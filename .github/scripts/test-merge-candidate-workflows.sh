@@ -26,6 +26,7 @@ ARCHIVE_SOURCE_SCRIPT="$SCRIPT_DIR/select-package-archive-source.sh"
 ARCHIVE_DOWNLOAD_SCRIPT="$SCRIPT_DIR/download-verified-release-asset.sh"
 STAGING_REUSE_SCRIPT="$SCRIPT_DIR/validate-staging-release.sh"
 STAGING_COMPOSE_SCRIPT="$SCRIPT_DIR/compose-staging-release-snapshots.sh"
+PACK_WORKSPACE_SCRIPT="$REPO_ROOT/scripts/pack-ci-test-workspace.sh"
 
 fail() {
   echo "merge-candidate workflow contract: $*" >&2
@@ -363,8 +364,8 @@ fi
 if grep -Fq -- '- name: Capture tested candidate index' "$PREPARE"; then
   fail "candidate index must not be recaptured from mutable release state after materialization"
 fi
-homebrew_guest_block=$(step_block "$PREPARE" "Prove Homebrew starts from candidate artifacts")
-homebrew_guest_step=$(step_run_block "$PREPARE" "Prove Homebrew starts from candidate artifacts")
+homebrew_guest_block=$(step_block "$PREPARE" "Build and prove Homebrew guest bootstrap from candidate artifacts")
+homebrew_guest_step=$(step_run_block "$PREPARE" "Build and prove Homebrew guest bootstrap from candidate artifacts")
 grep -Fq "if: env.PACKAGE_STAGING_REQUIRED == 'true'" <<<"$homebrew_guest_block" || \
   fail "candidate-backed Homebrew execution must run for package and ABI staging"
 grep -Fq 'build-homebrew-bootstrap.sh --skip-package-resolve' <<<"$homebrew_guest_step" || \
@@ -373,19 +374,32 @@ grep -Fq -- '--brew-script /home/linuxbrew/.linuxbrew/bin/brew' <<<"$homebrew_gu
   fail "candidate-backed Homebrew execution must test the canonical brew entry point"
 grep -Fq -- '--brew-script /usr/bin/brew' <<<"$homebrew_guest_step" || \
   fail "candidate-backed Homebrew execution must test the /usr/bin/brew alias"
+grep -Fq 'homebrew_bootstrap_guest_contract_node.ts' <<<"$homebrew_guest_step" || \
+  fail "candidate-backed Homebrew execution must prove the complete guest bootstrap contract"
 host_dist_clear_count=$(grep -Fc 'rm -rf host/dist' <<<"$homebrew_guest_step")
-if [ "$host_dist_clear_count" -ne 2 ]; then
-  fail "candidate-backed Homebrew execution must clear host/dist before both probes"
+if [ "$host_dist_clear_count" -ne 3 ]; then
+  fail "candidate-backed Homebrew execution must clear host/dist before all three probes"
 fi
 first_host_dist_clear_line=$(grep -nF 'rm -rf host/dist' <<<"$homebrew_guest_step" | sed -n '1s/:.*//p')
 second_host_dist_clear_line=$(grep -nF 'rm -rf host/dist' <<<"$homebrew_guest_step" | sed -n '2s/:.*//p')
+third_host_dist_clear_line=$(grep -nF 'rm -rf host/dist' <<<"$homebrew_guest_step" | sed -n '3s/:.*//p')
 canonical_brew_line=$(grep -nF -- '--brew-script /home/linuxbrew/.linuxbrew/bin/brew' <<<"$homebrew_guest_step" | cut -d: -f1)
 alias_brew_line=$(grep -nF -- '--brew-script /usr/bin/brew' <<<"$homebrew_guest_step" | cut -d: -f1)
+guest_contract_line=$(grep -nF 'homebrew_bootstrap_guest_contract_node.ts' <<<"$homebrew_guest_step" | cut -d: -f1)
 if [ "$first_host_dist_clear_line" -ge "$canonical_brew_line" ] || \
    [ "$canonical_brew_line" -ge "$second_host_dist_clear_line" ] || \
-   [ "$second_host_dist_clear_line" -ge "$alias_brew_line" ]; then
+   [ "$second_host_dist_clear_line" -ge "$alias_brew_line" ] || \
+   [ "$alias_brew_line" -ge "$third_host_dist_clear_line" ] || \
+   [ "$third_host_dist_clear_line" -ge "$guest_contract_line" ]; then
   fail "candidate-backed Homebrew execution must clear host/dist before each ordered entry-point probe"
 fi
+homebrew_guest_step_line=$(grep -nF -- '- name: Build and prove Homebrew guest bootstrap from candidate artifacts' "$PREPARE" | cut -d: -f1)
+pack_workspace_step_line=$(grep -nF -- '- name: Pack prepared test workspace' "$PREPARE" | cut -d: -f1)
+if [ "$homebrew_guest_step_line" -ge "$pack_workspace_step_line" ]; then
+  fail "the exact guest bootstrap must be proved and packed before browser consumers run"
+fi
+grep -Fq 'target/homebrew-bootstrap/homebrew-bootstrap.vfs' "$PACK_WORKSPACE_SCRIPT" || \
+  fail "the prepared test workspace must carry the exact Homebrew bootstrap into browser CI"
 grep -Fq 'current merge-gate authority changed' "$MARK_READY_SCRIPT" || \
   fail "candidate recovery authority replacement must be compare-and-swap"
 grep -Fq 'default branch changed after recovery validation' "$MARK_READY_SCRIPT" || \

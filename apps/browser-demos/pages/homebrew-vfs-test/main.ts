@@ -20,6 +20,11 @@ interface HomebrewVfsAcceptanceRequest {
   vfsUrl: string;
   executable: string;
   argv: string[];
+  env?: string[];
+  cwd?: string;
+  uid?: number;
+  gid?: number;
+  lazyUrlBase?: string;
   timeoutMs: number;
 }
 
@@ -106,27 +111,6 @@ interface PackageLayerMachine {
 let packageLayerMachine: PackageLayerMachine | null = null;
 let packageLayerDiscardedBufferCount = 0;
 
-function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
-  const stat = fs.stat(path);
-  const fd = fs.open(path, 0, 0);
-  try {
-    const bytes = new Uint8Array(stat.size);
-    fs.read(fd, bytes, null, bytes.byteLength);
-    return bytes;
-  } finally {
-    fs.close(fd);
-  }
-}
-
-function extractExecutable(image: Uint8Array, path: string): Uint8Array {
-  const fs = MemoryFileSystem.fromImagePreservingCapacity(image);
-  try {
-    return readVfsFile(fs, path);
-  } finally {
-    trackTransientImageBuffer(fs.sharedBuffer);
-  }
-}
-
 function appendOutput(current: string, bytes: Uint8Array, label: string): string {
   const next = current + new TextDecoder().decode(bytes);
   if (new TextEncoder().encode(next).byteLength > MAX_OUTPUT_BYTES) {
@@ -165,10 +149,6 @@ async function init(): Promise<void> {
       ABI_VERSION,
       "Homebrew Brewfile VFS image",
     );
-    const executableBytes = extractExecutable(
-      new Uint8Array(imageBytes),
-      request.executable,
-    );
     let stdout = "";
     let stderr = "";
     const kernel = new BrowserKernel({
@@ -183,18 +163,20 @@ async function init(): Promise<void> {
       await kernel.initFromImage({
         kernelWasm: kernelBytes,
         vfsImage: new Uint8Array(imageBytes),
+        lazyUrlBase: request.lazyUrlBase,
       });
-      const executable = new Uint8Array(executableBytes.byteLength);
-      executable.set(executableBytes);
+      const spawned = await kernel.spawnFromVfs(request.executable, request.argv, {
+        cwd: request.cwd ?? "/",
+        env: request.env ?? [
+          "HOME=/tmp",
+          "TMPDIR=/tmp",
+          "PATH=/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin",
+        ],
+        uid: request.uid,
+        gid: request.gid,
+      });
       const exitCode = await Promise.race([
-        kernel.spawn(executable.buffer, request.argv, {
-          cwd: "/",
-          env: [
-            "HOME=/tmp",
-            "TMPDIR=/tmp",
-            "PATH=/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin",
-          ],
-        }),
+        spawned.exit,
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(
             () => reject(new Error(`browser acceptance timed out after ${request.timeoutMs}ms`)),

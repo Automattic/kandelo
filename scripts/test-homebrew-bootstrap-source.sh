@@ -206,6 +206,7 @@ ARCHIVE64="$RUN_ROOT/wasm64/homebrew-brew.zip"
 PROVENANCE32="$RUN_ROOT/wasm32/homebrew-source.json"
 PROVENANCE64="$RUN_ROOT/wasm64/homebrew-source.json"
 IMAGE_METADATA="$RUN_ROOT/homebrew-image.json"
+LAYOUT_METADATA="$RUN_ROOT/homebrew-bootstrap-layout.json"
 
 if ! cmp -s "$ARCHIVE32" "$ARCHIVE64"; then
     echo "test-homebrew-bootstrap-source: patched archive is not reproducible across preparations" >&2
@@ -274,8 +275,38 @@ if (!/^[0-9a-f]{64}$/.test(wasm32.homebrew_patched_tree_sha256)) {
 }
 NODE
 
+node --input-type=module - "$LAYOUT_METADATA" <<'NODE'
+import { writeFileSync } from "node:fs";
+const path = process.argv[2];
+const prefix = "/home/linuxbrew/.linuxbrew";
+writeFileSync(path, `${JSON.stringify({
+  schema: 1,
+  guest: { uid: 1000, gid: 1000, home: "/home/linuxbrew" },
+  prefix,
+  eagerRootfsPackages: ["dash", "bash", "coreutils", "gawk", "grep", "sed", "findutils"],
+  eagerRootfsOutputs: [{ package: "posix-utils-lite", path: "/usr/bin/locale" }],
+  repository: {
+    path: prefix,
+    state: "mutable-working-repository",
+    initialSourceProvenance: "/etc/kandelo/homebrew-image.json",
+  },
+  entrypoints: ["brew", "ruby", "gem", "bundle", "bundler"].map((name) => ({
+    path: `/usr/bin/${name}`,
+  })),
+  writableDirectories: ["Cellar", "Library/Taps", "var/homebrew/locks"].map((suffix) => ({
+    path: `${prefix}/${suffix}`,
+  })),
+  protectedFiles: [{
+    path: "/etc/kandelo/homebrew-image.json",
+    owner: "root",
+    mode: "0444",
+  }],
+}, null, 2)}\n`);
+NODE
+
 node "$ROOT/scripts/write-homebrew-bootstrap-metadata.mjs" \
     --source "$PROVENANCE32" \
+    --layout "$LAYOUT_METADATA" \
     --abi 39 \
     --out "$IMAGE_METADATA"
 node --input-type=module - "$IMAGE_METADATA" "$PATCH_SHA256" "$BREW_REVISION" <<'NODE'
@@ -293,13 +324,28 @@ if (!/^[0-9a-f]{64}$/.test(metadata.homebrew_patched_tree_sha256)) {
 if (!/^[0-9a-f]{64}$/.test(metadata.homebrew_archive_sha256)) {
   throw new Error("metadata is missing the archive digest");
 }
+if (metadata.guest_layout?.path !== "/etc/kandelo/homebrew-bootstrap-layout.json") {
+  throw new Error("metadata is missing the guest-layout path");
+}
+if (!/^[0-9a-f]{64}$/.test(metadata.guest_layout?.sha256)) {
+  throw new Error("metadata is missing the guest-layout digest");
+}
+if (metadata.guest_layout?.repository_state !== "mutable-working-repository") {
+  throw new Error("metadata does not describe the live working repository truthfully");
+}
+if (JSON.stringify(metadata.guest_layout?.eager_rootfs_outputs) !==
+    JSON.stringify([{ package: "posix-utils-lite", path: "/usr/bin/locale" }])) {
+  throw new Error("metadata does not bind the eager rootfs output closure");
+}
 NODE
 
 grep -Fxq 'HOMEBREW_KANDELO_BOTTLE_TAG=wasm32_kandelo' "$RUN_ROOT/wasm32/brew.env"
 grep -Fxq 'HOMEBREW_KANDELO_BOTTLE_TAG=wasm64_kandelo' "$RUN_ROOT/wasm64/brew.env"
 grep -Fxq 'HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY=1' "$RUN_ROOT/wasm32/brew.env"
-grep -Fq '/usr/bin/brew l 0777 0 0 target=/home/linuxbrew/.linuxbrew/bin/brew' \
-    "$ROOT/scripts/build-homebrew-bootstrap.sh"
+grep -Fq 'scripts/homebrew-bootstrap-layout.ts' "$ROOT/scripts/build-homebrew-bootstrap.sh"
+grep -Fq -- '--print-rootfs-eager-arguments' "$ROOT/scripts/build-homebrew-bootstrap.sh"
+grep -Fq -- '^(lazy_url|src)=binaries\/.*\.wasm$' "$ROOT/scripts/build-homebrew-bootstrap.sh"
+grep -Fq -- '--layout "$BOOTSTRAP_LAYOUT"' "$ROOT/scripts/build-homebrew-bootstrap.sh"
 
 EXTRACT_ROOT="$RUN_ROOT/prefix"
 mkdir -p "$EXTRACT_ROOT"

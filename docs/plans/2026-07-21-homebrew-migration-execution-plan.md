@@ -786,6 +786,23 @@ main-shell capability):
   existing sealed build/test plan and provenance. Unsupported dependency-skip
   flags, a synthetic core API, and a curated partial core tap remain rejected.
 
+Current checkpoint evidence:
+
+- `scripts/homebrew-bootstrap-layout.ts` is the authority for the guest
+  identity, five conventional entrypoints, writable state, protected files,
+  and exact eager startup-tool closure. Output-level eager selection keeps only
+  `/usr/bin/locale` from the 37-command `posix-utils-lite` bundle resident.
+- Bash revision 4 enables upstream programmable completion. The package suite
+  covers `compgen`/`complete`, builtin enumeration, disable/re-enable, and
+  restoration after a function shadows a builtin; all 16 Bash tests pass on
+  the source-built, fork-instrumented Wasm.
+- The exact bootstrap validates every eager `src=` and deferred `lazy_url=`
+  Wasm input against ABI 41. The shared unprivileged guest contract passes on
+  Node.js and Chromium, and Chromium observes zero deferred program requests.
+- This evidence does not activate the canonical shell, prove a bottle pour, or
+  retire the remaining `config`/`doctor`/tap/install/upgrade/uninstall and
+  historical `saveImage()` work above.
+
 Acceptance:
 
 - Stock upstream Homebrew, with only the documented Kandelo target/platform

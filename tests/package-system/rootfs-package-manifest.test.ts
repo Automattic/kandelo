@@ -150,6 +150,152 @@ describe("generate-rootfs-package-manifest artifact provenance", () => {
     expect(result.stderr).not.toContain("local-binaries");
   });
 
+  it("embeds every output of an explicitly eager package without duplicating its paths", () => {
+    const scratch = makeScratch();
+    const selectedRoot = join(scratch, "selected-binaries");
+    const firstRel = "programs/wasm32/fixture/main.wasm";
+    const secondRel = "programs/wasm32/fixture/helper.wasm";
+    const first = writeArtifact(selectedRoot, firstRel, "main");
+    const second = writeArtifact(selectedRoot, secondRel, "helper");
+    const packages = join(scratch, "PACKAGES.toml");
+    writeFileSync(
+      packages,
+      [
+        'default_install = "lazy"',
+        'lazy_url_prefix = "binaries/"',
+        "[[packages]]",
+        'name = "fixture"',
+        "[[packages.outputs]]",
+        `binary = "${firstRel}"`,
+        'path = "/usr/bin/fixture"',
+        'aliases = ["/bin/fixture"]',
+        "[[packages.outputs]]",
+        `binary = "${secondRel}"`,
+        'path = "/usr/bin/fixture-helper"',
+        'install = "lazy"',
+        "",
+      ].join("\n"),
+    );
+    const out = join(scratch, "eager.MANIFEST");
+
+    const result = runGenerator([
+      "--packages",
+      packages,
+      "--binaries-dir",
+      relative(repoRoot, selectedRoot),
+      "--eager-package",
+      "fixture",
+      "--out",
+      out,
+    ]);
+
+    expect(result.status, result.stderr).toBe(0);
+    const manifest = readFileSync(out, "utf8");
+    expect(manifest).toContain(`/usr/bin/fixture f 0755 0 0 src=${relative(repoRoot, first)}`);
+    expect(manifest).toContain(
+      `/usr/bin/fixture-helper f 0755 0 0 src=${relative(repoRoot, second)}`,
+    );
+    expect(manifest).toContain("/bin/fixture l 0777 0 0 target=/usr/bin/fixture");
+    expect(manifest).not.toContain("lazy_url=");
+    expect(manifest.match(/^\/usr\/bin\/fixture /gm)).toHaveLength(1);
+
+    const unknown = runGenerator([
+      "--packages",
+      packages,
+      "--binaries-dir",
+      relative(repoRoot, selectedRoot),
+      "--eager-package",
+      "missing",
+      "--out",
+      join(scratch, "unknown.MANIFEST"),
+    ]);
+    expect(unknown.status).toBe(1);
+    expect(unknown.stderr).toContain("does not name a configured package: missing");
+  });
+
+  it("embeds only the selected output of a multi-output package", () => {
+    const scratch = makeScratch();
+    const selectedRoot = join(scratch, "selected-binaries");
+    const mainRel = "programs/wasm32/fixture/main.wasm";
+    const helperRel = "programs/wasm32/fixture/helper.wasm";
+    writeArtifact(selectedRoot, mainRel, "main");
+    const helper = writeArtifact(selectedRoot, helperRel, "helper");
+    const packages = join(scratch, "PACKAGES.toml");
+    writeFileSync(
+      packages,
+      [
+        'default_install = "lazy"',
+        'lazy_url_prefix = "binaries/"',
+        "[[packages]]",
+        'name = "fixture"',
+        "[[packages.outputs]]",
+        `binary = "${mainRel}"`,
+        'path = "/usr/bin/fixture"',
+        "[[packages.outputs]]",
+        `binary = "${helperRel}"`,
+        'path = "/usr/bin/fixture-helper"',
+        'aliases = ["/bin/fixture-helper"]',
+        "",
+      ].join("\n"),
+    );
+    const out = join(scratch, "eager-output.MANIFEST");
+
+    const result = runGenerator([
+      "--packages",
+      packages,
+      "--binaries-dir",
+      relative(repoRoot, selectedRoot),
+      "--eager-output",
+      "fixture:/usr/bin/fixture-helper",
+      "--out",
+      out,
+    ]);
+
+    expect(result.status, result.stderr).toBe(0);
+    const manifest = readFileSync(out, "utf8");
+    expect(manifest).toContain(
+      "/usr/bin/fixture f 0755 0 0 lazy_url=binaries/programs/wasm32/fixture/main.wasm",
+    );
+    expect(manifest).toContain(
+      `/usr/bin/fixture-helper f 0755 0 0 src=${relative(repoRoot, helper)}`,
+    );
+    expect(manifest).toContain(
+      "/bin/fixture-helper l 0777 0 0 target=/usr/bin/fixture-helper",
+    );
+
+    const unknown = runGenerator([
+      "--packages",
+      packages,
+      "--binaries-dir",
+      relative(repoRoot, selectedRoot),
+      "--eager-output",
+      "fixture:/usr/bin/missing",
+      "--out",
+      join(scratch, "unknown-output.MANIFEST"),
+    ]);
+    expect(unknown.status).toBe(1);
+    expect(unknown.stderr).toContain(
+      "does not name a configured output: fixture:/usr/bin/missing",
+    );
+
+    const duplicate = runGenerator([
+      "--packages",
+      packages,
+      "--binaries-dir",
+      relative(repoRoot, selectedRoot),
+      "--eager-output",
+      "fixture:/usr/bin/fixture-helper",
+      "--eager-output",
+      "fixture:/usr/bin/fixture-helper",
+      "--out",
+      join(scratch, "duplicate-output.MANIFEST"),
+    ]);
+    expect(duplicate.status).toBe(1);
+    expect(duplicate.stderr).toContain(
+      "duplicate --eager-output: fixture:/usr/bin/fixture-helper",
+    );
+  });
+
   it.each([
     ["parent traversal", "../outside.wasm"],
     ["embedded parent traversal", "programs/wasm32/../outside.wasm"],
