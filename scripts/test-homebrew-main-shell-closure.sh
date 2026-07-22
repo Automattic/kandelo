@@ -62,7 +62,9 @@ push_paths="$(awk '
   fail "Homebrew main-shell pull_request and push path filters must stay aligned"
 
 for required_path in \
+  ".github/actions/fetch-submodules/**" \
   ".github/actions/setup-nix/**" \
+  ".gitmodules" \
   "MANIFEST" \
   "apps/browser-demos/**" \
   "crates/shared/**" \
@@ -74,8 +76,10 @@ for required_path in \
   "images/vfs/scripts/build-shell-vfs-image.ts" \
   "images/vfs/scripts/main-shell-demo-config.ts" \
   "images/vfs/scripts/vfs-image-helpers.ts" \
-  "packages/registry/rootfs/package.toml" \
-  "packages/registry/shell/**" \
+  "libc/**" \
+  "packages/registry/**" \
+  "sdk/**" \
+  "scripts/build-musl.sh" \
   "scripts/dev-shell.sh" \
   "scripts/browser-binary-package-roots.mjs" \
   "scripts/create-homebrew-bottle-mirror-publish-manifest.ts" \
@@ -84,8 +88,10 @@ for required_path in \
   "scripts/homebrew-language-runtime-contract.ts" \
   "scripts/homebrew-main-shell-image-contract*.ts" \
   "scripts/install-local-binary.sh" \
+  "scripts/install-overlay-headers.sh" \
   "scripts/resolve-binary.sh" \
   "scripts/recover-homebrew-bottle-mirror.ts" \
+  "scripts/run-wasm-fork-instrument.sh" \
   "scripts/verify-homebrew-main-shell-artifact-lock.sh" \
   "tests/package-system/browser-binary-dependencies.test.ts" \
   "tests/package-system/homebrew-bottle-mirror-recovery.test.ts" \
@@ -143,6 +149,28 @@ done
 
 grep -Fq 'persist-credentials: false' "$WORKFLOW" ||
   fail "main-shell proof checkout must not persist repository credentials"
+submodule_line="$(grep -nF 'submodules: libc/musl' "$WORKFLOW" | cut -d: -f1)"
+setup_nix_line="$(grep -nF 'uses: ./.github/actions/setup-nix' "$WORKFLOW" | cut -d: -f1)"
+isolate_line="$(grep -nF 'git archive "$GITHUB_SHA" | tar -x -C "$source_root"' "$WORKFLOW" | cut -d: -f1)"
+sysroot_line="$(grep -nF 'bash scripts/dev-shell.sh bash scripts/build-musl.sh' "$WORKFLOW" | cut -d: -f1)"
+fetch_line="$(grep -nF 'scripts/fetch-binaries.sh "${fetch_args[@]}"' "$WORKFLOW" | cut -d: -f1)"
+[ -n "$submodule_line" ] && [ -n "$setup_nix_line" ] &&
+  [ -n "$isolate_line" ] && [ -n "$sysroot_line" ] && [ -n "$fetch_line" ] &&
+  [ "$submodule_line" -lt "$isolate_line" ] &&
+  [ "$setup_nix_line" -lt "$isolate_line" ] &&
+  [ "$isolate_line" -lt "$sysroot_line" ] &&
+  [ "$sysroot_line" -lt "$fetch_line" ] ||
+  fail "main-shell source fallback must isolate musl and build the sysroot before package resolution"
+[ "$(grep -Fc 'bash scripts/dev-shell.sh bash scripts/build-musl.sh' "$WORKFLOW")" -eq 1 ] ||
+  fail "main-shell proof must build the source-fallback sysroot exactly once"
+grep -Fq 'test -f sysroot/lib/libc.a' "$WORKFLOW" ||
+  fail "main-shell proof must verify the source-fallback libc archive"
+grep -Fq 'working-directory: ${{ steps.sysroot-source.outputs.path }}' "$WORKFLOW" ||
+  fail "main-shell proof must build musl outside the package resolver source tree"
+grep -Fq 'test ! -e "$source_root/.git"' "$WORKFLOW" ||
+  fail "isolated sysroot source must remain a path input independent of shallow Git history"
+grep -Fq 'test -z "$(git -C "$GITHUB_WORKSPACE/libc/musl" status --porcelain=v1 --untracked-files=all)"' "$WORKFLOW" ||
+  fail "main-shell proof must verify that sysroot preparation leaves package cache inputs clean"
 grep -Fq 'GH_TOKEN: ${{ github.token }}' "$WORKFLOW" &&
   fail "main-shell proof must not expose the workflow token to package composition"
 grep -Fq 'scripts/homebrew-checkout-public-tap.sh' "$WORKFLOW" &&
