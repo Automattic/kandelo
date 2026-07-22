@@ -16,15 +16,8 @@ on:
       - "homebrew/main-shell*"
       - "host/package-lock.json"
       - "host/package.json"
-      - "host/src/binary-resolver.ts"
-      - "host/src/generated/abi.ts"
-      - "host/src/homebrew-bottle-mirror-*.ts"
-      - "host/src/homebrew-vfs-*.ts"
-      - "host/src/node-kernel-host.ts"
-      - "host/src/vfs/**"
-      - "host/test/homebrew-vfs-*.test.ts"
-      - "host/test/optional-demo-vfs.test.ts"
-      - "host/test/vfs-image.test.ts"
+      - "host/src/**"
+      - "host/test/**"
       - "images/rootfs/**"
       - "images/vfs/scripts/build-homebrew-materialized-vfs-image.ts"
       - "images/vfs/scripts/build-homebrew-vfs-image.ts"
@@ -54,10 +47,7 @@ on:
       - "tests/package-system/homebrew-bottle-mirror-recovery.test.ts"
       - "tools/mkrootfs/**"
       - "tools/xtask/**"
-      - "web-libs/kandelo-session/src/shell-config.ts"
-      - "web-libs/kandelo-session/src/demo-config*.ts"
-      - "web-libs/kandelo-session/src/kernel-host.ts"
-      - "web-libs/kandelo-session/src/vfs-capacity.ts"
+      - "web-libs/kandelo-session/**"
   push:
     branches: [main]
     paths:
@@ -74,15 +64,8 @@ on:
       - "homebrew/main-shell*"
       - "host/package-lock.json"
       - "host/package.json"
-      - "host/src/binary-resolver.ts"
-      - "host/src/generated/abi.ts"
-      - "host/src/homebrew-bottle-mirror-*.ts"
-      - "host/src/homebrew-vfs-*.ts"
-      - "host/src/node-kernel-host.ts"
-      - "host/src/vfs/**"
-      - "host/test/homebrew-vfs-*.test.ts"
-      - "host/test/optional-demo-vfs.test.ts"
-      - "host/test/vfs-image.test.ts"
+      - "host/src/**"
+      - "host/test/**"
       - "images/rootfs/**"
       - "images/vfs/scripts/build-homebrew-materialized-vfs-image.ts"
       - "images/vfs/scripts/build-homebrew-vfs-image.ts"
@@ -112,11 +95,17 @@ on:
       - "tests/package-system/homebrew-bottle-mirror-recovery.test.ts"
       - "tools/mkrootfs/**"
       - "tools/xtask/**"
-      - "web-libs/kandelo-session/src/shell-config.ts"
-      - "web-libs/kandelo-session/src/demo-config*.ts"
-      - "web-libs/kandelo-session/src/kernel-host.ts"
-      - "web-libs/kandelo-session/src/vfs-capacity.ts"
+      - "web-libs/kandelo-session/**"
   workflow_dispatch:
+    inputs:
+      transport_mode:
+        description: Validate exact bottle bytes from closed bindings or the public release
+        required: true
+        default: closed
+        type: choice
+        options:
+          - closed
+          - public
 
 concurrency:
   group: homebrew-main-shell-${{ github.event.pull_request.number || github.ref }}
@@ -132,6 +121,7 @@ jobs:
     timeout-minutes: 90
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      TRANSPORT_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.transport_mode || 'closed' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -239,9 +229,11 @@ jobs:
           test -f "$candidate_root/main-shell-report.json"
           test "$(find "$candidate_root/bottle-mirror" -maxdepth 1 -type f | wc -l)" \
             -eq 36
-          echo "image=$candidate_root/main-shell.vfs.zst" >> "$GITHUB_OUTPUT"
-          echo "report=$candidate_root/main-shell-report.json" >> "$GITHUB_OUTPUT"
-          echo "tap_sha=$tap_sha" >> "$GITHUB_OUTPUT"
+          {
+            echo "image=$candidate_root/main-shell.vfs.zst"
+            echo "report=$candidate_root/main-shell-report.json"
+            echo "tap_sha=$tap_sha"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Install the candidate's exact shell bytes
         id: image
@@ -263,7 +255,7 @@ jobs:
           [[ "$image_sha" =~ ^[0-9a-f]{64}$ ]]
           echo "sha256=$image_sha" >> "$GITHUB_OUTPUT"
 
-      - name: Recover the exact closed bottle mirror from anonymous source packages
+      - name: Recover the exact bottle mirror from anonymous source packages
         id: mirror
         run: |
           set -euo pipefail
@@ -285,9 +277,6 @@ jobs:
             .kind == "kandelo-homebrew-bottle-mirror-recovery" and
             (.assets | length) == 35
           ' "$mirror_report" >/dev/null
-          browser_mirror=apps/browser-demos/public/homebrew-main-shell-bottles
-          test ! -e "$browser_mirror"
-          cp -R "$mirror_dir" "$browser_mirror"
           publish_manifest="$RUNNER_TEMP/homebrew-main-shell-bottle-publish.json"
           bash scripts/dev-shell.sh npx tsx \
             scripts/create-homebrew-bottle-mirror-publish-manifest.ts \
@@ -300,36 +289,76 @@ jobs:
             (.preferred_asset_names | length) == 36 and
             .accepted_existing_asset_sets == []
           ' "$publish_manifest" >/dev/null
+          browser_mirror=apps/browser-demos/public/homebrew-main-shell-bottles
+          test ! -e "$browser_mirror"
+          if [ "$TRANSPORT_MODE" = closed ]; then
+            cp -R "$mirror_dir" "$browser_mirror"
+            test "$(find "$browser_mirror" -maxdepth 1 -type f | wc -l)" -eq 36
+          elif [ "$TRANSPORT_MODE" = public ]; then
+            mkdir -p "$browser_mirror"
+            cp "$mirror_dir/kandelo-homebrew-bottle-mirror-plan.json" \
+              "$browser_mirror/"
+            test "$(find "$browser_mirror" -maxdepth 1 -type f | wc -l)" -eq 1
+          else
+            echo "unsupported transport mode: $TRANSPORT_MODE" >&2
+            exit 1
+          fi
           echo "plan=$mirror_dir/kandelo-homebrew-bottle-mirror-plan.json" >> "$GITHUB_OUTPUT"
+
       - name: Boot the exact installed bytes in Node
         run: |
+          node_smoke_args=(
+            --image "${{ steps.candidate.outputs.image }}"
+            --migration-lock homebrew/main-shell-migration-lock.json
+            --demo-config homebrew/main-shell-demo.json
+            --transport-mode "$TRANSPORT_MODE"
+          )
+          case "$TRANSPORT_MODE" in
+            closed)
+              node_smoke_args+=(
+                --bottle-mirror-plan "${{ steps.mirror.outputs.plan }}"
+              )
+              ;;
+            public)
+              ;;
+            *)
+              echo "unsupported transport mode: $TRANSPORT_MODE" >&2
+              exit 1
+              ;;
+          esac
           bash scripts/dev-shell.sh npx tsx \
             scripts/homebrew-main-shell-node-smoke.ts \
-            --image "${{ steps.candidate.outputs.image }}" \
-            --migration-lock homebrew/main-shell-migration-lock.json \
-            --demo-config homebrew/main-shell-demo.json \
-            --transport-mode closed \
-            --bottle-mirror-plan "${{ steps.mirror.outputs.plan }}"
+            "${node_smoke_args[@]}"
 
       - name: Boot the current main-shell path in Chromium
         env:
           KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "1"
           KANDELO_HOMEBREW_MAIN_SHELL_SHA256: ${{ steps.image.outputs.sha256 }}
-          KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE: closed
+          KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE: ${{ env.TRANSPORT_MODE }}
           KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL: /homebrew-main-shell-bottles/kandelo-homebrew-bottle-mirror-plan.json
-          VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT: /homebrew-main-shell-bottles
         run: |
           set -euo pipefail
           report="$RUNNER_TEMP/homebrew-main-shell-playwright.json"
+          playwright_env=(
+            "PLAYWRIGHT_JSON_OUTPUT_FILE=$report"
+            "KANDELO_HOMEBREW_MAIN_SHELL_STRICT=$KANDELO_HOMEBREW_MAIN_SHELL_STRICT"
+            "KANDELO_HOMEBREW_MAIN_SHELL_SHA256=$KANDELO_HOMEBREW_MAIN_SHELL_SHA256"
+            "KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE=$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE"
+            "KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL=$KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL"
+          )
+          if [ "$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" = closed ]; then
+            playwright_env+=(
+              "VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT=/homebrew-main-shell-bottles"
+            )
+          elif [ "$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" = public ]; then
+            unset VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT
+          else
+            echo "unsupported transport mode: $KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" >&2
+            exit 1
+          fi
           (
             cd apps/browser-demos
-            bash ../../scripts/dev-shell.sh env \
-              PLAYWRIGHT_JSON_OUTPUT_FILE="$report" \
-              KANDELO_HOMEBREW_MAIN_SHELL_STRICT="$KANDELO_HOMEBREW_MAIN_SHELL_STRICT" \
-              KANDELO_HOMEBREW_MAIN_SHELL_SHA256="$KANDELO_HOMEBREW_MAIN_SHELL_SHA256" \
-              KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE="$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" \
-              KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL="$KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL" \
-              VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT="$VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT" \
+            bash ../../scripts/dev-shell.sh env "${playwright_env[@]}" \
               npx playwright test test/kandelo-homebrew-main-shell.spec.ts \
               --project=chromium --reporter=json
           )

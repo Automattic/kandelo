@@ -410,6 +410,8 @@ const WEB_BOOT_LOG_DEMO_IDS = new Set<LiveDemoId>([
 
 interface LiveProfile {
   id: string;
+  /** Canonical built-in image family, or null for custom/software images. */
+  image: LiveVfsImage | null;
   vfsUrl: string;
   vfsSource?: LiveVfsSource;
   software?: SoftwareProfile;
@@ -730,6 +732,7 @@ function customVfsProfile(
 ): LiveProfile {
   return {
     id: desc.id,
+    image: null,
     vfsUrl,
     descriptor: desc,
     shell: "default",
@@ -745,6 +748,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
     const desc = descriptorFor(id);
     return {
       id: software.id,
+      image: null,
       vfsUrl: software.vfsArchiveUrl,
       software,
       descriptor: desc,
@@ -764,6 +768,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
   const vfsSource = VFS_SOURCES[spec.image];
   return {
     id: normalized,
+    image: spec.image,
     vfsUrl: vfsSource.kind === "url" ? vfsSource.url : "",
     vfsSource,
     descriptor: desc,

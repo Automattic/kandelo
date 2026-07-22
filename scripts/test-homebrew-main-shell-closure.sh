@@ -9,6 +9,7 @@ SOURCE_LOCK="$REPO_ROOT/homebrew/main-shell-migration-lock.json"
 WORKFLOW="$REPO_ROOT/.github/workflows/homebrew-main-shell-ci.yml"
 IMAGE_CONTRACT="$REPO_ROOT/scripts/homebrew-main-shell-image-contract.ts"
 IMAGE_CONTRACT_TEST="$REPO_ROOT/scripts/homebrew-main-shell-image-contract.test.ts"
+NODE_SMOKE="$REPO_ROOT/scripts/homebrew-main-shell-node-smoke.ts"
 EAGER_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts"
 MATERIALIZED_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-materialized-vfs-image.ts"
 STAGING_WORKFLOW="$REPO_ROOT/.github/workflows/staging-build.yml"
@@ -61,10 +62,8 @@ for required_path in \
   "apps/browser-demos/**" \
   "crates/shared/**" \
   "homebrew/main-shell*" \
-  "host/src/generated/abi.ts" \
-  "host/src/homebrew-bottle-mirror-*.ts" \
-  "host/src/homebrew-vfs-*.ts" \
-  "host/src/vfs/**" \
+  "host/src/**" \
+  "host/test/**" \
   "images/rootfs/**" \
   "images/vfs/scripts/build-homebrew-materialized-vfs-image.ts" \
   "images/vfs/scripts/build-shell-vfs-image.ts" \
@@ -85,9 +84,7 @@ for required_path in \
   "tests/package-system/homebrew-bottle-mirror-recovery.test.ts" \
   "tools/mkrootfs/**" \
   "tools/xtask/**" \
-  "web-libs/kandelo-session/src/kernel-host.ts" \
-  "web-libs/kandelo-session/src/demo-config*.ts" \
-  "web-libs/kandelo-session/src/shell-config.ts"
+  "web-libs/kandelo-session/**"
 do
   grep -Fxq "$required_path" <<<"$pull_paths" ||
     fail "Homebrew main-shell workflow does not watch authoritative input $required_path"
@@ -114,7 +111,7 @@ for variable in \
   KANDELO_HOMEBREW_MAIN_SHELL_STRICT \
   KANDELO_HOMEBREW_MAIN_SHELL_SHA256
 do
-  grep -Fq -- "$variable=\"\$" "$WORKFLOW" ||
+  grep -Fq -- "\"$variable=\$$variable\"" "$WORKFLOW" ||
     fail "main-shell workflow must pass $variable explicitly to its isolated consumer"
   grep -Fq -- "--keep $variable " "$REPO_ROOT/scripts/dev-shell.sh" &&
     fail "dev shell must not globally preserve main-shell-only input $variable"
@@ -148,13 +145,35 @@ grep -Fq -- '--migration-lock homebrew/main-shell-migration-lock.json' "$WORKFLO
   fail "post-archive Node proof must validate against the reviewed migration lock"
 grep -Fq -- '--demo-config homebrew/main-shell-demo.json' "$WORKFLOW" ||
   fail "post-archive Node proof must validate the canonical demo config bytes"
+node_smoke_workflow_block="$(sed -n \
+  '/- name: Boot the exact installed bytes in Node/,/- name: Boot the current main-shell path in Chromium/p' \
+  "$WORKFLOW")"
+grep -Fq 'node_smoke_args=(' <<<"$node_smoke_workflow_block" ||
+  fail "Node proof must build one explicit transport-aware argument vector"
+grep -Fq 'case "$TRANSPORT_MODE" in' <<<"$node_smoke_workflow_block" ||
+  fail "Node proof must branch explicitly on closed versus public transport"
+grep -Fq '"${node_smoke_args[@]}"' <<<"$node_smoke_workflow_block" ||
+  fail "Node proof must invoke the smoke with its checked argument vector"
+[ "$(grep -Fc -- '--bottle-mirror-plan' <<<"$node_smoke_workflow_block")" -eq 1 ] ||
+  fail "Node proof must declare the closed bottle mirror plan exactly once"
+closed_mode_line="$(grep -nF 'closed)' <<<"$node_smoke_workflow_block" | cut -d: -f1)"
+mirror_plan_line="$(grep -nF -- '--bottle-mirror-plan' <<<"$node_smoke_workflow_block" | cut -d: -f1)"
+public_mode_line="$(grep -nF 'public)' <<<"$node_smoke_workflow_block" | cut -d: -f1)"
+[ -n "$closed_mode_line" ] && [ -n "$mirror_plan_line" ] && [ -n "$public_mode_line" ] &&
+  [ "$closed_mode_line" -lt "$mirror_plan_line" ] &&
+  [ "$mirror_plan_line" -lt "$public_mode_line" ] ||
+  fail "Node proof must pass --bottle-mirror-plan only inside the closed transport branch"
+grep -Fq '(mode === "closed" && !plan)' "$NODE_SMOKE" ||
+  fail "Node smoke must require a local mirror plan in closed mode"
+grep -Fq '(mode === "public" && plan !== undefined)' "$NODE_SMOKE" ||
+  fail "Node smoke must reject a local mirror plan in public mode"
 grep -Fq '${{ steps.candidate.outputs.image }}' "$WORKFLOW" ||
   fail "main-shell evidence must retain the exact candidate image"
 grep -Fq '${{ steps.candidate.outputs.report }}' "$WORKFLOW" ||
   fail "main-shell evidence must retain the candidate composition report"
-grep -Fq 'bash ../../scripts/dev-shell.sh env \' "$WORKFLOW" ||
+grep -Fq 'bash ../../scripts/dev-shell.sh env "${playwright_env[@]}" \' "$WORKFLOW" ||
   fail "main-shell workflow must forward browser acceptance inputs inside the isolated dev shell"
-grep -Fq 'PLAYWRIGHT_JSON_OUTPUT_FILE="$report" \' "$WORKFLOW" ||
+grep -Fq '"PLAYWRIGHT_JSON_OUTPUT_FILE=$report"' "$WORKFLOW" ||
   fail "browser acceptance must have Playwright write JSON directly to its report file"
 grep -Fq -- '--project=chromium --reporter=json >"$report"' "$WORKFLOW" &&
   fail "browser acceptance must not mix dev-shell stdout into the Playwright JSON report"
@@ -254,8 +273,7 @@ for candidate_only_input in \
   host/src/homebrew-bottle-mirror-plan.ts \
   host/src/homebrew-runtime-layer-consumer.ts \
   host/src/homebrew-vfs-composer.ts \
-  host/src/homebrew-vfs-materialization-policy.ts \
-  host/src/vfs/deferred-tree-limits.ts
+  host/src/homebrew-vfs-materialization-policy.ts
 do
   grep -Fq "\"$candidate_only_input\"" "$SHELL_BUILD_TOML" &&
     fail "candidate infrastructure must not activate package input $candidate_only_input"
