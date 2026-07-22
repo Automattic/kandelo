@@ -18,11 +18,19 @@ import { gzipSync } from "fflate";
 import { ABI_VERSION } from "../src/generated/abi";
 import {
   buildHomebrewVfs,
+  writeHomebrewVfsComposition,
   type HomebrewVfsBuildResult,
   type HomebrewVfsCatalogCheckout,
   type HomebrewVfsCompatibilityPolicy,
   type HomebrewVfsSelectionSource,
 } from "../src/homebrew-vfs-builder";
+import {
+  assertHomebrewBottleMirrorBundle,
+  assertHomebrewBottleMirrorPlan,
+  assertHomebrewVfsMaterialization,
+  buildHomebrewMaterializedVfs,
+  HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH,
+} from "../src/homebrew-vfs-composer";
 import {
   buildHomebrewLazyLayer,
   buildHomebrewOriginalBottleCollection,
@@ -3130,6 +3138,338 @@ describe("Homebrew VFS builder", () => {
     expect(collection.payloads.map((payload) => payload.id)).toEqual(
       collection.deferredTrees.map((tree) => tree.id),
     );
+  });
+
+  it("composes global ownership before embedding a checked closure and deferring the rest", async () => {
+    const fixture = await lazyLayerFixture({ includeLayerDependency: true });
+    const deferredVersion = "4.0";
+    const deferredKeg = `${CELLAR}/deferred/${deferredVersion}`;
+    const deferredBytes = bottleTar([
+      {
+        path: `deferred/${deferredVersion}/bin/deferred`,
+        data: "deferred payload\n",
+        mode: 0o755,
+      },
+      {
+        path: `deferred/${deferredVersion}/share/deferred.txt`,
+        data: "deferred sibling\n",
+        mode: 0o644,
+      },
+      {
+        path: `deferred/${deferredVersion}/.brew/deferred.rb`,
+        data: "class Deferred < Formula\nend\n",
+      },
+      {
+        path: `deferred/${deferredVersion}/INSTALL_RECEIPT.json`,
+        data: "{}\n",
+      },
+    ]);
+    const runtime = fixture.plan.packages.find((pkg) => pkg.name === "runtime")!;
+    const deferred = {
+      ...structuredClone(runtime),
+      name: "deferred",
+      fullName: "kandelo-dev/tap-core/deferred",
+      version: deferredVersion,
+      url: "file:///tmp/deferred.bottle.tar.gz",
+      sha256: sha256(deferredBytes),
+      bytes: deferredBytes.byteLength,
+      cacheKeySha: sha256(utf8("deferred-cache-key")),
+      keg: deferredKeg,
+      payloadRoot: `deferred/${deferredVersion}`,
+      linkManifestPath: "Kandelo/link/deferred-4.0-rebuild0-wasm32.json",
+      dependencies: [{
+        name: "hello",
+        full_name: "kandelo-dev/tap-core/hello",
+        version: "2.12.1",
+      }],
+      linkManifest: {
+        ...structuredClone(runtime.linkManifest),
+        package: "deferred",
+        version: deferredVersion,
+        keg: deferredKeg,
+        bottle: {
+          ...structuredClone(runtime.linkManifest.bottle),
+          url: "file:///tmp/deferred.bottle.tar.gz",
+          sha256: sha256(deferredBytes),
+          bytes: deferredBytes.byteLength,
+          cache_key_sha: sha256(utf8("deferred-cache-key")),
+          payload_root: `deferred/${deferredVersion}`,
+        },
+        // Compete with the embedded root to prove the winner comes from the
+        // full four-package projection, not a later three-package re-pour.
+        links: [{
+          type: "symlink" as const,
+          source: `Cellar/deferred/${deferredVersion}/bin/deferred`,
+          target: "bin/runtime",
+        }],
+        receipts: [
+          `Cellar/deferred/${deferredVersion}/.brew/deferred.rb`,
+          `Cellar/deferred/${deferredVersion}/INSTALL_RECEIPT.json`,
+        ],
+      },
+    };
+    const plan: HomebrewVfsPlan = {
+      ...fixture.plan,
+      requestedPackages: ["runtime", "deferred"],
+      packages: [...fixture.plan.packages, deferred],
+    };
+    const policy = {
+      schema: 1,
+      kind: "kandelo-homebrew-vfs-materialization-policy",
+      embedded_roots: ["kandelo-dev/tap-core/runtime"],
+      embedded_package_order: [
+        "kandelo-dev/tap-core/hello",
+        "kandelo-dev/tap-core/runtime-dep",
+        "kandelo-dev/tap-core/runtime",
+      ],
+    };
+    const compatibilityPolicy: HomebrewVfsCompatibilityPolicy = {
+      mirror_link_manifest_bin: { targets: ["/usr/bin"] },
+      link_conflict_owners: [{
+        target: "bin/runtime",
+        package: "kandelo-dev/tap-core/runtime",
+        reason: "the embedded runtime owns the shared command",
+      }],
+      aliases: [{
+        package: "kandelo-dev/tap-core/deferred",
+        source_kind: "keg",
+        source: "bin/deferred",
+        targets: ["/bin/deferred"],
+      }],
+      runtime_state: [{
+        requires_package: "kandelo-dev/tap-core/deferred",
+        path: "/var/lib/deferred",
+        kind: "directory",
+        mode: 0o755,
+        uid: 1000,
+        gid: 1000,
+        reason: "deferred runtime state remains consumer-owned",
+      }],
+    };
+    const bytesByPackage = new Map([
+      ["hello", fixture.baseBytes],
+      ["runtime-dep", fixture.dependencyBytes],
+      ["runtime", fixture.runtimeBytes],
+      ["deferred", deferredBytes],
+    ]);
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(32 * 1024 * 1024));
+    ensureDirRecursive(fs, "/home");
+    ensureDirRecursive(fs, "/var/lib");
+    const result = await buildHomebrewMaterializedVfs(plan, {
+      fs,
+      collectionFs: MemoryFileSystem.create(new SharedArrayBuffer(32 * 1024 * 1024)),
+      policy,
+      mirrorRepository: "kandelo-dev/homebrew-tap-core",
+      compatibilityPolicy,
+      writeProfile: true,
+      loadBottleBytes(pkg) {
+        return bytesByPackage.get(pkg.name)!;
+      },
+    });
+
+    expect(result.selection.embeddedPackages.map((pkg) => pkg.fullName)).toEqual(
+      policy.embedded_package_order,
+    );
+    expect(result.selection.deferredPackages.map((pkg) => pkg.fullName)).toEqual([
+      "kandelo-dev/tap-core/deferred",
+    ]);
+    expect(result.report.materialization).toMatchObject({
+      embedded_tree_count: 3,
+      deferred_tree_count: 1,
+      bottle_mirror: {
+        asset_count: 1,
+        manifest_path: HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH,
+        manifest_sha256: result.mirrorPlanAsset.sha256,
+        manifest_bytes: result.mirrorPlanAsset.bytes.byteLength,
+      },
+    });
+    expect(result.evidence.mirrorPlan).toEqual({
+      path: HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH,
+      sha256: result.mirrorPlanAsset.sha256,
+      bytes: result.mirrorPlanAsset.bytes.byteLength,
+    });
+    expect(readVfsFile(fs, HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH)).toBe(
+      new TextDecoder().decode(result.mirrorPlanAsset.bytes),
+    );
+    expect(() => assertHomebrewVfsMaterialization(fs, {
+      ...result.evidence,
+      // Two packages may legitimately have byte-identical bottles. Deferred
+      // identity is the exact mirror URL + integrity, never SHA/size alone.
+      embedded: [
+        ...result.evidence.embedded,
+        {
+          package: "kandelo-dev/tap-core/byte-identical-embedded",
+          treeId: "byte-identical-embedded",
+          sha256: result.evidence.deferred[0]!.sha256,
+          bytes: result.evidence.deferred[0]!.bytes,
+        },
+      ],
+    })).not.toThrow();
+    expect(() => assertHomebrewVfsMaterialization(fs, {
+      ...result.evidence,
+      deferred: [{
+        ...result.evidence.deferred[0]!,
+        url: `${result.evidence.deferred[0]!.url}-wrong`,
+      }],
+    })).toThrow(/pending deferred trees differ/);
+    expect(result.mirrorPlan.tag).toBe(
+      `homebrew-shell-bottles-sha256-${result.mirrorPlan.collection_sha256}`,
+    );
+    expect(result.mirrorPlan.assets).toEqual([
+      expect.objectContaining({
+        package: "kandelo-dev/tap-core/deferred",
+        sha256: sha256(deferredBytes),
+        bytes: deferredBytes.byteLength,
+      }),
+    ]);
+    expect(() => assertHomebrewBottleMirrorBundle(
+      result.mirrorPlan,
+      result.mirrorPayloads,
+      result.mirrorPlanAsset,
+    )).not.toThrow();
+    const tamperedPayloadBytes = new Uint8Array(result.mirrorPayloads[0]!.bytes);
+    tamperedPayloadBytes[0] ^= 0xff;
+    expect(() => assertHomebrewBottleMirrorBundle(
+      result.mirrorPlan,
+      [{ ...result.mirrorPayloads[0]!, bytes: tamperedPayloadBytes }],
+      result.mirrorPlanAsset,
+    )).toThrow(/payload differs/);
+    const tamperedManifestBytes = new Uint8Array(
+      result.mirrorPlanAsset.bytes.byteLength + 1,
+    );
+    tamperedManifestBytes.set(result.mirrorPlanAsset.bytes);
+    expect(() => assertHomebrewBottleMirrorBundle(
+      result.mirrorPlan,
+      result.mirrorPayloads,
+      { ...result.mirrorPlanAsset, bytes: tamperedManifestBytes },
+    )).toThrow(/manifest bytes are not canonical/);
+    expect(() => assertHomebrewBottleMirrorBundle(
+      { ...result.mirrorPlan, repository: "kandelo-dev/.." },
+      result.mirrorPayloads,
+      result.mirrorPlanAsset,
+    )).toThrow(/invalid top-level fields/);
+    expect(() => assertHomebrewBottleMirrorBundle(
+      {
+        ...result.mirrorPlan,
+        assets: [result.mirrorPlan.assets[0]!, result.mirrorPlan.assets[0]!],
+      },
+      result.mirrorPayloads,
+      result.mirrorPlanAsset,
+    )).toThrow(/asset ownership is not canonical/);
+    expect(() => assertHomebrewBottleMirrorPlan({
+      ...result.mirrorPlan,
+      assets: [],
+    })).toThrow(/invalid top-level fields/);
+    expect(() => assertHomebrewBottleMirrorPlan({
+      ...result.mirrorPlan,
+      assets: Array.from({ length: 129 }, (_, index) => ({
+        ...result.mirrorPlan.assets[0]!,
+        id: `bottle-${String(index).padStart(3, "0")}`,
+        package: `kandelo-dev/tap-core/pkg${index}`,
+        asset: `asset-${index}.bin`,
+        url: `${result.mirrorPlan.release_root}/asset-${index}.bin`,
+      })),
+    })).toThrow(/invalid top-level fields/);
+    expect(() => assertHomebrewBottleMirrorPlan({
+      ...result.mirrorPlan,
+      assets: [{
+        ...result.mirrorPlan.assets[0]!,
+        bytes: 512 * 1024 * 1024 + 1,
+      }],
+    })).toThrow(/asset ownership is not canonical/);
+    expect(fs.exportLazyArchiveEntries()).toHaveLength(1);
+    expect(fs.readlink(`${PREFIX}/bin/runtime`)).toBe(`${runtime.keg}/bin/runtime`);
+    expect(fs.readlink("/bin/deferred")).toBe(`${deferredKeg}/bin/deferred`);
+    expect(fs.lstat("/var/lib/deferred").mode & 0o7777).toBe(0o755);
+    expect(readVfsFile(fs, "/etc/profile.d/kandelo-homebrew.sh")).toContain(PREFIX);
+    expect(() => writeHomebrewVfsComposition(fs, plan, result.report)).toThrow(
+      /refusing to replace existing Homebrew VFS composition/,
+    );
+
+    const savedImage = await fs.saveImage();
+    const restored = MemoryFileSystem.fromImage(savedImage);
+    assertHomebrewVfsMaterialization(restored, result.evidence);
+    expect(restored.exportLazyArchiveEntries()).toHaveLength(1);
+    const offlineFetch = vi.fn(async () => {
+      throw new Error("network disabled during embedded command proof");
+    });
+    restored.setLazyFetcher(offlineFetch);
+    await expect(restored.preparePath(`${runtime.keg}/bin/runtime`)).resolves.toBe(false);
+    expect(readVfsFile(restored, `${runtime.keg}/bin/runtime`)).toContain("runtime");
+    expect(offlineFetch).not.toHaveBeenCalled();
+
+    const deferredFetch = vi.fn(async (url: string) => {
+      expect(url).toBe(result.mirrorPlan.assets[0]!.url);
+      return new Response(deferredBytes);
+    });
+    restored.setLazyFetcher(deferredFetch);
+    await expect(restored.preparePath(`${deferredKeg}/bin/deferred`)).resolves.toBe(true);
+    expect(deferredFetch).toHaveBeenCalledTimes(1);
+    expect(readVfsFile(restored, `${deferredKeg}/bin/deferred`)).toContain(
+      "deferred payload",
+    );
+    expect(readVfsFile(restored, `${deferredKeg}/share/deferred.txt`)).toContain(
+      "deferred sibling",
+    );
+    expect(restored.exportLazyArchiveEntries()).toEqual([]);
+
+    const tamperedPlanFs = MemoryFileSystem.fromImage(savedImage);
+    writeVfsFile(
+      tamperedPlanFs,
+      HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH,
+      "not the exact mirror plan\n",
+      0o644,
+    );
+    expect(() => assertHomebrewVfsMaterialization(
+      tamperedPlanFs,
+      result.evidence,
+    )).toThrow(/embedded bottle mirror plan changed identity/);
+
+    const unrelatedFs = MemoryFileSystem.create(
+      new SharedArrayBuffer(32 * 1024 * 1024),
+    );
+    ensureDirRecursive(unrelatedFs, "/home");
+    ensureDirRecursive(unrelatedFs, "/var/lib");
+    writeVfsFile(unrelatedFs, "/unrelated-vfs-state", "not mirror identity\n");
+    const unrelatedResult = await buildHomebrewMaterializedVfs(plan, {
+      fs: unrelatedFs,
+      collectionFs: MemoryFileSystem.create(
+        new SharedArrayBuffer(32 * 1024 * 1024),
+      ),
+      policy,
+      mirrorRepository: "kandelo-dev/homebrew-tap-core",
+      compatibilityPolicy,
+      writeProfile: true,
+      loadBottleBytes(pkg) {
+        return bytesByPackage.get(pkg.name)!;
+      },
+    });
+    expect(unrelatedResult.mirrorPlan.tag).toBe(result.mirrorPlan.tag);
+
+    const reservedPlanFs = MemoryFileSystem.create(
+      new SharedArrayBuffer(32 * 1024 * 1024),
+    );
+    ensureDirRecursive(reservedPlanFs, "/etc/kandelo");
+    ensureDirRecursive(reservedPlanFs, "/home");
+    ensureDirRecursive(reservedPlanFs, "/var/lib");
+    writeVfsFile(
+      reservedPlanFs,
+      HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH,
+      "preexisting owner\n",
+    );
+    await expect(buildHomebrewMaterializedVfs(plan, {
+      fs: reservedPlanFs,
+      collectionFs: MemoryFileSystem.create(
+        new SharedArrayBuffer(32 * 1024 * 1024),
+      ),
+      policy,
+      mirrorRepository: "kandelo-dev/homebrew-tap-core",
+      compatibilityPolicy,
+      writeProfile: true,
+      loadBottleBytes(pkg) {
+        return bytesByPackage.get(pkg.name)!;
+      },
+    })).rejects.toThrow(/refusing to replace existing Homebrew bottle mirror plan/);
   });
 
   it("preserves exact eligible external bottle URLs and rejects fragments", async () => {

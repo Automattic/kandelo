@@ -14,7 +14,10 @@ import { gzipSync, zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 
 import { NodeKernelHost } from "../src/node-kernel-host";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import {
+  MemoryFileSystem,
+  type LazyDownloadEvent,
+} from "../src/vfs/memory-fs";
 import { parseZipCentralDirectory } from "../src/vfs/zip";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -24,7 +27,7 @@ const environmentProgram = join(
   "examples/environment_lifecycle_test.wasm",
 );
 const mountProbe = join(repoRoot, "examples/mount_probe_test.wasm");
-const kernel = join(repoRoot, "host/wasm/kandelo-kernel.wasm");
+const kernel = join(repoRoot, "local-binaries/kernel.wasm");
 const available = [environmentProgram, mountProbe, kernel].every(existsSync);
 const TAR_BLOCK = 512;
 
@@ -43,6 +46,111 @@ function integrity(bytes: Uint8Array): { sha256: string; bytes: number } {
 }
 
 describe.skipIf(!available)("Node lazy archive runtime paths", () => {
+  it("uses a closed HTTPS binding for a whole tree and fails closed for an unbound tree", async () => {
+    const probeBytes = new Uint8Array(readFileSync(mountProbe));
+    const boundFile = new TextEncoder().encode("bound lazy tree\n");
+    const unboundFile = new TextEncoder().encode("unbound lazy tree\n");
+    const boundTar = tarBytes([{
+      path: "etc/closed-bound",
+      data: boundFile,
+      mode: 0o644,
+    }]);
+    const unboundTar = tarBytes([{
+      path: "etc/closed-unbound",
+      data: unboundFile,
+      mode: 0o644,
+    }]);
+    const boundArchive = gzipSync(boundTar);
+    const unboundArchive = gzipSync(unboundTar);
+    const boundUrl =
+      "https://github.com/example/project/releases/download/v1/bound.tar.gz";
+    const unboundUrl =
+      "https://github.com/example/project/releases/download/v1/unbound.tar.gz";
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(32 * 1024 * 1024));
+    fs.registerLazyTree({
+      decoder: "homebrew-bottle-tar-gzip-v1",
+      mediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+      ...integrity(boundArchive),
+      expandedBytes: boundTar.byteLength,
+      sourceEntryCount: 1,
+      transports: [boundUrl],
+    }, [{
+      vfsPath: "/etc/closed-bound",
+      sourcePath: "etc/closed-bound",
+      type: "file",
+      mode: 0o644,
+      size: boundFile.byteLength,
+      inodeGroup: "closed-bound",
+    }]);
+    fs.registerLazyTree({
+      decoder: "homebrew-bottle-tar-gzip-v1",
+      mediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+      ...integrity(unboundArchive),
+      expandedBytes: unboundTar.byteLength,
+      sourceEntryCount: 1,
+      transports: [unboundUrl],
+    }, [{
+      vfsPath: "/etc/closed-unbound",
+      sourcePath: "etc/closed-unbound",
+      type: "file",
+      mode: 0o644,
+      size: unboundFile.byteLength,
+      inodeGroup: "closed-unbound",
+    }]);
+
+    const events: LazyDownloadEvent[] = [];
+    let stdout = "";
+    const host = new NodeKernelHost({
+      rootfsImage: await fs.saveImage(),
+      rootfsLazyAssets: [{
+        url: boundUrl,
+        sha256: integrity(boundArchive).sha256,
+        size: boundArchive.byteLength,
+        bytes: boundArchive,
+      }],
+      onStdout: (_pid, bytes) => {
+        stdout += new TextDecoder().decode(bytes);
+      },
+      onLazyDownload: (event) => events.push(event),
+    });
+
+    try {
+      await host.init();
+      expect(await host.spawn(arrayBuffer(probeBytes), [
+        "mount_probe_test",
+        "rootfs",
+        "/etc/closed-bound",
+      ])).toBe(0);
+      expect(stdout).toContain(`ROOTFS size=${boundFile.byteLength}`);
+      const boundEvents = events.filter((event) => event.url === boundUrl);
+      expect(boundEvents.map((event) => [event.kind, event.status])).toEqual([
+        ["tree", "started"],
+        ["tree", "progress"],
+        ["tree", "complete"],
+      ]);
+      expect(boundEvents.at(-1)).toMatchObject({
+        loadedBytes: boundArchive.byteLength,
+        totalBytes: boundArchive.byteLength,
+      });
+
+      stdout = "";
+      expect(await host.spawn(arrayBuffer(probeBytes), [
+        "mount_probe_test",
+        "rootfs",
+        "/etc/closed-unbound",
+      ])).toBe(1);
+      expect(stdout).toContain("ROOTFS open-errno=5");
+      const unboundEvents = events.filter((event) => event.url === unboundUrl);
+      expect(unboundEvents.map((event) => [event.kind, event.status])).toEqual([
+        ["tree", "started"],
+        ["tree", "error"],
+      ]);
+      expect(unboundEvents.at(-1)?.error).toContain("do not bind URL");
+    } finally {
+      await host.destroy().catch(() => {});
+    }
+  });
+
   it("executes and ordinarily opens archive-backed files through the mounted VFS", async () => {
     const temp = mkdtempSync(join(tmpdir(), "kandelo-node-lazy-"));
     const execBytes = new Uint8Array(readFileSync(environmentProgram));

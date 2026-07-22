@@ -83,12 +83,15 @@ export {
   HOMEBREW_RUNTIME_LAYER_LIMITS,
   composeHomebrewRuntimeLayers,
   parseHomebrewRuntimeLayerDescriptor,
+  registerHomebrewDeferredTreeCollection,
 } from "./homebrew-runtime-layer-consumer";
 export type {
   ComposedHomebrewRuntimeLayers,
   ComposeHomebrewRuntimeLayersOptions,
   HomebrewRuntimeLayerReference,
   RegisteredHomebrewRuntimeLayer,
+  RegisteredHomebrewDeferredTree,
+  RegisterHomebrewDeferredTreeCollectionOptions,
 } from "./homebrew-runtime-layer-consumer";
 export type {
   HomebrewDeferredTreeDecoder,
@@ -130,7 +133,9 @@ export type {
 } from "./homebrew-vfs-materialization-policy";
 export {
   HomebrewVfsBuildError,
+  applyHomebrewVfsConsumerState,
   buildHomebrewVfs,
+  writeHomebrewVfsComposition,
 } from "./homebrew-vfs-builder";
 export type {
   HomebrewVfsBuildOptions,
@@ -140,7 +145,35 @@ export type {
   HomebrewVfsPackageReport,
   HomebrewVfsSelectionReport,
   HomebrewVfsSelectionSource,
+  HomebrewVfsConsumerStateOptions,
+  HomebrewVfsConsumerStateResult,
 } from "./homebrew-vfs-builder";
+export {
+  assertHomebrewBottleMirrorBundle,
+  assertHomebrewBottleMirrorPlan,
+  assertHomebrewVfsMaterialization,
+  buildHomebrewMaterializedVfs,
+  encodeHomebrewBottleMirrorPlan,
+} from "./homebrew-vfs-composer";
+export {
+  encodeHomebrewBottleMirrorCollectionIdentity,
+  HOMEBREW_BOTTLE_MIRROR_PLAN_ASSET,
+  HOMEBREW_BOTTLE_MIRROR_PLAN_KIND,
+  HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH,
+} from "./homebrew-bottle-mirror-plan";
+export {
+  loadHomebrewBottleMirrorClosedAssets,
+  parseHomebrewBottleMirrorPlan,
+} from "./homebrew-bottle-mirror-browser";
+export type {
+  BuildHomebrewMaterializedVfsOptions,
+  HomebrewBottleMirrorAsset,
+  HomebrewBottleMirrorPayload,
+  HomebrewBottleMirrorPlan,
+  HomebrewBottleMirrorPlanAsset,
+  HomebrewMaterializedVfsBuildResult,
+  HomebrewVfsMaterializationEvidence,
+} from "./homebrew-vfs-composer";
 export {
   HomebrewBottleFetchError,
   fetchHomebrewBottleBytes,

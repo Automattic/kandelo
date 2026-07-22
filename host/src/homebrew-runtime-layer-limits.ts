@@ -35,3 +35,22 @@ export function isHomebrewRuntimeLayerId(value: unknown): value is string {
     value.length <= HOMEBREW_RUNTIME_LAYER_LIMITS.maxRuntimeLayerIdBytes &&
     /^[a-z0-9][a-z0-9-]*$/.test(value);
 }
+
+export function homebrewRuntimeLayerPayloadAsset(id: string): string {
+  return runtimeLayerAssetName(id, "bin");
+}
+
+export function homebrewRuntimeLayerDescriptorAsset(id: string): string {
+  return runtimeLayerAssetName(id, "json");
+}
+
+function runtimeLayerAssetName(id: string, extension: "bin" | "json"): string {
+  if (!isHomebrewRuntimeLayerId(id)) {
+    throw new Error(`invalid Homebrew runtime layer id ${id}`);
+  }
+  const name = `kandelo-homebrew-${id}-layer.${extension}`;
+  if (new TextEncoder().encode(name).byteLength > MAX_RELEASE_ASSET_NAME_BYTES) {
+    throw new Error(`Homebrew runtime layer id ${id} exceeds the release asset budget`);
+  }
+  return name;
+}

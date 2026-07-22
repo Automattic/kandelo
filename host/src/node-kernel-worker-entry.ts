@@ -11,7 +11,7 @@
  *                  pty_write, pty_resize, terminate_process, destroy,
  *                  resolve_exec_response
  *   Worker → Main: ready, response, exit, stdout, stderr, host_diagnostic,
- *                  pty_output, resolve_exec
+ *                  pty_output, resolve_exec, lazy_download
  */
 import { parentPort } from "node:worker_threads";
 import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -42,6 +42,7 @@ import {
   readPreparedPlatformFile,
 } from "./vfs";
 import type { MountConfig } from "./vfs/types";
+import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { findRepoRoot } from "./binary-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
@@ -540,6 +541,7 @@ function buildVirtualPlatformIO(
     uid?: number;
     gid?: number;
   }>,
+  rootfsLazyAssets?: InitMessage["rootfsLazyAssets"],
 ): VirtualPlatformIO {
   const bootSessionDir = mkdtempSync(join(tmpdir(), "wasm-posix-session-"));
   sessionDir = bootSessionDir;
@@ -571,18 +573,23 @@ function buildVirtualPlatformIO(
     : null;
   if (rootfsMemfs) {
     ensureMountParentDirectories(rootfsMemfs, extras.map((m) => m.mountPoint));
-    rootfsMemfs.setLazyFetcher(async (url) => {
-      if (/^https?:\/\//.test(url)) return globalThis.fetch(url);
-      const path = url.startsWith("file://")
-        ? fileURLToPath(url)
-        : join(findRepoRoot(), url.replace(/^\/+/, ""));
-      if (!existsSync(path)) return new Response(null, { status: 404 });
-      const bytes = new Uint8Array(readFileSync(path));
-      return new Response(bytes, {
-        status: 200,
-        headers: { "content-length": String(bytes.byteLength) },
-      });
+    rootfsMemfs.subscribeLazyDownloads((event) => {
+      post({ type: "lazy_download", event });
     });
+    rootfsMemfs.setLazyFetcher(rootfsLazyAssets === undefined
+      ? async (url) => {
+        if (/^https?:\/\//.test(url)) return globalThis.fetch(url);
+        const path = url.startsWith("file://")
+          ? fileURLToPath(url)
+          : join(findRepoRoot(), url.replace(/^\/+/, ""));
+        if (!existsSync(path)) return new Response(null, { status: 404 });
+        const bytes = new Uint8Array(readFileSync(path));
+        return new Response(bytes, {
+          status: 200,
+          headers: { "content-length": String(bytes.byteLength) },
+        });
+      }
+      : createClosedLazyAssetFetcherFromOwnedAssets(rootfsLazyAssets));
   }
   return new VirtualPlatformIO(mounts, new NodeTimeProvider());
 }
@@ -607,7 +614,7 @@ async function handleInit(msg: InitMessage) {
   workerAdapter = new NodeWorkerAdapter();
 
   const io: PlatformIO = msg.rootfsImage
-    ? buildVirtualPlatformIO(msg.rootfsImage, msg.extraMounts)
+    ? buildVirtualPlatformIO(msg.rootfsImage, msg.extraMounts, msg.rootfsLazyAssets)
     : new NodePlatformIO();
   vfsExecIO = msg.rootfsImage ? io : null;
   if (msg.enableTcpNetwork) {

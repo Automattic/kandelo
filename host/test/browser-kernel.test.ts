@@ -13,6 +13,7 @@
  * kernel-worker pump end-to-end.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { createHash } from "node:crypto";
 import type { HttpResponse } from "../src/networking";
 
 // ---------------------------------------------------------------------------
@@ -102,6 +103,47 @@ describe("BrowserKernel", () => {
     // The constructor allocates only the small shm SAB — no VFS SAB and no
     // worker until boot()/initFromImage().
     new BrowserKernel({ kernelOwnedFs: true });
+    expect(MockWorker.instances).toHaveLength(0);
+  });
+
+  it("snapshots and transfers an exhaustive lazy-asset binding to the worker", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const source = new Uint8Array([1, 2, 3, 4]);
+    const url = "https://github.com/example/project/releases/download/v1/a.tar.gz";
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+      closedLazyAssets: [{
+        url,
+        sha256: createHash("sha256").update(source).digest("hex"),
+        size: source.byteLength,
+        bytes: source,
+      }],
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    const captured = worker.sent.find(({ data }) => data?.type === "init")!;
+    const sentAsset = captured.data.closedLazyAssets[0];
+    expect(sentAsset.bytes).not.toBe(source);
+    expect(captured.transfer).toContain(sentAsset.bytes.buffer);
+    expect(captured.transfer).not.toContain(source.buffer);
+    source.fill(9);
+    expect(sentAsset.bytes).toEqual(new Uint8Array([1, 2, 3, 4]));
+
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
+  });
+
+  it("rejects an invalid closed binding before spawning a worker", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    await expect(kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+      closedLazyAssets: [],
+    })).rejects.toThrow("at least one binding");
     expect(MockWorker.instances).toHaveLength(0);
   });
 

@@ -205,6 +205,15 @@ export interface SerializedLazyArchiveEntry {
 export type LazyTreeGroup = LazyArchiveGroup;
 export type SerializedLazyTree = SerializedLazyArchiveEntry;
 
+const DEFERRED_TREE_MATERIALIZATION_HANDLE: unique symbol = Symbol(
+  "DeferredTreeMaterializationHandle",
+);
+
+/** Opaque authority for one typed tree registered on one exact filesystem. */
+export interface DeferredTreeMaterializationHandle {
+  readonly [DEFERRED_TREE_MATERIALIZATION_HANDLE]: true;
+}
+
 /** Options for saving a VFS image. */
 export interface VfsImageOptions {
   /**
@@ -687,7 +696,10 @@ function requireLazyTreeInteger(
   return Number(value);
 }
 
-function validateLazyTreeContent(value: unknown): LazyTreeContent {
+function validateLazyTreeContent(
+  value: unknown,
+  minimumTransports = 1,
+): LazyTreeContent {
   const initial = value as Record<string, unknown> | null;
   const hasSource = typeof initial === "object" && initial !== null &&
     !Array.isArray(initial) && initial.source !== undefined;
@@ -717,7 +729,7 @@ function validateLazyTreeContent(value: unknown): LazyTreeContent {
   const transports = requireLazyTreeArray(
     record.transports,
     "Lazy tree transports",
-    1,
+    minimumTransports,
     VFS_DEFERRED_TREE_LIMITS.maxTransportsPerTree,
   ).map((url, index) =>
     requireLazyTreeString(
@@ -974,8 +986,9 @@ function validateLazyTreeDefinition(
   entriesValue: unknown,
   mountPrefixValue: unknown,
   activationValue: unknown,
+  minimumTransports = 1,
 ): ValidatedLazyTreeDefinition {
-  const content = validateLazyTreeContent(contentValue);
+  const content = validateLazyTreeContent(contentValue, minimumTransports);
   const mountPrefix = normalizeLazyArchiveMountPrefix(mountPrefixValue);
   const activationRecord = exactLazyTreeRecord(
     activationValue,
@@ -1729,6 +1742,11 @@ export class MemoryFileSystem implements FileSystemBackend {
   >();
   /** Lazy archive groups (bundle of files backed by one zip URL). */
   private lazyArchiveGroups: LazyArchiveGroup[] = [];
+  /** Build-time direct-materialization authority; handles never serialize. */
+  private deferredTreeMaterializationHandles = new WeakMap<
+    DeferredTreeMaterializationHandle,
+    LazyArchiveGroup
+  >();
   /** Fast lookup keyed by inode slot + generation. */
   private lazyArchiveInodes = new Map<string, LazyArchiveGroup>();
   private lazyDownloadListeners = new Set<LazyDownloadListener>();
@@ -2431,6 +2449,15 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   /**
+   * Report whether `path` currently resolves to any deferred backing without
+   * starting I/O. This follows symlinks and covers both legacy lazy files and
+   * typed archive/tree registrations.
+   */
+  isPathDeferred(path: string): boolean {
+    return this.lazyBackingForPath(path) !== null;
+  }
+
+  /**
    * Rewrite the URL of every registered lazy file. Useful when a VFS image
    * was built with placeholder URLs and the browser runtime needs to replace
    * them with bundler-produced asset URLs.
@@ -2452,6 +2479,22 @@ export class MemoryFileSystem implements FileSystemBackend {
     mountPrefix = "/",
     activationValue?: LazyTreeActivation,
   ): LazyTreeGroup {
+    return this.registerLazyTreeInternal(
+      contentValue,
+      entriesValue,
+      mountPrefix,
+      activationValue,
+      false,
+    );
+  }
+
+  private registerLazyTreeInternal(
+    contentValue: LazyTreeContent,
+    entriesValue: readonly LazyTreeRegistrationEntry[],
+    mountPrefix: string,
+    activationValue: LazyTreeActivation | undefined,
+    allowTransportlessDirectMaterialization: boolean,
+  ): LazyTreeGroup {
     this.assertCanRegisterPendingLazyArchiveGroup();
     const canonicalMountPrefix = normalizeLazyArchiveMountPrefix(mountPrefix);
     const {
@@ -2469,11 +2512,12 @@ export class MemoryFileSystem implements FileSystemBackend {
         capabilities: ["deferred-tree"],
         roots: [canonicalMountPrefix],
       },
+      allowTransportlessDirectMaterialization ? 0 : 1,
     );
 
     const group: LazyTreeGroup = {
       content,
-      url: content.transports[0],
+      url: content.transports[0] ?? "",
       mountPrefix: validatedMountPrefix,
       integrity: { sha256: content.sha256, bytes: content.bytes },
       materialized: false,
@@ -2588,6 +2632,30 @@ export class MemoryFileSystem implements FileSystemBackend {
 
     this.lazyArchiveGroups.push(group);
     return group;
+  }
+
+  /**
+   * Register one typed tree and return only an opaque direct-materialization
+   * authority. The mutable internal group is deliberately not exposed.
+   */
+  registerLazyTreeWithMaterializationHandle(
+    contentValue: LazyTreeContent,
+    entriesValue: readonly LazyTreeRegistrationEntry[],
+    mountPrefix = "/",
+    activationValue?: LazyTreeActivation,
+  ): DeferredTreeMaterializationHandle {
+    const group = this.registerLazyTreeInternal(
+      contentValue,
+      entriesValue,
+      mountPrefix,
+      activationValue,
+      true,
+    );
+    const handle = Object.freeze({
+      [DEFERRED_TREE_MATERIALIZATION_HANDLE]: true as const,
+    });
+    this.deferredTreeMaterializationHandles.set(handle, group);
+    return handle;
   }
 
   /**
@@ -2971,6 +3039,11 @@ export class MemoryFileSystem implements FileSystemBackend {
       ) continue;
       const genericTree = group.content !== undefined &&
         group.inventory !== undefined && group.activation !== undefined;
+      if (genericTree && group.content!.transports.length === 0) {
+        throw new Error(
+          "Direct-materialization tree must be materialized before serialization",
+        );
+      }
       serialized.push(genericTree
         ? {
           kind: group.content!.source === undefined
@@ -3028,7 +3101,15 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   private assertCanRegisterPendingLazyArchiveGroup(): void {
-    const pendingGroups = this.pendingDeferredTreeUsage().groups;
+    this.reconcileLazyIdentityState(this.fs.identityState());
+    const pendingGroups = this.lazyArchiveGroups.filter((group) =>
+      !group.materialized && (
+        group.content !== undefined && group.inventory !== undefined ||
+        Array.from(group.entries.values()).some((entry) =>
+          !entry.deleted && !entry.materialized
+        )
+      )
+    ).length;
     if (pendingGroups >= VFS_DEFERRED_TREE_LIMITS.maxGroups) {
       throw new Error(
         `Cannot register another lazy archive group: ` +
@@ -3094,6 +3175,60 @@ export class MemoryFileSystem implements FileSystemBackend {
     await Promise.all(workers);
     if (failure !== undefined) throw failure;
     return groups.length;
+  }
+
+  /**
+   * Materialize one exact typed tree authorized by this filesystem's opaque
+   * registration wrapper. Build-time composers use this to embed a reviewed
+   * package subset without re-pouring a smaller closure and thereby changing
+   * global path/conflict ownership.
+   */
+  async materializeRegisteredDeferredTree(
+    handle: DeferredTreeMaterializationHandle,
+    exactBytes: Uint8Array,
+  ): Promise<boolean> {
+    const group = this.deferredTreeMaterializationHandles.get(handle);
+    if (group === undefined) {
+      throw new Error(
+        "Deferred-tree handle was not issued by this filesystem",
+      );
+    }
+    if (group.materialized) return false;
+    const existing = this.lazyPreparations.get(group);
+    if (existing !== undefined) return existing.promise;
+    const bytes = new Uint8Array(exactBytes.byteLength);
+    bytes.set(exactBytes);
+    const preparation = {
+      status: "pending",
+      promise: Promise.resolve(false),
+    } as LazyPreparation;
+    // Defer the first await until after the shared preparation slot is owned,
+    // so a concurrent guest preparePath() joins this exact-byte operation
+    // instead of starting a transport fetch for the same group.
+    preparation.promise = Promise.resolve().then(async () => {
+      await assertLazyIntegrity(bytes, "tree", group.integrity);
+      await this.materializeArchiveBytes(group, bytes);
+      return true;
+    }).then(
+      (materialized) => {
+        preparation.status = "fulfilled";
+        return materialized;
+      },
+      (error) => {
+        preparation.status = "rejected";
+        preparation.error = error;
+        throw error;
+      },
+    );
+    void preparation.promise.catch(() => {});
+    this.lazyPreparations.set(group, preparation);
+    try {
+      return await preparation.promise;
+    } finally {
+      if (this.lazyPreparations.get(group) === preparation) {
+        this.lazyPreparations.delete(group);
+      }
+    }
   }
 
   private async prepareLazyTreeGroup(group: LazyTreeGroup): Promise<boolean> {
@@ -3402,6 +3537,16 @@ export class MemoryFileSystem implements FileSystemBackend {
       );
     }
 
+    await this.materializeArchiveBytes(group, archiveData, requested);
+  }
+
+  private async materializeArchiveBytes(
+    group: LazyArchiveGroup,
+    archiveData: Uint8Array,
+    requested?: { path: string; ino: number; generation: number },
+  ): Promise<void> {
+    if (group.materialized) return;
+    const genericTree = group.content !== undefined && group.inventory !== undefined;
     const decodedTreeFiles = genericTree
       ? await this.decodeAndValidateLazyTree(group, archiveData)
       : null;

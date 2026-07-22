@@ -21,6 +21,8 @@ import {
   WORDPRESS_MARIADB_SOCKET_PATH,
 } from "../../../lib/init/wordpress-mariadb-readiness";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
+import { loadHomebrewBottleMirrorClosedAssets } from "../../../../../host/src/homebrew-bottle-mirror-browser";
+import { HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH } from "../../../../../host/src/homebrew-bottle-mirror-plan";
 import {
   composeBootDescriptorVfs,
   homebrewRuntimeLayerReferences,
@@ -1220,6 +1222,13 @@ async function bootProfile(
   await stageConfiguredAssets(buildFs, assets, tick);
   assertCurrent();
 
+  const closedLazyAssets = await loadProfileClosedLazyAssets(
+    buildFs,
+    profile,
+    tick,
+  );
+  assertCurrent();
+
   // Serialize the assembled image to transferable bytes, then let `buildFs`
   // go out of scope. `saveImage()` emits raw (uncompressed) bytes that
   // `MemoryFileSystem.fromImage` restores directly in the worker.
@@ -1280,6 +1289,7 @@ async function bootProfile(
     await kernel.initFromImage({
       kernelWasm: kernelBytes,
       vfsImage: vfsImageBytes,
+      ...(closedLazyAssets === undefined ? {} : { closedLazyAssets }),
     });
     assertCurrent();
     host.attachKernel(kernel);
@@ -2422,6 +2432,32 @@ function readImageShellConfig(fs: MemoryFileSystem): KandeloShellConfig | null {
     throw new Error(`VFS image has unsupported ${KANDELO_SHELL_CONFIG_PATH} version`);
   }
   return config;
+}
+
+async function loadProfileClosedLazyAssets(
+  fs: MemoryFileSystem,
+  profile: LiveProfile,
+  tick: (message: string) => void,
+) {
+  const bundleRoot = (
+    import.meta.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT as string | undefined
+  )?.trim();
+  if (!bundleRoot || profile.image !== "shell") return undefined;
+  if (import.meta.env.PROD) {
+    throw new Error(
+      "local Homebrew bottle preloading is acceptance-only and unavailable in production",
+    );
+  }
+  tick("verifying exact local Homebrew bottle mirror...");
+  const embeddedPlanBytes = new Uint8Array(
+    readVfsFile(fs, HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH),
+  );
+  const bundle = await loadHomebrewBottleMirrorClosedAssets({
+    embeddedPlanBytes,
+    bundleRoot,
+  });
+  tick(`verified ${bundle.assets.length} exact deferred bottle payloads`);
+  return bundle.assets;
 }
 
 function assertImageShellExecutable(fs: MemoryFileSystem, path: string): void {

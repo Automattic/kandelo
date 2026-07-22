@@ -45,6 +45,21 @@ export type {
   SerializedLazyTree,
   VfsImageCapacity,
 } from "./vfs/memory-fs";
+export {
+  encodeHomebrewBottleMirrorCollectionIdentity,
+  encodeHomebrewBottleMirrorPlan,
+  HOMEBREW_BOTTLE_MIRROR_PLAN_ASSET,
+  HOMEBREW_BOTTLE_MIRROR_PLAN_KIND,
+  HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH,
+} from "./homebrew-bottle-mirror-plan";
+export type {
+  HomebrewBottleMirrorAsset,
+  HomebrewBottleMirrorPlan,
+} from "./homebrew-bottle-mirror-plan";
+export {
+  loadHomebrewBottleMirrorClosedAssets,
+  parseHomebrewBottleMirrorPlan,
+} from "./homebrew-bottle-mirror-browser";
 export { DeviceFileSystem } from "./vfs/device-fs";
 export { OpfsFileSystem } from "./vfs/opfs";
 export { BrowserTimeProvider } from "./vfs/time";

@@ -82,7 +82,7 @@ export interface KernelSyscallEvent {
   args: [number, number, number, number, number, number];
 }
 
-export type LazyDownloadKind = "file" | "archive";
+export type LazyDownloadKind = "file" | "tree" | "archive";
 export type LazyDownloadStatus = "started" | "progress" | "complete" | "error";
 
 export interface LazyDownloadEvent {

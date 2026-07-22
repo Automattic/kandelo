@@ -12,6 +12,7 @@ import {
 } from "./homebrew-lazy-layer-descriptor";
 import {
   MemoryFileSystem,
+  type DeferredTreeMaterializationHandle,
   type LazyTreeGroup,
   type LazyTreeRegistrationEntry,
 } from "./vfs/memory-fs";
@@ -94,9 +95,37 @@ interface PlannedTree {
   entries: LazyTreeRegistrationEntry[];
 }
 
-interface PlannedLayer extends LoadedLayer {
+interface HomebrewDeferredTreeCollectionPlan {
+  id: string;
+  schema: 4 | 5;
+  mountPrefix: string;
+  trees: readonly HomebrewDeferredTreeDescriptor[];
+}
+
+interface PlannedTreeCollection extends Omit<HomebrewDeferredTreeCollectionPlan, "trees"> {
   trees: PlannedTree[];
   directories: HomebrewLazyLayerEntry[];
+}
+
+export interface RegisterHomebrewDeferredTreeCollectionOptions {
+  fs: MemoryFileSystem;
+  /** Human-readable identity used in collision diagnostics. */
+  id: string;
+  /** Schema 5 admits absent/equal mergeable directories. */
+  schema: 4 | 5;
+  mountPrefix?: string;
+  /** Producer-verified closed trees with concrete immutable transport URLs. */
+  trees: readonly HomebrewDeferredTreeDescriptor[];
+}
+
+export interface RegisteredHomebrewDeferredTree {
+  id: string;
+  package?: string;
+  content: {
+    sha256: string;
+    bytes: number;
+  };
+  materialization: DeferredTreeMaterializationHandle;
 }
 
 /**
@@ -133,6 +162,45 @@ export async function composeHomebrewRuntimeLayers(
     }
     throw error;
   }
+}
+
+/**
+ * Register one producer-verified tree collection on an exclusive composition
+ * filesystem. All paths and aggregate resource limits are preflighted before
+ * namespace mutation. Returned authorities are bound to the exact filesystem,
+ * tree id, package identity, digest, and byte count reported beside them.
+ */
+export function registerHomebrewDeferredTreeCollection(
+  options: RegisterHomebrewDeferredTreeCollectionOptions,
+): RegisteredHomebrewDeferredTree[] {
+  if (!isHomebrewRuntimeLayerId(options.id)) {
+    throw new Error(`Homebrew deferred-tree collection id ${options.id} is invalid`);
+  }
+  const mountPrefix = options.mountPrefix ?? "/";
+  const collection: HomebrewDeferredTreeCollectionPlan = {
+    id: options.id,
+    schema: options.schema,
+    mountPrefix,
+    trees: options.trees,
+  };
+  options.fs.assertCanAppendDeferredTreeUsage(deferredTreeUsage(options.trees));
+  const [planned] = preflightDeferredTreeCollections(options.fs, [collection]);
+  createDeferredTreeDirectories(options.fs, [planned]);
+  return planned.trees.map((tree) => ({
+    id: tree.descriptor.id,
+    ...(tree.descriptor.package === undefined
+      ? {}
+      : { package: tree.descriptor.package }),
+    content: {
+      sha256: tree.descriptor.content.sha256,
+      bytes: tree.descriptor.content.bytes,
+    },
+    materialization: registerPlannedDeferredTreeWithHandle(
+      options.fs,
+      tree,
+      planned.mountPrefix,
+    ),
+  }));
 }
 
 async function registerHomebrewRuntimeLayersOnStagedFileSystem(
@@ -216,49 +284,21 @@ async function registerHomebrewRuntimeLayersOnStagedFileSystem(
   const selectedUsage = selectedDeferredTreeUsage(loaded);
   validateAggregateLayerCounts(pendingBaseUsage, selectedUsage, loaded);
   options.fs.assertCanAppendDeferredTreeUsage(selectedUsage);
-  const planned = preflightLayerPaths(options.fs, loaded);
+  const planned = preflightDeferredTreeCollections(
+    options.fs,
+    loaded.map((layer) => ({
+      id: layer.reference.id,
+      schema: layer.descriptor.schema,
+      mountPrefix: layer.descriptor.mount_prefix,
+      trees: layer.descriptor.deferred_trees,
+    })),
+  );
+  createDeferredTreeDirectories(options.fs, planned);
 
-  for (const layer of planned) {
-    for (const directory of layer.directories) {
-      const path = `/${directory.path}`;
-      const existing = lstatOrNull(options.fs, path);
-      if (existing === null) {
-        options.fs.mkdir(path, directory.mode);
-        options.fs.chmod(path, directory.mode);
-      } else if ((existing.mode & S_IFMT) !== S_IFDIR) {
-        throw new Error(`Homebrew runtime layer directory collides at ${path}`);
-      }
-    }
-  }
-
-  const registered = planned.map((layer) => {
-    const deferredTrees = layer.trees.map((tree) =>
-      options.fs.registerLazyTree({
-        decoder: tree.descriptor.content.decoder,
-        mediaType: tree.descriptor.content.media_type,
-        sha256: tree.descriptor.content.sha256,
-        bytes: tree.descriptor.content.bytes,
-        expandedBytes: tree.descriptor.inventory.expanded_bytes,
-        sourceEntryCount: tree.descriptor.inventory.source_entry_count,
-        transports: tree.descriptor.transports.map((transport) => transport.url),
-        ...(tree.descriptor.inventory.source === undefined ? {} : {
-          source: {
-            schema: 1 as const,
-            kind: "homebrew-bottle-tar-gzip-v1" as const,
-            entries: tree.descriptor.inventory.source.entries.map((entry) => ({
-              sourcePath: entry.path,
-              type: entry.type,
-              mode: entry.mode,
-              size: entry.size,
-              ...(entry.target === undefined ? {} : { target: entry.target }),
-            })),
-          },
-        }),
-      }, tree.entries, layer.descriptor.mount_prefix, {
-        mode: tree.descriptor.activation.mode,
-        capabilities: [...tree.descriptor.activation.capabilities],
-        roots: [...tree.descriptor.activation.roots],
-      })
+  const registered = planned.map((collection, index) => {
+    const layer = loaded[index]!;
+    const deferredTrees = collection.trees.map((tree) =>
+      registerPlannedDeferredTree(options.fs, tree, collection.mountPrefix)
     );
     return {
       id: layer.reference.id,
@@ -301,6 +341,14 @@ function validateAggregateLayerCounts(
 function selectedDeferredTreeUsage(
   loaded: readonly LoadedLayer[],
 ): VfsDeferredTreeUsage {
+  return deferredTreeUsage(
+    loaded.flatMap((layer) => layer.descriptor.deferred_trees),
+  );
+}
+
+function deferredTreeUsage(
+  trees: readonly HomebrewDeferredTreeDescriptor[],
+): VfsDeferredTreeUsage {
   const usage: VfsDeferredTreeUsage = {
     groups: 0,
     archiveBytes: 0,
@@ -308,15 +356,13 @@ function selectedDeferredTreeUsage(
     payloadBytes: 0,
     entries: 0,
   };
-  for (const layer of loaded) {
-    for (const tree of layer.descriptor.deferred_trees) {
-      usage.groups += 1;
-      usage.archiveBytes += tree.content.bytes;
-      usage.expandedBytes += tree.inventory.expanded_bytes;
-      usage.payloadBytes += tree.inventory.payload_bytes;
-      usage.entries += tree.inventory.entries.length +
-        (tree.inventory.source?.entries.length ?? 0);
-    }
+  for (const tree of trees) {
+    usage.groups += 1;
+    usage.archiveBytes += tree.content.bytes;
+    usage.expandedBytes += tree.inventory.expanded_bytes;
+    usage.payloadBytes += tree.inventory.payload_bytes;
+    usage.entries += tree.inventory.entries.length +
+      (tree.inventory.source?.entries.length ?? 0);
   }
   return usage;
 }
@@ -1116,51 +1162,51 @@ function validatePackageOwnership(layers: readonly LoadedLayer[]): void {
   }
 }
 
-function preflightLayerPaths(
+function preflightDeferredTreeCollections(
   fs: MemoryFileSystem,
-  layers: readonly LoadedLayer[],
-): PlannedLayer[] {
+  collections: readonly HomebrewDeferredTreeCollectionPlan[],
+): PlannedTreeCollection[] {
   const ownership = new Map<string, {
     id: string;
     type: HomebrewLazyLayerEntry["type"];
     ownership: HomebrewLazyLayerEntry["ownership"];
     mode: number;
   }>();
-  const planned: PlannedLayer[] = [];
+  const planned: PlannedTreeCollection[] = [];
 
-  for (const layer of layers) {
+  for (const collection of collections) {
     const directories: HomebrewLazyLayerEntry[] = [];
     const trees: PlannedTree[] = [];
-    for (const tree of layer.descriptor.deferred_trees) {
+    for (const tree of collection.trees) {
       const registrationEntries: LazyTreeRegistrationEntry[] = [];
       for (const entry of tree.inventory.entries) {
         const vfsPath = `/${entry.path}`;
         const base = lstatOrNull(fs, vfsPath);
         if (entry.ownership === "mergeable-directory") {
           if (
-            layer.descriptor.schema !== 5 ||
+            collection.schema !== 5 ||
             base !== null && (base.mode & S_IFMT) !== S_IFDIR
           ) {
             throw new Error(
-              `Homebrew runtime layer ${layer.reference.id} cannot merge directory ${vfsPath}`,
+              `Homebrew runtime layer ${collection.id} cannot merge directory ${vfsPath}`,
             );
           }
           if (base !== null && (base.mode & 0o7777) !== entry.mode) {
             throw new Error(
-              `Homebrew runtime layer ${layer.reference.id} cannot merge directory ` +
+              `Homebrew runtime layer ${collection.id} cannot merge directory ` +
                 `${vfsPath}: base mode differs from the descriptor`,
             );
           }
         } else if (entry.ownership === "shared-base-directory") {
           if (base === null || (base.mode & S_IFMT) !== S_IFDIR) {
             throw new Error(
-              `Homebrew runtime layer ${layer.reference.id} does not share an ` +
+              `Homebrew runtime layer ${collection.id} does not share an ` +
                 `existing base directory at ${vfsPath}`,
             );
           }
         } else if (base !== null) {
           throw new Error(
-            `Homebrew runtime layer ${layer.reference.id} collides with the base at ${vfsPath}`,
+            `Homebrew runtime layer ${collection.id} collides with the base at ${vfsPath}`,
           );
         }
 
@@ -1179,13 +1225,13 @@ function preflightLayerPaths(
             previous.mode === entry.mode;
           if (!jointlySharedDirectory && !jointlyMergeableDirectory) {
             throw new Error(
-              `Homebrew runtime layers ${previous.id} and ${layer.reference.id} ` +
+              `Homebrew runtime layers ${previous.id} and ${collection.id} ` +
                 `conflict at ${vfsPath}`,
             );
           }
         } else {
           ownership.set(entry.path, {
-            id: layer.reference.id,
+            id: collection.id,
             type: entry.type,
             ownership: entry.ownership,
             mode: entry.mode,
@@ -1222,7 +1268,7 @@ function preflightLayerPaths(
       pathDepth(left.path) - pathDepth(right.path) ||
         compareHomebrewCanonicalText(left.path, right.path)
     );
-    planned.push({ ...layer, trees, directories });
+    planned.push({ ...collection, trees, directories });
   }
 
   for (const [path, entry] of ownership) {
@@ -1258,6 +1304,83 @@ function preflightLayerPaths(
     }
   }
   return planned;
+}
+
+function createDeferredTreeDirectories(
+  fs: MemoryFileSystem,
+  collections: readonly PlannedTreeCollection[],
+): void {
+  for (const collection of collections) {
+    for (const directory of collection.directories) {
+      const path = `/${directory.path}`;
+      const existing = lstatOrNull(fs, path);
+      if (existing === null) {
+        fs.mkdir(path, directory.mode);
+        fs.chmod(path, directory.mode);
+      } else if ((existing.mode & S_IFMT) !== S_IFDIR) {
+        throw new Error(`Homebrew runtime layer directory collides at ${path}`);
+      }
+    }
+  }
+}
+
+function registerPlannedDeferredTree(
+  fs: MemoryFileSystem,
+  tree: PlannedTree,
+  mountPrefix: string,
+): LazyTreeGroup {
+  return fs.registerLazyTree(
+    plannedDeferredTreeContent(tree),
+    tree.entries,
+    mountPrefix,
+    plannedDeferredTreeActivation(tree),
+  );
+}
+
+function registerPlannedDeferredTreeWithHandle(
+  fs: MemoryFileSystem,
+  tree: PlannedTree,
+  mountPrefix: string,
+): DeferredTreeMaterializationHandle {
+  return fs.registerLazyTreeWithMaterializationHandle(
+    plannedDeferredTreeContent(tree),
+    tree.entries,
+    mountPrefix,
+    plannedDeferredTreeActivation(tree),
+  );
+}
+
+function plannedDeferredTreeContent(tree: PlannedTree) {
+  return {
+    decoder: tree.descriptor.content.decoder,
+    mediaType: tree.descriptor.content.media_type,
+    sha256: tree.descriptor.content.sha256,
+    bytes: tree.descriptor.content.bytes,
+    expandedBytes: tree.descriptor.inventory.expanded_bytes,
+    sourceEntryCount: tree.descriptor.inventory.source_entry_count,
+    transports: tree.descriptor.transports.map((transport) => transport.url),
+    ...(tree.descriptor.inventory.source === undefined ? {} : {
+      source: {
+        schema: 1 as const,
+        kind: "homebrew-bottle-tar-gzip-v1" as const,
+        entries: tree.descriptor.inventory.source.entries.map((entry) => ({
+          sourcePath: entry.path,
+          type: entry.type,
+          mode: entry.mode,
+          size: entry.size,
+          ...(entry.target === undefined ? {} : { target: entry.target }),
+        })),
+      },
+    }),
+  };
+}
+
+function plannedDeferredTreeActivation(tree: PlannedTree) {
+  return {
+    mode: tree.descriptor.activation.mode,
+    capabilities: [...tree.descriptor.activation.capabilities],
+    roots: [...tree.descriptor.activation.roots],
+  };
 }
 
 function validateBaseVfs(

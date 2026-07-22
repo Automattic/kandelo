@@ -9,6 +9,8 @@ SOURCE_LOCK="$REPO_ROOT/homebrew/main-shell-migration-lock.json"
 WORKFLOW="$REPO_ROOT/.github/workflows/homebrew-main-shell-ci.yml"
 IMAGE_CONTRACT="$REPO_ROOT/scripts/homebrew-main-shell-image-contract.ts"
 IMAGE_CONTRACT_TEST="$REPO_ROOT/scripts/homebrew-main-shell-image-contract.test.ts"
+EAGER_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts"
+MATERIALIZED_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-materialized-vfs-image.ts"
 STAGING_WORKFLOW="$REPO_ROOT/.github/workflows/staging-build.yml"
 PREPARE_MERGE_WORKFLOW="$REPO_ROOT/.github/workflows/prepare-merge.yml"
 FORCE_REBUILD_WORKFLOW="$REPO_ROOT/.github/workflows/force-rebuild.yml"
@@ -60,9 +62,11 @@ for required_path in \
   "crates/shared/**" \
   "homebrew/main-shell*" \
   "host/src/generated/abi.ts" \
+  "host/src/homebrew-bottle-mirror-*.ts" \
   "host/src/homebrew-vfs-*.ts" \
   "host/src/vfs/**" \
   "images/rootfs/**" \
+  "images/vfs/scripts/build-homebrew-materialized-vfs-image.ts" \
   "images/vfs/scripts/build-shell-vfs-image.ts" \
   "images/vfs/scripts/main-shell-demo-config.ts" \
   "images/vfs/scripts/vfs-image-helpers.ts" \
@@ -70,12 +74,15 @@ for required_path in \
   "packages/registry/shell/**" \
   "scripts/dev-shell.sh" \
   "scripts/browser-binary-package-roots.mjs" \
+  "scripts/create-homebrew-bottle-mirror-publish-manifest.ts" \
   "scripts/fetch-binaries.sh" \
   "scripts/homebrew-brewfile-selection.rb" \
   "scripts/homebrew-main-shell-image-contract*.ts" \
   "scripts/install-local-binary.sh" \
   "scripts/resolve-binary.sh" \
+  "scripts/recover-homebrew-bottle-mirror.ts" \
   "tests/package-system/browser-binary-dependencies.test.ts" \
+  "tests/package-system/homebrew-bottle-mirror-recovery.test.ts" \
   "tools/mkrootfs/**" \
   "tools/xtask/**" \
   "web-libs/kandelo-session/src/kernel-host.ts" \
@@ -118,35 +125,33 @@ grep -Fq 'persist-credentials: false' "$WORKFLOW" ||
 grep -Fq 'GH_TOKEN: ${{ github.token }}' "$WORKFLOW" &&
   fail "main-shell proof must not expose the workflow token to package composition"
 grep -Fq 'scripts/homebrew-checkout-public-tap.sh' "$WORKFLOW" &&
-  fail "main-shell proof must let the package system provision its immutable Git input"
+  fail "candidate proof must use its one explicit exact tap checkout"
 grep -Fq 'bash packages/registry/shell/build-shell.sh' "$WORKFLOW" &&
-  fail "main-shell proof must not invoke the shell builder outside archive-stage"
-grep -Fq 'compute-cache-key-sha \' "$WORKFLOW" ||
-  fail "main-shell proof must compute the canonical shell package cache identity"
-grep -Fq 'archive-stage \' "$WORKFLOW" ||
-  fail "main-shell proof must exercise the canonical package archive path"
-grep -Fq -- '--package packages/registry/shell' "$WORKFLOW" ||
-  fail "main-shell proof must stage the shell package"
-grep -Fq -- '--expected-cache-key-sha "$cache_key"' "$WORKFLOW" ||
-  fail "main-shell proof must bind archive-stage to the precomputed package identity"
-grep -Fq -- '--force-source-build' "$WORKFLOW" ||
-  fail "main-shell proof must execute the shell composer instead of reusing its package archive"
-grep -Fq 'tar --zstd -xf "$ARCHIVE_PATH" -C "$archive_root" \' "$WORKFLOW" ||
-  fail "main-shell proof must extract the package archive"
-grep -Fq 'manifest.toml artifacts/shell.vfs.zst' "$WORKFLOW" ||
-  fail "main-shell proof must extract the shell package's declared artifact"
-grep -Fq 'cp "$archived" "$installed"' "$WORKFLOW" ||
-  fail "main-shell proof must install the archive-contained bytes for browser resolution"
-grep -Fq -- '--image "$RUNNER_TEMP/shell-archive/artifacts/shell.vfs.zst"' "$WORKFLOW" ||
-  fail "Node proof must boot the archive-contained shell bytes directly"
+  fail "candidate proof must not invoke the canonical shell package wrapper"
+grep -Fq 'compute-cache-key-sha \' "$WORKFLOW" &&
+  fail "candidate proof must not compute or activate a canonical package identity"
+grep -Fq 'archive-stage \' "$WORKFLOW" &&
+  fail "candidate proof must not publish or stage the canonical shell package"
+grep -Fq 'git -C "$tap_root" fetch --depth=1 origin "$tap_sha"' "$WORKFLOW" ||
+  fail "candidate proof must fetch the exact reviewed tap commit"
+grep -Fq 'test "$(git -C "$tap_root" rev-parse HEAD)" = "$tap_sha"' "$WORKFLOW" ||
+  fail "candidate proof must verify the exact checked-out tap commit"
+grep -Fq -- '--materialized-candidate \' "$WORKFLOW" ||
+  fail "candidate proof must explicitly opt into lazy shell composition"
+grep -Fq 'scripts/build-homebrew-main-shell-closure.sh \' "$WORKFLOW" ||
+  fail "candidate proof must invoke the strict shell composer"
+grep -Fq 'cp "$CANDIDATE_PATH" "$installed"' "$WORKFLOW" ||
+  fail "candidate proof must install the exact candidate bytes for browser resolution"
+grep -Fq -- '--image "${{ steps.candidate.outputs.image }}"' "$WORKFLOW" ||
+  fail "Node proof must boot the exact candidate bytes directly"
 grep -Fq -- '--migration-lock homebrew/main-shell-migration-lock.json' "$WORKFLOW" ||
   fail "post-archive Node proof must validate against the reviewed migration lock"
 grep -Fq -- '--demo-config homebrew/main-shell-demo.json' "$WORKFLOW" ||
   fail "post-archive Node proof must validate the canonical demo config bytes"
-grep -Fq '${{ runner.temp }}/staged-shell/*.tar.zst' "$WORKFLOW" ||
-  fail "main-shell evidence must retain the exact canonical package archive"
-grep -Fq '${{ runner.temp }}/shell-archive/artifacts/shell.vfs.zst' "$WORKFLOW" ||
-  fail "main-shell evidence must retain the archive-contained shell bytes"
+grep -Fq '${{ steps.candidate.outputs.image }}' "$WORKFLOW" ||
+  fail "main-shell evidence must retain the exact candidate image"
+grep -Fq '${{ steps.candidate.outputs.report }}' "$WORKFLOW" ||
+  fail "main-shell evidence must retain the candidate composition report"
 grep -Fq 'bash ../../scripts/dev-shell.sh env \' "$WORKFLOW" ||
   fail "main-shell workflow must forward browser acceptance inputs inside the isolated dev shell"
 grep -Fq 'PLAYWRIGHT_JSON_OUTPUT_FILE="$report" \' "$WORKFLOW" ||
@@ -160,7 +165,7 @@ grep -Fq 'fetch_args+=(--package "$package")' "$WORKFLOW" ||
 grep -Fq 'scripts/fetch-binaries.sh "${fetch_args[@]}"' "$WORKFLOW" ||
   fail "binary fetch must materialize only direct browser bundling inputs"
 browser_fetch_block="$(sed -n \
-  '/- name: Resolve current direct browser bundling inputs/,/- name: Build the canonical shell package archive/p' \
+  '/- name: Resolve current direct browser bundling inputs/,/- name: Build an opt-in shell candidate/p' \
   "$WORKFLOW")"
 grep -Fq 'fetch_args=()' <<<"$browser_fetch_block" ||
   fail "browser support inputs must use the normal current-recipe resolver path"
@@ -235,7 +240,7 @@ locked_tap_sha="$(jq -er '.catalog.tap_commit' "$SOURCE_LOCK")"
 grep -Fq "commit = \"$locked_tap_sha\"" "$SHELL_BUILD_TOML" ||
   fail "shell Git input commit must equal the reviewed migration lock"
 grep -Eq '^revision[[:space:]]*=[[:space:]]*16$' "$SHELL_BUILD_TOML" ||
-  fail "bottle-built shell parity changes must advance the shell recipe to revision 16"
+  fail "candidate infrastructure must leave the canonical shell at revision 16"
 for shell_input in \
   homebrew/main-shell-demo.json \
   web-libs/kandelo-session/src/demo-config.ts
@@ -243,6 +248,31 @@ do
   grep -Fq "\"$shell_input\"" "$SHELL_BUILD_TOML" ||
     fail "shell build cache inputs omit $shell_input"
 done
+for candidate_only_input in \
+  homebrew/main-shell-materialization-policy.json \
+  images/vfs/scripts/build-homebrew-materialized-vfs-image.ts \
+  host/src/homebrew-bottle-mirror-plan.ts \
+  host/src/homebrew-runtime-layer-consumer.ts \
+  host/src/homebrew-vfs-composer.ts \
+  host/src/homebrew-vfs-materialization-policy.ts \
+  host/src/vfs/deferred-tree-limits.ts
+do
+  grep -Fq "\"$candidate_only_input\"" "$SHELL_BUILD_TOML" &&
+    fail "candidate infrastructure must not activate package input $candidate_only_input"
+done
+grep -Fq \
+  'VFS_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts"' \
+  "$BUILDER" || fail "canonical shell composition must select the eager image entrypoint"
+grep -Fq \
+  'VFS_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-materialized-vfs-image.ts"' \
+  "$BUILDER" || fail "candidate shell composition must select its materialized entrypoint"
+[ "$(grep -Fc '"$VFS_IMAGE_BUILDER"' "$BUILDER")" -eq 1 ] ||
+  fail "shell composition must invoke exactly its selected image entrypoint"
+grep -Fq 'homebrew-vfs-composer' "$EAGER_IMAGE_BUILDER" &&
+  fail "canonical eager image entrypoint must not import the candidate composer"
+grep -Fq 'from "../../../host/src/homebrew-vfs-composer"' \
+  "$MATERIALIZED_IMAGE_BUILDER" ||
+  fail "materialized image entrypoint must own the candidate composer import"
 for generic_input in \
   WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_DIR \
   WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_COMMIT
@@ -252,6 +282,8 @@ do
 done
 grep -Fq 'KANDELO_HOMEBREW_MAIN_SHELL_TAP_' "$SHELL_BUILDER" &&
   fail "shell builder must not retain the workflow-only tap injection path"
+grep -Fq -- '--materialized-candidate' "$SHELL_BUILDER" &&
+  fail "candidate infrastructure must not activate lazy composition in the package wrapper"
 grep -Fq 'build-shell-vfs-image.sh' "$SHELL_BUILDER" &&
   fail "shell builder must not retain the legacy registry-composition fallback"
 for isolated_flag in '--work-dir "$WORK_DIR"' '--report "$REPORT"' '--bottle-cache "$BOTTLE_CACHE"'; do
@@ -263,7 +295,7 @@ grep -Fq 'WORK_DIR="$REPO_ROOT/target/homebrew-main-shell"' "$BUILDER" &&
 grep -Fq 'homebrew-main-shell-node-smoke.ts' "$BUILDER" &&
   fail "cached shell composition must not consume ambient runtime acceptance artifacts"
 grep -Fq 'scripts/homebrew-main-shell-node-smoke.ts' "$WORKFLOW" ||
-  fail "exact archived shell bytes must retain post-archive Node acceptance"
+  fail "exact candidate shell bytes must retain post-build Node acceptance"
 grep -Eq '^depends_on = \[\]$' "$REPO_ROOT/packages/registry/shell/package.toml" ||
   fail "canonical bottle-only shell package must not pre-resolve the legacy registry graph"
 

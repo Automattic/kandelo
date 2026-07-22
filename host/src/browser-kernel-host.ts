@@ -27,6 +27,10 @@ import rootfsVfsUrl from "@rootfs-vfs?url";
 import workerEntryUrl from "./worker-entry-browser.ts?worker&url";
 import kernelWorkerEntryUrl from "./browser-kernel-worker-entry.ts?worker&url";
 import { DEFAULT_MAX_PAGES } from "./constants";
+import {
+  snapshotClosedLazyAssets,
+  type ClosedLazyAsset,
+} from "./vfs/closed-lazy-assets";
 
 export interface BrowserKernelOptions {
   /** Maximum concurrent workers (default: 4) */
@@ -98,6 +102,11 @@ export interface BrowserKernelBootOptions {
   vfsImage: Uint8Array | "default";
   /** Base URL used to resolve relative lazy file/archive URLs in `vfsImage`. */
   lazyUrlBase?: string;
+  /**
+   * Exhaustive exact URL-to-byte transport for lazy entries in `vfsImage`.
+   * When set, an unbound URL fails instead of using ambient browser fetch.
+   */
+  closedLazyAssets?: readonly ClosedLazyAsset[];
   /** Argv for the first (and currently only "init") process. argv[0] should
    *  be a path inside the VFS image. */
   argv: string[];
@@ -198,6 +207,7 @@ export class BrowserKernel {
     kernelWasm?: ArrayBuffer;
     vfsImage: Uint8Array | "default";
     lazyUrlBase?: string;
+    closedLazyAssets?: readonly ClosedLazyAsset[];
   }): Promise<void> {
     const [wasmBytes, vfsImage] = await Promise.all([
       options.kernelWasm
@@ -214,6 +224,7 @@ export class BrowserKernel {
       kernelWasmBytes: wasmBytes,
       vfsImage,
       lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
+      closedLazyAssets: options.closedLazyAssets,
     });
   }
 
@@ -225,7 +236,11 @@ export class BrowserKernel {
     kernelWasmBytes: ArrayBuffer;
     vfsImage: Uint8Array;
     lazyUrlBase?: string;
+    closedLazyAssets?: readonly ClosedLazyAsset[];
   }): Promise<void> {
+    const closedLazyAssets = opts.closedLazyAssets === undefined
+      ? undefined
+      : snapshotClosedLazyAssets(opts.closedLazyAssets);
     // Create the kernel worker
     this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
 
@@ -298,6 +313,7 @@ export class BrowserKernel {
         kernelWasmBytes: transferBuf,
         vfsImage: opts.vfsImage,
         lazyUrlBase: opts.lazyUrlBase,
+        closedLazyAssets,
         shmSab: this.shmSab,
         workerEntryUrl,
         config: {
@@ -311,7 +327,13 @@ export class BrowserKernel {
           corsProxyUrl: this.options.corsProxyUrl,
         },
       };
-      this.kernelWorkerHandle.postMessage(initMsg, [transferBuf]);
+      const transfer: Transferable[] = [transferBuf];
+      for (const asset of closedLazyAssets ?? []) {
+        // snapshotClosedLazyAssets always allocates one ordinary ArrayBuffer
+        // per binding, so transferring it cannot detach caller-owned bytes.
+        transfer.push(asset.bytes.buffer as ArrayBuffer);
+      }
+      this.kernelWorkerHandle.postMessage(initMsg, transfer);
     });
   }
 

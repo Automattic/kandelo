@@ -4,6 +4,13 @@ export { HostFileSystem } from "./host-fs";
 export { MemoryFileSystem } from "./memory-fs";
 export { VFS_DEFERRED_TREE_LIMITS } from "./deferred-tree-limits";
 export type { VfsDeferredTreeUsage } from "./deferred-tree-limits";
+export {
+  createClosedLazyAssetFetcher,
+  MAX_CLOSED_LAZY_ASSETS,
+  MAX_CLOSED_LAZY_ASSET_BYTES,
+  snapshotClosedLazyAssets,
+} from "./closed-lazy-assets";
+export type { ClosedLazyAsset } from "./closed-lazy-assets";
 export type {
   LazyDownloadEvent,
   LazyDownloadKind,

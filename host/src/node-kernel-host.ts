@@ -27,6 +27,11 @@ import type {
 } from "./node-kernel-protocol";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
+import type { LazyDownloadEvent } from "./vfs/memory-fs";
+import {
+  snapshotClosedLazyAssets,
+  type ClosedLazyAsset,
+} from "./vfs/closed-lazy-assets";
 
 export type { HttpRequest, HttpResponse };
 
@@ -64,6 +69,8 @@ export interface NodeKernelHostOptions {
   onStderr?: (pid: number, data: Uint8Array) => void;
   /** Called for host-runtime diagnostics that are not guest stderr. */
   onHostDiagnostic?: (diagnostic: HostDiagnostic) => void;
+  /** Called as lazy VFS files or trees are fetched on demand. */
+  onLazyDownload?: (event: LazyDownloadEvent) => void;
   /** Called when a process writes PTY output */
   onPtyOutput?: (pid: number, data: Uint8Array) => void;
   /** Called when a process is spawned, execs a new program, or exits.
@@ -92,6 +99,12 @@ export interface NodeKernelHostOptions {
    *     to a VFS-only world yet.
    */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
+  /**
+   * Exhaustive exact URL-to-byte transport for lazy entries in rootfsImage.
+   * Intended for offline and pre-publication acceptance: when set, unbound
+   * URLs fail instead of falling through to ambient network fetch.
+   */
+  rootfsLazyAssets?: readonly ClosedLazyAsset[];
   extraMounts?: Array<{
     mountPoint: string;
     hostPath: string;
@@ -135,6 +148,7 @@ export class NodeKernelHost {
   private exitSequence = 0;
   private _nextRequestId = 1;
   private options: NodeKernelHostOptions;
+  private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
 
   constructor(options?: NodeKernelHostOptions) {
     this.options = options ?? {};
@@ -144,6 +158,12 @@ export class NodeKernelHost {
   async init(kernelWasmBytes?: ArrayBuffer): Promise<void> {
     const wasmBytes = kernelWasmBytes ?? loadKernelWasm();
     const rootfsImage = resolveRootfsImage(this.options.rootfsImage);
+    if (this.options.rootfsLazyAssets !== undefined && rootfsImage === null) {
+      throw new Error("rootfsLazyAssets requires rootfsImage");
+    }
+    const rootfsLazyAssets = this.options.rootfsLazyAssets === undefined
+      ? undefined
+      : snapshotClosedLazyAssets(this.options.rootfsLazyAssets);
 
     this.worker = spawnKernelWorkerThread();
 
@@ -213,10 +233,14 @@ export class NodeKernelHost {
         },
         execPrograms: this.options.execPrograms,
         rootfsImage: rootfsImage ?? undefined,
+        rootfsLazyAssets,
         extraMounts: this.options.extraMounts,
         enableTcpNetwork: this.options.enableTcpNetwork,
       };
-      this.worker.postMessage(initMsg);
+      const transfer = (rootfsLazyAssets ?? []).map(
+        (asset) => asset.bytes.buffer as ArrayBuffer,
+      );
+      this.worker.postMessage(initMsg, transfer);
     });
   }
 
@@ -470,6 +494,14 @@ export class NodeKernelHost {
     if (resolver) resolver(status);
   }
 
+  /** Subscribe to worker-owned lazy VFS transport progress. */
+  subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void): () => void {
+    this.lazyDownloadListeners.add(cb);
+    return () => {
+      this.lazyDownloadListeners.delete(cb);
+    };
+  }
+
   /** Destroy the kernel and release all resources */
   async destroy(): Promise<void> {
     const requestId = this._nextRequestId++;
@@ -489,6 +521,7 @@ export class NodeKernelHost {
     await this.worker.terminate();
     this.exitResolvers.clear();
     this.pendingRequests.clear();
+    this.lazyDownloadListeners.clear();
   }
 
   // ── Private ──
@@ -572,6 +605,9 @@ export class NodeKernelHost {
       case "resolve_exec":
         this.handleResolveExec(msg);
         break;
+      case "lazy_download":
+        this.emitLazyDownload(msg.event);
+        break;
       default: {
         // Keep this dispatch coupled to KernelToMainMessage as the protocol
         // grows. Runtime values still originate outside TypeScript, so make a
@@ -582,6 +618,21 @@ export class NodeKernelHost {
           `[NodeKernelHost] unknown kernel-worker message type: ${String((msg as { type?: unknown }).type)}`,
         );
         break;
+      }
+    }
+  }
+
+  private emitLazyDownload(event: LazyDownloadEvent): void {
+    try {
+      this.options.onLazyDownload?.(event);
+    } catch {
+      // Host callbacks must not break worker message delivery.
+    }
+    for (const listener of this.lazyDownloadListeners) {
+      try {
+        listener(event);
+      } catch {
+        // One observer must not starve the remaining listeners.
       }
     }
   }
