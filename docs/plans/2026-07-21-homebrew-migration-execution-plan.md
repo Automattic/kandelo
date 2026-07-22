@@ -175,11 +175,11 @@ complete here only when its exact accepted artifact has been verified.
 |---|---|---|
 | Public publisher foundation | Complete | Repository-rooted public GHCR creation, anonymous readback, immutable trust, retry/recovery, coordinated finalization, and immutable VFS releases are implemented. PR #1048 landed the clean-input coordinated-finalizer fix at `1618563d87dd2207077ce228040cc9b2c773eb5e`. The production path uses `GITHUB_TOKEN`. |
 | Canonical tap migration | Complete for the production repository | PR #973 retargeted publication to `Kandelo-dev/homebrew-tap-core`; the old Automattic tap is archived. |
-| Core Formula coverage | Broad but incomplete | The live core tap currently contains 61 Formula files plus its Formula README, with 58 successful sidecar package records at this snapshot. This covers the complete 38-Formula main-shell closure and several language runtimes, but not every historical registry role; Formula presence alone does not prove publication. |
+| Core Formula coverage | Broad but incomplete | The live core tap currently contains 61 Formula files plus its Formula README, with 60 sidecar package records and 67 successful architecture-specific bottle records at this snapshot. This covers the complete 38-Formula main-shell closure and several language runtimes, but not every historical registry role; Formula presence alone does not prove publication. |
 | Bottle-composed main shell | Complete, currently eager | PR #1025 builds and publishes the current main shell from the exact public 38-Formula closure and proves the exact image in Node.js and Chromium. All poured content is currently serialized into the VFS, so laziness still needs restoration. |
-| Language bottles | In progress | Ruby is public and runtime-verified. Fresh coordinated run `29886510272` built, publicly uploaded, and indexed Python and Erlang through the final trusted publisher pins. Erlang's complete credential-free verification is green; Python's anonymous force-pour is green and its remaining sidecar/image verification is still running at this checkpoint. Coordinated finalization therefore still waits for Python. Perl is published but still needs inclusion in the final lazy-shell language acceptance matrix. |
+| Language bottles | Public publication complete; lazy-shell acceptance pending | Ruby is public and runtime-verified. Coordinated run `29886510272` built, publicly uploaded, anonymously verified, and atomically finalized Python `3.13.3_1` and Erlang `28.2_1` at tap commit `00ba350ffcee7df02fb9f329bb3c62873ae50831`. It also published and anonymously read back the immutable browser-proven Python VFS release `homebrew-vfs-sha256-db98a17118afeb91d7c8d939fecc8c482ba765cbbe63b242ccf2834de2b48119`. Perl is published. Python, Perl, Erlang, and Ruby still need inclusion in the final lazy-shell language acceptance matrix. |
 | Third-party tap model | Live publisher proof complete; guest use remains | The stricter load-order-independent cross-tap runtime contract landed in Kandelo as PR #1046 at `bd2b090e3e6998350be24ed018bbb76d3eb5b012`, in the core tap as PR #82 at `caad125218a2e3c6f05d290151a32128ec6c54ac`, and in the canary as PR #13 at `25069ad2acb7f86746ec3d119a823e8210a7a1eb`. PR #1049 landed the active-repository tap-store correction at `466a685d9366d3b712c4fe998307e00157bd5d15`; core-tap PR #83 pinned it at `cbb439454adf2718b010d0fe2caffe7158340a0e`, and canary PR #14 pinned it at `ee4464b87b988b163608b6c3520c2260907bda61`. Independent run `29886510154` is completely green: public M4 package and index, anonymous exact-byte pour, dependency-bearing Node.js and Chromium image proof, transactional tap finalization, and immutable five-asset VFS release `homebrew-vfs-sha256-40a44df5c6f139a4e9105b5155040be757bc20596dc5dce2d7a64286447d9f3e`. Conventional third-party `brew tap` and `brew install` inside the guest remain Phase 5 work. |
-| Deferred bottle trees | Substrate validation in progress | The integration branch now contains exact original-bottle transport identity, decoder-neutral descriptors, bounded tar+gzip and legacy ZIP decoding, hardlink preservation, atomic batch import and materialization, shared first-open/exec behavior, independent immutable runtime-layer identity, and boot-descriptor composition. Its focused host suite, exact Chromium first-use proof, release reconciliation, publisher-trust check, ABI check, cache-closure check, and wasm32/wasm64 native-sidecar test are green. It is not landed and no production lazy-shell claim exists yet. |
+| Deferred bottle trees | PR #1051 validation in progress | The integration branch now contains exact original-bottle transport identity, decoder-neutral descriptors, bounded tar+gzip and legacy ZIP decoding, hardlink preservation, atomic batch import and materialization, shared first-open/exec behavior, independent immutable runtime-layer identity, and boot-descriptor composition. The current proof producer emits one whole ZIP scaffold per selected runtime layer; the production shell producer still must map each original bottle to its own tree. Its focused host suite, exact Chromium first-use proof, cross-browser failed-stage reclamation proof, release reconciliation, publisher-trust check, ABI check, cache-closure check, and wasm32/wasm64 native-sidecar test are green. It is not landed and no production lazy-shell claim exists yet. |
 | Guest upstream `brew` | Partial experiment | A bootstrap image can run upstream Homebrew and its Ruby support. General `brew tap`/`brew install` from public first-party and third-party bottles is not yet a supported shell capability. |
 | Registry replacement | Incomplete | Formulae are increasingly authoritative, but `packages/registry` still owns recipes, platform artifacts, tests, and composite-image definitions. It cannot be deleted yet. |
 | Bottle-declared, mix-and-match VFS packages | Future retained scope | The current composer produces precomposed images. VFS Formulae/bottles and user-selectable composition remain a later product iteration. |
@@ -192,12 +192,14 @@ do preserve the single-writer finalization and exact-commit trust contracts.
 
 ### Phase 1: Close the active publication and federation work
 
-1. Completed by PR #1048: fix the coordinated-finalizer boundary that let one
-   package's generated sidecars dirty the provenance source for the next
-   package. Finish the Python and Erlang publication run against the final
-   trusted publisher pins.
-2. Verify final tap commits, Formula bottle blocks, sidecars, public package
-   visibility, immutable tags, and anonymous exact-byte reads.
+1. Completed by PR #1048 and run `29886510272`: fix the
+   coordinated-finalizer boundary that let one package's generated sidecars
+   dirty the provenance source for the next package, then publish Python and
+   Erlang against the final trusted publisher pins.
+2. Completed: verify final tap commit
+   `00ba350ffcee7df02fb9f329bb3c62873ae50831`, Formula bottle blocks,
+   sidecars, public package visibility, immutable tags, and anonymous
+   exact-byte reads.
 3. Completed: PR #1046 passed its exact-head and synthesized-merge gates and
    landed as `bd2b090e3e6998350be24ed018bbb76d3eb5b012`.
 4. Completed: the first-party core tap and independent canary were pinned to
@@ -207,11 +209,11 @@ do preserve the single-writer finalization and exact-commit trust contracts.
    bottle fetch, tap finalization, Node.js VFS acceptance, Chromium VFS
    acceptance, and immutable release readback.
 
-Checkpoint: PRs #1048 and #1049 are landed, and both tap callers pin #1049's
-immutable merge commit. The independent M4 proof is completely green through
-its immutable release. Erlang's fresh retry is green; Python has passed build,
-public upload, indexing, and anonymous pour, while its remaining verification
-and the coordinated finalizer are still active at the snapshot above.
+Checkpoint: Phase 1 is complete. PRs #1048 and #1049 are landed, and both tap
+callers pin #1049's immutable merge commit. The independent M4 proof is green
+through its immutable release. The Python/Erlang coordinated run is green
+through public upload, anonymous verification, atomic tap finalization, and
+immutable Python VFS release readback.
 
 Acceptance:
 
