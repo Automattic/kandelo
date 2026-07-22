@@ -507,6 +507,11 @@ The consumer restores the base image and composes every selected layer in a
 private filesystem, publishing that filesystem to boot only after registration
 and every required boot-prefetch succeeds. Allocation, collision, validation,
 and transport failures therefore cannot expose a partially composed namespace.
+If this private browser-side transaction fails, the consumer reports its
+discarded `SharedArrayBuffer` to the boot lifecycle before rethrowing the
+original error. Failed and superseded boots then run the same bounded WebKit
+reclamation pass used after kernel teardown, so repeated failures do not leave
+untracked staged images on the persistent main thread.
 
 The current derived producer uses deterministic ZIP bytes with decoder
 `zip-v1` as a temporary scaffold. The host contract is format-neutral and also

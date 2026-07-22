@@ -68,6 +68,12 @@ export interface ComposeHomebrewRuntimeLayersOptions {
   fetch?: (url: string) => Promise<Response>;
   /** Credential-free deferred-tree transport, including boot-prefetch trees. */
   archiveFetch?: (url: string) => Promise<Response>;
+  /**
+   * Observe a private staged filesystem that is abandoned before publication.
+   * Browser callers use this to register the SharedArrayBuffer for WebKit
+   * reclamation; the observer must not retain the buffer.
+   */
+  onStagedFileSystemDiscarded?: (buffer: SharedArrayBuffer) => void;
 }
 
 export interface RegisteredHomebrewRuntimeLayer {
@@ -116,11 +122,24 @@ export async function composeHomebrewRuntimeLayers(
     : MemoryFileSystem.fromImage(options.baseImageBytes, {
       maxByteLength: options.maxByteLength,
     });
-  if (options.archiveFetch !== undefined) fs.setLazyFetcher(options.archiveFetch);
-  const layers = options.layers.length === 0
-    ? []
-    : await registerHomebrewRuntimeLayersOnStagedFileSystem({ ...options, fs });
-  return { fs, layers };
+  try {
+    if (options.archiveFetch !== undefined) fs.setLazyFetcher(options.archiveFetch);
+    const layers = options.layers.length === 0
+      ? []
+      : await registerHomebrewRuntimeLayersOnStagedFileSystem({ ...options, fs });
+    return { fs, layers };
+  } catch (error) {
+    // This filesystem was deliberately private until the composition
+    // transaction completed, so a rejection gives the caller no other way to
+    // observe its large SharedArrayBuffer. Reclamation observers are best
+    // effort and must never replace the truthful composition failure.
+    try {
+      options.onStagedFileSystemDiscarded?.(fs.sharedBuffer);
+    } catch {
+      // Preserve the original composition error.
+    }
+    throw error;
+  }
 }
 
 async function registerHomebrewRuntimeLayersOnStagedFileSystem(

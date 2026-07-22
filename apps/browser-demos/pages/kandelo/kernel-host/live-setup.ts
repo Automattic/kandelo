@@ -28,6 +28,7 @@ import {
 import {
   finalizeKernelOwnedImage,
   settleWebKitReclaim,
+  trackTransientImageBuffer,
 } from "../../../lib/kernel-owned-boot";
 import {
   ensureDirRecursive,
@@ -303,9 +304,10 @@ const LIVE_DEMO_IDS = [
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
 
-// Kernel teardown reclamation (transient image-build buffers) lives in the
-// shared helper so every kernel-owned demo shares one implementation.
-async function settleAfterKernelDestroy(): Promise<void> {
+// Boot-resource reclamation (worker-owned live filesystems and transient
+// image-build buffers) lives in the shared helper so every kernel-owned demo
+// shares one implementation, including failures before a kernel exists.
+async function settleAfterBootResourcesReleased(): Promise<void> {
   await settleWebKitReclaim();
 }
 
@@ -602,7 +604,7 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
     currentKernel = null;
     if (previousKernel) {
       await previousKernel.destroy().catch(() => {});
-      await settleAfterKernelDestroy();
+      await settleAfterBootResourcesReleased();
     }
     h.detachKernel();
     const bootStartedAt = performance.now();
@@ -618,10 +620,15 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
       );
       if (seq !== bootSeq) {
         await kernel.destroy().catch(() => {});
+        await settleAfterBootResourcesReleased();
         return;
       }
       currentKernel = kernel;
     } catch (err) {
+      // Failed composition can abandon a private staged filesystem before a
+      // BrowserKernel exists. Its discard hook registered the buffer; run the
+      // same bounded WebKit reclamation pass used after worker teardown.
+      await settleAfterBootResourcesReleased();
       if (err instanceof BootSuperseded || seq !== bootSeq) return;
       currentKernel = null;
       h.detachKernel();
@@ -1138,6 +1145,7 @@ async function bootProfile(
       baseImageBytes: fetchedVfsImageBytes,
       maxByteLength: profile.maxVfsByteLength,
       kernelAbi: ABI_VERSION,
+      onStagedFileSystemDiscarded: trackTransientImageBuffer,
     });
     buildFs = composed.fs;
     assertCurrent();
@@ -1147,6 +1155,10 @@ async function bootProfile(
       maxByteLength: profile.maxVfsByteLength,
     });
   }
+  // Track as soon as the caller owns the staged filesystem. This covers every
+  // later fetch, staging, supersession, and serialization failure; finalizing
+  // the image is intentionally an idempotent second registration.
+  trackTransientImageBuffer(buildFs.sharedBuffer);
   const shellConfig = readImageShellConfig(buildFs);
   if (
     profile.id === "nginx-php" ||
@@ -1389,7 +1401,7 @@ async function bootProfile(
     return kernel;
   } catch (err) {
     stopDinitStartingPoller();
-    if (kernel && !isCurrent()) {
+    if (kernel) {
       await kernel.destroy().catch(() => {});
     }
     throw err;

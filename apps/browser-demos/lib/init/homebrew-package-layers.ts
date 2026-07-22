@@ -20,6 +20,8 @@ export interface ComposeBootDescriptorVfsOptions {
   fetch?: (url: string) => Promise<Response>;
   /** Credential-free deferred-tree transport. */
   archiveFetch?: (url: string) => Promise<Response>;
+  /** Observe a private staged filesystem abandoned by failed composition. */
+  onStagedFileSystemDiscarded?: (buffer: SharedArrayBuffer) => void;
 }
 
 export interface ComposedBootDescriptorVfs extends ComposedHomebrewRuntimeLayers {
@@ -89,6 +91,11 @@ export async function composeBootDescriptorVfs(
     ...(options.archiveFetch === undefined
       ? {}
       : { archiveFetch: options.archiveFetch }),
+    ...(options.onStagedFileSystemDiscarded === undefined
+      ? {}
+      : {
+        onStagedFileSystemDiscarded: options.onStagedFileSystemDiscarded,
+      }),
   });
   return { ...composed, references };
 }

@@ -88,6 +88,7 @@ declare global {
       request: PackageLayerExecRequest,
     ) => Promise<PackageLayerExecResult>;
     __destroyPackageLayerAcceptance: () => Promise<void>;
+    __packageLayerDiscardedBufferCount: () => number;
   }
 }
 
@@ -97,6 +98,7 @@ interface PackageLayerMachine {
 }
 
 let packageLayerMachine: PackageLayerMachine | null = null;
+let packageLayerDiscardedBufferCount = 0;
 
 function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
   const stat = fs.stat(path);
@@ -280,44 +282,52 @@ async function init(): Promise<void> {
     if (machine) await machine.kernel.destroy().catch(() => {});
     await settleWebKitReclaim();
   };
+  window.__packageLayerDiscardedBufferCount = () =>
+    packageLayerDiscardedBufferCount;
 
   window.__bootPackageLayerAcceptance = async (request) => {
     await window.__destroyPackageLayerAcceptance();
-    const baseImageBytes = new Uint8Array(
-      await fetchBytes(request.baseVfsUrl, "package-layer base VFS image"),
-    );
-    MemoryFileSystem.assertImageKernelAbi(
-      baseImageBytes,
-      ABI_VERSION,
-      "package-layer base VFS image",
-    );
-    const composed = await composeBootDescriptorVfs({
-      descriptor: request.descriptor,
-      baseImageBytes,
-      kernelAbi: ABI_VERSION,
-    });
-    const output = { stdout: "", stderr: "" };
-    const kernel = new BrowserKernel({
-      kernelOwnedFs: true,
-      onStdout: (bytes) => {
-        output.stdout = appendOutput(output.stdout, bytes, "stdout");
-      },
-      onStderr: (bytes) => {
-        output.stderr = appendOutput(output.stderr, bytes, "stderr");
-      },
-    });
+    let kernel: BrowserKernel | null = null;
     try {
+      const baseImageBytes = new Uint8Array(
+        await fetchBytes(request.baseVfsUrl, "package-layer base VFS image"),
+      );
+      MemoryFileSystem.assertImageKernelAbi(
+        baseImageBytes,
+        ABI_VERSION,
+        "package-layer base VFS image",
+      );
+      const composed = await composeBootDescriptorVfs({
+        descriptor: request.descriptor,
+        baseImageBytes,
+        kernelAbi: ABI_VERSION,
+        onStagedFileSystemDiscarded: (buffer) => {
+          packageLayerDiscardedBufferCount += 1;
+          trackTransientImageBuffer(buffer);
+        },
+      });
+      trackTransientImageBuffer(composed.fs.sharedBuffer);
+      const output = { stdout: "", stderr: "" };
+      kernel = new BrowserKernel({
+        kernelOwnedFs: true,
+        onStdout: (bytes) => {
+          output.stdout = appendOutput(output.stdout, bytes, "stdout");
+        },
+        onStderr: (bytes) => {
+          output.stderr = appendOutput(output.stderr, bytes, "stderr");
+        },
+      });
       await kernel.initFromImage({
         kernelWasm: kernelBytes,
         vfsImage: await finalizeKernelOwnedImage(composed.fs),
       });
+      packageLayerMachine = { kernel, output };
+      return { layerIds: composed.layers.map((layer) => layer.id) };
     } catch (error) {
-      await kernel.destroy().catch(() => {});
+      if (kernel) await kernel.destroy().catch(() => {});
       await settleWebKitReclaim();
       throw error;
     }
-    packageLayerMachine = { kernel, output };
-    return { layerIds: composed.layers.map((layer) => layer.id) };
   };
 
   window.__readPackageLayerAcceptance = async (path) => {

@@ -43,6 +43,7 @@ declare global {
       timeoutMs: number;
     }) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
     __destroyPackageLayerAcceptance: () => Promise<void>;
+    __packageLayerDiscardedBufferCount: () => number;
   }
 }
 
@@ -79,8 +80,13 @@ interface PackageLayerFixture {
     base: string;
     descriptor: string;
     data: string;
+    dataMirror: string;
     exec: string;
   };
+}
+
+interface PackageLayerFixtureOptions {
+  bootPrefetchTree?: "data" | "exec";
 }
 
 function utf8(value: string): Uint8Array {
@@ -106,6 +112,24 @@ async function routeBytes(
         "access-control-allow-origin": "*",
         "content-length": String(bytes.byteLength),
         "content-type": "application/octet-stream",
+      },
+    });
+  });
+}
+
+async function routeFailure(
+  page: Page,
+  url: string,
+  onRequest?: () => void,
+): Promise<void> {
+  await page.route(url, async (route) => {
+    onRequest?.();
+    await route.fulfill({
+      status: 503,
+      body: "fixture transport offline",
+      headers: {
+        "access-control-allow-origin": "*",
+        "content-type": "text/plain",
       },
     });
   });
@@ -212,11 +236,14 @@ function zipTree(
   };
 }
 
-async function createFixture(): Promise<PackageLayerFixture> {
+async function createFixture(
+  options: PackageLayerFixtureOptions = {},
+): Promise<PackageLayerFixture> {
   const urls = {
     base: "https://fixtures.kandelo.invalid/package-layer-base.vfs",
     descriptor: "",
     data: "https://fixtures.kandelo.invalid/lazyfixture-data.zip",
+    dataMirror: "",
     exec: "https://fixtures.kandelo.invalid/lazyfixture-exec.zip",
   };
   const fs = MemoryFileSystem.create(new SharedArrayBuffer(32 * 1024 * 1024));
@@ -323,6 +350,11 @@ async function createFixture(): Promise<PackageLayerFixture> {
     execEntries,
     new Map([[executable.slice(1), executableBytes]]),
   );
+  if (options.bootPrefetchTree === "data") {
+    dataTree.tree.activation.mode = "boot-prefetch";
+  } else if (options.bootPrefetchTree === "exec") {
+    execTree.tree.activation.mode = "boot-prefetch";
+  }
 
   const baseSha = sha256(baseImage);
   const draft: HomebrewLazyLayerDraftDescriptor = {
@@ -433,6 +465,17 @@ async function createFixture(): Promise<PackageLayerFixture> {
   urls.descriptor =
     `https://github.com/${RELEASE_REPOSITORY}/releases/download/` +
     `${descriptor.release.tag}/${homebrewRuntimeLayerDescriptorAsset(PACKAGE)}`;
+  const mirrorUrl = (treeId: string): string => {
+    const tree = descriptor.deferred_trees.find((candidate) =>
+      candidate.id === treeId
+    );
+    const transport = tree?.transports.find((candidate) =>
+      candidate.kind === "bundle-release"
+    );
+    if (!transport) throw new Error(`missing bundle mirror for ${treeId}`);
+    return transport.url;
+  };
+  urls.dataMirror = mirrorUrl(`${PACKAGE}-data`);
   const descriptorBytes = encodeHomebrewLazyLayerDescriptor(descriptor);
   const bootDescriptor: BootDescriptor = {
     version: 1,
@@ -473,9 +516,9 @@ async function createFixture(): Promise<PackageLayerFixture> {
   };
 }
 
-test.skip(!available, "package-layer Chromium fixtures are not built");
+test.skip(!available, "package-layer browser fixtures are not built");
 
-test("Chromium applies a boot-descriptor package layer and materializes each tree on guest use", async ({
+test("browser applies a boot-descriptor package layer and materializes each tree on guest use", async ({
   page,
   baseURL,
 }) => {
@@ -542,6 +585,74 @@ test("Chromium applies a boot-descriptor package layer and materializes each tre
     )).resolves.toBe("package-layer-first-use\n");
     expect(dataFetches).toBe(1);
     expect(execFetches).toBe(1);
+  } finally {
+    await page.evaluate(() => window.__destroyPackageLayerAcceptance());
+  }
+});
+
+test("browser discards each private package-layer stage after repeated boot-prefetch failures", async ({
+  page,
+  baseURL,
+}) => {
+  test.setTimeout(180_000);
+  if (!baseURL) throw new Error("Playwright baseURL is required");
+  const fixture = await createFixture({ bootPrefetchTree: "data" });
+  let descriptorFetches = 0;
+  let directArchiveFetches = 0;
+  let mirrorArchiveFetches = 0;
+  await routeBytes(page, fixture.urls.base, fixture.baseImage);
+  await routeBytes(
+    page,
+    fixture.urls.descriptor,
+    fixture.descriptorBytes,
+    () => descriptorFetches++,
+  );
+  await routeFailure(page, fixture.urls.data, () => directArchiveFetches++);
+  await routeFailure(
+    page,
+    fixture.urls.dataMirror,
+    () => mirrorArchiveFetches++,
+  );
+
+  await page.goto(new URL("/pages/homebrew-vfs-test/", baseURL).href);
+  await expect.poll(
+    () => page.evaluate(() => window.__homebrewVfsTestReady),
+    { timeout: 120_000 },
+  ).toBe(true);
+  const initialDiscards = await page.evaluate(() =>
+    window.__packageLayerDiscardedBufferCount()
+  );
+
+  try {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const failure = await page.evaluate(
+        async ({ baseVfsUrl, descriptor }) => {
+          try {
+            await window.__bootPackageLayerAcceptance({ baseVfsUrl, descriptor });
+            return null;
+          } catch (error) {
+            return error instanceof Error ? error.message : String(error);
+          }
+        },
+        { baseVfsUrl: fixture.urls.base, descriptor: fixture.descriptor },
+      );
+      expect(failure).toContain("failed");
+      expect(await page.evaluate(() =>
+        window.__packageLayerDiscardedBufferCount()
+      )).toBe(initialDiscards + attempt);
+    }
+
+    expect(descriptorFetches).toBe(3);
+    expect(directArchiveFetches).toBe(3);
+    expect(mirrorArchiveFetches).toBe(3);
+    await expect(page.evaluate(async (path) => {
+      try {
+        await window.__readPackageLayerAcceptance(path);
+        return null;
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    }, fixture.dataPath)).resolves.toContain("not booted");
   } finally {
     await page.evaluate(() => window.__destroyPackageLayerAcceptance());
   }

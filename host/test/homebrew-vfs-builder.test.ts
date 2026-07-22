@@ -1244,6 +1244,102 @@ describe("Homebrew runtime layer consumer", () => {
     expect(() => fs.lstat(perlDescriptor.packages.layer[0].keg)).toThrow();
   });
 
+  it("reports each unpublished staged filesystem exactly once across failure phases", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const exact = runtimeLayerReference("runtime", fixture.descriptor);
+    let discarded = 0;
+    const onStagedFileSystemDiscarded = (buffer: SharedArrayBuffer) => {
+      discarded += 1;
+      expect(buffer).toBeInstanceOf(SharedArrayBuffer);
+      expect(buffer.byteLength).toBeGreaterThan(0);
+    };
+
+    await expect(composeHomebrewRuntimeLayers({
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: Array.from(
+        { length: HOMEBREW_RUNTIME_LAYER_LIMITS.maxLayers + 1 },
+        (_, index) => ({
+          id: `layer-${index}`,
+          descriptor: {
+            url: `https://example.invalid/layer-${index}.json`,
+            sha256: index.toString(16).padStart(64, "0"),
+            bytes: 1,
+          },
+        }),
+      ),
+      onStagedFileSystemDiscarded,
+    })).rejects.toThrow(/layer count .* exceeds/);
+    expect(discarded).toBe(1);
+
+    await expect(composeHomebrewRuntimeLayers({
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [exact.reference],
+      fetch: async () => {
+        throw new Error("descriptor transport offline");
+      },
+      onStagedFileSystemDiscarded,
+    })).rejects.toThrow("descriptor transport offline");
+    expect(discarded).toBe(2);
+
+    const prefetchDescriptor = structuredClone(fixture.descriptor);
+    descriptorTree(prefetchDescriptor).activation.mode = "boot-prefetch";
+    recloseRuntimeLayerDescriptor(prefetchDescriptor);
+    const prefetch = runtimeLayerReference("runtime", prefetchDescriptor);
+    await expect(composeHomebrewRuntimeLayers({
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [prefetch.reference],
+      fetch: async () => new Response(prefetch.bytes),
+      archiveFetch: async () => {
+        throw new Error("boot transport offline");
+      },
+      onStagedFileSystemDiscarded,
+    })).rejects.toThrow("boot transport offline");
+    expect(discarded).toBe(3);
+  });
+
+  it("does not report a published stage or let a discard observer mask the failure", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const exact = runtimeLayerReference("runtime", fixture.descriptor);
+    let discarded = 0;
+    await expect(composeHomebrewRuntimeLayers({
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [exact.reference],
+      fetch: async () => new Response(exact.bytes),
+      onStagedFileSystemDiscarded: () => {
+        discarded += 1;
+      },
+    })).resolves.toMatchObject({ layers: [{ id: "runtime" }] });
+    expect(discarded).toBe(0);
+
+    await expect(composeHomebrewRuntimeLayers({
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: Array.from(
+        { length: HOMEBREW_RUNTIME_LAYER_LIMITS.maxLayers + 1 },
+        (_, index) => ({
+          id: `layer-${index}`,
+          descriptor: {
+            url: `https://example.invalid/layer-${index}.json`,
+            sha256: index.toString(16).padStart(64, "0"),
+            bytes: 1,
+          },
+        }),
+      ),
+      onStagedFileSystemDiscarded: () => {
+        throw new Error("observer failure");
+      },
+    })).rejects.toThrow(/layer count .* exceeds/);
+  });
+
   it("rejects aggregate compressed size before changing the VFS", async () => {
     const fixture = await runtimeLayerConsumerFixture();
     const runtimeDescriptor = structuredClone(fixture.descriptor);

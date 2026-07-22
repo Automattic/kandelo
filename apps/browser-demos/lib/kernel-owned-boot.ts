@@ -20,6 +20,7 @@ const WEBKIT_RECLAIM_STEP_MS = 150;
 const WEBKIT_RECLAIM_PRESSURE_BYTES = 32 * 1024 * 1024;
 
 let pendingImageBufferReclaims = 0;
+const trackedImageBuffers = new WeakSet<object>();
 const imageBufferRegistry =
   typeof FinalizationRegistry !== "undefined"
     ? new FinalizationRegistry<void>(() => {
@@ -36,12 +37,16 @@ export function isWebKitLikeBrowser(): boolean {
 /**
  * Track a transient image-build buffer so {@link settleWebKitReclaim} can wait
  * for its reclamation instead of guessing with a fixed delay. The registry
- * holds `buf` weakly, so tracking it does not keep it alive.
+ * holds `buf` weakly, so tracking it does not keep it alive. Registration is
+ * idempotent because callers may track at allocation and again at finalization.
  */
 export function trackTransientImageBuffer(buf: ArrayBufferLike): void {
   if (!imageBufferRegistry) return;
+  const identity = buf as object;
+  if (trackedImageBuffers.has(identity)) return;
+  trackedImageBuffers.add(identity);
   pendingImageBufferReclaims += 1;
-  imageBufferRegistry.register(buf as object, undefined);
+  imageBufferRegistry.register(identity, undefined);
 }
 
 /**
