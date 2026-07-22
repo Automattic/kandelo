@@ -1131,7 +1131,8 @@ homebrew_patched_launcher_prepare_native_prefix() {
   HOMEBREW_PATCHED_NATIVE_BREW_BIN="$native_brew"
 
   reported_prefix="$(
-    unset HOMEBREW_KANDELO_BOTTLE_TAG KANDELO_HOMEBREW_BOTTLE_TAG
+    unset HOMEBREW_KANDELO_BOTTLE_TAG KANDELO_HOMEBREW_BOTTLE_TAG \
+      HOMEBREW_KANDELO_PRIMARY_TAP_ROOT
     HOME="$HOMEBREW_PATCHED_NATIVE_HOME" \
       XDG_CONFIG_HOME="$HOMEBREW_PATCHED_NATIVE_CONFIG" \
       HOMEBREW_CACHE="$HOMEBREW_PATCHED_NATIVE_CACHE" \
@@ -1174,13 +1175,16 @@ homebrew_patched_launcher_run_native() {
       echo "homebrew-patched-launcher: CI native Formula execution requires isolation" >&2
       return 2
     }
-    unset HOMEBREW_KANDELO_BOTTLE_TAG KANDELO_HOMEBREW_BOTTLE_TAG
-    HOME="$HOMEBREW_PATCHED_NATIVE_HOME" \
-      XDG_CONFIG_HOME="$HOMEBREW_PATCHED_NATIVE_CONFIG" \
-      HOMEBREW_CACHE="$HOMEBREW_PATCHED_NATIVE_CACHE" \
-      HOMEBREW_TEMP="$HOMEBREW_PATCHED_NATIVE_TEMP" \
-      HOMEBREW_RELOCATE_BUILD_PREFIX=1 \
-      "$HOMEBREW_PATCHED_NATIVE_BREW_BIN" "$@"
+    (
+      unset HOMEBREW_KANDELO_BOTTLE_TAG KANDELO_HOMEBREW_BOTTLE_TAG \
+        HOMEBREW_KANDELO_PRIMARY_TAP_ROOT
+      HOME="$HOMEBREW_PATCHED_NATIVE_HOME" \
+        XDG_CONFIG_HOME="$HOMEBREW_PATCHED_NATIVE_CONFIG" \
+        HOMEBREW_CACHE="$HOMEBREW_PATCHED_NATIVE_CACHE" \
+        HOMEBREW_TEMP="$HOMEBREW_PATCHED_NATIVE_TEMP" \
+        HOMEBREW_RELOCATE_BUILD_PREFIX=1 \
+        "$HOMEBREW_PATCHED_NATIVE_BREW_BIN" "$@"
+    )
     return
   fi
   [ -n "$HOMEBREW_PATCHED_NATIVE_RUNNER" ] || {
@@ -1645,6 +1649,7 @@ homebrew_patched_launcher_isolate() {
   local systemd_run_bin systemctl_bin getent_bin pgrep_bin pkill_bin
   local build_uid systemd_slice unit_prefix source_alias_dir
   local config_root config_file unsafe_config_entry trust_file trust_lock
+  local primary_tap_root primary_tap_owner_root taps_root
   local -a preserved_variables native_preserved_variables mutable_roots
   local -a additional_protected_roots=("$@")
 
@@ -1766,6 +1771,32 @@ homebrew_patched_launcher_isolate() {
     echo "homebrew-patched-launcher: build user has no home directory" >&2
     return 2
   }
+
+  primary_tap_root="${HOMEBREW_KANDELO_PRIMARY_TAP_ROOT:-}"
+  if [ -z "$primary_tap_root" ] || [ ! -d "$primary_tap_root" ] || \
+     [ -L "$primary_tap_root" ]; then
+    echo "homebrew-patched-launcher: selected primary tap root must be a real directory" >&2
+    return 2
+  fi
+  primary_tap_root="$(cd "$primary_tap_root" && pwd -P)" || return 2
+  taps_root="$HOMEBREW_PATCHED_PREFIX/Library/Taps"
+  if [ ! -d "$taps_root" ] || [ -L "$taps_root" ]; then
+    echo "homebrew-patched-launcher: target Homebrew tap storage must be a real directory" >&2
+    return 2
+  fi
+  taps_root="$(cd "$taps_root" && pwd -P)" || return 2
+  primary_tap_owner_root="${primary_tap_root%/*}"
+  if [ "${primary_tap_owner_root%/*}" != "$taps_root" ] || \
+     [ "$primary_tap_root" != "$HOMEBREW_KANDELO_PRIMARY_TAP_ROOT" ]; then
+    echo "homebrew-patched-launcher: selected primary tap root is not one canonical tapped checkout" >&2
+    return 2
+  fi
+  case "$primary_tap_root" in
+    *:*)
+      echo "homebrew-patched-launcher: selected primary tap root cannot contain ':'" >&2
+      return 2
+      ;;
+  esac
 
   if [ ! -d "$sysroot_build_root" ] || [ -L "$sysroot_build_root" ]; then
     echo "homebrew-patched-launcher: sysroot build root must be a real directory" >&2
@@ -1995,6 +2026,7 @@ homebrew_patched_launcher_isolate() {
     printf 'expected_kandelo=%q\n' "$source_alias_dir/kandelo"
     printf 'expected_tap=%q\n' "$source_alias_dir/tap"
     printf 'expected_sysroot=%q\n' "$source_alias_dir/sysroot"
+    printf 'expected_primary_tap=%q\n' "$primary_tap_root"
     printf 'if [ "${HOMEBREW_KANDELO_ROOT:-}" != "$expected_kandelo" ] || '
     printf '[ "${KANDELO_HOMEBREW_KANDELO_ROOT:-}" != "$expected_kandelo" ]; then\n'
     printf '  echo "homebrew-patched-launcher: isolated Kandelo root does not use the protected alias" >&2\n'
@@ -2002,6 +2034,9 @@ homebrew_patched_launcher_isolate() {
     printf 'if [ "${HOMEBREW_KANDELO_SYSROOT:-}" != "$expected_sysroot" ] || '
     printf '[ "${WASM_POSIX_SYSROOT:-}" != "$expected_sysroot" ]; then\n'
     printf '  echo "homebrew-patched-launcher: isolated sysroot does not use the protected alias" >&2\n'
+    printf '  exit 2\nfi\n'
+    printf 'if [ "${HOMEBREW_KANDELO_PRIMARY_TAP_ROOT:-}" != "$expected_primary_tap" ]; then\n'
+    printf '  echo "homebrew-patched-launcher: isolated primary tap root changed" >&2\n'
     printf '  exit 2\nfi\n'
     printf 'if [ ! -f "$expected_sysroot/lib/libc.a" ] || [ -L "$expected_sysroot/lib/libc.a" ]; then\n'
     printf '  echo "homebrew-patched-launcher: protected sysroot libc archive is invalid" >&2\n'
@@ -2017,6 +2052,11 @@ homebrew_patched_launcher_isolate() {
     printf '    *,ro,*) ;;\n'
     printf '    *) echo "homebrew-patched-launcher: protected source mount is writable: $source_alias" >&2; exit 1 ;;\n'
     printf '  esac\ndone\n'
+    printf 'primary_tap_options="$(/usr/bin/findmnt --noheadings --output VFS-OPTIONS --target "$expected_primary_tap")" || {\n'
+    printf '  echo "homebrew-patched-launcher: could not inspect selected primary tap mount" >&2; exit 2;\n}\n'
+    printf 'case ",${primary_tap_options// /}," in *,ro,*) ;; *) echo "homebrew-patched-launcher: selected primary tap is writable" >&2; exit 1 ;; esac\n'
+    printf 'if (: >"$expected_primary_tap/.kandelo-write-probe") 2>/dev/null; then\n'
+    printf '  echo "homebrew-patched-launcher: target Formula can modify the selected primary tap" >&2; exit 1\nfi\n'
     homebrew_patched_launcher_emit_sysroot_access_audit
     printf 'hidden_roots=('
     for protected_root in "$kandelo_root" "$tap_root" "$output_root" \
@@ -2056,6 +2096,7 @@ homebrew_patched_launcher_isolate() {
     HOMEBREW_NO_INSTALL_CLEANUP HOMEBREW_NO_ANALYTICS HOMEBREW_DEVELOPER
     KANDELO_HOMEBREW_ARCH
     HOMEBREW_KANDELO_ARCH HOMEBREW_KANDELO_NODE
+    HOMEBREW_KANDELO_PRIMARY_TAP_ROOT
     HOMEBREW_GIT_PATH
     HOMEBREW_KANDELO_GNU_TAR HOMEBREW_KANDELO_LLVM_BIN HOMEBREW_KANDELO_ABI
     HOMEBREW_KANDELO_NODE_RECEIPT_PATH
@@ -2092,6 +2133,7 @@ homebrew_patched_launcher_isolate() {
       "--property=BindReadOnlyPaths=$kandelo_root:$source_alias_dir/kandelo" \
       "--property=BindReadOnlyPaths=$tap_root:$source_alias_dir/tap" \
       "--property=BindReadOnlyPaths=$sysroot:$source_alias_dir/sysroot" \
+      "--property=BindReadOnlyPaths=$taps_root" \
       "--property=InaccessiblePaths=$kandelo_root" \
       "--property=InaccessiblePaths=$tap_root" \
       "--property=InaccessiblePaths=$output_root" \

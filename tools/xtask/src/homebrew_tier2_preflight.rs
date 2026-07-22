@@ -25,6 +25,7 @@ struct BridgePlan {
     full_name: String,
     formula_sha256: String,
     support_sha256: PresentNullable<String>,
+    support_runtime_sha256: PresentNullable<String>,
     tier2_bridge: PresentNullable<BridgeDeclaration>,
 }
 
@@ -62,6 +63,7 @@ struct BridgeAttestation {
     full_name: String,
     formula_sha256: String,
     support_sha256: Option<String>,
+    support_runtime_sha256: Option<String>,
     tier2_bridge: Option<AttestedBridge>,
 }
 
@@ -165,25 +167,27 @@ fn validate(
         "full_name",
         "formula_sha256",
         "support_sha256",
+        "support_runtime_sha256",
         "tier2_bridge",
     ] {
         if !object.contains_key(field) {
             return Err(format!("Tier-2 bridge plan is missing field {field:?}"));
         }
     }
-    if object.len() != 7 {
+    if object.len() != 8 {
         return Err("Tier-2 bridge plan has unexpected fields".to_string());
     }
     validate_plan_identity(&plan)?;
     let Some(bridge) = plan.tier2_bridge.0 else {
         return Ok(BridgeAttestation {
-            schema: 1,
+            schema: 2,
             arch: arch.as_str().to_string(),
             tap: plan.tap,
             formula: plan.formula,
             full_name: plan.full_name,
             formula_sha256: plan.formula_sha256,
             support_sha256: plan.support_sha256.0,
+            support_runtime_sha256: plan.support_runtime_sha256.0,
             tier2_bridge: None,
         });
     };
@@ -194,6 +198,12 @@ fn validate(
         .as_deref()
         .ok_or_else(|| "Tier-2 bridge plan is missing its support SHA-256".to_string())?;
     validate_sha256(support_sha256, "support SHA-256")?;
+    let support_runtime_sha256 = plan
+        .support_runtime_sha256
+        .0
+        .as_deref()
+        .ok_or_else(|| "Tier-2 bridge plan is missing its support runtime SHA-256".to_string())?;
+    validate_sha256(support_runtime_sha256, "support runtime SHA-256")?;
 
     let repo_root = exact_real_directory(repo_root, "repository root")?;
     let packages = exact_child_directory(&repo_root, "packages", "packages directory")?;
@@ -292,13 +302,14 @@ fn validate(
     };
 
     Ok(BridgeAttestation {
-        schema: 1,
+        schema: 2,
         arch: arch.as_str().to_string(),
         tap: plan.tap,
         formula: plan.formula,
         full_name: plan.full_name,
         formula_sha256: plan.formula_sha256,
         support_sha256: Some(support_sha256.to_string()),
+        support_runtime_sha256: Some(support_runtime_sha256.to_string()),
         tier2_bridge: Some(AttestedBridge {
             build_toml_sha256,
             package: bridge.package,
@@ -319,7 +330,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn validate_plan_identity(plan: &BridgePlan) -> Result<(), String> {
-    if plan.schema != 1 {
+    if plan.schema != 2 {
         return Err(format!(
             "unsupported Tier-2 bridge plan schema {}",
             plan.schema
@@ -331,8 +342,18 @@ fn validate_plan_identity(plan: &BridgePlan) -> Result<(), String> {
         return Err("Tier-2 bridge plan full_name does not match tap/formula".to_string());
     }
     validate_sha256(&plan.formula_sha256, "Formula SHA-256")?;
-    if let Some(support_sha256) = &plan.support_sha256.0 {
-        validate_sha256(support_sha256, "support SHA-256")?;
+    match (&plan.support_sha256.0, &plan.support_runtime_sha256.0) {
+        (Some(support_sha256), Some(support_runtime_sha256)) => {
+            validate_sha256(support_sha256, "support SHA-256")?;
+            validate_sha256(support_runtime_sha256, "support runtime SHA-256")?;
+        }
+        (None, None) => {}
+        _ => {
+            return Err(
+                "Tier-2 bridge plan support module and runtime SHA-256 must both be present or null"
+                    .to_string(),
+            );
+        }
     }
     Ok(())
 }
@@ -686,12 +707,13 @@ mod tests {
 
     fn bridge_plan() -> String {
         serde_json::json!({
-            "schema": 1,
+            "schema": 2,
             "tap": "kandelo-dev/tap-core",
             "formula": "bridge",
             "full_name": "kandelo-dev/tap-core/bridge",
             "formula_sha256": "a".repeat(64),
             "support_sha256": "b".repeat(64),
+            "support_runtime_sha256": "d".repeat(64),
             "tier2_bridge": {
                 "package": "bridge",
                 "script_env_keys": ["WASM_POSIX_DEP_ZLIB_DIR"],
@@ -765,11 +787,13 @@ index_url = "https://example.test/index.toml"
                 "formula_sha256",
                 "full_name",
                 "schema",
+                "support_runtime_sha256",
                 "support_sha256",
                 "tap",
                 "tier2_bridge",
             ]
         );
+        assert_eq!(document["schema"], 2);
         assert_eq!(
             document["tier2_bridge"]
                 .as_object()
@@ -806,6 +830,21 @@ index_url = "https://example.test/index.toml"
         assert_eq!(bridge.version, "1.2.3");
         assert_eq!(bridge.source_mode, "exact");
         assert_eq!(attestation.arch, "wasm32");
+    }
+
+    #[test]
+    fn bridge_plan_rejects_previous_and_unknown_schemas() {
+        let fixture = Fixture::new();
+        for schema in [1, 3] {
+            let mut plan: serde_json::Value = serde_json::from_str(&bridge_plan()).unwrap();
+            plan["schema"] = schema.into();
+            fs::write(&fixture.plan, serde_json::to_vec(&plan).unwrap()).unwrap();
+            let error = fixture.validate(TargetArch::Wasm32).unwrap_err();
+            assert_eq!(
+                error,
+                format!("unsupported Tier-2 bridge plan schema {schema}")
+            );
+        }
     }
 
     #[test]
@@ -1298,12 +1337,13 @@ index_url = "https://example.test/index.toml"
     #[test]
     fn bridge_plan_rejects_duplicate_fields_and_missing_support_digest() {
         let fixture = Fixture::new();
-        let duplicate = bridge_plan().replacen("\"schema\":1", "\"schema\":1,\"schema\":1", 1);
+        let duplicate = bridge_plan().replacen("\"schema\":2", "\"schema\":2,\"schema\":2", 1);
         fs::write(&fixture.plan, duplicate).unwrap();
         assert!(fixture.validate(TargetArch::Wasm32).is_err());
 
         let mut plan: serde_json::Value = serde_json::from_str(&bridge_plan()).unwrap();
         plan["support_sha256"] = serde_json::Value::Null;
+        plan["support_runtime_sha256"] = serde_json::Value::Null;
         fs::write(&fixture.plan, serde_json::to_vec(&plan).unwrap()).unwrap();
         assert!(
             fixture
@@ -1312,7 +1352,7 @@ index_url = "https://example.test/index.toml"
                 .contains("missing its support SHA-256")
         );
 
-        for field in ["support_sha256", "tier2_bridge"] {
+        for field in ["support_sha256", "support_runtime_sha256", "tier2_bridge"] {
             let mut plan: serde_json::Value = serde_json::from_str(&bridge_plan()).unwrap();
             plan.as_object_mut().unwrap().remove(field);
             fs::write(&fixture.plan, serde_json::to_vec(&plan).unwrap()).unwrap();
@@ -1345,12 +1385,15 @@ index_url = "https://example.test/index.toml"
         let mut plan: serde_json::Value = serde_json::from_str(&bridge_plan()).unwrap();
         plan["tier2_bridge"] = serde_json::Value::Null;
         plan["support_sha256"] = serde_json::Value::Null;
+        plan["support_runtime_sha256"] = serde_json::Value::Null;
         fs::write(&fixture.plan, serde_json::to_vec(&plan).unwrap()).unwrap();
         let attestation = fixture.validate(TargetArch::Wasm32).unwrap();
         assert_eq!(attestation.arch, "wasm32");
         assert_eq!(attestation.support_sha256, None);
+        assert_eq!(attestation.support_runtime_sha256, None);
         assert_eq!(attestation.tier2_bridge, None);
         let document = serde_json::to_value(attestation).unwrap();
+        assert_eq!(document["schema"], 2);
         assert_eq!(
             document
                 .as_object()
@@ -1364,12 +1407,32 @@ index_url = "https://example.test/index.toml"
                 "formula_sha256",
                 "full_name",
                 "schema",
+                "support_runtime_sha256",
                 "support_sha256",
                 "tap",
                 "tier2_bridge",
             ]
         );
         assert!(document.get("support_sha256").unwrap().is_null());
+        assert!(document.get("support_runtime_sha256").unwrap().is_null());
         assert!(document.get("tier2_bridge").unwrap().is_null());
+    }
+
+    #[test]
+    fn bridge_plan_requires_support_module_and_runtime_digests_together() {
+        let fixture = Fixture::new();
+        for field in ["support_sha256", "support_runtime_sha256"] {
+            let mut plan: serde_json::Value = serde_json::from_str(&bridge_plan()).unwrap();
+            plan[field] = serde_json::Value::Null;
+            plan["tier2_bridge"] = serde_json::Value::Null;
+            fs::write(&fixture.plan, serde_json::to_vec(&plan).unwrap()).unwrap();
+            assert!(
+                fixture
+                    .validate(TargetArch::Wasm32)
+                    .unwrap_err()
+                    .contains("must both be present or null"),
+                "{field}"
+            );
+        }
     }
 }

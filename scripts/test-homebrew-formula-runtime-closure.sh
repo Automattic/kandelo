@@ -397,7 +397,16 @@ require "pathname"
 require "shellwords"
 require "tempfile"
 
+if defined?(KandeloFormulaSupport)
+  unless KandeloFormulaSupport::KANDELO_FORMULA_SUPPORT_API_VERSION == 1 &&
+         Digest::SHA256.file(Pathname(__FILE__).realpath).hexdigest ==
+           KandeloFormulaSupport::KANDELO_TIER2_RUNTIME.fetch("support_sha256")
+    raise "loaded Kandelo Formula support copies are incompatible"
+  end
+else
 module KandeloFormulaSupport
+  KANDELO_FORMULA_SUPPORT_API_VERSION = 1
+
   def self.kandelo_load_tier2_runtime!
     support_path = Pathname(__FILE__).realpath
     support_path.freeze
@@ -408,6 +417,7 @@ module KandeloFormulaSupport
   def kandelo_build_package(package: nil, script_env: {})
     [package, script_env]
   end
+end
 end
 RUBY
 
@@ -494,16 +504,33 @@ expect_bridge_failure() {
   }
 }
 
+expect_support_runtime_failure() {
+  local label="$1" expected="$2"
+  if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core support-only \
+    --tier2-bridge-json >"$TMP_ROOT/$label.out" 2>"$TMP_ROOT/$label.err"; then
+    echo "test-homebrew-formula-runtime-closure.sh: accepted invalid support runtime: $label" >&2
+    exit 1
+  fi
+  grep -F "$expected" "$TMP_ROOT/$label.err" >/dev/null || {
+    cat "$TMP_ROOT/$label.err" >&2
+    echo "test-homebrew-formula-runtime-closure.sh: wrong support-runtime rejection: $label" >&2
+    exit 1
+  }
+}
+
 write_valid_bridge_formula
+printf 'omega\n' >"$TAP_ROOT/Kandelo/formula_support/z-runtime.txt"
+printf 'alpha\n' >"$TAP_ROOT/Kandelo/formula_support/a-runtime.txt"
 bridge_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge --tier2-bridge-json)"
 jq -e '
-  keys == ["formula", "formula_sha256", "full_name", "schema", "support_sha256", "tap", "tier2_bridge"] and
-  .schema == 1 and
+  keys == ["formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tier2_bridge"] and
+  .schema == 2 and
   .tap == "kandelo-dev/tap-core" and
   .formula == "bridge" and
   .full_name == "kandelo-dev/tap-core/bridge" and
   (.formula_sha256 | test("^[0-9a-f]{64}$")) and
   (.support_sha256 | test("^[0-9a-f]{64}$")) and
+  (.support_runtime_sha256 | test("^[0-9a-f]{64}$")) and
   .tier2_bridge == {
     package: "bridge",
     script_env_keys: ["WASM_POSIX_DEP_ZLIB_DIR"],
@@ -512,7 +539,11 @@ jq -e '
     version: "1.2.3"
   }
 ' <<<"$bridge_plan" >/dev/null
+[ "$(jq -r '.support_runtime_sha256' <<<"$bridge_plan")" = \
+  "f4268a4e34b7fc2fc3ec46466e656eb6b917bd451d77cbfffdafe2a08e8924a4" ]
 [ "$bridge_plan" = "$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge --tier2-bridge-json)" ]
+rm "$TAP_ROOT/Kandelo/formula_support/a-runtime.txt" \
+  "$TAP_ROOT/Kandelo/formula_support/z-runtime.txt"
 
 write_mapped_bridge_formula
 mapped_bridge_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge --tier2-bridge-json)"
@@ -550,6 +581,7 @@ expect_bridge_failure formula-env-for-mapped-package \
 
 idiomatic_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core required --tier2-bridge-json)"
 jq -e '.tier2_bridge == null and .support_sha256 == null and
+  .support_runtime_sha256 == null and
   (.formula_sha256 | test("^[0-9a-f]{64}$"))' <<<"$idiomatic_plan" >/dev/null
 
 cat >"$TAP_ROOT/Formula/support-only.rb" <<'RUBY'
@@ -568,8 +600,155 @@ RUBY
 support_only_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core support-only --tier2-bridge-json)"
 jq -e '.tier2_bridge == null and
   (.support_sha256 | test("^[0-9a-f]{64}$")) and
+  (.support_runtime_sha256 | test("^[0-9a-f]{64}$")) and
   (.formula_sha256 | test("^[0-9a-f]{64}$"))' \
   <<<"$support_only_plan" >/dev/null
+
+support_runtime_dir="$TAP_ROOT/Kandelo/formula_support"
+mkdir "$support_runtime_dir/test"
+printf 'tap-local test bytes\n' >"$support_runtime_dir/test/fixture.txt"
+ln -s ../kandelo_formula_support.rb "$support_runtime_dir/test/ignored-link.rb"
+test_excluded_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core support-only --tier2-bridge-json)"
+[ "$(jq -r '.support_runtime_sha256' <<<"$test_excluded_plan")" = \
+  "$(jq -r '.support_runtime_sha256' <<<"$support_only_plan")" ]
+rm "$support_runtime_dir/test/ignored-link.rb" "$support_runtime_dir/test/fixture.txt"
+rmdir "$support_runtime_dir/test"
+
+ln -s kandelo_formula_support.rb "$support_runtime_dir/runtime-link.rb"
+expect_support_runtime_failure runtime-symlink \
+  'support runtime entry must be a canonical regular file'
+rm "$support_runtime_dir/runtime-link.rb"
+
+mkdir "$support_runtime_dir/nested-runtime"
+expect_support_runtime_failure runtime-directory \
+  'support runtime entry must be a canonical regular file'
+rmdir "$support_runtime_dir/nested-runtime"
+
+ln -s . "$support_runtime_dir/test"
+expect_support_runtime_failure test-symlink \
+  'support test path must be a real directory'
+rm "$support_runtime_dir/test"
+
+printf 'invalid name\n' >"$support_runtime_dir/runtime helper.txt"
+expect_support_runtime_failure runtime-name \
+  'support runtime entry must be a canonical regular file'
+rm "$support_runtime_dir/runtime helper.txt"
+
+for ((index = 1; index <= 127; index++)); do
+  touch "$support_runtime_dir/$(printf 'count-%03d.txt' "$index")"
+done
+count_boundary_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core support-only --tier2-bridge-json)"
+jq -e '(.support_runtime_sha256 | test("^[0-9a-f]{64}$"))' \
+  <<<"$count_boundary_plan" >/dev/null
+touch "$support_runtime_dir/count-128.txt"
+expect_support_runtime_failure runtime-file-count \
+  'support runtime exceeds 128 files'
+for ((index = 1; index <= 128; index++)); do
+  rm "$support_runtime_dir/$(printf 'count-%03d.txt' "$index")"
+done
+
+ruby - "$support_runtime_dir/exact-file.bin" 1048576 <<'RUBY'
+path, size = ARGV
+File.open(path, "wb") { |file| file.truncate(Integer(size, 10)) }
+RUBY
+file_size_boundary_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core support-only --tier2-bridge-json)"
+jq -e '(.support_runtime_sha256 | test("^[0-9a-f]{64}$"))' \
+  <<<"$file_size_boundary_plan" >/dev/null
+ruby - "$support_runtime_dir/exact-file.bin" 1048577 <<'RUBY'
+path, size = ARGV
+File.open(path, "wb") { |file| file.truncate(Integer(size, 10)) }
+RUBY
+expect_support_runtime_failure runtime-file-bytes \
+  'support runtime exceeds the byte limit'
+rm "$support_runtime_dir/exact-file.bin"
+
+ruby - "$support_runtime_dir" <<'RUBY'
+support_dir = ARGV.fetch(0)
+15.times do |index|
+  File.open(File.join(support_dir, format("aggregate-%02d.bin", index)), "wb") do |file|
+    file.truncate(1_048_576)
+  end
+end
+support_bytes = File.size(File.join(support_dir, "kandelo_formula_support.rb"))
+File.open(File.join(support_dir, "aggregate-15.bin"), "wb") do |file|
+  file.truncate(1_048_576 - support_bytes)
+end
+RUBY
+aggregate_boundary_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core support-only --tier2-bridge-json)"
+jq -e '(.support_runtime_sha256 | test("^[0-9a-f]{64}$"))' \
+  <<<"$aggregate_boundary_plan" >/dev/null
+printf x >"$support_runtime_dir/aggregate-over.bin"
+expect_support_runtime_failure runtime-aggregate-bytes \
+  'support runtime exceeds the byte limit'
+rm "$support_runtime_dir/aggregate-over.bin"
+for ((index = 0; index <= 15; index++)); do
+  rm "$support_runtime_dir/$(printf 'aggregate-%02d.bin' "$index")"
+done
+
+mkdir -p "$DEPENDENCY_TAP_ROOT/Kandelo/formula_support"
+cp "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb" \
+  "$DEPENDENCY_TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+printf 'export const reviewed = true;\n' \
+  >"$TAP_ROOT/Kandelo/formula_support/run-browser-wasm.ts"
+cp "$TAP_ROOT/Kandelo/formula_support/run-browser-wasm.ts" \
+  "$DEPENDENCY_TAP_ROOT/Kandelo/formula_support/run-browser-wasm.ts"
+mkdir -p "$TAP_ROOT/Kandelo/formula_support/test" \
+  "$DEPENDENCY_TAP_ROOT/Kandelo/formula_support/test"
+printf 'primary tap-local test\n' \
+  >"$TAP_ROOT/Kandelo/formula_support/test/tap-local.txt"
+printf 'dependency tap-local test\n' \
+  >"$DEPENDENCY_TAP_ROOT/Kandelo/formula_support/test/tap-local.txt"
+cat >"$TAP_ROOT/Formula/m4.rb" <<'RUBY'
+require (Tap.fetch("acme", "tools").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
+class M4 < Formula
+  include KandeloFormulaSupport
+
+  depends_on "kandelo-dev/tap-core/dash"
+end
+RUBY
+cat >"$DEPENDENCY_TAP_ROOT/Formula/dash.rb" <<'RUBY'
+require (Tap.fetch("kandelo-dev", "tap-core").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
+class Dash < Formula
+  include KandeloFormulaSupport
+
+  bottle do
+    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    sha256 cellar: :any, wasm32_kandelo: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  end
+end
+RUBY
+identical_support_direct="$(
+  KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$RESOLVED_TAPS" \
+    ruby "$resolver" "$TAP_ROOT" acme/tools m4 --direct
+)"
+[ "$identical_support_direct" = "kandelo-dev/tap-core/dash" ]
+printf 'export const dependencyDrift = true;\n' \
+  >>"$DEPENDENCY_TAP_ROOT/Kandelo/formula_support/run-browser-wasm.ts"
+if KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$RESOLVED_TAPS" \
+  ruby "$resolver" "$TAP_ROOT" acme/tools m4 --direct \
+    >"$TMP_ROOT/cross-support-runtime-drift.out" \
+    2>"$TMP_ROOT/cross-support-runtime-drift.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: accepted divergent cross-tap support runtime" >&2
+  exit 1
+fi
+grep -F 'Kandelo Formula support API or runtime-tree bytes differ across the immutable tap closure' \
+  "$TMP_ROOT/cross-support-runtime-drift.err" >/dev/null
+cp "$TAP_ROOT/Kandelo/formula_support/run-browser-wasm.ts" \
+  "$DEPENDENCY_TAP_ROOT/Kandelo/formula_support/run-browser-wasm.ts"
+printf '# incompatible support copy\n' \
+  >>"$DEPENDENCY_TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+if KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$RESOLVED_TAPS" \
+  ruby "$resolver" "$TAP_ROOT" acme/tools m4 --direct \
+    >"$TMP_ROOT/cross-support-drift.out" 2>"$TMP_ROOT/cross-support-drift.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: accepted divergent cross-tap support" >&2
+  exit 1
+fi
+grep -F 'Kandelo Formula support API or runtime-tree bytes differ across the immutable tap closure' \
+  "$TMP_ROOT/cross-support-drift.err" >/dev/null
+cp "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb" \
+  "$DEPENDENCY_TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
 
 cp "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb" "$TMP_ROOT/package-keyword-support.rb"
 sed -i.bak 's/package: nil, script_env: {}/script_env: {}/' \
@@ -589,8 +768,6 @@ cp "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb" "$TMP_ROOT/run
 ruby - "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb" <<'RUBY'
 path = ARGV.fetch(0)
 source = File.binread(path)
-source.sub!(%Q(require "digest"\n), "") or abort "missing digest import"
-source.sub!(%Q(require "pathname"\n), "") or abort "missing pathname import"
 initializer = "  def self.kandelo_load_tier2_runtime!\n" \
               "    support_path = Pathname(__FILE__).realpath\n" \
               "    support_path.freeze\n" \
@@ -599,12 +776,14 @@ initializer = "  def self.kandelo_load_tier2_runtime!\n" \
 source.sub!(initializer, "") or abort "missing runtime initializer pair"
 File.binwrite(path, source)
 RUBY
-legacy_support_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core support-only --tier2-bridge-json)"
-jq -e '.tier2_bridge == null and
-  (.support_sha256 | test("^[0-9a-f]{64}$"))' <<<"$legacy_support_plan" >/dev/null
-write_valid_bridge_formula
-expect_bridge_failure legacy-support-bridge \
-  'Formula bridge requires canonical Tier-2 runtime authority'
+if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core support-only \
+  --tier2-bridge-json >"$TMP_ROOT/support-without-runtime.out" \
+  2>"$TMP_ROOT/support-without-runtime.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: accepted API-v1 support without runtime authority" >&2
+  exit 1
+fi
+grep -F 'must initialize Tier-2 runtime authority exactly once' \
+  "$TMP_ROOT/support-without-runtime.err" >/dev/null
 cp "$TMP_ROOT/runtime-support.rb" "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
 
 write_bridge_formula_with_env_shape exact
@@ -815,6 +994,21 @@ rm "$TAP_ROOT/Formula/bridge.rb.bak"
 expect_bridge_failure helper-shadow 'unsupported or duplicate instance method "kandelo_build_package"'
 
 cp "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb" "$TMP_ROOT/valid-support.rb"
+sed -i.bak 's/^else$/elsif true/' "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+rm "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb.bak"
+write_valid_bridge_formula
+expect_bridge_failure support-compatibility-guard \
+  'must use the canonical idempotent compatibility guard'
+cp "$TMP_ROOT/valid-support.rb" "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+
+sed -i.bak \
+  's/^  KANDELO_FORMULA_SUPPORT_API_VERSION = 1$/  KANDELO_FORMULA_SUPPORT_API_VERSION = 2/' \
+  "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+rm "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb.bak"
+write_valid_bridge_formula
+expect_bridge_failure support-api-version 'must declare one canonical API version'
+cp "$TMP_ROOT/valid-support.rb" "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
+
 sed -i.bak 's/package: nil, script_env: {}/package: nil, **script_env/' \
   "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb"
 rm "$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb.bak"

@@ -187,6 +187,7 @@ export XDG_CONFIG_HOME="$WORK_DIR/xdg-config"
 mkdir -p "$XDG_CONFIG_HOME/homebrew"
 chmod 0700 "$XDG_CONFIG_HOME" "$XDG_CONFIG_HOME/homebrew"
 unset HOMEBREW_RELOCATE_BUILD_PREFIX
+unset HOMEBREW_KANDELO_PRIMARY_TAP_ROOT
 
 homebrew_patched_launcher_prepare \
   "$BREW_BIN" "$PATCH_FILE" "$WORK_DIR" "$PUBLISHER_ISOLATION_PATCH_FILE"
@@ -298,12 +299,16 @@ ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
   --bridge-plan "$TIER2_BRIDGE_PLAN" >"$TIER2_ATTESTATION"
 if ! jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
   --arg arch "$ARCH" '
-    keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_sha256", "tap", "tier2_bridge"] and
-    .schema == 1 and .tap == $tap and .formula == $formula and .arch == $arch and
+    keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tier2_bridge"] and
+    .schema == 2 and .tap == $tap and .formula == $formula and .arch == $arch and
     .full_name == ($tap + "/" + $formula) and
     (.formula_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
     (.support_sha256 == null or
       (.support_sha256 | type == "string" and test("^[0-9a-f]{64}$"))) and
+    (.support_runtime_sha256 == null or
+      (.support_runtime_sha256 | type == "string" and test("^[0-9a-f]{64}$"))) and
+    ((.support_sha256 == null) == (.support_runtime_sha256 == null)) and
+    (.tier2_bridge == null or .support_sha256 != null) and
     if .tier2_bridge == null then true else
       (.tier2_bridge | keys == ["build_toml_sha256", "package", "package_toml_sha256", "script", "script_env_keys", "script_sha256", "source_mode", "source_sha256", "source_url", "version"]) and
       (.tier2_bridge.package | type == "string" and test("^[a-z0-9][a-z0-9._-]{0,254}$")) and
@@ -403,6 +408,12 @@ TAPPED_TAP_ROOT="$(cd "$TAPPED_TAP_ROOT" && pwd -P)"
   echo "homebrew-bottle-build.sh: Homebrew did not clone the planned tap commit cleanly" >&2
   exit 1
 }
+# Formula resolution may load a locked dependency tap's support before it
+# loads the selected Formula's support. Keep the selected tap root as explicit
+# publisher authority instead of letting Ruby load order choose it. The
+# isolated launcher snapshots this HOMEBREW_* value into its root-owned
+# wrapper, and Homebrew preserves it across its Formula-evaluation re-execs.
+export HOMEBREW_KANDELO_PRIMARY_TAP_ROOT="$TAPPED_TAP_ROOT"
 homebrew_prune_formula_support_tests_from_tapped_clone "$TAPPED_TAP_ROOT"
 
 printf '%s\n' "$TAP_NAME" >"$ALLOWED_TARGET_TAPS"

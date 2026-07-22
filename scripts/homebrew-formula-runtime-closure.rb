@@ -15,6 +15,8 @@ end
 MAX_FORMULA_BYTES = 1_048_576
 MAX_DEPENDENCIES = 128
 MAX_TIER2_CONTROL_BYTES = 16_384
+MAX_SUPPORT_RUNTIME_FILES = 128
+MAX_SUPPORT_RUNTIME_BYTES = 16_777_216
 FORMULA_NAME = /\A[a-z0-9][a-z0-9._-]*\z/
 HOST_FORMULA_NAME = /\A[a-z0-9][a-z0-9@+_.-]*\z/
 TAP_NAME = /\A[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\z/
@@ -37,6 +39,8 @@ TIER2_BRIDGE_METHOD = "kandelo_build_package"
 TIER2_BRIDGE_MARKER = "KANDELO_REGISTRY_BRIDGE"
 TIER2_RUNTIME_INITIALIZER_METHOD = "kandelo_load_tier2_runtime!"
 TIER2_RUNTIME_CONSTANT = "KANDELO_TIER2_RUNTIME"
+FORMULA_SUPPORT_API_VERSION_CONSTANT = "KANDELO_FORMULA_SUPPORT_API_VERSION"
+FORMULA_SUPPORT_API_VERSION = 1
 TIER2_BRIDGE_PACKAGE = /\A[a-z0-9][a-z0-9._-]{0,254}\z/
 TIER2_BRIDGE_VERSION = /\A[A-Za-z0-9][A-Za-z0-9._+,-]{0,254}\z/
 TIER2_BRIDGE_SOURCE_SHA256 = /\A[0-9a-f]{64}\z/
@@ -702,7 +706,8 @@ end
 support_validated = Set.new
 support_methods_by_tap = {}
 support_sha256_by_tap = {}
-support_tier2_runtime_by_tap = {}
+support_runtime_sha256_by_tap = {}
+support_api_version_by_tap = {}
 support_tier2_package_keyword_by_tap = {}
 validate_support = lambda do |context|
   context_tap_name = context.fetch("tap_name")
@@ -720,6 +725,42 @@ validate_support = lambda do |context|
   if support_path.symlink? || !support_path.file?
     abort "Kandelo Formula support must be a regular non-symlink file: #{support_path}"
   end
+
+  # The Ruby support module dispatches neighboring shell, Perl, TypeScript,
+  # HTML, and configuration files through its lexical __dir__. Whichever tap
+  # loads the module first therefore owns this entire runtime tree, not only
+  # kandelo_formula_support.rb. Hash every publisher-consumable top-level file
+  # so cross-tap compatibility and pre-execution rescans bind the real runtime
+  # closure. Tap-local tests are deliberately excluded from bottle identity.
+  support_runtime_files = {}
+  support_runtime_bytes = 0
+  support_dir.each_child do |entry|
+    basename = entry.basename.to_s
+    if basename == "test"
+      if entry.symlink? || !entry.directory?
+        abort "Kandelo Formula support test path must be a real directory: #{entry}"
+      end
+      next
+    end
+    unless basename.match?(/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/) &&
+           entry.parent == support_dir && !entry.symlink? && entry.file?
+      abort "Kandelo Formula support runtime entry must be a canonical regular file: #{entry}"
+    end
+    if support_runtime_files.length >= MAX_SUPPORT_RUNTIME_FILES
+      abort "Kandelo Formula support runtime exceeds #{MAX_SUPPORT_RUNTIME_FILES} files: #{support_dir}"
+    end
+    entry_bytes = entry.size
+    if entry_bytes > MAX_FORMULA_BYTES ||
+       support_runtime_bytes + entry_bytes > MAX_SUPPORT_RUNTIME_BYTES
+      abort "Kandelo Formula support runtime exceeds the byte limit: #{support_dir}"
+    end
+    support_runtime_bytes += entry_bytes
+    support_runtime_files[basename] = Digest::SHA256.file(entry).hexdigest
+  end
+  unless support_runtime_files.key?(support_path.basename.to_s)
+    abort "Kandelo Formula support runtime omits its support module: #{support_dir}"
+  end
+  support_runtime_files = support_runtime_files.sort.to_h.freeze
   if support_path.size > MAX_FORMULA_BYTES
     abort "Kandelo Formula support exceeds #{MAX_FORMULA_BYTES} bytes: #{support_path}"
   end
@@ -730,12 +771,6 @@ validate_support = lambda do |context|
   support_tree = Ripper.sexp(support_source)
   abort "could not parse Kandelo Formula support: #{support_path}" if support_tree.nil?
   top_level = support_tree[1]
-  legacy_requires = [
-    "require \"fileutils\"\n",
-    "require \"json\"\n",
-    "require \"shellwords\"\n",
-    "require \"tempfile\"\n",
-  ]
   runtime_requires = [
     "require \"digest\"\n",
     "require \"fileutils\"\n",
@@ -745,19 +780,45 @@ validate_support = lambda do |context|
     "require \"tempfile\"\n",
   ]
   support_lines = support_source.lines
-  expected_requires = [runtime_requires, legacy_requires].find do |candidate|
-    top_level.is_a?(Array) && top_level.length == candidate.length + 1 &&
-      top_level.first(candidate.length).each_with_index.all? do |statement, index|
+  canonical_requires =
+    top_level.is_a?(Array) && top_level.length == runtime_requires.length + 1 &&
+      top_level.first(runtime_requires.length).each_with_index.all? do |statement, index|
         position = call_position.call(statement)
         line_number = position[0] if position.is_a?(Array)
         line = support_lines.fetch(line_number - 1, nil) if line_number.is_a?(Integer)
-        call_name.call(statement) == "require" && line == candidate[index]
+        call_name.call(statement) == "require" && line == runtime_requires[index]
       end
+  unless canonical_requires
+    abort "Kandelo Formula support must contain only approved requires, the compatibility guard, and one module: #{support_path}"
   end
-  if expected_requires.nil?
-    abort "Kandelo Formula support must contain only approved requires and one module: #{support_path}"
+  compatibility_guard = top_level.fetch(runtime_requires.length)
+  last_require_position = call_position.call(top_level.fetch(runtime_requires.length - 1))
+  guard_line = last_require_position.fetch(0) + 2 if last_require_position.is_a?(Array)
+  canonical_guard_lines = [
+    "if defined?(KandeloFormulaSupport)\n",
+    "  unless KandeloFormulaSupport::KANDELO_FORMULA_SUPPORT_API_VERSION == 1 &&\n",
+    "         Digest::SHA256.file(Pathname(__FILE__).realpath).hexdigest ==\n",
+    "           KandeloFormulaSupport::KANDELO_TIER2_RUNTIME.fetch(\"support_sha256\")\n",
+    "    raise \"loaded Kandelo Formula support copies are incompatible\"\n",
+    "  end\n",
+    "else\n",
+  ]
+  guard_constant = compatibility_guard.dig(1, 1, 1) if compatibility_guard.is_a?(Array) &&
+                                                       compatibility_guard.first == :if &&
+                                                       compatibility_guard.dig(1, 0) == :defined &&
+                                                       compatibility_guard.dig(1, 1, 0) == :var_ref
+  unless guard_constant.is_a?(Array) && guard_constant.first == :@const &&
+         guard_constant[1] == "KandeloFormulaSupport" &&
+         guard_constant.dig(2, 0) == guard_line &&
+         support_lines.slice(guard_line - 1, canonical_guard_lines.length) == canonical_guard_lines
+    abort "Kandelo Formula support must use the canonical idempotent compatibility guard: #{support_path}"
   end
-  module_node = top_level.fetch(expected_requires.length)
+  guarded_definition = compatibility_guard[3]
+  unless guarded_definition.is_a?(Array) && guarded_definition.first == :else &&
+         guarded_definition[1].is_a?(Array) && guarded_definition[1].length == 1
+    abort "Kandelo Formula support compatibility guard must own exactly one module definition: #{support_path}"
+  end
+  module_node = guarded_definition.dig(1, 0)
   module_name = module_node.dig(1, 1) if module_node.is_a?(Array) && module_node.first == :module
   unless module_name.is_a?(Array) && module_name.first == :@const && module_name[1] == "KandeloFormulaSupport"
     abort "Kandelo Formula support must define only KandeloFormulaSupport: #{support_path}"
@@ -772,6 +833,7 @@ validate_support = lambda do |context|
   methods = Set.new
   runtime_initializer_index = nil
   runtime_assignment_index = nil
+  support_api_version = nil
   tier2_package_keyword = false
   module_body.each_with_index do |statement, statement_index|
     next if statement.is_a?(Array) && statement.first == :void_stmt
@@ -935,6 +997,16 @@ validate_support = lambda do |context|
       left = statement[1]
       constant = left.dig(1) if left.is_a?(Array) && left.first == :var_field
       if constant.is_a?(Array) && constant.first == :@const &&
+         constant[1] == FORMULA_SUPPORT_API_VERSION_CONSTANT
+        line_number = constant.dig(2, 0)
+        unless support_api_version.nil? && statement[2].is_a?(Array) &&
+               statement[2].first == :@int && statement[2][1] == FORMULA_SUPPORT_API_VERSION.to_s &&
+               support_lines.fetch(line_number - 1, nil) ==
+                 "  #{FORMULA_SUPPORT_API_VERSION_CONSTANT} = #{FORMULA_SUPPORT_API_VERSION}\n"
+          abort "Kandelo Formula support must declare one canonical API version: #{support_path}"
+        end
+        support_api_version = FORMULA_SUPPORT_API_VERSION
+      elsif constant.is_a?(Array) && constant.first == :@const &&
          constant[1] == TIER2_RUNTIME_CONSTANT
         unless runtime_assignment_index.nil? &&
                canonical_tier2_runtime_assignment.call(statement, support_lines)
@@ -949,17 +1021,22 @@ validate_support = lambda do |context|
       abort "Kandelo Formula support contains executable module structure: #{support_path}"
     end
   end
-  runtime_capable = !runtime_initializer_index.nil? || !runtime_assignment_index.nil?
-  if runtime_capable &&
-     (runtime_initializer_index.nil? || runtime_assignment_index != runtime_initializer_index + 1)
+  if runtime_initializer_index.nil? || runtime_assignment_index != runtime_initializer_index + 1
     abort "Kandelo Formula support must initialize Tier-2 runtime authority exactly once: #{support_path}"
   end
-  if runtime_capable && expected_requires != runtime_requires
-    abort "Kandelo Formula support Tier-2 runtime initializer requires canonical imports: #{support_path}"
+  if support_api_version != FORMULA_SUPPORT_API_VERSION
+    abort "Kandelo Formula support must declare API version #{FORMULA_SUPPORT_API_VERSION}: #{support_path}"
   end
   support_methods_by_tap[context_tap_name] = methods.freeze
-  support_sha256_by_tap[context_tap_name] = Digest::SHA256.hexdigest(support_source)
-  support_tier2_runtime_by_tap[context_tap_name] = runtime_capable
+  support_sha256 = Digest::SHA256.hexdigest(support_source)
+  unless support_runtime_files.fetch(support_path.basename.to_s) == support_sha256
+    abort "Kandelo Formula support changed while its runtime tree was validated: #{support_path}"
+  end
+  support_sha256_by_tap[context_tap_name] = support_sha256
+  support_runtime_sha256_by_tap[context_tap_name] = Digest::SHA256.hexdigest(
+    JSON.generate(support_runtime_files),
+  )
+  support_api_version_by_tap[context_tap_name] = support_api_version
   support_tier2_package_keyword_by_tap[context_tap_name] = tier2_package_keyword
   support_validated.add(context_tap_name)
 end
@@ -1261,10 +1338,6 @@ parse_formula = lambda do |full_name|
        !support_tier2_package_keyword_by_tap.fetch(formula_tap_name)
       abort "Formula bridge package mapping requires canonical package: support: #{path}"
     end
-    unless support_tier2_runtime_by_tap.fetch(formula_tap_name)
-      abort "Formula bridge requires canonical Tier-2 runtime authority: #{path}"
-    end
-
     direct_literal = lambda do |command|
       candidates = class_body.select do |statement|
         statement.is_a?(Array) && statement.first == :command &&
@@ -1377,6 +1450,8 @@ parse_formula = lambda do |full_name|
   formula_tier2_bridges[full_name] = {
     "formula_sha256" => Digest::SHA256.hexdigest(source),
     "support_sha256" => included_support ? support_sha256_by_tap.fetch(formula_tap_name) : nil,
+    "support_runtime_sha256" => included_support ?
+      support_runtime_sha256_by_tap.fetch(formula_tap_name) : nil,
     "tier2_bridge" => tier2_bridge,
   }
   dependencies
@@ -1411,6 +1486,24 @@ end
 
 target_full_name = "#{tap_name}/#{target}"
 visit_formula.call(target_full_name)
+support_copies = formula_tier2_bridges.each_with_object({}) do |(full_name, record), copies|
+  support_sha256 = record.fetch("support_sha256")
+  next if support_sha256.nil?
+
+  formula_tap_name = full_name.rpartition("/").first
+  copies[formula_tap_name] = [
+    support_api_version_by_tap.fetch(formula_tap_name),
+    support_sha256,
+    support_runtime_sha256_by_tap.fetch(formula_tap_name),
+  ]
+end
+if support_copies.values.uniq.length > 1
+  details = support_copies.sort.map do |name, (version, sha256, runtime_sha256)|
+    "#{name}:v#{version}:support=#{sha256}:runtime=#{runtime_sha256}"
+  end
+  abort "Kandelo Formula support API or runtime-tree bytes differ across the immutable tap closure: " \
+        "#{details.inspect}"
+end
 short_names = [target_full_name, *closure.to_a].group_by do |full_name|
   full_name.rpartition("/").last
 end
@@ -1447,12 +1540,13 @@ if declarations_only
 elsif tier2_bridge_only
   record = formula_tier2_bridges.fetch(target_full_name)
   document = JSON.generate({
-    "schema" => 1,
+    "schema" => 2,
     "tap" => tap_name,
     "formula" => target,
     "full_name" => target_full_name,
     "formula_sha256" => record.fetch("formula_sha256"),
     "support_sha256" => record.fetch("support_sha256"),
+    "support_runtime_sha256" => record.fetch("support_runtime_sha256"),
     "tier2_bridge" => record.fetch("tier2_bridge"),
   })
   if document.bytesize > MAX_TIER2_CONTROL_BYTES

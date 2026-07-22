@@ -1495,10 +1495,27 @@ def check_publisher(workflow)
     '"tap_repository" => context.fetch("tap_repository")',
     '"tap_commit" => commit',
     '"target_taps" => immutable_target_taps',
+    'FORMULA_SUPPORT_API_VERSION = 1',
+    'MAX_SUPPORT_RUNTIME_FILES = 128',
+    'canonical_guard_lines = [',
+    'guarded_definition[1].is_a?(Array) && guarded_definition[1].length == 1',
+    'support_runtime_sha256_by_tap',
+    'JSON.generate(support_runtime_files)',
+    'support_copies.values.uniq.length > 1',
+    'Kandelo Formula support API or runtime-tree bytes differ across the immutable tap closure',
   ].each do |fragment|
     check(formula_closure.include?(fragment),
           "static Formula closure lacks immutable tap identity binding: #{fragment}")
   end
+  tier2_plan_output = formula_closure[/elsif tier2_bridge_only(.*?)elsif bottle_identity_only/m, 1]
+  check(tier2_plan_output&.include?('"schema" => 2') &&
+        !tier2_plan_output&.include?('"schema" => 1'),
+        "static Formula closure does not emit the exact Tier-2 schema-2 plan")
+  check(!formula_closure.include?("legacy_requires") &&
+        formula_closure.include?(
+          "if runtime_initializer_index.nil? || runtime_assignment_index != runtime_initializer_index + 1"
+        ),
+        "Formula support API v1 does not require canonical Tier-2 runtime authority")
   [
     'TAP_ROOT="$(cd "$TAP_ROOT" && pwd -P)"',
     'homebrew_patched_launcher_isolate "$BUILD_USER"',
@@ -1525,6 +1542,7 @@ def check_publisher(workflow)
     'log="$CONTROL_DIR/brew-install-attempt-${attempt}.log"',
     'rm -rf "$CONTROL_DIR"',
     'unset HOMEBREW_KANDELO_BOTTLE_TAG KANDELO_HOMEBREW_BOTTLE_TAG',
+    'unset HOMEBREW_KANDELO_PRIMARY_TAP_ROOT',
     'unset HOMEBREW_KANDELO_GNU_TAR',
     'HOMEBREW_KANDELO_GNU_TAR="$(command -v tar || true)"',
     'GNU_TAR_VERSION="$("$HOMEBREW_KANDELO_GNU_TAR" --version 2>/dev/null || true)"',
@@ -1539,9 +1557,12 @@ def check_publisher(workflow)
     'jq -r \'.build_and_test[]\' "$HOST_DEPENDENCY_PLAN" >"$HOST_DEPENDENCY_LIST"',
     'keys == ["build", "build_and_test", "formula", "full_name", "runtime_and_test", "schema", "tap", "target_taps"]',
     '.schema == 3',
+    'TIER2_ATTESTATION="$CONTROL_DIR/tier2-attestation.json"',
+    '.schema == 2 and .tap == $tap and .formula == $formula and .arch == $arch',
     '--slurpfile resolved "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"',
     'map({tap_name, tap_repository, tap_commit}) | sort_by(.tap_name)',
     'DEPENDENCY_TAP_ROOTS=()',
+    'export HOMEBREW_KANDELO_PRIMARY_TAP_ROOT="$TAPPED_TAP_ROOT"',
     '"$BREW_BIN" tap "$dependency_tap" "$dependency_root"',
     'DEPENDENCY_TAP_ROOTS+=("$dependency_root")',
     '"${DEPENDENCY_TAP_ROOTS[@]}"',
@@ -1780,6 +1801,9 @@ def check_publisher(workflow)
   builder_clean_clone_index = bottle_builder.index(
     'git -C "$TAPPED_TAP_ROOT" rev-parse HEAD'
   )
+  builder_primary_authority_index = bottle_builder.index(
+    'export HOMEBREW_KANDELO_PRIMARY_TAP_ROOT="$TAPPED_TAP_ROOT"'
+  )
   builder_primary_prune_index = bottle_builder.index(
     'homebrew_prune_formula_support_tests_from_tapped_clone "$TAPPED_TAP_ROOT"'
   )
@@ -1790,10 +1814,12 @@ def check_publisher(workflow)
     'homebrew_patched_launcher_isolate "$BUILD_USER"'
   )
   check(builder_tap_clone_index && builder_clean_clone_index &&
-        builder_primary_prune_index && builder_execution_rescan_index &&
+        builder_primary_authority_index && builder_primary_prune_index &&
+        builder_execution_rescan_index &&
         builder_isolate_index &&
         builder_tap_clone_index < builder_clean_clone_index &&
-        builder_clean_clone_index < builder_primary_prune_index &&
+        builder_clean_clone_index < builder_primary_authority_index &&
+        builder_primary_authority_index < builder_primary_prune_index &&
         builder_primary_prune_index < builder_execution_rescan_index &&
         builder_execution_rescan_index < builder_isolate_index,
         "reviewed bottle builder exposes support tests or prunes an unvalidated primary clone")
@@ -2164,6 +2190,13 @@ def check_publisher(workflow)
     'sysroot build root must be a real directory',
     'sysroot must be a real directory containing a regular libc archive',
     'expected_sysroot=%q',
+    'selected primary tap root must be a real directory',
+    'selected primary tap root is not one canonical tapped checkout',
+    '[ "$primary_tap_root" != "$HOMEBREW_KANDELO_PRIMARY_TAP_ROOT" ]',
+    'expected_primary_tap=%q',
+    'isolated primary tap root changed',
+    'selected primary tap is writable',
+    'target Formula can modify the selected primary tap',
     'HOMEBREW_KANDELO_SYSROOT:-}',
     'WASM_POSIX_SYSROOT:-}',
     "--property=KillMode=control-group", "--property=SendSIGKILL=yes",
@@ -2171,6 +2204,7 @@ def check_publisher(workflow)
     '"--property=BindReadOnlyPaths=$kandelo_root:$source_alias_dir/kandelo"',
     '"--property=BindReadOnlyPaths=$tap_root:$source_alias_dir/tap"',
     '"--property=BindReadOnlyPaths=$sysroot:$source_alias_dir/sysroot"',
+    '"--property=BindReadOnlyPaths=$taps_root"',
     '"--property=InaccessiblePaths=$kandelo_root"',
     '"--property=InaccessiblePaths=$tap_root"',
     '"--property=InaccessiblePaths=$output_root"',

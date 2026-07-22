@@ -153,7 +153,8 @@ case "${1:-}" in
     for target_only in KANDELO_HOMEBREW_ARCH KANDELO_HOMEBREW_KANDELO_ROOT \
       HOMEBREW_KANDELO_ABI HOMEBREW_KANDELO_ARCH HOMEBREW_KANDELO_LLVM_BIN \
       HOMEBREW_KANDELO_GNU_TAR HOMEBREW_KANDELO_NODE HOMEBREW_KANDELO_NODE_RECEIPT_PATH \
-      HOMEBREW_KANDELO_ROOT HOMEBREW_KANDELO_SYSROOT LLVM_BIN \
+      HOMEBREW_KANDELO_PRIMARY_TAP_ROOT HOMEBREW_KANDELO_ROOT \
+      HOMEBREW_KANDELO_SYSROOT LLVM_BIN \
       PLAYWRIGHT_BROWSERS_PATH WASM_POSIX_LLVM_DIR WASM_POSIX_SYSROOT; do
       [ -z "${!target_only+x}" ] || exit 1
     done
@@ -422,6 +423,12 @@ case "${1:-}" in
     if ( : >"$3/write-probe" ) 2>/dev/null; then exit 1; fi
     if ( : >"$4/write-probe" ) 2>/dev/null; then exit 1; fi
     ;;
+  assert-primary-tap-root)
+    [ "$#" -eq 2 ]
+    [ "${HOMEBREW_KANDELO_PRIMARY_TAP_ROOT:-}" = "$2" ]
+    [ "$(cd "$2" && pwd -P)" = "$2" ]
+    [ "$(cat "$2/primary-tap-marker")" = "selected primary tap" ]
+    ;;
   assert-argv)
     [ "$#" -eq 6 ]
     [ "$2" = "" ]
@@ -543,7 +550,7 @@ local_tier2_attestation="$TMPDIR/local-tier2-attestation.json"
 printf '%s\n' '{"build":[],"build_and_test":[],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","runtime_and_test":[],"schema":2,"tap":"kandelo-dev/tap-core"}' \
   >"$local_dependency_plan"
 chmod 0600 "$local_dependency_plan"
-active_tier2_attestation_json='{"arch":"wasm32","formula":"hello","formula_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","full_name":"kandelo-dev/tap-core/hello","schema":1,"support_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tap":"kandelo-dev/tap-core","tier2_bridge":{"build_toml_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","package":"hello","package_toml_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","script":"build-hello.sh","script_env_keys":[],"script_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","source_mode":"exact","source_sha256":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","source_url":"https://example.test/hello-1.0.tar.gz","version":"1.0"}}'
+active_tier2_attestation_json='{"arch":"wasm32","formula":"hello","formula_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","full_name":"kandelo-dev/tap-core/hello","schema":2,"support_runtime_sha256":"1111111111111111111111111111111111111111111111111111111111111111","support_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tap":"kandelo-dev/tap-core","tier2_bridge":{"build_toml_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","package":"hello","package_toml_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","script":"build-hello.sh","script_env_keys":[],"script_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","source_mode":"exact","source_sha256":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","source_url":"https://example.test/hello-1.0.tar.gz","version":"1.0"}}'
 printf '%s\n' "$active_tier2_attestation_json" \
   >"$local_tier2_attestation"
 chmod 0600 "$local_tier2_attestation"
@@ -1181,6 +1188,7 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   isolated_kandelo="$isolated_source_parent/kandelo"
   isolated_tap="$isolated_source_parent/tap"
   isolated_dependency_tap="$isolated_source_parent/dependency-tap"
+  isolated_primary_tap="$isolated_prefix/Library/Taps/kandelo-dev/homebrew-tap-core"
   isolated_output="$isolated_source_parent/output"
   isolated_sysroot_private_parent="$ISOLATION_ROOT/private-sysroot-owner"
   isolated_sysroot_owner="$isolated_sysroot_private_parent/sysroot-build"
@@ -1197,6 +1205,7 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   mkdir -p "$isolated_repo/bin" "$isolated_prefix/bin" "$isolated_work" \
     "$isolated_cache" "$isolated_temp" "$isolated_kandelo" "$isolated_tap" \
     "$isolated_dependency_tap" "$isolated_output" "$isolated_native_base" \
+    "$isolated_primary_tap" \
     "$external_cellar" "$external_opt" \
     "$isolated_private_bottle_dir" "$isolated_shared_temp" "$isolated_sysroot/lib"
   chmod 0711 "$isolated_native_base"
@@ -1211,6 +1220,7 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   printf 'reviewed source\n' >"$isolated_kandelo/source-marker"
   printf 'reviewed tap\n' >"$isolated_tap/tap-marker"
   printf 'reviewed dependency tap\n' >"$isolated_dependency_tap/tap-marker"
+  printf 'selected primary tap\n' >"$isolated_primary_tap/primary-tap-marker"
   printf 'reviewed sysroot\n' >"$isolated_sysroot/lib/libc.a"
   printf 'target work\n' >"$isolated_work/target-work-marker"
   printf 'external target untouched\n' >"$external_cellar/sentinel"
@@ -1259,6 +1269,7 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   export KANDELO_HOMEBREW_GETENT_BIN=/usr/bin/getent
   export KANDELO_HOMEBREW_PGREP_BIN=/usr/bin/pgrep
   export KANDELO_HOMEBREW_PKILL_BIN=/usr/bin/pkill
+  export HOMEBREW_KANDELO_PRIMARY_TAP_ROOT="$isolated_primary_tap"
   HOMEBREW_KANDELO_GNU_TAR="$(command -v tar)"
   export HOMEBREW_KANDELO_GNU_TAR
   [[ "$HOMEBREW_KANDELO_GNU_TAR" =~ ^/nix/store/[0-9a-z]{32}-gnutar-[^/]+/bin/tar$ ]] ||
@@ -1432,6 +1443,9 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
     "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/sysroot" \
     "$isolated_kandelo" "$isolated_tap" "$isolated_output" "$isolated_sysroot_owner" \
     "$isolated_dependency_tap"
+  HOMEBREW_KANDELO_PRIMARY_TAP_ROOT=caller-poison \
+    "$HOMEBREW_PATCHED_BREW_BIN" assert-primary-tap-root \
+      "$isolated_primary_tap"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-argv \
     "" "with spaces" '$dollar' '%percent' $'line one\nline two'
   "$HOMEBREW_PATCHED_BREW_BIN" assert-bottle-tags "" ""
