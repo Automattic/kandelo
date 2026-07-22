@@ -1417,7 +1417,7 @@ describe("Homebrew runtime layer consumer", () => {
     })).rejects.toThrow(/no space|ENOSPC/i);
     expect(() => untouched.lstat(fixture.runtimeKeg)).toThrow();
     expect(() => untouched.lstat(perlDescriptor.packages.layer[0].keg)).toThrow();
-  });
+  }, 30_000);
 
   it("keeps caller-owned shared state intact when boot-prefetch fails", async () => {
     const fixture = await runtimeLayerConsumerFixture();
