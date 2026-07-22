@@ -16,6 +16,10 @@ on:
       - 'package.json'
       - 'package-lock.json'
 
+concurrency:
+  group: kandelo-gh-pages
+  cancel-in-progress: false
+
 jobs:
   deploy-docs:
     runs-on: ubuntu-latest
@@ -73,7 +77,6 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: docs-site/.vitepress/dist
           destination_dir: guide
-          keep_files: true
 
       - name: Install API dependencies
         if: steps.changes.outputs.api_docs == 'true'
@@ -97,4 +100,3 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: host/docs
           destination_dir: api
-          keep_files: true
