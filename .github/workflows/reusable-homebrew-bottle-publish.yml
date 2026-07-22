@@ -3167,6 +3167,13 @@ jobs:
           acceptance_root="$RUNNER_TEMP/homebrew-vfs-acceptance"
           runtime_layer="$acceptance_root/kandelo-homebrew-${KANDELO_HOMEBREW_FORMULA}-layer.bin"
           runtime_layer_descriptor="$acceptance_root/kandelo-homebrew-${KANDELO_HOMEBREW_FORMULA}-layer.json"
+          dependency_tap_args=()
+          while IFS=$'\t' read -r dependency_tap dependency_root; do
+            [ -n "$dependency_tap" ] && [ -n "$dependency_root" ] || continue
+            dependency_tap_args+=(--dependency-tap-root \
+              "$dependency_tap=$dependency_root")
+          done < <(jq -r '.dependencies[] | [.tap_name, .root] | @tsv' \
+            "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE")
           python3 kandelo-postverify/scripts/homebrew-vfs-release.py prepare \
             --image "$acceptance_root/homebrew-brewfile.vfs.zst" \
             --report "$acceptance_root/homebrew-brewfile-report.json" \
@@ -3175,6 +3182,7 @@ jobs:
             --lazy-layer "$runtime_layer" \
             --lazy-layer-descriptor "$runtime_layer_descriptor" \
             --tap-root "$GITHUB_WORKSPACE/tap-postverify" \
+            "${dependency_tap_args[@]}" \
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT" \
@@ -3595,9 +3603,20 @@ jobs:
           path: tap-base
           fetch-depth: 0
 
+      - name: Checkout exact public core dependency tap for VFS publication
+        if: ${{ needs.plan.outputs.core-dependency-tap-sha != '' }}
+        shell: bash
+        env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+        run: |
+          /usr/bin/bash kandelo/scripts/homebrew-checkout-public-tap.sh \
+            kandelo-dev/homebrew-tap-core "$CORE_TAP_SHA" \
+            "$GITHUB_WORKSPACE/dependency-taps/core"
+
       - name: Verify VFS release source snapshots
         shell: bash
         env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
           TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
         run: |
@@ -3614,6 +3633,14 @@ jobs:
           [ -z "$(git -C tap-base status --short --untracked-files=all)" ] || {
             echo "::error::VFS source tap is dirty"; exit 2;
           }
+          if [ -n "$CORE_TAP_SHA" ]; then
+            [ "$(git -C dependency-taps/core rev-parse HEAD)" = "$CORE_TAP_SHA" ] || {
+              echo "::error::VFS core dependency tap differs from the plan"; exit 2;
+            }
+            [ -z "$(git -C dependency-taps/core status --short --untracked-files=all)" ] || {
+              echo "::error::VFS core dependency tap is dirty"; exit 2;
+            }
+          fi
 
       - name: Download exact browser-proven VFS release handoff
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -3625,6 +3652,7 @@ jobs:
         id: validate-vfs-release
         shell: bash
         env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
           KANDELO_HOMEBREW_ABI: ${{ needs.plan.outputs.abi }}
           KANDELO_HOMEBREW_BOTTLE_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
           KANDELO_HOMEBREW_FORMULA: ${{ needs.plan.outputs.vfs-acceptance-formula }}
@@ -3637,9 +3665,15 @@ jobs:
           [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ] || {
             echo "::error::a credential reached VFS handoff validation"; exit 2;
           }
+          dependency_tap_args=()
+          if [ -n "$CORE_TAP_SHA" ]; then
+            dependency_tap_args+=(--dependency-tap-root \
+              "kandelo-dev/tap-core=$GITHUB_WORKSPACE/dependency-taps/core")
+          fi
           python3 kandelo/scripts/homebrew-vfs-release.py validate \
             --handoff "$RUNNER_TEMP/homebrew-vfs-release-handoff" \
             --tap-root "$GITHUB_WORKSPACE/tap-base" \
+            "${dependency_tap_args[@]}" \
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT" \
@@ -3652,6 +3686,7 @@ jobs:
         id: publish-vfs-release
         shell: bash
         env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
           KANDELO_HOMEBREW_ABI: ${{ needs.plan.outputs.abi }}
           KANDELO_HOMEBREW_BOTTLE_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
           GH_TOKEN: ${{ github.token }}
@@ -3663,9 +3698,15 @@ jobs:
           STATE_LOCK_OWNER_DETAIL: public VFS release
         run: |
           set -euo pipefail
+          dependency_tap_args=()
+          if [ -n "$CORE_TAP_SHA" ]; then
+            dependency_tap_args+=(--dependency-tap-root \
+              "kandelo-dev/tap-core=$GITHUB_WORKSPACE/dependency-taps/core")
+          fi
           bash kandelo/scripts/homebrew-publish-vfs-release.sh \
             --handoff "$RUNNER_TEMP/homebrew-vfs-release-handoff" \
             --tap-root "$GITHUB_WORKSPACE/tap-base" \
+            "${dependency_tap_args[@]}" \
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT" \

@@ -381,6 +381,7 @@ async function main(): Promise<void> {
         bytes: imageBytes.byteLength,
       },
       loadBottleBytes: loadPlannedBottle,
+      compatibilityPolicy,
       runtimeLayer: {
         id: options.runtimeLayerId!,
         policy: readJsonFile(options.runtimeLayerPolicy!),
@@ -388,7 +389,13 @@ async function main(): Promise<void> {
     });
     mkdirSync(dirname(options.lazyLayerOut), { recursive: true });
     mkdirSync(dirname(options.lazyLayerDescriptor), { recursive: true });
-    writeFileSync(options.lazyLayerOut, layer.payload);
+    const rootPayload = layer.payloads.find((payload) => payload.id === options.runtimeLayerId);
+    if (rootPayload === undefined || basename(options.lazyLayerOut) !== rootPayload.asset) {
+      throw new Error("Homebrew runtime root payload does not match --lazy-layer-out");
+    }
+    for (const payload of layer.payloads) {
+      writeFileSync(join(dirname(options.lazyLayerOut), payload.asset), payload.bytes);
+    }
     writeFileSync(
       options.lazyLayerDescriptor,
       encodeHomebrewLazyLayerDescriptor(layer.descriptor),

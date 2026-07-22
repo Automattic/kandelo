@@ -36,8 +36,19 @@ export interface HomebrewLazyLayerEntry {
   path: string;
   /** Exact member name in the immutable deferred-tree payload. */
   source_path: string;
+  /**
+   * Absent only on the already-published ZIP-v1 inventory contract.
+   * Original-bottle trees distinguish decoded members from structural paths
+   * created directly from the signed descriptor.
+   */
+  materialization?:
+    | "archive"
+    | "archive-copy"
+    /** A link-manifest copy whose reviewed mode intentionally differs. */
+    | "archive-copy-mode"
+    | "descriptor";
   type: "directory" | "file" | "symlink" | "hardlink";
-  ownership: "layer" | "shared-base-directory";
+  ownership: "layer" | "shared-base-directory" | "mergeable-directory";
   mode: number;
   /** Logical guest size. Hard links repeat their canonical file's size. */
   size: number;
@@ -45,6 +56,17 @@ export interface HomebrewLazyLayerEntry {
   target?: string;
   /** Stable identity shared by one regular file and all of its hard links. */
   inode_group?: string;
+}
+
+/** Exact filesystem-member truth decoded from one immutable source object. */
+export interface HomebrewDeferredTreeSourceEntry {
+  path: string;
+  type: "directory" | "file" | "symlink" | "hardlink";
+  mode: number;
+  /** TAR/ZIP member payload size; links and directories carry zero bytes. */
+  size: number;
+  /** Exact symlink text, or canonical source member named by a hard link. */
+  target?: string;
 }
 
 export type HomebrewDeferredTreeDecoder =
@@ -67,6 +89,8 @@ export type HomebrewDeferredTreeDraftTransport =
 
 export interface HomebrewDeferredTreeDescriptor {
   id: string;
+  /** Explicit Formula ownership for a byte-identical original bottle tree. */
+  package?: string;
   activation: {
     mode: "boot-prefetch" | "first-use";
     /** Capability names explain why eager availability is required. */
@@ -90,11 +114,23 @@ export interface HomebrewDeferredTreeDescriptor {
     source_entry_count: number;
     regular_inode_count: number;
     layer_entry_count: number;
-    shared_base_directory_count: number;
+    /** Legacy schema-4 directories which must already exist in the base. */
+    shared_base_directory_count?: number;
+    /** Schema-5 directories which may be created once or merged with a real directory. */
+    mergeable_directory_count?: number;
     /** Decoder expansion bound (ZIP member bytes or complete TAR bytes). */
     expanded_bytes: number;
     /** Bytes allocated once per regular inode, excluding hard-link aliases. */
     payload_bytes: number;
+    /**
+     * Decoder-conditional original-bottle contract. Legacy ZIP descriptors
+     * omit it and retain their historical one-source-per-entry meaning.
+     */
+    source?: {
+      schema: 1;
+      kind: "homebrew-bottle-tar-gzip-v1";
+      entries: HomebrewDeferredTreeSourceEntry[];
+    };
     entries: HomebrewLazyLayerEntry[];
   };
 }
@@ -123,6 +159,13 @@ export interface HomebrewRuntimeLayerBundleAssets {
   acceptance_node_evidence: HomebrewRuntimeLayerAssetIdentity;
   acceptance_browser_evidence: HomebrewRuntimeLayerAssetIdentity;
   deferred_trees: Array<HomebrewRuntimeLayerAssetIdentity & { id: string }>;
+}
+
+/** One immutable transport object emitted by the producer. */
+export interface HomebrewLazyLayerPayload {
+  id: string;
+  asset: string;
+  bytes: Uint8Array;
 }
 
 export interface HomebrewLazyLayerPackageRecord {
@@ -155,7 +198,8 @@ export interface HomebrewLazyLayerPackageRecord {
 }
 
 interface HomebrewLazyLayerDescriptorCommon {
-  schema: 4;
+  /** Schema 4 is the exact legacy ZIP contract; schema 5 owns original bottles. */
+  schema: 4 | 5;
   arch: "wasm32" | "wasm64";
   mount_prefix: "/";
   tap: {
@@ -216,7 +260,6 @@ export interface HomebrewLazyLayerDraftDescriptor extends
 /** Closed public descriptor whose release tag is its independent bundle hash. */
 export interface HomebrewLazyLayerDescriptor extends
   HomebrewLazyLayerDescriptorCommon {
-  schema: 4;
   kind: "kandelo-homebrew-deferred-layer";
   bundle: {
     schema: 1;
@@ -294,6 +337,7 @@ export function homebrewRuntimeLayerBundleIdentityDocument(
       },
       deferred_trees: descriptor.deferred_trees.map((tree) => ({
         id: tree.id,
+        ...(tree.package === undefined ? {} : { package: tree.package }),
         activation: tree.activation,
         content: tree.content,
         transports: tree.transports.map((transport) =>
@@ -335,10 +379,50 @@ function withoutUrl(
 
 function sortJson(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortJson);
+  if (typeof value === "string") {
+    assertHomebrewCanonicalText(value);
+    return value;
+  }
   if (typeof value !== "object" || value === null) return value;
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .sort(([left], [right]) => compareHomebrewCanonicalText(left, right))
       .map(([key, item]) => [key, sortJson(item)]),
   );
+}
+
+/**
+ * Python orders Unicode strings by scalar value, while JavaScript's relational
+ * operators compare UTF-16 code units. Compare decoded scalars explicitly so
+ * canonical-json-v1 has one cross-host key order for non-BMP text.
+ */
+export function compareHomebrewCanonicalText(left: string, right: string): number {
+  assertHomebrewCanonicalText(left);
+  assertHomebrewCanonicalText(right);
+  let leftOffset = 0;
+  let rightOffset = 0;
+  while (leftOffset < left.length && rightOffset < right.length) {
+    const leftScalar = left.codePointAt(leftOffset)!;
+    const rightScalar = right.codePointAt(rightOffset)!;
+    if (leftScalar !== rightScalar) return leftScalar < rightScalar ? -1 : 1;
+    leftOffset += leftScalar > 0xffff ? 2 : 1;
+    rightOffset += rightScalar > 0xffff ? 2 : 1;
+  }
+  return leftOffset < left.length ? 1 : rightOffset < right.length ? -1 : 0;
+}
+
+export function assertHomebrewCanonicalText(value: string): void {
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index);
+    if (unit < 0xd800 || unit > 0xdfff) continue;
+    if (
+      unit <= 0xdbff && index + 1 < value.length &&
+      value.charCodeAt(index + 1) >= 0xdc00 &&
+      value.charCodeAt(index + 1) <= 0xdfff
+    ) {
+      index += 1;
+      continue;
+    }
+    throw new Error("canonical-json-v1 strings must contain only Unicode scalar values");
+  }
 }

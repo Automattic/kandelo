@@ -46,6 +46,8 @@ export interface HomebrewVfsBuildOptions {
   catalogCheckout?: HomebrewVfsCatalogCheckout;
   compatibilityPolicy?: HomebrewVfsCompatibilityPolicy;
   migrationLock?: HomebrewVfsMigrationLockBinding;
+  /** Consumer-owned aliases/profile/runtime state may be applied after lazy trees register. */
+  consumerState?: "apply" | "defer";
 }
 
 export interface HomebrewVfsMigrationLockBinding {
@@ -234,6 +236,10 @@ export async function buildHomebrewVfs(
   const selection = createSelectionReport(plan, options.selectionSource);
   const catalog = createCatalogReport(plan, options.catalogCheckout);
   const migrationLock = createMigrationLockBinding(options.migrationLock);
+  const consumerState = options.consumerState ?? "apply";
+  if (consumerState !== "apply" && consumerState !== "defer") {
+    throw new HomebrewVfsBuildError("Homebrew consumer-state mode is invalid");
+  }
   const linkResolution = resolveLinkConflicts(plan, options.compatibilityPolicy);
   const runtimeStateDeclarations = prepareRuntimeState(
     plan,
@@ -272,7 +278,7 @@ export async function buildHomebrewVfs(
       staged_symlinks: staged.symlinks,
       receipts: [...pkg.linkManifest.receipts],
       links,
-      opt_link: canonicalOptLink(pkg),
+      opt_link: homebrewCanonicalOptLink(pkg),
       ...(pkg.builtFrom === undefined ? {} : {
         built_from: {
           tap_repository: pkg.builtFrom.tapRepository,
@@ -286,13 +292,15 @@ export async function buildHomebrewVfs(
   }
 
   applyCanonicalOptLinks(fs, plan.packages);
-  const compatibilityLinks = options.compatibilityPolicy === undefined
-    ? undefined
-    : applyCompatibilityLinks(fs, plan, options.compatibilityPolicy, linkResolution);
-  if (options.writeProfile) {
-    writeProfileFragment(fs, plan);
-  }
-  const runtimeState = applyRuntimeState(fs, runtimeStateDeclarations);
+  const { compatibilityLinks, runtimeState } = consumerState === "apply"
+    ? applyHomebrewVfsConsumerStateWithResolution(
+      fs,
+      plan,
+      options,
+      linkResolution,
+      runtimeStateDeclarations,
+    )
+    : { compatibilityLinks: undefined, runtimeState: [] };
 
   const report: HomebrewVfsBuildReport = {
     schema: 1,
@@ -361,6 +369,26 @@ export async function buildHomebrewVfs(
   );
 
   return { fs, report };
+}
+
+function applyHomebrewVfsConsumerStateWithResolution(
+  fs: MemoryFileSystem,
+  plan: HomebrewVfsPlan,
+  options: HomebrewVfsBuildOptions,
+  linkResolution: HomebrewVfsLinkResolution,
+  runtimeStateDeclarations: readonly HomebrewVfsRuntimeStateDeclaration[],
+): {
+  compatibilityLinks: HomebrewVfsCompatibilityLinkReport[] | undefined;
+  runtimeState: HomebrewVfsRuntimeStateReport[];
+} {
+  const compatibilityLinks = options.compatibilityPolicy === undefined
+    ? undefined
+    : applyCompatibilityLinks(fs, plan, options.compatibilityPolicy, linkResolution);
+  if (options.writeProfile) writeProfileFragment(fs, plan);
+  return {
+    compatibilityLinks,
+    runtimeState: applyRuntimeState(fs, runtimeStateDeclarations),
+  };
 }
 
 function createCatalogReport(
@@ -497,7 +525,7 @@ function stagePackage(
   let symlinks = 0;
 
   for (const entry of entries) {
-    const targetPath = mapBottleEntryToGuestPath(pkg, entry.path);
+    const targetPath = mapHomebrewBottleEntryToGuestPath(pkg, entry.path);
     if (targetPath === null) continue;
 
     if (entry.type === "directory") {
@@ -506,7 +534,7 @@ function stagePackage(
         fail(pkg, `bottle directory ${entry.path} conflicts with existing ${targetPath}`);
       }
       ensureDirRecursive(fs, targetPath);
-      fs.chmod(targetPath, entry.mode || 0o755);
+      fs.chmod(targetPath, entry.mode);
       if (!stagedPaths.has(targetPath)) {
         stagedPaths.add(targetPath);
         directories += 1;
@@ -522,7 +550,7 @@ function stagePackage(
     stagedPaths.add(targetPath);
 
     if (entry.type === "file") {
-      writeVfsBinary(fs, targetPath, entry.data, entry.mode || 0o644);
+      writeVfsBinary(fs, targetPath, entry.data, entry.mode);
       files += 1;
     } else if (entry.type === "symlink") {
       const linkName = entry.linkName ?? "";
@@ -531,7 +559,7 @@ function stagePackage(
       symlinks += 1;
     } else {
       const targetArchivePath = entry.linkName ?? "";
-      const hardlinkTarget = mapBottleEntryToGuestPath(pkg, targetArchivePath);
+      const hardlinkTarget = mapHomebrewBottleEntryToGuestPath(pkg, targetArchivePath);
       if (
         !guestPathIsUnder(targetPath, pkg.keg) ||
         hardlinkTarget === null ||
@@ -612,7 +640,7 @@ function stageHardlinks(
 
 function validateReceipts(fs: MemoryFileSystem, pkg: HomebrewVfsPackagePlan): void {
   for (const receipt of pkg.linkManifest.receipts) {
-    const path = resolveManifestSource(pkg, receipt);
+    const path = homebrewManifestSourcePath(pkg, receipt);
     if (tryLstat(fs, path) === null) {
       fail(pkg, `receipt ${receipt} is missing after staging at ${path}`);
     }
@@ -739,7 +767,7 @@ function applyLinks(
   pkg: HomebrewVfsPackagePlan,
   resolution: HomebrewVfsLinkResolution,
 ): string[] {
-  const linkedTargets: string[] = [];
+  const applied: string[] = [];
   const seenTargets = new Set<string>();
 
   for (const entry of pkg.linkManifest.links) {
@@ -748,7 +776,7 @@ function applyLinks(
     }
     seenTargets.add(entry.target);
 
-    const sourcePath = resolveManifestSource(pkg, entry.source);
+    const sourcePath = homebrewManifestSourcePath(pkg, entry.source);
     const targetPath = joinGuestPath(pkg.prefix, entry.target);
     if (!guestPathIsUnder(targetPath, pkg.prefix)) {
       fail(pkg, `link target ${entry.target} escapes prefix ${pkg.prefix}`);
@@ -768,10 +796,10 @@ function applyLinks(
 
     ensureParentDir(fs, targetPath);
     applyLinkEntry(fs, entry, sourcePath, sourceStat, targetPath);
-    linkedTargets.push(entry.target);
+    applied.push(entry.target);
   }
 
-  return linkedTargets;
+  return applied;
 }
 
 function applyCanonicalOptLinks(
@@ -779,7 +807,7 @@ function applyCanonicalOptLinks(
   packages: readonly HomebrewVfsPackagePlan[],
 ): void {
   for (const pkg of packages) {
-    const link = canonicalOptLink(pkg);
+    const link = homebrewCanonicalOptLink(pkg);
     const optDirectory = joinGuestPath(pkg.prefix, "opt");
     const optDirectoryStat = tryLstat(fs, optDirectory);
     if (optDirectoryStat === null) {
@@ -893,7 +921,7 @@ function applyCompatibilityLinks(
     const owned = manifestOwned ?? {
       pkg,
       source: alias.source,
-      sourcePath: resolveManifestSource(pkg, alias.source),
+      sourcePath: homebrewManifestSourcePath(pkg, alias.source),
       ownership: "bottle-keg" as const,
     };
     if (new Set(alias.targets).size !== alias.targets.length) {
@@ -1165,7 +1193,9 @@ function pathDepth(path: string): number {
   return path.split("/").length;
 }
 
-function canonicalOptLink(pkg: HomebrewVfsPackagePlan): HomebrewVfsOptLinkReport {
+export function homebrewCanonicalOptLink(
+  pkg: HomebrewVfsPackagePlan,
+): HomebrewVfsOptLinkReport {
   const path = `opt/${pkg.name}`;
   const targetPath = joinGuestPath(pkg.prefix, path);
   const target = relativeGuestPath(dirnameGuestPath(targetPath), pkg.keg);
@@ -1231,7 +1261,10 @@ function writeProfileFragment(fs: MemoryFileSystem, plan: HomebrewVfsPlan): void
   );
 }
 
-function mapBottleEntryToGuestPath(pkg: HomebrewVfsPackagePlan, entryPath: string): string | null {
+export function mapHomebrewBottleEntryToGuestPath(
+  pkg: HomebrewVfsPackagePlan,
+  entryPath: string,
+): string | null {
   const payloadRoot = trimSlashes(pkg.payloadRoot);
   if (entryPath === payloadRoot) return null;
   if (entryPath.startsWith(`${payloadRoot}/`)) {
@@ -1244,7 +1277,10 @@ function mapBottleEntryToGuestPath(pkg: HomebrewVfsPackagePlan, entryPath: strin
   return joinGuestPath(pkg.keg, entryPath);
 }
 
-function resolveManifestSource(pkg: HomebrewVfsPackagePlan, source: string): string {
+export function homebrewManifestSourcePath(
+  pkg: HomebrewVfsPackagePlan,
+  source: string,
+): string {
   if (source === "Cellar" || source.startsWith("Cellar/")) {
     return joinGuestPath(pkg.prefix, source);
   }

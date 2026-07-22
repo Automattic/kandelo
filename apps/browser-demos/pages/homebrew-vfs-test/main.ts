@@ -52,10 +52,16 @@ interface LazyVfsAcceptanceResult {
 interface PackageLayerBootRequest {
   baseVfsUrl: string;
   descriptor: BootDescriptor;
+  inspect?: {
+    statPaths: string[];
+    readdirPaths: string[];
+  };
 }
 
 interface PackageLayerBootResult {
   layerIds: string[];
+  stats: Array<{ path: string; mode: number; size: number }>;
+  directories: Array<{ path: string; names: string[] }>;
 }
 
 interface PackageLayerExecRequest {
@@ -307,6 +313,24 @@ async function init(): Promise<void> {
         },
       });
       trackTransientImageBuffer(composed.fs.sharedBuffer);
+      const stats = (request.inspect?.statPaths ?? []).map((path) => {
+        const stat = composed.fs.stat(path);
+        return { path, mode: stat.mode, size: stat.size };
+      });
+      const directories = (request.inspect?.readdirPaths ?? []).map((path) => {
+        const handle = composed.fs.opendir(path);
+        const names: string[] = [];
+        try {
+          for (;;) {
+            const entry = composed.fs.readdir(handle);
+            if (entry === null) break;
+            names.push(entry.name);
+          }
+        } finally {
+          composed.fs.closedir(handle);
+        }
+        return { path, names: names.sort() };
+      });
       const output = { stdout: "", stderr: "" };
       kernel = new BrowserKernel({
         kernelOwnedFs: true,
@@ -322,7 +346,11 @@ async function init(): Promise<void> {
         vfsImage: await finalizeKernelOwnedImage(composed.fs),
       });
       packageLayerMachine = { kernel, output };
-      return { layerIds: composed.layers.map((layer) => layer.id) };
+      return {
+        layerIds: composed.layers.map((layer) => layer.id),
+        stats,
+        directories,
+      };
     } catch (error) {
       if (kernel) await kernel.destroy().catch(() => {});
       await settleWebKitReclaim();

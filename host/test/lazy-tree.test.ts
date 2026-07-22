@@ -6,6 +6,7 @@ import {
   type LazyTreeActivation,
   type LazyTreeRegistrationEntry,
 } from "../src/vfs/memory-fs";
+import { VFS_DEFERRED_TREE_LIMITS } from "../src/vfs/deferred-tree-limits";
 
 const BLOCK = 512;
 const encoder = new TextEncoder();
@@ -20,6 +21,103 @@ interface TarSpec {
 }
 
 describe("format-neutral deferred trees", () => {
+  it("keeps public deferred-tree bounds reloadable and accounts for pending base usage", async () => {
+    const fixture = tarTreeFixture("first-use");
+    const fs = createFs();
+    fs.registerLazyTree(fixture.content, fixture.inventory, "/", fixture.activation);
+    const pending = fs.pendingDeferredTreeUsage();
+
+    expect(pending).toEqual({
+      groups: 1,
+      archiveBytes: fixture.content.bytes,
+      expandedBytes: fixture.content.expandedBytes,
+      payloadBytes: 7,
+      entries: fixture.inventory.length,
+    });
+    expect(() => fs.assertCanAppendDeferredTreeUsage({
+      groups: VFS_DEFERRED_TREE_LIMITS.maxGroups,
+      archiveBytes: 0,
+      expandedBytes: 0,
+      payloadBytes: 0,
+      entries: 0,
+    })).toThrow(/group cap|groups exceed/);
+    expect(() => fs.assertCanAppendDeferredTreeUsage({
+      groups: 0,
+      archiveBytes:
+        VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes - pending.archiveBytes + 1,
+      expandedBytes: 0,
+      payloadBytes: 0,
+      entries: 0,
+    })).toThrow(/archive-byte cap/);
+    expect(() => fs.assertCanAppendDeferredTreeUsage({
+      groups: 0,
+      archiveBytes: 0,
+      expandedBytes: 0,
+      payloadBytes: 0,
+      entries: VFS_DEFERRED_TREE_LIMITS.maxEntries - pending.entries + 1,
+    })).toThrow(/entry-count cap/);
+
+    const oversized = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+    for (const root of ["archive-a", "archive-b"]) {
+      const tree = tarTreeFixture("first-use", root);
+      oversized.registerLazyTree({
+        ...tree.content,
+        bytes: Math.floor(VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes / 2) + 1,
+      }, tree.inventory, "/", tree.activation);
+    }
+    await expect(oversized.saveImage()).rejects.toThrow(/archive-byte cap/);
+  });
+
+  it("refuses to register a 513th pending group and round-trips the exact boundary", async () => {
+    const fixture = tarTreeFixture("first-use");
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(64 * 1024 * 1024));
+    const registration = (index: number) => {
+      const root = `group-${index.toString().padStart(3, "0")}`;
+      return {
+        content: {
+          ...fixture.content,
+          transports: [`https://example.invalid/${root}.tar.gz`],
+        },
+        inventory: fixture.inventory.map((entry) => ({
+          ...entry,
+          vfsPath: entry.vfsPath.replace("/runtime", `/${root}`),
+          sourcePath: entry.sourcePath.replace("runtime", root),
+          ...(entry.target === undefined
+            ? {}
+            : { target: entry.target.replace("/runtime", `/${root}`) }),
+          ...(entry.inodeGroup === undefined
+            ? {}
+            : { inodeGroup: entry.inodeGroup.replace("runtime", root) }),
+        })),
+        activation: {
+          mode: "first-use" as const,
+          capabilities: [`test:${root}`],
+          roots: [`/${root}`],
+        },
+      };
+    };
+    for (let index = 0; index < VFS_DEFERRED_TREE_LIMITS.maxGroups; index += 1) {
+      const tree = registration(index);
+      fs.registerLazyTree(tree.content, tree.inventory, "/", tree.activation);
+    }
+    expect(fs.pendingDeferredTreeUsage().groups).toBe(
+      VFS_DEFERRED_TREE_LIMITS.maxGroups,
+    );
+    const image = await fs.saveImage();
+    expect(MemoryFileSystem.fromImage(image).pendingDeferredTreeUsage().groups).toBe(
+      VFS_DEFERRED_TREE_LIMITS.maxGroups,
+    );
+
+    const extra = registration(VFS_DEFERRED_TREE_LIMITS.maxGroups);
+    expect(() => fs.registerLazyTree(
+      extra.content,
+      extra.inventory,
+      "/",
+      extra.activation,
+    )).toThrow(/Cannot register another lazy archive group/);
+    expect(() => fs.lstat(`/${extra.activation.roots[0]!.slice(1)}`)).toThrow();
+  });
+
   it("accepts the filesystem root as the default first-use activation root", () => {
     const fixture = tarTreeFixture("first-use");
     const fs = createFs();
@@ -84,6 +182,50 @@ describe("format-neutral deferred trees", () => {
     await expect(fs.preparePath("/runtime/tool")).resolves.toBe(true);
     expect(fetcher.mock.calls.map(([url]) => url)).toEqual([primary, mirror]);
     expect(readText(fs, "/runtime/tool")).toBe("payload");
+  });
+
+  it("accepts every exact public activation and transport boundary", () => {
+    const fixture = tarTreeFixture("first-use");
+    const capabilities = Array.from(
+      { length: VFS_DEFERRED_TREE_LIMITS.maxActivationCapabilities },
+      (_, index) => index === 0
+        ? "a".repeat(VFS_DEFERRED_TREE_LIMITS.maxActivationCapabilityBytes)
+        : `test:capability-${index.toString().padStart(2, "0")}`,
+    );
+    const roots = [
+      "/runtime",
+      ...Array.from(
+        { length: VFS_DEFERRED_TREE_LIMITS.maxActivationRoots - 1 },
+        (_, index) => `/activation-root-${index.toString().padStart(2, "0")}`,
+      ),
+    ];
+    const inventory = [
+      ...fixture.inventory,
+      ...roots.slice(1).map((root) => ({
+        vfsPath: root,
+        sourcePath: root.slice(1),
+        type: "directory" as const,
+        mode: 0o755,
+        size: 0,
+      })),
+    ];
+    const transports = Array.from(
+      { length: VFS_DEFERRED_TREE_LIMITS.maxTransportsPerTree },
+      (_, index) => `https://example.invalid/runtime-${index}.tar.gz`,
+    );
+    const fs = createFs();
+    expect(() => fs.registerLazyTree({
+      ...fixture.content,
+      sourceEntryCount: inventory.length,
+      transports,
+    }, inventory, "/", {
+      mode: "first-use",
+      capabilities,
+      roots,
+    })).not.toThrow();
+    expect(fs.exportLazyArchiveEntries()[0]?.content?.transports).toHaveLength(
+      VFS_DEFERRED_TREE_LIMITS.maxTransportsPerTree,
+    );
   });
 
   it("round-trips decoder, inventory, activation, and inode groups through an image", async () => {
@@ -238,6 +380,91 @@ describe("format-neutral deferred trees", () => {
       )
     ).toThrow(/hardlink .* invalid target/);
     expect(() => fs.lstat("/runtime")).toThrow();
+  });
+
+  it("binds original-bottle copy modes unless the link manifest explicitly overrides them", async () => {
+    const fixture = originalBottleTreeFixture();
+    const mismatched = structuredClone(fixture.inventory);
+    mismatched.find((entry) => entry.materialization === "archive-copy")!.mode = 0o644;
+    const rejected = createFs();
+
+    expect(() => rejected.registerLazyTree(
+      fixture.content,
+      mismatched,
+      "/",
+      fixture.activation,
+    )).toThrow(/archive copy .* differs from its source/);
+    expect(() => rejected.lstat("/runtime")).toThrow();
+
+    const overridden = structuredClone(fixture.inventory);
+    const copy = overridden.find((entry) => entry.materialization === "archive-copy")!;
+    copy.materialization = "archive-copy-mode";
+    copy.mode = 0o644;
+    const accepted = createFs();
+    accepted.registerLazyTree(
+      fixture.content,
+      overridden,
+      "/",
+      fixture.activation,
+    );
+    expect(accepted.exportLazyArchiveEntries()[0]?.kind)
+      .toBe("kandelo-deferred-tree-v2");
+    const restored = MemoryFileSystem.fromImage(await accepted.saveImage());
+    expect(restored.exportLazyArchiveEntries()[0]?.kind)
+      .toBe("kandelo-deferred-tree-v2");
+    const rebased = restored.rebaseToNewFileSystem(8 * 1024 * 1024);
+    expect(rebased.exportLazyArchiveEntries()[0]?.kind)
+      .toBe("kandelo-deferred-tree-v2");
+    rebased.setLazyFetcher(async () => new Response(fixture.payload));
+
+    await expect(rebased.preparePath("/runtime/tool-copy")).resolves.toBe(true);
+    expect(readText(rebased, "/runtime/tool-copy")).toBe("payload");
+    expect(rebased.stat("/runtime/tool-copy").mode & 0o777).toBe(0o644);
+  });
+
+  it("keeps legacy v1 and original-bottle v2 serialized shapes disjoint", () => {
+    const legacyFixture = tarTreeFixture("first-use");
+    const legacy = createFs();
+    legacy.registerLazyTree(
+      legacyFixture.content,
+      legacyFixture.inventory,
+      "/",
+      legacyFixture.activation,
+    );
+    const legacyV1 = structuredClone(legacy.exportLazyArchiveEntries()[0]) as any;
+    expect(legacyV1.kind).toBe("kandelo-deferred-tree-v1");
+    legacyV1.kind = "kandelo-deferred-tree-v2";
+    expect(() => MemoryFileSystem.fromExisting(legacy.sharedBuffer)
+      .importLazyArchiveEntries([legacyV1]))
+      .toThrow(/v2 requires original-bottle source metadata/);
+
+    const directFixture = originalBottleTreeFixture();
+    const direct = createFs();
+    direct.registerLazyTree(
+      directFixture.content,
+      directFixture.inventory,
+      "/",
+      directFixture.activation,
+    );
+    const directV2 = structuredClone(direct.exportLazyArchiveEntries()[0]) as any;
+    expect(directV2.kind).toBe("kandelo-deferred-tree-v2");
+    directV2.kind = "kandelo-deferred-tree-v1";
+    expect(() => MemoryFileSystem.fromExisting(direct.sharedBuffer)
+      .importLazyArchiveEntries([directV2]))
+      .toThrow(/v1 cannot contain original-bottle source metadata/);
+
+    const incompleteV2 = structuredClone(direct.exportLazyArchiveEntries()[0]) as any;
+    delete incompleteV2.content.source;
+    for (const entry of incompleteV2.inventory) delete entry.materialization;
+    incompleteV2.inventory = incompleteV2.inventory.filter(
+      (entry: any) => entry.vfsPath !== "/runtime/tool-copy",
+    );
+    incompleteV2.entries = incompleteV2.entries.filter(
+      (entry: any) => entry.vfsPath !== "/runtime/tool-copy",
+    );
+    expect(() => MemoryFileSystem.fromExisting(direct.sharedBuffer)
+      .importLazyArchiveEntries([incompleteV2]))
+      .toThrow(/v2 requires original-bottle source metadata/);
   });
 
   it("preserves ZIP inventories whose hardlinks reuse the canonical member", () => {
@@ -521,6 +748,96 @@ describe("format-neutral deferred trees", () => {
     expect(peer.exportLazyArchiveEntries()).toEqual([]);
   });
 
+  it("rejects aggregate serialized-tree resource claims before installing groups", () => {
+    const source = createFs();
+    const first = tarTreeFixture("first-use", "aggregate-first");
+    const second = tarTreeFixture("first-use", "aggregate-second");
+    source.registerLazyTree(first.content, first.inventory, "/", first.activation);
+    source.registerLazyTree(second.content, second.inventory, "/", second.activation);
+    const serialized = structuredClone(source.exportLazyArchiveEntries()) as any[];
+
+    for (const group of serialized) {
+      group.content.bytes = 128 * 1024 * 1024 + 1;
+      group.integrity.bytes = group.content.bytes;
+    }
+    const archivePeer = MemoryFileSystem.fromExisting(source.sharedBuffer);
+    expect(() => archivePeer.importLazyArchiveEntries(serialized as any))
+      .toThrow(/collection exceeds the archive-byte cap/);
+    expect(archivePeer.exportLazyArchiveEntries()).toEqual([]);
+
+    const expanded = structuredClone(source.exportLazyArchiveEntries()) as any[];
+    for (const group of expanded) {
+      group.content.expandedBytes = 128 * 1024 * 1024 + 1;
+    }
+    const expandedPeer = MemoryFileSystem.fromExisting(source.sharedBuffer);
+    expect(() => expandedPeer.importLazyArchiveEntries(expanded as any))
+      .toThrow(/collection exceeds the expansion cap/);
+    expect(expandedPeer.exportLazyArchiveEntries()).toEqual([]);
+
+    const payloadSource = createFs();
+    for (const root of ["payload-a", "payload-b"]) {
+      const fixture = originalBottleTreeFixture(root);
+      payloadSource.registerLazyTree(
+        fixture.content,
+        fixture.inventory,
+        "/",
+        fixture.activation,
+      );
+    }
+    const payload = structuredClone(payloadSource.exportLazyArchiveEntries()) as any[];
+    for (const group of payload) {
+      const largeSize = 70 * 1024 * 1024;
+      for (const sourceEntry of group.content.source.entries) {
+        if (sourceEntry.type === "file") sourceEntry.size = largeSize;
+      }
+      for (const entry of group.inventory) {
+        if (entry.type === "file" || entry.type === "hardlink") entry.size = largeSize;
+      }
+      for (const entry of group.entries) entry.size = largeSize;
+    }
+    const payloadPeer = MemoryFileSystem.fromExisting(payloadSource.sharedBuffer);
+    expect(() => payloadPeer.importLazyArchiveEntries(payload as any))
+      .toThrow(/collection exceeds the payload-byte cap/);
+    expect(payloadPeer.exportLazyArchiveEntries()).toEqual([]);
+
+    const metadataGroup = (root: string) => ({
+      kind: "kandelo-deferred-tree-v1",
+      content: {
+        ...first.content,
+        expandedBytes: 50_001,
+        sourceEntryCount: 50_001,
+        transports: [`https://example.invalid/${root}.tar.gz`],
+      },
+      inventory: Array.from({ length: 50_001 }, (_, index) => ({
+        vfsPath: `/${root}/link-${index.toString().padStart(5, "0")}`,
+        sourcePath: `${root}/link-${index.toString().padStart(5, "0")}`,
+        type: "symlink",
+        mode: 0o777,
+        size: 1,
+        target: "x",
+      })),
+      activation: {
+        mode: "first-use",
+        capabilities: [`test:${root}`],
+        roots: ["/"],
+      },
+      url: `https://example.invalid/${root}.tar.gz`,
+      mountPrefix: "/",
+      integrity: {
+        sha256: first.content.sha256,
+        bytes: first.content.bytes,
+      },
+      materialized: false,
+      entries: [],
+    });
+    const entryPeer = createFs();
+    expect(() => entryPeer.importLazyArchiveEntries([
+      metadataGroup("aggregate-a"),
+      metadataGroup("aggregate-b"),
+    ] as any)).toThrow(/collection exceeds the entry-count cap/);
+    expect(entryPeer.exportLazyArchiveEntries()).toEqual([]);
+  });
+
   it("applies the same generic-tree validator during restore and rebase", async () => {
     const fixture = tarTreeFixture("first-use");
     const source = createFs();
@@ -666,6 +983,55 @@ function tarTreeFixture(
       capabilities: [`test:${root}`],
       roots: [`/${root}`],
     } satisfies LazyTreeActivation,
+  };
+}
+
+function originalBottleTreeFixture(root = "runtime") {
+  const fixture = tarTreeFixture("first-use", root);
+  const inventory: LazyTreeRegistrationEntry[] = fixture.inventory.map((entry) => ({
+    ...entry,
+    materialization: "archive",
+  }));
+  inventory.push({
+    vfsPath: `/${root}/tool-copy`,
+    sourcePath: `${root}/tool`,
+    materialization: "archive-copy",
+    type: "file",
+    mode: 0o755,
+    size: 7,
+    inodeGroup: `${root}:tool-copy`,
+  });
+  return {
+    ...fixture,
+    content: {
+      ...fixture.content,
+      source: {
+        schema: 1 as const,
+        kind: "homebrew-bottle-tar-gzip-v1" as const,
+        entries: [
+          {
+            sourcePath: root,
+            type: "directory" as const,
+            mode: 0o755,
+            size: 0,
+          },
+          {
+            sourcePath: `${root}/tool`,
+            type: "file" as const,
+            mode: 0o755,
+            size: 7,
+          },
+          {
+            sourcePath: `${root}/tool-hardlink`,
+            type: "hardlink" as const,
+            mode: 0o755,
+            size: 0,
+            target: `${root}/tool`,
+          },
+        ],
+      },
+    },
+    inventory,
   };
 }
 

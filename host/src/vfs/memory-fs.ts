@@ -14,6 +14,10 @@ import {
 } from "./sharedfs-vendor";
 import type { ZipEntry } from "./zip";
 import { resolveHardlinkGraph } from "./hardlink-graph";
+import {
+  VFS_DEFERRED_TREE_LIMITS,
+  type VfsDeferredTreeUsage,
+} from "./deferred-tree-limits";
 
 /** Serializable lazy file entry for transfer between instances. */
 export interface LazyFileEntry {
@@ -103,6 +107,22 @@ export interface LazyTreeContent {
   sourceEntryCount: number;
   /** Byte-identical transport mirrors, tried in declared order. */
   transports: string[];
+  /** Complete source-member truth for a byte-identical original bottle. */
+  source?: LazyTreeSourceInventory;
+}
+
+export interface LazyTreeSourceEntry {
+  sourcePath: string;
+  type: "directory" | "file" | "symlink" | "hardlink";
+  mode: number;
+  size: number;
+  target?: string;
+}
+
+export interface LazyTreeSourceInventory {
+  schema: 1;
+  kind: "homebrew-bottle-tar-gzip-v1";
+  entries: LazyTreeSourceEntry[];
 }
 
 export interface LazyTreeRegistrationEntry {
@@ -110,6 +130,12 @@ export interface LazyTreeRegistrationEntry {
   vfsPath: string;
   /** Canonical member path interpreted by the selected decoder. */
   sourcePath: string;
+  /** Explicit only for the original-bottle source-inventory contract. */
+  materialization?:
+    | "archive"
+    | "archive-copy"
+    | "archive-copy-mode"
+    | "descriptor";
   type: "directory" | "file" | "symlink" | "hardlink";
   mode: number;
   /** Logical guest size; hard links repeat their canonical file's size. */
@@ -147,7 +173,10 @@ export interface LazyArchiveGroup {
 /** JSON-serializable form of LazyArchiveGroup for cross-worker transfer. */
 export interface SerializedLazyArchiveEntry {
   /** Closed wire identity; legacy snapshots without it are migration-only. */
-  kind: "kandelo-legacy-zip-v1" | "kandelo-deferred-tree-v1";
+  kind:
+    | "kandelo-legacy-zip-v1"
+    | "kandelo-deferred-tree-v1"
+    | "kandelo-deferred-tree-v2";
   content?: LazyTreeContent;
   inventory?: LazyTreeRegistrationEntry[];
   activation?: LazyTreeActivation;
@@ -242,18 +271,22 @@ const MIN_REBASE_INITIAL_BYTES = 16 * 1024 * 1024;
 const VFS_IMAGE_MAX_METADATA_BYTES = 64 * 1024;
 const VFS_IMAGE_MAX_LAZY_METADATA_BYTES = 16 * 1024 * 1024;
 const VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES = 16 * 1024 * 1024;
-const MAX_LAZY_ARCHIVE_BYTES = 256 * 1024 * 1024;
+const MAX_LAZY_ARCHIVE_BYTES = VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes;
 const MAX_BOOT_DEFERRED_TREE_CONCURRENCY = 2;
-const MAX_LAZY_TREE_ENTRIES = 100_000;
-const MAX_LAZY_TREE_GROUPS = 512;
-const MAX_LAZY_TREE_PATH_BYTES = 4096;
-const MAX_LAZY_TREE_SYMLINK_TARGET_BYTES = 65_536;
-const MAX_LAZY_TREE_STRING_BYTES = 8192;
-const MAX_LAZY_TREE_CAPABILITIES = 32;
-const MAX_LAZY_TREE_ACTIVATION_ROOTS = 64;
+const MAX_LAZY_TREE_ENTRIES = VFS_DEFERRED_TREE_LIMITS.maxEntries;
+const MAX_LAZY_TREE_GROUPS = VFS_DEFERRED_TREE_LIMITS.maxGroups;
+const MAX_LAZY_TREE_PATH_BYTES = VFS_DEFERRED_TREE_LIMITS.maxPathBytes;
+const MAX_LAZY_TREE_SYMLINK_TARGET_BYTES =
+  VFS_DEFERRED_TREE_LIMITS.maxSymlinkTargetBytes;
+const MAX_LAZY_TREE_STRING_BYTES = VFS_DEFERRED_TREE_LIMITS.maxStringBytes;
+const MAX_LAZY_TREE_CAPABILITIES =
+  VFS_DEFERRED_TREE_LIMITS.maxActivationCapabilities;
+const MAX_LAZY_TREE_ACTIVATION_ROOTS =
+  VFS_DEFERRED_TREE_LIMITS.maxActivationRoots;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const SERIALIZED_LEGACY_ARCHIVE_KIND = "kandelo-legacy-zip-v1";
-const SERIALIZED_DEFERRED_TREE_KIND = "kandelo-deferred-tree-v1";
+const SERIALIZED_DEFERRED_TREE_V1_KIND = "kandelo-deferred-tree-v1";
+const SERIALIZED_DEFERRED_TREE_V2_KIND = "kandelo-deferred-tree-v2";
 
 interface PlannedLazyArchiveEntry {
   entry: ZipEntry;
@@ -655,6 +688,9 @@ function requireLazyTreeInteger(
 }
 
 function validateLazyTreeContent(value: unknown): LazyTreeContent {
+  const initial = value as Record<string, unknown> | null;
+  const hasSource = typeof initial === "object" && initial !== null &&
+    !Array.isArray(initial) && initial.source !== undefined;
   const record = exactLazyTreeRecord(value, [
     "decoder",
     "mediaType",
@@ -663,6 +699,7 @@ function validateLazyTreeContent(value: unknown): LazyTreeContent {
     "expandedBytes",
     "sourceEntryCount",
     "transports",
+    ...(hasSource ? ["source"] : []),
   ], "Lazy tree content");
   const expectedMediaType = record.decoder === "zip-v1"
     ? "application/zip"
@@ -681,7 +718,7 @@ function validateLazyTreeContent(value: unknown): LazyTreeContent {
     record.transports,
     "Lazy tree transports",
     1,
-    8,
+    VFS_DEFERRED_TREE_LIMITS.maxTransportsPerTree,
   ).map((url, index) =>
     requireLazyTreeString(
       url,
@@ -704,6 +741,12 @@ function validateLazyTreeContent(value: unknown): LazyTreeContent {
     1,
     MAX_LAZY_TREE_ENTRIES,
   );
+  const source = hasSource
+    ? validateLazyTreeSourceInventory(record.source, record.decoder)
+    : undefined;
+  if (source !== undefined && source.entries.length !== sourceEntryCount) {
+    throw new Error("Lazy tree source inventory count differs from its content");
+  }
   return {
     decoder: record.decoder as LazyTreeDecoder,
     mediaType: expectedMediaType,
@@ -712,7 +755,186 @@ function validateLazyTreeContent(value: unknown): LazyTreeContent {
     expandedBytes,
     sourceEntryCount,
     transports,
+    ...(source === undefined ? {} : { source }),
   };
+}
+
+function summarizeSerializedDeferredTreeCollection(
+  serialized: readonly SerializedLazyArchiveEntry[],
+): VfsDeferredTreeUsage {
+  const usage: VfsDeferredTreeUsage = {
+    groups: serialized.length,
+    archiveBytes: 0,
+    expandedBytes: 0,
+    payloadBytes: 0,
+    entries: 0,
+  };
+  for (const group of serialized) {
+    if (group.content === undefined || group.inventory === undefined) continue;
+    usage.archiveBytes += group.content.bytes;
+    usage.expandedBytes += group.content.expandedBytes;
+    usage.payloadBytes += group.inventory
+      .filter((entry) => entry.type === "file")
+      .reduce((total, entry) => total + entry.size, 0);
+    usage.entries += group.inventory.length +
+      (group.content.source?.entries.length ?? 0);
+  }
+  return usage;
+}
+
+function validateDeferredTreeUsage(usage: VfsDeferredTreeUsage): void {
+  for (const [name, value] of Object.entries(usage)) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`Deferred tree ${name} usage is invalid`);
+    }
+  }
+  if (usage.groups > VFS_DEFERRED_TREE_LIMITS.maxGroups) {
+    throw new Error(
+      `Serialized lazy archive groups exceed the ` +
+        `${VFS_DEFERRED_TREE_LIMITS.maxGroups}-group cap`,
+    );
+  }
+  if (usage.archiveBytes > VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes) {
+    throw new Error("Serialized lazy tree collection exceeds the archive-byte cap");
+  }
+  if (usage.expandedBytes > VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes) {
+    throw new Error("Serialized lazy tree collection exceeds the expansion cap");
+  }
+  if (usage.payloadBytes > VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes) {
+    throw new Error("Serialized lazy tree collection exceeds the payload-byte cap");
+  }
+  if (usage.entries > VFS_DEFERRED_TREE_LIMITS.maxEntries) {
+    throw new Error("Serialized lazy tree collection exceeds the entry-count cap");
+  }
+}
+
+function validateSerializedDeferredTreeCollection(
+  serialized: readonly SerializedLazyArchiveEntry[],
+): void {
+  validateDeferredTreeUsage(summarizeSerializedDeferredTreeCollection(serialized));
+}
+
+function validateLazyTreeSourceInventory(
+  value: unknown,
+  decoder: unknown,
+): LazyTreeSourceInventory {
+  if (decoder !== "homebrew-bottle-tar-gzip-v1") {
+    throw new Error("Lazy tree source inventory is valid only for original bottles");
+  }
+  const record = exactLazyTreeRecord(
+    value,
+    ["schema", "kind", "entries"],
+    "Lazy tree source inventory",
+  );
+  if (record.schema !== 1 || record.kind !== "homebrew-bottle-tar-gzip-v1") {
+    throw new Error("Lazy tree source inventory has an unsupported identity");
+  }
+  const byPath = new Map<string, LazyTreeSourceEntry>();
+  const entries = requireLazyTreeArray(
+    record.entries,
+    "Lazy tree source entries",
+    1,
+    MAX_LAZY_TREE_ENTRIES,
+  ).map((value, index) => {
+    const initial = value as Record<string, unknown> | null;
+    const type = typeof initial === "object" && initial !== null && !Array.isArray(initial)
+      ? initial.type
+      : undefined;
+    const keys = type === "directory" || type === "file"
+      ? ["sourcePath", "type", "mode", "size"]
+      : type === "symlink" || type === "hardlink"
+        ? ["sourcePath", "type", "mode", "size", "target"]
+        : null;
+    if (keys === null) throw new Error(`Lazy tree source entry ${index} has invalid type`);
+    const entry = exactLazyTreeRecord(value, keys, `Lazy tree source entry ${index}`);
+    const sourcePath = requireCanonicalTreePath(
+      entry.sourcePath,
+      false,
+      `Lazy tree source entry ${index} path`,
+    );
+    if (byPath.has(sourcePath)) {
+      throw new Error(`Lazy tree source inventory duplicates ${sourcePath}`);
+    }
+    const mode = requireLazyTreeInteger(
+      entry.mode,
+      `Lazy tree source entry ${sourcePath} mode`,
+      0,
+      0o7777,
+    );
+    const size = requireLazyTreeInteger(
+      entry.size,
+      `Lazy tree source entry ${sourcePath} size`,
+      0,
+      MAX_LAZY_ARCHIVE_BYTES,
+    );
+    let target: string | undefined;
+    if (type === "directory" || type === "symlink" || type === "hardlink") {
+      if (size !== 0) {
+        throw new Error(`Lazy tree source ${sourcePath} has payload for ${String(type)}`);
+      }
+    }
+    if (type === "symlink") {
+      target = requireLazyTreeString(
+        entry.target,
+        `Lazy tree source symlink ${sourcePath} target`,
+        MAX_LAZY_TREE_SYMLINK_TARGET_BYTES,
+      );
+    } else if (type === "hardlink") {
+      target = requireCanonicalTreePath(
+        entry.target,
+        false,
+        `Lazy tree source hardlink ${sourcePath} target`,
+      );
+    }
+    const result: LazyTreeSourceEntry = {
+      sourcePath,
+      type: type as LazyTreeSourceEntry["type"],
+      mode,
+      size,
+      ...(target === undefined ? {} : { target }),
+    };
+    byPath.set(sourcePath, result);
+    return result;
+  });
+  const paths = entries.map((entry) => entry.sourcePath);
+  if (paths.some((path, index) => index > 0 && paths[index - 1] >= path)) {
+    throw new Error("Lazy tree source inventory is not in canonical path order");
+  }
+  return { schema: 1, kind: "homebrew-bottle-tar-gzip-v1", entries };
+}
+
+function resolveLazyTreeSourceHardlinks(
+  entries: readonly LazyTreeSourceEntry[],
+): Map<string, LazyTreeSourceEntry> {
+  const byPath = new Map(entries.map((entry) => [entry.sourcePath, entry]));
+  const canonicalByPath = new Map<string, LazyTreeSourceEntry>();
+  for (const start of entries) {
+    if (start.type !== "hardlink" || canonicalByPath.has(start.sourcePath)) continue;
+    const chain: LazyTreeSourceEntry[] = [];
+    const seen = new Set<string>();
+    let current = start;
+    let canonical: LazyTreeSourceEntry | undefined;
+    while (current.type === "hardlink") {
+      canonical = canonicalByPath.get(current.sourcePath);
+      if (canonical !== undefined) break;
+      if (seen.has(current.sourcePath)) {
+        throw new Error(`Lazy tree source hardlink cycle includes ${current.sourcePath}`);
+      }
+      seen.add(current.sourcePath);
+      chain.push(current);
+      const target = byPath.get(current.target!);
+      if (target === undefined) {
+        throw new Error(`Lazy tree source hardlink ${current.sourcePath} target is absent`);
+      }
+      if (target.type !== "file" && target.type !== "hardlink") {
+        throw new Error(`Lazy tree source hardlink ${current.sourcePath} target is not regular`);
+      }
+      current = target;
+    }
+    if (canonical === undefined) canonical = current;
+    for (const link of chain) canonicalByPath.set(link.sourcePath, canonical);
+  }
+  return canonicalByPath;
 }
 
 function requireCanonicalTreePath(
@@ -775,7 +997,7 @@ function validateLazyTreeDefinition(
     const text = requireLazyTreeString(
       capability,
       `Lazy tree activation capability ${index}`,
-      255,
+      VFS_DEFERRED_TREE_LIMITS.maxActivationCapabilityBytes,
     );
     if (!/^[a-z0-9][a-z0-9:._-]*$/.test(text)) {
       throw new Error(`Lazy tree activation capability ${index} is invalid`);
@@ -816,6 +1038,12 @@ function validateLazyTreeDefinition(
   const entries: LazyTreeRegistrationEntry[] = [];
   const byPath = new Map<string, LazyTreeRegistrationEntry>();
   const sourceEntries = new Map<string, LazyTreeRegistrationEntry>();
+  const completeSources = content.source === undefined
+    ? undefined
+    : new Map(content.source.entries.map((entry) => [entry.sourcePath, entry]));
+  const canonicalSourceByPath = content.source === undefined
+    ? undefined
+    : resolveLazyTreeSourceHardlinks(content.source.entries);
   let decodedPayloadBytes = 0;
   for (const [index, value] of rawEntries.entries()) {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -840,7 +1068,11 @@ function validateLazyTreeDefinition(
             ]
             : null;
     if (!keys) throw new Error(`Lazy tree entry ${index} has an invalid type`);
-    const record = exactLazyTreeRecord(value, keys, `Lazy tree entry ${index}`);
+    const record = exactLazyTreeRecord(
+      value,
+      [...keys, ...(completeSources === undefined ? [] : ["materialization"])],
+      `Lazy tree entry ${index}`,
+    );
     const vfsPath = requireCanonicalTreePath(
       record.vfsPath,
       true,
@@ -851,6 +1083,18 @@ function validateLazyTreeDefinition(
       false,
       `Lazy tree entry ${index} source path`,
     );
+    const materialization = completeSources === undefined
+      ? undefined
+      : record.materialization;
+    if (
+      completeSources !== undefined &&
+      materialization !== "archive" &&
+      materialization !== "archive-copy" &&
+      materialization !== "archive-copy-mode" &&
+      materialization !== "descriptor"
+    ) {
+      throw new Error(`Lazy tree entry ${vfsPath} has invalid materialization provenance`);
+    }
     if (
       mountPrefix !== "/" && vfsPath !== mountPrefix &&
       !vfsPath.startsWith(`${mountPrefix}/`)
@@ -910,27 +1154,63 @@ function validateLazyTreeDefinition(
     const entry: LazyTreeRegistrationEntry = {
       vfsPath,
       sourcePath,
+      ...(materialization === undefined ? {} : {
+        materialization: materialization as LazyTreeRegistrationEntry["materialization"],
+      }),
       type: type as LazyTreeRegistrationEntry["type"],
       mode,
       size,
       ...(target === undefined ? {} : { target }),
       ...(inodeGroup === undefined ? {} : { inodeGroup }),
     };
-    const priorSource = sourceEntries.get(sourcePath);
-    if (priorSource) {
-      if (
-        content.decoder !== "zip-v1" || entry.type !== "hardlink" ||
-        priorSource.inodeGroup !== entry.inodeGroup
-      ) {
-        throw new Error(`Lazy tree duplicates source path ${sourcePath}`);
+    if (completeSources === undefined) {
+      const priorSource = sourceEntries.get(sourcePath);
+      if (priorSource) {
+        if (
+          content.decoder !== "zip-v1" || entry.type !== "hardlink" ||
+          priorSource.inodeGroup !== entry.inodeGroup
+        ) {
+          throw new Error(`Lazy tree duplicates source path ${sourcePath}`);
+        }
+      } else {
+        if (content.decoder === "zip-v1" && entry.type === "hardlink") {
+          throw new Error(
+            `Lazy ZIP hardlink ${vfsPath} does not reuse a canonical source path`,
+          );
+        }
+        sourceEntries.set(sourcePath, entry);
+      }
+    } else if (entry.materialization === "descriptor") {
+      if (entry.type !== "directory" && entry.type !== "symlink") {
+        throw new Error(`Lazy tree descriptor entry ${vfsPath} is not structural`);
+      }
+      if (completeSources.has(sourcePath)) {
+        throw new Error(`Lazy tree descriptor entry ${vfsPath} impersonates a source member`);
       }
     } else {
-      if (content.decoder === "zip-v1" && entry.type === "hardlink") {
-        throw new Error(
-          `Lazy ZIP hardlink ${vfsPath} does not reuse a canonical source path`,
-        );
+      const source = completeSources.get(sourcePath);
+      if (source === undefined) {
+        throw new Error(`Lazy tree entry ${vfsPath} names absent source ${sourcePath}`);
       }
-      sourceEntries.set(sourcePath, entry);
+      if (
+        entry.materialization === "archive-copy" ||
+        entry.materialization === "archive-copy-mode"
+      ) {
+        if (
+          entry.type !== "file" || source.type !== "file" ||
+          entry.size !== source.size ||
+          (entry.materialization === "archive-copy" && entry.mode !== source.mode)
+        ) {
+          throw new Error(`Lazy tree archive copy ${vfsPath} differs from its source`);
+        }
+      } else if (
+        source.type !== entry.type ||
+        (entry.type === "file" && source.size !== entry.size) ||
+        (entry.type === "symlink" && source.target !== entry.target) ||
+        (entry.type !== "hardlink" && source.mode !== entry.mode)
+      ) {
+        throw new Error(`Lazy tree archive entry ${vfsPath} differs from its source`);
+      }
     }
     entries.push(entry);
     byPath.set(vfsPath, entry);
@@ -959,11 +1239,30 @@ function validateLazyTreeDefinition(
     })),
     "Lazy tree",
   );
-  if (content.sourceEntryCount !== sourceEntries.size) {
+  if (completeSources !== undefined) {
+    for (const entry of entries) {
+      if (entry.type !== "hardlink" || entry.materialization !== "archive") continue;
+      const source = completeSources.get(entry.sourcePath)!;
+      const target = byPath.get(entry.target!);
+      const regularSource = canonicalSourceByPath!.get(source.sourcePath);
+      if (
+        source.target !== target?.sourcePath ||
+        regularSource?.type !== "file" ||
+        regularSource.mode !== entry.mode ||
+        target?.mode !== entry.mode
+      ) {
+        throw new Error(`Lazy tree hardlink ${entry.vfsPath} differs from its source`);
+      }
+    }
+  }
+  if (
+    content.sourceEntryCount !==
+      (completeSources === undefined ? sourceEntries.size : completeSources.size)
+  ) {
     throw new Error("Lazy tree source entry count differs from its inventory");
   }
   if (
-    content.expandedBytes < decodedPayloadBytes ||
+    (content.source === undefined && content.expandedBytes < decodedPayloadBytes) ||
     (content.decoder === "zip-v1" && content.expandedBytes !== decodedPayloadBytes)
   ) {
     throw new Error("Lazy tree expanded byte count differs from its inventory");
@@ -1184,6 +1483,9 @@ function validateSerializedLegacyArchive(
 
 function validateSerializedGenericTree(
   value: unknown,
+  expectedKind:
+    | typeof SERIALIZED_DEFERRED_TREE_V1_KIND
+    | typeof SERIALIZED_DEFERRED_TREE_V2_KIND,
 ): SerializedLazyArchiveEntry {
   const record = exactLazyTreeRecord(value, [
     "kind",
@@ -1196,7 +1498,7 @@ function validateSerializedGenericTree(
     "materialized",
     "entries",
   ], "Serialized lazy tree");
-  if (record.kind !== SERIALIZED_DEFERRED_TREE_KIND) {
+  if (record.kind !== expectedKind) {
     throw new Error("Serialized lazy tree has an unsupported kind");
   }
   const definition = validateLazyTreeDefinition(
@@ -1205,6 +1507,16 @@ function validateSerializedGenericTree(
     record.mountPrefix,
     record.activation,
   );
+  if (
+    (expectedKind === SERIALIZED_DEFERRED_TREE_V1_KIND) !==
+      (definition.content.source === undefined)
+  ) {
+    throw new Error(
+      expectedKind === SERIALIZED_DEFERRED_TREE_V1_KIND
+        ? "Serialized deferred-tree-v1 cannot contain original-bottle source metadata"
+        : "Serialized deferred-tree-v2 requires original-bottle source metadata",
+    );
+  }
   const url = requireLazyTreeString(
     record.url,
     "Serialized lazy tree URL",
@@ -1358,7 +1670,7 @@ function validateSerializedGenericTree(
     };
   });
   return {
-    kind: SERIALIZED_DEFERRED_TREE_KIND,
+    kind: expectedKind,
     content: definition.content,
     inventory: definition.entries,
     activation: definition.activation,
@@ -2140,6 +2452,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     mountPrefix = "/",
     activationValue?: LazyTreeActivation,
   ): LazyTreeGroup {
+    this.assertCanRegisterPendingLazyArchiveGroup();
     const canonicalMountPrefix = normalizeLazyArchiveMountPrefix(mountPrefix);
     const {
       content,
@@ -2304,6 +2617,9 @@ export class MemoryFileSystem implements FileSystemBackend {
       mountPrefix,
       symlinkTargets,
     );
+    if (plannedEntries.some(({ entry }) => !entry.isDirectory && !entry.isSymlink)) {
+      this.assertCanRegisterPendingLazyArchiveGroup();
+    }
     const group: LazyArchiveGroup = {
       ...(integrity
         ? {
@@ -2410,8 +2726,11 @@ export class MemoryFileSystem implements FileSystemBackend {
         throw new Error(`Serialized lazy archive group ${index} must be an object`);
       }
       const kind = (value as Record<string, unknown>).kind;
-      if (kind === SERIALIZED_DEFERRED_TREE_KIND) {
-        return validateSerializedGenericTree(value);
+      if (
+        kind === SERIALIZED_DEFERRED_TREE_V1_KIND ||
+        kind === SERIALIZED_DEFERRED_TREE_V2_KIND
+      ) {
+        return validateSerializedGenericTree(value, kind);
       }
       if (kind === SERIALIZED_LEGACY_ARCHIVE_KIND) {
         return validateSerializedLegacyArchive(value, false);
@@ -2426,6 +2745,10 @@ export class MemoryFileSystem implements FileSystemBackend {
       }
       return validateSerializedLegacyArchive(value, true);
     });
+    validateSerializedDeferredTreeCollection([
+      ...this.serializeLazyArchiveEntries(),
+      ...serialized,
+    ]);
     const plannedGroups: LazyArchiveGroup[] = [];
     const plannedInodes = new Map<string, LazyArchiveGroup>();
     for (const s of serialized) {
@@ -2650,7 +2973,9 @@ export class MemoryFileSystem implements FileSystemBackend {
         group.inventory !== undefined && group.activation !== undefined;
       serialized.push(genericTree
         ? {
-          kind: SERIALIZED_DEFERRED_TREE_KIND,
+          kind: group.content!.source === undefined
+            ? SERIALIZED_DEFERRED_TREE_V1_KIND
+            : SERIALIZED_DEFERRED_TREE_V2_KIND,
           content: group.content,
           inventory: group.inventory,
           activation: group.activation,
@@ -2676,6 +3001,40 @@ export class MemoryFileSystem implements FileSystemBackend {
   exportLazyArchiveEntries(): SerializedLazyArchiveEntry[] {
     this.reconcileLazyIdentityState(this.fs.identityState());
     return this.serializeLazyArchiveEntries();
+  }
+
+  /** Return aggregate resources that a saved image would retain lazily. */
+  pendingDeferredTreeUsage(): VfsDeferredTreeUsage {
+    this.reconcileLazyIdentityState(this.fs.identityState());
+    return summarizeSerializedDeferredTreeCollection(
+      this.serializeLazyArchiveEntries(),
+    );
+  }
+
+  /**
+   * Prove that additional deferred-tree metadata can still be serialized and
+   * restored together with the groups already pending in this filesystem.
+   */
+  assertCanAppendDeferredTreeUsage(additional: VfsDeferredTreeUsage): void {
+    validateDeferredTreeUsage(additional);
+    const pending = this.pendingDeferredTreeUsage();
+    validateDeferredTreeUsage({
+      groups: pending.groups + additional.groups,
+      archiveBytes: pending.archiveBytes + additional.archiveBytes,
+      expandedBytes: pending.expandedBytes + additional.expandedBytes,
+      payloadBytes: pending.payloadBytes + additional.payloadBytes,
+      entries: pending.entries + additional.entries,
+    });
+  }
+
+  private assertCanRegisterPendingLazyArchiveGroup(): void {
+    const pendingGroups = this.pendingDeferredTreeUsage().groups;
+    if (pendingGroups >= VFS_DEFERRED_TREE_LIMITS.maxGroups) {
+      throw new Error(
+        `Cannot register another lazy archive group: ` +
+          `${VFS_DEFERRED_TREE_LIMITS.maxGroups} pending groups already exist`,
+      );
+    }
   }
 
   /**
@@ -2824,22 +3183,37 @@ export class MemoryFileSystem implements FileSystemBackend {
     if (!content || !inventory) {
       throw new Error("Lazy tree is missing its decoder or complete inventory");
     }
-    const expectedBySource = new Map<string, LazyTreeRegistrationEntry>();
+    const expectedBySource = new Map<string, LazyTreeSourceEntry>();
     const inventoryByPath = new Map(inventory.map((entry) => [entry.vfsPath, entry]));
-    for (const entry of inventory) {
-      if (entry.type === "hardlink") {
-        const target = inventoryByPath.get(entry.target!);
-        if (!target) throw new Error(`Lazy tree hardlink target disappeared: ${entry.target}`);
-        // The derived ZIP scaffold stores one source member per inode and
-        // reconstructs aliases from inventory. Native TAR hardlinks retain a
-        // distinct source member and are validated below.
-        if (entry.sourcePath === target.sourcePath) continue;
+    if (content.source !== undefined) {
+      for (const entry of content.source.entries) {
+        expectedBySource.set(entry.sourcePath, entry);
       }
-      const prior = expectedBySource.get(entry.sourcePath);
-      if (prior) {
-        throw new Error(`Lazy tree inventory duplicates source member ${entry.sourcePath}`);
+    } else {
+      for (const entry of inventory) {
+        if (entry.type === "hardlink") {
+          const target = inventoryByPath.get(entry.target!);
+          if (!target) throw new Error(`Lazy tree hardlink target disappeared: ${entry.target}`);
+          // The derived ZIP scaffold stores one source member per inode and
+          // reconstructs aliases from inventory. Native TAR hardlinks retain a
+          // distinct source member and are validated below.
+          if (entry.sourcePath === target.sourcePath) continue;
+        }
+        const prior = expectedBySource.get(entry.sourcePath);
+        if (prior) {
+          throw new Error(`Lazy tree inventory duplicates source member ${entry.sourcePath}`);
+        }
+        expectedBySource.set(entry.sourcePath, {
+          sourcePath: entry.sourcePath,
+          type: entry.type,
+          mode: entry.mode,
+          size: entry.size,
+          ...(entry.type === "symlink" ? { target: entry.target } : {}),
+          ...(entry.type === "hardlink"
+            ? { target: inventoryByPath.get(entry.target!)?.sourcePath }
+            : {}),
+        });
       }
-      expectedBySource.set(entry.sourcePath, entry);
     }
 
     const decoded = new Map<string, {
@@ -2871,10 +3245,7 @@ export class MemoryFileSystem implements FileSystemBackend {
           throw new Error(`Lazy ZIP tree has undeclared source member ${sourcePath}`);
         }
         expandedBytes += entry.uncompressedSize;
-        if (
-          expandedBytes > content.expandedBytes ||
-          entry.uncompressedSize !== expected.size
-        ) {
+        if (expandedBytes > content.expandedBytes || entry.uncompressedSize !== expected.size) {
           throw new Error(`Lazy ZIP tree member ${sourcePath} exceeds its inventory`);
         }
         const actualType = entry.isDirectory
@@ -2976,8 +3347,7 @@ export class MemoryFileSystem implements FileSystemBackend {
         throw new Error(`Lazy tree symlink ${sourcePath} target differs from inventory`);
       }
       if (expectedType === "hardlink") {
-        const target = inventoryByPath.get(expected.target!)!;
-        if (actual.target !== target.sourcePath) {
+        if (actual.target !== expected.target) {
           throw new Error(`Lazy tree hardlink ${sourcePath} target differs from inventory`);
         }
       }
@@ -2986,6 +3356,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     const files = new Map<string, Uint8Array>();
     for (const entry of inventory) {
       if (entry.type !== "file") continue;
+      if (entry.materialization === "descriptor") continue;
       const decodedEntry = decoded.get(entry.sourcePath);
       if (decodedEntry?.type !== "file" || !decodedEntry.data) {
         throw new Error(`Lazy tree has no file content for ${entry.sourcePath}`);
@@ -3257,6 +3628,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     }
 
     const archiveEntries = this.serializeLazyArchiveEntries();
+    validateSerializedDeferredTreeCollection(archiveEntries);
     const hasArchives = archiveEntries.length > 0;
     const archiveJson = hasArchives
       ? new TextEncoder().encode(JSON.stringify(archiveEntries))

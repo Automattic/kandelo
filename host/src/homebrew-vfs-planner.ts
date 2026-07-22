@@ -1,4 +1,6 @@
 import { ABI_VERSION } from "./generated/abi";
+import { assertHomebrewCanonicalText } from "./homebrew-lazy-layer-descriptor";
+import { HOMEBREW_RUNTIME_LAYER_LIMITS } from "./homebrew-runtime-layer-limits";
 
 export type HomebrewBottleArch = "wasm32" | "wasm64";
 export type HomebrewRuntime = "node" | "browser";
@@ -231,9 +233,7 @@ const GIT_SHA_RE = /^[0-9a-f]{40}$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const SAFE_TAP_REL_SEGMENT_RE = /^[A-Za-z0-9._@%+=:-]+$/;
 const SAFE_GUEST_REL_SEGMENT_RE = /^[A-Za-z0-9._@%+=,:\[\]-]+$/;
-const MAX_PACKAGE_NAME_BYTES = 255;
-const MAX_REQUESTED_PACKAGES = 128;
-const MAX_RESOLVED_PACKAGES = 128;
+const MAX_RESOLVED_PACKAGES = HOMEBREW_RUNTIME_LAYER_LIMITS.maxRequestedPackages;
 const MAX_METADATA_PACKAGES = 4096;
 const MAX_PACKAGE_DEPENDENCIES = 128;
 const MAX_FEDERATED_TAPS = 16;
@@ -374,10 +374,19 @@ function parseTapMetadata(value: unknown): HomebrewTapMetadata {
     parseMetadataPackage(pkg, `metadata.packages[${index}]`)
   );
 
-  const tapRepository = requiredString(metadata, "tap_repository", "metadata");
-  const tapName = requiredString(metadata, "tap_name", "metadata");
+  const tapRepository = requiredString(
+    metadata, "tap_repository", "metadata",
+    HOMEBREW_RUNTIME_LAYER_LIMITS.maxRepositoryBytes,
+  );
+  const tapName = requiredString(
+    metadata, "tap_name", "metadata",
+    HOMEBREW_RUNTIME_LAYER_LIMITS.maxRepositoryBytes,
+  );
   const tapCommit = requiredString(metadata, "tap_commit", "metadata");
-  const kandeloRepository = requiredString(metadata, "kandelo_repository", "metadata");
+  const kandeloRepository = requiredString(
+    metadata, "kandelo_repository", "metadata",
+    HOMEBREW_RUNTIME_LAYER_LIMITS.maxRepositoryBytes,
+  );
   const kandeloCommit = requiredString(metadata, "kandelo_commit", "metadata");
   if (!REPOSITORY_RE.test(tapRepository)) {
     fail(`metadata.tap_repository ${quote(tapRepository)} is not a valid owner/repository`);
@@ -415,7 +424,7 @@ function parseTapMetadata(value: unknown): HomebrewTapMetadata {
     kandelo_repository: kandeloRepository,
     kandelo_commit: kandeloCommit,
     kandelo_abi: requiredInteger(metadata, "kandelo_abi", "metadata"),
-    release_tag: requiredString(metadata, "release_tag", "metadata"),
+    release_tag: requiredString(metadata, "release_tag", "metadata", 256),
     generated_at: requiredString(metadata, "generated_at", "metadata"),
     generator: requiredString(metadata, "generator", "metadata"),
     packages,
@@ -424,7 +433,9 @@ function parseTapMetadata(value: unknown): HomebrewTapMetadata {
 
 function parseMetadataPackage(value: unknown, label: string): HomebrewMetadataPackage {
   const pkg = requireRecord(value, label);
-  const name = requiredString(pkg, "name", label);
+  const name = requiredString(
+    pkg, "name", label, HOMEBREW_RUNTIME_LAYER_LIMITS.maxPackageNameBytes,
+  );
   validatePackageName(name, `${label}.name`);
   const dependencyValues = requiredArray(pkg, "dependencies", label);
   if (dependencyValues.length > MAX_PACKAGE_DEPENDENCIES) {
@@ -448,12 +459,18 @@ function parseMetadataPackage(value: unknown, label: string): HomebrewMetadataPa
 
   return {
     name,
-    full_name: requiredString(pkg, "full_name", label),
-    version: requiredString(pkg, "version", label),
+    full_name: requiredString(
+      pkg, "full_name", label, HOMEBREW_RUNTIME_LAYER_LIMITS.maxRepositoryBytes,
+    ),
+    version: requiredString(pkg, "version", label, 256),
     formula_revision: requiredInteger(pkg, "formula_revision", label),
     bottle_rebuild: requiredInteger(pkg, "bottle_rebuild", label),
-    formula_path: requiredString(pkg, "formula_path", label),
-    formula_metadata: requiredString(pkg, "formula_metadata", label),
+    formula_path: requiredString(
+      pkg, "formula_path", label, HOMEBREW_RUNTIME_LAYER_LIMITS.maxPathBytes,
+    ),
+    formula_metadata: requiredString(
+      pkg, "formula_metadata", label, HOMEBREW_RUNTIME_LAYER_LIMITS.maxPathBytes,
+    ),
     dependencies,
     bottles,
   };
@@ -461,9 +478,13 @@ function parseMetadataPackage(value: unknown, label: string): HomebrewMetadataPa
 
 function parseDependency(value: unknown, label: string): HomebrewDependency {
   const dep = requireRecord(value, label);
-  const name = requiredString(dep, "name", label);
+  const name = requiredString(
+    dep, "name", label, HOMEBREW_RUNTIME_LAYER_LIMITS.maxPackageNameBytes,
+  );
   validatePackageName(name, `${label}.name`);
-  const fullName = optionalString(dep, "full_name", label);
+  const fullName = optionalString(
+    dep, "full_name", label, HOMEBREW_RUNTIME_LAYER_LIMITS.maxRepositoryBytes,
+  );
   if (fullName !== undefined) {
     const parsed = parseFullFormulaName(fullName, `${label}.full_name`);
     if (parsed.name !== name) {
@@ -472,7 +493,7 @@ function parseDependency(value: unknown, label: string): HomebrewDependency {
       );
     }
   }
-  const version = optionalString(dep, "version", label);
+  const version = optionalString(dep, "version", label, 256);
   return {
     name,
     ...(fullName === undefined ? {} : { full_name: fullName }),
@@ -493,8 +514,12 @@ function parseMetadataBottle(value: unknown, label: string): HomebrewMetadataBot
     arch,
     bottle_tag: requiredString(bottle, "bottle_tag", label),
     kandelo_abi: requiredInteger(bottle, "kandelo_abi", label),
-    cellar: requiredString(bottle, "cellar", label),
-    prefix: requiredString(bottle, "prefix", label),
+    cellar: requiredString(
+      bottle, "cellar", label, HOMEBREW_RUNTIME_LAYER_LIMITS.maxPathBytes,
+    ),
+    prefix: requiredString(
+      bottle, "prefix", label, HOMEBREW_RUNTIME_LAYER_LIMITS.maxPathBytes,
+    ),
     runtime_support: runtimeSupport,
     browser_compatible: browserCompatible,
     fork_instrumentation: requiredString(bottle, "fork_instrumentation", label),
@@ -505,7 +530,9 @@ function parseMetadataBottle(value: unknown, label: string): HomebrewMetadataBot
     sha256: optionalString(bottle, "sha256", label),
     bytes: optionalInteger(bottle, "bytes", label),
     cache_key_sha: optionalString(bottle, "cache_key_sha", label),
-    link_manifest: optionalString(bottle, "link_manifest", label),
+    link_manifest: optionalString(
+      bottle, "link_manifest", label, HOMEBREW_RUNTIME_LAYER_LIMITS.maxPathBytes,
+    ),
     error: optionalString(bottle, "error", label),
     last_attempt: optionalString(bottle, "last_attempt", label),
     last_attempt_by: optionalString(bottle, "last_attempt_by", label),
@@ -514,7 +541,12 @@ function parseMetadataBottle(value: unknown, label: string): HomebrewMetadataBot
     fallback_sha256: optionalString(bottle, "fallback_sha256", label),
     fallback_bytes: optionalInteger(bottle, "fallback_bytes", label),
     fallback_cache_key_sha: optionalString(bottle, "fallback_cache_key_sha", label),
-    fallback_link_manifest: optionalString(bottle, "fallback_link_manifest", label),
+    fallback_link_manifest: optionalString(
+      bottle,
+      "fallback_link_manifest",
+      label,
+      HOMEBREW_RUNTIME_LAYER_LIMITS.maxPathBytes,
+    ),
     fallback_built_at: optionalString(bottle, "fallback_built_at", label),
     built_from: bottle.built_from,
   };
@@ -529,26 +561,43 @@ function parseLinkManifest(value: unknown, label: string): HomebrewLinkManifest 
     parseLinkEntry(entry, `${label}.links[${index}]`)
   );
   const receipts = requiredArray(link, "receipts", label).map((entry, index) =>
-    requireStringValue(entry, `${label}.receipts[${index}]`)
+    requireStringValue(
+      entry,
+      `${label}.receipts[${index}]`,
+      HOMEBREW_RUNTIME_LAYER_LIMITS.maxPathBytes,
+    )
   );
   const envRecord = requireRecord(link.env, `${label}.env`);
   const pathPrepend = optionalStringArray(envRecord, "PATH_prepend", `${label}.env`);
 
   return {
     schema: 1,
-    package: requiredString(link, "package", label),
-    version: requiredString(link, "version", label),
+    package: requiredString(
+      link, "package", label, HOMEBREW_RUNTIME_LAYER_LIMITS.maxPackageNameBytes,
+    ),
+    version: requiredString(link, "version", label, 256),
     arch: parseArch(requiredString(link, "arch", label), `${label}.arch`),
     kandelo_abi: requiredInteger(link, "kandelo_abi", label),
-    prefix: requiredString(link, "prefix", label),
-    cellar: requiredString(link, "cellar", label),
-    keg: requiredString(link, "keg", label),
+    prefix: requiredString(
+      link, "prefix", label, HOMEBREW_RUNTIME_LAYER_LIMITS.maxPathBytes,
+    ),
+    cellar: requiredString(
+      link, "cellar", label, HOMEBREW_RUNTIME_LAYER_LIMITS.maxPathBytes,
+    ),
+    keg: requiredString(
+      link, "keg", label, HOMEBREW_RUNTIME_LAYER_LIMITS.maxPathBytes,
+    ),
     bottle: {
       url: requiredString(bottle, "url", `${label}.bottle`),
       sha256: requiredString(bottle, "sha256", `${label}.bottle`),
       bytes: requiredInteger(bottle, "bytes", `${label}.bottle`),
       cache_key_sha: requiredString(bottle, "cache_key_sha", `${label}.bottle`),
-      payload_root: requiredString(bottle, "payload_root", `${label}.bottle`),
+      payload_root: requiredString(
+        bottle,
+        "payload_root",
+        `${label}.bottle`,
+        HOMEBREW_RUNTIME_LAYER_LIMITS.maxPathBytes,
+      ),
     },
     links,
     receipts,
@@ -565,8 +614,12 @@ function parseLinkEntry(value: unknown, label: string): HomebrewLinkEntry {
   const mode = optionalString(entry, "mode", label);
   return {
     type,
-    source: requiredString(entry, "source", label),
-    target: requiredString(entry, "target", label),
+    source: requiredString(
+      entry, "source", label, HOMEBREW_RUNTIME_LAYER_LIMITS.maxPathBytes,
+    ),
+    target: requiredString(
+      entry, "target", label, HOMEBREW_RUNTIME_LAYER_LIMITS.maxPathBytes,
+    ),
     ...(mode === undefined ? {} : { mode }),
   };
 }
@@ -605,6 +658,11 @@ function validateExpectedTapName(
 }
 
 function validateCanonicalTapName(tapName: string, label: string): void {
+  requireStringValue(
+    tapName,
+    label,
+    HOMEBREW_RUNTIME_LAYER_LIMITS.maxRepositoryBytes,
+  );
   if (!TAP_NAME_RE.test(tapName)) {
     fail(`${label} ${quote(tapName)} is not a canonical lowercase owner/tap name`);
   }
@@ -669,8 +727,11 @@ function validateRequestedPackages(packages: string[]): string[] {
   if (!Array.isArray(packages) || packages.length === 0) {
     fail("Homebrew VFS plan requires at least one requested package");
   }
-  if (packages.length > MAX_REQUESTED_PACKAGES) {
-    fail(`Homebrew VFS plan accepts at most ${MAX_REQUESTED_PACKAGES} requested packages`);
+  if (packages.length > HOMEBREW_RUNTIME_LAYER_LIMITS.maxRequestedPackages) {
+    fail(
+      `Homebrew VFS plan accepts at most ` +
+        `${HOMEBREW_RUNTIME_LAYER_LIMITS.maxRequestedPackages} requested packages`,
+    );
   }
   const seen = new Set<string>();
   for (const pkg of packages) {
@@ -935,11 +996,13 @@ function validateRepositoryRootedBottleSource(
     builtFrom,
     "tap_repository",
     `package ${quote(pkg.full_name)} bottle built_from`,
+    HOMEBREW_RUNTIME_LAYER_LIMITS.maxRepositoryBytes,
   );
   const kandeloRepository = requiredString(
     builtFrom,
     "kandelo_repository",
     `package ${quote(pkg.full_name)} bottle built_from`,
+    HOMEBREW_RUNTIME_LAYER_LIMITS.maxRepositoryBytes,
   );
   if (tapRepository.toLowerCase() !== repository) {
     fail(`package ${quote(pkg.full_name)} bottle built_from tap repository does not match metadata`);
@@ -1140,7 +1203,10 @@ function parseStatus(value: string, label: string): HomebrewBottleStatus {
 }
 
 function validatePackageName(value: string, label: string): void {
-  if (!PACKAGE_RE.test(value) || value.length > MAX_PACKAGE_NAME_BYTES) {
+  if (
+    !PACKAGE_RE.test(value) ||
+    value.length > HOMEBREW_RUNTIME_LAYER_LIMITS.maxPackageNameBytes
+  ) {
     fail(`${label} ${quote(value)} is not a valid package name`);
   }
 }
@@ -1193,26 +1259,49 @@ function expectEqual<T>(actual: T, expected: T, actualLabel: string, expectedLab
   }
 }
 
-function requiredString(record: Record<string, unknown>, key: string, label: string): string {
-  return requireStringValue(record[key], `${label}.${key}`);
+function requiredString(
+  record: Record<string, unknown>,
+  key: string,
+  label: string,
+  maximumBytes: number = HOMEBREW_RUNTIME_LAYER_LIMITS.maxStringBytes,
+): string {
+  return requireStringValue(record[key], `${label}.${key}`, maximumBytes);
 }
 
-function requireStringValue(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.length === 0) fail(`${label} must be a non-empty string`);
+function requireStringValue(
+  value: unknown,
+  label: string,
+  maximumBytes: number = HOMEBREW_RUNTIME_LAYER_LIMITS.maxStringBytes,
+): string {
+  if (
+    typeof value !== "string" || value.length === 0 || value.includes("\0") ||
+    new TextEncoder().encode(value).byteLength > maximumBytes
+  ) {
+    fail(`${label} must be a non-empty NUL-free string of at most ${maximumBytes} bytes`);
+  }
+  try {
+    assertHomebrewCanonicalText(value);
+  } catch {
+    fail(`${label} must contain only Unicode scalar values`);
+  }
   return value;
 }
 
-function optionalString(record: Record<string, unknown>, key: string, label: string): string | undefined {
+function optionalString(
+  record: Record<string, unknown>,
+  key: string,
+  label: string,
+  maximumBytes: number = HOMEBREW_RUNTIME_LAYER_LIMITS.maxStringBytes,
+): string | undefined {
   const value = record[key];
   if (value === undefined) return undefined;
-  if (typeof value !== "string" || value.length === 0) fail(`${label}.${key} must be a non-empty string`);
-  return value;
+  return requireStringValue(value, `${label}.${key}`, maximumBytes);
 }
 
 function requiredInteger(record: Record<string, unknown>, key: string, label: string): number {
   const value = record[key];
-  if (typeof value !== "number" || !Number.isInteger(value)) {
-    fail(`${label}.${key} must be an integer`);
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+    fail(`${label}.${key} must be a safe integer`);
   }
   return value;
 }
@@ -1220,8 +1309,8 @@ function requiredInteger(record: Record<string, unknown>, key: string, label: st
 function optionalInteger(record: Record<string, unknown>, key: string, label: string): number | undefined {
   const value = record[key];
   if (value === undefined) return undefined;
-  if (typeof value !== "number" || !Number.isInteger(value)) {
-    fail(`${label}.${key} must be an integer`);
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+    fail(`${label}.${key} must be a safe integer`);
   }
   return value;
 }
@@ -1242,7 +1331,11 @@ function optionalStringArray(record: Record<string, unknown>, key: string, label
   const value = record[key];
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) fail(`${label}.${key} must be an array`);
-  return value.map((entry, index) => requireStringValue(entry, `${label}.${key}[${index}]`));
+  return value.map((entry, index) => requireStringValue(
+    entry,
+    `${label}.${key}[${index}]`,
+    HOMEBREW_RUNTIME_LAYER_LIMITS.maxPathBytes,
+  ));
 }
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
