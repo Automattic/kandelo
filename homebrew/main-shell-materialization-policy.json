@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "kind": "kandelo-homebrew-vfs-materialization-policy",
+  "embedded_roots": [
+    "kandelo-dev/tap-core/bash"
+  ],
+  "embedded_package_order": [
+    "kandelo-dev/tap-core/libcxx",
+    "kandelo-dev/tap-core/ncurses",
+    "kandelo-dev/tap-core/bash"
+  ]
+}
