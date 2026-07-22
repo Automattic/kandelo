@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "kind": "kandelo-homebrew-lazy-shell-artifact-lock",
+  "source_date_epoch": 0,
+  "image": {
+    "sha256": "9056b9d1874e39ca8dc70b5389c1f88fa14df6b822616ce4fc2f8a01ee34bdc6",
+    "bytes": 5439544
+  }
+}

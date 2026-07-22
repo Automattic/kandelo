@@ -333,14 +333,19 @@ Pre-publication candidate checkpoint (2026-07-22):
   35 other original bottle payloads independently deferred.
 - Two clean builds from the exact tap checkout produced byte-identical reports,
   mirror bundles, and a 512 MiB-capacity shell image. The compressed image is
-  5,426,598 bytes with SHA-256
-  `52e69e7cc1eccaab3a49b5c192c6b63e16ccb530fc65a4d3ab9223f171890d7d`.
+  5,439,544 bytes with SHA-256
+  `9056b9d1874e39ca8dc70b5389c1f88fa14df6b822616ce4fc2f8a01ee34bdc6`.
   The current revision-16 eager shell asset is 31,724,141 compressed bytes in
   public package archive SHA-256
   `10ce3daf0b804fd722e9f7c48189302597351a9072b4903181cbdff0bcb1a788`, so this
-  candidate removes 26,297,543 bytes (82.89%) from the initial shell download.
+  candidate removes 26,284,597 bytes (82.85%) from the initial shell download.
   Its embedded bottle closure accounts for 7,934,040 original compressed
   bottle bytes; the 35 deferred bottles account for 39,552,141.
+- The strict composer owns a canonical Unix-epoch timestamp instead of
+  inheriting a Nix, CI, or developer `SOURCE_DATE_EPOCH`. A checked-in artifact
+  lock binds that timestamp to the exact compressed image digest and byte
+  count, so the closed candidate and canonical package wrapper cannot silently
+  produce different shell bytes from the same package closure.
 - The embedded canonical mirror plan binds every deferred URL, package, tree,
   SHA-256, and byte count. Its immutable release tag is
   `homebrew-shell-bottles-sha256-047ae996f54f4417a11123ddd4d906db08a4ea944fc3002d187bdf4b2340d88b`.

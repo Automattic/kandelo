@@ -6,6 +6,8 @@ BUILDER="$REPO_ROOT/scripts/build-homebrew-main-shell-closure.sh"
 CHECKER="$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs"
 BREWFILE="$REPO_ROOT/homebrew/main-shell.Brewfile"
 SOURCE_LOCK="$REPO_ROOT/homebrew/main-shell-migration-lock.json"
+LAZY_ARTIFACT_LOCK="$REPO_ROOT/homebrew/main-shell-lazy-artifact-lock.json"
+LAZY_ARTIFACT_CHECKER="$REPO_ROOT/scripts/verify-homebrew-main-shell-artifact-lock.sh"
 WORKFLOW="$REPO_ROOT/.github/workflows/homebrew-main-shell-ci.yml"
 IMAGE_CONTRACT="$REPO_ROOT/scripts/homebrew-main-shell-image-contract.ts"
 IMAGE_CONTRACT_TEST="$REPO_ROOT/scripts/homebrew-main-shell-image-contract.test.ts"
@@ -80,6 +82,7 @@ for required_path in \
   "scripts/install-local-binary.sh" \
   "scripts/resolve-binary.sh" \
   "scripts/recover-homebrew-bottle-mirror.ts" \
+  "scripts/verify-homebrew-main-shell-artifact-lock.sh" \
   "tests/package-system/browser-binary-dependencies.test.ts" \
   "tests/package-system/homebrew-bottle-mirror-recovery.test.ts" \
   "tools/mkrootfs/**" \
@@ -106,6 +109,15 @@ grep -Fq 'const EXPECTED_ROOT_COUNT = 32' "$IMAGE_CONTRACT" ||
   fail "post-archive image contract does not require the exact 32 roots"
 grep -Fq 'const EXPECTED_CLOSURE_COUNT = 38' "$IMAGE_CONTRACT" ||
   fail "post-archive image contract does not require the exact 38-Formula closure"
+[ "$(grep -Fc 'export SOURCE_DATE_EPOCH=0' "$BUILDER")" -eq 1 ] ||
+  fail "strict shell composer must own one canonical timestamp epoch"
+bash "$LAZY_ARTIFACT_CHECKER" \
+  --lock "$LAZY_ARTIFACT_LOCK" --expected-source-date-epoch 0 ||
+  fail "lazy shell artifact lock is not an exact digest/size/timestamp contract"
+[ "$(grep -Fc 'bash "$LAZY_ARTIFACT_CHECKER"' "$BUILDER")" -eq 2 ] ||
+  fail "strict shell composer must validate its lock before and after composition"
+grep -Fq -- '--artifact "$OUT"' "$BUILDER" ||
+  fail "strict shell composer must verify the final compressed artifact"
 
 for variable in \
   KANDELO_HOMEBREW_MAIN_SHELL_STRICT \
@@ -412,6 +424,10 @@ for token in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
     exit 80
   fi
 done
+[ "${SOURCE_DATE_EPOCH:-}" = 0 ] || {
+  echo "canonical shell wrapper did not pin SOURCE_DATE_EPOCH=0" >&2
+  exit 79
+}
 work="" report="" cache="" out=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -514,6 +530,58 @@ tap_worktree="$TMP_ROOT/tap-worktree"
 git -C "$tap" worktree add --detach "$tap_worktree" "$tap_sha" >/dev/null
 [ -f "$tap_worktree/.git" ] ||
   fail "linked tap fixture does not exercise a .git worktree file"
+wrong_epoch_lock="$TMP_ROOT/main-shell-wrong-epoch-lock.json"
+jq '.source_date_epoch = 1' "$LAZY_ARTIFACT_LOCK" >"$wrong_epoch_lock"
+expect_failure "lock is invalid or uses a different timestamp epoch" \
+  "$BUILDER" --materialized-candidate --tap-root "$tap_worktree" \
+  --work-dir "$TMP_ROOT/work-wrong-lazy-epoch" --migration-lock "$lock" \
+  --lazy-artifact-lock "$wrong_epoch_lock"
+extra_field_lock="$TMP_ROOT/main-shell-extra-field-lock.json"
+jq '.unexpected = true' "$LAZY_ARTIFACT_LOCK" >"$extra_field_lock"
+expect_failure "lock is invalid or uses a different timestamp epoch" \
+  "$BUILDER" --materialized-candidate --tap-root "$tap_worktree" \
+  --work-dir "$TMP_ROOT/work-extra-lazy-lock-field" --migration-lock "$lock" \
+  --lazy-artifact-lock "$extra_field_lock"
+
+# Exercise the final compressed-artifact checks without rebuilding the full
+# bottle closure. SHA-256 and byte count are independent promises: matching one
+# must not let a mismatch in the other pass.
+artifact_fixture="$TMP_ROOT/lazy-shell-artifact.vfs.zst"
+printf '%s\n' "exact lazy shell artifact fixture" >"$artifact_fixture"
+artifact_sha="$(sha256sum "$artifact_fixture")"
+artifact_sha="${artifact_sha%% *}"
+artifact_bytes="$(wc -c <"$artifact_fixture" | tr -d '[:space:]')"
+fixture_lock="$TMP_ROOT/lazy-shell-artifact-lock.json"
+jq --arg sha "$artifact_sha" --argjson bytes "$artifact_bytes" \
+  '.image.sha256 = $sha | .image.bytes = $bytes' \
+  "$LAZY_ARTIFACT_LOCK" >"$fixture_lock"
+bash "$LAZY_ARTIFACT_CHECKER" \
+  --lock "$fixture_lock" --expected-source-date-epoch 0 \
+  --artifact "$artifact_fixture" ||
+  fail "artifact checker rejected the exact digest and byte count"
+
+wrong_sha_lock="$TMP_ROOT/lazy-shell-wrong-sha-lock.json"
+jq '.image.sha256 = "0000000000000000000000000000000000000000000000000000000000000000"' \
+  "$fixture_lock" >"$wrong_sha_lock"
+expect_failure "artifact SHA-256 does not match the reviewed lock" \
+  bash "$LAZY_ARTIFACT_CHECKER" \
+    --lock "$wrong_sha_lock" --expected-source-date-epoch 0 \
+    --artifact "$artifact_fixture"
+
+wrong_bytes_lock="$TMP_ROOT/lazy-shell-wrong-bytes-lock.json"
+jq --argjson bytes "$((artifact_bytes + 1))" '.image.bytes = $bytes' \
+  "$fixture_lock" >"$wrong_bytes_lock"
+expect_failure "artifact byte count does not match the reviewed lock" \
+  bash "$LAZY_ARTIFACT_CHECKER" \
+    --lock "$wrong_bytes_lock" --expected-source-date-epoch 0 \
+    --artifact "$artifact_fixture"
+
+artifact_symlink="$TMP_ROOT/lazy-shell-artifact-symlink.vfs.zst"
+ln -s "$artifact_fixture" "$artifact_symlink"
+expect_failure "--artifact must be a regular non-symlink file" \
+  bash "$LAZY_ARTIFACT_CHECKER" \
+    --lock "$fixture_lock" --expected-source-date-epoch 0 \
+    --artifact "$artifact_symlink"
 expect_failure "--max-bytes must match the locked consumer capacity" \
   "$BUILDER" --tap-root "$tap_worktree" --work-dir "$TMP_ROOT/work-bad-capacity" \
   --migration-lock "$lock" --max-bytes 4096
