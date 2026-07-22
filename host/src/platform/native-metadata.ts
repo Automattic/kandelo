@@ -3,6 +3,8 @@ import type { StatResult } from "../types";
 
 const MODE_CHANGE_MASK = 0o7777;
 const UID_GID_UNCHANGED = 0xffffffff;
+const SET_ID_BITS = 0o6000;
+const EXECUTE_BITS = 0o111;
 const X_OK = 0o1;
 const W_OK = 0o2;
 const R_OK = 0o4;
@@ -106,6 +108,10 @@ export class NativeMetadataOverlay {
     const metadata = this.metadataFor(s);
     if (uid !== UID_GID_UNCHANGED) metadata.uid = uid;
     if (gid !== UID_GID_UNCHANGED) metadata.gid = gid;
+    const mode = metadata.mode ?? (checkedNumber(s.mode, "st_mode") & MODE_CHANGE_MASK);
+    if (s.isFile() && (mode & EXECUTE_BITS) !== 0) {
+      metadata.mode = mode & ~SET_ID_BITS;
+    }
     metadata.ctimeMs = Date.now();
   }
 

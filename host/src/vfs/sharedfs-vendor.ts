@@ -41,6 +41,10 @@ export const S_IFREG = 0x8000;
 export const S_IFDIR = 0x4000;
 export const S_IFLNK = 0xa000;
 export const S_IFMT = 0xf000;
+const S_ISUID = 0o4000;
+const S_ISGID = 0o2000;
+const EXECUTE_BITS = 0o111;
+const UID_GID_UNCHANGED = 0xffffffff;
 
 // Open flags
 export const O_RDONLY = 0x0000;
@@ -3167,12 +3171,7 @@ export class SharedFS {
     if (ino < 0) throw new SFSError(ino);
     this.inodeWriteLock(ino);
     try {
-      const off = this.inodeOffset(ino);
-      this.w32(off + INO_UID, uid);
-      this.w32(off + INO_GID, gid);
-      this.w64(off + INO_CTIME, Date.now());
-      // POSIX: chown may clear setuid/setgid bits. Deferred to PR 5/5
-      // (permission enforcement); for now we just store.
+      this.chownInodeUnlocked(ino, uid, gid);
     } finally {
       this.inodeWriteUnlock(ino);
     }
@@ -3183,10 +3182,7 @@ export class SharedFS {
     if (!entry) throw new SFSError(EBADF);
     this.inodeWriteLock(entry.ino);
     try {
-      const off = this.inodeOffset(entry.ino);
-      this.w32(off + INO_UID, uid);
-      this.w32(off + INO_GID, gid);
-      this.w64(off + INO_CTIME, Date.now());
+      this.chownInodeUnlocked(entry.ino, uid, gid);
     } finally {
       this.inodeWriteUnlock(entry.ino);
     }
@@ -3201,13 +3197,24 @@ export class SharedFS {
     if (ino < 0) throw new SFSError(ino);
     this.inodeWriteLock(ino);
     try {
-      const off = this.inodeOffset(ino);
-      this.w32(off + INO_UID, uid);
-      this.w32(off + INO_GID, gid);
-      this.w64(off + INO_CTIME, Date.now());
+      this.chownInodeUnlocked(ino, uid, gid);
     } finally {
       this.inodeWriteUnlock(ino);
     }
+  }
+
+  /** Update ownership and the POSIX security-sensitive mode bits atomically
+   * while the caller holds the inode write lock. */
+  private chownInodeUnlocked(ino: number, uid: number, gid: number): void {
+    const off = this.inodeOffset(ino);
+    if (uid !== UID_GID_UNCHANGED) this.w32(off + INO_UID, uid);
+    if (gid !== UID_GID_UNCHANGED) this.w32(off + INO_GID, gid);
+
+    const mode = this.r32(off + INO_MODE);
+    if ((mode & S_IFMT) === S_IFREG && (mode & EXECUTE_BITS) !== 0) {
+      this.w32(off + INO_MODE, mode & ~(S_ISUID | S_ISGID));
+    }
+    this.w64(off + INO_CTIME, Date.now());
   }
 
   utimens(

@@ -5,9 +5,9 @@ import { runCentralizedProgram } from "./centralized-test-helper";
 import { ensureWasm64ExampleFixture } from "./wasm64-example-fixture";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-describe("chown and lchown ownership semantics", () => {
+describe("chown ownership, authorization, and set-ID semantics", () => {
   it.each([".wasm", ".wasm64.wasm"])(
-    "preserves sentinels and changes final links without following (%s)",
+    "enforces ownership and link semantics (%s)",
     async (suffix) => {
       if (suffix === ".wasm64.wasm") {
         ensureWasm64ExampleFixture("chown_sentinel_test.c");

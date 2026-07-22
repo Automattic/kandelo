@@ -1718,7 +1718,13 @@ fn virtual_device_stat(dev: VirtualDevice, uid: u32, gid: u32) -> WasmStat {
 const S_ISVTX: u32 = 0o1000;
 const AT_EACCESS: u32 = 0x200;
 
-fn has_access_for_ids(uid: u32, gid: u32, st: &WasmStat, amode: u32) -> bool {
+fn has_access_for_ids(
+    uid: u32,
+    gid: u32,
+    supplementary_gid: u32,
+    st: &WasmStat,
+    amode: u32,
+) -> bool {
     if amode == 0 {
         return true;
     }
@@ -1733,7 +1739,7 @@ fn has_access_for_ids(uid: u32, gid: u32, st: &WasmStat, amode: u32) -> bool {
 
     let available = if uid == st.st_uid {
         (st.st_mode >> 6) & 0o7
-    } else if gid == st.st_gid {
+    } else if gid == st.st_gid || supplementary_gid == st.st_gid {
         (st.st_mode >> 3) & 0o7
     } else {
         st.st_mode & 0o7
@@ -1743,7 +1749,7 @@ fn has_access_for_ids(uid: u32, gid: u32, st: &WasmStat, amode: u32) -> bool {
 }
 
 fn has_access(proc: &Process, st: &WasmStat, amode: u32) -> bool {
-    has_access_for_ids(proc.euid, proc.egid, st, amode)
+    has_access_for_ids(proc.euid, proc.egid, proc.gid, st, amode)
 }
 
 fn check_access(proc: &Process, st: &WasmStat, amode: u32) -> Result<(), Errno> {
@@ -1754,8 +1760,14 @@ fn check_access(proc: &Process, st: &WasmStat, amode: u32) -> Result<(), Errno> 
     }
 }
 
-fn check_access_for_ids(uid: u32, gid: u32, st: &WasmStat, amode: u32) -> Result<(), Errno> {
-    if has_access_for_ids(uid, gid, st, amode) {
+fn check_access_for_ids(
+    uid: u32,
+    gid: u32,
+    supplementary_gid: u32,
+    st: &WasmStat,
+    amode: u32,
+) -> Result<(), Errno> {
+    if has_access_for_ids(uid, gid, supplementary_gid, st, amode) {
         Ok(())
     } else {
         Err(Errno::EACCES)
@@ -2010,7 +2022,7 @@ fn resolve_namespace_path_from(
     } else {
         (proc.euid, proc.egid)
     };
-    check_access_for_ids(search_uid, search_gid, &root_stat, X_OK)?;
+    check_access_for_ids(search_uid, search_gid, proc.gid, &root_stat, X_OK)?;
 
     let mut resolved = alloc::vec![b'/'];
     let mut final_stat = Some(root_stat);
@@ -2027,7 +2039,7 @@ fn resolve_namespace_path_from(
                 if stat.st_mode & S_IFMT != S_IFDIR {
                     return Err(Errno::ENOTDIR);
                 }
-                check_access_for_ids(search_uid, search_gid, &stat, X_OK)?;
+                check_access_for_ids(search_uid, search_gid, proc.gid, &stat, X_OK)?;
             }
             final_stat = Some(stat);
             continue;
@@ -2130,7 +2142,7 @@ fn resolve_namespace_path_from(
             if stat.st_mode & S_IFMT != S_IFDIR {
                 return Err(Errno::ENOTDIR);
             }
-            check_access_for_ids(search_uid, search_gid, &stat, X_OK)?;
+            check_access_for_ids(search_uid, search_gid, proc.gid, &stat, X_OK)?;
         }
         resolved = candidate;
         final_stat = Some(stat);
@@ -6056,9 +6068,21 @@ fn prepare_chown_ids(
     uid: u32,
     gid: u32,
 ) -> Result<(u32, u32), Errno> {
-    let both_unchanged = uid == CHOWN_ID_UNCHANGED && gid == CHOWN_ID_UNCHANGED;
-    if proc.euid != 0 && !(both_unchanged && proc.euid == st.st_uid) {
-        return Err(Errno::EPERM);
+    if proc.euid != 0 {
+        // _POSIX_CHOWN_RESTRICTED: an unprivileged caller must own the file,
+        // cannot give it to another user, and can select only a group in its
+        // group set. Kandelo currently exposes one synthesized supplementary
+        // group through getgroups(): the real GID. Keep that documented
+        // credential model coherent by accepting either it or the effective
+        // GID here. The unchanged sentinels preserve their corresponding IDs.
+        if proc.euid != st.st_uid
+            || (uid != CHOWN_ID_UNCHANGED && uid != st.st_uid)
+            || (gid != CHOWN_ID_UNCHANGED
+                && gid != proc.egid
+                && gid != proc.gid)
+        {
+            return Err(Errno::EPERM);
+        }
     }
     Ok((
         if uid == CHOWN_ID_UNCHANGED {
@@ -6129,7 +6153,7 @@ pub fn sys_access(
         return Err(Errno::EACCES);
     }
     let st = resolved.stat.ok_or(Errno::ENOENT)?;
-    check_access_for_ids(proc.uid, proc.gid, &st, amode)
+    check_access_for_ids(proc.uid, proc.gid, proc.gid, &st, amode)
 }
 
 /// Change the current working directory.
@@ -14190,8 +14214,10 @@ pub fn sys_fchown(
             let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
             host.host_fchown(ofd.host_handle, uid, gid)
         }
-        // Match sys_fchmod above — accept the call on all fd types so
-        // daemons that touch ownership during startup don't fail.
+        // Match sys_fchmod above — accept the call on kernel-owned fd types
+        // whose ownership metadata is not independently mutable. Regular
+        // files, directories, and named FIFOs above still use the complete
+        // authorization path.
         _ => Ok(()),
     }
 }
@@ -14345,7 +14371,7 @@ pub fn sys_faccessat(
     } else {
         (proc.uid, proc.gid)
     };
-    check_access_for_ids(uid, gid, &st, amode)
+    check_access_for_ids(uid, gid, proc.gid, &st, amode)
 }
 
 /// fchmodat -- change file mode relative to directory fd.
@@ -18204,6 +18230,132 @@ mod tests {
     }
 
     #[test]
+    fn test_prepare_chown_ids_enforces_the_exposed_group_set() {
+        let mut proc = Process::new(1);
+        proc.uid = 1000;
+        proc.euid = 1000;
+        proc.gid = 2000; // Kandelo's synthesized supplementary group.
+        proc.egid = 3000;
+        let st = WasmStat {
+            st_dev: 0,
+            st_ino: 1,
+            st_mode: S_IFREG | 0o755,
+            st_nlink: 1,
+            st_uid: 1000,
+            st_gid: 4000,
+            st_size: 0,
+            st_atime_sec: 0,
+            st_atime_nsec: 0,
+            st_mtime_sec: 0,
+            st_mtime_nsec: 0,
+            st_ctime_sec: 0,
+            st_ctime_nsec: 0,
+            _pad: 0,
+        };
+
+        assert_eq!(
+            prepare_chown_ids(&proc, &st, CHOWN_ID_UNCHANGED, CHOWN_ID_UNCHANGED),
+            Ok((1000, 4000)),
+        );
+        assert_eq!(
+            prepare_chown_ids(&proc, &st, 1000, CHOWN_ID_UNCHANGED),
+            Ok((1000, 4000)),
+        );
+        assert_eq!(
+            prepare_chown_ids(&proc, &st, CHOWN_ID_UNCHANGED, 3000),
+            Ok((1000, 3000)),
+        );
+        assert_eq!(
+            prepare_chown_ids(&proc, &st, CHOWN_ID_UNCHANGED, 2000),
+            Ok((1000, 2000)),
+        );
+
+        // An unprivileged owner cannot give a file away or name a group
+        // outside the effective-plus-synthesized group set. POSIX requires
+        // the unchanged sentinel to preserve an existing foreign group;
+        // explicitly naming that group is not authorized.
+        assert_eq!(
+            prepare_chown_ids(&proc, &st, 1001, CHOWN_ID_UNCHANGED),
+            Err(Errno::EPERM),
+        );
+        assert_eq!(
+            prepare_chown_ids(&proc, &st, CHOWN_ID_UNCHANGED, 4000),
+            Err(Errno::EPERM),
+        );
+        assert_eq!(
+            prepare_chown_ids(&proc, &st, CHOWN_ID_UNCHANGED, 5000),
+            Err(Errno::EPERM),
+        );
+
+        proc.euid = 1001;
+        assert_eq!(
+            prepare_chown_ids(&proc, &st, CHOWN_ID_UNCHANGED, CHOWN_ID_UNCHANGED),
+            Err(Errno::EPERM),
+        );
+
+        proc.euid = 0;
+        assert_eq!(
+            prepare_chown_ids(&proc, &st, 5000, 6000),
+            Ok((5000, 6000)),
+        );
+    }
+
+    #[test]
+    fn test_sys_chown_allows_owner_group_changes_but_rejects_foreign_ids() {
+        let mut proc = Process::new(1);
+        proc.uid = 1000;
+        proc.euid = 1000;
+        proc.gid = 2000;
+        proc.egid = 1000;
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/owned", 1000, 4000, 0o755, b"hi");
+
+        sys_chown(
+            &mut proc,
+            &mut host,
+            b"/owned",
+            CHOWN_ID_UNCHANGED,
+            1000,
+        )
+        .unwrap();
+        sys_chown(
+            &mut proc,
+            &mut host,
+            b"/owned",
+            1000,
+            2000,
+        )
+        .unwrap();
+        assert_eq!(
+            sys_chown(
+                &mut proc,
+                &mut host,
+                b"/owned",
+                CHOWN_ID_UNCHANGED,
+                5000,
+            ),
+            Err(Errno::EPERM),
+        );
+        assert_eq!(
+            sys_chown(
+                &mut proc,
+                &mut host,
+                b"/owned",
+                1001,
+                CHOWN_ID_UNCHANGED,
+            ),
+            Err(Errno::EPERM),
+        );
+        assert_eq!(
+            host.chown_calls,
+            vec![
+                (b"/owned".to_vec(), 1000, 1000),
+                (b"/owned".to_vec(), 1000, 2000),
+            ],
+        );
+    }
+
+    #[test]
     fn test_sys_chown_preserves_sentinels_and_delegates_same_ids() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -18382,6 +18534,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_sys_lchown_authorizes_against_link_owner_and_caller_groups() {
+        let mut proc = Process::new(1);
+        proc.uid = 1000;
+        proc.euid = 1000;
+        proc.gid = 2000;
+        proc.egid = 3000;
+        let mut host = MockHostIO::new();
+        host.set_symlink(b"/link", b"/target");
+        host.file_owners.insert(b"/link".to_vec(), (1000, 4000));
+        host.set_file_with_owner(b"/target", 9999, 9999, 0o755, b"target");
+
+        sys_lchown(
+            &mut proc,
+            &mut host,
+            b"/link",
+            CHOWN_ID_UNCHANGED,
+            2000,
+        )
+        .unwrap();
+        assert_eq!(
+            sys_lchown(
+                &mut proc,
+                &mut host,
+                b"/link",
+                CHOWN_ID_UNCHANGED,
+                5000,
+            ),
+            Err(Errno::EPERM),
+        );
+        assert_eq!(
+            host.lchown_calls,
+            vec![(b"/link".to_vec(), 1000, 2000)],
+        );
+        assert_eq!(host.file_owners.get(b"/target".as_slice()), Some(&(9999, 9999)));
+    }
+
     /// sys_fchown must propagate uid/gid into the host VFS via the open file
     /// handle so that a subsequent sys_fstat returns the new values.
     #[test]
@@ -18434,6 +18623,46 @@ mod tests {
             ),
             Err(Errno::EBADF),
         );
+    }
+
+    #[test]
+    fn test_sys_fchown_uses_effective_and_synthesized_groups() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/fd-group", 1000, 4000, 0o755, b"hi");
+        let fd = sys_open(&mut proc, &mut host, b"/fd-group", O_RDONLY, 0).unwrap();
+        proc.uid = 1000;
+        proc.euid = 1000;
+        proc.gid = 2000;
+        proc.egid = 3000;
+
+        sys_fchown(
+            &mut proc,
+            &mut host,
+            fd,
+            CHOWN_ID_UNCHANGED,
+            3000,
+        )
+        .unwrap();
+        sys_fchown(
+            &mut proc,
+            &mut host,
+            fd,
+            CHOWN_ID_UNCHANGED,
+            2000,
+        )
+        .unwrap();
+        assert_eq!(
+            sys_fchown(
+                &mut proc,
+                &mut host,
+                fd,
+                CHOWN_ID_UNCHANGED,
+                5000,
+            ),
+            Err(Errno::EPERM),
+        );
+        assert_eq!(host.fchown_calls.len(), 2);
     }
 
     /// sys_fchownat with AT_FDCWD shares its propagation path with sys_chown
@@ -18516,6 +18745,72 @@ mod tests {
         assert_eq!(
             sys_fchownat(&mut proc, &mut host, AT_FDCWD, b"/link", 9, 10, 0x200),
             Err(Errno::EINVAL),
+        );
+    }
+
+    #[test]
+    fn test_sys_fchownat_relative_dirfd_applies_group_rules_to_selected_inode() {
+        use wasm_posix_shared::flags::AT_SYMLINK_NOFOLLOW;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_dir_with_owner(b"/dir", 0, 0, 0o755);
+        host.set_file_with_owner(b"/dir/target", 1000, 4000, 0o755, b"target");
+        host.set_symlink(b"/dir/link", b"target");
+        host.file_owners
+            .insert(b"/dir/link".to_vec(), (1000, 4000));
+        let dirfd = sys_open(
+            &mut proc,
+            &mut host,
+            b"/dir",
+            O_RDONLY | O_DIRECTORY,
+            0,
+        )
+        .unwrap();
+        proc.uid = 1000;
+        proc.euid = 1000;
+        proc.gid = 2000;
+        proc.egid = 3000;
+
+        sys_fchownat(
+            &mut proc,
+            &mut host,
+            dirfd,
+            b"link",
+            CHOWN_ID_UNCHANGED,
+            2000,
+            AT_SYMLINK_NOFOLLOW,
+        )
+        .unwrap();
+        sys_fchownat(
+            &mut proc,
+            &mut host,
+            dirfd,
+            b"link",
+            CHOWN_ID_UNCHANGED,
+            3000,
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            sys_fchownat(
+                &mut proc,
+                &mut host,
+                dirfd,
+                b"link",
+                CHOWN_ID_UNCHANGED,
+                5000,
+                AT_SYMLINK_NOFOLLOW,
+            ),
+            Err(Errno::EPERM),
+        );
+        assert_eq!(
+            host.lchown_calls,
+            vec![(b"/dir/link".to_vec(), 1000, 2000)],
+        );
+        assert_eq!(
+            host.chown_calls,
+            vec![(b"/dir/target".to_vec(), 1000, 3000)],
         );
     }
 
@@ -18714,6 +19009,50 @@ mod tests {
                 R_OK,
                 AT_EACCESS,
             ),
+            Err(Errno::EACCES),
+        );
+    }
+
+    #[test]
+    fn access_uses_effective_and_synthesized_supplementary_groups() {
+        let mut proc = Process::new(1);
+        proc.uid = 1000;
+        proc.euid = 1000;
+        proc.gid = 2000;
+        proc.egid = 3000;
+        let mut host = MockHostIO::new();
+        host.set_dir_with_owner(b"/supp", 9999, 2000, 0o710);
+        host.set_file_with_owner(b"/supp/file", 9999, 2000, 0o040, b"data");
+        host.set_dir_with_owner(b"/effective", 9999, 3000, 0o710);
+        host.set_file_with_owner(b"/effective/file", 9999, 3000, 0o040, b"data");
+        host.set_dir_with_owner(b"/foreign", 9999, 4000, 0o710);
+        host.set_file_with_owner(b"/foreign/file", 9999, 4000, 0o040, b"data");
+
+        assert!(sys_access(&mut proc, &mut host, b"/supp/file", R_OK).is_ok());
+        assert!(
+            sys_faccessat(
+                &mut proc,
+                &mut host,
+                AT_FDCWD,
+                b"/supp/file",
+                R_OK,
+                AT_EACCESS,
+            )
+            .is_ok()
+        );
+        assert!(
+            sys_faccessat(
+                &mut proc,
+                &mut host,
+                AT_FDCWD,
+                b"/effective/file",
+                R_OK,
+                AT_EACCESS,
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            sys_access(&mut proc, &mut host, b"/foreign/file", R_OK),
             Err(Errno::EACCES),
         );
     }
