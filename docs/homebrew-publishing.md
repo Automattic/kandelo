@@ -1620,6 +1620,17 @@ acceptance intentionally happens after archive creation so a package cache hit
 cannot skip it and a package build cannot depend on ambient kernel build
 artifacts.
 
+The wider browser application also imports registry packages that are not part
+of the 38-Formula shell closure, including the canonical `rootfs` image. The
+workflow derives that supporting package set from the browser imports, excludes
+`shell`, and resolves it with normal package semantics: reuse an exact public
+archive when one exists, otherwise source-build the current PR recipe. This is
+necessary when a PR changes a declared input of a supporting package, because
+the corresponding public archive cannot exist until the change is published.
+It does not weaken the bottle-only shell claim: the accepted `shell.vfs.zst`
+still comes only from the separately staged shell package whose composer reads
+the 38 pinned public bottles.
+
 For local use, `./run.sh build shell-vfs` takes the ordinary resolver path and
 materializes the declared output under `local-binaries`. It may reuse a valid
 public package archive; before allowing normal source fallback, it prepares
