@@ -106,6 +106,8 @@ grep -Fq '(.selection.requested_packages | length) == $expected_root_count' "$BU
   fail "$BUILDER does not bind the requested-root count to the migration lock"
 grep -Fq '(.packages | length) == $expected_closure_count' "$BUILDER" ||
   fail "$BUILDER does not bind the Formula count to the migration lock"
+grep -Fq 'MATERIALIZED_CANDIDATE' "$BUILDER" &&
+  fail "$BUILDER still references the retired materialized-candidate mode"
 grep -Fq '[.packages[].full_name] | sort' "$BUILDER" ||
   fail "$BUILDER does not compare exact Formula composition identities"
 grep -Fq 'formula_closure | sort' "$BUILDER" ||
@@ -281,8 +283,8 @@ grep -Fq 'repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"' \
 locked_tap_sha="$(jq -er '.catalog.tap_commit' "$SOURCE_LOCK")"
 grep -Fq "commit = \"$locked_tap_sha\"" "$SHELL_BUILD_TOML" ||
   fail "shell Git input commit must equal the reviewed migration lock"
-grep -Eq '^revision[[:space:]]*=[[:space:]]*17$' "$SHELL_BUILD_TOML" ||
-  fail "lazy-shell activation must publish canonical shell revision 17"
+grep -Eq '^revision[[:space:]]*=[[:space:]]*18$' "$SHELL_BUILD_TOML" ||
+  fail "language-expanded lazy shell must publish canonical shell revision 18"
 for shell_input in \
   homebrew/main-shell-demo.json \
   web-libs/kandelo-session/src/demo-config.ts
