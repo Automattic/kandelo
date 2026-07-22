@@ -29,12 +29,12 @@ import {
   encodeHomebrewLazyLayerDescriptor,
   type HomebrewDeferredTreeDescriptor,
   type HomebrewDeferredTreeDraftDescriptor,
+  type HomebrewLazyLayerClosureEvidence,
   type HomebrewLazyLayerDescriptor,
   type HomebrewLazyLayerDraftDescriptor,
   type HomebrewLazyLayerBasePackageSource,
 } from "../src/homebrew-lazy-layer";
 import {
-  canonicalHomebrewRuntimeLayerBundleIdentityBytes,
   canonicalHomebrewRuntimeLayerDescriptorBytes,
 } from "../src/homebrew-lazy-layer-descriptor";
 import {
@@ -827,40 +827,55 @@ function runtimeLayerVariant(
   releaseTransport.asset = `kandelo-homebrew-${id}-layer.bin`;
   tree.content.sha256 = sha256(utf8(`${id}-tree`));
   refreshInventory(descriptor);
-  descriptor.bundle.assets.deferred_trees = [{
-    id,
-    asset: releaseTransport.asset,
-    sha256: tree.content.sha256,
-    bytes: tree.content.bytes,
-  }];
-  refreshRuntimeLayerBundleIdentity(descriptor);
-  return descriptor;
+  return recloseRuntimeLayerDescriptor(descriptor);
 }
 
-function refreshRuntimeLayerBundleIdentity(
+function withoutReleaseUrl<T extends { url: string }>(value: T): Omit<T, "url"> {
+  const { url: _url, ...identity } = value;
+  return identity;
+}
+
+/**
+ * Recreate a valid closed fixture after a test changes signed semantics.
+ *
+ * The production closer owns every derived bundle asset, tag, and release URL.
+ * Tests that are not specifically exercising stale identity must use the same
+ * path instead of updating one derived field by hand.
+ */
+function recloseRuntimeLayerDescriptor(
   descriptor: HomebrewLazyLayerDescriptor,
-): void {
-  descriptor.bundle.assets.deferred_trees = descriptor.deferred_trees.map((tree) => ({
-    id: tree.id,
-    asset: bundleReleaseTransport(tree).asset,
-    sha256: tree.content.sha256,
-    bytes: tree.content.bytes,
-  }));
-  const bundleSha = sha256(
-    canonicalHomebrewRuntimeLayerBundleIdentityBytes(descriptor),
-  );
-  descriptor.bundle.sha256 = bundleSha;
-  descriptor.release.tag = `homebrew-runtime-layer-sha256-${bundleSha}`;
-  const releaseRoot =
-    `https://github.com/${descriptor.release.repository}/releases/download/` +
-    descriptor.release.tag;
-  for (const tree of descriptor.deferred_trees) {
-    for (const transport of tree.transports) {
-      if (transport.kind === "bundle-release") {
-        transport.url = `${releaseRoot}/${transport.asset}`;
-      }
-    }
-  }
+): HomebrewLazyLayerDescriptor {
+  const closed = structuredClone(descriptor);
+  const {
+    bundle: _bundle,
+    release: _release,
+    acceptance_evidence: acceptanceEvidence,
+    acceptance_vfs: acceptanceVfs,
+    deferred_trees: deferredTrees,
+    ...common
+  } = closed;
+  const draft: HomebrewLazyLayerDraftDescriptor = {
+    ...common,
+    kind: "kandelo-homebrew-deferred-layer-draft",
+    acceptance_vfs: withoutReleaseUrl(acceptanceVfs),
+    deferred_trees: deferredTrees.map((tree) => ({
+      ...tree,
+      transports: tree.transports.map((transport) =>
+        transport.kind === "bundle-release"
+          ? { kind: transport.kind, asset: transport.asset }
+          : { kind: transport.kind, url: transport.url }
+      ),
+    })),
+  };
+  const evidence: HomebrewLazyLayerClosureEvidence = {
+    descriptor: withoutReleaseUrl(acceptanceEvidence.descriptor),
+    report: withoutReleaseUrl(acceptanceEvidence.report),
+    node: withoutReleaseUrl(acceptanceEvidence.node),
+    browser: withoutReleaseUrl(acceptanceEvidence.browser),
+  };
+  const reclosed = closeHomebrewLazyLayerDescriptor(draft, evidence);
+  Object.assign(descriptor, reclosed);
+  return descriptor;
 }
 
 function makeLazyLayerPlanFederated(plan: HomebrewVfsPlan): void {
@@ -913,8 +928,7 @@ describe("Homebrew runtime layer consumer", () => {
     fixture.descriptor.base_vfs.package_source.package.revision += 1;
     const { reference, bytes } = runtimeLayerReference("runtime", fixture.descriptor);
 
-    await expect(registerHomebrewRuntimeLayers({
-      fs: MemoryFileSystem.fromImage(fixture.baseImageBytes),
+    await expect(composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
@@ -930,8 +944,7 @@ describe("Homebrew runtime layer consumer", () => {
     reference.descriptor.sha256 = sha256(bytes);
     reference.descriptor.bytes = bytes.byteLength;
 
-    await expect(registerHomebrewRuntimeLayers({
-      fs: MemoryFileSystem.fromImage(fixture.baseImageBytes),
+    await expect(composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
@@ -947,7 +960,7 @@ describe("Homebrew runtime layer consumer", () => {
       kind: "external-https",
       url: directUrl,
     });
-    refreshRuntimeLayerBundleIdentity(fixture.descriptor);
+    recloseRuntimeLayerDescriptor(fixture.descriptor);
     expect(pythonRuntimeLayerBundleSha(fixture.descriptor)).toBe(
       fixture.descriptor.bundle.sha256,
     );
@@ -955,17 +968,15 @@ describe("Homebrew runtime layer consumer", () => {
       Array.from(canonicalHomebrewRuntimeLayerDescriptorBytes(fixture.descriptor)),
     );
     const { reference, bytes } = runtimeLayerReference("runtime", fixture.descriptor);
-    const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
-
-    await expect(registerHomebrewRuntimeLayers({
-      fs,
+    const composed = await composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
       layers: [reference],
       fetch: async () => new Response(bytes),
-    })).resolves.toHaveLength(1);
-    expect(fs.exportLazyArchiveEntries()[0]?.url).toBe(directUrl);
+    });
+    expect(composed.layers).toHaveLength(1);
+    expect(composed.fs.exportLazyArchiveEntries()[0]?.url).toBe(directUrl);
   });
 
   it("registers verified stubs without fetching the archive, then verifies it on demand", async () => {
@@ -1212,7 +1223,7 @@ describe("Homebrew runtime layer consumer", () => {
       const file = descriptorEntries(descriptor).find((entry) => entry.type === "file")!;
       file.size = declaredSize;
       refreshInventory(descriptor);
-      refreshRuntimeLayerBundleIdentity(descriptor);
+      recloseRuntimeLayerDescriptor(descriptor);
     }
     const runtime = runtimeLayerReference("runtime", runtimeDescriptor);
     const perl = runtimeLayerReference("perl", perlDescriptor);
@@ -1242,6 +1253,7 @@ describe("Homebrew runtime layer consumer", () => {
     ) + 1;
     for (const descriptor of [runtimeDescriptor, perlDescriptor]) {
       descriptorTree(descriptor).content.bytes = declaredSize;
+      recloseRuntimeLayerDescriptor(descriptor);
     }
     const runtime = runtimeLayerReference("runtime", runtimeDescriptor);
     const perl = runtimeLayerReference("perl", perlDescriptor);
@@ -1292,6 +1304,7 @@ describe("Homebrew runtime layer consumer", () => {
       left.path < right.path ? -1 : left.path > right.path ? 1 : 0
     );
     refreshInventory(perlDescriptor);
+    recloseRuntimeLayerDescriptor(perlDescriptor);
     const perl = runtimeLayerReference("perl", perlDescriptor);
     const responses = new Map([
       [runtime.reference.descriptor.url, runtime.bytes],
@@ -1314,6 +1327,7 @@ describe("Homebrew runtime layer consumer", () => {
     const fixture = await runtimeLayerConsumerFixture();
     const descriptor = structuredClone(fixture.descriptor);
     descriptorTree(descriptor).activation.mode = "boot-prefetch";
+    recloseRuntimeLayerDescriptor(descriptor);
     const encoded = runtimeLayerReference("runtime", descriptor);
     const owner = MemoryFileSystem.fromImage(fixture.baseImageBytes);
     const peer = MemoryFileSystem.fromExisting(owner.sharedBuffer);
@@ -1352,12 +1366,9 @@ describe("Homebrew runtime layer consumer", () => {
     const fixture = await runtimeLayerConsumerFixture();
     const runtime = runtimeLayerReference("runtime", fixture.descriptor);
     const duplicateArchiveDescriptor = runtimeLayerVariant(fixture.descriptor, "perl");
-    descriptorTree(duplicateArchiveDescriptor).transports = structuredClone(
-      descriptorTree(fixture.descriptor).transports,
-    );
     descriptorTree(duplicateArchiveDescriptor).content.sha256 =
       descriptorTree(fixture.descriptor).content.sha256;
-    refreshRuntimeLayerBundleIdentity(duplicateArchiveDescriptor);
+    recloseRuntimeLayerDescriptor(duplicateArchiveDescriptor);
     const duplicateArchive = runtimeLayerReference("perl", duplicateArchiveDescriptor);
     let responses = new Map([
       [runtime.reference.descriptor.url, runtime.bytes],
@@ -1378,7 +1389,7 @@ describe("Homebrew runtime layer consumer", () => {
     descriptorEntries(nestedDescriptor).sort((left, right) =>
       left.path < right.path ? -1 : left.path > right.path ? 1 : 0
     );
-    refreshRuntimeLayerBundleIdentity(nestedDescriptor);
+    recloseRuntimeLayerDescriptor(nestedDescriptor);
     const nested = runtimeLayerReference("perl", nestedDescriptor);
     responses = new Map([
       [runtime.reference.descriptor.url, runtime.bytes],
@@ -1397,7 +1408,7 @@ describe("Homebrew runtime layer consumer", () => {
     const fixture = await runtimeLayerConsumerFixture();
     const descriptor = structuredClone(fixture.descriptor);
     descriptor.base_vfs.composition.package_set_sha256 = "9".repeat(64);
-    refreshRuntimeLayerBundleIdentity(descriptor);
+    recloseRuntimeLayerDescriptor(descriptor);
     const encoded = runtimeLayerReference("runtime", descriptor);
     const fs = MemoryFileSystem.fromImage(fixture.baseImageBytes);
 
@@ -1443,7 +1454,7 @@ describe("Homebrew runtime layer consumer", () => {
     const descriptor = structuredClone(fixture.descriptor);
     descriptor.base_vfs.sha256 = "9".repeat(64);
     descriptor.base_vfs.package_source.output.sha256 = "9".repeat(64);
-    refreshRuntimeLayerBundleIdentity(descriptor);
+    recloseRuntimeLayerDescriptor(descriptor);
     const encoded = runtimeLayerReference("runtime", descriptor);
 
     await expect(composeHomebrewRuntimeLayers({
@@ -1480,7 +1491,7 @@ describe("Homebrew runtime layer consumer", () => {
     descriptorEntries(descriptor).sort((left, right) =>
       left.path < right.path ? -1 : left.path > right.path ? 1 : 0
     );
-    refreshRuntimeLayerBundleIdentity(descriptor);
+    recloseRuntimeLayerDescriptor(descriptor);
     const encoded = runtimeLayerReference("runtime", descriptor);
 
     await expect(composeHomebrewRuntimeLayers({
@@ -1504,7 +1515,7 @@ describe("Homebrew runtime layer consumer", () => {
     descriptorEntries(perlDescriptor).sort((left, right) =>
       left.path < right.path ? -1 : left.path > right.path ? 1 : 0
     );
-    refreshRuntimeLayerBundleIdentity(perlDescriptor);
+    recloseRuntimeLayerDescriptor(perlDescriptor);
     const perl = runtimeLayerReference("perl", perlDescriptor);
     const responses = new Map([
       [runtime.reference.descriptor.url, runtime.bytes],
