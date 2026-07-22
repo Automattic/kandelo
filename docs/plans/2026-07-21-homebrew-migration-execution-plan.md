@@ -180,7 +180,7 @@ complete here only when its exact accepted artifact has been verified.
 | Language bottles | Public publication complete; lazy-shell acceptance pending | Ruby is public and runtime-verified. Coordinated run `29886510272` built, publicly uploaded, anonymously verified, and atomically finalized Python `3.13.3_1` and Erlang `28.2_1` at tap commit `00ba350ffcee7df02fb9f329bb3c62873ae50831`. It also published and anonymously read back the immutable browser-proven Python VFS release `homebrew-vfs-sha256-db98a17118afeb91d7c8d939fecc8c482ba765cbbe63b242ccf2834de2b48119`. Perl is published. Python, Perl, Erlang, and Ruby still need inclusion in the final lazy-shell language acceptance matrix. |
 | Third-party tap model | Live publisher proof complete; guest use remains | The stricter load-order-independent cross-tap runtime contract landed in Kandelo as PR #1046 at `bd2b090e3e6998350be24ed018bbb76d3eb5b012`, in the core tap as PR #82 at `caad125218a2e3c6f05d290151a32128ec6c54ac`, and in the canary as PR #13 at `25069ad2acb7f86746ec3d119a823e8210a7a1eb`. PR #1049 landed the active-repository tap-store correction at `466a685d9366d3b712c4fe998307e00157bd5d15`; core-tap PR #83 pinned it at `cbb439454adf2718b010d0fe2caffe7158340a0e`, and canary PR #14 pinned it at `ee4464b87b988b163608b6c3520c2260907bda61`. Independent run `29886510154` is completely green: public M4 package and index, anonymous exact-byte pour, dependency-bearing Node.js and Chromium image proof, transactional tap finalization, and immutable five-asset VFS release `homebrew-vfs-sha256-40a44df5c6f139a4e9105b5155040be757bc20596dc5dce2d7a64286447d9f3e`. Conventional third-party `brew tap` and `brew install` inside the guest remain Phase 5 work. |
 | Deferred bottle trees | Producer landed; Phase 3 candidate closed-validated | PR #1051 landed the generic substrate at `122e62a77ffeb40039bee3f2b29cd5f82ed6b1fe`: exact transport identity, bounded tar+gzip and legacy ZIP decoding, hardlink preservation, atomic batch import and materialization, shared first-open/exec behavior, independent immutable runtime-layer identity, and boot-descriptor composition. PR #1052 landed the reviewed 3-embedded/35-deferred main-shell policy at `0dbeb2e0e644fff41510045dccb76f11e2d23042`. PR #1053 landed deterministic checked-in software-gallery browser fixtures at `77358bf5a6081c0561cd73c2bd7db3d15ac6730d`. PR #1054 landed the direct producer at `c16a48c693c8a6dea4ca14e7886b735bf685d51d`: every selected Formula retains its byte-identical original bottle as an independently lazy tree with complete source and guest inventories, package/keg/activation bindings, mode-copy validation, and multi-asset release closure. Core-tap PR #84 then pinned all active publisher callers to that exact Kandelo commit at tap commit `e7cfe3140e692965cd7abf10e8029633c5d20c02`. PR #1055 now composes the exact 38-Formula namespace, embeds `libcxx`, `ncurses`, and `bash`, leaves 35 trees pending, creates the exact mirror manifest, and passes closed-transport Node.js and Chromium acceptance. The immutable public mirror, anonymous public-transport acceptance, and canonical package cutover remain pending. |
-| Guest upstream `brew` | Partial experiment | A bootstrap image can run upstream Homebrew and its Ruby support. General `brew tap`/`brew install` from public first-party and third-party bottles is not yet a supported shell capability. |
+| Guest upstream `brew` | Opt-in bootstrap contract complete; installs remain | The pinned stock-upstream bootstrap now owns a versioned guest layout, an unprivileged writable working repository and install-state tree, protected initial-source provenance, and conventional `/usr/bin/{brew,ruby,gem,bundle,bundler}` entrypoints. Its exact image passes the shared guest contract in Node.js and Chromium without a deferred program fetch. This remains an opt-in integration artifact: `brew config`/`doctor`, first-party and third-party tap/install, upgrade/uninstall, and canonical main-shell activation are still Phase 5 work. |
 | Registry replacement | Incomplete | Formulae are increasingly authoritative, but `packages/registry` still owns recipes, platform artifacts, tests, and composite-image definitions. It cannot be deleted yet. |
 | Bottle-declared, mix-and-match VFS packages | Future retained scope | The current composer produces precomposed images. VFS Formulae/bottles and user-selectable composition remain a later product iteration. |
 
@@ -410,15 +410,22 @@ Acceptance:
 
 ### Phase 5: Ship usable upstream Homebrew inside Kandelo
 
-1. Reassess the existing bootstrap image against current main and record exact
-   results for `brew --version`, `brew config`, `brew doctor`, `brew tap`, and
-   bottle installation.
-2. Give guest Homebrew a truthful writable installation/state model without
-   weakening the immutable provenance of the base image or canonical bottle
-   cache.
-3. Close ordinary platform blockers in Ruby, process/pipe behavior, networking,
-   TLS, GHCR bearer authentication, filesystem links/permissions, or subprocess
-   execution at their owning layer.
+1. The current checkpoint reassesses `brew --version`, prefix, repository,
+   Cellar, cache, Ruby, RubyGems, and Bundler through ordinary guest
+   entrypoints. Still record exact results for `brew config`, `brew doctor`,
+   `brew tap`, and bottle installation rather than inferring them from startup.
+2. Completed for the opt-in bootstrap: guest Homebrew has an explicit
+   unprivileged writable home, cache, configuration, repository, tap store,
+   Cellar, locks, and install-state layout. Root-owned image metadata binds the
+   immutable initial source separately from the truthfully mutable live
+   checkout. Carry this model into the eventual main-shell command rather than
+   weakening permissions or pretending mutable state is immutable.
+3. The current checkpoint closes the generic Bash programmable-completion and
+   builtin-reset capability used by stock Homebrew and preserves Ruby script
+   executable modes. Continue closing ordinary blockers in Ruby,
+   process/pipe behavior, networking, TLS, GHCR bearer authentication,
+   filesystem links/permissions, or subprocess execution at their owning
+   layer.
 4. Make the upstream `brew` command available from the main shell. Its own
    embedded-versus-deferred policy may be selected from measured startup and
    size evidence; invoking it must not depend on host-side Formula emulation.
@@ -431,6 +438,23 @@ Acceptance:
    links, Homebrew receipts, and provenance with the direct composer. Record an
    evidence-backed keep, replace, or retire decision; the existence of the
    current direct composer is not that evidence by itself.
+
+Current checkpoint evidence:
+
+- `scripts/homebrew-bootstrap-layout.ts` is the authority for the guest
+  identity, five conventional entrypoints, writable state, protected files,
+  and exact eager startup-tool closure. Output-level eager selection keeps only
+  `/usr/bin/locale` from the 37-command `posix-utils-lite` bundle resident.
+- Bash revision 4 enables upstream programmable completion. The package suite
+  covers `compgen`/`complete`, builtin enumeration, disable/re-enable, and
+  restoration after a function shadows a builtin; all 16 Bash tests pass on
+  the source-built, fork-instrumented Wasm.
+- The exact bootstrap validates every eager `src=` and deferred `lazy_url=`
+  Wasm input against ABI 41. The shared unprivileged guest contract passes on
+  Node.js and Chromium, and Chromium observes zero deferred program requests.
+- This evidence does not activate the canonical shell, prove a bottle pour, or
+  retire the remaining `config`/`doctor`/tap/install/upgrade/uninstall and
+  historical `saveImage()` work above.
 
 Acceptance:
 

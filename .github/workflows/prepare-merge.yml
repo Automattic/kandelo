@@ -1578,20 +1578,7 @@ jobs:
             bash scripts/build-rootfs.sh
           '
 
-      - name: Pack prepared test workspace
-        run: |
-          bash scripts/dev-shell.sh bash scripts/pack-ci-test-workspace.sh \
-            "$RUNNER_TEMP/test-workspace.tar.zst"
-
-      - name: Upload prepared test workspace
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: test-workspace
-          path: ${{ runner.temp }}/test-workspace.tar.zst
-          retention-days: 1
-          if-no-files-found: error
-
-      - name: Prove Homebrew starts from candidate artifacts
+      - name: Build and prove Homebrew guest bootstrap from candidate artifacts
         if: env.PACKAGE_STAGING_REQUIRED == 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
@@ -1614,7 +1601,27 @@ jobs:
               --bash binaries/programs/wasm32/bash.wasm \
               --brew-script /usr/bin/brew \
               --timeout-ms 120000
+
+            rm -rf host/dist
+            host/node_modules/.bin/tsx \
+              homebrew/test/homebrew_bootstrap_guest_contract_node.ts \
+              --image target/homebrew-bootstrap/homebrew-bootstrap.vfs \
+              --bash binaries/programs/wasm32/bash.wasm \
+              --timeout-ms 300000
           '
+
+      - name: Pack prepared test workspace
+        run: |
+          bash scripts/dev-shell.sh bash scripts/pack-ci-test-workspace.sh \
+            "$RUNNER_TEMP/test-workspace.tar.zst"
+
+      - name: Upload prepared test workspace
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-workspace
+          path: ${{ runner.temp }}/test-workspace.tar.zst
+          retention-days: 1
+          if-no-files-found: error
 
   test-suite:
     name: test-suite (${{ matrix.label }})

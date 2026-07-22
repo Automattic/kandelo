@@ -46,6 +46,12 @@ items=("$xtask_path")
 for item in binaries local-binaries host/wasm; do
     [ -e "$item" ] && items+=("$item")
 done
+if [ -f target/homebrew-bootstrap/homebrew-bootstrap.vfs ]; then
+    # Package/ABI staging builds the exact guest bootstrap before packing. The
+    # browser consumer reuses these same bytes instead of rebuilding against a
+    # different candidate index.
+    items+=(target/homebrew-bootstrap/homebrew-bootstrap.vfs)
+fi
 # `prepare-browser` uses xtask to map package outputs to their resolver paths.
 # The producer already built this exact binary while fetching packages, so keep
 # it with the prepared workspace instead of rebuilding it in the consumer.

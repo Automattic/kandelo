@@ -1304,10 +1304,32 @@ The default 768 MiB VFS capacity leaves writable space for real guest Homebrew
 operations; use `--sab-size` and `--max-size` when a specific integration test
 needs a different capacity.
 
-The bootstrap manifest explicitly trusts executable bits from the pinned
-`git archive` ZIP. `mkrootfs` imports only those Unix `0111` bits; ownership,
-directory modes, non-executable file modes, and all other permission bits stay
-normalized by the manifest.
+This image remains an opt-in integration artifact. Building it does not add
+`brew` to the canonical main-shell image. Its guest contract is owned by
+`scripts/homebrew-bootstrap-layout.ts` and serialized at
+`/etc/kandelo/homebrew-bootstrap-layout.json`. The contract creates an
+unprivileged `linuxbrew` identity (`uid=1000`, `gid=1000`) with a writable home,
+cache, configuration, Cellar, tap store, locks, and installation directories.
+The live `/home/linuxbrew/.linuxbrew` checkout is deliberately a mutable
+working repository because stock Homebrew updates that repository and creates
+taps below it. Root-owned, mode-`0444` image metadata separately binds the
+immutable initial source archive, patch, tree, and layout digests; it does not
+mislabel the post-boot checkout as immutable.
+
+The conventional guest entrypoints are `/usr/bin/brew`, `/usr/bin/ruby`,
+`/usr/bin/gem`, `/usr/bin/bundle`, and `/usr/bin/bundler`. The bootstrap embeds
+the complete outputs of Dash, Bash, Coreutils, Gawk, Grep, Sed, and Findutils,
+plus the single `posix-utils-lite` `/usr/bin/locale` output that stock Homebrew
+uses during startup. Other rootfs tools retain their normal deferred policy.
+The output-level closure is declared generically rather than making the whole
+multi-command `posix-utils-lite` bundle eager.
+
+Both the pinned Homebrew `git archive` ZIP and Ruby's runtime ZIP use
+`fmode_policy=preserve-executable`. `mkrootfs` imports only their Unix `0111`
+bits; ownership, directory modes, non-executable file modes, and all other
+permission bits stay normalized by the manifest. This lets the Ruby script
+entrypoints execute through their ordinary shebangs instead of a test harness
+passing them directly to Ruby.
 
 Run the focused source and selection contract with:
 
@@ -1343,6 +1365,24 @@ requires `brew --version` to succeed after proving that Homebrew consumed
 not prove shebang dispatch, `/usr/bin/brew` alias execution, an install, or a
 bottle download.
 
+Run the complete current guest bootstrap contract in Node.js with:
+
+```bash
+./scripts/dev-shell.sh npx tsx \
+  homebrew/test/homebrew_bootstrap_guest_contract_node.ts \
+  --image target/homebrew-bootstrap/homebrew-bootstrap.vfs \
+  --bash binaries/programs/wasm32/bash.wasm
+```
+
+That contract runs as the unprivileged guest, invokes all five conventional
+entrypoints normally, checks Homebrew's prefix, repository, Cellar, and cache,
+exercises every declared writable directory, proves protected metadata rejects
+writes, creates and removes real guest state, and verifies the layout and
+source-provenance digest binding. The Chromium peer is
+`apps/browser-demos/test/homebrew-bootstrap-vfs.spec.ts`; it runs the same
+script from `/usr/bin/bash` in the exact image and also rejects any deferred
+program download during the bootstrap proof.
+
 ABI 41 raised every fork continuation reserve from 16 KiB to 60 KiB. The
 earlier ABI 39 dispatcher and `/usr/bin/brew` alias-launcher measurements needed
 20,012 and 29,212 bytes respectively. The exact candidate bootstrap also found
@@ -1353,18 +1393,21 @@ weakening the overrun guard. Repeat the probe with
 `/usr/bin/brew`, the launcher must recognize the symlink, and the command must
 print the Homebrew version rather than silently falling back to `/Library`.
 
-For a package or ABI change, Prepare Merge runs both entry-point probes against
-the exact synthetic merge candidate before it can publish merge authority. The
-job materializes the candidate index first and builds the bootstrap image with
+For a package or ABI change, Prepare Merge runs both focused entry-point probes
+and the complete Node.js guest contract against the exact synthetic merge
+candidate before it can publish merge authority. The job materializes the
+candidate index first and builds the bootstrap image with
 `--skip-package-resolve`, so a green result cannot come from an older canonical
-package release. Both probes clear `host/dist` before loading the TypeScript
+package release. Each probe clears `host/dist` before loading the TypeScript
 host runtime, preventing stale compiled host code from shadowing the tested
-source.
+source. The prepared workspace carries that same image into the Chromium
+suite; the browser does not rebuild or substitute it.
 
 `--skip-package-resolve` is only for a worktree whose `binaries/` tree has
-already been materialized. It still validates every required output and fails
-if any artifact is absent, has a stale ABI marker, lacks executable exports, or
-contains retired Asyncify instrumentation. The bootstrap image does not prove
+already been materialized. It still validates every required eager `src=` and
+deferred `lazy_url=` Wasm output and fails if any artifact is absent, has a
+stale ABI marker, lacks executable exports, or contains retired Asyncify
+instrumentation. The bootstrap image does not prove
 that a formula was built from, published as, or poured from a Homebrew bottle;
 those claims require the trusted publish and bottle validation paths below.
 

@@ -134,7 +134,7 @@ if [ ! -f Makefile ]; then
         --disable-nls \
         --disable-mem-scramble \
         --disable-net-redirections \
-        --disable-progcomp \
+        --enable-progcomp \
         2>&1 | tail -30
 
     echo "==> Configure complete."

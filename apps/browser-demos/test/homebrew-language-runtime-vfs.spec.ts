@@ -6,6 +6,11 @@ interface RuntimeRequest {
   vfsUrl: string;
   executable: string;
   argv: string[];
+  env?: string[];
+  cwd?: string;
+  uid?: number;
+  gid?: number;
+  lazyUrlBase?: string;
   timeoutMs: number;
 }
 
