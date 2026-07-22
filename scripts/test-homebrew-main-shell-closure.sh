@@ -198,7 +198,7 @@ grep -Fq 'fetch_args+=(--package "$package")' "$WORKFLOW" ||
 grep -Fq 'scripts/fetch-binaries.sh "${fetch_args[@]}"' "$WORKFLOW" ||
   fail "binary fetch must materialize only direct browser bundling inputs"
 browser_fetch_block="$(sed -n \
-  '/- name: Resolve current direct browser bundling inputs/,/- name: Build an opt-in shell candidate/p' \
+  '/- name: Resolve current direct browser bundling inputs/,/- name: Build the exact lazy shell from public bottles/p' \
   "$WORKFLOW")"
 grep -Fq 'fetch_args=()' <<<"$browser_fetch_block" ||
   fail "browser support inputs must use the normal current-recipe resolver path"

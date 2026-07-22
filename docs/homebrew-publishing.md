@@ -2118,12 +2118,14 @@ that mode and its `build.toml` declares the complete materialization import
 closure. Other eager-image consumers therefore do not acquire lazy-shell code
 or cache dependencies merely because they share the planner and serializer.
 
-`homebrew/main-shell-lazy-artifact-lock.json` makes the candidate's outer image
-identity reviewable rather than merely reporting whatever one runner produced.
+`homebrew/main-shell-lazy-artifact-lock.json` makes the canonical lazy shell's
+outer image identity reviewable rather than merely reporting whatever one
+runner produced.
 The strict composer pins `SOURCE_DATE_EPOCH` to Unix epoch zero so ambient Nix,
 CI, or developer timestamps cannot change inode metadata, then rejects an image
 whose compressed SHA-256 or byte count differs from that lock. This keeps the
-closed candidate proof and the later canonical package wrapper byte-identical.
+closed and public workflow proofs byte-identical to the canonical package
+wrapper.
 
 `homebrew/runtime-layer-policy.json` is the reviewed planning contract for
 runtime derivation. It names the canonical `shell` package-output receipt as

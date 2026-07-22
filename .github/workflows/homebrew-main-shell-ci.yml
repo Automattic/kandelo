@@ -1,4 +1,4 @@
-name: Homebrew main-shell candidate
+name: Homebrew main shell
 
 on:
   pull_request:
@@ -118,7 +118,7 @@ permissions:
 
 jobs:
   exact-public-bottle-closure:
-    name: exact materialized candidate (Node + Chromium)
+    name: exact lazy shell (Node + Chromium)
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -199,7 +199,7 @@ jobs:
               local-binaries/kernel.wasm
           '
 
-      - name: Build an opt-in shell candidate from public bottles
+      - name: Build the exact lazy shell from public bottles
         id: candidate
         run: |
           set -euo pipefail
