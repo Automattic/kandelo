@@ -154,19 +154,25 @@ describe("package build input import closure", () => {
   }
 
   it("makes every MariaDB VFS input deterministic", () => {
-    for (const [packageName, builderPath] of [
-      ["mariadb-test", "images/vfs/scripts/build-mariadb-test-vfs-image.ts"],
-      ["mariadb-vfs", "images/vfs/scripts/build-mariadb-vfs-image.ts"],
+    for (const [packageName, builderPath, minimumRevision] of [
+      ["mariadb-test", "images/vfs/scripts/build-mariadb-test-vfs-image.ts", 4],
+      ["mariadb-vfs", "images/vfs/scripts/build-mariadb-vfs-image.ts", 5],
     ] as const) {
       const manifest = readFileSync(
         join(repoRoot, "packages", "registry", packageName, "package.toml"),
         "utf8",
       );
+      const buildToml = readFileSync(
+        join(repoRoot, "packages", "registry", packageName, "build.toml"),
+        "utf8",
+      );
       const builder = readFileSync(join(repoRoot, builderPath), "utf8");
+      const revision = Number(buildToml.match(/^revision\s*=\s*(\d+)\s*$/m)?.[1]);
 
       expect(manifest).toMatch(
         /^depends_on\s*=\s*\[[\s\S]*?"coreutils@9\.6"[\s\S]*?\]/m,
       );
+      expect(revision).toBeGreaterThanOrEqual(minimumRevision);
       expect(builder).toContain(
         'const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm")',
       );
