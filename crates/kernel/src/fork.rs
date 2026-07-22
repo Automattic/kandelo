@@ -1174,6 +1174,9 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             dir_host_handle: -1,
             dir_synth_state: 0,
             dir_entry_offset: 0,
+            // The retained fork wire format does not carry host-directory
+            // cursor state; see the documented global-OFD limitation.
+            dir_pending_entry: None,
             dri_state,
         });
     }
@@ -1831,6 +1834,9 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             dir_host_handle: -1,
             dir_synth_state: 0,
             dir_entry_offset: 0,
+            // Canonical in-place exec preserves this state. Only the retained
+            // legacy exec wire format restarts host-directory iteration.
+            dir_pending_entry: None,
             dri_state,
         });
     }

@@ -1,5 +1,6 @@
 extern crate alloc;
 
+use alloc::borrow::Cow;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use wasm_posix_shared::Errno;
@@ -3936,6 +3937,7 @@ pub fn sys_lseek(
             ofd.dir_host_handle = -1; // will be reopened by next getdents64
             ofd.dir_synth_state = 0;
             ofd.dir_entry_offset = 0;
+            ofd.dir_pending_entry = None;
             ofd.offset = offset;
 
             if offset > 0 {
@@ -6599,44 +6601,67 @@ pub fn sys_getdents64(
         } else {
             &[b".."]
         };
+        let mut next_synth_state = synth_state;
         for name in synth_entries {
             entry_offset += 1;
             let written = write_dirent64(buf, pos, 1, entry_offset, 4 /* DT_DIR */, name);
             if written == 0 {
-                if pos == 0 {
-                    return Err(Errno::EINVAL);
-                }
-                // Save entry_offset before returning
                 if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
                     ofd.dir_entry_offset = entry_offset - 1; // didn't emit this one
+                    ofd.dir_synth_state = next_synth_state;
+                }
+                if pos == 0 {
+                    return Err(Errno::EINVAL);
                 }
                 return Ok(pos);
             }
             pos += written;
+            next_synth_state += 1;
         }
         if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
-            ofd.dir_synth_state = 2;
+            ofd.dir_synth_state = next_synth_state;
         }
     }
 
     loop {
-        match host.host_readdir(dir_handle, &mut name_buf)? {
-            Some((d_ino, host_d_type, name_len)) => {
+        let pending = proc
+            .ofd_table
+            .get_mut(ofd_idx)
+            .ok_or(Errno::EBADF)?
+            .dir_pending_entry
+            .take();
+        let next_entry = if let Some(entry) = pending {
+            Some((entry.ino, entry.d_type, Cow::Owned(entry.name), true))
+        } else {
+            host.host_readdir(dir_handle, &mut name_buf)?.map(
+                |(d_ino, host_d_type, name_len)| {
+                    (
+                        d_ino,
+                        host_d_type as u8,
+                        Cow::Borrowed(&name_buf[..name_len]),
+                        false,
+                    )
+                },
+            )
+        };
+        match next_entry {
+            Some((d_ino, host_d_type, name, d_type_is_final)) => {
                 // Skip host "." and ".." entries (we already synthesized them)
-                if (name_len == 1 && name_buf[0] == b'.')
-                    || (name_len == 2 && name_buf[0] == b'.' && name_buf[1] == b'.')
+                if name.as_ref() == b"." || name.as_ref() == b".."
                 {
                     continue;
                 }
 
-                let entry_path = directory_entry_path(&path, &name_buf[..name_len]);
-                let d_type = if unsafe { crate::fifo::global_fifo_table() }
+                let entry_path = directory_entry_path(&path, name.as_ref());
+                let d_type = if d_type_is_final {
+                    host_d_type
+                } else if unsafe { crate::fifo::global_fifo_table() }
                     .lookup(&entry_path)
                     .is_some()
                 {
                     1 // DT_FIFO
                 } else {
-                    host_d_type as u8
+                    host_d_type
                 };
                 entry_offset += 1;
                 let written = write_dirent64(
@@ -6645,12 +6670,21 @@ pub fn sys_getdents64(
                     d_ino,
                     entry_offset,
                     d_type,
-                    &name_buf[..name_len],
+                    name.as_ref(),
                 );
                 if written == 0 {
+                    if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                        ofd.dir_pending_entry = Some(crate::ofd::PendingDirEntry {
+                            ino: d_ino,
+                            d_type,
+                            name: name.into_owned(),
+                        });
+                        ofd.dir_entry_offset = entry_offset - 1;
+                    }
                     if pos == 0 {
                         return Err(Errno::EINVAL);
                     }
+                    entry_offset -= 1;
                     break;
                 }
                 pos += written;
@@ -17292,6 +17326,274 @@ mod tests {
         sys_unlink(&mut proc, &mut host, fifo).unwrap();
     }
 
+    fn parse_linux_dirents64(buf: &[u8], len: usize) -> Vec<(u64, i64, Vec<u8>)> {
+        let mut entries = Vec::new();
+        let mut pos = 0usize;
+        while pos < len {
+            assert!(pos + 19 <= len, "truncated linux_dirent64 header");
+            let ino = u64::from_le_bytes(buf[pos..pos + 8].try_into().unwrap());
+            let offset = i64::from_le_bytes(buf[pos + 8..pos + 16].try_into().unwrap());
+            let record_len =
+                u16::from_le_bytes(buf[pos + 16..pos + 18].try_into().unwrap()) as usize;
+            assert!(record_len >= 24 && record_len % 8 == 0);
+            assert!(pos + record_len <= len, "dirent extends beyond returned bytes");
+            let name_bytes = &buf[pos + 19..pos + record_len];
+            let nul = name_bytes
+                .iter()
+                .position(|byte| *byte == 0)
+                .expect("dirent name terminator");
+            entries.push((ino, offset, name_bytes[..nul].to_vec()));
+            pos += record_len;
+        }
+        assert_eq!(pos, len);
+        entries
+    }
+
+    #[test]
+    fn test_getdents64_resumes_synthetic_entries_after_full_buffer() {
+        let mut proc = Process::new(81_071);
+        let mut host = MockHostIO::new();
+        host.dir_entry_count = 0;
+        let fd = sys_open(
+            &mut proc,
+            &mut host,
+            b"/tmp",
+            O_RDONLY | O_DIRECTORY,
+            0,
+        )
+        .unwrap();
+
+        let mut one_record = [0u8; 24];
+        let first = sys_getdents64(&mut proc, &mut host, fd, &mut one_record).unwrap();
+        assert_eq!(parse_linux_dirents64(&one_record, first)[0].2, b".");
+        let second = sys_getdents64(&mut proc, &mut host, fd, &mut one_record).unwrap();
+        assert_eq!(parse_linux_dirents64(&one_record, second)[0].2, b"..");
+        assert_eq!(sys_getdents64(&mut proc, &mut host, fd, &mut one_record), Ok(0));
+        assert_eq!(sys_getdents64(&mut proc, &mut host, fd, &mut one_record), Ok(0));
+    }
+
+    #[test]
+    fn test_getdents64_keeps_entry_that_does_not_fit() {
+        const HOST_ENTRY_COUNT: usize = 192;
+        let mut proc = Process::new(81_072);
+        let mut host = MockHostIO::new();
+        host.dir_entry_count = HOST_ENTRY_COUNT;
+        let fd = sys_open(
+            &mut proc,
+            &mut host,
+            b"/tmp",
+            O_RDONLY | O_DIRECTORY,
+            0,
+        )
+        .unwrap();
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+
+        // Exactly two 24-byte synthetic records fit. Fetching the first
+        // 32-byte host record must not make that record disappear.
+        let mut prefix = [0u8; 48];
+        let prefix_len = sys_getdents64(&mut proc, &mut host, fd, &mut prefix).unwrap();
+        assert_eq!(
+            parse_linux_dirents64(&prefix, prefix_len)
+                .into_iter()
+                .map(|entry| entry.2)
+                .collect::<Vec<_>>(),
+            [b".".to_vec(), b"..".to_vec()],
+        );
+        assert_eq!(host.dir_entry_index, 1);
+        assert_eq!(
+            proc.ofd_table
+                .get(ofd_idx)
+                .unwrap()
+                .dir_pending_entry
+                .as_ref()
+                .unwrap()
+                .ino,
+            42,
+        );
+
+        // dup() aliases the same open file description. Closing the original
+        // fd must therefore leave both the staged entry and the shared
+        // directory cursor available through the duplicate.
+        let duplicate_fd = sys_dup(&mut proc, fd).unwrap();
+        assert_eq!(
+            proc.fd_table.get(duplicate_fd).unwrap().ofd_ref,
+            proc.fd_table.get(fd).unwrap().ofd_ref,
+        );
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert!(proc
+            .ofd_table
+            .get(ofd_idx)
+            .unwrap()
+            .dir_pending_entry
+            .is_some());
+
+        // One byte less than the pending record needs returns EINVAL without
+        // advancing either the host cursor or the guest-visible d_off cookie.
+        assert_eq!(
+            sys_getdents64(&mut proc, &mut host, duplicate_fd, &mut [0u8; 31]),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(host.dir_entry_index, 1);
+        let ofd = proc.ofd_table.get(ofd_idx).unwrap();
+        assert_eq!(ofd.dir_entry_offset, 2);
+        assert_eq!(ofd.dir_pending_entry.as_ref().unwrap().ino, 42);
+
+        // The exact-size retry returns the same entry, and repeated small
+        // buffers must enumerate every remaining host entry once.
+        let mut seen_inodes = Vec::new();
+        let mut one_entry = [0u8; 32];
+        loop {
+            let len =
+                sys_getdents64(&mut proc, &mut host, duplicate_fd, &mut one_entry).unwrap();
+            if len == 0 {
+                break;
+            }
+            assert_eq!(len, 32);
+            let entries = parse_linux_dirents64(&one_entry, len);
+            assert_eq!(entries.len(), 1);
+            seen_inodes.push(entries[0].0);
+        }
+        assert_eq!(
+            seen_inodes,
+            (42..42 + HOST_ENTRY_COUNT as u64).collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            sys_getdents64(&mut proc, &mut host, duplicate_fd, &mut one_entry),
+            Ok(0),
+        );
+
+        // Rewind discards no pending state and larger repeated buffers still
+        // return the complete Python-sized directory without boundary gaps.
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, duplicate_fd, 0, SEEK_SET),
+            Ok(0),
+        );
+        let mut repeated = [0u8; 64];
+        let mut rewound_inodes = Vec::new();
+        loop {
+            let len =
+                sys_getdents64(&mut proc, &mut host, duplicate_fd, &mut repeated).unwrap();
+            if len == 0 {
+                break;
+            }
+            for (ino, _, name) in parse_linux_dirents64(&repeated, len) {
+                if name != b"." && name != b".." {
+                    rewound_inodes.push(ino);
+                }
+            }
+        }
+        assert_eq!(rewound_inodes, seen_inodes);
+
+        // A d_off cookie names the next entry. Seeking to the first host
+        // entry's cookie must resume at the second host entry, even if a
+        // subsequent host entry had already been staged as pending.
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, duplicate_fd, 0, SEEK_SET),
+            Ok(0),
+        );
+        let mut exact_prefix = [0u8; 80];
+        let len =
+            sys_getdents64(&mut proc, &mut host, duplicate_fd, &mut exact_prefix).unwrap();
+        let entries = parse_linux_dirents64(&exact_prefix, len);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[2].0, 42);
+        let cookie = entries[2].1;
+        assert_eq!(cookie, 3);
+        assert!(proc
+            .ofd_table
+            .get(ofd_idx)
+            .unwrap()
+            .dir_pending_entry
+            .is_some());
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, duplicate_fd, cookie, SEEK_SET),
+            Ok(cookie),
+        );
+        assert!(proc
+            .ofd_table
+            .get(ofd_idx)
+            .unwrap()
+            .dir_pending_entry
+            .is_none());
+        let len =
+            sys_getdents64(&mut proc, &mut host, duplicate_fd, &mut one_entry).unwrap();
+        assert_eq!(parse_linux_dirents64(&one_entry, len)[0].0, 43);
+
+        // Final close drops the staged allocation with the OFD. Reusing the
+        // table slot for a new directory must not leak the old cursor state.
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, duplicate_fd, 0, SEEK_SET),
+            Ok(0),
+        );
+        assert_eq!(
+            sys_getdents64(&mut proc, &mut host, duplicate_fd, &mut prefix),
+            Ok(prefix.len()),
+        );
+        assert!(proc
+            .ofd_table
+            .get(ofd_idx)
+            .unwrap()
+            .dir_pending_entry
+            .is_some());
+        sys_close(&mut proc, &mut host, duplicate_fd).unwrap();
+        assert!(proc.ofd_table.get(ofd_idx).is_none());
+
+        let reopened = sys_open(
+            &mut proc,
+            &mut host,
+            b"/tmp",
+            O_RDONLY | O_DIRECTORY,
+            0,
+        )
+        .unwrap();
+        let reopened_ofd_idx = proc.fd_table.get(reopened).unwrap().ofd_ref.0;
+        assert_eq!(reopened_ofd_idx, ofd_idx);
+        let reopened_ofd = proc.ofd_table.get(reopened_ofd_idx).unwrap();
+        assert_eq!(reopened_ofd.dir_entry_offset, 0);
+        assert_eq!(reopened_ofd.dir_synth_state, 0);
+        assert!(reopened_ofd.dir_pending_entry.is_none());
+        sys_close(&mut proc, &mut host, reopened).unwrap();
+    }
+
+    #[test]
+    fn test_getdents64_pending_entry_is_a_stable_snapshot() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(81_073);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(
+            &mut proc,
+            &mut host,
+            b"/tmp",
+            O_RDONLY | O_DIRECTORY,
+            0,
+        )
+        .unwrap();
+
+        // The exact-fit prefix makes getdents64 read "test.txt" from the
+        // host, classify it as DT_REG, and stage it for the next call.
+        let mut prefix = [0u8; 48];
+        assert_eq!(
+            sys_getdents64(&mut proc, &mut host, fd, &mut prefix),
+            Ok(prefix.len()),
+        );
+
+        // Model a namespace/type change after the host iterator supplied the
+        // entry. The retry must return the already-observed record rather than
+        // reclassifying it from mutable namespace state.
+        let fifo_path = b"/tmp/test.txt";
+        assert!(unsafe { crate::fifo::global_fifo_table() }.register(fifo_path.to_vec(), 0));
+        let mut pending = [0u8; 32];
+        let len = sys_getdents64(&mut proc, &mut host, fd, &mut pending).unwrap();
+        assert_eq!(len, pending.len());
+        assert_eq!(&pending[19..27], b"test.txt");
+        assert_eq!(pending[18], 8); // DT_REG as observed before the mutation
+        assert_eq!(
+            unsafe { crate::fifo::global_fifo_table() }.remove(fifo_path),
+            Some(0),
+        );
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
     #[test]
     fn fifo_truncate_fails_without_starting_an_open_rendezvous() {
         let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
@@ -21277,6 +21579,11 @@ mod tests {
             ofd.dir_host_handle = 77;
             ofd.dir_synth_state = 2;
             ofd.dir_entry_offset = 9;
+            ofd.dir_pending_entry = Some(crate::ofd::PendingDirEntry {
+                ino: 91,
+                d_type: 8,
+                name: b"pending.txt".to_vec(),
+            });
         }
         let dir_fd = proc
             .fd_table
@@ -21299,6 +21606,10 @@ mod tests {
         assert_eq!(ofd.dir_host_handle, 77);
         assert_eq!(ofd.dir_synth_state, 2);
         assert_eq!(ofd.dir_entry_offset, 9);
+        assert_eq!(
+            ofd.dir_pending_entry.as_ref().map(|entry| entry.name.as_slice()),
+            Some(b"pending.txt".as_slice()),
+        );
 
         sys_close(&mut proc, &mut host, dir_fd).unwrap();
         assert_eq!(host.closed_dir_handles, vec![88, 77]);

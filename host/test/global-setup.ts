@@ -42,6 +42,7 @@ const TEST_PROGRAMS = [
   "pthread_channel_reuse_test.c",
   "wait_lifecycle_test.c",
   "pathconf_test.c",
+  "getdents_boundary_test.c",
   "terminal_attributes_api_test.c",
   "rlimit_fsize_test.c",
   "socket_timeout_options_test.c",
