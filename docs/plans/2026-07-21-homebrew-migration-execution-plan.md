@@ -179,7 +179,7 @@ complete here only when its exact accepted artifact has been verified.
 | Bottle-composed main shell | Production remains eager; lazy candidate is closed-validated | PR #1025 builds and publishes the current main shell from the exact public 38-Formula closure and proves the exact eager image in Node.js and Chromium. PR #1052 landed the reviewed Bash-closure/35-deferred-bottle policy at `0dbeb2e0e644fff41510045dccb76f11e2d23042`. The current candidate composes that partition reproducibly, boots Bash offline, and passes exact closed-transport Node.js and Chromium acceptance. The immutable public mirror, anonymous public acceptance, and canonical package cutover remain pending, so production still uses the eager image. |
 | Language bottles | Public publication complete; lazy-shell acceptance pending | Ruby is public and runtime-verified. Coordinated run `29886510272` built, publicly uploaded, anonymously verified, and atomically finalized Python `3.13.3_1` and Erlang `28.2_1` at tap commit `00ba350ffcee7df02fb9f329bb3c62873ae50831`. It also published and anonymously read back the immutable browser-proven Python VFS release `homebrew-vfs-sha256-db98a17118afeb91d7c8d939fecc8c482ba765cbbe63b242ccf2834de2b48119`. Perl is published. Python, Perl, Erlang, and Ruby still need inclusion in the final lazy-shell language acceptance matrix. |
 | Third-party tap model | Live publisher proof complete; guest use remains | The stricter load-order-independent cross-tap runtime contract landed in Kandelo as PR #1046 at `bd2b090e3e6998350be24ed018bbb76d3eb5b012`, in the core tap as PR #82 at `caad125218a2e3c6f05d290151a32128ec6c54ac`, and in the canary as PR #13 at `25069ad2acb7f86746ec3d119a823e8210a7a1eb`. PR #1049 landed the active-repository tap-store correction at `466a685d9366d3b712c4fe998307e00157bd5d15`; core-tap PR #83 pinned it at `cbb439454adf2718b010d0fe2caffe7158340a0e`, and canary PR #14 pinned it at `ee4464b87b988b163608b6c3520c2260907bda61`. Independent run `29886510154` is completely green: public M4 package and index, anonymous exact-byte pour, dependency-bearing Node.js and Chromium image proof, transactional tap finalization, and immutable five-asset VFS release `homebrew-vfs-sha256-40a44df5c6f139a4e9105b5155040be757bc20596dc5dce2d7a64286447d9f3e`. Conventional third-party `brew tap` and `brew install` inside the guest remain Phase 5 work. |
-| Deferred bottle trees | Direct producer checkpoint in the current PR; Phase 3 composer in progress | PR #1051 landed the generic substrate at `122e62a77ffeb40039bee3f2b29cd5f82ed6b1fe`: exact transport identity, bounded tar+gzip and legacy ZIP decoding, hardlink preservation, atomic batch import and materialization, shared first-open/exec behavior, independent immutable runtime-layer identity, and boot-descriptor composition. PR #1052 landed the reviewed 3-embedded/35-deferred main-shell policy at `0dbeb2e0e644fff41510045dccb76f11e2d23042`; it selects `libcxx`, `ncurses`, and `bash` for physical embedding but does not yet compose or publish that shell. PR #1053 landed deterministic checked-in software-gallery browser fixtures at `77358bf5a6081c0561cd73c2bd7db3d15ac6730d`, keeping the exact browser gate independent of generated local files. The current `[Homebrew] Turn each bottle into an independently lazy VFS tree` PR maps every selected Formula to its own byte-identical original-bottle candidate tree, carries complete source and guest inventories, validates package/keg/activation and mode-copy bindings in both TypeScript and the independent release validator, and publishes the descriptor plus the exact multi-bottle asset set. The boot runtime-layer consumer remains intentionally one requested root per layer reference; Phase 3 uses the collection primitive directly for the multi-root main shell. Focused host, release, ABI, and synthetic direct-TAR Chromium validation gate this checkpoint. This is still not the production shell cutover: the in-progress Phase 3 composer must compute ownership across all 38 Formulae, materialize exactly the three policy-selected bottles, retain exactly 35 trees as pending, publish their browser-readable mirrors, republish the shell artifact, and run complete command-surface evidence. |
+| Deferred bottle trees | Producer landed; Phase 3 candidate closed-validated | PR #1051 landed the generic substrate at `122e62a77ffeb40039bee3f2b29cd5f82ed6b1fe`: exact transport identity, bounded tar+gzip and legacy ZIP decoding, hardlink preservation, atomic batch import and materialization, shared first-open/exec behavior, independent immutable runtime-layer identity, and boot-descriptor composition. PR #1052 landed the reviewed 3-embedded/35-deferred main-shell policy at `0dbeb2e0e644fff41510045dccb76f11e2d23042`. PR #1053 landed deterministic checked-in software-gallery browser fixtures at `77358bf5a6081c0561cd73c2bd7db3d15ac6730d`. PR #1054 landed the direct producer at `c16a48c693c8a6dea4ca14e7886b735bf685d51d`: every selected Formula retains its byte-identical original bottle as an independently lazy tree with complete source and guest inventories, package/keg/activation bindings, mode-copy validation, and multi-asset release closure. Core-tap PR #84 then pinned all active publisher callers to that exact Kandelo commit at tap commit `e7cfe3140e692965cd7abf10e8029633c5d20c02`. PR #1055 now composes the exact 38-Formula namespace, embeds `libcxx`, `ncurses`, and `bash`, leaves 35 trees pending, creates the exact mirror manifest, and passes closed-transport Node.js and Chromium acceptance. The immutable public mirror, anonymous public-transport acceptance, and canonical package cutover remain pending. |
 | Guest upstream `brew` | Partial experiment | A bootstrap image can run upstream Homebrew and its Ruby support. General `brew tap`/`brew install` from public first-party and third-party bottles is not yet a supported shell capability. |
 | Registry replacement | Incomplete | Formulae are increasingly authoritative, but `packages/registry` still owns recipes, platform artifacts, tests, and composite-image definitions. It cannot be deleted yet. |
 | Bottle-declared, mix-and-match VFS packages | Future retained scope | The current composer produces precomposed images. VFS Formulae/bottles and user-selectable composition remain a later product iteration. |
@@ -275,13 +275,15 @@ per tree, complete source and guest projections, and multi-asset release
 closure. Its new source inventory and `archive-copy-mode` fields are additive:
 new hosts accept existing schema-4 ZIP and legacy serialized trees, while old
 hosts fail closed on the unfamiliar direct shape. They do not change the
-kernel/process ABI. PR #1054 is the remaining Phase 2 checkpoint and landing
-vehicle for that direct producer. Its exact merge commit must become the
-trusted tap input before publishing the shell mirror. The Phase 3 composer is
-in progress, not complete: it still must apply the landed policy to the
-globally owned 38-Formula collection, publish the deferred mirrors, and
-republish and validate the resulting shell under its corrected cache identity.
-Those items remain the boundary between Phase 2 and the Phase 3 cutover.
+kernel/process ABI. PR #1054 landed that producer at
+`c16a48c693c8a6dea4ca14e7886b735bf685d51d` after its exact-head staging and
+synthesized-merge suites passed. Core-tap PR #84 rotated publish, dry-run, and
+maintenance callers to that immutable Kandelo commit and landed at
+`e7cfe3140e692965cd7abf10e8029633c5d20c02`.
+
+Checkpoint: Phase 2 is complete. PR #1055 is the Phase 3 composer and closed
+transport proof. Public mirror publication, anonymous public-transport
+acceptance, and the canonical shell-package cutover remain Phase 3 work.
 
 ### Phase 3: Restore full main-shell laziness
 
@@ -310,21 +312,19 @@ Those items remain the boundary between Phase 2 and the Phase 3 cutover.
 6. Publish the resulting shell through the normal package and browser release
    path and update the exact shell acceptance gate.
 
-Producer checkpoint: the low-level collection interface can already run the
-complete plan once, apply global collision ownership, and return one exact
-bottle payload/tree per package plus the complete eager conflict report. It
-does not choose or serialize the product partition. Phase 3 must compute
-ownership across the full 38-Formula closure before selecting Bash's complete
-embedded runtime closure. PR #1052 fixes that partition at three embedded
-packages (`libcxx`, `ncurses`, and `bash`) and 35 deferred packages. The
-in-progress composer must materialize exactly those three globally projected
-trees, leave exactly 35 pending, preserve the full-plan consumer-owned profile
-and runtime state, generate the exact production shell partition, retrieve its
-public mirrors, and publish and measure the resulting shell. Before publication,
-the exact closed host/VFS binding must pass without `page.route` or service-worker
-interception. After publication, Chromium must read the real anonymous public
-URLs through the normal browser worker/VFS fetch path. This checkpoint does not
-remove or defer any of those acceptance items.
+Producer checkpoint: the low-level collection interface runs the complete plan
+once, applies global collision ownership, and returns one exact bottle
+payload/tree per package plus the complete eager conflict report. It does not
+choose or serialize the product partition. PR #1052 fixes that partition at
+three embedded packages (`libcxx`, `ncurses`, and `bash`) and 35 deferred
+packages. PR #1055 applies the partition after computing ownership across all
+38 Formulae, materializes exactly those three globally projected trees, leaves
+exactly 35 pending, preserves the full-plan consumer-owned profile and runtime
+state, and generates the measured production-shell candidate. Its exact closed
+host/VFS binding passes without `page.route` or service-worker interception.
+After publication, Chromium must still read the real anonymous public URLs
+through the normal browser worker/VFS fetch path. This checkpoint does not
+remove or defer that acceptance item.
 
 Pre-publication candidate checkpoint (2026-07-22):
 
@@ -354,12 +354,12 @@ Pre-publication candidate checkpoint (2026-07-22):
   the three representative first uses fetch 156,581, 6,815,615, and 1,982,626
   bytes respectively (8,954,822 bytes total).
 - This evidence deliberately does not activate the canonical shell package.
-  The package remains at its previous revision until the producer lands, tap
-  trust is rotated to that immutable merge commit, the exact mirror is publicly
-  published and anonymously read back, and the same Node.js/Chromium proof
-  passes against public transport. A final small cutover then changes the
-  canonical package revision and wrapper activation without a broken URL
-  window.
+  The producer has landed and tap trust now pins its immutable merge commit.
+  The package remains at its previous revision until the candidate code lands,
+  the exact mirror is publicly published and anonymously read back, and the
+  same Node.js/Chromium proof passes against public transport. A final small
+  cutover then changes the canonical package revision and wrapper activation
+  without a broken URL window.
 
 Acceptance:
 
