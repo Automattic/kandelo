@@ -7,6 +7,7 @@
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
 import type { HostDiagnostic } from "@host/host-diagnostic";
+import { resolveBrowserCorsProxyUrl } from "../../lib/cors-proxy-config";
 import {
   createBuildFsWithEtc,
   finalizeKernelOwnedImage,
@@ -56,10 +57,12 @@ let grepBytes: ArrayBuffer | null = null;
 let sedBytes: ArrayBuffer | null = null;
 let genCatBytes: ArrayBuffer | null = null;
 
-const corsProxyUrl = new URL(
-  `${import.meta.env.BASE_URL}__kandelo_cors_proxy?url=`,
-  window.location.href,
-).href;
+const corsProxyUrl = resolveBrowserCorsProxyUrl({
+  baseUrl: import.meta.env.BASE_URL,
+  configuredUrl: import.meta.env.VITE_CORS_PROXY_URL,
+  isDev: import.meta.env.DEV,
+  locationHref: window.location.href,
+});
 
 const COREUTILS_NAMES = [
   "arch", "b2sum", "base32", "base64", "basename", "basenc", "cat",

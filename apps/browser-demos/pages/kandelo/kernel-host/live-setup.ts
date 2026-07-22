@@ -1,6 +1,7 @@
 // Builds a LiveKernelHost over a real BrowserKernel for the Kandelo page.
 
 import { BrowserKernel } from "@host/browser-kernel-host";
+import { resolveBrowserCorsProxyUrl } from "../../../lib/cors-proxy-config";
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
 import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
 import { rewriteShellLazyFileUrls } from "../../../lib/init/shell-lazy-files";
@@ -447,6 +448,12 @@ const APP_PATH = import.meta.env.BASE_URL + "app";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const DEV_CORS_PROXY_PATH = import.meta.env.BASE_URL + "__kandelo_cors_proxy";
+const BROWSER_CORS_PROXY_URL = resolveBrowserCorsProxyUrl({
+  baseUrl: import.meta.env.BASE_URL,
+  configuredUrl: import.meta.env.VITE_CORS_PROXY_URL,
+  isDev: import.meta.env.DEV,
+  locationHref: window.location.href,
+});
 const COI_RELOAD_SESSION_KEY = "kandelo:coi-reload-attempted";
 const PHP_FPM_WORKERS = 6;
 const PATCHED_PHP_FPM_CONF = `[global]
@@ -1251,6 +1258,7 @@ async function bootProfile(
   try {
     kernel = new BrowserKernel({
       kernelOwnedFs: true,
+      corsProxyUrl: BROWSER_CORS_PROXY_URL,
       maxWorkers: profile.init?.maxWorkers ?? 4,
       maxMemoryPages: profile.init?.maxMemoryPages,
       onStdout: (data) => recordProcessOutput(data, "stdout"),

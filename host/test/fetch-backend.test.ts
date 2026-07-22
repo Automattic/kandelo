@@ -169,6 +169,54 @@ describe("FetchNetworkBackend", () => {
     });
   });
 
+  it("uses the shared proxy boundary for method, body, headers, and credentials", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("proxied"));
+    vi.stubGlobal("fetch", fetchMock);
+    const backend = new FetchNetworkBackend({
+      corsProxyUrl: "https://kandelo.test/proxy?url=",
+    });
+    const addr = backend.getaddrinfo("example.com");
+    backend.connect(1, addr, 80);
+
+    const body = "command=ls-refs\n";
+    backend.send(
+      1,
+      encoder.encode(
+        "POST /repo/git-upload-pack HTTP/1.1\r\n" +
+        "Host: example.com\r\n" +
+        "Authorization: Bearer guest-token\r\n" +
+        "Proxy-Authorization: Basic host-policy-bypass\r\n" +
+        "Git-Protocol: version=2\r\n" +
+        "X-Cors-Proxy-Allowed-Request-Headers: cookie\r\n" +
+        `Content-Length: ${body.length}\r\n` +
+        "\r\n" +
+        body,
+      ),
+      0,
+    );
+    await recvWhenReady(backend, 1);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      "https://kandelo.test/proxy?url=" +
+      encodeURIComponent("http://example.com/repo/git-upload-pack"),
+    );
+    expect(init.method).toBe("POST");
+    expect(init.credentials).toBe("omit");
+    expect(init.referrerPolicy).toBe("no-referrer");
+    expect(decoder.decode(init.body as Uint8Array)).toBe(body);
+    const headers = init.headers as Headers;
+    expect(headers.get("authorization")).toBe("Bearer guest-token");
+    expect(headers.get("git-protocol")).toBe("version=2");
+    expect(headers.get("x-cors-proxy-allowed-request-headers")).toBe(
+      "authorization",
+    );
+    expect(headers.has("host")).toBe(false);
+    expect(headers.has("content-length")).toBe(false);
+    expect(headers.has("proxy-authorization")).toBe(false);
+  });
+
   describe("close", () => {
     it("cleans up connection state", () => {
       const backend = new FetchNetworkBackend();
@@ -357,6 +405,97 @@ describe("TlsNetworkBackend HTTP proxy path", () => {
     );
   });
 
+  it("preserves a proxied POST and derives narrow Authorization forwarding", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("proxied"));
+    vi.stubGlobal("fetch", fetchMock);
+    const backend = new TlsNetworkBackend({
+      corsProxyUrl: "https://kandelo.test/proxy?url=",
+      dnsAliases: {},
+    });
+    const addr = backend.getaddrinfo("example.com");
+    backend.connect(1, addr, 80);
+
+    const body = "command=ls-refs\n";
+    backend.send(
+      1,
+      encoder.encode(
+        "POST /repo/git-upload-pack HTTP/1.1\r\n" +
+        "Host: example.com\r\n" +
+        "Authorization: Bearer guest-token\r\n" +
+        "Proxy-Authorization: Basic host-policy-bypass\r\n" +
+        "Accept: application/x-git-upload-pack-result\r\n" +
+        "Content-Type: application/x-git-upload-pack-request\r\n" +
+        "Git-Protocol: version=2\r\n" +
+        "X-Guest-Probe: preserved\r\n" +
+        "X-Cors-Proxy-Allowed-Request-Headers: cookie, proxy-authorization\r\n" +
+        `Content-Length: ${body.length}\r\n` +
+        "Connection: keep-alive\r\n" +
+        "\r\n" +
+        body,
+      ),
+      0,
+    );
+    await recvWhenReady(backend, 1);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      "https://kandelo.test/proxy?url=" +
+      encodeURIComponent("http://example.com/repo/git-upload-pack"),
+    );
+    expect(init.method).toBe("POST");
+    expect(init.credentials).toBe("omit");
+    expect(init.referrerPolicy).toBe("no-referrer");
+    expect(decoder.decode(init.body as Uint8Array)).toBe(body);
+
+    const headers = init.headers as Headers;
+    expect(headers.get("authorization")).toBe("Bearer guest-token");
+    expect(headers.get("accept")).toBe(
+      "application/x-git-upload-pack-result",
+    );
+    expect(headers.get("content-type")).toBe(
+      "application/x-git-upload-pack-request",
+    );
+    expect(headers.get("git-protocol")).toBe("version=2");
+    expect(headers.get("x-guest-probe")).toBe("preserved");
+    expect(headers.get("x-cors-proxy-allowed-request-headers")).toBe(
+      "authorization",
+    );
+    expect(headers.has("host")).toBe(false);
+    expect(headers.has("connection")).toBe(false);
+    expect(headers.has("content-length")).toBe(false);
+    expect(headers.has("proxy-authorization")).toBe(false);
+  });
+
+  it("keeps direct fetches free of proxy controls and browser credentials", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("direct"));
+    vi.stubGlobal("fetch", fetchMock);
+    const backend = new TlsNetworkBackend({ dnsAliases: {} });
+    const addr = backend.getaddrinfo("example.com");
+    backend.connect(1, addr, 80);
+
+    backend.send(
+      1,
+      encoder.encode(
+        "GET /direct HTTP/1.1\r\n" +
+        "Host: example.com\r\n" +
+        "Authorization: Bearer direct-token\r\n" +
+        "X-Cors-Proxy-Allowed-Request-Headers: authorization\r\n" +
+        "\r\n",
+      ),
+      0,
+    );
+    await recvWhenReady(backend, 1);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://example.com/direct");
+    expect(init.credentials).toBe("omit");
+    expect(init.referrerPolicy).toBe("no-referrer");
+    const headers = init.headers as Headers;
+    expect(headers.get("authorization")).toBe("Bearer direct-token");
+    expect(headers.has("x-cors-proxy-allowed-request-headers")).toBe(false);
+  });
+
   it("honors MSG_PEEK without consuming HTTP response bytes", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("peek-body")));
     const backend = new TlsNetworkBackend();
@@ -436,7 +575,7 @@ describe("TlsNetworkBackend TLS MITM path", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       `${proxyPrefix}https://example.com/secure`,
-      expect.any(Object),
+      expect.objectContaining({ credentials: "omit" }),
     );
   });
 });

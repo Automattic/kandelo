@@ -244,9 +244,13 @@ machine presentation owned by the demo image. Guide actions may run terminal or
 web actions through `KernelHost`, but they do not replace process supervision,
 VFS state, networking, or runtime behavior.
 
-Cross-origin browser fetches are routed through `public/service-worker.js`,
-which defaults to `https://wordpress-playground-cors-proxy.net/?`. Override it
-with `VITE_CORS_PROXY_URL` when testing another proxy:
+Guest cross-origin HTTP(S) is routed by `BrowserKernel` through its configured
+proxy. `public/service-worker.js` separately uses the same configured endpoint
+for page-level cross-origin fetches and passes already-proxied guest requests
+through unchanged. Local development defaults to the same-origin Vite relay.
+Production defaults to the WordPress Playground CORS proxy at
+`https://wordpress-playground-cors-proxy.net/?`. Override both paths with
+`VITE_CORS_PROXY_URL` when testing or deploying another proxy:
 
 ```bash
 cd apps/browser-demos
@@ -254,7 +258,21 @@ VITE_CORS_PROXY_URL='https://your-proxy.example/?' npm run dev
 ```
 
 Proxy prefixes ending in a bare `?` receive raw target URLs; `?url=`-style
-prefixes receive percent-encoded targets.
+prefixes receive percent-encoded targets. The value must resolve to an absolute
+HTTPS URL without embedded credentials or a fragment; HTTP is accepted only
+for a loopback development relay. The proxy must allow the browser app's origin
+and support GET and POST with request bodies and guest headers. The public
+default allows Kandelo's Automattic GitHub Pages origin; another deployment
+should configure a proxy that explicitly allows its own origin.
+
+The host preserves the guest's method, body, and ordinary headers. It removes
+browser-controlled transport headers and asks the proxy to forward
+`Authorization` only when the guest supplied that header. It always uses
+`credentials: "omit"`; embedding-page cookies and browser authentication state
+are not guest credentials. The local Vite relay applies the same boundary by
+stripping cookies, page origin/referrer context, forwarding headers, and the
+internal proxy opt-in before contacting the target. That relay is development
+tooling bound to the local Vite server, not a production proxy service.
 
 ### Blob-URL iframes (service-worker boundary)
 
@@ -661,4 +679,4 @@ Browser sandboxing prevents Kandelo from listening on real network ports or open
 Each process gets `WebAssembly.Memory(shared: true, initial: layout.initialPages, max: maxPages)`. The initial size covers the program's imported minimum memory, a brk window, and the low syscall control channel; it no longer allocates `maxPages` at spawn. `maxMemoryPages` still caps guest brk/mmap growth and should be tuned for workloads that need large address spaces.
 
 ### npm registry access in the browser
-The node demo's `npm install` uses `--registry=http://proxy.local/` so registry traffic can pass through the host fetch bridge instead of requiring the JavaScript runtime to own every TLS edge case. The kernel resolves `proxy.local` via `host_getaddrinfo` (it is deliberately absent from the synthetic `/etc/hosts`), and the host-side TLS backend re-routes those requests through the existing cors-proxy (dev) or service worker (prod) onto `https://registry.npmjs.org/`. Tarball URLs in JSON responses are rewritten to the same alias so subsequent fetches stay on the same path.
+The node demo's `npm install` uses `--registry=http://proxy.local/` so registry traffic can pass through the host fetch bridge instead of requiring the JavaScript runtime to own every TLS edge case. The kernel resolves `proxy.local` via `host_getaddrinfo` (it is deliberately absent from the synthetic `/etc/hosts`), and the host-side TLS backend re-routes those requests through the configured CORS proxy onto `https://registry.npmjs.org/`. Tarball URLs in JSON responses are rewritten to the same alias so subsequent fetches stay on the same path.

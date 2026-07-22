@@ -3,6 +3,10 @@ import {
   parseNumericIpv4Hostname,
   validateSyntheticDnsHostname,
 } from "./hostname";
+import {
+  normalizeCorsProxyUrl,
+  prepareBrowserHttpFetch,
+} from "./cors-proxy";
 
 /** Error with errno property for EAGAIN propagation to the kernel host imports. */
 export class EagainError extends Error {
@@ -32,24 +36,16 @@ export interface FetchBackendOptions {
   hostAliases?: Record<string, string>;
 }
 
-function corsProxyFetchUrl(corsProxyUrl: string, targetUrl: string): string {
-  const trimmedProxyUrl = corsProxyUrl.trim();
-  if (targetUrl.startsWith(trimmedProxyUrl)) {
-    return targetUrl;
-  }
-  const proxiedTarget = trimmedProxyUrl.endsWith("?")
-    ? targetUrl
-    : encodeURIComponent(targetUrl);
-  return `${trimmedProxyUrl}${proxiedTarget}`;
-}
-
 export class FetchNetworkBackend implements NetworkIO {
   private connections = new Map<number, ConnectionState>();
   private hostnameMap = new Map<string, string>(); // ip string → hostname
   private options: FetchBackendOptions;
 
   constructor(options?: FetchBackendOptions) {
-    this.options = options ?? {};
+    this.options = {
+      ...options,
+      corsProxyUrl: normalizeCorsProxyUrl(options?.corsProxyUrl),
+    };
   }
 
   connect(handle: number, addr: Uint8Array, port: number): void {
@@ -111,19 +107,13 @@ export class FetchNetworkBackend implements NetworkIO {
     const host = rewriteHostAlias(requestedHost, this.options.hostAliases);
     const url = `${scheme}://${host}${path}`;
 
-    // Convert headers map to Headers object (skip Host and Connection)
-    const fetchHeaders = new Headers();
-    for (const [key, value] of headers) {
-      const lower = key.toLowerCase();
-      if (lower !== "host" && lower !== "connection") {
-        fetchHeaders.set(key, value);
-      }
-    }
-
-    // Copy body into a standard ArrayBuffer-backed Uint8Array for fetch compatibility
-    // (the input buffer may be backed by SharedArrayBuffer which isn't accepted as BodyInit)
-    const fetchBody: Uint8Array<ArrayBuffer> | undefined =
-      body && body.length > 0 ? new Uint8Array(body) as Uint8Array<ArrayBuffer> : undefined;
+    const request = prepareBrowserHttpFetch({
+      targetUrl: url,
+      method,
+      headers,
+      body,
+      corsProxyUrl: this.options.corsProxyUrl,
+    });
 
     // Fire-and-forget: start the async fetch. The response will be available
     // when recv() is called later. If recv() is called before the fetch completes,
@@ -131,28 +121,7 @@ export class FetchNetworkBackend implements NetworkIO {
     // after yielding the event loop (allowing this promise to resolve).
     const doFetch = async () => {
       try {
-        let response: Response;
-        try {
-          response = await fetch(url, {
-            method,
-            headers: fetchHeaders,
-            body: fetchBody,
-          });
-        } catch (e) {
-          // Try CORS proxy if configured
-          if (this.options.corsProxyUrl) {
-            response = await fetch(
-              corsProxyFetchUrl(this.options.corsProxyUrl, url),
-              {
-                method,
-                headers: fetchHeaders,
-                body: fetchBody,
-              },
-            );
-          } else {
-            throw e;
-          }
-        }
+        const response = await fetch(request.url, request.init);
 
         conn.responseBuf = formatHttpResponse(response.status, response.statusText, response.headers, await response.arrayBuffer());
         conn.fetchDone = true;
@@ -305,7 +274,10 @@ function parseHttpRequest(buf: Uint8Array, headerEnd: number): {
     }
   }
   const bodyStart = headerEnd + 4;
-  const body = bodyStart < buf.length ? buf.subarray(bodyStart) : null;
+  const contentLength = parseContentLength(headerStr);
+  const body = contentLength > 0
+    ? buf.subarray(bodyStart, bodyStart + contentLength)
+    : null;
   return { method, path, headers, body };
 }
 

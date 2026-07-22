@@ -50,9 +50,9 @@ export interface InitMessage {
     syscallLogPtrWidth?: 4 | 8;
     /** Forwarded to TlsNetworkBackendOptions.dnsAliases. */
     dnsAliases?: Record<string, string>;
-    /** Forwarded to TlsNetworkBackendOptions.corsProxyUrl for browser fetch
-     *  backends that need a same-origin proxy to reach external HTTP(S)
-     *  hosts. */
+    /** Validated absolute HTTPS CORS-proxy prefix for guest outbound HTTP(S),
+     *  or an HTTP loopback relay for local development. Empty or omitted
+     *  values leave proxying disabled. */
     corsProxyUrl?: string;
   };
 }
