@@ -483,7 +483,80 @@ import tarfile
 
 release = runpy.run_path(sys.argv[1])
 validate = release["validate_lazy_layer_tar_gzip"]
+resolve_hardlinks = release["resolve_lazy_layer_hardlinks"]
 ValidationError = release["ValidationError"]
+
+canonical = {
+    "path": "runtime/tool",
+    "source_path": "runtime/tool",
+    "type": "file",
+    "mode": 0o755,
+    "size": 1,
+    "inode_group": "runtime:tool",
+}
+chain = [canonical]
+target = canonical["path"]
+for index in range(20_000):
+    path = f"runtime/link-{index:05d}"
+    chain.append({
+        "path": path,
+        "source_path": path,
+        "type": "hardlink",
+        "mode": canonical["mode"],
+        "size": canonical["size"],
+        "inode_group": canonical["inode_group"],
+        "target": target,
+    })
+    target = path
+if resolve_hardlinks(chain) != {canonical["inode_group"]: canonical}:
+    raise AssertionError("hardlink chain did not resolve to its canonical file")
+
+
+def expect_graph_rejected(label, graph, message):
+    try:
+        resolve_hardlinks(graph)
+    except ValidationError as error:
+        if message not in str(error):
+            raise AssertionError(
+                f"{label} failed for the wrong reason: {error}"
+            ) from error
+    else:
+        raise AssertionError(f"release validator accepted {label}")
+
+
+def hardlink(path, target, group="runtime:tool"):
+    return {
+        "path": path,
+        "source_path": path,
+        "type": "hardlink",
+        "mode": 0o755,
+        "size": 1,
+        "inode_group": group,
+        "target": target,
+    }
+
+
+expect_graph_rejected(
+    "a hardlink cycle reached through a tail",
+    [
+        canonical,
+        hardlink("runtime/tail", "runtime/cycle-a"),
+        hardlink("runtime/cycle-a", "runtime/cycle-b"),
+        hardlink("runtime/cycle-b", "runtime/cycle-a"),
+    ],
+    "cycle reaches",
+)
+expect_graph_rejected(
+    "a missing hardlink target",
+    [canonical, hardlink("runtime/missing", "runtime/absent")],
+    "is missing",
+)
+other = {**canonical, "path": "runtime/other", "inode_group": "runtime:other"}
+expect_graph_rejected(
+    "a cross-inode hardlink target",
+    [canonical, other, hardlink("runtime/cross", "runtime/other")],
+    "invalid target",
+)
 
 stream = io.BytesIO()
 with tarfile.open(fileobj=stream, mode="w:", format=tarfile.USTAR_FORMAT) as archive:

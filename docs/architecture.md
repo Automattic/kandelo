@@ -685,6 +685,18 @@ identity-guarded batch replacement, so failure leaves all pending regular
 inodes unchanged. Hard-link aliases use one SharedFS inode and retain that
 identity when the lazy metadata is transferred or saved in an image.
 
+The generic-tree schema is revalidated through one closed, bounded path at
+live registration, cross-worker import, image restore, and filesystem rebase.
+Content, activation, mount prefix, inventory, and pending inode metadata reject
+unknown fields, unsafe or oversized strings, count/size disagreement, and
+missing, cyclic, or cross-inode hard-link targets before a group is installed.
+Hard-link chains are resolved once with cycle state and path compression, so
+validation is linear in the inventory size. VFS lazy-file and lazy-archive JSON
+sections are each capped at 16 MiB and checked for truncation before JSON
+decoding; deferred-tree imports additionally allow at most 512 groups and
+100,000 entries per group. A pending metadata-only tree remains valid and must
+still verify its immutable payload through its activation policy.
+
 ### VFS Images
 
 A `MemoryFileSystem` can be serialized to a portable binary image and restored later to boot a new kernel with a pre-populated filesystem. This enables snapshotting an initialized VFS (with all files, directories, symlinks, and permissions) and restoring it without repeating the setup work.

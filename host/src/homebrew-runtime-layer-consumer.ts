@@ -9,6 +9,7 @@ import {
   type LazyTreeGroup,
   type LazyTreeRegistrationEntry,
 } from "./vfs/memory-fs";
+import { resolveHardlinkGraph } from "./vfs/hardlink-graph";
 
 export const HOMEBREW_RUNTIME_LAYER_LIMITS = {
   maxLayers: 8,
@@ -1377,39 +1378,17 @@ function validateEntries(
       }
     }
   }
-  const canonicalByGroup = new Map<string, HomebrewLazyLayerEntry>();
-  for (const entry of entries) {
-    if (entry.type !== "file") continue;
-    if (canonicalByGroup.has(entry.inode_group!)) {
-      throw new Error(`Homebrew runtime layer inode group ${entry.inode_group} has multiple files`);
-    }
-    canonicalByGroup.set(entry.inode_group!, entry);
-  }
-  for (const entry of entries) {
-    if (entry.type !== "hardlink") continue;
-    const target = entriesByPath.get(entry.target!);
-    const canonical = canonicalByGroup.get(entry.inode_group!);
-    if (
-      target === undefined || canonical === undefined ||
-      target.inode_group !== entry.inode_group || target.size !== entry.size ||
-      target.mode !== entry.mode
-    ) {
-      throw new Error(`Homebrew runtime layer hardlink ${entry.path} has an invalid target`);
-    }
-    const seen = new Set<string>([entry.path]);
-    let resolved = target;
-    while (resolved.type === "hardlink") {
-      if (seen.has(resolved.path)) {
-        throw new Error(`Homebrew runtime layer hardlink cycle reaches ${resolved.path}`);
-      }
-      seen.add(resolved.path);
-      resolved = entriesByPath.get(resolved.target!)!;
-      if (!resolved) break;
-    }
-    if (resolved !== canonical) {
-      throw new Error(`Homebrew runtime layer hardlink ${entry.path} does not resolve to its inode`);
-    }
-  }
+  const { canonicalByGroup } = resolveHardlinkGraph(
+    entries.map((entry) => ({
+      path: entry.path,
+      type: entry.type,
+      mode: entry.mode,
+      size: entry.size,
+      target: entry.target,
+      inodeGroup: entry.inode_group,
+    })),
+    "Homebrew runtime layer",
+  );
   if (!hasPayload) throw new Error("Homebrew runtime layer has no layer-owned payload");
   const sourceEntryCount = new Set(entries.map((entry) => entry.source_path)).size;
   const expandedBytes = requireInteger(

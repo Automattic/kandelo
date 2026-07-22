@@ -63,6 +63,71 @@ def fail(message: str) -> None:
     raise ValidationError(message)
 
 
+def resolve_lazy_layer_hardlinks(
+    entries: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Resolve the closed hardlink graph once, with path compression."""
+    by_path = {entry["path"]: entry for entry in entries}
+    canonical_groups: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        if entry["type"] != "file":
+            continue
+        inode_group = entry["inode_group"]
+        if inode_group in canonical_groups:
+            fail("Homebrew deferred tree has duplicate canonical inode groups")
+        canonical_groups[inode_group] = entry
+
+    visiting: set[str] = set()
+    resolved: dict[str, dict[str, Any]] = {}
+    for start in entries:
+        if start["type"] != "hardlink" or start["path"] in resolved:
+            continue
+        chain: list[dict[str, Any]] = []
+        cursor = start
+        canonical: dict[str, Any] | None = None
+        while cursor["type"] == "hardlink":
+            path = cursor["path"]
+            if path in resolved:
+                canonical = resolved[path]
+                break
+            if path in visiting:
+                fail(f"Homebrew deferred tree hardlink cycle reaches {path}")
+            visiting.add(path)
+            chain.append(cursor)
+            target = by_path.get(cursor["target"])
+            if target is None:
+                fail(
+                    f"Homebrew deferred tree hardlink {path} target "
+                    f"{cursor['target']} is missing"
+                )
+            if (
+                target["type"] not in ("file", "hardlink")
+                or target.get("inode_group") != cursor["inode_group"]
+                or target.get("size") != cursor["size"]
+                or target.get("mode") != cursor["mode"]
+            ):
+                fail(f"Homebrew deferred tree hardlink {path} has an invalid target")
+            cursor = target
+
+        if canonical is None and cursor["type"] == "file":
+            canonical = cursor
+        expected = canonical_groups.get(start["inode_group"])
+        if canonical is None or canonical is not expected:
+            fail(
+                f"Homebrew deferred tree hardlink {start['path']} "
+                "resolves to a different inode group"
+            )
+        for link in reversed(chain):
+            if canonical_groups.get(link["inode_group"]) is not canonical:
+                fail(
+                    f"Homebrew deferred tree hardlink {link['path']} "
+                    "resolves to a different inode group"
+                )
+            visiting.remove(link["path"])
+            resolved[link["path"]] = canonical
+    return canonical_groups
+
+
 def lazy_layer_asset_names(runtime_id: str) -> tuple[str, str]:
     if not RUNTIME_LAYER_ID_RE.fullmatch(runtime_id):
         fail("Homebrew lazy layer runtime id is invalid")
@@ -1370,39 +1435,7 @@ def validate_lazy_layer(
         source_count,
         "Homebrew deferred tree source entry count",
     )
-    canonical_groups = {
-        entry["inode_group"]: entry
-        for entry in validated_entries
-        if entry["type"] == "file"
-    }
-    if len(canonical_groups) != sum(
-        entry["type"] == "file" for entry in validated_entries
-    ):
-        fail("Homebrew deferred tree has duplicate canonical inode groups")
-    by_path = {entry["path"]: entry for entry in validated_entries}
-    for entry in validated_entries:
-        if entry["type"] != "hardlink":
-            continue
-        target = by_path.get(entry["target"])
-        canonical = canonical_groups.get(entry["inode_group"])
-        if (
-            target is None
-            or canonical is None
-            or target.get("inode_group") != entry["inode_group"]
-            or target.get("size") != entry["size"]
-            or target.get("mode") != entry["mode"]
-        ):
-            fail(f"Homebrew deferred tree hardlink {entry['path']} has an invalid target")
-        seen = {entry["path"]}
-        while target["type"] == "hardlink":
-            if target["path"] in seen:
-                fail("Homebrew deferred tree hardlink cycle")
-            seen.add(target["path"])
-            target = by_path.get(target["target"])
-            if target is None:
-                fail("Homebrew deferred tree hardlink target is missing")
-        if target is not canonical:
-            fail("Homebrew deferred tree hardlink resolves to a different inode group")
+    canonical_groups = resolve_lazy_layer_hardlinks(validated_entries)
     exact(
         inventory.get("regular_inode_count"),
         len(canonical_groups),
@@ -1734,6 +1767,7 @@ def validate_lazy_layer_tar_gzip(
     validate_closed_tar_structure(tar_value)
 
     expected_by_source = {entry["source_path"]: entry for entry in entries}
+    expected_by_path = {entry["path"]: entry for entry in entries}
     if len(expected_by_source) != len(entries):
         fail("Homebrew deferred TAR inventory duplicates a source member")
     try:
@@ -1779,17 +1813,18 @@ def validate_lazy_layer_tar_gzip(
                         f"Homebrew deferred TAR symlink {index} target",
                     )
                 elif actual_type == "hardlink":
-                    target = next(
-                        candidate
-                        for candidate in entries
-                        if candidate["path"] == entry["target"]
-                    )
+                    target = expected_by_path.get(entry["target"])
+                    if target is None:
+                        fail(
+                            f"Homebrew deferred TAR hardlink {index} "
+                            "target is absent from the inventory"
+                        )
                     exact(
                         member.linkname.removeprefix("./").rstrip("/"),
                         target["source_path"],
                         f"Homebrew deferred TAR hardlink {index} target",
                     )
-    except (tarfile.TarError, StopIteration) as error:
+    except tarfile.TarError as error:
         fail(f"Homebrew deferred TAR is invalid: {error}")
 
 

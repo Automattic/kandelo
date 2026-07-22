@@ -13,6 +13,7 @@ import {
   type StatResult as SfsStatResult,
 } from "./sharedfs-vendor";
 import type { ZipEntry } from "./zip";
+import { resolveHardlinkGraph } from "./hardlink-graph";
 
 /** Serializable lazy file entry for transfer between instances. */
 export interface LazyFileEntry {
@@ -236,8 +237,17 @@ const O_WRONLY_CREAT_TRUNC = 0o1101;
 const COPY_CHUNK_BYTES = 1024 * 1024;
 const MIN_REBASE_INITIAL_BYTES = 16 * 1024 * 1024;
 const VFS_IMAGE_MAX_METADATA_BYTES = 64 * 1024;
+const VFS_IMAGE_MAX_LAZY_METADATA_BYTES = 16 * 1024 * 1024;
+const VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES = 16 * 1024 * 1024;
 const MAX_LAZY_ARCHIVE_BYTES = 256 * 1024 * 1024;
 const MAX_BOOT_DEFERRED_TREE_CONCURRENCY = 2;
+const MAX_LAZY_TREE_ENTRIES = 100_000;
+const MAX_LAZY_TREE_GROUPS = 512;
+const MAX_LAZY_TREE_PATH_BYTES = 4096;
+const MAX_LAZY_TREE_SYMLINK_TARGET_BYTES = 65_536;
+const MAX_LAZY_TREE_STRING_BYTES = 8192;
+const MAX_LAZY_TREE_CAPABILITIES = 32;
+const MAX_LAZY_TREE_ACTIVATION_ROOTS = 64;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 
 interface PlannedLazyArchiveEntry {
@@ -246,9 +256,11 @@ interface PlannedLazyArchiveEntry {
   vfsPath: string;
 }
 
-function normalizeLazyArchiveMountPrefix(mountPrefix: string): string {
+function normalizeLazyArchiveMountPrefix(mountPrefix: unknown): string {
   if (
+    typeof mountPrefix !== "string" ||
     !mountPrefix.startsWith("/") ||
+    new TextEncoder().encode(mountPrefix).byteLength > MAX_LAZY_TREE_PATH_BYTES ||
     mountPrefix.includes("\0") ||
     mountPrefix.includes("\\")
   ) {
@@ -257,7 +269,7 @@ function normalizeLazyArchiveMountPrefix(mountPrefix: string): string {
     );
   }
   const normalized = mountPrefix.replace(/\/+$/, "");
-  if (normalized === "") return normalized;
+  if (normalized === "") return "/";
   const segments = normalized.slice(1).split("/");
   if (
     segments.some(
@@ -325,7 +337,9 @@ function planLazyArchiveEntries(
     return {
       entry,
       archivePath,
-      vfsPath: `${normalizedPrefix}/${archivePath}`,
+      vfsPath: normalizedPrefix === "/"
+        ? `/${archivePath}`
+        : `${normalizedPrefix}/${archivePath}`,
     };
   });
 
@@ -463,6 +477,14 @@ function sectionOffsetAfterArchives(
 ): { lazyLen: number; archiveOffset: number; metadataOffset: number } {
   const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabLen;
   const lazyLen = view.getUint32(lazyOffset, true);
+  if (lazyLen > VFS_IMAGE_MAX_LAZY_METADATA_BYTES) {
+    throw new Error(
+      `VFS image lazy metadata exceeds ${VFS_IMAGE_MAX_LAZY_METADATA_BYTES} bytes`,
+    );
+  }
+  if (image.byteLength < lazyOffset + 4 + lazyLen) {
+    throw new Error("VFS image truncated (lazy metadata section)");
+  }
   const archiveOffset = lazyOffset + 4 + lazyLen;
   let metadataOffset = archiveOffset;
 
@@ -471,10 +493,28 @@ function sectionOffsetAfterArchives(
       throw new Error("VFS image truncated (lazy archive section)");
     }
     const archiveLen = view.getUint32(archiveOffset, true);
+    if (archiveLen > VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES) {
+      throw new Error(
+        `VFS image lazy archive metadata exceeds ` +
+          `${VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES} bytes`,
+      );
+    }
+    if (image.byteLength < archiveOffset + 4 + archiveLen) {
+      throw new Error("VFS image truncated (lazy archive payload)");
+    }
     metadataOffset = archiveOffset + 4 + archiveLen;
   }
 
   return { lazyLen, archiveOffset, metadataOffset };
+}
+
+function decodeJsonSection(bytes: Uint8Array, label: string): unknown {
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`${label} is not valid UTF-8 JSON: ${detail}`);
+  }
 }
 
 function monotonicNow(): number {
@@ -532,68 +572,628 @@ function validateLazyArchiveIntegrity(
   return { sha256: record.sha256, bytes: Number(record.bytes) };
 }
 
-function validateLazyTreeContent(value: LazyTreeContent): LazyTreeContent {
-  const expectedMediaType = value.decoder === "zip-v1"
+function exactLazyTreeRecord(
+  value: unknown,
+  keys: readonly string[],
+  label: string,
+): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  const record = value as Record<string, unknown>;
+  const actual = Object.keys(record);
+  if (
+    actual.length !== keys.length ||
+    keys.some((key) => !Object.prototype.hasOwnProperty.call(record, key))
+  ) {
+    throw new Error(`${label} has unexpected or missing fields`);
+  }
+  return record;
+}
+
+function boundedLazyTreeRecord(
+  value: unknown,
+  allowedKeys: readonly string[],
+  requiredKeys: readonly string[],
+  label: string,
+): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  const record = value as Record<string, unknown>;
+  const allowed = new Set(allowedKeys);
+  if (
+    Object.keys(record).some((key) => !allowed.has(key)) ||
+    requiredKeys.some((key) => !Object.prototype.hasOwnProperty.call(record, key))
+  ) {
+    throw new Error(`${label} has unexpected or missing fields`);
+  }
+  return record;
+}
+
+function requireLazyTreeArray(
+  value: unknown,
+  label: string,
+  minimum: number,
+  maximum: number,
+): unknown[] {
+  if (!Array.isArray(value) || value.length < minimum || value.length > maximum) {
+    throw new Error(`${label} must contain ${minimum} to ${maximum} items`);
+  }
+  return value;
+}
+
+function requireLazyTreeString(
+  value: unknown,
+  label: string,
+  maximumBytes: number,
+): string {
+  if (
+    typeof value !== "string" || value.length === 0 || value.includes("\0") ||
+    new TextEncoder().encode(value).byteLength > maximumBytes
+  ) {
+    throw new Error(`${label} is invalid or exceeds ${maximumBytes} bytes`);
+  }
+  return value;
+}
+
+function requireLazyTreeInteger(
+  value: unknown,
+  label: string,
+  minimum: number,
+  maximum: number,
+): number {
+  if (!Number.isSafeInteger(value) || Number(value) < minimum || Number(value) > maximum) {
+    throw new Error(`${label} must be an integer between ${minimum} and ${maximum}`);
+  }
+  return Number(value);
+}
+
+function validateLazyTreeContent(value: unknown): LazyTreeContent {
+  const record = exactLazyTreeRecord(value, [
+    "decoder",
+    "mediaType",
+    "sha256",
+    "bytes",
+    "expandedBytes",
+    "sourceEntryCount",
+    "transports",
+  ], "Lazy tree content");
+  const expectedMediaType = record.decoder === "zip-v1"
     ? "application/zip"
-    : value.decoder === "homebrew-bottle-tar-gzip-v1"
+    : record.decoder === "homebrew-bottle-tar-gzip-v1"
       ? "application/vnd.oci.image.layer.v1.tar+gzip"
       : null;
-  if (expectedMediaType === null || value.mediaType !== expectedMediaType) {
+  if (expectedMediaType === null || record.mediaType !== expectedMediaType) {
     throw new Error("Lazy tree decoder and media type are inconsistent");
   }
   const integrity = validateLazyArchiveIntegrity({
-    sha256: value.sha256,
-    bytes: value.bytes,
+    sha256: record.sha256,
+    bytes: record.bytes,
   });
   if (!integrity) throw new Error("Lazy tree integrity is required");
-  if (
-    !Array.isArray(value.transports) ||
-    value.transports.length === 0 ||
-    value.transports.length > 8 ||
-    new Set(value.transports).size !== value.transports.length ||
-    value.transports.some((url) => typeof url !== "string" || url.length === 0)
-  ) {
-    throw new Error("Lazy tree transports are invalid");
+  const transports = requireLazyTreeArray(
+    record.transports,
+    "Lazy tree transports",
+    1,
+    8,
+  ).map((url, index) =>
+    requireLazyTreeString(
+      url,
+      `Lazy tree transport ${index}`,
+      MAX_LAZY_TREE_STRING_BYTES,
+    )
+  );
+  if (new Set(transports).size !== transports.length) {
+    throw new Error("Lazy tree transports contain duplicates");
   }
-  if (
-    !Number.isSafeInteger(value.expandedBytes) || value.expandedBytes < 0 ||
-    value.expandedBytes > MAX_LAZY_ARCHIVE_BYTES ||
-    !Number.isSafeInteger(value.sourceEntryCount) || value.sourceEntryCount <= 0 ||
-    value.sourceEntryCount > 100_000
-  ) {
-    throw new Error("Lazy tree expansion limits are invalid");
-  }
+  const expandedBytes = requireLazyTreeInteger(
+    record.expandedBytes,
+    "Lazy tree expanded byte count",
+    0,
+    MAX_LAZY_ARCHIVE_BYTES,
+  );
+  const sourceEntryCount = requireLazyTreeInteger(
+    record.sourceEntryCount,
+    "Lazy tree source entry count",
+    1,
+    MAX_LAZY_TREE_ENTRIES,
+  );
   return {
-    decoder: value.decoder,
-    mediaType: value.mediaType,
+    decoder: record.decoder as LazyTreeDecoder,
+    mediaType: expectedMediaType,
     sha256: integrity.sha256,
     bytes: integrity.bytes,
-    expandedBytes: value.expandedBytes,
-    sourceEntryCount: value.sourceEntryCount,
-    transports: [...value.transports],
+    expandedBytes,
+    sourceEntryCount,
+    transports,
   };
 }
 
 function requireCanonicalTreePath(
-  path: string,
+  path: unknown,
   absolute: boolean,
   label: string,
   allowAbsoluteRoot = false,
-): void {
+): string {
   if (
     typeof path !== "string" ||
     path.length === 0 ||
+    new TextEncoder().encode(path).byteLength > MAX_LAZY_TREE_PATH_BYTES ||
     path.includes("\0") ||
     path.includes("\\") ||
     path.startsWith("/") !== absolute
   ) {
     throw new Error(`${label} is not a canonical ${absolute ? "absolute" : "relative"} path`);
   }
-  if (allowAbsoluteRoot && absolute && path === "/") return;
+  if (allowAbsoluteRoot && absolute && path === "/") return path;
   const segments = path.slice(absolute ? 1 : 0).split("/");
   if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
     throw new Error(`${label} has an unsafe path segment`);
   }
+  return path;
+}
+
+interface ValidatedLazyTreeDefinition {
+  content: LazyTreeContent;
+  entries: LazyTreeRegistrationEntry[];
+  mountPrefix: string;
+  activation: LazyTreeActivation;
+  canonicalByGroup: Map<string, LazyTreeRegistrationEntry>;
+}
+
+function validateLazyTreeDefinition(
+  contentValue: unknown,
+  entriesValue: unknown,
+  mountPrefixValue: unknown,
+  activationValue: unknown,
+): ValidatedLazyTreeDefinition {
+  const content = validateLazyTreeContent(contentValue);
+  const mountPrefix = normalizeLazyArchiveMountPrefix(mountPrefixValue);
+  const activationRecord = exactLazyTreeRecord(
+    activationValue,
+    ["mode", "capabilities", "roots"],
+    "Lazy tree activation",
+  );
+  if (
+    activationRecord.mode !== "boot-prefetch" &&
+    activationRecord.mode !== "first-use"
+  ) {
+    throw new Error("Lazy tree activation mode is invalid");
+  }
+  const capabilities = requireLazyTreeArray(
+    activationRecord.capabilities,
+    "Lazy tree activation capabilities",
+    1,
+    MAX_LAZY_TREE_CAPABILITIES,
+  ).map((capability, index) => {
+    const text = requireLazyTreeString(
+      capability,
+      `Lazy tree activation capability ${index}`,
+      255,
+    );
+    if (!/^[a-z0-9][a-z0-9:._-]*$/.test(text)) {
+      throw new Error(`Lazy tree activation capability ${index} is invalid`);
+    }
+    return text;
+  });
+  const roots = requireLazyTreeArray(
+    activationRecord.roots,
+    "Lazy tree activation roots",
+    1,
+    MAX_LAZY_TREE_ACTIVATION_ROOTS,
+  ).map((root, index) =>
+    requireCanonicalTreePath(
+      root,
+      true,
+      `Lazy tree activation root ${index}`,
+      true,
+    )
+  );
+  if (
+    new Set(capabilities).size !== capabilities.length ||
+    new Set(roots).size !== roots.length
+  ) {
+    throw new Error("Lazy tree activation contains duplicates");
+  }
+  const activation: LazyTreeActivation = {
+    mode: activationRecord.mode,
+    capabilities,
+    roots,
+  };
+
+  const rawEntries = requireLazyTreeArray(
+    entriesValue,
+    "Lazy tree inventory",
+    1,
+    MAX_LAZY_TREE_ENTRIES,
+  );
+  const entries: LazyTreeRegistrationEntry[] = [];
+  const byPath = new Map<string, LazyTreeRegistrationEntry>();
+  const sourceEntries = new Map<string, LazyTreeRegistrationEntry>();
+  let decodedPayloadBytes = 0;
+  for (const [index, value] of rawEntries.entries()) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      throw new Error(`Lazy tree entry ${index} must be an object`);
+    }
+    const type = (value as Record<string, unknown>).type;
+    const keys = type === "directory"
+      ? ["vfsPath", "sourcePath", "type", "mode", "size"]
+      : type === "file"
+        ? ["vfsPath", "sourcePath", "type", "mode", "size", "inodeGroup"]
+        : type === "symlink"
+          ? ["vfsPath", "sourcePath", "type", "mode", "size", "target"]
+          : type === "hardlink"
+            ? [
+              "vfsPath",
+              "sourcePath",
+              "type",
+              "mode",
+              "size",
+              "target",
+              "inodeGroup",
+            ]
+            : null;
+    if (!keys) throw new Error(`Lazy tree entry ${index} has an invalid type`);
+    const record = exactLazyTreeRecord(value, keys, `Lazy tree entry ${index}`);
+    const vfsPath = requireCanonicalTreePath(
+      record.vfsPath,
+      true,
+      `Lazy tree entry ${index} VFS path`,
+    );
+    const sourcePath = requireCanonicalTreePath(
+      record.sourcePath,
+      false,
+      `Lazy tree entry ${index} source path`,
+    );
+    if (
+      mountPrefix !== "/" && vfsPath !== mountPrefix &&
+      !vfsPath.startsWith(`${mountPrefix}/`)
+    ) {
+      throw new Error(`Lazy tree entry ${vfsPath} escapes its mount prefix`);
+    }
+    if (byPath.has(vfsPath)) {
+      throw new Error(`Lazy tree duplicates VFS path ${vfsPath}`);
+    }
+    const mode = requireLazyTreeInteger(
+      record.mode,
+      `Lazy tree entry ${vfsPath} mode`,
+      0,
+      0o7777,
+    );
+    const size = requireLazyTreeInteger(
+      record.size,
+      `Lazy tree entry ${vfsPath} size`,
+      0,
+      MAX_LAZY_ARCHIVE_BYTES,
+    );
+    let target: string | undefined;
+    let inodeGroup: string | undefined;
+    if (type === "directory") {
+      if (size !== 0) {
+        throw new Error(`Lazy tree directory ${vfsPath} has nonzero size`);
+      }
+    } else if (type === "symlink") {
+      target = requireLazyTreeString(
+        record.target,
+        `Lazy tree symlink ${vfsPath} target`,
+        MAX_LAZY_TREE_SYMLINK_TARGET_BYTES,
+      );
+      if (new TextEncoder().encode(target).byteLength !== size) {
+        throw new Error(`Lazy tree symlink ${vfsPath} size differs from its target`);
+      }
+    } else {
+      inodeGroup = requireLazyTreeString(
+        record.inodeGroup,
+        `Lazy tree entry ${vfsPath} inode group`,
+        MAX_LAZY_TREE_PATH_BYTES,
+      );
+      if (type === "hardlink") {
+        target = requireCanonicalTreePath(
+          record.target,
+          true,
+          `Lazy tree hardlink ${vfsPath} target`,
+        );
+      }
+    }
+    if (type !== "hardlink") {
+      decodedPayloadBytes += size;
+      if (decodedPayloadBytes > MAX_LAZY_ARCHIVE_BYTES) {
+        throw new Error("Lazy tree inventory exceeds the expansion limit");
+      }
+    }
+    const entry: LazyTreeRegistrationEntry = {
+      vfsPath,
+      sourcePath,
+      type: type as LazyTreeRegistrationEntry["type"],
+      mode,
+      size,
+      ...(target === undefined ? {} : { target }),
+      ...(inodeGroup === undefined ? {} : { inodeGroup }),
+    };
+    const priorSource = sourceEntries.get(sourcePath);
+    if (priorSource) {
+      if (
+        content.decoder !== "zip-v1" || entry.type !== "hardlink" ||
+        priorSource.inodeGroup !== entry.inodeGroup
+      ) {
+        throw new Error(`Lazy tree duplicates source path ${sourcePath}`);
+      }
+    } else {
+      if (content.decoder === "zip-v1" && entry.type === "hardlink") {
+        throw new Error(
+          `Lazy ZIP hardlink ${vfsPath} does not reuse a canonical source path`,
+        );
+      }
+      sourceEntries.set(sourcePath, entry);
+    }
+    entries.push(entry);
+    byPath.set(vfsPath, entry);
+  }
+
+  for (const entry of entries) {
+    const components = entry.vfsPath.split("/").filter(Boolean);
+    for (let length = 1; length < components.length; length += 1) {
+      const ancestorPath = `/${components.slice(0, length).join("/")}`;
+      const ancestor = byPath.get(ancestorPath);
+      if (ancestor && ancestor.type !== "directory") {
+        throw new Error(
+          `Lazy tree entry ${entry.vfsPath} descends through non-directory ${ancestorPath}`,
+        );
+      }
+    }
+  }
+  const graph = resolveHardlinkGraph(
+    entries.map((entry) => ({
+      path: entry.vfsPath,
+      type: entry.type,
+      mode: entry.mode,
+      size: entry.size,
+      target: entry.target,
+      inodeGroup: entry.inodeGroup,
+    })),
+    "Lazy tree",
+  );
+  if (content.sourceEntryCount !== sourceEntries.size) {
+    throw new Error("Lazy tree source entry count differs from its inventory");
+  }
+  if (
+    content.expandedBytes < decodedPayloadBytes ||
+    (content.decoder === "zip-v1" && content.expandedBytes !== decodedPayloadBytes)
+  ) {
+    throw new Error("Lazy tree expanded byte count differs from its inventory");
+  }
+  for (const root of activation.roots) {
+    if (
+      root !== "/" &&
+      !entries.some((entry) =>
+        entry.vfsPath === root || entry.vfsPath.startsWith(`${root}/`)
+      )
+    ) {
+      throw new Error(`Lazy tree activation root ${root} is not owned by its inventory`);
+    }
+  }
+  const canonicalByGroup = new Map<string, LazyTreeRegistrationEntry>();
+  for (const entry of entries) {
+    if (entry.type === "file") canonicalByGroup.set(entry.inodeGroup!, entry);
+  }
+  if (canonicalByGroup.size !== graph.canonicalByGroup.size) {
+    throw new Error("Lazy tree regular inode inventory is inconsistent");
+  }
+  return { content, entries, mountPrefix, activation, canonicalByGroup };
+}
+
+function isGenericLazyTreeMetadata(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.inventory !== undefined || record.activation !== undefined) return true;
+  if (
+    typeof record.content === "object" && record.content !== null &&
+    !Array.isArray(record.content)
+  ) {
+    return (record.content as Record<string, unknown>).decoder ===
+      "homebrew-bottle-tar-gzip-v1";
+  }
+  return false;
+}
+
+function lazyTreeInventoryIdentityKey(value: {
+  sourcePath?: string;
+  type?: string;
+  inodeGroup?: string;
+  target?: string;
+}): string {
+  return JSON.stringify([
+    value.sourcePath,
+    value.type,
+    value.inodeGroup,
+    value.target,
+  ]);
+}
+
+function validateSerializedGenericTree(
+  value: unknown,
+): SerializedLazyArchiveEntry {
+  const record = exactLazyTreeRecord(value, [
+    "content",
+    "inventory",
+    "activation",
+    "url",
+    "mountPrefix",
+    "integrity",
+    "materialized",
+    "entries",
+  ], "Serialized lazy tree");
+  const definition = validateLazyTreeDefinition(
+    record.content,
+    record.inventory,
+    record.mountPrefix,
+    record.activation,
+  );
+  const url = requireLazyTreeString(
+    record.url,
+    "Serialized lazy tree URL",
+    MAX_LAZY_TREE_STRING_BYTES,
+  );
+  if (url !== definition.content.transports[0]) {
+    throw new Error("Serialized lazy tree URL differs from its primary transport");
+  }
+  const integrity = validateLazyArchiveIntegrity(record.integrity);
+  if (
+    !integrity || integrity.sha256 !== definition.content.sha256 ||
+    integrity.bytes !== definition.content.bytes
+  ) {
+    throw new Error("Serialized lazy tree integrity differs from its content");
+  }
+  if (record.materialized !== false) {
+    throw new Error("Serialized lazy tree must describe pending content");
+  }
+
+  const inventoryByPath = new Map(
+    definition.entries.map((entry) => [entry.vfsPath, entry]),
+  );
+  const inventoryByIdentity = new Map(
+    definition.entries.map((entry) => [
+      lazyTreeInventoryIdentityKey(entry),
+      entry,
+    ]),
+  );
+  const pendingValues = requireLazyTreeArray(
+    record.entries,
+    "Serialized lazy tree entries",
+    0,
+    MAX_LAZY_TREE_ENTRIES,
+  );
+  const pendingPaths = new Set<string>();
+  const pending = pendingValues.map((value, index) => {
+    const entry = boundedLazyTreeRecord(value, [
+      "vfsPath",
+      "ino",
+      "generation",
+      "dataSequence",
+      "size",
+      "isSymlink",
+      "deleted",
+      "materialized",
+      "archivePath",
+      "sourcePath",
+      "type",
+      "inodeGroup",
+      "target",
+    ], [
+      "vfsPath",
+      "ino",
+      "generation",
+      "dataSequence",
+      "size",
+      "isSymlink",
+      "deleted",
+      "materialized",
+      "archivePath",
+      "sourcePath",
+      "type",
+      "inodeGroup",
+    ], `Serialized lazy tree entry ${index}`);
+    const vfsPath = requireCanonicalTreePath(
+      entry.vfsPath,
+      true,
+      `Serialized lazy tree entry ${index} VFS path`,
+    );
+    if (pendingPaths.has(vfsPath)) {
+      throw new Error(`Serialized lazy tree duplicates pending path ${vfsPath}`);
+    }
+    pendingPaths.add(vfsPath);
+    const sourcePath = requireCanonicalTreePath(
+      entry.sourcePath,
+      false,
+      `Serialized lazy tree entry ${index} source path`,
+    );
+    const archivePath = requireCanonicalTreePath(
+      entry.archivePath,
+      false,
+      `Serialized lazy tree entry ${index} archive path`,
+    );
+    const inventoryAtPath = inventoryByPath.get(vfsPath);
+    const inventoryEntry = inventoryByIdentity.get(lazyTreeInventoryIdentityKey({
+      sourcePath,
+      type: typeof entry.type === "string" ? entry.type : undefined,
+      inodeGroup: typeof entry.inodeGroup === "string"
+        ? entry.inodeGroup
+        : undefined,
+      target: typeof entry.target === "string" ? entry.target : undefined,
+    })) ?? inventoryAtPath;
+    if (
+      !inventoryEntry ||
+      (inventoryEntry.type !== "file" && inventoryEntry.type !== "hardlink") ||
+      (inventoryAtPath?.inodeGroup !== undefined &&
+        inventoryAtPath.inodeGroup !== inventoryEntry.inodeGroup)
+    ) {
+      throw new Error(
+        `Serialized lazy tree entry ${vfsPath} is absent from its inventory`,
+      );
+    }
+    const canonical = definition.canonicalByGroup.get(inventoryEntry.inodeGroup!);
+    if (
+      entry.type !== inventoryEntry.type ||
+      entry.inodeGroup !== inventoryEntry.inodeGroup ||
+      entry.size !== inventoryEntry.size ||
+      archivePath !== canonical?.sourcePath ||
+      entry.target !== inventoryEntry.target ||
+      entry.isSymlink !== false || entry.deleted !== false ||
+      entry.materialized !== false
+    ) {
+      throw new Error(
+        `Serialized lazy tree entry ${vfsPath} disagrees with its inventory`,
+      );
+    }
+    const ino = requireLazyTreeInteger(
+      entry.ino,
+      `Serialized lazy tree entry ${vfsPath} inode`,
+      1,
+      Number.MAX_SAFE_INTEGER,
+    );
+    const generation = requireLazyTreeInteger(
+      entry.generation,
+      `Serialized lazy tree entry ${vfsPath} generation`,
+      0,
+      Number.MAX_SAFE_INTEGER,
+    );
+    const dataSequence = requireLazyTreeInteger(
+      entry.dataSequence,
+      `Serialized lazy tree entry ${vfsPath} data sequence`,
+      0,
+      Number.MAX_SAFE_INTEGER,
+    );
+    return {
+      vfsPath,
+      ino,
+      generation,
+      dataSequence,
+      size: inventoryEntry.size,
+      isSymlink: false,
+      deleted: false,
+      materialized: false,
+      archivePath,
+      sourcePath,
+      type: inventoryEntry.type,
+      inodeGroup: inventoryEntry.inodeGroup,
+      ...(inventoryEntry.target === undefined
+        ? {}
+        : { target: inventoryEntry.target }),
+    };
+  });
+  return {
+    content: definition.content,
+    inventory: definition.entries,
+    activation: definition.activation,
+    url,
+    mountPrefix: definition.mountPrefix,
+    integrity,
+    materialized: false,
+    entries: pending,
+  };
 }
 
 async function assertLazyIntegrity(
@@ -1364,111 +1964,30 @@ export class MemoryFileSystem implements FileSystemBackend {
     contentValue: LazyTreeContent,
     entriesValue: readonly LazyTreeRegistrationEntry[],
     mountPrefix = "/",
-    activationValue: LazyTreeActivation = {
-      mode: "first-use",
-      capabilities: ["deferred-tree"],
-      roots: [mountPrefix || "/"],
-    },
+    activationValue?: LazyTreeActivation,
   ): LazyTreeGroup {
-    const content = validateLazyTreeContent(contentValue);
-    normalizeLazyArchiveMountPrefix(mountPrefix);
-    if (entriesValue.length === 0) {
-      throw new Error("Lazy tree inventory must not be empty");
-    }
-
-    const entries = entriesValue.map((entry) => ({ ...entry }));
-    const activation: LazyTreeActivation = {
-      mode: activationValue.mode,
-      capabilities: [...activationValue.capabilities],
-      roots: [...activationValue.roots],
-    };
-    if (
-      (activation.mode !== "boot-prefetch" && activation.mode !== "first-use") ||
-      activation.capabilities.length === 0 || activation.roots.length === 0 ||
-      new Set(activation.capabilities).size !== activation.capabilities.length ||
-      new Set(activation.roots).size !== activation.roots.length
-    ) {
-      throw new Error("Lazy tree activation policy is invalid");
-    }
-    for (const root of activation.roots) {
-      requireCanonicalTreePath(root, true, "Lazy tree activation root", true);
-    }
-    const byPath = new Map<string, LazyTreeRegistrationEntry>();
-    const canonicalByGroup = new Map<string, LazyTreeRegistrationEntry>();
-    for (const entry of entries) {
-      requireCanonicalTreePath(entry.vfsPath, true, "Lazy tree VFS path");
-      requireCanonicalTreePath(entry.sourcePath, false, "Lazy tree source path");
-      if (byPath.has(entry.vfsPath)) {
-        throw new Error(`Lazy tree duplicates VFS path ${entry.vfsPath}`);
-      }
-      if (!Number.isSafeInteger(entry.mode) || entry.mode < 0 || entry.mode > 0o7777) {
-        throw new Error(`Lazy tree entry ${entry.vfsPath} has an invalid mode`);
-      }
-      if (!Number.isSafeInteger(entry.size) || entry.size < 0) {
-        throw new Error(`Lazy tree entry ${entry.vfsPath} has an invalid size`);
-      }
-      if (entry.type === "directory") {
-        if (entry.size !== 0 || entry.target !== undefined || entry.inodeGroup !== undefined) {
-          throw new Error(`Lazy tree directory ${entry.vfsPath} has invalid metadata`);
-        }
-      } else if (entry.type === "symlink") {
-        if (
-          typeof entry.target !== "string" || entry.target.length === 0 ||
-          entry.inodeGroup !== undefined ||
-          new TextEncoder().encode(entry.target).byteLength !== entry.size
-        ) {
-          throw new Error(`Lazy tree symlink ${entry.vfsPath} has invalid metadata`);
-        }
-      } else {
-        if (typeof entry.inodeGroup !== "string" || entry.inodeGroup.length === 0) {
-          throw new Error(`Lazy tree regular entry ${entry.vfsPath} has no inode group`);
-        }
-        if (entry.type === "file") {
-          if (entry.target !== undefined || canonicalByGroup.has(entry.inodeGroup)) {
-            throw new Error(`Lazy tree inode group ${entry.inodeGroup} has multiple files`);
-          }
-          canonicalByGroup.set(entry.inodeGroup, entry);
-        } else if (typeof entry.target !== "string") {
-          throw new Error(`Lazy tree hardlink ${entry.vfsPath} has no target`);
-        }
-      }
-      byPath.set(entry.vfsPath, entry);
-    }
-
-    for (const entry of entries) {
-      if (entry.type !== "hardlink") continue;
-      requireCanonicalTreePath(entry.target!, true, "Lazy tree hardlink target");
-      let target = byPath.get(entry.target!);
-      const seen = new Set<string>([entry.vfsPath]);
-      while (target?.type === "hardlink") {
-        if (seen.has(target.vfsPath)) {
-          throw new Error(`Lazy tree hardlink cycle reaches ${target.vfsPath}`);
-        }
-        seen.add(target.vfsPath);
-        target = target.target === undefined ? undefined : byPath.get(target.target);
-      }
-      const canonical = canonicalByGroup.get(entry.inodeGroup!);
-      if (
-        target?.type !== "file" || canonical !== target ||
-        target.inodeGroup !== entry.inodeGroup || target.size !== entry.size ||
-        target.mode !== entry.mode
-      ) {
-        throw new Error(`Lazy tree hardlink ${entry.vfsPath} has an invalid target`);
-      }
-    }
-    for (const entry of entries) {
-      if (
-        (entry.type === "file" || entry.type === "hardlink") &&
-        !canonicalByGroup.has(entry.inodeGroup!)
-      ) {
-        throw new Error(`Lazy tree inode group ${entry.inodeGroup} has no canonical file`);
-      }
-    }
+    const canonicalMountPrefix = normalizeLazyArchiveMountPrefix(mountPrefix);
+    const {
+      content,
+      entries,
+      mountPrefix: validatedMountPrefix,
+      activation,
+      canonicalByGroup,
+    } = validateLazyTreeDefinition(
+      contentValue,
+      entriesValue,
+      canonicalMountPrefix,
+      activationValue ?? {
+        mode: "first-use",
+        capabilities: ["deferred-tree"],
+        roots: [canonicalMountPrefix],
+      },
+    );
 
     const group: LazyTreeGroup = {
       content,
       url: content.transports[0],
-      mountPrefix,
+      mountPrefix: validatedMountPrefix,
       integrity: { sha256: content.sha256, bytes: content.bytes },
       materialized: false,
       inventory: entries.map((entry) => ({ ...entry })),
@@ -1703,12 +2222,39 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   private importLazyArchiveEntriesInternal(
-    serialized: SerializedLazyArchiveEntry[],
+    serializedValue: unknown,
     trustedLegacySnapshot: boolean,
   ): void {
+    const serialized = requireLazyTreeArray(
+      serializedValue,
+      "Serialized lazy archive groups",
+      0,
+      MAX_LAZY_TREE_GROUPS,
+    ).map((value, index) => {
+      if (isGenericLazyTreeMetadata(value)) {
+        return validateSerializedGenericTree(value);
+      }
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new Error(`Serialized lazy archive group ${index} must be an object`);
+      }
+      return value as SerializedLazyArchiveEntry;
+    });
     for (const s of serialized) {
       const entries = new Map<string, LazyArchiveFileEntry>();
       const normalizedPrefix = s.mountPrefix.replace(/\/+$/, "");
+      const genericTree = s.content !== undefined && s.inventory !== undefined &&
+        s.activation !== undefined;
+      const inventoryByPath = genericTree
+        ? new Map(s.inventory!.map((entry) => [entry.vfsPath, entry]))
+        : null;
+      const inventoryByIdentity = genericTree
+        ? new Map(s.inventory!.map((entry) => [
+          lazyTreeInventoryIdentityKey(entry),
+          entry,
+        ]))
+        : null;
+      const identityByGroup = new Map<string, string>();
+      const groupByIdentity = new Map<string, string>();
       for (const e of s.entries) {
         let st: SfsStatResult | null = null;
         const materialized =
@@ -1724,15 +2270,76 @@ export class MemoryFileSystem implements FileSystemBackend {
           try {
             st = this.fs.lstat(e.vfsPath);
           } catch {
+            if (genericTree) {
+              throw new Error(
+                `Serialized lazy tree stub ${e.vfsPath} is missing from the filesystem`,
+              );
+            }
             continue;
           }
-          if (st.ino !== e.ino) continue;
+          if (st.ino !== e.ino) {
+            if (genericTree) {
+              throw new Error(
+                `Serialized lazy tree stub ${e.vfsPath} has a different inode`,
+              );
+            }
+            continue;
+          }
           if (e.generation !== undefined && st.generation !== e.generation) {
+            if (genericTree) {
+              throw new Error(
+                `Serialized lazy tree stub ${e.vfsPath} has a different generation`,
+              );
+            }
             continue;
           }
           if (e.dataSequence === undefined) {
-            if (!MemoryFileSystem.canAdoptLegacyLazyStub(st)) continue;
-          } else if (st.dataSequence !== e.dataSequence) continue;
+            if (!MemoryFileSystem.canAdoptLegacyLazyStub(st)) {
+              if (genericTree) {
+                throw new Error(
+                  `Serialized lazy tree stub ${e.vfsPath} is not pristine`,
+                );
+              }
+              continue;
+            }
+          } else if (st.dataSequence !== e.dataSequence) {
+            if (genericTree) {
+              throw new Error(
+                `Serialized lazy tree stub ${e.vfsPath} has a different data sequence`,
+              );
+            }
+            continue;
+          }
+          if (genericTree) {
+            const inventoryAtPath = inventoryByPath!.get(e.vfsPath);
+            const inventoryEntry =
+              inventoryByIdentity!.get(lazyTreeInventoryIdentityKey(e)) ??
+              inventoryAtPath;
+            if (
+              !inventoryEntry || (st.mode & S_IFMT) !== S_IFREG || st.size !== 0 ||
+              (st.mode & 0o7777) !== inventoryEntry.mode ||
+              (inventoryAtPath?.inodeGroup !== undefined &&
+                inventoryAtPath.inodeGroup !== inventoryEntry.inodeGroup)
+            ) {
+              throw new Error(
+                `Serialized lazy tree stub ${e.vfsPath} disagrees with its inventory`,
+              );
+            }
+            const identity = MemoryFileSystem.inodeKey(st.ino, st.generation);
+            const group = e.inodeGroup!;
+            const priorIdentity = identityByGroup.get(group);
+            const priorGroup = groupByIdentity.get(identity);
+            if (
+              (priorIdentity !== undefined && priorIdentity !== identity) ||
+              (priorGroup !== undefined && priorGroup !== group)
+            ) {
+              throw new Error(
+                `Serialized lazy tree inode group ${group} disagrees with the filesystem`,
+              );
+            }
+            identityByGroup.set(group, identity);
+            groupByIdentity.set(identity, group);
+          }
         }
         entries.set(e.vfsPath, {
           ino: e.ino,
@@ -2429,12 +3036,23 @@ export class MemoryFileSystem implements FileSystemBackend {
     const lazyJson = hasLazy
       ? new TextEncoder().encode(JSON.stringify(lazyEntries))
       : new Uint8Array(0);
+    if (lazyJson.byteLength > VFS_IMAGE_MAX_LAZY_METADATA_BYTES) {
+      throw new Error(
+        `VFS image lazy metadata exceeds ${VFS_IMAGE_MAX_LAZY_METADATA_BYTES} bytes`,
+      );
+    }
 
     const archiveEntries = this.serializeLazyArchiveEntries();
     const hasArchives = archiveEntries.length > 0;
     const archiveJson = hasArchives
       ? new TextEncoder().encode(JSON.stringify(archiveEntries))
       : new Uint8Array(0);
+    if (archiveJson.byteLength > VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES) {
+      throw new Error(
+        `VFS image lazy archive metadata exceeds ` +
+          `${VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES} bytes`,
+      );
+    }
 
     const metadata =
       options?.metadata === undefined ? this.imageMetadata : options.metadata;
@@ -2600,6 +3218,10 @@ export class MemoryFileSystem implements FileSystemBackend {
     const view = parsed.view;
     const flags = parsed.flags;
     const sabLen = parsed.sabLen;
+    const sections = sectionOffsetAfterArchives(image, view, flags, sabLen);
+    if (!(flags & VFS_IMAGE_FLAG_HAS_LAZY) && sections.lazyLen !== 0) {
+      throw new Error("VFS image has lazy metadata without its format flag");
+    }
 
     // Restore SharedArrayBuffer (optionally growable). Some TypeScript lib
     // versions still expose only the 1-arg constructor even on runtimes that
@@ -2629,34 +3251,35 @@ export class MemoryFileSystem implements FileSystemBackend {
 
     // Restore lazy entries
     const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabLen;
-    const lazyLen = view.getUint32(lazyOffset, true);
+    const lazyLen = sections.lazyLen;
     if (flags & VFS_IMAGE_FLAG_HAS_LAZY) {
       if (lazyLen > 0) {
         const lazyBytes = image.subarray(
           lazyOffset + 4,
           lazyOffset + 4 + lazyLen,
         );
-        const entries: LazyFileEntry[] = JSON.parse(
-          new TextDecoder().decode(lazyBytes),
-        );
+        const entries = requireLazyTreeArray(
+          decodeJsonSection(lazyBytes, "VFS image lazy metadata"),
+          "VFS image lazy entries",
+          0,
+          MAX_LAZY_TREE_ENTRIES,
+        ) as LazyFileEntry[];
         mfs.importLazyEntriesInternal(entries, true);
       }
     }
 
     // Restore lazy archive groups
     if (flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES) {
-      const archiveOffset = lazyOffset + 4 + lazyLen;
-      if (image.byteLength < archiveOffset + 4) {
-        throw new Error("VFS image truncated (lazy archive section)");
-      }
+      const archiveOffset = sections.archiveOffset;
       const archiveLen = view.getUint32(archiveOffset, true);
       if (archiveLen > 0) {
         const archiveBytes = image.subarray(
           archiveOffset + 4,
           archiveOffset + 4 + archiveLen,
         );
-        const entries: SerializedLazyArchiveEntry[] = JSON.parse(
-          new TextDecoder().decode(archiveBytes),
+        const entries = decodeJsonSection(
+          archiveBytes,
+          "VFS image lazy archive metadata",
         );
         mfs.importLazyArchiveEntriesInternal(entries, true);
       }

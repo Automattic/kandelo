@@ -872,6 +872,43 @@ describe("Homebrew runtime layer consumer", () => {
     );
   });
 
+  it("resolves descriptor hardlink chains and rejects a cyclic tail", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const descriptor = structuredClone(fixture.descriptor);
+    const file = descriptorEntries(descriptor).find((entry) => entry.type === "file")!;
+    let target = file.path;
+    const addedPaths: string[] = [];
+    for (const suffix of ["a", "b", "c"]) {
+      const path = `${file.path}-hardlink-${suffix}`;
+      addedPaths.push(path);
+      descriptorEntries(descriptor).push({
+        path,
+        source_path: `${file.source_path}-hardlink-${suffix}`,
+        type: "hardlink",
+        ownership: "layer",
+        mode: file.mode,
+        size: file.size,
+        target,
+        inode_group: file.inode_group,
+      });
+      target = path;
+    }
+    descriptorEntries(descriptor).sort((left, right) =>
+      left.path < right.path ? -1 : left.path > right.path ? 1 : 0
+    );
+    refreshInventory(descriptor);
+
+    expect(() => parseHomebrewRuntimeLayerDescriptor(descriptor)).not.toThrow();
+
+    const cyclic = structuredClone(descriptor);
+    const links = addedPaths.map((path) =>
+      descriptorEntries(cyclic).find((entry) => entry.path === path)!
+    );
+    links[0].target = links[links.length - 1].path;
+    expect(() => parseHomebrewRuntimeLayerDescriptor(cyclic))
+      .toThrow(/cycle reaches/);
+  });
+
   it("binds every layer package to its declared keg, opt link, and tap provenance", async () => {
     const fixture = await runtimeLayerConsumerFixture();
     const missingKeg = structuredClone(fixture.descriptor);

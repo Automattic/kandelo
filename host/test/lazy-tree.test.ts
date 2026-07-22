@@ -26,7 +26,11 @@ describe("format-neutral deferred trees", () => {
 
     fs.registerLazyTree(fixture.content, fixture.inventory);
 
-    expect(fs.exportLazyArchiveEntries()[0]?.activation).toEqual({
+    const serialized = fs.exportLazyArchiveEntries()[0];
+    expect(serialized?.mountPrefix).toBe("/");
+    expect(serialized?.entries.every((entry) => entry.vfsPath.startsWith("/")))
+      .toBe(true);
+    expect(serialized?.activation).toEqual({
       mode: "first-use",
       capabilities: ["deferred-tree"],
       roots: ["/"],
@@ -163,6 +167,11 @@ describe("format-neutral deferred trees", () => {
       "/",
       fixture.activation,
     );
+    expect(source.exportLazyArchiveEntries()[0]).toMatchObject({
+      mountPrefix: "/",
+      materialized: false,
+      entries: [],
+    });
     const restored = MemoryFileSystem.fromImage(await source.saveImage());
     const fetcher = vi.fn(async () => new Response(fixture.payload));
     restored.setLazyFetcher(fetcher);
@@ -175,20 +184,41 @@ describe("format-neutral deferred trees", () => {
     expect(restored.exportLazyArchiveEntries()).toEqual([]);
   });
 
-  it("rejects undeclared TAR members without mutating any stub", async () => {
+  it("preserves a pending metadata-only tree after its regular names are removed", async () => {
+    const fixture = tarTreeFixture("first-use");
+    const source = createFs();
+    source.registerLazyTree(
+      fixture.content,
+      fixture.inventory,
+      "/",
+      fixture.activation,
+    );
+    source.unlink("/runtime/tool-hardlink");
+    source.unlink("/runtime/tool");
+    expect(source.exportLazyArchiveEntries()[0]).toMatchObject({
+      materialized: false,
+      entries: [],
+    });
+
+    const restored = MemoryFileSystem.fromImage(await source.saveImage());
+    const fetcher = vi.fn(async () => new Response(fixture.payload));
+    restored.setLazyFetcher(fetcher);
+    await expect(restored.preparePath("/runtime")).resolves.toBe(true);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(restored.exportLazyArchiveEntries()).toEqual([]);
+  });
+
+  it("rejects inventory/content disagreement before mutating any stub", () => {
     const fixture = tarTreeFixture("first-use");
     const fs = createFs();
     const inventory = fixture.inventory.filter(
       (entry) => entry.vfsPath !== "/runtime/tool-hardlink",
     );
-    fs.registerLazyTree(fixture.content, inventory, "/", fixture.activation);
-    fs.setLazyFetcher(async () => new Response(fixture.payload));
 
-    await expect(fs.preparePath("/runtime/tool")).rejects.toThrow(
-      /decoded inventory counts differ/,
-    );
-    const peer = MemoryFileSystem.fromExisting(fs.sharedBuffer);
-    expect(peer.stat("/runtime/tool").size).toBe(0);
+    expect(() =>
+      fs.registerLazyTree(fixture.content, inventory, "/", fixture.activation)
+    ).toThrow(/source entry count differs/);
+    expect(() => fs.lstat("/runtime")).toThrow();
   });
 
   it("rejects impossible hardlink metadata before namespace registration", () => {
@@ -207,6 +237,27 @@ describe("format-neutral deferred trees", () => {
       )
     ).toThrow(/hardlink .* invalid target/);
     expect(() => fs.lstat("/runtime")).toThrow();
+  });
+
+  it("preserves ZIP inventories whose hardlinks reuse the canonical member", () => {
+    const fixture = tarTreeFixture("first-use");
+    const inventory = structuredClone(fixture.inventory);
+    const file = inventory.find((entry) => entry.type === "file")!;
+    const hardlink = inventory.find((entry) => entry.type === "hardlink")!;
+    hardlink.sourcePath = file.sourcePath;
+    const fs = createFs();
+
+    fs.registerLazyTree({
+      ...fixture.content,
+      decoder: "zip-v1",
+      mediaType: "application/zip",
+      expandedBytes: 7,
+      sourceEntryCount: 2,
+      transports: ["https://example.invalid/runtime.zip"],
+    }, inventory, "/", fixture.activation);
+
+    expect(fs.lstat("/runtime/tool-hardlink").ino)
+      .toBe(fs.lstat("/runtime/tool").ino);
   });
 
   it("bounds ZIP expansion by the declared inventory before mutating a stub", async () => {
@@ -251,6 +302,215 @@ describe("format-neutral deferred trees", () => {
     const peer = MemoryFileSystem.fromExisting(fs.sharedBuffer);
     expect(peer.stat("/runtime/tool").size).toBe(0);
   });
+
+  it("closes and bounds every live generic-tree schema component", () => {
+    const fixture = tarTreeFixture("first-use");
+    const cases: Array<{ mutate: (value: Record<string, any>) => void; error: RegExp }> = [
+      {
+        mutate: (value) => value.content.unexpected = true,
+        error: /content has unexpected or missing fields/,
+      },
+      {
+        mutate: (value) => value.activation.unexpected = true,
+        error: /activation has unexpected or missing fields/,
+      },
+      {
+        mutate: (value) => value.inventory[0].unexpected = true,
+        error: /entry 0 has unexpected or missing fields/,
+      },
+      {
+        mutate: (value) => value.activation.roots = ["/runtime/../escape"],
+        error: /unsafe path segment/,
+      },
+      {
+        mutate: (value) => value.activation.roots = ["/outside"],
+        error: /is not owned by its inventory/,
+      },
+      {
+        mutate: (value) => value.mountPrefix = "/runtime/../escape",
+        error: /mount prefix is not canonical/,
+      },
+      {
+        mutate: (value) => value.inventory[0].sourcePath = "x".repeat(4097),
+        error: /canonical relative path/,
+      },
+      {
+        mutate: (value) => value.content.transports = ["x".repeat(8193)],
+        error: /exceeds 8192 bytes/,
+      },
+      {
+        mutate: (value) => value.activation.capabilities = new Array(33).fill("test:x"),
+        error: /must contain 1 to 32 items/,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const value: Record<string, any> = {
+        content: structuredClone(fixture.content),
+        inventory: structuredClone(fixture.inventory),
+        activation: structuredClone(fixture.activation),
+        mountPrefix: "/",
+      };
+      testCase.mutate(value);
+      const fs = createFs();
+      expect(() =>
+        fs.registerLazyTree(
+          value.content,
+          value.inventory,
+          value.mountPrefix,
+          value.activation,
+        )
+      ).toThrow(testCase.error);
+      expect(() => fs.lstat("/runtime")).toThrow();
+    }
+  });
+
+  it("rejects missing, cyclic, and cross-inode hardlinks before registration", () => {
+    const fixture = tarTreeFixture("first-use");
+    const missing = structuredClone(fixture.inventory);
+    missing.find((entry) => entry.type === "hardlink")!.target = "/runtime/missing";
+    expect(() =>
+      createFs().registerLazyTree(
+        fixture.content,
+        missing,
+        "/",
+        fixture.activation,
+      )
+    ).toThrow(/target .* is missing/);
+
+    const cyclic = structuredClone(fixture.inventory);
+    const alias = cyclic.find((entry) => entry.type === "hardlink")!;
+    alias.target = alias.vfsPath;
+    expect(() =>
+      createFs().registerLazyTree(
+        fixture.content,
+        cyclic,
+        "/",
+        fixture.activation,
+      )
+    ).toThrow(/cycle reaches/);
+
+    const crossInode = structuredClone(fixture.inventory);
+    crossInode.push({
+      vfsPath: "/runtime/other",
+      sourcePath: "runtime/other",
+      type: "file",
+      mode: 0o755,
+      size: 7,
+      inodeGroup: "runtime:other",
+    });
+    const crossAlias = crossInode.find((entry) => entry.type === "hardlink")!;
+    crossAlias.target = "/runtime/other";
+    const crossContent = {
+      ...fixture.content,
+      sourceEntryCount: fixture.content.sourceEntryCount + 1,
+      expandedBytes: fixture.content.expandedBytes + 7,
+    };
+    expect(() =>
+      createFs().registerLazyTree(
+        crossContent,
+        crossInode,
+        "/",
+        fixture.activation,
+      )
+    ).toThrow(/invalid target/);
+  });
+
+  it("validates imported generic metadata before installing any group", () => {
+    const fixture = tarTreeFixture("first-use");
+    const source = createFs();
+    source.registerLazyTree(fixture.content, fixture.inventory, "/", fixture.activation);
+    const serialized = source.exportLazyArchiveEntries();
+    const cases: Array<{ mutate: (value: any) => unknown; error: RegExp }> = [
+      {
+        mutate: (value) => ({ ...value, unexpected: true }),
+        error: /Serialized lazy tree has unexpected or missing fields/,
+      },
+      {
+        mutate: (value) => {
+          value.content.unexpected = true;
+          return value;
+        },
+        error: /content has unexpected or missing fields/,
+      },
+      {
+        mutate: (value) => {
+          value.inventory[0].unexpected = true;
+          return value;
+        },
+        error: /entry 0 has unexpected or missing fields/,
+      },
+      {
+        mutate: (value) => {
+          value.entries[0].size += 1;
+          return value;
+        },
+        error: /disagrees with its inventory/,
+      },
+      {
+        mutate: (value) => {
+          value.entries = new Array(100_001).fill(value.entries[0]);
+          return value;
+        },
+        error: /must contain 0 to 100000 items/,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const candidate = testCase.mutate(structuredClone(serialized[0]));
+      const peer = MemoryFileSystem.fromExisting(source.sharedBuffer);
+      expect(() => peer.importLazyArchiveEntries([candidate] as any))
+        .toThrow(testCase.error);
+      expect(peer.exportLazyArchiveEntries()).toEqual([]);
+    }
+    const peer = MemoryFileSystem.fromExisting(source.sharedBuffer);
+    expect(() =>
+      peer.importLazyArchiveEntries(
+        new Array(513).fill(serialized[0]) as any,
+      )
+    ).toThrow(/must contain 0 to 512 items/);
+  });
+
+  it("applies the same generic-tree validator during restore and rebase", async () => {
+    const fixture = tarTreeFixture("first-use");
+    const source = createFs();
+    source.registerLazyTree(fixture.content, fixture.inventory, "/", fixture.activation);
+    const image = await source.saveImage();
+    const serialized = source.exportLazyArchiveEntries();
+    const unknown = structuredClone(serialized[0]) as any;
+    unknown.activation.unexpected = true;
+    expect(() =>
+      MemoryFileSystem.fromImage(replaceLazyArchiveMetadata(image, [unknown]))
+    ).toThrow(/activation has unexpected or missing fields/);
+
+    const truncated = image.slice();
+    const archiveOffset = lazyArchiveMetadataOffset(truncated);
+    const truncatedView = new DataView(
+      truncated.buffer,
+      truncated.byteOffset,
+      truncated.byteLength,
+    );
+    truncatedView.setUint32(
+      archiveOffset,
+      truncatedView.getUint32(archiveOffset, true) + 1,
+      true,
+    );
+    expect(() => MemoryFileSystem.fromImage(truncated))
+      .toThrow(/truncated \(lazy archive payload\)/);
+
+    const oversized = image.slice();
+    new DataView(oversized.buffer, oversized.byteOffset, oversized.byteLength)
+      .setUint32(lazyArchiveMetadataOffset(oversized), 16 * 1024 * 1024 + 1, true);
+    expect(() => MemoryFileSystem.fromImage(oversized))
+      .toThrow(/lazy archive metadata exceeds/);
+
+    const internal = source as unknown as {
+      lazyArchiveGroups: Array<{ content: { expandedBytes: number } }>;
+    };
+    internal.lazyArchiveGroups[0].content.expandedBytes = 0;
+    expect(() => source.rebaseToNewFileSystem(8 * 1024 * 1024))
+      .toThrow(/expanded byte count differs from its inventory/);
+  });
 });
 
 function findZipCentralDirectory(bytes: Uint8Array): number {
@@ -259,6 +519,33 @@ function findZipCentralDirectory(bytes: Uint8Array): number {
     if (view.getUint32(offset, true) === 0x02014b50) return offset;
   }
   throw new Error("central directory entry not found in test ZIP");
+}
+
+function lazyArchiveMetadataOffset(image: Uint8Array): number {
+  const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
+  const sabLength = view.getUint32(12, true);
+  const lazyOffset = 16 + sabLength;
+  const lazyLength = view.getUint32(lazyOffset, true);
+  return lazyOffset + 4 + lazyLength;
+}
+
+function replaceLazyArchiveMetadata(
+  image: Uint8Array,
+  metadata: unknown,
+): Uint8Array {
+  const archiveOffset = lazyArchiveMetadataOffset(image);
+  const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
+  const oldLength = view.getUint32(archiveOffset, true);
+  const suffixOffset = archiveOffset + 4 + oldLength;
+  const json = encoder.encode(JSON.stringify(metadata));
+  const replaced = new Uint8Array(
+    archiveOffset + 4 + json.byteLength + image.byteLength - suffixOffset,
+  );
+  replaced.set(image.subarray(0, archiveOffset), 0);
+  new DataView(replaced.buffer).setUint32(archiveOffset, json.byteLength, true);
+  replaced.set(json, archiveOffset + 4);
+  replaced.set(image.subarray(suffixOffset), archiveOffset + 4 + json.byteLength);
+  return replaced;
 }
 
 function tarTreeFixture(
