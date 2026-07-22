@@ -244,6 +244,18 @@ machine presentation owned by the demo image. Guide actions may run terminal or
 web actions through `KernelHost`, but they do not replace process supervision,
 VFS state, networking, or runtime behavior.
 
+Lazy VFS diagnostics have two intentionally different `KernelHost` views.
+`lazyDownloadHistory()` is a 512-event chronological ring for recent transport
+detail. `lazyDownloadSummaries()` is the complete attached-kernel-lifecycle
+ledger: it retains one latest record per distinct asset, including its
+first/start/update times and complete raw-event count. Its size grows with the
+number of distinct assets retrieved during that kernel lifecycle; it has no
+fixed asset cap. `subscribeLazyDownloadSummaries()` reports both event updates
+and lifecycle resets. The Lazy Load inspector and acceptance tests use the
+summary ledger, so response chunk volume cannot erase evidence that an earlier
+bottle completed. Both views reset when the kernel is replaced; neither is
+persisted as a machine snapshot.
+
 Cross-origin browser fetches are routed through `public/service-worker.js`,
 which defaults to `https://wordpress-playground-cors-proxy.net/?`. Override it
 with `VITE_CORS_PROXY_URL` when testing another proxy:

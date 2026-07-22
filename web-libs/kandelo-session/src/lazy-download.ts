@@ -1,4 +1,31 @@
-import type { LazyDownloadEvent } from "./kernel-host";
+import type { LazyDownloadEvent, LazyDownloadSummary } from "./kernel-host";
+
+/** Collapse one raw transport event into an asset's authoritative state. */
+export function advanceLazyDownloadSummary(
+  previous: LazyDownloadSummary | undefined,
+  event: LazyDownloadEvent,
+): LazyDownloadSummary {
+  return {
+    ...event,
+    path: event.path ?? previous?.path,
+    mountPrefix: event.mountPrefix ?? previous?.mountPrefix,
+    totalBytes: event.totalBytes ?? previous?.totalBytes,
+    firstSeenAt: previous?.firstSeenAt ?? event.t,
+    startedAt: event.status === "started"
+      ? event.t
+      : previous?.startedAt ?? event.t,
+    eventCount: (previous?.eventCount ?? 0) + 1,
+  };
+}
+
+/** Latest non-terminal assets, newest first, for transient download UI. */
+export function activeLazyDownloadSummaries(
+  summaries: Iterable<LazyDownloadSummary>,
+): LazyDownloadSummary[] {
+  return Array.from(summaries)
+    .filter(({ status }) => status !== "complete" && status !== "error")
+    .sort((a, b) => b.t - a.t);
+}
 
 /**
  * Human-readable identity for one lazy download. Archive and tree events

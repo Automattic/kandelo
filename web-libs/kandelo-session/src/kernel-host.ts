@@ -1,4 +1,5 @@
 import type { DemoGuideConfig } from "./demo-config";
+import { advanceLazyDownloadSummary } from "./lazy-download";
 
 // KernelHost — the contract between Kandelo session UI and the kernel/host runtime.
 //
@@ -96,6 +97,25 @@ export interface LazyDownloadEvent {
   totalBytes?: number;
   error?: string;
   t: number;
+}
+
+/**
+ * Authoritative latest state for one lazy VFS transport asset.
+ *
+ * `lazyDownloadHistory()` is intentionally a bounded chronological event log,
+ * so a large streamed response can evict an earlier asset's events. Summaries
+ * collapse every event for one stable download id into one record. Summary
+ * storage grows with the number of distinct assets observed by the currently
+ * attached kernel, rather than with response chunk count; it has no fixed
+ * asset cap.
+ */
+export interface LazyDownloadSummary extends LazyDownloadEvent {
+  /** Timestamp of the first event observed for this asset. */
+  firstSeenAt: number;
+  /** Most recent `started` event, or first observation if no start was seen. */
+  startedAt: number;
+  /** Number of raw events observed for this asset, including this state. */
+  eventCount: number;
 }
 
 export interface KernelLike {
@@ -541,7 +561,12 @@ export interface KernelHost {
 
   // Lazy VFS materialization progress
   subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void): () => void;
+  /** Bounded chronological log for low-level diagnostics. */
   lazyDownloadHistory(): LazyDownloadEvent[];
+  /** Subscribe to summary-ledger changes, including kernel-lifecycle resets. */
+  subscribeLazyDownloadSummaries(cb: () => void): () => void;
+  /** One authoritative latest record per asset for this kernel lifecycle. */
+  lazyDownloadSummaries(): LazyDownloadSummary[];
 
   // Process lifecycle — fires on spawn/exec/exit. Inspector tabs use this
   // to refetch enumProcs / readMemMap instead of polling on a timer.
@@ -790,8 +815,9 @@ export class LiveKernelHost implements KernelHost {
   private dmesgListeners = new ListenerSet<DmesgLine>();
   private dmesgCapacity = 4096;
   private lazyDownloadRing: LazyDownloadEvent[] = [];
-  private lazyDownloadCurrent = new Map<string, LazyDownloadEvent>();
+  private lazyDownloadSummariesById = new Map<string, LazyDownloadSummary>();
   private lazyDownloadListeners = new ListenerSet<LazyDownloadEvent>();
+  private lazyDownloadSummaryListeners = new ListenerSet<void>();
   private lazyDownloadCapacity = 512;
   private processListeners = new ListenerSet<ProcessEvent>();
   private webPreviewListeners = new ListenerSet<WebPreviewState | null>();
@@ -853,7 +879,7 @@ export class LiveKernelHost implements KernelHost {
   /** Replace the wrapped KernelLike. Used after `boot` resolves. */
   attachKernel(kernel: KernelLike): void {
     this.cancelLazyDownloads("kernel replaced");
-    this.clearLazyDownloadHistory();
+    this.clearLazyDownloadState();
     this.offFramebufferAvailability?.();
     this.offFramebufferAvailability = null;
     this.offLazyDownloads?.();
@@ -881,7 +907,7 @@ export class LiveKernelHost implements KernelHost {
   /** Clear the wrapped kernel after a failed boot without changing status. */
   detachKernel(): void {
     this.cancelLazyDownloads("kernel detached");
-    this.clearLazyDownloadHistory();
+    this.clearLazyDownloadState();
     this.offFramebufferAvailability?.();
     this.offFramebufferAvailability = null;
     this.offLazyDownloads?.();
@@ -986,35 +1012,46 @@ export class LiveKernelHost implements KernelHost {
   /** Emit lazy VFS materialization progress from the wrapped kernel. */
   emitLazyDownloadEvent(event: LazyDownloadEvent): void {
     const copy = { ...event };
-    if (copy.status === "complete" || copy.status === "error") {
-      this.lazyDownloadCurrent.delete(copy.id);
-    } else {
-      this.lazyDownloadCurrent.set(copy.id, copy);
-    }
+    const summary = advanceLazyDownloadSummary(
+      this.lazyDownloadSummariesById.get(copy.id),
+      copy,
+    );
+    this.lazyDownloadSummariesById.set(copy.id, summary);
     this.lazyDownloadRing.push(copy);
     if (this.lazyDownloadRing.length > this.lazyDownloadCapacity) {
       this.lazyDownloadRing.splice(0, this.lazyDownloadRing.length - this.lazyDownloadCapacity);
     }
     this.lazyDownloadListeners.emit(copy);
+    this.lazyDownloadSummaryListeners.emit(undefined);
   }
 
   private cancelLazyDownloads(reason: string): void {
-    if (this.lazyDownloadCurrent.size === 0) return;
-    const active = Array.from(this.lazyDownloadCurrent.values());
-    this.lazyDownloadCurrent.clear();
-    for (const event of active) {
+    const active = Array.from(this.lazyDownloadSummariesById.values()).filter(
+      ({ status }) => status !== "complete" && status !== "error",
+    );
+    for (const summary of active) {
       this.emitLazyDownloadEvent({
-        ...event,
+        id: summary.id,
+        kind: summary.kind,
         status: "error",
+        url: summary.url,
+        path: summary.path,
+        mountPrefix: summary.mountPrefix,
+        loadedBytes: summary.loadedBytes,
+        totalBytes: summary.totalBytes,
         error: reason,
         t: nowMs(),
       });
     }
   }
 
-  private clearLazyDownloadHistory(): void {
+  private clearLazyDownloadState(): void {
+    const hadSummaries = this.lazyDownloadSummariesById.size > 0;
     this.lazyDownloadRing = [];
-    this.lazyDownloadCurrent.clear();
+    this.lazyDownloadSummariesById.clear();
+    if (hadSummaries) {
+      this.lazyDownloadSummaryListeners.emit(undefined);
+    }
   }
 
   /** Push a dmesg line into the ring and fan out to subscribers. */
@@ -1158,7 +1195,18 @@ export class LiveKernelHost implements KernelHost {
   }
 
   lazyDownloadHistory(): LazyDownloadEvent[] {
-    return this.lazyDownloadRing.slice();
+    return this.lazyDownloadRing.map((event) => ({ ...event }));
+  }
+
+  subscribeLazyDownloadSummaries(cb: () => void): () => void {
+    return this.lazyDownloadSummaryListeners.add(cb);
+  }
+
+  lazyDownloadSummaries(): LazyDownloadSummary[] {
+    return Array.from(
+      this.lazyDownloadSummariesById.values(),
+      (summary) => ({ ...summary }),
+    );
   }
 
   subscribeProcessEvents(cb: (event: ProcessEvent) => void): () => void {

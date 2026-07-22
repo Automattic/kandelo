@@ -383,7 +383,9 @@ describe("LiveKernelHost: lazy download events", () => {
       } as any,
     });
     const seen: LazyDownloadEvent[] = [];
+    const summaryChanges = vi.fn();
     host.subscribeLazyDownloads((event) => seen.push(event));
+    const offSummaries = host.subscribeLazyDownloadSummaries(summaryChanges);
 
     const event: LazyDownloadEvent = {
       id: "tree:7",
@@ -399,13 +401,174 @@ describe("LiveKernelHost: lazy download events", () => {
 
     expect(seen).toEqual([event]);
     expect(host.lazyDownloadHistory()).toEqual([event]);
+    expect(host.lazyDownloadSummaries()).toEqual([{
+      ...event,
+      firstSeenAt: 10,
+      startedAt: 10,
+      eventCount: 1,
+    }]);
+    expect(summaryChanges).toHaveBeenCalledOnce();
+    offSummaries();
+    kernelCb?.({ ...event, loadedBytes: 768, t: 11 });
+    expect(summaryChanges).toHaveBeenCalledOnce();
     host.detachKernel();
     expect(offKernel).toHaveBeenCalledOnce();
   });
 
-  it("clears lazy download history when the kernel is replaced", () => {
+  it("keeps one authoritative summary per asset when raw progress rolls over", () => {
+    const host = new LiveKernelHost();
+    const emit = (
+      id: string,
+      status: LazyDownloadEvent["status"],
+      loadedBytes: number,
+      t: number,
+    ) => host.emitLazyDownloadEvent({
+      id,
+      kind: "tree",
+      status,
+      url: `https://example.test/${id}.tar.gz`,
+      mountPrefix: "/",
+      loadedBytes,
+      totalBytes: 700,
+      t,
+    });
+
+    emit("early", "started", 0, 1);
+    emit("early", "complete", 700, 2);
+    emit("large", "started", 0, 3);
+    for (let chunk = 1; chunk <= 700; chunk++) {
+      emit("large", "progress", chunk, chunk + 3);
+    }
+    emit("large", "complete", 700, 704);
+
+    const history = host.lazyDownloadHistory();
+    expect(history).toHaveLength(512);
+    expect(history.some(({ id }) => id === "early")).toBe(false);
+    expect(history.map(({ t }) => t)).toEqual(
+      Array.from({ length: 512 }, (_, index) => index + 193),
+    );
+    expect(host.lazyDownloadSummaries()).toEqual([
+      expect.objectContaining({
+        id: "early",
+        status: "complete",
+        loadedBytes: 700,
+        firstSeenAt: 1,
+        startedAt: 1,
+        eventCount: 2,
+      }),
+      expect.objectContaining({
+        id: "large",
+        status: "complete",
+        loadedBytes: 700,
+        firstSeenAt: 3,
+        startedAt: 3,
+        eventCount: 702,
+      }),
+    ]);
+  });
+
+  it("keys summary cardinality to distinct assets rather than progress event count", () => {
+    const host = new LiveKernelHost();
+    for (let eventIndex = 0; eventIndex < 2_000; eventIndex++) {
+      const id = eventIndex % 2 === 0 ? "one" : "two";
+      host.emitLazyDownloadEvent({
+        id,
+        kind: "file",
+        status: "progress",
+        url: `https://example.test/${id}.wasm`,
+        path: `/usr/bin/${id}`,
+        loadedBytes: eventIndex,
+        t: eventIndex,
+      });
+    }
+
+    const summaries = host.lazyDownloadSummaries();
+    expect(summaries).toHaveLength(2);
+    expect(summaries.map(({ id, eventCount }) => ({ id, eventCount }))).toEqual([
+      { id: "one", eventCount: 1_000 },
+      { id: "two", eventCount: 1_000 },
+    ]);
+  });
+
+  it("returns defensive copies of raw events and asset summaries", () => {
+    const host = new LiveKernelHost();
+    const event: LazyDownloadEvent = {
+      id: "tree:1",
+      kind: "tree",
+      status: "complete",
+      url: "https://example.test/tree.tar.gz",
+      mountPrefix: "/",
+      loadedBytes: 1024,
+      totalBytes: 1024,
+      t: 10,
+    };
+    host.emitLazyDownloadEvent(event);
+
+    event.status = "error";
+    host.lazyDownloadHistory()[0]!.status = "error";
+    host.lazyDownloadSummaries()[0]!.status = "error";
+    host.lazyDownloadHistory().splice(0);
+    host.lazyDownloadSummaries().splice(0);
+
+    expect(host.lazyDownloadHistory()[0]!.status).toBe("complete");
+    expect(host.lazyDownloadSummaries()[0]!.status).toBe("complete");
+  });
+
+  it("cancels an active asset even after its first event leaves raw history", () => {
+    const host = new LiveKernelHost();
+    const seen: LazyDownloadEvent[] = [];
+    host.subscribeLazyDownloads((event) => seen.push(event));
+    host.emitLazyDownloadEvent({
+      id: "active",
+      kind: "tree",
+      status: "started",
+      url: "https://example.test/active.tar.gz",
+      mountPrefix: "/",
+      loadedBytes: 0,
+      totalBytes: 700,
+      t: 1,
+    });
+    for (let chunk = 1; chunk <= 700; chunk++) {
+      host.emitLazyDownloadEvent({
+        id: "active",
+        kind: "tree",
+        status: "progress",
+        url: "https://example.test/active.tar.gz",
+        mountPrefix: "/",
+        loadedBytes: chunk,
+        totalBytes: 700,
+        t: chunk + 1,
+      });
+    }
+
+    const summaryStates: Array<Array<{ status: string; error?: string }>> = [];
+    host.subscribeLazyDownloadSummaries(() => {
+      summaryStates.push(host.lazyDownloadSummaries().map(({ status, error }) => ({
+        status,
+        error,
+      })));
+    });
+    host.attachKernel({ fs: makeFs({ "/etc/passwd": "" }) } as any);
+
+    expect(seen.at(-1)).toMatchObject({
+      id: "active",
+      status: "error",
+      error: "kernel replaced",
+      loadedBytes: 700,
+    });
+    expect(summaryStates).toEqual([
+      [{ status: "error", error: "kernel replaced" }],
+      [],
+    ]);
+    expect(host.lazyDownloadHistory()).toEqual([]);
+    expect(host.lazyDownloadSummaries()).toEqual([]);
+  });
+
+  it("notifies summary consumers when a new boot clears completed history", async () => {
     let kernelCb: ((event: LazyDownloadEvent) => void) | null = null;
+    const replacementKernel = { fs: makeFs({ "/etc/passwd": "" }) } as any;
     const host = new LiveKernelHost({
+      descriptor: DUMMY_DESCRIPTOR,
       kernel: {
         fs: makeFs({ "/etc/passwd": "" }),
         subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void) {
@@ -413,6 +576,13 @@ describe("LiveKernelHost: lazy download events", () => {
           return vi.fn();
         },
       } as any,
+      applyBootDescriptor: async (_descriptor, liveHost) => {
+        liveHost.attachKernel(replacementKernel);
+      },
+    });
+    const summaryStates: string[][] = [];
+    host.subscribeLazyDownloadSummaries(() => {
+      summaryStates.push(host.lazyDownloadSummaries().map(({ status }) => status));
     });
 
     kernelCb?.({
@@ -426,12 +596,82 @@ describe("LiveKernelHost: lazy download events", () => {
       t: 10,
     });
     expect(host.lazyDownloadHistory()).toHaveLength(1);
+    expect(host.lazyDownloadSummaries()).toHaveLength(1);
 
-    host.attachKernel({
-      fs: makeFs({ "/etc/passwd": "" }),
-    } as any);
+    await host.reboot();
 
+    expect(summaryStates).toEqual([["complete"], []]);
     expect(host.lazyDownloadHistory()).toEqual([]);
+    expect(host.lazyDownloadSummaries()).toEqual([]);
+  });
+
+  it("cancels and clears an active ledger when its kernel is detached", () => {
+    const host = new LiveKernelHost({
+      kernel: { fs: makeFs({ "/etc/passwd": "" }) } as any,
+    });
+    const rawEvents: LazyDownloadEvent[] = [];
+    const summaryStates: string[][] = [];
+    host.subscribeLazyDownloads((event) => rawEvents.push(event));
+    host.subscribeLazyDownloadSummaries(() => {
+      summaryStates.push(host.lazyDownloadSummaries().map(({ status }) => status));
+    });
+    host.emitLazyDownloadEvent({
+      id: "file:detached",
+      kind: "file",
+      status: "progress",
+      url: "https://example.test/detached.wasm",
+      path: "/usr/bin/detached",
+      loadedBytes: 64,
+      totalBytes: 128,
+      t: 10,
+    });
+
+    host.detachKernel();
+
+    expect(rawEvents.at(-1)).toMatchObject({
+      id: "file:detached",
+      status: "error",
+      error: "kernel detached",
+    });
+    expect(summaryStates).toEqual([["progress"], ["error"], []]);
+    expect(host.lazyDownloadHistory()).toEqual([]);
+    expect(host.lazyDownloadSummaries()).toEqual([]);
+  });
+
+  it("retains a terminal cancellation summary when the attached kernel halts", async () => {
+    const destroy = vi.fn(async () => {});
+    const host = new LiveKernelHost({
+      status: "running",
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        destroy,
+      } as any,
+    });
+    host.emitLazyDownloadEvent({
+      id: "archive:halted",
+      kind: "archive",
+      status: "started",
+      url: "https://example.test/halted.zip",
+      mountPrefix: "/opt/halted",
+      loadedBytes: 0,
+      totalBytes: 4096,
+      t: 10,
+    });
+
+    await host.halt();
+
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(host.lazyDownloadHistory()).toHaveLength(2);
+    expect(host.lazyDownloadSummaries()).toEqual([
+      expect.objectContaining({
+        id: "archive:halted",
+        status: "error",
+        error: "kernel halted",
+        firstSeenAt: 10,
+        startedAt: 10,
+        eventCount: 2,
+      }),
+    ]);
   });
 });
 
