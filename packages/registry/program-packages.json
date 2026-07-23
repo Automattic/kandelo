@@ -4,8 +4,8 @@
     "bash": {
       "manifestSha256": "6478060f28d430d18a6ebe7c603392d35a41d9bcf6bc74322351d1450b9c5335",
       "cacheKeys": {
-        "wasm32": "8b15ec8fb407b5dbbeaec4b8909ede62676beed847701b757e598bd7d5a0a351",
-        "wasm64": "72e8a3b7c8d13c0f2f7a22dc395df195aeb2e319ef1294e870a3b048e8418ed2"
+        "wasm32": "fc697c53b8186a02e0120fed51922b13538f23cea627700b4de141aa40dcc127",
+        "wasm64": "522c868466b6fb1db8135c70515f02f08f1153f1add4e7d3f5570bc9fad7bbf9"
       }
     },
     "bc": {
@@ -275,10 +275,10 @@
       }
     },
     "ncurses": {
-      "manifestSha256": "120bef02a4783a59f86f20a1953b120b603851e04c7d8400f16435f97f97779c",
+      "manifestSha256": "0a1c180eeade627e204aa47065dbfebfcdc9359d25e2db436932c7fa3a86fc1e",
       "cacheKeys": {
-        "wasm32": "5c4927fd2e419c260fb88a25d3a057e86b1387b1f01d2a26532cc5d6f57512c0",
-        "wasm64": "c7ef25bdb961d43166e3c66add1a90c86de040c6e6dbb7f6c19dd4885872551d"
+        "wasm32": "e95f67690426e286783716ea6e0b39edf44bca23e8f7fd225567a45109c13400",
+        "wasm64": "6e0707760f3fcb68e2250b2e1701b7a5dbc50f7f5091ba6cd7e078c99921678e"
       }
     },
     "netcat": {
@@ -291,15 +291,15 @@
     "nethack": {
       "manifestSha256": "1a2f12ec2770bd8d40006d6c878a3493b97c71c2bb63ad08c7f6ad99bfd53504",
       "cacheKeys": {
-        "wasm32": "560a76cade2c4c4968d1f614439fa503a0e0f2c39c372f9f2e326386488a91b7",
-        "wasm64": "4bd9523ee723adbf1ef108c5307fed7144cbbab390fc9344339209b81713f1ff"
+        "wasm32": "35bd109acb9812c033d6d96996f5d00020554b1cee059811eec89b7aba5c1455",
+        "wasm64": "24102c2e6dbe5911533b42f8fb41ea83a7cc738a0b39d30356774f6767826564"
       }
     },
     "nethack-browser-bundle": {
       "manifestSha256": "b8294981da7ce4299dfb271d4aecb90ababa97a4d1acc9b716ae05bbe52beb53",
       "cacheKeys": {
-        "wasm32": "33f7a5955dc879cb958192549bff211bdfc2c9ead6d3d1125c9503b16d526285",
-        "wasm64": "448e5fbea922dc63525d954e5075d6d91c7bcf2ceb4ce63e2c1ff322a6f54370"
+        "wasm32": "bbde7202fd7ac9d0fe859540f69fa04547a7903705c7abda85861cf9f3a9bb3f",
+        "wasm64": "299820741076c5835ed6abc7a114143603919f74a9d5f0fb0b5a677a23ada2e5"
       }
     },
     "nginx": {
@@ -403,8 +403,8 @@
     "rootfs": {
       "manifestSha256": "0420201025170f48c32949ac62707d4577cdc13a53ad1f01f59d318ec07c8d6e",
       "cacheKeys": {
-        "wasm32": "c3bef9442f6b494727d396aa1b980425620e6a889b472c296fb70fdde1a84f96",
-        "wasm64": "97652e3600a95285f975dadbbf6d2bf806879264ac859a4bcc1f138420f930c5"
+        "wasm32": "fe67ecc5f5a13d2e1d443bbd10196e115625d6633e0056af6138143922ca2dc5",
+        "wasm64": "ffa1490aa8d3947081c4203266dd514b854b3ec805cdad776ac6a61b2301571b"
       }
     },
     "ruby": {
@@ -555,14 +555,14 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "8b15ec8fb407b5dbbeaec4b8909ede62676beed847701b757e598bd7d5a0a351"
+        "wasm32": "fc697c53b8186a02e0120fed51922b13538f23cea627700b4de141aa40dcc127"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "ncurses",
-            "manifestSha256": "120bef02a4783a59f86f20a1953b120b603851e04c7d8400f16435f97f97779c",
-            "cacheKey": "5c4927fd2e419c260fb88a25d3a057e86b1387b1f01d2a26532cc5d6f57512c0"
+            "manifestSha256": "0a1c180eeade627e204aa47065dbfebfcdc9359d25e2db436932c7fa3a86fc1e",
+            "cacheKey": "e95f67690426e286783716ea6e0b39edf44bca23e8f7fd225567a45109c13400"
           }
         ]
       },
@@ -1521,12 +1521,12 @@
       ]
     },
     "ncurses": {
-      "manifestSha256": "120bef02a4783a59f86f20a1953b120b603851e04c7d8400f16435f97f97779c",
+      "manifestSha256": "0a1c180eeade627e204aa47065dbfebfcdc9359d25e2db436932c7fa3a86fc1e",
       "arches": [
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "5c4927fd2e419c260fb88a25d3a057e86b1387b1f01d2a26532cc5d6f57512c0"
+        "wasm32": "e95f67690426e286783716ea6e0b39edf44bca23e8f7fd225567a45109c13400"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -1631,14 +1631,14 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "560a76cade2c4c4968d1f614439fa503a0e0f2c39c372f9f2e326386488a91b7"
+        "wasm32": "35bd109acb9812c033d6d96996f5d00020554b1cee059811eec89b7aba5c1455"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "ncurses",
-            "manifestSha256": "120bef02a4783a59f86f20a1953b120b603851e04c7d8400f16435f97f97779c",
-            "cacheKey": "5c4927fd2e419c260fb88a25d3a057e86b1387b1f01d2a26532cc5d6f57512c0"
+            "manifestSha256": "0a1c180eeade627e204aa47065dbfebfcdc9359d25e2db436932c7fa3a86fc1e",
+            "cacheKey": "e95f67690426e286783716ea6e0b39edf44bca23e8f7fd225567a45109c13400"
           }
         ]
       },
@@ -1658,19 +1658,19 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "33f7a5955dc879cb958192549bff211bdfc2c9ead6d3d1125c9503b16d526285"
+        "wasm32": "bbde7202fd7ac9d0fe859540f69fa04547a7903705c7abda85861cf9f3a9bb3f"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "ncurses",
-            "manifestSha256": "120bef02a4783a59f86f20a1953b120b603851e04c7d8400f16435f97f97779c",
-            "cacheKey": "5c4927fd2e419c260fb88a25d3a057e86b1387b1f01d2a26532cc5d6f57512c0"
+            "manifestSha256": "0a1c180eeade627e204aa47065dbfebfcdc9359d25e2db436932c7fa3a86fc1e",
+            "cacheKey": "e95f67690426e286783716ea6e0b39edf44bca23e8f7fd225567a45109c13400"
           },
           {
             "packageName": "nethack",
             "manifestSha256": "1a2f12ec2770bd8d40006d6c878a3493b97c71c2bb63ad08c7f6ad99bfd53504",
-            "cacheKey": "560a76cade2c4c4968d1f614439fa503a0e0f2c39c372f9f2e326386488a91b7"
+            "cacheKey": "35bd109acb9812c033d6d96996f5d00020554b1cee059811eec89b7aba5c1455"
           }
         ]
       },
@@ -2480,14 +2480,14 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "c3bef9442f6b494727d396aa1b980425620e6a889b472c296fb70fdde1a84f96"
+        "wasm32": "fe67ecc5f5a13d2e1d443bbd10196e115625d6633e0056af6138143922ca2dc5"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "bash",
             "manifestSha256": "6478060f28d430d18a6ebe7c603392d35a41d9bcf6bc74322351d1450b9c5335",
-            "cacheKey": "8b15ec8fb407b5dbbeaec4b8909ede62676beed847701b757e598bd7d5a0a351"
+            "cacheKey": "fc697c53b8186a02e0120fed51922b13538f23cea627700b4de141aa40dcc127"
           },
           {
             "packageName": "bc",
@@ -2541,8 +2541,8 @@
           },
           {
             "packageName": "ncurses",
-            "manifestSha256": "120bef02a4783a59f86f20a1953b120b603851e04c7d8400f16435f97f97779c",
-            "cacheKey": "5c4927fd2e419c260fb88a25d3a057e86b1387b1f01d2a26532cc5d6f57512c0"
+            "manifestSha256": "0a1c180eeade627e204aa47065dbfebfcdc9359d25e2db436932c7fa3a86fc1e",
+            "cacheKey": "e95f67690426e286783716ea6e0b39edf44bca23e8f7fd225567a45109c13400"
           },
           {
             "packageName": "posix-utils-lite",
