@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer, normalizePath, type ViteDevServer } from "vite";
 
@@ -178,8 +178,10 @@ test("Vite serves an approved bottle member without exposing its cache", async (
     "sidecar.dat",
   );
   const entryDirectory = generatedEntryDirectory(namespace);
-  const entry = join(entryDirectory, "entry.ts");
+  const artifactEntry = join(entryDirectory, "artifact-entry.ts");
+  const sidecarEntry = join(entryDirectory, "sidecar-entry.ts");
   const artifactBytes = "approved bottle member\n".repeat(512);
+  const sidecarBytes = "package sidecar\n";
   let server: ViteDevServer | null = null;
 
   try {
@@ -196,7 +198,7 @@ test("Vite serves an approved bottle member without exposing its cache", async (
     mkdirSync(dirname(mirror), { recursive: true });
     mkdirSync(entryDirectory, { recursive: true });
     writeFileSync(artifact, artifactBytes);
-    writeFileSync(sidecar, "package sidecar\n");
+    writeFileSync(sidecar, sidecarBytes);
     writeFileSync(privateSource, "private source bytes\n");
     symlinkSync(privateSource, cacheEscape);
     symlinkSync(artifact, mirror);
@@ -210,9 +212,26 @@ test("Vite serves an approved bottle member without exposing its cache", async (
       namespace,
       "artifact.dat?url",
     ].join("/");
+    const relativeSidecar = normalizePath(
+      relative(entryDirectory, sidecarMirror),
+    );
+    const relativeSidecarImport = relativeSidecar.startsWith(".")
+      ? relativeSidecar
+      : `./${relativeSidecar}`;
     writeFileSync(
-      entry,
-      `import artifactUrl from "${fixtureImport}";\nexport default artifactUrl;\n`,
+      artifactEntry,
+      [
+        `import artifactUrl from "${fixtureImport}";`,
+        "export default artifactUrl;",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      sidecarEntry,
+      [
+        `export const sidecars = import.meta.glob(${JSON.stringify(relativeSidecarImport)}, { query: "?url", import: "default" });`,
+        "",
+      ].join("\n"),
     );
 
     process.env.XDG_CACHE_HOME = testRoot;
@@ -229,13 +248,17 @@ test("Vite serves an approved bottle member without exposing its cache", async (
     const address = server.httpServer!.address() as AddressInfo;
     const origin = `http://127.0.0.1:${address.port}`;
     const canonicalArtifact = realpathSync(artifact);
+    const canonicalSidecar = realpathSync(sidecar);
     const canonicalProgramRoot = realpathSync(join(cacheRoot, "programs"));
 
     expect((await fetch(fsUrl(origin, canonicalArtifact))).status).toBe(403);
-    const transformedEntry = await fetch(fsUrl(origin, entry));
+    expect((await fetch(fsUrl(origin, canonicalSidecar))).status).toBe(403);
+    const transformedEntry = await fetch(fsUrl(origin, artifactEntry));
     const transformedSource = await transformedEntry.text();
     expect(transformedEntry.status, transformedSource).toBe(200);
     expect(transformedSource).toContain("artifact.dat");
+    expect(transformedSource).not.toContain("sidecar.dat");
+    expect((await fetch(fsUrl(origin, canonicalSidecar))).status).toBe(403);
 
     const modulePath = transformedSource.match(
       /from\s+("\/@fs\/[^"\n]+artifact\.dat\?import&url")/,
@@ -252,6 +275,32 @@ test("Vite serves an approved bottle member without exposing its cache", async (
     expect(importedAsset.status).toBe(200);
     expect(await importedAsset.text()).toBe(artifactBytes);
 
+    const transformedSidecarEntry = await fetch(fsUrl(origin, sidecarEntry));
+    const transformedSidecarSource = await transformedSidecarEntry.text();
+    expect(
+      transformedSidecarEntry.status,
+      transformedSidecarSource,
+    ).toBe(200);
+    expect(transformedSidecarSource).toContain("sidecar.dat");
+    const sidecarModulePath = transformedSidecarSource.match(
+      /import\(("\/@fs\/[^"\n]+sidecar\.dat\?[^"\n]*url[^"\n]*")\)/,
+    )?.[1];
+    expect(sidecarModulePath, transformedSidecarSource).toBeDefined();
+    const sidecarModule = await fetch(
+      new URL(JSON.parse(sidecarModulePath!), origin),
+    );
+    const sidecarModuleSource = await sidecarModule.text();
+    expect(sidecarModule.status, sidecarModuleSource).toBe(200);
+    const sidecarAssetPath = sidecarModuleSource.match(
+      /export default ("[^"\n]+")\s*;?/,
+    )?.[1];
+    expect(sidecarAssetPath, sidecarModuleSource).toBeDefined();
+    const importedSidecar = await fetch(
+      new URL(JSON.parse(sidecarAssetPath!), origin),
+    );
+    expect(importedSidecar.status).toBe(200);
+    expect(await importedSidecar.text()).toBe(sidecarBytes);
+
     const approvedResponse = await fetch(fsUrl(origin, canonicalArtifact));
     const approvedBody = await approvedResponse.text();
     expect(
@@ -267,6 +316,7 @@ test("Vite serves an approved bottle member without exposing its cache", async (
       ),
     ).toBe(200);
     expect(approvedBody).toBe(artifactBytes);
+    expect((await fetch(fsUrl(origin, canonicalSidecar))).status).toBe(200);
     expect(
       (await fetch(fsUrl(origin, realpathSync(privateSource)))).status,
     ).toBe(403);

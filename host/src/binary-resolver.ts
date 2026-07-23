@@ -2144,24 +2144,84 @@ export function tryResolveBinary(relPath: string): string | null {
  * Unlike `tryResolveBinarySet`, these paths do not need to belong to one
  * package closure and the returned entries may independently be `null`.
  * Each package-owned path still resolves its complete declared closure from
- * one verified generation. This API exists for consumers such as the example
- * runner that load many unrelated optional programs at one synchronous
- * boundary; invoking the canonical Rust freshness checker once per program
- * would make module startup scale with the number of optional commands.
+ * one verified generation. Requests for multiple members of the same package
+ * share that one pinned closure, so an atomic live-mirror replacement cannot
+ * mix generations inside the returned batch. This API exists for consumers
+ * such as the example runner that load many unrelated optional programs at
+ * one synchronous boundary; invoking the canonical Rust freshness checker
+ * once per program would make module startup scale with the number of
+ * optional commands.
  */
 export function tryResolveBinaries(
   relPaths: readonly string[],
 ): Array<string | null> {
-  return withFreshProgramIndexes(relPaths, () =>
-    relPaths.map((relPath) => {
+  return withFreshProgramIndexes(relPaths, () => {
+    const results = new Array<string | null>(relPaths.length).fill(null);
+    const independentRequests: Array<{
+      index: number;
+      relPath: string;
+    }> = [];
+    const packageGroups: Array<{
+      closure: ProgramPackageClosure;
+      requests: Array<{
+        index: number;
+        adjustedRelPath: string;
+      }>;
+    }> = [];
+
+    for (const [index, relPath] of relPaths.entries()) {
+      const adjustedRelPath = applyDefaultArch(relPath);
+      const closure = discoverProgramPackageClosure(adjustedRelPath);
+      if (!closure) {
+        independentRequests.push({ index, relPath });
+        continue;
+      }
+      let group = packageGroups.find((candidate) =>
+        samePackageClosure(candidate.closure, closure)
+      );
+      if (!group) {
+        group = { closure, requests: [] };
+        packageGroups.push(group);
+      }
+      group.requests.push({ index, adjustedRelPath });
+    }
+
+    for (const { closure, requests } of packageGroups) {
+      // Resolve the declared closure once, then map every requested member
+      // from those pinned paths. Re-resolving member-by-member would reopen a
+      // race with the publisher's atomic live-directory replacement.
+      const selected = tryResolveBinarySetFromTiers(
+        closure.members.map((member) => member.relPath),
+        closure.members,
+      );
+      if (selected === null) continue;
+      const selectedByRelPath = new Map(
+        closure.members.map((member, index) => [
+          member.relPath,
+          selected[index]!,
+        ]),
+      );
+      for (const request of requests) {
+        const resolved = selectedByRelPath.get(request.adjustedRelPath);
+        if (resolved === undefined) {
+          throw new Error(
+            `Internal package projection omitted ${request.adjustedRelPath}`,
+          );
+        }
+        results[request.index] = resolved;
+      }
+    }
+
+    for (const { index, relPath } of independentRequests) {
       try {
-        return resolveBinaryInFreshProgramContext(relPath);
+        results[index] = resolveBinaryInFreshProgramContext(relPath);
       } catch (error) {
-        if (error instanceof BinaryNotFoundError) return null;
+        if (error instanceof BinaryNotFoundError) continue;
         throw error;
       }
-    }),
-  );
+    }
+    return results;
+  });
 }
 
 /**

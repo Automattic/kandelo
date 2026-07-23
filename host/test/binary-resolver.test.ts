@@ -2694,6 +2694,68 @@ wasm = "bin/${renamedOutput}.zip"
     );
   });
 
+  it("pins one generation for every independently requested package member", () => {
+    const fixture = createMultiOutputFixture();
+    const oldCanonicalRoot = fixtureLocalCanonicalRoot(fixture.name);
+    for (const member of fixture.members) {
+      linkClosureMember(
+        localBinariesDir(),
+        member,
+        oldCanonicalRoot,
+        "old-generation",
+      );
+    }
+    const requested = [
+      fixture.members[2]!.relPath,
+      fixture.members[0]!.relPath,
+      fixture.members[2]!.relPath,
+      fixture.members[1]!.relPath,
+    ];
+    const pinned = tryResolveBinaries(requested);
+
+    const newCanonicalRoot = fixtureLocalCanonicalRoot(fixture.name);
+    const liveDirectory = join(
+      localBinariesDir(),
+      "programs",
+      "wasm32",
+      fixture.name,
+    );
+    const stagedDirectory = `${liveDirectory}.test-stage-${randomUUID()}`;
+    cleanupDirs.add(stagedDirectory);
+    const newTargets = new Map<string, string>();
+    for (const member of fixture.members) {
+      const target = writeCanonicalMember(
+        newCanonicalRoot,
+        member.sourceArtifact,
+        "new-generation",
+      );
+      newTargets.set(member.relPath, target);
+      const packageRelative = member.relPath.split("/").slice(3).join("/");
+      const mirror = join(stagedDirectory, packageRelative);
+      mkdirSync(dirname(mirror), { recursive: true });
+      symlinkSync(target, mirror);
+    }
+    const backupDirectory = `${liveDirectory}.test-backup-${randomUUID()}`;
+    cleanupDirs.add(backupDirectory);
+    renameSync(liveDirectory, backupDirectory);
+    renameSync(stagedDirectory, liveDirectory);
+
+    expect(pinned).toEqual(
+      requested.map((relPath) => {
+        const member = fixture.members.find(
+          (candidate) => candidate.relPath === relPath,
+        )!;
+        return join(
+          oldCanonicalRoot,
+          ...member.sourceArtifact.split("/"),
+        );
+      }),
+    );
+    expect(tryResolveBinaries(requested)).toEqual(
+      requested.map((relPath) => newTargets.get(relPath)!),
+    );
+  });
+
   it("keeps an absent package-owned member on the package lookup path", () => {
     const fixture = createMultiOutputFixture();
     expect(tryResolveBinary(fixture.members[0]!.relPath)).toBeNull();

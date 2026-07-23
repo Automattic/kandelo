@@ -7,16 +7,21 @@ import {
   statSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
-import { parse } from "@babel/parser";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  browserBinariesImports,
+} from "../apps/browser-demos/browser-binary-imports.mjs";
+
+export { browserBinariesImports };
 
 const scriptPath = fileURLToPath(import.meta.url);
 const defaultRepoRoot = resolve(dirname(scriptPath), "..");
 
 export const localOnlyBrowserImports = new Set([
-  "programs/wasm32/nginx-vfs.vfs.zst",
-  "programs/wasm32/nginx-php-vfs.vfs.zst",
+  // fbtest is a browser/conformance fixture built locally, not a published
+  // package. Every product artifact must pass the registry ownership audit.
+  "programs/wasm32/fbtest.wasm",
 ]);
 
 export const registryPackagesWithoutBuildToml = new Set([
@@ -75,20 +80,6 @@ export function configuredProgramRegistryRoots(
       }
       return isAbsolute(entry) ? resolve(entry) : resolve(repoRoot, entry);
     });
-}
-
-function walkFiles(root) {
-  const out = [];
-  for (const entry of readdirSync(root, { withFileTypes: true })) {
-    if (entry.name === "node_modules" || entry.name === "dist") continue;
-    const full = join(root, entry.name);
-    if (entry.isDirectory()) {
-      out.push(...walkFiles(full));
-    } else if (/\.[cm]?[jt]sx?$/.test(entry.name)) {
-      out.push(full);
-    }
-  }
-  return out;
 }
 
 export function firstTomlString(text, key) {
@@ -483,74 +474,6 @@ export function packageOutputOwners(
   }
 
   return owners;
-}
-
-function normalizeBinariesRel(rel) {
-  if (!rel.startsWith("programs/")) return rel;
-  const tail = rel.slice("programs/".length);
-  const first = tail.split("/", 1)[0];
-  if (first === "wasm32" || first === "wasm64") return rel;
-  return `programs/wasm32/${tail}`;
-}
-
-function staticModuleSpecifiers(text, file) {
-  const ast = parse(text, {
-    sourceType: "unambiguous",
-    sourceFilename: file,
-    plugins: ["jsx", "typescript", "importAttributes"],
-  });
-  const specifiers = [];
-  const pending = [ast.program];
-  while (pending.length > 0) {
-    const node = pending.pop();
-    if (!node || typeof node !== "object") continue;
-    if (
-      (
-        node.type === "ImportDeclaration"
-        || node.type === "ExportNamedDeclaration"
-        || node.type === "ExportAllDeclaration"
-      )
-      && node.source?.type === "StringLiteral"
-    ) {
-      specifiers.push(node.source.value);
-    } else if (
-      node.type === "CallExpression"
-      && node.callee?.type === "Import"
-      && node.arguments?.length === 1
-      && node.arguments[0]?.type === "StringLiteral"
-    ) {
-      specifiers.push(node.arguments[0].value);
-    } else if (
-      node.type === "ImportExpression"
-      && node.source?.type === "StringLiteral"
-    ) {
-      specifiers.push(node.source.value);
-    }
-    for (const value of Object.values(node)) {
-      if (Array.isArray(value)) {
-        for (const child of value) pending.push(child);
-      } else if (value && typeof value === "object") {
-        pending.push(value);
-      }
-    }
-  }
-  return specifiers;
-}
-
-export function browserBinariesImports(repoRoot = defaultRepoRoot) {
-  const browserRoot = join(repoRoot, "apps", "browser-demos");
-  const imports = new Set();
-
-  for (const file of walkFiles(browserRoot)) {
-    const text = readFileSync(file, "utf8");
-    for (const specifier of staticModuleSpecifiers(text, file)) {
-      if (!specifier.startsWith("@binaries/")) continue;
-      const rel = specifier.slice("@binaries/".length).split("?", 1)[0];
-      imports.add(normalizeBinariesRel(rel));
-    }
-  }
-
-  return [...imports].sort();
 }
 
 export function fetchableRegistryPackageNames(
