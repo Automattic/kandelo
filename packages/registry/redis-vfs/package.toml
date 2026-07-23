@@ -1,0 +1,28 @@
+kind = "program"
+name = "redis-vfs"
+version = "0.1.0"
+kernel_abi = 41
+depends_on = [
+  "redis@7.2.5",
+  "dinit@0.19.4",
+]
+
+# Composite VFS image for the Redis browser demo. Declaring the image as a
+# package output prevents its local mirror from bypassing package ownership or
+# being mixed with files from another build generation.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "images/vfs/scripts/build-redis-vfs-image.sh"
+
+[[outputs]]
+name = "redis-vfs"
+wasm = "redis.vfs.zst"
+# This output is a VFS image, not a Wasm executable.
+fork_instrumentation = "disabled"
