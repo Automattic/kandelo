@@ -10,6 +10,7 @@ import {
   type PackageDeferredZipTreeSpec,
 } from "../src/vfs/package-deferred-tree";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { EIO, SFSError } from "../src/vfs/sharedfs-vendor";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -138,6 +139,39 @@ describe("package deferred ZIP trees", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps every member deferred after a failed fetch and coalesces the retry", async () => {
+    const archive = packageArchive();
+    const derived = derivePackageDeferredZipTree(SPEC, archive);
+    const fs = packageFs();
+    registerPackageDeferredZipTree(fs, derived);
+    const wrong = new Uint8Array(archive);
+    wrong[0] ^= 1;
+    let served = wrong;
+    const fetcher = vi.fn(async () => new Response(served, {
+      headers: { "content-length": String(served.byteLength) },
+    }));
+    fs.setLazyFetcher(fetcher);
+
+    await expect(Promise.all([
+      fs.preparePath(`${SPEC.mount_prefix}/bin/brew`),
+      fs.preparePath(`${SPEC.mount_prefix}/Library/Homebrew/global.rb`),
+    ])).rejects.toThrow(/SHA-256/);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    assertPackageDeferredZipTreeState(fs, derived, "deferred");
+    expect(fs.isPathDeferred(`${SPEC.mount_prefix}/bin/brew`)).toBe(true);
+    expect(fs.isPathDeferred(
+      `${SPEC.mount_prefix}/Library/Homebrew/global.rb`,
+    )).toBe(true);
+
+    served = archive;
+    await expect(Promise.all([
+      fs.preparePath(`${SPEC.mount_prefix}/bin/brew`),
+      fs.preparePath(`${SPEC.mount_prefix}/Library/Homebrew/global.rb`),
+    ])).resolves.toEqual([true, true]);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    assertPackageDeferredZipTreeState(fs, derived, "materialized");
+  });
+
   it("pre-materializes the identical descriptor without using transport", async () => {
     const archive = packageArchive();
     const lazy = derivePackageDeferredZipTree(SPEC, archive);
@@ -214,6 +248,29 @@ describe("package deferred ZIP trees", () => {
       materializePackageDeferredZipTree(fs, registered, changed),
     ).rejects.toThrow(/changed identity/);
     expect(fs.isPathDeferred(`${SPEC.mount_prefix}/bin/brew`)).toBe(true);
+  });
+
+  it("propagates namespace lookup errors instead of treating them as absence", () => {
+    const archive = packageArchive();
+    const derived = derivePackageDeferredZipTree(SPEC, archive);
+    const fs = packageFs();
+    const originalLstat = fs.lstat.bind(fs);
+    const lstat = vi.spyOn(fs, "lstat").mockImplementation((path) => {
+      if (path === `${SPEC.mount_prefix}/bin`) throw new SFSError(EIO);
+      return originalLstat(path);
+    });
+    let caught: unknown;
+    try {
+      registerPackageDeferredZipTree(fs, derived);
+    } catch (error) {
+      caught = error;
+    } finally {
+      lstat.mockRestore();
+    }
+    expect(caught).toBeInstanceOf(SFSError);
+    expect((caught as SFSError).code).toBe(EIO);
+    expect(fs.exportLazyArchiveEntries()).toEqual([]);
+    expect(fs.isPathDeferred(`${SPEC.mount_prefix}/bin/brew`)).toBe(false);
   });
 });
 

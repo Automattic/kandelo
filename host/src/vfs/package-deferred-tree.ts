@@ -13,6 +13,7 @@ import {
   type ZipEntry,
 } from "./zip";
 import { VFS_DEFERRED_TREE_LIMITS } from "./deferred-tree-limits";
+import { ENOENT, SFSError } from "./sharedfs-vendor";
 
 const S_IFMT = 0xf000;
 const S_IFREG = 0x8000;
@@ -523,8 +524,9 @@ function preflightNamespace(
     let existing;
     try {
       existing = fs.lstat(path);
-    } catch {
-      continue;
+    } catch (error) {
+      if (error instanceof SFSError && error.code === ENOENT) continue;
+      throw error;
     }
     const entry = entryByPath.get(path);
     if (entry === undefined) {
