@@ -543,7 +543,7 @@ describe("declared shell lazy-archive inputs", () => {
     expect(packageToml).toMatch(/^depends_on\s*=\s*\[\]$/m);
     expect(packageToml).not.toContain("vim-browser-bundle@");
     expect(packageToml).not.toContain("nethack-browser-bundle@");
-    expect(buildToml).toMatch(/^revision\s*=\s*17$/m);
+    expect(buildToml).toMatch(/^revision\s*=\s*18$/m);
     for (const input of [
       "scripts/build-homebrew-main-shell-closure.sh",
       "scripts/check-homebrew-main-shell-brewfile.mjs",
@@ -643,7 +643,7 @@ describe("declared shell lazy-archive inputs", () => {
         ],
         { cwd: repoRoot, encoding: "utf8" },
       ),
-    ).toContain("32 reviewed migration roots and 38 Formulae");
+    ).toContain("36 reviewed migration roots and 42 Formulae");
 
     // The package build consumes only public bottle provenance from the
     // locked checkout. The strict composer must reject fallback, verify every

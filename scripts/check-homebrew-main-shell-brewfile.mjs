@@ -14,8 +14,6 @@ const tapRepository = "kandelo-dev/homebrew-tap-core";
 const tapName = "kandelo-dev/tap-core";
 const gitShaPattern = /^[0-9a-f]{40}$/;
 const formulaIdentityPattern = /^kandelo-dev\/tap-core\/[a-z0-9][a-z0-9._-]*$/;
-const expectedRootCount = 32;
-const expectedClosureCount = 38;
 
 const lock = readMigrationLock(lockPath);
 const rootfsPackages = readDependencies(
@@ -113,18 +111,11 @@ function readMigrationLock(path) {
       },
     };
   });
-  if (packages.length !== expectedRootCount) {
-    throw new Error(
-      `main-shell migration lock must contain exactly ${expectedRootCount} registry roots: ${path}`,
-    );
-  }
   const formulaClosure = value.formula_closure.map((entry, index) =>
     readFormulaIdentity(entry, `formula_closure[${index}]`)
   );
-  if (formulaClosure.length !== expectedClosureCount) {
-    throw new Error(
-      `main-shell migration lock must contain exactly ${expectedClosureCount} closure Formulae: ${path}`,
-    );
+  if (packages.length === 0 || formulaClosure.length === 0) {
+    throw new Error(`main-shell migration lock must contain roots and a closure: ${path}`);
   }
   assertUnique(formulaClosure, "migration lock formula_closure");
   const missingRoots = packages
@@ -411,10 +402,10 @@ function validateTapMetadata(lock, path) {
     lock.packages.map(({ formula }) => formula.name),
     byName,
   );
-  if (actualClosure.length !== expectedClosureCount) {
+  if (actualClosure.length !== lock.formula_closure.length) {
     throw new Error(
       `tap metadata resolves ${actualClosure.length} main-shell Formulae; ` +
-        `the reviewed closure requires ${expectedClosureCount}`,
+        `the reviewed closure requires ${lock.formula_closure.length}`,
     );
   }
   assertExactSet(

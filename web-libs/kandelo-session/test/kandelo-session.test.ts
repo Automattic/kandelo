@@ -27,6 +27,8 @@ import {
 import { parseKandeloShellConfig } from "../src/shell-config";
 import {
   MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
+  SHELL_DERIVED_VFS_MIN_FREE_BYTES,
+  SHELL_DERIVED_VFS_MIN_FREE_INODES,
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
   assertVfsImageFitsProfile,
 } from "../src/vfs-capacity";
@@ -1725,10 +1727,14 @@ describe("Kandelo default shell image configuration", () => {
 });
 
 describe("Kandelo VFS consumer capacity contract", () => {
-  it("keeps standard shell-derived products aligned with the main shell", () => {
-    expect(SHELL_DERIVED_VFS_PROFILE_MAX_BYTES).toBe(
+  it("gives shell-derived products independent runtime capacity", () => {
+    expect(MAIN_SHELL_VFS_PROFILE_MAX_BYTES).toBe(512 * 1024 * 1024);
+    expect(SHELL_DERIVED_VFS_PROFILE_MAX_BYTES).toBe(768 * 1024 * 1024);
+    expect(SHELL_DERIVED_VFS_PROFILE_MAX_BYTES).toBeGreaterThan(
       MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
     );
+    expect(SHELL_DERIVED_VFS_MIN_FREE_BYTES).toBe(64 * 1024 * 1024);
+    expect(SHELL_DERIVED_VFS_MIN_FREE_INODES).toBe(8 * 1024);
   });
 
   it("accepts the main shell's exact 512 MiB declaration", () => {

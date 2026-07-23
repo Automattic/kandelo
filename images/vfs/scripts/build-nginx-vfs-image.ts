@@ -16,9 +16,11 @@ import {
   writeVfsBinary,
 } from "../../../host/src/vfs/image-helpers";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
-import { saveImage } from "./vfs-image-helpers";
 import { addDinitInit } from "./dinit-image-helpers";
-import { loadShellBaseFileSystem } from "./shell-vfs-build";
+import {
+  loadShellBaseFileSystem,
+  saveShellDerivedVfsImage,
+} from "./shell-vfs-build";
 import {
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
 } from "../../../web-libs/kandelo-session/src/vfs-capacity";
@@ -148,7 +150,7 @@ async function main() {
     },
   });
 
-  await saveImage(fs, OUT_FILE);
+  await saveShellDerivedVfsImage(fs, OUT_FILE);
 }
 
 main().catch((err) => {

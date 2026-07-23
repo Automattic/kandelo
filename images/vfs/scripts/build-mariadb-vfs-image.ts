@@ -24,7 +24,7 @@ import {
   writeVfsBinary,
   symlink,
 } from "../../../host/src/vfs/image-helpers";
-import { resolveBinary, tryResolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
+import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { saveImage } from "./vfs-image-helpers";
 import { addDinitInit, type DinitService } from "./dinit-image-helpers";
 import { prepareMariadbWritableDirectories } from "./mariadb-image-helpers";
@@ -56,7 +56,7 @@ const DASH_PATH = resolveBinary("programs/dash.wasm");
 // Coreutils is baked into the VFS so users get an immediate `ls`/`cat`
 // in the shell demo without waiting for a lazy-load fetch. Not strictly
 // required by the bootstrap wrapper (which is just `exec mariadbd < sql`).
-const COREUTILS_PATH = tryResolveBinary("programs/coreutils.wasm");
+const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm");
 
 const OUT_FILE = useWasm64
   ? join(REPO_ROOT, "apps/browser-demos/public/mariadb-64.vfs.zst")
@@ -169,20 +169,15 @@ async function main() {
   }
   prepareMariadbWritableDirectories(fs);
 
-  // dash + coreutils symlinks (page registers coreutils.wasm lazily).
+  // Bake dash and coreutils so the service wrappers and shell utilities are
+  // available without ambient browser assets.
   if (existsSync(DASH_PATH)) {
     writeVfsBinary(fs, "/bin/dash", new Uint8Array(readFileSync(DASH_PATH)));
     symlink(fs, "/bin/dash", "/bin/sh");
     symlink(fs, "/bin/dash", "/usr/bin/dash");
     symlink(fs, "/bin/dash", "/usr/bin/sh");
   }
-  // Bake coreutils.wasm so the shell demo has `ls`/`cat`/etc. without
-  // waiting for a lazy-load fetch on first invocation.
-  if (COREUTILS_PATH && existsSync(COREUTILS_PATH)) {
-    writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
-  } else {
-    console.warn("  Warning: coreutils.wasm not found — shell demo will lack /bin/ls etc.");
-  }
+  writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
   for (const name of COREUTILS_SYMLINK_NAMES) {
     symlink(fs, "/bin/coreutils", `/bin/${name}`);
     symlink(fs, "/bin/coreutils", `/usr/bin/${name}`);

@@ -2,6 +2,7 @@ import {
   existsSync,
   lstatSync,
   readFileSync,
+  readdirSync,
 } from "node:fs";
 import {
   dirname,
@@ -16,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const packages = ["lamp", "node-vfs", "shell", "wordpress"] as const;
+const packages = discoverVfsImagePackages();
 const sourceExtensions = new Set([
   ".cjs",
   ".cts",
@@ -37,12 +38,10 @@ describe("package build input import closure", () => {
       expect(packagesAffectedBy(changedPath)).toEqual(["lamp", "wordpress"]);
     }
 
-    expect(packagesAffectedBy("host/src/vfs/memory-fs.ts")).toEqual([
-      "lamp",
-      "node-vfs",
-      "shell",
-      "wordpress",
-    ]);
+    expect(packagesAffectedBy("host/src/vfs/memory-fs.ts")).toEqual(packages);
+
+    expect(packagesAffectedBy("host/src/homebrew-bottle-relocation.ts"))
+      .toEqual(packages);
 
     for (const changedPath of [
       "host/src/homebrew-runtime-layer-policy.ts",
@@ -94,11 +93,15 @@ describe("package build input import closure", () => {
         packageName,
         "build.toml",
       );
-      const declaredInputs = parseBuildInputs(readFileSync(buildTomlPath, "utf8"));
+      const buildToml = readFileSync(buildTomlPath, "utf8");
+      const declaredInputs = parseBuildInputs(buildToml);
       const declaredPaths = declaredInputs.map((input) => resolve(repoRoot, input));
+      const scriptPath = buildToml.match(/^script_path\s*=\s*"([^"]+)"\s*$/m)?.[1];
 
       expect(declaredInputs.length).toBeGreaterThan(0);
       expect(declaredInputs).toEqual([...new Set(declaredInputs)]);
+      expect(scriptPath, `${packageName} has no build script`).toBeDefined();
+      expect(declaredInputs).toContain(scriptPath);
       for (const declaredPath of declaredPaths) {
         expect(
           existsSync(declaredPath),
@@ -149,6 +152,35 @@ describe("package build input import closure", () => {
       expect([...missing].sort()).toEqual([]);
     });
   }
+
+  it("makes every MariaDB VFS input deterministic", () => {
+    for (const [packageName, builderPath, minimumRevision] of [
+      ["mariadb-test", "images/vfs/scripts/build-mariadb-test-vfs-image.ts", 4],
+      ["mariadb-vfs", "images/vfs/scripts/build-mariadb-vfs-image.ts", 5],
+    ] as const) {
+      const manifest = readFileSync(
+        join(repoRoot, "packages", "registry", packageName, "package.toml"),
+        "utf8",
+      );
+      const buildToml = readFileSync(
+        join(repoRoot, "packages", "registry", packageName, "build.toml"),
+        "utf8",
+      );
+      const builder = readFileSync(join(repoRoot, builderPath), "utf8");
+      const revision = Number(buildToml.match(/^revision\s*=\s*(\d+)\s*$/m)?.[1]);
+
+      expect(manifest).toMatch(
+        /^depends_on\s*=\s*\[[\s\S]*?"coreutils@9\.6"[\s\S]*?\]/m,
+      );
+      expect(revision).toBeGreaterThanOrEqual(minimumRevision);
+      expect(builder).toContain(
+        'const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm")',
+      );
+      expect(builder).not.toContain(
+        'tryResolveBinary("programs/coreutils.wasm")',
+      );
+    }
+  });
 });
 
 function packagesAffectedBy(changedPath: string): string[] {
@@ -168,6 +200,25 @@ function packagesAffectedBy(changedPath: string): string[] {
       return declaredPaths.some((declaredPath) =>
         covers(declaredPath, absoluteChangedPath)
       );
+    })
+    .sort();
+}
+
+function discoverVfsImagePackages(): string[] {
+  const registryRoot = join(repoRoot, "packages", "registry");
+  return readdirSync(registryRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .filter((packageName) => {
+      const manifestPath = join(registryRoot, packageName, "package.toml");
+      if (!existsSync(manifestPath)) return false;
+      const manifest = readFileSync(manifestPath, "utf8");
+      return manifest
+        .split(/^\s*\[\[outputs\]\]\s*$/m)
+        .slice(1)
+        .some((block) =>
+          /^\s*wasm\s*=\s*"[^"]+\.vfs(?:\.zst)?"\s*(?:#.*)?$/m.test(block)
+        );
     })
     .sort();
 }
@@ -231,6 +282,7 @@ function relativeImportSpecifiers(source: string): string[] {
   const patterns = [
     /\b(?:import|export)\s+(?:[^"'();]*?\s+from\s*)?["'](\.[^"']*)["']/gs,
     /\bimport\s*\(\s*["'](\.[^"']*)["']\s*\)/g,
+    /\brequire(?:\.resolve)?\s*\(\s*["'](\.[^"']*)["']\s*\)/g,
   ];
   for (const pattern of patterns) {
     for (const match of runtimeSource.matchAll(pattern)) specifiers.add(match[1]);

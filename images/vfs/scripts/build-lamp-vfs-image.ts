@@ -22,7 +22,6 @@ import {
   writeVfsBinary,
   ensureDirRecursive,
   walkAndWrite,
-  saveImage,
 } from "./vfs-image-helpers";
 import {
   addDinitInit,
@@ -47,7 +46,13 @@ import {
   wordpressSmtpCaptureMuPlugin,
 } from "./smtp-capture-helpers";
 import { MYSQL_BENCHMARK_PHP } from "../../../apps/browser-demos/lib/init/mysql-benchmark";
-import { loadShellBaseFileSystem } from "./shell-vfs-build";
+import {
+  loadShellBaseFileSystem,
+  saveShellDerivedVfsImage,
+} from "./shell-vfs-build";
+import {
+  SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+} from "../../../web-libs/kandelo-session/src/vfs-capacity";
 import { preinstallWordPressMariaDb } from "./wordpress-preinstall";
 import { prepareMariadbWritableDirectories } from "./mariadb-image-helpers";
 
@@ -79,7 +84,7 @@ const MSMTPD_PATH = resolveBinary("programs/msmtpd.wasm");
 const OUT_FILE = join(BROWSER_DIR, "public", "lamp.vfs.zst");
 const PHP_FPM_WORKERS = 6;
 const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
-const LAMP_IMAGE_MAX_BYTES = 768 * 1024 * 1024;
+const LAMP_IMAGE_MAX_BYTES = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES;
 const MARIADB_ARIA_LOG_FILE_SIZE = 16 * 1024 * 1024;
 const MARIADB_ARIA_PAGECACHE_SIZE = 1024 * 1024;
 const MARIADB_INNODB_LOG_FILE_SIZE = 16 * 1024 * 1024;
@@ -477,7 +482,7 @@ async function main() {
     },
   });
 
-  await saveImage(fs, OUT_FILE);
+  await saveShellDerivedVfsImage(fs, OUT_FILE);
   console.log(`${wpCount} WordPress files total`);
 }
 

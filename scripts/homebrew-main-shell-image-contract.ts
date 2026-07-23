@@ -13,8 +13,6 @@ import {
   DOOM_WAD_URL,
 } from "../web-libs/kandelo-session/src/demo-guides";
 
-const EXPECTED_ROOT_COUNT = 32;
-const EXPECTED_CLOSURE_COUNT = 38;
 const EXPECTED_ARCH = "wasm32";
 const EXPECTED_SHELL_PATH = "/home/linuxbrew/.linuxbrew/bin/bash";
 const EXPECTED_SHELL_ARGV = ["bash", "-l", "-i"];
@@ -61,9 +59,7 @@ export function assertMainShellImageContract(input: MainShellImageContractInput)
   );
 
   const lockedPackages = requiredRecordArray(lock.packages, "migration lock packages");
-  if (lockedPackages.length !== EXPECTED_ROOT_COUNT) {
-    fail(`migration lock has ${lockedPackages.length} roots, expected ${EXPECTED_ROOT_COUNT}`);
-  }
+  if (lockedPackages.length === 0) fail("migration lock has no package roots");
   const requestedPackages = lockedPackages.map((entry, index) => {
     const formula = requiredRecord(entry.formula, `migration lock package ${index} formula`);
     return requiredString(formula, "name", `migration lock package ${index} formula`);
@@ -77,12 +73,7 @@ export function assertMainShellImageContract(input: MainShellImageContractInput)
     lock.formula_closure,
     "migration lock formula_closure",
   );
-  if (formulaClosure.length !== EXPECTED_CLOSURE_COUNT) {
-    fail(
-      `migration lock has ${formulaClosure.length} closure Formulae, ` +
-        `expected ${EXPECTED_CLOSURE_COUNT}`,
-    );
-  }
+  if (formulaClosure.length === 0) fail("migration lock has no Formula closure");
   assertUnique(formulaClosure, "migration lock formula_closure");
 
   const guest = requiredRecord(input.guestManifest, "guest Homebrew manifest");

@@ -31,11 +31,17 @@ import {
   SHELL_LAZY_ARCHIVE_SPECS,
 } from "./shell-lazy-archives";
 import {
+  saveImage,
   writeVfsFile,
   writeVfsBinary,
   ensureDirRecursive,
   symlink,
 } from "./vfs-image-helpers";
+import type { SaveImageOptions } from "./vfs-image-helpers";
+import {
+  SHELL_DERIVED_VFS_MIN_FREE_BYTES,
+  SHELL_DERIVED_VFS_MIN_FREE_INODES,
+} from "../../../web-libs/kandelo-session/src/vfs-capacity";
 
 function depEnvKey(name: string): string {
   return name.replaceAll("-", "_").toUpperCase();
@@ -76,6 +82,24 @@ export function loadShellBaseFileSystem(maxByteLength: number): MemoryFileSystem
   const shellImagePath = resolveVfsArtifact("programs/shell.vfs.zst", "shell");
   const shellImage = new Uint8Array(readFileSync(shellImagePath));
   return loadShellBaseFileSystemFromImage(shellImage, maxByteLength);
+}
+
+/**
+ * Save a product layered on the canonical shell only when it retains enough
+ * independent block and inode capacity for normal runtime writes.
+ */
+export function saveShellDerivedVfsImage(
+  fs: MemoryFileSystem,
+  outFile: string,
+  options: Omit<SaveImageOptions, "headroom"> = {},
+): Promise<Uint8Array> {
+  return saveImage(fs, outFile, {
+    ...options,
+    headroom: {
+      minimumFreeBytes: SHELL_DERIVED_VFS_MIN_FREE_BYTES,
+      minimumFreeInodes: SHELL_DERIVED_VFS_MIN_FREE_INODES,
+    },
+  });
 }
 
 /**

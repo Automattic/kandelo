@@ -952,10 +952,27 @@ import runpy
 import sys
 
 release = runpy.run_path(sys.argv[1])
+parse_receipt = release["parse_homebrew_install_receipt"]
+java_home = release["homebrew_java_home"]
+prefix = release["HOMEBREW_PREFIX"]
+ValidationError = release["ValidationError"]
+assert parse_receipt(b'{"changed_files":null}') == {
+    "changed_files": [],
+    "runtime_dependencies": None,
+}
+try:
+    parse_receipt(b'{"changed_files":"lib/runtime.conf"}')
+except ValidationError as error:
+    assert "changed_files must be an array or null" in str(error)
+else:
+    raise AssertionError("non-null non-array changed_files was accepted")
+assert java_home([{"full_name": None, "name": "openjdk@21"}]) == (
+    f"{prefix}/opt/openjdk@21/libexec".encode()
+)
+assert java_home([{"full_name": "openjdk@21\n"}]) is None
+
 validate = release["validate_canonical_original_bottle_trees"]
 tree_id = release["expected_original_bottle_tree_id"]
-ValidationError = release["ValidationError"]
-prefix = "/home/linuxbrew/.linuxbrew"
 packages = [
     {
         "name": "dash", "full_name": "third-party/runtime/dash",

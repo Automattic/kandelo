@@ -1,7 +1,32 @@
 script_path = "packages/registry/mariadb-test/build-mariadb-test.sh"
+inputs = [
+  "packages/registry/mariadb-test/build-mariadb-test.sh",
+  "packages/registry/mariadb/package.toml",
+  "images/vfs/scripts/build-mariadb-test-vfs-image.ts",
+  "images/vfs/scripts/dinit-image-helpers.ts",
+  "images/rootfs/etc/services",
+  "images/vfs/scripts/mariadb-image-helpers.ts",
+  "images/vfs/scripts/source-extract-helper.ts",
+  "images/vfs/scripts/vfs-image-helpers.ts",
+  "host/src/binary-resolver.ts",
+  "host/src/constants.ts",
+  "host/src/generated/abi.ts",
+  "host/src/homebrew-bottle-relocation.ts",
+  "host/src/pathconf.ts",
+  "host/src/statfs.ts",
+  "host/src/types.ts",
+  "host/src/vfs/deferred-tree-limits.ts",
+  "host/src/vfs/hardlink-graph.ts",
+  "host/src/vfs/image-helpers.ts",
+  "host/src/vfs/memory-fs.ts",
+  "host/src/vfs/sharedfs-vendor.ts",
+  "host/src/vfs/tar.ts",
+  "host/src/vfs/types.ts",
+  "host/src/vfs/zip.ts",
+]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 3
+revision    = 4
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

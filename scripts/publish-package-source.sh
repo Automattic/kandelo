@@ -117,6 +117,7 @@ build_publish_one() {
     archive-stage \
       --package "$pkg_dir" \
       --arch "$arch" \
+      --binaries-dir "$KANDELO_ROOT/binaries" \
       --out "$out_dir" \
       --build-timestamp "$BUILD_TIMESTAMP" \
       --build-host "$BUILD_HOST" \

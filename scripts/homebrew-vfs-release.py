@@ -71,6 +71,15 @@ MAX_LAZY_LAYER_RUNTIME_ID_BYTES = (
 MAX_LAZY_LAYER_ARCHIVE_BYTES = 256 * 1024 * 1024
 MAX_LAZY_LAYER_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
 HOMEBREW_PREFIX = "/home/linuxbrew/.linuxbrew"
+MAX_BOTTLE_CHANGED_FILES = 100_000
+HOMEBREW_REPLACEMENTS = (
+    (b"@@HOMEBREW_PREFIX@@", HOMEBREW_PREFIX.encode()),
+    (b"@@HOMEBREW_CELLAR@@", f"{HOMEBREW_PREFIX}/Cellar".encode()),
+    (b"@@HOMEBREW_REPOSITORY@@", HOMEBREW_PREFIX.encode()),
+    (b"@@HOMEBREW_LIBRARY@@", f"{HOMEBREW_PREFIX}/Library".encode()),
+    (b"@@HOMEBREW_PERL@@", f"{HOMEBREW_PREFIX}/opt/perl/bin/perl".encode()),
+)
+HOMEBREW_JAVA_PLACEHOLDER = b"@@HOMEBREW_JAVA@@"
 TAR_BLOCK_BYTES = 512
 TAR_MAX_SAFE_INTEGER = (1 << 53) - 1
 TAR_ZERO_BLOCK = bytes(TAR_BLOCK_BYTES)
@@ -1517,6 +1526,174 @@ def validate_original_bottle_source(
     return entries, resolved
 
 
+def parse_homebrew_install_receipt(value: bytes) -> dict[str, Any]:
+    try:
+        receipt = json.loads(value.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"INSTALL_RECEIPT.json is not valid UTF-8 JSON: {error}")
+    if not isinstance(receipt, dict):
+        fail("INSTALL_RECEIPT.json must contain an object")
+    changed = receipt.get("changed_files")
+    if changed is None:
+        changed = []
+    elif not isinstance(changed, list):
+        fail(
+            "INSTALL_RECEIPT.json changed_files must be an array or null when present"
+        )
+    if len(changed) > MAX_BOTTLE_CHANGED_FILES:
+        fail(
+            f"INSTALL_RECEIPT.json declares {len(changed)} changed files, "
+            f"limit {MAX_BOTTLE_CHANGED_FILES}"
+        )
+    seen: set[str] = set()
+    validated: list[str] = []
+    for index, path_value in enumerate(changed):
+        if not isinstance(path_value, str):
+            fail(f"INSTALL_RECEIPT.json changed_files[{index}] is not a string")
+        path = safe_relative_path(path_value, "Homebrew changed file")
+        if path in seen:
+            fail(f"INSTALL_RECEIPT.json repeats changed file {path}")
+        seen.add(path)
+        validated.append(path)
+    return {
+        "changed_files": validated,
+        "runtime_dependencies": receipt.get("runtime_dependencies"),
+    }
+
+
+def homebrew_java_home(runtime_dependencies: Any) -> bytes | None:
+    if not isinstance(runtime_dependencies, list):
+        return None
+    names: set[str] = set()
+    for dependency in runtime_dependencies:
+        if not isinstance(dependency, dict):
+            continue
+        candidate = dependency.get("full_name")
+        if not isinstance(candidate, str):
+            candidate = dependency.get("name")
+        if not isinstance(candidate, str):
+            continue
+        name = candidate.rsplit("/", 1)[-1]
+        if re.fullmatch(r"openjdk(?:@\d+(?:\.\d+)*)?", name):
+            names.add(name)
+    if len(names) != 1:
+        return None
+    return f"{HOMEBREW_PREFIX}/opt/{next(iter(names))}/libexec".encode()
+
+
+def relocate_homebrew_bottle_file(
+    value: bytes, receipt: dict[str, Any], path: str
+) -> bytes:
+    relocated = value
+    for placeholder, replacement in HOMEBREW_REPLACEMENTS:
+        relocated = relocated.replace(placeholder, replacement)
+    if HOMEBREW_JAVA_PLACEHOLDER in relocated:
+        java_home = homebrew_java_home(receipt.get("runtime_dependencies"))
+        if java_home is None:
+            fail(
+                f"Homebrew changed file {path} uses "
+                "@@HOMEBREW_JAVA@@ without exactly one OpenJDK runtime dependency"
+            )
+        relocated = relocated.replace(HOMEBREW_JAVA_PLACEHOLDER, java_home)
+    for placeholder, _ in (*HOMEBREW_REPLACEMENTS, (HOMEBREW_JAVA_PLACEHOLDER, b"")):
+        if placeholder in relocated:
+            fail(
+                f"Homebrew changed file {path} retains "
+                f"{placeholder.decode('ascii')}"
+            )
+    return relocated
+
+
+def original_bottle_relocation(
+    archive_value: bytes,
+    source_entries: list[dict[str, Any]],
+    canonical_source_by_path: dict[str, dict[str, Any]],
+    expanded_bytes: int,
+) -> dict[str, Any]:
+    source_by_path = {entry["path"]: entry for entry in source_entries}
+    receipts = [
+        entry for entry in source_entries
+        if entry["path"] == "INSTALL_RECEIPT.json"
+        or entry["path"].endswith("/INSTALL_RECEIPT.json")
+    ]
+    if not receipts:
+        return {"source_paths": set(), "bytes_by_canonical": {}}
+    if len(receipts) > 1:
+        fail(
+            f"Homebrew deferred bottle has {len(receipts)} INSTALL_RECEIPT.json "
+            "source members, expected one"
+        )
+    receipt_source = receipts[0]
+    receipt_canonical = (
+        receipt_source if receipt_source["type"] == "file"
+        else canonical_source_by_path.get(receipt_source["path"])
+    )
+    if receipt_canonical is None or receipt_canonical["type"] != "file":
+        fail("Homebrew deferred bottle INSTALL_RECEIPT.json is not regular")
+
+    tar_value = decompress_single_lazy_layer_gzip(archive_value, expanded_bytes)
+    try:
+        with tarfile.open(fileobj=io.BytesIO(tar_value), mode="r:") as archive:
+            members = {
+                normalize_tar_member_name(member.name): member
+                for member in archive.getmembers()
+            }
+
+            def regular_bytes(source: dict[str, Any]) -> bytes:
+                canonical = (
+                    source if source["type"] == "file"
+                    else canonical_source_by_path.get(source["path"])
+                )
+                if canonical is None or canonical["type"] != "file":
+                    fail(
+                        f"Homebrew deferred bottle changed source {source['path']} "
+                        "is not regular"
+                    )
+                member = members.get(canonical["path"])
+                extracted = None if member is None else archive.extractfile(member)
+                if extracted is None:
+                    fail(
+                        f"Homebrew deferred bottle cannot read regular source "
+                        f"{canonical['path']}"
+                    )
+                return extracted.read()
+
+            receipt = parse_homebrew_install_receipt(regular_bytes(receipt_source))
+            separator = receipt_source["path"].rfind("/")
+            source_root = (
+                "" if separator < 0 else receipt_source["path"][:separator]
+            )
+            source_paths: set[str] = set()
+            bytes_by_canonical: dict[str, bytes] = {}
+            for relative in receipt["changed_files"]:
+                source_path = relative if not source_root else f"{source_root}/{relative}"
+                source = source_by_path.get(source_path)
+                if source is None or source["type"] not in ("file", "hardlink"):
+                    fail(
+                        f"Homebrew deferred bottle changed source {source_path} "
+                        "is missing or not regular"
+                    )
+                canonical = (
+                    source if source["type"] == "file"
+                    else canonical_source_by_path.get(source["path"])
+                )
+                assert canonical is not None
+                relocated = relocate_homebrew_bottle_file(
+                    regular_bytes(source), receipt, source_path
+                )
+                prior = bytes_by_canonical.get(canonical["path"])
+                if prior is not None and prior != relocated:
+                    fail("Homebrew hard-link aliases produce different relocated bytes")
+                source_paths.add(source_path)
+                bytes_by_canonical[canonical["path"]] = relocated
+            return {
+                "source_paths": source_paths,
+                "bytes_by_canonical": bytes_by_canonical,
+            }
+    except tarfile.TarError as error:
+        fail(f"Homebrew deferred TAR is invalid: {error}")
+
+
 def validate_original_bottle_inventory(
     value: Any,
     *,
@@ -1526,6 +1703,7 @@ def validate_original_bottle_inventory(
     list[dict[str, Any]],
     list[dict[str, Any]],
     dict[str, dict[str, Any]],
+    dict[str, Any],
 ]:
     inventory = record(value, f"Homebrew deferred tree {tree_id} inventory")
     expected_inventory = {
@@ -1537,6 +1715,17 @@ def validate_original_bottle_inventory(
         fail(f"Homebrew deferred tree {tree_id} inventory has unexpected fields")
     source_entries, canonical_source_by_path = validate_original_bottle_source(
         inventory.get("source"), tree_id
+    )
+    expanded_bytes = integer(
+        inventory.get("expanded_bytes"), f"Homebrew deferred tree {tree_id} expanded bytes"
+    )
+    if expanded_bytes > MAX_LAZY_LAYER_UNCOMPRESSED_BYTES:
+        fail(f"Homebrew deferred tree {tree_id} expansion bound is invalid")
+    relocation = original_bottle_relocation(
+        archive_value,
+        source_entries,
+        canonical_source_by_path,
+        expanded_bytes,
     )
     source_by_path = {entry["path"]: entry for entry in source_entries}
     raw_entries = array(inventory.get("entries"), f"Homebrew deferred tree {tree_id} entries")
@@ -1579,7 +1768,8 @@ def validate_original_bottle_inventory(
         )
         materialization = entry.get("materialization")
         if materialization not in (
-            "archive", "archive-copy", "archive-copy-mode", "descriptor"
+            "archive", "archive-homebrew-relocate", "archive-copy",
+            "archive-copy-mode", "descriptor"
         ):
             fail(f"Homebrew deferred tree {tree_id} entry {index} materialization is invalid")
         ownership = entry.get("ownership")
@@ -1643,13 +1833,21 @@ def validate_original_bottle_inventory(
             if (
                 entry_type != "file"
                 or source["type"] != "file"
-                or source["size"] != size
                 or materialization == "archive-copy" and source["mode"] != mode
             ):
                 fail(f"Homebrew deferred tree {tree_id} archive copy {path} differs")
+        elif materialization == "archive-homebrew-relocate":
+            if (
+                entry_type not in ("file", "hardlink")
+                or source["type"] != entry_type
+                or entry_type == "file" and source["mode"] != mode
+            ):
+                fail(
+                    f"Homebrew deferred tree {tree_id} receipt-relocated "
+                    f"entry {path} differs"
+                )
         elif (
             source["type"] != entry_type
-            or entry_type == "file" and source["size"] != size
             or entry_type == "symlink" and source.get("target") != validated.get("target")
             or entry_type != "hardlink" and source["mode"] != mode
         ):
@@ -1667,6 +1865,35 @@ def validate_original_bottle_inventory(
             mergeable_count += 1
         entries.append(validated)
         by_path[path] = validated
+    relocation_markers = {
+        entry["source_path"] for entry in entries
+        if entry["materialization"] == "archive-homebrew-relocate"
+    }
+    if relocation_markers != relocation["source_paths"]:
+        fail(
+            f"Homebrew deferred tree {tree_id} relocation markers differ "
+            "from INSTALL_RECEIPT.json"
+        )
+    relocated_canonical_paths = set(relocation["bytes_by_canonical"])
+    for entry in entries:
+        if entry["materialization"] == "descriptor" or entry["type"] not in (
+            "file", "hardlink"
+        ):
+            continue
+        source = source_by_path[entry["source_path"]]
+        canonical = (
+            source if source["type"] == "file"
+            else canonical_source_by_path.get(source["path"])
+        )
+        if canonical is None or canonical["type"] != "file":
+            fail(f"Homebrew deferred tree {tree_id} regular source is unresolved")
+        expected_size = (
+            len(relocation["bytes_by_canonical"][canonical["path"]])
+            if canonical["path"] in relocated_canonical_paths
+            else canonical["size"]
+        )
+        if entry["size"] != expected_size:
+            fail(f"Homebrew deferred tree {tree_id} archive entry {entry['path']} differs")
     if not has_payload:
         fail(f"Homebrew deferred tree {tree_id} has no layer-owned payload")
     paths = [entry["path"] for entry in entries]
@@ -1680,7 +1907,9 @@ def validate_original_bottle_inventory(
                 fail(f"Homebrew deferred tree {tree_id} descends through a non-directory")
     canonical_groups = resolve_lazy_layer_hardlinks(entries)
     for entry in entries:
-        if entry["type"] != "hardlink" or entry["materialization"] != "archive":
+        if entry["type"] != "hardlink" or entry["materialization"] not in (
+            "archive", "archive-homebrew-relocate"
+        ):
             continue
         source = source_by_path[entry["source_path"]]
         target = by_path.get(entry["target"])
@@ -1712,15 +1941,8 @@ def validate_original_bottle_inventory(
         f"Homebrew deferred tree {tree_id} mergeable directory count",
     )
     exact(inventory.get("payload_bytes"), payload_bytes, f"Homebrew deferred tree {tree_id} payload bytes")
-    expanded_bytes = integer(
-        inventory.get("expanded_bytes"), f"Homebrew deferred tree {tree_id} expanded bytes"
-    )
-    if (
-        expanded_bytes > MAX_LAZY_LAYER_UNCOMPRESSED_BYTES
-    ):
-        fail(f"Homebrew deferred tree {tree_id} expansion bound is invalid")
     validate_lazy_layer_tar_gzip(archive_value, source_entries, expanded_bytes)
-    return entries, source_entries, canonical_source_by_path
+    return entries, source_entries, canonical_source_by_path, relocation
 
 
 def expected_original_bottle_tree_id(
@@ -1888,15 +2110,26 @@ def validate_canonical_original_bottle_trees(
         data = data_by_package[full_name]
         tree_id = expected_ids[full_name]
         canonical = data["canonical_source_by_path"].get(source["path"])
+        canonical_regular = source if source["type"] == "file" else canonical
+        relocated = (
+            None if canonical_regular is None
+            else data["relocation"]["bytes_by_canonical"].get(canonical_regular["path"])
+        )
         expected: dict[str, Any] = {
             "path": guest,
             "source_path": source["path"],
-            "materialization": "archive",
+            "materialization": (
+                "archive-homebrew-relocate"
+                if source["path"] in data["relocation"]["source_paths"]
+                else "archive"
+            ),
             "type": source["type"],
             "ownership": entry_ownership(data["package"], guest, source["type"]),
             "mode": source["mode"],
             "size": (
-                canonical["size"]
+                len(relocated)
+                if relocated is not None
+                else canonical["size"]
                 if source["type"] == "hardlink"
                 else len(source["target"].encode("utf-8"))
                 if source["type"] == "symlink"
@@ -1989,7 +2222,9 @@ def validate_canonical_original_bottle_trees(
             if source["type"] not in ("file", "directory"):
                 fail(f"Homebrew deferred tree {tree_id} link source is unsupported")
             if link["type"] == "file":
-                if source["type"] != "file" or source["materialization"] != "archive":
+                if source["type"] != "file" or source["materialization"] not in (
+                    "archive", "archive-homebrew-relocate"
+                ):
                     fail(f"Homebrew deferred tree {tree_id} copied link source is not regular")
                 mode = source["mode"] if link["mode_override"] is None else link["mode_override"]
                 expected_entries[target_path] = {
@@ -2277,7 +2512,12 @@ def validate_original_bottle_trees(
             fail(f"Homebrew deferred tree {tree_id} payload is missing")
         exact(content_sha, digest_bytes(archive_value), f"Homebrew deferred tree {tree_id} payload digest")
         exact(content_bytes, len(archive_value), f"Homebrew deferred tree {tree_id} payload size")
-        entries, source_entries, canonical_source_by_path = validate_original_bottle_inventory(
+        (
+            entries,
+            source_entries,
+            canonical_source_by_path,
+            relocation,
+        ) = validate_original_bottle_inventory(
             tree.get("inventory"), tree_id=tree_id, archive_value=archive_value
         )
         entries_by_path = {entry["path"]: entry for entry in entries}
@@ -2340,6 +2580,7 @@ def validate_original_bottle_trees(
             "entries_by_path": entries_by_path,
             "source_entries": source_entries,
             "canonical_source_by_path": canonical_source_by_path,
+            "relocation": relocation,
         })
     if tree_id_order != sorted(tree_id_order):
         fail("Homebrew deferred trees are not in canonical order")
