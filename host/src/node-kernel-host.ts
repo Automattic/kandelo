@@ -100,6 +100,11 @@ export interface NodeKernelHostOptions {
    */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
   /**
+   * Resolve relative lazy URLs embedded in rootfsImage before transport.
+   * This is the Node peer of BrowserKernel's lazyUrlBase contract.
+   */
+  rootfsLazyUrlBase?: string;
+  /**
    * Exhaustive exact URL-to-byte transport for lazy entries in rootfsImage.
    * Intended for offline and pre-publication acceptance: when set, unbound
    * URLs fail instead of falling through to ambient network fetch.
@@ -160,6 +165,12 @@ export class NodeKernelHost {
     const rootfsImage = resolveRootfsImage(this.options.rootfsImage);
     if (this.options.rootfsLazyAssets !== undefined && rootfsImage === null) {
       throw new Error("rootfsLazyAssets requires rootfsImage");
+    }
+    if (this.options.rootfsLazyUrlBase !== undefined && rootfsImage === null) {
+      throw new Error("rootfsLazyUrlBase requires rootfsImage");
+    }
+    if (this.options.rootfsLazyUrlBase === "") {
+      throw new Error("rootfsLazyUrlBase must not be empty");
     }
     const rootfsLazyAssets = this.options.rootfsLazyAssets === undefined
       ? undefined
@@ -233,6 +244,7 @@ export class NodeKernelHost {
         },
         execPrograms: this.options.execPrograms,
         rootfsImage: rootfsImage ?? undefined,
+        rootfsLazyUrlBase: this.options.rootfsLazyUrlBase,
         rootfsLazyAssets,
         extraMounts: this.options.extraMounts,
         enableTcpNetwork: this.options.enableTcpNetwork,

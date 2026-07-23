@@ -345,24 +345,38 @@ export function assertHomebrewVfsMaterialization(
   ) {
     throw new Error("Homebrew embedded bottle mirror plan changed identity");
   }
-  const pending = fs.exportLazyArchiveEntries().filter(
-    (entry) => entry.content !== undefined,
-  );
-  const pendingIdentities = pending.map((entry) => {
+  const pendingIdentities = fs.exportLazyArchiveEntries().flatMap((entry) => {
+    if (entry.content === undefined) return [];
+    const bottleCapabilities = entry.activation?.capabilities.filter((capability) =>
+      capability.startsWith("homebrew-bottle:")
+    ) ?? [];
+    if (bottleCapabilities.length === 0) return [];
+    if (bottleCapabilities.length !== 1) {
+      throw new Error(
+        `Homebrew pending deferred tree ${entry.mountPrefix} has ambiguous bottle ownership`,
+      );
+    }
     const url = entry.content!.transports[0];
     if (url === undefined) {
       throw new Error(`Homebrew pending deferred tree ${entry.mountPrefix} has no transport`);
     }
-    return {
+    return [{
+      treeId: bottleCapabilities[0]!.slice("homebrew-bottle:".length),
       url,
       sha256: entry.content!.sha256,
       bytes: entry.content!.bytes,
-    };
-  }).sort((left, right) => compareText(left.url, right.url));
+    }];
+  }).sort((left, right) =>
+    compareText(left.treeId, right.treeId) || compareText(left.url, right.url)
+  );
   const expectedDeferred = evidence.deferred.map((tree) =>
-    ({ url: tree.url, sha256: tree.sha256, bytes: tree.bytes })
-  ).sort((left, right) => compareText(left.url, right.url));
-  if (JSON.stringify(pendingIdentities) !== JSON.stringify(expectedDeferred)) {
+    ({ treeId: tree.treeId, url: tree.url, sha256: tree.sha256, bytes: tree.bytes })
+  ).sort((left, right) =>
+    compareText(left.treeId, right.treeId) || compareText(left.url, right.url)
+  );
+  if (
+    JSON.stringify(pendingIdentities) !== JSON.stringify(expectedDeferred)
+  ) {
     throw new Error(
       "Homebrew pending deferred trees differ from the selected package partition",
     );

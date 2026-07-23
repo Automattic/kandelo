@@ -43,6 +43,7 @@ import {
 } from "./vfs";
 import type { MountConfig } from "./vfs/types";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
+import { resolveLazyUrl } from "./vfs/lazy-url";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { findRepoRoot } from "./binary-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
@@ -541,6 +542,7 @@ function buildVirtualPlatformIO(
     uid?: number;
     gid?: number;
   }>,
+  rootfsLazyUrlBase?: InitMessage["rootfsLazyUrlBase"],
   rootfsLazyAssets?: InitMessage["rootfsLazyAssets"],
 ): VirtualPlatformIO {
   const bootSessionDir = mkdtempSync(join(tmpdir(), "wasm-posix-session-"));
@@ -573,6 +575,10 @@ function buildVirtualPlatformIO(
     : null;
   if (rootfsMemfs) {
     ensureMountParentDirectories(rootfsMemfs, extras.map((m) => m.mountPoint));
+    if (rootfsLazyUrlBase !== undefined) {
+      rootfsMemfs.rewriteLazyFileUrls((url) => resolveLazyUrl(rootfsLazyUrlBase, url));
+      rootfsMemfs.rewriteLazyArchiveUrls((url) => resolveLazyUrl(rootfsLazyUrlBase, url));
+    }
     rootfsMemfs.subscribeLazyDownloads((event) => {
       post({ type: "lazy_download", event });
     });
@@ -614,7 +620,12 @@ async function handleInit(msg: InitMessage) {
   workerAdapter = new NodeWorkerAdapter();
 
   const io: PlatformIO = msg.rootfsImage
-    ? buildVirtualPlatformIO(msg.rootfsImage, msg.extraMounts, msg.rootfsLazyAssets)
+    ? buildVirtualPlatformIO(
+      msg.rootfsImage,
+      msg.extraMounts,
+      msg.rootfsLazyUrlBase,
+      msg.rootfsLazyAssets,
+    )
     : new NodePlatformIO();
   vfsExecIO = msg.rootfsImage ? io : null;
   if (msg.enableTcpNetwork) {
