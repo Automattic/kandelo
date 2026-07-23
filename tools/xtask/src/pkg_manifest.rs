@@ -1349,7 +1349,7 @@ fn default_outputs_value() -> toml::Value {
 
 fn program_output_dest_rel(
     package_name: &str,
-    output_count: usize,
+    closure_member_count: usize,
     out: &ProgramOutput,
 ) -> PathBuf {
     let basename = Path::new(&out.wasm)
@@ -1361,7 +1361,7 @@ fn program_output_dest_rel(
         None => "",
     };
     let dest_name = format!("{}{}", out.name, ext);
-    if output_count > 1 {
+    if closure_member_count > 1 {
         Path::new(package_name).join(dest_name)
     } else {
         PathBuf::from(dest_name)
@@ -1369,6 +1369,19 @@ fn program_output_dest_rel(
 }
 
 impl DepsManifest {
+    /// Number of files that form this program package's resolver closure.
+    ///
+    /// Executable outputs and non-Wasm runtime files are one package identity:
+    /// consumers must never mix either class across builds.
+    pub fn program_closure_member_count(&self) -> usize {
+        self.program_outputs.len() + self.runtime_files.len()
+    }
+
+    /// Whether the resolver mirror must be owned by one package directory.
+    pub fn uses_package_mirror_directory(&self) -> bool {
+        self.program_closure_member_count() > 1
+    }
+
     /// Resolver mirror path under `programs/<arch>/` for a runtime file.
     /// Runtime files always live below the package name, independently of the
     /// number of executable `[[outputs]]` entries.
@@ -1413,13 +1426,13 @@ impl DepsManifest {
     /// the consumer's expected path.
     ///
     /// Layout:
-    ///   * 1 output:  `<output.name><ext>`
-    ///   * ≥2 outputs: `<program.name>/<output.name><ext>`
+    ///   * 1 total output/runtime member: `<output.name><ext>`
+    ///   * ≥2 total members: `<program.name>/<output.name><ext>`
     ///
     /// `<ext>` is everything from the first `.` onward in `out.wasm`'s
     /// basename, so `.vfs.zst`, `.tar.gz`, etc. round-trip intact.
     pub fn output_dest_rel_for(&self, out: &ProgramOutput) -> PathBuf {
-        program_output_dest_rel(&self.name, self.program_outputs.len(), out)
+        program_output_dest_rel(&self.name, self.program_closure_member_count(), out)
     }
 
     /// Same as [`output_dest_rel_for`] but keyed by the `wasm`
@@ -2067,7 +2080,11 @@ impl DepsManifest {
                         ));
                     }
                 }
-                let mirror = program_output_dest_rel(&raw.name, program_outputs.len(), out);
+                let mirror = program_output_dest_rel(
+                    &raw.name,
+                    program_outputs.len() + runtime_files.len(),
+                    out,
+                );
                 for prior in &output_mirrors {
                     if file_paths_conflict(&prior.to_string_lossy(), &mirror.to_string_lossy()) {
                         return Err(format!(
@@ -3289,11 +3306,11 @@ wasm = "vim.wasm"
             m.runtime_file_dest_rel("icu.dat").unwrap(),
             PathBuf::from("vim/icu.dat")
         );
-        // Runtime-file placement must not perturb the legacy single-output
-        // destination convention.
+        // The executable and runtime file are one closure, so both live below
+        // the package-owned mirror directory.
         assert_eq!(
             m.output_dest_rel("vim.wasm").unwrap(),
-            PathBuf::from("vim.wasm")
+            PathBuf::from("vim/vim.wasm")
         );
 
         let nested = program_with_runtime_file("share/icu/icu.dat", "/usr/lib/php/icu.dat", None);
@@ -3871,6 +3888,31 @@ spdx = "TestLicense"
         assert_eq!(
             m.output_dest_rel("pdftex.wasm").unwrap(),
             PathBuf::from("pdftex.wasm")
+        );
+    }
+
+    #[test]
+    fn output_dest_rel_single_output_with_runtime_file_uses_program_subdir() {
+        let m = program_manifest(
+            "cpython",
+            r#"[[outputs]]
+name = "cpython"
+wasm = "python.wasm"
+
+[[runtime_files]]
+artifact = "python-runtime.zip"
+guest_path = "/usr/share/cpython/python-runtime.zip"
+"#,
+        );
+        assert_eq!(m.program_closure_member_count(), 2);
+        assert!(m.uses_package_mirror_directory());
+        assert_eq!(
+            m.output_dest_rel("python.wasm").unwrap(),
+            PathBuf::from("cpython/cpython.wasm")
+        );
+        assert_eq!(
+            m.runtime_file_dest_rel("python-runtime.zip").unwrap(),
+            PathBuf::from("cpython/python-runtime.zip")
         );
     }
 
