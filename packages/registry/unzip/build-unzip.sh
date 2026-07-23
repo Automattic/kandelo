@@ -5,9 +5,10 @@ set -euo pipefail
 #
 # Plain Makefile build with CC override.
 # unzip has its own inflate (no zlib needed).
-# Output: packages/registry/unzip/bin/unzip.wasm
+# Outputs: packages/registry/unzip/bin/{unzip,funzip}.wasm
 
 UNZIP_VERSION="${UNZIP_VERSION:-60}"
+UNZIP_SHA256="036d96991646d0449ed0aa952e4fbe21b476ce994abc276e49d30e686708bd37"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SRC_DIR="$SCRIPT_DIR/unzip-src"
@@ -15,8 +16,10 @@ BIN_DIR="$SCRIPT_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
+source "$REPO_ROOT/sdk/activate.sh"
+
 if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+    echo "ERROR: wasm32posix-cc not found. Run through scripts/dev-shell.sh." >&2
     exit 1
 fi
 
@@ -32,10 +35,14 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading unzip $UNZIP_VERSION..."
     TARBALL="unzip${UNZIP_VERSION}.tar.gz"
     URL="https://downloads.sourceforge.net/infozip/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL -L "$URL" -o "/tmp/$TARBALL"
+    TARBALL_PATH="$(mktemp "${TMPDIR:-/tmp}/${TARBALL}.XXXXXX")"
+    trap 'rm -f "$TARBALL_PATH"' EXIT
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL -L "$URL" -o "$TARBALL_PATH"
+    printf '%s  %s\n' "$UNZIP_SHA256" "$TARBALL_PATH" | sha256sum -c -
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
+    tar xzf "$TARBALL_PATH" -C "$SRC_DIR" --strip-components=1
+    rm "$TARBALL_PATH"
+    trap - EXIT
     echo "==> Source extracted to $SRC_DIR"
 fi
 
@@ -51,23 +58,25 @@ make -f unix/Makefile unzips \
     LF2="" \
     2>&1 | tail -30
 
-echo "==> Collecting binary..."
+echo "==> Collecting binaries..."
 mkdir -p "$BIN_DIR"
 
-if [ -f "$SRC_DIR/unzip" ]; then
-    cp "$SRC_DIR/unzip" "$BIN_DIR/unzip.wasm"
-    echo "==> Built unzip"
-    ls -lh "$BIN_DIR/unzip.wasm"
-else
-    echo "ERROR: unzip binary not found after build" >&2
-    exit 1
-fi
+for program in unzip funzip; do
+    if [ ! -f "$SRC_DIR/$program" ]; then
+        echo "ERROR: $program binary not found after build" >&2
+        exit 1
+    fi
+    cp "$SRC_DIR/$program" "$BIN_DIR/$program.wasm"
+    echo "==> Built $program"
+    ls -lh "$BIN_DIR/$program.wasm"
+done
 
 echo ""
-echo "==> unzip built successfully!"
-echo "Binary: $BIN_DIR/unzip.wasm"
+echo "==> unzip and funzip built successfully!"
+echo "Binaries: $BIN_DIR/unzip.wasm $BIN_DIR/funzip.wasm"
 
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary unzip "$SCRIPT_DIR/bin/unzip.wasm"
+install_local_binary unzip "$SCRIPT_DIR/bin/funzip.wasm"

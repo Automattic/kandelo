@@ -66,7 +66,8 @@ const bzip2Wasm = tryResolveBinary("programs/bzip2.wasm");
 const xzWasm = tryResolveBinary("programs/xz.wasm");
 const zstdWasm = tryResolveBinary("programs/zstd.wasm");
 const zipWasm = tryResolveBinary("programs/zip.wasm");
-const unzipWasm = tryResolveBinary("programs/unzip.wasm");
+const unzipWasm = tryResolveBinary("programs/unzip/unzip.wasm");
+const funzipWasm = tryResolveBinary("programs/unzip/funzip.wasm");
 const nodeWasm =
     tryResolveBinary("programs/node.wasm") ??
     tryResolveBinary("programs/spidermonkey-node.wasm");
@@ -203,9 +204,9 @@ const builtinPrograms: Record<string, string | null> = {
     "zipinfo": unzipWasm,
     "/usr/bin/zipinfo": unzipWasm,
     "/bin/zipinfo": unzipWasm,
-    "funzip": unzipWasm,
-    "/usr/bin/funzip": unzipWasm,
-    "/bin/funzip": unzipWasm,
+    "funzip": funzipWasm,
+    "/usr/bin/funzip": funzipWasm,
+    "/bin/funzip": funzipWasm,
     // Node.js-compatible runtime backed by SpiderMonkey.
     "node": nodeWasm,
     "/usr/bin/node": nodeWasm,
