@@ -49,7 +49,6 @@ import posixIpcsWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/ipcs.wa
 import posixLexWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/lex.wasm?url";
 import posixLocaleWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/locale.wasm?url";
 import posixLoggerWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/logger.wasm?url";
-import posixManWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/man.wasm?url";
 import posixMoreWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/more.wasm?url";
 import posixMsgfmtWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/msgfmt.wasm?url";
 import posixNgettextWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/ngettext.wasm?url";
@@ -114,7 +113,6 @@ const ROOTFS_LAZY_ASSET_URLS = new Map<string, string>([
   ["binaries/programs/wasm32/posix-utils-lite/lex.wasm", posixLexWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/locale.wasm", posixLocaleWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/logger.wasm", posixLoggerWasmUrl],
-  ["binaries/programs/wasm32/posix-utils-lite/man.wasm", posixManWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/more.wasm", posixMoreWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/msgfmt.wasm", posixMsgfmtWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/ngettext.wasm", posixNgettextWasmUrl],

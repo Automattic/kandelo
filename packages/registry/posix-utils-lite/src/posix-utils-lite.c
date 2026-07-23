@@ -175,31 +175,6 @@ static int util_more(int argc, char **argv) {
     return rc;
 }
 
-static int util_man(int argc, char **argv) {
-    if (argc < 2) {
-        fprintf(stderr, "man: usage: man topic\n");
-        return 1;
-    }
-    int rc = 0;
-    for (int i = 1; i < argc; i++) {
-        char path[PATH_MAX];
-        int found = 0;
-        for (int section = 1; section <= 9; section++) {
-            snprintf(path, sizeof(path), "/usr/share/man/man%d/%s.%d", section, argv[i], section);
-            if (access(path, R_OK) == 0) {
-                found = 1;
-                rc |= copy_path_to_stream(path, stdout);
-                break;
-            }
-        }
-        if (!found) {
-            fprintf(stderr, "man: no entry for %s\n", argv[i]);
-            rc = 1;
-        }
-    }
-    return rc;
-}
-
 static int util_asa(int argc, char **argv) {
     int rc = 0;
     int start = argc > 1 ? 1 : 0;
@@ -2132,7 +2107,6 @@ static int dispatch(const char *name, int argc, char **argv) {
     if (streq(name, "lex")) return util_lex(argc, argv);
     if (streq(name, "locale")) return util_locale(argc, argv);
     if (streq(name, "logger")) return util_logger(argc, argv);
-    if (streq(name, "man")) return util_man(argc, argv);
     if (streq(name, "more")) return util_more(argc, argv);
     if (streq(name, "msgfmt")) return util_msgfmt(argc, argv);
     if (streq(name, "ngettext")) return util_ngettext(argc, argv);

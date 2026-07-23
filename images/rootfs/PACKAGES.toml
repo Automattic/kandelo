@@ -391,11 +391,6 @@ path = "/usr/bin/logger"
 aliases = ["/bin/logger"]
 
 [[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/man.wasm"
-path = "/usr/bin/man"
-aliases = ["/bin/man"]
-
-[[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/more.wasm"
 path = "/usr/bin/more"
 aliases = ["/bin/more"]

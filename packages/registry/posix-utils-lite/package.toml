@@ -92,10 +92,6 @@ name = "logger"
 wasm = "logger.wasm"
 
 [[outputs]]
-name = "man"
-wasm = "man.wasm"
-
-[[outputs]]
 name = "more"
 wasm = "more.wasm"
 
