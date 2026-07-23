@@ -265,6 +265,15 @@ the exact artifact accepted by the current gates:
   the failure is not a current landing blocker, but it remains evidence to
   reproduce and root-cause. Do not turn the source build into unconditional
   retry-until-green behavior.
+- Remove the GNU mirror selector as a single availability dependency for
+  source builds. ABI 42 staging run `30045822037` exhausted all eleven ncurses
+  retries while `ftpmirror.gnu.org` returned HTTP 502, even though the
+  hash-identical archive remained available from GNU's canonical origin.
+  Ncurses uses the canonical origin to unblock this generation; follow up by
+  auditing every remaining GNU recipe and either pinning the canonical origin
+  or adding a package-schema mirror list whose alternatives remain bound to
+  the one declared source hash. Retrying the same failed selector is not source
+  redundancy.
 
 ### Phase 1: Close the active publication and federation work
 
