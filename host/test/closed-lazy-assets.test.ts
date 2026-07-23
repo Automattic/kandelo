@@ -51,6 +51,7 @@ describe("closed lazy assets", () => {
     expect(fetchImpl).toHaveBeenCalledWith("/assets/package-tree.zip", {
       cache: "no-store",
       credentials: "omit",
+      referrerPolicy: "no-referrer",
       redirect: "error",
       signal: expect.any(AbortSignal),
     });
@@ -123,7 +124,7 @@ describe("closed lazy assets", () => {
     await expect(loadClosedLazyAssetSources([{
       ...identity,
       sourceUrl: "data:text/plain,not-http",
-    }], { fetchImpl })).rejects.toThrow("must be canonical HTTP(S)");
+    }], { fetchImpl })).rejects.toThrow("loopback HTTP");
     await expect(loadClosedLazyAssetSources([{
       ...identity,
       url: "http://example.test/not-https",
@@ -134,8 +135,9 @@ describe("closed lazy assets", () => {
   it.each([
     "/assets/package-tree.zip?",
     "/assets/package-tree.zip?channel=closed",
-    "http://assets.example.test/package-tree.zip",
-    "http://assets.example.test/package-tree.zip?",
+    "http://127.0.0.1:4173/package-tree.zip",
+    "http://localhost:4173/package-tree.zip?",
+    "http://[::1]:4173/package-tree.zip",
     "https://assets.example.test/package-tree.zip",
     "https://assets.example.test/package-tree.zip?channel=closed",
   ])("accepts canonical transport source URL %s", async (sourceUrl) => {
@@ -147,6 +149,7 @@ describe("closed lazy assets", () => {
     expect(fetchImpl).toHaveBeenCalledWith(sourceUrl, {
       cache: "no-store",
       credentials: "omit",
+      referrerPolicy: "no-referrer",
       redirect: "error",
       signal: expect.any(AbortSignal),
     });
@@ -162,11 +165,13 @@ describe("closed lazy assets", () => {
     ["relative dot-segment normalization", "/assets/a/../package.zip"],
     ["non-root-relative path", "assets/package.zip"],
     ["network-path reference", "//assets.example.test/package.zip"],
+    ["non-loopback cleartext HTTP", "http://assets.example.test/package.zip"],
+    ["non-loopback numeric HTTP", "http://192.0.2.1/package.zip"],
   ])("rejects a transport source URL with %s", async (_name, sourceUrl) => {
     const fetchImpl = vi.fn(async () => new Response(new Uint8Array([4, 5, 6])));
     await expect(loadClosedLazyAssetSources([
       sourceBinding(URL_B, sourceUrl),
-    ], { fetchImpl })).rejects.toThrow("must be canonical HTTP(S)");
+    ], { fetchImpl })).rejects.toThrow("loopback HTTP");
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 

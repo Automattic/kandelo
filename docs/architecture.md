@@ -750,10 +750,18 @@ Relative lazy asset URLs are resolved inside the dedicated kernel worker on
 both hosts. Browser boots use `BrowserKernel`'s `lazyUrlBase`; Node boots use
 the peer `NodeKernelHost.rootfsLazyUrlBase` option. Closed/offline acceptance
 can bind the resolved URL to exact caller-owned bytes through the existing
-closed-lazy-asset transport. Metadata inspection and directory enumeration do
-not fetch a deferred tree. The first prepared open or executable resolution
-fetches the whole declared archive once, verifies it, and atomically
-materializes the complete group; later accesses do not fetch it again.
+closed-lazy-asset transport. Before kernel boot, that acceptance-only loader
+eagerly fetches bounded source URLs, verifies each complete decoded response
+against its declared byte count and SHA-256, and only then associates the
+bytes with the separate immutable HTTPS URL stored in the deferred tree. A
+source URL is transport input, never VFS authority: absolute cleartext HTTP is
+limited to loopback acceptance servers, requests omit credentials and
+referrers and reject redirects, and source URLs must not contain bearer
+secrets. This eager pre-publication proof is not the product tree's first-use
+transport. Metadata inspection and directory enumeration do not fetch a
+deferred tree. The first prepared open or executable resolution fetches the
+whole declared archive once, verifies it, and atomically materializes the
+complete group; later accesses do not fetch it again.
 
 ### VFS Images
 
