@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -149,6 +150,54 @@ function writeProgramProjection(
   }
   return cacheKey;
 }
+
+test("Vite dependency scanning does not require the package checker", async () => {
+  const savedXtask = process.env.WASM_POSIX_XTASK_BIN;
+  const savedNoHmr = process.env.KANDELO_BROWSER_TEST_NO_HMR;
+  const testRoot = mkdtempSync(join(tmpdir(), "kandelo-vite-no-packages-"));
+  const checker = join(testRoot, "unexpected-xtask");
+  const marker = join(testRoot, "checker-was-invoked");
+  let server: ViteDevServer | null = null;
+
+  try {
+    writeFileSync(
+      checker,
+      [
+        "#!/bin/sh",
+        `printf invoked > ${JSON.stringify(marker)}`,
+        "exit 97",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(checker, 0o755);
+    process.env.WASM_POSIX_XTASK_BIN = checker;
+    process.env.KANDELO_BROWSER_TEST_NO_HMR = "1";
+
+    server = await createServer({
+      configFile: join(appRoot, "vite.config.ts"),
+      root: appRoot,
+      logLevel: "silent",
+      server: { host: "127.0.0.1", port: 0, hmr: false },
+    });
+    await server.listen();
+    await server.environments.client.depsOptimizer?.scanProcessing;
+
+    expect(existsSync(marker)).toBe(false);
+  } finally {
+    await server?.close();
+    rmSync(testRoot, { recursive: true, force: true });
+    if (savedXtask === undefined) {
+      delete process.env.WASM_POSIX_XTASK_BIN;
+    } else {
+      process.env.WASM_POSIX_XTASK_BIN = savedXtask;
+    }
+    if (savedNoHmr === undefined) {
+      delete process.env.KANDELO_BROWSER_TEST_NO_HMR;
+    } else {
+      process.env.KANDELO_BROWSER_TEST_NO_HMR = savedNoHmr;
+    }
+  }
+});
 
 test("Vite serves an approved bottle member without exposing its cache", async () => {
   const savedXdgCacheHome = process.env.XDG_CACHE_HOME;
