@@ -219,14 +219,11 @@ test("Vite serves an approved bottle member without exposing its cache", async (
   const testRoot = mkdtempSync(join(tmpdir(), "kandelo-vite-cache-boundary-"));
   const namespace = `vite-cache-boundary-${randomUUID()}`;
   const programCacheRoot = binaryProgramCacheRoot();
-  const cacheRoot = dirname(programCacheRoot);
   const registryRoot = join(testRoot, "registry");
-  const privateSource = join(
-    cacheRoot,
-    "sources",
-    namespace,
-    "private.dat",
-  );
+  // WHY: Prepared CI workspaces relocate the program cache inside the checkout.
+  // A control file beside that cache would then be Vite-servable through the
+  // allowed repository root, so keep it under the external test root.
+  const privateSource = join(testRoot, "private-source", "private.dat");
   const cacheEscapeName = `${namespace}-escape.dat`;
   const cacheEscape = join(programCacheRoot, cacheEscapeName);
   const mirror = join(
