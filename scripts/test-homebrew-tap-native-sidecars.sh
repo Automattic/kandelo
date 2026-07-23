@@ -332,18 +332,9 @@ make_tool_bottle() {
   local bottle_json="$TMPDIR/sidecar-tool--2.0_3.wasm32_kandelo.bottle.json"
   mkdir -p "$stage/bin" "$stage/include" "$stage/lib" "$stage/share/man/man1" \
     "$stage/share/info" "$stage/.brew"
-  cat >"$TMPDIR/sidecar-tool.wat" <<WAT
-(module
-  (memory 1)
-  (func (export "__abi_version") (result i32) (i32.const $ABI_VERSION))
-  (func (export "_start"))
-  (func (export "wpk_fork_unwind_begin"))
-  (func (export "wpk_fork_unwind_end"))
-  (func (export "wpk_fork_rewind_begin"))
-  (func (export "wpk_fork_rewind_end"))
-  (func (export "wpk_fork_state")))
-WAT
-  wat2wasm "$TMPDIR/sidecar-tool.wat" -o "$stage/bin/sidecar-tool"
+  bash "$REPO_ROOT/scripts/build-fork-instrumented-test-fixture.sh" \
+    --arch wasm32 \
+    --output "$stage/bin/sidecar-tool"
   cp "$stage/bin/sidecar-tool" "$stage/bin/sidecar-tool-helper"
   chmod +x "$stage/bin/sidecar-tool" "$stage/bin/sidecar-tool-helper"
   printf '#define SIDECAR_TOOL 1\n' >"$stage/include/sidecar-tool.h"
@@ -413,18 +404,9 @@ make_tool_wasm64_bottle() {
   rm -rf "$stage_parent"
   mkdir -p "$stage_parent"
   tar -xzf "$source_archive" -C "$stage_parent"
-  cat >"$TMPDIR/sidecar-tool-wasm64.wat" <<WAT
-(module
-  (memory i64 1)
-  (func (export "__abi_version") (result i32) (i32.const $ABI_VERSION))
-  (func (export "wpk_fork_unwind_begin"))
-  (func (export "wpk_fork_unwind_end"))
-  (func (export "wpk_fork_rewind_begin"))
-  (func (export "wpk_fork_rewind_end"))
-  (func (export "wpk_fork_state")))
-WAT
-  wat2wasm --enable-memory64 "$TMPDIR/sidecar-tool-wasm64.wat" \
-    -o "$stage/bin/sidecar-tool"
+  bash "$REPO_ROOT/scripts/build-fork-instrumented-test-fixture.sh" \
+    --arch wasm64 \
+    --output "$stage/bin/sidecar-tool"
   cp "$stage/bin/sidecar-tool" "$stage/bin/sidecar-tool-helper"
   chmod +x "$stage/bin/sidecar-tool" "$stage/bin/sidecar-tool-helper"
   tar -czf "$archive" -C "$stage_parent" sidecar-tool
