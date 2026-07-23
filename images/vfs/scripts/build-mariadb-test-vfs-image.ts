@@ -278,13 +278,13 @@ exit 0
     for (const name of readdirSync(mainDir).sort()) {
       if (!name.endsWith(".test")) continue;
       const full = join(mainDir, name);
-      try {
-        const stat = lstatSync(full);
-        if (!stat.isFile()) continue;
-        const data = readFileSync(full);
-        writeVfsBinary(fs, `/mysql-test/main/${name}`, new Uint8Array(data), 0o644);
-        testCount++;
-      } catch { /* skip */ }
+      const stat = lstatSync(full);
+      if (!stat.isFile()) {
+        throw new Error(`MariaDB test source entry is not a regular file: ${full}`);
+      }
+      const data = readFileSync(full);
+      writeVfsBinary(fs, `/mysql-test/main/${name}`, new Uint8Array(data), 0o644);
+      testCount++;
     }
   } else {
     console.log("  Writing curated test files...");
