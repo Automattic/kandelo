@@ -13,9 +13,10 @@
  *
  * End-to-end behavior was measured against the Homebrew dispatcher, its
  * /usr/bin/brew alias launcher, the GTK/GLib desktop path, and the exact
- * candidate bootstrap's Bash child. ABI 41's 60 KiB reserve must fit every
- * measured continuation while retaining truthful detection for larger ones.
- * These tests pin the arithmetic that the fork paths use.
+ * candidate bootstrap's Bash child. Those measurements preserve the ABI 41
+ * regression boundary; ABI 42 no longer treats 60 KiB as continuation
+ * capacity. These tests keep the retired contiguous-buffer detector truthful
+ * without implying that current linked continuations have the old ceiling.
  */
 import { describe, it, expect } from "vitest";
 import type { SideModuleForkState } from "../src/dylink";
