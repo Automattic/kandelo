@@ -267,6 +267,12 @@ export interface GetForkCountRequestMessage {
   pid: number;
 }
 
+/** Read the kernel Wasm instance's current 64 KiB linear-memory page count. */
+export interface GetKernelMemoryPagesRequestMessage {
+  type: "get_kernel_memory_pages";
+  requestId: number;
+}
+
 /** Snapshot the kernel's process table. The kernel-worker forwards to
  * `CentralizedKernelWorker.enumProcs()`; the response carries `ProcessSnapshot[]`.
  * Used by Kandelo's Inspector → Procs tab. */
@@ -358,6 +364,7 @@ export type MainToKernelMessage =
   | RegisterLazyFilesMessage
   | RegisterLazyArchivesMessage
   | GetForkCountRequestMessage
+  | GetKernelMemoryPagesRequestMessage
   | MouseInjectMessage
   | AudioDrainMessage
   | EnumProcsRequestMessage

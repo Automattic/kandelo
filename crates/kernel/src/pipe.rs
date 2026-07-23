@@ -227,7 +227,7 @@ struct DeferredInFlightReleaseQueue {
     records: Vec<DeferredInFlightFdRelease>,
     /// Capacity promised to live `InFlightFd` values whose destructor may
     /// enqueue one record. Reserving before ownership is acquired keeps Drop
-    /// allocation-free even with the kernel's non-reclaiming allocator.
+    /// allocation-free and prevents allocation failure during cleanup.
     reserved: usize,
 }
 

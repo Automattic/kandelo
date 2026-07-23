@@ -126,6 +126,12 @@ export interface GetForkCountRequestMessage {
   pid: number;
 }
 
+/** Read the kernel Wasm instance's current 64 KiB linear-memory page count. */
+export interface GetKernelMemoryPagesRequestMessage {
+  type: "get_kernel_memory_pages";
+  requestId: number;
+}
+
 export interface ResolveExecResponseMessage {
   type: "resolve_exec_response";
   requestId: number;
@@ -202,6 +208,7 @@ export type MainToKernelMessage =
   | TerminateProcessMessage
   | DestroyMessage
   | GetForkCountRequestMessage
+  | GetKernelMemoryPagesRequestMessage
   | ResolveExecResponseMessage
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage

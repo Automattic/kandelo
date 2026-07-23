@@ -2251,6 +2251,14 @@ sw.onmessage = (e: MessageEvent) => {
       }
       break;
     }
+    case "get_kernel_memory_pages": {
+      try {
+        respond(msg.requestId, kernelWorker.getKernelMemoryPages());
+      } catch (err) {
+        respondError(msg.requestId, (err as Error)?.message ?? String(err));
+      }
+      break;
+    }
     case "mouse_inject": handleMouseInject(msg); break;
     case "audio_drain": handleAudioDrain(msg); break;
     case "enum_procs": {

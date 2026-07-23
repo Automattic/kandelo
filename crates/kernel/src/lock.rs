@@ -1,9 +1,9 @@
 //! Machine-wide POSIX advisory file-lock state.
 //!
-//! The kernel's allocator does not reclaim individual allocations.  Keeping
-//! every normalized record in one geometrically-grown, high-water `Vec`
-//! therefore bounds allocator use while a file-first ordering still gives
-//! `O(log n + k)` lookup (`k` is the number of records for one file).
+//! Keeping every normalized record in one geometrically-grown, high-water
+//! `Vec` avoids allocator churn and bounds retained capacity. A file-first
+//! ordering still gives `O(log n + k)` lookup (`k` is the number of records
+//! for one file).
 
 extern crate alloc;
 

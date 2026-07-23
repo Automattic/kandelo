@@ -13608,6 +13608,22 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Current size of the kernel's own Wasm linear memory in 64 KiB pages.
+   *
+   * This deliberately reports kernel memory, not any guest process memory.
+   * Hosts use it for bounded-lifetime diagnostics such as proving that
+   * repeated pipe/fork teardown reuses allocator-owned chunks.
+   */
+  getKernelMemoryPages(): number {
+    const fn = this.kernelInstance?.exports.kernel_get_memory_pages as
+      (() => number) | undefined;
+    if (typeof fn !== "function") {
+      throw new Error("kernel_get_memory_pages export is unavailable");
+    }
+    return fn() >>> 0;
+  }
+
+  /**
    * Push a mouse event into the kernel's `/dev/input/mice` queue. The
    * kernel buffers a 3-byte PS/2 frame; any process blocked in
    * `read()` or `poll()` on the device is woken on the next retry tick.

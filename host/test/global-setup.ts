@@ -69,6 +69,7 @@ const TEST_PROGRAMS = [
   "locale_info_test.c",
   "thread-exit-group.c",
   "fifo_lifecycle_test.c",
+  "kernel_allocator_churn_test.c",
 ];
 
 const FORK_INSTRUMENTED_PROGRAMS = new Set([
@@ -77,6 +78,7 @@ const FORK_INSTRUMENTED_PROGRAMS = new Set([
   "unix_listener_exec_test.c",
   "wait_lifecycle_test.c",
   "fifo_lifecycle_test.c",
+  "kernel_allocator_churn_test.c",
 ]);
 
 /** WAT fixtures used by host runtime tests. */

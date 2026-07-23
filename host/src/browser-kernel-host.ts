@@ -528,6 +528,23 @@ export class BrowserKernel {
   }
 
   /**
+   * Return the kernel Wasm instance's current size in 64 KiB pages.
+   * This is kernel allocator telemetry, not guest process memory. Mirrors
+   * `NodeKernelHost.getKernelMemoryPages`.
+   */
+  async getKernelMemoryPages(): Promise<number> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "get_kernel_memory_pages",
+      requestId,
+    });
+    if (!Number.isSafeInteger(result) || result < 0) {
+      throw new Error(`kernel worker returned an invalid memory-page count: ${String(result)}`);
+    }
+    return result;
+  }
+
+  /**
    * Snapshot the kernel's process table — one row per live process. Used
    * by Kandelo's Inspector → Procs tab. Mirrors `NodeKernelHost.enumProcs`.
    */
