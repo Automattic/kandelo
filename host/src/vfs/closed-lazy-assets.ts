@@ -34,11 +34,17 @@ export const MAX_CLOSED_LAZY_ASSET_BYTES = 512 * 1024 * 1024;
 /**
  * Fetch and verify acceptance-only sources before giving them canonical lazy
  * transport identities. This never treats the source URL as VFS authority:
- * only the separately declared HTTPS URL, digest, and size survive.
+ * only the separately declared HTTPS URL, digest, and size survive. A caller
+ * abort or first source failure stops new work and closes every active body
+ * before the loader rejects with that exact first reason.
  */
 export async function loadClosedLazyAssetSources(
   sources: readonly ClosedLazyAssetSource[],
-  options: { fetchImpl?: FetchLike; maxConcurrency?: number } = {},
+  options: {
+    fetchImpl?: FetchLike;
+    maxConcurrency?: number;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<ClosedLazyAsset[]> {
   const validated = validateClosedLazyAssetSources(sources);
   const fetchImpl = options.fetchImpl ?? fetch;
@@ -48,31 +54,117 @@ export async function loadClosedLazyAssetSources(
       "closed lazy asset source concurrency must be an integer from 1 to 16",
     );
   }
-  return mapWithConcurrency(validated, maxConcurrency, async (source) => {
-    const response = await fetchImpl(source.sourceUrl, {
-      cache: "no-store",
-      credentials: "omit",
-      redirect: "error",
-    });
-    if (!response.ok) {
-      throw new Error(
-        `closed lazy asset source ${source.sourceUrl} returned HTTP ${response.status}`,
+
+  const controller = new AbortController();
+  let firstFailure: { reason: unknown } | undefined;
+  const fail = (reason: unknown): void => {
+    if (firstFailure !== undefined) return;
+    firstFailure = { reason };
+    controller.abort(reason);
+  };
+
+  const callerSignal = options.signal;
+  const onCallerAbort = (): void => fail(callerSignal!.reason);
+  let callerListenerAdded = false;
+  if (callerSignal?.aborted) {
+    fail(callerSignal.reason);
+  } else if (callerSignal !== undefined) {
+    callerSignal.addEventListener("abort", onCallerAbort, { once: true });
+    callerListenerAdded = true;
+  }
+
+  const output = new Array<ClosedLazyAsset>(validated.length);
+  let next = 0;
+  const loadOne = async (
+    source: ClosedLazyAssetSource,
+  ): Promise<ClosedLazyAsset> => {
+    const diagnosticUrl = redactSourceUrl(source.sourceUrl);
+    try {
+      throwIfAborted(controller.signal);
+      const response = await fetchImpl(source.sourceUrl, {
+        cache: "no-store",
+        credentials: "omit",
+        redirect: "error",
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) {
+        await cancelResponseBody(response, controller.signal.reason);
+        throw controller.signal.reason;
+      }
+      if (response.redirected) {
+        const error = new Error(
+          `closed lazy asset source ${diagnosticUrl} followed a redirect`,
+        );
+        fail(error);
+        await cancelResponseBody(response, error);
+        throw error;
+      }
+      if (!response.ok) {
+        const error = new Error(
+          `closed lazy asset source ${diagnosticUrl} returned HTTP ${response.status}`,
+        );
+        fail(error);
+        await cancelResponseBody(response, error);
+        throw error;
+      }
+      const bytes = await readExactResponseBytes(
+        response,
+        source.size,
+        diagnosticUrl,
+        controller.signal,
+        fail,
       );
+      throwIfAborted(controller.signal);
+      const actualSha256 = hex(
+        new Uint8Array(
+          await crypto.subtle.digest("SHA-256", bytes.buffer),
+        ),
+      );
+      throwIfAborted(controller.signal);
+      if (actualSha256 !== source.sha256) {
+        const error = new Error(
+          `closed lazy asset source ${diagnosticUrl} changed SHA-256`,
+        );
+        fail(error);
+        throw error;
+      }
+      return {
+        url: source.url,
+        sha256: source.sha256,
+        size: source.size,
+        bytes,
+      };
+    } catch (reason) {
+      fail(reason);
+      throw reason;
     }
-    const bytes = await readExactResponseBytes(response, source.size, source.sourceUrl);
-    const actualSha256 = hex(
-      new Uint8Array(await crypto.subtle.digest("SHA-256", copyBytes(bytes).buffer)),
+  };
+
+  try {
+    const workers = Array.from(
+      { length: Math.min(maxConcurrency, validated.length) },
+      async () => {
+        while (firstFailure === undefined) {
+          const index = next;
+          next += 1;
+          if (index >= validated.length) return;
+          try {
+            output[index] = await loadOne(validated[index]!);
+          } catch (reason) {
+            fail(reason);
+            return;
+          }
+        }
+      },
     );
-    if (actualSha256 !== source.sha256) {
-      throw new Error(`closed lazy asset source ${source.sourceUrl} changed SHA-256`);
+    await Promise.all(workers);
+    if (firstFailure !== undefined) throw firstFailure.reason;
+    return output;
+  } finally {
+    if (callerListenerAdded) {
+      callerSignal!.removeEventListener("abort", onCallerAbort);
     }
-    return {
-      url: source.url,
-      sha256: source.sha256,
-      size: source.size,
-      bytes,
-    };
-  });
+  }
 }
 
 /** Validate and snapshot a bounded, canonical HTTPS URL-to-byte binding. */
@@ -96,13 +188,19 @@ function validateClosedLazyAssets(
   }
   const seen = new Set<string>();
   let totalBytes = 0;
-  return assets.map((asset, index) => {
+  const validated = new Array<ClosedLazyAsset>(assets.length);
+  for (let index = 0; index < assets.length; index += 1) {
+    if (!Object.hasOwn(assets, index)) {
+      throw new Error(`closed lazy asset ${index} is missing`);
+    }
+    const asset = assets[index];
     if (typeof asset !== "object" || asset === null) {
       throw new Error(`closed lazy asset ${index} is not an object`);
     }
     const { url, sha256, size, bytes } = asset;
     if (
-      typeof url !== "string" || !SHA256_RE.test(sha256) ||
+      typeof url !== "string" || typeof sha256 !== "string" ||
+      !SHA256_RE.test(sha256) ||
       !Number.isSafeInteger(size) || size <= 0 ||
       !(bytes instanceof Uint8Array)
     ) {
@@ -133,8 +231,15 @@ function validateClosedLazyAssets(
         `closed lazy asset ${index} ownership requires one whole ordinary ArrayBuffer`,
       );
     }
-    return { url, sha256, size, bytes: copy ? copyBytes(bytes) : bytes };
-  });
+    validated[index] = { url, sha256, size, bytes };
+  }
+  if (!copy) return validated;
+  return validated.map(({ url, sha256, size, bytes }) => ({
+    url,
+    sha256,
+    size,
+    bytes: copyBytes(bytes),
+  }));
 }
 
 /**
@@ -194,8 +299,8 @@ function hex(bytes: Uint8Array): string {
 function validateClosedLazyAssetSources(
   sources: readonly ClosedLazyAssetSource[],
 ): ClosedLazyAssetSource[] {
-  if (!Array.isArray(sources)) {
-    throw new Error("closed lazy asset sources must be an array");
+  if (!Array.isArray(sources) || sources.length === 0) {
+    throw new Error("closed lazy asset sources must contain at least one binding");
   }
   if (sources.length > MAX_CLOSED_LAZY_ASSETS) {
     throw new Error(
@@ -204,14 +309,20 @@ function validateClosedLazyAssetSources(
   }
   const seen = new Set<string>();
   let totalBytes = 0;
-  return sources.map((source, index) => {
+  const validated = new Array<ClosedLazyAssetSource>(sources.length);
+  for (let index = 0; index < sources.length; index += 1) {
+    if (!Object.hasOwn(sources, index)) {
+      throw new Error(`closed lazy asset source ${index} is missing`);
+    }
+    const source = sources[index];
     if (typeof source !== "object" || source === null) {
       throw new Error(`closed lazy asset source ${index} is not an object`);
     }
     const { url, sourceUrl, sha256, size } = source;
     if (
       typeof url !== "string" || typeof sourceUrl !== "string" ||
-      sourceUrl.length === 0 || !SHA256_RE.test(sha256) ||
+      sourceUrl.length === 0 || typeof sha256 !== "string" ||
+      !SHA256_RE.test(sha256) ||
       !Number.isSafeInteger(size) || size <= 0
     ) {
       throw new Error(`closed lazy asset source ${index} has invalid fields`);
@@ -228,8 +339,9 @@ function validateClosedLazyAssetSources(
       );
     }
     seen.add(url);
-    return { url, sourceUrl, sha256, size };
-  });
+    validated[index] = { url, sourceUrl, sha256, size };
+  }
+  return validated;
 }
 
 function validateCanonicalClosedUrl(url: string, label: string): void {
@@ -241,7 +353,8 @@ function validateCanonicalClosedUrl(url: string, label: string): void {
   }
   if (
     parsed.protocol !== "https:" || parsed.username !== "" ||
-    parsed.password !== "" || parsed.hash !== "" || parsed.href !== url
+    parsed.password !== "" || parsed.hash !== "" || url.includes("#") ||
+    parsed.href !== url
   ) {
     throw new Error(
       `${label} must use one canonical credential-free HTTPS URL`,
@@ -250,20 +363,23 @@ function validateCanonicalClosedUrl(url: string, label: string): void {
 }
 
 function validateClosedSourceUrl(sourceUrl: string, index: number): void {
+  const validationOrigin = "https://closed-source.invalid";
   let parsed: URL;
   try {
-    parsed = new URL(sourceUrl, "https://closed-source.invalid/");
+    parsed = new URL(sourceUrl, `${validationOrigin}/`);
   } catch (error) {
     throw new Error(`closed lazy asset source ${index} fetch URL is invalid`, {
       cause: error,
     });
   }
   const relative = sourceUrl.startsWith("/");
+  const serializedRelative = parsed.href.slice(validationOrigin.length);
   if (
     (parsed.protocol !== "https:" && parsed.protocol !== "http:") ||
     parsed.username !== "" || parsed.password !== "" || parsed.hash !== "" ||
+    sourceUrl.includes("#") ||
     (relative
-      ? `${parsed.pathname}${parsed.search}` !== sourceUrl
+      ? parsed.origin !== validationOrigin || serializedRelative !== sourceUrl
       : parsed.href !== sourceUrl)
   ) {
     throw new Error(
@@ -275,76 +391,98 @@ function validateClosedSourceUrl(sourceUrl: string, index: number): void {
 async function readExactResponseBytes(
   response: Response,
   expectedBytes: number,
-  sourceUrl: string,
+  diagnosticUrl: string,
+  signal: AbortSignal,
+  fail: (reason: unknown) => void,
 ): Promise<Uint8Array<ArrayBuffer>> {
-  const declaredLength = response.headers.get("content-length");
-  if (declaredLength !== null) {
-    if (!/^(0|[1-9][0-9]*)$/.test(declaredLength)) {
-      throw new Error(
-        `closed lazy asset source ${sourceUrl} has invalid Content-Length`,
-      );
-    }
-    const parsedLength = Number(declaredLength);
-    if (!Number.isSafeInteger(parsedLength) || parsedLength !== expectedBytes) {
-      throw new Error(
-        `closed lazy asset source ${sourceUrl} declares ${declaredLength} bytes, ` +
-          `expected ${expectedBytes}`,
-      );
-    }
-  }
   if (response.body === null) {
-    throw new Error(
-      `closed lazy asset source ${sourceUrl} has no response body`,
+    const error = new Error(
+      `closed lazy asset source ${diagnosticUrl} has no response body`,
     );
+    fail(error);
+    throw error;
   }
   const output = new Uint8Array(expectedBytes);
   const reader = response.body.getReader();
+  let cancelPromise: Promise<void> | undefined;
+  const cancel = (reason: unknown): Promise<void> => {
+    if (cancelPromise !== undefined) return cancelPromise;
+    try {
+      cancelPromise = reader.cancel(reason).then(
+        () => {},
+        () => {},
+      );
+    } catch {
+      cancelPromise = Promise.resolve();
+    }
+    return cancelPromise;
+  };
+  const onAbort = (): void => {
+    void cancel(signal.reason);
+  };
+  if (signal.aborted) {
+    onAbort();
+  } else {
+    signal.addEventListener("abort", onAbort, { once: true });
+  }
   let offset = 0;
   try {
+    throwIfAborted(signal);
     while (true) {
       const { done, value } = await reader.read();
+      throwIfAborted(signal);
       if (done) break;
       if (value.byteLength > expectedBytes - offset) {
-        await reader.cancel().catch(() => {});
-        throw new Error(
-          `closed lazy asset source ${sourceUrl} exceeds ${expectedBytes} bytes`,
+        const error = new Error(
+          `closed lazy asset source ${diagnosticUrl} exceeds ${expectedBytes} bytes`,
         );
+        fail(error);
+        await cancel(error);
+        throw error;
       }
       output.set(value, offset);
       offset += value.byteLength;
     }
+    if (offset !== expectedBytes) {
+      const error = new Error(
+        `closed lazy asset source ${diagnosticUrl} has ${offset} bytes, ` +
+          `expected ${expectedBytes}`,
+      );
+      fail(error);
+      throw error;
+    }
+    return output;
+  } catch (reason) {
+    fail(reason);
+    throw reason;
   } finally {
+    signal.removeEventListener("abort", onAbort);
+    if (signal.aborted) await cancel(signal.reason);
+    if (cancelPromise !== undefined) await cancelPromise;
     reader.releaseLock();
   }
-  if (offset !== expectedBytes) {
-    throw new Error(
-      `closed lazy asset source ${sourceUrl} has ${offset} bytes, ` +
-        `expected ${expectedBytes}`,
-    );
-  }
-  return output;
 }
 
-async function mapWithConcurrency<T, R>(
-  values: readonly T[],
-  limit: number,
-  map: (value: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  const output = new Array<R>(values.length);
-  let next = 0;
-  const workers = Array.from(
-    { length: Math.min(limit, values.length) },
-    async () => {
-      while (true) {
-        const index = next;
-        next += 1;
-        if (index >= values.length) return;
-        output[index] = await map(values[index]!, index);
-      }
-    },
-  );
-  await Promise.all(workers);
-  return output;
+async function cancelResponseBody(
+  response: Response,
+  reason: unknown,
+): Promise<void> {
+  if (response.body === null) return;
+  try {
+    await response.body.cancel(reason);
+  } catch {
+    // Cleanup failures must not replace the original transport failure.
+  }
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw signal.reason;
+}
+
+function redactSourceUrl(sourceUrl: string): string {
+  const queryIndex = sourceUrl.indexOf("?");
+  if (queryIndex === -1) return sourceUrl;
+  return `${sourceUrl.slice(0, queryIndex)}?<redacted>`;
 }
 
 function copyBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
