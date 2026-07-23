@@ -173,7 +173,13 @@ describe("shell binary resolver artifact policy", () => {
     mkdirSync(dirname(xtaskPath), { recursive: true });
     mkdirSync(toolBin, { recursive: true });
     writeFileSync(join(sourceRoot, "tools", "xtask", "Cargo.toml"), "");
-    writeFileSync(join(sourceRoot, "scripts", "dev-shell.sh"), "#!/bin/sh\n");
+    writeFileSync(
+      join(sourceRoot, "scripts", "dev-shell.sh"),
+      `#!/bin/sh
+printf '%s\\n' 'dev-shell setup chatter'
+exec "$@"
+`,
+    );
     writeFileSync(xtaskPath, "#!/bin/sh\nexit 99\n");
     chmodSync(xtaskPath, 0o755);
     writeFileSync(
@@ -211,7 +217,7 @@ printf '%s\\n' "$WASM_POSIX_XTASK_BIN"
           env: {
             ...process.env,
             PATH: `${toolBin}:${process.env.PATH ?? ""}`,
-            KANDELO_DEV_SHELL_TOOL_PATH: "test",
+            KANDELO_DEV_SHELL_TOOL_PATH: "",
             WASM_POSIX_BINARY_RESOLVER_REPO_ROOT: sourceRoot,
             CHECKER_BUILD_RECORD: buildRecord,
             WASM_POSIX_XTASK_BIN: "",
@@ -221,6 +227,7 @@ printf '%s\\n' "$WASM_POSIX_XTASK_BIN"
 
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout.trim()).toBe(xtaskPath);
+      expect(result.stderr).toContain("dev-shell setup chatter");
       expect(readFileSync(buildRecord, "utf8").trim()).toBe(
         `build --release -p xtask --target ${hostTarget} --quiet`,
       );
