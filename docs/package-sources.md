@@ -48,6 +48,13 @@ WASM_POSIX_DEPS_REGISTRY="$PWD/packages:/path/to/kandelo/packages/registry" \
   cargo xtask build-deps program-index packages packages/program-packages.json
 ```
 
+Validate all existing roots exactly as a source consumer will see them:
+
+```bash
+WASM_POSIX_DEPS_REGISTRY="$PWD/packages:/path/to/kandelo/packages/registry" \
+  cargo xtask build-deps program-index-context-check
+```
+
 Commit the result beside the package directories. Runtime consumers require it
 to preserve exact first-hit output closures, per-architecture cache keys, and
 fork policy without maintaining a second TOML parser. The projection also binds
@@ -55,6 +62,10 @@ each program to the identities of its complete transitive dependency closure
 in that registry order. The reusable publication workflow checks this
 projection before building, so a changed recipe or dependency cannot be
 published with stale runtime identity.
+Kandelo source checkouts run the same contextual Rust check before every public
+program resolution. An existing configured root without an index is an error;
+nonexistent optional roots are skipped. Installed host packages instead consume
+the projection that Kandelo verified and copied at package-build time.
 
 The external index is a complete `external:main` projection. It contains
 identities for every first-hit package and projections for every selected

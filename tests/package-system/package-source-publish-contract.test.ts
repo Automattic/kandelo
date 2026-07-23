@@ -17,7 +17,7 @@ describe("package-source publication contract", () => {
       'export WASM_POSIX_DEPS_REGISTRY="$PACKAGE_SOURCE_ROOT/packages:$KANDELO_ROOT/packages/registry"',
     );
     const projectionCheck = script.indexOf(
-      "build-deps program-index-check \\",
+      "build-deps program-index-context-check",
     );
     const packageLoop = script.indexOf("while IFS= read -r pkg; do");
 
@@ -27,7 +27,6 @@ describe("package-source publication contract", () => {
     expect(projectionCheck).toBeGreaterThan(registry);
     expect(projectionCheck).toBeLessThan(sync);
     expect(packageLoop).toBeGreaterThan(sync);
-    expect(script).toContain('"$PACKAGE_SOURCE_ROOT/packages/program-packages.json"');
   });
 
   it("materializes declared program dependencies for source builds", () => {

@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -152,6 +154,81 @@ afterAll(() => {
 });
 
 describe("shell binary resolver artifact policy", () => {
+  it("incrementally rebuilds an existing source checker before exporting it", () => {
+    const sourceRoot = mkdtempSync(
+      join(tmpdir(), "kandelo-resolve-binary-checker-source-"),
+    );
+    const toolBin = join(sourceRoot, "test-tools");
+    const hostTarget = "test-checker-host";
+    const xtaskPath = join(
+      sourceRoot,
+      "target",
+      hostTarget,
+      "release",
+      "xtask",
+    );
+    const buildRecord = join(sourceRoot, "cargo-build-record");
+    mkdirSync(join(sourceRoot, "tools", "xtask"), { recursive: true });
+    mkdirSync(join(sourceRoot, "scripts"), { recursive: true });
+    mkdirSync(dirname(xtaskPath), { recursive: true });
+    mkdirSync(toolBin, { recursive: true });
+    writeFileSync(join(sourceRoot, "tools", "xtask", "Cargo.toml"), "");
+    writeFileSync(join(sourceRoot, "scripts", "dev-shell.sh"), "#!/bin/sh\n");
+    writeFileSync(xtaskPath, "#!/bin/sh\nexit 99\n");
+    chmodSync(xtaskPath, 0o755);
+    writeFileSync(
+      join(toolBin, "rustc"),
+      `#!/bin/sh
+printf 'rustc 1.0\\nhost: ${hostTarget}\\n'
+`,
+    );
+    writeFileSync(
+      join(toolBin, "cargo"),
+      `#!/bin/sh
+printf '%s\\n' "$*" > "$CHECKER_BUILD_RECORD"
+`,
+    );
+    writeFileSync(
+      join(toolBin, "node"),
+      `#!/bin/sh
+printf '%s\\n' "$WASM_POSIX_XTASK_BIN"
+`,
+    );
+    for (const tool of ["rustc", "cargo", "node"]) {
+      chmodSync(join(toolBin, tool), 0o755);
+    }
+
+    try {
+      const result = spawnSync(
+        "bash",
+        [
+          join(repoRoot, "scripts", "resolve-binary.sh"),
+          "programs/wasm32/checker/checker.wasm",
+        ],
+        {
+          cwd: sourceRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: `${toolBin}:${process.env.PATH ?? ""}`,
+            KANDELO_DEV_SHELL_TOOL_PATH: "test",
+            WASM_POSIX_BINARY_RESOLVER_REPO_ROOT: sourceRoot,
+            CHECKER_BUILD_RECORD: buildRecord,
+            WASM_POSIX_XTASK_BIN: "",
+          },
+        },
+      );
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.trim()).toBe(xtaskPath);
+      expect(readFileSync(buildRecord, "utf8").trim()).toBe(
+        `build --release -p xtask --target ${hostTarget} --quiet`,
+      );
+    } finally {
+      rmSync(sourceRoot, { recursive: true, force: true });
+    }
+  });
+
   it("ships a standalone resolver bundle generated from the shared TypeScript source", () => {
     const result = spawnSync(
       "bash",
