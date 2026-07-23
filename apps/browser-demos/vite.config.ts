@@ -4,17 +4,140 @@ import fs from "fs";
 import { execSync } from "child_process";
 import {
   defineConfig,
+  normalizePath,
   type Plugin,
   type PreviewServer,
   type ViteDevServer,
 } from "vite";
 import react from "@vitejs/plugin-react";
-import { tryResolveBinary } from "../../host/src/binary-resolver";
+import {
+  binaryProgramCacheRoot,
+  tryResolveBinary,
+} from "../../host/src/binary-resolver";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
+
+function canonicalizeFromExistingAncestor(file: string): string {
+  const suffix: string[] = [];
+  let existing = path.resolve(file);
+  while (!fs.existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) return normalizePath(path.resolve(file));
+    suffix.unshift(path.basename(existing));
+    existing = parent;
+  }
+  return normalizePath(path.resolve(fs.realpathSync(existing), ...suffix));
+}
+
+const configuredProgramCacheRoot = binaryProgramCacheRoot();
+const browserProgramCacheRoot = canonicalizeFromExistingAncestor(
+  configuredProgramCacheRoot,
+);
+const caseInsensitivePaths = fs.existsSync(
+  path.join(__dirname, "VITE.CONFIG.TS"),
+);
 const DEFAULT_CORS_PROXY_URL = "https://wordpress-playground-cors-proxy.net/?";
 const preferredLocalPort = 5401;
+
+interface BinaryDevAccess {
+  approve(file: string): string;
+  attachServer(server: ViteDevServer): void;
+}
+
+const invalidFsRequest = Symbol("invalid-fs-request");
+
+function fsRequestPath(
+  url: string | undefined,
+): string | typeof invalidFsRequest | null {
+  if (!url) return null;
+  const pathname = new URL(url, "http://127.0.0.1").pathname;
+  if (!pathname.startsWith("/@fs/")) return null;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname.slice("/@fs/".length));
+  } catch {
+    return invalidFsRequest;
+  }
+  let file = normalizePath(decoded);
+  if (!path.isAbsolute(file) && !/^[A-Za-z]:\//.test(file)) file = `/${file}`;
+  return normalizePath(file);
+}
+
+function pathIsWithin(root: string, file: string): boolean {
+  const comparableRoot = caseInsensitivePaths ? root.toLowerCase() : root;
+  const comparableFile = caseInsensitivePaths ? file.toLowerCase() : file;
+  const fromRoot = path.relative(comparableRoot, comparableFile);
+  return fromRoot === ""
+    || (fromRoot !== ".."
+      && !fromRoot.startsWith(`..${path.sep}`)
+      && !path.isAbsolute(fromRoot));
+}
+
+/**
+ * Give Vite access only to exact resolver-approved files outside the checkout.
+ * Vite needs the program-cache directory in its transport allow list, while
+ * this pre-serving guard turns that broad lexical rule into exact, rechecked
+ * regular-file capabilities.
+ */
+function createBinaryDevAccess(): BinaryDevAccess {
+  const approvedExternalFiles = new Set<string>();
+  const attachedServers = new WeakSet<ViteDevServer>();
+  const programCacheRoot = browserProgramCacheRoot;
+
+  return {
+    approve(file: string): string {
+      const canonical = fs.realpathSync(file);
+      if (!fs.lstatSync(canonical).isFile()) {
+        throw new Error(`Resolved browser artifact is not a regular file: ${canonical}`);
+      }
+      const isInsideRepo = pathIsWithin(repoRoot, canonical);
+      if (!isInsideRepo) {
+        if (!pathIsWithin(programCacheRoot, canonical)) {
+          throw new Error(
+            `Resolved browser artifact is outside the Kandelo program cache: ${canonical}`,
+          );
+        }
+        approvedExternalFiles.add(normalizePath(canonical));
+      }
+      return canonical;
+    },
+    attachServer(nextServer: ViteDevServer): void {
+      if (attachedServers.has(nextServer)) return;
+      attachedServers.add(nextServer);
+      nextServer.middlewares.use((request, response, next) => {
+        const requested = fsRequestPath(request.url);
+        if (requested === invalidFsRequest) {
+          response.statusCode = 403;
+          response.end("Malformed filesystem path");
+          return;
+        }
+        if (!requested || !pathIsWithin(programCacheRoot, requested)) {
+          next();
+          return;
+        }
+        try {
+          if (
+            !approvedExternalFiles.has(requested)
+            || !fs.lstatSync(requested).isFile()
+            || normalizePath(fs.realpathSync(requested)) !== requested
+          ) {
+            response.statusCode = 403;
+            response.end("Forbidden resolver-cache path");
+            return;
+          }
+        } catch {
+          response.statusCode = 403;
+          response.end("Forbidden resolver-cache path");
+          return;
+        }
+        next();
+      });
+    },
+  };
+}
+
+const binaryDevAccess = createBinaryDevAccess();
 
 const crossOriginIsolationHeaders = {
   "Cross-Origin-Opener-Policy": "same-origin",
@@ -87,7 +210,7 @@ function injectBlobIframeInterceptorPlaceholder(content: string): string {
  * these aliases can run without a kernel build present. Pages that do
  * import them get a clear error pointing at the build script.
  */
-function resolveKernelArtifactsAlias(): Plugin {
+function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
   const KERNEL = "@kernel-wasm";
   const ROOTFS = "@rootfs-vfs";
   return {
@@ -100,7 +223,7 @@ function resolveKernelArtifactsAlias(): Plugin {
 
       if (pathPart === KERNEL) {
         const resolved = tryResolveBinary("kernel.wasm");
-        if (resolved) return resolved + query;
+        if (resolved) return access.approve(resolved) + query;
         const local = path.resolve(repoRoot, "local-binaries/kernel.wasm");
         const fetched = path.resolve(repoRoot, "binaries/kernel.wasm");
         this.error(
@@ -117,7 +240,7 @@ function resolveKernelArtifactsAlias(): Plugin {
           path.resolve(repoRoot, "binaries/programs/wasm32/rootfs.vfs"),
         ];
         for (const file of candidates) {
-          if (fs.existsSync(file)) return file + query;
+          if (fs.existsSync(file)) return access.approve(file) + query;
         }
         this.error(
           "rootfs.vfs not found. Run `bash build.sh` from the repo root, or fetch/build the rootfs package.\n" +
@@ -125,6 +248,9 @@ function resolveKernelArtifactsAlias(): Plugin {
         );
       }
       return null;
+    },
+    configureServer(server) {
+      access.attachServer(server);
     },
   };
 }
@@ -184,7 +310,7 @@ function dropWorkerEntryExports(): Plugin {
  * which can't express "try this directory first, then that one." A
  * `resolveId` hook can.
  */
-function resolveBinariesAlias(): Plugin {
+function resolveBinariesAlias(access: BinaryDevAccess): Plugin {
   const PREFIX = "@binaries/";
   const applyDefaultArch = (rel: string): string => {
     if (!rel.startsWith("programs/")) return rel;
@@ -204,7 +330,7 @@ function resolveBinariesAlias(): Plugin {
       const query = queryIdx === -1 ? "" : source.slice(queryIdx);
       const rest = applyDefaultArch(pathPart.slice(PREFIX.length));
       const resolved = tryResolveBinary(rest);
-      if (resolved) return resolved + query;
+      if (resolved) return access.approve(resolved) + query;
       const local = path.resolve(repoRoot, "local-binaries", rest);
       const fetched = path.resolve(repoRoot, "binaries", rest);
       this.error(
@@ -212,6 +338,9 @@ function resolveBinariesAlias(): Plugin {
           `Looked at:\n  ${local}\n  ${fetched}\n` +
           `Run \`./run.sh fetch\` to install release archives, or build the artifact locally.`,
       );
+    },
+    configureServer(server) {
+      access.attachServer(server);
     },
   };
 }
@@ -511,8 +640,8 @@ export default defineConfig({
   },
   plugins: [
     react(),
-    resolveKernelArtifactsAlias(),
-    resolveBinariesAlias(),
+    resolveKernelArtifactsAlias(binaryDevAccess),
+    resolveBinariesAlias(binaryDevAccess),
     rewriteNavLinks(),
     injectGitRevision(),
     injectCoiServiceWorker(),
@@ -531,7 +660,11 @@ export default defineConfig({
       ],
     } : undefined,
     fs: {
-      allow: [repoRoot],
+      // Multi-member package resolution returns canonical generation paths so
+      // a live mirror swap cannot change the bytes after validation. Resolver
+      // plugins approve exact files, and the pre-serving guard rejects every
+      // other cache path (including symlinks and approved-path descendants).
+      allow: [repoRoot, browserProgramCacheRoot],
     },
   },
   preview: {
@@ -553,8 +686,8 @@ export default defineConfig({
   worker: {
     format: "es",
     plugins: () => [
-      resolveKernelArtifactsAlias(),
-      resolveBinariesAlias(),
+      resolveKernelArtifactsAlias(binaryDevAccess),
+      resolveBinariesAlias(binaryDevAccess),
       dropWorkerEntryExports(),
     ],
   },
