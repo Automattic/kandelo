@@ -5,9 +5,17 @@ inputs = [
   "images/vfs/scripts/dinit-image-helpers.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
   "images/rootfs/etc/services",
-  # The image builder reaches shared VFS/runtime modules transitively. Keep the
-  # directory broad so a host-side format change cannot reuse a stale image.
-  "host/src",
+  # The builder reads the shared resolver and VFS format transitively. Track
+  # those ownership boundaries without making unrelated host changes rebuild
+  # this image.
+  "host/src/binary-resolver.ts",
+  "host/src/constants.ts",
+  "host/src/generated/abi.ts",
+  "host/src/homebrew-bottle-relocation.ts",
+  "host/src/pathconf.ts",
+  "host/src/statfs.ts",
+  "host/src/types.ts",
+  "host/src/vfs",
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
