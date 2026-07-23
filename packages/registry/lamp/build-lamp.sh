@@ -6,9 +6,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-# Same WordPress-source bootstrap as build-wordpress.sh — see that file
-# for rationale. Idempotent.
-bash "$REPO_ROOT/packages/registry/wordpress/setup.sh"
+# The VFS builder resolves and verifies the WordPress source archive itself.
+# `packages/registry/wordpress/setup.sh` is only for the local unpacked demo;
+# its checkout-specific SQLite plugin symlink is not a LAMP image input.
 
 # Build-time opcache prewarming boots NodeKernelHost against the half-built VFS,
 # so package builds need a host kernel even though lamp itself is a wasm32

@@ -29,6 +29,17 @@ metadata is an additional contract for VFS builders, Node validation, browser
 automation, and publication audits; it is not a replacement for Formula Ruby or
 Homebrew's `bottle do` block.
 
+The patched Homebrew Ruby tree used by a guest is a dedicated Kandelo program
+package named `homebrew-bootstrap`; it is not a Formula bottle. The package
+emits `homebrew-bootstrap.zip` from a sealed exact Homebrew checkout and the
+reviewed guest-platform patch. Its source lock at
+`homebrew/homebrew-bootstrap-source-lock.json` binds all source, patch,
+prepared-tree, portable-Ruby, archive-producing Git, and final-archive
+identities. The first package revision is sealed by the exact final ZIP
+SHA-256 and byte count recorded in that lock. Consumer cutover is a separate
+rollout step, so introducing the package does not change shell or
+bootstrap-image consumers.
+
 ## Repositories And Ownership
 
 | Repository | Owns |
@@ -417,6 +428,49 @@ also carries the sorted immutable target-tap set plus three native lists:
   needed to build or test the Formula.
 - `runtime_and_test` is used by the bottle verifier and excludes dependencies
   that are only tagged `:build`.
+
+### Publisher-Only Native Requirements
+
+Publisher-only tools are represented by three closed, tap-local Homebrew
+`Requirement` classes rather than ordinary guest Formula dependencies:
+`BinaryenRequirement`, `PkgconfRequirement`, and `WabtRequirement`. Each class
+has one canonical definition under `KandeloFormulaSupport`: it is fatal, binds
+one fixed `KANDELO_NATIVE_FORMULA` and `KANDELO_NATIVE_SENTINEL`, and checks
+that same sentinel with `satisfy(build_env: false)`. Formulae may refer to
+those classes only through the canonical support require and a literal
+`depends_on KandeloFormulaSupport::<Class> => :build` or
+`[:build, :test]` declaration. Unknown classes, dynamic constant lookup,
+changed metadata or predicates, and `:test`-only native Requirements fail
+closed.
+
+The static Formula parser recognizes that exact source shape without
+evaluating Formula Ruby. Schema 4 of the protected host-dependency plan binds
+the Requirement class, native Formula identity, sentinel executable, and
+sorted tags in addition to the existing native dependency lists and immutable
+target-tap map. The bottle builder and pour verifier run the same closed-schema
+validator before staging the plan. The publisher overlay then compares the
+evaluated Requirement objects with those sealed records before reconstructing
+only the matching build-only dependencies for Homebrew's normal Superenv path.
+For a Requirement also tagged `:test`, the Formula test process receives only
+the planned proxy keg's standard tool and metadata paths after the exact
+sentinel has been found executable. A missing proxy, omitted evaluated object,
+forged class, changed constant, changed tag, or legacy ambiguous schema fails
+instead of widening the host-tool graph.
+
+The publisher lifecycle and guest lifecycle deliberately use different
+artifacts. Trusted Linux publication runs the reviewed publisher-side Homebrew
+commit pinned by the reusable workflow and proves a real install and test
+offline after its disposable Ruby dependencies have been provisioned and
+sealed. Kandelo guests instead receive upstream Homebrew commit
+`4ead8619231cb15cbe15e8e8188081e347d6f7cd` through the dedicated
+`homebrew-bootstrap` program package. Guest acceptance must materialize that
+package through the canonical ABI release index and verify its package-output
+receipt, archive identity, cache key, and locked inner ZIP before booting it.
+The PR staging release is evidence for the package build, not a durable
+consumer URL. Until the package is activated in the canonical ABI index and
+the tap has adopted these Requirement declarations under a compatible pinned
+publisher, the full guest install lifecycle remains a rollout gate rather than
+a supported user-facing contract.
 
 The native launcher installs each selected direct dependency as an explicit
 `homebrew/core/<name>` reference under an ephemeral native prefix. Each install
@@ -1282,11 +1336,13 @@ reviewed platform patch, and ABI-current Kandelo package artifacts with:
 The script writes `target/homebrew-bootstrap/homebrew-bootstrap.vfs`. It derives
 the ABI from `crates/shared`, resolves the Node kernel, canonical rootfs package
 set, and Homebrew bootstrap programs through `xtask build-deps`, and calls
-`scripts/prepare-homebrew-bootstrap-source.sh` to prepare Homebrew. Source
-preparation verifies the reviewed patch SHA-256, refuses an upstream revision
-where the patch does not apply, limits the patch to its four declared Homebrew
-files, and archives the patched Git tree with a fixed timestamp and UTC
-timezone.
+`scripts/prepare-homebrew-bootstrap-source.sh` to prepare Homebrew. The
+dedicated `homebrew-bootstrap` package uses that same preparer and records
+byte identity with this still-current image path; switching this image to
+consume the package is a separate consumer change. Source preparation verifies
+the reviewed patch SHA-256, refuses an upstream revision where the patch does
+not apply, limits the patch to its declared Homebrew files, and archives the
+patched Git tree with a fixed timestamp and UTC timezone.
 
 `/etc/kandelo/homebrew-image.json` records the exact upstream Homebrew commit,
 patch SHA-256, patched-tree Git object and normalized-tree SHA-256, patched ZIP

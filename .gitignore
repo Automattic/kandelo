@@ -15,6 +15,7 @@ host/wasm/
 # override tree that takes priority. Neither is tracked.
 /binaries/
 /local-binaries/
+/.ci-test-binary-cache/
 
 # PR-build overlay file. Created by scripts/fetch-binaries.sh when
 # checked out on a PR branch with a corresponding pr-<NNN>-staging
@@ -132,3 +133,8 @@ benchmarks/wasm/
 
 # Phase C: per-package PR overlay (CI-generated; merged over package.toml at parse time).
 packages/registry/*/package.pr.toml
+
+# Durable advisory-lock inode used to serialize generated package-index
+# replacement across cooperating xtask processes. It is intentionally retained
+# so waiters never split onto different lock inodes.
+.*.kandelo-index.lock

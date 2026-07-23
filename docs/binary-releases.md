@@ -23,6 +23,39 @@ for the resolver behavior, schema, and build-script contract.
 For third-party repositories that publish their own package archives,
 see [docs/package-sources.md](package-sources.md).
 
+Program archives have a second, source-controlled index:
+`packages/registry/program-packages.json`. It is not a release ledger and does
+not select archive URLs. Rust generates it from `package.toml` so every
+consumer agrees on output/runtime closure membership, mirror placement, target
+arches, and fork policy. Schema `kandelo-program-packages-v2` also records an
+identity for every package kind and each program's full transitive dependency
+identity per consumer architecture. Repository TypeScript, shell resolution,
+external registry roots, and the standalone host npm package consume that
+projection. The generated manifest digests and cache keys prevent a changed
+selected recipe or dependency from silently using old policy. For an ordered
+multi-root registry, the highest-priority existing index contains the complete
+first-hit identity and program projection across lower roots too. A
+dependency-only override rekeys affected lower programs in that combined
+context; lower indexes remain standalone suffix-context fallbacks. The
+first-party `kernel` and `userspace` boot artifacts retain identities in the
+index but are excluded from its guest-program map because their outputs publish
+at the binary root rather than below `programs/<arch>/`. Regenerate the
+projection whenever a package manifest or ordered dependency context changes;
+package checks reject stale committed output.
+
+Source-checkout program resolution runs
+`xtask build-deps program-index-context-check` synchronously before each public
+program-resolution boundary. That one Rust implementation recomputes every
+existing registry root in its ordered suffix context, including `build.toml`
+revision and declared inputs, global toolchain inputs, and transitive
+dependency identities. It fails closed when an index is missing or stale.
+The standalone npm package does not reach back into a checkout; its projection
+is checked before packaging and shipped as immutable package content.
+Index generation stages complete JSON and serializes cooperating publishers
+through a persistent advisory sidecar lock held across source refresh, target
+validation, replacement, and directory sync. The lock file is intentionally
+retained so concurrent writers always coordinate on one inode.
+
 Homebrew bottles use a separate publication model. Bottle tarballs are
 Homebrew-native artifacts published through the `kandelo-dev/homebrew-tap-core`
 tap and GHCR/Homebrew bottle URL shape; Kandelo-specific sidecars and
@@ -127,9 +160,17 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
   composed index is rewritten to relative archive basenames and consumed from
   the same local `file://` directory, so later release mutation cannot redirect
   the tested resolver. Source validation and the Cargo-only suites run in
-  parallel with this preparation. The prepared workspace retains the
-  materialized package tree because its root filesystem refers to package-backed
-  executables lazily (for example, `/bin/sh`). libc-test runs as
+  parallel with this preparation. The prepared workspace retains each selected
+  content-addressed program generation under `.ci-test-binary-cache/` and
+  rewrites the `binaries/` mirrors as relative symlinks into that cache. It does
+  not flatten package mirrors into unrelated regular files: extraction at a
+  different checkout path therefore preserves the same complete, single-tier
+  package identity. Local package-generation links are likewise made relative
+  within `local-binaries/`; non-package scalar links are copied as verified
+  regular files. `scripts/ci-run-test-suite.sh` selects that transported cache
+  before a suite resolves an artifact. The workspace also retains the
+  materialized package tree because its root filesystem refers to
+  package-backed executables lazily (for example, `/bin/sh`). libc-test runs as
   functional+regression and math shards; Sortix runs as include, basic, and
   remaining-runtime shards. Browser-local assets are generated in the browser
   consumer from the already-materialized package tree, without fetching the
@@ -646,9 +687,49 @@ For each declared arch in the package's `arches = [...]` (default
      cache-key sha (catches recipe drift).
 6. Places each program output under `binaries/programs/<arch>/` using the
    manifest's output layout, and places declared non-Wasm runtime files under
-   `binaries/programs/<arch>/<package>/<artifact>`. Both are symlinks into the
-   validated cache, so browser/Node image builders load the same bytes without
-   re-fetching. Local builds use the identical layout under `local-binaries/`.
+   `binaries/programs/<arch>/<package>/<artifact>`. When the combined output
+   and runtime-file count is greater than one, every member—including the sole
+   executable of an executable-plus-runtime package—lives below one package
+   directory. Members are symlinks into the validated cache, so browser/Node
+   image builders load the same bytes without re-fetching. The host verifies
+   that every link ends in its declared source-artifact suffix and that all
+   links resolve into one canonical program-cache generation. It returns those
+   canonical member paths instead of the mutable mirror paths.
+
+For a multi-member package closure, the fetched materializer validates every
+output and runtime file before changing the live mirror. It creates a
+same-parent staging directory, renames the old live directory to a
+transaction-owned backup, then renames the stage to the live name. A concurrent
+path lookup can therefore see the complete old directory, a brief absence
+between renames, or the complete new directory, but not a partially populated
+live directory. Normal failures roll back or clean up only paths owned by that
+transaction. An abrupt process crash can leave an inert stage or backup; those
+orphans are not automatically scavenged because there is no lease proving that
+another process is not still using them.
+
+Direct local builds use the same public layout but different backing storage.
+One build-helper session collects exact declared suffixes under
+`local-binaries/.kandelo-local-generations/<arch>/<package>/<cache-key>/<session>/`.
+Members are create-once regular files. Only a complete, validated tree can
+claim its one publication attempt and atomically replace the live package
+directory or scalar link; a claimed missing generation is never recreated. A
+one-member package keeps its historical flat mirror name as a symlink to the
+immutable generation member.
+
+The stage and live directory must be on the same filesystem so rename remains
+atomic. Unix uses file symlinks for mirror members. Windows uses file symlinks
+too, but missing symlink privileges or open handles that prevent a rename make
+the transaction abort and roll back; the implementation does not depend on
+Windows overwrite semantics.
+
+Canonical paths protect a consumer from later live-mirror swaps; they are not
+open file descriptors or operating-system leases. Normal fetched cache entries
+are treated as immutable, but force-source rebuild and stale-cache repair can
+remove and recreate one canonical cache-key directory. Those maintenance
+operations must not run concurrently with consumers of the same package or a
+previously returned path may disappear or name replacement bytes. Append-only
+local session generations do not have this maintenance exception unless a user
+manually deletes resolver-owned state.
 
 The no-argument form above materializes every publishable registry root. A
 bounded consumer should repeat `--package` for its direct roots instead:

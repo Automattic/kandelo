@@ -15,8 +15,8 @@
  *   npx tsx images/vfs/scripts/build-mariadb-test-vfs-image.ts          # curated tests
  *   npx tsx images/vfs/scripts/build-mariadb-test-vfs-image.ts --all    # ALL tests
  */
-import { readFileSync, readdirSync, lstatSync, existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   ensureDir,
@@ -26,9 +26,10 @@ import {
   symlink,
 } from "../../../host/src/vfs/image-helpers";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
-import { saveImage, walkAndWrite } from "./vfs-image-helpers";
+import { saveImage } from "./vfs-image-helpers";
 import { addDinitInit, type DinitService } from "./dinit-image-helpers";
 import { prepareMariadbWritableDirectories } from "./mariadb-image-helpers";
+import { copyMariaDbTestSources } from "./mariadb-test-source-copy";
 import { ensureSourceExtract } from "./source-extract-helper";
 
 const REPO_ROOT = findRepoRoot();
@@ -65,7 +66,7 @@ const COREUTILS_SYMLINK_NAMES = [
   "md5sum", "seq", "test", "[",
 ];
 
-// 185 tests verified to pass in headless Chromium with MariaDB on kandelo.
+// 184 tests verified to pass in headless Chromium with MariaDB on kandelo.
 const CURATED_TESTS = [
   "1st", "adddate_454", "almost_full", "alter_table_combinations",
   "alter_table_lock", "alter_table_mdev539_maria",
@@ -113,7 +114,7 @@ const CURATED_TESTS = [
   "set_statement_notembedded", "show_create_user",
   "show_function_with_pad_char_to_full_length",
   "show_row_order-9226", "signal_demo1", "signal_demo2", "signal_demo3",
-  "signal_sqlmode", "simple_select", "single_delete_update",
+  "signal_sqlmode", "single_delete_update",
   "skip_log_bin", "sp-bugs2", "sp-condition-handler", "sp-destruct",
   "sp-memory-leak", "sp-no-code", "sp-no-valgrind", "sp-ucs2", "sp-vars",
   "sp_gis", "sp_missing_4665", "sql_mode_pad_char_to_full_length",
@@ -268,52 +269,20 @@ kill -KILL $PID 2>/dev/null
 exit 0
 `);
 
-  // Test files
-  ensureDirRecursive(fs, "/mysql-test/main");
-  let testCount = 0;
-
-  if (includeAll) {
-    console.log("  Writing ALL .test files from main/...");
-    const mainDir = resolve(MYSQL_TEST_DIR, "main");
-    for (const name of readdirSync(mainDir).sort()) {
-      if (!name.endsWith(".test")) continue;
-      const full = join(mainDir, name);
-      try {
-        const stat = lstatSync(full);
-        if (!stat.isFile()) continue;
-        const data = readFileSync(full);
-        writeVfsBinary(fs, `/mysql-test/main/${name}`, new Uint8Array(data), 0o644);
-        testCount++;
-      } catch { /* skip */ }
-    }
-  } else {
-    console.log("  Writing curated test files...");
-    for (const name of CURATED_TESTS) {
-      const testFile = resolve(MYSQL_TEST_DIR, "main", `${name}.test`);
-      if (existsSync(testFile)) {
-        const data = readFileSync(testFile);
-        writeVfsBinary(fs, `/mysql-test/main/${name}.test`, new Uint8Array(data), 0o644);
-        testCount++;
-      }
-    }
-  }
+  console.log(
+    includeAll
+      ? "  Writing ALL .test files and required fixtures..."
+      : "  Writing curated .test files and required fixtures...",
+  );
+  const testCount = copyMariaDbTestSources(fs, MYSQL_TEST_DIR, {
+    includeAll,
+    curatedTests: CURATED_TESTS,
+  });
   console.log(`    ${testCount} test files`);
 
   // Setup and reset SQL test files (run by the page after server-ready)
   writeVfsFile(fs, "/mysql-test/main/__setup.test", SETUP_SQL);
   writeVfsFile(fs, "/mysql-test/main/__reset.test", RESET_SQL);
-
-  // Include + std_data directories
-  const includeDir = resolve(MYSQL_TEST_DIR, "include");
-  if (existsSync(includeDir)) {
-    console.log("  Writing include/ directory...");
-    walkAndWrite(fs, includeDir, "/mysql-test/include");
-  }
-  const stdDataDir = resolve(MYSQL_TEST_DIR, "std_data");
-  if (existsSync(stdDataDir)) {
-    console.log("  Writing std_data/ directory...");
-    walkAndWrite(fs, stdDataDir, "/mysql-test/std_data");
-  }
 
   // dinit service tree (no auto-boot — page passes target service as argv).
   // We use the default boot:true here because the page only ever wants

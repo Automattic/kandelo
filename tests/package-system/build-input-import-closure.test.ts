@@ -35,7 +35,15 @@ describe("package build input import closure", () => {
       "host/src/process.ts",
       "host/src/kernel-worker.ts",
     ]) {
-      expect(packagesAffectedBy(changedPath)).toEqual(["lamp", "wordpress"]);
+      // nginx-php-vfs prewarms opcache by booting NodeKernelHost, so changes
+      // anywhere in the host runtime are part of that image's cache identity.
+      // The nginx-only and Redis images use just the narrower VFS/resolver
+      // boundaries and therefore must not appear here.
+      expect(packagesAffectedBy(changedPath)).toEqual([
+        "lamp",
+        "nginx-php-vfs",
+        "wordpress",
+      ]);
     }
 
     expect(packagesAffectedBy("host/src/vfs/memory-fs.ts")).toEqual(packages);
@@ -82,6 +90,57 @@ describe("package build input import closure", () => {
     expect(candidateClosure.has(
       "images/vfs/scripts/build-homebrew-vfs-image.ts",
     )).toBe(true);
+  });
+
+  it("keeps local WordPress setup aliases outside product VFS builds", () => {
+    for (const [packageName, buildScript] of [
+      ["lamp", "packages/registry/lamp/build-lamp.sh"],
+      ["wordpress", "packages/registry/wordpress/build-wordpress.sh"],
+    ] as const) {
+      const executableLines = readFileSync(join(repoRoot, buildScript), "utf8")
+        .split(/\r?\n/)
+        .filter((line) => line.trim() !== "" && !line.trimStart().startsWith("#"));
+      expect(executableLines.join("\n")).not.toContain("setup.sh");
+      expect(readFileSync(
+        join(repoRoot, "packages", "registry", packageName, "build.toml"),
+        "utf8",
+      )).not.toContain("packages/registry/wordpress/setup.sh");
+    }
+
+    for (const imageBuilder of [
+      "images/vfs/scripts/build-lamp-vfs-image.ts",
+      "images/vfs/scripts/build-wp-vfs-image.ts",
+    ]) {
+      const source = readFileSync(join(repoRoot, imageBuilder), "utf8");
+      expect(source).toContain("resolveWordPressCoreSource(REPO_ROOT)");
+      expect(source).toContain("copyWordPressCoreSource(fs, WP_DIR)");
+    }
+
+    const sqliteImageBuilder = readFileSync(
+      join(repoRoot, "images/vfs/scripts/build-wp-vfs-image.ts"),
+      "utf8",
+    );
+    expect(sqliteImageBuilder).toContain(
+      "resolveWordPressSqlitePluginSource()",
+    );
+    expect(sqliteImageBuilder).toContain(
+      "materializeWordPressSqlitePlugin(fs, SQLITE_DIR)",
+    );
+
+    for (const localDemoScript of [
+      "packages/registry/wordpress/demo/build.sh",
+      "packages/registry/wordpress/demo/run.sh",
+    ]) {
+      const executableLines = readFileSync(
+        join(repoRoot, localDemoScript),
+        "utf8",
+      )
+        .split(/\r?\n/)
+        .filter((line) => line.trim() !== "" && !line.trimStart().startsWith("#"));
+      expect(executableLines.join("\n")).toContain(
+        'bash "$SCRIPT_DIR/../setup.sh"',
+      );
+    }
   });
 
   for (const packageName of packages) {

@@ -1,0 +1,25 @@
+script_path = "images/vfs/scripts/build-redis-vfs-image.sh"
+inputs = [
+  "images/vfs/scripts/build-redis-vfs-image.sh",
+  "images/vfs/scripts/build-redis-vfs-image.ts",
+  "images/vfs/scripts/dinit-image-helpers.ts",
+  "images/vfs/scripts/vfs-image-helpers.ts",
+  "images/rootfs/etc/services",
+  # The builder reads the shared resolver and VFS format transitively. Track
+  # those ownership boundaries without making unrelated host changes rebuild
+  # this image.
+  "host/src/binary-resolver.ts",
+  "host/src/constants.ts",
+  "host/src/generated/abi.ts",
+  "host/src/homebrew-bottle-relocation.ts",
+  "host/src/pathconf.ts",
+  "host/src/statfs.ts",
+  "host/src/types.ts",
+  "host/src/vfs",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

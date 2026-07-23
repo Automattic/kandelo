@@ -1,0 +1,38 @@
+kind = "program"
+name = "homebrew-bootstrap"
+version = "6.0.3-4-g4ead861"
+kernel_abi = 41
+arches = ["wasm32"]
+depends_on = []
+
+# The portable recipe identifies Homebrew's immutable upstream archive. The
+# Kandelo project build additionally consumes the same commit through a sealed
+# [[git_inputs]] checkout so source preparation never depends on ambient Git
+# state or a second network fetch.
+[source]
+url = "https://github.com/Homebrew/brew/archive/4ead8619231cb15cbe15e8e8188081e347d6f7cd.tar.gz"
+sha256 = "4b9fdfb4872bd2fbff001c69f91ec7b2c2b7a956459132b6c3adba878f551155"
+
+[license]
+spdx = "BSD-2-Clause AND GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/homebrew/patches/README.md"
+
+[build]
+script_path = "packages/registry/homebrew-bootstrap/build-homebrew-bootstrap.sh"
+
+[[outputs]]
+name = "homebrew-bootstrap"
+wasm = "homebrew-bootstrap.zip"
+fork_instrumentation = "disabled"
+
+[[host_tools]]
+name = "git"
+version_constraint = ">=2.30"
+probe = { args = ["--version"], version_regex = "git version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "node"
+version_constraint = ">=20.0"
+probe = { args = ["--version"], version_regex = "v(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }

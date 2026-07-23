@@ -26,8 +26,15 @@ Exclude only the Homebrew repository from the preinstall writability diagnostic
 and skip automatic per-item persistence when the tap already grants the same
 authority. When the isolated publisher supplies its protected static plan,
 populate the build child's environment with only the matching direct native
-build dependencies. Do not recursively expand them. Every selected dependency
-must already be present as a proxy keg, so a missing proxy still fails closed.
+build dependencies. Its schema distinguishes literal Formula dependencies from
+statically allowlisted Requirements. Validate each evaluated Requirement's
+class, Formula identity, sentinel executable, and tags against the sealed plan,
+then reconstruct only those matching Formulae as build-only Superenv inputs.
+Do not recursively expand them. Every selected dependency must already be
+present as a proxy keg, so a missing proxy still fails closed.
+For a Requirement also tagged `:test`, validate that its sealed proxy contains
+the planned sentinel and expose only that proxy's standard tool and metadata
+paths to Homebrew's Formula test process.
 Use that same protected plan to suppress Linux global dependencies for the
 identified Kandelo target and every Formula in its exact immutable target taps
 while Homebrew derives the recursive target receipt. Formulae from other taps
@@ -49,17 +56,18 @@ against an immutable publisher store.
 This patch is applied only to the publisher's temporary Homebrew overlay. Guest
 Homebrew keeps its normal repository, trust, and dependency behavior.
 ---
- Library/Homebrew/build.rb                   | 25 ++++++++++++++++++++++++--
+ Library/Homebrew/build.rb                   | 31 ++++++++++++++++++++++++++++++-
  Library/Homebrew/dev-cmd/bottle.rb          | 12 ++++++++++++
  Library/Homebrew/diagnostic.rb              |  1 +
  Library/Homebrew/extend/os/linux/formula.rb |  4 ++++
  Library/Homebrew/extend/os/linux/sandbox.rb |  4 +++-
- Library/Homebrew/kandelo_publisher.rb       | 127 +++++++++++++++++++++++++++++
+ Library/Homebrew/kandelo_publisher.rb       | 225 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ Library/Homebrew/test.rb                    |  2 ++
  Library/Homebrew/trust.rb                   |  1 +
- 7 files changed, 172 insertions(+), 2 deletions(-)
+ 8 files changed, 278 insertions(+), 2 deletions(-)
 
 diff --git a/Library/Homebrew/build.rb b/Library/Homebrew/build.rb
-index be833176c0..465cf63438 100644
+index be833176c0..c2c07f5bcf 100644
 --- a/Library/Homebrew/build.rb
 +++ b/Library/Homebrew/build.rb
 @@ -10,6 +10,7 @@ old_trap = trap("INT") { exit! 130 }
@@ -70,7 +78,7 @@ index be833176c0..465cf63438 100644
  require "keg"
  require "extend/ENV"
  require "fcntl"
-@@ -43,12 +44,34 @@ class Build
+@@ -43,12 +44,40 @@ class Build
      @deps = T.let([], T::Array[Dependency])
      @reqs = T.let(Requirements.new, Requirements)
 
@@ -90,10 +98,16 @@ index be833176c0..465cf63438 100644
 +    return [] if plan.nil?
 +
 +    target_tap_prefixes = plan.fetch("target_taps").map { |tap| "#{tap.fetch("tap_name")}/" }
-+    direct_native_build_dependencies = formula.deps.select do |dependency|
++    direct_native_formula_dependencies = formula.deps.select do |dependency|
 +      dependency.build? && !dependency.implicit? &&
 +        target_tap_prefixes.none? { |prefix| dependency.name.start_with?(prefix) }
 +    end
++    native_requirement_dependencies =
++      KandeloPublisher.evaluated_native_requirements(formula, plan).map do |requirement|
++        Dependency.new(requirement.fetch("formula"), [:build])
++      end
++    direct_native_build_dependencies =
++      direct_native_formula_dependencies + native_requirement_dependencies
 +    expected_names = plan.fetch("build")
 +    actual_names = direct_native_build_dependencies.map(&:name).sort
 +    if actual_names != expected_names
@@ -107,7 +121,7 @@ index be833176c0..465cf63438 100644
    def effective_build_options_for(dependent)
      args  = dependent.build.used_options
 diff --git a/Library/Homebrew/dev-cmd/bottle.rb b/Library/Homebrew/dev-cmd/bottle.rb
-index dbd420e2c5..82d3263e97 100644
+index dbd420e2c5..82d326397e 100644
 --- a/Library/Homebrew/dev-cmd/bottle.rb
 +++ b/Library/Homebrew/dev-cmd/bottle.rb
 @@ -4,4 +4,5 @@
@@ -158,7 +172,7 @@ index f493938c3a..66926e07ea 100644
          return if not_writable_dirs.empty?
 
 diff --git a/Library/Homebrew/extend/os/linux/formula.rb b/Library/Homebrew/extend/os/linux/formula.rb
-index dbe848ba51..ea87cff22e 100644
+index dbe848ba51..e0f7374914 100644
 --- a/Library/Homebrew/extend/os/linux/formula.rb
 +++ b/Library/Homebrew/extend/os/linux/formula.rb
 @@ -1,6 +1,8 @@
@@ -195,10 +209,10 @@ index ba803bc756..06d1671285 100644
            begin
 diff --git a/Library/Homebrew/kandelo_publisher.rb b/Library/Homebrew/kandelo_publisher.rb
 new file mode 100644
-index 0000000000..ff90519c8
+index 0000000000..7ee01d23d5
 --- /dev/null
 +++ b/Library/Homebrew/kandelo_publisher.rb
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,225 @@
 +# typed: false
 +# frozen_string_literal: true
 +
@@ -209,8 +223,16 @@ index 0000000000..ff90519c8
 +module KandeloPublisher
 +  PLAN_FILENAME = ".kandelo-publisher-build-dependencies.json"
 +  MAX_PLAN_BYTES = 65_536
-+  PLAN_KEYS = %w[build build_and_test formula full_name runtime_and_test schema tap target_taps].freeze
++  MAX_DEPENDENCIES = 128
++  PLAN_KEYS = %w[
++    build build_and_test formula full_name native_requirements runtime_and_test schema tap target_taps
++  ].freeze
++  NATIVE_REQUIREMENT_KEYS = %w[class formula sentinel tags].freeze
 +  DEPENDENCY_NAME = /\A[a-z0-9][a-z0-9@+_.-]*\z/
++  EXECUTABLE_NAME = /\A[A-Za-z0-9][A-Za-z0-9._+-]*\z/
++  NATIVE_REQUIREMENT_CLASS = /\AKandeloFormulaSupport::[A-Z][A-Za-z0-9]*Requirement\z/
++  NATIVE_FORMULA_CONSTANT = :KANDELO_NATIVE_FORMULA
++  NATIVE_SENTINEL_CONSTANT = :KANDELO_NATIVE_SENTINEL
 +  TAP_NAME = /\A[a-z0-9._-]+\/[a-z0-9._-]+\z/
 +  TAP_REPOSITORY = /\A[a-z0-9._-]+\/homebrew-[a-z0-9._-]+\z/
 +  GNU_TAR_ENV = "HOMEBREW_KANDELO_GNU_TAR"
@@ -264,6 +286,69 @@ index 0000000000..ff90519c8
 +    tab.source = archived_source
 +  end
 +
++  def self.evaluated_native_requirements(formula, plan = dependency_plan(formula))
++    expected = plan.fetch("native_requirements")
++    actual = formula.requirements.filter_map do |requirement|
++      requirement_class = requirement.class
++      class_name = requirement_class.name
++      next unless class_name.is_a?(String) && class_name.start_with?("KandeloFormulaSupport::")
++
++      metadata_constants = [NATIVE_FORMULA_CONSTANT, NATIVE_SENTINEL_CONSTANT]
++      unless metadata_constants.all? { |constant| requirement_class.const_defined?(constant, false) }
++        raise "Kandelo publisher native Requirement lacks sealed metadata"
++      end
++      formula_name = requirement_class.const_get(NATIVE_FORMULA_CONSTANT, false)
++      sentinel = requirement_class.const_get(NATIVE_SENTINEL_CONSTANT, false)
++      tags = requirement.tags
++      unless formula_name.is_a?(String) && sentinel.is_a?(String) && tags.is_a?(Array) &&
++             tags.all? { |tag| tag.is_a?(Symbol) }
++        raise "Kandelo publisher native Requirement has invalid evaluated metadata"
++      end
++
++      {
++        "class" => class_name,
++        "formula" => formula_name,
++        "sentinel" => sentinel,
++        "tags" => tags.map(&:to_s).sort,
++      }
++    end.sort_by { |requirement| requirement.fetch("class") }
++    unless actual == expected
++      raise "Kandelo publisher native Requirements differ from the sealed dependency plan"
++    end
++
++    actual
++  end
++
++  def self.activate_native_test_requirements!(formula, env)
++    plan = dependency_plan(formula)
++    return if plan.nil?
++
++    evaluated_native_requirements(formula, plan).each do |requirement|
++      next unless requirement.fetch("tags").include?("test")
++
++      opt_prefix = HOMEBREW_PREFIX/"opt"/requirement.fetch("formula")
++      sentinel = requirement.fetch("sentinel")
++      sentinel_paths = [opt_prefix/"bin"/sentinel, opt_prefix/"sbin"/sentinel]
++      unless sentinel_paths.any?(&:executable?)
++        raise "Kandelo publisher native test Requirement sentinel is unavailable"
++      end
++
++      [opt_prefix/"bin", opt_prefix/"sbin"].each do |path|
++        env.prepend_path("PATH", path.to_s) if path.directory?
++      end
++      [opt_prefix/"lib/pkgconfig", opt_prefix/"share/pkgconfig"].each do |path|
++        env.prepend_path("PKG_CONFIG_PATH", path.to_s) if path.directory?
++      end
++      aclocal = opt_prefix/"share/aclocal"
++      env.prepend_path("ACLOCAL_PATH", aclocal.to_s) if aclocal.directory?
++      env.prepend_path("CMAKE_PREFIX_PATH", opt_prefix.to_s)
++      lib = opt_prefix/"lib"
++      include_dir = opt_prefix/"include"
++      env.prepend("LDFLAGS", "-L#{lib}") if lib.directory?
++      env.prepend("CPPFLAGS", "-I#{include_dir}") if include_dir.directory?
++    end
++  end
++
 +  def self.dependency_plan(formula = nil, require_match: true)
 +    plan_path = HOMEBREW_PREFIX/PLAN_FILENAME
 +    return unless plan_path.exist?
@@ -280,7 +365,7 @@ index 0000000000..ff90519c8
 +    end
 +
 +    plan = JSON.parse(contents)
-+    identified_plan = plan.is_a?(Hash) && plan.keys.sort == PLAN_KEYS && plan["schema"] == 3 &&
++    identified_plan = plan.is_a?(Hash) && plan.keys.sort == PLAN_KEYS && plan["schema"] == 4 &&
 +                      plan["tap"].is_a?(String) && plan["formula"].is_a?(String) &&
 +                      plan["full_name"] == "#{plan["tap"]}/#{plan["formula"]}"
 +    raise "Kandelo publisher dependency plan has an invalid identity" unless identified_plan
@@ -305,7 +390,8 @@ index 0000000000..ff90519c8
 +
 +    arrays = %w[build build_and_test runtime_and_test].to_h do |key|
 +      value = plan[key]
-+      valid_names = value.is_a?(Array) && value == value.sort.uniq &&
++      valid_names = value.is_a?(Array) && value.length <= MAX_DEPENDENCIES &&
++                    value == value.sort.uniq &&
 +                    value.all? { |name| name.is_a?(String) && DEPENDENCY_NAME.match?(name) }
 +      raise "Kandelo publisher dependency plan contains invalid #{key} names" unless valid_names
 +
@@ -314,6 +400,32 @@ index 0000000000..ff90519c8
 +    consistent_subsets = (arrays.fetch("build") - arrays.fetch("build_and_test")).empty? &&
 +                         (arrays.fetch("runtime_and_test") - arrays.fetch("build_and_test")).empty?
 +    raise "Kandelo publisher dependency plan subsets are inconsistent" unless consistent_subsets
++
++    native_requirements = plan["native_requirements"]
++    valid_native_requirements = native_requirements.is_a?(Array) &&
++                                native_requirements.length <= 128 &&
++                                native_requirements.all? do |requirement|
++      next false unless requirement.is_a?(Hash) && requirement.keys.sort == NATIVE_REQUIREMENT_KEYS
++
++      class_name = requirement["class"]
++      formula_name = requirement["formula"]
++      sentinel = requirement["sentinel"]
++      tags = requirement["tags"]
++      class_name.is_a?(String) && NATIVE_REQUIREMENT_CLASS.match?(class_name) &&
++        formula_name.is_a?(String) && DEPENDENCY_NAME.match?(formula_name) &&
++        sentinel.is_a?(String) && EXECUTABLE_NAME.match?(sentinel) &&
++        [["build"], ["build", "test"]].include?(tags) &&
++        arrays.fetch("build").include?(formula_name) &&
++        arrays.fetch("build_and_test").include?(formula_name) &&
++        arrays.fetch("runtime_and_test").include?(formula_name) == tags.include?("test")
++    end
++    native_classes = valid_native_requirements ? native_requirements.map { |item| item.fetch("class") } : []
++    native_formulae = valid_native_requirements ? native_requirements.map { |item| item.fetch("formula") } : []
++    valid_native_requirements &&= native_classes == native_classes.sort.uniq &&
++                                  native_formulae.length == native_formulae.uniq.length
++    unless valid_native_requirements
++      raise "Kandelo publisher dependency plan contains invalid native Requirements"
++    end
 +
 +    return plan if formula.nil?
 +
@@ -326,6 +438,27 @@ index 0000000000..ff90519c8
 +    raise "Kandelo publisher dependency plan is invalid JSON: #{e.message}"
 +  end
 +end
+diff --git a/Library/Homebrew/test.rb b/Library/Homebrew/test.rb
+index b0c5227092..2d2350a54b 100644
+--- a/Library/Homebrew/test.rb
++++ b/Library/Homebrew/test.rb
+@@ -8,6 +8,7 @@ old_trap = trap("INT") { exit! 130 }
+ require_relative "global"
+ require "extend/ENV"
++require "kandelo_publisher"
+ require "timeout"
+ require "formula_assertions"
+ require "formula_free_port"
+ require "fcntl"
+@@ -46,7 +47,8 @@ begin
+   end
+
+   ENV.extend(Stdenv)
+   ENV.setup_build_environment(formula:, testing_formula: true)
++  KandeloPublisher.activate_native_test_requirements!(formula, ENV)
+   Pathname.activate_extensions!
+
+   run_test = proc do |_|
 diff --git a/Library/Homebrew/trust.rb b/Library/Homebrew/trust.rb
 index 07c9edd42b..3de1d9be03 100644
 --- a/Library/Homebrew/trust.rb

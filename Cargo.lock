@@ -1983,6 +1983,7 @@ dependencies = [
  "flate2",
  "jsonschema",
  "regex",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
