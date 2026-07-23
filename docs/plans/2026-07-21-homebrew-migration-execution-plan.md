@@ -563,6 +563,49 @@ canonical release):
   Rebase or squash is not acceptable for this transition because GitHub
   rewrites the source SHA recorded by the bottle handoffs and sidecars.
 
+  Before dispatching ABI-42 writes, reserve a fresh immutable bottle identity
+  for every live Formula by incrementing its reviewed `bottle do` rebuild once
+  and retaining the last-green hashes as evidence until the trusted finalizer
+  replaces them. GHCR's Homebrew child references contain package version,
+  architecture, and bottle rebuild—not Kandelo ABI—so reusing the ABI-41
+  rebuild would either collide with different bytes or stale Formula identity.
+  The exact 63-Formula reservation has 70 declared architecture references; all
+  70 next-rebuild references must be absent before the reservation merges. Tap
+  PR #91 carries this bulk reservation, stacked after the native Requirement
+  rollout in tap PR #86.
+
+  Publish the ABI-42 catalog one Formula per write dispatch, with no more than
+  eight write runs queued or active. Refill those slots as soon as a Formula's
+  same-tap build, test, and runtime dependencies are finalized; do not wait for
+  an unrelated Formula in the same level to finish. The dependency-ready
+  wasm32 levels for the exact 63-Formula tap are:
+
+  1. `asa`, `bc`, `binutils`, `bzip2`, `coreutils`, `ctags`, `dash`, `ed`,
+     `fbdoom`, `gawk`, `gencat`, `getconf`, `grep`, `gzip`, `libcxx`,
+     `libiconv`, `lsof`, `modeset`, `musl-fts`, `ncompress`, `netcat`,
+     `openssl`, `pcre2`, `perl`, `posix-utils-lite`, `procps`, `sed`, `sqlite`,
+     `unzip`, `what`, `xz`, `zlib`, and `zstd`;
+  2. `diffutils`, `dinit`, `erlang`, `findutils`, `icu`, `libcurl`, `libmagic`,
+     `libpng`, `libxml2`, `libzip`, `m4`, `make`, `ncurses`, `patch`, `pax`,
+     `python`, `ruby`, `tar`, `tcl`, `wget`, and `zip`;
+  3. `bash`, `curl`, `file-formula`, `less`, `nano`, `nethack`, `texlive`, and
+     `vim`;
+  4. `git`.
+
+  This graph deliberately includes same-tap test dependencies: `erlang` and
+  `findutils` both need the ABI-42 `dash` bottle for `brew test`. It also
+  includes `icu`, the live Formula absent from the prior successful metadata
+  ledger, after its `libcxx` dependency. Native Requirements and unqualified
+  `homebrew/core` build tools run on the publisher and are not target-bottle
+  edges.
+
+  Publish the seven declared wasm64 targets through the same Formula-scoped
+  runs: first `libcxx`, `musl-fts`, `openssl`, `sqlite`, and `zlib`; then
+  `libcurl`; then `curl`. A dual-architecture dispatch is valid when both
+  architecture dependencies are ready. The ABI-42 `python` wasm32 dispatch
+  must require the configured dependency-bearing VFS acceptance after `dash`
+  and `zlib` are finalized.
+
 ### Phase 5: Ship usable upstream Homebrew inside Kandelo
 
 1. Reassess the existing bootstrap image against current main and record exact
