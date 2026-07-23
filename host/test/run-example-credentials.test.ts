@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -67,12 +69,25 @@ describe("run-example initial credentials", () => {
   it.each(["-1", "1.5", "0x10", " 1000 ", "4294967295", "4294967296"])(
     "rejects an invalid KERNEL_UID value (%s)",
     (value) => {
-      const result = runCredentialProbe({ KERNEL_UID: value });
-
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain(
-        "KERNEL_UID must be a decimal integer from 0 to 4294967294",
+      const cacheRoot = mkdtempSync(
+        join(tmpdir(), "kandelo-invalid-credential-cache-"),
       );
+      try {
+        const result = runCredentialProbe({
+          KERNEL_UID: value,
+          // This deliberately disagrees with any checked-out binaries mirror.
+          // Credential parsing must reject the input before package probing.
+          WASM_POSIX_BINARY_CACHE_ROOT: cacheRoot,
+        });
+
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(
+          "KERNEL_UID must be a decimal integer from 0 to 4294967294",
+        );
+        expect(result.stderr).not.toContain("Package artifact closure");
+      } finally {
+        rmSync(cacheRoot, { recursive: true, force: true });
+      }
     },
   );
 });

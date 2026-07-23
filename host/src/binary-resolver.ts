@@ -2138,6 +2138,33 @@ export function tryResolveBinary(relPath: string): string | null {
 }
 
 /**
+ * Resolve several independent optional artifacts after one source-projection
+ * freshness check.
+ *
+ * Unlike `tryResolveBinarySet`, these paths do not need to belong to one
+ * package closure and the returned entries may independently be `null`.
+ * Each package-owned path still resolves its complete declared closure from
+ * one verified generation. This API exists for consumers such as the example
+ * runner that load many unrelated optional programs at one synchronous
+ * boundary; invoking the canonical Rust freshness checker once per program
+ * would make module startup scale with the number of optional commands.
+ */
+export function tryResolveBinaries(
+  relPaths: readonly string[],
+): Array<string | null> {
+  return withFreshProgramIndexes(relPaths, () =>
+    relPaths.map((relPath) => {
+      try {
+        return resolveBinaryInFreshProgramContext(relPath);
+      } catch (error) {
+        if (error instanceof BinaryNotFoundError) return null;
+        throw error;
+      }
+    }),
+  );
+}
+
+/**
  * Resolve a related artifact set from one complete provenance tier.
  *
  * A partial or policy-invalid local tier is skipped as a whole when a later

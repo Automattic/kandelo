@@ -339,6 +339,12 @@ resolver entries reject
 absolute, backslash, drive-prefixed, empty-component, `.`/`..`, and NUL path
 spellings. `tryResolveBinary` returns `null` only for genuine absence and
 rethrows corruption, policy rejection, and malformed package state.
+Consumers that probe many unrelated optional programs synchronously use
+`tryResolveBinaries`: it performs one source-projection freshness check, then
+returns one path or `null` per request. This is intentionally different from
+`tryResolveBinarySet`, which requires every requested path to be the complete
+closure of one package and returns that closure from one provenance tier.
+Batching independent probes does not weaken package closure validation.
 
 Tier membership alone is not a package identity. Every selected symlink under
 the mutable `local-binaries/` or `binaries/` mirrors must resolve through its

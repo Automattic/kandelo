@@ -16,7 +16,7 @@
 import { closeSync, existsSync, openSync, readFileSync, statSync } from "fs";
 import { resolve, dirname, isAbsolute } from "path";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
-import { tryResolveBinary } from "../host/src/binary-resolver";
+import { tryResolveBinaries } from "../host/src/binary-resolver";
 import { writeAllSync } from "./run-example-output";
 import { isWithinRealDirectory } from "./run-example-paths";
 
@@ -45,51 +45,68 @@ function parseKernelCredential(name: "KERNEL_UID" | "KERNEL_GID"): number | unde
     return value;
 }
 
-// Built-in program resolution via the binary-resolver. Resolver returns
-// null for programs that aren't fetched or locally built; callers that
-// need the path must handle null explicitly.
-const coreutilsWasm = tryResolveBinary("programs/coreutils.wasm");
-const dashWasm = tryResolveBinary("programs/dash.wasm");
-const grepWasm = tryResolveBinary("programs/grep.wasm");
-const sedWasm = tryResolveBinary("programs/sed.wasm");
-const gitWasm = tryResolveBinary("programs/git/git.wasm");
-const bcWasm = tryResolveBinary("programs/bc.wasm");
-const fileWasm = tryResolveBinary("programs/file/file.wasm");
-const lessWasm = tryResolveBinary("programs/less.wasm");
-const m4Wasm = tryResolveBinary("programs/m4.wasm");
-const makeWasm = tryResolveBinary("programs/make.wasm");
-const tarWasm = tryResolveBinary("programs/tar.wasm");
-const curlWasm = tryResolveBinary("programs/curl.wasm");
-const wgetWasm = tryResolveBinary("programs/wget.wasm");
-const gzipWasm = tryResolveBinary("programs/gzip.wasm");
-const bzip2Wasm = tryResolveBinary("programs/bzip2.wasm");
-const xzWasm = tryResolveBinary("programs/xz.wasm");
-const zstdWasm = tryResolveBinary("programs/zstd.wasm");
-const zipWasm = tryResolveBinary("programs/zip.wasm");
-const unzipWasm = tryResolveBinary("programs/unzip.wasm");
-const nodeWasm =
-    tryResolveBinary("programs/node.wasm") ??
-    tryResolveBinary("programs/spidermonkey-node.wasm");
+interface OptionalBinary {
+    readonly relPaths: readonly string[];
+    readonly fallback?: string;
+}
+
+function optionalBinary(...relPaths: string[]): OptionalBinary {
+    return { relPaths };
+}
+
+function optionalBinaryWithFallback(fallback: string, ...relPaths: string[]): OptionalBinary {
+    return { relPaths, fallback };
+}
+
+// These declarations describe optional program sources without probing package
+// state at module import time. resolveBuiltinPrograms() checks all package paths
+// together after CLI input is validated.
+const coreutilsWasm = optionalBinary("programs/coreutils.wasm");
+const dashWasm = optionalBinary("programs/dash.wasm");
+const grepWasm = optionalBinary("programs/grep.wasm");
+const sedWasm = optionalBinary("programs/sed.wasm");
+const gitWasm = optionalBinary("programs/git/git.wasm");
+const bcWasm = optionalBinary("programs/bc.wasm");
+const fileWasm = optionalBinary("programs/file/file.wasm");
+const lessWasm = optionalBinary("programs/less.wasm");
+const m4Wasm = optionalBinary("programs/m4.wasm");
+const makeWasm = optionalBinary("programs/make.wasm");
+const tarWasm = optionalBinary("programs/tar.wasm");
+const curlWasm = optionalBinary("programs/curl.wasm");
+const wgetWasm = optionalBinary("programs/wget.wasm");
+const gzipWasm = optionalBinary("programs/gzip.wasm");
+const bzip2Wasm = optionalBinary("programs/bzip2.wasm");
+const xzWasm = optionalBinary("programs/xz.wasm");
+const zstdWasm = optionalBinary("programs/zstd.wasm");
+const zipWasm = optionalBinary("programs/zip.wasm");
+const unzipWasm = optionalBinary("programs/unzip.wasm");
+const nodeWasm = optionalBinary(
+    "programs/node.wasm",
+    "programs/spidermonkey-node.wasm",
+);
 const lsofWasm = resolve(repoRoot, "examples/lsof.wasm");
-const rubyWasm = tryResolveBinary("programs/ruby/ruby.wasm");
-const vimWasm = tryResolveBinary("programs/vim.zip");
-const gawkWasm = tryResolveBinary("programs/gawk.wasm");
-const findWasm = tryResolveBinary("programs/findutils/find.wasm");
-const xargsWasm = tryResolveBinary("programs/findutils/xargs.wasm");
-const diffWasm = tryResolveBinary("programs/diffutils/diff.wasm");
-const cmpWasm = tryResolveBinary("programs/diffutils/cmp.wasm");
-const sdiffWasm = tryResolveBinary("programs/diffutils/sdiff.wasm");
-const diff3Wasm = tryResolveBinary("programs/diffutils/diff3.wasm");
-const perlWasm = tryResolveBinary("programs/perl.wasm");
-const nanoWasm = tryResolveBinary("programs/nano.wasm");
-const tclshWasm = tryResolveBinary("programs/tcl.wasm");
+const rubyWasm = optionalBinary("programs/ruby/ruby.wasm");
+const vimWasm = optionalBinary("programs/vim.zip");
+const gawkWasm = optionalBinary("programs/gawk.wasm");
+const findWasm = optionalBinary("programs/findutils/find.wasm");
+const xargsWasm = optionalBinary("programs/findutils/xargs.wasm");
+const diffWasm = optionalBinary("programs/diffutils/diff.wasm");
+const cmpWasm = optionalBinary("programs/diffutils/cmp.wasm");
+const sdiffWasm = optionalBinary("programs/diffutils/sdiff.wasm");
+const diff3Wasm = optionalBinary("programs/diffutils/diff3.wasm");
+const perlWasm = optionalBinary("programs/perl.wasm");
+const nanoWasm = optionalBinary("programs/nano.wasm");
+const tclshWasm = optionalBinary("programs/tcl.wasm");
 const testfixtureBuild = resolve(
     repoRoot,
     "packages/registry/sqlite/bin/testfixture.wasm",
 );
 const testfixtureWasm = existsSync(testfixtureBuild) ? testfixtureBuild : null;
-const mysqltestWasm = tryResolveBinary("programs/mariadb/mysqltest.wasm");
-const echoWasm = tryResolveBinary("programs/echo.wasm") ?? resolve(repoRoot, "examples/echo.wasm");
+const mysqltestWasm = optionalBinary("programs/mariadb/mysqltest.wasm");
+const echoWasm = optionalBinaryWithFallback(
+    resolve(repoRoot, "examples/echo.wasm"),
+    "programs/echo.wasm",
+);
 
 // GNU coreutils multi-call binary supports all of these as argv[0]
 const coreutilsNames = [
@@ -101,9 +118,9 @@ const coreutilsNames = [
     "sha256sum", "base64", "seq", "factor", "nproc", "du", "df",
 ];
 
-// Values may be null when a program isn't fetched/built locally.
-// Consumers filter out null entries before use.
-const builtinPrograms: Record<string, string | null> = {
+// Static paths and optional package references share this command map. The
+// package references become concrete paths or null after the batch lookup.
+const builtinProgramSources: Record<string, string | OptionalBinary | null> = {
     "echo": echoWasm,
     "/bin/echo": echoWasm,
     "/usr/bin/echo": echoWasm,
@@ -273,9 +290,46 @@ const builtinPrograms: Record<string, string | null> = {
 
 // Add coreutils mappings for all known tool names
 for (const name of coreutilsNames) {
-    builtinPrograms[name] = coreutilsWasm;
-    builtinPrograms[`/bin/${name}`] = coreutilsWasm;
-    builtinPrograms[`/usr/bin/${name}`] = coreutilsWasm;
+    builtinProgramSources[name] = coreutilsWasm;
+    builtinProgramSources[`/bin/${name}`] = coreutilsWasm;
+    builtinProgramSources[`/usr/bin/${name}`] = coreutilsWasm;
+}
+
+function resolveBuiltinPrograms(): Record<string, string | null> {
+    const references = Array.from(new Set(
+        Object.values(builtinProgramSources).filter(
+            (source): source is OptionalBinary =>
+                typeof source === "object" && source !== null,
+        ),
+    ));
+    const relPaths = references.flatMap((reference) => reference.relPaths);
+
+    // A source checkout must prove that its package projection is current
+    // before using any cached artifact. Checking this independent optional set
+    // as one batch preserves that boundary without paying once per command.
+    const resolvedPaths = tryResolveBinaries(relPaths);
+    const resolvedByPath = new Map(
+        relPaths.map((relPath, index) => [relPath, resolvedPaths[index]]),
+    );
+    const resolvedByReference = new Map(
+        references.map((reference) => [
+            reference,
+            reference.relPaths
+                .map((relPath) => resolvedByPath.get(relPath) ?? null)
+                .find((path) => path !== null) ??
+                reference.fallback ??
+                null,
+        ]),
+    );
+
+    const programs: Record<string, string | null> = {};
+    for (const [name, source] of Object.entries(builtinProgramSources)) {
+        programs[name] =
+            typeof source === "object" && source !== null
+                ? resolvedByReference.get(source) ?? null
+                : source;
+    }
+    return programs;
 }
 
 function loadBytes(path: string): ArrayBuffer {
@@ -302,7 +356,10 @@ function tryLoadGuestCandidate(candidate: string, kernelCwd: string): ArrayBuffe
     }
 }
 
-function resolveProgram(path: string): ArrayBuffer | null {
+function resolveProgram(
+    path: string,
+    builtinPrograms: Record<string, string | null>,
+): ArrayBuffer | null {
     const mapped = builtinPrograms[path];
     if (mapped) {
         return loadBytes(mapped);
@@ -343,6 +400,7 @@ async function main() {
     }
     const uid = parseKernelCredential("KERNEL_UID");
     const gid = parseKernelCredential("KERNEL_GID");
+    const builtinPrograms = resolveBuiltinPrograms();
 
     let programPath: string;
     if (name.endsWith(".wasm")) {
@@ -404,7 +462,7 @@ async function main() {
             maxWorkers: 4,
             onStdout: (_pid, data) => writeGuestOutput(process.stdout, data),
             onStderr: (_pid, data) => writeGuestOutput(process.stderr, data),
-            onResolveExec: (path) => resolveProgram(path),
+            onResolveExec: (path) => resolveProgram(path, builtinPrograms),
         });
 
         await host.init();
