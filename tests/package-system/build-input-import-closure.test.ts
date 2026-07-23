@@ -35,7 +35,15 @@ describe("package build input import closure", () => {
       "host/src/process.ts",
       "host/src/kernel-worker.ts",
     ]) {
-      expect(packagesAffectedBy(changedPath)).toEqual(["lamp", "wordpress"]);
+      // nginx-php-vfs prewarms opcache by booting NodeKernelHost, so changes
+      // anywhere in the host runtime are part of that image's cache identity.
+      // The nginx-only and Redis images use just the narrower VFS/resolver
+      // boundaries and therefore must not appear here.
+      expect(packagesAffectedBy(changedPath)).toEqual([
+        "lamp",
+        "nginx-php-vfs",
+        "wordpress",
+      ]);
     }
 
     expect(packagesAffectedBy("host/src/vfs/memory-fs.ts")).toEqual(packages);
