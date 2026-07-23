@@ -31,6 +31,7 @@ describe("Vite browser binary resolution", () => {
             : relPath.replace("programs/", "programs/wasm32/"),
         resolveBatch,
         resolveOne,
+        approveBatch: (files) => files.map(approve),
         approve,
         candidateEntryExists,
       },
@@ -63,6 +64,7 @@ describe("Vite browser binary resolution", () => {
         normalizeRelPath: (relPath) => relPath,
         resolveBatch,
         resolveOne: () => null,
+        approveBatch: (files) => [...files],
         approve: (file) => file,
         candidateEntryExists: () => false,
       },
@@ -81,6 +83,7 @@ describe("Vite browser binary resolution", () => {
         normalizeRelPath: (relPath) => relPath,
         resolveBatch,
         resolveOne: () => null,
+        approveBatch: (files) => [...files],
         approve: (file) => file,
         candidateEntryExists: () => true,
       },
@@ -96,36 +99,80 @@ describe("Vite browser binary resolution", () => {
     expect(resolveBatch).toHaveBeenCalledOnce();
   });
 
-  it("rechecks only an optional artifact whose mirror appears after startup", () => {
+  it("rechecks the complete graph when a declared artifact appears after startup", () => {
     let installed = false;
-    const resolveBatch = vi.fn(() => [null]);
-    const resolveOne = vi.fn(() => "/cache/optional.vfs.zst");
+    const resolveBatch = vi.fn(() =>
+      installed
+        ? ["/cache/generation/artifact.wasm", "/cache/generation/sidecar.dat"]
+        : [null, null]
+    );
+    const resolveOne = vi.fn(() => {
+      throw new Error("declared artifacts must never use scalar resolution");
+    });
     const approve = vi.fn((file: string) => `approved:${file}`);
     const resolution = createBatchedBrowserBinaryResolution(
-      ["programs/wasm32/optional.vfs.zst"],
+      [
+        "programs/wasm32/package/artifact.wasm",
+        "programs/wasm32/package/sidecar.dat",
+      ],
       {
         normalizeRelPath: (relPath) => relPath,
         resolveBatch,
         resolveOne,
+        approveBatch: (files) => files.map(approve),
         approve,
         candidateEntryExists: () => installed,
       },
     );
 
-    expect(resolution.resolve("programs/wasm32/optional.vfs.zst")).toBeNull();
+    expect(
+      resolution.resolve("programs/wasm32/package/artifact.wasm"),
+    ).toBeNull();
     expect(resolveOne).not.toHaveBeenCalled();
 
     installed = true;
-    expect(resolution.resolve("programs/wasm32/optional.vfs.zst")).toBe(
-      "approved:/cache/optional.vfs.zst",
+    expect(
+      resolution.resolve("programs/wasm32/package/artifact.wasm"),
+    ).toBe(
+      "approved:/cache/generation/artifact.wasm",
     );
-    expect(resolveOne).toHaveBeenCalledOnce();
-    expect(approve).toHaveBeenCalledOnce();
+    expect(
+      resolution.resolve("programs/wasm32/package/sidecar.dat"),
+    ).toBe(
+      "approved:/cache/generation/sidecar.dat",
+    );
+    expect(resolveBatch).toHaveBeenCalledOnce();
+    expect(resolveOne).not.toHaveBeenCalled();
+    expect(approve).toHaveBeenCalledTimes(2);
+  });
 
-    expect(resolution.resolve("programs/wasm32/optional.vfs.zst")).toBe(
-      "approved:/cache/optional.vfs.zst",
+  it("keeps an undeclared miss on the scalar package-closure path", () => {
+    let scalarAttempt = 0;
+    const resolveBatch = vi.fn(() => [null]);
+    const resolveOne = vi.fn(() => {
+      scalarAttempt += 1;
+      return scalarAttempt === 1 ? null : "/cache/generation/extra.dat";
+    });
+    const resolution = createBatchedBrowserBinaryResolution(
+      ["programs/wasm32/declared.wasm"],
+      {
+        normalizeRelPath: (relPath) => relPath,
+        resolveBatch,
+        resolveOne,
+        approveBatch: (files) => [...files],
+        approve: (file) => `approved:${file}`,
+        candidateEntryExists: (relPath) => relPath.endsWith("extra.dat"),
+      },
     );
-    expect(resolveOne).toHaveBeenCalledOnce();
+
+    expect(
+      resolution.resolve("programs/wasm32/package/extra.dat"),
+    ).toBeNull();
+    expect(
+      resolution.resolve("programs/wasm32/package/extra.dat"),
+    ).toBe("approved:/cache/generation/extra.dat");
+    expect(resolveBatch).not.toHaveBeenCalled();
+    expect(resolveOne).toHaveBeenCalledTimes(2);
   });
 
   it("rejects a malformed batch result instead of misassigning capabilities", () => {
@@ -135,6 +182,7 @@ describe("Vite browser binary resolution", () => {
         normalizeRelPath: (relPath) => relPath,
         resolveBatch: () => ["/cache/one"],
         resolveOne: () => null,
+        approveBatch: (files) => [...files],
         approve: (file) => file,
         candidateEntryExists: () => true,
       },
@@ -158,6 +206,7 @@ describe("Vite browser binary resolution", () => {
         normalizeRelPath: (relPath) => relPath,
         resolveBatch,
         resolveOne: () => null,
+        approveBatch: (files) => [...files],
         approve: (file) => file,
         candidateEntryExists: () => true,
       },

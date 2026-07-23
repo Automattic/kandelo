@@ -19,6 +19,11 @@ import {
   browserBinariesImports,
 } from "./browser-binary-imports.mjs";
 import {
+  createBinaryDevAccess,
+  pathIsWithin as pathIsWithinWithCasePolicy,
+  type BinaryDevAccess,
+} from "./binary-dev-access";
+import {
   createBatchedBrowserBinaryResolution,
   type BrowserBinaryResolution,
 } from "./vite-binary-resolution";
@@ -48,107 +53,15 @@ const caseInsensitivePaths = fs.existsSync(
 const DEFAULT_CORS_PROXY_URL = "https://wordpress-playground-cors-proxy.net/?";
 const preferredLocalPort = 5401;
 
-interface BinaryDevAccess {
-  approve(file: string): string;
-  attachServer(server: ViteDevServer): void;
-}
-
-const invalidFsRequest = Symbol("invalid-fs-request");
-
-function fsRequestPath(
-  url: string | undefined,
-): string | typeof invalidFsRequest | null {
-  if (!url) return null;
-  const pathname = new URL(url, "http://127.0.0.1").pathname;
-  if (!pathname.startsWith("/@fs/")) return null;
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(pathname.slice("/@fs/".length));
-  } catch {
-    return invalidFsRequest;
-  }
-  let file = normalizePath(decoded);
-  if (!path.isAbsolute(file) && !/^[A-Za-z]:\//.test(file)) file = `/${file}`;
-  return normalizePath(file);
-}
-
 function pathIsWithin(root: string, file: string): boolean {
-  const comparableRoot = caseInsensitivePaths ? root.toLowerCase() : root;
-  const comparableFile = caseInsensitivePaths ? file.toLowerCase() : file;
-  const fromRoot = path.relative(comparableRoot, comparableFile);
-  return fromRoot === ""
-    || (fromRoot !== ".."
-      && !fromRoot.startsWith(`..${path.sep}`)
-      && !path.isAbsolute(fromRoot));
+  return pathIsWithinWithCasePolicy(root, file, caseInsensitivePaths);
 }
 
-/**
- * Give Vite access only to exact resolver-approved files outside the checkout.
- * Vite needs the program-cache directory in its transport allow list, while
- * this pre-serving guard turns that broad lexical rule into exact, rechecked
- * regular-file capabilities.
- */
-function createBinaryDevAccess(): BinaryDevAccess {
-  const approvedExternalFiles = new Set<string>();
-  const attachedServers = new WeakSet<ViteDevServer>();
-  const programCacheRoot = browserProgramCacheRoot;
-
-  return {
-    approve(file: string): string {
-      const canonical = fs.realpathSync(file);
-      if (!fs.lstatSync(canonical).isFile()) {
-        throw new Error(`Resolved browser artifact is not a regular file: ${canonical}`);
-      }
-      const isInsideProgramCache = pathIsWithin(programCacheRoot, canonical);
-      const isInsideRepo = pathIsWithin(repoRoot, canonical);
-      if (isInsideProgramCache) {
-        // The middleware guards the cache namespace even when an explicit
-        // cache root overlaps the checkout, so every cache file needs an
-        // exact capability regardless of repository containment.
-        approvedExternalFiles.add(normalizePath(canonical));
-      } else if (!isInsideRepo) {
-        throw new Error(
-          `Resolved browser artifact is outside the Kandelo program cache: ${canonical}`,
-        );
-      }
-      return canonical;
-    },
-    attachServer(nextServer: ViteDevServer): void {
-      if (attachedServers.has(nextServer)) return;
-      attachedServers.add(nextServer);
-      nextServer.middlewares.use((request, response, next) => {
-        const requested = fsRequestPath(request.url);
-        if (requested === invalidFsRequest) {
-          response.statusCode = 403;
-          response.end("Malformed filesystem path");
-          return;
-        }
-        if (!requested || !pathIsWithin(programCacheRoot, requested)) {
-          next();
-          return;
-        }
-        try {
-          if (
-            !approvedExternalFiles.has(requested)
-            || !fs.lstatSync(requested).isFile()
-            || normalizePath(fs.realpathSync(requested)) !== requested
-          ) {
-            response.statusCode = 403;
-            response.end("Forbidden resolver-cache path");
-            return;
-          }
-        } catch {
-          response.statusCode = 403;
-          response.end("Forbidden resolver-cache path");
-          return;
-        }
-        next();
-      });
-    },
-  };
-}
-
-const binaryDevAccess = createBinaryDevAccess();
+const binaryDevAccess = createBinaryDevAccess({
+  repoRoot,
+  programCacheRoot: browserProgramCacheRoot,
+  caseInsensitivePaths,
+});
 const binaryMirrorRoots = [
   path.resolve(repoRoot, "local-binaries"),
   path.resolve(repoRoot, "binaries"),
@@ -188,6 +101,7 @@ function createBrowserBinaryResolution(
     normalizeRelPath: applyDefaultProgramArch,
     resolveBatch: tryResolveBinaries,
     resolveOne: tryResolveBinary,
+    approveBatch: (files) => access.approveBatch(files),
     approve: (file) => access.approve(file),
     candidateEntryExists,
   });
