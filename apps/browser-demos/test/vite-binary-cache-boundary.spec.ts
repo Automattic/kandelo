@@ -1,9 +1,11 @@
 import { expect, test } from "@playwright/test";
-import { createHash, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -17,68 +19,135 @@ import { createServer, normalizePath, type ViteDevServer } from "vite";
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(appRoot, "../..");
+let cachedRustHostTarget: string | null = null;
 
 function fsUrl(origin: string, file: string): string {
   const normalized = normalizePath(file).replace(/^\//, "");
   return `${origin}/@fs/${encodeURI(normalized)}`;
 }
 
+function generatedEntryDirectory(namespace: string): string {
+  // Keep generated imports under the ignored build tree. If a browser worker
+  // crashes before `finally`, the next source scan must not mistake a leftover
+  // concrete fixture import for authored browser-package policy.
+  return join(repoRoot, "target", "browser-test-runs", namespace);
+}
+
+function rustHostTarget(): string {
+  if (cachedRustHostTarget !== null) return cachedRustHostTarget;
+  const output =
+    process.env.KANDELO_DEV_SHELL_TOOL_PATH !== undefined
+      ? execFileSync("rustc", ["-vV"], {
+          cwd: repoRoot,
+          encoding: "utf8",
+        })
+      : execFileSync(
+          "bash",
+          [join(repoRoot, "scripts", "dev-shell.sh"), "rustc", "-vV"],
+          {
+            cwd: repoRoot,
+            encoding: "utf8",
+          },
+        );
+  cachedRustHostTarget =
+    output
+      .split(/\r?\n/)
+      .find((line) => line.startsWith("host: "))
+      ?.slice("host: ".length)
+      .trim() ?? null;
+  if (cachedRustHostTarget === null) {
+    throw new Error("could not determine the Rust host target");
+  }
+  return cachedRustHostTarget;
+}
+
 function writeProgramProjection(
   registryRoot: string,
   packageName: string,
-  cacheKey: string,
-): void {
+): string {
   const manifest = [
-    "[package]",
+    'kind = "program"',
     `name = ${JSON.stringify(packageName)}`,
     'version = "1.0.0"',
-    "revision = 1",
+    'arches = ["wasm32"]',
+    "depends_on = []",
+    "",
+    "[source]",
+    'url = "https://example.invalid/vite-cache-boundary.tar.gz"',
+    `sha256 = "${"a".repeat(64)}"`,
+    "",
+    "[license]",
+    'spdx = "MIT"',
+    "",
+    "[[outputs]]",
+    'name = "artifact"',
+    'wasm = "artifact.dat"',
+    'fork_instrumentation = "disabled"',
+    "",
+    "[[outputs]]",
+    'name = "sidecar"',
+    'wasm = "sidecar.dat"',
+    'fork_instrumentation = "disabled"',
     "",
   ].join("\n");
   const packageRoot = join(registryRoot, packageName);
   mkdirSync(packageRoot, { recursive: true });
   writeFileSync(join(packageRoot, "package.toml"), manifest);
-  writeFileSync(
-    join(registryRoot, "program-packages.json"),
-    `${JSON.stringify({
-      format: "kandelo-program-packages-v2",
-      identities: {
-        [packageName]: {
-          manifestSha256: createHash("sha256").update(manifest).digest("hex"),
-          cacheKeys: {
-            wasm32: cacheKey,
-            wasm64: createHash("sha256")
-              .update(`${packageName}:wasm64`)
-              .digest("hex"),
-          },
-        },
+  const indexPath = join(registryRoot, "program-packages.json");
+  const cargoArgs = [
+    "run",
+    "--release",
+    "--quiet",
+    "-p",
+    "xtask",
+    "--target",
+    rustHostTarget(),
+    "--",
+    "build-deps",
+    "program-index",
+    registryRoot,
+    indexPath,
+  ];
+  const environment = {
+    ...process.env,
+    WASM_POSIX_DEPS_REGISTRY: registryRoot,
+  };
+  // The source checkout deliberately rejects hand-authored cache identities.
+  // Generate this synthetic registry through the same Rust manifest parser and
+  // cache-key implementation that Vite rechecks before serving package bytes.
+  if (process.env.KANDELO_DEV_SHELL_TOOL_PATH !== undefined) {
+    execFileSync("cargo", cargoArgs, {
+      cwd: repoRoot,
+      env: environment,
+      stdio: "pipe",
+    });
+  } else {
+    execFileSync(
+      "bash",
+      [
+        join(repoRoot, "scripts", "dev-shell.sh"),
+        "env",
+        `WASM_POSIX_DEPS_REGISTRY=${registryRoot}`,
+        "cargo",
+        ...cargoArgs,
+      ],
+      {
+        cwd: repoRoot,
+        env: process.env,
+        stdio: "pipe",
       },
-      packages: {
-        [packageName]: {
-          manifestSha256: createHash("sha256").update(manifest).digest("hex"),
-          arches: ["wasm32"],
-          cacheKeys: { wasm32: cacheKey },
-          dependencyClosures: { wasm32: [] },
-          members: [
-            {
-              kind: "output",
-              sourceArtifact: "artifact.dat",
-              mirrorPath: `${packageName}/artifact.dat`,
-              outputName: "artifact",
-              forkInstrumentation: "disabled",
-            },
-            {
-              kind: "output",
-              sourceArtifact: "sidecar.dat",
-              mirrorPath: `${packageName}/sidecar.dat`,
-              outputName: "sidecar",
-              forkInstrumentation: "disabled",
-            },
-          ],
-        },
-      },
-    }, null, 2)}\n`,
-  );
+    );
+  }
+  const projection = JSON.parse(readFileSync(indexPath, "utf8")) as {
+    packages?: Record<string, { cacheKeys?: { wasm32?: unknown } }>;
+  };
+  const cacheKey = projection.packages?.[packageName]?.cacheKeys?.wasm32;
+  if (typeof cacheKey !== "string" || !/^[a-f0-9]{64}$/.test(cacheKey)) {
+    throw new Error(
+      `canonical program projection omitted the wasm32 cache key for ${packageName}`,
+    );
+  }
+  return cacheKey;
 }
 
 test("Vite serves an approved bottle member without exposing its cache", async () => {
@@ -88,16 +157,8 @@ test("Vite serves an approved bottle member without exposing its cache", async (
   const savedNoHmr = process.env.KANDELO_BROWSER_TEST_NO_HMR;
   const testRoot = mkdtempSync(join(tmpdir(), "kandelo-vite-cache-boundary-"));
   const namespace = `vite-cache-boundary-${randomUUID()}`;
-  const cacheKey = "a".repeat(64);
   const cacheRoot = join(testRoot, "kandelo");
   const registryRoot = join(testRoot, "registry");
-  const generation = join(
-    cacheRoot,
-    "programs",
-    `${namespace}-1.0.0-rev1-wasm32-${cacheKey}`,
-  );
-  const artifact = join(generation, "artifact.dat");
-  const sidecar = join(generation, "sidecar.dat");
   const privateSource = join(cacheRoot, "sources", "private.dat");
   const cacheEscape = join(cacheRoot, "programs", "escape.dat");
   const mirror = join(
@@ -116,12 +177,20 @@ test("Vite serves an approved bottle member without exposing its cache", async (
     namespace,
     "sidecar.dat",
   );
-  const entryDirectory = join(appRoot, "test-runs", namespace);
+  const entryDirectory = generatedEntryDirectory(namespace);
   const entry = join(entryDirectory, "entry.ts");
   const artifactBytes = "approved bottle member\n".repeat(512);
   let server: ViteDevServer | null = null;
 
   try {
+    const cacheKey = writeProgramProjection(registryRoot, namespace);
+    const generation = join(
+      cacheRoot,
+      "programs",
+      `${namespace}-1.0.0-rev1-wasm32-${cacheKey}`,
+    );
+    const artifact = join(generation, "artifact.dat");
+    const sidecar = join(generation, "sidecar.dat");
     mkdirSync(dirname(artifact), { recursive: true });
     mkdirSync(dirname(privateSource), { recursive: true });
     mkdirSync(dirname(mirror), { recursive: true });
@@ -132,10 +201,18 @@ test("Vite serves an approved bottle member without exposing its cache", async (
     symlinkSync(privateSource, cacheEscape);
     symlinkSync(artifact, mirror);
     symlinkSync(sidecar, sidecarMirror);
-    writeProgramProjection(registryRoot, namespace, cacheKey);
+    // Assemble this runtime-only fixture in pieces so the repository scanner
+    // does not mistake its `${namespace}` placeholder for a real static import.
+    const fixtureImport = [
+      "@binaries",
+      "programs",
+      "wasm32",
+      namespace,
+      "artifact.dat?url",
+    ].join("/");
     writeFileSync(
       entry,
-      `import artifactUrl from "@binaries/programs/wasm32/${namespace}/artifact.dat?url";\nexport default artifactUrl;\n`,
+      `import artifactUrl from "${fixtureImport}";\nexport default artifactUrl;\n`,
     );
 
     process.env.XDG_CACHE_HOME = testRoot;
@@ -179,17 +256,24 @@ test("Vite serves an approved bottle member without exposing its cache", async (
     const approvedBody = await approvedResponse.text();
     expect(
       approvedResponse.status,
-      JSON.stringify({
-        approvedBody,
-        transformedSource,
-        allow: server.config.server.fs.allow,
-      }, null, 2),
+      JSON.stringify(
+        {
+          approvedBody,
+          transformedSource,
+          allow: server.config.server.fs.allow,
+        },
+        null,
+        2,
+      ),
     ).toBe(200);
     expect(approvedBody).toBe(artifactBytes);
-    expect((await fetch(fsUrl(origin, realpathSync(privateSource)))).status).toBe(403);
-    expect((await fetch(
-      fsUrl(origin, join(canonicalProgramRoot, "escape.dat")),
-    )).status).toBe(403);
+    expect(
+      (await fetch(fsUrl(origin, realpathSync(privateSource)))).status,
+    ).toBe(403);
+    expect(
+      (await fetch(fsUrl(origin, join(canonicalProgramRoot, "escape.dat"))))
+        .status,
+    ).toBe(403);
     const caseVariant = canonicalArtifact.replace(
       namespace,
       namespace.toUpperCase(),
@@ -204,10 +288,10 @@ test("Vite serves an approved bottle member without exposing its cache", async (
     const descendant = join(artifact, "private.dat");
     writeFileSync(descendant, "replacement directory bytes\n");
     expect((await fetch(fsUrl(origin, canonicalArtifact))).status).toBe(403);
-    expect((await fetch(fsUrl(
-      origin,
-      join(canonicalArtifact, "private.dat"),
-    ))).status).toBe(403);
+    expect(
+      (await fetch(fsUrl(origin, join(canonicalArtifact, "private.dat"))))
+        .status,
+    ).toBe(403);
   } finally {
     await server?.close();
     rmSync(join(repoRoot, "binaries", "programs", "wasm32", namespace), {
@@ -244,16 +328,8 @@ test("Vite approves an explicit program cache that overlaps the checkout", async
   const savedRegistry = process.env.WASM_POSIX_DEPS_REGISTRY;
   const savedNoHmr = process.env.KANDELO_BROWSER_TEST_NO_HMR;
   const namespace = `vite-overlap-${randomUUID()}`;
-  const cacheKey = "b".repeat(64);
   const cacheRoot = join(repoRoot, `.vite-overlap-cache-${namespace}`);
   const registryRoot = join(cacheRoot, "registry");
-  const generation = join(
-    cacheRoot,
-    "programs",
-    `${namespace}-1.0.0-rev1-wasm32-${cacheKey}`,
-  );
-  const artifact = join(generation, "artifact.dat");
-  const sidecar = join(generation, "sidecar.dat");
   const mirror = join(
     repoRoot,
     "binaries",
@@ -270,11 +346,19 @@ test("Vite approves an explicit program cache that overlaps the checkout", async
     namespace,
     "sidecar.dat",
   );
-  const entryDirectory = join(appRoot, "test-runs", namespace);
+  const entryDirectory = generatedEntryDirectory(namespace);
   const entry = join(entryDirectory, "entry.ts");
   let server: ViteDevServer | null = null;
 
   try {
+    const cacheKey = writeProgramProjection(registryRoot, namespace);
+    const generation = join(
+      cacheRoot,
+      "programs",
+      `${namespace}-1.0.0-rev1-wasm32-${cacheKey}`,
+    );
+    const artifact = join(generation, "artifact.dat");
+    const sidecar = join(generation, "sidecar.dat");
     mkdirSync(dirname(artifact), { recursive: true });
     mkdirSync(dirname(mirror), { recursive: true });
     mkdirSync(entryDirectory, { recursive: true });
@@ -282,10 +366,18 @@ test("Vite approves an explicit program cache that overlaps the checkout", async
     writeFileSync(sidecar, "package sidecar\n");
     symlinkSync(artifact, mirror);
     symlinkSync(sidecar, sidecarMirror);
-    writeProgramProjection(registryRoot, namespace, cacheKey);
+    // Assemble this runtime-only fixture in pieces so the repository scanner
+    // does not mistake its `${namespace}` placeholder for a real static import.
+    const fixtureImport = [
+      "@binaries",
+      "programs",
+      "wasm32",
+      namespace,
+      "artifact.dat?url",
+    ].join("/");
     writeFileSync(
       entry,
-      `import artifactUrl from "@binaries/programs/wasm32/${namespace}/artifact.dat?url";\nexport default artifactUrl;\n`,
+      `import artifactUrl from "${fixtureImport}";\nexport default artifactUrl;\n`,
     );
     process.env.WASM_POSIX_BINARY_CACHE_ROOT = cacheRoot;
     process.env.WASM_POSIX_DEPS_REGISTRY = registryRoot;
