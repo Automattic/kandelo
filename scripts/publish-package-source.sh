@@ -61,9 +61,7 @@ source "$KANDELO_ROOT/sdk/activate.sh"
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 export WASM_POSIX_DEPS_REGISTRY="$PACKAGE_SOURCE_ROOT/packages:$KANDELO_ROOT/packages/registry"
 cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
-  build-deps program-index-check \
-  "$PACKAGE_SOURCE_ROOT/packages" \
-  "$PACKAGE_SOURCE_ROOT/packages/program-packages.json"
+  build-deps program-index-context-check
 
 "$KANDELO_ROOT/scripts/sync-package-source.sh" \
   --package-source-root "$PACKAGE_SOURCE_ROOT" \

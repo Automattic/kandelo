@@ -300,12 +300,17 @@ cargo xtask build-deps program-index <registry-root> \
   <registry-root>/program-packages.json
 cargo xtask build-deps program-index-check <registry-root> \
   <registry-root>/program-packages.json
+cargo xtask build-deps program-index-context-check
 ```
 
 The root passed to `program-index` or `program-index-check` must be the
 highest-priority existing root in `WASM_POSIX_DEPS_REGISTRY`. Generate a lower
 root's committed fallback with the registry suffix beginning at that root.
 `build-deps check` verifies every present index against its own suffix context.
+`program-index-context-check` is the stricter consumer boundary: it skips
+nonexistent optional roots, requires an index for every existing configured
+root, and validates each in its exact suffix context. Source-checkout program
+resolution runs that Rust check before consuming generated policy.
 The standalone `wasm-posix-host` package ships the same projection under
 `wasm/`, so installed consumers retain closure and fork policy without carrying
 source manifests.
@@ -316,6 +321,11 @@ from the same TypeScript resolver, so clean checkouts do not need
 or its policy dependencies, regenerate and verify that bundle with
 `scripts/build-resolve-binary-bundle.sh` and
 `scripts/test-resolve-binary-bundle.sh`.
+For program paths the wrapper incrementally builds the current release xtask
+and exports its path as `WASM_POSIX_XTASK_BIN`. A direct caller may provide that
+override, but doing so is an attestation that the executable was prepared from
+the current source; the resolver deliberately does not rebuild an explicit
+caller-owned tool path.
 
 A registry directory without a regular `package.toml` is an ordinary
 non-package path, matching Rust's lookup. A regular manifest is a first-hit
@@ -364,7 +374,10 @@ immutable generation member.
 Scalar replacement and package-directory replacement reserve a unique private
 transaction parent (mode 0700 on Unix), validate filesystem identity and exact
 bytes or link maps before and after quarantine, and delete only unchanged
-private entries. Concurrent publishers must replace resolver paths through
+private entries. Scalar rollback uses an atomic no-replace rename, so a writer
+that appears after a failed publication or quarantine check remains the winner;
+changed or unvalidated quarantined state is preserved privately rather than
+overwriting that winner. Concurrent publishers must replace resolver paths through
 this pathname transaction; mutating an already quarantined regular file
 through a previously held file descriptor is outside the supported writer
 protocol and causes digest validation to fail whenever it is observed before
@@ -442,6 +455,14 @@ index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-ab
   package-system import-closure test enforces that relationship for derived
   images. Type-only modules elided by `tsx` are not inferred, but an authored
   schema that belongs in artifact provenance may be declared explicitly.
+  Canonical `packages/registry/<package>/...` inputs select the first registry
+  root containing that package's `package.toml`, then require every declared
+  file below that one selected package directory. A partial external shadow
+  fails instead of filling missing files from a lower package generation, and
+  a stray higher directory without `package.toml` cannot shadow main. The
+  first-party non-package helper trees below `packages/registry` remain
+  main-checkout inputs. Existing registry-relative input spellings apply the
+  same package-level rule for third-party sources.
 - `repo_url` + `commit` record the project's recipe provenance.
 - `revision` is the publish-time counter the resolver hashes into
   the cache-key. Bump when output bytes legitimately change (build

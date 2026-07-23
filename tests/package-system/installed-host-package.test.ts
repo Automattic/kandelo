@@ -208,6 +208,10 @@ version = "1.0.0"
     const baseEnv = { ...process.env };
     delete baseEnv.WASM_POSIX_DEPS_REGISTRY;
     delete baseEnv.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT;
+    // Installed projections are verified when the package is assembled, not
+    // by reaching back into a source checkout at runtime. A deliberately
+    // unusable checker path proves installed resolution never consults it.
+    baseEnv.WASM_POSIX_XTASK_BIN = join(root, "must-not-run-xtask");
 
     const writeRegistry = (
       name: string,
