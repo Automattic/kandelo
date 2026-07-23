@@ -5,6 +5,27 @@ export const ABI_VERSION = 42 as const;
 export const ABI_CUSTOM_SECTION = "wasm-posix-abi" as const;
 export const ABI_KERNEL_EXPORT = "__abi_version" as const;
 
+export const WPK_FORK_LINKED_FRAME_FORMAT_SECTION = "kandelo.wpk_fork.linked_frames" as const;
+export const WPK_FORK_LINKED_FRAME_FORMAT_VERSION = 1 as const;
+export const WPK_FORK_LINKED_FRAME_FORMAT_MAGIC = [75, 76, 67, 70] as const;
+export const WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE = 24 as const;
+export const WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT = 8 as const;
+export const WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS = 3 as const;
+export const WPK_FORK_REQUIRED_IMPORTS = [
+  { module: "env", name: "__wpk_fork_frame_commit", params: ["ptr"], results: [] },
+  { module: "env", name: "__wpk_fork_frame_next", params: ["ptr"], results: ["ptr"] },
+  { module: "env", name: "__wpk_fork_frame_reserve", params: ["ptr"], results: ["ptr"] },
+] as const;
+export const WPK_FORK_REQUIRED_EXPORTS = [
+  { name: "wpk_fork_abort_begin", params: ["ptr"], results: [] },
+  { name: "wpk_fork_abort_end", params: [], results: [] },
+  { name: "wpk_fork_rewind_begin", params: ["ptr"], results: [] },
+  { name: "wpk_fork_rewind_end", params: [], results: [] },
+  { name: "wpk_fork_state", params: [], results: ["i32"] },
+  { name: "wpk_fork_unwind_begin", params: ["ptr"], results: [] },
+  { name: "wpk_fork_unwind_end", params: [], results: [] },
+] as const;
+
 export const SCHED_AFFINITY_MASK_SIZE = 4 as const;
 
 export const HOST_ADAPTER_VERSION = 1 as const;

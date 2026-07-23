@@ -705,7 +705,7 @@ prepare_runtime_wasm() {
 
     wasm-strip "$artifact"
     if wasm_imports_kernel_fork "$artifact" && ! wasm_has_complete_fork_instrumentation "$artifact"; then
-        if wasm_has_any_wpk_fork_export "$artifact"; then
+        if wasm_has_any_fork_instrumentation "$artifact"; then
             wasm_require_fork_instrumentation_if_needed "$artifact"
             return 1
         fi

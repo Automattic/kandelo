@@ -6,22 +6,21 @@
 //! page.
 
 use std::fmt;
+use wasm_posix_shared::abi;
 
 /// WebAssembly linear-memory allocation granularity.
 pub const WASM_PAGE_SIZE: u64 = 64 * 1024;
 
 /// Alignment used for chunk and node records.
-pub const RECORD_ALIGNMENT: u64 = 8;
+pub const RECORD_ALIGNMENT: u64 = abi::WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT as u64;
 
 /// Linked-frame artifact metadata version used by ABI 42.
-pub const LINKED_FRAME_FORMAT_VERSION: u16 = 1;
-pub const LINKED_FRAME_FORMAT_SECTION: &str = "kandelo.wpk_fork.linked_frames";
+pub const LINKED_FRAME_FORMAT_VERSION: u16 = abi::WPK_FORK_LINKED_FRAME_FORMAT_VERSION;
+pub const LINKED_FRAME_FORMAT_SECTION: &str = abi::WPK_FORK_LINKED_FRAME_FORMAT_SECTION;
 
-const FORMAT_DESCRIPTOR_MAGIC: [u8; 4] = *b"KLCF";
-const FORMAT_DESCRIPTOR_SIZE: usize = 24;
-const FORMAT_FLAG_TRANSACTIONAL_NODES: u16 = 1 << 0;
-const FORMAT_FLAG_ABORT_UNWINDING: u16 = 1 << 1;
-const FORMAT_REQUIRED_FLAGS: u16 = FORMAT_FLAG_TRANSACTIONAL_NODES | FORMAT_FLAG_ABORT_UNWINDING;
+const FORMAT_DESCRIPTOR_MAGIC: [u8; 4] = abi::WPK_FORK_LINKED_FRAME_FORMAT_MAGIC;
+const FORMAT_DESCRIPTOR_SIZE: usize = abi::WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE as usize;
+const FORMAT_REQUIRED_FLAGS: u16 = abi::WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS;
 const FORMAT_KNOWN_FLAGS: u16 = FORMAT_REQUIRED_FLAGS;
 
 /// Transactional lifecycle for one linked frame node.

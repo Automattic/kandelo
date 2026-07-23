@@ -9,7 +9,7 @@
 //!   * [`wasm_posix_shared::channel`] — channel header byte layout
 //!   * Marshalled repr(C) structs — offsets via `core::mem::offset_of!`
 //!   * [`wasm_posix_shared::abi`] — expected process globals, export
-//!     deny-lists, custom-section name
+//!     deny-lists, custom-section names, and program-artifact fork contract
 //!   * [`wasm_posix_shared::abi::HOST_ADAPTER_MANIFEST`] — kernel/host
 //!     adapter boot contract metadata
 //!   * [`wasm_posix_shared::host_abi`] — host adapter syscall marshalling
@@ -213,6 +213,51 @@ fn render_ts_module() -> String {
         "export const ABI_KERNEL_EXPORT = {:?} as const;\n\n",
         shared::abi::ABI_KERNEL_EXPORT
     ));
+    out.push_str(&format!(
+        "export const WPK_FORK_LINKED_FRAME_FORMAT_SECTION = {:?} as const;\n",
+        shared::abi::WPK_FORK_LINKED_FRAME_FORMAT_SECTION
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_LINKED_FRAME_FORMAT_VERSION = {} as const;\n",
+        shared::abi::WPK_FORK_LINKED_FRAME_FORMAT_VERSION
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_LINKED_FRAME_FORMAT_MAGIC = {:?} as const;\n",
+        shared::abi::WPK_FORK_LINKED_FRAME_FORMAT_MAGIC
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE = {} as const;\n",
+        shared::abi::WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT = {} as const;\n",
+        shared::abi::WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS = {} as const;\n",
+        shared::abi::WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS
+    ));
+    out.push_str("export const WPK_FORK_REQUIRED_IMPORTS = [\n");
+    for requirement in shared::abi::WPK_FORK_REQUIRED_IMPORTS {
+        out.push_str(&format!(
+            "  {{ module: {:?}, name: {:?}, params: {}, results: {} }},\n",
+            requirement.module,
+            requirement.name,
+            render_ts_program_artifact_types(requirement.params),
+            render_ts_program_artifact_types(requirement.results),
+        ));
+    }
+    out.push_str("] as const;\n");
+    out.push_str("export const WPK_FORK_REQUIRED_EXPORTS = [\n");
+    for requirement in shared::abi::WPK_FORK_REQUIRED_EXPORTS {
+        out.push_str(&format!(
+            "  {{ name: {:?}, params: {}, results: {} }},\n",
+            requirement.name,
+            render_ts_program_artifact_types(requirement.params),
+            render_ts_program_artifact_types(requirement.results),
+        ));
+    }
+    out.push_str("] as const;\n\n");
     out.push_str(&format!(
         "export const SCHED_AFFINITY_MASK_SIZE = {} as const;\n\n",
         shared::SCHED_AFFINITY_MASK_SIZE
@@ -614,6 +659,20 @@ fn render_ts_module() -> String {
     out
 }
 
+fn render_ts_program_artifact_types(values: &[shared::abi::ProgramArtifactValueType]) -> String {
+    use shared::abi::ProgramArtifactValueType;
+
+    let values = values
+        .iter()
+        .map(|value| match value {
+            ProgramArtifactValueType::Pointer => "\"ptr\"",
+            ProgramArtifactValueType::I32 => "\"i32\"",
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{values}]")
+}
+
 fn ts_syscall_arg_desc(desc: &shared::host_abi::SyscallArgDesc) -> String {
     let mut s = format!(
         "{{ argIndex: {}, direction: {:?}, size: {}",
@@ -805,6 +864,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "process_expected_globals".into(),
         process_expected_globals(),
     );
+    root.insert("program_artifact".into(), program_artifact());
 
     root.insert("export_deny".into(), export_deny());
 
@@ -1800,13 +1860,147 @@ fn channel_status_codes() -> Value {
 }
 
 fn custom_sections() -> Value {
-    json!([shared::abi::ABI_CUSTOM_SECTION])
+    let mut sections = vec![
+        shared::abi::ABI_CUSTOM_SECTION,
+        shared::abi::WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
+    ];
+    sections.sort();
+    Value::Array(sections.into_iter().map(Value::from).collect())
 }
 
 fn process_expected_globals() -> Value {
     let mut list: Vec<&str> = shared::abi::PROCESS_EXPECTED_GLOBALS.to_vec();
     list.sort();
     Value::Array(list.into_iter().map(Value::from).collect())
+}
+
+fn program_artifact() -> Value {
+    use shared::abi::{
+        ProgramArtifactValueType, WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE,
+        WPK_FORK_LINKED_FRAME_FLAG_ABORT_UNWINDING, WPK_FORK_LINKED_FRAME_FLAG_TRANSACTIONAL_NODES,
+        WPK_FORK_LINKED_FRAME_FORMAT_MAGIC, WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
+        WPK_FORK_LINKED_FRAME_FORMAT_VERSION, WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
+        WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT, WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
+        WPK_FORK_REQUIRED_EXPORTS, WPK_FORK_REQUIRED_IMPORTS, wpk_fork_linked_chunk_header_size,
+        wpk_fork_linked_node_header_size,
+    };
+
+    let value_types = |values: &[ProgramArtifactValueType]| {
+        Value::Array(
+            values
+                .iter()
+                .map(|value| {
+                    Value::from(match value {
+                        ProgramArtifactValueType::Pointer => "ptr",
+                        ProgramArtifactValueType::I32 => "i32",
+                    })
+                })
+                .collect(),
+        )
+    };
+
+    let imports = WPK_FORK_REQUIRED_IMPORTS
+        .iter()
+        .map(|requirement| {
+            let mut item: JsonMap = BTreeMap::new();
+            item.insert("kind".into(), json!("func"));
+            item.insert("module".into(), json!(requirement.module));
+            item.insert("name".into(), json!(requirement.name));
+            item.insert("params".into(), value_types(requirement.params));
+            item.insert("results".into(), value_types(requirement.results));
+            Value::Object(item.into_iter().collect())
+        })
+        .collect();
+
+    let exports = WPK_FORK_REQUIRED_EXPORTS
+        .iter()
+        .map(|requirement| {
+            let mut item: JsonMap = BTreeMap::new();
+            item.insert("kind".into(), json!("func"));
+            item.insert("name".into(), json!(requirement.name));
+            item.insert("params".into(), value_types(requirement.params));
+            item.insert("results".into(), value_types(requirement.results));
+            Value::Object(item.into_iter().collect())
+        })
+        .collect();
+
+    let pointer_widths = WPK_FORK_LINKED_FRAME_POINTER_WIDTHS
+        .iter()
+        .map(|pointer_width| {
+            let mut item: JsonMap = BTreeMap::new();
+            item.insert("bytes".into(), json!(pointer_width));
+            item.insert(
+                "chunk_header_size".into(),
+                json!(
+                    wpk_fork_linked_chunk_header_size(*pointer_width)
+                        .expect("supported pointer width must have a chunk header")
+                ),
+            );
+            item.insert(
+                "node_header_size".into(),
+                json!(
+                    wpk_fork_linked_node_header_size(*pointer_width)
+                        .expect("supported pointer width must have a node header")
+                ),
+            );
+            Value::Object(item.into_iter().collect())
+        })
+        .collect();
+
+    let mut descriptor: JsonMap = BTreeMap::new();
+    descriptor.insert(
+        "alignment".into(),
+        json!(WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT),
+    );
+    descriptor.insert(
+        "descriptor_size".into(),
+        json!(WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE),
+    );
+    descriptor.insert(
+        "flags".into(),
+        json!([
+            {
+                "bit": WPK_FORK_LINKED_FRAME_FLAG_ABORT_UNWINDING,
+                "name": "abort_unwinding"
+            },
+            {
+                "bit": WPK_FORK_LINKED_FRAME_FLAG_TRANSACTIONAL_NODES,
+                "name": "transactional_nodes"
+            }
+        ]),
+    );
+    descriptor.insert(
+        "magic_bytes".into(),
+        json!(WPK_FORK_LINKED_FRAME_FORMAT_MAGIC),
+    );
+    descriptor.insert("pointer_widths".into(), Value::Array(pointer_widths));
+    descriptor.insert(
+        "required_flags".into(),
+        json!(WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS),
+    );
+    descriptor.insert(
+        "section".into(),
+        json!(WPK_FORK_LINKED_FRAME_FORMAT_SECTION),
+    );
+    descriptor.insert(
+        "version".into(),
+        json!(WPK_FORK_LINKED_FRAME_FORMAT_VERSION),
+    );
+
+    let mut fork: JsonMap = BTreeMap::new();
+    fork.insert(
+        "linked_frame_descriptor".into(),
+        Value::Object(descriptor.into_iter().collect()),
+    );
+    fork.insert("required_exports".into(), Value::Array(exports));
+    fork.insert("required_imports".into(), Value::Array(imports));
+
+    let mut artifact: JsonMap = BTreeMap::new();
+    artifact.insert(
+        "fork_instrumentation".into(),
+        Value::Object(fork.into_iter().collect()),
+    );
+    Value::Object(artifact.into_iter().collect())
 }
 
 fn export_deny() -> Value {
@@ -2324,6 +2518,70 @@ mod tests {
         assert_eq!(names["LINK_MAX"], json!(0));
         assert_eq!(names["TIMESTAMP_RESOLUTION"], json!(23));
         assert_eq!(names.as_object().unwrap().len(), 24);
+    }
+
+    #[test]
+    fn program_artifact_snapshot_captures_complete_abi42_fork_contract() {
+        let artifact = program_artifact();
+        let fork = &artifact["fork_instrumentation"];
+        let descriptor = &fork["linked_frame_descriptor"];
+        assert_eq!(
+            descriptor["section"],
+            json!("kandelo.wpk_fork.linked_frames")
+        );
+        assert_eq!(descriptor["magic_bytes"], json!([75, 76, 67, 70]));
+        assert_eq!(descriptor["version"], json!(1));
+        assert_eq!(descriptor["descriptor_size"], json!(24));
+        assert_eq!(descriptor["required_flags"], json!(3));
+        assert_eq!(
+            descriptor["pointer_widths"],
+            json!([
+                {"bytes": 4, "chunk_header_size": 32, "node_header_size": 24},
+                {"bytes": 8, "chunk_header_size": 56, "node_header_size": 32}
+            ])
+        );
+
+        let imports = fork["required_imports"].as_array().unwrap();
+        assert_eq!(imports.len(), 3);
+        assert_eq!(
+            imports[0],
+            json!({
+                "kind": "func",
+                "module": "env",
+                "name": "__wpk_fork_frame_commit",
+                "params": ["ptr"],
+                "results": []
+            })
+        );
+
+        let exports = fork["required_exports"].as_array().unwrap();
+        assert_eq!(exports.len(), 7);
+        assert!(exports.iter().any(|entry| {
+            entry["name"] == json!("wpk_fork_abort_begin")
+                && entry["params"] == json!(["ptr"])
+                && entry["results"] == json!([])
+        }));
+        assert!(exports.iter().any(|entry| {
+            entry["name"] == json!("wpk_fork_state")
+                && entry["params"] == json!([])
+                && entry["results"] == json!(["i32"])
+        }));
+
+        assert_eq!(
+            custom_sections(),
+            json!(["kandelo.wpk_fork.linked_frames", "wasm-posix-abi"])
+        );
+        let rendered = render_ts_module();
+        for expected in [
+            "export const WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE = 24 as const;",
+            "name: \"__wpk_fork_frame_reserve\", params: [\"ptr\"], results: [\"ptr\"]",
+            "name: \"wpk_fork_abort_end\", params: [], results: []",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing generated TS: {expected}"
+            );
+        }
     }
 
     #[test]

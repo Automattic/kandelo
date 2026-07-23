@@ -289,9 +289,16 @@ captures:
   pthread slot page offsets, and the process-wasm thread-slot declaration
   contract.
 - `custom_sections` — names of wasm custom sections that participate in
-  the ABI (currently `wasm-posix-abi` for the per-binary version).
+  the ABI: `wasm-posix-abi` for the per-binary version and
+  `kandelo.wpk_fork.linked_frames` for the linked-continuation layout.
 - `process_expected_globals` — globals every user process instance is
   expected to expose for the host to thread through fork/exec.
+- `program_artifact` — requirements checked on instrumented user programs
+  before they can be published: the linked-frame descriptor schema, its
+  wasm32/wasm64 header sizes, the three transactional frame imports, and
+  the seven `wpk_fork_*` control exports with pointer-width-aware signatures.
+  WHY this is snapshot-owned: a program can otherwise pass kernel ABI checks
+  yet fail only when its first `fork()` reaches a newer host.
 - `kernel_exports` — every non-toolchain export in the built kernel
   `.wasm`: function signatures (`(params) -> (results)`), global
   types/mutability, memory + table entries. Toolchain-internal

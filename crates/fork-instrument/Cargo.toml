@@ -15,6 +15,8 @@ name = "fork_instrument"
 path = "src/lib.rs"
 
 [dependencies]
+wasm-posix-shared = { path = "../shared" }
+
 # walrus — typed wasm IR with validator. The primary workhorse for
 # parsing, manipulating, and emitting instrumented modules.
 walrus = "0.26"

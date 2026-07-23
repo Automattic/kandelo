@@ -63,17 +63,17 @@ pub mod names {
     pub const GLOBAL_STATE: &str = "_wpk_fork_state";
     pub const GLOBAL_BUF: &str = "_wpk_fork_buf";
 
-    pub const EXPORT_UNWIND_BEGIN: &str = "wpk_fork_unwind_begin";
-    pub const EXPORT_UNWIND_END: &str = "wpk_fork_unwind_end";
-    pub const EXPORT_REWIND_BEGIN: &str = "wpk_fork_rewind_begin";
-    pub const EXPORT_REWIND_END: &str = "wpk_fork_rewind_end";
-    pub const EXPORT_ABORT_BEGIN: &str = "wpk_fork_abort_begin";
-    pub const EXPORT_ABORT_END: &str = "wpk_fork_abort_end";
-    pub const EXPORT_STATE: &str = "wpk_fork_state";
+    pub const EXPORT_UNWIND_BEGIN: &str = wasm_posix_shared::abi::WPK_FORK_EXPORT_UNWIND_BEGIN;
+    pub const EXPORT_UNWIND_END: &str = wasm_posix_shared::abi::WPK_FORK_EXPORT_UNWIND_END;
+    pub const EXPORT_REWIND_BEGIN: &str = wasm_posix_shared::abi::WPK_FORK_EXPORT_REWIND_BEGIN;
+    pub const EXPORT_REWIND_END: &str = wasm_posix_shared::abi::WPK_FORK_EXPORT_REWIND_END;
+    pub const EXPORT_ABORT_BEGIN: &str = wasm_posix_shared::abi::WPK_FORK_EXPORT_ABORT_BEGIN;
+    pub const EXPORT_ABORT_END: &str = wasm_posix_shared::abi::WPK_FORK_EXPORT_ABORT_END;
+    pub const EXPORT_STATE: &str = wasm_posix_shared::abi::WPK_FORK_EXPORT_STATE;
 
-    pub const IMPORT_FRAME_RESERVE: &str = "__wpk_fork_frame_reserve";
-    pub const IMPORT_FRAME_COMMIT: &str = "__wpk_fork_frame_commit";
-    pub const IMPORT_FRAME_NEXT: &str = "__wpk_fork_frame_next";
+    pub const IMPORT_FRAME_RESERVE: &str = wasm_posix_shared::abi::WPK_FORK_FRAME_IMPORT_RESERVE;
+    pub const IMPORT_FRAME_COMMIT: &str = wasm_posix_shared::abi::WPK_FORK_FRAME_IMPORT_COMMIT;
+    pub const IMPORT_FRAME_NEXT: &str = wasm_posix_shared::abi::WPK_FORK_FRAME_IMPORT_NEXT;
 }
 
 /// Metadata about a saved mutable global.
@@ -283,9 +283,12 @@ fn inject_runtime_with_frame_storage(
         let reserve_ty = module.types.add(&[ptr_ty], &[ptr_ty]);
         let commit_ty = module.types.add(&[ptr_ty], &[]);
         let next_ty = module.types.add(&[ptr_ty], &[ptr_ty]);
-        let (reserve, _) = module.add_import_func("env", names::IMPORT_FRAME_RESERVE, reserve_ty);
-        let (commit, _) = module.add_import_func("env", names::IMPORT_FRAME_COMMIT, commit_ty);
-        let (next, _) = module.add_import_func("env", names::IMPORT_FRAME_NEXT, next_ty);
+        let import_module = wasm_posix_shared::abi::WPK_FORK_FRAME_IMPORT_MODULE;
+        let (reserve, _) =
+            module.add_import_func(import_module, names::IMPORT_FRAME_RESERVE, reserve_ty);
+        let (commit, _) =
+            module.add_import_func(import_module, names::IMPORT_FRAME_COMMIT, commit_ty);
+        let (next, _) = module.add_import_func(import_module, names::IMPORT_FRAME_NEXT, next_ty);
         (Some(reserve), Some(commit), Some(next))
     } else {
         (None, None, None)

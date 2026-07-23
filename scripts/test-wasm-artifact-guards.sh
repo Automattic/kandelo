@@ -386,16 +386,27 @@ PY
 
 cat >"$work/complete-fork.wat" <<'WAT'
 (module
+  (@custom "kandelo.wpk_fork.linked_frames"
+    "KLCF\01\00\18\00\04\08\03\00\20\00\00\00\18\00\00\00\10\00\00\00")
   (import "kernel" "kernel_fork" (func $kernel_fork))
-  (func (export "wpk_fork_unwind_begin"))
+  (import "env" "__wpk_fork_frame_reserve"
+    (func $frame_reserve (param i32) (result i32)))
+  (import "env" "__wpk_fork_frame_commit"
+    (func $frame_commit (param i32)))
+  (import "env" "__wpk_fork_frame_next"
+    (func $frame_next (param i32) (result i32)))
+  (func (export "wpk_fork_abort_begin") (param i32))
+  (func (export "wpk_fork_abort_end"))
+  (func (export "wpk_fork_unwind_begin") (param i32))
   (func (export "wpk_fork_unwind_end"))
-  (func (export "wpk_fork_rewind_begin"))
+  (func (export "wpk_fork_rewind_begin") (param i32))
   (func (export "wpk_fork_rewind_end"))
-  (func (export "wpk_fork_state"))
+  (func (export "wpk_fork_state") (result i32)
+    i32.const 0)
   (func (export "_start")
     call $kernel_fork))
 WAT
-wat2wasm "$work/complete-fork.wat" -o "$work/complete-fork.wasm"
+wat2wasm --enable-annotations "$work/complete-fork.wat" -o "$work/complete-fork.wasm"
 if ! wasm_has_complete_fork_instrumentation "$work/complete-fork.wasm"; then
     echo "ERROR: complete fork instrumentation was rejected" >&2
     exit 1
@@ -408,15 +419,25 @@ wasm_require_fork_instrumentation_if_needed "$work/complete-fork.wasm"
 
 cat >"$work/partial-fork.wat" <<'WAT'
 (module
+  (@custom "kandelo.wpk_fork.linked_frames"
+    "KLCF\01\00\18\00\04\08\03\00\20\00\00\00\18\00\00\00\10\00\00\00")
   (import "kernel" "kernel_fork" (func $kernel_fork))
-  (func (export "wpk_fork_unwind_begin"))
+  (import "env" "__wpk_fork_frame_reserve"
+    (func $frame_reserve (param i32) (result i32)))
+  (import "env" "__wpk_fork_frame_commit"
+    (func $frame_commit (param i32)))
+  (import "env" "__wpk_fork_frame_next"
+    (func $frame_next (param i32) (result i32)))
+  (func (export "wpk_fork_abort_begin") (param i32))
+  (func (export "wpk_fork_abort_end"))
+  (func (export "wpk_fork_unwind_begin") (param i32))
   (func (export "wpk_fork_unwind_end"))
-  (func (export "wpk_fork_rewind_begin"))
+  (func (export "wpk_fork_rewind_begin") (param i32))
   (func (export "wpk_fork_rewind_end"))
   (func (export "_start")
     call $kernel_fork))
 WAT
-wat2wasm "$work/partial-fork.wat" -o "$work/partial-fork.wasm"
+wat2wasm --enable-annotations "$work/partial-fork.wat" -o "$work/partial-fork.wasm"
 partial_fork_error="$work/partial-fork.error"
 if wasm_require_fork_instrumentation_if_needed \
     "$work/partial-fork.wasm" 2>"$partial_fork_error"; then
@@ -429,10 +450,85 @@ grep -Fqx '       missing: wpk_fork_state' "$partial_fork_error" || {
     exit 1
 }
 
+# A section name is not sufficient evidence. Publication must reject a missing
+# payload, malformed layout fields, or a partially installed transaction hook.
+sed '/(@custom/,+1d' "$work/complete-fork.wat" >"$work/missing-fork-descriptor.wat"
+wat2wasm --enable-annotations "$work/missing-fork-descriptor.wat" \
+    -o "$work/missing-fork-descriptor.wasm"
+if wasm_require_fork_instrumentation_if_needed \
+    "$work/missing-fork-descriptor.wasm" >/dev/null 2>&1; then
+    echo "ERROR: fork instrumentation without its descriptor was accepted" >&2
+    exit 1
+fi
+
+sed 's/\\03\\00\\20/\\01\\00\\20/' \
+    "$work/complete-fork.wat" >"$work/malformed-fork-descriptor.wat"
+wat2wasm --enable-annotations "$work/malformed-fork-descriptor.wat" \
+    -o "$work/malformed-fork-descriptor.wasm"
+if wasm_require_fork_instrumentation_if_needed \
+    "$work/malformed-fork-descriptor.wasm" >/dev/null 2>&1; then
+    echo "ERROR: fork instrumentation with incomplete descriptor flags was accepted" >&2
+    exit 1
+fi
+
+sed '/__wpk_fork_frame_reserve/,+1d' \
+    "$work/complete-fork.wat" >"$work/missing-frame-reserve.wat"
+wat2wasm --enable-annotations "$work/missing-frame-reserve.wat" \
+    -o "$work/missing-frame-reserve.wasm"
+missing_import_error="$work/missing-frame-reserve.error"
+if wasm_require_fork_instrumentation_if_needed \
+    "$work/missing-frame-reserve.wasm" 2>"$missing_import_error"; then
+    echo "ERROR: fork instrumentation with a partial frame transaction was accepted" >&2
+    exit 1
+fi
+grep -F 'env.__wpk_fork_frame_reserve' "$missing_import_error" >/dev/null || {
+    echo "ERROR: partial frame transaction did not report its missing reserve hook" >&2
+    cat "$missing_import_error" >&2
+    exit 1
+}
+if ! wasm_has_any_fork_instrumentation "$work/missing-frame-reserve.wasm"; then
+    echo "ERROR: partial frame transaction was mistaken for a clean input" >&2
+    exit 1
+fi
+
+cat >"$work/inert-fork.wat" <<'WAT'
+(module
+  (@custom "kandelo.wpk_fork.linked_frames"
+    "KLCF\01\00\18\00\04\08\03\00\20\00\00\00\18\00\00\00\10\00\00\00")
+  (func (export "wpk_fork_abort_begin") (param i32))
+  (func (export "wpk_fork_abort_end"))
+  (func (export "wpk_fork_unwind_begin") (param i32))
+  (func (export "wpk_fork_unwind_end"))
+  (func (export "wpk_fork_rewind_begin") (param i32))
+  (func (export "wpk_fork_rewind_end"))
+  (func (export "wpk_fork_state") (result i32)
+    i32.const 0)
+  (func (export "_start")))
+WAT
+wat2wasm --enable-annotations "$work/inert-fork.wat" -o "$work/inert-fork.wasm"
+wasm_require_fork_instrumentation_if_needed "$work/inert-fork.wasm"
+if wasm_require_no_fork_instrumentation "$work/inert-fork.wasm" >/dev/null 2>&1; then
+    echo "ERROR: disabled fork policy accepted an inert instrumented runtime" >&2
+    exit 1
+fi
+
+cat >"$work/wasm64-linked-frame-descriptor.wat" <<'WAT'
+(module
+  (@custom "kandelo.wpk_fork.linked_frames"
+    "KLCF\01\00\18\00\08\08\03\00\38\00\00\00\20\00\00\00\10\00\00\00"))
+WAT
+wat2wasm --enable-annotations "$work/wasm64-linked-frame-descriptor.wat" \
+    -o "$work/wasm64-linked-frame-descriptor.wasm"
+[ "$(wasm_linked_frame_descriptor_pointer_width \
+    "$work/wasm64-linked-frame-descriptor.wasm")" = 8 ] || {
+    echo "ERROR: valid wasm64 linked-frame descriptor was rejected" >&2
+    exit 1
+}
+
 mkdir "$work/counting-bin"
 cat >"$work/counting-bin/wasm-objdump" <<'SH'
 #!/usr/bin/env bash
-printf 'decode\n' >> "$WASM_OBJDUMP_COUNT_FILE"
+printf '%s\n' "${1:-}" >> "$WASM_OBJDUMP_COUNT_FILE"
 exec "$REAL_WASM_OBJDUMP" "$@"
 SH
 chmod +x "$work/counting-bin/wasm-objdump"
@@ -444,8 +540,11 @@ count_file="$work/wasm-objdump.count"
     export WASM_OBJDUMP_COUNT_FILE="$count_file"
     wasm_require_fork_instrumentation_if_needed "$work/complete-fork.wasm"
 )
-[ "$(wc -l <"$count_file" | tr -d ' ')" = 1 ] || {
-    echo "ERROR: complete fork validation decoded the Wasm more than once" >&2
+[ "$(grep -c '^-x$' "$count_file")" = 1 ] &&
+    [ "$(grep -c '^-s$' "$count_file")" = 1 ] &&
+    [ "$(wc -l <"$count_file" | tr -d ' ')" = 2 ] || {
+    echo "ERROR: fork validation did not use one structure pass and one descriptor pass" >&2
+    cat "$count_file" >&2
     exit 1
 }
 

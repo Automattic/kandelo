@@ -1279,6 +1279,144 @@ pub mod abi {
     /// the host can thread channel / TLS state through fork and exec.
     pub const PROCESS_EXPECTED_GLOBALS: &[&str] = &["__channel_base", "__tls_base"];
 
+    /// Pointer-sensitive value types used by program-artifact function
+    /// requirements. `Pointer` resolves to i32 for wasm32 artifacts and i64
+    /// for wasm64 artifacts.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ProgramArtifactValueType {
+        Pointer,
+        I32,
+    }
+
+    /// One required function import in an instrumented program artifact.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ProgramArtifactImport {
+        pub module: &'static str,
+        pub name: &'static str,
+        pub params: &'static [ProgramArtifactValueType],
+        pub results: &'static [ProgramArtifactValueType],
+    }
+
+    /// One required function export in an instrumented program artifact.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ProgramArtifactExport {
+        pub name: &'static str,
+        pub params: &'static [ProgramArtifactValueType],
+        pub results: &'static [ProgramArtifactValueType],
+    }
+
+    /// ABI 42 linked-continuation metadata and function surface.
+    ///
+    /// WHY this lives in `shared::abi`: these names and descriptor fields are
+    /// consumed before a program starts, by the instrumenter, host, package
+    /// publisher, and Homebrew validator. Keeping the publication contract in
+    /// Rust-owned ABI metadata makes `dump-abi` record drift instead of
+    /// allowing a newly instrumented program to publish successfully and fail
+    /// only when its first `fork()` reaches the host.
+    pub const WPK_FORK_LINKED_FRAME_FORMAT_SECTION: &str = "kandelo.wpk_fork.linked_frames";
+    pub const WPK_FORK_LINKED_FRAME_FORMAT_MAGIC: [u8; 4] = *b"KLCF";
+    pub const WPK_FORK_LINKED_FRAME_FORMAT_VERSION: u16 = 1;
+    pub const WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE: u16 = 24;
+    pub const WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT: u8 = 8;
+    pub const WPK_FORK_LINKED_FRAME_FLAG_TRANSACTIONAL_NODES: u16 = 1 << 0;
+    pub const WPK_FORK_LINKED_FRAME_FLAG_ABORT_UNWINDING: u16 = 1 << 1;
+    pub const WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS: u16 =
+        WPK_FORK_LINKED_FRAME_FLAG_TRANSACTIONAL_NODES | WPK_FORK_LINKED_FRAME_FLAG_ABORT_UNWINDING;
+    pub const WPK_FORK_LINKED_FRAME_POINTER_WIDTHS: &[u8] = &[4, 8];
+
+    pub const WPK_FORK_FRAME_IMPORT_MODULE: &str = "env";
+    pub const WPK_FORK_FRAME_IMPORT_RESERVE: &str = "__wpk_fork_frame_reserve";
+    pub const WPK_FORK_FRAME_IMPORT_COMMIT: &str = "__wpk_fork_frame_commit";
+    pub const WPK_FORK_FRAME_IMPORT_NEXT: &str = "__wpk_fork_frame_next";
+
+    pub const WPK_FORK_EXPORT_ABORT_BEGIN: &str = "wpk_fork_abort_begin";
+    pub const WPK_FORK_EXPORT_ABORT_END: &str = "wpk_fork_abort_end";
+    pub const WPK_FORK_EXPORT_REWIND_BEGIN: &str = "wpk_fork_rewind_begin";
+    pub const WPK_FORK_EXPORT_REWIND_END: &str = "wpk_fork_rewind_end";
+    pub const WPK_FORK_EXPORT_STATE: &str = "wpk_fork_state";
+    pub const WPK_FORK_EXPORT_UNWIND_BEGIN: &str = "wpk_fork_unwind_begin";
+    pub const WPK_FORK_EXPORT_UNWIND_END: &str = "wpk_fork_unwind_end";
+
+    use ProgramArtifactValueType::{I32, Pointer};
+
+    pub const WPK_FORK_REQUIRED_IMPORTS: &[ProgramArtifactImport] = &[
+        ProgramArtifactImport {
+            module: WPK_FORK_FRAME_IMPORT_MODULE,
+            name: WPK_FORK_FRAME_IMPORT_COMMIT,
+            params: &[Pointer],
+            results: &[],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_FRAME_IMPORT_MODULE,
+            name: WPK_FORK_FRAME_IMPORT_NEXT,
+            params: &[Pointer],
+            results: &[Pointer],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_FRAME_IMPORT_MODULE,
+            name: WPK_FORK_FRAME_IMPORT_RESERVE,
+            params: &[Pointer],
+            results: &[Pointer],
+        },
+    ];
+
+    pub const WPK_FORK_REQUIRED_EXPORTS: &[ProgramArtifactExport] = &[
+        ProgramArtifactExport {
+            name: WPK_FORK_EXPORT_ABORT_BEGIN,
+            params: &[Pointer],
+            results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXPORT_ABORT_END,
+            params: &[],
+            results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXPORT_REWIND_BEGIN,
+            params: &[Pointer],
+            results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXPORT_REWIND_END,
+            params: &[],
+            results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXPORT_STATE,
+            params: &[],
+            results: &[I32],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXPORT_UNWIND_BEGIN,
+            params: &[Pointer],
+            results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXPORT_UNWIND_END,
+            params: &[],
+            results: &[],
+        },
+    ];
+
+    /// Return the version-1 linked-chunk header size for one pointer width.
+    pub const fn wpk_fork_linked_chunk_header_size(pointer_width: u8) -> Option<u32> {
+        match pointer_width {
+            4 => Some(32),
+            8 => Some(56),
+            _ => None,
+        }
+    }
+
+    /// Return the version-1 linked-frame-node header size for one pointer
+    /// width, including the required eight-byte alignment.
+    pub const fn wpk_fork_linked_node_header_size(pointer_width: u8) -> Option<u32> {
+        match pointer_width {
+            4 => Some(24),
+            8 => Some(32),
+            _ => None,
+        }
+    }
+
     /// Patterns (applied as prefix match) for kernel-wasm exports that
     /// are implementation details of the toolchain, not part of the
     /// host/kernel ABI. The snapshot excludes any export whose name
@@ -1864,7 +2002,11 @@ pub mod abi {
             HOST_ADAPTER_MANIFEST, HOST_ADAPTER_MANIFEST_MAGIC, HOST_ADAPTER_MANIFEST_SIZE,
             HOST_ADAPTER_MANIFEST_VERSION, HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS,
             HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS, HOST_ADAPTER_REQUIRED_WORKER_FEATURES,
-            HOST_ADAPTER_VERSION, HOST_ADAPTER_WORKER_FEATURES, extended_syscalls::SYSCALLS,
+            HOST_ADAPTER_VERSION, HOST_ADAPTER_WORKER_FEATURES,
+            WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE, WPK_FORK_LINKED_FRAME_FORMAT_MAGIC,
+            WPK_FORK_LINKED_FRAME_POINTER_WIDTHS, WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
+            WPK_FORK_REQUIRED_EXPORTS, WPK_FORK_REQUIRED_IMPORTS, extended_syscalls::SYSCALLS,
+            wpk_fork_linked_chunk_header_size, wpk_fork_linked_node_header_size,
         };
         use crate::Syscall;
 
@@ -1952,6 +2094,41 @@ pub mod abi {
                 required_worker_features,
                 HOST_ADAPTER_REQUIRED_WORKER_FEATURES
             );
+        }
+
+        #[test]
+        fn linked_fork_program_artifact_contract_is_complete_and_sorted() {
+            assert_eq!(WPK_FORK_LINKED_FRAME_FORMAT_MAGIC, *b"KLCF");
+            assert_eq!(WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE, 24);
+            assert_eq!(WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS, 0b11);
+            assert_eq!(WPK_FORK_LINKED_FRAME_POINTER_WIDTHS, &[4, 8]);
+            assert_eq!(wpk_fork_linked_chunk_header_size(4), Some(32));
+            assert_eq!(wpk_fork_linked_node_header_size(4), Some(24));
+            assert_eq!(wpk_fork_linked_chunk_header_size(8), Some(56));
+            assert_eq!(wpk_fork_linked_node_header_size(8), Some(32));
+            assert_eq!(wpk_fork_linked_chunk_header_size(16), None);
+            assert_eq!(wpk_fork_linked_node_header_size(16), None);
+
+            assert_eq!(WPK_FORK_REQUIRED_IMPORTS.len(), 3);
+            let mut previous_import = ("", "");
+            for requirement in WPK_FORK_REQUIRED_IMPORTS {
+                let current = (requirement.module, requirement.name);
+                assert!(
+                    previous_import < current,
+                    "fork imports must be sorted and unique"
+                );
+                previous_import = current;
+            }
+
+            assert_eq!(WPK_FORK_REQUIRED_EXPORTS.len(), 7);
+            let mut previous_export = "";
+            for requirement in WPK_FORK_REQUIRED_EXPORTS {
+                assert!(
+                    previous_export < requirement.name,
+                    "fork exports must be sorted and unique"
+                );
+                previous_export = requirement.name;
+            }
         }
 
         fn assert_sorted_unique(items: &[&str]) {
