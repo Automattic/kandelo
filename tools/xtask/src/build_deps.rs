@@ -51,17 +51,25 @@ use crate::host_tool_probe::{self, ProbeFailure};
 use crate::index_toml::{self, EntryStatus};
 use crate::pkg_manifest::{
     BinarySource, BuildToml, DepRef, DepsManifest, ForkInstrumentationPolicy, GitBuildInput,
-    HostTool, ManifestKind, TargetArch, remove_cache_provenance, validate_cache_provenance,
-    write_cache_provenance,
+    HostTool, ManifestKind, TargetArch, file_paths_conflict, remove_cache_provenance,
+    validate_cache_provenance, write_cache_provenance,
 };
 use crate::remote_fetch;
 use crate::repo_root;
 use crate::source_extract;
 
-/// Root directory of the per-user lib cache. Honors `XDG_CACHE_HOME`,
-/// else `$HOME/.cache`. Matches the pattern other tools in the repo use.
+/// Root directory of the package cache. `WASM_POSIX_BINARY_CACHE_ROOT` is the
+/// explicit cross-language override shared with the TypeScript resolver.
+/// Otherwise honors `XDG_CACHE_HOME`, then `$HOME/.cache`.
 pub fn default_cache_root() -> PathBuf {
-    if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME") {
+    if let Some(explicit) = std::env::var_os("WASM_POSIX_BINARY_CACHE_ROOT") {
+        let explicit = PathBuf::from(explicit);
+        if explicit.is_absolute() {
+            explicit
+        } else {
+            repo_root().join(explicit)
+        }
+    } else if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME") {
         PathBuf::from(xdg).join("kandelo")
     } else if let Some(home) = std::env::var_os("HOME") {
         PathBuf::from(home).join(".cache").join("kandelo")
@@ -70,6 +78,19 @@ pub fn default_cache_root() -> PathBuf {
         // avoids panicking on exotic environments.
         PathBuf::from("/tmp/kandelo")
     }
+}
+
+#[cfg(unix)]
+fn create_private_transaction_directory(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    let mut builder = std::fs::DirBuilder::new();
+    builder.mode(0o700);
+    builder.create(path)
+}
+
+#[cfg(not(unix))]
+fn create_private_transaction_directory(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(path)
 }
 
 /// Registry search path. Later entries have lower priority.
@@ -85,7 +106,7 @@ impl Registry {
             let roots = env
                 .split(':')
                 .filter(|s| !s.is_empty())
-                .map(|s| expand_tilde(s))
+                .map(|s| resolve_registry_root(repo, s))
                 .collect();
             return Self { roots };
         }
@@ -149,14 +170,909 @@ impl Registry {
                 if !toml.is_file() {
                     continue;
                 }
-                let m =
-                    DepsManifest::load(&toml).map_err(|e| format!("{}: {e}", toml.display()))?;
+                // Match `Registry::load`: build.toml owns the package revision
+                // used by cache-key computation, and a package.pr.toml may
+                // replace only binary fetch metadata. Using the base manifest
+                // parser here would silently project revision 1 identities
+                // for packages whose published revision is newer.
+                let m = DepsManifest::load_with_overlay(&path)
+                    .map_err(|e| format!("{}: {e}", toml.display()))?;
+                let directory_name =
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or_else(|| {
+                            format!(
+                                "registry package directory is not valid UTF-8: {}",
+                                path.display()
+                            )
+                        })?;
+                if m.name != directory_name {
+                    return Err(format!(
+                        "{}: package name {:?} does not match registry directory {:?}",
+                        toml.display(),
+                        m.name,
+                        directory_name
+                    ));
+                }
                 // First-root-wins, mirrors `find()`.
                 out.entry(m.name.clone()).or_insert(m);
             }
         }
         Ok(out.into_iter().collect())
     }
+}
+
+const PROGRAM_PACKAGE_INDEX_FORMAT: &str = "kandelo-program-packages-v2";
+const PROGRAM_PACKAGE_CONTEXT_ARCHES: [TargetArch; 2] = [TargetArch::Wasm32, TargetArch::Wasm64];
+
+/// Runtime-facing projection of the program-package contract.
+///
+/// `package.toml` remains the only authored source. Rust's complete manifest
+/// parser emits this deliberately small, versioned index so Node, browser
+/// tooling, shell scripts, external registry roots, and the standalone host
+/// package all consume exactly the same closure and artifact policy without
+/// growing independent TOML parsers.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProgramPackageIndex {
+    format: &'static str,
+    identities: BTreeMap<String, ProgramPackageIdentity>,
+    packages: BTreeMap<String, ProgramPackageProjection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProgramPackageIdentity {
+    manifest_sha256: String,
+    cache_keys: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProgramPackageProjection {
+    manifest_sha256: String,
+    arches: Vec<String>,
+    cache_keys: BTreeMap<String, String>,
+    dependency_closures: BTreeMap<String, Vec<ProgramDependencyIdentity>>,
+    members: Vec<ProgramPackageProjectionMember>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProgramDependencyIdentity {
+    package_name: String,
+    manifest_sha256: String,
+    cache_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProgramPackageProjectionMember {
+    kind: &'static str,
+    source_artifact: String,
+    mirror_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fork_instrumentation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    guest_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<u32>,
+}
+
+fn package_manifest_sha256(manifest_path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(manifest_path).map_err(|e| {
+        format!(
+            "read {} for package identity digest: {e}",
+            manifest_path.display()
+        )
+    })?;
+    Ok(hex(&Sha256::digest(bytes)))
+}
+
+fn package_context_cache_keys(
+    manifest: &DepsManifest,
+    registry: &Registry,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut cache_keys = BTreeMap::new();
+    let mut memo = BTreeMap::new();
+    for arch in PROGRAM_PACKAGE_CONTEXT_ARCHES {
+        let cache_key = compute_sha(
+            manifest,
+            registry,
+            arch,
+            current_abi_version(),
+            &mut memo,
+            &mut Vec::new(),
+        )?;
+        cache_keys.insert(arch.as_str().to_string(), hex(&cache_key));
+    }
+    Ok(cache_keys)
+}
+
+fn collect_program_dependency_identities(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    identities: &mut BTreeMap<String, ProgramDependencyIdentity>,
+    visiting: &mut Vec<String>,
+    memo: &mut BTreeMap<String, [u8; 32]>,
+) -> Result<(), String> {
+    if visiting.iter().any(|name| name == &target.name) {
+        return Err(format!(
+            "cycle in projected dependency graph: {} -> {}",
+            visiting.join(" -> "),
+            target.name
+        ));
+    }
+    visiting.push(target.name.clone());
+
+    for dependency_ref in &target.depends_on {
+        if visiting.iter().any(|name| name == &dependency_ref.name) {
+            return Err(format!(
+                "cycle in projected dependency graph: {} -> {}",
+                visiting.join(" -> "),
+                dependency_ref.name
+            ));
+        }
+        let manifest_path = registry.find(&dependency_ref.name).ok_or_else(|| {
+            format!(
+                "{} depends on {}@{}, but that package is absent from the selected registry roots",
+                target.spec(),
+                dependency_ref.name,
+                dependency_ref.version
+            )
+        })?;
+        let dependency = registry.load(&dependency_ref.name)?;
+        if dependency.version != dependency_ref.version {
+            return Err(format!(
+                "{} depends on {}@{}, but registry has {}",
+                target.spec(),
+                dependency_ref.name,
+                dependency_ref.version,
+                dependency.spec()
+            ));
+        }
+        let cache_key = hex(&compute_sha(
+            &dependency,
+            registry,
+            arch,
+            current_abi_version(),
+            memo,
+            &mut Vec::new(),
+        )?);
+        let identity = ProgramDependencyIdentity {
+            package_name: dependency.name.clone(),
+            manifest_sha256: package_manifest_sha256(&manifest_path)?,
+            cache_key,
+        };
+        let should_recurse = match identities.get(&dependency.name) {
+            Some(previous) if previous != &identity => {
+                return Err(format!(
+                    "{} resolves dependency {:?} to conflicting identities while projecting {}",
+                    target.spec(),
+                    dependency.name,
+                    arch.as_str()
+                ));
+            }
+            Some(_) => false,
+            None => {
+                identities.insert(dependency.name.clone(), identity);
+                true
+            }
+        };
+        if should_recurse {
+            collect_program_dependency_identities(
+                &dependency,
+                registry,
+                arch,
+                identities,
+                visiting,
+                memo,
+            )?;
+        }
+    }
+
+    visiting.pop();
+    Ok(())
+}
+
+fn program_dependency_closure(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+) -> Result<Vec<ProgramDependencyIdentity>, String> {
+    let mut identities = BTreeMap::new();
+    collect_program_dependency_identities(
+        target,
+        registry,
+        arch,
+        &mut identities,
+        &mut Vec::new(),
+        &mut BTreeMap::new(),
+    )?;
+    Ok(identities.into_values().collect())
+}
+
+fn program_package_index_for_root_once(
+    root: &Path,
+    registry: &Registry,
+) -> Result<ProgramPackageIndex, String> {
+    let canonical_root = std::fs::canonicalize(root)
+        .map_err(|e| format!("resolve program registry root {}: {e}", root.display()))?;
+    let mut first_existing_root = None;
+    for candidate in &registry.roots {
+        match std::fs::metadata(candidate) {
+            Ok(metadata) => {
+                first_existing_root = Some((candidate, metadata));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "inspect configured program registry root {}: {error}",
+                    candidate.display()
+                ));
+            }
+        }
+    }
+    let (first_existing_root, first_existing_metadata) = first_existing_root.ok_or_else(|| {
+        format!(
+            "{}: no configured program registry root exists",
+            root.display()
+        )
+    })?;
+    if !first_existing_metadata.is_dir() {
+        return Err(format!(
+            "configured program registry root is not a directory: {}",
+            first_existing_root.display()
+        ));
+    }
+    let canonical_first = std::fs::canonicalize(first_existing_root).map_err(|e| {
+        format!(
+            "resolve configured program registry root {}: {e}",
+            first_existing_root.display()
+        )
+    })?;
+    if canonical_root != canonical_first {
+        return Err(format!(
+            "{} is not the highest-priority existing configured registry root {}; generate each index with its owning root first in the ordered registry context",
+            root.display(),
+            first_existing_root.display(),
+        ));
+    }
+
+    // The first generated index in an ordered registry path is the
+    // authoritative view of that complete first-hit context. Include both
+    // identities and program projections from lower roots: a dependency-only
+    // override can change a lower program's cache key without changing that
+    // program's physical manifest or members. Lower suffix indexes remain
+    // self-contained fallbacks when their root becomes the first existing one.
+    let selected_manifests = registry.walk_all()?;
+    let mut identities = BTreeMap::new();
+    for (selected_name, manifest) in &selected_manifests {
+        if &manifest.name != selected_name {
+            return Err(format!(
+                "{}: selected registry key {:?} does not match manifest package name {:?}",
+                root.display(),
+                selected_name,
+                manifest.name
+            ));
+        }
+        let manifest_path = manifest.dir.join("package.toml");
+        let identity = ProgramPackageIdentity {
+            manifest_sha256: package_manifest_sha256(&manifest_path)?,
+            cache_keys: package_context_cache_keys(&manifest, registry)?,
+        };
+        if identities.insert(manifest.name.clone(), identity).is_some() {
+            return Err(format!(
+                "{}: duplicate selected package identity {:?}",
+                root.display(),
+                manifest.name
+            ));
+        }
+    }
+
+    let mut packages = BTreeMap::new();
+    let mut resolver_paths: Vec<(String, String, String)> = Vec::new();
+    for (selected_name, manifest) in &selected_manifests {
+        let directory_name = manifest
+            .dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                format!(
+                    "program registry package directory is not valid UTF-8: {}",
+                    manifest.dir.display()
+                )
+            })?;
+        let manifest_path = manifest.dir.join("package.toml");
+        if manifest.name != directory_name || &manifest.name != selected_name {
+            return Err(format!(
+                "{}: package name {:?} does not match registry directory {:?}",
+                manifest_path.display(),
+                manifest.name,
+                directory_name
+            ));
+        }
+        let manifest_sha256 = package_manifest_sha256(&manifest_path)?;
+        let identity = identities.get(&manifest.name).ok_or_else(|| {
+            format!(
+                "{}: package {:?} is not selected by the configured ordered registry roots; generate this index with its owning root first",
+                manifest_path.display(),
+                manifest.name
+            )
+        })?;
+        if identity.manifest_sha256 != manifest_sha256 {
+            return Err(format!(
+                "{}: selected package {:?} does not match its authoritative first-hit identity",
+                manifest_path.display(),
+                manifest.name,
+            ));
+        }
+        if !matches!(manifest.kind, ManifestKind::Program) {
+            continue;
+        }
+        // The kernel and userspace adapter are published as root boot
+        // artifacts (`binaries/kernel.wasm` and `binaries/userspace.wasm`),
+        // not as architecture-scoped guest programs. They therefore do not
+        // belong in the program-mirror projection.
+        if manifest.uses_root_binary_mirror() {
+            continue;
+        }
+
+        let mut members = Vec::new();
+        let mut source_artifacts = BTreeSet::new();
+        let mut mirror_paths = BTreeSet::new();
+        for output in &manifest.program_outputs {
+            let mirror_path = portable_projection_path(
+                &manifest,
+                &manifest.output_dest_rel_for(output),
+                "output mirror path",
+            )?;
+            insert_projection_identity(
+                &manifest,
+                &output.wasm,
+                &mirror_path,
+                &mut source_artifacts,
+                &mut mirror_paths,
+            )?;
+            members.push(ProgramPackageProjectionMember {
+                kind: "output",
+                source_artifact: output.wasm.clone(),
+                mirror_path,
+                output_name: Some(output.name.clone()),
+                fork_instrumentation: Some(output.fork_instrumentation.as_str().to_string()),
+                guest_path: None,
+                mode: None,
+            });
+        }
+        for runtime_file in &manifest.runtime_files {
+            let mirror_path = portable_projection_path(
+                &manifest,
+                &manifest.runtime_file_dest_rel_for(runtime_file),
+                "runtime-file mirror path",
+            )?;
+            insert_projection_identity(
+                &manifest,
+                &runtime_file.artifact,
+                &mirror_path,
+                &mut source_artifacts,
+                &mut mirror_paths,
+            )?;
+            members.push(ProgramPackageProjectionMember {
+                kind: "runtime-file",
+                source_artifact: runtime_file.artifact.clone(),
+                mirror_path,
+                output_name: None,
+                fork_instrumentation: None,
+                guest_path: Some(runtime_file.guest_path.clone()),
+                mode: Some(runtime_file.mode),
+            });
+        }
+        if members.is_empty() {
+            return Err(format!(
+                "{}: program package has no projected members",
+                manifest.spec()
+            ));
+        }
+        if members.len() != manifest.program_closure_member_count() {
+            return Err(format!(
+                "{}: projected member count does not match the manifest closure",
+                manifest.spec()
+            ));
+        }
+
+        let mut cache_keys = BTreeMap::new();
+        let mut dependency_closures = BTreeMap::new();
+        for arch in &manifest.target_arches {
+            cache_keys.insert(
+                arch.as_str().to_string(),
+                identity.cache_keys[arch.as_str()].clone(),
+            );
+            dependency_closures.insert(
+                arch.as_str().to_string(),
+                program_dependency_closure(&manifest, registry, *arch)?,
+            );
+        }
+        let projection = ProgramPackageProjection {
+            manifest_sha256,
+            arches: manifest
+                .target_arches
+                .iter()
+                .map(|arch| arch.as_str().to_string())
+                .collect(),
+            cache_keys,
+            dependency_closures,
+            members,
+        };
+        for arch in &projection.arches {
+            for member in &projection.members {
+                for (previous_arch, previous_path, previous_package) in &resolver_paths {
+                    if previous_arch == arch
+                        && file_paths_conflict(previous_path, &member.mirror_path)
+                    {
+                        return Err(format!(
+                            "{}: resolver paths programs/{}/{} and programs/{}/{} conflict between packages {:?} and {:?}",
+                            root.display(),
+                            previous_arch,
+                            previous_path,
+                            arch,
+                            member.mirror_path,
+                            previous_package,
+                            manifest.name
+                        ));
+                    }
+                }
+                resolver_paths.push((
+                    arch.clone(),
+                    member.mirror_path.clone(),
+                    manifest.name.clone(),
+                ));
+            }
+        }
+        if packages.insert(manifest.name.clone(), projection).is_some() {
+            return Err(format!(
+                "{}: duplicate program package name {:?}",
+                root.display(),
+                manifest.name
+            ));
+        }
+    }
+
+    Ok(ProgramPackageIndex {
+        format: PROGRAM_PACKAGE_INDEX_FORMAT,
+        identities,
+        packages,
+    })
+}
+
+fn program_package_index_for_root(
+    root: &Path,
+    registry: &Registry,
+) -> Result<ProgramPackageIndex, String> {
+    let mut after_first = || {};
+    program_package_index_for_root_with(root, registry, &mut after_first)
+}
+
+fn program_package_index_for_root_with<F>(
+    root: &Path,
+    registry: &Registry,
+    after_first: &mut F,
+) -> Result<ProgramPackageIndex, String>
+where
+    F: FnMut(),
+{
+    let first = program_package_index_for_root_once(root, registry)?;
+    let first_snapshot =
+        serde_json::to_vec(&first).map_err(|e| format!("snapshot program package index: {e}"))?;
+    after_first();
+    let second = program_package_index_for_root_once(root, registry)?;
+    let second_snapshot = serde_json::to_vec(&second)
+        .map_err(|e| format!("resnapshot program package index: {e}"))?;
+    if first_snapshot != second_snapshot {
+        return Err(format!(
+            "{}: package registry changed while generating program-packages.json; retry from one stable registry snapshot",
+            root.display(),
+        ));
+    }
+    Ok(second)
+}
+
+fn portable_projection_path(
+    manifest: &DepsManifest,
+    path: &Path,
+    field: &str,
+) -> Result<String, String> {
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(value) => {
+                let value = value.to_str().ok_or_else(|| {
+                    format!(
+                        "{}: {field} is not valid UTF-8: {}",
+                        manifest.spec(),
+                        path.display()
+                    )
+                })?;
+                components.push(value);
+            }
+            _ => {
+                return Err(format!(
+                    "{}: {field} must be a normalized relative path: {}",
+                    manifest.spec(),
+                    path.display()
+                ));
+            }
+        }
+    }
+    if components.is_empty() {
+        return Err(format!("{}: {field} may not be empty", manifest.spec()));
+    }
+    Ok(components.join("/"))
+}
+
+fn insert_projection_identity(
+    manifest: &DepsManifest,
+    source_artifact: &str,
+    mirror_path: &str,
+    source_artifacts: &mut BTreeSet<String>,
+    mirror_paths: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    if !source_artifacts.insert(source_artifact.to_string()) {
+        return Err(format!(
+            "{}: declared source artifact {:?} appears more than once in the program closure",
+            manifest.spec(),
+            source_artifact
+        ));
+    }
+    if !mirror_paths.insert(mirror_path.to_string()) {
+        return Err(format!(
+            "{}: resolver mirror path {:?} appears more than once in the program closure",
+            manifest.spec(),
+            mirror_path
+        ));
+    }
+    Ok(())
+}
+
+fn serialize_program_package_index(root: &Path, registry: &Registry) -> Result<String, String> {
+    let mut json = serde_json::to_string_pretty(&program_package_index_for_root(root, registry)?)
+        .map_err(|e| format!("serialize program package index: {e}"))?;
+    json.push('\n');
+    Ok(json)
+}
+
+fn cmd_program_package_index(
+    root: &Path,
+    output: &Path,
+    registry: &Registry,
+) -> Result<(), String> {
+    let json = serialize_program_package_index(root, registry)?;
+    let mut refresh_source =
+        || serialize_program_package_index(root, registry).map(String::into_bytes);
+    let mut replace = |from: &Path, to: &Path| std::fs::rename(from, to);
+    write_program_package_index_atomically_with_source(
+        output,
+        json.as_bytes(),
+        &mut refresh_source,
+        &mut replace,
+    )
+}
+
+#[cfg(test)]
+fn write_program_package_index_atomically(output: &Path, bytes: &[u8]) -> Result<(), String> {
+    let expected = bytes.to_vec();
+    let mut refresh_source = || Ok(expected.clone());
+    let mut replace = |from: &Path, to: &Path| std::fs::rename(from, to);
+    write_program_package_index_atomically_with_source(
+        output,
+        bytes,
+        &mut refresh_source,
+        &mut replace,
+    )
+}
+
+#[cfg(test)]
+fn write_program_package_index_atomically_with<F>(
+    output: &Path,
+    bytes: &[u8],
+    replace: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(&Path, &Path) -> std::io::Result<()>,
+{
+    let expected = bytes.to_vec();
+    let mut refresh_source = || Ok(expected.clone());
+    write_program_package_index_atomically_with_source(output, bytes, &mut refresh_source, replace)
+}
+
+fn write_program_package_index_atomically_with_source<F, R>(
+    output: &Path,
+    bytes: &[u8],
+    refresh_source: &mut R,
+    replace: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(&Path, &Path) -> std::io::Result<()>,
+    R: FnMut() -> Result<Vec<u8>, String>,
+{
+    let parent = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let parent = canonical_real_directory(parent, "program package index parent")?;
+    let file_name = output.file_name().ok_or_else(|| {
+        format!(
+            "program package index path has no file name: {}",
+            output.display()
+        )
+    })?;
+    let output = parent.join(file_name);
+    let target_snapshot = inspect_program_package_index_target(&output)?;
+    let existing_permissions = target_snapshot.permissions.clone();
+    let (transaction_root, stage, mut stage_file, stage_identity) =
+        reserve_program_package_index_transaction(&parent, file_name)?;
+
+    let publish = (|| {
+        std::io::Write::write_all(&mut stage_file, bytes).map_err(|e| {
+            format!(
+                "write staged program package index {}: {e}",
+                stage.display()
+            )
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let permissions = existing_permissions
+                .clone()
+                .unwrap_or_else(|| std::fs::Permissions::from_mode(0o644));
+            std::fs::set_permissions(&stage, permissions).map_err(|e| {
+                format!(
+                    "set staged program package index permissions {}: {e}",
+                    stage.display()
+                )
+            })?;
+        }
+        #[cfg(not(unix))]
+        if let Some(permissions) = existing_permissions.clone() {
+            std::fs::set_permissions(&stage, permissions).map_err(|e| {
+                format!(
+                    "set staged program package index permissions {}: {e}",
+                    stage.display()
+                )
+            })?;
+        }
+        stage_file
+            .sync_all()
+            .map_err(|e| format!("sync staged program package index {}: {e}", stage.display()))?;
+        drop(stage_file);
+
+        // Recompute the complete registry projection at the publication
+        // boundary. A writer that staged an older registry snapshot must not
+        // overwrite an index generated after the recipe graph changed.
+        let refreshed = refresh_source()
+            .map_err(|e| format!("refresh program package index before publication: {e}"))?;
+        if refreshed != bytes {
+            return Err(
+                "package registry changed after the program package index was staged; retry"
+                    .to_string(),
+            );
+        }
+
+        // Refuse when another writer changed the old target after our initial
+        // snapshot. This is a cooperative compare-and-swap boundary: writers
+        // over unchanged source stage byte-identical content, while stale
+        // writers fail either this check or the source refresh above.
+        validate_program_package_index_target_snapshot(&output, &target_snapshot)?;
+        replace(&stage, &output).map_err(|e| {
+            format!(
+                "atomically publish program package index {} -> {}: {e}",
+                stage.display(),
+                output.display()
+            )
+        })?;
+
+        #[cfg(unix)]
+        std::fs::File::open(&parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|e| {
+                format!(
+                    "sync program package index parent {}: {e}",
+                    parent.display()
+                )
+            })?;
+        std::fs::remove_dir(&transaction_root).map_err(|e| {
+            format!(
+                "remove empty program package index transaction {}: {e}",
+                transaction_root.display()
+            )
+        })
+    })();
+
+    if let Err(error) = publish {
+        let cleanup =
+            cleanup_program_package_index_transaction(&transaction_root, &stage, &stage_identity);
+        return match cleanup {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(format!(
+                "{error}; additionally failed to clean private index transaction: {cleanup_error}"
+            )),
+        };
+    }
+    Ok(())
+}
+
+struct ProgramPackageIndexTargetSnapshot {
+    entry: Option<LocalMirrorEntrySnapshot>,
+    permissions: Option<std::fs::Permissions>,
+}
+
+fn inspect_program_package_index_target(
+    output: &Path,
+) -> Result<ProgramPackageIndexTargetSnapshot, String> {
+    match std::fs::symlink_metadata(output) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => Err(format!(
+            "refusing to replace non-regular program package index: {}",
+            output.display()
+        )),
+        Ok(metadata) => {
+            let identity = package_mirror_identity(&metadata)?;
+            let entry = inspect_local_mirror_entry(output)?;
+            if entry.identity != identity
+                || !matches!(&entry.kind, LocalMirrorEntryKind::Regular { .. })
+            {
+                return Err(format!(
+                    "program package index changed while it was inspected: {}",
+                    output.display()
+                ));
+            }
+            Ok(ProgramPackageIndexTargetSnapshot {
+                entry: Some(entry),
+                permissions: Some(metadata.permissions()),
+            })
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(ProgramPackageIndexTargetSnapshot {
+                entry: None,
+                permissions: None,
+            })
+        }
+        Err(e) => Err(format!(
+            "inspect program package index {}: {e}",
+            output.display()
+        )),
+    }
+}
+
+fn validate_program_package_index_target_snapshot(
+    output: &Path,
+    expected: &ProgramPackageIndexTargetSnapshot,
+) -> Result<(), String> {
+    match &expected.entry {
+        Some(entry) => validate_local_mirror_entry(output, entry)
+            .map_err(|e| format!("program package index target changed before publication: {e}")),
+        None if path_entry_exists(output)? => Err(format!(
+            "program package index target appeared before publication: {}",
+            output.display()
+        )),
+        None => Ok(()),
+    }
+}
+
+fn reserve_program_package_index_transaction(
+    parent: &Path,
+    file_name: &std::ffi::OsStr,
+) -> Result<(PathBuf, PathBuf, std::fs::File, PackageMirrorIdentity), String> {
+    for _ in 0..1024 {
+        let sequence = MIRROR_TRANSACTION_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let transaction_root = parent.join(format!(
+            ".{}.index-transaction-{}-{sequence}",
+            file_name.to_string_lossy(),
+            std::process::id()
+        ));
+        match create_private_transaction_directory(&transaction_root) {
+            Ok(()) => {
+                let stage = transaction_root.join("index");
+                match std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&stage)
+                {
+                    Ok(file) => {
+                        let metadata = file.metadata().map_err(|e| {
+                            format!(
+                                "inspect staged program package index {}: {e}",
+                                stage.display()
+                            )
+                        })?;
+                        let identity = package_mirror_identity(&metadata)?;
+                        return Ok((transaction_root, stage, file, identity));
+                    }
+                    Err(e) => {
+                        let _ = std::fs::remove_dir(&transaction_root);
+                        return Err(format!(
+                            "create staged program package index {}: {e}",
+                            stage.display()
+                        ));
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(format!(
+                    "reserve program package index transaction {}: {e}",
+                    transaction_root.display()
+                ));
+            }
+        }
+    }
+    Err(format!(
+        "could not allocate a unique program package index transaction below {}",
+        parent.display()
+    ))
+}
+
+fn cleanup_program_package_index_transaction(
+    transaction_root: &Path,
+    stage: &Path,
+    expected_identity: &PackageMirrorIdentity,
+) -> Result<(), String> {
+    match std::fs::symlink_metadata(stage) {
+        Ok(metadata)
+            if metadata.is_file()
+                && !metadata.file_type().is_symlink()
+                && &package_mirror_identity(&metadata)? == expected_identity =>
+        {
+            std::fs::remove_file(stage).map_err(|e| {
+                format!(
+                    "remove staged program package index {}: {e}",
+                    stage.display()
+                )
+            })?;
+        }
+        Ok(_) => {
+            return Err(format!(
+                "refusing to remove changed staged program package index {}",
+                stage.display()
+            ));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(format!(
+                "inspect staged program package index {}: {e}",
+                stage.display()
+            ));
+        }
+    }
+    match std::fs::remove_dir(transaction_root) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!(
+            "remove program package index transaction {}: {e}",
+            transaction_root.display()
+        )),
+    }
+}
+
+fn cmd_check_program_package_index(
+    root: &Path,
+    index: &Path,
+    registry: &Registry,
+) -> Result<(), String> {
+    let expected = serialize_program_package_index(root, registry)?;
+    let actual = std::fs::read_to_string(index)
+        .map_err(|e| format!("read program package index {}: {e}", index.display()))?;
+    if actual != expected {
+        return Err(format!(
+            "{} is stale; regenerate it with `cargo run -p xtask -- build-deps program-index {} {}`",
+            index.display(),
+            root.display(),
+            index.display()
+        ));
+    }
+    Ok(())
 }
 
 /// Subset of [`Registry::walk_all`] containing only `kind = "program"`
@@ -177,6 +1093,15 @@ fn expand_tilde(s: &str) -> PathBuf {
         }
     }
     PathBuf::from(s)
+}
+
+fn resolve_registry_root(repo: &Path, value: &str) -> PathBuf {
+    let expanded = expand_tilde(value);
+    if expanded.is_absolute() {
+        expanded
+    } else {
+        repo.join(expanded)
+    }
 }
 
 /// Cache-key sha for a manifest. Recursively hashes transitive deps
@@ -3736,7 +4661,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut it = rest.into_iter();
     let sub = it.next().ok_or(
         "usage: xtask build-deps [--arch=wasm32|wasm64] [--binaries-dir <path>] [--fetch-only] \
-         <parse|sha|path|resolve|check|install-local-artifact|output-path|runtime-file-path|runtime-file-metadata|output-fork-instrumentation|output-fork-instrumentation-for-rel> \
+         <parse|sha|path|resolve|check|program-index|program-index-check|install-local-artifact|output-metadata|output-path|runtime-file-path|runtime-file-metadata|output-fork-instrumentation|output-fork-instrumentation-for-rel> \
          [<name|path> [<wasm-basename>]]",
     )?;
     let target = it.next();
@@ -3783,6 +4708,16 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 );
             }
             cmd_output_fork_instrumentation_for_rel(&registry, &rel)
+        }
+        "program-index" | "program-index-check" => {
+            let root =
+                target.ok_or_else(|| format!("build-deps {sub}: missing <registry-root>"))?;
+            let output = extra.ok_or_else(|| format!("build-deps {sub}: missing <index-path>"))?;
+            if sub == "program-index" {
+                cmd_program_package_index(Path::new(&root), Path::new(&output), &registry)
+            } else {
+                cmd_check_program_package_index(Path::new(&root), Path::new(&output), &registry)
+            }
         }
         _ => {
             let target = target.ok_or_else(|| format!("build-deps {sub}: missing <name|path>"))?;
@@ -3843,6 +4778,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                     })?;
                     cmd_install_local_artifact(
                         &manifest,
+                        &registry,
                         &artifact,
                         &source,
                         &session,
@@ -3857,6 +4793,14 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                             .to_string()
                     })?;
                     cmd_output_path(&manifest, &basename)
+                }
+                "output-metadata" => {
+                    let artifact = extra.ok_or_else(|| {
+                        "build-deps output-metadata: missing <wasm-artifact> \
+                         (usage: build-deps output-metadata <name|path> <wasm-artifact>)"
+                            .to_string()
+                    })?;
+                    cmd_output_metadata(&manifest, &artifact)
                 }
                 "runtime-file-path" => {
                     let artifact = extra.ok_or_else(|| {
@@ -3993,6 +4937,23 @@ fn cmd_path(m: &DepsManifest, registry: &Registry, arch: TargetArch) -> Result<(
 fn cmd_output_path(m: &DepsManifest, wasm_basename: &str) -> Result<(), String> {
     let rel = m.output_dest_rel(wasm_basename)?;
     println!("{}", rel.display());
+    Ok(())
+}
+
+/// One fail-closed lookup used by local build scripts before they mutate or
+/// instrument the source artifact. Returning destination and policy together
+/// prevents separate manifest reads from observing different registry state.
+fn cmd_output_metadata(m: &DepsManifest, wasm_artifact: &str) -> Result<(), String> {
+    let output = m.output_for_wasm_artifact(wasm_artifact)?;
+    let value = serde_json::json!({
+        "source_artifact": output.wasm,
+        "mirror_path": m.output_dest_rel_for(output),
+        "fork_instrumentation": output.fork_instrumentation.as_str(),
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&value).map_err(|e| format!("serialize output metadata: {e}"))?
+    );
     Ok(())
 }
 
@@ -4164,13 +5125,32 @@ enum LocalArtifactInstall {
 /// release.
 fn cmd_install_local_artifact(
     manifest: &DepsManifest,
+    registry: &Registry,
     artifact: &str,
     source: &Path,
     session: &str,
     binaries_dir: &Path,
     arch: TargetArch,
 ) -> Result<(), String> {
-    let outcome = install_local_artifact(manifest, artifact, source, session, binaries_dir, arch)?;
+    let mut memo = BTreeMap::new();
+    let mut chain = Vec::new();
+    let cache_key_sha = hex(&compute_sha(
+        manifest,
+        registry,
+        arch,
+        current_abi_version(),
+        &mut memo,
+        &mut chain,
+    )?);
+    let outcome = install_local_artifact(
+        manifest,
+        &cache_key_sha,
+        artifact,
+        source,
+        session,
+        binaries_dir,
+        arch,
+    )?;
     match outcome {
         LocalArtifactInstall::Staged {
             generation,
@@ -4198,6 +5178,7 @@ fn cmd_install_local_artifact(
 
 fn install_local_artifact(
     manifest: &DepsManifest,
+    cache_key_sha: &str,
     artifact: &str,
     source: &Path,
     session: &str,
@@ -4212,6 +5193,16 @@ fn install_local_artifact(
     }
     if manifest.program_outputs.is_empty() {
         return Err(format!("program {:?} has no [[outputs]]", manifest.name));
+    }
+    if cache_key_sha.len() != 64
+        || !cache_key_sha
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(format!(
+            "{}: local generation cache identity must be 64 lowercase hexadecimal characters",
+            manifest.spec(),
+        ));
     }
 
     let declared = declared_local_artifact(manifest, artifact)?;
@@ -4230,33 +5221,11 @@ fn install_local_artifact(
         ));
     }
 
-    ensure_real_directory(binaries_dir, "local binaries root")?;
+    let binaries_dir = canonical_real_directory(binaries_dir, "local binaries root")?;
     let programs_root = binaries_dir.join("programs");
-    ensure_real_child_directory(binaries_dir, &programs_root, "program mirror root")?;
+    ensure_real_child_directory(&binaries_dir, &programs_root, "program mirror root")?;
     let arch_root = programs_root.join(arch.as_str());
     ensure_real_child_directory(&programs_root, &arch_root, "architecture mirror root")?;
-
-    if !manifest.uses_package_mirror_directory() {
-        let output = declared
-            .output_index
-            .and_then(|index| manifest.program_outputs.get(index))
-            .ok_or_else(|| {
-                format!(
-                    "{}: a one-member program package must install its declared executable output",
-                    manifest.spec()
-                )
-            })?;
-        validate_wasm_artifact_policy(
-            source,
-            output.fork_instrumentation,
-            required_exports_for_program_output(manifest, output),
-        )?;
-        let destination = arch_root.join(&declared.mirror_relative);
-        replace_local_file_no_follow(manifest, source, &destination)?;
-        return Ok(LocalArtifactInstall::Replaced {
-            mirror: destination,
-        });
-    }
 
     validate_local_install_session(session)?;
     // Keep immutable backing bytes outside `programs/<arch>/`, which is the
@@ -4265,7 +5234,7 @@ fn install_local_artifact(
     // enforcement. This root is still below `binaries_dir`, so backing bytes
     // and the live mirror remain on one filesystem.
     let generations_root = binaries_dir.join(LOCAL_GENERATIONS_DIR);
-    ensure_real_child_directory(binaries_dir, &generations_root, "local generations root")?;
+    ensure_real_child_directory(&binaries_dir, &generations_root, "local generations root")?;
     let arch_generations = generations_root.join(arch.as_str());
     ensure_real_child_directory(
         &generations_root,
@@ -4278,13 +5247,19 @@ fn install_local_artifact(
         &package_generations,
         "package generations root",
     )?;
-    let generation = package_generations.join(session);
+    let identity_generations = package_generations.join(cache_key_sha);
+    ensure_real_child_directory(
+        &package_generations,
+        &identity_generations,
+        "package cache-identity generations root",
+    )?;
+    let generation = identity_generations.join(session);
 
     // A publication claim is deliberately one-shot and is created before the
     // live transaction. If the process is killed at that boundary, a retry
     // must use a new session instead of possibly replaying this generation
     // over a newer local build.
-    let publication_claim = package_generations.join(format!(".{session}.publication-claimed"));
+    let publication_claim = identity_generations.join(format!(".{session}.publication-claimed"));
     let claimed_before_member = publication_claim_exists(&publication_claim)?;
     if claimed_before_member {
         // Consumers may already hold canonical paths below this session.
@@ -4292,7 +5267,7 @@ fn install_local_artifact(
         ensure_existing_real_directory(&generation, "claimed local package generation")?;
     } else {
         ensure_real_child_directory(
-            &package_generations,
+            &identity_generations,
             &generation,
             "local package generation",
         )?;
@@ -4315,7 +5290,7 @@ fn install_local_artifact(
         source,
         &generation_member,
         &generation,
-        &package_generations,
+        &identity_generations,
         session,
     )?;
 
@@ -4335,6 +5310,63 @@ fn install_local_artifact(
     }
 
     validate_cache_artifacts(manifest, &generation)?;
+    if !manifest.uses_package_mirror_directory() {
+        let _output = declared
+            .output_index
+            .and_then(|index| manifest.program_outputs.get(index))
+            .ok_or_else(|| {
+                format!(
+                    "{}: a one-member program package must install its declared executable output",
+                    manifest.spec(),
+                )
+            })?;
+        let canonical_member = std::fs::canonicalize(&generation_member).map_err(|e| {
+            format!(
+                "{}: canonicalize immutable local generation member {}: {e}",
+                manifest.spec(),
+                generation_member.display(),
+            )
+        })?;
+        let destination = arch_root.join(&declared.mirror_relative);
+        let already_claimed = publication_claim_exists(&publication_claim)?;
+        let live_matches = scalar_mirror_matches_target(&destination, &canonical_member)?;
+        if already_claimed {
+            if !live_matches {
+                return Err(format!(
+                    "{}: local install session {:?} already consumed its one publication attempt but does not own {}; start a new session instead of risking stale-byte replay",
+                    manifest.spec(),
+                    session,
+                    destination.display(),
+                ));
+            }
+        } else {
+            match claim_local_generation_publication(&publication_claim)? {
+                PublicationClaim::Created => {
+                    if !live_matches {
+                        replace_mirror_symlink_no_follow(
+                            manifest,
+                            &canonical_member,
+                            &destination,
+                        )?;
+                    }
+                }
+                PublicationClaim::Existing => {
+                    if !scalar_mirror_matches_target(&destination, &canonical_member)? {
+                        return Err(format!(
+                            "{}: another writer claimed publication for local install session {:?}; retry after it finishes or start a new session",
+                            manifest.spec(),
+                            session,
+                        ));
+                    }
+                }
+            }
+        }
+
+        return Ok(LocalArtifactInstall::Replaced {
+            mirror: destination,
+        });
+    }
+
     let plan = PackageClosureMirrorPlan::validate(manifest, &generation, &arch_root)?;
     // Re-read after collection. A concurrent completion may have claimed and
     // published this session while this process was copying its member.
@@ -4378,6 +5410,40 @@ fn declared_local_artifact(
     manifest: &DepsManifest,
     artifact: &str,
 ) -> Result<DeclaredLocalArtifact, String> {
+    // Exact declaration paths are authoritative and keep otherwise-valid
+    // packages such as `a/foo.wasm` + `b/foo.wasm` installable. Basename
+    // matching below is compatibility for existing build scripts only.
+    let mut exact_matches = Vec::new();
+    for (index, output) in manifest.program_outputs.iter().enumerate() {
+        if output.wasm == artifact {
+            exact_matches.push(DeclaredLocalArtifact {
+                source_suffix: PathBuf::from(&output.wasm),
+                mirror_relative: manifest.output_dest_rel_for(output),
+                output_index: Some(index),
+            });
+        }
+    }
+    for runtime_file in &manifest.runtime_files {
+        if runtime_file.artifact == artifact {
+            exact_matches.push(DeclaredLocalArtifact {
+                source_suffix: PathBuf::from(&runtime_file.artifact),
+                mirror_relative: manifest.runtime_file_dest_rel_for(runtime_file),
+                output_index: None,
+            });
+        }
+    }
+    match exact_matches.as_slice() {
+        [declared] => return Ok(declared.clone()),
+        [] => {}
+        _ => {
+            return Err(format!(
+                "{}: exact artifact path {:?} ambiguously names more than one declared package member",
+                manifest.spec(),
+                artifact
+            ));
+        }
+    }
+
     let mut matches = Vec::new();
     for (index, output) in manifest.program_outputs.iter().enumerate() {
         let basename = Path::new(&output.wasm)
@@ -4391,19 +5457,10 @@ fn declared_local_artifact(
             });
         }
     }
-    for runtime_file in &manifest.runtime_files {
-        if runtime_file.artifact == artifact {
-            matches.push(DeclaredLocalArtifact {
-                source_suffix: PathBuf::from(&runtime_file.artifact),
-                mirror_relative: manifest.runtime_file_dest_rel_for(runtime_file),
-                output_index: None,
-            });
-        }
-    }
     match matches.as_slice() {
         [declared] => Ok(declared.clone()),
         [] => Err(format!(
-            "{}: {:?} is not a declared [[outputs]].wasm basename or [[runtime_files]].artifact",
+            "{}: {:?} is not a declared [[outputs]].wasm path, unique output basename, or [[runtime_files]].artifact",
             manifest.spec(),
             artifact
         )),
@@ -4456,6 +5513,25 @@ fn ensure_real_directory(path: &Path, label: &str) -> Result<(), String> {
         }
         Err(e) => Err(format!("inspect {label} {}: {e}", path.display())),
     }
+}
+
+/// Authorize an externally supplied publication root once, then operate only
+/// below its canonical identity. The root itself may not be a symlink; symlink
+/// aliases in earlier host path components are resolved here rather than
+/// repeatedly followed while package-owned children are created.
+fn canonical_real_directory(path: &Path, label: &str) -> Result<PathBuf, String> {
+    ensure_real_directory(path, label)?;
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|e| format!("canonicalize {label} {}: {e}", path.display()))?;
+    let metadata = std::fs::symlink_metadata(&canonical)
+        .map_err(|e| format!("inspect canonical {label} {}: {e}", canonical.display()))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(format!(
+            "canonical {label} must be a real directory: {}",
+            canonical.display()
+        ));
+    }
+    Ok(canonical)
 }
 
 fn ensure_existing_real_directory(path: &Path, label: &str) -> Result<(), String> {
@@ -4859,6 +5935,20 @@ fn package_mirror_matches_plan(plan: &PackageClosureMirrorPlan) -> Result<bool, 
             .unwrap_or(false))
 }
 
+fn scalar_mirror_matches_target(destination: &Path, target: &Path) -> Result<bool, String> {
+    match std::fs::symlink_metadata(destination) {
+        Ok(metadata) if metadata.file_type().is_symlink() => std::fs::read_link(destination)
+            .map(|actual| actual == target)
+            .map_err(|e| format!("read scalar mirror symlink {}: {e}", destination.display(),)),
+        Ok(_) => Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!(
+            "inspect scalar mirror {}: {e}",
+            destination.display(),
+        )),
+    }
+}
+
 fn publication_claim_exists(marker: &Path) -> Result<bool, String> {
     match std::fs::symlink_metadata(marker) {
         Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => Ok(true),
@@ -4906,189 +5996,577 @@ fn claim_local_generation_publication(marker: &Path) -> Result<PublicationClaim,
     }
 }
 
-fn replace_local_file_no_follow(
+fn replace_mirror_symlink_no_follow(
     manifest: &DepsManifest,
-    source: &Path,
+    target: &Path,
     destination: &Path,
 ) -> Result<(), String> {
-    let parent = destination.parent().ok_or_else(|| {
-        format!(
-            "{}: local mirror path has no parent: {}",
-            manifest.spec(),
-            destination.display()
-        )
-    })?;
-    ensure_real_directory(parent, "local artifact mirror parent")?;
-    let file_name = destination.file_name().ok_or_else(|| {
-        format!(
-            "{}: local mirror path has no filename: {}",
-            manifest.spec(),
-            destination.display()
-        )
-    })?;
-    let (stage, backup, mut stage_file) = reserve_local_file_transaction(parent, file_name)?;
-    let prepared = (|| {
-        let mut source_file = std::fs::File::open(source)
-            .map_err(|e| format!("open local artifact source {}: {e}", source.display()))?;
-        std::io::copy(&mut source_file, &mut stage_file).map_err(|e| {
-            format!(
-                "copy local artifact {} into private mirror stage {}: {e}",
-                source.display(),
-                stage.display()
-            )
-        })?;
-        stage_file
-            .sync_all()
-            .map_err(|e| format!("sync private mirror stage {}: {e}", stage.display()))?;
-        std::fs::set_permissions(
-            &stage,
-            std::fs::symlink_metadata(source)
-                .map_err(|e| format!("inspect local artifact source {}: {e}", source.display()))?
-                .permissions(),
-        )
-        .map_err(|e| {
-            format!(
-                "set private mirror stage permissions {}: {e}",
-                stage.display()
-            )
-        })?;
-        if files_equal(source, &stage)? {
-            Ok(())
-        } else {
-            Err(format!(
-                "local artifact source changed while it was copied: {}",
-                source.display()
-            ))
-        }
-    })();
-    drop(stage_file);
-    if let Err(error) = prepared {
-        let _ = remove_owned_transaction_path(&stage);
-        return Err(error);
-    }
+    let mut transaction = LocalFileTransaction::prepare_symlink(manifest, target, destination)?;
+    let mut rename = |from: &Path, to: &Path| std::fs::rename(from, to);
+    transaction.move_existing_aside_with(manifest, &mut rename)?;
+    transaction.publish_with(manifest, &mut rename)?;
+    transaction.finish()
+}
 
-    let mut old_moved = false;
-    match std::fs::symlink_metadata(destination) {
-        Ok(metadata) if metadata.is_file() || metadata.file_type().is_symlink() => {
-            std::fs::rename(destination, &backup).map_err(|e| {
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum LocalMirrorEntryKind {
+    Regular { len: u64, sha256: [u8; 32] },
+    Symlink { target: PathBuf },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LocalMirrorEntrySnapshot {
+    identity: PackageMirrorIdentity,
+    kind: LocalMirrorEntryKind,
+}
+
+struct LocalFileTransaction {
+    destination: PathBuf,
+    transaction_root: PathBuf,
+    stage: PathBuf,
+    backup: PathBuf,
+    stage_snapshot: LocalMirrorEntrySnapshot,
+    backup_snapshot: Option<LocalMirrorEntrySnapshot>,
+    old_moved: bool,
+    published: bool,
+    yielded_to_other_writer: bool,
+    finished: bool,
+    allow_existing_regular: bool,
+}
+
+impl LocalFileTransaction {
+    #[cfg(test)]
+    fn prepare(
+        manifest: &DepsManifest,
+        source: &Path,
+        destination: &Path,
+        fork_instrumentation: ForkInstrumentationPolicy,
+        required_exports: &[&str],
+    ) -> Result<Self, String> {
+        let parent = destination.parent().ok_or_else(|| {
+            format!(
+                "{}: local mirror path has no parent: {}",
+                manifest.spec(),
+                destination.display()
+            )
+        })?;
+        let parent = canonical_real_directory(parent, "local artifact mirror parent")?;
+        let file_name = destination.file_name().ok_or_else(|| {
+            format!(
+                "{}: local mirror path has no filename: {}",
+                manifest.spec(),
+                destination.display()
+            )
+        })?;
+        let destination = parent.join(file_name);
+        let (transaction_root, stage, backup, mut stage_file, stage_identity) =
+            reserve_local_file_transaction(&parent, file_name)?;
+        let prepared = (|| {
+            let source_before = std::fs::symlink_metadata(source)
+                .map_err(|e| format!("inspect local artifact source {}: {e}", source.display()))?;
+            if !source_before.is_file() || source_before.file_type().is_symlink() {
+                return Err(format!(
+                    "local artifact source must remain a regular non-symlink file: {}",
+                    source.display()
+                ));
+            }
+            let source_identity = package_mirror_identity(&source_before)?;
+            let mut source_file = std::fs::File::open(source)
+                .map_err(|e| format!("open local artifact source {}: {e}", source.display()))?;
+            if package_mirror_identity(&source_file.metadata().map_err(|e| {
                 format!(
-                    "{}: move existing local mirror {} aside without following it: {e}",
-                    manifest.spec(),
-                    destination.display()
+                    "inspect opened local artifact source {}: {e}",
+                    source.display()
+                )
+            })?)?
+                != source_identity
+            {
+                return Err(format!(
+                    "local artifact source changed before it was copied: {}",
+                    source.display()
+                ));
+            }
+            std::io::copy(&mut source_file, &mut stage_file).map_err(|e| {
+                format!(
+                    "copy local artifact {} into private mirror stage {}: {e}",
+                    source.display(),
+                    stage.display()
                 )
             })?;
-            old_moved = true;
+            stage_file
+                .sync_all()
+                .map_err(|e| format!("sync private mirror stage {}: {e}", stage.display()))?;
+            std::fs::set_permissions(
+                &stage,
+                std::fs::symlink_metadata(source)
+                    .map_err(|e| {
+                        format!("inspect local artifact source {}: {e}", source.display())
+                    })?
+                    .permissions(),
+            )
+            .map_err(|e| {
+                format!(
+                    "set private mirror stage permissions {}: {e}",
+                    stage.display()
+                )
+            })?;
+            if files_equal(source, &stage)? {
+                validate_wasm_artifact_policy(&stage, fork_instrumentation, required_exports)
+            } else {
+                Err(format!(
+                    "local artifact source changed while it was copied: {}",
+                    source.display()
+                ))
+            }
+        })();
+        drop(stage_file);
+        if let Err(error) = prepared {
+            let cleanup = cleanup_reserved_local_stage(&transaction_root, &stage, &stage_identity);
+            return match cleanup {
+                Ok(()) => Err(error),
+                Err(cleanup_error) => Err(format!(
+                    "{error}; additionally failed to clean private local-file transaction: {cleanup_error}"
+                )),
+            };
         }
-        Ok(_) => {
-            let _ = remove_owned_transaction_path(&stage);
-            return Err(format!(
-                "{}: refusing to replace non-file local mirror path {}",
-                manifest.spec(),
-                destination.display()
-            ));
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => {
-            let _ = remove_owned_transaction_path(&stage);
-            return Err(format!(
-                "{}: inspect existing local mirror {}: {e}",
-                manifest.spec(),
-                destination.display()
-            ));
-        }
+        let stage_snapshot = inspect_local_mirror_entry(&stage)?;
+        Ok(Self {
+            destination,
+            transaction_root,
+            stage,
+            backup,
+            stage_snapshot,
+            backup_snapshot: None,
+            old_moved: false,
+            published: false,
+            yielded_to_other_writer: false,
+            finished: false,
+            allow_existing_regular: true,
+        })
     }
 
-    if let Err(publish_error) = std::fs::hard_link(&stage, destination) {
-        let concurrent_entry = match path_entry_exists(destination) {
-            Ok(exists) => exists,
-            Err(inspect_error) => {
-                let _ = remove_owned_transaction_path(&stage);
-                if old_moved {
-                    let rollback = std::fs::rename(&backup, destination).map_err(|e| {
-                        format!(
-                            "restore previous local mirror {} after destination inspection failed: {e}",
-                            destination.display()
-                        )
+    fn prepare_symlink(
+        manifest: &DepsManifest,
+        target: &Path,
+        destination: &Path,
+    ) -> Result<Self, String> {
+        let target_metadata = std::fs::symlink_metadata(target).map_err(|e| {
+            format!(
+                "{}: inspect scalar mirror target {}: {e}",
+                manifest.spec(),
+                target.display(),
+            )
+        })?;
+        if !target.is_absolute()
+            || !target_metadata.is_file()
+            || target_metadata.file_type().is_symlink()
+        {
+            return Err(format!(
+                "{}: scalar mirror target must be an absolute regular non-symlink file: {}",
+                manifest.spec(),
+                target.display(),
+            ));
+        }
+        let target = std::fs::canonicalize(target).map_err(|e| {
+            format!(
+                "{}: canonicalize scalar mirror target {}: {e}",
+                manifest.spec(),
+                target.display(),
+            )
+        })?;
+        let parent = destination.parent().ok_or_else(|| {
+            format!(
+                "{}: scalar mirror path has no parent: {}",
+                manifest.spec(),
+                destination.display(),
+            )
+        })?;
+        let parent = canonical_real_directory(parent, "scalar mirror parent")?;
+        let file_name = destination.file_name().ok_or_else(|| {
+            format!(
+                "{}: scalar mirror path has no filename: {}",
+                manifest.spec(),
+                destination.display(),
+            )
+        })?;
+        let destination = parent.join(file_name);
+        let (transaction_root, stage, backup) =
+            reserve_local_symlink_transaction(&parent, file_name)?;
+        if let Err(error) = symlink_file(&target, &stage) {
+            let _ = std::fs::remove_dir(&transaction_root);
+            return Err(format!(
+                "{}: create private scalar mirror symlink {} -> {}: {error}",
+                manifest.spec(),
+                stage.display(),
+                target.display(),
+            ));
+        }
+        let stage_snapshot = match inspect_local_mirror_entry(&stage) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let cleanup = std::fs::symlink_metadata(&stage)
+                    .ok()
+                    .filter(|metadata| metadata.file_type().is_symlink())
+                    .and_then(|_| {
+                        (std::fs::read_link(&stage).ok().as_deref() == Some(target.as_path()))
+                            .then(|| std::fs::remove_file(&stage))
                     });
-                    if let Err(rollback_error) = rollback {
-                        return Err(format!(
-                            "{}: publish local mirror {} failed ({publish_error}); {inspect_error}; {rollback_error}",
-                            manifest.spec(),
-                            destination.display()
-                        ));
-                    }
+                if let Some(result) = cleanup {
+                    let _ = result;
+                    let _ = std::fs::remove_dir(&transaction_root);
                 }
                 return Err(format!(
-                    "{}: publish local mirror {} failed ({publish_error}); {inspect_error}",
+                    "{}: inspect private scalar mirror symlink {}: {error}",
                     manifest.spec(),
-                    destination.display()
+                    stage.display(),
                 ));
             }
         };
-        let rollback = if old_moved && !concurrent_entry {
-            std::fs::rename(&backup, destination).map_err(|e| {
-                format!(
-                    "restore previous local mirror {} after publish failure: {e}",
-                    destination.display()
-                )
-            })
-        } else {
-            Ok(())
-        };
-        let _ = remove_owned_transaction_path(&stage);
-        if concurrent_entry {
-            let _ = remove_owned_transaction_path(&backup);
-            return Err(format!(
-                "{}: publish local mirror {} failed ({publish_error}); another writer installed an entry, which was left intact",
+        Ok(Self {
+            destination,
+            transaction_root,
+            stage,
+            backup,
+            stage_snapshot,
+            backup_snapshot: None,
+            old_moved: false,
+            published: false,
+            yielded_to_other_writer: false,
+            finished: false,
+            allow_existing_regular: false,
+        })
+    }
+
+    fn move_existing_aside_with<F>(
+        &mut self,
+        manifest: &DepsManifest,
+        rename: &mut F,
+    ) -> Result<(), String>
+    where
+        F: FnMut(&Path, &Path) -> std::io::Result<()>,
+    {
+        match std::fs::symlink_metadata(&self.destination) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => {
+                return Err(format!(
+                    "{}: inspect existing local mirror {}: {e}",
+                    manifest.spec(),
+                    self.destination.display()
+                ));
+            }
+        }
+        let live_snapshot = inspect_local_mirror_entry(&self.destination).map_err(|e| {
+            format!(
+                "{}: refusing to replace non-file or unstable local mirror {}: {e}",
                 manifest.spec(),
-                destination.display()
+                self.destination.display()
+            )
+        })?;
+        if !self.allow_existing_regular
+            && matches!(&live_snapshot.kind, LocalMirrorEntryKind::Regular { .. })
+        {
+            return Err(format!(
+                "{}: refusing to replace regular file at scalar mirror {}",
+                manifest.spec(),
+                self.destination.display(),
             ));
         }
-        rollback?;
-        return Err(format!(
-            "{}: publish local mirror {} failed: {publish_error}",
-            manifest.spec(),
-            destination.display()
-        ));
+        rename(&self.destination, &self.backup).map_err(|e| {
+            format!(
+                "{}: move existing local mirror {} aside without following it: {e}",
+                manifest.spec(),
+                self.destination.display()
+            )
+        })?;
+        self.old_moved = true;
+        match inspect_local_mirror_entry(&self.backup) {
+            Ok(backup_snapshot) if backup_snapshot == live_snapshot => {
+                self.backup_snapshot = Some(backup_snapshot);
+                Ok(())
+            }
+            validation => {
+                let detail = match validation {
+                    Ok(_) => "entry identity or contents changed during quarantine".to_string(),
+                    Err(e) => e,
+                };
+                if !path_entry_exists(&self.destination)?
+                    && rename(&self.backup, &self.destination).is_ok()
+                {
+                    self.old_moved = false;
+                    return Err(format!(
+                        "{}: local mirror ownership changed during quarantine; restored {} and refused publication: {detail}",
+                        manifest.spec(),
+                        self.destination.display()
+                    ));
+                }
+                Err(format!(
+                    "{}: local mirror ownership changed during quarantine; preserved the exact entry at {}: {detail}",
+                    manifest.spec(),
+                    self.backup.display()
+                ))
+            }
+        }
     }
 
-    remove_owned_transaction_path(&stage)?;
-    if old_moved {
-        remove_owned_transaction_path(&backup)?;
+    fn publish_with<F>(&mut self, manifest: &DepsManifest, rename: &mut F) -> Result<(), String>
+    where
+        F: FnMut(&Path, &Path) -> std::io::Result<()>,
+    {
+        let stage_kind = self.stage_snapshot.kind.clone();
+        let mut publish = |stage: &Path, destination: &Path| match &stage_kind {
+            LocalMirrorEntryKind::Regular { .. } => std::fs::hard_link(stage, destination),
+            LocalMirrorEntryKind::Symlink { target } => symlink_file(target, destination),
+        };
+        self.publish_with_operation(manifest, rename, &mut publish)
     }
-    Ok(())
+
+    fn publish_with_operation<F, P>(
+        &mut self,
+        manifest: &DepsManifest,
+        rename: &mut F,
+        publish: &mut P,
+    ) -> Result<(), String>
+    where
+        F: FnMut(&Path, &Path) -> std::io::Result<()>,
+        P: FnMut(&Path, &Path) -> std::io::Result<()>,
+    {
+        validate_local_mirror_entry(&self.stage, &self.stage_snapshot).map_err(|e| {
+            format!(
+                "{}: staged local mirror changed before publication: {e}",
+                manifest.spec()
+            )
+        })?;
+        let publish_result = publish(&self.stage, &self.destination);
+        if let Err(publish_error) = publish_result {
+            match path_entry_exists(&self.destination) {
+                Ok(true) => {
+                    self.yielded_to_other_writer = true;
+                    let cleanup_error = self.cleanup_private_paths().err();
+                    let mut message = format!(
+                        "{}: publish local mirror {} failed ({publish_error}); another writer installed an entry, which was left intact",
+                        manifest.spec(),
+                        self.destination.display()
+                    );
+                    if let Some(cleanup_error) = cleanup_error {
+                        message.push_str(&format!(
+                            "; private transaction cleanup also failed: {cleanup_error}"
+                        ));
+                    }
+                    return Err(message);
+                }
+                Ok(false) => {}
+                Err(inspect_error) => {
+                    return Err(format!(
+                        "{}: publish local mirror {} failed ({publish_error}); {inspect_error}; private quarantine was preserved",
+                        manifest.spec(),
+                        self.destination.display()
+                    ));
+                }
+            }
+
+            if self.old_moved {
+                let backup_snapshot = self.backup_snapshot.as_ref().ok_or_else(|| {
+                    format!(
+                        "{}: refusing to restore unvalidated local mirror quarantine {}",
+                        manifest.spec(),
+                        self.backup.display()
+                    )
+                })?;
+                validate_local_mirror_entry(&self.backup, backup_snapshot)?;
+                rename(&self.backup, &self.destination).map_err(|e| {
+                    format!(
+                        "{}: publish local mirror {} failed ({publish_error}); restore previous mirror from {}: {e}",
+                        manifest.spec(),
+                        self.destination.display(),
+                        self.backup.display()
+                    )
+                })?;
+                self.old_moved = false;
+                self.backup_snapshot = None;
+            }
+            return Err(format!(
+                "{}: publish local mirror {} failed: {publish_error}",
+                manifest.spec(),
+                self.destination.display()
+            ));
+        }
+        self.published = true;
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<(), String> {
+        self.cleanup_private_paths()?;
+        self.finished = true;
+        Ok(())
+    }
+
+    fn cleanup_private_paths(&mut self) -> Result<(), String> {
+        let mut failures = Vec::new();
+        if let Err(e) = remove_validated_local_transaction_entry(
+            &self.stage,
+            &self.stage_snapshot,
+            "staged local mirror",
+        ) {
+            failures.push(e);
+        }
+        match &self.backup_snapshot {
+            Some(snapshot) => {
+                if let Err(e) = remove_validated_local_transaction_entry(
+                    &self.backup,
+                    snapshot,
+                    "quarantined previous local mirror",
+                ) {
+                    failures.push(e);
+                }
+            }
+            None => match path_entry_exists(&self.backup) {
+                Ok(true) => failures.push(format!(
+                    "refusing to remove unvalidated local mirror quarantine {}",
+                    self.backup.display()
+                )),
+                Ok(false) => {}
+                Err(e) => failures.push(e),
+            },
+        }
+        if failures.is_empty() {
+            match std::fs::remove_dir(&self.transaction_root) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => failures.push(format!(
+                    "remove empty local mirror transaction {}: {e}",
+                    self.transaction_root.display()
+                )),
+            }
+        }
+        if failures.is_empty() {
+            self.backup_snapshot = None;
+            self.old_moved = false;
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
+    }
 }
 
-fn reserve_local_file_transaction(
+impl Drop for LocalFileTransaction {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        if !self.published
+            && !self.yielded_to_other_writer
+            && self.old_moved
+            && !path_entry_exists(&self.destination).unwrap_or(true)
+            && self
+                .backup_snapshot
+                .as_ref()
+                .is_some_and(|snapshot| validate_local_mirror_entry(&self.backup, snapshot).is_ok())
+            && std::fs::rename(&self.backup, &self.destination).is_ok()
+        {
+            self.old_moved = false;
+            self.backup_snapshot = None;
+        }
+        let _ = remove_validated_local_transaction_entry(
+            &self.stage,
+            &self.stage_snapshot,
+            "staged local mirror",
+        );
+        if (self.published || self.yielded_to_other_writer || !self.old_moved)
+            && self.backup_snapshot.is_some()
+        {
+            let _ = remove_validated_local_transaction_entry(
+                &self.backup,
+                self.backup_snapshot.as_ref().unwrap(),
+                "quarantined previous local mirror",
+            );
+        }
+        let _ = std::fs::remove_dir(&self.transaction_root);
+    }
+}
+
+fn reserve_local_symlink_transaction(
     parent: &Path,
     file_name: &std::ffi::OsStr,
-) -> Result<(PathBuf, PathBuf, std::fs::File), String> {
+) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     for _ in 0..1024 {
         let sequence = MIRROR_TRANSACTION_COUNTER.fetch_add(1, Ordering::Relaxed);
         let transaction = format!("{}-{sequence}", std::process::id());
         let file_name = file_name.to_string_lossy();
-        let stage = parent.join(format!(".{file_name}.local-stage-{transaction}"));
-        let backup = parent.join(format!(".{file_name}.local-backup-{transaction}"));
-        if path_entry_exists(&backup)? {
-            continue;
+        let transaction_root =
+            parent.join(format!(".{file_name}.symlink-transaction-{transaction}"));
+        match create_private_transaction_directory(&transaction_root) {
+            Ok(()) => {
+                return Ok((
+                    transaction_root.clone(),
+                    transaction_root.join("stage"),
+                    transaction_root.join("backup"),
+                ));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(format!(
+                    "reserve private scalar-symlink transaction {}: {e}",
+                    transaction_root.display(),
+                ));
+            }
         }
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&stage)
-        {
-            Ok(file) => {
-                if path_entry_exists(&backup)? {
-                    let _ = remove_owned_transaction_path(&stage);
-                    continue;
+    }
+    Err(format!(
+        "could not allocate a unique scalar-symlink transaction below {}",
+        parent.display(),
+    ))
+}
+
+#[cfg(test)]
+fn reserve_local_file_transaction(
+    parent: &Path,
+    file_name: &std::ffi::OsStr,
+) -> Result<
+    (
+        PathBuf,
+        PathBuf,
+        PathBuf,
+        std::fs::File,
+        PackageMirrorIdentity,
+    ),
+    String,
+> {
+    for _ in 0..1024 {
+        let sequence = MIRROR_TRANSACTION_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let transaction = format!("{}-{sequence}", std::process::id());
+        let file_name = file_name.to_string_lossy();
+        let transaction_root = parent.join(format!(".{file_name}.local-transaction-{transaction}"));
+        match create_private_transaction_directory(&transaction_root) {
+            Ok(()) => {
+                let stage = transaction_root.join("stage");
+                let backup = transaction_root.join("backup");
+                match std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&stage)
+                {
+                    Ok(file) => {
+                        let metadata = std::fs::symlink_metadata(&stage).map_err(|e| {
+                            format!("inspect private local file stage {}: {e}", stage.display())
+                        })?;
+                        let identity = package_mirror_identity(&metadata)?;
+                        return Ok((transaction_root, stage, backup, file, identity));
+                    }
+                    Err(e) => {
+                        let _ = std::fs::remove_dir(&transaction_root);
+                        return Err(format!(
+                            "create private local file stage {}: {e}",
+                            stage.display()
+                        ));
+                    }
                 }
-                return Ok((stage, backup, file));
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
                 return Err(format!(
                     "reserve private local file transaction {}: {e}",
-                    stage.display()
+                    transaction_root.display()
                 ));
             }
         }
@@ -5097,6 +6575,139 @@ fn reserve_local_file_transaction(
         "could not allocate a unique local file transaction below {}",
         parent.display()
     ))
+}
+
+fn inspect_local_mirror_entry(path: &Path) -> Result<LocalMirrorEntrySnapshot, String> {
+    let before = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("inspect local mirror entry {}: {e}", path.display()))?;
+    let identity = package_mirror_identity(&before)?;
+    let kind = if before.file_type().is_symlink() {
+        LocalMirrorEntryKind::Symlink {
+            target: std::fs::read_link(path)
+                .map_err(|e| format!("read local mirror symlink {}: {e}", path.display()))?,
+        }
+    } else if before.is_file() {
+        let mut file = std::fs::File::open(path)
+            .map_err(|e| format!("open local mirror entry {}: {e}", path.display()))?;
+        let opened = file
+            .metadata()
+            .map_err(|e| format!("inspect opened local mirror entry {}: {e}", path.display()))?;
+        if !opened.is_file() || package_mirror_identity(&opened)? != identity {
+            return Err(format!(
+                "local mirror entry changed before its contents were read: {}",
+                path.display()
+            ));
+        }
+        let mut hasher = Sha256::new();
+        std::io::copy(&mut file, &mut hasher)
+            .map_err(|e| format!("hash local mirror entry {}: {e}", path.display()))?;
+        let hashed = file.metadata().map_err(|e| {
+            format!(
+                "reinspect opened local mirror entry {}: {e}",
+                path.display()
+            )
+        })?;
+        if package_mirror_identity(&hashed)? != identity || hashed.len() != opened.len() {
+            return Err(format!(
+                "local mirror entry changed while its contents were read: {}",
+                path.display()
+            ));
+        }
+        LocalMirrorEntryKind::Regular {
+            len: opened.len(),
+            sha256: hasher.finalize().into(),
+        }
+    } else {
+        return Err(format!(
+            "local mirror entry is not a regular file or symlink: {}",
+            path.display()
+        ));
+    };
+    let after = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("reinspect local mirror entry {}: {e}", path.display()))?;
+    if package_mirror_identity(&after)? != identity {
+        return Err(format!(
+            "local mirror entry identity changed while it was inspected: {}",
+            path.display()
+        ));
+    }
+    let actual_kind = if after.file_type().is_symlink() {
+        LocalMirrorEntryKind::Symlink {
+            target: std::fs::read_link(path)
+                .map_err(|e| format!("reread local mirror symlink {}: {e}", path.display()))?,
+        }
+    } else if after.is_file() {
+        // The file handle above already proved the exact identity and bytes.
+        kind.clone()
+    } else {
+        return Err(format!(
+            "local mirror entry type changed while it was inspected: {}",
+            path.display()
+        ));
+    };
+    if actual_kind != kind {
+        return Err(format!(
+            "local mirror entry contents changed while it was inspected: {}",
+            path.display()
+        ));
+    }
+    Ok(LocalMirrorEntrySnapshot { identity, kind })
+}
+
+fn validate_local_mirror_entry(
+    path: &Path,
+    expected: &LocalMirrorEntrySnapshot,
+) -> Result<(), String> {
+    let actual = inspect_local_mirror_entry(path)?;
+    if &actual == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "local mirror identity or contents changed: {}",
+            path.display()
+        ))
+    }
+}
+
+fn remove_validated_local_transaction_entry(
+    path: &Path,
+    expected: &LocalMirrorEntrySnapshot,
+    label: &str,
+) -> Result<(), String> {
+    if !path_entry_exists(path)? {
+        return Ok(());
+    }
+    validate_local_mirror_entry(path, expected)
+        .map_err(|e| format!("refusing to remove changed {label} {}: {e}", path.display()))?;
+    std::fs::remove_file(path)
+        .map_err(|e| format!("remove validated {label} {}: {e}", path.display()))
+}
+
+#[cfg(test)]
+fn cleanup_reserved_local_stage(
+    transaction_root: &Path,
+    stage: &Path,
+    expected_identity: &PackageMirrorIdentity,
+) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(stage)
+        .map_err(|e| format!("inspect reserved local stage {}: {e}", stage.display()))?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || &package_mirror_identity(&metadata)? != expected_identity
+    {
+        return Err(format!(
+            "refusing to remove changed reserved local stage {}",
+            stage.display()
+        ));
+    }
+    std::fs::remove_file(stage)
+        .map_err(|e| format!("remove reserved local stage {}: {e}", stage.display()))?;
+    std::fs::remove_dir(transaction_root).map_err(|e| {
+        format!(
+            "remove empty local file transaction {}: {e}",
+            transaction_root.display()
+        )
+    })
 }
 
 /// Place symlinks under `binaries_dir/programs/<arch>/` pointing at
@@ -5130,24 +6741,36 @@ fn place_binaries_symlinks(
     if outputs.is_empty() {
         return Err(format!("program {:?} has no [[outputs]]", m.name));
     }
-    let arch_root = binaries_dir.join("programs").join(arch.as_str());
+    let binaries_dir = canonical_real_directory(binaries_dir, "binaries publication root")?;
+    let programs_root = binaries_dir.join("programs");
+    ensure_real_child_directory(&binaries_dir, &programs_root, "program publication root")?;
+    let arch_root = programs_root.join(arch.as_str());
+    ensure_real_child_directory(&programs_root, &arch_root, "architecture publication root")?;
     if m.uses_package_mirror_directory() {
         let plan = PackageClosureMirrorPlan::validate(m, canonical, &arch_root)?;
+        if package_mirror_matches_plan(&plan)? {
+            return Ok(());
+        }
         return install_package_closure_mirror(plan);
     }
 
     for out in outputs {
         let src = canonical.join(&out.wasm);
-        if !src.is_file() {
+        let source_metadata = std::fs::symlink_metadata(&src).map_err(|e| {
+            format!(
+                "declared output {} not found in cache at {}: {e}",
+                out.wasm,
+                src.display()
+            )
+        })?;
+        if !source_metadata.is_file() || source_metadata.file_type().is_symlink() {
             return Err(format!(
-                "declared output {} not found in cache at {}",
+                "declared output {} is not a regular non-symlink cache file at {}",
                 out.wasm,
                 src.display()
             ));
         }
-        let dest = if (m.name == "kernel" || m.name == "userspace")
-            && m.program_closure_member_count() == 1
-        {
+        let dest = if m.uses_root_binary_mirror() {
             binaries_dir.join(format!("{}.wasm", out.name))
         } else {
             arch_root.join(m.output_dest_rel_for(out))
@@ -5155,16 +6778,21 @@ fn place_binaries_symlinks(
         let dest_dir = dest
             .parent()
             .ok_or_else(|| format!("dest path {} has no parent", dest.display()))?;
-        std::fs::create_dir_all(dest_dir)
-            .map_err(|e| format!("mkdir {}: {e}", dest_dir.display()))?;
-        // Replace-in-place: remove any existing entry (file or
-        // symlink), then create a fresh symlink. Skipping the remove
-        // step would cause `symlink` to fail with EEXIST.
-        if dest.exists() || dest.symlink_metadata().is_ok() {
-            let _ = std::fs::remove_file(&dest);
+        ensure_existing_real_directory(dest_dir, "artifact publication parent")?;
+        if let Ok(metadata) = std::fs::symlink_metadata(&dest) {
+            if metadata.file_type().is_symlink()
+                && std::fs::read_link(&dest).ok().as_deref() == Some(src.as_path())
+            {
+                continue;
+            }
+            if metadata.is_dir() && !metadata.file_type().is_symlink() {
+                return Err(format!(
+                    "refusing to replace artifact publication directory {}",
+                    dest.display()
+                ));
+            }
         }
-        symlink_file(&src, &dest)
-            .map_err(|e| format!("symlink {} -> {}: {e}", dest.display(), src.display()))?;
+        replace_mirror_symlink_no_follow(m, &src, &dest)?;
     }
     for runtime_file in &m.runtime_files {
         let src = canonical.join(&runtime_file.artifact);
@@ -5186,13 +6814,21 @@ fn place_binaries_symlinks(
         let dest_dir = dest
             .parent()
             .ok_or_else(|| format!("dest path {} has no parent", dest.display()))?;
-        std::fs::create_dir_all(dest_dir)
-            .map_err(|e| format!("mkdir {}: {e}", dest_dir.display()))?;
-        if dest.exists() || dest.symlink_metadata().is_ok() {
-            let _ = std::fs::remove_file(&dest);
+        ensure_existing_real_directory(dest_dir, "runtime-file publication parent")?;
+        if let Ok(metadata) = std::fs::symlink_metadata(&dest) {
+            if metadata.file_type().is_symlink()
+                && std::fs::read_link(&dest).ok().as_deref() == Some(src.as_path())
+            {
+                continue;
+            }
+            if metadata.is_dir() && !metadata.file_type().is_symlink() {
+                return Err(format!(
+                    "refusing to replace runtime-file publication directory {}",
+                    dest.display()
+                ));
+            }
         }
-        symlink_file(&src, &dest)
-            .map_err(|e| format!("symlink {} -> {}: {e}", dest.display(), src.display()))?;
+        replace_mirror_symlink_no_follow(m, &src, &dest)?;
     }
     Ok(())
 }
@@ -5421,11 +7057,13 @@ static MIRROR_TRANSACTION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A prepared two-rename installation of a package-owned mirror directory.
 ///
-/// The stage and backup names are unique to this transaction and are siblings
-/// of `live_dir`. Sibling placement is a correctness requirement: filesystem
-/// rename atomicity is only specified within one filesystem/mount. We do not
-/// depend on rename-over-existing behavior, which differs across POSIX and
-/// Windows. Instead the commit boundary is:
+/// A uniquely reserved private directory beside `live_dir` contains the stage
+/// and backup. Sibling placement is a correctness requirement: filesystem
+/// rename atomicity is only specified within one filesystem/mount. The private
+/// parent is mode 0700 on Unix, so cooperating concurrent installers cannot
+/// collide with or modify each other's transaction children. We do not depend
+/// on rename-over-existing behavior, which differs across POSIX and Windows.
+/// Instead the commit boundary is:
 ///
 /// 1. `live_dir -> backup_dir` (when an old entry exists);
 /// 2. `stage_dir -> live_dir`.
@@ -5434,20 +7072,35 @@ static MIRROR_TRANSACTION_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// directory in the short interval between renames, or the complete new
 /// directory. It cannot see the old and new links mixed in one live directory.
 ///
-/// The protocol is deliberately lock-free. Private names keep concurrent
-/// writers from touching each other's staged/backup trees. If another writer
+/// The protocol is deliberately lock-free. Before an existing live directory
+/// can be moved, and again after it has moved into the private transaction, its
+/// filesystem identity and complete symlink map must match. Only snapshots
+/// validated inside the private parent are ever removed. If another writer
 /// fills the live path between our two renames, we accept it only when its
 /// *entire* declared output/runtime link set has our exact canonical targets.
-/// A different winner is never removed or overwritten; this writer cleans only
-/// its private paths and reports a retryable error. A process crash can leave
-/// inert private siblings, which require later operational cleanup; scavenging
-/// without a lease could delete another live writer's stage, so it is unsafe
-/// here.
+/// A different winner is never removed or overwritten. A process crash can
+/// leave an inert private transaction directory; scavenging without a lease
+/// could delete another live writer's stage, so it is unsafe here.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PackageMirrorSnapshot {
+    identity: PackageMirrorIdentity,
+    links: BTreeMap<PathBuf, PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PackageMirrorIdentity {
+    first: u64,
+    second: u64,
+}
+
 struct PackageDirectoryTransaction {
     live_dir: PathBuf,
+    transaction_root: PathBuf,
     stage_dir: PathBuf,
     backup_dir: PathBuf,
     expected_links: BTreeMap<PathBuf, PathBuf>,
+    stage_snapshot: PackageMirrorSnapshot,
+    backup_snapshot: Option<PackageMirrorSnapshot>,
     old_moved: bool,
     committed: bool,
     yielded_to_other_writer: bool,
@@ -5462,11 +7115,13 @@ impl PackageDirectoryTransaction {
                 plan.package_dir.display()
             )
         })?;
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("mkdir package mirror root {}: {e}", parent.display()))?;
+        ensure_existing_real_directory(parent, "package mirror transaction root")?;
 
-        let (stage_dir, backup_dir) =
-            reserve_transaction_siblings(parent, plan.package_dir.file_name().unwrap_or_default())?;
+        let (transaction_root, stage_dir, backup_dir) = reserve_package_directory_transaction(
+            parent,
+            plan.package_dir.file_name().unwrap_or_default(),
+        )?;
+        let expected_plan_links = plan.expected_links();
         let staged = (|| {
             for link in &plan.links {
                 let destination = stage_dir.join(&link.package_relative);
@@ -5490,21 +7145,25 @@ impl PackageDirectoryTransaction {
                     )
                 })?;
             }
-            let staged_links = read_package_mirror_links(&stage_dir)?;
-            let expected_links = plan.expected_links();
-            if staged_links != expected_links {
+            let staged_snapshot = inspect_package_mirror_snapshot(&stage_dir)?;
+            let expected_links = expected_plan_links.clone();
+            if staged_snapshot.links != expected_links {
                 return Err(format!(
                     "staged package mirror {} does not exactly match its validated output/runtime plan",
                     stage_dir.display()
                 ));
             }
-            Ok(expected_links)
+            Ok((expected_links, staged_snapshot))
         })();
 
-        let expected_links = match staged {
-            Ok(expected_links) => expected_links,
+        let (expected_links, stage_snapshot) = match staged {
+            Ok(prepared) => prepared,
             Err(e) => {
-                let cleanup = remove_owned_transaction_path(&stage_dir);
+                let cleanup = cleanup_prepared_package_transaction(
+                    &transaction_root,
+                    &stage_dir,
+                    &expected_plan_links,
+                );
                 return match cleanup {
                     Ok(()) => Err(e),
                     Err(cleanup_err) => Err(format!(
@@ -5516,9 +7175,12 @@ impl PackageDirectoryTransaction {
 
         Ok(Self {
             live_dir: plan.package_dir,
+            transaction_root,
             stage_dir,
             backup_dir,
             expected_links,
+            stage_snapshot,
+            backup_snapshot: None,
             old_moved: false,
             committed: false,
             yielded_to_other_writer: false,
@@ -5540,6 +7202,12 @@ impl PackageDirectoryTransaction {
                 ));
             }
         }
+        let live_snapshot = inspect_package_mirror_snapshot(&self.live_dir).map_err(|e| {
+            format!(
+                "refusing to replace package mirror without resolver ownership proof at {}: {e}",
+                self.live_dir.display()
+            )
+        })?;
         rename(&self.live_dir, &self.backup_dir).map_err(|e| {
             format!(
                 "rename existing package mirror {} -> {}: {e}",
@@ -5548,6 +7216,32 @@ impl PackageDirectoryTransaction {
             )
         })?;
         self.old_moved = true;
+        match inspect_package_mirror_snapshot(&self.backup_dir) {
+            Ok(backup_snapshot) if backup_snapshot == live_snapshot => {
+                self.backup_snapshot = Some(backup_snapshot);
+            }
+            validation => {
+                let detail = match validation {
+                    Ok(_) => "the quarantined entry changed identity or contents during rename"
+                        .to_string(),
+                    Err(e) => e,
+                };
+                if !path_entry_exists(&self.live_dir)?
+                    && rename(&self.backup_dir, &self.live_dir).is_ok()
+                {
+                    self.old_moved = false;
+                    self.backup_snapshot = None;
+                    return Err(format!(
+                        "package mirror ownership changed during quarantine; restored {} and refused publication: {detail}",
+                        self.live_dir.display()
+                    ));
+                }
+                return Err(format!(
+                    "package mirror ownership changed during quarantine; preserved the exact entry at {} and refused publication: {detail}",
+                    self.backup_dir.display()
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -5588,9 +7282,26 @@ impl PackageDirectoryTransaction {
                 }
 
                 if self.old_moved {
+                    let Some(backup_snapshot) = &self.backup_snapshot else {
+                        return Err(format!(
+                            "publish package mirror {} failed ({publish_error}); refusing to restore an unvalidated quarantine at {}",
+                            self.live_dir.display(),
+                            self.backup_dir.display()
+                        ));
+                    };
+                    validate_package_mirror_snapshot(&self.backup_dir, backup_snapshot).map_err(
+                        |validation_error| {
+                            format!(
+                                "publish package mirror {} failed ({publish_error}); refusing to restore changed quarantine {}: {validation_error}",
+                                self.live_dir.display(),
+                                self.backup_dir.display()
+                            )
+                        },
+                    )?;
                     match rename(&self.backup_dir, &self.live_dir) {
                         Ok(()) => {
                             self.old_moved = false;
+                            self.backup_snapshot = None;
                             return Err(format!(
                                 "publish package mirror {} failed ({publish_error}); restored the previous complete package directory",
                                 self.live_dir.display()
@@ -5623,13 +7334,47 @@ impl PackageDirectoryTransaction {
 
     fn cleanup_private_paths(&mut self) -> Result<(), String> {
         let mut failures = Vec::new();
-        for path in [&self.stage_dir, &self.backup_dir] {
-            if let Err(e) = remove_owned_transaction_path(path) {
-                failures.push(e);
+        if let Err(e) = remove_validated_package_transaction_tree(
+            &self.stage_dir,
+            &self.stage_snapshot,
+            "staged package mirror",
+        ) {
+            failures.push(e);
+        }
+        match &self.backup_snapshot {
+            Some(expected) => {
+                if let Err(e) = remove_validated_package_transaction_tree(
+                    &self.backup_dir,
+                    expected,
+                    "quarantined previous package mirror",
+                ) {
+                    failures.push(e);
+                }
+            }
+            None => {
+                if path_entry_exists(&self.backup_dir)? {
+                    failures.push(format!(
+                        "refusing to remove unvalidated package mirror quarantine {}",
+                        self.backup_dir.display()
+                    ));
+                }
+            }
+        }
+        if failures.is_empty() {
+            match std::fs::remove_dir(&self.transaction_root) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    failures.push(format!(
+                        "remove empty package mirror transaction {}: {e}",
+                        self.transaction_root.display()
+                    ));
+                }
             }
         }
         if failures.is_empty() {
             self.old_moved = false;
+            self.backup_snapshot = None;
             Ok(())
         } else {
             Err(failures.join("; "))
@@ -5650,14 +7395,29 @@ impl Drop for PackageDirectoryTransaction {
             && !self.yielded_to_other_writer
             && self.old_moved
             && !path_entry_exists(&self.live_dir).unwrap_or(true)
+            && self.backup_snapshot.as_ref().is_some_and(|snapshot| {
+                validate_package_mirror_snapshot(&self.backup_dir, snapshot).is_ok()
+            })
             && std::fs::rename(&self.backup_dir, &self.live_dir).is_ok()
         {
             self.old_moved = false;
+            self.backup_snapshot = None;
         }
-        let _ = remove_owned_transaction_path(&self.stage_dir);
-        if self.committed || self.yielded_to_other_writer || !self.old_moved {
-            let _ = remove_owned_transaction_path(&self.backup_dir);
+        let _ = remove_validated_package_transaction_tree(
+            &self.stage_dir,
+            &self.stage_snapshot,
+            "staged package mirror",
+        );
+        if (self.committed || self.yielded_to_other_writer || !self.old_moved)
+            && self.backup_snapshot.is_some()
+        {
+            let _ = remove_validated_package_transaction_tree(
+                &self.backup_dir,
+                self.backup_snapshot.as_ref().unwrap(),
+                "quarantined previous package mirror",
+            );
         }
+        let _ = std::fs::remove_dir(&self.transaction_root);
     }
 }
 
@@ -5669,32 +7429,38 @@ fn install_package_closure_mirror(plan: PackageClosureMirrorPlan) -> Result<(), 
     transaction.finish()
 }
 
-fn reserve_transaction_siblings(
+fn reserve_package_directory_transaction(
     parent: &Path,
     package_name: &std::ffi::OsStr,
-) -> Result<(PathBuf, PathBuf), String> {
+) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     for _ in 0..1024 {
         let sequence = MIRROR_TRANSACTION_COUNTER.fetch_add(1, Ordering::Relaxed);
         let transaction = format!("{}-{sequence}", std::process::id());
         let package_name = package_name.to_string_lossy();
-        let stage = parent.join(format!(".{package_name}.stage-{transaction}"));
-        let backup = parent.join(format!(".{package_name}.backup-{transaction}"));
-        if path_entry_exists(&stage)? || path_entry_exists(&backup)? {
-            continue;
-        }
-        match std::fs::create_dir(&stage) {
+        let transaction_root = parent.join(format!(".{package_name}.transaction-{transaction}"));
+        match create_private_transaction_directory(&transaction_root) {
             Ok(()) => {
-                if path_entry_exists(&backup)? {
-                    let _ = remove_owned_transaction_path(&stage);
-                    continue;
+                let stage = transaction_root.join("stage");
+                let backup = transaction_root.join("backup");
+                if let Err(e) = std::fs::create_dir(&stage) {
+                    let cleanup = std::fs::remove_dir(&transaction_root);
+                    return Err(match cleanup {
+                        Ok(()) => {
+                            format!("create staged package mirror {}: {e}", stage.display())
+                        }
+                        Err(cleanup_error) => format!(
+                            "create staged package mirror {}: {e}; remove empty reservation: {cleanup_error}",
+                            stage.display()
+                        ),
+                    });
                 }
-                return Ok((stage, backup));
+                return Ok((transaction_root, stage, backup));
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
                 return Err(format!(
-                    "reserve staged package mirror {}: {e}",
-                    stage.display()
+                    "reserve package mirror transaction {}: {e}",
+                    transaction_root.display()
                 ));
             }
         }
@@ -5713,6 +7479,171 @@ fn path_entry_exists(path: &Path) -> Result<bool, String> {
     }
 }
 
+#[cfg(unix)]
+fn package_mirror_identity(metadata: &std::fs::Metadata) -> Result<PackageMirrorIdentity, String> {
+    use std::os::unix::fs::MetadataExt;
+    Ok(PackageMirrorIdentity {
+        first: metadata.dev(),
+        second: metadata.ino(),
+    })
+}
+
+#[cfg(windows)]
+fn package_mirror_identity(metadata: &std::fs::Metadata) -> Result<PackageMirrorIdentity, String> {
+    use std::os::windows::fs::MetadataExt;
+    Ok(PackageMirrorIdentity {
+        first: u64::from(metadata.volume_serial_number().ok_or_else(|| {
+            "directory metadata does not expose a volume serial number".to_string()
+        })?),
+        second: metadata
+            .file_index()
+            .ok_or_else(|| "directory metadata does not expose a file index".to_string())?,
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn package_mirror_identity(_metadata: &std::fs::Metadata) -> Result<PackageMirrorIdentity, String> {
+    Err("package mirror transactions require stable host filesystem identities".to_string())
+}
+
+/// Capture a real package directory's filesystem identity and complete
+/// symlink-only contents. The identity is checked on both sides of traversal,
+/// so a concurrent pathname replacement cannot be mistaken for one snapshot.
+fn inspect_package_mirror_snapshot(path: &Path) -> Result<PackageMirrorSnapshot, String> {
+    let before = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("inspect package mirror {}: {e}", path.display()))?;
+    if !before.is_dir() || before.file_type().is_symlink() {
+        return Err(format!(
+            "package mirror must be a real directory: {}",
+            path.display()
+        ));
+    }
+    let identity = package_mirror_identity(&before)?;
+    let links = read_package_mirror_links(path)?;
+    if links.is_empty() {
+        return Err(format!(
+            "package mirror has no resolver-owned symlink leaves: {}",
+            path.display()
+        ));
+    }
+    let after = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("reinspect package mirror {}: {e}", path.display()))?;
+    if !after.is_dir()
+        || after.file_type().is_symlink()
+        || package_mirror_identity(&after)? != identity
+    {
+        return Err(format!(
+            "package mirror identity changed while it was inspected: {}",
+            path.display()
+        ));
+    }
+    Ok(PackageMirrorSnapshot { identity, links })
+}
+
+fn validate_package_mirror_snapshot(
+    path: &Path,
+    expected: &PackageMirrorSnapshot,
+) -> Result<(), String> {
+    let actual = inspect_package_mirror_snapshot(path)?;
+    if &actual == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "package mirror identity or symlink contents changed: {}",
+            path.display()
+        ))
+    }
+}
+
+/// Delete only a private transaction child whose filesystem identity and exact
+/// resolver-owned link map still match the captured snapshot.
+fn remove_validated_package_transaction_tree(
+    path: &Path,
+    expected: &PackageMirrorSnapshot,
+    label: &str,
+) -> Result<(), String> {
+    if !path_entry_exists(path)? {
+        return Ok(());
+    }
+    validate_package_mirror_snapshot(path, expected)
+        .map_err(|e| format!("refusing to remove changed {label} {}: {e}", path.display()))?;
+    std::fs::remove_dir_all(path)
+        .map_err(|e| format!("remove validated {label} {}: {e}", path.display()))
+}
+
+/// A preparation failure may leave only a subset of the planned symlinks and
+/// their ancestor directories. Validate that subset before deleting it; any
+/// regular file, special entry, unexpected link, or unexpected directory
+/// leaves the private transaction quarantined for manual inspection.
+fn cleanup_prepared_package_transaction(
+    transaction_root: &Path,
+    stage_dir: &Path,
+    expected_links: &BTreeMap<PathBuf, PathBuf>,
+) -> Result<(), String> {
+    if path_entry_exists(stage_dir)? {
+        let before = std::fs::symlink_metadata(stage_dir).map_err(|e| {
+            format!(
+                "inspect partial package mirror {}: {e}",
+                stage_dir.display()
+            )
+        })?;
+        if !before.is_dir() || before.file_type().is_symlink() {
+            return Err(format!(
+                "partial package mirror is not a real directory: {}",
+                stage_dir.display()
+            ));
+        }
+        let identity = package_mirror_identity(&before)?;
+        let mut links = BTreeMap::new();
+        let mut directories = BTreeSet::new();
+        read_package_mirror_links_inner(stage_dir, stage_dir, &mut links, &mut directories)?;
+        if links
+            .iter()
+            .any(|(relative, target)| expected_links.get(relative) != Some(target))
+        {
+            return Err(format!(
+                "partial package mirror contains an unexpected symlink: {}",
+                stage_dir.display()
+            ));
+        }
+        let allowed_directories = package_mirror_link_ancestor_directories(expected_links);
+        if !directories.is_subset(&allowed_directories) {
+            return Err(format!(
+                "partial package mirror contains an unexpected directory: {}",
+                stage_dir.display()
+            ));
+        }
+        let after = std::fs::symlink_metadata(stage_dir).map_err(|e| {
+            format!(
+                "reinspect partial package mirror {}: {e}",
+                stage_dir.display()
+            )
+        })?;
+        if !after.is_dir()
+            || after.file_type().is_symlink()
+            || package_mirror_identity(&after)? != identity
+        {
+            return Err(format!(
+                "partial package mirror identity changed while it was inspected: {}",
+                stage_dir.display()
+            ));
+        }
+        std::fs::remove_dir_all(stage_dir).map_err(|e| {
+            format!(
+                "remove validated partial package mirror {}: {e}",
+                stage_dir.display()
+            )
+        })?;
+    }
+    std::fs::remove_dir(transaction_root).map_err(|e| {
+        format!(
+            "remove empty package mirror transaction {}: {e}",
+            transaction_root.display()
+        )
+    })
+}
+
+#[cfg(test)]
 fn remove_owned_transaction_path(path: &Path) -> Result<(), String> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_file() => {
@@ -5946,6 +7877,19 @@ pub fn run_compute_cache_key_sha(args: Vec<String>) -> Result<(), String> {
 /// On failure: every offending group is reported in the error.
 fn cmd_check(registry: &Registry) -> Result<(), String> {
     let manifests = registry.walk_all()?;
+    for (root_index, root) in registry.roots.iter().enumerate() {
+        let index = root.join("program-packages.json");
+        if index.is_file() {
+            // Each physical root owns an index for the ordered registry
+            // context beginning at that root. Higher-priority roots may add
+            // identities for the complete combined context, but must not make
+            // a lower root's committed suffix-context index appear stale.
+            let suffix_registry = Registry {
+                roots: registry.roots[root_index..].to_vec(),
+            };
+            cmd_check_program_package_index(root, &index, &suffix_registry)?;
+        }
+    }
 
     // Group: tool_name -> Vec<(consumer_name, &HostTool)>.
     let mut by_tool: BTreeMap<String, Vec<(String, &HostTool)>> = BTreeMap::new();
@@ -6041,6 +7985,25 @@ libs = ["lib/lib{name}.a"]
         fs::write(lib_dir.join("package.toml"), text).unwrap();
     }
 
+    fn write_build_revision(dir: &Path, name: &str, revision: u32) {
+        fs::write(
+            dir.join(name).join("build.toml"),
+            format!(
+                r#"
+script_path = "packages/registry/{name}/build-{name}.sh"
+inputs = []
+repo_url = "https://example.test/kandelo.git"
+commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision = {revision}
+
+[binary]
+index_url = "https://example.test/releases/download/binaries-abi-v{{abi}}/index.toml"
+"#
+            ),
+        )
+        .unwrap();
+    }
+
     fn tempdir(label: &str) -> PathBuf {
         let p = std::env::temp_dir()
             .join("wpk-xtask-test")
@@ -6048,6 +8011,679 @@ libs = ["lib/lib{name}.a"]
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    #[test]
+    fn relative_registry_roots_anchor_at_the_kandelo_repository() {
+        let repo = Path::new("/kandelo/source");
+        assert_eq!(
+            resolve_registry_root(repo, "third-party/registry"),
+            repo.join("third-party/registry"),
+        );
+        assert_eq!(
+            resolve_registry_root(repo, "/shared/registry"),
+            PathBuf::from("/shared/registry"),
+        );
+    }
+
+    #[test]
+    fn committed_program_package_projection_is_current() {
+        let registry_root = crate::repo_root().join("packages/registry");
+        let registry = Registry {
+            roots: vec![registry_root.clone()],
+        };
+        cmd_check_program_package_index(
+            &registry_root,
+            &registry_root.join("program-packages.json"),
+            &registry,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn program_package_projection_excludes_root_boot_artifacts() {
+        let registry_root = tempdir("program-projection-root-boot-artifacts");
+        write_program(
+            &registry_root,
+            "kernel",
+            "1.0.0",
+            &[],
+            ":",
+            &[("kernel", "kandelo-kernel.wasm")],
+        );
+        write_program(
+            &registry_root,
+            "userspace",
+            "1.0.0",
+            &[],
+            ":",
+            &[("userspace", "wasm_posix_userspace.wasm")],
+        );
+        write_program(
+            &registry_root,
+            "guest-command",
+            "1.0.0",
+            &[],
+            ":",
+            &[("guest-command", "guest-command.wasm")],
+        );
+        let registry = Registry {
+            roots: vec![registry_root.clone()],
+        };
+
+        let projection = program_package_index_for_root(&registry_root, &registry).unwrap();
+        assert_eq!(
+            projection
+                .packages
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["guest-command"],
+        );
+    }
+
+    #[test]
+    fn program_projection_binds_external_programs_to_full_first_hit_dependency_context() {
+        let main_root = tempdir("program-projection-context-main");
+        let external_root = tempdir("program-projection-context-external");
+        write(&main_root, "shared", "1.0.0", &[]);
+        write(&main_root, "middle", "1.0.0", &["shared@1.0.0"]);
+        write_build_revision(&main_root, "middle", 7);
+        write_program(
+            &main_root,
+            "direct-program",
+            "1.0.0",
+            &["shared@1.0.0"],
+            ":",
+            &[("direct-program", "direct-program.wasm")],
+        );
+        write_program(
+            &main_root,
+            "transitive-program",
+            "1.0.0",
+            &["middle@1.0.0"],
+            ":",
+            &[("transitive-program", "transitive-program.wasm")],
+        );
+        let source_dir = main_root.join("source-data");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(
+            source_dir.join("package.toml"),
+            r#"kind = "source"
+name = "source-data"
+version = "1.0.0"
+depends_on = []
+[source]
+url = "https://example.test/source-data-1.0.0.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+"#,
+        )
+        .unwrap();
+        write_program(
+            &external_root,
+            "external-program",
+            "1.0.0",
+            &["middle@1.0.0", "source-data@1.0.0"],
+            ":",
+            &[("external-program", "external-program.wasm")],
+        );
+        write_build_revision(&external_root, "external-program", 9);
+        let external_manifest = external_root.join("external-program/package.toml");
+        let external_text = fs::read_to_string(&external_manifest).unwrap();
+        fs::write(
+            &external_manifest,
+            external_text.replace(
+                "version = \"1.0.0\"\n",
+                "version = \"1.0.0\"\narches = [\"wasm32\", \"wasm64\"]\n",
+            ),
+        )
+        .unwrap();
+        write(&external_root, "shared", "1.0.0", &[]);
+
+        let main_registry = Registry {
+            roots: vec![main_root.clone()],
+        };
+        let main_projection = program_package_index_for_root(&main_root, &main_registry).unwrap();
+        let source_identity = &main_projection.identities["source-data"];
+        assert_eq!(
+            source_identity.cache_keys["wasm32"], source_identity.cache_keys["wasm64"],
+            "source-kind package context must remain architecture independent",
+        );
+
+        let combined_registry = Registry {
+            roots: vec![external_root.clone(), main_root.clone()],
+        };
+        let initial_external =
+            program_package_index_for_root(&external_root, &combined_registry).unwrap();
+        let expected_middle = package_context_cache_keys(
+            &combined_registry.load("middle").unwrap(),
+            &combined_registry,
+        )
+        .unwrap();
+        let expected_external = package_context_cache_keys(
+            &combined_registry.load("external-program").unwrap(),
+            &combined_registry,
+        )
+        .unwrap();
+        assert_eq!(
+            initial_external.identities["middle"].cache_keys, expected_middle,
+            "the projection must use the same build.toml revision as normal dependency resolution",
+        );
+        assert_eq!(
+            initial_external.identities["external-program"].cache_keys, expected_external,
+            "the projected program identity must use its build.toml revision",
+        );
+        assert_eq!(
+            initial_external.packages["external-program"].cache_keys, expected_external,
+            "the program projection and top-level identity must describe one exact generation",
+        );
+        assert_eq!(
+            initial_external.identities["shared"], main_projection.identities["shared"],
+            "an identical first-hit shadow must retain the same exact identity",
+        );
+        assert_eq!(
+            initial_external.identities["middle"], main_projection.identities["middle"],
+            "the highest-priority index must carry lower-root identities in the exact combined context",
+        );
+        assert_eq!(
+            initial_external.identities["source-data"], main_projection.identities["source-data"],
+            "architecture-independent lower-root sources must remain in the combined context",
+        );
+        for package_name in ["direct-program", "transitive-program"] {
+            assert_eq!(
+                initial_external.packages[package_name], main_projection.packages[package_name],
+                "an identical first-hit context must carry lower-root program projections into the complete top index",
+            );
+        }
+        let external_program = &initial_external.packages["external-program"];
+        for arch in ["wasm32", "wasm64"] {
+            assert_eq!(
+                external_program.dependency_closures[arch]
+                    .iter()
+                    .map(|identity| identity.package_name.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["middle", "shared", "source-data"],
+                "the projected closure must include direct and transitive dependencies",
+            );
+            let projected_source = external_program.dependency_closures[arch]
+                .iter()
+                .find(|identity| identity.package_name == "source-data")
+                .unwrap();
+            assert_eq!(projected_source.cache_key, source_identity.cache_keys[arch],);
+        }
+
+        let external_shared = external_root.join("shared/package.toml");
+        let changed = fs::read_to_string(&external_shared)
+            .unwrap()
+            .replace(&"0".repeat(64), &"1".repeat(64));
+        fs::write(&external_shared, changed).unwrap();
+        let changed_external =
+            program_package_index_for_root(&external_root, &combined_registry).unwrap();
+        assert_ne!(
+            changed_external.identities["shared"], main_projection.identities["shared"],
+            "a changed first-hit shadow must carry a different contextual identity",
+        );
+        assert_ne!(
+            changed_external.identities["middle"], main_projection.identities["middle"],
+            "a lower-root package identity must incorporate a changed transitive first-hit dependency",
+        );
+        for package_name in ["direct-program", "transitive-program"] {
+            assert_ne!(
+                changed_external.packages[package_name].cache_keys,
+                main_projection.packages[package_name].cache_keys,
+                "a dependency-only override must rekey each affected lower-root program in the complete top projection",
+            );
+            assert_eq!(
+                changed_external.packages[package_name].cache_keys,
+                changed_external.identities[package_name]
+                    .cache_keys
+                    .iter()
+                    .filter(|(arch, _)| {
+                        changed_external.packages[package_name]
+                            .arches
+                            .contains(arch)
+                    })
+                    .map(|(arch, key)| (arch.clone(), key.clone()))
+                    .collect(),
+                "the reprojected lower program must use its exact combined-context identity",
+            );
+        }
+        for arch in ["wasm32", "wasm64"] {
+            let projected_shared = changed_external.packages["external-program"]
+                .dependency_closures[arch]
+                .iter()
+                .find(|identity| identity.package_name == "shared")
+                .unwrap();
+            assert_eq!(
+                projected_shared.manifest_sha256,
+                changed_external.identities["shared"].manifest_sha256,
+            );
+            assert_eq!(
+                projected_shared.cache_key,
+                changed_external.identities["shared"].cache_keys[arch],
+            );
+            let projected_middle = changed_external.packages["external-program"]
+                .dependency_closures[arch]
+                .iter()
+                .find(|identity| identity.package_name == "middle")
+                .unwrap();
+            assert_eq!(
+                projected_middle.manifest_sha256,
+                changed_external.identities["middle"].manifest_sha256,
+            );
+            assert_eq!(
+                projected_middle.cache_key,
+                changed_external.identities["middle"].cache_keys[arch],
+            );
+        }
+    }
+
+    #[test]
+    fn registry_check_validates_each_root_index_in_its_suffix_context() {
+        let main_root = tempdir("program-index-check-context-main");
+        let external_root = tempdir("program-index-check-context-external");
+        write(&main_root, "shared", "1.0.0", &[]);
+        write_program(
+            &main_root,
+            "main-program",
+            "1.0.0",
+            &["shared@1.0.0"],
+            ":",
+            &[("main-program", "main-program.wasm")],
+        );
+        write(&external_root, "shared", "1.0.0", &[]);
+        let external_shared = external_root.join("shared/package.toml");
+        let changed = fs::read_to_string(&external_shared)
+            .unwrap()
+            .replace(&"0".repeat(64), &"1".repeat(64));
+        fs::write(&external_shared, changed).unwrap();
+
+        let main_registry = Registry {
+            roots: vec![main_root.clone()],
+        };
+        fs::write(
+            main_root.join("program-packages.json"),
+            serialize_program_package_index(&main_root, &main_registry).unwrap(),
+        )
+        .unwrap();
+
+        let combined_registry = Registry {
+            roots: vec![external_root.clone(), main_root.clone()],
+        };
+        fs::write(
+            external_root.join("program-packages.json"),
+            serialize_program_package_index(&external_root, &combined_registry).unwrap(),
+        )
+        .unwrap();
+
+        cmd_check(&combined_registry).expect(
+            "a lower root's suffix-context index must remain valid when a higher root shadows its dependency",
+        );
+    }
+
+    #[test]
+    fn complete_top_projection_excludes_a_lower_program_shadowed_by_a_non_program() {
+        let main_root = tempdir("program-projection-non-program-shadow-main");
+        let external_root = tempdir("program-projection-non-program-shadow-external");
+        write_program(
+            &main_root,
+            "same-name",
+            "1.0.0",
+            &[],
+            ":",
+            &[("same-name", "same-name.wasm")],
+        );
+        write(&external_root, "same-name", "2.0.0", &[]);
+
+        let main_registry = Registry {
+            roots: vec![main_root.clone()],
+        };
+        let main_projection = program_package_index_for_root(&main_root, &main_registry).unwrap();
+        assert!(main_projection.packages.contains_key("same-name"));
+
+        let combined_registry = Registry {
+            roots: vec![external_root.clone(), main_root.clone()],
+        };
+        let combined_projection =
+            program_package_index_for_root(&external_root, &combined_registry).unwrap();
+        assert!(
+            combined_projection.identities.contains_key("same-name"),
+            "the first-hit non-program still needs a contextual identity",
+        );
+        assert!(
+            !combined_projection.packages.contains_key("same-name"),
+            "a lower program must not survive a higher first-hit non-program shadow",
+        );
+    }
+
+    #[test]
+    fn program_projection_generation_requires_its_root_to_be_first_existing() {
+        let main_root = tempdir("program-projection-root-order-main");
+        let external_root = tempdir("program-projection-root-order-external");
+        write(&main_root, "main-library", "1.0.0", &[]);
+        write(&external_root, "external-library", "1.0.0", &[]);
+        let combined_registry = Registry {
+            roots: vec![external_root.clone(), main_root.clone()],
+        };
+
+        let error = program_package_index_for_root(&main_root, &combined_registry).unwrap_err();
+        assert!(
+            error.contains("not the highest-priority existing configured registry root")
+                && error.contains(&external_root.display().to_string()),
+            "got: {error}",
+        );
+    }
+
+    #[test]
+    fn program_package_projection_publication_never_exposes_partial_json() {
+        let root = tempdir("program-projection-atomic-readers");
+        let output = root.join("program-packages.json");
+        write_program_package_index_atomically(&output, br#"{"generation":0}"#).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader_stop = std::sync::Arc::clone(&stop);
+        let reader_output = output.clone();
+        let reader = std::thread::spawn(move || {
+            while !reader_stop.load(Ordering::Acquire) {
+                let bytes = fs::read(&reader_output).unwrap();
+                let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert!(value["generation"].as_u64().is_some());
+            }
+        });
+
+        for generation in 1..=100 {
+            let json = format!(r#"{{"generation":{generation}}}"#);
+            write_program_package_index_atomically(&output, json.as_bytes()).unwrap();
+        }
+        stop.store(true, Ordering::Release);
+        reader.join().unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(&output).unwrap()).unwrap()["generation"],
+            100
+        );
+    }
+
+    #[test]
+    fn program_package_projection_publish_failure_preserves_the_old_index() {
+        let root = tempdir("program-projection-publish-failure");
+        let output = root.join("program-packages.json");
+        fs::write(&output, b"{\"generation\":\"old\"}\n").unwrap();
+        let mut fail_replace = |_from: &Path, _to: &Path| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected projection publish failure",
+            ))
+        };
+
+        let error = write_program_package_index_atomically_with(
+            &output,
+            b"{\"generation\":\"new\"}\n",
+            &mut fail_replace,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("injected projection publish failure"),
+            "got: {error}"
+        );
+        assert_eq!(fs::read(&output).unwrap(), b"{\"generation\":\"old\"}\n");
+        assert!(fs::read_dir(&root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".index-transaction-")
+        }));
+    }
+
+    #[test]
+    fn program_package_projection_source_change_after_staging_preserves_the_old_index() {
+        let root = tempdir("program-projection-source-change");
+        let output = root.join("program-packages.json");
+        fs::write(&output, b"{\"generation\":\"old\"}\n").unwrap();
+        let mut refresh_changed_source = || Ok(b"{\"generation\":\"newer-source\"}\n".to_vec());
+        let mut replace = |from: &Path, to: &Path| fs::rename(from, to);
+
+        let error = write_program_package_index_atomically_with_source(
+            &output,
+            b"{\"generation\":\"staged\"}\n",
+            &mut refresh_changed_source,
+            &mut replace,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("registry changed after")
+                || error.contains("refresh program package index"),
+            "got: {error}"
+        );
+        assert_eq!(fs::read(&output).unwrap(), b"{\"generation\":\"old\"}\n");
+    }
+
+    #[test]
+    fn program_package_projection_stale_writer_preserves_a_newer_target() {
+        let root = tempdir("program-projection-target-cas");
+        let output = root.join("program-packages.json");
+        let newer_output = output.clone();
+        let staged = b"{\"generation\":\"staged\"}\n".to_vec();
+        let staged_for_refresh = staged.clone();
+        let mut publish_newer_target = move || {
+            fs::write(&newer_output, b"{\"generation\":\"newer\"}\n").unwrap();
+            Ok(staged_for_refresh.clone())
+        };
+        let mut replace = |from: &Path, to: &Path| fs::rename(from, to);
+
+        let error = write_program_package_index_atomically_with_source(
+            &output,
+            &staged,
+            &mut publish_newer_target,
+            &mut replace,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("target appeared before publication"),
+            "got: {error}"
+        );
+        assert_eq!(fs::read(&output).unwrap(), b"{\"generation\":\"newer\"}\n");
+    }
+
+    #[test]
+    fn program_package_projection_never_deletes_a_substituted_private_stage() {
+        let root = tempdir("program-projection-substituted-stage");
+        let output = root.join("program-packages.json");
+        let displaced_stage = root.join("displaced-stage");
+        fs::write(&output, b"{\"generation\":\"old\"}\n").unwrap();
+        let mut substitute_stage = |from: &Path, _to: &Path| {
+            fs::rename(from, &displaced_stage)?;
+            fs::write(from, b"user replacement")?;
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected failure after stage substitution",
+            ))
+        };
+
+        let error = write_program_package_index_atomically_with(
+            &output,
+            b"{\"generation\":\"new\"}\n",
+            &mut substitute_stage,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("injected failure after stage substitution")
+                && error.contains("refusing to remove changed"),
+            "got: {error}"
+        );
+        assert_eq!(fs::read(&output).unwrap(), b"{\"generation\":\"old\"}\n");
+        let transaction_root = fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains(".index-transaction-")
+            })
+            .unwrap();
+        assert_eq!(
+            fs::read(transaction_root.join("index")).unwrap(),
+            b"user replacement"
+        );
+        remove_owned_transaction_path(&transaction_root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn program_package_projection_publish_replaces_a_racing_symlink_not_its_target() {
+        let root = tempdir("program-projection-racing-symlink");
+        let output = root.join("program-packages.json");
+        let displaced = root.join("old-index");
+        let outside = root.join("outside");
+        fs::write(&output, b"{\"generation\":\"old\"}\n").unwrap();
+        fs::write(&outside, b"outside").unwrap();
+        let mut substitute_then_replace = |from: &Path, to: &Path| {
+            fs::rename(to, &displaced)?;
+            symlink_file(&outside, to)?;
+            fs::rename(from, to)
+        };
+
+        write_program_package_index_atomically_with(
+            &output,
+            b"{\"generation\":\"new\"}\n",
+            &mut substitute_then_replace,
+        )
+        .unwrap();
+        assert_eq!(fs::read(&output).unwrap(), b"{\"generation\":\"new\"}\n");
+        assert_eq!(fs::read(&outside).unwrap(), b"outside");
+        assert_eq!(fs::read(&displaced).unwrap(), b"{\"generation\":\"old\"}\n");
+    }
+
+    #[test]
+    fn program_package_projection_rejects_a_registry_mutation_between_snapshots() {
+        let registry_root = tempdir("program-projection-registry-mutation");
+        let package = registry_root.join("changing-program");
+        fs::create_dir_all(&package).unwrap();
+        let manifest_path = package.join("package.toml");
+        let manifest = |version: &str| {
+            format!(
+                r#"kind = "program"
+name = "changing-program"
+version = "{version}"
+depends_on = []
+[source]
+url = "https://example.test/changing-program-{version}.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+[[outputs]]
+name = "changing-command"
+wasm = "changing-command.wasm"
+"#,
+            )
+        };
+        fs::write(&manifest_path, manifest("1.0")).unwrap();
+        let registry = Registry {
+            roots: vec![registry_root.clone()],
+        };
+        let mut mutate = || fs::write(&manifest_path, manifest("2.0")).unwrap();
+
+        let error = program_package_index_for_root_with(&registry_root, &registry, &mut mutate)
+            .unwrap_err();
+        assert!(
+            error.contains("registry changed while generating"),
+            "got: {error}",
+        );
+    }
+
+    #[test]
+    fn program_package_projection_rejects_cross_package_mirror_collisions() {
+        let registry = tempdir("program-projection-collision");
+        for package in ["first", "second"] {
+            let directory = registry.join(package);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(
+                directory.join("package.toml"),
+                format!(
+                    r#"kind = "program"
+name = "{package}"
+version = "1.0"
+depends_on = []
+[source]
+url = "https://example.test/{package}.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+[[outputs]]
+name = "shared"
+wasm = "shared.wasm"
+"#
+                ),
+            )
+            .unwrap();
+        }
+
+        let selected = Registry {
+            roots: vec![registry.clone()],
+        };
+        let error = program_package_index_for_root(&registry, &selected).unwrap_err();
+        assert!(
+            error.contains("conflict") && error.contains("shared.wasm"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn program_package_projection_rejects_file_directory_mirror_collisions() {
+        let registry = tempdir("program-projection-file-directory-collision");
+        let scalar = registry.join("scalar-owner");
+        fs::create_dir_all(&scalar).unwrap();
+        fs::write(
+            scalar.join("package.toml"),
+            r#"kind = "program"
+name = "scalar-owner"
+version = "1.0"
+depends_on = []
+[source]
+url = "https://example.test/scalar.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+[[outputs]]
+name = "directory-owner"
+wasm = "artifact"
+"#,
+        )
+        .unwrap();
+        let directory = registry.join("directory-owner");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("package.toml"),
+            r#"kind = "program"
+name = "directory-owner"
+version = "1.0"
+depends_on = []
+[source]
+url = "https://example.test/directory.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+[[outputs]]
+name = "first"
+wasm = "first.wasm"
+[[outputs]]
+name = "second"
+wasm = "second.wasm"
+"#,
+        )
+        .unwrap();
+
+        let selected = Registry {
+            roots: vec![registry.clone()],
+        };
+        let error = program_package_index_for_root(&registry, &selected).unwrap_err();
+        assert!(
+            error.contains("programs/wasm32/directory-owner")
+                && error.contains("programs/wasm32/directory-owner/first.wasm"),
+            "got: {error}"
+        );
     }
 
     fn fixture_git(repo: &Path, args: &[&str]) -> String {
@@ -6550,17 +9186,11 @@ index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
 "#,
         )
         .unwrap();
-        let registry = Registry {
-            roots: vec![root],
-        };
+        let registry = Registry { roots: vec![root] };
 
-        let actual = compute_cache_key_sha_for_package(
-            &package,
-            &registry,
-            TargetArch::Wasm32,
-            TEST_ABI,
-        )
-        .unwrap();
+        let actual =
+            compute_cache_key_sha_for_package(&package, &registry, TargetArch::Wasm32, TEST_ABI)
+                .unwrap();
 
         // Golden produced by the resolver before build.toml learned the
         // optional [[git_inputs]] section. Merely adding that schema must not
@@ -10203,6 +12833,9 @@ guest_path = "/usr/share/local-python/python-runtime.zip"
         .unwrap()
     }
 
+    const LOCAL_GENERATION_CACHE_KEY: &str =
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
     #[test]
     fn direct_local_generation_waits_for_complete_closure_and_never_mutates_fetched_targets() {
         let root = tempdir("direct-local-generation");
@@ -10230,6 +12863,7 @@ guest_path = "/usr/share/local-python/python-runtime.zip"
 
         let first = install_local_artifact(
             &manifest,
+            LOCAL_GENERATION_CACHE_KEY,
             "python.wasm",
             &local_wasm,
             "build-one",
@@ -10241,7 +12875,11 @@ guest_path = "/usr/share/local-python/python-runtime.zip"
             .join(LOCAL_GENERATIONS_DIR)
             .join("wasm32")
             .join("local-python")
+            .join(LOCAL_GENERATION_CACHE_KEY)
             .join("build-one");
+        let generation = fs::canonicalize(generation.parent().unwrap())
+            .unwrap()
+            .join(generation.file_name().unwrap());
         assert_eq!(
             first,
             LocalArtifactInstall::Staged {
@@ -10268,7 +12906,9 @@ guest_path = "/usr/share/local-python/python-runtime.zip"
         }
         assert!(!generation.join("share/python-runtime.zip").exists());
 
-        let live = binaries.join("programs/wasm32/local-python");
+        let live = fs::canonicalize(binaries.join("programs/wasm32"))
+            .unwrap()
+            .join("local-python");
         assert_eq!(
             fs::read(live.join("python.wasm")).unwrap(),
             fetched_wasm_bytes
@@ -10282,6 +12922,7 @@ guest_path = "/usr/share/local-python/python-runtime.zip"
 
         let second = install_local_artifact(
             &manifest,
+            LOCAL_GENERATION_CACHE_KEY,
             "share/python-runtime.zip",
             &local_runtime,
             "build-one",
@@ -10321,11 +12962,13 @@ guest_path = "/usr/share/local-python/python-runtime.zip"
         );
         assert_eq!(fs::read(&fetched_wasm).unwrap(), fetched_wasm_bytes);
         assert_eq!(fs::read(&fetched_runtime).unwrap(), b"FETCHED-RUNTIME");
-        assert!(generation
-            .parent()
-            .unwrap()
-            .join(".build-one.publication-claimed")
-            .is_file());
+        assert!(
+            generation
+                .parent()
+                .unwrap()
+                .join(".build-one.publication-claimed")
+                .is_file()
+        );
 
         let second_wasm = sources.join("python-two.wasm");
         let second_runtime = sources.join("python-runtime-two.zip");
@@ -10336,6 +12979,7 @@ guest_path = "/usr/share/local-python/python-runtime.zip"
         assert!(matches!(
             install_local_artifact(
                 &manifest,
+                LOCAL_GENERATION_CACHE_KEY,
                 "python.wasm",
                 &second_wasm,
                 "build-two",
@@ -10347,6 +12991,7 @@ guest_path = "/usr/share/local-python/python-runtime.zip"
         ));
         install_local_artifact(
             &manifest,
+            LOCAL_GENERATION_CACHE_KEY,
             "share/python-runtime.zip",
             &second_runtime,
             "build-two",
@@ -10365,6 +13010,7 @@ guest_path = "/usr/share/local-python/python-runtime.zip"
 
         let stale_error = install_local_artifact(
             &manifest,
+            LOCAL_GENERATION_CACHE_KEY,
             "share/python-runtime.zip",
             &local_runtime,
             "build-one",
@@ -10380,6 +13026,7 @@ guest_path = "/usr/share/local-python/python-runtime.zip"
         fs::write(&local_runtime, b"DIFFERENT-RUNTIME").unwrap();
         let error = install_local_artifact(
             &manifest,
+            LOCAL_GENERATION_CACHE_KEY,
             "share/python-runtime.zip",
             &local_runtime,
             "build-one",
@@ -10399,6 +13046,7 @@ guest_path = "/usr/share/local-python/python-runtime.zip"
         fs::remove_dir_all(&generation).unwrap();
         let missing_claimed_error = install_local_artifact(
             &manifest,
+            LOCAL_GENERATION_CACHE_KEY,
             "share/python-runtime.zip",
             &local_runtime,
             "build-one",
@@ -10454,6 +13102,7 @@ wasm = "single-local.wasm"
 
         let outcome = install_local_artifact(
             &manifest,
+            LOCAL_GENERATION_CACHE_KEY,
             "single-local.wasm",
             &local,
             "ignored-for-single",
@@ -10464,16 +13113,452 @@ wasm = "single-local.wasm"
         assert_eq!(
             outcome,
             LocalArtifactInstall::Replaced {
-                mirror: destination.clone(),
+                mirror: fs::canonicalize(destination.parent().unwrap())
+                    .unwrap()
+                    .join(destination.file_name().unwrap()),
             }
         );
         assert_eq!(fs::read(&fetched).unwrap(), fetched_bytes);
         assert_eq!(fs::read(&destination).unwrap(), local_bytes);
-        assert!(!destination
-            .symlink_metadata()
+        assert!(
+            destination
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let target = fs::read_link(&destination).unwrap();
+        assert!(
+            target
+                .components()
+                .any(|component| component.as_os_str() == LOCAL_GENERATION_CACHE_KEY)
+        );
+    }
+
+    fn scalar_local_transaction_manifest() -> DepsManifest {
+        DepsManifest::parse(
+            r#"kind = "program"
+name = "scalar-local"
+version = "1.0"
+depends_on = []
+[source]
+url = "https://example.test/scalar-local.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+[[outputs]]
+name = "scalar-local"
+wasm = "scalar-local.wasm"
+"#,
+            PathBuf::from("/scalar-local"),
+        )
+        .unwrap()
+    }
+
+    fn assert_no_local_file_transaction_siblings(destination: &Path) {
+        let parent = destination.parent().unwrap();
+        let file_name = destination.file_name().unwrap().to_string_lossy();
+        let prefixes = [
+            format!(".{file_name}.local-transaction-"),
+            format!(".{file_name}.symlink-transaction-"),
+        ];
+        let leftovers: Vec<_> = fs::read_dir(parent)
             .unwrap()
-            .file_type()
-            .is_symlink());
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| {
+                prefixes
+                    .iter()
+                    .any(|prefix| name.to_string_lossy().starts_with(prefix))
+            })
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "local file transaction left private siblings: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn scalar_local_transaction_detects_a_directory_swap_and_restores_it() {
+        let root = tempdir("scalar-local-directory-swap");
+        let source = root.join("source.wasm");
+        let destination = root.join("scalar-local.wasm");
+        let displaced_old = root.join("displaced-old");
+        let replacement = root.join("replacement");
+        fs::write(&source, minimal_executable_wasm()).unwrap();
+        fs::write(&destination, b"old").unwrap();
+        fs::create_dir(&replacement).unwrap();
+        fs::write(replacement.join("sentinel"), b"user-owned").unwrap();
+        let manifest = scalar_local_transaction_manifest();
+
+        let mut transaction = LocalFileTransaction::prepare(
+            &manifest,
+            &source,
+            &destination,
+            ForkInstrumentationPolicy::Auto,
+            &EXECUTABLE_PROGRAM_REQUIRED_EXPORTS,
+        )
+        .unwrap();
+        let mut first_rename = true;
+        let mut swap_before_rename = |from: &Path, to: &Path| {
+            if first_rename {
+                first_rename = false;
+                fs::rename(from, &displaced_old)?;
+                fs::rename(&replacement, from)?;
+            }
+            fs::rename(from, to)
+        };
+        let error = transaction
+            .move_existing_aside_with(&manifest, &mut swap_before_rename)
+            .unwrap_err();
+        assert!(
+            error.contains("ownership changed during quarantine") && error.contains("restored"),
+            "got: {error}"
+        );
+        drop(transaction);
+
+        assert_eq!(
+            fs::read(destination.join("sentinel")).unwrap(),
+            b"user-owned"
+        );
+        assert_eq!(fs::read(&displaced_old).unwrap(), b"old");
+        assert_no_local_file_transaction_siblings(&destination);
+    }
+
+    #[test]
+    fn scalar_local_transaction_never_deletes_a_tampered_private_backup() {
+        let root = tempdir("scalar-local-tampered-backup");
+        let source = root.join("source.wasm");
+        let destination = root.join("scalar-local.wasm");
+        let source_bytes = minimal_executable_wasm();
+        fs::write(&source, &source_bytes).unwrap();
+        fs::write(&destination, b"old").unwrap();
+        let manifest = scalar_local_transaction_manifest();
+        let mut transaction = LocalFileTransaction::prepare(
+            &manifest,
+            &source,
+            &destination,
+            ForkInstrumentationPolicy::Auto,
+            &EXECUTABLE_PROGRAM_REQUIRED_EXPORTS,
+        )
+        .unwrap();
+        let transaction_root = transaction.transaction_root.clone();
+        let backup = transaction.backup.clone();
+        let displaced_backup = root.join("displaced-backup");
+        let mut rename = |from: &Path, to: &Path| fs::rename(from, to);
+        transaction
+            .move_existing_aside_with(&manifest, &mut rename)
+            .unwrap();
+        fs::rename(&backup, &displaced_backup).unwrap();
+        fs::create_dir(&backup).unwrap();
+        fs::write(backup.join("sentinel"), b"do-not-delete").unwrap();
+        transaction.publish_with(&manifest, &mut rename).unwrap();
+        let error = transaction.finish().unwrap_err();
+        assert!(error.contains("refusing to remove changed"), "got: {error}");
+
+        assert_eq!(fs::read(&destination).unwrap(), source_bytes);
+        assert_eq!(fs::read(backup.join("sentinel")).unwrap(), b"do-not-delete");
+        assert_eq!(fs::read(&displaced_backup).unwrap(), b"old");
+        remove_owned_transaction_path(&transaction_root).unwrap();
+        assert_no_local_file_transaction_siblings(&destination);
+    }
+
+    #[test]
+    fn scalar_local_transaction_detects_same_length_backup_rewrites() {
+        let root = tempdir("scalar-local-rewritten-backup");
+        let source = root.join("source.wasm");
+        let destination = root.join("scalar-local.wasm");
+        let source_bytes = minimal_executable_wasm();
+        fs::write(&source, &source_bytes).unwrap();
+        fs::write(&destination, b"old").unwrap();
+        let manifest = scalar_local_transaction_manifest();
+        let mut transaction = LocalFileTransaction::prepare(
+            &manifest,
+            &source,
+            &destination,
+            ForkInstrumentationPolicy::Auto,
+            &EXECUTABLE_PROGRAM_REQUIRED_EXPORTS,
+        )
+        .unwrap();
+        let transaction_root = transaction.transaction_root.clone();
+        let backup = transaction.backup.clone();
+        let mut rename = |from: &Path, to: &Path| fs::rename(from, to);
+        transaction
+            .move_existing_aside_with(&manifest, &mut rename)
+            .unwrap();
+        let old_modified = fs::metadata(&backup).unwrap().modified().unwrap();
+        let mut backup_file = fs::OpenOptions::new().write(true).open(&backup).unwrap();
+        std::io::Write::write_all(&mut backup_file, b"new").unwrap();
+        backup_file
+            .set_times(std::fs::FileTimes::new().set_modified(old_modified))
+            .unwrap();
+        drop(backup_file);
+        transaction.publish_with(&manifest, &mut rename).unwrap();
+        let error = transaction.finish().unwrap_err();
+        assert!(error.contains("refusing to remove changed"), "got: {error}");
+
+        assert_eq!(fs::read(&destination).unwrap(), source_bytes);
+        assert_eq!(fs::read(&backup).unwrap(), b"new");
+        remove_owned_transaction_path(&transaction_root).unwrap();
+        assert_no_local_file_transaction_siblings(&destination);
+    }
+
+    #[test]
+    fn scalar_local_transaction_leaves_a_concurrent_winner_intact() {
+        let root = tempdir("scalar-local-concurrent-winner");
+        let source = root.join("source.wasm");
+        let destination = root.join("scalar-local.wasm");
+        fs::write(&source, minimal_executable_wasm()).unwrap();
+        fs::write(&destination, b"old").unwrap();
+        let manifest = scalar_local_transaction_manifest();
+        let mut transaction = LocalFileTransaction::prepare(
+            &manifest,
+            &source,
+            &destination,
+            ForkInstrumentationPolicy::Auto,
+            &EXECUTABLE_PROGRAM_REQUIRED_EXPORTS,
+        )
+        .unwrap();
+        let mut rename = |from: &Path, to: &Path| fs::rename(from, to);
+        transaction
+            .move_existing_aside_with(&manifest, &mut rename)
+            .unwrap();
+        fs::write(&destination, b"concurrent-winner").unwrap();
+        let error = transaction
+            .publish_with(&manifest, &mut rename)
+            .unwrap_err();
+        assert!(
+            error.contains("another writer installed an entry"),
+            "got: {error}"
+        );
+        drop(transaction);
+
+        assert_eq!(fs::read(&destination).unwrap(), b"concurrent-winner");
+        assert_no_local_file_transaction_siblings(&destination);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scalar_local_transaction_reserves_its_private_parent_as_mode_0700() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempdir("scalar-local-private-mode");
+        let source = root.join("source.wasm");
+        let destination = root.join("scalar-local.wasm");
+        fs::write(&source, minimal_executable_wasm()).unwrap();
+        let manifest = scalar_local_transaction_manifest();
+        let transaction = LocalFileTransaction::prepare(
+            &manifest,
+            &source,
+            &destination,
+            ForkInstrumentationPolicy::Auto,
+            &EXECUTABLE_PROGRAM_REQUIRED_EXPORTS,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::symlink_metadata(&transaction.transaction_root)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        drop(transaction);
+        assert_no_local_file_transaction_siblings(&destination);
+    }
+
+    #[test]
+    fn scalar_local_transaction_revalidates_policy_after_the_source_changes() {
+        let root = tempdir("scalar-local-source-policy-race");
+        let source = root.join("source.wasm");
+        let destination = root.join("scalar-local.wasm");
+        fs::write(&source, minimal_executable_wasm()).unwrap();
+        fs::write(&destination, b"old").unwrap();
+        validate_wasm_artifact_policy(
+            &source,
+            ForkInstrumentationPolicy::Auto,
+            &EXECUTABLE_PROGRAM_REQUIRED_EXPORTS,
+        )
+        .unwrap();
+
+        // Model a rebuild replacing the same source pathname after the caller's
+        // initial validation but before the transaction copies it.
+        fs::write(&source, b"not wasm anymore").unwrap();
+        let manifest = scalar_local_transaction_manifest();
+        let error = match LocalFileTransaction::prepare(
+            &manifest,
+            &source,
+            &destination,
+            ForkInstrumentationPolicy::Auto,
+            &EXECUTABLE_PROGRAM_REQUIRED_EXPORTS,
+        ) {
+            Ok(_) => panic!("invalid staged Wasm unexpectedly passed policy validation"),
+            Err(error) => error,
+        };
+        assert!(error.contains("is not a wasm binary"), "got: {error}");
+        assert_eq!(fs::read(&destination).unwrap(), b"old");
+        assert_no_local_file_transaction_siblings(&destination);
+    }
+
+    #[test]
+    fn scalar_symlink_transaction_refuses_regular_files_and_directories() {
+        let root = tempdir("scalar-symlink-refuses-user-entries");
+        let target = root.join("target.wasm");
+        let regular = root.join("regular.wasm");
+        let directory = root.join("directory.wasm");
+        fs::write(&target, minimal_executable_wasm()).unwrap();
+        fs::write(&regular, b"user regular file").unwrap();
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("sentinel"), b"user directory").unwrap();
+        let manifest = scalar_local_transaction_manifest();
+
+        for destination in [&regular, &directory] {
+            let mut transaction =
+                LocalFileTransaction::prepare_symlink(&manifest, &target, destination).unwrap();
+            let mut rename = |from: &Path, to: &Path| fs::rename(from, to);
+            let error = transaction
+                .move_existing_aside_with(&manifest, &mut rename)
+                .unwrap_err();
+            assert!(
+                error.contains("refusing to replace regular file")
+                    || error.contains("refusing to replace non-file"),
+                "got: {error}",
+            );
+            drop(transaction);
+            assert_no_local_file_transaction_siblings(destination);
+        }
+        assert_eq!(fs::read(&regular).unwrap(), b"user regular file");
+        assert_eq!(
+            fs::read(directory.join("sentinel")).unwrap(),
+            b"user directory",
+        );
+    }
+
+    #[test]
+    fn scalar_symlink_transaction_preserves_the_old_link_on_publish_failure() {
+        let root = tempdir("scalar-symlink-publish-failure");
+        let old_target = root.join("old.wasm");
+        let new_target = root.join("new.wasm");
+        let destination = root.join("scalar-local.wasm");
+        fs::write(&old_target, b"old").unwrap();
+        fs::write(&new_target, b"new").unwrap();
+        symlink_file(&old_target, &destination).unwrap();
+        let manifest = scalar_local_transaction_manifest();
+        let mut transaction =
+            LocalFileTransaction::prepare_symlink(&manifest, &new_target, &destination).unwrap();
+        let mut rename = |from: &Path, to: &Path| fs::rename(from, to);
+        transaction
+            .move_existing_aside_with(&manifest, &mut rename)
+            .unwrap();
+        let mut fail_publish = |_stage: &Path, _destination: &Path| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected scalar symlink publication failure",
+            ))
+        };
+        let error = transaction
+            .publish_with_operation(&manifest, &mut rename, &mut fail_publish)
+            .unwrap_err();
+        assert!(
+            error.contains("injected scalar symlink publication failure"),
+            "got: {error}",
+        );
+        drop(transaction);
+
+        assert_eq!(fs::read_link(&destination).unwrap(), old_target);
+        assert_no_local_file_transaction_siblings(&destination);
+    }
+
+    #[test]
+    fn scalar_symlink_transaction_leaves_a_concurrent_winner_intact() {
+        let root = tempdir("scalar-symlink-concurrent-winner");
+        let old_target = root.join("old.wasm");
+        let new_target = root.join("new.wasm");
+        let winner = root.join("winner.wasm");
+        let destination = root.join("scalar-local.wasm");
+        fs::write(&old_target, b"old").unwrap();
+        fs::write(&new_target, b"new").unwrap();
+        fs::write(&winner, b"winner").unwrap();
+        symlink_file(&old_target, &destination).unwrap();
+        let manifest = scalar_local_transaction_manifest();
+        let mut transaction =
+            LocalFileTransaction::prepare_symlink(&manifest, &new_target, &destination).unwrap();
+        let mut rename = |from: &Path, to: &Path| fs::rename(from, to);
+        transaction
+            .move_existing_aside_with(&manifest, &mut rename)
+            .unwrap();
+        symlink_file(&winner, &destination).unwrap();
+        let error = transaction
+            .publish_with(&manifest, &mut rename)
+            .unwrap_err();
+        assert!(
+            error.contains("another writer installed an entry"),
+            "got: {error}",
+        );
+        drop(transaction);
+
+        assert_eq!(fs::read_link(&destination).unwrap(), winner);
+        assert_no_local_file_transaction_siblings(&destination);
+    }
+
+    #[test]
+    fn scalar_symlink_transaction_never_deletes_a_tampered_private_backup() {
+        let root = tempdir("scalar-symlink-tampered-backup");
+        let old_target = root.join("old.wasm");
+        let new_target = root.join("new.wasm");
+        let foreign_target = root.join("foreign.wasm");
+        let destination = root.join("scalar-local.wasm");
+        fs::write(&old_target, b"old").unwrap();
+        fs::write(&new_target, b"new").unwrap();
+        fs::write(&foreign_target, b"foreign").unwrap();
+        symlink_file(&old_target, &destination).unwrap();
+        let manifest = scalar_local_transaction_manifest();
+        let mut transaction =
+            LocalFileTransaction::prepare_symlink(&manifest, &new_target, &destination).unwrap();
+        let transaction_root = transaction.transaction_root.clone();
+        let backup = transaction.backup.clone();
+        let displaced_backup = root.join("displaced-backup");
+        let mut rename = |from: &Path, to: &Path| fs::rename(from, to);
+        transaction
+            .move_existing_aside_with(&manifest, &mut rename)
+            .unwrap();
+        fs::rename(&backup, &displaced_backup).unwrap();
+        symlink_file(&foreign_target, &backup).unwrap();
+        transaction.publish_with(&manifest, &mut rename).unwrap();
+        let error = transaction.finish().unwrap_err();
+        assert!(error.contains("refusing to remove changed"), "got: {error}",);
+
+        assert_eq!(
+            fs::read_link(&destination).unwrap(),
+            fs::canonicalize(&new_target).unwrap(),
+        );
+        assert_eq!(fs::read_link(&backup).unwrap(), foreign_target);
+        assert_eq!(fs::read_link(&displaced_backup).unwrap(), old_target);
+        remove_owned_transaction_path(&transaction_root).unwrap();
+        assert_no_local_file_transaction_siblings(&destination);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scalar_symlink_transaction_reserves_its_private_parent_as_mode_0700() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempdir("scalar-symlink-private-mode");
+        let target = root.join("target.wasm");
+        let destination = root.join("scalar-local.wasm");
+        fs::write(&target, minimal_executable_wasm()).unwrap();
+        let manifest = scalar_local_transaction_manifest();
+        let transaction =
+            LocalFileTransaction::prepare_symlink(&manifest, &target, &destination).unwrap();
+        assert_eq!(
+            fs::symlink_metadata(&transaction.transaction_root)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700,
+        );
+        drop(transaction);
+        assert_no_local_file_transaction_siblings(&destination);
     }
 
     fn atomic_mirror_manifest(runtime_artifact: &str) -> DepsManifest {
@@ -10534,10 +13619,7 @@ guest_path = "/usr/share/atomic-shell/runtime/index.dat"
     fn assert_no_atomic_mirror_transaction_siblings(package_dir: &Path) {
         let parent = package_dir.parent().unwrap();
         let package_name = package_dir.file_name().unwrap().to_string_lossy();
-        let transaction_prefixes = [
-            format!(".{package_name}.stage-"),
-            format!(".{package_name}.backup-"),
-        ];
+        let transaction_prefixes = [format!(".{package_name}.transaction-")];
         let leftovers: Vec<String> = fs::read_dir(parent)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
@@ -10661,6 +13743,164 @@ guest_path = "/usr/share/atomic-shell/runtime/index.dat"
         assert_no_atomic_mirror_transaction_siblings(&live_dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn matching_fetched_package_mirror_is_a_true_no_op() {
+        use std::os::unix::fs::MetadataExt;
+
+        let root = tempdir("atomic-mirror-no-op");
+        let binaries = root.join("binaries");
+        let canonical = root.join("cache/identity");
+        let manifest = atomic_mirror_manifest("share/runtime/nested/index.dat");
+        populate_atomic_mirror_identity(&canonical, &manifest, "same");
+
+        place_binaries_symlinks(&manifest, &canonical, &binaries, TEST_ARCH).unwrap();
+        let live = binaries.join("programs/wasm32/atomic-shell");
+        let before = fs::symlink_metadata(&live).unwrap().ino();
+        place_binaries_symlinks(&manifest, &canonical, &binaries, TEST_ARCH).unwrap();
+        let after = fs::symlink_metadata(&live).unwrap().ino();
+
+        assert_eq!(
+            before, after,
+            "no-op publication replaced the live directory"
+        );
+        assert_no_atomic_mirror_transaction_siblings(&live);
+    }
+
+    #[test]
+    fn fetched_multi_to_scalar_transition_leaves_the_old_directory_inert() {
+        let root = tempdir("atomic-mirror-multi-to-scalar");
+        let binaries = root.join("binaries");
+        let old_canonical = root.join("cache/old");
+        let old_manifest = atomic_mirror_manifest("share/runtime/index.dat");
+        populate_atomic_mirror_identity(&old_canonical, &old_manifest, "old");
+        place_binaries_symlinks(&old_manifest, &old_canonical, &binaries, TEST_ARCH).unwrap();
+        let old_live = binaries.join("programs/wasm32/atomic-shell");
+        assert!(old_live.is_dir());
+
+        let scalar_manifest = DepsManifest::parse(
+            r#"kind = "program"
+name = "atomic-shell"
+version = "2.0"
+depends_on = []
+[source]
+url = "https://example.test/atomic-shell.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+[[outputs]]
+name = "shell"
+wasm = "shell.zip"
+"#,
+            PathBuf::from("/atomic-shell"),
+        )
+        .unwrap();
+        let scalar_canonical = root.join("cache/scalar");
+        fs::create_dir_all(&scalar_canonical).unwrap();
+        fs::write(scalar_canonical.join("shell.zip"), b"scalar").unwrap();
+
+        place_binaries_symlinks(&scalar_manifest, &scalar_canonical, &binaries, TEST_ARCH).unwrap();
+        assert!(
+            old_live.is_dir(),
+            "scalar publication must not delete a path a concurrent package publisher can own"
+        );
+        assert_eq!(
+            fs::read(old_live.join("shell.vfs.zst")).unwrap(),
+            b"old-output-image/shell.vfs.zst\n"
+        );
+        assert_eq!(
+            fs::read_link(binaries.join("programs/wasm32/shell.zip")).unwrap(),
+            fs::canonicalize(&scalar_canonical)
+                .unwrap()
+                .join("shell.zip")
+        );
+    }
+
+    #[test]
+    fn scalar_publication_never_removes_a_package_named_user_directory() {
+        let root = tempdir("scalar-preserves-user-directory");
+        let binaries = root.join("binaries");
+        let arch_root = binaries.join("programs/wasm32");
+        let user_directory = arch_root.join("scalar-package");
+        fs::create_dir_all(&user_directory).unwrap();
+        fs::write(user_directory.join("sentinel"), b"user-owned").unwrap();
+
+        let manifest = DepsManifest::parse(
+            r#"kind = "program"
+name = "scalar-package"
+version = "1.0"
+depends_on = []
+[source]
+url = "https://example.test/scalar.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+[[outputs]]
+name = "scalar"
+wasm = "scalar.zip"
+"#,
+            PathBuf::from("/scalar-package"),
+        )
+        .unwrap();
+        let canonical = root.join("cache/scalar");
+        fs::create_dir_all(&canonical).unwrap();
+        fs::write(canonical.join("scalar.zip"), b"scalar").unwrap();
+
+        place_binaries_symlinks(&manifest, &canonical, &binaries, TEST_ARCH).unwrap();
+        assert_eq!(
+            fs::read(user_directory.join("sentinel")).unwrap(),
+            b"user-owned"
+        );
+        assert_eq!(
+            fs::read_link(arch_root.join("scalar.zip")).unwrap(),
+            fs::canonicalize(&canonical).unwrap().join("scalar.zip")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fetched_publication_rejects_symlinked_root_programs_and_arch_ancestors() {
+        let manifest = atomic_mirror_manifest("share/runtime/nested/index.dat");
+        for attacked_component in ["root", "programs", "arch"] {
+            let root = tempdir(&format!("atomic-mirror-symlink-{attacked_component}"));
+            let canonical = root.join("cache/identity");
+            let outside = root.join("outside");
+            fs::create_dir_all(&outside).unwrap();
+            fs::write(outside.join("sentinel"), b"outside").unwrap();
+            populate_atomic_mirror_identity(&canonical, &manifest, "new");
+
+            let real_binaries = root.join("binaries-real");
+            let binaries = root.join("binaries");
+            match attacked_component {
+                "root" => {
+                    fs::create_dir_all(&real_binaries).unwrap();
+                    symlink_file(&real_binaries, &binaries).unwrap();
+                }
+                "programs" => {
+                    fs::create_dir_all(&binaries).unwrap();
+                    symlink_file(&outside, &binaries.join("programs")).unwrap();
+                }
+                "arch" => {
+                    fs::create_dir_all(binaries.join("programs")).unwrap();
+                    symlink_file(&outside, &binaries.join("programs/wasm32")).unwrap();
+                }
+                _ => unreachable!(),
+            }
+
+            let error =
+                place_binaries_symlinks(&manifest, &canonical, &binaries, TEST_ARCH).unwrap_err();
+            assert!(
+                error.contains("real directory") || error.contains("file or symlink"),
+                "unexpected {attacked_component} rejection: {error}"
+            );
+            assert_eq!(fs::read(outside.join("sentinel")).unwrap(), b"outside");
+            assert!(
+                !outside.join("atomic-shell").exists(),
+                "publication escaped through {attacked_component}"
+            );
+        }
+    }
+
     #[test]
     fn multi_output_mirror_validates_nested_runtime_and_collisions_before_destination_mutation() {
         let root = tempdir("atomic-mirror-preflight");
@@ -10746,6 +13986,105 @@ guest_path = "/usr/share/atomic-shell/runtime/index.dat"
     }
 
     #[test]
+    fn multi_output_mirror_refuses_a_non_owned_live_directory_without_mutating_it() {
+        let root = tempdir("atomic-mirror-refuse-user-directory");
+        let arch_root = root.join("binaries/programs/wasm32");
+        let canonical = root.join("cache/new-identity");
+        let manifest = atomic_mirror_manifest("share/runtime/nested/index.dat");
+        populate_atomic_mirror_identity(&canonical, &manifest, "new");
+        let plan = PackageClosureMirrorPlan::validate(&manifest, &canonical, &arch_root).unwrap();
+        let live_dir = plan.package_dir.clone();
+        fs::create_dir_all(&live_dir).unwrap();
+        fs::write(live_dir.join("sentinel"), b"user-owned").unwrap();
+
+        let error = install_package_closure_mirror(plan).unwrap_err();
+        assert!(
+            error.contains("without resolver ownership proof"),
+            "got: {error}"
+        );
+        assert_eq!(fs::read(live_dir.join("sentinel")).unwrap(), b"user-owned");
+        assert_no_atomic_mirror_transaction_siblings(&live_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn multi_output_mirror_refuses_a_symlink_live_directory_without_following_it() {
+        let root = tempdir("atomic-mirror-refuse-live-symlink");
+        let arch_root = root.join("binaries/programs/wasm32");
+        let canonical = root.join("cache/new-identity");
+        let outside = root.join("outside");
+        let manifest = atomic_mirror_manifest("share/runtime/nested/index.dat");
+        populate_atomic_mirror_identity(&canonical, &manifest, "new");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("sentinel"), b"outside").unwrap();
+        let plan = PackageClosureMirrorPlan::validate(&manifest, &canonical, &arch_root).unwrap();
+        let live_dir = plan.package_dir.clone();
+        fs::create_dir_all(&arch_root).unwrap();
+        symlink_file(&outside, &live_dir).unwrap();
+
+        let error = install_package_closure_mirror(plan).unwrap_err();
+        assert!(
+            error.contains("without resolver ownership proof"),
+            "got: {error}"
+        );
+        assert_eq!(fs::read(outside.join("sentinel")).unwrap(), b"outside");
+        assert!(
+            fs::symlink_metadata(&live_dir)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_no_atomic_mirror_transaction_siblings(&live_dir);
+    }
+
+    #[test]
+    fn multi_output_mirror_detects_a_live_tree_swap_during_quarantine_and_restores_it() {
+        let root = tempdir("atomic-mirror-live-swap");
+        let arch_root = root.join("binaries/programs/wasm32");
+        let old_canonical = root.join("cache/old-identity");
+        let new_canonical = root.join("cache/new-identity");
+        let manifest = atomic_mirror_manifest("share/runtime/nested/index.dat");
+        populate_atomic_mirror_identity(&old_canonical, &manifest, "old");
+        populate_atomic_mirror_identity(&new_canonical, &manifest, "new");
+        let old_plan =
+            PackageClosureMirrorPlan::validate(&manifest, &old_canonical, &arch_root).unwrap();
+        let new_plan =
+            PackageClosureMirrorPlan::validate(&manifest, &new_canonical, &arch_root).unwrap();
+        let live_dir = old_plan.package_dir.clone();
+        write_atomic_mirror_fixture(&old_plan);
+        let displaced_old = root.join("displaced-old");
+        let replacement = root.join("user-replacement");
+        fs::create_dir(&replacement).unwrap();
+        fs::write(replacement.join("sentinel"), b"user-owned").unwrap();
+
+        let mut transaction = PackageDirectoryTransaction::prepare(new_plan).unwrap();
+        let mut first_rename = true;
+        let mut swap_before_rename = |from: &Path, to: &Path| {
+            if first_rename {
+                first_rename = false;
+                fs::rename(from, &displaced_old)?;
+                fs::rename(&replacement, from)?;
+            }
+            fs::rename(from, to)
+        };
+        let error = transaction
+            .move_existing_aside_with(&mut swap_before_rename)
+            .unwrap_err();
+        assert!(
+            error.contains("ownership changed during quarantine") && error.contains("restored"),
+            "got: {error}"
+        );
+        drop(transaction);
+
+        assert_eq!(fs::read(live_dir.join("sentinel")).unwrap(), b"user-owned");
+        assert_eq!(
+            read_package_mirror_links(&displaced_old).unwrap(),
+            old_plan.expected_links()
+        );
+        assert_no_atomic_mirror_transaction_siblings(&live_dir);
+    }
+
+    #[test]
     fn multi_output_mirror_second_rename_failure_rolls_back_complete_old_directory() {
         let root = tempdir("atomic-mirror-second-rename-failure");
         let arch_root = root.join("binaries/programs/wasm32");
@@ -10784,6 +14123,48 @@ guest_path = "/usr/share/atomic-shell/runtime/index.dat"
         drop(transaction);
 
         assert_eq!(read_package_mirror_links(&live_dir).unwrap(), old_links);
+        assert_no_atomic_mirror_transaction_siblings(&live_dir);
+    }
+
+    #[test]
+    fn multi_output_mirror_never_deletes_a_tampered_private_quarantine() {
+        let root = tempdir("atomic-mirror-tampered-quarantine");
+        let arch_root = root.join("binaries/programs/wasm32");
+        let old_canonical = root.join("cache/old-identity");
+        let new_canonical = root.join("cache/new-identity");
+        let manifest = atomic_mirror_manifest("share/runtime/nested/index.dat");
+        populate_atomic_mirror_identity(&old_canonical, &manifest, "old");
+        populate_atomic_mirror_identity(&new_canonical, &manifest, "new");
+        let old_plan =
+            PackageClosureMirrorPlan::validate(&manifest, &old_canonical, &arch_root).unwrap();
+        let new_plan =
+            PackageClosureMirrorPlan::validate(&manifest, &new_canonical, &arch_root).unwrap();
+        let live_dir = old_plan.package_dir.clone();
+        write_atomic_mirror_fixture(&old_plan);
+
+        let mut transaction = PackageDirectoryTransaction::prepare(new_plan.clone()).unwrap();
+        let transaction_root = transaction.transaction_root.clone();
+        let backup_dir = transaction.backup_dir.clone();
+        let mut rename = |from: &Path, to: &Path| fs::rename(from, to);
+        transaction.move_existing_aside_with(&mut rename).unwrap();
+        fs::write(backup_dir.join("user-sentinel"), b"do-not-delete").unwrap();
+        transaction.publish_with(&mut rename).unwrap();
+        let error = transaction.finish().unwrap_err();
+        assert!(error.contains("refusing to remove changed"), "got: {error}");
+
+        assert_eq!(
+            read_package_mirror_links(&live_dir).unwrap(),
+            new_plan.expected_links()
+        );
+        assert_eq!(
+            fs::read(backup_dir.join("user-sentinel")).unwrap(),
+            b"do-not-delete"
+        );
+        assert!(transaction_root.is_dir());
+
+        // Test-only cleanup after proving production cleanup left the changed
+        // quarantine untouched.
+        remove_owned_transaction_path(&transaction_root).unwrap();
         assert_no_atomic_mirror_transaction_siblings(&live_dir);
     }
 
@@ -10843,6 +14224,7 @@ guest_path = "/usr/share/atomic-shell/runtime/index.dat"
         write_atomic_mirror_fixture(&old_plan);
 
         let mut transaction = PackageDirectoryTransaction::prepare(new_plan).unwrap();
+        let transaction_root = transaction.transaction_root.clone();
         let stage_dir = transaction.stage_dir.clone();
         let backup_dir = transaction.backup_dir.clone();
         let mut rename = |from: &Path, to: &Path| fs::rename(from, to);
@@ -10855,6 +14237,7 @@ guest_path = "/usr/share/atomic-shell/runtime/index.dat"
 
         fs::rename(&backup_dir, &live_dir).unwrap();
         remove_owned_transaction_path(&stage_dir).unwrap();
+        fs::remove_dir(&transaction_root).unwrap();
         assert_no_atomic_mirror_transaction_siblings(&live_dir);
     }
 
@@ -10877,6 +14260,7 @@ guest_path = "/usr/share/atomic-shell/runtime/index.dat"
         write_atomic_mirror_fixture(&old_plan);
 
         let mut transaction = PackageDirectoryTransaction::prepare(new_plan).unwrap();
+        let transaction_root = transaction.transaction_root.clone();
         let stage_dir = transaction.stage_dir.clone();
         let backup_dir = transaction.backup_dir.clone();
         let mut rename = |from: &Path, to: &Path| fs::rename(from, to);
@@ -10889,6 +14273,7 @@ guest_path = "/usr/share/atomic-shell/runtime/index.dat"
         assert_eq!(read_package_mirror_links(&backup_dir).unwrap(), old_links);
 
         remove_owned_transaction_path(&backup_dir).unwrap();
+        fs::remove_dir(&transaction_root).unwrap();
         assert_no_atomic_mirror_transaction_siblings(&live_dir);
     }
 
@@ -11269,6 +14654,56 @@ fork_instrumentation = "disabled"
     }
 
     #[test]
+    fn walk_all_matches_normal_resolution_revision_and_overlay_loading() {
+        let root = tempdir("walk-all-loader-parity");
+        write(&root, "libRev", "1.0.0", &[]);
+        write_build_revision(&root, "libRev", 7);
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+
+        let normally_loaded = reg.load("libRev").unwrap();
+        let (_, walked) = reg
+            .walk_all()
+            .unwrap()
+            .into_iter()
+            .find(|(name, _)| name == "libRev")
+            .unwrap();
+        assert_eq!(walked.revision, 7);
+        assert_eq!(
+            package_context_cache_keys(&walked, &reg).unwrap(),
+            package_context_cache_keys(&normally_loaded, &reg).unwrap(),
+            "registry enumeration and dependency resolution must compute one cache identity",
+        );
+
+        fs::write(
+            root.join("libRev/package.pr.toml"),
+            r#"
+[binary.wasm32]
+archive_url = "https://example.test/pr/libRev.tar.zst"
+archive_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+"#,
+        )
+        .unwrap();
+        let (_, walked_with_overlay) = reg
+            .walk_all()
+            .unwrap()
+            .into_iter()
+            .find(|(name, _)| name == "libRev")
+            .unwrap();
+        assert_eq!(walked_with_overlay.revision, 7);
+        assert!(
+            walked_with_overlay.binary.contains_key(&TargetArch::Wasm32),
+            "walk_all must honor the same binary-only PR overlay as Registry::load",
+        );
+        assert_eq!(
+            package_context_cache_keys(&walked_with_overlay, &reg).unwrap(),
+            package_context_cache_keys(&normally_loaded, &reg).unwrap(),
+            "binary fetch overlays must not change the canonical package identity",
+        );
+    }
+
+    #[test]
     fn programs_by_name_filters_to_program_kind() {
         let root = tempdir("progs-by-name");
         write_lib(
@@ -11333,6 +14768,25 @@ fork_instrumentation = "disabled"
             m.version, "1.0.0",
             "first root should win, got version {}",
             m.version
+        );
+    }
+
+    #[test]
+    fn walk_all_rejects_manifest_names_that_do_not_match_the_registry_directory() {
+        let root = tempdir("walk-name-directory-mismatch");
+        write(&root, "directory-name", "1.0.0", &[]);
+        let manifest_path = root.join("directory-name/package.toml");
+        let changed = fs::read_to_string(&manifest_path)
+            .unwrap()
+            .replace("name = \"directory-name\"", "name = \"different-name\"");
+        fs::write(&manifest_path, changed).unwrap();
+        let reg = Registry { roots: vec![root] };
+
+        let error = reg.walk_all().unwrap_err();
+        assert!(
+            error.contains("package name \"different-name\"")
+                && error.contains("registry directory \"directory-name\""),
+            "got: {error}",
         );
     }
 
@@ -12350,11 +15804,13 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
         assert!(runtime.symlink_metadata().unwrap().file_type().is_symlink());
         assert_eq!(fs::read(runtime).unwrap(), b"canonical-runtime");
         let executable = bin_dir.join("programs/wasm32/runtimebin/runtimebin.wasm");
-        assert!(executable
-            .symlink_metadata()
-            .unwrap()
-            .file_type()
-            .is_symlink());
+        assert!(
+            executable
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert_eq!(fs::read(executable).unwrap(), minimal_executable_wasm());
     }
 

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -23,18 +23,81 @@ function fsUrl(origin: string, file: string): string {
   return `${origin}/@fs/${encodeURI(normalized)}`;
 }
 
+function writeProgramProjection(
+  registryRoot: string,
+  packageName: string,
+  cacheKey: string,
+): void {
+  const manifest = [
+    "[package]",
+    `name = ${JSON.stringify(packageName)}`,
+    'version = "1.0.0"',
+    "revision = 1",
+    "",
+  ].join("\n");
+  const packageRoot = join(registryRoot, packageName);
+  mkdirSync(packageRoot, { recursive: true });
+  writeFileSync(join(packageRoot, "package.toml"), manifest);
+  writeFileSync(
+    join(registryRoot, "program-packages.json"),
+    `${JSON.stringify({
+      format: "kandelo-program-packages-v2",
+      identities: {
+        [packageName]: {
+          manifestSha256: createHash("sha256").update(manifest).digest("hex"),
+          cacheKeys: {
+            wasm32: cacheKey,
+            wasm64: createHash("sha256")
+              .update(`${packageName}:wasm64`)
+              .digest("hex"),
+          },
+        },
+      },
+      packages: {
+        [packageName]: {
+          manifestSha256: createHash("sha256").update(manifest).digest("hex"),
+          arches: ["wasm32"],
+          cacheKeys: { wasm32: cacheKey },
+          dependencyClosures: { wasm32: [] },
+          members: [
+            {
+              kind: "output",
+              sourceArtifact: "artifact.dat",
+              mirrorPath: `${packageName}/artifact.dat`,
+              outputName: "artifact",
+              forkInstrumentation: "disabled",
+            },
+            {
+              kind: "output",
+              sourceArtifact: "sidecar.dat",
+              mirrorPath: `${packageName}/sidecar.dat`,
+              outputName: "sidecar",
+              forkInstrumentation: "disabled",
+            },
+          ],
+        },
+      },
+    }, null, 2)}\n`,
+  );
+}
+
 test("Vite serves an approved bottle member without exposing its cache", async () => {
   const savedXdgCacheHome = process.env.XDG_CACHE_HOME;
+  const savedBinaryCacheRoot = process.env.WASM_POSIX_BINARY_CACHE_ROOT;
+  const savedRegistry = process.env.WASM_POSIX_DEPS_REGISTRY;
   const savedNoHmr = process.env.KANDELO_BROWSER_TEST_NO_HMR;
   const testRoot = mkdtempSync(join(tmpdir(), "kandelo-vite-cache-boundary-"));
   const namespace = `vite-cache-boundary-${randomUUID()}`;
+  const cacheKey = "a".repeat(64);
   const cacheRoot = join(testRoot, "kandelo");
+  const registryRoot = join(testRoot, "registry");
   const generation = join(
     cacheRoot,
     "programs",
-    `${namespace}-1.0.0-rev1-wasm32-${"a".repeat(64)}`,
+    `${namespace}-1.0.0-rev1-wasm32-${cacheKey}`,
   );
   const artifact = join(generation, "artifact.dat");
+  const sidecar = join(generation, "sidecar.dat");
   const privateSource = join(cacheRoot, "sources", "private.dat");
   const cacheEscape = join(cacheRoot, "programs", "escape.dat");
   const mirror = join(
@@ -44,6 +107,14 @@ test("Vite serves an approved bottle member without exposing its cache", async (
     "wasm32",
     namespace,
     "artifact.dat",
+  );
+  const sidecarMirror = join(
+    repoRoot,
+    "binaries",
+    "programs",
+    "wasm32",
+    namespace,
+    "sidecar.dat",
   );
   const entryDirectory = join(appRoot, "test-runs", namespace);
   const entry = join(entryDirectory, "entry.ts");
@@ -56,15 +127,20 @@ test("Vite serves an approved bottle member without exposing its cache", async (
     mkdirSync(dirname(mirror), { recursive: true });
     mkdirSync(entryDirectory, { recursive: true });
     writeFileSync(artifact, artifactBytes);
+    writeFileSync(sidecar, "package sidecar\n");
     writeFileSync(privateSource, "private source bytes\n");
     symlinkSync(privateSource, cacheEscape);
     symlinkSync(artifact, mirror);
+    symlinkSync(sidecar, sidecarMirror);
+    writeProgramProjection(registryRoot, namespace, cacheKey);
     writeFileSync(
       entry,
       `import artifactUrl from "@binaries/programs/wasm32/${namespace}/artifact.dat?url";\nexport default artifactUrl;\n`,
     );
 
     process.env.XDG_CACHE_HOME = testRoot;
+    delete process.env.WASM_POSIX_BINARY_CACHE_ROOT;
+    process.env.WASM_POSIX_DEPS_REGISTRY = registryRoot;
     process.env.KANDELO_BROWSER_TEST_NO_HMR = "1";
     server = await createServer({
       configFile: join(appRoot, "vite.config.ts"),
@@ -144,6 +220,111 @@ test("Vite serves an approved bottle member without exposing its cache", async (
       delete process.env.XDG_CACHE_HOME;
     } else {
       process.env.XDG_CACHE_HOME = savedXdgCacheHome;
+    }
+    if (savedBinaryCacheRoot === undefined) {
+      delete process.env.WASM_POSIX_BINARY_CACHE_ROOT;
+    } else {
+      process.env.WASM_POSIX_BINARY_CACHE_ROOT = savedBinaryCacheRoot;
+    }
+    if (savedRegistry === undefined) {
+      delete process.env.WASM_POSIX_DEPS_REGISTRY;
+    } else {
+      process.env.WASM_POSIX_DEPS_REGISTRY = savedRegistry;
+    }
+    if (savedNoHmr === undefined) {
+      delete process.env.KANDELO_BROWSER_TEST_NO_HMR;
+    } else {
+      process.env.KANDELO_BROWSER_TEST_NO_HMR = savedNoHmr;
+    }
+  }
+});
+
+test("Vite approves an explicit program cache that overlaps the checkout", async () => {
+  const savedBinaryCacheRoot = process.env.WASM_POSIX_BINARY_CACHE_ROOT;
+  const savedRegistry = process.env.WASM_POSIX_DEPS_REGISTRY;
+  const savedNoHmr = process.env.KANDELO_BROWSER_TEST_NO_HMR;
+  const namespace = `vite-overlap-${randomUUID()}`;
+  const cacheKey = "b".repeat(64);
+  const cacheRoot = join(repoRoot, `.vite-overlap-cache-${namespace}`);
+  const registryRoot = join(cacheRoot, "registry");
+  const generation = join(
+    cacheRoot,
+    "programs",
+    `${namespace}-1.0.0-rev1-wasm32-${cacheKey}`,
+  );
+  const artifact = join(generation, "artifact.dat");
+  const sidecar = join(generation, "sidecar.dat");
+  const mirror = join(
+    repoRoot,
+    "binaries",
+    "programs",
+    "wasm32",
+    namespace,
+    "artifact.dat",
+  );
+  const sidecarMirror = join(
+    repoRoot,
+    "binaries",
+    "programs",
+    "wasm32",
+    namespace,
+    "sidecar.dat",
+  );
+  const entryDirectory = join(appRoot, "test-runs", namespace);
+  const entry = join(entryDirectory, "entry.ts");
+  let server: ViteDevServer | null = null;
+
+  try {
+    mkdirSync(dirname(artifact), { recursive: true });
+    mkdirSync(dirname(mirror), { recursive: true });
+    mkdirSync(entryDirectory, { recursive: true });
+    writeFileSync(artifact, "repo-overlap bottle member\n");
+    writeFileSync(sidecar, "package sidecar\n");
+    symlinkSync(artifact, mirror);
+    symlinkSync(sidecar, sidecarMirror);
+    writeProgramProjection(registryRoot, namespace, cacheKey);
+    writeFileSync(
+      entry,
+      `import artifactUrl from "@binaries/programs/wasm32/${namespace}/artifact.dat?url";\nexport default artifactUrl;\n`,
+    );
+    process.env.WASM_POSIX_BINARY_CACHE_ROOT = cacheRoot;
+    process.env.WASM_POSIX_DEPS_REGISTRY = registryRoot;
+    process.env.KANDELO_BROWSER_TEST_NO_HMR = "1";
+
+    server = await createServer({
+      configFile: join(appRoot, "vite.config.ts"),
+      root: appRoot,
+      logLevel: "silent",
+      server: { host: "127.0.0.1", port: 0, hmr: false },
+    });
+    await server.listen();
+    const address = server.httpServer!.address() as AddressInfo;
+    const origin = `http://127.0.0.1:${address.port}`;
+    const canonicalArtifact = realpathSync(artifact);
+    expect((await fetch(fsUrl(origin, canonicalArtifact))).status).toBe(403);
+
+    const transformedEntry = await fetch(fsUrl(origin, entry));
+    const transformedSource = await transformedEntry.text();
+    expect(transformedEntry.status, transformedSource).toBe(200);
+    expect(transformedSource).toContain("artifact.dat");
+    expect((await fetch(fsUrl(origin, canonicalArtifact))).status).toBe(200);
+  } finally {
+    await server?.close();
+    rmSync(join(repoRoot, "binaries", "programs", "wasm32", namespace), {
+      recursive: true,
+      force: true,
+    });
+    rmSync(entryDirectory, { recursive: true, force: true });
+    rmSync(cacheRoot, { recursive: true, force: true });
+    if (savedBinaryCacheRoot === undefined) {
+      delete process.env.WASM_POSIX_BINARY_CACHE_ROOT;
+    } else {
+      process.env.WASM_POSIX_BINARY_CACHE_ROOT = savedBinaryCacheRoot;
+    }
+    if (savedRegistry === undefined) {
+      delete process.env.WASM_POSIX_DEPS_REGISTRY;
+    } else {
+      process.env.WASM_POSIX_DEPS_REGISTRY = savedRegistry;
     }
     if (savedNoHmr === undefined) {
       delete process.env.KANDELO_BROWSER_TEST_NO_HMR;

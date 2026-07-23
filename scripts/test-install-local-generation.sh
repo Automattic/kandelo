@@ -90,6 +90,15 @@ run_install() {
     )
 }
 
+cache_key="$(
+    cd "$REPO_ROOT"
+    WASM_POSIX_DEPS_REGISTRY="$registry" \
+        cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
+            build-deps --arch wasm32 sha local-python
+)"
+printf '%s\n' "$cache_key" | grep -Eq '^[0-9a-f]{64}$' ||
+    fail "resolver did not return a full local generation cache identity"
+
 first_log="$work/first.log"
 run_install python.wasm "$source_dir/python.wasm" >"$first_log"
 grep -F 'waiting for 1 declared package artifact' "$first_log" >/dev/null ||
@@ -101,7 +110,7 @@ cmp "$fetched/share/python-runtime.zip" \
     "$mirror/programs/wasm32/local-python/share/python-runtime.zip" >/dev/null ||
     fail "incomplete local generation changed the live runtime file"
 
-generation="$mirror/.kandelo-local-generations/wasm32/local-python/direct-build-one"
+generation="$mirror/.kandelo-local-generations/wasm32/local-python/$cache_key/direct-build-one"
 cmp "$source_dir/python.wasm" "$generation/bin/python.wasm" >/dev/null ||
     fail "local output was not collected at its exact declared suffix"
 [ ! -e "$generation/share/python-runtime.zip" ] ||
@@ -131,9 +140,8 @@ generation_physical="$(cd "$generation" && pwd -P)"
     "$(shasum -a 256 "$fetched/share/python-runtime.zip" | awk '{print $1}')" ] ||
     fail "direct build overwrote fetched canonical runtime bytes"
 
-# The package-less alias fallback cannot use the manifest-driven Rust command,
-# but it must keep the same no-follow invariant. A fake repo makes its mirror
-# disposable, while an empty rustc probe deliberately selects the alias path.
+# Undeclared package names must fail before changing either source bytes or a
+# destination. A fake repo makes the negative path disposable.
 fake_repo="$work/fake-repo"
 fake_bin="$work/fake-bin"
 legacy_canonical="$work/legacy-canonical.wasm"
@@ -148,33 +156,6 @@ ln -s "$legacy_canonical" \
     "$fake_repo/local-binaries/programs/wasm32/legacy-alias.wasm"
 cat >"$fake_bin/rustc" <<'EOF'
 #!/usr/bin/env bash
-exit 0
-EOF
-chmod +x "$fake_bin/rustc"
-legacy_before="$(shasum -a 256 "$legacy_canonical" | awk '{print $1}')"
-(
-    PATH="$fake_bin:$PATH"
-    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled
-    export PATH WASM_POSIX_INSTALL_FORK_INSTRUMENTATION
-    # shellcheck source=/dev/null
-    source "$fake_repo/scripts/install-local-binary.sh"
-    install_local_binary legacy-alias "$legacy_source"
-)
-legacy_dest="$fake_repo/local-binaries/programs/wasm32/legacy-alias.wasm"
-[ ! -L "$legacy_dest" ] ||
-    fail "legacy alias left the old destination symlink in place"
-cmp "$legacy_source" "$legacy_dest" >/dev/null ||
-    fail "legacy alias did not install local bytes"
-[ "$legacy_before" = "$(shasum -a 256 "$legacy_canonical" | awk '{print $1}')" ] ||
-    fail "legacy alias followed its destination symlink into canonical cache"
-
-# A registered package is not an alias. Manifest parse errors and undeclared
-# artifacts must stay visible instead of dropping into the compatibility copy
-# path and publishing bytes at a guessed location.
-mkdir -p "$fake_repo/packages/registry/registered"
-printf 'malformed = [\n' >"$fake_repo/packages/registry/registered/package.toml"
-cat >"$fake_bin/rustc" <<'EOF'
-#!/usr/bin/env bash
 printf 'host: fake-test-target\n'
 EOF
 cat >"$fake_bin/cargo" <<'EOF'
@@ -183,6 +164,32 @@ printf 'fixture manifest lookup failed\n' >&2
 exit 19
 EOF
 chmod +x "$fake_bin/rustc" "$fake_bin/cargo"
+legacy_before="$(shasum -a 256 "$legacy_canonical" | awk '{print $1}')"
+legacy_source_before="$(shasum -a 256 "$legacy_source" | awk '{print $1}')"
+legacy_err="$work/legacy.err"
+if (
+    PATH="$fake_bin:$PATH"
+    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled
+    export PATH WASM_POSIX_INSTALL_FORK_INSTRUMENTATION
+    # shellcheck source=/dev/null
+    source "$fake_repo/scripts/install-local-binary.sh"
+    install_local_binary legacy-alias "$legacy_source"
+) 2>"$legacy_err"; then
+    fail "undeclared package was installed through a guessed path"
+fi
+legacy_dest="$fake_repo/local-binaries/programs/wasm32/legacy-alias.wasm"
+[ -L "$legacy_dest" ] ||
+    fail "failed package lookup changed its existing mirror"
+[ "$legacy_before" = "$(shasum -a 256 "$legacy_canonical" | awk '{print $1}')" ] ||
+    fail "failed package lookup mutated canonical cache bytes"
+[ "$legacy_source_before" = "$(shasum -a 256 "$legacy_source" | awk '{print $1}')" ] ||
+    fail "failed package lookup mutated source bytes before resolving policy"
+grep -F "does not uniquely declare output" "$legacy_err" >/dev/null ||
+    fail "undeclared package lookup failure was not explained"
+
+# A selected malformed package also fails at the same pre-mutation lookup.
+mkdir -p "$fake_repo/packages/registry/registered"
+printf 'malformed = [\n' >"$fake_repo/packages/registry/registered/package.toml"
 registered_dest="$fake_repo/local-binaries/programs/wasm32/registered.wasm"
 ln -s "$legacy_canonical" "$registered_dest"
 registered_err="$work/registered.err"
@@ -196,7 +203,7 @@ if (
 ) 2>"$registered_err"; then
     fail "registered package lookup failure fell through to the legacy copy path"
 fi
-grep -F "registered package 'registered' does not declare output" \
+grep -F "package 'registered' does not uniquely declare output" \
     "$registered_err" >/dev/null ||
     fail "registered package lookup failure was not explained"
 [ -L "$registered_dest" ] ||

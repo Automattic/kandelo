@@ -1,135 +1,372 @@
 #!/usr/bin/env bash
 #
-# install-local-binary.sh — install freshly-built package artifacts into
-# local-binaries/ so the resolver picks them up as an override over anything
-# `scripts/fetch-binaries.sh` downloaded.
+# Install freshly-built package artifacts into local-binaries/. Normal local
+# installs are manifest-driven and fail closed: one Rust metadata lookup
+# selects the exact output path and fork policy before source instrumentation
+# or destination mutation. Sealed package builds may avoid Cargo only by
+# disabling the local mirror and explicitly declaring the fork policy.
 #
-# Sourced or called from each ported program's build script after
-# producing its output binary. The resolver (host/src/binary-resolver.ts
-# + scripts/resolve-binary.sh) prefers local-binaries/ over binaries/,
-# so running any program's local build automatically shadows the
-# released version.
+# Usage:
+#   source scripts/install-local-binary.sh
+#   install_local_binary <package> <source> [declared-output-artifact]
+#   install_local_runtime_file <package> <source> [declared-runtime-artifact]
 #
-# Path discovery: the destination relative path under
-# `local-binaries/programs/<arch>/` is read from the package's
-# `package.toml` via `xtask build-deps output-path <program> <basename>`.
-# This is the SAME path the resolver writes to from a published
-# archive — keeping local builds and releases interchangeable at the
-# resolver layer (a one-member package is flat `<output.name>.<ext>`;
-# every output/runtime member nests under `<program.name>/` when the package
-# has more than one total member). Without this lookup, a
-# package whose `program.name != output.name` (e.g. texlive/pdftex) had
-# divergent local-vs-release paths and the demo could never see a
-# fresh local build.
-#
-# Usage (each call is one install target):
-#     source scripts/install-local-binary.sh   # adds install_local_binary()
-#
-#     install_local_binary <program> <src>
-#
-# Where:
-#   <program>   logical program name matching a package.toml `name` field
-#               in the registry (e.g. "dash", "git", "texlive").
-#   <src>       path to the freshly-built file. Its basename must
-#               match one of the `[[outputs]].wasm` filenames declared
-#               in the package's package.toml.
-#
-# Legacy 3-arg form `install_local_binary <program> <src> <dest-name>`
-# is silently accepted: the third arg is ignored when the package.toml
-# lookup succeeds (the lookup is the source of truth) and falls
-# through to the legacy multi-binary subdir layout otherwise. Treat
-# the 2-arg form as canonical for new build scripts.
-#
-# Arch is taken from $WASM_POSIX_DEP_TARGET_ARCH (set by the resolver
-# while running build scripts) and falls back to "wasm32" for direct
-# build-script invocations like `bash packages/registry/dash/build-dash.sh`.
-# Sealed callers that only consume $WASM_POSIX_DEP_OUT_DIR can set
-# WASM_POSIX_INSTALL_LOCAL_MIRROR=0 to retain all writes in caller-owned
-# scratch space while preserving the normal artifact guards below.
+# The optional artifact is the exact `[[outputs]].wasm` or
+# `[[runtime_files]].artifact` path. A source basename is accepted only when it
+# identifies one output unambiguously.
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/wasm-artifact-guards.sh"
 
-# All artifacts installed by one sourced build helper share a session. For a
-# package closure, xtask collects that session below a hidden immutable
-# generation and publishes the live package directory only after every declared
-# output and runtime file is present. Callers coordinating separate shell
-# processes may provide their own portable session token.
 if [ -z "${WASM_POSIX_LOCAL_INSTALL_SESSION:-}" ]; then
     WASM_POSIX_LOCAL_INSTALL_SESSION="shell-${BASHPID:-$$}-${RANDOM:-0}-${RANDOM:-0}"
 fi
 
-# Copy through a private sibling and publish with a hard link. `cp "$src"
-# "$dest"` would follow an existing destination symlink and overwrite the
-# fetched canonical cache bytes it points at. This helper moves that entry
-# aside without dereferencing it, then creates the new pathname only if it is
-# still absent. It is used for legacy aliases and caller-owned scratch too.
-_wasm_posix_copy_file_no_follow() {
-    local src="$1"
-    local dest="$2"
-    local parent
-    parent="$(dirname "$dest")"
-    mkdir -p "$parent"
+_wasm_posix_require_portable_relative_path() {
+    case "$1" in
+        ""|/*|*\\*|.|..|./*|../*|*/.|*/..|*//*|*/./*|*/../*|*/)
+            return 1
+            ;;
+    esac
+}
 
-    local name
-    name="$(basename "$dest")"
-    local stage
-    stage="$(mktemp "$parent/.${name}.local-stage.XXXXXX")" || return 1
-    local backup
-    backup="$(mktemp "$parent/.${name}.local-backup.XXXXXX")" || {
-        rm -f "$stage"
+_wasm_posix_directory_identity() {
+    local path="$1"
+    local identity
+    if [ ! -d "$path" ] || [ -L "$path" ]; then
+        return 1
+    fi
+    if identity="$(stat -c '%d:%i:%u:%g:%a' "$path" 2>/dev/null)"; then
+        printf '%s\n' "$identity"
+        return
+    fi
+    identity="$(stat -f '%d:%i:%u:%g:%Lp' "$path" 2>/dev/null)" || return
+    printf '%s\n' "$identity"
+}
+
+_wasm_posix_sha256_file() {
+    local path="$1"
+    local output
+    if command -v sha256sum >/dev/null 2>&1; then
+        output="$(sha256sum "$path")" || return
+    elif command -v shasum >/dev/null 2>&1; then
+        output="$(shasum -a 256 "$path")" || return
+    elif command -v openssl >/dev/null 2>&1; then
+        output="$(openssl dgst -sha256 "$path")" || return
+        printf '%s\n' "${output##* }"
+        return
+    else
+        echo "install-local-binary: no SHA-256 implementation is available" >&2
+        return 1
+    fi
+    printf '%s\n' "${output%% *}"
+}
+
+# The filesystem identity plus exact bytes of one regular file. Cleanup uses
+# this state to avoid deleting a path that another writer replaced or changed.
+_wasm_posix_regular_file_state() {
+    local path="$1"
+    local identity digest
+    if [ ! -f "$path" ] || [ -L "$path" ]; then
+        return 1
+    fi
+    if ! identity="$(stat -c '%d:%i:%u:%g:%a:%s' "$path" 2>/dev/null)"; then
+        identity="$(stat -f '%d:%i:%u:%g:%Lp:%z' "$path" 2>/dev/null)" || return
+    fi
+    digest="$(_wasm_posix_sha256_file "$path")" || return
+    printf '%s:%s\n' "$identity" "$digest"
+}
+
+# Shell path operations cannot provide openat-style race freedom. The sealed
+# install contract therefore requires a caller-owned, single-writer scratch
+# root. Enforce the observable part of that contract: this user owns every
+# directory we traverse and no group/other writer can replace its entries.
+_wasm_posix_require_single_writer_directory() {
+    local path="$1"
+    local label="$2"
+    local identity="${3:-}"
+    if [ -z "$identity" ]; then
+        identity="$(_wasm_posix_directory_identity "$path")" || {
+            echo "install-local-binary: $label must be a real directory: $path" >&2
+            return 1
+        }
+    fi
+    local device inode owner group mode
+    IFS=: read -r device inode owner group mode <<<"$identity"
+    if [ "$owner" != "$(id -u)" ]; then
+        echo "install-local-binary: $label must be owned by the current user: $path" >&2
+        return 1
+    fi
+    if ! [[ "$mode" =~ ^[0-7]{3,4}$ ]] || (( (8#$mode & 8#022) != 0 )); then
+        echo "install-local-binary: $label must not be writable by group or other users: $path" >&2
+        return 1
+    fi
+}
+
+_wasm_posix_require_unchanged_directory() {
+    local path="$1"
+    local expected="$2"
+    local label="$3"
+    local actual
+    actual="$(_wasm_posix_directory_identity "$path")" || {
+        echo "install-local-binary: $label changed or disappeared; preserving transaction state: $path" >&2
         return 1
     }
-    rm -f "$backup"
+    if [ "$actual" != "$expected" ]; then
+        echo "install-local-binary: $label changed filesystem identity; preserving transaction state: $path" >&2
+        return 1
+    fi
+}
 
-    if ! cp -p "$src" "$stage"; then
-        rm -f "$stage"
+_wasm_posix_remove_unchanged_transaction_file() {
+    local transaction="$1"
+    local transaction_identity="$2"
+    local path="$3"
+    local expected="$4"
+    local label="$5"
+    local actual
+    _wasm_posix_require_unchanged_directory \
+        "$transaction" "$transaction_identity" "private transaction directory" || return
+    actual="$(_wasm_posix_regular_file_state "$path")" || {
+        echo "install-local-binary: $label changed type or disappeared; refusing cleanup: $path" >&2
+        return 1
+    }
+    if [ "$actual" != "$expected" ]; then
+        echo "install-local-binary: $label changed identity or contents; refusing cleanup: $path" >&2
+        return 1
+    fi
+    rm -f "$path" || return
+    if [ -e "$path" ] || [ -L "$path" ]; then
+        echo "install-local-binary: $label remained after cleanup: $path" >&2
+        return 1
+    fi
+}
+
+# Copy below one authorized caller-owned scratch directory. Every
+# created/existing descendant directory is checked without following symlinks,
+# and publication uses a private transaction plus create-once hard link. The
+# caller must keep the root single-writer for the duration of this function;
+# general shared-directory race freedom requires dirfd/openat operations and is
+# intentionally not claimed by this packaging-only shell path.
+_wasm_posix_copy_file_no_follow() {
+    local src="$1"
+    local authorized_root="$2"
+    local relative_dest="$3"
+
+    if [ ! -f "$src" ] || [ -L "$src" ]; then
+        echo "install-local-binary: source must be a regular non-symlink file: $src" >&2
+        return 1
+    fi
+    if [ ! -d "$authorized_root" ] || [ -L "$authorized_root" ]; then
+        echo "install-local-binary: authorized destination root must be a real directory: $authorized_root" >&2
+        return 1
+    fi
+    if ! _wasm_posix_require_portable_relative_path "$relative_dest"; then
+        echo "install-local-binary: destination must be a normalized portable relative path: $relative_dest" >&2
         return 1
     fi
 
+    local root
+    root="$(cd "$authorized_root" && pwd -P)" || return 1
+    local root_identity
+    root_identity="$(_wasm_posix_directory_identity "$root")" || return 1
+    _wasm_posix_require_single_writer_directory \
+        "$root" "authorized destination root" "$root_identity" || return
+    local parent_relative
+    parent_relative="$(dirname "$relative_dest")"
+    local parent="$root"
+    if [ "$parent_relative" != "." ]; then
+        local remainder="$parent_relative"
+        while [ -n "$remainder" ]; do
+            local component="${remainder%%/*}"
+            if [ "$component" = "$remainder" ]; then
+                remainder=""
+            else
+                remainder="${remainder#*/}"
+            fi
+            local next="$parent/$component"
+            if [ -L "$next" ]; then
+                echo "install-local-binary: refusing destination symlink ancestor: $next" >&2
+                return 1
+            fi
+            if [ -e "$next" ]; then
+                if [ ! -d "$next" ]; then
+                    echo "install-local-binary: destination ancestor is not a directory: $next" >&2
+                    return 1
+                fi
+            elif ! mkdir -m 755 "$next"; then
+                return 1
+            fi
+            _wasm_posix_require_single_writer_directory \
+                "$next" "destination ancestor" || return
+            parent="$next"
+        done
+    fi
+
+    local parent_identity
+    parent_identity="$(_wasm_posix_directory_identity "$parent")" || return 1
+    local source_state
+    source_state="$(_wasm_posix_regular_file_state "$src")" || {
+        echo "install-local-binary: could not capture source identity and contents: $src" >&2
+        return 1
+    }
+
+    local dest="$root/$relative_dest"
+    local transaction
+    transaction="$(mktemp -d "$root/.kandelo-install.XXXXXX")" || return 1
+    chmod 700 "$transaction" || {
+        echo "install-local-binary: could not protect transaction directory: $transaction" >&2
+        return 1
+    }
+    local transaction_identity
+    transaction_identity="$(_wasm_posix_directory_identity "$transaction")" || return 1
+    _wasm_posix_require_single_writer_directory \
+        "$transaction" "private transaction directory" "$transaction_identity" || return
+    local stage="$transaction/stage"
+    local backup="$transaction/backup"
+
+    if ! cp -p "$src" "$stage"; then
+        echo "install-local-binary: source copy failed; preserving transaction state: $transaction" >&2
+        return 1
+    fi
+    local source_after stage_state
+    source_after="$(_wasm_posix_regular_file_state "$src")" || return 1
+    stage_state="$(_wasm_posix_regular_file_state "$stage")" || return 1
+    if [ "$source_after" != "$source_state" ] || \
+       [ "${stage_state##*:}" != "${source_state##*:}" ]; then
+        echo "install-local-binary: source changed during copy; preserving transaction state: $transaction" >&2
+        return 1
+    fi
+    _wasm_posix_require_unchanged_directory \
+        "$root" "$root_identity" "authorized destination root" || return
+    _wasm_posix_require_unchanged_directory \
+        "$parent" "$parent_identity" "destination parent" || return
+    _wasm_posix_require_unchanged_directory \
+        "$transaction" "$transaction_identity" "private transaction directory" || return
+
     local old_moved=0
+    local old_state=""
     if [ -e "$dest" ] || [ -L "$dest" ]; then
         if [ -d "$dest" ] && [ ! -L "$dest" ]; then
             echo "install-local-binary: refusing to replace directory: $dest" >&2
-            rm -f "$stage"
             return 1
         fi
+        if [ -L "$dest" ] || [ ! -f "$dest" ]; then
+            echo "install-local-binary: refusing to replace a non-regular destination: $dest" >&2
+            return 1
+        fi
+        old_state="$(_wasm_posix_regular_file_state "$dest")" || return 1
         if ! mv "$dest" "$backup"; then
-            rm -f "$stage"
             return 1
         fi
         old_moved=1
+        local quarantined_state=""
+        quarantined_state="$(_wasm_posix_regular_file_state "$backup")" || true
+        if [ "$quarantined_state" != "$old_state" ]; then
+            echo "install-local-binary: destination changed during quarantine; refusing publication" >&2
+            if [ ! -e "$dest" ] && [ ! -L "$dest" ]; then
+                # Preserve the entry that won the pathname race by returning
+                # it to the live name. Never delete an unrecognized backup.
+                mv "$backup" "$dest" || {
+                    echo "install-local-binary: could not restore changed quarantine; preserved it at $backup" >&2
+                    return 1
+                }
+            fi
+            return 1
+        fi
     fi
 
     if ! ln "$stage" "$dest"; then
         if [ "$old_moved" = "1" ] && [ ! -e "$dest" ] && [ ! -L "$dest" ]; then
-            mv "$backup" "$dest" || true
+            local rollback_state
+            rollback_state="$(_wasm_posix_regular_file_state "$backup")" || {
+                echo "install-local-binary: refusing to restore changed quarantine: $backup" >&2
+                return 1
+            }
+            if [ "$rollback_state" != "$old_state" ]; then
+                echo "install-local-binary: refusing to restore changed quarantine: $backup" >&2
+                return 1
+            fi
+            if ! mv "$backup" "$dest" || \
+               [ "$(_wasm_posix_regular_file_state "$dest" || true)" != "$old_state" ]; then
+                echo "install-local-binary: failed to restore the previous destination: $dest" >&2
+                return 1
+            fi
         fi
-        rm -f "$stage"
-        if [ "$old_moved" = "1" ] && { [ -e "$dest" ] || [ -L "$dest" ]; }; then
-            rm -f "$backup"
-        fi
+        echo "install-local-binary: publication failed; preserving transaction state: $transaction" >&2
         return 1
     fi
 
-    rm -f "$stage"
-    if [ "$old_moved" = "1" ]; then
-        rm -f "$backup"
+    local published_stage_state published_dest_state
+    published_stage_state="$(_wasm_posix_regular_file_state "$stage")" || return 1
+    published_dest_state="$(_wasm_posix_regular_file_state "$dest")" || return 1
+    if [ "$published_stage_state" != "$published_dest_state" ] || \
+       [ "${published_dest_state##*:}" != "${source_state##*:}" ]; then
+        echo "install-local-binary: published destination changed identity or contents; preserving transaction state: $transaction" >&2
+        return 1
     fi
+
+    if [ "$old_moved" = "1" ]; then
+        local final_backup_state
+        final_backup_state="$(_wasm_posix_regular_file_state "$backup")" || {
+            echo "install-local-binary: quarantined destination changed type or disappeared; preserving transaction state: $transaction" >&2
+            return 1
+        }
+        if [ "$final_backup_state" != "$old_state" ]; then
+            echo "install-local-binary: quarantined destination changed identity or contents; preserving transaction state: $transaction" >&2
+            return 1
+        fi
+    fi
+
+    _wasm_posix_remove_unchanged_transaction_file \
+        "$transaction" "$transaction_identity" "$stage" \
+        "$published_stage_state" "staged artifact" || return
+    if [ "$(_wasm_posix_regular_file_state "$dest" || true)" != "$published_dest_state" ]; then
+        echo "install-local-binary: published destination changed during staged-link cleanup: $dest" >&2
+        return 1
+    fi
+    if [ "$old_moved" = "1" ]; then
+        _wasm_posix_remove_unchanged_transaction_file \
+            "$transaction" "$transaction_identity" "$backup" \
+            "$old_state" "quarantined destination" || return
+    fi
+    if [ "$(_wasm_posix_regular_file_state "$dest" || true)" != "$published_dest_state" ]; then
+        echo "install-local-binary: published destination changed during transaction cleanup: $dest" >&2
+        return 1
+    fi
+    _wasm_posix_require_unchanged_directory \
+        "$transaction" "$transaction_identity" "private transaction directory" || return
+    rmdir "$transaction" || {
+        echo "install-local-binary: private transaction is not empty; refusing recursive cleanup: $transaction" >&2
+        return 1
+    }
+}
+
+_wasm_posix_output_metadata() {
+    local repo_root="$1"
+    local host_target="$2"
+    local package="$3"
+    local artifact="$4"
+    (
+        cd "$repo_root"
+        env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+            cargo run -p xtask --target "$host_target" --quiet -- \
+                build-deps output-metadata "$package" "$artifact"
+    )
 }
 
 install_local_binary() {
-    local program="$1"
-    local src="$2"
-    local legacy_dest_name="${3:-}"
-
+    local program="${1:-}"
+    local src="${2:-}"
+    local requested_artifact="${3:-}"
     if [ -z "$program" ] || [ -z "$src" ]; then
-        echo "install_local_binary: usage: install_local_binary <program> <src>" >&2
+        echo "install_local_binary: usage: install_local_binary <package> <source> [declared-output-artifact]" >&2
         return 2
     fi
-    if [ ! -f "$src" ]; then
-        echo "install_local_binary: source file not found: $src" >&2
+    if [ ! -f "$src" ] || [ -L "$src" ]; then
+        echo "install_local_binary: source must be a regular non-symlink file: $src" >&2
         return 1
     fi
+
     local arch="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
     case "$arch" in
         wasm32|wasm64) ;;
@@ -139,13 +376,16 @@ install_local_binary() {
             ;;
     esac
 
-    # Repo root must be derived from this helper, not from the caller's
-    # current directory: package builds often `cd` into an upstream git
-    # checkout before installing artifacts.
     local repo_root
     repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     local src_basename
     src_basename="$(basename "$src")"
+    requested_artifact="${requested_artifact:-$src_basename}"
+    if ! _wasm_posix_require_portable_relative_path "$requested_artifact"; then
+        echo "install_local_binary: declared artifact must be a normalized portable relative path: $requested_artifact" >&2
+        return 2
+    fi
+
     local install_local_mirror="${WASM_POSIX_INSTALL_LOCAL_MIRROR:-1}"
     case "$install_local_mirror" in
         0)
@@ -161,22 +401,67 @@ install_local_binary() {
             ;;
     esac
 
+    local host_target=""
+    local mirror_path=""
+    local declared_artifact="$requested_artifact"
+    local declared_policy=""
+    if [ "$install_local_mirror" = "1" ]; then
+        host_target="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')"
+        if [ -z "$host_target" ]; then
+            echo "install_local_binary: rustc did not report a host target" >&2
+            return 1
+        fi
+
+        # Resolve destination and policy together before any operation below
+        # can instrument the source or mutate a destination.
+        local metadata
+        if ! metadata="$(_wasm_posix_output_metadata \
+            "$repo_root" "$host_target" "$program" "$requested_artifact")"; then
+            echo "install_local_binary: package '$program' does not uniquely declare output '$requested_artifact'" >&2
+            return 1
+        fi
+        local fields
+        if ! fields="$(node -e '
+            const value = JSON.parse(process.argv[1]);
+            for (const key of ["mirror_path", "fork_instrumentation", "source_artifact"]) {
+              if (typeof value[key] !== "string" || value[key].length === 0 ||
+                  value[key].includes("\t") || value[key].includes("\n")) {
+                throw new Error(`invalid output metadata field ${key}`);
+              }
+            }
+            process.stdout.write(
+              `${value.mirror_path}\t${value.fork_instrumentation}\t${value.source_artifact}`,
+            );
+          ' "$metadata")"; then
+            echo "install_local_binary: invalid output metadata for '$program:$requested_artifact'" >&2
+            return 1
+        fi
+        IFS=$'\t' read -r mirror_path declared_policy declared_artifact <<<"$fields"
+        if ! _wasm_posix_require_portable_relative_path "$mirror_path" \
+            || ! _wasm_posix_require_portable_relative_path "$declared_artifact"; then
+            echo "install_local_binary: xtask returned an unsafe output path" >&2
+            return 1
+        fi
+    else
+        declared_policy="${WASM_POSIX_INSTALL_FORK_INSTRUMENTATION:-}"
+        if [ -z "$declared_policy" ]; then
+            echo "install_local_binary: sealed installs require explicit WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto|disabled" >&2
+            return 2
+        fi
+    fi
+
+    local requested_policy="${WASM_POSIX_INSTALL_FORK_INSTRUMENTATION:-}"
+    if [ "$install_local_mirror" = "1" ] \
+        && [ -n "$requested_policy" ] \
+        && [ "$requested_policy" != "$declared_policy" ]; then
+        echo "install_local_binary: requested fork policy '$requested_policy' disagrees with package policy '$declared_policy'" >&2
+        return 1
+    fi
+
     if ! wasm_require_no_legacy_asyncify "$src"; then
         return 1
     fi
-    local host_target=""
-    if [ "$install_local_mirror" = "1" ]; then
-        host_target="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')"
-    fi
-    local fork_instrumentation="${WASM_POSIX_INSTALL_FORK_INSTRUMENTATION:-}"
-    if [ -z "$fork_instrumentation" ] && [ -n "$host_target" ]; then
-        fork_instrumentation="$(cd "$repo_root" && \
-            env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
-            cargo run -p xtask --target "$host_target" --quiet -- \
-                build-deps output-fork-instrumentation "$program" "$src_basename" 2>/dev/null || true)"
-    fi
-    fork_instrumentation="${fork_instrumentation:-auto}"
-    case "$fork_instrumentation" in
+    case "$declared_policy" in
         auto)
             if wasm_imports_kernel_fork "$src" && ! wasm_has_complete_fork_instrumentation "$src"; then
                 if wasm_has_any_wpk_fork_export "$src"; then
@@ -192,145 +477,58 @@ install_local_binary() {
                 fi
                 mv "$instrumented" "$src"
             fi
-            if ! wasm_require_fork_instrumentation_if_needed "$src"; then
-                return 1
-            fi
+            wasm_require_fork_instrumentation_if_needed "$src" || return 1
             ;;
         disabled)
-            if ! wasm_require_no_fork_instrumentation "$src"; then
-                return 1
-            fi
+            wasm_require_no_fork_instrumentation "$src" || return 1
             ;;
         *)
-            echo "install_local_binary: unsupported WASM_POSIX_INSTALL_FORK_INSTRUMENTATION='$fork_instrumentation' (expected auto or disabled)" >&2
+            echo "install_local_binary: unsupported fork policy '$declared_policy' (expected auto or disabled)" >&2
             return 2
             ;;
     esac
 
     if [ "$install_local_mirror" = "1" ]; then
-        # Take everything from the FIRST dot in the source basename onward
-        # so compound extensions like `.vfs.zst` round-trip intact (matches
-        # the resolver's `place_binaries_symlinks` extension handling).
-        local src_ext=""
-        case "$src_basename" in
-            *.*) src_ext=".${src_basename#*.}" ;;
-        esac
-
-        # Ask xtask for the package.toml-driven destination relative path.
-        # On hit, that's the canonical location matching the resolver's
-        # symlink layout (tools/xtask/src/build_deps.rs `place_binaries_symlinks`).
-        # On miss (package not in the registry, e.g. the dash→sh alias
-        # call site, or no [[outputs]] entry for this basename) fall back
-        # to the legacy heuristic so existing build scripts keep working.
-        local rel=""
-        local registered_package_dir="$repo_root/packages/registry/$program"
-        if [ -e "$registered_package_dir" ] || [ -L "$registered_package_dir" ]; then
-            if [ -z "$host_target" ]; then
-                echo "install_local_binary: rustc did not report a host target for registered package '$program'" >&2
-                return 1
-            fi
-            if ! rel="$(cd "$repo_root" && \
-                env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+        local source_parent
+        source_parent="$(cd "$(dirname "$src")" && pwd -P)" || return 1
+        local source_abs="$source_parent/$src_basename"
+        if ! (
+            cd "$repo_root"
+            env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+                WASM_POSIX_LOCAL_INSTALL_SOURCE="$source_abs" \
+                WASM_POSIX_LOCAL_INSTALL_SESSION="$WASM_POSIX_LOCAL_INSTALL_SESSION" \
                 cargo run -p xtask --target "$host_target" --quiet -- \
-                    build-deps output-path "$program" "$src_basename")"; then
-                echo "install_local_binary: registered package '$program' does not declare output '$src_basename'" >&2
-                return 1
-            fi
-            if [ -z "$rel" ]; then
-                echo "install_local_binary: registered package '$program' returned an empty output path" >&2
-                return 1
-            fi
-        elif [ -n "$host_target" ]; then
-            # Genuinely unregistered names are compatibility aliases (for
-            # example dash -> sh). Let an external registry opt into the
-            # manifest path when it resolves successfully, but preserve the
-            # legacy fallback when no manifest exists.
-            rel="$(cd "$repo_root" && \
-                env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
-                cargo run -p xtask --target "$host_target" --quiet -- \
-                    build-deps output-path "$program" "$src_basename" 2>/dev/null || true)"
-        fi
-
-        local dest
-        if [ -n "$rel" ]; then
-            dest="$repo_root/local-binaries/programs/$arch/$rel"
-            local source_parent
-            source_parent="$(cd "$(dirname "$src")" && pwd -P)" || return 1
-            local source_abs="$source_parent/$src_basename"
-            if ! (cd "$repo_root" && \
-                env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
-                    WASM_POSIX_LOCAL_INSTALL_SOURCE="$source_abs" \
-                    WASM_POSIX_LOCAL_INSTALL_SESSION="$WASM_POSIX_LOCAL_INSTALL_SESSION" \
-                    cargo run -p xtask --target "$host_target" --quiet -- \
-                        build-deps --arch "$arch" \
-                        --binaries-dir "$repo_root/local-binaries" \
-                        install-local-artifact "$program" "$src_basename"); then
-                return 1
-            fi
-        elif [ -n "$legacy_dest_name" ]; then
-            # Legacy multi-binary subdir layout. Used to be the only way to
-            # express "this program produces multiple wasms"; package.toml's
-            # [[outputs]] now does that explicitly. Reachable today only
-            # for callers whose program name isn't in the registry.
-            dest="$repo_root/local-binaries/programs/$arch/$program/$legacy_dest_name"
-        else
-            # Legacy single-binary fallback. Used by aliasing call sites
-            # like `install_local_binary sh "$BIN_DIR/dash.wasm"` where
-            # the "program" is a name registered nowhere. Uses the full
-            # compound extension so `.vfs.zst` round-trips intact.
-            dest="$repo_root/local-binaries/programs/$arch/$program$src_ext"
-        fi
-
-        if [ -z "$rel" ]; then
-            if ! _wasm_posix_copy_file_no_follow "$src" "$dest"; then
-                echo "install_local_binary: failed to replace legacy local mirror without following it: $dest" >&2
-                return 1
-            fi
-            echo "  installed $dest"
+                    build-deps --arch "$arch" \
+                    --binaries-dir "$repo_root/local-binaries" \
+                    install-local-artifact "$program" "$declared_artifact"
+        ); then
+            return 1
         fi
     fi
 
-    # When invoked under the package-system resolver (`xtask build-deps
-    # resolve`, `xtask archive-stage`), WASM_POSIX_DEP_OUT_DIR points at
-    # the resolver's scratch dir. The build script must install its
-    # declared `[[outputs]].wasm` files there so `validate_outputs`
-    # finds them and `archive_stage` packs them into the release
-    # archive — and `validate_outputs` looks them up by EXACT
-    # `[[outputs]].wasm` filename (tools/xtask/src/build_deps.rs:1136).
-    #
-    # The src filename (build script's own output) is what the build
-    # script declared via `[[outputs]].wasm`, so basename(src) is
-    # always the right key. No translation needed.
-    #
-    # Outside the resolver, WASM_POSIX_DEP_OUT_DIR is unset and this
-    # path is a no-op.
     if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-        local resolver_dest="$WASM_POSIX_DEP_OUT_DIR/$src_basename"
-        if ! _wasm_posix_copy_file_no_follow "$src" "$resolver_dest"; then
-            echo "install_local_binary: failed to replace resolver scratch artifact without following it: $resolver_dest" >&2
+        if ! _wasm_posix_copy_file_no_follow \
+            "$src" "$WASM_POSIX_DEP_OUT_DIR" "$declared_artifact"; then
+            echo "install_local_binary: failed to publish resolver scratch artifact: $WASM_POSIX_DEP_OUT_DIR/$declared_artifact" >&2
             return 1
         fi
-        echo "  installed $resolver_dest (resolver scratch)"
+        echo "  installed $WASM_POSIX_DEP_OUT_DIR/$declared_artifact (resolver scratch)"
     fi
 }
 
-# Install a declared non-Wasm `[[runtime_files]]` artifact into the same local
-# and caller-owned resolver destinations used by executable outputs. This is
-# intentionally separate from install_local_binary: data files must not pass
-# Wasm/fork guards or be described as executable outputs.
 install_local_runtime_file() {
-    local program="$1"
-    local src="$2"
+    local program="${1:-}"
+    local src="${2:-}"
     local artifact="${3:-}"
-
     if [ -z "$program" ] || [ -z "$src" ]; then
-        echo "install_local_runtime_file: usage: install_local_runtime_file <program> <src> [artifact]" >&2
+        echo "install_local_runtime_file: usage: install_local_runtime_file <package> <source> [declared-runtime-artifact]" >&2
         return 2
     fi
     if [ ! -f "$src" ] || [ -L "$src" ]; then
         echo "install_local_runtime_file: source must be a regular non-symlink file: $src" >&2
         return 1
     fi
+
     local arch="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
     case "$arch" in
         wasm32|wasm64) ;;
@@ -339,18 +537,15 @@ install_local_runtime_file() {
             return 2
             ;;
     esac
-
     local repo_root
     repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     local src_basename
     src_basename="$(basename "$src")"
     artifact="${artifact:-$src_basename}"
-    case "$artifact" in
-        ""|/*|*\\*|.|..|./*|../*|*/.|*/..|*//*|*/./*|*/../*|*/)
-            echo "install_local_runtime_file: artifact must be a portable relative path: $artifact" >&2
-            return 2
-            ;;
-    esac
+    if ! _wasm_posix_require_portable_relative_path "$artifact"; then
+        echo "install_local_runtime_file: artifact must be a portable relative path with normalized components: $artifact" >&2
+        return 2
+    fi
 
     local install_local_mirror="${WASM_POSIX_INSTALL_LOCAL_MIRROR:-1}"
     case "$install_local_mirror" in
@@ -359,12 +554,12 @@ install_local_runtime_file() {
                 echo "install_local_runtime_file: WASM_POSIX_INSTALL_LOCAL_MIRROR=0 requires WASM_POSIX_DEP_OUT_DIR" >&2
                 return 2
             fi
-            local resolver_dest="$WASM_POSIX_DEP_OUT_DIR/$artifact"
-            if ! _wasm_posix_copy_file_no_follow "$src" "$resolver_dest"; then
-                echo "install_local_runtime_file: failed to replace resolver scratch artifact without following it: $resolver_dest" >&2
+            if ! _wasm_posix_copy_file_no_follow \
+                "$src" "$WASM_POSIX_DEP_OUT_DIR" "$artifact"; then
+                echo "install_local_runtime_file: failed to publish resolver scratch artifact: $WASM_POSIX_DEP_OUT_DIR/$artifact" >&2
                 return 1
             fi
-            echo "  installed $resolver_dest (resolver scratch)"
+            echo "  installed $WASM_POSIX_DEP_OUT_DIR/$artifact (resolver scratch)"
             return 0
             ;;
         1) ;;
@@ -383,14 +578,14 @@ install_local_runtime_file() {
     local source_parent
     source_parent="$(cd "$(dirname "$src")" && pwd -P)" || return 1
     local source_abs="$source_parent/$src_basename"
-    if ! (cd "$repo_root" && \
+    (
+        cd "$repo_root"
         env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
             WASM_POSIX_LOCAL_INSTALL_SOURCE="$source_abs" \
             WASM_POSIX_LOCAL_INSTALL_SESSION="$WASM_POSIX_LOCAL_INSTALL_SESSION" \
             cargo run -p xtask --target "$host_target" --quiet -- \
                 build-deps --arch "$arch" \
                 --binaries-dir "$repo_root/local-binaries" \
-                install-local-artifact "$program" "$artifact"); then
-        return 1
-    fi
+                install-local-artifact "$program" "$artifact"
+    )
 }
