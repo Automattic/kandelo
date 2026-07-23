@@ -131,7 +131,7 @@ test("Chromium grows and replays a continuation beyond ABI 41's fixed reserve", 
   expect(result.diagnostics).toEqual([]);
 });
 
-test("Chromium reports continuation ENOMEM and preserves process state", async ({
+test("Chromium preserves the parent across root and later continuation ENOMEM", async ({
   page,
   baseURL,
   browserName,
@@ -151,6 +151,9 @@ test("Chromium reports continuation ENOMEM and preserves process state", async (
   );
 
   expect(result.exitCode).toBe(0);
+  expect(result.stdout).toContain("ROOT_CONTINUATION_ENOMEM: ok");
+  expect(result.stdout).toContain("ROOT_NO_PHANTOM_CHILD: ok");
+  expect(result.stdout).toContain("ROOT_PARENT_USABLE: ok");
   expect(result.stdout).toContain("CONTINUATION_ENOMEM: ok");
   expect(result.stdout).toContain("NO_PHANTOM_CHILD: ok");
   expect(result.stdout).toContain("CONTINUATION_PAGE_REUSED: ok");

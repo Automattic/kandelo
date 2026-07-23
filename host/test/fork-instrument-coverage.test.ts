@@ -489,13 +489,16 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
     });
   });
 
-  // P-11: force the linked continuation's second mmap to receive real ENOMEM
-  // after the first chunk contains committed frames. The fixture also proves
-  // abort replay leaves no child, releases its mapping, preserves the parent
-  // identity, and permits a later fork.
-  it("P-11 continuation allocation failure aborts cleanly", async () => {
+  // P-11 first exhausts the address space completely so the root continuation
+  // mmap fails before unwind, then frees one page so a deep fork fails on its
+  // second chunk after committing frames. Both real guest paths must leave no
+  // child and preserve a usable parent before a later fork succeeds.
+  it("P-11 root and later continuation allocation failures preserve the parent", async () => {
     await runFixture("programs/p_11_fork_continuation_enomem.wasm", {
       contains: [
+        "ROOT_CONTINUATION_ENOMEM: ok",
+        "ROOT_NO_PHANTOM_CHILD: ok",
+        "ROOT_PARENT_USABLE: ok",
         "CONTINUATION_ENOMEM: ok",
         "NO_PHANTOM_CHILD: ok",
         "CONTINUATION_PAGE_REUSED: ok",

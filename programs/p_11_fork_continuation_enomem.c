@@ -1,5 +1,6 @@
-// P-11 — a linked fork continuation that exhausts process address space must
-// return ENOMEM without creating a child or poisoning a later fork.
+// P-11 — root and later linked-fork continuation allocations that exhaust
+// process address space must return ENOMEM without creating a child or
+// poisoning the still-running parent.
 
 #include <errno.h>
 #include <stdint.h>
@@ -30,6 +31,47 @@ static int release_fillers(size_t count) {
         if (munmap(filler_mappings[i], WASM_PAGE_BYTES) != 0) failed = 1;
     }
     return failed;
+}
+
+static int emit_marker(const char *text, size_t length) {
+    while (length > 0) {
+        const ssize_t written = write(STDOUT_FILENO, text, length);
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) return -1;
+        text += (size_t)written;
+        length -= (size_t)written;
+    }
+    return 0;
+}
+
+static int prove_parent_syscalls_remain_usable(void) {
+    int pipefd[2];
+    char sent = 'K';
+    char received = '\0';
+
+    if (pipe(pipefd) != 0) return -1;
+    if (write(pipefd[1], &sent, 1) != 1 || read(pipefd[0], &received, 1) != 1) {
+        const int saved_errno = errno;
+        close(pipefd[0]);
+        close(pipefd[1]);
+        errno = saved_errno;
+        return -1;
+    }
+    const int read_close_result = close(pipefd[0]);
+    const int read_close_errno = errno;
+    const int write_close_result = close(pipefd[1]);
+    if (read_close_result != 0) {
+        errno = read_close_errno;
+        return -1;
+    }
+    if (write_close_result != 0) {
+        return -1;
+    }
+    if (received != sent) {
+        errno = EIO;
+        return -1;
+    }
+    return 0;
 }
 
 int main(void) {
@@ -63,6 +105,62 @@ int main(void) {
         return 1;
     }
 
+    // WHY: leave the address space completely full for this first fork. Its
+    // initial 64-KiB continuation mmap must fail before unwind starts, proving
+    // the real worker-side root-allocation error path rather than only the
+    // host arena unit.
+    errno = 0;
+    const pid_t root_failed_child = fork();
+    const int root_fork_errno = errno;
+    if (root_failed_child != -1 || root_fork_errno != ENOMEM) {
+        printf(
+            "FAIL: root-allocation fork result=%d errno=%d\n",
+            (int)root_failed_child,
+            root_fork_errno
+        );
+        release_fillers(filler_count);
+        return 1;
+    }
+    if (getpid() != original_pid) {
+        printf("FAIL: process identity changed after root-allocation failure\n");
+        release_fillers(filler_count);
+        return 1;
+    }
+    static const char root_enomem_marker[] = "ROOT_CONTINUATION_ENOMEM: ok\n";
+    if (emit_marker(root_enomem_marker, sizeof(root_enomem_marker) - 1) != 0) {
+        release_fillers(filler_count);
+        return 1;
+    }
+
+    int status = 0;
+    errno = 0;
+    const pid_t root_phantom = waitpid(-1, &status, WNOHANG);
+    if (root_phantom != -1 || errno != ECHILD) {
+        printf(
+            "FAIL: root-allocation failure left child=%d errno=%d\n",
+            (int)root_phantom,
+            errno
+        );
+        release_fillers(filler_count);
+        return 1;
+    }
+    static const char no_phantom_marker[] = "ROOT_NO_PHANTOM_CHILD: ok\n";
+    if (emit_marker(no_phantom_marker, sizeof(no_phantom_marker) - 1) != 0) {
+        release_fillers(filler_count);
+        return 1;
+    }
+
+    if (prove_parent_syscalls_remain_usable() != 0 || getpid() != original_pid) {
+        printf("FAIL: parent unusable after root-allocation failure errno=%d\n", errno);
+        release_fillers(filler_count);
+        return 1;
+    }
+    static const char usable_marker[] = "ROOT_PARENT_USABLE: ok\n";
+    if (emit_marker(usable_marker, sizeof(usable_marker) - 1) != 0) {
+        release_fillers(filler_count);
+        return 1;
+    }
+
     // WHY: one free page lets beginUnwind allocate its root chunk. The deep
     // call chain then needs another chunk, so failure occurs after frames have
     // been committed and exercises ABORT_UNWINDING rather than the simpler
@@ -93,7 +191,7 @@ int main(void) {
     }
     printf("CONTINUATION_ENOMEM: ok\n");
 
-    int status = 0;
+    status = 0;
     errno = 0;
     const pid_t phantom = waitpid(-1, &status, WNOHANG);
     if (phantom != -1 || errno != ECHILD) {
