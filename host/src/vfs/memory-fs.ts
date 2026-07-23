@@ -113,6 +113,8 @@ export interface LazyTreeContent {
   sourceEntryCount: number;
   /** Byte-identical transport mirrors, tried in declared order. */
   transports: string[];
+  /** Closed install-mode normalization for portable package ZIP outputs. */
+  modePolicy?: "portable-posix-v1";
   /** Complete source-member truth for a byte-identical original bottle. */
   source?: LazyTreeSourceInventory;
 }
@@ -712,6 +714,8 @@ function validateLazyTreeContent(
   const initial = value as Record<string, unknown> | null;
   const hasSource = typeof initial === "object" && initial !== null &&
     !Array.isArray(initial) && initial.source !== undefined;
+  const hasModePolicy = typeof initial === "object" && initial !== null &&
+    !Array.isArray(initial) && initial.modePolicy !== undefined;
   const record = exactLazyTreeRecord(value, [
     "decoder",
     "mediaType",
@@ -720,6 +724,7 @@ function validateLazyTreeContent(
     "expandedBytes",
     "sourceEntryCount",
     "transports",
+    ...(hasModePolicy ? ["modePolicy"] : []),
     ...(hasSource ? ["source"] : []),
   ], "Lazy tree content");
   const expectedMediaType = record.decoder === "zip-v1"
@@ -765,6 +770,13 @@ function validateLazyTreeContent(
   const source = hasSource
     ? validateLazyTreeSourceInventory(record.source, record.decoder)
     : undefined;
+  const modePolicy = hasModePolicy ? record.modePolicy : undefined;
+  if (
+    modePolicy !== undefined &&
+    (modePolicy !== "portable-posix-v1" || record.decoder !== "zip-v1" || hasSource)
+  ) {
+    throw new Error("Lazy tree mode policy is invalid for its decoder");
+  }
   if (source !== undefined && source.entries.length !== sourceEntryCount) {
     throw new Error("Lazy tree source inventory count differs from its content");
   }
@@ -776,6 +788,7 @@ function validateLazyTreeContent(
     expandedBytes,
     sourceEntryCount,
     transports,
+    ...(modePolicy === undefined ? {} : { modePolicy }),
     ...(source === undefined ? {} : { source }),
   };
 }
@@ -3418,14 +3431,23 @@ export class MemoryFileSystem implements FileSystemBackend {
           : entry.isSymlink
             ? "symlink"
             : "file";
+        const actualMode = content.modePolicy === "portable-posix-v1"
+          ? actualType === "directory"
+            ? 0o755
+            : actualType === "symlink"
+              ? 0o777
+              : (entry.mode & 0o111) !== 0
+                ? 0o755
+                : 0o644
+          : entry.mode & 0o7777;
         if (
           actualType !== expected.type ||
-          (entry.mode & 0o7777) !== expected.mode
+          actualMode !== expected.mode
         ) {
           throw new Error(`Lazy ZIP tree member ${sourcePath} differs from inventory`);
         }
         if (entry.isDirectory) {
-          decoded.set(sourcePath, { type: "directory", mode: entry.mode });
+          decoded.set(sourcePath, { type: "directory", mode: actualMode });
         } else {
           const member = extractZipEntryBounded(data, entry, expected.size);
           if (entry.isSymlink) {
@@ -3437,13 +3459,13 @@ export class MemoryFileSystem implements FileSystemBackend {
             }
             decoded.set(sourcePath, {
               type: "symlink",
-              mode: entry.mode,
+              mode: actualMode,
               target,
             });
           } else {
             decoded.set(sourcePath, {
               type: "file",
-              mode: entry.mode,
+              mode: actualMode,
               data: member,
             });
           }
