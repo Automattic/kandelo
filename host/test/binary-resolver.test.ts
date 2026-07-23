@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
+  copyFileSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   renameSync,
   rmdirSync,
@@ -12,6 +14,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { dirname, join, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { zstdCompressSync } from "node:zlib";
@@ -40,6 +43,8 @@ let savedBinaryCacheRoot: string | undefined;
 let hadSavedBinaryCacheRoot = false;
 let savedRegistry: string | undefined;
 let hadSavedRegistry = false;
+let savedResolverRepoRoot: string | undefined;
+let hadSavedResolverRepoRoot = false;
 let fixtureRegistryRoot = "";
 let fixtureRegistryIdentities: Record<string, unknown> = {};
 let fixtureRegistryPackages: Record<string, unknown> = {};
@@ -60,6 +65,12 @@ beforeEach(() => {
     "WASM_POSIX_DEPS_REGISTRY",
   );
   savedRegistry = process.env.WASM_POSIX_DEPS_REGISTRY;
+  hadSavedResolverRepoRoot = Object.prototype.hasOwnProperty.call(
+    process.env,
+    "WASM_POSIX_BINARY_RESOLVER_REPO_ROOT",
+  );
+  savedResolverRepoRoot = process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT;
+  delete process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT;
   fixtureRegistryRoot = mkdtempSync(
     join(tmpdir(), "kandelo-resolver-registry-"),
   );
@@ -101,6 +112,12 @@ afterEach(() => {
     process.env.WASM_POSIX_DEPS_REGISTRY = savedRegistry ?? "";
   } else {
     delete process.env.WASM_POSIX_DEPS_REGISTRY;
+  }
+  if (hadSavedResolverRepoRoot) {
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT =
+      savedResolverRepoRoot ?? "";
+  } else {
+    delete process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT;
   }
 });
 
@@ -2002,6 +2019,24 @@ guest_path = '/usr/share/runtime.dat'
     expect(tryResolveBinarySet(
       fixture.members.map((member) => member.relPath),
     )).toEqual(targets);
+
+    const localCanonicalRoot = fixtureLocalCanonicalRoot(fixture.name);
+    const localMirrors = fixture.members.map((member) => {
+      const target = writeCanonicalMember(
+        localCanonicalRoot,
+        member.sourceArtifact,
+        `local:${member.relPath}`,
+      );
+      const mirror = join(localBinariesDir(), member.relPath);
+      mkdirSync(dirname(mirror), { recursive: true });
+      symlinkSync(relative(dirname(mirror), target), mirror);
+      return mirror;
+    });
+    const localTargets = localMirrors.map((mirror) => realpathSync(mirror));
+    expect(resolveBinary(fixture.members[0]!.relPath)).toBe(localTargets[0]);
+    expect(tryResolveBinarySet(
+      fixture.members.map((member) => member.relPath),
+    )).toEqual(localTargets);
   });
 
   it("shares an explicit package cache root with archive-stage consumers", () => {
@@ -2022,6 +2057,194 @@ guest_path = '/usr/share/runtime.dat'
     expect(tryResolveBinarySet(
       fixture.members.map((member) => member.relPath),
     )).toEqual(targets);
+  });
+
+  it("accepts a relocated prepared workspace with relative links into one package generation", () => {
+    const relocatedRepo = mkdtempSync(
+      join(tmpdir(), "kandelo-relocated-test-workspace-"),
+    );
+    cleanupDirs.add(relocatedRepo);
+    writeFileSync(
+      join(relocatedRepo, "Cargo.toml"),
+      "[workspace]\nmembers = []\n",
+    );
+    writeFileSync(
+      join(relocatedRepo, "package.json"),
+      '{"name":"kandelo","private":true}\n',
+    );
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = relocatedRepo;
+    process.env.WASM_POSIX_BINARY_CACHE_ROOT = ".ci-test-binary-cache";
+
+    const fixture = createMultiOutputFixture();
+    const canonicalRoot = fixtureCanonicalRoot(fixture.name);
+    const mirrors = fixture.members.map((member) => {
+      const target = writeCanonicalMember(
+        canonicalRoot,
+        member.sourceArtifact,
+        member.relPath,
+      );
+      const mirror = join(binariesDir(), member.relPath);
+      mkdirSync(dirname(mirror), { recursive: true });
+      symlinkSync(relative(dirname(mirror), target), mirror);
+      return mirror;
+    });
+    const targets = mirrors.map((mirror) => realpathSync(mirror));
+
+    expect(binaryProgramCacheRoot()).toBe(
+      join(relocatedRepo, ".ci-test-binary-cache", "programs"),
+    );
+    expect(
+      mirrors.map((mirror) => readlinkSync(mirror).startsWith("/")),
+    ).toEqual(mirrors.map(() => false));
+    expect(resolveBinary(fixture.members[0]!.relPath)).toBe(targets[0]);
+    expect(tryResolveBinarySet(
+      fixture.members.map((member) => member.relPath),
+    )).toEqual(targets);
+  });
+
+  it("resolves one complete package after its prepared workspace archive is relocated", () => {
+    const sourceRepo = mkdtempSync(
+      join(tmpdir(), "kandelo-test-workspace-source-"),
+    );
+    const relocatedRepo = mkdtempSync(
+      join(tmpdir(), "kandelo-test-workspace-relocated-"),
+    );
+    const sourceCache = mkdtempSync(
+      join(tmpdir(), "kandelo-test-workspace-cache-"),
+    );
+    cleanupDirs.add(sourceRepo);
+    cleanupDirs.add(relocatedRepo);
+    cleanupDirs.add(sourceCache);
+
+    const actualRepo = findRepoRoot();
+    const packer = join(sourceRepo, "scripts", "pack-ci-test-workspace.sh");
+    mkdirSync(dirname(packer), { recursive: true });
+    copyFileSync(
+      join(actualRepo, "scripts", "pack-ci-test-workspace.sh"),
+      packer,
+    );
+    chmodSync(packer, 0o755);
+
+    const fakeBin = join(sourceRepo, "fixture-bin");
+    mkdirSync(fakeBin, { recursive: true });
+    const rustc = join(fakeBin, "rustc");
+    writeFileSync(
+      rustc,
+      "#!/bin/sh\n[ \"${1:-}\" = -vV ] && printf 'host: fixture-host\\n'\n",
+    );
+    chmodSync(rustc, 0o755);
+    const xtask = join(
+      sourceRepo,
+      "target",
+      "fixture-host",
+      "release",
+      "xtask",
+    );
+    mkdirSync(dirname(xtask), { recursive: true });
+    writeFileSync(
+      xtask,
+      `#!/bin/sh
+if [ "\${1:-}" = build-deps ] && [ "\${2:-}" = cache-root ] && [ "$#" -eq 2 ]; then
+  printf '%s\\n' "$WASM_POSIX_BINARY_CACHE_ROOT"
+  exit 0
+fi
+exit 2
+`,
+    );
+    chmodSync(xtask, 0o755);
+
+    for (const relPath of [
+      "local-binaries/kernel.wasm",
+      "host/wasm/rootfs.vfs",
+      "examples/gencat.wasm",
+      "examples/pthread_channel_reuse_test.wasm",
+      "examples/wait_lifecycle_test.wasm",
+      "examples/wait_lifecycle_test.wasm64.wasm",
+      "examples/terminal_attributes_api_test.wasm64.wasm",
+      "benchmarks/wasm/pipe-throughput.wasm",
+      "benchmarks/wasm/file-throughput.wasm",
+      "benchmarks/wasm/syscall-latency.wasm",
+      "benchmarks/wasm/fork-bench.wasm",
+      "benchmarks/wasm/clone-bench.wasm",
+      "benchmarks/wasm/spawn-bench.wasm",
+      "benchmarks/wasm/hello.wasm",
+    ]) {
+      const path = join(sourceRepo, relPath);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, relPath);
+    }
+
+    const fixture = createMultiOutputFixture();
+    const cacheKey = fixtureCacheKey(fixture.name);
+    const generation = join(
+      sourceCache,
+      "programs",
+      `${fixture.name}-1.0.0-rev1-wasm32-${cacheKey}`,
+    );
+    const originalTargets: string[] = [];
+    for (const member of fixture.members) {
+      const target = writeCanonicalMember(
+        generation,
+        member.sourceArtifact,
+        member.relPath,
+      );
+      const mirror = join(sourceRepo, "binaries", member.relPath);
+      mkdirSync(dirname(mirror), { recursive: true });
+      symlinkSync(target, mirror);
+      originalTargets.push(target);
+    }
+
+    const archive = join(sourceRepo, "prepared-workspace.tar.zst");
+    execFileSync("bash", [packer, archive], {
+      cwd: sourceRepo,
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+        WASM_POSIX_BINARY_CACHE_ROOT: sourceCache,
+      },
+      stdio: "pipe",
+    });
+    writeFileSync(
+      join(relocatedRepo, "Cargo.toml"),
+      "[workspace]\nmembers = []\n",
+    );
+    writeFileSync(
+      join(relocatedRepo, "package.json"),
+      '{"name":"kandelo","private":true}\n',
+    );
+    execFileSync(
+      "tar",
+      ["--zstd", "-xf", archive, "-C", relocatedRepo],
+      { stdio: "pipe" },
+    );
+
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = relocatedRepo;
+    process.env.WASM_POSIX_BINARY_CACHE_ROOT = ".ci-test-binary-cache";
+    const relocatedMirrors = fixture.members.map((member) =>
+      join(relocatedRepo, "binaries", member.relPath)
+    );
+    expect(
+      relocatedMirrors.map((mirror) => readlinkSync(mirror).startsWith("/")),
+    ).toEqual(relocatedMirrors.map(() => false));
+
+    const relocatedTargets = relocatedMirrors.map((mirror) =>
+      realpathSync(mirror)
+    );
+    const portablePrograms = realpathSync(join(
+      relocatedRepo,
+      ".ci-test-binary-cache",
+      "programs",
+    ));
+    expect(relocatedTargets.every((target) =>
+      target.startsWith(`${portablePrograms}/`)
+    )).toBe(true);
+    expect(resolveBinary(fixture.members[0]!.relPath)).toBe(
+      relocatedTargets[0],
+    );
+    expect(tryResolveBinarySet(
+      fixture.members.map((member) => member.relPath),
+    )).toEqual(relocatedTargets);
+    expect(originalTargets).not.toEqual(relocatedTargets);
   });
 
   it("anchors a relative explicit package cache at the Kandelo repository", () => {

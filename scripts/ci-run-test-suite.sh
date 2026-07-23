@@ -12,6 +12,15 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Prepared CI workspaces transport fetched programs as relative links into a
+# repo-local copy of the exact content-addressed cache generations. Point both
+# the Rust and TypeScript resolvers at that identity before any suite can read
+# `binaries/`; otherwise the copied cache would look like an unrelated tier.
+portable_cache="$REPO_ROOT/.ci-test-binary-cache"
+if [ -d "$portable_cache/programs" ]; then
+    export WASM_POSIX_BINARY_CACHE_ROOT="$portable_cache"
+fi
+
 suite="${1:-}"
 if [ -z "$suite" ]; then
     echo "usage: $0 <cargo-kernel|fork-instrument|vitest|browser|libc|posix|sortix> [group]" >&2
