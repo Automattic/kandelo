@@ -96,6 +96,27 @@ jobs:
             return 2
           }
 
+          normalize_write_kandelo_ref() {
+            local ref="$1"
+
+            if [ "$ref" = "main" ]; then
+              printf 'refs/heads/main\n'
+              return 0
+            fi
+            if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+              # WHY: a new ABI needs bottles before its bottle-backed shell can
+              # validate and merge. The protected tap caller must hardcode this
+              # reviewed SHA, and the Kandelo merge must preserve it as an
+              # ancestor of main; accepting a branch would make executable
+              # publication input mutable between review and checkout.
+              printf '%s\n' "$ref"
+              return 0
+            fi
+
+            echo "::error::write publication requires Kandelo main or an exact reviewed lowercase 40-character commit SHA" >&2
+            return 2
+          }
+
           normalized_caller_repository="$(printf '%s' "$CALLER_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           normalized_tap_repository="$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           normalized_tap_name="$(printf '%s' "$TAP_NAME" | tr '[:upper:]' '[:lower:]')"
@@ -134,13 +155,10 @@ jobs:
               "$CALLER_REPOSITORY/.github/workflows/maintain-bottles.yml@refs/heads/main") ;;
               *) echo "::error::publication requires a reviewed tap write workflow"; exit 2 ;;
             esac
-            [ "$KANDELO_REF" = "main" ] || {
-              echo "::error::write publication requires Kandelo main"; exit 2;
-            }
             [ "$TAP_REF" = "main" ] || {
               echo "::error::write publication requires tap main"; exit 2;
             }
-            validated_kandelo_ref="refs/heads/main"
+            validated_kandelo_ref="$(normalize_write_kandelo_ref "$KANDELO_REF")"
             validated_tap_ref="refs/heads/main"
           fi
           {

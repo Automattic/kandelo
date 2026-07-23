@@ -543,6 +543,25 @@ canonical release):
   Canonical activation also waits for the shared product-VFS headroom fix, its
   derived-product regression, and the final exact restack against landed
   prerequisites.
+- ABI 42 creates a real publication cycle: the bottle-backed shell cannot
+  validate until ABI-42 tap metadata exists, while normal write publication
+  builds only from Kandelo `main`. Break that cycle without accepting a mutable
+  source ref:
+
+  1. finish every non-cyclic #1079 validation and freeze its reviewed head;
+  2. have protected tap `main` hardcode that same exact 40-character SHA as
+     both the reusable-workflow ref and `kandelo-ref`;
+  3. publish only the complete intended ABI-42 closure, then update the shell
+     lock to the exact resulting tap commit and run exact Node/Chromium and
+     staging acceptance;
+  4. merge #1079 with a merge commit so the published Kandelo SHA becomes an
+     ancestor of `main`, verify that ancestry, and immediately rotate the tap
+     caller back to landed Kandelo `main`;
+  5. restore the repository's normal merge-method setting after that one
+     cutover.
+
+  Rebase or squash is not acceptable for this transition because GitHub
+  rewrites the source SHA recorded by the bottle handoffs and sidecars.
 
 ### Phase 5: Ship usable upstream Homebrew inside Kandelo
 

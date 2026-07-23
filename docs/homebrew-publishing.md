@@ -808,15 +808,22 @@ workflow name. The three dispatch events are `publish-kandelo-bottles`,
 `dry-run-kandelo-bottles`, and `maintain-kandelo-bottles`. Publish and dry-run
 payloads must select at least one Formula and architecture; an absent or empty
 selection is an error, not a successful no-op.
-Write publication is additionally fixed to `Automattic/kandelo@main` and the
-caller tap's `main` branch. A dry run keeps those repository identities fixed,
-but may select a reviewed, valid Git branch name or an exact lowercase
-40-character commit SHA from each repository. The trust step normalizes branch
-names under `refs/heads/`, and the planning job resolves both selections to
-immutable commits before any matrix job starts. These source selections are
-data passed to the already-reviewed caller and reusable workflow definitions;
-they do not select either workflow definition. The bottle root is never
-caller-selected:
+Write publication is fixed to the caller tap's `main` branch and normally to
+`Automattic/kandelo@main`. During an ABI transition, the protected tap caller
+may instead hardcode one reviewed, exact lowercase 40-character Kandelo commit
+so the new-ABI bottles exist before the bottle-backed shell can validate. The
+Kandelo PR must then merge without rewriting that commit, making the published
+source commit an ancestor of `main`; immediately afterward, rotate the tap
+caller back to Kandelo `main`. Write publication never accepts a non-main
+Kandelo branch.
+
+A dry run keeps those repository identities fixed, but may select a reviewed,
+valid Git branch name or an exact lowercase 40-character commit SHA from each
+repository. The trust step normalizes branch names under `refs/heads/`, and the
+planning job resolves both selections to immutable commits before any matrix
+job starts. These source selections are data passed to the already-reviewed
+caller and reusable workflow definitions; they do not select either workflow
+definition. The bottle root is never caller-selected:
 the workflow rejects a non-empty `bottle-root-url` and derives
 `https://ghcr.io/v2/<lowercase-owner>/<lowercase-homebrew-repository>` from the
 validated tap repository. The separate reusable maintenance workflow remains first-party

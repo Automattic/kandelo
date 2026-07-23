@@ -20,7 +20,7 @@ MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
-PUBLISHER_PLAN_DIGEST = "81fa4e83b42c41a598bfb500f697444a5068d9cb068efc87da3f916d0f70d415"
+PUBLISHER_PLAN_DIGEST = "abf9de4c12169a8af47f288a42a73851aec0d0634177958e99bbc9969b90bd9e"
 PUBLISHER_BUILD_DIGEST = "85cda2db521caa63926b18931e189652f88948f93fe281c2893a6d26cb1cc282"
 PUBLISHER_UPLOAD_DIGEST = "1a9f39031587a5944bce022031d6f84d70f476159d4798bbcb51a4fa8377da9e"
 PUBLISHER_INDEX_DIGEST = "c0eaec6f01ac64e8744b8c98e35b304aa2adafc4ce7ad96416eac85c593fdf87"
@@ -211,9 +211,40 @@ def check_caller_validation_behavior(workflow)
     "DRY_RUN" => "false",
     "KANDELO_REF" => kandelo_sha,
   })
-  check(write_sha["status"] == 2 &&
-        write_sha["stdout"].include?("write publication requires Kandelo main"),
-        "publisher write path accepts a non-main Kandelo ref")
+  check(write_sha["status"] == 0 && write_sha["outputs"] ==
+        "kandelo-ref=#{kandelo_sha}\ntap-ref=refs/heads/main\n",
+        "publisher write path does not accept an exact reviewed Kandelo commit")
+
+  write_branch = caller_validation_result(source, {
+    "CALLER_WORKFLOW_REF" =>
+      "kandelo-dev/homebrew-tap-core/.github/workflows/publish-bottles.yml@refs/heads/main",
+    "DRY_RUN" => "false",
+    "KANDELO_REF" => "review/homebrew",
+  })
+  check(write_branch["status"] == 2 &&
+        write_branch["stderr"].include?(
+          "write publication requires Kandelo main or an exact reviewed lowercase"
+        ),
+        "publisher write path accepts a mutable non-main Kandelo ref")
+
+  {
+    "fully qualified main" => "refs/heads/main",
+    "uppercase commit" => "A" * 40,
+    "short commit" => "a" * 39,
+    "long commit" => "a" * 41,
+  }.each do |label, ref|
+    rejected = caller_validation_result(source, {
+      "CALLER_WORKFLOW_REF" =>
+        "kandelo-dev/homebrew-tap-core/.github/workflows/publish-bottles.yml@refs/heads/main",
+      "DRY_RUN" => "false",
+      "KANDELO_REF" => ref,
+    })
+    check(rejected["status"] == 2 &&
+          rejected["stderr"].include?(
+            "write publication requires Kandelo main or an exact reviewed lowercase"
+          ),
+          "publisher write path accepts #{label}")
+  end
 
   {
     "fully qualified ref" => "refs/heads/review/homebrew",
@@ -660,7 +691,6 @@ def check_publisher(workflow)
     '"$CALLER_REPOSITORY/.github/workflows/publish-bottles.yml@refs/heads/main"',
     '"$CALLER_REPOSITORY/.github/workflows/maintain-bottles.yml@refs/heads/main"',
     '[ "$KANDELO_REPOSITORY" = "Automattic/kandelo" ]',
-    '[ "$KANDELO_REF" = "main" ]',
     '[[ "$normalized_tap_repository" =~ ^[a-z0-9_.-]+/homebrew-[a-z0-9_.-]+$ ]]',
     'tap_short_name="${normalized_tap_repository#*/homebrew-}"',
     '[ "$normalized_tap_name" = "${tap_owner}/${tap_short_name}" ]',
@@ -672,8 +702,12 @@ def check_publisher(workflow)
     '[[ "$ref" != refs/* ]]',
     '[[ "$ref" != -* ]]',
     'git check-ref-format "refs/heads/$ref"',
+    'normalize_write_kandelo_ref()',
+    '[ "$ref" = "main" ]',
+    'write publication requires Kandelo main or an exact reviewed lowercase 40-character commit SHA',
     'validated_kandelo_ref="$(normalize_dry_run_source_ref "Kandelo" "$KANDELO_REF")"',
     'validated_tap_ref="$(normalize_dry_run_source_ref "tap" "$TAP_REF")"',
+    'validated_kandelo_ref="$(normalize_write_kandelo_ref "$KANDELO_REF")"',
     'echo "kandelo-ref=$validated_kandelo_ref"',
     'echo "tap-ref=$validated_tap_ref"',
   ].each do |predicate|
@@ -690,7 +724,9 @@ def check_publisher(workflow)
   dry_kandelo_ref_index = validation_run.index(
     'validated_kandelo_ref="$(normalize_dry_run_source_ref "Kandelo" "$KANDELO_REF")"'
   )
-  write_kandelo_ref_index = validation_run.index('[ "$KANDELO_REF" = "main" ]')
+  write_kandelo_ref_index = validation_run.index(
+    'validated_kandelo_ref="$(normalize_write_kandelo_ref "$KANDELO_REF")"'
+  )
   write_tap_ref_index = validation_run.index('[ "$TAP_REF" = "main" ]')
   check(dry_index && caller_index && kandelo_index && tap_name_index &&
         caller_index < dry_index && kandelo_index < dry_index && tap_name_index < dry_index,
@@ -698,7 +734,7 @@ def check_publisher(workflow)
   check(dry_kandelo_ref_index && write_kandelo_ref_index && write_tap_ref_index &&
         dry_index < dry_kandelo_ref_index && dry_kandelo_ref_index < write_kandelo_ref_index &&
         dry_kandelo_ref_index < write_tap_ref_index,
-        "publisher does not separate selectable dry-run refs from write-only main refs")
+        "publisher does not separate selectable dry-run refs from reviewed write refs")
 
   vfs_selection = named_step(
     plan_steps, "Validate dependency-bearing VFS acceptance selection"
