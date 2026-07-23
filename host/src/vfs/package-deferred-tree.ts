@@ -240,6 +240,7 @@ export function derivePackageDeferredZipTree(
     expandedBytes,
     sourceEntryCount: zipEntries.length,
     transports: [spec.archive.url],
+    modePolicy: spec.archive.mode_policy,
   };
   const descriptor: PackageDeferredZipTreeDescriptor = {
     schema: 1,
