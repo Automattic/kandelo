@@ -28,6 +28,7 @@ import {
   resolveBinary,
   setProgramIndexContextCheckerForTests,
   tryResolveBinary,
+  tryResolveBinaries,
   tryResolveBinarySet,
 } from "../src/binary-resolver";
 import { ABI_VERSION } from "../src/generated/abi";
@@ -350,13 +351,36 @@ describe("program package source freshness boundary", () => {
     expect(programOutputClosureRelPaths(relPath)).toBeNull();
     expect(resolveBinary(relPath)).toBe(path);
     expect(tryResolveBinary(relPath)).toBe(path);
+    expect(tryResolveBinaries([relPath])).toEqual([path]);
     expect(tryResolveBinarySet([relPath])).toEqual([path]);
 
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(5);
     for (const call of calls) {
       expect(call.sourceRepoRoot).toBe(findRepoRoot());
       expect(call.registryRoots).toEqual([fixtureRegistryRoot]);
     }
+  });
+
+  it("checks one projection once for a batch of independent optional artifacts", () => {
+    const [presentRelPath, absentRelPath] = fixtureClosureRelPaths([
+      "present.dat",
+      "absent.dat",
+    ]);
+    const presentPath = writeCandidate(
+      localBinariesDir(),
+      presentRelPath!,
+      new TextEncoder().encode("program data"),
+    );
+    const calls: string[][] = [];
+    setProgramIndexContextCheckerForTests((_sourceRepoRoot, registryRoots) => {
+      calls.push([...registryRoots]);
+    });
+
+    expect(tryResolveBinaries([presentRelPath!, absentRelPath!])).toEqual([
+      presentPath,
+      null,
+    ]);
+    expect(calls).toEqual([[fixtureRegistryRoot]]);
   });
 
   it("passes the exact configured registry order to the Rust checker", () => {
@@ -2655,6 +2679,19 @@ wasm = "bin/${renamedOutput}.zip"
       fixture.members[0]!.relPath,
       fixture.members[1]!.relPath,
     ])).toThrow(/must resolve its complete declared closure/);
+  });
+
+  it("does not let an independent batch weaken package closure identity", () => {
+    const fixture = createMultiOutputFixture();
+    writeCandidate(
+      localBinariesDir(),
+      fixture.members[0]!.relPath,
+      new TextEncoder().encode("partial-local-output"),
+    );
+
+    expect(() => tryResolveBinaries([fixture.members[0]!.relPath])).toThrow(
+      /Package artifact closure is incomplete/,
+    );
   });
 
   it("keeps an absent package-owned member on the package lookup path", () => {

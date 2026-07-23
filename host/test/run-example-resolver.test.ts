@@ -57,6 +57,9 @@ describe("run-example exec resolver", () => {
           cwd: repoRoot,
           env: {
             ...process.env,
+            // This intentionally does not match any checked-out binaries
+            // mirror. No-argument usage must return before package probing;
+            // otherwise this sentinel cache makes the test fail closed.
             WASM_POSIX_BINARY_CACHE_ROOT: cacheRoot,
             WASM_POSIX_DEPS_REGISTRY: "packages/registry",
           },
@@ -70,6 +73,7 @@ describe("run-example exec resolver", () => {
         "Usage: npx tsx examples/run-example.ts <name>",
       );
       expect(result.stderr).not.toContain("Legacy flat resolver path");
+      expect(result.stderr).not.toContain("Package artifact closure");
     } finally {
       rmSync(cacheRoot, { recursive: true, force: true });
     }
