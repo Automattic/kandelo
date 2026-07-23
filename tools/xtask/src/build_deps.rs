@@ -275,16 +275,25 @@ fn package_context_cache_keys(
     manifest: &DepsManifest,
     registry: &Registry,
 ) -> Result<BTreeMap<String, String>, String> {
+    package_context_cache_keys_with_global_toolchain_inputs(manifest, registry, None)
+}
+
+fn package_context_cache_keys_with_global_toolchain_inputs(
+    manifest: &DepsManifest,
+    registry: &Registry,
+    global_toolchain_inputs: Option<&[BuildInputDigest]>,
+) -> Result<BTreeMap<String, String>, String> {
     let mut cache_keys = BTreeMap::new();
     let mut memo = BTreeMap::new();
     for arch in PROGRAM_PACKAGE_CONTEXT_ARCHES {
-        let cache_key = compute_sha(
+        let cache_key = compute_sha_with_global_toolchain_inputs(
             manifest,
             registry,
             arch,
             current_abi_version(),
             &mut memo,
             &mut Vec::new(),
+            global_toolchain_inputs,
         )?;
         cache_keys.insert(arch.as_str().to_string(), hex(&cache_key));
     }
@@ -849,6 +858,15 @@ where
             .map_err(|e| format!("sync staged program package index {}: {e}", stage.display()))?;
         drop(stage_file);
 
+        // The target snapshot check and overwriting rename are not a compare-
+        // and-swap by themselves: another generator could replace the target
+        // after validation and then be overwritten by this writer. All xtask
+        // index publishers coordinate through one durable lock inode. Keep the
+        // lock through source refresh, target validation, replacement, and the
+        // parent-directory sync so an older cooperating writer can never land
+        // after a newer one in that gap.
+        let _publication_lock = lock_program_package_index_publication(&parent, file_name)?;
+
         // Recompute the complete registry projection at the publication
         // boundary. A writer that staged an older registry snapshot must not
         // overwrite an index generated after the recipe graph changed.
@@ -902,6 +920,67 @@ where
         };
     }
     Ok(())
+}
+
+fn program_package_index_lock_path(parent: &Path, file_name: &std::ffi::OsStr) -> PathBuf {
+    let mut lock_name = std::ffi::OsString::from(".");
+    lock_name.push(file_name);
+    lock_name.push(".kandelo-index.lock");
+    parent.join(lock_name)
+}
+
+fn lock_program_package_index_publication(
+    parent: &Path,
+    file_name: &std::ffi::OsStr,
+) -> Result<std::fs::File, String> {
+    let lock_path = program_package_index_lock_path(parent, file_name);
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let lock = options.open(&lock_path).map_err(|e| {
+        format!(
+            "open program package index publication lock {}: {e}",
+            lock_path.display()
+        )
+    })?;
+    lock.lock().map_err(|e| {
+        format!(
+            "lock program package index publication {}: {e}",
+            lock_path.display()
+        )
+    })?;
+
+    let opened_metadata = lock.metadata().map_err(|e| {
+        format!(
+            "inspect opened program package index publication lock {}: {e}",
+            lock_path.display()
+        )
+    })?;
+    let path_metadata = std::fs::symlink_metadata(&lock_path).map_err(|e| {
+        format!(
+            "inspect program package index publication lock path {}: {e}",
+            lock_path.display()
+        )
+    })?;
+    if !opened_metadata.is_file()
+        || opened_metadata.file_type().is_symlink()
+        || opened_metadata.len() != 0
+        || !path_metadata.is_file()
+        || path_metadata.file_type().is_symlink()
+        || path_metadata.len() != 0
+        || package_mirror_identity(&opened_metadata)? != package_mirror_identity(&path_metadata)?
+    {
+        let _ = lock.unlock();
+        return Err(format!(
+            "program package index publication lock must remain one empty regular non-symlink file: {}",
+            lock_path.display()
+        ));
+    }
+    Ok(lock)
 }
 
 struct ProgramPackageIndexTargetSnapshot {
@@ -1075,6 +1154,61 @@ fn cmd_check_program_package_index(
     Ok(())
 }
 
+/// Validate every program-package projection in the same ordered suffix
+/// context that owns it.
+///
+/// A source resolver needs a complete projection for each existing configured
+/// registry root: when a higher-priority external root disappears, the next
+/// root becomes authoritative. The broader `build-deps check` command retains
+/// its historical behavior of validating indexes that are present, while the
+/// runtime boundary uses `require_every_index = true` so an absent projection
+/// cannot silently disable exact source-freshness validation.
+fn check_program_package_indexes_in_context(
+    registry: &Registry,
+    require_every_index: bool,
+) -> Result<(), String> {
+    for (root_index, root) in registry.roots.iter().enumerate() {
+        let root_metadata = match std::fs::metadata(root) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "inspect configured package registry root {}: {error}",
+                    root.display()
+                ));
+            }
+        };
+        if !root_metadata.is_dir() {
+            return Err(format!(
+                "configured package registry root is not a directory: {}",
+                root.display()
+            ));
+        }
+
+        let index = root.join("program-packages.json");
+        if !index.is_file() {
+            if require_every_index {
+                return Err(format!(
+                    "configured package registry root {} is missing {}; generate it in its ordered registry context before resolving source packages",
+                    root.display(),
+                    index.display()
+                ));
+            }
+            continue;
+        }
+
+        // Each physical root owns an index for the ordered registry context
+        // beginning at that root. Higher-priority roots may add identities for
+        // the complete combined context, but must not make a lower root's
+        // committed suffix-context index appear stale.
+        let suffix_registry = Registry {
+            roots: registry.roots[root_index..].to_vec(),
+        };
+        cmd_check_program_package_index(root, &index, &suffix_registry)?;
+    }
+    Ok(())
+}
+
 /// Subset of [`Registry::walk_all`] containing only `kind = "program"`
 /// manifests. Used by `bundle-program` and `archive-stage` to look
 /// up source + license decoration for release artifacts.
@@ -1147,6 +1281,26 @@ pub fn compute_sha(
     memo: &mut BTreeMap<String, [u8; 32]>,
     chain: &mut Vec<String>,
 ) -> Result<[u8; 32], String> {
+    compute_sha_with_global_toolchain_inputs(
+        target,
+        registry,
+        arch,
+        abi_version,
+        memo,
+        chain,
+        None,
+    )
+}
+
+fn compute_sha_with_global_toolchain_inputs(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+    memo: &mut BTreeMap<String, [u8; 32]>,
+    chain: &mut Vec<String>,
+    global_toolchain_inputs_override: Option<&[BuildInputDigest]>,
+) -> Result<[u8; 32], String> {
     if chain.iter().any(|s| s == &target.name) {
         return Err(format!(
             "cycle in dep graph: {} -> {}",
@@ -1183,7 +1337,15 @@ pub fn compute_sha(
                 child.spec()
             ));
         }
-        let child_sha = compute_sha(&child, registry, arch, abi_version, memo, chain)?;
+        let child_sha = compute_sha_with_global_toolchain_inputs(
+            &child,
+            registry,
+            arch,
+            abi_version,
+            memo,
+            chain,
+            global_toolchain_inputs_override,
+        )?;
         dep_shas.push((dref.clone(), child_sha));
     }
     dep_shas.sort_by(|a, b| a.0.name.cmp(&b.0.name));
@@ -1192,7 +1354,12 @@ pub fn compute_sha(
 
     let build_inputs = build_input_digests(target, registry)?;
     let global_toolchain_inputs = match target.kind {
-        ManifestKind::Library | ManifestKind::Program => global_package_toolchain_digests()?,
+        ManifestKind::Library | ManifestKind::Program => {
+            match global_toolchain_inputs_override {
+                Some(inputs) => inputs.to_vec(),
+                None => global_package_toolchain_digests()?,
+            }
+        }
         ManifestKind::Source => Vec::new(),
     };
     let fork_instrument_tool_inputs = if package_uses_fork_instrument_tool(target) {
@@ -1801,27 +1968,159 @@ fn resolve_build_input_path(
     registry: &Registry,
     input: &str,
 ) -> Result<PathBuf, String> {
-    let mut candidates = Vec::new();
-    candidates.push(repo_root().join(input));
-    candidates.extend(registry.roots.iter().map(|root| root.join(input)));
-    candidates.push(target.dir.join(input));
+    resolve_build_input_path_from_repo(target, registry, input, &repo_root())
+}
 
-    for candidate in &candidates {
-        if candidate.exists() {
-            return Ok(candidate.clone());
+fn resolve_build_input_path_from_repo(
+    target: &DepsManifest,
+    registry: &Registry,
+    input: &str,
+    main_repo_root: &Path,
+) -> Result<PathBuf, String> {
+    // Canonical Kandelo build inputs are authored relative to the repository
+    // (`packages/registry/<package>/...`). Registry priority is package-level,
+    // not file-level: once a first-hit package.toml selects an external
+    // package, every declared input below that package must exist there. Never
+    // fill a missing file from a lower package generation.
+    if let Ok(registry_relative) = Path::new(input).strip_prefix("packages/registry") {
+        let (package_name, package_relative) =
+            split_registry_build_input(registry_relative, input)?;
+        if let Some(selected) = selected_registry_package_dir(
+            registry,
+            main_repo_root,
+            package_name,
+        ) {
+            return require_selected_registry_build_input(
+                target,
+                input,
+                package_name,
+                &selected,
+                package_relative,
+            );
+        }
+
+        // Some first-party helper trees under packages/registry (currently
+        // npm and node-compat) deliberately are not packages. They remain
+        // main-checkout inputs; an unclaimed directory in a higher registry
+        // root must not shadow them.
+        let main_candidate = main_repo_root.join(input);
+        if main_candidate.exists() {
+            return Ok(main_candidate);
+        }
+        return Err(format!(
+            "{} build input {:?} does not name a selected registry package and was not found at {}",
+            target.spec(),
+            input,
+            main_candidate.display(),
+        ));
+    }
+
+    let main_candidate = main_repo_root.join(input);
+    if main_candidate.exists() {
+        return Ok(main_candidate);
+    }
+
+    // Preserve the historical registry-relative input form
+    // (`<package>/build.sh`) for third-party registries that use it, with the
+    // same package-level first-hit rule as canonical inputs.
+    let input_path = Path::new(input);
+    let mut legacy_components = input_path.components();
+    if let Some(first_component) = legacy_components.next() {
+        if let std::path::Component::Normal(package_component) = first_component {
+            let package_name = package_component.to_str().ok_or_else(|| {
+                format!(
+                    "{} build input {:?} has a non-UTF-8 registry package name",
+                    target.spec(),
+                    input,
+                )
+            })?;
+            let package_relative = legacy_components.as_path();
+            if let Some(selected) =
+                selected_registry_package_dir(registry, main_repo_root, package_name)
+            {
+                return require_selected_registry_build_input(
+                    target,
+                    input,
+                    package_name,
+                    &selected,
+                    package_relative,
+                );
+            }
         }
     }
 
-    let tried = candidates
-        .iter()
-        .map(|p| p.display().to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let main_registry_candidate = main_repo_root.join("packages/registry").join(input);
+    if main_registry_candidate.exists() {
+        return Ok(main_registry_candidate);
+    }
+    let package_relative_candidate = target.dir.join(input);
+    if package_relative_candidate.exists() {
+        return Ok(package_relative_candidate);
+    }
+
     Err(format!(
-        "{} build input {:?} not found (tried: {})",
+        "{} build input {:?} not found (tried: {}, {}, {})",
         target.spec(),
         input,
-        tried
+        main_candidate.display(),
+        main_registry_candidate.display(),
+        package_relative_candidate.display(),
+    ))
+}
+
+fn split_registry_build_input<'a>(
+    registry_relative: &'a Path,
+    authored_input: &str,
+) -> Result<(&'a str, &'a Path), String> {
+    let mut components = registry_relative.components();
+    let package_component = match components.next() {
+        Some(std::path::Component::Normal(component)) => component,
+        _ => {
+            return Err(format!(
+                "canonical registry build input must name a package below packages/registry: {authored_input:?}",
+            ));
+        }
+    };
+    let package_name = package_component.to_str().ok_or_else(|| {
+        format!(
+            "canonical registry build input has a non-UTF-8 package name: {authored_input:?}",
+        )
+    })?;
+    Ok((package_name, components.as_path()))
+}
+
+fn selected_registry_package_dir(
+    registry: &Registry,
+    main_repo_root: &Path,
+    package_name: &str,
+) -> Option<PathBuf> {
+    if let Some(manifest) = registry.find(package_name) {
+        return manifest.parent().map(Path::to_path_buf);
+    }
+    let main_package = main_repo_root.join("packages/registry").join(package_name);
+    main_package
+        .join("package.toml")
+        .is_file()
+        .then_some(main_package)
+}
+
+fn require_selected_registry_build_input(
+    target: &DepsManifest,
+    authored_input: &str,
+    package_name: &str,
+    selected_package_dir: &Path,
+    package_relative: &Path,
+) -> Result<PathBuf, String> {
+    let candidate = selected_package_dir.join(package_relative);
+    if candidate.exists() {
+        return Ok(candidate);
+    }
+    Err(format!(
+        "{} build input {:?} is missing from first-hit registry package {:?} at {}; lower-priority package roots were not consulted",
+        target.spec(),
+        authored_input,
+        package_name,
+        selected_package_dir.display(),
     ))
 }
 
@@ -4661,7 +4960,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut it = rest.into_iter();
     let sub = it.next().ok_or(
         "usage: xtask build-deps [--arch=wasm32|wasm64] [--binaries-dir <path>] [--fetch-only] \
-         <parse|sha|path|resolve|check|program-index|program-index-check|install-local-artifact|output-metadata|output-path|runtime-file-path|runtime-file-metadata|output-fork-instrumentation|output-fork-instrumentation-for-rel> \
+         <parse|sha|path|resolve|check|program-index|program-index-check|program-index-context-check|install-local-artifact|output-metadata|output-path|runtime-file-path|runtime-file-metadata|output-fork-instrumentation|output-fork-instrumentation-for-rel> \
          [<name|path> [<wasm-basename>]]",
     )?;
     let target = it.next();
@@ -4696,6 +4995,12 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 return Err("build-deps check: takes no arguments".into());
             }
             cmd_check(&registry)
+        }
+        "program-index-context-check" => {
+            if target.is_some() || extra.is_some() {
+                return Err("build-deps program-index-context-check: takes no arguments".into());
+            }
+            check_program_package_indexes_in_context(&registry, true)
         }
         "output-fork-instrumentation-for-rel" => {
             let rel = target.ok_or_else(|| {
@@ -6008,6 +6313,52 @@ fn replace_mirror_symlink_no_follow(
     transaction.finish()
 }
 
+#[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
+fn rename_entry_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    rustix::fs::renameat_with(
+        rustix::fs::CWD,
+        from,
+        rustix::fs::CWD,
+        to,
+        rustix::fs::RenameFlags::NOREPLACE,
+    )
+    .map_err(Into::into)
+}
+
+#[cfg(windows)]
+fn rename_entry_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn MoveFileW(existing: *const u16, new: *const u16) -> i32;
+    }
+
+    let from: Vec<u16> = from.as_os_str().encode_wide().chain(Some(0)).collect();
+    let to: Vec<u16> = to.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: both pointers reference NUL-terminated UTF-16 buffers for the
+    // duration of the call. MoveFileW omits MOVEFILE_REPLACE_EXISTING, so it
+    // fails atomically when the destination already exists.
+    if unsafe { MoveFileW(from.as_ptr(), to.as_ptr()) } == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(any(
+    target_vendor = "apple",
+    target_os = "linux",
+    target_os = "android",
+    windows
+)))]
+fn rename_entry_no_replace(_from: &Path, _to: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "this host does not provide atomic no-replace rename",
+    ))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum LocalMirrorEntryKind {
     Regular { len: u64, sha256: [u8; 32] },
@@ -6245,6 +6596,20 @@ impl LocalFileTransaction {
     where
         F: FnMut(&Path, &Path) -> std::io::Result<()>,
     {
+        let mut restore = |from: &Path, to: &Path| rename_entry_no_replace(from, to);
+        self.move_existing_aside_with_restore(manifest, rename, &mut restore)
+    }
+
+    fn move_existing_aside_with_restore<F, R>(
+        &mut self,
+        manifest: &DepsManifest,
+        rename: &mut F,
+        restore: &mut R,
+    ) -> Result<(), String>
+    where
+        F: FnMut(&Path, &Path) -> std::io::Result<()>,
+        R: FnMut(&Path, &Path) -> std::io::Result<()>,
+    {
         match std::fs::symlink_metadata(&self.destination) {
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -6290,21 +6655,33 @@ impl LocalFileTransaction {
                     Ok(_) => "entry identity or contents changed during quarantine".to_string(),
                     Err(e) => e,
                 };
-                if !path_entry_exists(&self.destination)?
-                    && rename(&self.backup, &self.destination).is_ok()
-                {
-                    self.old_moved = false;
-                    return Err(format!(
-                        "{}: local mirror ownership changed during quarantine; restored {} and refused publication: {detail}",
-                        manifest.spec(),
-                        self.destination.display()
-                    ));
+                match restore(&self.backup, &self.destination) {
+                    Ok(()) => {
+                        self.old_moved = false;
+                        return Err(format!(
+                            "{}: local mirror ownership changed during quarantine; restored {} without replacing another writer and refused publication: {detail}",
+                            manifest.spec(),
+                            self.destination.display()
+                        ));
+                    }
+                    Err(restore_error)
+                        if restore_error.kind() == std::io::ErrorKind::AlreadyExists =>
+                    {
+                        return Err(format!(
+                            "{}: local mirror ownership changed during quarantine; a concurrent entry at {} was left intact and the displaced entry was preserved at {}: {detail}",
+                            manifest.spec(),
+                            self.destination.display(),
+                            self.backup.display(),
+                        ));
+                    }
+                    Err(restore_error) => {
+                        return Err(format!(
+                            "{}: local mirror ownership changed during quarantine; preserved the displaced entry at {} after no-replace restore failed: {restore_error}: {detail}",
+                            manifest.spec(),
+                            self.backup.display(),
+                        ));
+                    }
                 }
-                Err(format!(
-                    "{}: local mirror ownership changed during quarantine; preserved the exact entry at {}: {detail}",
-                    manifest.spec(),
-                    self.backup.display()
-                ))
             }
         }
     }
@@ -6330,6 +6707,22 @@ impl LocalFileTransaction {
     where
         F: FnMut(&Path, &Path) -> std::io::Result<()>,
         P: FnMut(&Path, &Path) -> std::io::Result<()>,
+    {
+        let mut restore = |from: &Path, to: &Path| rename_entry_no_replace(from, to);
+        self.publish_with_operations(manifest, rename, publish, &mut restore)
+    }
+
+    fn publish_with_operations<F, P, R>(
+        &mut self,
+        manifest: &DepsManifest,
+        _rename: &mut F,
+        publish: &mut P,
+        restore: &mut R,
+    ) -> Result<(), String>
+    where
+        F: FnMut(&Path, &Path) -> std::io::Result<()>,
+        P: FnMut(&Path, &Path) -> std::io::Result<()>,
+        R: FnMut(&Path, &Path) -> std::io::Result<()>,
     {
         validate_local_mirror_entry(&self.stage, &self.stage_snapshot).map_err(|e| {
             format!(
@@ -6374,16 +6767,37 @@ impl LocalFileTransaction {
                     )
                 })?;
                 validate_local_mirror_entry(&self.backup, backup_snapshot)?;
-                rename(&self.backup, &self.destination).map_err(|e| {
-                    format!(
-                        "{}: publish local mirror {} failed ({publish_error}); restore previous mirror from {}: {e}",
-                        manifest.spec(),
-                        self.destination.display(),
-                        self.backup.display()
-                    )
-                })?;
-                self.old_moved = false;
-                self.backup_snapshot = None;
+                match restore(&self.backup, &self.destination) {
+                    Ok(()) => {
+                        self.old_moved = false;
+                        self.backup_snapshot = None;
+                    }
+                    Err(restore_error)
+                        if restore_error.kind() == std::io::ErrorKind::AlreadyExists =>
+                    {
+                        self.yielded_to_other_writer = true;
+                        let cleanup_error = self.cleanup_private_paths().err();
+                        let mut message = format!(
+                            "{}: publish local mirror {} failed ({publish_error}); a concurrent writer won before rollback and was left intact",
+                            manifest.spec(),
+                            self.destination.display(),
+                        );
+                        if let Some(cleanup_error) = cleanup_error {
+                            message.push_str(&format!(
+                                "; private transaction cleanup also failed: {cleanup_error}"
+                            ));
+                        }
+                        return Err(message);
+                    }
+                    Err(restore_error) => {
+                        return Err(format!(
+                            "{}: publish local mirror {} failed ({publish_error}); no-replace restore of previous mirror from {} failed: {restore_error}",
+                            manifest.spec(),
+                            self.destination.display(),
+                            self.backup.display(),
+                        ));
+                    }
+                }
             }
             return Err(format!(
                 "{}: publish local mirror {} failed: {publish_error}",
@@ -6447,6 +6861,31 @@ impl LocalFileTransaction {
             Err(failures.join("; "))
         }
     }
+
+    fn restore_unpublished_backup_with<R>(&mut self, restore: &mut R)
+    where
+        R: FnMut(&Path, &Path) -> std::io::Result<()>,
+    {
+        if self.published
+            || self.yielded_to_other_writer
+            || !self.old_moved
+            || self.backup_snapshot.as_ref().is_none_or(|snapshot| {
+                validate_local_mirror_entry(&self.backup, snapshot).is_err()
+            })
+        {
+            return;
+        }
+        match restore(&self.backup, &self.destination) {
+            Ok(()) => {
+                self.old_moved = false;
+                self.backup_snapshot = None;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                self.yielded_to_other_writer = true;
+            }
+            Err(_) => {}
+        }
+    }
 }
 
 impl Drop for LocalFileTransaction {
@@ -6454,19 +6893,8 @@ impl Drop for LocalFileTransaction {
         if self.finished {
             return;
         }
-        if !self.published
-            && !self.yielded_to_other_writer
-            && self.old_moved
-            && !path_entry_exists(&self.destination).unwrap_or(true)
-            && self
-                .backup_snapshot
-                .as_ref()
-                .is_some_and(|snapshot| validate_local_mirror_entry(&self.backup, snapshot).is_ok())
-            && std::fs::rename(&self.backup, &self.destination).is_ok()
-        {
-            self.old_moved = false;
-            self.backup_snapshot = None;
-        }
+        let mut restore = |from: &Path, to: &Path| rename_entry_no_replace(from, to);
+        self.restore_unpublished_backup_with(&mut restore);
         let _ = remove_validated_local_transaction_entry(
             &self.stage,
             &self.stage_snapshot,
@@ -7877,19 +8305,7 @@ pub fn run_compute_cache_key_sha(args: Vec<String>) -> Result<(), String> {
 /// On failure: every offending group is reported in the error.
 fn cmd_check(registry: &Registry) -> Result<(), String> {
     let manifests = registry.walk_all()?;
-    for (root_index, root) in registry.roots.iter().enumerate() {
-        let index = root.join("program-packages.json");
-        if index.is_file() {
-            // Each physical root owns an index for the ordered registry
-            // context beginning at that root. Higher-priority roots may add
-            // identities for the complete combined context, but must not make
-            // a lower root's committed suffix-context index appear stale.
-            let suffix_registry = Registry {
-                roots: registry.roots[root_index..].to_vec(),
-            };
-            cmd_check_program_package_index(root, &index, &suffix_registry)?;
-        }
-    }
+    check_program_package_indexes_in_context(registry, false)?;
 
     // Group: tool_name -> Vec<(consumer_name, &HostTool)>.
     let mut by_tool: BTreeMap<String, Vec<(String, &HostTool)>> = BTreeMap::new();
@@ -7992,6 +8408,33 @@ libs = ["lib/lib{name}.a"]
                 r#"
 script_path = "packages/registry/{name}/build-{name}.sh"
 inputs = []
+repo_url = "https://example.test/kandelo.git"
+commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision = {revision}
+
+[binary]
+index_url = "https://example.test/releases/download/binaries-abi-v{{abi}}/index.toml"
+"#
+            ),
+        )
+        .unwrap();
+    }
+
+    fn write_build_with_input(
+        dir: &Path,
+        name: &str,
+        revision: u32,
+        input: &str,
+        contents: &str,
+    ) {
+        let input_path = dir.join(name).join(input);
+        fs::write(&input_path, contents).unwrap();
+        fs::write(
+            dir.join(name).join("build.toml"),
+            format!(
+                r#"
+script_path = "packages/registry/{name}/build-{name}.sh"
+inputs = ["packages/registry/{name}/{input}"]
 repo_url = "https://example.test/kandelo.git"
 commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 revision = {revision}
@@ -8318,9 +8761,90 @@ spdx = "MIT"
         )
         .unwrap();
 
-        cmd_check(&combined_registry).expect(
+        check_program_package_indexes_in_context(&combined_registry, true).expect(
             "a lower root's suffix-context index must remain valid when a higher root shadows its dependency",
         );
+    }
+
+    #[test]
+    fn source_context_check_requires_an_index_for_each_existing_registry_root() {
+        let existing_root = tempdir("program-index-context-required");
+        let missing_root = existing_root.with_extension("absent");
+        let _ = fs::remove_dir_all(&missing_root);
+        let registry = Registry {
+            roots: vec![missing_root, existing_root.clone()],
+        };
+
+        let error = check_program_package_indexes_in_context(&registry, true).unwrap_err();
+        assert!(
+            error.contains("missing") && error.contains("program-packages.json"),
+            "got: {error}"
+        );
+
+        fs::write(
+            existing_root.join("program-packages.json"),
+            serialize_program_package_index(
+                &existing_root,
+                &Registry {
+                    roots: vec![existing_root.clone()],
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        check_program_package_indexes_in_context(&registry, true)
+            .expect("nonexistent roots are skipped and every existing root has a fresh index");
+    }
+
+    #[test]
+    fn source_context_check_rejects_revision_input_and_transitive_input_mutations() {
+        let root = tempdir("program-index-context-source-freshness");
+        write(&root, "dependency", "1.0.0", &[]);
+        write_build_with_input(&root, "dependency", 1, "recipe.txt", "dependency-one\n");
+        write_program(
+            &root,
+            "command",
+            "1.0.0",
+            &["dependency@1.0.0"],
+            ":",
+            &[("command", "command.wasm")],
+        );
+        write_build_with_input(&root, "command", 1, "recipe.txt", "command-one\n");
+        let registry = Registry {
+            roots: vec![root.clone()],
+        };
+        let index = root.join("program-packages.json");
+        let refresh = || {
+            fs::write(
+                &index,
+                serialize_program_package_index(&root, &registry).unwrap(),
+            )
+            .unwrap();
+        };
+        let assert_stale = |reason: &str| {
+            let error = check_program_package_indexes_in_context(&registry, true).unwrap_err();
+            assert!(error.contains("is stale"), "{reason}: got {error}");
+        };
+
+        refresh();
+        let command_build = root.join("command/build.toml");
+        let original_command_build = fs::read_to_string(&command_build).unwrap();
+        fs::write(
+            &command_build,
+            original_command_build.replace("revision = 1", "revision = 2"),
+        )
+        .unwrap();
+        assert_stale("program build.toml revision mutation");
+
+        fs::write(&command_build, &original_command_build).unwrap();
+        refresh();
+        fs::write(root.join("command/recipe.txt"), "command-two\n").unwrap();
+        assert_stale("program declared build input mutation");
+
+        fs::write(root.join("command/recipe.txt"), "command-one\n").unwrap();
+        refresh();
+        fs::write(root.join("dependency/recipe.txt"), "dependency-two\n").unwrap();
+        assert_stale("transitive dependency declared build input mutation");
     }
 
     #[test]
@@ -8484,6 +9008,43 @@ spdx = "MIT"
             "got: {error}"
         );
         assert_eq!(fs::read(&output).unwrap(), b"{\"generation\":\"newer\"}\n");
+    }
+
+    #[test]
+    fn program_package_projection_holds_its_writer_lock_through_replacement() {
+        let root = tempdir("program-projection-locked-replace");
+        let output = root.join("program-packages.json");
+        fs::write(&output, b"{\"generation\":\"old\"}\n").unwrap();
+        let lock_path = program_package_index_lock_path(
+            &root,
+            output.file_name().expect("program index filename"),
+        );
+        let mut replace_after_validation = |from: &Path, to: &Path| {
+            // The replacement callback runs after the target snapshot has been
+            // validated. A competing generator must still be unable to enter
+            // its publication boundary at this exact point.
+            let competing_writer = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&lock_path)?;
+            assert!(
+                matches!(
+                    competing_writer.try_lock(),
+                    Err(std::fs::TryLockError::WouldBlock)
+                ),
+                "a second writer acquired the publication lock after validation but before replacement",
+            );
+            fs::rename(from, to)
+        };
+
+        write_program_package_index_atomically_with(
+            &output,
+            b"{\"generation\":\"new\"}\n",
+            &mut replace_after_validation,
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(&output).unwrap(), b"{\"generation\":\"new\"}\n");
     }
 
     #[test]
@@ -9314,6 +9875,49 @@ index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
     }
 
     #[test]
+    fn program_projection_cache_keys_change_with_global_toolchain_inputs() {
+        let root = tempdir("program-projection-global-build-inputs");
+        write_program(
+            &root,
+            "global-input-command",
+            "1.0.0",
+            &[],
+            ":",
+            &[("global-input-command", "global-input-command.wasm")],
+        );
+        let registry = Registry {
+            roots: vec![root.clone()],
+        };
+        let manifest = registry.load("global-input-command").unwrap();
+        let before_inputs = vec![BuildInputDigest {
+            label: "toolchain.txt".to_string(),
+            digest: [1; 32],
+        }];
+        let after_inputs = vec![BuildInputDigest {
+            label: "toolchain.txt".to_string(),
+            digest: [2; 32],
+        }];
+
+        let before = package_context_cache_keys_with_global_toolchain_inputs(
+            &manifest,
+            &registry,
+            Some(&before_inputs),
+        )
+        .unwrap();
+        let after = package_context_cache_keys_with_global_toolchain_inputs(
+            &manifest,
+            &registry,
+            Some(&after_inputs),
+        )
+        .unwrap();
+
+        assert_ne!(
+            before, after,
+            "the cache identities serialized into program-packages.json must change with global toolchain inputs",
+        );
+    }
+
+    #[test]
     fn global_package_toolchain_inputs_include_package_build_actions() {
         for input in [
             ".github/actions/package-archive-build",
@@ -9559,6 +10163,162 @@ index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.to
             .unwrap_err();
         assert!(err.contains("build input"), "got: {err}");
         assert!(err.contains("nope.txt"), "got: {err}");
+    }
+
+    #[test]
+    fn canonical_build_inputs_follow_first_hit_package_ownership() {
+        let repo = tempdir("canonical-build-input-main-repo");
+        let main_root = repo.join("packages/registry");
+        let external_root = tempdir("canonical-build-input-external");
+        write(&external_root, "consumer", "1.0.0", &[]);
+        write(&external_root, "shadowed", "1.0.0", &[]);
+        write(&main_root, "shadowed", "1.0.0", &[]);
+        write(&external_root, "shared-helper", "1.0.0", &[]);
+        write(&main_root, "shared-helper", "1.0.0", &[]);
+
+        fs::write(
+            external_root.join("shadowed/recipe.txt"),
+            "external shadow\n",
+        )
+        .unwrap();
+        fs::write(main_root.join("shadowed/recipe.txt"), "main shadow\n").unwrap();
+        fs::write(
+            external_root.join("shared-helper/cross-package.txt"),
+            "external helper\n",
+        )
+        .unwrap();
+        fs::write(
+            main_root.join("shared-helper/cross-package.txt"),
+            "main helper\n",
+        )
+        .unwrap();
+        fs::write(
+            external_root.join("shared-helper/legacy.txt"),
+            "legacy external helper\n",
+        )
+        .unwrap();
+
+        let registry = Registry {
+            roots: vec![external_root.clone(), main_root.clone()],
+        };
+        let external_shadow = registry.load("shadowed").unwrap();
+        let consumer = registry.load("consumer").unwrap();
+
+        let selected_shadow = resolve_build_input_path_from_repo(
+            &external_shadow,
+            &registry,
+            "packages/registry/shadowed/recipe.txt",
+            &repo,
+        )
+        .unwrap();
+        assert_eq!(
+            selected_shadow,
+            external_root.join("shadowed/recipe.txt"),
+            "a canonical input owned by a first-hit external package must hash external bytes",
+        );
+
+        let selected_cross_package = resolve_build_input_path_from_repo(
+            &consumer,
+            &registry,
+            "packages/registry/shared-helper/cross-package.txt",
+            &repo,
+        )
+        .unwrap();
+        assert_eq!(
+            selected_cross_package,
+            external_root.join("shared-helper/cross-package.txt"),
+            "canonical cross-package helpers must follow the same ordered first-hit roots",
+        );
+        fs::write(
+            external_root.join("consumer/build.toml"),
+            r#"
+script_path = "packages/registry/consumer/build-consumer.sh"
+inputs = ["packages/registry/shared-helper/cross-package.txt"]
+repo_url = "https://example.test/external.git"
+commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision = 1
+
+[binary]
+index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.toml"
+"#,
+        )
+        .unwrap();
+        let digests = build_input_digests(&consumer, &registry).unwrap();
+        assert_eq!(
+            digests[0].digest,
+            hash_build_input(&selected_cross_package).unwrap(),
+            "cache-key input hashing must consume the selected external cross-package bytes",
+        );
+
+        fs::remove_file(&selected_cross_package).unwrap();
+        let missing_selected_input = resolve_build_input_path_from_repo(
+            &consumer,
+            &registry,
+            "packages/registry/shared-helper/cross-package.txt",
+            &repo,
+        )
+        .unwrap_err();
+        assert!(
+            missing_selected_input.contains("first-hit registry package")
+                && missing_selected_input.contains("lower-priority package roots were not consulted"),
+            "a selected external package must not be completed with a lower package's file: {missing_selected_input}",
+        );
+
+        let legacy_registry_relative = resolve_build_input_path_from_repo(
+            &consumer,
+            &registry,
+            "shared-helper/legacy.txt",
+            &repo,
+        )
+        .unwrap();
+        assert_eq!(
+            legacy_registry_relative,
+            external_root.join("shared-helper/legacy.txt"),
+            "existing registry-relative third-party input paths remain supported",
+        );
+        fs::remove_file(&legacy_registry_relative).unwrap();
+        fs::write(
+            main_root.join("shared-helper/legacy.txt"),
+            "legacy main helper\n",
+        )
+        .unwrap();
+        let missing_legacy_input = resolve_build_input_path_from_repo(
+            &consumer,
+            &registry,
+            "shared-helper/legacy.txt",
+            &repo,
+        )
+        .unwrap_err();
+        assert!(
+            missing_legacy_input.contains("first-hit registry package")
+                && missing_legacy_input.contains("lower-priority package roots were not consulted"),
+            "legacy registry-relative inputs must use the same package-level selection: {missing_legacy_input}",
+        );
+
+        write(&main_root, "main-only-helper", "1.0.0", &[]);
+        fs::write(
+            main_root.join("main-only-helper/owned.txt"),
+            "main selected helper\n",
+        )
+        .unwrap();
+        fs::create_dir_all(external_root.join("main-only-helper")).unwrap();
+        fs::write(
+            external_root.join("main-only-helper/owned.txt"),
+            "unclaimed external directory\n",
+        )
+        .unwrap();
+        let selected_main_package = resolve_build_input_path_from_repo(
+            &consumer,
+            &registry,
+            "packages/registry/main-only-helper/owned.txt",
+            &repo,
+        )
+        .unwrap();
+        assert_eq!(
+            selected_main_package,
+            main_root.join("main-only-helper/owned.txt"),
+            "a higher directory without package.toml cannot shadow the first package manifest in main",
+        );
     }
 
     #[test]
@@ -13494,6 +14254,149 @@ wasm = "scalar-local.wasm"
             error.contains("another writer installed an entry"),
             "got: {error}",
         );
+        drop(transaction);
+
+        assert_eq!(fs::read_link(&destination).unwrap(), winner);
+        assert_no_local_file_transaction_siblings(&destination);
+    }
+
+    #[test]
+    fn scalar_symlink_explicit_rollback_cannot_overwrite_a_late_winner() {
+        let root = tempdir("scalar-symlink-explicit-rollback-winner");
+        let old_target = root.join("old.wasm");
+        let new_target = root.join("new.wasm");
+        let winner = root.join("winner.wasm");
+        let destination = root.join("scalar-local.wasm");
+        fs::write(&old_target, b"old").unwrap();
+        fs::write(&new_target, b"new").unwrap();
+        fs::write(&winner, b"winner").unwrap();
+        symlink_file(&old_target, &destination).unwrap();
+        let manifest = scalar_local_transaction_manifest();
+        let mut transaction =
+            LocalFileTransaction::prepare_symlink(&manifest, &new_target, &destination).unwrap();
+        let mut rename = |from: &Path, to: &Path| fs::rename(from, to);
+        transaction
+            .move_existing_aside_with(&manifest, &mut rename)
+            .unwrap();
+        let mut fail_publish = |_stage: &Path, _destination: &Path| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected publication failure before rollback",
+            ))
+        };
+        let mut restore_attempted = false;
+        let mut install_winner_before_restore = |from: &Path, to: &Path| {
+            restore_attempted = true;
+            symlink_file(&winner, to)?;
+            rename_entry_no_replace(from, to)
+        };
+
+        let error = transaction
+            .publish_with_operations(
+                &manifest,
+                &mut rename,
+                &mut fail_publish,
+                &mut install_winner_before_restore,
+            )
+            .unwrap_err();
+        assert!(restore_attempted);
+        assert!(
+            error.contains("concurrent writer won before rollback")
+                && error.contains("left intact"),
+            "got: {error}",
+        );
+        drop(transaction);
+
+        assert_eq!(fs::read_link(&destination).unwrap(), winner);
+        assert_no_local_file_transaction_siblings(&destination);
+    }
+
+    #[test]
+    fn scalar_symlink_quarantine_recovery_cannot_overwrite_a_late_winner() {
+        let root = tempdir("scalar-symlink-quarantine-winner");
+        let old_target = root.join("old.wasm");
+        let new_target = root.join("new.wasm");
+        let substituted_target = root.join("substituted.wasm");
+        let winner = root.join("winner.wasm");
+        let destination = root.join("scalar-local.wasm");
+        let displaced_old = root.join("displaced-old");
+        for (path, bytes) in [
+            (&old_target, b"old".as_slice()),
+            (&new_target, b"new".as_slice()),
+            (&substituted_target, b"substituted".as_slice()),
+            (&winner, b"winner".as_slice()),
+        ] {
+            fs::write(path, bytes).unwrap();
+        }
+        symlink_file(&old_target, &destination).unwrap();
+        let manifest = scalar_local_transaction_manifest();
+        let mut transaction =
+            LocalFileTransaction::prepare_symlink(&manifest, &new_target, &destination).unwrap();
+        let transaction_root = transaction.transaction_root.clone();
+        let backup = transaction.backup.clone();
+        let mut first_rename = true;
+        let mut substitute_before_quarantine = |from: &Path, to: &Path| {
+            if first_rename {
+                first_rename = false;
+                fs::rename(from, &displaced_old)?;
+                symlink_file(&substituted_target, from)?;
+            }
+            fs::rename(from, to)
+        };
+        let mut install_winner_before_restore = |from: &Path, to: &Path| {
+            symlink_file(&winner, to)?;
+            rename_entry_no_replace(from, to)
+        };
+
+        let error = transaction
+            .move_existing_aside_with_restore(
+                &manifest,
+                &mut substitute_before_quarantine,
+                &mut install_winner_before_restore,
+            )
+            .unwrap_err();
+        assert!(
+            error.contains("ownership changed during quarantine")
+                && error.contains("concurrent entry")
+                && error.contains("left intact"),
+            "got: {error}",
+        );
+        drop(transaction);
+
+        assert_eq!(fs::read_link(&destination).unwrap(), winner);
+        assert_eq!(fs::read_link(&backup).unwrap(), substituted_target);
+        assert_eq!(fs::read_link(&displaced_old).unwrap(), old_target);
+        remove_owned_transaction_path(&transaction_root).unwrap();
+        assert_no_local_file_transaction_siblings(&destination);
+    }
+
+    #[test]
+    fn scalar_symlink_drop_recovery_cannot_overwrite_a_late_winner() {
+        let root = tempdir("scalar-symlink-drop-rollback-winner");
+        let old_target = root.join("old.wasm");
+        let new_target = root.join("new.wasm");
+        let winner = root.join("winner.wasm");
+        let destination = root.join("scalar-local.wasm");
+        fs::write(&old_target, b"old").unwrap();
+        fs::write(&new_target, b"new").unwrap();
+        fs::write(&winner, b"winner").unwrap();
+        symlink_file(&old_target, &destination).unwrap();
+        let manifest = scalar_local_transaction_manifest();
+        let mut transaction =
+            LocalFileTransaction::prepare_symlink(&manifest, &new_target, &destination).unwrap();
+        let mut rename = |from: &Path, to: &Path| fs::rename(from, to);
+        transaction
+            .move_existing_aside_with(&manifest, &mut rename)
+            .unwrap();
+        let mut install_winner_before_restore = |from: &Path, to: &Path| {
+            symlink_file(&winner, to)?;
+            rename_entry_no_replace(from, to)
+        };
+
+        // Exercise the exact helper Drop uses, with the competing writer
+        // injected at the no-replace rename boundary.
+        transaction.restore_unpublished_backup_with(&mut install_winner_before_restore);
+        assert_eq!(fs::read_link(&destination).unwrap(), winner);
         drop(transaction);
 
         assert_eq!(fs::read_link(&destination).unwrap(), winner);

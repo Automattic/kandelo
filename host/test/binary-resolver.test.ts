@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -22,6 +23,7 @@ import {
   programOutputClosureRelPaths,
   resetBinaryResolverManifestCacheForTests,
   resolveBinary,
+  setProgramIndexContextCheckerForTests,
   tryResolveBinary,
   tryResolveBinarySet,
 } from "../src/binary-resolver";
@@ -66,6 +68,7 @@ beforeEach(() => {
   fixtureRegistryPackages = {};
   writeFixtureRegistryIndex();
   process.env.WASM_POSIX_DEPS_REGISTRY = fixtureRegistryRoot;
+  setProgramIndexContextCheckerForTests(() => {});
   resetBinaryResolverManifestCacheForTests();
 });
 
@@ -82,6 +85,7 @@ afterEach(() => {
   }
   cleanupDirs.clear();
   cleanupEmptyDirs.clear();
+  setProgramIndexContextCheckerForTests(null);
   resetBinaryResolverManifestCacheForTests();
   if (savedXdgCacheHome === undefined) {
     delete process.env.XDG_CACHE_HOME;
@@ -312,6 +316,108 @@ function writeFixturePackageIdentity(
     cacheKey: cacheKeys.wasm32!,
   };
 }
+
+describe("program package source freshness boundary", () => {
+  it("checks every public program-resolution boundary without duplicate nested checks", () => {
+    const relPath = fixtureRelPath(".dat");
+    const path = writeCandidate(
+      localBinariesDir(),
+      relPath,
+      new TextEncoder().encode("program data"),
+    );
+    const calls: Array<{ sourceRepoRoot: string; registryRoots: string[] }> = [];
+    setProgramIndexContextCheckerForTests((sourceRepoRoot, registryRoots) => {
+      calls.push({ sourceRepoRoot, registryRoots: [...registryRoots] });
+    });
+
+    expect(programOutputClosureRelPaths(relPath)).toBeNull();
+    expect(resolveBinary(relPath)).toBe(path);
+    expect(tryResolveBinary(relPath)).toBe(path);
+    expect(tryResolveBinarySet([relPath])).toEqual([path]);
+
+    expect(calls).toHaveLength(4);
+    for (const call of calls) {
+      expect(call.sourceRepoRoot).toBe(findRepoRoot());
+      expect(call.registryRoots).toEqual([fixtureRegistryRoot]);
+    }
+  });
+
+  it("passes the exact configured registry order to the Rust checker", () => {
+    const upperRoot = mkdtempSync(
+      join(tmpdir(), "kandelo-resolver-upper-registry-"),
+    );
+    cleanupDirs.add(upperRoot);
+    writeFileSync(
+      join(upperRoot, "program-packages.json"),
+      '{"format":"kandelo-program-packages-v2","identities":{},"packages":{}}\n',
+    );
+    process.env.WASM_POSIX_DEPS_REGISTRY =
+      `${upperRoot}:${fixtureRegistryRoot}`;
+    const calls: string[][] = [];
+    setProgramIndexContextCheckerForTests((_sourceRepoRoot, registryRoots) => {
+      calls.push([...registryRoots]);
+    });
+
+    expect(
+      programOutputClosureRelPaths(
+        "programs/wasm32/not-selected/not-selected.wasm",
+      ),
+    ).toBeNull();
+
+    expect(calls).toEqual([[upperRoot, fixtureRegistryRoot]]);
+  });
+
+  it("does not consume source projection policy after the exact checker fails", () => {
+    setProgramIndexContextCheckerForTests(() => {
+      throw new Error("injected stale program projection");
+    });
+
+    expect(() =>
+      programOutputClosureRelPaths(
+        "programs/wasm32/stale-package/stale.wasm",
+      )
+    ).toThrow("injected stale program projection");
+  });
+
+  it("executes the production checker command and fails closed on its error", () => {
+    const checkerRoot = mkdtempSync(
+      join(tmpdir(), "kandelo-resolver-checker-command-"),
+    );
+    cleanupDirs.add(checkerRoot);
+    const checkerPath = join(checkerRoot, "xtask");
+    writeFileSync(
+      checkerPath,
+      `#!/bin/sh
+printf 'checker args: %s %s\\nregistry: %s\\n' "$1" "$2" "$WASM_POSIX_DEPS_REGISTRY" >&2
+exit 23
+`,
+    );
+    chmodSync(checkerPath, 0o755);
+    const savedXtask = process.env.WASM_POSIX_XTASK_BIN;
+    const hadSavedXtask = Object.prototype.hasOwnProperty.call(
+      process.env,
+      "WASM_POSIX_XTASK_BIN",
+    );
+    process.env.WASM_POSIX_XTASK_BIN = checkerPath;
+    setProgramIndexContextCheckerForTests(null);
+    try {
+      expect(() =>
+        programOutputClosureRelPaths(
+          "programs/wasm32/production-check/production-check.wasm",
+        )
+      ).toThrow(
+        /program-index-context-check failed with status 23[\s\S]*checker args: build-deps program-index-context-check/,
+      );
+    } finally {
+      if (hadSavedXtask) {
+        process.env.WASM_POSIX_XTASK_BIN = savedXtask ?? "";
+      } else {
+        delete process.env.WASM_POSIX_XTASK_BIN;
+      }
+      setProgramIndexContextCheckerForTests(() => {});
+    }
+  });
+});
 
 interface StandaloneRegistryEntry {
   manifest: string;

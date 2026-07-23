@@ -43,6 +43,19 @@ at the binary root rather than below `programs/<arch>/`. Regenerate the
 projection whenever a package manifest or ordered dependency context changes;
 package checks reject stale committed output.
 
+Source-checkout program resolution runs
+`xtask build-deps program-index-context-check` synchronously before each public
+program-resolution boundary. That one Rust implementation recomputes every
+existing registry root in its ordered suffix context, including `build.toml`
+revision and declared inputs, global toolchain inputs, and transitive
+dependency identities. It fails closed when an index is missing or stale.
+The standalone npm package does not reach back into a checkout; its projection
+is checked before packaging and shipped as immutable package content.
+Index generation stages complete JSON and serializes cooperating publishers
+through a persistent advisory sidecar lock held across source refresh, target
+validation, replacement, and directory sync. The lock file is intentionally
+retained so concurrent writers always coordinate on one inode.
+
 Homebrew bottles use a separate publication model. Bottle tarballs are
 Homebrew-native artifacts published through the `kandelo-dev/homebrew-tap-core`
 tap and GHCR/Homebrew bottle URL shape; Kandelo-specific sidecars and

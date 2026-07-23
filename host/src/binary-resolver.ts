@@ -23,6 +23,7 @@ import {
   statSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   basename,
   dirname,
@@ -435,6 +436,17 @@ interface SelectedProgramPackageState {
 const PROGRAM_PACKAGE_INDEX_FORMAT = "kandelo-program-packages-v2";
 const PROGRAM_PACKAGE_INDEX_FILE = "program-packages.json";
 
+type ProgramIndexContextChecker = (
+  sourceRepoRoot: string,
+  registryRoots: readonly string[],
+) => void;
+
+let programIndexContextCheckerForTests: ProgramIndexContextChecker | null = null;
+let preparedProgramIndexChecker:
+  | { sourceRepoRoot: string; xtaskPath: string }
+  | null = null;
+let programIndexFreshnessBoundaryDepth = 0;
+
 /**
  * @internal Compatibility hook for test fixtures.
  *
@@ -445,6 +457,20 @@ const PROGRAM_PACKAGE_INDEX_FILE = "program-packages.json";
  */
 export function resetBinaryResolverManifestCacheForTests(): void {
   // No-op by design.
+}
+
+/**
+ * @internal Test-only substitution for the Rust source-freshness boundary.
+ *
+ * Tests that author deliberately synthetic projections can replace the
+ * external process while still asserting when and with which ordered roots
+ * the boundary runs. Production callers always execute xtask's canonical
+ * manifest/cache-key implementation.
+ */
+export function setProgramIndexContextCheckerForTests(
+  checker: ProgramIndexContextChecker | null,
+): void {
+  programIndexContextCheckerForTests = checker;
 }
 
 function configuredProgramRegistryRoots(): string[] | null {
@@ -469,6 +495,188 @@ function configuredProgramRegistryRoots(): string[] | null {
     return [join(resolverRepoRoot(), "packages", "registry")];
   } catch {
     return null;
+  }
+}
+
+function completeSourceCheckoutRoot(): string | null {
+  let sourceRepoRoot: string;
+  try {
+    sourceRepoRoot = resolverRepoRoot();
+  } catch {
+    return null;
+  }
+  if (
+    !existsSync(join(sourceRepoRoot, "tools", "xtask", "Cargo.toml"))
+    || !existsSync(join(sourceRepoRoot, "scripts", "dev-shell.sh"))
+  ) return null;
+
+  // An installed npm package can live below node_modules in an unrelated
+  // Kandelo source checkout. Only source-owned module locations may execute
+  // that checkout's policy checker: host/ for the shared TypeScript module,
+  // and scripts/ for the generated standalone resolver bundle.
+  try {
+    const sourceModuleDir = realpathSync(currentModuleDir());
+    const realRepoRoot = realpathSync(sourceRepoRoot);
+    const sourceOwned = [
+      join(realRepoRoot, "host"),
+      join(realRepoRoot, "scripts"),
+    ].some((ownedRoot) => {
+      return existsSync(ownedRoot)
+        && pathIsWithin(realpathSync(ownedRoot), sourceModuleDir)
+    });
+    return sourceOwned ? realRepoRoot : null;
+  } catch {
+    return null;
+  }
+}
+
+function commandFailure(
+  command: string,
+  args: readonly string[],
+  result: ReturnType<typeof spawnSync>,
+): string {
+  const detail = [
+    typeof result.stderr === "string" ? result.stderr.trim() : "",
+    typeof result.stdout === "string" ? result.stdout.trim() : "",
+    result.error?.message ?? "",
+  ].filter(Boolean).join("\n");
+  return `${command} ${args.join(" ")} failed${
+    result.status === null ? "" : ` with status ${result.status}`
+  }${detail ? `:\n${detail}` : ""}`;
+}
+
+function rustHostTarget(sourceRepoRoot: string): string {
+  const inDevShell = process.env.KANDELO_DEV_SHELL_TOOL_PATH !== undefined;
+  const command = inDevShell ? "rustc" : "bash";
+  const args = inDevShell
+    ? ["-vV"]
+    : [join(sourceRepoRoot, "scripts", "dev-shell.sh"), "rustc", "-vV"];
+  const result = spawnSync(command, args, {
+    cwd: sourceRepoRoot,
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    throw new Error(commandFailure(command, args, result));
+  }
+  const host = result.stdout
+    .split(/\r?\n/)
+    .find((line) => line.startsWith("host: "))
+    ?.slice("host: ".length)
+    .trim();
+  if (!host) {
+    throw new Error(
+      `Could not determine the Rust host target for ${sourceRepoRoot}`,
+    );
+  }
+  return host;
+}
+
+function requireRegularXtask(path: string): string {
+  try {
+    if (lstatSync(path).isFile()) return realpathSync(path);
+  } catch {
+    // The caller below reports the complete preparation failure.
+  }
+  throw new Error(`Prepared xtask is not a regular file: ${path}`);
+}
+
+function prepareProgramIndexChecker(sourceRepoRoot: string): string {
+  const explicit = process.env.WASM_POSIX_XTASK_BIN;
+  if (explicit !== undefined) {
+    const explicitPath = isAbsolute(explicit)
+      ? resolve(explicit)
+      : resolve(sourceRepoRoot, explicit);
+    return requireRegularXtask(explicitPath);
+  }
+  if (preparedProgramIndexChecker?.sourceRepoRoot === sourceRepoRoot) {
+    return requireRegularXtask(preparedProgramIndexChecker.xtaskPath);
+  }
+
+  const host = rustHostTarget(sourceRepoRoot);
+  const xtaskPath = join(
+    sourceRepoRoot,
+    "target",
+    host,
+    "release",
+    process.platform === "win32" ? "xtask.exe" : "xtask",
+  );
+  // A path left by an earlier checkout state is not evidence that it contains
+  // the current checker. Cargo's incremental no-op is the preparation
+  // contract; pay it once per long-lived resolver process, then execute the
+  // resulting binary at every public source-policy boundary.
+  const cargoArgs = [
+    "build",
+    "--release",
+    "-p",
+    "xtask",
+    "--target",
+    host,
+    "--quiet",
+  ];
+  const inDevShell = process.env.KANDELO_DEV_SHELL_TOOL_PATH !== undefined;
+  const command = inDevShell ? "cargo" : "bash";
+  const args = inDevShell
+    ? cargoArgs
+    : [join(sourceRepoRoot, "scripts", "dev-shell.sh"), "cargo", ...cargoArgs];
+  const result = spawnSync(command, args, {
+    cwd: sourceRepoRoot,
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    throw new Error(commandFailure(command, args, result));
+  }
+  preparedProgramIndexChecker = {
+    sourceRepoRoot,
+    xtaskPath: requireRegularXtask(xtaskPath),
+  };
+  return preparedProgramIndexChecker.xtaskPath;
+}
+
+function checkProgramIndexesInSourceContext(): void {
+  const sourceRepoRoot = completeSourceCheckoutRoot();
+  if (sourceRepoRoot === null) return;
+  const registryRoots = configuredProgramRegistryRoots();
+  if (registryRoots === null) return;
+  if (programIndexContextCheckerForTests) {
+    programIndexContextCheckerForTests(sourceRepoRoot, registryRoots);
+    return;
+  }
+
+  const xtaskPath = prepareProgramIndexChecker(sourceRepoRoot);
+  const args = ["build-deps", "program-index-context-check"];
+  const result = spawnSync(xtaskPath, args, {
+    cwd: sourceRepoRoot,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      WASM_POSIX_DEPS_REGISTRY: registryRoots.join(":"),
+    },
+  });
+  if (result.status !== 0) {
+    throw new Error(
+      `Program package source projection is not current:\n${
+        commandFailure(xtaskPath, args, result)
+      }`,
+    );
+  }
+}
+
+function withFreshProgramIndexes<T>(
+  relPaths: readonly string[],
+  operation: () => T,
+): T {
+  if (
+    programIndexFreshnessBoundaryDepth > 0
+    || !relPaths.some((relPath) => relPath.startsWith("programs/"))
+  ) {
+    return operation();
+  }
+  programIndexFreshnessBoundaryDepth += 1;
+  try {
+    checkProgramIndexesInSourceContext();
+    return operation();
+  } finally {
+    programIndexFreshnessBoundaryDepth -= 1;
   }
 }
 
@@ -1420,9 +1628,11 @@ function discoverProgramPackageClosure(
  * rather than permission to fall back to single-output resolution.
  */
 export function programOutputClosureRelPaths(relPath: string): string[] | null {
-  return discoverProgramPackageClosure(relPath)?.members.map(
-    (member) => member.relPath,
-  ) ?? null;
+  return withFreshProgramIndexes([relPath], () =>
+    discoverProgramPackageClosure(relPath)?.members.map(
+      (member) => member.relPath,
+    ) ?? null
+  );
 }
 
 function stripProgramArch(relPath: string): string | null {
@@ -1865,6 +2075,12 @@ function closureMembersForRequestedSet(
 }
 
 export function resolveBinary(relPath: string): string {
+  return withFreshProgramIndexes([relPath], () =>
+    resolveBinaryInFreshProgramContext(relPath)
+  );
+}
+
+function resolveBinaryInFreshProgramContext(relPath: string): string {
   const adjusted = applyDefaultArch(relPath);
   const packageClosure = discoverProgramPackageClosure(adjusted);
   if (packageClosure) {
@@ -1936,8 +2152,10 @@ export function tryResolveBinary(relPath: string): string | null {
  * no concurrent force-rebuild or stale-entry repair of the same cache key.
  */
 export function tryResolveBinarySet(relPaths: readonly string[]): string[] | null {
-  const closureMembers = closureMembersForRequestedSet(relPaths);
-  return tryResolveBinarySetFromTiers(relPaths, closureMembers);
+  return withFreshProgramIndexes(relPaths, () => {
+    const closureMembers = closureMembersForRequestedSet(relPaths);
+    return tryResolveBinarySetFromTiers(relPaths, closureMembers);
+  });
 }
 
 function tryResolveBinarySetFromTiers(
