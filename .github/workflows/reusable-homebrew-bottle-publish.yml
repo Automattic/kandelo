@@ -149,7 +149,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout Kandelo workflow source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           repository: ${{ inputs.kandelo-repository }}
@@ -158,7 +158,7 @@ jobs:
           submodules: false
 
       - name: Checkout tap
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           repository: ${{ inputs.tap-repository }}
@@ -458,7 +458,7 @@ jobs:
         include: ${{ fromJson(needs.plan.outputs.matrix) }}
     steps:
       - name: Checkout Kandelo workflow source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           repository: ${{ inputs.kandelo-repository }}
@@ -467,7 +467,7 @@ jobs:
           submodules: false
 
       - name: Checkout tap
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           repository: ${{ inputs.tap-repository }}
@@ -529,7 +529,7 @@ jobs:
           echo "KANDELO_HOMEBREW_RESOLVED_TAPS_FILE=$resolved" >> "$GITHUB_ENV"
 
       - name: Checkout reviewed Homebrew implementation
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           repository: Homebrew/brew
@@ -937,7 +937,7 @@ jobs:
           fi
 
       - name: Checkout exact post-build Kandelo validator source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           repository: ${{ inputs.kandelo-repository }}
@@ -946,7 +946,7 @@ jobs:
           submodules: false
 
       - name: Checkout exact post-build tap source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           repository: ${{ inputs.tap-repository }}
@@ -1167,7 +1167,7 @@ jobs:
         include: ${{ fromJson(needs.plan.outputs.matrix) }}
     steps:
       - name: Checkout exact Kandelo validator source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           repository: ${{ inputs.kandelo-repository }}
@@ -1176,7 +1176,7 @@ jobs:
           submodules: false
 
       - name: Checkout exact tap source for upload validation
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           repository: ${{ inputs.tap-repository }}
@@ -1407,7 +1407,7 @@ jobs:
         include: ${{ fromJson(needs.plan.outputs.formula-matrix) }}
     steps:
       - name: Checkout exact Kandelo index publisher source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           repository: ${{ inputs.kandelo-repository }}
@@ -1416,7 +1416,7 @@ jobs:
           submodules: false
 
       - name: Checkout exact tap source for index validation
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           repository: ${{ inputs.tap-repository }}
@@ -1690,7 +1690,7 @@ jobs:
         include: ${{ fromJson(needs.plan.outputs.matrix) }}
     steps:
       - name: Checkout exact Kandelo verifier source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           repository: ${{ inputs.kandelo-repository }}
@@ -1699,7 +1699,7 @@ jobs:
           submodules: false
 
       - name: Checkout exact Kandelo sysroot build source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           repository: ${{ inputs.kandelo-repository }}
@@ -1708,7 +1708,7 @@ jobs:
           submodules: false
 
       - name: Checkout exact tap source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           repository: ${{ inputs.tap-repository }}
@@ -1769,7 +1769,7 @@ jobs:
           echo "KANDELO_HOMEBREW_RESOLVED_TAPS_FILE=$resolved" >> "$GITHUB_ENV"
 
       - name: Checkout reviewed Homebrew implementation for bottle verification
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           repository: Homebrew/brew
@@ -2481,7 +2481,7 @@ jobs:
           fi
 
       - name: Checkout exact post-verification Kandelo generator source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           repository: ${{ inputs.kandelo-repository }}
@@ -2490,7 +2490,7 @@ jobs:
           submodules: false
 
       - name: Checkout exact post-verification tap source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           repository: ${{ inputs.tap-repository }}
@@ -3293,7 +3293,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout exact Kandelo finalizer source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           repository: ${{ inputs.kandelo-repository }}
@@ -3302,7 +3302,7 @@ jobs:
           submodules: false
 
       - name: Checkout exact base tap without credentials
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           repository: ${{ inputs.tap-repository }}
@@ -3444,7 +3444,7 @@ jobs:
 
       - name: Checkout tap publication branch after payload validation
         if: ${{ steps.validate-payload.outcome == 'success' }}
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: ${{ inputs.tap-repository }}
           ref: main
@@ -3507,7 +3507,7 @@ jobs:
 
       - name: Checkout clean tap for a failed-attempt report
         if: ${{ always() && (steps.publish-handoffs.outcome != 'success' || steps.validate-payload.outcome != 'success' || steps.publish.outcome != 'success') }}
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: ${{ inputs.tap-repository }}
           ref: main
@@ -3586,7 +3586,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout exact Kandelo VFS release source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           repository: ${{ inputs.kandelo-repository }}
@@ -3595,7 +3595,7 @@ jobs:
           submodules: false
 
       - name: Checkout exact VFS source tap without credentials
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           repository: ${{ inputs.tap-repository }}
