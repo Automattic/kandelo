@@ -511,12 +511,18 @@ main-shell capability):
   cache, configuration, lock, and temporary-state paths. Exact Node.js and
   Chromium runs use the same 805,315,495-byte bootstrap image with SHA-256
   `46033f3579781ac0891a9792d4bc32e47bac37cc80a4f47112eb6824412ebc49`.
-- A strengthened main-shell probe found that the currently published Bash
-  bottle was built without programmable-completion builtins. Upstream
-  `brew --version` therefore emits `compgen: not a shell builtin` even though
-  the script later exits zero. Draft PR #1059 contains the general Bash build
-  and builtin-test correction; built-in `brew` remains unclaimed until that
-  bottle, the tap lock, and the exact Node.js/Chromium proof advance together.
+- A strengthened main-shell probe found that the previous Bash bottle was
+  built without programmable-completion builtins. Upstream `brew --version`
+  therefore emitted `compgen: not a shell builtin` even though the script
+  later exited zero. Core-tap PR #85 landed the general Bash build and exact
+  builtin-test correction at
+  `9cb60ec8181afb0c04a14440b5a66b03e81b48e6`. Production run `29963546302`
+  published and anonymously re-read Bash `5.2.37_2` rebuild 3; finalizer
+  `fccc3970db092dd1a173b8d0859e620d1d3e2e2a` binds the 1,783,637-byte public
+  bottle with SHA-256
+  `bef5fef66621e5692db4268997f7ab5ad30bf6c9f18ea578453843a142c4a87b`.
+  Built-in `brew` remains unclaimed until the lazy bootstrap and its exact
+  Node.js/Chromium proof advance together.
 - An exact working revision-19 comparison measured the embedded design before
   selecting the lazy policy: revision 18 is 5,885,691 compressed bytes;
   corrected Bash alone produces 5,904,540 bytes; and embedding Homebrew's tree
