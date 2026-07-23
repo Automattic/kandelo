@@ -15,6 +15,7 @@ host/wasm/
 # override tree that takes priority. Neither is tracked.
 /binaries/
 /local-binaries/
+/.ci-test-binary-cache/
 
 # PR-build overlay file. Created by scripts/fetch-binaries.sh when
 # checked out on a PR branch with a corresponding pr-<NNN>-staging

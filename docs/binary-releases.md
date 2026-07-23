@@ -160,9 +160,17 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
   composed index is rewritten to relative archive basenames and consumed from
   the same local `file://` directory, so later release mutation cannot redirect
   the tested resolver. Source validation and the Cargo-only suites run in
-  parallel with this preparation. The prepared workspace retains the
-  materialized package tree because its root filesystem refers to package-backed
-  executables lazily (for example, `/bin/sh`). libc-test runs as
+  parallel with this preparation. The prepared workspace retains each selected
+  content-addressed program generation under `.ci-test-binary-cache/` and
+  rewrites the `binaries/` mirrors as relative symlinks into that cache. It does
+  not flatten package mirrors into unrelated regular files: extraction at a
+  different checkout path therefore preserves the same complete, single-tier
+  package identity. Local package-generation links are likewise made relative
+  within `local-binaries/`; non-package scalar links are copied as verified
+  regular files. `scripts/ci-run-test-suite.sh` selects that transported cache
+  before a suite resolves an artifact. The workspace also retains the
+  materialized package tree because its root filesystem refers to
+  package-backed executables lazily (for example, `/bin/sh`). libc-test runs as
   functional+regression and math shards; Sortix runs as include, basic, and
   remaining-runtime shards. Browser-local assets are generated in the browser
   consumer from the already-materialized package tree, without fetching the
