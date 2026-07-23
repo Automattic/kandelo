@@ -710,6 +710,72 @@ main-shell capability):
   existing sealed build/test plan and provenance. Unsupported dependency-skip
   flags, a synthetic core API, and a curated partial core tap remain rejected.
 
+Working checkpoint (2026-07-23; not yet canonical):
+
+- The activation work is deliberately stacked behind the atomic package
+  generation and VFS-source contracts in PRs #1073, #1074, #1069, and #1076.
+  Land #1073's shared resolver boundary first. Then preserve the reviewed
+  commit boundaries for #1074, #1069, and #1076 in one combined candidate and
+  run one full exact-head gate, instead of paying three serial staging and
+  prepare-merge cycles for an already ordered stack. PR #1076 has merge
+  approval, but the combined candidate must still be replayed onto the exact
+  landed #1073 parent and pass exact-head CI before merge. This ordering keeps
+  the lazy Homebrew tree from bypassing package-generation freshness or source
+  integrity checks while reducing CI serialization rather than test scope.
+- The bootstrap package now emits two members from one generation: the exact
+  Homebrew source archive and the environment file consumed with it. The
+  canonical resolver therefore proves they share one recipe, dependency
+  closure, cache identity, and immutable generation rather than resolving two
+  independently mutable files.
+- Two clean candidate builds produced the same 6,025,043-byte compressed
+  512 MiB-capacity image. They embed only `libcxx`, `ncurses`, and Bash; leave
+  39 Formula trees and the Homebrew bootstrap deferred; install the ordinary
+  `/usr/bin/brew` entrypoint and `/etc/homebrew/brew.env`; and preserve the
+  unprivileged Homebrew ownership model. A derived eager build has the same
+  deferred-tree descriptors and bootstrap consumer identity, differing only
+  in which declared sources are materialized initially.
+- The first exact runtime pass correctly rejected the candidate's stale tap
+  lock: it selected Bash revision 1, built without `compgen`, even though the
+  public tap already contains the corrected revision 2 rebuild 3. Do not
+  accept the warning or patch upstream `brew`. After the in-flight Tcl/Dinit
+  publication sequence finalizes one coherent catalog commit, advance both
+  tap pins to that commit, retain Bash revision 2, regenerate all contextual
+  package identities and the image artifact lock, and repeat Node.js and
+  Chromium proofs against the final bytes.
+- An interim build against the already-finalized corrected Bash snapshot
+  produced a 6,044,463-byte image and proved that `brew --version`, `--prefix`,
+  `--repository`, `--cellar`, and `--cache` all pass through the ordinary lazy
+  `/usr/bin/brew` entrypoint. The first Ruby-backed command then exposed a real
+  ABI 41 platform ceiling: two valid fork continuations required 64,256 and
+  66,092 bytes while the fixed buffer reserves 61,440. Do not weaken the test,
+  avoid command substitution, or patch Ruby/Homebrew around this. Audit and
+  finish the existing dynamic continuation work, including allocation-failure
+  recovery, Node/browser parity, ABI rollout, and exact rebuilt-bottle proof.
+- The dynamic linked-chunk architecture in PR #1043 is the intended general
+  fix, but its current head is not mergeable evidence. PRs #979 and #1043 are
+  sibling ABI-42 transitions based far behind main and must become one ordered
+  unpublished ABI-42 tranche: authoritative kernel task identity first, then
+  transactional growable fork continuations. Preserve current-main wasm64
+  `BigInt` address conversion, move the descriptor/import/export requirements
+  into generated ABI and publication guards, cover allocation recovery across
+  main, pthread, side-module, Node, and browser paths, and benchmark shallow
+  and overflowing forks before rollout. No ABI-42 binary or bottle release
+  exists, so both contracts may still ship as ABI 42 if they are composed and
+  published together; publishing either incomplete contract first forces the
+  combined transition to ABI 43.
+- The ABI transition is one coordinated rebuild wave, not a series of mixed
+  package fixes: stage all selected programs with the final instrumenter,
+  publish one `binaries-abi-v42` set and one `bottles-abi-v42` catalog, rebuild
+  the shell VFS, and repeat exact Node/Chromium Homebrew plus conformance and
+  performance validation. Fixed-buffer growth or a Homebrew/Ruby workaround
+  is not an accepted intermediate endpoint.
+- Erlang's `erl` entrypoint is a `/bin/sh` launcher, so Dash is an operational
+  runtime dependency even though the current tap Formula labels it test-only.
+  The main-shell proof names this launcher dependency separately from Erlang's
+  library closure. Before arbitrary mix-and-match installation is claimed,
+  promote Dash to a runtime Formula dependency and publish a rebuilt Erlang
+  bottle so the package owns that truth itself.
+
 Acceptance:
 
 - Stock upstream Homebrew, with only the documented Kandelo target/platform
@@ -784,6 +850,21 @@ Formula files.
    files from the embedded closure (1,534,914 uncompressed bytes); measure the
    exact compressed base-image delta before considering one docs sidecar for
    the embedded set.
+10. After the first mostly-lazy shell cutover, make bottles addressable by the
+    smallest correct **activation group**, beginning with the independent
+    programs in `posix-utils-lite`. Preserve one Formula and one reviewed bottle
+    as the build, test, receipt, and publication unit, but publish a
+    content-addressed activation-group inventory and independently retrievable
+    objects in that bottle's GitHub package. Each lazy command entry must name
+    its owning bottle, group, installed paths, digests, sizes, modes, links, and
+    inseparable runtime companions. A self-contained utility may occupy a
+    one-binary group, so invoking `cat` does not download every other
+    `posix-utils-lite` program. A data-rich application such as Vim instead
+    keeps its executable, runtime scripts, syntax data, defaults, and other
+    required files in one cohesive group; it must never appear runnable after
+    fetching only its executable. Implement this as a generic bottle-owned
+    activation contract rather than a command-name special case, and retain an
+    eager materialization path derived from the same inventory.
 
 Acceptance:
 
@@ -802,6 +883,14 @@ Acceptance:
   deferred package. The deferred case fetches only the owning bottle, page
   links and `MANPATH` resolve through normal Homebrew layout, and the package
   inventory rejects an applicable Formula that silently drops its pages.
+- Node.js and Chromium can invoke two previously untouched
+  `posix-utils-lite` commands independently; network evidence proves that each
+  first use retrieves only its content-addressed activation group from the
+  owning GitHub package, a second use is cache-only, and neither use downloads
+  the full bundle. A data-rich fixture proves that first use atomically
+  materializes all declared supporting files and never exposes an
+  executable-only partial installation. Tampered members, inventories, modes,
+  incomplete groups, and cross-bottle ownership are rejected before execution.
 
 ### Phase 7: Bottle-compose service, application, and selectable VFS layers
 
