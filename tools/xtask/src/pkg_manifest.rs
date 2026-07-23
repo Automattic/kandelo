@@ -1180,7 +1180,7 @@ fn validate_single_path_component(value: &str, context: &str) -> Result<(), Stri
 
 /// Both paths describe files. Equal paths and ancestor/descendant pairs are
 /// therefore unsatisfiable in one artifact or VFS closure.
-fn file_paths_conflict(a: &str, b: &str) -> bool {
+pub(crate) fn file_paths_conflict(a: &str, b: &str) -> bool {
     a == b
         || a.strip_prefix(b)
             .is_some_and(|suffix| suffix.starts_with('/'))
@@ -1349,7 +1349,7 @@ fn default_outputs_value() -> toml::Value {
 
 fn program_output_dest_rel(
     package_name: &str,
-    output_count: usize,
+    closure_member_count: usize,
     out: &ProgramOutput,
 ) -> PathBuf {
     let basename = Path::new(&out.wasm)
@@ -1361,7 +1361,7 @@ fn program_output_dest_rel(
         None => "",
     };
     let dest_name = format!("{}{}", out.name, ext);
-    if output_count > 1 {
+    if closure_member_count > 1 {
         Path::new(package_name).join(dest_name)
     } else {
         PathBuf::from(dest_name)
@@ -1369,6 +1369,32 @@ fn program_output_dest_rel(
 }
 
 impl DepsManifest {
+    /// Number of files that form this program package's resolver closure.
+    ///
+    /// Executable outputs and non-Wasm runtime files are one package identity:
+    /// consumers must never mix either class across builds.
+    pub fn program_closure_member_count(&self) -> usize {
+        self.program_outputs.len() + self.runtime_files.len()
+    }
+
+    /// Whether the resolver mirror must be owned by one package directory.
+    pub fn uses_package_mirror_directory(&self) -> bool {
+        self.program_closure_member_count() > 1
+    }
+
+    /// Whether this package publishes its sole executable at the binary root
+    /// instead of under `programs/<arch>/`.
+    ///
+    /// The kernel and userspace adapter are host boot artifacts, not guest
+    /// programs. Keep this predicate shared by publication and projection so
+    /// the program-package index never claims a path the publisher cannot
+    /// create.
+    pub fn uses_root_binary_mirror(&self) -> bool {
+        matches!(self.name.as_str(), "kernel" | "userspace")
+            && self.program_outputs.len() == 1
+            && self.runtime_files.is_empty()
+    }
+
     /// Resolver mirror path under `programs/<arch>/` for a runtime file.
     /// Runtime files always live below the package name, independently of the
     /// number of executable `[[outputs]]` entries.
@@ -1413,21 +1439,20 @@ impl DepsManifest {
     /// the consumer's expected path.
     ///
     /// Layout:
-    ///   * 1 output:  `<output.name><ext>`
-    ///   * ≥2 outputs: `<program.name>/<output.name><ext>`
+    ///   * 1 total output/runtime member: `<output.name><ext>`
+    ///   * ≥2 total members: `<program.name>/<output.name><ext>`
     ///
     /// `<ext>` is everything from the first `.` onward in `out.wasm`'s
     /// basename, so `.vfs.zst`, `.tar.gz`, etc. round-trip intact.
     pub fn output_dest_rel_for(&self, out: &ProgramOutput) -> PathBuf {
-        program_output_dest_rel(&self.name, self.program_outputs.len(), out)
+        program_output_dest_rel(&self.name, self.program_closure_member_count(), out)
     }
 
-    /// Same as [`output_dest_rel_for`] but keyed by the `wasm`
-    /// filename instead of the output struct — used by build scripts
-    /// (via `xtask build-deps output-path`) which have only the file
-    /// they just built, not the parsed package.toml struct.
-    pub fn output_dest_rel(&self, wasm_basename: &str) -> Result<PathBuf, String> {
-        let out = self.output_for_wasm_basename(wasm_basename)?;
+    /// Same as [`output_dest_rel_for`] but keyed by the declared `wasm`
+    /// artifact path. A unique basename remains accepted for existing build
+    /// scripts, but an exact declaration wins and ambiguous basenames fail.
+    pub fn output_dest_rel(&self, wasm_artifact: &str) -> Result<PathBuf, String> {
+        let out = self.output_for_wasm_artifact(wasm_artifact)?;
         Ok(self.output_dest_rel_for(out))
     }
 
@@ -1435,14 +1460,14 @@ impl DepsManifest {
     /// output, keyed by its `wasm` basename.
     pub fn output_fork_instrumentation(
         &self,
-        wasm_basename: &str,
+        wasm_artifact: &str,
     ) -> Result<ForkInstrumentationPolicy, String> {
         Ok(self
-            .output_for_wasm_basename(wasm_basename)?
+            .output_for_wasm_artifact(wasm_artifact)?
             .fork_instrumentation)
     }
 
-    fn output_for_wasm_basename(&self, wasm_basename: &str) -> Result<&ProgramOutput, String> {
+    pub fn output_for_wasm_artifact(&self, wasm_artifact: &str) -> Result<&ProgramOutput, String> {
         if self.kind != ManifestKind::Program {
             return Err(format!(
                 "manifest {:?} is kind={:?}; program output lookup is program-only",
@@ -1453,20 +1478,32 @@ impl DepsManifest {
         if outputs.is_empty() {
             return Err(format!("program {:?} has no [[outputs]]", self.name));
         }
-        let out = outputs
+        if let Some(output) = outputs.iter().find(|output| output.wasm == wasm_artifact) {
+            return Ok(output);
+        }
+        let matches: Vec<_> = outputs
             .iter()
-            .find(|o| {
-                Path::new(&o.wasm).file_name().and_then(|s| s.to_str()) == Some(wasm_basename)
+            .filter(|output| {
+                Path::new(&output.wasm)
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    == Some(wasm_artifact)
             })
-            .ok_or_else(|| {
+            .collect();
+        match matches.as_slice() {
+            [output] => Ok(*output),
+            [] => {
                 let declared: Vec<&str> = outputs.iter().map(|o| o.wasm.as_str()).collect();
-                format!(
-                    "program {:?} has no [[outputs]] entry whose wasm = {:?} \
-                     (declared: {:?})",
-                    self.name, wasm_basename, declared
-                )
-            })?;
-        Ok(out)
+                Err(format!(
+                    "program {:?} has no [[outputs]] entry whose wasm path or unique basename is {:?} (declared: {:?})",
+                    self.name, wasm_artifact, declared
+                ))
+            }
+            _ => Err(format!(
+                "program {:?} has multiple [[outputs]] entries with basename {:?}; pass the exact declared wasm path",
+                self.name, wasm_artifact
+            )),
+        }
     }
 
     /// Read + parse + validate a `package.toml` file. `dir` is the
@@ -2067,7 +2104,11 @@ impl DepsManifest {
                         ));
                     }
                 }
-                let mirror = program_output_dest_rel(&raw.name, program_outputs.len(), out);
+                let mirror = program_output_dest_rel(
+                    &raw.name,
+                    program_outputs.len() + runtime_files.len(),
+                    out,
+                );
                 for prior in &output_mirrors {
                     if file_paths_conflict(&prior.to_string_lossy(), &mirror.to_string_lossy()) {
                         return Err(format!(
@@ -3289,11 +3330,11 @@ wasm = "vim.wasm"
             m.runtime_file_dest_rel("icu.dat").unwrap(),
             PathBuf::from("vim/icu.dat")
         );
-        // Runtime-file placement must not perturb the legacy single-output
-        // destination convention.
+        // The executable and runtime file are one closure, so both live below
+        // the package-owned mirror directory.
         assert_eq!(
             m.output_dest_rel("vim.wasm").unwrap(),
-            PathBuf::from("vim.wasm")
+            PathBuf::from("vim/vim.wasm")
         );
 
         let nested = program_with_runtime_file("share/icu/icu.dat", "/usr/lib/php/icu.dat", None);
@@ -3832,6 +3873,35 @@ spdx = "TestLicense"
     }
 
     #[test]
+    fn root_binary_mirror_is_limited_to_single_output_boot_artifacts() {
+        for name in ["kernel", "userspace"] {
+            let manifest = program_manifest(
+                name,
+                &format!("[[outputs]]\nname = \"{name}\"\nwasm = \"{name}.wasm\"\n"),
+            );
+            assert!(manifest.uses_root_binary_mirror());
+        }
+
+        let ordinary = program_manifest(
+            "shell",
+            "[[outputs]]\nname = \"shell\"\nwasm = \"shell.wasm\"\n",
+        );
+        assert!(!ordinary.uses_root_binary_mirror());
+
+        let multi = program_manifest(
+            "kernel",
+            r#"[[outputs]]
+name = "kernel"
+wasm = "kernel.wasm"
+[[runtime_files]]
+artifact = "kernel-data"
+guest_path = "/usr/share/kernel-data"
+"#,
+        );
+        assert!(!multi.uses_root_binary_mirror());
+    }
+
+    #[test]
     fn output_fork_instrumentation_defaults_to_auto() {
         let m = program_manifest(
             "dash",
@@ -3875,6 +3945,31 @@ spdx = "TestLicense"
     }
 
     #[test]
+    fn output_dest_rel_single_output_with_runtime_file_uses_program_subdir() {
+        let m = program_manifest(
+            "cpython",
+            r#"[[outputs]]
+name = "cpython"
+wasm = "python.wasm"
+
+[[runtime_files]]
+artifact = "python-runtime.zip"
+guest_path = "/usr/share/cpython/python-runtime.zip"
+"#,
+        );
+        assert_eq!(m.program_closure_member_count(), 2);
+        assert!(m.uses_package_mirror_directory());
+        assert_eq!(
+            m.output_dest_rel("python.wasm").unwrap(),
+            PathBuf::from("cpython/cpython.wasm")
+        );
+        assert_eq!(
+            m.runtime_file_dest_rel("python-runtime.zip").unwrap(),
+            PathBuf::from("cpython/python-runtime.zip")
+        );
+    }
+
+    #[test]
     fn output_dest_rel_multi_output_uses_program_subdir() {
         // ≥2 outputs: the resolver nests under <program.name>/, so
         // each output's per-arch path is unique even when other packages
@@ -3899,6 +3994,33 @@ wasm = "git-remote-http.wasm"
             m.output_dest_rel("git-remote-http.wasm").unwrap(),
             PathBuf::from("git/git-remote-http.wasm")
         );
+    }
+
+    #[test]
+    fn exact_output_artifact_disambiguates_duplicate_basenames() {
+        let m = program_manifest(
+            "tools",
+            r#"
+[[outputs]]
+name = "first"
+wasm = "a/tool.wasm"
+
+[[outputs]]
+name = "second"
+wasm = "b/tool.wasm"
+"#,
+        );
+        assert_eq!(
+            m.output_dest_rel("a/tool.wasm").unwrap(),
+            PathBuf::from("tools/first.wasm")
+        );
+        assert_eq!(
+            m.output_dest_rel("b/tool.wasm").unwrap(),
+            PathBuf::from("tools/second.wasm")
+        );
+        let error = m.output_dest_rel("tool.wasm").unwrap_err();
+        assert!(error.contains("multiple"), "got: {error}");
+        assert!(error.contains("exact declared wasm path"), "got: {error}");
     }
 
     #[test]

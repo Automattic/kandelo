@@ -275,8 +275,9 @@ pkg_remove_local_output() {
 # or `local-binaries/`. This is the single source of truth for "is
 # this package built?" — replaces ~30 hand-coded has_<pkg> checks
 # that hardcoded the flat-vs-nested layout convention and silently
-# drifted (e.g. the `programs/erlang.wasm` vs `programs/erlang/erlang.wasm`
-# bug). Layout decisions live in `output_dest_rel_for` only.
+# drifted when a package moved from scalar to package-directory layout
+# (the Erlang build exposed this bug). Layout decisions live in
+# `output_dest_rel_for` only.
 #
 # The wasm-basename arg is the file listed in `[[outputs]].wasm`
 # (e.g. `python.wasm`, `mariadbd.wasm`), NOT the output `name` field.

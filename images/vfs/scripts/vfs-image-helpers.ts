@@ -13,9 +13,9 @@ import {
 } from "fs";
 import { join, relative } from "path";
 import { zstdCompressSync, constants as zlibConstants } from "node:zlib";
-import type {
+import {
   MemoryFileSystem,
-  VfsImageMetadata,
+  type VfsImageMetadata,
 } from "../../../host/src/vfs/memory-fs";
 import { describeWasmArtifactPolicyFailures } from "../../../host/src/constants";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
@@ -33,12 +33,17 @@ import { writeVfsBinary, ensureDirRecursive } from "../../../host/src/vfs/image-
 export interface WalkOptions {
   exclude?: (relPath: string) => boolean;
   preserveMode?: boolean;
-  preserveSymlinks?: boolean;
-  failOnError?: boolean;
+  preserveSymlinks?: true;
 }
 
 /**
  * Walk a host directory and write all files into the VFS under mountPrefix.
+ * Any host-read or VFS-write failure aborts the build. Product images must not
+ * silently omit an entry; callers that intentionally exclude content must do
+ * so through `exclude`.
+ *
+ * Unexcluded symlinks must be preserved explicitly. Silently omitting a
+ * representable entry would produce an incomplete product image.
  * Returns the number of files written.
  */
 export function walkAndWrite(
@@ -56,32 +61,32 @@ export function walkAndWrite(
       const rel = relative(rootDir, full);
       const mountPath = mountPrefix + "/" + rel;
 
-      try {
-        const lstat = lstatSync(full);
-        if (opts?.exclude?.(rel)) continue;
-        if (lstat.isSymbolicLink()) {
-          if (opts?.preserveSymlinks) {
-            ensureDirRecursive(fs, mountPath.slice(0, mountPath.lastIndexOf("/")) || "/");
-            fs.symlink(readlinkSync(full), mountPath);
-            count++;
-          }
-        } else if (lstat.isDirectory()) {
-          ensureDirRecursive(fs, mountPath);
-          if (opts?.preserveMode) fs.chmod(mountPath, lstat.mode & 0o7777);
-          walk(full);
-        } else if (lstat.isFile()) {
-          const data = readFileSync(full);
-          writeVfsBinary(
-            fs,
-            mountPath,
-            new Uint8Array(data),
-            opts?.preserveMode ? lstat.mode & 0o7777 : 0o644,
+      const lstat = lstatSync(full);
+      if (opts?.exclude?.(rel)) continue;
+      if (lstat.isSymbolicLink()) {
+        if (!opts?.preserveSymlinks) {
+          throw new Error(
+            `VFS image source symlink requires preserveSymlinks or an explicit exclude: ${full}`,
           );
-          count++;
         }
-      } catch (err) {
-        if (opts?.failOnError) throw err;
-        // Skip unreadable files
+        ensureDirRecursive(fs, mountPath.slice(0, mountPath.lastIndexOf("/")) || "/");
+        fs.symlink(readlinkSync(full), mountPath);
+        count++;
+      } else if (lstat.isDirectory()) {
+        ensureDirRecursive(fs, mountPath);
+        if (opts?.preserveMode) fs.chmod(mountPath, lstat.mode & 0o7777);
+        walk(full);
+      } else if (lstat.isFile()) {
+        const data = readFileSync(full);
+        writeVfsBinary(
+          fs,
+          mountPath,
+          new Uint8Array(data),
+          opts?.preserveMode ? lstat.mode & 0o7777 : 0o644,
+        );
+        count++;
+      } else {
+        throw new Error(`Unsupported VFS image source entry: ${full}`);
       }
     }
   }
@@ -107,6 +112,8 @@ export interface SaveImageOptions {
   normalizeTimestampsMs?: number;
   /** Runtime allocation reserve that must remain after build-time population. */
   headroom?: VfsImageHeadroom;
+  /** Exact growth ceiling that the serialized artifact must encode. */
+  expectedMaxByteLength?: number;
 }
 
 export interface VfsImageHeadroom {
@@ -185,6 +192,27 @@ export function assertVfsImageHeadroom(
   }
   if (failures.length > 0) {
     throw new Error(`${label} lacks runtime VFS headroom: ${failures.join("; ")}`);
+  }
+}
+
+/** Require a serialized artifact's encoded growth ceiling to match its product profile. */
+export function assertVfsImageCapacity(
+  image: Uint8Array,
+  expectedMaxByteLength: number,
+  label: string,
+): void {
+  if (!Number.isSafeInteger(expectedMaxByteLength) || expectedMaxByteLength <= 0) {
+    throw new Error(
+      `${label} expectedMaxByteLength must be a positive safe integer`,
+    );
+  }
+  const actualMaxByteLength =
+    MemoryFileSystem.readImageCapacity(image).maxByteLength;
+  if (actualMaxByteLength !== expectedMaxByteLength) {
+    throw new Error(
+      `${label} has a ${actualMaxByteLength}-byte VFS capacity; ` +
+        `${expectedMaxByteLength} bytes are required by its product profile`,
+    );
   }
 }
 
@@ -283,6 +311,9 @@ export async function saveImage(
     metadata,
     normalizeTimestampsMs: options.normalizeTimestampsMs,
   });
+  if (options.expectedMaxByteLength !== undefined) {
+    assertVfsImageCapacity(image, options.expectedMaxByteLength, outFile);
+  }
   // Level 19 — slow build, smaller download. Decompression speed is
   // unaffected by compression level, so this is a one-sided trade.
   const compressed = zstdCompressSync(image, {

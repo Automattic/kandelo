@@ -5,6 +5,18 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HOST_WASM_DIR="$REPO_ROOT/host/wasm"
 mkdir -p "$HOST_WASM_DIR"
 
+# Keep the standalone npm package on the same Rust-generated program closure
+# and artifact policy as source checkouts. The package has no registry TOML to
+# inspect at runtime. Refuse to copy stale policy into a publishable package.
+HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
+    build-deps program-index-check \
+    "$REPO_ROOT/packages/registry" \
+    "$REPO_ROOT/packages/registry/program-packages.json"
+cp \
+    "$REPO_ROOT/packages/registry/program-packages.json" \
+    "$HOST_WASM_DIR/program-packages.json"
+
 copy_first_existing() {
     local dest="$1"
     shift

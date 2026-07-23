@@ -68,6 +68,7 @@ import {
   ensureDirRecursive,
   saveImage,
   sourceDateEpochMilliseconds,
+  type SaveImageOptions,
   writeVfsBinary,
 } from "./vfs-image-helpers";
 
@@ -126,6 +127,23 @@ export type HomebrewVfsImageMaterializer = (
   plan: HomebrewVfsPlan,
   options: HomebrewVfsImageMaterializationOptions,
 ) => Promise<HomebrewVfsImageMaterializedBuild>;
+
+/**
+ * Serialize a Homebrew product image only when its encoded SharedFS ceiling
+ * matches the consumer contract before compression, directory creation, or
+ * output writes.
+ */
+export async function saveVerifiedHomebrewVfsImage(
+  fs: MemoryFileSystem,
+  outFile: string,
+  options: Omit<SaveImageOptions, "expectedMaxByteLength">,
+  expectedMaxByteLength: number,
+): Promise<Uint8Array> {
+  return saveImage(fs, outFile, {
+    ...options,
+    expectedMaxByteLength,
+  });
+}
 
 const DEFAULT_MAX_BYTES = 128 * 1024 * 1024;
 const SHARED_FS_BLOCK_BYTES = 4096;
@@ -340,7 +358,7 @@ export async function runHomebrewVfsImageBuilder(
     writeVfsBinary(fs, KANDELO_DEMO_CONFIG_PATH, demoConfig.source, 0o644);
   }
 
-  const imageBytes = await saveImage(fs, options.out, {
+  const imageBytes = await saveVerifiedHomebrewVfsImage(fs, options.out, {
     normalizeTimestampsMs: sourceDateEpochMilliseconds(
       process.env.SOURCE_DATE_EPOCH,
     ),
@@ -432,7 +450,7 @@ export async function runHomebrewVfsImageBuilder(
         })),
       },
     },
-  });
+  }, maxByteLength);
   const imageCapacity = MemoryFileSystem.readImageCapacity(imageBytes);
   if (imageCapacity.maxByteLength !== maxByteLength) {
     throw new Error(

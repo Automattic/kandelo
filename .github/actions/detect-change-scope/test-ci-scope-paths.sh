@@ -126,6 +126,17 @@ assert_matches binary_materialization_changed_files \
 assert_matches binary_materialization_changed_files \
   "scripts/vfs-has-stale-abi.mjs" \
   "scripts/vfs-has-stale-abi.mjs"
+for resolver_input in \
+  host/src/binary-resolver.ts \
+  scripts/resolve-binary.ts \
+  scripts/resolve-binary.bundle.mjs \
+  scripts/resolve-binary.bundle.LICENSES.txt \
+  scripts/build-resolve-binary-bundle.sh \
+  scripts/test-resolve-binary-bundle.sh; do
+  assert_matches binary_materialization_changed_files \
+    "$resolver_input" \
+    "$resolver_input"
+done
 assert_matches binary_materialization_changed_files \
   "tests/package-system/fetch-binaries-allow-stale.test.ts" \
   "tests/package-system/fetch-binaries-allow-stale.test.ts"

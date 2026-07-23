@@ -43,8 +43,10 @@ export type {
 } from "./worker-protocol";
 export * from "./vfs/index";
 export {
+  BinaryNotFoundError,
   resolveBinary,
   tryResolveBinary,
+  tryResolveBinarySet,
   findRepoRoot,
   binariesDir,
   localBinariesDir,

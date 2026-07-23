@@ -28,8 +28,7 @@ on:
       - "libc/**"
       - "package.json"
       - "package-lock.json"
-      - "packages/registry/**/package.toml"
-      - "packages/registry/**/build.toml"
+      - "packages/registry/**"
       - "programs/**"
       - "rust-toolchain.toml"
       - "images/rootfs/**"
@@ -38,6 +37,7 @@ on:
       - "scripts/build-musl.sh"
       - "scripts/build-programs.sh"
       - "scripts/build-rootfs.sh"
+      - "scripts/browser-binary-package-roots.mjs"
       - "scripts/check-pages-publish-size.mjs"
       - "scripts/check-pages-run-freshness.sh"
       - "scripts/ci-check-pages-deployment.sh"
@@ -49,6 +49,11 @@ on:
       - "scripts/install-overlay-headers.sh"
       - "scripts/install-local-binary.sh"
       - "scripts/resolve-binary.sh"
+      - "scripts/resolve-binary.ts"
+      - "scripts/resolve-binary.bundle.mjs"
+      - "scripts/resolve-binary.bundle.LICENSES.txt"
+      - "scripts/build-resolve-binary-bundle.sh"
+      - "scripts/test-resolve-binary-bundle.sh"
       - "sdk/**"
       - "tools/mkrootfs/**"
       - "tools/xtask/**"
@@ -104,6 +109,15 @@ jobs:
 
       - name: Set up Nix
         uses: ./.github/actions/setup-nix
+
+      - name: Verify browser package projection is current
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            host_target="$(rustc -vV | sed -n "s/^host: //p")"
+            cargo run -p xtask --target "$host_target" --quiet -- \
+              build-deps program-index-check \
+              packages/registry packages/registry/program-packages.json
+          '
 
       - name: Prepare browser demo assets
         run: bash scripts/dev-shell.sh ./run.sh prepare-browser --allow-stale

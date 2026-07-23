@@ -170,12 +170,11 @@ echo "==> dash built successfully!"
 mkdir -p "$SCRIPT_DIR/bin"
 cp "$DASH_BIN" "$SCRIPT_DIR/bin/dash.wasm"
 
-# Install into local-binaries/ so the resolver picks it up as an override.
+# Install the declared dash artifact into local-binaries/ so the resolver picks
+# it up as an override. Guest images create `/bin/sh` as a VFS-level shell link;
+# there is no separate resolver `sh.wasm` package artifact.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary dash "$SCRIPT_DIR/bin/dash.wasm"
-# sh ships as an alias for dash in the release; install the same bytes
-# under that name so `programs/sh.wasm` also resolves locally.
-install_local_binary sh "$SCRIPT_DIR/bin/dash.wasm"
 
 ls -lh "$SCRIPT_DIR/bin/dash.wasm"
 echo ""

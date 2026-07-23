@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +19,62 @@ const runExample = join(repoRoot, "examples", "run-example.ts");
 const spawnSmokeWasm = join(repoRoot, "examples", "spawn-smoke.wasm");
 
 describe("run-example exec resolver", () => {
+  it("loads unrelated examples without probing legacy flat paths for multi-member packages", () => {
+    const source = readFileSync(runExample, "utf8");
+    const projection = JSON.parse(
+      readFileSync(
+        join(repoRoot, "packages", "registry", "program-packages.json"),
+        "utf8",
+      ),
+    ) as {
+      packages: Record<string, {
+        members: Array<{ kind: string; mirrorPath: string }>;
+      }>;
+    };
+    const probes = new Set(
+      [...source.matchAll(/tryResolveBinary\("([^"]+)"\)/g)]
+        .map((match) => match[1]),
+    );
+    const legacyMultiMemberProbes: string[] = [];
+    for (const packageProjection of Object.values(projection.packages)) {
+      if (packageProjection.members.length < 2) continue;
+      for (const member of packageProjection.members) {
+        if (member.kind !== "output") continue;
+        const basename = member.mirrorPath.split("/").at(-1);
+        if (basename && probes.has(`programs/${basename}`)) {
+          legacyMultiMemberProbes.push(`programs/${basename}`);
+        }
+      }
+    }
+    expect(legacyMultiMemberProbes).toEqual([]);
+
+    const cacheRoot = mkdtempSync(join(tmpdir(), "kandelo-run-example-load-"));
+    try {
+      const result = spawnSync(
+        process.execPath,
+        ["--import", "tsx/esm", runExample],
+        {
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            WASM_POSIX_BINARY_CACHE_ROOT: cacheRoot,
+            WASM_POSIX_DEPS_REGISTRY: "packages/registry",
+          },
+          encoding: "utf8",
+          timeout: 30_000,
+        },
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "Usage: npx tsx examples/run-example.ts <name>",
+      );
+      expect(result.stderr).not.toContain("Legacy flat resolver path");
+    } finally {
+      rmSync(cacheRoot, { recursive: true, force: true });
+    }
+  });
+
   it("compares canonical workdir paths without allowing symlink escapes", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "kandelo-workdir-boundary-"));
     const realWorkdir = join(tempDir, "real-workdir");
