@@ -12,6 +12,8 @@ WORKFLOW="$REPO_ROOT/.github/workflows/homebrew-main-shell-ci.yml"
 IMAGE_CONTRACT="$REPO_ROOT/scripts/homebrew-main-shell-image-contract.ts"
 IMAGE_CONTRACT_TEST="$REPO_ROOT/scripts/homebrew-main-shell-image-contract.test.ts"
 NODE_SMOKE="$REPO_ROOT/scripts/homebrew-main-shell-node-smoke.ts"
+BROWSER_SMOKE="$REPO_ROOT/apps/browser-demos/test/kandelo-homebrew-main-shell.spec.ts"
+MODESET_SMOKE="$REPO_ROOT/apps/browser-demos/test/kandelo-modeset.spec.ts"
 EAGER_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts"
 MATERIALIZED_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-materialized-vfs-image.ts"
 STAGING_WORKFLOW="$REPO_ROOT/.github/workflows/staging-build.yml"
@@ -225,10 +227,25 @@ grep -Fq '${{ steps.candidate.outputs.report }}' "$WORKFLOW" ||
   fail "main-shell evidence must retain the candidate composition report"
 grep -Fq 'apps/browser-demos/test-results' "$WORKFLOW" ||
   fail "main-shell evidence must retain browser failure traces"
-grep -Fq 'bash ../../scripts/dev-shell.sh env "${playwright_env[@]}" \' "$WORKFLOW" ||
-  fail "main-shell workflow must forward browser acceptance inputs inside the isolated dev shell"
-grep -Fq '"PLAYWRIGHT_JSON_OUTPUT_FILE=$report"' "$WORKFLOW" ||
-  fail "browser acceptance must have Playwright write JSON directly to its report file"
+grep -Fq '${{ runner.temp }}/homebrew-main-shell-modeset-playwright.json' \
+  "$WORKFLOW" ||
+  fail "main-shell evidence must retain the isolated MODESET report"
+[ "$(grep -Fc 'bash ../../scripts/dev-shell.sh env \' "$WORKFLOW")" -eq 2 ] ||
+  fail "shell and MODESET proofs must run in separate isolated browser processes"
+grep -Fq '"PLAYWRIGHT_JSON_OUTPUT_FILE=$shell_report"' "$WORKFLOW" ||
+  fail "shell acceptance must have Playwright write JSON directly to its report file"
+grep -Fq '"PLAYWRIGHT_JSON_OUTPUT_FILE=$modeset_report"' "$WORKFLOW" ||
+  fail "MODESET acceptance must have Playwright write JSON directly to its report file"
+grep -Fq 'npx playwright test test/kandelo-homebrew-main-shell.spec.ts \' "$WORKFLOW" ||
+  fail "browser acceptance must run the exact Homebrew shell proof"
+grep -Fq 'npx playwright test test/kandelo-modeset.spec.ts \' "$WORKFLOW" ||
+  fail "browser acceptance must preserve MODESET in a fresh process"
+grep -Fq 'for report in "$shell_report" "$modeset_report"; do' "$WORKFLOW" ||
+  fail "browser acceptance must validate both isolated Playwright reports"
+grep -Fq 'page.goto("/?demo=modeset"' "$BROWSER_SMOKE" &&
+  fail "Homebrew shell acceptance must not start a second VFS in its browser process"
+grep -Fq 'gotoOrSkip(page, "/?demo=modeset")' "$MODESET_SMOKE" ||
+  fail "isolated MODESET acceptance must boot the MODESET demo"
 grep -Fq -- '--project=chromium --reporter=json >"$report"' "$WORKFLOW" &&
   fail "browser acceptance must not mix dev-shell stdout into the Playwright JSON report"
 grep -Fq "jq -r '.packages[].registry.name' homebrew/main-shell-migration-lock.json" "$WORKFLOW" &&

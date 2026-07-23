@@ -141,7 +141,7 @@ async function waitForLazyPackageRows(
   return rows;
 }
 
-test("the exact public-bottle shell preserves shell, language, NetHack, and modeset behavior", async ({ page }) => {
+test("the exact public-bottle shell preserves shell, language, and NetHack behavior", async ({ page }) => {
   test.skip(!strict, "exact Homebrew main-shell CI configures this acceptance test");
   if (!expectedImageSha256 || !/^[0-9a-f]{64}$/.test(expectedImageSha256)) {
     throw new Error(
@@ -380,44 +380,6 @@ test("the exact public-bottle shell preserves shell, language, NetHack, and mode
     expect(row.totalBytes).toBe(String(asset!.bytes));
     expect(Number(row.eventCount)).toBeGreaterThanOrEqual(3);
   }
-
-  await page.goto("/?demo=modeset", { waitUntil: "domcontentloaded" });
-  const modesetControls = page
-    .locator(".kdemo-surface-controls")
-    .filter({ has: page.locator(".kdemo-surface-title", { hasText: /MODESET/ }) })
-    .first();
-  await expect(modesetControls).toBeVisible({ timeout: 180_000 });
-  await expect
-    .poll(() => modesetControls.innerText(), { timeout: 180_000 })
-    .toMatch(/[1-9]\d*\s+flips/i);
-  const canvas = page.locator("canvas").first();
-  await expect(canvas).toBeVisible({ timeout: 60_000 });
-  await expect
-    .poll(
-      async () => (await canvas.screenshot()).byteLength,
-      { timeout: 60_000, intervals: [1_000, 2_000, 5_000] },
-    )
-    .toBeGreaterThan(5_000);
-
-  await page.waitForFunction(() => {
-    const evidence = (window as typeof window & {
-      __kandeloHomebrewMainShellImageEvidence?: {
-        digests: string[];
-        errors: string[];
-      };
-    }).__kandeloHomebrewMainShellImageEvidence;
-    return Boolean(evidence && (evidence.digests.length > 0 || evidence.errors.length > 0));
-  }, undefined, { timeout: 180_000 });
-  const modesetImageEvidence = await page.evaluate(() =>
-    (window as typeof window & {
-      __kandeloHomebrewMainShellImageEvidence: {
-        digests: string[];
-        errors: string[];
-      };
-    }).__kandeloHomebrewMainShellImageEvidence
-  );
-  expect(modesetImageEvidence.errors).toEqual([]);
-  expect(new Set(modesetImageEvidence.digests)).toEqual(new Set([expectedImageSha256]));
 
   expect(legacyArtifactDownloads).toEqual([]);
 });
