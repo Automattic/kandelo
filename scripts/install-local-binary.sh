@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# install-local-binary.sh — copy a freshly-built wasm into
-# local-binaries/ so the resolver picks it up as an override over
-# anything `scripts/fetch-binaries.sh` downloaded.
+# install-local-binary.sh — install freshly-built package artifacts into
+# local-binaries/ so the resolver picks them up as an override over anything
+# `scripts/fetch-binaries.sh` downloaded.
 #
 # Sourced or called from each ported program's build script after
 # producing its output binary. The resolver (host/src/binary-resolver.ts
@@ -15,8 +15,9 @@
 # `package.toml` via `xtask build-deps output-path <program> <basename>`.
 # This is the SAME path the resolver writes to from a published
 # archive — keeping local builds and releases interchangeable at the
-# resolver layer (single-output is flat `<output.name>.<ext>`,
-# multi-output nests under `<program.name>/`). Without this lookup, a
+# resolver layer (a one-member package is flat `<output.name>.<ext>`;
+# every output/runtime member nests under `<program.name>/` when the package
+# has more than one total member). Without this lookup, a
 # package whose `program.name != output.name` (e.g. texlive/pdftex) had
 # divergent local-vs-release paths and the demo could never see a
 # fresh local build.
@@ -47,6 +48,74 @@
 # scratch space while preserving the normal artifact guards below.
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/wasm-artifact-guards.sh"
+
+# All artifacts installed by one sourced build helper share a session. For a
+# package closure, xtask collects that session below a hidden immutable
+# generation and publishes the live package directory only after every declared
+# output and runtime file is present. Callers coordinating separate shell
+# processes may provide their own portable session token.
+if [ -z "${WASM_POSIX_LOCAL_INSTALL_SESSION:-}" ]; then
+    WASM_POSIX_LOCAL_INSTALL_SESSION="shell-${BASHPID:-$$}-${RANDOM:-0}-${RANDOM:-0}"
+fi
+
+# Copy through a private sibling and publish with a hard link. `cp "$src"
+# "$dest"` would follow an existing destination symlink and overwrite the
+# fetched canonical cache bytes it points at. This helper moves that entry
+# aside without dereferencing it, then creates the new pathname only if it is
+# still absent. It is used for legacy aliases and caller-owned scratch too.
+_wasm_posix_copy_file_no_follow() {
+    local src="$1"
+    local dest="$2"
+    local parent
+    parent="$(dirname "$dest")"
+    mkdir -p "$parent"
+
+    local name
+    name="$(basename "$dest")"
+    local stage
+    stage="$(mktemp "$parent/.${name}.local-stage.XXXXXX")" || return 1
+    local backup
+    backup="$(mktemp "$parent/.${name}.local-backup.XXXXXX")" || {
+        rm -f "$stage"
+        return 1
+    }
+    rm -f "$backup"
+
+    if ! cp -p "$src" "$stage"; then
+        rm -f "$stage"
+        return 1
+    fi
+
+    local old_moved=0
+    if [ -e "$dest" ] || [ -L "$dest" ]; then
+        if [ -d "$dest" ] && [ ! -L "$dest" ]; then
+            echo "install-local-binary: refusing to replace directory: $dest" >&2
+            rm -f "$stage"
+            return 1
+        fi
+        if ! mv "$dest" "$backup"; then
+            rm -f "$stage"
+            return 1
+        fi
+        old_moved=1
+    fi
+
+    if ! ln "$stage" "$dest"; then
+        if [ "$old_moved" = "1" ] && [ ! -e "$dest" ] && [ ! -L "$dest" ]; then
+            mv "$backup" "$dest" || true
+        fi
+        rm -f "$stage"
+        if [ "$old_moved" = "1" ] && { [ -e "$dest" ] || [ -L "$dest" ]; }; then
+            rm -f "$backup"
+        fi
+        return 1
+    fi
+
+    rm -f "$stage"
+    if [ "$old_moved" = "1" ]; then
+        rm -f "$backup"
+    fi
+}
 
 install_local_binary() {
     local program="$1"
@@ -154,7 +223,28 @@ install_local_binary() {
         # call site, or no [[outputs]] entry for this basename) fall back
         # to the legacy heuristic so existing build scripts keep working.
         local rel=""
-        if [ -n "$host_target" ]; then
+        local registered_package_dir="$repo_root/packages/registry/$program"
+        if [ -e "$registered_package_dir" ] || [ -L "$registered_package_dir" ]; then
+            if [ -z "$host_target" ]; then
+                echo "install_local_binary: rustc did not report a host target for registered package '$program'" >&2
+                return 1
+            fi
+            if ! rel="$(cd "$repo_root" && \
+                env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+                cargo run -p xtask --target "$host_target" --quiet -- \
+                    build-deps output-path "$program" "$src_basename")"; then
+                echo "install_local_binary: registered package '$program' does not declare output '$src_basename'" >&2
+                return 1
+            fi
+            if [ -z "$rel" ]; then
+                echo "install_local_binary: registered package '$program' returned an empty output path" >&2
+                return 1
+            fi
+        elif [ -n "$host_target" ]; then
+            # Genuinely unregistered names are compatibility aliases (for
+            # example dash -> sh). Let an external registry opt into the
+            # manifest path when it resolves successfully, but preserve the
+            # legacy fallback when no manifest exists.
             rel="$(cd "$repo_root" && \
                 env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
                 cargo run -p xtask --target "$host_target" --quiet -- \
@@ -164,6 +254,19 @@ install_local_binary() {
         local dest
         if [ -n "$rel" ]; then
             dest="$repo_root/local-binaries/programs/$arch/$rel"
+            local source_parent
+            source_parent="$(cd "$(dirname "$src")" && pwd -P)" || return 1
+            local source_abs="$source_parent/$src_basename"
+            if ! (cd "$repo_root" && \
+                env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+                    WASM_POSIX_LOCAL_INSTALL_SOURCE="$source_abs" \
+                    WASM_POSIX_LOCAL_INSTALL_SESSION="$WASM_POSIX_LOCAL_INSTALL_SESSION" \
+                    cargo run -p xtask --target "$host_target" --quiet -- \
+                        build-deps --arch "$arch" \
+                        --binaries-dir "$repo_root/local-binaries" \
+                        install-local-artifact "$program" "$src_basename"); then
+                return 1
+            fi
         elif [ -n "$legacy_dest_name" ]; then
             # Legacy multi-binary subdir layout. Used to be the only way to
             # express "this program produces multiple wasms"; package.toml's
@@ -178,9 +281,13 @@ install_local_binary() {
             dest="$repo_root/local-binaries/programs/$arch/$program$src_ext"
         fi
 
-        mkdir -p "$(dirname "$dest")"
-        cp "$src" "$dest"
-        echo "  installed $dest"
+        if [ -z "$rel" ]; then
+            if ! _wasm_posix_copy_file_no_follow "$src" "$dest"; then
+                echo "install_local_binary: failed to replace legacy local mirror without following it: $dest" >&2
+                return 1
+            fi
+            echo "  installed $dest"
+        fi
     fi
 
     # When invoked under the package-system resolver (`xtask build-deps
@@ -199,8 +306,10 @@ install_local_binary() {
     # path is a no-op.
     if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
         local resolver_dest="$WASM_POSIX_DEP_OUT_DIR/$src_basename"
-        mkdir -p "$(dirname "$resolver_dest")"
-        cp "$src" "$resolver_dest"
+        if ! _wasm_posix_copy_file_no_follow "$src" "$resolver_dest"; then
+            echo "install_local_binary: failed to replace resolver scratch artifact without following it: $resolver_dest" >&2
+            return 1
+        fi
         echo "  installed $resolver_dest (resolver scratch)"
     fi
 }
@@ -251,8 +360,10 @@ install_local_runtime_file() {
                 return 2
             fi
             local resolver_dest="$WASM_POSIX_DEP_OUT_DIR/$artifact"
-            mkdir -p "$(dirname "$resolver_dest")"
-            cp "$src" "$resolver_dest"
+            if ! _wasm_posix_copy_file_no_follow "$src" "$resolver_dest"; then
+                echo "install_local_runtime_file: failed to replace resolver scratch artifact without following it: $resolver_dest" >&2
+                return 1
+            fi
             echo "  installed $resolver_dest (resolver scratch)"
             return 0
             ;;
@@ -269,18 +380,17 @@ install_local_runtime_file() {
         echo "install_local_runtime_file: rustc did not report a host target" >&2
         return 1
     fi
-    local rel
-    rel="$(cd "$repo_root" && \
+    local source_parent
+    source_parent="$(cd "$(dirname "$src")" && pwd -P)" || return 1
+    local source_abs="$source_parent/$src_basename"
+    if ! (cd "$repo_root" && \
         env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
-        cargo run -p xtask --target "$host_target" --quiet -- \
-            build-deps runtime-file-path "$program" "$artifact")" || return 1
-    if [ -z "$rel" ]; then
-        echo "install_local_runtime_file: manifest lookup returned an empty path" >&2
+            WASM_POSIX_LOCAL_INSTALL_SOURCE="$source_abs" \
+            WASM_POSIX_LOCAL_INSTALL_SESSION="$WASM_POSIX_LOCAL_INSTALL_SESSION" \
+            cargo run -p xtask --target "$host_target" --quiet -- \
+                build-deps --arch "$arch" \
+                --binaries-dir "$repo_root/local-binaries" \
+                install-local-artifact "$program" "$artifact"); then
         return 1
     fi
-
-    local dest="$repo_root/local-binaries/programs/$arch/$rel"
-    mkdir -p "$(dirname "$dest")"
-    cp "$src" "$dest"
-    echo "  installed $dest"
 }
