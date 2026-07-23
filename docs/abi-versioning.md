@@ -297,6 +297,8 @@ captures:
   before they can be published: the linked-frame descriptor schema, its
   wasm32/wasm64 header sizes, the three transactional frame imports, and
   the seven `wpk_fork_*` control exports with pointer-width-aware signatures.
+  The descriptor width, function signatures, and the module's single memory
+  address width are validated as one contract.
   WHY this is snapshot-owned: a program can otherwise pass kernel ABI checks
   yet fail only when its first `fork()` reaches a newer host.
 - `kernel_exports` — every non-toolchain export in the built kernel

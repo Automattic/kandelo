@@ -451,7 +451,13 @@ describe("wasm artifact ABI guards", () => {
     expect(foldedStale.status, foldedStale.stderr).toBe(0);
   });
 
-  it("extracts only a constant ABI through the primary and fallback paths", () => {
+  it(
+    "extracts only a constant ABI through the primary and fallback paths",
+    // WHY: this is an integration probe that invokes Wabt repeatedly and also
+    // exercises the large-artifact streaming path. Its cold-tool cost is not
+    // bounded by Vitest's unit-test default, especially on shared CI runners.
+    { timeout: 30_000 },
+    () => {
     const output = execFileSync(
       "bash",
       [path.resolve(repoRoot, "scripts", "test-wasm-artifact-guards.sh")],
@@ -459,5 +465,6 @@ describe("wasm artifact ABI guards", () => {
     );
 
     expect(output).toContain("test-wasm-artifact-guards.sh: ok");
-  });
+    },
+  );
 });

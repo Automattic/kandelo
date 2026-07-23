@@ -395,6 +395,7 @@ cat >"$work/complete-fork.wat" <<'WAT'
     (func $frame_commit (param i32)))
   (import "env" "__wpk_fork_frame_next"
     (func $frame_next (param i32) (result i32)))
+  (memory 1)
   (func (export "wpk_fork_abort_begin") (param i32))
   (func (export "wpk_fork_abort_end"))
   (func (export "wpk_fork_unwind_begin") (param i32))
@@ -417,6 +418,37 @@ if wasm_has_missing_fork_instrumentation "$work/complete-fork.wasm"; then
 fi
 wasm_require_fork_instrumentation_if_needed "$work/complete-fork.wasm"
 
+cat >"$work/complete-fork-wasm64.wat" <<'WAT'
+(module
+  (@custom "kandelo.wpk_fork.linked_frames"
+    "KLCF\01\00\18\00\08\08\03\00\38\00\00\00\20\00\00\00\10\00\00\00")
+  (import "kernel" "kernel_fork" (func $kernel_fork))
+  (import "env" "__wpk_fork_frame_reserve"
+    (func $frame_reserve (param i64) (result i64)))
+  (import "env" "__wpk_fork_frame_commit"
+    (func $frame_commit (param i64)))
+  (import "env" "__wpk_fork_frame_next"
+    (func $frame_next (param i64) (result i64)))
+  (memory i64 1)
+  (func (export "wpk_fork_abort_begin") (param i64))
+  (func (export "wpk_fork_abort_end"))
+  (func (export "wpk_fork_unwind_begin") (param i64))
+  (func (export "wpk_fork_unwind_end"))
+  (func (export "wpk_fork_rewind_begin") (param i64))
+  (func (export "wpk_fork_rewind_end"))
+  (func (export "wpk_fork_state") (result i32)
+    i32.const 0)
+  (func (export "_start")
+    call $kernel_fork))
+WAT
+wat2wasm --enable-annotations --enable-memory64 "$work/complete-fork-wasm64.wat" \
+    -o "$work/complete-fork-wasm64.wasm"
+if ! wasm_has_complete_fork_instrumentation "$work/complete-fork-wasm64.wasm"; then
+    echo "ERROR: complete wasm64 fork instrumentation was rejected" >&2
+    exit 1
+fi
+wasm_require_fork_instrumentation_if_needed "$work/complete-fork-wasm64.wasm"
+
 cat >"$work/partial-fork.wat" <<'WAT'
 (module
   (@custom "kandelo.wpk_fork.linked_frames"
@@ -428,6 +460,7 @@ cat >"$work/partial-fork.wat" <<'WAT'
     (func $frame_commit (param i32)))
   (import "env" "__wpk_fork_frame_next"
     (func $frame_next (param i32) (result i32)))
+  (memory 1)
   (func (export "wpk_fork_abort_begin") (param i32))
   (func (export "wpk_fork_abort_end"))
   (func (export "wpk_fork_unwind_begin") (param i32))
@@ -471,6 +504,51 @@ if wasm_require_fork_instrumentation_if_needed \
     exit 1
 fi
 
+sed \
+    's/\\04\\08\\03\\00\\20\\00\\00\\00\\18/\\08\\08\\03\\00\\38\\00\\00\\00\\20/' \
+    "$work/complete-fork.wat" >"$work/mismatched-memory-descriptor.wat"
+grep -F '\08\08\03\00\38\00\00\00\20' \
+    "$work/mismatched-memory-descriptor.wat" >/dev/null || {
+    echo "ERROR: failed to construct descriptor/memory drift fixture" >&2
+    exit 1
+}
+wat2wasm --enable-annotations "$work/mismatched-memory-descriptor.wat" \
+    -o "$work/mismatched-memory-descriptor.wasm"
+[ "$(wasm_linked_frame_descriptor_pointer_width \
+    "$work/mismatched-memory-descriptor.wasm")" = 8 ] || {
+    echo "ERROR: descriptor/memory drift fixture did not contain a wasm64 descriptor" >&2
+    exit 1
+}
+mismatched_memory_error="$work/mismatched-memory-descriptor.error"
+if wasm_require_fork_instrumentation_if_needed \
+    "$work/mismatched-memory-descriptor.wasm" 2>"$mismatched_memory_error"; then
+    echo "ERROR: fork descriptor whose pointer width disagrees with memory was accepted" >&2
+    exit 1
+fi
+grep -F 'descriptor declares an 8-byte pointer but module memory uses 4-byte addresses' \
+    "$mismatched_memory_error" >/dev/null || {
+    echo "ERROR: descriptor/memory pointer-width drift was not reported" >&2
+    cat "$mismatched_memory_error" >&2
+    exit 1
+}
+
+sed \
+    's/(func (export "wpk_fork_abort_begin") (param i32))/(func (export "wpk_fork_abort_begin") (param i64))/' \
+    "$work/complete-fork.wat" >"$work/mismatched-fork-signature.wat"
+wat2wasm --enable-annotations "$work/mismatched-fork-signature.wat" \
+    -o "$work/mismatched-fork-signature.wasm"
+mismatched_signature_error="$work/mismatched-fork-signature.error"
+if wasm_require_fork_instrumentation_if_needed \
+    "$work/mismatched-fork-signature.wasm" 2>"$mismatched_signature_error"; then
+    echo "ERROR: fork export with the wrong pointer signature was accepted" >&2
+    exit 1
+fi
+grep -F 'signatures do not match module memory' "$mismatched_signature_error" >/dev/null || {
+    echo "ERROR: fork signature drift was not reported" >&2
+    cat "$mismatched_signature_error" >&2
+    exit 1
+}
+
 sed '/__wpk_fork_frame_reserve/,+1d' \
     "$work/complete-fork.wat" >"$work/missing-frame-reserve.wat"
 wat2wasm --enable-annotations "$work/missing-frame-reserve.wat" \
@@ -495,6 +573,7 @@ cat >"$work/inert-fork.wat" <<'WAT'
 (module
   (@custom "kandelo.wpk_fork.linked_frames"
     "KLCF\01\00\18\00\04\08\03\00\20\00\00\00\18\00\00\00\10\00\00\00")
+  (memory 1)
   (func (export "wpk_fork_abort_begin") (param i32))
   (func (export "wpk_fork_abort_end"))
   (func (export "wpk_fork_unwind_begin") (param i32))

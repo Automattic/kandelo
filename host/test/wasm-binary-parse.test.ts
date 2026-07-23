@@ -13,7 +13,18 @@ import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { ABI_VERSION } from "../src/generated/abi";
+import {
+  ABI_VERSION,
+  WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE,
+  WPK_FORK_LINKED_FRAME_FORMAT_MAGIC,
+  WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
+  WPK_FORK_LINKED_FRAME_FORMAT_VERSION,
+  WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
+  WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT,
+  WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
+  WPK_FORK_REQUIRED_EXPORTS,
+  WPK_FORK_REQUIRED_IMPORTS,
+} from "../src/generated/abi";
 import {
   describeWasmArtifactPolicyFailures,
   extractHeapBase,
@@ -90,7 +101,9 @@ interface FuncBody { locals: number[]; instructions: number[]; }
 function buildWasm(opts: {
   funcImports?: FuncImport[];
   globalImports?: GlobalImport[];
+  types?: { params: number[]; results: number[] }[];
   funcTypes?: number[];        // type index per defined function
+  memoryPointerWidths?: Array<4 | 8>;
   globals?: DefinedGlobal[];
   exports?: ExportEntry[];
   funcBodies?: FuncBody[];
@@ -105,9 +118,19 @@ function buildWasm(opts: {
     bytes.push(...section(0, [...nameBytes(custom.name), ...(custom.data ?? [])]));
   }
 
-  // Type section (id=1): one type `() -> i32` so __abi_version-like funcs work.
-  // Encoded: count=1, [0x60 (func), 0 params, 1 result, 0x7F i32]
-  bytes.push(...section(1, [0x01, 0x60, 0x00, 0x01, 0x7F]));
+  // Default to one `() -> i32` type so __abi_version-like funcs work.
+  const types = opts.types ?? [{ params: [], results: [0x7F] }];
+  const typePayload = [...uleb128(types.length)];
+  for (const type of types) {
+    typePayload.push(
+      0x60,
+      ...uleb128(type.params.length),
+      ...type.params,
+      ...uleb128(type.results.length),
+      ...type.results,
+    );
+  }
+  bytes.push(...section(1, typePayload));
 
   // Import section (id=2)
   const fImps = opts.funcImports ?? [];
@@ -129,6 +152,15 @@ function buildWasm(opts: {
     const payload: number[] = [...uleb128(fTypes.length)];
     for (const t of fTypes) payload.push(...uleb128(t));
     bytes.push(...section(3, payload));
+  }
+
+  const memoryPointerWidths = opts.memoryPointerWidths ?? [];
+  if (memoryPointerWidths.length > 0) {
+    const payload = [...uleb128(memoryPointerWidths.length)];
+    for (const pointerWidth of memoryPointerWidths) {
+      payload.push(pointerWidth === 8 ? 0x04 : 0x00, 0x01);
+    }
+    bytes.push(...section(5, payload));
   }
 
   // Global section (id=6)
@@ -167,6 +199,77 @@ function buildWasm(opts: {
 
 const I32 = 0x7F;
 const I64 = 0x7E;
+
+function linkedFrameDescriptor(pointerWidth: 4 | 8): number[] {
+  const pointerFormat = WPK_FORK_LINKED_FRAME_POINTER_WIDTHS.find(
+    ({ bytes }) => bytes === pointerWidth,
+  );
+  if (!pointerFormat) throw new Error(`unsupported pointer width ${pointerWidth}`);
+  const bytes = new Uint8Array(WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE);
+  bytes.set(WPK_FORK_LINKED_FRAME_FORMAT_MAGIC, 0);
+  const view = new DataView(bytes.buffer);
+  view.setUint16(4, WPK_FORK_LINKED_FRAME_FORMAT_VERSION, true);
+  view.setUint16(6, WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE, true);
+  view.setUint8(8, pointerWidth);
+  view.setUint8(9, WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT);
+  view.setUint16(10, WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS, true);
+  view.setUint32(12, pointerFormat.chunkHeaderSize, true);
+  view.setUint32(16, pointerFormat.nodeHeaderSize, true);
+  view.setUint32(20, 16, true);
+  return [...bytes];
+}
+
+function completeForkWasm(options: {
+  pointerWidth?: 4 | 8;
+  memoryPointerWidth?: 4 | 8;
+  exportPointerWidth?: 4 | 8;
+} = {}): ArrayBuffer {
+  const pointerWidth = options.pointerWidth ?? 4;
+  const pointerType = pointerWidth === 8 ? I64 : I32;
+  const exportPointerType = (options.exportPointerWidth ?? pointerWidth) === 8 ? I64 : I32;
+  const types = [
+    { params: [], results: [I32] },
+    { params: [exportPointerType], results: [] },
+    { params: [], results: [] },
+    { params: [pointerType], results: [pointerType] },
+    { params: [pointerType], results: [] },
+  ];
+  const funcImports: FuncImport[] = [
+    { module: "kernel", name: "kernel_fork", typeIdx: 0 },
+    ...WPK_FORK_REQUIRED_IMPORTS.map((requirement) => ({
+      module: requirement.module,
+      name: requirement.name,
+      typeIdx: requirement.results.length === 1 ? 3 : 4,
+    })),
+  ];
+  const forkTypeIndices = WPK_FORK_REQUIRED_EXPORTS.map((requirement) => {
+    if (requirement.results.length === 1) return 0;
+    return requirement.params.length === 1 ? 1 : 2;
+  });
+  const firstDefinedFunction = funcImports.length;
+  return buildWasm({
+    customSections: [{
+      name: WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
+      data: linkedFrameDescriptor(pointerWidth),
+    }],
+    types,
+    funcImports,
+    funcTypes: [...forkTypeIndices, 0],
+    memoryPointerWidths: [options.memoryPointerWidth ?? pointerWidth],
+    exports: [
+      ...WPK_FORK_REQUIRED_EXPORTS.map((requirement, index) => ({
+        name: requirement.name,
+        kind: 0 as const,
+        index: firstDefinedFunction + index,
+      })),
+      {
+        name: "__abi_version",
+        kind: 0,
+        index: firstDefinedFunction + forkTypeIndices.length,
+      },
+    ],
+  });
+}
 
 // ---------------------------------------------------------------------------
 // extractHeapBase
@@ -401,31 +504,40 @@ describe("wasm artifact policy helpers", () => {
     });
 
     expect(wasmHasCompleteForkInstrumentation(wasm)).toBe(false);
-    expect(describeWasmArtifactPolicyFailures(wasm, { expectedAbi: 12 })).toEqual([
-      "incomplete wasm-fork-instrument exports; missing wpk_fork_unwind_begin, wpk_fork_unwind_end, wpk_fork_rewind_begin, wpk_fork_rewind_end, wpk_fork_abort_begin, wpk_fork_abort_end",
-      "imports kernel.kernel_fork without complete wasm-fork-instrument exports",
-    ]);
+    const failures = describeWasmArtifactPolicyFailures(wasm, { expectedAbi: 12 });
+    expect(failures).toContain(
+      "incomplete wasm-fork-instrument exports; missing wpk_fork_abort_begin, wpk_fork_abort_end, wpk_fork_rewind_begin, wpk_fork_rewind_end, wpk_fork_unwind_begin, wpk_fork_unwind_end",
+    );
+    expect(failures).toContain(
+      `missing required ${WPK_FORK_LINKED_FRAME_FORMAT_SECTION} descriptor`,
+    );
+    expect(failures).toContain(
+      "incomplete ABI 42 linked-frame imports; missing env.__wpk_fork_frame_commit, env.__wpk_fork_frame_next, env.__wpk_fork_frame_reserve",
+    );
   });
 
-  it("accepts fork-capable wasm with the complete instrumentation export set", () => {
-    const wasm = buildWasm({
-      funcImports: [{ module: "kernel", name: "kernel_fork", typeIdx: 0 }],
-      funcTypes: [0],
-      funcBodies: [abiVersionBody(12)],
-      exports: [
-        { name: "__abi_version", kind: 0, index: 1 },
-        { name: "wpk_fork_unwind_begin", kind: 0, index: 1 },
-        { name: "wpk_fork_unwind_end", kind: 0, index: 1 },
-        { name: "wpk_fork_rewind_begin", kind: 0, index: 1 },
-        { name: "wpk_fork_rewind_end", kind: 0, index: 1 },
-        { name: "wpk_fork_abort_begin", kind: 0, index: 1 },
-        { name: "wpk_fork_abort_end", kind: 0, index: 1 },
-        { name: "wpk_fork_state", kind: 0, index: 1 },
-      ],
-    });
+  it("accepts the complete ABI 42 contract for wasm32 and wasm64", () => {
+    for (const pointerWidth of [4, 8] as const) {
+      const wasm = completeForkWasm({ pointerWidth });
+      expect(wasmHasCompleteForkInstrumentation(wasm)).toBe(true);
+      expect(describeWasmArtifactPolicyFailures(wasm, { expectedAbi: 12 })).toEqual([]);
+    }
+  });
 
-    expect(wasmHasCompleteForkInstrumentation(wasm)).toBe(true);
-    expect(describeWasmArtifactPolicyFailures(wasm, { expectedAbi: 12 })).toEqual([]);
+  it("rejects descriptor and module-memory pointer-width drift", () => {
+    const wasm = completeForkWasm({ pointerWidth: 8, memoryPointerWidth: 4 });
+    expect(wasmHasCompleteForkInstrumentation(wasm)).toBe(false);
+    expect(describeWasmArtifactPolicyFailures(wasm)).toContain(
+      "ABI 42 linked-frame descriptor declares an 8-byte pointer but the module memory uses 4-byte addresses",
+    );
+  });
+
+  it("rejects function signatures that drift from the descriptor pointer width", () => {
+    const wasm = completeForkWasm({ pointerWidth: 8, exportPointerWidth: 4 });
+    expect(wasmHasCompleteForkInstrumentation(wasm)).toBe(false);
+    expect(describeWasmArtifactPolicyFailures(wasm)).toContain(
+      "ABI 42 wasm-fork-instrument export wpk_fork_abort_begin has the wrong signature; expected (i64) -> ()",
+    );
   });
 
   it("does not require fork instrumentation for thread-only kernel_clone imports", () => {
@@ -515,7 +627,7 @@ describe("wasm artifact policy helpers", () => {
       expectedAbi: 12,
       requireForkInstrumentation: false,
       forbidForkInstrumentation: true,
-    })).toContain("contains wasm-fork-instrument exports");
+    })).toContain("contains ABI 42 wasm-fork-instrument metadata, imports, or exports");
   });
 });
 

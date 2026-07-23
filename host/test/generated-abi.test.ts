@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { WPK_FORK_EXPORTS } from "../src/constants";
+import { SIDE_MODULE_FORK_EXPORTS } from "../src/dylink";
 import {
   ABI_CUSTOM_SECTION,
   ABI_KERNEL_EXPORT,
@@ -59,6 +61,15 @@ import {
   STRUCT_SIZE_WASM_STATFS,
   STRUCT_SIZE_WASM_TIMESPEC,
   SYSCALL_ARGS,
+  WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE,
+  WPK_FORK_LINKED_FRAME_FORMAT_MAGIC,
+  WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
+  WPK_FORK_LINKED_FRAME_FORMAT_VERSION,
+  WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
+  WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT,
+  WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
+  WPK_FORK_REQUIRED_EXPORTS,
+  WPK_FORK_REQUIRED_IMPORTS,
 } from "../src/generated/abi";
 
 const snapshot = JSON.parse(
@@ -99,6 +110,43 @@ function hostAdapterManifestField(name: string): { offset: number; size: number 
 }
 
 describe("generated host ABI bindings", () => {
+  it("match the complete fork-artifact contract", () => {
+    const fork = snapshot.program_artifact.fork_instrumentation;
+    const descriptor = fork.linked_frame_descriptor;
+    expect(WPK_FORK_LINKED_FRAME_FORMAT_SECTION).toBe(descriptor.section);
+    expect(WPK_FORK_LINKED_FRAME_FORMAT_VERSION).toBe(descriptor.version);
+    expect(WPK_FORK_LINKED_FRAME_FORMAT_MAGIC).toEqual(descriptor.magic_bytes);
+    expect(WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE).toBe(descriptor.descriptor_size);
+    expect(WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT).toBe(descriptor.alignment);
+    expect(WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS).toBe(descriptor.required_flags);
+    expect(WPK_FORK_LINKED_FRAME_POINTER_WIDTHS).toEqual(
+      descriptor.pointer_widths.map(
+        (format: {
+          bytes: number;
+          chunk_header_size: number;
+          node_header_size: number;
+        }) => ({
+          bytes: format.bytes,
+          chunkHeaderSize: format.chunk_header_size,
+          nodeHeaderSize: format.node_header_size,
+        }),
+      ),
+    );
+    expect(WPK_FORK_REQUIRED_IMPORTS).toEqual(
+      fork.required_imports.map(({ kind: _kind, ...requirement }: { kind: string }) =>
+        requirement
+      ),
+    );
+    expect(WPK_FORK_REQUIRED_EXPORTS).toEqual(
+      fork.required_exports.map(({ kind: _kind, ...requirement }: { kind: string }) =>
+        requirement
+      ),
+    );
+    const generatedExportNames = WPK_FORK_REQUIRED_EXPORTS.map(({ name }) => name);
+    expect(WPK_FORK_EXPORTS).toEqual(generatedExportNames);
+    expect(SIDE_MODULE_FORK_EXPORTS).toEqual(generatedExportNames);
+  });
+
   it("match the ABI version and channel layout snapshot", () => {
     expect(ABI_VERSION).toBe(snapshot.abi_version);
     expect(snapshot.custom_sections).toContain(ABI_CUSTOM_SECTION);

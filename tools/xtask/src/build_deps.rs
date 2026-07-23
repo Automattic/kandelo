@@ -4296,6 +4296,7 @@ struct WasmArtifactFacts {
     exports: BTreeSet<String>,
     function_imports: BTreeMap<(String, String), Vec<wasmparser::FuncType>>,
     function_exports: BTreeMap<String, Vec<wasmparser::FuncType>>,
+    memory_pointer_widths: Vec<u8>,
     linked_frame_descriptors: Vec<Vec<u8>>,
     is_relocatable_object: bool,
 }
@@ -4322,6 +4323,10 @@ fn record_wasm_function_import(
     if module == "kernel" && name == "kernel_fork" {
         *imports_kernel_fork = true;
     }
+}
+
+fn record_wasm_memory(memory: wasmparser::MemoryType, pointer_widths: &mut Vec<u8>) {
+    pointer_widths.push(if memory.memory64 { 8 } else { 4 });
 }
 
 fn wasm_artifact_facts(bytes: &[u8]) -> Result<WasmArtifactFacts, String> {
@@ -4353,6 +4358,9 @@ fn wasm_artifact_facts(bytes: &[u8]) -> Result<WasmArtifactFacts, String> {
                     let group = group.map_err(|e| format!("import section: {e}"))?;
                     match group {
                         Imports::Single(_, imp) => {
+                            if let wasmparser::TypeRef::Memory(memory) = imp.ty {
+                                record_wasm_memory(memory, &mut facts.memory_pointer_widths);
+                            }
                             record_wasm_function_import(
                                 imp.module,
                                 imp.name,
@@ -4365,6 +4373,9 @@ fn wasm_artifact_facts(bytes: &[u8]) -> Result<WasmArtifactFacts, String> {
                         Imports::Compact1 { module, items } => {
                             for item in items {
                                 let item = item.map_err(|e| format!("import section: {e}"))?;
+                                if let wasmparser::TypeRef::Memory(memory) = item.ty {
+                                    record_wasm_memory(memory, &mut facts.memory_pointer_widths);
+                                }
                                 record_wasm_function_import(
                                     module,
                                     item.name,
@@ -4378,6 +4389,9 @@ fn wasm_artifact_facts(bytes: &[u8]) -> Result<WasmArtifactFacts, String> {
                         Imports::Compact2 { module, names, ty } => {
                             for name in names {
                                 let name = name.map_err(|e| format!("import section: {e}"))?;
+                                if let wasmparser::TypeRef::Memory(memory) = ty {
+                                    record_wasm_memory(memory, &mut facts.memory_pointer_widths);
+                                }
                                 record_wasm_function_import(
                                     module,
                                     name,
@@ -4389,6 +4403,14 @@ fn wasm_artifact_facts(bytes: &[u8]) -> Result<WasmArtifactFacts, String> {
                             }
                         }
                     }
+                }
+            }
+            Payload::MemorySection(r) => {
+                for memory in r {
+                    record_wasm_memory(
+                        memory.map_err(|e| format!("memory section: {e}"))?,
+                        &mut facts.memory_pointer_widths,
+                    );
                 }
             }
             Payload::FunctionSection(r) => {
@@ -4736,6 +4758,25 @@ fn wasm_artifact_policy_failures_for(
     }
 
     if let Some(descriptor) = descriptor {
+        match facts.memory_pointer_widths.as_slice() {
+            [pointer_width] if *pointer_width == descriptor.pointer_width => {}
+            [pointer_width] => {
+                let article = if descriptor.pointer_width == 8 {
+                    "an"
+                } else {
+                    "a"
+                };
+                failures.push(format!(
+                    "ABI 42 linked-frame descriptor declares {article} {}-byte pointer but the module memory uses {}-byte addresses",
+                    descriptor.pointer_width, pointer_width
+                ));
+            }
+            pointer_widths => failures.push(format!(
+                "ABI 42 fork instrumentation requires exactly one module memory, found {}",
+                pointer_widths.len()
+            )),
+        }
+
         for requirement in fork_exports {
             let Some([signature]) = facts
                 .function_exports
@@ -9715,6 +9756,7 @@ wasm = "second.wasm"
     fn wasm_fork_artifact(
         descriptor_pointer_width: u8,
         signature_pointer_width: u8,
+        memory_pointer_width: u8,
         include_kernel_fork: bool,
         frame_imports: &[&str],
         fork_exports: &[&str],
@@ -9781,6 +9823,13 @@ wasm = "second.wasm"
         }
         bytes.extend(wasm_section(3, function_section));
 
+        let memory_flags = match memory_pointer_width {
+            4 => 0x00,
+            8 => 0x04,
+            other => panic!("unsupported fixture memory pointer width {other}"),
+        };
+        bytes.extend(wasm_section(5, vec![0x01, memory_flags, 0x01]));
+
         let local_exports = [
             (abi::WPK_FORK_EXPORT_ABORT_BEGIN, 0u32),
             (abi::WPK_FORK_EXPORT_ABORT_END, 1),
@@ -9830,6 +9879,7 @@ wasm = "second.wasm"
             .map(|requirement| requirement.name)
             .collect::<Vec<_>>();
         wasm_fork_artifact(
+            pointer_width,
             pointer_width,
             pointer_width,
             true,
@@ -15966,7 +16016,8 @@ wasm = "bad.wasm"
             .iter()
             .map(|requirement| requirement.name)
             .collect::<Vec<_>>();
-        let bytes = wasm_fork_artifact(4, 4, false, &[], &exports, &[linked_frame_descriptor(4)]);
+        let bytes =
+            wasm_fork_artifact(4, 4, 4, false, &[], &exports, &[linked_frame_descriptor(4)]);
         let failures = wasm_artifact_policy_failures_for(
             &bytes,
             ForkInstrumentationPolicy::Auto,
@@ -15993,6 +16044,7 @@ wasm = "bad.wasm"
                 .filter(|name| name != missing)
                 .collect::<Vec<_>>();
             let bytes = wasm_fork_artifact(
+                4,
                 4,
                 4,
                 true,
@@ -16026,6 +16078,7 @@ wasm = "bad.wasm"
                 .filter(|name| name != missing)
                 .collect::<Vec<_>>();
             let bytes = wasm_fork_artifact(
+                4,
                 4,
                 4,
                 true,
@@ -16116,7 +16169,7 @@ wasm = "bad.wasm"
         ];
 
         for (expected, descriptors) in cases {
-            let bytes = wasm_fork_artifact(4, 4, true, &imports, &exports, &descriptors);
+            let bytes = wasm_fork_artifact(4, 4, 4, true, &imports, &exports, &descriptors);
             let failures = wasm_artifact_policy_failures(&bytes, ForkInstrumentationPolicy::Auto);
             assert!(
                 failures.iter().any(|failure| failure.contains(expected)),
@@ -16138,6 +16191,7 @@ wasm = "bad.wasm"
         let bytes = wasm_fork_artifact(
             8,
             4,
+            8,
             true,
             &imports,
             &exports,
@@ -16154,6 +16208,35 @@ wasm = "bad.wasm"
             failures.iter().any(|failure| {
                 failure.contains("__wpk_fork_frame_reserve")
                     && failure.contains("expected (i64) -> (i64)")
+            }),
+            "got: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn program_artifact_policy_rejects_descriptor_memory_pointer_width_drift() {
+        let imports = wasm_posix_shared::abi::WPK_FORK_REQUIRED_IMPORTS
+            .iter()
+            .map(|requirement| requirement.name)
+            .collect::<Vec<_>>();
+        let exports = wasm_posix_shared::abi::WPK_FORK_REQUIRED_EXPORTS
+            .iter()
+            .map(|requirement| requirement.name)
+            .collect::<Vec<_>>();
+        let bytes = wasm_fork_artifact(
+            8,
+            8,
+            4,
+            true,
+            &imports,
+            &exports,
+            &[linked_frame_descriptor(8)],
+        );
+        let failures = wasm_artifact_policy_failures(&bytes, ForkInstrumentationPolicy::Auto);
+        assert!(
+            failures.iter().any(|failure| {
+                failure.contains("descriptor declares an 8-byte pointer")
+                    && failure.contains("module memory uses 4-byte addresses")
             }),
             "got: {failures:?}"
         );

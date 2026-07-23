@@ -3,6 +3,15 @@ import {
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   PROCESS_MEMORY_THREAD_SLOT_DECL_EXPORT,
   PROCESS_MEMORY_WASM_PAGE_SIZE,
+  WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE,
+  WPK_FORK_LINKED_FRAME_FORMAT_MAGIC,
+  WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
+  WPK_FORK_LINKED_FRAME_FORMAT_VERSION,
+  WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
+  WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT,
+  WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
+  WPK_FORK_REQUIRED_EXPORTS,
+  WPK_FORK_REQUIRED_IMPORTS,
 } from "./generated/abi";
 
 /** WebAssembly page size (64 KiB) */
@@ -272,15 +281,381 @@ function containsAscii(src: Uint8Array, needle: string): boolean {
  * Any program that can reach `kernel.kernel_fork` must export all of these so
  * the host can unwind the parent and rewind the child at the fork point.
  */
-export const WPK_FORK_EXPORTS = [
-  "wpk_fork_unwind_begin",
-  "wpk_fork_unwind_end",
-  "wpk_fork_rewind_begin",
-  "wpk_fork_rewind_end",
-  "wpk_fork_abort_begin",
-  "wpk_fork_abort_end",
-  "wpk_fork_state",
-] as const;
+export const WPK_FORK_EXPORTS = WPK_FORK_REQUIRED_EXPORTS.map(({ name }) => name);
+
+interface WasmFunctionSignature {
+  params: number[];
+  results: number[];
+}
+
+interface WasmForkArtifactFacts {
+  functionImports: Map<string, WasmFunctionSignature[]>;
+  functionExports: Map<string, WasmFunctionSignature[]>;
+  memoryPointerWidths: number[];
+  linkedFrameDescriptors: Uint8Array[];
+  importsKernelFork: boolean;
+}
+
+function appendSignature(
+  signatures: Map<string, WasmFunctionSignature[]>,
+  identity: string,
+  signature: WasmFunctionSignature | undefined,
+): void {
+  if (!signature) {
+    throw new Error(`function ${identity} refers to an unknown type`);
+  }
+  const values = signatures.get(identity) ?? [];
+  values.push(signature);
+  signatures.set(identity, values);
+}
+
+function readLimits(
+  src: Uint8Array,
+  pos: number,
+): { flags: number; next: number } {
+  const [flags, flagBytes] = readULEB128(src, pos);
+  pos += flagBytes;
+  const [, minBytes] = readULEB128(src, pos);
+  pos += minBytes;
+  if ((flags & 1) !== 0) {
+    const [, maxBytes] = readULEB128(src, pos);
+    pos += maxBytes;
+  }
+  return { flags, next: pos };
+}
+
+/**
+ * Parse the portions of a final Wasm module that jointly define the ABI 42
+ * fork-artifact contract.
+ *
+ * WHY: names alone can look complete while the host and guest disagree about
+ * i32/i64 pointers. Release and resolver acceptance must validate the actual
+ * memory architecture, descriptor, and function types as one atomic contract.
+ */
+function readWasmForkArtifactFacts(programBytes: ArrayBuffer): WasmForkArtifactFacts {
+  const src = new Uint8Array(programBytes);
+  if (!hasWasmMagic(src)) throw new Error("not a wasm binary");
+
+  const functionTypes: WasmFunctionSignature[] = [];
+  const functionTypeIndices: number[] = [];
+  const pendingFunctionExports: Array<{ name: string; index: number }> = [];
+  const facts: WasmForkArtifactFacts = {
+    functionImports: new Map(),
+    functionExports: new Map(),
+    memoryPointerWidths: [],
+    linkedFrameDescriptors: [],
+    importsKernelFork: false,
+  };
+
+  let offset = 8;
+  while (offset < src.length) {
+    const sectionId = src[offset];
+    const [sectionSize, sizeBytes] = readULEB128(src, offset + 1);
+    const contentOffset = offset + 1 + sizeBytes;
+    const sectionEnd = contentOffset + sectionSize;
+    if (sectionEnd > src.length) throw new Error("wasm section exceeds file size");
+    let pos = contentOffset;
+    let requireFullyConsumed = false;
+
+    if (sectionId === 0) {
+      const [name, afterName] = readName(src, pos);
+      if (name === WPK_FORK_LINKED_FRAME_FORMAT_SECTION) {
+        facts.linkedFrameDescriptors.push(src.slice(afterName, sectionEnd));
+      }
+    } else if (sectionId === 1) {
+      requireFullyConsumed = true;
+      const [count, countBytes] = readULEB128(src, pos);
+      pos += countBytes;
+      for (let i = 0; i < count; i++) {
+        if (src[pos++] !== 0x60) {
+          throw new Error("unsupported non-function type in fork artifact");
+        }
+        const [paramCount, paramCountBytes] = readULEB128(src, pos);
+        pos += paramCountBytes;
+        const params = [...src.slice(pos, pos + paramCount)];
+        pos += paramCount;
+        const [resultCount, resultCountBytes] = readULEB128(src, pos);
+        pos += resultCountBytes;
+        const results = [...src.slice(pos, pos + resultCount)];
+        pos += resultCount;
+        functionTypes.push({ params, results });
+      }
+    } else if (sectionId === 2) {
+      requireFullyConsumed = true;
+      const [count, countBytes] = readULEB128(src, pos);
+      pos += countBytes;
+      for (let i = 0; i < count; i++) {
+        const [moduleName, afterModule] = readName(src, pos);
+        const [fieldName, afterField] = readName(src, afterModule);
+        pos = afterField;
+        const kind = src[pos++];
+        if (kind === 0) {
+          const [typeIndex, typeBytes] = readULEB128(src, pos);
+          pos += typeBytes;
+          functionTypeIndices.push(typeIndex);
+          const identity = `${moduleName}.${fieldName}`;
+          appendSignature(facts.functionImports, identity, functionTypes[typeIndex]);
+          if (identity === "kernel.kernel_fork") facts.importsKernelFork = true;
+        } else if (kind === 1) {
+          pos++; // reference type
+          pos = readLimits(src, pos).next;
+        } else if (kind === 2) {
+          const limits = readLimits(src, pos);
+          pos = limits.next;
+          facts.memoryPointerWidths.push((limits.flags & 4) !== 0 ? 8 : 4);
+        } else if (kind === 3) {
+          pos += 2; // value type + mutability
+        } else if (kind === 4) {
+          pos++; // tag attribute
+          const [, typeBytes] = readULEB128(src, pos);
+          pos += typeBytes;
+        } else {
+          throw new Error(`unsupported wasm import kind ${kind}`);
+        }
+      }
+    } else if (sectionId === 3) {
+      requireFullyConsumed = true;
+      const [count, countBytes] = readULEB128(src, pos);
+      pos += countBytes;
+      for (let i = 0; i < count; i++) {
+        const [typeIndex, typeBytes] = readULEB128(src, pos);
+        pos += typeBytes;
+        functionTypeIndices.push(typeIndex);
+      }
+    } else if (sectionId === 5) {
+      requireFullyConsumed = true;
+      const [count, countBytes] = readULEB128(src, pos);
+      pos += countBytes;
+      for (let i = 0; i < count; i++) {
+        const limits = readLimits(src, pos);
+        pos = limits.next;
+        facts.memoryPointerWidths.push((limits.flags & 4) !== 0 ? 8 : 4);
+      }
+    } else if (sectionId === 7) {
+      requireFullyConsumed = true;
+      const [count, countBytes] = readULEB128(src, pos);
+      pos += countBytes;
+      for (let i = 0; i < count; i++) {
+        const [name, afterName] = readName(src, pos);
+        pos = afterName;
+        const kind = src[pos++];
+        const [index, indexBytes] = readULEB128(src, pos);
+        pos += indexBytes;
+        if (kind === 0) pendingFunctionExports.push({ name, index });
+      }
+    }
+
+    if (requireFullyConsumed && pos !== sectionEnd) {
+      throw new Error(`malformed wasm section ${sectionId}`);
+    }
+    offset = sectionEnd;
+  }
+
+  for (const { name, index } of pendingFunctionExports) {
+    const typeIndex = functionTypeIndices[index];
+    appendSignature(facts.functionExports, name, functionTypes[typeIndex]);
+  }
+  return facts;
+}
+
+function validateLinkedFrameDescriptor(descriptor: Uint8Array): number {
+  if (descriptor.byteLength !== WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE) {
+    throw new Error(
+      `linked-frame descriptor has ${descriptor.byteLength} bytes, expected ${WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE}`,
+    );
+  }
+  if (!WPK_FORK_LINKED_FRAME_FORMAT_MAGIC.every((byte, index) => descriptor[index] === byte)) {
+    throw new Error("linked-frame descriptor has invalid magic");
+  }
+  const view = new DataView(
+    descriptor.buffer,
+    descriptor.byteOffset,
+    descriptor.byteLength,
+  );
+  const version = view.getUint16(4, true);
+  if (version !== WPK_FORK_LINKED_FRAME_FORMAT_VERSION) {
+    throw new Error(`linked-frame descriptor version ${version} is unsupported`);
+  }
+  const declaredSize = view.getUint16(6, true);
+  if (declaredSize !== WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE) {
+    throw new Error(
+      `linked-frame descriptor declares size ${declaredSize}, expected ${WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE}`,
+    );
+  }
+  const pointerWidth = view.getUint8(8);
+  const pointerFormat = WPK_FORK_LINKED_FRAME_POINTER_WIDTHS.find(
+    ({ bytes }) => bytes === pointerWidth,
+  );
+  if (!pointerFormat) {
+    throw new Error(`linked-frame descriptor pointer width ${pointerWidth} is unsupported`);
+  }
+  if (view.getUint8(9) !== WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT) {
+    throw new Error(
+      `linked-frame descriptor alignment ${view.getUint8(9)} is unsupported`,
+    );
+  }
+  const flags = view.getUint16(10, true);
+  if (flags !== WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS) {
+    throw new Error(
+      `linked-frame descriptor flags 0x${flags.toString(16)} do not equal required flags 0x${WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS.toString(16)}`,
+    );
+  }
+  if (
+    view.getUint32(12, true) !== pointerFormat.chunkHeaderSize ||
+    view.getUint32(16, true) !== pointerFormat.nodeHeaderSize
+  ) {
+    throw new Error(
+      `linked-frame descriptor header sizes do not match its ${pointerWidth}-byte pointer width`,
+    );
+  }
+  return pointerFormat.bytes;
+}
+
+function expectedWasmValueType(
+  value: "ptr" | "i32",
+  pointerWidth: number,
+): number {
+  if (value === "i32") return 0x7f;
+  return pointerWidth === 8 ? 0x7e : 0x7f;
+}
+
+function signatureMatches(
+  actual: WasmFunctionSignature,
+  params: readonly ("ptr" | "i32")[],
+  results: readonly ("ptr" | "i32")[],
+  pointerWidth: number,
+): boolean {
+  return actual.params.length === params.length &&
+    actual.results.length === results.length &&
+    actual.params.every((value, index) =>
+      value === expectedWasmValueType(params[index], pointerWidth)
+    ) &&
+    actual.results.every((value, index) =>
+      value === expectedWasmValueType(results[index], pointerWidth)
+    );
+}
+
+function signatureText(
+  params: readonly ("ptr" | "i32")[],
+  results: readonly ("ptr" | "i32")[],
+  pointerWidth: number,
+): string {
+  const render = (value: "ptr" | "i32") =>
+    value === "ptr" ? (pointerWidth === 8 ? "i64" : "i32") : "i32";
+  return `(${params.map(render).join(", ")}) -> (${results.map(render).join(", ")})`;
+}
+
+function describeForkArtifactContractFailures(
+  facts: WasmForkArtifactFacts,
+): string[] {
+  const failures: string[] = [];
+  for (const requirement of WPK_FORK_REQUIRED_EXPORTS) {
+    const signatures = facts.functionExports.get(requirement.name);
+    if (!signatures) continue;
+    if (signatures.length !== 1) {
+      failures.push(`duplicate ABI 42 wasm-fork-instrument export ${requirement.name}`);
+    }
+  }
+  const missingExports = WPK_FORK_REQUIRED_EXPORTS
+    .filter(({ name }) => !facts.functionExports.has(name))
+    .map(({ name }) => name);
+  if (missingExports.length > 0) {
+    failures.push(
+      `incomplete wasm-fork-instrument exports; missing ${missingExports.join(", ")}`,
+    );
+  }
+
+  let pointerWidth: number | null = null;
+  if (facts.linkedFrameDescriptors.length === 0) {
+    failures.push(`missing required ${WPK_FORK_LINKED_FRAME_FORMAT_SECTION} descriptor`);
+  } else if (facts.linkedFrameDescriptors.length !== 1) {
+    failures.push(
+      `has ${facts.linkedFrameDescriptors.length} ${WPK_FORK_LINKED_FRAME_FORMAT_SECTION} descriptors, expected exactly one`,
+    );
+  } else {
+    try {
+      pointerWidth = validateLinkedFrameDescriptor(facts.linkedFrameDescriptors[0]);
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  const presentFrameImports = WPK_FORK_REQUIRED_IMPORTS.filter(({ module, name }) =>
+    facts.functionImports.has(`${module}.${name}`)
+  );
+  const requiresFrameImports = facts.importsKernelFork || presentFrameImports.length > 0;
+  if (requiresFrameImports) {
+    const missingImports = WPK_FORK_REQUIRED_IMPORTS
+      .filter(({ module, name }) => !facts.functionImports.has(`${module}.${name}`))
+      .map(({ module, name }) => `${module}.${name}`);
+    if (missingImports.length > 0) {
+      failures.push(
+        `incomplete ABI 42 linked-frame imports; missing ${missingImports.join(", ")}`,
+      );
+    }
+    for (const requirement of WPK_FORK_REQUIRED_IMPORTS) {
+      const identity = `${requirement.module}.${requirement.name}`;
+      const signatures = facts.functionImports.get(identity);
+      if (signatures && signatures.length !== 1) {
+        failures.push(`duplicate ABI 42 linked-frame import ${identity}`);
+      }
+    }
+  }
+
+  if (pointerWidth !== null) {
+    if (facts.memoryPointerWidths.length !== 1) {
+      failures.push(
+        `ABI 42 fork instrumentation requires exactly one module memory, found ${facts.memoryPointerWidths.length}`,
+      );
+    } else if (facts.memoryPointerWidths[0] !== pointerWidth) {
+      const article = pointerWidth === 8 ? "an" : "a";
+      failures.push(
+        `ABI 42 linked-frame descriptor declares ${article} ${pointerWidth}-byte pointer but the module memory uses ${facts.memoryPointerWidths[0]}-byte addresses`,
+      );
+    }
+    for (const requirement of WPK_FORK_REQUIRED_EXPORTS) {
+      const signatures = facts.functionExports.get(requirement.name);
+      if (
+        signatures?.length === 1 &&
+        !signatureMatches(
+          signatures[0],
+          requirement.params,
+          requirement.results,
+          pointerWidth,
+        )
+      ) {
+        failures.push(
+          `ABI 42 wasm-fork-instrument export ${requirement.name} has the wrong signature; expected ${
+            signatureText(requirement.params, requirement.results, pointerWidth)
+          }`,
+        );
+      }
+    }
+    if (requiresFrameImports) {
+      for (const requirement of WPK_FORK_REQUIRED_IMPORTS) {
+        const identity = `${requirement.module}.${requirement.name}`;
+        const signatures = facts.functionImports.get(identity);
+        if (
+          signatures?.length === 1 &&
+          !signatureMatches(
+            signatures[0],
+            requirement.params,
+            requirement.results,
+            pointerWidth,
+          )
+        ) {
+          failures.push(
+            `ABI 42 linked-frame import ${identity} has the wrong signature; expected ${
+              signatureText(requirement.params, requirement.results, pointerWidth)
+            }`,
+          );
+        }
+      }
+    }
+  }
+
+  return failures;
+}
 
 /**
  * Return import names in `module.field` form. This is intentionally a small
@@ -395,8 +770,15 @@ export function wasmImportsKernelFork(programBytes: ArrayBuffer): boolean {
 }
 
 export function wasmHasCompleteForkInstrumentation(programBytes: ArrayBuffer): boolean {
-  const exports = new Set(readWasmExportNames(programBytes));
-  return WPK_FORK_EXPORTS.every((name) => exports.has(name));
+  try {
+    const facts = readWasmForkArtifactFacts(programBytes);
+    const hasForkSurface = WPK_FORK_REQUIRED_EXPORTS.some(({ name }) =>
+      facts.functionExports.has(name)
+    ) || facts.linkedFrameDescriptors.length > 0;
+    return hasForkSurface && describeForkArtifactContractFailures(facts).length === 0;
+  } catch {
+    return false;
+  }
 }
 
 export function wasmIsRelocatableObject(programBytes: ArrayBuffer): boolean {
@@ -435,21 +817,36 @@ export function describeWasmArtifactPolicyFailures(
   }
 
   const presentWpkExports = WPK_FORK_EXPORTS.filter((name) => exports.has(name));
-  if (options.forbidForkInstrumentation && presentWpkExports.length > 0) {
-    failures.push("contains wasm-fork-instrument exports");
+  const importNames = readWasmImportNames(programBytes);
+  const customSections = readWasmCustomSectionNames(programBytes);
+  const presentWpkImports = WPK_FORK_REQUIRED_IMPORTS.filter(({ module, name }) =>
+    importNames.includes(`${module}.${name}`)
+  );
+  const descriptorCount = customSections.filter((name) =>
+    name === WPK_FORK_LINKED_FRAME_FORMAT_SECTION
+  ).length;
+  const hasForkArtifactSurface =
+    presentWpkExports.length > 0 || presentWpkImports.length > 0 || descriptorCount > 0;
+  if (options.forbidForkInstrumentation && hasForkArtifactSurface) {
+    failures.push("contains ABI 42 wasm-fork-instrument metadata, imports, or exports");
   }
 
   const requireForkInstrumentation =
     options.requireForkInstrumentation ?? !wasmIsRelocatableObject(programBytes);
-  if (requireForkInstrumentation) {
-    const hasCompleteForkInstrumentation = presentWpkExports.length === WPK_FORK_EXPORTS.length;
-    if (presentWpkExports.length > 0 && !hasCompleteForkInstrumentation) {
-      const missing = WPK_FORK_EXPORTS.filter((name) => !exports.has(name));
-      failures.push(`incomplete wasm-fork-instrument exports; missing ${missing.join(", ")}`);
-    }
-
-    if (wasmImportsKernelFork(programBytes) && !hasCompleteForkInstrumentation) {
-      failures.push("imports kernel.kernel_fork without complete wasm-fork-instrument exports");
+  if (
+    requireForkInstrumentation &&
+    (hasForkArtifactSurface || importNames.includes("kernel.kernel_fork"))
+  ) {
+    try {
+      failures.push(
+        ...describeForkArtifactContractFailures(readWasmForkArtifactFacts(programBytes)),
+      );
+    } catch (error) {
+      failures.push(
+        `cannot validate ABI 42 fork-artifact contract: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
   }
 

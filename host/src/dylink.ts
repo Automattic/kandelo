@@ -6,7 +6,11 @@
  * https://github.com/WebAssembly/tool-conventions/blob/main/DynamicLinking.md
  */
 
-import { ABI_VERSION } from "./generated/abi";
+import {
+  ABI_VERSION,
+  WPK_FORK_REQUIRED_EXPORTS,
+  WPK_FORK_REQUIRED_IMPORTS,
+} from "./generated/abi";
 import {
   ContinuationAllocationError,
   invokeForkContinuationBegin,
@@ -26,15 +30,9 @@ const WASM_DYLINK_IMPORT_INFO = 4;
 const WASM_DYLINK_FLAG_TLS = 0x01;
 const WASM_DYLINK_FLAG_WEAK = 0x02;
 
-export const SIDE_MODULE_FORK_EXPORTS = [
-  "wpk_fork_unwind_begin",
-  "wpk_fork_unwind_end",
-  "wpk_fork_rewind_begin",
-  "wpk_fork_rewind_end",
-  "wpk_fork_abort_begin",
-  "wpk_fork_abort_end",
-  "wpk_fork_state",
-] as const;
+export const SIDE_MODULE_FORK_EXPORTS = WPK_FORK_REQUIRED_EXPORTS.map(
+  ({ name }) => name,
+);
 
 export const FORK_CAPABILITIES_SECTION = "kandelo.wpk_fork.capabilities";
 export const FORK_CAPABILITIES_VERSION = 1;
@@ -672,11 +670,9 @@ function instantiateSharedLibrary(
   const importsFork = moduleImports.some((imp) =>
     imp.module === "env" && imp.name === "fork" && imp.kind === "function"
   );
-  const linkedFrameImportNames = [
-    "__wpk_fork_frame_reserve",
-    "__wpk_fork_frame_commit",
-    "__wpk_fork_frame_next",
-  ];
+  const linkedFrameImportNames = WPK_FORK_REQUIRED_IMPORTS
+    .filter(({ module }) => module === "env")
+    .map(({ name }) => name);
   const linkedFrameImportCount = linkedFrameImportNames.filter((importName) =>
     moduleImports.some((imp) =>
       imp.module === "env" && imp.name === importName && imp.kind === "function"
@@ -1128,7 +1124,7 @@ function instantiateSharedLibrary(
                "__table_base", "__stack_pointer", "__c_longjmp",
                "__cpp_exception"].includes(prop)) return true;
           if (prop === "fork" && importsFork) return true;
-          if (linkedFrameImportNames.includes(prop) && importsFork) return true;
+          if (linkedFrameImportNames.some((name) => name === prop) && importsFork) return true;
           return options.globalSymbols.has(prop) || selfFunctionImports.has(prop);
         },
       }),

@@ -1,15 +1,20 @@
 import { WASM_PAGE_SIZE } from "./constants";
+import {
+  WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE,
+  WPK_FORK_LINKED_FRAME_FORMAT_MAGIC,
+  WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
+  WPK_FORK_LINKED_FRAME_FORMAT_VERSION,
+  WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
+  WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT,
+  WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
+} from "./generated/abi";
 
-export const LINKED_FRAME_FORMAT_SECTION = "kandelo.wpk_fork.linked_frames";
-export const LINKED_FRAME_FORMAT_VERSION = 1;
-export const LINKED_FRAME_RECORD_ALIGNMENT = 8;
+export const LINKED_FRAME_FORMAT_SECTION = WPK_FORK_LINKED_FRAME_FORMAT_SECTION;
+export const LINKED_FRAME_FORMAT_VERSION = WPK_FORK_LINKED_FRAME_FORMAT_VERSION;
+export const LINKED_FRAME_RECORD_ALIGNMENT = WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT;
 
-const DESCRIPTOR_SIZE = 24;
-const DESCRIPTOR_MAGIC = 0x46434c4b; // "KLCF", little-endian
-const DESCRIPTOR_FLAG_TRANSACTIONAL_NODES = 1 << 0;
-const DESCRIPTOR_FLAG_ABORT_UNWINDING = 1 << 1;
-const DESCRIPTOR_REQUIRED_FLAGS =
-  DESCRIPTOR_FLAG_TRANSACTIONAL_NODES | DESCRIPTOR_FLAG_ABORT_UNWINDING;
+const DESCRIPTOR_SIZE = WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE;
+const DESCRIPTOR_REQUIRED_FLAGS = WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS;
 const CHUNK_MAGIC = 0x4843464b; // "KFCH", little-endian
 const NODE_MAGIC = 0x4e43464b; // "KFCN", little-endian
 const NODE_RESERVED = 1;
@@ -100,13 +105,11 @@ export function readForkContinuationAnchor(
   return value;
 }
 
-function expectedChunkHeaderSize(ptrWidth: 4 | 8): number {
-  return 8 + 6 * ptrWidth;
-}
-
-function expectedNodeHeaderSize(ptrWidth: 4 | 8): number {
-  return Math.ceil((8 + 3 * ptrWidth) / LINKED_FRAME_RECORD_ALIGNMENT)
-    * LINKED_FRAME_RECORD_ALIGNMENT;
+// WHY: descriptor parsing must use the same Rust-generated layout table as
+// publication guards; recomputing it here would let a future ABI change pass
+// release validation and fail only when the host begins a continuation.
+function linkedFramePointerFormat(ptrWidth: number) {
+  return WPK_FORK_LINKED_FRAME_POINTER_WIDTHS.find(({ bytes }) => bytes === ptrWidth);
 }
 
 function alignUp(value: number, alignment: number): number {
@@ -147,7 +150,7 @@ export function readLinkedFrameFormat(
     );
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if (view.getUint32(0, true) !== DESCRIPTOR_MAGIC) {
+  if (!WPK_FORK_LINKED_FRAME_FORMAT_MAGIC.every((byte, index) => bytes[index] === byte)) {
     throw new Error("linked continuation metadata has invalid magic");
   }
   const version = view.getUint16(4, true);
@@ -158,7 +161,8 @@ export function readLinkedFrameFormat(
     throw new Error("linked continuation metadata has an invalid declared size");
   }
   const ptrWidth = view.getUint8(8);
-  if (ptrWidth !== 4 && ptrWidth !== 8) {
+  const pointerFormat = linkedFramePointerFormat(ptrWidth);
+  if (!pointerFormat) {
     throw new Error(`unsupported linked continuation pointer width ${ptrWidth}`);
   }
   const alignment = view.getUint8(9);
@@ -173,14 +177,14 @@ export function readLinkedFrameFormat(
   const nodeHeaderSize = view.getUint32(16, true);
   const fixedPrefixSize = view.getUint32(20, true);
   if (
-    chunkHeaderSize !== expectedChunkHeaderSize(ptrWidth)
-    || nodeHeaderSize !== expectedNodeHeaderSize(ptrWidth)
+    chunkHeaderSize !== pointerFormat.chunkHeaderSize
+    || nodeHeaderSize !== pointerFormat.nodeHeaderSize
   ) {
     throw new Error("linked continuation metadata header sizes do not match pointer width");
   }
   return {
     version,
-    ptrWidth,
+    ptrWidth: pointerFormat.bytes,
     alignment,
     flags,
     chunkHeaderSize,

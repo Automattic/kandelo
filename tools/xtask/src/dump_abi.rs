@@ -237,6 +237,18 @@ fn render_ts_module() -> String {
         "export const WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS = {} as const;\n",
         shared::abi::WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS
     ));
+    out.push_str("export const WPK_FORK_LINKED_FRAME_POINTER_WIDTHS = [\n");
+    for pointer_width in shared::abi::WPK_FORK_LINKED_FRAME_POINTER_WIDTHS {
+        out.push_str(&format!(
+            "  {{ bytes: {}, chunkHeaderSize: {}, nodeHeaderSize: {} }},\n",
+            pointer_width,
+            shared::abi::wpk_fork_linked_chunk_header_size(*pointer_width)
+                .expect("supported pointer width must have a chunk header"),
+            shared::abi::wpk_fork_linked_node_header_size(*pointer_width)
+                .expect("supported pointer width must have a node header"),
+        ));
+    }
+    out.push_str("] as const;\n");
     out.push_str("export const WPK_FORK_REQUIRED_IMPORTS = [\n");
     for requirement in shared::abi::WPK_FORK_REQUIRED_IMPORTS {
         out.push_str(&format!(

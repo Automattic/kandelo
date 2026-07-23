@@ -6,6 +6,15 @@ import {
   readLinkedFrameFormat,
   type LinkedFrameFormatDescriptor,
 } from "../src/fork-continuation";
+import {
+  WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE,
+  WPK_FORK_LINKED_FRAME_FORMAT_MAGIC,
+  WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
+  WPK_FORK_LINKED_FRAME_FORMAT_VERSION,
+  WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
+  WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT,
+  WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
+} from "../src/generated/abi";
 
 function addressBeginExport(pointerType: 0x7f | 0x7e): WebAssembly.ExportValue {
   const module = new WebAssembly.Module(new Uint8Array([
@@ -47,13 +56,14 @@ describe("invokeForkContinuationBegin", () => {
   });
 });
 
+const wasm32Format = WPK_FORK_LINKED_FRAME_POINTER_WIDTHS.find(({ bytes }) => bytes === 4)!;
 const FORMAT: LinkedFrameFormatDescriptor = {
-  version: 1,
+  version: WPK_FORK_LINKED_FRAME_FORMAT_VERSION,
   ptrWidth: 4,
-  alignment: 8,
-  flags: 3,
-  chunkHeaderSize: 32,
-  nodeHeaderSize: 24,
+  alignment: WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT,
+  flags: WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
+  chunkHeaderSize: wasm32Format.chunkHeaderSize,
+  nodeHeaderSize: wasm32Format.nodeHeaderSize,
   fixedPrefixSize: 128,
 };
 
@@ -69,7 +79,7 @@ function uleb128(value: number): number[] {
 }
 
 function moduleWithLinkedDescriptor(data: number[]): WebAssembly.Module {
-  const name = [...new TextEncoder().encode("kandelo.wpk_fork.linked_frames")];
+  const name = [...new TextEncoder().encode(WPK_FORK_LINKED_FRAME_FORMAT_SECTION)];
   const payload = [...uleb128(name.length), ...name, ...data];
   return new WebAssembly.Module(new Uint8Array([
     0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
@@ -77,25 +87,36 @@ function moduleWithLinkedDescriptor(data: number[]): WebAssembly.Module {
   ]));
 }
 
-function linkedDescriptorBytes(): number[] {
-  const bytes = new Uint8Array(24);
+function linkedDescriptorBytes(pointerWidth: 4 | 8 = 4): number[] {
+  const pointerFormat = WPK_FORK_LINKED_FRAME_POINTER_WIDTHS.find(
+    ({ bytes }) => bytes === pointerWidth,
+  )!;
+  const bytes = new Uint8Array(WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE);
   const view = new DataView(bytes.buffer);
-  bytes.set([0x4b, 0x4c, 0x43, 0x46]);
-  view.setUint16(4, 1, true);
-  view.setUint16(6, 24, true);
-  view.setUint8(8, 4);
-  view.setUint8(9, 8);
-  view.setUint16(10, 3, true);
-  view.setUint32(12, 32, true);
-  view.setUint32(16, 24, true);
+  bytes.set(WPK_FORK_LINKED_FRAME_FORMAT_MAGIC);
+  view.setUint16(4, WPK_FORK_LINKED_FRAME_FORMAT_VERSION, true);
+  view.setUint16(6, WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE, true);
+  view.setUint8(8, pointerWidth);
+  view.setUint8(9, WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT);
+  view.setUint16(10, WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS, true);
+  view.setUint32(12, pointerFormat.chunkHeaderSize, true);
+  view.setUint32(16, pointerFormat.nodeHeaderSize, true);
   view.setUint32(20, 128, true);
   return [...bytes];
 }
 
 describe("readLinkedFrameFormat", () => {
-  it("accepts the exact version-1 descriptor", () => {
+  it("accepts exact generated wasm32 and wasm64 descriptors", () => {
     expect(readLinkedFrameFormat(moduleWithLinkedDescriptor(linkedDescriptorBytes())))
       .toEqual(FORMAT);
+    const wasm64Format = WPK_FORK_LINKED_FRAME_POINTER_WIDTHS.find(({ bytes }) => bytes === 8)!;
+    expect(readLinkedFrameFormat(moduleWithLinkedDescriptor(linkedDescriptorBytes(8))))
+      .toEqual({
+        ...FORMAT,
+        ptrWidth: 8,
+        chunkHeaderSize: wasm64Format.chunkHeaderSize,
+        nodeHeaderSize: wasm64Format.nodeHeaderSize,
+      });
   });
 
   it("rejects unknown flags before instantiation", () => {

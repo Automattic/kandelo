@@ -11,6 +11,10 @@ export const WPK_FORK_LINKED_FRAME_FORMAT_MAGIC = [75, 76, 67, 70] as const;
 export const WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE = 24 as const;
 export const WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT = 8 as const;
 export const WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS = 3 as const;
+export const WPK_FORK_LINKED_FRAME_POINTER_WIDTHS = [
+  { bytes: 4, chunkHeaderSize: 32, nodeHeaderSize: 24 },
+  { bytes: 8, chunkHeaderSize: 56, nodeHeaderSize: 32 },
+] as const;
 export const WPK_FORK_REQUIRED_IMPORTS = [
   { module: "env", name: "__wpk_fork_frame_commit", params: ["ptr"], results: [] },
   { module: "env", name: "__wpk_fork_frame_next", params: ["ptr"], results: ["ptr"] },

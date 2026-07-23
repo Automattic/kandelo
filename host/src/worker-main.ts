@@ -36,6 +36,8 @@ import {
   CH_SYSCALL,
   CH_TOTAL_SIZE,
   HOST_INTERCEPTED_SYSCALLS,
+  WPK_FORK_REQUIRED_EXPORTS,
+  WPK_FORK_REQUIRED_IMPORTS,
 } from "./generated/abi";
 import {
   FORK_SAVE_BUFFER_SIZE,
@@ -1110,13 +1112,13 @@ function buildImportObject(
   const importsFunction = (name: string): boolean => moduleImports.some(
     (i) => i.module === "env" && i.name === name && i.kind === "function",
   );
-  const linkedFrameImportNames = [
-    "__wpk_fork_frame_reserve",
-    "__wpk_fork_frame_commit",
-    "__wpk_fork_frame_next",
-  ];
-  const linkedFrameImportCount = linkedFrameImportNames.filter(importsFunction).length;
-  if (linkedFrameImportCount !== 0 && linkedFrameImportCount !== linkedFrameImportNames.length) {
+  const linkedFrameImports = WPK_FORK_REQUIRED_IMPORTS.filter(
+    ({ module }) => module === "env",
+  );
+  const linkedFrameImportCount = linkedFrameImports.filter(
+    ({ name }) => importsFunction(name),
+  ).length;
+  if (linkedFrameImportCount !== 0 && linkedFrameImportCount !== linkedFrameImports.length) {
     throw new Error("incomplete linked fork instrumentation imports; rebuild the program");
   }
   if (linkedFrameImportCount !== 0) {
@@ -1493,15 +1495,7 @@ const DLOPEN_LOCK_MAX_READERS = 0x7fff_ffff;
 const DLOPEN_ENTRY_SIZE_WASM32 = 40;
 const DLOPEN_ENTRY_SIZE_WASM64 = 72;
 
-const WPK_FORK_EXPORTS = [
-  "wpk_fork_unwind_begin",
-  "wpk_fork_unwind_end",
-  "wpk_fork_rewind_begin",
-  "wpk_fork_rewind_end",
-  "wpk_fork_abort_begin",
-  "wpk_fork_abort_end",
-  "wpk_fork_state",
-] as const;
+const WPK_FORK_EXPORTS = WPK_FORK_REQUIRED_EXPORTS.map(({ name }) => name);
 
 function hasCompleteForkInstrumentation(
   moduleExports: WebAssembly.ModuleExportDescriptor[],
