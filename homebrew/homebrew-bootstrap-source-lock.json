@@ -3,7 +3,7 @@
   "kind": "kandelo-homebrew-bootstrap-source-lock",
   "package": {
     "name": "homebrew-bootstrap",
-    "version": "6.0.2-167-g4ead861",
+    "version": "6.0.3-4-g4ead861",
     "arch": "wasm32"
   },
   "source": {
@@ -39,9 +39,6 @@
   "output": {
     "path": "homebrew-bootstrap.zip",
     "sha256": "6b94235c4463a7ae03104decb20910fb660af4d2313fc0c87a84ef02acde440c",
-    "bytes": 5081250,
-    "current_shell_producer": "scripts/build-homebrew-main-shell-closure.sh",
-    "current_shell_sha256": "6b94235c4463a7ae03104decb20910fb660af4d2313fc0c87a84ef02acde440c",
-    "current_shell_bytes": 5081250
+    "bytes": 5081250
   }
 }
