@@ -6,8 +6,10 @@ inputs = [
   "images/vfs/scripts/kandelo-demo-config.ts",
   "images/vfs/scripts/kandelo-demo-guides.ts",
   "images/vfs/scripts/opcache-prewarm.ts",
+  "images/vfs/scripts/shell-lazy-archives.ts",
   "images/vfs/scripts/shell-vfs-build.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
+  "images/vfs/lib/init/shell-binaries.ts",
   "images/rootfs/etc/services",
   # Opcache prewarming boots the shared host runtime, and the image builder
   # reaches shared VFS modules transitively. Track both as one source tree so
