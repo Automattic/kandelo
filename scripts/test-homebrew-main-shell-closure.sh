@@ -116,6 +116,31 @@ checker_line="$(grep -n 'node scripts/check-homebrew-main-shell-brewfile.mjs' "$
   [ "$setup_node_line" -lt "$checker_line" ] ||
   fail "pinned Node setup must precede the main-shell contract checker"
 
+generation_block="$(sed -n \
+  '/- name: Select one verified package generation/,/- name: Resolve current direct browser bundling inputs/p' \
+  "$WORKFLOW")"
+grep -Fq 'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}' <<<"$generation_block" ||
+  fail "package-generation validation needs only the workflow's read token"
+grep -Fq 'staging-reuse expected \' <<<"$generation_block" &&
+  grep -Fq 'validate-staging-release.sh \' <<<"$generation_block" &&
+  grep -Fq -- '--mode current \' <<<"$generation_block" ||
+  fail "main-shell CI must accept only a complete current PR package generation"
+grep -Fq 'index-candidate seed \' <<<"$generation_block" &&
+  grep -Fq 'selected_url="file://${frozen_index}"' <<<"$generation_block" ||
+  fail "main-shell CI must freeze the validated mutable staging index locally"
+grep -Fq 'env -u GH_TOKEN -u GITHUB_TOKEN \' <<<"$generation_block" &&
+  grep -Fq -- '-u HOMEBREW_GITHUB_PACKAGES_TOKEN \' <<<"$generation_block" ||
+  fail "local index freezing must run without GitHub credentials"
+grep -Fq 'selected_url="$canonical_url"' <<<"$generation_block" ||
+  fail "main-shell CI must retain the canonical/source-build fallback"
+grep -Fq 'echo "WASM_POSIX_BINARY_INDEX_URL=$selected_url" >> "$GITHUB_ENV"' \
+  <<<"$generation_block" ||
+  fail "main-shell CI must pass the selected generation through the resolver contract"
+grep -Fq 'GH_TOKEN:' <<<"$(sed -n \
+  '/- name: Resolve current direct browser bundling inputs/,/- name: Build the exact lazy shell from public bottles/p' \
+  "$WORKFLOW")" &&
+  fail "browser package resolution must not retain the staging-validation token"
+
 grep -Fq '(.selection.requested_packages | length) == $expected_root_count' "$BUILDER" ||
   fail "$BUILDER does not bind the requested-root count to the migration lock"
 grep -Fq '(.packages | length) == $expected_closure_count' "$BUILDER" ||
@@ -179,7 +204,7 @@ grep -Fq 'test ! -e "$source_root/.git"' "$WORKFLOW" ||
 grep -Fq 'test -z "$(git -C "$GITHUB_WORKSPACE/libc/musl" status --porcelain=v1 --untracked-files=all)"' "$WORKFLOW" ||
   fail "main-shell proof must verify that sysroot preparation leaves package cache inputs clean"
 grep -Fq 'GH_TOKEN: ${{ github.token }}' "$WORKFLOW" &&
-  fail "main-shell proof must not expose the workflow token to package composition"
+  fail "main-shell proof must not expose the implicit workflow token to package composition"
 grep -Fq 'scripts/homebrew-checkout-public-tap.sh' "$WORKFLOW" &&
   fail "candidate proof must use its one explicit exact tap checkout"
 grep -Fq 'bash packages/registry/shell/build-shell.sh' "$WORKFLOW" &&
