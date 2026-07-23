@@ -206,6 +206,38 @@ Work in different repositories may proceed concurrently when immutable inputs
 make the results independent. Do not serialize unrelated Formula rollouts, but
 do preserve the single-writer finalization and exact-commit trust contracts.
 
+### Accelerated landing tranches
+
+The remaining critical path is grouped into coherent tranches to avoid paying
+the serialized `prepare-merge` and immutable-publication cost once per small
+prerequisite. This changes landing mechanics, not product scope or acceptance
+criteria:
+
+1. Land the atomic package-generation foundation by itself because its exact
+   staging and public-bottle proof were already running when batching was
+   selected. Do not discard that evidence by expanding its head late.
+2. Land one packaging tranche containing the dedicated guest Homebrew program
+   package, fail-closed VFS publication integrity, and native Homebrew
+   `Requirement` support. Preserve the individual commits and PR references so
+   failures and review history remain attributable.
+3. After explicit runtime-change approval, land one generic VFS tranche that
+   makes lazy and eager package trees consume one verified archive description
+   and binds lazy URLs to their intended source. Keep kernel or POSIX changes
+   outside this tranche.
+4. Rotate the tap's reusable-workflow trust pins to the exact landed
+   `Requirement`-support commit, then finalize the native-Requirement Formula
+   rollout.
+5. Land one product cutover tranche that keeps Bash and its startup closure
+   eager, keeps optional bottles and Homebrew itself lazy, exposes the normal
+   `/usr/bin/brew` entrypoint, and proves the exact image in Node.js and
+   Chromium.
+
+A tranche may be split when a real correctness or review boundary requires it,
+but queue convenience alone is not a reason to restore one PR per small step.
+Batching must never weaken exact-head validation, immutable
+artifact identity, browser/Node parity, POSIX correctness, or an explicit
+merge-approval boundary.
+
 ### Phase 1: Close the active publication and federation work
 
 1. Completed by PR #1048 and run `29886510272`: fix the
