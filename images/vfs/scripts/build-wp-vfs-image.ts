@@ -19,10 +19,8 @@ import {
   writeVfsFile,
   writeVfsBinary,
   ensureDirRecursive,
-  walkAndWrite,
 } from "./vfs-image-helpers";
 import { addDinitInit, type DinitService } from "./dinit-image-helpers";
-import { ensureSourceExtract, ensureExtract } from "./source-extract-helper";
 import { prewarmOpcache } from "./opcache-prewarm";
 import {
   webPresentation,
@@ -46,27 +44,17 @@ import {
   wordpressConfigTemplate,
 } from "../../../apps/browser-demos/lib/init/wordpress-runtime-config";
 import { preinstallWordPressSqlite } from "./wordpress-preinstall";
+import {
+  copyWordPressCoreSource,
+  materializeWordPressSqlitePlugin,
+  resolveWordPressCoreSource,
+  resolveWordPressSqlitePluginSource,
+} from "./wordpress-source-layout";
 
 const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
-const WP_SOURCE_DIR = join(REPO_ROOT, "packages", "registry", "wordpress");
-// WordPress + SQLite-Database-Integration plugin trees: prefer the local
-// `packages/registry/wordpress/setup.sh` outputs if present, otherwise
-// download both via source-extract-helper. The WP version + sha live in the
-// wordpress package's package.toml; the SQLite plugin is a wp.org-hosted zip
-// with no package.toml of its own, so its URL+sha are pinned here.
-const SQLITE_PLUGIN_VERSION = "2.1.16";
-const SQLITE_PLUGIN_URL =
-  `https://downloads.wordpress.org/plugin/sqlite-database-integration.${SQLITE_PLUGIN_VERSION}.zip`;
-const SQLITE_PLUGIN_SHA256 =
-  "ccc69cada05983e6c2dac8c0962b548c437b4c96c00ea41b0e130fc128671391";
-const WP_DIR = ensureSourceExtract("wordpress", REPO_ROOT, join(WP_SOURCE_DIR, "wordpress"));
-const SQLITE_DIR = ensureExtract({
-  url: SQLITE_PLUGIN_URL,
-  sha256: SQLITE_PLUGIN_SHA256,
-  cacheKey: `sqlite-database-integration-${SQLITE_PLUGIN_VERSION}`,
-  legacyPath: join(WP_SOURCE_DIR, "sqlite-database-integration"),
-});
+const WP_DIR = resolveWordPressCoreSource(REPO_ROOT);
+const SQLITE_DIR = resolveWordPressSqlitePluginSource();
 const NGINX_PATH = resolveBinary("programs/nginx.wasm");
 const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");
 const OPCACHE_SO_PATH = resolveBinary("programs/php/opcache.so");
@@ -375,19 +363,13 @@ async function main() {
   );
 
   // WordPress core files
-  const excludeDb = (rel: string) => rel.endsWith(".db") || rel === "wp-config.php";
   console.log("Writing WordPress core files...");
-  let wpCount = walkAndWrite(fs, WP_DIR, "/var/www/html", { exclude: excludeDb });
+  let wpCount = copyWordPressCoreSource(fs, WP_DIR);
   console.log(`  WordPress core: ${wpCount} files`);
 
   // SQLite plugin files
   console.log("Writing SQLite plugin files...");
-  const sqliteCount = walkAndWrite(
-    fs,
-    SQLITE_DIR,
-    "/var/www/html/wp-content/plugins/sqlite-database-integration",
-    { exclude: excludeDb },
-  );
+  const sqliteCount = materializeWordPressSqlitePlugin(fs, SQLITE_DIR);
   console.log(`  SQLite plugin: ${sqliteCount} files`);
   wpCount += sqliteCount;
 

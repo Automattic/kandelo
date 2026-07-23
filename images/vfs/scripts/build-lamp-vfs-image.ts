@@ -21,7 +21,6 @@ import {
   writeVfsFile,
   writeVfsBinary,
   ensureDirRecursive,
-  walkAndWrite,
 } from "./vfs-image-helpers";
 import {
   addDinitInit,
@@ -54,6 +53,10 @@ import {
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
 } from "../../../web-libs/kandelo-session/src/vfs-capacity";
 import { preinstallWordPressMariaDb } from "./wordpress-preinstall";
+import {
+  copyWordPressCoreSource,
+  resolveWordPressCoreSource,
+} from "./wordpress-source-layout";
 import { prepareMariadbWritableDirectories } from "./mariadb-image-helpers";
 
 const REPO_ROOT = findRepoRoot();
@@ -63,11 +66,7 @@ const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
 // the system_tables SQL files are shipped only in the upstream MariaDB
 // source tarball, so we extract them on demand the same way
 // build-mariadb-vfs-image.ts does.
-const WP_DIR = ensureSourceExtract(
-  "wordpress",
-  REPO_ROOT,
-  join(REPO_ROOT, "packages", "registry", "wordpress", "wordpress"),
-);
+const WP_DIR = resolveWordPressCoreSource(REPO_ROOT);
 const MARIADB_LEGACY_INSTALL = join(REPO_ROOT, "packages", "registry", "mariadb", "mariadb-install");
 const MARIADB_SOURCE = ensureSourceExtract("mariadb", REPO_ROOT);
 const MARIADB_PATH = resolveBinary("programs/mariadb/mariadbd.wasm");
@@ -454,9 +453,7 @@ async function main() {
   );
 
   console.log("Writing WordPress core files...");
-  const excludeDb = (rel: string) =>
-    rel.endsWith(".db") || rel === "wp-config.php" || rel.includes("wp-content/db.php");
-  const wpCount = walkAndWrite(fs, WP_DIR, "/var/www/html", { exclude: excludeDb });
+  const wpCount = copyWordPressCoreSource(fs, WP_DIR);
   patchWordPressPersistentMysqli(fs);
   console.log(`  WordPress core: ${wpCount} files`);
 

@@ -6,10 +6,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-# WordPress PHP source and the SQLite db.php drop-in are downloaded into this
-# registry package. The VFS image builder reads from there. setup.sh is
-# idempotent: it skips downloads when the trees are already present.
-bash "$REPO_ROOT/packages/registry/wordpress/setup.sh"
+# The VFS builder resolves and verifies the WordPress and SQLite plugin source
+# archives itself. `setup.sh` remains the local unpacked-demo entrypoint; it
+# creates a checkout-specific plugin symlink that is not a product-image input.
 
 # Build-time opcache prewarming boots NodeKernelHost against the half-built VFS,
 # so package builds need a host kernel even though wordpress itself is a
