@@ -128,17 +128,42 @@ async function waitForLazyPackageRows(
   mirrorPlan: { assets: MirrorAsset[] },
 ): Promise<LazyDownloadRow[]> {
   const deadline = Date.now() + 30_000;
+  const settleWindowMs = 1_000;
   let rows: LazyDownloadRow[] = [];
+  let stableCompleteFingerprint: string | undefined;
+  let stableCompleteSince = 0;
   while (Date.now() < deadline) {
     rows = await readLazyDownloadRows(page);
     const added = rows.filter(({ source }) => !priorSources.has(source));
     const addedPackages = new Set(packageNamesForRows(added, mirrorPlan));
-    if (expectedPackages.every((packageName) => addedPackages.has(packageName))) {
-      return rows;
+    const expectedPackagesPresent = expectedPackages.every((packageName) =>
+      addedPackages.has(packageName)
+    );
+    const addedRowsComplete = added.every(({ status }) => status === "complete");
+    if (expectedPackagesPresent && addedRowsComplete) {
+      // Guest completion can precede the last React ledger update. Require a
+      // quiet completed window so a delayed row cannot escape this phase.
+      const fingerprint = JSON.stringify(added);
+      if (fingerprint !== stableCompleteFingerprint) {
+        stableCompleteFingerprint = fingerprint;
+        stableCompleteSince = Date.now();
+      } else if (Date.now() - stableCompleteSince >= settleWindowMs) {
+        return rows;
+      }
+    } else {
+      stableCompleteFingerprint = undefined;
+      stableCompleteSince = 0;
     }
     await page.waitForTimeout(100);
   }
-  return rows;
+  const added = rows.filter(({ source }) => !priorSources.has(source));
+  throw new Error(
+    `timed out waiting for completed lazy packages: ${JSON.stringify({
+      expectedPackages,
+      observedPackages: packageNamesForRows(added, mirrorPlan),
+      rows: added,
+    })}`,
+  );
 }
 
 test("the exact public-bottle shell preserves shell, language, and NetHack behavior", async ({ page }) => {
