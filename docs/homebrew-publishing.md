@@ -429,6 +429,49 @@ also carries the sorted immutable target-tap set plus three native lists:
 - `runtime_and_test` is used by the bottle verifier and excludes dependencies
   that are only tagged `:build`.
 
+### Publisher-Only Native Requirements
+
+Publisher-only tools are represented by three closed, tap-local Homebrew
+`Requirement` classes rather than ordinary guest Formula dependencies:
+`BinaryenRequirement`, `PkgconfRequirement`, and `WabtRequirement`. Each class
+has one canonical definition under `KandeloFormulaSupport`: it is fatal, binds
+one fixed `KANDELO_NATIVE_FORMULA` and `KANDELO_NATIVE_SENTINEL`, and checks
+that same sentinel with `satisfy(build_env: false)`. Formulae may refer to
+those classes only through the canonical support require and a literal
+`depends_on KandeloFormulaSupport::<Class> => :build` or
+`[:build, :test]` declaration. Unknown classes, dynamic constant lookup,
+changed metadata or predicates, and `:test`-only native Requirements fail
+closed.
+
+The static Formula parser recognizes that exact source shape without
+evaluating Formula Ruby. Schema 4 of the protected host-dependency plan binds
+the Requirement class, native Formula identity, sentinel executable, and
+sorted tags in addition to the existing native dependency lists and immutable
+target-tap map. The bottle builder and pour verifier run the same closed-schema
+validator before staging the plan. The publisher overlay then compares the
+evaluated Requirement objects with those sealed records before reconstructing
+only the matching build-only dependencies for Homebrew's normal Superenv path.
+For a Requirement also tagged `:test`, the Formula test process receives only
+the planned proxy keg's standard tool and metadata paths after the exact
+sentinel has been found executable. A missing proxy, omitted evaluated object,
+forged class, changed constant, changed tag, or legacy ambiguous schema fails
+instead of widening the host-tool graph.
+
+The publisher lifecycle and guest lifecycle deliberately use different
+artifacts. Trusted Linux publication runs the reviewed publisher-side Homebrew
+commit pinned by the reusable workflow and proves a real install and test
+offline after its disposable Ruby dependencies have been provisioned and
+sealed. Kandelo guests instead receive upstream Homebrew commit
+`4ead8619231cb15cbe15e8e8188081e347d6f7cd` through the dedicated
+`homebrew-bootstrap` program package. Guest acceptance must materialize that
+package through the canonical ABI release index and verify its package-output
+receipt, archive identity, cache key, and locked inner ZIP before booting it.
+The PR staging release is evidence for the package build, not a durable
+consumer URL. Until the package is activated in the canonical ABI index and
+the tap has adopted these Requirement declarations under a compatible pinned
+publisher, the full guest install lifecycle remains a rollout gate rather than
+a supported user-facing contract.
+
 The native launcher installs each selected direct dependency as an explicit
 `homebrew/core/<name>` reference under an ephemeral native prefix. Each install
 uses Homebrew's normal dependency resolution and completes its full transitive
