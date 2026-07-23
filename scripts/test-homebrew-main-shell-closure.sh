@@ -196,8 +196,42 @@ grep -Fq -- '--lazy-shell \' "$WORKFLOW" ||
   fail "candidate proof must explicitly opt into lazy shell composition"
 grep -Fq 'scripts/build-homebrew-main-shell-closure.sh \' "$WORKFLOW" ||
   fail "candidate proof must invoke the strict shell composer"
-grep -Fq 'cp "$CANDIDATE_PATH" "$installed"' "$WORKFLOW" ||
-  fail "candidate proof must install the exact candidate bytes for browser resolution"
+candidate_install_workflow_block="$(sed -n \
+  "/- name: Install the candidate's exact shell bytes/,/- name: Recover the exact bottle mirror/p" \
+  "$WORKFLOW")"
+grep -Fq 'WASM_POSIX_LOCAL_INSTALL_SOURCE="$1"' \
+  <<<"$candidate_install_workflow_block" ||
+  fail "candidate proof must give the exact candidate to the package installer"
+grep -Fq 'WASM_POSIX_LOCAL_INSTALL_SESSION="$2"' \
+  <<<"$candidate_install_workflow_block" ||
+  fail "candidate proof must give the package installer an explicit session"
+grep -Fq 'bash "$CANDIDATE_PATH" "$install_session"' \
+  <<<"$candidate_install_workflow_block" ||
+  fail "candidate and session must be passed into the installer shell as isolated arguments"
+grep -Fq '${GITHUB_RUN_ID}' <<<"$candidate_install_workflow_block" &&
+  grep -Fq '${GITHUB_RUN_ATTEMPT}' <<<"$candidate_install_workflow_block" &&
+  grep -Fq '${GITHUB_JOB}' <<<"$candidate_install_workflow_block" ||
+  fail "candidate package-install session must be unique to one workflow job attempt"
+grep -Fq 'build-deps --arch wasm32 --binaries-dir local-binaries \' \
+  <<<"$candidate_install_workflow_block" ||
+  fail "candidate proof must publish through the wasm32 local package installer"
+grep -Fq 'install-local-artifact shell shell.vfs.zst' \
+  <<<"$candidate_install_workflow_block" ||
+  fail "candidate proof must install shell.vfs.zst as a declared shell artifact"
+grep -Fq 'resolved=$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)' \
+  <<<"$candidate_install_workflow_block" ||
+  fail "candidate proof must resolve the canonical installed shell artifact"
+grep -Fq 'cmp "$CANDIDATE_PATH" "$resolved"' \
+  <<<"$candidate_install_workflow_block" ||
+  fail "candidate proof must compare the canonical installed artifact with the candidate"
+grep -Fq 'cp "$CANDIDATE_PATH" "$browser_copy"' \
+  <<<"$candidate_install_workflow_block" ||
+  fail "candidate proof must retain a separate browser-public copy"
+[ "$(grep -Fc 'local-binaries' <<<"$candidate_install_workflow_block")" -eq 1 ] ||
+  fail "candidate proof must access local-binaries only through the package installer"
+grep -Eq '(^|[[:space:]])(cp|mv|install|ln)[[:space:]].*(local-binaries|\$installed)' \
+  <<<"$candidate_install_workflow_block" &&
+  fail "candidate proof must not write or copy directly into local-binaries"
 grep -Fq -- '--image "${{ steps.candidate.outputs.image }}"' "$WORKFLOW" ||
   fail "Node proof must boot the exact candidate bytes directly"
 grep -Fq -- '--migration-lock homebrew/main-shell-migration-lock.json' "$WORKFLOW" ||

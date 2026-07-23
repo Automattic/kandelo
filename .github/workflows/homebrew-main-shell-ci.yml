@@ -302,16 +302,24 @@ jobs:
           CANDIDATE_PATH: ${{ steps.candidate.outputs.image }}
         run: |
           set -euo pipefail
-          installed=local-binaries/programs/wasm32/shell.vfs.zst
           browser_copy=apps/browser-demos/public/shell.vfs.zst
+          install_session="homebrew-main-shell-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
           test -f "$CANDIDATE_PATH"
-          mkdir -p "$(dirname "$installed")" "$(dirname "$browser_copy")"
-          cp "$CANDIDATE_PATH" "$installed"
-          cp "$CANDIDATE_PATH" "$browser_copy"
-          cmp "$CANDIDATE_PATH" "$installed"
-          cmp "$CANDIDATE_PATH" "$browser_copy"
+          mkdir -p "$(dirname "$browser_copy")"
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            host_target="$(rustc -vV | sed -n "s/^host: //p")"
+            WASM_POSIX_LOCAL_INSTALL_SOURCE="$1" \
+            WASM_POSIX_LOCAL_INSTALL_SESSION="$2" \
+              cargo run -p xtask --target "$host_target" --quiet -- \
+                build-deps --arch wasm32 --binaries-dir local-binaries \
+                install-local-artifact shell shell.vfs.zst
+          ' bash "$CANDIDATE_PATH" "$install_session"
           resolved=$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)
-          test "$(realpath "$resolved")" = "$(realpath "$installed")"
+          test -f "$resolved"
+          cmp "$CANDIDATE_PATH" "$resolved"
+          cp "$CANDIDATE_PATH" "$browser_copy"
+          cmp "$CANDIDATE_PATH" "$browser_copy"
           image_sha=$(sha256sum "$CANDIDATE_PATH" | awk '{print $1}')
           [[ "$image_sha" =~ ^[0-9a-f]{64}$ ]]
           echo "sha256=$image_sha" >> "$GITHUB_OUTPUT"
