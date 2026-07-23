@@ -64,6 +64,9 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
     const unboundArchive = gzipSync(unboundTar);
     const boundUrl =
       "https://github.com/example/project/releases/download/v1/bound.tar.gz";
+    const boundRelativeUrl = "bound.tar.gz";
+    const boundUrlBase =
+      "https://github.com/example/project/releases/download/v1";
     const unboundUrl =
       "https://github.com/example/project/releases/download/v1/unbound.tar.gz";
     const fs = MemoryFileSystem.create(new SharedArrayBuffer(32 * 1024 * 1024));
@@ -73,7 +76,7 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
       ...integrity(boundArchive),
       expandedBytes: boundTar.byteLength,
       sourceEntryCount: 1,
-      transports: [boundUrl],
+      transports: [boundRelativeUrl],
     }, [{
       vfsPath: "/etc/closed-bound",
       sourcePath: "etc/closed-bound",
@@ -102,6 +105,7 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
     let stdout = "";
     const host = new NodeKernelHost({
       rootfsImage: await fs.saveImage(),
+      rootfsLazyUrlBase: boundUrlBase,
       rootfsLazyAssets: [{
         url: boundUrl,
         sha256: integrity(boundArchive).sha256,

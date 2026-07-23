@@ -706,6 +706,45 @@ decoding; deferred-tree imports additionally allow at most 512 groups and
 100,000 entries per group. A pending metadata-only tree remains valid and must
 still verify its immutable payload through its activation policy.
 
+Build tooling can derive a package-owned deferred ZIP tree from one exact
+declared package output. The reviewable spec names the output, its distribution
+role (`source-tree` or `runtime-tree`), mount prefix, owner, and first-use
+activation roots. The builder reads the exact ZIP once and derives a canonical
+typed-tree descriptor containing its digest, byte counts, decoder, and complete
+inventory. A lazy image registers that descriptor and keeps the relative
+package-output URL; an eager derivative directly materializes the same
+descriptor from the same bytes. The eager path is therefore a consumption
+choice, not a second package recipe or artifact identity. A `source-tree`
+output, such as a pinned upstream tool implementation, is explicitly not a
+Homebrew bottle; formula bottles remain their original published TAR+gzip
+artifacts.
+
+Package ZIP trees declare the closed `portable-posix-v1` mode policy. It
+normalizes directories to `0755`, symbolic links to `0777`, and regular files
+to `0755` when the ZIP member carries any execute bit or `0644` otherwise.
+This prevents host-specific archive modes from changing the installed tree,
+and the lazy and eager paths validate and install the same normalized modes.
+`host/test/package-deferred-tree.test.ts`, in “derives one canonical descriptor
+from the exact package output,” covers the policy with deliberately
+non-portable input modes.
+
+Relative lazy asset URLs are resolved inside the dedicated kernel worker on
+both hosts. Browser boots use `BrowserKernel`'s `lazyUrlBase`; Node boots use
+the peer `NodeKernelHost.rootfsLazyUrlBase` option. Closed/offline acceptance
+can bind the resolved URL to exact caller-owned bytes through the existing
+closed-lazy-asset transport. Before kernel boot, that acceptance-only loader
+eagerly fetches bounded source URLs, verifies each complete decoded response
+against its declared byte count and SHA-256, and only then associates the
+bytes with the separate immutable HTTPS URL stored in the deferred tree. A
+source URL is transport input, never VFS authority: absolute cleartext HTTP is
+limited to loopback acceptance servers, requests omit credentials and
+referrers and reject redirects, and source URLs must not contain bearer
+secrets. This eager pre-publication proof is not the product tree's first-use
+transport. Metadata inspection and directory enumeration do not fetch a
+deferred tree. The first prepared open or executable resolution fetches the
+whole declared archive once, verifies it, and atomically materializes the
+complete group; later accesses do not fetch it again.
+
 ### VFS Images
 
 A `MemoryFileSystem` can be serialized to a portable binary image and restored later to boot a new kernel with a pre-populated filesystem. This enables snapshotting an initialized VFS (with all files, directories, symlinks, and permissions) and restoring it without repeating the setup work.
