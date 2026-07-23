@@ -12,7 +12,7 @@ Kandelo is organized as a kernel-first monorepo. The kernel and host runtimes ar
 | `web-libs/` | Browser-independent reusable UI/session contracts | App-specific page code |
 | `packages/registry/<name>/` | One ported package: manifest, build script, patches, package-owned demos, package-owned tests | Kernel/host behavior tests |
 | `packages/sets/` | Named product or CI package sets | Package implementation details |
-| `tests/` | External conformance suites and package-system tooling tests | Package-owned integration tests |
+| `tests/` | External conformance suites, package-system tooling tests, and shared host/kernel test artifact manifests | Package-owned integration tests |
 | `images/` | Rootfs sources and VFS/archive build scripts | Package source builds |
 | `tools/` | Repo automation such as `xtask` and `mkrootfs` | Product runtime code |
 | `sdk/` | Cross-compilation wrapper CLI and SDK support code | Runtime host implementation |
@@ -55,6 +55,7 @@ Package behavior tests live with the package so future CI can map changes to rel
 | `host/test/` | Host/kernel runtime behavior: process lifecycle, VFS semantics, syscalls, worker behavior, host parity |
 | `packages/registry/<name>/test/` | Behavior of a specific ported package |
 | `tests/package-system/` | Package registry and binary-fetching automation |
+| `tests/test-artifacts/` | Shared host/kernel test artifact ownership manifests |
 | `tests/libc/`, `tests/posix/`, `tests/sortix/` | External conformance suites and overlays |
 | `apps/browser-demos/test/` | Browser app and demo-page integration behavior |
 

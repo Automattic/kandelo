@@ -4,8 +4,7 @@ import { centralizedWorkerMain } from "../src/worker-main";
 import { tryResolveBinary } from "../src/binary-resolver";
 import type { CentralizedWorkerInitMessage } from "../src/worker-protocol";
 
-const helloWasm = tryResolveBinary("programs/hello.wasm") ??
-  tryResolveBinary("programs/hello64.wasm");
+const helloWasm = tryResolveBinary("programs/wasm64/hello64.wasm");
 const hasBinary = !!helloWasm;
 
 function loadProgramBytes(): ArrayBuffer {

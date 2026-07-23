@@ -1,0 +1,138 @@
+{
+  "schema": 1,
+  "name": "kernel-test-programs",
+  "owner": "host-kernel-tests",
+  "producer": {
+    "script": "scripts/build-programs.sh",
+    "output_root": "local-binaries/programs"
+  },
+  "fixtures": [
+    {
+      "id": "exec-caller:wasm32",
+      "name": "exec-caller",
+      "arch": "wasm32",
+      "source": "programs/exec-caller.c",
+      "binary": "programs/wasm32/exec-caller.wasm",
+      "resolver_path": "programs/exec-caller.wasm",
+      "consumers": [
+        "host/test/exec.test.ts",
+        "host/test/abi-version.test.ts"
+      ]
+    },
+    {
+      "id": "exec-child:wasm32",
+      "name": "exec-child",
+      "arch": "wasm32",
+      "source": "programs/exec-child.c",
+      "binary": "programs/wasm32/exec-child.wasm",
+      "resolver_path": "programs/exec-child.wasm",
+      "consumers": [
+        "apps/browser-demos/test/nonzero-exit-diagnostic.spec.ts",
+        "host/test/exec.test.ts",
+        "host/test/fixtures/ordinary-nonzero-exit.ts"
+      ]
+    },
+    {
+      "id": "fork-exec:wasm32",
+      "name": "fork-exec",
+      "arch": "wasm32",
+      "source": "programs/fork-exec.c",
+      "binary": "programs/wasm32/fork-exec.wasm",
+      "resolver_path": "programs/fork-exec.wasm",
+      "consumers": [
+        "host/test/exec.test.ts",
+        "host/test/wasm64.test.ts",
+        "run.sh"
+      ]
+    },
+    {
+      "id": "ifhwaddr:wasm32",
+      "name": "ifhwaddr",
+      "arch": "wasm32",
+      "source": "programs/ifhwaddr.c",
+      "binary": "programs/wasm32/ifhwaddr.wasm",
+      "resolver_path": "programs/ifhwaddr.wasm",
+      "consumers": [
+        "host/test/ifhwaddr.test.ts"
+      ]
+    },
+    {
+      "id": "ifhwaddr:wasm64",
+      "name": "ifhwaddr",
+      "arch": "wasm64",
+      "source": "programs/ifhwaddr.c",
+      "binary": "programs/wasm64/ifhwaddr.wasm",
+      "resolver_path": "programs/wasm64/ifhwaddr.wasm",
+      "consumers": [
+        "host/test/ifhwaddr.test.ts"
+      ]
+    },
+    {
+      "id": "mmap_shared_test:wasm32",
+      "name": "mmap_shared_test",
+      "arch": "wasm32",
+      "source": "programs/mmap_shared_test.c",
+      "binary": "programs/wasm32/mmap_shared_test.wasm",
+      "resolver_path": "programs/mmap_shared_test.wasm",
+      "consumers": [
+        "host/test/mmap-shared.test.ts"
+      ]
+    },
+    {
+      "id": "hello64:wasm64",
+      "name": "hello64",
+      "arch": "wasm64",
+      "source": "programs/hello64.c",
+      "binary": "programs/wasm64/hello64.wasm",
+      "resolver_path": "programs/wasm64/hello64.wasm",
+      "consumers": [
+        "host/test/wasm64.test.ts",
+        "host/test/worker-entry.test.ts"
+      ]
+    }
+  ],
+  "legacy_outputs": [
+    {
+      "name": "exec-caller",
+      "wasm": "exec-caller.wasm",
+      "disposition": "migrated-fixture",
+      "fixture": "exec-caller:wasm32"
+    },
+    {
+      "name": "exec-child",
+      "wasm": "exec-child.wasm",
+      "disposition": "migrated-fixture",
+      "fixture": "exec-child:wasm32"
+    },
+    {
+      "name": "fork-exec",
+      "wasm": "fork-exec.wasm",
+      "disposition": "migrated-fixture",
+      "fixture": "fork-exec:wasm32"
+    },
+    {
+      "name": "ifhwaddr",
+      "wasm": "ifhwaddr.wasm",
+      "disposition": "migrated-fixture",
+      "fixture": "ifhwaddr:wasm32"
+    },
+    {
+      "name": "mmap_shared_test",
+      "wasm": "mmap_shared_test.wasm",
+      "disposition": "migrated-fixture",
+      "fixture": "mmap_shared_test:wasm32"
+    },
+    {
+      "name": "hello",
+      "wasm": "hello.wasm",
+      "disposition": "retired",
+      "reason": "The retired GNU hello package and its programs/hello.wasm resolver output were removed; examples/hello.c remains a separate SDK example rather than a shared resolver fixture."
+    },
+    {
+      "name": "hello64",
+      "wasm": "hello64.wasm",
+      "disposition": "migrated-fixture",
+      "fixture": "hello64:wasm64"
+    }
+  ]
+}

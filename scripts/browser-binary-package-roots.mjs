@@ -18,7 +18,6 @@ export const localOnlyBrowserImports = new Set([
 ]);
 
 export const registryPackagesWithoutBuildToml = new Set([
-  "kernel-test-programs",
   "pcre2-source",
   "sqlite-cli",
 ]);

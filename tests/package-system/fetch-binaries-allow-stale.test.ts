@@ -9,7 +9,7 @@
  *         --binaries-dir <repo>/binaries resolve <name>
  *
  * once per declared arch. Packages without a sibling `build.toml` are
- * skipped (kernel/userspace/source/etc).
+ * skipped (source/helper or stale manifest-only entries).
  *
  * Strategy: stage a fake "repo root" in a tempdir with a hand-
  * written `packages/registry/` tree of one-line package.toml files
@@ -167,8 +167,8 @@ describe.skipIf(!rustcAvailable)("fetch-binaries.sh per-package walk", () => {
     );
     writeFileSync(path.join(registry, "charlie", "build.toml"), `revision = 1\n`);
 
-    // delta: kind=program, no build.toml (mirrors kernel/userspace/
-    // examples). Must be skipped silently.
+    // delta: kind=program, no build.toml (mirrors source/helper or stale
+    // manifest-only entries). Must be skipped silently.
     mkdirSync(path.join(registry, "delta"), { recursive: true });
     writeFileSync(
       path.join(registry, "delta", "package.toml"),
