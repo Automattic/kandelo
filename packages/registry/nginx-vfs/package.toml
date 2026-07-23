@@ -1,0 +1,30 @@
+kind = "program"
+name = "nginx-vfs"
+version = "0.1.0"
+kernel_abi = 41
+depends_on = [
+  "shell@0.1.0",
+  "nginx@1.24.0",
+  "dinit@0.19.4",
+]
+
+# Composite VFS image for the nginx browser demo. The image builder layers
+# nginx and dinit configuration onto the selected shell image; the declared
+# output keeps the generated image under the same package-generation contract
+# as every other resolver-visible browser artifact.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "images/vfs/scripts/build-nginx-vfs-image.sh"
+
+[[outputs]]
+name = "nginx-vfs"
+wasm = "nginx.vfs.zst"
+# This output is a VFS image, not a Wasm executable.
+fork_instrumentation = "disabled"

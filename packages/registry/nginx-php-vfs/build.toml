@@ -1,0 +1,25 @@
+script_path = "images/vfs/scripts/build-nginx-php-vfs-image.sh"
+inputs = [
+  "images/vfs/scripts/build-nginx-php-vfs-image.sh",
+  "images/vfs/scripts/build-nginx-php-vfs-image.ts",
+  "images/vfs/scripts/dinit-image-helpers.ts",
+  "images/vfs/scripts/kandelo-demo-config.ts",
+  "images/vfs/scripts/kandelo-demo-guides.ts",
+  "images/vfs/scripts/opcache-prewarm.ts",
+  "images/vfs/scripts/shell-vfs-build.ts",
+  "images/vfs/scripts/vfs-image-helpers.ts",
+  "images/rootfs/etc/services",
+  # Opcache prewarming boots the shared host runtime, and the image builder
+  # reaches shared VFS modules transitively. Track both as one source tree so
+  # cache identity cannot outlive either contract.
+  "host/src",
+  "web-libs/kandelo-session/src/demo-config.ts",
+  "web-libs/kandelo-session/src/demo-guides.ts",
+  "web-libs/kandelo-session/src/vfs-capacity.ts",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

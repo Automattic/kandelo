@@ -1,0 +1,23 @@
+script_path = "images/vfs/scripts/build-nginx-vfs-image.sh"
+inputs = [
+  "images/vfs/scripts/build-nginx-vfs-image.sh",
+  "images/vfs/scripts/build-nginx-vfs-image.ts",
+  "images/vfs/scripts/dinit-image-helpers.ts",
+  "images/vfs/scripts/kandelo-demo-config.ts",
+  "images/vfs/scripts/kandelo-demo-guides.ts",
+  "images/vfs/scripts/shell-vfs-build.ts",
+  "images/vfs/scripts/vfs-image-helpers.ts",
+  "images/rootfs/etc/services",
+  # The image builder reaches shared VFS/runtime modules transitively. Keep the
+  # directory broad so a host-side format change cannot reuse a stale image.
+  "host/src",
+  "web-libs/kandelo-session/src/demo-config.ts",
+  "web-libs/kandelo-session/src/demo-guides.ts",
+  "web-libs/kandelo-session/src/vfs-capacity.ts",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

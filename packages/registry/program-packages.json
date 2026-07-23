@@ -309,6 +309,20 @@
         "wasm64": "a521a8cd7c9b4188de37479410eeb81ffd182924a05c2262e679cd0370ff3861"
       }
     },
+    "nginx-php-vfs": {
+      "manifestSha256": "97976410cb02f8ba710d856b4ac904bcf976d677b50eefdee39fb64176070d4b",
+      "cacheKeys": {
+        "wasm32": "72414c9af826e0f75a927d68524eee9294746e0bd5f7c5de508a830e0338e844",
+        "wasm64": "4f6b02d08d580794bdc7e0e73d075517173ffc1eb4907d9cc0128febe63972b8"
+      }
+    },
+    "nginx-vfs": {
+      "manifestSha256": "46aa2d3250ac5cd0f102a85c3a36a086c7a50ba1f9e05fa1c2aae3d07ad16f10",
+      "cacheKeys": {
+        "wasm32": "53660fe2cff1a872d0a42081d43a9a25f2d313b314180d222f35caafd676924d",
+        "wasm64": "6ac0c0b80cac046ccad6634b018142693a303a2ef24742d96ccb6e72d5ab040a"
+      }
+    },
     "node": {
       "manifestSha256": "2131a24dfda8587860e57fc65b573086477d376b065b3b9ca4e1dfe4d79f5790",
       "cacheKeys": {
@@ -377,6 +391,13 @@
       "cacheKeys": {
         "wasm32": "a7391e556a100804e931a940f6a88b3afee2d7a866fa315e7787a9a5a8948403",
         "wasm64": "bef3535753cb37406c4f9d04d751d59d9d72f0cefc96491ccc1352da6affe75c"
+      }
+    },
+    "redis-vfs": {
+      "manifestSha256": "234c45c40f94e2a89f98295313b82cb9fce15a412ac829d9e87394e0dc731813",
+      "cacheKeys": {
+        "wasm32": "20146e84ffb8b1b7abbf9576689f8117f486d5af687ba956daf3a28183a5e0ee",
+        "wasm64": "4de56082cc66c0de1ff25d214df4c28dbfe5bc92c393f8744b1e56d56b928ea3"
       }
     },
     "rootfs": {
@@ -1684,6 +1705,140 @@
         }
       ]
     },
+    "nginx-php-vfs": {
+      "manifestSha256": "97976410cb02f8ba710d856b4ac904bcf976d677b50eefdee39fb64176070d4b",
+      "arches": [
+        "wasm32"
+      ],
+      "cacheKeys": {
+        "wasm32": "72414c9af826e0f75a927d68524eee9294746e0bd5f7c5de508a830e0338e844"
+      },
+      "dependencyClosures": {
+        "wasm32": [
+          {
+            "packageName": "dinit",
+            "manifestSha256": "44e125e1337503e27f8cff531cdbd79c4f406fd2d282b916a7746cf3a14057bf",
+            "cacheKey": "e4d6e040b3c583d15e3a80feea9db153c1e8b0ff02bc86d00fa28e5870287781"
+          },
+          {
+            "packageName": "icu",
+            "manifestSha256": "f5b1f02d169ec1108fc32d9da55be53c3efb96e3a7aeba6a03aec62e0175f0dc",
+            "cacheKey": "5f2d9559cd1173f21fa621bcdf5451a35f3ffcc3435dd7b0e09169834092e402"
+          },
+          {
+            "packageName": "kernel",
+            "manifestSha256": "db1d66db8575562ac7b3e720dbaa06d7dd5eef577d80220ea4167dc2d69b863b",
+            "cacheKey": "e98596ee4e363710004ff969cc74e58e433a521011d6331681421c20cbaff721"
+          },
+          {
+            "packageName": "libcurl",
+            "manifestSha256": "c771e6cdc83b43840db4dd1fdce4b6189ba4f281596f7485bcda9c65e2ecda00",
+            "cacheKey": "cb147677f78c356f20e2581df7dbaab3c77f6e3b879c33f24484bb4eafa6160b"
+          },
+          {
+            "packageName": "libcxx",
+            "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
+            "cacheKey": "6d08aa913e932d33232f8076de99312f87dd7b4d866c31f1c168999910a4fffd"
+          },
+          {
+            "packageName": "libiconv",
+            "manifestSha256": "fa60b386f4ba0cd5bbbd595f67477cbfb0cc401a14bbd4769630c502bb3f24b1",
+            "cacheKey": "9328da7f90a267e6eabfb49e8b00d0dd45296f0d9c4339fa1c58e2813def6c70"
+          },
+          {
+            "packageName": "libxml2",
+            "manifestSha256": "908490efcdc7783c76ce36af31d1db24bfcc7ba5f1e7b9b5298cc81cb110256c",
+            "cacheKey": "ecbc5a52e3f7b2cc5d697d3982fe94e9dbc69e8354f62f145dad302437b1ce61"
+          },
+          {
+            "packageName": "libzip",
+            "manifestSha256": "83c65d63a6416e79436bf4e792759a4701d568df0e8c010394a9732cf659f0cc",
+            "cacheKey": "bb7925958ee1261e640a025e5801ffed415d4486e4a6339094f0fd7338f47073"
+          },
+          {
+            "packageName": "nginx",
+            "manifestSha256": "41b0aaf05fdd0d8da42642703f9e60fd7b9545d8029896918b87c771c359147b",
+            "cacheKey": "7f69eae6a9d05d93c4458093a1ac80d5685ea4ff991c948274400796c770f690"
+          },
+          {
+            "packageName": "openssl",
+            "manifestSha256": "374f5dce6b2691b630b55cb82955b33d2305384e4bd64746c581621bb0793993",
+            "cacheKey": "ef7615079b83e8bb69afeabcc5abaf026b5fc16a6a4b6234e25d762effdcb362"
+          },
+          {
+            "packageName": "php",
+            "manifestSha256": "fcd9d7915ed8935b05418e148edcb312adf0b1e4e627fe4aab75444b35b33bbc",
+            "cacheKey": "2b3b191f35c8adbfccdcfc138af00f8c00855e808ffb7336b503ac50f224b4a6"
+          },
+          {
+            "packageName": "shell",
+            "manifestSha256": "5d02cd8fee4e0d46c7552a3046c3898f9e3bd5667094e02cab01851eed97a321",
+            "cacheKey": "feffb1d8d0b51ef0116bc99f0f7989127ed9bc414ce54b459a8232df05f0a5d2"
+          },
+          {
+            "packageName": "sqlite",
+            "manifestSha256": "ab9560b4eab53445034e2a87a27ccee9d05ddb0db73fee28f5000325b0b1cba5",
+            "cacheKey": "3cabb24c5250387ef8e26e0a1566cb7b198a8783c3cc30fb2ae31c8d6d044e77"
+          },
+          {
+            "packageName": "zlib",
+            "manifestSha256": "d4f4701c0c30dc843ebe2111ed3e2284836cdfc4bc05a130c8fab4f31b8e6357",
+            "cacheKey": "d17bfc607f79188de27ed14ceac45d191f537d7376d8e69ab83e01a374d5428e"
+          }
+        ]
+      },
+      "members": [
+        {
+          "kind": "output",
+          "sourceArtifact": "nginx-php.vfs.zst",
+          "mirrorPath": "nginx-php-vfs.vfs.zst",
+          "outputName": "nginx-php-vfs",
+          "forkInstrumentation": "disabled"
+        }
+      ]
+    },
+    "nginx-vfs": {
+      "manifestSha256": "46aa2d3250ac5cd0f102a85c3a36a086c7a50ba1f9e05fa1c2aae3d07ad16f10",
+      "arches": [
+        "wasm32"
+      ],
+      "cacheKeys": {
+        "wasm32": "53660fe2cff1a872d0a42081d43a9a25f2d313b314180d222f35caafd676924d"
+      },
+      "dependencyClosures": {
+        "wasm32": [
+          {
+            "packageName": "dinit",
+            "manifestSha256": "44e125e1337503e27f8cff531cdbd79c4f406fd2d282b916a7746cf3a14057bf",
+            "cacheKey": "e4d6e040b3c583d15e3a80feea9db153c1e8b0ff02bc86d00fa28e5870287781"
+          },
+          {
+            "packageName": "libcxx",
+            "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
+            "cacheKey": "6d08aa913e932d33232f8076de99312f87dd7b4d866c31f1c168999910a4fffd"
+          },
+          {
+            "packageName": "nginx",
+            "manifestSha256": "41b0aaf05fdd0d8da42642703f9e60fd7b9545d8029896918b87c771c359147b",
+            "cacheKey": "7f69eae6a9d05d93c4458093a1ac80d5685ea4ff991c948274400796c770f690"
+          },
+          {
+            "packageName": "shell",
+            "manifestSha256": "5d02cd8fee4e0d46c7552a3046c3898f9e3bd5667094e02cab01851eed97a321",
+            "cacheKey": "feffb1d8d0b51ef0116bc99f0f7989127ed9bc414ce54b459a8232df05f0a5d2"
+          }
+        ]
+      },
+      "members": [
+        {
+          "kind": "output",
+          "sourceArtifact": "nginx.vfs.zst",
+          "mirrorPath": "nginx-vfs.vfs.zst",
+          "outputName": "nginx-vfs",
+          "forkInstrumentation": "disabled"
+        }
+      ]
+    },
     "node": {
       "manifestSha256": "2131a24dfda8587860e57fc65b573086477d376b065b3b9ca4e1dfe4d79f5790",
       "arches": [
@@ -2279,6 +2434,43 @@
           "mirrorPath": "redis/redis-cli.wasm",
           "outputName": "redis-cli",
           "forkInstrumentation": "auto"
+        }
+      ]
+    },
+    "redis-vfs": {
+      "manifestSha256": "234c45c40f94e2a89f98295313b82cb9fce15a412ac829d9e87394e0dc731813",
+      "arches": [
+        "wasm32"
+      ],
+      "cacheKeys": {
+        "wasm32": "20146e84ffb8b1b7abbf9576689f8117f486d5af687ba956daf3a28183a5e0ee"
+      },
+      "dependencyClosures": {
+        "wasm32": [
+          {
+            "packageName": "dinit",
+            "manifestSha256": "44e125e1337503e27f8cff531cdbd79c4f406fd2d282b916a7746cf3a14057bf",
+            "cacheKey": "e4d6e040b3c583d15e3a80feea9db153c1e8b0ff02bc86d00fa28e5870287781"
+          },
+          {
+            "packageName": "libcxx",
+            "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
+            "cacheKey": "6d08aa913e932d33232f8076de99312f87dd7b4d866c31f1c168999910a4fffd"
+          },
+          {
+            "packageName": "redis",
+            "manifestSha256": "151fb507de953ba2ba94b8f881bc7d66b4c741c1359a2f590cc07f9a4cd368a3",
+            "cacheKey": "a7391e556a100804e931a940f6a88b3afee2d7a866fa315e7787a9a5a8948403"
+          }
+        ]
+      },
+      "members": [
+        {
+          "kind": "output",
+          "sourceArtifact": "redis.vfs.zst",
+          "mirrorPath": "redis-vfs.vfs.zst",
+          "outputName": "redis-vfs",
+          "forkInstrumentation": "disabled"
         }
       ]
     },
