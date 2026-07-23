@@ -266,16 +266,37 @@ tar -C "$SOURCE_ROOT" -czf "$SOURCE_ROOT/fixture-1.0.tar.gz" fixture-1.0
 SOURCE_SHA256="$(sha256sum "$SOURCE_ROOT/fixture-1.0.tar.gz" | awk '{print $1}')"
 
 cat >"$TAP_ROOT/Kandelo/formula_support/kandelo_formula_support.rb" <<'RUBY'
-# frozen_string_literal: true
+require "digest"
+require "fileutils"
+require "json"
+require "pathname"
+require "shellwords"
+require "tempfile"
 
+if defined?(KandeloFormulaSupport)
+  unless KandeloFormulaSupport::KANDELO_FORMULA_SUPPORT_API_VERSION == 1 &&
+         Digest::SHA256.file(Pathname(__FILE__).realpath).hexdigest ==
+           KandeloFormulaSupport::KANDELO_TIER2_RUNTIME.fetch("support_sha256")
+    raise "loaded Kandelo Formula support copies are incompatible"
+  end
+else
 module KandeloFormulaSupport
+  KANDELO_FORMULA_SUPPORT_API_VERSION = 1
+
   class WabtRequirement < Requirement
     KANDELO_NATIVE_FORMULA = "wabt"
     KANDELO_NATIVE_SENTINEL = "wasm-validate"
-
     fatal true
     satisfy(build_env: false) { which("wasm-validate") }
   end
+
+  def self.kandelo_load_tier2_runtime!
+    support_path = Pathname(__FILE__).realpath
+    { "support_sha256" => Digest::SHA256.file(support_path).hexdigest }.freeze
+  end
+
+  KANDELO_TIER2_RUNTIME = kandelo_load_tier2_runtime!
+end
 end
 RUBY
 
@@ -341,28 +362,40 @@ for repository in "$TAP_ROOT" "$CORE_ROOT"; do
 done
 TAP_COMMIT="$(git -C "$TAP_ROOT" rev-parse HEAD)"
 
-cat >"$BREW_ROOT/.kandelo-publisher-build-dependencies.json" <<JSON
+RESOLVED_TAPS="$TMP_ROOT/resolved-taps.json"
+HOST_DEPENDENCY_PLAN="$TMP_ROOT/host-dependencies.json"
+cat >"$RESOLVED_TAPS" <<JSON
 {
-  "schema": 4,
-  "tap": "kandelo-dev/tap-core",
-  "formula": "fixture",
-  "full_name": "kandelo-dev/tap-core/fixture",
-  "target_taps": [{
+  "schema": 1,
+  "primary": {
     "tap_name": "kandelo-dev/tap-core",
     "tap_repository": "kandelo-dev/homebrew-tap-core",
-    "tap_commit": "$TAP_COMMIT"
-  }],
-  "build": ["wabt"],
-  "build_and_test": ["wabt"],
-  "native_requirements": [{
-    "class": "KandeloFormulaSupport::WabtRequirement",
-    "formula": "wabt",
-    "sentinel": "wasm-validate",
-    "tags": ["build", "test"]
-  }],
-  "runtime_and_test": ["wabt"]
+    "tap_commit": "$TAP_COMMIT",
+    "root": "$TAP_ROOT"
+  },
+  "dependencies": []
 }
 JSON
+chmod 0444 "$RESOLVED_TAPS"
+KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$RESOLVED_TAPS" \
+  ruby "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+    "$TAP_ROOT" kandelo-dev/tap-core fixture --host-dependencies-json \
+    >"$HOST_DEPENDENCY_PLAN"
+bash "$REPO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh" \
+  "$HOST_DEPENDENCY_PLAN" kandelo-dev/tap-core fixture "$RESOLVED_TAPS"
+jq -e '
+  .build == ["wabt"] and
+  .build_and_test == ["wabt"] and
+  .native_requirements == [{
+    class: "KandeloFormulaSupport::WabtRequirement",
+    formula: "wabt",
+    sentinel: "wasm-validate",
+    tags: ["build", "test"]
+  }] and
+  .runtime_and_test == ["wabt"]
+' "$HOST_DEPENDENCY_PLAN" >/dev/null
+cp "$HOST_DEPENDENCY_PLAN" \
+  "$BREW_ROOT/.kandelo-publisher-build-dependencies.json"
 chmod 0444 "$BREW_ROOT/.kandelo-publisher-build-dependencies.json"
 
 run_offline_brew install install --build-bottle \

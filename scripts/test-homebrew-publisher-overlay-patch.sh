@@ -1104,6 +1104,23 @@ rescue RuntimeError => e
   raise unless e.message.include?("invalid identity")
 end
 
+oversized_dependencies = (0...129).map { |index| format("tool%03d", index) }
+oversized_plan = plan.merge(
+  "build" => oversized_dependencies,
+  "build_and_test" => oversized_dependencies,
+  "native_requirements" => [],
+  "runtime_and_test" => oversized_dependencies,
+)
+plan_path.chmod(0o644)
+plan_path.write(JSON.generate(oversized_plan))
+plan_path.chmod(0o444)
+begin
+  KandeloPublisher.dependency_plan(native_formula)
+  raise "publisher accepted oversized host dependency arrays"
+rescue RuntimeError => e
+  raise unless e.message.include?("invalid build names")
+end
+
 plan_path.chmod(0o644)
 plan_path.write(JSON.generate(plan))
 plan_path.chmod(0o444)

@@ -61,10 +61,10 @@ Homebrew keeps its normal repository, trust, and dependency behavior.
  Library/Homebrew/diagnostic.rb              |  1 +
  Library/Homebrew/extend/os/linux/formula.rb |  4 ++++
  Library/Homebrew/extend/os/linux/sandbox.rb |  4 +++-
- Library/Homebrew/kandelo_publisher.rb       | 223 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ Library/Homebrew/kandelo_publisher.rb       | 225 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
  Library/Homebrew/test.rb                    |  2 ++
  Library/Homebrew/trust.rb                   |  1 +
- 8 files changed, 276 insertions(+), 2 deletions(-)
+ 8 files changed, 278 insertions(+), 2 deletions(-)
 
 diff --git a/Library/Homebrew/build.rb b/Library/Homebrew/build.rb
 index be833176c0..c2c07f5bcf 100644
@@ -209,10 +209,10 @@ index ba803bc756..06d1671285 100644
            begin
 diff --git a/Library/Homebrew/kandelo_publisher.rb b/Library/Homebrew/kandelo_publisher.rb
 new file mode 100644
-index 0000000000..884c7a533e
+index 0000000000..7ee01d23d5
 --- /dev/null
 +++ b/Library/Homebrew/kandelo_publisher.rb
-@@ -0,0 +1,223 @@
+@@ -0,0 +1,225 @@
 +# typed: false
 +# frozen_string_literal: true
 +
@@ -223,6 +223,7 @@ index 0000000000..884c7a533e
 +module KandeloPublisher
 +  PLAN_FILENAME = ".kandelo-publisher-build-dependencies.json"
 +  MAX_PLAN_BYTES = 65_536
++  MAX_DEPENDENCIES = 128
 +  PLAN_KEYS = %w[
 +    build build_and_test formula full_name native_requirements runtime_and_test schema tap target_taps
 +  ].freeze
@@ -389,7 +390,8 @@ index 0000000000..884c7a533e
 +
 +    arrays = %w[build build_and_test runtime_and_test].to_h do |key|
 +      value = plan[key]
-+      valid_names = value.is_a?(Array) && value == value.sort.uniq &&
++      valid_names = value.is_a?(Array) && value.length <= MAX_DEPENDENCIES &&
++                    value == value.sort.uniq &&
 +                    value.all? { |name| name.is_a?(String) && DEPENDENCY_NAME.match?(name) }
 +      raise "Kandelo publisher dependency plan contains invalid #{key} names" unless valid_names
 +

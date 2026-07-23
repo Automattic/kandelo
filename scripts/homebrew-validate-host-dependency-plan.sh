@@ -19,10 +19,10 @@ jq -e --arg tap "$EXPECTED_TAP" --arg formula "$FORMULA" \
   .tap == $tap and
   .formula == $formula and
   .full_name == ($tap + "/" + $formula) and
-  (.build | type == "array") and
-  (.build_and_test | type == "array") and
+  (.build | type == "array" and length <= 128) and
+  (.build_and_test | type == "array" and length <= 128) and
   (.native_requirements | type == "array" and length <= 128) and
-  (.runtime_and_test | type == "array") and
+  (.runtime_and_test | type == "array" and length <= 128) and
   (.build == (.build | sort | unique)) and
   (.build_and_test == (.build_and_test | sort | unique)) and
   (.runtime_and_test == (.runtime_and_test | sort | unique)) and
