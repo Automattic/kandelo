@@ -51,6 +51,13 @@ import {
   type VfsImageMetadata,
 } from "../../../host/src/vfs/memory-fs";
 import {
+  assertPackageDeferredZipTreeState,
+  derivePackageDeferredZipTree,
+  materializePackageDeferredZipTree,
+  registerPackageDeferredZipTree,
+  type DerivedPackageDeferredZipTree,
+} from "../../../host/src/vfs/package-deferred-tree";
+import {
   KANDELO_DEMO_CONFIG_PATH,
   MAX_KANDELO_DEMO_CONFIG_BYTES,
   parseKandeloDemoConfig,
@@ -100,6 +107,9 @@ interface CliOptions {
   materializationPolicy?: string;
   bottleMirrorRepository?: string;
   bottleMirrorOut?: string;
+  packageTreeSpec?: string;
+  packageTreeArchive?: string;
+  materializePackageTree: boolean;
 }
 
 /**
@@ -311,6 +321,29 @@ export async function runHomebrewVfsImageBuilder(
     result = materializedBuild.result;
     materializedBuild.assert(fs);
   }
+  let packageTree: {
+    derived: DerivedPackageDeferredZipTree;
+    state: "deferred" | "materialized";
+  } | undefined;
+  if (options.packageTreeSpec !== undefined) {
+    const archiveBytes = readPackageTreeArchive(options.packageTreeArchive!);
+    const derived = derivePackageDeferredZipTree(
+      readJsonFile(options.packageTreeSpec),
+      archiveBytes,
+    );
+    if (basename(options.packageTreeArchive!) !== derived.descriptor.package.output) {
+      throw new Error(
+        `package tree archive must be named ${derived.descriptor.package.output}`,
+      );
+    }
+    const registered = registerPackageDeferredZipTree(fs, derived);
+    if (options.materializePackageTree) {
+      await materializePackageDeferredZipTree(fs, registered, archiveBytes);
+    }
+    const state = options.materializePackageTree ? "materialized" : "deferred";
+    assertPackageDeferredZipTreeState(fs, derived, state);
+    packageTree = { derived, state };
+  }
   if (shellConfig) {
     assertShellExecutable(fs, shellConfig.config.path);
     if (
@@ -350,6 +383,9 @@ export async function runHomebrewVfsImageBuilder(
       createdBy: "images/vfs/scripts/build-homebrew-vfs-image.ts",
       capacity: { maxByteLength },
       ...(baseImage ? { baseImage: baseImage.binding } : {}),
+      ...(packageTree === undefined ? {} : {
+        packageDeferredTrees: [packageTreeBinding(packageTree)],
+      }),
       homebrew: {
         tapRepository: plan.tapRepository,
         tapName: plan.tapName,
@@ -441,9 +477,16 @@ export async function runHomebrewVfsImageBuilder(
     );
   }
   let bottleMirrorOutput: unknown;
-  if (materializedBuild !== undefined) {
+  if (materializedBuild !== undefined || packageTree !== undefined) {
     const restored = MemoryFileSystem.fromImagePreservingCapacity(imageBytes);
-    materializedBuild.assert(restored);
+    materializedBuild?.assert(restored);
+    if (packageTree !== undefined) {
+      assertPackageDeferredZipTreeState(
+        restored,
+        packageTree.derived,
+        packageTree.state,
+      );
+    }
     if (shellConfig !== undefined) {
       assertShellExecutable(restored, shellConfig.config.path);
       if (restored.isPathDeferred(shellConfig.config.path)) {
@@ -453,9 +496,11 @@ export async function runHomebrewVfsImageBuilder(
         );
       }
     }
-    bottleMirrorOutput = materializedBuild.writeBottleMirrorBundle(
-      options.bottleMirrorOut!,
-    );
+    if (materializedBuild !== undefined) {
+      bottleMirrorOutput = materializedBuild.writeBottleMirrorBundle(
+        options.bottleMirrorOut!,
+      );
+    }
   }
 
   if (options.lazyLayerOut && options.lazyLayerDescriptor) {
@@ -530,6 +575,9 @@ export async function runHomebrewVfsImageBuilder(
     ...(bottleMirrorOutput === undefined ? {} : {
       bottle_mirror: bottleMirrorOutput,
     }),
+    ...(packageTree === undefined ? {} : {
+      package_deferred_trees: [packageTreeBinding(packageTree)],
+    }),
     // Report a reproducible artifact identity, not a runner/worktree path.
     image: basename(options.out),
   };
@@ -550,6 +598,7 @@ function parseArgs(args: string[]): CliOptions {
     arch: "wasm32",
     allowFallback: true,
     writeProfile: false,
+    materializePackageTree: false,
   };
 
   for (let i = 0; i < args.length; i += 1) {
@@ -697,6 +746,24 @@ function parseArgs(args: string[]): CliOptions {
         }
         options.bottleMirrorOut = requireValue(args, ++i, arg);
         break;
+      case "--package-tree-spec":
+        if (options.packageTreeSpec !== undefined) {
+          usage("--package-tree-spec may be provided only once");
+        }
+        options.packageTreeSpec = requireValue(args, ++i, arg);
+        break;
+      case "--package-tree-archive":
+        if (options.packageTreeArchive !== undefined) {
+          usage("--package-tree-archive may be provided only once");
+        }
+        options.packageTreeArchive = requireValue(args, ++i, arg);
+        break;
+      case "--materialize-package-tree":
+        if (options.materializePackageTree) {
+          usage("--materialize-package-tree may be provided only once");
+        }
+        options.materializePackageTree = true;
+        break;
       case "--help":
       case "-h":
         usage(undefined, 0);
@@ -752,6 +819,18 @@ function parseArgs(args: string[]): CliOptions {
   }
   if (options.bottleMirrorOut !== undefined && existsSync(options.bottleMirrorOut)) {
     usage(`bottle mirror output must not already exist: ${options.bottleMirrorOut}`);
+  }
+  if (Boolean(options.packageTreeSpec) !== Boolean(options.packageTreeArchive)) {
+    usage("--package-tree-spec and --package-tree-archive must be provided together");
+  }
+  if (options.materializePackageTree && options.packageTreeSpec === undefined) {
+    usage("--materialize-package-tree requires a package tree");
+  }
+  if (options.packageTreeSpec !== undefined && !existsSync(options.packageTreeSpec)) {
+    usage(`package tree spec does not exist: ${options.packageTreeSpec}`);
+  }
+  if (options.packageTreeArchive !== undefined && !existsSync(options.packageTreeArchive)) {
+    usage(`package tree archive does not exist: ${options.packageTreeArchive}`);
   }
   if (options.materializationPolicy !== undefined && options.lazyLayerOut !== undefined) {
     usage("materialized shell composition cannot also emit a runtime layer");
@@ -866,6 +945,44 @@ function parseBaseImagePath(value: string): string {
     usage(`--base-image must end in .vfs or .vfs.zst, got ${value}`);
   }
   return value;
+}
+
+function readPackageTreeArchive(path: string): Uint8Array {
+  const stat = lstatSync(path);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0) {
+    throw new Error(`package tree archive is not a nonempty regular file: ${path}`);
+  }
+  return new Uint8Array(readFileSync(path));
+}
+
+function packageTreeBinding(tree: {
+  derived: DerivedPackageDeferredZipTree;
+  state: "deferred" | "materialized";
+}) {
+  const descriptor = tree.derived.descriptor;
+  return {
+    schema: descriptor.schema,
+    kind: descriptor.kind,
+    id: descriptor.id,
+    content_role: descriptor.content_role,
+    package: descriptor.package,
+    descriptor: {
+      sha256: tree.derived.descriptorSha256,
+      bytes: tree.derived.descriptorBytes.byteLength,
+    },
+    archive: {
+      output: descriptor.package.output,
+      url: descriptor.archive.url,
+      sha256: descriptor.archive.sha256,
+      bytes: descriptor.archive.bytes,
+      expanded_bytes: descriptor.archive.expanded_bytes,
+      source_entry_count: descriptor.archive.source_entry_count,
+    },
+    mount_prefix: descriptor.mount_prefix,
+    owner: descriptor.owner,
+    activation: descriptor.activation,
+    state: tree.state,
+  };
 }
 
 function createFs(
@@ -1361,6 +1478,9 @@ function usage(message?: string, code = 2): never {
   [--materialization-policy <policy.json> \\
    --bottle-mirror-repository <owner/repository> \\
    --bottle-mirror-out <new-directory>] \\
+  [--package-tree-spec <tree.json> \\
+   --package-tree-archive <package-output.zip> \\
+   [--materialize-package-tree]] \\
   [--lazy-layer-out <layer.bin> \\
    --lazy-layer-descriptor <layer.json> \\
    --lazy-layer-base-image <main-shell.vfs[.zst]> \\
