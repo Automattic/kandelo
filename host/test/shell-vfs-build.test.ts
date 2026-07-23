@@ -159,19 +159,38 @@ describe("shell VFS base composition", () => {
     expectContentsPreserved(restored);
   });
 
-  it("rejects an image that drifts from the standard product capacity", () => {
+  it("rejects an image that drifts from the standard product capacity", async () => {
     const largerProfile = 1024 * MiB;
     const fs = MemoryFileSystem.create(
       new SharedArrayBuffer(16 * MiB, { maxByteLength: largerProfile }),
       largerProfile,
     );
 
-    expect(() =>
-      saveShellDerivedVfsImage(fs, "/tmp/not-written.vfs.zst")
-    ).toThrow(
+    await expect(
+      saveShellDerivedVfsImage(fs, "/tmp/not-written.vfs.zst"),
+    ).rejects.toThrow(
       new RegExp(
         `${largerProfile}-byte VFS capacity.*` +
           `${SHELL_DERIVED_VFS_PROFILE_MAX_BYTES} bytes are required`,
+      ),
+    );
+  });
+
+  it("rejects an explicit product profile below the standard capacity", () => {
+    const smallerProfile = 512 * MiB;
+    const fs = MemoryFileSystem.create(
+      new SharedArrayBuffer(16 * MiB, { maxByteLength: smallerProfile }),
+      smallerProfile,
+    );
+
+    expect(() =>
+      saveShellDerivedVfsImage(fs, "/tmp/not-written.vfs.zst", {
+        expectedMaxByteLength: smallerProfile,
+      })
+    ).toThrow(
+      new RegExp(
+        `must use the standard ${SHELL_DERIVED_VFS_PROFILE_MAX_BYTES}-byte ` +
+          "product profile or an explicitly reviewed, strictly larger profile",
       ),
     );
   });

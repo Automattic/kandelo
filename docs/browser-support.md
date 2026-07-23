@@ -308,12 +308,13 @@ unless at least 64 MiB of data blocks and 8,192 inode slots remain after its
 immutable contents are written. This makes runtime allocation space a checked
 artifact contract instead of allowing an image to build successfully and then
 fail with `ENOSPC` during normal browser initialization. The shared save helper
-also requires the image's effective growth ceiling to equal the 768 MiB product
-profile. A future product that intentionally needs a larger reviewed profile
-must pass that exact ceiling explicitly rather than silently drifting from its
-browser consumer. Host-tree copies fail the build on any read or VFS write
-error; intentional omissions are declared through the copy helper's `exclude`
-option.
+also requires the serialized artifact's encoded growth ceiling to equal the
+768 MiB product profile. A future product that intentionally needs a larger
+reviewed profile must pass that exact ceiling explicitly rather than silently
+drifting from its browser consumer; an override cannot select a smaller
+profile. Host-tree copies fail the build on any read or VFS write error.
+Intentional omissions are declared through the copy helper's `exclude` option,
+and every unexcluded symlink must be preserved explicitly or the build fails.
 
 ```typescript
 // Typical demo pattern
