@@ -75,6 +75,20 @@ export type {
   HomebrewVfsTapIdentity,
 } from "./homebrew-vfs-planner";
 export {
+  HOMEBREW_VFS_FORMULA_LAYER_KIND,
+  HOMEBREW_VFS_FORMULA_MANIFEST_RELATIVE_PATH,
+  HOMEBREW_VFS_FORMULA_PAYLOAD_RELATIVE_PATH,
+  parseHomebrewVfsFormulaLayerManifest,
+  preflightHomebrewVfsFormulaLayers,
+  projectHomebrewVfsFormulaLayer,
+} from "./homebrew-vfs-formula-layer";
+export type {
+  HomebrewVfsFormulaLayerComposition,
+  HomebrewVfsFormulaLayerEntry,
+  HomebrewVfsFormulaLayerManifest,
+  HomebrewVfsFormulaLayerProjection,
+} from "./homebrew-vfs-formula-layer";
+export {
   HOMEBREW_RUNTIME_LAYER_POLICY_KIND,
   parseHomebrewRuntimeLayerPolicy,
   projectHomebrewRuntimeLayerPlan,
