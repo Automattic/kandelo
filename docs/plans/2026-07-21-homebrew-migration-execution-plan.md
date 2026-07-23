@@ -216,14 +216,21 @@ criteria:
 1. Land the atomic package-generation foundation by itself because its exact
    staging and public-bottle proof were already running when batching was
    selected. Do not discard that evidence by expanding its head late.
-2. Land one packaging tranche containing the dedicated guest Homebrew program
-   package, fail-closed VFS publication integrity, and native Homebrew
-   `Requirement` support. Preserve the individual commits and PR references so
-   failures and review history remain attributable.
-3. After explicit runtime-change approval, land one generic VFS tranche that
-   makes lazy and eager package trees consume one verified archive description
-   and binds lazy URLs to their intended source. Keep kernel or POSIX changes
-   outside this tranche.
+2. After explicit kernel-change approval, land one integrated tranche that
+   contains the dedicated guest Homebrew program package, fail-closed VFS
+   publication integrity, native Homebrew `Requirement` support, the generic
+   lazy/eager verified-archive contract, and ABI 42's kernel-owned task identity
+   and dynamically allocated fork continuations. Preserve the individual
+   commits and PR references so failures and review history remain attributable.
+   Keeping these changes in one pull request saves one complete serialized
+   staging and synthesized-merge cycle without weakening the kernel approval
+   boundary: the tranche cannot merge until the ABI/kernel portion is approved.
+3. ABI 42 is not a functional prerequisite for composing the revision-18 VFS.
+   It is deliberately ordered before final bottle publication and shell
+   activation because an ABI bump afterward would invalidate and require
+   republishing the complete ABI-bound bottle and image set. Validate the
+   combined exact tree once, publish one ABI-42 artifact generation, and avoid
+   building a throwaway final ABI-41 generation.
 4. Rotate the tap's reusable-workflow trust pins to the exact landed
    `Requirement`-support commit, then finalize the native-Requirement Formula
    rollout.
@@ -497,11 +504,15 @@ canonical release):
 - The initial proof used the exact locally built directory fix from draft PR
   #1058. PR #1060 superseded that draft, landed the general `getdents64` fix,
   activated canonical revision 17, and completed the Phase 3 package cutover.
-  There is no remaining kernel prerequisite for revision 18. Canonical PR
-  #1056 and the browser ledger in PR #1062 have now landed. The stacked exact
-  shell/language test is green in Node.js and Chromium. Canonical activation
-  now waits only for the shared product-VFS headroom fix, its derived-product
-  regression, and the final exact restack against landed prerequisites.
+  There is no remaining VFS-semantic kernel prerequisite for revision 18.
+  Canonical PR #1056 and the browser ledger in PR #1062 have now landed. The
+  stacked exact shell/language test is green in Node.js and Chromium. ABI 42 is
+  nevertheless scheduled before the final publication/cutover so the complete
+  bottle set is published once for the ABI Kandelo will actually ship, rather
+  than publishing and immediately invalidating another ABI-41 generation.
+  Canonical activation also waits for the shared product-VFS headroom fix, its
+  derived-product regression, and the final exact restack against landed
+  prerequisites.
 
 ### Phase 5: Ship usable upstream Homebrew inside Kandelo
 
