@@ -10,6 +10,7 @@ import {
   type HomebrewVfsFormulaLayerManifest,
   type HomebrewVfsFormulaLayerProjection,
 } from "../src/homebrew-vfs-formula-layer";
+import { HOMEBREW_RUNTIME_LAYER_LIMITS } from "../src/homebrew-runtime-layer-limits";
 import type {
   HomebrewDependency,
   HomebrewFederatedVfsPlan,
@@ -211,6 +212,12 @@ describe("Homebrew VFS Formula layer manifest", () => {
         },
       }),
     ).toThrow("not in canonical order");
+    expect(() =>
+      parseHomebrewVfsFormulaLayerManifest({
+        ...value,
+        package: `${"a".repeat(HOMEBREW_RUNTIME_LAYER_LIMITS.maxRepositoryBytes)}/tap/formula`,
+      }),
+    ).toThrow("canonical owner/tap/formula name");
   });
 });
 
@@ -553,5 +560,58 @@ describe("Homebrew VFS Formula layer composition preflight", () => {
     expect(() =>
       preflightHomebrewVfsFormulaLayers([withSharedA, withIncompatibleShared]),
     ).toThrow(`${shared.fullName} to different immutable package identities`);
+  });
+
+  it("enforces image-wide package, entry, and payload budgets after deduplication", () => {
+    const first = projection(CORE_TAP, "first-vfs", [
+      { path: "first", type: "file", mode: 0o644, data: new Uint8Array([1]) },
+    ]);
+    const second = projection(EXTERNAL_TAP, "second-vfs", [
+      { path: "second", type: "file", mode: 0o644, data: new Uint8Array([2]) },
+    ]);
+
+    const packageHeavy = structuredClone(first);
+    packageHeavy.packages = [
+      ...Array.from(
+        { length: HOMEBREW_RUNTIME_LAYER_LIMITS.maxPackages - 1 },
+        (_, index) => pkg(CORE_TAP, `dependency-${index}`),
+      ),
+      packageHeavy.rootPackage,
+    ];
+    expect(() =>
+      preflightHomebrewVfsFormulaLayers([packageHeavy, second]),
+    ).toThrow(
+      `packages; maximum is ${HOMEBREW_RUNTIME_LAYER_LIMITS.maxPackages}`,
+    );
+
+    const entryHeavy = structuredClone(first);
+    entryHeavy.entries = Array.from(
+      { length: HOMEBREW_RUNTIME_LAYER_LIMITS.maxCollectionEntries },
+      (_, index) => ({
+        path: `/entry-${index}`,
+        source_path: `${first.rootPackage.payloadRoot}/entry-${index}`,
+        type: "file" as const,
+        mode: 0o644,
+        size: 1,
+      }),
+    );
+    expect(() =>
+      preflightHomebrewVfsFormulaLayers([entryHeavy, second]),
+    ).toThrow(
+      `entries; maximum is ${HOMEBREW_RUNTIME_LAYER_LIMITS.maxCollectionEntries}`,
+    );
+
+    const payloadHeavy = structuredClone(first);
+    const halfPayloadBudget =
+      Math.floor(HOMEBREW_RUNTIME_LAYER_LIMITS.maxCollectionPayloadBytes / 2) +
+      1;
+    payloadHeavy.entries[0]!.size = halfPayloadBudget;
+    const secondPayloadHeavy = structuredClone(second);
+    secondPayloadHeavy.entries[0]!.size = halfPayloadBudget;
+    expect(() =>
+      preflightHomebrewVfsFormulaLayers([payloadHeavy, secondPayloadHeavy]),
+    ).toThrow(
+      `${HOMEBREW_RUNTIME_LAYER_LIMITS.maxCollectionPayloadBytes}-byte cap`,
+    );
   });
 });

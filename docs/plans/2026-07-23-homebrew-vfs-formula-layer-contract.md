@@ -34,12 +34,19 @@ without making publication provenance circular.
 - one explicitly requested, dependency-first Formula closure;
 - fixed manifest and payload presence in the root bottle;
 - canonical path, directory, mode, symlink, hard-link, and activation checks;
-- deterministic cross-layer package and target ownership preflight.
+- deterministic cross-layer package and target ownership preflight; and
+- image-wide package, entry, and payload budgets after shared ownership is
+  deduplicated.
 
 Two selected layers may share an ordinary Formula dependency. Composition
 installs it once when both plans bind the exact same bottle, link projection,
 and immutable provenance; two different identities for the same full Formula
 name fail before filesystem staging begins.
+
+Per-layer bounds are not sufficient on their own: several valid layers can
+still exceed one VFS image's retained-resource budget. Composition therefore
+charges the final deduplicated package and path inventory before a descriptor
+builder or staged filesystem is allowed to mutate state.
 
 The existing runtime-layer consumer remains the composition endpoint. It
 already verifies descriptor and content hashes, the exact base image and ABI,

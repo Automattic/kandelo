@@ -296,6 +296,37 @@ export function preflightHomebrewVfsFormulaLayers(
     }
   }
 
+  // Each projection is bounded when it is built, but the collection limits
+  // belong to the final VFS. Charge the deduplicated package/path inventory so
+  // shared dependencies and mergeable directories count once without letting
+  // several individually valid layers exceed the image-wide budget.
+  if (packageOwner.size > HOMEBREW_RUNTIME_LAYER_LIMITS.maxPackages) {
+    throw new Error(
+      `Homebrew VFS Formula composition contains ${packageOwner.size} ` +
+        `packages; maximum is ${HOMEBREW_RUNTIME_LAYER_LIMITS.maxPackages}`,
+    );
+  }
+  if (pathOwner.size > HOMEBREW_RUNTIME_LAYER_LIMITS.maxCollectionEntries) {
+    throw new Error(
+      `Homebrew VFS Formula composition contains ${pathOwner.size} entries; ` +
+        `maximum is ${HOMEBREW_RUNTIME_LAYER_LIMITS.maxCollectionEntries}`,
+    );
+  }
+  let payloadBytes = 0;
+  for (const entry of pathOwner.values()) {
+    if (entry.type !== "file") continue;
+    payloadBytes += entry.size;
+    if (
+      !Number.isSafeInteger(payloadBytes) ||
+      payloadBytes > HOMEBREW_RUNTIME_LAYER_LIMITS.maxCollectionPayloadBytes
+    ) {
+      throw new Error(
+        `Homebrew VFS Formula composition payload exceeds the ` +
+          `${HOMEBREW_RUNTIME_LAYER_LIMITS.maxCollectionPayloadBytes}-byte cap`,
+      );
+    }
+  }
+
   return {
     layers,
     packageOrder: [...packageOwner.keys()],
@@ -782,7 +813,11 @@ function requireCanonicalStringArray(
 }
 
 function requireFullPackageName(value: unknown, label: string): string {
-  if (typeof value !== "string" || !FULL_PACKAGE_RE.test(value)) {
+  if (
+    typeof value !== "string" ||
+    encodedLength(value) > HOMEBREW_RUNTIME_LAYER_LIMITS.maxRepositoryBytes ||
+    !FULL_PACKAGE_RE.test(value)
+  ) {
     throw new Error(`${label} must be a canonical owner/tap/formula name`);
   }
   return value;
