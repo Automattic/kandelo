@@ -93,5 +93,12 @@ mutate_and_reject "malformed evaluated class identity" \
 mutate_and_reject "open native Requirement record" \
   '.native_requirements[0].unexpected = true'
 mutate_and_reject "missing native Requirement plan" 'del(.native_requirements)'
+mutate_and_reject "oversized host dependency arrays" '
+  ([range(0; 129) | "tool\(.)"] | sort) as $tools |
+  .build = $tools |
+  .build_and_test = $tools |
+  .native_requirements = [] |
+  .runtime_and_test = $tools
+'
 
 echo "test-homebrew-validate-host-dependency-plan.sh: ok"
