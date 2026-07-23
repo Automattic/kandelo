@@ -533,6 +533,28 @@ atomically materializes its guest projection. It does not fetch individual TAR
 members or use HTTP ranges. Dependency bottles have separate identities and
 remain unfetched until a path owned by that dependency is used.
 
+The guest `brew` implementation is distributed separately from Formula
+bottles as the `homebrew-bootstrap` program package. Its single declared
+artifact, `homebrew-bootstrap.zip`, is a deterministic archive of one exact
+upstream Homebrew commit plus Kandelo's reviewed guest-platform patch. Although
+the artifact is not Wasm, it uses the ordinary program-package resolver,
+program projection, cache key, and release archive contracts; its output
+therefore declares `fork_instrumentation = "disabled"`.
+
+`homebrew/homebrew-bootstrap-source-lock.json` is the reviewed source/output
+identity. It binds the upstream archive URL and SHA-256, sealed
+`[[git_inputs]]` commit, patch path/SHA-256/license, patched Git and normalized
+tree identities, portable Ruby version, archive-producing Git version, and
+final ZIP SHA-256/byte count. The
+package build imports the resolver-owned exact Git checkout into private
+scratch storage and performs no source fetch of its own. The lock also records
+the current shell migration producer's ZIP identity and requires byte
+equality, so the later ownership cutover cannot silently change guest
+Homebrew bytes. Shell and bootstrap-image consumers still use their existing
+preparation paths until their separate cutover changes land. Run
+the build through `scripts/dev-shell.sh`; a different Git ZIP implementation
+fails the exact output lock instead of publishing different bytes.
+
 See [docs/homebrew-publishing.md](homebrew-publishing.md) for the Homebrew
 formula, sidecar, GHCR, VFS, and runtime validation contract.
 

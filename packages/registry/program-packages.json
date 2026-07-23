@@ -127,6 +127,13 @@
         "wasm64": "672b7412bf57cb280cfd03eee984688f347ca8f596a1fce51a4bffcab4d8401c"
       }
     },
+    "homebrew-bootstrap": {
+      "manifestSha256": "8c84a06baad0ebda5d3b5610e4c0680d70083bea3f79715ef0fffdc29d9e5e70",
+      "cacheKeys": {
+        "wasm32": "1acdbf6ce9b58eb897f6ff03d39aae2870440a67997b6d98a84845bfe5c6f901",
+        "wasm64": "6e2f973bc597640eca47582214193c092d6295e58276b10b9c03e93bac094f9c"
+      }
+    },
     "icu": {
       "manifestSha256": "f5b1f02d169ec1108fc32d9da55be53c3efb96e3a7aeba6a03aec62e0175f0dc",
       "cacheKeys": {
@@ -1022,6 +1029,27 @@
           "mirrorPath": "gzip.wasm",
           "outputName": "gzip",
           "forkInstrumentation": "auto"
+        }
+      ]
+    },
+    "homebrew-bootstrap": {
+      "manifestSha256": "8c84a06baad0ebda5d3b5610e4c0680d70083bea3f79715ef0fffdc29d9e5e70",
+      "arches": [
+        "wasm32"
+      ],
+      "cacheKeys": {
+        "wasm32": "1acdbf6ce9b58eb897f6ff03d39aae2870440a67997b6d98a84845bfe5c6f901"
+      },
+      "dependencyClosures": {
+        "wasm32": []
+      },
+      "members": [
+        {
+          "kind": "output",
+          "sourceArtifact": "homebrew-bootstrap.zip",
+          "mirrorPath": "homebrew-bootstrap.zip",
+          "outputName": "homebrew-bootstrap",
+          "forkInstrumentation": "disabled"
         }
       ]
     },
