@@ -396,9 +396,9 @@ jobs:
           KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL: /homebrew-main-shell-bottles/kandelo-homebrew-bottle-mirror-plan.json
         run: |
           set -euo pipefail
-          report="$RUNNER_TEMP/homebrew-main-shell-playwright.json"
+          shell_report="$RUNNER_TEMP/homebrew-main-shell-playwright.json"
+          modeset_report="$RUNNER_TEMP/homebrew-main-shell-modeset-playwright.json"
           playwright_env=(
-            "PLAYWRIGHT_JSON_OUTPUT_FILE=$report"
             "KANDELO_HOMEBREW_MAIN_SHELL_STRICT=$KANDELO_HOMEBREW_MAIN_SHELL_STRICT"
             "KANDELO_HOMEBREW_MAIN_SHELL_SHA256=$KANDELO_HOMEBREW_MAIN_SHELL_SHA256"
             "KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE=$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE"
@@ -416,14 +416,27 @@ jobs:
           fi
           (
             cd apps/browser-demos
-            bash ../../scripts/dev-shell.sh env "${playwright_env[@]}" \
+            bash ../../scripts/dev-shell.sh env \
+              "PLAYWRIGHT_JSON_OUTPUT_FILE=$shell_report" \
+              "${playwright_env[@]}" \
               npx playwright test test/kandelo-homebrew-main-shell.spec.ts \
               --project=chromium --reporter=json
+            # The shell VFS and worker occupy roughly 512 MiB, making browser-
+            # process lifetime part of this proof. Start MODESET in a fresh
+            # Playwright process so the test measures the candidate image, not
+            # whether a previous heavyweight worker has been collected yet.
+            bash ../../scripts/dev-shell.sh env \
+              "PLAYWRIGHT_JSON_OUTPUT_FILE=$modeset_report" \
+              "${playwright_env[@]}" \
+              npx playwright test test/kandelo-modeset.spec.ts \
+              --project=chromium --reporter=json
           )
-          jq -e '
-            .stats.expected == 1 and .stats.unexpected == 0 and
-            .stats.flaky == 0 and .stats.skipped == 0
-          ' "$report" >/dev/null
+          for report in "$shell_report" "$modeset_report"; do
+            jq -e '
+              .stats.expected == 1 and .stats.unexpected == 0 and
+              .stats.flaky == 0 and .stats.skipped == 0
+            ' "$report" >/dev/null
+          done
 
       - name: Upload exact closure evidence
         if: always()
@@ -437,6 +450,7 @@ jobs:
             ${{ runner.temp }}/homebrew-main-shell-bottle-recovery.json
             ${{ runner.temp }}/homebrew-main-shell-bottle-publish.json
             ${{ runner.temp }}/homebrew-main-shell-playwright.json
+            ${{ runner.temp }}/homebrew-main-shell-modeset-playwright.json
             apps/browser-demos/test-results
           retention-days: 7
           if-no-files-found: warn
