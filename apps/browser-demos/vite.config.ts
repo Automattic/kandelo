@@ -162,7 +162,7 @@ function applyDefaultProgramArch(relPath: string): string {
   return `programs/wasm32/${tail}`;
 }
 
-function mirrorEntryExists(relPath: string): boolean {
+function candidateEntryExists(relPath: string): boolean {
   return binaryMirrorRoots.some((root) => {
     try {
       fs.lstatSync(path.resolve(root, relPath));
@@ -189,7 +189,7 @@ function createBrowserBinaryResolution(
     resolveBatch: tryResolveBinaries,
     resolveOne: tryResolveBinary,
     approve: (file) => access.approve(file),
-    mirrorEntryExists,
+    candidateEntryExists,
   });
 }
 
@@ -413,7 +413,7 @@ function resolveBinariesAlias(
   return {
     name: "resolve-binaries-alias",
     enforce: "pre",
-    resolveId(source, importer) {
+    resolveId(source, importer, options) {
       let request: BinaryMirrorImport | null = null;
       if (source.startsWith(PREFIX)) {
         const queryIndex = source.indexOf("?");
@@ -432,6 +432,14 @@ function resolveBinariesAlias(
         request = relativeBinaryMirrorImport(source, importer);
       }
       if (request === null) return null;
+      if (options.scan) {
+        // Vite's dependency scanner only classifies the import graph; it does
+        // not load these assets. Let Vite mark asset/query imports external so
+        // HTML-only smoke sessions do not need the Rust package checker.
+        // The real transform request returns here without `scan` and performs
+        // the complete resolver/capability check before any bytes are served.
+        return null;
+      }
 
       const resolved = resolution.resolve(request.relPath);
       if (resolved) return resolved + request.query;
