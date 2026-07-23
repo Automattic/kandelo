@@ -19410,7 +19410,6 @@ mod tests {
     #[test]
     fn test_kill_marks_signal_pending() {
         let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
         sys_kill(&mut proc, 1, 2).unwrap(); // SIGINT=2
         assert!(proc.signals.is_pending(2));
     }
@@ -19418,7 +19417,6 @@ mod tests {
     #[test]
     fn test_kill_sig_zero_is_noop() {
         let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
         sys_kill(&mut proc, 1, 0).unwrap();
         assert_eq!(proc.signals.pending, 0);
     }
@@ -19426,7 +19424,6 @@ mod tests {
     #[test]
     fn test_kill_invalid_signal() {
         let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
         let result = sys_kill(&mut proc, 1, 100);
         assert_eq!(result, Err(Errno::EINVAL));
     }
@@ -19434,7 +19431,6 @@ mod tests {
     #[test]
     fn test_process_local_kill_rejects_remote_pid() {
         let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
         let result = sys_kill(&mut proc, 2, 15);
         assert_eq!(result, Err(Errno::ESRCH));
         assert!(!proc.signals.is_pending(15)); // NOT pending locally
@@ -19443,7 +19439,6 @@ mod tests {
     #[test]
     fn test_kill_self_raises_locally() {
         let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
         let result = sys_kill(&mut proc, 1, 2);
         assert!(result.is_ok());
         assert!(proc.signals.is_pending(2));
@@ -19452,7 +19447,6 @@ mod tests {
     #[test]
     fn test_process_local_kill_does_not_infer_group_from_pid_zero() {
         let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
         let result = sys_kill(&mut proc, 0, 2);
         assert_eq!(result, Err(Errno::ESRCH));
         assert!(!proc.signals.is_pending(2));
@@ -19461,7 +19455,6 @@ mod tests {
     #[test]
     fn test_process_local_kill_sig_zero_rejects_remote_pid() {
         let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
         let result = sys_kill(&mut proc, 2, 0);
         assert_eq!(result, Err(Errno::ESRCH));
         assert_eq!(proc.signals.pending, 0); // no signal raised locally
@@ -19581,7 +19574,6 @@ mod tests {
     #[test]
     fn test_raise_is_kill_to_self() {
         let mut proc = Process::new(42);
-        let mut host = MockHostIO::new();
         sys_raise(&mut proc, 15).unwrap(); // SIGTERM
         assert!(proc.signals.is_pending(15));
     }
@@ -19626,7 +19618,6 @@ mod tests {
         );
 
         // Step 3: Raise SIGINT
-        let mut host = MockHostIO::new();
         let result = sys_raise(&mut proc, SIGINT);
         assert!(result.is_ok());
         assert!(proc.signals.is_pending(SIGINT), "SIGINT should be pending");
