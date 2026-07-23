@@ -646,9 +646,49 @@ For each declared arch in the package's `arches = [...]` (default
      cache-key sha (catches recipe drift).
 6. Places each program output under `binaries/programs/<arch>/` using the
    manifest's output layout, and places declared non-Wasm runtime files under
-   `binaries/programs/<arch>/<package>/<artifact>`. Both are symlinks into the
-   validated cache, so browser/Node image builders load the same bytes without
-   re-fetching. Local builds use the identical layout under `local-binaries/`.
+   `binaries/programs/<arch>/<package>/<artifact>`. When the combined output
+   and runtime-file count is greater than one, every member—including the sole
+   executable of an executable-plus-runtime package—lives below one package
+   directory. Members are symlinks into the validated cache, so browser/Node
+   image builders load the same bytes without re-fetching. The host verifies
+   that every link ends in its declared source-artifact suffix and that all
+   links resolve into one canonical program-cache generation. It returns those
+   canonical member paths instead of the mutable mirror paths.
+
+For a multi-member package closure, the fetched materializer validates every
+output and runtime file before changing the live mirror. It creates a
+same-parent staging directory, renames the old live directory to a
+transaction-owned backup, then renames the stage to the live name. A concurrent
+path lookup can therefore see the complete old directory, a brief absence
+between renames, or the complete new directory, but not a partially populated
+live directory. Normal failures roll back or clean up only paths owned by that
+transaction. An abrupt process crash can leave an inert stage or backup; those
+orphans are not automatically scavenged because there is no lease proving that
+another process is not still using them.
+
+Direct local builds use the same public layout but different backing storage.
+One build-helper session collects exact declared suffixes under
+`local-binaries/.kandelo-local-generations/<arch>/<package>/<session>/`. Members
+are create-once regular files. Only a complete, validated tree can claim its
+one publication attempt and atomically replace the live package directory; a
+claimed missing generation is never recreated. A one-member package keeps its
+historical flat regular-file mirror and replaces that one entry through a
+private stage without dereferencing an old destination symlink.
+
+The stage and live directory must be on the same filesystem so rename remains
+atomic. Unix uses file symlinks for mirror members. Windows uses file symlinks
+too, but missing symlink privileges or open handles that prevent a rename make
+the transaction abort and roll back; the implementation does not depend on
+Windows overwrite semantics.
+
+Canonical paths protect a consumer from later live-mirror swaps; they are not
+open file descriptors or operating-system leases. Normal fetched cache entries
+are treated as immutable, but force-source rebuild and stale-cache repair can
+remove and recreate one canonical cache-key directory. Those maintenance
+operations must not run concurrently with consumers of the same package or a
+previously returned path may disappear or name replacement bytes. Append-only
+local session generations do not have this maintenance exception unless a user
+manually deletes resolver-owned state.
 
 The no-argument form above materializes every publishable registry root. A
 bounded consumer should repeat `--package` for its direct roots instead:

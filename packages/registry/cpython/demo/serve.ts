@@ -20,7 +20,7 @@ const scriptDir = dirname(new URL(import.meta.url).pathname);
 const repoRoot = resolve(scriptDir, "../../../..");
 
 async function main() {
-    const pythonWasm = tryResolveBinary("programs/cpython.wasm");
+    const pythonWasm = tryResolveBinary("programs/cpython/cpython.wasm");
     const pythonHome = resolve(repoRoot, "packages/registry/cpython/cpython-install");
 
     if (!pythonWasm) {
