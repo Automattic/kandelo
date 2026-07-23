@@ -719,6 +719,15 @@ output, such as a pinned upstream tool implementation, is explicitly not a
 Homebrew bottle; formula bottles remain their original published TAR+gzip
 artifacts.
 
+Package ZIP trees declare the closed `portable-posix-v1` mode policy. It
+normalizes directories to `0755`, symbolic links to `0777`, and regular files
+to `0755` when the ZIP member carries any execute bit or `0644` otherwise.
+This prevents host-specific archive modes from changing the installed tree,
+and the lazy and eager paths validate and install the same normalized modes.
+`host/test/package-deferred-tree.test.ts`, in “derives one canonical descriptor
+from the exact package output,” covers the policy with deliberately
+non-portable input modes.
+
 Relative lazy asset URLs are resolved inside the dedicated kernel worker on
 both hosts. Browser boots use `BrowserKernel`'s `lazyUrlBase`; Node boots use
 the peer `NodeKernelHost.rootfsLazyUrlBase` option. Closed/offline acceptance
