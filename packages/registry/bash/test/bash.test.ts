@@ -67,11 +67,7 @@ describe.skipIf(!hasBash)("bash shell", () => {
   it("supports indexed arrays", async () => {
     const result = await runCentralizedProgram({
       programPath: bashBinary,
-      argv: [
-        "bash",
-        "-c",
-        "arr=(one two three); echo ${arr[1]} ${#arr[@]}",
-      ],
+      argv: ["bash", "-c", "arr=(one two three); echo ${arr[1]} ${#arr[@]}"],
       env: bashEnv,
       timeout: 20_000,
     });
@@ -82,11 +78,7 @@ describe.skipIf(!hasBash)("bash shell", () => {
   it("supports associative arrays", async () => {
     const result = await runCentralizedProgram({
       programPath: bashBinary,
-      argv: [
-        "bash",
-        "-c",
-        'declare -A h=([a]=1 [b]=2 [c]=3); echo ${h[b]}',
-      ],
+      argv: ["bash", "-c", "declare -A h=([a]=1 [b]=2 [c]=3); echo ${h[b]}"],
       env: bashEnv,
       timeout: 20_000,
     });
@@ -141,11 +133,7 @@ describe.skipIf(!hasBash)("bash shell", () => {
   it("supports C-style for loop", async () => {
     const result = await runCentralizedProgram({
       programPath: bashBinary,
-      argv: [
-        "bash",
-        "-c",
-        "for ((i=0; i<3; i++)); do echo $i; done",
-      ],
+      argv: ["bash", "-c", "for ((i=0; i<3; i++)); do echo $i; done"],
       env: bashEnv,
       timeout: 20_000,
     });
@@ -177,6 +165,38 @@ describe.skipIf(!hasBash)("bash shell", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("y");
+  });
+
+  it("can restore and enumerate the builtins used by Homebrew", async () => {
+    const result = await runCentralizedProgram({
+      programPath: bashBinary,
+      argv: [
+        "bash",
+        "-c",
+        [
+          "enable -n compgen",
+          "builtin enable compgen unset",
+          "saw_compgen= saw_unset=",
+          "for cmd in $(builtin compgen -A builtin); do",
+          '  case "$cmd" in',
+          "    compgen) saw_compgen=yes ;;",
+          "    unset) saw_unset=yes ;;",
+          "  esac",
+          "done",
+          'test "$saw_compgen" = yes',
+          'test "$saw_unset" = yes',
+          'test "$(type -t compgen)" = builtin',
+          "type complete >/dev/null",
+          "type compopt >/dev/null",
+          'printf "homebrew-builtins-ok\\n"',
+        ].join("\n"),
+      ],
+      env: bashEnv,
+      timeout: 20_000,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("homebrew-builtins-ok");
+    expect(result.stderr).toBe("");
   });
 
   it("exits with the correct status", async () => {

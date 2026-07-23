@@ -124,6 +124,9 @@ if [ ! -f Makefile ]; then
     export CFLAGS="-O2 -gline-tables-only -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types"
     export LDFLAGS="-Wl,-z,stack-size=1048576 ${LDFLAGS_NCURSES:-}"
 
+    # Stock Homebrew uses compgen while resetting Bash's builtin command set
+    # during every invocation. Keep programmable completion enabled even when
+    # the image does not install interactive completion scripts.
     wasm32posix-configure \
         --prefix=/usr \
         --without-bash-malloc \
@@ -134,7 +137,7 @@ if [ ! -f Makefile ]; then
         --disable-nls \
         --disable-mem-scramble \
         --disable-net-redirections \
-        --disable-progcomp \
+        --enable-progcomp \
         2>&1 | tail -30
 
     echo "==> Configure complete."

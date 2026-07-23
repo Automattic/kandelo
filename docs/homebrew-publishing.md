@@ -31,14 +31,15 @@ Homebrew's `bottle do` block.
 
 The patched Homebrew Ruby tree used by a guest is a dedicated Kandelo program
 package named `homebrew-bootstrap`; it is not a Formula bottle. The package
-emits `homebrew-bootstrap.zip` from a sealed exact Homebrew checkout and the
-reviewed guest-platform patch. Its source lock at
+atomically emits `homebrew-bootstrap.zip` from a sealed exact Homebrew checkout
+and the reviewed guest-platform patch plus `homebrew-brew.env`, which owns the
+matching architecture and system-environment policy. Its source lock at
 `homebrew/homebrew-bootstrap-source-lock.json` binds all source, patch,
 prepared-tree, portable-Ruby, archive-producing Git, and final-archive
-identities. The first package revision is sealed by the exact final ZIP
-SHA-256 and byte count recorded in that lock. Consumer cutover is a separate
-rollout step, so introducing the package does not change shell or
-bootstrap-image consumers.
+identities. The program-package generation binds both declared members to one
+recipe, dependency closure, cache identity, and immutable release archive;
+consumers must resolve the canonical nested member paths together rather than
+recreating `brew.env` or resolving a mutable flat fallback.
 
 ## Repositories And Ownership
 
@@ -464,8 +465,9 @@ offline after its disposable Ruby dependencies have been provisioned and
 sealed. Kandelo guests instead receive upstream Homebrew commit
 `4ead8619231cb15cbe15e8e8188081e347d6f7cd` through the dedicated
 `homebrew-bootstrap` program package. Guest acceptance must materialize that
-package through the canonical ABI release index and verify its package-output
-receipt, archive identity, cache key, and locked inner ZIP before booting it.
+package through the canonical ABI release index and verify its complete
+two-member generation, package-output receipt, archive identity, cache key,
+and locked inner ZIP before booting it.
 The PR staging release is evidence for the package build, not a durable
 consumer URL. Until the package is activated in the canonical ABI index and
 the tap has adopted these Requirement declarations under a compatible pinned
@@ -1338,8 +1340,11 @@ the ABI from `crates/shared`, resolves the Node kernel, canonical rootfs package
 set, and Homebrew bootstrap programs through `xtask build-deps`, and calls
 `scripts/prepare-homebrew-bootstrap-source.sh` to prepare Homebrew. The
 dedicated `homebrew-bootstrap` package uses that same preparer and records
-byte identity with this still-current image path; switching this image to
-consume the package is a separate consumer change. Source preparation verifies
+the source ZIP and `homebrew-brew.env` as one package generation. The main
+shell resolves that exact generation, embeds the small environment policy, and
+registers the source ZIP as a package-level lazy tree behind `/usr/bin/brew`;
+the separate diagnostic bootstrap image above remains an eager integration
+artifact. Source preparation verifies
 the reviewed patch SHA-256, refuses an upstream revision where the patch does
 not apply, limits the patch to its declared Homebrew files, and archives the
 patched Git tree with a fixed timestamp and UTC timezone.
@@ -1400,11 +1405,16 @@ not prove shebang dispatch, `/usr/bin/brew` alias execution, an install, or a
 bottle download.
 
 ABI 41 raised every fork continuation reserve from 16 KiB to 60 KiB. The
-earlier ABI 39 dispatcher and `/usr/bin/brew` alias-launcher measurements needed
-20,012 and 29,212 bytes respectively. The exact candidate bootstrap also found
-a 49,232-byte Bash child continuation in the recursive command evaluator,
-which the 48 KiB draft reserve rejected truthfully. All three now fit without
-weakening the overrun guard. Repeat the probe with
+earlier ABI 39 dispatcher, `/usr/bin/brew` alias-launcher, and recursive Bash
+measurements needed 20,012, 29,212, and 49,232 bytes respectively, so the
+shallow source/bootstrap probe above fits. The complete main-shell proof found
+that Ruby-backed Homebrew startup can require 64,256 and 66,092 bytes. ABI 41
+therefore does not support the full guest Homebrew lifecycle; the truthful
+overrun is a platform failure, not a package defect. Full support waits for the
+reviewed dynamic continuation design, allocation-failure recovery, ABI-current
+bottle rebuild, and exact Node/browser proof. Do not increase a package-local
+limit, bypass command substitution, or accept the diagnostic as success.
+Repeat the shallow source probe with
 `--brew-script /usr/bin/brew` when validating the alias path; `$0` must remain
 `/usr/bin/brew`, the launcher must recognize the symlink, and the command must
 print the Homebrew version rather than silently falling back to `/Library`.

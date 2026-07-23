@@ -4,8 +4,8 @@
     "bash": {
       "manifestSha256": "6478060f28d430d18a6ebe7c603392d35a41d9bcf6bc74322351d1450b9c5335",
       "cacheKeys": {
-        "wasm32": "a43cb889225cd487f93af47eafe907467d21df9bc04428a5ad3df7c57cf0c6ba",
-        "wasm64": "aeb203ba1b78a3ca325ea9635ab2d687ea5e537db2637281f9f1124f5b333428"
+        "wasm32": "d3cdc17240c24d040cffa61a2508953888aea23ac0a080203c1a92135635d2b9",
+        "wasm64": "ab3026e63e534f14fe0f6eeeb4b90adec77c4afa2df9a5aca67f803612f54687"
       }
     },
     "bc": {
@@ -128,10 +128,10 @@
       }
     },
     "homebrew-bootstrap": {
-      "manifestSha256": "9446c30113764de79abe29df79586849ab4f296d723fcf9614f45d885d114388",
+      "manifestSha256": "b171060c86cb6642e8cadef9d2698e671c6bf188868c7d835b3e8ecf3a3b054a",
       "cacheKeys": {
-        "wasm32": "5abead30501a86986dcbf2698f2899e5a5f8cdb009ae18a14a35acf6858cbdce",
-        "wasm64": "4ac2673824d918adb200ca482c12334786a97a92cc9b73b0dc8c22422932a1ef"
+        "wasm32": "a47c1a7d7f97bc63b681a3fa905302c57514e5939d470c6fe9e036de90211240",
+        "wasm64": "c51fecbe998f3f5a0277c9e0b5234c93f362ac3131145f4f65de0a18548907a4"
       }
     },
     "icu": {
@@ -158,8 +158,8 @@
     "lamp": {
       "manifestSha256": "40b66d115967f8ea3e1229cccfd1e6636f5363b4fd02ef66850a2dd441ccf13d",
       "cacheKeys": {
-        "wasm32": "12de3192d334e90646ecdcd7ca622c8089acd544c5a23893c79f03448b4d693f",
-        "wasm64": "68e91b9c748faf6ad46fe190b27922fb9b907fd502fe43fc6f57643af9660462"
+        "wasm32": "a0b6b95b80b947281b0eb48869ebb70151d3752ae14a59300bfe1adbb2b2d51b",
+        "wasm64": "f1035700816a437af976d588b15141c6252840bc60270eba75568eab109a1af6"
       }
     },
     "less": {
@@ -312,15 +312,15 @@
     "nginx-php-vfs": {
       "manifestSha256": "97976410cb02f8ba710d856b4ac904bcf976d677b50eefdee39fb64176070d4b",
       "cacheKeys": {
-        "wasm32": "2f4dfb788b8823c8fc29218af1f52a14749eaf85ba9774134c6e6d247f563f23",
-        "wasm64": "7d02bbb1c69212f5dc25c7152fdd917eba1a0fbdafcffbe610e1a5c8afd623b1"
+        "wasm32": "85095a402e097e3a3c8d905c9783bdf55861744cbab51e6a3912e5cc447acd51",
+        "wasm64": "70739027434ccdd6ba69340bdaf367a67e92bba7fdbfcd1687ff256a7710b655"
       }
     },
     "nginx-vfs": {
       "manifestSha256": "46aa2d3250ac5cd0f102a85c3a36a086c7a50ba1f9e05fa1c2aae3d07ad16f10",
       "cacheKeys": {
-        "wasm32": "ed695fbee78e1a61bfc12282a84a32974ceac8717d281c485fef7046e2df96e0",
-        "wasm64": "51e8f4bbc3e5abb90df9d1bd340589e01d9b1185b6fe5008be8db30407283e84"
+        "wasm32": "e6f165d62640fafcfa21d235ee70e615fab8a7ab6e536fbd906f3c21adde6b72",
+        "wasm64": "06d389a33f835e9af71af57dd4bf45e6c9fb11ddca307b6252892b3c9213ba8b"
       }
     },
     "node": {
@@ -333,8 +333,8 @@
     "node-vfs": {
       "manifestSha256": "33315fb1b3030a4c187ae075eac08f717de8d7ab017b86c6458778ac9070eece",
       "cacheKeys": {
-        "wasm32": "b1651fa5b8bff3f199191ee0734dc8ca62fee0aa099f878bb76e2be51aaf0ca4",
-        "wasm64": "0885456c5bd595030508da5625b0bf099c04145757f3ac2c0f2cdd8fddf7629e"
+        "wasm32": "d04ed75203605c8580fa0ec6fb545b1ee857a1d3b8788928b9e30692053903a0",
+        "wasm64": "d97ea8d29bbf589232c162e5f1fe181f83b239bf1310caf6953b24051db00ecf"
       }
     },
     "openssl": {
@@ -403,8 +403,8 @@
     "rootfs": {
       "manifestSha256": "0420201025170f48c32949ac62707d4577cdc13a53ad1f01f59d318ec07c8d6e",
       "cacheKeys": {
-        "wasm32": "9965534820ce17eb2e9d21691adfebb3f65d28247f7488e03c948fe18d701d37",
-        "wasm64": "af919aa81cade391d46c73dbc68e7f13601d76a7b8831e022b8558f3a307a953"
+        "wasm32": "ae3d9170a8c44c45cd4981e7bc8304d8c20034ad5e6da61dde89bf616696af1c",
+        "wasm64": "74174c62fb39c5aafa0a34dd75e23c89a521a22db2ccc3d082aa3c8d0ccd9f00"
       }
     },
     "ruby": {
@@ -422,10 +422,10 @@
       }
     },
     "shell": {
-      "manifestSha256": "5d02cd8fee4e0d46c7552a3046c3898f9e3bd5667094e02cab01851eed97a321",
+      "manifestSha256": "775d46b5252f6d94fb1ce04c97d63088df7574c54fdb3cbbb5135326352aa069",
       "cacheKeys": {
-        "wasm32": "44b3fddfb216bc7a1cdf5c15aef6c24bc111927409a5891799fe447e9a760961",
-        "wasm64": "eae66e74f3b0f1bde7ac1915a46c7011bec1d258a12d7ee2442551e288e59125"
+        "wasm32": "c3162e989dfe563ee0107a4f45ac94972789caf9c690d40a1f16bd755c03d08e",
+        "wasm64": "d96ee4391f695537852f464f1eb96240655bad0a90b7770896dfb015c8344161"
       }
     },
     "spidermonkey": {
@@ -515,8 +515,8 @@
     "wordpress": {
       "manifestSha256": "2c95e72f657a05be445c9b264de769becfb50833d6ef7ee4d18feac690ca2b52",
       "cacheKeys": {
-        "wasm32": "d0ae7cec096df41d116702e0eaa37035e97c31270a8f8f1520968d9f0ee09b56",
-        "wasm64": "1f07d1edb3144a1e36956e60b9682c3849089d19e231ba3fc330230891a339c2"
+        "wasm32": "3adf6c93fdfc1770a6849ae7b893eddf02a26201c193acab626d03c01eafe148",
+        "wasm64": "ac62564f578e4816d71be320f67157c823233c185eeb528b591e8e3737834ada"
       }
     },
     "xz": {
@@ -555,7 +555,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "a43cb889225cd487f93af47eafe907467d21df9bc04428a5ad3df7c57cf0c6ba"
+        "wasm32": "d3cdc17240c24d040cffa61a2508953888aea23ac0a080203c1a92135635d2b9"
       },
       "dependencyClosures": {
         "wasm32": [
@@ -1033,12 +1033,12 @@
       ]
     },
     "homebrew-bootstrap": {
-      "manifestSha256": "9446c30113764de79abe29df79586849ab4f296d723fcf9614f45d885d114388",
+      "manifestSha256": "b171060c86cb6642e8cadef9d2698e671c6bf188868c7d835b3e8ecf3a3b054a",
       "arches": [
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "5abead30501a86986dcbf2698f2899e5a5f8cdb009ae18a14a35acf6858cbdce"
+        "wasm32": "a47c1a7d7f97bc63b681a3fa905302c57514e5939d470c6fe9e036de90211240"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -1047,8 +1047,15 @@
         {
           "kind": "output",
           "sourceArtifact": "homebrew-bootstrap.zip",
-          "mirrorPath": "homebrew-bootstrap.zip",
+          "mirrorPath": "homebrew-bootstrap/homebrew-bootstrap.zip",
           "outputName": "homebrew-bootstrap",
+          "forkInstrumentation": "disabled"
+        },
+        {
+          "kind": "output",
+          "sourceArtifact": "homebrew-brew.env",
+          "mirrorPath": "homebrew-bootstrap/homebrew-brew.env",
+          "outputName": "homebrew-brew",
           "forkInstrumentation": "disabled"
         }
       ]
@@ -1086,7 +1093,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "12de3192d334e90646ecdcd7ca622c8089acd544c5a23893c79f03448b4d693f"
+        "wasm32": "a0b6b95b80b947281b0eb48869ebb70151d3752ae14a59300bfe1adbb2b2d51b"
       },
       "dependencyClosures": {
         "wasm32": [
@@ -1094,6 +1101,11 @@
             "packageName": "dinit",
             "manifestSha256": "44e125e1337503e27f8cff531cdbd79c4f406fd2d282b916a7746cf3a14057bf",
             "cacheKey": "e4d6e040b3c583d15e3a80feea9db153c1e8b0ff02bc86d00fa28e5870287781"
+          },
+          {
+            "packageName": "homebrew-bootstrap",
+            "manifestSha256": "b171060c86cb6642e8cadef9d2698e671c6bf188868c7d835b3e8ecf3a3b054a",
+            "cacheKey": "a47c1a7d7f97bc63b681a3fa905302c57514e5939d470c6fe9e036de90211240"
           },
           {
             "packageName": "icu",
@@ -1157,8 +1169,8 @@
           },
           {
             "packageName": "shell",
-            "manifestSha256": "5d02cd8fee4e0d46c7552a3046c3898f9e3bd5667094e02cab01851eed97a321",
-            "cacheKey": "44b3fddfb216bc7a1cdf5c15aef6c24bc111927409a5891799fe447e9a760961"
+            "manifestSha256": "775d46b5252f6d94fb1ce04c97d63088df7574c54fdb3cbbb5135326352aa069",
+            "cacheKey": "c3162e989dfe563ee0107a4f45ac94972789caf9c690d40a1f16bd755c03d08e"
           },
           {
             "packageName": "sqlite",
@@ -1711,7 +1723,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "2f4dfb788b8823c8fc29218af1f52a14749eaf85ba9774134c6e6d247f563f23"
+        "wasm32": "85095a402e097e3a3c8d905c9783bdf55861744cbab51e6a3912e5cc447acd51"
       },
       "dependencyClosures": {
         "wasm32": [
@@ -1719,6 +1731,11 @@
             "packageName": "dinit",
             "manifestSha256": "44e125e1337503e27f8cff531cdbd79c4f406fd2d282b916a7746cf3a14057bf",
             "cacheKey": "e4d6e040b3c583d15e3a80feea9db153c1e8b0ff02bc86d00fa28e5870287781"
+          },
+          {
+            "packageName": "homebrew-bootstrap",
+            "manifestSha256": "b171060c86cb6642e8cadef9d2698e671c6bf188868c7d835b3e8ecf3a3b054a",
+            "cacheKey": "a47c1a7d7f97bc63b681a3fa905302c57514e5939d470c6fe9e036de90211240"
           },
           {
             "packageName": "icu",
@@ -1772,8 +1789,8 @@
           },
           {
             "packageName": "shell",
-            "manifestSha256": "5d02cd8fee4e0d46c7552a3046c3898f9e3bd5667094e02cab01851eed97a321",
-            "cacheKey": "44b3fddfb216bc7a1cdf5c15aef6c24bc111927409a5891799fe447e9a760961"
+            "manifestSha256": "775d46b5252f6d94fb1ce04c97d63088df7574c54fdb3cbbb5135326352aa069",
+            "cacheKey": "c3162e989dfe563ee0107a4f45ac94972789caf9c690d40a1f16bd755c03d08e"
           },
           {
             "packageName": "sqlite",
@@ -1803,7 +1820,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "ed695fbee78e1a61bfc12282a84a32974ceac8717d281c485fef7046e2df96e0"
+        "wasm32": "e6f165d62640fafcfa21d235ee70e615fab8a7ab6e536fbd906f3c21adde6b72"
       },
       "dependencyClosures": {
         "wasm32": [
@@ -1811,6 +1828,11 @@
             "packageName": "dinit",
             "manifestSha256": "44e125e1337503e27f8cff531cdbd79c4f406fd2d282b916a7746cf3a14057bf",
             "cacheKey": "e4d6e040b3c583d15e3a80feea9db153c1e8b0ff02bc86d00fa28e5870287781"
+          },
+          {
+            "packageName": "homebrew-bootstrap",
+            "manifestSha256": "b171060c86cb6642e8cadef9d2698e671c6bf188868c7d835b3e8ecf3a3b054a",
+            "cacheKey": "a47c1a7d7f97bc63b681a3fa905302c57514e5939d470c6fe9e036de90211240"
           },
           {
             "packageName": "libcxx",
@@ -1824,8 +1846,8 @@
           },
           {
             "packageName": "shell",
-            "manifestSha256": "5d02cd8fee4e0d46c7552a3046c3898f9e3bd5667094e02cab01851eed97a321",
-            "cacheKey": "44b3fddfb216bc7a1cdf5c15aef6c24bc111927409a5891799fe447e9a760961"
+            "manifestSha256": "775d46b5252f6d94fb1ce04c97d63088df7574c54fdb3cbbb5135326352aa069",
+            "cacheKey": "c3162e989dfe563ee0107a4f45ac94972789caf9c690d40a1f16bd755c03d08e"
           }
         ]
       },
@@ -1887,10 +1909,15 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "b1651fa5b8bff3f199191ee0734dc8ca62fee0aa099f878bb76e2be51aaf0ca4"
+        "wasm32": "d04ed75203605c8580fa0ec6fb545b1ee857a1d3b8788928b9e30692053903a0"
       },
       "dependencyClosures": {
         "wasm32": [
+          {
+            "packageName": "homebrew-bootstrap",
+            "manifestSha256": "b171060c86cb6642e8cadef9d2698e671c6bf188868c7d835b3e8ecf3a3b054a",
+            "cacheKey": "a47c1a7d7f97bc63b681a3fa905302c57514e5939d470c6fe9e036de90211240"
+          },
           {
             "packageName": "libcxx",
             "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
@@ -1908,8 +1935,8 @@
           },
           {
             "packageName": "shell",
-            "manifestSha256": "5d02cd8fee4e0d46c7552a3046c3898f9e3bd5667094e02cab01851eed97a321",
-            "cacheKey": "44b3fddfb216bc7a1cdf5c15aef6c24bc111927409a5891799fe447e9a760961"
+            "manifestSha256": "775d46b5252f6d94fb1ce04c97d63088df7574c54fdb3cbbb5135326352aa069",
+            "cacheKey": "c3162e989dfe563ee0107a4f45ac94972789caf9c690d40a1f16bd755c03d08e"
           },
           {
             "packageName": "spidermonkey",
@@ -2480,14 +2507,14 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "9965534820ce17eb2e9d21691adfebb3f65d28247f7488e03c948fe18d701d37"
+        "wasm32": "ae3d9170a8c44c45cd4981e7bc8304d8c20034ad5e6da61dde89bf616696af1c"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "bash",
             "manifestSha256": "6478060f28d430d18a6ebe7c603392d35a41d9bcf6bc74322351d1450b9c5335",
-            "cacheKey": "a43cb889225cd487f93af47eafe907467d21df9bc04428a5ad3df7c57cf0c6ba"
+            "cacheKey": "d3cdc17240c24d040cffa61a2508953888aea23ac0a080203c1a92135635d2b9"
           },
           {
             "packageName": "bc",
@@ -2622,15 +2649,21 @@
       ]
     },
     "shell": {
-      "manifestSha256": "5d02cd8fee4e0d46c7552a3046c3898f9e3bd5667094e02cab01851eed97a321",
+      "manifestSha256": "775d46b5252f6d94fb1ce04c97d63088df7574c54fdb3cbbb5135326352aa069",
       "arches": [
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "44b3fddfb216bc7a1cdf5c15aef6c24bc111927409a5891799fe447e9a760961"
+        "wasm32": "c3162e989dfe563ee0107a4f45ac94972789caf9c690d40a1f16bd755c03d08e"
       },
       "dependencyClosures": {
-        "wasm32": []
+        "wasm32": [
+          {
+            "packageName": "homebrew-bootstrap",
+            "manifestSha256": "b171060c86cb6642e8cadef9d2698e671c6bf188868c7d835b3e8ecf3a3b054a",
+            "cacheKey": "a47c1a7d7f97bc63b681a3fa905302c57514e5939d470c6fe9e036de90211240"
+          }
+        ]
       },
       "members": [
         {
@@ -2919,7 +2952,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "d0ae7cec096df41d116702e0eaa37035e97c31270a8f8f1520968d9f0ee09b56"
+        "wasm32": "3adf6c93fdfc1770a6849ae7b893eddf02a26201c193acab626d03c01eafe148"
       },
       "dependencyClosures": {
         "wasm32": [
@@ -2927,6 +2960,11 @@
             "packageName": "dinit",
             "manifestSha256": "44e125e1337503e27f8cff531cdbd79c4f406fd2d282b916a7746cf3a14057bf",
             "cacheKey": "e4d6e040b3c583d15e3a80feea9db153c1e8b0ff02bc86d00fa28e5870287781"
+          },
+          {
+            "packageName": "homebrew-bootstrap",
+            "manifestSha256": "b171060c86cb6642e8cadef9d2698e671c6bf188868c7d835b3e8ecf3a3b054a",
+            "cacheKey": "a47c1a7d7f97bc63b681a3fa905302c57514e5939d470c6fe9e036de90211240"
           },
           {
             "packageName": "icu",
@@ -2980,8 +3018,8 @@
           },
           {
             "packageName": "shell",
-            "manifestSha256": "5d02cd8fee4e0d46c7552a3046c3898f9e3bd5667094e02cab01851eed97a321",
-            "cacheKey": "44b3fddfb216bc7a1cdf5c15aef6c24bc111927409a5891799fe447e9a760961"
+            "manifestSha256": "775d46b5252f6d94fb1ce04c97d63088df7574c54fdb3cbbb5135326352aa069",
+            "cacheKey": "c3162e989dfe563ee0107a4f45ac94972789caf9c690d40a1f16bd755c03d08e"
           },
           {
             "packageName": "sqlite",

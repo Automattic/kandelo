@@ -17,28 +17,51 @@ function loadBytes(path: string): ArrayBuffer {
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
-async function runCase(script: string): Promise<{ code: number; out: string; err: string }> {
+async function runCase(
+  script: string,
+): Promise<{ code: number; out: string; err: string }> {
   const bashBin = resolve(repoRoot, "packages/registry/bash/bin/bash.wasm");
-  const coreutilsBin = resolve(repoRoot, "packages/registry/coreutils/bin/coreutils.wasm");
+  const coreutilsBin = resolve(
+    repoRoot,
+    "packages/registry/coreutils/bin/coreutils.wasm",
+  );
   let out = "";
   let err = "";
   const execPrograms: Record<string, string> = {
     "/bin/bash": bashBin,
     "/bin/sh": bashBin,
   };
-  for (const n of ["cat", "wc", "sort", "echo", "ls", "printf", "head", "tail"]) {
+  for (const n of [
+    "cat",
+    "wc",
+    "sort",
+    "echo",
+    "ls",
+    "printf",
+    "head",
+    "tail",
+  ]) {
     execPrograms[`/bin/${n}`] = coreutilsBin;
     execPrograms[`/usr/bin/${n}`] = coreutilsBin;
   }
   const host = new NodeKernelHost({
     maxWorkers: 8,
     execPrograms,
-    onStdout: (_pid, data) => { out += Buffer.from(data).toString("utf8"); },
-    onStderr: (_pid, data) => { err += Buffer.from(data).toString("utf8"); },
+    onStdout: (_pid, data) => {
+      out += Buffer.from(data).toString("utf8");
+    },
+    onStderr: (_pid, data) => {
+      err += Buffer.from(data).toString("utf8");
+    },
   });
   await host.init();
   const code = await host.spawn(loadBytes(bashBin), ["bash", "-c", script], {
-    env: ["HOME=/tmp", "PATH=/usr/local/bin:/usr/bin:/bin", "TMPDIR=/tmp", "TERM=dumb"],
+    env: [
+      "HOME=/tmp",
+      "PATH=/usr/local/bin:/usr/bin:/bin",
+      "TMPDIR=/tmp",
+      "TERM=dumb",
+    ],
     cwd: "/",
     stdin: new Uint8Array(0),
   });
@@ -53,11 +76,28 @@ const cases: [string, string, string][] = [
   ["for i in a b c; do echo -n $i; done; echo", "abc\n", "for loop"],
   ["if [[ 5 -gt 3 ]]; then echo yes; fi", "yes\n", "[[ ]] test (bashism)"],
   ["arr=(one two three); echo ${arr[1]}", "two\n", "indexed array (bashism)"],
-  ["declare -A h=([a]=1 [b]=2); echo ${h[b]}", "2\n", "associative array (bashism)"],
+  [
+    "declare -A h=([a]=1 [b]=2); echo ${h[b]}",
+    "2\n",
+    "associative array (bashism)",
+  ],
   ["echo {1..5}", "1 2 3 4 5\n", "brace expansion"],
   ["s=hello; echo ${s^^}", "HELLO\n", "case-mod expansion (bashism)"],
   ["type history >/dev/null && echo y", "y\n", "history builtin available"],
   ["type bind >/dev/null && echo y", "y\n", "readline bind builtin available"],
+  [
+    "enable -n compgen; builtin enable compgen unset; " +
+      "saw_compgen= saw_unset=; " +
+      "for cmd in $(builtin compgen -A builtin); do " +
+      'case "$cmd" in compgen) saw_compgen=yes ;; unset) saw_unset=yes ;; esac; ' +
+      "done; " +
+      'test "$saw_compgen" = yes && test "$saw_unset" = yes && ' +
+      'test "$(type -t compgen)" = builtin && ' +
+      "type complete >/dev/null && type compopt >/dev/null && " +
+      'printf "homebrew-builtins-ok\\n"',
+    "homebrew-builtins-ok\n",
+    "Homebrew builtin restoration contract",
+  ],
   ["echo hello | cat", "hello\n", "simple pipe (cat)"],
   ["echo hello world | wc -c", "12\n", "pipe to wc -c"],
   ["printf 'b\\na\\n' | sort", "a\nb\n", "pipe to sort"],

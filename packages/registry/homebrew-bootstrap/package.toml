@@ -25,6 +25,13 @@ name = "homebrew-bootstrap"
 wasm = "homebrew-bootstrap.zip"
 fork_instrumentation = "disabled"
 
+# Keep the launcher policy in the same atomic package publication as the
+# source tree. Consumers must not recreate the bottle tag or precedence rules.
+[[outputs]]
+name = "homebrew-brew"
+wasm = "homebrew-brew.env"
+fork_instrumentation = "disabled"
+
 [[host_tools]]
 name = "git"
 version_constraint = ">=2.30"

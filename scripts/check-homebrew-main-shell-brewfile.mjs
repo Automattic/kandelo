@@ -5,7 +5,9 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const brewfile = resolve(process.argv[2] ?? `${repoRoot}/homebrew/main-shell.Brewfile`);
+const brewfile = resolve(
+  process.argv[2] ?? `${repoRoot}/homebrew/main-shell.Brewfile`,
+);
 const lockPath = resolve(
   process.argv[3] ?? `${repoRoot}/homebrew/main-shell-migration-lock.json`,
 );
@@ -22,17 +24,26 @@ const rootfsPackages = readDependencies(
 const shellDependencies = readDependencies(
   `${repoRoot}/packages/registry/shell/package.toml`,
 );
-if (shellDependencies.length !== 0) {
-  throw new Error(
-    "the canonical shell package must stay bottle-only (depends_on = []); " +
-      `found ${shellDependencies.map(({ name, version }) => `${name}@${version}`).join(", ")}`,
-  );
-}
+const homebrewBootstrap = readPackageIdentity(
+  `${repoRoot}/packages/registry/homebrew-bootstrap/package.toml`,
+);
+// Bottle Formulae remain selected only by the reviewed Brewfile. The sole
+// registry dependency is distribution machinery: exact Homebrew source bytes
+// that the VFS registers without materializing until a guest invokes brew.
+assertExactSequence(
+  shellDependencies,
+  [homebrewBootstrap],
+  "the canonical shell package must depend only on its exact Homebrew source package",
+  ({ name, version }) => `${name}@${version}`,
+);
 const lockedRegistryPackages = lock.packages.map(({ registry }) => registry);
 const expectedFormulae = lock.packages.map(({ formula }) => formula.name);
 const actualFormulae = readBrewfilePackages(brewfile);
 
-assertUnique(lockedRegistryPackages.map(({ name }) => name), "migration lock registry roots");
+assertUnique(
+  lockedRegistryPackages.map(({ name }) => name),
+  "migration lock registry roots",
+);
 assertUnique(expectedFormulae, "migration lock Formulae");
 assertUnique(actualFormulae, "main-shell Brewfile");
 assertExactSequence(
@@ -65,15 +76,20 @@ function readMigrationLock(path) {
     value.tap_repository !== tapRepository ||
     value.tap_name !== tapName
   ) {
-    throw new Error(`invalid main-shell migration lock schema or tap identity: ${path}`);
+    throw new Error(
+      `invalid main-shell migration lock schema or tap identity: ${path}`,
+    );
   }
   if (
     !isRecord(value.catalog) ||
-    JSON.stringify(Object.keys(value.catalog).sort()) !== JSON.stringify(["tap_commit"]) ||
+    JSON.stringify(Object.keys(value.catalog).sort()) !==
+      JSON.stringify(["tap_commit"]) ||
     typeof value.catalog.tap_commit !== "string" ||
     !gitShaPattern.test(value.catalog.tap_commit)
   ) {
-    throw new Error(`main-shell migration lock must pin one exact catalog commit: ${path}`);
+    throw new Error(
+      `main-shell migration lock must pin one exact catalog commit: ${path}`,
+    );
   }
   if (
     !Array.isArray(value.packages) ||
@@ -89,17 +105,28 @@ function readMigrationLock(path) {
     value.consumer.profile !== "main-shell" ||
     value.consumer.max_vfs_byte_length !== 512 * 1024 * 1024
   ) {
-    throw new Error(`main-shell migration lock must declare the 512 MiB consumer profile: ${path}`);
+    throw new Error(
+      `main-shell migration lock must declare the 512 MiB consumer profile: ${path}`,
+    );
   }
   const packages = value.packages.map((entry, index) => {
-    if (!isRecord(entry) || !isRecord(entry.registry) || !isRecord(entry.formula)) {
+    if (
+      !isRecord(entry) ||
+      !isRecord(entry.registry) ||
+      !isRecord(entry.formula)
+    ) {
       throw new Error(`invalid migration lock package ${index}`);
     }
-    const registry = readIdentity(entry.registry, `packages[${index}].registry`);
+    const registry = readIdentity(
+      entry.registry,
+      `packages[${index}].registry`,
+    );
     const formula = readIdentity(entry.formula, `packages[${index}].formula`);
     for (const field of ["revision", "bottle_rebuild"]) {
       if (!Number.isInteger(entry.formula[field]) || entry.formula[field] < 0) {
-        throw new Error(`packages[${index}].formula.${field} must be a non-negative integer`);
+        throw new Error(
+          `packages[${index}].formula.${field} must be a non-negative integer`,
+        );
       }
     }
     return {
@@ -112,10 +139,12 @@ function readMigrationLock(path) {
     };
   });
   const formulaClosure = value.formula_closure.map((entry, index) =>
-    readFormulaIdentity(entry, `formula_closure[${index}]`)
+    readFormulaIdentity(entry, `formula_closure[${index}]`),
   );
   if (packages.length === 0 || formulaClosure.length === 0) {
-    throw new Error(`main-shell migration lock must contain roots and a closure: ${path}`);
+    throw new Error(
+      `main-shell migration lock must contain roots and a closure: ${path}`,
+    );
   }
   assertUnique(formulaClosure, "migration lock formula_closure");
   const missingRoots = packages
@@ -143,11 +172,10 @@ function readIdentity(value, label) {
 }
 
 function readFormulaIdentity(value, label) {
-  if (
-    typeof value !== "string" ||
-    !formulaIdentityPattern.test(value)
-  ) {
-    throw new Error(`${label} must be a canonical ${tapName}/<formula> identity`);
+  if (typeof value !== "string" || !formulaIdentityPattern.test(value)) {
+    throw new Error(
+      `${label} must be a canonical ${tapName}/<formula> identity`,
+    );
   }
   return value;
 }
@@ -184,12 +212,17 @@ function validateReviewedSubstitutions(lock) {
     }
     return {
       kind: entry.kind,
-      registry: readReviewedRegistryIdentity(entry.registry, `${label}.registry`),
+      registry: readReviewedRegistryIdentity(
+        entry.registry,
+        `${label}.registry`,
+      ),
       formula: readReviewedFormulaIdentity(entry.formula, `${label}.formula`),
     };
   });
   assertUnique(
-    actual.map(({ kind, registry, formula }) => `${kind}:${registry}->${formula}`),
+    actual.map(
+      ({ kind, registry, formula }) => `${kind}:${registry}->${formula}`,
+    ),
     "reviewed migration substitutions",
   );
   assertExactSequence(
@@ -218,12 +251,16 @@ function readReviewedRegistryIdentity(value, label) {
 function readReviewedFormulaIdentity(value, label) {
   const prefix = `${tapName}/`;
   if (typeof value !== "string" || !value.startsWith(prefix)) {
-    throw new Error(`${label} must be a ${tapName}/<formula>@<version> identity`);
+    throw new Error(
+      `${label} must be a ${tapName}/<formula>@<version> identity`,
+    );
   }
   const unqualified = value.slice(prefix.length);
   const separator = unqualified.lastIndexOf("@");
   if (separator <= 0 || separator === unqualified.length - 1) {
-    throw new Error(`${label} must be a ${tapName}/<formula>@<version> identity`);
+    throw new Error(
+      `${label} must be a ${tapName}/<formula>@<version> identity`,
+    );
   }
   readIdentity(
     {
@@ -261,10 +298,14 @@ function validateCompatibilityPolicy(lock) {
       typeof entry.reason !== "string" ||
       entry.reason.trim().length === 0
     ) {
-      throw new Error(`compatibility.link_conflict_owners[${index}] is invalid`);
+      throw new Error(
+        `compatibility.link_conflict_owners[${index}] is invalid`,
+      );
     }
     if (conflictTargets.has(entry.target)) {
-      throw new Error(`compatibility link conflict target is duplicated: ${entry.target}`);
+      throw new Error(
+        `compatibility link conflict target is duplicated: ${entry.target}`,
+      );
     }
     conflictTargets.add(entry.target);
   }
@@ -277,14 +318,17 @@ function validateCompatibilityPolicy(lock) {
       !lockedPackages.has(entry.package) ||
       (entry.source_kind !== "link" && entry.source_kind !== "keg") ||
       typeof entry.source !== "string" ||
-      !/^[a-z0-9][a-z0-9._+-]*(?:\/[a-z0-9][a-z0-9._+-]*)*$/.test(entry.source) ||
+      !/^[a-z0-9][a-z0-9._+-]*(?:\/[a-z0-9][a-z0-9._+-]*)*$/.test(
+        entry.source,
+      ) ||
       (entry.source_kind === "link" &&
         !/^bin\/[a-z0-9][a-z0-9._+-]*$/.test(entry.source)) ||
       !Array.isArray(entry.targets) ||
       entry.targets.length === 0 ||
-      entry.targets.some((target) =>
-        typeof target !== "string" ||
-        !/^\/(?:[a-z0-9._+-]+\/)*[a-z0-9._+-]+$/.test(target)
+      entry.targets.some(
+        (target) =>
+          typeof target !== "string" ||
+          !/^\/(?:[a-z0-9._+-]+\/)*[a-z0-9._+-]+$/.test(target),
       ) ||
       new Set(entry.targets).size !== entry.targets.length
     ) {
@@ -341,7 +385,9 @@ function validateCompatibilityPolicy(lock) {
       throw new Error(`compatibility.runtime_state[${index}] is invalid`);
     }
     if (runtimePaths.has(entry.path)) {
-      throw new Error(`compatibility runtime state path is duplicated: ${entry.path}`);
+      throw new Error(
+        `compatibility runtime state path is duplicated: ${entry.path}`,
+      );
     }
     runtimePaths.set(entry.path, entry);
   }
@@ -368,7 +414,9 @@ function validateTapMetadata(lock, path) {
     metadata.tap_name !== tapName ||
     !Array.isArray(metadata.packages)
   ) {
-    throw new Error(`tap metadata has the wrong identity or package shape: ${path}`);
+    throw new Error(
+      `tap metadata has the wrong identity or package shape: ${path}`,
+    );
   }
   const byName = new Map();
   for (const [index, value] of metadata.packages.entries()) {
@@ -383,9 +431,10 @@ function validateTapMetadata(lock, path) {
     if (!isRecord(pkg)) {
       throw new Error(`tap metadata is missing locked Formula ${formula.name}`);
     }
-    const expectedVersion = formula.revision === 0
-      ? formula.version
-      : `${formula.version}_${formula.revision}`;
+    const expectedVersion =
+      formula.revision === 0
+        ? formula.version
+        : `${formula.version}_${formula.revision}`;
     if (
       pkg.full_name !== `${tapName}/${formula.name}` ||
       pkg.version !== expectedVersion ||
@@ -438,7 +487,9 @@ function readTapMetadataPackage(value, label) {
       (dependency.full_name !== undefined &&
         dependency.full_name !== `${tapName}/${dependency.name}`)
     ) {
-      throw new Error(`${dependencyLabel} is not a canonical same-tap dependency`);
+      throw new Error(
+        `${dependencyLabel} is not a canonical same-tap dependency`,
+      );
     }
     return dependency.name;
   });
@@ -460,7 +511,10 @@ function resolveTapFormulaClosure(rootNames, byName) {
     }
     const pkg = byName.get(name);
     if (pkg === undefined) {
-      const context = requiredBy === undefined ? "registry root" : `dependency of ${requiredBy}`;
+      const context =
+        requiredBy === undefined
+          ? "registry root"
+          : `dependency of ${requiredBy}`;
       throw new Error(`tap metadata is missing ${context} Formula ${name}`);
     }
     state.set(name, "visiting");
@@ -479,25 +533,49 @@ function readDependencies(path) {
   const source = readFileSync(path, "utf8");
   const match = /(?:^|\n)depends_on\s*=\s*\[([\s\S]*?)\]/.exec(source);
   if (!match) throw new Error(`cannot find depends_on array in ${path}`);
-  const entries = Array.from(match[1].matchAll(/"([^"]+)"/g), (item) => item[1]);
+  const entries = Array.from(
+    match[1].matchAll(/"([^"]+)"/g),
+    (item) => item[1],
+  );
   return entries.map((entry) => {
     const at = entry.lastIndexOf("@");
     if (at <= 0 || at === entry.length - 1) {
-      throw new Error(`dependency must be locked as name@version: ${entry} in ${path}`);
+      throw new Error(
+        `dependency must be locked as name@version: ${entry} in ${path}`,
+      );
     }
     const name = entry.slice(0, at);
     const version = entry.slice(at + 1);
     if (!/^[a-z0-9][a-z0-9._-]*$/.test(name)) {
-      throw new Error(`unsupported dependency ${JSON.stringify(entry)} in ${path}`);
+      throw new Error(
+        `unsupported dependency ${JSON.stringify(entry)} in ${path}`,
+      );
     }
     return { name, version };
   });
 }
 
+function readPackageIdentity(path) {
+  const source = readFileSync(path, "utf8");
+  const name = /(?:^|\n)name\s*=\s*"([^"]+)"/.exec(source)?.[1];
+  const version = /(?:^|\n)version\s*=\s*"([^"]+)"/.exec(source)?.[1];
+  if (
+    name === undefined ||
+    !/^[a-z0-9][a-z0-9._-]*$/.test(name) ||
+    version === undefined ||
+    version.length === 0
+  ) {
+    throw new Error(`cannot read package identity from ${path}`);
+  }
+  return { name, version };
+}
+
 function readBrewfilePackages(path) {
   const packages = [];
   let sawTap = false;
-  for (const [index, rawLine] of readFileSync(path, "utf8").split("\n").entries()) {
+  for (const [index, rawLine] of readFileSync(path, "utf8")
+    .split("\n")
+    .entries()) {
     const line = rawLine.trim();
     if (line === "" || line.startsWith("#")) continue;
     if (line === `tap "${tapName}"`) {
@@ -505,7 +583,9 @@ function readBrewfilePackages(path) {
       sawTap = true;
       continue;
     }
-    const match = /^brew "kandelo-dev\/tap-core\/([a-z0-9][a-z0-9._-]*)"$/.exec(line);
+    const match = /^brew "kandelo-dev\/tap-core\/([a-z0-9][a-z0-9._-]*)"$/.exec(
+      line,
+    );
     if (!match) throw new Error(`unsupported ${path}:${index + 1}: ${rawLine}`);
     packages.push(match[1]);
   }
@@ -517,7 +597,9 @@ function assertExactSequence(actual, expected, message, render) {
   const actualValues = actual.map(render);
   const expectedValues = expected.map(render);
   if (JSON.stringify(actualValues) === JSON.stringify(expectedValues)) return;
-  const missing = expectedValues.filter((value) => !actualValues.includes(value));
+  const missing = expectedValues.filter(
+    (value) => !actualValues.includes(value),
+  );
   const extra = actualValues.filter((value) => !expectedValues.includes(value));
   throw new Error(
     `${message}\n  missing: ${missing.join(", ") || "(none)"}` +
@@ -529,7 +611,9 @@ function assertExactSet(actual, expected, message, render) {
   const actualValues = actual.map(render).sort();
   const expectedValues = expected.map(render).sort();
   if (JSON.stringify(actualValues) === JSON.stringify(expectedValues)) return;
-  const missing = expectedValues.filter((value) => !actualValues.includes(value));
+  const missing = expectedValues.filter(
+    (value) => !actualValues.includes(value),
+  );
   const extra = actualValues.filter((value) => !expectedValues.includes(value));
   throw new Error(
     `${message}\n  missing: ${missing.join(", ") || "(none)"}` +
@@ -538,7 +622,9 @@ function assertExactSet(actual, expected, message, render) {
 }
 
 function assertUnique(values, label) {
-  const duplicate = values.find((value, index) => values.indexOf(value) !== index);
+  const duplicate = values.find(
+    (value, index) => values.indexOf(value) !== index,
+  );
   if (duplicate) throw new Error(`${label} contains duplicate ${duplicate}`);
 }
 
