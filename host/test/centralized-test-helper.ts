@@ -70,6 +70,7 @@ function createFreshProcessMemory(
   programBytes: ArrayBuffer,
   ptrWidth: 4 | 8,
   reserveSlotStartPage?: () => number,
+  maximumPages: number = MAX_PAGES,
 ): {
   memory: WebAssembly.Memory;
   layout: ProcessMemoryLayout;
@@ -77,7 +78,7 @@ function createFreshProcessMemory(
 } {
   const heapBase = extractHeapBase(programBytes);
   const layout = computeProcessMemoryLayout({
-    maxPages: MAX_PAGES,
+    maxPages: maximumPages,
     ptrWidth,
     programBytes,
     heapBase,
@@ -117,6 +118,8 @@ export interface RunProgramOptions {
   argv?: string[];
   /** Timeout in ms (default: 30000) */
   timeout?: number;
+  /** Process memory ceiling for bounded allocation-failure tests. */
+  maxPages?: number;
   /** Custom PlatformIO (defaults to NodePlatformIO).
    *  When provided, forces main-thread mode (PlatformIO can't be serialized). */
   io?: PlatformIO;
@@ -221,6 +224,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
   // does not engage NodeKernelHost at all).
   const host = new NodeKernelHost({
     maxWorkers: 4,
+    maxPages: options.maxPages,
     execPrograms,
     rootfsImage: options.rootfsImage
       ?? (options.useDefaultRootfs === false ? undefined : "default"),
@@ -458,6 +462,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
             execPid,
             PAGES_PER_THREAD * WASM_PAGE_SIZE,
           ) / WASM_PAGE_SIZE,
+          options.maxPages,
         );
         const newChannelOffset = newLayout.channelOffset;
 
@@ -657,6 +662,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
       pid,
       PAGES_PER_THREAD * WASM_PAGE_SIZE,
     ) / WASM_PAGE_SIZE,
+    options.maxPages,
   );
   const channelOffset = layout.channelOffset;
 

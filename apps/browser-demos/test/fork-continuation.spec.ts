@@ -1,0 +1,162 @@
+import { expect, test, type Page } from "@playwright/test";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { resolveBinary } from "../../../host/src/binary-resolver";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const browserKernelModulePath = resolve(
+  __dirname,
+  "../../../host/src/browser-kernel-host.ts",
+);
+const memoryFsModulePath = resolve(
+  __dirname,
+  "../../../host/src/vfs/memory-fs.ts",
+);
+
+interface BrowserFixtureResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  diagnostics: Array<{ source: string; message: string }>;
+}
+
+async function runBrowserFixture(
+  page: Page,
+  baseURL: string,
+  fixturePath: string,
+  argv0: string,
+  maxMemoryPages?: number,
+): Promise<BrowserFixtureResult> {
+  const asViteFsUrl = (path: string) =>
+    new URL(`/@fs/${path}`, baseURL).href;
+
+  await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+  return page.evaluate(
+    async ({
+      browserKernelModuleUrl,
+      memoryFsModuleUrl,
+      fixtureUrl,
+      argv0,
+      maxMemoryPages,
+    }) => {
+      // WHY: BrowserKernel already imports MemoryFileSystem. Loading the host
+      // entry first avoids asking a cold Vite server to optimize the same
+      // dependency graph through two concurrent dynamic imports.
+      const { BrowserKernel } = await import(
+        /* @vite-ignore */ browserKernelModuleUrl
+      );
+      const { MemoryFileSystem } = await import(
+        /* @vite-ignore */ memoryFsModuleUrl
+      );
+      const decoder = new TextDecoder();
+      let stdout = "";
+      let stderr = "";
+      const diagnostics: Array<{ source: string; message: string }> = [];
+      const kernel = new BrowserKernel({
+        maxWorkers: 4,
+        ...(maxMemoryPages === undefined ? {} : { maxMemoryPages }),
+        onStdout: (data: Uint8Array) => {
+          stdout += decoder.decode(data);
+        },
+        onStderr: (data: Uint8Array) => {
+          stderr += decoder.decode(data);
+        },
+        onHostDiagnostic: (diagnostic: { source: string; message: string }) => {
+          diagnostics.push({
+            source: diagnostic.source,
+            message: diagnostic.message,
+          });
+        },
+      });
+      let initialized = false;
+
+      try {
+        // WHY: these fixtures do not use files. A minimal image keeps this a
+        // BrowserKernel integration proof without coupling it to the much
+        // larger shell image or its package publication state.
+        const imageOwner = MemoryFileSystem.create(
+          new SharedArrayBuffer(1024 * 1024),
+        );
+        const vfsImage = await imageOwner.saveImage();
+        await kernel.initFromImage({ vfsImage });
+        initialized = true;
+
+        const response = await fetch(fixtureUrl);
+        if (!response.ok) {
+          throw new Error(
+            `fixture fetch failed: ${response.status} ${fixtureUrl}`,
+          );
+        }
+        const exitCode = await kernel.spawn(
+          await response.arrayBuffer(),
+          [argv0],
+        );
+        return { exitCode, stdout, stderr, diagnostics };
+      } finally {
+        if (initialized) await kernel.destroy();
+      }
+    },
+    {
+      browserKernelModuleUrl: asViteFsUrl(browserKernelModulePath),
+      memoryFsModuleUrl: asViteFsUrl(memoryFsModulePath),
+      fixtureUrl: asViteFsUrl(fixturePath),
+      argv0,
+      maxMemoryPages,
+    },
+  );
+}
+
+test("Chromium grows and replays a continuation beyond ABI 41's fixed reserve", async ({
+  page,
+  baseURL,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "the aggregate browser gate uses Chromium");
+  test.setTimeout(180_000);
+  expect(baseURL).toBeTruthy();
+
+  const result = await runBrowserFixture(
+    page,
+    baseURL!,
+    resolveBinary("programs/p_10_deep_linked_continuation.wasm"),
+    "p_10_deep_linked_continuation",
+  );
+
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout).toContain("PRE_DEEP_FORK");
+  expect(result.stdout).toContain("DEEP_CHILD: ok");
+  expect(result.stdout).toContain("DEEP_PARENT: child=");
+  expect(result.stdout).toContain("PASS: P-10");
+  expect(result.stderr).toBe("");
+  expect(result.diagnostics).toEqual([]);
+});
+
+test("Chromium reports continuation ENOMEM and preserves process state", async ({
+  page,
+  baseURL,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "the aggregate browser gate uses Chromium");
+  test.setTimeout(180_000);
+  expect(baseURL).toBeTruthy();
+
+  const result = await runBrowserFixture(
+    page,
+    baseURL!,
+    resolveBinary("programs/p_11_fork_continuation_enomem.wasm"),
+    "p_11_fork_continuation_enomem",
+    // Keep the exhaustion loop bounded while leaving enough initial pages for
+    // the program and BrowserKernel-owned channel/control memory.
+    384,
+  );
+
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout).toContain("CONTINUATION_ENOMEM: ok");
+  expect(result.stdout).toContain("NO_PHANTOM_CHILD: ok");
+  expect(result.stdout).toContain("CONTINUATION_PAGE_REUSED: ok");
+  expect(result.stdout).toContain("RECOVERY_CHILD: ok");
+  expect(result.stdout).toContain("RECOVERY_PARENT: child=");
+  expect(result.stdout).toContain("PASS: P-11");
+  expect(result.stderr).toBe("");
+  expect(result.diagnostics).toEqual([]);
+});

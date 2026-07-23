@@ -13,8 +13,9 @@
  *             non-nullable funcref, throw-from-outside.
  *   K-* (4)   callback-registration fork roots — sigaction, signal,
  *             pthread_cleanup_push, qsort comparator.
- *   P-* (5)   process / threading patterns — main thread, blocked
- *             cond, held mutex, popen, posix_spawn.
+ *   P-* (11)  process / threading patterns — main thread, blocked
+ *             cond, held mutex, popen, posix_spawn, deep and failed
+ *             continuation allocation.
  *   F-* (4)   accepted-limit failure modes — ucontext, wasm-GC refs.
  *
  * Pre-refactor expected behaviour is encoded with vitest modifiers:
@@ -52,6 +53,8 @@ interface Expected {
   execPrograms?: Map<string, string>;
   /** Opt out when the fixture does not access the filesystem. */
   useDefaultRootfs?: boolean;
+  /** Process memory ceiling for bounded allocation-failure fixtures. */
+  maxPages?: number;
 }
 
 async function runFixture(relPath: string, expected: Expected) {
@@ -69,6 +72,7 @@ async function runFixture(relPath: string, expected: Expected) {
     timeout: expected.timeout ?? 10_000,
     execPrograms: expected.execPrograms,
     useDefaultRootfs: expected.useDefaultRootfs,
+    maxPages: expected.maxPages,
   });
   expect(
     result.exitCode,
@@ -482,6 +486,26 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
       contains: ["PRE_DEEP_FORK", "DEEP_CHILD: ok", "DEEP_PARENT: child=", "PASS: P-10"],
       timeout: 10_000,
       useDefaultRootfs: false,
+    });
+  });
+
+  // P-11: force the linked continuation's second mmap to receive real ENOMEM
+  // after the first chunk contains committed frames. The fixture also proves
+  // abort replay leaves no child, releases its mapping, preserves the parent
+  // identity, and permits a later fork.
+  it("P-11 continuation allocation failure aborts cleanly", async () => {
+    await runFixture("programs/p_11_fork_continuation_enomem.wasm", {
+      contains: [
+        "CONTINUATION_ENOMEM: ok",
+        "NO_PHANTOM_CHILD: ok",
+        "CONTINUATION_PAGE_REUSED: ok",
+        "RECOVERY_CHILD: ok",
+        "RECOVERY_PARENT: child=",
+        "PASS: P-11",
+      ],
+      timeout: 10_000,
+      useDefaultRootfs: false,
+      maxPages: 384,
     });
   });
 });
