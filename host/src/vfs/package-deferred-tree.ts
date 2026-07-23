@@ -470,6 +470,9 @@ function deriveEntry(
     throw new Error(`package deferred ZIP file ${sourcePath} is invalid`);
   }
   extractZipEntryBounded(archiveBytes, entry, entry.uncompressedSize);
+  // WHY: producer umasks and host-specific permission bits are not part of the
+  // package contract. Preserve executability while giving eager and lazy
+  // materialization the same portable mode.
   const executable = (entry.mode & 0o111) !== 0;
   return {
     vfsPath,
@@ -521,6 +524,9 @@ function preflightNamespace(
     left.split("/").length - right.split("/").length ||
     compareUnicodeScalars(left, right)
   );
+  // WHY: reject the whole layer before registration mutates the namespace.
+  // Existing directories are shareable only when their package-visible
+  // ownership and mode agree, so a layer cannot silently rewrite the base.
   for (const path of orderedPaths) {
     let existing;
     try {

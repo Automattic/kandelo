@@ -152,6 +152,21 @@ Avoid unexplained repository shorthand, internal task names, and descriptions
 that start with file edits or implementation mechanics. Preserve technical
 precision while explaining specialized concepts in ordinary language.
 
+### Comment Decisions, Not Syntax
+
+Add a concise inline `WHY` comment when a reasonable reader can see what the
+code does but cannot recover why that design is necessary. This especially
+applies to ownership boundaries, ordering constraints, security checks,
+cross-host parity, POSIX or ABI invariants, performance-sensitive shapes, and
+workarounds at documented compatibility boundaries.
+
+Place the comment beside the decision it protects and name the failure that a
+plausible simplification would reintroduce. Link the authoritative reference
+when the full rationale is too large for the code. Do not narrate obvious
+syntax, restate a function name, preserve incident chronology, or use comments
+instead of tests and enforceable types. If the reason belongs to the public
+platform contract, update the authoritative documentation as well.
+
 ### Preserve Contributor Attribution
 
 Authorship records contribution; restacking must not transfer it. Before

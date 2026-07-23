@@ -314,6 +314,9 @@ export class LinkedForkContinuation {
         next = this.allocateChunk(nextCapacity, this.root, chunk);
       } catch (error) {
         if (error instanceof ContinuationAllocationError) {
+          // WHY: a Wasm save callback cannot unwind through JavaScript with an
+          // errno. The null reservation asks the instrumented guest to replay
+          // and discard committed frames before the original fork returns it.
           this.beginAbortReplay(error.errno, size, error.message);
           return this.asGuestPtr(0);
         }
