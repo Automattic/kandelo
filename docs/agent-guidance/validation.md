@@ -24,7 +24,7 @@ Core validation surface:
 | Fork instrument tests | `cargo test -p fork-instrument --target <host-target>` | Fork instrumentation/tooling changes |
 | Host integration tests | `cd host && npx vitest run` | Host/runtime behavior |
 | Browser app/runtime tests | `cd apps/browser-demos && npx playwright test --grep-invert "@slow" --project=chromium` | Browser host, UI, demo, service worker, VFS image behavior |
-| Browser lazy VFS contract | `cd apps/browser-demos && npx playwright test test/browser-kernel-lazy-registration.spec.ts --project=chromium --project=firefox --project=webkit` | Browser-host lazy VFS registration ordering, including Safari/WebKit |
+| Browser package-tree contract | `cd apps/browser-demos && npx playwright test test/package-deferred-tree-browser.spec.ts --project=chromium --project=firefox --project=webkit` | Browser lazy/eager package-tree parity, including Safari/WebKit |
 | Browser asset check | `bash scripts/ci-check-browser-assets.sh` | Browser asset/import changes |
 | musl libc-test | `scripts/run-libc-tests.sh` | libc, syscall, and kernel semantic changes |
 | Open POSIX Test Suite | `scripts/run-posix-tests.sh` | POSIX API behavior |
