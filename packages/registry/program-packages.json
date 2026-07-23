@@ -312,15 +312,15 @@
     "nginx-php-vfs": {
       "manifestSha256": "97976410cb02f8ba710d856b4ac904bcf976d677b50eefdee39fb64176070d4b",
       "cacheKeys": {
-        "wasm32": "7a0a085c629103c2dd5390abbbd060145f6dc133efdff8a2fc05dd8b4afb4e58",
-        "wasm64": "62989732b26134659e102951dfb6730e0299847e9b642809d9142df7a0f671ce"
+        "wasm32": "2f4dfb788b8823c8fc29218af1f52a14749eaf85ba9774134c6e6d247f563f23",
+        "wasm64": "7d02bbb1c69212f5dc25c7152fdd917eba1a0fbdafcffbe610e1a5c8afd623b1"
       }
     },
     "nginx-vfs": {
       "manifestSha256": "46aa2d3250ac5cd0f102a85c3a36a086c7a50ba1f9e05fa1c2aae3d07ad16f10",
       "cacheKeys": {
-        "wasm32": "952fec763276ebd980f1f020a291043d123da9f7879ca6fb59424321d8257771",
-        "wasm64": "a59aa181f63666d23f7f715aff10e65cbc45756cf638e41a059b3f9c10bdc21c"
+        "wasm32": "ed695fbee78e1a61bfc12282a84a32974ceac8717d281c485fef7046e2df96e0",
+        "wasm64": "51e8f4bbc3e5abb90df9d1bd340589e01d9b1185b6fe5008be8db30407283e84"
       }
     },
     "node": {
@@ -396,8 +396,8 @@
     "redis-vfs": {
       "manifestSha256": "234c45c40f94e2a89f98295313b82cb9fce15a412ac829d9e87394e0dc731813",
       "cacheKeys": {
-        "wasm32": "bca44df622c96f6574232dd6f2c1ad80133d083e16261d11eb643d622e362d79",
-        "wasm64": "41672d11f8e6da2cc8d927a21284036973b0e043482ebd56a1b1af1ceba6591e"
+        "wasm32": "d9d5ca3b198b8a6fdcd0c839cafd09ef07345ae8aa40f2ff59a7923f77ff0be8",
+        "wasm64": "4e72aabefdfb4fd4cbbc758fe76a6201d55eb61fcfbe7dea294453eef61a563d"
       }
     },
     "rootfs": {
@@ -1711,7 +1711,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "7a0a085c629103c2dd5390abbbd060145f6dc133efdff8a2fc05dd8b4afb4e58"
+        "wasm32": "2f4dfb788b8823c8fc29218af1f52a14749eaf85ba9774134c6e6d247f563f23"
       },
       "dependencyClosures": {
         "wasm32": [
@@ -1773,7 +1773,7 @@
           {
             "packageName": "shell",
             "manifestSha256": "5d02cd8fee4e0d46c7552a3046c3898f9e3bd5667094e02cab01851eed97a321",
-            "cacheKey": "feffb1d8d0b51ef0116bc99f0f7989127ed9bc414ce54b459a8232df05f0a5d2"
+            "cacheKey": "44b3fddfb216bc7a1cdf5c15aef6c24bc111927409a5891799fe447e9a760961"
           },
           {
             "packageName": "sqlite",
@@ -1803,7 +1803,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "952fec763276ebd980f1f020a291043d123da9f7879ca6fb59424321d8257771"
+        "wasm32": "ed695fbee78e1a61bfc12282a84a32974ceac8717d281c485fef7046e2df96e0"
       },
       "dependencyClosures": {
         "wasm32": [
@@ -1825,7 +1825,7 @@
           {
             "packageName": "shell",
             "manifestSha256": "5d02cd8fee4e0d46c7552a3046c3898f9e3bd5667094e02cab01851eed97a321",
-            "cacheKey": "feffb1d8d0b51ef0116bc99f0f7989127ed9bc414ce54b459a8232df05f0a5d2"
+            "cacheKey": "44b3fddfb216bc7a1cdf5c15aef6c24bc111927409a5891799fe447e9a760961"
           }
         ]
       },
@@ -2443,7 +2443,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "bca44df622c96f6574232dd6f2c1ad80133d083e16261d11eb643d622e362d79"
+        "wasm32": "d9d5ca3b198b8a6fdcd0c839cafd09ef07345ae8aa40f2ff59a7923f77ff0be8"
       },
       "dependencyClosures": {
         "wasm32": [
