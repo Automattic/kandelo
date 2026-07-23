@@ -3,6 +3,12 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
+    build-deps program-index-check \
+    "$REPO_ROOT/packages/registry" \
+    "$REPO_ROOT/packages/registry/program-packages.json"
+
 TMP_ROOT="$(mktemp -d)"
 cleanup() {
     chmod -R u+w "$TMP_ROOT" 2>/dev/null || true

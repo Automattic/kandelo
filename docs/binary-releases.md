@@ -23,6 +23,26 @@ for the resolver behavior, schema, and build-script contract.
 For third-party repositories that publish their own package archives,
 see [docs/package-sources.md](package-sources.md).
 
+Program archives have a second, source-controlled index:
+`packages/registry/program-packages.json`. It is not a release ledger and does
+not select archive URLs. Rust generates it from `package.toml` so every
+consumer agrees on output/runtime closure membership, mirror placement, target
+arches, and fork policy. Schema `kandelo-program-packages-v2` also records an
+identity for every package kind and each program's full transitive dependency
+identity per consumer architecture. Repository TypeScript, shell resolution,
+external registry roots, and the standalone host npm package consume that
+projection. The generated manifest digests and cache keys prevent a changed
+selected recipe or dependency from silently using old policy. For an ordered
+multi-root registry, the highest-priority existing index contains the complete
+first-hit identity and program projection across lower roots too. A
+dependency-only override rekeys affected lower programs in that combined
+context; lower indexes remain standalone suffix-context fallbacks. The
+first-party `kernel` and `userspace` boot artifacts retain identities in the
+index but are excluded from its guest-program map because their outputs publish
+at the binary root rather than below `programs/<arch>/`. Regenerate the
+projection whenever a package manifest or ordered dependency context changes;
+package checks reject stale committed output.
+
 Homebrew bottles use a separate publication model. Bottle tarballs are
 Homebrew-native artifacts published through the `kandelo-dev/homebrew-tap-core`
 tap and GHCR/Homebrew bottle URL shape; Kandelo-specific sidecars and
@@ -668,12 +688,12 @@ another process is not still using them.
 
 Direct local builds use the same public layout but different backing storage.
 One build-helper session collects exact declared suffixes under
-`local-binaries/.kandelo-local-generations/<arch>/<package>/<session>/`. Members
-are create-once regular files. Only a complete, validated tree can claim its
-one publication attempt and atomically replace the live package directory; a
-claimed missing generation is never recreated. A one-member package keeps its
-historical flat regular-file mirror and replaces that one entry through a
-private stage without dereferencing an old destination symlink.
+`local-binaries/.kandelo-local-generations/<arch>/<package>/<cache-key>/<session>/`.
+Members are create-once regular files. Only a complete, validated tree can
+claim its one publication attempt and atomically replace the live package
+directory or scalar link; a claimed missing generation is never recreated. A
+one-member package keeps its historical flat mirror name as a symlink to the
+immutable generation member.
 
 The stage and live directory must be on the same filesystem so rename remains
 atomic. Unix uses file symlinks for mirror members. Windows uses file symlinks

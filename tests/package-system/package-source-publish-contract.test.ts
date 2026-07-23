@@ -11,6 +11,25 @@ const script = readFileSync(
 );
 
 describe("package-source publication contract", () => {
+  it("rejects a stale runtime projection in the exact publish registry order", () => {
+    const sync = script.indexOf('"$KANDELO_ROOT/scripts/sync-package-source.sh"');
+    const registry = script.indexOf(
+      'export WASM_POSIX_DEPS_REGISTRY="$PACKAGE_SOURCE_ROOT/packages:$KANDELO_ROOT/packages/registry"',
+    );
+    const projectionCheck = script.indexOf(
+      "build-deps program-index-check \\",
+    );
+    const packageLoop = script.indexOf("while IFS= read -r pkg; do");
+
+    expect(sync).toBeGreaterThan(-1);
+    expect(registry).toBeGreaterThan(-1);
+    expect(registry).toBeLessThan(sync);
+    expect(projectionCheck).toBeGreaterThan(registry);
+    expect(projectionCheck).toBeLessThan(sync);
+    expect(packageLoop).toBeGreaterThan(sync);
+    expect(script).toContain('"$PACKAGE_SOURCE_ROOT/packages/program-packages.json"');
+  });
+
   it("materializes declared program dependencies for source builds", () => {
     const lines = script.split(/\r?\n/);
     const archiveStage = lines.findIndex((line) => line.trim() === "archive-stage \\");

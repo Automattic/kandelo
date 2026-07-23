@@ -21,8 +21,8 @@ import {
   readFileSync,
   realpathSync,
   statSync,
-  type Dirent,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import {
   basename,
   dirname,
@@ -62,14 +62,18 @@ function currentModuleDir(): string {
 
 function isRepoRoot(dir: string): boolean {
   // Workspace Cargo.toml has a [workspace] table; nested crate
-  // Cargo.tomls do not. Cheap check that disambiguates without
-  // having to read+parse every Cargo.toml on the way up.
+  // Cargo.tomls do not. The package identity matters too: an installed host
+  // package may live below an unrelated consumer's Cargo/npm workspace, which
+  // must not be mistaken for a Kandelo source checkout.
   const cargo = join(dir, "Cargo.toml");
-  if (!existsSync(cargo) || !existsSync(join(dir, "package.json"))) {
+  const packageJson = join(dir, "package.json");
+  if (!existsSync(cargo) || !existsSync(packageJson)) {
     return false;
   }
   try {
-    return /^\s*\[workspace\]/m.test(readFileSync(cargo, "utf8"));
+    const packageIdentity = JSON.parse(readFileSync(packageJson, "utf8"));
+    return /^\s*\[workspace\]/m.test(readFileSync(cargo, "utf8"))
+      && packageIdentity?.name === "kandelo";
   } catch {
     return false;
   }
@@ -93,12 +97,38 @@ export function findRepoRoot(startFrom?: string): string {
   );
 }
 
+function resolverRepoRoot(): string {
+  const explicitStart = process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT;
+  return explicitStart ? findRepoRoot(explicitStart) : findRepoRoot();
+}
+
 function packageRoot(): string {
   return resolve(currentModuleDir(), "..");
 }
 
-/** Cache root used by xtask for immutable package generations. */
+function hasSourceCheckout(): boolean {
+  try {
+    resolverRepoRoot();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Cache root used by xtask for immutable package generations.
+ *
+ * `WASM_POSIX_BINARY_CACHE_ROOT` is the explicit cross-language override. It
+ * is required when an `archive-stage --cache-root` invocation also publishes
+ * symlinks into a binaries mirror that will be consumed in another process.
+ */
 export function binaryCacheRoot(): string {
+  const explicitCacheRoot = process.env.WASM_POSIX_BINARY_CACHE_ROOT;
+  if (explicitCacheRoot !== undefined) {
+    return isAbsolute(explicitCacheRoot)
+      ? resolve(explicitCacheRoot)
+      : resolve(resolverRepoRoot(), explicitCacheRoot);
+  }
   const xdgCacheHome = process.env.XDG_CACHE_HOME;
   if (xdgCacheHome !== undefined) {
     return resolve(xdgCacheHome, "kandelo");
@@ -190,8 +220,8 @@ interface BinaryCandidateTier {
   root: string;
   identity: "local-generation" | "program-cache" | "installed-package";
   /**
-   * An installed npm package is one versioned installation identity. Repo
-   * mirrors are mutable and need cache-target identity from their symlinks.
+   * A genuine installed npm package is one versioned installation identity.
+   * A source checkout's host/wasm tree is mutable and never qualifies.
    */
   allowRegularFileClosure: boolean;
   candidatesFor(relPath: string): string[];
@@ -212,8 +242,10 @@ export class BinaryNotFoundError extends Error {
  */
 function binaryCandidateTiers(): BinaryCandidateTier[] {
   const tiers: BinaryCandidateTier[] = [];
+  let sourceCheckout = false;
   try {
-    const repo = findRepoRoot();
+    const repo = resolverRepoRoot();
+    sourceCheckout = true;
     for (const [label, root] of [
       ["local-binaries", join(repo, "local-binaries")],
       ["binaries", join(repo, "binaries")],
@@ -239,7 +271,7 @@ function binaryCandidateTiers(): BinaryCandidateTier[] {
     label: "installed package",
     root,
     identity: "installed-package",
-    allowRegularFileClosure: true,
+    allowRegularFileClosure: !sourceCheckout,
     candidatesFor(relPath: string): string[] {
       return packagedBinaryCandidates(relPath, root);
     },
@@ -247,53 +279,19 @@ function binaryCandidateTiers(): BinaryCandidateTier[] {
   return tiers;
 }
 
-interface ProgramOutputPolicy {
-  name?: string;
-  wasm?: string;
-  forkInstrumentation?: string;
-}
-
-interface ProgramRuntimeFilePolicy {
-  artifact?: string;
-}
-
 interface ProgramPackageClosureMember {
+  packageName: string;
   relPath: string;
   sourceArtifact: string;
+  cacheKey: string;
+  forkInstrumentation: "auto" | "disabled" | null;
+  projectionIdentity: string;
 }
 
 interface ProgramPackageClosure {
   manifestPath: string;
   packageName: string;
   members: ProgramPackageClosureMember[];
-}
-
-type ParsedProgramOutput = Required<Pick<
-  ProgramOutputPolicy,
-  "name" | "wasm"
->> & Pick<ProgramOutputPolicy, "forkInstrumentation">;
-
-interface ParsedProgramPackageManifest {
-  kind: string;
-  name: string;
-  outputs: ParsedProgramOutput[];
-  runtimeFiles: Required<Pick<ProgramRuntimeFilePolicy, "artifact">>[];
-  targetArches: string[];
-}
-
-function outputExtension(wasmPath: string): string {
-  const basename = wasmPath.split(/[\\/]/).pop() ?? wasmPath;
-  const dot = basename.indexOf(".");
-  return dot >= 0 ? basename.slice(dot) : "";
-}
-
-function outputRelForPackage(
-  packageName: string,
-  output: Required<Pick<ProgramOutputPolicy, "name" | "wasm">>,
-  packageOwned: boolean,
-): string {
-  const destName = `${output.name}${outputExtension(output.wasm)}`;
-  return packageOwned ? `${packageName}/${destName}` : destName;
 }
 
 function manifestError(manifestPath: string, detail: string): Error {
@@ -313,113 +311,6 @@ function pathEntryExists(path: string): boolean {
     ) return false;
     throw error;
   }
-}
-
-function stripTomlComment(line: string): string {
-  let quote: "'" | "\"" | null = null;
-  let escaped = false;
-  for (let index = 0; index < line.length; index++) {
-    const char = line[index]!;
-    if (quote === "\"") {
-      if (escaped) {
-        escaped = false;
-      } else if (char === "\\") {
-        escaped = true;
-      } else if (char === quote) {
-        quote = null;
-      }
-      continue;
-    }
-    if (quote === "'") {
-      if (char === quote) quote = null;
-      continue;
-    }
-    if (char === "\"" || char === "'") {
-      quote = char;
-    } else if (char === "#") {
-      return line.slice(0, index);
-    }
-  }
-  return line;
-}
-
-function plainTomlString(
-  value: string,
-  manifestPath: string,
-  field: string,
-): string {
-  const basic = value.match(/^"([^"\\]*)"$/);
-  const literal = value.match(/^'([^']*)'$/);
-  const parsed = basic?.[1] ?? literal?.[1];
-  if (parsed === undefined) {
-    throw manifestError(
-      manifestPath,
-      `${field} must be a plain quoted string`,
-    );
-  }
-  return parsed;
-}
-
-function plainTomlStringArray(
-  value: string,
-  manifestPath: string,
-  field: string,
-): string[] {
-  const match = value.match(/^\[\s*(.*?)\s*\]$/);
-  if (!match) {
-    throw manifestError(
-      manifestPath,
-      `${field} must be an array of plain quoted strings`,
-    );
-  }
-  const body = match[1]!.trim();
-  if (!body) return [];
-
-  const values: string[] = [];
-  let rest = body;
-  while (rest.length > 0) {
-    const entry = rest.match(
-      /^\s*(?:"([^"\\]*)"|'([^']*)')\s*(?:,\s*|$)/,
-    );
-    if (!entry) {
-      throw manifestError(
-        manifestPath,
-        `${field} must contain only plain quoted strings`,
-      );
-    }
-    values.push((entry[1] ?? entry[2])!);
-    rest = rest.slice(entry[0].length);
-  }
-  return values;
-}
-
-function topLevelManifestKind(
-  packageToml: string,
-  manifestPath: string,
-): string {
-  let section = "";
-  let kind: string | undefined;
-  for (const rawLine of packageToml.split(/\r?\n/)) {
-    const line = stripTomlComment(rawLine).trim();
-    if (!line) continue;
-    if (line.startsWith("[")) {
-      section = line;
-      continue;
-    }
-    const assignment = line.match(/^([A-Za-z0-9_.-]+)\s*=\s*(.+)$/);
-    if (section !== "" || assignment?.[1] !== "kind") continue;
-    if (kind !== undefined) {
-      throw manifestError(manifestPath, "duplicate top-level kind");
-    }
-    kind = plainTomlString(assignment[2]!, manifestPath, "kind");
-  }
-  if (kind === undefined) {
-    throw manifestError(
-      manifestPath,
-      "missing or unsupported top-level kind",
-    );
-  }
-  return kind;
 }
 
 function portableArtifactPath(
@@ -465,275 +356,928 @@ function safeSinglePathComponent(
   return value;
 }
 
-function parseProgramPackageClosureManifest(
-  packageToml: string,
-  manifestPath: string,
-): ParsedProgramPackageManifest {
-  let section = "";
-  let kind: string | undefined;
-  let name: string | undefined;
-  let arches: string[] | undefined;
-  const outputs: ProgramOutputPolicy[] = [];
-  const runtimeFiles: ProgramRuntimeFilePolicy[] = [];
-
-  for (const rawLine of packageToml.split(/\r?\n/)) {
-    const line = stripTomlComment(rawLine).trim();
-    if (!line) continue;
-
-    const arrayTable = line.match(/^\[\[([A-Za-z0-9_.-]+)\]\]$/);
-    if (arrayTable) {
-      section = `[[${arrayTable[1]}]]`;
-      if (section === "[[outputs]]") outputs.push({});
-      if (section === "[[runtime_files]]") runtimeFiles.push({});
-      continue;
-    }
-    const table = line.match(/^\[([A-Za-z0-9_.-]+)\]$/);
-    if (table) {
-      section = `[${table[1]}]`;
-      continue;
-    }
-    if (
-      line.startsWith("[[outputs")
-      || line.startsWith("[[runtime_files")
-    ) {
-      throw manifestError(manifestPath, "malformed resolver-owned table header");
-    }
-
-    const assignment = line.match(/^([A-Za-z0-9_.-]+)\s*=\s*(.+)$/);
-    if (!assignment) continue;
-    const [, key, value] = assignment;
-    if (section === "" && key === "kind") {
-      if (kind !== undefined) {
-        throw manifestError(manifestPath, "duplicate top-level kind");
-      }
-      kind = plainTomlString(value!, manifestPath, "kind");
-    } else if (section === "" && key === "name") {
-      if (name !== undefined) {
-        throw manifestError(manifestPath, "duplicate top-level name");
-      }
-      name = plainTomlString(value!, manifestPath, "name");
-    } else if (section === "" && key === "arches") {
-      if (arches !== undefined) {
-        throw manifestError(manifestPath, "duplicate top-level arches");
-      }
-      arches = plainTomlStringArray(value!, manifestPath, "arches");
-    } else if (section === "[[outputs]]" && key === "name") {
-      const output = outputs.at(-1)!;
-      if (output.name !== undefined) {
-        throw manifestError(manifestPath, "duplicate [[outputs]].name");
-      }
-      output.name = plainTomlString(
-        value!,
-        manifestPath,
-        "[[outputs]].name",
-      );
-    } else if (section === "[[outputs]]" && key === "wasm") {
-      const output = outputs.at(-1)!;
-      if (output.wasm !== undefined) {
-        throw manifestError(manifestPath, "duplicate [[outputs]].wasm");
-      }
-      output.wasm = plainTomlString(
-        value!,
-        manifestPath,
-        "[[outputs]].wasm",
-      );
-    } else if (
-      section === "[[outputs]]"
-      && key === "fork_instrumentation"
-    ) {
-      const output = outputs.at(-1)!;
-      if (output.forkInstrumentation !== undefined) {
-        throw manifestError(
-          manifestPath,
-          "duplicate [[outputs]].fork_instrumentation",
-        );
-      }
-      output.forkInstrumentation = plainTomlString(
-        value!,
-        manifestPath,
-        "[[outputs]].fork_instrumentation",
-      );
-    } else if (section === "[[runtime_files]]" && key === "artifact") {
-      const runtimeFile = runtimeFiles.at(-1)!;
-      if (runtimeFile.artifact !== undefined) {
-        throw manifestError(
-          manifestPath,
-          "duplicate [[runtime_files]].artifact",
-        );
-      }
-      runtimeFile.artifact = plainTomlString(
-        value!,
-        manifestPath,
-        "[[runtime_files]].artifact",
-      );
-    }
-  }
-
-  if (!kind) throw manifestError(manifestPath, "missing top-level kind");
-  if (!name) throw manifestError(manifestPath, "missing top-level name");
-  if (outputs.length === 0) {
-    throw manifestError(manifestPath, "program package has no [[outputs]]");
-  }
-
-  const completeOutputs = outputs.map((output, index) => {
-    if (!output.name || !output.wasm) {
-      throw manifestError(
-        manifestPath,
-        `[[outputs]] entry ${index + 1} requires name and wasm`,
-      );
-    }
-    if (
-      output.forkInstrumentation !== undefined
-      && output.forkInstrumentation !== "auto"
-      && output.forkInstrumentation !== "disabled"
-    ) {
-      throw manifestError(
-        manifestPath,
-        `[[outputs]] entry ${index + 1} fork_instrumentation must be "auto" or "disabled"`,
-      );
-    }
-    return {
-      name: safeSinglePathComponent(
-        output.name,
-        manifestPath,
-        `[[outputs]] entry ${index + 1} name`,
-      ),
-      wasm: portableArtifactPath(
-        output.wasm,
-        manifestPath,
-        `[[outputs]] entry ${index + 1} wasm`,
-      ),
-      ...(output.forkInstrumentation === undefined
-        ? {}
-        : { forkInstrumentation: output.forkInstrumentation }),
-    };
-  });
-  const completeRuntimeFiles = runtimeFiles.map((runtimeFile, index) => {
-    if (!runtimeFile.artifact) {
-      throw manifestError(
-        manifestPath,
-        `[[runtime_files]] entry ${index + 1} requires artifact`,
-      );
-    }
-    return {
-      artifact: portableArtifactPath(
-        runtimeFile.artifact,
-        manifestPath,
-        `[[runtime_files]] entry ${index + 1} artifact`,
-      ),
-    };
-  });
-
-  const targetArches = arches && arches.length > 0 ? arches : ["wasm32"];
-  if (
-    new Set(targetArches).size !== targetArches.length
-    || targetArches.some((arch) => !ARCH_SEGMENTS.has(arch))
-  ) {
-    throw manifestError(
-      manifestPath,
-      "arches must list wasm32 and/or wasm64 without duplicates",
-    );
-  }
-
-  return {
-    kind,
-    name: safeSinglePathComponent(name, manifestPath, "name", false),
-    outputs: completeOutputs,
-    runtimeFiles: completeRuntimeFiles,
-    targetArches,
-  };
-}
-
 interface LegacyFlatOutputOwner {
-  hasScalarOwner: boolean;
-  packagePaths: Set<string>;
+  scalarOwners: Set<string>;
+  packagePaths: Map<string, string>;
+  shadowedOwners: Set<string>;
 }
 
 interface ProgramRegistryIndex {
   legacyFlatOutputs: Map<string, LegacyFlatOutputOwner>;
-  forkInstrumentationDisabledOutputs: Set<string>;
+  forkInstrumentationDisabledOutputs: Map<string, string>;
+  identities: Map<string, SelectedPackageProjectionIdentity>;
+  unidentifiedPackages: Map<string, string>;
+  packages: Map<string, SelectedProgramPackageProjection>;
+  unprojectedPackages: Map<string, string>;
 }
 
-let cachedProgramRegistryIndex: ProgramRegistryIndex | null = null;
+interface ProgramPackageProjectionMember {
+  kind: "output" | "runtime-file";
+  sourceArtifact: string;
+  mirrorPath: string;
+  outputName?: string;
+  forkInstrumentation?: "auto" | "disabled";
+  guestPath?: string;
+  mode?: number;
+}
 
-/** @internal Test fixtures call this after changing registry manifests. */
+interface ProgramPackageProjection {
+  manifestSha256: string;
+  arches: string[];
+  cacheKeys: Record<string, string>;
+  dependencyClosures: Record<string, ProgramDependencyIdentity[]>;
+  members: ProgramPackageProjectionMember[];
+}
+
+interface ProgramDependencyIdentity {
+  packageName: string;
+  manifestSha256: string;
+  cacheKey: string;
+}
+
+interface PackageProjectionIdentity {
+  manifestSha256: string;
+  cacheKeys: Record<string, string>;
+}
+
+interface SelectedPackageProjectionIdentity extends PackageProjectionIdentity {
+  packageName: string;
+  policyPath: string;
+  manifestPath?: string;
+}
+
+interface SelectedProgramPackageProjection extends ProgramPackageProjection {
+  packageName: string;
+  policyPath: string;
+  manifestPath?: string;
+}
+
+interface LoadedProgramPackageProjection {
+  identities: Map<string, PackageProjectionIdentity>;
+  packages: Map<string, ProgramPackageProjection>;
+  indexPath: string;
+}
+
+interface PhysicalProgramProjectionClaim {
+  packageName: string;
+  projection: ProgramPackageProjection;
+  selected: boolean;
+}
+
+interface SelectedProgramPackageState {
+  identities: Map<string, SelectedPackageProjectionIdentity>;
+  unidentifiedPackages: Map<string, string>;
+  packages: Map<string, SelectedProgramPackageProjection>;
+  unprojectedPackages: Map<string, string>;
+  physicalProgramClaims: PhysicalProgramProjectionClaim[];
+}
+
+const PROGRAM_PACKAGE_INDEX_FORMAT = "kandelo-program-packages-v2";
+const PROGRAM_PACKAGE_INDEX_FILE = "program-packages.json";
+
+/**
+ * @internal Compatibility hook for test fixtures.
+ *
+ * Registry policy is deliberately uncached. Package directories and generated
+ * projections can change while Vite or a long-lived Node process is running;
+ * stale negative cache entries would let a newly package-owned nested path
+ * fall through to scalar resolution.
+ */
 export function resetBinaryResolverManifestCacheForTests(): void {
-  cachedProgramRegistryIndex = null;
+  // No-op by design.
+}
+
+function configuredProgramRegistryRoots(): string[] | null {
+  if (Object.prototype.hasOwnProperty.call(
+    process.env,
+    "WASM_POSIX_DEPS_REGISTRY",
+  )) {
+    let sourceRepoRoot: string | null = null;
+    return (process.env.WASM_POSIX_DEPS_REGISTRY ?? "")
+      .split(":")
+      .filter(Boolean)
+      .map((entry) => {
+        if (entry.startsWith("~/") && process.env.HOME !== undefined) {
+          return join(process.env.HOME, entry.slice(2));
+        }
+        if (isAbsolute(entry)) return resolve(entry);
+        sourceRepoRoot ??= resolverRepoRoot();
+        return resolve(sourceRepoRoot, entry);
+      });
+  }
+  try {
+    return [join(resolverRepoRoot(), "packages", "registry")];
+  } catch {
+    return null;
+  }
+}
+
+function hasExactObjectKeys(
+  value: object,
+  expectedKeys: readonly string[],
+): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...expectedKeys].sort();
+  return actual.length === expected.length
+    && actual.every((key, index) => key === expected[index]);
+}
+
+function readProgramPackageProjection(
+  indexPath: string,
+): LoadedProgramPackageProjection {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(indexPath, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `Invalid program package index ${indexPath}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  if (
+    typeof raw !== "object"
+    || raw === null
+    || !hasExactObjectKeys(raw, ["format", "identities", "packages"])
+    || (raw as { format?: unknown }).format !== PROGRAM_PACKAGE_INDEX_FORMAT
+    || typeof (raw as { identities?: unknown }).identities !== "object"
+    || (raw as { identities?: unknown }).identities === null
+    || Array.isArray((raw as { identities?: unknown }).identities)
+    || typeof (raw as { packages?: unknown }).packages !== "object"
+    || (raw as { packages?: unknown }).packages === null
+    || Array.isArray((raw as { packages?: unknown }).packages)
+  ) {
+    throw new Error(
+      `Invalid program package index ${indexPath}: expected ${PROGRAM_PACKAGE_INDEX_FORMAT}`,
+    );
+  }
+
+  const identities = new Map<string, PackageProjectionIdentity>();
+  const rawIdentities = (raw as {
+    identities: Record<string, unknown>;
+  }).identities;
+  for (const [packageName, rawIdentity] of Object.entries(rawIdentities)) {
+    safeSinglePathComponent(packageName, indexPath, "identity package name", false);
+    if (
+      typeof rawIdentity !== "object"
+      || rawIdentity === null
+      || !hasExactObjectKeys(rawIdentity, ["manifestSha256", "cacheKeys"])
+      || typeof (rawIdentity as { manifestSha256?: unknown }).manifestSha256
+        !== "string"
+      || !/^[a-f0-9]{64}$/.test(
+        (rawIdentity as { manifestSha256: string }).manifestSha256,
+      )
+      || typeof (rawIdentity as { cacheKeys?: unknown }).cacheKeys !== "object"
+      || (rawIdentity as { cacheKeys?: unknown }).cacheKeys === null
+      || Array.isArray((rawIdentity as { cacheKeys?: unknown }).cacheKeys)
+    ) {
+      throw new Error(
+        `Invalid program package index ${indexPath}: malformed identity ${JSON.stringify(packageName)}`,
+      );
+    }
+    const cacheKeys = (rawIdentity as {
+      cacheKeys: Record<string, unknown>;
+    }).cacheKeys;
+    if (
+      !hasExactObjectKeys(cacheKeys, ["wasm32", "wasm64"])
+      || Object.values(cacheKeys).some(
+        (cacheKey) =>
+          typeof cacheKey !== "string" || !/^[a-f0-9]{64}$/.test(cacheKey),
+      )
+    ) {
+      throw new Error(
+        `Invalid program package index ${indexPath}: identity ${JSON.stringify(packageName)} has invalid contextual cache keys`,
+      );
+    }
+    identities.set(packageName, {
+      manifestSha256: (rawIdentity as { manifestSha256: string }).manifestSha256,
+      cacheKeys: cacheKeys as Record<string, string>,
+    });
+  }
+
+  const packages = new Map<string, ProgramPackageProjection>();
+  const rawPackages = (raw as { packages: Record<string, unknown> }).packages;
+  for (const [packageName, rawPackage] of Object.entries(rawPackages)) {
+    safeSinglePathComponent(packageName, indexPath, "package name", false);
+    if (
+      typeof rawPackage !== "object"
+      || rawPackage === null
+      || !hasExactObjectKeys(rawPackage, [
+        "manifestSha256",
+        "arches",
+        "cacheKeys",
+        "dependencyClosures",
+        "members",
+      ])
+      || !Array.isArray((rawPackage as { arches?: unknown }).arches)
+      || typeof (rawPackage as { cacheKeys?: unknown }).cacheKeys !== "object"
+      || (rawPackage as { cacheKeys?: unknown }).cacheKeys === null
+      || Array.isArray((rawPackage as { cacheKeys?: unknown }).cacheKeys)
+      || typeof (rawPackage as { dependencyClosures?: unknown })
+        .dependencyClosures !== "object"
+      || (rawPackage as { dependencyClosures?: unknown })
+        .dependencyClosures === null
+      || Array.isArray(
+        (rawPackage as { dependencyClosures?: unknown }).dependencyClosures,
+      )
+      || !Array.isArray((rawPackage as { members?: unknown }).members)
+      || typeof (rawPackage as { manifestSha256?: unknown }).manifestSha256
+        !== "string"
+      || !/^[a-f0-9]{64}$/.test(
+        (rawPackage as { manifestSha256: string }).manifestSha256,
+      )
+    ) {
+      throw new Error(
+        `Invalid program package index ${indexPath}: malformed package ${JSON.stringify(packageName)}`,
+      );
+    }
+    const arches = (rawPackage as { arches: unknown[] }).arches;
+    if (
+      arches.length === 0
+      || new Set(arches).size !== arches.length
+      || arches.some((arch) => typeof arch !== "string" || !ARCH_SEGMENTS.has(arch))
+    ) {
+      throw new Error(
+        `Invalid program package index ${indexPath}: package ${JSON.stringify(packageName)} has invalid arches`,
+      );
+    }
+    const cacheKeys = (rawPackage as {
+      cacheKeys: Record<string, unknown>;
+    }).cacheKeys;
+    if (
+      !hasExactObjectKeys(cacheKeys, arches as string[])
+      || Object.values(cacheKeys).some(
+        (cacheKey) =>
+          typeof cacheKey !== "string" || !/^[a-f0-9]{64}$/.test(cacheKey),
+      )
+    ) {
+      throw new Error(
+        `Invalid program package index ${indexPath}: package ${JSON.stringify(packageName)} has invalid cache keys`,
+      );
+    }
+    const dependencyClosures = (rawPackage as {
+      dependencyClosures: Record<string, unknown>;
+    }).dependencyClosures;
+    if (!hasExactObjectKeys(dependencyClosures, arches as string[])) {
+      throw new Error(
+        `Invalid program package index ${indexPath}: package ${JSON.stringify(packageName)} has invalid dependency closure arches`,
+      );
+    }
+    const parsedDependencyClosures: Record<string, ProgramDependencyIdentity[]> =
+      {};
+    for (const arch of arches as string[]) {
+      const rawClosure = dependencyClosures[arch];
+      if (!Array.isArray(rawClosure)) {
+        throw new Error(
+          `Invalid program package index ${indexPath}: package ${JSON.stringify(packageName)} has a malformed dependency closure for ${arch}`,
+        );
+      }
+      // Dependency order is deliberately non-semantic. Rust emits a stable
+      // order for reproducible checked-in JSON, while consumers require and
+      // compare a unique package-identity set.
+      const seenDependencies = new Set<string>();
+      parsedDependencyClosures[arch] = rawClosure.map(
+        (rawDependency, dependencyIndex): ProgramDependencyIdentity => {
+          if (
+            typeof rawDependency !== "object"
+            || rawDependency === null
+            || !hasExactObjectKeys(rawDependency, [
+              "packageName",
+              "manifestSha256",
+              "cacheKey",
+            ])
+            || typeof (rawDependency as { packageName?: unknown }).packageName
+              !== "string"
+            || typeof (rawDependency as { manifestSha256?: unknown })
+              .manifestSha256 !== "string"
+            || !/^[a-f0-9]{64}$/.test(
+              (rawDependency as { manifestSha256: string }).manifestSha256,
+            )
+            || typeof (rawDependency as { cacheKey?: unknown }).cacheKey
+              !== "string"
+            || !/^[a-f0-9]{64}$/.test(
+              (rawDependency as { cacheKey: string }).cacheKey,
+            )
+          ) {
+            throw new Error(
+              `Invalid program package index ${indexPath}: package ${JSON.stringify(packageName)} dependency ${dependencyIndex + 1} for ${arch} is malformed`,
+            );
+          }
+          const dependency = rawDependency as unknown as ProgramDependencyIdentity;
+          safeSinglePathComponent(
+            dependency.packageName,
+            indexPath,
+            `${packageName} dependency packageName`,
+            false,
+          );
+          if (
+            dependency.packageName === packageName
+            || seenDependencies.has(dependency.packageName)
+          ) {
+            throw new Error(
+              `Invalid program package index ${indexPath}: package ${JSON.stringify(packageName)} dependency closure for ${arch} must contain unique dependencies other than itself`,
+            );
+          }
+          seenDependencies.add(dependency.packageName);
+          const contextualIdentity = identities.get(dependency.packageName);
+          if (
+            !contextualIdentity
+            || contextualIdentity.manifestSha256
+              !== dependency.manifestSha256
+            || contextualIdentity.cacheKeys[arch] !== dependency.cacheKey
+          ) {
+            throw new Error(
+              `Invalid program package index ${indexPath}: package ${JSON.stringify(packageName)} dependency ${JSON.stringify(dependency.packageName)} for ${arch} does not match the index's authoritative contextual identity`,
+            );
+          }
+          return dependency;
+        },
+      );
+    }
+    const members = (rawPackage as { members: unknown[] }).members.map(
+      (rawMember, memberIndex): ProgramPackageProjectionMember => {
+        if (
+          typeof rawMember !== "object"
+          || rawMember === null
+          || (
+            (rawMember as { kind?: unknown }).kind !== "output"
+            && (rawMember as { kind?: unknown }).kind !== "runtime-file"
+          )
+          || typeof (rawMember as { sourceArtifact?: unknown }).sourceArtifact
+            !== "string"
+          || typeof (rawMember as { mirrorPath?: unknown }).mirrorPath !== "string"
+        ) {
+          throw new Error(
+            `Invalid program package index ${indexPath}: package ${JSON.stringify(packageName)} member ${memberIndex + 1} is malformed`,
+          );
+        }
+        const member = rawMember as Record<string, unknown>;
+        const expectedMemberKeys = member.kind === "output"
+          ? [
+            "kind",
+            "sourceArtifact",
+            "mirrorPath",
+            "outputName",
+            "forkInstrumentation",
+          ]
+          : [
+            "kind",
+            "sourceArtifact",
+            "mirrorPath",
+            "guestPath",
+            "mode",
+          ];
+        if (!hasExactObjectKeys(member, expectedMemberKeys)) {
+          throw new Error(
+            `Invalid program package index ${indexPath}: package ${JSON.stringify(packageName)} member ${memberIndex + 1} has unknown or missing fields`,
+          );
+        }
+        portableArtifactPath(
+          member.sourceArtifact as string,
+          indexPath,
+          `${packageName} sourceArtifact`,
+        );
+        portableArtifactPath(
+          member.mirrorPath as string,
+          indexPath,
+          `${packageName} mirrorPath`,
+        );
+        if (member.kind === "output") {
+          if (
+            typeof member.outputName !== "string"
+            || (
+              member.forkInstrumentation !== "auto"
+              && member.forkInstrumentation !== "disabled"
+            )
+          ) {
+            throw new Error(
+              `Invalid program package index ${indexPath}: package ${JSON.stringify(packageName)} output member lacks outputName or forkInstrumentation`,
+            );
+          }
+          safeSinglePathComponent(
+            member.outputName,
+            indexPath,
+            `${packageName} outputName`,
+          );
+        } else if (
+          typeof member.guestPath !== "string"
+          || !member.guestPath.startsWith("/")
+          || !Number.isInteger(member.mode)
+          || (member.mode as number) < 0
+          || (member.mode as number) > 0o777
+        ) {
+          throw new Error(
+            `Invalid program package index ${indexPath}: package ${JSON.stringify(packageName)} runtime member lacks valid guestPath or mode`,
+          );
+        }
+        return member as unknown as ProgramPackageProjectionMember;
+      },
+    );
+    if (
+      members.length === 0
+      || new Set(members.map((member) => member.sourceArtifact)).size
+        !== members.length
+      || new Set(members.map((member) => member.mirrorPath)).size
+        !== members.length
+      || (
+        members.length === 1
+        && members[0]!.mirrorPath.includes("/")
+      )
+      || (
+        members.length > 1
+        && members.some(
+          (member) => !member.mirrorPath.startsWith(`${packageName}/`),
+        )
+      )
+    ) {
+      throw new Error(
+        `Invalid program package index ${indexPath}: package ${JSON.stringify(packageName)} members are empty, collide, or violate scalar/package-directory layout`,
+      );
+    }
+    const manifestSha256 =
+      (rawPackage as { manifestSha256: string }).manifestSha256;
+    const identity = identities.get(packageName);
+    if (
+      !identity
+      || identity.manifestSha256 !== manifestSha256
+      || (arches as string[]).some(
+        (arch) => identity.cacheKeys[arch] !== cacheKeys[arch],
+      )
+    ) {
+      throw new Error(
+        `Invalid program package index ${indexPath}: package ${JSON.stringify(packageName)} does not match its contextual package identity`,
+      );
+    }
+    packages.set(packageName, {
+      manifestSha256,
+      arches: arches as string[],
+      cacheKeys: cacheKeys as Record<string, string>,
+      dependencyClosures: parsedDependencyClosures,
+      members,
+    });
+  }
+  return { identities, packages, indexPath };
+}
+
+function programPackageProjectionIdentity(
+  projection: ProgramPackageProjection,
+): string {
+  return JSON.stringify({
+    manifestSha256: projection.manifestSha256,
+    arches: projection.arches,
+    cacheKeys: Object.fromEntries(
+      projection.arches.map((arch) => [arch, projection.cacheKeys[arch]]),
+    ),
+    dependencyClosures: Object.fromEntries(
+      projection.arches.map((arch) => [
+        arch,
+        [...projection.dependencyClosures[arch]!].sort((left, right) =>
+          left.packageName < right.packageName
+            ? -1
+            : left.packageName > right.packageName
+            ? 1
+            : 0
+        ),
+      ]),
+    ),
+    members: projection.members.map((member) =>
+      member.kind === "output"
+        ? {
+          kind: member.kind,
+          sourceArtifact: member.sourceArtifact,
+          mirrorPath: member.mirrorPath,
+          outputName: member.outputName,
+          forkInstrumentation: member.forkInstrumentation,
+        }
+        : {
+          kind: member.kind,
+          sourceArtifact: member.sourceArtifact,
+          mirrorPath: member.mirrorPath,
+          guestPath: member.guestPath,
+          mode: member.mode,
+        }
+    ),
+  });
+}
+
+function bundledProgramPackageProjection(): LoadedProgramPackageProjection | null {
+  const indexPath = join(packageRoot(), "wasm", PROGRAM_PACKAGE_INDEX_FILE);
+  return pathEntryExists(indexPath)
+    ? readProgramPackageProjection(indexPath)
+    : null;
+}
+
+/**
+ * An explicit registry remains the authored policy source. The projection
+ * shipped beside installed bytes is independent identity evidence, but its
+ * namespaces must not fall through to generic scalar lookup merely because a
+ * custom registry omitted them.
+ */
+function bundledProgramClaimForPath(adjusted: string): string | null {
+  const loaded = bundledProgramPackageProjection();
+  if (!loaded) return null;
+  const components = adjusted.split("/");
+  if (
+    components[0] !== "programs"
+    || !ARCH_SEGMENTS.has(components[1]!)
+  ) return null;
+  const arch = components[1]!;
+  if (components.length >= 4) {
+    const packageName = components[2]!;
+    const projection = loaded.packages.get(packageName);
+    return projection?.arches.includes(arch) ? packageName : null;
+  }
+  if (components.length !== 3) return null;
+  const flatName = components[2]!;
+  for (const [packageName, projection] of loaded.packages) {
+    if (
+      projection.arches.includes(arch)
+      && projection.members.some(
+        (member) =>
+          member.kind === "output"
+          && member.mirrorPath.split("/").at(-1) === flatName,
+      )
+    ) return packageName;
+  }
+  return null;
+}
+
+function rejectUnselectedBundledProgramClaim(adjusted: string): void {
+  const packageName = bundledProgramClaimForPath(adjusted);
+  if (packageName) {
+    throw new Error(
+      `Installed package resolver path ${JSON.stringify(adjusted)} is owned by ` +
+        `${JSON.stringify(packageName)}, but that package is not selected by ` +
+        `the configured program registry`,
+    );
+  }
+}
+
+function selectedProgramPackageState(): SelectedProgramPackageState {
+  const roots = configuredProgramRegistryRoots();
+  const identities = new Map<string, SelectedPackageProjectionIdentity>();
+  const unidentifiedPackages = new Map<string, string>();
+  const packages = new Map<string, SelectedProgramPackageProjection>();
+  const unprojectedPackages = new Map<string, string>();
+  const physicalProgramClaims: PhysicalProgramProjectionClaim[] = [];
+
+  if (roots === null) {
+    const indexPath = join(packageRoot(), "wasm", PROGRAM_PACKAGE_INDEX_FILE);
+    if (!pathEntryExists(indexPath)) {
+      return {
+        identities,
+        unidentifiedPackages,
+        packages,
+        unprojectedPackages,
+        physicalProgramClaims,
+      };
+    }
+    const loaded = readProgramPackageProjection(indexPath);
+    for (const [packageName, identity] of loaded.identities) {
+      identities.set(packageName, {
+        ...identity,
+        packageName,
+        policyPath: `${loaded.indexPath}#identities.${packageName}`,
+      });
+    }
+    for (const [packageName, projection] of loaded.packages) {
+      physicalProgramClaims.push({
+        packageName,
+        projection,
+        selected: true,
+      });
+      packages.set(packageName, {
+        ...projection,
+        packageName,
+        policyPath: `${loaded.indexPath}#${packageName}`,
+      });
+    }
+    return {
+      identities,
+      unidentifiedPackages,
+      packages,
+      unprojectedPackages,
+      physicalProgramClaims,
+    };
+  }
+
+  const claimed = new Set<string>();
+  let authoritativeIdentities:
+    | Map<string, PackageProjectionIdentity>
+    | null = null;
+  let authoritativePackages:
+    | Map<string, ProgramPackageProjection>
+    | null = null;
+  for (const root of roots) {
+    if (!pathEntryExists(root)) continue;
+    if (!statSync(root).isDirectory()) {
+      throw new Error(`Program registry root is not a directory: ${root}`);
+    }
+    const indexPath = join(root, PROGRAM_PACKAGE_INDEX_FILE);
+    if (!pathEntryExists(indexPath)) {
+      throw new Error(
+        `Program registry ${root} is missing ${PROGRAM_PACKAGE_INDEX_FILE}; generate it with xtask build-deps program-index`,
+      );
+    }
+    const loaded = readProgramPackageProjection(indexPath);
+    // The highest-priority existing root was generated against the complete
+    // ordered registry path. It owns both contextual identities and program
+    // projections for every first-hit package, including lower-root programs
+    // rekeyed by a dependency-only override. Lower indexes retain suffix-
+    // context projections as fallbacks and namespace evidence only.
+    authoritativeIdentities ??= loaded.identities;
+    authoritativePackages ??= loaded.packages;
+    const entries = readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
+      .sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const packageName = entry.name;
+      const manifestPath = join(root, packageName, "package.toml");
+      if (!pathEntryExists(manifestPath)) continue;
+      let isFile = false;
+      try {
+        isFile = statSync(manifestPath).isFile();
+      } catch {
+        isFile = false;
+      }
+      if (!isFile) continue;
+      const physicalProjection = loaded.packages.get(packageName);
+      const selected = !claimed.has(packageName);
+      if (physicalProjection) {
+        physicalProgramClaims.push({
+          packageName,
+          projection: physicalProjection,
+          selected,
+        });
+      }
+      if (!selected) continue;
+      claimed.add(packageName);
+      const identity = authoritativeIdentities.get(packageName);
+      if (identity) {
+        identities.set(packageName, {
+          ...identity,
+          packageName,
+          manifestPath,
+          policyPath: manifestPath,
+        });
+      } else {
+        unidentifiedPackages.set(packageName, manifestPath);
+      }
+      const projection = authoritativePackages.get(packageName);
+      if (!projection) {
+        unprojectedPackages.set(packageName, manifestPath);
+        continue;
+      }
+      packages.set(packageName, {
+        ...projection,
+        packageName,
+        manifestPath,
+        policyPath: manifestPath,
+      });
+    }
+  }
+  return {
+    identities,
+    unidentifiedPackages,
+    packages,
+    unprojectedPackages,
+    physicalProgramClaims,
+  };
+}
+
+function verifySelectedPackageIdentity(
+  identity: SelectedPackageProjectionIdentity,
+): void {
+  if (!identity.manifestPath) return;
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(identity.manifestPath);
+  } catch (error) {
+    throw new Error(
+      `Program package identity cannot verify ${identity.manifestPath}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  if (digest !== identity.manifestSha256) {
+    throw new Error(
+      `Program package identity is stale for ${identity.manifestPath}; regenerate ${PROGRAM_PACKAGE_INDEX_FILE}`,
+    );
+  }
+}
+
+function verifySelectedProgramPackage(
+  projection: SelectedProgramPackageProjection,
+): void {
+  if (!projection.manifestPath) return;
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(projection.manifestPath);
+  } catch (error) {
+    throw new Error(
+      `Program package projection cannot verify ${projection.manifestPath}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  if (digest !== projection.manifestSha256) {
+    throw new Error(
+      `Program package projection is stale for ${projection.manifestPath}; regenerate ${PROGRAM_PACKAGE_INDEX_FILE}`,
+    );
+  }
+}
+
+function selectedProgramPackage(
+  packageName: string,
+): SelectedProgramPackageProjection | null {
+  const index = programRegistryIndex();
+  const projection = index.packages.get(packageName);
+  if (projection) {
+    verifySelectedProgramPackage(projection);
+    return projection;
+  }
+  const manifestPath = index.unprojectedPackages.get(packageName);
+  if (manifestPath) {
+    throw new Error(
+      `Package ${JSON.stringify(packageName)} is selected at ${manifestPath} but is absent from ${PROGRAM_PACKAGE_INDEX_FILE}; regenerate the registry projection`,
+    );
+  }
+  return null;
+}
+
+function verifyProgramDependencyContext(
+  projection: SelectedProgramPackageProjection,
+  arch: string,
+): void {
+  const expectedDependencies = projection.dependencyClosures[arch];
+  if (!expectedDependencies) {
+    throw manifestError(
+      projection.policyPath,
+      `package ${JSON.stringify(projection.packageName)} lacks a dependency identity closure for ${arch}`,
+    );
+  }
+  const state = selectedProgramPackageState();
+  const selectedProgramIdentity = state.identities.get(projection.packageName);
+  if (!selectedProgramIdentity) {
+    const unidentified = state.unidentifiedPackages.get(projection.packageName);
+    throw new Error(
+      `Program package ${JSON.stringify(projection.packageName)} has no authoritative ` +
+        `contextual identity for ${arch}${
+          unidentified ? ` at ${unidentified}` : ""
+        }; regenerate ${PROGRAM_PACKAGE_INDEX_FILE} with the exact ordered registry roots`,
+    );
+  }
+  verifySelectedPackageIdentity(selectedProgramIdentity);
+  const selectedProgramCacheKey = selectedProgramIdentity.cacheKeys[arch];
+  if (
+    selectedProgramIdentity.manifestSha256 !== projection.manifestSha256
+    || selectedProgramCacheKey !== projection.cacheKeys[arch]
+  ) {
+    throw new Error(
+      `Program package ${JSON.stringify(projection.packageName)} was projected with ` +
+        `manifest ${projection.manifestSha256} and cache key ${projection.cacheKeys[arch]}` +
+        ` for ${arch}, but the authoritative first-hit registry context at ` +
+        `${selectedProgramIdentity.policyPath} requires manifest ` +
+        `${selectedProgramIdentity.manifestSha256} and cache key ` +
+        `${selectedProgramCacheKey ?? "<missing>"}. Regenerate this program projection ` +
+        `with the exact ordered registry roots; the highest-priority index must ` +
+        `carry the complete combined-context projection rather than relying on ` +
+        `a lower suffix-context build identity.`,
+    );
+  }
+  for (const expected of expectedDependencies) {
+    const selected = state.identities.get(expected.packageName);
+    if (!selected) {
+      const unidentified = state.unidentifiedPackages.get(expected.packageName);
+      if (unidentified) {
+        throw new Error(
+          `Program package ${JSON.stringify(projection.packageName)} was generated against ` +
+            `dependency ${JSON.stringify(expected.packageName)}, but the first-hit package at ` +
+            `${unidentified} has no contextual identity in ${PROGRAM_PACKAGE_INDEX_FILE}`,
+        );
+      }
+      throw new Error(
+        `Program package ${JSON.stringify(projection.packageName)} was generated against ` +
+          `dependency ${JSON.stringify(expected.packageName)}, but that dependency is absent ` +
+          `from the configured first-hit registry roots`,
+      );
+    }
+    verifySelectedPackageIdentity(selected);
+    const selectedCacheKey = selected.cacheKeys[arch];
+    if (
+      selected.manifestSha256 !== expected.manifestSha256
+      || selectedCacheKey !== expected.cacheKey
+    ) {
+      throw new Error(
+        `Program package ${JSON.stringify(projection.packageName)} has a contextual cache ` +
+          `identity mismatch for ${arch}: its projection expects dependency ` +
+          `${JSON.stringify(expected.packageName)} manifest ${expected.manifestSha256} ` +
+          `and cache key ${expected.cacheKey}, but first-hit selection at ` +
+          `${selected.policyPath} provides manifest ${selected.manifestSha256} and cache key ` +
+          `${selectedCacheKey ?? "<missing>"}. Regenerate the program projection with the ` +
+          `exact ordered registry roots; the complete highest-priority projection must ` +
+          `bind every selected program to the same combined dependency context.`,
+      );
+    }
+  }
 }
 
 function programRegistryIndex(): ProgramRegistryIndex {
-  if (cachedProgramRegistryIndex) return cachedProgramRegistryIndex;
-
+  const state = selectedProgramPackageState();
+  const { physicalProgramClaims, ...selectedState } = state;
   const index: ProgramRegistryIndex = {
+    ...selectedState,
     legacyFlatOutputs: new Map(),
-    forkInstrumentationDisabledOutputs: new Set(),
+    forkInstrumentationDisabledOutputs: new Map(),
   };
-  let registry: string;
-  try {
-    registry = join(findRepoRoot(), "packages", "registry");
-  } catch {
-    cachedProgramRegistryIndex = index;
-    return index;
-  }
-
-  let entries: Dirent<string>[];
-  try {
-    entries = readdirSync(registry, { withFileTypes: true });
-  } catch (error) {
-    if (
-      error instanceof Error
-      && "code" in error
-      && error.code === "ENOENT"
-    ) {
-      cachedProgramRegistryIndex = index;
-      return index;
-    }
-    throw error;
-  }
-
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const manifestPath = join(registry, entry.name, "package.toml");
-    if (!pathEntryExists(manifestPath)) continue;
-    const packageToml = readFileSync(manifestPath, "utf8");
-    if (topLevelManifestKind(packageToml, manifestPath) !== "program") continue;
-    const parsed = parseProgramPackageClosureManifest(packageToml, manifestPath);
-    if (parsed.kind !== "program") continue;
-    if (parsed.name !== entry.name) {
-      throw manifestError(
-        manifestPath,
-        `top-level name ${JSON.stringify(parsed.name)} does not match registry directory ${JSON.stringify(entry.name)}`,
-      );
-    }
-
-    const packageOwned = parsed.outputs.length + parsed.runtimeFiles.length > 1;
-    for (const arch of parsed.targetArches) {
-      for (const output of parsed.outputs) {
-        const flatOutput = outputRelForPackage(parsed.name, output, false);
-        const key = `${arch}/${flatOutput}`;
+  const resolverPaths: Array<{
+    arch: string;
+    path: string;
+    packageName: string;
+  }> = [];
+  for (const projection of state.packages.values()) {
+    const packageOwned = projection.members.length > 1;
+    for (const arch of projection.arches) {
+      for (const member of projection.members) {
+        const conflict = resolverPaths.find(
+          (previous) =>
+            previous.arch === arch
+            && (
+              previous.path === member.mirrorPath
+              || previous.path.startsWith(`${member.mirrorPath}/`)
+              || member.mirrorPath.startsWith(`${previous.path}/`)
+            ),
+        );
+        if (conflict) {
+          throw new Error(
+            `Program resolver paths programs/${arch}/${conflict.path} and programs/${arch}/${member.mirrorPath} conflict between selected packages ${JSON.stringify(conflict.packageName)} and ${JSON.stringify(projection.packageName)}`,
+          );
+        }
+        resolverPaths.push({
+          arch,
+          path: member.mirrorPath,
+          packageName: projection.packageName,
+        });
+        if (member.kind !== "output") continue;
+        const flatPath = member.mirrorPath.split("/").at(-1)!;
+        const key = `${arch}/${flatPath}`;
         let owner = index.legacyFlatOutputs.get(key);
         if (!owner) {
-          owner = { hasScalarOwner: false, packagePaths: new Set() };
+          owner = {
+            scalarOwners: new Set(),
+            packagePaths: new Map(),
+            shadowedOwners: new Set(),
+          };
           index.legacyFlatOutputs.set(key, owner);
         }
         if (packageOwned) {
-          owner.packagePaths.add(
-            `programs/${arch}/${outputRelForPackage(parsed.name, output, true)}`,
+          owner.packagePaths.set(
+            `programs/${arch}/${member.mirrorPath}`,
+            projection.packageName,
           );
         } else {
-          owner.hasScalarOwner = true;
+          owner.scalarOwners.add(projection.packageName);
         }
-
-        if (output.forkInstrumentation === "disabled") {
-          index.forkInstrumentationDisabledOutputs.add(
-            `${arch}/${outputRelForPackage(parsed.name, output, packageOwned)}`,
+        if (member.forkInstrumentation === "disabled") {
+          index.forkInstrumentationDisabledOutputs.set(
+            `${arch}/${member.mirrorPath}`,
+            projection.packageName,
           );
         }
       }
     }
   }
+  // A lower physical program can be shadowed by a higher package of another
+  // kind (or by a different program layout). Its old flat mirror path must
+  // remain a fail-closed namespace claim; otherwise generic scalar lookup
+  // could serve stale bytes that bypass the actual first-hit package. A
+  // selected lower program reprojected by the authoritative top index already
+  // has active claims for the same manifest-owned members.
+  for (
+    const { packageName, projection, selected } of physicalProgramClaims
+  ) {
+    if (selected && state.packages.has(packageName)) continue;
+    for (const arch of projection.arches) {
+      for (const member of projection.members) {
+        if (member.kind !== "output") continue;
+        const flatPath = member.mirrorPath.split("/").at(-1)!;
+        const key = `${arch}/${flatPath}`;
+        let owner = index.legacyFlatOutputs.get(key);
+        if (!owner) {
+          owner = {
+            scalarOwners: new Set(),
+            packagePaths: new Map(),
+            shadowedOwners: new Set(),
+          };
+          index.legacyFlatOutputs.set(key, owner);
+        }
+        owner.shadowedOwners.add(packageName);
+      }
+    }
+  }
 
-  cachedProgramRegistryIndex = index;
   return index;
 }
 
@@ -744,21 +1288,87 @@ function programRegistryIndex(): ProgramRegistryIndex {
  * package closure. A flat spelling remains valid when a true single-member
  * package owns the same output name.
  */
-function rejectLegacyFlatPackageMember(adjusted: string): void {
+function selectedFlatProgramPackage(
+  adjusted: string,
+): SelectedProgramPackageProjection | null {
   const components = adjusted.split("/");
   if (
     components.length !== 3
     || components[0] !== "programs"
     || !ARCH_SEGMENTS.has(components[1]!)
-  ) return;
+  ) return null;
   const owner = programRegistryIndex().legacyFlatOutputs.get(
     `${components[1]}/${components[2]}`,
   );
-  if (owner && !owner.hasScalarOwner && owner.packagePaths.size > 0) {
+  if (!owner) return null;
+  for (const packageName of owner.scalarOwners) {
+    const projection = selectedProgramPackage(packageName);
+    if (projection) return projection;
+  }
+  for (const packageName of owner.packagePaths.values()) {
+    selectedProgramPackage(packageName);
+  }
+  if (owner.packagePaths.size > 0) {
     throw new Error(
-      `Legacy flat resolver path ${JSON.stringify(adjusted)} belongs to a multi-member package; use ${[...owner.packagePaths].sort().map((path) => JSON.stringify(path)).join(" or ")}`,
+      `Legacy flat resolver path ${JSON.stringify(adjusted)} belongs to a multi-member package; use ${[...owner.packagePaths.keys()].sort().map((path) => JSON.stringify(path)).join(" or ")}`,
     );
   }
+  for (const packageName of owner.shadowedOwners) {
+    const projection = selectedProgramPackage(packageName);
+    if (projection) return projection;
+    throw new Error(
+      `Legacy flat resolver path ${JSON.stringify(adjusted)} is claimed by ` +
+        `a lower-root program package ${JSON.stringify(packageName)}, but its ` +
+        `first-hit selected package does not project that program; stale scalar ` +
+        `mirror fallback is forbidden`,
+    );
+  }
+  return null;
+}
+
+function closureForProjection(
+  projection: SelectedProgramPackageProjection,
+  arch: string,
+  adjusted: string,
+): ProgramPackageClosure {
+  if (!projection.arches.includes(arch)) {
+    throw manifestError(
+      projection.policyPath,
+      `package ${JSON.stringify(projection.packageName)} does not declare resolver artifacts for ${arch}`,
+    );
+  }
+  const cacheKey = projection.cacheKeys[arch];
+  if (!cacheKey) {
+    throw manifestError(
+      projection.policyPath,
+      `package ${JSON.stringify(projection.packageName)} lacks a cache identity for ${arch}`,
+    );
+  }
+  verifyProgramDependencyContext(projection, arch);
+  const projectionIdentity = programPackageProjectionIdentity(projection);
+  const members: ProgramPackageClosureMember[] = projection.members.map(
+    (member) => ({
+      packageName: projection.packageName,
+      relPath: `programs/${arch}/${member.mirrorPath}`,
+      sourceArtifact: member.sourceArtifact,
+      cacheKey,
+      forkInstrumentation: member.kind === "output"
+        ? member.forkInstrumentation ?? null
+        : null,
+      projectionIdentity,
+    }),
+  );
+  if (!members.some((member) => member.relPath === adjusted)) {
+    throw manifestError(
+      projection.policyPath,
+      `resolver path ${JSON.stringify(adjusted)} is not a declared member of package ${JSON.stringify(projection.packageName)}`,
+    );
+  }
+  return {
+    manifestPath: projection.policyPath,
+    packageName: projection.packageName,
+    members,
+  };
 }
 
 function discoverProgramPackageClosure(
@@ -766,8 +1376,22 @@ function discoverProgramPackageClosure(
 ): ProgramPackageClosure | null {
   const adjusted = applyDefaultArch(relPath);
   const components = adjusted.split("/");
+  if (
+    components[0] === "programs"
+    && !hasSourceCheckout()
+    && bundledProgramPackageProjection() === null
+  ) {
+    throw new Error(
+      `Installed host package is missing wasm/${PROGRAM_PACKAGE_INDEX_FILE}; ` +
+        `program artifacts cannot be resolved without packaged policy`,
+    );
+  }
   if (components.length === 3) {
-    rejectLegacyFlatPackageMember(adjusted);
+    const projection = selectedFlatProgramPackage(adjusted);
+    if (projection) {
+      return closureForProjection(projection, components[1]!, adjusted);
+    }
+    rejectUnselectedBundledProgramClaim(adjusted);
     return null;
   }
   if (
@@ -777,100 +1401,19 @@ function discoverProgramPackageClosure(
   ) return null;
   const arch = components[1]!;
   const packageDirectory = components[2]!;
-
-  let repoRoot: string;
-  try {
-    repoRoot = findRepoRoot();
-  } catch {
-    // An installed host package has no source registry to inspect.
+  const projection = selectedProgramPackage(packageDirectory);
+  if (!projection) {
+    rejectUnselectedBundledProgramClaim(adjusted);
     return null;
   }
-  const packageDirectoryPath = join(
-    repoRoot,
-    "packages",
-    "registry",
-    packageDirectory!,
-  );
-  if (!pathEntryExists(packageDirectoryPath)) return null;
-  const manifestPath = join(packageDirectoryPath, "package.toml");
-  if (!pathEntryExists(manifestPath)) {
-    throw manifestError(
-      manifestPath,
-      "registry package directory exists but package.toml is missing",
-    );
-  }
-
-  let packageToml: string;
-  try {
-    packageToml = readFileSync(manifestPath, "utf8");
-  } catch (error) {
-    throw manifestError(
-      manifestPath,
-      `cannot read it: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  const parsed = parseProgramPackageClosureManifest(packageToml, manifestPath);
-  if (parsed.kind !== "program") {
-    throw manifestError(
-      manifestPath,
-      `expected kind "program", found ${JSON.stringify(parsed.kind)}`,
-    );
-  }
-  if (parsed.name !== packageDirectory) {
-    throw manifestError(
-      manifestPath,
-      `top-level name ${JSON.stringify(parsed.name)} does not match registry directory ${JSON.stringify(packageDirectory)}`,
-    );
-  }
-  if (!parsed.targetArches.includes(arch)) {
-    throw manifestError(
-      manifestPath,
-      `package ${JSON.stringify(parsed.name)} does not declare resolver artifacts for ${arch}`,
-    );
-  }
-
-  // A package-level transaction is needed whenever more than one declared
-  // member must come from the same build, including one executable plus a
-  // runtime archive (CPython and Erlang use that shape).
-  const packageOwned = parsed.outputs.length + parsed.runtimeFiles.length > 1;
-  if (!packageOwned) return null;
-
-  const members: ProgramPackageClosureMember[] = [
-    ...parsed.outputs.map((output) => ({
-      relPath: `programs/${arch}/${outputRelForPackage(
-        parsed.name,
-        output,
-        packageOwned,
-      )}`,
-      sourceArtifact: output.wasm,
-    })),
-    ...parsed.runtimeFiles.map((runtimeFile) => ({
-      relPath: `programs/${arch}/${parsed.name}/${runtimeFile.artifact}`,
-      sourceArtifact: runtimeFile.artifact,
-    })),
-  ];
-  const relPathSet = new Set(members.map((member) => member.relPath));
-  const artifactSet = new Set(members.map((member) => member.sourceArtifact));
-  if (relPathSet.size !== members.length) {
-    throw manifestError(manifestPath, "declared outputs collide in the resolver mirror");
-  }
-  if (artifactSet.size !== members.length) {
-    throw manifestError(manifestPath, "declared source artifact paths are not unique");
-  }
-
-  if (!relPathSet.has(adjusted)) {
-    throw manifestError(
-      manifestPath,
-      `resolver path ${JSON.stringify(adjusted)} is not a declared member of multi-member package ${JSON.stringify(parsed.name)}`,
-    );
-  }
-  return { manifestPath, packageName: parsed.name, members };
+  return closureForProjection(projection, arch, adjusted);
 }
 
 /**
- * Return every output and runtime file when `relPath` names a member of a
- * multi-member program package. Outputs and runtime files are resolved as one
- * transaction whenever their combined count is greater than one.
+ * Return every output and runtime file when `relPath` names a projected
+ * program package. Even a one-member package carries an exact selected cache
+ * identity; packages with multiple members additionally resolve as one
+ * all-or-nothing closure.
  *
  * An absent registry directory means the path is not package-owned. Once the
  * directory exists, a missing, unreadable, or incomplete manifest is an error
@@ -895,9 +1438,12 @@ function disablesForkInstrumentation(relPath: string): boolean {
   for (const arch of ARCH_SEGMENTS) {
     const prefix = `programs/${arch}/`;
     if (adjusted.startsWith(prefix)) {
-      return programRegistryIndex().forkInstrumentationDisabledOutputs.has(
-        `${arch}/${adjusted.slice(prefix.length)}`,
-      );
+      const packageName = programRegistryIndex()
+        .forkInstrumentationDisabledOutputs.get(
+          `${arch}/${adjusted.slice(prefix.length)}`,
+        );
+      if (!packageName) return false;
+      return selectedProgramPackage(packageName) !== null;
     }
   }
   return false;
@@ -917,12 +1463,18 @@ function requiredExportsForRelPath(relPath: string): readonly string[] | undefin
   return undefined;
 }
 
-function hasWasmArtifactPolicyFailures(path: string, relPath: string): boolean {
+function hasWasmArtifactPolicyFailures(
+  path: string,
+  relPath: string,
+  capturedForkInstrumentation?: "auto" | "disabled" | null,
+): boolean {
   if (!path.endsWith(".wasm")) return false;
   try {
     const bytes = readFileSync(path);
     const programBytes = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-    const forkDisabled = disablesForkInstrumentation(relPath);
+    const forkDisabled = capturedForkInstrumentation === undefined
+      ? disablesForkInstrumentation(relPath)
+      : capturedForkInstrumentation === "disabled";
     return describeWasmArtifactPolicyFailures(programBytes, {
       expectedAbi: ABI_VERSION,
       requiredExports: requiredExportsForRelPath(relPath),
@@ -950,23 +1502,99 @@ function hasVfsArtifactPolicyFailures(path: string): boolean {
   }
 }
 
-function hasBinaryArtifactPolicyFailures(path: string, relPath: string): boolean {
-  return hasWasmArtifactPolicyFailures(path, relPath) ||
+function hasBinaryArtifactPolicyFailures(
+  path: string,
+  relPath: string,
+  capturedForkInstrumentation?: "auto" | "disabled" | null,
+): boolean {
+  return hasWasmArtifactPolicyFailures(
+    path,
+    relPath,
+    capturedForkInstrumentation,
+  ) ||
     hasVfsArtifactPolicyFailures(path);
 }
 
-function chooseBinaryCandidate(candidates: string[], relPath: string): string | null {
+function chooseBinaryCandidate(
+  candidates: string[],
+  relPath: string,
+  capturedForkInstrumentation?: "auto" | "disabled" | null,
+): string | null {
   const existing = candidates.filter(pathEntryExists);
   if (existing.length === 0) return null;
 
   return existing.find((candidate) => {
     try {
       return statSync(candidate).isFile()
-        && !hasBinaryArtifactPolicyFailures(candidate, relPath);
+        && !hasBinaryArtifactPolicyFailures(
+          candidate,
+          relPath,
+          capturedForkInstrumentation,
+        );
     } catch {
       return false;
     }
   }) ?? null;
+}
+
+function pinScalarCandidate(
+  candidate: string,
+  relPath: string,
+  capturedForkInstrumentation?: "auto" | "disabled" | null,
+): string {
+  try {
+    const metadata = lstatSync(candidate);
+    if (!metadata.isSymbolicLink()) return candidate;
+    const pinned = realpathSync(candidate);
+    if (
+      !statSync(pinned).isFile()
+      || hasBinaryArtifactPolicyFailures(
+        pinned,
+        relPath,
+        capturedForkInstrumentation,
+      )
+    ) {
+      throw new Error("canonical target is not an accepted regular file");
+    }
+    if (
+      applyDefaultArch(relPath).startsWith("programs/")
+      && isResolverOwnedProgramGenerationTarget(pinned)
+    ) {
+      throw new Error(
+        "resolver-owned program generation has no matching selected package projection",
+      );
+    }
+    return pinned;
+  } catch (error) {
+    throw new Error(
+      `Binary changed or became invalid while pinning ${relPath}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+function isResolverOwnedProgramGenerationTarget(path: string): boolean {
+  const roots = [binaryProgramCacheRoot()];
+  try {
+    roots.push(
+      join(
+        resolverRepoRoot(),
+        "local-binaries",
+        ".kandelo-local-generations",
+      ),
+    );
+  } catch {
+    // Installed consumers have no local source-build generation namespace.
+  }
+  return roots.some((root) => {
+    try {
+      return pathEntryExists(root)
+        && pathIsWithin(realpathSync(root), path);
+    } catch {
+      return false;
+    }
+  });
 }
 
 function pathIsWithin(root: string, path: string): boolean {
@@ -994,14 +1622,23 @@ function mutableGenerationIdentityFailure(
   sharedRoot: string,
   members: readonly ProgramPackageClosureMember[],
 ): string | null {
-  const [programs, arch, packageName] = members[0]!.relPath.split("/");
+  const [programs, arch] = members[0]!.relPath.split("/");
+  const packageName = members[0]!.packageName;
   if (
     programs !== "programs"
     || !ARCH_SEGMENTS.has(arch!)
     || !packageName
+    || members.some((member) => member.packageName !== packageName)
   ) return "declared package members do not share a valid program namespace";
   if (!statSync(sharedRoot).isDirectory()) {
     return "shared package generation root is not a directory";
+  }
+  const cacheKey = members[0]!.cacheKey;
+  if (
+    !/^[a-f0-9]{64}$/.test(cacheKey)
+    || members.some((member) => member.cacheKey !== cacheKey)
+  ) {
+    return "declared package members do not share one valid cache identity";
   }
 
   if (tier.identity === "local-generation") {
@@ -1010,6 +1647,7 @@ function mutableGenerationIdentityFailure(
       ".kandelo-local-generations",
       arch!,
       packageName,
+      cacheKey,
     );
     if (!pathEntryExists(expectedParentPath)) {
       return "local mirror targets are not one direct immutable local generation";
@@ -1027,7 +1665,7 @@ function mutableGenerationIdentityFailure(
     const expectedParent = realpathSync(expectedParentPath);
     const generationName = basename(sharedRoot);
     const hasCanonicalName = generationName.startsWith(`${packageName}-`)
-      && new RegExp(`-rev[0-9]+-${arch}-[a-f0-9]{64}$`).test(generationName);
+      && new RegExp(`-rev[0-9]+-${arch}-${cacheKey}$`).test(generationName);
     return dirname(sharedRoot) === expectedParent && hasCanonicalName
       ? null
       : "fetched mirror targets are not one canonical program-cache generation";
@@ -1082,7 +1720,31 @@ function pinPackageClosureIdentity(
     if (allFiles) {
       if (!tier.allowRegularFileClosure) {
         return {
-          failure: "mutable repo mirrors need symlinks to one canonical package generation",
+          failure: "a mutable source-checkout wasm tree is not an installed package identity",
+        };
+      }
+      const packageName = members[0]!.packageName;
+      const projectionIdentity = members[0]!.projectionIdentity;
+      if (
+        members.some(
+          (member) =>
+            member.packageName !== packageName
+            || member.projectionIdentity !== projectionIdentity,
+        )
+      ) {
+        return {
+          failure: "declared members do not share one selected package projection",
+        };
+      }
+      const bundled = bundledProgramPackageProjection();
+      const bundledProjection = bundled?.packages.get(packageName);
+      if (
+        !bundledProjection
+        || programPackageProjectionIdentity(bundledProjection)
+          !== projectionIdentity
+      ) {
+        return {
+          failure: "installed bytes do not match the selected package projection",
         };
       }
       const installedRoot = realpathSync(tier.root);
@@ -1156,10 +1818,15 @@ function samePackageClosure(
     return false;
   }
   const rightByPath = new Map(
-    right.members.map((member) => [member.relPath, member.sourceArtifact]),
+    right.members.map((member) => [
+      member.relPath,
+      `${member.packageName}\0${member.sourceArtifact}\0${member.cacheKey}\0${member.forkInstrumentation ?? ""}\0${member.projectionIdentity}`,
+    ]),
   );
   return left.members.every(
-    (member) => rightByPath.get(member.relPath) === member.sourceArtifact,
+    (member) =>
+      rightByPath.get(member.relPath)
+        === `${member.packageName}\0${member.sourceArtifact}\0${member.cacheKey}\0${member.forkInstrumentation ?? ""}\0${member.projectionIdentity}`,
   );
 }
 
@@ -1227,7 +1894,7 @@ export function resolveBinary(relPath: string): string {
     }
   }
   const candidate = chooseBinaryCandidate(candidates, relPath);
-  if (candidate) return candidate;
+  if (candidate) return pinScalarCandidate(candidate, relPath);
   if (candidates.some(pathEntryExists)) {
     throw new Error(
       `Binary exists but was rejected by artifact policy: ${relPath}\n` +
@@ -1290,11 +1957,15 @@ function tryResolveBinarySetFromTiers(
         anyExisting ||= pathEntryExists(join(tier.root, programs, arch, packageName));
       }
     }
-    for (const relPath of relPaths) {
+    for (const [index, relPath] of relPaths.entries()) {
       const candidates = tier.candidatesFor(relPath);
       const existing = candidates.filter(pathEntryExists);
       anyExisting ||= existing.length > 0;
-      const candidate = chooseBinaryCandidate(candidates, relPath);
+      const candidate = chooseBinaryCandidate(
+        candidates,
+        relPath,
+        closureMembers?.[index]?.forkInstrumentation,
+      );
       if (candidate) {
         selected.push(candidate);
       } else if (existing.length > 0) {
@@ -1313,7 +1984,11 @@ function tryResolveBinarySetFromTiers(
         unavailable.push(`shared package identity rejected: ${identity.failure}`);
       } else {
         const rejectedPinnedMembers = identity.paths.flatMap((path, index) =>
-          hasBinaryArtifactPolicyFailures(path, relPaths[index]!)
+          hasBinaryArtifactPolicyFailures(
+            path,
+            relPaths[index]!,
+            closureMembers[index]!.forkInstrumentation,
+          )
             ? [relPaths[index]!]
             : []
         );
@@ -1326,7 +2001,15 @@ function tryResolveBinarySetFromTiers(
         }
       }
     }
-    if (unavailable.length === 0) return selected;
+    if (unavailable.length === 0) {
+      return selected.map((path, index) =>
+        pinScalarCandidate(
+          path,
+          relPaths[index]!,
+          closureMembers?.[index]?.forkInstrumentation,
+        )
+      );
+    }
     incomplete.push(
       `  ${tier.label} (${tier.root}): ${unavailable.join(", ")}`,
     );
@@ -1342,10 +2025,10 @@ function tryResolveBinarySetFromTiers(
 
 /** Returns the absolute path of binaries/ whether or not it exists. */
 export function binariesDir(): string {
-  return join(findRepoRoot(), "binaries");
+  return join(resolverRepoRoot(), "binaries");
 }
 
 /** Returns the absolute path of local-binaries/ whether or not it exists. */
 export function localBinariesDir(): string {
-  return join(findRepoRoot(), "local-binaries");
+  return join(resolverRepoRoot(), "local-binaries");
 }

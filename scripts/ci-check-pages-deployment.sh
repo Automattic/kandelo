@@ -90,6 +90,8 @@ for required_path in \
   'host/tsup.config.ts' \
   'package.json' \
   'package-lock.json' \
+  'packages/registry/**' \
+  'scripts/browser-binary-package-roots.mjs' \
   'scripts/check-pages-publish-size.mjs' \
   'scripts/check-pages-run-freshness.sh' \
   'scripts/ci-check-pages-deployment.sh' \
@@ -100,6 +102,8 @@ for required_path in \
     fail "the complete Pages publisher does not watch $required_path"
 done
 
+projection_line="$(step_line "Verify browser package projection is current")"
+prepare_browser_line="$(step_line "Prepare browser demo assets")"
 guide_build_line="$(step_line "Build user guide for the complete Pages tree")"
 api_build_line="$(step_line "Build API docs for the complete Pages tree")"
 assembly_line="$(step_line "Add documentation to the complete Pages tree")"
@@ -107,7 +111,9 @@ size_line="$(step_line "Enforce the GitHub Pages published-site size limit")"
 freshness_line="$(step_line "Confirm this is the newest Pages run")"
 deploy_line="$(step_line "Deploy to gh-pages")"
 
-[ -n "$guide_build_line" ] && [ -n "$api_build_line" ] &&
+[ -n "$projection_line" ] && [ -n "$prepare_browser_line" ] &&
+  [ "$projection_line" -lt "$prepare_browser_line" ] &&
+  [ -n "$guide_build_line" ] && [ -n "$api_build_line" ] &&
   [ -n "$assembly_line" ] && [ -n "$size_line" ] &&
   [ -n "$freshness_line" ] && [ -n "$deploy_line" ] &&
   [ "$guide_build_line" -lt "$assembly_line" ] &&
@@ -116,6 +122,14 @@ deploy_line="$(step_line "Deploy to gh-pages")"
   [ "$size_line" -lt "$freshness_line" ] &&
   [ "$freshness_line" -lt "$deploy_line" ] ||
   fail "one job must assemble and size-check the complete tree before its freshness check and deployment"
+
+projection_block="$(
+  step_block "$PAGES_WORKFLOW" "Verify browser package projection is current"
+)"
+grep -Fq 'build-deps program-index-check' <<<"$projection_block" &&
+  grep -Fq 'packages/registry packages/registry/program-packages.json' \
+    <<<"$projection_block" ||
+  fail "the Pages publisher must verify the generated package projection before preparing assets"
 
 between_freshness_and_deploy="$(
   sed -n "${freshness_line},${deploy_line}p" "$PAGES_WORKFLOW" |

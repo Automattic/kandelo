@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
@@ -11,7 +11,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { zstdCompressSync } from "node:zlib";
 import {
@@ -34,12 +34,39 @@ import {
 const cleanupDirs = new Set<string>();
 const cleanupEmptyDirs = new Set<string>();
 let savedXdgCacheHome: string | undefined;
+let savedBinaryCacheRoot: string | undefined;
+let hadSavedBinaryCacheRoot = false;
+let savedRegistry: string | undefined;
+let hadSavedRegistry = false;
+let fixtureRegistryRoot = "";
+let fixtureRegistryIdentities: Record<string, unknown> = {};
+let fixtureRegistryPackages: Record<string, unknown> = {};
 
 beforeEach(() => {
+  hadSavedBinaryCacheRoot = Object.prototype.hasOwnProperty.call(
+    process.env,
+    "WASM_POSIX_BINARY_CACHE_ROOT",
+  );
+  savedBinaryCacheRoot = process.env.WASM_POSIX_BINARY_CACHE_ROOT;
+  delete process.env.WASM_POSIX_BINARY_CACHE_ROOT;
   savedXdgCacheHome = process.env.XDG_CACHE_HOME;
   const cacheHome = mkdtempSync(join(tmpdir(), "kandelo-resolver-xdg-cache-"));
   cleanupDirs.add(cacheHome);
   process.env.XDG_CACHE_HOME = cacheHome;
+  hadSavedRegistry = Object.prototype.hasOwnProperty.call(
+    process.env,
+    "WASM_POSIX_DEPS_REGISTRY",
+  );
+  savedRegistry = process.env.WASM_POSIX_DEPS_REGISTRY;
+  fixtureRegistryRoot = mkdtempSync(
+    join(tmpdir(), "kandelo-resolver-registry-"),
+  );
+  cleanupDirs.add(fixtureRegistryRoot);
+  fixtureRegistryIdentities = {};
+  fixtureRegistryPackages = {};
+  writeFixtureRegistryIndex();
+  process.env.WASM_POSIX_DEPS_REGISTRY = fixtureRegistryRoot;
+  resetBinaryResolverManifestCacheForTests();
 });
 
 afterEach(() => {
@@ -60,6 +87,16 @@ afterEach(() => {
     delete process.env.XDG_CACHE_HOME;
   } else {
     process.env.XDG_CACHE_HOME = savedXdgCacheHome;
+  }
+  if (hadSavedBinaryCacheRoot) {
+    process.env.WASM_POSIX_BINARY_CACHE_ROOT = savedBinaryCacheRoot ?? "";
+  } else {
+    delete process.env.WASM_POSIX_BINARY_CACHE_ROOT;
+  }
+  if (hadSavedRegistry) {
+    process.env.WASM_POSIX_DEPS_REGISTRY = savedRegistry ?? "";
+  } else {
+    delete process.env.WASM_POSIX_DEPS_REGISTRY;
   }
 });
 
@@ -177,7 +214,7 @@ function fixturePackageName(): string {
 }
 
 function fixturePackageDirectory(name: string): string {
-  const directory = join(findRepoRoot(), "packages", "registry", name);
+  const directory = join(fixtureRegistryRoot, name);
   cleanupDirs.add(directory);
   return directory;
 }
@@ -187,7 +224,166 @@ function writeFixturePackageManifest(name: string, manifest: string): string {
   mkdirSync(directory, { recursive: true });
   const manifestPath = join(directory, "package.toml");
   writeFileSync(manifestPath, manifest);
+  resetBinaryResolverManifestCacheForTests();
   return manifestPath;
+}
+
+interface FixtureProjectionMember {
+  kind: "output" | "runtime-file";
+  sourceArtifact: string;
+  mirrorPath: string;
+  outputName?: string;
+  forkInstrumentation?: "auto" | "disabled";
+  guestPath?: string;
+  mode?: number;
+}
+
+interface FixtureDependencyIdentity {
+  packageName: string;
+  manifestSha256: string;
+  cacheKey: string;
+}
+
+function fixtureCacheKey(packageName: string, arch = "wasm32"): string {
+  return createHash("sha256")
+    .update(`binary-resolver fixture:${packageName}:${arch}`)
+    .digest("hex");
+}
+
+function writeFixtureRegistryIndex(): void {
+  writeFileSync(
+    join(fixtureRegistryRoot, "program-packages.json"),
+    `${JSON.stringify({
+      format: "kandelo-program-packages-v2",
+      identities: fixtureRegistryIdentities,
+      packages: fixtureRegistryPackages,
+    }, null, 2)}\n`,
+  );
+  resetBinaryResolverManifestCacheForTests();
+}
+
+function writeFixturePackageProjection(
+  name: string,
+  members: FixtureProjectionMember[],
+  arches = ["wasm32"],
+  cacheKeys = Object.fromEntries(
+    arches.map((arch) => [arch, fixtureCacheKey(name, arch)]),
+  ),
+  dependencyClosures: Record<string, FixtureDependencyIdentity[]> =
+    Object.fromEntries(arches.map((arch) => [arch, []])),
+): void {
+  const manifestPath = join(fixturePackageDirectory(name), "package.toml");
+  const manifestSha256 = createHash("sha256")
+    .update(readFileSync(manifestPath))
+    .digest("hex");
+  fixtureRegistryIdentities[name] = {
+    manifestSha256,
+    cacheKeys: {
+      wasm32: cacheKeys.wasm32 ?? fixtureCacheKey(name, "wasm32"),
+      wasm64: cacheKeys.wasm64 ?? fixtureCacheKey(name, "wasm64"),
+    },
+  };
+  fixtureRegistryPackages[name] = {
+    manifestSha256,
+    arches,
+    cacheKeys,
+    dependencyClosures,
+    members,
+  };
+  writeFixtureRegistryIndex();
+}
+
+function writeFixturePackageIdentity(
+  name: string,
+  cacheKeys: Record<string, string> = {
+    wasm32: fixtureCacheKey(name, "wasm32"),
+    wasm64: fixtureCacheKey(name, "wasm64"),
+  },
+): FixtureDependencyIdentity {
+  const manifestPath = join(fixturePackageDirectory(name), "package.toml");
+  const manifestSha256 = createHash("sha256")
+    .update(readFileSync(manifestPath))
+    .digest("hex");
+  fixtureRegistryIdentities[name] = { manifestSha256, cacheKeys };
+  writeFixtureRegistryIndex();
+  return {
+    packageName: name,
+    manifestSha256,
+    cacheKey: cacheKeys.wasm32!,
+  };
+}
+
+interface StandaloneRegistryEntry {
+  manifest: string;
+  cacheKeys: Record<"wasm32" | "wasm64", string>;
+  projection?: {
+    arches: Array<"wasm32" | "wasm64">;
+    dependencyClosures: Record<string, FixtureDependencyIdentity[]>;
+    members: FixtureProjectionMember[];
+  };
+}
+
+function writeStandaloneRegistry(
+  root: string,
+  entries: Record<string, StandaloneRegistryEntry>,
+  contextualEntries: Record<string, StandaloneRegistryEntry> = {},
+): void {
+  const identities: Record<string, unknown> = {};
+  const packages: Record<string, unknown> = {};
+  const addProjection = (
+    packageName: string,
+    entry: StandaloneRegistryEntry,
+  ) => {
+    const manifestSha256 = createHash("sha256")
+      .update(entry.manifest)
+      .digest("hex");
+    identities[packageName] = {
+      manifestSha256,
+      cacheKeys: entry.cacheKeys,
+    };
+    if (entry.projection) {
+      packages[packageName] = {
+        manifestSha256,
+        arches: entry.projection.arches,
+        cacheKeys: Object.fromEntries(
+          entry.projection.arches.map(
+            (arch) => [arch, entry.cacheKeys[arch]],
+          ),
+        ),
+        dependencyClosures: entry.projection.dependencyClosures,
+        members: entry.projection.members,
+      };
+    }
+  };
+  for (const [packageName, entry] of Object.entries(contextualEntries)) {
+    addProjection(packageName, entry);
+  }
+  for (const [packageName, entry] of Object.entries(entries)) {
+    const packageRoot = join(root, packageName);
+    mkdirSync(packageRoot, { recursive: true });
+    writeFileSync(join(packageRoot, "package.toml"), entry.manifest);
+    addProjection(packageName, entry);
+  }
+  writeFileSync(
+    join(root, "program-packages.json"),
+    `${JSON.stringify({
+      format: "kandelo-program-packages-v2",
+      identities,
+      packages,
+    }, null, 2)}\n`,
+  );
+}
+
+function standaloneDependencyIdentity(
+  packageName: string,
+  manifest: string,
+  cacheKey: string,
+): FixtureDependencyIdentity {
+  return {
+    packageName,
+    manifestSha256: createHash("sha256").update(manifest).digest("hex"),
+    cacheKey,
+  };
 }
 
 function createMultiOutputFixture(): MultiOutputFixture {
@@ -231,6 +427,29 @@ guest_path = "/usr/share/runtime.dat"
       sourceArtifact: "share/runtime.dat",
     },
   ];
+  writeFixturePackageProjection(name, [
+    {
+      kind: "output",
+      sourceArtifact: "artifacts/image.zip",
+      mirrorPath: `${name}/image.zip`,
+      outputName: "image",
+      forkInstrumentation: "auto",
+    },
+    {
+      kind: "output",
+      sourceArtifact: "support/bootstrap.zip",
+      mirrorPath: `${name}/bootstrap.zip`,
+      outputName: "bootstrap",
+      forkInstrumentation: "auto",
+    },
+    {
+      kind: "runtime-file",
+      sourceArtifact: "share/runtime.dat",
+      mirrorPath: `${name}/share/runtime.dat`,
+      guestPath: "/usr/share/runtime.dat",
+      mode: 0o644,
+    },
+  ]);
   for (const root of [
     localBinariesDir(),
     binariesDir(),
@@ -241,14 +460,53 @@ guest_path = "/usr/share/runtime.dat"
   return { name, members };
 }
 
+function createScalarOutputFixture(): {
+  name: string;
+  relPath: string;
+  sourceArtifact: string;
+} {
+  const name = fixturePackageName();
+  const outputName = `command-${randomUUID()}`;
+  const sourceArtifact = `bin/${outputName}.wasm`;
+  const relPath = `programs/wasm32/${outputName}.wasm`;
+  writeFixturePackageManifest(name, `kind = "program"
+name = "${name}"
+version = "1.0.0"
+kernel_abi = ${ABI_VERSION}
+depends_on = []
+
+[source]
+url = "https://example.invalid/${name}.tar.gz"
+sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[license]
+spdx = "MIT"
+
+[[outputs]]
+name = "${outputName}"
+wasm = "${sourceArtifact}"
+`);
+  writeFixturePackageProjection(name, [{
+    kind: "output",
+    sourceArtifact,
+    mirrorPath: `${outputName}.wasm`,
+    outputName,
+    forkInstrumentation: "auto",
+  }]);
+  for (const root of [localBinariesDir(), binariesDir()]) {
+    cleanupDirs.add(join(root, relPath));
+  }
+  return { name, relPath, sourceArtifact };
+}
+
 function fixtureCanonicalRoot(
   packageName: string,
   arch = "wasm32",
+  cacheKey = fixtureCacheKey(packageName, arch),
 ): string {
-  const digest = randomUUID().replaceAll("-", "").repeat(2);
   const root = join(
     binaryProgramCacheRoot(),
-    `${packageName}-1.0.0-rev1-${arch}-${digest}`,
+    `${packageName}-1.0.0-rev1-${arch}-${cacheKey}`,
   );
   mkdirSync(root, { recursive: true });
   cleanupDirs.add(root);
@@ -258,12 +516,14 @@ function fixtureCanonicalRoot(
 function fixtureLocalCanonicalRoot(
   packageName: string,
   arch = "wasm32",
+  cacheKey = fixtureCacheKey(packageName, arch),
 ): string {
   const packageGenerations = join(
     localBinariesDir(),
     ".kandelo-local-generations",
     arch,
     packageName,
+    cacheKey,
   );
   const root = join(packageGenerations, randomUUID());
   mkdirSync(root, { recursive: true });
@@ -309,6 +569,33 @@ function linkClosureMember(
 }
 
 describe("binary resolver artifact policy", () => {
+  it("does not mistake an installed package consumer workspace for Kandelo", () => {
+    const consumer = mkdtempSync(join(tmpdir(), "kandelo-consumer-root-"));
+    cleanupDirs.add(consumer);
+    const installedModule = join(
+      consumer,
+      "node_modules",
+      "@automattic",
+      "wasm-posix-host",
+      "dist",
+    );
+    mkdirSync(installedModule, { recursive: true });
+    writeFileSync(join(consumer, "Cargo.toml"), "[workspace]\nmembers = []\n");
+    writeFileSync(
+      join(consumer, "package.json"),
+      '{"name":"unrelated-consumer","private":true}\n',
+    );
+
+    expect(() => findRepoRoot(installedModule)).toThrow(
+      /Could not find repo root/,
+    );
+    writeFileSync(
+      join(consumer, "package.json"),
+      '{"name":"kandelo","private":true}\n',
+    );
+    expect(findRepoRoot(installedModule)).toBe(consumer);
+  });
+
   it("skips a stale local .vfs.zst when a fetched ABI-matching candidate exists", async () => {
     const relPath = fixtureRelPath(".vfs.zst");
     const staleLocal = await vfsImage(
@@ -482,35 +769,36 @@ describe("binary resolver package closures", () => {
     expect(resolveBinary(relPath)).toBe(localPath);
   });
 
-  it("fails closed when a registry package directory has no manifest", () => {
+  it("matches Rust first-hit semantics by ignoring a directory without package.toml", () => {
     const name = fixturePackageName();
     mkdirSync(fixturePackageDirectory(name), { recursive: true });
+    const relPath = `programs/wasm32/${name}/image.zip`;
+    const localPath = writeCandidate(
+      localBinariesDir(),
+      relPath,
+      new TextEncoder().encode("not-a-package"),
+    );
 
-    expect(() => programOutputClosureRelPaths(
-      `programs/wasm32/${name}/image.zip`,
-    )).toThrow(/registry package directory exists but package\.toml is missing/);
-    expect(() => resolveBinary(
-      `programs/wasm32/${name}/image.zip`,
-    )).toThrow(/registry package directory exists but package\.toml is missing/);
-    expect(() => tryResolveBinary(
-      `programs/wasm32/${name}/image.zip`,
-    )).toThrow(/registry package directory exists but package\.toml is missing/);
-    expect(() => tryResolveBinarySet([
-      `programs/wasm32/${name}/image.zip`,
-    ])).toThrow(/registry package directory exists but package\.toml is missing/);
+    expect(programOutputClosureRelPaths(relPath)).toBeNull();
+    expect(resolveBinary(relPath)).toBe(localPath);
   });
 
-  it("fails closed when an existing package manifest cannot be read", () => {
+  it("matches Rust first-hit semantics when package.toml is not a file", () => {
     const name = fixturePackageName();
     const directory = fixturePackageDirectory(name);
     mkdirSync(join(directory, "package.toml"), { recursive: true });
+    const relPath = `programs/wasm32/${name}/image.zip`;
+    const localPath = writeCandidate(
+      localBinariesDir(),
+      relPath,
+      new TextEncoder().encode("not-a-package"),
+    );
 
-    expect(() => programOutputClosureRelPaths(
-      `programs/wasm32/${name}/image.zip`,
-    )).toThrow(/cannot read it/);
+    expect(programOutputClosureRelPaths(relPath)).toBeNull();
+    expect(resolveBinary(relPath)).toBe(localPath);
   });
 
-  it("fails closed when the resolver projection is malformed or incomplete", () => {
+  it("does not parse an unrelated malformed manifest at runtime", () => {
     const malformedName = fixturePackageName();
     writeFixturePackageManifest(malformedName, `kind = "program"
 name = "${malformedName}"
@@ -521,9 +809,13 @@ wasm = "one.zip"
 name = "two"
 wasm = "two.zip"
 `);
+    const fixture = createMultiOutputFixture();
+    expect(programOutputClosureRelPaths(fixture.members[0]!.relPath)).toEqual(
+      fixture.members.map((member) => member.relPath),
+    );
     expect(() => programOutputClosureRelPaths(
       `programs/wasm32/${malformedName}/one.zip`,
-    )).toThrow(/malformed resolver-owned table header/);
+    )).toThrow(/absent from program-packages\.json/);
 
     const incompleteName = fixturePackageName();
     writeFixturePackageManifest(incompleteName, `kind = "program"
@@ -536,7 +828,7 @@ name = "two"
 `);
     expect(() => programOutputClosureRelPaths(
       `programs/wasm32/${incompleteName}/one.zip`,
-    )).toThrow(/\[\[outputs\]\] entry 2 requires name and wasm/);
+    )).toThrow(/absent from program-packages\.json/);
   });
 
   it("discovers every output and runtime file in a multi-member package", () => {
@@ -548,7 +840,7 @@ name = "two"
     }
     expect(() => programOutputClosureRelPaths(
       `programs/wasm32/${fixture.name}/not-declared.zip`,
-    )).toThrow(/is not a declared member of multi-member package/);
+    )).toThrow(/is not a declared member of package/);
   });
 
   it("discovers Rust-valid package and output path components", () => {
@@ -562,6 +854,22 @@ wasm = "artifacts/image.zip"
 name = ".bootstrap"
 wasm = "support/bootstrap.zip"
 `);
+    writeFixturePackageProjection(name, [
+      {
+        kind: "output",
+        sourceArtifact: "artifacts/image.zip",
+        mirrorPath: `${name}/image one.zip`,
+        outputName: "image one",
+        forkInstrumentation: "auto",
+      },
+      {
+        kind: "output",
+        sourceArtifact: "support/bootstrap.zip",
+        mirrorPath: `${name}/.bootstrap.zip`,
+        outputName: ".bootstrap",
+        forkInstrumentation: "auto",
+      },
+    ]);
     const members = [
       {
         relPath: `programs/wasm32/${name}/image one.zip`,
@@ -597,6 +905,22 @@ wasm = "${name}.wasm"
 artifact = "share/runtime.dat"
 guest_path = "/usr/share/runtime.dat"
 `);
+    writeFixturePackageProjection(name, [
+      {
+        kind: "output",
+        sourceArtifact: `${name}.wasm`,
+        mirrorPath: `${name}/${name}.wasm`,
+        outputName: name,
+        forkInstrumentation: "auto",
+      },
+      {
+        kind: "runtime-file",
+        sourceArtifact: "share/runtime.dat",
+        mirrorPath: `${name}/share/runtime.dat`,
+        guestPath: "/usr/share/runtime.dat",
+        mode: 0o644,
+      },
+    ]);
     const members = [
       {
         relPath: `programs/wasm32/${name}/${name}.wasm`,
@@ -649,6 +973,55 @@ guest_path = "/usr/share/runtime.dat"
     )).toThrow(/does not declare resolver artifacts for wasm64/);
   });
 
+  it("rejects a stale nested directory after a package becomes scalar", () => {
+    const name = fixturePackageName();
+    writeFixturePackageManifest(name, `kind = "program"
+name = "${name}"
+[[outputs]]
+name = "${name}"
+wasm = "${name}.wasm"
+`);
+    writeFixturePackageProjection(name, [
+      {
+        kind: "output",
+        sourceArtifact: `${name}.wasm`,
+        mirrorPath: `${name}.wasm`,
+        outputName: name,
+        forkInstrumentation: "auto",
+      },
+    ]);
+    const staleNested = `programs/wasm32/${name}/${name}.wasm`;
+    writeCandidate(
+      localBinariesDir(),
+      staleNested,
+      executableWasmWithAbi(ABI_VERSION),
+    );
+
+    expect(() => programOutputClosureRelPaths(staleNested)).toThrow(
+      /is not a declared member of package/,
+    );
+    expect(() => resolveBinary(staleNested)).toThrow(
+      /is not a declared member of package/,
+    );
+  });
+
+  it("fails a selected package when its generated projection is stale", () => {
+    const fixture = createMultiOutputFixture();
+    const manifestPath = join(
+      fixtureRegistryRoot,
+      fixture.name,
+      "package.toml",
+    );
+    writeFileSync(
+      manifestPath,
+      `${readFileSync(manifestPath, "utf8")}\n# changed after projection\n`,
+    );
+
+    expect(() => programOutputClosureRelPaths(
+      fixture.members[0]!.relPath,
+    )).toThrow(/projection is stale/);
+  });
+
   it("uses the requested arch when a scalar owner shares a legacy flat name", () => {
     const sharedOutput = `shared-${randomUUID()}`;
     const packageOwnedName = fixturePackageName();
@@ -662,6 +1035,26 @@ wasm = "${sharedOutput}.wasm"
 artifact = "share/runtime.dat"
 guest_path = "/usr/share/runtime.dat"
 `);
+    writeFixturePackageProjection(
+      packageOwnedName,
+      [
+        {
+          kind: "output",
+          sourceArtifact: `${sharedOutput}.wasm`,
+          mirrorPath: `${packageOwnedName}/${sharedOutput}.wasm`,
+          outputName: sharedOutput,
+          forkInstrumentation: "auto",
+        },
+        {
+          kind: "runtime-file",
+          sourceArtifact: "share/runtime.dat",
+          mirrorPath: `${packageOwnedName}/share/runtime.dat`,
+          guestPath: "/usr/share/runtime.dat",
+          mode: 0o644,
+        },
+      ],
+      ["wasm32", "wasm64"],
+    );
     const scalarName = fixturePackageName();
     writeFixturePackageManifest(scalarName, `kind = "program"
 name = "${scalarName}"
@@ -670,17 +1063,790 @@ arches = ["wasm32"]
 name = "${sharedOutput}"
 wasm = "${sharedOutput}.wasm"
 `);
-    resetBinaryResolverManifestCacheForTests();
+    writeFixturePackageProjection(scalarName, [
+      {
+        kind: "output",
+        sourceArtifact: `${sharedOutput}.wasm`,
+        mirrorPath: `${sharedOutput}.wasm`,
+        outputName: sharedOutput,
+        forkInstrumentation: "auto",
+      },
+    ]);
 
     expect(programOutputClosureRelPaths(
       `programs/wasm32/${sharedOutput}.wasm`,
-    )).toBeNull();
+    )).toEqual([`programs/wasm32/${sharedOutput}.wasm`]);
     expect(() => programOutputClosureRelPaths(
       `programs/wasm64/${sharedOutput}.wasm`,
     )).toThrow(/Legacy flat resolver path/);
   });
 
-  it("fails closed for Rust-valid literal-string package metadata", () => {
+  it("does not merge a lower external registry over a first-hit package", () => {
+    const name = fixturePackageName();
+    writeFixturePackageManifest(name, `kind = "program"
+name = "${name}"
+[[outputs]
+name = "broken"
+wasm = "broken.wasm"
+`);
+
+    const lowerRoot = mkdtempSync(join(tmpdir(), "kandelo-lower-registry-"));
+    cleanupDirs.add(lowerRoot);
+    const lowerDirectory = join(lowerRoot, name);
+    mkdirSync(lowerDirectory, { recursive: true });
+    const lowerManifest = `kind = "program"
+name = "${name}"
+[[outputs]]
+name = "lower"
+wasm = "lower.wasm"
+[[runtime_files]]
+artifact = "share/lower.dat"
+guest_path = "/share/lower.dat"
+`;
+    writeFileSync(join(lowerDirectory, "package.toml"), lowerManifest);
+    writeFileSync(
+      join(lowerRoot, "program-packages.json"),
+      `${JSON.stringify({
+        format: "kandelo-program-packages-v2",
+        identities: {
+          [name]: {
+            manifestSha256: createHash("sha256")
+              .update(lowerManifest)
+              .digest("hex"),
+            cacheKeys: {
+              wasm32: fixtureCacheKey(name),
+              wasm64: fixtureCacheKey(name, "wasm64"),
+            },
+          },
+        },
+        packages: {
+          [name]: {
+            manifestSha256: createHash("sha256")
+              .update(lowerManifest)
+              .digest("hex"),
+            arches: ["wasm32"],
+            cacheKeys: {
+              wasm32: fixtureCacheKey(name),
+            },
+            dependencyClosures: { wasm32: [] },
+            members: [
+              {
+                kind: "output",
+                sourceArtifact: "lower.wasm",
+                mirrorPath: `${name}/lower.wasm`,
+                outputName: "lower",
+                forkInstrumentation: "auto",
+              },
+              {
+                kind: "runtime-file",
+                sourceArtifact: "share/lower.dat",
+                mirrorPath: `${name}/share/lower.dat`,
+                guestPath: "/share/lower.dat",
+                mode: 0o644,
+              },
+            ],
+          },
+        },
+      }, null, 2)}\n`,
+    );
+    process.env.WASM_POSIX_DEPS_REGISTRY =
+      `${fixtureRegistryRoot}:${lowerRoot}`;
+    resetBinaryResolverManifestCacheForTests();
+
+    expect(() => programOutputClosureRelPaths(
+      `programs/wasm32/${name}/lower.wasm`,
+    )).toThrow(/absent from program-packages\.json/);
+  });
+
+  it("keeps a shadowed lower scalar program path fail-closed", () => {
+    const upperRoot = mkdtempSync(join(tmpdir(), "kandelo-upper-library-shadow-"));
+    const lowerRoot = mkdtempSync(join(tmpdir(), "kandelo-lower-program-shadow-"));
+    cleanupDirs.add(upperRoot);
+    cleanupDirs.add(lowerRoot);
+    const name = fixturePackageName();
+    const outputName = `shadowed-${randomUUID()}`;
+    const upperManifest = `kind = "library"
+name = "${name}"
+version = "1.0.0"
+`;
+    const lowerManifest = `kind = "program"
+name = "${name}"
+version = "1.0.0"
+`;
+    writeStandaloneRegistry(upperRoot, {
+      [name]: {
+        manifest: upperManifest,
+        cacheKeys: {
+          wasm32: "1".repeat(64),
+          wasm64: "2".repeat(64),
+        },
+      },
+    });
+    writeStandaloneRegistry(lowerRoot, {
+      [name]: {
+        manifest: lowerManifest,
+        cacheKeys: {
+          wasm32: "3".repeat(64),
+          wasm64: "4".repeat(64),
+        },
+        projection: {
+          arches: ["wasm32"],
+          dependencyClosures: { wasm32: [] },
+          members: [{
+            kind: "output",
+            sourceArtifact: `${outputName}.wasm`,
+            mirrorPath: `${outputName}.wasm`,
+            outputName,
+            forkInstrumentation: "auto",
+          }],
+        },
+      },
+    });
+    process.env.WASM_POSIX_DEPS_REGISTRY = `${upperRoot}:${lowerRoot}`;
+    const relPath = `programs/wasm32/${outputName}.wasm`;
+    writeCandidate(
+      binariesDir(),
+      relPath,
+      executableWasmWithAbi(ABI_VERSION),
+    );
+
+    expect(() => programOutputClosureRelPaths(relPath)).toThrow(
+      /selected at .* but is absent from program-packages\.json/,
+    );
+    expect(() => resolveBinary(relPath)).toThrow(
+      /selected at .* but is absent from program-packages\.json/,
+    );
+  });
+
+  it("accepts identical first-hit shadows and an external program generated against external:main", () => {
+    const upperRoot = mkdtempSync(join(tmpdir(), "kandelo-upper-context-"));
+    const lowerRoot = mkdtempSync(join(tmpdir(), "kandelo-lower-context-"));
+    cleanupDirs.add(upperRoot);
+    cleanupDirs.add(lowerRoot);
+    const contextId = randomUUID();
+    const dependencyName = `z-context-dependency-${contextId}`;
+    const auxiliaryName = `a-context-dependency-${contextId}`;
+    const externalName = fixturePackageName();
+    const lowerProgramName = fixturePackageName();
+    const dependencyManifest = `kind = "library"
+name = "${dependencyName}"
+version = "1.0.0"
+depends_on = []
+`;
+    const auxiliaryManifest = `kind = "source"
+name = "${auxiliaryName}"
+version = "1.0.0"
+depends_on = []
+`;
+    const externalManifest = `kind = "program"
+name = "${externalName}"
+version = "1.0.0"
+depends_on = ["${dependencyName}@1.0.0"]
+`;
+    const lowerProgramManifest = `kind = "program"
+name = "${lowerProgramName}"
+version = "1.0.0"
+depends_on = ["${dependencyName}@1.0.0"]
+`;
+    const dependencyKeys = {
+      wasm32: "1".repeat(64),
+      wasm64: "2".repeat(64),
+    };
+    const expectedDependency = standaloneDependencyIdentity(
+      dependencyName,
+      dependencyManifest,
+      dependencyKeys.wasm32,
+    );
+    const auxiliaryKeys = {
+      wasm32: "7".repeat(64),
+      wasm64: "8".repeat(64),
+    };
+    const expectedAuxiliary = standaloneDependencyIdentity(
+      auxiliaryName,
+      auxiliaryManifest,
+      auxiliaryKeys.wasm32,
+    );
+    const scalarProjection = (
+      packageName: string,
+      dependencyClosures: Record<string, FixtureDependencyIdentity[]>,
+    ) => ({
+      arches: ["wasm32"] as Array<"wasm32">,
+      dependencyClosures,
+      members: [{
+        kind: "output" as const,
+        sourceArtifact: `${packageName}.wasm`,
+        mirrorPath: `${packageName}.wasm`,
+        outputName: packageName,
+        forkInstrumentation: "auto" as const,
+      }],
+    });
+
+    writeStandaloneRegistry(
+      upperRoot,
+      {
+        [dependencyName]: {
+          manifest: dependencyManifest,
+          cacheKeys: dependencyKeys,
+        },
+        [auxiliaryName]: {
+          manifest: auxiliaryManifest,
+          cacheKeys: auxiliaryKeys,
+        },
+        [externalName]: {
+          manifest: externalManifest,
+          cacheKeys: {
+            wasm32: "3".repeat(64),
+            wasm64: "4".repeat(64),
+          },
+          projection: scalarProjection(externalName, {
+            // Deliberately z-before-a: dependency order is non-semantic.
+            wasm32: [expectedDependency, expectedAuxiliary],
+          }),
+        },
+      },
+      {
+        [lowerProgramName]: {
+          manifest: lowerProgramManifest,
+          cacheKeys: {
+            wasm32: "5".repeat(64),
+            wasm64: "6".repeat(64),
+          },
+          projection: scalarProjection(lowerProgramName, {
+            wasm32: [expectedDependency],
+          }),
+        },
+      },
+    );
+    writeStandaloneRegistry(lowerRoot, {
+      [dependencyName]: {
+        manifest: dependencyManifest,
+        cacheKeys: dependencyKeys,
+      },
+      [lowerProgramName]: {
+        manifest: lowerProgramManifest,
+        cacheKeys: {
+          wasm32: "5".repeat(64),
+          wasm64: "6".repeat(64),
+        },
+        projection: scalarProjection(lowerProgramName, {
+          wasm32: [expectedDependency],
+        }),
+      },
+    });
+    process.env.WASM_POSIX_DEPS_REGISTRY = `${upperRoot}:${lowerRoot}`;
+
+    expect(programOutputClosureRelPaths(
+      `programs/wasm32/${externalName}.wasm`,
+    )).toEqual([`programs/wasm32/${externalName}.wasm`]);
+    expect(programOutputClosureRelPaths(
+      `programs/wasm32/${lowerProgramName}.wasm`,
+    )).toEqual([`programs/wasm32/${lowerProgramName}.wasm`]);
+  });
+
+  it("accepts an external program generated against a changed transitive external:main context", () => {
+    const upperRoot = mkdtempSync(join(tmpdir(), "kandelo-upper-external-context-"));
+    const lowerRoot = mkdtempSync(join(tmpdir(), "kandelo-lower-external-context-"));
+    cleanupDirs.add(upperRoot);
+    cleanupDirs.add(lowerRoot);
+    const leafName = fixturePackageName();
+    const middleName = fixturePackageName();
+    const externalName = fixturePackageName();
+    const lowerLeafManifest = `kind = "source"
+name = "${leafName}"
+version = "1.0.0"
+depends_on = []
+[source]
+url = "https://example.test/${leafName}.tar.gz"
+sha256 = "${"0".repeat(64)}"
+[license]
+spdx = "MIT"
+`;
+    const upperLeafManifest = lowerLeafManifest.replace(
+      "0".repeat(64),
+      "1".repeat(64),
+    );
+    const middleManifest = `kind = "library"
+name = "${middleName}"
+version = "1.0.0"
+depends_on = ["${leafName}@1.0.0"]
+`;
+    const externalManifest = `kind = "program"
+name = "${externalName}"
+version = "1.0.0"
+depends_on = ["${middleName}@1.0.0"]
+`;
+    const upperLeafKeys = {
+      wasm32: "1".repeat(64),
+      wasm64: "2".repeat(64),
+    };
+    const combinedMiddleKeys = {
+      wasm32: "3".repeat(64),
+      wasm64: "4".repeat(64),
+    };
+    const externalKeys = {
+      wasm32: "5".repeat(64),
+      wasm64: "6".repeat(64),
+    };
+    const expectedLeaf = standaloneDependencyIdentity(
+      leafName,
+      upperLeafManifest,
+      upperLeafKeys.wasm32,
+    );
+    const expectedMiddle = standaloneDependencyIdentity(
+      middleName,
+      middleManifest,
+      combinedMiddleKeys.wasm32,
+    );
+    writeStandaloneRegistry(
+      upperRoot,
+      {
+        [leafName]: {
+          manifest: upperLeafManifest,
+          cacheKeys: upperLeafKeys,
+        },
+        [externalName]: {
+          manifest: externalManifest,
+          cacheKeys: externalKeys,
+          projection: {
+            arches: ["wasm32"],
+            dependencyClosures: {
+              wasm32: [expectedLeaf, expectedMiddle],
+            },
+            members: [{
+              kind: "output",
+              sourceArtifact: `${externalName}.wasm`,
+              mirrorPath: `${externalName}.wasm`,
+              outputName: externalName,
+              forkInstrumentation: "auto",
+            }],
+          },
+        },
+      },
+      {
+        [middleName]: {
+          manifest: middleManifest,
+          cacheKeys: combinedMiddleKeys,
+        },
+      },
+    );
+    writeStandaloneRegistry(lowerRoot, {
+      [leafName]: {
+        manifest: lowerLeafManifest,
+        cacheKeys: {
+          wasm32: "7".repeat(64),
+          wasm64: "8".repeat(64),
+        },
+      },
+      [middleName]: {
+        manifest: middleManifest,
+        cacheKeys: {
+          wasm32: "9".repeat(64),
+          wasm64: "a".repeat(64),
+        },
+      },
+    });
+    process.env.WASM_POSIX_DEPS_REGISTRY = `${upperRoot}:${lowerRoot}`;
+
+    expect(programOutputClosureRelPaths(
+      `programs/wasm32/${externalName}.wasm`,
+    )).toEqual([`programs/wasm32/${externalName}.wasm`]);
+
+    writeFileSync(
+      join(lowerRoot, middleName, "package.toml"),
+      `${middleManifest}build_input = "changed-after-projection"\n`,
+    );
+    expect(() =>
+      programOutputClosureRelPaths(`programs/wasm32/${externalName}.wasm`)
+    ).toThrow(new RegExp(`identity is stale.*${middleName}`));
+  });
+
+  it("uses the complete top projection for a lower program whose direct dependency is overridden", () => {
+    const upperRoot = mkdtempSync(join(tmpdir(), "kandelo-upper-direct-shadow-"));
+    const lowerRoot = mkdtempSync(join(tmpdir(), "kandelo-lower-direct-shadow-"));
+    cleanupDirs.add(upperRoot);
+    cleanupDirs.add(lowerRoot);
+    const dependencyName = fixturePackageName();
+    const programName = fixturePackageName();
+    const lowerDependencyManifest = `kind = "library"
+name = "${dependencyName}"
+version = "1.0.0"
+depends_on = []
+[source]
+url = "https://example.test/${dependencyName}.tar.gz"
+sha256 = "${"0".repeat(64)}"
+[license]
+spdx = "MIT"
+`;
+    const upperDependencyManifest = lowerDependencyManifest.replace(
+      "0".repeat(64),
+      "1".repeat(64),
+    );
+    const programManifest = `kind = "program"
+name = "${programName}"
+version = "1.0.0"
+depends_on = ["${dependencyName}@1.0.0"]
+`;
+    const upperDependencyIdentity = standaloneDependencyIdentity(
+      dependencyName,
+      upperDependencyManifest,
+      "7".repeat(64),
+    );
+    const programProjection = (
+      dependency: FixtureDependencyIdentity,
+    ): StandaloneRegistryEntry["projection"] => ({
+      arches: ["wasm32"],
+      dependencyClosures: { wasm32: [dependency] },
+      members: [{
+        kind: "output",
+        sourceArtifact: `${programName}.wasm`,
+        mirrorPath: `${programName}.wasm`,
+        outputName: programName,
+        forkInstrumentation: "auto",
+      }],
+    });
+    writeStandaloneRegistry(
+      upperRoot,
+      {
+        [dependencyName]: {
+          manifest: upperDependencyManifest,
+          cacheKeys: {
+            wasm32: "7".repeat(64),
+            wasm64: "8".repeat(64),
+          },
+        },
+      },
+      {
+        [programName]: {
+          manifest: programManifest,
+          cacheKeys: {
+            wasm32: "d".repeat(64),
+            wasm64: "e".repeat(64),
+          },
+          projection: programProjection(upperDependencyIdentity),
+        },
+      },
+    );
+    writeStandaloneRegistry(lowerRoot, {
+      [dependencyName]: {
+        manifest: lowerDependencyManifest,
+        cacheKeys: {
+          wasm32: "9".repeat(64),
+          wasm64: "a".repeat(64),
+        },
+      },
+      [programName]: {
+        manifest: programManifest,
+        cacheKeys: {
+          wasm32: "b".repeat(64),
+          wasm64: "c".repeat(64),
+        },
+        projection: programProjection(standaloneDependencyIdentity(
+          dependencyName,
+          lowerDependencyManifest,
+          "9".repeat(64),
+        )),
+      },
+    });
+    process.env.WASM_POSIX_DEPS_REGISTRY = `${upperRoot}:${lowerRoot}`;
+
+    expect(programOutputClosureRelPaths(
+      `programs/wasm32/${programName}.wasm`,
+    )).toEqual([`programs/wasm32/${programName}.wasm`]);
+
+    process.env.WASM_POSIX_DEPS_REGISTRY = lowerRoot;
+    expect(programOutputClosureRelPaths(
+      `programs/wasm32/${programName}.wasm`,
+    )).toEqual([`programs/wasm32/${programName}.wasm`]);
+  });
+
+  it("uses the complete top projection when a lower program's transitive dependency is overridden", () => {
+    const upperRoot = mkdtempSync(join(tmpdir(), "kandelo-upper-transitive-shadow-"));
+    const lowerRoot = mkdtempSync(join(tmpdir(), "kandelo-lower-transitive-shadow-"));
+    cleanupDirs.add(upperRoot);
+    cleanupDirs.add(lowerRoot);
+    const leafName = fixturePackageName();
+    const intermediateName = fixturePackageName();
+    const programName = fixturePackageName();
+    const lowerLeafManifest = `kind = "source"
+name = "${leafName}"
+version = "1.0.0"
+depends_on = []
+[source]
+url = "https://example.test/${leafName}.tar.gz"
+sha256 = "${"0".repeat(64)}"
+[license]
+spdx = "MIT"
+`;
+    const upperLeafManifest = lowerLeafManifest.replace(
+      "0".repeat(64),
+      "1".repeat(64),
+    );
+    const intermediateManifest = `kind = "library"
+name = "${intermediateName}"
+version = "1.0.0"
+depends_on = ["${leafName}@1.0.0"]
+`;
+    const programManifest = `kind = "program"
+name = "${programName}"
+version = "1.0.0"
+depends_on = ["${intermediateName}@1.0.0"]
+`;
+    const lowerLeafIdentity = standaloneDependencyIdentity(
+      leafName,
+      lowerLeafManifest,
+      "d".repeat(64),
+    );
+    const intermediateIdentity = standaloneDependencyIdentity(
+      intermediateName,
+      intermediateManifest,
+      "e".repeat(64),
+    );
+    const combinedLeafIdentity = standaloneDependencyIdentity(
+      leafName,
+      upperLeafManifest,
+      "f".repeat(64),
+    );
+    const combinedIntermediateIdentity = standaloneDependencyIdentity(
+      intermediateName,
+      intermediateManifest,
+      "4".repeat(64),
+    );
+    const programMembers: FixtureProjectionMember[] = [{
+      kind: "output",
+      sourceArtifact: `${programName}.wasm`,
+      mirrorPath: `${programName}.wasm`,
+      outputName: programName,
+      forkInstrumentation: "auto",
+    }];
+    writeStandaloneRegistry(
+      upperRoot,
+      {
+        [leafName]: {
+          manifest: upperLeafManifest,
+          cacheKeys: {
+            wasm32: "f".repeat(64),
+            wasm64: "f".repeat(64),
+          },
+        },
+      },
+      {
+        [intermediateName]: {
+          manifest: intermediateManifest,
+          cacheKeys: {
+            wasm32: "4".repeat(64),
+            wasm64: "5".repeat(64),
+          },
+        },
+        [programName]: {
+          manifest: programManifest,
+          cacheKeys: {
+            wasm32: "6".repeat(64),
+            wasm64: "7".repeat(64),
+          },
+          projection: {
+            arches: ["wasm32"],
+            dependencyClosures: {
+              wasm32: [
+                combinedIntermediateIdentity,
+                combinedLeafIdentity,
+              ].sort(
+                (left, right) =>
+                  left.packageName.localeCompare(right.packageName),
+              ),
+            },
+            members: programMembers,
+          },
+        },
+      },
+    );
+    writeStandaloneRegistry(lowerRoot, {
+      [leafName]: {
+        manifest: lowerLeafManifest,
+        cacheKeys: {
+          wasm32: lowerLeafIdentity.cacheKey,
+          wasm64: lowerLeafIdentity.cacheKey,
+        },
+      },
+      [intermediateName]: {
+        manifest: intermediateManifest,
+        cacheKeys: {
+          wasm32: intermediateIdentity.cacheKey,
+          wasm64: "1".repeat(64),
+        },
+      },
+      [programName]: {
+        manifest: programManifest,
+        cacheKeys: {
+          wasm32: "2".repeat(64),
+          wasm64: "3".repeat(64),
+        },
+        projection: {
+          arches: ["wasm32"],
+          dependencyClosures: {
+            wasm32: [intermediateIdentity, lowerLeafIdentity].sort(
+              (left, right) => left.packageName.localeCompare(right.packageName),
+            ),
+          },
+          members: programMembers,
+        },
+      },
+    });
+    process.env.WASM_POSIX_DEPS_REGISTRY = `${upperRoot}:${lowerRoot}`;
+
+    expect(programOutputClosureRelPaths(
+      `programs/wasm32/${programName}.wasm`,
+    )).toEqual([`programs/wasm32/${programName}.wasm`]);
+  });
+
+  it("rejects unknown projection fields instead of widening the policy schema", () => {
+    const name = fixturePackageName();
+    writeFixturePackageManifest(name, `kind = "program"
+name = "${name}"
+[[outputs]]
+name = "${name}"
+wasm = "${name}.wasm"
+`);
+    writeFixturePackageProjection(name, [{
+      kind: "output",
+      sourceArtifact: `${name}.wasm`,
+      mirrorPath: `${name}.wasm`,
+      outputName: name,
+      forkInstrumentation: "auto",
+    }]);
+    const projected = fixtureRegistryPackages[name] as Record<string, unknown>;
+    projected.unreviewedPolicy = true;
+    writeFixtureRegistryIndex();
+
+    expect(() => programOutputClosureRelPaths(
+      `programs/wasm32/${name}.wasm`,
+    )).toThrow(/malformed package/);
+  });
+
+  it("rejects a projection that invents a noncanonical scalar mirror layout", () => {
+    const name = fixturePackageName();
+    writeFixturePackageManifest(name, `kind = "program"
+name = "${name}"
+[[outputs]]
+name = "${name}"
+wasm = "${name}.wasm"
+`);
+    writeFixturePackageProjection(name, [{
+      kind: "output",
+      sourceArtifact: `${name}.wasm`,
+      mirrorPath: `${name}/${name}.wasm`,
+      outputName: name,
+      forkInstrumentation: "auto",
+    }]);
+
+    expect(() => programOutputClosureRelPaths(
+      `programs/wasm32/${name}/${name}.wasm`,
+    )).toThrow(/violate scalar\/package-directory layout/);
+  });
+
+  it("observes package additions and shape changes without a process restart", () => {
+    const name = fixturePackageName();
+    const nested = `programs/wasm32/${name}/first.wasm`;
+    expect(programOutputClosureRelPaths(nested)).toBeNull();
+
+    writeFixturePackageManifest(name, `kind = "program"
+name = "${name}"
+[[outputs]]
+name = "first"
+wasm = "first.wasm"
+[[outputs]]
+name = "second"
+wasm = "second.wasm"
+`);
+    writeFixturePackageProjection(name, [
+      {
+        kind: "output",
+        sourceArtifact: "first.wasm",
+        mirrorPath: `${name}/first.wasm`,
+        outputName: "first",
+        forkInstrumentation: "auto",
+      },
+      {
+        kind: "output",
+        sourceArtifact: "second.wasm",
+        mirrorPath: `${name}/second.wasm`,
+        outputName: "second",
+        forkInstrumentation: "auto",
+      },
+    ]);
+    expect(programOutputClosureRelPaths(nested)).toEqual([
+      nested,
+      `programs/wasm32/${name}/second.wasm`,
+    ]);
+
+    writeFixturePackageManifest(name, `kind = "program"
+name = "${name}"
+[[outputs]]
+name = "first"
+wasm = "first.wasm"
+`);
+    writeFixturePackageProjection(name, [{
+      kind: "output",
+      sourceArtifact: "first.wasm",
+      mirrorPath: "first.wasm",
+      outputName: "first",
+      forkInstrumentation: "auto",
+    }]);
+    expect(() => programOutputClosureRelPaths(nested)).toThrow(
+      /not a declared member/,
+    );
+    expect(programOutputClosureRelPaths(
+      "programs/wasm32/first.wasm",
+    )).toEqual(["programs/wasm32/first.wasm"]);
+  });
+
+  it("rejects cross-package file and package-directory mirror collisions", () => {
+    const scalarName = fixturePackageName();
+    const directoryName = fixturePackageName();
+    writeFixturePackageManifest(scalarName, `kind = "program"
+name = "${scalarName}"
+[[outputs]]
+name = "${directoryName}"
+wasm = "artifact"
+`);
+    writeFixturePackageProjection(scalarName, [{
+      kind: "output",
+      sourceArtifact: "artifact",
+      mirrorPath: directoryName,
+      outputName: directoryName,
+      forkInstrumentation: "auto",
+    }]);
+    writeFixturePackageManifest(directoryName, `kind = "program"
+name = "${directoryName}"
+[[outputs]]
+name = "first"
+wasm = "first.wasm"
+[[outputs]]
+name = "second"
+wasm = "second.wasm"
+`);
+    writeFixturePackageProjection(directoryName, [
+      {
+        kind: "output",
+        sourceArtifact: "first.wasm",
+        mirrorPath: `${directoryName}/first.wasm`,
+        outputName: "first",
+        forkInstrumentation: "auto",
+      },
+      {
+        kind: "output",
+        sourceArtifact: "second.wasm",
+        mirrorPath: `${directoryName}/second.wasm`,
+        outputName: "second",
+        forkInstrumentation: "auto",
+      },
+    ]);
+
+    expect(() => programOutputClosureRelPaths(
+      `programs/wasm32/${directoryName}/first.wasm`,
+    )).toThrow(/conflict between selected packages/);
+  });
+
+  it("accepts Rust-valid literal-string metadata through the generated projection", () => {
     const name = fixturePackageName();
     writeFixturePackageManifest(name, `kind = 'program'
 name = '${name}'
@@ -691,7 +1857,22 @@ wasm = '${name}.wasm'
 artifact = 'share/runtime.dat'
 guest_path = '/usr/share/runtime.dat'
 `);
-    resetBinaryResolverManifestCacheForTests();
+    writeFixturePackageProjection(name, [
+      {
+        kind: "output",
+        sourceArtifact: `${name}.wasm`,
+        mirrorPath: `${name}/${name}.wasm`,
+        outputName: name,
+        forkInstrumentation: "auto",
+      },
+      {
+        kind: "runtime-file",
+        sourceArtifact: "share/runtime.dat",
+        mirrorPath: `${name}/share/runtime.dat`,
+        guestPath: "/usr/share/runtime.dat",
+        mode: 0o644,
+      },
+    ]);
 
     const nested = `programs/wasm32/${name}/${name}.wasm`;
     expect(programOutputClosureRelPaths(nested)).toEqual([
@@ -717,6 +1898,207 @@ guest_path = '/usr/share/runtime.dat'
     )).toEqual(targets);
   });
 
+  it("shares an explicit package cache root with archive-stage consumers", () => {
+    const explicitCacheRoot = mkdtempSync(
+      join(tmpdir(), "kandelo-explicit-package-cache-"),
+    );
+    cleanupDirs.add(explicitCacheRoot);
+    process.env.WASM_POSIX_BINARY_CACHE_ROOT = explicitCacheRoot;
+    const fixture = createMultiOutputFixture();
+    const canonicalRoot = fixtureCanonicalRoot(fixture.name);
+    const mirrors = fixture.members.map((member) =>
+      linkClosureMember(binariesDir(), member, canonicalRoot)
+    );
+    const targets = mirrors.map((mirror) => realpathSync(mirror));
+
+    expect(binaryProgramCacheRoot()).toBe(join(explicitCacheRoot, "programs"));
+    expect(resolveBinary(fixture.members[0]!.relPath)).toBe(targets[0]);
+    expect(tryResolveBinarySet(
+      fixture.members.map((member) => member.relPath),
+    )).toEqual(targets);
+  });
+
+  it("anchors a relative explicit package cache at the Kandelo repository", () => {
+    const relativeRoot = `.test-package-cache-${randomUUID()}`;
+    process.env.WASM_POSIX_BINARY_CACHE_ROOT = relativeRoot;
+    expect(binaryProgramCacheRoot()).toBe(
+      join(findRepoRoot(), relativeRoot, "programs"),
+    );
+  });
+
+  it("anchors a relative registry root at Kandelo even from an app cwd", () => {
+    const repo = findRepoRoot();
+    const relativeRoot = `.test-program-registry-${randomUUID()}`;
+    const registryRoot = join(repo, relativeRoot);
+    cleanupDirs.add(registryRoot);
+    const savedFixtureRoot = fixtureRegistryRoot;
+    const savedFixturePackages = fixtureRegistryPackages;
+    const savedCwd = process.cwd();
+    try {
+      fixtureRegistryRoot = registryRoot;
+      fixtureRegistryPackages = {};
+      mkdirSync(registryRoot, { recursive: true });
+      writeFixtureRegistryIndex();
+      const fixture = createScalarOutputFixture();
+      process.env.WASM_POSIX_DEPS_REGISTRY = relativeRoot;
+      process.chdir(join(repo, "apps", "browser-demos"));
+      const canonicalRoot = fixtureCanonicalRoot(fixture.name);
+      const mirror = linkClosureMember(
+        binariesDir(),
+        fixture,
+        canonicalRoot,
+        executableWasmWithAbi(ABI_VERSION),
+      );
+
+      expect(relative(repo, mirror)).toContain("binaries/programs/wasm32/");
+      expect(resolveBinary(fixture.relPath)).toBe(realpathSync(mirror));
+    } finally {
+      process.chdir(savedCwd);
+      fixtureRegistryRoot = savedFixtureRoot;
+      fixtureRegistryPackages = savedFixturePackages;
+    }
+  });
+
+  it("binds a fetched scalar output to its projected package and cache identity", () => {
+    const fixture = createScalarOutputFixture();
+    const canonicalRoot = fixtureCanonicalRoot(fixture.name);
+    const mirror = linkClosureMember(
+      binariesDir(),
+      fixture,
+      canonicalRoot,
+      executableWasmWithAbi(ABI_VERSION),
+    );
+
+    expect(programOutputClosureRelPaths(fixture.relPath)).toEqual([
+      fixture.relPath,
+    ]);
+    expect(resolveBinary(fixture.relPath)).toBe(realpathSync(mirror));
+  });
+
+  it("binds a local scalar output to its projected package and cache identity", () => {
+    const fixture = createScalarOutputFixture();
+    const canonicalRoot = fixtureLocalCanonicalRoot(fixture.name);
+    const mirror = linkClosureMember(
+      localBinariesDir(),
+      fixture,
+      canonicalRoot,
+      executableWasmWithAbi(ABI_VERSION),
+    );
+
+    expect(resolveBinary(fixture.relPath)).toBe(realpathSync(mirror));
+  });
+
+  it("rejects stale fetched and local scalar generations after a recipe switch", () => {
+    const fixture = createScalarOutputFixture();
+    const oldCacheKey = fixtureCacheKey(fixture.name);
+    const fetchedRoot = fixtureCanonicalRoot(
+      fixture.name,
+      "wasm32",
+      oldCacheKey,
+    );
+    const localRoot = fixtureLocalCanonicalRoot(
+      fixture.name,
+      "wasm32",
+      oldCacheKey,
+    );
+    linkClosureMember(
+      binariesDir(),
+      fixture,
+      fetchedRoot,
+      executableWasmWithAbi(ABI_VERSION),
+    );
+    linkClosureMember(
+      localBinariesDir(),
+      fixture,
+      localRoot,
+      executableWasmWithAbi(ABI_VERSION),
+    );
+
+    const outputName = fixture.relPath.split("/").at(-1)!.replace(/\.wasm$/, "");
+    writeFixturePackageManifest(fixture.name, `kind = "program"
+name = "${fixture.name}"
+version = "2.0.0"
+kernel_abi = ${ABI_VERSION}
+depends_on = []
+[source]
+url = "https://example.invalid/${fixture.name}-v2.tar.gz"
+sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+[license]
+spdx = "MIT"
+[[outputs]]
+name = "${outputName}"
+wasm = "${fixture.sourceArtifact}"
+`);
+    const newCacheKey = "b".repeat(64);
+    writeFixturePackageProjection(
+      fixture.name,
+      [{
+        kind: "output",
+        sourceArtifact: fixture.sourceArtifact,
+        mirrorPath: `${outputName}.wasm`,
+        outputName,
+        forkInstrumentation: "auto",
+      }],
+      ["wasm32"],
+      { wasm32: newCacheKey },
+    );
+
+    expect(() => resolveBinary(fixture.relPath)).toThrow(
+      /shared package identity rejected/,
+    );
+    expect(() => tryResolveBinarySet([fixture.relPath])).toThrow(
+      /shared package identity rejected/,
+    );
+  });
+
+  it("rejects resolver-owned scalar links after their output is renamed", () => {
+    const fixture = createScalarOutputFixture();
+    const fetchedRoot = fixtureCanonicalRoot(fixture.name);
+    const localRoot = fixtureLocalCanonicalRoot(fixture.name);
+    const localMirror = linkClosureMember(
+      localBinariesDir(),
+      fixture,
+      localRoot,
+      executableWasmWithAbi(ABI_VERSION),
+    );
+    linkClosureMember(
+      binariesDir(),
+      fixture,
+      fetchedRoot,
+      executableWasmWithAbi(ABI_VERSION),
+    );
+
+    const renamedOutput = `renamed-${randomUUID()}`;
+    writeFixturePackageManifest(fixture.name, `kind = "program"
+name = "${fixture.name}"
+version = "2.0.0"
+depends_on = []
+[source]
+url = "https://example.invalid/${fixture.name}-v2.tar.gz"
+sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+[license]
+spdx = "MIT"
+[[outputs]]
+name = "${renamedOutput}"
+wasm = "bin/${renamedOutput}.zip"
+`);
+    writeFixturePackageProjection(fixture.name, [{
+      kind: "output",
+      sourceArtifact: `bin/${renamedOutput}.zip`,
+      mirrorPath: `${renamedOutput}.zip`,
+      outputName: renamedOutput,
+      forkInstrumentation: "auto",
+    }]);
+
+    expect(() => resolveBinary(fixture.relPath)).toThrow(
+      /resolver-owned program generation has no matching selected package projection/,
+    );
+    rmSync(localMirror);
+    expect(() => resolveBinary(fixture.relPath)).toThrow(
+      /resolver-owned program generation has no matching selected package projection/,
+    );
+  });
+
   it("accepts local mirrors only from one direct immutable local generation", () => {
     const fixture = createMultiOutputFixture();
     const canonicalRoot = fixtureLocalCanonicalRoot(fixture.name);
@@ -729,6 +2111,29 @@ guest_path = '/usr/share/runtime.dat'
     expect(tryResolveBinarySet(
       fixture.members.map((member) => member.relPath),
     )).toEqual(targets);
+  });
+
+  it("rejects stale fetched and local multi-member cache identities", () => {
+    const fixture = createMultiOutputFixture();
+    const wrongCacheKey = "c".repeat(64);
+    const fetchedRoot = fixtureCanonicalRoot(
+      fixture.name,
+      "wasm32",
+      wrongCacheKey,
+    );
+    const localRoot = fixtureLocalCanonicalRoot(
+      fixture.name,
+      "wasm32",
+      wrongCacheKey,
+    );
+    for (const member of fixture.members) {
+      linkClosureMember(binariesDir(), member, fetchedRoot);
+      linkClosureMember(localBinariesDir(), member, localRoot);
+    }
+
+    expect(() => resolveBinary(fixture.members[0]!.relPath)).toThrow(
+      /shared package identity rejected/,
+    );
   });
 
   it("rejects fetched mirrors whose target is outside the canonical program cache", () => {
@@ -745,30 +2150,37 @@ guest_path = '/usr/share/runtime.dat'
 
   it("pins canonical member paths across a concurrent live-directory swap", () => {
     const fixture = createMultiOutputFixture();
-    const oldCanonicalRoot = fixtureCanonicalRoot(fixture.name);
+    const oldCanonicalRoot = fixtureLocalCanonicalRoot(fixture.name);
     const oldMirrors = fixture.members.map((member) =>
-      linkClosureMember(binariesDir(), member, oldCanonicalRoot, "old-generation")
+      linkClosureMember(
+        localBinariesDir(),
+        member,
+        oldCanonicalRoot,
+        "generation",
+      )
     );
     const pinned = tryResolveBinarySet(
       fixture.members.map((member) => member.relPath),
     );
     expect(pinned).toEqual(oldMirrors.map((mirror) => realpathSync(mirror)));
 
-    const newCanonicalRoot = fixtureCanonicalRoot(fixture.name);
+    const newCanonicalRoot = fixtureLocalCanonicalRoot(fixture.name);
     const liveDirectory = join(
-      binariesDir(),
+      localBinariesDir(),
       "programs",
       "wasm32",
       fixture.name,
     );
     const stagedDirectory = `${liveDirectory}.test-stage-${randomUUID()}`;
     cleanupDirs.add(stagedDirectory);
+    const newTargets: string[] = [];
     for (const member of fixture.members) {
       const target = writeCanonicalMember(
         newCanonicalRoot,
         member.sourceArtifact,
-        "new-generation",
+        "generation",
       );
+      newTargets.push(target);
       const packageRelative = member.relPath.split("/").slice(3).join("/");
       const mirror = join(stagedDirectory, packageRelative);
       mkdirSync(dirname(mirror), { recursive: true });
@@ -779,14 +2191,14 @@ guest_path = '/usr/share/runtime.dat'
     renameSync(liveDirectory, backupDirectory);
     renameSync(stagedDirectory, liveDirectory);
 
-    expect(pinned!.map((path) => readFileSync(path, "utf8"))).toEqual(
-      fixture.members.map(() => "old-generation"),
+    expect(pinned).toEqual(
+      fixture.members.map((member) =>
+        join(oldCanonicalRoot, ...member.sourceArtifact.split("/"))
+      ),
     );
     expect(tryResolveBinarySet(
       fixture.members.map((member) => member.relPath),
-    )!.map((path) => readFileSync(path, "utf8"))).toEqual(
-      fixture.members.map(() => "new-generation"),
-    );
+    )).toEqual(newTargets);
   });
 
   it("uses the whole fetched closure when a local runtime member is absent", () => {
@@ -811,17 +2223,17 @@ guest_path = '/usr/share/runtime.dat'
     );
   });
 
-  it("rejects preexisting same-tier symlinks into different canonical cache entries", () => {
+  it("rejects preexisting same-tier symlinks into different canonical generations", () => {
     const fixture = createMultiOutputFixture();
-    const firstCanonicalRoot = fixtureCanonicalRoot(fixture.name);
-    const secondCanonicalRoot = fixtureCanonicalRoot(fixture.name);
+    const firstCanonicalRoot = fixtureLocalCanonicalRoot(fixture.name);
+    const secondCanonicalRoot = fixtureLocalCanonicalRoot(fixture.name);
     linkClosureMember(
-      binariesDir(),
+      localBinariesDir(),
       fixture.members[0]!,
       firstCanonicalRoot,
     );
     for (const member of fixture.members.slice(1)) {
-      linkClosureMember(binariesDir(), member, secondCanonicalRoot);
+      linkClosureMember(localBinariesDir(), member, secondCanonicalRoot);
     }
 
     expect(() => resolveBinary(fixture.members[0]!.relPath)).toThrow(
@@ -874,10 +2286,10 @@ guest_path = '/usr/share/runtime.dat'
     );
   });
 
-  it("accepts complete regular files from one installed package identity", () => {
+  it("does not treat mutable source-checkout wasm files as an installed package identity", () => {
     const fixture = createMultiOutputFixture();
     const installedRoot = join(findRepoRoot(), "host", "wasm");
-    const installed = fixture.members.map((member) =>
+    fixture.members.map((member) =>
       writeCandidate(
         installedRoot,
         member.relPath,
@@ -885,7 +2297,9 @@ guest_path = '/usr/share/runtime.dat'
       )
     );
 
-    expect(resolveBinary(fixture.members[1]!.relPath)).toBe(installed[1]);
+    expect(() => resolveBinary(fixture.members[1]!.relPath)).toThrow(
+      /mutable source-checkout wasm tree/,
+    );
   });
 
   it("rejects mixed files and symlinks in the installed package identity", () => {

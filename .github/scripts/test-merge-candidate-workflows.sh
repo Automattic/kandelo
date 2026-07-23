@@ -654,6 +654,28 @@ for step in "Compute matrix" "Materialize binaries"; do
   fi
 done
 
+for workflow in "$STAGING_WORKFLOW" "$PREPARE"; do
+  validation_job="$(job_block "$workflow" test-gate-validation)"
+  root_install_line="$(
+    grep -nF -- '- name: Install root npm deps' <<<"$validation_job" |
+      head -n 1 |
+      cut -d: -f1
+  )"
+  materialization_line="$(
+    grep -nF -- '- name: Test binary materialization flow' <<<"$validation_job" |
+      head -n 1 |
+      cut -d: -f1
+  )"
+  [ -n "$root_install_line" ] &&
+    [ -n "$materialization_line" ] &&
+    [ "$root_install_line" -lt "$materialization_line" ] ||
+    fail "$(basename "$workflow") must install root npm dependencies before materialization tests"
+  root_install_step="$(step_block "$workflow" "Install root npm deps")"
+  grep -Fq 'run: bash scripts/dev-shell.sh npm ci --no-audit --no-fund' \
+    <<<"$root_install_step" ||
+    fail "$(basename "$workflow") materialization validation must install the root esbuild dependency"
+done
+
 grep -Fq 'cleanup-merge-candidates.sh' "$CLEANUP_WORKFLOW" || \
   fail "staging cleanup must delegate candidate lifecycle to the tested helper"
 cleanup_sweep=$(job_block "$CLEANUP_WORKFLOW" sweep)

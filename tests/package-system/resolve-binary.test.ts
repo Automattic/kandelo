@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import {
-  copyFileSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -120,9 +119,15 @@ function writeCandidate(
 }
 
 function resolveBinary(relPath: string) {
-  return spawnSync("bash", [join(fakeRepoRoot, "scripts", "resolve-binary.sh"), relPath], {
+  const env = {
+    ...process.env,
+    WASM_POSIX_BINARY_RESOLVER_REPO_ROOT: fakeRepoRoot,
+  };
+  delete env.WASM_POSIX_DEPS_REGISTRY;
+  return spawnSync("bash", [join(repoRoot, "scripts", "resolve-binary.sh"), relPath], {
     cwd: fakeRepoRoot,
     encoding: "utf8",
+    env,
   });
 }
 
@@ -130,22 +135,16 @@ beforeAll(() => {
   fakeRepoRoot = realpathSync(
     mkdtempSync(join(tmpdir(), "kandelo-resolve-binary-")),
   );
-  mkdirSync(join(fakeRepoRoot, "scripts"), { recursive: true });
-  mkdirSync(join(fakeRepoRoot, "abi"), { recursive: true });
-  mkdirSync(join(fakeRepoRoot, "crates", "shared", "src"), { recursive: true });
+  mkdirSync(join(fakeRepoRoot, "packages", "registry"), { recursive: true });
   writeFileSync(join(fakeRepoRoot, "Cargo.toml"), "[workspace]\nmembers = []\n");
-  writeFileSync(join(fakeRepoRoot, "abi", "snapshot.json"), "{}\n");
   writeFileSync(
-    join(fakeRepoRoot, "crates", "shared", "src", "lib.rs"),
-    `pub const ABI_VERSION: u32 = ${ABI_VERSION};\n`,
+    join(fakeRepoRoot, "package.json"),
+    "{\"name\":\"kandelo\",\"private\":true}\n",
   );
-  for (const script of [
-    "resolve-binary.sh",
-    "wasm-artifact-guards.sh",
-    "vfs-has-stale-abi.mjs",
-  ]) {
-    copyFileSync(join(repoRoot, "scripts", script), join(fakeRepoRoot, "scripts", script));
-  }
+  writeFileSync(
+    join(fakeRepoRoot, "packages", "registry", "program-packages.json"),
+    '{"format":"kandelo-program-packages-v2","identities":{},"packages":{}}\n',
+  );
 });
 
 afterAll(() => {
@@ -153,6 +152,15 @@ afterAll(() => {
 });
 
 describe("shell binary resolver artifact policy", () => {
+  it("ships a standalone resolver bundle generated from the shared TypeScript source", () => {
+    const result = spawnSync(
+      "bash",
+      [join(repoRoot, "scripts", "test-resolve-binary-bundle.sh")],
+      { cwd: repoRoot, encoding: "utf8" },
+    );
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+  });
+
   it("resolves a ZIP archive without applying Wasm policy", () => {
     const relPath = "programs/wasm32/__resolve_binary_test__/runtime.zip";
     const localPath = writeCandidate(
@@ -229,7 +237,7 @@ describe("shell binary resolver artifact policy", () => {
     const result = resolveBinary(relPath);
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("stale or invalid artifact ignored");
+    expect(result.stderr).toContain("exists but was rejected by artifact policy");
   });
 
   it("keeps an uninspectable .wasm artifact fail-closed", () => {
@@ -243,7 +251,7 @@ describe("shell binary resolver artifact policy", () => {
     const result = resolveBinary(relPath);
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("stale or invalid artifact ignored");
+    expect(result.stderr).toContain("exists but was rejected by artifact policy");
   });
 
   it("falls back from an uninspectable local .wasm to a valid fetched candidate", () => {

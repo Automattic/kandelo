@@ -54,7 +54,7 @@ const grepWasm = tryResolveBinary("programs/grep.wasm");
 const sedWasm = tryResolveBinary("programs/sed.wasm");
 const gitWasm = tryResolveBinary("programs/git/git.wasm");
 const bcWasm = tryResolveBinary("programs/bc.wasm");
-const fileWasm = tryResolveBinary("programs/file.wasm");
+const fileWasm = tryResolveBinary("programs/file/file.wasm");
 const lessWasm = tryResolveBinary("programs/less.wasm");
 const m4Wasm = tryResolveBinary("programs/m4.wasm");
 const makeWasm = tryResolveBinary("programs/make.wasm");
@@ -71,7 +71,7 @@ const nodeWasm =
     tryResolveBinary("programs/node.wasm") ??
     tryResolveBinary("programs/spidermonkey-node.wasm");
 const lsofWasm = resolve(repoRoot, "examples/lsof.wasm");
-const rubyWasm = tryResolveBinary("programs/ruby.wasm");
+const rubyWasm = tryResolveBinary("programs/ruby/ruby.wasm");
 const vimWasm = tryResolveBinary("programs/vim.zip");
 const gawkWasm = tryResolveBinary("programs/gawk.wasm");
 const findWasm = tryResolveBinary("programs/findutils/find.wasm");
@@ -83,7 +83,11 @@ const diff3Wasm = tryResolveBinary("programs/diffutils/diff3.wasm");
 const perlWasm = tryResolveBinary("programs/perl.wasm");
 const nanoWasm = tryResolveBinary("programs/nano.wasm");
 const tclshWasm = tryResolveBinary("programs/tcl.wasm");
-const testfixtureWasm = tryResolveBinary("programs/sqlite/testfixture.wasm");
+const testfixtureBuild = resolve(
+    repoRoot,
+    "packages/registry/sqlite/bin/testfixture.wasm",
+);
+const testfixtureWasm = existsSync(testfixtureBuild) ? testfixtureBuild : null;
 const mysqltestWasm = tryResolveBinary("programs/mariadb/mysqltest.wasm");
 const echoWasm = tryResolveBinary("programs/echo.wasm") ?? resolve(repoRoot, "examples/echo.wasm");
 
