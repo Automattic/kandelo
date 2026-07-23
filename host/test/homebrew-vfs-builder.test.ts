@@ -556,6 +556,7 @@ async function lazyLayerFixture(options: {
   compatibilityPolicy?: HomebrewVfsCompatibilityPolicy;
   runtimeReceipt?: string;
   runtimeExtraEntries?: TarSpec[];
+  manualPages?: boolean;
 } = {}) {
   const baseBytes = bottleTar(standardEntries());
   const baseManifest = linkManifest(baseBytes);
@@ -601,6 +602,11 @@ async function lazyLayerFixture(options: {
       data: "#!/bin/sh\necho runtime\n",
       mode: 0o755,
     },
+    ...(options.manualPages ? [{
+      path: `runtime/${runtimeVersion}/share/man/man1/runtime.1`,
+      data: ".TH RUNTIME 1\n.SH NAME\nruntime \\- owning bottle fixture\n",
+      mode: 0o644,
+    }] : []),
     ...(options.hardlinkCanonicalAfterAlias ? [
       {
         path: `runtime/${runtimeVersion}/lib/z-canonical.a`,
@@ -656,11 +662,18 @@ async function lazyLayerFixture(options: {
         cache_key_sha: runtimeCacheKey,
         payload_root: `runtime/${runtimeVersion}`,
       },
-      links: [{
-        type: "symlink" as const,
-        source: `Cellar/runtime/${runtimeVersion}/bin/runtime`,
-        target: "bin/runtime",
-      }],
+      links: [
+        {
+          type: "symlink" as const,
+          source: `Cellar/runtime/${runtimeVersion}/bin/runtime`,
+          target: "bin/runtime",
+        },
+        ...(options.manualPages ? [{
+          type: "symlink" as const,
+          source: `Cellar/runtime/${runtimeVersion}/share/man/man1/runtime.1`,
+          target: "share/man/man1/runtime.1",
+        }] : []),
+      ],
       receipts: [
         `Cellar/runtime/${runtimeVersion}/.brew/runtime.rb`,
         `Cellar/runtime/${runtimeVersion}/INSTALL_RECEIPT.json`,
@@ -680,6 +693,11 @@ async function lazyLayerFixture(options: {
       data: "dependency payload\n",
       mode: 0o755,
     },
+    ...(options.manualPages ? [{
+      path: `runtime-dep/${dependencyVersion}/share/man/man1/runtime-dep.1`,
+      data: ".TH RUNTIME-DEP 1\n.SH NAME\nruntime-dep \\- deferred fixture\n",
+      mode: 0o644,
+    }] : []),
     {
       path: `runtime-dep/${dependencyVersion}/bin/runtime-dep-alias`,
       type: "hardlink",
@@ -732,11 +750,18 @@ async function lazyLayerFixture(options: {
         cache_key_sha: dependencyCacheKey,
         payload_root: `runtime-dep/${dependencyVersion}`,
       },
-      links: [{
-        type: "symlink" as const,
-        source: `Cellar/runtime-dep/${dependencyVersion}/bin/runtime-dep`,
-        target: "bin/runtime-dep",
-      }],
+      links: [
+        {
+          type: "symlink" as const,
+          source: `Cellar/runtime-dep/${dependencyVersion}/bin/runtime-dep`,
+          target: "bin/runtime-dep",
+        },
+        ...(options.manualPages ? [{
+          type: "symlink" as const,
+          source: `Cellar/runtime-dep/${dependencyVersion}/share/man/man1/runtime-dep.1`,
+          target: "share/man/man1/runtime-dep.1",
+        }] : []),
+      ],
       receipts: [
         `Cellar/runtime-dep/${dependencyVersion}/.brew/runtime-dep.rb`,
         `Cellar/runtime-dep/${dependencyVersion}/INSTALL_RECEIPT.json`,
@@ -846,12 +871,14 @@ async function runtimeLayerConsumerFixture(
     includeLayerDependency?: boolean;
     runtimeReceipt?: string;
     runtimeExtraEntries?: TarSpec[];
+    manualPages?: boolean;
   } = {},
 ) {
   const fixture = await lazyLayerFixture({
     includeLayerDependency: options.includeLayerDependency,
     runtimeReceipt: options.runtimeReceipt,
     runtimeExtraEntries: options.runtimeExtraEntries,
+    manualPages: options.manualPages,
     mutateBase(fs) {
       const composition = JSON.parse(readVfsFile(fs, "/etc/kandelo/homebrew-vfs.json"));
       composition.packages[0].url =
@@ -2176,6 +2203,71 @@ describe("Homebrew runtime layer consumer", () => {
     expect(chainedAlias.ino).toBe(original.ino);
     expect(readVfsFile(restored, `${fixture.dependencyKeg}/bin/runtime-dep-alias-2`))
       .toBe("dependency payload\n");
+  });
+
+  it("keeps linked manual pages in their owning bottle and fetches one bottle per first lookup", async () => {
+    const fixture = await runtimeLayerConsumerFixture({
+      includeLayerDependency: true,
+      manualPages: true,
+    });
+    const runtimeTree = fixture.descriptor.deferred_trees.find((tree) =>
+      tree.package?.endsWith("/runtime")
+    )!;
+    const dependencyTree = fixture.descriptor.deferred_trees.find((tree) =>
+      tree.package?.endsWith("/runtime-dep")
+    )!;
+    const runtimeTransport = bundleReleaseTransport(runtimeTree);
+    const dependencyTransport = bundleReleaseTransport(dependencyTree);
+    const payloadByUrl = new Map<string, Uint8Array>();
+    for (const tree of fixture.descriptor.deferred_trees) {
+      payloadByUrl.set(
+        bundleReleaseTransport(tree).url,
+        fixture.payloads.find((payload) => payload.id === tree.id)!.bytes,
+      );
+    }
+
+    const encoded = runtimeLayerReference("runtime", fixture.descriptor);
+    const composed = await composeHomebrewRuntimeLayers({
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [encoded.reference],
+      fetch: async () => new Response(encoded.bytes),
+    });
+    const restored = MemoryFileSystem.fromImage(await composed.fs.saveImage());
+    const fetched: string[] = [];
+    restored.setLazyFetcher(async (url) => {
+      fetched.push(url);
+      return new Response(payloadByUrl.get(url)!);
+    });
+
+    const runtimePage = `${PREFIX}/share/man/man1/runtime.1`;
+    const dependencyPage = `${PREFIX}/share/man/man1/runtime-dep.1`;
+    expect(restored.readlink(runtimePage)).toBe(
+      `${fixture.runtimeKeg}/share/man/man1/runtime.1`,
+    );
+    expect(restored.readlink(dependencyPage)).toBe(
+      `${fixture.dependencyKeg}/share/man/man1/runtime-dep.1`,
+    );
+    expect(restored.stat(runtimePage).size).toBeGreaterThan(0);
+    expect(restored.stat(dependencyPage).size).toBeGreaterThan(0);
+    expect(fetched).toEqual([]);
+
+    await expect(restored.preparePath(runtimePage)).resolves.toBe(true);
+    expect(fetched).toEqual([runtimeTransport.url]);
+    expect(readVfsFile(restored, runtimePage)).toContain("owning bottle fixture");
+    expect(readVfsFile(restored, `${fixture.runtimeKeg}/bin/runtime`))
+      .toContain("echo runtime");
+    expect(JSON.stringify(restored.exportLazyArchiveEntries())).toContain(
+      "runtime-dep",
+    );
+
+    await expect(restored.preparePath(dependencyPage)).resolves.toBe(true);
+    expect(fetched).toEqual([runtimeTransport.url, dependencyTransport.url]);
+    expect(readVfsFile(restored, dependencyPage)).toContain("deferred fixture");
+    expect(readVfsFile(restored, `${fixture.dependencyKeg}/bin/runtime-dep`))
+      .toContain("dependency payload");
+    expect(restored.exportLazyArchiveEntries()).toEqual([]);
   });
 
   it("resolves descriptor hardlink chains and rejects a cyclic tail", async () => {
