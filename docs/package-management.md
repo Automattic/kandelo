@@ -240,6 +240,58 @@ a complete fetched package, but local, fetched, and installed-package tiers
 are never combined. If artifacts exist but no tier has the complete accepted
 closure, resolution fails loudly.
 
+The host resolver applies the same rule automatically when any member of a
+program package with more than one total `[[outputs]]` plus
+`[[runtime_files]]` entry is requested. This includes a package with one
+executable and one runtime archive: both paths move under the package directory
+and form one closure. The host reads a closed projection of `package.toml`
+covering package identity, target arches, every output, and every runtime file.
+It accepts ordinary single-line TOML basic and literal strings for those
+fields; an unsupported spelling fails closed. The Rust package parser remains
+authoritative for the complete manifest schema.
+
+An absent registry directory is an ordinary non-package path. Once a package
+directory exists, however, a missing, unreadable, malformed, incomplete, or
+name-mismatched resolver projection is an error. Undeclared nested members and
+the former flat spelling of a package-owned output are errors too; they never
+fall through to scalar lookup. All public resolver entries also reject
+absolute, backslash, drive-prefixed, empty-component, `.`/`..`, and NUL path
+spellings. `tryResolveBinary` returns `null` only for genuine absence and
+rethrows corruption, policy rejection, and malformed package state.
+
+Tier membership alone is not a package identity. Every selected symlink under
+the mutable `local-binaries/` or `binaries/` mirrors must resolve through its
+declared source-artifact suffix into one approved generation root. A fetched
+generation root must be a canonically named direct child of the program-cache
+namespace; a local generation root must be a direct child of that package's
+hidden local-generation namespace. A preexisting directory whose links point
+at different or arbitrary roots is rejected even when every mirror path
+exists. A versioned installed host package is one immutable installation
+identity, so a complete
+all-regular-file closure under its `wasm/` tree remains supported;
+regular-file/symlink mixtures and installed symlink closures are rejected.
+
+Normal direct builds collect package closures under
+`local-binaries/.kandelo-local-generations/<arch>/<package>/<session>/`, using
+the exact declared source suffix for each member. One sourced install helper
+shares a session across its calls. The collector accepts only create-once
+regular files, validates the complete tree, creates a one-shot publication
+claim, and only then swaps the live package directory. A claimed generation is
+never recreated after its root disappears. One-member packages retain their
+flat regular-file mirror and replace that single entry without following a
+preexisting symlink.
+
+For symlink-backed closures the host returns canonical generation-member paths,
+not live mirror paths, so a later mirror-directory swap cannot retarget an
+already resolved string. Local claimed generations are append-only unless a
+user manually removes both resolver-owned state and backing bytes. Fetched
+cache repair is a narrower boundary: force-source rebuild and stale-entry
+recovery may remove and recreate the same cache-key directory, and the resolver
+does not support that operation concurrently with same-package consumers. A
+path retained across such repair can temporarily disappear or name replacement
+bytes. See [Binary releases](binary-releases.md) for producer replacement,
+rollback, crash-orphan, cache-repair, and platform boundaries.
+
 Build scripts register executable outputs with `install_local_binary` and
 declared data with `install_local_runtime_file`. Normal local builds mirror
 both into `local-binaries/`. A sealed publisher instead sets
@@ -1232,6 +1284,14 @@ If two builds of the same cache key race, the first `rename` wins.
 The second notices the canonical path exists and discards its own
 temp dir. Identical inputs yield identical outputs, so keeping either
 copy is correct.
+
+This race rule covers creation of a previously absent cache key. Maintenance
+that deliberately removes an existing key—force-source rebuild or stale-cache
+repair—uses the resolver's existing no-concurrent-same-package assumption.
+Consumers must not retain or read canonical member paths concurrently with
+that maintenance because the directory can be absent and then recreated under
+the same pathname. Live mirror publication remains atomic; this boundary is
+about maintenance of the backing cache itself.
 
 A crashed build (process killed mid-script) leaves its `.tmp-<pid>/`
 behind. The next resolve of the same key starts a fresh temp with a
