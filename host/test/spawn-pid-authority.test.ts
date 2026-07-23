@@ -332,9 +332,20 @@ describe("kernel task-ID authority", () => {
       expect(HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS).toContain(exportName);
     }
 
+    const resolverWrapper = readFileSync(
+      join(repoRoot, "scripts", "resolve-binary.sh"),
+      "utf8",
+    );
+    // The shell entrypoint deliberately delegates artifact policy to the
+    // generated standalone resolver. Check that boundary and inspect the
+    // executable bundle instead of requiring a second hard-coded export list.
+    expect(resolverWrapper).toContain(
+      'exec node "$script_dir/resolve-binary.bundle.mjs" "$1"',
+    );
+
     const artifactGuards = [
       "run.sh",
-      "scripts/resolve-binary.sh",
+      "scripts/resolve-binary.bundle.mjs",
       "packages/registry/kernel/build-kernel.sh",
     ].map((path) => readFileSync(join(repoRoot, path), "utf8"));
     for (const source of artifactGuards) {
