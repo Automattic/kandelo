@@ -56,7 +56,7 @@ if [[ "$1" == programs/* ]] &&
             cd "$checker_root"
             bash scripts/dev-shell.sh \
                 cargo build --release -p xtask --target "$host_target" --quiet
-        )
+        ) >&2
     fi
     export WASM_POSIX_XTASK_BIN
 fi
