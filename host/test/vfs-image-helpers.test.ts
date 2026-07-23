@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -11,7 +12,11 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { walkAndWrite } from "../../images/vfs/scripts/vfs-image-helpers";
+import {
+  saveImage,
+  walkAndWrite,
+  writeVfsBinary,
+} from "../../images/vfs/scripts/vfs-image-helpers";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 
 const O_RDONLY = 0;
@@ -42,6 +47,32 @@ function withSourceTree(run: (root: string) => void): void {
     chmodSync(join(root, "nested", "tool"), 0o751);
     symlinkSync("keep.txt", join(root, "alias"));
     run(root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function artifactFileSystem(): MemoryFileSystem {
+  const fs = MemoryFileSystem.create(
+    new SharedArrayBuffer(4 * 1024 * 1024),
+  );
+  writeVfsBinary(
+    fs,
+    "/ordinary.bin",
+    new TextEncoder().encode("ordinary artifact bytes"),
+  );
+  return fs;
+}
+
+async function expectArtifactInspectionFailure(
+  fs: MemoryFileSystem,
+  failure: Error | RegExp,
+): Promise<void> {
+  const root = mkdtempSync(join(tmpdir(), "vfs-artifact-inspection-"));
+  const output = join(root, "guarded.vfs.zst");
+  try {
+    await expect(saveImage(fs, output)).rejects.toThrow(failure);
+    expect(existsSync(output)).toBe(false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -179,5 +210,142 @@ describe("walkAndWrite", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("VFS artifact publication inspection", () => {
+  it("skips only an explicitly deferred path while inspecting ordinary files", async () => {
+    const fs = artifactFileSystem();
+    fs.registerLazyFile(
+      "/deferred.wasm",
+      "https://example.invalid/deferred.wasm",
+      4,
+      0o755,
+    );
+    const realOpen = fs.open.bind(fs);
+    const open = vi.spyOn(fs, "open").mockImplementation(
+      (path, flags, mode) => {
+        if (path === "/deferred.wasm") {
+          throw new Error("deferred bytes must not be read during publication");
+        }
+        return realOpen(path, flags, mode);
+      },
+    );
+    const root = mkdtempSync(join(tmpdir(), "vfs-deferred-inspection-"));
+    const output = join(root, "guarded.vfs.zst");
+    try {
+      await expect(saveImage(fs, output)).resolves.toBeInstanceOf(Uint8Array);
+      expect(
+        open.mock.calls.some(([path]) => path === "/ordinary.bin"),
+      ).toBe(true);
+      expect(
+        open.mock.calls.some(([path]) => path === "/deferred.wasm"),
+      ).toBe(false);
+      expect(existsSync(output)).toBe(true);
+    } finally {
+      open.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("propagates a root-directory inspection failure", async () => {
+    const fs = artifactFileSystem();
+    const failure = new Error("synthetic artifact opendir failure");
+    vi.spyOn(fs, "opendir").mockImplementation(() => {
+      throw failure;
+    });
+
+    await expectArtifactInspectionFailure(fs, failure);
+  });
+
+  it("propagates a directory iteration failure", async () => {
+    const fs = artifactFileSystem();
+    const failure = new Error("synthetic artifact readdir failure");
+    vi.spyOn(fs, "readdir").mockImplementation(() => {
+      throw failure;
+    });
+
+    await expectArtifactInspectionFailure(fs, failure);
+  });
+
+  it("propagates a directory-entry metadata failure", async () => {
+    const fs = artifactFileSystem();
+    const failure = new Error("synthetic artifact lstat failure");
+    const realLstat = fs.lstat.bind(fs);
+    vi.spyOn(fs, "lstat").mockImplementation((path) => {
+      if (path === "/ordinary.bin") throw failure;
+      return realLstat(path);
+    });
+
+    await expectArtifactInspectionFailure(fs, failure);
+  });
+
+  it("propagates a non-deferred file stat failure", async () => {
+    const fs = artifactFileSystem();
+    const failure = new Error("synthetic artifact stat failure");
+    vi.spyOn(fs, "stat").mockImplementation(() => {
+      throw failure;
+    });
+
+    await expectArtifactInspectionFailure(fs, failure);
+  });
+
+  it("propagates a non-deferred file open failure", async () => {
+    const fs = artifactFileSystem();
+    const failure = new Error("synthetic artifact open failure");
+    vi.spyOn(fs, "open").mockImplementation(() => {
+      throw failure;
+    });
+
+    await expectArtifactInspectionFailure(fs, failure);
+  });
+
+  it("accepts partial reads only after consuming the complete file", async () => {
+    const fs = artifactFileSystem();
+    const realRead = fs.read.bind(fs);
+    const read = vi.spyOn(fs, "read").mockImplementation(
+      (fd, buffer, position, length) =>
+        realRead(fd, buffer, position, Math.min(length, 3)),
+    );
+    const root = mkdtempSync(join(tmpdir(), "vfs-partial-inspection-"));
+    const output = join(root, "guarded.vfs.zst");
+    try {
+      await expect(saveImage(fs, output)).resolves.toBeInstanceOf(Uint8Array);
+      expect(read.mock.calls.length).toBeGreaterThan(1);
+      expect(existsSync(output)).toBe(true);
+    } finally {
+      read.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("propagates a non-deferred file read failure", async () => {
+    const fs = artifactFileSystem();
+    const failure = new Error("synthetic artifact read failure");
+    vi.spyOn(fs, "read").mockImplementation(() => {
+      throw failure;
+    });
+
+    await expectArtifactInspectionFailure(fs, failure);
+  });
+
+  it("rejects premature EOF from a non-deferred artifact", async () => {
+    const fs = artifactFileSystem();
+    vi.spyOn(fs, "read").mockReturnValue(0);
+
+    await expectArtifactInspectionFailure(
+      fs,
+      /Incomplete VFS artifact read for \/ordinary\.bin: 0 of 23 bytes before result 0/,
+    );
+  });
+
+  it("propagates a non-deferred file close failure", async () => {
+    const fs = artifactFileSystem();
+    const failure = new Error("synthetic artifact close failure");
+    vi.spyOn(fs, "close").mockImplementation(() => {
+      throw failure;
+    });
+
+    await expectArtifactInspectionFailure(fs, failure);
   });
 });

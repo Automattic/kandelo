@@ -145,7 +145,18 @@ function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {
   const fd = fs.open(path, 0, 0);
   try {
     const buf = new Uint8Array(st.size);
-    fs.read(fd, buf, null, buf.length);
+    let offset = 0;
+    while (offset < buf.length) {
+      const remaining = buf.length - offset;
+      const count = fs.read(fd, buf.subarray(offset), null, remaining);
+      if (!Number.isSafeInteger(count) || count <= 0 || count > remaining) {
+        throw new Error(
+          `Incomplete VFS artifact read for ${path}: ` +
+            `${offset} of ${buf.length} bytes before result ${count}`,
+        );
+      }
+      offset += count;
+    }
     return buf;
   } finally {
     fs.close(fd);
@@ -217,24 +228,16 @@ export function assertVfsImageCapacity(
 }
 
 function walkVfsFiles(fs: MemoryFileSystem, dir: string, out: string[] = []): string[] {
-  let dh: number;
-  try {
-    dh = fs.opendir(dir);
-  } catch {
-    return out;
-  }
+  // WHY: this walk protects the artifact that will be published. A namespace
+  // inspection failure is not an intentional omission and must stop the build.
+  const dh = fs.opendir(dir);
   try {
     for (;;) {
       const entry = fs.readdir(dh);
       if (!entry) break;
       if (entry.name === "." || entry.name === "..") continue;
       const path = dir === "/" ? `/${entry.name}` : `${dir}/${entry.name}`;
-      let st;
-      try {
-        st = fs.lstat(path);
-      } catch {
-        continue;
-      }
+      const st = fs.lstat(path);
       const kind = st.mode & 0xf000;
       if (kind === 0x4000) {
         walkVfsFiles(fs, path, out);
@@ -259,12 +262,11 @@ function isWasm(bytes: Uint8Array): boolean {
 function assertNoStaleWasmArtifacts(fs: MemoryFileSystem, kernelAbi: number): void {
   const failures: string[] = [];
   for (const path of walkVfsFiles(fs, "/")) {
-    let bytes: Uint8Array;
-    try {
-      bytes = readVfsBytes(fs, path);
-    } catch {
-      continue;
-    }
+    // WHY: a deferred entry deliberately has no local bytes to inspect; its
+    // closed package identity is validated at registration/materialization.
+    // Every non-deferred read failure could otherwise hide a stale artifact.
+    if (fs.isPathDeferred(path)) continue;
+    const bytes = readVfsBytes(fs, path);
     if (!isWasm(bytes)) continue;
     const artifactBytes = new Uint8Array(bytes.byteLength);
     artifactBytes.set(bytes);
