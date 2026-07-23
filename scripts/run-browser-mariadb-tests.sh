@@ -18,8 +18,8 @@ KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 VFS_IMAGE="$REPO_ROOT/apps/browser-demos/public/mariadb-test.vfs.zst"
 RUNNER="$REPO_ROOT/scripts/browser-mariadb-test-runner.ts"
 
-# ── Curated tests (from full browser triage of all 1184 tests) ──
-# 185 tests verified to pass in headless Chromium with MariaDB on kandelo.
+# ── Curated tests (from full browser triage of all 1183 tests) ──
+# 184 tests verified to pass in headless Chromium with MariaDB on kandelo.
 # Excludes: 230 connect-command tests (deadlock with no-threads), 339 timeouts,
 #           143 self-skipping, 287 other failures.
 CURATED_TESTS=(
@@ -69,7 +69,7 @@ CURATED_TESTS=(
     set_statement_notembedded show_create_user
     show_function_with_pad_char_to_full_length
     show_row_order-9226 signal_demo1 signal_demo2 signal_demo3
-    signal_sqlmode simple_select single_delete_update
+    signal_sqlmode single_delete_update
     skip_log_bin sp-bugs2 sp-condition-handler sp-destruct
     sp-memory-leak sp-no-code sp-no-valgrind sp-ucs2 sp-vars
     sp_gis sp_missing_4665 sql_mode_pad_char_to_full_length

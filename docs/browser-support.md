@@ -312,7 +312,9 @@ also requires the serialized artifact's encoded growth ceiling to equal the
 768 MiB product profile. A future product that intentionally needs a larger
 reviewed profile must pass that exact ceiling explicitly rather than silently
 drifting from its browser consumer; an override cannot select a smaller
-profile. Host-tree copies fail the build on any read or VFS write error.
+profile. The Homebrew main-shell composer applies the same serialized-ceiling
+check against its selected `--max-bytes` contract before it creates the output
+artifact. Host-tree copies fail the build on any read or VFS write error.
 Intentional omissions are declared through the copy helper's `exclude` option,
 and every unexcluded symlink must be preserved explicitly or the build fails.
 
