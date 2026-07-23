@@ -13,7 +13,15 @@ import react from "@vitejs/plugin-react";
 import {
   binaryProgramCacheRoot,
   tryResolveBinary,
+  tryResolveBinaries,
 } from "../../host/src/binary-resolver";
+import {
+  browserBinariesImports,
+} from "./browser-binary-imports.mjs";
+import {
+  createBatchedBrowserBinaryResolution,
+  type BrowserBinaryResolution,
+} from "./vite-binary-resolution";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
@@ -141,6 +149,51 @@ function createBinaryDevAccess(): BinaryDevAccess {
 }
 
 const binaryDevAccess = createBinaryDevAccess();
+const binaryMirrorRoots = [
+  path.resolve(repoRoot, "local-binaries"),
+  path.resolve(repoRoot, "binaries"),
+];
+
+function applyDefaultProgramArch(relPath: string): string {
+  if (!relPath.startsWith("programs/")) return relPath;
+  const tail = relPath.slice("programs/".length);
+  const first = tail.split("/", 1)[0];
+  if (first === "wasm32" || first === "wasm64") return relPath;
+  return `programs/wasm32/${tail}`;
+}
+
+function mirrorEntryExists(relPath: string): boolean {
+  return binaryMirrorRoots.some((root) => {
+    try {
+      fs.lstatSync(path.resolve(root, relPath));
+      return true;
+    } catch (error) {
+      if (
+        error instanceof Error
+        && "code" in error
+        && error.code === "ENOENT"
+      ) {
+        return false;
+      }
+      throw error;
+    }
+  });
+}
+
+function createBrowserBinaryResolution(
+  access: BinaryDevAccess,
+): BrowserBinaryResolution {
+  const declaredRelPaths = browserBinariesImports(repoRoot);
+  return createBatchedBrowserBinaryResolution(declaredRelPaths, {
+    normalizeRelPath: applyDefaultProgramArch,
+    resolveBatch: tryResolveBinaries,
+    resolveOne: tryResolveBinary,
+    approve: (file) => access.approve(file),
+    mirrorEntryExists,
+  });
+}
+
+const browserBinaryResolution = createBrowserBinaryResolution(binaryDevAccess);
 
 const crossOriginIsolationHeaders = {
   "Cross-Origin-Opener-Policy": "same-origin",
@@ -293,8 +346,8 @@ function dropWorkerEntryExports(): Plugin {
 }
 
 /**
- * Vite plugin: resolve `@binaries/...` imports against the
- * resolver-managed binaries trees.
+ * Vite plugin: resolve `@binaries/...` imports and authored relative imports
+ * into the resolver-managed binaries trees.
  *
  * Lookup order, first hit wins:
  *   1. `<repoRoot>/local-binaries/<rest>` — populated by xtask while
@@ -305,39 +358,91 @@ function dropWorkerEntryExports(): Plugin {
  *
  * The fallback is what makes the alias useful for both release-shipped
  * artifacts and local-only ones (e.g. dev builds, test fixtures): a
- * page just imports `@binaries/programs/wasm32/<x>` and gets whichever
- * copy is present.
+ * page just imports `@binaries/programs/wasm32/<x>` (or uses an optional
+ * relative `import.meta.glob()` into either mirror) and gets whichever copy
+ * is present.
  *
  * Doing this with a custom plugin (rather than `resolve.alias`) is
  * deliberate: `@rollup/plugin-alias` has a single `replacement` string,
  * which can't express "try this directory first, then that one." A
  * `resolveId` hook can.
  */
-function resolveBinariesAlias(access: BinaryDevAccess): Plugin {
+interface BinaryMirrorImport {
+  relPath: string;
+  query: string;
+}
+
+function relativeBinaryMirrorImport(
+  source: string,
+  importer: string | undefined,
+): BinaryMirrorImport | null {
+  if (importer === undefined || source.startsWith("\0")) return null;
+  const queryIndex = source.indexOf("?");
+  const pathPart = queryIndex === -1 ? source : source.slice(0, queryIndex);
+  const query = queryIndex === -1 ? "" : source.slice(queryIndex);
+  if (!pathPart.startsWith(".") && !path.isAbsolute(pathPart)) return null;
+
+  const importerPath = importer.split("?", 1)[0];
+  if (!path.isAbsolute(importerPath)) return null;
+  const candidate = path.isAbsolute(pathPart)
+    ? path.resolve(pathPart)
+    : path.resolve(path.dirname(importerPath), pathPart);
+
+  for (const mirrorRoot of binaryMirrorRoots) {
+    if (!pathIsWithin(mirrorRoot, candidate)) continue;
+    const relPath = normalizePath(path.relative(mirrorRoot, candidate));
+    if (
+      relPath === ""
+      || relPath === ".."
+      || relPath.startsWith("../")
+      || path.isAbsolute(relPath)
+    ) {
+      return null;
+    }
+    return { relPath: applyDefaultProgramArch(relPath), query };
+  }
+  return null;
+}
+
+function resolveBinariesAlias(
+  access: BinaryDevAccess,
+  resolution: BrowserBinaryResolution,
+): Plugin {
   const PREFIX = "@binaries/";
-  const applyDefaultArch = (rel: string): string => {
-    if (!rel.startsWith("programs/")) return rel;
-    const tail = rel.slice("programs/".length);
-    const first = tail.split("/", 1)[0];
-    if (first === "wasm32" || first === "wasm64") return rel;
-    return `programs/wasm32/${tail}`;
-  };
 
   return {
     name: "resolve-binaries-alias",
     enforce: "pre",
-    resolveId(source) {
-      if (!source.startsWith(PREFIX)) return null;
-      const queryIdx = source.indexOf("?");
-      const pathPart = queryIdx === -1 ? source : source.slice(0, queryIdx);
-      const query = queryIdx === -1 ? "" : source.slice(queryIdx);
-      const rest = applyDefaultArch(pathPart.slice(PREFIX.length));
-      const resolved = tryResolveBinary(rest);
-      if (resolved) return access.approve(resolved) + query;
-      const local = path.resolve(repoRoot, "local-binaries", rest);
-      const fetched = path.resolve(repoRoot, "binaries", rest);
+    resolveId(source, importer) {
+      let request: BinaryMirrorImport | null = null;
+      if (source.startsWith(PREFIX)) {
+        const queryIndex = source.indexOf("?");
+        const pathPart = queryIndex === -1
+          ? source
+          : source.slice(0, queryIndex);
+        request = {
+          relPath: applyDefaultProgramArch(pathPart.slice(PREFIX.length)),
+          query: queryIndex === -1 ? "" : source.slice(queryIndex),
+        };
+      } else {
+        // Vite expands import.meta.glob() before normal alias resolution and
+        // follows matching mirror symlinks lexically. Convert those concrete
+        // mirror paths back into package-relative requests so they receive the
+        // same provenance check and exact-file capability as @binaries.
+        request = relativeBinaryMirrorImport(source, importer);
+      }
+      if (request === null) return null;
+
+      const resolved = resolution.resolve(request.relPath);
+      if (resolved) return resolved + request.query;
+      const local = path.resolve(
+        repoRoot,
+        "local-binaries",
+        request.relPath,
+      );
+      const fetched = path.resolve(repoRoot, "binaries", request.relPath);
       this.error(
-        `@binaries: ${rest} not found, or every candidate is stale. ` +
+        `Browser binary ${request.relPath} not found, or every candidate is stale. ` +
           `Looked at:\n  ${local}\n  ${fetched}\n` +
           `Run \`./run.sh fetch\` to install release archives, or build the artifact locally.`,
       );
@@ -644,7 +749,7 @@ export default defineConfig({
   plugins: [
     react(),
     resolveKernelArtifactsAlias(binaryDevAccess),
-    resolveBinariesAlias(binaryDevAccess),
+    resolveBinariesAlias(binaryDevAccess, browserBinaryResolution),
     rewriteNavLinks(),
     injectGitRevision(),
     injectCoiServiceWorker(),
@@ -690,7 +795,7 @@ export default defineConfig({
     format: "es",
     plugins: () => [
       resolveKernelArtifactsAlias(binaryDevAccess),
-      resolveBinariesAlias(binaryDevAccess),
+      resolveBinariesAlias(binaryDevAccess, browserBinaryResolution),
       dropWorkerEntryExports(),
     ],
   },

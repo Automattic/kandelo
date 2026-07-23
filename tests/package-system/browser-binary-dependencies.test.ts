@@ -205,12 +205,17 @@ describe("browser binary dependencies", () => {
           "const generated = `import ignored from \"@binaries/programs/ignored.wasm?url\";`;",
           "import actual from \"@binaries/programs/actual.wasm?url\";",
           "const dynamic = import(\"@binaries/programs/dynamic.wasm?url\");",
-          "void generated; void actual; void dynamic;",
+          "const optional = import.meta.glob(\"../../binaries/programs/optional.vfs.zst\", { query: \"?url\", import: \"default\" });",
+          "const local = import.meta.glob([\"../../local-binaries/programs/local.vfs.zst\"], { query: \"?url\", import: \"default\" });",
+          "const unrelated = import.meta.glob(\"./ordinary-module.ts\");",
+          "void generated; void actual; void dynamic; void optional; void local; void unrelated;",
         ].join("\n"),
       );
       expect(browserBinariesImports(fixtureRoot)).toEqual([
         "programs/wasm32/actual.wasm",
         "programs/wasm32/dynamic.wasm",
+        "programs/wasm32/local.vfs.zst",
+        "programs/wasm32/optional.vfs.zst",
       ]);
     } finally {
       rmSync(fixtureRoot, { recursive: true, force: true });

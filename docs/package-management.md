@@ -344,7 +344,9 @@ Consumers that probe many unrelated optional programs synchronously use
 returns one path or `null` per request. This is intentionally different from
 `tryResolveBinarySet`, which requires every requested path to be the complete
 closure of one package and returns that closure from one provenance tier.
-Batching independent probes does not weaken package closure validation.
+Batching independent probes does not weaken package closure validation:
+requests that belong to the same package share one complete, pinned
+generation, even when the caller requests only some members or repeats one.
 
 Tier membership alone is not a package identity. Every selected symlink under
 the mutable `local-binaries/` or `binaries/` mirrors must resolve through its
