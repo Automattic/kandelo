@@ -1,0 +1,31 @@
+kind = "program"
+name = "nginx-php-vfs"
+version = "0.1.0"
+kernel_abi = 41
+depends_on = [
+  "shell@0.1.0",
+  "nginx@1.24.0",
+  "php@8.3.15",
+  "dinit@0.19.4",
+  "kernel@0.1.0",
+]
+
+# Composite VFS image for the nginx + PHP-FPM browser demo. The builder also
+# boots the declared kernel to prewarm PHP's opcache, so the kernel is an
+# explicit build dependency rather than an ambient checkout artifact.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "images/vfs/scripts/build-nginx-php-vfs-image.sh"
+
+[[outputs]]
+name = "nginx-php-vfs"
+wasm = "nginx-php.vfs.zst"
+# This output is a VFS image, not a Wasm executable.
+fork_instrumentation = "disabled"

@@ -127,6 +127,65 @@ describe("browser binary dependencies", () => {
     expect(missingBuildToml).toEqual([]);
   });
 
+  it("gives every locally mirrored composite VFS image a declared package owner", () => {
+    const imageScriptsRoot = join(repoRoot, "images", "vfs", "scripts");
+    const installers = readdirSync(imageScriptsRoot)
+      // These wrappers create complete VFS package outputs. Archive helpers
+      // such as build-nethack-zip.sh mirror a declared member of an existing
+      // package instead, so their variable-based calls belong to that package's
+      // ordinary multi-file generation contract rather than this ownership
+      // audit.
+      .filter((name) => name.endsWith("-vfs-image.sh"))
+      .flatMap((name) => {
+        const scriptPath = join(imageScriptsRoot, name);
+        return readFileSync(scriptPath, "utf8")
+          .split("\n")
+          .filter((line) => /^\s*install_local_binary\s+/.test(line))
+          .map((line) => {
+            const match = line.match(
+              /^\s*install_local_binary\s+([a-z0-9][a-z0-9+._-]*)\s+"[^"]*\/([^/"']+\.vfs\.zst)"\s*$/,
+            );
+            if (!match) {
+              throw new Error(
+                `composite VFS installer must name its package and source artifact literally: ${scriptPath}: ${line.trim()}`,
+              );
+            }
+            return {
+              packageName: match[1]!,
+              sourceArtifact: match[2]!,
+              scriptPath,
+            };
+          });
+      });
+    expect(installers.length).toBeGreaterThan(0);
+
+    const projection = JSON.parse(
+      readFileSync(join(registryRoot, "program-packages.json"), "utf8"),
+    ) as {
+      packages: Record<string, {
+        members: Array<{
+          kind: string;
+          sourceArtifact: string;
+          mirrorPath: string;
+          forkInstrumentation?: string;
+        }>;
+      }>;
+    };
+
+    for (const { packageName, sourceArtifact } of installers) {
+      expect(existsSync(join(registryRoot, packageName, "package.toml"))).toBe(true);
+      expect(existsSync(join(registryRoot, packageName, "build.toml"))).toBe(true);
+      expect(projection.packages[packageName]?.members).toEqual([
+        expect.objectContaining({
+          kind: "output",
+          sourceArtifact,
+          mirrorPath: `${packageName}.vfs.zst`,
+          forkInstrumentation: "disabled",
+        }),
+      ]);
+    }
+  });
+
   it("backs every browser @binaries import with a fetchable package output", () => {
     const { missingOwners, unfetchableOwners } =
       inspectBrowserBinaryDependencies(repoRoot);
