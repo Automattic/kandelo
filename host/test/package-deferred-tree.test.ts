@@ -58,6 +58,7 @@ describe("package deferred ZIP trees", () => {
       bytes: archive.byteLength,
       source_entry_count: 6,
     });
+    expect(first.content.modePolicy).toBe("portable-posix-v1");
     expect(first.descriptor.inventory).toEqual([
       expect.objectContaining({
         vfs_path: "/home/linuxbrew/.linuxbrew/bin",
@@ -212,6 +213,12 @@ describe("package deferred ZIP trees", () => {
 
     const archive = packageArchive();
     const derived = derivePackageDeferredZipTree(SPEC, archive);
+    expect(() => packageFs().registerLazyTree(
+      { ...derived.content, modePolicy: "host-mode" } as unknown as typeof derived.content,
+      derived.entries,
+      SPEC.mount_prefix,
+      SPEC.activation,
+    )).toThrow(/mode policy is invalid/);
     const fs = packageFs();
     fs.mkdir(`${SPEC.mount_prefix}/bin`, 0o700);
     fs.chown(`${SPEC.mount_prefix}/bin`, 1000, 1000);
@@ -276,12 +283,12 @@ describe("package deferred ZIP trees", () => {
 
 function packageArchive(): Uint8Array {
   const zippable: Zippable = {
-    "bin/": zipEntry(new Uint8Array(), 0o040755),
-    "bin/brew": zipEntry(encoder.encode("#!/bin/brew\n"), 0o100755),
-    "bin/brew-link": zipEntry(encoder.encode("brew"), 0o120777),
-    "Library/": zipEntry(new Uint8Array(), 0o040755),
-    "Library/Homebrew/": zipEntry(new Uint8Array(), 0o040755),
-    "Library/Homebrew/global.rb": zipEntry(encoder.encode("GLOBAL = true\n"), 0o100644),
+    "bin/": zipEntry(new Uint8Array(), 0o040700),
+    "bin/brew": zipEntry(encoder.encode("#!/bin/brew\n"), 0o100711),
+    "bin/brew-link": zipEntry(encoder.encode("brew"), 0o120700),
+    "Library/": zipEntry(new Uint8Array(), 0o040750),
+    "Library/Homebrew/": zipEntry(new Uint8Array(), 0o040777),
+    "Library/Homebrew/global.rb": zipEntry(encoder.encode("GLOBAL = true\n"), 0o100600),
   };
   return zipSync(zippable, { level: 9 });
 }
