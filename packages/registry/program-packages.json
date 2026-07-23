@@ -151,8 +151,8 @@
     "lamp": {
       "manifestSha256": "40b66d115967f8ea3e1229cccfd1e6636f5363b4fd02ef66850a2dd441ccf13d",
       "cacheKeys": {
-        "wasm32": "d43bec4f09c3ac8336c38216a6be6e5bd344757396e020bf786daac94c856434",
-        "wasm64": "01acbbfe8187e516f0a8a160b1714ad1c20aeda622b808a9e57c917d9407f558"
+        "wasm32": "ab82d60e7785852046aa8d36633b3554926bf65f2fe7c38b624b20411556751c",
+        "wasm64": "c4a78a0143971ba844e45b311f4dd807ee1ad980819d74045a03ccf91208af51"
       }
     },
     "less": {
@@ -312,8 +312,8 @@
     "node-vfs": {
       "manifestSha256": "33315fb1b3030a4c187ae075eac08f717de8d7ab017b86c6458778ac9070eece",
       "cacheKeys": {
-        "wasm32": "e30d430299f5c7302d55815b6830325304ae436aab26a50228ee0cf11dea4daa",
-        "wasm64": "e0d18794ffed278e0c61bb499bb7c73e0cae0ac75b74523cc7c9862408a6a192"
+        "wasm32": "b1651fa5b8bff3f199191ee0734dc8ca62fee0aa099f878bb76e2be51aaf0ca4",
+        "wasm64": "0885456c5bd595030508da5625b0bf099c04145757f3ac2c0f2cdd8fddf7629e"
       }
     },
     "openssl": {
@@ -396,8 +396,8 @@
     "shell": {
       "manifestSha256": "5d02cd8fee4e0d46c7552a3046c3898f9e3bd5667094e02cab01851eed97a321",
       "cacheKeys": {
-        "wasm32": "c4bd0ba9a14f00e617340567a746e454fcfe53214d4da21f6021a8c8ca8af302",
-        "wasm64": "5511934b47430baf636029f3bd269d540b526d000e1eaa096dc7bb503291bde2"
+        "wasm32": "44b3fddfb216bc7a1cdf5c15aef6c24bc111927409a5891799fe447e9a760961",
+        "wasm64": "eae66e74f3b0f1bde7ac1915a46c7011bec1d258a12d7ee2442551e288e59125"
       }
     },
     "spidermonkey": {
@@ -487,8 +487,8 @@
     "wordpress": {
       "manifestSha256": "2c95e72f657a05be445c9b264de769becfb50833d6ef7ee4d18feac690ca2b52",
       "cacheKeys": {
-        "wasm32": "d428d31af608a957dfd7dfadcc59c53d3e4a3d35f8b895c93046a800238e3755",
-        "wasm64": "54811408fcb9b8f97e922755b9e0403e0a7c84cd06afd5c6b942211878ac1f2a"
+        "wasm32": "85dfd741f9c998d374863a1a8d69da6322e40e8353b58fac0ba8b97b2560153f",
+        "wasm64": "385e4897dd064f3d48e9fc5c3d168a3804515a88fbba9013f97568383096a4fa"
       }
     },
     "xz": {
@@ -1037,7 +1037,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "d43bec4f09c3ac8336c38216a6be6e5bd344757396e020bf786daac94c856434"
+        "wasm32": "ab82d60e7785852046aa8d36633b3554926bf65f2fe7c38b624b20411556751c"
       },
       "dependencyClosures": {
         "wasm32": [
@@ -1109,7 +1109,7 @@
           {
             "packageName": "shell",
             "manifestSha256": "5d02cd8fee4e0d46c7552a3046c3898f9e3bd5667094e02cab01851eed97a321",
-            "cacheKey": "c4bd0ba9a14f00e617340567a746e454fcfe53214d4da21f6021a8c8ca8af302"
+            "cacheKey": "44b3fddfb216bc7a1cdf5c15aef6c24bc111927409a5891799fe447e9a760961"
           },
           {
             "packageName": "sqlite",
@@ -1704,7 +1704,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "e30d430299f5c7302d55815b6830325304ae436aab26a50228ee0cf11dea4daa"
+        "wasm32": "b1651fa5b8bff3f199191ee0734dc8ca62fee0aa099f878bb76e2be51aaf0ca4"
       },
       "dependencyClosures": {
         "wasm32": [
@@ -1726,7 +1726,7 @@
           {
             "packageName": "shell",
             "manifestSha256": "5d02cd8fee4e0d46c7552a3046c3898f9e3bd5667094e02cab01851eed97a321",
-            "cacheKey": "c4bd0ba9a14f00e617340567a746e454fcfe53214d4da21f6021a8c8ca8af302"
+            "cacheKey": "44b3fddfb216bc7a1cdf5c15aef6c24bc111927409a5891799fe447e9a760961"
           },
           {
             "packageName": "spidermonkey",
@@ -2407,7 +2407,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "c4bd0ba9a14f00e617340567a746e454fcfe53214d4da21f6021a8c8ca8af302"
+        "wasm32": "44b3fddfb216bc7a1cdf5c15aef6c24bc111927409a5891799fe447e9a760961"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -2699,7 +2699,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "d428d31af608a957dfd7dfadcc59c53d3e4a3d35f8b895c93046a800238e3755"
+        "wasm32": "85dfd741f9c998d374863a1a8d69da6322e40e8353b58fac0ba8b97b2560153f"
       },
       "dependencyClosures": {
         "wasm32": [
@@ -2761,7 +2761,7 @@
           {
             "packageName": "shell",
             "manifestSha256": "5d02cd8fee4e0d46c7552a3046c3898f9e3bd5667094e02cab01851eed97a321",
-            "cacheKey": "c4bd0ba9a14f00e617340567a746e454fcfe53214d4da21f6021a8c8ca8af302"
+            "cacheKey": "44b3fddfb216bc7a1cdf5c15aef6c24bc111927409a5891799fe447e9a760961"
           },
           {
             "packageName": "sqlite",

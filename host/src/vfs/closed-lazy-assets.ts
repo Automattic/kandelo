@@ -14,9 +14,10 @@ export interface ClosedLazyAsset {
 /**
  * One acceptance-only transport source whose bytes are bound to the canonical
  * HTTPS URL stored in a deferred VFS tree only after verification. `sourceUrl`
- * may be a canonical root-relative URL or a canonical absolute HTTP(S) URL.
- * Fetches omit credentials and reject redirects; the exact size and SHA-256
- * declared here remain the authority.
+ * may be a canonical root-relative URL, an absolute HTTPS URL, or a loopback
+ * HTTP URL used by local acceptance. Fetches omit credentials and referrers
+ * and reject redirects; the exact size and SHA-256 declared here remain the
+ * authority.
  */
 export interface ClosedLazyAssetSource {
   url: string;
@@ -84,6 +85,7 @@ export async function loadClosedLazyAssetSources(
       const response = await fetchImpl(source.sourceUrl, {
         cache: "no-store",
         credentials: "omit",
+        referrerPolicy: "no-referrer",
         redirect: "error",
         signal: controller.signal,
       });
@@ -374,8 +376,10 @@ function validateClosedSourceUrl(sourceUrl: string, index: number): void {
   }
   const relative = sourceUrl.startsWith("/");
   const serializedRelative = parsed.href.slice(validationOrigin.length);
+  const allowedProtocol = parsed.protocol === "https:" ||
+    (parsed.protocol === "http:" && isLoopbackHostname(parsed.hostname));
   if (
-    (parsed.protocol !== "https:" && parsed.protocol !== "http:") ||
+    !allowedProtocol ||
     parsed.username !== "" || parsed.password !== "" || parsed.hash !== "" ||
     sourceUrl.includes("#") ||
     (relative
@@ -383,9 +387,15 @@ function validateClosedSourceUrl(sourceUrl: string, index: number): void {
       : parsed.href !== sourceUrl)
   ) {
     throw new Error(
-      `closed lazy asset source ${index} fetch URL must be canonical HTTP(S)`,
+      `closed lazy asset source ${index} fetch URL must be canonical ` +
+        `root-relative, HTTPS, or loopback HTTP`,
     );
   }
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" ||
+    hostname === "[::1]";
 }
 
 async function readExactResponseBytes(

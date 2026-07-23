@@ -31,6 +31,7 @@ test("Chromium verifies and closes native lazy-asset transports", async ({
   const state = {
     cookieProbe: "",
     gzipCookie: "",
+    gzipReferer: "",
     redirectTargetHits: 0,
     overflowClosed: false,
     overflowFinished: false,
@@ -80,6 +81,7 @@ test("Chromium verifies and closes native lazy-asset transports", async ({
         return;
       case "/gzip":
         state.gzipCookie = request.headers.cookie ?? "";
+        state.gzipReferer = request.headers.referer ?? "";
         response.writeHead(200, {
           "content-encoding": "gzip",
           "content-length": String(encodedPayload.byteLength),
@@ -238,6 +240,7 @@ test("Chromium verifies and closes native lazy-asset transports", async ({
     expect(Buffer.from(result.gzipBytes)).toEqual(decodedPayload);
     expect(encodedPayload.byteLength).not.toBe(decodedPayload.byteLength);
     expect(state.gzipCookie).toBe("");
+    expect(state.gzipReferer).toBe("");
     expect(result.redirect.rejected).toBe(true);
     expect(state.redirectTargetHits).toBe(0);
     expect(result.overflow).toMatchObject({
