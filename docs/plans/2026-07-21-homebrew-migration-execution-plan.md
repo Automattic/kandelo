@@ -245,6 +245,27 @@ Batching must never weaken exact-head validation, immutable
 artifact identity, browser/Node parity, POSIX correctness, or an explicit
 merge-approval boundary.
 
+### Tracked non-blocking pipeline follow-ups
+
+These defects affect iteration speed or diagnostic quality but do not weaken
+the exact artifact accepted by the current gates:
+
+- Make every completed PR staging release a self-contained snapshot. A run
+  that cannot reuse a partial target currently rebuilds against the canonical
+  ABI release, while each matrix writer adds only its own result to the target
+  index. The test gate still composes and verifies the complete canonical plus
+  local-matrix view, so this is not a correctness bypass, but a later run
+  cannot reuse a target that remains sparse. Add one post-matrix finalizer that
+  writes a complete target-relative index and verifies every referenced target
+  asset before making it reusable. Do not copy canonical relative URLs into a
+  different release namespace without rewriting and re-verifying them.
+- Diagnose the intermittent MariaDB out-of-bounds failure from Homebrew shell
+  run `30041372714`. Exact replacement run `30044000480` passed the same
+  direct-input LAMP source-build and complete Node.js/Chromium shell proof, so
+  the failure is not a current landing blocker, but it remains evidence to
+  reproduce and root-cause. Do not turn the source build into unconditional
+  retry-until-green behavior.
+
 ### Phase 1: Close the active publication and federation work
 
 1. Completed by PR #1048 and run `29886510272`: fix the
