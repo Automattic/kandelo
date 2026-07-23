@@ -31,7 +31,6 @@ import {
   SHELL_LAZY_ARCHIVE_SPECS,
 } from "./shell-lazy-archives";
 import {
-  assertVfsImageCapacity,
   saveImage,
   writeVfsFile,
   writeVfsBinary,
@@ -93,7 +92,10 @@ export function loadShellBaseFileSystem(maxByteLength: number): MemoryFileSystem
 export function saveShellDerivedVfsImage(
   fs: MemoryFileSystem,
   outFile: string,
-  options: Omit<SaveImageOptions, "headroom"> & {
+  options: Omit<
+    SaveImageOptions,
+    "headroom" | "expectedMaxByteLength"
+  > & {
     /** Explicit escape hatch for a reviewed product profile above 768 MiB. */
     expectedMaxByteLength?: number;
   } = {},
@@ -102,9 +104,22 @@ export function saveShellDerivedVfsImage(
     expectedMaxByteLength = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
     ...saveOptions
   } = options;
-  assertVfsImageCapacity(fs, expectedMaxByteLength, outFile);
+  if (
+    expectedMaxByteLength !== SHELL_DERIVED_VFS_PROFILE_MAX_BYTES &&
+    (
+      !Number.isSafeInteger(expectedMaxByteLength) ||
+      expectedMaxByteLength <= SHELL_DERIVED_VFS_PROFILE_MAX_BYTES
+    )
+  ) {
+    throw new Error(
+      `${outFile} expectedMaxByteLength must use the standard ` +
+        `${SHELL_DERIVED_VFS_PROFILE_MAX_BYTES}-byte product profile or ` +
+        "an explicitly reviewed, strictly larger profile",
+    );
+  }
   return saveImage(fs, outFile, {
     ...saveOptions,
+    expectedMaxByteLength,
     headroom: {
       minimumFreeBytes: SHELL_DERIVED_VFS_MIN_FREE_BYTES,
       minimumFreeInodes: SHELL_DERIVED_VFS_MIN_FREE_INODES,

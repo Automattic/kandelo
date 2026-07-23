@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -71,15 +72,62 @@ describe("walkAndWrite", () => {
     });
   });
 
-  it("intentionally omits symlinks unless preservation is requested", () => {
+  it("rejects an unexcluded symlink unless preservation is requested", () => {
     withSourceTree((root) => {
       const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
 
-      const count = walkAndWrite(fs, root, "/payload");
+      expect(() => walkAndWrite(fs, root, "/payload")).toThrow(
+        new RegExp(
+          `VFS image source symlink requires preserveSymlinks or an explicit exclude: ` +
+            `${join(root, "alias")}`,
+        ),
+      );
+    });
+  });
+
+  it("omits a symlink only through an explicit exclusion", () => {
+    withSourceTree((root) => {
+      const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+
+      const count = walkAndWrite(fs, root, "/payload", {
+        exclude: (path) => path === "alias",
+      });
 
       expect(count).toBe(3);
       expect(() => fs.lstat("/payload/alias")).toThrow();
       expect(fs.stat("/payload/nested/tool").mode & 0o7777).toBe(0o644);
+    });
+  });
+
+  it("propagates a host file read failure", () => {
+    withSourceTree((root) => {
+      const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+
+      expect(() =>
+        walkAndWrite(fs, root, "/payload", {
+          exclude: (path) => {
+            if (path === "alias") return true;
+            if (path === "keep.txt") unlinkSync(join(root, path));
+            return false;
+          },
+        })
+      ).toThrow();
+    });
+  });
+
+  it("propagates a host symlink read failure", () => {
+    withSourceTree((root) => {
+      const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+
+      expect(() =>
+        walkAndWrite(fs, root, "/payload", {
+          preserveSymlinks: true,
+          exclude: (path) => {
+            if (path === "alias") unlinkSync(join(root, path));
+            return false;
+          },
+        })
+      ).toThrow();
     });
   });
 
