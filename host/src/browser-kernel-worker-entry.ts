@@ -30,6 +30,7 @@ import {
 } from "./vfs/vfs";
 import { MemoryFileSystem } from "./vfs/memory-fs";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
+import { resolveLazyUrl } from "./vfs/lazy-url";
 import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
 import {
@@ -555,11 +556,6 @@ function createFreshProcessMemory(
     layout,
     threadAllocator: threadAllocatorForLayout(layout, ptrWidth, pid),
   };
-}
-
-function resolveLazyUrl(base: string, url: string): string {
-  if (/^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("/")) return url;
-  return base.replace(/\/?$/, "/") + url;
 }
 
 // ── Init ──
