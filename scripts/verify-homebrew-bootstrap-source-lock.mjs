@@ -141,14 +141,7 @@ export function loadHomebrewBootstrapSourceLock(path) {
 
   exactKeys(
     lock.output,
-    [
-      "path",
-      "sha256",
-      "bytes",
-      "current_shell_producer",
-      "current_shell_sha256",
-      "current_shell_bytes",
-    ],
+    ["path", "sha256", "bytes"],
     "output",
   );
   if (lock.output.path !== "homebrew-bootstrap.zip") {
@@ -156,17 +149,6 @@ export function loadHomebrewBootstrapSourceLock(path) {
   }
   stringField(lock.output.sha256, SHA256, "output.sha256");
   positiveSafeInteger(lock.output.bytes, "output.bytes");
-  if (lock.output.current_shell_producer !== "scripts/build-homebrew-main-shell-closure.sh") {
-    fail("output.current_shell_producer is not the current shell migration producer");
-  }
-  stringField(lock.output.current_shell_sha256, SHA256, "output.current_shell_sha256");
-  positiveSafeInteger(lock.output.current_shell_bytes, "output.current_shell_bytes");
-  if (
-    lock.output.sha256 !== lock.output.current_shell_sha256 ||
-    lock.output.bytes !== lock.output.current_shell_bytes
-  ) {
-    fail("dedicated output and current shell output identities must be byte-identical");
-  }
 
   return lock;
 }

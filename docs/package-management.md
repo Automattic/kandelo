@@ -537,15 +537,13 @@ therefore declares `fork_instrumentation = "disabled"`.
 identity. It binds the upstream archive URL and SHA-256, sealed
 `[[git_inputs]]` commit, patch path/SHA-256/license, patched Git and normalized
 tree identities, portable Ruby version, archive-producing Git version, and
-final ZIP SHA-256/byte count. The
-package build imports the resolver-owned exact Git checkout into private
-scratch storage and performs no source fetch of its own. The lock also records
-the current shell migration producer's ZIP identity and requires byte
-equality, so the later ownership cutover cannot silently change guest
-Homebrew bytes. Shell and bootstrap-image consumers still use their existing
-preparation paths until their separate cutover changes land. Run
-the build through `scripts/dev-shell.sh`; a different Git ZIP implementation
-fails the exact output lock instead of publishing different bytes.
+final ZIP SHA-256/byte count. The package build imports the resolver-owned
+exact Git checkout into private scratch storage and performs no source fetch
+of its own. The lock also records the dedicated package output's exact SHA-256
+and byte count, so a rebuild cannot silently change guest Homebrew bytes.
+Shell and bootstrap-image consumer cutover remains a separate change. Run the
+build through `scripts/dev-shell.sh`; a different Git ZIP implementation fails
+the exact output lock instead of publishing different bytes.
 
 See [docs/homebrew-publishing.md](homebrew-publishing.md) for the Homebrew
 formula, sidecar, GHCR, VFS, and runtime validation contract.

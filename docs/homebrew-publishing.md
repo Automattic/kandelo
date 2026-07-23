@@ -35,10 +35,10 @@ emits `homebrew-bootstrap.zip` from a sealed exact Homebrew checkout and the
 reviewed guest-platform patch. Its source lock at
 `homebrew/homebrew-bootstrap-source-lock.json` binds all source, patch,
 prepared-tree, portable-Ruby, archive-producing Git, and final-archive
-identities. The first package revision is intentionally byte-identical to the
-ZIP emitted by the current shell migration producer under Kandelo's pinned
-developer shell. Consumer cutover is a separate rollout step, so introducing
-the package does not change current shell or bootstrap image consumers.
+identities. The first package revision is sealed by the exact final ZIP
+SHA-256 and byte count recorded in that lock. Consumer cutover is a separate
+rollout step, so introducing the package does not change shell or
+bootstrap-image consumers.
 
 ## Repositories And Ownership
 

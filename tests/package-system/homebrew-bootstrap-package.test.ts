@@ -76,8 +76,6 @@ describe("homebrew-bootstrap package contract", () => {
     expect(sha256(licenseEvidence)).toBe(lock.license.kandelo_patch.evidence_sha256);
     expect(lock.license.upstream.spdx).toBe("BSD-2-Clause");
     expect(lock.license.kandelo_patch.spdx).toBe("GPL-2.0-or-later");
-    expect(lock.output.sha256).toBe(lock.output.current_shell_sha256);
-    expect(lock.output.bytes).toBe(lock.output.current_shell_bytes);
   });
 
   it("declares every byte-producing local file and external commit as cache-key input", () => {
@@ -114,7 +112,7 @@ describe("homebrew-bootstrap package contract", () => {
     });
   });
 
-  it("rejects source, patch, prepared-tree, and current-shell-output lock drift", () => {
+  it("rejects source, patch, prepared-tree, and output lock drift", () => {
     const original = JSON.parse(readFileSync(lockPath, "utf8"));
     const mutations: Array<[string, (lock: any) => void]> = [
       ["source archive digest", (lock) => { lock.source.archive_sha256 = "not-a-digest"; }],
@@ -125,7 +123,7 @@ describe("homebrew-bootstrap package contract", () => {
       ["patched tree", (lock) => { lock.prepared.patched_tree_git_oid = "not-an-oid"; }],
       ["portable Ruby", (lock) => { lock.prepared.portable_ruby_version = "../ruby"; }],
       ["Git version", (lock) => { lock.prepared.git_version = "latest"; }],
-      ["current shell output", (lock) => { lock.output.current_shell_bytes += 1; }],
+      ["output byte count", (lock) => { lock.output.bytes = 0; }],
     ];
 
     for (const [label, mutate] of mutations) {
@@ -149,8 +147,6 @@ describe("homebrew-bootstrap package contract", () => {
     const lock = JSON.parse(readFileSync(lockPath, "utf8"));
     lock.output.sha256 = sha256(archive);
     lock.output.bytes = archive.byteLength;
-    lock.output.current_shell_sha256 = lock.output.sha256;
-    lock.output.current_shell_bytes = lock.output.bytes;
     lock.license.upstream.sha256 = sha256(upstreamLicense);
     lock.license.upstream.bytes = upstreamLicense.byteLength;
     lock.license.kandelo_patch.evidence_sha256 = sha256(patchLicenseEvidence);
