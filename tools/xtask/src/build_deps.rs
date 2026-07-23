@@ -4960,7 +4960,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut it = rest.into_iter();
     let sub = it.next().ok_or(
         "usage: xtask build-deps [--arch=wasm32|wasm64] [--binaries-dir <path>] [--fetch-only] \
-         <parse|sha|path|resolve|check|program-index|program-index-check|program-index-context-check|install-local-artifact|output-metadata|output-path|runtime-file-path|runtime-file-metadata|output-fork-instrumentation|output-fork-instrumentation-for-rel> \
+         <parse|sha|path|resolve|check|cache-root|program-index|program-index-check|program-index-context-check|install-local-artifact|output-metadata|output-path|runtime-file-path|runtime-file-metadata|output-fork-instrumentation|output-fork-instrumentation-for-rel> \
          [<name|path> [<wasm-basename>]]",
     )?;
     let target = it.next();
@@ -4990,6 +4990,13 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     }
 
     match sub.as_str() {
+        "cache-root" => {
+            if target.is_some() || extra.is_some() {
+                return Err("build-deps cache-root: takes no arguments".into());
+            }
+            println!("{}", default_cache_root().display());
+            Ok(())
+        }
         "check" => {
             if target.is_some() {
                 return Err("build-deps check: takes no arguments".into());
