@@ -121,10 +121,10 @@ function packageNamesForRows(
   }).sort();
 }
 
-async function waitForLanguageLazyRows(
+async function waitForLazyPackageRows(
   page: Page,
   priorSources: ReadonlySet<string | null>,
-  expectedPackage: string,
+  expectedPackages: readonly string[],
   mirrorPlan: { assets: MirrorAsset[] },
 ): Promise<LazyDownloadRow[]> {
   const deadline = Date.now() + 30_000;
@@ -132,7 +132,8 @@ async function waitForLanguageLazyRows(
   while (Date.now() < deadline) {
     rows = await readLazyDownloadRows(page);
     const added = rows.filter(({ source }) => !priorSources.has(source));
-    if (packageNamesForRows(added, mirrorPlan).includes(expectedPackage)) {
+    const addedPackages = new Set(packageNamesForRows(added, mirrorPlan));
+    if (expectedPackages.every((packageName) => addedPackages.has(packageName))) {
       return rows;
     }
     await page.waitForTimeout(100);
@@ -308,7 +309,12 @@ test("the exact public-bottle shell preserves shell, language, NetHack, and mode
     "kandelo-dev/tap-core/nethack",
   ];
   expect(mirrorPlan.assets).toHaveLength(39);
-  let lazyRows = await readLazyDownloadRows(page);
+  let lazyRows = await waitForLazyPackageRows(
+    page,
+    new Set(),
+    basePackages,
+    mirrorPlan,
+  );
   expect(packageNamesForRows(lazyRows, mirrorPlan)).toEqual([...basePackages].sort());
 
   for (const invocation of MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS) {
@@ -319,10 +325,10 @@ test("the exact public-bottle shell preserves shell, language, NetHack, and mode
       invocation.expectedStdout.trim(),
       240_000,
     );
-    const nextRows = await waitForLanguageLazyRows(
+    const nextRows = await waitForLazyPackageRows(
       page,
       priorSources,
-      invocation.packageName,
+      [invocation.packageName],
       mirrorPlan,
     );
     const newRows = nextRows.filter(({ source }) => !priorSources.has(source));
