@@ -707,6 +707,9 @@ jobs:
       - name: Set up Nix
         uses: ./.github/actions/setup-nix
 
+      - name: Install root npm deps
+        run: bash scripts/dev-shell.sh npm ci --no-audit --no-fund
+
       - name: Install host npm deps
         run: |
           bash scripts/dev-shell.sh bash -c '

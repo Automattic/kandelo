@@ -92,6 +92,11 @@ for required_path in \
   "scripts/install-local-binary.sh" \
   "scripts/install-overlay-headers.sh" \
   "scripts/resolve-binary.sh" \
+  "scripts/resolve-binary.ts" \
+  "scripts/resolve-binary.bundle.mjs" \
+  "scripts/resolve-binary.bundle.LICENSES.txt" \
+  "scripts/build-resolve-binary-bundle.sh" \
+  "scripts/test-resolve-binary-bundle.sh" \
   "scripts/recover-homebrew-bottle-mirror.ts" \
   "scripts/run-wasm-fork-instrument.sh" \
   "scripts/verify-homebrew-main-shell-artifact-lock.sh" \

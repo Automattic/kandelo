@@ -59,7 +59,10 @@ binary_materialization_changed_files() {
   grep -E \
     -e '^tools/xtask/src/(index_toml|remote_fetch|util)\.rs$' \
     -e '^scripts/(fetch-binaries|install-local-binary|materialize-pr-overlays|resolve-binary|test-wasm-artifact-guards|wasm-artifact-guards)\.sh$' \
+    -e '^scripts/(build-resolve-binary-bundle|test-resolve-binary-bundle)\.sh$' \
+    -e '^scripts/resolve-binary\.(ts|bundle\.mjs|bundle\.LICENSES\.txt)$' \
     -e '^scripts/vfs-has-stale-abi\.mjs$' \
+    -e '^host/src/binary-resolver\.ts$' \
     -e '^tests/package-system/' \
     || true
 }

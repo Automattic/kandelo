@@ -81,6 +81,21 @@ expect_mutation_rejected \
   's/^      - "docs-site\/\*\*"\n//m'
 
 expect_mutation_rejected \
+  "missing browser package scanner trigger" \
+  "does not watch scripts/browser-binary-package-roots.mjs" \
+  's/^      - "scripts\/browser-binary-package-roots\.mjs"\n//m'
+
+expect_mutation_rejected \
+  "missing package-registry trigger" \
+  "does not watch packages/registry/**" \
+  's/^      - "packages\/registry\/\*\*"\n//m'
+
+expect_mutation_rejected \
+  "bypassed package projection check" \
+  "must verify the generated package projection" \
+  's/build-deps program-index-check/build-deps parse/'
+
+expect_mutation_rejected \
   "checkout of a different ref" \
   "checkout must use the workflow event source SHA" \
   's/(        uses: actions\/checkout@[^\n]+\n)/$1        with:\n          ref: main\n/'

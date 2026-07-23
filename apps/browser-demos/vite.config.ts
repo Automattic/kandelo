@@ -91,14 +91,17 @@ function createBinaryDevAccess(): BinaryDevAccess {
       if (!fs.lstatSync(canonical).isFile()) {
         throw new Error(`Resolved browser artifact is not a regular file: ${canonical}`);
       }
+      const isInsideProgramCache = pathIsWithin(programCacheRoot, canonical);
       const isInsideRepo = pathIsWithin(repoRoot, canonical);
-      if (!isInsideRepo) {
-        if (!pathIsWithin(programCacheRoot, canonical)) {
-          throw new Error(
-            `Resolved browser artifact is outside the Kandelo program cache: ${canonical}`,
-          );
-        }
+      if (isInsideProgramCache) {
+        // The middleware guards the cache namespace even when an explicit
+        // cache root overlaps the checkout, so every cache file needs an
+        // exact capability regardless of repository containment.
         approvedExternalFiles.add(normalizePath(canonical));
+      } else if (!isInsideRepo) {
+        throw new Error(
+          `Resolved browser artifact is outside the Kandelo program cache: ${canonical}`,
+        );
       }
       return canonical;
     },

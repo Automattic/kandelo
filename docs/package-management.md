@@ -32,7 +32,7 @@ Most readers want one of these. Detailed sections follow further down.
 | Pull pre-built binaries without compiling | [`scripts/fetch-binaries.sh`](#release-archives) — walks every `package.toml`, calls the resolver. Run with `--allow-stale` in CI. |
 | Add a new package to the registry | [Schema: `package.toml`](#schema-packagetoml) + [docs/porting-guide.md](porting-guide.md#adding-a-new-package-to-the-registry) for the end-to-end workflow. |
 | Resolve one package on demand | `cargo xtask build-deps resolve <name>` — handles fetch/source-build, populates the cache. |
-| Find where an output lands | `cargo xtask build-deps output-path <name> <wasm-basename>` — single source of truth for the layout convention (flat for 1-output packages, nested under `<pkg>/` for ≥2-output packages). |
+| Find where an output lands | `cargo xtask build-deps output-path <name> <declared-artifact>` — single source of truth for the layout convention (flat for a one-member output/runtime closure, nested under `<pkg>/` for two or more members). A basename is accepted only when unique. |
 | Migrate a build script to consume cached deps | [Migrating a consumer to the cache](#migrating-a-consumer-to-the-cache) — the `WASM_POSIX_DEP_*_DIR` contract + CPPFLAGS/LDFLAGS pattern. |
 | Override a published archive locally | Drop the file at `local-binaries/programs/<arch>/<rel>` or `local-libs/<pkg>/build/`. The resolver prefers these. |
 | Override an archive in a PR for testing | Per-PR builds publish to `pr-<N>-staging` tags. Locally, run `./run.sh --pr-staging <command>` or set `WASM_POSIX_USE_PR_STAGING=1` so `run.sh` exports the matching staging `WASM_POSIX_BINARY_INDEX_URL`. Manual `WASM_POSIX_BINARY_INDEX_URL` values still win. |
@@ -224,9 +224,16 @@ Build scripts install declared artifacts through
 `scripts/install-local-binary.sh`. When
 `WASM_POSIX_INSTALL_LOCAL_MIRROR=0` and `WASM_POSIX_DEP_OUT_DIR` are set,
 both executable outputs and runtime files are copied only into that
-caller-owned output root. This packaging-only mode does not require Rust,
-Cargo, or `xtask`; the resolver validates the completed output root against
-`package.toml` after the build script returns.
+caller-owned output root. The root is a single-writer scratch contract for the
+duration of each install: the current user must own it and every destination
+directory created or traversed within it, and group/other users may not write
+those directories. The packaging-only shell helper enforces those observable
+properties, publishes through a private create-once transaction, and compares
+filesystem identity plus exact bytes before cleanup. It does not claim general
+shared-directory race freedom; that would require dirfd/openat-style operations
+rather than shell pathname commands. This mode does not require Rust, Cargo, or
+`xtask`; the resolver validates the completed output root against `package.toml`
+after the build script returns.
 
 Repo-side VFS/test builders query the authoritative path and mode with
 `xtask build-deps runtime-file-metadata <package> <artifact>`; they must not
@@ -244,17 +251,81 @@ The host resolver applies the same rule automatically when any member of a
 program package with more than one total `[[outputs]]` plus
 `[[runtime_files]]` entry is requested. This includes a package with one
 executable and one runtime archive: both paths move under the package directory
-and form one closure. The host reads a closed projection of `package.toml`
-covering package identity, target arches, every output, and every runtime file.
-It accepts ordinary single-line TOML basic and literal strings for those
-fields; an unsupported spelling fails closed. The Rust package parser remains
-authoritative for the complete manifest schema.
+and form one closure. Rust's complete TOML parser generates
+`packages/registry/program-packages.json`, a closed, versioned projection of
+package identity, target arches, exact source artifacts, resolver mirror paths,
+fork policy, and runtime-file metadata. TypeScript and shell consumers read
+that JSON; neither reparses `package.toml`.
 
-An absent registry directory is an ordinary non-package path. Once a package
-directory exists, however, a missing, unreadable, malformed, incomplete, or
-name-mismatched resolver projection is an error. Undeclared nested members and
-the former flat spelling of a package-owned output are errors too; they never
-fall through to scalar lookup. All public resolver entries also reject
+Schema `kandelo-program-packages-v2` records every library, program, and source
+package's manifest SHA-256 and cache key in both wasm32 and wasm64 consumer
+contexts. A source package has the same cache key in both contexts because its
+identity is architecture-independent. Each projected program also records its
+complete transitive selected dependency identity for every supported
+architecture. The host resolver, standalone shell bundle, and browser scanner
+therefore validate the same first-hit registry context before accepting a
+program mirror. Dependency order has no selection meaning and names must be
+unique. The Rust generator emits a deterministic order so the checked-in JSON
+is reproducible and CI can detect stale projections. Runtime consumers compare
+the closure as a unique package-identity set, so reordering the same entries
+does not change the accepted program identity.
+
+An index describes the complete ordered registry context beginning at its
+owning root, not only packages physically stored in that root. Its `identities`
+map covers every first-hit package, and its `packages` map covers every
+first-hit guest program across that root and all lower roots. The generator
+reads each selected program's physical manifest for member policy, then
+recomputes its cache key and dependency closure in the complete context. A
+dependency-only external override can therefore rekey affected main-registry
+programs without copying their manifests into the external root. The
+highest-priority existing root's index is authoritative to consumers; lower
+indexes are self-contained suffix-context fallbacks when higher roots are
+absent, not fragments that consumers merge.
+
+The program map covers guest programs published under
+`binaries/programs/<arch>/`. A higher first-hit non-program package naturally
+removes a same-named lower program from that map, while the lower physical
+index retains a fail-closed claim against stale flat mirror fallback. The map
+deliberately excludes Kandelo's first-party `kernel` and `userspace` boot
+artifacts: their single outputs publish at `binaries/kernel.wasm` and
+`binaries/userspace.wasm`, and retain their existing root-artifact ABI and
+export validation instead of pretending to be guest program packages. Their
+package identities remain in the all-package identity map so
+dependency-context validation stays complete.
+
+Generate or verify an index with:
+
+```bash
+cargo xtask build-deps program-index <registry-root> \
+  <registry-root>/program-packages.json
+cargo xtask build-deps program-index-check <registry-root> \
+  <registry-root>/program-packages.json
+```
+
+The root passed to `program-index` or `program-index-check` must be the
+highest-priority existing root in `WASM_POSIX_DEPS_REGISTRY`. Generate a lower
+root's committed fallback with the registry suffix beginning at that root.
+`build-deps check` verifies every present index against its own suffix context.
+The standalone `wasm-posix-host` package ships the same projection under
+`wasm/`, so installed consumers retain closure and fork policy without carrying
+source manifests.
+
+`scripts/resolve-binary.sh` runs a checked-in standalone Node bundle generated
+from the same TypeScript resolver, so clean checkouts do not need
+`node_modules` merely to probe fetched artifacts. After changing the resolver
+or its policy dependencies, regenerate and verify that bundle with
+`scripts/build-resolve-binary-bundle.sh` and
+`scripts/test-resolve-binary-bundle.sh`.
+
+A registry directory without a regular `package.toml` is an ordinary
+non-package path, matching Rust's lookup. A regular manifest is a first-hit
+claim on that package name. If that selected package has no contextual
+identity, a selected program has no program projection, or either manifest
+digest is stale, package-owned lookup fails. Undeclared
+nested members and the former flat spelling of a package-owned output are
+errors too; they never fall through to scalar lookup. This also rejects stale
+nested paths after a package changes from multi-member to scalar. All public
+resolver entries reject
 absolute, backslash, drive-prefixed, empty-component, `.`/`..`, and NUL path
 spellings. `tryResolveBinary` returns `null` only for genuine absence and
 rethrows corruption, policy rejection, and malformed package state.
@@ -271,15 +342,33 @@ identity, so a complete
 all-regular-file closure under its `wasm/` tree remains supported;
 regular-file/symlink mixtures and installed symlink closures are rejected.
 
+Changing a package from a multi-member directory layout to a scalar flat path
+does not delete the former package directory. The generated projection makes
+that stale nested spelling inert immediately, while retaining the directory
+avoids guessing whether another publisher or a user owns it. This safe
+transition can leave stale mirror directories for explicit operational
+cleanup; automatic ownership-marked retirement is deferred. An extensionless
+scalar output whose exact flat name is that retained directory will fail
+closed until the directory is deliberately retired.
+
 Normal direct builds collect package closures under
-`local-binaries/.kandelo-local-generations/<arch>/<package>/<session>/`, using
-the exact declared source suffix for each member. One sourced install helper
-shares a session across its calls. The collector accepts only create-once
-regular files, validates the complete tree, creates a one-shot publication
-claim, and only then swaps the live package directory. A claimed generation is
-never recreated after its root disappears. One-member packages retain their
-flat regular-file mirror and replace that single entry without following a
-preexisting symlink.
+`local-binaries/.kandelo-local-generations/<arch>/<package>/<cache-key>/<session>/`,
+using the exact declared source suffix for each member. One sourced install
+helper shares a session across its calls. The collector accepts only
+create-once regular files, validates the complete tree, creates a one-shot
+publication claim, and only then swaps the live package directory or scalar
+link. A claimed generation is never recreated after its root disappears.
+One-member packages retain their flat mirror name as a symlink to the
+immutable generation member.
+
+Scalar replacement and package-directory replacement reserve a unique private
+transaction parent (mode 0700 on Unix), validate filesystem identity and exact
+bytes or link maps before and after quarantine, and delete only unchanged
+private entries. Concurrent publishers must replace resolver paths through
+this pathname transaction; mutating an already quarantined regular file
+through a previously held file descriptor is outside the supported writer
+protocol and causes digest validation to fail whenever it is observed before
+unlink.
 
 For symlink-backed closures the host returns canonical generation-member paths,
 not live mirror paths, so a later mirror-directory swap cannot retarget an
@@ -294,7 +383,14 @@ rollback, crash-orphan, cache-repair, and platform boundaries.
 
 Build scripts register executable outputs with `install_local_binary` and
 declared data with `install_local_runtime_file`. Normal local builds mirror
-both into `local-binaries/`. A sealed publisher instead sets
+both into `local-binaries/`. A normal executable install performs one
+structured Rust lookup for the destination, exact declared artifact, and fork
+policy before instrumentation or filesystem mutation. It never guesses a path
+for an unregistered or malformed package. Package publication does not create
+a second `sh` resolver output; guest images own their explicit `/bin/sh`
+symlink to the shell they include.
+
+A sealed publisher instead sets
 `WASM_POSIX_INSTALL_LOCAL_MIRROR=0`, provides
 `WASM_POSIX_DEP_OUT_DIR`, and supplies the reviewed fork-instrumentation policy
 for executable outputs. In that mode the helpers copy the exact declared
@@ -568,8 +664,13 @@ in turn, it checks:
    validate declared outputs, atomically install into the
    canonical cache.
 
-`cache_root` is `$XDG_CACHE_HOME/kandelo` if set, else
-`$HOME/.cache/kandelo`.
+`cache_root` is `WASM_POSIX_BINARY_CACHE_ROOT` when set, otherwise
+`$XDG_CACHE_HOME/kandelo` or `$HOME/.cache/kandelo`. Rust, TypeScript, the
+standalone resolver bundle, and Vite share this override. Absolute values are
+used directly; relative values are anchored at the Kandelo repository root so
+different process working directories cannot silently select different
+caches. Installed npm consumers without a Kandelo source root must use an
+absolute value.
 
 ## Build-script contract
 
@@ -578,7 +679,7 @@ that doesn't respect them cannot be cached safely.
 
 | Variable | Meaning |
 |---|---|
-| `WASM_POSIX_DEP_OUT_DIR` | Temp dir the script must install into. Layout matches `outputs.libs` / `outputs.headers` / `outputs.pkgconfig` / `outputs.files` relative paths. |
+| `WASM_POSIX_DEP_OUT_DIR` | Caller-owned, single-writer temp dir the script must install into. The current user owns it and each destination directory traversed within it; none is group/other-writable. Layout matches `outputs.libs` / `outputs.headers` / `outputs.pkgconfig` / `outputs.files` relative paths. |
 | `WASM_POSIX_DEP_NAME` | `name` from package.toml. |
 | `WASM_POSIX_DEP_VERSION` | `version` from package.toml. |
 | `WASM_POSIX_DEP_REVISION` | Effective package revision after `build.toml` is overlaid. |
@@ -983,6 +1084,12 @@ continue through ordinary resolution. For example, the main-shell proof uses
 it to guarantee that the shell composer runs while its reviewed Homebrew
 bottles remain ordinary immutable inputs.
 
+When `archive-stage --cache-root <dir>` also uses `--binaries-dir`, later
+processes consuming that symlink mirror must set
+`WASM_POSIX_BINARY_CACHE_ROOT=<dir>`. This couples the mirror's canonical
+targets to the same non-default cache in Rust, Node, shell, and browser
+consumers instead of rejecting a valid generation as foreign.
+
 Each matrix entry then publishes via `scripts/index-update.sh`:
 
 ```bash
@@ -1310,7 +1417,20 @@ WASM_POSIX_DEPS_REGISTRY="./packages/registry:~/my-wasm-packages" \
 Colon-separated. First hit wins — later entries have lower priority,
 like `$PATH`. This is how third parties bring their own packages
 without patching the repo: they drop a `<lib>/package.toml` into their
-own directory tree and prepend it to the registry path.
+own directory tree, generate that root's `program-packages.json`, and prepend
+it to the registry path. Rust builds, TypeScript resolution, and
+`scripts/resolve-binary.sh` use the same exact roots and first-hit package
+selection.
+
+Generate the external root's index against `external:main`. That complete top
+index includes external programs and every selected lower program, each with
+the exact combined first-hit cache key and dependency closure. An identical
+higher-priority shadow leaves identities unchanged. A changed direct or
+transitive dependency rekeys only the affected programs; those programs remain
+eligible for normal exact-key fetch or source build instead of reusing
+main-only bytes. Consumers do not synthesize or merge policy: they verify the
+complete top projection. If the external root is absent, the main root's
+committed suffix-context index becomes authoritative again.
 
 The first external package source using this pattern is
 [`brandonpayton/kandelo-software`](https://github.com/brandonpayton/kandelo-software):
