@@ -132,6 +132,24 @@ Key host components:
 | NodeWorkerAdapter | `worker-adapter.ts` | Creates Node.js worker_threads |
 | BrowserWorkerAdapter | `worker-adapter-browser.ts` | Creates Web Workers |
 
+### Kernel heap lifetime
+
+The Rust kernel uses a reclaiming `dlmalloc` heap inside its own Wasm linear
+memory. Closing a pipe, reaping a process, replacing an image, or dropping
+temporary fork serialization state therefore returns that allocation to the
+kernel heap for reuse. This is required for ordinary long-running workloads:
+a monotonic allocator would make total historical syscall activity determine
+whether a later allocation succeeds.
+
+WebAssembly linear memory cannot shrink. Freeing a kernel allocation makes its
+chunk reusable, but the kernel's visible page count remains at its high-water
+mark. `NodeKernelHost.getKernelMemoryPages()` and
+`BrowserKernel.getKernelMemoryPages()` expose that page count for diagnostics
+and lifetime tests; it is not guest process memory. The allocator is protected
+by an internal lock even though the architecture serializes kernel dispatch in
+one dedicated worker, preserving allocator integrity if dispatch concurrency
+changes later.
+
 ### Advisory file locks
 
 Advisory lock state and semantics live entirely in the Rust kernel. The
@@ -141,8 +159,8 @@ retains one high-water `Vec<LockRecord>` sorted by file identity and range.
 Binary search selects the contiguous records for a file before range scanning,
 so lookup is `O(log n + k)` for `k` records on that file rather than a scan of
 unrelated files. The vector grows geometrically, never shrinks, and is bounded
-at 4096 normalized records to keep allocation bounded under the Wasm kernel's
-non-reclaiming allocator.
+at 4096 normalized records so adversarial lock churn cannot retain unbounded
+kernel heap capacity.
 
 Each host-backed regular file is identified by the exact `(st_dev, st_ino)`
 returned by `host_fstat` on its live open handle. The open file description

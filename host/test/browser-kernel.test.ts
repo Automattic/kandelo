@@ -255,7 +255,7 @@ describe("BrowserKernel", () => {
 
     // The main thread cannot know that a guest fork has reserved pid 101 but
     // has not yet finished registering its process worker. Only the kernel
-    // worker's monotonic allocator can assign the following pid safely.
+    // worker's authoritative PID allocator can assign the following pid safely.
     expect(spawn).not.toHaveProperty("pid");
     worker.simulateMessage({
       type: "response",
@@ -467,6 +467,40 @@ describe("BrowserKernel", () => {
       result: true,
     });
     expect(await unlinkPromise).toBe(true);
+  });
+
+  it("reads and validates kernel allocator page telemetry", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
+
+    const pagesPromise = kernel.getKernelMemoryPages();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const request = worker.lastMessage("get_kernel_memory_pages");
+    expect(request).toBeDefined();
+    worker.simulateMessage({
+      type: "response",
+      requestId: request.requestId,
+      result: 321,
+    });
+    await expect(pagesPromise).resolves.toBe(321);
+
+    const invalidPromise = kernel.getKernelMemoryPages();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const invalidRequest = worker.lastMessage("get_kernel_memory_pages");
+    worker.simulateMessage({
+      type: "response",
+      requestId: invalidRequest.requestId,
+      result: "321",
+    });
+    await expect(invalidPromise).rejects.toThrow("invalid memory-page count");
   });
 
   describe("fetchInKernel", () => {

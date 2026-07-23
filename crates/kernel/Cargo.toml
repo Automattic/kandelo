@@ -9,3 +9,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 wasm-posix-shared = { path = "../shared" }
+
+[target.'cfg(any(target_arch = "wasm32", target_arch = "wasm64"))'.dependencies]
+dlmalloc = { version = "0.2.14", default-features = false }

@@ -14518,8 +14518,8 @@ pub fn sys_select(
 
     let nfds = nfds as usize;
 
-    // Inline readiness check — avoids Vec allocations that leak with the
-    // bump allocator. We check each fd directly from the fd_sets.
+    // Inline readiness check keeps this bounded hot path allocation-free.
+    // Check each fd directly from the fd_sets.
     let mut ready = 0i32;
 
     // Save input fd_sets before clearing (we need to know which fds were requested)
