@@ -80,14 +80,38 @@ These are intended categories, not a CI implementation. The current PR only keep
 ## GitHub Pages Publication
 
 The browser demo, user guide, and generated host API documentation share one
-`gh-pages` branch but own distinct paths. The browser demo owns the branch root,
-the guide owns `guide/`, and the API documentation owns `api/`.
+`gh-pages` branch. The browser demo owns the branch root, the guide owns
+`guide/`, and the API documentation owns `api/`. One workflow,
+`.github/workflows/browser-demos-pages.yml`, is the only workflow allowed to
+write that branch.
 
-`.github/workflows/browser-demos-pages.yml` builds all three trees before it
-replaces the complete branch. Replacing the branch is intentional: Vite gives
-browser assets content-addressed names, so retaining files from earlier builds
-would grow the published site without bound. `.github/workflows/docs.yml` can
-still publish either documentation subtree independently; each deployment
-cleans only its own `destination_dir` and leaves the other paths unchanged.
-Both publishers share one concurrency group so their writes to `gh-pages`
-cannot race.
+The workflow checks out one source commit and builds all three trees in one
+job. It then publishes that complete tree as a fresh orphan commit. Replacing
+the branch is intentional: Vite gives browser assets content-addressed names,
+so retaining files from earlier builds would preserve obsolete names and grow
+the published site without bound. Before publication, the workflow sums the
+logical sizes of every regular file in the assembled tree and refuses to
+publish more than 1,000,000,000 bytes. Symbolic links are rejected because the
+publisher would dereference them and their target sizes would otherwise escape
+that accounting.
+
+GitHub recommends that a Pages source repository remain below 1 GB and limits a
+published Pages site to 1 GB. Before this cleanup, the `gh-pages` tree at
+`1d84fd02a383213c1cf9d9266cebdd4d1fdb2b81` contained 11,504,642,167 bytes of
+file content, including 2,502 files and 11,104,024,279 bytes under `assets/`.
+That measurement was taken on 2026-07-23; it records the accumulated-tree
+problem rather than promising that branch size is static.
+
+Newer Pages runs cancel work for superseded commits. Because GitHub does not
+guarantee concurrency-group ordering, cancellation is not the publication
+authority. An unrelated `main` commit may not trigger the Pages workflow, so
+comparing the build commit with the tip of `main` would incorrectly discard a
+still-current site build. Instead, immediately before the sole deployment
+step, the workflow queries GitHub Actions and publishes only when its run
+number is the newest run triggered for this workflow on `main`. A delayed older
+run therefore cannot become the final writer. Missing, empty, malformed, or
+failed API responses stop publication rather than guessing that a run is
+current.
+
+GitHub's current Pages limits are documented at
+<https://docs.github.com/en/pages/getting-started-with-github-pages/github-pages-limits>.

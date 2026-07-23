@@ -1,4 +1,4 @@
-name: Deploy browser demos
+name: Deploy GitHub Pages
 
 on:
   push:
@@ -38,7 +38,12 @@ on:
       - "scripts/build-musl.sh"
       - "scripts/build-programs.sh"
       - "scripts/build-rootfs.sh"
+      - "scripts/check-pages-publish-size.mjs"
+      - "scripts/check-pages-run-freshness.sh"
       - "scripts/ci-check-pages-deployment.sh"
+      - "scripts/test-pages-deployment-contract.sh"
+      - "scripts/test-pages-publish-size.sh"
+      - "scripts/test-pages-run-freshness.sh"
       - "scripts/dev-shell.sh"
       - "scripts/fetch-binaries.sh"
       - "scripts/install-overlay-headers.sh"
@@ -51,9 +56,10 @@ on:
 
 concurrency:
   group: kandelo-gh-pages
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
+  actions: read
   contents: write
 
 env:
@@ -65,7 +71,8 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out the source commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Fetch musl submodule
         uses: ./.github/actions/fetch-submodules
         with:
@@ -129,7 +136,21 @@ jobs:
           cp -R docs-site/.vitepress/dist apps/browser-demos/dist/guide
           cp -R host/docs apps/browser-demos/dist/api
 
+      - name: Enforce the GitHub Pages published-site size limit
+        run: node scripts/check-pages-publish-size.mjs apps/browser-demos/dist 1000000000
+
+      # Concurrency removes the usual superseded run promptly, but GitHub does
+      # not guarantee the order in which runs enter a concurrency group. Query
+      # this workflow immediately before its only publishing step so a delayed
+      # older run cannot overwrite the newest triggered complete-tree build.
+      - name: Confirm this is the newest Pages run
+        id: publish_freshness
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/check-pages-run-freshness.sh
+
       - name: Deploy to gh-pages
+        if: steps.publish_freshness.outputs.publish == 'true'
         uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
