@@ -28,6 +28,34 @@ export interface LinkedFrameFormatDescriptor {
 
 export type ContinuationAllocate = (size: number) => number;
 export type ContinuationDeallocate = (addr: number, size: number) => void;
+export type ForkContinuationGuestAddress = number | bigint;
+
+/**
+ * Invoke an instrumented continuation begin export with the module's exact
+ * pointer-width calling convention.
+ *
+ * WHY: WebAssembly i64 parameters require JavaScript BigInt even when the
+ * address itself fits in a Number. Keeping this conversion at the shared
+ * continuation boundary prevents main, pthread, and side-module paths from
+ * silently drifting apart.
+ */
+export function invokeForkContinuationBegin(
+  exported: unknown,
+  address: number,
+  ptrWidth: 4 | 8,
+  context: string,
+): void {
+  if (typeof exported !== "function") {
+    throw new TypeError(`${context}: continuation begin export is not callable`);
+  }
+  if (!Number.isSafeInteger(address) || address <= 0) {
+    throw new RangeError(`${context}: invalid continuation address ${address}`);
+  }
+  const guestAddress: ForkContinuationGuestAddress = ptrWidth === 8
+    ? BigInt(address)
+    : address;
+  (exported as (value: ForkContinuationGuestAddress) => void)(guestAddress);
+}
 
 export class ContinuationAllocationError extends Error {
   constructor(

@@ -43,6 +43,7 @@ import {
 } from "./process-memory";
 import {
   ContinuationAllocationError,
+  invokeForkContinuationBegin,
   LinkedForkContinuation,
   readLinkedFrameFormat,
   writeForkContinuationAnchor,
@@ -907,8 +908,11 @@ export function buildDlopenImports(
     } else {
       state.continuation.attachForReplay(state.forkBufAddr);
     }
-    (state.instance.exports.wpk_fork_rewind_begin as (addr: number) => void)(
+    invokeForkContinuationBegin(
+      state.instance.exports.wpk_fork_rewind_begin,
       state.forkBufAddr,
+      ptrWidth,
+      `${state.name}: side-module linked fork rewind`,
     );
     if (sideForkState(state) !== 2) {
       throw new Error(`${state.name}: side-module rewind did not enter REWINDING`);
@@ -922,8 +926,11 @@ export function buildDlopenImports(
       throw new Error(`${state.name}: expected UNWINDING before side-module abort replay`);
     }
     state.continuation.beginAbortReplay(errno);
-    (state.instance.exports.wpk_fork_abort_begin as (addr: number) => void)(
+    invokeForkContinuationBegin(
+      state.instance.exports.wpk_fork_abort_begin,
       state.forkBufAddr,
+      ptrWidth,
+      `${state.name}: side-module linked fork abort`,
     );
     if (sideForkState(state) !== 3) {
       throw new Error(`${state.name}: side-module abort did not enter ABORT_UNWINDING`);
@@ -1733,7 +1740,12 @@ export async function centralizedWorkerMain(
           ptrWidth,
           forkBufAddr,
         );
-        (processInstance.exports.wpk_fork_unwind_begin as (addr: number) => void)(forkBufAddr);
+        invokeForkContinuationBegin(
+          processInstance.exports.wpk_fork_unwind_begin,
+          forkBufAddr,
+          ptrWidth,
+          `pid=${pid}: linked fork unwind`,
+        );
         return 0; // ignored during unwind
       };
 
@@ -1752,7 +1764,12 @@ export async function centralizedWorkerMain(
         (errno) => {
           if (!processInstance) throw new Error(`pid=${pid}: side abort before main instantiation`);
           forkContinuation.beginAbortReplay(errno);
-          (processInstance.exports.wpk_fork_abort_begin as (addr: number) => void)(forkBufAddr);
+          invokeForkContinuationBegin(
+            processInstance.exports.wpk_fork_abort_begin,
+            forkBufAddr,
+            ptrWidth,
+            `pid=${pid}: linked fork abort`,
+          );
         },
       );
       const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenSupport.imports,
@@ -1771,7 +1788,12 @@ export async function centralizedWorkerMain(
           if (!processInstance) throw new Error(`pid=${pid}: continuation abort before instantiation`);
           const errno = forkContinuation.abortErrno();
           dlopenSupport.beginSideModuleForkAbort(errno);
-          (processInstance.exports.wpk_fork_abort_begin as (addr: number) => void)(forkBufAddr);
+          invokeForkContinuationBegin(
+            processInstance.exports.wpk_fork_abort_begin,
+            forkBufAddr,
+            ptrWidth,
+            `pid=${pid}: linked fork abort`,
+          );
         });
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
@@ -1801,7 +1823,6 @@ export async function centralizedWorkerMain(
         const start = instance.exports._start as () => void;
         const getState = instance.exports.wpk_fork_state as () => number;
         const unwindEnd = instance.exports.wpk_fork_unwind_end as () => void;
-        const rewindBegin = instance.exports.wpk_fork_rewind_begin as (addr: number) => void;
 
         // For fork children: start with rewind to resume from fork point
         let needsRewind = !!initData.isForkChild;
@@ -1855,7 +1876,12 @@ export async function centralizedWorkerMain(
             // (including __tls_base and __stack_pointer) from the fork
             // buffer. Must run before setupChannelBase, which reads
             // __tls_base to locate the channel-base TLS slot.
-            rewindBegin(rewindAddr);
+            invokeForkContinuationBegin(
+              instance.exports.wpk_fork_rewind_begin,
+              rewindAddr,
+              ptrWidth,
+              `pid=${pid}: linked fork rewind`,
+            );
             // Now that rewind_begin has restored __tls_base, install
             // __channel_base for this (child) instance.
             setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer, ptrWidth);
@@ -2778,7 +2804,12 @@ export async function centralizedThreadWorkerMain(
             ptrWidth,
             forkBufAddr,
           );
-          (threadInstance.exports.wpk_fork_unwind_begin as (addr: number) => void)(forkBufAddr);
+          invokeForkContinuationBegin(
+            threadInstance.exports.wpk_fork_unwind_begin,
+            forkBufAddr,
+            ptrWidth,
+            `pid=${pid} tid=${tid}: linked fork unwind`,
+          );
         } catch (error) {
           releasePthreadForkLock();
           if (error instanceof ContinuationAllocationError) return -error.errno;
@@ -2815,7 +2846,12 @@ export async function centralizedThreadWorkerMain(
         if (!threadInstance) {
           throw new Error(`pid=${pid} tid=${tid}: continuation abort before instantiation`);
         }
-        (threadInstance.exports.wpk_fork_abort_begin as (addr: number) => void)(forkBufAddr);
+        invokeForkContinuationBegin(
+          threadInstance.exports.wpk_fork_abort_begin,
+          forkBufAddr,
+          ptrWidth,
+          `pid=${pid} tid=${tid}: linked fork abort`,
+        );
       });
     const instance = new WebAssembly.Instance(module, importObject);
     threadInstance = instance;
@@ -2863,13 +2899,17 @@ export async function centralizedThreadWorkerMain(
     if (hasForkInstrumentation) {
       const getState = instance.exports.wpk_fork_state as () => number;
       const unwindEnd = instance.exports.wpk_fork_unwind_end as () => void;
-      const rewindBegin = instance.exports.wpk_fork_rewind_begin as (addr: number) => void;
       let needsRewind = false;
 
       for (;;) {
         if (needsRewind) {
           threadForkContinuation!.beginReplay();
-          rewindBegin(forkBufAddr);
+          invokeForkContinuationBegin(
+            instance.exports.wpk_fork_rewind_begin,
+            forkBufAddr,
+            ptrWidth,
+            `pid=${pid} tid=${tid}: linked fork rewind`,
+          );
           needsRewind = false;
         }
 

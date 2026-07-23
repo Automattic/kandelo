@@ -9,6 +9,7 @@
 import { ABI_VERSION } from "./generated/abi";
 import {
   ContinuationAllocationError,
+  invokeForkContinuationBegin,
   LinkedForkContinuation,
   readLinkedFrameFormat,
   type ContinuationAllocate,
@@ -989,12 +990,11 @@ function instantiateSharedLibrary(
         }
         const loaded = options.loadedLibraries.get(name);
         if (loaded) loaded.forkBufAddr = sideForkBufAddr;
-        (instance.exports.wpk_fork_unwind_begin as (addr: WasmAddress) => void)(
-          wasmAddress(
-            sideForkBufAddr,
-            ptrWidth,
-            `${name}: side-module linked fork continuation`,
-          ),
+        invokeForkContinuationBegin(
+          instance.exports.wpk_fork_unwind_begin,
+          sideForkBufAddr,
+          ptrWidth,
+          `${name}: side-module linked fork unwind`,
         );
         if (forkState() !== WPK_FORK_UNWINDING) {
           throw new Error(`${name}: side-module fork failed to enter UNWINDING`);
@@ -1091,8 +1091,11 @@ function instantiateSharedLibrary(
                 if (frame === 0 || frame === 0n) {
                   const errno = sideForkContinuation!.abortErrno();
                   options.sideModuleFork!.beginMainAbort(errno);
-                  (instance!.exports.wpk_fork_abort_begin as (addr: number) => void)(
+                  invokeForkContinuationBegin(
+                    instance!.exports.wpk_fork_abort_begin,
                     sideForkBufAddr,
+                    ptrWidth,
+                    `${name}: side-module linked fork abort`,
                   );
                 }
                 return frame;

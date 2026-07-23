@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   ContinuationAllocationError,
@@ -39,7 +40,10 @@ describe("instrumented ABORT_UNWINDING", () => {
       const watPath = join(dir, "abort.wat");
       writeFileSync(watPath, wat);
       execFileSync("wat2wasm", [watPath, "-o", rawPath]);
-      execFileSync(resolve("../tools/bin/wasm-fork-instrument"), [
+      execFileSync(fileURLToPath(new URL(
+        "../../tools/bin/wasm-fork-instrument",
+        import.meta.url,
+      )), [
         rawPath,
         "-o",
         instrumentedPath,

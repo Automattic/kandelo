@@ -1,10 +1,51 @@
 import { describe, expect, it } from "vitest";
 import {
   ContinuationAllocationError,
+  invokeForkContinuationBegin,
   LinkedForkContinuation,
   readLinkedFrameFormat,
   type LinkedFrameFormatDescriptor,
 } from "../src/fork-continuation";
+
+function addressBeginExport(pointerType: 0x7f | 0x7e): WebAssembly.ExportValue {
+  const module = new WebAssembly.Module(new Uint8Array([
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+    0x01, 0x05, 0x01, 0x60, 0x01, pointerType, 0x00,
+    0x03, 0x02, 0x01, 0x00,
+    0x07, 0x09, 0x01, 0x05, 0x62, 0x65, 0x67, 0x69, 0x6e, 0x00, 0x00,
+    0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b,
+  ]));
+  return new WebAssembly.Instance(module).exports.begin!;
+}
+
+describe("invokeForkContinuationBegin", () => {
+  it("calls wasm32 i32 and wasm64 i64 exports with their native JS types", () => {
+    const wasm32Begin = addressBeginExport(0x7f);
+    const wasm64Begin = addressBeginExport(0x7e);
+
+    expect(() => invokeForkContinuationBegin(wasm32Begin, 4096, 4, "wasm32"))
+      .not.toThrow();
+    expect(() => invokeForkContinuationBegin(wasm64Begin, 4096, 8, "wasm64"))
+      .not.toThrow();
+
+    // Prove this reaches V8's real i64 boundary rather than a mock function.
+    expect(() => (wasm64Begin as (value: number) => void)(4096)).toThrow(TypeError);
+  });
+
+  it("rejects missing exports and invalid continuation addresses", () => {
+    const wasm32Begin = addressBeginExport(0x7f);
+    expect(() => invokeForkContinuationBegin(undefined, 4096, 4, "missing"))
+      .toThrow("continuation begin export is not callable");
+    expect(() => invokeForkContinuationBegin(wasm32Begin, 0, 4, "zero"))
+      .toThrow("invalid continuation address");
+    expect(() => invokeForkContinuationBegin(
+      wasm32Begin,
+      Number.MAX_SAFE_INTEGER + 1,
+      4,
+      "imprecise",
+    )).toThrow("invalid continuation address");
+  });
+});
 
 const FORMAT: LinkedFrameFormatDescriptor = {
   version: 1,
