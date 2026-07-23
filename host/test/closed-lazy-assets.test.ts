@@ -52,6 +52,7 @@ describe("closed lazy assets", () => {
       cache: "no-store",
       credentials: "omit",
       redirect: "error",
+      signal: expect.any(AbortSignal),
     });
     expect(loaded).toEqual([asset(URL_B, source)]);
 
@@ -85,20 +86,27 @@ describe("closed lazy assets", () => {
     })).rejects.toThrow("changed SHA-256");
   });
 
-  it("rejects invalid or mismatched Content-Length and a missing response body", async () => {
+  it("trusts the decoded stream length instead of transport Content-Length", async () => {
     const identity = sourceBinding();
     await expect(loadClosedLazyAssetSources([identity], {
       fetchImpl: async () =>
         new Response(new Uint8Array([4, 5, 6]), {
           headers: { "content-length": "03" },
         }),
-    })).rejects.toThrow("has invalid Content-Length");
+    })).resolves.toEqual([asset(URL_B, new Uint8Array([4, 5, 6]))]);
     await expect(loadClosedLazyAssetSources([identity], {
       fetchImpl: async () =>
         new Response(new Uint8Array([4, 5, 6]), {
-          headers: { "content-length": "4" },
+          headers: {
+            "content-encoding": "gzip",
+            "content-length": "1",
+          },
         }),
-    })).rejects.toThrow("declares 4 bytes, expected 3");
+    })).resolves.toEqual([asset(URL_B, new Uint8Array([4, 5, 6]))]);
+  });
+
+  it("rejects a successful response without a body", async () => {
+    const identity = sourceBinding();
     await expect(loadClosedLazyAssetSources([identity], {
       fetchImpl: async () => new Response(null, { status: 200 }),
     })).rejects.toThrow("has no response body");
@@ -124,9 +132,12 @@ describe("closed lazy assets", () => {
   });
 
   it.each([
+    "/assets/package-tree.zip?",
     "/assets/package-tree.zip?channel=closed",
     "http://assets.example.test/package-tree.zip",
+    "http://assets.example.test/package-tree.zip?",
     "https://assets.example.test/package-tree.zip",
+    "https://assets.example.test/package-tree.zip?channel=closed",
   ])("accepts canonical transport source URL %s", async (sourceUrl) => {
     const source = new Uint8Array([4, 5, 6]);
     const fetchImpl = vi.fn(async () => new Response(source));
@@ -137,14 +148,18 @@ describe("closed lazy assets", () => {
       cache: "no-store",
       credentials: "omit",
       redirect: "error",
+      signal: expect.any(AbortSignal),
     });
   });
 
   it.each([
     ["credentials", "https://user:secret@assets.example.test/package.zip"],
     ["fragment", "https://assets.example.test/package.zip#fragment"],
+    ["empty fragment", "https://assets.example.test/package.zip#"],
+    ["relative empty fragment", "/assets/package.zip#"],
     ["uppercase host", "https://ASSETS.example.test/package.zip"],
     ["dot-segment normalization", "https://assets.example.test/a/../package.zip"],
+    ["relative dot-segment normalization", "/assets/a/../package.zip"],
     ["non-root-relative path", "assets/package.zip"],
     ["network-path reference", "//assets.example.test/package.zip"],
   ])("rejects a transport source URL with %s", async (_name, sourceUrl) => {
@@ -166,6 +181,288 @@ describe("closed lazy assets", () => {
       expect(fetchImpl).not.toHaveBeenCalled();
     },
   );
+
+  it("rejects empty, sparse, and coercible source manifests before fetching", async () => {
+    const fetchImpl = vi.fn(async () => new Response(new Uint8Array([4, 5, 6])));
+    await expect(loadClosedLazyAssetSources([], { fetchImpl })).rejects.toThrow(
+      "at least one binding",
+    );
+
+    const sparse = new Array<ClosedLazyAssetSource>(2);
+    sparse[0] = sourceBinding();
+    await expect(loadClosedLazyAssetSources(sparse, { fetchImpl })).rejects.toThrow(
+      "source 1 is missing",
+    );
+
+    const coercibleSha = {
+      toString: () => sourceBinding().sha256,
+    } as unknown as string;
+    await expect(loadClosedLazyAssetSources([{
+      ...sourceBinding(),
+      sha256: coercibleSha,
+    }], { fetchImpl })).rejects.toThrow("invalid fields");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("snapshots every source field before starting transport I/O", async () => {
+    const bytes = new Uint8Array([4, 5, 6]);
+    const original = sourceBinding(URL_B, "/assets/original.zip", bytes);
+    const mutable = { ...original };
+    const manifest = [mutable];
+    let resolveFetch!: (response: Response) => void;
+    const fetchImpl = vi.fn(() => new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    }));
+
+    const loading = loadClosedLazyAssetSources(manifest, { fetchImpl });
+    mutable.url = URL_A;
+    mutable.sourceUrl = "/assets/mutated.zip";
+    mutable.sha256 = "0".repeat(64);
+    mutable.size = 1;
+    manifest.push(sourceBinding());
+    resolveFetch(new Response(bytes));
+
+    await expect(loading).resolves.toEqual([asset(original.url, bytes)]);
+    expect(fetchImpl.mock.calls[0]![0]).toBe(original.sourceUrl);
+  });
+
+  it("hashes the owned response buffer without an aggregate-sized copy", async () => {
+    const bytes = new Uint8Array([4, 5, 6]);
+    const digest = crypto.subtle.digest.bind(crypto.subtle);
+    const digestInputs: BufferSource[] = [];
+    const digestSpy = vi.spyOn(crypto.subtle, "digest").mockImplementation(
+      async (algorithm, input) => {
+        digestInputs.push(input);
+        return digest(algorithm, input);
+      },
+    );
+    try {
+      const loaded = await loadClosedLazyAssetSources([
+        sourceBinding(URL_B, "/assets/package.zip", bytes),
+      ], {
+        fetchImpl: async () => new Response(bytes),
+      });
+      expect(digestInputs).toHaveLength(1);
+      expect(digestInputs[0]).toBe(loaded[0]!.bytes.buffer);
+    } finally {
+      digestSpy.mockRestore();
+    }
+  });
+
+  it("redacts source queries and cancels an unused HTTP-error body", async () => {
+    const cancellationError = new Error("secondary cancellation failure");
+    let cancellationReason: unknown;
+    const response = new Response(new ReadableStream<Uint8Array>({
+      cancel(reason) {
+        cancellationReason = reason;
+        return Promise.reject(cancellationError);
+      },
+    }), { status: 503 });
+    const loading = loadClosedLazyAssetSources([
+      sourceBinding(URL_B, "/assets/package.zip?token=private-value"),
+    ], { fetchImpl: async () => response });
+
+    const failure = await loading.then(
+      () => undefined,
+      (reason: unknown) => reason,
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain(
+      "/assets/package.zip?<redacted> returned HTTP 503",
+    );
+    expect((failure as Error).message).not.toContain("private-value");
+    expect(cancellationReason).toBe(failure);
+  });
+
+  it("rejects an injected redirected response and cancels its body", async () => {
+    let cancellationReason: unknown;
+    const response = new Response(new ReadableStream<Uint8Array>({
+      cancel(reason) {
+        cancellationReason = reason;
+      },
+    }));
+    Object.defineProperty(response, "redirected", { value: true });
+    const failure = await loadClosedLazyAssetSources([sourceBinding()], {
+      fetchImpl: async () => response,
+    }).then(
+      () => undefined,
+      (reason: unknown) => reason,
+    );
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("followed a redirect");
+    expect(cancellationReason).toBe(failure);
+  });
+
+  it("preserves a pre-aborted caller reason without starting I/O", async () => {
+    const controller = new AbortController();
+    const reason = new Error("caller stopped before loading");
+    controller.abort(reason);
+    const fetchImpl = vi.fn(async () => new Response(new Uint8Array([4, 5, 6])));
+
+    await expect(loadClosedLazyAssetSources([sourceBinding()], {
+      fetchImpl,
+      signal: controller.signal,
+    })).rejects.toBe(reason);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("relays a caller abort to an active fetch and removes its listener", async () => {
+    const controller = new AbortController();
+    const addListener = vi.spyOn(controller.signal, "addEventListener");
+    const removeListener = vi.spyOn(controller.signal, "removeEventListener");
+    let internalSignal!: AbortSignal;
+    let started!: () => void;
+    const didStart = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const fetchImpl = vi.fn((_input: string | URL, init?: RequestInit) => {
+      internalSignal = init!.signal as AbortSignal;
+      started();
+      return new Promise<Response>((_resolve, reject) => {
+        internalSignal.addEventListener(
+          "abort",
+          () => reject(internalSignal.reason),
+          { once: true },
+        );
+      });
+    });
+    const loading = loadClosedLazyAssetSources([sourceBinding()], {
+      fetchImpl,
+      signal: controller.signal,
+    });
+    await didStart;
+    const reason = new Error("caller stopped active loading");
+    controller.abort(reason);
+
+    await expect(loading).rejects.toBe(reason);
+    expect(internalSignal).not.toBe(controller.signal);
+    expect(internalSignal.aborted).toBe(true);
+    expect(internalSignal.reason).toBe(reason);
+    const listener = addListener.mock.calls[0]![1];
+    expect(removeListener).toHaveBeenCalledWith("abort", listener);
+  });
+
+  it("removes the caller abort listener after success and transport failure", async () => {
+    const scenarios = [
+      async () => new Response(new Uint8Array([4, 5, 6])),
+      async () => {
+        throw new Error("transport failed");
+      },
+    ];
+    for (const fetchImpl of scenarios) {
+      const controller = new AbortController();
+      const addListener = vi.spyOn(controller.signal, "addEventListener");
+      const removeListener = vi.spyOn(controller.signal, "removeEventListener");
+      await loadClosedLazyAssetSources([sourceBinding()], {
+        fetchImpl,
+        signal: controller.signal,
+      }).catch(() => undefined);
+
+      const listener = addListener.mock.calls[0]![1];
+      expect(removeListener).toHaveBeenCalledWith("abort", listener);
+    }
+  });
+
+  it("keeps the first worker failure, stops dequeuing, and waits for peer cleanup", async () => {
+    const inputs = [0, 1, 2].map((index) => {
+      const bytes = new Uint8Array([10 + index]);
+      return sourceBinding(
+        `https://example.test/releases/${index}.zip`,
+        `/assets/${index}.zip`,
+        bytes,
+      );
+    });
+    const firstFailure = new Error("first source failed");
+    let peerCancelReason: unknown;
+    let releasePeerCancel!: () => void;
+    const peerCancelGate = new Promise<void>((resolve) => {
+      releasePeerCancel = resolve;
+    });
+    const peerResponse = new Response(new ReadableStream<Uint8Array>({
+      cancel(reason) {
+        peerCancelReason = reason;
+        return peerCancelGate;
+      },
+    }));
+    const started: string[] = [];
+    const fetchImpl = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      started.push(url);
+      if (url === inputs[0]!.sourceUrl) throw firstFailure;
+      if (url === inputs[1]!.sourceUrl) return peerResponse;
+      return new Response(new Uint8Array([12]));
+    });
+
+    const loading = loadClosedLazyAssetSources(inputs, {
+      fetchImpl,
+      maxConcurrency: 2,
+    });
+    let settled = false;
+    void loading.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.waitFor(() => expect(peerCancelReason).toBe(firstFailure));
+    expect(started).toEqual([inputs[0]!.sourceUrl, inputs[1]!.sourceUrl]);
+    expect(settled).toBe(false);
+    releasePeerCancel();
+
+    await expect(loading).rejects.toBe(firstFailure);
+    expect(started).not.toContain(inputs[2]!.sourceUrl);
+  });
+
+  it("returns the exact overflow error only after stream cancellation finishes", async () => {
+    let cancellationReason: unknown;
+    let releaseCancellation!: () => void;
+    const cancellationGate = new Promise<void>((resolve) => {
+      releaseCancellation = resolve;
+    });
+    const response = new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([4, 5, 6, 7]));
+      },
+      cancel(reason) {
+        cancellationReason = reason;
+        return cancellationGate;
+      },
+    }));
+    const loading = loadClosedLazyAssetSources([sourceBinding()], {
+      fetchImpl: async () => response,
+    });
+    let settled = false;
+    void loading.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.waitFor(() => expect(cancellationReason).toBeInstanceOf(Error));
+    expect((cancellationReason as Error).message).toContain("exceeds 3 bytes");
+    expect(settled).toBe(false);
+    releaseCancellation();
+
+    await expect(loading).rejects.toBe(cancellationReason);
+  });
+
+  it("preserves an exact stream read failure", async () => {
+    const streamFailure = new Error("transport stream failed");
+    const response = new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(streamFailure);
+      },
+    }));
+
+    await expect(loadClosedLazyAssetSources([sourceBinding()], {
+      fetchImpl: async () => response,
+    })).rejects.toBe(streamFailure);
+  });
 
   it("limits concurrent fetches while preserving source order", async () => {
     const inputs = [0, 1, 2].map((index) => {
@@ -304,6 +601,11 @@ describe("closed lazy assets", () => {
       "canonical credential-free HTTPS",
     ],
     [
+      "empty-fragment URL",
+      [asset("https://example.test/a#")],
+      "canonical credential-free HTTPS",
+    ],
+    [
       "noncanonical URL",
       [asset("https://EXAMPLE.test/a")],
       "canonical credential-free HTTPS",
@@ -320,6 +622,20 @@ describe("closed lazy assets", () => {
     ],
   ])("rejects %s", (_name, assets, message) => {
     expect(() => snapshotClosedLazyAssets(assets)).toThrow(message);
+  });
+
+  it("rejects sparse assets and coercible digests before copying bytes", () => {
+    const sparse = new Array<ClosedLazyAsset>(2);
+    sparse[0] = asset();
+    expect(() => snapshotClosedLazyAssets(sparse)).toThrow("asset 1 is missing");
+
+    const coercibleSha = {
+      toString: () => asset().sha256,
+    } as unknown as string;
+    expect(() => snapshotClosedLazyAssets([{
+      ...asset(),
+      sha256: coercibleSha,
+    }])).toThrow("invalid fields");
   });
 
   it("returns defensive byte copies", () => {
