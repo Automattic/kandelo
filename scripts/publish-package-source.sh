@@ -58,13 +58,17 @@ PACKAGE_LIST="${PACKAGE_LIST:-$PACKAGE_SOURCE_ROOT/packages.txt}"
 cd "$KANDELO_ROOT"
 source "$KANDELO_ROOT/sdk/activate.sh"
 
+HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+export WASM_POSIX_DEPS_REGISTRY="$PACKAGE_SOURCE_ROOT/packages:$KANDELO_ROOT/packages/registry"
+cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
+  build-deps program-index-context-check
+
 "$KANDELO_ROOT/scripts/sync-package-source.sh" \
   --package-source-root "$PACKAGE_SOURCE_ROOT" \
   --kandelo-root "$KANDELO_ROOT"
 
 ABI="$(grep -oE 'ABI_VERSION: u32 = [0-9]+' crates/shared/src/lib.rs | awk '{print $4}')"
 TARGET_TAG="${TARGET_TAG:-binaries-abi-v${ABI}}"
-HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 BUILD_TIMESTAMP="$(git -C "$PACKAGE_SOURCE_ROOT" log -1 --format=%aI HEAD 2>/dev/null || date -u +%FT%TZ)"
 BUILD_COMMIT="$(git -C "$PACKAGE_SOURCE_ROOT" rev-parse HEAD 2>/dev/null || echo local)"
 BUILD_HOST="${REPOSITORY}@${BUILD_COMMIT}"

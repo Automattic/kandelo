@@ -29,6 +29,17 @@ metadata is an additional contract for VFS builders, Node validation, browser
 automation, and publication audits; it is not a replacement for Formula Ruby or
 Homebrew's `bottle do` block.
 
+The patched Homebrew Ruby tree used by a guest is a dedicated Kandelo program
+package named `homebrew-bootstrap`; it is not a Formula bottle. The package
+emits `homebrew-bootstrap.zip` from a sealed exact Homebrew checkout and the
+reviewed guest-platform patch. Its source lock at
+`homebrew/homebrew-bootstrap-source-lock.json` binds all source, patch,
+prepared-tree, portable-Ruby, archive-producing Git, and final-archive
+identities. The first package revision is sealed by the exact final ZIP
+SHA-256 and byte count recorded in that lock. Consumer cutover is a separate
+rollout step, so introducing the package does not change shell or
+bootstrap-image consumers.
+
 ## Repositories And Ownership
 
 | Repository | Owns |
@@ -1282,11 +1293,13 @@ reviewed platform patch, and ABI-current Kandelo package artifacts with:
 The script writes `target/homebrew-bootstrap/homebrew-bootstrap.vfs`. It derives
 the ABI from `crates/shared`, resolves the Node kernel, canonical rootfs package
 set, and Homebrew bootstrap programs through `xtask build-deps`, and calls
-`scripts/prepare-homebrew-bootstrap-source.sh` to prepare Homebrew. Source
-preparation verifies the reviewed patch SHA-256, refuses an upstream revision
-where the patch does not apply, limits the patch to its four declared Homebrew
-files, and archives the patched Git tree with a fixed timestamp and UTC
-timezone.
+`scripts/prepare-homebrew-bootstrap-source.sh` to prepare Homebrew. The
+dedicated `homebrew-bootstrap` package uses that same preparer and records
+byte identity with this still-current image path; switching this image to
+consume the package is a separate consumer change. Source preparation verifies
+the reviewed patch SHA-256, refuses an upstream revision where the patch does
+not apply, limits the patch to its declared Homebrew files, and archives the
+patched Git tree with a fixed timestamp and UTC timezone.
 
 `/etc/kandelo/homebrew-image.json` records the exact upstream Homebrew commit,
 patch SHA-256, patched-tree Git object and normalized-tree SHA-256, patched ZIP

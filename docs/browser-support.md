@@ -674,6 +674,15 @@ export default {
 };
 ```
 
+During development, `@binaries/...` imports can resolve to canonical package
+members outside the checkout. Vite's directory allow list is only transport
+plumbing: a pre-serving guard permits the exact regular files approved by the
+binary resolver and rechecks their real paths on every request. Other program
+cache entries, source-cache files, symlink escapes, malformed filesystem URLs,
+and descendants created by replacing an approved file with a directory receive
+HTTP 403. Production builds emit ordinary bundled assets and do not expose the
+local package cache.
+
 ## Known Limitations
 
 ### SharedArrayBuffer restrictions

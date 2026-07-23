@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import {
-  copyFileSync,
+  chmodSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -120,9 +121,15 @@ function writeCandidate(
 }
 
 function resolveBinary(relPath: string) {
-  return spawnSync("bash", [join(fakeRepoRoot, "scripts", "resolve-binary.sh"), relPath], {
+  const env = {
+    ...process.env,
+    WASM_POSIX_BINARY_RESOLVER_REPO_ROOT: fakeRepoRoot,
+  };
+  delete env.WASM_POSIX_DEPS_REGISTRY;
+  return spawnSync("bash", [join(repoRoot, "scripts", "resolve-binary.sh"), relPath], {
     cwd: fakeRepoRoot,
     encoding: "utf8",
+    env,
   });
 }
 
@@ -130,22 +137,16 @@ beforeAll(() => {
   fakeRepoRoot = realpathSync(
     mkdtempSync(join(tmpdir(), "kandelo-resolve-binary-")),
   );
-  mkdirSync(join(fakeRepoRoot, "scripts"), { recursive: true });
-  mkdirSync(join(fakeRepoRoot, "abi"), { recursive: true });
-  mkdirSync(join(fakeRepoRoot, "crates", "shared", "src"), { recursive: true });
+  mkdirSync(join(fakeRepoRoot, "packages", "registry"), { recursive: true });
   writeFileSync(join(fakeRepoRoot, "Cargo.toml"), "[workspace]\nmembers = []\n");
-  writeFileSync(join(fakeRepoRoot, "abi", "snapshot.json"), "{}\n");
   writeFileSync(
-    join(fakeRepoRoot, "crates", "shared", "src", "lib.rs"),
-    `pub const ABI_VERSION: u32 = ${ABI_VERSION};\n`,
+    join(fakeRepoRoot, "package.json"),
+    "{\"name\":\"kandelo\",\"private\":true}\n",
   );
-  for (const script of [
-    "resolve-binary.sh",
-    "wasm-artifact-guards.sh",
-    "vfs-has-stale-abi.mjs",
-  ]) {
-    copyFileSync(join(repoRoot, "scripts", script), join(fakeRepoRoot, "scripts", script));
-  }
+  writeFileSync(
+    join(fakeRepoRoot, "packages", "registry", "program-packages.json"),
+    '{"format":"kandelo-program-packages-v2","identities":{},"packages":{}}\n',
+  );
 });
 
 afterAll(() => {
@@ -153,6 +154,97 @@ afterAll(() => {
 });
 
 describe("shell binary resolver artifact policy", () => {
+  it("incrementally rebuilds an existing source checker before exporting it", () => {
+    const sourceRoot = mkdtempSync(
+      join(tmpdir(), "kandelo-resolve-binary-checker-source-"),
+    );
+    const toolBin = join(sourceRoot, "test-tools");
+    const hostTarget = "test-checker-host";
+    const xtaskPath = join(
+      sourceRoot,
+      "target",
+      hostTarget,
+      "release",
+      "xtask",
+    );
+    const buildRecord = join(sourceRoot, "cargo-build-record");
+    mkdirSync(join(sourceRoot, "tools", "xtask"), { recursive: true });
+    mkdirSync(join(sourceRoot, "scripts"), { recursive: true });
+    mkdirSync(dirname(xtaskPath), { recursive: true });
+    mkdirSync(toolBin, { recursive: true });
+    writeFileSync(join(sourceRoot, "tools", "xtask", "Cargo.toml"), "");
+    writeFileSync(
+      join(sourceRoot, "scripts", "dev-shell.sh"),
+      `#!/bin/sh
+printf '%s\\n' 'dev-shell setup chatter'
+exec "$@"
+`,
+    );
+    writeFileSync(xtaskPath, "#!/bin/sh\nexit 99\n");
+    chmodSync(xtaskPath, 0o755);
+    writeFileSync(
+      join(toolBin, "rustc"),
+      `#!/bin/sh
+printf 'rustc 1.0\\nhost: ${hostTarget}\\n'
+`,
+    );
+    writeFileSync(
+      join(toolBin, "cargo"),
+      `#!/bin/sh
+printf '%s\\n' "$*" > "$CHECKER_BUILD_RECORD"
+`,
+    );
+    writeFileSync(
+      join(toolBin, "node"),
+      `#!/bin/sh
+printf '%s\\n' "$WASM_POSIX_XTASK_BIN"
+`,
+    );
+    for (const tool of ["rustc", "cargo", "node"]) {
+      chmodSync(join(toolBin, tool), 0o755);
+    }
+
+    try {
+      const result = spawnSync(
+        "bash",
+        [
+          join(repoRoot, "scripts", "resolve-binary.sh"),
+          "programs/wasm32/checker/checker.wasm",
+        ],
+        {
+          cwd: sourceRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: `${toolBin}:${process.env.PATH ?? ""}`,
+            KANDELO_DEV_SHELL_TOOL_PATH: "",
+            WASM_POSIX_BINARY_RESOLVER_REPO_ROOT: sourceRoot,
+            CHECKER_BUILD_RECORD: buildRecord,
+            WASM_POSIX_XTASK_BIN: "",
+          },
+        },
+      );
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.trim()).toBe(xtaskPath);
+      expect(result.stderr).toContain("dev-shell setup chatter");
+      expect(readFileSync(buildRecord, "utf8").trim()).toBe(
+        `build --release -p xtask --target ${hostTarget} --quiet`,
+      );
+    } finally {
+      rmSync(sourceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("ships a standalone resolver bundle generated from the shared TypeScript source", () => {
+    const result = spawnSync(
+      "bash",
+      [join(repoRoot, "scripts", "test-resolve-binary-bundle.sh")],
+      { cwd: repoRoot, encoding: "utf8" },
+    );
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+  });
+
   it("resolves a ZIP archive without applying Wasm policy", () => {
     const relPath = "programs/wasm32/__resolve_binary_test__/runtime.zip";
     const localPath = writeCandidate(
@@ -229,7 +321,7 @@ describe("shell binary resolver artifact policy", () => {
     const result = resolveBinary(relPath);
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("stale or invalid artifact ignored");
+    expect(result.stderr).toContain("exists but was rejected by artifact policy");
   });
 
   it("keeps an uninspectable .wasm artifact fail-closed", () => {
@@ -243,7 +335,7 @@ describe("shell binary resolver artifact policy", () => {
     const result = resolveBinary(relPath);
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("stale or invalid artifact ignored");
+    expect(result.stderr).toContain("exists but was rejected by artifact policy");
   });
 
   it("falls back from an uninspectable local .wasm to a valid fetched candidate", () => {

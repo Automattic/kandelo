@@ -3,6 +3,12 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
+    build-deps program-index-check \
+    "$REPO_ROOT/packages/registry" \
+    "$REPO_ROOT/packages/registry/program-packages.json"
+
 TMP_ROOT="$(mktemp -d)"
 cleanup() {
     chmod -R u+w "$TMP_ROOT" 2>/dev/null || true
@@ -323,6 +329,7 @@ grep -F "artifact must be a portable relative path" "$err" >/dev/null ||
     fail "unsafe caller-owned runtime artifact escaped its output root"
 
 bash "$REPO_ROOT/scripts/test-graphics-pkgconfig.sh"
+bash "$REPO_ROOT/scripts/test-install-local-generation.sh"
 
 # Every exact-shell registry recipe must enter through this tested root
 # contract. Their real package builds remain separate bottle/dry-run evidence.

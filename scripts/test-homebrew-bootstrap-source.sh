@@ -18,7 +18,7 @@ BOTTLE_SHA256="919fe4746f30a775963040995297c149972874fea50356530a8cb81b70845865"
 # namespace; fetching, pouring, and execution belong to integration tests.
 BOTTLE_ROOT_URL="https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
 
-for tool in git node sha256sum unzip; do
+for tool in git node unzip; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "test-homebrew-bootstrap-source: $tool not found; run through scripts/dev-shell.sh" >&2
         exit 2
@@ -37,10 +37,17 @@ prepare() {
     local output_root="$2"
     local repository="${3:-$BREW_REPOSITORY}"
     local revision="${4:-$BREW_REVISION}"
+    local source_checkout="${5:-}"
     mkdir -p "$output_root"
+    local source_args=(
+        --repository "$repository"
+        --revision "$revision"
+    )
+    if [ -n "$source_checkout" ]; then
+        source_args+=(--source-checkout "$source_checkout")
+    fi
     "$PREPARE" \
-        --repository "$repository" \
-        --revision "$revision" \
+        "${source_args[@]}" \
         --patch "$PATCH_FILE" \
         --expected-patch-sha256 "$PATCH_SHA256" \
         --arch "$arch" \
@@ -56,6 +63,91 @@ prepare wasm64 "$RUN_ROOT/wasm64"
     export TZ=EST5
     prepare wasm32 "$RUN_ROOT/wasm32-est"
 )
+
+# Source preparation must not inherit Git config injection, credential
+# callbacks, template hooks, or fsmonitor commands from the caller.
+HOSTILE_GIT_ROOT="$RUN_ROOT/hostile-git"
+HOSTILE_MARKER="$HOSTILE_GIT_ROOT/invoked"
+HOSTILE_COMMAND="$HOSTILE_GIT_ROOT/fail-if-invoked"
+HOSTILE_EXEC_PATH="$HOSTILE_GIT_ROOT/exec-path"
+HOSTILE_TEMPLATE="$HOSTILE_GIT_ROOT/template"
+HOSTILE_GLOBAL_CONFIG="$HOSTILE_GIT_ROOT/global.config"
+mkdir -p "$HOSTILE_EXEC_PATH" "$HOSTILE_TEMPLATE/hooks"
+cat >"$HOSTILE_COMMAND" <<EOF
+#!/bin/sh
+printf invoked >"$HOSTILE_MARKER"
+exit 97
+EOF
+chmod 0700 "$HOSTILE_COMMAND"
+cp "$HOSTILE_COMMAND" "$HOSTILE_EXEC_PATH/git-remote-https"
+cp "$HOSTILE_COMMAND" "$HOSTILE_EXEC_PATH/git-upload-pack"
+cp "$HOSTILE_COMMAND" "$HOSTILE_TEMPLATE/hooks/post-fetch"
+cat >"$HOSTILE_GLOBAL_CONFIG" <<EOF
+[core]
+    fsmonitor = $HOSTILE_COMMAND
+    hooksPath = $HOSTILE_TEMPLATE/hooks
+[credential]
+    helper = !$HOSTILE_COMMAND
+EOF
+(
+    export GIT_ASKPASS="$HOSTILE_COMMAND"
+    export GIT_CONFIG_COUNT=1
+    export GIT_CONFIG_GLOBAL="$HOSTILE_GLOBAL_CONFIG"
+    export GIT_CONFIG_KEY_0=core.fsmonitor
+    export GIT_CONFIG_VALUE_0="$HOSTILE_COMMAND"
+    export GIT_EXEC_PATH="$HOSTILE_EXEC_PATH"
+    export GIT_TEMPLATE_DIR="$HOSTILE_TEMPLATE"
+    export SSH_ASKPASS="$HOSTILE_COMMAND"
+    prepare wasm32 "$RUN_ROOT/wasm32-hostile-env"
+)
+if [ -e "$HOSTILE_MARKER" ] || [ -L "$HOSTILE_MARKER" ]; then
+    echo "test-homebrew-bootstrap-source: ambient Git callback executed" >&2
+    exit 1
+fi
+
+# Reproducible package builds consume the resolver's sealed checkout instead
+# of fetching Homebrew a second time. Preparing from that checkout must not
+# mutate it or change any emitted bytes.
+SOURCE_CHECKOUT="$RUN_ROOT/source-checkout"
+git init -q "$SOURCE_CHECKOUT"
+git -C "$SOURCE_CHECKOUT" fetch -q --depth=1 "$RUN_ROOT/wasm32/brew.git" "$BREW_REVISION"
+git -C "$SOURCE_CHECKOUT" checkout -q --detach FETCH_HEAD
+cp "$SOURCE_CHECKOUT/.git/config" "$RUN_ROOT/source-checkout.config.before"
+SOURCE_STATUS_BEFORE="$(git -C "$SOURCE_CHECKOUT" status --porcelain=v1 --untracked-files=all)"
+prepare wasm32 "$RUN_ROOT/wasm32-local" \
+    "$BREW_REPOSITORY" "$BREW_REVISION" "$SOURCE_CHECKOUT"
+SOURCE_STATUS_AFTER="$(git -C "$SOURCE_CHECKOUT" status --porcelain=v1 --untracked-files=all)"
+if [ "$SOURCE_STATUS_BEFORE" != "$SOURCE_STATUS_AFTER" ]; then
+    echo "test-homebrew-bootstrap-source: local source checkout was mutated" >&2
+    exit 1
+fi
+if ! cmp -s "$SOURCE_CHECKOUT/.git/config" "$RUN_ROOT/source-checkout.config.before"; then
+    echo "test-homebrew-bootstrap-source: local source Git configuration was mutated" >&2
+    exit 1
+fi
+
+# A sealed source checkout with executable local Git behavior is rejected
+# before Git can run it. Resolver-owned checkouts carry only the allowlisted
+# structural keys exercised by the successful preparation above.
+git -C "$SOURCE_CHECKOUT" config core.fsmonitor "$HOSTILE_COMMAND"
+set +e
+prepare wasm32 "$RUN_ROOT/hostile-source-config-output" \
+    "$BREW_REPOSITORY" "$BREW_REVISION" "$SOURCE_CHECKOUT" \
+    >"$RUN_ROOT/hostile-source-config.log" 2>&1
+HOSTILE_SOURCE_CONFIG_STATUS=$?
+set -e
+git -C "$SOURCE_CHECKOUT" config --unset core.fsmonitor
+if [ "$HOSTILE_SOURCE_CONFIG_STATUS" -eq 0 ]; then
+    echo "test-homebrew-bootstrap-source: executable source Git config unexpectedly accepted" >&2
+    exit 1
+fi
+grep -Fq 'source checkout has unsupported local Git configuration: core.fsmonitor' \
+    "$RUN_ROOT/hostile-source-config.log"
+if [ -e "$HOSTILE_MARKER" ] || [ -L "$HOSTILE_MARKER" ]; then
+    echo "test-homebrew-bootstrap-source: source Git callback executed before rejection" >&2
+    exit 1
+fi
+
 (
     export TZ=HST10
     prepare wasm32 "$RUN_ROOT/wasm32-hst"
@@ -129,6 +221,29 @@ for timezone_root in "$RUN_ROOT/wasm32-est" "$RUN_ROOT/wasm32-hst"; do
         exit 1
     fi
 done
+if ! cmp -s "$ARCHIVE32" "$RUN_ROOT/wasm32-hostile-env/homebrew-brew.zip" ||
+   ! cmp -s "$PROVENANCE32" "$RUN_ROOT/wasm32-hostile-env/homebrew-source.json"; then
+    echo "test-homebrew-bootstrap-source: ambient Git state changed source identity" >&2
+    exit 1
+fi
+if ! cmp -s "$ARCHIVE32" "$RUN_ROOT/wasm32-local/homebrew-brew.zip" ||
+   ! cmp -s "$PROVENANCE32" "$RUN_ROOT/wasm32-local/homebrew-source.json"; then
+    echo "test-homebrew-bootstrap-source: local checkout changed source identity" >&2
+    exit 1
+fi
+
+printf '\n# dirty source fixture\n' >>"$SOURCE_CHECKOUT/README.md"
+set +e
+prepare wasm32 "$RUN_ROOT/dirty-source-output" \
+    "$BREW_REPOSITORY" "$BREW_REVISION" "$SOURCE_CHECKOUT" \
+    >"$RUN_ROOT/dirty-source.log" 2>&1
+DIRTY_SOURCE_STATUS=$?
+set -e
+if [ "$DIRTY_SOURCE_STATUS" -eq 0 ]; then
+    echo "test-homebrew-bootstrap-source: dirty source checkout unexpectedly accepted" >&2
+    exit 1
+fi
+grep -Fq 'source checkout is dirty' "$RUN_ROOT/dirty-source.log"
 
 node --input-type=module - \
     "$PROVENANCE32" "$PROVENANCE64" "$ARCHIVE32" "$PATCH_SHA256" "$BREW_REVISION" <<'NODE'

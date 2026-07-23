@@ -25,7 +25,7 @@ function loadBytes(path: string): ArrayBuffer {
 }
 
 async function main() {
-  const pythonWasm = resolveBinary("programs/cpython.wasm");
+  const pythonWasm = resolveBinary("programs/cpython/cpython.wasm");
   const pythonHome = resolve(repoRoot, "packages/registry/cpython/cpython-install");
   const kernelWasmPath = resolveBinary("kernel.wasm");
 

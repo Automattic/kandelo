@@ -27,6 +27,7 @@ README.md
 packages.txt
 gallery.json                         # optional browser-gallery metadata
 packages/
+  program-packages.json              # Rust-generated runtime projection
   <name>/
     package.toml                     # portable package recipe
     build.toml                       # this source's publish/index state
@@ -37,6 +38,45 @@ packages/
 `packages.txt` lists publishable packages in dependency order, one per
 line. Blank lines and `#` comments are ignored by
 `scripts/publish-package-source.sh`.
+
+If the source is used directly through `WASM_POSIX_DEPS_REGISTRY`, generate
+`packages/program-packages.json` with Kandelo's authoritative parser and the
+same ordered registry roots that consumers will use:
+
+```bash
+WASM_POSIX_DEPS_REGISTRY="$PWD/packages:/path/to/kandelo/packages/registry" \
+  cargo xtask build-deps program-index packages packages/program-packages.json
+```
+
+Validate all existing roots exactly as a source consumer will see them:
+
+```bash
+WASM_POSIX_DEPS_REGISTRY="$PWD/packages:/path/to/kandelo/packages/registry" \
+  cargo xtask build-deps program-index-context-check
+```
+
+Commit the result beside the package directories. Runtime consumers require it
+to preserve exact first-hit output closures, per-architecture cache keys, and
+fork policy without maintaining a second TOML parser. The projection also binds
+each program to the identities of its complete transitive dependency closure
+in that registry order. The reusable publication workflow checks this
+projection before building, so a changed recipe or dependency cannot be
+published with stale runtime identity.
+Kandelo source checkouts run the same contextual Rust check before every public
+program resolution. An existing configured root without an index is an error;
+nonexistent optional roots are skipped. Installed host packages instead consume
+the projection that Kandelo verified and copied at package-build time.
+
+The external index is a complete `external:main` projection. It contains
+identities for every first-hit package and projections for every selected
+program, including programs whose physical manifests remain in the main
+registry. Identical shadows keep the same identity. A changed direct or
+transitive external dependency gives each affected lower program a newly
+computed combined-context cache key and closure, so normal resolution can fetch
+or build that exact generation without copying the program recipe into the
+external repository. Consumers use this highest-priority complete index; they
+never merge it with lower policy. The main registry's own index remains a
+self-contained fallback when the external root is not configured or present.
 
 Use Kandelo's current package layout in new recipes:
 
