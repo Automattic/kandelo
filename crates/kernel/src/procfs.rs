@@ -1111,14 +1111,15 @@ mod tests {
     #[test]
     fn foreign_procfs_directory_preserves_specific_errors() {
         let mut table = crate::process_table::ProcessTable::new();
-        table.create_process(42).unwrap();
+        let pid = table.create_process().unwrap();
+        assert_eq!(pid, 100);
 
         assert_eq!(
-            procfs_getdents64_for_pid(&table, 42, b"/proc/42/fd", &mut [], 0),
+            procfs_getdents64_for_pid(&table, pid, b"/proc/100/fd", &mut [], 0),
             Err(Errno::EINVAL),
         );
         assert_eq!(
-            procfs_getdents64_for_pid(&table, 43, b"/proc/43/fd", &mut [], 0),
+            procfs_getdents64_for_pid(&table, pid + 1, b"/proc/101/fd", &mut [], 0),
             Err(Errno::ENOENT),
         );
     }

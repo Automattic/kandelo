@@ -1878,14 +1878,13 @@ mod tests {
         use crate::spawn::SpawnAttrs;
         use wasm_posix_shared::flags::O_RDONLY;
 
-        const PARENT: u32 = 945_001;
         const BACKING_HANDLE: i64 = 9_450_010;
         const ITERATOR_HANDLE: i64 = 9_450_011;
 
         let mut table = ProcessTable::new();
-        table.create_process(PARENT).unwrap();
+        let parent_pid = table.create_process().unwrap();
         let inherited_fd = {
-            let parent = table.get_mut(PARENT).unwrap();
+            let parent = table.get_mut(parent_pid).unwrap();
             let ofd_idx = parent.ofd_table.create(
                 FileType::Directory,
                 O_RDONLY,
@@ -1910,8 +1909,9 @@ mod tests {
 
         let mut host = NoopHost;
         let child_pid = table
-            .spawn_child(
-                PARENT,
+            .spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
                 &[b"/bin/child".as_slice()],
                 &[],
                 &[],
@@ -1933,9 +1933,14 @@ mod tests {
         assert_eq!(child_ofd.dir_host_handle, -1);
         assert!(child_ofd.dir_pending_entry.is_none());
 
-        let parent_entry = table.get(PARENT).unwrap().fd_table.get(inherited_fd).unwrap();
+        let parent_entry = table
+            .get(parent_pid)
+            .unwrap()
+            .fd_table
+            .get(inherited_fd)
+            .unwrap();
         let parent_ofd = table
-            .get(PARENT)
+            .get(parent_pid)
             .unwrap()
             .ofd_table
             .get(parent_entry.ofd_ref.0)
@@ -1947,7 +1952,7 @@ mod tests {
         // remains owned by the parent. Parent cleanup releases it exactly once.
         let child_cleanup = table.remove_process(child_pid).unwrap();
         assert!(!child_cleanup.host_dir_closes.contains(&ITERATOR_HANDLE));
-        let parent_cleanup = table.remove_process(PARENT).unwrap();
+        let parent_cleanup = table.remove_process(parent_pid).unwrap();
         assert_eq!(
             parent_cleanup
                 .host_dir_closes
@@ -1964,15 +1969,13 @@ mod tests {
         use crate::ofd::PendingDirEntry;
         use wasm_posix_shared::flags::O_RDONLY;
 
-        const PARENT: u32 = 945_101;
-        const CHILD: u32 = 945_102;
         const BACKING_HANDLE: i64 = 9_451_010;
         const ITERATOR_HANDLE: i64 = 9_451_011;
 
         let mut table = ProcessTable::new();
-        table.create_process(PARENT).unwrap();
+        let parent_pid = table.create_process().unwrap();
         let inherited_fd = {
-            let parent = table.get_mut(PARENT).unwrap();
+            let parent = table.get_mut(parent_pid).unwrap();
             let ofd_idx = parent.ofd_table.create(
                 FileType::Directory,
                 O_RDONLY,
@@ -1995,11 +1998,18 @@ mod tests {
                 .unwrap()
         };
 
-        table.fork_process(PARENT, CHILD).unwrap();
+        let child_pid = table
+            .fork_process_for_caller(parent_pid, parent_pid)
+            .unwrap();
 
-        let child_entry = table.get(CHILD).unwrap().fd_table.get(inherited_fd).unwrap();
+        let child_entry = table
+            .get(child_pid)
+            .unwrap()
+            .fd_table
+            .get(inherited_fd)
+            .unwrap();
         let child_ofd = table
-            .get(CHILD)
+            .get(child_pid)
             .unwrap()
             .ofd_table
             .get(child_entry.ofd_ref.0)
@@ -2009,9 +2019,9 @@ mod tests {
         assert_eq!(child_ofd.dir_host_handle, -1);
         assert!(child_ofd.dir_pending_entry.is_none());
 
-        let child_cleanup = table.remove_process(CHILD).unwrap();
+        let child_cleanup = table.remove_process(child_pid).unwrap();
         assert!(!child_cleanup.host_dir_closes.contains(&ITERATOR_HANDLE));
-        let parent_cleanup = table.remove_process(PARENT).unwrap();
+        let parent_cleanup = table.remove_process(parent_pid).unwrap();
         assert_eq!(
             parent_cleanup
                 .host_dir_closes

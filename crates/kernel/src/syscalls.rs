@@ -20925,15 +20925,12 @@ mod tests {
         let _guard = SCM_RIGHTS_LIFETIME_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        const PARENT: u32 = 70_903;
-        const FORK_CHILD: u32 = 70_904;
-
         let mut table = ProcessTable::new();
-        table.create_process(PARENT).unwrap();
+        let parent_pid = table.create_process().unwrap();
         let mut host = MockHostIO::new();
         host.dir_entry_count = 3;
         let parent_fd = sys_open(
-            table.get_mut(PARENT).unwrap(),
+            table.get_mut(parent_pid).unwrap(),
             &mut host,
             b"/tmp",
             O_RDONLY | O_DIRECTORY,
@@ -20941,7 +20938,7 @@ mod tests {
         )
         .unwrap();
         let parent_ofd_idx = table
-            .get(PARENT)
+            .get(parent_pid)
             .unwrap()
             .fd_table
             .get(parent_fd)
@@ -20951,7 +20948,7 @@ mod tests {
         let mut prefix = [0u8; 80];
         assert_eq!(
             sys_getdents64(
-                table.get_mut(PARENT).unwrap(),
+                table.get_mut(parent_pid).unwrap(),
                 &mut host,
                 parent_fd,
                 &mut prefix,
@@ -20960,7 +20957,7 @@ mod tests {
         );
         assert_eq!(
             table
-                .get(PARENT)
+                .get(parent_pid)
                 .unwrap()
                 .ofd_table
                 .get(parent_ofd_idx)
@@ -20969,10 +20966,13 @@ mod tests {
             200,
         );
 
-        table.fork_process(PARENT, FORK_CHILD).unwrap();
+        let fork_child = table
+            .fork_process_for_caller(parent_pid, parent_pid)
+            .unwrap();
         let spawn_child = table
-            .spawn_child(
-                PARENT,
+            .spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
                 &[b"/bin/child".as_slice()],
                 &[],
                 &[],
@@ -20981,7 +20981,7 @@ mod tests {
             )
             .unwrap();
 
-        for pid in [FORK_CHILD, spawn_child] {
+        for pid in [fork_child, spawn_child] {
             let child_entry = table.get(pid).unwrap().fd_table.get(parent_fd).unwrap();
             let child_ofd = table
                 .get(pid)
@@ -21008,7 +21008,7 @@ mod tests {
         // Both child iterators resumed independently, while the parent kept
         // its live pending record at the same snapshot cookie.
         let parent_ofd = table
-            .get(PARENT)
+            .get(parent_pid)
             .unwrap()
             .ofd_table
             .get(parent_ofd_idx)
@@ -21017,7 +21017,7 @@ mod tests {
         assert_eq!(parent_ofd.dir_entry_offset, 3);
         assert_eq!(parent_ofd.dir_pending_entry.as_ref().unwrap().name, b"foo.txt");
 
-        for pid in [FORK_CHILD, spawn_child, PARENT] {
+        for pid in [fork_child, spawn_child, parent_pid] {
             sys_close(table.get_mut(pid).unwrap(), &mut host, parent_fd).unwrap();
         }
         assert_eq!(host.closed_dir_handles, [201, 202, 200]);
@@ -21028,9 +21028,9 @@ mod tests {
                 .count(),
             1,
         );
-        table.remove_process(FORK_CHILD).unwrap();
+        table.remove_process(fork_child).unwrap();
         table.remove_process(spawn_child).unwrap();
-        table.remove_process(PARENT).unwrap();
+        table.remove_process(parent_pid).unwrap();
     }
 
     #[test]
