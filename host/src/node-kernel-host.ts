@@ -268,6 +268,29 @@ export class NodeKernelHost {
     argv: string[],
     options?: SpawnOptions,
   ): Promise<number> {
+    const { exit } = await this.spawnProgram({ programBytes }, argv, options);
+    return exit;
+  }
+
+  /**
+   * Spawn a process whose executable already lives in the worker-owned VFS.
+   * This mirrors BrowserKernel.spawnFromVfs(): no executable bytes cross the
+   * main-thread/worker boundary, and a missing VFS path fails rather than
+   * consulting an ambient host path.
+   */
+  async spawnFromVfs(
+    programPath: string,
+    argv: string[],
+    options?: SpawnOptions,
+  ): Promise<{ pid: number; exit: Promise<number> }> {
+    return this.spawnProgram({ programPath }, argv, options);
+  }
+
+  private async spawnProgram(
+    program: { programBytes: ArrayBuffer } | { programPath: string },
+    argv: string[],
+    options?: SpawnOptions,
+  ): Promise<{ pid: number; exit: Promise<number> }> {
     const requestId = this._nextRequestId++;
     const spawnStartedBeforeExitSequence = this.exitSequence;
     const stdin =
@@ -277,7 +300,7 @@ export class NodeKernelHost {
     const pid = await this.request(requestId, {
       type: "spawn",
       requestId,
-      programBytes,
+      ...program,
       // Avoid forwarding externally compiled WebAssembly.Module objects through
       // the main thread -> kernel worker -> process worker chain. Reusing that
       // two-hop clone with SpiderMonkey's shared-memory worker runtime can leave
@@ -308,7 +331,7 @@ export class NodeKernelHost {
       // host bookkeeping from an obsolete generation, not this spawn's exit.
       this.unclaimedExitStatuses.delete(pid);
     }
-    const exitPromise = unclaimedExitStatus !== undefined &&
+    const exit = unclaimedExitStatus !== undefined &&
       unclaimedExitStatus.sequence > spawnStartedBeforeExitSequence
       ? Promise.resolve(unclaimedExitStatus.status)
       : new Promise<number>((resolve) => {
@@ -322,7 +345,7 @@ export class NodeKernelHost {
       await options.onStarted(pid);
     }
 
-    return exitPromise;
+    return { pid, exit };
   }
 
   /** Append data to a process's stdin buffer (process sees more data, no EOF) */
@@ -532,6 +555,28 @@ export class NodeKernelHost {
     return () => {
       this.lazyDownloadListeners.delete(cb);
     };
+  }
+
+  /**
+   * Read a regular file from the existing worker-owned VFS. This is the Node
+   * peer of BrowserKernel.readFileFromVfs(); it never falls back to an ambient
+   * host path and may materialize a deferred VFS entry.
+   */
+  async readFileFromVfs(path: string): Promise<Uint8Array | null> {
+    if (!this.initialized) {
+      throw new Error("VFS read requires an initialized kernel");
+    }
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "read_vfs_file",
+      requestId,
+      path,
+    });
+    if (result === null) return null;
+    if (!(result instanceof Uint8Array)) {
+      throw new Error("kernel worker returned invalid VFS file bytes");
+    }
+    return result;
   }
 
   /**

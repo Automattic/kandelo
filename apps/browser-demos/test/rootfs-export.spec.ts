@@ -10,6 +10,7 @@ interface RootfsExportAcceptanceResult {
   firstExportSha256: string;
   secondExportSha256: string;
   firstExportBytes: number;
+  firstExportSourceBytesAfterOwnedInit: number;
   secondExportBytes: number;
   liveProcessExitCode: number;
   liveProcessExportError: string;
@@ -158,6 +159,7 @@ test("browser rootfs export rejects unsafe races and reboots its snapshot", asyn
     "browser rootfs state survives reboot\n",
   );
   expect(result.firstExportBytes).toBeGreaterThan(0);
+  expect(result.firstExportSourceBytesAfterOwnedInit).toBe(0);
   expect(result.secondExportBytes).toBeGreaterThan(0);
   expect(result.firstExportSha256).toMatch(/^[0-9a-f]{64}$/);
   expect(result.secondExportSha256).toMatch(/^[0-9a-f]{64}$/);

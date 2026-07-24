@@ -6,10 +6,7 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { NodeKernelHost } from "../../host/src/node-kernel-host";
-import {
-  MemoryFileSystem,
-  type LazyDownloadEvent,
-} from "../../host/src/vfs/memory-fs";
+import type { LazyDownloadEvent } from "../../host/src/vfs/memory-fs";
 import { assertHomebrewBottleMirrorPlan } from "../../host/src/homebrew-vfs-composer";
 import {
   assertPackageDeferredZipTreeState,
@@ -29,6 +26,7 @@ import {
   HOMEBREW_GUEST_LIFECYCLE_ENV,
   type HomebrewGuestLifecycleMachine,
   runHomebrewGuestLifecycle,
+  runHomebrewGuestLifecycleProcess,
 } from "./homebrew_guest_lifecycle_runner";
 import {
   deriveHomebrewGuestLifecycleRuntimeInputs,
@@ -62,6 +60,7 @@ const MAX_CAPTURED_DIAGNOSTICS = 1_000;
 
 async function main(): Promise<void> {
   const options = parseOptions(process.argv.slice(2));
+  const deadlineMs = Date.now() + options.timeoutMs;
   const runtime = loadRootfsRuntimeInputs(options);
   const revisions = {
     coreRevision: options.coreRevision,
@@ -71,7 +70,7 @@ async function main(): Promise<void> {
   await runHomebrewGuestLifecycle({
     runtime,
     revisions,
-    timeoutMs: options.timeoutMs,
+    deadlineMs,
     createMachine: (machineRuntime) =>
       createNodeLifecycleMachine(machineRuntime, options),
   });
@@ -106,11 +105,6 @@ function loadRootfsRuntimeInputs(
     parseJson(bootstrapSpecBytes, options.bootstrapSpecPath),
     bootstrapArchiveBytes,
   );
-  assertPackageDeferredZipTreeState(
-    MemoryFileSystem.fromImage(imageBytes),
-    bootstrapTree,
-    "deferred",
-  );
   const bootstrapArchiveSha256 = createHash("sha256")
     .update(bootstrapArchiveBytes)
     .digest("hex");
@@ -119,6 +113,12 @@ function loadRootfsRuntimeInputs(
     : pathToFileURL(`${dirname(options.bootstrapArchivePath)}/`).toString();
   return deriveHomebrewGuestLifecycleRuntimeInputs({
     imageBytes,
+    validateImageFileSystem: (imageFileSystem) =>
+      assertPackageDeferredZipTreeState(
+        imageFileSystem,
+        bootstrapTree,
+        "deferred",
+      ),
     bootstrapSpecBytes,
     bootstrapArchiveBytes,
     bootstrapArchiveSha256,
@@ -233,6 +233,7 @@ function createNodeLifecycleMachine(
     lazyDownloads: captured.lazyDownloads,
     diagnostics: captured.output.diagnostics,
     start: () => captured.host.init(),
+    readFile: (path) => captured.host.readFileFromVfs(path),
     runShellScript: (scriptOptions) =>
       runGuestScript({ captured, ...scriptOptions }),
     exportRootfsImage: () => captured.host.exportRootfsImage(),
@@ -242,7 +243,7 @@ function createNodeLifecycleMachine(
 
 async function runGuestScript(options: {
   captured: CapturedHost;
-  shellBytes: Uint8Array;
+  shellPath: string;
   shellArgv0: string;
   script: string;
   marker: string;
@@ -252,63 +253,47 @@ async function runGuestScript(options: {
   const stdoutStart = options.captured.output.stdout.length;
   const stderrStart = options.captured.output.stderr.length;
   const diagnosticStart = options.captured.output.diagnostics.length;
-  let pid: number | undefined;
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const exit = options.captured.host.spawn(
-      toArrayBuffer(options.shellBytes),
-      [options.shellArgv0, "-c", options.script],
-      {
-        env: [...HOMEBREW_GUEST_LIFECYCLE_ENV],
-        cwd: "/home/user",
-        uid: 1000,
-        gid: 1000,
-        stdin: new Uint8Array(),
-        onStarted: (startedPid) => {
-          pid = startedPid;
+  const exitCode = await runHomebrewGuestLifecycleProcess({
+    label: options.label,
+    timeoutMs: options.timeoutMs,
+    spawn: () =>
+      options.captured.host.spawnFromVfs(
+        options.shellPath,
+        [options.shellArgv0, "-c", options.script],
+        {
+          env: [...HOMEBREW_GUEST_LIFECYCLE_ENV],
+          cwd: "/home/user",
+          uid: 1000,
+          gid: 1000,
+          stdin: new Uint8Array(),
         },
-      },
+      ),
+    terminate: (pid, exitStatus) =>
+      options.captured.host.terminateProcess(pid, exitStatus),
+  });
+  const stdout = options.captured.output.stdout.slice(stdoutStart);
+  const stderr = options.captured.output.stderr.slice(stderrStart);
+  if (exitCode !== 0) {
+    throw new Error(
+      `${options.label} exited ${exitCode}; stdout=${JSON.stringify(stdout)}; ` +
+        `stderr=${JSON.stringify(stderr)}; diagnostics=` +
+        `${JSON.stringify(options.captured.output.diagnostics)}`,
     );
-    const timedOut = new Promise<never>((_resolve, reject) => {
-      timeout = setTimeout(
-        () => reject(
-          new Error(`${options.label} timed out after ${options.timeoutMs}ms`),
-        ),
-        options.timeoutMs,
-      );
-    });
-    const exitCode = await Promise.race([exit, timedOut]);
-    const stdout = options.captured.output.stdout.slice(stdoutStart);
-    const stderr = options.captured.output.stderr.slice(stderrStart);
-    if (exitCode !== 0) {
-      throw new Error(
-        `${options.label} exited ${exitCode}; stdout=${JSON.stringify(stdout)}; ` +
-          `stderr=${JSON.stringify(stderr)}; diagnostics=` +
-          `${JSON.stringify(options.captured.output.diagnostics)}`,
-      );
-    }
-    if (!stdout.split(/\r?\n/).includes(options.marker)) {
-      throw new Error(
-        `${options.label} marker is missing; stdout=${JSON.stringify(stdout)}; ` +
-          `stderr=${JSON.stringify(stderr)}`,
-      );
-    }
-    assertNoUnexpectedHostDiagnostics(
-      options.captured.output.diagnostics.slice(diagnosticStart),
-      options.label,
+  }
+  if (!stdout.split(/\r?\n/).includes(options.marker)) {
+    throw new Error(
+      `${options.label} marker is missing; stdout=${JSON.stringify(stdout)}; ` +
+        `stderr=${JSON.stringify(stderr)}`,
     );
-    if (options.captured.output.limitExceeded) {
-      throw new Error(
-        `${options.label} exceeded the ${MAX_CAPTURED_OUTPUT_BYTES}-byte output limit`,
-      );
-    }
-  } catch (error) {
-    if (pid !== undefined) {
-      await options.captured.host.terminateProcess(pid, 124).catch(() => {});
-    }
-    throw error;
-  } finally {
-    if (timeout !== undefined) clearTimeout(timeout);
+  }
+  assertNoUnexpectedHostDiagnostics(
+    options.captured.output.diagnostics.slice(diagnosticStart),
+    options.label,
+  );
+  if (options.captured.output.limitExceeded) {
+    throw new Error(
+      `${options.label} exceeded the ${MAX_CAPTURED_OUTPUT_BYTES}-byte output limit`,
+    );
   }
 }
 
@@ -328,12 +313,6 @@ function parseJson(bytes: Uint8Array, label: string): unknown {
   } catch (error) {
     throw new Error(`${label} is not valid UTF-8 JSON: ${String(error)}`);
   }
-}
-
-function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  const result = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(result).set(bytes);
-  return result;
 }
 
 function delay(milliseconds: number): Promise<void> {

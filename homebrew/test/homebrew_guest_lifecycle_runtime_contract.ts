@@ -15,8 +15,23 @@ import {
 } from "./homebrew_guest_lifecycle_contract";
 
 export interface HomebrewGuestLifecycleShell {
-  bytes: Uint8Array;
+  path: string;
   argv0: string;
+}
+
+export function parseHomebrewGuestLifecycleShellConfig(
+  bytes: Uint8Array,
+): HomebrewGuestLifecycleShell {
+  const shellConfig = parseKandeloShellConfig(
+    new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+  );
+  if (shellConfig === null) {
+    throw new Error(`${KANDELO_SHELL_CONFIG_PATH} has an unsupported schema`);
+  }
+  return {
+    path: shellConfig.path,
+    argv0: shellConfig.argv[0]!,
+  };
 }
 
 export function assertHomebrewGuestLifecycleCatalog(
@@ -33,32 +48,25 @@ export function assertHomebrewGuestLifecycleCatalog(
 /**
  * Resolve the executable from the supplied filesystem rather than carrying
  * bytes over from an earlier boot. A reboot proof must fail if export omitted
- * or re-deferred the image-owned shell.
+ * or re-deferred the image-owned shell. Callers launch this path through the
+ * owning worker instead of copying the executable back to the main thread.
  */
 export function resolveHomebrewGuestLifecycleShell(
   fs: MemoryFileSystem,
 ): HomebrewGuestLifecycleShell {
-  const shellConfig = parseKandeloShellConfig(
-    new TextDecoder("utf-8", { fatal: true }).decode(
-      readVfsFile(fs, KANDELO_SHELL_CONFIG_PATH),
-    ),
+  const shell = parseHomebrewGuestLifecycleShellConfig(
+    readVfsFile(fs, KANDELO_SHELL_CONFIG_PATH),
   );
-  if (shellConfig === null) {
-    throw new Error(`${KANDELO_SHELL_CONFIG_PATH} has an unsupported schema`);
-  }
-  if (fs.isPathDeferred(shellConfig.path)) {
+  if (fs.isPathDeferred(shell.path)) {
     throw new Error(
-      `lifecycle shell must be image-owned, but ${shellConfig.path} is deferred`,
+      `lifecycle shell must be image-owned, but ${shell.path} is deferred`,
     );
   }
-  const stat = fs.stat(shellConfig.path);
+  const stat = fs.stat(shell.path);
   if ((stat.mode & 0xf000) !== 0x8000 || (stat.mode & 0o111) === 0) {
-    throw new Error(`${shellConfig.path} is not an executable regular file`);
+    throw new Error(`${shell.path} is not an executable regular file`);
   }
-  return {
-    bytes: readVfsFile(fs, shellConfig.path, stat.size),
-    argv0: shellConfig.argv[0]!,
-  };
+  return shell;
 }
 
 export function completedLazyDownloadUrls(

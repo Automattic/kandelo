@@ -104,6 +104,7 @@ interface RootfsExportAcceptanceResult {
   firstExportSha256: string;
   secondExportSha256: string;
   firstExportBytes: number;
+  firstExportSourceBytesAfterOwnedInit: number;
   secondExportBytes: number;
   liveProcessExitCode: number;
   liveProcessExportError: string;
@@ -590,7 +591,21 @@ async function init(): Promise<void> {
       await settleWebKitReclaim();
     }
 
-    const parsed = MemoryFileSystem.fromImage(firstExport);
+    const firstExportSha256 = await sha256(firstExport);
+    const firstExportBytes = firstExport.byteLength;
+    if (
+      !(firstExport.buffer instanceof ArrayBuffer) ||
+      firstExport.byteOffset !== 0 ||
+      firstExport.byteLength !== firstExport.buffer.byteLength
+    ) {
+      throw new Error(
+        "rootfs export did not return one whole transferable ArrayBuffer",
+      );
+    }
+    const firstExportBuffer = firstExport.buffer;
+    let parsed: MemoryFileSystem | null = MemoryFileSystem.fromImage(
+      firstExport,
+    );
     const lazyEntries = parsed.exportLazyEntries().map((entry) => ({
       path: entry.path,
       url: entry.url,
@@ -608,6 +623,8 @@ async function init(): Promise<void> {
       parsed,
       request.lateWritePath,
     );
+    trackTransientImageBuffer(parsed.sharedBuffer);
+    parsed = null;
 
     let secondKernel: BrowserKernel | null = new BrowserKernel({
       kernelOwnedFs: true,
@@ -619,10 +636,14 @@ async function init(): Promise<void> {
       },
     });
     try {
-      await secondKernel.initFromImage({
+      // WHY: a durable reboot has already hashed and inspected this export.
+      // Transfer its exact buffer so a large image is not structured-cloned on
+      // the persistent browser main thread before worker-owned restore.
+      await secondKernel.initFromOwnedImage({
         kernelWasm: kernelBytes,
-        vfsImage: firstExport,
+        vfsImage: firstExportBuffer,
       });
+      const firstExportSourceBytesAfterOwnedInit = firstExport.byteLength;
       const persisted = await secondKernel.readFileFromVfs(request.writePath);
       if (persisted === null) {
         throw new Error(`exported rootfs lost ${request.writePath}`);
@@ -630,9 +651,10 @@ async function init(): Promise<void> {
       const secondExport = await secondKernel.exportRootfsImage();
       return {
         persistedText: new TextDecoder().decode(persisted),
-        firstExportSha256: await sha256(firstExport),
+        firstExportSha256,
         secondExportSha256: await sha256(secondExport),
-        firstExportBytes: firstExport.byteLength,
+        firstExportBytes,
+        firstExportSourceBytesAfterOwnedInit,
         secondExportBytes: secondExport.byteLength,
         liveProcessExitCode,
         liveProcessExportError,

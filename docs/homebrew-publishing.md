@@ -497,15 +497,30 @@ file uses schema 1 and declares:
   payload record for every plan asset, while public transport forbids local
   payload bytes;
 - exact 40-character `coreRevision` and `canaryRevision` values; and
-- a bounded `timeoutMs` from 1,000 through 1,800,000.
+- one bounded `timeoutMs` from 1,000 through 1,800,000 for fixture loading,
+  both guest phases, export, reboot, and teardown together.
 
-All artifact URLs are canonical credential-free HTTPS identities. Chromium
-may retrieve them through the same-origin test proxy, but digest validation and
-the VFS keep the original immutable URL as authority. The downloaded mirror
-plan must be byte-identical to the plan embedded in the image and must derive
-its release tag and every payload URL from its complete collection digest.
-Closed payloads are then handed to the worker as an exhaustive transport:
-an undeclared request fails instead of falling back to ambient network.
+All artifact URLs are canonical HTTPS locations without URL userinfo or
+fragments. Query parameters are allowed, so the fixture does not claim that
+every location is credential-free or immutable. Loader requests omit browser
+credentials and referrers, and fetch-source query strings are redacted from
+response diagnostics. Exact byte length and SHA-256 are the authority even if
+a location changes. Chromium may retrieve those locations through the
+same-origin test proxy while the VFS retains the original URL identity. The
+downloaded mirror plan has the stronger content-addressed release contract: it
+must be byte-identical to the plan embedded in the image and must derive its
+release tag and every payload URL from its complete collection digest.
+Closed payload requests begin only after that plan authorizes their complete
+URL, digest, size, and asset-name set. The verified payloads are then handed to
+the worker as an exhaustive transport: an undeclared request fails instead of
+falling back to ambient network.
+
+Before the Chromium reboot, the runner records the exported image's size and
+digest, then transfers its whole `ArrayBuffer` to the VFS-owning worker and
+confirms the main-thread view is detached. Phase two re-reads the small
+`/etc/kandelo/shell.json` contract through the worker and launches that VFS
+path; it does not reconstruct the exported filesystem or copy Bash on the
+browser main thread.
 
 Run an exact reviewed fixture with:
 
