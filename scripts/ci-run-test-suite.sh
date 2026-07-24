@@ -12,6 +12,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
+host_target() {
+    rustc -vV | awk '/^host/ {print $2}'
+}
+
 # Prepared CI workspaces transport fetched programs as relative links into a
 # repo-local copy of the exact content-addressed cache generations. Point both
 # the Rust and TypeScript resolvers at that identity before any suite can read
@@ -19,6 +23,15 @@ cd "$REPO_ROOT"
 portable_cache="$REPO_ROOT/.ci-test-binary-cache"
 if [ -d "$portable_cache/programs" ]; then
     export WASM_POSIX_BINARY_CACHE_ROOT="$portable_cache"
+    prepared_xtask="$REPO_ROOT/target/$(host_target)/release/xtask"
+    if [ ! -f "$prepared_xtask" ] || [ ! -x "$prepared_xtask" ]; then
+        echo "ci-run-test-suite: missing executable prepared package checker: $prepared_xtask" >&2
+        exit 1
+    fi
+    # WHY: each conformance case starts a fresh Node resolver under a short
+    # timeout. Without the packed checker path, every process may start Cargo
+    # preparation and leave later cases waiting on its build lock.
+    export WASM_POSIX_XTASK_BIN="$prepared_xtask"
 fi
 
 suite="${1:-}"
@@ -31,10 +44,6 @@ group="${2:-${TEST_GROUP:-all}}"
 invalid_group() {
     echo "unknown $suite test group: $group" >&2
     exit 2
-}
-
-host_target() {
-    rustc -vV | awk '/^host/ {print $2}'
 }
 
 install_node_deps() {

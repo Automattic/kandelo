@@ -50,6 +50,9 @@ printf '%s\n' "$*" > "$RUN_CAPTURE"
 if [ -n "${RUN_CACHE_CAPTURE:-}" ]; then
     printf '%s\n' "${WASM_POSIX_BINARY_CACHE_ROOT:-}" > "$RUN_CACHE_CAPTURE"
 fi
+if [ -n "${RUN_XTASK_CAPTURE:-}" ]; then
+    printf '%s\n' "${WASM_POSIX_XTASK_BIN:-}" > "$RUN_XTASK_CAPTURE"
+fi
 EOF
 
 cat > "$FIXTURE/scripts/ci-check-browser-assets.sh" <<'EOF'
@@ -63,6 +66,9 @@ for runner in run-libc-tests.sh run-sortix-tests.sh; do
 printf '%s\n' "$*" > "$TEST_CAPTURE"
 if [ -n "${CACHE_CAPTURE:-}" ]; then
     printf '%s\n' "${WASM_POSIX_BINARY_CACHE_ROOT:-}" > "$CACHE_CAPTURE"
+fi
+if [ -n "${XTASK_CAPTURE:-}" ]; then
+    printf '%s\n' "${WASM_POSIX_XTASK_BIN:-}" > "$XTASK_CAPTURE"
 fi
 EOF
     chmod +x "$FIXTURE/scripts/$runner"
@@ -148,17 +154,57 @@ for workflow in \
     fi
 done
 
+prepared_xtask="$FIXTURE/target/fixture-host/release/xtask"
+mkdir -p "$(dirname "$prepared_xtask")"
+cat > "$prepared_xtask" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "build-deps" ] && [ "${2:-}" = "cache-root" ] &&
+   [ "$#" -eq 2 ]; then
+    case "${WASM_POSIX_BINARY_CACHE_ROOT:-}" in
+        /*) printf '%s\n' "$WASM_POSIX_BINARY_CACHE_ROOT" ;;
+        *) printf '%s\n' "$PWD/${WASM_POSIX_BINARY_CACHE_ROOT:-.cache/kandelo}" ;;
+    esac
+    exit 0
+fi
+exit 2
+EOF
+chmod +x "$prepared_xtask"
+
 mkdir -p "$FIXTURE/.ci-test-binary-cache/programs"
 cache_capture="$TMP_DIR/portable-cache-root"
+xtask_capture="$TMP_DIR/portable-xtask"
 PATH="$FIXTURE/bin:$PATH" \
     TEST_CAPTURE="$TMP_DIR/portable-cache-suite.args" \
     CACHE_CAPTURE="$cache_capture" \
+    XTASK_CAPTURE="$xtask_capture" \
     WASM_POSIX_BINARY_CACHE_ROOT="$TMP_DIR/wrong-cache" \
+    WASM_POSIX_XTASK_BIN="$TMP_DIR/wrong-xtask" \
     bash "$FIXTURE/scripts/ci-run-test-suite.sh" libc all
 grep -Fxq "$FIXTURE/.ci-test-binary-cache" "$cache_capture" || {
     echo "ci-run-test-suite.sh did not select the transported program cache" >&2
     exit 1
 }
+grep -Fxq "$prepared_xtask" "$xtask_capture" || {
+    echo "ci-run-test-suite.sh did not select the transported package checker" >&2
+    exit 1
+}
+missing_xtask_capture="$TMP_DIR/missing-xtask-suite.args"
+chmod -x "$prepared_xtask"
+if PATH="$FIXTURE/bin:$PATH" \
+    TEST_CAPTURE="$missing_xtask_capture" \
+    bash "$FIXTURE/scripts/ci-run-test-suite.sh" libc all \
+    > "$TMP_DIR/missing-xtask.out" 2>&1; then
+    echo "ci-run-test-suite.sh accepted a non-executable transported package checker" >&2
+    exit 1
+fi
+grep -Fq \
+    "missing executable prepared package checker: $prepared_xtask" \
+    "$TMP_DIR/missing-xtask.out"
+[ ! -e "$missing_xtask_capture" ] || {
+    echo "ci-run-test-suite.sh dispatched a suite without its transported package checker" >&2
+    exit 1
+}
+chmod +x "$prepared_xtask"
 rm -rf "$FIXTURE/.ci-test-binary-cache"
 
 prepared_files=(
@@ -183,22 +229,10 @@ for benchmark in \
 done
 for prepared in "${prepared_files[@]}"; do
     mkdir -p "$FIXTURE/$(dirname "$prepared")"
-    : > "$FIXTURE/$prepared"
+    if [ "$prepared" != "target/fixture-host/release/xtask" ]; then
+        : > "$FIXTURE/$prepared"
+    fi
 done
-chmod +x "$FIXTURE/target/fixture-host/release/xtask"
-cat > "$FIXTURE/target/fixture-host/release/xtask" <<'EOF'
-#!/usr/bin/env bash
-if [ "${1:-}" = "build-deps" ] && [ "${2:-}" = "cache-root" ] &&
-   [ "$#" -eq 2 ]; then
-    case "${WASM_POSIX_BINARY_CACHE_ROOT:-}" in
-        /*) printf '%s\n' "$WASM_POSIX_BINARY_CACHE_ROOT" ;;
-        *) printf '%s\n' "$PWD/${WASM_POSIX_BINARY_CACHE_ROOT:-.cache/kandelo}" ;;
-    esac
-    exit 0
-fi
-exit 2
-EOF
-chmod +x "$FIXTURE/target/fixture-host/release/xtask"
 
 cache_key="$(printf 'a%.0s' {1..64})"
 generation="fixture-1.0.0-rev1-wasm32-$cache_key"
@@ -459,16 +493,25 @@ cp \
     "$pack_extract/scripts/"
 cp "$FIXTURE/run.sh" "$pack_extract/run.sh"
 browser_cache_capture="$TMP_DIR/relocated-browser-cache"
+browser_xtask_capture="$TMP_DIR/relocated-browser-xtask"
 PATH="$FIXTURE/bin:$PATH" \
     RUN_CAPTURE="$TMP_DIR/relocated-browser-run.args" \
     RUN_CACHE_CAPTURE="$browser_cache_capture" \
+    RUN_XTASK_CAPTURE="$browser_xtask_capture" \
     PREPARE_BROWSER_ASSETS=true \
     WASM_POSIX_BINARY_CACHE_ROOT="$TMP_DIR/wrong-relocated-cache" \
+    WASM_POSIX_XTASK_BIN="$TMP_DIR/wrong-relocated-xtask" \
     bash "$pack_extract/scripts/ci-run-test-suite.sh" browser
 grep -Fxq \
     "$pack_extract/.ci-test-binary-cache" \
     "$browser_cache_capture" || {
     echo "relocated browser preparation did not select the transported cache" >&2
+    exit 1
+}
+grep -Fxq \
+    "$pack_extract/target/fixture-host/release/xtask" \
+    "$browser_xtask_capture" || {
+    echo "relocated browser preparation did not select the transported package checker" >&2
     exit 1
 }
 grep -Fxq -- \
