@@ -847,6 +847,14 @@ rewriting that commit, making the published source commit an ancestor of
 `main`; immediately afterward, rotate the tap caller back to Kandelo `main`.
 Write publication never accepts a non-main Kandelo branch.
 
+Ordinary kernel PRs may be squash-merged. Bottles built from a PR commit are
+provisional, and final publication normally rebuilds from the landed `main`
+commit. Preserving a PR head with a merge commit is an explicit ABI
+release-train exception used only when the exact pre-merge bottle bytes are
+being promoted. That exception changes commit reachability only: it must not
+weaken source provenance checks, substitute a different commit by content
+hash, or treat merely similar bytes as the reviewed artifact.
+
 An ABI bootstrap may need package archives produced by the reviewed commit
 immediately before the publisher workflow plumbing. Every bootstrap batch uses
 this explicit staging tag and package-producing SHA pair:
