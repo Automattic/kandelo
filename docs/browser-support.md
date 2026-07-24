@@ -309,6 +309,17 @@ immutable contents are written. This makes runtime allocation space a checked
 artifact contract instead of allowing an image to build successfully and then
 fail with `ENOSPC` during normal browser initialization.
 
+Gallery launch URLs retain both the logical demo id and the resolved VFS image
+URL. Each built-in VFS image has one trusted source and resource identity; the
+logical id separately selects launch behavior. This lets the shell, Doom, and
+modeset demos reuse the same shell image without creating multiple trusted
+image profiles. The loader verifies that the URL exactly matches the current
+built-in image before granting its larger resource limit. A query parameter or
+URL fragment cannot give an unrelated image that limit; images consumed by the
+general live host use the bounded custom-image profile when they do not match.
+The specialized Node host always boots its fixed built-in image rather than
+consuming a `vfs` override.
+
 ```typescript
 // Typical demo pattern
 const [kernelBuf, vfsImageBuf] = await Promise.all([

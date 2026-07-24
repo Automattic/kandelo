@@ -18,6 +18,15 @@ export interface KandeloBootQuery {
   vfsImageUrl: string | null;
 }
 
+export interface TrustedVfsSourceCandidate<SourceId extends string> {
+  id: SourceId;
+  resolveVfsImageUrl: () =>
+    | string
+    | null
+    | undefined
+    | Promise<string | null | undefined>;
+}
+
 export function readKandeloBootQuery(search = currentSearch()): KandeloBootQuery {
   const params = new URLSearchParams(search);
   return {
@@ -34,6 +43,10 @@ export function galleryItemUrl(
   url.searchParams.delete("idle");
   clearVfsImageQueryParams(url.searchParams);
   if (item.vfsImageUrl) {
+    // WHY: the demo id selects launch behavior while the exact URL identifies
+    // the VFS image and its resource limit. Gallery navigation must preserve
+    // both parts of that contract.
+    url.searchParams.set("demo", item.id);
     url.searchParams.set(VFS_IMAGE_QUERY_PARAM, item.vfsImageUrl);
   }
   return url.href;
@@ -111,6 +124,37 @@ export function normalizeVfsImageUrl(
   return url.href;
 }
 
+/**
+ * Match a URL to one exact trusted VFS source.
+ *
+ * Fragments describe launch behavior, not file identity, so they are ignored
+ * here. Unmatched, duplicated, ambiguous, and unresolvable sources fail closed.
+ */
+export async function matchTrustedVfsSourceId<SourceId extends string>(
+  vfsImageUrl: string,
+  candidates: readonly TrustedVfsSourceCandidate<SourceId>[],
+  baseHref = currentHref(),
+): Promise<SourceId | null> {
+  const normalized = normalizeVfsImageUrl(vfsImageUrl, baseHref);
+  if (!normalized) return null;
+
+  const ids = new Set<SourceId>();
+  for (const candidate of candidates) {
+    if (ids.has(candidate.id)) return null;
+    ids.add(candidate.id);
+  }
+
+  const requestedBase = withoutUrlHash(new URL(normalized));
+
+  const matches = (
+    await Promise.all(candidates.map(async (candidate) => ({
+      id: candidate.id,
+      baseUrl: await resolvedCandidateBaseUrl(candidate, baseHref),
+    })))
+  ).filter((candidate) => candidate.baseUrl === requestedBase);
+  return matches.length === 1 ? matches[0].id : null;
+}
+
 export function demoIdFromVfsImageUrl(vfsImageUrl: string): string {
   let name = "custom-vfs";
   try {
@@ -149,6 +193,25 @@ function clearVfsImageQueryParams(params: URLSearchParams): void {
   for (const key of VFS_IMAGE_QUERY_ALIASES) {
     params.delete(key);
   }
+}
+
+async function resolvedCandidateBaseUrl<SourceId extends string>(
+  candidate: TrustedVfsSourceCandidate<SourceId>,
+  baseHref = currentHref(),
+): Promise<string | null> {
+  try {
+    const resolved = await candidate.resolveVfsImageUrl();
+    const normalized = normalizeVfsImageUrl(resolved, baseHref);
+    return normalized ? withoutUrlHash(new URL(normalized)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function withoutUrlHash(url: URL): string {
+  const copy = new URL(url.href);
+  copy.hash = "";
+  return copy.href;
 }
 
 function nonEmpty(value: string | null | undefined): string | null {

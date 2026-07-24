@@ -11,8 +11,10 @@ test("Kandelo dock defaults to full width", async ({ page }) => {
     waitUntil: "domcontentloaded",
   });
 
+  // WHY: a brand-new origin reloads once after its service worker first takes
+  // control. This test must also pass alone, without another test priming it.
   await expect(page.getByRole("navigation", { name: "Kandelo tools" }))
-    .toHaveClass(/\bkdock-full-width\b/);
+    .toHaveClass(/\bkdock-full-width\b/, { timeout: 30_000 });
   await expect(page.getByRole("button", { name: "Use compact dock" }))
     .toHaveAttribute("aria-pressed", "true");
   await expect(page.locator(".kdocked-app"))
@@ -38,7 +40,8 @@ test("Kandelo gallery launch updates the browser URL with a VFS image", async ({
     .poll(() => new URL(page.url()).searchParams.get("vfs"))
     .toContain("/node-vfs.vfs.zst#node");
   const url = new URL(page.url());
-  expect(url.searchParams.has("demo")).toBe(false);
+  expect(url.searchParams.get("demo")).toBe("node");
+  await expect(page.locator(".kdock-status-title")).toHaveText("Node.js");
 });
 
 test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) => {
@@ -96,13 +99,98 @@ test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) =
   }, ABI_VERSION);
 
   const url = new URL(result.href);
-  expect(url.searchParams.has("demo")).toBe(false);
+  expect(url.searchParams.get("demo")).toBe("site");
   expect(url.searchParams.get("vfs")).toBe("https://cdn.example.invalid/site.vfs.zst");
   expect(result.parsed).toEqual({
     vfsImageUrl: "https://cdn.example.invalid/site.vfs.zst",
   });
   expect(result.localRefUrl).toBeNull();
   expect(result.relativeRefUrl).toBe(result.expectedRelativeRefUrl);
+});
+
+test("Kandelo identifies a built-in VFS image only by its exact source", async ({ page }) => {
+  await page.goto(appUrl("/?demo=shell"), {
+    waitUntil: "domcontentloaded",
+  });
+
+  const result = await page.evaluate(async () => {
+    const { matchTrustedVfsSourceId } = await import("/pages/kandelo/url-state.ts");
+    const baseHref = "https://kandelo.example/app/";
+    const candidates = [
+      {
+        id: "alpha",
+        resolveVfsImageUrl: () => "./images/alpha.vfs.zst",
+      },
+      {
+        id: "beta",
+        resolveVfsImageUrl: async () =>
+          "https://cdn.example.invalid/beta.vfs.zst",
+      },
+    ] as const;
+
+    return {
+      exact: await matchTrustedVfsSourceId(
+        "https://cdn.example.invalid/beta.vfs.zst#beta",
+        candidates,
+        baseHref,
+      ),
+      fragmentDoesNotChangeSource: await matchTrustedVfsSourceId(
+        "https://kandelo.example/app/images/alpha.vfs.zst#beta",
+        candidates,
+        baseHref,
+      ),
+      relativeSource: await matchTrustedVfsSourceId(
+        "https://kandelo.example/app/images/alpha.vfs.zst",
+        candidates,
+        baseHref,
+      ),
+      unmatched: await matchTrustedVfsSourceId(
+        "https://cdn.example.invalid/other.vfs.zst",
+        candidates,
+        baseHref,
+      ),
+      ambiguousSource: await matchTrustedVfsSourceId(
+        "https://cdn.example.invalid/shared.vfs.zst#shell",
+        [
+          { id: "shell", resolveVfsImageUrl: () => "https://cdn.example.invalid/shared.vfs.zst" },
+          { id: "doom", resolveVfsImageUrl: () => "https://cdn.example.invalid/shared.vfs.zst" },
+        ] as const,
+        baseHref,
+      ),
+      failedResolver: await matchTrustedVfsSourceId(
+        "https://cdn.example.invalid/missing.vfs.zst#missing",
+        [{
+          id: "missing",
+          resolveVfsImageUrl: () => Promise.reject(new Error("not built")),
+        }] as const,
+        baseHref,
+      ),
+      duplicateIds: await matchTrustedVfsSourceId(
+        "https://cdn.example.invalid/one.vfs.zst#same",
+        [
+          { id: "same", resolveVfsImageUrl: () => "https://cdn.example.invalid/one.vfs.zst" },
+          { id: "same", resolveVfsImageUrl: () => "https://cdn.example.invalid/two.vfs.zst" },
+        ] as const,
+        baseHref,
+      ),
+      invalidProtocol: await matchTrustedVfsSourceId(
+        "file:///tmp/alpha.vfs.zst#alpha",
+        candidates,
+        baseHref,
+      ),
+    };
+  });
+
+  expect(result).toEqual({
+    exact: "beta",
+    fragmentDoesNotChangeSource: "alpha",
+    relativeSource: "alpha",
+    unmatched: null,
+    ambiguousSource: null,
+    failedResolver: null,
+    duplicateIds: null,
+    invalidProtocol: null,
+  });
 });
 
 test("Kandelo service worker app probe does not capture the shell page client", async ({ page }) => {

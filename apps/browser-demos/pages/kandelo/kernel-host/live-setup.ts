@@ -87,6 +87,7 @@ import { PRESET_LIBRARY } from "../presets";
 import {
   descriptorWithVfsImageUrl,
   demoIdFromVfsImageUrl,
+  matchTrustedVfsSourceId,
   normalizeVfsImageUrl,
   titleFromVfsImageUrl,
   vfsImageUrlFromDescriptor,
@@ -241,7 +242,7 @@ type LiveVfsSource =
 type ShellProfile = "default" | "node";
 type InitEnvProfile = "service" | "wordpress";
 
-interface LiveProfileSpec {
+interface LiveDemoSpec {
   image: LiveVfsImage;
   shell?: ShellProfile;
   includeNodeUtility?: boolean;
@@ -313,7 +314,7 @@ async function settleAfterBootResourcesReleased(): Promise<void> {
   await settleWebKitReclaim();
 }
 
-const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
+const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
   shell: {
     image: "shell",
   },
@@ -392,6 +393,15 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     image: "shell",
     features: ["kms"],
   },
+};
+
+const DEFAULT_DEMO_FOR_VFS_IMAGE: Record<LiveVfsImage, LiveDemoId> = {
+  shell: "shell",
+  node: "node",
+  nginx: "nginx",
+  "nginx-php": "nginx-php",
+  wordpress: "wordpress-sqlite",
+  lamp: "wordpress-mariadb",
 };
 
 const DEMO_ALIASES: Record<string, LiveDemoId> = {
@@ -538,7 +548,7 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
   let serviceWorkerReady: Promise<ServiceWorker> | null = null;
   const localGalleryItems = liveGalleryItems();
 
-  const initialDescriptor = descriptorForBootQuery(opts.vfsUrl, opts.demo);
+  const initialDescriptor = await descriptorForBootQuery(opts.vfsUrl, opts.demo);
   const host = new LiveKernelHost({
     status: "booting",
     descriptor: initialDescriptor,
@@ -685,14 +695,14 @@ function bootElapsedMs(bootStartedAt: number): number {
   return Math.max(0, performance.now() - bootStartedAt);
 }
 
-function descriptorForBootQuery(
+async function descriptorForBootQuery(
   vfsUrl: string | null | undefined,
   demo: string | null | undefined,
-): BootDescriptor {
+): Promise<BootDescriptor> {
   const normalizedVfsUrl = normalizeVfsImageUrl(vfsUrl);
   if (!normalizedVfsUrl) return descriptorFor(normalizeDemoId(demo) ?? "shell");
 
-  const liveId = liveDemoIdForVfsImageUrl(normalizedVfsUrl);
+  const liveId = await liveDemoIdForVfsImageUrl(normalizedVfsUrl, demo);
   const base = descriptorFor(liveId ?? "shell");
   return descriptorWithVfsImageUrl(base, normalizedVfsUrl, liveId
     ? {
@@ -763,7 +773,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
   }
 
   const normalized = normalizeDemoId(id) ?? "shell";
-  const spec = LIVE_PROFILE_SPECS[normalized];
+  const spec = LIVE_DEMO_SPECS[normalized];
   const desc = descriptorFor(normalized);
   const vfsSource = VFS_SOURCES[spec.image];
   return {
@@ -1612,13 +1622,7 @@ async function loadVfsImageBytes(profile: LiveProfile): Promise<ArrayBuffer> {
 }
 
 async function resolveProfileVfsUrl(profile: LiveProfile): Promise<string> {
-  if (profile.vfsSource?.kind === "url") return profile.vfsSource.url;
-  if (profile.vfsSource?.kind === "optional-demo") {
-    return resolveOptionalDemoVfsUrl(profile.vfsSource.image);
-  }
-  if (profile.vfsSource?.kind === "optional-binary") {
-    return optionalBinaryUrl(profile.vfsSource.relPaths, profile.vfsSource.label);
-  }
+  if (profile.vfsSource) return resolveLiveVfsSourceUrl(profile.vfsSource);
   if (profile.vfsUrl) return profile.vfsUrl;
   throw new Error(`No VFS image URL configured for ${profile.id}`);
 }
@@ -1923,7 +1927,7 @@ function envRecord(env: string[]): Record<string, string> {
 function descriptorFor(id: string): BootDescriptor {
   const software = SOFTWARE_PROFILES.get(id);
   const normalized = software ? "shell" : normalizeDemoId(id) ?? "shell";
-  const spec = LIVE_PROFILE_SPECS[normalized];
+  const spec = LIVE_DEMO_SPECS[normalized];
   const item = software
     ? liveGalleryItems().find((p) => p.id === "shell")!
     : liveGalleryItems().find((p) => p.id === normalized) ?? liveGalleryItems()[0];
@@ -1982,7 +1986,7 @@ function liveGalleryItems(): GalleryItem[] {
 function vfsImageUrlForPreset(id: string): string | undefined {
   const liveId = normalizeDemoId(id);
   if (!liveId) return undefined;
-  const source = VFS_SOURCES[LIVE_PROFILE_SPECS[liveId].image];
+  const source = VFS_SOURCES[LIVE_DEMO_SPECS[liveId].image];
   if (source.kind !== "url") return undefined;
   const url = new URL(source.url, location.href);
   url.hash = liveId;
@@ -1994,7 +1998,7 @@ function vfsImageUrlResolverForPreset(
 ): (() => Promise<string>) | undefined {
   const liveId = normalizeDemoId(id);
   if (!liveId) return undefined;
-  const source = VFS_SOURCES[LIVE_PROFILE_SPECS[liveId].image];
+  const source = VFS_SOURCES[LIVE_DEMO_SPECS[liveId].image];
   if (source.kind !== "optional-demo") return undefined;
   return async () => {
     const url = new URL(await resolveOptionalDemoVfsUrl(source.image), location.href);
@@ -2003,39 +2007,36 @@ function vfsImageUrlResolverForPreset(
   };
 }
 
-function liveDemoIdForVfsImageUrl(vfsUrl: string): LiveDemoId | null {
-  const normalized = normalizeVfsImageUrl(vfsUrl);
-  if (!normalized) return null;
+async function liveDemoIdForVfsImageUrl(
+  vfsUrl: string,
+  demo: string | null | undefined,
+): Promise<LiveDemoId | null> {
+  const image = await matchTrustedVfsSourceId(
+    vfsUrl,
+    (Object.keys(VFS_SOURCES) as LiveVfsImage[]).map((id) => ({
+      id,
+      resolveVfsImageUrl: () => resolveLiveVfsSourceUrl(VFS_SOURCES[id]),
+    })),
+  );
+  if (!image) return null;
 
-  const url = new URL(normalized);
-  const hashId = url.hash.slice(1);
-  const baseUrl = withoutHash(url);
-  const hashBaseUrl = isLiveDemoId(hashId) ? profileVfsBaseUrl(hashId) : null;
-  if (hashBaseUrl && baseUrl === hashBaseUrl) {
-    return hashId;
+  const fragmentDemo = normalizeDemoId(new URL(vfsUrl, location.href).hash.slice(1));
+  const requestedDemo = normalizeDemoId(demo) ?? fragmentDemo;
+  if (!requestedDemo) return DEFAULT_DEMO_FOR_VFS_IMAGE[image];
+
+  // WHY: a demo selects launch behavior, while the matched image owns the VFS
+  // bytes and capacity. Never apply a launch profile to a different image.
+  return LIVE_DEMO_SPECS[requestedDemo].image === image
+    ? requestedDemo
+    : null;
+}
+
+async function resolveLiveVfsSourceUrl(source: LiveVfsSource): Promise<string> {
+  if (source.kind === "url") return source.url;
+  if (source.kind === "optional-demo") {
+    return resolveOptionalDemoVfsUrl(source.image);
   }
-
-  const matches = LIVE_DEMO_IDS.filter((id) => {
-    const profileBaseUrl = profileVfsBaseUrl(id);
-    return profileBaseUrl !== null && baseUrl === profileBaseUrl;
-  });
-  if (matches.length === 1) return matches[0];
-  // Multiple presets share the shell VFS image (doom, modeset). When the URL
-  // doesn't pin one via the hash, fall back to the shell preset so the
-  // ambiguous shell-image link doesn't auto-launch a demo binary.
-  return matches.find((id) => id !== "doom" && id !== "modeset") ?? null;
-}
-
-function profileVfsBaseUrl(id: LiveDemoId): string | null {
-  const source = VFS_SOURCES[LIVE_PROFILE_SPECS[id].image];
-  if (source.kind !== "url") return null;
-  return withoutHash(new URL(source.url, location.href));
-}
-
-function withoutHash(url: URL): string {
-  const copy = new URL(url.href);
-  copy.hash = "";
-  return copy.href;
+  return optionalBinaryUrl(source.relPaths, source.label);
 }
 
 async function refreshSoftwareGallery(
@@ -2410,7 +2411,7 @@ function normalizeDemoId(id: string | null | undefined): LiveDemoId | null {
 }
 
 function isLiveDemoId(id: string): id is LiveDemoId {
-  return Object.hasOwn(LIVE_PROFILE_SPECS, id);
+  return Object.hasOwn(LIVE_DEMO_SPECS, id);
 }
 
 function readImageShellConfig(fs: MemoryFileSystem): KandeloShellConfig | null {
