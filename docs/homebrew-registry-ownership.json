@@ -1,0 +1,919 @@
+{
+  "schema": 1,
+  "as_of": "2026-07-23",
+  "purpose": "Machine-checked ownership ledger for retiring packages/registry without losing package, platform, test, support, or composite-image roles.",
+  "sources": {
+    "kandelo": {
+      "repository": "Automattic/kandelo",
+      "commit": "427185cff21ed213de8b8b6573b4f1a3757aa80d"
+    },
+    "historical_inventory": {
+      "git_blob": "ed0dbe477554be8d7bb3fbe4f90e95450b5de85c",
+      "manifest_count": 73,
+      "support_directory_count": 2,
+      "entries": [
+        "bash",
+        "bc",
+        "bzip2",
+        "coreutils",
+        "cpython",
+        "curl",
+        "dash",
+        "diffutils",
+        "dinit",
+        "erlang",
+        "erlang-vfs",
+        "fbdoom",
+        "file",
+        "findutils",
+        "gawk",
+        "git",
+        "grep",
+        "gzip",
+        "hello",
+        "kandelo-sdk",
+        "kernel",
+        "kernel-test-programs",
+        "lamp",
+        "less",
+        "libcurl",
+        "libcxx",
+        "libpng",
+        "libxml2",
+        "lsof",
+        "m4",
+        "make",
+        "mariadb",
+        "mariadb-test",
+        "mariadb-vfs",
+        "modeset",
+        "msmtpd",
+        "nano",
+        "ncurses",
+        "netcat",
+        "nethack",
+        "nethack-browser-bundle",
+        "nginx",
+        "node",
+        "node-compat",
+        "node-vfs",
+        "npm",
+        "openssl",
+        "pcre2-source",
+        "perl",
+        "perl-vfs",
+        "php",
+        "posix-utils-lite",
+        "python-vfs",
+        "redis",
+        "rootfs",
+        "ruby",
+        "sed",
+        "shell",
+        "spidermonkey",
+        "spidermonkey-node",
+        "sqlite",
+        "sqlite-cli",
+        "tar",
+        "tcl",
+        "texlive",
+        "unzip",
+        "userspace",
+        "vim",
+        "vim-browser-bundle",
+        "wget",
+        "wordpress",
+        "xz",
+        "zip",
+        "zlib",
+        "zstd"
+      ]
+    },
+    "tap": {
+      "repository": "Kandelo-dev/homebrew-tap-core",
+      "commit": "fccc3970db092dd1a173b8d0859e620d1d3e2e2a",
+      "formula_directory": "Formula",
+      "sidecar_directory": "Kandelo/formula"
+    }
+  },
+  "role_definitions": {
+    "formula_recipe": "A live tap Formula is the intended authoritative recipe owner. Registry removal still requires recipe, test, patch, source, and fallback parity.",
+    "platform_artifact": "The role belongs to Kandelo's platform release/build contract rather than Homebrew.",
+    "test_fixture_harness": "The entry exists to test the platform or a composed service and must move with its test owner.",
+    "composite_image_policy": "The entry describes an image, demo, service graph, or browser bundle to be replaced by the Phase 7 VFS-layer contract.",
+    "still_unowned": "No durable final owner has been accepted yet. The entry must not be retired."
+  },
+  "registry_entries": {
+    "bash": {
+      "role": "formula_recipe",
+      "formulae": ["bash"],
+      "recipe_state": "tap_native"
+    },
+    "bc": {
+      "role": "formula_recipe",
+      "formulae": ["bc"],
+      "recipe_state": "registry_bridge"
+    },
+    "bzip2": {
+      "role": "formula_recipe",
+      "formulae": ["bzip2"],
+      "recipe_state": "tap_native"
+    },
+    "coreutils": {
+      "role": "formula_recipe",
+      "formulae": ["coreutils"],
+      "recipe_state": "tap_native"
+    },
+    "cpython": {
+      "role": "formula_recipe",
+      "formulae": ["python"],
+      "recipe_state": "registry_bridge",
+      "notes": "The tap uses the public package identity python; the registry recipe is named cpython."
+    },
+    "curl": {
+      "role": "formula_recipe",
+      "formulae": ["curl"],
+      "recipe_state": "tap_native"
+    },
+    "dash": {
+      "role": "formula_recipe",
+      "formulae": ["dash"],
+      "recipe_state": "tap_native"
+    },
+    "diffutils": {
+      "role": "formula_recipe",
+      "formulae": ["diffutils"],
+      "recipe_state": "tap_native"
+    },
+    "dinit": {
+      "role": "still_unowned",
+      "owner": "Kandelo Homebrew migration",
+      "reason": "No Dinit Formula exists in the core tap snapshot.",
+      "next_action": "Port Dinit as a normal Formula before defining service-image boot-critical ownership."
+    },
+    "erlang": {
+      "role": "formula_recipe",
+      "formulae": ["erlang"],
+      "recipe_state": "registry_bridge"
+    },
+    "erlang-vfs": {
+      "role": "composite_image_policy",
+      "owner": "Phase 7 VFS-layer contract",
+      "next_action": "Replace the runtime-specific VFS recipe with a selectable Erlang bottle-backed layer."
+    },
+    "fbdoom": {
+      "role": "formula_recipe",
+      "formulae": ["fbdoom"],
+      "recipe_state": "registry_bridge"
+    },
+    "file": {
+      "role": "formula_recipe",
+      "formulae": ["file-formula", "libmagic"],
+      "recipe_state": "tap_native",
+      "notes": "The registry's combined command/data role is split into file-formula and libmagic."
+    },
+    "findutils": {
+      "role": "formula_recipe",
+      "formulae": ["findutils"],
+      "recipe_state": "tap_native"
+    },
+    "gawk": {
+      "role": "formula_recipe",
+      "formulae": ["gawk"],
+      "recipe_state": "tap_native"
+    },
+    "git": {
+      "role": "formula_recipe",
+      "formulae": ["git"],
+      "recipe_state": "tap_native"
+    },
+    "grep": {
+      "role": "formula_recipe",
+      "formulae": ["grep"],
+      "recipe_state": "tap_native"
+    },
+    "gzip": {
+      "role": "formula_recipe",
+      "formulae": ["gzip"],
+      "recipe_state": "tap_native"
+    },
+    "icu": {
+      "role": "formula_recipe",
+      "formulae": ["icu"],
+      "recipe_state": "tap_native",
+      "notes": "The Formula declares wasm32 but has no sidecar at the recorded tap snapshot, so publication coverage is still pending."
+    },
+    "kandelo-sdk": {
+      "role": "platform_artifact",
+      "owner": "Kandelo SDK release contract",
+      "next_action": "Define a versioned platform release owner and settle the temporary Homebrew SDK bridge before registry retirement."
+    },
+    "kernel": {
+      "role": "platform_artifact",
+      "owner": "Kandelo kernel release contract",
+      "next_action": "Move the artifact to an explicit ABI-bound platform release contract rather than a Formula."
+    },
+    "lamp": {
+      "role": "composite_image_policy",
+      "owner": "Phase 7 VFS-layer contract",
+      "next_action": "Express the LAMP service graph as composable bottled VFS layers after its service Formulae exist."
+    },
+    "less": {
+      "role": "formula_recipe",
+      "formulae": ["less"],
+      "recipe_state": "tap_native"
+    },
+    "libcurl": {
+      "role": "formula_recipe",
+      "formulae": ["libcurl"],
+      "recipe_state": "tap_native"
+    },
+    "libcxx": {
+      "role": "formula_recipe",
+      "formulae": ["libcxx"],
+      "recipe_state": "tap_native"
+    },
+    "libiconv": {
+      "role": "formula_recipe",
+      "formulae": ["libiconv"],
+      "recipe_state": "tap_native"
+    },
+    "libpng": {
+      "role": "formula_recipe",
+      "formulae": ["libpng"],
+      "recipe_state": "tap_native"
+    },
+    "libxml2": {
+      "role": "formula_recipe",
+      "formulae": ["libxml2"],
+      "recipe_state": "tap_native"
+    },
+    "libzip": {
+      "role": "formula_recipe",
+      "formulae": ["libzip"],
+      "recipe_state": "tap_native"
+    },
+    "lsof": {
+      "role": "formula_recipe",
+      "formulae": ["lsof"],
+      "recipe_state": "registry_bridge"
+    },
+    "m4": {
+      "role": "formula_recipe",
+      "formulae": ["m4"],
+      "recipe_state": "tap_native"
+    },
+    "make": {
+      "role": "formula_recipe",
+      "formulae": ["make"],
+      "recipe_state": "tap_native"
+    },
+    "mariadb": {
+      "role": "still_unowned",
+      "owner": "Kandelo Homebrew migration",
+      "reason": "No MariaDB Formula exists in the core tap snapshot.",
+      "next_action": "Port the server, client, and library closure before migrating the MariaDB VFS and LAMP policies."
+    },
+    "mariadb-test": {
+      "role": "test_fixture_harness",
+      "owner": "MariaDB package and VFS acceptance tests",
+      "next_action": "Move the runner and fixtures beside the future Formula/VFS-layer acceptance tests before deleting its registry directory."
+    },
+    "mariadb-vfs": {
+      "role": "composite_image_policy",
+      "owner": "Phase 7 VFS-layer contract",
+      "next_action": "Replace with a MariaDB bottle-backed service layer after the Formula and test harness have durable owners."
+    },
+    "modeset": {
+      "role": "formula_recipe",
+      "formulae": ["modeset"],
+      "recipe_state": "registry_bridge"
+    },
+    "msmtpd": {
+      "role": "still_unowned",
+      "owner": "Kandelo Homebrew migration",
+      "reason": "No msmtpd Formula exists in the core tap snapshot.",
+      "next_action": "Port msmtpd and preserve its daemon/runtime tests before service-image composition."
+    },
+    "nano": {
+      "role": "formula_recipe",
+      "formulae": ["nano"],
+      "recipe_state": "tap_native"
+    },
+    "ncurses": {
+      "role": "formula_recipe",
+      "formulae": ["ncurses"],
+      "recipe_state": "tap_native"
+    },
+    "netcat": {
+      "role": "formula_recipe",
+      "formulae": ["netcat"],
+      "recipe_state": "registry_bridge"
+    },
+    "nethack": {
+      "role": "formula_recipe",
+      "formulae": ["nethack"],
+      "recipe_state": "registry_bridge"
+    },
+    "nethack-browser-bundle": {
+      "role": "composite_image_policy",
+      "owner": "Generic browser gallery and Phase 7 VFS-layer contract",
+      "next_action": "Replace the package-specific browser bundle with durable Formula compatibility evidence and a generic gallery entry."
+    },
+    "nginx": {
+      "role": "still_unowned",
+      "owner": "Kandelo Homebrew migration",
+      "reason": "No Nginx Formula exists in the core tap snapshot.",
+      "next_action": "Port Nginx with normal runtime and browser-host acceptance before composing service images."
+    },
+    "node": {
+      "role": "still_unowned",
+      "owner": "Kandelo Homebrew migration",
+      "reason": "No Node.js Formula exists in the core tap snapshot.",
+      "next_action": "Port Node.js and absorb the node-compat and npm support roles into an explicit Formula/VFS contract."
+    },
+    "node-compat": {
+      "role": "still_unowned",
+      "owner": "Future Node.js Formula",
+      "reason": "This support directory has no package manifest and no accepted durable owner.",
+      "next_action": "Move bootstrap.js into the Node.js Formula, a versioned source resource, or a named platform compatibility contract."
+    },
+    "node-vfs": {
+      "role": "composite_image_policy",
+      "owner": "Phase 7 VFS-layer contract",
+      "next_action": "Preserve the Node demo as the initial bottle-backed VFS-layer example rather than a default runtime-specific base image."
+    },
+    "npm": {
+      "role": "still_unowned",
+      "owner": "Future Node.js/npm Formulae",
+      "reason": "This source-fetch helper has no package manifest and no accepted durable owner.",
+      "next_action": "Move fetch-npm.sh and its provenance contract into the Formula or a versioned source-fetch owner."
+    },
+    "openssl": {
+      "role": "formula_recipe",
+      "formulae": ["openssl"],
+      "recipe_state": "tap_native"
+    },
+    "pcre2-source": {
+      "role": "still_unowned",
+      "owner": "Future MariaDB Formula closure",
+      "reason": "The pcre2 Formula owns the normal library, but this source-only helper remains a registry input for the unported MariaDB path.",
+      "next_action": "Make MariaDB depend on the pcre2 Formula and remove the source-helper role only after source-build parity is proved.",
+      "candidate_formulae": ["pcre2"]
+    },
+    "perl": {
+      "role": "formula_recipe",
+      "formulae": ["perl"],
+      "recipe_state": "tap_native"
+    },
+    "perl-vfs": {
+      "role": "composite_image_policy",
+      "owner": "Phase 7 VFS-layer contract",
+      "next_action": "Replace the runtime-specific image with a selectable Perl bottle-backed layer."
+    },
+    "php": {
+      "role": "still_unowned",
+      "owner": "Kandelo Homebrew migration",
+      "reason": "No PHP Formula exists in the core tap snapshot.",
+      "next_action": "Port PHP and its ICU/XML/SQLite dependencies through normal Formula contracts before LAMP composition."
+    },
+    "posix-utils-lite": {
+      "role": "formula_recipe",
+      "formulae": [
+        "asa",
+        "binutils",
+        "ctags",
+        "ed",
+        "gencat",
+        "getconf",
+        "ncompress",
+        "patch",
+        "pax",
+        "posix-utils-lite",
+        "procps",
+        "what"
+      ],
+      "recipe_state": "registry_bridge",
+      "notes": "Maintained Formulae replace many bundled applets, while the residual multicall Formula remains a registry bridge. The separate man Formula remains future work."
+    },
+    "python-vfs": {
+      "role": "composite_image_policy",
+      "owner": "Phase 7 VFS-layer contract",
+      "next_action": "Replace the runtime-specific image with a selectable Python bottle-backed layer."
+    },
+    "redis": {
+      "role": "still_unowned",
+      "owner": "Kandelo Homebrew migration",
+      "reason": "No Redis Formula exists in the core tap snapshot.",
+      "next_action": "Port Redis with daemon/process and persistence tests before service-image composition."
+    },
+    "rootfs": {
+      "role": "composite_image_policy",
+      "owner": "Bottle closure composer and base-image policy",
+      "next_action": "Replace registry package selection with a versioned bottle-closure manifest while preserving boot-critical eager files."
+    },
+    "ruby": {
+      "role": "formula_recipe",
+      "formulae": ["ruby"],
+      "recipe_state": "registry_bridge"
+    },
+    "sed": {
+      "role": "formula_recipe",
+      "formulae": ["sed"],
+      "recipe_state": "tap_native"
+    },
+    "shell": {
+      "role": "composite_image_policy",
+      "owner": "Main-shell Brewfile and bottle closure composer",
+      "next_action": "Retire the registry shell recipe only after the mostly-lazy bottle-composed shell replaces the deployed image and rollback path."
+    },
+    "spidermonkey": {
+      "role": "still_unowned",
+      "owner": "Kandelo Homebrew migration",
+      "reason": "No SpiderMonkey Formula exists in the core tap snapshot.",
+      "next_action": "Port the engine as a Formula with library and runtime acceptance."
+    },
+    "spidermonkey-node": {
+      "role": "still_unowned",
+      "owner": "Kandelo Homebrew migration",
+      "reason": "The SpiderMonkey Node-compatibility package has neither a Formula nor a settled compatibility-layer owner.",
+      "next_action": "Classify the compatibility role after the SpiderMonkey and Node.js Formula boundaries are defined."
+    },
+    "sqlite": {
+      "role": "formula_recipe",
+      "formulae": ["sqlite"],
+      "recipe_state": "tap_native",
+      "notes": "The Formula installs both libsqlite3 and the sqlite3 command."
+    },
+    "sqlite-cli": {
+      "role": "still_unowned",
+      "owner": "SQLite Formula parity audit",
+      "reason": "The sqlite Formula appears to cover the CLI output, but the separate historical manifest has not received an explicit retirement disposition.",
+      "next_action": "Prove command, fork, test, and source parity and then record sqlite as its authoritative owner.",
+      "candidate_formulae": ["sqlite"]
+    },
+    "tar": {
+      "role": "formula_recipe",
+      "formulae": ["tar"],
+      "recipe_state": "tap_native"
+    },
+    "tcl": {
+      "role": "still_unowned",
+      "owner": "Kandelo Homebrew migration",
+      "reason": "No Tcl Formula exists in the core tap snapshot.",
+      "next_action": "Port Tcl with its library, shell, and runtime tests."
+    },
+    "texlive": {
+      "role": "formula_recipe",
+      "formulae": ["texlive"],
+      "recipe_state": "tap_native"
+    },
+    "unzip": {
+      "role": "formula_recipe",
+      "formulae": ["unzip"],
+      "recipe_state": "tap_native"
+    },
+    "userspace": {
+      "role": "platform_artifact",
+      "owner": "Kandelo userspace release contract",
+      "next_action": "Split platform-owned userspace glue from normal user software and give the former an ABI-bound release owner."
+    },
+    "vim": {
+      "role": "formula_recipe",
+      "formulae": ["vim"],
+      "recipe_state": "tap_native"
+    },
+    "vim-browser-bundle": {
+      "role": "composite_image_policy",
+      "owner": "Generic browser gallery and Phase 7 VFS-layer contract",
+      "next_action": "Replace the package-specific browser bundle with durable Formula compatibility evidence and a generic gallery entry."
+    },
+    "wget": {
+      "role": "formula_recipe",
+      "formulae": ["wget"],
+      "recipe_state": "tap_native"
+    },
+    "wordpress": {
+      "role": "composite_image_policy",
+      "owner": "Phase 7 VFS-layer contract",
+      "next_action": "Compose WordPress from its own image files plus bottled PHP, MariaDB, web-server, and service dependencies."
+    },
+    "xz": {
+      "role": "formula_recipe",
+      "formulae": ["xz"],
+      "recipe_state": "tap_native"
+    },
+    "zip": {
+      "role": "formula_recipe",
+      "formulae": ["zip"],
+      "recipe_state": "tap_native"
+    },
+    "zlib": {
+      "role": "formula_recipe",
+      "formulae": ["zlib"],
+      "recipe_state": "tap_native"
+    },
+    "zstd": {
+      "role": "formula_recipe",
+      "formulae": ["zstd"],
+      "recipe_state": "tap_native"
+    }
+  },
+  "historical_only_entries": {
+    "hello": {
+      "role": "test_fixture_harness",
+      "disposition": "retired",
+      "owner": "Historical package-publication canary",
+      "notes": "The never-product canary was retired; retained GHCR history is not a migration blocker."
+    },
+    "kernel-test-programs": {
+      "role": "test_fixture_harness",
+      "disposition": "moved",
+      "owner": "tests/package-system/kernel-test-fixtures.test.ts",
+      "notes": "Kernel fixtures are generated and validated by the test subsystem rather than shipped as a user Formula."
+    }
+  },
+  "tap_formulae": {
+    "asa": {
+      "registry_entries": ["posix-utils-lite"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "bash": {
+      "registry_entries": ["bash"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "bc": {
+      "registry_entries": ["bc"],
+      "recipe_state": "registry_bridge",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "binutils": {
+      "registry_entries": ["posix-utils-lite"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "bzip2": {
+      "registry_entries": ["bzip2"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "coreutils": {
+      "registry_entries": ["coreutils"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "ctags": {
+      "registry_entries": ["posix-utils-lite"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "curl": {
+      "registry_entries": ["curl"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32", "wasm64"],
+      "architecture_evidence": { "wasm32": "success", "wasm64": "success" }
+    },
+    "dash": {
+      "registry_entries": ["dash"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "diffutils": {
+      "registry_entries": ["diffutils"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "ed": {
+      "registry_entries": ["posix-utils-lite"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "erlang": {
+      "registry_entries": ["erlang"],
+      "recipe_state": "registry_bridge",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "fbdoom": {
+      "registry_entries": ["fbdoom"],
+      "recipe_state": "registry_bridge",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "file-formula": {
+      "registry_entries": ["file"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "findutils": {
+      "registry_entries": ["findutils"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "gawk": {
+      "registry_entries": ["gawk"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "gencat": {
+      "registry_entries": ["posix-utils-lite"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "getconf": {
+      "registry_entries": ["posix-utils-lite"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "git": {
+      "registry_entries": ["git"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "grep": {
+      "registry_entries": ["grep"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "gzip": {
+      "registry_entries": ["gzip"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "icu": {
+      "registry_entries": ["icu"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": {
+        "wasm32": {
+          "status": "pending",
+          "category": "publication",
+          "reason": "Formula/icu.rb declares wasm32, but the recorded tap snapshot has no published ICU sidecar.",
+          "attempt": "Read-only tap audit at fccc3970db092dd1a173b8d0859e620d1d3e2e2a on 2026-07-23.",
+          "first_error_or_artifact": "Kandelo/formula/icu.json is absent from the recorded tap commit.",
+          "last_green": "none: no accepted ICU bottle sidecar exists in the recorded tap snapshot.",
+          "owner": "Kandelo Homebrew publishers",
+          "next_action": "Publish and anonymously verify the ICU bottle sidecar, then advance this evidence to success."
+        }
+      }
+    },
+    "less": {
+      "registry_entries": ["less"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "libcurl": {
+      "registry_entries": ["libcurl"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32", "wasm64"],
+      "architecture_evidence": { "wasm32": "success", "wasm64": "success" }
+    },
+    "libcxx": {
+      "registry_entries": ["libcxx"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32", "wasm64"],
+      "architecture_evidence": { "wasm32": "success", "wasm64": "success" }
+    },
+    "libiconv": {
+      "registry_entries": ["libiconv"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "libmagic": {
+      "registry_entries": ["file"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "libpng": {
+      "registry_entries": ["libpng"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "libxml2": {
+      "registry_entries": ["libxml2"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "libzip": {
+      "registry_entries": ["libzip"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "lsof": {
+      "registry_entries": ["lsof"],
+      "recipe_state": "registry_bridge",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "m4": {
+      "registry_entries": ["m4"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "make": {
+      "registry_entries": ["make"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "modeset": {
+      "registry_entries": ["modeset"],
+      "recipe_state": "registry_bridge",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "musl-fts": {
+      "registry_entries": [],
+      "recipe_state": "tap_native",
+      "tap_native_role": "Dependency Formula added directly in the tap; it has no registry predecessor.",
+      "declared_architectures": ["wasm32", "wasm64"],
+      "architecture_evidence": { "wasm32": "success", "wasm64": "success" }
+    },
+    "nano": {
+      "registry_entries": ["nano"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "ncompress": {
+      "registry_entries": ["posix-utils-lite"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "ncurses": {
+      "registry_entries": ["ncurses"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "netcat": {
+      "registry_entries": ["netcat"],
+      "recipe_state": "registry_bridge",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "nethack": {
+      "registry_entries": ["nethack"],
+      "recipe_state": "registry_bridge",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "openssl": {
+      "registry_entries": ["openssl"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32", "wasm64"],
+      "architecture_evidence": { "wasm32": "success", "wasm64": "success" }
+    },
+    "patch": {
+      "registry_entries": ["posix-utils-lite"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "pax": {
+      "registry_entries": ["posix-utils-lite"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "pcre2": {
+      "registry_entries": [],
+      "candidate_registry_entries": ["pcre2-source"],
+      "recipe_state": "tap_native",
+      "tap_native_role": "Normal library Formula; the registry source helper remains until MariaDB consumes this Formula.",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "perl": {
+      "registry_entries": ["perl"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "posix-utils-lite": {
+      "registry_entries": ["posix-utils-lite"],
+      "recipe_state": "registry_bridge",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "procps": {
+      "registry_entries": ["posix-utils-lite"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "python": {
+      "registry_entries": ["cpython"],
+      "recipe_state": "registry_bridge",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "ruby": {
+      "registry_entries": ["ruby"],
+      "recipe_state": "registry_bridge",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "sed": {
+      "registry_entries": ["sed"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "sqlite": {
+      "registry_entries": ["sqlite"],
+      "candidate_registry_entries": ["sqlite-cli"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32", "wasm64"],
+      "architecture_evidence": { "wasm32": "success", "wasm64": "success" }
+    },
+    "tar": {
+      "registry_entries": ["tar"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "texlive": {
+      "registry_entries": ["texlive"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "unzip": {
+      "registry_entries": ["unzip"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "vim": {
+      "registry_entries": ["vim"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "wget": {
+      "registry_entries": ["wget"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "what": {
+      "registry_entries": ["posix-utils-lite"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "xz": {
+      "registry_entries": ["xz"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "zip": {
+      "registry_entries": ["zip"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    },
+    "zlib": {
+      "registry_entries": ["zlib"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32", "wasm64"],
+      "architecture_evidence": { "wasm32": "success", "wasm64": "success" }
+    },
+    "zstd": {
+      "registry_entries": ["zstd"],
+      "recipe_state": "tap_native",
+      "declared_architectures": ["wasm32"],
+      "architecture_evidence": { "wasm32": "success" }
+    }
+  }
+}
