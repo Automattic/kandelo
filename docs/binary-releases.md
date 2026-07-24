@@ -74,6 +74,102 @@ artifacts appears in the main repository's `binaries-abi-v<N>` `index.toml`
 ledger. See [docs/homebrew-publishing.md](homebrew-publishing.md) for formula
 authoring, the immutable VFS descriptor contract, and operations.
 
+### Durable package generations for cross-workflow publication
+
+A Homebrew publication may need an exact Kandelo package closure after the
+source PR has closed. It must not use `pr-<N>-staging` as that long-lived
+resolver: the staging release is intentionally temporary, and
+`staging-cleanup.yml` deletes it after the PR closes. The manual
+`promote-package-generation.yml` workflow copies one fully validated closure
+into a public content-addressed prerelease before cleanup. Its tags have this
+form:
+
+```
+package-generation-<root>-<arch>-abi-v<N>-sha256-<full-identity-sha256>
+```
+
+`generation.json` binds the package-source commit, ABI, selected
+`program-packages.json` projection, exact expected ledger, validated source
+snapshot, source staging index identity, minimal localized index identity, and
+every archive name, byte count, and SHA-256. The full 64-character identity
+digest determines the tag. The published `index.toml` may name only the exact
+archives under that tag. It contains no fallback fields and no URL back to the
+source staging release.
+
+Three Git commits remain separate:
+
+1. **Workflow authority** is the default-branch commit whose reviewed scripts
+   validate and publish the generation.
+2. **Package source** is the exact commit whose package projection, recipes,
+   cache keys, and archives own the generation. The durable lightweight tag
+   directly targets this commit.
+3. **Package consumer** may be a different commit, but it is accepted only
+   when its newly computed selected projection and expected ledger are exactly
+   equal to the package source's values.
+
+A workflow-only descendant therefore cannot claim compatibility after package
+drift. Conversely, an unrelated source change does not force duplicate
+generation bytes when the selected closure is unchanged.
+
+The preparation job has read-only repository permission, disables persisted
+checkout credentials, and is the only job that executes the historical
+package-source `xtask`. The release writer executes only current default-branch
+authority. It revalidates canonical bounded metadata, archive bytes, and every
+embedded archive manifest before using its write credential.
+
+The main repository cannot rely on repository-wide GitHub Release
+immutability: its canonical `binaries-abi-v<N>` releases are intentionally
+updated. Durable package generations are append-only at the application
+contract instead. The writer uploads `generation.json` last as the seal, can
+resume an exact partial draft, and never changes a public generation. Every
+writer retry and consumer rechecks the exact release metadata, direct tag,
+asset inventory, digests, authenticated bytes where credentials exist, and
+anonymous bytes. An administrator can still mutate a GitHub release, but the
+next use fails closed rather than trusting that mutation.
+
+Promotion does not change ordinary staging cleanup. Tags outside the exact
+`pr-<N>-staging` pattern are not cleanup inputs.
+
+#### Promotion and recovery
+
+Dispatch only the workflow on the repository's default branch:
+
+```bash
+gh workflow run promote-package-generation.yml \
+  --repo Automattic/kandelo \
+  --ref main \
+  -f source-tag=pr-1079-staging \
+  -f package-source-sha=437fde2524ea6ad9c44933f8abbf995a46841009 \
+  -f expected-abi=42 \
+  -f root-package=rootfs \
+  -f arch=wasm32
+```
+
+The exact validated 16-asset source generation above produces 15 selected
+archives plus `index.toml` and the new seal, under:
+
+```
+package-generation-rootfs-wasm32-abi-v42-sha256-cc8a6460221f68b077a640c39d8e63de32d3847e90e1bdac4065f060e4fb35dc
+```
+
+The workflow summary prints that derived full tag. For this recovery,
+`437fde2524ea6ad9c44933f8abbf995a46841009` is both the package source and the
+initial compatible consumer. Later workflow descendants are not assumed
+compatible; the materializer computes and compares their package identities.
+
+If a runner stops while the release is still a draft, repeat the identical
+dispatch. The writer accepts only an exact subset of the declared assets,
+verifies every existing byte, uploads missing non-seal assets, uploads
+`generation.json` last, and publishes. It never deletes or overwrites a draft
+asset. An unknown or changed asset requires investigation or a new
+content-derived tag.
+
+If a public generation fails validation, do not repair it in place. Preserve
+the evidence and publish changed content under its naturally different tag.
+If source staging cleanup wins the race before a generation is sealed, restore
+or rebuild the exact source staging generation first; never substitute another
+commit's similarly named archives.
+
 These content-addressed releases share one manifest-driven immutable-release
 publisher. Before using a credential it stages and verifies the manifest's
 bounded duplicate-free JSON, safe unique basenames, exact sizes, and SHA-256

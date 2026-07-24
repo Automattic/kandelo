@@ -211,6 +211,27 @@ assert_matches package_publish_flow_changed_files \
   ".github/scripts/test-validate-staging-release.sh" \
   ".github/scripts/test-validate-staging-release.sh"
 assert_matches package_publish_flow_changed_files \
+  ".github/scripts/package-generation.py" \
+  ".github/scripts/package-generation.py"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/prepare-durable-package-generation.sh" \
+  ".github/scripts/prepare-durable-package-generation.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/materialize-durable-package-generation.sh" \
+  ".github/scripts/materialize-durable-package-generation.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/publish-durable-package-generation.sh" \
+  ".github/scripts/publish-durable-package-generation.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-package-generation.sh" \
+  ".github/scripts/test-package-generation.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-publish-durable-package-generation.sh" \
+  ".github/scripts/test-publish-durable-package-generation.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/workflows/promote-package-generation.yml" \
+  ".github/workflows/promote-package-generation.yml"
+assert_matches package_publish_flow_changed_files \
   "tools/xtask/src/staging_reuse.rs" \
   "tools/xtask/src/staging_reuse.rs"
 assert_matches package_publish_flow_changed_files \
@@ -323,6 +344,27 @@ assert_matches ci_control_changed_files \
 assert_matches ci_control_changed_files \
   ".github/scripts/test-validate-staging-release.sh" \
   ".github/scripts/test-validate-staging-release.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/package-generation.py" \
+  ".github/scripts/package-generation.py"
+assert_matches ci_control_changed_files \
+  ".github/scripts/prepare-durable-package-generation.sh" \
+  ".github/scripts/prepare-durable-package-generation.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/materialize-durable-package-generation.sh" \
+  ".github/scripts/materialize-durable-package-generation.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/publish-durable-package-generation.sh" \
+  ".github/scripts/publish-durable-package-generation.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/test-package-generation.sh" \
+  ".github/scripts/test-package-generation.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/test-publish-durable-package-generation.sh" \
+  ".github/scripts/test-publish-durable-package-generation.sh"
+assert_matches ci_control_changed_files \
+  ".github/workflows/promote-package-generation.yml" \
+  ".github/workflows/promote-package-generation.yml"
 assert_matches ci_control_changed_files \
   ".github/scripts/recover-canonical-indexes.sh" \
   ".github/scripts/recover-canonical-indexes.sh"

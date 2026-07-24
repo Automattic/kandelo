@@ -88,7 +88,21 @@ if [ "$actual_size" != "$index_size" ] || [ "sha256:$actual_sha" != "$index_dige
   exit 1
 fi
 
-"$XTASK" staging-reuse validate \
+run_xtask_without_credentials() {
+  # WHY: release credentials authorize writes to the package distribution
+  # channel. Package/index parsing is untrusted input processing and has no
+  # reason to observe those credentials.
+  env -u GH_TOKEN -u GITHUB_TOKEN \
+    -u HOMEBREW_GITHUB_API_TOKEN \
+    -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+    -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+    -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+    -u ACTIONS_ID_TOKEN_REQUEST_URL \
+    -u ACTIONS_RUNTIME_TOKEN \
+    "$XTASK" "$@"
+}
+
+run_xtask_without_credentials staging-reuse validate \
   --expected-ledger "$EXPECTED_LEDGER" \
   --index "$TMP_ROOT/source-index.toml" \
   --assets "$TMP_ROOT/assets.json" \
@@ -125,7 +139,7 @@ while IFS=$'\t' read -r asset sha size; do
     --output "$TMP_ROOT/archives/$asset"
 done < "$TMP_ROOT/archive-selection.tsv"
 
-"$XTASK" staging-reuse validate-archives \
+run_xtask_without_credentials staging-reuse validate-archives \
   --expected-ledger "$EXPECTED_LEDGER" \
   --snapshot "$TMP_ROOT/snapshot.json" \
   --archives-dir "$TMP_ROOT/archives" \
