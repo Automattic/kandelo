@@ -68,6 +68,8 @@ grep -Fq 'compose-staging-finalization.sh' <<<"$finalizer" ||
   fail "finalizer does not compose a complete local snapshot"
 grep -Fq 'publish-staging-finalization.sh' <<<"$finalizer" ||
   fail "finalizer does not publish one complete snapshot"
+grep -Fq -- '--mode available' <<<"$finalizer" ||
+  fail "canonical baseline freeze rejects absent expected keys before composition"
 grep -Fq 'had_failures: ${{ steps.compose.outputs.had_failures }}' \
   <<<"$finalizer" ||
   fail "finalizer does not expose exact composer failure evidence"
@@ -131,7 +133,7 @@ grep -Fq 'duplicate IDs/names' "$PUBLISH" ||
 
 for step in \
   "Build exact finalization inputs" \
-  "Freeze the complete last-green baseline" \
+  "Freeze the available last-green baseline" \
   "Compose one complete target-relative index" \
   "Reduce staging finalization outcomes" \
   "Enforce package staging result"

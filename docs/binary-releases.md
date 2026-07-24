@@ -146,10 +146,17 @@ preflight → toolchain-cache → matrix-build → staging-finalizer
      remain dependencies of program matrix entries, but neither matrix has
      `contents: write`.
 - **staging-finalizer** waits for both matrices, including partial failures.
-  It validates and materializes the last-green canonical release, trims it to
-  the current expected package ledger, and applies all successful matrix
-  artifacts offline. A missing or invalid artifact becomes one exact failed
-  entry while a valid same-version last-green archive remains its fallback.
+  It validates and materializes every expected package/arch key available in
+  the last-green canonical release, trims it to the current managed package
+  ledger, and applies all successful matrix artifacts offline. The
+  baseline-only validation permits expected package/architecture keys to be
+  absent from canonical, but it still rejects malformed, ambiguous, or invalid
+  present entries. Matrix artifacts fill those gaps, including both additions
+  and repair of incomplete canonical state. Final validation after composition
+  requires every expected key exactly once. A missing or invalid matrix
+  artifact becomes one exact failed entry while a verified last-green archive
+  may remain available for resolver continuity. Only an exact-current fallback
+  is eligible for the test gate described below.
   If the canonical release for a new ABI does not exist yet, the first matrix
   must supply every expected entry. A failed entry can still be published as
   truthful evidence, but it has no invented fallback and cannot be tested.

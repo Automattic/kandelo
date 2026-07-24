@@ -83,6 +83,10 @@ struct FinalAsset {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ValidationMode {
+    /// Freeze every expected key that exists in a canonical baseline while
+    /// allowing expected package/arch keys to be absent from canonical. The
+    /// final staging validator still requires the composed index to be complete.
+    Available,
     Structural,
     Current,
     Testable,
@@ -92,6 +96,9 @@ enum ValidationMode {
 enum ArchiveValidationScope {
     /// Validate every downloaded archive in a materialized snapshot.
     All,
+    /// Validate every downloaded archive while allowing the baseline snapshot
+    /// to omit expected keys that did not exist in the canonical release.
+    Available,
     /// Metadata-only preflight downloads only entries that are current and
     /// declare external Git provenance. Other entries cannot be selected under
     /// a forged-equal Git identity because they have no such identity.
@@ -250,12 +257,13 @@ fn run_validate(args: &[String]) -> Result<(), String> {
     let release_base_url = flags.required("--release-base-url")?;
     validate_release_base_url(release_base_url, release_tag)?;
     let mode = match flags.required("--mode")? {
+        "available" => ValidationMode::Available,
         "structural" => ValidationMode::Structural,
         "current" => ValidationMode::Current,
         "testable" => ValidationMode::Testable,
         other => {
             return Err(format!(
-                "--mode must be structural, current, or testable, got {other:?}"
+                "--mode must be available, structural, current, or testable, got {other:?}"
             ));
         }
     };
@@ -285,10 +293,11 @@ fn run_validate_archives(args: &[String]) -> Result<(), String> {
     let snapshot: ValidatedSnapshot = read_json(flags.required_path("--snapshot")?)?;
     let scope = match flags.required("--scope")? {
         "all" => ArchiveValidationScope::All,
+        "available" => ArchiveValidationScope::Available,
         "current-declared-git-inputs" => ArchiveValidationScope::CurrentDeclaredGitInputs,
         other => {
             return Err(format!(
-                "--scope must be all or current-declared-git-inputs, got {other:?}"
+                "--scope must be all, available, or current-declared-git-inputs, got {other:?}"
             ));
         }
     };
@@ -411,16 +420,25 @@ fn validate_release(
 
     let mut snapshot_entries = Vec::with_capacity(expected.entries.len());
     let mut stale = Vec::new();
+    let mut missing = Vec::new();
     for wanted in &expected.entries {
-        let (package, binary) = index_entries
-            .get(&(wanted.package.as_str(), wanted.arch))
-            .ok_or_else(|| {
-                format!(
-                    "release index is incomplete: missing {} {}",
-                    wanted.package,
-                    wanted.arch.as_str()
-                )
-            })?;
+        let Some((package, binary)) =
+            index_entries.get(&(wanted.package.as_str(), wanted.arch))
+        else {
+            if mode == ValidationMode::Available {
+                // WHY: canonical may lack an expected key because it is new or
+                // canonical itself is incomplete. This mode is used only to
+                // freeze baseline bytes before matrix artifacts fill the gap;
+                // final validation remains fully complete.
+                missing.push(format!("{} {}", wanted.package, wanted.arch.as_str()));
+                continue;
+            }
+            return Err(format!(
+                "release index is incomplete: missing {} {}",
+                wanted.package,
+                wanted.arch.as_str()
+            ));
+        };
         let (archive_url, archive_sha256, cache_key_sha, from_fallback) = match binary.status {
             EntryStatus::Success => (
                 required_entry_field(
@@ -486,7 +504,7 @@ fn validate_release(
             }
             status => {
                 return Err(format!(
-                    "release index {} {} has status {:?}; mode {:?} requires a current success{}",
+                    "release index {} {} has status {:?}; mode {:?} requires a success{}",
                     wanted.package,
                     wanted.arch.as_str(),
                     status,
@@ -566,7 +584,7 @@ fn validate_release(
         });
     }
 
-    if mode != ValidationMode::Structural && !stale.is_empty() {
+    if matches!(mode, ValidationMode::Current | ValidationMode::Testable) && !stale.is_empty() {
         return Err(format!(
             "release is structurally complete but not current for: {}",
             stale.join(", ")
@@ -575,7 +593,7 @@ fn validate_release(
     Ok(ValidatedSnapshot {
         abi_version: expected.abi_version,
         release_tag: release_tag.to_owned(),
-        complete_current: stale.is_empty(),
+        complete_current: stale.is_empty() && missing.is_empty(),
         entries: snapshot_entries,
     })
 }
@@ -627,9 +645,21 @@ fn validate_archive_snapshot(
         ));
     }
 
+    let expected_keys: BTreeSet<_> = expected
+        .entries
+        .iter()
+        .map(|entry| (entry.package.as_str(), entry.arch))
+        .collect();
     let mut snapshot_by_key = BTreeMap::new();
     for entry in &snapshot.entries {
         let key = (entry.package.as_str(), entry.arch);
+        if !expected_keys.contains(&key) {
+            return Err(format!(
+                "archive snapshot contains unexpected package/arch {} {}",
+                entry.package,
+                entry.arch.as_str()
+            ));
+        }
         if snapshot_by_key.insert(key, entry).is_some() {
             return Err(format!(
                 "archive snapshot contains duplicate package/arch {} {}",
@@ -638,26 +668,38 @@ fn validate_archive_snapshot(
             ));
         }
     }
-    if snapshot_by_key.len() != expected.entries.len() {
+    if scope != ArchiveValidationScope::Available
+        && snapshot_by_key.len() != expected.entries.len()
+    {
         return Err(format!(
             "archive snapshot contains {} entries, expected {}",
             snapshot_by_key.len(),
             expected.entries.len()
         ));
     }
+    if scope == ArchiveValidationScope::Available
+        && snapshot_by_key.len() != expected.entries.len()
+        && snapshot.complete_current
+    {
+        return Err(
+            "available archive snapshot claims complete_current while expected keys are absent"
+                .into(),
+        );
+    }
 
     for wanted in &expected.entries {
-        let entry = snapshot_by_key
-            .get(&(wanted.package.as_str(), wanted.arch))
-            .ok_or_else(|| {
-                format!(
-                    "archive snapshot lacks {} {}",
-                    wanted.package,
-                    wanted.arch.as_str()
-                )
-            })?;
+        let Some(entry) = snapshot_by_key.get(&(wanted.package.as_str(), wanted.arch)) else {
+            if scope == ArchiveValidationScope::Available {
+                continue;
+            }
+            return Err(format!(
+                "archive snapshot lacks {} {}",
+                wanted.package,
+                wanted.arch.as_str()
+            ));
+        };
         let should_validate = match scope {
-            ArchiveValidationScope::All => true,
+            ArchiveValidationScope::All | ArchiveValidationScope::Available => true,
             ArchiveValidationScope::CurrentDeclaredGitInputs => {
                 entry.current && !wanted.git_inputs.is_empty()
             }
@@ -1723,6 +1765,51 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
     }
 
     #[test]
+    fn available_baseline_allows_absent_package_and_arch_keys_only() {
+        let additions = [
+            ExpectedEntry {
+                package: "bzip2".into(),
+                kind: ExpectedKind::Library,
+                arch: TargetArch::Wasm32,
+                version: "1.0".into(),
+                revision: 1,
+                cache_key_sha: "c".repeat(64),
+                git_inputs: Vec::new(),
+            },
+            ExpectedEntry {
+                package: "zlib".into(),
+                kind: ExpectedKind::Library,
+                arch: TargetArch::Wasm64,
+                version: "1.3.1".into(),
+                revision: 2,
+                cache_key_sha: "d".repeat(64),
+                git_inputs: Vec::new(),
+            },
+        ];
+        for addition in additions {
+            let mut expanded = expected();
+            expanded.entries.push(addition);
+            let snapshot =
+                validate(&expanded, &index(), &assets(), ValidationMode::Available).unwrap();
+            assert_eq!(snapshot.entries.len(), 1);
+            assert!(!snapshot.complete_current);
+            assert_eq!(snapshot.entries[0].package, "zlib");
+            assert_eq!(snapshot.entries[0].arch, TargetArch::Wasm32);
+
+            assert!(
+                validate(
+                    &expanded,
+                    &index(),
+                    &assets(),
+                    ValidationMode::Structural
+                )
+                .is_err(),
+                "only the baseline-only available mode may omit an expected key"
+            );
+        }
+    }
+
+    #[test]
     fn testable_mode_selects_and_localizes_an_exact_current_failure_fallback() {
         let mut failed = index();
         failed.update_entry_failed(
@@ -1752,6 +1839,70 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
         let mut stale = failed;
         stale.packages[0].revision = 3;
         assert!(validate(&expected(), &stale, &assets(), ValidationMode::Testable).is_err());
+    }
+
+    #[test]
+    fn available_archive_scope_validates_present_subset_and_rejects_extras() {
+        let dir = archive_tempdir("available-subset");
+        let archive = dir.join("zlib-1.3.1-rev2-abi39-wasm32-aaaaaaaa.tar.zst");
+        write_test_archive(
+            &archive,
+            "manifest.toml",
+            archived_manifest(&[]).as_bytes(),
+            false,
+        );
+        let mut snapshot = snapshot_for_archive(&archive, true);
+        snapshot.complete_current = false;
+        let mut expanded = expected();
+        expanded.entries.push(ExpectedEntry {
+            package: "bzip2".into(),
+            kind: ExpectedKind::Library,
+            arch: TargetArch::Wasm32,
+            version: "1.0".into(),
+            revision: 1,
+            cache_key_sha: "c".repeat(64),
+            git_inputs: Vec::new(),
+        });
+
+        validate_archive_snapshot(
+            &expanded,
+            &snapshot,
+            &dir,
+            ArchiveValidationScope::Available,
+        )
+        .unwrap();
+        let mut falsely_complete = snapshot.clone();
+        falsely_complete.complete_current = true;
+        let error = validate_archive_snapshot(
+            &expanded,
+            &falsely_complete,
+            &dir,
+            ArchiveValidationScope::Available,
+        )
+        .unwrap_err();
+        assert!(error.contains("claims complete_current"), "{error}");
+        assert!(
+            validate_archive_snapshot(
+                &expanded,
+                &snapshot,
+                &dir,
+                ArchiveValidationScope::All
+            )
+            .is_err()
+        );
+
+        let mut with_extra = snapshot;
+        let mut extra = with_extra.entries[0].clone();
+        extra.package = "not-expected".into();
+        with_extra.entries.push(extra);
+        let error = validate_archive_snapshot(
+            &expanded,
+            &with_extra,
+            &dir,
+            ArchiveValidationScope::Available,
+        )
+        .unwrap_err();
+        assert!(error.contains("unexpected package/arch"), "{error}");
     }
 
     #[test]

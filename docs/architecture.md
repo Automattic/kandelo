@@ -1334,14 +1334,15 @@ Binary resolution does not look at either of those files for archive URLs. Inste
 
 **Release updates have one authorized writer.** PR matrix jobs only build
 immutable workflow artifacts. After both matrices finish, one staging
-finalizer validates the complete expected snapshot offline, acquires the target
-tag's workflow-level state-lock (`.github/scripts/state-lock.sh`) once, reads
-the full paginated release inventory, uploads every referenced immutable
-archive, replaces one complete `index.toml` as the final mutable write, and
-re-reads all published bytes. This is referentially safe but the GitHub
-`--clobber` itself is not an availability-atomic swap. Exact same-version
-last-green fallbacks with the same revision, cache key, and immutable Git
-provenance may keep consumer tests useful after a package failure,
+finalizer freezes all valid expected keys available in canonical state, fills
+absent expected package/architecture keys from matrix artifacts, validates the
+complete expected snapshot offline, acquires the target tag's workflow-level state-lock
+(`.github/scripts/state-lock.sh`) once, reads the full paginated release
+inventory, uploads every referenced immutable archive, replaces one complete
+`index.toml` as the final mutable write, and re-reads all published bytes. This
+is referentially safe but the GitHub
+`--clobber` itself is not an availability-atomic swap. Exact-current
+last-green fallbacks may keep consumer tests useful after a package failure,
 while a separate package result remains red. Prepare-merge candidates may still apply
 serialized per-package updates through `scripts/index-update.sh`; canonical
 `binaries-abi-v<N>` writers publish through

@@ -8,6 +8,8 @@
 # be materialized as an input to a separately validated union. Testable mode
 # also accepts an exact current failure fallback so the test gate can exercise
 # the published last-green union while the separate package result stays red.
+# Available mode freezes every valid expected key present in a canonical
+# baseline while allowing expected package/arch keys to be absent there.
 set -euo pipefail
 
 TAG=""
@@ -31,7 +33,8 @@ done
 
 if ! [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]] ||
    [ ! -f "$EXPECTED_LEDGER" ] ||
-   [[ "$MODE" != structural && "$MODE" != current && "$MODE" != testable ]] ||
+   [[ "$MODE" != available && "$MODE" != structural &&
+      "$MODE" != current && "$MODE" != testable ]] ||
    [ -z "$OUTPUT_DIR" ] || [ "$OUTPUT_DIR" = / ] ||
    [ ! -x "$XTASK" ]; then
   echo "validate-staging-release: valid tag, expected ledger, mode, output dir, and xtask are required" >&2
@@ -114,6 +117,9 @@ run_xtask_without_credentials staging-reuse validate \
 mkdir "$TMP_ROOT/archives"
 if [ "$MATERIALIZE" = 1 ]; then
   archive_scope=all
+  if [ "$MODE" = available ]; then
+    archive_scope=available
+  fi
   jq -r '.entries[] | [.asset, .archive_sha256, (.size | tostring)] | @tsv' \
     "$TMP_ROOT/snapshot.json" > "$TMP_ROOT/archive-selection.tsv"
 else

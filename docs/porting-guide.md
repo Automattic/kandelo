@@ -716,10 +716,13 @@ CI runs `staging-build.yml` on the PR, which:
 2. Runs `archive-stage` for it in `matrix-build` and uploads the
    content-addressed `.tar.zst` as an immutable workflow artifact.
 3. After all matrix entries finish, one credentialed finalizer validates the
-   complete target-relative snapshot, takes the staging tag's state-lock once,
-   uploads every referenced archive, publishes one complete `index.toml`, and
-   re-reads every referenced asset. For the first release of a new ABI, the
-   matrix must supply the complete snapshot because no fallback exists yet.
+   available canonical baseline, fills any absent expected
+   package/architecture keys from the matrix, requires the composed
+   target-relative snapshot to be complete,
+   takes the staging tag's state-lock once, uploads every referenced archive,
+   publishes one complete `index.toml`, and re-reads every referenced asset.
+   For the first release of a new ABI, the matrix must supply the complete
+   snapshot because no fallback exists yet.
 4. `test-gate` runs the full 5-suite test gate against that exact finalized
    snapshot. An exact failed attempt may select its verified exact-current
    fallback for testing, but a separate package result remains red;

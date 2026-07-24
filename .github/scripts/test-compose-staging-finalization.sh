@@ -23,7 +23,8 @@ sha256_file() {
 
 make_archive() {
   local name="$1" version="$2" revision="$3" cache_key="$4" output="$5"
-  local source="$TMP_ROOT/archive-source-$name-$version-$revision-${cache_key:0:8}"
+  local arch="${6:-wasm32}"
+  local source="$TMP_ROOT/archive-source-$name-$version-$revision-$arch-${cache_key:0:8}"
   mkdir -p "$source/artifacts/lib"
   cat >"$source/manifest.toml" <<EOF
 kind = "library"
@@ -43,7 +44,7 @@ spdx = "MIT"
 libs = ["lib/lib$name.a"]
 
 [compatibility]
-target_arch = "wasm32"
+target_arch = "$arch"
 abi_versions = [39]
 cache_key_sha = "$cache_key"
 EOF
@@ -138,6 +139,115 @@ if grep -Fq 'retired' "$TMP_ROOT/success/index.toml" ||
   echo "compose staging test: stale or unrelated baseline package survived" >&2
   exit 1
 fi
+
+# A package added to an existing ABI is necessarily absent from canonical.
+# The verified available baseline contributes zlib while the matrix contributes
+# the new bzip2 key; final validation still requires both exact entries.
+PACKAGE_KEY="$(printf 'c%.0s' {1..64})"
+PACKAGE_NAME="bzip2-1.0-rev1-abi39-wasm32-${PACKAGE_KEY:0:8}.tar.zst"
+mkdir -p "$TMP_ROOT/package-add-artifacts/bzip2-wasm32"
+make_archive bzip2 1.0 1 "$PACKAGE_KEY" \
+  "$TMP_ROOT/package-add-artifacts/bzip2-wasm32/$PACKAGE_NAME"
+cat >"$TMP_ROOT/package-add-expected.json" <<EOF
+{
+  "abi_version": 39,
+  "entries": [
+    {
+      "package": "bzip2",
+      "kind": "library",
+      "arch": "wasm32",
+      "version": "1.0",
+      "revision": 1,
+      "cache_key_sha": "$PACKAGE_KEY",
+      "git_inputs": []
+    },
+    {
+      "package": "zlib",
+      "kind": "library",
+      "arch": "wasm32",
+      "version": "1.0",
+      "revision": 1,
+      "cache_key_sha": "$OLD_KEY",
+      "git_inputs": []
+    }
+  ]
+}
+EOF
+cat >"$TMP_ROOT/package-add-matrix.json" <<EOF
+[{"package":"bzip2","arch":"wasm32","sha":"$PACKAGE_KEY","version":"1.0","revision":1}]
+EOF
+bash "$SCRIPT" \
+  --target-tag pr-1091-staging \
+  --expected-ledger "$TMP_ROOT/package-add-expected.json" \
+  --matrix "$TMP_ROOT/package-add-matrix.json" \
+  --artifacts-dir "$TMP_ROOT/package-add-artifacts" \
+  --baseline-dir "$TMP_ROOT/baseline" \
+  --output-dir "$TMP_ROOT/package-add" \
+  --xtask "$XTASK" \
+  --abi 39 \
+  --built-at 2026-07-24T00:00:00Z \
+  --built-by https://example.test/run/package-add
+
+[ "$(cat "$TMP_ROOT/package-add/had-failures")" = 0 ]
+jq -e --arg old "$OLD_NAME" --arg added "$PACKAGE_NAME" \
+  'map(.name) | sort == ([$old,$added] | sort)' \
+  "$TMP_ROOT/package-add/assets.json" >/dev/null
+grep -Fq 'name = "bzip2"' "$TMP_ROOT/package-add/index.toml"
+grep -Fq 'name = "zlib"' "$TMP_ROOT/package-add/index.toml"
+
+# Adding an architecture to an existing package has the same baseline gap,
+# but the matrix update must preserve the already-verified sibling arch.
+ARCH_KEY="$(printf 'd%.0s' {1..64})"
+ARCH_NAME="zlib-1.0-rev1-abi39-wasm64-${ARCH_KEY:0:8}.tar.zst"
+mkdir -p "$TMP_ROOT/arch-add-artifacts/zlib-wasm64"
+make_archive zlib 1.0 1 "$ARCH_KEY" \
+  "$TMP_ROOT/arch-add-artifacts/zlib-wasm64/$ARCH_NAME" wasm64
+cat >"$TMP_ROOT/arch-add-expected.json" <<EOF
+{
+  "abi_version": 39,
+  "entries": [
+    {
+      "package": "zlib",
+      "kind": "library",
+      "arch": "wasm32",
+      "version": "1.0",
+      "revision": 1,
+      "cache_key_sha": "$OLD_KEY",
+      "git_inputs": []
+    },
+    {
+      "package": "zlib",
+      "kind": "library",
+      "arch": "wasm64",
+      "version": "1.0",
+      "revision": 1,
+      "cache_key_sha": "$ARCH_KEY",
+      "git_inputs": []
+    }
+  ]
+}
+EOF
+cat >"$TMP_ROOT/arch-add-matrix.json" <<EOF
+[{"package":"zlib","arch":"wasm64","sha":"$ARCH_KEY","version":"1.0","revision":1}]
+EOF
+bash "$SCRIPT" \
+  --target-tag pr-1092-staging \
+  --expected-ledger "$TMP_ROOT/arch-add-expected.json" \
+  --matrix "$TMP_ROOT/arch-add-matrix.json" \
+  --artifacts-dir "$TMP_ROOT/arch-add-artifacts" \
+  --baseline-dir "$TMP_ROOT/baseline" \
+  --output-dir "$TMP_ROOT/arch-add" \
+  --xtask "$XTASK" \
+  --abi 39 \
+  --built-at 2026-07-24T00:00:00Z \
+  --built-by https://example.test/run/arch-add
+
+[ "$(cat "$TMP_ROOT/arch-add/had-failures")" = 0 ]
+jq -e --arg old "$OLD_NAME" --arg added "$ARCH_NAME" \
+  'map(.name) | sort == ([$old,$added] | sort)' \
+  "$TMP_ROOT/arch-add/assets.json" >/dev/null
+grep -Fq '[packages.binary.wasm32]' "$TMP_ROOT/arch-add/index.toml"
+grep -Fq '[packages.binary.wasm64]' "$TMP_ROOT/arch-add/index.toml"
 
 # The first release for a new ABI has no canonical baseline. A complete
 # successful matrix must still produce the whole usable snapshot from its own

@@ -662,7 +662,7 @@ jobs:
               --output "$RUNNER_TEMP/staging-artifacts" \
               --allow-missing-completed
 
-      - name: Freeze the complete last-green baseline
+      - name: Freeze the available last-green baseline
         env:
           BASELINE_TAG: ${{ needs.preflight.outputs.baseline_tag }}
         run: |
@@ -676,10 +676,13 @@ jobs:
               if gh release view "$BASELINE_TAG" --repo "$GITHUB_REPOSITORY" \
                   >/dev/null 2>"$error"; then
                 HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+                # WHY: canonical can lack an expected package/arch key. Freeze
+                # every valid key it does have; matrix artifacts fill gaps and
+                # the post-composition validator still requires full coverage.
                 bash .github/scripts/validate-staging-release.sh \
                   --tag "$BASELINE_TAG" \
                   --expected-ledger "$RUNNER_TEMP/staging-expected.json" \
-                  --mode structural \
+                  --mode available \
                   --materialize \
                   --output-dir "$RUNNER_TEMP/staging-baseline" \
                   --xtask "target/$HOST_TARGET/release/xtask"

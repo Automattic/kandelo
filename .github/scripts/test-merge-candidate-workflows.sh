@@ -615,6 +615,8 @@ grep -Fq 'reuse_staging: ${{ steps.compute.outputs.reuse_staging }}' "$STAGING_W
   fail "staging preflight must expose its release-reuse decision"
 grep -Fq -- '--mode structural' "$STAGING_WORKFLOW" || \
   fail "staging preflight must validate complete target-release structure"
+grep -Fq -- '--mode available' "$STAGING_WORKFLOW" || \
+  fail "staging finalizer must allow absent canonical keys only while freezing its baseline"
 grep -Fq 'validated target/canonical union did not cover the computed matrix' "$STAGING_WORKFLOW" || \
   fail "staging preflight must prove full current coverage before emptying the matrix"
 grep -Fq 'PACKAGE_REUSE_STAGING: ${{ needs.preflight.outputs.reuse_staging }}' "$STAGING_WORKFLOW" || \
@@ -651,7 +653,7 @@ grep -Fq 'cp "$TMP_ROOT/index.toml" "$TMP_ROOT/archives/index.toml"' "$STAGING_R
 for step in \
   "Compute matrix" \
   "Build exact finalization inputs" \
-  "Freeze the complete last-green baseline" \
+  "Freeze the available last-green baseline" \
   "Compose one complete target-relative index" \
   "Materialize binaries"
 do
