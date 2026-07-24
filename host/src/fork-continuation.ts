@@ -200,6 +200,13 @@ interface PendingNode {
   nextUsed: number;
 }
 
+interface ContinuationChunk {
+  addr: number;
+  size: number;
+  nodeStart: number;
+  used: number;
+}
+
 /**
  * Host-side owner and validator for one module instance's linked fork frames.
  * Allocations are ordinary anonymous process mappings, so kernel brk/mmap
@@ -209,8 +216,10 @@ export class LinkedForkContinuation {
   private root = 0;
   private activeChunk = 0;
   private replayNode = 0;
+  private replayChunkIndex = -1;
+  private replayExpectedEnd = 0;
   private pending: PendingNode | null = null;
-  private chunks: Array<{ addr: number; size: number }> = [];
+  private chunks: ContinuationChunk[] = [];
   private committedFrames = 0;
   private committedBytes = 0;
   private abortFailure: AbortFailure | null = null;
@@ -247,6 +256,8 @@ export class LinkedForkContinuation {
     this.root = root;
     this.activeChunk = root;
     this.writePtr(root + 8 + 4 * this.format.ptrWidth, initialUsed);
+    this.chunks[0]!.nodeStart = initialUsed;
+    this.chunks[0]!.used = initialUsed;
     return this.asGuestPtr(root + this.format.chunkHeaderSize);
   }
 
@@ -256,34 +267,62 @@ export class LinkedForkContinuation {
     }
     const moduleBufferNumber = this.fromGuestPtr(moduleBuffer);
     const root = moduleBufferNumber - this.format.chunkHeaderSize;
-    this.validateChunk(root, root, 0);
-    this.root = root;
-    this.chunks = [];
+    const chunks: ContinuationChunk[] = [];
+    const seen = new Set<number>();
+    // WHY: address zero is reserved and each continuation mapping starts on a
+    // Wasm page and occupies at least one page. The current memory therefore
+    // supplies a hard upper bound without trusting a guest-controlled link.
+    const maxChunks = Math.max(
+      0,
+      Math.floor(this.memory.buffer.byteLength / WASM_PAGE_SIZE) - 1,
+    );
     let chunk = root;
     let previous = 0;
     for (;;) {
-      this.validateChunk(chunk, root, previous);
-      const capacity = this.readPtr(chunk + 8 + 3 * this.format.ptrWidth);
-      this.chunks.push({ addr: chunk, size: capacity });
+      // Check identity before dereferencing the repeated node. This rejects a
+      // corrupt self- or multi-node cycle at its first repeated address.
+      if (seen.has(chunk)) {
+        throw new Error(`${this.label}: linked continuation chunk cycle`);
+      }
+      if (seen.size >= maxChunks) {
+        throw new Error(`${this.label}: linked continuation chunk chain exceeds memory`);
+      }
+      seen.add(chunk);
+      const { capacity, used } = this.validateChunk(chunk, root, previous);
+      const nodeStart = chunks.length === 0
+        ? alignUp(
+          this.format.chunkHeaderSize + this.format.fixedPrefixSize,
+          this.format.alignment,
+        )
+        : this.format.chunkHeaderSize;
+      if (
+        used < nodeStart
+        || (chunks.length > 0 && used === nodeStart)
+      ) {
+        throw new Error(`${this.label}: invalid linked continuation chunk contents`);
+      }
+      chunks.push({ addr: chunk, size: capacity, nodeStart, used });
       const next = this.readPtr(chunk + 8 + 2 * this.format.ptrWidth);
       if (next === 0) {
-        this.activeChunk = chunk;
         break;
       }
       previous = chunk;
       chunk = next;
-      if (this.chunks.length > 1_000_000) {
-        throw new Error(`${this.label}: linked continuation chunk cycle`);
-      }
     }
-    this.replayNode = this.readPtr(root + 8 + 5 * this.format.ptrWidth);
+    const replayNode = this.readPtr(root + 8 + 5 * this.format.ptrWidth);
+    // Publish the reconstructed owner state only after the complete guest
+    // chain is valid, so a failed attachment cannot leave a partial owner.
+    this.root = root;
+    this.chunks = chunks;
+    this.activeChunk = chunks[chunks.length - 1]!.addr;
+    this.resetReplay(replayNode);
   }
 
   beginReplay(): void {
     if (this.root === 0 || this.pending || this.abortFailure) {
       throw new Error(`${this.label}: cannot begin replay from incomplete continuation`);
     }
-    this.replayNode = this.readPtr(this.root + 8 + 5 * this.format.ptrWidth);
+    this.resetReplay(this.readPtr(this.root + 8 + 5 * this.format.ptrWidth));
   }
 
   reserveFrame(payloadSize: number | bigint): number | bigint {
@@ -354,7 +393,12 @@ export class LinkedForkContinuation {
     if (!pending || pending.payload !== payloadNumber) {
       throw new Error(`${this.label}: frame commit does not match the pending reservation`);
     }
+    const active = this.chunks[this.chunks.length - 1];
+    if (active?.addr !== pending.chunk) {
+      throw new Error(`${this.label}: pending frame belongs to an inactive chunk`);
+    }
     this.writePtr(pending.chunk + 8 + 4 * this.format.ptrWidth, pending.nextUsed);
+    active.used = pending.nextUsed;
     this.view().setUint16(pending.node + 6, NODE_COMMITTED, true);
     // Publishing the new tail is the final write: replay can never observe a
     // reserved or partially populated node through the committed chain.
@@ -371,7 +415,7 @@ export class LinkedForkContinuation {
     if (this.root === 0 || node === 0) {
       throw new Error(`${this.label}: linked continuation replay exhausted early`);
     }
-    const chunk = this.chunkContaining(node);
+    const chunk = this.replayChunk(node);
     const view = this.view();
     if (
       view.getUint32(node, true) !== NODE_MAGIC
@@ -387,13 +431,18 @@ export class LinkedForkContinuation {
         `${this.label}: linked continuation frame size ${payloadSize} does not match ${expected}`,
       );
     }
+    const nodeEnd = checkedEnd(node, nodeSize);
     if (
       nodeSize !== alignUp(this.format.nodeHeaderSize + payloadSize, this.format.alignment)
-      || checkedEnd(node, nodeSize) > chunk.addr + chunk.size
+      || nodeEnd !== this.replayExpectedEnd
     ) {
       throw new Error(`${this.label}: invalid linked continuation node bounds`);
     }
-    this.replayNode = this.readPtr(node + 8);
+    const previous = this.readPtr(node + 8);
+    const nextReplay = this.previousReplayPosition(previous, node);
+    this.replayNode = previous;
+    this.replayChunkIndex = nextReplay.chunkIndex;
+    this.replayExpectedEnd = nextReplay.expectedEnd;
     view.setUint16(node + 6, NODE_CONSUMED, true);
     return this.asGuestPtr(node + this.format.nodeHeaderSize);
   }
@@ -432,7 +481,7 @@ export class LinkedForkContinuation {
       throw new Error(`${this.label}: conflicting continuation abort failures`);
     }
     this.abortFailure ??= { errno, requestedFrame, diagnostic };
-    this.replayNode = this.readPtr(this.root + 8 + 5 * this.format.ptrWidth);
+    this.resetReplay(this.readPtr(this.root + 8 + 5 * this.format.ptrWidth));
   }
 
   abortErrno(): number {
@@ -516,15 +565,25 @@ export class LinkedForkContinuation {
     this.writePtr(addr + 8 + 3 * this.format.ptrWidth, capacity);
     this.writePtr(addr + 8 + 4 * this.format.ptrWidth, this.format.chunkHeaderSize);
     this.writePtr(addr + 8 + 5 * this.format.ptrWidth, 0);
-    this.chunks.push({ addr, size: capacity });
+    this.chunks.push({
+      addr,
+      size: capacity,
+      nodeStart: this.format.chunkHeaderSize,
+      used: this.format.chunkHeaderSize,
+    });
     return addr;
   }
 
-  private validateChunk(addr: number, root: number, previous: number): void {
+  private validateChunk(
+    addr: number,
+    root: number,
+    previous: number,
+  ): { capacity: number; used: number } {
     const view = this.view();
     if (
       !Number.isSafeInteger(addr)
       || addr <= 0
+      || addr % WASM_PAGE_SIZE !== 0
       || checkedEnd(addr, this.format.chunkHeaderSize) > this.memory.buffer.byteLength
       || view.getUint32(addr, true) !== CHUNK_MAGIC
       || view.getUint16(addr + 4, true) !== LINKED_FRAME_FORMAT_VERSION
@@ -537,21 +596,97 @@ export class LinkedForkContinuation {
     const capacity = this.readPtr(addr + 8 + 3 * this.format.ptrWidth);
     const used = this.readPtr(addr + 8 + 4 * this.format.ptrWidth);
     if (
-      capacity < this.format.chunkHeaderSize
+      capacity < WASM_PAGE_SIZE
+      || capacity % WASM_PAGE_SIZE !== 0
       || checkedEnd(addr, capacity) > this.memory.buffer.byteLength
       || used < this.format.chunkHeaderSize
       || used > capacity
     ) {
       throw new Error(`${this.label}: invalid linked continuation chunk bounds`);
     }
+    return { capacity, used };
   }
 
-  private chunkContaining(addr: number): { addr: number; size: number } {
-    const chunk = this.chunks.find(({ addr: base, size }) => addr >= base && addr < base + size);
+  private resetReplay(node: number): void {
+    this.replayNode = node;
+    if (node === 0) {
+      this.replayChunkIndex = -1;
+      this.replayExpectedEnd = 0;
+      return;
+    }
+    this.replayChunkIndex = this.chunks.length - 1;
+    const chunk = this.chunks[this.replayChunkIndex];
     if (!chunk) {
-      throw new Error(`${this.label}: frame pointer is outside the continuation chunks`);
+      throw new Error(`${this.label}: linked continuation has no replay chunk`);
+    }
+    this.replayExpectedEnd = chunk.addr + chunk.used;
+  }
+
+  private replayChunk(node: number): ContinuationChunk {
+    const chunk = this.chunks[this.replayChunkIndex];
+    if (
+      !chunk
+      || node % this.format.alignment !== 0
+      || node < chunk.addr + chunk.nodeStart
+      || checkedEnd(node, this.format.nodeHeaderSize) > chunk.addr + chunk.used
+    ) {
+      throw new Error(
+        `${this.label}: frame pointer is outside the expected continuation chunk`,
+      );
     }
     return chunk;
+  }
+
+  private previousReplayPosition(
+    previous: number,
+    node: number,
+  ): { chunkIndex: number; expectedEnd: number } {
+    const chunkIndex = this.replayChunkIndex;
+    const chunk = this.chunks[chunkIndex]!;
+    if (previous === 0) {
+      // Every non-root chunk is created for, and must contain, a frame. Only
+      // the root can be empty when the first frame needs a larger chunk.
+      const earlierChunkHasFrames = chunkIndex > 1 || (
+        chunkIndex === 1
+        && this.chunks[0]!.used > this.chunks[0]!.nodeStart
+      );
+      if (node !== chunk.addr + chunk.nodeStart || earlierChunkHasFrames) {
+        throw new Error(`${this.label}: linked continuation replay ended before its first frame`);
+      }
+      return { chunkIndex: -1, expectedEnd: 0 };
+    }
+    if (
+      previous >= chunk.addr + chunk.nodeStart
+      && checkedEnd(previous, this.format.nodeHeaderSize) <= chunk.addr + chunk.used
+    ) {
+      if (previous >= node) {
+        throw new Error(`${this.label}: linked continuation nodes are not reverse ordered`);
+      }
+      return { chunkIndex, expectedEnd: node };
+    }
+
+    const priorChunk = this.chunks[chunkIndex - 1];
+    if (
+      priorChunk
+      && previous >= priorChunk.addr + priorChunk.nodeStart
+      && checkedEnd(previous, this.format.nodeHeaderSize) <=
+        priorChunk.addr + priorChunk.used
+    ) {
+      // WHY: chunks are appended only when the active chunk cannot fit the
+      // next frame. Reverse replay can therefore cross only from the first
+      // node of one chunk to the immediately preceding chunk. This cursor
+      // makes replay O(frames + chunks), independent of total chunk count.
+      if (node !== chunk.addr + chunk.nodeStart) {
+        throw new Error(`${this.label}: linked continuation replay skipped a frame`);
+      }
+      return {
+        chunkIndex: chunkIndex - 1,
+        expectedEnd: priorChunk.addr + priorChunk.used,
+      };
+    }
+    throw new Error(
+      `${this.label}: frame pointer is outside the expected continuation chunk`,
+    );
   }
 
   private release(): void {
@@ -560,6 +695,8 @@ export class LinkedForkContinuation {
     this.root = 0;
     this.activeChunk = 0;
     this.replayNode = 0;
+    this.replayChunkIndex = -1;
+    this.replayExpectedEnd = 0;
     this.abortFailure = null;
     let firstError: unknown;
     for (const chunk of chunks) {

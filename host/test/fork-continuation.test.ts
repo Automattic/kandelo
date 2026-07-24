@@ -56,16 +56,24 @@ describe("invokeForkContinuationBegin", () => {
   });
 });
 
-const wasm32Format = WPK_FORK_LINKED_FRAME_POINTER_WIDTHS.find(({ bytes }) => bytes === 4)!;
-const FORMAT: LinkedFrameFormatDescriptor = {
-  version: WPK_FORK_LINKED_FRAME_FORMAT_VERSION,
-  ptrWidth: 4,
-  alignment: WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT,
-  flags: WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
-  chunkHeaderSize: wasm32Format.chunkHeaderSize,
-  nodeHeaderSize: wasm32Format.nodeHeaderSize,
-  fixedPrefixSize: 128,
-};
+const PAGE_SIZE = 65_536;
+
+function formatFor(ptrWidth: 4 | 8): LinkedFrameFormatDescriptor {
+  const pointerFormat = WPK_FORK_LINKED_FRAME_POINTER_WIDTHS.find(
+    ({ bytes }) => bytes === ptrWidth,
+  )!;
+  return {
+    version: WPK_FORK_LINKED_FRAME_FORMAT_VERSION,
+    ptrWidth,
+    alignment: WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT,
+    flags: WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
+    chunkHeaderSize: pointerFormat.chunkHeaderSize,
+    nodeHeaderSize: pointerFormat.nodeHeaderSize,
+    fixedPrefixSize: 128,
+  };
+}
+
+const FORMAT = formatFor(4);
 
 function uleb128(value: number): number[] {
   const out: number[] = [];
@@ -128,7 +136,7 @@ describe("readLinkedFrameFormat", () => {
 });
 
 function allocator(memory: WebAssembly.Memory) {
-  let next = 65536;
+  let next = PAGE_SIZE;
   const allocations: Array<{ addr: number; size: number }> = [];
   const releases: Array<{ addr: number; size: number }> = [];
   return {
@@ -138,7 +146,7 @@ function allocator(memory: WebAssembly.Memory) {
       const addr = next;
       next += size;
       if (next > memory.buffer.byteLength) {
-        memory.grow(Math.ceil((next - memory.buffer.byteLength) / 65536));
+        memory.grow(Math.ceil((next - memory.buffer.byteLength) / PAGE_SIZE));
       }
       allocations.push({ addr, size });
       return addr;
@@ -151,10 +159,25 @@ function allocator(memory: WebAssembly.Memory) {
 
 function cloneMemory(memory: WebAssembly.Memory): WebAssembly.Memory {
   const clone = new WebAssembly.Memory({
-    initial: memory.buffer.byteLength / 65536,
+    initial: memory.buffer.byteLength / PAGE_SIZE,
   });
   new Uint8Array(clone.buffer).set(new Uint8Array(memory.buffer));
   return clone;
+}
+
+function guestPointer(value: number, ptrWidth: 4 | 8): number | bigint {
+  return ptrWidth === 8 ? BigInt(value) : value;
+}
+
+function writePointer(
+  memory: WebAssembly.Memory,
+  ptrWidth: 4 | 8,
+  addr: number,
+  value: number,
+): void {
+  const view = new DataView(memory.buffer);
+  if (ptrWidth === 8) view.setBigUint64(addr, BigInt(value), true);
+  else view.setUint32(addr, value, true);
 }
 
 describe("LinkedForkContinuation", () => {
@@ -197,6 +220,215 @@ describe("LinkedForkContinuation", () => {
     );
     child.finishReplayAndRelease();
     expect(childAllocator.releases).toEqual(parentAllocator.allocations);
+  });
+
+  it.each([4, 8] as const)(
+    "replays a deep multi-chunk wasm%s chain in exact reverse frame order",
+    (ptrWidth) => {
+      const format = formatFor(ptrWidth);
+      const parentMemory = new WebAssembly.Memory({ initial: 4 });
+      const parentAllocator = allocator(parentMemory);
+      const parent = new LinkedForkContinuation(
+        parentMemory,
+        format,
+        parentAllocator.allocate,
+        parentAllocator.deallocate,
+        `deep-wasm${ptrWidth * 8}`,
+      );
+      const moduleBuffer = parent.beginUnwind();
+      const frames = Array.from({ length: 257 }, (_, index) => ({
+        size: 4_096 + index % 5 * format.alignment,
+        byte: (index * 37) & 0xff,
+      }));
+      for (const frame of frames) {
+        const payload = parent.reserveFrame(guestPointer(frame.size, ptrWidth));
+        new Uint8Array(parentMemory.buffer, Number(payload), frame.size).fill(frame.byte);
+        parent.commitFrame(payload);
+      }
+      parent.finishUnwind();
+      expect(parentAllocator.allocations.length).toBeGreaterThan(10);
+
+      // Clone before the parent consumes its nodes, exactly as fork gives the
+      // child an independent copy of continuation memory.
+      const childMemory = cloneMemory(parentMemory);
+      parent.beginReplay();
+      for (const frame of [...frames].reverse()) {
+        const payload = parent.nextFrame(guestPointer(frame.size, ptrWidth));
+        const bytes = new Uint8Array(parentMemory.buffer, Number(payload), frame.size);
+        expect(bytes[0]).toBe(frame.byte);
+        expect(bytes[bytes.length - 1]).toBe(frame.byte);
+      }
+      parent.finishReplayAndRelease();
+      expect(parentAllocator.releases).toEqual(
+        [...parentAllocator.allocations].reverse(),
+      );
+
+      const childAllocator = allocator(childMemory);
+      const child = new LinkedForkContinuation(
+        childMemory,
+        format,
+        childAllocator.allocate,
+        childAllocator.deallocate,
+        `deep-child-wasm${ptrWidth * 8}`,
+      );
+      child.attachForReplay(moduleBuffer);
+      for (const frame of [...frames].reverse()) {
+        const payload = child.nextFrame(guestPointer(frame.size, ptrWidth));
+        const bytes = new Uint8Array(childMemory.buffer, Number(payload), frame.size);
+        expect(bytes[0]).toBe(frame.byte);
+        expect(bytes[bytes.length - 1]).toBe(frame.byte);
+      }
+      child.finishReplayAndRelease();
+      expect(childAllocator.releases).toEqual(
+        [...parentAllocator.allocations].reverse(),
+      );
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "rejects a two-node wasm%s chunk cycle at its first repeated address",
+    (ptrWidth) => {
+      const format = formatFor(ptrWidth);
+      const parentMemory = new WebAssembly.Memory({ initial: 5 });
+      const parentAllocator = allocator(parentMemory);
+      const parent = new LinkedForkContinuation(
+        parentMemory,
+        format,
+        parentAllocator.allocate,
+        parentAllocator.deallocate,
+        `cycle-parent-wasm${ptrWidth * 8}`,
+      );
+      const moduleBuffer = parent.beginUnwind();
+      const payload = parent.reserveFrame(guestPointer(PAGE_SIZE, ptrWidth));
+      parent.commitFrame(payload);
+      parent.finishUnwind();
+      expect(parentAllocator.allocations).toHaveLength(2);
+      const [root, second] = parentAllocator.allocations;
+      writePointer(
+        parentMemory,
+        ptrWidth,
+        second!.addr + 8 + 2 * ptrWidth,
+        root!.addr,
+      );
+
+      const childMemory = cloneMemory(parentMemory);
+      const child = new LinkedForkContinuation(
+        childMemory,
+        format,
+        () => { throw new Error("replay must not allocate"); },
+        () => { throw new Error("failed attachment must not release"); },
+        `cycle-child-wasm${ptrWidth * 8}`,
+      );
+      expect(() => child.attachForReplay(moduleBuffer)).toThrow(
+        "linked continuation chunk cycle",
+      );
+      expect(child.hasActiveContinuation()).toBe(false);
+    },
+  );
+
+  it("bounds an attached chunk chain by the pages available in memory", () => {
+    const memory = new WebAssembly.Memory({ initial: 3 });
+    const arenaAllocator = allocator(memory);
+    const arena = new LinkedForkContinuation(
+      memory,
+      FORMAT,
+      arenaAllocator.allocate,
+      arenaAllocator.deallocate,
+      "memory-bound-parent",
+    );
+    const moduleBuffer = arena.beginUnwind();
+    for (let index = 0; index < 2; index += 1) {
+      const payload = arena.reserveFrame(40_000);
+      arena.commitFrame(payload);
+    }
+    arena.finishUnwind();
+    expect(arenaAllocator.allocations).toHaveLength(2);
+    const second = arenaAllocator.allocations[1]!;
+    writePointer(memory, 4, second.addr + 8 + 2 * FORMAT.ptrWidth, 3 * PAGE_SIZE);
+
+    const child = new LinkedForkContinuation(
+      cloneMemory(memory),
+      FORMAT,
+      () => { throw new Error("replay must not allocate"); },
+      () => { throw new Error("failed attachment must not release"); },
+      "memory-bound-child",
+    );
+    expect(() => child.attachForReplay(moduleBuffer)).toThrow(
+      "chunk chain exceeds memory",
+    );
+    expect(child.hasActiveContinuation()).toBe(false);
+  });
+
+  it("rejects a reverse link at the exclusive end of the prior chunk", () => {
+    const memory = new WebAssembly.Memory({ initial: 5 });
+    const arenaAllocator = allocator(memory);
+    const arena = new LinkedForkContinuation(
+      memory,
+      FORMAT,
+      arenaAllocator.allocate,
+      arenaAllocator.deallocate,
+      "boundary-parent",
+    );
+    const moduleBuffer = arena.beginUnwind();
+    const payloads = [];
+    for (let index = 0; index < 3; index += 1) {
+      const payload = arena.reserveFrame(40_000);
+      payloads.push(Number(payload));
+      arena.commitFrame(payload);
+    }
+    arena.finishUnwind();
+    expect(arenaAllocator.allocations).toHaveLength(3);
+    const prior = arenaAllocator.allocations[1]!;
+    const tailNode = payloads[2]! - FORMAT.nodeHeaderSize;
+    writePointer(memory, 4, tailNode + 8, prior.addr + prior.size);
+
+    const child = new LinkedForkContinuation(
+      cloneMemory(memory),
+      FORMAT,
+      () => { throw new Error("replay must not allocate"); },
+      () => {},
+      "boundary-child",
+    );
+    child.attachForReplay(moduleBuffer);
+    expect(() => child.nextFrame(40_000)).toThrow(
+      "frame pointer is outside the expected continuation chunk",
+    );
+  });
+
+  it("rejects a reverse link that skips a frame in the active chunk", () => {
+    const memory = new WebAssembly.Memory({ initial: 5 });
+    const arenaAllocator = allocator(memory);
+    const arena = new LinkedForkContinuation(
+      memory,
+      FORMAT,
+      arenaAllocator.allocate,
+      arenaAllocator.deallocate,
+      "ordering-parent",
+    );
+    const moduleBuffer = arena.beginUnwind();
+    const payloads = [];
+    for (let index = 0; index < 4; index += 1) {
+      const payload = arena.reserveFrame(30_000);
+      payloads.push(Number(payload));
+      arena.commitFrame(payload);
+    }
+    arena.finishUnwind();
+    expect(arenaAllocator.allocations).toHaveLength(2);
+    const tailNode = payloads[3]! - FORMAT.nodeHeaderSize;
+    const priorChunkNode = payloads[1]! - FORMAT.nodeHeaderSize;
+    writePointer(memory, 4, tailNode + 8, priorChunkNode);
+
+    const child = new LinkedForkContinuation(
+      cloneMemory(memory),
+      FORMAT,
+      () => { throw new Error("replay must not allocate"); },
+      () => {},
+      "ordering-child",
+    );
+    child.attachForReplay(moduleBuffer);
+    expect(() => child.nextFrame(30_000)).toThrow(
+      "linked continuation replay skipped a frame",
+    );
   });
 
   it("allocates a multi-page chunk for one frame larger than a Wasm page", () => {
