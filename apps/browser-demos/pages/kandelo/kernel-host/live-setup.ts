@@ -242,7 +242,7 @@ type LiveVfsSource =
 type ShellProfile = "default" | "node";
 type InitEnvProfile = "service" | "wordpress";
 
-interface LiveProfileSpec {
+interface LiveDemoSpec {
   image: LiveVfsImage;
   shell?: ShellProfile;
   includeNodeUtility?: boolean;
@@ -314,7 +314,7 @@ async function settleAfterBootResourcesReleased(): Promise<void> {
   await settleWebKitReclaim();
 }
 
-const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
+const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
   shell: {
     image: "shell",
   },
@@ -773,7 +773,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
   }
 
   const normalized = normalizeDemoId(id) ?? "shell";
-  const spec = LIVE_PROFILE_SPECS[normalized];
+  const spec = LIVE_DEMO_SPECS[normalized];
   const desc = descriptorFor(normalized);
   const vfsSource = VFS_SOURCES[spec.image];
   return {
@@ -1927,7 +1927,7 @@ function envRecord(env: string[]): Record<string, string> {
 function descriptorFor(id: string): BootDescriptor {
   const software = SOFTWARE_PROFILES.get(id);
   const normalized = software ? "shell" : normalizeDemoId(id) ?? "shell";
-  const spec = LIVE_PROFILE_SPECS[normalized];
+  const spec = LIVE_DEMO_SPECS[normalized];
   const item = software
     ? liveGalleryItems().find((p) => p.id === "shell")!
     : liveGalleryItems().find((p) => p.id === normalized) ?? liveGalleryItems()[0];
@@ -1986,7 +1986,7 @@ function liveGalleryItems(): GalleryItem[] {
 function vfsImageUrlForPreset(id: string): string | undefined {
   const liveId = normalizeDemoId(id);
   if (!liveId) return undefined;
-  const source = VFS_SOURCES[LIVE_PROFILE_SPECS[liveId].image];
+  const source = VFS_SOURCES[LIVE_DEMO_SPECS[liveId].image];
   if (source.kind !== "url") return undefined;
   const url = new URL(source.url, location.href);
   url.hash = liveId;
@@ -1998,7 +1998,7 @@ function vfsImageUrlResolverForPreset(
 ): (() => Promise<string>) | undefined {
   const liveId = normalizeDemoId(id);
   if (!liveId) return undefined;
-  const source = VFS_SOURCES[LIVE_PROFILE_SPECS[liveId].image];
+  const source = VFS_SOURCES[LIVE_DEMO_SPECS[liveId].image];
   if (source.kind !== "optional-demo") return undefined;
   return async () => {
     const url = new URL(await resolveOptionalDemoVfsUrl(source.image), location.href);
@@ -2026,7 +2026,7 @@ async function liveDemoIdForVfsImageUrl(
 
   // WHY: a demo selects launch behavior, while the matched image owns the VFS
   // bytes and capacity. Never apply a launch profile to a different image.
-  return LIVE_PROFILE_SPECS[requestedDemo].image === image
+  return LIVE_DEMO_SPECS[requestedDemo].image === image
     ? requestedDemo
     : null;
 }
@@ -2411,7 +2411,7 @@ function normalizeDemoId(id: string | null | undefined): LiveDemoId | null {
 }
 
 function isLiveDemoId(id: string): id is LiveDemoId {
-  return Object.hasOwn(LIVE_PROFILE_SPECS, id);
+  return Object.hasOwn(LIVE_DEMO_SPECS, id);
 }
 
 function readImageShellConfig(fs: MemoryFileSystem): KandeloShellConfig | null {
