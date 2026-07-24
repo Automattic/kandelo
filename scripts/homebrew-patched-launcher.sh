@@ -1891,14 +1891,28 @@ homebrew_patched_launcher_isolate() {
   xtask_links="$(/usr/bin/stat -c '%h' "$xtask_bin" 2>/dev/null || true)"
   xtask_uid="$(/usr/bin/stat -c '%u' "$xtask_bin" 2>/dev/null || true)"
   if ! [[ "$xtask_mode" =~ ^[0-7]{3,4}$ ]] || \
-     [ $((8#$xtask_mode & 06022)) -ne 0 ] || [ "$xtask_links" != "1" ] || \
-     [ "$xtask_uid" = "$build_uid" ] || \
-     ! "$sudo_bin" -H -u "$build_user" -- \
-       /usr/bin/test -r "$xtask_bin" -a -x "$xtask_bin" || \
-     "$sudo_bin" -H -u "$build_user" -- /usr/bin/test -w "$xtask_bin"; then
-    echo "homebrew-patched-launcher: prepared program-index checker has unsafe Formula access" >&2
+     [ $((8#$xtask_mode & 06022)) -ne 0 ]; then
+    echo "homebrew-patched-launcher: prepared program-index checker has an unsafe mode" >&2
     return 2
   fi
+  if [ "$xtask_links" != "1" ]; then
+    echo "homebrew-patched-launcher: prepared program-index checker is not single-linked" >&2
+    return 2
+  fi
+  if [ "$xtask_uid" = "$build_uid" ]; then
+    echo "homebrew-patched-launcher: prepared program-index checker is owned by the Formula user" >&2
+    return 2
+  fi
+  if "$sudo_bin" -H -u "$build_user" -- /usr/bin/test -w "$xtask_bin"; then
+    echo "homebrew-patched-launcher: prepared program-index checker is writable by the Formula user" >&2
+    return 2
+  fi
+  # WHY: GitHub places the reviewed checkout below the workflow user's private
+  # home. Formula execution never reads that original path: systemd exposes the
+  # exact inode through the root-created read-only alias audited below, then
+  # makes the original Kandelo root inaccessible. Requiring direct Formula-user
+  # read access here rejects that secure runner layout without protecting the
+  # actual execution boundary.
   homebrew_assert_tree_not_replaceable_by_user "$build_user" "$xtask_bin" || return
   xtask_state="$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' "$xtask_bin")" || return 2
   xtask_sha256="$(/usr/bin/sha256sum "$xtask_bin")" || return 2

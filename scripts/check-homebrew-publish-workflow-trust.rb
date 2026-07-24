@@ -2855,7 +2855,10 @@ def check_publisher(workflow)
     'prepared program-index checker must be one exact regular executable',
     'prepared program-index checker is outside the exact Kandelo root',
     'program-index checker is not the prepared release xtask',
-    'prepared program-index checker has unsafe Formula access',
+    'prepared program-index checker has an unsafe mode',
+    'prepared program-index checker is not single-linked',
+    'prepared program-index checker is owned by the Formula user',
+    'prepared program-index checker is writable by the Formula user',
     'homebrew_assert_tree_not_replaceable_by_user "$build_user" "$xtask_bin"',
     "xtask_state=\"$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' \"$xtask_bin\")\"",
     'xtask_sha256="$(/usr/bin/sha256sum "$xtask_bin")"',
@@ -3037,6 +3040,10 @@ def check_publisher(workflow)
     check(launcher.include?(fragment),
           "protected Formula input staging lacks #{fragment}")
   end
+  check(!launcher.include?(
+          '/usr/bin/test -r "$xtask_bin" -a -x "$xtask_bin"'
+        ),
+        "reviewed launcher requires Formula access to the hidden original checker")
   staged_cleanup_owner_index = launcher.index("homebrew_patched_launcher_cleanup()")
   staged_cleanup_teardown_index = launcher.index(
     'homebrew_patched_launcher_teardown "$HOMEBREW_PATCHED_BUILD_USER"',
@@ -3171,7 +3178,10 @@ def check_publisher(workflow)
     "a non-release program-index checker",
     "an inaccessible program-index checker",
     "a build-user-writable program-index checker",
+    "a hard-linked program-index checker",
+    "a Formula-user-owned program-index checker",
     "a build-user-replaceable program-index checker",
+    "program-index checker fixture does not model a workflow-private checkout",
     "isolated launcher accepted changed program-index checker bytes",
     "WASM_POSIX_XTASK_BIN=caller-poison",
     "build-deps program-index-context-check",

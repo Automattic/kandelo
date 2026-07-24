@@ -1240,7 +1240,7 @@ set -euo pipefail
 [ "$*" = "build-deps program-index-context-check" ]
 printf 'checked source projection\n'
 EOF
-  chmod 0755 "$isolated_xtask"
+  chmod 0555 "$isolated_xtask"
   printf 'target work\n' >"$isolated_work/target-work-marker"
   printf 'external target untouched\n' >"$external_cellar/sentinel"
   printf 'external target untouched\n' >"$external_opt/sentinel"
@@ -1252,9 +1252,10 @@ EOF
   chmod 0600 "$isolated_tier2_attestation"
   mkdir "$isolated_kandelo/runner-control"
   chmod 0700 "$isolated_kandelo/runner-control"
-  # Keep the parent traversable so only systemd's InaccessiblePaths protects
-  # these roots. A mode-000 mountpoint can still exist and stat successfully.
-  chmod 0755 "$isolated_source_parent"
+  # Model GitHub's workflow-private home: the Formula identity cannot traverse
+  # the original checkout. The launcher must expose only its root-created,
+  # read-only bind aliases inside the isolated service.
+  chmod 0700 "$isolated_source_parent"
   cp "$prefix/bin/brew" "$isolated_repo/bin/brew"
   chmod +x "$isolated_repo/bin/brew"
   printf 'unpatched\n' >"$isolated_repo/marker.txt"
@@ -1278,6 +1279,10 @@ EOF
   if /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
     /usr/bin/test -x "$isolated_sysroot_owner"; then
     fail "sysroot fixture does not model a workflow-private owner path"
+  fi
+  if /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+    /usr/bin/test -r "$isolated_xtask"; then
+    fail "program-index checker fixture does not model a workflow-private checkout"
   fi
   export HOMEBREW_CACHE="$isolated_cache"
   export HOMEBREW_TEMP="$isolated_temp"
@@ -1403,7 +1408,7 @@ EOF
   cp "$isolated_xtask" "$inaccessible_xtask"
   chmod 0700 "$inaccessible_xtask"
   assert_xtask_rejected "$inaccessible_xtask" \
-    "prepared program-index checker has unsafe Formula access" \
+    "prepared program-index checker has an unsafe mode" \
     "an inaccessible program-index checker"
   rm -rf "$isolated_kandelo/target/inaccessible"
 
@@ -1412,9 +1417,27 @@ EOF
   cp "$isolated_xtask" "$writable_xtask"
   chmod 0777 "$writable_xtask"
   assert_xtask_rejected "$writable_xtask" \
-    "prepared program-index checker has unsafe Formula access" \
+    "prepared program-index checker has an unsafe mode" \
     "a build-user-writable program-index checker"
   rm -rf "$isolated_kandelo/target/writable"
+
+  hardlinked_xtask="$isolated_kandelo/target/hardlinked/release/xtask"
+  mkdir -p "${hardlinked_xtask%/*}"
+  cp "$isolated_xtask" "$hardlinked_xtask"
+  ln "$hardlinked_xtask" "$hardlinked_xtask.alternate"
+  assert_xtask_rejected "$hardlinked_xtask" \
+    "prepared program-index checker is not single-linked" \
+    "a hard-linked program-index checker"
+  rm -rf "$isolated_kandelo/target/hardlinked"
+
+  owned_xtask="$isolated_kandelo/target/owned/release/xtask"
+  mkdir -p "${owned_xtask%/*}"
+  cp "$isolated_xtask" "$owned_xtask"
+  /usr/bin/sudo -n -- chown "$ISOLATION_BUILD_USER" "$owned_xtask"
+  assert_xtask_rejected "$owned_xtask" \
+    "prepared program-index checker is owned by the Formula user" \
+    "a Formula-user-owned program-index checker"
+  rm -rf "$isolated_kandelo/target/owned"
 
   replaceable_xtask="$isolated_kandelo/target/replaceable/release/xtask"
   mkdir -p "${replaceable_xtask%/*}"
