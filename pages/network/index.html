@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <script src="/kandelo/service-worker.js"></script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kandelo network lab</title>
+  <link rel="icon" href="data:,">
+  <script type="module" crossorigin src="/kandelo/assets/network-Di3WS21G.js"></script>
+  <link rel="modulepreload" crossorigin href="/kandelo/assets/modulepreload-polyfill-axk1WA_r.js">
+  <link rel="stylesheet" crossorigin href="/kandelo/assets/network-CU85hA75.css">
+</head>
+<body>
+  <main class="network-app">
+    <section class="topbar">
+      <div>
+        <h1>Kandelo network lab</h1>
+        <p>Three local Kandelo machines share one in-browser virtual network and communicate with POSIX TCP and UDP sockets.</p>
+      </div>
+      <button id="run" type="button" title="Run demo">
+        <span aria-hidden="true">▶</span>
+        <span>Run</span>
+      </button>
+    </section>
+
+    <section class="machines" aria-label="Machines">
+      <article class="machine" data-machine="alpha">
+        <div class="machine-head">
+          <span class="machine-dot"></span>
+          <div>
+            <h2>alpha</h2>
+            <p>10.88.0.2</p>
+          </div>
+        </div>
+        <div class="machine-status" id="machine-alpha">idle</div>
+      </article>
+      <article class="machine" data-machine="beta">
+        <div class="machine-head">
+          <span class="machine-dot"></span>
+          <div>
+            <h2>beta</h2>
+            <p>10.88.0.3</p>
+          </div>
+        </div>
+        <div class="machine-status" id="machine-beta">idle</div>
+      </article>
+      <article class="machine" data-machine="gamma">
+        <div class="machine-head">
+          <span class="machine-dot"></span>
+          <div>
+            <h2>gamma</h2>
+            <p>10.88.0.4</p>
+          </div>
+        </div>
+        <div class="machine-status" id="machine-gamma">idle</div>
+      </article>
+    </section>
+
+    <section class="run-grid">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Scenarios</h2>
+          <span id="overall-status">ready</span>
+        </div>
+        <ol id="steps" class="steps">
+          <li data-step="udp"><span></span><div><strong>UDP datagram</strong><p>beta sends text to alpha with real GNU netcat over SOCK_DGRAM.</p></div></li>
+          <li data-step="tcp"><span></span><div><strong>TCP stream</strong><p>beta connects to alpha with netcat over SOCK_STREAM.</p></div></li>
+          <li data-step="curl"><span></span><div><strong>HTTP with curl</strong><p>alpha serves an HTTP response with netcat; gamma fetches it with curl.</p></div></li>
+        </ol>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Results</h2>
+          <span id="result-count">0/3</span>
+        </div>
+        <div id="results" class="results"></div>
+      </section>
+    </section>
+
+    <section class="panel transcript-panel">
+      <div class="panel-head">
+        <h2>Command Output</h2>
+        <button id="clear" type="button" title="Clear output">Clear</button>
+      </div>
+      <pre id="transcript" class="transcript"></pre>
+    </section>
+  </main>
+
+</body>
+</html>

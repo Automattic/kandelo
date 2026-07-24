@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Shared WebAssembly.Memory reclamation test</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 1.5rem; max-width: 60rem; }
+  h1 { font-size: 1.3rem; }
+  p.lede { max-width: 48rem; opacity: 0.85; }
+  fieldset { border: 1px solid color-mix(in srgb, currentColor 25%, transparent); border-radius: 8px; margin: 1rem 0; }
+  legend { font-weight: 600; padding: 0 0.4rem; }
+  label { display: inline-flex; align-items: center; gap: 0.35rem; margin-right: 1rem; }
+  .variants { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+  .variant { border: 1px solid color-mix(in srgb, currentColor 25%, transparent); border-radius: 8px; padding: 0.75rem 1rem; flex: 1 1 16rem; }
+  .variant h3 { margin: 0 0 0.3rem; font-size: 1rem; }
+  .variant small { opacity: 0.8; }
+  button { font: inherit; padding: 0.45rem 0.9rem; border-radius: 6px; cursor: pointer; border: 1px solid color-mix(in srgb, currentColor 40%, transparent); background: color-mix(in srgb, currentColor 8%, transparent); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  #log { white-space: pre-wrap; font: 12px/1.45 ui-monospace, monospace; background: color-mix(in srgb, currentColor 6%, transparent); border-radius: 8px; padding: 0.75rem 1rem; margin-top: 1rem; max-height: 22rem; overflow: auto; }
+  .ok { color: #1a9e57; } .bad { color: #d23c3c; } .warn { color: #c98a00; }
+  code { background: color-mix(in srgb, currentColor 10%, transparent); padding: 0.05rem 0.3rem; border-radius: 4px; }
+  .status { font-weight: 600; margin-top: 0.5rem; }
+</style>
+</head>
+<body>
+<h1>Shared <code>WebAssembly.Memory</code> reclamation test</h1>
+<p class="lede">
+  Validates the hinge behind the Safari image-switch OOM fix: <strong>does
+  <code>Worker.terminate()</code> promptly reclaim a large committed shared
+  <code>WebAssembly.Memory</code> owned only by workers, while a memory the
+  persistent main thread co-owns is <em>not</em> reclaimed?</strong>
+  Each iteration allocates a fresh 1&nbsp;GiB-maximum shared memory, grows it to
+  the committed size, and touches every page (real physical commit). If
+  <code>terminate()</code> reclaims, live memory stays flat and every iteration
+  completes. If it does not, committed memory accumulates until the tab throws
+  <em>Out of Memory</em> — the same error users hit when switching images.
+</p>
+
+<fieldset>
+  <legend>Parameters</legend>
+  <label>Committed MiB / iter <input id="mib" type="number" value="256" min="16" max="1024" step="16" style="width:5rem"></label>
+  <label>Iterations <input id="iters" type="number" value="40" min="1" max="500" style="width:5rem"></label>
+  <label><input id="nudge" type="checkbox"> yield + GC-nudge between iters</label>
+</fieldset>
+
+<div class="variants">
+  <div class="variant">
+    <h3>A · Worker-exclusive</h3>
+    <small>Worker allocates &amp; owns the memory. Main thread never receives it.
+    <strong>Expected: flat, all iters complete.</strong></small><br><br>
+    <button data-variant="worker-exclusive">Run A</button>
+  </div>
+  <div class="variant">
+    <h3>B · Main-thread co-owned</h3>
+    <small>Worker ships the memory to the main thread, which keeps it (the leak
+    shape). <strong>Expected: OOM after a few iters.</strong></small><br><br>
+    <button data-variant="main-held">Run B</button>
+  </div>
+  <div class="variant">
+    <h3>C · Worker↔worker shared</h3>
+    <small>Memory shared between a worker and its sub-worker; both terminated,
+    main thread never holds it. <strong>Expected: flat, like A.</strong></small><br><br>
+    <button data-variant="worker-shared">Run C</button>
+  </div>
+</div>
+
+<div>
+  <button id="runAll">Run A → C in sequence</button>
+  <button id="clear">Clear log</button>
+</div>
+<div class="status" id="status"></div>
+<div id="log"></div>
+
+<script>
+const WASM_PAGE = 64 * 1024;
+const logEl = document.getElementById("log");
+const statusEl = document.getElementById("status");
+// Deliberate leak reservoir for variant B: the persistent main thread keeps
+// every memory it is handed, exactly like a page that never drops old buffers.
+const mainHeld = [];
+
+function log(msg, cls) {
+  const line = document.createElement("div");
+  if (cls) line.className = cls;
+  line.textContent = msg;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function memReport() {
+  // performance.memory is Chromium-only; Safari exposes nothing. When present
+  // it corroborates the pass/fail; when absent, the iteration count and any
+  // OOM throw are the signal.
+  const m = performance.memory;
+  if (!m) return "";
+  return ` [heap ${(m.usedJSHeapSize / 1048576).toFixed(0)}/${(m.jsHeapSizeLimit / 1048576).toFixed(0)} MiB]`;
+}
+
+async function measureUAMemory() {
+  if (!performance.measureUserAgentSpecificMemory) return null;
+  try {
+    const r = await performance.measureUserAgentSpecificMemory();
+    return r.bytes;
+  } catch { return null; }
+}
+
+function runIteration(variant, committedPages) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker("./wasm-memory-reclaim-worker.js", { type: "classic" });
+    let settled = false;
+    const finish = (fn, arg) => { if (settled) return; settled = true; fn(arg); };
+    worker.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.cmd === "done") {
+        if (variant === "main-held" && msg.memory) mainHeld.push(msg.memory);
+        // Terminating the top-level worker drops its (and, for variant C, its
+        // sub-worker's) references. For A and C nothing else holds the memory;
+        // for B the main thread's `mainHeld` array still does.
+        worker.terminate();
+        finish(resolve);
+      } else if (msg.cmd === "error") {
+        worker.terminate();
+        finish(reject, new Error(msg.error));
+      }
+    };
+    worker.onerror = (e) => { worker.terminate(); finish(reject, new Error(e.message || "worker error")); };
+    worker.postMessage({ cmd: "alloc", variant, committedPages });
+  });
+}
+
+function nudgeGc() {
+  // No window.gc() in production browsers. Best-effort: yield across a frame
+  // and a macrotask so the engine can run opportunistic GC, and allocate +
+  // drop a small pressure buffer to push it toward its collection threshold.
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      // eslint-disable-next-line no-unused-vars
+      let pressure = new ArrayBuffer(32 * 1024 * 1024);
+      pressure = null;
+      setTimeout(resolve, 0);
+    });
+  });
+}
+
+async function runVariant(variant, opts) {
+  const committedPages = Math.max(1, Math.round((opts.mib * 1024 * 1024) / WASM_PAGE));
+  const startUA = await measureUAMemory();
+  log(`── Variant ${variant}: ${opts.iters} iters × ${opts.mib} MiB committed${startUA != null ? ` (UA mem ${(startUA/1048576).toFixed(0)} MiB)` : ""}`, "warn");
+  let completed = 0;
+  for (let i = 0; i < opts.iters; i++) {
+    try {
+      await runIteration(variant, committedPages);
+      completed++;
+      if ((i + 1) % 5 === 0 || i === opts.iters - 1) {
+        const ua = await measureUAMemory();
+        log(`  iter ${i + 1}/${opts.iters} ok${ua != null ? ` — UA mem ${(ua/1048576).toFixed(0)} MiB` : ""}${memReport()}`);
+      }
+      if (opts.nudge) await nudgeGc();
+    } catch (err) {
+      log(`  iter ${i + 1}/${opts.iters} FAILED: ${err.message}${memReport()}`, "bad");
+      log(`  → stopped after ${completed} successful iters. This is the OOM/accumulation signal.`, "bad");
+      return { variant, completed, failed: true };
+    }
+  }
+  const endUA = await measureUAMemory();
+  const delta = startUA != null && endUA != null ? ` — UA mem Δ ${((endUA - startUA)/1048576).toFixed(0)} MiB` : "";
+  log(`  ✓ all ${opts.iters} iters completed${delta}`, "ok");
+  return { variant, completed, failed: false };
+}
+
+function readOpts() {
+  return {
+    mib: Math.max(16, Number(document.getElementById("mib").value) || 256),
+    iters: Math.max(1, Number(document.getElementById("iters").value) || 40),
+    nudge: document.getElementById("nudge").checked,
+  };
+}
+
+function setBusy(busy) {
+  document.querySelectorAll("button").forEach((b) => { b.disabled = busy; });
+  statusEl.textContent = busy ? "running…" : "idle";
+}
+
+async function run(variants) {
+  setBusy(true);
+  const opts = readOpts();
+  if (mainHeld.length) { mainHeld.length = 0; log("(cleared main-thread reservoir from a prior B run)", "warn"); }
+  const results = [];
+  for (const v of variants) {
+    results.push(await runVariant(v, opts));
+  }
+  log("");
+  for (const r of results) {
+    const verdict = r.failed
+      ? `accumulates → OOM after ${r.completed} iters`
+      : `flat → reclaimed (all ${r.completed} iters)`;
+    log(`RESULT ${r.variant}: ${verdict}`, r.failed ? "bad" : "ok");
+  }
+  const a = results.find((r) => r.variant === "worker-exclusive");
+  const b = results.find((r) => r.variant === "main-held");
+  if (a && b) {
+    if (!a.failed && b.failed) {
+      log("✓ HINGE CONFIRMED: worker-owned memory is reclaimed by terminate(); main-thread-held memory is not. The kernel-owned-FS fix is sound.", "ok");
+    } else if (!a.failed && !b.failed) {
+      log("⚠ Neither variant OOM'd — raise Committed MiB / Iterations so total exceeds this browser's ceiling, then re-run.", "warn");
+    } else if (a.failed) {
+      log("✗ UNEXPECTED: worker-exclusive also failed — terminate() may be lazy on this engine. Re-examine before relying on kernel-owned FS alone.", "bad");
+    }
+  }
+  setBusy(false);
+}
+
+// Exposed for headless drivers (Playwright) that measure RSS between iters.
+window.runIteration = runIteration;
+window.mainHeld = mainHeld;
+
+document.querySelectorAll("button[data-variant]").forEach((btn) => {
+  btn.addEventListener("click", () => run([btn.dataset.variant]));
+});
+document.getElementById("runAll").addEventListener("click", () =>
+  run(["worker-exclusive", "main-held", "worker-shared"]));
+document.getElementById("clear").addEventListener("click", () => { logEl.innerHTML = ""; });
+
+log(`SharedArrayBuffer: ${typeof SharedArrayBuffer !== "undefined" ? "available" : "MISSING (needs COOP/COEP)"}`,
+    typeof SharedArrayBuffer !== "undefined" ? "ok" : "bad");
+log(`crossOriginIsolated: ${self.crossOriginIsolated}`, self.crossOriginIsolated ? "ok" : "bad");
+log(`performance.memory: ${performance.memory ? "present (Chromium)" : "absent (Safari/Firefox — rely on iter count + OOM)"}`);
+log(`measureUserAgentSpecificMemory: ${performance.measureUserAgentSpecificMemory ? "present" : "absent"}`);
+log("");
+log("Tip: on Safari, also watch Web Inspector → Timelines → JavaScript Allocations, or Activity Monitor, while running.");
+</script>
+</body>
+</html>

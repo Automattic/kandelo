@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <script src="/kandelo/service-worker.js"></script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kandelo</title>
+  <link rel="icon" type="image/png" href="/kandelo/assets/favicon-DwvkjUbe.png">
+  <script>
+    const target = new URL(
+      window.location.pathname.replace(/\/pages\/kandelo\/?$/, "/"),
+      window.location.origin,
+    );
+    target.search = window.location.search;
+    target.hash = window.location.hash;
+    window.location.replace(target);
+  </script>
+</head>
+<body>
+  <a href="../../">Open Kandelo</a>
+</body>
+</html>

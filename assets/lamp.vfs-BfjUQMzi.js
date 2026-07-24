@@ -1,0 +1,1 @@
+var a="/kandelo/assets/lamp.vfs-QYp3j5cJ.zst";export{a as default};

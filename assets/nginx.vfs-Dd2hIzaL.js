@@ -1,0 +1,1 @@
+var s="/kandelo/assets/nginx.vfs-DtEz66kX.zst";export{s as default};

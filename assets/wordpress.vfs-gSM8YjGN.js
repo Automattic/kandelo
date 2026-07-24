@@ -1,0 +1,1 @@
+var s="/kandelo/assets/wordpress.vfs-B6qXl5vD.zst";export{s as default};
