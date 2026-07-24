@@ -2868,6 +2868,8 @@ def check_publisher(workflow)
     'expected_xtask_sha256=%q',
     'protected program-index checker changed or is inaccessible',
     'prepared program-index checker changed after isolation',
+    '[ "${HOMEBREW_KANDELO_XTASK_BIN:-}" != "$expected_xtask" ]',
+    'HOMEBREW_KANDELO_XTASK_BIN=$xtask_alias',
     'WASM_POSIX_XTASK_BIN=$xtask_alias',
     "--property=KillMode=control-group", "--property=SendSIGKILL=yes",
     "--property=NoNewPrivileges=yes", "--expand-environment=no",
@@ -3151,7 +3153,9 @@ def check_publisher(workflow)
   check(target_environment&.include?("HOMEBREW_KANDELO_GNU_TAR"),
         "isolated target Homebrew drops the validated GNU tar path")
   check(target_environment &&
-        !target_environment.include?("WASM_POSIX_XTASK_BIN"),
+        !target_environment.match?(
+          /(?:HOMEBREW_KANDELO_XTASK_BIN|WASM_POSIX_XTASK_BIN)/
+        ),
         "isolated target Homebrew preserves a caller-selected checker path")
   native_environment = launcher[/native_preserved_variables=\((.*?)\n  \)/m, 1]
   check(native_environment &&
@@ -3184,6 +3188,7 @@ def check_publisher(workflow)
     "a build-user-replaceable program-index checker",
     "program-index checker fixture does not model a workflow-private checkout",
     "isolated launcher accepted changed program-index checker bytes",
+    "HOMEBREW_KANDELO_XTASK_BIN=caller-poison",
     "WASM_POSIX_XTASK_BIN=caller-poison",
     "build-deps program-index-context-check",
   ].each do |fragment|

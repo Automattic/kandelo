@@ -1018,7 +1018,14 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    workflow-user cache, which the isolated Formula identity cannot access, so
    the publisher transactionally replaces that link tree with self-contained
    regular files before it exposes the Kandelo checkout through a read-only
-   source alias.
+   source alias. The launcher also exposes its already-validated, root-owned
+   `xtask` through that alias. Because Homebrew reconstructs the ordinary
+   environment when it re-enters a Formula test, the launcher carries this
+   exact path across that boundary as `HOMEBREW_KANDELO_XTASK_BIN`. Tap support
+   validates and freezes the value while loading the trusted support module,
+   then translates only that frozen value to `WASM_POSIX_XTASK_BIN` for the
+   Node or Chromium resolver child. Caller-selected checker paths are neither
+   preserved nor trusted.
    The workflow also
    materializes the exact `formula_test` and `bottle` groups from pinned
    Homebrew's frozen Gemfile into the temporary overlay, validates their group

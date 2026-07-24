@@ -2118,6 +2118,7 @@ homebrew_patched_launcher_isolate() {
     printf '  echo "homebrew-patched-launcher: isolated primary tap root changed" >&2\n'
     printf '  exit 2\nfi\n'
     printf 'if [ "${WASM_POSIX_XTASK_BIN:-}" != "$expected_xtask" ] || '
+    printf '[ "${HOMEBREW_KANDELO_XTASK_BIN:-}" != "$expected_xtask" ] || '
     printf '[ ! -f "$expected_xtask" ] || [ -L "$expected_xtask" ] || '
     printf '[ ! -r "$expected_xtask" ] || [ ! -x "$expected_xtask" ] || '
     printf '[ -w "$expected_xtask" ] || '
@@ -2266,10 +2267,15 @@ homebrew_patched_launcher_isolate() {
         printf ' %q' "$variable=$value"
       fi
     done
-    printf ' %q %q %q %q %q' "HOMEBREW_KANDELO_ROOT=$source_alias_dir/kandelo" \
+    # WHY: Homebrew preserves HOMEBREW_* variables across its Formula-test
+    # re-exec but rebuilds the ordinary environment. Give tap support a
+    # protected alias it can freeze, while direct resolver callers still get
+    # the conventional WASM_POSIX_XTASK_BIN name.
+    printf ' %q %q %q %q %q %q' "HOMEBREW_KANDELO_ROOT=$source_alias_dir/kandelo" \
       "KANDELO_HOMEBREW_KANDELO_ROOT=$source_alias_dir/kandelo" \
       "HOMEBREW_KANDELO_SYSROOT=$source_alias_dir/sysroot" \
       "WASM_POSIX_SYSROOT=$source_alias_dir/sysroot" \
+      "HOMEBREW_KANDELO_XTASK_BIN=$xtask_alias" \
       "WASM_POSIX_XTASK_BIN=$xtask_alias"
     printf ' "${bottle_tag_env[@]}" "$command_path" "$@"\n'
   } >"$wrapper_source"

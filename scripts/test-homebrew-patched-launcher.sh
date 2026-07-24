@@ -154,7 +154,7 @@ case "${1:-}" in
       HOMEBREW_KANDELO_ABI HOMEBREW_KANDELO_ARCH HOMEBREW_KANDELO_LLVM_BIN \
       HOMEBREW_KANDELO_GNU_TAR HOMEBREW_KANDELO_NODE HOMEBREW_KANDELO_NODE_RECEIPT_PATH \
       HOMEBREW_KANDELO_PRIMARY_TAP_ROOT HOMEBREW_KANDELO_ROOT \
-      HOMEBREW_KANDELO_SYSROOT LLVM_BIN \
+      HOMEBREW_KANDELO_SYSROOT HOMEBREW_KANDELO_XTASK_BIN LLVM_BIN \
       PLAYWRIGHT_BROWSERS_PATH WASM_POSIX_LLVM_DIR WASM_POSIX_SYSROOT; do
       [ -z "${!target_only+x}" ] || exit 1
     done
@@ -409,6 +409,7 @@ case "${1:-}" in
     [ "${KANDELO_HOMEBREW_KANDELO_ROOT:-}" = "$2" ]
     [ "${HOMEBREW_KANDELO_SYSROOT:-}" = "$4" ]
     [ "${WASM_POSIX_SYSROOT:-}" = "$4" ]
+    [ "${HOMEBREW_KANDELO_XTASK_BIN:-}" = "$5" ]
     [ "${WASM_POSIX_XTASK_BIN:-}" = "$5" ]
     [ -f "$5" ] && [ ! -L "$5" ] && [ -r "$5" ] && [ -x "$5" ] && [ ! -w "$5" ]
     [ "$(/usr/bin/realpath -- "$5")" = "$5" ]
@@ -1602,6 +1603,7 @@ EOF
   fi
   isolated_xtask_sha256="$(/usr/bin/sha256sum "$isolated_xtask")"
   isolated_xtask_sha256="${isolated_xtask_sha256%% *}"
+  HOMEBREW_KANDELO_XTASK_BIN=caller-poison \
   WASM_POSIX_XTASK_BIN=caller-poison \
   "$HOMEBREW_PATCHED_BREW_BIN" assert-source-aliases \
     "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/kandelo" \

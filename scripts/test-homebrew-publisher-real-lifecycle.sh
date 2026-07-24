@@ -114,6 +114,9 @@ fi
 
 mkdir -p "$BREW_ROOT/.tmp" "$BREW_ROOT/.cache" "$BREW_ROOT/.config" \
   "$BREW_ROOT/.home"
+SEALED_XTASK="$TMP_ROOT/sealed-xtask"
+printf '#!/bin/sh\nexit 0\n' >"$SEALED_XTASK"
+chmod 0555 "$SEALED_XTASK"
 BREW_ENV=(
   HOME="$BREW_ROOT/.home"
   PATH="$PATH"
@@ -124,7 +127,9 @@ BREW_ENV=(
   HOMEBREW_NO_INSTALL_CLEANUP=1
   HOMEBREW_NO_INSTALL_FROM_API=1
   HOMEBREW_KANDELO_HERMETIC_LIFECYCLE_TEST=1
+  HOMEBREW_KANDELO_XTASK_BIN="$SEALED_XTASK"
   HOMEBREW_TEMP="$BREW_ROOT/.tmp"
+  WASM_POSIX_XTASK_BIN=caller-poison
   XDG_CONFIG_HOME="$BREW_ROOT/.config"
 )
 
@@ -321,6 +326,13 @@ class Fixture < Formula
   end
 
   test do
+    # WHY: Homebrew rebuilds the Formula-test environment. It preserves the
+    # publisher's HOMEBREW_* transport value but must not leak the ordinary
+    # caller-selected resolver alias; tap support translates the frozen value.
+    raise "sealed checker transport was not preserved" unless
+      ENV["HOMEBREW_KANDELO_XTASK_BIN"] == "$SEALED_XTASK"
+    raise "ordinary checker alias leaked into Formula test" if
+      ENV.key?("WASM_POSIX_XTASK_BIN")
     system "wasm-validate", "--kandelo-test-probe"
   end
 end
