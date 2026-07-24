@@ -1743,6 +1743,10 @@ async function handleReadVfsFile(
       "read or materialize a rootfs file",
     );
     const { data, stat } = await readPreparedPlatformFile(io, msg.path);
+    if ((stat.mode & 0o170000) !== 0o100000) {
+      respond(msg.requestId, null);
+      return;
+    }
     // Copy into a plain (non-shared) ArrayBuffer so it structured-clones back.
     const result = data.slice();
     respond(
