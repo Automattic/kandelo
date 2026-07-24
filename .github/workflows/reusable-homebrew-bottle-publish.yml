@@ -873,12 +873,22 @@ jobs:
             }
             cargo build --release -p xtask --target "$host" --quiet
             xtask="$PWD/target/$host/release/xtask"
-            # Formula tests need the source-projection checker, not Cargo or
-            # Nix authority. Publish this exact reviewed binary to the
-            # launcher; it will expose only a read-only source-alias path.
             [ -f "$xtask" ] && [ ! -L "$xtask" ] && [ -x "$xtask" ] &&
               [ "$(realpath -- "$xtask")" = "$xtask" ] || {
               echo "prepared Formula test xtask is not an exact executable" >&2
+              exit 2
+            }
+            # Formula tests need the source-projection checker, not Cargo or
+            # Nix authority. Cargo may hard-link this executable on Linux, so
+            # detach exact bytes before the launcher exposes one read-only
+            # source-alias path to the Formula user.
+            sealed_xtask="$(
+              bash scripts/seal-homebrew-formula-checker.sh \
+                --root "$PWD" \
+                --checker "$xtask"
+            )"
+            [ "$sealed_xtask" = "$xtask" ] || {
+              echo "Formula test checker seal selected another executable" >&2
               exit 2
             }
             printf "xtask-bin=%s\n" "$xtask" >>"$GITHUB_OUTPUT"
@@ -2373,12 +2383,21 @@ jobs:
             }
             cargo build --release -p xtask --target "$host" --quiet
             xtask="$PWD/target/$host/release/xtask"
-            # Formula tests need the source-projection checker, not Cargo or
-            # Nix authority. Publish this exact reviewed binary to the
-            # launcher; it will expose only a read-only source-alias path.
             [ -f "$xtask" ] && [ ! -L "$xtask" ] && [ -x "$xtask" ] &&
               [ "$(realpath -- "$xtask")" = "$xtask" ] || {
               echo "prepared Formula verification xtask is not an exact executable" >&2
+              exit 2
+            }
+            # Verification has the same Cargo hardlink boundary as the build.
+            # Use the shared byte-for-byte seal so both isolated Formula paths
+            # receive the same single-link authority.
+            sealed_xtask="$(
+              bash scripts/seal-homebrew-formula-checker.sh \
+                --root "$PWD" \
+                --checker "$xtask"
+            )"
+            [ "$sealed_xtask" = "$xtask" ] || {
+              echo "Formula verification checker seal selected another executable" >&2
               exit 2
             }
             printf "xtask-bin=%s\n" "$xtask" >>"$GITHUB_OUTPUT"

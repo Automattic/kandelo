@@ -7045,6 +7045,7 @@ assert_bottle_verifier_installs_test_dependencies
 bash "$REPO_ROOT/scripts/test-homebrew-provision-formula-browser.sh"
 bash "$REPO_ROOT/scripts/test-materialize-resolver-binaries.sh"
 bash "$REPO_ROOT/scripts/test-install-local-binary-sealed.sh"
+bash "$REPO_ROOT/scripts/test-seal-homebrew-formula-checker.sh"
 assert_dependency_pour_provenance_is_bounded
 assert_static_formula_closure_is_fail_closed
 assert_generator_validates_homebrew_commit_as_data

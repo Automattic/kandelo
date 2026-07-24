@@ -21,10 +21,10 @@ UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "5764359641eacc708845ceaf075b04940b6d24c6e3fa20135d5e6e75026f87df"
-PUBLISHER_BUILD_DIGEST = "d239689c71b23b76fd947cc8a71b0ecb7c89e9da732ea67b779eeb6b0e90f42d"
+PUBLISHER_BUILD_DIGEST = "6902b3d525fa6aae5205d1896d350afbe908f044f0712e4dab9dd2fb865603d5"
 PUBLISHER_UPLOAD_DIGEST = "1a9f39031587a5944bce022031d6f84d70f476159d4798bbcb51a4fa8377da9e"
 PUBLISHER_INDEX_DIGEST = "c0eaec6f01ac64e8744b8c98e35b304aa2adafc4ce7ad96416eac85c593fdf87"
-PUBLISHER_VERIFY_DIGEST = "4e50425dcf61caa6068e8685500449dfa8a5cff8c03a61307e79f5050c40150a"
+PUBLISHER_VERIFY_DIGEST = "b79cbbc10e4173b38f73bdd1dd827061b6d2654963f9f5563bea5b40807d6c53"
 PUBLISHER_FINALIZE_DIGEST = "b101bc67a1ba796d7986c9cb0e9d0270300e519d2cb6ba60e3ae7fc9b4c6fc2e"
 PUBLISHER_VFS_RELEASE_DIGEST = "34171400552baefd1efee3e05a294308ea3ba783f191f899d1affa5135a4d4da"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
@@ -3264,6 +3264,9 @@ def check_publisher(workflow)
     'xtask="$PWD/target/$host/release/xtask"',
     '[ -f "$xtask" ] && [ ! -L "$xtask" ] && [ -x "$xtask" ]',
     '[ "$(realpath -- "$xtask")" = "$xtask" ]',
+    'bash scripts/seal-homebrew-formula-checker.sh',
+    '--root "$PWD"', '--checker "$xtask"',
+    '[ "$sealed_xtask" = "$xtask" ]',
     'printf "xtask-bin=%s\\n" "$xtask" >>"$GITHUB_OUTPUT"',
     "for package in dash coreutils grep sed rootfs", '"$xtask"',
     "build-deps --arch wasm32", '--binaries-dir "$PWD/binaries"', '--fetch-only resolve "$package"',
@@ -3284,6 +3287,42 @@ def check_publisher(workflow)
           "Formula checker handoff made the exact-source program projection stale"
         ),
         "publisher regression does not protect exact-source program cache keys")
+  checker_sealer = File.read(
+    File.join(REPO_ROOT, "scripts/seal-homebrew-formula-checker.sh")
+  )
+  [
+    'set -euo pipefail',
+    '[ "$(realpath -- "$ROOT" 2>/dev/null || true)" != "$ROOT" ]',
+    '[ "$(realpath -- "$CHECKER" 2>/dev/null || true)" != "$CHECKER" ]',
+    '"$ROOT"/target/*/release/xtask',
+    '[ $((8#$source_mode & 06022)) -ne 0 ]',
+    'sealed="$CHECKER.formula-seal"',
+    '[ -e "$sealed" ] || [ -L "$sealed" ]',
+    "Cargo hard-links target/<host>/release/xtask",
+    'install -m 0555 -- "$CHECKER" "$sealed"',
+    '[ "$sealed_mode" != "555" ] || [ "$sealed_links" != "1" ]',
+    '[ "$sealed_sha256" != "$source_sha256" ]',
+    'mv -f -- "$sealed" "$CHECKER"',
+    '[ "$final_mode" != "555" ] || [ "$final_links" != "1" ]',
+    '[ "$final_sha256" != "$source_sha256" ]',
+  ].each do |fragment|
+    check(checker_sealer.include?(fragment),
+          "Formula checker sealer lacks #{fragment}")
+  end
+  checker_sealer_test = File.read(
+    File.join(REPO_ROOT, "scripts/test-seal-homebrew-formula-checker.sh")
+  )
+  check(
+    publisher_test.include?(
+      'bash "$REPO_ROOT/scripts/test-seal-homebrew-formula-checker.sh"'
+    ) &&
+      checker_sealer_test.include?("fixture does not model Cargo's Linux hardlink") &&
+      checker_sealer_test.include?("sealed checker still aliases Cargo's deps artifact") &&
+      checker_sealer_test.include?("Cargo's alternate path can mutate the sealed checker") &&
+      checker_sealer_test.include?("sealer accepted a writable source checker") &&
+      checker_sealer_test.include?("sealer overwrote an occupied seal destination"),
+    "publisher regressions do not prove Cargo hardlink detachment"
+  )
   materializer = File.read(File.join(REPO_ROOT, "scripts/materialize-resolver-binaries.sh"))
   [
     'cp -aLx -- "$source_dir" "$staged"',
@@ -4027,6 +4066,9 @@ def check_publisher(workflow)
     'xtask="$PWD/target/$host/release/xtask"',
     '[ -f "$xtask" ] && [ ! -L "$xtask" ] && [ -x "$xtask" ]',
     '[ "$(realpath -- "$xtask")" = "$xtask" ]',
+    'bash scripts/seal-homebrew-formula-checker.sh',
+    '--root "$PWD"', '--checker "$xtask"',
+    '[ "$sealed_xtask" = "$xtask" ]',
     'printf "xtask-bin=%s\\n" "$xtask" >>"$GITHUB_OUTPUT"',
     "for package in dash coreutils grep sed rootfs",
     '"$xtask"',
@@ -5538,6 +5580,14 @@ def self_test(publisher, maintenance, repository_canary)
                                "Materialize Formula test platform runtime")
       step["run"] = step.fetch("run").sub('[ ! -L "$xtask" ]', "true")
     },
+    "Formula test checker single-link seal bypass" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test",
+                               "Materialize Formula test platform runtime")
+      step["run"] = step.fetch("run").sub(
+        "bash scripts/seal-homebrew-formula-checker.sh",
+        'printf "%s\\n" "$xtask"'
+      )
+    },
     "Formula test checker leaks job-wide" => lambda { |w|
       step = mutate_named_step(w, "build-and-test",
                                "Materialize Formula test platform runtime")
@@ -5573,6 +5623,15 @@ def self_test(publisher, maintenance, repository_canary)
         w, "verify-bottle", "Materialize Formula verification platform runtime"
       )
       step["run"] = step.fetch("run").sub('[ ! -L "$xtask" ]', "true")
+    },
+    "Formula verification checker single-link seal bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Materialize Formula verification platform runtime"
+      )
+      step["run"] = step.fetch("run").sub(
+        "bash scripts/seal-homebrew-formula-checker.sh",
+        'printf "%s\\n" "$xtask"'
+      )
     },
     "Formula verification checker leaks job-wide" => lambda { |w|
       step = mutate_named_step(
