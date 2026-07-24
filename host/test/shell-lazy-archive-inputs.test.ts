@@ -538,12 +538,15 @@ describe("declared shell lazy-archive inputs", () => {
     };
 
     // The canonical shell no longer resolves the old registry ZIP packages.
-    // Its reviewed lock maps those historical identities to direct Formula
-    // roots, and the exact immutable tap is part of the package cache key.
-    expect(packageToml).toMatch(/^depends_on\s*=\s*\[\]$/m);
+    // Its only registry dependency is the atomic Homebrew source/launcher
+    // package needed to register `brew` lazily; the reviewed lock maps the
+    // historical program identities to direct Formula roots.
+    expect(packageToml).toMatch(
+      /^depends_on\s*=\s*\["homebrew-bootstrap@6\.0\.3-4-g4ead861"\]$/m,
+    );
     expect(packageToml).not.toContain("vim-browser-bundle@");
     expect(packageToml).not.toContain("nethack-browser-bundle@");
-    expect(buildToml).toMatch(/^revision\s*=\s*18$/m);
+    expect(buildToml).toMatch(/^revision\s*=\s*19$/m);
     for (const input of [
       "scripts/build-homebrew-main-shell-closure.sh",
       "scripts/check-homebrew-main-shell-brewfile.mjs",

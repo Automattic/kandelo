@@ -112,6 +112,10 @@ const browserBinaryResolution = createBrowserBinaryResolution(binaryDevAccess);
 const crossOriginIsolationHeaders = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Embedder-Policy": "require-corp",
+  // WebKit revalidates a module worker when a kernel is rebooted on the same
+  // page. Mark every dev/preview response same-origin so that cached worker
+  // responses remain admissible under COEP, including a 304 revalidation.
+  "Cross-Origin-Resource-Policy": "same-origin",
   "Service-Worker-Allowed": "/",
 };
 
@@ -468,6 +472,41 @@ function injectCoiServiceWorker(): Plugin {
 }
 
 /**
+ * Keep local module-worker reloads usable under COEP in WebKit.
+ *
+ * WebKit 26.5 rejects a second same-page module Worker load when it
+ * conditionally revalidates Vite's transformed worker response, even though
+ * both the original response and the page carry matching COEP/CORP headers.
+ * Removing only the worker request validators makes Vite return the same
+ * transformed bytes with a normal 200 response. Production assets do not use
+ * this middleware; the deployed service worker adds the isolation headers to
+ * its cached response itself.
+ */
+function forceFreshDevWorkerResponses(): Plugin {
+  function attachMiddleware(
+    middlewares: ViteDevServer["middlewares"] | PreviewServer["middlewares"],
+  ): void {
+    middlewares.use((req, _res, next) => {
+      if (req.headers["sec-fetch-dest"] === "worker") {
+        delete req.headers["if-none-match"];
+        delete req.headers["if-modified-since"];
+      }
+      next();
+    });
+  }
+
+  return {
+    name: "force-fresh-dev-worker-responses",
+    configureServer(server) {
+      attachMiddleware(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      attachMiddleware(server.middlewares);
+    },
+  };
+}
+
+/**
  * Vite plugin: inject the service worker CORS proxy URL. Local dev/preview
  * uses the Vite same-origin proxy by default so the service worker can read
  * the response from whichever port Vite selected. Production builds use the
@@ -675,6 +714,7 @@ export default defineConfig({
     rewriteNavLinks(),
     injectGitRevision(),
     injectCoiServiceWorker(),
+    forceFreshDevWorkerResponses(),
     injectCorsProxyUrl(),
     devCorsProxyMiddleware(),
   ],

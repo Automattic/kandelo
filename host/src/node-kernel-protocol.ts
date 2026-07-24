@@ -60,7 +60,12 @@ export interface InitMessage {
 export interface SpawnMessage {
   type: "spawn";
   requestId: number;
-  programBytes: ArrayBuffer;
+  /**
+   * Supply exactly one program source. `programPath` resolves inside the
+   * worker-owned VFS and is the Node peer of BrowserKernel.spawnFromVfs().
+   */
+  programBytes?: ArrayBuffer;
+  programPath?: string;
   /** Optional pre-compiled module for the same bytes. */
   programModule?: WebAssembly.Module;
   argv: string[];
@@ -116,6 +121,22 @@ export interface TerminateProcessMessage {
 export interface DestroyMessage {
   type: "destroy";
   requestId: number;
+}
+
+/**
+ * Serialize the quiescent worker-owned root filesystem. Boot-scoped scratch
+ * and device mounts are intentionally outside this root-image snapshot.
+ */
+export interface ExportRootfsImageMessage {
+  type: "export_rootfs_image";
+  requestId: number;
+}
+
+/** Read one regular file through the worker-owned VFS. */
+export interface ReadVfsFileMessage {
+  type: "read_vfs_file";
+  requestId: number;
+  path: string;
 }
 
 /** Request the kernel's per-process fork counter. The kernel-worker entry
@@ -209,6 +230,8 @@ export type MainToKernelMessage =
   | PtyResizeMessage
   | TerminateProcessMessage
   | DestroyMessage
+  | ExportRootfsImageMessage
+  | ReadVfsFileMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
   | ResolveExecResponseMessage
