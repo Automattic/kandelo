@@ -57,6 +57,8 @@ const S_IFMT = 0o170000;
 const S_IFREG = 0o100000;
 const S_IFDIR = 0o040000;
 const S_IFLNK = 0o120000;
+const HOMEBREW_GUEST_UID = 1000;
+const HOMEBREW_GUEST_GID = 1000;
 
 export interface HomebrewBottleMirrorPayload {
   id: string;
@@ -345,7 +347,8 @@ export function assertHomebrewVfsMaterialization(
   ) {
     throw new Error("Homebrew embedded bottle mirror plan changed identity");
   }
-  const pendingIdentities = fs.exportLazyArchiveEntries().flatMap((entry) => {
+  const pendingTrees = fs.exportLazyArchiveEntries();
+  const pendingIdentities = pendingTrees.flatMap((entry) => {
     if (entry.content === undefined) return [];
     const bottleCapabilities = entry.activation?.capabilities.filter((capability) =>
       capability.startsWith("homebrew-bottle:")
@@ -381,6 +384,27 @@ export function assertHomebrewVfsMaterialization(
       "Homebrew pending deferred trees differ from the selected package partition",
     );
   }
+  for (const tree of pendingTrees) {
+    if (
+      !tree.activation?.capabilities.some((capability) =>
+        capability.startsWith("homebrew-bottle:")
+      )
+    ) {
+      continue;
+    }
+    for (const inventoryEntry of tree.inventory ?? []) {
+      const stat = fs.lstat(inventoryEntry.vfsPath);
+      if (
+        stat.uid !== HOMEBREW_GUEST_UID ||
+        stat.gid !== HOMEBREW_GUEST_GID
+      ) {
+        throw new Error(
+          `Homebrew pending deferred path ${inventoryEntry.vfsPath} ` +
+            "is not owned by the Homebrew guest",
+        );
+      }
+    }
+  }
   for (const entry of evidence.embeddedEntries) {
     const path = `/${entry.path}`;
     if (fs.getLazyEntry(path) !== null) {
@@ -389,6 +413,12 @@ export function assertHomebrewVfsMaterialization(
     const stat = fs.lstat(path);
     if ((stat.mode & S_IFMT) !== entryTypeMode(entry.type)) {
       throw new Error(`Homebrew embedded path ${path} changed type`);
+    }
+    if (
+      stat.uid !== HOMEBREW_GUEST_UID ||
+      stat.gid !== HOMEBREW_GUEST_GID
+    ) {
+      throw new Error(`Homebrew embedded path ${path} is not owned by the Homebrew guest`);
     }
     const sizeChanged = entry.type !== "directory" && stat.size !== entry.size;
     if ((stat.mode & 0o7777) !== entry.mode || sizeChanged) {

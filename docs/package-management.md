@@ -540,6 +540,12 @@ first content access downloads and verifies the complete Formula bottle and
 atomically materializes its guest projection. It does not fetch individual TAR
 members or use HTTP ranges. Dependency bottles have separate identities and
 remain unfetched until a path owned by that dependency is used.
+The Homebrew consumer applies Kandelo's canonical unprivileged Homebrew owner
+(`uid=1000`, `gid=1000`) to every Formula-tree path at registration, before
+lazy stubs are exposed. Materialization and VFS save/restore preserve that
+owner and the bottle-declared modes. This prefix-wide consumer policy lets
+stock `brew` create a new Cellar entry and its shared links without
+Formula-specific `chown` steps; existing file collisions still fail closed.
 
 The guest `brew` implementation is distributed separately from Formula
 bottles as the `homebrew-bootstrap` program package. One package generation

@@ -528,6 +528,16 @@ self-derived release URL and the hash itself are excluded to avoid a circular
 identity; external transport records remain bound. The consumer recomputes the
 canonical hash, requires the closed descriptor's canonical-json-v1 byte
 encoding, and verifies the derived release URL before registering paths.
+Bottle metadata does not carry Kandelo's guest-account mapping. The shared
+Node.js/browser consumer therefore assigns every registered Formula-tree path
+under `/home/linuxbrew/.linuxbrew` to the canonical Homebrew guest
+(`uid=1000`, `gid=1000`) before the deferred namespace becomes observable.
+Bottle modes and symlink targets remain unchanged. Equal-mode mergeable
+directories may be adopted into that guest-owned prefix, while a pre-existing
+Formula file or any other non-directory collision still fails before
+registration. This gives stock `brew` a writable `Cellar`, `opt`, and link
+namespace for installing a genuinely new Formula without a Formula-specific
+ownership rewrite.
 Deferred content remains lazy inside the serialized kernel-owned VFS.
 Registration, `stat`, and `readdir` do not fetch it. The first ordinary
 open/read, mapping, or executable resolution downloads and verifies the whole

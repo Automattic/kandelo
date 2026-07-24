@@ -25,6 +25,7 @@ import {
 export { HOMEBREW_RUNTIME_LAYER_LIMITS } from "./homebrew-runtime-layer-limits";
 
 const HOMEBREW_PREFIX = "/home/linuxbrew/.linuxbrew";
+const HOMEBREW_GUEST_OWNER = { uid: 1000, gid: 1000 } as const;
 const COMPOSITION_PATH = "/etc/kandelo/homebrew-vfs.json";
 const ACCEPTANCE_ASSET = "kandelo-homebrew.vfs.zst";
 const ACCEPTANCE_DESCRIPTOR_ASSET = "kandelo-homebrew-vfs.json";
@@ -1330,11 +1331,17 @@ function registerPlannedDeferredTree(
   tree: PlannedTree,
   mountPrefix: string,
 ): LazyTreeGroup {
+  // WHY: original Homebrew bottles do not encode Kandelo's guest account
+  // mapping, but stock brew must be able to add Formulae beside both eager
+  // and deferred kegs. Apply one prefix-wide consumer policy before the lazy
+  // namespace becomes observable; per-Formula chowns would leave shared
+  // Cellar/opt/bin directories dependent on registration order.
   return fs.registerLazyTree(
     plannedDeferredTreeContent(tree),
     tree.entries,
     mountPrefix,
     plannedDeferredTreeActivation(tree),
+    HOMEBREW_GUEST_OWNER,
   );
 }
 
@@ -1348,6 +1355,7 @@ function registerPlannedDeferredTreeWithHandle(
     tree.entries,
     mountPrefix,
     plannedDeferredTreeActivation(tree),
+    HOMEBREW_GUEST_OWNER,
   );
 }
 

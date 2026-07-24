@@ -79,6 +79,55 @@ const TAP_COMMIT = "1111111111111111111111111111111111111111";
 const KANDELO_COMMIT = "2222222222222222222222222222222222222222";
 const CACHE_KEY = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 const WRONG_SHA = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+const HOMEBREW_GUEST_UID = 1000;
+const HOMEBREW_GUEST_GID = 1000;
+
+function expectHomebrewGuestOwner(
+  fs: MemoryFileSystem,
+  path: string,
+): void {
+  expect(fs.lstat(path)).toMatchObject({
+    uid: HOMEBREW_GUEST_UID,
+    gid: HOMEBREW_GUEST_GID,
+  });
+}
+
+function expectHomebrewGuestWritableDirectory(
+  fs: MemoryFileSystem,
+  path: string,
+): void {
+  const stat = fs.lstat(path);
+  expect(stat).toMatchObject({
+    uid: HOMEBREW_GUEST_UID,
+    gid: HOMEBREW_GUEST_GID,
+  });
+  expect(stat.mode & 0o170000).toBe(0o040000);
+  expect(stat.mode & 0o300).toBe(0o300);
+}
+
+function expectHomebrewInventoryGuestOwned(
+  fs: MemoryFileSystem,
+  entries: readonly HomebrewLazyLayerEntry[],
+): void {
+  for (const entry of entries) {
+    expectHomebrewGuestOwner(fs, `/${entry.path}`);
+  }
+}
+
+function expectPendingHomebrewTreesGuestOwned(
+  fs: MemoryFileSystem,
+  expectedTreeCount: number,
+): void {
+  const trees = fs.exportLazyArchiveEntries().filter(
+    (tree) => tree.content?.decoder === "homebrew-bottle-tar-gzip-v1",
+  );
+  expect(trees).toHaveLength(expectedTreeCount);
+  for (const tree of trees) {
+    for (const entry of tree.inventory ?? []) {
+      expectHomebrewGuestOwner(fs, entry.vfsPath);
+    }
+  }
+}
 
 interface TarSpec {
   path: string;
@@ -1402,12 +1451,33 @@ describe("Homebrew runtime layer consumer", () => {
         bytes: fixture.archive.byteLength,
       },
     });
+    expectHomebrewInventoryGuestOwned(
+      fs,
+      descriptorTree(fixture.descriptor).inventory.entries,
+    );
+    expectHomebrewGuestWritableDirectory(fs, PREFIX);
+    expectHomebrewGuestWritableDirectory(fs, CELLAR);
 
+    const restored = MemoryFileSystem.fromImage(await fs.saveImage());
+    expectHomebrewInventoryGuestOwned(
+      restored,
+      descriptorTree(fixture.descriptor).inventory.entries,
+    );
+    expectHomebrewGuestWritableDirectory(restored, PREFIX);
+    expectHomebrewGuestWritableDirectory(restored, CELLAR);
+    restored.setLazyFetcher(async () => {
+      archiveFetches += 1;
+      return new Response(fixture.archive);
+    });
     await expect(
-      fs.ensureMaterialized(`${fixture.runtimeKeg}/bin/runtime`),
+      restored.ensureMaterialized(`${fixture.runtimeKeg}/bin/runtime`),
     ).resolves.toBe(true);
-    expect(readVfsFile(fs, `${fixture.runtimeKeg}/bin/runtime`))
+    expect(readVfsFile(restored, `${fixture.runtimeKeg}/bin/runtime`))
       .toContain("echo runtime");
+    expectHomebrewInventoryGuestOwned(
+      restored,
+      descriptorTree(fixture.descriptor).inventory.entries,
+    );
     expect(archiveFetches).toBe(1);
   });
 
@@ -1630,6 +1700,7 @@ describe("Homebrew runtime layer consumer", () => {
         fetch: async (url) => new Response(responses.get(url)!),
       });
       expect(composed.fs.lstat(sharedPath).mode & 0o170000).toBe(0o040000);
+      expectHomebrewGuestWritableDirectory(composed.fs, sharedPath);
       expect(composed.fs.exportLazyArchiveEntries()).toHaveLength(2);
       expect(mkdir.mock.calls.filter(([path]) => path === sharedPath)).toHaveLength(1);
     } finally {
@@ -1637,7 +1708,7 @@ describe("Homebrew runtime layer consumer", () => {
     }
   });
 
-  it("reuses an existing real base directory for a schema-5 mergeable claim", async () => {
+  it("adopts an existing mergeable prefix directory for the Homebrew guest", async () => {
     const fixture = await runtimeLayerConsumerFixture();
     const sharedPath = `${PREFIX}/shared-prefix`;
     const base = MemoryFileSystem.fromImage(fixture.baseImageBytes);
@@ -1659,6 +1730,7 @@ describe("Homebrew runtime layer consumer", () => {
         fetch: async () => new Response(runtime.bytes),
       });
       expect(composed.fs.lstat(sharedPath).mode & 0o7777).toBe(0o755);
+      expectHomebrewGuestWritableDirectory(composed.fs, sharedPath);
       expect(mkdir.mock.calls.filter(([path]) => path === sharedPath)).toHaveLength(0);
     } finally {
       mkdir.mockRestore();
@@ -3522,6 +3594,9 @@ describe("Homebrew VFS builder", () => {
         return bytesByPackage.get(pkg.name)!;
       },
     });
+    expectHomebrewGuestWritableDirectory(fs, PREFIX);
+    expectHomebrewGuestWritableDirectory(fs, CELLAR);
+    expectPendingHomebrewTreesGuestOwned(fs, 1);
 
     const packageTreeArchive = zipSync({
       "bin/": [new Uint8Array(), {
@@ -3699,6 +3774,9 @@ describe("Homebrew VFS builder", () => {
     const savedImage = await fs.saveImage();
     const restored = MemoryFileSystem.fromImage(savedImage);
     assertHomebrewVfsMaterialization(restored, result.evidence);
+    expectHomebrewGuestWritableDirectory(restored, PREFIX);
+    expectHomebrewGuestWritableDirectory(restored, CELLAR);
+    expectPendingHomebrewTreesGuestOwned(restored, 1);
     expect(restored.exportLazyArchiveEntries()).toHaveLength(1);
     const offlineFetch = vi.fn(async () => {
       throw new Error("network disabled during embedded command proof");
@@ -3721,6 +3799,9 @@ describe("Homebrew VFS builder", () => {
     expect(readVfsFile(restored, `${deferredKeg}/share/deferred.txt`)).toContain(
       "deferred sibling",
     );
+    expectHomebrewGuestOwner(restored, `${deferredKeg}/bin/deferred`);
+    expectHomebrewGuestOwner(restored, `${deferredKeg}/share/deferred.txt`);
+    expectHomebrewGuestWritableDirectory(restored, deferredKeg);
     expect(restored.exportLazyArchiveEntries()).toEqual([]);
 
     const tamperedPlanFs = MemoryFileSystem.fromImage(savedImage);
@@ -3734,6 +3815,20 @@ describe("Homebrew VFS builder", () => {
       tamperedPlanFs,
       result.evidence,
     )).toThrow(/embedded bottle mirror plan changed identity/);
+
+    const rootOwnedDeferredFs = MemoryFileSystem.fromImage(savedImage);
+    rootOwnedDeferredFs.lchown(`${deferredKeg}/bin/deferred`, 0, 0);
+    expect(() => assertHomebrewVfsMaterialization(
+      rootOwnedDeferredFs,
+      result.evidence,
+    )).toThrow(/pending deferred path .* is not owned by the Homebrew guest/);
+
+    const rootOwnedEmbeddedFs = MemoryFileSystem.fromImage(savedImage);
+    rootOwnedEmbeddedFs.lchown(`${runtime.keg}/bin/runtime`, 0, 0);
+    expect(() => assertHomebrewVfsMaterialization(
+      rootOwnedEmbeddedFs,
+      result.evidence,
+    )).toThrow(/embedded path .* is not owned by the Homebrew guest/);
 
     const unrelatedFs = MemoryFileSystem.create(
       new SharedArrayBuffer(32 * 1024 * 1024),
