@@ -565,7 +565,7 @@ for isolated_flag in \
   '--work-dir "$WORK_DIR"' \
   '--report "$REPORT"' \
   '--bottle-cache "$BOTTLE_CACHE"' \
-  '--package-tree-spec "$REPO_ROOT/homebrew/main-shell-brew-package-tree.json"' \
+  '--package-tree-spec "$SOURCE_ROOT/homebrew/main-shell-brew-package-tree.json"' \
   '--package-tree-archive "$HOMEBREW_BOOTSTRAP"'
 do
   grep -Fq -- "$isolated_flag" "$SHELL_BUILDER" ||
@@ -720,6 +720,11 @@ if [[ "$composer" == */packages/registry/shell/prepare-build-tools.sh ]]; then
   exec /bin/bash "$composer" "$@"
 fi
 [[ "$composer" == */scripts/build-homebrew-main-shell-closure.sh ]]
+# The recipe must pass every Git-owned composer input from the private snapshot.
+# Accepting the shared checkout here would reintroduce the concurrent mutation
+# race that prepare-build-tools.sh is meant to remove.
+source_root="${composer%/scripts/build-homebrew-main-shell-closure.sh}"
+[ "$source_root" != "$composer" ]
 for token in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
   HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN \
   NPM_TOKEN NODE_AUTH_TOKEN NODE_OPTIONS NODE_PATH \
@@ -750,7 +755,8 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 [ -n "$work" ] && [ -n "$report" ] && [ -n "$cache" ] && [ -n "$out" ] &&
-  [ "$spec" = "$PACKAGE_TREE_SPEC" ] &&
+  [ "$spec" = "$source_root/homebrew/main-shell-brew-package-tree.json" ] &&
+  [ "$spec" != "$PACKAGE_TREE_SPEC" ] &&
   [ "$archive" = "$WASM_POSIX_DEP_HOMEBREW_BOOTSTRAP_DIR/homebrew-bootstrap.zip" ] &&
   [ "$bootstrap_env" = "$WASM_POSIX_DEP_HOMEBREW_BOOTSTRAP_DIR/homebrew-brew.env" ]
 [ "$lazy_shell" = true ]
