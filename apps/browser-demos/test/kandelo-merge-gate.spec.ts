@@ -184,7 +184,36 @@ async function runWordPressPreinstalledLogin(page: Page, demo: string, title: st
   test.setTimeout(420_000);
 
   try {
-    await gotoOrSkip(page, `/?demo=${demo}`);
+    // WHY: the deployed regression this protects against happened only when
+    // Gallery resolved an optional VFS asset and navigated to it. A direct
+    // ?demo= URL would bypass that product path and could pass while Launch
+    // still assigned the image an undersized custom-image capacity profile.
+    await gotoOrSkip(page, "/?demo=shell");
+    await page.getByRole("button", { name: "New", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Launch New Machine" }))
+      .toBeVisible();
+    await page
+      .locator(".kgal-row", {
+        has: page.locator(".kgal-machine-title", { hasText: title }),
+      })
+      .getByRole("button", { name: "Launch" })
+      .click();
+    await expect
+      .poll(
+        () => new URL(page.url()).searchParams.get("demo"),
+        { timeout: 60_000 },
+      )
+      .toBe(demo);
+    await expect
+      .poll(
+        () => new URL(page.url()).searchParams.get("vfs"),
+        { timeout: 60_000 },
+      )
+      .toContain(`#${demo}`);
+    await expect(page.locator(".kdock-status-title")).toHaveText(title, {
+      timeout: 60_000,
+    });
+
     await page.waitForSelector(`iframe[title="${title}"]`, { timeout: 240_000 });
     const frame = webFrame(page, title);
 

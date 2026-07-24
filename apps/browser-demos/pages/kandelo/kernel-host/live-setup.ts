@@ -87,6 +87,7 @@ import { PRESET_LIBRARY } from "../presets";
 import {
   descriptorWithVfsImageUrl,
   demoIdFromVfsImageUrl,
+  matchTrustedVfsProfileId,
   normalizeVfsImageUrl,
   titleFromVfsImageUrl,
   vfsImageUrlFromDescriptor,
@@ -538,7 +539,7 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
   let serviceWorkerReady: Promise<ServiceWorker> | null = null;
   const localGalleryItems = liveGalleryItems();
 
-  const initialDescriptor = descriptorForBootQuery(opts.vfsUrl, opts.demo);
+  const initialDescriptor = await descriptorForBootQuery(opts.vfsUrl, opts.demo);
   const host = new LiveKernelHost({
     status: "booting",
     descriptor: initialDescriptor,
@@ -685,14 +686,14 @@ function bootElapsedMs(bootStartedAt: number): number {
   return Math.max(0, performance.now() - bootStartedAt);
 }
 
-function descriptorForBootQuery(
+async function descriptorForBootQuery(
   vfsUrl: string | null | undefined,
   demo: string | null | undefined,
-): BootDescriptor {
+): Promise<BootDescriptor> {
   const normalizedVfsUrl = normalizeVfsImageUrl(vfsUrl);
   if (!normalizedVfsUrl) return descriptorFor(normalizeDemoId(demo) ?? "shell");
 
-  const liveId = liveDemoIdForVfsImageUrl(normalizedVfsUrl);
+  const liveId = await liveDemoIdForVfsImageUrl(normalizedVfsUrl);
   const base = descriptorFor(liveId ?? "shell");
   return descriptorWithVfsImageUrl(base, normalizedVfsUrl, liveId
     ? {
@@ -1612,13 +1613,7 @@ async function loadVfsImageBytes(profile: LiveProfile): Promise<ArrayBuffer> {
 }
 
 async function resolveProfileVfsUrl(profile: LiveProfile): Promise<string> {
-  if (profile.vfsSource?.kind === "url") return profile.vfsSource.url;
-  if (profile.vfsSource?.kind === "optional-demo") {
-    return resolveOptionalDemoVfsUrl(profile.vfsSource.image);
-  }
-  if (profile.vfsSource?.kind === "optional-binary") {
-    return optionalBinaryUrl(profile.vfsSource.relPaths, profile.vfsSource.label);
-  }
+  if (profile.vfsSource) return resolveLiveVfsSourceUrl(profile.vfsSource);
   if (profile.vfsUrl) return profile.vfsUrl;
   throw new Error(`No VFS image URL configured for ${profile.id}`);
 }
@@ -2003,39 +1998,30 @@ function vfsImageUrlResolverForPreset(
   };
 }
 
-function liveDemoIdForVfsImageUrl(vfsUrl: string): LiveDemoId | null {
-  const normalized = normalizeVfsImageUrl(vfsUrl);
-  if (!normalized) return null;
+async function liveDemoIdForVfsImageUrl(
+  vfsUrl: string,
+): Promise<LiveDemoId | null> {
+  return matchTrustedVfsProfileId(
+    vfsUrl,
+    LIVE_DEMO_IDS.map((id) => ({
+      id,
+      resolveVfsImageUrl: () =>
+        resolveLiveVfsSourceUrl(VFS_SOURCES[LIVE_PROFILE_SPECS[id].image]),
+    })),
+    {
+      // WHY: shell, Doom, and modeset intentionally share one image. A bare
+      // shell-image URL must boot a shell rather than auto-launching a demo.
+      preferredAmbiguousId: "shell",
+    },
+  );
+}
 
-  const url = new URL(normalized);
-  const hashId = url.hash.slice(1);
-  const baseUrl = withoutHash(url);
-  const hashBaseUrl = isLiveDemoId(hashId) ? profileVfsBaseUrl(hashId) : null;
-  if (hashBaseUrl && baseUrl === hashBaseUrl) {
-    return hashId;
+async function resolveLiveVfsSourceUrl(source: LiveVfsSource): Promise<string> {
+  if (source.kind === "url") return source.url;
+  if (source.kind === "optional-demo") {
+    return resolveOptionalDemoVfsUrl(source.image);
   }
-
-  const matches = LIVE_DEMO_IDS.filter((id) => {
-    const profileBaseUrl = profileVfsBaseUrl(id);
-    return profileBaseUrl !== null && baseUrl === profileBaseUrl;
-  });
-  if (matches.length === 1) return matches[0];
-  // Multiple presets share the shell VFS image (doom, modeset). When the URL
-  // doesn't pin one via the hash, fall back to the shell preset so the
-  // ambiguous shell-image link doesn't auto-launch a demo binary.
-  return matches.find((id) => id !== "doom" && id !== "modeset") ?? null;
-}
-
-function profileVfsBaseUrl(id: LiveDemoId): string | null {
-  const source = VFS_SOURCES[LIVE_PROFILE_SPECS[id].image];
-  if (source.kind !== "url") return null;
-  return withoutHash(new URL(source.url, location.href));
-}
-
-function withoutHash(url: URL): string {
-  const copy = new URL(url.href);
-  copy.hash = "";
-  return copy.href;
+  return optionalBinaryUrl(source.relPaths, source.label);
 }
 
 async function refreshSoftwareGallery(

@@ -18,6 +18,20 @@ export interface KandeloBootQuery {
   vfsImageUrl: string | null;
 }
 
+export interface TrustedVfsProfileCandidate<ProfileId extends string> {
+  id: ProfileId;
+  resolveVfsImageUrl: () =>
+    | string
+    | null
+    | undefined
+    | Promise<string | null | undefined>;
+}
+
+export interface MatchTrustedVfsProfileOptions<ProfileId extends string> {
+  baseHref?: string;
+  preferredAmbiguousId?: ProfileId;
+}
+
 export function readKandeloBootQuery(search = currentSearch()): KandeloBootQuery {
   const params = new URLSearchParams(search);
   return {
@@ -34,6 +48,11 @@ export function galleryItemUrl(
   url.searchParams.delete("idle");
   clearVfsImageQueryParams(url.searchParams);
   if (item.vfsImageUrl) {
+    // WHY: startup chooses specialized hosts and product capacity profiles
+    // from the logical demo id before it resolves the exact Vite asset URL.
+    // Keeping both fields prevents a trusted built-in asset from degrading
+    // into the smaller generic/custom-image profile after navigation.
+    url.searchParams.set("demo", item.id);
     url.searchParams.set(VFS_IMAGE_QUERY_PARAM, item.vfsImageUrl);
   }
   return url.href;
@@ -111,6 +130,56 @@ export function normalizeVfsImageUrl(
   return url.href;
 }
 
+/**
+ * Match a URL to an exact trusted profile source.
+ *
+ * A URL fragment can select one of several profiles that intentionally share
+ * an image, but it cannot make an unrelated image inherit that profile's
+ * larger resource limits. Resolver failures also fail closed.
+ */
+export async function matchTrustedVfsProfileId<ProfileId extends string>(
+  vfsImageUrl: string,
+  candidates: readonly TrustedVfsProfileCandidate<ProfileId>[],
+  options: MatchTrustedVfsProfileOptions<ProfileId> = {},
+): Promise<ProfileId | null> {
+  const normalized = normalizeVfsImageUrl(
+    vfsImageUrl,
+    options.baseHref ?? currentHref(),
+  );
+  if (!normalized) return null;
+
+  const ids = new Set<ProfileId>();
+  for (const candidate of candidates) {
+    if (ids.has(candidate.id)) return null;
+    ids.add(candidate.id);
+  }
+
+  const requested = new URL(normalized);
+  const requestedBase = withoutUrlHash(requested);
+  const claimed = candidates.find((candidate) =>
+    candidate.id === requested.hash.slice(1)
+  );
+  if (claimed) {
+    const claimedBase = await resolvedCandidateBaseUrl(claimed, options.baseHref);
+    return claimedBase === requestedBase ? claimed.id : null;
+  }
+
+  const matches = (
+    await Promise.all(candidates.map(async (candidate) => ({
+      id: candidate.id,
+      baseUrl: await resolvedCandidateBaseUrl(candidate, options.baseHref),
+    })))
+  ).filter((candidate) => candidate.baseUrl === requestedBase);
+  if (matches.length === 1) return matches[0].id;
+  if (
+    options.preferredAmbiguousId !== undefined &&
+    matches.some((candidate) => candidate.id === options.preferredAmbiguousId)
+  ) {
+    return options.preferredAmbiguousId;
+  }
+  return null;
+}
+
 export function demoIdFromVfsImageUrl(vfsImageUrl: string): string {
   let name = "custom-vfs";
   try {
@@ -149,6 +218,25 @@ function clearVfsImageQueryParams(params: URLSearchParams): void {
   for (const key of VFS_IMAGE_QUERY_ALIASES) {
     params.delete(key);
   }
+}
+
+async function resolvedCandidateBaseUrl<ProfileId extends string>(
+  candidate: TrustedVfsProfileCandidate<ProfileId>,
+  baseHref = currentHref(),
+): Promise<string | null> {
+  try {
+    const resolved = await candidate.resolveVfsImageUrl();
+    const normalized = normalizeVfsImageUrl(resolved, baseHref);
+    return normalized ? withoutUrlHash(new URL(normalized)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function withoutUrlHash(url: URL): string {
+  const copy = new URL(url.href);
+  copy.hash = "";
+  return copy.href;
 }
 
 function nonEmpty(value: string | null | undefined): string | null {
