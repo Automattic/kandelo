@@ -6,12 +6,14 @@ import {
 } from "../../host/src/vfs/memory-fs";
 import {
   loadHomebrewGuestLifecycleBrowserFixture,
+  projectHomebrewGuestLifecycleBrowserFixture,
   type HomebrewGuestLifecycleBrowserFixture,
 } from "./homebrew_guest_lifecycle_browser_fixture";
 import {
   HOMEBREW_GUEST_LIFECYCLE_ENV,
   type HomebrewGuestLifecycleMachine,
   runHomebrewGuestLifecycle,
+  runHomebrewGuestLifecycleProcess,
 } from "./homebrew_guest_lifecycle_runner";
 import {
   deriveHomebrewGuestLifecycleRuntimeInputs,
@@ -52,63 +54,82 @@ export async function runHomebrewGuestLifecycleInBrowser(options: {
   fetchImpl?: FetchLike;
   afterMachineDestroy?: () => Promise<void>;
 }): Promise<HomebrewGuestLifecycleBrowserResult> {
-  const loaded = await loadHomebrewGuestLifecycleBrowserFixture(
-    options.fixture,
-    {
-      fetchImpl: options.fetchImpl,
-      sourceUrl: (canonicalUrl) =>
-        createCorsProxySourceUrl(options.corsProxyUrl, canonicalUrl),
-    },
+  const fixture = projectHomebrewGuestLifecycleBrowserFixture(options.fixture);
+  const deadlineMs = Date.now() + fixture.timeoutMs;
+  const deadlineController = new AbortController();
+  const deadlineReason = new Error(
+    "Homebrew guest lifecycle exceeded its total deadline",
   );
-  const fixture = loaded.fixture;
-  MemoryFileSystem.assertImageKernelAbi(
-    loaded.imageBytes,
-    ABI_VERSION,
-    "Homebrew guest lifecycle browser image",
+  const deadlineTimer = setTimeout(
+    () => deadlineController.abort(deadlineReason),
+    fixture.timeoutMs,
   );
-  const publicTransport = fixture.transportMode === "public";
-  const runtime = deriveHomebrewGuestLifecycleRuntimeInputs({
-    imageBytes: loaded.imageBytes,
-    bootstrapSpecBytes: loaded.bootstrapSpecBytes,
-    bootstrapArchiveBytes: loaded.bootstrapArchiveBytes,
-    bootstrapArchiveSha256: fixture.bootstrap.archive.sha256,
-    bootstrapEnvironmentBytes: loaded.bootstrapEnvironmentBytes,
-    coreRevision: fixture.revisions.coreRevision,
-    transportMode: fixture.transportMode,
-    expectedEmbeddedBottlePlanBytes: loaded.bottleMirrorPlanBytes,
-    lazyUrlBase: publicTransport
-      ? new URL(".", fixture.bootstrap.archive.url).href
-      : "https://closed.kandelo.invalid/homebrew-guest-lifecycle/",
-    ...(publicTransport
-      ? {
-          expectedBootstrapTransportUrl: fixture.bootstrap.archive.url,
-        }
-      : {
-          closedBottleAssets: loaded.closedBottleAssets!,
-        }),
-  });
+  try {
+    const loaded = await loadHomebrewGuestLifecycleBrowserFixture(
+      fixture,
+      {
+        fetchImpl: options.fetchImpl,
+        sourceUrl: (canonicalUrl) =>
+          createCorsProxySourceUrl(options.corsProxyUrl, canonicalUrl),
+        signal: deadlineController.signal,
+      },
+    );
+    MemoryFileSystem.assertImageKernelAbi(
+      loaded.imageBytes,
+      ABI_VERSION,
+      "Homebrew guest lifecycle browser image",
+    );
+    const publicTransport = fixture.transportMode === "public";
+    const runtime = deriveHomebrewGuestLifecycleRuntimeInputs({
+      imageBytes: loaded.imageBytes,
+      takeImageOwnership: true,
+      bootstrapSpecBytes: loaded.bootstrapSpecBytes,
+      bootstrapArchiveBytes: loaded.bootstrapArchiveBytes,
+      bootstrapArchiveSha256: fixture.bootstrap.archive.sha256,
+      bootstrapEnvironmentBytes: loaded.bootstrapEnvironmentBytes,
+      coreRevision: fixture.revisions.coreRevision,
+      transportMode: fixture.transportMode,
+      expectedEmbeddedBottlePlanBytes: loaded.bottleMirrorPlanBytes,
+      lazyUrlBase: publicTransport
+        ? new URL(".", fixture.bootstrap.archive.url).href
+        : "https://closed.kandelo.invalid/homebrew-guest-lifecycle/",
+      ...(publicTransport
+        ? {
+            expectedBootstrapTransportUrl: fixture.bootstrap.archive.url,
+          }
+        : {
+            closedBottleAssets: loaded.closedBottleAssets!,
+          }),
+    });
 
-  const result = await runHomebrewGuestLifecycle({
-    runtime,
-    revisions: fixture.revisions,
-    timeoutMs: fixture.timeoutMs,
-    createMachine: (machineRuntime) =>
-      createBrowserLifecycleMachine({
-        runtime: machineRuntime,
-        kernelWasm: options.kernelWasm,
-        corsProxyUrl: options.corsProxyUrl,
-        afterDestroy: options.afterMachineDestroy,
-      }),
-  });
-  return {
-    exportedImageSha256: await sha256(result.exportedImage),
-    exportedImageBytes: result.exportedImage.byteLength,
-    coreRevision: fixture.revisions.coreRevision,
-    canaryRevision: fixture.revisions.canaryRevision,
-    phaseOneCompletedUrls: [...result.phaseOneCompletedUrls].sort(),
-    phaseOneLazyDownloads: result.phaseOneLazyDownloads,
-    phaseTwoLazyDownloads: result.phaseTwoLazyDownloads,
-  };
+    const result = await runHomebrewGuestLifecycle({
+      runtime,
+      revisions: fixture.revisions,
+      deadlineMs,
+      hashExportedImage: sha256,
+      createMachine: (machineRuntime) =>
+        createBrowserLifecycleMachine({
+          runtime: machineRuntime,
+          kernelWasm: options.kernelWasm,
+          corsProxyUrl: options.corsProxyUrl,
+          afterDestroy: options.afterMachineDestroy,
+        }),
+    });
+    if (result.exportedImageSha256 === undefined) {
+      throw new Error("browser lifecycle omitted its pre-handoff image digest");
+    }
+    return {
+      exportedImageSha256: result.exportedImageSha256,
+      exportedImageBytes: result.exportedImageBytes,
+      coreRevision: fixture.revisions.coreRevision,
+      canaryRevision: fixture.revisions.canaryRevision,
+      phaseOneCompletedUrls: [...result.phaseOneCompletedUrls].sort(),
+      phaseOneLazyDownloads: result.phaseOneLazyDownloads,
+      phaseTwoLazyDownloads: result.phaseTwoLazyDownloads,
+    };
+  } finally {
+    clearTimeout(deadlineTimer);
+  }
 }
 
 export function createCorsProxySourceUrl(
@@ -174,83 +195,81 @@ function createBrowserLifecycleMachine(options: {
   return {
     lazyDownloads,
     diagnostics,
-    start: () =>
-      kernel.initFromImage({
+    start: async () => {
+      const init = {
         kernelWasm: options.kernelWasm,
-        vfsImage: options.runtime.imageBytes,
         lazyUrlBase: options.runtime.lazyUrlBase,
         ...(options.runtime.lazyAssets === undefined
           ? {}
           : { closedLazyAssets: options.runtime.lazyAssets }),
-      }),
+      };
+      if (options.runtime.takeImageOwnership === true) {
+        const imageView = options.runtime.imageBytes;
+        await kernel.initFromOwnedImage({
+          ...init,
+          vfsImage: wholeOwnedArrayBuffer(imageView),
+        });
+        if (imageView.byteLength !== 0) {
+          throw new Error(
+            "browser lifecycle worker did not take VFS image ownership",
+          );
+        }
+        return;
+      }
+      await kernel.initFromImage({
+        ...init,
+        vfsImage: options.runtime.imageBytes,
+      });
+    },
+    readFile: (path) => kernel.readFileFromVfs(path),
     runShellScript: async (scriptOptions) => {
       const stdoutStart = stdout.length;
       const stderrStart = stderr.length;
       const diagnosticStart = diagnostics.length;
-      let pid: number | undefined;
-      let timeout: ReturnType<typeof setTimeout> | undefined;
-      try {
-        const exit = kernel.spawn(
-          toArrayBuffer(scriptOptions.shellBytes),
-          [scriptOptions.shellArgv0, "-c", scriptOptions.script],
-          {
-            env: [...HOMEBREW_GUEST_LIFECYCLE_ENV],
-            cwd: "/home/user",
-            uid: 1000,
-            gid: 1000,
-            stdin: new Uint8Array(),
-            onStarted: (startedPid) => {
-              pid = startedPid;
+      const exitCode = await runHomebrewGuestLifecycleProcess({
+        label: scriptOptions.label,
+        timeoutMs: scriptOptions.timeoutMs,
+        spawn: () =>
+          kernel.spawnFromVfs(
+            scriptOptions.shellPath,
+            [scriptOptions.shellArgv0, "-c", scriptOptions.script],
+            {
+              env: [...HOMEBREW_GUEST_LIFECYCLE_ENV],
+              cwd: "/home/user",
+              uid: 1000,
+              gid: 1000,
+              stdin: new Uint8Array(),
             },
-          },
+          ),
+        terminate: (pid, exitStatus) =>
+          kernel.terminateProcess(pid, exitStatus),
+      });
+      const scriptStdout = stdout.slice(stdoutStart);
+      const scriptStderr = stderr.slice(stderrStart);
+      if (exitCode !== 0) {
+        throw new Error(
+          `${scriptOptions.label} exited ${exitCode}; stdout=` +
+            `${JSON.stringify(scriptStdout)}; stderr=` +
+            `${JSON.stringify(scriptStderr)}; diagnostics=` +
+            `${JSON.stringify(diagnostics)}`,
         );
-        const timedOut = new Promise<never>((_resolve, reject) => {
-          timeout = setTimeout(
-            () =>
-              reject(
-                new Error(
-                  `${scriptOptions.label} timed out after ` +
-                    `${scriptOptions.timeoutMs}ms`,
-                ),
-              ),
-            scriptOptions.timeoutMs,
-          );
-        });
-        const exitCode = await Promise.race([exit, timedOut]);
-        const scriptStdout = stdout.slice(stdoutStart);
-        const scriptStderr = stderr.slice(stderrStart);
-        if (exitCode !== 0) {
-          throw new Error(
-            `${scriptOptions.label} exited ${exitCode}; stdout=` +
-              `${JSON.stringify(scriptStdout)}; stderr=` +
-              `${JSON.stringify(scriptStderr)}; diagnostics=` +
-              `${JSON.stringify(diagnostics)}`,
-          );
-        }
-        if (!scriptStdout.split(/\r?\n/).includes(scriptOptions.marker)) {
-          throw new Error(
-            `${scriptOptions.label} marker is missing; stdout=` +
-              `${JSON.stringify(scriptStdout)}; stderr=` +
-              `${JSON.stringify(scriptStderr)}`,
-          );
-        }
-        assertNoUnexpectedHostDiagnostics(
-          diagnostics.slice(diagnosticStart),
-          scriptOptions.label,
+      }
+      if (!scriptStdout.split(/\r?\n/).includes(scriptOptions.marker)) {
+        throw new Error(
+          `${scriptOptions.label} marker is missing; stdout=` +
+            `${JSON.stringify(scriptStdout)}; stderr=` +
+            `${JSON.stringify(scriptStderr)}`,
         );
-        if (outputLimitExceeded) {
-          throw new Error(
-            `${scriptOptions.label} exceeded the ` +
-              `${MAX_CAPTURED_OUTPUT_BYTES}-byte output limit`,
-          );
-        }
-      } catch (error) {
-        if (pid !== undefined) {
-          await kernel.terminateProcess(pid, 124).catch(() => {});
-        }
-        throw error;
-      } finally {
-        if (timeout !== undefined) clearTimeout(timeout);
+      }
+      assertNoUnexpectedHostDiagnostics(
+        diagnostics.slice(diagnosticStart),
+        scriptOptions.label,
+      );
+      if (outputLimitExceeded) {
+        throw new Error(
+          `${scriptOptions.label} exceeded the ` +
+            `${MAX_CAPTURED_OUTPUT_BYTES}-byte output limit`,
+        );
       }
     },
     exportRootfsImage: () => kernel.exportRootfsImage(),
@@ -264,14 +283,8 @@ function createBrowserLifecycleMachine(options: {
   };
 }
 
-function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  const result = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(result).set(bytes);
-  return result;
-}
-
 async function sha256(bytes: Uint8Array): Promise<string> {
-  const owned = toArrayBuffer(bytes);
+  const owned = wholeOwnedArrayBuffer(bytes);
   const digest = new Uint8Array(
     await crypto.subtle.digest("SHA-256", owned),
   );
@@ -279,6 +292,19 @@ async function sha256(bytes: Uint8Array): Promise<string> {
     digest,
     (byte) => byte.toString(16).padStart(2, "0"),
   ).join("");
+}
+
+function wholeOwnedArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  if (
+    !(bytes.buffer instanceof ArrayBuffer) ||
+    bytes.byteOffset !== 0 ||
+    bytes.byteLength !== bytes.buffer.byteLength
+  ) {
+    throw new Error(
+      "browser lifecycle image ownership requires one whole ordinary ArrayBuffer",
+    );
+  }
+  return bytes.buffer;
 }
 
 export type {

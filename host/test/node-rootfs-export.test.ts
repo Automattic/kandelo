@@ -12,8 +12,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "../..");
 const kernelPath = tryResolveBinary("kernel.wasm");
 const blockForeverPath = join(repoRoot, "examples/block-forever.wasm");
+const wasiHelloPath = join(here, "fixtures/wasi-hello.wasm");
 const haveKernel = kernelPath !== null;
 const haveBlockForever = existsSync(blockForeverPath);
+const haveWasiHello = existsSync(wasiHelloPath);
 
 function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(
@@ -67,9 +69,33 @@ async function createRootfs(): Promise<Uint8Array> {
   return fs.saveImage();
 }
 
+async function createExecutableRootfs(
+  path: string,
+  program: Uint8Array,
+): Promise<Uint8Array> {
+  const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+  fs.mkdir("/bin", 0o755);
+  fs.mkdir("/etc", 0o755);
+  fs.mkdir("/etc/kandelo", 0o755);
+  writeFile(fs, path, program, 0o755);
+  writeFile(
+    fs,
+    "/etc/kandelo/shell.json",
+    new TextEncoder().encode(JSON.stringify({
+      version: 1,
+      path,
+      argv: ["wasi-hello"],
+    })),
+  );
+  return fs.saveImage();
+}
+
 describe("NodeKernelHost rootfs export contract", () => {
   it("rejects export before initialization without starting a worker", async () => {
     const host = new NodeKernelHost({ rootfsImage: new Uint8Array() });
+    await expect(host.readFileFromVfs("/missing")).rejects.toThrow(
+      "VFS read requires an initialized kernel",
+    );
     await expect(host.exportRootfsImage()).rejects.toThrow(
       "rootfs export requires an initialized kernel",
     );
@@ -82,6 +108,7 @@ describe("NodeKernelHost rootfs export contract", () => {
       const host = new NodeKernelHost();
       try {
         await host.init(asArrayBuffer(new Uint8Array(readFileSync(kernelPath!))));
+        await expect(host.readFileFromVfs("/missing")).resolves.toBeNull();
         await expect(host.exportRootfsImage()).rejects.toThrow(
           "rootfs export requires a VFS-backed kernel",
         );
@@ -168,6 +195,60 @@ describe("NodeKernelHost rootfs export contract", () => {
         await terminating;
         await expect(exit).resolves.toBe(143);
         await expect(host.exportRootfsImage()).resolves.toBeInstanceOf(Uint8Array);
+      } finally {
+        await host.destroy();
+      }
+    },
+  );
+
+  it.skipIf(!haveKernel || !haveWasiHello)(
+    "spawns an executable by path from the existing worker-owned rootfs",
+    async () => {
+      const kernel = new Uint8Array(readFileSync(kernelPath!));
+      const rootfs = await createExecutableRootfs(
+        "/bin/wasi-hello",
+        new Uint8Array(readFileSync(wasiHelloPath)),
+      );
+      let stdout = "";
+      let ambientResolveRequests = 0;
+      const host = new NodeKernelHost({
+        rootfsImage: rootfs,
+        // A VFS-path spawn must not fall back to either ambient resolution
+        // mechanism, even when both could satisfy the missing path.
+        execPrograms: { "/bin/missing": wasiHelloPath },
+        onResolveExec: (path) => {
+          ambientResolveRequests += 1;
+          return path === "/bin/missing"
+            ? asArrayBuffer(new Uint8Array(readFileSync(wasiHelloPath)))
+            : null;
+        },
+        onStdout: (_pid, bytes) => {
+          stdout += new TextDecoder().decode(bytes);
+        },
+      });
+      try {
+        await host.init(asArrayBuffer(kernel));
+        const shellConfig = await host.readFileFromVfs(
+          "/etc/kandelo/shell.json",
+        );
+        expect(shellConfig).not.toBeNull();
+        expect(JSON.parse(new TextDecoder().decode(shellConfig!))).toEqual({
+          version: 1,
+          path: "/bin/wasi-hello",
+          argv: ["wasi-hello"],
+        });
+        await expect(host.readFileFromVfs("/missing")).resolves.toBeNull();
+        const { pid, exit } = await host.spawnFromVfs(
+          "/bin/wasi-hello",
+          ["wasi-hello"],
+        );
+        expect(pid).toBeGreaterThan(0);
+        await expect(exit).resolves.toBe(0);
+        expect(stdout).toBe("Hello from WASI\n");
+        await expect(
+          host.spawnFromVfs("/bin/missing", ["missing"]),
+        ).rejects.toThrow("ENOENT: /bin/missing");
+        expect(ambientResolveRequests).toBe(0);
       } finally {
         await host.destroy();
       }

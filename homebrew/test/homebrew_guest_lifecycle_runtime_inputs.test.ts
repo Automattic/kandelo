@@ -156,7 +156,7 @@ test("binds verified bootstrap bytes and bottle payloads to one exact image", as
     }],
   });
 
-  assert.deepEqual(runtime.shellBytes, new Uint8Array([0, 97, 115, 109]));
+  assert.equal(runtime.shellPath, "/bin/bash");
   assert.equal(runtime.shellArgv0, "bash");
   assert.equal(
     runtime.bootstrapTransportUrl,

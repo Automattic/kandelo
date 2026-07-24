@@ -124,6 +124,29 @@ export interface BrowserKernelBootOptions {
   stdin?: Uint8Array;
 }
 
+export type BrowserKernelOwnedImageBootOptions = Omit<
+  BrowserKernelBootOptions,
+  "vfsImage"
+> & {
+  /**
+   * One whole ordinary ArrayBuffer whose ownership is transferred to the
+   * kernel worker. The caller must finish hashing or otherwise inspecting the
+   * bytes before this call because the buffer is detached during boot.
+   */
+  vfsImage: ArrayBuffer;
+};
+
+export interface BrowserKernelOwnedImageInitOptions {
+  kernelWasm?: ArrayBuffer;
+  /**
+   * One whole ordinary ArrayBuffer whose ownership is transferred to the
+   * kernel worker and detached from the caller.
+   */
+  vfsImage: ArrayBuffer;
+  lazyUrlBase?: string;
+  closedLazyAssets?: readonly ClosedLazyAsset[];
+}
+
 export class BrowserKernel {
   private kernelWorkerHandle!: Worker;
   private workerStarted = false;
@@ -197,6 +220,17 @@ export class BrowserKernel {
   }
 
   /**
+   * Ownership-taking peer of {@link boot}. This avoids structured-cloning a
+   * large VFS image when the caller will never reuse its bytes.
+   */
+  async bootFromOwnedImage(
+    options: BrowserKernelOwnedImageBootOptions,
+  ): Promise<{ pid: number; exit: Promise<number> }> {
+    await this.initFromOwnedImage(options);
+    return this.spawnFirstProcess(options);
+  }
+
+  /**
    * Load a pre-built VFS image into the kernel worker WITHOUT spawning a
    * first process. The worker builds and takes ownership of the FS; the main
    * thread holds no FS SharedArrayBuffer, so the whole VFS is reclaimed when
@@ -227,6 +261,34 @@ export class BrowserKernel {
       vfsImage,
       lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
       closedLazyAssets: options.closedLazyAssets,
+      takeVfsImageOwnership: false,
+    });
+  }
+
+  /**
+   * Load an image by transferring its one whole ordinary ArrayBuffer to the
+   * VFS-owning worker. Unlike {@link initFromImage}, this deliberately
+   * detaches the caller's buffer. Keeping the two entry points explicit
+   * preserves restart-friendly copy semantics for existing callers while
+   * allowing reboot pipelines to avoid an aggregate-sized structured clone.
+   */
+  async initFromOwnedImage(
+    options: BrowserKernelOwnedImageInitOptions,
+  ): Promise<void> {
+    if (!(options.vfsImage instanceof ArrayBuffer)) {
+      throw new Error(
+        "owned VFS image must be one whole ordinary ArrayBuffer",
+      );
+    }
+    const wasmBytes = options.kernelWasm
+      ? options.kernelWasm
+      : await fetch(kernelWasmUrl).then((response) => response.arrayBuffer());
+    await this.bootWorker({
+      kernelWasmBytes: wasmBytes,
+      vfsImage: new Uint8Array(options.vfsImage),
+      lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
+      closedLazyAssets: options.closedLazyAssets,
+      takeVfsImageOwnership: true,
     });
   }
 
@@ -239,7 +301,20 @@ export class BrowserKernel {
     vfsImage: Uint8Array;
     lazyUrlBase?: string;
     closedLazyAssets?: readonly ClosedLazyAsset[];
+    takeVfsImageOwnership: boolean;
   }): Promise<void> {
+    if (
+      opts.takeVfsImageOwnership &&
+      (
+        !(opts.vfsImage.buffer instanceof ArrayBuffer) ||
+        opts.vfsImage.byteOffset !== 0 ||
+        opts.vfsImage.byteLength !== opts.vfsImage.buffer.byteLength
+      )
+    ) {
+      throw new Error(
+        "owned VFS image must be one whole ordinary ArrayBuffer",
+      );
+    }
     const closedLazyAssets = opts.closedLazyAssets === undefined
       ? undefined
       : snapshotClosedLazyAssets(opts.closedLazyAssets);
@@ -331,6 +406,13 @@ export class BrowserKernel {
         },
       };
       const transfer: Transferable[] = [transferBuf];
+      if (opts.takeVfsImageOwnership) {
+        // WHY: this API is used at durable reboot boundaries where the main
+        // thread has already hashed the image and will not reuse it. Transfer
+        // prevents a second 512 MiB structured-clone allocation while the
+        // worker restores its own kernel-owned filesystem.
+        transfer.push(opts.vfsImage.buffer as ArrayBuffer);
+      }
       for (const asset of closedLazyAssets ?? []) {
         // snapshotClosedLazyAssets always allocates one ordinary ArrayBuffer
         // per binding, so transferring it cannot detach caller-owned bytes.
@@ -347,7 +429,7 @@ export class BrowserKernel {
    * The exit promise is wired up after the pid is known.
    */
   private async spawnFirstProcess(
-    options: BrowserKernelBootOptions,
+    options: BrowserKernelBootOptions | BrowserKernelOwnedImageBootOptions,
   ): Promise<{ pid: number; exit: Promise<number> }> {
     const requestId = this.nextRequestId++;
     const spawnStartedBeforeExitSequence = this.exitSequence;

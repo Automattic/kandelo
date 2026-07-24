@@ -1,7 +1,6 @@
-import {
-  MemoryFileSystem,
-  type LazyDownloadEvent,
-} from "../../host/src/vfs/memory-fs";
+import type { LazyDownloadEvent } from "../../host/src/vfs/memory-fs";
+import { KANDELO_SHELL_CONFIG_PATH } from
+  "../../web-libs/kandelo-session/src/shell-config";
 import {
   createHomebrewGuestLifecyclePhaseOneScript,
   createHomebrewGuestLifecyclePhaseTwoScript,
@@ -14,7 +13,7 @@ import {
   assertNoUnexpectedHostDiagnostics,
   completedLazyDownloadUrls,
   omitCompletedClosedLazyAssets,
-  resolveHomebrewGuestLifecycleShell,
+  parseHomebrewGuestLifecycleShellConfig,
 } from "./homebrew_guest_lifecycle_runtime_contract";
 import type {
   HomebrewGuestLifecycleRuntimeInputs,
@@ -41,8 +40,9 @@ export interface HomebrewGuestLifecycleMachine {
   readonly lazyDownloads: readonly LazyDownloadEvent[];
   readonly diagnostics: readonly string[];
   start(): Promise<void>;
+  readFile(path: string): Promise<Uint8Array | null>;
   runShellScript(options: {
-    shellBytes: Uint8Array;
+    shellPath: string;
     shellArgv0: string;
     script: string;
     marker: string;
@@ -54,21 +54,62 @@ export interface HomebrewGuestLifecycleMachine {
 }
 
 export interface HomebrewGuestLifecycleRunResult {
-  exportedImage: Uint8Array;
+  exportedImageBytes: number;
+  exportedImageSha256?: string;
   phaseOneCompletedUrls: ReadonlySet<string>;
   phaseOneLazyDownloads: readonly LazyDownloadEvent[];
   phaseTwoLazyDownloads: readonly LazyDownloadEvent[];
 }
 
+export async function runHomebrewGuestLifecycleProcess(options: {
+  label: string;
+  timeoutMs: number;
+  spawn: () => Promise<{ pid: number; exit: Promise<number> }>;
+  terminate: (pid: number, exitCode: number) => Promise<void>;
+}): Promise<number> {
+  let pid: number | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  // WHY: start one clock before requesting the VFS-owned executable. The
+  // worker read, Wasm compile, spawn acknowledgement, and process lifetime
+  // all spend the same operation budget; a stalled acknowledgement must not
+  // leave this adapter running after the lifecycle tears its machine down.
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(
+      () =>
+        reject(
+          new Error(
+            `${options.label} timed out after ${options.timeoutMs}ms`,
+          ),
+        ),
+      options.timeoutMs,
+    );
+  });
+  try {
+    const spawned = await Promise.race([options.spawn(), timedOut]);
+    pid = spawned.pid;
+    return await Promise.race([spawned.exit, timedOut]);
+  } catch (error) {
+    if (pid !== undefined) {
+      await options.terminate(pid, 124).catch(() => {});
+    }
+    throw error;
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
 export async function runHomebrewGuestLifecycle(options: {
   runtime: HomebrewGuestLifecycleRuntimeInputs;
   revisions: HomebrewGuestLifecycleRevisions;
-  timeoutMs: number;
+  /** One absolute deadline shared by initialization, both phases, and reboot. */
+  deadlineMs: number;
+  hashExportedImage?: (image: Uint8Array) => Promise<string>;
   createMachine: (
     runtime: HomebrewGuestLifecycleRuntimeInputs,
     phase: HomebrewGuestLifecyclePhase,
   ) => HomebrewGuestLifecycleMachine;
 }): Promise<HomebrewGuestLifecycleRunResult> {
+  assertUsableDeadline(options.deadlineMs);
   const phaseOneMachine = options.createMachine(
     options.runtime,
     "phase-one",
@@ -76,32 +117,44 @@ export async function runHomebrewGuestLifecycle(options: {
   let exportedImage: Uint8Array | undefined;
   let phaseOneCompletedUrls: ReadonlySet<string> | undefined;
   let phaseOneLazyDownloads: readonly LazyDownloadEvent[] | undefined;
+  let phaseOneSucceeded = false;
   try {
-    await phaseOneMachine.start();
+    await beforeDeadline(
+      options.deadlineMs,
+      "Homebrew lifecycle phase-one machine start",
+      () => phaseOneMachine.start(),
+    );
     const preflightStart = phaseOneMachine.lazyDownloads.length;
-    await phaseOneMachine.runShellScript({
-      shellBytes: options.runtime.shellBytes,
-      shellArgv0: options.runtime.shellArgv0,
-      script:
-        "set -eu; test -n \"$BASH_VERSION\"; " +
-        "printf 'homebrew-lifecycle-offline-ok\\n'",
-      marker: "homebrew-lifecycle-offline-ok",
-      label: "Homebrew lifecycle image-owned shell preflight",
-      timeoutMs: options.timeoutMs,
-    });
+    await runScriptBeforeDeadline(
+      phaseOneMachine,
+      options.deadlineMs,
+      {
+        shellPath: options.runtime.shellPath,
+        shellArgv0: options.runtime.shellArgv0,
+        script: createImageOwnedShellPreflight(
+          options.runtime.shellPath,
+          "homebrew-lifecycle-offline-ok",
+        ),
+        marker: "homebrew-lifecycle-offline-ok",
+        label: "Homebrew lifecycle image-owned shell preflight",
+      },
+    );
     assertNoLazyDownload(
       phaseOneMachine.lazyDownloads.slice(preflightStart),
       "image-owned shell preflight",
     );
 
-    await phaseOneMachine.runShellScript({
-      shellBytes: options.runtime.shellBytes,
-      shellArgv0: options.runtime.shellArgv0,
-      script: createHomebrewGuestLifecyclePhaseOneScript(options.revisions),
-      marker: HOMEBREW_GUEST_LIFECYCLE_PHASE_ONE_MARKER,
-      label: "stock Homebrew guest lifecycle phase one",
-      timeoutMs: options.timeoutMs,
-    });
+    await runScriptBeforeDeadline(
+      phaseOneMachine,
+      options.deadlineMs,
+      {
+        shellPath: options.runtime.shellPath,
+        shellArgv0: options.runtime.shellArgv0,
+        script: createHomebrewGuestLifecyclePhaseOneScript(options.revisions),
+        marker: HOMEBREW_GUEST_LIFECYCLE_PHASE_ONE_MARKER,
+        label: "stock Homebrew guest lifecycle phase one",
+      },
+    );
     assertSingleCompletedLazyDownload(
       phaseOneMachine.lazyDownloads,
       options.runtime.bootstrapTransportUrl,
@@ -114,10 +167,16 @@ export async function runHomebrewGuestLifecycle(options: {
     );
     exportedImage = await exportRootfsAfterProcessTeardown(
       phaseOneMachine,
-      5_000,
+      options.deadlineMs,
     );
+    phaseOneSucceeded = true;
   } finally {
-    await phaseOneMachine.destroy().catch(() => {});
+    const destroy = destroyBeforeDeadline(
+      phaseOneMachine,
+      options.deadlineMs,
+    );
+    if (phaseOneSucceeded) await destroy;
+    else await destroy.catch(() => {});
     assertNoUnexpectedHostDiagnostics(
       phaseOneMachine.diagnostics,
       "stock Homebrew guest lifecycle phase one host",
@@ -131,13 +190,28 @@ export async function runHomebrewGuestLifecycle(options: {
     throw new Error("phase one did not export a durable root filesystem");
   }
 
-  const exportedFs = MemoryFileSystem.fromImage(exportedImage);
-  const exportedShell = resolveHomebrewGuestLifecycleShell(exportedFs);
+  const exportedImageBytes = exportedImage.byteLength;
+  if (exportedImageBytes === 0) {
+    throw new Error("phase one exported an empty root filesystem");
+  }
+  const exportedImageSha256 = options.hashExportedImage === undefined
+    ? undefined
+    : await beforeDeadline(
+      options.deadlineMs,
+      "Homebrew lifecycle exported-image digest",
+      () => options.hashExportedImage!(exportedImage!),
+    );
+  if (
+    options.runtime.takeImageOwnership === true &&
+    exportedImageSha256 === undefined
+  ) {
+    throw new Error(
+      "ownership-taking lifecycle requires a pre-handoff image digest",
+    );
+  }
   const phaseTwoRuntime: HomebrewGuestLifecycleRuntimeInputs = {
     ...options.runtime,
     imageBytes: exportedImage,
-    shellBytes: exportedShell.bytes,
-    shellArgv0: exportedShell.argv0,
     // WHY: a rebooted image must own everything phase one materialized. Do not
     // leave those closed bytes available to hide an export durability defect.
     lazyAssets: omitCompletedClosedLazyAssets(
@@ -150,24 +224,70 @@ export async function runHomebrewGuestLifecycle(options: {
     "phase-two",
   );
   let phaseTwoLazyDownloads: readonly LazyDownloadEvent[] | undefined;
+  let phaseTwoSucceeded = false;
   try {
-    await phaseTwoMachine.start();
-    await phaseTwoMachine.runShellScript({
-      shellBytes: phaseTwoRuntime.shellBytes,
-      shellArgv0: phaseTwoRuntime.shellArgv0,
-      script: createHomebrewGuestLifecyclePhaseTwoScript(options.revisions),
-      marker: HOMEBREW_GUEST_LIFECYCLE_PHASE_TWO_MARKER,
-      label: "stock Homebrew guest lifecycle phase two after rootfs reboot",
-      timeoutMs: options.timeoutMs,
-    });
+    await beforeDeadline(
+      options.deadlineMs,
+      "Homebrew lifecycle phase-two machine start",
+      () => phaseTwoMachine.start(),
+    );
+    const rebootPreflightStart = phaseTwoMachine.lazyDownloads.length;
+    const exportedShellConfig = await beforeDeadline(
+      options.deadlineMs,
+      "Homebrew lifecycle rebooted shell-config read",
+      () => phaseTwoMachine.readFile(KANDELO_SHELL_CONFIG_PATH),
+    );
+    if (exportedShellConfig === null) {
+      throw new Error(
+        `rebooted lifecycle is missing ${KANDELO_SHELL_CONFIG_PATH}`,
+      );
+    }
+    const exportedShell = parseHomebrewGuestLifecycleShellConfig(
+      exportedShellConfig,
+    );
+    await runScriptBeforeDeadline(
+      phaseTwoMachine,
+      options.deadlineMs,
+      {
+        shellPath: exportedShell.path,
+        shellArgv0: exportedShell.argv0,
+        script: createImageOwnedShellPreflight(
+          exportedShell.path,
+          "homebrew-lifecycle-reboot-shell-ok",
+        ),
+        marker: "homebrew-lifecycle-reboot-shell-ok",
+        label: "Homebrew lifecycle rebooted image-owned shell preflight",
+      },
+    );
+    assertNoLazyDownload(
+      phaseTwoMachine.lazyDownloads.slice(rebootPreflightStart),
+      "rebooted image-owned shell preflight",
+    );
+    await runScriptBeforeDeadline(
+      phaseTwoMachine,
+      options.deadlineMs,
+      {
+        shellPath: exportedShell.path,
+        shellArgv0: exportedShell.argv0,
+        script: createHomebrewGuestLifecyclePhaseTwoScript(options.revisions),
+        marker: HOMEBREW_GUEST_LIFECYCLE_PHASE_TWO_MARKER,
+        label: "stock Homebrew guest lifecycle phase two after rootfs reboot",
+      },
+    );
     phaseTwoLazyDownloads = [...phaseTwoMachine.lazyDownloads];
     assertNoRepeatedLazyDownloads(
       phaseOneCompletedUrls,
       phaseTwoLazyDownloads,
       "rebooted lifecycle",
     );
+    phaseTwoSucceeded = true;
   } finally {
-    await phaseTwoMachine.destroy().catch(() => {});
+    const destroy = destroyBeforeDeadline(
+      phaseTwoMachine,
+      options.deadlineMs,
+    );
+    if (phaseTwoSucceeded) await destroy;
+    else await destroy.catch(() => {});
     assertNoUnexpectedHostDiagnostics(
       phaseTwoMachine.diagnostics,
       "stock Homebrew guest lifecycle phase two host",
@@ -178,7 +298,10 @@ export async function runHomebrewGuestLifecycle(options: {
   }
 
   return {
-    exportedImage,
+    exportedImageBytes,
+    ...(exportedImageSha256 === undefined
+      ? {}
+      : { exportedImageSha256 }),
     phaseOneCompletedUrls,
     phaseOneLazyDownloads,
     phaseTwoLazyDownloads,
@@ -187,26 +310,106 @@ export async function runHomebrewGuestLifecycle(options: {
 
 async function exportRootfsAfterProcessTeardown(
   machine: HomebrewGuestLifecycleMachine,
-  timeoutMs: number,
+  deadlineMs: number,
 ): Promise<Uint8Array> {
-  const deadline = Date.now() + timeoutMs;
   for (;;) {
     try {
-      return await machine.exportRootfsImage();
+      return await beforeDeadline(
+        deadlineMs,
+        "Homebrew lifecycle rootfs export",
+        () => machine.exportRootfsImage(),
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (
         !message.includes("no live or tearing-down processes") ||
-        Date.now() >= deadline
+        Date.now() >= deadlineMs
       ) {
         throw error;
       }
       // WHY: a process exit is observable before the worker has necessarily
       // finished its asynchronous teardown. Retry only that exact transient
       // state; the worker-owned snapshot gate remains authoritative.
-      await delay(20);
+      await delay(Math.min(20, remainingMilliseconds(deadlineMs)));
     }
   }
+}
+
+async function runScriptBeforeDeadline(
+  machine: HomebrewGuestLifecycleMachine,
+  deadlineMs: number,
+  options: Omit<
+    Parameters<HomebrewGuestLifecycleMachine["runShellScript"]>[0],
+    "timeoutMs"
+  >,
+): Promise<void> {
+  const timeoutMs = remainingMilliseconds(deadlineMs);
+  await beforeDeadline(deadlineMs, options.label, () =>
+    machine.runShellScript({ ...options, timeoutMs })
+  );
+}
+
+async function destroyBeforeDeadline(
+  machine: HomebrewGuestLifecycleMachine,
+  deadlineMs: number,
+): Promise<void> {
+  const destroying = machine.destroy();
+  try {
+    await beforeDeadline(
+      deadlineMs,
+      "Homebrew lifecycle machine teardown",
+      () => destroying,
+    );
+  } catch (error) {
+    // The underlying cleanup cannot be cancelled. Keep observing its rejection
+    // after the total deadline wins the race, then preserve that deadline as
+    // the lifecycle result.
+    void destroying.catch(() => {});
+    throw error;
+  }
+}
+
+async function beforeDeadline<T>(
+  deadlineMs: number,
+  label: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const timeoutMs = remainingMilliseconds(deadlineMs);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation(),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          reject(
+            new Error(
+              `${label} exceeded the Homebrew guest lifecycle total deadline`,
+            ),
+          );
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+function assertUsableDeadline(deadlineMs: number): void {
+  if (!Number.isSafeInteger(deadlineMs) || deadlineMs <= Date.now()) {
+    throw new Error(
+      "Homebrew guest lifecycle deadline must be a future integer timestamp",
+    );
+  }
+}
+
+function remainingMilliseconds(deadlineMs: number): number {
+  const remaining = deadlineMs - Date.now();
+  if (remaining <= 0) {
+    throw new Error(
+      "Homebrew guest lifecycle exceeded its total deadline",
+    );
+  }
+  return remaining;
 }
 
 function assertSingleCompletedLazyDownload(
@@ -242,6 +445,24 @@ function assertNoLazyDownload(
   if (events.length !== 0) {
     throw new Error(`${label} unexpectedly fetched ${events[0]!.url}`);
   }
+}
+
+function createImageOwnedShellPreflight(
+  shellPath: string,
+  marker: string,
+): string {
+  // WHY: spawnFromVfs deliberately moves bytes inside the owning worker, but
+  // top-level host launch is not a guest execve syscall. Ask Bash's builtin
+  // `test` to exercise Kandelo's credential-aware POSIX access path so a
+  // readable Wasm file with the wrong execute/search permissions cannot make
+  // this durability proof pass.
+  return `set -eu; test -n "$BASH_VERSION"; ` +
+    `test -x ${quoteShellWord(shellPath)}; ` +
+    `printf '%s\\n' ${quoteShellWord(marker)}`;
+}
+
+function quoteShellWord(value: string): string {
+  return `'${value.replaceAll("'", `'\"'\"'`)}'`;
 }
 
 function delay(milliseconds: number): Promise<void> {

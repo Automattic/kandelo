@@ -3,6 +3,10 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
+  MAX_CLOSED_LAZY_ASSET_BYTES,
+  MAX_CLOSED_LAZY_ASSETS,
+} from "../../host/src/vfs/closed-lazy-assets";
+import {
   encodeHomebrewBottleMirrorCollectionIdentity,
   encodeHomebrewBottleMirrorPlan,
   HOMEBREW_BOTTLE_MIRROR_PLAN_ASSET,
@@ -92,7 +96,7 @@ test("rejects changed bytes and fixture identities that differ from the plan", a
         sourceUrl: (url) => url,
         fetchImpl: createFixtureFetch(changedBytesByUrl),
       }),
-    /bootstrap archive.*changed SHA-256/,
+    /fixture assets.*changed SHA-256/,
   );
 
   const changedPayloadFixture = {
@@ -104,13 +108,23 @@ test("rejects changed bytes and fixture identities that differ from the plan", a
       ),
     },
   };
+  const changedPayloadRequests: string[] = [];
   await assert.rejects(
     () =>
       loadHomebrewGuestLifecycleBrowserFixture(changedPayloadFixture, {
         sourceUrl: (url) => url,
-        fetchImpl: createFixtureFetch(fixture.bytesByUrl),
+        fetchImpl: async (input) => {
+          const url = String(input);
+          changedPayloadRequests.push(url);
+          return createFixtureFetch(fixture.bytesByUrl)(input);
+        },
       }),
     /payload fixture differs from mirror asset/,
+  );
+  assert.equal(
+    changedPayloadRequests.includes(fixture.plan.assets[0]!.url),
+    false,
+    "a payload whose exact identity is not authorized by the plan is not fetched",
   );
 
   const inconsistentPlanBytes = encodeHomebrewBottleMirrorPlan({
@@ -140,6 +154,258 @@ test("rejects changed bytes and fixture identities that differ from the plan", a
       }),
     /inconsistent derived identity/,
   );
+});
+
+test("loads the complete fixture under one aggregate transport budget and signal", async () => {
+  const fixture = createFixture();
+  const signals = new Set<AbortSignal>();
+  let requests = 0;
+  const loaded = await loadHomebrewGuestLifecycleBrowserFixture(
+    fixture.value,
+    {
+      sourceUrl: (url) => url,
+      fetchImpl: async (input, init) => {
+        requests += 1;
+        signals.add(init!.signal as AbortSignal);
+        const bytes = fixture.bytesByUrl.get(String(input));
+        assert.ok(bytes);
+        return new Response(bytes.slice().buffer);
+      },
+    },
+  );
+
+  assert.equal(requests, fixture.bytesByUrl.size);
+  assert.equal(signals.size, 1);
+  assert.equal(loaded.closedBottleAssets?.length, 1);
+});
+
+test("rejects duplicate URLs and aggregate count or byte overflow before fetching", async () => {
+  const fixture = createFixture();
+  let requests = 0;
+  const fetchImpl = async (): Promise<Response> => {
+    requests += 1;
+    return new Response(new Uint8Array([1]));
+  };
+  const duplicate = {
+    ...fixture.value,
+    bootstrap: {
+      ...fixture.value.bootstrap,
+      spec: fixture.value.image,
+    },
+  };
+  await assert.rejects(
+    () =>
+      loadHomebrewGuestLifecycleBrowserFixture(duplicate, {
+        sourceUrl: (url) => url,
+        fetchImpl,
+      }),
+    /duplicate URL/,
+  );
+
+  const sparsePayloads = new Array(1);
+  assert.throws(
+    () =>
+      projectHomebrewGuestLifecycleBrowserFixture({
+        ...fixture.value,
+        bottleMirror: {
+          ...fixture.value.bottleMirror,
+          payloads: sparsePayloads,
+        },
+      }),
+    /bottle payload 0 is missing/,
+  );
+
+  assert.throws(
+    () =>
+      projectHomebrewGuestLifecycleBrowserFixture({
+        ...fixture.value,
+        bottleMirror: {
+          ...fixture.value.bottleMirror,
+          payloads: [
+            fixture.value.bottleMirror.payloads[0],
+            fixture.value.bottleMirror.payloads[0],
+          ],
+        },
+      }),
+    /duplicate asset/,
+  );
+
+  const tooManyPayloads = Array.from(
+    { length: MAX_CLOSED_LAZY_ASSETS - 4 },
+    (_unused, index) => ({
+      asset: `payload-${index}.tar.gz`,
+      url: `https://example.test/payload-${index}.tar.gz`,
+      sha256: "0".repeat(64),
+      bytes: 1,
+    }),
+  );
+  assert.throws(
+    () =>
+      projectHomebrewGuestLifecycleBrowserFixture({
+        ...fixture.value,
+        bottleMirror: {
+          ...fixture.value.bottleMirror,
+          payloads: tooManyPayloads,
+        },
+      }),
+    new RegExp(`exceeds ${MAX_CLOSED_LAZY_ASSETS} exact assets`),
+  );
+
+  const aggregateOverflow = {
+    ...fixture.value,
+    image: {
+      ...fixture.value.image,
+      bytes: Math.floor(MAX_CLOSED_LAZY_ASSET_BYTES * 0.6),
+    },
+    bootstrap: {
+      ...fixture.value.bootstrap,
+      spec: {
+        ...fixture.value.bootstrap.spec,
+        bytes: Math.floor(MAX_CLOSED_LAZY_ASSET_BYTES * 0.6),
+      },
+    },
+  };
+  await assert.rejects(
+    () =>
+      loadHomebrewGuestLifecycleBrowserFixture(aggregateOverflow, {
+        sourceUrl: (url) => url,
+        fetchImpl,
+      }),
+    new RegExp(`exceed ${MAX_CLOSED_LAZY_ASSET_BYTES} bytes`),
+  );
+  assert.equal(requests, 0);
+});
+
+test("propagates one caller cancellation without starting fixture I/O", async () => {
+  const fixture = createFixture();
+  const controller = new AbortController();
+  const reason = new Error("fixture deadline elapsed");
+  controller.abort(reason);
+  let requests = 0;
+  await assert.rejects(
+    () =>
+      loadHomebrewGuestLifecycleBrowserFixture(fixture.value, {
+        sourceUrl: (url) => url,
+        signal: controller.signal,
+        fetchImpl: async () => {
+          requests += 1;
+          return new Response(new Uint8Array([1]));
+        },
+      }),
+    (error) => error === reason,
+  );
+  assert.equal(requests, 0);
+});
+
+test("preserves caller cancellation during public plan identity validation", async () => {
+  const fixture = createFixture();
+  const { payloads: _payloads, ...planOnly } = fixture.value.bottleMirror;
+  const publicFixture = {
+    ...fixture.value,
+    transportMode: "public",
+    bottleMirror: planOnly,
+  };
+  const controller = new AbortController();
+  const reason = new Error("fixture deadline elapsed during plan validation");
+  const originalDigest = crypto.subtle.digest.bind(crypto.subtle);
+  const ownDescriptor = Object.getOwnPropertyDescriptor(
+    crypto.subtle,
+    "digest",
+  );
+  let digestCalls = 0;
+  let markIdentityStarted!: () => void;
+  let releaseIdentity!: () => void;
+  const identityStarted = new Promise<void>((resolve) => {
+    markIdentityStarted = resolve;
+  });
+  const identityGate = new Promise<void>((resolve) => {
+    releaseIdentity = resolve;
+  });
+  Object.defineProperty(crypto.subtle, "digest", {
+    configurable: true,
+    value: async (
+      algorithm: AlgorithmIdentifier,
+      data: BufferSource,
+    ): Promise<ArrayBuffer> => {
+      digestCalls += 1;
+      if (digestCalls === 6) {
+        markIdentityStarted();
+        await identityGate;
+      }
+      return originalDigest(algorithm, data);
+    },
+  });
+  try {
+    const loading = loadHomebrewGuestLifecycleBrowserFixture(publicFixture, {
+      sourceUrl: (url) => url,
+      signal: controller.signal,
+      fetchImpl: createFixtureFetch(fixture.bytesByUrl),
+    });
+    await identityStarted;
+    let observedReason: unknown;
+    void loading.catch((error: unknown) => {
+      observedReason = error;
+    });
+    controller.abort(reason);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(
+      observedReason,
+      reason,
+      "the caller deadline settles without waiting for Web Crypto",
+    );
+  } finally {
+    releaseIdentity();
+    if (ownDescriptor === undefined) {
+      Reflect.deleteProperty(crypto.subtle, "digest");
+    } else {
+      Object.defineProperty(crypto.subtle, "digest", ownDescriptor);
+    }
+  }
+});
+
+test("settles caller cancellation when an injected fetch ignores its signal", async () => {
+  const fixture = createFixture();
+  const { payloads: _payloads, ...planOnly } = fixture.value.bottleMirror;
+  const publicFixture = {
+    ...fixture.value,
+    transportMode: "public",
+    bottleMirror: planOnly,
+  };
+  const controller = new AbortController();
+  const reason = new Error("fixture deadline elapsed during transport");
+  let markFetchStarted!: () => void;
+  let releaseFetch!: () => void;
+  const fetchStarted = new Promise<void>((resolve) => {
+    markFetchStarted = resolve;
+  });
+  const fetchGate = new Promise<void>((resolve) => {
+    releaseFetch = resolve;
+  });
+  const loading = loadHomebrewGuestLifecycleBrowserFixture(publicFixture, {
+    sourceUrl: (url) => url,
+    signal: controller.signal,
+    fetchImpl: async (input) => {
+      markFetchStarted();
+      await fetchGate;
+      const bytes = fixture.bytesByUrl.get(String(input));
+      assert.ok(bytes);
+      return new Response(bytes.slice().buffer);
+    },
+  });
+  await fetchStarted;
+  let observedReason: unknown;
+  void loading.catch((error: unknown) => {
+    observedReason = error;
+  });
+  controller.abort(reason);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(
+    observedReason,
+    reason,
+    "the caller deadline settles without waiting for an uncooperative fetch",
+  );
+  releaseFetch();
+  await new Promise<void>((resolve) => setImmediate(resolve));
 });
 
 function createFixture() {

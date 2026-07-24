@@ -25,8 +25,13 @@ export type HomebrewGuestLifecycleTransportMode = "closed" | "public";
 
 export interface HomebrewGuestLifecycleRuntimeInputs {
   imageBytes: Uint8Array;
-  shellBytes: Uint8Array;
+  shellPath: string;
   shellArgv0: string;
+  /**
+   * The host may transfer `imageBytes.buffer` only when it is one whole
+   * ordinary ArrayBuffer and this flag is true.
+   */
+  takeImageOwnership?: boolean;
   lazyUrlBase: string;
   lazyAssets?: readonly ClosedLazyAsset[];
   bootstrapTransportUrl: string;
@@ -35,6 +40,13 @@ export interface HomebrewGuestLifecycleRuntimeInputs {
 
 export interface DeriveHomebrewGuestLifecycleRuntimeInputs {
   imageBytes: Uint8Array;
+  /**
+   * Run an additional exact-image validation against the same filesystem this
+   * function restored from `imageBytes`. Accepting a caller-supplied
+   * filesystem would let validation cover different bytes than the runtime.
+   */
+  validateImageFileSystem?: (fs: MemoryFileSystem) => void;
+  takeImageOwnership?: boolean;
   bootstrapSpecBytes: Uint8Array;
   bootstrapArchiveBytes: Uint8Array;
   bootstrapArchiveSha256: string;
@@ -162,11 +174,15 @@ export function deriveHomebrewGuestLifecycleRuntimeInputs(
     input.bootstrapArchiveSha256,
     input.bootstrapArchiveBytes.byteLength,
   );
+  input.validateImageFileSystem?.(fs);
 
   return {
     imageBytes: input.imageBytes,
-    shellBytes: shell.bytes,
+    shellPath: shell.path,
     shellArgv0: shell.argv0,
+    ...(input.takeImageOwnership === true
+      ? { takeImageOwnership: true }
+      : {}),
     lazyUrlBase: input.lazyUrlBase,
     ...(lazyAssets === undefined ? {} : { lazyAssets }),
     bootstrapTransportUrl,
