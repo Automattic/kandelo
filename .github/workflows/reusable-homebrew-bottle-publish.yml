@@ -130,6 +130,22 @@ jobs:
             return 2
           }
 
+          normalize_write_tap_ref() {
+            local ref="$1"
+
+            if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+              # WHY: repository_dispatch can be admitted while main is at one
+              # commit but instantiated after another publication advances it.
+              # The dispatch payload therefore owns the immutable source
+              # selection; the workflow execution SHA is not a substitute.
+              printf '%s\n' "$ref"
+              return 0
+            fi
+
+            echo "::error::write publication requires an exact reviewed lowercase 40-character tap commit SHA" >&2
+            return 2
+          }
+
           normalized_caller_repository="$(printf '%s' "$CALLER_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           normalized_tap_repository="$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           normalized_tap_name="$(printf '%s' "$TAP_NAME" | tr '[:upper:]' '[:lower:]')"
@@ -201,11 +217,8 @@ jobs:
               "$CALLER_REPOSITORY/.github/workflows/maintain-bottles.yml@refs/heads/main") ;;
               *) echo "::error::publication requires a reviewed tap write workflow"; exit 2 ;;
             esac
-            [ "$TAP_REF" = "main" ] || {
-              echo "::error::write publication requires tap main"; exit 2;
-            }
             validated_kandelo_ref="$(normalize_write_kandelo_ref "$KANDELO_REF")"
-            validated_tap_ref="refs/heads/main"
+            validated_tap_ref="$(normalize_write_tap_ref "$TAP_REF")"
           fi
           {
             echo "kandelo-ref=$validated_kandelo_ref"
@@ -256,6 +269,33 @@ jobs:
             echo "kandelo-sha=$kandelo_sha"
             echo "tap-sha=$tap_sha"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Bind write tap source to protected main history
+        if: ${{ !inputs.dry-run }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAP_SHA: ${{ inputs.tap-ref }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ steps.source-commits.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          [ "$TAP_SHA" = "$REQUESTED_TAP_SHA" ] || {
+            echo "::error::tap checkout differs from the exact requested source commit"; exit 2;
+          }
+          if ! compare_status="$(gh api \
+              "/repos/$TAP_REPOSITORY/compare/$TAP_SHA...main" \
+              --jq .status)"; then
+            echo "::error::could not prove that the requested tap commit belongs to protected main"
+            exit 1
+          fi
+          case "$compare_status" in
+            ahead|identical) ;;
+            # WHY: an older requested source is safe only while it remains an
+            # ancestor of protected main. Descendant, detached, and
+            # force-pushed sources have not passed that branch's review path.
+            *) echo "::error::requested tap commit must remain on protected main history"; exit 1 ;;
+          esac
 
       - name: Bind prepublication generation to the workflow descendant
         if: ${{ inputs.prepublication-staging-tag != '' }}

@@ -13,6 +13,7 @@ jobs:
     uses: Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-maintenance.yml@main
     with:
       mode: ${{ github.event.client_payload.mode || 'rebuild' }}
+      tap-ref: ${{ github.event.client_payload.tap_sha }}
       formulae: ${{ github.event.client_payload.formulae }}
       arches: ${{ github.event.client_payload.arches || 'wasm32' }}
       release-tag: ${{ github.event.client_payload.release_tag || '' }}
