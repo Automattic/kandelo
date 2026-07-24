@@ -48,6 +48,12 @@ probe = { args = ["--version"], version_regex = "v(\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 
 [[host_tools]]
+name = "npm"
+version_constraint = ">=10.0"
+probe = { args = ["--version"], version_regex = "(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
 name = "ruby"
 version_constraint = ">=3.0"
 probe = { args = ["--version"], version_regex = "ruby (\\d+\\.\\d+(?:\\.\\d+)?)" }
@@ -57,6 +63,12 @@ install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run thro
 name = "sha256sum"
 version_constraint = ">=8.0"
 probe = { args = ["--version"], version_regex = "coreutils\\) (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "tar"
+version_constraint = ">=1.30"
+probe = { args = ["--version"], version_regex = "(?:bsdtar|tar).*?(\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 
 [[host_tools]]

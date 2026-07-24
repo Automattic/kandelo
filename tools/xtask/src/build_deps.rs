@@ -13423,6 +13423,71 @@ archive_sha256 = "{archive_sha_hex}"
     }
 
     #[test]
+    fn stale_direct_pr_overlay_falls_through_to_source_build() {
+        let root = tempdir("stale-direct-overlay-reg");
+        let cache = tempdir("stale-direct-overlay-cache");
+        let archive_dir = tempdir("stale-direct-overlay-archive");
+
+        write_lib(
+            &root,
+            "libStaleOverlay",
+            "1.0.0",
+            &[],
+            r#"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+echo BUILD > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
+touch "$WASM_POSIX_DEP_OUT_DIR/via-build"
+"#,
+            r#"[outputs]
+libs = ["lib/out.a"]
+"#,
+        );
+
+        // The archive itself is intact, but its manifest belongs to a
+        // different cache identity. This is the important same-run failure
+        // mode: finding package.pr.toml is not proof that source fallback is
+        // unnecessary.
+        let stale_manifest =
+            archived_manifest_text("libStaleOverlay", "wasm32", &[TEST_ABI], &"0".repeat(64));
+        let archive_bytes = crate::remote_fetch::build_test_archive(
+            &stale_manifest,
+            &[("lib/out.a", b"STALE-OVERLAY")],
+        );
+        let archive_path = archive_dir.join("libStaleOverlay-1.0.0.tar.zst");
+        std::fs::write(&archive_path, &archive_bytes).unwrap();
+        std::fs::write(
+            root.join("libStaleOverlay/package.pr.toml"),
+            format!(
+                r#"
+[binary.wasm32]
+archive_url = "file://{}"
+archive_sha256 = "{}"
+"#,
+                archive_path.display(),
+                sha256_hex(&archive_bytes),
+            ),
+        )
+        .unwrap();
+
+        let reg = Registry { roots: vec![root] };
+        let manifest = reg.load("libStaleOverlay").unwrap();
+        let path = ensure_built(
+            &manifest,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+
+        assert!(
+            path.join("via-build").exists(),
+            "a stale direct overlay must execute the normal source recipe"
+        );
+        assert_eq!(std::fs::read(path.join("lib/out.a")).unwrap(), b"BUILD\n");
+    }
+
+    #[test]
     fn index_fetch_installs_archive_when_sha_arch_abi_cachekey_all_match() {
         let root = tempdir("idx-happy-reg");
         let cache = tempdir("idx-happy-cache");

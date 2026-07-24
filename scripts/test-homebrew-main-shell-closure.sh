@@ -20,11 +20,13 @@ STAGING_WORKFLOW="$REPO_ROOT/.github/workflows/staging-build.yml"
 PREPARE_MERGE_WORKFLOW="$REPO_ROOT/.github/workflows/prepare-merge.yml"
 FORCE_REBUILD_WORKFLOW="$REPO_ROOT/.github/workflows/force-rebuild.yml"
 SHELL_BUILD_TOML="$REPO_ROOT/packages/registry/shell/build.toml"
-SHELL_BUILDER="$REPO_ROOT/packages/registry/shell/build-shell.sh"
 SHELL_PACKAGE_TOML="$REPO_ROOT/packages/registry/shell/package.toml"
+SHELL_BUILDER="$REPO_ROOT/packages/registry/shell/build-shell.sh"
 HOMEBREW_BOOTSTRAP_PACKAGE_TOML="$REPO_ROOT/packages/registry/homebrew-bootstrap/package.toml"
 PACKAGE_TREE_SPEC="$REPO_ROOT/homebrew/main-shell-brew-package-tree.json"
 LAZY_ARCHIVE_RESOLVER="$REPO_ROOT/apps/browser-demos/lib/init/lazy-archives.ts"
+SHELL_TOOL_PREPARER="$REPO_ROOT/packages/registry/shell/prepare-build-tools.sh"
+SHELL_TOOL_PREPARER_TEST="$REPO_ROOT/packages/registry/shell/test-prepare-build-tools.sh"
 RUN_SH="$REPO_ROOT/run.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
@@ -439,19 +441,40 @@ for package_workflow in \
   "$PREPARE_MERGE_WORKFLOW" \
   "$FORCE_REBUILD_WORKFLOW"
 do
-  [ "$(grep -Fc 'npm --prefix tools/mkrootfs ci --no-audit --no-fund' "$package_workflow")" -eq 1 ] ||
-    fail "$package_workflow must install mkrootfs exactly once for the shell program wave"
-  grep -Fq "if: \${{ matrix.package == 'shell' }}" "$package_workflow" ||
-    fail "$package_workflow must limit the mkrootfs prerequisite to the shell package"
-  install_line="$(grep -nF 'npm --prefix tools/mkrootfs ci --no-audit --no-fund' "$package_workflow" | cut -d: -f1)"
-  if [ "$package_workflow" = "$FORCE_REBUILD_WORKFLOW" ]; then
-    build_line="$(grep -nF '              archive-stage \' "$package_workflow" | tail -1 | cut -d: -f1)"
-  else
-    build_line="$(grep -nF 'uses: ./.github/actions/package-archive-build' "$package_workflow" | tail -1 | cut -d: -f1)"
-  fi
-  [ -n "$install_line" ] && [ -n "$build_line" ] && [ "$install_line" -lt "$build_line" ] ||
-    fail "$package_workflow must install mkrootfs before the shell archive build"
+  grep -Fq 'Install shell VFS composer dependencies' "$package_workflow" &&
+    fail "$package_workflow must not own a shell-recipe prerequisite"
+  grep -Fq 'npm --prefix tools/mkrootfs ci' "$package_workflow" &&
+    fail "$package_workflow must let the shell source recipe install mkrootfs"
 done
+
+bash "$SHELL_TOOL_PREPARER_TEST" ||
+  fail "shell source-build tool preparation tests failed"
+[ "$(grep -Fc 'bash "$SCRIPT_DIR/prepare-build-tools.sh" "$SOURCE_ROOT"' "$SHELL_BUILDER")" -eq 1 ] ||
+  fail "shell recipe must prepare its locked build tools exactly once"
+preparer_line="$(grep -nF 'bash "$SCRIPT_DIR/prepare-build-tools.sh" "$SOURCE_ROOT"' \
+  "$SHELL_BUILDER" | cut -d: -f1)"
+composer_line="$(grep -nF 'bash "$SOURCE_ROOT/scripts/build-homebrew-main-shell-closure.sh"' \
+  "$SHELL_BUILDER" | tail -1 | cut -d: -f1)"
+[ -n "$preparer_line" ] &&
+  [ -n "$composer_line" ] &&
+  [ "$preparer_line" -lt "$composer_line" ] ||
+  fail "shell recipe must prepare locked tools before starting the composer"
+grep -Fq '"packages/registry/shell/prepare-build-tools.sh"' \
+  "$SHELL_BUILD_TOML" ||
+  fail "shell cache identity must include its build-tool preparer"
+grep -A4 -F 'name = "npm"' "$SHELL_PACKAGE_TOML" |
+  grep -Fq 'version_constraint = ">=10.0"' ||
+  fail "shell package must declare the npm host tool its recipe executes"
+grep -Fq '# WHY: the package resolver may source-build shell' \
+  "$SHELL_TOOL_PREPARER" ||
+  fail "shell tool ownership boundary must retain its WHY comment"
+grep -Fq 'env -i \' "$SHELL_TOOL_PREPARER" ||
+  fail "shell tool installs must start from a scrubbed environment"
+grep -Fq 'npm_config_registry="https://registry.npmjs.org/"' \
+  "$SHELL_TOOL_PREPARER" ||
+  fail "shell tool installs must pin the public npm registry"
+grep -Fq 'npm ci' "$SHELL_BUILDER" &&
+  fail "shell wrapper must not mutate checkout-global dependency trees"
 
 # The dev-shell wrapper intentionally reports Nix lookup and shell-hook details
 # on stdout. Playwright must own the JSON file directly so those diagnostics can
@@ -603,11 +626,11 @@ shell_build_function="$TMP_ROOT/build-shell-vfs-function.sh"
 sed -n '/^build_shell_vfs()/,/^}/p' "$RUN_SH" >"$shell_build_function"
 grep -Fq 'resolve_args+=(resolve shell)' "$shell_build_function" ||
   fail "run.sh must resolve the shell package through the package system"
-grep -Fq 'need_shell_vfs_build_tools' "$shell_build_function" ||
-  fail "run.sh must prepare lockfile-owned tools before shell source fallback"
+grep -Fq 'need_shell_vfs_build_tools' "$RUN_SH" &&
+  fail "run.sh must not duplicate prerequisites owned by the shell recipe"
 grep -Fq 'if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then' \
   "$shell_build_function" ||
-  fail "run.sh must distinguish an explicit fetch-only resolve from normal fallback"
+  fail "run.sh must preserve an explicit fetch-only resolve"
 grep -Fq 'resolve_args+=("${FETCH_ONLY_ARGS[@]}")' \
   "$shell_build_function" ||
   fail "run.sh must forward the caller's fetch-only contract to the shell resolver"
@@ -615,26 +638,13 @@ fetch_condition_line="$(grep -nF 'if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then' \
   "$shell_build_function" | cut -d: -f1)"
 fetch_forward_line="$(grep -nF 'resolve_args+=("${FETCH_ONLY_ARGS[@]}")' \
   "$shell_build_function" | cut -d: -f1)"
-fallback_else_line="$(grep -nE '^    else$' "$shell_build_function" | cut -d: -f1)"
-fallback_tools_line="$(grep -nF '        need_shell_vfs_build_tools' \
-  "$shell_build_function" | cut -d: -f1)"
-fallback_fi_line="$(awk -v start="$fallback_tools_line" \
+fetch_fi_line="$(awk -v start="$fetch_forward_line" \
   'NR > start && /^    fi$/ { print NR; exit }' "$shell_build_function")"
 [ "$fetch_condition_line" -lt "$fetch_forward_line" ] &&
-  [ "$fetch_forward_line" -lt "$fallback_else_line" ] &&
-  [ "$fallback_else_line" -lt "$fallback_tools_line" ] &&
-  [ "$fallback_tools_line" -lt "$fallback_fi_line" ] ||
-  fail "run.sh must skip composer tools only on the fetch-only branch"
-shell_tools_function="$TMP_ROOT/need-shell-vfs-build-tools-function.sh"
-sed -n '/^need_shell_vfs_build_tools()/,/^}/p' "$RUN_SH" >"$shell_tools_function"
-grep -Fq 'npm ci --no-audit --no-fund --prefer-offline' \
-  "$shell_tools_function" ||
-  fail "run.sh must install root shell-composer dependencies from the lockfile"
-grep -Fq 'npm --prefix "$REPO_ROOT/tools/mkrootfs" ci' \
-  "$shell_tools_function" ||
-  fail "run.sh must install mkrootfs dependencies from the lockfile"
-grep -Eq '(^|[[:space:]])if[[:space:]]' "$shell_tools_function" &&
-  fail "shell source fallback must not accept dependency presence as lockfile identity"
+  [ "$fetch_forward_line" -lt "$fetch_fi_line" ] ||
+  fail "run.sh must limit fetch-only forwarding to the explicit branch"
+grep -Fq 'npm ci' "$shell_build_function" &&
+  fail "run.sh must not predict whether the package resolver will source-build shell"
 grep -Fq -- '--binaries-dir "$REPO_ROOT/local-binaries"' "$RUN_SH" ||
   fail "run.sh must materialize the resolved shell package for local consumers"
 grep -Fq 'pkg_has_output shell shell.vfs.zst' "$RUN_SH" ||
@@ -694,9 +704,27 @@ cat >"$apply_fake_composer" <<'FAKE_COMPOSER'
 set -euo pipefail
 composer="${1:-}"
 shift
+if [[ "$composer" == */packages/registry/shell/prepare-build-tools.sh ]]; then
+  for token in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
+    HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN \
+    NPM_TOKEN NODE_AUTH_TOKEN NODE_OPTIONS NODE_PATH \
+    NPM_CONFIG_USERCONFIG NPM_CONFIG_GLOBALCONFIG NPM_CONFIG_REGISTRY \
+    npm_config_userconfig npm_config_globalconfig npm_config_registry; do
+    if [ "${!token+x}" = x ]; then
+      echo "credential leaked to build-tool preparer: $token" >&2
+      exit 82
+    fi
+  done
+  # Run the real snapshot preparer. npm itself is replaced below, so this
+  # exercises two concurrent Git-owned source snapshots without network I/O.
+  exec /bin/bash "$composer" "$@"
+fi
 [[ "$composer" == */scripts/build-homebrew-main-shell-closure.sh ]]
 for token in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
-  HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN; do
+  HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN \
+  NPM_TOKEN NODE_AUTH_TOKEN NODE_OPTIONS NODE_PATH \
+  NPM_CONFIG_USERCONFIG NPM_CONFIG_GLOBALCONFIG NPM_CONFIG_REGISTRY \
+  npm_config_userconfig npm_config_globalconfig npm_config_registry; do
   if [ "${!token+x}" = x ]; then
     echo "credential leaked to composer: $token" >&2
     exit 80
@@ -736,7 +764,19 @@ printf '%s|%s|%s|%s|%s|%s|%s\n' \
   "$bootstrap_env" \
   >>"$FAKE_COMPOSER_LOG"
 FAKE_COMPOSER
-chmod 0755 "$apply_fake_composer"
+cat >"$fake_bin/npm" <<'FAKE_NPM'
+#!/bin/bash
+set -euo pipefail
+prefix="$(pwd -P)"
+[ -n "$prefix" ]
+if [[ "$prefix" == */tools/mkrootfs ]]; then
+  mkdir -p "$prefix/node_modules/fflate"
+else
+  mkdir -p "$prefix/node_modules/.bin"
+  : >"$prefix/node_modules/.bin/tsx"
+fi
+FAKE_NPM
+chmod 0755 "$apply_fake_composer" "$fake_bin/npm"
 
 tap_sha=1111111111111111111111111111111111111111
 bootstrap_dir="$TMP_ROOT/homebrew-bootstrap-dependency"
@@ -763,6 +803,16 @@ run_fake_shell_build() {
     HOMEBREW_GITHUB_API_TOKEN=forbidden \
     HOMEBREW_GITHUB_PACKAGES_TOKEN=forbidden \
     HOMEBREW_DOCKER_REGISTRY_TOKEN=forbidden \
+    NPM_TOKEN=forbidden \
+    NODE_AUTH_TOKEN=forbidden \
+    NODE_OPTIONS=--trace-warnings \
+    NODE_PATH="$TMP_ROOT/forbidden-node-path" \
+    NPM_CONFIG_USERCONFIG="$TMP_ROOT/forbidden-user.npmrc" \
+    NPM_CONFIG_GLOBALCONFIG="$TMP_ROOT/forbidden-global.npmrc" \
+    NPM_CONFIG_REGISTRY=https://attacker.invalid/ \
+    npm_config_userconfig="$TMP_ROOT/forbidden-lower-user.npmrc" \
+    npm_config_globalconfig="$TMP_ROOT/forbidden-lower-global.npmrc" \
+    npm_config_registry=https://lower-attacker.invalid/ \
     WASM_POSIX_DEP_OUT_DIR="$out_dir" \
     WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
     WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_DIR="$TMP_ROOT/fake-tap" \
