@@ -2017,7 +2017,11 @@ export class MemoryFileSystem implements FileSystemBackend {
   /** One in-flight fetch/commit per lazy file or archive group. */
   private lazyPreparations = new Map<object, LazyPreparation>();
   private lazyTransport: LazyTransport = {
-    fetcher: (url, init) => globalThis.fetch(url, init),
+    // WHY: the no-signal transport contract is observably one argument.
+    // Forwarding an explicit `undefined` breaks embedders and tests that use
+    // callback arity to distinguish an ordinary fetch from an initialized one.
+    fetcher: (url, init) =>
+      init === undefined ? globalThis.fetch(url) : globalThis.fetch(url, init),
   };
 
   private constructor(fs: SharedFS, metadata: VfsImageMetadata | null = null) {
