@@ -1739,7 +1739,11 @@ EOF
     fail "isolated target Homebrew rejected the native Formula proxy keg"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-no-new-privileges
   cp "$isolated_xtask" "$isolated_xtask.backup"
+  # WHY: production checkers are sealed 0555. Only the private fixture owner
+  # may unseal this copy, and every launcher invocation must see it resealed.
+  chmod 0755 "$isolated_xtask"
   printf 'stale replacement\n' >>"$isolated_xtask"
+  chmod 0555 "$isolated_xtask"
   if "$HOMEBREW_PATCHED_BREW_BIN" assert-no-new-privileges \
       >/dev/null 2>"$ISOLATION_ROOT/stale-xtask.err"; then
     fail "isolated launcher accepted changed program-index checker bytes"
@@ -1747,7 +1751,9 @@ EOF
   grep -F "prepared program-index checker changed after isolation" \
     "$ISOLATION_ROOT/stale-xtask.err" >/dev/null ||
     fail "isolated launcher did not explain stale program-index checker bytes"
+  chmod 0755 "$isolated_xtask"
   cp "$isolated_xtask.backup" "$isolated_xtask"
+  chmod 0555 "$isolated_xtask"
   rm "$isolated_xtask.backup"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-no-new-privileges
   "$HOMEBREW_PATCHED_BREW_BIN" spawn-daemon "$daemon_marker" "$daemon_started"
