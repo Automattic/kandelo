@@ -563,6 +563,23 @@ canonical release):
   Rebase or squash is not acceptable for this transition because GitHub
   rewrites the source SHA recorded by the bottle handoffs and sidecars.
 
+  Make the tap-side transition one atomic `main` update rather than merging
+  the native-Requirement change, bottle-identity reservations, and publisher
+  pins separately. Before that merge, disable every core-tap and independent
+  canary `repository_dispatch` caller and wait until no older caller run is
+  queued or active; an already-loaded old caller could otherwise check out the
+  new tap tree. Recheck all 70 reserved GHCR child references immediately
+  before merging the combined tap PR. Afterward, enable only the core
+  production publisher while the frozen Kandelo SHA is not yet on `main`.
+  Dry-run selection can still choose pre-transition Kandelo `main`, and
+  maintenance resolves Kandelo `main` internally, so both remain disabled
+  until #1079 is merge-committed and the tap pins are normalized. The
+  historical repository-namespace canary remains disabled, and the independent
+  canary stays disabled until its vendored support, core lock, and publisher
+  pin are updated together. The base-owned tap trust check intentionally
+  rejects any workflow-contract edit; for this reviewed rotation, require the
+  candidate-owned trust check plus an exact manual workflow/trust-root diff.
+
   Before dispatching ABI-42 writes, reserve a fresh immutable bottle identity
   for every live Formula by incrementing its reviewed `bottle do` rebuild once
   and retaining the last-green hashes as evidence until the trusted finalizer
