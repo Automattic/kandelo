@@ -244,4 +244,26 @@ if run_verify >"$TMP_ROOT/method.out" 2>"$TMP_ROOT/method.err"; then
 fi
 grep -q 'rebase result contains merge commits' "$TMP_ROOT/method.err"
 
+# A preserve-head merge accepts only the exact prepared base and head as its
+# ordered parents. This is the history shape that keeps a published head SHA
+# reachable without weakening the tested-tree check above.
+jq '.merge_method = "merge"' "$CANDIDATE_JSON" > "$TMP_ROOT/merge-candidate.json"
+mv "$TMP_ROOT/merge-candidate.json" "$CANDIDATE_JSON"
+jq '.merge_method = "merge"' "$READY_JSON" > "$TMP_ROOT/merge-ready.json"
+mv "$TMP_ROOT/merge-ready.json" "$READY_JSON"
+run_verify >/dev/null
+
+WRONG_HEAD_MERGE=$(printf 'wrong merge head\n' | \
+  git -C "$REPO" commit-tree "$SYNTHETIC_TREE_SHA" -p "$BASE_SHA" -p "$FIRST_HEAD_SHA")
+git -C "$REPO" update-ref refs/remotes/origin/main "$WRONG_HEAD_MERGE"
+jq --arg merge "$WRONG_HEAD_MERGE" '.mergeCommit.oid = $merge' "$PR_JSON" \
+  > "$TMP_ROOT/wrong-head-merge-pr.json"
+mv "$TMP_ROOT/wrong-head-merge-pr.json" "$PR_JSON"
+if run_verify >"$TMP_ROOT/merge-parent.out" 2>"$TMP_ROOT/merge-parent.err"; then
+  echo "expected a merge with the wrong head parent to fail" >&2
+  exit 1
+fi
+grep -q 'do not match prepared base and head' "$TMP_ROOT/merge-parent.err"
+[ "$(cat "$TMP_ROOT/terminal-reason")" = merge-parent-mismatch ]
+
 echo "merge candidate verification tests passed"

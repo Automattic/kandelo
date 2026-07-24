@@ -358,7 +358,13 @@ has_msmtpd()        { pkg_has_output msmtpd msmtpd.wasm || [ -f "$REPO_ROOT/pack
 has_cpython()       { pkg_has_output cpython python.wasm || [ -f "$REPO_ROOT/packages/registry/cpython/bin/python.wasm" ]; }
 has_python_vfs()    { pkg_has_output python-vfs python-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/python.vfs.zst" ]; }
 has_perl_vfs()      { pkg_has_output perl-vfs perl-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/perl.vfs.zst" ]; }
-has_shell_vfs()     { pkg_has_output shell shell.vfs.zst; }
+has_shell_vfs()     {
+    pkg_has_output shell shell.vfs.zst &&
+    # The VFS keeps this dependency lazy, but the browser must still be able
+    # to serve its exact package bytes when the guest first invokes brew.
+    pkg_has_output homebrew-bootstrap homebrew-bootstrap.zip &&
+    pkg_has_output homebrew-bootstrap homebrew-brew.env
+}
 has_node()          { pkg_has_output node node.wasm; }
 has_spidermonkey_node() { pkg_has_output spidermonkey-node node.wasm || [ -f "$REPO_ROOT/packages/registry/spidermonkey-node/bin/node.wasm" ]; }
 has_node_vfs()      { pkg_has_output node-vfs node-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/node-vfs.vfs.zst" ]; }
@@ -495,23 +501,6 @@ need_node_modules() {
         warn "Installing root npm dependencies"
         cd "$REPO_ROOT" && npm install --prefer-offline
     fi
-}
-
-# Source composition of the bottle-built shell uses the repository's pinned
-# tsx and mkrootfs dependency trees. Run exact lockfile installs every time the
-# source-capable path is selected: presence checks cannot prove that an old
-# node_modules tree matches the cache key's current package-lock inputs.
-need_shell_vfs_build_tools() {
-    step "Installing locked Shell VFS TypeScript dependencies"
-    (cd "$REPO_ROOT" && \
-        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
-        npm ci --no-audit --no-fund --prefer-offline)
-    info "Shell VFS TypeScript dependencies installed"
-
-    step "Installing locked mkrootfs dependencies"
-    npm --prefix "$REPO_ROOT/tools/mkrootfs" ci \
-        --no-audit --no-fund --prefer-offline
-    info "mkrootfs dependencies installed"
 }
 
 # ─── Build targets ────────────────────────────────────────────────────────────
@@ -992,14 +981,8 @@ build_shell_vfs() {
     )
     if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then
         # Preserve the caller's explicit no-source-build contract. This
-        # path needs no composer dependencies because any archive miss or
-        # verification failure must remain a failure.
+        # remains an error on any archive miss or verification failure.
         resolve_args+=("${FETCH_ONLY_ARGS[@]}")
-    else
-        # The normal resolver may use a valid public archive or execute
-        # the source composer. Prepare the latter's exact lockfile-owned
-        # tools so fallback never depends on ambient npm state.
-        need_shell_vfs_build_tools
     fi
     resolve_args+=(resolve shell)
     xtask="$(pkg_xtask_bin)" || {
@@ -1010,6 +993,14 @@ build_shell_vfs() {
     (cd "$REPO_ROOT" && "$xtask" "${resolve_args[@]}" >/dev/null)
     if ! pkg_has_output shell shell.vfs.zst; then
         err "Package resolver did not materialize the declared shell.vfs.zst output"
+        return 1
+    fi
+    if ! pkg_has_output homebrew-bootstrap homebrew-bootstrap.zip; then
+        err "Package resolver did not materialize shell's Homebrew source dependency"
+        return 1
+    fi
+    if ! pkg_has_output homebrew-bootstrap homebrew-brew.env; then
+        err "Package resolver did not materialize shell's Homebrew launcher policy"
         return 1
     fi
     info "Bottle-built Shell VFS image resolved"
