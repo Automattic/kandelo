@@ -21,10 +21,10 @@ UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "5764359641eacc708845ceaf075b04940b6d24c6e3fa20135d5e6e75026f87df"
-PUBLISHER_BUILD_DIGEST = "189d71e4dd4b51ba2cf880e666a56591eea6da30788419d46d66441e196cdc20"
+PUBLISHER_BUILD_DIGEST = "00973a0b3a996c2053e84681dba90786931a3d2dc58bddfef337df42f6eac712"
 PUBLISHER_UPLOAD_DIGEST = "1a9f39031587a5944bce022031d6f84d70f476159d4798bbcb51a4fa8377da9e"
 PUBLISHER_INDEX_DIGEST = "c0eaec6f01ac64e8744b8c98e35b304aa2adafc4ce7ad96416eac85c593fdf87"
-PUBLISHER_VERIFY_DIGEST = "4a2f571b39d8ad027467070108acd7add0afa344330712afc900ff0289dde08f"
+PUBLISHER_VERIFY_DIGEST = "393b4862b62128d1d3f17c24a61b7e4f7981a597e231aeb94518d33bdedaa6db"
 PUBLISHER_FINALIZE_DIGEST = "b101bc67a1ba796d7986c9cb0e9d0270300e519d2cb6ba60e3ae7fc9b4c6fc2e"
 PUBLISHER_VFS_RELEASE_DIGEST = "34171400552baefd1efee3e05a294308ea3ba783f191f899d1affa5135a4d4da"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
@@ -1853,8 +1853,36 @@ def check_publisher(workflow)
     "if-no-files-found" => "error", "retention-days" => 14,
   }, "publisher VFS release receipt artifact contract changed")
 
-  build_run = named_step(build_steps,
-                         "Build and test Homebrew bottle without publisher credentials").fetch("run")
+  build_formula_step = named_step(
+    build_steps, "Build and test Homebrew bottle without publisher credentials"
+  )
+  build_run = build_formula_step.fetch("run")
+  check(build_formula_step.fetch("env").fetch("WASM_POSIX_XTASK_BIN") ==
+          "${{ steps.formula-runtime.outputs.xtask-bin }}",
+        "publisher does not scope the prepared checker to Formula execution")
+  xtask_environment_steps = build_steps.select do |step|
+    step.fetch("env", {}).key?("WASM_POSIX_XTASK_BIN")
+  end
+  check(xtask_environment_steps == [build_formula_step],
+        "publisher exposes the prepared checker outside Formula execution")
+  verify_formula_step = named_step(
+    verify_steps, "Force-pour and test the exact selected bottle without credentials"
+  )
+  check(verify_formula_step.fetch("env").fetch("WASM_POSIX_XTASK_BIN") ==
+          "${{ steps.formula-verification-runtime.outputs.xtask-bin }}",
+        "publisher does not scope the prepared checker to Formula verification")
+  verify_xtask_environment_steps = verify_steps.select do |step|
+    step.fetch("env", {}).key?("WASM_POSIX_XTASK_BIN")
+  end
+  check(verify_xtask_environment_steps == [verify_formula_step],
+        "publisher exposes the prepared verifier checker outside Formula execution")
+  all_xtask_environment_steps = jobs.values.flat_map do |job|
+    job.fetch("steps", [])
+  end.select do |step|
+    step.fetch("env", {}).key?("WASM_POSIX_XTASK_BIN")
+  end
+  check(all_xtask_environment_steps == [build_formula_step, verify_formula_step],
+        "publisher checker authority is not scoped to the two Formula execution steps")
   check(build_run.include?("unprivileged bottle build received $secret_name") &&
         build_run.include?("scripts/homebrew-bottle-build.sh") &&
         build_run.include?('readlink -f "$HOMEBREW_BREW_FILE"') &&
@@ -2165,6 +2193,29 @@ def check_publisher(workflow)
     check(bottle_verifier.include?(fragment),
           "reviewed bottle verifier protected sysroot contract lacks #{fragment}")
   end
+  verifier_checker_derivation_index = bottle_verifier.index(
+    'XTASK_BIN="$KANDELO_ROOT/target/$HOST_TARGET/release/xtask"'
+  )
+  verifier_checker_match_index = bottle_verifier.index(
+    '[ "${WASM_POSIX_XTASK_BIN:-}" != "$XTASK_BIN" ]',
+    verifier_checker_derivation_index || 0
+  )
+  verifier_checker_export_index = bottle_verifier.index(
+    "export WASM_POSIX_XTASK_BIN", verifier_checker_match_index || 0
+  )
+  verifier_checker_isolate_index = bottle_verifier.index(
+    'homebrew_patched_launcher_isolate "$BUILD_USER"',
+    verifier_checker_export_index || 0
+  )
+  check(verifier_checker_derivation_index && verifier_checker_match_index &&
+        verifier_checker_export_index && verifier_checker_isolate_index &&
+        verifier_checker_derivation_index < verifier_checker_match_index &&
+        verifier_checker_match_index < verifier_checker_export_index &&
+        verifier_checker_export_index < verifier_checker_isolate_index &&
+        bottle_verifier.include?(
+          "scoped program-index checker differs from the exact host xtask"
+        ),
+        "reviewed bottle verifier does not bind the scoped checker to its host target")
   [
     'PROVENANCE_TAP_ROOT="$(jq -er --arg tap "$TAP_NAME"',
     'select(.tap_name == $tap)',
@@ -2775,6 +2826,21 @@ def check_publisher(workflow)
     'target Formula can modify the selected primary tap',
     'HOMEBREW_KANDELO_SYSROOT:-}',
     'WASM_POSIX_SYSROOT:-}',
+    'xtask_bin="${WASM_POSIX_XTASK_BIN:-}"',
+    'Kandelo root must be one exact canonical checkout',
+    'prepared program-index checker must be one exact regular executable',
+    'prepared program-index checker is outside the exact Kandelo root',
+    'program-index checker is not the prepared release xtask',
+    'prepared program-index checker has unsafe Formula access',
+    'homebrew_assert_tree_not_replaceable_by_user "$build_user" "$xtask_bin"',
+    "xtask_state=\"$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' \"$xtask_bin\")\"",
+    'xtask_sha256="$(/usr/bin/sha256sum "$xtask_bin")"',
+    'expected_xtask=%q',
+    'expected_xtask_state=%q',
+    'expected_xtask_sha256=%q',
+    'protected program-index checker changed or is inaccessible',
+    'prepared program-index checker changed after isolation',
+    'WASM_POSIX_XTASK_BIN=$xtask_alias',
     "--property=KillMode=control-group", "--property=SendSIGKILL=yes",
     "--property=NoNewPrivileges=yes", "--expand-environment=no",
     '"--property=BindReadOnlyPaths=$kandelo_root:$source_alias_dir/kandelo"',
@@ -2886,7 +2952,8 @@ def check_publisher(workflow)
     'native Formula bridge rollback failed; preserving launcher state for retry',
     'Formula process teardown failed; preserving launcher state for retry',
     'return "$teardown_status"',
-    'for protected_bin in chmod chown cmp cp id install ln ls mktemp readlink rm stat test; do',
+    'for protected_bin in chmod chown cmp cp id install ln ls mktemp readlink rm \\',
+    'sha256sum stat test; do',
     '"$sudo_bin" /usr/bin/install -d -o root -g "$build_group" -m 1775',
     '"$(/usr/bin/stat -c \'%u:%g:%a\' "$target_state_root")" = "0:$build_gid:1775"',
     'target_opt_target="../Cellar/$formula/$native_version"',
@@ -3051,9 +3118,14 @@ def check_publisher(workflow)
   target_environment = launcher[/\n  preserved_variables=\((.*?)\n  \)/m, 1]
   check(target_environment&.include?("HOMEBREW_KANDELO_GNU_TAR"),
         "isolated target Homebrew drops the validated GNU tar path")
+  check(target_environment &&
+        !target_environment.include?("WASM_POSIX_XTASK_BIN"),
+        "isolated target Homebrew preserves a caller-selected checker path")
   native_environment = launcher[/native_preserved_variables=\((.*?)\n  \)/m, 1]
   check(native_environment &&
-        !native_environment.match?(/KANDELO|HOMEBREW_CACHE|HOMEBREW_TEMP|XDG_CONFIG_HOME|LLVM|GNU_TAR/),
+        !native_environment.match?(
+          /KANDELO|HOMEBREW_CACHE|HOMEBREW_TEMP|XDG_CONFIG_HOME|LLVM|GNU_TAR|XTASK/
+        ),
         "isolated native Homebrew inherits target-only state or Kandelo controls")
   gnu_tar_executable_index = launcher.index(
     '"$HOMEBREW_KANDELO_GNU_TAR" "Nix GNU tar" || return'
@@ -3068,6 +3140,21 @@ def check_publisher(workflow)
   launcher_test = File.read(
     File.join(REPO_ROOT, "scripts/test-homebrew-patched-launcher.sh")
   )
+  [
+    "a missing program-index checker",
+    "a symlinked program-index checker",
+    "a program-index checker outside Kandelo",
+    "a non-release program-index checker",
+    "an inaccessible program-index checker",
+    "a build-user-writable program-index checker",
+    "a build-user-replaceable program-index checker",
+    "isolated launcher accepted changed program-index checker bytes",
+    "WASM_POSIX_XTASK_BIN=caller-poison",
+    "build-deps program-index-context-check",
+  ].each do |fragment|
+    check(launcher_test.include?(fragment),
+          "launcher checker regression lacks #{fragment}")
+  end
   check(launcher_test.include?("assert-protected-gnu-tar") &&
         launcher_test.include?('[ ! -w "$2" ] && [ ! -w "${2%/*}" ]'),
         "launcher regression does not exercise GNU tar as the dedicated Formula identity")
@@ -3101,22 +3188,70 @@ def check_publisher(workflow)
     check(launcher.include?(fragment),
           "native bridge cleanup retry contract lacks #{fragment}")
   end
+  checker_derivation_index = bottle_builder.index(
+    'XTASK_BIN="$KANDELO_ROOT/target/$HOST_TARGET/release/xtask"'
+  )
+  checker_match_index = bottle_builder.index(
+    '[ "${WASM_POSIX_XTASK_BIN:-}" != "$XTASK_BIN" ]',
+    checker_derivation_index || 0
+  )
+  checker_export_index = bottle_builder.index(
+    "export WASM_POSIX_XTASK_BIN", checker_match_index || 0
+  )
+  checker_isolate_index = bottle_builder.index(
+    'homebrew_patched_launcher_isolate "$BUILD_USER"',
+    checker_export_index || 0
+  )
+  check(checker_derivation_index && checker_match_index &&
+        checker_export_index && checker_isolate_index &&
+        checker_derivation_index < checker_match_index &&
+        checker_match_index < checker_export_index &&
+        checker_export_index < checker_isolate_index &&
+        bottle_builder.include?(
+          "scoped program-index checker differs from the exact host xtask"
+        ),
+        "reviewed bottle builder does not bind the scoped checker to its host target")
+  publisher_test = File.read(
+    File.join(REPO_ROOT, "scripts/test-homebrew-publish-workflow.sh")
+  )
+  check(publisher_test.include?(
+          "another safe target-triple checker"
+        ) && publisher_test.include?(
+          "mismatched checker authority"
+        ) && publisher_test.include?(
+          "isolated bottle verifier accepted another safe target-triple checker"
+        ) && publisher_test.include?(
+          "isolated bottle verifier did not explain the mismatched checker authority"
+        ),
+        "publisher regressions do not reject a second safe checker identity")
   teardown_index = bottle_builder.index('homebrew_patched_launcher_teardown "$BUILD_USER"')
   artifact_index = bottle_builder.index("mapfile -t bottle_jsons")
   check(teardown_index && artifact_index && teardown_index < artifact_index,
         "reviewed bottle builder reads artifacts before Formula process teardown")
   runtime_step = named_step(build_steps, "Materialize Formula test platform runtime")
-  check(runtime_step.keys.sort == %w[name run shell] && runtime_step["shell"] == "bash",
+  check(runtime_step.keys.sort == %w[id name run shell] &&
+        runtime_step["id"] == "formula-runtime" &&
+        runtime_step["shell"] == "bash",
         "publisher Formula test runtime mapping changed")
   runtime_run = runtime_step.fetch("run")
   [
     "bash scripts/dev-shell.sh bash -c", 'host="$(rustc -vV | sed -n "s/^host: //p")"',
-    "for package in dash coreutils grep sed rootfs", 'cargo run --release -p xtask --target "$host" --quiet --',
+    'cargo build --release -p xtask --target "$host" --quiet',
+    'xtask="$PWD/target/$host/release/xtask"',
+    '[ -f "$xtask" ] && [ ! -L "$xtask" ] && [ -x "$xtask" ]',
+    '[ "$(realpath -- "$xtask")" = "$xtask" ]',
+    'printf "xtask-bin=%s\\n" "$xtask" >>"$GITHUB_OUTPUT"',
+    "for package in dash coreutils grep sed rootfs", '"$xtask"',
     "build-deps --arch wasm32", '--binaries-dir "$PWD/binaries"', '--fetch-only resolve "$package"',
     'bash scripts/materialize-resolver-binaries.sh "$PWD/binaries"',
   ].each do |fragment|
     check(runtime_run.include?(fragment), "publisher Formula test runtime lacks #{fragment}")
   end
+  check(!runtime_run.include?("cargo run") && !runtime_run.include?("GITHUB_ENV"),
+        "publisher Formula test checker is rebuilt or leaked job-wide")
+  dev_shell = File.read(File.join(REPO_ROOT, "scripts/dev-shell.sh"))
+  check(dev_shell.include?("--keep WASM_POSIX_XTASK_BIN \\"),
+        "dev shell drops the explicitly scoped Formula checker")
   materializer = File.read(File.join(REPO_ROOT, "scripts/materialize-resolver-binaries.sh"))
   [
     'cp -aLx -- "$source_dir" "$staged"',
@@ -3849,14 +3984,20 @@ def check_publisher(workflow)
         "publisher file-formula verification bypasses the supported browser package selection")
   verifier_runtime_step = named_step(verify_steps,
                                      "Materialize Formula verification platform runtime")
-  check(verifier_runtime_step.keys.sort == %w[name run shell] &&
+  check(verifier_runtime_step.keys.sort == %w[id name run shell] &&
+        verifier_runtime_step["id"] == "formula-verification-runtime" &&
         verifier_runtime_step["shell"] == "bash",
         "publisher Formula verification runtime mapping changed")
   verifier_runtime_run = verifier_runtime_step.fetch("run")
   [
     "bash scripts/dev-shell.sh bash -c", 'host="$(rustc -vV | sed -n "s/^host: //p")"',
+    'cargo build --release -p xtask --target "$host" --quiet',
+    'xtask="$PWD/target/$host/release/xtask"',
+    '[ -f "$xtask" ] && [ ! -L "$xtask" ] && [ -x "$xtask" ]',
+    '[ "$(realpath -- "$xtask")" = "$xtask" ]',
+    'printf "xtask-bin=%s\\n" "$xtask" >>"$GITHUB_OUTPUT"',
     "for package in dash coreutils grep sed rootfs",
-    'cargo run --release -p xtask --target "$host" --quiet --',
+    '"$xtask"',
     "build-deps --arch wasm32", '--binaries-dir "$PWD/binaries"',
     '--fetch-only resolve "$package"',
     'bash scripts/materialize-resolver-binaries.sh "$PWD/binaries"',
@@ -3864,6 +4005,9 @@ def check_publisher(workflow)
     check(verifier_runtime_run.include?(fragment),
           "publisher Formula verification runtime lacks #{fragment}")
   end
+  check(!verifier_runtime_run.include?("cargo run") &&
+        !verifier_runtime_run.include?("GITHUB_ENV"),
+        "publisher Formula verification checker is rebuilt or leaked job-wide")
   sidecar_run = named_step(verify_steps,
                            "Generate sidecars from the selected bottle").fetch("run")
   check(sidecar_run.include?('KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$RUNTIME_BOTTLE"') &&
@@ -5349,6 +5493,57 @@ def self_test(publisher, maintenance, repository_canary)
       step = mutate_named_step(w, "build-and-test",
                                "Materialize Formula test platform runtime")
       step["run"] = step.fetch("run").sub("--fetch-only resolve", "resolve")
+    },
+    "Formula test checker build bypass" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test",
+                               "Materialize Formula test platform runtime")
+      step["run"] = step.fetch("run").sub(
+        'cargo build --release -p xtask --target "$host" --quiet', "true"
+      )
+    },
+    "Formula test checker validation bypass" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test",
+                               "Materialize Formula test platform runtime")
+      step["run"] = step.fetch("run").sub('[ ! -L "$xtask" ]', "true")
+    },
+    "Formula test checker leaks job-wide" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test",
+                               "Materialize Formula test platform runtime")
+      step["run"] = step.fetch("run").sub("GITHUB_OUTPUT", "GITHUB_ENV")
+    },
+    "Formula test checker output substitution" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test",
+        "Build and test Homebrew bottle without publisher credentials"
+      )
+      step.fetch("env")["WASM_POSIX_XTASK_BIN"] = "/tmp/unreviewed-xtask"
+    },
+    "Formula verification checker build bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Materialize Formula verification platform runtime"
+      )
+      step["run"] = step.fetch("run").sub(
+        'cargo build --release -p xtask --target "$host" --quiet', "true"
+      )
+    },
+    "Formula verification checker validation bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Materialize Formula verification platform runtime"
+      )
+      step["run"] = step.fetch("run").sub('[ ! -L "$xtask" ]', "true")
+    },
+    "Formula verification checker leaks job-wide" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Materialize Formula verification platform runtime"
+      )
+      step["run"] = step.fetch("run").sub("GITHUB_OUTPUT", "GITHUB_ENV")
+    },
+    "Formula verification checker output substitution" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle",
+        "Force-pour and test the exact selected bottle without credentials"
+      )
+      step.fetch("env")["WASM_POSIX_XTASK_BIN"] = "/tmp/unreviewed-xtask"
     },
     "Formula test runtime cache-link materialization bypass" => lambda { |w|
       step = mutate_named_step(w, "build-and-test",

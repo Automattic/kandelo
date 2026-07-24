@@ -3070,6 +3070,9 @@ assert_bottle_build_trusts_selected_tap() {
   local log="$TMPDIR/bottle-trust.log"
   local lifecycle_log="$TMPDIR/bottle-trust-lifecycle.log"
   local ci_err="$TMPDIR/bottle-trust-ci.err"
+  local checker_err="$TMPDIR/bottle-trust-checker.err"
+  local shared_temp="$TMPDIR/bottle-trust-shared-temp"
+  local different_checker
   local caller_config="$TMPDIR/caller-homebrew-config"
   local symlink_target="$TMPDIR/runner-write-target"
   local ci_tapped="$TMPDIR/bottle-trust-ci-tapped"
@@ -3082,7 +3085,7 @@ assert_bottle_build_trusts_selected_tap() {
 class Zlib < Formula
 end
 EOF
-  mkdir -p "$brew_repo" "$brew_prefix" "$caller_config"
+  mkdir -p "$brew_repo" "$brew_prefix" "$caller_config" "$shared_temp"
   printf 'sentinel\n' >"$symlink_target"
 
   cat >"$fake_brew" <<'EOF'
@@ -3169,6 +3172,35 @@ EOF
     "$ci_err" >/dev/null ||
     fail "CI bottle build did not explain its isolated-identity requirement"
   : >"$log"
+
+  different_checker="$FORMULA_RUNNER_FIXTURE_ROOT/target/different-safe-host/release/xtask"
+  mkdir -p "${different_checker%/*}"
+  cp "$FORMULA_RUNNER_FIXTURE_ROOT/target/$(rustc -vV | sed -n 's/^host: //p')/release/xtask" \
+    "$different_checker"
+  if FAKE_BREW_LOG="$log" \
+    FAKE_REALM_LIFECYCLE_LOG="$lifecycle_log" \
+    FAKE_BREW_PREFIX="$brew_prefix" \
+    FAKE_BREW_REPOSITORY="$brew_repo" \
+    FAKE_TAP_ROOT="$ci_tapped" \
+    FAKE_SYMLINK_TARGET="$symlink_target" \
+    HOMEBREW_BREW_FILE="$fake_brew" \
+    KANDELO_HOMEBREW_BUILD_USER=fixture-build-user \
+    KANDELO_HOMEBREW_SHARED_TEMP="$shared_temp" \
+    WASM_POSIX_XTASK_BIN="$different_checker" \
+    GITHUB_ACTIONS=true \
+    bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-bottle-build.sh" \
+      --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello \
+      --arch wasm32 \
+      --out "$out" \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      >/dev/null 2>"$checker_err"; then
+    fail "isolated bottle build accepted another safe target-triple checker"
+  fi
+  grep -F "scoped program-index checker differs from the exact host xtask" \
+    "$checker_err" >/dev/null ||
+    fail "isolated bottle build did not explain the mismatched checker authority"
 
   prepare_formula_runner_tapped_clone \
     "$tap" "$tapped" "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"
@@ -4168,6 +4200,8 @@ assert_bottle_verifier_installs_test_dependencies() {
   local shared_temp="$root/shared-temp"
   local renamed_err="$root/renamed-bottle.err"
   local nested_target_err="$root/nested-target.err"
+  local checker_err="$root/checker.err"
+  local exact_checker different_checker
   local bottle_sha bottle_bytes tap_commit native_prefix real_python3 real_rm host_git_bin
   local KANDELO_HOMEBREW_RESOLVED_TAPS_FILE
 
@@ -4469,6 +4503,7 @@ EOF
 
   run_bottle_verifier_fixture() {
     local evidence_out="$1"
+    local checker="${2:-$exact_checker}"
     PATH="$fake_bin:$PATH" \
       REAL_PYTHON3="$real_python3" \
       REAL_RM="$real_rm" \
@@ -4496,6 +4531,7 @@ EOF
       KANDELO_HOMEBREW_BUILD_USER=fixture-build-user \
       KANDELO_HOMEBREW_SHARED_TEMP="$shared_temp" \
       KANDELO_HOMEBREW_SUDO_BIN="$fake_bin/sudo" \
+      WASM_POSIX_XTASK_BIN="$checker" \
       HOMEBREW_KANDELO_BOTTLE_TAG=caller-poison \
       KANDELO_HOMEBREW_BOTTLE_TAG=caller-poison \
       HOMEBREW_RELOCATE_BUILD_PREFIX=caller-poison \
@@ -4520,6 +4556,18 @@ EOF
         --sysroot-build-root "$sysroot_build_root" \
         --out "$evidence_out"
   }
+
+  exact_checker="$FORMULA_RUNNER_FIXTURE_ROOT/target/$(rustc -vV | sed -n 's/^host: //p')/release/xtask"
+  different_checker="$FORMULA_RUNNER_FIXTURE_ROOT/target/verifier-different-safe-host/release/xtask"
+  mkdir -p "${different_checker%/*}"
+  cp "$exact_checker" "$different_checker"
+  if run_bottle_verifier_fixture "$root/checker-runtime-evidence.json" \
+      "$different_checker" >/dev/null 2>"$checker_err"; then
+    fail "isolated bottle verifier accepted another safe target-triple checker"
+  fi
+  grep -F "scoped program-index checker differs from the exact host xtask" \
+    "$checker_err" >/dev/null ||
+    fail "isolated bottle verifier did not explain the mismatched checker authority"
 
   rm "$target_opt_prefix"
   ln -s ../Cellar/hello/nested/Cellar/hello/1.0 "$target_opt_prefix"

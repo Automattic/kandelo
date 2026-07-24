@@ -291,6 +291,16 @@ if [ -z "$HOST_TARGET" ] || [ ! -f "$XTASK_BIN" ] || [ -L "$XTASK_BIN" ] ||
   echo "homebrew-bottle-build.sh: exact prebuilt release xtask is unavailable" >&2
   exit 2
 fi
+# WHY: the workflow-scoped variable crosses the dev-shell boundary, while
+# HOST_TARGET is derived independently inside it. Requiring both authorities
+# to name the same binary prevents another safe-looking target directory from
+# selecting the package-policy checker used by isolated Formula tests.
+if [ -n "$BUILD_USER" ] && [ "${WASM_POSIX_XTASK_BIN:-}" != "$XTASK_BIN" ]; then
+  echo "homebrew-bottle-build.sh: scoped program-index checker differs from the exact host xtask" >&2
+  exit 2
+fi
+WASM_POSIX_XTASK_BIN="$XTASK_BIN"
+export WASM_POSIX_XTASK_BIN
 ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
   "$TAP_ROOT" "$TAP_NAME" "$FORMULA" --tier2-bridge-json \
   >"$TIER2_BRIDGE_PLAN"

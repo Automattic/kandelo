@@ -404,15 +404,27 @@ case "${1:-}" in
     printf 'mutation\n' >>"${XDG_CONFIG_HOME:?}/homebrew/trust.json"
     ;;
   assert-source-aliases)
-    [ "$#" -eq 9 ]
+    [ "$#" -eq 11 ]
     [ "${HOMEBREW_KANDELO_ROOT:-}" = "$2" ]
     [ "${KANDELO_HOMEBREW_KANDELO_ROOT:-}" = "$2" ]
     [ "${HOMEBREW_KANDELO_SYSROOT:-}" = "$4" ]
     [ "${WASM_POSIX_SYSROOT:-}" = "$4" ]
+    [ "${WASM_POSIX_XTASK_BIN:-}" = "$5" ]
+    [ -f "$5" ] && [ ! -L "$5" ] && [ -r "$5" ] && [ -x "$5" ] && [ ! -w "$5" ]
+    [ "$(/usr/bin/realpath -- "$5")" = "$5" ]
+    actual_xtask_sha256="$(/usr/bin/sha256sum "$5")"
+    actual_xtask_sha256="${actual_xtask_sha256%% *}"
+    [ "$actual_xtask_sha256" = "$6" ]
+    [ "$("$5" build-deps program-index-context-check)" = "checked source projection" ]
     [ -r "$2/source-marker" ]
     [ -r "$3/tap-marker" ]
     [ "$(cat "$4/lib/libc.a")" = "reviewed sysroot" ]
-    for hidden_root in "$5" "$6" "$7" "$8" "$9"; do
+    if printf 'changed\n' >>"$5" 2>/dev/null; then exit 1; fi
+    if chmod u+w "$5" 2>/dev/null; then exit 1; fi
+    if rm -f "$5" 2>/dev/null; then exit 1; fi
+    if mv "$5" "$5-replaced" 2>/dev/null; then exit 1; fi
+    if ln -snf /tmp/changed "$5" 2>/dev/null; then exit 1; fi
+    for hidden_root in "$7" "$8" "$9" "${10}" "${11}"; do
       if [ -r "$hidden_root" ] || [ -w "$hidden_root" ] || [ -x "$hidden_root" ]; then
         exit 1
       fi
@@ -1192,6 +1204,8 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   isolated_sysroot_private_parent="$ISOLATION_ROOT/private-sysroot-owner"
   isolated_sysroot_owner="$isolated_sysroot_private_parent/sysroot-build"
   isolated_sysroot="$isolated_sysroot_owner/sysroot"
+  isolated_xtask_dir="$isolated_kandelo/target/x86_64-unknown-linux-gnu/release"
+  isolated_xtask="$isolated_xtask_dir/xtask"
   isolated_dependency_plan="$isolated_output/host-dependencies.json"
   isolated_tier2_attestation="$isolated_output/tier2-attestation.json"
   isolated_home="/home/$ISOLATION_BUILD_USER"
@@ -1205,7 +1219,8 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
     "$isolated_cache" "$isolated_temp" "$isolated_kandelo" "$isolated_tap" \
     "$isolated_dependency_tap" "$isolated_output" "$isolated_native_base" \
     "$external_cellar" "$external_opt" \
-    "$isolated_private_bottle_dir" "$isolated_shared_temp" "$isolated_sysroot/lib"
+    "$isolated_private_bottle_dir" "$isolated_shared_temp" "$isolated_sysroot/lib" \
+    "$isolated_xtask_dir"
   chmod 0711 "$isolated_native_base"
   chmod 0700 "$isolated_private_bottle_dir"
   chmod 0700 "$isolated_sysroot_private_parent"
@@ -1219,6 +1234,13 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   printf 'reviewed tap\n' >"$isolated_tap/tap-marker"
   printf 'reviewed dependency tap\n' >"$isolated_dependency_tap/tap-marker"
   printf 'reviewed sysroot\n' >"$isolated_sysroot/lib/libc.a"
+  cat >"$isolated_xtask" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$*" = "build-deps program-index-context-check" ]
+printf 'checked source projection\n'
+EOF
+  chmod 0755 "$isolated_xtask"
   printf 'target work\n' >"$isolated_work/target-work-marker"
   printf 'external target untouched\n' >"$external_cellar/sentinel"
   printf 'external target untouched\n' >"$external_opt/sentinel"
@@ -1318,6 +1340,7 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   done
   printf 'native boundary marker\n' >"$isolated_native_prefix/boundary-marker"
   export KANDELO_HOMEBREW_ARCH=wasm64
+  export WASM_POSIX_XTASK_BIN="$isolated_xtask"
   if homebrew_patched_launcher_isolate \
       "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap" \
       "$isolated_output" "$isolated_sysroot_owner" >/dev/null 2>&1; then
@@ -1330,6 +1353,78 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
     fail "Formula isolation accepted an invalid target architecture"
   fi
   export KANDELO_HOMEBREW_ARCH=wasm32
+
+  assert_xtask_rejected() {
+    local candidate="$1" expected_error="$2" label="$3"
+    local error_file="$ISOLATION_ROOT/rejected-xtask.err"
+    local saved_xtask="$WASM_POSIX_XTASK_BIN"
+    if [ -n "$candidate" ]; then
+      export WASM_POSIX_XTASK_BIN="$candidate"
+    else
+      unset WASM_POSIX_XTASK_BIN
+    fi
+    if homebrew_patched_launcher_isolate \
+        "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap" \
+        "$isolated_output" "$isolated_sysroot_owner" > /dev/null 2>"$error_file"; then
+      fail "Formula isolation accepted $label"
+    fi
+    grep -F "$expected_error" "$error_file" >/dev/null ||
+      fail "Formula isolation did not explain rejected $label"
+    export WASM_POSIX_XTASK_BIN="$saved_xtask"
+  }
+
+  assert_xtask_rejected "" \
+    "prepared program-index checker must be one exact regular executable" \
+    "a missing program-index checker"
+
+  isolated_xtask_link="$isolated_xtask_dir/xtask-link"
+  ln -s xtask "$isolated_xtask_link"
+  assert_xtask_rejected "$isolated_xtask_link" \
+    "prepared program-index checker must be one exact regular executable" \
+    "a symlinked program-index checker"
+  rm "$isolated_xtask_link"
+
+  outside_xtask="$isolated_output/xtask"
+  cp "$isolated_xtask" "$outside_xtask"
+  assert_xtask_rejected "$outside_xtask" \
+    "prepared program-index checker is outside the exact Kandelo root" \
+    "a program-index checker outside Kandelo"
+  rm "$outside_xtask"
+
+  misplaced_xtask="$isolated_kandelo/xtask"
+  cp "$isolated_xtask" "$misplaced_xtask"
+  assert_xtask_rejected "$misplaced_xtask" \
+    "program-index checker is not the prepared release xtask" \
+    "a non-release program-index checker"
+  rm "$misplaced_xtask"
+
+  inaccessible_xtask="$isolated_kandelo/target/inaccessible/release/xtask"
+  mkdir -p "${inaccessible_xtask%/*}"
+  cp "$isolated_xtask" "$inaccessible_xtask"
+  chmod 0700 "$inaccessible_xtask"
+  assert_xtask_rejected "$inaccessible_xtask" \
+    "prepared program-index checker has unsafe Formula access" \
+    "an inaccessible program-index checker"
+  rm -rf "$isolated_kandelo/target/inaccessible"
+
+  writable_xtask="$isolated_kandelo/target/writable/release/xtask"
+  mkdir -p "${writable_xtask%/*}"
+  cp "$isolated_xtask" "$writable_xtask"
+  chmod 0777 "$writable_xtask"
+  assert_xtask_rejected "$writable_xtask" \
+    "prepared program-index checker has unsafe Formula access" \
+    "a build-user-writable program-index checker"
+  rm -rf "$isolated_kandelo/target/writable"
+
+  replaceable_xtask="$isolated_kandelo/target/replaceable/release/xtask"
+  mkdir -p "${replaceable_xtask%/*}"
+  cp "$isolated_xtask" "$replaceable_xtask"
+  /usr/bin/sudo -n -- chown "$ISOLATION_BUILD_USER" "${replaceable_xtask%/*}"
+  assert_xtask_rejected "$replaceable_xtask" \
+    "build user can replace protected source" \
+    "a build-user-replaceable program-index checker"
+  /usr/bin/sudo -n -- chown "$(id -u):$(id -g)" "${replaceable_xtask%/*}"
+  rm -rf "$isolated_kandelo/target/replaceable"
 
   assert_primary_tap_rejected() {
     local candidate="$1" expected_error="$2" label="$3"
@@ -1477,10 +1572,15 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   if "$HOMEBREW_PATCHED_BREW_BIN" trust >/dev/null 2>&1; then
     fail "explicit trust mutation succeeded against the sealed store"
   fi
+  isolated_xtask_sha256="$(/usr/bin/sha256sum "$isolated_xtask")"
+  isolated_xtask_sha256="${isolated_xtask_sha256%% *}"
+  WASM_POSIX_XTASK_BIN=caller-poison \
   "$HOMEBREW_PATCHED_BREW_BIN" assert-source-aliases \
     "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/kandelo" \
     "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/tap" \
     "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/sysroot" \
+    "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/kandelo/target/x86_64-unknown-linux-gnu/release/xtask" \
+    "$isolated_xtask_sha256" \
     "$isolated_kandelo" "$isolated_tap" "$isolated_output" "$isolated_sysroot_owner" \
     "$isolated_dependency_tap"
   HOMEBREW_KANDELO_PRIMARY_TAP_ROOT=caller-poison \
@@ -1609,6 +1709,18 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
     fail "target execution changed the native Formula proxy opt link"
   [ -z "$($HOMEBREW_PATCHED_BREW_BIN list --formula cmake)" ] ||
     fail "isolated target Homebrew rejected the native Formula proxy keg"
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-no-new-privileges
+  cp "$isolated_xtask" "$isolated_xtask.backup"
+  printf 'stale replacement\n' >>"$isolated_xtask"
+  if "$HOMEBREW_PATCHED_BREW_BIN" assert-no-new-privileges \
+      >/dev/null 2>"$ISOLATION_ROOT/stale-xtask.err"; then
+    fail "isolated launcher accepted changed program-index checker bytes"
+  fi
+  grep -F "prepared program-index checker changed after isolation" \
+    "$ISOLATION_ROOT/stale-xtask.err" >/dev/null ||
+    fail "isolated launcher did not explain stale program-index checker bytes"
+  cp "$isolated_xtask.backup" "$isolated_xtask"
+  rm "$isolated_xtask.backup"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-no-new-privileges
   "$HOMEBREW_PATCHED_BREW_BIN" spawn-daemon "$daemon_marker" "$daemon_started"
   [ -e "$daemon_started" ] || fail "detached Formula process never started"

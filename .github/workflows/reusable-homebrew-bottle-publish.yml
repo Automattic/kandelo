@@ -859,6 +859,7 @@ jobs:
           bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh
 
       - name: Materialize Formula test platform runtime
+        id: formula-runtime
         shell: bash
         run: |
           set -euo pipefail
@@ -870,8 +871,19 @@ jobs:
               echo "unable to resolve the Rust host target" >&2
               exit 2
             }
+            cargo build --release -p xtask --target "$host" --quiet
+            xtask="$PWD/target/$host/release/xtask"
+            # Formula tests need the source-projection checker, not Cargo or
+            # Nix authority. Publish this exact reviewed binary to the
+            # launcher; it will expose only a read-only source-alias path.
+            [ -f "$xtask" ] && [ ! -L "$xtask" ] && [ -x "$xtask" ] &&
+              [ "$(realpath -- "$xtask")" = "$xtask" ] || {
+              echo "prepared Formula test xtask is not an exact executable" >&2
+              exit 2
+            }
+            printf "xtask-bin=%s\n" "$xtask" >>"$GITHUB_OUTPUT"
             for package in dash coreutils grep sed rootfs; do
-              cargo run --release -p xtask --target "$host" --quiet -- \
+              "$xtask" \
                 build-deps --arch wasm32 \
                 --binaries-dir "$PWD/binaries" --fetch-only resolve "$package"
             done
@@ -1021,6 +1033,7 @@ jobs:
           KANDELO_HOMEBREW_BOTTLE_ROOT_URL: ${{ needs.plan.outputs.bottle-root-prefix }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
+          WASM_POSIX_XTASK_BIN: ${{ steps.formula-runtime.outputs.xtask-bin }}
         run: |
           set -euo pipefail
           for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
@@ -2345,6 +2358,7 @@ jobs:
           '
 
       - name: Materialize Formula verification platform runtime
+        id: formula-verification-runtime
         shell: bash
         run: |
           set -euo pipefail
@@ -2356,8 +2370,19 @@ jobs:
               echo "unable to resolve the Rust host target" >&2
               exit 2
             }
+            cargo build --release -p xtask --target "$host" --quiet
+            xtask="$PWD/target/$host/release/xtask"
+            # Formula tests need the source-projection checker, not Cargo or
+            # Nix authority. Publish this exact reviewed binary to the
+            # launcher; it will expose only a read-only source-alias path.
+            [ -f "$xtask" ] && [ ! -L "$xtask" ] && [ -x "$xtask" ] &&
+              [ "$(realpath -- "$xtask")" = "$xtask" ] || {
+              echo "prepared Formula verification xtask is not an exact executable" >&2
+              exit 2
+            }
+            printf "xtask-bin=%s\n" "$xtask" >>"$GITHUB_OUTPUT"
             for package in dash coreutils grep sed rootfs; do
-              cargo run --release -p xtask --target "$host" --quiet -- \
+              "$xtask" \
                 build-deps --arch wasm32 \
                 --binaries-dir "$PWD/binaries" --fetch-only resolve "$package"
             done
@@ -2612,6 +2637,7 @@ jobs:
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
+          WASM_POSIX_XTASK_BIN: ${{ steps.formula-verification-runtime.outputs.xtask-bin }}
         run: |
           set -euo pipefail
           for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \

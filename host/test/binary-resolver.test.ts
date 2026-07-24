@@ -420,6 +420,73 @@ describe("program package source freshness boundary", () => {
     ).toThrow("injected stale program projection");
   });
 
+  it("uses one prepared checker across every public resolver boundary without host tools", () => {
+    const relPath = fixtureRelPath(".dat");
+    const path = writeCandidate(
+      localBinariesDir(),
+      relPath,
+      new TextEncoder().encode("program data"),
+    );
+    const checkerRoot = mkdtempSync(
+      join(tmpdir(), "kandelo-resolver-prepared-checker-"),
+    );
+    cleanupDirs.add(checkerRoot);
+    const checkerPath = join(checkerRoot, "xtask");
+    const checkerLog = join(checkerRoot, "calls");
+    writeFileSync(
+      checkerPath,
+      `#!/bin/sh
+[ "$1" = build-deps ]
+[ "$2" = program-index-context-check ]
+[ "$WASM_POSIX_DEPS_REGISTRY" = "${fixtureRegistryRoot}" ]
+printf 'checked\\n' >>"${checkerLog}"
+`,
+    );
+    chmodSync(checkerPath, 0o755);
+    const savedXtask = process.env.WASM_POSIX_XTASK_BIN;
+    const hadSavedXtask = Object.prototype.hasOwnProperty.call(
+      process.env,
+      "WASM_POSIX_XTASK_BIN",
+    );
+    const savedPath = process.env.PATH;
+    const hadSavedPath = Object.prototype.hasOwnProperty.call(
+      process.env,
+      "PATH",
+    );
+    process.env.WASM_POSIX_XTASK_BIN = checkerPath;
+    // WHY: an empty PATH makes this the same least-authority environment as
+    // Formula tests: the explicit checker must work without finding Bash,
+    // Cargo, rustc, Nix, or scripts/dev-shell.sh.
+    process.env.PATH = "";
+    setProgramIndexContextCheckerForTests(null);
+    try {
+      expect(programOutputClosureRelPaths(relPath)).toBeNull();
+      expect(resolveBinary(relPath)).toBe(path);
+      expect(tryResolveBinary(relPath)).toBe(path);
+      expect(tryResolveBinaries([relPath])).toEqual([path]);
+      expect(tryResolveBinarySet([relPath])).toEqual([path]);
+      expect(readFileSync(checkerLog, "utf8").trim().split("\n")).toEqual([
+        "checked",
+        "checked",
+        "checked",
+        "checked",
+        "checked",
+      ]);
+    } finally {
+      if (hadSavedXtask) {
+        process.env.WASM_POSIX_XTASK_BIN = savedXtask ?? "";
+      } else {
+        delete process.env.WASM_POSIX_XTASK_BIN;
+      }
+      if (hadSavedPath) {
+        process.env.PATH = savedPath ?? "";
+      } else {
+        delete process.env.PATH;
+      }
+      setProgramIndexContextCheckerForTests(() => {});
+    }
+  });
+
   it("executes the production checker command and fails closed on its error", () => {
     const checkerRoot = mkdtempSync(
       join(tmpdir(), "kandelo-resolver-checker-command-"),

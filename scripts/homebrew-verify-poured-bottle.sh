@@ -198,6 +198,25 @@ PUBLISHER_ISOLATION_PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0002-support-isol
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-patched-launcher.sh"
 homebrew_patched_launcher_select_host_git
+if [ -n "$BUILD_USER" ]; then
+  HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+  XTASK_BIN="$KANDELO_ROOT/target/$HOST_TARGET/release/xtask"
+  if [ -z "$HOST_TARGET" ] || [ ! -f "$XTASK_BIN" ] || [ -L "$XTASK_BIN" ] ||
+     [ ! -x "$XTASK_BIN" ]; then
+    echo "homebrew-verify-poured-bottle.sh: exact prebuilt release xtask is unavailable" >&2
+    exit 2
+  fi
+  # WHY: the workflow-scoped path and the independently derived Rust host
+  # target must agree before the checker enters the Formula identity's
+  # read-only source alias. A second valid-looking release binary must not be
+  # able to choose which package projection the isolated test validates.
+  if [ "${WASM_POSIX_XTASK_BIN:-}" != "$XTASK_BIN" ]; then
+    echo "homebrew-verify-poured-bottle.sh: scoped program-index checker differs from the exact host xtask" >&2
+    exit 2
+  fi
+  WASM_POSIX_XTASK_BIN="$XTASK_BIN"
+  export WASM_POSIX_XTASK_BIN
+fi
 
 OUT_PARENT="$(dirname "$OUT")"
 mkdir -p "$OUT_PARENT"

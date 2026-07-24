@@ -1650,7 +1650,10 @@ homebrew_patched_launcher_isolate() {
   local build_uid systemd_slice unit_prefix source_alias_dir
   local config_root config_file unsafe_config_entry trust_file trust_lock
   local primary_tap_root primary_tap_owner_root taps_root
+  local xtask_bin xtask_relative xtask_alias xtask_mode xtask_links
+  local xtask_uid xtask_state xtask_sha256
   local -a preserved_variables native_preserved_variables mutable_roots
+  local -a xtask_path_parts
   local -a additional_protected_roots=("$@")
 
   if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
@@ -1735,7 +1738,8 @@ homebrew_patched_launcher_isolate() {
     "$build_user" /usr/bin/realpath /usr/bin/realpath realpath
   homebrew_assert_protected_host_executable \
     "$build_user" /usr/bin/bash /usr/bin/bash bash
-  for protected_bin in chmod chown cmp cp id install ln ls mktemp readlink rm stat test; do
+  for protected_bin in chmod chown cmp cp id install ln ls mktemp readlink rm \
+    sha256sum stat test; do
     homebrew_assert_protected_host_executable \
       "$build_user" "/usr/bin/$protected_bin" "/usr/bin/$protected_bin" "$protected_bin"
   done
@@ -1851,6 +1855,58 @@ homebrew_patched_launcher_isolate() {
         ;;
     esac
   done
+  [ "$(cd "$kandelo_root" && pwd -P)" = "$kandelo_root" ] || {
+    echo "homebrew-patched-launcher: Kandelo root must be one exact canonical checkout" >&2
+    return 2
+  }
+
+  # WHY: WASM_POSIX_XTASK_BIN is caller-controlled until this boundary. Only
+  # Cargo's exact release output below the reviewed checkout may become the
+  # source-projection authority; accepting a cache, symlink, or adjacent tool
+  # would let Formula evaluation select different package policy code.
+  xtask_bin="${WASM_POSIX_XTASK_BIN:-}"
+  if [ -z "$xtask_bin" ] || [ "${xtask_bin#/}" = "$xtask_bin" ] || \
+     [ ! -f "$xtask_bin" ] || [ -L "$xtask_bin" ] || [ ! -x "$xtask_bin" ] || \
+     [ "$(/usr/bin/realpath -- "$xtask_bin" 2>/dev/null || true)" != "$xtask_bin" ]; then
+    echo "homebrew-patched-launcher: prepared program-index checker must be one exact regular executable" >&2
+    return 2
+  fi
+  case "$xtask_bin" in
+    "$kandelo_root"/*) xtask_relative="${xtask_bin#"$kandelo_root"/}" ;;
+    *)
+      echo "homebrew-patched-launcher: prepared program-index checker is outside the exact Kandelo root" >&2
+      return 2
+      ;;
+  esac
+  IFS=/ read -r -a xtask_path_parts <<<"$xtask_relative"
+  if [ "${#xtask_path_parts[@]}" -ne 4 ] || \
+     [ "${xtask_path_parts[0]}" != "target" ] || \
+     ! [[ "${xtask_path_parts[1]}" =~ ^[A-Za-z0-9_.+-]+$ ]] || \
+     [ "${xtask_path_parts[2]}" != "release" ] || \
+     [ "${xtask_path_parts[3]}" != "xtask" ]; then
+    echo "homebrew-patched-launcher: program-index checker is not the prepared release xtask" >&2
+    return 2
+  fi
+  xtask_mode="$(/usr/bin/stat -c '%a' "$xtask_bin" 2>/dev/null || true)"
+  xtask_links="$(/usr/bin/stat -c '%h' "$xtask_bin" 2>/dev/null || true)"
+  xtask_uid="$(/usr/bin/stat -c '%u' "$xtask_bin" 2>/dev/null || true)"
+  if ! [[ "$xtask_mode" =~ ^[0-7]{3,4}$ ]] || \
+     [ $((8#$xtask_mode & 06022)) -ne 0 ] || [ "$xtask_links" != "1" ] || \
+     [ "$xtask_uid" = "$build_uid" ] || \
+     ! "$sudo_bin" -H -u "$build_user" -- \
+       /usr/bin/test -r "$xtask_bin" -a -x "$xtask_bin" || \
+     "$sudo_bin" -H -u "$build_user" -- /usr/bin/test -w "$xtask_bin"; then
+    echo "homebrew-patched-launcher: prepared program-index checker has unsafe Formula access" >&2
+    return 2
+  fi
+  homebrew_assert_tree_not_replaceable_by_user "$build_user" "$xtask_bin" || return
+  xtask_state="$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' "$xtask_bin")" || return 2
+  xtask_sha256="$(/usr/bin/sha256sum "$xtask_bin")" || return 2
+  xtask_sha256="${xtask_sha256%% *}"
+  [[ "$xtask_sha256" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "homebrew-patched-launcher: could not seal the prepared program-index checker" >&2
+    return 2
+  }
 
   if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
     for mutable_root in "$HOMEBREW_PATCHED_NATIVE_PREFIX" \
@@ -2020,6 +2076,7 @@ homebrew_patched_launcher_isolate() {
     "$source_alias_dir" "$source_alias_dir/kandelo" "$source_alias_dir/tap" \
     "$source_alias_dir/sysroot"
   HOMEBREW_PATCHED_SOURCE_ALIAS_DIR="$source_alias_dir"
+  xtask_alias="$source_alias_dir/kandelo/$xtask_relative"
   protected_brew="$HOMEBREW_PATCHED_PROTECTED_DIR/brew"
   "$sudo_bin" ln -s "$HOMEBREW_PATCHED_OVERLAY/bin/brew" "$protected_brew"
 
@@ -2030,7 +2087,12 @@ homebrew_patched_launcher_isolate() {
     printf 'expected_kandelo=%q\n' "$source_alias_dir/kandelo"
     printf 'expected_tap=%q\n' "$source_alias_dir/tap"
     printf 'expected_sysroot=%q\n' "$source_alias_dir/sysroot"
+    printf 'expected_xtask=%q\n' "$xtask_alias"
+    printf 'expected_xtask_state=%q\n' "$xtask_state"
+    printf 'expected_xtask_sha256=%q\n' "$xtask_sha256"
     printf 'expected_primary_tap=%q\n' "$primary_tap_root"
+    printf 'actual_xtask_sha256="$(/usr/bin/sha256sum "$expected_xtask" 2>/dev/null || true)"\n'
+    printf 'actual_xtask_sha256="${actual_xtask_sha256%%%% *}"\n'
     printf 'if [ "${HOMEBREW_KANDELO_ROOT:-}" != "$expected_kandelo" ] || '
     printf '[ "${KANDELO_HOMEBREW_KANDELO_ROOT:-}" != "$expected_kandelo" ]; then\n'
     printf '  echo "homebrew-patched-launcher: isolated Kandelo root does not use the protected alias" >&2\n'
@@ -2041,6 +2103,15 @@ homebrew_patched_launcher_isolate() {
     printf '  exit 2\nfi\n'
     printf 'if [ "${HOMEBREW_KANDELO_PRIMARY_TAP_ROOT:-}" != "$expected_primary_tap" ]; then\n'
     printf '  echo "homebrew-patched-launcher: isolated primary tap root changed" >&2\n'
+    printf '  exit 2\nfi\n'
+    printf 'if [ "${WASM_POSIX_XTASK_BIN:-}" != "$expected_xtask" ] || '
+    printf '[ ! -f "$expected_xtask" ] || [ -L "$expected_xtask" ] || '
+    printf '[ ! -r "$expected_xtask" ] || [ ! -x "$expected_xtask" ] || '
+    printf '[ -w "$expected_xtask" ] || '
+    printf '[ "$(/usr/bin/realpath -- "$expected_xtask")" != "$expected_xtask" ] || '
+    printf '[ "$(/usr/bin/stat -c '\''%%d:%%i:%%u:%%g:%%a:%%h:%%s'\'' "$expected_xtask")" != "$expected_xtask_state" ] || '
+    printf '[ "$actual_xtask_sha256" != "$expected_xtask_sha256" ]; then\n'
+    printf '  echo "homebrew-patched-launcher: protected program-index checker changed or is inaccessible" >&2\n'
     printf '  exit 2\nfi\n'
     printf 'if [ ! -f "$expected_sysroot/lib/libc.a" ] || [ -L "$expected_sysroot/lib/libc.a" ]; then\n'
     printf '  echo "homebrew-patched-launcher: protected sysroot libc archive is invalid" >&2\n'
@@ -2115,6 +2186,20 @@ homebrew_patched_launcher_isolate() {
   )
   {
     printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+    printf 'xtask_path=%q\n' "$xtask_bin"
+    printf 'xtask_state=%q\n' "$xtask_state"
+    printf 'xtask_sha256=%q\n' "$xtask_sha256"
+    printf 'actual_xtask_sha256="$(/usr/bin/sha256sum "$xtask_path" 2>/dev/null || true)"\n'
+    printf 'actual_xtask_sha256="${actual_xtask_sha256%%%% *}"\n'
+    # WHY: the source checkout is trusted but workflow-owned. Rechecking its
+    # inode and bytes for every Formula entry prevents a later workflow step
+    # from silently turning the already-reviewed checker path into new code.
+    printf 'if [ ! -f "$xtask_path" ] || [ -L "$xtask_path" ] || [ ! -x "$xtask_path" ] || '
+    printf '[ "$(/usr/bin/realpath -- "$xtask_path")" != "$xtask_path" ] || '
+    printf '[ "$(/usr/bin/stat -c '\''%%d:%%i:%%u:%%g:%%a:%%h:%%s'\'' "$xtask_path")" != "$xtask_state" ] || '
+    printf '[ "$actual_xtask_sha256" != "$xtask_sha256" ]; then\n'
+    printf '  echo "homebrew-patched-launcher: prepared program-index checker changed after isolation" >&2\n'
+    printf '  exit 2\nfi\n'
     printf 'bottle_tag_env=()\n'
     for variable in KANDELO_HOMEBREW_BOTTLE_TAG HOMEBREW_KANDELO_BOTTLE_TAG; do
       printf 'if [ -n "${%s+x}" ]; then bottle_tag_env+=("%s=${%s}"); fi\n' \
@@ -2168,10 +2253,11 @@ homebrew_patched_launcher_isolate() {
         printf ' %q' "$variable=$value"
       fi
     done
-    printf ' %q %q %q %q' "HOMEBREW_KANDELO_ROOT=$source_alias_dir/kandelo" \
+    printf ' %q %q %q %q %q' "HOMEBREW_KANDELO_ROOT=$source_alias_dir/kandelo" \
       "KANDELO_HOMEBREW_KANDELO_ROOT=$source_alias_dir/kandelo" \
       "HOMEBREW_KANDELO_SYSROOT=$source_alias_dir/sysroot" \
-      "WASM_POSIX_SYSROOT=$source_alias_dir/sysroot"
+      "WASM_POSIX_SYSROOT=$source_alias_dir/sysroot" \
+      "WASM_POSIX_XTASK_BIN=$xtask_alias"
     printf ' "${bottle_tag_env[@]}" "$command_path" "$@"\n'
   } >"$wrapper_source"
   "$sudo_bin" install -o root -g root -m 0555 "$wrapper_source" "$wrapper_path"
