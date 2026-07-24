@@ -145,7 +145,7 @@ async function inspectPackageTreeInBrowser(
   );
 }
 
-test("browsers consume lazy and eager package trees from one exact ZIP", async ({
+test("browsers retry transient lazy package trees and consume the exact ZIP", async ({
   page,
   baseURL,
   browserName,
@@ -162,6 +162,14 @@ test("browsers consume lazy and eager package trees from one exact ZIP", async (
   let archiveFetches = 0;
   await page.route(archiveUrl, async (route) => {
     archiveFetches++;
+    if (archiveFetches === 1) {
+      await route.fulfill({
+        status: 502,
+        body: "temporary package release edge failure",
+        headers: { "retry-after": "0" },
+      });
+      return;
+    }
     await route.fulfill({
       status: 200,
       body: Buffer.from(images.archive),
@@ -208,7 +216,7 @@ test("browsers consume lazy and eager package trees from one exact ZIP", async (
   expect(lazy.after.data.deferred, browserName).toBe(false);
   expect(lazy.after.executable.deferred, browserName).toBe(false);
   expect(lazy.pendingTrees, browserName).toBe(0);
-  expect(archiveFetches, browserName).toBe(1);
+  expect(archiveFetches, browserName).toBe(2);
 
   const eager = await inspectPackageTreeInBrowser(
     page,
@@ -222,5 +230,5 @@ test("browsers consume lazy and eager package trees from one exact ZIP", async (
   expect(eager.text, browserName).toBe(lazy.text);
   expect(eager.after, browserName).toEqual(lazy.after);
   expect(eager.pendingTrees, browserName).toBe(0);
-  expect(archiveFetches, browserName).toBe(1);
+  expect(archiveFetches, browserName).toBe(2);
 });

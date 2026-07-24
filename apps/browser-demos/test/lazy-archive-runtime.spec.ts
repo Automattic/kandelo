@@ -268,6 +268,79 @@ test("Chromium boots, reads, and execs through verified lazy archives", async ({
   expect(execFetches).toBe(1);
 });
 
+test("Chromium retries a transient lazy-tree response before surfacing EIO", async ({
+  page,
+  baseURL,
+}) => {
+  if (!baseURL) throw new Error("Playwright baseURL is required");
+  const archiveUrl = "https://fixtures.kandelo.invalid/transient.tar.gz";
+  const imageUrl = "https://fixtures.kandelo.invalid/transient.vfs";
+  const payload = new TextEncoder().encode("verified-after-transient-502");
+  const tar = tarBytes([
+    {
+      path: "etc/transient-data",
+      mode: 0o644,
+      data: payload,
+    },
+  ]);
+  const archive = gzipSync(tar);
+  const image = await lazyImage([{
+    url: archiveUrl,
+    archive,
+    tarBytes: tar.byteLength,
+    inventory: [{
+      vfsPath: "/etc/transient-data",
+      sourcePath: "etc/transient-data",
+      type: "file",
+      mode: 0o644,
+      size: payload.byteLength,
+      inodeGroup: "transient-data",
+    }],
+  }]);
+  let fetches = 0;
+  await routeBytes(page, imageUrl, image, "application/octet-stream");
+  await page.route(archiveUrl, async (route) => {
+    fetches++;
+    if (fetches === 1) {
+      await route.fulfill({
+        status: 502,
+        body: "temporary release edge failure",
+        headers: {
+          "access-control-allow-origin": "*",
+          "retry-after": "0",
+        },
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      body: Buffer.from(archive),
+      headers: {
+        "access-control-allow-origin": "*",
+        "content-length": String(archive.byteLength),
+      },
+    });
+  });
+
+  await page.goto(new URL("/pages/homebrew-vfs-test/", baseURL).href);
+  await expect.poll(
+    () => page.evaluate(() => window.__homebrewVfsTestReady),
+    { timeout: 120_000 },
+  ).toBe(true);
+  const result = await page.evaluate(
+    (url) => window.__runLazyVfsAcceptance({
+      vfsUrl: url,
+      readPath: "/etc/transient-data",
+      timeoutMs: 30_000,
+    }),
+    imageUrl,
+  );
+
+  expect(result.firstReadError).toBeUndefined();
+  expect(result.readText).toBe("verified-after-transient-502");
+  expect(fetches).toBe(2);
+});
+
 test("Chromium reports digest failure without mutation and retries cleanly", async ({
   page,
   baseURL,

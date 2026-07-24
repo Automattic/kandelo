@@ -533,8 +533,18 @@ Registration, `stat`, and `readdir` do not fetch it. The first ordinary
 open/read, mapping, or executable resolution downloads and verifies the whole
 owning bottle; transports are tried in descriptor order until one passes the
 same digest and size identity, and all members are bounded, decoded, and
-verified before one identity-guarded batch commit. There is no per-file or
-byte-range retrieval inside the gzip/TAR. A failed fetch, digest,
+verified before one identity-guarded batch commit. Each transport gets at most
+three total GET attempts. The same URL is retried only for HTTP 408, 429, or
+5xx responses and recognized fetch/body network interruptions, with 250/500 ms
+backoff unless `Retry-After` requests a delay capped at five seconds. A custom
+fetcher may register an `AbortSignal` alongside its existing one-argument
+callback. The host passes that exact signal into every attempt, makes retry
+waits abortable, and rethrows its arbitrary `reason` unchanged before mirror
+fallback or VFS commit. Standard `AbortError`/`ABORT_ERR` failures remain the
+compatibility fallback when no signal is registered. Other 4xx responses and
+size, digest, or decode failures do not consume the same-URL retry budget.
+There is no per-file or byte-range retrieval inside the gzip/TAR. A failed
+fetch, digest,
 decode, inventory check, or allocation leaves every regular inode pending and
 retryable. Hard-link inventory members are restored as names of the same inode,
 including across VFS image save/restore. A metadata-only tree remains deferred

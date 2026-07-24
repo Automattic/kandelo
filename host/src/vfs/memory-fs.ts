@@ -57,7 +57,23 @@ export interface LazyDownloadEvent {
 
 export type LazyDownloadListener = (event: LazyDownloadEvent) => void;
 
-type LazyFetch = (url: string) => Promise<Response>;
+type LazyFetch = (
+  url: string,
+  init?: { signal?: AbortSignal },
+) => Promise<Response>;
+
+export interface LazyFetcherOptions {
+  /**
+   * Explicit cancellation provenance shared with the fetcher. MemoryFS passes
+   * this exact signal into every attempt and rethrows its reason unchanged.
+   */
+  signal?: AbortSignal;
+}
+
+interface LazyTransport {
+  fetcher: LazyFetch;
+  signal?: AbortSignal;
+}
 
 interface LazyPreparation {
   status: "pending" | "fulfilled" | "rejected";
@@ -310,10 +326,39 @@ const MAX_LAZY_TREE_CAPABILITIES =
 const MAX_LAZY_TREE_ACTIVATION_ROOTS =
   VFS_DEFERRED_TREE_LIMITS.maxActivationRoots;
 const MAX_LAZY_TREE_OWNER_ID = 0xffff_fffe;
+const MAX_LAZY_TRANSPORT_ATTEMPTS = 3;
+const LAZY_TRANSPORT_RETRY_BASE_MS = 250;
+const MAX_LAZY_TRANSPORT_RETRY_DELAY_MS = 5_000;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const SERIALIZED_LEGACY_ARCHIVE_KIND = "kandelo-legacy-zip-v1";
 const SERIALIZED_DEFERRED_TREE_V1_KIND = "kandelo-deferred-tree-v1";
 const SERIALIZED_DEFERRED_TREE_V2_KIND = "kandelo-deferred-tree-v2";
+
+const TRANSIENT_NETWORK_ERROR_CODES = new Set([
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETDOWN",
+  "ENETRESET",
+  "ENETUNREACH",
+  "EPIPE",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+
+class LazyHttpResponseError extends Error {
+  constructor(
+    readonly status: number,
+    readonly retryAfterMs: number | undefined,
+  ) {
+    super(`HTTP ${status}`);
+    this.name = "LazyHttpResponseError";
+  }
+}
 
 interface PlannedLazyArchiveEntry {
   entry: ZipEntry;
@@ -593,6 +638,151 @@ function parseContentLength(headers: Headers | undefined): number | undefined {
   if (!raw) return undefined;
   const value = Number(raw);
   return Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function isTransientHttpStatus(status: number): boolean {
+  return status === 408 || status === 429 || (status >= 500 && status <= 599);
+}
+
+function parseRetryAfterMs(
+  headers: Headers | undefined,
+  now = Date.now(),
+): number | undefined {
+  const raw = headers?.get("retry-after")?.trim();
+  if (!raw) return undefined;
+  let delayMs: number;
+  if (/^\d+$/.test(raw)) {
+    delayMs = Number(raw) * 1_000;
+  } else {
+    const retryAt = Date.parse(raw);
+    if (!Number.isFinite(retryAt)) return undefined;
+    delayMs = Math.max(0, retryAt - now);
+  }
+  if (!Number.isSafeInteger(delayMs) || delayMs < 0) return undefined;
+  // WHY: Retry-After is advisory input from a remote server. Capping it keeps
+  // one deferred open from parking a guest process for an attacker-chosen time.
+  return Math.min(delayMs, MAX_LAZY_TRANSPORT_RETRY_DELAY_MS);
+}
+
+function errorCause(error: unknown): unknown {
+  if (typeof error !== "object" || error === null || !("cause" in error)) {
+    return undefined;
+  }
+  return (error as { cause?: unknown }).cause;
+}
+
+function errorName(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("name" in error)) {
+    return undefined;
+  }
+  return typeof (error as { name?: unknown }).name === "string"
+    ? (error as { name: string }).name
+    : undefined;
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return undefined;
+  }
+  return typeof (error as { code?: unknown }).code === "string"
+    ? (error as { code: string }).code
+    : undefined;
+}
+
+function errorChainSome(
+  error: unknown,
+  predicate: (candidate: unknown) => boolean,
+): boolean {
+  const seen = new Set<unknown>();
+  let candidate: unknown = error;
+  for (let depth = 0; candidate !== undefined && depth < 8; depth += 1) {
+    if (seen.has(candidate)) return false;
+    seen.add(candidate);
+    if (predicate(candidate)) return true;
+    candidate = errorCause(candidate);
+  }
+  return false;
+}
+
+function isAbortFailure(error: unknown): boolean {
+  return errorChainSome(error, (candidate) =>
+    errorName(candidate) === "AbortError" ||
+    errorCode(candidate) === "ABORT_ERR"
+  );
+}
+
+function isTransientNetworkFailure(error: unknown): boolean {
+  if (isAbortFailure(error)) return false;
+  // Fetch intentionally exposes network failures as TypeError in browsers.
+  // Node's fetch adds transport codes on its bounded `cause` chain, while
+  // DOM-backed streams may use NetworkError or TimeoutError instead.
+  return errorChainSome(error, (candidate) => {
+    const name = errorName(candidate);
+    const code = errorCode(candidate);
+    return candidate instanceof TypeError ||
+      name === "NetworkError" ||
+      name === "TimeoutError" ||
+      (code !== undefined && TRANSIENT_NETWORK_ERROR_CODES.has(code));
+  });
+}
+
+function lazyTransportRetryDelayMs(
+  error: unknown,
+  failedAttempt: number,
+): number | null {
+  if (error instanceof LazyHttpResponseError) {
+    if (!isTransientHttpStatus(error.status)) return null;
+    if (error.retryAfterMs !== undefined) return error.retryAfterMs;
+  } else if (!isTransientNetworkFailure(error)) {
+    return null;
+  }
+  return Math.min(
+    LAZY_TRANSPORT_RETRY_BASE_MS * (2 ** failedAttempt),
+    MAX_LAZY_TRANSPORT_RETRY_DELAY_MS,
+  );
+}
+
+function throwIfLazyTransportAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw signal.reason;
+}
+
+function waitForLazyTransportRetry(
+  delayMs: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  throwIfLazyTransportAborted(signal);
+  if (delayMs === 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => finish(false), delayMs);
+    const onAbort = (): void => finish(true, signal!.reason);
+    let settled = false;
+    function finish(aborted: boolean, reason?: unknown): void {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      if (aborted) {
+        reject(reason);
+      } else {
+        resolve();
+      }
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+    // The signal can abort between the initial check and listener install.
+    if (signal?.aborted) onAbort();
+  });
+}
+
+async function cancelResponseBody(
+  response: Response,
+  reason: unknown,
+): Promise<void> {
+  try {
+    await response.body?.cancel(reason);
+  } catch {
+    // A failed transport may already have errored its stream. Cancellation is
+    // resource cleanup and must not replace the diagnostic that caused it.
+  }
 }
 
 function concatChunks(chunks: Uint8Array[], total: number): Uint8Array {
@@ -1826,7 +2016,9 @@ export class MemoryFileSystem implements FileSystemBackend {
   private lazyDownloadListeners = new Set<LazyDownloadListener>();
   /** One in-flight fetch/commit per lazy file or archive group. */
   private lazyPreparations = new Map<object, LazyPreparation>();
-  private lazyFetch: LazyFetch = (url) => globalThis.fetch(url);
+  private lazyTransport: LazyTransport = {
+    fetcher: (url, init) => globalThis.fetch(url, init),
+  };
 
   private constructor(fs: SharedFS, metadata: VfsImageMetadata | null = null) {
     this.fs = fs;
@@ -2248,9 +2440,20 @@ export class MemoryFileSystem implements FileSystemBackend {
     return () => this.lazyDownloadListeners.delete(listener);
   }
 
-  /** Install the host-specific transport used for lazy file and archive URLs. */
-  setLazyFetcher(fetcher: LazyFetch): void {
-    this.lazyFetch = fetcher;
+  /**
+   * Install the host-specific transport used for lazy file and archive URLs.
+   * Register a signal here rather than closing over one invisibly: Fetch
+   * rejects with `AbortSignal.reason` unchanged, which may otherwise look like
+   * a retryable TypeError or an ordinary mirror failure.
+   */
+  setLazyFetcher(
+    fetcher: LazyFetch,
+    options: LazyFetcherOptions = {},
+  ): void {
+    this.lazyTransport = {
+      fetcher,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    };
   }
 
   private emitLazyDownload(event: Omit<LazyDownloadEvent, "t">): void {
@@ -2273,7 +2476,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     mountPrefix?: string;
     fallbackTotalBytes?: number;
     integrity?: LazyArchiveIntegrity;
-  }): Promise<Uint8Array> {
+  }, transport: LazyTransport): Promise<Uint8Array> {
     let loadedBytes = 0;
     let totalBytes = details.integrity?.bytes ?? details.fallbackTotalBytes;
     const base = {
@@ -2284,40 +2487,111 @@ export class MemoryFileSystem implements FileSystemBackend {
       mountPrefix: details.mountPrefix,
     };
 
-    this.emitLazyDownload({
-      ...base,
-      status: "started",
-      loadedBytes,
-      totalBytes,
-    });
+    for (let attempt = 0; attempt < MAX_LAZY_TRANSPORT_ATTEMPTS; attempt += 1) {
+      loadedBytes = 0;
+      this.emitLazyDownload({
+        ...base,
+        status: "started",
+        loadedBytes,
+        totalBytes,
+      });
+      try {
+        throwIfLazyTransportAborted(transport.signal);
+        // WHY: preserve the historical one-argument callback shape unless the
+        // caller explicitly opted into signal forwarding.
+        const resp = transport.signal === undefined
+          ? await transport.fetcher(details.url)
+          : await transport.fetcher(details.url, { signal: transport.signal });
+        if (transport.signal?.aborted) {
+          await cancelResponseBody(resp, transport.signal.reason);
+          throw transport.signal.reason;
+        }
+        if (!resp.ok) {
+          const error = new LazyHttpResponseError(
+            resp.status,
+            parseRetryAfterMs(resp.headers),
+          );
+          await cancelResponseBody(resp, error);
+          throw error;
+        }
 
-    try {
-      const resp = await this.lazyFetch(details.url);
-      if (!resp.ok) {
-        throw new Error(`HTTP ${resp.status}`);
-      }
+        totalBytes = parseContentLength(resp.headers) ?? totalBytes;
+        if (
+          details.integrity &&
+          totalBytes !== undefined &&
+          totalBytes !== details.integrity.bytes
+        ) {
+          const error = new Error(
+            `Lazy ${details.kind} byte count ${totalBytes} does not match ` +
+              `expected ${details.integrity.bytes}`,
+          );
+          await cancelResponseBody(resp, error);
+          throw error;
+        }
+        if (!resp.body) {
+          const data = new Uint8Array(await resp.arrayBuffer());
+          throwIfLazyTransportAborted(transport.signal);
+          loadedBytes = data.byteLength;
+          await assertLazyIntegrity(data, details.kind, details.integrity);
+          throwIfLazyTransportAborted(transport.signal);
+          this.emitLazyDownload({
+            ...base,
+            status: "progress",
+            loadedBytes,
+            totalBytes: totalBytes ?? loadedBytes,
+          });
+          this.emitLazyDownload({
+            ...base,
+            status: "complete",
+            loadedBytes,
+            totalBytes: totalBytes ?? loadedBytes,
+          });
+          return data;
+        }
 
-      totalBytes = parseContentLength(resp.headers) ?? totalBytes;
-      if (
-        details.integrity &&
-        totalBytes !== undefined &&
-        totalBytes !== details.integrity.bytes
-      ) {
-        throw new Error(
-          `Lazy ${details.kind} byte count ${totalBytes} does not match ` +
-            `expected ${details.integrity.bytes}`,
-        );
-      }
-      if (!resp.body) {
-        const data = new Uint8Array(await resp.arrayBuffer());
-        loadedBytes = data.byteLength;
+        const reader = resp.body.getReader();
+        const chunks: Uint8Array[] = [];
+        try {
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              throwIfLazyTransportAborted(transport.signal);
+              if (done) break;
+              if (!value) continue;
+              chunks.push(value);
+              loadedBytes += value.byteLength;
+              if (details.integrity && loadedBytes > details.integrity.bytes) {
+                // WHY: throw the authoritative bound violation first. The
+                // enclosing catch cancels best-effort; a rejecting stream
+                // cleanup must never turn integrity failure into a retry.
+                throw new Error(
+                  `Lazy ${details.kind} exceeded expected byte count ` +
+                    `${details.integrity.bytes}`,
+                );
+              }
+              this.emitLazyDownload({
+                ...base,
+                status: "progress",
+                loadedBytes,
+                totalBytes,
+              });
+            }
+          } catch (error) {
+            try {
+              await reader.cancel(error);
+            } catch {
+              // Preserve the read failure; the stream may already be errored.
+            }
+            throw error;
+          }
+        } finally {
+          reader.releaseLock();
+        }
+
+        const data = concatChunks(chunks, loadedBytes);
+        throwIfLazyTransportAborted(transport.signal);
         await assertLazyIntegrity(data, details.kind, details.integrity);
-        this.emitLazyDownload({
-          ...base,
-          status: "progress",
-          loadedBytes,
-          totalBytes: totalBytes ?? loadedBytes,
-        });
+        throwIfLazyTransportAborted(transport.signal);
         this.emitLazyDownload({
           ...base,
           status: "complete",
@@ -2325,55 +2599,58 @@ export class MemoryFileSystem implements FileSystemBackend {
           totalBytes: totalBytes ?? loadedBytes,
         });
         return data;
-      }
-
-      const reader = resp.body.getReader();
-      const chunks: Uint8Array[] = [];
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (!value) continue;
-          chunks.push(value);
-          loadedBytes += value.byteLength;
-          if (details.integrity && loadedBytes > details.integrity.bytes) {
-            await reader.cancel();
-            throw new Error(
-              `Lazy ${details.kind} exceeded expected byte count ` +
-                `${details.integrity.bytes}`,
-            );
-          }
+      } catch (err) {
+        if (transport.signal?.aborted) {
+          const reason = transport.signal.reason;
+          const message = reason instanceof Error ? reason.message : String(reason);
           this.emitLazyDownload({
             ...base,
-            status: "progress",
+            status: "error",
             loadedBytes,
             totalBytes,
+            error: message,
           });
+          throw reason;
         }
-      } finally {
-        reader.releaseLock();
+        const retryDelay = attempt + 1 < MAX_LAZY_TRANSPORT_ATTEMPTS
+          ? lazyTransportRetryDelayMs(err, attempt)
+          : null;
+        if (retryDelay !== null) {
+          // WHY: a failed attempt never supplies bytes to the decoder or VFS.
+          // Retrying only closed transport failures preserves truthful
+          // integrity/decode errors while surviving an ephemeral CDN edge.
+          try {
+            await waitForLazyTransportRetry(retryDelay, transport.signal);
+          } catch (waitError) {
+            const reason = transport.signal?.aborted
+              ? transport.signal.reason
+              : waitError;
+            const message = reason instanceof Error
+              ? reason.message
+              : String(reason);
+            this.emitLazyDownload({
+              ...base,
+              status: "error",
+              loadedBytes,
+              totalBytes,
+              error: message,
+            });
+            throw reason;
+          }
+          continue;
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        this.emitLazyDownload({
+          ...base,
+          status: "error",
+          loadedBytes,
+          totalBytes,
+          error: message,
+        });
+        throw err;
       }
-
-      const data = concatChunks(chunks, loadedBytes);
-      await assertLazyIntegrity(data, details.kind, details.integrity);
-      this.emitLazyDownload({
-        ...base,
-        status: "complete",
-        loadedBytes,
-        totalBytes: totalBytes ?? loadedBytes,
-      });
-      return data;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.emitLazyDownload({
-        ...base,
-        status: "error",
-        loadedBytes,
-        totalBytes,
-        error: message,
-      });
-      throw err;
     }
+    throw new Error("Lazy transport retry state became unreachable");
   }
 
   /**
@@ -3360,16 +3637,18 @@ export class MemoryFileSystem implements FileSystemBackend {
     const key = MemoryFileSystem.inodeKey(st.ino, st.generation);
     const entry = this.lazyFiles.get(key);
     if (entry) {
+      const transport = this.lazyTransport;
       const data = await this.fetchLazyBytes({
         id: `file:${st.ino}`,
         kind: "file",
         url: entry.url,
         path: entry.path,
         fallbackTotalBytes: entry.size,
-      });
+      }, transport);
       for (let attempt = 0; attempt < 3; attempt++) {
         if (this.lazyFiles.get(key) !== entry) return false;
         for (const candidate of new Set([path, ...entry.paths])) {
+          throwIfLazyTransportAborted(transport.signal);
           const materialized = this.fs.replaceIfIdentity(
             candidate,
             entry.ino,
@@ -3697,6 +3976,7 @@ export class MemoryFileSystem implements FileSystemBackend {
   ): Promise<void> {
     if (group.materialized) return;
     const genericTree = group.content !== undefined && group.inventory !== undefined;
+    const transport = this.lazyTransport;
 
     const transports = genericTree ? group.content!.transports : [group.url];
     const failures: string[] = [];
@@ -3709,12 +3989,18 @@ export class MemoryFileSystem implements FileSystemBackend {
           url,
           mountPrefix: group.mountPrefix,
           integrity: group.integrity,
-        });
+        }, transport);
         break;
       } catch (error) {
+        // WHY: explicit cancellation belongs to the caller/worker lifecycle,
+        // not to one mirror. Check its exact reason before compatibility
+        // fallbacks inspect the error's shape.
+        throwIfLazyTransportAborted(transport.signal);
+        if (isAbortFailure(error)) throw error;
         failures.push(error instanceof Error ? error.message : String(error));
       }
     }
+    throwIfLazyTransportAborted(transport.signal);
     if (archiveData === null) {
       throw new Error(
         `All ${transports.length} lazy ${genericTree ? "tree" : "archive"} ` +
@@ -3722,20 +4008,30 @@ export class MemoryFileSystem implements FileSystemBackend {
       );
     }
 
-    await this.materializeArchiveBytes(group, archiveData, requested);
+    throwIfLazyTransportAborted(transport.signal);
+    await this.materializeArchiveBytes(
+      group,
+      archiveData,
+      requested,
+      transport.signal,
+    );
   }
 
   private async materializeArchiveBytes(
     group: LazyArchiveGroup,
     archiveData: Uint8Array,
     requested?: { path: string; ino: number; generation: number },
+    signal?: AbortSignal,
   ): Promise<void> {
+    throwIfLazyTransportAborted(signal);
     if (group.materialized) return;
     const genericTree = group.content !== undefined && group.inventory !== undefined;
     const decodedTreeFiles = genericTree
       ? await this.decodeAndValidateLazyTree(group, archiveData)
       : null;
+    throwIfLazyTransportAborted(signal);
     const { parseZipCentralDirectory, extractZipEntry } = await import("./zip");
+    throwIfLazyTransportAborted(signal);
     const zipEntries = decodedTreeFiles ? [] : parseZipCentralDirectory(archiveData);
     const zipLookup = new Map<string, ZipEntry>();
     for (const ze of zipEntries) {
@@ -3844,6 +4140,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       }
 
       if (pending.size > 0) {
+        throwIfLazyTransportAborted(signal);
         const committed = this.fs.replaceManyIfIdentities(
           Array.from(pending.values(), (replacement) => ({
             paths: Array.from(replacement.paths),
@@ -3860,6 +4157,9 @@ export class MemoryFileSystem implements FileSystemBackend {
         }
       }
 
+      // Metadata-only groups have no regular replacement above, so retain the
+      // same last cancellation boundary before publishing materialized state.
+      throwIfLazyTransportAborted(signal);
       for (const [key, replacement] of pending) {
         this.lazyArchiveInodes.delete(key);
         for (const alias of group.entries.values()) {

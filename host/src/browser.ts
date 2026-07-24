@@ -41,6 +41,7 @@ export type {
   LazyDownloadListener,
   LazyDownloadStatus,
   LazyFileEntry,
+  LazyFetcherOptions,
   LazyTreeActivation,
   LazyTreeContent,
   LazyTreeDecoder,

@@ -804,6 +804,18 @@ identity-guarded batch replacement, so failure leaves all pending regular
 inodes unchanged. Hard-link aliases use one SharedFS inode and retain that
 identity when the lazy metadata is transferred or saved in an image.
 
+For each declared transport, materialization permits three total GET attempts:
+only HTTP 408, 429, and 5xx responses or recognized fetch/body network
+interruptions repeat the same URL. The two retry waits default to 250 and 500
+milliseconds; a valid `Retry-After` value replaces that wait up to a five-second
+cap. A lazy fetcher may register an optional `AbortSignal`; the VFS passes it
+to each fetch, aborts a pending retry wait, and checks its exact `reason`
+before mirror fallback and namespace commit. That explicit signal preserves
+arbitrary `Error` and `TypeError` reasons. Standard `AbortError` and
+`ABORT_ERR` shapes remain a compatibility fallback for existing one-argument
+fetchers. Permanent HTTP responses and size, digest, decode, inventory, and
+commit failures remain truthful failures rather than retry signals.
+
 The generic-tree schema is revalidated through one closed, bounded path at
 live registration, cross-worker import, image restore, and filesystem rebase.
 Content, activation, mount prefix, inventory, and pending inode metadata reject

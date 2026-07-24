@@ -319,7 +319,7 @@ describe("format-neutral deferred trees", () => {
     const mirror = "https://mirror.example.invalid/runtime.tar.gz";
     const fetcher = vi.fn(async (url: string) =>
       url === primary
-        ? new Response(null, { status: 503 })
+        ? new Response(null, { status: 404 })
         : new Response(fixture.payload)
     );
     fs.setLazyFetcher(fetcher);
@@ -331,6 +331,410 @@ describe("format-neutral deferred trees", () => {
     await expect(fs.preparePath("/runtime/tool")).resolves.toBe(true);
     expect(fetcher.mock.calls.map(([url]) => url)).toEqual([primary, mirror]);
     expect(readText(fs, "/runtime/tool")).toBe("payload");
+  });
+
+  it.each([408, 429, 500, 502, 599])(
+    "retries transient HTTP %s responses on the same transport",
+    async (status) => {
+      const fixture = tarTreeFixture("first-use");
+      const fs = createFs();
+      const url = fixture.content.transports[0]!;
+      const fetcher = vi.fn(async () =>
+        fetcher.mock.calls.length === 1
+          ? new Response(null, {
+            status,
+            headers: { "retry-after": "0" },
+          })
+          : new Response(fixture.payload)
+      );
+      fs.setLazyFetcher(fetcher);
+      fs.registerLazyTree(
+        fixture.content,
+        fixture.inventory,
+        "/",
+        fixture.activation,
+      );
+
+      await expect(fs.preparePath("/runtime/tool")).resolves.toBe(true);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(fetcher.mock.calls.map(([requested]) => requested)).toEqual([
+        url,
+        url,
+      ]);
+    },
+  );
+
+  it.each([400, 401, 403, 404, 409, 499])(
+    "does not retry permanent HTTP %s responses",
+    async (status) => {
+      const fixture = tarTreeFixture("first-use");
+      const fs = createFs();
+      const fetcher = vi.fn(async () => new Response(null, { status }));
+      fs.setLazyFetcher(fetcher);
+      fs.registerLazyTree(
+        fixture.content,
+        fixture.inventory,
+        "/",
+        fixture.activation,
+      );
+
+      await expect(fs.preparePath("/runtime/tool")).rejects.toThrow(
+        `HTTP ${status}`,
+      );
+      expect(fetcher).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("bounds one transient transport to three total attempts", async () => {
+    const fixture = tarTreeFixture("first-use");
+    const fs = createFs();
+    const fetcher = vi.fn(async () =>
+      new Response(null, {
+        status: 503,
+        headers: { "retry-after": "0" },
+      })
+    );
+    fs.setLazyFetcher(fetcher);
+    fs.registerLazyTree(
+      fixture.content,
+      fixture.inventory,
+      "/",
+      fixture.activation,
+    );
+
+    await expect(fs.preparePath("/runtime/tool")).rejects.toThrow("HTTP 503");
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it("exhausts one transient transport before advancing to its mirror", async () => {
+    const fixture = tarTreeFixture("first-use");
+    const fs = createFs();
+    const primary = "https://primary.example.invalid/transient.tar.gz";
+    const mirror = "https://mirror.example.invalid/transient.tar.gz";
+    const fetcher = vi.fn(async (url: string) =>
+      url === primary
+        ? new Response(null, {
+          status: 503,
+          headers: { "retry-after": "0" },
+        })
+        : new Response(fixture.payload)
+    );
+    fs.setLazyFetcher(fetcher);
+    fs.registerLazyTree({
+      ...fixture.content,
+      transports: [primary, mirror],
+    }, fixture.inventory, "/", fixture.activation);
+
+    await expect(fs.preparePath("/runtime/tool")).resolves.toBe(true);
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+      primary,
+      primary,
+      primary,
+      mirror,
+    ]);
+  });
+
+  it("uses bounded backoff and honors Retry-After without sleeping in tests", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-23T12:00:00.000Z"));
+    try {
+      const fixture = tarTreeFixture("first-use");
+      const fs = createFs();
+      const fetcher = vi.fn(async () =>
+        fetcher.mock.calls.length === 1
+          ? new Response(null, { status: 502 })
+          : fetcher.mock.calls.length === 2
+            ? new Response(null, {
+              status: 429,
+              headers: {
+                "retry-after": new Date(Date.now() + 60_000).toUTCString(),
+              },
+            })
+            : new Response(fixture.payload)
+      );
+      fs.setLazyFetcher(fetcher);
+      fs.registerLazyTree(
+        fixture.content,
+        fixture.inventory,
+        "/",
+        fixture.activation,
+      );
+
+      const materialized = fs.preparePath("/runtime/tool");
+      await vi.advanceTimersByTimeAsync(249);
+      expect(fetcher).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(materialized).resolves.toBe(true);
+      expect(fetcher).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries fetch and response-stream network interruptions", async () => {
+    const fixture = tarTreeFixture("first-use");
+    const fs = createFs();
+    const fetcher = vi.fn(async () => {
+      if (fetcher.mock.calls.length === 1) {
+        throw new TypeError("fetch failed");
+      }
+      if (fetcher.mock.calls.length === 2) {
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.error(new TypeError("connection reset"));
+          },
+        }), {
+          headers: { "content-length": String(fixture.payload.byteLength) },
+        });
+      }
+      return new Response(fixture.payload);
+    });
+    fs.setLazyFetcher(fetcher);
+    fs.registerLazyTree(
+      fixture.content,
+      fixture.inventory,
+      "/",
+      fixture.activation,
+    );
+
+    vi.useFakeTimers();
+    try {
+      const materialized = fs.preparePath("/runtime/tool");
+      await vi.runAllTimersAsync();
+      await expect(materialized).resolves.toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it("preserves an oversize violation when stream cancellation rejects", async () => {
+    const fixture = tarTreeFixture("first-use");
+    const fs = createFs();
+    const oversized = new Uint8Array(fixture.payload.byteLength + 1);
+    oversized.set(fixture.payload);
+    const cancel = vi.fn(async () => {
+      throw new TypeError("stream cancellation failed");
+    });
+    const fetcher = vi.fn(async () =>
+      new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(oversized);
+        },
+        cancel,
+      }))
+    );
+    fs.setLazyFetcher(fetcher);
+    fs.registerLazyTree(
+      fixture.content,
+      fixture.inventory,
+      "/",
+      fixture.activation,
+    );
+
+    await expect(fs.preparePath("/runtime/tool")).rejects.toThrow(
+      `exceeded expected byte count ${fixture.payload.byteLength}`,
+    );
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("stops a multi-mirror tree on a standard Fetch abort", async () => {
+    const fixture = tarTreeFixture("first-use");
+    const aborted = createFs();
+    const reason = new DOMException("caller stopped", "AbortError");
+    const abortFetch = vi.fn(async () => {
+      throw reason;
+    });
+    aborted.setLazyFetcher(abortFetch);
+    aborted.registerLazyTree({
+      ...fixture.content,
+      transports: [
+        "https://primary.example.invalid/abort.tar.gz",
+        "https://mirror.example.invalid/abort.tar.gz",
+      ],
+    }, fixture.inventory, "/", fixture.activation);
+
+    await expect(aborted.preparePath("/runtime/tool")).rejects.toBe(reason);
+    expect(abortFetch).toHaveBeenCalledOnce();
+  });
+
+  it("invokes an existing one-argument fetcher with exactly one argument", async () => {
+    const fixture = tarTreeFixture("first-use");
+    const fs = createFs();
+    const argumentCounts: number[] = [];
+    const fetcher = vi.fn(async function (url: string) {
+      argumentCounts.push(arguments.length);
+      expect(url).toBe(fixture.content.transports[0]);
+      return new Response(fixture.payload);
+    });
+    fs.setLazyFetcher(fetcher);
+    fs.registerLazyTree(
+      fixture.content,
+      fixture.inventory,
+      "/",
+      fixture.activation,
+    );
+
+    await expect(fs.preparePath("/runtime/tool")).resolves.toBe(true);
+    expect(argumentCounts).toEqual([1]);
+  });
+
+  it("rethrows a pre-aborted registered signal before starting any mirror", async () => {
+    const fixture = tarTreeFixture("first-use");
+    const fs = createFs();
+    const controller = new AbortController();
+    const reason = new Error("cancel before fetch");
+    controller.abort(reason);
+    const fetcher = vi.fn(async () => new Response(fixture.payload));
+    fs.setLazyFetcher(fetcher, { signal: controller.signal });
+    fs.registerLazyTree({
+      ...fixture.content,
+      transports: [
+        "https://primary.example.invalid/pre-abort.tar.gz",
+        "https://mirror.example.invalid/pre-abort.tar.gz",
+      ],
+    }, fixture.inventory, "/", fixture.activation);
+
+    await expect(fs.preparePath("/runtime/tool")).rejects.toBe(reason);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["Error", () => new Error("custom cancellation")],
+    ["TypeError", () => new TypeError("custom cancellation")],
+    ["string", () => "primitive cancellation"],
+  ] as const)(
+    "preserves a registered signal's custom %s reason across mirrors",
+    async (_label, createReason) => {
+      const fixture = tarTreeFixture("first-use");
+      const fs = createFs();
+      const controller = new AbortController();
+      const reason = createReason();
+      const fetcher = vi.fn(async (
+        _url: string,
+        init?: { signal?: AbortSignal },
+      ) => {
+        expect(init?.signal).toBe(controller.signal);
+        controller.abort(reason);
+        return new Response(fixture.payload);
+      });
+      fs.setLazyFetcher(fetcher, { signal: controller.signal });
+      fs.registerLazyTree({
+        ...fixture.content,
+        transports: [
+          "https://primary.example.invalid/custom-abort.tar.gz",
+          "https://mirror.example.invalid/custom-abort.tar.gz",
+        ],
+      }, fixture.inventory, "/", fixture.activation);
+
+      await expect(fs.preparePath("/runtime/tool")).rejects.toBe(reason);
+      expect(fetcher).toHaveBeenCalledOnce();
+      expect(fs.isPathDeferred("/runtime/tool")).toBe(true);
+    },
+  );
+
+  it("preserves AbortSignal.timeout provenance across mirrors", async () => {
+    const fixture = tarTreeFixture("first-use");
+    const fs = createFs();
+    const signal = AbortSignal.timeout(10);
+    const fetcher = vi.fn((
+      _url: string,
+      init?: { signal?: AbortSignal },
+    ) =>
+      new Promise<Response>((_resolve, reject) => {
+        const registered = init?.signal;
+        if (registered === undefined) {
+          reject(new Error("lazy fetch signal was not forwarded"));
+          return;
+        }
+        const onAbort = (): void => reject(registered.reason);
+        if (registered.aborted) onAbort();
+        else registered.addEventListener("abort", onAbort, { once: true });
+      })
+    );
+    fs.setLazyFetcher(fetcher, { signal });
+    fs.registerLazyTree({
+      ...fixture.content,
+      transports: [
+        "https://primary.example.invalid/timeout.tar.gz",
+        "https://mirror.example.invalid/timeout.tar.gz",
+      ],
+    }, fixture.inventory, "/", fixture.activation);
+
+    let caught: unknown;
+    try {
+      await fs.preparePath("/runtime/tool");
+    } catch (error) {
+      caught = error;
+    }
+    expect(signal.aborted).toBe(true);
+    expect(caught).toBe(signal.reason);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("interrupts a transient retry wait with the exact registered reason", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = tarTreeFixture("first-use");
+      const fs = createFs();
+      const controller = new AbortController();
+      const reason = new Error("stop retry wait");
+      const fetcher = vi.fn(async () => new Response(null, { status: 502 }));
+      fs.setLazyFetcher(fetcher, { signal: controller.signal });
+      fs.registerLazyTree({
+        ...fixture.content,
+        transports: [
+          "https://primary.example.invalid/wait.tar.gz",
+          "https://mirror.example.invalid/wait.tar.gz",
+        ],
+      }, fixture.inventory, "/", fixture.activation);
+
+      const materialized = fs.preparePath("/runtime/tool");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetcher).toHaveBeenCalledOnce();
+      controller.abort(reason);
+      await expect(materialized).rejects.toBe(reason);
+      expect(fetcher).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry integrity or decoder failures", async () => {
+    const fixture = tarTreeFixture("first-use");
+
+    const changed = fixture.payload.slice();
+    changed[0] ^= 0xff;
+    const integrity = createFs();
+    const integrityFetch = vi.fn(async () => new Response(changed));
+    integrity.setLazyFetcher(integrityFetch);
+    integrity.registerLazyTree(
+      fixture.content,
+      fixture.inventory,
+      "/",
+      fixture.activation,
+    );
+    await expect(integrity.preparePath("/runtime/tool")).rejects.toThrow(
+      /SHA-256/,
+    );
+    expect(integrityFetch).toHaveBeenCalledOnce();
+
+    const undecodable = encoder.encode("not a gzip archive");
+    const decoder = createFs();
+    const decoderFetch = vi.fn(async () => new Response(undecodable));
+    decoder.setLazyFetcher(decoderFetch);
+    decoder.registerLazyTree({
+      ...fixture.content,
+      sha256: createHash("sha256").update(undecodable).digest("hex"),
+      bytes: undecodable.byteLength,
+    }, fixture.inventory, "/", fixture.activation);
+    await expect(decoder.preparePath("/runtime/tool")).rejects.toThrow();
+    expect(decoderFetch).toHaveBeenCalledOnce();
   });
 
   it("accepts every exact public activation and transport boundary", () => {

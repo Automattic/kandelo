@@ -2126,8 +2126,16 @@ resolution starts one deduplicated preparation through the owning VFS mount.
 The host tries byte-identical transports in descriptor order, checks the same
 declared compressed identity for each attempt, decodes and validates the
 entire source inventory, and commits every still-matching regular inode in one
-batch. Failure leaves all stubs unchanged and retryable; hard-link names retain
-one inode and link count. A `boot-prefetch` tree uses the same path but must
+batch. One transport is attempted at most three times. Only HTTP 408, 429, and
+5xx responses or recognized fetch/body network interruptions repeat its URL;
+the default waits are 250 and 500 milliseconds, and `Retry-After` is honored
+up to five seconds. A fetcher may register an `AbortSignal` that is passed into
+every attempt; retry waits, mirror fallback, and VFS commit all rethrow its
+exact reason. Existing one-argument fetchers retain standard
+`AbortError`/`ABORT_ERR` compatibility. Permanent HTTP, integrity, and decoder
+failures do not repeat the same URL. Failure leaves all stubs unchanged and
+retryable; hard-link names retain one inode and link count. A `boot-prefetch`
+tree uses the same path but must
 finish successfully before boot returns. Metadata-only directory/symlink trees
 retain a group-level activation identity, so serialization cannot silently turn
 boot-prefetch into an unverified no-op merely because no regular stub exists.
