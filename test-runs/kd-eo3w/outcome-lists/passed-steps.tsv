@@ -1,0 +1,29 @@
+step	detail
+tool:cargo	found at /nix/store/374l8bx7qhrawcxxdgbn94kjhwxjkp8r-rust-minimal-1.97.0-nightly-2026-04-27/bin/cargo
+tool:rustc	found at /nix/store/374l8bx7qhrawcxxdgbn94kjhwxjkp8r-rust-minimal-1.97.0-nightly-2026-04-27/bin/rustc
+tool:node	found at /nix/store/b06wg8qk5bcvq5xcqrgq9nah23h71kj2-nodejs-24.15.0/bin/node
+tool:npx	found at /nix/store/b06wg8qk5bcvq5xcqrgq9nah23h71kj2-nodejs-24.15.0/bin/npx
+tool:wasm32posix-cc	found at /Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-eo3w-stabilize-verification-fixture-bootstrap-when-release-ca/sdk/bin/wasm32posix-cc
+tool:wasm-opt	found at /nix/store/vf8jfl60f3mk9wh15w2rsxfg44hpmv74-binaryen-126/bin/wasm-opt
+tool:wat2wasm	found at /nix/store/x6hr0q2644nb6gjacgixs4m2h45qqr89-wabt-1.0.37/bin/wat2wasm
+classify:dash	release-cache HIT (published wasm32 archive fetched)
+classify:bash	release-cache HIT (published wasm32 archive fetched)
+classify:ncurses	release-cache HIT (published wasm32 archive fetched)
+classify:coreutils	release-cache HIT (published wasm32 archive fetched)
+classify:gawk	release-cache HIT (published wasm32 archive fetched)
+classify:grep	release-cache HIT (published wasm32 archive fetched)
+classify:sed	release-cache HIT (published wasm32 archive fetched)
+classify:bc	release-cache HIT (published wasm32 archive fetched)
+classify:file	release-cache HIT (published wasm32 archive fetched)
+classify:m4	release-cache HIT (published wasm32 archive fetched)
+classify:make	release-cache HIT (published wasm32 archive fetched)
+classify:findutils	release-cache HIT (published wasm32 archive fetched)
+classify:diffutils	release-cache HIT (published wasm32 archive fetched)
+classify:posix-utils-lite	release-cache HIT (published wasm32 archive fetched)
+build:sysroot	Building wasm32 sysroot (build-musl.sh) (log: test-runs/kd-eo3w/outcome-lists/build_sysroot.log)
+build:sysroot64	Building wasm64 sysroot (build-musl.sh --arch wasm64posix) (log: test-runs/kd-eo3w/outcome-lists/build_sysroot64.log)
+build:kernel	Building kernel (build-kernel.sh) (log: test-runs/kd-eo3w/outcome-lists/build_kernel.log)
+build:programs	Building programs incl. wasm64 hello64 (build-programs.sh) (log: test-runs/kd-eo3w/outcome-lists/build_programs.log)
+fixture:hello64	local-binaries/programs/wasm64/hello64.wasm
+build:rootfs	Building host/wasm/rootfs.vfs (build-rootfs.sh) (log: test-runs/kd-eo3w/outcome-lists/build_rootfs.log)
+fixture:rootfs.vfs	host/wasm/rootfs.vfs
