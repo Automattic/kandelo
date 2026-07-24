@@ -36,6 +36,122 @@ fail() {
   exit 1
 }
 
+assert_real_relocated_xtask_uses_source_alias() {
+  if [ "$#" -ne 1 ]; then
+    fail "real relocated xtask regression expects one isolated build user"
+  fi
+  local build_user="$1"
+  local build_group host_target release_xtask regression_root protected_root
+  local protected_xtask source_alias runner_source runner unit
+  build_group="$(id -gn "$build_user")"
+  host_target="$(rustc -vV | sed -n 's/^host: //p')"
+  release_xtask="$REPO_ROOT/target/$host_target/release/xtask"
+  [ -n "$host_target" ] && [ -f "$release_xtask" ] && \
+    [ ! -L "$release_xtask" ] && [ -x "$release_xtask" ] ||
+    fail "real relocated xtask regression requires the prebuilt host release checker"
+
+  regression_root="$ISOLATION_ROOT/real-relocated-xtask"
+  case "$regression_root/" in
+    "$ISOLATION_ROOT/"*) ;;
+    *) fail "real relocated xtask regression escaped its isolated root" ;;
+  esac
+  protected_root="$regression_root/protected"
+  protected_xtask="$protected_root/xtask"
+  source_alias="$regression_root/source/kandelo"
+  runner_source="$ISOLATION_ROOT/verify-relocated-xtask-$$-${RANDOM}.source"
+  runner="$protected_root/verify-relocated-xtask"
+  /usr/bin/sudo -n -- /usr/bin/install -d -o root -g root -m 0555 \
+    "$protected_root" "${source_alias%/*}" "$source_alias"
+  /usr/bin/sudo -n -- /usr/bin/install -o root -g root -m 0555 -- \
+    "$release_xtask" "$protected_xtask"
+  /usr/bin/sudo -n -- /usr/bin/cmp -s -- "$release_xtask" "$protected_xtask" ||
+    fail "real relocated xtask regression did not stage the exact release bytes"
+
+  cat >"$runner_source" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+original_root="$1"
+source_alias="$2"
+checker="$3"
+host_target="$4"
+expected_registry="$source_alias/packages/registry"
+
+# The negative control must reproduce the publisher failure: the checker was
+# compiled in original_root, but that checkout is deliberately inaccessible.
+if [ -r "$original_root" ] || [ -w "$original_root" ] || \
+   [ -x "$original_root" ] || ls "$original_root" >/dev/null 2>&1; then
+  echo "real relocated xtask regression can still access the compile checkout" >&2
+  exit 1
+fi
+[ -r "$source_alias/Cargo.toml" ] &&
+  [ -r "$expected_registry/program-packages.json" ] ||
+  { echo "real relocated xtask regression cannot read the source alias" >&2; exit 1; }
+[ "$checker" = "$source_alias/target/$host_target/release/xtask" ]
+[ -f "$checker" ] && [ ! -L "$checker" ] && [ -r "$checker" ] &&
+  [ -x "$checker" ] && [ ! -w "$checker" ]
+[ "$(/usr/bin/realpath -- "$checker")" = "$checker" ]
+[ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$checker")" = "0:0:555:1" ]
+for read_only_path in "$source_alias" "$checker"; do
+  mount_options="$(
+    /usr/bin/findmnt --noheadings --output VFS-OPTIONS --target "$read_only_path"
+  )"
+  case ",${mount_options// /}," in
+    *,ro,*) ;;
+    *)
+      echo "real relocated xtask regression found a writable bind: $read_only_path" >&2
+      exit 1
+      ;;
+  esac
+done
+
+export WASM_POSIX_DEPS_REGISTRY="$expected_registry"
+if negative_output="$(
+    "$checker" build-deps program-index-context-check 2>&1
+  )"; then
+  echo "relocated checker unexpectedly used its inaccessible compile checkout" >&2
+  exit 1
+fi
+case "$negative_output" in
+  *"global package build input \"flake.nix\" not found at $original_root/flake.nix"*) ;;
+  *)
+    echo "relocated checker negative control failed for the wrong reason:" >&2
+    echo "$negative_output" >&2
+    exit 1
+    ;;
+esac
+
+"$checker" build-deps program-index-context-check \
+  --source-repo-root "$source_alias"
+EOF
+  chmod 0555 "$runner_source"
+  /usr/bin/sudo -n -- /usr/bin/install -o root -g root -m 0555 -- \
+    "$runner_source" "$runner"
+  rm -f "$runner_source"
+
+  unit="kandelo-real-relocated-xtask-$$-${RANDOM}.service"
+  /usr/bin/sudo -n -- /usr/bin/systemd-run \
+    --quiet --wait --collect --pipe \
+    --unit="$unit" \
+    --uid="$build_user" --gid="$build_group" \
+    --property=KillMode=control-group \
+    --property=SendSIGKILL=yes \
+    --property=TimeoutStopSec=10s \
+    --property=NoNewPrivileges=yes \
+    "--property=BindReadOnlyPaths=$REPO_ROOT:$source_alias" \
+    "--property=BindReadOnlyPaths=$protected_xtask:$source_alias/target/$host_target/release/xtask" \
+    "--property=InaccessiblePaths=$REPO_ROOT" \
+    --service-type=exec \
+    --expand-environment=no \
+    --working-directory="$source_alias" \
+    -- /usr/bin/env -i \
+      "HOME=/home/$build_user" "USER=$build_user" "LOGNAME=$build_user" \
+      "PATH=$PATH" \
+      "$runner" "$REPO_ROOT" "$source_alias" \
+      "$source_alias/target/$host_target/release/xtask" "$host_target"
+
+  /usr/bin/sudo -n -- rm -rf -- "$regression_root"
+}
+
 prefix="$TMPDIR/prefix"
 patch_file="$TMPDIR/marker.patch"
 publisher_patch_file="$TMPDIR/publisher-marker.patch"
@@ -417,7 +533,8 @@ case "${1:-}" in
     actual_xtask_sha256="$(/usr/bin/sha256sum "$5")"
     actual_xtask_sha256="${actual_xtask_sha256%% *}"
     [ "$actual_xtask_sha256" = "$6" ]
-    [ "$("$5" build-deps program-index-context-check)" = "checked source projection" ]
+    [ "$("$5" build-deps program-index-context-check \
+      --source-repo-root "$2")" = "checked source projection" ]
     [ -r "$2/source-marker" ]
     [ -r "$3/tap-marker" ]
     [ "$(cat "$4/lib/libc.a")" = "reviewed sysroot" ]
@@ -1239,7 +1356,12 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   cat >"$isolated_xtask" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[ "$*" = "build-deps program-index-context-check" ]
+[ "$#" -eq 4 ]
+[ "$1" = "build-deps" ]
+[ "$2" = "program-index-context-check" ]
+[ "$3" = "--source-repo-root" ]
+[ "$4" = "${HOMEBREW_KANDELO_ROOT:?}" ]
+[ -r "$4/source-marker" ]
 printf 'checked source projection\n'
 EOF
   chmod 0555 "$isolated_xtask"
@@ -1271,6 +1393,7 @@ EOF
 
   /usr/bin/sudo -n -- /usr/sbin/useradd --system --user-group --create-home \
     --home-dir "$isolated_home" --shell /usr/sbin/nologin "$ISOLATION_BUILD_USER"
+  assert_real_relocated_xtask_uses_source_alias "$ISOLATION_BUILD_USER"
   /usr/bin/sudo -n -- chown -R \
     "$ISOLATION_BUILD_USER:$(id -gn "$ISOLATION_BUILD_USER")" \
     "$external_cellar" "$external_opt"

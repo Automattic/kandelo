@@ -7018,7 +7018,8 @@ assert_exact_source_program_projection_is_fresh() {
   # Formula checker through the workflow command argv must not edit that file
   # or silently invalidate every committed program package cache key.
   WASM_POSIX_DEPS_REGISTRY="$REPO_ROOT/packages/registry" \
-    "$xtask_bin" build-deps program-index-context-check ||
+    "$xtask_bin" build-deps program-index-context-check \
+      --source-repo-root "$REPO_ROOT" ||
     fail "Formula checker handoff made the exact-source program projection stale"
 }
 

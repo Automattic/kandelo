@@ -50,9 +50,12 @@
 //!                         authoritative in-tree registry recipe.
 //!   homebrew-validate     Validate Kandelo/Homebrew tap sidecar metadata.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::rc::Rc;
 
 mod archive_stage;
 mod archive_stage_cli;
@@ -131,7 +134,45 @@ fn main() -> ExitCode {
     }
 }
 
+thread_local! {
+    static REPO_ROOT_OVERRIDE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+pub(crate) struct RepoRootOverrideGuard {
+    // The guard resets thread-local state and therefore must be dropped on the
+    // same thread that installed it.
+    _not_send: PhantomData<Rc<()>>,
+}
+
+impl Drop for RepoRootOverrideGuard {
+    fn drop(&mut self) {
+        REPO_ROOT_OVERRIDE.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
+    }
+}
+
+pub(crate) fn install_repo_root_override(root: PathBuf) -> Result<RepoRootOverrideGuard, String> {
+    REPO_ROOT_OVERRIDE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_some() {
+            return Err("xtask repository-root override is already installed".to_string());
+        }
+        *slot = Some(root);
+        Ok(())
+    })?;
+    // WHY: the override belongs to one build-deps command, not ambient process
+    // state. Restoring it on every return (including unwinding) keeps unit tests
+    // and future in-process callers from inheriting another command's identity.
+    Ok(RepoRootOverrideGuard {
+        _not_send: PhantomData,
+    })
+}
+
 pub fn repo_root() -> PathBuf {
+    if let Some(root) = REPO_ROOT_OVERRIDE.with(|slot| slot.borrow().clone()) {
+        return root;
+    }
     // CARGO_MANIFEST_DIR points to tools/xtask/; go up two levels.
     let manifest = env!("CARGO_MANIFEST_DIR");
     Path::new(manifest)

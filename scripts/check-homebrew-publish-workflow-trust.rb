@@ -3212,6 +3212,12 @@ def check_publisher(workflow)
     "HOMEBREW_KANDELO_XTASK_BIN=caller-poison",
     "WASM_POSIX_XTASK_BIN=caller-poison",
     "build-deps program-index-context-check",
+    '--source-repo-root "$2"',
+    "assert_real_relocated_xtask_uses_source_alias",
+    '"--property=BindReadOnlyPaths=$REPO_ROOT:$source_alias"',
+    '"--property=InaccessiblePaths=$REPO_ROOT"',
+    '--source-repo-root "$source_alias"',
+    'global package build input \"flake.nix\" not found',
   ].each do |fragment|
     check(launcher_test.include?(fragment),
           "launcher checker regression lacks #{fragment}")

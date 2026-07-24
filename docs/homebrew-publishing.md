@@ -1027,8 +1027,19 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    exact path across that boundary as `HOMEBREW_KANDELO_XTASK_BIN`. Tap support
    validates and freezes the value while loading the trusted support module,
    then translates only that frozen value to `WASM_POSIX_XTASK_BIN` for the
-   Node or Chromium resolver child. Caller-selected checker paths are neither
-   preserved nor trusted.
+   Node or Chromium resolver child. The resolver invokes that checker with the
+   authenticated read-only Kandelo alias as the narrowly scoped
+   `build-deps program-index-context-check --source-repo-root` argument. This
+   matters because a relocated executable still contains its compile-time
+   checkout path: the explicit root makes global toolchain files, fork-tool
+   Cargo metadata, and repo-relative package inputs all come from the same
+   protected source projection. The option rejects relative, noncanonical, or
+   incomplete roots and is invalid for every other `build-deps` subcommand.
+   Global and fork-tool digest memoization is keyed by that exact root; the
+   publisher's read-only alias and one-shot checker process keep a selected
+   root immutable for the command.
+   Caller-selected checker paths and ambient repository-root overrides are
+   neither preserved nor trusted.
    The workflow also
    materializes the exact `formula_test` and `bottle` groups from pinned
    Homebrew's frozen Gemfile into the temporary overlay, validates their group

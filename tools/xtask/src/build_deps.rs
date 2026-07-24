@@ -1551,32 +1551,58 @@ const FORK_INSTRUMENT_TOOL_INPUTS: &[&str] = &[
     "scripts/run-wasm-fork-instrument.sh",
 ];
 
-static GLOBAL_PACKAGE_TOOLCHAIN_DIGESTS: OnceLock<Result<Vec<BuildInputDigest>, String>> =
-    OnceLock::new();
-static FORK_INSTRUMENT_TOOL_DIGESTS: OnceLock<Result<Vec<BuildInputDigest>, String>> =
-    OnceLock::new();
+type RootDigestCache =
+    OnceLock<Mutex<BTreeMap<PathBuf, Result<Vec<BuildInputDigest>, String>>>>;
 
-fn global_package_toolchain_digests() -> Result<Vec<BuildInputDigest>, String> {
-    GLOBAL_PACKAGE_TOOLCHAIN_DIGESTS
-        .get_or_init(|| {
-            global_package_build_input_digests_for(&repo_root(), GLOBAL_PACKAGE_TOOLCHAIN_INPUTS)
-        })
+static GLOBAL_PACKAGE_TOOLCHAIN_DIGESTS: RootDigestCache = OnceLock::new();
+static FORK_INSTRUMENT_TOOL_DIGESTS: RootDigestCache = OnceLock::new();
+
+fn root_scoped_build_input_digests(
+    cache: &RootDigestCache,
+    root: &Path,
+    compute: impl FnOnce(&Path) -> Result<Vec<BuildInputDigest>, String>,
+) -> Result<Vec<BuildInputDigest>, String> {
+    // WHY: a rootless OnceLock could reuse compile-checkout digests after the
+    // command selects a different protected alias. Same-path memoization is
+    // safe at the publisher boundary because the alias is read-only and each
+    // checker invocation is a fresh process.
+    let cached = cache.get_or_init(|| Mutex::new(BTreeMap::new()));
+    if let Some(result) = cached
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(root)
+        .cloned()
+    {
+        return result;
+    }
+
+    let computed = compute(root);
+    cached
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entry(root.to_path_buf())
+        .or_insert_with(|| computed.clone())
         .clone()
 }
 
+fn global_package_toolchain_digests() -> Result<Vec<BuildInputDigest>, String> {
+    let root = repo_root();
+    root_scoped_build_input_digests(&GLOBAL_PACKAGE_TOOLCHAIN_DIGESTS, &root, |root| {
+        global_package_build_input_digests_for(root, GLOBAL_PACKAGE_TOOLCHAIN_INPUTS)
+    })
+}
+
 fn fork_instrument_tool_digests() -> Result<Vec<BuildInputDigest>, String> {
-    FORK_INSTRUMENT_TOOL_DIGESTS
-        .get_or_init(|| {
-            let root = repo_root();
-            let mut digests =
-                global_package_build_input_digests_for(&root, FORK_INSTRUMENT_TOOL_INPUTS)?;
-            digests.push(BuildInputDigest {
-                label: "cargo-metadata:fork-instrument-build-deps".to_string(),
-                digest: fork_instrument_cargo_dependency_digest(&root)?,
-            });
-            Ok(digests)
-        })
-        .clone()
+    let root = repo_root();
+    root_scoped_build_input_digests(&FORK_INSTRUMENT_TOOL_DIGESTS, &root, |root| {
+        let mut digests =
+            global_package_build_input_digests_for(root, FORK_INSTRUMENT_TOOL_INPUTS)?;
+        digests.push(BuildInputDigest {
+            label: "cargo-metadata:fork-instrument-build-deps".to_string(),
+            digest: fork_instrument_cargo_dependency_digest(root)?,
+        });
+        Ok(digests)
+    })
 }
 
 fn package_uses_fork_instrument_tool(target: &DepsManifest) -> bool {
@@ -5347,8 +5373,108 @@ fn extract_fetch_only_flag(args: Vec<String>) -> (bool, Vec<String>) {
     (fetch_only, rest)
 }
 
+/// Extract the source checkout identity used by the public program-index
+/// freshness boundary. Unlike resolver/cache configuration, this is command
+/// authority and therefore travels in argv rather than mutable ambient state.
+fn extract_source_repo_root_flag(
+    args: Vec<String>,
+) -> Result<(Option<PathBuf>, Vec<String>), String> {
+    let mut source_repo_root: Option<PathBuf> = None;
+    let mut rest = Vec::with_capacity(args.len());
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        let value = if let Some(value) = arg.strip_prefix("--source-repo-root=") {
+            Some(value.to_string())
+        } else if arg == "--source-repo-root" {
+            Some(
+                it.next()
+                    .ok_or_else(|| "--source-repo-root requires a path".to_string())?,
+            )
+        } else {
+            None
+        };
+        if let Some(value) = value {
+            if source_repo_root.is_some() {
+                return Err("--source-repo-root given more than once".to_string());
+            }
+            if value.is_empty() {
+                return Err("--source-repo-root requires a path".to_string());
+            }
+            source_repo_root = Some(PathBuf::from(value));
+        } else {
+            rest.push(arg);
+        }
+    }
+    Ok((source_repo_root, rest))
+}
+
+fn validate_source_repo_root_scope(
+    source_repo_root: Option<&Path>,
+    subcommand: &str,
+) -> Result<(), String> {
+    if source_repo_root.is_some() && subcommand != "program-index-context-check" {
+        return Err(format!(
+            "build-deps {subcommand}: --source-repo-root is only valid for \
+             `program-index-context-check`"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_source_repo_root(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err(format!(
+            "--source-repo-root must be an absolute path: {}",
+            path.display()
+        ));
+    }
+    let canonical = std::fs::canonicalize(path).map_err(|error| {
+        format!(
+            "--source-repo-root is not an accessible directory {}: {error}",
+            path.display()
+        )
+    })?;
+    if canonical != path {
+        return Err(format!(
+            "--source-repo-root must be canonical; received {}, canonical path is {}",
+            path.display(),
+            canonical.display()
+        ));
+    }
+    if !canonical.is_dir() {
+        return Err(format!(
+            "--source-repo-root is not a directory: {}",
+            canonical.display()
+        ));
+    }
+    for marker in [
+        "Cargo.toml",
+        "package.json",
+        "tools/xtask/Cargo.toml",
+        "scripts/dev-shell.sh",
+    ] {
+        let marker_path = canonical.join(marker);
+        let metadata = std::fs::symlink_metadata(&marker_path).map_err(|_| {
+            format!(
+                "--source-repo-root is not a complete Kandelo checkout; \
+                 missing regular file {}",
+                marker_path.display()
+            )
+        })?;
+        if !metadata.file_type().is_file() {
+            return Err(format!(
+                "--source-repo-root is not a complete Kandelo checkout; \
+                 expected a regular file at {}",
+                marker_path.display()
+            ));
+        }
+    }
+    Ok(canonical)
+}
+
 pub fn run(args: Vec<String>) -> Result<(), String> {
-    let (arch_flag, rest) = extract_arch_flag(args)?;
+    let (source_repo_root, rest) = extract_source_repo_root_flag(args)?;
+    let (arch_flag, rest) = extract_arch_flag(rest)?;
     let arch = match arch_flag {
         Some(a) => a,
         None => default_target_arch()?,
@@ -5361,6 +5487,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut it = rest.into_iter();
     let sub = it.next().ok_or(
         "usage: xtask build-deps [--arch=wasm32|wasm64] [--binaries-dir <path>] [--fetch-only] \
+         [--source-repo-root <absolute-canonical-path>] \
          <parse|sha|path|resolve|check|cache-root|program-index|program-index-check|program-index-context-check|install-local-artifact|output-metadata|output-path|runtime-file-path|runtime-file-metadata|output-fork-instrumentation|output-fork-instrumentation-for-rel> \
          [<name|path> [<wasm-basename>]]",
     )?;
@@ -5373,6 +5500,19 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     if it.next().is_some() {
         return Err(format!("build-deps {sub}: unexpected extra args"));
     }
+
+    validate_source_repo_root_scope(source_repo_root.as_deref(), &sub)?;
+    let source_repo_root = source_repo_root
+        .as_deref()
+        .map(validate_source_repo_root)
+        .transpose()?;
+    // WHY: install the explicit identity before Registry::from_env or any
+    // global input digest can consult crate::repo_root(). The guard makes
+    // toolchain files, fork-tool Cargo metadata, and repo-relative declared
+    // inputs one coherent source snapshot, then restores in-process callers.
+    let _repo_root_override = source_repo_root
+        .map(crate::install_repo_root_override)
+        .transpose()?;
 
     let repo = repo_root();
     let registry = Registry::from_env(&repo);
@@ -17411,6 +17551,114 @@ libs = ["lib/libF3b.a"]
     // ---------------------------------------------------------------
     // Phase C Task 2: --binaries-dir flag (resolver places symlinks)
     // ---------------------------------------------------------------
+
+    #[test]
+    fn extract_source_repo_root_flag_accepts_both_forms_and_preserves_position() {
+        let (separated, rest) = extract_source_repo_root_flag(vec![
+            "program-index-context-check".into(),
+            "--source-repo-root".into(),
+            "/reviewed/kandelo".into(),
+        ])
+        .unwrap();
+        assert_eq!(separated, Some(PathBuf::from("/reviewed/kandelo")));
+        assert_eq!(rest, vec!["program-index-context-check".to_string()]);
+
+        let (equals, rest) = extract_source_repo_root_flag(vec![
+            "--source-repo-root=/reviewed/kandelo".into(),
+            "program-index-context-check".into(),
+        ])
+        .unwrap();
+        assert_eq!(equals, Some(PathBuf::from("/reviewed/kandelo")));
+        assert_eq!(rest, vec!["program-index-context-check".to_string()]);
+    }
+
+    #[test]
+    fn extract_source_repo_root_flag_rejects_missing_or_duplicate_values() {
+        assert!(extract_source_repo_root_flag(vec!["--source-repo-root".into()])
+            .unwrap_err()
+            .contains("requires a path"));
+        assert!(extract_source_repo_root_flag(vec![
+            "--source-repo-root=/a".into(),
+            "--source-repo-root".into(),
+            "/b".into(),
+        ])
+        .unwrap_err()
+        .contains("more than once"));
+    }
+
+    #[test]
+    fn source_repo_root_override_is_bounded_to_context_check() {
+        validate_source_repo_root_scope(
+            Some(Path::new("/reviewed/kandelo")),
+            "program-index-context-check",
+        )
+        .unwrap();
+        for other in ["check", "resolve", "program-index-check", "cache-root"] {
+            let error =
+                validate_source_repo_root_scope(Some(Path::new("/reviewed/kandelo")), other)
+                    .unwrap_err();
+            assert!(
+                error.contains("only valid for `program-index-context-check`"),
+                "unexpected scope error for {other}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_repo_root_must_be_absolute_canonical_and_complete() {
+        let relative_error = validate_source_repo_root(Path::new("relative/kandelo")).unwrap_err();
+        assert!(relative_error.contains("must be an absolute path"));
+
+        let current = crate::repo_root();
+        let canonical = std::fs::canonicalize(&current).unwrap();
+        validate_source_repo_root(&canonical).unwrap();
+        #[cfg(unix)]
+        {
+            let alias_parent = tempdir("source-repo-root-alias");
+            let noncanonical = alias_parent.join("kandelo");
+            std::os::unix::fs::symlink(&canonical, &noncanonical).unwrap();
+            let noncanonical_error = validate_source_repo_root(&noncanonical).unwrap_err();
+            assert!(noncanonical_error.contains("must be canonical"));
+        }
+
+        let incomplete = tempdir("source-repo-root-incomplete");
+        let incomplete = std::fs::canonicalize(incomplete).unwrap();
+        let incomplete_error = validate_source_repo_root(&incomplete).unwrap_err();
+        assert!(incomplete_error.contains("not a complete Kandelo checkout"));
+    }
+
+    #[test]
+    fn scoped_repo_root_override_is_restored_after_the_command() {
+        let original = crate::repo_root();
+        let replacement = std::fs::canonicalize(tempdir("scoped-source-repo-root")).unwrap();
+        let guard = crate::install_repo_root_override(replacement.clone()).unwrap();
+        assert_eq!(crate::repo_root(), replacement);
+        drop(guard);
+        assert_eq!(crate::repo_root(), original);
+    }
+
+    #[test]
+    fn build_input_digest_cache_is_keyed_by_source_repo_root() {
+        let first = tempdir("root-digest-cache-first");
+        let second = tempdir("root-digest-cache-second");
+        fs::write(first.join("identity.txt"), "first source projection").unwrap();
+        fs::write(second.join("identity.txt"), "second source projection").unwrap();
+        let cache: RootDigestCache = OnceLock::new();
+        let compute = |root: &Path| {
+            global_package_build_input_digests_for(root, &["identity.txt"])
+        };
+
+        let first_digest =
+            root_scoped_build_input_digests(&cache, &first, compute).unwrap();
+        let second_digest =
+            root_scoped_build_input_digests(&cache, &second, compute).unwrap();
+        assert_ne!(first_digest[0].digest, second_digest[0].digest);
+
+        fs::write(first.join("identity.txt"), "changed after memoization").unwrap();
+        let first_cached =
+            root_scoped_build_input_digests(&cache, &first, compute).unwrap();
+        assert_eq!(first_cached[0].digest, first_digest[0].digest);
+    }
 
     #[test]
     fn extract_binaries_dir_flag_separated_form() {

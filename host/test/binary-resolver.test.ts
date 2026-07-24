@@ -436,8 +436,11 @@ describe("program package source freshness boundary", () => {
     writeFileSync(
       checkerPath,
       `#!/bin/sh
+[ "$#" = 4 ]
 [ "$1" = build-deps ]
 [ "$2" = program-index-context-check ]
+[ "$3" = --source-repo-root ]
+[ "$4" = "${realpathSync(findRepoRoot())}" ]
 [ "$WASM_POSIX_DEPS_REGISTRY" = "${fixtureRegistryRoot}" ]
 printf 'checked\\n' >>"${checkerLog}"
 `,
@@ -496,7 +499,8 @@ printf 'checked\\n' >>"${checkerLog}"
     writeFileSync(
       checkerPath,
       `#!/bin/sh
-printf 'checker args: %s %s\\nregistry: %s\\n' "$1" "$2" "$WASM_POSIX_DEPS_REGISTRY" >&2
+printf 'checker args: %s\\n' "$*" >&2
+printf 'registry: %s\\n' "$WASM_POSIX_DEPS_REGISTRY" >&2
 exit 23
 `,
     );
@@ -509,12 +513,21 @@ exit 23
     process.env.WASM_POSIX_XTASK_BIN = checkerPath;
     setProgramIndexContextCheckerForTests(null);
     try {
+      const sourceRepoRootPattern = realpathSync(findRepoRoot()).replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&",
+      );
       expect(() =>
         programOutputClosureRelPaths(
           "programs/wasm32/production-check/production-check.wasm",
         )
       ).toThrow(
-        /program-index-context-check failed with status 23[\s\S]*checker args: build-deps program-index-context-check/,
+        new RegExp(
+          "program-index-context-check --source-repo-root "
+            + `${sourceRepoRootPattern} failed with status 23[\\s\\S]*`
+            + "checker args: build-deps program-index-context-check "
+            + `--source-repo-root ${sourceRepoRootPattern}`,
+        ),
       );
     } finally {
       if (hadSavedXtask) {
