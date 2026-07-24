@@ -108,15 +108,7 @@ function writeProgramProjection(
   mkdirSync(packageRoot, { recursive: true });
   writeFileSync(join(packageRoot, "package.toml"), manifest);
   const indexPath = join(registryRoot, "program-packages.json");
-  const cargoArgs = [
-    "run",
-    "--release",
-    "--quiet",
-    "-p",
-    "xtask",
-    "--target",
-    rustHostTarget(),
-    "--",
+  const indexArgs = [
     "build-deps",
     "program-index",
     registryRoot,
@@ -130,28 +122,53 @@ function writeProgramProjection(
   // The source checkout deliberately rejects hand-authored cache identities.
   // Generate this synthetic registry through the same Rust manifest parser and
   // cache-key implementation that Vite rechecks before serving package bytes.
-  if (process.env.KANDELO_DEV_SHELL_TOOL_PATH !== undefined) {
-    execFileSync("cargo", cargoArgs, {
+  const preparedXtask = process.env.WASM_POSIX_XTASK_BIN;
+  if (preparedXtask !== undefined) {
+    // WHY: Portable CI workspaces carry the exact release checker but omit
+    // Cargo fingerprints. Rebuilding it inside this 120-second browser test
+    // would relink the same checker and spend the assertion budget on setup.
+    // If the transported path is invalid, fail instead of silently rebuilding
+    // a checker that might not match the workspace under test.
+    execFileSync(preparedXtask, indexArgs, {
       cwd: repoRoot,
       env: environment,
       stdio: "pipe",
     });
   } else {
-    execFileSync(
-      "bash",
-      [
-        join(repoRoot, "scripts", "dev-shell.sh"),
-        "env",
-        `WASM_POSIX_DEPS_REGISTRY=${registryStack}`,
-        "cargo",
-        ...cargoArgs,
-      ],
-      {
+    const cargoArgs = [
+      "run",
+      "--release",
+      "--quiet",
+      "-p",
+      "xtask",
+      "--target",
+      rustHostTarget(),
+      "--",
+      ...indexArgs,
+    ];
+    if (process.env.KANDELO_DEV_SHELL_TOOL_PATH !== undefined) {
+      execFileSync("cargo", cargoArgs, {
         cwd: repoRoot,
-        env: process.env,
+        env: environment,
         stdio: "pipe",
-      },
-    );
+      });
+    } else {
+      execFileSync(
+        "bash",
+        [
+          join(repoRoot, "scripts", "dev-shell.sh"),
+          "env",
+          `WASM_POSIX_DEPS_REGISTRY=${registryStack}`,
+          "cargo",
+          ...cargoArgs,
+        ],
+        {
+          cwd: repoRoot,
+          env: process.env,
+          stdio: "pipe",
+        },
+      );
+    }
   }
   const projection = JSON.parse(readFileSync(indexPath, "utf8")) as {
     packages?: Record<string, { cacheKeys?: { wasm32?: unknown } }>;
@@ -164,6 +181,70 @@ function writeProgramProjection(
   }
   return cacheKey;
 }
+
+test("synthetic projections reuse an explicitly prepared checker and fail closed", () => {
+  const savedXtask = process.env.WASM_POSIX_XTASK_BIN;
+  const testRoot = mkdtempSync(join(tmpdir(), "kandelo-vite-projection-"));
+  const checker = join(testRoot, "prepared-xtask");
+  const marker = join(testRoot, "checker-args.json");
+  const registryRoot = join(testRoot, "registry");
+  const packageName = "prepared-checker-fixture";
+  const cacheKey = "b".repeat(64);
+
+  try {
+    writeFileSync(
+      checker,
+      [
+        "#!/usr/bin/env node",
+        'const { writeFileSync } = require("node:fs");',
+        `const expected = ${JSON.stringify([
+          "build-deps",
+          "program-index",
+          registryRoot,
+          join(registryRoot, "program-packages.json"),
+        ])};`,
+        "if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(expected)) process.exit(93);",
+        `writeFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(2)));`,
+        `writeFileSync(expected[3], ${JSON.stringify(
+          JSON.stringify({
+            packages: {
+              [packageName]: { cacheKeys: { wasm32: cacheKey } },
+            },
+          }),
+        )});`,
+        "",
+      ].join("\n"),
+    );
+    chmodSync(checker, 0o755);
+    process.env.WASM_POSIX_XTASK_BIN = checker;
+
+    expect(writeProgramProjection(registryRoot, packageName)).toBe(cacheKey);
+    expect(JSON.parse(readFileSync(marker, "utf8"))).toEqual([
+      "build-deps",
+      "program-index",
+      registryRoot,
+      join(registryRoot, "program-packages.json"),
+    ]);
+
+    writeFileSync(
+      checker,
+      ["#!/usr/bin/env node", "process.exit(97);", ""].join("\n"),
+    );
+    expect(() =>
+      writeProgramProjection(
+        join(testRoot, "failed-registry"),
+        "failed-prepared-checker",
+      ),
+    ).toThrow();
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+    if (savedXtask === undefined) {
+      delete process.env.WASM_POSIX_XTASK_BIN;
+    } else {
+      process.env.WASM_POSIX_XTASK_BIN = savedXtask;
+    }
+  }
+});
 
 test("Vite dependency scanning does not require the package checker", async () => {
   const savedXtask = process.env.WASM_POSIX_XTASK_BIN;
