@@ -56,7 +56,7 @@ test("resolves the image-owned shell from the rebooted filesystem", async () => 
   const resolved = resolveHomebrewGuestLifecycleShell(rebooted);
 
   assert.deepEqual(resolved, {
-    bytes: new Uint8Array([0, 97, 115, 109]),
+    path: "/bin/bash",
     argv0: "bash",
   });
 });

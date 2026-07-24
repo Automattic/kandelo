@@ -27,6 +27,7 @@ interface CapturedMessage {
 
 class MockWorker {
   static instances: MockWorker[] = [];
+  static detachTransfers = false;
   url: string | URL;
   options: any;
   onmessage: ((e: { data: unknown }) => void) | null = null;
@@ -40,6 +41,11 @@ class MockWorker {
     MockWorker.instances.push(this);
   }
   postMessage(data: unknown, transfer: Transferable[] = []) {
+    if (MockWorker.detachTransfers) {
+      const cloned = structuredClone(data, { transfer });
+      this.sent.push({ data: cloned, transfer: [...transfer] });
+      return;
+    }
     this.sent.push({ data, transfer });
   }
   addEventListener(_type: string, _h: (e: any) => void) {
@@ -84,6 +90,7 @@ async function loadBrowserKernel() {
 describe("BrowserKernel", () => {
   beforeEach(() => {
     MockWorker.instances = [];
+    MockWorker.detachTransfers = false;
     vi.stubGlobal("Worker", MockWorker as any);
     // Provide a fetch stub for kernel.init() / boot() default kernelWasm
     // fetch path. Tests that exercise init/boot pass kernelWasm explicitly,
@@ -134,6 +141,82 @@ describe("BrowserKernel", () => {
 
     worker.simulateMessage({ type: "ready" });
     await initPromise;
+  });
+
+  it("preserves caller bytes through initFromImage copy semantics", async () => {
+    MockWorker.detachTransfers = true;
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const sourceBuffer = new ArrayBuffer(4);
+    new Uint8Array(sourceBuffer).set([1, 2, 3, 4]);
+    const source = new Uint8Array(sourceBuffer);
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: source,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    const captured = worker.sent.find(({ data }) => data?.type === "init")!;
+    expect(captured.transfer).not.toContain(sourceBuffer);
+    expect(sourceBuffer.byteLength).toBe(4);
+    expect(source).toEqual(new Uint8Array([1, 2, 3, 4]));
+    source.fill(9);
+    expect(captured.data.vfsImage).toEqual(new Uint8Array([1, 2, 3, 4]));
+
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
+    expect(sourceBuffer.byteLength).toBe(4);
+  });
+
+  it("detaches exactly the caller-owned VFS buffer through initFromOwnedImage", async () => {
+    MockWorker.detachTransfers = true;
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const owned = new ArrayBuffer(4);
+    new Uint8Array(owned).set([4, 3, 2, 1]);
+    const initPromise = kernel.initFromOwnedImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: owned,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    const captured = worker.sent.find(({ data }) => data?.type === "init")!;
+    expect(owned.byteLength).toBe(0);
+    expect(captured.data.vfsImage).toEqual(new Uint8Array([4, 3, 2, 1]));
+
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
+  });
+
+  it("boots and spawns from a caller-owned VFS image", async () => {
+    MockWorker.detachTransfers = true;
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const owned = new ArrayBuffer(3);
+    new Uint8Array(owned).set([7, 8, 9]);
+    const bootPromise = kernel.bootFromOwnedImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: owned,
+      argv: ["/bin/init"],
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    expect(owned.byteLength).toBe(0);
+    worker.simulateMessage({ type: "ready" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const spawn = worker.lastMessage("spawn");
+    expect(spawn.programPath).toBe("/bin/init");
+    worker.simulateMessage({
+      type: "response",
+      requestId: spawn.requestId,
+      result: 100,
+    });
+    const { exit } = await bootPromise;
+    worker.simulateMessage({ type: "exit", pid: 100, status: 0 });
+    await expect(exit).resolves.toBe(0);
   });
 
   it("rejects an invalid closed binding before spawning a worker", async () => {

@@ -331,8 +331,61 @@ grep -Fq 'apps/browser-demos/test-results' "$WORKFLOW" ||
 grep -Fq '${{ runner.temp }}/homebrew-main-shell-modeset-playwright.json' \
   "$WORKFLOW" ||
   fail "main-shell evidence must retain the isolated MODESET report"
-[ "$(grep -Fc 'bash ../../scripts/dev-shell.sh env \' "$WORKFLOW")" -eq 2 ] ||
-  fail "shell and MODESET proofs must run in separate isolated browser processes"
+# WHY: process isolation is a contract of each heavyweight browser proof, not
+# an incidental total invocation count. Name every standalone command so adding
+# another legitimate proof cannot silently relabel which contracts are isolated.
+browser_invocation_for() {
+  local test_path="$1"
+  awk -v test_path="$test_path" '
+    index($0, "bash ../../scripts/dev-shell.sh env \\") {
+      invocation = $0 ORS
+      active = 1
+      matched = 0
+      next
+    }
+    active {
+      invocation = invocation $0 ORS
+      if (index($0, "npx playwright test " test_path " \\")) {
+        matched = 1
+      }
+      if (matched && $0 !~ /\\[[:space:]]*$/) {
+        printf "%s", invocation
+        exit
+      }
+      if (!matched && $0 !~ /\\[[:space:]]*$/) {
+        active = 0
+      }
+    }
+  ' "$WORKFLOW"
+}
+guest_lifecycle_browser_invocation="$(
+  browser_invocation_for "test/homebrew-guest-lifecycle.spec.ts"
+)"
+grep -Fq 'bash ../../scripts/dev-shell.sh env \' \
+  <<<"$guest_lifecycle_browser_invocation" &&
+  grep -Fq -- '--grep "rejects a guest lifecycle fixture"' \
+    <<<"$guest_lifecycle_browser_invocation" ||
+  fail "offline guest-lifecycle rejection must run in its own browser process"
+shell_browser_invocation="$(
+  browser_invocation_for "test/kandelo-homebrew-main-shell.spec.ts"
+)"
+grep -Fq 'bash ../../scripts/dev-shell.sh env \' \
+  <<<"$shell_browser_invocation" &&
+  grep -Fq '"PLAYWRIGHT_JSON_OUTPUT_FILE=$shell_report" \' \
+    <<<"$shell_browser_invocation" &&
+  grep -Fq -- '--project=chromium --reporter=json' \
+    <<<"$shell_browser_invocation" ||
+  fail "shell acceptance must run in its own reporting browser process"
+modeset_browser_invocation="$(
+  browser_invocation_for "test/kandelo-modeset.spec.ts"
+)"
+grep -Fq 'bash ../../scripts/dev-shell.sh env \' \
+  <<<"$modeset_browser_invocation" &&
+  grep -Fq '"PLAYWRIGHT_JSON_OUTPUT_FILE=$modeset_report" \' \
+    <<<"$modeset_browser_invocation" &&
+  grep -Fq -- '--project=chromium --reporter=json' \
+    <<<"$modeset_browser_invocation" ||
+  fail "MODESET acceptance must run in its own reporting browser process"
 grep -Fq '"PLAYWRIGHT_JSON_OUTPUT_FILE=$shell_report"' "$WORKFLOW" ||
   fail "shell acceptance must have Playwright write JSON directly to its report file"
 grep -Fq '"PLAYWRIGHT_JSON_OUTPUT_FILE=$modeset_report"' "$WORKFLOW" ||

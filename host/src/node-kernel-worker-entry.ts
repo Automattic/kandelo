@@ -716,12 +716,28 @@ async function handleInit(msg: InitMessage) {
 
 // --- Spawn ---
 
-function handleSpawn(msg: SpawnMessage) {
+async function handleSpawn(msg: SpawnMessage) {
   let releaseMutation: (() => void) | undefined;
   let createdPid: number | undefined;
   try {
     releaseMutation = rootfsSnapshotGate.beginMutation("spawn a process");
-    if (!isWasmModuleBytes(msg.programBytes)) {
+    const hasProgramBytes = msg.programBytes !== undefined;
+    const hasProgramPath = msg.programPath !== undefined;
+    if (hasProgramBytes === hasProgramPath) {
+      respondError(
+        msg.requestId,
+        "spawn requires exactly one of programBytes or programPath",
+      );
+      return;
+    }
+    const programBytes = msg.programBytes ??
+      await readExecFromVfs(msg.programPath!);
+    const programModule = hasProgramBytes ? msg.programModule : undefined;
+    if (programBytes === null) {
+      respondError(msg.requestId, `ENOENT: ${msg.programPath}`);
+      return;
+    }
+    if (!isWasmModuleBytes(programBytes)) {
       respondError(msg.requestId, "ENOEXEC: program is not a WebAssembly module");
       return;
     }
@@ -730,12 +746,12 @@ function handleSpawn(msg: SpawnMessage) {
       msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
     );
     createdPid = pid;
-    const ptrWidth = detectPtrWidth(msg.programBytes);
+    const ptrWidth = detectPtrWidth(programBytes);
     const {
       memory,
       layout,
       threadAllocator,
-    } = createFreshProcessMemory(pid, msg.programBytes, ptrWidth);
+    } = createFreshProcessMemory(pid, programBytes, ptrWidth);
     const channelOffset = layout.channelOffset;
 
     kernelWorker.registerProcess(pid, memory, [channelOffset], {
@@ -779,8 +795,8 @@ function handleSpawn(msg: SpawnMessage) {
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
       pid,
-      programBytes: msg.programBytes,
-      programModule: msg.programModule,
+      programBytes,
+      programModule,
       memory,
       channelOffset,
       env: msg.env,
@@ -792,8 +808,8 @@ function handleSpawn(msg: SpawnMessage) {
     const worker = workerAdapter.createWorker(initData);
     processes.set(pid, {
       memory,
-      programBytes: msg.programBytes,
-      programModule: msg.programModule,
+      programBytes,
+      programModule,
       worker,
       channelOffset,
       ptrWidth,
@@ -1692,6 +1708,40 @@ async function handleExportRootfsImage(
   }
 }
 
+async function handleReadVfsFile(
+  msg: Extract<MainToKernelMessage, { type: "read_vfs_file" }>,
+) {
+  const io = vfsExecIO;
+  if (!io) {
+    respond(msg.requestId, null);
+    return;
+  }
+  let releaseMutation: (() => void) | undefined;
+  try {
+    // A read can materialize a deferred file/tree, so it participates in the
+    // same exclusion contract as process launches and rootfs snapshots.
+    releaseMutation = rootfsSnapshotGate.beginMutation(
+      "read or materialize a rootfs file",
+    );
+    const { data, stat } = await readPreparedPlatformFile(io, msg.path);
+    if ((stat.mode & 0o170000) !== 0o100000) {
+      respond(msg.requestId, null);
+      return;
+    }
+    respondTransferredBytes(msg.requestId, data);
+  } catch (error) {
+    if (isMissingPathError(error)) respond(msg.requestId, null);
+    else {
+      respondError(
+        msg.requestId,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  } finally {
+    releaseMutation?.();
+  }
+}
+
 // --- Message dispatch ---
 
 port.on("message", (msg: MainToKernelMessage) => {
@@ -1700,7 +1750,7 @@ port.on("message", (msg: MainToKernelMessage) => {
       handleInit(msg);
       break;
     case "spawn":
-      handleSpawn(msg);
+      void handleSpawn(msg);
       break;
     case "append_stdin_data":
       kernelWorker.appendStdinData(msg.pid, msg.data);
@@ -1722,6 +1772,9 @@ port.on("message", (msg: MainToKernelMessage) => {
       break;
     case "export_rootfs_image":
       void handleExportRootfsImage(msg);
+      break;
+    case "read_vfs_file":
+      void handleReadVfsFile(msg);
       break;
     case "get_fork_count": {
       // Round-trip access to the kernel's per-process fork counter for

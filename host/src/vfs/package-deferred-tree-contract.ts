@@ -1,6 +1,9 @@
 import type { LazyTreeActivation } from "./memory-fs";
 import { VFS_DEFERRED_TREE_LIMITS } from "./deferred-tree-limits";
 
+// WHY: uid_t/gid_t -1 is the POSIX chown "leave unchanged" sentinel and
+// therefore cannot truthfully identify the owner declared by a package
+// descriptor.
 const MAX_OWNER_ID = 0xffff_fffe;
 const PACKAGE_NAME_RE = /^[a-z0-9][a-z0-9+._-]*$/;
 const OUTPUT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9+._-]*$/;

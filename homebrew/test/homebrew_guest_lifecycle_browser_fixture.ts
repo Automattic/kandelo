@@ -1,6 +1,8 @@
 import {
   loadClosedLazyAssetSources,
   MAX_CLOSED_LAZY_ASSET_BYTES,
+  MAX_CLOSED_LAZY_ASSETS,
+  validateClosedLazyAssetSources,
   type ClosedLazyAsset,
   type ClosedLazyAssetSource,
 } from "../../host/src/vfs/closed-lazy-assets";
@@ -77,11 +79,12 @@ const REVISION_KEYS = ["coreRevision", "canaryRevision"] as const;
 const ASSET_KEYS = ["url", "sha256", "bytes"] as const;
 const PAYLOAD_KEYS = ["asset", "url", "sha256", "bytes"] as const;
 const SHA256_RE = /^[0-9a-f]{64}$/;
+const FIXED_EXACT_ASSET_COUNT = 5;
 
 /**
  * Reject ambient or partially specified live inputs before any browser fetch.
  * A lifecycle proof may use network transport, but every accepted byte source
- * remains bound to an immutable URL, exact length, and SHA-256.
+ * remains bound to one canonical URL, exact length, and SHA-256.
  */
 export function projectHomebrewGuestLifecycleBrowserFixture(
   value: unknown,
@@ -174,53 +177,76 @@ export function projectHomebrewGuestLifecycleBrowserFixture(
   };
 }
 
-export async function loadHomebrewGuestLifecycleBrowserFixture(
+export function loadHomebrewGuestLifecycleBrowserFixture(
   value: unknown,
   options: {
     fetchImpl?: FetchLike;
     sourceUrl: (canonicalUrl: string) => string;
+    signal?: AbortSignal;
+  },
+): Promise<LoadedHomebrewGuestLifecycleBrowserFixture> {
+  const loading = loadHomebrewGuestLifecycleBrowserFixtureImpl(value, options);
+  return settleFixtureLoadOnAbort(loading, options.signal);
+}
+
+async function loadHomebrewGuestLifecycleBrowserFixtureImpl(
+  value: unknown,
+  options: {
+    fetchImpl?: FetchLike;
+    sourceUrl: (canonicalUrl: string) => string;
+    signal?: AbortSignal;
   },
 ): Promise<LoadedHomebrewGuestLifecycleBrowserFixture> {
   const fixture = projectHomebrewGuestLifecycleBrowserFixture(value);
   const fetchImpl = options.fetchImpl ?? fetch;
-  const [
-    imageBytes,
-    bootstrapSpecBytes,
-    bootstrapArchiveBytes,
-    bootstrapEnvironmentBytes,
-  ] = await Promise.all([
-    loadExactAsset(fixture.image, "image", options.sourceUrl, fetchImpl),
-    loadExactAsset(
-      fixture.bootstrap.spec,
-      "bootstrap spec",
-      options.sourceUrl,
-      fetchImpl,
-    ),
-    loadExactAsset(
-      fixture.bootstrap.archive,
-      "bootstrap archive",
-      options.sourceUrl,
-      fetchImpl,
-    ),
-    loadExactAsset(
-      fixture.bootstrap.environment,
-      "bootstrap environment",
-      options.sourceUrl,
-      fetchImpl,
-    ),
-  ]);
-
-  const bottleMirrorPlanBytes = await loadExactAsset(
+  const payloads = fixture.bottleMirror.payloads ?? [];
+  const exactAssets = [
+    fixture.image,
+    fixture.bootstrap.spec,
+    fixture.bootstrap.archive,
+    fixture.bootstrap.environment,
     fixture.bottleMirror.plan,
-    "bottle mirror plan",
-    options.sourceUrl,
-    fetchImpl,
+    ...payloads,
+  ];
+  // WHY: validate the entire transport set before I/O so staging the
+  // authority plan ahead of its payloads cannot accidentally grant each
+  // stage a separate count/byte budget or permit a duplicate canonical URL.
+  const sources = validateClosedLazyAssetSources(
+    exactAssets.map((asset) => ({
+      url: asset.url,
+      sourceUrl: options.sourceUrl(asset.url),
+      sha256: asset.sha256,
+      size: asset.bytes,
+    })),
   );
+  const transportController = new AbortController();
+  // WHY: the mirror plan is the authority for its payload URLs and exact
+  // identities. Fetch fixed inputs and that plan first; do not issue payload
+  // requests until the decoded plan proves the fixture declared the same set.
+  const loadedFixedAssets = await loadFixtureAssetSources(
+    sources.slice(0, FIXED_EXACT_ASSET_COUNT),
+    fetchImpl,
+    options.signal,
+    transportController,
+  );
+  const [
+    image,
+    bootstrapSpec,
+    bootstrapArchive,
+    bootstrapEnvironment,
+    bottleMirrorPlan,
+  ] = loadedFixedAssets;
+  const imageBytes = image!.bytes;
+  const bootstrapSpecBytes = bootstrapSpec!.bytes;
+  const bootstrapArchiveBytes = bootstrapArchive!.bytes;
+  const bootstrapEnvironmentBytes = bootstrapEnvironment!.bytes;
+  const bottleMirrorPlanBytes = bottleMirrorPlan!.bytes;
   const plan = decodeHomebrewBottleMirrorPlan(
     bottleMirrorPlanBytes,
     "live Homebrew bottle mirror plan",
   );
   await assertHomebrewBottleMirrorPlanIdentity(plan);
+  throwIfFixtureAborted(options.signal, transportController);
   const expectedPlanUrl = `${plan.release_root}/${plan.manifest_asset}`;
   if (fixture.bottleMirror.plan.url !== expectedPlanUrl) {
     throw new Error(
@@ -250,7 +276,7 @@ export async function loadHomebrewGuestLifecycleBrowserFixture(
       "live bottle payload fixtures must cover each mirror asset exactly once",
     );
   }
-  const payloadSources: ClosedLazyAssetSource[] = plan.assets.map((asset) => {
+  for (const asset of plan.assets) {
     const payload = payloadFixtureByAsset.get(asset.asset);
     if (
       payload === undefined ||
@@ -262,16 +288,38 @@ export async function loadHomebrewGuestLifecycleBrowserFixture(
         `live bottle payload fixture differs from mirror asset ${asset.asset}`,
       );
     }
-    return {
-      url: asset.url,
-      sourceUrl: options.sourceUrl(asset.url),
-      sha256: asset.sha256,
-      size: asset.bytes,
-    };
-  });
-  const closedBottleAssets = await loadClosedLazyAssetSources(payloadSources, {
+  }
+
+  const loadedPayloads = await loadFixtureAssetSources(
+    sources.slice(FIXED_EXACT_ASSET_COUNT),
     fetchImpl,
-    maxConcurrency: 4,
+    options.signal,
+    transportController,
+  );
+  const loadedPayloadByAsset = new Map(
+    payloads.map((payload, index) => [
+      payload.asset,
+      loadedPayloads[index]!,
+    ]),
+  );
+  const closedBottleAssets: ClosedLazyAsset[] = plan.assets.map((asset) => {
+    const payload = payloadFixtureByAsset.get(asset.asset);
+    const loaded = loadedPayloadByAsset.get(asset.asset);
+    if (
+      payload === undefined ||
+      loaded === undefined ||
+      payload.url !== asset.url ||
+      payload.sha256 !== asset.sha256 ||
+      payload.bytes !== asset.bytes ||
+      loaded.url !== asset.url ||
+      loaded.sha256 !== asset.sha256 ||
+      loaded.size !== asset.bytes
+    ) {
+      throw new Error(
+        `live bottle payload fixture differs from mirror asset ${asset.asset}`,
+      );
+    }
+    return loaded;
   });
 
   return {
@@ -283,6 +331,76 @@ export async function loadHomebrewGuestLifecycleBrowserFixture(
     bottleMirrorPlanBytes,
     closedBottleAssets,
   };
+}
+
+function settleFixtureLoadOnAbort<T>(
+  loading: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (signal === undefined) return loading;
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (): boolean => {
+      if (settled) return false;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      return true;
+    };
+    const onAbort = (): void => {
+      if (finish()) reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    // Keep observing the underlying staged load after a deadline wins. Its
+    // loader still cancels active bodies and preserves first-failure cleanup,
+    // while the advertised total deadline can settle even if injected fetch
+    // or Web Crypto work does not cooperate with AbortSignal.
+    void loading.then(
+      (value) => {
+        if (finish()) resolve(value);
+      },
+      (error: unknown) => {
+        if (finish()) reject(error);
+      },
+    );
+    if (signal.aborted) onAbort();
+  });
+}
+
+function throwIfFixtureAborted(
+  signal: AbortSignal | undefined,
+  transportController: AbortController,
+): void {
+  if (signal?.aborted !== true) return;
+  // The stage loader removes its listener after transport cleanup. Preserve
+  // the same cancellation reason if the caller aborts while asynchronous plan
+  // identity validation runs between the fixed and dependent fetch stages.
+  transportController.abort(signal.reason);
+  throw signal.reason;
+}
+
+async function loadFixtureAssetSources(
+  sources: readonly ClosedLazyAssetSource[],
+  fetchImpl: FetchLike,
+  signal: AbortSignal | undefined,
+  transportController: AbortController,
+): Promise<ClosedLazyAsset[]> {
+  try {
+    return await loadClosedLazyAssetSources(sources, {
+      fetchImpl,
+      maxConcurrency: 4,
+      signal,
+      transportController,
+    });
+  } catch (error) {
+    if (signal?.aborted && error === signal.reason) {
+      throw error;
+    }
+    throw new Error(
+      `failed to load exact Homebrew browser lifecycle fixture assets: ` +
+        `${String(error)}`,
+      { cause: error },
+    );
+  }
 }
 
 function projectBottleMirror(value: unknown):
@@ -306,15 +424,40 @@ function projectBottleMirror(value: unknown):
       "Homebrew browser lifecycle bottle payloads must be a non-empty array",
     );
   }
+  if (
+    value.payloads !== undefined &&
+    value.payloads.length >
+      MAX_CLOSED_LAZY_ASSETS - FIXED_EXACT_ASSET_COUNT
+  ) {
+    throw new Error(
+      `Homebrew browser lifecycle fixture exceeds ` +
+        `${MAX_CLOSED_LAZY_ASSETS} exact assets`,
+    );
+  }
+  let payloads: HomebrewGuestLifecycleBottlePayloadFixture[] | undefined;
+  if (value.payloads !== undefined) {
+    payloads = new Array(value.payloads.length);
+    const seenAssets = new Set<string>();
+    for (let index = 0; index < value.payloads.length; index += 1) {
+      if (!Object.hasOwn(value.payloads, index)) {
+        throw new Error(
+          `Homebrew browser lifecycle bottle payload ${index} is missing`,
+        );
+      }
+      const payload = projectBottlePayload(value.payloads[index], index);
+      if (seenAssets.has(payload.asset)) {
+        throw new Error(
+          `Homebrew browser lifecycle bottle payloads duplicate asset ` +
+            `${payload.asset}`,
+        );
+      }
+      seenAssets.add(payload.asset);
+      payloads[index] = payload;
+    }
+  }
   return {
     plan: projectExactAsset(value.plan, "bottle mirror plan"),
-    ...(value.payloads === undefined
-      ? {}
-      : {
-          payloads: value.payloads.map((payload, index) =>
-            projectBottlePayload(payload, index)
-          ),
-        }),
+    ...(payloads === undefined ? {} : { payloads }),
   };
 }
 
@@ -377,35 +520,15 @@ function projectExactAssetFields(
     value.url.includes("#") ||
     parsed.href !== value.url
   ) {
-    throw new Error(`${label} must use one canonical credential-free HTTPS URL`);
+    throw new Error(
+      `${label} must use one canonical HTTPS URL without userinfo or a fragment`,
+    );
   }
   return {
     url: value.url,
     sha256: value.sha256,
     bytes: value.bytes as number,
   };
-}
-
-async function loadExactAsset(
-  asset: HomebrewGuestLifecycleExactAsset,
-  label: string,
-  sourceUrl: (canonicalUrl: string) => string,
-  fetchImpl: FetchLike,
-): Promise<Uint8Array> {
-  try {
-    const [loaded] = await loadClosedLazyAssetSources([{
-      url: asset.url,
-      sourceUrl: sourceUrl(asset.url),
-      sha256: asset.sha256,
-      size: asset.bytes,
-    }], { fetchImpl });
-    return loaded!.bytes;
-  } catch (error) {
-    throw new Error(
-      `failed to load exact Homebrew browser lifecycle ${label}: ${String(error)}`,
-      { cause: error },
-    );
-  }
 }
 
 function hasExactKeys(

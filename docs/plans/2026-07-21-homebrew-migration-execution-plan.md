@@ -815,16 +815,24 @@ successful public guest lifecycle):
 - Node.js and Chromium now share that lifecycle orchestration and the exact
   generated phase scripts; their adapters differ only in host transport,
   process launch, output capture, and rootfs export. The browser fixture is
-  rejected before any fixture network access unless it explicitly opts into a live run
-  and binds the image, bootstrap spec/archive/environment, embedded bottle
-  mirror plan, every closed payload when used, and both tap revisions to exact
-  immutable URLs, byte lengths, and SHA-256 values. Offline unit coverage and
-  a real Chromium admission test are green. This is prepared browser
-  scaffolding, not live bottle evidence: the lifecycle test remains skipped
-  unless both
+  rejected before any fixture network access unless it explicitly opts into a
+  live run and binds the image, bootstrap spec/archive/environment, embedded
+  bottle mirror plan, every closed payload when used, and both tap revisions
+  to exact canonical HTTPS locations plus exact byte lengths and SHA-256
+  values. The mirror release is content-addressed; the other locations need
+  not themselves be immutable because their accepted bytes remain
+  digest-bound. Offline unit coverage and a real Chromium admission test are
+  green. This is prepared browser scaffolding, not live bottle evidence: the
+  lifecycle test remains skipped unless both
   `KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE=1` and
   `KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_FIXTURE_PATH` name an exact
   reviewed fixture.
+- Before the Chromium reboot, the lifecycle runner records the exported
+  image's size and digest, transfers its whole `ArrayBuffer` to the VFS-owning
+  worker, and confirms the main-thread view is detached. Phase two re-reads
+  the small `/etc/kandelo/shell.json` contract through that worker and launches
+  its VFS path. It does not reconstruct the exported filesystem or copy Bash
+  on the browser main thread.
 - The first live run remains gated by one coherent ABI-42 generation. The
   `homebrew-bootstrap` recipe still declares ABI 41, the main-shell mirror
   requires the complete public ABI-42 closure, and the core and independent
