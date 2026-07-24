@@ -636,7 +636,7 @@ jobs:
         run: bash scripts/dev-shell.sh true
 
       - name: Cache xtask build
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -1184,7 +1184,7 @@ jobs:
 
       - name: Set up Node for the shell VFS composer
         if: ${{ matrix.package == 'shell' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
           cache: npm
