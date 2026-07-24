@@ -6604,8 +6604,39 @@ class Escape < Formula
   end
 end
 EOF
+  cat >"$tap/Formula/native-support.rb" <<'EOF'
+require (Tap.fetch("kandelo-dev", "tap-core").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
+class NativeSupport < Formula
+  depends_on KandeloFormulaSupport::BinaryenRequirement => :build
+  depends_on KandeloFormulaSupport::WabtRequirement => [:build, :test]
+  include KandeloFormulaSupport
+end
+EOF
+  cat >"$tap/Formula/dynamic-support.rb" <<'EOF'
+require (Tap.fetch("kandelo-dev", "tap-core").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
+class DynamicSupport < Formula
+  depends_on KandeloFormulaSupport.const_get("WabtRequirement") => [:build, :test]
+  include KandeloFormulaSupport
+end
+EOF
   write_canonical_formula_support \
     "$tap/Kandelo/formula_support/kandelo_formula_support.rb" <<'EOF'
+  class BinaryenRequirement < Requirement
+    KANDELO_NATIVE_FORMULA = "binaryen"
+    KANDELO_NATIVE_SENTINEL = "wasm-opt"
+    fatal true
+    satisfy(build_env: false) { which("wasm-opt") }
+  end
+
+  class WabtRequirement < Requirement
+    KANDELO_NATIVE_FORMULA = "wabt"
+    KANDELO_NATIVE_SENTINEL = "wasm-validate"
+    fatal true
+    satisfy(build_env: false) { which("wasm-validate") }
+  end
+
   def kandelo_runner_command
     runner = Pathname(__dir__)/"run-network-wasm.ts"
     command = +""
@@ -6658,6 +6689,30 @@ EOF
     --formula hello \
     --base-ref "$base" \
     --reviewed-tap-root "$reviewed" >/dev/null
+
+  # Canonical native Requirement declarations name the support module without
+  # loading another local source. Both closure validators must accept that
+  # static reference while the Formula parser retains semantic authority.
+  bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --formula native-support \
+    --base-ref "$base" >/dev/null
+  bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --formula native-support \
+    --base-ref "$base" \
+    --reviewed-tap-root "$reviewed" >/dev/null
+  if bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --formula dynamic-support \
+    --base-ref "$base" >/dev/null 2>"$err"; then
+    fail "Formula source-closure validator accepted a dynamic Requirement reference"
+  fi
+  grep -F "Formula support reference is not a bounded canonical closure" "$err" >/dev/null ||
+    fail "Formula source-closure validator did not explain the dynamic Requirement reference"
 
   printf 'test-only-v2\n' \
     >"$tap/Kandelo/formula_support/test/kandelo_formula_support_test.rb"

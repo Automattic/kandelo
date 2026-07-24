@@ -150,10 +150,13 @@ if grep -Fq "$support_marker" "$BASE_FORMULA"; then
     exit 1
   fi
   tap_fetch_count="$({ grep -Fo 'Tap.fetch' "$BASE_FORMULA" || true; } | wc -l | tr -d '[:space:]')"
-  support_constant_count="$({ grep -Fo 'KandeloFormulaSupport' "$BASE_FORMULA" || true; } | wc -l | tr -d '[:space:]')"
+  # WHY: canonical publisher-only Requirement declarations also name
+  # KandeloFormulaSupport. The source-closure generator below owns the exact
+  # line allowlist, and the Ripper-based runtime-closure parser owns the
+  # Requirement class and tag allowlist. Counting the module token here would
+  # reject those reviewed static declarations without adding source authority.
   if [ "$tap_fetch_count" != "1" ] || \
      [ "$(grep -Fxc '  include KandeloFormulaSupport' "$BASE_FORMULA" || true)" != "1" ] || \
-     [ "$support_constant_count" != "1" ] || \
      grep -Fq 'require_relative' "$BASE_FORMULA"; then
     echo "homebrew-validate-formula-source-closure.sh: Formula has an unsupported local source reference" >&2
     exit 1

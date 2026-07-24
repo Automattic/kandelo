@@ -443,6 +443,12 @@ those classes only through the canonical support require and a literal
 changed metadata or predicates, and `:test`-only native Requirements fail
 closed.
 
+The bottle source-closure layer recognizes those literal Requirement lines as
+references to the already-bound Formula support tree; it does not treat every
+additional `KandeloFormulaSupport` token as a second source loader. Its line
+allowlist rejects other module references, while the Ripper-based Formula
+parser remains authoritative for the closed class and tag allowlists.
+
 The static Formula parser recognizes that exact source shape without
 evaluating Formula Ruby. Schema 4 of the protected host-dependency plan binds
 the Requirement class, native Formula identity, sentinel executable, and

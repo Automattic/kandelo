@@ -35,6 +35,13 @@ SHA256 = re.compile(r"^[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 TAP_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 CANONICAL_UINT = re.compile(r"^(0|[1-9][0-9]*)$")
+# WHY: source closure needs to recognize references into the already-bound
+# support tree without deciding which Requirements are trusted. The Ripper
+# parser remains authoritative for AST placement, class names, and tags.
+NATIVE_REQUIREMENT_REFERENCE = re.compile(
+    r"^  depends_on KandeloFormulaSupport::[A-Z][A-Za-z0-9]*Requirement"
+    r" => (:[a-z]+|\[(?::[a-z]+)(?:, :[a-z]+)*\])$"
+)
 OCI_REMOTE = re.compile(
     r"^ghcr\.io/[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$"
 )
@@ -442,15 +449,25 @@ def source_closure(
     marker = "Kandelo/formula_support/kandelo_formula_support"
     entries: list[dict[str, Any]] = []
     if marker in formula_source:
-        if formula_source.splitlines().count(require_line) != 1:
+        formula_lines = formula_source.splitlines()
+        if formula_lines.count(require_line) != 1:
             fail("Formula support require is not canonical")
+        support_reference_lines = [
+            line for line in formula_lines if "KandeloFormulaSupport" in line
+        ]
+        allowed_support_references = [
+            line
+            for line in support_reference_lines
+            if line == "  include KandeloFormulaSupport"
+            or NATIVE_REQUIREMENT_REFERENCE.fullmatch(line) is not None
+        ]
         if (
             formula_source.count("Tap.fetch") != 1
-            or formula_source.count("KandeloFormulaSupport") != 1
             or "require_relative" in formula_source
+            or allowed_support_references != support_reference_lines
         ):
             fail("Formula support reference is not a bounded canonical closure")
-        if formula_source.splitlines().count("  include KandeloFormulaSupport") != 1:
+        if formula_lines.count("  include KandeloFormulaSupport") != 1:
             fail("Formula support include is not canonical")
         support_root = real_directory(
             tap_root / "Kandelo/formula_support", "Formula support source root"
