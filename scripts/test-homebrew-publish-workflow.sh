@@ -7006,8 +7006,25 @@ EOF
     fail "under-lock publisher does not revalidate the Formula source closure"
 }
 
+assert_exact_source_program_projection_is_fresh() {
+  local host_target xtask_bin
+  host_target="$(rustc -vV | sed -n 's/^host: //p')"
+  xtask_bin="$REPO_ROOT/target/$host_target/release/xtask"
+  [ -n "$host_target" ] && [ -f "$xtask_bin" ] && [ ! -L "$xtask_bin" ] &&
+    [ -x "$xtask_bin" ] ||
+    fail "exact-source projection regression lacks the prebuilt host xtask"
+
+  # WHY: dev-shell.sh is a global package-toolchain input. Passing the scoped
+  # Formula checker through the workflow command argv must not edit that file
+  # or silently invalidate every committed program package cache key.
+  WASM_POSIX_DEPS_REGISTRY="$REPO_ROOT/packages/registry" \
+    "$xtask_bin" build-deps program-index-context-check ||
+    fail "Formula checker handoff made the exact-source program projection stale"
+}
+
 assert_canonical_formula_support_is_load_order_independent
 make_formula_runner_fixture
+assert_exact_source_program_projection_is_fresh
 assert_formula_support_test_pruning_is_bounded
 assert_local_root_spill_uses_caller_work_root
 assert_ghcr_auth_env_does_not_cross_dev_shell

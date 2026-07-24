@@ -21,10 +21,10 @@ UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "5764359641eacc708845ceaf075b04940b6d24c6e3fa20135d5e6e75026f87df"
-PUBLISHER_BUILD_DIGEST = "00973a0b3a996c2053e84681dba90786931a3d2dc58bddfef337df42f6eac712"
+PUBLISHER_BUILD_DIGEST = "d239689c71b23b76fd947cc8a71b0ecb7c89e9da732ea67b779eeb6b0e90f42d"
 PUBLISHER_UPLOAD_DIGEST = "1a9f39031587a5944bce022031d6f84d70f476159d4798bbcb51a4fa8377da9e"
 PUBLISHER_INDEX_DIGEST = "c0eaec6f01ac64e8744b8c98e35b304aa2adafc4ce7ad96416eac85c593fdf87"
-PUBLISHER_VERIFY_DIGEST = "393b4862b62128d1d3f17c24a61b7e4f7981a597e231aeb94518d33bdedaa6db"
+PUBLISHER_VERIFY_DIGEST = "4e50425dcf61caa6068e8685500449dfa8a5cff8c03a61307e79f5050c40150a"
 PUBLISHER_FINALIZE_DIGEST = "b101bc67a1ba796d7986c9cb0e9d0270300e519d2cb6ba60e3ae7fc9b4c6fc2e"
 PUBLISHER_VFS_RELEASE_DIGEST = "34171400552baefd1efee3e05a294308ea3ba783f191f899d1affa5135a4d4da"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
@@ -1883,6 +1883,30 @@ def check_publisher(workflow)
   end
   check(all_xtask_environment_steps == [build_formula_step, verify_formula_step],
         "publisher checker authority is not scoped to the two Formula execution steps")
+  build_dev_shell_index = build_run.index("bash scripts/dev-shell.sh env")
+  build_checker_forward_index = build_run.index(
+    'WASM_POSIX_XTASK_BIN="$WASM_POSIX_XTASK_BIN"'
+  )
+  build_script_index = build_run.index(
+    "bash scripts/homebrew-bottle-build.sh", build_checker_forward_index || 0
+  )
+  check(build_dev_shell_index && build_checker_forward_index && build_script_index &&
+        build_dev_shell_index < build_checker_forward_index &&
+        build_checker_forward_index < build_script_index,
+        "publisher does not pass the scoped checker through the Formula build command")
+  verify_run = verify_formula_step.fetch("run")
+  verify_dev_shell_index = verify_run.index("bash scripts/dev-shell.sh env")
+  verify_checker_forward_index = verify_run.index(
+    'WASM_POSIX_XTASK_BIN="$WASM_POSIX_XTASK_BIN"'
+  )
+  verify_script_index = verify_run.index(
+    "bash scripts/homebrew-verify-poured-bottle.sh",
+    verify_checker_forward_index || 0
+  )
+  check(verify_dev_shell_index && verify_checker_forward_index && verify_script_index &&
+        verify_dev_shell_index < verify_checker_forward_index &&
+        verify_checker_forward_index < verify_script_index,
+        "publisher does not pass the scoped checker through the Formula verifier command")
   check(build_run.include?("unprivileged bottle build received $secret_name") &&
         build_run.include?("scripts/homebrew-bottle-build.sh") &&
         build_run.include?('readlink -f "$HOMEBREW_BREW_FILE"') &&
@@ -3250,8 +3274,16 @@ def check_publisher(workflow)
   check(!runtime_run.include?("cargo run") && !runtime_run.include?("GITHUB_ENV"),
         "publisher Formula test checker is rebuilt or leaked job-wide")
   dev_shell = File.read(File.join(REPO_ROOT, "scripts/dev-shell.sh"))
-  check(dev_shell.include?("--keep WASM_POSIX_XTASK_BIN \\"),
-        "dev shell drops the explicitly scoped Formula checker")
+  check(!dev_shell.include?("WASM_POSIX_XTASK_BIN"),
+        "dev shell makes the Formula checker a global package-toolchain input")
+  check(publisher_test.include?(
+          "assert_exact_source_program_projection_is_fresh"
+        ) && publisher_test.include?(
+          'WASM_POSIX_DEPS_REGISTRY="$REPO_ROOT/packages/registry"'
+        ) && publisher_test.include?(
+          "Formula checker handoff made the exact-source program projection stale"
+        ),
+        "publisher regression does not protect exact-source program cache keys")
   materializer = File.read(File.join(REPO_ROOT, "scripts/materialize-resolver-binaries.sh"))
   [
     'cp -aLx -- "$source_dir" "$staged"',
@@ -5518,6 +5550,16 @@ def self_test(publisher, maintenance, repository_canary)
       )
       step.fetch("env")["WASM_POSIX_XTASK_BIN"] = "/tmp/unreviewed-xtask"
     },
+    "Formula test checker command forwarding bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test",
+        "Build and test Homebrew bottle without publisher credentials"
+      )
+      step["run"] = step.fetch("run").sub(
+        'WASM_POSIX_XTASK_BIN="$WASM_POSIX_XTASK_BIN"',
+        "WASM_POSIX_XTASK_BIN="
+      )
+    },
     "Formula verification checker build bypass" => lambda { |w|
       step = mutate_named_step(
         w, "verify-bottle", "Materialize Formula verification platform runtime"
@@ -5544,6 +5586,16 @@ def self_test(publisher, maintenance, repository_canary)
         "Force-pour and test the exact selected bottle without credentials"
       )
       step.fetch("env")["WASM_POSIX_XTASK_BIN"] = "/tmp/unreviewed-xtask"
+    },
+    "Formula verification checker command forwarding bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle",
+        "Force-pour and test the exact selected bottle without credentials"
+      )
+      step["run"] = step.fetch("run").sub(
+        'WASM_POSIX_XTASK_BIN="$WASM_POSIX_XTASK_BIN"',
+        "WASM_POSIX_XTASK_BIN="
+      )
     },
     "Formula test runtime cache-link materialization bypass" => lambda { |w|
       step = mutate_named_step(w, "build-and-test",
