@@ -77,6 +77,25 @@ interface PackageLayerExecResult {
   stderr: string;
 }
 
+interface RootfsExportAcceptanceRequest {
+  vfsUrl: string;
+  writePath: string;
+  writeText: string;
+}
+
+interface RootfsExportAcceptanceResult {
+  persistedText: string;
+  firstExportSha256: string;
+  secondExportSha256: string;
+  firstExportBytes: number;
+  secondExportBytes: number;
+  lazyEntries: Array<{
+    path: string;
+    url: string;
+    size: number;
+  }>;
+}
+
 declare global {
   interface Window {
     __homebrewVfsTestReady: boolean;
@@ -95,6 +114,9 @@ declare global {
     ) => Promise<PackageLayerExecResult>;
     __destroyPackageLayerAcceptance: () => Promise<void>;
     __packageLayerDiscardedBufferCount: () => number;
+    __runRootfsExportAcceptance: (
+      request: RootfsExportAcceptanceRequest,
+    ) => Promise<RootfsExportAcceptanceResult>;
   }
 }
 
@@ -135,8 +157,15 @@ function appendOutput(current: string, bytes: Uint8Array, label: string): string
   return next;
 }
 
-async function sha256(bytes: ArrayBuffer): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+async function sha256(bytes: ArrayBuffer | Uint8Array): Promise<string> {
+  const source: BufferSource = bytes instanceof Uint8Array
+    ? new Uint8Array(
+        bytes.buffer as ArrayBuffer,
+        bytes.byteOffset,
+        bytes.byteLength,
+      )
+    : bytes;
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", source));
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
@@ -278,6 +307,66 @@ async function init(): Promise<void> {
     } finally {
       if (timer) clearTimeout(timer);
       await kernel.destroy().catch(() => {});
+      await settleWebKitReclaim();
+    }
+  };
+
+  window.__runRootfsExportAcceptance = async (request) => {
+    const initialImage = new Uint8Array(
+      await fetchBytes(request.vfsUrl, "rootfs export VFS image"),
+    );
+    let firstKernel: BrowserKernel | null = new BrowserKernel({
+      kernelOwnedFs: true,
+    });
+    let firstExport: Uint8Array;
+    try {
+      await firstKernel.initFromImage({
+        kernelWasm: kernelBytes,
+        vfsImage: initialImage,
+      });
+      await firstKernel.writeFileToVfs(
+        request.writePath,
+        new TextEncoder().encode(request.writeText),
+        0o640,
+      );
+      firstExport = await firstKernel.exportRootfsImage();
+    } finally {
+      await firstKernel?.destroy().catch(() => {});
+      firstKernel = null;
+      await settleWebKitReclaim();
+    }
+
+    const parsed = MemoryFileSystem.fromImage(firstExport);
+    const lazyEntries = parsed.exportLazyEntries().map((entry) => ({
+      path: entry.path,
+      url: entry.url,
+      size: entry.size,
+    }));
+
+    let secondKernel: BrowserKernel | null = new BrowserKernel({
+      kernelOwnedFs: true,
+    });
+    try {
+      await secondKernel.initFromImage({
+        kernelWasm: kernelBytes,
+        vfsImage: firstExport,
+      });
+      const persisted = await secondKernel.readFileFromVfs(request.writePath);
+      if (persisted === null) {
+        throw new Error(`exported rootfs lost ${request.writePath}`);
+      }
+      const secondExport = await secondKernel.exportRootfsImage();
+      return {
+        persistedText: new TextDecoder().decode(persisted),
+        firstExportSha256: await sha256(firstExport),
+        secondExportSha256: await sha256(secondExport),
+        firstExportBytes: firstExport.byteLength,
+        secondExportBytes: secondExport.byteLength,
+        lazyEntries,
+      };
+    } finally {
+      await secondKernel?.destroy().catch(() => {});
+      secondKernel = null;
       await settleWebKitReclaim();
     }
   };

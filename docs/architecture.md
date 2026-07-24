@@ -901,6 +901,20 @@ changed by another worker. `materializeAll: true` resolves both standalone and
 archive-backed entries and fails instead of emitting an image that still
 depends on a deferred URL.
 
+Kernel-owned machines expose that same durable boundary through
+`NodeKernelHost.exportRootfsImage()` and
+`BrowserKernel.exportRootfsImage()`. Export is available only after a
+VFS-backed kernel has initialized and every guest process and worker teardown
+has completed. The owning worker closes a snapshot gate before its first
+asynchronous wait, drains host-side mutations that started earlier, and rejects
+later spawns, lazy registration, materializing reads, writes, unlinks, and
+concurrent exports until serialization settles. The returned image contains
+only the `/` image backend; boot-scoped scratch, device, and shared-memory
+mounts are recreated on the next boot. Lazy descriptors and image metadata
+remain part of the root image, so a deferred package that was never opened
+stays deferred after export and restore. Callers must await the export before
+destroying the host.
+
 **Restore from an image:**
 
 ```typescript

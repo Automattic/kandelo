@@ -66,6 +66,7 @@ import {
   threadWorkerFailureDisposition,
 } from "./thread-worker-disposition";
 import { VmInterruptTimerManager } from "./vm-interrupt-timer";
+import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
 import {
   computeProcessMemoryLayout,
   createProcessMemory,
@@ -104,6 +105,7 @@ let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
 let execPrograms: Record<string, string> = {};
 let vfsExecIO: PlatformIO | null = null;
 let rootfsMemfs: MemoryFileSystem | null = null;
+let initReady = false;
 /** Per-boot scratch directory; cleaned up on `destroy`. Only set when the
  *  worker constructs a `VirtualPlatformIO` from the default mount spec. */
 let sessionDir: string | null = null;
@@ -137,6 +139,7 @@ const vmInterruptTimers = new VmInterruptTimerManager<ProcessInfo>(
   (pid) => processes.get(pid),
 );
 const reportedExits = new Set<number>();
+const rootfsSnapshotGate = new RootfsSnapshotGate();
 
 // Workers terminated by the kernel-worker entry itself (handleExit /
 // handleExec / handleTerminate). The crash safety-net listener checks
@@ -373,6 +376,13 @@ function reportWorkerProtocolError(message: string): void {
 
 function respond(requestId: number, result: unknown) {
   post({ type: "response", requestId, result });
+}
+
+function respondTransferredBytes(requestId: number, result: Uint8Array) {
+  port.postMessage(
+    { type: "response", requestId, result } satisfies KernelToMainMessage,
+    [result.buffer as ArrayBuffer],
+  );
 }
 
 function respondError(requestId: number, error: string) {
@@ -627,6 +637,7 @@ function cleanupSessionDir(): void {
 }
 
 async function handleInit(msg: InitMessage) {
+  initReady = false;
   maxPages = msg.config.maxPages ?? DEFAULT_MAX_PAGES;
   defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
   execPrograms = msg.execPrograms ?? {};
@@ -699,14 +710,17 @@ async function handleInit(msg: InitMessage) {
 
   await kernelWorker.init(msg.kernelWasmBytes);
 
+  initReady = true;
   post({ type: "ready" });
 }
 
 // --- Spawn ---
 
 function handleSpawn(msg: SpawnMessage) {
+  let releaseMutation: (() => void) | undefined;
   let createdPid: number | undefined;
   try {
+    releaseMutation = rootfsSnapshotGate.beginMutation("spawn a process");
     if (!isWasmModuleBytes(msg.programBytes)) {
       respondError(msg.requestId, "ENOEXEC: program is not a WebAssembly module");
       return;
@@ -820,6 +834,8 @@ function handleSpawn(msg: SpawnMessage) {
       kernelWorker.removeProcessFromKernelTable(createdPid);
     }
     respondError(msg.requestId, String(e));
+  } finally {
+    releaseMutation?.();
   }
 }
 
@@ -1647,6 +1663,35 @@ async function handleHttpRequest(msg: HttpRequestMessage) {
   }
 }
 
+async function handleExportRootfsImage(
+  msg: Extract<MainToKernelMessage, { type: "export_rootfs_image" }>,
+) {
+  if (!rootfsMemfs) {
+    respondError(msg.requestId, "rootfs export requires a VFS-backed kernel");
+    return;
+  }
+  if (!initReady) {
+    respondError(msg.requestId, "rootfs export requires an initialized kernel");
+    return;
+  }
+  try {
+    const image = await rootfsSnapshotGate.runSnapshot(async () => {
+      if (processes.size !== 0 || processTeardowns.size !== 0) {
+        throw new Error(
+          "rootfs export requires a quiescent kernel with no live or tearing-down processes",
+        );
+      }
+      return rootfsMemfs!.saveImage();
+    });
+    respondTransferredBytes(msg.requestId, image);
+  } catch (error) {
+    respondError(
+      msg.requestId,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
 // --- Message dispatch ---
 
 port.on("message", (msg: MainToKernelMessage) => {
@@ -1674,6 +1719,9 @@ port.on("message", (msg: MainToKernelMessage) => {
       break;
     case "destroy":
       void handleDestroy(msg);
+      break;
+    case "export_rootfs_image":
+      void handleExportRootfsImage(msg);
       break;
     case "get_fork_count": {
       // Round-trip access to the kernel's per-process fork counter for

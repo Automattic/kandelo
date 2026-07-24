@@ -469,6 +469,121 @@ describe("BrowserKernel", () => {
     expect(await unlinkPromise).toBe(true);
   });
 
+  it("rejects rootfs export before the kernel worker is initialized", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+
+    await expect(kernel.exportRootfsImage()).rejects.toThrow(
+      "rootfs export requires an initialized kernel",
+    );
+    expect(MockWorker.instances).toHaveLength(0);
+    await expect(kernel.destroy()).resolves.toBeUndefined();
+  });
+
+  it("returns the exact rootfs bytes supplied by the worker", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
+
+    const exportPromise = kernel.exportRootfsImage();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const request = worker.lastMessage("export_rootfs_image");
+    expect(request).toMatchObject({ type: "export_rootfs_image" });
+    const expected = new Uint8Array([0, 255, 7, 91]);
+    worker.simulateMessage({
+      type: "response",
+      requestId: request.requestId,
+      result: expected,
+    });
+
+    const actual = await exportPromise;
+    expect(actual).toBe(expected);
+    expect(actual).toEqual(new Uint8Array([0, 255, 7, 91]));
+  });
+
+  it("fails closed for malformed and rejected rootfs export responses", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
+
+    const malformedPromise = kernel.exportRootfsImage();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const malformed = worker.lastMessage("export_rootfs_image");
+    worker.simulateMessage({
+      type: "response",
+      requestId: malformed.requestId,
+      result: [1, 2, 3],
+    });
+    await expect(malformedPromise).rejects.toThrow(
+      "kernel worker returned an invalid rootfs image",
+    );
+
+    const rejectedPromise = kernel.exportRootfsImage();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const rejected = worker.lastMessage("export_rootfs_image");
+    worker.simulateMessage({
+      type: "response",
+      requestId: rejected.requestId,
+      result: null,
+      error: "rootfs export is already in progress",
+    });
+    await expect(rejectedPromise).rejects.toThrow(
+      "rootfs export is already in progress",
+    );
+  });
+
+  it("keeps concurrent rootfs export responses paired to their requests", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
+
+    const first = kernel.exportRootfsImage();
+    const second = kernel.exportRootfsImage();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const requests = worker.sent
+      .map(({ data }) => data)
+      .filter((message) => message?.type === "export_rootfs_image");
+    expect(requests).toHaveLength(2);
+
+    worker.simulateMessage({
+      type: "response",
+      requestId: requests[1].requestId,
+      result: null,
+      error: "rootfs export is already in progress",
+    });
+    worker.simulateMessage({
+      type: "response",
+      requestId: requests[0].requestId,
+      result: new Uint8Array([4, 2]),
+    });
+
+    await expect(first).resolves.toEqual(new Uint8Array([4, 2]));
+    await expect(second).rejects.toThrow(
+      "rootfs export is already in progress",
+    );
+  });
+
   it("reads and validates kernel allocator page telemetry", async () => {
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });

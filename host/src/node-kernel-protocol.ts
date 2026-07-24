@@ -118,6 +118,15 @@ export interface DestroyMessage {
   requestId: number;
 }
 
+/**
+ * Serialize the quiescent worker-owned root filesystem. Boot-scoped scratch
+ * and device mounts are intentionally outside this root-image snapshot.
+ */
+export interface ExportRootfsImageMessage {
+  type: "export_rootfs_image";
+  requestId: number;
+}
+
 /** Request the kernel's per-process fork counter. The kernel-worker entry
  * forwards this to `kernel_get_fork_count` and posts a `response` message
  * with `result` set to a `bigint` (u64 as BigInt). Used by the spawn
@@ -209,6 +218,7 @@ export type MainToKernelMessage =
   | PtyResizeMessage
   | TerminateProcessMessage
   | DestroyMessage
+  | ExportRootfsImageMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
   | ResolveExecResponseMessage

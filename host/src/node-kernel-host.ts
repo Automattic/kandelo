@@ -147,6 +147,8 @@ export interface SpawnOptions {
 
 export class NodeKernelHost {
   private worker!: NodeThreadWorker;
+  private workerStarted = false;
+  private initialized = false;
   private pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: Error) => void }>();
   private exitResolvers = new Map<number, (status: number) => void>();
   private unclaimedExitStatuses = new Map<number, { status: number; sequence: number }>();
@@ -177,6 +179,7 @@ export class NodeKernelHost {
       : snapshotClosedLazyAssets(this.options.rootfsLazyAssets);
 
     this.worker = spawnKernelWorkerThread();
+    this.workerStarted = true;
 
     this.worker.on("message", (msg: KernelToMainMessage) => {
       this.handleWorkerMessage(msg);
@@ -254,6 +257,7 @@ export class NodeKernelHost {
       );
       this.worker.postMessage(initMsg, transfer);
     });
+    this.initialized = true;
   }
 
   /**
@@ -530,23 +534,48 @@ export class NodeKernelHost {
     };
   }
 
+  /**
+   * Serialize the quiescent worker-owned root filesystem for a later boot.
+   * The root image is durable; boot-scoped scratch and device mounts are not.
+   * Callers must wait for every guest process to exit before invoking this.
+   */
+  async exportRootfsImage(): Promise<Uint8Array> {
+    if (!this.initialized) {
+      throw new Error("rootfs export requires an initialized kernel");
+    }
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "export_rootfs_image",
+      requestId,
+    });
+    if (!(result instanceof Uint8Array)) {
+      throw new Error("kernel worker returned an invalid rootfs image");
+    }
+    return result;
+  }
+
   /** Destroy the kernel and release all resources */
   async destroy(): Promise<void> {
-    const requestId = this._nextRequestId++;
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        this.request(requestId, { type: "destroy", requestId }),
-        new Promise((resolve) => {
-          timeoutId = setTimeout(resolve, DESTROY_REQUEST_TIMEOUT_MS);
-        }),
-      ]);
-    } catch {
-      // Worker may have already exited
-    } finally {
-      if (timeoutId !== undefined) clearTimeout(timeoutId);
+    if (!this.workerStarted) return;
+    if (this.initialized) {
+      const requestId = this._nextRequestId++;
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          this.request(requestId, { type: "destroy", requestId }),
+          new Promise((resolve) => {
+            timeoutId = setTimeout(resolve, DESTROY_REQUEST_TIMEOUT_MS);
+          }),
+        ]);
+      } catch {
+        // Worker may have already exited
+      } finally {
+        if (timeoutId !== undefined) clearTimeout(timeoutId);
+      }
     }
-    await this.worker.terminate();
+    await this.worker.terminate().catch(() => {});
+    this.workerStarted = false;
+    this.initialized = false;
     this.exitResolvers.clear();
     this.pendingRequests.clear();
     this.lazyDownloadListeners.clear();
