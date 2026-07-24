@@ -48,6 +48,17 @@ mkdir -p "$PARENT"
 TMP_ROOT="$(mktemp -d "$PARENT/.staging-release.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
+run_xtask_without_credentials() {
+  # WHY: this helper needs a token for GitHub release metadata and downloads,
+  # but the index and archive validators operate only on already-downloaded
+  # bytes and must not inherit publication credentials.
+  env -u GH_TOKEN -u GITHUB_TOKEN \
+    -u HOMEBREW_GITHUB_API_TOKEN \
+    -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+    -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+    "$XTASK" "$@"
+}
+
 release_id="$(gh api "/repos/$REPOSITORY/releases/tags/$TAG" --jq .id)"
 if ! [[ "$release_id" =~ ^[0-9]+$ ]]; then
   echo "validate-staging-release: invalid release id for $TAG: $release_id" >&2
@@ -88,7 +99,7 @@ if [ "$actual_size" != "$index_size" ] || [ "sha256:$actual_sha" != "$index_dige
   exit 1
 fi
 
-"$XTASK" staging-reuse validate \
+run_xtask_without_credentials staging-reuse validate \
   --expected-ledger "$EXPECTED_LEDGER" \
   --index "$TMP_ROOT/source-index.toml" \
   --assets "$TMP_ROOT/assets.json" \
@@ -125,7 +136,7 @@ while IFS=$'\t' read -r asset sha size; do
     --output "$TMP_ROOT/archives/$asset"
 done < "$TMP_ROOT/archive-selection.tsv"
 
-"$XTASK" staging-reuse validate-archives \
+run_xtask_without_credentials staging-reuse validate-archives \
   --expected-ledger "$EXPECTED_LEDGER" \
   --snapshot "$TMP_ROOT/snapshot.json" \
   --archives-dir "$TMP_ROOT/archives" \

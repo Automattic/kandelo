@@ -817,6 +817,65 @@ source commit an ancestor of `main`; immediately afterward, rotate the tap
 caller back to Kandelo `main`. Write publication never accepts a non-main
 Kandelo branch.
 
+An ABI bootstrap may need package archives produced by the reviewed commit
+immediately before the publisher workflow plumbing. Every bootstrap batch uses
+this explicit staging tag and package-producing SHA pair:
+
+```yaml
+prepublication-staging-tag: pr-<number>-staging
+prepublication-staging-kandelo-sha: <exact package-producing commit>
+```
+
+Only the designated batch that would otherwise require the dependency-bearing
+VFS proof also uses:
+
+```yaml
+require-vfs-acceptance: true
+defer-vfs-acceptance-until-postpublication: true
+```
+
+Other bootstrap batches keep both acceptance booleans false.
+
+The tag and package-producing SHA are an all-or-none pair. They are accepted
+only for a non-dry write publication whose `kandelo-ref` is also an exact
+40-character commit. The package-producing commit must be an ancestor of the
+workflow commit. Make the workflow commit reachable from a temporary repository
+branch first; do not move the package-producing PR head while its staging
+release is the publication source. After the exact tap transition and public
+shell proof are green, fast-forward the PR head to the workflow commit and run
+fresh checks against the canonical bottles before merging that exact head.
+
+The planner compiles its index tooling in a credential-free step. The freezer
+removes GitHub and package credentials before projections and transformations,
+reintroduces the workflow token only for the GitHub release snapshot and asset
+downloads, and removes it again from the release validator's pure index/archive
+commands. The planner then derives the wasm32 `rootfs` package and its exact
+runtime dependency closure from each commit's checked-in
+`program-packages.json`, recomputes both expected ledgers, and requires the
+projections and ledgers to match. It then validates and downloads every
+selected staging archive, including its embedded manifest, rebuilds an index
+from only those verified archives, rewrites their relative names to the exact
+staging release URLs, and uploads the resulting index and evidence as one
+same-run Actions artifact. Its manifest records the SHA-256 and byte size of
+the index, projection, expected ledger, staging snapshot, and release asset
+inventory. Activation verifies every binding, requires the exact
+package/architecture/cache-key identity set to agree across all three ledgers,
+and checks each selected snapshot archive against its unique uploaded release
+asset record. Both the builder and the independent verifier
+download that artifact and set `WASM_POSIX_BINARY_INDEX_URL` to its local
+`file://` index before any resolver use. Extra entries in the mutable staging
+index therefore cannot become resolver candidates.
+
+The deferral flag is narrower than disabling VFS acceptance. It is valid only
+when the sealed generation pair is present and
+`require-vfs-acceptance: true` remains set. Formula build/test, public bottle
+upload, anonymous verification, version-index publication, and atomic tap
+finalization still run. Only the dependency-bearing Node/Chromium VFS proof,
+its handoff, and its immutable VFS release wait until the just-published
+bottles are canonical. A postpublication descendant must bind the final tap
+commit and rerun that acceptance without the deferral. Normal main/canonical
+publication supplies none of these inputs and is unchanged.
+
 A dry run keeps those repository identities fixed, but may select a reviewed,
 valid Git branch name or an exact lowercase 40-character commit SHA from each
 repository. The trust step normalizes branch names under `refs/heads/`, and the
@@ -1985,14 +2044,26 @@ checks negative ABI-mismatch and missing-bottle cases.
 
 Browser compatibility requires a separate browser smoke. For the current
 `file-formula` path, the trusted publisher builds a precomposed wasm32 VFS image,
-serves it through the browser demo, runs Chromium Playwright against
-`apps/browser-demos/test/kandelo-homebrew.spec.ts`, and executes:
+serves it through the browser demo, and executes:
 
 ```bash
 /home/linuxbrew/.linuxbrew/bin/file --version
 ```
 
-Only after that smoke passes may sidecars record
+Normal publication prepares the complete supported browser graph and runs
+Chromium Playwright against
+`apps/browser-demos/test/kandelo-homebrew.spec.ts`. A sealed prepublication
+generation cannot prepare that graph because it contains packages whose
+bottles the bootstrap is creating. In that mode, the publisher builds only the
+host and selects the existing `homebrew-vfs-test` Vite input and
+`homebrew-brewfile-vfs.spec.ts`. That focused test binds the exact generated
+VFS SHA-256, exact local kernel SHA-256, executable, argument vector, and
+expected output. It is stronger bottle/image/kernel execution evidence but
+narrower UI-integration evidence; the required post-transition main-shell
+Chromium acceptance closes the full browser integration after the bottles are
+canonical.
+
+Only after the applicable smoke passes may sidecars record
 `runtime_support = ["node", "browser"]` and `browser_compatible = true`.
 Packages without a successful browser smoke remain Node-only.
 
@@ -2005,11 +2076,11 @@ fetch only the base command set and `rootfs`; their focused Vite input does not
 scan the interactive demo. Schema 2 acceptance also boots the image-owned
 default shell through the full machine UI, so the selected acceptance matrix
 entry materializes the supported interactive graph through
-`./run.sh --fetch-only prepare-browser` before that smoke. The `file-formula` gallery
-smoke materializes the same graph. Browser preparation excludes packages whose
-demos are provided by the external software gallery. Those platform assets are
-not the migrated package under test, and unrelated gallery packages are not
-bottle verification prerequisites.
+`./run.sh --fetch-only prepare-browser` before that smoke. The normal
+`file-formula` gallery smoke materializes the same graph. Browser preparation
+excludes packages whose demos are provided by the external software gallery.
+Those platform assets are not the migrated package under test, and unrelated
+gallery packages are not bottle verification prerequisites.
 
 ## Durable Browser-Proven VFS Releases
 

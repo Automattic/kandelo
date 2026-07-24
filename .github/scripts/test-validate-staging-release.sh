@@ -59,6 +59,15 @@ chmod +x "$TMP_ROOT/bin/gh"
 cat > "$TMP_ROOT/bin/xtask" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+for credential_name in \
+  GH_TOKEN GITHUB_TOKEN \
+  HOMEBREW_GITHUB_API_TOKEN HOMEBREW_GITHUB_PACKAGES_TOKEN \
+  HOMEBREW_DOCKER_REGISTRY_TOKEN; do
+  [ -z "${!credential_name:-}" ] || {
+    echo "xtask inherited $credential_name" >&2
+    exit 97
+  }
+done
 action="$1 $2"
 shift 2
 mode=""; output=""; localized=""; index=""; assets=""; archives=""; snapshot=""; scope=""
@@ -111,6 +120,11 @@ ASSETS="$(jq -nc \
 
 run_helper() {
   env PATH="$TMP_ROOT/bin:$PATH" \
+    GH_TOKEN=test-release-token \
+    GITHUB_TOKEN=test-fallback-token \
+    HOMEBREW_GITHUB_API_TOKEN=test-api-token \
+    HOMEBREW_GITHUB_PACKAGES_TOKEN=test-packages-token \
+    HOMEBREW_DOCKER_REGISTRY_TOKEN=test-registry-token \
     GITHUB_REPOSITORY=Automattic/kandelo \
     GH_STUB_ASSETS="${GH_STUB_ASSETS_OVERRIDE:-$ASSETS}" \
     GH_STUB_RELEASE_PRESENT="${GH_STUB_RELEASE_PRESENT:-1}" \

@@ -1,7 +1,7 @@
 # Homebrew Migration Living Execution Plan
 
 - Status: active
-- Last reconciled: 2026-07-23
+- Last reconciled: 2026-07-24
 - Primary repositories: `Automattic/kandelo` and
   `Kandelo-dev/homebrew-tap-core`
 - Purpose: preserve the complete Homebrew migration scope, record what has
@@ -548,17 +548,86 @@ canonical release):
   builds only from Kandelo `main`. Break that cycle without accepting a mutable
   source ref:
 
-  1. finish every non-cyclic #1079 validation and freeze its reviewed head;
-  2. have protected tap `main` hardcode that same exact 40-character SHA as
-     both the reusable-workflow ref and `kandelo-ref`;
+  1. finish every non-cyclic #1079 validation and freeze its reviewed
+     package-producing head `F`;
+  2. make the workflow-only descendant `H` reachable from a temporary
+     Automattic/kandelo branch without moving #1079's head, then have protected
+     tap `main` pin the reusable workflow to exact `H` while separately naming
+     exact `F` as the staged package generation;
   3. publish only the complete intended ABI-42 closure, then update the shell
      lock to the exact resulting tap commit and run exact Node/Chromium and
      staging acceptance;
-  4. merge #1079 with a merge commit so the published Kandelo SHA becomes an
-     ancestor of `main`, verify that ancestry, and immediately rotate the tap
-     caller back to landed Kandelo `main`;
+  4. only after the exact tap commit and public shell proof are green,
+     fast-forward #1079's head from `F` to `H`, rerun fresh checks against the
+     canonical ABI-42 bottles, and merge the exact checked head without
+     rewriting it; then verify ancestry and immediately rotate the tap caller
+     back to landed Kandelo `main`;
   5. restore the repository's normal merge-method setting after that one
      cutover.
+
+  Protocol refinement (2026-07-24): package staging and bottle publication
+  form a two-stage cycle, so one Kandelo commit cannot honestly provide both
+  prepublication package inputs and postpublication bottle-backed VFS
+  acceptance.
+
+  1. Keep #1079's exact package-producing commit
+     `437fde2524ea6ad9c44933f8abbf995a46841009` as generation `F`. Validate and
+     materialize the exact 15-entry `rootfs` wasm32 runtime closure derived
+     from `F`'s committed `program-packages.json`.
+  2. Create and review a workflow/tests/docs-only descendant `H`, then push it
+     to a temporary Automattic/kandelo branch so its reusable workflow SHA is
+     reachable. Do **not** move #1079's head from `F` yet: this keeps its
+     staging tag and package-generation checks undisturbed during tap
+     publication. The protected tap pins both reusable `uses` and
+     `kandelo-ref` to exact `H`, while the publisher separately names exact
+     `F` and `pr-1079-staging`. The publisher must
+     prove `F` is an ancestor of `H`, derive byte-identical expected ledgers
+     from both checkouts, validate every selected archive and embedded
+     manifest, rebuild a minimal index from only those verified archives, and
+     carry that index between jobs as an immutable same-run artifact. Build
+     and independent verification resolve through its local `file://` URL.
+     The artifact manifest binds the hash and size of every evidence file;
+     activation also requires identical package/architecture/cache-key sets
+     across the projection, expected ledger, and staging snapshot and binds
+     each selected snapshot archive to its unique release asset record.
+     Unselected staging entries remain unusable even when the mutable release
+     index contains them.
+  3. Supply the `F`/staging-tag pair to every bootstrap batch. For the one
+     designated batch that would otherwise require dependency-bearing VFS
+     acceptance, retain `require-vfs-acceptance: true` and set the separately
+     reviewed explicit deferral flag; all other batches keep both acceptance
+     booleans false. Ordinary Formula build, bottle verification, anonymous
+     readback, public index publication, and tap finalization still run. Only
+     the dependency-bearing VFS boot, its handoff, and immutable VFS release
+     wait, because those proofs require the bottles this stage is publishing.
+     An absent sealed generation, mutable Kandelo ref, dry run, or deferral
+     without required acceptance fails closed.
+  4. Atomically finalize the ABI-42 tap transition and call its still-symbolic
+     exact immutable commit `T42`. Replace `T42` with its real SHA as soon as
+     it exists; do not let the symbolic name enter a workflow input or
+     artifact record.
+  5. Build the postpublication Kandelo descendant tranche against exact `T42`:
+     `shell`, `lamp`, `nginx-php-vfs`, `nginx-vfs`, `node-vfs`, and
+     `wordpress`. This is the first stage that can close the previously
+     deferred dependency-bearing VFS acceptance without a package/bottle
+     cycle.
+  6. Re-run the existing exact Node.js and Chromium main-shell language
+     acceptance against that descendant and `T42`. It must retain the already
+     proven lazy Python, Perl, Erlang, and Ruby behavior; the sealed
+     prepublication exception is complete only when this postpublication
+     acceptance and immutable VFS publication are green.
+  7. After `T42` and the public shell proof are green, fast-forward #1079's
+     head from `F` to exact `H`. Let fresh PR checks consume the now-canonical
+     ABI-42 bottles, then merge that exact checked head without a squash or
+     rebase. The temporary workflow branch may be removed only after `H` is
+     reachable from landed `main` and the tap caller has rotated back to
+     `main`.
+
+  This refinement supersedes only the assumption that all ABI-42 package and
+  VFS acceptance can occur in one commit/run. It does not remove the merge-SHA
+  preservation, atomic tap transition, full catalog rollout, lazy-shell,
+  guest-Homebrew, registry-retirement, manual-page, or composable-VFS scope
+  elsewhere in this plan.
 
   Rebase or squash is not acceptable for this transition because GitHub
   rewrites the source SHA recorded by the bottle handoffs and sidecars.

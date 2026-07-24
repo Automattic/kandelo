@@ -7007,6 +7007,8 @@ bash "$REPO_ROOT/scripts/test-homebrew-formula-runtime-closure.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-validate-host-dependency-plan.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-bottle-runtime-evidence.sh"
 bash "$REPO_ROOT/scripts/test-publish-immutable-github-release.sh"
+bash "$REPO_ROOT/.github/scripts/test-validate-staging-release.sh"
+bash "$REPO_ROOT/.github/scripts/test-freeze-homebrew-prepublication-generation.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-vfs-release.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-main-shell-closure.sh"
 assert_formula_composition_is_static_and_lossless

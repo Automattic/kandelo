@@ -42,6 +42,15 @@ on:
       require-vfs-acceptance:
         type: boolean
         default: false
+      prepublication-staging-tag:
+        type: string
+        default: ""
+      prepublication-staging-kandelo-sha:
+        type: string
+        default: ""
+      defer-vfs-acceptance-until-postpublication:
+        type: boolean
+        default: false
 
 jobs:
   plan:
@@ -74,6 +83,10 @@ jobs:
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
           TAP_REF: ${{ inputs.tap-ref }}
           BOTTLE_ROOT_URL: ${{ inputs.bottle-root-url }}
+          REQUIRE_VFS_ACCEPTANCE: ${{ inputs.require-vfs-acceptance }}
+          PREPUBLICATION_STAGING_TAG: ${{ inputs.prepublication-staging-tag }}
+          PREPUBLICATION_STAGING_KANDELO_SHA: ${{ inputs.prepublication-staging-kandelo-sha }}
+          DEFER_VFS_ACCEPTANCE: ${{ inputs.defer-vfs-acceptance-until-postpublication }}
         run: |
           set -euo pipefail
           normalize_dry_run_source_ref() {
@@ -135,6 +148,39 @@ jobs:
           [ "$KANDELO_REPOSITORY" = "Automattic/kandelo" ] || {
             echo "::error::publication requires Automattic/kandelo"; exit 2;
           }
+          case "$REQUIRE_VFS_ACCEPTANCE" in
+            true|false) ;;
+            *) echo "::error::require-vfs-acceptance must be true or false"; exit 2 ;;
+          esac
+          case "$DEFER_VFS_ACCEPTANCE" in
+            true|false) ;;
+            *) echo "::error::defer-vfs-acceptance-until-postpublication must be true or false"; exit 2 ;;
+          esac
+          if [ -n "$PREPUBLICATION_STAGING_TAG" ] ||
+             [ -n "$PREPUBLICATION_STAGING_KANDELO_SHA" ]; then
+            [[ "$PREPUBLICATION_STAGING_TAG" =~ ^pr-[1-9][0-9]*-staging$ ]] || {
+              echo "::error::prepublication-staging-tag must be pr-N-staging"; exit 2;
+            }
+            [[ "$PREPUBLICATION_STAGING_KANDELO_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "::error::prepublication-staging-kandelo-sha must be an exact lowercase commit SHA"; exit 2;
+            }
+            [ -n "$PREPUBLICATION_STAGING_TAG" ] &&
+              [ -n "$PREPUBLICATION_STAGING_KANDELO_SHA" ] || {
+              echo "::error::prepublication staging tag and Kandelo SHA must be supplied together"; exit 2;
+            }
+            [ "$DRY_RUN" = "false" ] || {
+              echo "::error::prepublication package generation is restricted to write publication"; exit 2;
+            }
+            [[ "$KANDELO_REF" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "::error::prepublication package generation requires an exact reviewed Kandelo commit"; exit 2;
+            }
+          fi
+          if [ "$DEFER_VFS_ACCEPTANCE" = "true" ]; then
+            [ -n "$PREPUBLICATION_STAGING_TAG" ] &&
+              [ "$REQUIRE_VFS_ACCEPTANCE" = "true" ] || {
+              echo "::error::VFS acceptance may be deferred only for a required sealed prepublication generation"; exit 2;
+            }
+          fi
           [[ "$normalized_tap_repository" =~ ^[a-z0-9_.-]+/homebrew-[a-z0-9_.-]+$ ]] || {
             echo "::error::tap repositories must use owner/homebrew-name"; exit 2;
           }
@@ -175,6 +221,16 @@ jobs:
           path: kandelo
           submodules: false
 
+      - name: Checkout exact prepublication package generation
+        if: ${{ inputs.prepublication-staging-tag != '' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ inputs.prepublication-staging-kandelo-sha }}
+          path: kandelo-generation
+          submodules: false
+
       - name: Checkout tap
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -200,6 +256,27 @@ jobs:
             echo "kandelo-sha=$kandelo_sha"
             echo "tap-sha=$tap_sha"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Bind prepublication generation to the workflow descendant
+        if: ${{ inputs.prepublication-staging-tag != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KANDELO_REPOSITORY: ${{ inputs.kandelo-repository }}
+          KANDELO_SHA: ${{ steps.source-commits.outputs.kandelo-sha }}
+          GENERATION_SHA: ${{ inputs.prepublication-staging-kandelo-sha }}
+        run: |
+          set -euo pipefail
+          [ "$(git -C kandelo-generation rev-parse HEAD)" = "$GENERATION_SHA" ] || {
+            echo "::error::prepublication generation checkout differs from its exact SHA"; exit 2;
+          }
+          compare_status="$(gh api \
+            "/repos/$KANDELO_REPOSITORY/compare/$GENERATION_SHA...$KANDELO_SHA" \
+            --jq .status)"
+          case "$compare_status" in
+            ahead|identical) ;;
+            *) echo "::error::publishing workflow commit must descend from the staged package generation"; exit 1 ;;
+          esac
 
       - name: Validate committed dependency tap lock
         id: dependency-taps
@@ -288,6 +365,77 @@ jobs:
             echo "bottle-root-prefix=$root_prefix"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Install Nix for prepublication generation validation
+        if: ${{ inputs.prepublication-staging-tag != '' }}
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Build prepublication index tooling without credentials
+        if: ${{ inputs.prepublication-staging-tag != '' }}
+        id: prepublication-tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          host_target="$(
+            cd kandelo
+            env -u GH_TOKEN -u GITHUB_TOKEN \
+              -u HOMEBREW_GITHUB_API_TOKEN \
+              -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+              -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+              bash scripts/dev-shell.sh rustc -vV |
+              sed -n 's/^host: //p'
+          )"
+          [[ "$host_target" =~ ^[a-z0-9_]+(-[a-z0-9_.]+){2,}$ ]] || {
+            echo "::error::unable to resolve the prepublication tooling host target"; exit 2;
+          }
+          (
+            cd kandelo
+            env -u GH_TOKEN -u GITHUB_TOKEN \
+              -u HOMEBREW_GITHUB_API_TOKEN \
+              -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+              -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+              bash scripts/dev-shell.sh \
+                cargo build --release -p xtask --target "$host_target"
+          )
+          echo "host-target=$host_target" >>"$GITHUB_OUTPUT"
+
+      - name: Freeze exact prepublication package generation
+        if: ${{ inputs.prepublication-staging-tag != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOST_TARGET: ${{ steps.prepublication-tooling.outputs.host-target }}
+          KANDELO_ABI: ${{ steps.release.outputs.abi }}
+          KANDELO_SHA: ${{ steps.source-commits.outputs.kandelo-sha }}
+          GENERATION_SHA: ${{ inputs.prepublication-staging-kandelo-sha }}
+          STAGING_TAG: ${{ inputs.prepublication-staging-tag }}
+        run: |
+          set -euo pipefail
+          [[ "$HOST_TARGET" =~ ^[a-z0-9_]+(-[a-z0-9_.]+){2,}$ ]] || {
+            echo "::error::invalid prepublication tooling host target"; exit 2;
+          }
+          bash kandelo/.github/scripts/freeze-homebrew-prepublication-generation.sh \
+            --tag "$STAGING_TAG" \
+            --generation-root "$GITHUB_WORKSPACE/kandelo-generation" \
+            --consumer-root "$GITHUB_WORKSPACE/kandelo" \
+            --expected-abi "$KANDELO_ABI" \
+            --generation-sha "$GENERATION_SHA" \
+            --consumer-sha "$KANDELO_SHA" \
+            --repository Automattic/kandelo \
+            --output-dir "$RUNNER_TEMP/homebrew-prepublication-generation" \
+            --xtask "$GITHUB_WORKSPACE/kandelo/target/$HOST_TARGET/release/xtask"
+
+      - name: Upload sealed prepublication package generation
+        if: ${{ inputs.prepublication-staging-tag != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: homebrew-prepublication-generation-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/homebrew-prepublication-generation
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 2
+
       - name: Plan formula matrix
         id: matrix
         shell: bash
@@ -331,6 +479,7 @@ jobs:
           DRY_RUN: ${{ inputs.dry-run }}
           PLANNED_MATRIX: ${{ steps.matrix.outputs.matrix }}
           REQUIRE_VFS_ACCEPTANCE: ${{ inputs.require-vfs-acceptance }}
+          DEFER_VFS_ACCEPTANCE: ${{ inputs.defer-vfs-acceptance-until-postpublication }}
           TAP_NAME: ${{ inputs.tap-name }}
         run: |
           set -euo pipefail
@@ -457,6 +606,12 @@ jobs:
               echo "::error::required dependency-bearing VFS acceptance target ${selected_formula}/wasm32 is absent from the planned matrix; include it and use force when its bottle is already current"
               exit 1
             }
+            if [ "$DEFER_VFS_ACCEPTANCE" = "true" ]; then
+              # WHY: this bootstrap publishes the bottles needed to construct
+              # the acceptance VFS itself. Keep the missing proof explicit so
+              # a postpublication invocation must close the cycle.
+              echo "::notice::dependency-bearing VFS acceptance is explicitly deferred until the sealed generation is canonical"
+            fi
           elif [ "$DRY_RUN" = "true" ] || [ "$target_planned" != "true" ]; then
             echo "::notice::this invocation will produce no dependency-bearing VFS acceptance evidence"
           fi
@@ -630,6 +785,30 @@ jobs:
         run: |
           cd kandelo
           bash scripts/dev-shell.sh true
+
+      - name: Download sealed prepublication package generation
+        if: ${{ inputs.prepublication-staging-tag != '' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: homebrew-prepublication-generation-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/homebrew-prepublication-generation
+
+      - name: Activate sealed prepublication package generation
+        if: ${{ inputs.prepublication-staging-tag != '' }}
+        shell: bash
+        env:
+          KANDELO_ABI: ${{ needs.plan.outputs.abi }}
+          KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          GENERATION_SHA: ${{ inputs.prepublication-staging-kandelo-sha }}
+          STAGING_TAG: ${{ inputs.prepublication-staging-tag }}
+        run: |
+          bash kandelo/.github/scripts/activate-homebrew-prepublication-generation.sh \
+            --bundle "$RUNNER_TEMP/homebrew-prepublication-generation" \
+            --expected-tag "$STAGING_TAG" \
+            --expected-generation-sha "$GENERATION_SHA" \
+            --expected-consumer-sha "$KANDELO_SHA" \
+            --expected-abi "$KANDELO_ABI" \
+            --github-env "$GITHUB_ENV"
 
       - name: Build Kandelo sysroot
         shell: bash
@@ -1865,6 +2044,30 @@ jobs:
           cd kandelo
           bash scripts/dev-shell.sh true
 
+      - name: Download sealed prepublication package generation
+        if: ${{ inputs.prepublication-staging-tag != '' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: homebrew-prepublication-generation-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/homebrew-prepublication-generation
+
+      - name: Activate sealed prepublication package generation
+        if: ${{ inputs.prepublication-staging-tag != '' }}
+        shell: bash
+        env:
+          KANDELO_ABI: ${{ needs.plan.outputs.abi }}
+          KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          GENERATION_SHA: ${{ inputs.prepublication-staging-kandelo-sha }}
+          STAGING_TAG: ${{ inputs.prepublication-staging-tag }}
+        run: |
+          bash kandelo/.github/scripts/activate-homebrew-prepublication-generation.sh \
+            --bundle "$RUNNER_TEMP/homebrew-prepublication-generation" \
+            --expected-tag "$STAGING_TAG" \
+            --expected-generation-sha "$GENERATION_SHA" \
+            --expected-consumer-sha "$KANDELO_SHA" \
+            --expected-abi "$KANDELO_ABI" \
+            --github-env "$GITHUB_ENV"
+
       - name: Download strict build handoff
         id: build-handoff
         continue-on-error: true
@@ -2106,7 +2309,7 @@ jobs:
           esac
 
       - name: Build Kandelo wasm64 sysroot for the interactive browser graph
-        if: ${{ matrix.arch == 'wasm32' && (matrix.formula == 'file-formula' || (!inputs.dry-run && matrix.formula == needs.plan.outputs.vfs-acceptance-formula)) }}
+        if: ${{ matrix.arch == 'wasm32' && ((matrix.formula == 'file-formula' && inputs.prepublication-staging-tag == '') || (!inputs.defer-vfs-acceptance-until-postpublication && !inputs.dry-run && matrix.formula == needs.plan.outputs.vfs-acceptance-formula)) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -2141,29 +2344,6 @@ jobs:
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
           '
 
-      - name: Prepare the supported interactive browser demo graph
-        if: ${{ matrix.arch == 'wasm32' && (matrix.formula == 'file-formula' || (!inputs.dry-run && matrix.formula == needs.plan.outputs.vfs-acceptance-formula)) }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for sysroot_name in sysroot sysroot64; do
-            sysroot_source="$GITHUB_WORKSPACE/kandelo-sysroot-build/$sysroot_name"
-            sysroot_destination="$GITHUB_WORKSPACE/kandelo/$sysroot_name"
-            [ -d "$sysroot_source" ] && [ ! -L "$sysroot_source" ] && \
-              [ -f "$sysroot_source/lib/libc.a" ] || {
-              echo "::error::exact browser $sysroot_name handoff is missing or invalid"; exit 1;
-            }
-            [ ! -e "$sysroot_destination" ] && [ ! -L "$sysroot_destination" ] || {
-              echo "::error::browser verifier $sysroot_name destination already exists"; exit 1;
-            }
-            cp -a -- "$sysroot_source" "$sysroot_destination"
-            [ -f "$sysroot_destination/lib/libc.a" ] || {
-              echo "::error::browser verifier $sysroot_name handoff is incomplete"; exit 1;
-            }
-          done
-          cd kandelo
-          bash scripts/dev-shell.sh ./run.sh --fetch-only prepare-browser
-
       - name: Materialize Formula verification platform runtime
         shell: bash
         run: |
@@ -2183,6 +2363,44 @@ jobs:
             done
             bash scripts/materialize-resolver-binaries.sh "$PWD/binaries"
           '
+
+      - name: Prepare the supported interactive browser demo graph
+        if: ${{ matrix.arch == 'wasm32' && (matrix.formula == 'file-formula' || (!inputs.defer-vfs-acceptance-until-postpublication && !inputs.dry-run && matrix.formula == needs.plan.outputs.vfs-acceptance-formula)) }}
+        shell: bash
+        env:
+          KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
+          PREPUBLICATION_STAGING_TAG: ${{ inputs.prepublication-staging-tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PREPUBLICATION_STAGING_TAG" ] &&
+             [ "$KANDELO_HOMEBREW_FORMULA" = "file-formula" ]; then
+            # WHY: the root browser route statically imports the full demo
+            # graph, including post-T42 packages this bootstrap exists to
+            # publish. The focused Homebrew VFS page imports only the exact
+            # local kernel and the externally supplied test VFS, so build its
+            # host without resolving unrelated demo packages. Postpublication
+            # main-shell Chromium acceptance closes the full UI integration.
+            cd kandelo
+            bash scripts/dev-shell.sh ./run.sh build host
+            exit 0
+          fi
+          for sysroot_name in sysroot sysroot64; do
+            sysroot_source="$GITHUB_WORKSPACE/kandelo-sysroot-build/$sysroot_name"
+            sysroot_destination="$GITHUB_WORKSPACE/kandelo/$sysroot_name"
+            [ -d "$sysroot_source" ] && [ ! -L "$sysroot_source" ] && \
+              [ -f "$sysroot_source/lib/libc.a" ] || {
+              echo "::error::exact browser $sysroot_name handoff is missing or invalid"; exit 1;
+            }
+            [ ! -e "$sysroot_destination" ] && [ ! -L "$sysroot_destination" ] || {
+              echo "::error::browser verifier $sysroot_name destination already exists"; exit 1;
+            }
+            cp -a -- "$sysroot_source" "$sysroot_destination"
+            [ -f "$sysroot_destination/lib/libc.a" ] || {
+              echo "::error::browser verifier $sysroot_name handoff is incomplete"; exit 1;
+            }
+          done
+          cd kandelo
+          bash scripts/dev-shell.sh ./run.sh --fetch-only prepare-browser
 
       - name: Compose only reconstructed bottle metadata into the fresh tap
         shell: bash
@@ -2645,6 +2863,7 @@ jobs:
         shell: bash
         env:
           HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
+          PREPUBLICATION_STAGING_TAG: ${{ inputs.prepublication-staging-tag }}
         run: |
           set -euo pipefail
           cd kandelo
@@ -2683,6 +2902,7 @@ jobs:
             KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
             KANDELO_HOMEBREW_TAP_NAME="$KANDELO_HOMEBREW_TAP_NAME" \
             KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON="$KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON" \
+            PREPUBLICATION_STAGING_TAG="$PREPUBLICATION_STAGING_TAG" \
             bash -s <<'KANDELO_HOMEBREW_BROWSER_SMOKE'
             set -euo pipefail
             browser_vfs_root="$RUNNER_TEMP/homebrew-browser-vfs"
@@ -2709,19 +2929,56 @@ jobs:
             npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts "${vfs_args[@]}"
             cp "$browser_vfs" "$browser_public_dir/homebrew-file-formula.vfs.zst"
 
-            (
-              cd apps/browser-demos
-              playwright_args=(
-                test test/kandelo-homebrew.spec.ts
-                --project=chromium
-                --grep "Homebrew file-formula VFS image boots in browser and runs file --version$"
-                --reporter=json
+            if [ -n "$PREPUBLICATION_STAGING_TAG" ]; then
+              kernel_wasm="$GITHUB_WORKSPACE/kandelo/local-binaries/kernel.wasm"
+              [ -f "$browser_vfs" ] && [ ! -L "$browser_vfs" ] || {
+                echo "::error::sealed Homebrew browser VFS must be a regular non-symlink file"; exit 2;
+              }
+              [ -f "$kernel_wasm" ] && [ ! -L "$kernel_wasm" ] || {
+                echo "::error::sealed Homebrew browser kernel must be a regular non-symlink file"; exit 2;
+              }
+              image_sha256="$(sha256sum "$browser_vfs" | awk '{print $1}')"
+              kernel_sha256="$(sha256sum "$kernel_wasm" | awk '{print $1}')"
+              (
+                cd apps/browser-demos
+                # WHY: the main browser route imports packages that this
+                # sealed bootstrap has not published yet. This focused route
+                # is narrower UI coverage, but it is a stronger execution
+                # binding: Chromium receives the exact generated VFS, exact
+                # local kernel, executable, argv, and expected output.
+                # Post-T42 main-shell Chromium acceptance closes the full UI
+                # integration after those bottles become canonical.
+                playwright_args=(
+                  test test/homebrew-brewfile-vfs.spec.ts
+                  --project=chromium
+                  --grep "the exact dependency-bearing Brewfile VFS boots in Chromium$"
+                  --reporter=json
+                )
+                KANDELO_PLAYWRIGHT_PORT="$browser_port" \
+                  KANDELO_BROWSER_DEMO_INPUTS=homebrew-vfs-test \
+                  KANDELO_HOMEBREW_ACCEPTANCE_VFS_URL="$browser_url" \
+                  KANDELO_HOMEBREW_ACCEPTANCE_VFS_SHA256="$image_sha256" \
+                  KANDELO_HOMEBREW_ACCEPTANCE_KERNEL_SHA256="$kernel_sha256" \
+                  KANDELO_HOMEBREW_ACCEPTANCE_EXECUTABLE=/home/linuxbrew/.linuxbrew/bin/file \
+                  KANDELO_HOMEBREW_ACCEPTANCE_ARGV_JSON='["file","--version"]' \
+                  KANDELO_HOMEBREW_ACCEPTANCE_EXPECTED_STDOUT=file-5.45 \
+                  npx playwright "${playwright_args[@]}" >"$playwright_report"
               )
-              export KANDELO_PLAYWRIGHT_PORT="$browser_port"
-              export KANDELO_BROWSER_FILE_FORMULA_VFS_URL="$browser_url"
-              export KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE=1
-              npx playwright "${playwright_args[@]}" >"$playwright_report"
-            )
+            else
+              (
+                cd apps/browser-demos
+                playwright_args=(
+                  test test/kandelo-homebrew.spec.ts
+                  --project=chromium
+                  --grep "Homebrew file-formula VFS image boots in browser and runs file --version$"
+                  --reporter=json
+                )
+                KANDELO_PLAYWRIGHT_PORT="$browser_port" \
+                  KANDELO_BROWSER_FILE_FORMULA_VFS_URL="$browser_url" \
+                  KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE=1 \
+                  npx playwright "${playwright_args[@]}" >"$playwright_report"
+              )
+            fi
             jq -e "
               .stats.expected == 1 and
               .stats.unexpected == 0 and
@@ -2768,6 +3025,7 @@ jobs:
           KANDELO_HOMEBREW_BROWSER_SMOKE
 
       - name: Boot an exact dependency-bearing Brewfile image on Node and Chromium
+        if: ${{ !inputs.defer-vfs-acceptance-until-postpublication }}
         shell: bash
         env:
           KANDELO_HOMEBREW_ACCEPTANCE_ARCH: ${{ matrix.arch }}
@@ -3170,7 +3428,7 @@ jobs:
           }
 
       - name: Prepare exact browser-proven VFS release handoff
-        if: ${{ !inputs.dry-run && inputs.require-vfs-acceptance && matrix.arch == 'wasm32' && matrix.formula == needs.plan.outputs.vfs-acceptance-formula }}
+        if: ${{ !inputs.defer-vfs-acceptance-until-postpublication && !inputs.dry-run && inputs.require-vfs-acceptance && matrix.arch == 'wasm32' && matrix.formula == needs.plan.outputs.vfs-acceptance-formula }}
         shell: bash
         env:
           KANDELO_HOMEBREW_ABI: ${{ needs.plan.outputs.abi }}
@@ -3211,7 +3469,7 @@ jobs:
             --out "$RUNNER_TEMP/homebrew-vfs-release-handoff"
 
       - name: Upload exact browser-proven VFS release handoff
-        if: ${{ !inputs.dry-run && inputs.require-vfs-acceptance && matrix.arch == 'wasm32' && matrix.formula == needs.plan.outputs.vfs-acceptance-formula }}
+        if: ${{ !inputs.defer-vfs-acceptance-until-postpublication && !inputs.dry-run && inputs.require-vfs-acceptance && matrix.arch == 'wasm32' && matrix.formula == needs.plan.outputs.vfs-acceptance-formula }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: homebrew-vfs-release-handoff-${{ matrix.formula }}-wasm32-attempt-${{ github.run_attempt }}
@@ -3596,7 +3854,7 @@ jobs:
 
   publish-vfs-release:
     needs: [plan, verify-bottle, finalize-tap]
-    if: ${{ always() && !cancelled() && !inputs.dry-run && inputs.require-vfs-acceptance && needs.plan.result == 'success' && needs.verify-bottle.result == 'success' && needs.finalize-tap.result == 'success' && needs.plan.outputs.vfs-acceptance-formula != '' }}
+    if: ${{ always() && !cancelled() && !inputs.defer-vfs-acceptance-until-postpublication && !inputs.dry-run && inputs.require-vfs-acceptance && needs.plan.result == 'success' && needs.verify-bottle.result == 'success' && needs.finalize-tap.result == 'success' && needs.plan.outputs.vfs-acceptance-formula != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
