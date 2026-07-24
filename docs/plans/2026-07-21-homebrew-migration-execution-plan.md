@@ -568,9 +568,9 @@ canonical release):
   pins separately. Before that merge, disable every core-tap and independent
   canary `repository_dispatch` caller and wait until no older caller run is
   queued or active; an already-loaded old caller could otherwise check out the
-  new tap tree. Recheck all 70 reserved GHCR child references immediately
-  before merging the combined tap PR. Afterward, enable only the core
-  production publisher while the frozen Kandelo SHA is not yet on `main`.
+  new tap tree. Recheck all 63 deterministic next-rebuild top-level GHCR tags
+  immediately before merging the combined tap PR. Afterward, enable only the
+  core production publisher while the frozen Kandelo SHA is not yet on `main`.
   Dry-run selection can still choose pre-transition Kandelo `main`, and
   maintenance resolves Kandelo `main` internally, so both remain disabled
   until #1079 is merge-committed and the tap pins are normalized. The
@@ -583,13 +583,17 @@ canonical release):
   Before dispatching ABI-42 writes, reserve a fresh immutable bottle identity
   for every live Formula by incrementing its reviewed `bottle do` rebuild once
   and retaining the last-green hashes as evidence until the trusted finalizer
-  replaces them. GHCR's Homebrew child references contain package version,
+  replaces them. GHCR's Homebrew identity annotations contain package version,
   architecture, and bottle rebuild—not Kandelo ABI—so reusing the ABI-41
   rebuild would either collide with different bytes or stale Formula identity.
-  The exact 63-Formula reservation has 70 declared architecture references; all
-  70 next-rebuild references must be absent before the reservation merges. Tap
-  PR #91 carries this bulk reservation, stacked after the native Requirement
-  rollout in tap PR #86.
+  The exact 63-Formula reservation has 70 declared architecture identities, but
+  those child identity strings are OCI annotations within each Formula's top
+  index rather than independently addressable registry tags. All 63
+  deterministic next-rebuild top-level tags must be absent before the
+  reservation merges. The trusted publisher and finalizer validate each
+  resulting index and its architecture-specific content. Tap PR #91 carries
+  this bulk reservation, stacked after the native Requirement rollout in tap
+  PR #86.
 
   Publish the ABI-42 catalog one Formula per write dispatch, with no more than
   eight write runs queued or active. Refill those slots as soon as a Formula's
