@@ -238,9 +238,7 @@ reusable-homebrew-bottle-maintenance.yml:rebuild
 reusable-homebrew-bottle-maintenance.yml:rollback
 reusable-homebrew-bottle-publish.yml:finalize-tap
 reusable-package-source-publish.yml:publish
-staging-build.yml:lib-matrix-build
-staging-build.yml:matrix-build
-staging-build.yml:repair-staging-index
+staging-build.yml:finalize-staging-release
 staging-cleanup.yml:sweep
 EOF
 )
@@ -263,7 +261,7 @@ actual_lock_callers=$(
       if (line ~ /^#/) next
       if (line ~ /reusable-homebrew-bottle-publish\.yml/ ||
           (line ~ /bash[[:space:]]/ &&
-           line ~ /(state-lock|index-update|compose-initial-index|publish-package-source|homebrew-publish-sidecars|fetch-canonical-index|init-merge-candidate|mark-merge-candidate-ready|recover-canonical-indexes|cleanup-merge-candidates|activate-merge-candidate|clone-rejected-merge-candidate)\.sh/)) {
+           line ~ /(state-lock|index-update|compose-initial-index|publish-package-source|publish-staging-finalization|homebrew-publish-sidecars|fetch-canonical-index|init-merge-candidate|mark-merge-candidate-ready|recover-canonical-indexes|cleanup-merge-candidates|activate-merge-candidate|clone-rejected-merge-candidate)\.sh/)) {
         print workflow ":" job
       }
     }
@@ -612,11 +610,13 @@ grep -Fq 'kandelo-index-transaction-v1-' "$INDEX_STATE_SCRIPT" || \
 
 # A retry can skip matrix builds only after one complete PR-staging release is
 # validated. The post-matrix gate must then freeze fresh current bytes locally;
-# first/partial runs retain the canonical + local-overlay path.
+# first runs consume the single finalizer's complete remote snapshot.
 grep -Fq 'reuse_staging: ${{ steps.compute.outputs.reuse_staging }}' "$STAGING_WORKFLOW" || \
   fail "staging preflight must expose its release-reuse decision"
 grep -Fq -- '--mode structural' "$STAGING_WORKFLOW" || \
   fail "staging preflight must validate complete target-release structure"
+grep -Fq -- '--mode available' "$STAGING_WORKFLOW" || \
+  fail "staging finalizer must allow repairable canonical gaps while freezing its baseline"
 grep -Fq 'validated target/canonical union did not cover the computed matrix' "$STAGING_WORKFLOW" || \
   fail "staging preflight must prove full current coverage before emptying the matrix"
 grep -Fq 'PACKAGE_REUSE_STAGING: ${{ needs.preflight.outputs.reuse_staging }}' "$STAGING_WORKFLOW" || \
@@ -624,10 +624,10 @@ grep -Fq 'PACKAGE_REUSE_STAGING: ${{ needs.preflight.outputs.reuse_staging }}' "
 materialize_step=$(step_block "$STAGING_WORKFLOW" "Materialize binaries")
 grep -Fq 'GH_TOKEN: ${{ github.token }}' <<<"$materialize_step" || \
   fail "staging materialization must authenticate release snapshot reads"
-grep -Fq "needs.preflight.outputs.reuse_staging == 'false'" "$STAGING_WORKFLOW" || \
-  fail "reused staging runs must not download absent matrix artifacts"
-grep -Fq -- '--mode current' "$STAGING_WORKFLOW" || \
-  fail "test-gate must freshly prove the staging ledger is fully current"
+grep -Fq 'PACKAGE_FINALIZED_STAGING:' "$STAGING_WORKFLOW" || \
+  fail "test-gate must distinguish a newly finalized staging snapshot"
+grep -Fq -- '--mode testable' <<<"$materialize_step" || \
+  fail "test-gate must accept only exact-current success or exact failed-entry fallback"
 grep -Fq -- '--materialize' "$STAGING_WORKFLOW" || \
   fail "test-gate must freeze verified staging archive bytes locally"
 grep -Fq 'compose-staging-release-snapshots.sh' "$STAGING_WORKFLOW" || \
@@ -638,8 +638,10 @@ grep -Fq 'archive basename collision with different bytes' "$STAGING_COMPOSE_SCR
   fail "staging union must reject conflicting same-name bytes"
 grep -Fq "printf 'file://%s/index.toml\\n' \"\$OUTPUT_DIR/archives\" > \"\$OUTPUT_DIR/index-url.txt\"" "$STAGING_COMPOSE_SCRIPT" || \
   fail "target-only reuse must rewrite its file URL after final placement"
-grep -Fq 'elif [ "$PACKAGE_STAGE_OVERLAYS_REQUIRED" = "true" ]' "$STAGING_WORKFLOW" || \
-  fail "non-reuse test-gate must retain canonical + local matrix overlays"
+grep -Fq 'staging-finalization-state.outputs.test_ready' "$STAGING_WORKFLOW" || \
+  fail "test preparation must wait for a published, testable finalizer result"
+grep -Fq 'needs: [preflight, staging-finalization-state, test-gate]' "$STAGING_WORKFLOW" || \
+  fail "package staging must remain red independently after testing a fallback"
 grep -Fq 'gh api --paginate --slurp' "$STAGING_REUSE_SCRIPT" || \
   fail "staging release validation must not truncate release assets"
 grep -Fq '$TAG/index.toml bytes changed after metadata snapshot' "$STAGING_REUSE_SCRIPT" || \
@@ -648,7 +650,13 @@ grep -Fq 'download-verified-release-asset.sh' "$STAGING_REUSE_SCRIPT" || \
   fail "staging materialization must verify every snapshotted archive"
 grep -Fq 'cp "$TMP_ROOT/index.toml" "$TMP_ROOT/archives/index.toml"' "$STAGING_REUSE_SCRIPT" || \
   fail "staging materialization must publish the localized index beside verified archives"
-for step in "Compute matrix" "Materialize binaries"; do
+for step in \
+  "Compute matrix" \
+  "Build exact finalization inputs" \
+  "Freeze the available last-green baseline" \
+  "Compose one complete target-relative index" \
+  "Materialize binaries"
+do
   if ! step_run_block "$STAGING_WORKFLOW" "$step" | bash -n; then
     fail "staging workflow step $step is not valid nested shell syntax"
   fi

@@ -1102,9 +1102,10 @@ manifest in-tree; instead, every release tag carries a single
 `index.toml` ledger that records every published archive's URL +
 sha + cache-key. Each `packages/registry/<pkg>/build.toml` points its
 `[binary]` entry at that ledger (typically via `index_url` with a
-`{abi}` placeholder). Matrix jobs upload one `.tar.zst` per
-`(package, arch)` entry and update the target release's package entry under a
-state-lock. PR staging and Prepare-merge candidates are isolated releases.
+`{abi}` placeholder). Matrix jobs produce one `.tar.zst` per
+`(package, arch)` entry. PR staging collects those archives as workflow
+artifacts and one finalizer publishes the complete release under a state-lock;
+Prepare-merge candidates use their own isolated, serialized release.
 Canonical ledgers use a marker, immutable generation, and transaction journal
 so an interrupted replacement can be recovered without interpreting a missing
 stable asset as an empty index.
@@ -1147,7 +1148,8 @@ processes consuming that symlink mirror must set
 targets to the same non-default cache in Rust, Node, shell, and browser
 consumers instead of rejecting a valid generation as foreign.
 
-Each matrix entry then publishes via `scripts/index-update.sh`:
+Candidate and manual canonical matrix entries publish through
+`scripts/index-update.sh`:
 
 ```bash
 bash scripts/index-update.sh \
@@ -1277,10 +1279,12 @@ No `--allow-stale` flag is needed: stale archives just slow the
 first run.
 
 The primary remedy is the per-PR staging-tag flow — push your
-branch, let `staging-build.yml` rebuild the touched packages, and
-each matrix entry's `scripts/index-update.sh` invocation publishes
-its archive + index entry to the PR's `pr-<NNN>-staging` release
-atomically. To consume those artifacts locally, run
+branch and let `staging-build.yml` rebuild the touched packages as
+immutable workflow artifacts. After all matrix jobs finish, one
+credentialed finalizer validates the complete package snapshot,
+publishes every referenced archive, publishes the PR's complete
+`pr-<NNN>-staging` index once, and re-reads all referenced assets.
+To consume those artifacts locally, run
 `./run.sh --pr-staging browser` or set `WASM_POSIX_USE_PR_STAGING=1`.
 `run.sh` detects the PR with `gh`, points
 `WASM_POSIX_BINARY_INDEX_URL` at
@@ -1367,8 +1371,7 @@ for this manifest. Release asset filenames use that compact transport
 label, while the canonical local cache directory uses the full 64-character
 key — `cargo xtask build-deps sha zlib` prints the full form).
 
-After publish, the matrix flow's `scripts/index-update.sh`
-invocation has added an entry to the release's `index.toml`:
+After publish, the final release ledger contains an entry like:
 
 ```toml
 [[packages]]
@@ -1429,7 +1432,8 @@ is simultaneously selected and listed in `WASM_POSIX_FETCH_SKIP_PKGS` fail
 before materialization. Omitting `--package` preserves the full-registry walk.
 
 The package workflows retain the same per-entry build shape but publish to
-different lifecycle states. `staging-build.yml` writes a per-PR staging tag;
+different lifecycle states. `staging-build.yml` collects read-only matrix
+artifacts and uses one finalizer to write a complete per-PR staging tag;
 `prepare-merge.yml` writes and tests a run-specific isolated candidate; and
 `force-rebuild.yml` is the manual canonical rebuild path. Post-merge
 `activate-merge-candidate.yml` verifies the exact merged tree, copies all

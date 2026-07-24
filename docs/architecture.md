@@ -1332,13 +1332,20 @@ Binary resolution does not look at either of those files for archive URLs. Inste
    - Anything else → fall through to source build.
 5. Every installed archive's internal `manifest.toml`'s `[compatibility]` block is verified against the request (target_arch, abi_versions, cache_key_sha). Any mismatch falls through to source build.
 
-**Per-package updates are serialized by release.** CI's per-matrix-build job
-runs `scripts/index-update.sh` after producing each archive: it acquires the
-target tag's workflow-level state-lock (`.github/scripts/state-lock.sh`),
-downloads the current `index.toml`, mutates this package's entry via `xtask
-index-update`, uploads the content-addressed archive, and publishes the updated
-ledger. PR staging and Prepare-merge candidate tags are isolated from
-consumers. Canonical `binaries-abi-v<N>` writers publish through
+**Release updates have one authorized writer.** PR matrix jobs only build
+immutable workflow artifacts. After both matrices finish, one staging
+finalizer freezes all valid expected keys available in canonical state, fills
+absent expected package/architecture keys from matrix artifacts, validates the
+complete expected snapshot offline, acquires the target tag's workflow-level state-lock
+(`.github/scripts/state-lock.sh`) once, reads the full paginated release
+inventory, uploads every referenced immutable archive, replaces one complete
+`index.toml` as the final mutable write, and re-reads all published bytes. This
+is referentially safe but the GitHub
+`--clobber` itself is not an availability-atomic swap. Exact-current
+last-green fallbacks may keep consumer tests useful after a package failure,
+while a separate package result remains red. Prepare-merge candidates may still apply
+serialized per-package updates through `scripts/index-update.sh`; canonical
+`binaries-abi-v<N>` writers publish through
 `scripts/release-index-state.sh`, whose marker, immutable generation, and
 transaction journal make the logical ledger commit crash-recoverable; they do
 not replace the canonical ledger with an unjournaled `--clobber`. Different

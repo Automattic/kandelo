@@ -97,7 +97,8 @@ if [ "$action" = 'staging-reuse validate-archives' ]; then
   else
     [ ! -e "$archives/zlib.tar.zst" ]
   fi
-  [[ "$scope" == all || "$scope" == current-declared-git-inputs ]]
+  [[ "$scope" == all || "$scope" == available ||
+     "$scope" == current-declared-git-inputs ]]
   [ "${XTASK_ARCHIVE_STUB_FAIL:-0}" = 0 ] || exit 1
   exit 0
 fi
@@ -163,6 +164,18 @@ if grep -Fq 'https://' "$TMP_ROOT/current/archives/index.toml"; then
   echo "materialized index retained a remote archive URL" >&2
   exit 1
 fi
+
+run_helper --tag pr-946-staging --expected-ledger "$TMP_ROOT/expected.json" \
+  --mode testable --materialize --output-dir "$TMP_ROOT/testable" \
+  --xtask "$TMP_ROOT/bin/xtask"
+jq -e '.mode == "testable"' "$TMP_ROOT/testable/snapshot.json" >/dev/null
+cmp "$TMP_ROOT/zlib.tar.zst" "$TMP_ROOT/testable/archives/zlib.tar.zst"
+
+run_helper --tag pr-946-staging --expected-ledger "$TMP_ROOT/expected.json" \
+  --mode available --materialize --output-dir "$TMP_ROOT/available" \
+  --xtask "$TMP_ROOT/bin/xtask"
+jq -e '.mode == "available"' "$TMP_ROOT/available/snapshot.json" >/dev/null
+cmp "$TMP_ROOT/zlib.tar.zst" "$TMP_ROOT/available/archives/zlib.tar.zst"
 
 # Target-only finalization must rewrite the helper's provisional file URL to
 # the final directory after moving it.

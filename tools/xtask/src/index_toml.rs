@@ -162,6 +162,21 @@ impl IndexToml {
         removed
     }
 
+    /// Remove every version block for `name` except `keep_version`.
+    ///
+    /// A registry owns one active recipe version for a package name. Batched
+    /// staging starts from a complete last-green index, so a version bump must
+    /// replace that old block before the current result is applied. Keeping
+    /// both blocks would make lookup order significant and would make a
+    /// supposedly complete staging snapshot fail the managed-package split
+    /// check.
+    pub fn retain_package_version(&mut self, name: &str, keep_version: &str) -> usize {
+        let before = self.packages.len();
+        self.packages
+            .retain(|package| package.name != name || package.version == keep_version);
+        before - self.packages.len()
+    }
+
     /// Record a successful build. Overwrites the current archive
     /// fields and clears any prior fallback — once a fresh success
     /// lands, the fallback (which existed only to cover for a

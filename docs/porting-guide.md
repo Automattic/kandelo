@@ -713,17 +713,26 @@ CI runs `staging-build.yml` on the PR, which:
 
 1. Detects the new package in `preflight` (its `compute-cache-key-sha`
    yields an archive name not yet on the durable release).
-2. Runs `archive-stage` for it in `matrix-build`, then invokes
-   `scripts/index-update.sh` per matrix entry to upload the
-   content-addressed `.tar.zst` and mutate the isolated PR staging
-   `index.toml` entry under a workflow-level state-lock.
-3. `test-gate` runs the full 5-suite test gate against the union of
-   matrix-built + durable-release archives.
-4. On `ready-to-ship`, `prepare-merge.yml` snapshots the durable
+2. Runs `archive-stage` for it in `matrix-build` and uploads the
+   content-addressed `.tar.zst` as an immutable workflow artifact.
+3. After all matrix entries finish, one credentialed finalizer freezes the
+   exact-current usable canonical subset, fills every missing, stale,
+   transient, or fallback-less failed package/architecture key from the matrix,
+   requires the composed
+   target-relative snapshot to be complete,
+   takes the staging tag's state-lock once, uploads every referenced archive,
+   publishes one complete `index.toml`, and re-reads every referenced asset.
+   For the first release of a new ABI, the matrix must supply the complete
+   snapshot because no fallback exists yet.
+4. `test-gate` runs the full 5-suite test gate against that exact finalized
+   snapshot. An exact failed attempt may select its verified exact-current
+   fallback for testing, but a separate package result remains red;
+   a failed first-ABI entry without a fallback cannot enter the test gate.
+5. On `ready-to-ship`, `prepare-merge.yml` snapshots the durable
    ledger into a run-specific merge-candidate release. It builds or
    promotes changed archives there, tests the exact synthetic merge,
    and seals that candidate without changing `binaries-abi-v<N>`.
-5. After a reviewer merges the exact prepared tree,
+6. After a reviewer merges the exact prepared tree,
    `activate-merge-candidate.yml` verifies the merge, copies and
    verifies the candidate archives, and commits one complete canonical
    ledger through the crash-recoverable release-index publisher. No bot

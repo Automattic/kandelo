@@ -1,12 +1,10 @@
-//! `xtask index-update` — atomically mutate `index.toml` with the
-//! result of one per-package matrix-build job, or repair release-level
-//! index metadata without touching a package entry.
+//! `xtask index-update` — mutate a local `index.toml` with one package-build
+//! result, or repair release-level index metadata without touching an entry.
 //!
-//! Called from `scripts/index-update.sh` (Phase 8) inside the
-//! state-lock acquired for the target tag. Reads the current
-//! `index.toml`, applies a success-or-failed update, writes the
-//! result back. The lock + GitHub-release sequence around it
-//! guarantees readers always see a consistent ledger.
+//! `scripts/index-update.sh` uses it inside a release state-lock for candidate
+//! and canonical per-entry publication. PR staging calls it only while
+//! composing all immutable matrix artifacts offline; the single finalizer
+//! validates the complete result before any release write.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -46,6 +44,26 @@ pub fn run_index_update(args: &[String]) -> Result<(), String> {
                 "index-update: pruned {pruned} archive entr{} whose filename ABI does not match {}",
                 if pruned == 1 { "y" } else { "ies" },
                 expected_abi
+            );
+        }
+    }
+
+    if parsed.replace_package_version {
+        let package = parsed
+            .package
+            .as_deref()
+            .ok_or("--replace-package-version requires --package")?;
+        let version = parsed
+            .version
+            .as_deref()
+            .ok_or("--replace-package-version requires --version")?;
+        if parsed.status == "repair" {
+            return Err("--replace-package-version cannot be used with --status repair".into());
+        }
+        let removed = idx.retain_package_version(package, version);
+        if removed > 0 {
+            eprintln!(
+                "index-update: replaced {removed} stale version block(s) for {package} with {version}"
             );
         }
     }
@@ -313,6 +331,7 @@ struct ParsedArgs {
     expected_abi: Option<u32>,
     built_at: String,
     built_by: String,
+    replace_package_version: bool,
 }
 
 impl ParsedArgs {
@@ -330,6 +349,7 @@ impl ParsedArgs {
         let mut expected_abi: Option<u32> = None;
         let mut built_at: Option<String> = None;
         let mut built_by: Option<String> = None;
+        let mut replace_package_version = false;
 
         let mut iter = args.iter();
         while let Some(key) = iter.next() {
@@ -362,6 +382,15 @@ impl ParsedArgs {
                 }
                 "--built-at" => built_at = Some(value),
                 "--built-by" => built_by = Some(value),
+                "--replace-package-version" => {
+                    replace_package_version = match value.as_str() {
+                        "true" => true,
+                        "false" => false,
+                        _ => {
+                            return Err("--replace-package-version must be true or false".into());
+                        }
+                    }
+                }
                 other => return Err(format!("unknown flag: {other}")),
             }
         }
@@ -380,6 +409,7 @@ impl ParsedArgs {
             expected_abi,
             built_at: built_at.ok_or("missing --built-at")?,
             built_by: built_by.ok_or("missing --built-by")?,
+            replace_package_version,
         })
     }
 }
@@ -686,6 +716,86 @@ build_host = "test-host"
         assert_eq!(
             entry.last_attempt_by.as_deref(),
             Some("https://example.com/run/2")
+        );
+    }
+
+    #[test]
+    fn index_update_can_replace_the_previous_managed_package_version() {
+        use super::*;
+        use crate::index_toml::{EntryStatus, IndexToml};
+        use crate::pkg_manifest::TargetArch;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "wpk-xtask-idx-update-replace-version-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let idx_path = tmp.join("index.toml");
+        let mut idx = IndexToml::empty(8, "seeded".into(), "test-seed".into());
+        idx.update_entry_success(
+            "foo",
+            "1.0",
+            1,
+            TargetArch::Wasm32,
+            "foo-1.0-rev1-abi8-wasm32-11111111.tar.zst".into(),
+            "1".repeat(64),
+            "1".repeat(64),
+            "t1".into(),
+            "run1".into(),
+        );
+        std::fs::write(&idx_path, idx.write()).unwrap();
+
+        let archive_path = tmp.join("foo-2.0-rev1-abi8-wasm32-deadbeef.tar.zst");
+        let cache_key = "deadbeef".repeat(8);
+        write_test_archive(&archive_path, "foo", "2.0", 1, 8, "wasm32", &cache_key);
+
+        run_index_update(&[
+            "--index-path".to_string(),
+            idx_path.to_string_lossy().into_owned(),
+            "--package".to_string(),
+            "foo".to_string(),
+            "--version".to_string(),
+            "2.0".to_string(),
+            "--revision".to_string(),
+            "1".to_string(),
+            "--arch".to_string(),
+            "wasm32".to_string(),
+            "--status".to_string(),
+            "success".to_string(),
+            "--archive-path".to_string(),
+            archive_path.to_string_lossy().into_owned(),
+            "--archive-name".to_string(),
+            "foo-2.0-rev1-abi8-wasm32-deadbeef.tar.zst".to_string(),
+            "--cache-key-sha".to_string(),
+            cache_key,
+            "--replace-package-version".to_string(),
+            "true".to_string(),
+            "--built-at".to_string(),
+            "t2".to_string(),
+            "--built-by".to_string(),
+            "run2".to_string(),
+        ])
+        .unwrap();
+
+        let updated = IndexToml::parse(&std::fs::read_to_string(&idx_path).unwrap()).unwrap();
+        assert!(updated.lookup("foo", "1.0", TargetArch::Wasm32).is_none());
+        assert_eq!(
+            updated
+                .lookup("foo", "2.0", TargetArch::Wasm32)
+                .unwrap()
+                .status,
+            EntryStatus::Success
+        );
+        assert_eq!(
+            updated
+                .packages
+                .iter()
+                .filter(|package| package.name == "foo")
+                .count(),
+            1
         );
     }
 
