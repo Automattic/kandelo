@@ -646,6 +646,10 @@ function resolvePayloadHardlink(
     }
     seen.add(current.path);
     const target = sourceByPath.get(current.linkName);
+    // WHY: a hard link is another name for one concrete inode, so the lazy
+    // materializer must own and verify its regular target in this package.
+    // Symlinks differ: they preserve text that may resolve to a dependency or
+    // base-image path only later, after the complete guest namespace exists.
     if (
       target === undefined ||
       projectedBySource.get(target.path) === undefined
@@ -693,6 +697,10 @@ function validateActivationOwnership(
   }
   if (manifest.activation.mode !== "first-use") return;
   for (const entry of entries) {
+    // WHY: shared ancestor directories are traversal scaffolding, not a reason
+    // to fetch a bottle. Only content-bearing entries must be covered by a
+    // first-use root, or an ordinary lookup such as /usr would activate every
+    // package that contributes descendants beneath it.
     if (
       entry.type !== "directory" &&
       !manifest.activation.roots.some(
@@ -726,6 +734,9 @@ function requireSafeSymlinkTarget(
     );
   }
   if (value.startsWith("/")) {
+    // WHY: Homebrew packages commonly link to files supplied by dependencies
+    // or the base image. Preserve that guest-absolute reference; projection
+    // records the link text and never follows it while unpacking the bottle.
     requireAbsolutePath(
       value,
       `Homebrew VFS Formula ${packageName} symlink ${path} target`,
@@ -736,6 +747,8 @@ function requireSafeSymlinkTarget(
   for (const component of value.split("/")) {
     if (component === "" || component === ".") continue;
     if (component === "..") {
+      // Parent-relative dependency links are valid until they would escape the
+      // guest root. This check is about the guest namespace, not the host.
       if (resolved.length === 0) {
         throw new Error(
           `Homebrew VFS Formula ${packageName} symlink ${path} escapes /`,

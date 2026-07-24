@@ -402,6 +402,45 @@ describe("Homebrew VFS Formula bottle projection", () => {
     ).toThrow("targets outside its payload");
   });
 
+  it("preserves absolute and parent-relative dependency symlinks", () => {
+    const root = pkg(EXTERNAL_TAP, "blog-vfs");
+    const payload: TarEntry[] = [
+      { path: "usr", type: "directory", mode: 0o755 },
+      { path: "usr/bin", type: "directory", mode: 0o755 },
+      {
+        path: "usr/bin/absolute-tool",
+        type: "symlink",
+        mode: 0o777,
+        linkName: "/home/linuxbrew/.linuxbrew/opt/dependency/bin/tool",
+      },
+      {
+        path: "usr/bin/relative-tool",
+        type: "symlink",
+        mode: 0o777,
+        linkName: "../../home/linuxbrew/.linuxbrew/opt/dependency/bin/tool",
+      },
+    ];
+
+    const projected = projectHomebrewVfsFormulaLayer(
+      plan(root),
+      root.fullName,
+      bottleEntries(root, payload, manifest(root.fullName, ["/usr/bin"])),
+    );
+
+    expect(projected.entries.find((entry) =>
+      entry.path === "/usr/bin/absolute-tool"
+    )).toMatchObject({
+      type: "symlink",
+      target: "/home/linuxbrew/.linuxbrew/opt/dependency/bin/tool",
+    });
+    expect(projected.entries.find((entry) =>
+      entry.path === "/usr/bin/relative-tool"
+    )).toMatchObject({
+      type: "symlink",
+      target: "../../home/linuxbrew/.linuxbrew/opt/dependency/bin/tool",
+    });
+  });
+
   it("requires first-use roots to cover every non-directory payload entry", () => {
     const root = pkg(EXTERNAL_TAP, "blog-vfs");
     const payload: TarEntry[] = [
@@ -427,6 +466,32 @@ describe("Homebrew VFS Formula bottle projection", () => {
         bottleEntries(root, payload, manifest(root.fullName, ["/etc"])),
       ),
     ).toThrow("/var/data has no activation root");
+  });
+
+  it("allows shared directory scaffolding outside first-use roots", () => {
+    const root = pkg(EXTERNAL_TAP, "blog-vfs");
+    const projected = projectHomebrewVfsFormulaLayer(
+      plan(root),
+      root.fullName,
+      bottleEntries(
+        root,
+        [
+          { path: "usr", type: "directory", mode: 0o755 },
+          { path: "usr/bin", type: "directory", mode: 0o755 },
+          {
+            path: "usr/bin/tool",
+            type: "file",
+            mode: 0o755,
+            data: new Uint8Array([1]),
+          },
+          { path: "var", type: "directory", mode: 0o755 },
+          { path: "var/lib", type: "directory", mode: 0o755 },
+        ],
+        manifest(root.fullName, ["/usr/bin"]),
+      ),
+    );
+
+    expect(projected.entries.map((entry) => entry.path)).toContain("/var/lib");
   });
 });
 

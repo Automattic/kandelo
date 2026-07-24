@@ -140,6 +140,32 @@ describe("package deferred ZIP trees", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  it("preserves guest-external symlink text without following it", () => {
+    const archive = packageArchive("../../../../usr/bin/env");
+    const derived = derivePackageDeferredZipTree(SPEC, archive);
+    const fs = packageFs();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    fs.createFileWithOwner(
+      "/usr/bin/env",
+      0o755,
+      0,
+      0,
+      encoder.encode("base image\n"),
+    );
+
+    registerPackageDeferredZipTree(fs, derived);
+
+    expect(fs.readlink(`${SPEC.mount_prefix}/bin/brew-link`)).toBe(
+      "../../../../usr/bin/env",
+    );
+    expect(readFile(fs, `${SPEC.mount_prefix}/bin/brew-link`)).toBe(
+      "base image\n",
+    );
+    expect(readFile(fs, "/usr/bin/env")).toBe("base image\n");
+    expect(fs.lstat("/usr/bin/env")).toMatchObject({ uid: 0, gid: 0 });
+  });
+
   it("keeps every member deferred after a failed fetch and coalesces the retry", async () => {
     const archive = packageArchive();
     const derived = derivePackageDeferredZipTree(SPEC, archive);
@@ -281,11 +307,11 @@ describe("package deferred ZIP trees", () => {
   });
 });
 
-function packageArchive(): Uint8Array {
+function packageArchive(symlinkTarget = "brew"): Uint8Array {
   const zippable: Zippable = {
     "bin/": zipEntry(new Uint8Array(), 0o040700),
     "bin/brew": zipEntry(encoder.encode("#!/bin/brew\n"), 0o100711),
-    "bin/brew-link": zipEntry(encoder.encode("brew"), 0o120700),
+    "bin/brew-link": zipEntry(encoder.encode(symlinkTarget), 0o120700),
     "Library/": zipEntry(new Uint8Array(), 0o040750),
     "Library/Homebrew/": zipEntry(new Uint8Array(), 0o040777),
     "Library/Homebrew/global.rb": zipEntry(encoder.encode("GLOBAL = true\n"), 0o100600),

@@ -457,6 +457,10 @@ function deriveEntry(
         `package deferred ZIP symlink ${sourcePath} target is not byte-preserving`,
       );
     }
+    // WHY: a symlink target is guest namespace text, not an archive extraction
+    // path. Registration creates the link itself without following it, and
+    // packages legitimately use absolute or parent-relative links to reach
+    // files supplied by the base image or a dependency.
     return {
       vfsPath,
       sourcePath,
