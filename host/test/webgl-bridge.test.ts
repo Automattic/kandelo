@@ -18,6 +18,7 @@ import { GlContextRegistry } from "../src/webgl/registry.js";
  */
 class RecordingGl {
   log: Array<[string, unknown[]]> = [];
+  extensions = new Map<string, object>();
 
   // counters so each create*() returns a unique handle the test can match
   private next = 1;
@@ -123,6 +124,10 @@ class RecordingGl {
 
   // queries
   getError() { return 0; }
+  getExtension(name: string) {
+    this.log.push(["getExtension", [name]]);
+    return this.extensions.get(name) ?? null;
+  }
   getParameter(p: number) {
     if (p === 0x1F03 /* GL_EXTENSIONS */) return "WEBGL_test";
     return 42;
@@ -135,8 +140,9 @@ class RecordingGl {
   getShaderInfoLog(_s: unknown) { return "shader log"; }
   getProgramParameter(_p: unknown, _q: number) { return 1; }
   getProgramInfoLog(_p: unknown) { return "program log"; }
-  readPixels(_x: number, _y: number, _w: number, _h: number, _f: number, _t: number, dst: Uint8Array) {
-    for (let i = 0; i < dst.length; i++) dst[i] = (i & 0xff);
+  readPixels(_x: number, _y: number, _w: number, _h: number, _f: number, _t: number, dst: ArrayBufferView) {
+    const bytes = new Uint8Array(dst.buffer, dst.byteOffset, dst.byteLength);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = (i & 0xff);
   }
   checkFramebufferStatus(_t: number) { return 0x8CD5 /* GL_FRAMEBUFFER_COMPLETE */; }
 }
@@ -219,6 +225,29 @@ describe("cmdbuf decoder — TLV walker", () => {
     const data = (gl.log[2][1] as unknown[])[1] as Uint8Array;
     expect(data.byteLength).toBe(12);
     expect(data[0]).toBe(17);
+  });
+
+  it("normalizes GLES half-float texture uploads to WebGL2's token", () => {
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl);
+    const t = new Tlv(b.cmdbufView!.buffer);
+
+    const h = t.op(O.OP_TEX_IMAGE_2D, 36);
+    t.view.setUint32(h.p, 0x0DE1 /* GL_TEXTURE_2D */, true);
+    t.view.setInt32(h.p + 4, 0, true);
+    t.view.setInt32(h.p + 8, 0x881A /* GL_RGBA16F */, true);
+    t.view.setInt32(h.p + 12, 16, true);
+    t.view.setInt32(h.p + 16, 16, true);
+    t.view.setInt32(h.p + 20, 0, true);
+    t.view.setUint32(h.p + 24, 0x1908 /* GL_RGBA */, true);
+    t.view.setUint32(h.p + 28, 0x8D61 /* GL_HALF_FLOAT_OES */, true);
+    t.view.setUint32(h.p + 32, 0, true);
+
+    decodeAndDispatch(b, 0, t.p);
+
+    const call = gl.log.find((r) => r[0] === "texImage2D");
+    expect(call).toBeDefined();
+    expect((call![1] as unknown[])[7]).toBe(0x140B /* GL_HALF_FLOAT */);
   });
 
   it("CreateShader + ShaderSource decodes UTF-8 source", () => {
@@ -409,6 +438,58 @@ describe("query handler", () => {
     const o = out(4);
     expect(runGlQuery(b, O.QOP_GET_ERROR, input([]), o)).toBe(4);
     expect(o[0]).toBe(0); // RecordingGl.getError() returns 0
+  });
+
+  it("QOP_GET_STRING exposes GLES bridge identity and core extension gates", () => {
+    const { b } = setup();
+    const pname = new Uint8Array(4);
+    const dv = new DataView(pname.buffer);
+
+    dv.setUint32(0, 0x1F02 /* GL_VERSION */, true);
+    const versionOut = out(128);
+    let n = runGlQuery(b, O.QOP_GET_STRING, pname, versionOut);
+    let len = new DataView(versionOut.buffer).getUint32(0, true);
+    expect(n).toBe(4 + len);
+    expect(new TextDecoder().decode(versionOut.subarray(4, 4 + len))).toBe("OpenGL ES 2.0 Kandelo");
+
+    dv.setUint32(0, 0x1F03 /* GL_EXTENSIONS */, true);
+    const extensionsOut = out(512);
+    n = runGlQuery(b, O.QOP_GET_STRING, pname, extensionsOut);
+    len = new DataView(extensionsOut.buffer).getUint32(0, true);
+    const extensions = new TextDecoder().decode(extensionsOut.subarray(4, 4 + len));
+
+    expect(n).toBe(4 + len);
+    expect(extensions).toContain("GL_EXT_blend_minmax");
+    expect(extensions).toContain("GL_EXT_texture_rg");
+    expect(extensions).toContain("GL_OES_depth_texture");
+    expect(extensions).toContain("GL_OES_packed_depth_stencil");
+    expect(extensions).toContain("GL_OES_rgb8_rgba8");
+    expect(extensions).toContain("GL_OES_standard_derivatives");
+    expect(extensions).toContain("GL_OES_texture_float");
+    expect(extensions).toContain("GL_OES_texture_half_float");
+    expect(extensions).toContain("GL_OES_texture_npot");
+    expect(extensions).not.toContain("WEBGL_test");
+  });
+
+  it("QOP_GET_STRING maps optional WebGL extensions to GLES names", () => {
+    const { gl, b } = setup();
+    gl.extensions.set("EXT_color_buffer_float", {});
+    gl.extensions.set("OES_texture_float_linear", {});
+    gl.extensions.set("OES_texture_half_float_linear", {});
+    gl.extensions.set("EXT_float_blend", {});
+    const pname = new Uint8Array(4);
+    new DataView(pname.buffer).setUint32(0, 0x1F03 /* GL_EXTENSIONS */, true);
+    const o = out(512);
+    const n = runGlQuery(b, O.QOP_GET_STRING, pname, o);
+    const len = new DataView(o.buffer).getUint32(0, true);
+    const extensions = new TextDecoder().decode(o.subarray(4, 4 + len));
+
+    expect(n).toBe(4 + len);
+    expect(extensions).toContain("GL_EXT_color_buffer_float");
+    expect(extensions).toContain("GL_EXT_color_buffer_half_float");
+    expect(extensions).toContain("GL_EXT_float_blend");
+    expect(extensions).toContain("GL_OES_texture_float_linear");
+    expect(extensions).toContain("GL_OES_texture_half_float_linear");
   });
 
   it("QOP_GET_INTEGERV reads a u32 pname and writes an i32", () => {

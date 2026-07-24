@@ -32,6 +32,9 @@ export const GL_SUBMIT_OK = 0;
 export const GL_SUBMIT_EIO = -5;
 export const GL_SUBMIT_EINVAL = -22;
 
+const GL_HALF_FLOAT = 0x140B;
+const GL_HALF_FLOAT_OES = 0x8D61;
+
 export function decodeAndDispatch(
   b: GlBinding,
   offset: number,
@@ -119,6 +122,12 @@ function countedFloatPayload(
   if (v.byteLength < countOffset + 4 || v.byteOffset % 4 !== 0) return false;
   const count = v.getUint32(countOffset, true);
   return v.byteLength === headerLen + count * floatsPerCount * 4;
+}
+
+function normalizeTextureType(type: number): number {
+  // GLES2's OES_texture_half_float extension uses GL_HALF_FLOAT_OES, while
+  // WebGL2 accepts the core GL_HALF_FLOAT token.
+  return type === GL_HALF_FLOAT_OES ? GL_HALF_FLOAT : type;
 }
 
 function validPayload(op: number, v: DataView): boolean {
@@ -375,7 +384,7 @@ function dispatch(
       const height = v.getInt32(p + 16, true);
       const border = v.getInt32(p + 20, true);
       const format = v.getUint32(p + 24, true);
-      const type = v.getUint32(p + 28, true);
+      const type = normalizeTextureType(v.getUint32(p + 28, true));
       const dataLen = v.getUint32(p + 32, true);
       const data = dataLen === 0
         ? null
@@ -397,7 +406,7 @@ function dispatch(
       const width = v.getInt32(p + 16, true);
       const height = v.getInt32(p + 20, true);
       const format = v.getUint32(p + 24, true);
-      const type = v.getUint32(p + 28, true);
+      const type = normalizeTextureType(v.getUint32(p + 28, true));
       const dataLen = v.getUint32(p + 32, true);
       const data = new Uint8Array(v.buffer, v.byteOffset + p + 36, dataLen);
       gl.texSubImage2D(

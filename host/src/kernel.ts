@@ -22,6 +22,7 @@ import { KmsRegistry } from "./dri/kms-registry";
 import { GlContextRegistry } from "./webgl/registry";
 import { decodeAndDispatch, validateCommandBuffer } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
+import { enableGlesBridgeExtensions } from "./webgl/capabilities";
 import { SubmitQueue } from "./webgl/submit-queue";
 import { GlMuxer } from "./webgl/muxer";
 import { drainSubmitQueue } from "./webgl/submit-drain";
@@ -954,14 +955,7 @@ export class WasmPosixKernel {
             preserveDrawingBuffer: true,
           }) as WebGL2RenderingContext | null;
           if (ctx) {
-            // Mirror main-forward.ts: enable the WebGL2 float extensions
-            // so RGBA16F framebuffers are renderable and float textures
-            // accept LINEAR filtering. Without these, ping-pong sims
-            // (Pavel-style fluid, GPU-side image processing) hit
-            // GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT silently.
-            ctx.getExtension("EXT_color_buffer_float");
-            ctx.getExtension("OES_texture_float_linear");
-            ctx.getExtension("EXT_float_blend");
+            enableGlesBridgeExtensions(ctx);
           }
           b.gl = ctx;
         },
