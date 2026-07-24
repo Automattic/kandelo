@@ -6,7 +6,12 @@
  *
  * Usage:
  *   npx tsx packages/registry/erlang/demo/serve.ts -eval "io:format(\"Hello from BEAM!~n\"), halt()."
- *   npx tsx packages/registry/erlang/demo/serve.ts -eval "ring:start()."
+ *
+ * The ring benchmark (demo/ring.erl) needs a host-precompiled ring.beam on
+ * the -pa code path: Erlang can't compile modules on Kandelo yet
+ * (erlang:md5/1 returns badarg on iolists, so beam_asm crashes — kd-qe2c).
+ * test/erlang.test.ts runs an equivalent self-contained ring that needs no
+ * compilation.
  */
 
 import { readFileSync, existsSync, writeFileSync, appendFileSync } from "fs";
