@@ -10,13 +10,13 @@ set -euo pipefail
 #   scripts/run-libc-tests.sh functional          # run one category
 #   scripts/run-libc-tests.sh functional string   # run specific test(s)
 #   scripts/run-libc-tests.sh --report            # run all + math-relaxed, write report to docs/libc-test-failures.md
+#   scripts/run-libc-tests.sh --outcome-dir DIR   # write durable outcome lists to DIR
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/libc/glue"
 LIBC_TEST="$REPO_ROOT/tests/libc/libc-test"
 BUILD_DIR="$REPO_ROOT/tests/libc/libc-test/build"
-KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 # ── Expected failures ──────────────────────────────────────
 # Tests known to fail due to wasm32 soft-float precision limits (no hardware FPU rounding control).
@@ -46,7 +46,7 @@ is_expected_fail() {
     local test_name="$1"
     shift
     local list=("$@")
-    for xf in "${list[@]}"; do
+    for xf in ${list[@]+"${list[@]}"}; do
         [ "$xf" = "$test_name" ] && return 0
     done
     return 1
@@ -173,6 +173,102 @@ discover_math() {
 
 discover_math-relaxed() {
     discover_math
+}
+
+verify_libc_test_tree() {
+    if [ ! -d "$LIBC_TEST/src" ]; then
+        echo "Error: libc-test sources not found at $LIBC_TEST/src" >&2
+        echo "Run: git submodule update --init tests/libc/libc-test" >&2
+        exit 1
+    fi
+
+    local missing=()
+    for path in \
+        "$LIBC_TEST/src/common/print.c" \
+        "$LIBC_TEST/src/functional" \
+        "$LIBC_TEST/src/regression" \
+        "$LIBC_TEST/src/math"
+    do
+        [ -e "$path" ] || missing+=("$path")
+    done
+
+    if [ ${#missing[@]} -gt 0 ]; then
+        echo "Error: libc-test source tree is incomplete:" >&2
+        local path
+        for path in ${missing[@]+"${missing[@]}"}; do
+            echo "  missing $path" >&2
+        done
+        echo "Run: git submodule update --init tests/libc/libc-test" >&2
+        exit 1
+    fi
+}
+
+trim_result_test_id() {
+    local status="$1"
+    local record="$2"
+    local test_id="${record#"$status"}"
+    local leading="${test_id%%[![:space:]]*}"
+    test_id="${test_id#"$leading"}"
+    printf '%s\n' "$test_id"
+}
+
+write_outcome_lists() {
+    local outcome_dir="$1"
+    mkdir -p "$outcome_dir"
+
+    : > "$outcome_dir/passed-tests.txt"
+    printf 'status\tcategory\ttest\treason\n' > "$outcome_dir/failed-tests.tsv"
+    printf 'category\ttest\treason\n' > "$outcome_dir/skipped-tests.tsv"
+    printf 'status\tcategory\ttest\treason\n' > "$outcome_dir/expected-fail-tests.tsv"
+    printf 'status\tcategory\ttest\treason\n' > "$outcome_dir/flaky-tests.tsv"
+    printf 'status\tcategory\ttest\treason\n' > "$outcome_dir/all-outcomes.tsv"
+
+    local r status test_id category test_name reason
+    for r in ${RESULTS[@]+"${RESULTS[@]}"}; do
+        status="${r%% *}"
+        test_id="$(trim_result_test_id "$status" "$r")"
+        category="${test_id%%/*}"
+        test_name="${test_id#*/}"
+        reason=""
+
+        case "$status" in
+            PASS)
+                printf '%s/%s\n' "$category" "$test_name" >> "$outcome_dir/passed-tests.txt"
+                ;;
+            FAIL)
+                reason="unexpected failure"
+                printf '%s\t%s\t%s\t%s\n' "$status" "$category" "$test_name" "$reason" >> "$outcome_dir/failed-tests.tsv"
+                ;;
+            XPASS)
+                reason="expected failure passed"
+                printf '%s\t%s\t%s\t%s\n' "$status" "$category" "$test_name" "$reason" >> "$outcome_dir/failed-tests.tsv"
+                ;;
+            BUILD)
+                reason="build failure"
+                printf '%s\t%s\t%s\t%s\n' "$status" "$category" "$test_name" "$reason" >> "$outcome_dir/failed-tests.tsv"
+                ;;
+            TIME)
+                reason="timeout"
+                printf '%s\t%s\t%s\t%s\n' "$status" "$category" "$test_name" "$reason" >> "$outcome_dir/failed-tests.tsv"
+                ;;
+            XFAIL)
+                reason="expected failure"
+                printf '%s\t%s\t%s\t%s\n' "$status" "$category" "$test_name" "$reason" >> "$outcome_dir/expected-fail-tests.tsv"
+                ;;
+            FLAKE-PASS|FLAKE-FAIL|FLAKE-TIME)
+                reason="classified flaky"
+                printf '%s\t%s\t%s\t%s\n' "$status" "$category" "$test_name" "$reason" >> "$outcome_dir/flaky-tests.tsv"
+                ;;
+            SKIP)
+                reason="skipped by harness"
+                printf '%s\t%s\t%s\n' "$category" "$test_name" "$reason" >> "$outcome_dir/skipped-tests.tsv"
+                ;;
+        esac
+
+        printf '%s\t%s\t%s\t%s\n' "$status" "$category" "$test_name" "$reason" >> "$outcome_dir/all-outcomes.tsv"
+    done
+
+    echo "Outcome lists written to: $outcome_dir"
 }
 
 # ── Build helpers ───────────────────────────────────────────
@@ -344,6 +440,7 @@ run_test() {
 # ── Main ────────────────────────────────────────────────────
 
 REPORT_MODE=false
+OUTCOME_DIR="${LIBC_TEST_OUTCOME_DIR:-$REPO_ROOT/test-runs/libc-tests/$(date -u '+%Y%m%dT%H%M%SZ')-$$}"
 CATEGORIES=()
 SPECIFIC_TESTS=()
 
@@ -351,6 +448,14 @@ SPECIFIC_TESTS=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --report) REPORT_MODE=true; shift ;;
+        --outcome-dir)
+            if [ $# -lt 2 ]; then
+                echo "Error: --outcome-dir requires a directory" >&2
+                exit 2
+            fi
+            OUTCOME_DIR="$2"
+            shift 2
+            ;;
         functional|regression|math|math-relaxed)
             CATEGORIES+=("$1"); shift
             # Remaining args are specific tests within that category
@@ -371,9 +476,44 @@ if [ ${#CATEGORIES[@]} -eq 0 ]; then
     fi
 fi
 
+verify_libc_test_tree
+
+SELECTED_TESTS=()
+for category in "${CATEGORIES[@]}"; do
+    if [ ${#SPECIFIC_TESTS[@]} -gt 0 ]; then
+        tests=("${SPECIFIC_TESTS[@]}")
+    else
+        tests=()
+        while IFS= read -r t; do
+            tests+=("$t")
+        done < <("discover_${category}")
+    fi
+
+    category_total=0
+    for test_name in ${tests[@]+"${tests[@]}"}; do
+        SELECTED_TESTS+=("${category}/${test_name}")
+        category_total=$((category_total + 1))
+    done
+
+    if [ "$category_total" -eq 0 ]; then
+        echo "Error: no libc tests discovered for category '$category' under $LIBC_TEST/src/$category" >&2
+        echo "Run: git submodule update --init tests/libc/libc-test" >&2
+        exit 1
+    fi
+done
+
+if [ ${#SELECTED_TESTS[@]} -eq 0 ]; then
+    echo "Error: no libc tests were selected or discovered" >&2
+    exit 1
+fi
+
 # Verify prerequisites
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     echo "Error: sysroot not found. Run scripts/build-musl.sh first." >&2
+    exit 1
+fi
+if ! KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"; then
+    echo "Error: kernel wasm not found. Run build.sh first." >&2
     exit 1
 fi
 if [ ! -f "$KERNEL_WASM" ]; then
@@ -400,24 +540,20 @@ FLAKE_TIME=0
 RESULTS=()
 TOTAL=0
 
-for category in "${CATEGORIES[@]}"; do
-    echo ""
-    echo "===== ${category} tests ====="
-    echo ""
+current_category=""
+for selected in "${SELECTED_TESTS[@]}"; do
+    category="${selected%%/*}"
+    test_name="${selected#*/}"
 
-    if [ ${#SPECIFIC_TESTS[@]} -gt 0 ]; then
-        tests=("${SPECIFIC_TESTS[@]}")
-    else
-        tests=()
-        while IFS= read -r t; do
-            tests+=("$t")
-        done < <("discover_${category}")
+    if [ "$category" != "$current_category" ]; then
+        echo ""
+        echo "===== ${category} tests ====="
+        echo ""
+        current_category="$category"
     fi
 
-    for test_name in "${tests[@]}"; do
-        TOTAL=$((TOTAL + 1))
-        run_test "$category" "$test_name"
-    done
+    TOTAL=$((TOTAL + 1))
+    run_test "$category" "$test_name"
 done
 
 # ── Summary ─────────────────────────────────────────────────
@@ -433,6 +569,8 @@ echo "BUILD:   $BUILD_FAIL"
 echo "TIMEOUT: $TIMEOUT_COUNT"
 echo "TOTAL:   $TOTAL"
 echo ""
+
+write_outcome_lists "$OUTCOME_DIR"
 
 # Group results by status
 for status in PASS XPASS FAIL XFAIL FLAKE-PASS FLAKE-FAIL FLAKE-TIME BUILD TIME; do
