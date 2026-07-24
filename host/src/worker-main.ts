@@ -50,6 +50,10 @@ import {
   readLinkedFrameFormat,
   writeForkContinuationAnchor,
 } from "./fork-continuation";
+import {
+  checkedWasmGuestPointerOffset,
+  type WasmGuestPointer,
+} from "./wasm-guest-pointer";
 // WASI detection helpers are tiny and live in their own file so we can
 // import them eagerly without dragging in the 1300-line WasiShim class.
 // The shim itself is dynamically imported below, only when a worker
@@ -283,53 +287,7 @@ export interface DlopenSupport {
   resetForkChildLock: () => void;
 }
 
-type WasmPointer = number | bigint;
-
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
-const MIN_SIGNED_WASM32 = -0x8000_0000;
-const MAX_UNSIGNED_WASM32 = 0xffff_ffff;
-const MIN_SIGNED_WASM64 = -(1n << 63n);
-const MAX_UNSIGNED_WASM64 = (1n << 64n) - 1n;
-
-/**
- * Convert a Wasm pointer into the exact JavaScript offset required by typed
- * array constructors. WebAssembly exposes memory32 i32 parameters as numbers
- * and memory64 i64 parameters as bigints. Normalize the signed JS view back to
- * the pointer's unsigned bit pattern, then reject any address JavaScript
- * cannot represent exactly.
- */
-function checkedWasmPointerOffset(
-  value: WasmPointer,
-  ptrWidth: 4 | 8,
-  context: string,
-): number {
-  let unsigned: bigint;
-  if (ptrWidth === 4) {
-    if (
-      typeof value !== "number"
-      || !Number.isSafeInteger(value)
-      || value < MIN_SIGNED_WASM32
-      || value > MAX_UNSIGNED_WASM32
-    ) {
-      throw new TypeError(`${context}: expected an exact memory32 pointer`);
-    }
-    unsigned = BigInt(value >>> 0);
-  } else {
-    if (
-      typeof value !== "bigint"
-      || value < MIN_SIGNED_WASM64
-      || value > MAX_UNSIGNED_WASM64
-    ) {
-      throw new TypeError(`${context}: expected an exact memory64 pointer`);
-    }
-    unsigned = BigInt.asUintN(64, value);
-  }
-
-  if (unsigned > MAX_SAFE_BIGINT) {
-    throw new RangeError(`${context}: pointer exceeds JavaScript's exact address range`);
-  }
-  return Number(unsigned);
-}
 
 function checkedWasmByteLength(value: number | bigint, context: string): number {
   if (typeof value === "number" && !Number.isSafeInteger(value)) {
@@ -344,12 +302,12 @@ function checkedWasmByteLength(value: number | bigint, context: string): number 
 
 function checkedWasmMemoryRange(
   memory: WebAssembly.Memory,
-  pointer: WasmPointer,
+  pointer: WasmGuestPointer,
   lengthValue: number | bigint,
   ptrWidth: 4 | 8,
   context: string,
 ): { offset: number; length: number } {
-  const offset = checkedWasmPointerOffset(pointer, ptrWidth, context);
+  const offset = checkedWasmGuestPointerOffset(pointer, ptrWidth, context);
   const length = checkedWasmByteLength(lengthValue, context);
   const memoryLength = memory.buffer.byteLength;
   if (offset > memoryLength || length > memoryLength - offset) {
@@ -908,7 +866,11 @@ export function buildDlopenImports(
     if (state.continuation.hasActiveContinuation()) {
       state.continuation.beginReplay();
     } else {
-      state.continuation.attachForReplay(state.forkBufAddr);
+      // WHY: attachment validates the copied pointer through the same guest
+      // ABI boundary as frame callbacks, where memory64 i64 values are BigInt.
+      state.continuation.attachForReplay(
+        ptrWidth === 8 ? BigInt(state.forkBufAddr) : state.forkBufAddr,
+      );
     }
     invokeForkContinuationBegin(
       state.instance.exports.wpk_fork_rewind_begin,
@@ -954,8 +916,8 @@ export function buildDlopenImports(
   };
 
   const imports: Record<string, WebAssembly.ExportValue> = {
-    __wasm_dlopen: (bytesPtr: WasmPointer, bytesLen: number | bigint,
-                    namePtr: WasmPointer, nameLen: number | bigint): number => {
+    __wasm_dlopen: (bytesPtr: WasmGuestPointer, bytesLen: number | bigint,
+                    namePtr: WasmGuestPointer, nameLen: number | bigint): number => {
       if (!acquireMainDlopenLock()) return 0;
       hostDlopenError = null;
       try {
@@ -1021,7 +983,7 @@ export function buildDlopenImports(
 
     __wasm_dlsym: (
       handle: number,
-      namePtr: WasmPointer,
+      namePtr: WasmGuestPointer,
       nameLen: number | bigint,
     ): number => {
       // See __wasm_dlopen above: copy off the shared buffer before
@@ -1048,7 +1010,7 @@ export function buildDlopenImports(
       return getLinker().dlclose(handle);
     },
 
-    __wasm_dlerror: (bufPtr: WasmPointer, bufMax: number | bigint): number => {
+    __wasm_dlerror: (bufPtr: WasmGuestPointer, bufMax: number | bigint): number => {
       const err = hostDlopenError ?? getLinker().dlerror();
       hostDlopenError = null;
       if (!err) return 0;
@@ -1861,7 +1823,11 @@ export async function centralizedWorkerMain(
               : forkBufAddr;
             if (initData.isForkChild && !attachedForkChildContinuation) {
               // A fork child has copied chunks but a fresh JS owner.
-              forkContinuation.attachForReplay(rewindAddr);
+              // Preserve the guest ABI type when handing that copied pointer
+              // to the continuation validator: memory64 i64 requires BigInt.
+              forkContinuation.attachForReplay(
+                ptrWidth === 8 ? BigInt(rewindAddr) : rewindAddr,
+              );
               attachedForkChildContinuation = true;
             } else {
               forkContinuation.beginReplay();

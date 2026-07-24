@@ -569,6 +569,48 @@ describe("LinkedForkContinuation", () => {
     },
   );
 
+  it("unsigned-normalizes a signed wasm32 high-bit frame size", () => {
+    const memory = new WebAssembly.Memory({ initial: 4 });
+    const releases: Array<{ addr: number; size: number }> = [];
+    let allocations = 0;
+    let requestedGrowth = 0;
+    const arena = new LinkedForkContinuation(
+      memory,
+      FORMAT,
+      (size) => {
+        if (allocations++ > 0) {
+          requestedGrowth = size;
+          throw new ContinuationAllocationError(12, size, "synthetic ENOMEM");
+        }
+        return PAGE_SIZE;
+      },
+      (addr, size) => releases.push({ addr, size }),
+      "signed-memory32-size",
+    );
+    arena.beginUnwind();
+    expect(arena.reserveFrame(-0x8000_0000)).toBe(0);
+    expect(requestedGrowth).toBe(0x8001_0000);
+    arena.finishAbortReplayAndRelease();
+    expect(releases).toEqual([{ addr: PAGE_SIZE, size: PAGE_SIZE }]);
+  });
+
+  it("requires BigInt for a wasm64 guest frame size", () => {
+    const memory = new WebAssembly.Memory({ initial: 4 });
+    const arenaAllocator = allocator(memory);
+    const arena = new LinkedForkContinuation(
+      memory,
+      formatFor(8),
+      arenaAllocator.allocate,
+      arenaAllocator.deallocate,
+      "strict-memory64-size",
+    );
+    arena.beginUnwind();
+    expect(() => arena.reserveFrame(32)).toThrow(
+      "strict-memory64-size: linked continuation: expected an exact memory64 pointer",
+    );
+    arena.cancelUnwindAndRelease();
+  });
+
   it("bounds an attached chunk chain by the pages available in memory", () => {
     const memory = new WebAssembly.Memory({ initial: 3 });
     const arenaAllocator = allocator(memory);
@@ -673,6 +715,57 @@ describe("LinkedForkContinuation", () => {
       "linked continuation replay skipped a frame",
     );
   });
+
+  it.each([4, 8] as const)(
+    "rejects a same-chunk wasm%s skip before returning the current frame",
+    (ptrWidth) => {
+      const format = formatFor(ptrWidth);
+      const parentMemory = new WebAssembly.Memory({ initial: 5 });
+      const parentAllocator = allocator(parentMemory);
+      const parent = new LinkedForkContinuation(
+        parentMemory,
+        format,
+        parentAllocator.allocate,
+        parentAllocator.deallocate,
+        `same-chunk-skip-parent-wasm${ptrWidth * 8}`,
+      );
+      const moduleBuffer = parent.beginUnwind();
+      const payloads = Array.from({ length: 3 }, (_, index) => {
+        const payload = parent.reserveFrame(guestPointer(32 + index * 8, ptrWidth));
+        parent.commitFrame(payload);
+        return Number(payload);
+      });
+      parent.finishUnwind();
+      expect(parentAllocator.allocations).toHaveLength(1);
+
+      const tailNode = payloads[2]! - format.nodeHeaderSize;
+      const middleNode = payloads[1]! - format.nodeHeaderSize;
+      const firstNode = payloads[0]! - format.nodeHeaderSize;
+      writePointer(parentMemory, ptrWidth, tailNode + 8, firstNode);
+
+      const childMemory = cloneMemory(parentMemory);
+      const childAllocator = allocator(childMemory);
+      const child = new LinkedForkContinuation(
+        childMemory,
+        format,
+        childAllocator.allocate,
+        childAllocator.deallocate,
+        `same-chunk-skip-child-wasm${ptrWidth * 8}`,
+      );
+      child.attachForReplay(moduleBuffer);
+      expect(() => child.nextFrame(guestPointer(48, ptrWidth))).toThrow(
+        "linked continuation replay skipped a frame",
+      );
+
+      // A rejected adjacency proof must leave the current node committed and
+      // retryable rather than exposing or consuming its payload.
+      writePointer(childMemory, ptrWidth, tailNode + 8, middleNode);
+      expect(Number(child.nextFrame(guestPointer(48, ptrWidth)))).toBe(payloads[2]);
+      expect(Number(child.nextFrame(guestPointer(40, ptrWidth)))).toBe(payloads[1]);
+      expect(Number(child.nextFrame(guestPointer(32, ptrWidth)))).toBe(payloads[0]);
+      child.finishReplayAndRelease();
+    },
+  );
 
   it("allocates a multi-page chunk for one frame larger than a Wasm page", () => {
     const memory = new WebAssembly.Memory({ initial: 8 });

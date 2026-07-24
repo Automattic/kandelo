@@ -8,6 +8,10 @@ import {
   WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT,
   WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
 } from "./generated/abi";
+import {
+  checkedWasmGuestPointerOffset,
+  type WasmGuestPointer,
+} from "./wasm-guest-pointer";
 
 export const LINKED_FRAME_FORMAT_SECTION = WPK_FORK_LINKED_FRAME_FORMAT_SECTION;
 export const LINKED_FRAME_FORMAT_VERSION = WPK_FORK_LINKED_FRAME_FORMAT_VERSION;
@@ -33,7 +37,7 @@ export interface LinkedFrameFormatDescriptor {
 
 export type ContinuationAllocate = (size: number) => number;
 export type ContinuationDeallocate = (addr: number, size: number) => void;
-export type ForkContinuationGuestAddress = number | bigint;
+export type ForkContinuationGuestAddress = WasmGuestPointer;
 
 /**
  * Invoke an instrumented continuation begin export with the module's exact
@@ -718,6 +722,7 @@ export class LinkedForkContinuation {
       if (previous >= node) {
         throw new Error(`${this.label}: linked continuation nodes are not reverse ordered`);
       }
+      this.validateReplayPredecessor(previous, chunk, node);
       return { chunkIndex, expectedEnd: node };
     }
 
@@ -735,6 +740,11 @@ export class LinkedForkContinuation {
       if (node !== chunk.addr + chunk.nodeStart) {
         throw new Error(`${this.label}: linked continuation replay skipped a frame`);
       }
+      this.validateReplayPredecessor(
+        previous,
+        priorChunk,
+        priorChunk.addr + priorChunk.used,
+      );
       return {
         chunkIndex: chunkIndex - 1,
         expectedEnd: priorChunk.addr + priorChunk.used,
@@ -743,6 +753,34 @@ export class LinkedForkContinuation {
     throw new Error(
       `${this.label}: frame pointer is outside the expected continuation chunk`,
     );
+  }
+
+  private validateReplayPredecessor(
+    node: number,
+    chunk: ContinuationChunk,
+    expectedEnd: number,
+  ): void {
+    const view = this.view();
+    if (
+      node % this.format.alignment !== 0
+      || node < chunk.addr + chunk.nodeStart
+      || checkedEnd(node, this.format.nodeHeaderSize) > chunk.addr + chunk.used
+      || view.getUint32(node, true) !== NODE_MAGIC
+      || view.getUint16(node + 4, true) !== LINKED_FRAME_FORMAT_VERSION
+      || view.getUint16(node + 6, true) !== NODE_COMMITTED
+    ) {
+      throw new Error(`${this.label}: invalid linked continuation replay predecessor`);
+    }
+    const payloadSize = this.readPtr(node + 8 + this.format.ptrWidth);
+    const nodeSize = this.readPtr(node + 8 + 2 * this.format.ptrWidth);
+    // WHY: proving the predecessor ends exactly where the current node starts
+    // detects a skipped or aliased frame before the current payload is exposed.
+    if (
+      nodeSize !== alignUp(this.format.nodeHeaderSize + payloadSize, this.format.alignment)
+      || checkedEnd(node, nodeSize) !== expectedEnd
+    ) {
+      throw new Error(`${this.label}: linked continuation replay skipped a frame`);
+    }
   }
 
   private release(): void {
@@ -800,11 +838,11 @@ export class LinkedForkContinuation {
   }
 
   private fromGuestPtr(value: number | bigint): number {
-    const number = typeof value === "bigint" ? Number(value) : value;
-    if (!Number.isSafeInteger(number) || number < 0) {
-      throw new Error(`${this.label}: invalid guest pointer value ${String(value)}`);
-    }
-    return number;
+    return checkedWasmGuestPointerOffset(
+      value,
+      this.format.ptrWidth,
+      `${this.label}: linked continuation`,
+    );
   }
 
   private asGuestPtr(value: number): number | bigint {
