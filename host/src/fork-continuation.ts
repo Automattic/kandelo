@@ -310,12 +310,24 @@ export class LinkedForkContinuation {
       chunk = next;
     }
     const replayNode = this.readPtr(root + 8 + 5 * this.format.ptrWidth);
+    // WHY: release() issues one munmap for every declared chunk. Distinct
+    // page-aligned starts are not enough: a forged header can sit inside a
+    // multi-page chunk and otherwise make us release overlapping mappings.
+    const chunksByAddress = [...chunks].sort((left, right) => left.addr - right.addr);
+    for (let index = 1; index < chunksByAddress.length; index++) {
+      const prior = chunksByAddress[index - 1]!;
+      const current = chunksByAddress[index]!;
+      if (checkedEnd(prior.addr, prior.size) > current.addr) {
+        throw new Error(`${this.label}: linked continuation chunk ranges overlap`);
+      }
+    }
+    this.validateReplayTail(chunks, replayNode);
     // Publish the reconstructed owner state only after the complete guest
     // chain is valid, so a failed attachment cannot leave a partial owner.
     this.root = root;
     this.chunks = chunks;
     this.activeChunk = chunks[chunks.length - 1]!.addr;
-    this.resetReplay(replayNode);
+    this.setReplayCursor(replayNode);
   }
 
   beginReplay(): void {
@@ -480,8 +492,8 @@ export class LinkedForkContinuation {
     if (this.abortFailure && this.abortFailure.errno !== errno) {
       throw new Error(`${this.label}: conflicting continuation abort failures`);
     }
-    this.abortFailure ??= { errno, requestedFrame, diagnostic };
     this.resetReplay(this.readPtr(this.root + 8 + 5 * this.format.ptrWidth));
+    this.abortFailure ??= { errno, requestedFrame, diagnostic };
   }
 
   abortErrno(): number {
@@ -607,7 +619,54 @@ export class LinkedForkContinuation {
     return { capacity, used };
   }
 
+  private validateReplayTail(
+    chunks: readonly ContinuationChunk[],
+    node: number,
+  ): void {
+    const containsFrames = chunks.some(({ nodeStart, used }) => used > nodeStart);
+    // WHY: zero is the complete empty-continuation representation. Accepting a
+    // zero tail for stored nodes would let replay finish and release them
+    // without proving that the reverse chain covered every committed frame.
+    if (node === 0) {
+      if (containsFrames) {
+        throw new Error(`${this.label}: nonempty linked continuation has no replay tail`);
+      }
+      return;
+    }
+    if (!containsFrames) {
+      throw new Error(`${this.label}: empty linked continuation has a replay tail`);
+    }
+
+    const chunk = chunks[chunks.length - 1]!;
+    const view = this.view();
+    if (
+      node % this.format.alignment !== 0
+      || node < chunk.addr + chunk.nodeStart
+      || checkedEnd(node, this.format.nodeHeaderSize) > chunk.addr + chunk.used
+      || view.getUint32(node, true) !== NODE_MAGIC
+      || view.getUint16(node + 4, true) !== LINKED_FRAME_FORMAT_VERSION
+      || view.getUint16(node + 6, true) !== NODE_COMMITTED
+    ) {
+      throw new Error(`${this.label}: invalid linked continuation replay tail`);
+    }
+    const payloadSize = this.readPtr(node + 8 + this.format.ptrWidth);
+    const nodeSize = this.readPtr(node + 8 + 2 * this.format.ptrWidth);
+    if (
+      nodeSize !== alignUp(this.format.nodeHeaderSize + payloadSize, this.format.alignment)
+      || checkedEnd(node, nodeSize) !== chunk.addr + chunk.used
+    ) {
+      throw new Error(`${this.label}: invalid linked continuation replay tail bounds`);
+    }
+  }
+
   private resetReplay(node: number): void {
+    // Parent and abort replay read the same guest-owned header as child
+    // attachment, so they must enforce the same tail/used invariant.
+    this.validateReplayTail(this.chunks, node);
+    this.setReplayCursor(node);
+  }
+
+  private setReplayCursor(node: number): void {
     this.replayNode = node;
     if (node === 0) {
       this.replayChunkIndex = -1;
@@ -615,10 +674,7 @@ export class LinkedForkContinuation {
       return;
     }
     this.replayChunkIndex = this.chunks.length - 1;
-    const chunk = this.chunks[this.replayChunkIndex];
-    if (!chunk) {
-      throw new Error(`${this.label}: linked continuation has no replay chunk`);
-    }
+    const chunk = this.chunks[this.replayChunkIndex]!;
     this.replayExpectedEnd = chunk.addr + chunk.used;
   }
 
