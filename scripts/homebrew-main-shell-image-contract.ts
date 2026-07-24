@@ -39,6 +39,31 @@ export interface MainShellRuntimeStateEntry {
   contents?: Uint8Array;
 }
 
+export interface MainShellCatalogIdentity {
+  tapRepository: string;
+  tapName: string;
+  tapCommit: string;
+}
+
+/**
+ * Validate the immutable catalog identity from the guest-visible composition
+ * descriptor. Consumers that do not have the migration lock still use the
+ * same parser and field mapping as the complete main-shell image contract.
+ */
+export function assertMainShellGuestCatalogIdentity(
+  guestManifest: unknown,
+  expected: MainShellCatalogIdentity,
+): void {
+  const guest = requiredRecord(guestManifest, "guest Homebrew manifest");
+  expectEqual(guest.schema, 1, "guest Homebrew manifest schema");
+  assertCatalog(
+    requiredRecord(guest.catalog, "guest Homebrew catalog"),
+    expected,
+    "guest Homebrew catalog",
+    "snake",
+  );
+}
+
 /**
  * Prove that the bytes accepted by the main-shell smoke contain the complete,
  * reviewed Homebrew migration closure. This intentionally validates the VFS
@@ -93,11 +118,11 @@ export function assertMainShellImageContract(input: MainShellImageContractInput)
     requestedPackagesSha256,
     "guest Homebrew requested_packages_sha256",
   );
-  assertCatalog(requiredRecord(guest.catalog, "guest Homebrew catalog"), {
+  assertMainShellGuestCatalogIdentity(guest, {
     tapRepository,
     tapName,
     tapCommit,
-  }, "guest Homebrew catalog", "snake");
+  });
   assertLockBinding(
     requiredRecord(guest.migration_lock, "guest Homebrew migration_lock"),
     input,

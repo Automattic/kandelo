@@ -16,6 +16,7 @@ on:
       - "flake.lock"
       - "flake.nix"
       - "homebrew/main-shell*"
+      - "homebrew/test/homebrew_guest_lifecycle*.ts"
       - "host/package-lock.json"
       - "host/package.json"
       - "host/src/**"
@@ -40,6 +41,7 @@ on:
       - "scripts/fetch-binaries.sh"
       - "scripts/homebrew-brewfile-selection.rb"
       - "scripts/homebrew-language-runtime-contract.ts"
+      - "scripts/homebrew-closed-lazy-assets*.ts"
       - "scripts/homebrew-main-shell-node-smoke.ts"
       - "scripts/homebrew-main-shell-image-contract*.ts"
       - "scripts/homebrew-vfs-acceptance-smoke.ts"
@@ -77,6 +79,7 @@ on:
       - "flake.lock"
       - "flake.nix"
       - "homebrew/main-shell*"
+      - "homebrew/test/homebrew_guest_lifecycle*.ts"
       - "host/package-lock.json"
       - "host/package.json"
       - "host/src/**"
@@ -101,6 +104,7 @@ on:
       - "scripts/fetch-binaries.sh"
       - "scripts/homebrew-brewfile-selection.rb"
       - "scripts/homebrew-language-runtime-contract.ts"
+      - "scripts/homebrew-closed-lazy-assets*.ts"
       - "scripts/homebrew-main-shell-node-smoke.ts"
       - "scripts/homebrew-main-shell-image-contract*.ts"
       - "scripts/homebrew-vfs-acceptance-smoke.ts"
@@ -216,6 +220,21 @@ jobs:
             cd apps/browser-demos
             npx playwright install chromium --with-deps
           )
+
+      - name: Validate the stock guest lifecycle contracts
+        run: |
+          set -euo pipefail
+          npx tsx --test \
+            homebrew/test/homebrew_guest_lifecycle_contract.test.ts \
+            homebrew/test/homebrew_guest_lifecycle_runtime_contract.test.ts \
+            scripts/homebrew-main-shell-image-contract.test.ts \
+            scripts/homebrew-closed-lazy-assets.test.ts
+          npx esbuild homebrew/test/homebrew_guest_lifecycle_node.ts \
+            --bundle \
+            --platform=node \
+            --format=esm \
+            --packages=external \
+            --outfile="$RUNNER_TEMP/homebrew_guest_lifecycle_node.mjs"
 
       - name: Select one verified package generation
         env:

@@ -776,6 +776,65 @@ Working checkpoint (2026-07-23; not yet canonical):
   promote Dash to a runtime Formula dependency and publish a rebuilt Erlang
   bottle so the package owns that truth itself.
 
+Preparation checkpoint (2026-07-24; locally validated scaffolding, not yet a
+successful public guest lifecycle):
+
+- Node.js and browser hosts can request an atomic image of the worker-owned
+  root filesystem only after the kernel has become quiescent. The worker closes
+  a snapshot gate before awaiting earlier filesystem mutations, rejects new
+  process/lazy-tree mutations while saving, and refuses export while a process
+  is live or still tearing down. The resulting image is durable root-mount
+  state. Boot-scoped `/tmp`, `/var/tmp`, `/var/log`, `/var/run`, `/home/user`,
+  `/root`, `/srv`, `/dev`, and `/dev/shm` mounts are intentionally
+  reconstructed for the next boot rather than serialized as durable package
+  state.
+- The next guest lifecycle harness consumes the same VFS-embedded mirror plan,
+  exact closed bottle bindings, deferred `homebrew-bootstrap` package tree, and
+  image-owned Bash as the main-shell smoke. It takes exact 40-character core
+  and independent-canary revisions rather than embedding mutable branch
+  defaults. The core revision must equal the canonical repository, tap, and
+  checkout in the image's `/etc/kandelo/homebrew-vfs.json`, checked through the
+  same authoritative catalog parser as the complete main-shell contract. It
+  uses stock `brew tap`, `install`, `reinstall`, `outdated`, `upgrade`,
+  `uninstall`, and `untap`; it does not copy support files, rewrite Formulae,
+  emulate Formula resolution on the host, or create `homebrew/core`.
+- The lazy shell already has direct-composed receipts for Bzip2 and M4. To
+  distinguish a real stock install from Homebrew's "already installed" path,
+  the harness first removes only those two receipts through
+  `brew uninstall --ignore-dependencies`, then installs Bzip2 from the core tap
+  and M4 from the independent tap. Dash stays installed because it is both
+  M4's cross-tap runtime dependency and the shell's `/bin/sh`; the M4 receipt
+  must name that exact first-party dependency. The exported image is then
+  rebooted, its shell executable is resolved again from exported bytes, both
+  packages execute again, and the proof cleans up its own installs. Closed
+  phase-two transport omits every URL phase one completed, and all transport
+  modes reject any repeated event for one of those URLs, so a re-deferred tree
+  cannot hide an export durability regression by fetching the original bytes.
+  Unexpected host diagnostics are fatal rather than accepted alongside a
+  successful guest marker.
+- The first live run remains gated by one coherent ABI-42 generation. The
+  `homebrew-bootstrap` recipe still declares ABI 41, the main-shell mirror
+  requires the complete public ABI-42 closure, and the core and independent
+  taps need final compatible immutable revisions plus public ABI-42 Bzip2, M4,
+  and Dash bottles. Until those inputs exist, static contract tests can prove
+  SHA validation, generated shell syntax, canonical origins, absence of
+  Formula mutation, exact closed-asset binding, and export/reboot behavior, but
+  cannot truthfully claim a public bottle install.
+- Loud ABI- and digest-mismatch evidence remains a separate negative live
+  fixture. It must bind an immutable intentionally wrong artifact or a closed
+  guest-network response to an exact reviewed expectation; it must not corrupt
+  a production package, rewrite a Formula after tapping it, or weaken
+  Homebrew's own checksum and Kandelo's ABI enforcement paths.
+- `brew outdated` plus a no-op `brew upgrade` at the exact pinned revisions is
+  the first upgrade-state milestone. The no-op proof compares each selected
+  Formula's exact prefix, reported version, receipt digest, and complete keg
+  content digest before and after the command. A real old-to-new upgrade
+  requires two immutable bottle versions and remains a live fixture.
+  `brew update` also remains separate because the bootstrap is a reviewed
+  patched source archive rather than a Git checkout. Ambient source replacement
+  is not safe until an update contract preserves and revalidates the Kandelo
+  platform boundary.
+
 Acceptance:
 
 - Stock upstream Homebrew, with only the documented Kandelo target/platform
