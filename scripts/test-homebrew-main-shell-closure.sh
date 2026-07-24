@@ -800,7 +800,10 @@ parallel_two="$TMP_ROOT/parallel-shell-two"
 mkdir "$parallel_one" "$parallel_two"
 run_fake_shell_build() {
   local out_dir="$1"
-  env \
+  # This fixture intentionally replaces bash/npm to observe the wrapper. Run
+  # it through the recipe's supported external-resolver mode; the separate
+  # preparer test exercises and verifies the authoritative Nix-only path.
+  env -u KANDELO_DEV_SHELL_TOOL_PATH \
     PATH="$fake_bin:$PATH" \
     FAKE_COMPOSER_LOG="$fake_log" \
     PACKAGE_TREE_SPEC="$PACKAGE_TREE_SPEC" \

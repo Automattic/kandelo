@@ -239,6 +239,25 @@ grep -Fqx "npm_config_globalconfig=$TMP_ROOT/scrubbed-state/global.npmrc" \
 grep -Fq 'npm_config_registry=https://registry.npmjs.org/' \
     "$fake_bin/environment.log" ||
     test_fail "npm did not receive the canonical public registry"
+if [ -n "${KANDELO_DEV_SHELL_TOOL_PATH:-}" ]; then
+    npm_path="$(sed -n 's/^PATH=//p' "$fake_bin/environment.log")"
+    case "$npm_path" in
+        "$KANDELO_DEV_SHELL_TOOL_PATH"|"$KANDELO_DEV_SHELL_TOOL_PATH":*) ;;
+        *) test_fail "npm did not retain the declared Nix tool path first" ;;
+    esac
+    case ":$npm_path:" in
+        *:/usr/bin:*|*:/bin:*|*:/usr/local/bin:*|*:/opt/homebrew/bin:*)
+            test_fail "npm reintroduced an ambient host tool directory"
+            ;;
+    esac
+    for tool in git jq node npm ruby sha256sum tar wc; do
+        resolved="$(PATH="$npm_path" type -P "$tool" || true)"
+        case "$resolved" in
+            /nix/store/*/bin/"$tool") ;;
+            *) test_fail "$tool did not resolve from the Nix store: ${resolved:-missing}" ;;
+        esac
+    done
+fi
 grep -Fq -- '--registry=https://registry.npmjs.org/' \
     "$fake_bin/arguments.log" ||
     test_fail "npm command did not pin the canonical public registry"

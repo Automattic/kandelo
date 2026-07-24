@@ -4,6 +4,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# shellcheck source=build-tool-path.sh
+source "$SCRIPT_DIR/build-tool-path.sh"
 NPM_BIN=""
 NODE_BIN=""
 
@@ -44,7 +46,10 @@ copy_checkout_inputs() (
     fi
     mkdir -p "$git_state/home" "$git_state/xdg"
     trap 'rm -rf -- "$git_state"' EXIT
-    git_path="$(dirname "$git_bin"):/usr/bin:/bin"
+    # WHY: the outer package recipe has already reduced PATH to its Nix-owned
+    # closure. Preserve it inside the credential-free Git subprocess instead
+    # of reintroducing runner-owned /usr/bin utilities.
+    git_path="$(kandelo_shell_build_tool_path)"
 
     isolated_git() {
         # WHY: Git archive/diff behavior can otherwise inherit a developer's
@@ -183,7 +188,10 @@ run_locked_npm_ci() {
     local package_root="$1"
     local state_root="$2"
     local safe_path
-    safe_path="$(dirname "$NODE_BIN"):$(dirname "$NPM_BIN"):/usr/bin:/bin"
+    # WHY: npm lifecycle scripts are package inputs too. Retain the same
+    # Nix-owned closure as the outer recipe; adding /usr/bin or /bin here would
+    # silently switch tools after the package boundary had selected Nix.
+    safe_path="$(kandelo_shell_build_tool_path)"
 
     mkdir -p \
         "$state_root/home" \
@@ -265,6 +273,7 @@ main() {
         return 2
     fi
 
+    kandelo_shell_activate_build_tool_path || return 1
     NPM_BIN="$(type -P npm || true)"
     NODE_BIN="$(type -P node || true)"
     if [ -z "$NPM_BIN" ] || [ -z "$NODE_BIN" ]; then

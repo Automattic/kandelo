@@ -5,6 +5,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=build-tool-path.sh
+source "$SCRIPT_DIR/build-tool-path.sh"
+# Package recipes remain portable outside the repository, but authoritative
+# Kandelo builds enter through Nix. Strip runner paths once here so every
+# composer subprocess consumes the same declared Nix-owned tool closure.
+kandelo_shell_activate_build_tool_path
+
 OUT_DIR="${WASM_POSIX_DEP_OUT_DIR:-}"
 HOMEBREW_TAP_ROOT="${WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_DIR:-}"
 HOMEBREW_TAP_SHA="${WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_COMMIT:-}"
