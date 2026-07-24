@@ -245,6 +245,56 @@ Batching must never weaken exact-head validation, immutable
 artifact identity, browser/Node parity, POSIX correctness, or an explicit
 merge-approval boundary.
 
+#### Reset-resistant throughput operating mode
+
+The ABI-42 rollout exposed a slow failure mode in the work process itself:
+several sibling pull requests each paid for nearly the same package-staging,
+Node.js, and Chromium gates, and every freshness correction restarted those
+large gates independently. Resume this migration with the following operating
+rules even after an agent or orchestrator reset:
+
+1. Keep immutable producer evidence separate from mutable product integration.
+   PR #1085 commit `d3805721b887a19382ef1c96b576fc27badc0951`
+   is the frozen publisher source used by the ABI-42 bottles. Do not amend,
+   rebase, squash, or expand that source merely to reduce CI count.
+2. Use draft PR #1087 as the single post-frozen product integration gate. Its
+   history retains exact #1081/#1083 lifecycle head
+   `362c6dd7e53f7cf3f9213aeb3cf3f7b1fb221d70`, exact #1086 packaging
+   head `91be65e4236714e6a6ac830a54f5d89b0230840b`, frozen #1085, and the
+   required current-main baseline as merge ancestors. Put newly discovered
+   integration fixes on #1087 as descendant commits; do not force-push or
+   repeatedly restack the reviewed sibling heads.
+3. Run focused contract tests while developing descendant fixes, then pay once
+   for the complete package-staging and exact Node.js/Chromium lifecycle proof
+   on #1087. Separate sibling CI remains useful evidence for each exact input,
+   but it is not a reason to rerun every sibling after the combined tree
+   changes, and it cannot substitute for the one combined-head proof.
+4. Keep up to eight independent Formula publication workflows queued or
+   active, and refill a slot as soon as dependency readiness permits. Preserve
+   one Formula per write dispatch so one build failure does not prevent seven
+   unrelated Formulae from finalizing. This is parallel batching, not a
+   multi-Formula transaction.
+5. During a frozen rollout, do not edit the trusted caller workflow only to
+   accelerate dispatch acknowledgement; doing so changes the workflow digest
+   and invalidates the frozen ledger. After the ABI-42 catalog is complete,
+   give each dispatch a durable unique correlation identity exposed in the
+   workflow run name, and let the controller journal several unresolved
+   intents so it can fill all eight slots without waiting for each plan matrix
+   to appear.
+6. Do not raise staging-build's four-way package writer limit in isolation.
+   Those jobs currently mutate one release index and have previously triggered
+   codeload throttling and Git push failures. First make matrix jobs publish
+   immutable archives without index contention, then have one post-matrix
+   finalizer write and verify the complete target-relative staging index.
+   After that contract is covered, increase staging concurrency toward the
+   already-used ten-way prepare-merge limit and measure the result.
+7. Keep unrelated downstream work moving while publication runs. The guest
+   first-party/third-party `brew` lifecycle, product-shell activation,
+   registry-role classification, manual-page ownership, per-program lazy
+   optimization, and bottle-declared VFS layers may be prepared concurrently
+   when their inputs are immutable. Only their final artifact acceptance must
+   wait for the exact finalized tap commit.
+
 ### Tracked non-blocking pipeline follow-ups
 
 These defects affect iteration speed or diagnostic quality but do not weaken
