@@ -10,7 +10,9 @@ commit      = "UNPUBLISHED"
 # /usr/lib/php instead of the resolver's random temporary install prefix.
 # Revision 6: make the three pkg-config prefixes relative to pcfiledir so a
 # fetched or moved archive resolves its own headers and libraries.
-revision    = 6
+# Revision 7: build native data generators with the declared wrapped host
+# compiler so clean Nix builds receive host SDK and C++ library paths.
+revision    = 7
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

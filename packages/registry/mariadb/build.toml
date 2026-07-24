@@ -1,7 +1,9 @@
 script_path = "packages/registry/mariadb/build-mariadb.sh"
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 1
+# Revision 2: rebuild incomplete native-generator stages with the declared
+# wrapped host compiler and its host SDK/C++ standard-library paths.
+revision    = 2
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

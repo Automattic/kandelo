@@ -23,6 +23,14 @@ SRC_DIR="$SCRIPT_DIR/mariadb-src"
 HOST_BUILD_DIR="$SCRIPT_DIR/mariadb-host-build"
 GLUE_DIR="$REPO_ROOT/libc/glue"
 
+# The native generator stage must use the dev shell's compiler wrappers. In a
+# Nix shell, raw clang/clang++ binaries can appear earlier on PATH without the
+# declared host SDK and C++ standard-library include paths; `cc`/`c++` carry
+# those paths and keep this stage native (the wasm compiler is selected later
+# by the cross-build toolchain file).
+HOST_CC="${HOST_CC:-cc}"
+HOST_CXX="${HOST_CXX:-c++}"
+
 # Default to xtask resolver's WASM_POSIX_DEP_TARGET_ARCH (set per
 # manifest arch at build-deps time); fall back to wasm32 outside the
 # resolver. CLI flags override — useful for direct manual invocation.
@@ -100,6 +108,11 @@ if ! command -v bison &>/dev/null; then
     exit 1
 fi
 
+if ! command -v "$HOST_CC" &>/dev/null || ! command -v "$HOST_CXX" &>/dev/null; then
+    echo "ERROR: host C/C++ compiler wrappers not found. Run through scripts/dev-shell.sh." >&2
+    exit 1
+fi
+
 # --- Download MariaDB source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading MariaDB $MARIADB_VERSION..."
@@ -147,6 +160,10 @@ fi
 # --- Step 1: Host build (native executables for cross-compile) ---
 if ! host_helpers_ready; then
     echo "==> Step 1: Host build (generating import_executables.cmake)..."
+    # An interrupted configure may cache a raw compiler that cannot see the
+    # dev shell's host headers. Native helpers are generated artifacts, so
+    # always reconstruct an incomplete stage with the declared wrappers.
+    rm -rf "$HOST_BUILD_DIR"
     mkdir -p "$HOST_BUILD_DIR"
     cd "$HOST_BUILD_DIR"
 
@@ -162,6 +179,8 @@ if ! host_helpers_ready; then
     # ≥3.4.2 installed (Nix dev shell, fresh CI runner, etc.).
     cmake "$SRC_DIR" \
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+        -DCMAKE_C_COMPILER="$HOST_CC" \
+        -DCMAKE_CXX_COMPILER="$HOST_CXX" \
         -DWITH_UNIT_TESTS=OFF \
         -DWITH_MARIABACKUP=OFF \
         -DPLUGIN_CONNECT=NO \

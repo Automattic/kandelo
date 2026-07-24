@@ -13,7 +13,7 @@ if [ -z "${IN_NIX_SHELL:-}" ]; then
 fi
 
 nix_store="${NIX_STORE:-/nix/store}"
-for tool in cmake make; do
+for tool in cc c++ cmake make; do
     resolved="$(command -v "$tool" || true)"
     case "$resolved" in
         "$nix_store"/*/bin/"$tool") ;;
@@ -24,3 +24,12 @@ for tool in cmake make; do
     esac
     "$tool" --version >/dev/null
 done
+
+# Resolving a compiler from the Nix store is not enough: an unwrapped clang can
+# still lack the host C++ standard library. Exercise the contract required by
+# native package-generator builds without producing an artifact.
+if ! printf '#include <memory>\nint main() { return 0; }\n' \
+    | c++ -x c++ -fsyntax-only - >/dev/null 2>&1; then
+    echo "ERROR: declared host C++ compiler cannot include <memory>" >&2
+    exit 1
+fi
