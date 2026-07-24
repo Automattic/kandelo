@@ -6,6 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 NPM_BIN=""
 NODE_BIN=""
+BASH_BIN=""
+DECLARED_TOOL_PATH=""
 
 usage() {
     echo "usage: prepare-build-tools.sh <new-source-snapshot>" >&2
@@ -14,6 +16,26 @@ usage() {
 fail() {
     echo "prepare-shell-build-tools: $*" >&2
     return 1
+}
+
+resolve_declared_tools() {
+    DECLARED_TOOL_PATH="${KANDELO_DEV_SHELL_TOOL_PATH:-}"
+    if [ -z "$DECLARED_TOOL_PATH" ]; then
+        fail "KANDELO_DEV_SHELL_TOOL_PATH is required; run the package build through scripts/dev-shell.sh"
+        return 1
+    fi
+
+    # WHY: the resolver may enter this recipe from any direct or transitive
+    # source fallback. Resolve every executable admitted to the isolated Git
+    # and npm subprocesses from the flake-declared tool path, never from an
+    # ambient suffix that a caller may have appended.
+    NPM_BIN="$(PATH="$DECLARED_TOOL_PATH" type -P npm || true)"
+    NODE_BIN="$(PATH="$DECLARED_TOOL_PATH" type -P node || true)"
+    BASH_BIN="$(PATH="$DECLARED_TOOL_PATH" type -P bash || true)"
+    if [ -z "$NPM_BIN" ] || [ -z "$NODE_BIN" ] || [ -z "$BASH_BIN" ]; then
+        fail "bash, node, and npm are required in the declared dev-shell tool path"
+        return 1
+    fi
 }
 
 validate_regular_file() {
@@ -32,7 +54,7 @@ copy_checkout_inputs() (
     local git_bin git_state git_path info_attributes
     local relative source destination index_record mode
 
-    git_bin="$(type -P git || true)"
+    git_bin="$(PATH="$DECLARED_TOOL_PATH" type -P git || true)"
     if [ -z "$git_bin" ]; then
         fail "git is required; run the package build through scripts/dev-shell.sh"
         return 1
@@ -44,7 +66,7 @@ copy_checkout_inputs() (
     fi
     mkdir -p "$git_state/home" "$git_state/xdg"
     trap 'rm -rf -- "$git_state"' EXIT
-    git_path="$(dirname "$git_bin"):/usr/bin:/bin"
+    git_path="$DECLARED_TOOL_PATH"
 
     isolated_git() {
         # WHY: Git archive/diff behavior can otherwise inherit a developer's
@@ -182,8 +204,6 @@ copy_checkout_inputs() (
 run_locked_npm_ci() {
     local package_root="$1"
     local state_root="$2"
-    local safe_path
-    safe_path="$(dirname "$NODE_BIN"):$(dirname "$NPM_BIN"):/usr/bin:/bin"
 
     mkdir -p \
         "$state_root/home" \
@@ -199,7 +219,7 @@ run_locked_npm_ci() {
     (
         cd "$package_root"
         env -i \
-            PATH="$safe_path" \
+            PATH="$DECLARED_TOOL_PATH" \
             HOME="$state_root/home" \
             PWD="$package_root" \
             TMPDIR="$state_root/tmp" \
@@ -210,6 +230,7 @@ run_locked_npm_ci() {
             npm_config_userconfig="$state_root/user.npmrc" \
             npm_config_globalconfig="$state_root/global.npmrc" \
             npm_config_registry="https://registry.npmjs.org/" \
+            npm_config_script_shell="$BASH_BIN" \
             "$NPM_BIN" \
                 ci \
                 --no-audit \
@@ -265,12 +286,7 @@ main() {
         return 2
     fi
 
-    NPM_BIN="$(type -P npm || true)"
-    NODE_BIN="$(type -P node || true)"
-    if [ -z "$NPM_BIN" ] || [ -z "$NODE_BIN" ]; then
-        fail "node and npm are required; run the package build through scripts/dev-shell.sh"
-        return 1
-    fi
+    resolve_declared_tools || return 1
 
     mkdir "$snapshot"
     copy_checkout_inputs "$snapshot" || return 1

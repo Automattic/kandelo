@@ -41,6 +41,18 @@ make_repo_fixture() {
     printf 'not a package input\n' >"$REPO_ROOT/untracked-secret"
 }
 
+# The preparer must receive the flake-owned tool path rather than reconstructing
+# a usable PATH from whatever happens to exist on the host.
+if (
+    unset KANDELO_DEV_SHELL_TOOL_PATH
+    main "$TMP_ROOT/missing-tool-path-snapshot"
+) >"$TMP_ROOT/missing-tool-path.out" 2>"$TMP_ROOT/missing-tool-path.err"; then
+    test_fail "accepted a source build without the declared dev-shell tool path"
+fi
+grep -Fq "KANDELO_DEV_SHELL_TOOL_PATH is required" \
+    "$TMP_ROOT/missing-tool-path.err" ||
+    test_fail "did not explain the missing declared dev-shell tool path"
+
 run_locked_npm_ci() {
     local package_root="$1"
     local state_root="$2"
@@ -196,16 +208,25 @@ cat >"$fake_bin/node" <<'EOF'
 exit 0
 EOF
 cat >"$fake_bin/npm" <<'EOF'
-#!/bin/sh
-set -eu
-bin_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
-env | sort >"$bin_dir/environment.log"
-printf '%s\n' "$@" >"$bin_dir/arguments.log"
+#!/usr/bin/env node
+const { writeFileSync } = require("node:fs");
+const { dirname, join } = require("node:path");
+const binDir = dirname(process.argv[1]);
+const environment = Object.entries(process.env)
+  .sort(([left], [right]) => left.localeCompare(right))
+  .map(([key, value]) => `${key}=${value}\n`)
+  .join("");
+writeFileSync(join(binDir, "environment.log"), environment);
+writeFileSync(
+  join(binDir, "arguments.log"),
+  process.argv.slice(2).map((argument) => `${argument}\n`).join(""),
+);
 EOF
 chmod +x "$fake_bin/node" "$fake_bin/npm"
 (
     # Reload the production implementation after the failure-case overrides.
     source "$SCRIPT_DIR/prepare-build-tools.sh"
+    resolve_declared_tools
     NPM_BIN="$fake_bin/npm"
     NODE_BIN="$fake_bin/node"
     export GH_TOKEN=forbidden
@@ -239,6 +260,12 @@ grep -Fqx "npm_config_globalconfig=$TMP_ROOT/scrubbed-state/global.npmrc" \
 grep -Fq 'npm_config_registry=https://registry.npmjs.org/' \
     "$fake_bin/environment.log" ||
     test_fail "npm did not receive the canonical public registry"
+grep -Fqx "PATH=$KANDELO_DEV_SHELL_TOOL_PATH" \
+    "$fake_bin/environment.log" ||
+    test_fail "npm did not receive only the declared dev-shell tool path"
+grep -Fqx "npm_config_script_shell=$BASH_BIN" \
+    "$fake_bin/environment.log" ||
+    test_fail "npm lifecycle scripts did not receive the declared Bash"
 grep -Fq -- '--registry=https://registry.npmjs.org/' \
     "$fake_bin/arguments.log" ||
     test_fail "npm command did not pin the canonical public registry"
