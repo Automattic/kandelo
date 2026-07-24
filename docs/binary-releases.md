@@ -253,6 +253,17 @@ process policy, not tamper-proof two-person authorization: same-repository
 writers are trusted to change the workflow and helper code through the normal
 review process.
 
+Occasionally immutable artifacts have already been published from an exact
+commit on a stale pull-request lineage. Preserve that provenance without
+replaying the stale product tree: join the current `main` commit to the exact
+published head with a merge commit whose tree is identical to `main`, then put
+only the documentation for that exceptional history operation on top. The
+published commit remains an ancestor for provenance checks, while a separate
+ordinary pull request owns the current consumer configuration and product
+cutover. Use this ancestry-only join only after verifying the public artifacts'
+source commit and digests; it is not a substitute for rebuilding unpublished
+or unverified artifacts from the commit that actually lands.
+
 The write-authorized merge gate executes candidate lifecycle helpers from the
 exact prepared base commit, not from the pull request head. The pull request is
 candidate data to validate and seal; it is not an authority for code that can
