@@ -246,12 +246,18 @@ live PR head still matches the event head, and no review has an outstanding
 `CHANGES_REQUESTED` decision. The label's persistent state is not authority;
 each new head needs a fresh label event or exact-head review. Prepare merge
 posts `merge-gate=success` and leaves the merge to a maintainer; Actions never
-enables auto-merge. PRs labeled
-`batched-changes` must be rebase-merged, while other PRs must be squash-merged.
+enables auto-merge. PRs labeled `batched-changes` must be rebase-merged. A PR
+labeled `preserve-head-commit` must be merged with a merge commit whose ordered
+parents are the prepared base and the exact PR head. That bounded mode keeps an
+exact reviewed or publication-pinned head SHA reachable from `main`; repository
+merge commits may remain disabled outside its merge window. The two
+history-method labels are mutually exclusive. Other PRs must be squash-merged.
 The exact merge method is part of `candidate.json` and a different method fails
-closed during activation. This is repository process policy, not tamper-proof
-two-person authorization: same-repository writers are trusted to change the
-workflow and helper code through the normal review process.
+closed during activation. Tree equality is required for every method, so a
+lookalike merge commit cannot substitute another head. This is repository
+process policy, not tamper-proof two-person authorization: same-repository
+writers are trusted to change the workflow and helper code through the normal
+review process.
 
 The write-authorized merge gate executes candidate lifecycle helpers from the
 exact prepared base commit, not from the pull request head. The pull request is

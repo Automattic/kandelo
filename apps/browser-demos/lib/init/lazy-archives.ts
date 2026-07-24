@@ -1,9 +1,14 @@
 import vimZipUrl from "@binaries/programs/vim.zip?url";
 import nethackZipUrl from "@binaries/programs/nethack.zip?url";
+import homebrewBootstrapZipUrl from "@binaries/programs/homebrew-bootstrap/homebrew-bootstrap.zip?url";
 
 const SHELL_LAZY_ARCHIVES: Record<string, string> = {
   "vim.zip": vimZipUrl,
   "nethack.zip": nethackZipUrl,
+  // The shell descriptor intentionally keeps a package-relative URL. Vite
+  // owns the browser deployment path, so resolve it through the package
+  // projection instead of baking a development-server URL into the VFS.
+  "homebrew-bootstrap.zip": homebrewBootstrapZipUrl,
 };
 
 export function resolveShellLazyArchiveUrl(url: string): string {

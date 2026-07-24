@@ -1,6 +1,8 @@
 script_path = "packages/registry/shell/build-shell.sh"
 inputs = [
   "packages/registry/shell/build-shell.sh",
+  "packages/registry/shell/build-tool-path.sh",
+  "packages/registry/shell/prepare-build-tools.sh",
   "scripts/build-homebrew-main-shell-closure.sh",
   "scripts/verify-homebrew-main-shell-artifact-lock.sh",
   "scripts/check-homebrew-main-shell-brewfile.mjs",
@@ -8,6 +10,7 @@ inputs = [
   "homebrew/main-shell.Brewfile",
   "homebrew/main-shell-default.json",
   "homebrew/main-shell-demo.json",
+  "homebrew/main-shell-brew-package-tree.json",
   "homebrew/main-shell-lazy-artifact-lock.json",
   "homebrew/main-shell-migration-lock.json",
   "homebrew/main-shell-materialization-policy.json",
@@ -48,6 +51,7 @@ inputs = [
   "host/src/vfs/hardlink-graph.ts",
   "host/src/vfs/image-helpers.ts",
   "host/src/vfs/memory-fs.ts",
+  "host/src/vfs/package-deferred-tree-contract.ts",
   "host/src/vfs/package-deferred-tree.ts",
   "host/src/vfs/sharedfs-vendor.ts",
   "host/src/vfs/tar.ts",
@@ -58,7 +62,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 18
+revision    = 19
 
 [[git_inputs]]
 name = "homebrew_tap_core"
