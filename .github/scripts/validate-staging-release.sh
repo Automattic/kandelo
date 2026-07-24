@@ -8,8 +8,9 @@
 # be materialized as an input to a separately validated union. Testable mode
 # also accepts an exact current failure fallback so the test gate can exercise
 # the published last-green union while the separate package result stays red.
-# Available mode freezes every valid expected key present in a canonical
-# baseline while allowing expected package/arch keys to be absent there.
+# Available mode freezes exact-current usable canonical keys. Missing, stale,
+# transient, and failed-without-fallback keys are removed from the localized
+# baseline so the matrix must recreate them before exact final validation.
 set -euo pipefail
 
 TAG=""

@@ -616,7 +616,7 @@ grep -Fq 'reuse_staging: ${{ steps.compute.outputs.reuse_staging }}' "$STAGING_W
 grep -Fq -- '--mode structural' "$STAGING_WORKFLOW" || \
   fail "staging preflight must validate complete target-release structure"
 grep -Fq -- '--mode available' "$STAGING_WORKFLOW" || \
-  fail "staging finalizer must allow absent canonical keys only while freezing its baseline"
+  fail "staging finalizer must allow repairable canonical gaps while freezing its baseline"
 grep -Fq 'validated target/canonical union did not cover the computed matrix' "$STAGING_WORKFLOW" || \
   fail "staging preflight must prove full current coverage before emptying the matrix"
 grep -Fq 'PACKAGE_REUSE_STAGING: ${{ needs.preflight.outputs.reuse_staging }}' "$STAGING_WORKFLOW" || \

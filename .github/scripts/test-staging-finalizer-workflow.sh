@@ -69,7 +69,7 @@ grep -Fq 'compose-staging-finalization.sh' <<<"$finalizer" ||
 grep -Fq 'publish-staging-finalization.sh' <<<"$finalizer" ||
   fail "finalizer does not publish one complete snapshot"
 grep -Fq -- '--mode available' <<<"$finalizer" ||
-  fail "canonical baseline freeze rejects absent expected keys before composition"
+  fail "canonical baseline freeze cannot leave repairable gaps for composition"
 grep -Fq 'had_failures: ${{ steps.compose.outputs.had_failures }}' \
   <<<"$finalizer" ||
   fail "finalizer does not expose exact composer failure evidence"
