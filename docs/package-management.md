@@ -1595,6 +1595,16 @@ each one before invoking the build script, so a missing or
 too-old tool fails up front with a platform-keyed install hint
 rather than mid-build with a cryptic shell error.
 
+The manifest declares executable prerequisites; the source recipe still owns
+any project-local dependency tree used by those executables. For example, a
+recipe that runs a JavaScript tool from a committed `package-lock.json` must
+install and verify that locked tree in its normal build path, below the
+resolver-owned build output or scratch tree rather than in the shared source
+checkout. Do not provision it only in selected CI callers: archive validation
+can reject a same-run or published artifact and fall through to the source
+recipe from any local, direct-dependency, transitive-dependency, or concurrent
+resolve.
+
 **Inline declaration**
 
 `[[host_tools]]` is an array-of-tables on the consumer manifest

@@ -1,6 +1,7 @@
 script_path = "packages/registry/shell/build-shell.sh"
 inputs = [
   "packages/registry/shell/build-shell.sh",
+  "packages/registry/shell/prepare-build-tools.sh",
   "scripts/build-homebrew-main-shell-closure.sh",
   "scripts/verify-homebrew-main-shell-artifact-lock.sh",
   "scripts/check-homebrew-main-shell-brewfile.mjs",

@@ -497,23 +497,6 @@ need_node_modules() {
     fi
 }
 
-# Source composition of the bottle-built shell uses the repository's pinned
-# tsx and mkrootfs dependency trees. Run exact lockfile installs every time the
-# source-capable path is selected: presence checks cannot prove that an old
-# node_modules tree matches the cache key's current package-lock inputs.
-need_shell_vfs_build_tools() {
-    step "Installing locked Shell VFS TypeScript dependencies"
-    (cd "$REPO_ROOT" && \
-        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
-        npm ci --no-audit --no-fund --prefer-offline)
-    info "Shell VFS TypeScript dependencies installed"
-
-    step "Installing locked mkrootfs dependencies"
-    npm --prefix "$REPO_ROOT/tools/mkrootfs" ci \
-        --no-audit --no-fund --prefer-offline
-    info "mkrootfs dependencies installed"
-}
-
 # ─── Build targets ────────────────────────────────────────────────────────────
 
 build_kernel() {
@@ -992,14 +975,8 @@ build_shell_vfs() {
     )
     if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then
         # Preserve the caller's explicit no-source-build contract. This
-        # path needs no composer dependencies because any archive miss or
-        # verification failure must remain a failure.
+        # remains an error on any archive miss or verification failure.
         resolve_args+=("${FETCH_ONLY_ARGS[@]}")
-    else
-        # The normal resolver may use a valid public archive or execute
-        # the source composer. Prepare the latter's exact lockfile-owned
-        # tools so fallback never depends on ambient npm state.
-        need_shell_vfs_build_tools
     fi
     resolve_args+=(resolve shell)
     xtask="$(pkg_xtask_bin)" || {
