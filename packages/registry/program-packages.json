@@ -298,8 +298,8 @@
     "nethack-browser-bundle": {
       "manifestSha256": "b8294981da7ce4299dfb271d4aecb90ababa97a4d1acc9b716ae05bbe52beb53",
       "cacheKeys": {
-        "wasm32": "bbde7202fd7ac9d0fe859540f69fa04547a7903705c7abda85861cf9f3a9bb3f",
-        "wasm64": "299820741076c5835ed6abc7a114143603919f74a9d5f0fb0b5a677a23ada2e5"
+        "wasm32": "8185e934440c3ff8fafe718d15028ab5dbd5c345a2f5517a2bc1dade96ca2154",
+        "wasm64": "76bef8bb896c85ae77da653130b6e9a135fd640badce83ddca4f1f517bcf1580"
       }
     },
     "nginx": {
@@ -501,8 +501,8 @@
     "vim-browser-bundle": {
       "manifestSha256": "e31d84057db49c3534381604d0c8f3c7d765e33ede560a7ea7b01a5a8f1aa0d3",
       "cacheKeys": {
-        "wasm32": "2be4011bff29858481bd2e67c3a9ed5fb8d2424e2ada956ae42bd0a2f506de71",
-        "wasm64": "b2bc5053848452fe5ae433b6a8a6c104af6de32757cf9b3bb46f2e03508b0ddf"
+        "wasm32": "f0f9e77e4b4a1003f387d7706cf16a29da27e537d1b354547d1d94721b4d53bb",
+        "wasm64": "bcb98d055890ef832e911e6a9a2705a94ac267505f581f2f724b630e6d2abadc"
       }
     },
     "wget": {
@@ -1658,7 +1658,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "bbde7202fd7ac9d0fe859540f69fa04547a7903705c7abda85861cf9f3a9bb3f"
+        "wasm32": "8185e934440c3ff8fafe718d15028ab5dbd5c345a2f5517a2bc1dade96ca2154"
       },
       "dependencyClosures": {
         "wasm32": [
@@ -2871,7 +2871,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "2be4011bff29858481bd2e67c3a9ed5fb8d2424e2ada956ae42bd0a2f506de71"
+        "wasm32": "f0f9e77e4b4a1003f387d7706cf16a29da27e537d1b354547d1d94721b4d53bb"
       },
       "dependencyClosures": {
         "wasm32": [
