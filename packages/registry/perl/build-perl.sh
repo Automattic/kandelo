@@ -13,17 +13,24 @@ set -euo pipefail
 #
 # Output: packages/registry/perl/bin/perl.wasm
 
-PERL_VERSION="${PERL_VERSION:-5.40.3}"
+PERL_VERSION="${WASM_POSIX_DEP_VERSION:-${PERL_VERSION:-5.40.3}}"
 PERL_CROSS_VERSION="${PERL_CROSS_VERSION:-1.6.4}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.cpan.org/src/5.0/perl-${PERL_VERSION}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/perl-src"
-BIN_DIR="$SCRIPT_DIR/bin"
-SYSROOT="$REPO_ROOT/sysroot"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="$WORK_DIR/perl-src"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
+# Worktree-local SDK on PATH (no global npm link required).
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
+SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+export WASM_POSIX_SYSROOT="$SYSROOT"
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+    echo "ERROR: wasm32posix-cc not found after sourcing sdk/activate.sh." >&2
     exit 1
 fi
 
@@ -31,8 +38,6 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     echo "ERROR: sysroot not found. Run: bash build.sh && bash scripts/build-musl.sh" >&2
     exit 1
 fi
-
-export WASM_POSIX_SYSROOT="$SYSROOT"
 
 # perl-cross's configure scripts require GNU tools (sed -r, readelf, objdump).
 # scripts/dev-shell.sh provides those tools in the pure build environment.
@@ -47,7 +52,7 @@ if [ -z "${LLVM_BIN:-}" ]; then
 fi
 if [ -d "$LLVM_BIN" ]; then
     # Create temp dir with readelf/objdump symlinks for perl-cross
-    TOOL_DIR="$SCRIPT_DIR/.host-tools"
+    TOOL_DIR="$WORK_DIR/.host-tools"
     mkdir -p "$TOOL_DIR"
     ln -sf "$LLVM_BIN/llvm-readelf" "$TOOL_DIR/readelf"
     ln -sf "$LLVM_BIN/llvm-objdump" "$TOOL_DIR/objdump"
@@ -57,11 +62,14 @@ fi
 # --- Download Perl source + perl-cross overlay ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading Perl $PERL_VERSION..."
-    TARBALL="perl-${PERL_VERSION}.tar.gz"
-    URL="https://www.cpan.org/src/5.0/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    TARBALL="$(basename "$SOURCE_URL")"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "/tmp/$TARBALL"
+    if [ -n "$SOURCE_SHA256" ]; then
+        echo "==> Verifying source sha256..."
+        echo "$SOURCE_SHA256  /tmp/$TARBALL" | shasum -a 256 -c -
+    fi
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
+    tar xf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"
 
     echo "==> Downloading perl-cross $PERL_CROSS_VERSION..."
@@ -242,6 +250,32 @@ if [ ! -f config.sh ]; then
     # platform that builds perl with clang. (Adding it to HOSTCFLAGS
     # ensures the buildmini sub-configure inherits it — perl-cross
     # propagates HOSTCFLAGS into the host CC invocation.)
+    #
+    # The SAME UB miscompile hits the TARGET perl.wasm, not just the host
+    # miniperl: with `-Doptimize=-O2` and no `-fno-strict-aliasing` in the
+    # target `-Dccflags`, perl.wasm panics `magic_killbackrefs` /
+    # `del_backref` the first time a loaded module traverses weak refs (e.g.
+    # `use File::Spec`, `use Config`, `use Data::Dumper`). That is why the
+    # earlier port only passed a trivial arithmetic smoke. `-Dccflags` below
+    # carries `-fno-strict-aliasing` so the shipped interpreter is correct.
+    #
+    # `-Dosname=linux` (below): the wasm32-unknown-none target left osname
+    # empty, so ExtUtils::MakeMaker's `$Config{osname} eq ...` probes hit
+    # undef and every core module's Makefile.PL/pm_to_blib staging failed
+    # (no generated runtime files). Kandelo presents a POSIX/linux-like
+    # syscall surface, so a linux osname routes MakeMaker through MM_Unix
+    # correctly and lets the core-module runtime tree generate + stage.
+    #
+    # `-Uusedl` (static extensions): Kandelo wasm has no working dlopen
+    # (dlerror() is a stub -> "Can't load Cwd.so ... dlerror() not
+    # implemented"). The default usedl=define builds each XS core module as a
+    # .so that the runtime can never load, so File::Spec (-> File::Spec::Unix
+    # -> Cwd, an XS module), POSIX, Fcntl, List::Util, etc. all fail. Building
+    # extensions statically links their XS into perl.wasm with a boot table so
+    # XSLoader::load resolves them without dlopen. The set of statically-linked
+    # extensions is curated after configure by editing Makefile.config's
+    # fullpath_static_ext (perl-cross has no -Dnoextensions handler); see that
+    # patch below for which extensions are dropped and why.
     export HOSTCFLAGS="-Wno-format -fno-strict-aliasing"
 
     # perl-cross's `--mode=cross` spawns two sub-configures: one for
@@ -266,7 +300,8 @@ if [ ! -f config.sh ]; then
         -Dranlib=wasm32posix-ranlib \
         -Dnm=wasm32posix-nm \
         -Doptimize="-O2" \
-        -Dccflags="-D_GNU_SOURCE -DNO_ENV_ARRAY_IN_MAIN -fvisibility=default" \
+        -Dosname=linux \
+        -Dccflags="-D_GNU_SOURCE -DNO_ENV_ARRAY_IN_MAIN -fvisibility=default -fno-strict-aliasing" \
         -Dldflags="" \
         -Dlddlflags="" \
         -Dccdlflags="" \
@@ -279,6 +314,7 @@ if [ ! -f config.sh ]; then
         -Uuselargefiles \
         -Duse64bitint \
         -Duseperlio \
+        -Uusedl \
         \
         -Dcharsize=1 \
         -Dshortsize=2 \
@@ -463,7 +499,7 @@ if [ ! -f config.sh ]; then
         -Dd_crypt=undef \
         -Dd_times=undef \
         -Dd_system=undef \
-        2>&1 | tee "$SCRIPT_DIR/configure.log" | tail -50
+        2>&1 | tee "$WORK_DIR/configure.log" | tail -50
 
     echo "==> Configure complete."
 
@@ -489,6 +525,21 @@ if [ ! -f config.sh ]; then
         -e "/^CFLAGS = /s/$/ -fvisibility=default -DNO_ENV_ARRAY_IN_MAIN/" \
         Makefile.config
 
+    # Curate the static extension set (perl-cross ignores -Dnoextensions, so we
+    # edit fullpath_static_ext directly). Two reasons:
+    #  - ext/re recompiles regcomp.c with -DPERL_EXT_RE_BUILD, whose symbols
+    #    (Perl_reg_add_data, ...) collide with core regcomp.o at the static
+    #    perl link ("duplicate symbol"). re is a debug pragma; drop it.
+    #  - drop extensions whose XS needs libraries absent from the wasm sysroot
+    #    (Compress::Raw::Zlib/Bzip2, Encode, Sys::Syslog, I18N::Langinfo,
+    #    NDBM_File, Unicode::Collate/Normalize, PerlIO::encoding) or threads
+    #    (we build -Uusethreads); with --allow-undefined those would link but
+    #    add wasm imports the host cannot satisfy. Kept set uses standard
+    #    libc/syscalls the kernel provides. Excluded modules -> follow-up.
+    KEEP_STATIC_EXT="ext/B ext/Devel-Peek ext/Fcntl ext/File-DosGlob ext/File-Glob ext/Hash-Util ext/Hash-Util-FieldHash ext/Opcode ext/POSIX ext/PerlIO-mmap ext/PerlIO-via ext/SDBM_File ext/Sys-Hostname ext/attributes ext/mro cpan/Digest-MD5 cpan/Digest-SHA cpan/Filter-Util-Call cpan/MIME-Base64 cpan/Math-BigInt-FastCalc cpan/Scalar-List-Utils cpan/Socket cpan/Time-Piece dist/Data-Dumper dist/Devel-PPPort dist/IO dist/PathTools dist/Storable dist/Time-HiRes"
+    sed -i.bak3 "s|^fullpath_static_ext = .*|fullpath_static_ext = ${KEEP_STATIC_EXT}|" Makefile.config
+    echo "==> Curated fullpath_static_ext to $(echo "$KEEP_STATIC_EXT" | wc -w | tr -d ' ') extensions (dropped re + external-lib/threads)."
+
     # Patch Makefile for wasm32 linking:
     # Our toolchain uses --allow-undefined which creates env.* imports for unresolved
     # symbols instead of linking to definitions from other .o files. Combined with
@@ -505,7 +556,7 @@ fi
 
 # --- Build ---
 echo "==> Building Perl (this takes a while)..."
-make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" perl 2>&1 | tee "$SCRIPT_DIR/build.log" | tail -80
+make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" perl 2>&1 | tee "$WORK_DIR/build.log" | tail -80
 
 echo "==> Collecting binary..."
 mkdir -p "$BIN_DIR"
@@ -517,7 +568,7 @@ if [ -f "$SRC_DIR/perl" ]; then
 else
     echo "ERROR: perl binary not found after build" >&2
     echo "==> Last 100 lines of build.log:"
-    tail -100 "$SCRIPT_DIR/build.log"
+    tail -100 "$WORK_DIR/build.log"
     exit 1
 fi
 
@@ -525,7 +576,97 @@ echo ""
 echo "==> Perl $PERL_VERSION built successfully!"
 echo "Binary: $BIN_DIR/perl.wasm"
 
+# --- Build + package the generated core-module runtime library ---
+# `make perl` links the interpreter but STOPS before perl-cross's
+# `nonxs_ext extensions pods` sub-targets. Those sub-targets are what
+# GENERATE core runtime files (e.g. lib/XSLoader.pm from
+# dist/XSLoader/XSLoader_pm.PL) and stage the pure-perl core-module tree
+# into perl-src/lib/ via pm_to_blib. Without them the shipped bottle has no
+# XSLoader.pm, so loading File::Spec (-> Cwd -> XSLoader) fails at runtime --
+# the reported gap. These steps run under miniperl (the host build perl), so
+# they need no wasm-target execution.
+#
+# We run `make -k` (keep-going) rather than a plain `make` because two known
+# wasm boundaries make the FULL build return non-zero, and neither blocks the
+# runtime this package ships (the curated static extensions above still build
+# and their .pm still stage):
+#   1. ext/Errno: Errno_pm.PL's errno-constant extraction finds none under the
+#      wasm sysroot ("No error definitions found") -> follow-up kd-gtxa.
+#   2. The extensions dropped from fullpath_static_ext (external-lib/threads/re)
+#      have their Makefile.PL/pm_to_blib skipped -> follow-up kd-14n8. The
+#      curated static set (POSIX/Fcntl/Cwd/List::Util/...) is linked into
+#      perl.wasm and their pure-perl .pm stage via pm_to_blib, so File::Spec
+#      (-> Cwd XS), POSIX, etc. load at runtime without dlopen.
+# We then verify the required generated files exist and package perl-src/lib/
+# (the staged privlib) as the perl-runtime.zip output that the Homebrew
+# formula installs + points PERL5LIB at, and that the resolver ships alongside
+# perl.wasm.
+echo "==> Building + staging Perl runtime modules (make -k)..."
+set +e
+make -k -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tee "$WORK_DIR/build-all.log" | tail -40
+ALL_RC=${PIPESTATUS[0]}
+set -e
+if [ "$ALL_RC" -ne 0 ]; then
+    echo "==> 'make -k' exited $ALL_RC (expected: Errno + dropped external-lib exts);" >&2
+    echo "    verifying the required generated runtime files were still staged below." >&2
+fi
+
+# Stage the statically-linked extensions' .pm into lib/. perl-cross's static
+# recipe runs `make -C <dir> ... static` (builds the .a) but never runs the
+# module's pm_to_blib, and it touches a `<dir>/pm_to_blib` stamp so a later
+# `make pm_to_blib` no-ops -- so File::Spec/POSIX/Cwd .pm never reach lib/ even
+# though their XS is linked into perl.wasm. Remove the stamp and run each
+# curated static ext's pm_to_blib (uses miniperl, no wasm-target execution).
+echo "==> Staging static-extension .pm (pm_to_blib)..."
+STATIC_EXT_DIRS="$(sed -n 's/^fullpath_static_ext = //p' Makefile.config)"
+for d in $STATIC_EXT_DIRS; do
+    [ -d "$d" ] || continue
+    rm -f "$d/pm_to_blib"
+    make -C "$d" PERL_CORE=1 LIBPERL=libperl.a pm_to_blib >/dev/null 2>&1 || \
+        echo "  WARN: pm_to_blib failed for $d (checked by the post-check below)" >&2
+done
+
+PRIVLIB_SRC="$SRC_DIR/lib"
+# Fail loudly if the generated core runtime files this package exists to ship
+# are still absent -- do not publish a silently-incomplete runtime. Cwd.pm is
+# the file whose absence made File::Spec fail in the original report.
+missing=""
+for f in XSLoader.pm Config.pm File/Spec.pm File/Spec/Unix.pm Cwd.pm; do
+    [ -f "$PRIVLIB_SRC/$f" ] || missing="$missing $f"
+done
+if [ -n "$missing" ]; then
+    echo "ERROR: required generated runtime files missing from $PRIVLIB_SRC:$missing" >&2
+    echo "       (make -k rc=$ALL_RC) -- see $WORK_DIR/build-all.log" >&2
+    exit 1
+fi
+echo "==> Generated runtime files present (XSLoader.pm, Config.pm, File::Spec, Cwd.pm)."
+
+# `make perl` above linked perl.wasm before any extension was built; with
+# `-Uusedl` the `make -k` pass compiles the core XS extensions and relinks
+# perl.wasm to statically embed them (with the XSLoader boot table). Re-collect
+# that interpreter -- it is the one that can load Cwd/POSIX/Fcntl without
+# dlopen. (No-op for a usedl=define build where make -k does not relink perl.)
+if [ -f "$SRC_DIR/perl" ]; then
+    cp "$SRC_DIR/perl" "$BIN_DIR/perl.wasm"
+    echo "==> Re-collected perl.wasm after make -k ($(wc -c < "$BIN_DIR/perl.wasm" | tr -d ' ') bytes)."
+fi
+
+echo "==> Packaging Perl runtime library (lib/perl5/$PERL_VERSION)..."
+RUNTIME_STAGE="$WORK_DIR/perl-runtime-stage"
+rm -rf "$RUNTIME_STAGE"
+mkdir -p "$RUNTIME_STAGE/lib/perl5/$PERL_VERSION"
+# Ship the staged privlib. Keep unicore/ (utf8 + regex need it) and the
+# generated *.pm/*.pl; drop *.bak left by the configure sed patches and the
+# *.orig backups so the runtime zip carries only real library files.
+cp -R "$PRIVLIB_SRC/." "$RUNTIME_STAGE/lib/perl5/$PERL_VERSION/"
+find "$RUNTIME_STAGE" -type f \( -name '*.bak' -o -name '*.orig' \) -delete 2>/dev/null || true
+RUNTIME_ZIP="$BIN_DIR/perl-runtime.zip"
+rm -f "$RUNTIME_ZIP"
+( cd "$RUNTIME_STAGE" && zip -q -r -X "$RUNTIME_ZIP" lib )
+echo "==> Packaged runtime: $RUNTIME_ZIP ($(du -h "$RUNTIME_ZIP" | cut -f1))"
+
 # Install into local-binaries/ so the resolver picks the freshly-built
-# binary over the fetched release.
+# binary + runtime over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary perl "$SCRIPT_DIR/bin/perl.wasm"
+install_local_binary perl "$BIN_DIR/perl.wasm"
+install_local_binary perl "$RUNTIME_ZIP"
