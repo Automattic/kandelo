@@ -852,16 +852,16 @@ downloads, and removes it again from the release validator's pure index/archive
 commands. The planner then derives the wasm32 `rootfs` package and its exact
 runtime dependency closure from each commit's checked-in
 `program-packages.json`, recomputes both expected ledgers, and requires the
-projections and ledgers to match. It then validates and downloads every
-selected staging archive, including its embedded manifest, rebuilds an index
-from only those verified archives, rewrites their relative names to the exact
-staging release URLs, and uploads the resulting index and evidence as one
-same-run Actions artifact. Its manifest records the SHA-256 and byte size of
-the index, projection, expected ledger, staging snapshot, and release asset
-inventory. Activation verifies every binding, requires the exact
-package/architecture/cache-key identity set to agree across all three ledgers,
-and checks each selected snapshot archive against its unique uploaded release
-asset record. Both the builder and the independent verifier
+selected closure projections and filtered ledgers to match. It then validates
+and downloads every selected staging archive, including its embedded manifest,
+rebuilds an index from only those verified archives, rewrites their relative
+names to the exact staging release URLs, and uploads the resulting index and
+evidence as one same-run Actions artifact. Its manifest records the SHA-256
+and byte size of the index, projection, expected ledger, staging snapshot, and
+release asset inventory. Activation verifies every binding, requires the
+exact package/architecture/cache-key identity set to agree across all three
+closure ledgers, and checks each selected snapshot archive against its unique
+uploaded release asset record. Both the builder and the independent verifier
 download that artifact and set `WASM_POSIX_BINARY_INDEX_URL` to its local
 `file://` index before any resolver use. Extra entries in the mutable staging
 index therefore cannot become resolver candidates.

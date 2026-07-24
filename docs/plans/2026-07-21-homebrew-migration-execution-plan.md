@@ -550,10 +550,11 @@ canonical release):
 
   1. finish every non-cyclic #1079 validation and freeze its reviewed
      package-producing head `F`;
-  2. make the workflow-only descendant `H` reachable from a temporary
+  2. make the reviewed publisher descendant `H` reachable from a temporary
      Automattic/kandelo branch without moving #1079's head, then have protected
      tap `main` pin the reusable workflow to exact `H` while separately naming
-     exact `F` as the staged package generation;
+     exact `F` as the staged package generation; `H` must retain `F`'s exact
+     sealed `rootfs` closure identities;
   3. publish only the complete intended ABI-42 closure, then update the shell
      lock to the exact resulting tap commit and run exact Node/Chromium and
      staging acceptance;
@@ -574,11 +575,17 @@ canonical release):
      `437fde2524ea6ad9c44933f8abbf995a46841009` as generation `F`. Validate and
      materialize the exact 15-entry `rootfs` wasm32 runtime closure derived
      from `F`'s committed `program-packages.json`.
-  2. Create and review a workflow/tests/docs-only descendant `H`, then push it
-     to a temporary Automattic/kandelo branch so its reusable workflow SHA is
-     reachable. Do **not** move #1079's head from `F` yet: this keeps its
-     staging tag and package-generation checks undisturbed during tap
-     publication. The protected tap pins both reusable `uses` and
+  2. Create and review publisher descendant `H`, then push it to a temporary
+     Automattic/kandelo branch so its reusable workflow SHA is reachable.
+     `H` changes the publisher workflow, its tests, and documentation, plus
+     the two narrow legacy `vim-browser-bundle` and
+     `nethack-browser-bundle` output-ownership corrections exposed by `F`'s
+     staging run. Those bundles are neither members of the sealed `rootfs`
+     closure nor Formulae in the Homebrew tap; their generated cache
+     identities are refreshed in `H`, while all 15 sealed closure identities
+     remain exactly equal to `F`. Do **not** move #1079's head from `F` yet:
+     this keeps its staging tag and package-generation checks undisturbed
+     during tap publication. The protected tap pins both reusable `uses` and
      `kandelo-ref` to exact `H`, while the publisher separately names exact
      `F` and `pr-1079-staging`. The publisher must
      prove `F` is an ancestor of `H`, derive byte-identical expected ledgers
@@ -618,10 +625,10 @@ canonical release):
      acceptance and immutable VFS publication are green.
   7. After `T42` and the public shell proof are green, fast-forward #1079's
      head from `F` to exact `H`. Let fresh PR checks consume the now-canonical
-     ABI-42 bottles, then merge that exact checked head without a squash or
-     rebase. The temporary workflow branch may be removed only after `H` is
-     reachable from landed `main` and the tap caller has rotated back to
-     `main`.
+     ABI-42 bottles and rebuild the two corrected browser-bundle packages,
+     then merge that exact checked head without a squash or rebase. The
+     temporary workflow branch may be removed only after `H` is reachable
+     from landed `main` and the tap caller has rotated back to `main`.
 
   This refinement supersedes only the assumption that all ABI-42 package and
   VFS acceptance can occur in one commit/run. It does not remove the merge-SHA
