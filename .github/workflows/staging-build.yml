@@ -42,9 +42,10 @@ jobs:
   # package matrix below: preflight → toolchain-cache → matrix-build,
   # with source validation and Cargo tests running in parallel before the
   # prepared-workspace suites converge at test-gate → f2-status. Each
-  # matrix-build job publishes its own
-  # archive + index.toml entry atomically via
-  # `scripts/index-update.sh`. See
+  # matrix-build job uploads an immutable workflow artifact. One
+  # credentialed finalizer validates the complete matrix, takes the
+  # per-tag state lock once, publishes every referenced archive, and
+  # replaces index.toml exactly once. See
   # docs/plans/2026-05-05-decoupled-package-builds-design.md for the
   # design and docs/binary-releases.md for the consumer-side flow.
   # ---------------------------------------------------------------------
@@ -116,7 +117,6 @@ jobs:
     outputs:
       library_matrix: ${{ steps.compute.outputs.library_matrix }}
       program_matrix: ${{ steps.compute.outputs.program_matrix }}
-      repair_index: ${{ steps.compute.outputs.repair_index }}
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
       baseline_tag: ${{ steps.compute.outputs.baseline_tag }}
@@ -189,7 +189,6 @@ jobs:
               echo "reuse_staging=false" >> "$GITHUB_OUTPUT"
               echo "library_matrix=[]" >> "$GITHUB_OUTPUT"
               echo "program_matrix=[]" >> "$GITHUB_OUTPUT"
-              echo "repair_index=false" >> "$GITHUB_OUTPUT"
               echo "preflight: package staging not required; skipping package drift matrix"
               exit 0
             fi
@@ -210,7 +209,6 @@ jobs:
               echo "existing-index: none"
               : > "$existing_index"
             fi
-            repair_index=0
             if [ -s "$existing_index" ]; then
               existing_index_abi=$(sed -nE "s/^abi_version *= *([0-9]+).*$/\\1/p" "$existing_index" | head -n1)
               if [ "$existing_index_abi" != "$ABI" ]; then
@@ -325,8 +323,8 @@ jobs:
               # target_arches. Assumes the single-line form
               # `arches = ["a", "b"]`; all current package.toml files
               # use that shape.
-              # Version + revision for the per-matrix-entry
-              # scripts/index-update.sh invocation downstream.
+              # Version + revision bind the matrix artifact to the one
+              # finalizer-owned index transaction downstream.
               version=$(sed -nE "s/^version *= *\"([^\"]+)\".*/\\1/p" "$pkg_dir/package.toml" | head -1)
               revision=1
               if [ -f "$pkg_dir/build.toml" ]; then
@@ -392,18 +390,9 @@ jobs:
               echo "preflight: validated target/canonical union did not cover the computed matrix" >&2
               exit 1
             fi
-            repair_index_output=false
-            if [ "$repair_index" = "1" ] && [ "$library_count" -eq 0 ] && [ "$program_count" -eq 0 ]; then
-              repair_index_output=true
-              echo "preflight: no package updates selected; scheduling $TARGET_TAG/index.toml metadata repair"
-            elif [ "$repair_index" = "1" ]; then
-              echo "preflight: package update jobs will repair $TARGET_TAG/index.toml metadata"
-            fi
-
             echo "library_matrix=$library_matrix" >> "$GITHUB_OUTPUT"
             echo "program_matrix=$program_matrix" >> "$GITHUB_OUTPUT"
-            echo "repair_index=$repair_index_output" >> "$GITHUB_OUTPUT"
-            echo "preflight: library=$library_count program=$program_count repair-index=$repair_index_output"
+            echo "preflight: library=$library_count program=$program_count"
             echo "library_matrix:"; echo "$library_matrix" | jq .
             echo "program_matrix:"; echo "$program_matrix" | jq .
           '
@@ -503,15 +492,15 @@ jobs:
     timeout-minutes: 45
     permissions:
       actions: read      # download toolchain artifact
-      contents: write    # state-lock git push + gh release create/upload
+      contents: read
     env:
       WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.baseline_tag }}/index.toml
     strategy:
       fail-fast: false
-      # Keep GitHub codeload/action downloads and the staging index state-lock
-      # below abuse-throttle territory, especially when stacked PRs trigger
-      # independent staging runs at the same time.
-      max-parallel: 4
+      # The matrix no longer contends on release writes or the staging
+      # state-lock. Ten workers keeps codeload pressure bounded while removing
+      # the old four-writer publication bottleneck.
+      max-parallel: 10
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.library_matrix) }}
     steps:
@@ -529,42 +518,6 @@ jobs:
           build-host: ${{ github.repository }}@${{ github.sha }}
           expected-cache-key-sha: ${{ matrix.sha }}
 
-      # Atomic per-matrix-entry publish to the pr-<N>-staging tag.
-      # Different state-lock subjects from durable-release, so PR
-      # staging publishes don't block prepare-merge runs.
-      - name: Publish archive + index entry
-        if: success()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          bash scripts/index-update.sh \
-            --target-tag "${{ needs.preflight.outputs.target_tag }}" \
-            --package "${{ matrix.package }}" \
-            --version "${{ matrix.version }}" \
-            --revision "${{ matrix.revision }}" \
-            --arch "${{ matrix.arch }}" \
-            --status success \
-            --archive-path "${{ steps.build.outputs.archive-path }}" \
-            --archive-name "${{ steps.build.outputs.archive-name }}" \
-            --cache-key-sha "${{ matrix.sha }}"
-
-      - name: Record failed build in index
-        if: ${{ failure() && steps.checkout.outcome == 'success' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          bash scripts/index-update.sh \
-            --target-tag "${{ needs.preflight.outputs.target_tag }}" \
-            --package "${{ matrix.package }}" \
-            --version "${{ matrix.version }}" \
-            --revision "${{ matrix.revision }}" \
-            --arch "${{ matrix.arch }}" \
-            --status failed \
-            --error "matrix-build failed; see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            || true
-
   # Program wave — kind=program packages, gated on the library wave.
   # Each runner downloads the library archives produced above and
   # materializes package.pr.toml overlays so the resolver finds each
@@ -580,14 +533,14 @@ jobs:
     timeout-minutes: 60
     permissions:
       actions: read      # download toolchain + library artifacts
-      contents: write    # state-lock git push + gh release create/upload
+      contents: read
     env:
       WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.baseline_tag }}/index.toml
     strategy:
       fail-fast: false
-      # Program jobs also publish through the same per-PR state-lock path; high
-      # fanout has caused transient codeload failures and git push 403s.
-      max-parallel: 4
+      # Program jobs retain dependency ordering through immutable workflow
+      # artifacts, but no longer serialize on release publication.
+      max-parallel: 10
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.program_matrix) }}
     steps:
@@ -621,49 +574,30 @@ jobs:
           dependency-matrix: ${{ needs.preflight.outputs.program_matrix }}
           github-token: ${{ github.token }}
 
-      # Atomic per-matrix-entry publish — same flow as
-      # lib-matrix-build, targeting the pr-<N>-staging tag.
-      - name: Publish archive + index entry
-        if: success()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          bash scripts/index-update.sh \
-            --target-tag "${{ needs.preflight.outputs.target_tag }}" \
-            --package "${{ matrix.package }}" \
-            --version "${{ matrix.version }}" \
-            --revision "${{ matrix.revision }}" \
-            --arch "${{ matrix.arch }}" \
-            --status success \
-            --archive-path "${{ steps.build.outputs.archive-path }}" \
-            --archive-name "${{ steps.build.outputs.archive-name }}" \
-            --cache-key-sha "${{ matrix.sha }}"
 
-      - name: Record failed build in index
-        if: ${{ failure() && steps.checkout.outcome == 'success' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          bash scripts/index-update.sh \
-            --target-tag "${{ needs.preflight.outputs.target_tag }}" \
-            --package "${{ matrix.package }}" \
-            --version "${{ matrix.version }}" \
-            --revision "${{ matrix.revision }}" \
-            --arch "${{ matrix.arch }}" \
-            --status failed \
-            --error "matrix-build failed; see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            || true
-
-  repair-staging-index:
-    needs: [preflight]
-    if: ${{ needs.preflight.result == 'success' && needs.preflight.outputs.repair_index == 'true' }}
+  finalize-staging-release:
+    # Matrix jobs are uncredentialed producers. This is the only staging
+    # release writer, and it runs after both dependency-ordered waves even
+    # when one entry failed so reviewers still receive a complete failure
+    # ledger and last-green fallbacks.
+    needs: [preflight, toolchain-cache, lib-matrix-build, matrix-build]
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.preflight.result == 'success' &&
+      needs.toolchain-cache.result == 'success' &&
+      (
+        needs.preflight.outputs.library_matrix != '[]' ||
+        needs.preflight.outputs.program_matrix != '[]'
+      )
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
+    concurrency:
+      group: phase-b-1-publish-${{ needs.preflight.outputs.target_tag }}
+      cancel-in-progress: false
     permissions:
-      actions: read      # verify a previous state-lock owner is terminal
-      contents: write    # state-lock git push + gh release create/upload
+      actions: read      # download matrix artifacts + recover abandoned lock owners
+      contents: write    # create/upload the one complete staging release transaction
     env:
       GH_TOKEN: ${{ github.token }}
       GITHUB_REPOSITORY: ${{ github.repository }}
@@ -672,14 +606,171 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
+      - name: Fetch musl submodule
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: libc/musl
+
       - name: Set up Nix
         uses: ./.github/actions/setup-nix
 
-      - name: Repair staging index metadata
+      - name: Restore xtask cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: preflight-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'tools/xtask/**') }}
+          restore-keys: |
+            preflight-${{ runner.os }}-
+
+      - name: Build exact finalization inputs
         run: |
-          bash scripts/dev-shell.sh bash scripts/index-update.sh \
-            --target-tag "${{ needs.preflight.outputs.target_tag }}" \
-            --repair-only
+          bash scripts/dev-shell.sh env \
+            LIBRARY_MATRIX='${{ needs.preflight.outputs.library_matrix }}' \
+            PROGRAM_MATRIX='${{ needs.preflight.outputs.program_matrix }}' \
+            ABI='${{ needs.preflight.outputs.abi }}' \
+            bash -c '
+              set -euo pipefail
+              HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+              cargo build --release -p xtask --target "$HOST_TARGET"
+              jq -nc --argjson libraries "$LIBRARY_MATRIX" \
+                --argjson programs "$PROGRAM_MATRIX" \
+                "\$libraries + \$programs" > "$RUNNER_TEMP/staging-matrix.json"
+              target/$HOST_TARGET/release/xtask staging-reuse expected \
+                --registry packages/registry \
+                --expected-abi "$ABI" \
+                --exclude erlang-vfs,perl,perl-vfs,python-vfs,redis,texlive \
+                --output "$RUNNER_TEMP/staging-expected.json"
+              jq -r ".[] | \"\\(.package)-\\(.arch)\"" \
+                "$RUNNER_TEMP/staging-matrix.json" \
+                > "$RUNNER_TEMP/staging-artifacts.txt"
+            '
+
+      - name: Download immutable matrix archives
+        run: |
+          bash scripts/dev-shell.sh env \
+            GH_TOKEN="$GH_TOKEN" \
+            GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            DEPENDENCY_ARTIFACT_ATTEMPTS=4 \
+            DEPENDENCY_ARTIFACT_POLL_SECONDS=5 \
+            bash .github/scripts/download-dependency-artifacts.sh \
+              --list "$RUNNER_TEMP/staging-artifacts.txt" \
+              --output "$RUNNER_TEMP/staging-artifacts" \
+              --allow-missing-completed
+
+      - name: Freeze the complete last-green baseline
+        env:
+          BASELINE_TAG: ${{ needs.preflight.outputs.baseline_tag }}
+        run: |
+          bash scripts/dev-shell.sh env \
+            GH_TOKEN="$GH_TOKEN" \
+            GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+            BASELINE_TAG="$BASELINE_TAG" \
+            bash -c '
+              set -euo pipefail
+              error="$RUNNER_TEMP/baseline-view.err"
+              if gh release view "$BASELINE_TAG" --repo "$GITHUB_REPOSITORY" \
+                  >/dev/null 2>"$error"; then
+                HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+                bash .github/scripts/validate-staging-release.sh \
+                  --tag "$BASELINE_TAG" \
+                  --expected-ledger "$RUNNER_TEMP/staging-expected.json" \
+                  --mode structural \
+                  --materialize \
+                  --output-dir "$RUNNER_TEMP/staging-baseline" \
+                  --xtask "target/$HOST_TARGET/release/xtask"
+              elif grep -Eqi "not found|HTTP 404|release does not exist" "$error"; then
+                echo "finalizer: $BASELINE_TAG is absent; the matrix must supply the complete first ABI snapshot"
+              else
+                cat "$error" >&2
+                exit 1
+              fi
+            '
+
+      - name: Compose one complete target-relative index
+        id: compose
+        env:
+          TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
+          ABI: ${{ needs.preflight.outputs.abi }}
+        run: |
+          bash scripts/dev-shell.sh env \
+            TARGET_TAG="$TARGET_TAG" \
+            ABI="$ABI" \
+            BUILT_BY="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            bash -c '
+              set -euo pipefail
+              HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+              baseline_args=()
+              if [ -d "$RUNNER_TEMP/staging-baseline" ]; then
+                baseline_args=(--baseline-dir "$RUNNER_TEMP/staging-baseline")
+              fi
+              bash .github/scripts/compose-staging-finalization.sh \
+                --target-tag "$TARGET_TAG" \
+                --expected-ledger "$RUNNER_TEMP/staging-expected.json" \
+                --matrix "$RUNNER_TEMP/staging-matrix.json" \
+                --artifacts-dir "$RUNNER_TEMP/staging-artifacts" \
+                "${baseline_args[@]}" \
+                --output-dir "$RUNNER_TEMP/staging-final" \
+                --xtask "target/$HOST_TARGET/release/xtask" \
+                --abi "$ABI" \
+                --built-at "$(date -u +%FT%TZ)" \
+                --built-by "$BUILT_BY"
+              echo "had_failures=$(cat "$RUNNER_TEMP/staging-final/had-failures")" \
+                >> "$GITHUB_OUTPUT"
+            '
+
+      - name: Publish and re-read the complete staging snapshot
+        id: publish
+        env:
+          TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
+        run: |
+          bash scripts/dev-shell.sh env \
+            GH_TOKEN="$GH_TOKEN" \
+            GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            GITHUB_SHA="${{ github.event.pull_request.head.sha }}" \
+            TARGET_TAG="$TARGET_TAG" \
+            bash .github/scripts/publish-staging-finalization.sh \
+              --target-tag "$TARGET_TAG" \
+              --target-sha "${{ github.event.pull_request.head.sha }}" \
+              --final-dir "$RUNNER_TEMP/staging-final"
+
+      - name: Record finalizer publication result
+        if: ${{ always() && steps.compose.outcome == 'success' }}
+        env:
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+        run: |
+          # WHY: package rows describe matrix builds, not the release write.
+          # Preserve that distinction so a successful build followed by a
+          # failed GitHub upload is never reported as a published snapshot.
+          publication_status=failed
+          if [ "$PUBLISH_OUTCOME" = success ]; then
+            publication_status=success
+          fi
+          jq --arg status "$publication_status" \
+            '.publication_status = $status' \
+            "$RUNNER_TEMP/staging-final/publish-status.json" \
+            > "$RUNNER_TEMP/staging-final/publish-status.next.json"
+          mv "$RUNNER_TEMP/staging-final/publish-status.next.json" \
+            "$RUNNER_TEMP/staging-final/publish-status.json"
+
+      - name: Upload per-package publication status
+        if: ${{ always() && steps.compose.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: staging-finalizer-status
+          path: ${{ runner.temp }}/staging-final/publish-status.json
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Fail after publishing partial-build evidence
+        if: ${{ steps.compose.outputs.had_failures == '1' }}
+        run: |
+          echo "::error::One or more matrix entries failed. The complete staging index records each failure and any verified last-green fallback."
+          exit 1
 
   test-gate-validation:
     # Source-only validation does not consume the prepared test workspace.
@@ -815,12 +906,12 @@ jobs:
     # legitimately hit all package archives in pr-<N>-staging (because
     # the previous run published them) while still needing to validate
     # the gate itself, especially after workflow/test-gate fixes.
-    needs: [change-scope, preflight, toolchain-cache, lib-matrix-build, matrix-build, repair-staging-index]
+    needs: [change-scope, preflight, toolchain-cache, lib-matrix-build, matrix-build, finalize-staging-release]
     if: |
       !cancelled() &&
       needs.toolchain-cache.result == 'success' &&
       needs.preflight.result == 'success' &&
-      (needs.repair-staging-index.result == 'success' || needs.repair-staging-index.result == 'skipped') &&
+      (needs.finalize-staging-release.result == 'success' || needs.finalize-staging-release.result == 'skipped') &&
       (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
       (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
     runs-on: ubuntu-latest
@@ -830,7 +921,7 @@ jobs:
       contents: read
     env:
       PACKAGE_STAGING_REQUIRED: ${{ needs.change-scope.outputs.package_staging_required }}
-      PACKAGE_STAGE_OVERLAYS_REQUIRED: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' }}
+      PACKAGE_FINALIZED_STAGING: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' }}
       PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
       PACKAGE_BASELINE_TAG: ${{ needs.preflight.outputs.baseline_tag }}
       PACKAGE_REUSE_STAGING: ${{ needs.preflight.outputs.reuse_staging }}
@@ -853,28 +944,50 @@ jobs:
         run: |
           tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
 
-      - name: Download matrix artifacts
-        # Each matrix entry uploaded one artifact named "<pkg>-<arch>"
-        # containing one .tar.zst. The pattern excludes the
-        # toolchain-sysroots helper artifact uploaded by toolchain-cache.
-        if: ${{ needs.preflight.outputs.reuse_staging == 'false' && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') }}
-        uses: ./.github/actions/download-run-artifacts
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          pattern: '*-wasm*'
-          path: ${{ runner.temp }}/staged-archives
-
       - name: Materialize binaries
         env:
           GH_TOKEN: ${{ github.token }}
           WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis texlive
-        # A reused staging release is fetched again after every matrix writer
-        # finishes, validated as fully current, and frozen into a local
-        # file:// snapshot. Otherwise retain the durable release + local
-        # matrix-overlay path used by first runs and partial staging releases.
+        # A finalized or reused staging release is fetched after the only
+        # writer finishes, validated, and frozen into a local file://
+        # snapshot. Tests therefore consume the same complete remote
+        # transaction reviewers receive.
         run: |
           set -euo pipefail
-          if [ "$PACKAGE_REUSE_STAGING" != "false" ]; then
+          if [ "$PACKAGE_FINALIZED_STAGING" = "true" ]; then
+            ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
+            EXPECTED="$RUNNER_TEMP/staging-expected.json"
+            SNAPSHOT="$RUNNER_TEMP/current-staging-snapshot"
+            bash scripts/dev-shell.sh env \
+              EXPECTED="$EXPECTED" \
+              SNAPSHOT="$SNAPSHOT" \
+              PACKAGE_TARGET_TAG="$PACKAGE_TARGET_TAG" \
+              ABI="$ABI" \
+              bash -c '
+                set -euo pipefail
+                HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+                cargo build --release -p xtask --target "$HOST_TARGET"
+                XTASK="target/$HOST_TARGET/release/xtask"
+                "$XTASK" staging-reuse expected \
+                  --registry packages/registry \
+                  --expected-abi "$ABI" \
+                  --exclude erlang-vfs,perl,perl-vfs,python-vfs,redis,texlive \
+                  --output "$EXPECTED"
+                TARGET_SNAPSHOT="$RUNNER_TEMP/fresh-finalized-target"
+                bash .github/scripts/validate-staging-release.sh \
+                  --tag "$PACKAGE_TARGET_TAG" \
+                  --expected-ledger "$EXPECTED" \
+                  --mode current \
+                  --materialize \
+                  --output-dir "$TARGET_SNAPSHOT" \
+                  --xtask "$XTASK"
+                bash .github/scripts/compose-staging-release-snapshots.sh \
+                  --target-dir "$TARGET_SNAPSHOT" \
+                  --output-dir "$SNAPSHOT"
+              '
+            export WASM_POSIX_BINARY_INDEX_URL
+            WASM_POSIX_BINARY_INDEX_URL=$(cat "$SNAPSHOT/index-url.txt")
+          elif [ "$PACKAGE_REUSE_STAGING" != "false" ]; then
             ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
             EXPECTED="$RUNNER_TEMP/staging-expected.json"
             SNAPSHOT="$RUNNER_TEMP/current-staging-snapshot"
@@ -934,10 +1047,6 @@ jobs:
             '
             export WASM_POSIX_BINARY_INDEX_URL
             WASM_POSIX_BINARY_INDEX_URL=$(cat "$SNAPSHOT/index-url.txt")
-          elif [ "$PACKAGE_STAGE_OVERLAYS_REQUIRED" = "true" ]; then
-            export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_BASELINE_TAG}/index.toml"
-            STAGE="$RUNNER_TEMP/staged-overlay"
-            bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/staged-archives" "$STAGE"
           else
             ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
             export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml"
@@ -1195,12 +1304,12 @@ jobs:
             -f description="Runtime/materialization tests passed; package staging skipped." \
             -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-  # publish / generate-index — REMOVED.
+  # Per-matrix publication — REMOVED.
   #
-  # Per binary-resolution-via-index-ledger, each matrix-build entry
-  # now publishes its archive + mutates pr-<N>-staging/index.toml
-  # atomically via scripts/index-update.sh. No separate publish
-  # job; no generate-index aggregation pass.
+  # Matrix jobs now produce immutable workflow artifacts. The single
+  # finalize-staging-release job validates the entire result, takes one
+  # state lock, uploads every index-referenced archive, and replaces the
+  # complete target-relative index exactly once.
   #
   # Stale-archive pruning (prune-staging-release.sh) is also gone:
   # the index.toml is authoritative, so orphan archives on the
@@ -1229,7 +1338,7 @@ jobs:
     # eliminates the common-case quick-push race). cancel-in-progress is
     # false here because aborting an in-flight comment edit is worse than
     # waiting one more comment-edit's worth of time.
-    needs: [preflight, lib-matrix-build, matrix-build]
+    needs: [preflight, lib-matrix-build, matrix-build, finalize-staging-release]
     if: always() && needs.preflight.result == 'success' && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1237,6 +1346,7 @@ jobs:
       group: phase-b-1-publish-${{ needs.preflight.outputs.target_tag }}
       cancel-in-progress: false
     permissions:
+      actions: read         # consume the finalizer's exact matrix result
       pull-requests: write   # post/edit PR comment
     env:
       GH_TOKEN: ${{ github.token }}
@@ -1245,72 +1355,28 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
+      - name: Download exact finalizer status
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: staging-finalizer-status
+          path: ${{ runner.temp }}/staging-finalizer-status
+
       - name: Compute publish-status.json
         id: status
         run: |
           set -euo pipefail
-          TAG="${{ needs.preflight.outputs.target_tag }}"
-          ABI="${{ needs.preflight.outputs.abi }}"
-          # f2-status walks the union of library + program matrices
-          # to decide per-entry status (built vs. failed); merge the
-          # two into a single array so the downstream loop stays
-          # uniform.
-          LIB_M='${{ needs.preflight.outputs.library_matrix }}'
-          PROG_M='${{ needs.preflight.outputs.program_matrix }}'
-          MATRIX=$(jq -nc --argjson l "$LIB_M" --argjson p "$PROG_M" '$l + $p')
-
-          # Currently published assets in the release (post-publish,
-          # post-generate-index). Falls back to [] if the release
-          # doesn't exist (matrix all failed early, nothing published).
-          existing=$(gh release view "$TAG" --repo "${{ github.repository }}" \
-            --json assets --jq '[.assets[].name]' 2>/dev/null || echo '[]')
-
-          # For each matrix entry, decide status by checking whether
-          # the expected canonical archive name is in the release.
-          # If yes: built. If no: failed (matrix-build for that entry
-          # failed). For failed entries, look up a prior archive for
-          # the same (pkg, arch) — the short-sha tail of that name is
-          # the previous_sha (last green).
-          #
-          # NOTE: process substitution (< <(...)) NOT a pipe — under
-          # non-interactive bash, `cmd | while` runs the loop body in a
-          # subshell, losing mutations to packages_json on each iteration.
-          packages_json='[]'
-          while IFS= read -r entry; do
-            pkg=$(echo "$entry" | jq -r .package)
-            arch=$(echo "$entry" | jq -r .arch)
-            sha=$(echo "$entry" | jq -r .sha)
-            short8="${sha:0:8}"
-
-            # Canonical archive name: <pkg>-<ver>-rev<N>-abi<N>-<arch>-<short8>.tar.zst.
-            # The (pkg, arch, short8) triple uniquely identifies an entry;
-            # version + revision live in the package manifest and don't
-            # need to round-trip through this aggregation.
-            if echo "$existing" | jq -e --arg pre "${pkg}-" --arg suf "-abi${ABI}-${arch}-${short8}.tar.zst" \
-                'any(.[]; startswith($pre) and endswith($suf))' >/dev/null; then
-              entry_json=$(jq -nc --arg n "$pkg" --arg a "$arch" --arg s "$sha" \
-                '{name:$n, arch:$a, status:"built", sha:$s}')
-            else
-              # Find a prior archive for the same (pkg, arch) — different sha.
-              # Best-effort; if multiple shas exist (shouldn't, but
-              # defensively), jq picks the first.
-              prev_short=$(echo "$existing" | jq -r --arg pre "${pkg}-" --arg arch_part "-abi${ABI}-${arch}-" \
-                '[.[] | select(startswith($pre) and contains($arch_part))] | .[0] // ""' \
-                | sed -nE 's/.*-([a-f0-9]{8})\.tar\.zst$/\1/p')
-              if [ -n "$prev_short" ]; then
-                entry_json=$(jq -nc --arg n "$pkg" --arg a "$arch" --arg p "$prev_short" \
-                  '{name:$n, arch:$a, status:"failed", previous_sha:$p}')
-              else
-                entry_json=$(jq -nc --arg n "$pkg" --arg a "$arch" \
-                  '{name:$n, arch:$a, status:"failed"}')
-              fi
-            fi
-            packages_json=$(echo "$packages_json" | jq -c --argjson e "$entry_json" '. + [$e]')
-          done < <(echo "$MATRIX" | jq -c '.[]')
-
-          jq -nc --argjson abi "$ABI" --arg tag "$TAG" --argjson pkgs "$packages_json" \
-            '{abi_version:$abi, release_tag:$tag, packages:$pkgs}' \
-            > publish-status.json
+          cp "$RUNNER_TEMP/staging-finalizer-status/publish-status.json" \
+            publish-status.json
+          jq -e '
+            (.abi_version | type == "number") and
+            (.release_tag | type == "string") and
+            (.publication_status == "success" or .publication_status == "failed") and
+            (.packages | type == "array") and
+            all(.packages[];
+              (.name | type == "string") and
+              (.arch == "wasm32" or .arch == "wasm64") and
+              (.status == "built" or .status == "failed"))
+          ' publish-status.json >/dev/null
 
           echo "--- publish-status.json ---"
           jq . publish-status.json
@@ -1348,6 +1414,9 @@ jobs:
             const total = status.packages.length;
             const built = status.packages.filter(p => p.status === 'built').length;
             const failed = status.packages.filter(p => p.status === 'failed').length;
+            const publication = status.publication_status === 'success'
+              ? 'complete staging snapshot published and re-read'
+              : 'staging snapshot publication failed; inspect the finalizer job';
 
             const rows = status.packages.map(p => {
               const sha = p.sha
@@ -1361,6 +1430,7 @@ jobs:
               `## Phase B-1 matrix build status — \`${status.release_tag}\``,
               '',
               `ABI v${status.abi_version}. **${built} built**, **${failed} failed**, ${total} total.`,
+              `Publication: **${publication}**.`,
               '',
               '| Package | Arch | Status | Sha |',
               '| --- | --- | --- | --- |',

@@ -73,6 +73,13 @@ struct ValidatedEntry {
     size: u64,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+struct FinalAsset {
+    name: String,
+    sha256: String,
+    size: u64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ValidationMode {
     Structural,
@@ -92,7 +99,7 @@ enum ArchiveValidationScope {
 pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     let Some((action, rest)) = args.split_first() else {
         return Err(
-            "usage: xtask staging-reuse <expected|validate|validate-archives|compose> [args]"
+            "usage: xtask staging-reuse <expected|validate|validate-archives|compose|trim-index|finalize-validate> [args]"
                 .into(),
         );
     };
@@ -101,10 +108,79 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
         "validate" => run_validate(rest),
         "validate-archives" => run_validate_archives(rest),
         "compose" => run_compose(rest),
+        "trim-index" => run_trim_index(rest),
+        "finalize-validate" => run_finalize_validate(rest),
         other => Err(format!(
-            "staging-reuse action must be expected, validate, validate-archives, or compose, got {other:?}"
+            "staging-reuse action must be expected, validate, validate-archives, compose, trim-index, or finalize-validate, got {other:?}"
         )),
     }
+}
+
+fn run_trim_index(args: &[String]) -> Result<(), String> {
+    let flags = Flags::parse(args)?;
+    flags.reject_unknown(&["--expected-ledger", "--index", "--output"])?;
+    let expected: ExpectedLedger = read_json(flags.required_path("--expected-ledger")?)?;
+    validate_expected_ledger(&expected)?;
+    let mut index = read_index(flags.required_path("--index")?)?;
+    if index.abi_version != expected.abi_version {
+        return Err(format!(
+            "staging base index ABI {} does not match expected ABI {}",
+            index.abi_version, expected.abi_version
+        ));
+    }
+
+    let expected_arches: BTreeMap<&str, BTreeSet<TargetArch>> =
+        expected
+            .entries
+            .iter()
+            .fold(BTreeMap::new(), |mut arches, entry| {
+                arches
+                    .entry(entry.package.as_str())
+                    .or_default()
+                    .insert(entry.arch);
+                arches
+            });
+    // WHY: the canonical release may contain intentionally disabled or
+    // historical packages. A PR-staging snapshot must not reference those
+    // unrelated assets, otherwise "self-contained" silently means copying
+    // the entire canonical release on every PR.
+    index.packages.retain_mut(|package| {
+        let Some(arches) = expected_arches.get(package.name.as_str()) else {
+            return false;
+        };
+        package.binary.retain(|arch, _| arches.contains(arch));
+        !package.binary.is_empty()
+    });
+    index.generator = "xtask staging-reuse trim-index".into();
+    index.validate_archive_abi_versions()?;
+    std::fs::write(flags.required_path("--output")?, index.write())
+        .map_err(|e| format!("write trimmed index: {e}"))
+}
+
+fn run_finalize_validate(args: &[String]) -> Result<(), String> {
+    let flags = Flags::parse(args)?;
+    flags.reject_unknown(&[
+        "--expected-ledger",
+        "--index",
+        "--archives-dir",
+        "--allow-failed",
+        "--output-assets",
+    ])?;
+    let expected: ExpectedLedger = read_json(flags.required_path("--expected-ledger")?)?;
+    validate_expected_ledger(&expected)?;
+    let index = read_index(flags.required_path("--index")?)?;
+    let archives_dir = flags.required_path("--archives-dir")?;
+    let allow_failed = match flags.required("--allow-failed")? {
+        "true" => true,
+        "false" => false,
+        other => {
+            return Err(format!(
+                "--allow-failed must be true or false, got {other:?}"
+            ));
+        }
+    };
+    let assets = validate_finalized_index(&expected, &index, archives_dir, allow_failed)?;
+    write_json(flags.required_path("--output-assets")?, &assets)
 }
 
 fn run_compose(args: &[String]) -> Result<(), String> {
@@ -617,6 +693,312 @@ fn validate_archive_snapshot(
                     wanted.git_inputs
                 ));
             }
+        }
+    }
+    Ok(())
+}
+
+fn validate_finalized_index(
+    expected: &ExpectedLedger,
+    index: &IndexToml,
+    archives_dir: &Path,
+    allow_failed: bool,
+) -> Result<Vec<FinalAsset>, String> {
+    if index.abi_version != expected.abi_version {
+        return Err(format!(
+            "final staging index ABI {} does not match expected ABI {}",
+            index.abi_version, expected.abi_version
+        ));
+    }
+    index.validate_archive_abi_versions()?;
+    ensure_localized_index(index, "final staging")?;
+
+    let directory = std::fs::symlink_metadata(archives_dir).map_err(|e| {
+        format!(
+            "inspect final archive directory {}: {e}",
+            archives_dir.display()
+        )
+    })?;
+    if !directory.is_dir() || directory.file_type().is_symlink() {
+        return Err(format!(
+            "final archive directory must be a non-symlink directory: {}",
+            archives_dir.display()
+        ));
+    }
+
+    let mut expected_packages: BTreeMap<&str, (&str, u32, BTreeSet<TargetArch>)> = BTreeMap::new();
+    for wanted in &expected.entries {
+        let package = expected_packages
+            .entry(wanted.package.as_str())
+            .or_insert_with(|| (wanted.version.as_str(), wanted.revision, BTreeSet::new()));
+        if package.0 != wanted.version || package.1 != wanted.revision {
+            return Err(format!(
+                "expected ledger gives package {} more than one version or revision",
+                wanted.package
+            ));
+        }
+        package.2.insert(wanted.arch);
+    }
+
+    let mut actual_packages = BTreeMap::new();
+    for package in &index.packages {
+        if actual_packages
+            .insert(package.name.as_str(), package)
+            .is_some()
+        {
+            return Err(format!(
+                "final staging index splits managed package {:?} across version blocks",
+                package.name
+            ));
+        }
+    }
+    if actual_packages.len() != expected_packages.len() {
+        return Err(format!(
+            "final staging index contains {} package blocks, expected {}",
+            actual_packages.len(),
+            expected_packages.len()
+        ));
+    }
+
+    let mut assets: BTreeMap<String, FinalAsset> = BTreeMap::new();
+    for wanted in &expected.entries {
+        let package = actual_packages
+            .get(wanted.package.as_str())
+            .ok_or_else(|| format!("final staging index lacks package {}", wanted.package))?;
+        if package.version != wanted.version || package.revision != wanted.revision {
+            return Err(format!(
+                "final staging index {} identity {} rev{} differs from expected {} rev{}",
+                wanted.package, package.version, package.revision, wanted.version, wanted.revision
+            ));
+        }
+        let expected_arches = &expected_packages
+            .get(wanted.package.as_str())
+            .expect("expected package was built above")
+            .2;
+        let actual_arches: BTreeSet<_> = package.binary.keys().copied().collect();
+        if &actual_arches != expected_arches {
+            return Err(format!(
+                "final staging index {} arches {:?} differ from expected {:?}",
+                wanted.package, actual_arches, expected_arches
+            ));
+        }
+        let entry = package.binary.get(&wanted.arch).ok_or_else(|| {
+            format!(
+                "final staging index lacks {} {}",
+                wanted.package,
+                wanted.arch.as_str()
+            )
+        })?;
+
+        match entry.status {
+            EntryStatus::Success => {
+                let archive_url = required_entry_field(
+                    entry.archive_url.as_deref(),
+                    &wanted.package,
+                    wanted.arch,
+                    "archive_url",
+                )?;
+                let archive_sha = required_entry_field(
+                    entry.archive_sha256.as_deref(),
+                    &wanted.package,
+                    wanted.arch,
+                    "archive_sha256",
+                )?;
+                let cache_key = required_entry_field(
+                    entry.cache_key_sha.as_deref(),
+                    &wanted.package,
+                    wanted.arch,
+                    "cache_key_sha",
+                )?;
+                if cache_key != wanted.cache_key_sha {
+                    return Err(format!(
+                        "final staging index {} {} cache key is stale",
+                        wanted.package,
+                        wanted.arch.as_str()
+                    ));
+                }
+                if entry.built_at.as_deref().unwrap_or_default().is_empty()
+                    || entry.built_by.as_deref().unwrap_or_default().is_empty()
+                    || entry.error.is_some()
+                    || entry.last_attempt.is_some()
+                    || entry.last_attempt_by.is_some()
+                    || entry.fallback_archive_url.is_some()
+                    || entry.fallback_archive_sha256.is_some()
+                    || entry.fallback_cache_key_sha.is_some()
+                    || entry.fallback_built_at.is_some()
+                {
+                    return Err(format!(
+                        "final staging index {} {} success metadata is inconsistent",
+                        wanted.package,
+                        wanted.arch.as_str()
+                    ));
+                }
+                validate_final_archive(
+                    archives_dir,
+                    archive_url,
+                    archive_sha,
+                    cache_key,
+                    wanted,
+                    expected.abi_version,
+                    true,
+                    &mut assets,
+                )?;
+            }
+            EntryStatus::Failed if allow_failed => {
+                if entry.error.as_deref().unwrap_or_default().is_empty()
+                    || entry.last_attempt.as_deref().unwrap_or_default().is_empty()
+                    || entry
+                        .last_attempt_by
+                        .as_deref()
+                        .unwrap_or_default()
+                        .is_empty()
+                    || entry.archive_url.is_some()
+                    || entry.archive_sha256.is_some()
+                    || entry.cache_key_sha.is_some()
+                    || entry.built_at.is_some()
+                    || entry.built_by.is_some()
+                {
+                    return Err(format!(
+                        "final staging index {} {} failure metadata is inconsistent",
+                        wanted.package,
+                        wanted.arch.as_str()
+                    ));
+                }
+                let fallback_fields = [
+                    entry.fallback_archive_url.is_some(),
+                    entry.fallback_archive_sha256.is_some(),
+                    entry.fallback_cache_key_sha.is_some(),
+                ];
+                if fallback_fields.iter().any(|present| *present)
+                    && !fallback_fields.iter().all(|present| *present)
+                {
+                    return Err(format!(
+                        "final staging index {} {} has a partial fallback identity",
+                        wanted.package,
+                        wanted.arch.as_str()
+                    ));
+                }
+                if let (Some(url), Some(sha), Some(cache_key)) = (
+                    entry.fallback_archive_url.as_deref(),
+                    entry.fallback_archive_sha256.as_deref(),
+                    entry.fallback_cache_key_sha.as_deref(),
+                ) {
+                    validate_final_archive(
+                        archives_dir,
+                        url,
+                        sha,
+                        cache_key,
+                        wanted,
+                        expected.abi_version,
+                        false,
+                        &mut assets,
+                    )?;
+                }
+            }
+            EntryStatus::Failed => {
+                return Err(format!(
+                    "final staging index {} {} records a failed build",
+                    wanted.package,
+                    wanted.arch.as_str()
+                ));
+            }
+            EntryStatus::Pending | EntryStatus::Building => {
+                return Err(format!(
+                    "final staging index {} {} retains transient status {:?}",
+                    wanted.package,
+                    wanted.arch.as_str(),
+                    entry.status
+                ));
+            }
+        }
+    }
+
+    Ok(assets.into_values().collect())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_final_archive(
+    archives_dir: &Path,
+    archive_url: &str,
+    archive_sha: &str,
+    cache_key: &str,
+    wanted: &ExpectedEntry,
+    expected_abi: u32,
+    current: bool,
+    assets: &mut BTreeMap<String, FinalAsset>,
+) -> Result<(), String> {
+    validate_sha256(archive_sha, "final archive sha256")?;
+    validate_sha256(cache_key, "final archive cache_key_sha")?;
+    let asset = archive_asset_name(
+        archive_url,
+        "https://invalid.example/releases/download/final/",
+    )?;
+    let path = archives_dir.join(asset);
+    let metadata = std::fs::symlink_metadata(&path)
+        .map_err(|e| format!("inspect final staging archive {}: {e}", path.display()))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() == 0 {
+        return Err(format!(
+            "final staging archive must be a nonempty regular file: {}",
+            path.display()
+        ));
+    }
+    let actual_sha = sha256_file(&path)?;
+    if actual_sha != archive_sha {
+        return Err(format!(
+            "final staging archive {} sha256 {} differs from index {}",
+            path.display(),
+            actual_sha,
+            archive_sha
+        ));
+    }
+    let archived = read_archive_manifest(&path)?;
+    let compatibility = archived
+        .compatibility
+        .as_ref()
+        .expect("parse_archived guarantees compatibility");
+    let archived_kind = match archived.kind {
+        ManifestKind::Library => ExpectedKind::Library,
+        ManifestKind::Program => ExpectedKind::Program,
+        ManifestKind::Source => {
+            return Err(format!(
+                "final staging archive {} unexpectedly contains kind=source",
+                path.display()
+            ));
+        }
+    };
+    if archived.name != wanted.package
+        || archived.version != wanted.version
+        || archived_kind != wanted.kind
+        || compatibility.target_arch != wanted.arch
+        || !compatibility.abi_versions.contains(&expected_abi)
+        || compatibility.cache_key_sha != cache_key
+    {
+        return Err(format!(
+            "final staging archive {} manifest identity differs from its index entry",
+            path.display()
+        ));
+    }
+    if current
+        && (archived.revision != wanted.revision
+            || cache_key != wanted.cache_key_sha
+            || compatibility.git_inputs != wanted.git_inputs)
+    {
+        return Err(format!(
+            "current final staging archive {} differs from expected recipe provenance",
+            path.display()
+        ));
+    }
+
+    let planned = FinalAsset {
+        name: asset.to_string(),
+        sha256: archive_sha.to_string(),
+        size: metadata.len(),
+    };
+    if let Some(existing) = assets.insert(asset.to_string(), planned.clone()) {
+        if existing != planned {
+            return Err(format!(
+                "final staging index assigns conflicting identities to asset {asset:?}"
+            ));
         }
     }
     Ok(())
@@ -1797,5 +2179,140 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
             ArchiveValidationScope::CurrentDeclaredGitInputs,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn finalized_index_emits_only_referenced_verified_assets() {
+        let dir = archive_tempdir("finalized-current");
+        let archive_name = "zlib-1.3.1-rev2-abi39-wasm32-aaaaaaaa.tar.zst";
+        let archive = dir.join(archive_name);
+        write_test_archive(
+            &archive,
+            "manifest.toml",
+            archived_manifest(&[]).as_bytes(),
+            false,
+        );
+        fs::write(dir.join("unrelated.tar.zst"), b"not referenced").unwrap();
+
+        let mut final_index = index();
+        final_index.packages[0]
+            .binary
+            .get_mut(&TargetArch::Wasm32)
+            .unwrap()
+            .archive_sha256 = Some(sha256_file(&archive).unwrap());
+        let assets = validate_finalized_index(&expected(), &final_index, &dir, false).unwrap();
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].name, archive_name);
+        assert_eq!(assets[0].size, fs::metadata(&archive).unwrap().len());
+    }
+
+    #[test]
+    fn finalized_index_rejects_missing_changed_or_stale_current_archives() {
+        let dir = archive_tempdir("finalized-rejections");
+        let archive_name = "zlib-1.3.1-rev2-abi39-wasm32-aaaaaaaa.tar.zst";
+        let archive = dir.join(archive_name);
+        write_test_archive(
+            &archive,
+            "manifest.toml",
+            archived_manifest(&[]).as_bytes(),
+            false,
+        );
+        let mut final_index = index();
+        final_index.packages[0]
+            .binary
+            .get_mut(&TargetArch::Wasm32)
+            .unwrap()
+            .archive_sha256 = Some(sha256_file(&archive).unwrap());
+
+        let mut stale = final_index.clone();
+        stale.packages[0]
+            .binary
+            .get_mut(&TargetArch::Wasm32)
+            .unwrap()
+            .cache_key_sha = Some("c".repeat(64));
+        let error = validate_finalized_index(&expected(), &stale, &dir, false).unwrap_err();
+        assert!(error.contains("cache key is stale"), "{error}");
+
+        fs::write(&archive, b"changed after index composition").unwrap();
+        let error = validate_finalized_index(&expected(), &final_index, &dir, false).unwrap_err();
+        assert!(error.contains("sha256"), "{error}");
+
+        fs::remove_file(&archive).unwrap();
+        let error = validate_finalized_index(&expected(), &final_index, &dir, false).unwrap_err();
+        assert!(error.contains("inspect final staging archive"), "{error}");
+    }
+
+    #[test]
+    fn finalized_index_preserves_a_verified_failure_fallback() {
+        let dir = archive_tempdir("finalized-fallback");
+        let archive_name = "zlib-1.3.1-rev2-abi39-wasm32-aaaaaaaa.tar.zst";
+        let archive = dir.join(archive_name);
+        write_test_archive(
+            &archive,
+            "manifest.toml",
+            archived_manifest(&[]).as_bytes(),
+            false,
+        );
+
+        let mut final_index = index();
+        let entry = final_index.packages[0]
+            .binary
+            .get_mut(&TargetArch::Wasm32)
+            .unwrap();
+        entry.archive_sha256 = Some(sha256_file(&archive).unwrap());
+        final_index.update_entry_failed(
+            "zlib",
+            "1.3.1",
+            2,
+            TargetArch::Wasm32,
+            "matrix build failed".into(),
+            "2026-07-24T00:00:00Z".into(),
+            "https://example.test/run/1".into(),
+        );
+
+        let assets = validate_finalized_index(&expected(), &final_index, &dir, true).unwrap();
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].name, archive_name);
+        let error = validate_finalized_index(&expected(), &final_index, &dir, false).unwrap_err();
+        assert!(error.contains("records a failed build"), "{error}");
+
+        final_index.packages[0]
+            .binary
+            .get_mut(&TargetArch::Wasm32)
+            .unwrap()
+            .fallback_archive_sha256 = None;
+        let error = validate_finalized_index(&expected(), &final_index, &dir, true).unwrap_err();
+        assert!(error.contains("partial fallback identity"), "{error}");
+    }
+
+    #[test]
+    fn trim_index_removes_unmanaged_canonical_packages() {
+        let dir = archive_tempdir("trim-index");
+        let expected_path = dir.join("expected.json");
+        let index_path = dir.join("index.toml");
+        let output_path = dir.join("trimmed.toml");
+        write_json(&expected_path, &expected()).unwrap();
+        let mut source = index();
+        source.packages.push(PackageEntry {
+            name: "retired".into(),
+            version: "1.0".into(),
+            revision: 1,
+            binary: BTreeMap::from([(TargetArch::Wasm32, binary())]),
+        });
+        fs::write(&index_path, source.write()).unwrap();
+
+        run_trim_index(&[
+            "--expected-ledger".into(),
+            expected_path.to_string_lossy().into_owned(),
+            "--index".into(),
+            index_path.to_string_lossy().into_owned(),
+            "--output".into(),
+            output_path.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+
+        let trimmed = read_index(&output_path).unwrap();
+        assert_eq!(trimmed.packages.len(), 1);
+        assert_eq!(trimmed.packages[0].name, "zlib");
     }
 }

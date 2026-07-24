@@ -11,11 +11,12 @@ URL + sha + cache-key. Each `packages/registry/<name>/build.toml` points
 its `[binary]` entry at that ledger (typically via `index_url` with a
 `{abi}` placeholder so one `build.toml` survives ABI bumps).
 
-Adding or rebuilding one package re-uploads that package's `.tar.zst`
-**and** updates exactly that package's entry in `index.toml` —
-atomically, under a workflow-level state-lock so concurrent
-matrix-build jobs serialize their writes to the same ledger without
-clobbering each other.
+Adding or rebuilding one package publishes that package's content-addressed
+`.tar.zst` and replaces exactly that package's ledger entry. Durable and
+merge-candidate publishers serialize ledger mutations under a release
+state-lock. PR staging batches all matrix outputs as immutable workflow
+artifacts, then one credentialed finalizer takes the lock once and publishes
+one complete `index.toml`. Matrix builders never write release state.
 
 See [docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md](plans/2026-05-13-binary-resolution-via-index-ledger-design.md)
 for the design rationale and [docs/package-management.md](package-management.md)
@@ -114,7 +115,7 @@ same matrix flow in `.github/workflows/staging-build.yml`. After this
 PR's [Phase 10 workflow rewrite](plans/2026-05-13-binary-resolution-via-index-ledger-plan.md):
 
 ```
-preflight → toolchain-cache → matrix-build → test-gate → merge-gate
+preflight → toolchain-cache → matrix-build → staging-finalizer → test-gate → merge-gate
 ```
 
 - **preflight** asks `xtask staging-reuse expected` for the complete,
@@ -139,34 +140,36 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
   1. Download the toolchain artifact.
   2. Run `xtask archive-stage` to produce the per-entry `.tar.zst`
      (pinned commit-bound `--build-timestamp` + `--build-host`).
-  3. Invoke `scripts/index-update.sh --target-tag <tag> --package
-     <name> --version <v> --revision <r> --arch <a> --status success
-     --archive-path <staged> --archive-name <n> --cache-key-sha <s>`.
-     The script acquires the state-lock for `<tag>`, downloads the
-     current `index.toml` (or bootstraps an empty one for a fresh
-     tag), runs `xtask index-update` to mutate this package's entry,
-     uploads the archive and publishes the new `index.toml` through the
-     journaled release-index state machine described below, then releases the
-     lock. Candidate and legacy staging tags use their isolated mutable index;
-     canonical tags never replace `index.toml` with an unjournaled clobber.
-  4. On failure: a separate `if: failure()` step runs
-     `scripts/index-update.sh --status failed --error <msg>` so the
-     ledger reflects the failure. If a prior successful build for
-     this `(name, version, arch)` exists in the entry, it's
-     preserved in `fallback_archive_url` — consumers can keep
-     using the last-green archive while CI iterates on the rebuild.
-- **test-gate** handles first/partial runs through the canonical index plus
-  local `file://` overlays for matrix outputs. When preflight reused a
-  complete staging release, the gate re-downloads its index and paginated
-  asset metadata after all matrix writers finish, requires every expected
-  entry to be current, and verifies each archive's snapshotted size and
-  sha256 while downloading it. A target+canonical union snapshots and verifies
-  both sources independently, rejects conflicting same-name bytes, and overlays
-  only the exact canonical keys selected to replace stale target entries. The
-  composed index is rewritten to relative archive basenames and consumed from
-  the same local `file://` directory, so later release mutation cannot redirect
-  the tested resolver. Source validation and the Cargo-only suites run in
-  parallel with this preparation. The prepared workspace retains each selected
+  3. Upload the archive as a read-only workflow artifact. Library artifacts
+     remain dependencies of program matrix entries, but neither matrix has
+     `contents: write`.
+- **staging-finalizer** waits for both matrices, including partial failures.
+  It validates and materializes the last-green canonical release, trims it to
+  the current expected package ledger, and applies all successful matrix
+  artifacts offline. A missing or invalid artifact becomes one exact failed
+  entry while a valid same-version last-green archive remains its fallback.
+  The final validator requires one current version block per expected package,
+  exact arch/cache/provenance metadata, canonical target-relative URLs, and
+  exact manifest/hash/size agreement for every referenced current or fallback
+  archive. It emits an asset plan containing only those references; unrelated
+  canonical assets are not copied.
+
+  Only after that validation does the sole credentialed writer acquire the
+  per-tag state-lock. It uploads or verifies each immutable archive, publishes
+  the complete index once as the final mutable write, then re-downloads the
+  index and every referenced archive. A conflicting existing archive is a hard
+  failure rather than a clobber. Publication status is saved as a workflow
+  artifact before a partial matrix result fails the job.
+- **test-gate** waits for the finalizer, re-downloads the exact finalized
+  staging snapshot, requires every expected entry to be current, and verifies
+  each archive's snapshotted size and sha256 while materializing it. A reused
+  target+canonical union snapshots and verifies both sources independently,
+  rejects conflicting same-name bytes, and overlays only the exact canonical
+  keys selected to replace stale target entries. The composed index is
+  rewritten to relative archive basenames and consumed from the same local
+  `file://` directory, so later release mutation cannot redirect the tested
+  resolver. Source validation and the Cargo-only suites run in parallel with
+  this preparation. The prepared workspace retains each selected
   content-addressed program generation under `.ci-test-binary-cache/` and
   rewrites the `binaries/` mirrors as relative symlinks into that cache. It does
   not flatten package mirrors into unrelated regular files: extraction at a
@@ -399,8 +402,9 @@ deletes it.
 
 ## State-lock serialization
 
-`scripts/index-update.sh` acquires the workflow-level state-lock
-before mutating `index.toml`. The lock ref is per-subject:
+Every release writer acquires the workflow-level state-lock before mutating
+`index.toml`. This includes `scripts/index-update.sh`, the PR-staging
+finalizer, and the journaled canonical publisher. The lock ref is per-subject:
 
 ```
 refs/heads/github-actions/state-lock/<subject>
@@ -578,12 +582,11 @@ of the form `-abi<N>-`. Durable `binaries-abi-v<N>` releases use `N`
 from the tag. Mutable `pr-<NNN>-staging` releases use the in-tree
 `ABI_VERSION` from `crates/shared/src/lib.rs` at publish time.
 
-`scripts/index-update.sh` passes the expected ABI into
-`xtask index-update` on every publish. If a reused PR-staging release
-still has an old `index.toml`, the top-level `abi_version` is
-rewritten before the new entry is applied and old-ABI archive entries
-are pruned. `xtask index-update` validates the final ledger before
-upload, so mixed-ABI indexes are rejected rather than published.
+PR staging derives the expected ABI from the current tree, trims the verified
+baseline to that ABI, and validates the complete final ledger before its one
+publish. Durable and candidate per-entry writers pass the expected ABI through
+`scripts/index-update.sh`. `xtask index-update` and the staging final validator
+reject mixed-ABI indexes rather than publishing them.
 Consumers also compare `index.toml`'s `abi_version` with the
 resolver's requested ABI; a mismatch logs a warning and falls through
 to source build.
@@ -802,9 +805,10 @@ success-then-failure-then-fallback grouping.
 Bumping `ABI_VERSION` in `crates/shared/src/lib.rs` invalidates every
 durable archive against the resolver's ABI check. The bump PR's
 matrix flow rebuilds every package whose `cache_key_sha` is now
-stale (the ABI is part of the sha), and each matrix entry's
-`scripts/index-update.sh` invocation atomically publishes its
-archive + index entry to the new `binaries-abi-v<N+1>/` release.
+stale (the ABI is part of the sha). The staging finalizer publishes
+the complete new-ABI PR snapshot once; prepare-merge and activation
+subsequently publish the tested candidate as the new durable
+`binaries-abi-v<N+1>` ledger.
 
 Because the resolver substitutes `{abi}` in `build.toml`'s
 `index_url`, no in-tree edit is required for the URL pivot — the
@@ -823,13 +827,14 @@ extracts each archive's internal `manifest.toml` as the authoritative
 package identity and compatibility record, verifies that the archive's
 filename is the canonical rendering of those fields, and uploads a freshly
 composed `index.toml`. The script acquires the same state-lock as the
-matrix-build path, so it serializes against any active CI rebuilds. It does
+ordinary release writers, so it serializes against any active CI rebuilds. It does
 not infer the package name or version by splitting the archive filename. If
 the downloaded inventory contains more than one archive for the same package
 name and target architecture, composition fails and reports both filenames,
 cache keys, and archive hashes. Recovery must select one explicit immutable
 archive rather than depend on directory traversal order.
 
-Day-to-day publishes don't use this script — they go through
-`scripts/index-update.sh` per-matrix-entry. compose-initial-index is
-migration scaffolding kept in-tree for reproducibility.
+Day-to-day durable and candidate updates do not use this script. PR staging
+uses its single-writer finalizer, while the other publishers use the ordinary
+index update and release-state paths. `compose-initial-index` is migration
+scaffolding kept in-tree for reproducibility.

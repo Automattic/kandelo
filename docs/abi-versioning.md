@@ -376,10 +376,11 @@ kernel revisions; the new release's `index.toml` ledger lists all
 v(N) archives. Each `packages/registry/<pkg>/build.toml`'s `[binary]
 index_url` templates `{abi}` against the current `ABI_VERSION`, so
 the next fetch automatically hits the v(N+1) release after the
-constant bumps — no per-package URL pinning in-tree to amend. The
-matrix flow's per-entry `scripts/index-update.sh` invocations
-populate the new tag's `index.toml` atomically as each archive
-publishes.
+constant bumps — no per-package URL pinning in-tree to amend. PR
+matrix jobs first publish immutable workflow artifacts; one staging
+finalizer verifies and publishes a complete new-ABI snapshot. The
+tested prepare-merge candidate is then activated as the complete
+durable v(N+1) ledger.
 
 ### Additive changes within an ABI epoch
 
