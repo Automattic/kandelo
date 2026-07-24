@@ -370,6 +370,8 @@ docs/
 | [Browser Support](docs/browser-support.md) | Browser architecture, capabilities, and limitations |
 | [Shareable Computer URLs](docs/plans/2026-05-11-shareable-computer-url-design.md) | Boot descriptor design for sharing computer topology, signed bases/packages, mounts, and overlays |
 | [Package Management](docs/package-management.md) | `packages/registry/<name>/package.toml` schema, resolver, release archives |
+| [Homebrew Publishing](docs/homebrew-publishing.md) | Trusted Homebrew bottle publication, sidecars, VFS image building, and Node/browser gates |
+| [Homebrew Registry Replacement](docs/plans/2026-06-30-homebrew-registry-replacement-model.md) | Design for replacing `packages/registry` with Formulae plus additive Kandelo sidecars |
 | [Package Sources](docs/package-sources.md) | Reusable workflows and scripts for third-party Kandelo package repositories |
 | [Homebrew Publishing](docs/homebrew-publishing.md) | Formula authoring, public bottle publication, validation, VFS composition, and operational rollout gates |
 | [Package Management — Future Work](docs/package-management-future-work.md) | Deferred items: WASI caching, semver, multi-arch `[binary]`, etc. |
