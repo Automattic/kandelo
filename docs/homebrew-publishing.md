@@ -29,6 +29,44 @@ metadata is an additional contract for VFS builders, Node validation, browser
 automation, and publication audits; it is not a replacement for Formula Ruby or
 Homebrew's `bottle do` block.
 
+## Durable Kandelo Package Input
+
+The Homebrew publisher may consume Kandelo package archives while validating
+or building bottles. A PR's `pr-<N>-staging` release is not a valid durable
+input: Kandelo deletes it after the source PR closes. Before a later
+publication workflow depends on that closure, run
+`promote-package-generation.yml`. The resulting public prerelease has a
+content-derived tag such as:
+
+```
+package-generation-rootfs-wasm32-abi-v42-sha256-<full-identity-sha256>
+```
+
+This is still a Kandelo package-archive generation, not a Homebrew bottle
+release. It carries the exact selected rootfs closure and a minimal package
+index so the Homebrew workflow can reproducibly obtain its platform inputs.
+Bottle outputs continue through the tap and GHCR path documented below.
+
+Keep three authorities explicit:
+
+- the current default-branch workflow commit owns validation and release
+  writes;
+- the exact package-source commit owns the promoted package identities and is
+  the durable tag's direct target; and
+- the selected consumer commit must independently reproduce the same
+  projection and expected ledger.
+
+Preparation executes historical source tooling only in a read-only job with
+persisted credentials disabled. The writer revalidates the transferred bytes
+with current code and never executes that source tool. Public generation
+retries are read-only. The publisher must consume the materializer's verified
+local index, never reconstruct a URL to the temporary staging release or fall
+back to a mutable canonical index.
+
+See
+[Binary releases: durable package generations](binary-releases.md#durable-package-generations-for-cross-workflow-publication)
+for dispatch, recovery, seal-last publication, and mutation handling.
+
 ## Repositories And Ownership
 
 | Repository | Owns |

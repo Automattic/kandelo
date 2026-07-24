@@ -1272,6 +1272,25 @@ before exposing the localized `file://` index. Missing, extra, changed, or
 reordered Git inputs; a mismatched archive identity; duplicate/noncanonical
 `manifest.toml`; or a symlinked archive fails closed.
 
+PR staging is not a durable dependency for a later workflow. When another
+publication pipeline needs the exact selected closure after PR close, first
+promote it through `promote-package-generation.yml` as described in
+[Binary releases: durable package generations](binary-releases.md#durable-package-generations-for-cross-workflow-publication).
+The promoter rebuilds a minimal index from only the fully materialized
+archives. It deliberately drops unrelated staging entries and all last-green
+fallbacks, then rewrites the selected archive URLs to one content-addressed
+generation tag.
+
+`.github/scripts/materialize-durable-package-generation.sh` activates such a
+generation for a checkout. It downloads every asset anonymously, validates the
+manifest/tag/release/direct-commit relationship and exact asset inventory,
+revalidates archive manifests with current authority, and computes the
+consumer checkout's own projection and expected ledger with its exact
+credential-free `xtask`. Only exact equality exposes a local `file://` index.
+The workflow authority commit, package-source commit, and consumer commit are
+independent inputs; a newer consumer SHA alone is never evidence of package
+compatibility.
+
 For pre-push iteration on packages whose source build is fast,
 just rely on the resolver's fall-through: edit `package.toml`,
 run `./run.sh browser`, and accept a one-time source build for
