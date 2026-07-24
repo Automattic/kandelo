@@ -150,7 +150,10 @@ jobs:
   exact-public-bottle-closure:
     name: exact lazy shell (Node + Chromium)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # WHY: Before the first canonical ABI release exists, this proof truthfully
+    # source-builds the shell closure; keep it bounded without cancelling that
+    # valid cold path halfway through.
+    timeout-minutes: 180
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
       TRANSPORT_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.transport_mode || 'closed' }}
