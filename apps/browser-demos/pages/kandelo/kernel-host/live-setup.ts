@@ -87,7 +87,7 @@ import { PRESET_LIBRARY } from "../presets";
 import {
   descriptorWithVfsImageUrl,
   demoIdFromVfsImageUrl,
-  matchTrustedVfsProfileId,
+  matchTrustedVfsSourceId,
   normalizeVfsImageUrl,
   titleFromVfsImageUrl,
   vfsImageUrlFromDescriptor,
@@ -395,6 +395,15 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
   },
 };
 
+const DEFAULT_DEMO_FOR_VFS_IMAGE: Record<LiveVfsImage, LiveDemoId> = {
+  shell: "shell",
+  node: "node",
+  nginx: "nginx",
+  "nginx-php": "nginx-php",
+  wordpress: "wordpress-sqlite",
+  lamp: "wordpress-mariadb",
+};
+
 const DEMO_ALIASES: Record<string, LiveDemoId> = {
   spidermonkey: "node",
   "spidermonkey-node": "node",
@@ -693,7 +702,7 @@ async function descriptorForBootQuery(
   const normalizedVfsUrl = normalizeVfsImageUrl(vfsUrl);
   if (!normalizedVfsUrl) return descriptorFor(normalizeDemoId(demo) ?? "shell");
 
-  const liveId = await liveDemoIdForVfsImageUrl(normalizedVfsUrl);
+  const liveId = await liveDemoIdForVfsImageUrl(normalizedVfsUrl, demo);
   const base = descriptorFor(liveId ?? "shell");
   return descriptorWithVfsImageUrl(base, normalizedVfsUrl, liveId
     ? {
@@ -2000,20 +2009,26 @@ function vfsImageUrlResolverForPreset(
 
 async function liveDemoIdForVfsImageUrl(
   vfsUrl: string,
+  demo: string | null | undefined,
 ): Promise<LiveDemoId | null> {
-  return matchTrustedVfsProfileId(
+  const image = await matchTrustedVfsSourceId(
     vfsUrl,
-    LIVE_DEMO_IDS.map((id) => ({
+    (Object.keys(VFS_SOURCES) as LiveVfsImage[]).map((id) => ({
       id,
-      resolveVfsImageUrl: () =>
-        resolveLiveVfsSourceUrl(VFS_SOURCES[LIVE_PROFILE_SPECS[id].image]),
+      resolveVfsImageUrl: () => resolveLiveVfsSourceUrl(VFS_SOURCES[id]),
     })),
-    {
-      // WHY: shell, Doom, and modeset intentionally share one image. A bare
-      // shell-image URL must boot a shell rather than auto-launching a demo.
-      preferredAmbiguousId: "shell",
-    },
   );
+  if (!image) return null;
+
+  const fragmentDemo = normalizeDemoId(new URL(vfsUrl, location.href).hash.slice(1));
+  const requestedDemo = normalizeDemoId(demo) ?? fragmentDemo;
+  if (!requestedDemo) return DEFAULT_DEMO_FOR_VFS_IMAGE[image];
+
+  // WHY: a demo selects launch behavior, while the matched image owns the VFS
+  // bytes and capacity. Never apply a launch profile to a different image.
+  return LIVE_PROFILE_SPECS[requestedDemo].image === image
+    ? requestedDemo
+    : null;
 }
 
 async function resolveLiveVfsSourceUrl(source: LiveVfsSource): Promise<string> {

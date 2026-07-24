@@ -108,13 +108,13 @@ test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) =
   expect(result.relativeRefUrl).toBe(result.expectedRelativeRefUrl);
 });
 
-test("Kandelo only grants a built-in profile to its exact VFS source", async ({ page }) => {
+test("Kandelo identifies a built-in VFS image only by its exact source", async ({ page }) => {
   await page.goto(appUrl("/?demo=shell"), {
     waitUntil: "domcontentloaded",
   });
 
   const result = await page.evaluate(async () => {
-    const { matchTrustedVfsProfileId } = await import("/pages/kandelo/url-state.ts");
+    const { matchTrustedVfsSourceId } = await import("/pages/kandelo/url-state.ts");
     const baseHref = "https://kandelo.example/app/";
     const candidates = [
       {
@@ -129,67 +129,64 @@ test("Kandelo only grants a built-in profile to its exact VFS source", async ({ 
     ] as const;
 
     return {
-      claimedExact: await matchTrustedVfsProfileId(
+      exact: await matchTrustedVfsSourceId(
         "https://cdn.example.invalid/beta.vfs.zst#beta",
         candidates,
-        { baseHref },
+        baseHref,
       ),
-      claimedWrongSource: await matchTrustedVfsProfileId(
+      fragmentDoesNotChangeSource: await matchTrustedVfsSourceId(
         "https://kandelo.example/app/images/alpha.vfs.zst#beta",
         candidates,
-        { baseHref },
+        baseHref,
       ),
-      uniqueWithoutClaim: await matchTrustedVfsProfileId(
+      relativeSource: await matchTrustedVfsSourceId(
         "https://kandelo.example/app/images/alpha.vfs.zst",
         candidates,
-        { baseHref },
+        baseHref,
       ),
-      preferredSharedProfile: await matchTrustedVfsProfileId(
-        "https://cdn.example.invalid/shared.vfs.zst",
+      unmatched: await matchTrustedVfsSourceId(
+        "https://cdn.example.invalid/other.vfs.zst",
+        candidates,
+        baseHref,
+      ),
+      ambiguousSource: await matchTrustedVfsSourceId(
+        "https://cdn.example.invalid/shared.vfs.zst#shell",
         [
           { id: "shell", resolveVfsImageUrl: () => "https://cdn.example.invalid/shared.vfs.zst" },
           { id: "doom", resolveVfsImageUrl: () => "https://cdn.example.invalid/shared.vfs.zst" },
         ] as const,
-        { baseHref, preferredAmbiguousId: "shell" },
+        baseHref,
       ),
-      ambiguousWithoutPreference: await matchTrustedVfsProfileId(
-        "https://cdn.example.invalid/shared.vfs.zst",
-        [
-          { id: "shell", resolveVfsImageUrl: () => "https://cdn.example.invalid/shared.vfs.zst" },
-          { id: "doom", resolveVfsImageUrl: () => "https://cdn.example.invalid/shared.vfs.zst" },
-        ] as const,
-        { baseHref },
-      ),
-      failedResolver: await matchTrustedVfsProfileId(
+      failedResolver: await matchTrustedVfsSourceId(
         "https://cdn.example.invalid/missing.vfs.zst#missing",
         [{
           id: "missing",
           resolveVfsImageUrl: () => Promise.reject(new Error("not built")),
         }] as const,
-        { baseHref },
+        baseHref,
       ),
-      duplicateIds: await matchTrustedVfsProfileId(
+      duplicateIds: await matchTrustedVfsSourceId(
         "https://cdn.example.invalid/one.vfs.zst#same",
         [
           { id: "same", resolveVfsImageUrl: () => "https://cdn.example.invalid/one.vfs.zst" },
           { id: "same", resolveVfsImageUrl: () => "https://cdn.example.invalid/two.vfs.zst" },
         ] as const,
-        { baseHref },
+        baseHref,
       ),
-      invalidProtocol: await matchTrustedVfsProfileId(
+      invalidProtocol: await matchTrustedVfsSourceId(
         "file:///tmp/alpha.vfs.zst#alpha",
         candidates,
-        { baseHref },
+        baseHref,
       ),
     };
   });
 
   expect(result).toEqual({
-    claimedExact: "beta",
-    claimedWrongSource: null,
-    uniqueWithoutClaim: "alpha",
-    preferredSharedProfile: "shell",
-    ambiguousWithoutPreference: null,
+    exact: "beta",
+    fragmentDoesNotChangeSource: "alpha",
+    relativeSource: "alpha",
+    unmatched: null,
+    ambiguousSource: null,
     failedResolver: null,
     duplicateIds: null,
     invalidProtocol: null,
