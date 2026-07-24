@@ -5,6 +5,7 @@ require "digest"
 require "json"
 require "open3"
 require "tempfile"
+require "tmpdir"
 require "yaml"
 
 REPO_ROOT = File.expand_path("..", __dir__)
@@ -20,7 +21,7 @@ MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
-PUBLISHER_PLAN_DIGEST = "5764359641eacc708845ceaf075b04940b6d24c6e3fa20135d5e6e75026f87df"
+PUBLISHER_PLAN_DIGEST = "2555298574e194ee6ef23d0ec042c9747861b6dae457191f0f8c82f618773fcf"
 PUBLISHER_BUILD_DIGEST = "b43b7ff70e7186343c9c1e86e4e8e3b94ffa5e78f0094d6de1dd009d1b30ff32"
 PUBLISHER_UPLOAD_DIGEST = "1a9f39031587a5944bce022031d6f84d70f476159d4798bbcb51a4fa8377da9e"
 PUBLISHER_INDEX_DIGEST = "c0eaec6f01ac64e8744b8c98e35b304aa2adafc4ce7ad96416eac85c593fdf87"
@@ -30,6 +31,7 @@ PUBLISHER_VFS_RELEASE_DIGEST = "34171400552baefd1efee3e05a294308ea3ba783f191f899
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
 MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
 REPOSITORY_CANARY_STEPS_DIGEST = "9cf30d889bd1bf6d0ab5b5f99e35f552d40f78f9b7dcb5fd40a07041b4c0f453"
+SELF_TEST_CALLER_SHA = "e" * 40
 
 def check(condition, message)
   raise message unless condition
@@ -105,6 +107,7 @@ def caller_validation_result(source, overrides = {})
     "CALLER_EVENT_NAME" => "repository_dispatch",
     "CALLER_REF" => "refs/heads/main",
     "CALLER_REPOSITORY" => "kandelo-dev/homebrew-tap-core",
+    "CALLER_SHA" => SELF_TEST_CALLER_SHA,
     "CALLER_WORKFLOW_REF" =>
       "kandelo-dev/homebrew-tap-core/.github/workflows/dry-run-bottles.yml@refs/heads/main",
     "DRY_RUN" => "true",
@@ -150,9 +153,47 @@ def maintenance_validation_result(source, overrides = {})
   { "status" => status.exitstatus, "stdout" => stdout, "stderr" => stderr }
 end
 
+def tap_source_binding_result(source, overrides = {})
+  env = {
+    "CALLER_SHA" => SELF_TEST_CALLER_SHA,
+    "TAP_REPOSITORY" => "kandelo-dev/homebrew-tap-core",
+    "TAP_SHA" => SELF_TEST_CALLER_SHA,
+    "TEST_COMPARE_STATUS" => "identical",
+  }.merge(overrides)
+  Dir.mktmpdir("kandelo-homebrew-caller-binding") do |directory|
+    gh = File.join(directory, "gh")
+    File.write(gh, <<~BASH)
+      #!/usr/bin/env bash
+      set -euo pipefail
+      [ "$#" -eq 4 ] &&
+        [ "$1" = api ] &&
+        [ "$2" = "/repos/kandelo-dev/homebrew-tap-core/compare/#{SELF_TEST_CALLER_SHA}...main" ] &&
+        [ "$3" = --jq ] &&
+        [ "$4" = .status ] || exit 91
+      printf '%s\\n' "${TEST_COMPARE_STATUS:?}"
+    BASH
+    File.chmod(0o755, gh)
+    env["PATH"] = "#{directory}:#{ENV.fetch('PATH')}"
+    stdout, stderr, status = Open3.capture3(
+      env, "bash", "--noprofile", "--norc", "-c", source
+    )
+    {
+      "status" => status.exitstatus,
+      "stdout" => stdout,
+      "stderr" => stderr,
+    }
+  end
+end
+
 def check_caller_validation_behavior(workflow)
   plan_steps = job_steps(workflow_jobs(workflow).fetch("plan"), "publisher plan")
   source = named_step(plan_steps, "Validate caller trust boundary").fetch("run")
+  write_caller = {
+    "CALLER_WORKFLOW_REF" =>
+      "kandelo-dev/homebrew-tap-core/.github/workflows/publish-bottles.yml@refs/heads/main",
+    "DRY_RUN" => "false",
+    "TAP_REF" => SELF_TEST_CALLER_SHA,
+  }.freeze
 
   branch = caller_validation_result(source, {
     "KANDELO_REF" => "review/homebrew_source-1.2",
@@ -200,51 +241,38 @@ def check_caller_validation_behavior(workflow)
           "dry-run publication requires the reviewed tap dry-run workflow"
         ), "publisher accepts a case-variant workflow path")
 
-  write = caller_validation_result(source, {
-    "CALLER_WORKFLOW_REF" =>
-      "kandelo-dev/homebrew-tap-core/.github/workflows/publish-bottles.yml@refs/heads/main",
-    "DRY_RUN" => "false",
-  })
+  write = caller_validation_result(source, write_caller)
   check(write["status"] == 0 && write["outputs"] ==
-        "kandelo-ref=refs/heads/main\ntap-ref=refs/heads/main\n",
-        "publisher write path does not remain fixed to main")
+        "kandelo-ref=refs/heads/main\ntap-ref=#{SELF_TEST_CALLER_SHA}\n",
+        "publisher write path does not bind source to the exact caller commit")
 
-  write_sha = caller_validation_result(source, {
-    "CALLER_WORKFLOW_REF" =>
-      "kandelo-dev/homebrew-tap-core/.github/workflows/publish-bottles.yml@refs/heads/main",
-    "DRY_RUN" => "false",
+  write_sha = caller_validation_result(source, write_caller.merge({
     "KANDELO_REF" => kandelo_sha,
-  })
+  }))
   check(write_sha["status"] == 0 && write_sha["outputs"] ==
-        "kandelo-ref=#{kandelo_sha}\ntap-ref=refs/heads/main\n",
+        "kandelo-ref=#{kandelo_sha}\ntap-ref=#{SELF_TEST_CALLER_SHA}\n",
         "publisher write path does not accept an exact reviewed Kandelo commit")
 
   prepublication_sha = "c" * 40
   prepublication_publisher_sha = "d" * 40
-  prepublication = caller_validation_result(source, {
-    "CALLER_WORKFLOW_REF" =>
-      "kandelo-dev/homebrew-tap-core/.github/workflows/publish-bottles.yml@refs/heads/main",
-    "DRY_RUN" => "false",
+  prepublication = caller_validation_result(source, write_caller.merge({
     "KANDELO_REF" => prepublication_publisher_sha,
     "PREPUBLICATION_STAGING_KANDELO_SHA" => prepublication_sha,
     "PREPUBLICATION_STAGING_TAG" => "pr-1079-staging",
-  })
+  }))
   check(prepublication["status"] == 0 &&
         prepublication["outputs"].include?(
           "kandelo-ref=#{prepublication_publisher_sha}\n"
         ),
         "publisher write path rejects a sealed prepublication generation")
 
-  deferred_prepublication = caller_validation_result(source, {
-    "CALLER_WORKFLOW_REF" =>
-      "kandelo-dev/homebrew-tap-core/.github/workflows/publish-bottles.yml@refs/heads/main",
+  deferred_prepublication = caller_validation_result(source, write_caller.merge({
     "DEFER_VFS_ACCEPTANCE" => "true",
-    "DRY_RUN" => "false",
     "KANDELO_REF" => prepublication_publisher_sha,
     "PREPUBLICATION_STAGING_KANDELO_SHA" => prepublication_sha,
     "PREPUBLICATION_STAGING_TAG" => "pr-1079-staging",
     "REQUIRE_VFS_ACCEPTANCE" => "true",
-  })
+  }))
   check(deferred_prepublication["status"] == 0 &&
         deferred_prepublication["outputs"].include?(
           "kandelo-ref=#{prepublication_publisher_sha}\n"
@@ -272,11 +300,7 @@ def check_caller_validation_behavior(workflow)
       "PREPUBLICATION_STAGING_TAG" => "refs/tags/pr-1079-staging",
     },
   }.each do |label, overrides|
-    rejected = caller_validation_result(source, {
-      "CALLER_WORKFLOW_REF" =>
-        "kandelo-dev/homebrew-tap-core/.github/workflows/publish-bottles.yml@refs/heads/main",
-      "DRY_RUN" => "false",
-    }.merge(overrides))
+    rejected = caller_validation_result(source, write_caller.merge(overrides))
     check(rejected["status"] == 2,
           "publisher accepts prepublication generation with #{label}")
   end
@@ -297,22 +321,16 @@ def check_caller_validation_behavior(workflow)
       "PREPUBLICATION_STAGING_TAG" => "pr-1079-staging",
     },
   }.each do |label, overrides|
-    rejected = caller_validation_result(source, {
-      "CALLER_WORKFLOW_REF" =>
-        "kandelo-dev/homebrew-tap-core/.github/workflows/publish-bottles.yml@refs/heads/main",
+    rejected = caller_validation_result(source, write_caller.merge({
       "DEFER_VFS_ACCEPTANCE" => "true",
-      "DRY_RUN" => "false",
-    }.merge(overrides))
+    }).merge(overrides))
     check(rejected["status"] == 2,
           "publisher accepts VFS acceptance deferral #{label}")
   end
 
-  write_branch = caller_validation_result(source, {
-    "CALLER_WORKFLOW_REF" =>
-      "kandelo-dev/homebrew-tap-core/.github/workflows/publish-bottles.yml@refs/heads/main",
-    "DRY_RUN" => "false",
+  write_branch = caller_validation_result(source, write_caller.merge({
     "KANDELO_REF" => "review/homebrew",
-  })
+  }))
   check(write_branch["status"] == 2 &&
         write_branch["stderr"].include?(
           "write publication requires Kandelo main or an exact reviewed lowercase"
@@ -325,12 +343,9 @@ def check_caller_validation_behavior(workflow)
     "short commit" => "a" * 39,
     "long commit" => "a" * 41,
   }.each do |label, ref|
-    rejected = caller_validation_result(source, {
-      "CALLER_WORKFLOW_REF" =>
-        "kandelo-dev/homebrew-tap-core/.github/workflows/publish-bottles.yml@refs/heads/main",
-      "DRY_RUN" => "false",
+    rejected = caller_validation_result(source, write_caller.merge({
       "KANDELO_REF" => ref,
-    })
+    }))
     check(rejected["status"] == 2 &&
           rejected["stderr"].include?(
             "write publication requires Kandelo main or an exact reviewed lowercase"
@@ -349,6 +364,52 @@ def check_caller_validation_behavior(workflow)
           rejected["stderr"].include?("dry-run Kandelo ref must be a branch name or exact"),
           "publisher dry-run accepts #{label}")
   end
+
+  {
+    "mutable main" => "main",
+    "another exact commit" => "f" * 40,
+    "uppercase caller commit" => "E" * 40,
+  }.each do |label, tap_ref|
+    overrides = write_caller.merge("TAP_REF" => tap_ref)
+    overrides["CALLER_SHA"] = tap_ref if label == "uppercase caller commit"
+    rejected = caller_validation_result(source, overrides)
+    check(rejected["status"] == 2 &&
+          "#{rejected['stdout']}\n#{rejected['stderr']}".include?(
+            label == "uppercase caller commit" ?
+              "write publication requires an exact caller commit SHA" :
+              "tap-ref must equal the protected-main caller commit"
+          ),
+          "publisher write path accepts #{label} as its tap source")
+  end
+end
+
+def check_tap_source_binding_behavior(workflow)
+  plan_steps = job_steps(workflow_jobs(workflow).fetch("plan"), "publisher plan")
+  source = named_step(
+    plan_steps, "Bind write tap source to the protected main caller"
+  ).fetch("run")
+
+  %w[identical ahead].each do |compare_status|
+    accepted = tap_source_binding_result(
+      source, "TEST_COMPARE_STATUS" => compare_status
+    )
+    check(accepted["status"] == 0,
+          "publisher rejects protected-main caller status #{compare_status}")
+  end
+
+  %w[behind diverged].each do |compare_status|
+    rejected = tap_source_binding_result(
+      source, "TEST_COMPARE_STATUS" => compare_status
+    )
+    check(rejected["status"] == 1 && rejected["stdout"].include?(
+            "tap caller commit must remain on protected main history"
+          ), "publisher accepts protected-main caller status #{compare_status}")
+  end
+
+  mismatch = tap_source_binding_result(source, "TAP_SHA" => "f" * 40)
+  check(mismatch["status"] == 2 && mismatch["stdout"].include?(
+          "tap checkout differs from the protected-main caller commit"
+        ), "publisher accepts a tap checkout different from the caller")
 end
 
 def check_architecture_aware_sysroot_step(step, label)
@@ -564,7 +625,7 @@ def check_tap_callers
     "kandelo-ref" => "main",
     "tap-repository" => "kandelo-dev/homebrew-tap-core",
     "tap-name" => "kandelo-dev/tap-core",
-    "tap-ref" => "main",
+    "tap-ref" => "${{ github.sha }}",
     "formulae" => "${{ github.event.client_payload.formulae }}",
     "arches" => "${{ github.event.client_payload.arches || 'wasm32' }}",
     "release-tag" => "${{ github.event.client_payload.release_tag || '' }}",
@@ -870,6 +931,7 @@ def check_publisher(workflow)
           "CALLER_EVENT_NAME" => "${{ github.event_name }}",
           "CALLER_REF" => "${{ github.ref }}",
           "CALLER_REPOSITORY" => "${{ github.repository }}",
+          "CALLER_SHA" => "${{ github.sha }}",
           "CALLER_WORKFLOW_REF" => "${{ github.workflow_ref }}",
           "DEFER_VFS_ACCEPTANCE" =>
             "${{ inputs.defer-vfs-acceptance-until-postpublication }}",
@@ -897,6 +959,9 @@ def check_publisher(workflow)
     '"$CALLER_REPOSITORY/.github/workflows/dry-run-bottles.yml@refs/heads/main"',
     '"$CALLER_REPOSITORY/.github/workflows/publish-bottles.yml@refs/heads/main"',
     '"$CALLER_REPOSITORY/.github/workflows/maintain-bottles.yml@refs/heads/main"',
+    '[[ "$CALLER_SHA" =~ ^[0-9a-f]{40}$ ]]',
+    '[ "$TAP_REF" = "$CALLER_SHA" ]',
+    'tap-ref must equal the protected-main caller commit',
     '[ "$KANDELO_REPOSITORY" = "Automattic/kandelo" ]',
     'case "$REQUIRE_VFS_ACCEPTANCE" in',
     'case "$DEFER_VFS_ACCEPTANCE" in',
@@ -910,7 +975,6 @@ def check_publisher(workflow)
     '[[ "$normalized_tap_repository" =~ ^[a-z0-9_.-]+/homebrew-[a-z0-9_.-]+$ ]]',
     'tap_short_name="${normalized_tap_repository#*/homebrew-}"',
     '[ "$normalized_tap_name" = "${tap_owner}/${tap_short_name}" ]',
-    '[ "$TAP_REF" = "main" ]',
     '[ -z "$BOTTLE_ROOT_URL" ]',
     'normalize_dry_run_source_ref()',
     '[[ "$ref" =~ ^[0-9a-f]{40}$ ]]',
@@ -943,7 +1007,7 @@ def check_publisher(workflow)
   write_kandelo_ref_index = validation_run.index(
     'validated_kandelo_ref="$(normalize_write_kandelo_ref "$KANDELO_REF")"'
   )
-  write_tap_ref_index = validation_run.index('[ "$TAP_REF" = "main" ]')
+  write_tap_ref_index = validation_run.index('[ "$TAP_REF" = "$CALLER_SHA" ]')
   check(dry_index && caller_index && kandelo_index && tap_name_index &&
         caller_index < dry_index && kandelo_index < dry_index && tap_name_index < dry_index,
         "publisher dry-run can bypass caller authority validation")
@@ -1224,10 +1288,33 @@ def check_publisher(workflow)
     plan_steps, "Checkout exact prepublication package generation"
   )
   source_commits = named_step(plan_steps, "Resolve source commits")
+  caller_source_binding = named_step(
+    plan_steps, "Bind write tap source to the protected main caller"
+  )
+  check(caller_source_binding.keys.sort == %w[env if name run shell] &&
+        caller_source_binding["if"] == "${{ !inputs.dry-run }}" &&
+        caller_source_binding["shell"] == "bash" &&
+        caller_source_binding["env"] == {
+          "CALLER_SHA" => "${{ github.sha }}",
+          "GH_TOKEN" => "${{ github.token }}",
+          "TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
+          "TAP_SHA" => "${{ steps.source-commits.outputs.tap-sha }}",
+        }, "publisher protected-main tap source binding changed")
+  [
+    '[ "$TAP_SHA" = "$CALLER_SHA" ]',
+    'tap checkout differs from the protected-main caller commit',
+    '"/repos/$TAP_REPOSITORY/compare/$TAP_SHA...main"',
+    "ahead|identical) ;;",
+    "tap caller commit must remain on protected main history",
+  ].each do |fragment|
+    check(caller_source_binding.fetch("run").include?(fragment),
+          "publisher protected-main tap source binding lacks #{fragment}")
+  end
   release = named_step(plan_steps, "Resolve release and bottle root")
   matrix = named_step(plan_steps, "Plan formula matrix")
   check(plan_steps.index(generation_checkout) < plan_steps.index(source_commits) &&
-        plan_steps.index(source_commits) < plan_steps.index(generation_binding) &&
+        plan_steps.index(source_commits) < plan_steps.index(caller_source_binding) &&
+        plan_steps.index(caller_source_binding) < plan_steps.index(generation_binding) &&
         plan_steps.index(generation_binding) < plan_steps.index(release) &&
         plan_steps.index(release) < plan_steps.index(generation_nix) &&
         plan_steps.index(generation_nix) < plan_steps.index(generation_tooling) &&
@@ -1581,6 +1668,7 @@ def check_publisher(workflow)
     !(step.fetch("env", {}).keys & credential_names).empty?
   end
   check(plan_credential_steps.map { |step| step["name"] } == [
+    "Bind write tap source to the protected main caller",
     "Bind prepublication generation to the workflow descendant",
     "Freeze exact prepublication package generation",
   ] && plan_credential_steps.all? do |step|
@@ -5061,7 +5149,10 @@ def check_publisher(workflow)
         "publisher failure report does not use a clean checkout and bounded stage diagnostics")
 
   check(!values_for_key(workflow, "run").join("\n").include?("GITHUB_SHA"),
-        "publisher uses caller-context SHA as source provenance")
+        "publisher reads an ambient caller SHA instead of its reviewed mapping")
+  check(values_for_key(plan, "CALLER_SHA") == [
+    "${{ github.sha }}", "${{ github.sha }}",
+  ], "publisher caller SHA escapes its validation and ancestry bindings")
   check(contract_digest(plan_steps) == PUBLISHER_PLAN_DIGEST,
         "publisher plan step contract changed")
   check(contract_digest(build_steps) == PUBLISHER_BUILD_DIGEST,
@@ -5486,6 +5577,25 @@ def self_test(publisher, maintenance, repository_canary)
     "wrong caller event" => lambda { |w|
       step = mutate_named_step(w, "plan", "Validate caller trust boundary")
       step.fetch("env")["CALLER_EVENT_NAME"] = "push"
+    },
+    "write tap source detached from caller commit" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Validate caller trust boundary")
+      step["run"] = step.fetch("run").sub(
+        '[ "$TAP_REF" = "$CALLER_SHA" ]', "true"
+      )
+    },
+    "caller SHA selected from publisher input" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Validate caller trust boundary")
+      step.fetch("env")["CALLER_SHA"] = "${{ inputs.tap-ref }}"
+    },
+    "protected-main tap ancestry bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "plan", "Bind write tap source to the protected main caller"
+      )
+      step["run"] = step.fetch("run").sub(
+        '"/repos/$TAP_REPOSITORY/compare/$TAP_SHA...main"',
+        '"/repos/$TAP_REPOSITORY/commits/$TAP_SHA"'
+      )
     },
     "required VFS acceptance selection accepted as absent during planning" => lambda { |w|
       step = mutate_named_step(
@@ -6396,6 +6506,7 @@ begin
   self_test(publisher, maintenance, repository_canary)
   check_publisher(publisher)
   check_caller_validation_behavior(publisher)
+  check_tap_source_binding_behavior(publisher)
   check_maintenance(maintenance)
   check_repository_canary(repository_canary)
   check_tap_callers

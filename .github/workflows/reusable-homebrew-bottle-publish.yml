@@ -75,6 +75,7 @@ jobs:
           CALLER_EVENT_NAME: ${{ github.event_name }}
           CALLER_REF: ${{ github.ref }}
           CALLER_REPOSITORY: ${{ github.repository }}
+          CALLER_SHA: ${{ github.sha }}
           CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
           DRY_RUN: ${{ inputs.dry-run }}
           KANDELO_REPOSITORY: ${{ inputs.kandelo-repository }}
@@ -201,11 +202,17 @@ jobs:
               "$CALLER_REPOSITORY/.github/workflows/maintain-bottles.yml@refs/heads/main") ;;
               *) echo "::error::publication requires a reviewed tap write workflow"; exit 2 ;;
             esac
-            [ "$TAP_REF" = "main" ] || {
-              echo "::error::write publication requires tap main"; exit 2;
+            [[ "$CALLER_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "::error::write publication requires an exact caller commit SHA"; exit 2;
+            }
+            [ "$TAP_REF" = "$CALLER_SHA" ] || {
+              # WHY: repository_dispatch does not freeze a later checkout of
+              # main. Binding the source ref to the event commit prevents main
+              # from moving between planning, checkout, and parallel POSTs.
+              echo "::error::write publication tap-ref must equal the protected-main caller commit"; exit 2;
             }
             validated_kandelo_ref="$(normalize_write_kandelo_ref "$KANDELO_REF")"
-            validated_tap_ref="refs/heads/main"
+            validated_tap_ref="$CALLER_SHA"
           fi
           {
             echo "kandelo-ref=$validated_kandelo_ref"
@@ -256,6 +263,30 @@ jobs:
             echo "kandelo-sha=$kandelo_sha"
             echo "tap-sha=$tap_sha"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Bind write tap source to the protected main caller
+        if: ${{ !inputs.dry-run }}
+        shell: bash
+        env:
+          CALLER_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ steps.source-commits.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          [ "$TAP_SHA" = "$CALLER_SHA" ] || {
+            echo "::error::tap checkout differs from the protected-main caller commit"; exit 2;
+          }
+          compare_status="$(gh api \
+            "/repos/$TAP_REPOSITORY/compare/$TAP_SHA...main" \
+            --jq .status)"
+          case "$compare_status" in
+            ahead|identical) ;;
+            # WHY: a rerun may retain an older protected-main event commit, but
+            # publication must never execute a detached or force-pushed source
+            # that is outside the current protected branch history.
+            *) echo "::error::tap caller commit must remain on protected main history"; exit 1 ;;
+          esac
 
       - name: Bind prepublication generation to the workflow descendant
         if: ${{ inputs.prepublication-staging-tag != '' }}
