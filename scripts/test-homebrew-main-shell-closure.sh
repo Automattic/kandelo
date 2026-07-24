@@ -512,7 +512,7 @@ for isolated_flag in \
   '--work-dir "$WORK_DIR"' \
   '--report "$REPORT"' \
   '--bottle-cache "$BOTTLE_CACHE"' \
-  '--package-tree-spec "$REPO_ROOT/homebrew/main-shell-brew-package-tree.json"' \
+  '--package-tree-spec "$SOURCE_ROOT/homebrew/main-shell-brew-package-tree.json"' \
   '--package-tree-archive "$HOMEBREW_BOOTSTRAP"'
 do
   grep -Fq -- "$isolated_flag" "$SHELL_BUILDER" ||

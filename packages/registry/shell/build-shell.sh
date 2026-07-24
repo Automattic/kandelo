@@ -88,7 +88,7 @@ bash "$SOURCE_ROOT/scripts/build-homebrew-main-shell-closure.sh" \
     --work-dir "$WORK_DIR" \
     --report "$REPORT" \
     --bottle-cache "$BOTTLE_CACHE" \
-    --package-tree-spec "$REPO_ROOT/homebrew/main-shell-brew-package-tree.json" \
+    --package-tree-spec "$SOURCE_ROOT/homebrew/main-shell-brew-package-tree.json" \
     --package-tree-archive "$HOMEBREW_BOOTSTRAP" \
     --homebrew-bootstrap-env "$HOMEBREW_BREW_ENV" \
     --out "$VFS"
