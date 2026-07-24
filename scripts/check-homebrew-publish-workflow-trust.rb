@@ -2855,6 +2855,7 @@ def check_publisher(workflow)
     'prepared program-index checker must be one exact regular executable',
     'prepared program-index checker is outside the exact Kandelo root',
     'program-index checker is not the prepared release xtask',
+    '[ "$xtask_mode" != "555" ]',
     'prepared program-index checker has an unsafe mode',
     'prepared program-index checker is not single-linked',
     'prepared program-index checker is owned by the Formula user',

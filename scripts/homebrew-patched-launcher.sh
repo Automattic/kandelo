@@ -1890,8 +1890,7 @@ homebrew_patched_launcher_isolate() {
   xtask_mode="$(/usr/bin/stat -c '%a' "$xtask_bin" 2>/dev/null || true)"
   xtask_links="$(/usr/bin/stat -c '%h' "$xtask_bin" 2>/dev/null || true)"
   xtask_uid="$(/usr/bin/stat -c '%u' "$xtask_bin" 2>/dev/null || true)"
-  if ! [[ "$xtask_mode" =~ ^[0-7]{3,4}$ ]] || \
-     [ $((8#$xtask_mode & 06022)) -ne 0 ]; then
+  if [ "$xtask_mode" != "555" ]; then
     echo "homebrew-patched-launcher: prepared program-index checker has an unsafe mode" >&2
     return 2
   fi
