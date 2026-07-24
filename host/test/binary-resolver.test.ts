@@ -2228,6 +2228,16 @@ guest_path = '/usr/share/runtime.dat'
       packer,
     );
     chmodSync(packer, 0o755);
+    const portableStager = join(
+      sourceRepo,
+      "scripts",
+      "stage-portable-resolver-binaries.sh",
+    );
+    copyFileSync(
+      join(actualRepo, "scripts", "stage-portable-resolver-binaries.sh"),
+      portableStager,
+    );
+    chmodSync(portableStager, 0o755);
 
     const fakeBin = join(sourceRepo, "fixture-bin");
     mkdirSync(fakeBin, { recursive: true });

@@ -359,6 +359,14 @@ exists. A versioned installed host package is one immutable installation
 identity, so a complete
 all-regular-file closure under its `wasm/` tree remains supported;
 regular-file/symlink mixtures and installed symlink closures are rejected.
+Relocatable prepared workspaces preserve fetched package identity by copying
+each referenced canonical generation under `.ci-test-binary-cache/programs/`
+and rewriting the `binaries/` mirrors as contained relative symlinks. Consumers
+must select that transported cache explicitly with
+`WASM_POSIX_BINARY_CACHE_ROOT`; the resolver does not implicitly trust a hidden
+directory merely because it is inside a source checkout. Formula-test
+publication and conformance-workspace packing share one staging helper so
+neither path can regress to identityless regular-file mirrors.
 
 Changing a package from a multi-member directory layout to a scalar flat path
 does not delete the former package directory. The generated projection makes

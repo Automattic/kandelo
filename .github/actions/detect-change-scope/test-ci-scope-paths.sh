@@ -121,6 +121,12 @@ assert_matches binary_materialization_changed_files \
   "scripts/pack-ci-test-workspace.sh" \
   "scripts/pack-ci-test-workspace.sh"
 assert_matches binary_materialization_changed_files \
+  "scripts/stage-portable-resolver-binaries.sh" \
+  "scripts/stage-portable-resolver-binaries.sh"
+assert_matches binary_materialization_changed_files \
+  "scripts/materialize-resolver-binaries.sh" \
+  "scripts/materialize-resolver-binaries.sh"
+assert_matches binary_materialization_changed_files \
   "scripts/wasm-artifact-guards.sh" \
   "scripts/wasm-artifact-guards.sh"
 assert_matches binary_materialization_changed_files \

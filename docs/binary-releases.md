@@ -94,6 +94,12 @@ execute installed shell scripts on Kandelo. These unqualified host-resolver
 paths intentionally remain wasm32 when the bottle matrix target is wasm64.
 Generic Homebrew runtime verification fetches only that base command set and
 the declared rootfs needed to exercise a Formula or dependency-bearing VFS.
+Before the isolated Formula identity runs, the publisher uses the same
+portable-cache staging contract as prepared conformance workspaces: complete
+canonical package generations are copied under `.ci-test-binary-cache/`, and
+the `binaries/` mirrors remain relative symlinks into those generations. The
+read-only source alias and an explicit resolver cache root therefore retain
+package identity without exposing the workflow user's ambient cache.
 The file-formula gallery smoke separately prepares Kandelo's supported interactive
 browser graph. These base tools, kernel, host-runtime, and VFS artifacts are
 platform prerequisites. The

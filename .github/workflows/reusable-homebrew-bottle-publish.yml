@@ -897,7 +897,13 @@ jobs:
                 build-deps --arch wasm32 \
                 --binaries-dir "$PWD/binaries" --fetch-only resolve "$package"
             done
-            bash scripts/materialize-resolver-binaries.sh "$PWD/binaries"
+            cache_root="$("$xtask" build-deps cache-root)"
+            case "$cache_root" in
+              /*) ;;
+              *) echo "Formula runtime cache root is not absolute" >&2; exit 2 ;;
+            esac
+            bash scripts/materialize-resolver-binaries.sh \
+              "$PWD/binaries" "$cache_root"
           '
 
       - name: Install JavaScript dependencies for formula tests
@@ -2368,6 +2374,44 @@ jobs:
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
           '
 
+      - name: Prepare the supported interactive browser demo graph
+        if: ${{ matrix.arch == 'wasm32' && (matrix.formula == 'file-formula' || (!inputs.defer-vfs-acceptance-until-postpublication && !inputs.dry-run && matrix.formula == needs.plan.outputs.vfs-acceptance-formula)) }}
+        shell: bash
+        env:
+          KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
+          PREPUBLICATION_STAGING_TAG: ${{ inputs.prepublication-staging-tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PREPUBLICATION_STAGING_TAG" ] &&
+             [ "$KANDELO_HOMEBREW_FORMULA" = "file-formula" ]; then
+            # WHY: the root browser route statically imports the full demo
+            # graph, including post-T42 packages this bootstrap exists to
+            # publish. The focused Homebrew VFS page imports only the exact
+            # local kernel and the externally supplied test VFS, so build its
+            # host without resolving unrelated demo packages. Postpublication
+            # main-shell Chromium acceptance closes the full UI integration.
+            cd kandelo
+            bash scripts/dev-shell.sh ./run.sh build host
+            exit 0
+          fi
+          for sysroot_name in sysroot sysroot64; do
+            sysroot_source="$GITHUB_WORKSPACE/kandelo-sysroot-build/$sysroot_name"
+            sysroot_destination="$GITHUB_WORKSPACE/kandelo/$sysroot_name"
+            [ -d "$sysroot_source" ] && [ ! -L "$sysroot_source" ] && \
+              [ -f "$sysroot_source/lib/libc.a" ] || {
+              echo "::error::exact browser $sysroot_name handoff is missing or invalid"; exit 1;
+            }
+            [ ! -e "$sysroot_destination" ] && [ ! -L "$sysroot_destination" ] || {
+              echo "::error::browser verifier $sysroot_name destination already exists"; exit 1;
+            }
+            cp -a -- "$sysroot_source" "$sysroot_destination"
+            [ -f "$sysroot_destination/lib/libc.a" ] || {
+              echo "::error::browser verifier $sysroot_name handoff is incomplete"; exit 1;
+            }
+          done
+          cd kandelo
+          bash scripts/dev-shell.sh ./run.sh --fetch-only prepare-browser
+
       - name: Materialize Formula verification platform runtime
         id: formula-verification-runtime
         shell: bash
@@ -2406,46 +2450,17 @@ jobs:
                 build-deps --arch wasm32 \
                 --binaries-dir "$PWD/binaries" --fetch-only resolve "$package"
             done
-            bash scripts/materialize-resolver-binaries.sh "$PWD/binaries"
+            cache_root="$("$xtask" build-deps cache-root)"
+            case "$cache_root" in
+              /*) ;;
+              *) echo "Formula verification cache root is not absolute" >&2; exit 2 ;;
+            esac
+            # WHY: prepare-browser also resolves packages into binaries/.
+            # Materialize after that last writer so the read-only Formula
+            # identity receives one coherent portable generation snapshot.
+            bash scripts/materialize-resolver-binaries.sh \
+              "$PWD/binaries" "$cache_root"
           '
-
-      - name: Prepare the supported interactive browser demo graph
-        if: ${{ matrix.arch == 'wasm32' && (matrix.formula == 'file-formula' || (!inputs.defer-vfs-acceptance-until-postpublication && !inputs.dry-run && matrix.formula == needs.plan.outputs.vfs-acceptance-formula)) }}
-        shell: bash
-        env:
-          KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
-          PREPUBLICATION_STAGING_TAG: ${{ inputs.prepublication-staging-tag }}
-        run: |
-          set -euo pipefail
-          if [ -n "$PREPUBLICATION_STAGING_TAG" ] &&
-             [ "$KANDELO_HOMEBREW_FORMULA" = "file-formula" ]; then
-            # WHY: the root browser route statically imports the full demo
-            # graph, including post-T42 packages this bootstrap exists to
-            # publish. The focused Homebrew VFS page imports only the exact
-            # local kernel and the externally supplied test VFS, so build its
-            # host without resolving unrelated demo packages. Postpublication
-            # main-shell Chromium acceptance closes the full UI integration.
-            cd kandelo
-            bash scripts/dev-shell.sh ./run.sh build host
-            exit 0
-          fi
-          for sysroot_name in sysroot sysroot64; do
-            sysroot_source="$GITHUB_WORKSPACE/kandelo-sysroot-build/$sysroot_name"
-            sysroot_destination="$GITHUB_WORKSPACE/kandelo/$sysroot_name"
-            [ -d "$sysroot_source" ] && [ ! -L "$sysroot_source" ] && \
-              [ -f "$sysroot_source/lib/libc.a" ] || {
-              echo "::error::exact browser $sysroot_name handoff is missing or invalid"; exit 1;
-            }
-            [ ! -e "$sysroot_destination" ] && [ ! -L "$sysroot_destination" ] || {
-              echo "::error::browser verifier $sysroot_name destination already exists"; exit 1;
-            }
-            cp -a -- "$sysroot_source" "$sysroot_destination"
-            [ -f "$sysroot_destination/lib/libc.a" ] || {
-              echo "::error::browser verifier $sysroot_name handoff is incomplete"; exit 1;
-            }
-          done
-          cd kandelo
-          bash scripts/dev-shell.sh ./run.sh --fetch-only prepare-browser
 
       - name: Compose only reconstructed bottle metadata into the fresh tap
         shell: bash

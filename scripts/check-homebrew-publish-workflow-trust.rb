@@ -21,10 +21,10 @@ UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "5764359641eacc708845ceaf075b04940b6d24c6e3fa20135d5e6e75026f87df"
-PUBLISHER_BUILD_DIGEST = "6902b3d525fa6aae5205d1896d350afbe908f044f0712e4dab9dd2fb865603d5"
+PUBLISHER_BUILD_DIGEST = "b43b7ff70e7186343c9c1e86e4e8e3b94ffa5e78f0094d6de1dd009d1b30ff32"
 PUBLISHER_UPLOAD_DIGEST = "1a9f39031587a5944bce022031d6f84d70f476159d4798bbcb51a4fa8377da9e"
 PUBLISHER_INDEX_DIGEST = "c0eaec6f01ac64e8744b8c98e35b304aa2adafc4ce7ad96416eac85c593fdf87"
-PUBLISHER_VERIFY_DIGEST = "b79cbbc10e4173b38f73bdd1dd827061b6d2654963f9f5563bea5b40807d6c53"
+PUBLISHER_VERIFY_DIGEST = "2d227719388a990148918a333fbc13e8fa44287da1ffa42da8294d2a3ce77b5a"
 PUBLISHER_FINALIZE_DIGEST = "b101bc67a1ba796d7986c9cb0e9d0270300e519d2cb6ba60e3ae7fc9b4c6fc2e"
 PUBLISHER_VFS_RELEASE_DIGEST = "34171400552baefd1efee3e05a294308ea3ba783f191f899d1affa5135a4d4da"
 MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
@@ -1712,12 +1712,12 @@ def check_publisher(workflow)
       verify_steps.index(
         named_step(verify_steps, "Activate sealed prepublication package generation")
       ) < verify_steps.index(
-        named_step(verify_steps, "Materialize Formula verification platform runtime")
+        named_step(verify_steps, "Prepare the supported interactive browser demo graph")
       ) &&
       verify_steps.index(
-        named_step(verify_steps, "Materialize Formula verification platform runtime")
-      ) < verify_steps.index(
         named_step(verify_steps, "Prepare the supported interactive browser demo graph")
+      ) < verify_steps.index(
+        named_step(verify_steps, "Materialize Formula verification platform runtime")
       ),
     "publisher verifier resolves packages before activating the frozen generation"
   )
@@ -3313,7 +3313,10 @@ def check_publisher(workflow)
     'printf "xtask-bin=%s\\n" "$xtask" >>"$GITHUB_OUTPUT"',
     "for package in dash coreutils grep sed rootfs", '"$xtask"',
     "build-deps --arch wasm32", '--binaries-dir "$PWD/binaries"', '--fetch-only resolve "$package"',
-    'bash scripts/materialize-resolver-binaries.sh "$PWD/binaries"',
+    'cache_root="$("$xtask" build-deps cache-root)"',
+    'case "$cache_root" in',
+    'bash scripts/materialize-resolver-binaries.sh',
+    '"$PWD/binaries" "$cache_root"',
   ].each do |fragment|
     check(runtime_run.include?(fragment), "publisher Formula test runtime lacks #{fragment}")
   end
@@ -3368,18 +3371,63 @@ def check_publisher(workflow)
   )
   materializer = File.read(File.join(REPO_ROOT, "scripts/materialize-resolver-binaries.sh"))
   [
-    'cp -aLx -- "$source_dir" "$staged"',
-    '! \\( -type d -o -type f \\)',
-    'find "$source_dir" -xdev -type d -exec chmod 0555 {} +',
-    'find "$source_dir" -xdev -type f -exec chmod 0444 {} +',
+    'PORTABLE_CACHE_REL=".ci-test-binary-cache"',
+    'bash "$script_root/stage-portable-resolver-binaries.sh"',
+    '"$source_dir" "$cache_root" "$stage_root"',
+    'Formula runtime contains no portable program cache',
+    'mv "$staged_cache" "$portable_cache"',
     'original_move_started=1',
     'mv "$source_dir" "$backup"',
-    'mv "$staged" "$source_dir"',
+    'mv "$staged_binaries" "$source_dir"',
+    'find "$source_dir" "$portable_cache" -xdev -type d -exec chmod 0555 {} +',
+    'find "$source_dir" "$portable_cache" -xdev -type f -exec chmod 0444 {} +',
+    'rm -rf -- "$portable_cache"',
+    "rolling back after that point could restore an incomplete original tree",
+    'original_move_started=0',
+    'could not remove the original resolver tree; preserving $transaction',
+    "trap - EXIT",
     'rollback failed; preserving $transaction',
   ].each do |fragment|
     check(materializer.include?(fragment),
           "publisher Formula runtime materialization lacks #{fragment}")
   end
+  commit_marker = materializer.index(
+    "rolling back after that point could restore an incomplete original tree"
+  )
+  backup_delete = materializer.index('rm -rf -- "$backup"')
+  check(
+    !commit_marker.nil? && !backup_delete.nil? && commit_marker < backup_delete &&
+      materializer[commit_marker...backup_delete].include?("original_move_started=0") &&
+      materializer[backup_delete..].include?("trap - EXIT"),
+    "publisher Formula runtime may restore a partially deleted original tree"
+  )
+  portable_stager = File.read(
+    File.join(REPO_ROOT, "scripts/stage-portable-resolver-binaries.sh")
+  )
+  [
+    'PORTABLE_CACHE_REL=".ci-test-binary-cache"',
+    'fetched program mirrors must remain generation symlinks',
+    'program resolver link targets a noncanonical cache',
+    'cp -a -- "$source_generation" "$staged_cache/programs/$generation"',
+    '"$(relative_cache_link "$mirror_relative" "$cache_relative")"',
+    'portable resolver closure contains an absolute, dangling, or escaping link',
+    'staged bytes differ from resolver output',
+  ].each do |fragment|
+    check(portable_stager.include?(fragment),
+          "portable resolver generation staging lacks #{fragment}")
+  end
+  workspace_packer = File.read(
+    File.join(REPO_ROOT, "scripts/pack-ci-test-workspace.sh")
+  )
+  check(
+    workspace_packer.include?(
+      'bash scripts/stage-portable-resolver-binaries.sh'
+    ) &&
+      workspace_packer.include?(
+        '"$REPO_ROOT/binaries" "$source_cache_root" "$stage"'
+      ),
+    "prepared CI workspace and Formula runtime do not share generation staging"
+  )
   check_architecture_aware_sysroot_step(
     named_step(build_steps, "Build Kandelo sysroot"), "publisher build"
   )
@@ -4098,6 +4146,39 @@ def check_publisher(workflow)
         "publisher file-formula verification bypasses the supported browser package selection")
   verifier_runtime_step = named_step(verify_steps,
                                      "Materialize Formula verification platform runtime")
+  browser_demo_index = verify_steps.index(browser_demo_step)
+  verifier_runtime_index = verify_steps.index(verifier_runtime_step)
+  isolated_verifier_index = verify_steps.index(
+    named_step(
+      verify_steps, "Force-pour and test the exact selected bottle without credentials"
+    )
+  )
+  check(
+    !browser_demo_index.nil? && !verifier_runtime_index.nil? &&
+      !isolated_verifier_index.nil? &&
+      verifier_runtime_index == browser_demo_index + 1 &&
+      verifier_runtime_index < isolated_verifier_index,
+    "publisher must materialize the portable Formula cache immediately after " \
+    "the final browser graph writer and before isolated verification"
+  )
+  # No later verifier step may resolve another package into binaries/: that
+  # would replace the mirrors after their canonical generations were copied.
+  post_materialization_steps =
+    verify_steps[(verifier_runtime_index + 1)...isolated_verifier_index]
+  post_materialization_writers = post_materialization_steps.filter_map do |step|
+    run = step.fetch("run", "").to_s
+    next unless [
+      "--binaries-dir", "prepare-browser", "fetch-binaries",
+      "materialize-resolver-binaries", "resolve-binary",
+    ].any? { |fragment| run.include?(fragment) }
+
+    step.fetch("name", "<unnamed>")
+  end
+  check(
+    post_materialization_writers.empty?,
+    "publisher rewrites binaries after portable Formula cache materialization: " \
+    "#{post_materialization_writers.join(', ')}"
+  )
   check(verifier_runtime_step.keys.sort == %w[id name run shell] &&
         verifier_runtime_step["id"] == "formula-verification-runtime" &&
         verifier_runtime_step["shell"] == "bash",
@@ -4117,7 +4198,10 @@ def check_publisher(workflow)
     '"$xtask"',
     "build-deps --arch wasm32", '--binaries-dir "$PWD/binaries"',
     '--fetch-only resolve "$package"',
-    'bash scripts/materialize-resolver-binaries.sh "$PWD/binaries"',
+    'cache_root="$("$xtask" build-deps cache-root)"',
+    'case "$cache_root" in',
+    'bash scripts/materialize-resolver-binaries.sh',
+    '"$PWD/binaries" "$cache_root"',
   ].each do |fragment|
     check(verifier_runtime_run.include?(fragment),
           "publisher Formula verification runtime lacks #{fragment}")
@@ -5699,11 +5783,22 @@ def self_test(publisher, maintenance, repository_canary)
         "WASM_POSIX_XTASK_BIN="
       )
     },
+    "Formula verification cache materialized before final browser package fetch" => lambda { |w|
+      steps = w.fetch("jobs").fetch("verify-bottle").fetch("steps")
+      browser_index = steps.index do |step|
+        step["name"] == "Prepare the supported interactive browser demo graph"
+      end
+      browser_step = steps.delete_at(browser_index)
+      runtime_index = steps.index do |step|
+        step["name"] == "Materialize Formula verification platform runtime"
+      end
+      steps.insert(runtime_index + 1, browser_step)
+    },
     "Formula test runtime cache-link materialization bypass" => lambda { |w|
       step = mutate_named_step(w, "build-and-test",
                                "Materialize Formula test platform runtime")
       step["run"] = step.fetch("run").sub(
-        'bash scripts/materialize-resolver-binaries.sh "$PWD/binaries"', "true"
+        '"$PWD/binaries" "$cache_root"', '"$PWD/binaries" "$PWD"'
       )
     },
     "fork-instrument host tool build bypass" => lambda { |w|

@@ -1016,9 +1016,17 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    fetches the Dash, coreutils, grep, and sed test-runtime archives without
    source fallback. The resolver normally links those outputs to its
    workflow-user cache, which the isolated Formula identity cannot access, so
-   the publisher transactionally replaces that link tree with self-contained
-   regular files before it exposes the Kandelo checkout through a read-only
-   source alias. The launcher copies the already-validated `xtask` bytes into
+   the publisher transactionally copies each complete content-addressed
+   generation into `.ci-test-binary-cache/` and rewrites `binaries/` as
+   contained relative symlinks before it exposes the Kandelo checkout through
+   a read-only source alias. This is the same portable-generation transport
+   used by prepared conformance workspaces. It deliberately does not flatten
+   package mirrors into regular files, because doing so would discard the
+   single-generation identity that prevents a package closure from mixing
+   unrelated builds. The Formula support loader derives the portable cache
+   from its frozen Kandelo root and gives every Node or Chromium resolver child
+   that exact `WASM_POSIX_BINARY_CACHE_ROOT`; caller-provided cache paths cannot
+   replace it. The launcher copies the already-validated `xtask` bytes into
    one root-owned, single-link, exact-`0555` inode, rechecks the source and
    copy, bind-mounts that inode over the checkout's release path, and verifies
    its exact inode and bytes both at each command entry and at final isolation

@@ -18,6 +18,7 @@ mkdir -p \
 cp \
     "$REPO_ROOT/scripts/ci-run-test-suite.sh" \
     "$REPO_ROOT/scripts/pack-ci-test-workspace.sh" \
+    "$REPO_ROOT/scripts/stage-portable-resolver-binaries.sh" \
     "$FIXTURE/scripts/"
 
 cat > "$FIXTURE/bin/npm" <<'EOF'
@@ -324,7 +325,11 @@ if PATH="$FIXTURE/bin:$PATH" \
     exit 1
 fi
 grep -Fq "portable resolver closure contains an absolute, dangling, or escaping link" \
-    "$TMP_DIR/escaping-workspace.out"
+    "$TMP_DIR/escaping-workspace.out" || {
+    cat "$TMP_DIR/escaping-workspace.out" >&2
+    echo "pack-ci-test-workspace.sh did not explain the escaping cache-generation link" >&2
+    exit 1
+}
 rm "$source_cache/programs/$generation/share/escaping-link"
 
 local_outside_generation="$FIXTURE/local-binaries/not-a-generation/local.wasm"
