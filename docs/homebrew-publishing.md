@@ -1571,18 +1571,18 @@ are poured into a fresh filesystem with a
 but any file, symlink, or type collision fails composition.
 
 The direct collection producer resolves the complete selected plan once so
-collision ownership and link suppression are global, then emits one candidate
-tree for every selected Formula. Each payload is that Formula's exact finalized Homebrew
-bottle `.tar.gz`; the producer does not recompress or combine dependency
+collision ownership and link suppression are global, then emits one tree for
+every selected Formula. Each payload is that Formula's exact finalized
+Homebrew bottle `.tar.gz`; the producer does not recompress or combine dependency
 bottles. A complete source inventory records every validated TAR member. Its
 guest projection records ownership, POSIX modes, logical sizes, link targets,
 source member paths, regular-inode groups, the package keg and `opt` link, and
 whether a path is an archive member, a link-manifest copy, an explicitly
 mode-overridden copy, or descriptor-created structure. The image builder still
 does not duplicate the lower shell image, `/etc` metadata, a gallery profile,
-or a language-specific VFS image into any bottle tree. Phase 3's product
-composer, not this collection primitive, chooses which candidate trees are
-embedded and which remain independently lazy.
+or a language-specific VFS image into any bottle tree. The product composer,
+not this collection primitive, chooses which trees are embedded and which
+remain independently lazy.
 
 The exact bottle is transport truth, but installed Homebrew text is not always
 byte-identical to the archive member. Homebrew records the files it changed
@@ -2190,11 +2190,12 @@ identities, ABI/base mismatches, and conflicting layers fail the boot instead
 of being skipped. Each runtime-layer reference currently names exactly one
 requested root equal to its layer ID; the shared 128-request parser/planner
 bound is not a promise that this boot mount composes a multi-root descriptor.
-Phase 3 builds the multi-root shell through the bottle-collection primitive.
-The bounded collection producer derives independently lazy,
-byte-identical bottle trees for a complete reviewed package closure. The
-production shell policy embeds `libcxx`, `ncurses`, and Bash, and retains the
-other 35 original bottles as independently deferred trees.
+The canonical shell builds its multi-root closure through the
+bottle-collection primitive. The bounded collection producer derives
+independently lazy, byte-identical bottle trees for a complete reviewed package
+closure. The production shell policy embeds `libcxx`, `ncurses`, and Bash, and
+retains the other 39 bottles in the language-expanded closure as independently
+deferred trees.
 
 The lazy build keeps materialization code behind its own entrypoint.
 `build-homebrew-vfs-image.ts` owns the shared eager planning, metadata, and

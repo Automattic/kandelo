@@ -468,7 +468,7 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Python (legacy opt-in) | `python-vfs.vfs.zst` | `bash packages/registry/python-vfs/build-python-vfs.sh` | ABI-bound CPython interpreter, complete stdlib, license, aliases, and demo metadata |
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
-| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the exact reviewed 38-Formula public Homebrew bottle closure, compatibility links, profile, and image-owned Homebrew Bash |
+| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the exact reviewed 42-Formula public Homebrew bottle closure, compatibility links, profile, and image-owned Homebrew Bash |
 | Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | npm 10.9.2 dist + writable `/work` |
 | WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
@@ -562,13 +562,13 @@ original error. Failed and superseded boots then run the same bounded WebKit
 reclamation pass used after kernel teardown, so repeated failures do not leave
 untracked staged images on the persistent main thread.
 
-The Homebrew collection producer emits one candidate tree per selected Formula
-and keeps that Formula's finalized bottle `.tar.gz` byte-for-byte as the tree
-payload. Its closed schema can represent the production shell's 32 requested
-roots under the shared 128-request bound, but Phase 3 calls
+The Homebrew collection producer emits one tree per selected Formula and keeps
+that Formula's finalized bottle `.tar.gz` byte-for-byte as the tree payload.
+Its closed schema represents the production shell's 36 requested roots under
+the shared 128-request bound, but the canonical shell calls
 `buildHomebrewOriginalBottleCollection` directly; it does not publish or boot
-that collection as one multi-root runtime layer. The later shell composer
-chooses the embedded/deferred partition. A
+that collection as one multi-root runtime layer. The shell composer chooses
+the embedded/deferred partition. A
 complete source inventory describes every TAR member. A separate
 guest projection binds those members to the keg, reviewed link-manifest copies,
 the builder-owned `opt` link, ownership, modes, and hard-link inode groups.
@@ -614,9 +614,10 @@ ephemeral flags, credentials in the URL, or non-root target paths.
 No Perl, Python, or Erlang layer URL is built into the browser. Concrete
 entries require immutable published descriptor/content identities derived from
 their finalized bottle sidecars; missing or mismatched identities fail boot
-instead of falling back to a standalone language VFS. This substrate does not
-change the main-shell composition: the Bash-plus-required-closure embedding and
-any default-shell cutover remain explicit later producer decisions.
+instead of falling back to a standalone language VFS. The canonical main shell
+uses the same substrate directly: Bash and its required closure are embedded,
+the remaining reviewed Formulae are registered as bottle-backed deferred trees,
+and the image-owned default-shell contract selects the embedded Bash.
 
 That direct release proves only its configured acceptance image; it does not
 set generic package browser flags. The separate gallery path first boots a
