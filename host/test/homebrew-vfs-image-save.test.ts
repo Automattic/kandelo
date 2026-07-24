@@ -90,6 +90,32 @@ describe("Homebrew VFS image publication boundary", () => {
     },
   );
 
+  it("materializes the source tree through the public /usr/bin/brew alias", async () => {
+    const archive = bootstrapArchive(true);
+    const derived = derivePackageDeferredZipTree(bootstrapSpec, archive);
+    const fs = bootstrapConsumerFs();
+    prepareHomebrewBootstrapConsumerNamespace(fs, derived);
+    registerPackageDeferredZipTree(fs, derived);
+    installHomebrewBootstrapConsumerState(fs, derived, bootstrapEnvironment);
+    let fetchCount = 0;
+    fs.setLazyFetcher(async (url) => {
+      fetchCount += 1;
+      expect(url).toBe("homebrew-bootstrap.zip");
+      return new Response(archive, {
+        headers: { "content-length": String(archive.byteLength) },
+      });
+    });
+
+    expect(fs.isPathDeferred("/usr/bin/brew")).toBe(true);
+    await expect(fs.preparePath("/usr/bin/brew")).resolves.toBe(true);
+    expect(fetchCount).toBe(1);
+    expect(fs.isPathDeferred("/usr/bin/brew")).toBe(false);
+    assertPackageDeferredZipTreeState(fs, derived, "materialized");
+
+    await expect(fs.preparePath("/usr/bin/brew")).resolves.toBe(false);
+    expect(fetchCount).toBe(1);
+  });
+
   it("rejects a missing or dangling Homebrew entrypoint and a changed launcher policy", () => {
     const incomplete = derivePackageDeferredZipTree(
       bootstrapSpec,
