@@ -324,7 +324,7 @@ jobs:
               # `arches = ["a", "b"]`; all current package.toml files
               # use that shape.
               # Version + revision bind the matrix artifact to the one
-              # finalizer-owned index transaction downstream.
+              # finalizer-owned complete index replacement downstream.
               version=$(sed -nE "s/^version *= *\"([^\"]+)\".*/\\1/p" "$pkg_dir/package.toml" | head -1)
               revision=1
               if [ -f "$pkg_dir/build.toml" ]; then
@@ -597,7 +597,9 @@ jobs:
       cancel-in-progress: false
     permissions:
       actions: read      # download matrix artifacts + recover abandoned lock owners
-      contents: write    # create/upload the one complete staging release transaction
+      contents: write    # publish one referentially safe staging snapshot
+    outputs:
+      had_failures: ${{ steps.compose.outputs.had_failures }}
     env:
       GH_TOKEN: ${{ github.token }}
       GITHUB_REPOSITORY: ${{ github.repository }}
@@ -766,11 +768,56 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      - name: Fail after publishing partial-build evidence
-        if: ${{ steps.compose.outputs.had_failures == '1' }}
+  staging-finalization-state:
+    # Always reduce producer/finalizer outcomes in one tested state machine.
+    # A partial package failure may still publish an exact fallback snapshot
+    # for the test gate, while package-staging-result below remains red.
+    needs: [preflight, lib-matrix-build, matrix-build, finalize-staging-release]
+    if: ${{ always() && !cancelled() && needs.preflight.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      matrix_selected: ${{ steps.state.outputs.matrix_selected }}
+      publication_succeeded: ${{ steps.state.outputs.publication_succeeded }}
+      finalization_ready: ${{ steps.state.outputs.finalization_ready }}
+      test_ready: ${{ steps.state.outputs.test_ready }}
+      artifact_failures: ${{ steps.state.outputs.artifact_failures }}
+      had_failures: ${{ steps.state.outputs.had_failures }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Reduce staging finalization outcomes
+        id: state
+        env:
+          MATRIX_SELECTED: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' }}
+          LIBRARY_RESULT: ${{ needs.lib-matrix-build.result }}
+          PROGRAM_RESULT: ${{ needs.matrix-build.result }}
+          FINALIZER_RESULT: ${{ needs.finalize-staging-release.result }}
+          HAD_FAILURES: ${{ needs.finalize-staging-release.outputs.had_failures }}
         run: |
-          echo "::error::One or more matrix entries failed. The complete staging index records each failure and any verified last-green fallback."
-          exit 1
+          bash .github/scripts/staging-finalization-outcome.sh \
+            --matrix-selected "$MATRIX_SELECTED" \
+            --library-result "$LIBRARY_RESULT" \
+            --program-result "$PROGRAM_RESULT" \
+            --finalizer-result "$FINALIZER_RESULT" \
+            --had-failures "$HAD_FAILURES" \
+            --output "$RUNNER_TEMP/staging-finalization-state.json"
+          jq . "$RUNNER_TEMP/staging-finalization-state.json"
+          while IFS= read -r key; do
+            echo "$key=$(jq -r --arg key "$key" '.[$key]' \
+              "$RUNNER_TEMP/staging-finalization-state.json")" >> "$GITHUB_OUTPUT"
+          done <<'EOF'
+          matrix_selected
+          publication_succeeded
+          finalization_ready
+          test_ready
+          artifact_failures
+          had_failures
+          EOF
 
   test-gate-validation:
     # Source-only validation does not consume the prepared test workspace.
@@ -906,14 +953,13 @@ jobs:
     # legitimately hit all package archives in pr-<N>-staging (because
     # the previous run published them) while still needing to validate
     # the gate itself, especially after workflow/test-gate fixes.
-    needs: [change-scope, preflight, toolchain-cache, lib-matrix-build, matrix-build, finalize-staging-release]
+    needs: [change-scope, preflight, toolchain-cache, staging-finalization-state]
     if: |
       !cancelled() &&
       needs.toolchain-cache.result == 'success' &&
       needs.preflight.result == 'success' &&
-      (needs.finalize-staging-release.result == 'success' || needs.finalize-staging-release.result == 'skipped') &&
-      (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
-      (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
+      needs.staging-finalization-state.result == 'success' &&
+      needs.staging-finalization-state.outputs.test_ready == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -951,7 +997,7 @@ jobs:
         # A finalized or reused staging release is fetched after the only
         # writer finishes, validated, and frozen into a local file://
         # snapshot. Tests therefore consume the same complete remote
-        # transaction reviewers receive.
+        # snapshot reviewers receive.
         run: |
           set -euo pipefail
           if [ "$PACKAGE_FINALIZED_STAGING" = "true" ]; then
@@ -977,7 +1023,7 @@ jobs:
                 bash .github/scripts/validate-staging-release.sh \
                   --tag "$PACKAGE_TARGET_TAG" \
                   --expected-ledger "$EXPECTED" \
-                  --mode current \
+                  --mode testable \
                   --materialize \
                   --output-dir "$TARGET_SNAPSHOT" \
                   --xtask "$XTASK"
@@ -1303,6 +1349,46 @@ jobs:
             -f context=merge-gate \
             -f description="Runtime/materialization tests passed; package staging skipped." \
             -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+  package-staging-result:
+    # Keep package publication red after the test gate has exercised a valid
+    # last-green fallback. This is intentionally separate from the finalizer:
+    # publication success and package build success are different facts.
+    needs: [preflight, staging-finalization-state, test-gate]
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.preflight.result == 'success' &&
+      (
+        needs.preflight.outputs.library_matrix != '[]' ||
+        needs.preflight.outputs.program_matrix != '[]'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: {}
+    steps:
+      - name: Enforce package staging result
+        env:
+          PUBLICATION_SUCCEEDED: ${{ needs.staging-finalization-state.outputs.publication_succeeded }}
+          ARTIFACT_FAILURES: ${{ needs.staging-finalization-state.outputs.artifact_failures }}
+          HAD_FAILURES: ${{ needs.staging-finalization-state.outputs.had_failures }}
+          TEST_GATE_RESULT: ${{ needs.test-gate.result }}
+        run: |
+          if [ "$PUBLICATION_SUCCEEDED" != true ]; then
+            echo "::error::The complete staging snapshot was not published and re-read."
+            exit 1
+          fi
+          if [ "$TEST_GATE_RESULT" != success ]; then
+            echo "::error::The test gate did not accept the published staging snapshot."
+            exit 1
+          fi
+          if [ "$ARTIFACT_FAILURES" = true ] || [ "$HAD_FAILURES" = 1 ]; then
+            # WHY: fallbacks keep tests useful, but they are not evidence that
+            # the requested package generation built successfully.
+            echo "::error::The testable last-green snapshot passed, but one or more requested package artifacts failed."
+            exit 1
+          fi
+          echo "Package staging publication, artifacts, and test gate succeeded."
 
   # Per-matrix publication — REMOVED.
   #

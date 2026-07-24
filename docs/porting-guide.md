@@ -718,9 +718,12 @@ CI runs `staging-build.yml` on the PR, which:
 3. After all matrix entries finish, one credentialed finalizer validates the
    complete target-relative snapshot, takes the staging tag's state-lock once,
    uploads every referenced archive, publishes one complete `index.toml`, and
-   re-reads every referenced asset.
+   re-reads every referenced asset. For the first release of a new ABI, the
+   matrix must supply the complete snapshot because no fallback exists yet.
 4. `test-gate` runs the full 5-suite test gate against that exact finalized
-   snapshot.
+   snapshot. An exact failed attempt may select its verified exact-current
+   fallback for testing, but a separate package result remains red;
+   a failed first-ABI entry without a fallback cannot enter the test gate.
 5. On `ready-to-ship`, `prepare-merge.yml` snapshots the durable
    ledger into a run-specific merge-candidate release. It builds or
    promotes changed archives there, tests the exact synthetic merge,

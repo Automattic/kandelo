@@ -220,6 +220,12 @@ assert_matches package_publish_flow_changed_files \
   ".github/scripts/publish-staging-finalization.sh" \
   ".github/scripts/publish-staging-finalization.sh"
 assert_matches package_publish_flow_changed_files \
+  ".github/scripts/staging-finalization-outcome.sh" \
+  ".github/scripts/staging-finalization-outcome.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-staging-finalization-outcome.sh" \
+  ".github/scripts/test-staging-finalization-outcome.sh"
+assert_matches package_publish_flow_changed_files \
   ".github/scripts/test-staging-finalizer-workflow.sh" \
   ".github/scripts/test-staging-finalizer-workflow.sh"
 assert_matches package_publish_flow_changed_files \
@@ -341,6 +347,12 @@ assert_matches ci_control_changed_files \
 assert_matches ci_control_changed_files \
   ".github/scripts/publish-staging-finalization.sh" \
   ".github/scripts/publish-staging-finalization.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/staging-finalization-outcome.sh" \
+  ".github/scripts/staging-finalization-outcome.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/test-staging-finalization-outcome.sh" \
+  ".github/scripts/test-staging-finalization-outcome.sh"
 assert_matches ci_control_changed_files \
   ".github/scripts/test-staging-finalizer-workflow.sh" \
   ".github/scripts/test-staging-finalizer-workflow.sh"

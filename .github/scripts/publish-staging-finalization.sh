@@ -42,6 +42,8 @@ STATE_LOCK_SCRIPT="${STATE_LOCK_SCRIPT:-.github/scripts/state-lock.sh}"
 DOWNLOAD_SCRIPT="${DOWNLOAD_SCRIPT:-.github/scripts/download-verified-release-asset.sh}"
 TMP_ROOT="$(mktemp -d)"
 LOCK_STATE="$TMP_ROOT/state-lock.env"
+ASSET_INVENTORY="$TMP_ROOT/release-assets.json"
+RELEASE_ID=""
 LOCKED=0
 
 cleanup() {
@@ -80,6 +82,30 @@ gh_retry() {
   done
 }
 
+gh_retry_to_file() {
+  local output="$1"
+  shift
+  local attempt=1 delay="${STAGING_PUBLISH_RETRY_SECONDS:-2}" candidate
+  while true; do
+    candidate="$(mktemp "$TMP_ROOT/gh-response.XXXXXX")"
+    if "$@" >"$candidate"; then
+      mv "$candidate" "$output"
+      return 0
+    fi
+    rm -f "$candidate"
+    if [ "$attempt" -ge 4 ]; then
+      return 1
+    fi
+    # WHY: each retry writes a fresh file. Appending a successful paginated
+    # response after partial JSON from a failed request would corrupt the
+    # inventory even though GitHub's retry ultimately succeeded.
+    echo "::warning::staging GitHub command failed; retrying in ${delay}s: $*" >&2
+    sleep "$delay"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2))
+  done
+}
+
 ensure_release() {
   local error="$TMP_ROOT/release-view.err"
   if gh release view "$TARGET_TAG" --repo "$REPOSITORY" >/dev/null 2>"$error"; then
@@ -103,6 +129,70 @@ ensure_release() {
   gh_retry gh release view "$TARGET_TAG" --repo "$REPOSITORY" >/dev/null
 }
 
+fetch_asset_inventory() {
+  local output="$1"
+  local pages="$TMP_ROOT/release-asset-pages.json"
+  if ! gh_retry_to_file "$pages" \
+      gh api --paginate --slurp \
+      "/repos/$REPOSITORY/releases/$RELEASE_ID/assets?per_page=100"; then
+    echo "publish-staging-finalization: could not enumerate release assets" >&2
+    return 1
+  fi
+  if ! jq -e '
+      (type == "array" and all(.[]; type == "array")) and
+      ((add // []) as $assets |
+        all($assets[];
+          ((.id | type) == "number" and
+           (.id | floor) == .id and
+           .id > 0) and
+          ((.name | type) == "string" and (.name | length) > 0)) and
+        (($assets | map(.id) | length) ==
+          ($assets | map(.id) | unique | length)) and
+        (($assets | map(.name) | length) ==
+          ($assets | map(.name) | unique | length)))
+    ' "$pages" >/dev/null; then
+    echo "publish-staging-finalization: release asset inventory is malformed or contains duplicate IDs/names" >&2
+    return 1
+  fi
+  jq '
+    (add // [])
+    | map({id, name})
+    | sort_by(.id, .name)
+  ' "$pages" >"$output"
+}
+
+refresh_asset_inventory() {
+  local first="$TMP_ROOT/release-assets-first.json"
+  local second="$TMP_ROOT/release-assets-second.json"
+  # WHY: an asset added or removed while GitHub is serving pagination can move
+  # page boundaries and make a single scan silently omit an archive. The state
+  # lock excludes our publishers; two identical scans also reject outside
+  # mutations rather than treating a partial inventory as proof of absence.
+  fetch_asset_inventory "$first"
+  fetch_asset_inventory "$second"
+  if ! cmp -s "$first" "$second"; then
+    echo "publish-staging-finalization: release asset inventory changed while it was being read" >&2
+    return 1
+  fi
+  mv "$second" "$ASSET_INVENTORY"
+}
+
+resolve_release() {
+  local id_file="$TMP_ROOT/release-id"
+  if ! gh_retry_to_file "$id_file" gh api \
+      "/repos/$REPOSITORY/releases/tags/$TARGET_TAG" \
+      --jq '.id'; then
+    echo "publish-staging-finalization: could not resolve release ID for $TARGET_TAG" >&2
+    return 1
+  fi
+  RELEASE_ID="$(tr -d '[:space:]' <"$id_file")"
+  if ! [[ "$RELEASE_ID" =~ ^[1-9][0-9]*$ ]]; then
+    echo "publish-staging-finalization: GitHub returned an invalid release ID" >&2
+    return 1
+  fi
+  refresh_asset_inventory
+}
+
 asset_download_matches() {
   local name="$1" sha="$2" size="$3" output="$4"
   RELEASE_DOWNLOAD_RETRY_SECONDS="${STAGING_PUBLISH_RETRY_SECONDS:-2}" \
@@ -116,9 +206,18 @@ asset_download_matches() {
 
 asset_exists() {
   local name="$1"
-  gh api "/repos/$REPOSITORY/releases/tags/$TARGET_TAG" \
-    --jq ".assets[] | select(.name == \"$name\") | .id" |
-    grep -q '^[0-9][0-9]*$'
+  jq -e --arg name "$name" 'any(.[]; .name == $name)' \
+    "$ASSET_INVENTORY" >/dev/null
+}
+
+assert_planned_assets_visible() {
+  local name
+  while IFS= read -r name; do
+    if ! asset_exists "$name"; then
+      echo "publish-staging-finalization: uploaded archive is absent from the complete release inventory: $name" >&2
+      return 1
+    fi
+  done < <(jq -r '.[].name' "$FINAL_DIR/assets.json")
 }
 
 publish_immutable_archive() {
@@ -149,8 +248,10 @@ publish_immutable_archive() {
     if ! gh release upload "$TARGET_TAG" --repo "$REPOSITORY" "$source"; then
       echo "::warning::archive upload response was ambiguous; reconciling $name" >&2
     fi
-    if asset_exists "$name" &&
-       asset_download_matches "$name" "$sha" "$size" "$verify"; then
+    # A successful exact download is the reconciliation proof. Refreshing the
+    # whole paginated inventory after every archive would turn N uploads into
+    # N complete release scans; one stable refresh follows the upload batch.
+    if asset_download_matches "$name" "$sha" "$size" "$verify"; then
       return 0
     fi
     if [ "$attempt" -lt 4 ]; then
@@ -187,6 +288,7 @@ export STATE_LOCK_OWNER_DETAIL="single-writer staging finalizer, PR ${PR_NUMBER}
 STATE_LOCK_STATE_FILE="$LOCK_STATE" bash "$STATE_LOCK_SCRIPT" acquire "$TARGET_TAG"
 LOCKED=1
 ensure_release
+resolve_release
 
 while IFS= read -r asset; do
   publish_immutable_archive \
@@ -195,12 +297,26 @@ while IFS= read -r asset; do
     "$(jq -r .size <<<"$asset")"
 done < <(jq -c '.[]' "$FINAL_DIR/assets.json")
 
+# Re-scan every asset page after the batch. This catches duplicate metadata,
+# proves newly uploaded names are visible, and avoids trusting a truncated
+# release object's embedded `assets` list.
+refresh_asset_inventory
+assert_planned_assets_visible
+
 # The only mutable write is deliberately last: every URL in these complete
 # bytes already names an uploaded, re-read archive under this target tag.
 publish_index_once
 
+# `--clobber` replaces index.toml, so also prove that GitHub settled on one
+# stable, duplicate-free release inventory after the mutable write.
+refresh_asset_inventory
+if ! asset_exists index.toml; then
+  echo "publish-staging-finalization: published index is absent from the complete release inventory" >&2
+  exit 1
+fi
+
 # Re-read every referenced archive after index publication. This final pass
-# proves the release still exposes the exact self-contained transaction, not
+# proves the release still exposes the exact self-contained publication, not
 # merely that each individual upload once returned success.
 while IFS= read -r asset; do
   name="$(jq -r .name <<<"$asset")"

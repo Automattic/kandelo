@@ -164,6 +164,12 @@ if grep -Fq 'https://' "$TMP_ROOT/current/archives/index.toml"; then
   exit 1
 fi
 
+run_helper --tag pr-946-staging --expected-ledger "$TMP_ROOT/expected.json" \
+  --mode testable --materialize --output-dir "$TMP_ROOT/testable" \
+  --xtask "$TMP_ROOT/bin/xtask"
+jq -e '.mode == "testable"' "$TMP_ROOT/testable/snapshot.json" >/dev/null
+cmp "$TMP_ROOT/zlib.tar.zst" "$TMP_ROOT/testable/archives/zlib.tar.zst"
+
 # Target-only finalization must rewrite the helper's provisional file URL to
 # the final directory after moving it.
 cp -R "$TMP_ROOT/current" "$TMP_ROOT/target-to-place"

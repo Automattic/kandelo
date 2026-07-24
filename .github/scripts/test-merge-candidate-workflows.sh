@@ -610,7 +610,7 @@ grep -Fq 'kandelo-index-transaction-v1-' "$INDEX_STATE_SCRIPT" || \
 
 # A retry can skip matrix builds only after one complete PR-staging release is
 # validated. The post-matrix gate must then freeze fresh current bytes locally;
-# first runs consume the single finalizer's complete remote transaction.
+# first runs consume the single finalizer's complete remote snapshot.
 grep -Fq 'reuse_staging: ${{ steps.compute.outputs.reuse_staging }}' "$STAGING_WORKFLOW" || \
   fail "staging preflight must expose its release-reuse decision"
 grep -Fq -- '--mode structural' "$STAGING_WORKFLOW" || \
@@ -623,9 +623,9 @@ materialize_step=$(step_block "$STAGING_WORKFLOW" "Materialize binaries")
 grep -Fq 'GH_TOKEN: ${{ github.token }}' <<<"$materialize_step" || \
   fail "staging materialization must authenticate release snapshot reads"
 grep -Fq 'PACKAGE_FINALIZED_STAGING:' "$STAGING_WORKFLOW" || \
-  fail "test-gate must distinguish a newly finalized staging transaction"
-grep -Fq -- '--mode current' "$STAGING_WORKFLOW" || \
-  fail "test-gate must freshly prove the staging ledger is fully current"
+  fail "test-gate must distinguish a newly finalized staging snapshot"
+grep -Fq -- '--mode testable' <<<"$materialize_step" || \
+  fail "test-gate must accept only exact-current success or exact failed-entry fallback"
 grep -Fq -- '--materialize' "$STAGING_WORKFLOW" || \
   fail "test-gate must freeze verified staging archive bytes locally"
 grep -Fq 'compose-staging-release-snapshots.sh' "$STAGING_WORKFLOW" || \
@@ -636,8 +636,10 @@ grep -Fq 'archive basename collision with different bytes' "$STAGING_COMPOSE_SCR
   fail "staging union must reject conflicting same-name bytes"
 grep -Fq "printf 'file://%s/index.toml\\n' \"\$OUTPUT_DIR/archives\" > \"\$OUTPUT_DIR/index-url.txt\"" "$STAGING_COMPOSE_SCRIPT" || \
   fail "target-only reuse must rewrite its file URL after final placement"
-grep -Fq 'finalize-staging-release.result' "$STAGING_WORKFLOW" || \
-  fail "test preparation must wait for the single staging finalizer"
+grep -Fq 'staging-finalization-state.outputs.test_ready' "$STAGING_WORKFLOW" || \
+  fail "test preparation must wait for a published, testable finalizer result"
+grep -Fq 'needs: [preflight, staging-finalization-state, test-gate]' "$STAGING_WORKFLOW" || \
+  fail "package staging must remain red independently after testing a fallback"
 grep -Fq 'gh api --paginate --slurp' "$STAGING_REUSE_SCRIPT" || \
   fail "staging release validation must not truncate release assets"
 grep -Fq '$TAG/index.toml bytes changed after metadata snapshot' "$STAGING_REUSE_SCRIPT" || \

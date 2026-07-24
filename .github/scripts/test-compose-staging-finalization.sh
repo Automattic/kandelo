@@ -139,6 +139,30 @@ if grep -Fq 'retired' "$TMP_ROOT/success/index.toml" ||
   exit 1
 fi
 
+# The first release for a new ABI has no canonical baseline. A complete
+# successful matrix must still produce the whole usable snapshot from its own
+# immutable workflow artifacts.
+bash "$SCRIPT" \
+  --target-tag pr-1089-staging \
+  --expected-ledger "$TMP_ROOT/expected.json" \
+  --matrix "$TMP_ROOT/matrix.json" \
+  --artifacts-dir "$TMP_ROOT/artifacts" \
+  --output-dir "$TMP_ROOT/first-success" \
+  --xtask "$XTASK" \
+  --abi 39 \
+  --built-at 2026-07-24T00:00:00Z \
+  --built-by https://example.test/run/first
+
+[ "$(cat "$TMP_ROOT/first-success/had-failures")" = 0 ]
+jq -e --arg name "$NEW_NAME" \
+  'length == 1 and .[0].name == $name' \
+  "$TMP_ROOT/first-success/assets.json" >/dev/null
+grep -Fq 'status = "success"' "$TMP_ROOT/first-success/index.toml"
+if grep -Fq 'fallback_archive_url' "$TMP_ROOT/first-success/index.toml"; then
+  echo "compose staging test: first successful snapshot invented a fallback" >&2
+  exit 1
+fi
+
 # A missing matrix artifact is a package failure, not an incomplete release.
 # The complete index keeps the same-version verified baseline as last-green
 # and reports the failed current attempt.
@@ -179,5 +203,40 @@ jq -e --arg name "$OLD_NAME" \
 jq -e '.packages[0].status == "failed"' "$TMP_ROOT/failure/publish-status.json" >/dev/null
 grep -Fq 'status = "failed"' "$TMP_ROOT/failure/index.toml"
 grep -Fq "fallback_archive_url = \"$OLD_NAME\"" "$TMP_ROOT/failure/index.toml"
+
+# A failed first-ABI matrix has no last-green bytes to test. It remains
+# publishable as truthful failure evidence, but testable materialization must
+# reject it and the independent package result remains red.
+bash "$SCRIPT" \
+  --target-tag pr-1090-staging \
+  --expected-ledger "$TMP_ROOT/failure-expected.json" \
+  --matrix "$TMP_ROOT/failure-matrix.json" \
+  --artifacts-dir "$TMP_ROOT/no-artifacts" \
+  --output-dir "$TMP_ROOT/first-failure" \
+  --xtask "$XTASK" \
+  --abi 39 \
+  --built-at 2026-07-24T00:00:00Z \
+  --built-by https://example.test/run/first-failure
+
+[ "$(cat "$TMP_ROOT/first-failure/had-failures")" = 1 ]
+jq -e 'length == 0' "$TMP_ROOT/first-failure/assets.json" >/dev/null
+grep -Fq 'status = "failed"' "$TMP_ROOT/first-failure/index.toml"
+if grep -Fq 'fallback_archive_url' "$TMP_ROOT/first-failure/index.toml"; then
+  echo "compose staging test: failed first snapshot invented a fallback" >&2
+  exit 1
+fi
+if "$XTASK" staging-reuse validate \
+    --expected-ledger "$TMP_ROOT/failure-expected.json" \
+    --index "$TMP_ROOT/first-failure/index.toml" \
+    --assets "$TMP_ROOT/first-failure/assets.json" \
+    --release-tag pr-1090-staging \
+    --release-base-url \
+      https://example.test/Automattic/kandelo/releases/download/pr-1090-staging/ \
+    --mode testable \
+    --output "$TMP_ROOT/first-failure-snapshot.json" \
+    --localized-index "$TMP_ROOT/first-failure-localized.toml"; then
+  echo "compose staging test: testable mode accepted first-ABI failure without fallback" >&2
+  exit 1
+fi
 
 echo "staging finalization composition tests passed"

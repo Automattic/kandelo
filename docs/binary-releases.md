@@ -115,7 +115,9 @@ same matrix flow in `.github/workflows/staging-build.yml`. After this
 PR's [Phase 10 workflow rewrite](plans/2026-05-13-binary-resolution-via-index-ledger-plan.md):
 
 ```
-preflight → toolchain-cache → matrix-build → staging-finalizer → test-gate → merge-gate
+preflight → toolchain-cache → matrix-build → staging-finalizer
+                                      └→ finalization-state → test-gate
+                                                              └→ package-staging-result
 ```
 
 - **preflight** asks `xtask staging-reuse expected` for the complete,
@@ -148,6 +150,9 @@ preflight → toolchain-cache → matrix-build → staging-finalizer → test-ga
   the current expected package ledger, and applies all successful matrix
   artifacts offline. A missing or invalid artifact becomes one exact failed
   entry while a valid same-version last-green archive remains its fallback.
+  If the canonical release for a new ABI does not exist yet, the first matrix
+  must supply every expected entry. A failed entry can still be published as
+  truthful evidence, but it has no invented fallback and cannot be tested.
   The final validator requires one current version block per expected package,
   exact arch/cache/provenance metadata, canonical target-relative URLs, and
   exact manifest/hash/size agreement for every referenced current or fallback
@@ -155,14 +160,26 @@ preflight → toolchain-cache → matrix-build → staging-finalizer → test-ga
   canonical assets are not copied.
 
   Only after that validation does the sole credentialed writer acquire the
-  per-tag state-lock. It uploads or verifies each immutable archive, publishes
-  the complete index once as the final mutable write, then re-downloads the
-  index and every referenced archive. A conflicting existing archive is a hard
-  failure rather than a clobber. Publication status is saved as a workflow
-  artifact before a partial matrix result fails the job.
-- **test-gate** waits for the finalizer, re-downloads the exact finalized
-  staging snapshot, requires every expected entry to be current, and verifies
-  each archive's snapshotted size and sha256 while materializing it. A reused
+  per-tag state-lock. It resolves the release ID, reads every asset page twice
+  to reject a changing or duplicate inventory, uploads or verifies each
+  immutable archive, replaces the complete index once as the final mutable
+  write, then re-downloads the index and every referenced archive. A
+  conflicting existing archive is a hard failure rather than a clobber.
+  Archives-before-index preserves referential safety, but GitHub's
+  `--clobber` is a delete+upload operation, not an availability-atomic swap;
+  interruption can leave `index.toml` absent until a retry repairs it.
+  Publication status and package-build status remain separate facts.
+- **finalization-state** reduces both matrix results, finalizer publication,
+  and the composer's exact failure ledger. A successfully published snapshot
+  remains eligible for testing when a failed current entry has a complete,
+  last-green fallback with the same version, revision, cache key, and immutable
+  Git provenance. It never converts that package build failure into success.
+- **test-gate** waits for that published/testable state, re-downloads the exact
+  finalized staging snapshot, and accepts each expected entry only as either
+  an exact-current success or an exact failed attempt with a complete,
+  exact-current fallback. It verifies each selected archive's
+  snapshotted size, sha256, and embedded manifest while materializing it. A
+  failed first-ABI entry without a fallback is rejected. A reused
   target+canonical union snapshots and verifies both sources independently,
   rejects conflicting same-name bytes, and overlays only the exact canonical
   keys selected to replace stale target entries. The composed index is
@@ -184,6 +201,10 @@ preflight → toolchain-cache → matrix-build → staging-finalizer → test-ga
   remaining-runtime shards. Browser-local assets are generated in the browser
   consumer from the already-materialized package tree, without fetching the
   index a second time.
+- **package-staging-result** runs after the test gate. It remains red when a
+  matrix artifact or current package build failed even if the exact
+  last-green snapshot passed every consumer test. Publication failure and test
+  failure are also red independently.
 - **merge-gate** posts `merge-gate=success` on the PR's HEAD SHA
   once test-gate passes. No bot-PR amend step exists anymore — the
   ledger on the release IS the consumer-visible state, so there's

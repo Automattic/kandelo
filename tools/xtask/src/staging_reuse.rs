@@ -68,6 +68,7 @@ struct ValidatedEntry {
     revision: u32,
     cache_key_sha: String,
     current: bool,
+    from_fallback: bool,
     asset: String,
     archive_sha256: String,
     size: u64,
@@ -84,6 +85,7 @@ struct FinalAsset {
 enum ValidationMode {
     Structural,
     Current,
+    Testable,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -250,9 +252,10 @@ fn run_validate(args: &[String]) -> Result<(), String> {
     let mode = match flags.required("--mode")? {
         "structural" => ValidationMode::Structural,
         "current" => ValidationMode::Current,
+        "testable" => ValidationMode::Testable,
         other => {
             return Err(format!(
-                "--mode must be structural or current, got {other:?}"
+                "--mode must be structural, current, or testable, got {other:?}"
             ));
         }
     };
@@ -418,32 +421,84 @@ fn validate_release(
                     wanted.arch.as_str()
                 )
             })?;
-        if binary.status != EntryStatus::Success {
-            return Err(format!(
-                "release index {} {} has status {:?}; a reusable baseline requires success",
-                wanted.package,
-                wanted.arch.as_str(),
-                binary.status
-            ));
-        }
-        let archive_url = required_entry_field(
-            binary.archive_url.as_deref(),
-            &wanted.package,
-            wanted.arch,
-            "archive_url",
-        )?;
-        let archive_sha256 = required_entry_field(
-            binary.archive_sha256.as_deref(),
-            &wanted.package,
-            wanted.arch,
-            "archive_sha256",
-        )?;
-        let cache_key_sha = required_entry_field(
-            binary.cache_key_sha.as_deref(),
-            &wanted.package,
-            wanted.arch,
-            "cache_key_sha",
-        )?;
+        let (archive_url, archive_sha256, cache_key_sha, from_fallback) = match binary.status {
+            EntryStatus::Success => (
+                required_entry_field(
+                    binary.archive_url.as_deref(),
+                    &wanted.package,
+                    wanted.arch,
+                    "archive_url",
+                )?,
+                required_entry_field(
+                    binary.archive_sha256.as_deref(),
+                    &wanted.package,
+                    wanted.arch,
+                    "archive_sha256",
+                )?,
+                required_entry_field(
+                    binary.cache_key_sha.as_deref(),
+                    &wanted.package,
+                    wanted.arch,
+                    "cache_key_sha",
+                )?,
+                false,
+            ),
+            EntryStatus::Failed if mode == ValidationMode::Testable => {
+                if binary.error.as_deref().unwrap_or_default().is_empty()
+                    || binary
+                        .last_attempt
+                        .as_deref()
+                        .unwrap_or_default()
+                        .is_empty()
+                    || binary
+                        .last_attempt_by
+                        .as_deref()
+                        .unwrap_or_default()
+                        .is_empty()
+                {
+                    return Err(format!(
+                        "release index {} {} failure lacks exact attempt metadata",
+                        wanted.package,
+                        wanted.arch.as_str()
+                    ));
+                }
+                (
+                    required_entry_field(
+                        binary.fallback_archive_url.as_deref(),
+                        &wanted.package,
+                        wanted.arch,
+                        "fallback_archive_url",
+                    )?,
+                    required_entry_field(
+                        binary.fallback_archive_sha256.as_deref(),
+                        &wanted.package,
+                        wanted.arch,
+                        "fallback_archive_sha256",
+                    )?,
+                    required_entry_field(
+                        binary.fallback_cache_key_sha.as_deref(),
+                        &wanted.package,
+                        wanted.arch,
+                        "fallback_cache_key_sha",
+                    )?,
+                    true,
+                )
+            }
+            status => {
+                return Err(format!(
+                    "release index {} {} has status {:?}; mode {:?} requires a current success{}",
+                    wanted.package,
+                    wanted.arch.as_str(),
+                    status,
+                    mode,
+                    if mode == ValidationMode::Testable {
+                        " or an exact current failure fallback"
+                    } else {
+                        ""
+                    }
+                ));
+            }
+        };
         validate_sha256(archive_sha256, "archive_sha256")?;
         validate_sha256(cache_key_sha, "cache_key_sha")?;
         let asset_name = archive_asset_name(archive_url, release_base_url)?;
@@ -504,13 +559,14 @@ fn validate_release(
             revision: package.revision,
             cache_key_sha: cache_key_sha.to_owned(),
             current,
+            from_fallback,
             asset: asset.name.clone(),
             archive_sha256: archive_sha256.to_owned(),
             size: asset.size,
         });
     }
 
-    if mode == ValidationMode::Current && !stale.is_empty() {
+    if mode != ValidationMode::Structural && !stale.is_empty() {
         return Err(format!(
             "release is structurally complete but not current for: {}",
             stale.join(", ")
@@ -1107,7 +1163,14 @@ fn localize_index(index: &IndexToml, snapshot: &ValidatedSnapshot) -> Result<Ind
                 validated.arch.as_str()
             )
         })?;
-        entry.archive_url = Some(validated.asset.clone());
+        if validated.from_fallback {
+            // WHY: a failed entry is resolved through fallback_archive_url.
+            // Writing the selected bytes into archive_url would make the
+            // localized test index point at a field the resolver ignores.
+            entry.fallback_archive_url = Some(validated.asset.clone());
+        } else {
+            entry.archive_url = Some(validated.asset.clone());
+        }
     }
     Ok(localized)
 }
@@ -1210,7 +1273,7 @@ fn required_entry_field<'a>(
 ) -> Result<&'a str, String> {
     value.ok_or_else(|| {
         format!(
-            "release index {package} {} success entry lacks {field}",
+            "release index {package} {} entry lacks {field}",
             arch.as_str()
         )
     })
@@ -1462,6 +1525,7 @@ cache_key_sha = "{SHA}"
                 revision: 2,
                 cache_key_sha: SHA.into(),
                 current,
+                from_fallback: false,
                 asset: path.file_name().unwrap().to_string_lossy().into_owned(),
                 archive_sha256: sha256_file(path).unwrap(),
                 size: fs::metadata(path).unwrap().len(),
@@ -1656,6 +1720,38 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
         let snapshot = validate(&expected(), &index(), &assets(), ValidationMode::Current).unwrap();
         assert!(snapshot.complete_current);
         assert!(snapshot.entries[0].current);
+    }
+
+    #[test]
+    fn testable_mode_selects_and_localizes_an_exact_current_failure_fallback() {
+        let mut failed = index();
+        failed.update_entry_failed(
+            "zlib",
+            "1.3.1",
+            2,
+            TargetArch::Wasm32,
+            "matrix build failed".into(),
+            "2026-07-24T00:00:00Z".into(),
+            "https://example.test/run/1".into(),
+        );
+
+        assert!(validate(&expected(), &failed, &assets(), ValidationMode::Current).is_err());
+        let snapshot = validate(&expected(), &failed, &assets(), ValidationMode::Testable).unwrap();
+        assert!(snapshot.complete_current);
+        assert!(snapshot.entries[0].current);
+        assert!(snapshot.entries[0].from_fallback);
+
+        let localized = localize_index(&failed, &snapshot).unwrap();
+        let entry = &localized.packages[0].binary[&TargetArch::Wasm32];
+        assert!(entry.archive_url.is_none());
+        assert_eq!(
+            entry.fallback_archive_url.as_deref(),
+            Some("zlib-1.3.1-rev2-abi39-wasm32-aaaaaaaa.tar.zst")
+        );
+
+        let mut stale = failed;
+        stale.packages[0].revision = 3;
+        assert!(validate(&expected(), &stale, &assets(), ValidationMode::Testable).is_err());
     }
 
     #[test]
@@ -2042,6 +2138,7 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
                 revision: 2,
                 cache_key_sha: SHA.into(),
                 current: true,
+                from_fallback: false,
                 asset: "../zlib.tar.zst".into(),
                 archive_sha256: ARCHIVE_SHA.into(),
                 size: 123,
@@ -2153,6 +2250,7 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
                 revision: 2,
                 cache_key_sha: SHA.into(),
                 current: true,
+                from_fallback: false,
                 asset: missing.file_name().unwrap().to_string_lossy().into_owned(),
                 archive_sha256: ARCHIVE_SHA.into(),
                 size: 123,

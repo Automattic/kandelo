@@ -5,7 +5,9 @@
 # immutable Git inputs and compares their embedded manifests with the exact
 # ledger. --materialize downloads and validates every archive, retains those
 # verified bytes, and exposes a local file:// index. Structural snapshots may
-# be materialized as an input to a separately validated union.
+# be materialized as an input to a separately validated union. Testable mode
+# also accepts an exact current failure fallback so the test gate can exercise
+# the published last-green union while the separate package result stays red.
 set -euo pipefail
 
 TAG=""
@@ -29,7 +31,7 @@ done
 
 if ! [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]] ||
    [ ! -f "$EXPECTED_LEDGER" ] ||
-   [[ "$MODE" != structural && "$MODE" != current ]] ||
+   [[ "$MODE" != structural && "$MODE" != current && "$MODE" != testable ]] ||
    [ -z "$OUTPUT_DIR" ] || [ "$OUTPUT_DIR" = / ] ||
    [ ! -x "$XTASK" ]; then
   echo "validate-staging-release: valid tag, expected ledger, mode, output dir, and xtask are required" >&2

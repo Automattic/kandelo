@@ -66,6 +66,12 @@ elif [ "$1 $2" = "release create" ]; then
 elif [ "$1 $2" = "release upload" ]; then
   source="${@: -1}"
   name="$(basename "$source")"
+  printf '%s\n' "$name" >>"$root/upload.log"
+  if [ -f "$root/release/$name" ] &&
+     [[ " $* " != *" --clobber "* ]]; then
+    echo "asset already exists" >&2
+    exit 1
+  fi
   cp "$source" "$root/release/$name"
   if [ "${GH_STUB_AMBIGUOUS_ONCE:-0}" = 1 ] &&
      [ ! -f "$root/ambiguous-used" ]; then
@@ -74,11 +80,61 @@ elif [ "$1 $2" = "release upload" ]; then
   fi
   exit 0
 elif [ "$1" = api ]; then
-  query="${*: -1}"
-  name="$(printf '%s\n' "$query" | sed -n 's/.*name == "\([^"]*\)".*/\1/p')"
-  if [ -n "$name" ]; then
-    [ -f "$root/release/$name" ] && printf '17\n'
-  fi
+  endpoint=""
+  for argument in "$@"; do
+    case "$argument" in
+      /repos/*/releases/*) endpoint="$argument" ;;
+    esac
+  done
+  case "$endpoint" in
+    /repos/*/releases/tags/*)
+      printf '23\n'
+      ;;
+    /repos/*/releases/23/assets\?per_page=100)
+      if [ "${GH_STUB_PARTIAL_ONCE:-0}" = 1 ] &&
+         [ ! -f "$root/partial-used" ]; then
+        # Simulate gh emitting an incomplete first page before the HTTP stream
+        # fails. A retry must replace, never append to, these partial bytes.
+        printf '[[{"id":1,"name":"truncated'
+        touch "$root/partial-used"
+        exit 1
+      fi
+      first="$root/assets-page-one.ndjson"
+      second="$root/assets-page-two.ndjson"
+      : >"$first"
+      : >"$second"
+      # Put 100 unrelated assets on page one. Every real release file is only
+      # visible on page two, which catches regressions to embedded/truncated
+      # release metadata or a one-page REST query.
+      for id in $(seq 1 100); do
+        jq -cn \
+          --argjson id "$id" \
+          --arg name "unrelated-$id.tar.zst" \
+          '{id:$id,name:$name}' >>"$first"
+      done
+      id=1000
+      for source in "$root"/release/*; do
+        [ -f "$source" ] || continue
+        jq -cn \
+          --argjson id "$id" \
+          --arg name "$(basename "$source")" \
+          '{id:$id,name:$name}' >>"$second"
+        id=$((id + 1))
+      done
+      if [ -n "${GH_STUB_DUPLICATE_NAME:-}" ]; then
+        jq -cn \
+          --argjson id 9000 \
+          --arg name "$GH_STUB_DUPLICATE_NAME" \
+          '{id:$id,name:$name}' >>"$second"
+      fi
+      jq -n --slurpfile first "$first" --slurpfile second "$second" \
+        '[$first,$second]'
+      ;;
+    *)
+      echo "unexpected gh api endpoint: $endpoint" >&2
+      exit 1
+      ;;
+  esac
   exit 0
 fi
 echo "unexpected gh call: $*" >&2
@@ -98,10 +154,13 @@ jq -n \
   '[{name:$name,sha256:$sha,size:$size}]' >"$TMP_ROOT/final/assets.json"
 
 run_publisher() {
+  local final_dir="${1:-$TMP_ROOT/final}"
   env \
     PATH="$TMP_ROOT/bin:$PATH" \
     GH_STUB_ROOT="$TMP_ROOT" \
     GH_STUB_AMBIGUOUS_ONCE="${GH_STUB_AMBIGUOUS_ONCE:-0}" \
+    GH_STUB_PARTIAL_ONCE="${GH_STUB_PARTIAL_ONCE:-0}" \
+    GH_STUB_DUPLICATE_NAME="${GH_STUB_DUPLICATE_NAME:-}" \
     GITHUB_REPOSITORY=Automattic/kandelo \
     STATE_LOCK_SCRIPT="$TMP_ROOT/state-lock.sh" \
     DOWNLOAD_SCRIPT="$TMP_ROOT/download.sh" \
@@ -109,10 +168,11 @@ run_publisher() {
     bash "$SCRIPT" \
       --target-tag pr-1087-staging \
       --target-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-      --final-dir "$TMP_ROOT/final"
+      --final-dir "$final_dir"
 }
 
-GH_STUB_AMBIGUOUS_ONCE=1 run_publisher
+GH_STUB_AMBIGUOUS_ONCE=1 GH_STUB_PARTIAL_ONCE=1 run_publisher
+[ -f "$TMP_ROOT/partial-used" ]
 cmp "$TMP_ROOT/final/archives/$ARCHIVE_NAME" "$TMP_ROOT/release/$ARCHIVE_NAME"
 cmp "$TMP_ROOT/final/index.toml" "$TMP_ROOT/release/index.toml"
 [ "$(grep -c '^acquire$' "$TMP_ROOT/lock.log")" = 1 ]
@@ -123,6 +183,16 @@ cmp "$TMP_ROOT/final/index.toml" "$TMP_ROOT/release/index.toml"
 run_publisher
 [ "$(grep -c '^acquire$' "$TMP_ROOT/lock.log")" = 2 ]
 [ "$(grep -c '^release$' "$TMP_ROOT/lock.log")" = 2 ]
+[ "$(grep -Fxc "$ARCHIVE_NAME" "$TMP_ROOT/upload.log")" = 1 ]
+
+# Duplicate asset metadata makes a paginated inventory ambiguous. Reject it
+# before any immutable upload instead of choosing one matching name.
+if GH_STUB_DUPLICATE_NAME="$ARCHIVE_NAME" run_publisher; then
+  echo "publisher accepted duplicate release asset names" >&2
+  exit 1
+fi
+[ "$(grep -c '^release$' "$TMP_ROOT/lock.log")" = 3 ]
+[ "$(grep -Fxc "$ARCHIVE_NAME" "$TMP_ROOT/upload.log")" = 1 ]
 
 printf 'conflicting remote bytes\n' >"$TMP_ROOT/release/$ARCHIVE_NAME"
 if run_publisher; then
@@ -130,6 +200,18 @@ if run_publisher; then
   exit 1
 fi
 grep -Fxq 'conflicting remote bytes' "$TMP_ROOT/release/$ARCHIVE_NAME"
-[ "$(grep -c '^release$' "$TMP_ROOT/lock.log")" = 3 ]
+[ "$(grep -c '^release$' "$TMP_ROOT/lock.log")" = 4 ]
+
+# A first-ABI run in which every package failed still publishes one truthful
+# failed-entry index and no archives. Prove that an empty asset plan does not
+# make the archive loop or final inventory verification invent an asset.
+mkdir -p "$TMP_ROOT/empty-final/archives"
+printf 'abi_version = 39\nfailed = true\n' >"$TMP_ROOT/empty-final/index.toml"
+printf '[]\n' >"$TMP_ROOT/empty-final/assets.json"
+run_publisher "$TMP_ROOT/empty-final"
+cmp "$TMP_ROOT/empty-final/index.toml" "$TMP_ROOT/release/index.toml"
+[ "$(grep -Fxc "$ARCHIVE_NAME" "$TMP_ROOT/upload.log")" = 1 ]
+[ "$(grep -Fxc index.toml "$TMP_ROOT/upload.log")" = 3 ]
+[ "$(grep -c '^release$' "$TMP_ROOT/lock.log")" = 5 ]
 
 echo "staging finalization publisher tests passed"
