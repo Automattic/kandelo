@@ -782,6 +782,7 @@ jobs:
     with:
       tap-repository: kandelo-dev/homebrew-tap-core
       tap-name: kandelo-dev/tap-core
+      tap-ref: ${{ github.sha }}
       formulae: file-formula
       arches: wasm32
 ```
@@ -814,14 +815,20 @@ workflow name. The three dispatch events are `publish-kandelo-bottles`,
 `dry-run-kandelo-bottles`, and `maintain-kandelo-bottles`. Publish and dry-run
 payloads must select at least one Formula and architecture; an absent or empty
 selection is an error, not a successful no-op.
-Write publication is fixed to the caller tap's `main` branch and normally to
-`Automattic/kandelo@main`. During an ABI transition, the protected tap caller
-may instead hardcode one reviewed, exact lowercase 40-character Kandelo commit
-so the new-ABI bottles exist before the bottle-backed shell can validate. The
-Kandelo PR must then merge without rewriting that commit, making the published
-source commit an ancestor of `main`; immediately afterward, rotate the tap
-caller back to Kandelo `main`. Write publication never accepts a non-main
-Kandelo branch.
+Write publication is fixed to the exact `github.sha` of the caller tap's
+protected `main` event and normally to `Automattic/kandelo@main`. The caller
+must pass that SHA as `tap-ref`; a mutable `main` source ref or a different
+commit is rejected before checkout. The publisher checks out that exact commit,
+proves the checkout matches the caller, and requires the commit to remain the
+current protected-main commit or its ancestor. This keeps an older rerun
+reproducible without authorizing a detached or force-pushed source.
+
+During an ABI transition, the protected tap caller may hardcode one reviewed,
+exact lowercase 40-character Kandelo commit so the new-ABI bottles exist before
+the bottle-backed shell can validate. The Kandelo PR must then merge without
+rewriting that commit, making the published source commit an ancestor of
+`main`; immediately afterward, rotate the tap caller back to Kandelo `main`.
+Write publication never accepts a non-main Kandelo branch.
 
 An ABI bootstrap may need package archives produced by the reviewed commit
 immediately before the publisher workflow plumbing. Every bootstrap batch uses
@@ -1360,11 +1367,12 @@ remain available, but cached build output is not an input to bottle publication.
 
 The repository-dispatch API does not return the workflow run ID, and concurrent
 dispatches can appear in the run list in a different order from the requests.
-Treat the newest run only as a candidate. Before cancelling, rerunning, watching,
-or downloading artifacts from a manually dispatched run, wait for its `plan`
-job and read that job's logged inputs. Match the Formula selection, architectures,
-Kandelo ref, and tap ref to the exact dispatch payload. If those facts are not
-yet available, do not mutate the run; another operator or rollout may own it.
+Treat the newest run only as a candidate. Before cancelling, rerunning,
+watching, or downloading artifacts from a manually dispatched run, wait for
+its `plan` job and read that job's logged inputs. Match the Formula selection,
+architectures, Kandelo ref, and exact caller/source tap SHA. If those facts are
+not yet available, do not mutate the run; another operator or rollout may own
+it.
 
 `bottles-abi-v<N>` is a bottle metadata namespace, not a promise that a GitHub
 Release with that tag contains sidecars or gallery archives. Browser-proven VFS

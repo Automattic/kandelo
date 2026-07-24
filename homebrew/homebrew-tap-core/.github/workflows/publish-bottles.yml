@@ -16,7 +16,7 @@ jobs:
       kandelo-ref: main
       tap-repository: kandelo-dev/homebrew-tap-core
       tap-name: kandelo-dev/tap-core
-      tap-ref: main
+      tap-ref: ${{ github.sha }}
       formulae: ${{ github.event.client_payload.formulae }}
       arches: ${{ github.event.client_payload.arches || 'wasm32' }}
       release-tag: ${{ github.event.client_payload.release_tag || '' }}
