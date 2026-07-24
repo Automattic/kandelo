@@ -8,7 +8,7 @@ import {
   parseKandeloShellConfig,
 } from "../../web-libs/kandelo-session/src/shell-config";
 import { assertMainShellGuestCatalogIdentity } from
-  "../../scripts/homebrew-main-shell-image-contract";
+  "../../scripts/homebrew-main-shell-catalog-contract";
 import {
   HOMEBREW_GUEST_LIFECYCLE_CORE_REPOSITORY,
   HOMEBREW_GUEST_LIFECYCLE_CORE_TAP,

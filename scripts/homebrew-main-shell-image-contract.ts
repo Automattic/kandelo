@@ -12,6 +12,13 @@ import {
   DOOM_WAD_SHA256,
   DOOM_WAD_URL,
 } from "../web-libs/kandelo-session/src/demo-guides";
+import {
+  assertMainShellGuestCatalogIdentity,
+} from "./homebrew-main-shell-catalog-contract";
+export {
+  assertMainShellGuestCatalogIdentity,
+  type MainShellCatalogIdentity,
+} from "./homebrew-main-shell-catalog-contract";
 
 const EXPECTED_ARCH = "wasm32";
 const EXPECTED_SHELL_PATH = "/home/linuxbrew/.linuxbrew/bin/bash";
@@ -37,31 +44,6 @@ export interface MainShellRuntimeStateEntry {
   uid: number;
   gid: number;
   contents?: Uint8Array;
-}
-
-export interface MainShellCatalogIdentity {
-  tapRepository: string;
-  tapName: string;
-  tapCommit: string;
-}
-
-/**
- * Validate the immutable catalog identity from the guest-visible composition
- * descriptor. Consumers that do not have the migration lock still use the
- * same parser and field mapping as the complete main-shell image contract.
- */
-export function assertMainShellGuestCatalogIdentity(
-  guestManifest: unknown,
-  expected: MainShellCatalogIdentity,
-): void {
-  const guest = requiredRecord(guestManifest, "guest Homebrew manifest");
-  expectEqual(guest.schema, 1, "guest Homebrew manifest schema");
-  assertCatalog(
-    requiredRecord(guest.catalog, "guest Homebrew catalog"),
-    expected,
-    "guest Homebrew catalog",
-    "snake",
-  );
 }
 
 /**

@@ -788,7 +788,7 @@ successful public guest lifecycle):
   `/root`, `/srv`, `/dev`, and `/dev/shm` mounts are intentionally
   reconstructed for the next boot rather than serialized as durable package
   state.
-- The next guest lifecycle harness consumes the same VFS-embedded mirror plan,
+- The guest lifecycle harness consumes the same VFS-embedded mirror plan,
   exact closed bottle bindings, deferred `homebrew-bootstrap` package tree, and
   image-owned Bash as the main-shell smoke. It takes exact 40-character core
   and independent-canary revisions rather than embedding mutable branch
@@ -812,6 +812,19 @@ successful public guest lifecycle):
   cannot hide an export durability regression by fetching the original bytes.
   Unexpected host diagnostics are fatal rather than accepted alongside a
   successful guest marker.
+- Node.js and Chromium now share that lifecycle orchestration and the exact
+  generated phase scripts; their adapters differ only in host transport,
+  process launch, output capture, and rootfs export. The browser fixture is
+  rejected before any fixture network access unless it explicitly opts into a live run
+  and binds the image, bootstrap spec/archive/environment, embedded bottle
+  mirror plan, every closed payload when used, and both tap revisions to exact
+  immutable URLs, byte lengths, and SHA-256 values. Offline unit coverage and
+  a real Chromium admission test are green. This is prepared browser
+  scaffolding, not live bottle evidence: the lifecycle test remains skipped
+  unless both
+  `KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE=1` and
+  `KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_FIXTURE_PATH` name an exact
+  reviewed fixture.
 - The first live run remains gated by one coherent ABI-42 generation. The
   `homebrew-bootstrap` recipe still declares ABI 41, the main-shell mirror
   requires the complete public ABI-42 closure, and the core and independent

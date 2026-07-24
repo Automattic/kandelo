@@ -474,6 +474,54 @@ the tap has adopted these Requirement declarations under a compatible pinned
 publisher, the full guest install lifecycle remains a rollout gate rather than
 a supported user-facing contract.
 
+#### Exact Chromium guest-lifecycle fixture
+
+The Node.js and Chromium lifecycle runners use the same generated guest
+scripts and host-neutral phase runner. They tap exact first- and third-party
+revisions, install and reinstall bottles, export and reboot the rootfs, execute
+the persisted packages, prove the pinned upgrade is a no-op, then uninstall and
+untap. A browser fixture only supplies host transport identities; it cannot
+replace or weaken those guest assertions.
+
+The live Playwright proof is disabled unless
+`KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE=1` and
+`KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_FIXTURE_PATH` are both set. The JSON
+file uses schema 1 and declares:
+
+- `allowLiveNetwork: true`, an explicit opt-in checked before any fixture
+  request;
+- `transportMode`, either `closed` or `public`;
+- exact `url`, `sha256`, and `bytes` records for the main-shell image and the
+  bootstrap spec, archive, and environment;
+- an exact bottle-mirror plan record; closed transport also requires one exact
+  payload record for every plan asset, while public transport forbids local
+  payload bytes;
+- exact 40-character `coreRevision` and `canaryRevision` values; and
+- a bounded `timeoutMs` from 1,000 through 1,800,000.
+
+All artifact URLs are canonical credential-free HTTPS identities. Chromium
+may retrieve them through the same-origin test proxy, but digest validation and
+the VFS keep the original immutable URL as authority. The downloaded mirror
+plan must be byte-identical to the plan embedded in the image and must derive
+its release tag and every payload URL from its complete collection digest.
+Closed payloads are then handed to the worker as an exhaustive transport:
+an undeclared request fails instead of falling back to ambient network.
+
+Run an exact reviewed fixture with:
+
+```bash
+cd apps/browser-demos
+bash ../../scripts/dev-shell.sh env \
+  KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE=1 \
+  KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_FIXTURE_PATH=/absolute/path/to/fixture.json \
+  npx playwright test test/homebrew-guest-lifecycle.spec.ts --project=chromium
+```
+
+Without those two variables, CI still runs the browser admission test proving
+that a fixture without live-network opt-in makes no external request. A skipped
+live test is preparation evidence only; it is not evidence that a bottle was
+published, poured, or executed.
+
 The native launcher installs each selected direct dependency as an explicit
 `homebrew/core/<name>` reference under an ephemeral native prefix. Each install
 uses Homebrew's normal dependency resolution and completes its full transitive

@@ -12,9 +12,18 @@ import {
 import type {
   BootDescriptor,
 } from "../../../../web-libs/kandelo-session/src/kernel-host";
+import {
+  runHomebrewGuestLifecycleInBrowser,
+  type HomebrewGuestLifecycleBrowserFixture,
+  type HomebrewGuestLifecycleBrowserResult,
+} from "../../../../homebrew/test/homebrew_guest_lifecycle_browser";
 import kernelWasmUrl from "@kernel-wasm?url";
 
 const MAX_OUTPUT_BYTES = 1024 * 1024;
+const corsProxyUrl = new URL(
+  `${import.meta.env.BASE_URL}__kandelo_cors_proxy?url=`,
+  window.location.href,
+).href;
 
 interface HomebrewVfsAcceptanceRequest {
   vfsUrl: string;
@@ -135,6 +144,9 @@ declare global {
       request: RootfsExportAcceptanceRequest,
     ) => Promise<RootfsExportAcceptanceResult>;
     __releaseRootfsExportLazyResponse: () => Promise<void>;
+    __runHomebrewGuestLifecycleAcceptance: (
+      fixture: HomebrewGuestLifecycleBrowserFixture,
+    ) => Promise<HomebrewGuestLifecycleBrowserResult>;
   }
 }
 
@@ -263,6 +275,14 @@ function vfsPathExists(fs: MemoryFileSystem, path: string): boolean {
 async function init(): Promise<void> {
   const kernelBytes = await fetchBytes(kernelWasmUrl, "kernel.wasm");
   const kernelSha256 = await sha256(kernelBytes);
+
+  window.__runHomebrewGuestLifecycleAcceptance = (fixture) =>
+    runHomebrewGuestLifecycleInBrowser({
+      fixture,
+      kernelWasm: kernelBytes,
+      corsProxyUrl,
+      afterMachineDestroy: settleWebKitReclaim,
+    });
 
   window.__runHomebrewVfsAcceptance = async (request) => {
     if (!Array.isArray(request.argv) || request.argv.length === 0) {

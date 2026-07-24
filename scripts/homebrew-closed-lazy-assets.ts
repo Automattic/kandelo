@@ -7,9 +7,27 @@ import type { SerializedLazyArchiveEntry } from "../host/src/vfs/memory-fs";
 import {
   assertHomebrewBottleMirrorBundle,
   assertHomebrewBottleMirrorPlan,
-  encodeHomebrewBottleMirrorPlan,
   type HomebrewBottleMirrorPlan,
 } from "../host/src/homebrew-vfs-composer";
+import {
+  assertPendingTreeHomebrewBottleMirrorBinding,
+  bytesEqual,
+  decodeHomebrewBottleMirrorPlan as decodeHomebrewBottleMirrorPlanStructure,
+  isRecord,
+} from "./homebrew-closed-lazy-assets-contract";
+
+export {
+  assertPendingTreeHomebrewBottleMirrorBinding,
+} from "./homebrew-closed-lazy-assets-contract";
+
+export function decodeHomebrewBottleMirrorPlan(
+  planBytes: Uint8Array,
+  label: string,
+): HomebrewBottleMirrorPlan {
+  const plan = decodeHomebrewBottleMirrorPlanStructure(planBytes, label);
+  assertHomebrewBottleMirrorPlan(plan);
+  return plan;
+}
 
 export function loadHomebrewBottleMirrorBindings(
   planPath: string,
@@ -98,78 +116,4 @@ export function loadHomebrewBottleMirrorBindings(
       bytes: payload.bytes,
     };
   });
-}
-
-export function decodeHomebrewBottleMirrorPlan(
-  planBytes: Uint8Array,
-  label: string,
-): HomebrewBottleMirrorPlan {
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(
-      planBytes,
-    ));
-  } catch (error) {
-    throw new Error(`${label} is not valid UTF-8 JSON: ${String(error)}`);
-  }
-  if (!isRecord(decoded) || !Array.isArray(decoded.assets)) {
-    throw new Error(`${label} does not declare a bottle mirror asset array`);
-  }
-  const plan = decoded as unknown as HomebrewBottleMirrorPlan;
-  assertHomebrewBottleMirrorPlan(plan);
-  if (!bytesEqual(planBytes, encodeHomebrewBottleMirrorPlan(plan))) {
-    throw new Error(`${label} bytes are not canonical`);
-  }
-  return plan;
-}
-
-export function assertPendingTreeHomebrewBottleMirrorBinding(
-  pendingTrees: readonly SerializedLazyArchiveEntry[],
-  plan: HomebrewBottleMirrorPlan,
-): void {
-  if (pendingTrees.length !== plan.assets.length) {
-    throw new Error(
-      `pending tree count ${pendingTrees.length} differs from mirror asset count ` +
-        `${plan.assets.length}`,
-    );
-  }
-  const assetByUrl = new Map(plan.assets.map((asset) => [asset.url, asset]));
-  if (assetByUrl.size !== plan.assets.length) {
-    throw new Error("bottle mirror plan duplicates a release URL");
-  }
-  const seen = new Set<string>();
-  for (const tree of pendingTrees) {
-    const content = tree.content;
-    const primaryUrl = content?.transports[0];
-    const asset =
-      primaryUrl === undefined ? undefined : assetByUrl.get(primaryUrl);
-    if (
-      content === undefined ||
-      asset === undefined ||
-      content.sha256 !== asset.sha256 ||
-      content.bytes !== asset.bytes
-    ) {
-      throw new Error(
-        `pending tree ${tree.mountPrefix} does not match one exact mirror asset`,
-      );
-    }
-    if (seen.has(primaryUrl!)) {
-      throw new Error(`multiple pending trees use mirror URL ${primaryUrl}`);
-    }
-    seen.add(primaryUrl!);
-  }
-  if (seen.size !== plan.assets.length) {
-    throw new Error(
-      "pending trees do not cover the complete bottle mirror plan",
-    );
-  }
-}
-
-function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
-  return left.byteLength === right.byteLength &&
-    left.every((byte, index) => byte === right[index]);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

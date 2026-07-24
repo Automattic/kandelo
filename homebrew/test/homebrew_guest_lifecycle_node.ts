@@ -1,44 +1,39 @@
 #!/usr/bin/env -S npx tsx
 
+import { createHash } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { NodeKernelHost } from "../../host/src/node-kernel-host";
-import type { ClosedLazyAsset } from "../../host/src/vfs/closed-lazy-assets";
 import {
   MemoryFileSystem,
   type LazyDownloadEvent,
-  type SerializedLazyArchiveEntry,
 } from "../../host/src/vfs/memory-fs";
+import { assertHomebrewBottleMirrorPlan } from "../../host/src/homebrew-vfs-composer";
 import {
   assertPackageDeferredZipTreeState,
   derivePackageDeferredZipTree,
 } from "../../host/src/vfs/package-deferred-tree";
 import {
-  HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH,
-} from "../../host/src/homebrew-vfs-composer";
-import {
-  assertPendingTreeHomebrewBottleMirrorBinding,
-  decodeHomebrewBottleMirrorPlan,
   loadHomebrewBottleMirrorBindings,
 } from "../../scripts/homebrew-closed-lazy-assets";
 import {
   assertHomebrewGuestLifecycleRevisions,
-  createHomebrewGuestLifecyclePhaseOneScript,
-  createHomebrewGuestLifecyclePhaseTwoScript,
-  HOMEBREW_GUEST_LIFECYCLE_PHASE_ONE_MARKER,
-  HOMEBREW_GUEST_LIFECYCLE_PHASE_TWO_MARKER,
   type HomebrewGuestLifecycleRevisions,
 } from "./homebrew_guest_lifecycle_contract";
 import {
-  assertHomebrewGuestLifecycleCatalog,
-  assertNoRepeatedLazyDownloads,
   assertNoUnexpectedHostDiagnostics,
-  completedLazyDownloadUrls,
-  omitCompletedClosedLazyAssets,
-  resolveHomebrewGuestLifecycleShell,
 } from "./homebrew_guest_lifecycle_runtime_contract";
+import {
+  HOMEBREW_GUEST_LIFECYCLE_ENV,
+  type HomebrewGuestLifecycleMachine,
+  runHomebrewGuestLifecycle,
+} from "./homebrew_guest_lifecycle_runner";
+import {
+  deriveHomebrewGuestLifecycleRuntimeInputs,
+  type HomebrewGuestLifecycleRuntimeInputs,
+} from "./homebrew_guest_lifecycle_runtime_inputs";
 
 interface Options extends HomebrewGuestLifecycleRevisions {
   imagePath: string;
@@ -49,16 +44,6 @@ interface Options extends HomebrewGuestLifecycleRevisions {
   bottleMirrorPlanPath?: string;
   timeoutMs: number;
   traceProcessesFromPid?: number;
-}
-
-interface RootfsRuntimeInputs {
-  imageBytes: Uint8Array;
-  shellBytes: Uint8Array;
-  shellArgv0: string;
-  lazyUrlBase: string;
-  lazyAssets?: readonly ClosedLazyAsset[];
-  bootstrapTransportUrl: string;
-  bootstrapBytes: number;
 }
 
 interface CapturedHost {
@@ -74,8 +59,6 @@ interface CapturedHost {
 
 const MAX_CAPTURED_OUTPUT_BYTES = 8 * 1024 * 1024;
 const MAX_CAPTURED_DIAGNOSTICS = 1_000;
-const ROOTFS_EXPORT_QUIESCENCE_TIMEOUT_MS = 5_000;
-const HOMEBREW_COMPOSITION_PATH = "/etc/kandelo/homebrew-vfs.json";
 
 async function main(): Promise<void> {
   const options = parseOptions(process.argv.slice(2));
@@ -85,97 +68,13 @@ async function main(): Promise<void> {
     canaryRevision: options.canaryRevision,
   };
 
-  const phaseOneHost = createCapturedHost(runtime, options);
-  let exportedImage: Uint8Array | undefined;
-  let phaseOneCompletedUrls: ReadonlySet<string> | undefined;
-  try {
-    await phaseOneHost.host.init();
-    const preflightStart = phaseOneHost.lazyDownloads.length;
-    await runGuestScript({
-      captured: phaseOneHost,
-      shellBytes: runtime.shellBytes,
-      shellArgv0: runtime.shellArgv0,
-      script: "set -eu; test -n \"$BASH_VERSION\"; printf 'homebrew-lifecycle-offline-ok\\n'",
-      marker: "homebrew-lifecycle-offline-ok",
-      label: "Homebrew lifecycle image-owned shell preflight",
-      timeoutMs: options.timeoutMs,
-    });
-    assertNoLazyDownload(
-      phaseOneHost.lazyDownloads.slice(preflightStart),
-      "image-owned shell preflight",
-    );
-
-    await runGuestScript({
-      captured: phaseOneHost,
-      shellBytes: runtime.shellBytes,
-      shellArgv0: runtime.shellArgv0,
-      script: createHomebrewGuestLifecyclePhaseOneScript(revisions),
-      marker: HOMEBREW_GUEST_LIFECYCLE_PHASE_ONE_MARKER,
-      label: "stock Homebrew guest lifecycle phase one",
-      timeoutMs: options.timeoutMs,
-    });
-    assertSingleCompletedLazyDownload(
-      phaseOneHost.lazyDownloads,
-      runtime.bootstrapTransportUrl,
-      runtime.bootstrapBytes,
-      "phase-one Homebrew bootstrap",
-    );
-    phaseOneCompletedUrls = completedLazyDownloadUrls(
-      phaseOneHost.lazyDownloads,
-    );
-    exportedImage = await exportRootfsAfterProcessTeardown(
-      phaseOneHost.host,
-      ROOTFS_EXPORT_QUIESCENCE_TIMEOUT_MS,
-    );
-  } finally {
-    await phaseOneHost.host.destroy().catch(() => {});
-    assertNoUnexpectedHostDiagnostics(
-      phaseOneHost.output.diagnostics,
-      "stock Homebrew guest lifecycle phase one host",
-    );
-  }
-  if (exportedImage === undefined || phaseOneCompletedUrls === undefined) {
-    throw new Error("phase one did not export a durable root filesystem");
-  }
-
-  const exportedFs = MemoryFileSystem.fromImage(exportedImage);
-  const exportedShell = resolveHomebrewGuestLifecycleShell(exportedFs);
-  const phaseTwoRuntime = {
-    ...runtime,
-    imageBytes: exportedImage,
-    shellBytes: exportedShell.bytes,
-    shellArgv0: exportedShell.argv0,
-    // WHY: a rebooted image must own everything phase one materialized. Do not
-    // leave those closed bytes available to hide an export durability defect.
-    lazyAssets: omitCompletedClosedLazyAssets(
-      runtime.lazyAssets,
-      phaseOneCompletedUrls,
-    ),
-  };
-  const phaseTwoHost = createCapturedHost(phaseTwoRuntime, options);
-  try {
-    await phaseTwoHost.host.init();
-    await runGuestScript({
-      captured: phaseTwoHost,
-      shellBytes: phaseTwoRuntime.shellBytes,
-      shellArgv0: phaseTwoRuntime.shellArgv0,
-      script: createHomebrewGuestLifecyclePhaseTwoScript(revisions),
-      marker: HOMEBREW_GUEST_LIFECYCLE_PHASE_TWO_MARKER,
-      label: "stock Homebrew guest lifecycle phase two after rootfs reboot",
-      timeoutMs: options.timeoutMs,
-    });
-    assertNoRepeatedLazyDownloads(
-      phaseOneCompletedUrls,
-      phaseTwoHost.lazyDownloads,
-      "rebooted lifecycle",
-    );
-  } finally {
-    await phaseTwoHost.host.destroy().catch(() => {});
-    assertNoUnexpectedHostDiagnostics(
-      phaseTwoHost.output.diagnostics,
-      "stock Homebrew guest lifecycle phase two host",
-    );
-  }
+  await runHomebrewGuestLifecycle({
+    runtime,
+    revisions,
+    timeoutMs: options.timeoutMs,
+    createMachine: (machineRuntime) =>
+      createNodeLifecycleMachine(machineRuntime, options),
+  });
 
   process.stdout.write(
     "homebrew_guest_lifecycle_node: stock install, reinstall, cross-tap " +
@@ -184,7 +83,9 @@ async function main(): Promise<void> {
   );
 }
 
-function loadRootfsRuntimeInputs(options: Options): RootfsRuntimeInputs {
+function loadRootfsRuntimeInputs(
+  options: Options,
+): HomebrewGuestLifecycleRuntimeInputs {
   const imageBytes = readRegularFile(options.imagePath, "main-shell VFS image");
   const bootstrapArchiveBytes = readRegularFile(
     options.bootstrapArchivePath,
@@ -194,101 +95,57 @@ function loadRootfsRuntimeInputs(options: Options): RootfsRuntimeInputs {
     options.bootstrapEnvironmentPath,
     "Homebrew bootstrap environment",
   );
-  const bootstrapSpec = parseJson(
-    readRegularFile(options.bootstrapSpecPath, "Homebrew bootstrap tree spec"),
+  const bootstrapSpecBytes = readRegularFile(
     options.bootstrapSpecPath,
+    "Homebrew bootstrap tree spec",
   );
+  // Node can afford to re-derive the complete ZIP inventory synchronously.
+  // Chromium binds Web-Crypto-verified bytes to this same serialized tree
+  // contract without importing Node's crypto implementation.
   const bootstrapTree = derivePackageDeferredZipTree(
-    bootstrapSpec,
+    parseJson(bootstrapSpecBytes, options.bootstrapSpecPath),
     bootstrapArchiveBytes,
   );
-  const fs = MemoryFileSystem.fromImage(imageBytes);
-  assertPackageDeferredZipTreeState(fs, bootstrapTree, "deferred");
-  assertExactBytes(
-    readVfsFile(fs, "/etc/homebrew/brew.env"),
-    bootstrapEnvironmentBytes,
-    "main-shell Homebrew environment",
+  assertPackageDeferredZipTreeState(
+    MemoryFileSystem.fromImage(imageBytes),
+    bootstrapTree,
+    "deferred",
   );
-  const guestManifest = parseJson(
-    readVfsFile(fs, HOMEBREW_COMPOSITION_PATH),
-    HOMEBREW_COMPOSITION_PATH,
-  );
-  assertHomebrewGuestLifecycleCatalog(guestManifest, options.coreRevision);
-  const shell = resolveHomebrewGuestLifecycleShell(fs);
-
-  const allPendingTrees = fs
-    .exportLazyArchiveEntries()
-    .filter((tree) => tree.content !== undefined);
-  const bottleTrees = allPendingTrees.filter((tree) =>
-    tree.activation?.capabilities.some((capability) =>
-      capability.startsWith("homebrew-bottle:"),
-    ),
-  );
-  const bootstrapTrees = allPendingTrees.filter((tree) =>
-    tree.activation?.capabilities.includes("homebrew:bootstrap"),
-  );
-  const unclassifiedTrees = allPendingTrees.filter(
-    (tree) => !bottleTrees.includes(tree) && !bootstrapTrees.includes(tree),
-  );
-  if (bootstrapTrees.length !== 1 || unclassifiedTrees.length !== 0) {
-    throw new Error(
-      `lifecycle image has ${bootstrapTrees.length} pending Homebrew source ` +
-        `trees and ${unclassifiedTrees.length} unclassified package trees`,
-    );
-  }
-
-  const embeddedPlanBytes = readVfsFile(
-    fs,
-    HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH,
-  );
-  const embeddedPlan = decodeHomebrewBottleMirrorPlan(
-    embeddedPlanBytes,
-    HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH,
-  );
-  if (bottleTrees.length !== embeddedPlan.assets.length) {
-    throw new Error(
-      `lifecycle image has ${bottleTrees.length} pending bottle trees, while ` +
-        `its mirror plan declares ${embeddedPlan.assets.length}`,
-    );
-  }
-  assertPendingTreeHomebrewBottleMirrorBinding(bottleTrees, embeddedPlan);
-
+  const bootstrapArchiveSha256 = createHash("sha256")
+    .update(bootstrapArchiveBytes)
+    .digest("hex");
   const lazyUrlBase = options.transportMode === "closed"
     ? "https://closed.kandelo.invalid/homebrew-guest-lifecycle/"
     : pathToFileURL(`${dirname(options.bootstrapArchivePath)}/`).toString();
-  const bootstrapTransportUrl = new URL(
-    bootstrapTree.descriptor.archive.url,
-    lazyUrlBase,
-  ).toString();
-  const lazyAssets = options.transportMode === "closed"
-    ? [
-        ...loadHomebrewBottleMirrorBindings(
-          options.bottleMirrorPlanPath!,
-          embeddedPlanBytes,
-          bottleTrees,
-        ),
-        {
-          url: bootstrapTransportUrl,
-          sha256: bootstrapTree.descriptor.archive.sha256,
-          size: bootstrapTree.descriptor.archive.bytes,
-          bytes: bootstrapArchiveBytes,
-        },
-      ]
-    : undefined;
-
-  return {
+  return deriveHomebrewGuestLifecycleRuntimeInputs({
     imageBytes,
-    shellBytes: shell.bytes,
-    shellArgv0: shell.argv0,
+    bootstrapSpecBytes,
+    bootstrapArchiveBytes,
+    bootstrapArchiveSha256,
+    bootstrapEnvironmentBytes,
+    coreRevision: options.coreRevision,
+    transportMode: options.transportMode,
     lazyUrlBase,
-    ...(lazyAssets === undefined ? {} : { lazyAssets }),
-    bootstrapTransportUrl,
-    bootstrapBytes: bootstrapTree.descriptor.archive.bytes,
-  };
+    validateEmbeddedBottlePlan: assertHomebrewBottleMirrorPlan,
+    ...(options.transportMode === "public"
+      ? {
+          expectedBootstrapTransportUrl: pathToFileURL(
+            options.bootstrapArchivePath,
+          ).toString(),
+        }
+      : {
+          loadClosedBottleAssets: (embeddedPlanBytes, pendingBottleTrees) =>
+            loadHomebrewBottleMirrorBindings(
+              options.bottleMirrorPlanPath!,
+              embeddedPlanBytes,
+              pendingBottleTrees,
+            ),
+        }),
+  });
 }
 
 function createCapturedHost(
-  runtime: RootfsRuntimeInputs,
+  runtime: HomebrewGuestLifecycleRuntimeInputs,
   options: Options,
 ): CapturedHost {
   const lazyDownloads: LazyDownloadEvent[] = [];
@@ -367,6 +224,22 @@ function createCapturedHost(
   return { host, lazyDownloads, output };
 }
 
+function createNodeLifecycleMachine(
+  runtime: HomebrewGuestLifecycleRuntimeInputs,
+  options: Options,
+): HomebrewGuestLifecycleMachine {
+  const captured = createCapturedHost(runtime, options);
+  return {
+    lazyDownloads: captured.lazyDownloads,
+    diagnostics: captured.output.diagnostics,
+    start: () => captured.host.init(),
+    runShellScript: (scriptOptions) =>
+      runGuestScript({ captured, ...scriptOptions }),
+    exportRootfsImage: () => captured.host.exportRootfsImage(),
+    destroy: () => captured.host.destroy(),
+  };
+}
+
 async function runGuestScript(options: {
   captured: CapturedHost;
   shellBytes: Uint8Array;
@@ -386,20 +259,7 @@ async function runGuestScript(options: {
       toArrayBuffer(options.shellBytes),
       [options.shellArgv0, "-c", options.script],
       {
-        env: [
-          "PATH=/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin",
-          "HOME=/home/user",
-          "USER=user",
-          "LOGNAME=user",
-          "SHELL=/bin/bash",
-          "TERM=dumb",
-          "TMPDIR=/tmp",
-          "HOMEBREW_NO_ANALYTICS=1",
-          "HOMEBREW_NO_AUTO_UPDATE=1",
-          "HOMEBREW_NO_ENV_HINTS=1",
-          "HOMEBREW_NO_INSTALL_FROM_API=1",
-          "GIT_TERMINAL_PROMPT=0",
-        ],
+        env: [...HOMEBREW_GUEST_LIFECYCLE_ENV],
         cwd: "/home/user",
         uid: 1000,
         gid: 1000,
@@ -452,99 +312,6 @@ async function runGuestScript(options: {
   }
 }
 
-async function exportRootfsAfterProcessTeardown(
-  host: NodeKernelHost,
-  timeoutMs: number,
-): Promise<Uint8Array> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    try {
-      return await host.exportRootfsImage();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (
-        !message.includes("no live or tearing-down processes") ||
-        Date.now() >= deadline
-      ) {
-        throw error;
-      }
-      // WHY: a process exit is observable before the worker has necessarily
-      // finished its asynchronous teardown. Retry only that exact transient
-      // state; the worker-owned snapshot gate remains the authority and still
-      // rejects every non-quiescent export.
-      await delay(20);
-    }
-  }
-}
-
-function assertSingleCompletedLazyDownload(
-  events: readonly LazyDownloadEvent[],
-  url: string,
-  expectedBytes: number,
-  label: string,
-): void {
-  const matches = events.filter((event) => event.url === url);
-  const started = matches.filter((event) => event.status === "started");
-  const completed = matches.filter((event) => event.status === "complete");
-  const failed = matches.filter((event) => event.status === "error");
-  if (
-    started.length !== 1 ||
-    completed.length !== 1 ||
-    failed.length !== 0 ||
-    matches[0]?.status !== "started" ||
-    matches.at(-1)?.status !== "complete" ||
-    started[0]?.loadedBytes !== 0 ||
-    completed[0]?.loadedBytes !== expectedBytes
-  ) {
-    throw new Error(
-      `${label} must fetch its exact lazy tree once; events=${JSON.stringify(matches)}`,
-    );
-  }
-}
-
-function assertNoLazyDownload(
-  events: readonly LazyDownloadEvent[],
-  label: string,
-): void {
-  if (events.length !== 0) {
-    throw new Error(
-      `${label} unexpectedly fetched ${events[0]!.url}`,
-    );
-  }
-}
-
-function readVfsFile(
-  fs: MemoryFileSystem,
-  path: string,
-  expectedSize?: number,
-): Uint8Array {
-  const stat = fs.stat(path);
-  const size = expectedSize ?? stat.size;
-  if ((stat.mode & 0xf000) !== 0x8000 || stat.size !== size) {
-    throw new Error(`${path} is not the expected regular file`);
-  }
-  const bytes = new Uint8Array(size);
-  const fd = fs.open(path, 0, 0);
-  try {
-    let offset = 0;
-    while (offset < bytes.byteLength) {
-      const count = fs.read(
-        fd,
-        bytes.subarray(offset),
-        null,
-        bytes.byteLength - offset,
-      );
-      if (count <= 0) {
-        throw new Error(`${path} ended after ${offset}/${bytes.byteLength} bytes`);
-      }
-      offset += count;
-    }
-  } finally {
-    fs.close(fd);
-  }
-  return bytes;
-}
-
 function readRegularFile(path: string, label: string): Uint8Array {
   const stat = lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink()) {
@@ -560,19 +327,6 @@ function parseJson(bytes: Uint8Array, label: string): unknown {
     );
   } catch (error) {
     throw new Error(`${label} is not valid UTF-8 JSON: ${String(error)}`);
-  }
-}
-
-function assertExactBytes(
-  actual: Uint8Array,
-  expected: Uint8Array,
-  label: string,
-): void {
-  if (
-    actual.byteLength !== expected.byteLength ||
-    !actual.every((byte, index) => byte === expected[index])
-  ) {
-    throw new Error(`${label} differs from the resolved package output`);
   }
 }
 

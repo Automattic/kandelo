@@ -225,8 +225,12 @@ jobs:
         run: |
           set -euo pipefail
           npx tsx --test \
+            apps/browser-demos/playwright-server-policy.test.ts \
+            homebrew/test/homebrew_guest_lifecycle_browser_fixture.test.ts \
             homebrew/test/homebrew_guest_lifecycle_contract.test.ts \
+            homebrew/test/homebrew_guest_lifecycle_runner.test.ts \
             homebrew/test/homebrew_guest_lifecycle_runtime_contract.test.ts \
+            homebrew/test/homebrew_guest_lifecycle_runtime_inputs.test.ts \
             scripts/homebrew-main-shell-image-contract.test.ts \
             scripts/homebrew-closed-lazy-assets.test.ts
           npx esbuild homebrew/test/homebrew_guest_lifecycle_node.ts \
@@ -615,6 +619,14 @@ jobs:
           fi
           (
             cd apps/browser-demos
+            # This offline browser contract must reject before any external
+            # fixture fetch. The separately gated live test runs only when an
+            # exact immutable fixture is explicitly supplied.
+            bash ../../scripts/dev-shell.sh env \
+              "${playwright_env[@]}" \
+              npx playwright test test/homebrew-guest-lifecycle.spec.ts \
+              --project=chromium \
+              --grep "rejects a guest lifecycle fixture"
             bash ../../scripts/dev-shell.sh env \
               "PLAYWRIGHT_JSON_OUTPUT_FILE=$shell_report" \
               "${playwright_env[@]}" \
