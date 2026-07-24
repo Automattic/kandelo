@@ -49,6 +49,7 @@ inputs = [
   "host/src/vfs/hardlink-graph.ts",
   "host/src/vfs/image-helpers.ts",
   "host/src/vfs/memory-fs.ts",
+  "host/src/vfs/package-deferred-tree-contract.ts",
   "host/src/vfs/package-deferred-tree.ts",
   "host/src/vfs/sharedfs-vendor.ts",
   "host/src/vfs/tar.ts",
