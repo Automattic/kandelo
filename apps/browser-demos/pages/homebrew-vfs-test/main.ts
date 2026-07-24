@@ -12,9 +12,18 @@ import {
 import type {
   BootDescriptor,
 } from "../../../../web-libs/kandelo-session/src/kernel-host";
+import {
+  runHomebrewGuestLifecycleInBrowser,
+  type HomebrewGuestLifecycleBrowserFixture,
+  type HomebrewGuestLifecycleBrowserResult,
+} from "../../../../homebrew/test/homebrew_guest_lifecycle_browser";
 import kernelWasmUrl from "@kernel-wasm?url";
 
 const MAX_OUTPUT_BYTES = 1024 * 1024;
+const corsProxyUrl = new URL(
+  `${import.meta.env.BASE_URL}__kandelo_cors_proxy?url=`,
+  window.location.href,
+).href;
 
 interface HomebrewVfsAcceptanceRequest {
   vfsUrl: string;
@@ -77,6 +86,42 @@ interface PackageLayerExecResult {
   stderr: string;
 }
 
+interface RootfsExportAcceptanceRequest {
+  vfsUrl: string;
+  writePath: string;
+  writeText: string;
+  liveProcessUrl: string;
+  teardownProcessUrl: string;
+  lazyReadPath: string;
+  lazyReadUrl: string;
+  lazyReadText: string;
+  lateWritePath: string;
+  lateWriteText: string;
+}
+
+interface RootfsExportAcceptanceResult {
+  persistedText: string;
+  firstExportSha256: string;
+  secondExportSha256: string;
+  firstExportBytes: number;
+  secondExportBytes: number;
+  liveProcessExitCode: number;
+  liveProcessExportError: string;
+  teardownProcessExitCode: number;
+  teardownExportError: string;
+  overlappingExportError: string;
+  overlappingWriteError: string;
+  lazyReadText: string;
+  lateWritePresentInExport: boolean;
+  writeAfterExportText: string;
+  diagnostics: Array<{ source: string; message: string }>;
+  lazyEntries: Array<{
+    path: string;
+    url: string;
+    size: number;
+  }>;
+}
+
 declare global {
   interface Window {
     __homebrewVfsTestReady: boolean;
@@ -95,6 +140,13 @@ declare global {
     ) => Promise<PackageLayerExecResult>;
     __destroyPackageLayerAcceptance: () => Promise<void>;
     __packageLayerDiscardedBufferCount: () => number;
+    __runRootfsExportAcceptance: (
+      request: RootfsExportAcceptanceRequest,
+    ) => Promise<RootfsExportAcceptanceResult>;
+    __releaseRootfsExportLazyResponse: () => Promise<void>;
+    __runHomebrewGuestLifecycleAcceptance: (
+      fixture: HomebrewGuestLifecycleBrowserFixture,
+    ) => Promise<HomebrewGuestLifecycleBrowserResult>;
   }
 }
 
@@ -135,8 +187,15 @@ function appendOutput(current: string, bytes: Uint8Array, label: string): string
   return next;
 }
 
-async function sha256(bytes: ArrayBuffer): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+async function sha256(bytes: ArrayBuffer | Uint8Array): Promise<string> {
+  const source: BufferSource = bytes instanceof Uint8Array
+    ? new Uint8Array(
+        bytes.buffer as ArrayBuffer,
+        bytes.byteOffset,
+        bytes.byteLength,
+      )
+    : bytes;
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", source));
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
@@ -146,9 +205,84 @@ async function fetchBytes(url: string, label: string): Promise<ArrayBuffer> {
   return response.arrayBuffer();
 }
 
+async function rejectionMessage(
+  operation: Promise<unknown>,
+  label: string,
+): Promise<string> {
+  try {
+    await operation;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  throw new Error(`${label} unexpectedly succeeded`);
+}
+
+async function withTimeout<T>(
+  operation: Promise<T>,
+  label: string,
+  timeoutMs = 5_000,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+async function exportRootfsWhenQuiescent(
+  kernel: BrowserKernel,
+  timeoutMs = 5_000,
+): Promise<Uint8Array> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      return await kernel.exportRootfsImage();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        !message.includes("no live or tearing-down processes") ||
+        Date.now() >= deadline
+      ) {
+        throw error;
+      }
+      // WHY: the public process-exit promise resolves when the worker reports
+      // exit, before the worker-owned teardown promise necessarily settles.
+      // Retry only that documented transient rejection; the export API remains
+      // the authority for when the browser kernel is actually quiescent.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+}
+
+function vfsPathExists(fs: MemoryFileSystem, path: string): boolean {
+  try {
+    fs.lstat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function init(): Promise<void> {
   const kernelBytes = await fetchBytes(kernelWasmUrl, "kernel.wasm");
   const kernelSha256 = await sha256(kernelBytes);
+
+  window.__runHomebrewGuestLifecycleAcceptance = (fixture) =>
+    runHomebrewGuestLifecycleInBrowser({
+      fixture,
+      kernelWasm: kernelBytes,
+      corsProxyUrl,
+      afterMachineDestroy: settleWebKitReclaim,
+    });
 
   window.__runHomebrewVfsAcceptance = async (request) => {
     if (!Array.isArray(request.argv) || request.argv.length === 0) {
@@ -278,6 +412,243 @@ async function init(): Promise<void> {
     } finally {
       if (timer) clearTimeout(timer);
       await kernel.destroy().catch(() => {});
+      await settleWebKitReclaim();
+    }
+  };
+
+  window.__runRootfsExportAcceptance = async (request) => {
+    const initialImage = new Uint8Array(
+      await fetchBytes(request.vfsUrl, "rootfs export VFS image"),
+    );
+    const liveProcessBytes = await fetchBytes(
+      request.liveProcessUrl,
+      "live-process fixture",
+    );
+    const teardownProcessBytes = await fetchBytes(
+      request.teardownProcessUrl,
+      "teardown-process fixture",
+    );
+    const diagnostics: Array<{ source: string; message: string }> = [];
+    let firstKernel: BrowserKernel | null = new BrowserKernel({
+      kernelOwnedFs: true,
+      onHostDiagnostic: (diagnostic) => {
+        diagnostics.push({
+          source: diagnostic.source,
+          message: diagnostic.message,
+        });
+      },
+    });
+    let firstExport: Uint8Array;
+    let liveProcessExitCode: number;
+    let liveProcessExportError: string;
+    let teardownProcessExitCode: number;
+    let teardownExportError: string;
+    let overlappingExportError: string;
+    let overlappingWriteError: string;
+    let lazyReadText: string;
+    let writeAfterExportText: string;
+    try {
+      await firstKernel.initFromImage({
+        kernelWasm: kernelBytes,
+        vfsImage: initialImage,
+      });
+      await firstKernel.writeFileToVfs(
+        request.writePath,
+        new TextEncoder().encode(request.writeText),
+        0o640,
+      );
+
+      let resolveLivePid!: (pid: number) => void;
+      let rejectLivePid!: (error: unknown) => void;
+      const livePid = new Promise<number>((resolve, reject) => {
+        resolveLivePid = resolve;
+        rejectLivePid = reject;
+      });
+      const liveExit = firstKernel.spawn(
+        liveProcessBytes,
+        ["block-forever"],
+        {
+          onStarted: resolveLivePid,
+        },
+      ).catch((error) => {
+        rejectLivePid(error);
+        throw error;
+      });
+      const pid = await withTimeout(
+        livePid,
+        "live process start",
+      );
+      liveProcessExportError = await withTimeout(
+        rejectionMessage(
+          firstKernel.exportRootfsImage(),
+          "rootfs export with a live process",
+        ),
+        "live-process rootfs rejection",
+      );
+      await firstKernel.terminateProcess(pid, 143);
+      liveProcessExitCode = await withTimeout(
+        liveExit,
+        "live process termination",
+      );
+
+      teardownProcessExitCode = await withTimeout(
+        firstKernel.spawn(
+          teardownProcessBytes,
+          ["thread-exit-group"],
+        ),
+        "threaded process exit",
+      );
+      // WHY: thread-exit-group exits from its child thread. The public exit
+      // promise resolves before the browser worker's tracked 250 ms thread and
+      // process-worker teardown settles, giving this request a deterministic
+      // real teardown window without exposing an internal test hook.
+      teardownExportError = await withTimeout(
+        rejectionMessage(
+          firstKernel.exportRootfsImage(),
+          "rootfs export during process-worker teardown",
+        ),
+        "teardown rootfs rejection",
+      );
+      await exportRootfsWhenQuiescent(firstKernel);
+
+      let resolveLazyStart!: () => void;
+      const lazyStarted = new Promise<void>((resolve) => {
+        resolveLazyStart = resolve;
+      });
+      const unsubscribeLazy = firstKernel.subscribeLazyDownloads((event) => {
+        if (
+          event.url === request.lazyReadUrl &&
+          event.status === "started"
+        ) {
+          resolveLazyStart();
+        }
+      });
+      const lazyRead = firstKernel.readFileFromVfs(request.lazyReadPath);
+      let gatedExport: Promise<Uint8Array> | undefined;
+      try {
+        await withTimeout(lazyStarted, "lazy rootfs read start");
+        // WHY: the lazy read has entered the worker's mutation gate but its
+        // routed response is deliberately held by Playwright. FIFO worker
+        // messages make the first export close the gate while it waits for
+        // that read; the following export and write must therefore reject.
+        gatedExport = firstKernel.exportRootfsImage();
+        [overlappingExportError, overlappingWriteError] = await withTimeout(
+          Promise.all([
+            rejectionMessage(
+              firstKernel.exportRootfsImage(),
+              "overlapping rootfs export",
+            ),
+            rejectionMessage(
+              firstKernel.writeFileToVfs(
+                request.lateWritePath,
+                new TextEncoder().encode(request.lateWriteText),
+                0o640,
+              ),
+              "rootfs write during export",
+            ),
+          ]),
+          "rootfs export exclusion",
+        );
+      } finally {
+        unsubscribeLazy();
+        // The callback is Playwright transport coordination only. It releases
+        // the real fetch used by MemoryFileSystem; it does not mutate worker
+        // state or bypass the production snapshot gate.
+        await window.__releaseRootfsExportLazyResponse();
+      }
+      const lazyBytes = await withTimeout(
+        lazyRead,
+        "lazy rootfs read completion",
+      );
+      if (lazyBytes === null) {
+        throw new Error(`lazy rootfs read lost ${request.lazyReadPath}`);
+      }
+      lazyReadText = new TextDecoder().decode(lazyBytes);
+      if (gatedExport === undefined) {
+        throw new Error("rootfs export exclusion did not start an export");
+      }
+      firstExport = await withTimeout(
+        gatedExport,
+        "rootfs export after lazy mutation",
+      );
+
+      await firstKernel.writeFileToVfs(
+        request.lateWritePath,
+        new TextEncoder().encode(request.lateWriteText),
+        0o640,
+      );
+      const writeAfterExport = await firstKernel.readFileFromVfs(
+        request.lateWritePath,
+      );
+      if (writeAfterExport === null) {
+        throw new Error(`post-export write lost ${request.lateWritePath}`);
+      }
+      writeAfterExportText = new TextDecoder().decode(writeAfterExport);
+    } finally {
+      await firstKernel?.destroy().catch(() => {});
+      firstKernel = null;
+      await settleWebKitReclaim();
+    }
+
+    const parsed = MemoryFileSystem.fromImage(firstExport);
+    const lazyEntries = parsed.exportLazyEntries().map((entry) => ({
+      path: entry.path,
+      url: entry.url,
+      size: entry.size,
+    }));
+    const exportedLazyRead = new TextDecoder().decode(
+      readVfsFile(parsed, request.lazyReadPath),
+    );
+    if (exportedLazyRead !== request.lazyReadText) {
+      throw new Error(
+        `exported rootfs changed ${request.lazyReadPath}`,
+      );
+    }
+    const lateWritePresentInExport = vfsPathExists(
+      parsed,
+      request.lateWritePath,
+    );
+
+    let secondKernel: BrowserKernel | null = new BrowserKernel({
+      kernelOwnedFs: true,
+      onHostDiagnostic: (diagnostic) => {
+        diagnostics.push({
+          source: diagnostic.source,
+          message: diagnostic.message,
+        });
+      },
+    });
+    try {
+      await secondKernel.initFromImage({
+        kernelWasm: kernelBytes,
+        vfsImage: firstExport,
+      });
+      const persisted = await secondKernel.readFileFromVfs(request.writePath);
+      if (persisted === null) {
+        throw new Error(`exported rootfs lost ${request.writePath}`);
+      }
+      const secondExport = await secondKernel.exportRootfsImage();
+      return {
+        persistedText: new TextDecoder().decode(persisted),
+        firstExportSha256: await sha256(firstExport),
+        secondExportSha256: await sha256(secondExport),
+        firstExportBytes: firstExport.byteLength,
+        secondExportBytes: secondExport.byteLength,
+        liveProcessExitCode,
+        liveProcessExportError,
+        teardownProcessExitCode,
+        teardownExportError,
+        overlappingExportError,
+        overlappingWriteError,
+        lazyReadText,
+        lateWritePresentInExport,
+        writeAfterExportText,
+        diagnostics,
+        lazyEntries,
+      };
+    } finally {
+      await secondKernel?.destroy().catch(() => {});
+      secondKernel = null;
       await settleWebKitReclaim();
     }
   };

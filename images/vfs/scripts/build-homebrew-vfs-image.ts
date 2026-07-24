@@ -110,6 +110,7 @@ interface CliOptions {
   bottleMirrorOut?: string;
   packageTreeSpec?: string;
   packageTreeArchive?: string;
+  homebrewBootstrapEnv?: string;
   materializePackageTree: boolean;
 }
 
@@ -119,8 +120,7 @@ interface CliOptions {
  * candidate composer imports while both paths reuse the same CLI, planning,
  * image metadata, and serialization implementation.
  */
-export interface HomebrewVfsImageMaterializationOptions
-  extends HomebrewVfsBuildOptions {
+export interface HomebrewVfsImageMaterializationOptions extends HomebrewVfsBuildOptions {
   fs: MemoryFileSystem;
   collectionFs: MemoryFileSystem;
   policy: unknown;
@@ -158,6 +158,18 @@ export async function saveVerifiedHomebrewVfsImage(
 const DEFAULT_MAX_BYTES = 128 * 1024 * 1024;
 const SHARED_FS_BLOCK_BYTES = 4096;
 const HOMEBREW_COMPOSITION_PATH = "/etc/kandelo/homebrew-vfs.json";
+const HOMEBREW_BOOTSTRAP_ENV_PATH = "/etc/homebrew/brew.env";
+const HOMEBREW_BOOTSTRAP_ENTRYPOINT = "/usr/bin/brew";
+const HOMEBREW_BOOTSTRAP_PREFIX = "/home/linuxbrew/.linuxbrew";
+const HOMEBREW_BOOTSTRAP_TARGET = "/home/linuxbrew/.linuxbrew/bin/brew";
+const HOMEBREW_BOOTSTRAP_MUTABLE_PATHS = [
+  "/home/linuxbrew/.linuxbrew/Cellar",
+  "/home/linuxbrew/.linuxbrew/Library/Taps",
+  "/home/linuxbrew/.linuxbrew/var/homebrew/linked",
+  "/home/linuxbrew/.linuxbrew/var/homebrew/locks",
+  "/home/user/.cache/Homebrew",
+] as const;
+const MAX_HOMEBREW_BOOTSTRAP_ENV_BYTES = 1024;
 const MAX_SIDECAR_JSON_BYTES = 16_777_216;
 const MAX_BREWFILE_BYTES = 65_536;
 const MAX_BREWFILE_PACKAGES = 128;
@@ -213,6 +225,24 @@ interface LoadedMigrationLock {
   bytes: number;
 }
 
+export interface HomebrewBootstrapConsumerState {
+  environment: {
+    path: typeof HOMEBREW_BOOTSTRAP_ENV_PATH;
+    sha256: string;
+    bytes: number;
+  };
+  entrypoint: {
+    path: typeof HOMEBREW_BOOTSTRAP_ENTRYPOINT;
+    target: typeof HOMEBREW_BOOTSTRAP_TARGET;
+  };
+  ownership: {
+    prefix: typeof HOMEBREW_BOOTSTRAP_PREFIX;
+    uid: 1000;
+    gid: 1000;
+    mutable_paths: string[];
+  };
+}
+
 export async function runHomebrewVfsImageBuilder(
   args: string[],
   materialize?: HomebrewVfsImageMaterializer,
@@ -229,9 +259,20 @@ export async function runHomebrewVfsImageBuilder(
   const migrationLock = options.migrationLock
     ? readMigrationLock(options.migrationLock)
     : undefined;
-  const compatibilityPolicy = migrationLock === undefined
-    ? undefined
-    : migrationLockCompatibilityPolicy(migrationLock.value, options.migrationLock!);
+  const homebrewBootstrapEnv =
+    options.homebrewBootstrapEnv === undefined
+      ? undefined
+      : readHomebrewBootstrapEnvironment(
+          options.homebrewBootstrapEnv,
+          options.arch,
+        );
+  const compatibilityPolicy =
+    migrationLock === undefined
+      ? undefined
+      : migrationLockCompatibilityPolicy(
+          migrationLock.value,
+          options.migrationLock!,
+        );
   const brewfileSelection = options.brewfile
     ? readBrewfileSelection(options.brewfile)
     : undefined;
@@ -246,7 +287,9 @@ export async function runHomebrewVfsImageBuilder(
   );
   const tapRoots = new Map<string, string>([
     [primaryTapName, options.tapRoot],
-    ...dependencyMetadata.map(({ tapName, tapRoot }) => [tapName, tapRoot] as const),
+    ...dependencyMetadata.map(
+      ({ tapName, tapRoot }) => [tapName, tapRoot] as const,
+    ),
   ]);
   const commonPlanOptions = {
     packages: requestedPackages,
@@ -255,26 +298,30 @@ export async function runHomebrewVfsImageBuilder(
     expectedCacheKeys: options.expectedCacheKeys,
     allowFallback: options.allowFallback,
   };
-  const plan = dependencyMetadata.length === 0
-    ? await planHomebrewVfs(metadata, {
-      ...commonPlanOptions,
-      expectedTapName: brewfileSelection?.tap_name,
-      loadLinkManifest: (relPath: string) => readJsonFile(join(options.tapRoot, relPath)),
-    })
-    : await planFederatedHomebrewVfs(
-      [metadata, ...dependencyMetadata.map(({ metadata: value }) => value)],
-      {
-        ...commonPlanOptions,
-        rootTapName: brewfileSelection?.tap_name ?? primaryTapName,
-        loadLinkManifest: (tap, relPath) => {
-          const root = tapRoots.get(tap.tapName);
-          if (root === undefined) {
-            throw new Error(`no immutable checkout is available for tap ${tap.tapName}`);
-          }
-          return readJsonFile(join(root, relPath));
-        },
-      },
-    );
+  const plan =
+    dependencyMetadata.length === 0
+      ? await planHomebrewVfs(metadata, {
+          ...commonPlanOptions,
+          expectedTapName: brewfileSelection?.tap_name,
+          loadLinkManifest: (relPath: string) =>
+            readJsonFile(join(options.tapRoot, relPath)),
+        })
+      : await planFederatedHomebrewVfs(
+          [metadata, ...dependencyMetadata.map(({ metadata: value }) => value)],
+          {
+            ...commonPlanOptions,
+            rootTapName: brewfileSelection?.tap_name ?? primaryTapName,
+            loadLinkManifest: (tap, relPath) => {
+              const root = tapRoots.get(tap.tapName);
+              if (root === undefined) {
+                throw new Error(
+                  `no immutable checkout is available for tap ${tap.tapName}`,
+                );
+              }
+              return readJsonFile(join(root, relPath));
+            },
+          },
+        );
 
   const { fs, baseImage, maxByteLength } = createFs(
     options.baseImage,
@@ -289,22 +336,30 @@ export async function runHomebrewVfsImageBuilder(
     loadedBottleBytes.set(pkg.fullName, bytes);
     return bytes;
   };
-  const selectionSource = brewfileSelection ? {
-    kind: "brewfile" as const,
-    parser: brewfileSelection.kind,
-    sha256: brewfileSelection.sha256,
-    bytes: brewfileSelection.bytes,
-    requestedPackages: brewfileSelection.packages,
-  } : undefined;
-  const catalogCheckout = options.catalogCommit === undefined ? undefined : {
-    tapRepository: plan.tapRepository,
-    tapName: plan.tapName,
-    checkoutCommit: options.catalogCommit,
-  };
-  const migrationLockBinding = migrationLock === undefined ? undefined : {
-    sha256: migrationLock.sha256,
-    bytes: migrationLock.bytes,
-  };
+  const selectionSource = brewfileSelection
+    ? {
+        kind: "brewfile" as const,
+        parser: brewfileSelection.kind,
+        sha256: brewfileSelection.sha256,
+        bytes: brewfileSelection.bytes,
+        requestedPackages: brewfileSelection.packages,
+      }
+    : undefined;
+  const catalogCheckout =
+    options.catalogCommit === undefined
+      ? undefined
+      : {
+          tapRepository: plan.tapRepository,
+          tapName: plan.tapName,
+          checkoutCommit: options.catalogCommit,
+        };
+  const migrationLockBinding =
+    migrationLock === undefined
+      ? undefined
+      : {
+          sha256: migrationLock.sha256,
+          bytes: migrationLock.bytes,
+        };
   let materializedBuild: HomebrewVfsImageMaterializedBuild | undefined;
   const commonBuildOptions = {
     fs,
@@ -328,31 +383,37 @@ export async function runHomebrewVfsImageBuilder(
     materializedBuild = await materialize(plan, {
       ...commonBuildOptions,
       fs,
-      collectionFs: createFs(
-        undefined,
-        maxByteLength,
-        plan.kandeloAbi,
-      ).fs,
+      collectionFs: createFs(undefined, maxByteLength, plan.kandeloAbi).fs,
       policy: readJsonFile(options.materializationPolicy),
       mirrorRepository: options.bottleMirrorRepository!,
     });
     result = materializedBuild.result;
     materializedBuild.assert(fs);
   }
-  let packageTree: {
-    derived: DerivedPackageDeferredZipTree;
-    state: "deferred" | "materialized";
-  } | undefined;
+  let packageTree:
+    | {
+        derived: DerivedPackageDeferredZipTree;
+        state: "deferred" | "materialized";
+      }
+    | undefined;
+  let homebrewBootstrapConsumerState:
+    HomebrewBootstrapConsumerState | undefined;
   if (options.packageTreeSpec !== undefined) {
     const archiveBytes = readPackageTreeArchive(options.packageTreeArchive!);
     const derived = derivePackageDeferredZipTree(
       readJsonFile(options.packageTreeSpec),
       archiveBytes,
     );
-    if (basename(options.packageTreeArchive!) !== derived.descriptor.package.output) {
+    if (
+      basename(options.packageTreeArchive!) !==
+      derived.descriptor.package.output
+    ) {
       throw new Error(
         `package tree archive must be named ${derived.descriptor.package.output}`,
       );
+    }
+    if (homebrewBootstrapEnv !== undefined) {
+      prepareHomebrewBootstrapConsumerNamespace(fs, derived);
     }
     const registered = registerPackageDeferredZipTree(fs, derived);
     if (options.materializePackageTree) {
@@ -361,6 +422,13 @@ export async function runHomebrewVfsImageBuilder(
     const state = options.materializePackageTree ? "materialized" : "deferred";
     assertPackageDeferredZipTreeState(fs, derived, state);
     packageTree = { derived, state };
+    if (homebrewBootstrapEnv !== undefined) {
+      homebrewBootstrapConsumerState = installHomebrewBootstrapConsumerState(
+        fs,
+        derived,
+        homebrewBootstrapEnv,
+      );
+    }
   }
   if (shellConfig) {
     assertShellExecutable(fs, shellConfig.config.path);
@@ -391,107 +459,135 @@ export async function runHomebrewVfsImageBuilder(
     writeVfsBinary(fs, KANDELO_DEMO_CONFIG_PATH, demoConfig.source, 0o644);
   }
 
-  const imageBytes = await saveVerifiedHomebrewVfsImage(fs, options.out, {
-    normalizeTimestampsMs: sourceDateEpochMilliseconds(
-      process.env.SOURCE_DATE_EPOCH,
-    ),
-    metadata: {
-      version: 1,
-      kernelAbi: plan.kandeloAbi,
-      createdBy: "images/vfs/scripts/build-homebrew-vfs-image.ts",
-      capacity: { maxByteLength },
-      ...(baseImage ? { baseImage: baseImage.binding } : {}),
-      ...(packageTree === undefined ? {} : {
-        packageDeferredTrees: [packageTreeBinding(packageTree)],
-      }),
-      homebrew: {
-        tapRepository: plan.tapRepository,
-        tapName: plan.tapName,
-        tapCommit: plan.tapCommit,
-        releaseTag: plan.releaseTag,
-        ...(result.report.catalog === undefined ? {} : {
-          catalog: {
-            tapRepository: result.report.catalog.tap_repository,
-            tapName: result.report.catalog.tap_name,
-            checkoutCommit: result.report.catalog.checkout_commit,
-          },
-        }),
-        ...(result.report.migration_lock === undefined ? {} : {
-          migrationLock: {
-            sha256: result.report.migration_lock.sha256,
-            bytes: result.report.migration_lock.bytes,
-          },
-        }),
-        ...(result.report.runtime_state === undefined ? {} : {
-          runtimeState: result.report.runtime_state.map((entry) => ({
-            requiresPackage: entry.requires_package,
-            path: entry.path,
-            kind: entry.kind,
-            mode: entry.mode,
-            uid: entry.uid,
-            gid: entry.gid,
-            reason: entry.reason,
-            ...(entry.content_sha256 === undefined ? {} : {
-              contentSha256: entry.content_sha256,
-              contentBytes: entry.content_bytes,
+  const imageBytes = await saveVerifiedHomebrewVfsImage(
+    fs,
+    options.out,
+    {
+      normalizeTimestampsMs: sourceDateEpochMilliseconds(
+        process.env.SOURCE_DATE_EPOCH,
+      ),
+      metadata: {
+        version: 1,
+        kernelAbi: plan.kandeloAbi,
+        createdBy: "images/vfs/scripts/build-homebrew-vfs-image.ts",
+        capacity: { maxByteLength },
+        ...(baseImage ? { baseImage: baseImage.binding } : {}),
+        ...(packageTree === undefined
+          ? {}
+          : {
+              packageDeferredTrees: [packageTreeBinding(packageTree)],
             }),
-          })),
-        }),
-        selection: {
-          kind: result.report.selection.kind,
-          requestedPackageCount:
-            result.report.selection.requested_packages.length,
-          requestedPackagesSha256:
-            result.report.selection.requested_packages_sha256,
-          ...(result.report.selection.brewfile
-            ? { brewfile: result.report.selection.brewfile }
+        ...(homebrewBootstrapConsumerState === undefined
+          ? {}
+          : {
+              homebrewBootstrap: homebrewBootstrapConsumerState,
+            }),
+        homebrew: {
+          tapRepository: plan.tapRepository,
+          tapName: plan.tapName,
+          tapCommit: plan.tapCommit,
+          releaseTag: plan.releaseTag,
+          ...(result.report.catalog === undefined
+            ? {}
+            : {
+                catalog: {
+                  tapRepository: result.report.catalog.tap_repository,
+                  tapName: result.report.catalog.tap_name,
+                  checkoutCommit: result.report.catalog.checkout_commit,
+                },
+              }),
+          ...(result.report.migration_lock === undefined
+            ? {}
+            : {
+                migrationLock: {
+                  sha256: result.report.migration_lock.sha256,
+                  bytes: result.report.migration_lock.bytes,
+                },
+              }),
+          ...(result.report.runtime_state === undefined
+            ? {}
+            : {
+                runtimeState: result.report.runtime_state.map((entry) => ({
+                  requiresPackage: entry.requires_package,
+                  path: entry.path,
+                  kind: entry.kind,
+                  mode: entry.mode,
+                  uid: entry.uid,
+                  gid: entry.gid,
+                  reason: entry.reason,
+                  ...(entry.content_sha256 === undefined
+                    ? {}
+                    : {
+                        contentSha256: entry.content_sha256,
+                        contentBytes: entry.content_bytes,
+                      }),
+                })),
+              }),
+          selection: {
+            kind: result.report.selection.kind,
+            requestedPackageCount:
+              result.report.selection.requested_packages.length,
+            requestedPackagesSha256:
+              result.report.selection.requested_packages_sha256,
+            ...(result.report.selection.brewfile
+              ? { brewfile: result.report.selection.brewfile }
+              : {}),
+          },
+          ...(result.report.materialization === undefined
+            ? {}
+            : {
+                materialization: result.report.materialization,
+              }),
+          ...(shellConfig
+            ? {
+                defaultShell: {
+                  path: shellConfig.config.path,
+                  argv: shellConfig.config.argv,
+                  configSha256: shellConfig.sha256,
+                },
+              }
             : {}),
+          ...(demoConfig
+            ? {
+                demoConfig: {
+                  path: KANDELO_DEMO_CONFIG_PATH,
+                  sha256: demoConfig.sha256,
+                  bytes: demoConfig.bytes,
+                },
+              }
+            : {}),
+          packages: plan.packages.map((pkg) => ({
+            name: pkg.name,
+            fullName: pkg.fullName,
+            tapRepository: pkg.tapRepository,
+            tapName: pkg.tapName,
+            tapCommit: pkg.tapCommit,
+            version: pkg.version,
+            arch: pkg.arch,
+            sourceStatus: pkg.sourceStatus,
+            cacheKeySha: pkg.cacheKeySha,
+            ...(pkg.builtFrom === undefined
+              ? {}
+              : {
+                  builtFrom: {
+                    tapRepository: pkg.builtFrom.tapRepository,
+                    tapCommit: pkg.builtFrom.tapCommit,
+                    kandeloRepository: pkg.builtFrom.kandeloRepository,
+                    kandeloCommit: pkg.builtFrom.kandeloCommit,
+                    formulaSha256: pkg.builtFrom.formulaSha256,
+                  },
+                }),
+          })),
         },
-        ...(result.report.materialization === undefined ? {} : {
-          materialization: result.report.materialization,
-        }),
-        ...(shellConfig ? {
-          defaultShell: {
-            path: shellConfig.config.path,
-            argv: shellConfig.config.argv,
-            configSha256: shellConfig.sha256,
-          },
-        } : {}),
-        ...(demoConfig ? {
-          demoConfig: {
-            path: KANDELO_DEMO_CONFIG_PATH,
-            sha256: demoConfig.sha256,
-            bytes: demoConfig.bytes,
-          },
-        } : {}),
-        packages: plan.packages.map((pkg) => ({
-          name: pkg.name,
-          fullName: pkg.fullName,
-          tapRepository: pkg.tapRepository,
-          tapName: pkg.tapName,
-          tapCommit: pkg.tapCommit,
-          version: pkg.version,
-          arch: pkg.arch,
-          sourceStatus: pkg.sourceStatus,
-          cacheKeySha: pkg.cacheKeySha,
-          ...(pkg.builtFrom === undefined ? {} : {
-            builtFrom: {
-              tapRepository: pkg.builtFrom.tapRepository,
-              tapCommit: pkg.builtFrom.tapCommit,
-              kandeloRepository: pkg.builtFrom.kandeloRepository,
-              kandeloCommit: pkg.builtFrom.kandeloCommit,
-              formulaSha256: pkg.builtFrom.formulaSha256,
-            },
-          }),
-        })),
       },
     },
-  }, maxByteLength);
+    maxByteLength,
+  );
   const imageCapacity = MemoryFileSystem.readImageCapacity(imageBytes);
   if (imageCapacity.maxByteLength !== maxByteLength) {
     throw new Error(
       `saved VFS capacity ${imageCapacity.maxByteLength} does not match ` +
-      `the declared consumer contract ${maxByteLength}`,
+        `the declared consumer contract ${maxByteLength}`,
     );
   }
   let bottleMirrorOutput: unknown;
@@ -503,6 +599,12 @@ export async function runHomebrewVfsImageBuilder(
         restored,
         packageTree.derived,
         packageTree.state,
+      );
+    }
+    if (homebrewBootstrapConsumerState !== undefined) {
+      assertHomebrewBootstrapConsumerState(
+        restored,
+        homebrewBootstrapConsumerState,
       );
     }
     if (shellConfig !== undefined) {
@@ -545,18 +647,30 @@ export async function runHomebrewVfsImageBuilder(
     });
     mkdirSync(dirname(options.lazyLayerOut), { recursive: true });
     mkdirSync(dirname(options.lazyLayerDescriptor), { recursive: true });
-    const rootPayload = layer.payloads.find((payload) => payload.id === options.runtimeLayerId);
-    if (rootPayload === undefined || basename(options.lazyLayerOut) !== rootPayload.asset) {
-      throw new Error("Homebrew runtime root payload does not match --lazy-layer-out");
+    const rootPayload = layer.payloads.find(
+      (payload) => payload.id === options.runtimeLayerId,
+    );
+    if (
+      rootPayload === undefined ||
+      basename(options.lazyLayerOut) !== rootPayload.asset
+    ) {
+      throw new Error(
+        "Homebrew runtime root payload does not match --lazy-layer-out",
+      );
     }
     for (const payload of layer.payloads) {
-      writeFileSync(join(dirname(options.lazyLayerOut), payload.asset), payload.bytes);
+      writeFileSync(
+        join(dirname(options.lazyLayerOut), payload.asset),
+        payload.bytes,
+      );
     }
     writeFileSync(
       options.lazyLayerDescriptor,
       encodeHomebrewLazyLayerDescriptor(layer.descriptor),
     );
-    console.log(`Homebrew ${options.runtimeLayerId} runtime layer: ${options.lazyLayerOut}`);
+    console.log(
+      `Homebrew ${options.runtimeLayerId} runtime layer: ${options.lazyLayerOut}`,
+    );
     console.log(
       `Homebrew ${options.runtimeLayerId} runtime layer descriptor: ` +
         options.lazyLayerDescriptor,
@@ -565,37 +679,52 @@ export async function runHomebrewVfsImageBuilder(
 
   const report = {
     ...result.report,
-    ...(shellConfig ? {
-      default_shell: {
-        path: shellConfig.config.path,
-        argv: shellConfig.config.argv,
-        config_sha256: shellConfig.sha256,
-        config_bytes: shellConfig.bytes,
-      },
-    } : {}),
-    ...(demoConfig ? {
-      demo_config: {
-        path: KANDELO_DEMO_CONFIG_PATH,
-        sha256: demoConfig.sha256,
-        bytes: demoConfig.bytes,
-      },
-    } : {}),
-    ...(baseImage ? {
-      base_image: {
-        ...baseImage.binding,
-        metadata: baseImage.metadata,
-      },
-    } : {}),
+    ...(shellConfig
+      ? {
+          default_shell: {
+            path: shellConfig.config.path,
+            argv: shellConfig.config.argv,
+            config_sha256: shellConfig.sha256,
+            config_bytes: shellConfig.bytes,
+          },
+        }
+      : {}),
+    ...(demoConfig
+      ? {
+          demo_config: {
+            path: KANDELO_DEMO_CONFIG_PATH,
+            sha256: demoConfig.sha256,
+            bytes: demoConfig.bytes,
+          },
+        }
+      : {}),
+    ...(baseImage
+      ? {
+          base_image: {
+            ...baseImage.binding,
+            metadata: baseImage.metadata,
+          },
+        }
+      : {}),
     image_capacity: {
       byte_length: imageCapacity.byteLength,
       max_byte_length: imageCapacity.maxByteLength,
     },
-    ...(bottleMirrorOutput === undefined ? {} : {
-      bottle_mirror: bottleMirrorOutput,
-    }),
-    ...(packageTree === undefined ? {} : {
-      package_deferred_trees: [packageTreeBinding(packageTree)],
-    }),
+    ...(bottleMirrorOutput === undefined
+      ? {}
+      : {
+          bottle_mirror: bottleMirrorOutput,
+        }),
+    ...(packageTree === undefined
+      ? {}
+      : {
+          package_deferred_trees: [packageTreeBinding(packageTree)],
+        }),
+    ...(homebrewBootstrapConsumerState === undefined
+      ? {}
+      : {
+          homebrew_bootstrap: homebrewBootstrapConsumerState,
+        }),
     // Report a reproducible artifact identity, not a runner/worktree path.
     image: basename(options.out),
   };
@@ -665,7 +794,8 @@ function parseArgs(args: string[]): CliOptions {
         break;
       case "--expected-cache-key": {
         const [name, sha] = requireValue(args, ++i, arg).split("=", 2);
-        if (!name || !sha) usage(`--expected-cache-key must be <package>=<sha256>`);
+        if (!name || !sha)
+          usage(`--expected-cache-key must be <package>=<sha256>`);
         options.expectedCacheKeys[name] = sha;
         break;
       }
@@ -776,6 +906,12 @@ function parseArgs(args: string[]): CliOptions {
         }
         options.packageTreeArchive = requireValue(args, ++i, arg);
         break;
+      case "--homebrew-bootstrap-env":
+        if (options.homebrewBootstrapEnv !== undefined) {
+          usage("--homebrew-bootstrap-env may be provided only once");
+        }
+        options.homebrewBootstrapEnv = requireValue(args, ++i, arg);
+        break;
       case "--materialize-package-tree":
         if (options.materializePackageTree) {
           usage("--materialize-package-tree may be provided only once");
@@ -792,25 +928,40 @@ function parseArgs(args: string[]): CliOptions {
   }
 
   for (const required of ["metadata", "tapRoot", "out", "report"] as const) {
-    if (!options[required]) usage(`missing --${required.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`);
+    if (!options[required])
+      usage(
+        `missing --${required.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`,
+      );
   }
   if (options.brewfile && options.packages.length > 0) {
     usage("--brewfile cannot be combined with --package");
   }
   if (!options.brewfile && options.packages.length === 0) {
-    usage("exactly one package selection mode is required: --brewfile or --package");
+    usage(
+      "exactly one package selection mode is required: --brewfile or --package",
+    );
   }
   if (options.baseImage && !existsSync(options.baseImage)) {
     usage(`base image does not exist: ${options.baseImage}`);
   }
   if (options.shellConfig && !options.writeProfile) {
-    usage("--shell-config requires --write-profile so the Homebrew environment is initialized");
+    usage(
+      "--shell-config requires --write-profile so the Homebrew environment is initialized",
+    );
   }
-  if (options.catalogCommit !== undefined && !GIT_SHA_RE.test(options.catalogCommit)) {
+  if (
+    options.catalogCommit !== undefined &&
+    !GIT_SHA_RE.test(options.catalogCommit)
+  ) {
     usage("--catalog-commit must be a lowercase 40-character git SHA");
   }
-  if (options.catalogCommit !== undefined && Object.keys(options.dependencyTapRoots).length > 0) {
-    usage("--catalog-commit currently supports only a single-tap catalog checkout");
+  if (
+    options.catalogCommit !== undefined &&
+    Object.keys(options.dependencyTapRoots).length > 0
+  ) {
+    usage(
+      "--catalog-commit currently supports only a single-tap catalog checkout",
+    );
   }
   if (options.migrationLock && !existsSync(options.migrationLock)) {
     usage(`migration lock does not exist: ${options.migrationLock}`);
@@ -833,28 +984,64 @@ function parseArgs(args: string[]): CliOptions {
     options.materializationPolicy !== undefined &&
     !existsSync(options.materializationPolicy)
   ) {
-    usage(`materialization policy does not exist: ${options.materializationPolicy}`);
+    usage(
+      `materialization policy does not exist: ${options.materializationPolicy}`,
+    );
   }
-  if (options.bottleMirrorOut !== undefined && existsSync(options.bottleMirrorOut)) {
-    usage(`bottle mirror output must not already exist: ${options.bottleMirrorOut}`);
+  if (
+    options.bottleMirrorOut !== undefined &&
+    existsSync(options.bottleMirrorOut)
+  ) {
+    usage(
+      `bottle mirror output must not already exist: ${options.bottleMirrorOut}`,
+    );
   }
-  if (Boolean(options.packageTreeSpec) !== Boolean(options.packageTreeArchive)) {
-    usage("--package-tree-spec and --package-tree-archive must be provided together");
+  if (
+    Boolean(options.packageTreeSpec) !== Boolean(options.packageTreeArchive)
+  ) {
+    usage(
+      "--package-tree-spec and --package-tree-archive must be provided together",
+    );
   }
   if (options.materializePackageTree && options.packageTreeSpec === undefined) {
     usage("--materialize-package-tree requires a package tree");
   }
-  if (options.packageTreeSpec !== undefined && !existsSync(options.packageTreeSpec)) {
+  if (
+    options.homebrewBootstrapEnv !== undefined &&
+    options.packageTreeSpec === undefined
+  ) {
+    usage("--homebrew-bootstrap-env requires a package tree");
+  }
+  if (
+    options.packageTreeSpec !== undefined &&
+    !existsSync(options.packageTreeSpec)
+  ) {
     usage(`package tree spec does not exist: ${options.packageTreeSpec}`);
   }
-  if (options.packageTreeArchive !== undefined && !existsSync(options.packageTreeArchive)) {
+  if (
+    options.packageTreeArchive !== undefined &&
+    !existsSync(options.packageTreeArchive)
+  ) {
     usage(`package tree archive does not exist: ${options.packageTreeArchive}`);
   }
-  if (options.materializationPolicy !== undefined && options.lazyLayerOut !== undefined) {
+  if (
+    options.homebrewBootstrapEnv !== undefined &&
+    !existsSync(options.homebrewBootstrapEnv)
+  ) {
+    usage(
+      `Homebrew bootstrap environment does not exist: ${options.homebrewBootstrapEnv}`,
+    );
+  }
+  if (
+    options.materializationPolicy !== undefined &&
+    options.lazyLayerOut !== undefined
+  ) {
     usage("materialized shell composition cannot also emit a runtime layer");
   }
   if (Boolean(options.lazyLayerOut) !== Boolean(options.lazyLayerDescriptor)) {
-    usage("--lazy-layer-out and --lazy-layer-descriptor must be provided together");
+    usage(
+      "--lazy-layer-out and --lazy-layer-descriptor must be provided together",
+    );
   }
   if (
     options.lazyLayerOut &&
@@ -882,7 +1069,9 @@ function parseArgs(args: string[]): CliOptions {
     usage("--runtime-layer-policy requires lazy layer outputs");
   }
   if (options.lazyLayerBaseImage && !existsSync(options.lazyLayerBaseImage)) {
-    usage(`lazy layer base image does not exist: ${options.lazyLayerBaseImage}`);
+    usage(
+      `lazy layer base image does not exist: ${options.lazyLayerBaseImage}`,
+    );
   }
   if (
     options.lazyLayerBasePackageSource &&
@@ -897,7 +1086,9 @@ function parseArgs(args: string[]): CliOptions {
     usage(`runtime layer policy does not exist: ${options.runtimeLayerPolicy}`);
   }
   if (options.lazyLayerOut && options.runtimeLayerId) {
-    const payloadAsset = homebrewRuntimeLayerPayloadAsset(options.runtimeLayerId);
+    const payloadAsset = homebrewRuntimeLayerPayloadAsset(
+      options.runtimeLayerId,
+    );
     const descriptorAsset = homebrewRuntimeLayerDescriptorAsset(
       options.runtimeLayerId,
     );
@@ -944,10 +1135,13 @@ function parseByteSize(value: string): number {
   if (!match) usage(`--max-bytes must be a positive byte size, got ${value}`);
   const amount = Number(match[1]);
   const suffix = (match[2] ?? "b").toLowerCase();
-  const multiplier = suffix.startsWith("g") ? 1024 ** 3
-    : suffix.startsWith("m") ? 1024 ** 2
-    : suffix.startsWith("k") ? 1024
-    : 1;
+  const multiplier = suffix.startsWith("g")
+    ? 1024 ** 3
+    : suffix.startsWith("m")
+      ? 1024 ** 2
+      : suffix.startsWith("k")
+        ? 1024
+        : 1;
   const bytes = amount * multiplier;
   if (!Number.isSafeInteger(bytes) || bytes <= 0) {
     usage(`--max-bytes is too large: ${value}`);
@@ -968,9 +1162,261 @@ function parseBaseImagePath(value: string): string {
 function readPackageTreeArchive(path: string): Uint8Array {
   const stat = lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0) {
-    throw new Error(`package tree archive is not a nonempty regular file: ${path}`);
+    throw new Error(
+      `package tree archive is not a nonempty regular file: ${path}`,
+    );
   }
   return new Uint8Array(readFileSync(path));
+}
+
+export function readHomebrewBootstrapEnvironment(
+  path: string,
+  arch: HomebrewBottleArch,
+): Uint8Array {
+  const bytes = readBoundedRegularFile(
+    path,
+    MAX_HOMEBREW_BOOTSTRAP_ENV_BYTES,
+    "Homebrew bootstrap environment",
+  );
+  let source: string;
+  try {
+    source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch (error) {
+    throw new Error("Homebrew bootstrap environment is not valid UTF-8", {
+      cause: error,
+    });
+  }
+  const expected = [
+    "HOMEBREW_NO_ANALYTICS=1",
+    "HOMEBREW_NO_AUTO_UPDATE=1",
+    "HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY=1",
+    `HOMEBREW_KANDELO_BOTTLE_TAG=${arch}_kandelo`,
+    "",
+  ].join("\n");
+  if (source !== expected) {
+    throw new Error(
+      `Homebrew bootstrap environment does not select ${arch}_kandelo with system precedence`,
+    );
+  }
+  return bytes;
+}
+
+export function installHomebrewBootstrapConsumerState(
+  fs: MemoryFileSystem,
+  tree: DerivedPackageDeferredZipTree,
+  environment: Uint8Array,
+): HomebrewBootstrapConsumerState {
+  const descriptor = tree.descriptor;
+  if (
+    descriptor.content_role !== "source-tree" ||
+    descriptor.package.name !== "homebrew-bootstrap" ||
+    descriptor.mount_prefix !== "/home/linuxbrew/.linuxbrew" ||
+    !descriptor.activation.roots.includes(HOMEBREW_BOOTSTRAP_TARGET) ||
+    !descriptor.inventory.some(
+      (entry) =>
+        entry.vfs_path === HOMEBREW_BOOTSTRAP_TARGET &&
+        entry.type === "file" &&
+        (entry.mode & 0o111) !== 0,
+    )
+  ) {
+    throw new Error(
+      "Homebrew bootstrap environment requires the canonical deferred source tree",
+    );
+  }
+  // WHY: descriptor ownership alone does not prove the registered VFS still
+  // contains its activation root. Check before writing consumer state so a
+  // deleted tree member cannot leave a new dangling /usr/bin/brew alias.
+  assertHomebrewBootstrapTarget(fs, HOMEBREW_BOOTSTRAP_TARGET);
+  for (const path of [
+    HOMEBREW_BOOTSTRAP_ENV_PATH,
+    HOMEBREW_BOOTSTRAP_ENTRYPOINT,
+  ]) {
+    if (vfsPathExists(fs, path)) {
+      throw new Error(
+        `refusing to replace Homebrew bootstrap consumer state: ${path}`,
+      );
+    }
+  }
+  ensureDirRecursive(fs, dirname(HOMEBREW_BOOTSTRAP_ENV_PATH));
+  writeVfsBinary(fs, HOMEBREW_BOOTSTRAP_ENV_PATH, environment, 0o644);
+  // WHY: Homebrew derives its canonical Kandelo prefix from this public alias.
+  // Pointing PATH straight at bin/brew appears to work but bypasses that
+  // launcher contract and can select the wrong prefix or bottle tag.
+  fs.symlink(HOMEBREW_BOOTSTRAP_TARGET, HOMEBREW_BOOTSTRAP_ENTRYPOINT);
+  const state: HomebrewBootstrapConsumerState = {
+    environment: {
+      path: HOMEBREW_BOOTSTRAP_ENV_PATH,
+      sha256: createHash("sha256").update(environment).digest("hex"),
+      bytes: environment.byteLength,
+    },
+    entrypoint: {
+      path: HOMEBREW_BOOTSTRAP_ENTRYPOINT,
+      target: HOMEBREW_BOOTSTRAP_TARGET,
+    },
+    ownership: {
+      prefix: HOMEBREW_BOOTSTRAP_PREFIX,
+      uid: 1000,
+      gid: 1000,
+      mutable_paths: [...HOMEBREW_BOOTSTRAP_MUTABLE_PATHS],
+    },
+  };
+  assertHomebrewBootstrapConsumerState(fs, state);
+  return state;
+}
+
+export function assertHomebrewBootstrapConsumerState(
+  fs: MemoryFileSystem,
+  expected: HomebrewBootstrapConsumerState,
+): void {
+  const environment = readVfsBinary(fs, expected.environment.path);
+  const environmentStat = fs.lstat(expected.environment.path);
+  if (
+    environment.byteLength !== expected.environment.bytes ||
+    createHash("sha256").update(environment).digest("hex") !==
+      expected.environment.sha256 ||
+    (environmentStat.mode & 0xf000) !== 0x8000 ||
+    (environmentStat.mode & 0o7777) !== 0o644 ||
+    environmentStat.uid !== 0 ||
+    environmentStat.gid !== 0
+  ) {
+    throw new Error("Homebrew bootstrap system environment changed in the VFS");
+  }
+  const stat = fs.lstat(expected.entrypoint.path);
+  if (
+    (stat.mode & 0xf000) !== 0xa000 ||
+    (stat.mode & 0o7777) !== 0o777 ||
+    stat.uid !== 0 ||
+    stat.gid !== 0 ||
+    fs.readlink(expected.entrypoint.path) !== expected.entrypoint.target
+  ) {
+    throw new Error("Homebrew bootstrap entrypoint changed in the VFS");
+  }
+  assertHomebrewBootstrapTarget(fs, expected.entrypoint.target);
+  assertVfsTreeOwner(
+    fs,
+    expected.ownership.prefix,
+    expected.ownership.uid,
+    expected.ownership.gid,
+  );
+  for (const path of expected.ownership.mutable_paths) {
+    const mutable = fs.lstat(path);
+    if (
+      (mutable.mode & 0xf000) !== 0x4000 ||
+      mutable.uid !== expected.ownership.uid ||
+      mutable.gid !== expected.ownership.gid
+    ) {
+      throw new Error(`Homebrew mutable path has the wrong owner: ${path}`);
+    }
+  }
+}
+
+function assertHomebrewBootstrapTarget(
+  fs: MemoryFileSystem,
+  path: string,
+): void {
+  try {
+    const target = fs.stat(path);
+    if ((target.mode & 0xf000) !== 0x8000 || (target.mode & 0o111) === 0) {
+      throw new Error("target is not an executable regular file");
+    }
+  } catch (error) {
+    throw new Error(
+      "Homebrew bootstrap environment requires the canonical deferred source tree",
+      { cause: error },
+    );
+  }
+}
+
+export function prepareHomebrewBootstrapConsumerNamespace(
+  fs: MemoryFileSystem,
+  tree: DerivedPackageDeferredZipTree,
+): void {
+  if (
+    tree.descriptor.package.name !== "homebrew-bootstrap" ||
+    tree.descriptor.mount_prefix !== HOMEBREW_BOOTSTRAP_PREFIX
+  ) {
+    throw new Error(
+      "Homebrew bootstrap ownership requires the canonical deferred source tree",
+    );
+  }
+  for (const path of HOMEBREW_BOOTSTRAP_MUTABLE_PATHS) {
+    ensureDirRecursive(fs, path);
+  }
+  // WHY: a real Linuxbrew installation belongs to the unprivileged brew user.
+  // Bottle composition initially creates structural prefix directories as
+  // root; adopting the complete prefix here both avoids a false lazy-tree
+  // collision and lets in-guest brew update Cellar, taps, links, and locks.
+  chownVfsTree(fs, HOMEBREW_BOOTSTRAP_PREFIX, 1000, 1000);
+  chownVfsTree(fs, "/home/user/.cache", 1000, 1000);
+}
+
+function chownVfsTree(
+  fs: MemoryFileSystem,
+  root: string,
+  uid: number,
+  gid: number,
+): void {
+  fs.lchown(root, uid, gid);
+  if ((fs.lstat(root).mode & 0xf000) !== 0x4000) return;
+  const handle = fs.opendir(root);
+  try {
+    for (;;) {
+      const entry = fs.readdir(handle);
+      if (entry === null) break;
+      if (entry.name === "." || entry.name === "..") continue;
+      const path = root === "/" ? `/${entry.name}` : `${root}/${entry.name}`;
+      chownVfsTree(fs, path, uid, gid);
+    }
+  } finally {
+    fs.closedir(handle);
+  }
+}
+
+function assertVfsTreeOwner(
+  fs: MemoryFileSystem,
+  root: string,
+  uid: number,
+  gid: number,
+): void {
+  const stat = fs.lstat(root);
+  if (stat.uid !== uid || stat.gid !== gid) {
+    throw new Error(`Homebrew prefix entry has the wrong owner: ${root}`);
+  }
+  if ((stat.mode & 0xf000) !== 0x4000) return;
+  const handle = fs.opendir(root);
+  try {
+    for (;;) {
+      const entry = fs.readdir(handle);
+      if (entry === null) break;
+      if (entry.name === "." || entry.name === "..") continue;
+      const path = root === "/" ? `/${entry.name}` : `${root}/${entry.name}`;
+      assertVfsTreeOwner(fs, path, uid, gid);
+    }
+  } finally {
+    fs.closedir(handle);
+  }
+}
+
+function readVfsBinary(fs: MemoryFileSystem, path: string): Uint8Array {
+  const stat = fs.stat(path);
+  const fd = fs.open(path, 0, 0);
+  try {
+    const bytes = new Uint8Array(stat.size);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const count = fs.read(
+        fd,
+        bytes.subarray(offset),
+        null,
+        bytes.byteLength - offset,
+      );
+      if (count <= 0) throw new Error(`short read from VFS file: ${path}`);
+      offset += count;
+    }
+    return bytes;
+  } finally {
+    fs.close(fd);
+  }
 }
 
 function packageTreeBinding(tree: {
@@ -1007,7 +1453,11 @@ function createFs(
   baseImage: string | undefined,
   maxBytes: number | undefined,
   expectedAbi: number,
-): { fs: MemoryFileSystem; baseImage?: LoadedBaseImage; maxByteLength: number } {
+): {
+  fs: MemoryFileSystem;
+  baseImage?: LoadedBaseImage;
+  maxByteLength: number;
+} {
   if (baseImage) {
     const image = new Uint8Array(readFileSync(baseImage));
     const restored = MemoryFileSystem.fromImagePreservingCapacity(image);
@@ -1020,7 +1470,7 @@ function createFs(
     if (metadata.kernelAbi !== expectedAbi) {
       throw new Error(
         `base image ${baseImage} declares kernel ABI ${metadata.kernelAbi}, ` +
-        `but bottle metadata requires ABI ${expectedAbi}`,
+          `but bottle metadata requires ABI ${expectedAbi}`,
       );
     }
     if (
@@ -1029,7 +1479,7 @@ function createFs(
     ) {
       throw new Error(
         `base image ${baseImage} already contains a Homebrew composition; ` +
-        "use a platform-only base image",
+          "use a platform-only base image",
       );
     }
 
@@ -1053,7 +1503,7 @@ function createFs(
     if (targetMaxBytes !== recordedMaxBytes) {
       console.log(
         `Rebasing base VFS capacity from ${formatMib(recordedMaxBytes)} ` +
-        `to ${formatMib(targetMaxBytes)}...`,
+          `to ${formatMib(targetMaxBytes)}...`,
       );
       return {
         fs: restored.rebaseToNewFileSystem(targetMaxBytes),
@@ -1181,7 +1631,11 @@ function migrationLockCompatibilityPolicy(
   value: unknown,
   path: string,
 ): HomebrewVfsCompatibilityPolicy {
-  if (!isRecord(value) || value.schema !== 1 || !isRecord(value.compatibility)) {
+  if (
+    !isRecord(value) ||
+    value.schema !== 1 ||
+    !isRecord(value.compatibility)
+  ) {
     throw new Error(`Homebrew migration lock has an invalid schema: ${path}`);
   }
   const compatibility = value.compatibility;
@@ -1196,25 +1650,29 @@ function migrationLockCompatibilityPolicy(
     (compatibility.runtime_state !== undefined &&
       !Array.isArray(compatibility.runtime_state))
   ) {
-    throw new Error(`Homebrew migration lock has an invalid compatibility policy: ${path}`);
+    throw new Error(
+      `Homebrew migration lock has an invalid compatibility policy: ${path}`,
+    );
   }
-  const linkConflictOwners = compatibility.link_conflict_owners.map((value, index) => {
-    if (
-      !isRecord(value) ||
-      typeof value.target !== "string" ||
-      typeof value.package !== "string" ||
-      typeof value.reason !== "string"
-    ) {
-      throw new Error(
-        `Homebrew migration lock compatibility.link_conflict_owners[${index}] is invalid: ${path}`,
-      );
-    }
-    return {
-      target: value.target,
-      package: value.package,
-      reason: value.reason,
-    };
-  });
+  const linkConflictOwners = compatibility.link_conflict_owners.map(
+    (value, index) => {
+      if (
+        !isRecord(value) ||
+        typeof value.target !== "string" ||
+        typeof value.package !== "string" ||
+        typeof value.reason !== "string"
+      ) {
+        throw new Error(
+          `Homebrew migration lock compatibility.link_conflict_owners[${index}] is invalid: ${path}`,
+        );
+      }
+      return {
+        target: value.target,
+        package: value.package,
+        reason: value.reason,
+      };
+    },
+  );
   const aliases = compatibility.aliases.map<
     HomebrewVfsCompatibilityPolicy["aliases"][number]
   >((value, index) => {
@@ -1237,9 +1695,9 @@ function migrationLockCompatibilityPolicy(
       targets: [...value.targets],
     };
   });
-  const runtimeState = (compatibility.runtime_state ?? []).map<
-    HomebrewVfsRuntimeStateDeclaration
-  >((value, index) => {
+  const runtimeState = (
+    compatibility.runtime_state ?? []
+  ).map<HomebrewVfsRuntimeStateDeclaration>((value, index) => {
     if (!isRecord(value)) {
       throw new Error(
         `Homebrew migration lock compatibility.runtime_state[${index}] is invalid: ${path}`,
@@ -1280,7 +1738,9 @@ function migrationLockCompatibilityPolicy(
       uid: value.uid,
       gid: value.gid,
       reason: value.reason,
-      ...(value.kind === "text_file" ? { contents: value.contents as string } : {}),
+      ...(value.kind === "text_file"
+        ? { contents: value.contents as string }
+        : {}),
     };
   });
   return {
@@ -1302,7 +1762,9 @@ function readShellConfig(path: string): LoadedShellConfig {
   const source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   const config = parseKandeloShellConfig(source);
   if (!config) {
-    throw new Error(`Kandelo default shell config has an unsupported version: ${path}`);
+    throw new Error(
+      `Kandelo default shell config has an unsupported version: ${path}`,
+    );
   }
   return {
     config,
@@ -1352,13 +1814,19 @@ function assertShellExecutable(fs: MemoryFileSystem, path: string): void {
   try {
     stat = fs.stat(path);
   } catch {
-    throw new Error(`default shell executable is missing from the composed VFS: ${path}`);
+    throw new Error(
+      `default shell executable is missing from the composed VFS: ${path}`,
+    );
   }
   if ((stat.mode & 0xf000) !== 0x8000) {
-    throw new Error(`default shell path is not a regular file in the composed VFS: ${path}`);
+    throw new Error(
+      `default shell path is not a regular file in the composed VFS: ${path}`,
+    );
   }
   if ((stat.mode & 0o111) === 0) {
-    throw new Error(`default shell is not executable in the composed VFS: ${path}`);
+    throw new Error(
+      `default shell is not executable in the composed VFS: ${path}`,
+    );
   }
   if (stat.size > MAX_KANDELO_SHELL_EXECUTABLE_BYTES) {
     throw new Error(
@@ -1395,7 +1863,8 @@ function readBrewfileSelection(path: string): BrewfileSelection {
     throw new Error(`cannot parse Brewfile ${path}: ${parsed.error.message}`);
   }
   if (parsed.status !== 0) {
-    const detail = parsed.stderr.trim() ||
+    const detail =
+      parsed.stderr.trim() ||
       `parser exited with status ${String(parsed.status)}`;
     throw new Error(`cannot parse Brewfile ${path}: ${detail}`);
   }
@@ -1409,12 +1878,23 @@ function readBrewfileSelection(path: string): BrewfileSelection {
   if (!isRecord(value)) {
     throw new Error(`Brewfile parser returned a non-object for ${path}`);
   }
-  const expectedKeys = ["bytes", "kind", "packages", "schema", "sha256", "tap_name"];
+  const expectedKeys = [
+    "bytes",
+    "kind",
+    "packages",
+    "schema",
+    "sha256",
+    "tap_name",
+  ];
   if (Object.keys(value).sort().join("\0") !== expectedKeys.join("\0")) {
-    throw new Error(`Brewfile parser returned an unsupported result shape for ${path}`);
+    throw new Error(
+      `Brewfile parser returned an unsupported result shape for ${path}`,
+    );
   }
   if (value.schema !== 1 || value.kind !== "kandelo-static-brewfile-v1") {
-    throw new Error(`Brewfile parser returned an unsupported schema for ${path}`);
+    throw new Error(
+      `Brewfile parser returned an unsupported schema for ${path}`,
+    );
   }
   if (typeof value.tap_name !== "string" || !TAP_NAME_RE.test(value.tap_name)) {
     throw new Error(`Brewfile parser returned an invalid tap name for ${path}`);
@@ -1428,18 +1908,22 @@ function readBrewfileSelection(path: string): BrewfileSelection {
     value.bytes <= 0 ||
     value.bytes > MAX_BREWFILE_BYTES
   ) {
-    throw new Error(`Brewfile parser returned an invalid byte count for ${path}`);
+    throw new Error(
+      `Brewfile parser returned an invalid byte count for ${path}`,
+    );
   }
   if (
     !Array.isArray(value.packages) ||
     value.packages.length === 0 ||
     value.packages.length > MAX_BREWFILE_PACKAGES ||
-    value.packages.some((pkg) =>
-      typeof pkg !== "string" || !PACKAGE_NAME_RE.test(pkg)
+    value.packages.some(
+      (pkg) => typeof pkg !== "string" || !PACKAGE_NAME_RE.test(pkg),
     ) ||
     new Set(value.packages).size !== value.packages.length
   ) {
-    throw new Error(`Brewfile parser returned invalid requested packages for ${path}`);
+    throw new Error(
+      `Brewfile parser returned invalid requested packages for ${path}`,
+    );
   }
   return value as unknown as BrewfileSelection;
 }
@@ -1498,6 +1982,7 @@ function usage(message?: string, code = 2): never {
    --bottle-mirror-out <new-directory>] \\
   [--package-tree-spec <tree.json> \\
    --package-tree-archive <package-output.zip> \\
+   [--homebrew-bootstrap-env <homebrew-brew.env>] \\
    [--materialize-package-tree]] \\
   [--lazy-layer-out <layer.bin> \\
    --lazy-layer-descriptor <layer.json> \\

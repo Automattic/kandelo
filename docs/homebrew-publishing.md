@@ -31,14 +31,15 @@ Homebrew's `bottle do` block.
 
 The patched Homebrew Ruby tree used by a guest is a dedicated Kandelo program
 package named `homebrew-bootstrap`; it is not a Formula bottle. The package
-emits `homebrew-bootstrap.zip` from a sealed exact Homebrew checkout and the
-reviewed guest-platform patch. Its source lock at
+atomically emits `homebrew-bootstrap.zip` from a sealed exact Homebrew checkout
+and the reviewed guest-platform patch plus `homebrew-brew.env`, which owns the
+matching architecture and system-environment policy. Its source lock at
 `homebrew/homebrew-bootstrap-source-lock.json` binds all source, patch,
 prepared-tree, portable-Ruby, archive-producing Git, and final-archive
-identities. The first package revision is sealed by the exact final ZIP
-SHA-256 and byte count recorded in that lock. Consumer cutover is a separate
-rollout step, so introducing the package does not change shell or
-bootstrap-image consumers.
+identities. The program-package generation binds both declared members to one
+recipe, dependency closure, cache identity, and immutable release archive;
+consumers must resolve the canonical nested member paths together rather than
+recreating `brew.env` or resolving a mutable flat fallback.
 
 ## Repositories And Ownership
 
@@ -464,13 +465,62 @@ offline after its disposable Ruby dependencies have been provisioned and
 sealed. Kandelo guests instead receive upstream Homebrew commit
 `4ead8619231cb15cbe15e8e8188081e347d6f7cd` through the dedicated
 `homebrew-bootstrap` program package. Guest acceptance must materialize that
-package through the canonical ABI release index and verify its package-output
-receipt, archive identity, cache key, and locked inner ZIP before booting it.
+package through the canonical ABI release index and verify its complete
+two-member generation, package-output receipt, archive identity, cache key,
+and locked inner ZIP before booting it.
 The PR staging release is evidence for the package build, not a durable
 consumer URL. Until the package is activated in the canonical ABI index and
 the tap has adopted these Requirement declarations under a compatible pinned
 publisher, the full guest install lifecycle remains a rollout gate rather than
 a supported user-facing contract.
+
+#### Exact Chromium guest-lifecycle fixture
+
+The Node.js and Chromium lifecycle runners use the same generated guest
+scripts and host-neutral phase runner. They tap exact first- and third-party
+revisions, install and reinstall bottles, export and reboot the rootfs, execute
+the persisted packages, prove the pinned upgrade is a no-op, then uninstall and
+untap. A browser fixture only supplies host transport identities; it cannot
+replace or weaken those guest assertions.
+
+The live Playwright proof is disabled unless
+`KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE=1` and
+`KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_FIXTURE_PATH` are both set. The JSON
+file uses schema 1 and declares:
+
+- `allowLiveNetwork: true`, an explicit opt-in checked before any fixture
+  request;
+- `transportMode`, either `closed` or `public`;
+- exact `url`, `sha256`, and `bytes` records for the main-shell image and the
+  bootstrap spec, archive, and environment;
+- an exact bottle-mirror plan record; closed transport also requires one exact
+  payload record for every plan asset, while public transport forbids local
+  payload bytes;
+- exact 40-character `coreRevision` and `canaryRevision` values; and
+- a bounded `timeoutMs` from 1,000 through 1,800,000.
+
+All artifact URLs are canonical credential-free HTTPS identities. Chromium
+may retrieve them through the same-origin test proxy, but digest validation and
+the VFS keep the original immutable URL as authority. The downloaded mirror
+plan must be byte-identical to the plan embedded in the image and must derive
+its release tag and every payload URL from its complete collection digest.
+Closed payloads are then handed to the worker as an exhaustive transport:
+an undeclared request fails instead of falling back to ambient network.
+
+Run an exact reviewed fixture with:
+
+```bash
+cd apps/browser-demos
+bash ../../scripts/dev-shell.sh env \
+  KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE=1 \
+  KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_FIXTURE_PATH=/absolute/path/to/fixture.json \
+  npx playwright test test/homebrew-guest-lifecycle.spec.ts --project=chromium
+```
+
+Without those two variables, CI still runs the browser admission test proving
+that a fixture without live-network opt-in makes no external request. A skipped
+live test is preparation evidence only; it is not evidence that a bottle was
+published, poured, or executed.
 
 The native launcher installs each selected direct dependency as an explicit
 `homebrew/core/<name>` reference under an ephemeral native prefix. Each install
@@ -1345,8 +1395,11 @@ the ABI from `crates/shared`, resolves the Node kernel, canonical rootfs package
 set, and Homebrew bootstrap programs through `xtask build-deps`, and calls
 `scripts/prepare-homebrew-bootstrap-source.sh` to prepare Homebrew. The
 dedicated `homebrew-bootstrap` package uses that same preparer and records
-byte identity with this still-current image path; switching this image to
-consume the package is a separate consumer change. Source preparation verifies
+the source ZIP and `homebrew-brew.env` as one package generation. The main
+shell resolves that exact generation, embeds the small environment policy, and
+registers the source ZIP as a package-level lazy tree behind `/usr/bin/brew`;
+the separate diagnostic bootstrap image above remains an eager integration
+artifact. Source preparation verifies
 the reviewed patch SHA-256, refuses an upstream revision where the patch does
 not apply, limits the patch to its declared Homebrew files, and archives the
 patched Git tree with a fixed timestamp and UTC timezone.
@@ -1407,11 +1460,16 @@ not prove shebang dispatch, `/usr/bin/brew` alias execution, an install, or a
 bottle download.
 
 ABI 41 raised every fork continuation reserve from 16 KiB to 60 KiB. The
-earlier ABI 39 dispatcher and `/usr/bin/brew` alias-launcher measurements needed
-20,012 and 29,212 bytes respectively. The exact candidate bootstrap also found
-a 49,232-byte Bash child continuation in the recursive command evaluator,
-which the 48 KiB draft reserve rejected truthfully. All three now fit without
-weakening the overrun guard. Repeat the probe with
+earlier ABI 39 dispatcher, `/usr/bin/brew` alias-launcher, and recursive Bash
+measurements needed 20,012, 29,212, and 49,232 bytes respectively, so the
+shallow source/bootstrap probe above fits. The complete main-shell proof found
+that Ruby-backed Homebrew startup can require 64,256 and 66,092 bytes. ABI 41
+therefore does not support the full guest Homebrew lifecycle; the truthful
+overrun is a platform failure, not a package defect. Full support waits for the
+reviewed dynamic continuation design, allocation-failure recovery, ABI-current
+bottle rebuild, and exact Node/browser proof. Do not increase a package-local
+limit, bypass command substitution, or accept the diagnostic as success.
+Repeat the shallow source probe with
 `--brew-script /usr/bin/brew` when validating the alias path; `$0` must remain
 `/usr/bin/brew`, the launcher must recognize the symlink, and the command must
 print the Homebrew version rather than silently falling back to `/Library`.

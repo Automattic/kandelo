@@ -116,6 +116,17 @@ export interface UnlinkVfsFileMessage {
   path: string;
 }
 
+/**
+ * Serialize the quiescent worker-owned root filesystem.
+ *
+ * This deliberately captures only the `/` image backend. Scratch and device
+ * mounts are boot-scoped and are recreated by the host on the next boot.
+ */
+export interface ExportRootfsImageMessage {
+  type: "export_rootfs_image";
+  requestId: number;
+}
+
 export interface AppendStdinDataMessage {
   type: "append_stdin_data";
   pid: number;
@@ -345,6 +356,7 @@ export type MainToKernelMessage =
   | ReadVfsFileMessage
   | WriteVfsFileMessage
   | UnlinkVfsFileMessage
+  | ExportRootfsImageMessage
   | AppendStdinDataMessage
   | SetStdinDataMessage
   | PtyWriteMessage

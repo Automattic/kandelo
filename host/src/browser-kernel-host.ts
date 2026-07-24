@@ -126,6 +126,8 @@ export interface BrowserKernelBootOptions {
 
 export class BrowserKernel {
   private kernelWorkerHandle!: Worker;
+  private workerStarted = false;
+  private initialized = false;
   /** POSIX shared-memory / semaphore SAB shared with the kernel worker. Small
    *  and fixed (1 MiB); the live VFS is owned by the worker, not here. */
   private shmSab: SharedArrayBuffer;
@@ -243,6 +245,7 @@ export class BrowserKernel {
       : snapshotClosedLazyAssets(opts.closedLazyAssets);
     // Create the kernel worker
     this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
+    this.workerStarted = true;
 
     this.kernelWorkerHandle.onmessage = (e: MessageEvent) => {
       this.handleWorkerMessage(e.data as KernelToMainMessage);
@@ -335,6 +338,7 @@ export class BrowserKernel {
       }
       this.kernelWorkerHandle.postMessage(initMsg, transfer);
     });
+    this.initialized = true;
   }
 
   /**
@@ -949,14 +953,39 @@ export class BrowserKernel {
     return result === true;
   }
 
-  /** Destroy the kernel and release all resources. */
-  async destroy(): Promise<void> {
+  /**
+   * Serialize the quiescent worker-owned root filesystem for a later boot.
+   * The root image is durable; boot-scoped scratch and device mounts are not.
+   * Callers must wait for every guest process to exit before invoking this.
+   */
+  async exportRootfsImage(): Promise<Uint8Array> {
+    if (!this.initialized) {
+      throw new Error("rootfs export requires an initialized kernel");
+    }
     const requestId = this.nextRequestId++;
-    await this.request(requestId, {
-      type: "destroy",
+    const result = await this.request(requestId, {
+      type: "export_rootfs_image",
       requestId,
     });
+    if (!(result instanceof Uint8Array)) {
+      throw new Error("kernel worker returned an invalid rootfs image");
+    }
+    return result;
+  }
+
+  /** Destroy the kernel and release all resources. */
+  async destroy(): Promise<void> {
+    if (!this.workerStarted) return;
+    if (this.initialized) {
+      const requestId = this.nextRequestId++;
+      await this.request(requestId, {
+        type: "destroy",
+        requestId,
+      });
+    }
+    this.initialized = false;
     this.kernelWorkerHandle.terminate();
+    this.workerStarted = false;
     this.exitResolvers.clear();
     this.unclaimedExitStatuses.clear();
     this.pendingRequests.clear();
