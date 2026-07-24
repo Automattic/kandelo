@@ -10,6 +10,9 @@ HOMEBREW_PATCHED_LAUNCHER=""
 HOMEBREW_PATCHED_BREW_BIN=""
 HOMEBREW_PATCHED_PROTECTED_DIR=""
 HOMEBREW_PATCHED_SOURCE_ALIAS_DIR=""
+HOMEBREW_PATCHED_PROTECTED_XTASK=""
+HOMEBREW_PATCHED_PROTECTED_XTASK_STATE=""
+HOMEBREW_PATCHED_PROTECTED_XTASK_SHA256=""
 HOMEBREW_PATCHED_INTEGRITY_SHA256=""
 HOMEBREW_PATCHED_OVERLAY_OWNER_UID=""
 HOMEBREW_PATCHED_OVERLAY_SEAL_STATE=""
@@ -61,6 +64,36 @@ homebrew_patched_launcher_integrity() {
     git -C "$HOMEBREW_PATCHED_OVERLAY" diff --binary HEAD
     git -C "$HOMEBREW_PATCHED_OVERLAY" status --porcelain=v1 --untracked-files=all
   } | homebrew_sha256_stream
+}
+
+homebrew_patched_launcher_verify_protected_xtask() {
+  if [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK" ] && \
+     [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK_STATE" ] && \
+     [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK_SHA256" ]; then
+    return 0
+  fi
+  if [ -z "$HOMEBREW_PATCHED_PROTECTED_DIR" ] || \
+     [ "$HOMEBREW_PATCHED_PROTECTED_XTASK" != \
+       "$HOMEBREW_PATCHED_PROTECTED_DIR/xtask" ] || \
+     [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK_STATE" ] || \
+     [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK_SHA256" ]; then
+    echo "homebrew-patched-launcher: protected program-index checker state is incomplete" >&2
+    return 2
+  fi
+
+  local actual_sha256
+  actual_sha256="$(/usr/bin/sha256sum \
+    "$HOMEBREW_PATCHED_PROTECTED_XTASK" 2>/dev/null || true)"
+  actual_sha256="${actual_sha256%% *}"
+  if [ ! -f "$HOMEBREW_PATCHED_PROTECTED_XTASK" ] || \
+     [ -L "$HOMEBREW_PATCHED_PROTECTED_XTASK" ] || \
+     [ "$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' \
+       "$HOMEBREW_PATCHED_PROTECTED_XTASK" 2>/dev/null || true)" != \
+       "$HOMEBREW_PATCHED_PROTECTED_XTASK_STATE" ] || \
+     [ "$actual_sha256" != "$HOMEBREW_PATCHED_PROTECTED_XTASK_SHA256" ]; then
+    echo "homebrew-patched-launcher: root-owned program-index checker changed after isolation" >&2
+    return 1
+  fi
 }
 
 homebrew_patched_launcher_snapshot_target_cellar_layout() {
@@ -856,6 +889,10 @@ homebrew_patched_launcher_cleanup() {
       return "$teardown_status"
     fi
   fi
+  if ! homebrew_patched_launcher_verify_protected_xtask; then
+    echo "homebrew-patched-launcher: protected checker changed; preserving launcher state for inspection" >&2
+    return 1
+  fi
   if ! homebrew_patched_launcher_remove_staged_input; then
     echo "homebrew-patched-launcher: protected input remains; preserving launcher state for retry" >&2
     return 1
@@ -884,13 +921,24 @@ homebrew_patched_launcher_cleanup() {
     return 1
   fi
   if [ -n "$HOMEBREW_PATCHED_PROTECTED_DIR" ]; then
-    "$HOMEBREW_PATCHED_SUDO_BIN" rm -rf "$HOMEBREW_PATCHED_PROTECTED_DIR" \
-      >/dev/null 2>&1 || true
+    if ! "$HOMEBREW_PATCHED_SUDO_BIN" rm -rf "$HOMEBREW_PATCHED_PROTECTED_DIR" \
+         >/dev/null 2>&1 || [ -e "$HOMEBREW_PATCHED_PROTECTED_DIR" ] || \
+         [ -L "$HOMEBREW_PATCHED_PROTECTED_DIR" ]; then
+      echo "homebrew-patched-launcher: protected launcher state could not be removed; preserving cleanup state for retry" >&2
+      return 1
+    fi
     HOMEBREW_PATCHED_PROTECTED_DIR=""
+    HOMEBREW_PATCHED_PROTECTED_XTASK=""
+    HOMEBREW_PATCHED_PROTECTED_XTASK_STATE=""
+    HOMEBREW_PATCHED_PROTECTED_XTASK_SHA256=""
   fi
   if [ -n "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR" ]; then
-    "$HOMEBREW_PATCHED_SUDO_BIN" rm -rf "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR" \
-      >/dev/null 2>&1 || true
+    if ! "$HOMEBREW_PATCHED_SUDO_BIN" rm -rf "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR" \
+         >/dev/null 2>&1 || [ -e "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR" ] || \
+         [ -L "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR" ]; then
+      echo "homebrew-patched-launcher: source aliases could not be removed; preserving cleanup state for retry" >&2
+      return 1
+    fi
     HOMEBREW_PATCHED_SOURCE_ALIAS_DIR=""
   fi
   if [ -n "$HOMEBREW_PATCHED_LAUNCHER" ] && [ -L "$HOMEBREW_PATCHED_LAUNCHER" ]; then
@@ -1641,7 +1689,7 @@ homebrew_patched_launcher_isolate() {
   local build_user="$1" work_dir="$2" kandelo_root="$3" tap_root="$4" output_root="$5"
   local sysroot_build_root="$6" sysroot
   shift 6
-  local build_group build_home protected_brew protected_audit
+  local build_group build_home protected_brew protected_audit protected_xtask
   local wrapper_source wrapper_path audit_source native_runner_source native_runner_path
   local mutable_root protected_root target_state_root native_reported_prefix native_reported_repo
   local physical_repo physical_prefix
@@ -1651,7 +1699,8 @@ homebrew_patched_launcher_isolate() {
   local config_root config_file unsafe_config_entry trust_file trust_lock
   local primary_tap_root primary_tap_owner_root taps_root
   local xtask_bin xtask_relative xtask_alias xtask_mode xtask_links
-  local xtask_uid xtask_state xtask_sha256
+  local xtask_uid xtask_state xtask_sha256 xtask_state_after xtask_sha256_after
+  local xtask_alias_state xtask_alias_sha256
   local -a preserved_variables native_preserved_variables mutable_roots
   local -a xtask_path_parts
   local -a additional_protected_roots=("$@")
@@ -2084,6 +2133,31 @@ homebrew_patched_launcher_isolate() {
 
   HOMEBREW_PATCHED_PROTECTED_DIR="$HOMEBREW_PATCHED_PREFIX/.kandelo-homebrew-$$-${RANDOM}"
   "$sudo_bin" install -d -o root -g root -m 0755 "$HOMEBREW_PATCHED_PROTECTED_DIR"
+  protected_xtask="$HOMEBREW_PATCHED_PROTECTED_DIR/xtask"
+  # WHY: a read-only bind preserves the source inode's uid. Stage the already
+  # validated bytes as one root-owned inode before Formula code runs so tap
+  # support can authenticate the checker without trusting a workflow-user uid.
+  "$sudo_bin" /usr/bin/install -o root -g root -m 0555 -- \
+    "$xtask_bin" "$protected_xtask"
+  xtask_state_after="$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' "$xtask_bin")" ||
+    return 2
+  xtask_sha256_after="$(/usr/bin/sha256sum "$xtask_bin")" || return 2
+  xtask_sha256_after="${xtask_sha256_after%% *}"
+  xtask_alias_state="$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' "$protected_xtask")" ||
+    return 2
+  xtask_alias_sha256="$(/usr/bin/sha256sum "$protected_xtask")" || return 2
+  xtask_alias_sha256="${xtask_alias_sha256%% *}"
+  if [ "$xtask_state_after" != "$xtask_state" ] || \
+     [ "$xtask_sha256_after" != "$xtask_sha256" ] || \
+     [ "$xtask_alias_sha256" != "$xtask_sha256" ] || \
+     [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$protected_xtask")" != "0:0:555:1" ] || \
+     ! /usr/bin/cmp -s -- "$xtask_bin" "$protected_xtask"; then
+    echo "homebrew-patched-launcher: could not stage the root-owned program-index checker" >&2
+    return 2
+  fi
+  HOMEBREW_PATCHED_PROTECTED_XTASK="$protected_xtask"
+  HOMEBREW_PATCHED_PROTECTED_XTASK_STATE="$xtask_alias_state"
+  HOMEBREW_PATCHED_PROTECTED_XTASK_SHA256="$xtask_alias_sha256"
   source_alias_dir="$work_dir/source-aliases"
   "$sudo_bin" install -d -o root -g root -m 0555 \
     "$source_alias_dir" "$source_alias_dir/kandelo" "$source_alias_dir/tap" \
@@ -2101,8 +2175,8 @@ homebrew_patched_launcher_isolate() {
     printf 'expected_tap=%q\n' "$source_alias_dir/tap"
     printf 'expected_sysroot=%q\n' "$source_alias_dir/sysroot"
     printf 'expected_xtask=%q\n' "$xtask_alias"
-    printf 'expected_xtask_state=%q\n' "$xtask_state"
-    printf 'expected_xtask_sha256=%q\n' "$xtask_sha256"
+    printf 'expected_xtask_state=%q\n' "$xtask_alias_state"
+    printf 'expected_xtask_sha256=%q\n' "$xtask_alias_sha256"
     printf 'expected_primary_tap=%q\n' "$primary_tap_root"
     printf 'actual_xtask_sha256="$(/usr/bin/sha256sum "$expected_xtask" 2>/dev/null || true)"\n'
     printf 'actual_xtask_sha256="${actual_xtask_sha256%%%% *}"\n'
@@ -2127,6 +2201,12 @@ homebrew_patched_launcher_isolate() {
     printf '[ "$actual_xtask_sha256" != "$expected_xtask_sha256" ]; then\n'
     printf '  echo "homebrew-patched-launcher: protected program-index checker changed or is inaccessible" >&2\n'
     printf '  exit 2\nfi\n'
+    printf 'xtask_mount_options="$(/usr/bin/findmnt --noheadings --output VFS-OPTIONS --target "$expected_xtask")" || {\n'
+    printf '  echo "homebrew-patched-launcher: could not inspect protected checker mount" >&2; exit 2;\n}\n'
+    printf 'case ",${xtask_mount_options// /}," in\n'
+    printf '  *,ro,*) ;;\n'
+    printf '  *) echo "homebrew-patched-launcher: protected checker mount is writable" >&2; exit 1 ;;\n'
+    printf 'esac\n'
     printf 'if [ ! -f "$expected_sysroot/lib/libc.a" ] || [ -L "$expected_sysroot/lib/libc.a" ]; then\n'
     printf '  echo "homebrew-patched-launcher: protected sysroot libc archive is invalid" >&2\n'
     printf '  exit 2\nfi\n'
@@ -2203,8 +2283,13 @@ homebrew_patched_launcher_isolate() {
     printf 'xtask_path=%q\n' "$xtask_bin"
     printf 'xtask_state=%q\n' "$xtask_state"
     printf 'xtask_sha256=%q\n' "$xtask_sha256"
+    printf 'protected_xtask_path=%q\n' "$protected_xtask"
+    printf 'protected_xtask_state=%q\n' "$xtask_alias_state"
+    printf 'protected_xtask_sha256=%q\n' "$xtask_alias_sha256"
     printf 'actual_xtask_sha256="$(/usr/bin/sha256sum "$xtask_path" 2>/dev/null || true)"\n'
     printf 'actual_xtask_sha256="${actual_xtask_sha256%%%% *}"\n'
+    printf 'actual_protected_xtask_sha256="$(/usr/bin/sha256sum "$protected_xtask_path" 2>/dev/null || true)"\n'
+    printf 'actual_protected_xtask_sha256="${actual_protected_xtask_sha256%%%% *}"\n'
     # WHY: the source checkout is trusted but workflow-owned. Rechecking its
     # inode and bytes for every Formula entry prevents a later workflow step
     # from silently turning the already-reviewed checker path into new code.
@@ -2213,6 +2298,11 @@ homebrew_patched_launcher_isolate() {
     printf '[ "$(/usr/bin/stat -c '\''%%d:%%i:%%u:%%g:%%a:%%h:%%s'\'' "$xtask_path")" != "$xtask_state" ] || '
     printf '[ "$actual_xtask_sha256" != "$xtask_sha256" ]; then\n'
     printf '  echo "homebrew-patched-launcher: prepared program-index checker changed after isolation" >&2\n'
+    printf '  exit 2\nfi\n'
+    printf 'if [ ! -f "$protected_xtask_path" ] || [ -L "$protected_xtask_path" ] || '
+    printf '[ "$(/usr/bin/stat -c '\''%%d:%%i:%%u:%%g:%%a:%%h:%%s'\'' "$protected_xtask_path")" != "$protected_xtask_state" ] || '
+    printf '[ "$actual_protected_xtask_sha256" != "$protected_xtask_sha256" ]; then\n'
+    printf '  echo "homebrew-patched-launcher: root-owned program-index checker changed after isolation" >&2\n'
     printf '  exit 2\nfi\n'
     printf 'bottle_tag_env=()\n'
     for variable in KANDELO_HOMEBREW_BOTTLE_TAG HOMEBREW_KANDELO_BOTTLE_TAG; do
@@ -2234,6 +2324,7 @@ homebrew_patched_launcher_isolate() {
       "--property=KillMode=control-group" "--property=SendSIGKILL=yes" \
       "--property=TimeoutStopSec=10s" "--property=NoNewPrivileges=yes" \
       "--property=BindReadOnlyPaths=$kandelo_root:$source_alias_dir/kandelo" \
+      "--property=BindReadOnlyPaths=$protected_xtask:$xtask_alias" \
       "--property=BindReadOnlyPaths=$tap_root:$source_alias_dir/tap" \
       "--property=BindReadOnlyPaths=$sysroot:$source_alias_dir/sysroot" \
       "--property=BindReadOnlyPaths=$taps_root" \
@@ -2588,12 +2679,17 @@ homebrew_patched_launcher_teardown() {
 }
 
 homebrew_patched_launcher_verify_isolation() {
-  if [ -z "$HOMEBREW_PATCHED_PROTECTED_DIR" ] || [ -z "$HOMEBREW_PATCHED_INTEGRITY_SHA256" ]; then
+  if [ -z "$HOMEBREW_PATCHED_PROTECTED_DIR" ] || \
+     [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK" ] || \
+     [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK_STATE" ] || \
+     [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK_SHA256" ] || \
+     [ -z "$HOMEBREW_PATCHED_INTEGRITY_SHA256" ]; then
     echo "homebrew-patched-launcher: isolated execution was not initialized" >&2
     return 2
   fi
   homebrew_patched_launcher_verify_overlay_seal \
     "$HOMEBREW_PATCHED_BUILD_USER" || return
+  homebrew_patched_launcher_verify_protected_xtask || return
   [ "$(homebrew_patched_launcher_integrity)" = "$HOMEBREW_PATCHED_INTEGRITY_SHA256" ] || {
     echo "homebrew-patched-launcher: patched Homebrew source changed during Formula execution" >&2
     return 1

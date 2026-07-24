@@ -413,6 +413,7 @@ case "${1:-}" in
     [ "${WASM_POSIX_XTASK_BIN:-}" = "$5" ]
     [ -f "$5" ] && [ ! -L "$5" ] && [ -r "$5" ] && [ -x "$5" ] && [ ! -w "$5" ]
     [ "$(/usr/bin/realpath -- "$5")" = "$5" ]
+    [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$5")" = "0:0:555:1" ]
     actual_xtask_sha256="$(/usr/bin/sha256sum "$5")"
     actual_xtask_sha256="${actual_xtask_sha256%% *}"
     [ "$actual_xtask_sha256" = "$6" ]
@@ -1528,6 +1529,13 @@ EOF
   homebrew_patched_launcher_isolate \
     "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap" \
     "$isolated_output" "$isolated_sysroot_owner" "$isolated_dependency_tap"
+  protected_dir="$HOMEBREW_PATCHED_PROTECTED_DIR"
+  source_alias_dir="$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR"
+  protected_xtask="$HOMEBREW_PATCHED_PROTECTED_DIR/xtask"
+  [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a:%h' "$protected_xtask")" = \
+      "0:0:555:1" ] &&
+    /usr/bin/sudo -n -- /usr/bin/cmp -s -- "$isolated_xtask" "$protected_xtask" ||
+    fail "isolated launcher did not stage one exact root-owned checker inode"
   /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
     test -x "$isolated_native_base" ||
     fail "build identity cannot traverse the workflow-owned native parent"
@@ -1758,6 +1766,29 @@ EOF
   chmod 0555 "$isolated_xtask"
   rm "$isolated_xtask.backup"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-no-new-privileges
+  /usr/bin/sudo -n -- chmod 0755 "$protected_xtask"
+  printf 'stale root copy\n' |
+    /usr/bin/sudo -n -- tee -a "$protected_xtask" >/dev/null
+  /usr/bin/sudo -n -- chmod 0555 "$protected_xtask"
+  if "$HOMEBREW_PATCHED_BREW_BIN" assert-no-new-privileges \
+      >/dev/null 2>"$ISOLATION_ROOT/stale-protected-xtask.err"; then
+    fail "isolated launcher accepted changed root-owned checker bytes"
+  fi
+  grep -F "root-owned program-index checker changed after isolation" \
+    "$ISOLATION_ROOT/stale-protected-xtask.err" >/dev/null ||
+    fail "isolated launcher did not explain changed root-owned checker bytes"
+  if homebrew_patched_launcher_verify_isolation \
+      >/dev/null 2>"$ISOLATION_ROOT/stale-protected-xtask-verify.err"; then
+    fail "isolation verification accepted changed root-owned checker bytes"
+  fi
+  grep -F "root-owned program-index checker changed after isolation" \
+    "$ISOLATION_ROOT/stale-protected-xtask-verify.err" >/dev/null ||
+    fail "isolation verification did not explain changed root-owned checker bytes"
+  /usr/bin/sudo -n -- chmod 0755 "$protected_xtask"
+  /usr/bin/sudo -n -- cp "$isolated_xtask" "$protected_xtask"
+  /usr/bin/sudo -n -- chmod 0555 "$protected_xtask"
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-no-new-privileges
+  homebrew_patched_launcher_verify_isolation
   "$HOMEBREW_PATCHED_BREW_BIN" spawn-daemon "$daemon_marker" "$daemon_started"
   [ -e "$daemon_started" ] || fail "detached Formula process never started"
   sleep 3
@@ -1768,6 +1799,27 @@ EOF
   pgrep_status="$?"
   set -e
   [ "$pgrep_status" -eq 1 ] || fail "Formula process check did not prove an empty UID"
+  /usr/bin/sudo -n -- mv -- "$protected_xtask" "$protected_xtask.original"
+  /usr/bin/sudo -n -- /usr/bin/install -o root -g root -m 0555 -- \
+    "$isolated_xtask" "$protected_xtask"
+  if "$HOMEBREW_PATCHED_BREW_BIN" assert-no-new-privileges \
+      >/dev/null 2>"$ISOLATION_ROOT/replaced-protected-xtask.err"; then
+    fail "isolated launcher accepted a replaced root-owned checker inode"
+  fi
+  grep -F "root-owned program-index checker changed after isolation" \
+    "$ISOLATION_ROOT/replaced-protected-xtask.err" >/dev/null ||
+    fail "isolated launcher did not explain the replaced root-owned checker inode"
+  if homebrew_patched_launcher_verify_isolation \
+      >/dev/null 2>"$ISOLATION_ROOT/replaced-protected-xtask-verify.err"; then
+    fail "isolation verification accepted a replaced root-owned checker inode"
+  fi
+  grep -F "root-owned program-index checker changed after isolation" \
+    "$ISOLATION_ROOT/replaced-protected-xtask-verify.err" >/dev/null ||
+    fail "isolation verification did not explain the replaced root-owned checker inode"
+  /usr/bin/sudo -n -- rm -f -- "$protected_xtask"
+  /usr/bin/sudo -n -- mv -- "$protected_xtask.original" "$protected_xtask"
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-no-new-privileges
+  homebrew_patched_launcher_verify_isolation
   homebrew_patched_launcher_teardown "$ISOLATION_BUILD_USER"
   /usr/bin/sudo -n -- chmod 0755 "$target_proxy_rack"
   if homebrew_patched_launcher_verify_isolation >/dev/null 2>&1; then
@@ -1796,6 +1848,13 @@ EOF
     fail "isolated cleanup left the publisher dependency plan"
   [ ! -e "$isolated_prefix/.kandelo-publisher-tier2-attestation.json" ] ||
     fail "isolated cleanup left the publisher Tier-2 attestation"
+  [ ! -e "$protected_dir" ] && [ ! -e "$source_alias_dir" ] && \
+    [ -z "$HOMEBREW_PATCHED_PROTECTED_DIR" ] && \
+    [ -z "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR" ] && \
+    [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK" ] && \
+    [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK_STATE" ] && \
+    [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK_SHA256" ] ||
+    fail "isolated cleanup left the protected checker or source aliases"
   [ ! -e "$protected_bottle" ] && [ ! -e "$protected_bottle_dir" ] && \
     [ -z "$(find "$isolated_shared_temp" -mindepth 1 -print -quit)" ] && \
     [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP" ] && \
