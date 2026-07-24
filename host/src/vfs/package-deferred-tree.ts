@@ -19,7 +19,9 @@ const S_IFMT = 0xf000;
 const S_IFREG = 0x8000;
 const S_IFDIR = 0x4000;
 const S_IFLNK = 0xa000;
-const MAX_OWNER_ID = 0xffff_ffff;
+// uid_t/gid_t -1 is the POSIX chown "leave unchanged" sentinel and therefore
+// cannot truthfully identify the owner declared by a package descriptor.
+const MAX_OWNER_ID = 0xffff_fffe;
 const PACKAGE_NAME_RE = /^[a-z0-9][a-z0-9+._-]*$/;
 const OUTPUT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9+._-]*$/;
 const TREE_ID_RE = /^[a-z0-9][a-z0-9+._/-]*$/;
@@ -295,14 +297,8 @@ export function registerPackageDeferredZipTree(
     derived.entries,
     derived.descriptor.mount_prefix,
     derived.descriptor.activation,
+    derived.descriptor.owner,
   );
-  for (const entry of derived.entries) {
-    fs.lchown(
-      entry.vfsPath,
-      derived.descriptor.owner.uid,
-      derived.descriptor.owner.gid,
-    );
-  }
   return { ...derived, materialization };
 }
 

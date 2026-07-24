@@ -100,6 +100,9 @@ describe("package deferred ZIP trees", () => {
     const fs = packageFs();
     registerPackageDeferredZipTree(fs, derived);
     assertPackageDeferredZipTreeState(fs, derived, "deferred");
+    for (const entry of derived.entries) {
+      expect(fs.lstat(entry.vfsPath)).toMatchObject({ uid: 1000, gid: 1000 });
+    }
     const fetcher = vi.fn(async (url: string) => {
       expect(url).toBe("homebrew-bootstrap.zip");
       return new Response(archive, {
@@ -229,6 +232,10 @@ describe("package deferred ZIP trees", () => {
       ...SPEC,
       activation: { ...SPEC.activation, roots: ["/outside"] },
     })).toThrow(/escapes its mount/);
+    expect(() => parsePackageDeferredZipTreeSpec({
+      ...SPEC,
+      owner: { uid: 0xffff_ffff, gid: 1000 },
+    })).toThrow(/spec is invalid/);
 
     const incomplete = zipSync({
       "missing/parent/file": encoder.encode("bad"),
@@ -268,6 +275,21 @@ describe("package deferred ZIP trees", () => {
       blockedFs,
       derivePackageDeferredZipTree(blockedSpec, archive),
     )).toThrow(/ancestor collides/);
+  });
+
+  it("publishes no deferred metadata before package ownership succeeds", () => {
+    const archive = packageArchive();
+    const derived = derivePackageDeferredZipTree(SPEC, archive);
+    const fs = packageFs();
+    const lchown = vi.spyOn(fs, "lchown").mockImplementationOnce(() => {
+      throw new SFSError(EIO);
+    });
+
+    expect(() => registerPackageDeferredZipTree(fs, derived)).toThrow(SFSError);
+
+    lchown.mockRestore();
+    expect(fs.exportLazyArchiveEntries()).toEqual([]);
+    expect(fs.isPathDeferred(`${SPEC.mount_prefix}/bin/brew`)).toBe(false);
   });
 
   it("rejects changed bytes before direct materialization", async () => {

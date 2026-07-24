@@ -155,6 +155,12 @@ export interface LazyTreeRegistrationEntry {
   inodeGroup?: string;
 }
 
+/** POSIX owner applied before a lazy tree becomes observable as deferred. */
+export interface LazyTreeRegistrationOwner {
+  uid: number;
+  gid: number;
+}
+
 export interface LazyTreeActivation {
   mode: "boot-prefetch" | "first-use";
   capabilities: string[];
@@ -303,6 +309,7 @@ const MAX_LAZY_TREE_CAPABILITIES =
   VFS_DEFERRED_TREE_LIMITS.maxActivationCapabilities;
 const MAX_LAZY_TREE_ACTIVATION_ROOTS =
   VFS_DEFERRED_TREE_LIMITS.maxActivationRoots;
+const MAX_LAZY_TREE_OWNER_ID = 0xffff_fffe;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const SERIALIZED_LEGACY_ARCHIVE_KIND = "kandelo-legacy-zip-v1";
 const SERIALIZED_DEFERRED_TREE_V1_KIND = "kandelo-deferred-tree-v1";
@@ -982,6 +989,30 @@ interface ValidatedLazyTreeDefinition {
   mountPrefix: string;
   activation: LazyTreeActivation;
   canonicalByGroup: Map<string, LazyTreeRegistrationEntry>;
+}
+
+function validateLazyTreeRegistrationOwner(
+  value: unknown,
+): LazyTreeRegistrationOwner {
+  const record = exactLazyTreeRecord(
+    value,
+    ["uid", "gid"],
+    "Lazy tree registration owner",
+  );
+  return {
+    uid: requireLazyTreeInteger(
+      record.uid,
+      "Lazy tree registration owner uid",
+      0,
+      MAX_LAZY_TREE_OWNER_ID,
+    ),
+    gid: requireLazyTreeInteger(
+      record.gid,
+      "Lazy tree registration owner gid",
+      0,
+      MAX_LAZY_TREE_OWNER_ID,
+    ),
+  };
 }
 
 function validateLazyTreeDefinition(
@@ -2521,6 +2552,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     entriesValue: readonly LazyTreeRegistrationEntry[],
     mountPrefix = "/",
     activationValue?: LazyTreeActivation,
+    ownerValue?: LazyTreeRegistrationOwner,
   ): LazyTreeGroup {
     return this.registerLazyTreeInternal(
       contentValue,
@@ -2528,6 +2560,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       mountPrefix,
       activationValue,
       false,
+      ownerValue,
     );
   }
 
@@ -2537,6 +2570,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     mountPrefix: string,
     activationValue: LazyTreeActivation | undefined,
     allowTransportlessDirectMaterialization: boolean,
+    ownerValue: LazyTreeRegistrationOwner | undefined,
   ): LazyTreeGroup {
     this.assertCanRegisterPendingLazyArchiveGroup();
     const canonicalMountPrefix = normalizeLazyArchiveMountPrefix(mountPrefix);
@@ -2557,6 +2591,9 @@ export class MemoryFileSystem implements FileSystemBackend {
       },
       allowTransportlessDirectMaterialization ? 0 : 1,
     );
+    const owner = ownerValue === undefined
+      ? undefined
+      : validateLazyTreeRegistrationOwner(ownerValue);
 
     const group: LazyTreeGroup = {
       content,
@@ -2641,10 +2678,6 @@ export class MemoryFileSystem implements FileSystemBackend {
         inodeGroup: entry.inodeGroup,
       };
       group.entries.set(entry.vfsPath, metadata);
-      this.lazyArchiveInodes.set(
-        MemoryFileSystem.inodeKey(st.ino, st.generation),
-        group,
-      );
     }
 
     for (const entry of entries) {
@@ -2673,6 +2706,22 @@ export class MemoryFileSystem implements FileSystemBackend {
       });
     }
 
+    if (owner !== undefined) {
+      // WHY: ownership is part of the package namespace contract. Apply it
+      // before publishing any lazy-inode metadata or returning a direct
+      // materialization handle, so callers cannot observe a registered tree
+      // whose stubs still carry SharedFS's default owner.
+      for (const entry of entries) {
+        this.lchown(entry.vfsPath, owner.uid, owner.gid);
+      }
+    }
+    for (const entry of group.entries.values()) {
+      if (entry.isSymlink || entry.generation === undefined) continue;
+      this.lazyArchiveInodes.set(
+        MemoryFileSystem.inodeKey(entry.ino, entry.generation),
+        group,
+      );
+    }
     this.lazyArchiveGroups.push(group);
     return group;
   }
@@ -2686,6 +2735,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     entriesValue: readonly LazyTreeRegistrationEntry[],
     mountPrefix = "/",
     activationValue?: LazyTreeActivation,
+    ownerValue?: LazyTreeRegistrationOwner,
   ): DeferredTreeMaterializationHandle {
     const group = this.registerLazyTreeInternal(
       contentValue,
@@ -2693,6 +2743,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       mountPrefix,
       activationValue,
       true,
+      ownerValue,
     );
     const handle = Object.freeze({
       [DEFERRED_TREE_MATERIALIZATION_HANDLE]: true as const,
