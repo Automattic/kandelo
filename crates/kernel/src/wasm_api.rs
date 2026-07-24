@@ -2496,9 +2496,25 @@ fn mq_would_block_result(timeout_ptr: usize, table: &crate::mqueue::MqueueTable,
 pub extern "C" fn kernel_handle_channel(offset: usize, pid: u32) -> i32 {
     use wasm_posix_shared::channel::*;
 
-    // Set current process for dispatch
+    // Set current process for dispatch.
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     table.set_current_pid(pid);
+
+    if table.get(pid).is_none() {
+        // Browser workers can deliver one final channel syscall after the
+        // parent has already consumed and reaped a crash child. Report ESRCH
+        // through the syscall channel instead of letting get_process() hit its
+        // wasm-only unreachable precondition.
+        let out = unsafe {
+            let ptr = offset as *mut u8;
+            core::slice::from_raw_parts_mut(ptr, MIN_CHANNEL_SIZE)
+        };
+        let ret_val = -1i64;
+        let errno_val = Errno::ESRCH as u32;
+        out[RETURN_OFFSET..RETURN_OFFSET + 8].copy_from_slice(&ret_val.to_le_bytes());
+        out[ERRNO_OFFSET..ERRNO_OFFSET + 4].copy_from_slice(&errno_val.to_le_bytes());
+        return -(Errno::ESRCH as i32);
+    }
 
     // Read syscall number and args from kernel memory
     let base = offset;
