@@ -179,6 +179,46 @@ describe.skipIf(!hasBash)("bash shell", () => {
     expect(result.stdout.trim()).toBe("y");
   });
 
+  it("can restore and enumerate the builtins used by Homebrew", async () => {
+    const result = await runCentralizedProgram({
+      programPath: bashBinary,
+      argv: [
+        "bash",
+        "-c",
+        [
+          'test "$(type -t printf)" = builtin',
+          "builtin enable -n printf",
+          'test "$(type -t printf)" != builtin',
+          "builtin enable printf",
+          'test "$(type -t printf)" = builtin',
+          "printf() { echo shadowed; }",
+          "builtin enable compgen unset",
+          "saw_compgen= saw_unset=",
+          "for cmd in $(builtin compgen -A builtin); do",
+          '  case "$cmd" in',
+          "    compgen) saw_compgen=yes ;;",
+          "    unset) saw_unset=yes ;;",
+          "  esac",
+          '  builtin unset -f "$cmd"',
+          '  builtin enable "$cmd"',
+          "done",
+          'test "$saw_compgen" = yes',
+          'test "$saw_unset" = yes',
+          'test "$(type -t compgen)" = builtin',
+          'test "$(type -t complete)" = builtin',
+          'test "$(type -t unset)" = builtin',
+          'test "$(type -t printf)" = builtin',
+          'printf "homebrew-builtins-ready\\n"',
+        ].join("\n"),
+      ],
+      env: bashEnv,
+      timeout: 20_000,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("homebrew-builtins-ready");
+    expect(result.stderr).toBe("");
+  });
+
   it("exits with the correct status", async () => {
     const result = await runCentralizedProgram({
       programPath: bashBinary,
