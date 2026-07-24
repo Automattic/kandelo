@@ -309,6 +309,33 @@ the exact artifact accepted by the current gates:
   writes a complete target-relative index and verifies every referenced target
   asset before making it reusable. Do not copy canonical relative URLs into a
   different release namespace without rewriting and re-verifying them.
+- Make Homebrew publication resumable from immutable producer checkpoints
+  instead of rebuilding after a downstream GitHub outage. First, let a
+  failed-job rerun select and strictly validate the newest complete handoff set
+  from an earlier attempt of the same workflow run, and download that evidence
+  before realizing Nix. Then publish a bounded, content-addressed GHCR recovery
+  envelope from the existing credential-isolated uploader before the mutable
+  Homebrew version index. The envelope must bind the exact tap and Kandelo
+  commits, canonical bottle JSON, original dependency provenance, OCI child
+  receipt, and bottle blob digest so a fresh run can anonymously reconstruct
+  the normal handoff and resume independent verification and finalization. Do
+  not give Formula build jobs write credentials, alter the Homebrew-native
+  child manifest, regenerate missing provenance, or use temporary GitHub
+  Releases as a cache; Releases do not remove the observed source-archive,
+  Actions API, Git push, or Release-download failure domains.
+- Reduce metadata-only publisher jobs to a narrow pinned Nix tools closure,
+  then serve that closure from a real trusted substituter or a
+  content-addressed GHCR artifact. Preserve PR #868's disabled GitHub Actions
+  Nix cache, bounded substitution concurrency, retry, and source-bootstrap
+  fail-fast contract. Build and runtime verification jobs still use the full
+  development closure.
+- Remove the program wave's whole-job dependency on the slowest library build.
+  The package plan already knows each direct dependency closure: launch
+  library-independent programs alongside the library matrix, then release only
+  the dependency-bearing cohorts whose required library artifacts are ready.
+  The one post-matrix index finalizer still waits for every producer and remains
+  the only mutable writer. This improves useful concurrency without allowing a
+  program to consume an unverified or missing library.
 - Diagnose the intermittent MariaDB out-of-bounds failure from Homebrew shell
   run `30041372714`. Exact replacement run `30044000480` passed the same
   direct-input LAMP source-build and complete Node.js/Chromium shell proof, so
