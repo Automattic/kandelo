@@ -187,6 +187,7 @@ complete here only when its exact accepted artifact has been verified.
 
 | Workstream | State | Evidence and remaining boundary |
 |---|---|---|
+| Usable bottle-and-tap proof | Active; highest priority | The mostly-lazy bottle shell and the opt-in stock-Homebrew proof exist separately. The next milestone joins them: Homebrew's tree remains lazy in the main shell, and stock guest `brew` adds, installs from, and runs packages from both the first-party tap and an independently owned public tap on Node.js and Chromium. Unrelated catalog rebuilds and failures do not gate this bounded proof, but they remain visible in the authoritative index. |
 | Public publisher foundation | Complete | Repository-rooted public GHCR creation, anonymous readback, immutable trust, retry/recovery, coordinated finalization, and immutable VFS releases are implemented. PR #1048 landed the clean-input coordinated-finalizer fix at `1618563d87dd2207077ce228040cc9b2c773eb5e`. The production path uses `GITHUB_TOKEN`. |
 | Canonical tap migration | Complete for the production repository | PR #973 retargeted publication to `Kandelo-dev/homebrew-tap-core`; the old Automattic tap is archived. |
 | Core Formula coverage | Broad but incomplete | The live core tap currently contains 61 Formula files plus its Formula README, with 60 sidecar package records and 67 successful architecture-specific bottle records at this snapshot. This covers the expanded 42-Formula main-shell candidate, including its four language runtimes, but not every historical registry role; Formula presence alone does not prove publication. |
@@ -205,6 +206,56 @@ complete here only when its exact accepted artifact has been verified.
 Work in different repositories may proceed concurrently when immutable inputs
 make the results independent. Do not serialize unrelated Formula rollouts, but
 do preserve the single-writer finalization and exact-commit trust contracts.
+
+### Immediate milestone: usable Homebrew and independent taps
+
+Status: active and highest priority as of 2026-07-24.
+
+The numbered phases below preserve the whole migration scope; they are not a
+requirement to finish every earlier phase before demonstrating the most useful
+end-to-end path. Pull forward only the work needed to prove this milestone:
+
+1. Boot the mostly-lazy bottle-composed main shell with its audited Bash
+   closure embedded and optional package trees still deferred.
+2. Register upstream Homebrew's complete integrity-bound tree behind the normal
+   `/usr/bin/brew` entrypoint without fetching it during boot. First use
+   materializes it once through the same Node.js/browser deferred-tree path.
+3. With unmodified stock guest Homebrew plus only the documented Kandelo target
+   boundary, add the first-party tap and an independently owned public
+   third-party tap.
+4. Install and run one reviewed bottle from each tap, including the exact
+   dependency closures required by those two packages, on Node.js and
+   Chromium.
+5. Record first-boot and first-use fetch behavior and the exact package,
+   architecture, ABI, Formula revision, bottle rebuild, source commit, digest,
+   byte count, tap commit, and validation runs used by the proof.
+
+The publication and consumption trust boundary is not deferrable. Every bottle
+used by the milestone must come from its exact trusted source/caller commit,
+have an immutable package or release identity, pass anonymous public exact-byte
+readback, and appear in the single-writer authoritative index. That index must
+retain unrelated successes and truthful non-success records; a partial retry
+must not erase or silently replace them.
+
+The following retained work is deliberately not a gate for this first usable
+proof unless the selected proof path reproduces the underlying defect:
+
+- rebuilding and repairing the complete Formula/architecture catalog beyond
+  the two selected package closures;
+- the general exec/process-exit async-retry teardown hardening exposed by the
+  Erlang rollout;
+- reinstall, upgrade, uninstall, durable reboot-state, the historical
+  `brew`-pour/`saveImage()` comparison, and in-guest source builds;
+- per-program lazy transport for multi-command bundles, normal `man` and
+  manual-page support, full registry retirement, and the deviations/status
+  completion work in Phase 6; and
+- bottle-declared composable VFS layers and service/application migration in
+  Phase 7.
+
+These follow-ups may proceed in parallel when they cannot disturb the exact
+proof inputs, but they must not put the usable proof back behind a full-catalog
+rollout. A deferred failure stays visible and is fixed at its owning platform
+layer; deferral never permits a package workaround or a false success record.
 
 ### Accelerated landing tranches
 
@@ -481,6 +532,11 @@ Acceptance:
 4. Keep the language-specific VFS builders only where they remain explicit
    tests or compatibility tools. Do not advertise one default product image per
    language. The existing Node.js demo remains the deliberate exception.
+5. After the immediate usable-Homebrew milestone, complete the general
+   host-runtime exec/process-exit async-retry retirement hardening exposed by
+   Erlang. Cover the whole teardown surface rather than adding an Erlang
+   special case. If the milestone's selected path reproduces the defect, this
+   item becomes an immediate blocker instead of remaining deferred.
 
 Acceptance:
 
@@ -899,7 +955,15 @@ Formula files.
    deviation exists, its platform or external boundary, its owner, and its
    exit criterion. The `kandelo-sdk` ownership decision must settle the SDK
    bridge rather than leaving it as ambient worktree state.
-9. Replace the narrow `man` applet currently bundled into
+9. After the immediate usable-Homebrew milestone, evaluate and implement
+   independently addressable lazy transport for individual commands in
+   multi-command bundles such as `posix-utils-lite`, without requiring dozens
+   of separately maintained Formulae. Each program must retain exact bottle
+   provenance and fetch only its independently verified payload and required
+   support files. Packages such as Vim whose executable requires a supporting
+   runtime tree remain package-level lazy groups rather than unsafe single-file
+   references.
+10. Replace the narrow `man` applet currently bundled into
    `posix-utils-lite` with a normal, separately owned `man` Formula/package and
    require every applicable Formula to retain and link its ordinary manual
    pages. The current applet only probes `/usr/share/man/man[1-9]` and copies
@@ -1077,6 +1141,9 @@ The migration is complete only when all of the following are true:
 - a normal `man` command resolves the ordinary manual pages shipped by
   applicable embedded and deferred packages;
 - upstream `brew` inside Kandelo installs first-party and third-party bottles;
+- the retained per-program lazy-transport optimization for multi-command
+  bundles is completed or explicitly dispositioned from measured transport and
+  support-file evidence, without fragmenting tree-owned applications;
 - every historical registry and support role has a durable owner and no
   accepted package has duplicate authoritative recipes;
 - every historical and current declared `(Formula, architecture)` pair has
