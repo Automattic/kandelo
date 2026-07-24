@@ -1443,9 +1443,14 @@ EOF
   mkdir -p "${replaceable_xtask%/*}"
   cp "$isolated_xtask" "$replaceable_xtask"
   /usr/bin/sudo -n -- chown "$ISOLATION_BUILD_USER" "${replaceable_xtask%/*}"
+  # This negative case must expose the deliberately replaceable inner
+  # directory. The positive production-shaped case below restores the private
+  # runner-home boundary before exercising the read-only source alias.
+  chmod 0711 "$isolated_source_parent"
   assert_xtask_rejected "$replaceable_xtask" \
     "build user can replace protected source" \
     "a build-user-replaceable program-index checker"
+  chmod 0700 "$isolated_source_parent"
   /usr/bin/sudo -n -- chown "$(id -u):$(id -g)" "${replaceable_xtask%/*}"
   rm -rf "$isolated_kandelo/target/replaceable"
 
