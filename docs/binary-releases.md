@@ -266,17 +266,24 @@ The writer binds every dispatch input to `generation.json`, independently
 rederives the architecture-scoped source projection and expected ledger from
 its own exact-main checkout, reacquires its state lock, requeries live main and
 producer package assets, and repeats local rehashing and semantic validation
-immediately before uploading `generation.json` as the application seal and
-before publishing the release. The materializer anonymously downloads every
-asset, requeries release/tag/asset metadata, reruns the same semantic
-validator, recomputes the consumer projection, and rechecks both clean
-checkouts immediately before exposing a local resolver index.
+before uploading `generation.json` as the application seal and before
+publishing the release. For admitted generations, it also records a canonical
+source-authority snapshot before and after semantic validation and compares a
+fresh release, direct tag, main ref, commit, and asset snapshot to that baseline
+immediately before every remote mutation. The materializer anonymously
+downloads every asset, requeries
+release/tag/asset metadata, reruns the same semantic validator, recomputes the
+consumer projection, and rechecks both clean checkouts immediately before
+exposing a local resolver index.
 
 Projection-compatible consumers may deliberately use a generation produced by
 another exact-main commit. Canonical Homebrew production is stricter:
 `.github/scripts/materialize-exact-package-generations.sh` requires each
-generation's `package_source_sha` to equal the admitted producer checkout
-exactly. It materializes the independent wasm32 and wasm64 `browser-inputs`
+generation to have been admitted against the exact consumer checkout. For a
+legacy v1 generation, its sole `package_source_sha` must equal that checkout.
+For v2, `validated_against_main.commit` must equal it, while the separately
+verified archive producer may truthfully remain an earlier commit such as `H`.
+The script materializes the independent wasm32 and wasm64 `browser-inputs`
 generations, composes only their verified local indexes, and exposes one
 `file://` resolver index beside the exact downloaded archives. It never uses
 the mutable `binaries-abi-v<N>` index as a base or fallback.
