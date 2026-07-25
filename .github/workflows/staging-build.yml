@@ -1045,6 +1045,12 @@ jobs:
                 bash .github/scripts/compose-staging-release-snapshots.sh \
                   --target-dir "$TARGET_SNAPSHOT" \
                   --output-dir "$SNAPSHOT"
+              elif [ "$ROOTFS_STAGING_ONLY" = "true" ]; then
+                # WHY: preflight already proved a self-contained target. If it
+                # changes before materialization, canonical fallback would hide
+                # that race and let a non-freezable target look successful.
+                echo "limited rootfs staging target changed after preflight; refusing canonical supplementation" >&2
+                exit 1
               else
                 CANONICAL_SNAPSHOT="$RUNNER_TEMP/fresh-canonical-supplement"
                 bash .github/scripts/validate-staging-release.sh \

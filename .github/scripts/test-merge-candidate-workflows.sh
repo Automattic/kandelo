@@ -124,6 +124,9 @@ grep -Fq 'bash .github/scripts/derive-rootfs-staging-scope.sh' "$STAGING_WORKFLO
   fail "Staging does not derive the rootfs scope from the validated package projection"
 grep -Fq '[ "$ROOTFS_STAGING_ONLY" != "true" ] &&' "$STAGING_WORKFLOW" || \
   fail "Limited rootfs staging can skip entries already present in the canonical release"
+grep -Fq 'limited rootfs staging target changed after preflight; refusing canonical supplementation' \
+  "$STAGING_WORKFLOW" || \
+  fail "Limited rootfs staging can hide target mutation with canonical supplementation"
 grep -Fq 'expected_parents="$base_sha $head_sha"' "$VERIFY_SCRIPT" || \
   fail "merge-commit activation does not bind the exact prepared base and head parents"
 
