@@ -11,6 +11,7 @@ import {
   PROCESS_STATE_RUNNING,
   PROCESS_STATE_STOPPED,
 } from "../src/generated/abi";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 describe("DeferredWorkerHandle", () => {
   it("does not construct or dispatch to a Worker before start", () => {
@@ -164,7 +165,7 @@ describe("stopped process Worker launch gate", () => {
     worker.processes.set(41, { memory, channels: [channel] });
     worker.kernel = { toKernelPtr: (value: number) => value };
     worker.kernelMemory = createSharedMemory();
-    worker.scratchOffset = 0;
+    installKernelWorkerTestScratch(worker, worker.kernelMemory);
     worker.channelTids = new Map();
     worker.kernelInstance.exports.kernel_dequeue_signal = vi.fn(() => {
       processState = PROCESS_STATE_EXITED;
@@ -194,7 +195,7 @@ describe("stopped process Worker launch gate", () => {
     worker.stoppedPids.add(41);
     worker.kernel = { toKernelPtr: (value: number) => value };
     worker.kernelMemory = createSharedMemory();
-    worker.scratchOffset = 0;
+    installKernelWorkerTestScratch(worker, worker.kernelMemory);
     worker.kernelInstance.exports.kernel_dequeue_signal = vi.fn(() => {
       processState = PROCESS_STATE_STOPPED;
       return 0;

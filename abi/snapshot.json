@@ -1331,6 +1331,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_semctl_array_bytes",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_send",
       "signature": "(i32,i32,i32,i32) -> (i32)"
     },
@@ -1523,6 +1528,16 @@
       "kind": "func",
       "name": "kernel_spawn_process",
       "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_spawn_scratch_capacity",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_spawn_scratch_reserve",
+      "signature": "(i32) -> (i32)"
     },
     {
       "kind": "func",

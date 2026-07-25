@@ -87,6 +87,10 @@ kernel_ipc_shmat_for_task(pid, tid, shmid, addr, flags) → segment_size | -errn
 kernel_ipc_shmdt_for_task(pid, tid, shmid) → 0 | -errno
 kernel_ipc_shmat_for_process(pid, shmid, addr, flags) → segment_size | -errno
 kernel_ipc_shmdt_for_process(pid, shmid) → 0 | -errno
+kernel_alloc_scratch(size) → kernel_owned_pointer | 0
+kernel_spawn_scratch_reserve(minimum_capacity) → kernel_owned_pointer | 0
+kernel_spawn_scratch_capacity() → retained_capacity
+kernel_semctl_array_bytes(semid, command) → bytes | -errno
 kernel_get_cwd(pid, buf, len) → bytes_written
 kernel_set_max_addr(pid, addr) → 0
 kernel_set_brk_base(pid, addr) → 0
@@ -146,6 +150,52 @@ Key host components:
 | SharedIpcTable | `shared-ipc-table.ts` | SysV IPC (msg queues, semaphores, shm) |
 | NodeWorkerAdapter | `worker-adapter.ts` | Creates Node.js worker_threads |
 | BrowserWorkerAdapter | `worker-adapter-browser.ts` | Creates Web Workers |
+
+### Kernel-owned scratch transfers
+
+The host moves syscall payloads through allocations owned by the Rust kernel.
+`host/src/kernel-scratch.ts::KernelScratchRegion` carries each allocation's
+pointer and declared capacity together. Callers can read or write it only
+inside a synchronous `KernelScratchLease`, which checks:
+
+1. safe-integer and non-negative offsets and lengths;
+2. lossless wasm32/wasm64 pointer conversion;
+3. the requested range against the allocation capacity; and
+4. the resulting address against the current kernel `Memory.buffer`.
+
+The capacity check and memory-buffer check answer different questions. The
+second proves that an address exists in linear memory. It does not prove that
+the allocator assigned all of those bytes to this scratch region. For example,
+a 70 KiB write may fit comfortably in a multi-megabyte `Memory` while crossing
+the end of a 65 KiB scratch allocation and corrupting the next Rust heap
+object.
+
+The central worker owns separate main-syscall and TCP regions for the kernel
+lifetime. Sequential operations reuse them cheaply. A lease rejects nested or
+promise-returning work, and a guarded data view is revoked when the lease ends,
+so a callback or retry cannot observe bytes replaced by another operation.
+Async syscall preparation detaches caller data into host-owned arrays; the
+final stage, Rust call, and output snapshot happen in one lease without an
+`await`.
+
+Large spawn blobs use a different kernel-owned high-water region in
+`crates/kernel/src/spawn.rs::SpawnScratchBuffer`. Its synchronous reserve
+operation may move the Rust `Vec`, so the host discards the old region before
+reserving and holds no lease across that call. It then consumes the returned
+pointer and capacity as one value. The allocation lives until the kernel
+instance ends and grows only to the largest accepted blob seen, rather than
+reserving the 8,417,320-byte protocol ceiling on the first approximately
+65 KiB overflow. Older ABI-compatible kernels without the additive reserve
+exports retain the safe fixed-ceiling fallback.
+
+Rust-lent host-import destinations are deliberately separate. Rust supplies a
+pointer and capacity valid for that synchronous import, so
+`WasmPosixKernel.writeKernelBytes` and `kernelDestinationView` check that range
+without claiming it came from the scratch allocator. Process memory,
+framebuffers, and explicit shared-memory mappings keep their own ownership
+models. `host/test/kernel-scratch-contract.test.ts` rejects future bare scratch
+pointers or direct variable-size kernel-memory writes outside these reviewed
+paths.
 
 ### Kernel heap lifetime
 
@@ -538,10 +588,17 @@ caller now take.
    contract as `execve`, copies it to bounded kernel-owned scratch, and calls
    `kernel_spawn_process(parent_pid, caller_tid, blob_ptr, blob_len)`. Ordinary
    blobs reuse the channel-sized syscall scratch. A blob above that size
-   lazily allocates one whole-spawn buffer and reuses it for the kernel
-   lifetime. Keeping both paths kernel-owned prevents a large environment or
-   file-action list from overwriting adjacent Rust heap state; the explicit
-   whole-blob ceiling also bounds data that `ARG_MAX` does not count.
+   reserves a Rust-owned reusable region to the requested high-water mark and
+   reuses it for the kernel lifetime. Keeping both paths kernel-owned prevents
+   a large environment or file-action list from overwriting adjacent Rust heap
+   state; the explicit 8,417,320-byte whole-blob ceiling also bounds file-action
+   data that `ARG_MAX` does not count. The advertised 4 MiB `ARG_MAX`,
+   4,096-byte `PATH_MAX`, and 1,024-entry `IOV_MAX` live in
+   `crates/shared/src/lib.rs::platform_limits` and generate the Rust,
+   TypeScript, and musl consumers. The separate authoritative spawn wire
+   contract generates the 40-byte header, 28-byte action records, 4,096 argv
+   and environment entry caps, 1,024 actions, and complete ceiling. Count caps
+   are defensive parser limits; they are not additional POSIX platform limits.
 3. Kernel parses the blob (`crates/kernel/src/spawn.rs::parse_blob` —
    the trust boundary; bails with EINVAL on any malformed offset), validates
    `caller_tid` as a live task belonging to the parent, and calls

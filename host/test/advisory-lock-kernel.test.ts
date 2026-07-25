@@ -16,6 +16,7 @@ import {
   CAPTURED_STDIO,
   CentralizedKernelWorker,
 } from "../src/kernel-worker";
+import type { KernelScratchLease } from "../src/kernel-scratch";
 import { NodePlatformIO } from "../src/platform/node";
 import type { PlatformIO } from "../src/types";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
@@ -100,30 +101,45 @@ function issue(
   syscall: number,
   args: Array<number | bigint>,
 ): SyscallResult {
-  const kernelMemory = (worker as any).kernelMemory as WebAssembly.Memory;
-  const scratchOffset = (worker as any).scratchOffset as number;
-  const channel = new DataView(kernelMemory.buffer, scratchOffset);
-  channel.setUint32(CH_SYSCALL, syscall, true);
-  channel.setUint32(CH_ERRNO, 0, true);
-  channel.setBigInt64(CH_RETURN, 0n, true);
-  for (let index = 0; index < 6; index++) {
-    channel.setBigInt64(
-      CH_ARGS + index * CH_ARG_SIZE,
-      BigInt(args[index] ?? 0),
-      true,
-    );
-  }
+  return issuePrepared(worker, pid, syscall, () => args);
+}
 
+function issuePrepared(
+  worker: CentralizedKernelWorker,
+  pid: number,
+  syscall: number,
+  prepareArgs: (lease: KernelScratchLease) => Array<number | bigint>,
+): SyscallResult {
   const handleChannel = (worker as any).kernelInstance.exports
     .kernel_handle_channel as (offset: number | bigint, pid: number) => number;
   const setCurrentTid = (worker as any).kernelInstance.exports
     .kernel_set_current_tid as (pid: number, tid: number) => number;
   expect(setCurrentTid(pid, pid)).toBe(0);
-  handleChannel(worker.toKernelPtr(scratchOffset), pid);
-  return {
-    value: Number(channel.getBigInt64(CH_RETURN, true)),
-    errno: channel.getUint32(CH_ERRNO, true),
-  };
+  return (worker as any).scratchRegion.withLease(
+    (lease: KernelScratchLease) => {
+      const args = prepareArgs(lease);
+      const channel = lease.dataView(0, CH_TOTAL_SIZE);
+      channel.setUint32(CH_SYSCALL, syscall, true);
+      channel.setUint32(CH_ERRNO, 0, true);
+      channel.setBigInt64(CH_RETURN, 0n, true);
+      for (let index = 0; index < 6; index++) {
+        channel.setBigInt64(
+          CH_ARGS + index * CH_ARG_SIZE,
+          BigInt(args[index] ?? 0),
+          true,
+        );
+      }
+      handleChannel(
+        worker.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+        pid,
+      );
+      const result = lease.dataView(0, CH_TOTAL_SIZE);
+      return {
+        value: Number(result.getBigInt64(CH_RETURN, true)),
+        errno: result.getUint32(CH_ERRNO, true),
+      };
+    },
+  );
 }
 
 function openFile(
@@ -131,12 +147,20 @@ function openFile(
   pid: number,
   path: string,
 ): number {
-  const kernelMemory = (worker as any).kernelMemory as WebAssembly.Memory;
-  const scratchOffset = (worker as any).scratchOffset as number;
-  const pathPtr = scratchOffset + CH_DATA;
   const encoded = new TextEncoder().encode(`${path}\0`);
-  new Uint8Array(kernelMemory.buffer).set(encoded, pathPtr);
-  const result = issue(worker, pid, ABI_SYSCALLS.Open, [pathPtr, O_RDWR, 0]);
+  const result = issuePrepared(
+    worker,
+    pid,
+    ABI_SYSCALLS.Open,
+    (lease) => {
+      lease.copyFrom(encoded, CH_DATA);
+      return [
+        lease.address(CH_DATA, encoded.byteLength),
+        O_RDWR,
+        0,
+      ];
+    },
+  );
   expect(result.errno).toBe(0);
   expect(result.value).toBeGreaterThanOrEqual(3);
   return result.value;
@@ -162,17 +186,21 @@ function lock(
   type = F_WRLCK,
   command = F_SETLK64,
 ): SyscallResult {
-  const kernelMemory = (worker as any).kernelMemory as WebAssembly.Memory;
-  const scratchOffset = (worker as any).scratchOffset as number;
-  const flockPtr = scratchOffset + CH_DATA;
-  const flock = new DataView(kernelMemory.buffer, flockPtr, 32);
-  new Uint8Array(kernelMemory.buffer, flockPtr, 32).fill(0);
-  flock.setInt16(0, type, true);
-  flock.setInt16(2, 0, true); // SEEK_SET
-  flock.setBigInt64(8, start, true);
-  flock.setBigInt64(16, len, true);
-  // l_pid remains zero, as required for F_OFD_* commands.
-  return issue(worker, pid, ABI_SYSCALLS.Fcntl, [fd, command, flockPtr]);
+  return issuePrepared(
+    worker,
+    pid,
+    ABI_SYSCALLS.Fcntl,
+    (lease) => {
+      lease.fill(0, CH_DATA, 32);
+      const flock = lease.dataView(CH_DATA, 32);
+      flock.setInt16(0, type, true);
+      flock.setInt16(2, 0, true); // SEEK_SET
+      flock.setBigInt64(8, start, true);
+      flock.setBigInt64(16, len, true);
+      // l_pid remains zero, as required for F_OFD_* commands.
+      return [fd, command, lease.address(CH_DATA, 32)];
+    },
+  );
 }
 
 async function makeWorker(

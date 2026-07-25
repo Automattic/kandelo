@@ -1820,6 +1820,23 @@ port.on("message", (msg: MainToKernelMessage) => {
       }
       break;
     }
+    case "get_spawn_scratch_capacity": {
+      try {
+        post({
+          type: "response",
+          requestId: msg.requestId,
+          result: kernelWorker.getSpawnScratchCapacity(),
+        });
+      } catch (err) {
+        post({
+          type: "response",
+          requestId: msg.requestId,
+          result: undefined,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
+      break;
+    }
     case "enum_procs": {
       // Snapshot the kernel's process table for the Inspector → Procs tab.
       // Mirrors the Browser-side handler in browser-kernel-worker-entry.ts.

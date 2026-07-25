@@ -16,6 +16,10 @@ import {
   createProcessMemory,
   type ProcessMemoryLayout,
 } from "../../../../host/src/process-memory";
+import type {
+  KernelScratchLease,
+  KernelScratchRegion,
+} from "../../../../host/src/kernel-scratch";
 import { OpfsFileSystem } from "../../../../host/src/vfs/opfs";
 import { BrowserTimeProvider } from "../../../../host/src/vfs/time";
 import { VirtualPlatformIO } from "../../../../host/src/vfs/vfs";
@@ -51,8 +55,7 @@ interface ChannelInfoForTest {
 }
 
 interface KernelWorkerInternals {
-  kernelMemory: WebAssembly.Memory;
-  scratchOffset: number;
+  scratchRegion: KernelScratchRegion;
   kernelInstance: WebAssembly.Instance;
   processes: Map<number, { channels: ChannelInfoForTest[] }>;
   pendingAdvisoryLockRetries: Map<ChannelInfoForTest, unknown>;
@@ -101,38 +104,48 @@ function issue(
   worker: CentralizedKernelWorker,
   pid: number,
   syscall: number,
-  args: Array<number | bigint>,
+  makeArgs:
+    | Array<number | bigint>
+    | ((scratch: KernelScratchLease) => Array<number | bigint>),
 ): SyscallResult {
   const state = internals(worker);
-  const channel = new DataView(state.kernelMemory.buffer, state.scratchOffset);
-  channel.setUint32(CH_SYSCALL, syscall, true);
-  channel.setUint32(CH_ERRNO, 0, true);
-  channel.setBigInt64(CH_RETURN, 0n, true);
-  for (let index = 0; index < 6; index++) {
-    channel.setBigInt64(
-      CH_ARGS + index * CH_ARG_SIZE,
-      BigInt(args[index] ?? 0),
-      true,
-    );
-  }
+  return state.scratchRegion.withLease((scratch) => {
+    const args = typeof makeArgs === "function"
+      ? makeArgs(scratch)
+      : makeArgs;
+    const channel = scratch.dataView(0, CH_TOTAL_SIZE);
+    channel.setUint32(CH_SYSCALL, syscall, true);
+    channel.setUint32(CH_ERRNO, 0, true);
+    channel.setBigInt64(CH_RETURN, 0n, true);
+    for (let index = 0; index < 6; index++) {
+      channel.setBigInt64(
+        CH_ARGS + index * CH_ARG_SIZE,
+        BigInt(args[index] ?? 0),
+        true,
+      );
+    }
 
-  const handleChannel = state.kernelInstance.exports.kernel_handle_channel as (
-    offset: number | bigint,
-    pid: number,
-  ) => number;
-  const setCurrentTid = state.kernelInstance.exports.kernel_set_current_tid as (
-    pid: number,
-    tid: number,
-  ) => number;
-  const bindResult = setCurrentTid(pid, pid);
-  if (bindResult !== 0) {
-    throw new Error(`kernel_set_current_tid(${pid}, ${pid}) failed: ${bindResult}`);
-  }
-  handleChannel(worker.toKernelPtr(state.scratchOffset), pid);
-  return {
-    value: Number(channel.getBigInt64(CH_RETURN, true)),
-    errno: channel.getUint32(CH_ERRNO, true),
-  };
+    const handleChannel = state.kernelInstance.exports.kernel_handle_channel as (
+      offset: number | bigint,
+      pid: number,
+    ) => number;
+    const setCurrentTid = state.kernelInstance.exports.kernel_set_current_tid as (
+      pid: number,
+      tid: number,
+    ) => number;
+    const bindResult = setCurrentTid(pid, pid);
+    if (bindResult !== 0) {
+      throw new Error(`kernel_set_current_tid(${pid}, ${pid}) failed: ${bindResult}`);
+    }
+    handleChannel(
+      worker.toKernelPtr(scratch.address(0, CH_TOTAL_SIZE)),
+      pid,
+    );
+    return {
+      value: Number(channel.getBigInt64(CH_RETURN, true)),
+      errno: channel.getUint32(CH_ERRNO, true),
+    };
+  });
 }
 
 function openFile(
@@ -140,13 +153,20 @@ function openFile(
   pid: number,
   path: string,
 ): number {
-  const state = internals(worker);
-  const pathPtr = state.scratchOffset + CH_DATA;
-  new Uint8Array(state.kernelMemory.buffer).set(
-    new TextEncoder().encode(`${path}\0`),
-    pathPtr,
+  const pathBytes = new TextEncoder().encode(`${path}\0`);
+  const result = issue(
+    worker,
+    pid,
+    ABI_SYSCALLS.Open,
+    (scratch) => {
+      scratch.copyFrom(pathBytes, CH_DATA);
+      return [
+        scratch.address(CH_DATA, pathBytes.byteLength),
+        O_RDWR,
+        0,
+      ];
+    },
   );
-  const result = issue(worker, pid, ABI_SYSCALLS.Open, [pathPtr, O_RDWR, 0]);
   if (result.errno !== 0 || result.value < 3) {
     throw new Error(
       `kernel open failed for pid ${pid}: value=${result.value} errno=${result.errno}`,
@@ -192,10 +212,19 @@ function lock(
   type = F_WRLCK,
   command = F_SETLK64,
 ): SyscallResult {
-  const state = internals(worker);
-  const flockPtr = state.scratchOffset + CH_DATA;
-  writeFlock(state.kernelMemory, start, len, type, flockPtr);
-  return issue(worker, pid, ABI_SYSCALLS.Fcntl, [fd, command, flockPtr]);
+  return issue(worker, pid, ABI_SYSCALLS.Fcntl, (scratch) => {
+    scratch.fill(0, CH_DATA, 32);
+    const flock = scratch.dataView(CH_DATA, 32);
+    flock.setInt16(0, type, true);
+    flock.setInt16(2, 0, true); // SEEK_SET
+    flock.setBigInt64(8, start, true);
+    flock.setBigInt64(16, len, true);
+    return [
+      fd,
+      command,
+      scratch.address(CH_DATA, 32),
+    ];
+  });
 }
 
 function prepareProcessFcntl(

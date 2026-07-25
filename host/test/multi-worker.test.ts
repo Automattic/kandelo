@@ -33,6 +33,7 @@ import {
   PROCESS_STATE_EXITED,
   WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
 } from "../src/generated/abi";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 const MAX_PAGES = 1024; // 64 MiB: enough to prove initial < maximum.
 const WASM32_CONTINUATION_HEADER_SIZE =
@@ -101,8 +102,7 @@ function issueThreadAttachment(
 ) {
   const channel = (worker as any).processes.get(pid)?.channels[0];
   if (!channel) throw new Error(`No main channel for process ${pid}`);
-  const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
-  const kernelView = new DataView(kernelMemory.buffer);
+  const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
   let attachment: Parameters<CentralizedKernelWorker["attachThreadChannel"]>[0]
     | undefined;
   new DataView(channel.memory.buffer, channel.channelOffset)
@@ -121,11 +121,12 @@ function issueThreadAttachment(
     toKernelPtr: (value: number | bigint) => Number(value),
   };
   (worker as any).kernelMemory = kernelMemory;
-  (worker as any).scratchOffset = 0;
+  installKernelWorkerTestScratch(worker as any, kernelMemory);
   (worker as any).currentHandlePid = 0;
   (worker as any).threadCtidPtrs ??= new Map();
   (worker as any).bindKernelTidForChannel = vi.fn();
-  (worker as any).kernelInstance.exports.kernel_handle_channel = vi.fn(() => {
+  (worker as any).kernelInstance.exports.kernel_handle_channel = vi.fn((offset: number) => {
+    const kernelView = new DataView(kernelMemory.buffer, offset);
     kernelView.setBigInt64(CH_RETURN, BigInt(tid), true);
     kernelView.setUint32(CH_ERRNO, 0, true);
     return 0;
@@ -142,6 +143,39 @@ function createAndRegisterProcess(
   const pid = kw.createProcess(CAPTURED_STDIO);
   attachProcess(kw, pid, entry);
   return pid;
+}
+
+function issueDirectKernelOpen(
+  worker: CentralizedKernelWorker,
+  pid: number,
+  path: string,
+): { value: number; errno: number } {
+  const region = (worker as any).scratchRegion;
+  const encoded = new TextEncoder().encode(`${path}\0`);
+  const handleChannel = (worker as any).kernelInstance.exports
+    .kernel_handle_channel as (offset: number, pid: number) => number;
+  const setCurrentTid = (worker as any).kernelInstance.exports
+    .kernel_set_current_tid as (pid: number, tid: number) => number;
+  expect(setCurrentTid(pid, pid)).toBe(0);
+  return region.withLease((lease: any) => {
+    const pathPointer = lease.address(CH_DATA, encoded.byteLength);
+    lease.copyFrom(encoded, CH_DATA);
+    const channel = lease.dataView(0, CH_TOTAL_SIZE);
+    channel.setUint32(CH_SYSCALL, ABI_SYSCALLS.Open, true);
+    for (let index = 0; index < 6; index++) {
+      channel.setBigInt64(CH_ARGS + index * CH_ARG_SIZE, 0n, true);
+    }
+    channel.setBigInt64(CH_ARGS, BigInt(pathPointer), true);
+    handleChannel(
+      worker.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)) as number,
+      pid,
+    );
+    const result = lease.dataView(0, CH_TOTAL_SIZE);
+    return {
+      value: Number(result.getBigInt64(CH_RETURN, true)),
+      errno: result.getUint32(CH_ERRNO, true),
+    };
+  });
 }
 
 describe("CentralizedKernelWorker Process Management", () => {
@@ -822,10 +856,9 @@ describe("CentralizedKernelWorker Process Management", () => {
     processView.setUint32(CH_DATA + 4, 22, true);
 
     const kernelMemory = new WebAssembly.Memory({
-      initial: 1,
-      maximum: 1,
+      initial: 2,
+      maximum: 2,
     });
-    const kernelView = new DataView(kernelMemory.buffer);
     const threadCtidPtrs = new Map<string, number>();
     let resolveClone!: () => void;
     let kw!: CentralizedKernelWorker;
@@ -846,7 +879,6 @@ describe("CentralizedKernelWorker Process Management", () => {
         },
       },
       kernelMemory,
-      scratchOffset: 0,
       currentHandlePid: 0,
       activeChannels: [channel],
       channelTids: new Map<string, number>(),
@@ -864,7 +896,8 @@ describe("CentralizedKernelWorker Process Management", () => {
         exports: {
           kernel_get_process_exit_signal: vi.fn(() => -1),
           kernel_validate_task: vi.fn(() => 0),
-          kernel_handle_channel: vi.fn(() => {
+          kernel_handle_channel: vi.fn((offset: number) => {
+            const kernelView = new DataView(kernelMemory.buffer, offset);
             kernelView.setBigInt64(CH_RETURN, BigInt(tid), true);
             kernelView.setUint32(CH_ERRNO, 0, true);
             return 0;
@@ -872,6 +905,7 @@ describe("CentralizedKernelWorker Process Management", () => {
         },
       },
     });
+    installKernelWorkerTestScratch(kw as any, kernelMemory);
 
     (kw as any).handleClone(
       channel,
@@ -904,8 +938,7 @@ describe("CentralizedKernelWorker Process Management", () => {
     const processView = new DataView(oldMemory.buffer, channelOffset);
     processView.setUint32(CH_DATA, 11, true);
     processView.setUint32(CH_DATA + 4, 22, true);
-    const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
-    const kernelView = new DataView(kernelMemory.buffer);
+    const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
     const threadCtidPtrs = new Map<string, number>();
     let resolveClone!: () => void;
     const onClone = vi.fn(() => new Promise<void>((resolve) => {
@@ -916,7 +949,6 @@ describe("CentralizedKernelWorker Process Management", () => {
       callbacks: { onClone },
       kernel: { toKernelPtr: (value: number | bigint) => Number(value) },
       kernelMemory,
-      scratchOffset: 0,
       currentHandlePid: 0,
       processes: new Map([[pid, { channels: [oldChannel] }]]),
       threadCtidPtrs,
@@ -924,7 +956,8 @@ describe("CentralizedKernelWorker Process Management", () => {
       bindKernelTidForChannel: vi.fn(),
       kernelInstance: {
         exports: {
-          kernel_handle_channel: vi.fn(() => {
+          kernel_handle_channel: vi.fn((offset: number) => {
+            const kernelView = new DataView(kernelMemory.buffer, offset);
             kernelView.setBigInt64(CH_RETURN, BigInt(tid), true);
             kernelView.setUint32(CH_ERRNO, 0, true);
             return 0;
@@ -932,6 +965,7 @@ describe("CentralizedKernelWorker Process Management", () => {
         },
       },
     });
+    installKernelWorkerTestScratch(kw as any, kernelMemory);
 
     (kw as any).handleClone(
       oldChannel,
@@ -1216,30 +1250,14 @@ describe("CentralizedKernelWorker Process Management", () => {
 
     // Issue open(2) directly through the real kernel export so the Rust
     // Process owns the exact host handle that unregisterProcess must release.
-    const kernelMemory = (kw as any).kernelMemory as WebAssembly.Memory;
-    const scratchOffset = (kw as any).scratchOffset as number;
-    const pathPtr = scratchOffset + CH_DATA;
-    const path = new TextEncoder().encode(
-      `${join(process.cwd(), "../Cargo.toml")}\0`,
+    const opened = issueDirectKernelOpen(
+      kw,
+      pid,
+      join(process.cwd(), "../Cargo.toml"),
     );
-    new Uint8Array(kernelMemory.buffer).set(path, pathPtr);
-    const channel = new DataView(kernelMemory.buffer, scratchOffset);
-    channel.setUint32(CH_SYSCALL, ABI_SYSCALLS.Open, true);
-    for (let i = 0; i < 6; i++) {
-      channel.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
-    }
-    channel.setBigInt64(CH_ARGS, BigInt(pathPtr), true);
-    const handleChannel = (kw as any).kernelInstance.exports
-      .kernel_handle_channel as (offset: number, pid: number) => number;
-    const setCurrentTid = (kw as any).kernelInstance.exports
-      .kernel_set_current_tid as (pid: number, tid: number) => number;
-    expect(setCurrentTid(pid, pid)).toBe(0);
-    handleChannel(kw.toKernelPtr(scratchOffset) as number, pid);
 
-    expect(channel.getUint32(CH_ERRNO, true)).toBe(0);
-    expect(Number(channel.getBigInt64(CH_RETURN, true))).toBeGreaterThanOrEqual(
-      3,
-    );
+    expect(opened.errno).toBe(0);
+    expect(opened.value).toBeGreaterThanOrEqual(3);
     expect(open).toHaveBeenCalledOnce();
     const hostHandle = open.mock.results[0].value;
     expect(close).not.toHaveBeenCalledWith(hostHandle);
@@ -1261,27 +1279,13 @@ describe("CentralizedKernelWorker Process Management", () => {
 
     const procMemory = createProcessMemory();
     const pid = createAndRegisterProcess(kw, procMemory);
-    const kernelMemory = (kw as any).kernelMemory as WebAssembly.Memory;
-    const scratchOffset = (kw as any).scratchOffset as number;
-    const pathPtr = scratchOffset + CH_DATA;
-    const path = new TextEncoder().encode(
-      `${join(process.cwd(), "../Cargo.toml")}\0`,
+    const opened = issueDirectKernelOpen(
+      kw,
+      pid,
+      join(process.cwd(), "../Cargo.toml"),
     );
-    new Uint8Array(kernelMemory.buffer).set(path, pathPtr);
-    const channel = new DataView(kernelMemory.buffer, scratchOffset);
-    channel.setUint32(CH_SYSCALL, ABI_SYSCALLS.Open, true);
-    for (let i = 0; i < 6; i++) {
-      channel.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
-    }
-    channel.setBigInt64(CH_ARGS, BigInt(pathPtr), true);
-    const handleChannel = (kw as any).kernelInstance.exports
-      .kernel_handle_channel as (offset: number, pid: number) => number;
-    const setCurrentTid = (kw as any).kernelInstance.exports
-      .kernel_set_current_tid as (pid: number, tid: number) => number;
-    expect(setCurrentTid(pid, pid)).toBe(0);
-    handleChannel(kw.toKernelPtr(scratchOffset) as number, pid);
-    const guestFd = Number(channel.getBigInt64(CH_RETURN, true));
-    expect(channel.getUint32(CH_ERRNO, true)).toBe(0);
+    const guestFd = opened.value;
+    expect(opened.errno).toBe(0);
     expect(guestFd).toBeGreaterThanOrEqual(3);
     const hostHandle = open.mock.results[0].value;
     const stat = io.fstat(hostHandle);

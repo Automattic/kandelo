@@ -284,6 +284,12 @@ export interface GetKernelMemoryPagesRequestMessage {
   requestId: number;
 }
 
+/** Read the retained capacity of the kernel-owned large-spawn region. */
+export interface GetSpawnScratchCapacityRequestMessage {
+  type: "get_spawn_scratch_capacity";
+  requestId: number;
+}
+
 /** Snapshot the kernel's process table. The kernel-worker forwards to
  * `CentralizedKernelWorker.enumProcs()`; the response carries `ProcessSnapshot[]`.
  * Used by Kandelo's Inspector → Procs tab. */
@@ -377,6 +383,7 @@ export type MainToKernelMessage =
   | RegisterLazyArchivesMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
+  | GetSpawnScratchCapacityRequestMessage
   | MouseInjectMessage
   | AudioDrainMessage
   | EnumProcsRequestMessage

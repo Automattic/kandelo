@@ -258,7 +258,12 @@ async function runProgramWithExecMap(
   programBytes: ArrayBuffer,
   argv: string[],
   execMap: Array<{ path: string; url: string; size: number }>,
-): Promise<{ exitCode: number; stdout: string }> {
+): Promise<{
+  exitCode: number;
+  stdout: string;
+  spawnScratchCapacity: number;
+  kernelMemoryPages: number;
+}> {
   let stdout = "";
   // Bake the exec-map entries into the image as lazy files; the worker fetches
   // them on demand when the child execs them.
@@ -276,7 +281,12 @@ async function runProgramWithExecMap(
   try {
     await kernel.initFromImage({ vfsImage });
     const exitCode = await kernel.spawn(programBytes, argv);
-    return { exitCode, stdout };
+    return {
+      exitCode,
+      stdout,
+      spawnScratchCapacity: await kernel.getSpawnScratchCapacity(),
+      kernelMemoryPages: await kernel.getKernelMemoryPages(),
+    };
   } finally {
     try { await kernel.destroy(); } catch {}
     await settleWebKitReclaim();
@@ -346,6 +356,8 @@ async function runProcessLifecycle(): Promise<Record<string, number>> {
   ]);
   if (spawn.exitCode !== 0) throw new Error(`spawn-bench failed: ${spawn.stdout}`);
   Object.assign(results, parseMetrics(spawn.stdout));
+  results.spawn_scratch_retained_bytes = spawn.spawnScratchCapacity;
+  results.spawn_scratch_kernel_bytes = spawn.kernelMemoryPages * 65_536;
 
   return results;
 }

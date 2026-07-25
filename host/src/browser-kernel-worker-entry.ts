@@ -1913,44 +1913,15 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
 
 function handlePipeRead(msg: Extract<MainToKernelMessage, { type: "pipe_read" }>) {
   if (!kernelInstance) { respond(msg.requestId, null); return; }
-  const pipeRead = kernelInstance.exports.kernel_pipe_read as (
-    pid: number, pipeIdx: number, bufPtr: KernelPointer, bufLen: number,
-  ) => number;
-  const scratchOffset = (kernelWorker as any).tcpScratchOffset || (kernelWorker as any).scratchOffset;
-  const chunks: Uint8Array[] = [];
-  for (;;) {
-    const n = pipeRead(msg.pid, msg.pipeIdx, kernelWorker.toKernelPtr(scratchOffset), PAGE_SIZE);
-    if (n <= 0) break;
-    const mem = new Uint8Array(kernelMemory!.buffer);
-    chunks.push(mem.slice(scratchOffset, scratchOffset + n));
-  }
-  if (chunks.length === 0) { respond(msg.requestId, null); return; }
-  const total = chunks.reduce((s, c) => s + c.length, 0);
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.length;
-  }
-  respond(msg.requestId, result);
+  respond(
+    msg.requestId,
+    kernelWorker.readPipeAvailable(msg.pid, msg.pipeIdx),
+  );
 }
 
 function handlePipeWrite(msg: Extract<MainToKernelMessage, { type: "pipe_write" }>) {
   if (!kernelInstance) { respond(msg.requestId, -1); return; }
-  const pipeWrite = kernelInstance.exports.kernel_pipe_write as (
-    pid: number, pipeIdx: number, bufPtr: KernelPointer, bufLen: number,
-  ) => number;
-  const scratchOffset = (kernelWorker as any).tcpScratchOffset || (kernelWorker as any).scratchOffset;
-  let written = 0;
-  const data = msg.data;
-  while (written < data.length) {
-    const chunk = Math.min(data.length - written, PAGE_SIZE);
-    let mem = new Uint8Array(kernelMemory!.buffer);
-    mem.set(data.subarray(written, written + chunk), scratchOffset);
-    const n = pipeWrite(msg.pid, msg.pipeIdx, kernelWorker.toKernelPtr(scratchOffset), chunk);
-    if (n <= 0) break;
-    written += n;
-  }
+  const written = kernelWorker.writePipeData(msg.pid, msg.pipeIdx, msg.data);
   // Wake readers + pollers watching this pipe + broad wake.
   kernelWorker.notifyPipeReadable(msg.pipeIdx);
   respond(msg.requestId, written);
@@ -2339,6 +2310,14 @@ sw.onmessage = (e: MessageEvent) => {
     case "get_kernel_memory_pages": {
       try {
         respond(msg.requestId, kernelWorker.getKernelMemoryPages());
+      } catch (err) {
+        respondError(msg.requestId, (err as Error)?.message ?? String(err));
+      }
+      break;
+    }
+    case "get_spawn_scratch_capacity": {
+      try {
+        respond(msg.requestId, kernelWorker.getSpawnScratchCapacity());
       } catch (err) {
         respondError(msg.requestId, (err as Error)?.message ?? String(err));
       }

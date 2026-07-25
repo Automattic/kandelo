@@ -12,6 +12,7 @@ import {
   CH_RETURN,
   HOST_INTERCEPTED_SYSCALLS,
 } from "../src/generated/abi";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 describe("exec host-state transition", () => {
   it("rejects an async continuation from a replaced process generation", () => {
@@ -363,8 +364,7 @@ describe("exec host-state transition", () => {
       processes: new Map([[7, { channels: [channel], memory }]]),
       callbacks: { onSpawn },
       completeChannel,
-      kernelMemory: new WebAssembly.Memory({ initial: 1 }),
-      scratchOffset: 0,
+      kernelMemory: new WebAssembly.Memory({ initial: 2 }),
       toKernelPtr: (value: number) => value,
       kernelInstance: {
         exports: {
@@ -414,8 +414,7 @@ describe("exec host-state transition", () => {
       processes: new Map([[7, { channels: [channel], memory }]]),
       callbacks: { onSpawn: vi.fn(() => spawned) },
       completeChannel: vi.fn(),
-      kernelMemory: new WebAssembly.Memory({ initial: 1 }),
-      scratchOffset: 0,
+      kernelMemory: new WebAssembly.Memory({ initial: 2 }),
       toKernelPtr: (value: number) => value,
       kernelInstance: {
         exports: {
@@ -608,12 +607,10 @@ describe("exec host-state transition", () => {
 
   it("replaces metadata entry by entry and clears an empty environment", () => {
     const kernelMemory = new WebAssembly.Memory({ initial: 2 });
-    const scratchOffset = 1024;
     const clears: Array<[number, number]> = [];
     const pushes: Array<{ pid: number; kind: number; bytes: Uint8Array }> = [];
     const worker = createWorker({
       kernelMemory,
-      scratchOffset,
       toKernelPtr: (value: number) => value,
       kernelInstance: {
         exports: {
@@ -654,16 +651,15 @@ describe("exec host-state transition", () => {
   });
 
   it("feature-detects metadata replacement and retains legacy small argv", () => {
-    const kernelMemory = new WebAssembly.Memory({ initial: 1 });
-    const setArgv = vi.fn((_pid: number, _ptr: number, len: number) => {
+    const kernelMemory = new WebAssembly.Memory({ initial: 2 });
+    const setArgv = vi.fn((_pid: number, ptr: number, len: number) => {
       expect(new TextDecoder().decode(
-        new Uint8Array(kernelMemory.buffer, 0, len),
+        new Uint8Array(kernelMemory.buffer, ptr, len),
       )).toBe("program\0arg");
       return 0;
     });
     const worker = createWorker({
       kernelMemory,
-      scratchOffset: 0,
       toKernelPtr: (value: number) => value,
       kernelInstance: {
         exports: { kernel_set_process_argv: setArgv },
@@ -748,19 +744,18 @@ describe("exec host-state transition", () => {
     const worker = createWorker({
       currentHandlePid: 0,
       kernelMemory,
-      scratchOffset: 0,
       toKernelPtr: (value: number) => value,
       bindKernelTidForChannel: vi.fn(),
       kernelInstance: {
         exports: {
-          kernel_handle_channel: () => {
-            const args = new DataView(kernelMemory.buffer);
+          kernel_handle_channel: (offset: number) => {
+            const args = new DataView(kernelMemory.buffer, offset);
             const requested = Number(args.getBigInt64(
               CH_ARGS + 2 * CH_ARG_SIZE,
               true,
             ));
             kernelMemory.grow(1);
-            new DataView(kernelMemory.buffer).setBigInt64(
+            new DataView(kernelMemory.buffer, offset).setBigInt64(
               CH_RETURN,
               BigInt(requested),
               true,
@@ -806,7 +801,6 @@ describe("exec host-state transition", () => {
       shmSegmentVersions: new Map([[3, 0]]),
       currentHandlePid: 0,
       kernelMemory,
-      scratchOffset: 0,
       getKernelMem: () => new Uint8Array(kernelMemory.buffer),
       toKernelPtr: (value: number) => value,
       kernelInstance: {
@@ -819,7 +813,12 @@ describe("exec host-state transition", () => {
     });
 
     expect(worker.prepareAddressSpaceForExec(7)).toBe(0);
-    expect(writeChunk).toHaveBeenCalledWith(3, 0, 72, 4);
+    expect(writeChunk).toHaveBeenCalledWith(
+      3,
+      0,
+      worker.testScratchPointer + CH_DATA,
+      4,
+    );
     expect(detach).not.toHaveBeenCalled();
     expect(worker.shmMappings.has(7)).toBe(true);
 
@@ -1148,6 +1147,12 @@ function createWorker(overrides: Record<string, unknown>): any {
       ...(kernelInstance.exports ?? {}),
     },
   };
+  if (worker.kernelMemory instanceof WebAssembly.Memory) {
+    worker.testScratchPointer = installKernelWorkerTestScratch(
+      worker,
+      worker.kernelMemory,
+    );
+  }
   return worker;
 }
 
@@ -1158,8 +1163,7 @@ function issueThreadAttachment(
   fnPtr = 1,
   argPtr = 2,
 ) {
-  const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
-  const kernelView = new DataView(kernelMemory.buffer);
+  const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
   let attachment: Parameters<CentralizedKernelWorker["attachThreadChannel"]>[0]
     | undefined;
   new DataView(channel.memory.buffer, channel.channelOffset)
@@ -1177,15 +1181,18 @@ function issueThreadAttachment(
     },
     kernel: { toKernelPtr: (value: number | bigint) => Number(value) },
     kernelMemory,
-    scratchOffset: 0,
     currentHandlePid: 0,
     threadCtidPtrs: (worker as any).threadCtidPtrs ?? new Map(),
     bindKernelTidForChannel: vi.fn(),
   });
-  (worker as any).kernelInstance.exports.kernel_handle_channel = vi.fn(() => {
-    kernelView.setBigInt64(CH_RETURN, BigInt(tid), true);
-    return 0;
-  });
+  installKernelWorkerTestScratch(worker as any, kernelMemory);
+  (worker as any).kernelInstance.exports.kernel_handle_channel = vi.fn(
+    (offset: number) => {
+      const kernelView = new DataView(kernelMemory.buffer, offset);
+      kernelView.setBigInt64(CH_RETURN, BigInt(tid), true);
+      return 0;
+    },
+  );
   (worker as any).handleClone(channel, [0, 0, 0, 0, 0, 0]);
   if (!attachment) throw new Error("clone callback did not receive attachment");
   return attachment;
