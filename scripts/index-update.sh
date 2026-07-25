@@ -83,7 +83,7 @@ require_canonical_source_authority() {
   [ -n "$CANONICAL_SOURCE_SHA" ] || return 0
   GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}" \
     bash .github/scripts/require-exact-kandelo-main.sh \
-      --repository "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}" \
+      --repository Automattic/kandelo \
       --source-sha "$CANONICAL_SOURCE_SHA" \
       >/dev/null
 }
@@ -443,9 +443,19 @@ EXPECTED_ABI="$(expected_abi_for_target_tag)"
 RELEASE_INDEX_STATE_SCRIPT="${RELEASE_INDEX_STATE_SCRIPT:-scripts/release-index-state.sh}"
 IS_CANONICAL=0
 case "$TARGET_TAG" in binaries-abi-v*) IS_CANONICAL=1 ;; esac
+NORMALIZED_REPOSITORY="$(printf '%s' "${GITHUB_REPOSITORY:-}" | tr '[:upper:]' '[:lower:]')"
+# WHY: `binaries-abi-v<N>` in Automattic/kandelo is the mutable canonical
+# package ledger. Making its authority flag optional would let a new caller
+# silently bypass the exact-main checks that force-rebuild relies on.
+if [ "$IS_CANONICAL" = 1 ] &&
+   [ "$NORMALIZED_REPOSITORY" = "automattic/kandelo" ] &&
+   [ -z "$CANONICAL_SOURCE_SHA" ]; then
+  echo "index-update.sh: Automattic/kandelo canonical publication requires --canonical-source-sha" >&2
+  exit 2
+fi
 if [ -n "$CANONICAL_SOURCE_SHA" ]; then
   if [ "$IS_CANONICAL" != 1 ] ||
-     [ "${GITHUB_REPOSITORY:-}" != "Automattic/kandelo" ] ||
+     [ "$NORMALIZED_REPOSITORY" != "automattic/kandelo" ] ||
      ! [[ "$CANONICAL_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
     echo "index-update.sh: --canonical-source-sha requires an Automattic/kandelo binaries-abi-v<N> target and an exact lowercase 40-character SHA" >&2
     exit 2

@@ -79,10 +79,12 @@ grep -Fq -- '--canonical-source-sha) CANONICAL_SOURCE_SHA="$2"; shift 2' \
   fail "index-update does not parse exact-main authority"
 grep -Fq 'bash .github/scripts/require-exact-kandelo-main.sh' "$INDEX_UPDATE" ||
   fail "index-update does not delegate live-main validation to the tested helper"
-grep -Fq '[ "${GITHUB_REPOSITORY:-}" != "Automattic/kandelo" ]' "$INDEX_UPDATE" ||
+grep -Fq '[ "$NORMALIZED_REPOSITORY" != "automattic/kandelo" ]' "$INDEX_UPDATE" ||
   fail "exact-main index mutation is not bound to Automattic/kandelo"
 grep -Fq '[ "$IS_CANONICAL" != 1 ]' "$INDEX_UPDATE" ||
   fail "exact-main authority can be misapplied to a noncanonical release"
+grep -Fq 'canonical publication requires --canonical-source-sha' "$INDEX_UPDATE" ||
+  fail "canonical Automattic/kandelo publication does not fail closed without authority"
 
 ensure_line="$(grep -n '^ensure_release_exists$' "$INDEX_UPDATE" | tail -1 | cut -d: -f1)"
 ensure_guard_line="$(

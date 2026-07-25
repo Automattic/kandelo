@@ -964,7 +964,11 @@ escape hatch. It must be dispatched from `refs/heads/main`; its optional legacy
 that SHA to equal live GitHub `refs/heads/main`, every job checks out the exact
 SHA, and each package target uses `--force-source-build`. If main advances
 before an archive or index write, the write fails closed and the rebuild must
-be redispatched at the newer main SHA.
+be redispatched at the newer main SHA. `scripts/index-update.sh` also enforces
+this at the writer boundary: a case-insensitive `Automattic/kandelo`
+`binaries-abi-v<N>` target is rejected unless the caller supplies the exact
+main SHA. External package-source repositories may continue to own their own
+canonical-shaped release tags without claiming Kandelo's publication authority.
 
 The `[compatibility]` block injected into each archive's
 `manifest.toml` is also a pure function of the build inputs (no

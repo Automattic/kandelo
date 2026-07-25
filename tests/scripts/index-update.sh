@@ -17,8 +17,12 @@ set -euo pipefail
 cmd="${1:-}"
 shift || true
 
-case "$cmd" in
+  case "$cmd" in
   api)
+    if [[ "$*" == *"/git/ref/heads/main"* ]]; then
+      printf '%s\n' "${GH_STUB_MAIN_SHA:?}"
+      exit 0
+    fi
     asset_name=""
     if [[ "$*" =~ select\(\.name[[:space:]]==[[:space:]]\"([^\"]+)\" ]]; then
       asset_name="${BASH_REMATCH[1]}"
@@ -193,19 +197,27 @@ run_index_update() {
   local has_index="$3"
   local seed_index="${4:-}"
   local has_ready="${5:-0}"
+  local repository="${6:-example/repo}"
+  local canonical_source_sha="${7:-}"
 
   local case_dir archive_path upload_dir
+  local -a authority_args=()
   case_dir="$(mktemp -d "$TMP_ROOT/case.XXXXXX")"
   archive_path="$case_dir/foo-1.0-rev1-abi${archive_abi}-wasm32-deadbeef.tar.zst"
   upload_dir="$case_dir/uploads"
   printf 'archive bytes\n' > "$archive_path"
   mkdir -p "$upload_dir"
+  if [ -n "$canonical_source_sha" ]; then
+    authority_args+=(--canonical-source-sha "$canonical_source_sha")
+  fi
 
   if ! GH_STUB_HAS_INDEX="$has_index" \
        GH_STUB_INDEX_SOURCE="$seed_index" \
        GH_STUB_UPLOAD_DIR="$upload_dir" \
        GH_STUB_HAS_READY="$has_ready" \
-       GITHUB_REPOSITORY="example/repo" \
+       GH_STUB_MAIN_SHA="0123456789abcdef0123456789abcdef01234567" \
+       GH_TOKEN="test-token" \
+       GITHUB_REPOSITORY="$repository" \
        GITHUB_SHA="0123456789abcdef0123456789abcdef01234567" \
        GITHUB_RUN_ID="123" \
        STATE_LOCK_SCRIPT="$STATE_LOCK_STUB" \
@@ -221,6 +233,7 @@ run_index_update() {
          --archive-path "$archive_path" \
          --archive-name "$(basename "$archive_path")" \
          --cache-key-sha deadbeef \
+         "${authority_args[@]}" \
          >"$case_dir/stdout" \
          2>"$case_dir/stderr"
   then
@@ -293,8 +306,45 @@ assert_index_abi "$repair_index" "$CURRENT_ABI"
 durable_index="$(run_index_update "binaries-abi-v42" 42 0)"
 assert_index_abi "$durable_index" 42
 
+canonical_sha="0123456789abcdef0123456789abcdef01234567"
+canonical_index="$(
+  run_index_update \
+    "binaries-abi-v42" 42 0 "" 0 "Automattic/kandelo" "$canonical_sha"
+)"
+assert_index_abi "$canonical_index" 42
+
+for canonical_repository in Automattic/kandelo automattic/kandelo; do
+  if run_index_update \
+      "binaries-abi-v42" 42 0 "" 0 "$canonical_repository" \
+      >/dev/null 2>"$TMP_ROOT/missing-authority.err"
+  then
+    echo "expected $canonical_repository canonical update without exact-main authority to fail" >&2
+    exit 1
+  fi
+  grep -Fq "canonical publication requires --canonical-source-sha" \
+    "$TMP_ROOT/missing-authority.err"
+done
+
+if run_index_update \
+    "binaries-abi-v42" 42 0 "" 0 "Automattic/kandelo" \
+    "ffffffffffffffffffffffffffffffffffffffff" \
+    >/dev/null 2>"$TMP_ROOT/stale-authority.err"
+then
+  echo "expected stale canonical exact-main authority to fail" >&2
+  exit 1
+fi
+grep -Fq "source SHA must equal the current refs/heads/main commit" \
+  "$TMP_ROOT/stale-authority.err"
+
 candidate_index="$(run_index_update "merge-candidate-abi-v${CURRENT_ABI}-pr-595-run-123-attempt-1" "$CURRENT_ABI" 0)"
 assert_index_abi "$candidate_index" "$CURRENT_ABI"
+
+automattic_candidate_index="$(
+  run_index_update \
+    "merge-candidate-abi-v${CURRENT_ABI}-pr-595-run-123-attempt-1" \
+    "$CURRENT_ABI" 0 "" 0 "Automattic/kandelo"
+)"
+assert_index_abi "$automattic_candidate_index" "$CURRENT_ABI"
 
 if run_index_update \
     "merge-candidate-abi-v${CURRENT_ABI}-pr-595-run-123-attempt-1" \
