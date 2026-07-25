@@ -108,6 +108,16 @@ Moving that final deferred set into `rebuild` completes the 35-Formula,
 fork-instrumented Formulae, changed Tier-2 `bc`, and dependency propagation to
 `less` and `m4` through changed Dash.
 
+For the complete current 42-Formula shell closure, the audited partition is 25
+rebuilds (`dash`, `bash`, `coreutils`, `gawk`, `bc`, `file-formula`, `m4`,
+`make`, `findutils`, `diffutils`, `less`, `tar`, `wget`, `git`, `zip`,
+`unzip`, `nano`, `vim`, `nethack`, `python`, `perl`, `erlang`, `ruby`,
+`libmagic`, and `ed`) and 17 reuses (`ncurses`, `grep`, `sed`,
+`posix-utils-lite`, `curl`, `netcat`, `gzip`, `bzip2`, `xz`, `zstd`, `lsof`,
+`fbdoom`, `modeset`, `libcxx`, `zlib`, `openssl`, and `libcurl`). The remaining
+21 Formulae are outside that shell closure and may stay deferred during the
+product cutover.
+
 Do not treat this audit as a substitute for a mechanically complete payload
 identity. Current Formula sidecars do not bind dependency bottle digests,
 Tier-2 attestations omit some auxiliary inputs, and `netcat/build.toml` does
