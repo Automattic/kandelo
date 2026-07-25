@@ -3,7 +3,7 @@ name = "lamp"
 version = "0.1.0"
 kernel_abi = 7
 # build-lamp-vfs-image.ts starts from shell.vfs.zst, then bakes a service
-# image: dinit as PID 1, nginx, php-fpm/opcache, mariadbd, the MariaDB
+# image: dinit as service supervisor, nginx, php-fpm/opcache, mariadbd, the MariaDB
 # preinitialized /data directory, and a preinstalled WordPress database.
 # The interactive terminal sees the same shell files that the shell demo ships.
 # It reads mariadbd.wasm via `resolveBinary("programs/mariadb/mariadbd.wasm")`.

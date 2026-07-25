@@ -35,7 +35,7 @@ SRC_DIR="$SCRIPT_DIR/ncurses-src"
 # --- Inputs from resolver, with legacy fallbacks ---
 NCURSES_VERSION="${WASM_POSIX_DEP_VERSION:-${NCURSES_VERSION:-6.5}}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/ncurses-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/gnu/ncurses/ncurses-${NCURSES_VERSION}.tar.gz}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftp.gnu.org/gnu/ncurses/ncurses-${NCURSES_VERSION}.tar.gz}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 
 if ! command -v wasm32posix-cc &>/dev/null; then

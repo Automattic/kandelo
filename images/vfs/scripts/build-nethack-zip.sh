@@ -74,7 +74,9 @@ echo "    $(find "$STAGING" -type f | wc -l | tr -d ' ') files"
 ls -lh "$OUTPUT_FILE"
 
 # Install into local-binaries/ so the resolver picks the locally-built
-# nethack.zip over a fetched release. Mirrors images/vfs/scripts/
-# build-vim-zip.sh.
+# nethack.zip over a fetched release. This ZIP is the declared output of
+# nethack-browser-bundle, not nethack: nethack owns nethack.wasm and its
+# runtime tree. Keeping that ownership exact lets the resolver validate the
+# output against the same package manifest that archive-stage is building.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary nethack "$OUTPUT_FILE"
+install_local_binary nethack-browser-bundle "$OUTPUT_FILE" nethack.zip

@@ -723,5 +723,20 @@ describe("declared shell lazy-archive inputs", () => {
     expect(nethackZipBuildScript).toContain(
       'bash "$SCRIPT_DIR/create-deterministic-zip.sh" "$STAGING" "$OUTPUT_FILE"',
     );
+    // The generated ZIP belongs to the bundle package. Assigning it to the
+    // underlying executable package makes manifest-driven installation reject
+    // the ZIP because vim and nethack declare only their .wasm outputs.
+    expect(vimZipBuildScript).toContain(
+      'install_local_binary vim-browser-bundle "$OUTPUT_FILE" vim.zip',
+    );
+    expect(vimZipBuildScript).not.toMatch(
+      /install_local_binary\s+vim\s+"\$OUTPUT_FILE"/,
+    );
+    expect(nethackZipBuildScript).toContain(
+      'install_local_binary nethack-browser-bundle "$OUTPUT_FILE" nethack.zip',
+    );
+    expect(nethackZipBuildScript).not.toMatch(
+      /install_local_binary\s+nethack\s+"\$OUTPUT_FILE"/,
+    );
   });
 });

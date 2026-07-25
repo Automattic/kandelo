@@ -80,7 +80,6 @@ async function main() {
   const otpRoot = "/usr/local/lib/erlang";
   ensureDirRecursive(fs, otpRoot);
   const totalFiles = walkAndWrite(fs, INSTALL_DIR, otpRoot, {
-    failOnError: true,
     preserveMode: true,
     preserveSymlinks: true,
   });

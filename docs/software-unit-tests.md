@@ -292,9 +292,11 @@ Kernel/host fixes present in that historical source-PR handoff:
   host stdio handle for I/O, but `fstat(2)` reports FIFO metadata and
   `isatty(3)` observes non-terminal behavior. This is needed for PHPT
   `--CAPTURE_STDIO--` cases and is a general POSIX metadata correction.
-- Centralized `fork(2)` retries host PID allocation when the kernel still owns a
-  zombie/limbo PID. The kernel remains the source of truth for PID occupancy;
-  `fork(2)` callers should not observe an internal `EEXIST` collision.
+- The historical centralized `fork(2)` path retried a host-selected identity
+  when the kernel still owned a zombie/limbo PID. ABI 42 supersedes that split
+  authority: the Rust `ProcessTable` now allocates fork PIDs, top-level PIDs,
+  spawn PIDs, and clone TIDs from one monotonic sequence, so callers neither
+  choose identities nor handle internal `EEXIST` collisions.
 - Thread exit now clears `CLONE_CHILD_CLEARTID` storage and wakes the futex wait
   word, matching Linux pthread join expectations.
 - Centralized host/kernel calls that pass guest pointers now route through the

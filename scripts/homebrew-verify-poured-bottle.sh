@@ -198,6 +198,25 @@ PUBLISHER_ISOLATION_PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0002-support-isol
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-patched-launcher.sh"
 homebrew_patched_launcher_select_host_git
+if [ -n "$BUILD_USER" ]; then
+  HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+  XTASK_BIN="$KANDELO_ROOT/target/$HOST_TARGET/release/xtask"
+  if [ -z "$HOST_TARGET" ] || [ ! -f "$XTASK_BIN" ] || [ -L "$XTASK_BIN" ] ||
+     [ ! -x "$XTASK_BIN" ]; then
+    echo "homebrew-verify-poured-bottle.sh: exact prebuilt release xtask is unavailable" >&2
+    exit 2
+  fi
+  # WHY: the workflow-scoped path and the independently derived Rust host
+  # target must agree before the checker enters the Formula identity's
+  # read-only source alias. A second valid-looking release binary must not be
+  # able to choose which package projection the isolated test validates.
+  if [ "${WASM_POSIX_XTASK_BIN:-}" != "$XTASK_BIN" ]; then
+    echo "homebrew-verify-poured-bottle.sh: scoped program-index checker differs from the exact host xtask" >&2
+    exit 2
+  fi
+  WASM_POSIX_XTASK_BIN="$XTASK_BIN"
+  export WASM_POSIX_XTASK_BIN
+fi
 
 OUT_PARENT="$(dirname "$OUT")"
 mkdir -p "$OUT_PARENT"
@@ -370,36 +389,9 @@ ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
   echo "homebrew-verify-poured-bottle.sh: host dependency plan exceeds the size limit" >&2
   exit 2
 }
-jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
-  --slurpfile resolved "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" '
-  keys == ["build", "build_and_test", "formula", "full_name", "runtime_and_test", "schema", "tap", "target_taps"] and
-  .schema == 3 and
-  .tap == $tap and
-  .formula == $formula and
-  .full_name == ($tap + "/" + $formula) and
-  (.build | type == "array") and
-  (.build_and_test | type == "array") and
-  (.runtime_and_test | type == "array") and
-  (.build == (.build | sort | unique)) and
-  (.build_and_test == (.build_and_test | sort | unique)) and
-  (.runtime_and_test == (.runtime_and_test | sort | unique)) and
-  (.target_taps == (
-    [$resolved[0].primary, $resolved[0].dependencies[]] |
-    map({tap_name, tap_repository, tap_commit}) | sort_by(.tap_name)
-  )) and
-  (.target_taps | all(.[];
-    keys == ["tap_commit", "tap_name", "tap_repository"] and
-    (.tap_name | type == "string" and test("^[a-z0-9._-]+/[a-z0-9._-]+$")) and
-    (.tap_repository | type == "string" and test("^[a-z0-9._-]+/homebrew-[a-z0-9._-]+$")) and
-    (.tap_commit | type == "string" and test("^[0-9a-f]{40}$"))
-  )) and
-  (.target_taps | map(.tap_name) | index($tap) != null) and
-  ((.build - .build_and_test) | length) == 0 and
-  ((.runtime_and_test - .build_and_test) | length) == 0 and
-  all(.build[]; type == "string" and test("^[a-z0-9][a-z0-9@+_.-]*$")) and
-  all(.build_and_test[]; type == "string" and test("^[a-z0-9][a-z0-9@+_.-]*$")) and
-  all(.runtime_and_test[]; type == "string" and test("^[a-z0-9][a-z0-9@+_.-]*$"))
-' "$HOST_DEPENDENCY_PLAN" >/dev/null || {
+bash "$KANDELO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh" \
+  "$HOST_DEPENDENCY_PLAN" "$EXPECTED_PLAN_TAP" "$FORMULA" \
+  "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" || {
   echo "homebrew-verify-poured-bottle.sh: invalid static host dependency plan" >&2
   exit 2
 }

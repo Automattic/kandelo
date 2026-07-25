@@ -78,10 +78,10 @@
 //!   a block from outside).  The tool panics with a diagnostic in
 //!   that case; the function must be restructured or the tool
 //!   extended.
-//! - **Fork-from-catch-handler remains unsupported** (B1 follow-up).
-//!   Phase 6c/6d/6e plumbing is retained so ref-typed exnref locals
-//!   still round-trip cleanly across fork; if a handler contains a
-//!   fork-path call, the tool panics (same mechanism as nested).
+//! - **Fork from modern `try_table` catches is supported.** Plain-catch
+//!   arm identity and scalar payloads are frame-backed per activation;
+//!   catch_ref values use the exnref auxiliary table. Legacy `try`
+//!   catch handlers remain unsupported.
 //! - **Scalar args only for fork-path calls.**  If a fork-path call
 //!   has a ref-typed argument, we'd need to spill it through an aux
 //!   table (not currently wired up).  Panic in that case.
@@ -96,7 +96,7 @@
 //! | 4             | 4    | `call_index`      |
 //! | 8             | 4    | `catch_region_id` |
 //! | 12            | 4    | `exnref_slot`     |
-//! | 16..          | var  | scalar locals (user + arg spills) |
+//! | 16..          | var  | scalar locals (user, arg spills, plain-catch state) |
 //!
 //! Ref-typed user locals are routed through module-level auxiliary
 //! tables; their storage is outside the frame.
@@ -114,14 +114,14 @@
 use std::collections::{HashMap, HashSet};
 
 use walrus::{
+    AbstractHeapType, ExportItem, FunctionId, FunctionKind, HeapType, LocalFunction, LocalId,
+    MemoryId, Module, RefType, TableId, TagId, TypeId, ValType,
     ir::{
         AtomicWidth, BinaryOp, Binop, Block, Br, BrTable, Call, CallIndirect, Const, GlobalGet,
         IfElse, Instr, InstrLocId, InstrSeqId, InstrSeqType, LegacyCatch, LoadKind, LocalGet,
-        LocalSet, LocalTee, Loop, MemArg, RefAsNonNull, RefIsNull, RefNull, Return, StoreKind,
-        TableGet, TableSet, Throw, ThrowRef, TryTable, TryTableCatch, UnaryOp, Unreachable, Value,
+        LocalSet, LocalTee, Loop, MemArg, RefAsNonNull, RefNull, Return, StoreKind, TableGet,
+        TableSet, Throw, ThrowRef, TryTable, TryTableCatch, UnaryOp, Value,
     },
-    AbstractHeapType, ExportItem, FunctionId, FunctionKind, HeapType, LocalFunction, LocalId,
-    MemoryId, Module, RefType, TableId, TagId, TypeId, ValType,
 };
 
 use crate::runtime::{self, Runtime};
@@ -146,7 +146,7 @@ pub fn instrument_functions(
     module: &mut Module,
     runtime: &Runtime,
     fork_path: &HashSet<FunctionId>,
-    b1_plan: &B1ScratchPlan,
+    plain_catch_plan: &PlainCatchPlan,
 ) -> HashSet<FunctionId> {
     let runtime_funcs: HashSet<FunctionId> = [
         runtime.unwind_begin,
@@ -169,7 +169,7 @@ pub fn instrument_functions(
 
     let (aux_tables, ref_plan, catch_plans) = plan_and_inject_aux_tables(module, &targets);
 
-    let empty_b1_slots: Vec<(InstrSeqId, Vec<PlainCatchArmSlot>)> = Vec::new();
+    let empty_plain_catches: Vec<(InstrSeqId, Vec<PlainCatchArm>)> = Vec::new();
 
     let mut instrumented = HashSet::new();
     for (ordinal, id) in targets.iter().enumerate() {
@@ -177,7 +177,10 @@ pub fn instrument_functions(
         let this_plan = ref_plan.get(id).unwrap_or(&empty_plan);
         let empty_catch_plan: Vec<CatchRegionPlan> = Vec::new();
         let this_catch_plan = catch_plans.get(id).unwrap_or(&empty_catch_plan);
-        let this_b1_slots = b1_plan.per_function.get(id).unwrap_or(&empty_b1_slots);
+        let this_plain_catches = plain_catch_plan
+            .per_function
+            .get(id)
+            .unwrap_or(&empty_plain_catches);
         instrument_one_function(
             module,
             *id,
@@ -187,7 +190,7 @@ pub fn instrument_functions(
             &aux_tables,
             this_plan,
             this_catch_plan,
-            this_b1_slots,
+            this_plain_catches,
         );
         instrumented.insert(*id);
     }
@@ -229,6 +232,12 @@ struct CatchStateLocals {
     exnref_slot: LocalId,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct AbortDispatch {
+    live_frame: LocalId,
+    restart_loop: InstrSeqId,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn instrument_one_function(
     module: &mut Module,
@@ -239,7 +248,7 @@ fn instrument_one_function(
     aux_tables: &AuxTables,
     ref_plan: &[RefLocalSlot],
     catch_plan: &[CatchRegionPlan],
-    b1_slots: &[(InstrSeqId, Vec<PlainCatchArmSlot>)],
+    plain_catches: &[(InstrSeqId, Vec<PlainCatchArm>)],
 ) {
     // Choose scheme based on call-site topology. Post-commit-4
     // (2026-05-14) there are TWO live schemes (guard-dispatch was
@@ -290,7 +299,7 @@ fn instrument_one_function(
                 aux_tables,
                 ref_plan,
                 catch_plan,
-                b1_slots,
+                plain_catches,
             );
             return;
         }
@@ -356,7 +365,7 @@ fn instrument_one_function(
                 aux_tables,
                 ref_plan,
                 catch_plan,
-                b1_slots,
+                plain_catches,
             );
             return;
         }
@@ -382,7 +391,7 @@ fn instrument_one_function(
         aux_tables,
         ref_plan,
         catch_plan,
-        b1_slots,
+        plain_catches,
     );
 }
 
@@ -400,7 +409,7 @@ fn instrument_one_function_switch(
     aux_tables: &AuxTables,
     ref_plan: &[RefLocalSlot],
     catch_plan: &[CatchRegionPlan],
-    b1_slots: &[(InstrSeqId, Vec<PlainCatchArmSlot>)],
+    plain_catches: &[(InstrSeqId, Vec<PlainCatchArm>)],
 ) {
     // Pre-existing user locals (args + referenced in body). Scalars
     // live in the frame; ref-typed locals go through aux tables.
@@ -427,7 +436,7 @@ fn instrument_one_function_switch(
     let n_calls = call_sites.len();
 
     // Allocate per-function synthetic locals.
-    let catch_state_locals = if catch_plan.is_empty() && b1_slots.is_empty() {
+    let catch_state_locals = if catch_plan.is_empty() && plain_catches.is_empty() {
         None
     } else {
         Some(CatchStateLocals {
@@ -435,6 +444,7 @@ fn instrument_one_function_switch(
             exnref_slot: module.locals.add(ValType::I32),
         })
     };
+    let abort_live_frame = module.locals.add(ValType::I32);
 
     // Per-call argument materialization. The default is the existing
     // spill-local path; a conservative pure scalar suffix can instead
@@ -485,6 +495,8 @@ fn instrument_one_function_switch(
         carryover_spills.push(spills);
     }
 
+    let plain_catch_state = allocate_plain_catch_state(module, plain_catches);
+
     // Combined scalar locals for the frame (user locals first, then
     // frame-backed per-call arg spills in call order, then per-call
     // carryover spills in call order — added 2.4c).
@@ -504,6 +516,7 @@ fn instrument_one_function_switch(
             frame_scalars.push((lid, ty));
         }
     }
+    append_plain_catch_frame_scalars(&mut frame_scalars, &plain_catch_state);
 
     let locals_with_offsets = assign_local_offsets(&frame_scalars, LOCALS_START_OFFSET);
     let frame_size = HEADER_SIZE + user_locals_size(&frame_scalars);
@@ -512,11 +525,13 @@ fn instrument_one_function_switch(
         let ty_id = module.funcs.get(func_id).ty();
         module.types.get(ty_id).results().to_vec()
     };
+    let restart_loop_ty = InstrSeqType::new(&mut module.types, &[], &result_types);
 
     // Plan catch-handler entry-capture (Phase 6d). We allocate in_catch
     // and captured_exnref locals now; the IR rewrite is applied later,
     // after the body has been rebuilt.
-    let catch_handlers = plan_catch_ref_handlers(module, func_id, catch_plan, aux_tables);
+    let catch_handlers =
+        plan_catch_ref_handlers(module, func_id, catch_plan, aux_tables, &plain_catch_state);
 
     // Build the new body: preamble-if + Block($unwind_save) + postamble.
     let memory = first_memory(module);
@@ -525,7 +540,7 @@ fn instrument_one_function_switch(
     // Phase 6c rewind-throw stubs: prepended to each fork-path
     // try_table body. Phase 6 covers catch_ref / catch_all_ref.
     // B1 Stage 2 (Task 2.3) extends the same stub with a plain-catch
-    // dispatch when `b1_slots` lists arms for the region.
+    // dispatch when `plain_catches` lists arms for the region.
     if !catch_plan.is_empty() && aux_tables.exnref.is_some() {
         let catch_state =
             catch_state_locals.expect("exnref catch plan requires catch-state locals");
@@ -536,7 +551,7 @@ fn instrument_one_function_switch(
             catch_state.catch_region_id,
             aux_tables,
             catch_plan,
-            b1_slots,
+            &plain_catch_state,
         );
         // The stub injection appended to the try_tables' own body
         // seqs. Those seqs are reachable from instructions inside
@@ -566,6 +581,11 @@ fn instrument_one_function_switch(
         .builder_mut()
         .dangling_instr_seq(InstrSeqType::Simple(None))
         .id();
+    let restart_loop = local.builder_mut().dangling_instr_seq(restart_loop_ty).id();
+    let abort = AbortDispatch {
+        live_frame: abort_live_frame,
+        restart_loop,
+    };
     let post_seqs: Vec<InstrSeqId> = (0..n_calls)
         .map(|_| {
             local
@@ -601,7 +621,9 @@ fn instrument_one_function_switch(
         runtime,
         memory,
         ptr_ty,
+        frame_size,
         catch_state_locals,
+        abort,
     );
 
     // Postamble lives outside $unwind_save, in the entry block, right
@@ -622,10 +644,10 @@ fn instrument_one_function_switch(
         &result_types,
     );
 
-    // Rebuild the entry block: [preamble if/else, Block($unwind_save),
-    // postamble].
-    let entry_seq = &mut local.block_mut(entry_id).instrs;
-    entry_seq.clear();
+    // Rebuild the function body around a result-typed restart loop. A partial
+    // allocation failure branches here from the still-live activation; fresh
+    // inner activations keep abort_live_frame=0 and restore committed nodes.
+    let entry_seq = &mut local.block_mut(restart_loop).instrs;
     push_instr(
         entry_seq,
         Instr::GlobalGet(GlobalGet {
@@ -641,7 +663,25 @@ fn instrument_one_function_switch(
     push_instr(
         entry_seq,
         Instr::Binop(Binop {
-            op: BinaryOp::I32Eq,
+            op: BinaryOp::I32GeU,
+        }),
+    );
+    push_instr(
+        entry_seq,
+        Instr::LocalGet(LocalGet {
+            local: abort_live_frame,
+        }),
+    );
+    push_instr(
+        entry_seq,
+        Instr::Unop(walrus::ir::Unop {
+            op: UnaryOp::I32Eqz,
+        }),
+    );
+    push_instr(
+        entry_seq,
+        Instr::Binop(Binop {
+            op: BinaryOp::I32And,
         }),
     );
     push_instr(
@@ -653,6 +693,9 @@ fn instrument_one_function_switch(
     );
     push_instr(entry_seq, Instr::Block(Block { seq: unwind_save }));
     entry_seq.extend(postamble);
+    let entry_seq = &mut local.block_mut(entry_id).instrs;
+    entry_seq.clear();
+    push_instr(entry_seq, Instr::Loop(Loop { seq: restart_loop }));
 
     // Phase 6d application: replaces each fork-path try_table with
     // an $outer/$capture wrap so caught exnrefs are stashed and the
@@ -668,14 +711,13 @@ fn instrument_one_function_switch(
         apply_plain_catch_handlers(
             module,
             func_id,
-            runtime,
             catch_state.catch_region_id,
-            b1_slots,
+            &plain_catch_state,
             catch_plan,
             &catch_handlers,
         );
     } else {
-        debug_assert!(b1_slots.is_empty());
+        debug_assert!(plain_catches.is_empty());
     }
 }
 
@@ -2186,7 +2228,7 @@ fn populate_dispatch_normal(
     push_instr(
         s,
         Instr::Binop(Binop {
-            op: BinaryOp::I32Eq,
+            op: BinaryOp::I32GeU,
         }),
     );
     push_instr(
@@ -2276,7 +2318,7 @@ fn populate_internal_dispatch(
     push_instr(
         s,
         Instr::Binop(Binop {
-            op: BinaryOp::I32Eq,
+            op: BinaryOp::I32GeU,
         }),
     );
     push_instr(
@@ -2304,7 +2346,9 @@ fn populate_dispatch_structure(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
+    frame_size: u32,
     catch_state_locals: Option<CatchStateLocals>,
+    abort: AbortDispatch,
 ) {
     let n_calls = call_sites.len();
 
@@ -2336,7 +2380,9 @@ fn populate_dispatch_structure(
         runtime,
         memory,
         ptr_ty,
+        frame_size,
         catch_state_locals,
+        abort,
     );
 }
 
@@ -2360,7 +2406,9 @@ fn emit_dispatch_node(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
+    frame_size: u32,
     catch_state_locals: Option<CatchStateLocals>,
+    abort: AbortDispatch,
 ) {
     match node {
         DispatchTree::Leaf { start, end } => emit_leaf_dispatch(
@@ -2379,7 +2427,9 @@ fn emit_dispatch_node(
             runtime,
             memory,
             ptr_ty,
+            frame_size,
             catch_state_locals,
+            abort,
         ),
         DispatchTree::Internal {
             children,
@@ -2400,7 +2450,9 @@ fn emit_dispatch_node(
             runtime,
             memory,
             ptr_ty,
+            frame_size,
             catch_state_locals,
+            abort,
         ),
     }
 }
@@ -2440,7 +2492,9 @@ fn emit_internal_dispatch(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
+    frame_size: u32,
     catch_state_locals: Option<CatchStateLocals>,
+    abort: AbortDispatch,
 ) {
     let b = children.len();
     debug_assert!(b >= 2, "internal dispatch node must have >= 2 children");
@@ -2502,7 +2556,9 @@ fn emit_internal_dispatch(
             runtime,
             memory,
             ptr_ty,
+            frame_size,
             catch_state_locals,
+            abort,
         );
     }
 
@@ -2530,7 +2586,9 @@ fn emit_internal_dispatch(
         runtime,
         memory,
         ptr_ty,
+        frame_size,
         catch_state_locals,
+        abort,
     );
 }
 
@@ -2557,7 +2615,9 @@ fn emit_leaf_dispatch(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
+    frame_size: u32,
     catch_state_locals: Option<CatchStateLocals>,
+    abort: AbortDispatch,
 ) {
     debug_assert!(
         leaf_end > leaf_start,
@@ -2625,8 +2685,10 @@ fn emit_leaf_dispatch(
             runtime,
             memory,
             ptr_ty,
+            frame_size,
             catch_state_locals,
             function_unwind_save,
+            abort,
         );
         {
             let s = &mut local.block_mut(post_seqs[k]).instrs;
@@ -2661,8 +2723,10 @@ fn emit_leaf_dispatch(
         runtime,
         memory,
         ptr_ty,
+        frame_size,
         catch_state_locals,
         function_unwind_save,
+        abort,
     );
     if is_last_leaf {
         let s = &mut local.block_mut(exit_seq).instrs;
@@ -2819,20 +2883,142 @@ fn emit_call_index_store_and_unwind_branch(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
+    frame_size: u32,
     call_idx: u32,
     unwind_save: InstrSeqId,
+    catch_handlers: &[CatchHandlerInfo],
+    catch_state_locals: Option<CatchStateLocals>,
+    abort: AbortDispatch,
 ) {
-    let if_then = local
+    let unwind_then = local
         .builder_mut()
         .dangling_instr_seq(InstrSeqType::Simple(None))
         .id();
-    let if_else = local
+    let normal_else = local
+        .builder_mut()
+        .dangling_instr_seq(InstrSeqType::Simple(None))
+        .id();
+    let reserve_succeeded = local
+        .builder_mut()
+        .dangling_instr_seq(InstrSeqType::Simple(None))
+        .id();
+    let reserve_failed = local
         .builder_mut()
         .dangling_instr_seq(InstrSeqType::Simple(None))
         .id();
 
     {
-        let s = &mut local.block_mut(if_then).instrs;
+        let s = &mut local.block_mut(unwind_then).instrs;
+        if let Some(frame_reserve) = runtime.frame_reserve {
+            // This is the first frame write on the unwind path. Reserve the
+            // complete node before publishing call_index or any postamble
+            // scalar/reference state.
+            push_instr(
+                s,
+                Instr::GlobalGet(GlobalGet {
+                    global: runtime.buf_global,
+                }),
+            );
+            push_instr(s, ptr_const(ptr_ty, frame_size as i64));
+            push_instr(
+                s,
+                Instr::Call(Call {
+                    func: frame_reserve,
+                }),
+            );
+            push_instr(s, store_ptr(memory, ptr_ty, 0));
+
+            push_instr(
+                s,
+                Instr::GlobalGet(GlobalGet {
+                    global: runtime.buf_global,
+                }),
+            );
+            push_instr(s, load_ptr(memory, ptr_ty, 0));
+            push_instr(
+                s,
+                Instr::Unop(walrus::ir::Unop {
+                    op: match ptr_ty {
+                        ValType::I32 => UnaryOp::I32Eqz,
+                        ValType::I64 => UnaryOp::I64Eqz,
+                        other => unreachable!("unsupported pointer type {other:?}"),
+                    },
+                }),
+            );
+            push_instr(
+                s,
+                Instr::IfElse(IfElse {
+                    consequent: reserve_failed,
+                    alternative: reserve_succeeded,
+                }),
+            );
+        } else {
+            push_instr(
+                s,
+                Instr::Block(Block {
+                    seq: reserve_succeeded,
+                }),
+            );
+        }
+    }
+
+    {
+        let s = &mut local.block_mut(reserve_failed).instrs;
+        push_instr(
+            s,
+            Instr::Const(Const {
+                value: Value::I32(1),
+            }),
+        );
+        push_instr(
+            s,
+            Instr::LocalSet(LocalSet {
+                local: abort.live_frame,
+            }),
+        );
+        // Select the module-owned abort scratch frame. Linked chunks begin
+        // after the descriptor's larger fixed prefix, so this header-sized
+        // area can carry the live activation's call index without touching a
+        // committed node.
+        push_instr(
+            s,
+            Instr::GlobalGet(GlobalGet {
+                global: runtime.buf_global,
+            }),
+        );
+        push_instr(
+            s,
+            Instr::GlobalGet(GlobalGet {
+                global: runtime.buf_global,
+            }),
+        );
+        push_instr(s, ptr_const(ptr_ty, runtime.frames_start_offset as i64));
+        push_instr(
+            s,
+            Instr::Binop(Binop {
+                op: ptr_add(ptr_ty),
+            }),
+        );
+        push_instr(s, store_ptr(memory, ptr_ty, 0));
+        push_current_frame_ptr(s, runtime, memory, ptr_ty);
+        push_instr(
+            s,
+            Instr::Const(Const {
+                value: Value::I32(call_idx as i32),
+            }),
+        );
+        push_instr(s, store_i32(memory, CALL_INDEX_OFFSET));
+        push_instr(
+            s,
+            Instr::Br(Br {
+                block: abort.restart_loop,
+            }),
+        );
+    }
+
+    emit_phase_6e_writes(local, reserve_succeeded, catch_handlers, catch_state_locals);
+    {
+        let s = &mut local.block_mut(reserve_succeeded).instrs;
         push_current_frame_ptr(s, runtime, memory, ptr_ty);
         push_instr(
             s,
@@ -2843,6 +3029,8 @@ fn emit_call_index_store_and_unwind_branch(
         push_instr(s, store_i32(memory, CALL_INDEX_OFFSET));
         push_instr(s, Instr::Br(Br { block: unwind_save }));
     }
+
+    emit_phase_6e_writes(local, normal_else, catch_handlers, catch_state_locals);
 
     let s = &mut local.block_mut(seq_id).instrs;
     push_instr(
@@ -2866,8 +3054,8 @@ fn emit_call_index_store_and_unwind_branch(
     push_instr(
         s,
         Instr::IfElse(IfElse {
-            consequent: if_then,
-            alternative: if_else,
+            consequent: unwind_then,
+            alternative: normal_else,
         }),
     );
 }
@@ -2891,28 +3079,34 @@ fn populate_preamble_then(
 ) {
     let s = &mut local.block_mut(preamble_then).instrs;
 
-    // *(buf + 0) = *(buf + 0) - frame_size. After this, the buffer
-    // cursor itself is the current frame pointer for all frame reads.
+    // Store the frame selected for replay in *(buf + 0). The linked format
+    // asks the host-managed chain for the next committed frame; the legacy
+    // format walks its contiguous buffer backward.
     push_instr(
         s,
         Instr::GlobalGet(GlobalGet {
             global: runtime.buf_global,
         }),
     );
-    push_instr(
-        s,
-        Instr::GlobalGet(GlobalGet {
-            global: runtime.buf_global,
-        }),
-    );
-    push_instr(s, load_ptr(memory, ptr_ty, 0));
-    push_instr(s, ptr_const(ptr_ty, frame_size as i64));
-    push_instr(
-        s,
-        Instr::Binop(Binop {
-            op: ptr_sub(ptr_ty),
-        }),
-    );
+    if let Some(frame_next) = runtime.frame_next {
+        push_instr(s, ptr_const(ptr_ty, frame_size as i64));
+        push_instr(s, Instr::Call(Call { func: frame_next }));
+    } else {
+        push_instr(
+            s,
+            Instr::GlobalGet(GlobalGet {
+                global: runtime.buf_global,
+            }),
+        );
+        push_instr(s, load_ptr(memory, ptr_ty, 0));
+        push_instr(s, ptr_const(ptr_ty, frame_size as i64));
+        push_instr(
+            s,
+            Instr::Binop(Binop {
+                op: ptr_sub(ptr_ty),
+            }),
+        );
+    }
     push_instr(s, store_ptr(memory, ptr_ty, 0));
 
     if let Some(catch_state) = catch_state_locals {
@@ -3037,22 +3231,28 @@ fn populate_postamble(
         push_instr(out, Instr::TableSet(TableSet { table }));
     }
 
-    // Advance current_pos: *(buf + 0) = frame_ptr + frame_size
-    push_instr(
-        out,
-        Instr::GlobalGet(GlobalGet {
-            global: runtime.buf_global,
-        }),
-    );
-    push_current_frame_ptr(out, runtime, memory, ptr_ty);
-    push_instr(out, ptr_const(ptr_ty, frame_size as i64));
-    push_instr(
-        out,
-        Instr::Binop(Binop {
-            op: ptr_add(ptr_ty),
-        }),
-    );
-    push_instr(out, store_ptr(memory, ptr_ty, 0));
+    if let Some(frame_commit) = runtime.frame_commit {
+        // Publish only after the complete payload and reference stashes exist.
+        push_current_frame_ptr(out, runtime, memory, ptr_ty);
+        push_instr(out, Instr::Call(Call { func: frame_commit }));
+    } else {
+        // Advance current_pos: *(buf + 0) = frame_ptr + frame_size
+        push_instr(
+            out,
+            Instr::GlobalGet(GlobalGet {
+                global: runtime.buf_global,
+            }),
+        );
+        push_current_frame_ptr(out, runtime, memory, ptr_ty);
+        push_instr(out, ptr_const(ptr_ty, frame_size as i64));
+        push_instr(
+            out,
+            Instr::Binop(Binop {
+                op: ptr_add(ptr_ty),
+            }),
+        );
+        push_instr(out, store_ptr(memory, ptr_ty, 0));
+    }
 
     // Push defaults for the function's result types, or `unreachable`
     // if any result is a non-nullable ref.
@@ -3093,8 +3293,10 @@ fn emit_post_call_via_local(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
+    frame_size: u32,
     catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
+    abort: AbortDispatch,
 ) {
     // Reload carryovers (deepest first), then args (deepest first).
     // The call pops only its args, leaving the carryovers + result on
@@ -3115,16 +3317,18 @@ fn emit_post_call_via_local(
         s.push((call_instr, call.loc));
     }
 
-    emit_phase_6e_writes(local, seq_id, catch_handlers, catch_state_locals);
-
     emit_call_index_store_and_unwind_branch(
         local,
         seq_id,
         runtime,
         memory,
         ptr_ty,
+        frame_size,
         call_idx as u32,
         unwind_save,
+        catch_handlers,
+        catch_state_locals,
+        abort,
     );
 }
 
@@ -3249,13 +3453,6 @@ fn scalar_size(ty: ValType) -> u32 {
 
 fn natural_align(ty: ValType) -> u32 {
     scalar_size(ty)
-}
-
-/// Round `x` up to the nearest 8-byte boundary. Used by B1 scratch
-/// planning and (Task 1.3) save-buffer reservation. A near-duplicate
-/// lives in `runtime.rs`; consolidate when extracting `crate::layout`.
-fn align_up_8(x: u32) -> u32 {
-    (x + 7) & !7u32
 }
 
 fn default_for_type(ty: ValType) -> Option<Instr> {
@@ -3640,8 +3837,8 @@ fn visit_try_tables(f: &LocalFunction, seq: InstrSeqId, out: &mut Vec<InstrSeqId
 #[derive(Debug, Clone)]
 pub struct PlainCatchArm {
     /// Index of this arm within its try_table's `catches` list. Stage 2
-    /// writes this value as the `arm_id` field of the saved scratch tuple
-    /// at unwind time; the rewind path reads it to select which
+    /// writes this value to the region's frame-backed `active_arm`
+    /// local; the rewind path reads it to select which
     /// `throw $tag (operands)` to emit. Combined with the function's
     /// `catch_region_id` (tracked by `CatchRegionPlan`), the pair is
     /// unique within the function — no module-wide arm_id is needed.
@@ -3718,28 +3915,7 @@ fn visit_for_plain_catch(
     }
 }
 
-/// Stage 1 (B1) — per-arm slot in the scratch area.
-#[derive(Debug, Clone)]
-pub struct PlainCatchArmSlot {
-    pub arm: PlainCatchArm,
-    /// Byte offset within the B1 scratch area at which this arm's
-    /// (arm_id, operand_0..N-1) tuple is stored. Relative to the
-    /// scratch base (which `Runtime.b1_scratch_base` will track in
-    /// Task 1.3); not yet relative to absolute buffer base.
-    pub scratch_offset: u32,
-    /// Total size in bytes of this arm's saved tuple: 4 (arm_id) +
-    /// concatenated scalar operand sizes. Per-operand alignment is
-    /// preserved without padding because (a) operand sizes are
-    /// powers-of-2 (4, 8, or 16 bytes), (b) the tuple itself starts
-    /// 8-aligned within the scratch area, and (c) operands appear in
-    /// declaration order — the first operand at +4 lands 4-aligned,
-    /// and any 8-aligned operand falls on a tuple offset that's
-    /// already 8-aligned because preceding operands are also
-    /// powers-of-2.
-    pub tuple_size: u32,
-}
-
-/// Stage 1 (B1) — module-wide plain-catch scratch plan.
+/// Module-wide static plain-catch plan.
 ///
 /// Stage 2 (Task 2.1) adds `b2_carveout`: functions whose plain-catch
 /// arms include unsupported operand types (e.g., ref-typed) land here
@@ -3748,16 +3924,11 @@ pub struct PlainCatchArmSlot {
 /// falling back to today's behavior (Phase 6 catch_ref still works,
 /// plain-catch fork remains unsupported for those specific shapes).
 #[derive(Debug, Clone, Default)]
-pub struct B1ScratchPlan {
-    /// Total bytes the B1 scratch area occupies. Stage 1 Task 1.3
-    /// will reserve this many bytes between `saved_globals` and
-    /// `frame data` in the save buffer.
-    pub total_bytes: u32,
-    /// Per-function per-region per-arm slot assignments. Outer Vec
+pub struct PlainCatchPlan {
+    /// Per-function per-region arm metadata. Outer Vec
     /// parallels `discover_plain_catch_arms`'s return shape (one
     /// entry per try_table that has at least one plain-catch arm).
-    pub per_function:
-        std::collections::HashMap<FunctionId, Vec<(InstrSeqId, Vec<PlainCatchArmSlot>)>>,
+    pub per_function: std::collections::HashMap<FunctionId, Vec<(InstrSeqId, Vec<PlainCatchArm>)>>,
     /// Stage 2 (B1): functions whose plain-catch arms include
     /// unsupported operand types (e.g., ref-typed). For these
     /// functions, B1 emission tasks fall back to today's behavior
@@ -3766,32 +3937,16 @@ pub struct B1ScratchPlan {
     pub b2_carveout: std::collections::HashSet<FunctionId>,
 }
 
-/// Stage 1 (B1) — assigns scratch offsets for every plain-catch arm
-/// across all fork-path functions. The scratch area lives between
-/// `saved_globals` and `frame data` in the save buffer; its base is
-/// `Runtime.b1_scratch_base` (set in Task 1.3) and its total size
-/// is `B1ScratchPlan.total_bytes`.
+/// Discover supported plain-catch arms across all fork-path functions.
 ///
-/// Tuple layout per arm (Stage 2 will read/write this):
-/// ```text
-/// +0    4    arm_id (i32)
-/// +4    var  operand_0 ... operand_N-1, naturally aligned
-/// ```
-/// Tuples are 8-byte-aligned within the scratch area so that
-/// i64/f64 operands at offset +4 (the first operand position)
-/// land on a properly aligned address relative to the scratch base.
-///
-/// Operand types are restricted to scalars (i32/i64/f32/f64/v128)
-/// at this stage. Ref-typed operands (externref/funcref/exnref/GC
-/// refs) will require aux-table spilling — a future B2 carve-out.
+/// Operand types are restricted to scalars (i32/i64/f32/f64/v128).
+/// Ref-typed operands (externref/funcref/exnref/GC refs) require
+/// auxiliary-table spilling and remain a conservative carve-out.
 ///
 /// Stage 2 (Task 2.1) detects ref-typed payloads here and routes the
-/// affected function to `B1ScratchPlan.b2_carveout` instead of
+/// affected function to `PlainCatchPlan.b2_carveout` instead of
 /// `per_function`. Stage 2 emission tasks check the carve-out set
-/// and skip plain-catch instrumentation for those functions, so
-/// `scalar_size`'s ref-type panic is now unreachable from the
-/// planner — it survives only as a defense-in-depth assertion for
-/// future callers that bypass the carve-out filter.
+/// and skip plain-catch instrumentation for those functions.
 ///
 /// The carve-out is whole-function: if any arm in any region of a
 /// function has a ref-typed operand, the entire function's
@@ -3799,15 +3954,8 @@ pub struct B1ScratchPlan {
 /// arms because Task 2.3's rewind dispatcher needs the whole
 /// region's arm set or none.
 ///
-/// The cursor walks `targets` in iteration order, so per-function
-/// offsets depend on the caller's ordering of `targets`. Stage 2's
-/// emission code reads `B1ScratchPlan.per_function[fid]` keyed by
-/// `FunctionId`, so this ordering is internal to the plan and
-/// irrelevant to correctness — but tests that pin specific offset
-/// values must use stable target ordering.
-pub fn plan_b1_scratch(module: &Module, targets: &[FunctionId]) -> B1ScratchPlan {
-    let mut plan = B1ScratchPlan::default();
-    let mut cursor: u32 = 0;
+pub fn plan_plain_catches(module: &Module, targets: &[FunctionId]) -> PlainCatchPlan {
+    let mut plan = PlainCatchPlan::default();
     for &fid in targets {
         let arms_per_region = discover_plain_catch_arms(module, fid);
         if arms_per_region.is_empty() {
@@ -3815,10 +3963,7 @@ pub fn plan_b1_scratch(module: &Module, targets: &[FunctionId]) -> B1ScratchPlan
         }
         // Stage 2 (B1): detect unsupported operand types and carve out
         // the entire function. We can't selectively drop just the bad
-        // arms because the rewind-throw stub dispatches by arm_id and
-        // expects every arm in a region to have a scratch slot — Stage
-        // 2 keeps things simple by treating the whole function's
-        // plain-catch as off-limits if any arm has a ref operand.
+        // arms because replay needs a complete region-wide arm set.
         let has_unsupported = arms_per_region.iter().any(|(_, arms)| {
             arms.iter()
                 .any(|arm| arm.operand_tys.iter().any(|t| matches!(t, ValType::Ref(_))))
@@ -3844,37 +3989,72 @@ pub fn plan_b1_scratch(module: &Module, targets: &[FunctionId]) -> B1ScratchPlan
             plan.b2_carveout.insert(fid);
             continue;
         }
-        let mut per_func: Vec<(InstrSeqId, Vec<PlainCatchArmSlot>)> =
-            Vec::with_capacity(arms_per_region.len());
-        for (body_seq, arm_list) in arms_per_region {
-            let mut slots: Vec<PlainCatchArmSlot> = Vec::with_capacity(arm_list.len());
-            for arm in arm_list {
-                debug_assert!(
-                    arm.operand_tys.iter().all(|t| !matches!(t, ValType::Ref(_))),
-                    "B1 plan_b1_scratch invariant: caller must filter ref-payload arms via Stage 2 \
-                     b2_carveout (excluded from fork-path) before reaching the planner. Affected \
-                     function has a tag with a ref-typed operand."
-                );
-                let payload_size: u32 = arm.operand_tys.iter().map(|t| scalar_size(*t)).sum();
-                let tuple_size = 4 + payload_size;
-                // Outer 8-byte alignment for the tuple start.
-                let aligned = align_up_8(cursor);
-                slots.push(PlainCatchArmSlot {
-                    arm,
-                    scratch_offset: aligned,
-                    tuple_size,
-                });
-                cursor = aligned + tuple_size;
-            }
-            per_func.push((body_seq, slots));
-        }
-        plan.per_function.insert(fid, per_func);
+        plan.per_function.insert(fid, arms_per_region);
     }
-    // Final scratch area aligned up to 8 bytes so `frames_start_offset`
-    // (which sits after the scratch area) lands aligned for the frame
-    // header writes that follow.
-    plan.total_bytes = align_up_8(cursor);
     plan
+}
+
+/// Activation-owned plain-catch state for one static arm.
+#[derive(Debug, Clone)]
+struct PlainCatchArmState {
+    arm: PlainCatchArm,
+    operand_locals: Vec<LocalId>,
+}
+
+/// Activation-owned state for one try_table with plain catches.
+///
+/// WHY: these locals are added to the ordinary function frame, so recursive
+/// calls and later activations cannot alias one module-wide scratch tuple.
+#[derive(Debug, Clone)]
+struct PlainCatchRegionState {
+    body_seq: InstrSeqId,
+    active_arm: LocalId,
+    arms: Vec<PlainCatchArmState>,
+}
+
+fn allocate_plain_catch_state(
+    module: &mut Module,
+    plain_catches: &[(InstrSeqId, Vec<PlainCatchArm>)],
+) -> Vec<PlainCatchRegionState> {
+    plain_catches
+        .iter()
+        .map(|(body_seq, arms)| PlainCatchRegionState {
+            body_seq: *body_seq,
+            active_arm: module.locals.add(ValType::I32),
+            arms: arms
+                .iter()
+                .cloned()
+                .map(|arm| {
+                    let operand_locals = arm
+                        .operand_tys
+                        .iter()
+                        .map(|&ty| module.locals.add(ty))
+                        .collect();
+                    PlainCatchArmState {
+                        arm,
+                        operand_locals,
+                    }
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+fn append_plain_catch_frame_scalars(
+    frame_scalars: &mut Vec<(LocalId, ValType)>,
+    regions: &[PlainCatchRegionState],
+) {
+    for region in regions {
+        frame_scalars.push((region.active_arm, ValType::I32));
+        for arm in &region.arms {
+            frame_scalars.extend(
+                arm.operand_locals
+                    .iter()
+                    .copied()
+                    .zip(arm.arm.operand_tys.iter().copied()),
+            );
+        }
+    }
 }
 
 // ----------------------------------------------------------------------
@@ -3890,26 +4070,10 @@ pub fn plan_b1_scratch(module: &Module, targets: &[FunctionId]) -> B1ScratchPlan
 /// exception that was caught pre-fork. The shape depends on what kind
 /// of catch was originally taken:
 ///
-/// - **catch_ref / catch_all_ref**: Phase 6's `apply_catch_ref_handlers`
-///   stashed the exnref in `_wpk_fork_exnref_stash[slot]`. We re-throw
-///   it via `throw_ref`. Selected when the stash slot is non-null.
-///
-/// - **plain catch (B1 Stage 2)**: the per-arm capture block stored
-///   `(arm_id, op_0, ..., op_M-1)` in the B1 scratch tuple at
-///   `runtime.b1_scratch_base + slot.scratch_offset`. We load the
-///   arm_id, dispatch by value to the matching arm, push the saved
-///   operands, and `throw $tag`. Selected when the stash slot is null.
-///
-/// The exnref-stash null-check is the sentinel: Phase 6's capture
-/// always writes a non-null exnref; B1's plain-catch capture never
-/// touches the stash. This naturally disambiguates regions with mixed
-/// `catch_ref` and `catch` clauses without Phase 6 needing to know
-/// about B1.
-///
-/// `b1_slots_lookup` maps `body_seq -> arm slots` for regions that have
-/// at least one plain-catch arm in scope (i.e. function not in
-/// `b2_carveout`). Regions with no plain arms fall back to today's
-/// catch_ref-only stub shape.
+/// Plain catches restore a frame-backed active-arm local and operand locals,
+/// then throw the matching tag. A catch_ref capture writes active-arm `-1`,
+/// so a mixed region falls through to the exnref `throw_ref` path without
+/// treating stale auxiliary-table contents as mode state.
 fn inject_rewind_throw_stubs(
     module: &mut Module,
     func_id: FunctionId,
@@ -3917,7 +4081,7 @@ fn inject_rewind_throw_stubs(
     catch_region_id_local: LocalId,
     aux_tables: &AuxTables,
     catch_plan: &[CatchRegionPlan],
-    b1_slots: &[(InstrSeqId, Vec<PlainCatchArmSlot>)],
+    plain_catches: &[PlainCatchRegionState],
 ) {
     let exnref_table = match aux_tables.exnref {
         Some(t) => t,
@@ -3927,23 +4091,20 @@ fn inject_rewind_throw_stubs(
         }
     };
 
-    let b1_lookup: HashMap<InstrSeqId, &[PlainCatchArmSlot]> = b1_slots
+    let plain_lookup: HashMap<InstrSeqId, &PlainCatchRegionState> = plain_catches
         .iter()
-        .map(|(seq, slots)| (*seq, slots.as_slice()))
+        .map(|region| (region.body_seq, region))
         .collect();
-
-    let memory = first_memory(module);
 
     for plan in catch_plan {
         let body_seq_id = plan.body_seq;
         let region_id = plan.catch_region_id;
         let slot = plan.exnref_slot;
-        let plain_arms: &[PlainCatchArmSlot] = b1_lookup.get(&body_seq_id).copied().unwrap_or(&[]);
+        let plain_region = plain_lookup.get(&body_seq_id).copied();
 
         // Build the inner "catch_ref path" sequence (Phase 6's existing
-        // logic). Always emitted — used either as the only path
-        // (region has no plain arms) or as the false-branch of the
-        // B1 sentinel check (region has plain arms).
+        // logic). Always emitted — used either as the only path or as
+        // the fallback when no exact plain arm is active.
         let throw_ref_seq_id = {
             let local = local_mut(module, func_id);
             let s = local
@@ -3968,48 +4129,9 @@ fn inject_rewind_throw_stubs(
             s
         };
 
-        // Build the "rewind dispatch" sequence: either a single
-        // throw_ref (no plain arms) or a sentinel-gated split between
-        // plain-catch dispatch and throw_ref.
-        let dispatch_seq_id = if plain_arms.is_empty() {
-            throw_ref_seq_id
-        } else {
-            // B1 plain-catch dispatch: build first, then wrap in
-            // an IfElse that selects on `exnref_stash[slot] is null`.
-            let plain_dispatch_id =
-                build_plain_catch_dispatch(module, func_id, runtime, memory, plain_arms);
-
-            let local = local_mut(module, func_id);
-            let outer = local
-                .builder_mut()
-                .dangling_instr_seq(InstrSeqType::Simple(None))
-                .id();
-            let block = &mut local.block_mut(outer).instrs;
-            // Sentinel: load `_wpk_fork_exnref_stash[slot]` and check if
-            // it's null. If null → plain-catch dispatch; if non-null →
-            // catch_ref throw_ref.
-            push_instr(
-                block,
-                Instr::Const(Const {
-                    value: Value::I32(slot as i32),
-                }),
-            );
-            push_instr(
-                block,
-                Instr::TableGet(TableGet {
-                    table: exnref_table,
-                }),
-            );
-            push_instr(block, Instr::RefIsNull(RefIsNull {}));
-            push_instr(
-                block,
-                Instr::IfElse(IfElse {
-                    consequent: plain_dispatch_id,
-                    alternative: throw_ref_seq_id,
-                }),
-            );
-            outer
-        };
+        let dispatch_seq_id = plain_region.map_or(throw_ref_seq_id, |region| {
+            build_plain_catch_dispatch(module, func_id, region, throw_ref_seq_id)
+        });
 
         // Build the empty else for the outer REWIND-match guard.
         let else_id = {
@@ -4020,7 +4142,7 @@ fn inject_rewind_throw_stubs(
                 .id()
         };
 
-        // Prepend the outer guard `if state==REWINDING && cri == K`
+        // Prepend the outer guard `if state>=REWINDING && cri == K`
         // to the try_table body.
         let local = local_mut(module, func_id);
         let original: Vec<(Instr, InstrLocId)> =
@@ -4042,7 +4164,7 @@ fn inject_rewind_throw_stubs(
         push_instr(
             body,
             Instr::Binop(Binop {
-                op: BinaryOp::I32Eq,
+                op: BinaryOp::I32GeU,
             }),
         );
         push_instr(
@@ -4081,54 +4203,21 @@ fn inject_rewind_throw_stubs(
     }
 }
 
-/// Build a dangling instr_seq that performs B1 plain-catch rewind
-/// dispatch. The sequence reads the saved `arm_id` from the B1 scratch
-/// tuple and walks an if-chain over `arm_idx` values, throwing the
-/// matching tag with operands loaded from the same tuple.
+/// Build a dangling sequence that rethrows one frame-restored plain catch.
 ///
-/// Layout of the scratch tuple (per `emit_capture_save_and_branch`):
-///   +0       i32  arm_id
-///   +4..     scalar operand_0, operand_1, ...
-///
-/// The base address is `*runtime.buf_global + runtime.b1_scratch_base
-/// + slot.scratch_offset`.
+/// Exact nonnegative arm IDs select plain catches. `-1` deliberately falls
+/// through to `throw_ref_fallback`, which is what a catch_ref capture records
+/// for a mixed region.
 fn build_plain_catch_dispatch(
     module: &mut Module,
     func_id: FunctionId,
-    runtime: &Runtime,
-    memory: MemoryId,
-    arms: &[PlainCatchArmSlot],
+    region: &PlainCatchRegionState,
+    throw_ref_fallback: InstrSeqId,
 ) -> InstrSeqId {
-    debug_assert!(!arms.is_empty());
+    debug_assert!(!region.arms.is_empty());
 
-    // We build the if-chain bottom-up: the "else" of arm[N-1] is a
-    // single `unreachable` (all arm_ids exhausted); each preceding
-    // arm wraps the previous chain in `if arm_id == K { throw J } else {
-    // ...prev... }`.
-    //
-    // arm_id is stable across capture+rewind: capture writes
-    // `slot.arm.arm_idx` at offset +0; we compare against the same
-    // value here.
-
-    // Innermost else: unreachable (defense; arm_id always matches one
-    // of the saved arms).
-    let unreachable_id = {
-        let local = local_mut(module, func_id);
-        let s = local
-            .builder_mut()
-            .dangling_instr_seq(InstrSeqType::Simple(None))
-            .id();
-        push_instr(
-            &mut local.block_mut(s).instrs,
-            Instr::Unreachable(Unreachable {}),
-        );
-        s
-    };
-
-    let mut chain = unreachable_id;
-    for slot in arms.iter().rev() {
-        // Build the "throw arm[J]" body: load operands from scratch,
-        // then throw the tag.
+    let mut chain = throw_ref_fallback;
+    for arm in region.arms.iter().rev() {
         let throw_id = {
             let local = local_mut(module, func_id);
             local
@@ -4136,36 +4225,13 @@ fn build_plain_catch_dispatch(
                 .dangling_instr_seq(InstrSeqType::Simple(None))
                 .id()
         };
-        let scratch_off = (runtime.b1_scratch_base + slot.scratch_offset) as u64;
-        // Operands start at +4 (after arm_id i32). Walk in declaration
-        // order so they land on the operand stack in the order the
-        // tag's params expect.
-        let mut cur_off: u32 = 4;
-        let operand_loads: Vec<(Instr, Instr)> = slot
-            .arm
-            .operand_tys
-            .iter()
-            .map(|&ty| {
-                let abs_off = scratch_off + cur_off as u64;
-                cur_off += scalar_size(ty);
-                (
-                    Instr::GlobalGet(GlobalGet {
-                        global: runtime.buf_global,
-                    }),
-                    load_scalar(memory, ty, abs_off),
-                )
-            })
-            .collect();
-
         let local = local_mut(module, func_id);
         let s = &mut local.block_mut(throw_id).instrs;
-        for (gget, load) in operand_loads {
-            push_instr(s, gget);
-            push_instr(s, load);
+        for &operand in &arm.operand_locals {
+            push_instr(s, Instr::LocalGet(LocalGet { local: operand }));
         }
-        push_instr(s, Instr::Throw(Throw { tag: slot.arm.tag }));
+        push_instr(s, Instr::Throw(Throw { tag: arm.arm.tag }));
 
-        // Wrap: if (load arm_id) == arm_idx { throw_id } else { chain }
         let outer_id = {
             let local = local_mut(module, func_id);
             local
@@ -4176,18 +4242,16 @@ fn build_plain_catch_dispatch(
         {
             let local = local_mut(module, func_id);
             let s = &mut local.block_mut(outer_id).instrs;
-            // Load arm_id from scratch (offset +0 of tuple).
             push_instr(
                 s,
-                Instr::GlobalGet(GlobalGet {
-                    global: runtime.buf_global,
+                Instr::LocalGet(LocalGet {
+                    local: region.active_arm,
                 }),
             );
-            push_instr(s, load_i32(memory, scratch_off));
             push_instr(
                 s,
                 Instr::Const(Const {
-                    value: Value::I32(slot.arm.arm_idx as i32),
+                    value: Value::I32(arm.arm.arm_idx as i32),
                 }),
             );
             push_instr(
@@ -4222,6 +4286,7 @@ struct CatchHandlerInfo {
     target_label: InstrSeqId,
     in_catch_local: LocalId,
     captured_exnref_local: LocalId,
+    plain_active_arm: Option<LocalId>,
 }
 
 fn plan_catch_ref_handlers(
@@ -4229,6 +4294,7 @@ fn plan_catch_ref_handlers(
     func_id: FunctionId,
     catch_plan: &[CatchRegionPlan],
     aux_tables: &AuxTables,
+    plain_catches: &[PlainCatchRegionState],
 ) -> Vec<CatchHandlerInfo> {
     let mut infos = Vec::new();
     if aux_tables.exnref.is_none() {
@@ -4282,6 +4348,10 @@ fn plan_catch_ref_handlers(
             target_label,
             in_catch_local,
             captured_exnref_local,
+            plain_active_arm: plain_catches
+                .iter()
+                .find(|region| region.body_seq == plan.body_seq)
+                .map(|region| region.active_arm),
         });
     }
 
@@ -4374,6 +4444,19 @@ fn apply_catch_ref_handlers(
                     local: info.captured_exnref_local,
                 }),
             );
+            if let Some(active_arm) = info.plain_active_arm {
+                // WHY: mixed catch regions must restore their capture kind
+                // from frame-owned state. A negative arm cannot match any
+                // plain catch, so replay falls through to throw_ref without
+                // consulting possibly stale exnref-table nullness.
+                push_instr(
+                    s,
+                    Instr::Const(Const {
+                        value: Value::I32(-1),
+                    }),
+                );
+                push_instr(s, Instr::LocalSet(LocalSet { local: active_arm }));
+            }
             push_instr(
                 s,
                 Instr::Const(Const {
@@ -4428,24 +4511,6 @@ fn apply_catch_ref_handlers(
 // Stage 2 (B1) — per-arm capture-block emission for plain catch
 // ----------------------------------------------------------------------
 
-/// Per-region emission state for a B1 plain-catch transform: links the
-/// region's try_table body to the function-local "in_catch" flag and
-/// the region's id (used for setting `catch_region_id_local` at unwind
-/// time).
-///
-/// Phase 6's `CatchHandlerInfo::in_catch_local` is allocated only for
-/// regions with a catch_ref/catch_all_ref clause. For plain-catch-only
-/// regions we allocate a fresh local; for mixed regions we reuse Phase
-/// 6's local so `maybe_record_catch_state` continues to see a single
-/// flag per region.
-#[derive(Debug, Clone, Copy)]
-#[allow(dead_code)] // Task 2.3 will consume these fields.
-struct PlainCatchRegionInfo {
-    body_seq: InstrSeqId,
-    catch_region_id: u32,
-    in_catch_local: LocalId,
-}
-
 /// Stage 2 (B1) — emit per-arm capture blocks that intercept plain
 /// catch dispatch.
 ///
@@ -4469,12 +4534,11 @@ struct PlainCatchRegionInfo {
 /// ```
 ///
 /// Inside each cap_arm_J body the operands are:
-///   1. spilled to fresh locals (top-of-stack first).
-///   2. saved as a tuple (arm_id, op_0, ..., op_M-1) at scratch slot
-///      `runtime.b1_scratch_base + slot.scratch_offset`.
-///   3. used to set `in_catch_local = 1` and `catch_region_id_local =
+///   1. spilled to activation-local, frame-backed locals.
+///   2. used to set the frame-backed active arm plus
+///      `in_catch_local = 1` and `catch_region_id_local =
 ///      region_id`.
-///   4. re-pushed (in declaration order) and `br $hJ` executes.
+///   3. re-pushed (in declaration order) and `br $hJ` executes.
 ///
 /// CatchAll/CatchRef/CatchAllRef clauses are preserved verbatim. If
 /// Phase 6 already retargeted CatchRef/CatchAllRef clauses, those
@@ -4484,29 +4548,22 @@ struct PlainCatchRegionInfo {
 /// is reused for any region that overlaps with B1's emission. For
 /// plain-catch-only regions, a fresh `in_catch_local` is allocated.
 ///
-/// Returns the per-region info Task 2.3 will consume: the region_id
-/// + in_catch_local pair lets `inject_rewind_throw_stubs` and
-/// `maybe_record_catch_state` extend their dispatch to plain-catch-
-/// only regions. Currently the caller discards the return; Task 2.3
-/// will plumb it through.
-#[allow(dead_code)]
 fn apply_plain_catch_handlers(
     module: &mut Module,
     func_id: FunctionId,
-    runtime: &Runtime,
     catch_region_id_local: LocalId,
-    b1_slots: &[(InstrSeqId, Vec<PlainCatchArmSlot>)],
+    plain_catches: &[PlainCatchRegionState],
     catch_plan: &[CatchRegionPlan],
     catch_handlers: &[CatchHandlerInfo],
-) -> Vec<PlainCatchRegionInfo> {
-    let mut regions = Vec::new();
-    if b1_slots.is_empty() {
-        return regions;
+) {
+    if plain_catches.is_empty() {
+        return;
     }
-    let memory = first_memory(module);
 
-    for (body_seq, arm_slots) in b1_slots {
-        if arm_slots.is_empty() {
+    for region in plain_catches {
+        let body_seq = region.body_seq;
+        let arm_states = &region.arms;
+        if arm_states.is_empty() {
             continue;
         }
 
@@ -4519,19 +4576,19 @@ fn apply_plain_catch_handlers(
                 FunctionKind::Local(l) => l,
                 _ => continue,
             };
-            let (parent, tt) =
-                match find_try_table_parent_seq(local, local.entry_block(), *body_seq) {
-                    Some(v) => v,
-                    None => continue,
-                };
-            (parent, tt.catches.clone(), local.block(*body_seq).ty)
+            let (parent, tt) = match find_try_table_parent_seq(local, local.entry_block(), body_seq)
+            {
+                Some(v) => v,
+                None => continue,
+            };
+            (parent, tt.catches.clone(), local.block(body_seq).ty)
         };
 
         // Look up region_id from catch_plan (every fork-path try_table
         // gets a catch_region_id assigned in plan_and_inject_aux_tables).
         let catch_region_id = catch_plan
             .iter()
-            .find(|p| p.body_seq == *body_seq)
+            .find(|p| p.body_seq == body_seq)
             .map(|p| p.catch_region_id)
             .unwrap_or(0);
 
@@ -4541,20 +4598,14 @@ fn apply_plain_catch_handlers(
         // region.)
         let in_catch_local = catch_handlers
             .iter()
-            .find(|h| h.body_seq == *body_seq)
+            .find(|h| h.body_seq == body_seq)
             .map(|h| h.in_catch_local)
             .unwrap_or_else(|| module.locals.add(ValType::I32));
-
-        regions.push(PlainCatchRegionInfo {
-            body_seq: *body_seq,
-            catch_region_id,
-            in_catch_local,
-        });
 
         // ----------------------------------------------------------
         // Build dangling sequences: outer + N caps.
         // Caps are ordered outer-to-inner so `cap_seq_ids[J]` is the
-        // J-th outermost (and corresponds to `arm_slots[J]`). The
+        // J-th outermost (and corresponds to `arm_states[J]`). The
         // innermost cap (`cap_seq_ids[N-1]`) holds the inner try_table
         // and the `br $b1_outer` that handles normal exit.
         // ----------------------------------------------------------
@@ -4565,27 +4616,15 @@ fn apply_plain_catch_handlers(
 
         // Build per-arm InstrSeqType up-front (mutates module.types)
         // before any &mut LocalFunction borrow is needed.
-        let cap_types: Vec<InstrSeqType> = arm_slots
+        let cap_types: Vec<InstrSeqType> = arm_states
             .iter()
-            .map(|slot| InstrSeqType::new(&mut module.types, &[], &slot.arm.operand_tys))
+            .map(|state| InstrSeqType::new(&mut module.types, &[], &state.arm.operand_tys))
             .collect();
 
-        let mut cap_seq_ids: Vec<InstrSeqId> = Vec::with_capacity(arm_slots.len());
+        let mut cap_seq_ids: Vec<InstrSeqId> = Vec::with_capacity(arm_states.len());
         for cap_ty in &cap_types {
             let local = local_mut(module, func_id);
             cap_seq_ids.push(local.builder_mut().dangling_instr_seq(*cap_ty).id());
-        }
-
-        // Per-arm operand spill locals.
-        let mut arm_spill_locals: Vec<Vec<LocalId>> = Vec::with_capacity(arm_slots.len());
-        for slot in arm_slots {
-            let spills: Vec<LocalId> = slot
-                .arm
-                .operand_tys
-                .iter()
-                .map(|&ty| module.locals.add(ty))
-                .collect();
-            arm_spill_locals.push(spills);
         }
 
         // ----------------------------------------------------------
@@ -4594,14 +4633,14 @@ fn apply_plain_catch_handlers(
         // catch_ref/catch_all_ref already retargeted by Phase 6) is
         // preserved verbatim.
         //
-        // We map by arm position within `arm_slots` -- each entry's
+        // We map by arm position within `arm_states` -- each entry's
         // `arm.arm_idx` is the arm's index in the original try_table's
         // catches list. We walk `original_catches` and substitute each
         // matching plain Catch with its capture target.
         // ----------------------------------------------------------
         let mut new_catches: Vec<TryTableCatch> = original_catches.clone();
-        for (j, slot) in arm_slots.iter().enumerate() {
-            let arm_idx = slot.arm.arm_idx as usize;
+        for (j, state) in arm_states.iter().enumerate() {
+            let arm_idx = state.arm.arm_idx as usize;
             if let Some(c) = new_catches.get_mut(arm_idx) {
                 if let TryTableCatch::Catch { tag, .. } = c {
                     *c = TryTableCatch::Catch {
@@ -4619,7 +4658,7 @@ fn apply_plain_catch_handlers(
         // ----------------------------------------------------------
         //
         // D-06 fix (2026-05-14): emit_capture_save_and_branch's
-        // "capture tail" (spill payload, save to scratch, set flags,
+        // "capture tail" (spill payload to frame locals, set flags,
         // re-push payload, br $hJ) must run AT THE POINT WHERE
         // CONTROL ARRIVES AFTER THE CATCH — which, per wasm-EH's
         // br-to-label semantics, is OUTSIDE the cap_seq the catch
@@ -4641,14 +4680,14 @@ fn apply_plain_catch_handlers(
         // never ran in either case, but legacy `try`/`catch` was
         // forced to guard-dispatch which used a completely
         // different mechanism.
-        let n = arm_slots.len();
+        let n = arm_states.len();
         {
             let local = local_mut(module, func_id);
             let s = &mut local.block_mut(cap_seq_ids[n - 1]).instrs;
             push_instr(
                 s,
                 Instr::TryTable(TryTable {
-                    seq: *body_seq,
+                    seq: body_seq,
                     catches: new_catches,
                 }),
             );
@@ -4684,11 +4723,9 @@ fn apply_plain_catch_handlers(
             emit_capture_save_and_branch(
                 module,
                 func_id,
-                runtime,
-                memory,
                 cap_seq_ids[j],
-                &arm_slots[j + 1],
-                &arm_spill_locals[j + 1],
+                region.active_arm,
+                &arm_states[j + 1],
                 in_catch_local,
                 catch_region_id_local,
                 catch_region_id,
@@ -4725,11 +4762,9 @@ fn apply_plain_catch_handlers(
         emit_capture_save_and_branch(
             module,
             func_id,
-            runtime,
-            memory,
             outer_seq_id,
-            &arm_slots[0],
-            &arm_spill_locals[0],
+            region.active_arm,
+            &arm_states[0],
             in_catch_local,
             catch_region_id_local,
             catch_region_id,
@@ -4745,33 +4780,28 @@ fn apply_plain_catch_handlers(
             let parent_instrs = &mut local.block_mut(parent_seq).instrs;
             let tt_idx = parent_instrs
                 .iter()
-                .position(|(i, _)| matches!(i, Instr::TryTable(tt) if tt.seq == *body_seq))
+                .position(|(i, _)| matches!(i, Instr::TryTable(tt) if tt.seq == body_seq))
                 .expect("try_table not found in its parent (B1 stage 2 emission)");
             parent_instrs[tt_idx].0 = Instr::Block(Block { seq: outer_seq_id });
         }
     }
-
-    regions
 }
 
 /// Emit the capture-block "tail" for a single plain-catch arm: at the
 /// point where this is invoked, `tag.params()` are on the operand
 /// stack. The emitted sequence:
 ///
-///   1. Spill operands to per-arm locals (top-of-stack first).
-///   2. Save tuple (arm_id, op_0, ..., op_M-1) to memory at
-///      `b1_scratch_base + slot.scratch_offset`.
+///   1. Spill operands to per-arm frame locals (top-of-stack first).
+///   2. Set the region's frame-backed active arm.
 ///   3. Set `in_catch_local = 1`, `catch_region_id_local = region_id`.
 ///   4. Re-push operands (declaration order).
-///   5. `br slot.arm.label` (original handler).
+///   5. `br arm.label` (original handler).
 fn emit_capture_save_and_branch(
     module: &mut Module,
     func_id: FunctionId,
-    runtime: &Runtime,
-    memory: MemoryId,
     cap_seq_id: InstrSeqId,
-    slot: &PlainCatchArmSlot,
-    spills: &[LocalId],
+    active_arm: LocalId,
+    arm: &PlainCatchArmState,
     in_catch_local: LocalId,
     catch_region_id_local: LocalId,
     catch_region_id: u32,
@@ -4782,44 +4812,23 @@ fn emit_capture_save_and_branch(
     // 1. Spill operands. Operands were declared L-to-R but appear on
     //    the stack with the LAST one on top — so we spill in reverse
     //    declaration order: spills[M-1] first, then [M-2], ..., [0].
-    for i in (0..spills.len()).rev() {
-        push_instr(s, Instr::LocalSet(LocalSet { local: spills[i] }));
+    for i in (0..arm.operand_locals.len()).rev() {
+        push_instr(
+            s,
+            Instr::LocalSet(LocalSet {
+                local: arm.operand_locals[i],
+            }),
+        );
     }
 
-    // 2. Save arm_id at offset +0 of this arm's scratch tuple. The
-    //    absolute address is `*(buf_global) + b1_scratch_base +
-    //    scratch_offset`. We fold the constant offset into the
-    //    MemArg.offset and push `global.get $buf_global` as the
-    //    address.
-    let scratch_off = (runtime.b1_scratch_base + slot.scratch_offset) as u64;
-    push_instr(
-        s,
-        Instr::GlobalGet(GlobalGet {
-            global: runtime.buf_global,
-        }),
-    );
+    // 2. Record which arm owns the operand locals for this activation.
     push_instr(
         s,
         Instr::Const(Const {
-            value: Value::I32(slot.arm.arm_idx as i32),
+            value: Value::I32(arm.arm.arm_idx as i32),
         }),
     );
-    push_instr(s, store_i32(memory, scratch_off));
-
-    // 2b. Save operands at offset +4 + cumulative.
-    let mut cur_off: u32 = 4;
-    for (i, &ty) in slot.arm.operand_tys.iter().enumerate() {
-        let abs_off = scratch_off + cur_off as u64;
-        push_instr(
-            s,
-            Instr::GlobalGet(GlobalGet {
-                global: runtime.buf_global,
-            }),
-        );
-        push_instr(s, Instr::LocalGet(LocalGet { local: spills[i] }));
-        push_instr(s, store_scalar(memory, ty, abs_off));
-        cur_off += scalar_size(ty);
-    }
+    push_instr(s, Instr::LocalSet(LocalSet { local: active_arm }));
 
     // 3. Set flags.
     push_instr(
@@ -4848,15 +4857,15 @@ fn emit_capture_save_and_branch(
     );
 
     // 4. Re-push operands in declaration order.
-    for &spill in spills {
-        push_instr(s, Instr::LocalGet(LocalGet { local: spill }));
+    for &operand in &arm.operand_locals {
+        push_instr(s, Instr::LocalGet(LocalGet { local: operand }));
     }
 
     // 5. Branch to original handler.
     push_instr(
         s,
         Instr::Br(Br {
-            block: slot.arm.label,
+            block: arm.arm.label,
         }),
     );
 }
@@ -5094,7 +5103,7 @@ fn instrument_one_function_trampoline_dispatch(
     _aux_tables: &AuxTables,
     _ref_plan: &[RefLocalSlot],
     _catch_plan: &[CatchRegionPlan],
-    _b1_slots: &[(InstrSeqId, Vec<PlainCatchArmSlot>)],
+    _plain_catches: &[(InstrSeqId, Vec<PlainCatchArm>)],
 ) {
     unimplemented!(
         "trampoline emission lands in sub-commits 2.4-2.6 of the mega-PR; \
@@ -5894,7 +5903,7 @@ fn instrument_one_function_nested_switch(
     aux_tables: &AuxTables,
     ref_plan: &[RefLocalSlot],
     catch_plan: &[CatchRegionPlan],
-    b1_slots: &[(InstrSeqId, Vec<PlainCatchArmSlot>)],
+    plain_catches: &[(InstrSeqId, Vec<PlainCatchArm>)],
 ) {
     // Pre-existing user locals.
     let all_user_locals = collect_user_locals(module, func_id);
@@ -5921,7 +5930,7 @@ fn instrument_one_function_nested_switch(
             aux_tables,
             ref_plan,
             catch_plan,
-            b1_slots,
+            plain_catches,
         );
         return;
     }
@@ -6027,6 +6036,8 @@ fn instrument_one_function_nested_switch(
         carryover_spills.insert(site.call_idx, spills);
     }
 
+    let plain_catch_state = allocate_plain_catch_state(module, plain_catches);
+
     // Combined scalar locals for the function frame: existing user
     // scalars + frame-backed per-call arg-spill locals (in call_idx
     // order) + per-call carryover-spill locals (in call_idx order;
@@ -6051,9 +6062,10 @@ fn instrument_one_function_nested_switch(
             frame_scalars.push((lid, ty));
         }
     }
+    append_plain_catch_frame_scalars(&mut frame_scalars, &plain_catch_state);
 
     // Synthetic locals.
-    let catch_state_locals = if catch_plan.is_empty() && b1_slots.is_empty() {
+    let catch_state_locals = if catch_plan.is_empty() && plain_catches.is_empty() {
         None
     } else {
         Some(CatchStateLocals {
@@ -6065,6 +6077,7 @@ fn instrument_one_function_nested_switch(
     // (preserve original cond while computing force_flag and
     // is_rewind without touching the operand stack).
     let cond_swap_local = module.locals.add(ValType::I32);
+    let abort_live_frame = module.locals.add(ValType::I32);
 
     // Pre-pass: walk each fork-bearing seq, identify its
     // SubRegion-with-1-i32-carryover landings, and pre-allocate spill
@@ -6219,11 +6232,13 @@ fn instrument_one_function_nested_switch(
         let ty_id = module.funcs.get(func_id).ty();
         module.types.get(ty_id).results().to_vec()
     };
+    let restart_loop_ty = InstrSeqType::new(&mut module.types, &[], &result_types);
 
     // Plan catch handlers (Phase 6d). These remain dead code for the
     // nested transform's MVP (no fork-from-catch), but the plumbing is
     // preserved for ref-typed exnref locals that still round-trip.
-    let catch_handlers = plan_catch_ref_handlers(module, func_id, catch_plan, aux_tables);
+    let catch_handlers =
+        plan_catch_ref_handlers(module, func_id, catch_plan, aux_tables, &plain_catch_state);
 
     let memory = first_memory(module);
     let ptr_ty = runtime.buf_type;
@@ -6231,7 +6246,7 @@ fn instrument_one_function_nested_switch(
     // Phase 6c rewind-throw stubs (still emitted for try_table bodies
     // without fork-path calls — preserves the exnref serialization
     // path). Extended by B1 Stage 2 Task 2.3 with plain-catch arm
-    // dispatch when `b1_slots` lists arms for the region.
+    // dispatch when `plain_catches` lists arms for the region.
     if !catch_plan.is_empty() && aux_tables.exnref.is_some() {
         let catch_state =
             catch_state_locals.expect("exnref catch plan requires catch-state locals");
@@ -6242,7 +6257,7 @@ fn instrument_one_function_nested_switch(
             catch_state.catch_region_id,
             aux_tables,
             catch_plan,
-            b1_slots,
+            &plain_catch_state,
         );
     }
 
@@ -6260,6 +6275,11 @@ fn instrument_one_function_nested_switch(
         .builder_mut()
         .dangling_instr_seq(InstrSeqType::Simple(None))
         .id();
+    let restart_loop = local.builder_mut().dangling_instr_seq(restart_loop_ty).id();
+    let abort = AbortDispatch {
+        live_frame: abort_live_frame,
+        restart_loop,
+    };
 
     populate_preamble_then(
         local,
@@ -6330,9 +6350,11 @@ fn instrument_one_function_nested_switch(
             runtime,
             memory,
             ptr_ty,
+            frame_size,
             cond_swap_local,
             catch_state_locals,
             unwind_save,
+            abort,
             body_params,
         );
     }
@@ -6358,9 +6380,11 @@ fn instrument_one_function_nested_switch(
         runtime,
         memory,
         ptr_ty,
+        frame_size,
         cond_swap_local,
         catch_state_locals,
         unwind_save,
+        abort,
         &result_types,
     );
 
@@ -6391,7 +6415,7 @@ fn instrument_one_function_nested_switch(
         s.extend(entry_body);
     }
 
-    let entry_seq = &mut local.block_mut(entry_id).instrs;
+    let entry_seq = &mut local.block_mut(restart_loop).instrs;
     push_instr(
         entry_seq,
         Instr::GlobalGet(GlobalGet {
@@ -6407,7 +6431,25 @@ fn instrument_one_function_nested_switch(
     push_instr(
         entry_seq,
         Instr::Binop(Binop {
-            op: BinaryOp::I32Eq,
+            op: BinaryOp::I32GeU,
+        }),
+    );
+    push_instr(
+        entry_seq,
+        Instr::LocalGet(LocalGet {
+            local: abort_live_frame,
+        }),
+    );
+    push_instr(
+        entry_seq,
+        Instr::Unop(walrus::ir::Unop {
+            op: UnaryOp::I32Eqz,
+        }),
+    );
+    push_instr(
+        entry_seq,
+        Instr::Binop(Binop {
+            op: BinaryOp::I32And,
         }),
     );
     push_instr(
@@ -6419,6 +6461,9 @@ fn instrument_one_function_nested_switch(
     );
     push_instr(entry_seq, Instr::Block(Block { seq: unwind_save }));
     entry_seq.extend(postamble);
+    let entry_seq = &mut local.block_mut(entry_id).instrs;
+    entry_seq.clear();
+    push_instr(entry_seq, Instr::Loop(Loop { seq: restart_loop }));
 
     apply_catch_ref_handlers(module, func_id, &catch_handlers, aux_tables);
 
@@ -6428,14 +6473,13 @@ fn instrument_one_function_nested_switch(
         apply_plain_catch_handlers(
             module,
             func_id,
-            runtime,
             catch_state.catch_region_id,
-            b1_slots,
+            &plain_catch_state,
             catch_plan,
             &catch_handlers,
         );
     } else {
-        debug_assert!(b1_slots.is_empty());
+        debug_assert!(plain_catches.is_empty());
     }
 }
 
@@ -6547,9 +6591,11 @@ fn transform_region_seq(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
+    frame_size: u32,
     cond_swap_local: LocalId,
     catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
+    abort: AbortDispatch,
     // Sub-commit 2.6c: this seq's declared type-params (only set for
     // multi-value Block/Loop/TryTable bodies). Pre-spilled at body
     // entry so the cascading POST_K Simple(None) blocks can re-expose
@@ -6642,9 +6688,11 @@ fn transform_region_seq(
         runtime,
         memory,
         ptr_ty,
+        frame_size,
         cond_swap_local,
         catch_state_locals,
         unwind_save,
+        abort,
         false, // don't append `return` at end
     );
 
@@ -6682,9 +6730,11 @@ fn transform_entry_region(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
+    frame_size: u32,
     cond_swap_local: LocalId,
     catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
+    abort: AbortDispatch,
     _result_types: &[ValType],
 ) {
     let original: Vec<(Instr, InstrLocId)> = std::mem::take(&mut local.block_mut(seq_id).instrs);
@@ -6754,9 +6804,11 @@ fn transform_entry_region(
         runtime,
         memory,
         ptr_ty,
+        frame_size,
         cond_swap_local,
         catch_state_locals,
         unwind_save,
+        abort,
         true, // append `return` for normal-path exit
     );
 }
@@ -7086,7 +7138,7 @@ fn populate_region_dispatch(
     push_instr(
         s,
         Instr::Binop(Binop {
-            op: BinaryOp::I32Eq,
+            op: BinaryOp::I32GeU,
         }),
     );
     push_instr(
@@ -7113,9 +7165,11 @@ fn populate_region_dispatch_structure(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
+    frame_size: u32,
     cond_swap_local: LocalId,
     catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
+    abort: AbortDispatch,
     append_return: bool,
 ) {
     let n_landings = landings.len();
@@ -7174,9 +7228,11 @@ fn populate_region_dispatch_structure(
             runtime,
             memory,
             ptr_ty,
+            frame_size,
             cond_swap_local,
             catch_state_locals,
             unwind_save,
+            abort,
         );
         {
             let s = &mut local.block_mut(post_seqs[k]).instrs;
@@ -7215,9 +7271,11 @@ fn populate_region_dispatch_structure(
         runtime,
         memory,
         ptr_ty,
+        frame_size,
         cond_swap_local,
         catch_state_locals,
         unwind_save,
+        abort,
     );
     {
         let s = &mut local.block_mut(outer_seq).instrs;
@@ -7242,9 +7300,11 @@ fn emit_post_landing(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
+    frame_size: u32,
     cond_swap_local: LocalId,
     catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
+    abort: AbortDispatch,
 ) {
     match &landing.kind {
         LandingKind::DirectCall { call_idx } => {
@@ -7274,16 +7334,21 @@ fn emit_post_landing(
                 };
                 s.push((call_instr, site.loc));
             }
-            // Phase 6e + call_idx frame write + UNWIND branch.
-            emit_phase_6e_writes(local, seq_id, catch_handlers, catch_state_locals);
+            // Phase 6e + call_idx frame write + UNWIND branch. Phase 6e is
+            // delayed until after frame reservation succeeds so an abort can
+            // replay the still-live activation without publishing state.
             emit_call_index_store_and_unwind_branch(
                 local,
                 seq_id,
                 runtime,
                 memory,
                 ptr_ty,
+                frame_size,
                 *call_idx,
                 unwind_save,
+                catch_handlers,
+                catch_state_locals,
+                abort,
             );
         }
         LandingKind::SubRegion { .. } => {
@@ -7464,7 +7529,7 @@ fn emit_post_landing(
             push_instr(
                 s,
                 Instr::Binop(Binop {
-                    op: BinaryOp::I32Eq,
+                    op: BinaryOp::I32GeU,
                 }),
             );
             push_instr(s, Instr::Select(walrus::ir::Select { ty: None }));

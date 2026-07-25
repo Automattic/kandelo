@@ -1,11 +1,18 @@
 import { describe, it, expect, vi } from "vitest";
 import { zstdCompressSync } from "node:zlib";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ABI_VERSION } from "../src/generated/abi";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import {
+  assertVfsImageCapacity,
   assertVfsImageHeadroom,
   saveImage,
   sourceDateEpochMilliseconds,
@@ -94,6 +101,81 @@ function stripStandaloneLazyIdentity(image: Uint8Array): Uint8Array {
 
 describe("VFS image save/restore", () => {
   describe("product image runtime headroom", () => {
+    it("validates the serialized product capacity contract and reports drift", async () => {
+      const mfs = createMemfs();
+      const image = await mfs.saveImage();
+      const maxByteLength =
+        MemoryFileSystem.readImageCapacity(image).maxByteLength;
+
+      expect(() =>
+        assertVfsImageCapacity(image, maxByteLength, "test image")
+      ).not.toThrow();
+      expect(() =>
+        assertVfsImageCapacity(image, maxByteLength + 4096, "test image")
+      ).toThrow(/test image has a .* VFS capacity; .* required/);
+    });
+
+    it.each([-1, 0, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1])(
+      "rejects invalid product capacity %s",
+      async (maxByteLength) => {
+        const image = await createMemfs().saveImage();
+        expect(() =>
+          assertVfsImageCapacity(image, maxByteLength, "test image")
+        ).toThrow(/expectedMaxByteLength must be a positive safe integer/);
+      },
+    );
+
+    it("rejects malformed serialized capacity state", () => {
+      expect(() =>
+        assertVfsImageCapacity(new Uint8Array(0), 1, "test image")
+      ).toThrow(/VFS image too small/);
+    });
+
+    it("rejects an encoded ceiling hidden by a smaller runtime buffer before writing", async () => {
+      const MiB = 1024 * 1024;
+      const encodedMaxBytes = 8 * MiB;
+      const runtimeMaxBytes = 4 * MiB;
+      const source = MemoryFileSystem.create(
+        new SharedArrayBuffer(1 * MiB, { maxByteLength: encodedMaxBytes }),
+        encodedMaxBytes,
+      );
+      const sourceImage = await source.saveImage();
+      const restored = MemoryFileSystem.fromImage(sourceImage, {
+        maxByteLength: runtimeMaxBytes,
+      });
+      expect(restored.statfs("/").blocks * restored.statfs("/").bsize).toBe(
+        runtimeMaxBytes,
+      );
+
+      const maskedImage = await restored.saveImage();
+      expect(MemoryFileSystem.readImageCapacity(maskedImage).maxByteLength).toBe(
+        encodedMaxBytes,
+      );
+      expect(() =>
+        assertVfsImageFitsProfile(
+          MemoryFileSystem.readImageCapacity(maskedImage),
+          runtimeMaxBytes,
+          undefined,
+          "masked.vfs.zst",
+        )
+      ).toThrow(/requires 8388608 VFS bytes, but its profile permits 4194304/);
+
+      const dir = mkdtempSync(join(tmpdir(), "vfs-masked-capacity-"));
+      const outFile = join(dir, "masked.vfs.zst");
+      try {
+        await expect(
+          saveImage(restored, outFile, {
+            expectedMaxByteLength: runtimeMaxBytes,
+          }),
+        ).rejects.toThrow(
+          /has a 8388608-byte VFS capacity; 4194304 bytes are required/,
+        );
+        expect(existsSync(outFile)).toBe(false);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     it("checks free blocks and free inodes as independent resources", () => {
       const mfs = createMemfs();
       const stats = mfs.statfs("/");

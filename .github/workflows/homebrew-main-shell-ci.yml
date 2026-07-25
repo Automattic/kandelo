@@ -217,12 +217,91 @@ jobs:
             npx playwright install chromium --with-deps
           )
 
-      - name: Resolve current direct browser bundling inputs and build the exact candidate kernel
+      - name: Select one verified package generation
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           abi=$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
             crates/shared/src/lib.rs)
-          export WASM_POSIX_BINARY_INDEX_URL="https://github.com/Automattic/kandelo/releases/download/binaries-abi-v${abi}/index.toml"
+          [[ "$abi" =~ ^[0-9]+$ ]]
+          canonical_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${abi}/index.toml"
+          selected_url="$canonical_url"
+
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            pr_number=$(jq -er '.pull_request.number' "$GITHUB_EVENT_PATH")
+            [[ "$pr_number" =~ ^[1-9][0-9]*$ ]]
+            target_tag="pr-${pr_number}-staging"
+            expected="$RUNNER_TEMP/homebrew-main-shell-staging-expected.json"
+            snapshot="$RUNNER_TEMP/homebrew-main-shell-staging-snapshot"
+
+            # WHY: an ABI bump has no canonical package release yet. Reuse the
+            # parallel staging build only after proving it is a complete,
+            # exact-current generation; accepting a partial mutable index would
+            # mix packages from different builds or silently source-build gaps.
+            if bash scripts/dev-shell.sh env \
+                EXPECTED="$expected" \
+                SNAPSHOT="$snapshot" \
+                TARGET_TAG="$target_tag" \
+                ABI="$abi" \
+                bash -c '
+                  set -euo pipefail
+                  host_target=$(rustc -vV | awk "/^host/ {print \$2}")
+                  cargo build --release -p xtask --target "$host_target"
+                  xtask="target/$host_target/release/xtask"
+                  "$xtask" staging-reuse expected \
+                    --registry packages/registry \
+                    --expected-abi "$ABI" \
+                    --exclude erlang-vfs,perl,perl-vfs,python-vfs,redis,texlive \
+                    --output "$EXPECTED"
+                  bash .github/scripts/validate-staging-release.sh \
+                    --tag "$TARGET_TAG" \
+                    --expected-ledger "$EXPECTED" \
+                    --mode current \
+                    --output-dir "$SNAPSHOT" \
+                    --xtask "$xtask"
+                '; then
+              frozen_index="$snapshot/frozen-index.toml"
+              target_index_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${target_tag}/index.toml"
+              # WHY: index freezing consumes only the bytes already validated
+              # above. Remove network credentials so this pure transformation
+              # cannot accidentally grow an authenticated code path.
+              env -u GH_TOKEN -u GITHUB_TOKEN \
+                -u HOMEBREW_GITHUB_API_TOKEN \
+                -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+                bash scripts/dev-shell.sh env \
+                SOURCE_INDEX="$snapshot/source-index.toml" \
+                FROZEN_INDEX="$frozen_index" \
+                TARGET_INDEX_URL="$target_index_url" \
+                ABI="$abi" \
+                bash -c '
+                  set -euo pipefail
+                  host_target=$(rustc -vV | awk "/^host/ {print \$2}")
+                  xtask="target/$host_target/release/xtask"
+                  # WHY: the PR release tag remains mutable. Keep the validated
+                  # index bytes local while rewriting relative archive names to
+                  # their exact release URLs; archive hashes still fail closed.
+                  "$xtask" index-candidate seed \
+                    --canonical-index "$SOURCE_INDEX" \
+                    --candidate-index "$FROZEN_INDEX" \
+                    --canonical-index-url "$TARGET_INDEX_URL" \
+                    --expected-abi "$ABI" \
+                    --generated-at "1970-01-01T00:00:00Z" \
+                    --generator "Homebrew main-shell frozen staging generation"
+                '
+              selected_url="file://${frozen_index}"
+              echo "Using complete verified package generation from $target_tag"
+            else
+              echo "Complete current $target_tag generation is unavailable; using canonical/source fallback"
+            fi
+          fi
+
+          echo "WASM_POSIX_BINARY_INDEX_URL=$selected_url" >> "$GITHUB_ENV"
+
+      - name: Resolve current direct browser bundling inputs and build the exact candidate kernel
+        run: |
+          set -euo pipefail
+          test -n "${WASM_POSIX_BINARY_INDEX_URL:-}"
           # Vite resolves static @binaries imports across the wider demo app.
           # Derive those registry roots from the imports and package manifests
           # so adding an import cannot silently leave this browser proof stale.

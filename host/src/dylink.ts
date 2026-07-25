@@ -6,8 +6,19 @@
  * https://github.com/WebAssembly/tool-conventions/blob/main/DynamicLinking.md
  */
 
-import { ABI_VERSION } from "./generated/abi";
-import { FORK_SAVE_BUFFER_SIZE } from "./process-memory";
+import {
+  ABI_VERSION,
+  WPK_FORK_REQUIRED_EXPORTS,
+  WPK_FORK_REQUIRED_IMPORTS,
+} from "./generated/abi";
+import {
+  ContinuationAllocationError,
+  invokeForkContinuationBegin,
+  LinkedForkContinuation,
+  readLinkedFrameFormat,
+  type ContinuationAllocate,
+  type ContinuationDeallocate,
+} from "./fork-continuation";
 
 // dylink.0 sub-section types
 const WASM_DYLINK_MEM_INFO = 1;
@@ -19,13 +30,9 @@ const WASM_DYLINK_IMPORT_INFO = 4;
 const WASM_DYLINK_FLAG_TLS = 0x01;
 const WASM_DYLINK_FLAG_WEAK = 0x02;
 
-export const SIDE_MODULE_FORK_EXPORTS = [
-  "wpk_fork_unwind_begin",
-  "wpk_fork_unwind_end",
-  "wpk_fork_rewind_begin",
-  "wpk_fork_rewind_end",
-  "wpk_fork_state",
-] as const;
+export const SIDE_MODULE_FORK_EXPORTS = WPK_FORK_REQUIRED_EXPORTS.map(
+  ({ name }) => name,
+);
 
 export const FORK_CAPABILITIES_SECTION = "kandelo.wpk_fork.capabilities";
 export const FORK_CAPABILITIES_VERSION = 1;
@@ -37,6 +44,7 @@ export const FORK_CAPABILITIES_REQUIRED_ABI = 17;
 const WPK_FORK_NORMAL = 0;
 const WPK_FORK_UNWINDING = 1;
 const WPK_FORK_REWINDING = 2;
+const WPK_FORK_ABORT_UNWINDING = 3;
 
 export interface ForkInstrumentCapabilityClaim {
   /** False for an ABI-16 artifact built before role markers were introduced. */
@@ -374,6 +382,7 @@ export interface LoadedSharedLibrary {
   name: string;
   /** Fork save buffer for an instrumented side module importing env.fork. */
   forkBufAddr?: number;
+  forkContinuation?: LinkedForkContinuation;
   /** Thread-local-storage base captured from the parent instance. */
   tlsBase?: number;
   /** Whether this module can originate a coordinated env.fork unwind. */
@@ -390,8 +399,7 @@ export interface SideModuleForkState {
   name: string;
   instance: WebAssembly.Instance;
   forkBufAddr: number;
-  /** Byte capacity reserved for this module's continuation frames. */
-  forkBufSize: number;
+  continuation: LinkedForkContinuation;
 }
 
 /**
@@ -406,7 +414,9 @@ export interface SideModuleForkSupport {
   setActiveFork: (state: SideModuleForkState) => void;
   clearActiveFork: (state: SideModuleForkState) => void;
   /** Invoke the immutable main-module fork trampoline and verify its state. */
-  invokeMainFork: (expectedStateAfter: 0 | 1) => number;
+  invokeMainFork: (expectedStateAfter: 0 | 1 | readonly (0 | 1)[]) => number;
+  /** Put the already-unwinding main image into allocation-failure replay. */
+  beginMainAbort: (errno: number) => void;
 }
 
 /**
@@ -455,6 +465,10 @@ export interface LoadSharedLibraryOptions {
   allocateMemory?: (size: number, align: number) => number;
   /** Release a successful allocateMemory result when loading rolls back. */
   deallocateMemory?: (addr: number, size: number) => void;
+  /** Page-granular process mapping used only for linked continuation chunks. */
+  allocateContinuation?: ContinuationAllocate;
+  /** Release one inherited or parent-owned continuation mapping. */
+  deallocateContinuation?: ContinuationDeallocate;
   /** Global symbol table: name → function or WebAssembly.Global */
   globalSymbols: Map<string, Function | WebAssembly.Global>;
   /** GOT entries: symbol name → mutable pointer-width WebAssembly.Global */
@@ -656,6 +670,14 @@ function instantiateSharedLibrary(
   const importsFork = moduleImports.some((imp) =>
     imp.module === "env" && imp.name === "fork" && imp.kind === "function"
   );
+  const linkedFrameImportNames = WPK_FORK_REQUIRED_IMPORTS
+    .filter(({ module }) => module === "env")
+    .map(({ name }) => name);
+  const linkedFrameImportCount = linkedFrameImportNames.filter((importName) =>
+    moduleImports.some((imp) =>
+      imp.module === "env" && imp.name === importName && imp.kind === "function"
+    )
+  ).length;
   const presentForkExports = SIDE_MODULE_FORK_EXPORTS.filter((exportName) =>
     moduleExports.some((exp) => exp.kind === "function" && exp.name === exportName)
   );
@@ -739,6 +761,12 @@ function instantiateSharedLibrary(
       `${name}: env.fork requires the versioned side-entry capability; ` +
         "rebuild with the current wasm-fork-instrument --entry env.fork",
     );
+  }
+  if (linkedFrameImportCount !== 0 && linkedFrameImportCount !== linkedFrameImportNames.length) {
+    throw new Error(`${name}: incomplete linked fork instrumentation imports; rebuild the module`);
+  }
+  if (importsFork && linkedFrameImportCount !== linkedFrameImportNames.length) {
+    throw new Error(`${name}: env.fork requires ABI 42 linked continuation imports`);
   }
   if (claimsSideEntry && !importsFork) {
     throw new Error(`${name}: side-entry capability is present without an env.fork import`);
@@ -840,25 +868,22 @@ function instantiateSharedLibrary(
     if (metadata.tableSize > 0) growTable(options.table, metadata.tableSize);
 
     let sideForkBufAddr = 0;
+    let sideForkContinuation: LinkedForkContinuation | undefined;
     if (importsFork) {
+      if (!options.allocateContinuation || !options.deallocateContinuation) {
+        throw new Error(
+          `${name}: linked continuations require process-mapping allocation and cleanup`,
+        );
+      }
+      sideForkContinuation = new LinkedForkContinuation(
+        options.memory,
+        readLinkedFrameFormat(module),
+        options.allocateContinuation,
+        options.deallocateContinuation,
+        name,
+      );
       if (replay) {
         sideForkBufAddr = replay.forkBufAddr ?? 0;
-      } else if (options.allocateMemory) {
-        sideForkBufAddr = allocate(FORK_SAVE_BUFFER_SIZE, 16);
-      } else if (options.heapPointer) {
-        sideForkBufAddr = alignUp(options.heapPointer.value, 16);
-        options.heapPointer.value = sideForkBufAddr + FORK_SAVE_BUFFER_SIZE;
-        const neededPages = Math.ceil(options.heapPointer.value / 65536);
-        const currentPages = options.memory.buffer.byteLength / 65536;
-        if (neededPages > currentPages) {
-          growMemory(options.memory, neededPages - currentPages, ptrWidth);
-        }
-      }
-      if (
-        sideForkBufAddr <= 0
-        || sideForkBufAddr + FORK_SAVE_BUFFER_SIZE > options.memory.buffer.byteLength
-      ) {
-        throw new Error(`${name}: invalid side-module fork save buffer`);
       }
     }
 
@@ -948,29 +973,56 @@ function instantiateSharedLibrary(
     };
 
     const sideModuleForkImport = (): number => {
-      if (!instance || !options.sideModuleFork || sideForkBufAddr === 0) {
+      if (!instance || !options.sideModuleFork || !sideForkContinuation) {
         throw new Error(`${name}: side-module fork coordinator is unavailable`);
       }
       const state = forkState();
       if (state === WPK_FORK_NORMAL) {
-        (instance.exports.wpk_fork_unwind_begin as (addr: WasmAddress) => void)(
-          wasmAddress(sideForkBufAddr, ptrWidth, `${name}: side-module fork save buffer`),
+        try {
+          sideForkBufAddr = Number(sideForkContinuation!.beginUnwind());
+        } catch (error) {
+          if (error instanceof ContinuationAllocationError) return -error.errno;
+          throw error;
+        }
+        const loaded = options.loadedLibraries.get(name);
+        if (loaded) loaded.forkBufAddr = sideForkBufAddr;
+        invokeForkContinuationBegin(
+          instance.exports.wpk_fork_unwind_begin,
+          sideForkBufAddr,
+          ptrWidth,
+          `${name}: side-module linked fork unwind`,
         );
         if (forkState() !== WPK_FORK_UNWINDING) {
           throw new Error(`${name}: side-module fork failed to enter UNWINDING`);
         }
-        sideForkState = {
+        const startedState: SideModuleForkState = {
           name,
           instance,
           forkBufAddr: sideForkBufAddr,
-          forkBufSize: FORK_SAVE_BUFFER_SIZE,
+          continuation: sideForkContinuation!,
         };
-        options.sideModuleFork.setActiveFork(sideForkState);
-        return options.sideModuleFork.invokeMainFork(WPK_FORK_UNWINDING);
+        sideForkState = startedState;
+        options.sideModuleFork.setActiveFork(startedState);
+        const result = options.sideModuleFork.invokeMainFork([
+          WPK_FORK_NORMAL,
+          WPK_FORK_UNWINDING,
+        ]);
+        if (result < 0) {
+          // Main root allocation failed synchronously: no side activation has
+          // returned yet, so unwind the side control state without replay.
+          (instance.exports.wpk_fork_unwind_end as () => void)();
+          sideForkContinuation!.cancelUnwindAndRelease();
+          options.sideModuleFork.clearActiveFork(startedState);
+          const loaded = options.loadedLibraries.get(name);
+          if (loaded) loaded.forkBufAddr = undefined;
+          sideForkState = null;
+        }
+        return result;
       }
 
       if (state === WPK_FORK_REWINDING) {
         (instance.exports.wpk_fork_rewind_end as () => void)();
+        sideForkContinuation!.finishReplayAndRelease();
         if (forkState() !== WPK_FORK_NORMAL) {
           throw new Error(`${name}: side-module fork failed to finish REWINDING`);
         }
@@ -982,11 +1034,32 @@ function instantiateSharedLibrary(
           name,
           instance,
           forkBufAddr: sideForkBufAddr,
-          forkBufSize: FORK_SAVE_BUFFER_SIZE,
+          continuation: sideForkContinuation!,
         };
         const result = options.sideModuleFork.invokeMainFork(WPK_FORK_NORMAL);
         options.sideModuleFork.clearActiveFork(completedState);
+        const loaded = options.loadedLibraries.get(name);
+        if (loaded) loaded.forkBufAddr = undefined;
         sideForkState = null;
+        return result;
+      }
+
+      if (state === WPK_FORK_ABORT_UNWINDING) {
+        const errno = sideForkContinuation!.abortErrno();
+        (instance.exports.wpk_fork_abort_end as () => void)();
+        sideForkContinuation!.finishAbortReplayAndRelease();
+        const completedState = sideForkState;
+        if (!completedState) {
+          throw new Error(`${name}: side-module abort lost its active fork identity`);
+        }
+        const result = options.sideModuleFork.invokeMainFork(WPK_FORK_NORMAL);
+        options.sideModuleFork.clearActiveFork(completedState);
+        const loaded = options.loadedLibraries.get(name);
+        if (loaded) loaded.forkBufAddr = undefined;
+        sideForkState = null;
+        if (result !== -errno) {
+          throw new Error(`${name}: main/side continuation abort errno mismatch`);
+        }
         return result;
       }
 
@@ -1008,6 +1081,30 @@ function instantiateSharedLibrary(
             case "fork":
               if (importsFork) return sideModuleForkImport;
               break;
+            case "__wpk_fork_frame_reserve":
+              if (importsFork) return (size: number | bigint) => {
+                const frame = sideForkContinuation!.reserveFrame(size);
+                if (frame === 0 || frame === 0n) {
+                  const errno = sideForkContinuation!.abortErrno();
+                  options.sideModuleFork!.beginMainAbort(errno);
+                  invokeForkContinuationBegin(
+                    instance!.exports.wpk_fork_abort_begin,
+                    sideForkBufAddr,
+                    ptrWidth,
+                    `${name}: side-module linked fork abort`,
+                  );
+                }
+                return frame;
+              };
+              break;
+            case "__wpk_fork_frame_commit":
+              if (importsFork) return (payload: number | bigint) =>
+                sideForkContinuation!.commitFrame(payload);
+              break;
+            case "__wpk_fork_frame_next":
+              if (importsFork) return (size: number | bigint) =>
+                sideForkContinuation!.nextFrame(size);
+              break;
           }
           const sym = options.globalSymbols.get(prop);
           if (sym !== undefined) return sym;
@@ -1027,6 +1124,7 @@ function instantiateSharedLibrary(
                "__table_base", "__stack_pointer", "__c_longjmp",
                "__cpp_exception"].includes(prop)) return true;
           if (prop === "fork" && importsFork) return true;
+          if (linkedFrameImportNames.some((name) => name === prop) && importsFork) return true;
           return options.globalSymbols.has(prop) || selfFunctionImports.has(prop);
         },
       }),
@@ -1235,6 +1333,7 @@ function instantiateSharedLibrary(
       metadata,
       name,
       forkBufAddr: sideForkBufAddr || undefined,
+      forkContinuation: sideForkContinuation,
       tlsBase,
       forkCapable: importsFork,
       functionImports,

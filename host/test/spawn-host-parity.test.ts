@@ -44,6 +44,14 @@ function posixSpawnHandlerSource(src: string): string {
   return src.slice(start, end);
 }
 
+function centralizedInitMessageSource(handler: string): string {
+  const start = handler.indexOf("const initData: CentralizedWorkerInitMessage");
+  const end = handler.indexOf("\n  };", start);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return handler.slice(start, end);
+}
+
 describe("spawn host parity", () => {
   it("Node kernel-worker-entry wires both onResolveSpawn and onSpawn", () => {
     const src = readFileSync(nodeEntry, "utf8");
@@ -66,8 +74,11 @@ describe("spawn host parity", () => {
     expect(spawnHandler, `${nodeEntry} must publish posix_spawn parentage`).toMatch(
       /kind:\s*"spawn",\s*pid:\s*childPid,\s*ppid:\s*parentPid/,
     );
-    expect(spawnHandler, `${nodeEntry} must initialize the child with its real parent`).toMatch(
-      /ppid:\s*parentPid/,
+    expect(
+      centralizedInitMessageSource(spawnHandler),
+      `${nodeEntry} must not duplicate kernel-owned parentage in worker init metadata`,
+    ).not.toMatch(
+      /\bppid\s*:/,
     );
   });
 
@@ -92,8 +103,11 @@ describe("spawn host parity", () => {
     expect(spawnHandler, `${browserEntry} must publish posix_spawn parentage`).toMatch(
       /kind:\s*"spawn",\s*pid:\s*childPid,\s*ppid:\s*parentPid/,
     );
-    expect(spawnHandler, `${browserEntry} must initialize the child with its real parent`).toMatch(
-      /ppid:\s*parentPid/,
+    expect(
+      centralizedInitMessageSource(spawnHandler),
+      `${browserEntry} must not duplicate kernel-owned parentage in worker init metadata`,
+    ).not.toMatch(
+      /\bppid\s*:/,
     );
   });
 

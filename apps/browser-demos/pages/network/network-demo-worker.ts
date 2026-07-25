@@ -149,7 +149,7 @@ async function runProgram(
 ): Promise<RunResult> {
   const workers = new Map<number, WorkerHandle>();
   const ptrWidth = detectPtrWidth(options.programBytes);
-  const pid = 100;
+  let pid = 0;
   let stdout = "";
   let stderr = "";
   let settled = false;
@@ -212,10 +212,10 @@ async function runProgram(
   growToMax(memory, ptrWidth, 17);
   new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
+  pid = kernelWorker.createProcess(CAPTURED_STDIO);
   kernelWorker.registerProcess(pid, memory, [channelOffset], {
     argv: options.argv,
     ptrWidth,
-    stdio: CAPTURED_STDIO,
   });
   const initialHeapBase = extractHeapBase(options.programBytes);
   if (initialHeapBase !== null) kernelWorker.setBrkBase(pid, initialHeapBase);
@@ -226,7 +226,6 @@ async function runProgram(
   const initData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
     pid,
-    ppid: 0,
     programBytes: options.programBytes,
     memory,
     channelOffset,

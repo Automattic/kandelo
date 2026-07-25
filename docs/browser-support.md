@@ -51,15 +51,15 @@ Service Worker ──MessagePort──> Kernel Worker       │
 ### Key Design Decisions
 
 - **Kernel in dedicated worker**: Browser syscall notification remains event-driven through `Atomics.waitAsync`; it does not poll channels. The browser config uses batch size 1 so every relisten and already-`PENDING` dispatch is deferred through the MessageChannel-backed `setImmediate` queue, allowing syscall handling and worker messages to keep progressing together under multi-process bridge load. Node.js keeps its native/default batching unchanged.
-- **Kernel-owned VFS** (preferred path, `kernelOwnedFs: true` + `kernel.boot()`): the kernel worker restores a pre-built VFS image and exec()s `argv[0]` as the first process. The main thread never instantiates a `MemoryFileSystem` and is not in the FS hot path. Service-supervised demos run dinit (PID 1) inside this image; single-program demos exec the language interpreter directly.
+- **Kernel-owned VFS** (preferred path, `kernelOwnedFs: true` + `kernel.boot()`): the kernel worker restores a pre-built VFS image and exec()s `argv[0]` as the first user process. The main thread never instantiates a `MemoryFileSystem` and is not in the FS hot path. Service-supervised demos run dinit under the first kernel-allocated user PID (100); PID 1 remains the kernel's synthetic init reservation. Single-program demos exec the language interpreter directly.
   Browser harnesses that must stage a transient file between process spawns use
   `BrowserKernel`'s worker RPC methods (`readFileSnapshotFromVfs`,
   `writeFileToVfs`, and `unlinkFileFromVfs`). The owning worker performs those
   mutations through the mounted VFS; the main thread never receives the live
   VFS `SharedArrayBuffer`.
-- **Legacy shared VFS** (`memfs:` constructor option + `kernel.spawn()`): main thread holds a `MemoryFileSystem` and shares the SAB with the kernel worker. Used by demos that fetch transient binaries at runtime (test runners, REPLs that load arbitrary user code, benchmark suites). The main thread transfers each program's bytes, but the kernel worker allocates and returns its pid so top-level spawns and guest forks share one authoritative sequence.
+- **Legacy shared VFS** (`memfs:` constructor option + `kernel.spawn()`): main thread holds a `MemoryFileSystem` and shares the SAB with the kernel worker. Used by demos that fetch transient binaries at runtime (test runners, REPLs that load arbitrary user code, benchmark suites). The main thread transfers each program's bytes, but the Rust `ProcessTable` allocates the PID and the worker returns it. Top-level creation, guest fork/spawn, and thread clone all draw from that one authoritative task-ID sequence; no browser or host-side allocator exists.
 - **Exec reads from filesystem**: Like a real OS, `exec()` reads binaries from the kernel-side `MemoryFileSystem`. Programs are baked into the VFS image at build time (or written by the page in the legacy path before spawning). Symlinks are used for multicall binaries (e.g., coreutils).
-- **dinit (PID 1) for service supervision**: Multi-process demos (nginx, redis, mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and per-service files under `/etc/dinit.d/` into the VFS image via `addDinitInit()` (`images/vfs/scripts/dinit-image-helpers.ts`). dinit handles SIGCHLD reaping, `depends-on` ordering, and bootstrap-then-daemon chains. Page code waits for service-ready via `onListenTcp` (port-bind) callbacks, then starts driving the demo over kernel-loopback TCP or the HTTP bridge.
+- **dinit for service supervision**: Multi-process demos (nginx, redis, mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and per-service files under `/etc/dinit.d/` into the VFS image via `addDinitInit()` (`images/vfs/scripts/dinit-image-helpers.ts`). dinit is the first user process, not PID 1. It reaps its directly supervised children and handles `depends-on` ordering and bootstrap-then-daemon chains. Synthetic PID 1 has no wait loop, so Kandelo does not yet reap children reparented to it. Page code waits for service-ready via `onListenTcp` (port-bind) callbacks, then starts driving the demo over kernel-loopback TCP or the HTTP bridge.
 - **Connection pump in kernel worker**: HTTP↔TCP bridge runs inside the kernel worker with synchronous pipe I/O (direct Wasm export calls). Service worker transfers a MessagePort to the kernel worker for HTTP request delivery.
 - **App clients on main thread**: MySQL and Redis wire protocol clients stay on the main thread and use async pipe operations via the message protocol.
 - **Rust-owned advisory locks**: the browser host does not hold advisory-lock
@@ -219,10 +219,10 @@ Located in `apps/browser-demos/pages/`:
 | doom | fbDOOM | legacy spawn | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin + mouse via `/dev/input/mice` (pointer-locked) + SFX **and** OPL2-synthesized music via `/dev/dsp` → AudioContext. The shareware `doom1.wad` is **fetched at page load** from a commit-pinned CDN URL (SHA-256 verified, Cache API cached); no IWAD ships in the package archive. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
-- **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first process.
-- **dinit** — `kernelOwnedFs: true`, exec dinit (PID 1), which brings up the per-demo service tree.
+- **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first user process.
+- **dinit** — `kernelOwnedFs: true`, exec dinit as the first user process (PID 100), which brings up the per-demo service tree; PID 1 remains synthetic.
 - **dinit + spawn** — dinit boots the supervised services; the page spawns transient binaries (e.g. mysqltest) via `kernel.spawn()`.
-- **legacy spawn** — main thread restores a `MemoryFileSystem`, page calls `kernel.spawn(programBytes, argv)` for each binary, and the kernel worker allocates the pid.
+- **legacy spawn** — main thread restores a `MemoryFileSystem`, page calls `kernel.spawn(programBytes, argv)` for each binary, and the Rust kernel allocates the PID before the worker launches it.
 
 Run the browser app: `cd apps/browser-demos && npm run dev`, then open
 `http://127.0.0.1:5401/`.
@@ -307,7 +307,16 @@ file can be created. `saveShellDerivedVfsImage()` rejects a product build
 unless at least 64 MiB of data blocks and 8,192 inode slots remain after its
 immutable contents are written. This makes runtime allocation space a checked
 artifact contract instead of allowing an image to build successfully and then
-fail with `ENOSPC` during normal browser initialization.
+fail with `ENOSPC` during normal browser initialization. The shared save helper
+also requires the serialized artifact's encoded growth ceiling to equal the
+768 MiB product profile. A future product that intentionally needs a larger
+reviewed profile must pass that exact ceiling explicitly rather than silently
+drifting from its browser consumer; an override cannot select a smaller
+profile. The Homebrew main-shell composer applies the same serialized-ceiling
+check against its selected `--max-bytes` contract before it creates the output
+artifact. Host-tree copies fail the build on any read or VFS write error.
+Intentional omissions are declared through the copy helper's `exclude` option,
+and every unexcluded symlink must be preserved explicitly or the build fails.
 
 Gallery launch URLs retain both the logical demo id and the resolved VFS image
 URL. Each built-in VFS image has one trusted source and resource identity; the
@@ -470,7 +479,7 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Python (legacy opt-in) | `python-vfs.vfs.zst` | `bash packages/registry/python-vfs/build-python-vfs.sh` | ABI-bound CPython interpreter, complete stdlib, license, aliases, and demo metadata |
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
-| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the exact reviewed 38-Formula public Homebrew bottle closure, compatibility links, profile, and image-owned Homebrew Bash |
+| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the exact reviewed 42-Formula public Homebrew bottle closure, compatibility links, profile, and image-owned Homebrew Bash |
 | Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | npm 10.9.2 dist + writable `/work` |
 | WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
@@ -535,8 +544,18 @@ Registration, `stat`, and `readdir` do not fetch it. The first ordinary
 open/read, mapping, or executable resolution downloads and verifies the whole
 owning bottle; transports are tried in descriptor order until one passes the
 same digest and size identity, and all members are bounded, decoded, and
-verified before one identity-guarded batch commit. There is no per-file or
-byte-range retrieval inside the gzip/TAR. A failed fetch, digest,
+verified before one identity-guarded batch commit. Each transport gets at most
+three total GET attempts. The same URL is retried only for HTTP 408, 429, or
+5xx responses and recognized fetch/body network interruptions, with 250/500 ms
+backoff unless `Retry-After` requests a delay capped at five seconds. A custom
+fetcher may register an `AbortSignal` alongside its existing one-argument
+callback. The host passes that exact signal into every attempt, makes retry
+waits abortable, and rethrows its arbitrary `reason` unchanged before mirror
+fallback or VFS commit. Standard `AbortError`/`ABORT_ERR` failures remain the
+compatibility fallback when no signal is registered. Other 4xx responses and
+size, digest, or decode failures do not consume the same-URL retry budget.
+There is no per-file or byte-range retrieval inside the gzip/TAR. A failed
+fetch, digest,
 decode, inventory check, or allocation leaves every regular inode pending and
 retryable. Hard-link inventory members are restored as names of the same inode,
 including across VFS image save/restore. A metadata-only tree remains deferred
@@ -564,13 +583,13 @@ original error. Failed and superseded boots then run the same bounded WebKit
 reclamation pass used after kernel teardown, so repeated failures do not leave
 untracked staged images on the persistent main thread.
 
-The Homebrew collection producer emits one candidate tree per selected Formula
-and keeps that Formula's finalized bottle `.tar.gz` byte-for-byte as the tree
-payload. Its closed schema can represent the production shell's 32 requested
-roots under the shared 128-request bound, but Phase 3 calls
+The Homebrew collection producer emits one tree per selected Formula and keeps
+that Formula's finalized bottle `.tar.gz` byte-for-byte as the tree payload.
+Its closed schema represents the production shell's 36 requested roots under
+the shared 128-request bound, but the canonical shell calls
 `buildHomebrewOriginalBottleCollection` directly; it does not publish or boot
-that collection as one multi-root runtime layer. The later shell composer
-chooses the embedded/deferred partition. A
+that collection as one multi-root runtime layer. The shell composer chooses
+the embedded/deferred partition. A
 complete source inventory describes every TAR member. A separate
 guest projection binds those members to the keg, reviewed link-manifest copies,
 the builder-owned `opt` link, ownership, modes, and hard-link inode groups.
@@ -616,9 +635,10 @@ ephemeral flags, credentials in the URL, or non-root target paths.
 No Perl, Python, or Erlang layer URL is built into the browser. Concrete
 entries require immutable published descriptor/content identities derived from
 their finalized bottle sidecars; missing or mismatched identities fail boot
-instead of falling back to a standalone language VFS. This substrate does not
-change the main-shell composition: the Bash-plus-required-closure embedding and
-any default-shell cutover remain explicit later producer decisions.
+instead of falling back to a standalone language VFS. The canonical main shell
+uses the same substrate directly: Bash and its required closure are embedded,
+the remaining reviewed Formulae are registered as bottle-backed deferred trees,
+and the image-owned default-shell contract selects the embedded Bash.
 
 That direct release proves only its configured acceptance image; it does not
 set generic package browser flags. The separate gallery path first boots a

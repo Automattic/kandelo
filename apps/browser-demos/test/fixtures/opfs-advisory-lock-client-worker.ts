@@ -33,6 +33,7 @@ const MAX_LOCK_RECORDS = 4096;
 const FLOCK_PTR = 0x4000;
 
 interface RegisteredProcess {
+  pid: number;
   memory: WebAssembly.Memory;
   channelOffset: number;
   layout: ProcessMemoryLayout;
@@ -70,7 +71,7 @@ function internals(worker: CentralizedKernelWorker): KernelWorkerInternals {
   return worker as unknown as KernelWorkerInternals;
 }
 
-function makeProcessMemory(): RegisteredProcess {
+function makeProcessMemory(): Omit<RegisteredProcess, "pid"> {
   const layout = computeProcessMemoryLayout({
     ptrWidth: 4,
     heapBase: 0x0012_0000,
@@ -85,16 +86,15 @@ function makeProcessMemory(): RegisteredProcess {
 
 function register(
   worker: CentralizedKernelWorker,
-  pid: number,
 ): RegisteredProcess {
   const process = makeProcessMemory();
+  const pid = worker.createProcess(CAPTURED_STDIO);
   worker.registerProcess(pid, process.memory, [process.channelOffset], {
     brkBase: process.layout.brkBase,
     mmapBase: process.layout.mmapBase,
     maxAddr: process.layout.maxAddr,
-    stdio: CAPTURED_STDIO,
   });
-  return process;
+  return { ...process, pid };
 }
 
 function issue(
@@ -120,6 +120,14 @@ function issue(
     offset: number | bigint,
     pid: number,
   ) => number;
+  const setCurrentTid = state.kernelInstance.exports.kernel_set_current_tid as (
+    pid: number,
+    tid: number,
+  ) => number;
+  const bindResult = setCurrentTid(pid, pid);
+  if (bindResult !== 0) {
+    throw new Error(`kernel_set_current_tid(${pid}, ${pid}) failed: ${bindResult}`);
+  }
   handleChannel(worker.toKernelPtr(state.scratchOffset), pid);
   return {
     value: Number(channel.getBigInt64(CH_RETURN, true)),
@@ -235,7 +243,7 @@ self.onmessage = async (event: MessageEvent<FixtureRequest>) => {
   const renamedIdentityPath = `${identityPath}-renamed`;
   const opfs = OpfsFileSystem.create(buffer);
   let worker: CentralizedKernelWorker | null = null;
-  const pids = [810, 811, 812, 813];
+  const pids: number[] = [];
   let response: Record<string, unknown> | null = null;
 
   try {
@@ -251,10 +259,12 @@ self.onmessage = async (event: MessageEvent<FixtureRequest>) => {
     );
     await worker.init(kernelWasm);
 
-    register(worker, pids[0]);
-    const peer = register(worker, pids[1]);
-    const capacityOwner = register(worker, pids[2]);
-    register(worker, pids[3]);
+    pids.push(register(worker).pid);
+    const peer = register(worker);
+    pids.push(peer.pid);
+    const capacityOwner = register(worker);
+    pids.push(capacityOwner.pid);
+    pids.push(register(worker).pid);
 
     const ownerFd = openFile(worker, pids[0], identityPath);
     const peerFd = openFile(worker, pids[1], identityPath);

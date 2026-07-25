@@ -4,13 +4,7 @@ export type HostToWorkerMessage =
   | CentralizedWorkerInitMessage
   | CentralizedThreadInitMessage
   | WorkerTerminateMessage
-  | DeliverSignalMessage
   | ExecReplyMessage;
-
-export interface DeliverSignalMessage {
-  type: "deliver_signal";
-  signal: number;
-}
 
 /**
  * Init message for centralized-mode Workers.
@@ -20,7 +14,6 @@ export interface DeliverSignalMessage {
 export interface CentralizedWorkerInitMessage {
   type: "centralized_init";
   pid: number;
-  ppid: number;
   /** User program bytes (compiled with channel_syscall.c — no kernel imports) */
   programBytes: ArrayBuffer;
   /** Pre-compiled WebAssembly module (avoids recompilation in web workers) */

@@ -179,6 +179,15 @@ class Requirements
 end
 
 class Dependency
+  attr_reader :name, :tags
+
+  def initialize(name, tags = [])
+    @name = name
+    @tags = Array(tags)
+  end
+
+  def build? = tags.include?(:build)
+  def implicit? = tags.include?(:implicit)
 end
 
 module T
@@ -211,6 +220,62 @@ class Build
   def effective_build_options_for(dependent)
     args  = dependent.build.used_options
   end
+end
+RUBY
+
+cat >"$TMPDIR/Library/Homebrew/test.rb" <<'RUBY'
+# typed: strict
+# frozen_string_literal: true
+
+raise "#{__FILE__} must not be loaded via `require`." if $PROGRAM_NAME != __FILE__
+
+old_trap = trap("INT") { exit! 130 }
+
+require_relative "global"
+require "extend/ENV"
+require "timeout"
+require "formula_assertions"
+require "formula_free_port"
+require "fcntl"
+require "utils/socket"
+require "cli/parser"
+require "dev-cmd/test"
+require "json/add/exception"
+require "extend/pathname/write_mkpath_extension"
+
+DEFAULT_TEST_TIMEOUT_SECONDS = T.let(5 * 60, Integer)
+
+begin
+  # Undocumented opt-out for internal use.
+  # We need to allow formulae from paths here due to how we pass them through.
+  ENV["HOMEBREW_INTERNAL_ALLOW_PACKAGES_FROM_PATHS"] = "1"
+
+  args = Homebrew::DevCmd::Test.new.args
+  Context.current = args.context
+
+  error_pipe = Utils::UNIXSocketExt.open(ENV.fetch("HOMEBREW_ERROR_PIPE"), &:recv_io)
+  error_pipe.fcntl(Fcntl::F_SETFD, Fcntl::FD_CLOEXEC)
+
+  trap("INT", old_trap)
+
+  if Homebrew::EnvConfig.developer? || ENV["CI"].present?
+    raise "Cannot find child processes without `pgrep`, please install!" unless which("pgrep")
+    raise "Cannot kill child processes without `pkill`, please install!" unless which("pkill")
+  end
+
+  formula = args.named.to_resolved_formulae.fetch(0)
+  formula.extend(Homebrew::Assertions)
+  formula.extend(Homebrew::FreePort)
+  if args.debug? && !Homebrew::EnvConfig.disable_debrew?
+    require "debrew"
+    formula.extend(Debrew::Formula)
+  end
+
+  ENV.extend(Stdenv)
+  ENV.setup_build_environment(formula:, testing_formula: true)
+  Pathname.activate_extensions!
+
+  run_test = proc do |_|
 end
 RUBY
 
@@ -534,7 +599,7 @@ end
 
 plan_path = HOMEBREW_PREFIX/".kandelo-publisher-build-dependencies.json"
 plan = {
-  "schema" => 3,
+  "schema" => 4,
   "tap" => "kandelo-dev/tap-core",
   "formula" => "hello",
   "full_name" => "kandelo-dev/tap-core/hello",
@@ -545,6 +610,7 @@ plan = {
   }],
   "build" => [],
   "build_and_test" => [],
+  "native_requirements" => [],
   "runtime_and_test" => [],
 }
 plan_path.write(JSON.generate(plan))
@@ -690,6 +756,7 @@ RUBY
 
 ruby -I"$TMPDIR/Library/Homebrew" - "$TMPDIR" <<'RUBY'
 require "json"
+require "open3"
 require "pathname"
 
 HOMEBREW_PREFIX = Pathname(ARGV.fetch(0))/"prefix"
@@ -709,12 +776,60 @@ class FixtureDependency
   def implicit? = @implicit
 end
 
+module KandeloFormulaSupport
+  class BinaryenRequirement
+    KANDELO_NATIVE_FORMULA = "binaryen"
+    KANDELO_NATIVE_SENTINEL = "wasm-opt"
+
+    attr_reader :tags
+
+    def initialize(tags) = @tags = tags
+  end
+
+  class PkgconfRequirement
+    KANDELO_NATIVE_FORMULA = "pkgconf"
+    KANDELO_NATIVE_SENTINEL = "pkg-config"
+
+    attr_reader :tags
+
+    def initialize(tags) = @tags = tags
+  end
+
+  class ForgedBinaryenRequirement
+    KANDELO_NATIVE_FORMULA = "binaryen"
+    KANDELO_NATIVE_SENTINEL = "wasm-opt"
+
+    attr_reader :tags
+
+    def initialize(tags) = @tags = tags
+  end
+
+  class AlteredSentinelRequirement
+    KANDELO_NATIVE_FORMULA = "binaryen"
+    KANDELO_NATIVE_SENTINEL = "forged-wasm-opt"
+
+    attr_reader :tags
+
+    def initialize(tags) = @tags = tags
+  end
+
+  class AlteredFormulaRequirement
+    KANDELO_NATIVE_FORMULA = "wabt"
+    KANDELO_NATIVE_SENTINEL = "wasm-opt"
+
+    attr_reader :tags
+
+    def initialize(tags) = @tags = tags
+  end
+end
+
 class FixtureFormula
   attr_accessor :build
-  attr_reader :deps, :full_name, :name, :options
+  attr_reader :deps, :full_name, :name, :options, :requirements
 
-  def initialize(deps)
+  def initialize(deps, requirements: [])
     @deps = deps
+    @requirements = requirements
     @name = "hello"
     @full_name = "kandelo-dev/tap-core/hello"
     @options = []
@@ -732,7 +847,7 @@ end
 
 plan_path = HOMEBREW_PREFIX/".kandelo-publisher-build-dependencies.json"
 plan = {
-  "schema" => 3,
+  "schema" => 4,
   "tap" => "kandelo-dev/tap-core",
   "formula" => "hello",
   "full_name" => "kandelo-dev/tap-core/hello",
@@ -750,6 +865,7 @@ plan = {
   ],
   "build" => ["binaryen", "wabt"],
   "build_and_test" => ["binaryen", "pkgconf", "wabt"],
+  "native_requirements" => [],
   "runtime_and_test" => ["pkgconf"],
 }
 plan_path.write(JSON.generate(plan))
@@ -769,6 +885,246 @@ unless build.deps.map(&:name) == ["binaryen", "wabt"]
   raise "publisher build did not activate exactly the authorized direct native build dependencies"
 end
 
+# Requirement-backed tools are reconstructed as build-only Dependency objects
+# so Homebrew's normal Build/Superenv path receives the same inputs as literal
+# string dependencies, while the evaluated class, metadata, and tags must all
+# match the protected static plan.
+native_plan = plan.merge(
+  "build" => ["binaryen", "pkgconf", "wabt"],
+  "build_and_test" => ["binaryen", "pkgconf", "wabt"],
+  "native_requirements" => [
+    {
+      "class" => "KandeloFormulaSupport::BinaryenRequirement",
+      "formula" => "binaryen",
+      "sentinel" => "wasm-opt",
+      "tags" => ["build"],
+    },
+    {
+      "class" => "KandeloFormulaSupport::PkgconfRequirement",
+      "formula" => "pkgconf",
+      "sentinel" => "pkg-config",
+      "tags" => ["build", "test"],
+    },
+  ],
+  "runtime_and_test" => ["pkgconf"],
+)
+plan_path.chmod(0o644)
+plan_path.write(JSON.generate(native_plan))
+plan_path.chmod(0o444)
+native_formula = FixtureFormula.new(
+  [FixtureDependency.new("wabt", build: true)],
+  requirements: [
+    KandeloFormulaSupport::PkgconfRequirement.new([:build, :test]),
+    KandeloFormulaSupport::BinaryenRequirement.new([:build]),
+  ],
+)
+native_build = Build.new(native_formula, [], args: FixtureArgs.new)
+unless native_build.deps.map(&:name) == ["binaryen", "pkgconf", "wabt"]
+  raise "publisher build did not reconstruct native Requirement Formula inputs"
+end
+reconstructed = native_build.deps.reject { |dependency| dependency.is_a?(FixtureDependency) }
+unless reconstructed.map(&:tags) == [[:build], [:build]]
+  raise "publisher native Requirement inputs did not populate the build-only Superenv dependency path"
+end
+
+class FixtureTestEnvironment
+  attr_reader :paths, :values
+
+  def initialize
+    @paths = Hash.new { |hash, key| hash[key] = [] }
+    @values = Hash.new { |hash, key| hash[key] = [] }
+  end
+
+  def prepend_path(key, path) = paths[key].unshift(path)
+  def prepend(key, value) = values[key].unshift(value)
+end
+
+pkgconf_opt = HOMEBREW_PREFIX/"opt/pkgconf"
+[pkgconf_opt/"bin", pkgconf_opt/"lib/pkgconfig", pkgconf_opt/"share/aclocal",
+ pkgconf_opt/"include"].each(&:mkpath)
+pkgconf_sentinel = pkgconf_opt/"bin/pkg-config"
+pkgconf_sentinel.write("#!/bin/sh\nprintf 'sealed-native-test-sentinel\\n'\n")
+pkgconf_sentinel.chmod(0o555)
+test_env = FixtureTestEnvironment.new
+KandeloPublisher.activate_native_test_requirements!(native_formula, test_env)
+unless test_env.paths.fetch("PATH") == [(pkgconf_opt/"bin").to_s] &&
+       test_env.paths.fetch("PKG_CONFIG_PATH") == [(pkgconf_opt/"lib/pkgconfig").to_s] &&
+       test_env.paths.fetch("ACLOCAL_PATH") == [(pkgconf_opt/"share/aclocal").to_s] &&
+       test_env.paths.fetch("CMAKE_PREFIX_PATH") == [pkgconf_opt.to_s] &&
+       test_env.values.fetch("LDFLAGS") == ["-L#{pkgconf_opt}/lib"] &&
+       test_env.values.fetch("CPPFLAGS") == ["-I#{pkgconf_opt}/include"]
+  raise "publisher test environment did not expose exactly the sealed test Requirement paths"
+end
+sentinel_output, sentinel_error, sentinel_status = Open3.capture3(
+  { "PATH" => test_env.paths.fetch("PATH").join(":") },
+  "/usr/bin/env",
+  "pkg-config",
+)
+unless sentinel_status.success? && sentinel_output == "sealed-native-test-sentinel\n" && sentinel_error.empty?
+  raise "publisher test environment did not execute the sealed Requirement sentinel by name"
+end
+pkgconf_sentinel.delete
+begin
+  KandeloPublisher.activate_native_test_requirements!(native_formula, FixtureTestEnvironment.new)
+  raise "publisher test environment accepted a missing native Requirement sentinel"
+rescue RuntimeError => e
+  raise unless e.message.include?("sentinel is unavailable")
+end
+
+begin
+  Build.new(
+    FixtureFormula.new(
+      [FixtureDependency.new("wabt", build: true)],
+      requirements: [KandeloFormulaSupport::BinaryenRequirement.new([:build])],
+    ),
+    [],
+    args: FixtureArgs.new,
+  )
+  raise "publisher accepted a missing evaluated native Requirement"
+rescue RuntimeError => e
+  raise unless e.message.include?("differ from the sealed dependency plan")
+end
+
+begin
+  Build.new(
+    FixtureFormula.new(
+      [FixtureDependency.new("wabt", build: true)],
+      requirements: [
+        KandeloFormulaSupport::BinaryenRequirement.new([:build]),
+        KandeloFormulaSupport::PkgconfRequirement.new([:build]),
+      ],
+    ),
+    [],
+    args: FixtureArgs.new,
+  )
+  raise "publisher accepted evaluated native Requirement tags that differ from the sealed plan"
+rescue RuntimeError => e
+  raise unless e.message.include?("differ from the sealed dependency plan")
+end
+
+begin
+  Build.new(
+    FixtureFormula.new(
+      [FixtureDependency.new("wabt", build: true)],
+      requirements: [
+        KandeloFormulaSupport::ForgedBinaryenRequirement.new([:build]),
+        KandeloFormulaSupport::PkgconfRequirement.new([:build, :test]),
+      ],
+    ),
+    [],
+    args: FixtureArgs.new,
+  )
+  raise "publisher accepted a forged evaluated native Requirement class"
+rescue RuntimeError => e
+  raise unless e.message.include?("differ from the sealed dependency plan")
+end
+
+altered_sentinel_plan = native_plan.merge(
+  "native_requirements" => [
+    {
+      "class" => "KandeloFormulaSupport::AlteredSentinelRequirement",
+      "formula" => "binaryen",
+      "sentinel" => "wasm-opt",
+      "tags" => ["build"],
+    },
+  ],
+  "build" => ["binaryen", "wabt"],
+  "build_and_test" => ["binaryen", "wabt"],
+  "runtime_and_test" => [],
+)
+plan_path.chmod(0o644)
+plan_path.write(JSON.generate(altered_sentinel_plan))
+plan_path.chmod(0o444)
+begin
+  Build.new(
+    FixtureFormula.new(
+      [FixtureDependency.new("wabt", build: true)],
+      requirements: [KandeloFormulaSupport::AlteredSentinelRequirement.new([:build])],
+    ),
+    [],
+    args: FixtureArgs.new,
+  )
+  raise "publisher accepted altered evaluated native Requirement metadata"
+rescue RuntimeError => e
+  raise unless e.message.include?("differ from the sealed dependency plan")
+end
+
+
+altered_formula_plan = altered_sentinel_plan.merge(
+  "native_requirements" => [
+    {
+      "class" => "KandeloFormulaSupport::AlteredFormulaRequirement",
+      "formula" => "binaryen",
+      "sentinel" => "wasm-opt",
+      "tags" => ["build"],
+    },
+  ],
+)
+plan_path.chmod(0o644)
+plan_path.write(JSON.generate(altered_formula_plan))
+plan_path.chmod(0o444)
+begin
+  Build.new(
+    FixtureFormula.new(
+      [FixtureDependency.new("wabt", build: true)],
+      requirements: [KandeloFormulaSupport::AlteredFormulaRequirement.new([:build])],
+    ),
+    [],
+    args: FixtureArgs.new,
+  )
+  raise "publisher accepted altered evaluated native Requirement Formula metadata"
+rescue RuntimeError => e
+  raise unless e.message.include?("differ from the sealed dependency plan")
+end
+
+invalid_tags_plan = native_plan.merge(
+  "native_requirements" => [native_plan.fetch("native_requirements").first.merge("tags" => ["test"])],
+  "build" => ["binaryen", "wabt"],
+  "build_and_test" => ["binaryen", "wabt"],
+  "runtime_and_test" => ["binaryen"],
+)
+plan_path.chmod(0o644)
+plan_path.write(JSON.generate(invalid_tags_plan))
+plan_path.chmod(0o444)
+begin
+  KandeloPublisher.dependency_plan(native_formula)
+  raise "publisher accepted a native Requirement without a build tag"
+rescue RuntimeError => e
+  raise unless e.message.include?("invalid native Requirements")
+end
+
+legacy_plan = plan.merge("schema" => 3)
+plan_path.chmod(0o644)
+plan_path.write(JSON.generate(legacy_plan))
+plan_path.chmod(0o444)
+begin
+  KandeloPublisher.dependency_plan(native_formula)
+  raise "publisher accepted ambiguous schema-3 native dependency data"
+rescue RuntimeError => e
+  raise unless e.message.include?("invalid identity")
+end
+
+oversized_dependencies = (0...129).map { |index| format("tool%03d", index) }
+oversized_plan = plan.merge(
+  "build" => oversized_dependencies,
+  "build_and_test" => oversized_dependencies,
+  "native_requirements" => [],
+  "runtime_and_test" => oversized_dependencies,
+)
+plan_path.chmod(0o644)
+plan_path.write(JSON.generate(oversized_plan))
+plan_path.chmod(0o444)
+begin
+  KandeloPublisher.dependency_plan(native_formula)
+  raise "publisher accepted oversized host dependency arrays"
+rescue RuntimeError => e
+  raise unless e.message.include?("invalid build names")
+end
+
+plan_path.chmod(0o644)
+plan_path.write(JSON.generate(plan))
+plan_path.chmod(0o444)
+
 pour = Build.new(FixtureFormula.new(deps), [], args: FixtureArgs.new(build_bottle: false))
 raise "staged publisher plan changed an ignored-dependency bottle pour" unless pour.deps.empty?
 
@@ -776,6 +1132,11 @@ plan_path.delete
 raise "missing publisher plan remained active" if KandeloPublisher.active?
 empty = Build.new(FixtureFormula.new(deps), [], args: FixtureArgs.new)
 raise "ordinary ignored-dependency build changed" unless empty.deps.empty?
+inactive_test_env = FixtureTestEnvironment.new
+KandeloPublisher.activate_native_test_requirements!(native_formula, inactive_test_env)
+unless inactive_test_env.paths.empty? && inactive_test_env.values.empty?
+  raise "ordinary Homebrew test environment changed without a protected publisher plan"
+end
 
 plan["build"] = ["binaryen", "missing", "wabt"]
 plan["build_and_test"] = ["binaryen", "missing", "pkgconf", "wabt"]
@@ -863,7 +1224,7 @@ end
 
 plan_path = HOMEBREW_PREFIX/".kandelo-publisher-build-dependencies.json"
 plan = {
-  "schema" => 3,
+  "schema" => 4,
   "tap" => "kandelo-dev/tap-core",
   "formula" => "hello",
   "full_name" => "kandelo-dev/tap-core/hello",
@@ -881,6 +1242,7 @@ plan = {
   ],
   "build" => ["wabt"],
   "build_and_test" => ["wabt"],
+  "native_requirements" => [],
   "runtime_and_test" => [],
 }
 plan_path.write(JSON.generate(plan))
@@ -989,7 +1351,7 @@ HOMEBREW_PREFIX = Pathname(ARGV.fetch(0))/"sandbox-prefix"
 HOMEBREW_PREFIX.mkpath
 plan_path = HOMEBREW_PREFIX/".kandelo-publisher-build-dependencies.json"
 plan = {
-  "schema" => 3,
+  "schema" => 4,
   "tap" => "kandelo-dev/tap-core",
   "formula" => "hello",
   "full_name" => "kandelo-dev/tap-core/hello",
@@ -1000,6 +1362,7 @@ plan = {
   }],
   "build" => [],
   "build_and_test" => [],
+  "native_requirements" => [],
   "runtime_and_test" => [],
 }
 plan_path.write(JSON.generate(plan))

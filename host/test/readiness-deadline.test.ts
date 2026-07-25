@@ -116,7 +116,11 @@ describe("host-emulated epoll signal delivery", () => {
       [7, 4096, 1, 1000, 0, 8],
     );
 
-    expect(harness.dequeueSignal).toHaveBeenCalledWith(harness.channel.pid, CH_SIG_BASE);
+    expect(harness.dequeueSignal).toHaveBeenCalledWith(
+      harness.channel.pid,
+      harness.channel.pid,
+      CH_SIG_BASE,
+    );
     expect(
       new DataView(harness.processMemory.buffer).getUint32(CH_SIG_BASE, true),
     ).toBe(15);
@@ -154,7 +158,7 @@ function createEpollSignalHarness(
     channelOffset: 0,
     memory: processMemory,
   };
-  const dequeueSignal = vi.fn((_pid: number, outPtr: number) => {
+  const dequeueSignal = vi.fn((_pid: number, _tid: number, outPtr: number) => {
     if (handlerSignal > 0) {
       new DataView(kernelMemory.buffer).setUint32(outPtr, handlerSignal, true);
     }
@@ -176,6 +180,7 @@ function createEpollSignalHarness(
     kernelMemory,
     scratchOffset: 0,
     currentHandlePid: 0,
+    channelTids: new Map([["42:0", 42]]),
     epollInterests: new Map([
       ["42:7", hasInterest ? [{ fd: 3, events: 0x001, data: 99n }] : []],
     ]),

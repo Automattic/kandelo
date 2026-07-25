@@ -71,7 +71,7 @@ describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
     const workerAdapter = new NodeWorkerAdapter();
     const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
 
-    const pid = 100;
+    let pid = 0;
 
     let stdout = "";
     let resolveReady: () => void;
@@ -114,18 +114,18 @@ describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
     });
 
     await kernel.init(kernelWasmBytes);
+    pid = kernel.createProcess(CAPTURED_STDIO);
 
     const memory = createProcessMemory(17);
     const channelOffset = (MAX_PAGES - 2) * 65536;
     memory.grow(MAX_PAGES - 17);
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-    kernel.registerProcess(pid, memory, [channelOffset], { ptrWidth, stdio: CAPTURED_STDIO });
+    kernel.registerProcess(pid, memory, [channelOffset], { ptrWidth });
 
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
       pid,
-      ppid: 0,
       programBytes,
       memory,
       channelOffset,

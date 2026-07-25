@@ -61,6 +61,36 @@ Process state is authoritative. `fork`, `exec`, `posix_spawn`, `clone`, `exit`,
 dispositions, fd tables, OFDs, locks, sockets, PTYs, memory layout, and
 zombie/reaping state must remain coherent across transitions.
 
+The Rust `ProcessTable` is the sole PID/TID authority. Its one monotonic task-ID
+sequence allocates top-level process, fork, spawn, and clone identities; host
+code and callbacks may only consume those assigned IDs and attach worker state.
+Do not add a host allocator, caller-selected identity, collision-retry loop, or
+watermark API. PID 1 remains the kernel-created synthetic init
+reservation, outside the user task sequence that starts at 100.
+Keep this boundary compile-enforced inside Rust: production process and thread
+construction must consume the opaque allocation token minted by `ProcessTable`,
+identity fields and thread membership must remain read-only elsewhere, and raw
+caller-selected constructors may exist only as `cfg(test)` fixtures. Fork-state
+deserialization must populate a process whose identity was already allocated;
+it must not accept or construct a child PID independently.
+Host-transported caller TIDs must be validated against the parent process's live
+kernel task records before fork, spawn, clone, or exact-thread signaling; they
+identify existing state and never delegate allocation authority. An unknown,
+exited, or
+cross-process exact-thread target must fail with `ESRCH`, not fall back to a
+process-wide operation. A host channel that cannot bind to a task while its
+kernel Process is live is a fatal host/kernel protocol failure; do not turn it
+into an ordinary guest `EIO` and continue. Channels retained only while an
+already-Exited Process's Workers are being terminated may complete musl's final
+exit handshake, but must never dispatch another syscall into that zombie.
+Thread-channel attachment must consume a one-shot transport proof bound to the
+exact TID returned by that clone allocation. Do not expose a numeric attachment
+API that lets host code substitute another valid sibling TID, reuse a proof, or
+map one task to multiple mailboxes.
+Likewise, the host may publish a Worker crash only after Rust accepts the
+signal-death transition, and a trapped kernel exit path must be checked for an
+authoritative `Exited` state before the host wakes a parent or reports success.
+
 `fork()` means continuation preservation. If a change touches fork, fork
 instrumentation, pthread fork, fd/resource inheritance, signal state, or memory
 copying, verify that the child resumes at the correct call site with correct

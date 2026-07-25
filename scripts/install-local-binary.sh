@@ -464,7 +464,10 @@ install_local_binary() {
     case "$declared_policy" in
         auto)
             if wasm_imports_kernel_fork "$src" && ! wasm_has_complete_fork_instrumentation "$src"; then
-                if wasm_has_any_wpk_fork_export "$src"; then
+                # WHY reject every partial ABI marker before reinstrumenting:
+                # adding a second copy can turn one stale descriptor or frame
+                # hook into an artifact that instantiates but corrupts replay.
+                if wasm_has_any_fork_instrumentation "$src"; then
                     wasm_require_fork_instrumentation_if_needed "$src"
                     return 1
                 fi

@@ -67,6 +67,19 @@ See
 [Binary releases: durable package generations](binary-releases.md#durable-package-generations-for-cross-workflow-publication)
 for dispatch, recovery, seal-last publication, and mutation handling.
 
+## Guest Homebrew Bootstrap Package
+
+The patched Homebrew Ruby tree used by a guest is a dedicated Kandelo program
+package named `homebrew-bootstrap`; it is not a Formula bottle. The package
+emits `homebrew-bootstrap.zip` from a sealed exact Homebrew checkout and the
+reviewed guest-platform patch. Its source lock at
+`homebrew/homebrew-bootstrap-source-lock.json` binds all source, patch,
+prepared-tree, portable-Ruby, archive-producing Git, and final-archive
+identities. The first package revision is sealed by the exact final ZIP
+SHA-256 and byte count recorded in that lock. Consumer cutover is a separate
+rollout step, so introducing the package does not change shell or
+bootstrap-image consumers.
+
 ## Repositories And Ownership
 
 | Repository | Owns |
@@ -456,6 +469,55 @@ also carries the sorted immutable target-tap set plus three native lists:
 - `runtime_and_test` is used by the bottle verifier and excludes dependencies
   that are only tagged `:build`.
 
+### Publisher-Only Native Requirements
+
+Publisher-only tools are represented by three closed, tap-local Homebrew
+`Requirement` classes rather than ordinary guest Formula dependencies:
+`BinaryenRequirement`, `PkgconfRequirement`, and `WabtRequirement`. Each class
+has one canonical definition under `KandeloFormulaSupport`: it is fatal, binds
+one fixed `KANDELO_NATIVE_FORMULA` and `KANDELO_NATIVE_SENTINEL`, and checks
+that same sentinel with `satisfy(build_env: false)`. Formulae may refer to
+those classes only through the canonical support require and a literal
+`depends_on KandeloFormulaSupport::<Class> => :build` or
+`[:build, :test]` declaration. Unknown classes, dynamic constant lookup,
+changed metadata or predicates, and `:test`-only native Requirements fail
+closed.
+
+The bottle source-closure layer recognizes those literal Requirement lines as
+references to the already-bound Formula support tree; it does not treat every
+additional `KandeloFormulaSupport` token as a second source loader. Its line
+allowlist rejects other module references, while the Ripper-based Formula
+parser remains authoritative for the closed class and tag allowlists.
+
+The static Formula parser recognizes that exact source shape without
+evaluating Formula Ruby. Schema 4 of the protected host-dependency plan binds
+the Requirement class, native Formula identity, sentinel executable, and
+sorted tags in addition to the existing native dependency lists and immutable
+target-tap map. The bottle builder and pour verifier run the same closed-schema
+validator before staging the plan. The publisher overlay then compares the
+evaluated Requirement objects with those sealed records before reconstructing
+only the matching build-only dependencies for Homebrew's normal Superenv path.
+For a Requirement also tagged `:test`, the Formula test process receives only
+the planned proxy keg's standard tool and metadata paths after the exact
+sentinel has been found executable. A missing proxy, omitted evaluated object,
+forged class, changed constant, changed tag, or legacy ambiguous schema fails
+instead of widening the host-tool graph.
+
+The publisher lifecycle and guest lifecycle deliberately use different
+artifacts. Trusted Linux publication runs the reviewed publisher-side Homebrew
+commit pinned by the reusable workflow and proves a real install and test
+offline after its disposable Ruby dependencies have been provisioned and
+sealed. Kandelo guests instead receive upstream Homebrew commit
+`4ead8619231cb15cbe15e8e8188081e347d6f7cd` through the dedicated
+`homebrew-bootstrap` program package. Guest acceptance must materialize that
+package through the canonical ABI release index and verify its package-output
+receipt, archive identity, cache key, and locked inner ZIP before booting it.
+The PR staging release is evidence for the package build, not a durable
+consumer URL. Until the package is activated in the canonical ABI index and
+the tap has adopted these Requirement declarations under a compatible pinned
+publisher, the full guest install lifecycle remains a rollout gate rather than
+a supported user-facing contract.
+
 The native launcher installs each selected direct dependency as an explicit
 `homebrew/core/<name>` reference under an ephemeral native prefix. Each install
 uses Homebrew's normal dependency resolution and completes its full transitive
@@ -760,6 +822,7 @@ jobs:
     with:
       tap-repository: kandelo-dev/homebrew-tap-core
       tap-name: kandelo-dev/tap-core
+      tap-ref: ${{ github.event.client_payload.tap_sha }}
       formulae: file-formula
       arches: wasm32
 ```
@@ -792,15 +855,95 @@ workflow name. The three dispatch events are `publish-kandelo-bottles`,
 `dry-run-kandelo-bottles`, and `maintain-kandelo-bottles`. Publish and dry-run
 payloads must select at least one Formula and architecture; an absent or empty
 selection is an error, not a successful no-op.
-Write publication is additionally fixed to `Automattic/kandelo@main` and the
-caller tap's `main` branch. A dry run keeps those repository identities fixed,
-but may select a reviewed, valid Git branch name or an exact lowercase
-40-character commit SHA from each repository. The trust step normalizes branch
-names under `refs/heads/`, and the planning job resolves both selections to
-immutable commits before any matrix job starts. These source selections are
-data passed to the already-reviewed caller and reusable workflow definitions;
-they do not select either workflow definition. The bottle root is never
-caller-selected:
+Write publication is fixed to the exact `tap_sha` in the dispatch payload and
+normally to `Automattic/kandelo@main`. The caller passes that payload value as
+`tap-ref` without a fallback. A missing value, mutable ref, abbreviated SHA, or
+uppercase SHA is rejected before checkout. The publisher checks out that exact
+commit, proves the checkout matches the request, and requires the commit to
+remain the current protected-main commit or its ancestor.
+
+The payload SHA is intentionally distinct from `github.sha`.
+`repository_dispatch` may be admitted while protected `main` is at one commit
+but instantiated after another publication advances it. Recording the source
+commit in the request keeps the older dispatch reproducible without
+authorizing a detached or force-pushed source. Maintenance rebuild dispatches
+use the same exact source contract. Rollback does not consume `tap_sha`; it
+refreshes and mutates the current protected branch under the tap-wide state
+lock.
+
+During an ABI transition, the protected tap caller may hardcode one reviewed,
+exact lowercase 40-character Kandelo commit so the new-ABI bottles exist before
+the bottle-backed shell can validate. The Kandelo PR must then merge without
+rewriting that commit, making the published source commit an ancestor of
+`main`; immediately afterward, rotate the tap caller back to Kandelo `main`.
+Write publication never accepts a non-main Kandelo branch.
+
+An ABI bootstrap may need package archives produced by the reviewed commit
+immediately before the publisher workflow plumbing. Every bootstrap batch uses
+this explicit staging tag and package-producing SHA pair:
+
+```yaml
+prepublication-staging-tag: pr-<number>-staging
+prepublication-staging-kandelo-sha: <exact package-producing commit>
+```
+
+Only the designated batch that would otherwise require the dependency-bearing
+VFS proof also uses:
+
+```yaml
+require-vfs-acceptance: true
+defer-vfs-acceptance-until-postpublication: true
+```
+
+Other bootstrap batches keep both acceptance booleans false.
+
+The tag and package-producing SHA are an all-or-none pair. They are accepted
+only for a non-dry write publication whose `kandelo-ref` is also an exact
+40-character commit. The package-producing commit must be an ancestor of the
+workflow commit. Make the workflow commit reachable from a temporary repository
+branch first; do not move the package-producing PR head while its staging
+release is the publication source. After the exact tap transition and public
+shell proof are green, fast-forward the PR head to the workflow commit and run
+fresh checks against the canonical bottles before merging that exact head.
+
+The planner compiles its index tooling in a credential-free step. The freezer
+removes GitHub and package credentials before projections and transformations,
+reintroduces the workflow token only for the GitHub release snapshot and asset
+downloads, and removes it again from the release validator's pure index/archive
+commands. The planner then derives the wasm32 `rootfs` package and its exact
+runtime dependency closure from each commit's checked-in
+`program-packages.json`, recomputes both expected ledgers, and requires the
+selected closure projections and filtered ledgers to match. It then validates
+and downloads every selected staging archive, including its embedded manifest,
+rebuilds an index from only those verified archives, rewrites their relative
+names to the exact staging release URLs, and uploads the resulting index and
+evidence as one same-run Actions artifact. Its manifest records the SHA-256
+and byte size of the index, projection, expected ledger, staging snapshot, and
+release asset inventory. Activation verifies every binding, requires the
+exact package/architecture/cache-key identity set to agree across all three
+closure ledgers, and checks each selected snapshot archive against its unique
+uploaded release asset record. Both the builder and the independent verifier
+download that artifact and set `WASM_POSIX_BINARY_INDEX_URL` to its local
+`file://` index before any resolver use. Extra entries in the mutable staging
+index therefore cannot become resolver candidates.
+
+The deferral flag is narrower than disabling VFS acceptance. It is valid only
+when the sealed generation pair is present and
+`require-vfs-acceptance: true` remains set. Formula build/test, public bottle
+upload, anonymous verification, version-index publication, and atomic tap
+finalization still run. Only the dependency-bearing Node/Chromium VFS proof,
+its handoff, and its immutable VFS release wait until the just-published
+bottles are canonical. A postpublication descendant must bind the final tap
+commit and rerun that acceptance without the deferral. Normal main/canonical
+publication supplies none of these inputs and is unchanged.
+
+A dry run keeps those repository identities fixed, but may select a reviewed,
+valid Git branch name or an exact lowercase 40-character commit SHA from each
+repository. The trust step normalizes branch names under `refs/heads/`, and the
+planning job resolves both selections to immutable commits before any matrix
+job starts. These source selections are data passed to the already-reviewed
+caller and reusable workflow definitions; they do not select either workflow
+definition. The bottle root is never caller-selected:
 the workflow rejects a non-empty `bottle-root-url` and derives
 `https://ghcr.io/v2/<lowercase-owner>/<lowercase-homebrew-repository>` from the
 validated tap repository. The separate reusable maintenance workflow remains first-party
@@ -934,9 +1077,38 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    fetches the Dash, coreutils, grep, and sed test-runtime archives without
    source fallback. The resolver normally links those outputs to its
    workflow-user cache, which the isolated Formula identity cannot access, so
-   the publisher transactionally replaces that link tree with self-contained
-   regular files before it exposes the Kandelo checkout through a read-only
-   source alias.
+   the publisher transactionally copies each complete content-addressed
+   generation into `.ci-test-binary-cache/` and rewrites `binaries/` as
+   contained relative symlinks before it exposes the Kandelo checkout through
+   a read-only source alias. This is the same portable-generation transport
+   used by prepared conformance workspaces. It deliberately does not flatten
+   package mirrors into regular files, because doing so would discard the
+   single-generation identity that prevents a package closure from mixing
+   unrelated builds. The Formula support loader derives the portable cache
+   from its frozen Kandelo root and gives every Node or Chromium resolver child
+   that exact `WASM_POSIX_BINARY_CACHE_ROOT`; caller-provided cache paths cannot
+   replace it. The launcher copies the already-validated `xtask` bytes into
+   one root-owned, single-link, exact-`0555` inode, rechecks the source and
+   copy, bind-mounts that inode over the checkout's release path, and verifies
+   its exact inode and bytes both at each command entry and at final isolation
+   verification. Because Homebrew reconstructs the ordinary
+   environment when it re-enters a Formula test, the launcher carries this
+   exact path across that boundary as `HOMEBREW_KANDELO_XTASK_BIN`. Tap support
+   validates and freezes the value while loading the trusted support module,
+   then translates only that frozen value to `WASM_POSIX_XTASK_BIN` for the
+   Node or Chromium resolver child. The resolver invokes that checker with the
+   authenticated read-only Kandelo alias as the narrowly scoped
+   `build-deps program-index-context-check --source-repo-root` argument. This
+   matters because a relocated executable still contains its compile-time
+   checkout path: the explicit root makes global toolchain files, fork-tool
+   Cargo metadata, and repo-relative package inputs all come from the same
+   protected source projection. The option rejects relative, noncanonical, or
+   incomplete roots and is invalid for every other `build-deps` subcommand.
+   Global and fork-tool digest memoization is keyed by that exact root; the
+   publisher's read-only alias and one-shot checker process keep a selected
+   root immutable for the command.
+   Caller-selected checker paths and ambient repository-root overrides are
+   neither preserved nor trusted.
    The workflow also
    materializes the exact `formula_test` and `bottle` groups from pinned
    Homebrew's frozen Gemfile into the temporary overlay, validates their group
@@ -1243,11 +1415,12 @@ remain available, but cached build output is not an input to bottle publication.
 
 The repository-dispatch API does not return the workflow run ID, and concurrent
 dispatches can appear in the run list in a different order from the requests.
-Treat the newest run only as a candidate. Before cancelling, rerunning, watching,
-or downloading artifacts from a manually dispatched run, wait for its `plan`
-job and read that job's logged inputs. Match the Formula selection, architectures,
-Kandelo ref, and tap ref to the exact dispatch payload. If those facts are not
-yet available, do not mutate the run; another operator or rollout may own it.
+Treat the newest run only as a candidate. Before cancelling, rerunning,
+watching, or downloading artifacts from a manually dispatched run, wait for
+its `plan` job and read that job's logged inputs. Match the Formula selection,
+architectures, Kandelo ref, and exact caller/source tap SHA. If those facts are
+not yet available, do not mutate the run; another operator or rollout may own
+it.
 
 `bottles-abi-v<N>` is a bottle metadata namespace, not a promise that a GitHub
 Release with that tag contains sidecars or gallery archives. Browser-proven VFS
@@ -1320,11 +1493,13 @@ reviewed platform patch, and ABI-current Kandelo package artifacts with:
 The script writes `target/homebrew-bootstrap/homebrew-bootstrap.vfs`. It derives
 the ABI from `crates/shared`, resolves the Node kernel, canonical rootfs package
 set, and Homebrew bootstrap programs through `xtask build-deps`, and calls
-`scripts/prepare-homebrew-bootstrap-source.sh` to prepare Homebrew. Source
-preparation verifies the reviewed patch SHA-256, refuses an upstream revision
-where the patch does not apply, limits the patch to its four declared Homebrew
-files, and archives the patched Git tree with a fixed timestamp and UTC
-timezone.
+`scripts/prepare-homebrew-bootstrap-source.sh` to prepare Homebrew. The
+dedicated `homebrew-bootstrap` package uses that same preparer and records
+byte identity with this still-current image path; switching this image to
+consume the package is a separate consumer change. Source preparation verifies
+the reviewed patch SHA-256, refuses an upstream revision where the patch does
+not apply, limits the patch to its declared Homebrew files, and archives the
+patched Git tree with a fixed timestamp and UTC timezone.
 
 `/etc/kandelo/homebrew-image.json` records the exact upstream Homebrew commit,
 patch SHA-256, patched-tree Git object and normalized-tree SHA-256, patched ZIP
@@ -1546,18 +1721,18 @@ are poured into a fresh filesystem with a
 but any file, symlink, or type collision fails composition.
 
 The direct collection producer resolves the complete selected plan once so
-collision ownership and link suppression are global, then emits one candidate
-tree for every selected Formula. Each payload is that Formula's exact finalized Homebrew
-bottle `.tar.gz`; the producer does not recompress or combine dependency
+collision ownership and link suppression are global, then emits one tree for
+every selected Formula. Each payload is that Formula's exact finalized
+Homebrew bottle `.tar.gz`; the producer does not recompress or combine dependency
 bottles. A complete source inventory records every validated TAR member. Its
 guest projection records ownership, POSIX modes, logical sizes, link targets,
 source member paths, regular-inode groups, the package keg and `opt` link, and
 whether a path is an archive member, a link-manifest copy, an explicitly
 mode-overridden copy, or descriptor-created structure. The image builder still
 does not duplicate the lower shell image, `/etc` metadata, a gallery profile,
-or a language-specific VFS image into any bottle tree. Phase 3's product
-composer, not this collection primitive, chooses which candidate trees are
-embedded and which remain independently lazy.
+or a language-specific VFS image into any bottle tree. The product composer,
+not this collection primitive, chooses which trees are embedded and which
+remain independently lazy.
 
 The exact bottle is transport truth, but installed Homebrew text is not always
 byte-identical to the archive member. Homebrew records the files it changed
@@ -1960,14 +2135,26 @@ checks negative ABI-mismatch and missing-bottle cases.
 
 Browser compatibility requires a separate browser smoke. For the current
 `file-formula` path, the trusted publisher builds a precomposed wasm32 VFS image,
-serves it through the browser demo, runs Chromium Playwright against
-`apps/browser-demos/test/kandelo-homebrew.spec.ts`, and executes:
+serves it through the browser demo, and executes:
 
 ```bash
 /home/linuxbrew/.linuxbrew/bin/file --version
 ```
 
-Only after that smoke passes may sidecars record
+Normal publication prepares the complete supported browser graph and runs
+Chromium Playwright against
+`apps/browser-demos/test/kandelo-homebrew.spec.ts`. A sealed prepublication
+generation cannot prepare that graph because it contains packages whose
+bottles the bootstrap is creating. In that mode, the publisher builds only the
+host and selects the existing `homebrew-vfs-test` Vite input and
+`homebrew-brewfile-vfs.spec.ts`. That focused test binds the exact generated
+VFS SHA-256, exact local kernel SHA-256, executable, argument vector, and
+expected output. It is stronger bottle/image/kernel execution evidence but
+narrower UI-integration evidence; the required post-transition main-shell
+Chromium acceptance closes the full browser integration after the bottles are
+canonical.
+
+Only after the applicable smoke passes may sidecars record
 `runtime_support = ["node", "browser"]` and `browser_compatible = true`.
 Packages without a successful browser smoke remain Node-only.
 
@@ -1980,11 +2167,11 @@ fetch only the base command set and `rootfs`; their focused Vite input does not
 scan the interactive demo. Schema 2 acceptance also boots the image-owned
 default shell through the full machine UI, so the selected acceptance matrix
 entry materializes the supported interactive graph through
-`./run.sh --fetch-only prepare-browser` before that smoke. The `file-formula` gallery
-smoke materializes the same graph. Browser preparation excludes packages whose
-demos are provided by the external software gallery. Those platform assets are
-not the migrated package under test, and unrelated gallery packages are not
-bottle verification prerequisites.
+`./run.sh --fetch-only prepare-browser` before that smoke. The normal
+`file-formula` gallery smoke materializes the same graph. Browser preparation
+excludes packages whose demos are provided by the external software gallery.
+Those platform assets are not the migrated package under test, and unrelated
+gallery packages are not bottle verification prerequisites.
 
 ## Durable Browser-Proven VFS Releases
 
@@ -2101,8 +2288,16 @@ resolution starts one deduplicated preparation through the owning VFS mount.
 The host tries byte-identical transports in descriptor order, checks the same
 declared compressed identity for each attempt, decodes and validates the
 entire source inventory, and commits every still-matching regular inode in one
-batch. Failure leaves all stubs unchanged and retryable; hard-link names retain
-one inode and link count. A `boot-prefetch` tree uses the same path but must
+batch. One transport is attempted at most three times. Only HTTP 408, 429, and
+5xx responses or recognized fetch/body network interruptions repeat its URL;
+the default waits are 250 and 500 milliseconds, and `Retry-After` is honored
+up to five seconds. A fetcher may register an `AbortSignal` that is passed into
+every attempt; retry waits, mirror fallback, and VFS commit all rethrow its
+exact reason. Existing one-argument fetchers retain standard
+`AbortError`/`ABORT_ERR` compatibility. Permanent HTTP, integrity, and decoder
+failures do not repeat the same URL. Failure leaves all stubs unchanged and
+retryable; hard-link names retain one inode and link count. A `boot-prefetch`
+tree uses the same path but must
 finish successfully before boot returns. Metadata-only directory/symlink trees
 retain a group-level activation identity, so serialization cannot silently turn
 boot-prefetch into an unverified no-op merely because no regular stub exists.
@@ -2165,11 +2360,12 @@ identities, ABI/base mismatches, and conflicting layers fail the boot instead
 of being skipped. Each runtime-layer reference currently names exactly one
 requested root equal to its layer ID; the shared 128-request parser/planner
 bound is not a promise that this boot mount composes a multi-root descriptor.
-Phase 3 builds the multi-root shell through the bottle-collection primitive.
-The bounded collection producer derives independently lazy,
-byte-identical bottle trees for a complete reviewed package closure. The
-production shell policy embeds `libcxx`, `ncurses`, and Bash, and retains the
-other 35 original bottles as independently deferred trees.
+The canonical shell builds its multi-root closure through the
+bottle-collection primitive. The bounded collection producer derives
+independently lazy, byte-identical bottle trees for a complete reviewed package
+closure. The production shell policy embeds `libcxx`, `ncurses`, and Bash, and
+retains the other 39 bottles in the language-expanded closure as independently
+deferred trees.
 
 The lazy build keeps materialization code behind its own entrypoint.
 `build-homebrew-vfs-image.ts` owns the shared eager planning, metadata, and
@@ -2407,7 +2603,9 @@ Use this checklist once for each new public tap repository:
    caller `actions: read`, `contents: write`, and `packages: write`; the reusable
    publisher narrows those permissions per job.
 4. Pass the exact caller repository as `tap-repository` and the canonical tap
-   name as `tap-name`. Do not pass a bottle root: the publisher must derive
+   name as `tap-name`. Every write dispatch must also record the reviewed
+   protected-main commit as the exact lowercase `tap_sha` payload field. Do not
+   pass a bottle root: the publisher must derive
    `https://ghcr.io/v2/<owner>/<homebrew-repository>`.
 5. Use only the caller's built-in `GITHUB_TOKEN`. Do not configure
    `HOMEBREW_GITHUB_PACKAGES_TOKEN`, a package PAT, or a package-visibility API
@@ -2572,7 +2770,11 @@ gh api --method POST \
   'repos/Kandelo-dev/homebrew-tap-core/dispatches' --input - <<'JSON'
 {
   "event_type": "publish-kandelo-bottles",
-  "client_payload": {"formulae": "zlib", "arches": "wasm32"}
+  "client_payload": {
+    "tap_sha": "<exact-reviewed-protected-main-sha>",
+    "formulae": "zlib",
+    "arches": "wasm32"
+  }
 }
 JSON
 
@@ -2580,7 +2782,11 @@ gh api --method POST \
   'repos/Kandelo-dev/homebrew-tap-core/dispatches' --input - <<'JSON'
 {
   "event_type": "publish-kandelo-bottles",
-  "client_payload": {"formulae": "bzip2", "arches": "wasm32"}
+  "client_payload": {
+    "tap_sha": "<the-same-exact-reviewed-protected-main-sha>",
+    "formulae": "bzip2",
+    "arches": "wasm32"
+  }
 }
 JSON
 ```

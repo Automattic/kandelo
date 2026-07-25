@@ -6,6 +6,9 @@ on:
       mode:
         type: string
         default: rebuild
+      tap-ref:
+        type: string
+        default: ""
       formulae:
         type: string
         required: true
@@ -51,6 +54,7 @@ jobs:
           CALLER_REPOSITORY: ${{ github.repository }}
           CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
           MODE: ${{ inputs.mode }}
+          TAP_REF: ${{ inputs.tap-ref }}
         run: |
           set -euo pipefail
           normalized_caller_repository="$(printf '%s' "$CALLER_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
@@ -67,7 +71,12 @@ jobs:
             echo "::error::maintenance requires the reviewed tap maintenance workflow"; exit 2;
           }
           case "$MODE" in
-            rebuild|rollback) ;;
+            rebuild)
+              [[ "$TAP_REF" =~ ^[0-9a-f]{40}$ ]] || {
+                echo "::error::maintenance rebuild requires an exact reviewed lowercase 40-character tap commit SHA"; exit 2;
+              }
+              ;;
+            rollback) ;;
             *) echo "::error::mode must be rebuild or rollback"; exit 2 ;;
           esac
 
@@ -84,7 +93,7 @@ jobs:
       kandelo-ref: main
       tap-repository: kandelo-dev/homebrew-tap-core
       tap-name: kandelo-dev/tap-core
-      tap-ref: main
+      tap-ref: ${{ inputs.tap-ref }}
       formulae: ${{ inputs.formulae }}
       arches: ${{ inputs.arches }}
       release-tag: ${{ inputs.release-tag }}

@@ -3,6 +3,7 @@ import {
   ABI_SYSCALLS,
   CH_ERRNO,
   CH_RETURN,
+  PROCESS_STATE_EXITED,
   PROCESS_STATE_RUNNING,
 } from "../src/generated/abi";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
@@ -123,7 +124,10 @@ describe("Rust-owned advisory-lock retry scheduling", () => {
     const handleChannel = vi.fn(() => {
       throw new WebAssembly.RuntimeError("unreachable");
     });
-    const worker = createWorker({ kernel_handle_channel: handleChannel });
+    const worker = createWorker({
+      kernel_handle_channel: handleChannel,
+      kernel_get_process_state: vi.fn(() => PROCESS_STATE_EXITED),
+    });
     worker.kernelMemory = createSharedMemory();
     worker.processes = new Map([[channel.pid, { channels: [channel], memory }]]);
     worker.releaseAllSharedMemoryForProcess = vi.fn();
@@ -186,8 +190,8 @@ describe("Rust-owned advisory-lock retry scheduling", () => {
     worker.drainAndProcessWakeupEvents = vi.fn();
     worker.snapshotExecTcpListenerWakeIds = vi.fn(() => new Map());
 
-    expect(worker.kernelExecPrepare(19)).toBe(-5);
-    expect(worker.kernelExecSetup(19)).toBe(-5);
+    expect(worker.kernelExecPrepare(19, 19)).toBe(-5);
+    expect(worker.kernelExecSetup(19, 19)).toBe(-5);
 
     expect(worker.drainAndProcessWakeupEvents).toHaveBeenCalledTimes(2);
     expect(prepare.mock.invocationCallOrder[0]).toBeLessThan(
@@ -404,6 +408,7 @@ function createWorker(exports: Record<string, unknown>): any {
       exports: {
         kernel_get_process_exit_signal: vi.fn(() => -1),
         kernel_get_process_state: vi.fn(() => PROCESS_STATE_RUNNING),
+        kernel_set_current_tid: vi.fn(() => 0),
         ...exports,
       },
     },

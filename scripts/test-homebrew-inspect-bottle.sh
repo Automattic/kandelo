@@ -17,17 +17,9 @@ class Tool < Formula
   desc "Archive inspector fixture"
 end
 RUBY
-cat >"$TMP_ROOT/tool.wat" <<WAT
-(module
-  (memory 1)
-  (func (export "__abi_version") (result i32) (i32.const $ABI_VERSION))
-  (func (export "wpk_fork_unwind_begin"))
-  (func (export "wpk_fork_unwind_end"))
-  (func (export "wpk_fork_rewind_begin"))
-  (func (export "wpk_fork_rewind_end"))
-  (func (export "wpk_fork_state")))
-WAT
-wat2wasm "$TMP_ROOT/tool.wat" -o "$WASM"
+bash "$REPO_ROOT/scripts/build-fork-instrumented-test-fixture.sh" \
+  --arch wasm32 \
+  --output "$WASM"
 
 cat >"$TMP_ROOT/make-archive.py" <<'PY'
 import io
@@ -266,9 +258,9 @@ make_wasm fork-import-missing <<WAT
   (func (export "__abi_version") (result i32) (i32.const $ABI_VERSION)))
 WAT
 expect_wasm_failure fork-import-missing valid \
-  "$TMP_ROOT/fork-import-missing.wasm" "incomplete/missing fork instrumentation"
+  "$TMP_ROOT/fork-import-missing.wasm" "incomplete ABI "
 expect_wasm_failure nonexec-fork-import-missing nonexec \
-  "$TMP_ROOT/fork-import-missing.wasm" "incomplete/missing fork instrumentation"
+  "$TMP_ROOT/fork-import-missing.wasm" "incomplete ABI "
 
 cp "$TMP_ROOT/fork-import-missing.wasm" "$TMP_ROOT/relocatable-fork-import.wasm"
 printf '\000\011\007linking\002' >>"$TMP_ROOT/relocatable-fork-import.wasm"

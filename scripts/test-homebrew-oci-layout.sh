@@ -38,6 +38,8 @@ make_fixture() {
 require (Tap.fetch("$(printf '%s' "$tap_owner" | tr '[:upper:]' '[:lower:]')", "$(printf '%s' "$tap_short_name" | tr '[:upper:]' '[:lower:]')").path/"Kandelo/formula_support/kandelo_formula_support").to_s
 
 class Hello < Formula
+  depends_on KandeloFormulaSupport::BinaryenRequirement => :build
+  depends_on KandeloFormulaSupport::WabtRequirement => [:build, :test]
   include KandeloFormulaSupport
   desc "OCI fixture"
 end
@@ -329,6 +331,20 @@ source_closure_args=(
 )
 python3 "$TOOL" "${source_closure_args[@]}" \
   --out "$TMP_ROOT/source-closure-baseline.json"
+cp "$source_closure_root/Formula/hello.rb" \
+  "$TMP_ROOT/source-closure-canonical-requirement.rb"
+sed -i.bak \
+  's/KandeloFormulaSupport::WabtRequirement/KandeloFormulaSupport.const_get("WabtRequirement")/' \
+  "$source_closure_root/Formula/hello.rb"
+rm "$source_closure_root/Formula/hello.rb.bak"
+if python3 "$TOOL" "${source_closure_args[@]}" \
+    --out "$TMP_ROOT/source-closure-with-dynamic-requirement.json" \
+    >/dev/null 2>&1; then
+  echo "Formula support source closure accepted a dynamic Requirement reference" >&2
+  exit 1
+fi
+mv "$TMP_ROOT/source-closure-canonical-requirement.rb" \
+  "$source_closure_root/Formula/hello.rb"
 mkdir -p "$source_closure_root/Kandelo/formula_support/test"
 printf 'test-only-v1\n' \
   >"$source_closure_root/Kandelo/formula_support/test/support_test.rb"

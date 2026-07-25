@@ -359,6 +359,14 @@ exists. A versioned installed host package is one immutable installation
 identity, so a complete
 all-regular-file closure under its `wasm/` tree remains supported;
 regular-file/symlink mixtures and installed symlink closures are rejected.
+Relocatable prepared workspaces preserve fetched package identity by copying
+each referenced canonical generation under `.ci-test-binary-cache/programs/`
+and rewriting the `binaries/` mirrors as contained relative symlinks. Consumers
+must select that transported cache explicitly with
+`WASM_POSIX_BINARY_CACHE_ROOT`; the resolver does not implicitly trust a hidden
+directory merely because it is inside a source checkout. Formula-test
+publication and conformance-workspace packing share one staging helper so
+neither path can regress to identityless regular-file mirrors.
 
 Changing a package from a multi-member directory layout to a scalar flat path
 does not delete the former package directory. The generated projection makes
@@ -532,6 +540,26 @@ first content access downloads and verifies the complete Formula bottle and
 atomically materializes its guest projection. It does not fetch individual TAR
 members or use HTTP ranges. Dependency bottles have separate identities and
 remain unfetched until a path owned by that dependency is used.
+
+The guest `brew` implementation is distributed separately from Formula
+bottles as the `homebrew-bootstrap` program package. Its single declared
+artifact, `homebrew-bootstrap.zip`, is a deterministic archive of one exact
+upstream Homebrew commit plus Kandelo's reviewed guest-platform patch. Although
+the artifact is not Wasm, it uses the ordinary program-package resolver,
+program projection, cache key, and release archive contracts; its output
+therefore declares `fork_instrumentation = "disabled"`.
+
+`homebrew/homebrew-bootstrap-source-lock.json` is the reviewed source/output
+identity. It binds the upstream archive URL and SHA-256, sealed
+`[[git_inputs]]` commit, patch path/SHA-256/license, patched Git and normalized
+tree identities, portable Ruby version, archive-producing Git version, and
+final ZIP SHA-256/byte count. The package build imports the resolver-owned
+exact Git checkout into private scratch storage and performs no source fetch
+of its own. The lock also records the dedicated package output's exact SHA-256
+and byte count, so a rebuild cannot silently change guest Homebrew bytes.
+Shell and bootstrap-image consumer cutover remains a separate change. Run the
+build through `scripts/dev-shell.sh`; a different Git ZIP implementation fails
+the exact output lock instead of publishing different bytes.
 
 See [docs/homebrew-publishing.md](homebrew-publishing.md) for the Homebrew
 formula, sidecar, GHCR, VFS, and runtime validation contract.
@@ -1585,6 +1613,16 @@ A manifest can declare host-side prerequisites — `cmake`,
 each one before invoking the build script, so a missing or
 too-old tool fails up front with a platform-keyed install hint
 rather than mid-build with a cryptic shell error.
+
+The manifest declares executable prerequisites; the source recipe still owns
+any project-local dependency tree used by those executables. For example, a
+recipe that runs a JavaScript tool from a committed `package-lock.json` must
+install and verify that locked tree in its normal build path, below the
+resolver-owned build output or scratch tree rather than in the shared source
+checkout. Do not provision it only in selected CI callers: archive validation
+can reject a same-run or published artifact and fall through to the source
+recipe from any local, direct-dependency, transitive-dependency, or concurrent
+resolve.
 
 **Inline declaration**
 
