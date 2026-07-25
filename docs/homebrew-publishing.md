@@ -2444,6 +2444,12 @@ checks a credential. The publisher then holds the tag state lock while it
 reconciles create, upload, and publish responses, authentically downloads every
 complete draft asset immediately before publication, and verifies the
 immutable release, direct tag, and every anonymous download afterward. A
+caller must pass the exact Kandelo `main` SHA. The credentialed primitive
+re-reads protected `main` immediately before each release creation, individual
+asset upload, direct-tag creation, and draft-to-public transition. If `main`
+advances during reconciliation, the next mutation fails closed; a complete
+draft may remain for a later exact-main run to inspect, but it is not made
+public under stale authority. A
 failed attempt leaves any older receipt untouched. Success atomically replaces
 the receipt with the release ID and every asset's ID, URL, digest, and size.
 This same bounded 256-asset contract can carry the production shell mirror's

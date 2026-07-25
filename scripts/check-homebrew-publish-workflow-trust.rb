@@ -4564,6 +4564,7 @@ def check_publisher(workflow)
     'legacy_acceptance_expected=', 'accepted_existing_asset_sets:',
     'publish-immutable-github-release.sh', '--manifest "$release_manifest"',
     '--asset-root "$HANDOFF"', '--lock-root "$TAP_ROOT"',
+    '--exact-kandelo-main-sha "$KANDELO_COMMIT"',
     '--receipt "$receipt"',
     'visibility: "public-anonymous-readback"',
     'acceptance_release:', 'release_tag: $runtime_tag',
@@ -4602,11 +4603,24 @@ def check_publisher(workflow)
     'gh api --method POST "/repos/${REPOSITORY}/git/refs"',
     'ensure_direct_tag',
     'publish response was ambiguous; reconciling',
+    '--exact-kandelo-main-sha) EXACT_KANDELO_MAIN_SHA=',
+    'require_exact_main_authority()',
+    'bash "$REPO_ROOT/.github/scripts/require-exact-kandelo-main.sh"',
+    '--source-sha "$EXACT_KANDELO_MAIN_SHA"',
     'anonymous digest readback failed', '.object.type == "commit"',
     'visibility: "public-anonymous-readback"',
   ].each do |fragment|
     check(immutable_publisher_source.include?(fragment),
           "immutable GitHub release publisher lacks #{fragment}")
+  end
+  [
+    /require_exact_main_authority\n\s+if gh api --method POST "\/repos\/\$\{REPOSITORY\}\/releases"/,
+    /require_exact_main_authority\n\s+gh release upload "\$TAG"/,
+    /require_exact_main_authority\n\s+gh api --method POST "\/repos\/\$\{REPOSITORY\}\/git\/refs"/,
+    /require_exact_main_authority\n\s+gh api --method PATCH "\/repos\/\$\{REPOSITORY\}\/releases\/\$\{release_id\}"/,
+  ].each do |pattern|
+    check(immutable_publisher_source.match?(pattern),
+          "immutable GitHub release mutation is not immediately preceded by exact-main authority")
   end
   immutable_manifest_validator_source = File.read(
     File.join(REPO_ROOT, "scripts/validate-immutable-github-release-manifest.py")
@@ -4662,6 +4676,8 @@ def check_publisher(workflow)
     "failed anonymous readback", "anonymous recovery mutated",
     "FAKE_CREATE_RESPONSE_LOST", "FAKE_UPLOAD_RESPONSE_LOST",
     "FAKE_TAG_RESPONSE_LOST", "FAKE_PUBLISH_RESPONSE_LOST",
+    "publisher made a release public after Kandelo main advanced",
+    "advanced Kandelo main reached the public release PATCH",
   ].each do |fragment|
     check(immutable_publisher_test_source.include?(fragment),
           "immutable release publisher tests lack #{fragment}")

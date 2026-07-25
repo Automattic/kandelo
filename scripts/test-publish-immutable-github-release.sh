@@ -226,7 +226,16 @@ def fields(args):
 
 
 args = sys.argv[1:]
-if args[:2] == ["api", "--include"]:
+if args == [
+    "api", "/repos/Automattic/kandelo/git/ref/heads/main",
+    "--jq", ".object.sha",
+]:
+    state = load()
+    if os.environ.get("FAKE_MAIN_ADVANCE_AFTER_TAG") and state["tags"]:
+        print("f" * 40)
+    else:
+        print(os.environ["FAKE_KANDELO_MAIN_SHA"])
+elif args[:2] == ["api", "--include"]:
     endpoint = args[2]
     state = load()
     if "/releases/tags/" in endpoint:
@@ -430,6 +439,7 @@ mkdir "$lock_root"
 ACTIVE_STATE=""
 ACTIVE_RECEIPT=""
 ACTIVE_MANIFEST=""
+EXACT_MAIN_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 new_state() {
   ACTIVE_STATE="$TMP_ROOT/state-$1"
   ACTIVE_RECEIPT="$TMP_ROOT/receipt-$1.json"
@@ -447,11 +457,14 @@ run_publisher() {
   IMMUTABLE_RELEASE_RETRY_DELAY_SECONDS=0 \
   GITHUB_API_RETRY_DELAY_SECONDS=0 \
   GITHUB_REPOSITORY=Kandelo-dev/homebrew-tap-core \
+  FAKE_KANDELO_MAIN_SHA="$EXACT_MAIN_SHA" \
+  FAKE_MAIN_ADVANCE_AFTER_TAG="${FAKE_MAIN_ADVANCE_AFTER_TAG:-}" \
   GH_TOKEN=fake-token \
     bash "$REPO_ROOT/scripts/publish-immutable-github-release.sh" \
       --manifest "$ACTIVE_MANIFEST" \
       --asset-root "$asset_root" \
       --lock-root "$lock_root" \
+      --exact-kandelo-main-sha "$EXACT_MAIN_SHA" \
       --receipt "$ACTIVE_RECEIPT"
 }
 
@@ -487,6 +500,29 @@ jq -e '
 [ "$(grep -c '^release$' "$ACTIVE_STATE/lock.log")" -eq 1 ] ||
   fail "publisher did not release exactly one state lock"
 
+# Kandelo main advances after all assets and the exact tag exist but before the
+# irreversible public transition. The final primitive-owned check must leave
+# the fully reconciled release as a draft and emit no success receipt.
+new_state main-advanced-before-publish
+FAKE_MAIN_ADVANCE_AFTER_TAG=1 expect_failure_containing \
+  "publisher made a release public after Kandelo main advanced" \
+  "source SHA must equal the current refs/heads/main commit" \
+  run_publisher
+jq -e '
+  (.releases | length) == 1 and .releases[0].draft == true and
+  (.releases[0].assets | length) == 36 and (.tags | length) == 1
+' "$ACTIVE_STATE/state.json" >/dev/null ||
+  fail "exact-main publication race did not stop at the complete draft"
+[ ! -e "$ACTIVE_RECEIPT" ] ||
+  fail "exact-main publication race emitted a success receipt"
+if jq -s -e 'any(.[]; .[0:3] == ["api", "--method", "PATCH"])' \
+  "$ACTIVE_STATE/gh.log" >/dev/null; then
+  fail "advanced Kandelo main reached the public release PATCH"
+fi
+
+ACTIVE_STATE="$TMP_ROOT/state-ambiguous"
+ACTIVE_RECEIPT="$TMP_ROOT/receipt-ambiguous.json"
+ACTIVE_MANIFEST="$manifest"
 : >"$ACTIVE_STATE/gh.log"
 run_publisher >/dev/null
 if jq -s -e 'any(.[];
