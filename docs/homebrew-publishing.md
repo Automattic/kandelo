@@ -1847,6 +1847,61 @@ image metadata. This is an exact-byte copy: callers that need a canonical
 configuration should track one JSON source rather than regenerate equivalent
 JSON in each image builder.
 
+### Temporary Exact-Main Source Bridge
+
+During the ABI 42 activation window, the published `shell` package must not
+consume bottles built from a pull-request checkout and then call them
+main-built merely because that checkout later became an ancestor of `main`.
+Reachability is useful review evidence, but it is not producer provenance.
+
+The current shell revision therefore has one declarative direct dependency
+contract in `homebrew/source-rootfs-shell-dependencies.json`; the package
+manifest, wrapper, composer, and CI checker consume or validate that same
+contract rather than maintaining parallel package lists. Its build script
+consumes only resolver-owned dependency directories. The package resolver may
+download each dependency's checksum-pinned upstream source through the normal
+verified-source path, but the image composer has no tap, OCI, bottle-registry,
+binary-mirror, or ambient network fallback.
+
+The composer eagerly replaces the complete `/bin/bash` and `/usr/bin/bash`
+lazy hardlink identity with the exact resolved Bash bytes because every shell
+boot needs that executable. It preserves rootfs ABI, capacity, and existing
+lazy-file/tree identities; adds the required demo executables and complete
+shared shell product surface; registers package-owned, integrity-bound Vim and
+NetHack archive trees; and copies the exact tracked
+`homebrew/source-rootfs-shell-default.json` and
+`homebrew/main-shell-demo.json` bytes into `/etc/kandelo`.
+
+The rootfs build-time archive recipes migrated by this bridge bind their
+direct-build defaults and resolver inputs to package-manifest versions, URLs,
+and SHA-256 values, stage through the shared verified-source helper, and keep
+mutable work below the caller-owned work root. `posix-utils-lite` selects the
+reviewed checkout itself rather than an upstream archive. The rootfs and shell
+composers consume only explicit resolver outputs; the resolver graph and the
+JSON direct-dependency contract determine the exact closure without another
+documentation-maintained list. This closure rule does not imply that every
+unrelated registry recipe has already been migrated.
+
+This is activation scaffolding, not the Homebrew endpoint. After the producer
+changes are on the default branch, rebuild every final bottle from a job whose
+actual Kandelo checkout is that exact default-branch `main` SHA, publish those
+new identities, and switch `shell` back to the strict bottle closure below.
+The pull-request/rehearsal bottles remain test evidence only.
+
+The required `.github/workflows/homebrew-main-shell-ci.yml` gate follows the
+same activation boundary. While `SHELL_ACTIVATION_MODE` is `source-rootfs`, it
+uses an empty index and fresh cache to force-source-build every buildable node
+in the exact current shell closure. It installs that exact output and boots it
+in both Node and Chromium; the old tap lock remains only in a dormant `bottles`
+branch. Unrelated browser-gallery roots can still use the separately verified
+package generation, but a before/after regular-file-and-symlink manifest proves
+they did not replace any exact-source shell closure bytes. The sealed Chromium
+proof executes eager Bash, rootfs-owned lazy `grep`, extended lazy `less`, and
+integrity-bound Vim and NetHack lazy archives. The Pages publisher builds the
+current sysroot and exact source closure, assembles the actual product tree,
+and boots that sealed `/kandelo/` tree before deployment. Flip the gate back to
+`bottles` only in the strict exact-main bottle cutover.
+
 ### Strict Main-Shell Bottle Closure
 
 `homebrew/main-shell.Brewfile` is the reviewed direct-root contract for the
@@ -1874,34 +1929,22 @@ scripts/dev-shell.sh bash scripts/build-homebrew-main-shell-closure.sh \
   --work-dir /path/to/new-exclusive-work-dir
 ```
 
-The package resolver anonymously provisions that exact commit from the
-`build.toml` Git input and invokes `packages/registry/shell/build-shell.sh`.
-Every composition scratch file, report, and downloaded bottle lives in a new
-resolver-owned workspace below `WASM_POSIX_DEP_OUT_DIR`; the wrapper removes
-that workspace before publishing the single declared `shell.vfs.zst` output.
-There is no legacy registry-composition fallback. The dedicated workflow then
-passes `archive-stage --force-source-build`, which bypasses cache and index
-reuse for the `shell` package only. Its dependencies retain normal resolver
-semantics; in this case the package has no registry dependencies because the
-42 public bottles are the composer's immutable inputs. This guarantees the
-composer executes even after a prior shell archive has been published. The
-workflow extracts the exact newly archived bytes, boots them through Node, and
-requires Chromium's current `?demo=shell` path to fetch the same SHA-256,
-launch the image-owned shell, and exercise the locked command surface. Runtime
-acceptance intentionally happens after archive creation so a package cache hit
-cannot skip it and a package build cannot depend on ambient kernel build
-artifacts.
+The strict composer remains directly testable with the exact tap checkout
+pinned in the migration lock, and the dedicated candidate workflow retains its
+post-build Node and Chromium gates. It is not the active shell package recipe
+during the source bridge above. When exact-main bottles are available, the
+package cutover must restore the tap commit to `build.toml`, run every
+composition scratch file and downloaded bottle in a resolver-owned workspace,
+publish only the declared `shell.vfs.zst`, and retain the post-archive
+exact-byte runtime gates. There is no legacy ambient registry-composition
+fallback.
 
-The wider browser application also imports registry packages that are not part
-of the 42-Formula shell closure, including the canonical `rootfs` image. The
-workflow derives that supporting package set from the browser imports, excludes
-`shell`, and resolves it with normal package semantics: reuse an exact public
-archive when one exists, otherwise source-build the current PR recipe. This is
-necessary when a PR changes a declared input of a supporting package, because
-the corresponding public archive cannot exist until the change is published.
-It does not weaken the bottle-only shell claim: the accepted `shell.vfs.zst`
-still comes only from the separately staged shell package whose composer reads
-the 42 pinned public bottles.
+The wider browser application also imports registry packages outside the
+42-Formula bottle closure. The workflow derives that supporting set from
+browser imports and resolves it with normal package semantics. During the
+bridge, the authoritative source-shell dependency contract names every direct
+input; after bottle cutover those inputs return to ordinary supporting
+packages rather than hidden composer prerequisites.
 
 For local use, `./run.sh build shell-vfs` takes the ordinary resolver path and
 materializes the declared output under `local-binaries`. It may reuse a valid

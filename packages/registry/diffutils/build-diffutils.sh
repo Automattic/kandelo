@@ -6,12 +6,25 @@ set -euo pipefail
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
 # Output: packages/registry/diffutils/bin/{diff,cmp,sdiff,diff3}.wasm
 
-DIFFUTILS_VERSION="${DIFFUTILS_VERSION:-3.10}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/diffutils-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/diffutils-src"
+BIN_DIR="$WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
+DIFFUTILS_VERSION="${WASM_POSIX_DEP_VERSION:-${DIFFUTILS_VERSION:-3.10}}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/gnu/diffutils/diffutils-${DIFFUTILS_VERSION}.tar.xz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-90e5e93cc724e4ebe12ede80df1634063c7a855692685919bfe60b556c9bd09e}"
+VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
+SOURCE_MARKER="$SRC_DIR/.kandelo-diffutils-source"
+
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -26,16 +39,18 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Download diffutils source ---
+# --- Stage verified diffutils source ---
+expected_source_marker="$(printf '%s\n%s\n%s' \
+    "$DIFFUTILS_VERSION" "$SOURCE_URL" "$SOURCE_SHA256")"
+if [ -d "$SRC_DIR" ] && \
+   [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_source_marker" ]; then
+    rm -rf "$SRC_DIR" "$BIN_DIR"
+fi
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading diffutils $DIFFUTILS_VERSION..."
-    TARBALL="diffutils-${DIFFUTILS_VERSION}.tar.xz"
-    URL="https://ftpmirror.gnu.org/gnu/diffutils/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
+    echo "==> Staging verified diffutils $DIFFUTILS_VERSION source..."
+    kandelo_package_stage_verified_source diffutils "$SRC_DIR" \
+        "$VERIFIED_SOURCE_DIR" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
+    printf '%s\n' "$expected_source_marker" >"$SOURCE_MARKER"
 fi
 
 cd "$SRC_DIR"
@@ -190,7 +205,7 @@ echo "Binaries: $BIN_DIR/{diff,cmp,sdiff,diff3}.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary diffutils "$SCRIPT_DIR/bin/diff.wasm" diff.wasm
-install_local_binary diffutils "$SCRIPT_DIR/bin/cmp.wasm" cmp.wasm
-install_local_binary diffutils "$SCRIPT_DIR/bin/diff3.wasm" diff3.wasm
-install_local_binary diffutils "$SCRIPT_DIR/bin/sdiff.wasm" sdiff.wasm
+install_local_binary diffutils "$BIN_DIR/diff.wasm" diff.wasm
+install_local_binary diffutils "$BIN_DIR/cmp.wasm" cmp.wasm
+install_local_binary diffutils "$BIN_DIR/diff3.wasm" diff3.wasm
+install_local_binary diffutils "$BIN_DIR/sdiff.wasm" sdiff.wasm

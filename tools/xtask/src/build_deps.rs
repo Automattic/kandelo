@@ -8,6 +8,8 @@
 //!
 //! The build script runs with:
 //!   * `WASM_POSIX_DEP_OUT_DIR` — temp dir the script must install into.
+//!   * `WASM_POSIX_DEP_WORK_DIR` — disjoint caller-owned scratch directory
+//!     removed after the build on both success and failure.
 //!   * `WASM_POSIX_DEP_NAME`, `WASM_POSIX_DEP_VERSION`,
 //!     `WASM_POSIX_DEP_REVISION` — identity of the lib being built.
 //!   * `WASM_POSIX_DEP_SOURCE_URL`, `WASM_POSIX_DEP_SOURCE_SHA256` —
@@ -2471,6 +2473,108 @@ pub fn ensure_built(
     Ok(path)
 }
 
+/// Return every library/program manifest in `target`'s complete dependency
+/// closure, including `target` itself.
+///
+/// `archive-stage --force-source-closure` uses this set to make an exact-source
+/// product build bypass both valid resolver cache entries and valid binary
+/// index entries at every buildable node. Source-kind nodes are intentionally
+/// excluded: their identity is their immutable URL + SHA-256, so normal
+/// resolver validation may safely reuse the already-verified extraction.
+pub fn buildable_transitive_closure(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+) -> Result<BTreeSet<String>, String> {
+    fn visit(
+        target: &DepsManifest,
+        registry: &Registry,
+        arch: TargetArch,
+        forced: &mut BTreeSet<String>,
+        visited: &mut BTreeSet<(String, TargetArch)>,
+        chain: &mut Vec<String>,
+    ) -> Result<(), String> {
+        let identity = (target.name.clone(), arch);
+        if visited.contains(&identity) {
+            return Ok(());
+        }
+        if chain.iter().any(|name| name == &target.name) {
+            return Err(format!(
+                "cycle while collecting source closure: {} -> {}",
+                chain.join(" -> "),
+                target.name,
+            ));
+        }
+        chain.push(target.name.clone());
+        if matches!(target.kind, ManifestKind::Library | ManifestKind::Program) {
+            forced.insert(target.name.clone());
+        }
+        for dependency in &target.depends_on {
+            let manifest = registry.load(&dependency.name)?;
+            if manifest.version != dependency.version {
+                return Err(format!(
+                    "{} depends on {}@{}, but registry has {}",
+                    target.spec(),
+                    dependency.name,
+                    dependency.version,
+                    manifest.spec(),
+                ));
+            }
+            let dependency_arch = dependency_target_arch(target, &manifest, arch)?;
+            visit(
+                &manifest,
+                registry,
+                dependency_arch,
+                forced,
+                visited,
+                chain,
+            )?;
+        }
+        chain.pop();
+        visited.insert(identity);
+        Ok(())
+    }
+
+    let mut forced = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+    let mut chain = Vec::new();
+    visit(
+        target,
+        registry,
+        arch,
+        &mut forced,
+        &mut visited,
+        &mut chain,
+    )?;
+    Ok(forced)
+}
+
+fn dependency_target_arch(
+    parent: &DepsManifest,
+    dependency: &DepsManifest,
+    requested: TargetArch,
+) -> Result<TargetArch, String> {
+    if dependency.target_arches.contains(&requested) {
+        Ok(requested)
+    } else if dependency.target_arches.contains(&TargetArch::Wasm32) {
+        Ok(TargetArch::Wasm32)
+    } else {
+        Err(format!(
+            "{} depends on {} (arch {}), but {} declares neither {} nor wasm32 in target_arches (declared: {:?})",
+            parent.spec(),
+            dependency.spec(),
+            requested.as_str(),
+            dependency.spec(),
+            requested.as_str(),
+            dependency
+                .target_arches
+                .iter()
+                .map(|arch| arch.as_str())
+                .collect::<Vec<_>>(),
+        ))
+    }
+}
+
 /// One direct dependency's resolved cache path plus its manifest kind.
 ///
 /// Carried alongside `dep_dirs` so the build-script env-var emission
@@ -2878,26 +2982,7 @@ fn ensure_built_uncached(
         // under binaries/programs/wasm32/, where build scripts'
         // arch-agnostic tryResolveBinary("programs/<x>.wasm") finds
         // them. The kernel runs mixed-arch programs.
-        let dep_arch = if dep_m.target_arches.contains(&arch) {
-            arch
-        } else if dep_m.target_arches.contains(&TargetArch::Wasm32) {
-            TargetArch::Wasm32
-        } else {
-            return Err(format!(
-                "{} depends on {}@{} (arch {}), but {} declares neither {} nor wasm32 in target_arches (declared: {:?})",
-                target.spec(),
-                dref.name,
-                dref.version,
-                arch.as_str(),
-                dep_m.spec(),
-                arch.as_str(),
-                dep_m
-                    .target_arches
-                    .iter()
-                    .map(|a| a.as_str())
-                    .collect::<Vec<_>>(),
-            ));
-        };
+        let dep_arch = dependency_target_arch(target, &dep_m, arch)?;
         let (dep_path, dep_transitive) = ensure_built_inner(
             &dep_m,
             registry,
@@ -4186,6 +4271,42 @@ fn set_git_input_tree_read_only(path: &Path, read_only: bool) -> Result<(), Stri
     })
 }
 
+struct BuildWorkRoot {
+    path: PathBuf,
+}
+
+impl Drop for BuildWorkRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+static BUILD_WORK_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn create_build_work_root(parent: &Path, basename: &str) -> Result<BuildWorkRoot, String> {
+    for _ in 0..10_000 {
+        let counter = BUILD_WORK_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = parent.join(format!(
+            ".{basename}.work-{}-{counter}",
+            std::process::id()
+        ));
+        match create_private_transaction_directory(&path) {
+            Ok(()) => return Ok(BuildWorkRoot { path }),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(format!(
+                    "create exclusive package work root {}: {e}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Err(format!(
+        "could not allocate an exclusive package work root below {}",
+        parent.display()
+    ))
+}
+
 /// Run the build script with `WASM_POSIX_DEP_*` env vars set, validate
 /// outputs under the temp directory, then `rename(2)` into place.
 ///
@@ -4233,6 +4354,26 @@ fn build_into_cache(
         ));
     }
 
+    // WHY: OUT_DIR is the atomic publication transaction, not a build tree.
+    // A separate resolver-owned root lets recipes configure, patch, and
+    // compile without mutating either the reviewed checkout or staged output.
+    // The guard removes scratch on every return path, including spawn and
+    // post-build validation failures.
+    let work = match create_build_work_root(
+        parent,
+        canonical
+            .file_name()
+            .expect("canonical path has a filename")
+            .to_string_lossy()
+            .as_ref(),
+    ) {
+        Ok(work) => work,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(format!("{}: allocate build work root: {e}", target.spec()));
+        }
+    };
+
     let git_inputs = match ProvisionedGitInputs::provision(target, canonical) {
         Ok(inputs) => inputs,
         Err(e) => {
@@ -4267,6 +4408,7 @@ fn build_into_cache(
         };
         cmd.env("PATH", path_var);
         cmd.env("WASM_POSIX_DEP_OUT_DIR", &tmp);
+        cmd.env("WASM_POSIX_DEP_WORK_DIR", &work.path);
         cmd.env("WASM_POSIX_DEP_NAME", &target.name);
         cmd.env("WASM_POSIX_DEP_VERSION", &target.version);
         cmd.env("WASM_POSIX_DEP_REVISION", target.revision.to_string());
@@ -11865,6 +12007,128 @@ libs = ["lib/libA.a"]
         assert!(path.join("lib/libA.a").exists());
         let stamp = std::fs::read_to_string(path.join("stamp")).unwrap();
         assert_eq!(stamp.trim(), "libA 1.0.0 rev1");
+    }
+
+    #[test]
+    fn source_builds_use_disjoint_ephemeral_work_roots_without_checkout_writes() {
+        let root = tempdir("built-work-root-reg");
+        let cache = tempdir("built-work-root-cache");
+        write_lib(
+            &root,
+            "libWork",
+            "1.0.0",
+            &[],
+            r#"
+case "$WASM_POSIX_DEP_WORK_DIR" in /*) ;; *) exit 91 ;; esac
+case "$WASM_POSIX_DEP_OUT_DIR" in /*) ;; *) exit 92 ;; esac
+test -d "$WASM_POSIX_DEP_WORK_DIR"
+test -d "$WASM_POSIX_DEP_OUT_DIR"
+case "$WASM_POSIX_DEP_WORK_DIR/" in "$WASM_POSIX_DEP_OUT_DIR/"*) exit 93 ;; esac
+case "$WASM_POSIX_DEP_OUT_DIR/" in "$WASM_POSIX_DEP_WORK_DIR/"*) exit 94 ;; esac
+mkdir -p "$WASM_POSIX_DEP_WORK_DIR/configure/tree"
+printf 'scratch\n' > "$WASM_POSIX_DEP_WORK_DIR/configure/tree/state"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libWork.a"
+printf '%s\n%s\n' "$WASM_POSIX_DEP_WORK_DIR" "$WASM_POSIX_DEP_OUT_DIR" \
+  > "$WASM_POSIX_DEP_OUT_DIR/build-roots"
+"#,
+            r#"[outputs]
+libs = ["lib/libWork.a"]
+"#,
+        );
+        let package_dir = root.join("libWork");
+        let before: BTreeSet<_> = fs::read_dir(&package_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let manifest = reg.load("libWork").unwrap();
+
+        let resolved = ensure_built(
+            &manifest,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+        let roots = fs::read_to_string(resolved.join("build-roots")).unwrap();
+        let mut roots = roots.lines().map(PathBuf::from);
+        let work = roots.next().unwrap();
+        let temporary_output = roots.next().unwrap();
+        assert!(roots.next().is_none());
+        assert_ne!(work, temporary_output);
+        assert!(work.starts_with(cache.join("libs")));
+        assert!(
+            !work.exists(),
+            "successful source build left caller-owned scratch behind: {}",
+            work.display()
+        );
+        let after: BTreeSet<_> = fs::read_dir(&package_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(after, before, "source build mutated its registry checkout");
+
+        let failure_record = cache.join("failed-build-roots");
+        write_lib(
+            &root,
+            "libWorkFail",
+            "1.0.0",
+            &[],
+            &format!(
+                r#"
+mkdir -p "$WASM_POSIX_DEP_WORK_DIR/partial"
+printf '%s\n%s\n' "$WASM_POSIX_DEP_WORK_DIR" "$WASM_POSIX_DEP_OUT_DIR" > "{}"
+exit 17
+"#,
+                failure_record.display()
+            ),
+            r#"[outputs]
+libs = ["lib/libWorkFail.a"]
+"#,
+        );
+        let failed_package_dir = root.join("libWorkFail");
+        let failed_before: BTreeSet<_> = fs::read_dir(&failed_package_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        let failed_manifest = reg.load("libWorkFail").unwrap();
+        let error = ensure_built(
+            &failed_manifest,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap_err();
+        assert!(error.contains("exit status: 17"), "got: {error}");
+        let failed_roots = fs::read_to_string(&failure_record).unwrap();
+        let mut failed_roots = failed_roots.lines().map(PathBuf::from);
+        let failed_work = failed_roots.next().unwrap();
+        let failed_output = failed_roots.next().unwrap();
+        assert!(failed_roots.next().is_none());
+        assert_ne!(failed_work, failed_output);
+        assert!(
+            !failed_work.exists(),
+            "failed source build left caller-owned scratch behind: {}",
+            failed_work.display()
+        );
+        assert!(
+            !failed_output.exists(),
+            "failed source build left atomic output transaction behind: {}",
+            failed_output.display()
+        );
+        let failed_after: BTreeSet<_> = fs::read_dir(&failed_package_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            failed_after, failed_before,
+            "failed source build mutated its registry checkout"
+        );
     }
 
     #[test]

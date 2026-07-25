@@ -6,12 +6,25 @@ set -euo pipefail
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
 # Output: packages/registry/findutils/bin/find.wasm, bin/xargs.wasm
 
-FINDUTILS_VERSION="${FINDUTILS_VERSION:-4.10.0}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/findutils-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/findutils-src"
+BIN_DIR="$WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
+FINDUTILS_VERSION="${WASM_POSIX_DEP_VERSION:-${FINDUTILS_VERSION:-4.10.0}}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/gnu/findutils/findutils-${FINDUTILS_VERSION}.tar.xz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-1387e0b67ff247d2abde998f90dfbf70c1491391a59ddfecb8ae698789f0a4f5}"
+VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
+SOURCE_MARKER="$SRC_DIR/.kandelo-findutils-source"
+
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -26,16 +39,18 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Download findutils source ---
+# --- Stage verified findutils source ---
+expected_source_marker="$(printf '%s\n%s\n%s' \
+    "$FINDUTILS_VERSION" "$SOURCE_URL" "$SOURCE_SHA256")"
+if [ -d "$SRC_DIR" ] && \
+   [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_source_marker" ]; then
+    rm -rf "$SRC_DIR" "$BIN_DIR"
+fi
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading findutils $FINDUTILS_VERSION..."
-    TARBALL="findutils-${FINDUTILS_VERSION}.tar.xz"
-    URL="https://ftpmirror.gnu.org/gnu/findutils/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
+    echo "==> Staging verified findutils $FINDUTILS_VERSION source..."
+    kandelo_package_stage_verified_source findutils "$SRC_DIR" \
+        "$VERIFIED_SOURCE_DIR" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
+    printf '%s\n' "$expected_source_marker" >"$SOURCE_MARKER"
 fi
 
 cd "$SRC_DIR"
@@ -206,5 +221,5 @@ echo "Binaries: $BIN_DIR/find.wasm $BIN_DIR/xargs.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary findutils "$SCRIPT_DIR/bin/find.wasm" find.wasm
-install_local_binary findutils "$SCRIPT_DIR/bin/xargs.wasm" xargs.wasm
+install_local_binary findutils "$BIN_DIR/find.wasm" find.wasm
+install_local_binary findutils "$BIN_DIR/xargs.wasm" xargs.wasm

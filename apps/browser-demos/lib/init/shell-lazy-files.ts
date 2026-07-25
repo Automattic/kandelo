@@ -34,6 +34,10 @@ import unzipWasmUrl from "@binaries/programs/wasm32/unzip.wasm?url";
 import lsofWasmUrl from "@binaries/programs/wasm32/lsof.wasm?url";
 import nanoWasmUrl from "@binaries/programs/wasm32/nano.wasm?url";
 
+export {
+  assertShellLazyUrlsResolved,
+} from "./shell-lazy-url-contract";
+
 const SHELL_LAZY_ASSET_URLS: Record<(typeof SHELL_LAZY_BINARY_SPECS)[number]["id"], string> = {
   coreutils: coreutilsWasmUrl,
   grep: grepWasmUrl,

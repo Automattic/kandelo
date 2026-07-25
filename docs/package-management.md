@@ -419,6 +419,14 @@ for an unregistered or malformed package. Package publication does not create
 a second `sh` resolver output; guest images own their explicit `/bin/sh`
 symlink to the shell they include.
 
+Executable registration also fails closed on unresolved imports in Kandelo's
+reserved `env.__wasm_posix_*` namespace. The SDK deliberately permits undefined
+symbols for real host APIs, but a new reserved import is accepted only after
+the host implements it and the shared artifact guard explicitly allows it.
+This prevents an ABI-current glue object linked against a stale musl sysroot
+from turning a private libc helper into a runtime trap and then caching or
+publishing that broken executable.
+
 A sealed publisher instead sets
 `WASM_POSIX_INSTALL_LOCAL_MIRROR=0`, provides
 `WASM_POSIX_DEP_OUT_DIR`, and supplies the reviewed fork-instrumentation policy
@@ -743,7 +751,7 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_DEP_SOURCE_URL` | Upstream tarball URL (`source.url` from package.toml). |
 | `WASM_POSIX_DEP_SOURCE_SHA256` | Expected sha256 of the downloaded tarball. Scripts **must** verify after download — the resolver does not fetch. |
 | `WASM_POSIX_DEP_TARGET_ARCH` | Requested package architecture (`wasm32` or `wasm64`). A package that supports only one must reject the other before invoking its toolchain. |
-| `WASM_POSIX_DEP_WORK_DIR` | Optional caller-owned scratch root. The sealed Homebrew Formula bridge sets this because its reviewed Kandelo checkout is read-only. Direct developer builds may retain a package-local default. |
+| `WASM_POSIX_DEP_WORK_DIR` | Caller-owned, single-writer scratch root disjoint from `OUT_DIR`. The resolver creates a fresh private directory for every source build and removes it on success or failure. The sealed Homebrew Formula bridge provides the equivalent boundary from Homebrew's buildpath. Direct ad-hoc script invocation may retain a package-local default. |
 | `WASM_POSIX_DEP_SOURCE_DIR` | Optional caller-verified, already-extracted source root. When present it takes precedence over downloading `SOURCE_URL`; the URL and SHA remain provenance/cache identity. |
 | `WASM_POSIX_DEP_<UPPER>_DIR` | For each *direct* dep, the resolved path to that dep's build output. `<UPPER>` is the dep name upper-cased, with `-` → `_` (e.g. `zlib-ng` → `ZLIB_NG`). Transitive deps are not surfaced — scripts that need them should declare them in `depends_on`. |
 | `WASM_POSIX_BUILD_GIT_<NAME>_DIR` | Read-only detached checkout for a `build.toml` `[[git_inputs]]` declaration. `<NAME>` is the injective uppercase form of the validated lowercase name. |

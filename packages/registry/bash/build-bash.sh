@@ -6,14 +6,28 @@ set -euo pipefail
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
 # Applies fork instrumentation so fork works (pipes, $(cmd), subshells).
 #
-# Output: packages/registry/bash/bin/bash.wasm
+# Output: packages/registry/bash/bin/bash.wasm for a direct build, or the
+# resolver-owned WASM_POSIX_DEP_OUT_DIR.
 
-BASH_VERSION_PKG="${BASH_VERSION_PKG:-5.2.37}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/bash-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/bash-src"
+BIN_DIR="$WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
+BASH_VERSION_PKG="${WASM_POSIX_DEP_VERSION:-${BASH_VERSION_PKG:-5.2.37}}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/gnu/bash/bash-${BASH_VERSION_PKG}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-9599b22ecd1d5787ad7d3b7bf0c59f312b3396d1e281175dd1f8a4014da621ff}"
+VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
+SOURCE_MARKER="$SRC_DIR/.kandelo-bash-source"
+
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -50,16 +64,18 @@ echo "==> ncurses at $NCURSES_PREFIX"
 export CPPFLAGS="-I$NCURSES_PREFIX/include"
 export LDFLAGS_NCURSES="-L$NCURSES_PREFIX/lib"
 
-# --- Download bash source ---
+# --- Stage verified bash source ---
+expected_source_marker="$(printf '%s\n%s\n%s' \
+    "$BASH_VERSION_PKG" "$SOURCE_URL" "$SOURCE_SHA256")"
+if [ -d "$SRC_DIR" ] && \
+   [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_source_marker" ]; then
+    rm -rf "$SRC_DIR" "$BIN_DIR"
+fi
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading bash $BASH_VERSION_PKG..."
-    TARBALL="bash-${BASH_VERSION_PKG}.tar.gz"
-    URL="https://ftpmirror.gnu.org/gnu/bash/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
+    echo "==> Staging verified bash $BASH_VERSION_PKG source..."
+    kandelo_package_stage_verified_source bash "$SRC_DIR" \
+        "$VERIFIED_SOURCE_DIR" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
+    printf '%s\n' "$expected_source_marker" >"$SOURCE_MARKER"
 fi
 
 cd "$SRC_DIR"
@@ -398,17 +414,16 @@ cp "$BASH_BIN" "$BIN_DIR/bash.wasm"
 SIZE_BEFORE=$(wc -c < "$BIN_DIR/bash.wasm" | tr -d ' ')
 echo "==> Pre-instrumentation size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${SIZE_BEFORE} bytes")"
 
-# --- Size optimization + fork instrumentation ---
-# wasm-opt -O2 runs first to shrink the binary. wasm-fork-instrument must
-# run LAST because it hardcodes mutable-global offsets at instrument time —
-# any later pass that reorders globals would corrupt the fork buffer.
+# --- Size optimization ---
+# Fork instrumentation remains last, but the shared installer below owns that
+# policy so direct and sealed builds cannot diverge.
 echo "==> Optimizing bash with wasm-opt -O2..."
 "$WASM_OPT" -O2 "$BIN_DIR/bash.wasm" -o "$BIN_DIR/bash.wasm"
 
-echo "==> Applying fork instrumentation..."
-FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
-"$FORK_INSTRUMENT" "$BIN_DIR/bash.wasm" -o "$BIN_DIR/bash.wasm.instr"
-mv "$BIN_DIR/bash.wasm.instr" "$BIN_DIR/bash.wasm"
+# Install into local-binaries/ (resolver priority 1) and the resolver
+# scratch dir when invoked by xtask build-deps / archive-stage.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary bash "$BIN_DIR/bash.wasm"
 
 SIZE_AFTER=$(wc -c < "$BIN_DIR/bash.wasm" | tr -d ' ')
 echo "==> Final size: $(echo "$SIZE_AFTER" | numfmt --to=iec 2>/dev/null || echo "${SIZE_AFTER} bytes")"
@@ -416,11 +431,6 @@ echo "==> Final size: $(echo "$SIZE_AFTER" | numfmt --to=iec 2>/dev/null || echo
 echo ""
 echo "==> bash built successfully!"
 echo "Binary: $BIN_DIR/bash.wasm"
-
-# Install into local-binaries/ (resolver priority 1) and the resolver
-# scratch dir when invoked by xtask build-deps / archive-stage.
-source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary bash "$BIN_DIR/bash.wasm"
 
 echo ""
 echo "Run with:"

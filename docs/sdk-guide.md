@@ -220,6 +220,13 @@ leave unresolved host imports in linked programs.
 -Wl,--export=__wasm_init_tls       # TLS initialization
 ```
 
+`--allow-undefined` is not permission for arbitrary Kandelo-private symbols to
+escape into a package. `install_local_binary` rejects unresolved imports in the
+reserved `env.__wasm_posix_*` namespace unless they are explicitly implemented
+host APIs. If that guard reports a private libc helper, rebuild the worktree's
+musl sysroot before rebuilding the program rather than teaching the host to
+stub it.
+
 #### Why an 8 MiB main-thread stack
 
 wasm-ld's default shadow stack is only ~64 KiB. WebAssembly has **no stack

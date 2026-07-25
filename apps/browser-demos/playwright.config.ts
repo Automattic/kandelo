@@ -5,6 +5,7 @@ import { shouldReuseExistingPlaywrightServer } from "./playwright-server-policy"
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.KANDELO_PLAYWRIGHT_PORT ?? 5401);
+const serveSealedDist = process.env.KANDELO_PLAYWRIGHT_SERVE_DIST === "1";
 
 const browserEnvironmentKeys = [
   "CI",
@@ -63,7 +64,9 @@ export default defineConfig({
     trace: process.env.CI ? "retain-on-failure" : "off",
   },
   webServer: {
-    command: `npx vite --config ${join(__dirname, "vite.config.ts")} --host 127.0.0.1 --port ${port} --strictPort`,
+    command: serveSealedDist
+      ? `npx vite preview --config ${join(__dirname, "vite.config.ts")} --host 127.0.0.1 --port ${port} --strictPort`
+      : `npx vite --config ${join(__dirname, "vite.config.ts")} --host 127.0.0.1 --port ${port} --strictPort`,
     port,
     reuseExistingServer: shouldReuseExistingPlaywrightServer(process.env),
     timeout: 30_000,

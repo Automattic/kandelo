@@ -10,13 +10,26 @@ set -euo pipefail
 #         packages/registry/file/bin/magic.lite  (wasm-safe text magic database)
 #         packages/registry/file/bin/magic       (full text magic database)
 
-FILE_VERSION="${FILE_VERSION:-5.45}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/file-src"
-HOST_BUILD_DIR="$SCRIPT_DIR/file-host-build"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/file-src"
+HOST_BUILD_DIR="$WORK_DIR/file-host-build"
+BIN_DIR="$WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
+FILE_VERSION="${WASM_POSIX_DEP_VERSION:-${FILE_VERSION:-5.45}}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://astron.com/pub/file/file-${FILE_VERSION}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-fc97f51029bb0e2c9f4e3bffefdaf678f0e039ee872b9de5c002a6d09c784d82}"
+VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
+SOURCE_MARKER="$SRC_DIR/.kandelo-file-source"
+
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -31,16 +44,18 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Download file source ---
+# --- Stage verified file source ---
+expected_source_marker="$(printf '%s\n%s\n%s' \
+    "$FILE_VERSION" "$SOURCE_URL" "$SOURCE_SHA256")"
+if [ -d "$SRC_DIR" ] && \
+   [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_source_marker" ]; then
+    rm -rf "$SRC_DIR" "$HOST_BUILD_DIR" "$BIN_DIR"
+fi
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading file $FILE_VERSION..."
-    TARBALL="file-${FILE_VERSION}.tar.gz"
-    URL="https://astron.com/pub/file/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
+    echo "==> Staging verified file $FILE_VERSION source..."
+    kandelo_package_stage_verified_source file "$SRC_DIR" \
+        "$VERIFIED_SOURCE_DIR" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
+    printf '%s\n' "$expected_source_marker" >"$SOURCE_MARKER"
 fi
 
 # ======================================================================
@@ -251,8 +266,8 @@ echo "Usage: file.wasm -m /path/to/magic.lite /path/to/file"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary file "$SCRIPT_DIR/bin/file.wasm"
-install_local_binary file "$SCRIPT_DIR/bin/magic.lite"
+install_local_binary file "$BIN_DIR/file.wasm"
+install_local_binary file "$BIN_DIR/magic.lite"
 
 # Stage magic.lite into the resolver scratch so it lands in the cache
 # canonical path (and from there, the .tar.zst release archive).

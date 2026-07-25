@@ -263,6 +263,46 @@ if wasm_has_stale_abi "$work/no-abi.wasm" 18; then
     exit 1
 fi
 
+cat >"$work/unapproved-reserved-import.wat" <<'WAT'
+(module
+  (import "env" "__wasm_posix_after_fork_child" (func))
+  (func (export "_start")))
+WAT
+wat2wasm "$work/unapproved-reserved-import.wat" \
+    -o "$work/unapproved-reserved-import.wasm"
+reserved_import_error="$work/unapproved-reserved-import.error"
+if wasm_require_approved_reserved_env_imports \
+    "$work/unapproved-reserved-import.wasm" 2>"$reserved_import_error"; then
+    echo "ERROR: unapproved reserved env import was accepted" >&2
+    exit 1
+fi
+grep -Fqx \
+    '       env.__wasm_posix_after_fork_child' \
+    "$reserved_import_error" || {
+    echo "ERROR: rejected reserved env import was not identified exactly" >&2
+    cat "$reserved_import_error" >&2
+    exit 1
+}
+
+cat >"$work/approved-reserved-import.wat" <<'WAT'
+(module
+  (import "env" "__wasm_posix_vm_interrupt_after"
+    (func (param i32 i32 i32)))
+  (func (export "_start")))
+WAT
+wat2wasm "$work/approved-reserved-import.wat" \
+    -o "$work/approved-reserved-import.wasm"
+wasm_require_approved_reserved_env_imports \
+    "$work/approved-reserved-import.wasm"
+
+cat >"$work/nonreserved-import.wat" <<'WAT'
+(module
+  (import "env" "package_owned_callback" (func))
+  (func (export "_start")))
+WAT
+wat2wasm "$work/nonreserved-import.wat" -o "$work/nonreserved-import.wasm"
+wasm_require_approved_reserved_env_imports "$work/nonreserved-import.wasm"
+
 # The bottle inspector limits each validator child to 16 MiB of regular-file
 # output. Large programs such as Ruby legitimately produce more structural
 # decoder text than that, so ABI validation must consume it as a stream rather

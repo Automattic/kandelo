@@ -1,17 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build GNU coreutils 9.5 for wasm32-posix-kernel.
+# Build GNU coreutils 9.6 for wasm32-posix-kernel.
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# Output: packages/registry/coreutils/bin/*.wasm
+# Output: packages/registry/coreutils/bin/*.wasm for a direct build, or the
+# resolver-owned WASM_POSIX_DEP_OUT_DIR.
 
-COREUTILS_VERSION="${COREUTILS_VERSION:-9.5}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/coreutils-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/coreutils-src"
+BIN_DIR="$WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
+COREUTILS_VERSION="${WASM_POSIX_DEP_VERSION:-${COREUTILS_VERSION:-9.6}}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/gnu/coreutils/coreutils-${COREUTILS_VERSION}.tar.xz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-7a0124327b398fd9eb1a6abde583389821422c744ffa10734b24f557610d3283}"
+VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
+SOURCE_MARKER="$SRC_DIR/.kandelo-coreutils-source"
+
+# A resolver/Formula caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -26,16 +42,18 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Download coreutils source ---
+# --- Stage verified coreutils source ---
+expected_source_marker="$(printf '%s\n%s\n%s' \
+    "$COREUTILS_VERSION" "$SOURCE_URL" "$SOURCE_SHA256")"
+if [ -d "$SRC_DIR" ] && \
+   [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_source_marker" ]; then
+    rm -rf "$SRC_DIR" "$BIN_DIR"
+fi
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading coreutils $COREUTILS_VERSION..."
-    TARBALL="coreutils-${COREUTILS_VERSION}.tar.xz"
-    URL="https://ftpmirror.gnu.org/gnu/coreutils/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
+    echo "==> Staging verified coreutils $COREUTILS_VERSION source..."
+    kandelo_package_stage_verified_source coreutils "$SRC_DIR" \
+        "$VERIFIED_SOURCE_DIR" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
+    printf '%s\n' "$expected_source_marker" >"$SOURCE_MARKER"
 fi
 
 cd "$SRC_DIR"
@@ -249,13 +267,6 @@ mkdir -p "$BIN_DIR"
 if [ -f "$SRC_DIR/src/coreutils" ]; then
     cp "$SRC_DIR/src/coreutils" "$BIN_DIR/coreutils.wasm"
     echo "==> Built single-binary coreutils"
-    # The single binary includes utilities and libc paths that can reach
-    # fork()/vfork()/clone(). Fork instrumentation is required before this
-    # artifact can enter local-binaries or a VFS image.
-    FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
-    echo "==> Applying fork instrumentation to coreutils..."
-    "$FORK_INSTRUMENT" "$BIN_DIR/coreutils.wasm" -o "$BIN_DIR/coreutils.wasm.instr"
-    mv "$BIN_DIR/coreutils.wasm.instr" "$BIN_DIR/coreutils.wasm"
     ls -lh "$BIN_DIR/coreutils.wasm"
 else
     echo "ERROR: coreutils binary not found after build" >&2
@@ -266,7 +277,7 @@ echo ""
 echo "==> coreutils built successfully!"
 echo "Binary: $BIN_DIR/coreutils.wasm"
 
-# Install into local-binaries/ so the resolver picks the freshly-built
-# binary over the fetched release.
+# The shared installer owns fork instrumentation as well as publication. This
+# keeps direct builds and sealed resolver builds on the same manifest policy.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary coreutils "$SCRIPT_DIR/bin/coreutils.wasm"
+install_local_binary coreutils "$BIN_DIR/coreutils.wasm"

@@ -669,12 +669,30 @@ orchestrates explicit resolver builds:
 ```
 
 The main shell target resolves the `shell` package into `local-binaries`; it
-does not invoke the image recipe directly or source-build fbDOOM first. On a
-cache or index miss, that package's source recipe anonymously provisions the
-immutable `homebrew-tap-core` commit declared in `build.toml`, verifies the
-reviewed Brewfile and migration lock, and composes exclusively from public
-bottles. `./run.sh --fetch-only build shell-vfs` keeps the stricter consumer
-contract and refuses that source fallback.
+does not invoke the image recipe or fbDOOM build directly. During ABI 42
+activation, its complete direct dependency contract is declared once in
+`homebrew/source-rootfs-shell-dependencies.json` and checked against the package
+manifest. The resolver may fetch the checksum-pinned upstream sources declared
+by those packages; the image composer itself consumes only resolver-owned
+outputs and has no tap, bottle-registry, binary-mirror, or ambient network
+fallback. Bash is materialized into its existing `/bin/bash` and
+`/usr/bin/bash` hardlink identity because every shell boot needs it; rootfs
+utilities and the extended shell tools remain lazy. Vim and NetHack retain
+package-owned, integrity-bound lazy archive trees. This temporary bridge
+prevents pull-request-built bottles from being relabeled as main-built through
+Git ancestry alone. The bottle-only recipe returns after every final bottle
+has been rebuilt from an actual default-branch `main` checkout.
+`./run.sh --fetch-only build shell-vfs` keeps the stricter consumer contract
+and refuses source fallback.
+
+Required shell CI and Pages deployment do not bypass that temporary recipe.
+The main-shell gate force-builds every buildable node in the current shell
+closure and verifies the same installed bytes in Node and Chromium. Its sealed
+browser proof runs eager Bash, a rootfs-owned lazy `grep`, extended lazy
+`less`, and integrity-bound Vim and NetHack archive entries. Pages builds the
+current sysroot and exact source closure, assembles the real product tree, then
+boots that sealed `/kandelo/` tree before deployment. The dormant bottle
+candidate is not selected again until exact-main bottles exist.
 
 ### Adding a new VFS image
 

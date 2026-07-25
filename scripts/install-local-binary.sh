@@ -461,6 +461,9 @@ install_local_binary() {
     if ! wasm_require_no_legacy_asyncify "$src"; then
         return 1
     fi
+    if ! wasm_require_approved_reserved_env_imports "$src"; then
+        return 1
+    fi
     case "$declared_policy" in
         auto)
             if wasm_imports_kernel_fork "$src" && ! wasm_has_complete_fork_instrumentation "$src"; then

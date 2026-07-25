@@ -3,6 +3,8 @@ inputs = [
   "packages/registry/rootfs/build-rootfs-package.sh",
   "scripts/build-rootfs.sh",
   "scripts/generate-rootfs-package-manifest.mjs",
+  "package.json",
+  "package-lock.json",
   "MANIFEST",
   "images/rootfs",
   "tools/mkrootfs/bin/mkrootfs.mjs",
@@ -25,7 +27,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 8
+revision    = 9
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

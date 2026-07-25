@@ -25,6 +25,46 @@ wasm_require_no_legacy_asyncify() {
     fi
 }
 
+# Reject unresolved imports in Kandelo's reserved libc/host namespace unless
+# the host deliberately implements that exact API. The SDK linker permits
+# undefined symbols so packages can retain real host/kernel imports. Without
+# this boundary, an up-to-date glue object linked against a stale sysroot can
+# turn a private libc helper into an env import; the generic host stub then
+# lets the program instantiate and traps only when the helper is called.
+wasm_require_approved_reserved_env_imports() {
+    local path="${1:-}"
+    wasm_is_binary "$path" || return 0
+    if ! command -v wasm-objdump >/dev/null 2>&1; then
+        echo "ERROR: cannot inspect reserved Wasm imports without wasm-objdump: $path" >&2
+        return 1
+    fi
+
+    local rejected
+    if ! rejected="$(
+        _wasm_stream_awk '
+            / <- env\.__wasm_posix_/ {
+                identity = $0
+                sub(/^.* <- /, "", identity)
+                # This timer callback is an intentional host API used by PHP.
+                if (identity == "env.__wasm_posix_vm_interrupt_after" &&
+                    $0 ~ /^ - func\[/) next
+                print identity
+            }
+        ' wasm-objdump -x "$path"
+    )"; then
+        echo "ERROR: cannot inspect reserved Wasm imports: $path" >&2
+        return 1
+    fi
+    if [ -n "$rejected" ]; then
+        echo "ERROR: refusing unapproved reserved Wasm env import(s): $path" >&2
+        while IFS= read -r identity; do
+            [ -n "$identity" ] && echo "       $identity" >&2
+        done <<<"$rejected"
+        echo "       Rebuild the sysroot or explicitly add a host-owned API to the guard." >&2
+        return 1
+    fi
+}
+
 wasm_current_abi_version() {
     local repo_root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
     sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);/\1/p' \

@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Build the canonical rootfs.vfs image from the top-level MANIFEST +
 # images/rootfs/ source tree, using the mkrootfs CLI under tools/mkrootfs/.
-# Output: host/wasm/rootfs.vfs (gitignored — built artifact).
+# Output defaults to host/wasm/rootfs.vfs (gitignored — built artifact).
 #
 # This is a Node.js/TypeScript invocation, not a wasm cross-compile,
 # so it does not need scripts/dev-shell.sh — only `node` and `npx`
@@ -12,22 +12,36 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# mkrootfs depends on the host package (file:../../host) for its VFS
-# writer + fzstd; install both trees if missing.
-if [ ! -d host/node_modules ]; then
-    echo "==> Installing host/ dependencies (needed by mkrootfs)..."
-    (cd host && npm ci --no-audit --no-fund --prefer-offline --silent)
-fi
-if [ ! -d tools/mkrootfs/node_modules ]; then
-    echo "==> Installing tools/mkrootfs/ dependencies..."
-    (cd tools/mkrootfs && npm ci --no-audit --no-fund --prefer-offline --silent)
+# Resolver-owned package builds must be read-only with respect to the source
+# checkout. Their CI callers install the repository's locked JavaScript
+# dependencies before invoking the package resolver.
+if [ "${ROOTFS_SEALED_BUILD:-0}" = "1" ]; then
+    for tool in \
+        node_modules/tsx/dist/cli.mjs \
+        node_modules/fflate \
+        node_modules/fzstd; do
+        [ -e "$tool" ] || {
+            echo "build-rootfs: sealed build requires locked root dependency $tool" >&2
+            exit 2
+        }
+    done
+else
+    # Direct developer builds retain the convenient legacy bootstrap.
+    if [ ! -d host/node_modules ]; then
+        echo "==> Installing host/ dependencies (needed by mkrootfs)..."
+        (cd host && npm ci --no-audit --no-fund --prefer-offline --silent)
+    fi
+    if [ ! -d tools/mkrootfs/node_modules ]; then
+        echo "==> Installing tools/mkrootfs/ dependencies..."
+        (cd tools/mkrootfs && npm ci --no-audit --no-fund --prefer-offline --silent)
+    fi
 fi
 
-OUT="host/wasm/rootfs.vfs"
-PKG_MANIFEST="target/rootfs-packages.MANIFEST"
+OUT="${ROOTFS_OUT:-host/wasm/rootfs.vfs}"
+PKG_MANIFEST="${ROOTFS_PACKAGE_MANIFEST:-target/rootfs-packages.MANIFEST}"
 ROOTFS_SAB_SIZE="${ROOTFS_SAB_SIZE:-16777216}"
 ROOTFS_MAX_SIZE="${ROOTFS_MAX_SIZE:-268435456}"
-ROOTFS_PACKAGES="images/rootfs/PACKAGES.toml"
+ROOTFS_PACKAGES="${ROOTFS_PACKAGES_CONFIG:-images/rootfs/PACKAGES.toml}"
 mkdir -p "$(dirname "$OUT")"
 ABI_VERSION="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' crates/shared/src/lib.rs)"
 if [ -z "$ABI_VERSION" ]; then
@@ -69,10 +83,31 @@ else
 fi
 
 echo "==> Generating rootfs package manifest from $ROOTFS_PACKAGES..."
-node scripts/generate-rootfs-package-manifest.mjs --out "$PKG_MANIFEST"
+generator_args=(
+    --packages "$ROOTFS_PACKAGES"
+    --out "$PKG_MANIFEST"
+)
+if [ "${ROOTFS_STAGE_RESOLVER_BINARIES:-0}" = "1" ]; then
+    [ -n "${ROOTFS_BINARIES_DIR:-}" ] || {
+        echo "build-rootfs: ROOTFS_BINARIES_DIR is required for resolver staging" >&2
+        exit 2
+    }
+    generator_args+=(--stage-resolver-binaries "$ROOTFS_BINARIES_DIR")
+elif [ -n "${ROOTFS_BINARIES_DIR:-}" ]; then
+    generator_args+=(--binaries-dir "$ROOTFS_BINARIES_DIR")
+fi
+node scripts/generate-rootfs-package-manifest.mjs "${generator_args[@]}"
 
 echo "==> Building rootfs.vfs from MANIFEST + images/rootfs/ + packages..."
-node tools/mkrootfs/bin/mkrootfs.mjs build MANIFEST images/rootfs \
+if [ "${ROOTFS_SEALED_BUILD:-0}" = "1" ]; then
+    # WHY: the wrapper uses npx, which is allowed to install missing tools.
+    # Package builds instead execute the already-installed lockfile version so
+    # an undeclared network fetch can never become build authority.
+    mkrootfs=(node node_modules/tsx/dist/cli.mjs tools/mkrootfs/src/index.ts)
+else
+    mkrootfs=(node tools/mkrootfs/bin/mkrootfs.mjs)
+fi
+"${mkrootfs[@]}" build MANIFEST images/rootfs \
     -o "$OUT" \
     --repo-root "$REPO_ROOT" \
     --manifest-fragment "$PKG_MANIFEST" \

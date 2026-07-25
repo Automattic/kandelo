@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "dependencies": [
+    { "name": "rootfs", "version": "0.1.0", "role": "base-image" },
+    { "name": "bash", "version": "5.2.37", "role": "eager-program" },
+    { "name": "fbdoom", "version": "0.1.0", "role": "eager-program" },
+    { "name": "modeset", "version": "0.1.0", "role": "eager-program" },
+    { "name": "less", "version": "668", "role": "lazy-file" },
+    { "name": "tar", "version": "1.35", "role": "lazy-file" },
+    { "name": "curl", "version": "8.11.1", "role": "lazy-file" },
+    { "name": "netcat", "version": "0.7.1", "role": "lazy-file" },
+    { "name": "wget", "version": "1.25.0", "role": "lazy-file" },
+    { "name": "git", "version": "2.47.1", "role": "lazy-file" },
+    { "name": "gzip", "version": "1.13", "role": "lazy-file" },
+    { "name": "bzip2", "version": "1.0.8", "role": "lazy-file" },
+    { "name": "xz", "version": "5.6.2", "role": "lazy-file" },
+    { "name": "zstd", "version": "1.5.6", "role": "lazy-file" },
+    { "name": "zip", "version": "3.0", "role": "lazy-file" },
+    { "name": "unzip", "version": "6.0", "role": "lazy-file" },
+    { "name": "lsof", "version": "0.1.0", "role": "lazy-file" },
+    { "name": "nano", "version": "8.0", "role": "lazy-file" },
+    {
+      "name": "vim-browser-bundle",
+      "version": "9.1.0900",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "nethack-browser-bundle",
+      "version": "3.6.7",
+      "role": "lazy-archive"
+    }
+  ]
+}

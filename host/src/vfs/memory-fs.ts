@@ -3054,10 +3054,11 @@ export class MemoryFileSystem implements FileSystemBackend {
     // stub, symlink, inode mapping, or group. SharedFS resolves `..`, so
     // validating only while registering would allow an archive member to
     // escape its mount prefix or leave partial state after a later failure.
+    const canonicalMountPrefix = normalizeLazyArchiveMountPrefix(mountPrefix);
     const plannedEntries = planLazyArchiveEntries(
       url,
       zipEntries,
-      mountPrefix,
+      canonicalMountPrefix,
       symlinkTargets,
     );
     if (plannedEntries.some(({ entry }) => !entry.isDirectory && !entry.isSymlink)) {
@@ -3081,7 +3082,7 @@ export class MemoryFileSystem implements FileSystemBackend {
         }
         : {}),
       url,
-      mountPrefix,
+      mountPrefix: canonicalMountPrefix,
       integrity: validateLazyArchiveIntegrity(integrity),
       materialized: false,
       entries: new Map(),

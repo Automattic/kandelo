@@ -1,17 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build GNU gawk 5.3.1 for wasm32-posix-kernel.
+# Build GNU gawk 5.3.0 for wasm32-posix-kernel.
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
 # Output: packages/registry/gawk/bin/gawk.wasm
 
-GAWK_VERSION="${GAWK_VERSION:-5.3.1}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/gawk-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/gawk-src"
+BIN_DIR="$WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
+GAWK_VERSION="${WASM_POSIX_DEP_VERSION:-${GAWK_VERSION:-5.3.0}}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/gnu/gawk/gawk-${GAWK_VERSION}.tar.xz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-ca9c16d3d11d0ff8c69d79dc0b47267e1329a69b39b799895604ed447d3ca90b}"
+VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
+SOURCE_MARKER="$SRC_DIR/.kandelo-gawk-source"
+
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -26,16 +39,18 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Download gawk source ---
+# --- Stage verified gawk source ---
+expected_source_marker="$(printf '%s\n%s\n%s' \
+    "$GAWK_VERSION" "$SOURCE_URL" "$SOURCE_SHA256")"
+if [ -d "$SRC_DIR" ] && \
+   [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_source_marker" ]; then
+    rm -rf "$SRC_DIR" "$BIN_DIR"
+fi
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading gawk $GAWK_VERSION..."
-    TARBALL="gawk-${GAWK_VERSION}.tar.xz"
-    URL="https://ftpmirror.gnu.org/gnu/gawk/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
+    echo "==> Staging verified gawk $GAWK_VERSION source..."
+    kandelo_package_stage_verified_source gawk "$SRC_DIR" \
+        "$VERIFIED_SOURCE_DIR" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
+    printf '%s\n' "$expected_source_marker" >"$SOURCE_MARKER"
 fi
 
 cd "$SRC_DIR"
@@ -192,4 +207,4 @@ echo "Binary: $BIN_DIR/gawk.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary gawk "$SCRIPT_DIR/bin/gawk.wasm"
+install_local_binary gawk "$BIN_DIR/gawk.wasm"

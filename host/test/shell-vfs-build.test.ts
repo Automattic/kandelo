@@ -1,10 +1,18 @@
 import { zstdCompressSync } from "node:zlib";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   loadShellBaseFileSystemFromImage,
+  populateShellEnvironment,
   saveShellDerivedVfsImage,
 } from "../../images/vfs/scripts/shell-vfs-build";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
@@ -96,6 +104,39 @@ function expectContentsPreserved(fs: MemoryFileSystem): void {
 }
 
 describe("shell VFS base composition", () => {
+  it("never replaces a missing strict dependency with ambient magic data", () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-strict-shell-resolver-"));
+    const genericArtifact = join(root, "program.wasm");
+    const ambientFileDir = join(root, "ambient-file");
+    mkdirSync(ambientFileDir);
+    writeFileSync(genericArtifact, "fixture");
+    writeFileSync(join(ambientFileDir, "magic.lite"), "ambient magic");
+    const key = "WASM_POSIX_DEP_FILE_DIR";
+    const prior = process.env[key];
+    process.env[key] = ambientFileDir;
+    try {
+      const fs = MemoryFileSystem.create(
+        new SharedArrayBuffer(4 * MiB, { maxByteLength: 16 * MiB }),
+        16 * MiB,
+      );
+      expect(() =>
+        populateShellEnvironment(fs, {
+          eagerBinaries: true,
+          resolveArtifact: (resolverPath) => {
+            if (resolverPath.endsWith("magic.lite")) {
+              throw new Error("declared file dependency omitted magic.lite");
+            }
+            return genericArtifact;
+          },
+        }),
+      ).toThrow("declared file dependency omitted magic.lite");
+    } finally {
+      if (prior === undefined) delete process.env[key];
+      else process.env[key] = prior;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("routes every shell-derived product builder through the headroom gate", () => {
     const scriptsDir = join(import.meta.dirname, "../../images/vfs/scripts");
     const builders = readdirSync(scriptsDir)

@@ -3,10 +3,12 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-if ! command -v wasm-objdump >/dev/null 2>&1; then
-    echo "test-install-local-binary-sealed.sh: missing required tool: wasm-objdump" >&2
-    exit 1
-fi
+for tool in wasm-objdump wat2wasm; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "test-install-local-binary-sealed.sh: missing required tool: $tool" >&2
+        exit 1
+    fi
+done
 
 work="$(mktemp -d)"
 cleanup() {
@@ -26,6 +28,12 @@ cp "$REPO_ROOT/scripts/wasm-artifact-guards.sh" "$fake_repo/scripts/"
 
 # A valid empty Wasm module is enough to exercise the ordinary no-fork policy.
 printf '\000asm\001\000\000\000' > "$source_dir/python.wasm"
+cat >"$work/stale-sysroot.wat" <<'WAT'
+(module
+  (import "env" "__wasm_posix_after_fork_child" (func))
+  (func (export "_start")))
+WAT
+wat2wasm "$work/stale-sysroot.wat" -o "$source_dir/stale-sysroot.wasm"
 printf 'complete runtime tree\n' > "$source_dir/python-runtime.zip"
 binary_sha_before="$(shasum -a 256 "$source_dir/python.wasm" | awk '{print $1}')"
 runtime_sha_before="$(shasum -a 256 "$source_dir/python-runtime.zip" | awk '{print $1}')"
@@ -234,6 +242,29 @@ if (
     echo "test-install-local-binary-sealed.sh: accepted an implicit sealed fork policy" >&2
     exit 1
 fi
+
+# A package may use --allow-undefined for real host APIs, but a private
+# __wasm_posix_* helper left unresolved by a stale sysroot must never enter the
+# resolver cache or a bottle.
+stale_out="$work/stale-output"
+mkdir "$stale_out"
+stale_error="$work/stale-sysroot.error"
+if (
+    source "$fake_repo/scripts/install-local-binary.sh"
+    WASM_POSIX_DEP_OUT_DIR="$stale_out" \
+    WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
+    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
+        install_local_binary cpython "$source_dir/stale-sysroot.wasm"
+) 2>"$stale_error"; then
+    echo "test-install-local-binary-sealed.sh: cached a stale-sysroot import" >&2
+    exit 1
+fi
+grep -F 'env.__wasm_posix_after_fork_child' "$stale_error" >/dev/null || {
+    echo "test-install-local-binary-sealed.sh: stale import was not identified" >&2
+    cat "$stale_error" >&2
+    exit 1
+}
+[ -z "$(find "$stale_out" -mindepth 1 -maxdepth 1 -print -quit)" ]
 
 # Source symlinks are rejected before any destination is touched.
 linked_source="$work/linked-source.wasm"
