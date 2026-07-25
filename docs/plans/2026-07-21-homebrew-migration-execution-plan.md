@@ -69,7 +69,10 @@ builds, or require absent successor GHCR tags; Formulae in the other two sets
 must remain byte-for-byte unchanged. This permits a shell-first campaign to
 rebuild Bash while reusing its unchanged `libcxx` and `ncurses` bottles and
 deferring unrelated Formulae. No corrected campaign has been initialized or
-dispatched yet.
+dispatched yet. Core-tap PR #110 then landed at
+`e747f724efc63c81af453eeada3b7f1453726058`; campaign initialization now also
+rejects a reused Formula unless its package-owned sidecar and every required
+architecture bottle already identify the target ABI.
 
 The corrected tap inventory contains 63 Formulae and 70
 architecture-specific bottle objects. Of those, 44 Formulae/50 objects already
