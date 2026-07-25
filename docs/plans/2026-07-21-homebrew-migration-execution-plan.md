@@ -13,6 +13,54 @@ goal merely because it is not part of the next pull request. A goal leaves this
 plan only when it is completed with evidence or explicitly superseded with the
 replacement decision recorded in the disposition log.
 
+## Active Artifact-Reuse Correction (2026-07-25)
+
+Do not initialize the planned 63-Formula fresh rebuild campaign until this
+checkpoint is resolved. The exact-current-main producer policy described later
+in this document is intentionally preserved as historical context, but its
+requirement that every reusable archive and bottle be rebuilt at the current
+`main` tip is superseded by the following contract:
+
+- `built_from` is immutable provenance. It records the source and tap commits
+  that actually produced an artifact and must not be rewritten to make an old
+  artifact appear newly built.
+- A compatible kernel or host-runtime implementation change rebuilds the
+  kernel/runtime and revalidates existing bottles. It does not change bottle
+  payload identity by itself.
+- Rebuild selection follows the package's real payload closure: Formula or
+  package recipe, upstream source, target architecture, ABI identity,
+  libc/sysroot/SDK inputs, applicable fork-instrumenter inputs, and the payload
+  identities of build dependencies. Only changed roots and their affected
+  payload dependents rebuild.
+- Archive construction, workflow transport, provenance stamping, and current
+  validation are separate from payload identity. Changes confined to those
+  envelope/orchestration layers may require repackaging or new validation
+  evidence, but not source recompilation.
+- A digest-bound `validated_against_main` receipt records the exact merged
+  Kandelo commit, ABI contract evidence, artifact digest, payload identity, and
+  Node/browser/runtime checks used to accept unchanged bytes. It supplements
+  rather than replaces `built_from`.
+- Draft-ABI artifacts are reusable across kernel commits while the structural
+  and semantic ABI contract and payload closure are unchanged. An incompatible
+  structural or semantic change is a new ABI identity even if a developer
+  initially intended to keep the same draft number.
+- VFS images are recomposed only when their selected bottle set, bottle bytes,
+  lazy-tree metadata, or VFS format/policy changes. Revalidating the same
+  bottles against a compatible kernel does not by itself require new bottle
+  bytes.
+
+The audit that triggered this correction compared the ABI-42 bottle producer
+`d3805721b887a19382ef1c96b576fc27badc0951` and package producer
+`437fde2524ea6ad9c44933f8abbf995a46841009` with the current #1097 candidate.
+Both producer commits are ancestors of current `main`; `ABI_VERSION`,
+`abi/snapshot.json`, libc, musl, and SDK inputs are unchanged. The package
+cache currently hashes `.github/actions/package-archive-build`, so a
+provenance-stamping-only action edit makes 77 of 78 package cache identities
+look stale without demonstrating changed payload bytes. The fork instrumenter
+did change, so fork-instrumented outputs remain a legitimate targeted rebuild
+set. Quantify the complete reuse/rebuild/missing inventory before creating any
+new immutable GHCR identities.
+
 ## Source Plans And Preservation Rule
 
 This plan reconciles, rather than silently replaces, the earlier Homebrew work:
