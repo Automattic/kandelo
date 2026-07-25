@@ -4022,7 +4022,7 @@ fn allocate_plain_catch_state(
             body_seq: *body_seq,
             active_arm: module.locals.add(ValType::I32),
             arms: arms
-                        .iter()
+                .iter()
                 .cloned()
                 .map(|arm| {
                     let operand_locals = arm
@@ -4031,9 +4031,9 @@ fn allocate_plain_catch_state(
                         .map(|&ty| module.locals.add(ty))
                         .collect();
                     PlainCatchArmState {
-                    arm,
+                        arm,
                         operand_locals,
-            }
+                    }
                 })
                 .collect(),
         })
@@ -4578,9 +4578,9 @@ fn apply_plain_catch_handlers(
             };
             let (parent, tt) = match find_try_table_parent_seq(local, local.entry_block(), body_seq)
             {
-                    Some(v) => v,
-                    None => continue,
-                };
+                Some(v) => v,
+                None => continue,
+            };
             (parent, tt.catches.clone(), local.block(body_seq).ty)
         };
 
@@ -4813,21 +4813,21 @@ fn emit_capture_save_and_branch(
     //    the stack with the LAST one on top — so we spill in reverse
     //    declaration order: spills[M-1] first, then [M-2], ..., [0].
     for i in (0..arm.operand_locals.len()).rev() {
-    push_instr(
-        s,
+        push_instr(
+            s,
             Instr::LocalSet(LocalSet {
                 local: arm.operand_locals[i],
-        }),
-    );
+            }),
+        );
     }
 
     // 2. Record which arm owns the operand locals for this activation.
-        push_instr(
-            s,
+    push_instr(
+        s,
         Instr::Const(Const {
             value: Value::I32(arm.arm.arm_idx as i32),
-            }),
-        );
+        }),
+    );
     push_instr(s, Instr::LocalSet(LocalSet { local: active_arm }));
 
     // 3. Set flags.
