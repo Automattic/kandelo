@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 function sharedMemory(): WebAssembly.Memory {
   return new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
@@ -277,7 +278,6 @@ function sysvHarness() {
         kernel_validate_task: validateTask,
       },
     },
-    scratchOffset: 0,
     processes,
     sharedMappings: new Map(),
     anonymousSharedBackings: new Map(),
@@ -287,6 +287,10 @@ function sysvHarness() {
     ]),
     shmSegmentVersions: new Map([[segId, 0]]),
   }) as CentralizedKernelWorker;
+  installKernelWorkerTestScratch(
+    kw as unknown as Record<string, unknown>,
+    kernelMemory,
+  );
   return {
     kw,
     mapAddr,

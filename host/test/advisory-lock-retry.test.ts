@@ -7,6 +7,7 @@ import {
   PROCESS_STATE_RUNNING,
 } from "../src/generated/abi";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 const EAGAIN = 11;
 const EINTR = 4;
@@ -71,6 +72,7 @@ describe("Rust-owned advisory-lock retry scheduling", () => {
     });
     const worker = createWorker({ kernel_drain_wakeup_events: drain });
     worker.kernelMemory = kernelMemory;
+    installKernelWorkerTestScratch(worker, kernelMemory);
     worker.processes = new Map([[channel.pid, {
       channels: [channel],
       memory: processMemory,
@@ -392,6 +394,7 @@ function createFcntlHarness(
     kernel_dequeue_signal: vi.fn(() => caughtSignal),
   });
   worker.kernelMemory = kernelMemory;
+  installKernelWorkerTestScratch(worker, kernelMemory);
   worker.processes = new Map([[channel.pid, {
     channels: [channel],
     memory: processMemory,
@@ -402,7 +405,8 @@ function createFcntlHarness(
 }
 
 function createWorker(exports: Record<string, unknown>): any {
-  return Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+  const kernelMemory = createSharedMemory();
+  const worker = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
     kernel: { toKernelPtr: (value: number | bigint) => value },
     kernelInstance: {
       exports: {
@@ -412,11 +416,13 @@ function createWorker(exports: Record<string, unknown>): any {
         ...exports,
       },
     },
-    scratchOffset: 128,
+    kernelMemory,
     processes: new Map(),
     channelTids: new Map(),
     hostReaped: new Set(),
   });
+  installKernelWorkerTestScratch(worker, kernelMemory);
+  return worker;
 }
 
 function createSharedMemory(): WebAssembly.Memory {

@@ -8,7 +8,10 @@ import {
   CH_DATA_SIZE,
   CH_TOTAL_SIZE,
   HOST_INTERCEPTED_SYSCALLS,
+  POSIX_PATH_MAX_BYTES,
+  SPAWN_WIRE_HEADER_BYTES,
 } from "../src/generated/abi";
+import { allocateKernelScratchRegion } from "../src/kernel-scratch";
 
 const E2BIG = 7;
 const EFAULT = 14;
@@ -18,6 +21,219 @@ const ENOMEM = 12;
 const ENAMETOOLONG = 36;
 
 describe("SYS_SPAWN blob transport", () => {
+  it("reports the Rust-owned retained capacity losslessly", () => {
+    const worker = createWorker({
+      kernelInstance: {
+        exports: {
+          kernel_spawn_scratch_capacity: vi.fn(() => 84_386n),
+        },
+      },
+    });
+
+    expect(worker.getSpawnScratchCapacity()).toBe(84_386);
+  });
+
+  it("grows one Rust-owned reservation to the requested high-water mark", () => {
+    const firstBlob = new Uint8Array(CH_TOTAL_SIZE + 1024).fill(0x31);
+    const reusedBlob = new Uint8Array(firstBlob.byteLength + 512).fill(0x32);
+    const grownBlob = new Uint8Array(firstBlob.byteLength + 4096).fill(0x33);
+    const firstPointer = 2 * CH_TOTAL_SIZE;
+    const grownPointer = firstPointer + firstBlob.byteLength + 8192;
+    const kernelMemory = new WebAssembly.Memory({
+      initial: 8,
+      maximum: 8,
+    });
+    let reservationPointer = firstPointer;
+    let reservationCapacity = reusedBlob.byteLength;
+    const reserveSpawnScratch = vi.fn((minimum: number) => {
+      if (minimum > reservationCapacity) {
+        reservationPointer = grownPointer;
+        reservationCapacity = minimum;
+      }
+      return reservationPointer;
+    });
+    const spawnScratchCapacity = vi.fn(() => reservationCapacity);
+    const fixedAllocator = vi.fn();
+    const kernelSpawn = vi.fn((
+      _parentPid: number,
+      _callerTid: number,
+      pointer: number,
+      length: number,
+    ) => {
+      expect(
+        new Uint8Array(kernelMemory.buffer).slice(pointer, pointer + length),
+      ).toEqual(
+        length === firstBlob.byteLength
+          ? firstBlob
+          : length === reusedBlob.byteLength
+          ? reusedBlob
+          : grownBlob,
+      );
+      return 42;
+    });
+    const worker = createWorker({
+      callbacks: { onSpawn: vi.fn(() => new Promise<number>(() => {})) },
+      kernelMemory,
+      scratchPointer: 1024,
+      kernelInstance: {
+        exports: {
+          kernel_alloc_scratch: fixedAllocator,
+          kernel_spawn_scratch_reserve: reserveSpawnScratch,
+          kernel_spawn_scratch_capacity: spawnScratchCapacity,
+          kernel_spawn_process: kernelSpawn,
+        },
+      },
+    });
+    const invoke = (blob: Uint8Array) => worker.handleSpawnAfterResolve(
+      createChannel(7, sharedMemoryFor(65_536)),
+      [0, 0, 0, blob.byteLength, 0, 0],
+      7,
+      7,
+      0,
+      blob,
+      blob.byteLength,
+      resolvedProgram(),
+      [],
+    );
+
+    invoke(firstBlob);
+    expect(reserveSpawnScratch).toHaveBeenCalledWith(firstBlob.byteLength);
+    expect(kernelSpawn).toHaveBeenLastCalledWith(
+      7,
+      7,
+      firstPointer,
+      firstBlob.byteLength,
+    );
+
+    invoke(reusedBlob);
+    expect(reserveSpawnScratch).toHaveBeenCalledOnce();
+    expect(kernelSpawn).toHaveBeenLastCalledWith(
+      7,
+      7,
+      firstPointer,
+      reusedBlob.byteLength,
+    );
+
+    invoke(grownBlob);
+    expect(reserveSpawnScratch).toHaveBeenCalledTimes(2);
+    expect(reserveSpawnScratch).toHaveBeenLastCalledWith(grownBlob.byteLength);
+    expect(kernelSpawn).toHaveBeenLastCalledWith(
+      7,
+      7,
+      grownPointer,
+      grownBlob.byteLength,
+    );
+    expect(fixedAllocator).not.toHaveBeenCalled();
+  });
+
+  it("preserves a lossless wasm64 reservation pointer and capacity", () => {
+    const blob = new Uint8Array(CH_TOTAL_SIZE + 1).fill(0x4a);
+    const pointer = 8192n;
+    const kernelMemory = new WebAssembly.Memory({ initial: 4, maximum: 4 });
+    const reserveSpawnScratch = vi.fn(() => pointer);
+    const kernelSpawn = vi.fn(() => 42);
+    const worker = createWorker({
+      kernel: {
+        toKernelPtr: (value: number | bigint) => BigInt(value),
+        getKernelPtrWidth: () => 8,
+      },
+      callbacks: { onSpawn: vi.fn(() => new Promise<number>(() => {})) },
+      kernelMemory,
+      kernelInstance: {
+        exports: {
+          kernel_spawn_scratch_reserve: reserveSpawnScratch,
+          kernel_spawn_scratch_capacity: vi.fn(() => BigInt(blob.byteLength)),
+          kernel_spawn_process: kernelSpawn,
+        },
+      },
+    });
+
+    worker.handleSpawnAfterResolve(
+      createChannel(7, sharedMemoryFor(65_536)),
+      [0, 0, 0, blob.byteLength, 0, 0],
+      7,
+      7,
+      0,
+      blob,
+      blob.byteLength,
+      resolvedProgram(),
+      [],
+    );
+
+    expect(reserveSpawnScratch).toHaveBeenCalledWith(BigInt(blob.byteLength));
+    expect(kernelSpawn).toHaveBeenCalledWith(
+      7,
+      7,
+      pointer,
+      BigInt(blob.byteLength),
+    );
+  });
+
+  it.each([
+    {
+      name: "allocator failure",
+      pointer: 0,
+      capacity: CH_TOTAL_SIZE + 1,
+      errno: ENOMEM,
+    },
+    {
+      name: "capacity below the request",
+      pointer: 4096,
+      capacity: CH_TOTAL_SIZE,
+      errno: EIO,
+    },
+    {
+      name: "range beyond kernel memory",
+      pointer: 65_536,
+      capacity: CH_TOTAL_SIZE + 1,
+      errno: EIO,
+    },
+  ])("rejects a growable reservation with $name", ({
+    pointer,
+    capacity,
+    errno,
+  }) => {
+    const blob = new Uint8Array(CH_TOTAL_SIZE + 1);
+    const completeChannel = vi.fn();
+    const kernelSpawn = vi.fn();
+    const worker = createWorker({
+      callbacks: { onSpawn: vi.fn() },
+      completeChannel,
+      kernelMemory: new WebAssembly.Memory({ initial: 2, maximum: 2 }),
+      kernelInstance: {
+        exports: {
+          kernel_spawn_scratch_reserve: vi.fn(() => pointer),
+          kernel_spawn_scratch_capacity: vi.fn(() => capacity),
+          kernel_spawn_process: kernelSpawn,
+        },
+      },
+    });
+    const channel = createChannel(7, sharedMemoryFor(65_536));
+    const args = [0, 0, 0, blob.byteLength, 0, 0];
+
+    worker.handleSpawnAfterResolve(
+      channel,
+      args,
+      7,
+      7,
+      0,
+      blob,
+      blob.byteLength,
+      resolvedProgram(),
+      [],
+    );
+
+    expect(kernelSpawn).not.toHaveBeenCalled();
+    expect(completeChannel).toHaveBeenCalledWith(
+      channel,
+      HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN,
+      args,
+      undefined,
+      -1,
+      errno,
+    );
+  });
+
   it("uses one reusable kernel-owned buffer for blobs larger than a syscall channel", async () => {
     const parentPid = 7;
     const childPid = 42;
@@ -37,10 +253,16 @@ describe("SYS_SPAWN blob transport", () => {
     processBytes.set(path, pathPtr);
     processBytes.set(blob, blobPtr);
 
-    const kernelMemory = new WebAssembly.Memory({ initial: 8, maximum: 8 });
-    const kernelBytes = new Uint8Array(kernelMemory.buffer);
     const generalScratchOffset = 1024;
     const largeScratchOffset = 2 * CH_TOTAL_SIZE;
+    const kernelPages = Math.ceil(
+      (largeScratchOffset + SPAWN_BLOB_MAX_BYTES) / 65_536,
+    );
+    const kernelMemory = new WebAssembly.Memory({
+      initial: kernelPages,
+      maximum: kernelPages,
+    });
+    const kernelBytes = new Uint8Array(kernelMemory.buffer);
     kernelBytes.fill(
       0xa5,
       generalScratchOffset,
@@ -74,8 +296,7 @@ describe("SYS_SPAWN blob transport", () => {
         { channels: [channel], memory: processMemory, ptrWidth: 4 },
       ]]),
       kernelMemory,
-      scratchOffset: generalScratchOffset,
-      largeSpawnScratchOffset: 0,
+      scratchPointer: generalScratchOffset,
       kernelInstance: {
         exports: {
           kernel_alloc_scratch: allocScratch,
@@ -130,13 +351,13 @@ describe("SYS_SPAWN blob transport", () => {
   it("keeps ordinary spawn blobs in the existing channel-sized scratch", () => {
     const blob = buildSpawnBlob(["child"], ["A=B"]);
     const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
-    const scratchOffset = 1024;
+    const scratchPointer = 1024;
     const allocScratch = vi.fn();
     const kernelSpawn = vi.fn(() => 42);
     const worker = createWorker({
       callbacks: { onSpawn: vi.fn(() => new Promise<number>(() => {})) },
       kernelMemory,
-      scratchOffset,
+      scratchPointer,
       kernelInstance: {
         exports: {
           kernel_alloc_scratch: allocScratch,
@@ -161,13 +382,13 @@ describe("SYS_SPAWN blob transport", () => {
     expect(kernelSpawn).toHaveBeenCalledWith(
       7,
       7,
-      scratchOffset,
+      scratchPointer,
       blob.byteLength,
     );
     expect(
       new Uint8Array(kernelMemory.buffer).slice(
-        scratchOffset,
-        scratchOffset + blob.byteLength,
+        scratchPointer,
+        scratchPointer + blob.byteLength,
       ),
     ).toEqual(blob);
   });
@@ -191,14 +412,19 @@ describe("SYS_SPAWN blob transport", () => {
     expectedAllocations,
   }) => {
     const blob = new Uint8Array(blobLen).fill(0x5a);
-    const kernelMemory = new WebAssembly.Memory({ initial: 4, maximum: 4 });
+    const kernelPages = Math.ceil(
+      (2 * CH_TOTAL_SIZE + SPAWN_BLOB_MAX_BYTES) / 65_536,
+    );
+    const kernelMemory = new WebAssembly.Memory({
+      initial: kernelPages,
+      maximum: kernelPages,
+    });
     const allocScratch = vi.fn(() => 2 * CH_TOTAL_SIZE);
     const kernelSpawn = vi.fn(() => 42);
     const worker = createWorker({
       callbacks: { onSpawn: vi.fn(() => new Promise<number>(() => {})) },
       kernelMemory,
-      scratchOffset: 1024,
-      largeSpawnScratchOffset: 0,
+      scratchPointer: 1024,
       kernelInstance: {
         exports: {
           kernel_alloc_scratch: allocScratch,
@@ -241,8 +467,6 @@ describe("SYS_SPAWN blob transport", () => {
     const worker = createWorker({
       callbacks: { onSpawn: vi.fn(() => new Promise<number>(() => {})) },
       kernelMemory,
-      scratchOffset: 0,
-      largeSpawnScratchOffset: 0,
       kernelInstance: {
         exports: {
           kernel_alloc_scratch: vi.fn(() => largeScratchOffset),
@@ -279,7 +503,7 @@ describe("SYS_SPAWN blob transport", () => {
       callbacks: { onSpawn: vi.fn() },
       completeChannel,
       kernelMemory: new WebAssembly.Memory({ initial: 2, maximum: 2 }),
-      scratchOffset: 1024,
+      scratchPointer: 1024,
       kernelInstance: {
         exports: {
           kernel_alloc_scratch: vi.fn(() => 0),
@@ -318,16 +542,17 @@ describe("SYS_SPAWN blob transport", () => {
     const completeChannel = vi.fn();
     const kernelSpawn = vi.fn();
     const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+    const fixedAllocator = vi.fn(
+      () => kernelMemory.buffer.byteLength - blob.byteLength + 1,
+    );
     const worker = createWorker({
       callbacks: { onSpawn: vi.fn() },
       completeChannel,
       kernelMemory,
-      scratchOffset: 1024,
+      scratchPointer: 1024,
       kernelInstance: {
         exports: {
-          kernel_alloc_scratch: vi.fn(
-            () => kernelMemory.buffer.byteLength - blob.byteLength + 1,
-          ),
+          kernel_alloc_scratch: fixedAllocator,
           kernel_spawn_process: kernelSpawn,
         },
       },
@@ -356,6 +581,30 @@ describe("SYS_SPAWN blob transport", () => {
       -1,
       EIO,
     );
+
+    completeChannel.mockClear();
+    worker.handleSpawnAfterResolve(
+      channel,
+      args,
+      7,
+      7,
+      0,
+      blob,
+      blob.byteLength,
+      resolvedProgram(),
+      [],
+    );
+
+    expect(fixedAllocator).toHaveBeenCalledOnce();
+    expect(kernelSpawn).not.toHaveBeenCalled();
+    expect(completeChannel).toHaveBeenCalledWith(
+      channel,
+      HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN,
+      args,
+      undefined,
+      -1,
+      EIO,
+    );
   });
 
   it.each([
@@ -365,7 +614,19 @@ describe("SYS_SPAWN blob transport", () => {
         memoryBytes - 2,
         4,
         256,
-        40,
+        SPAWN_WIRE_HEADER_BYTES,
+        128,
+        0,
+      ],
+      errno: EFAULT,
+    },
+    {
+      name: "null positive-length path",
+      args: (_memoryBytes: number) => [
+        0,
+        1,
+        256,
+        SPAWN_WIRE_HEADER_BYTES,
         128,
         0,
       ],
@@ -373,17 +634,38 @@ describe("SYS_SPAWN blob transport", () => {
     },
     {
       name: "blob range",
-      args: (memoryBytes: number) => [64, 4, memoryBytes - 8, 40, 128, 0],
+      args: (memoryBytes: number) => [
+        64,
+        4,
+        memoryBytes - 8,
+        SPAWN_WIRE_HEADER_BYTES,
+        128,
+        0,
+      ],
       errno: EFAULT,
     },
     {
       name: "pid output range",
-      args: (memoryBytes: number) => [64, 4, 256, 40, memoryBytes - 2, 0],
+      args: (memoryBytes: number) => [
+        64,
+        4,
+        256,
+        SPAWN_WIRE_HEADER_BYTES,
+        memoryBytes - 2,
+        0,
+      ],
       errno: EFAULT,
     },
     {
       name: "fractional blob length",
-      args: (_memoryBytes: number) => [64, 4, 256, 40.5, 128, 0],
+      args: (_memoryBytes: number) => [
+        64,
+        4,
+        256,
+        SPAWN_WIRE_HEADER_BYTES + 0.5,
+        128,
+        0,
+      ],
       errno: EINVAL,
     },
     {
@@ -393,12 +675,26 @@ describe("SYS_SPAWN blob transport", () => {
     },
     {
       name: "truncated blob header",
-      args: (_memoryBytes: number) => [64, 4, 256, 39, 128, 0],
+      args: (_memoryBytes: number) => [
+        64,
+        4,
+        256,
+        SPAWN_WIRE_HEADER_BYTES - 1,
+        128,
+        0,
+      ],
       errno: EINVAL,
     },
     {
       name: "PATH_MAX-byte path",
-      args: (_memoryBytes: number) => [64, 4096, 256, 40, 128, 0],
+      args: (_memoryBytes: number) => [
+        64,
+        POSIX_PATH_MAX_BYTES,
+        256,
+        SPAWN_WIRE_HEADER_BYTES,
+        128,
+        0,
+      ],
       errno: ENAMETOOLONG,
     },
   ])("rejects an invalid $name before resolution", ({ args, errno }) => {
@@ -495,8 +791,15 @@ describe("SYS_SPAWN blob transport", () => {
 });
 
 function createWorker(overrides: Record<string, unknown>): any {
+  const {
+    scratchPointer,
+    ...workerOverrides
+  } = overrides as Record<string, unknown> & { scratchPointer?: number };
   const worker = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-    kernel: { toKernelPtr: (value: number | bigint) => Number(value) },
+    kernel: {
+      toKernelPtr: (value: number | bigint) => Number(value),
+      getKernelPtrWidth: () => 4,
+    },
     callbacks: {},
     processes: new Map(),
     channelTids: new Map(),
@@ -507,7 +810,7 @@ function createWorker(overrides: Record<string, unknown>): any {
     tcpListeners: new Map(),
     epollInterests: new Map(),
     completeChannel: vi.fn(),
-    ...overrides,
+    ...workerOverrides,
   });
   const kernelInstance = worker.kernelInstance ?? { exports: {} };
   worker.kernelInstance = {
@@ -517,6 +820,20 @@ function createWorker(overrides: Record<string, unknown>): any {
       ...(kernelInstance.exports ?? {}),
     },
   };
+  if (
+    worker.kernelMemory &&
+    Number.isSafeInteger(scratchPointer) &&
+    scratchPointer! > 0 &&
+    !worker.scratchRegion
+  ) {
+    worker.scratchRegion = allocateKernelScratchRegion(
+      worker.kernelMemory,
+      () => scratchPointer!,
+      CH_TOTAL_SIZE,
+      4,
+      "test kernel syscall scratch",
+    );
+  }
   return worker;
 }
 
@@ -543,7 +860,7 @@ function buildSpawnBlob(argv: readonly string[], envp: readonly string[]): Uint8
   const encoder = new TextEncoder();
   const argvBytes = argv.map((value) => encoder.encode(`${value}\0`));
   const envpBytes = envp.map((value) => encoder.encode(`${value}\0`));
-  const headerBytes = 40;
+  const headerBytes = SPAWN_WIRE_HEADER_BYTES;
   const offsetsBytes = (argv.length + envp.length) * 4;
   const stringsBytes = [...argvBytes, ...envpBytes]
     .reduce((total, value) => total + value.byteLength, 0);

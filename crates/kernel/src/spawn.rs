@@ -7,7 +7,72 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use wasm_posix_shared::Errno;
+use core::cell::UnsafeCell;
+use wasm_posix_shared::{spawn_contract, Errno};
+
+/// Kernel-owned reusable transport for SYS_SPAWN blobs larger than the normal
+/// syscall-channel scratch region.
+///
+/// The host may write only the pointer/capacity pair returned by `reserve`.
+/// Growing may move the allocation, so no caller may retain an older pointer
+/// across a reserve call.
+struct SpawnScratchBuffer {
+    bytes: Vec<u8>,
+}
+
+impl SpawnScratchBuffer {
+    const fn new() -> Self {
+        Self { bytes: Vec::new() }
+    }
+
+    fn reserve(&mut self, minimum_capacity: usize) -> Result<(usize, usize), Errno> {
+        if minimum_capacity == 0 {
+            return Err(Errno::EINVAL);
+        }
+        if minimum_capacity > spawn_contract::WIRE_MAX_BYTES {
+            return Err(Errno::E2BIG);
+        }
+        if self.bytes.len() < minimum_capacity {
+            self.bytes
+                .try_reserve_exact(minimum_capacity - self.bytes.len())
+                .map_err(|_| Errno::ENOMEM)?;
+            // Expose only initialized bytes to the host. `try_reserve_exact`
+            // has already proven this resize cannot allocate or fail.
+            let capacity = self.bytes.capacity();
+            self.bytes.resize(capacity, 0);
+        }
+        Ok((self.bytes.as_mut_ptr() as usize, self.bytes.len()))
+    }
+
+    fn capacity(&self) -> usize {
+        self.bytes.len()
+    }
+}
+
+struct GlobalSpawnScratch(UnsafeCell<SpawnScratchBuffer>);
+
+// SAFETY: the kernel Wasm instance runs in one dedicated worker and all direct
+// export calls are serialized there. In particular, reserve/copy/parse is one
+// synchronous host operation, so the Vec cannot be grown while its bytes are
+// being consumed by `kernel_spawn_process`.
+unsafe impl Sync for GlobalSpawnScratch {}
+
+static SPAWN_SCRATCH: GlobalSpawnScratch =
+    GlobalSpawnScratch(UnsafeCell::new(SpawnScratchBuffer::new()));
+
+/// Reserve a kernel-owned region for a complete spawn blob.
+///
+/// The returned pointer is valid for exactly `spawn_scratch_capacity()` bytes
+/// until the next call that grows this region.
+pub fn reserve_spawn_scratch(minimum_capacity: usize) -> Result<usize, Errno> {
+    let scratch = unsafe { &mut *SPAWN_SCRATCH.0.get() };
+    scratch.reserve(minimum_capacity).map(|(pointer, _)| pointer)
+}
+
+pub fn spawn_scratch_capacity() -> usize {
+    let scratch = unsafe { &*SPAWN_SCRATCH.0.get() };
+    scratch.capacity()
+}
 
 /// Bit flags from `posix_spawnattr_t::__flags`. Values match POSIX / musl
 /// (`libc/musl/include/spawn.h`):
@@ -91,12 +156,12 @@ pub enum FileAction {
 // Wire format (little-endian, from
 // `docs/plans/2026-05-04-non-forking-posix-spawn-design.md` Section 1):
 //
-//   header (40 bytes):
+//   header (`spawn_contract::WIRE_HEADER_BYTES`):
 //       argc:u32  envc:u32  n_actions:u32  attr_flags:u32
 //       pgrp:i32  _pad:u32  sigdef:u64     sigmask:u64
 //   argv_offsets:    u32 × argc                (offsets into strings[])
 //   envp_offsets:    u32 × envc
-//   actions:         action_record × n_actions (28 bytes each)
+//   actions:         action_record × n_actions
 //   strings:         u8[]                       (null-terminated entries)
 //
 // `action_record = { op:u32, fd:i32, newfd:i32, path_off:u32, path_len:u32,
@@ -113,9 +178,6 @@ pub mod fdop {
     pub const CHDIR: u32 = 3;
     pub const FCHDIR: u32 = 4;
 }
-
-const HEADER_LEN: usize = 40;
-const ACTION_RECORD_LEN: usize = 28;
 
 /// Parsed view over a SYS_SPAWN blob. argv/envp/path bytes are owned (copied
 /// out of the blob) so the caller is free to drop the underlying buffer
@@ -160,13 +222,22 @@ fn read_string(strings: &[u8], off: u32, len: u32) -> Result<Vec<u8>, Errno> {
     } else {
         raw
     };
+    if trimmed.len() >= spawn_contract::POSIX_PATH_MAX_BYTES {
+        return Err(Errno::ENAMETOOLONG);
+    }
+    if trimmed.contains(&0) {
+        return Err(Errno::EINVAL);
+    }
     Ok(trimmed.to_vec())
 }
 
 /// Parse a SYS_SPAWN blob. Bails with `Errno::EINVAL` on any malformed
 /// offset, length, or op code.
 pub fn parse_blob(bytes: &[u8]) -> Result<ParsedBlob, Errno> {
-    if bytes.len() < HEADER_LEN {
+    if bytes.len() > spawn_contract::WIRE_MAX_BYTES {
+        return Err(Errno::E2BIG);
+    }
+    if bytes.len() < spawn_contract::WIRE_HEADER_BYTES {
         return Err(Errno::EINVAL);
     }
     let argc = read_u32(bytes, 0)? as usize;
@@ -180,14 +251,14 @@ pub fn parse_blob(bytes: &[u8]) -> Result<ParsedBlob, Errno> {
 
     // Cap counts to avoid pathological allocations on malformed input.
     // Real callers would never approach these limits.
-    const MAX_ARGV: usize = 4096;
-    const MAX_ENVP: usize = 4096;
-    const MAX_ACTIONS: usize = 1024;
-    if argc > MAX_ARGV || envc > MAX_ENVP || n_actions > MAX_ACTIONS {
+    if argc > spawn_contract::MAX_ARGV_COUNT
+        || envc > spawn_contract::MAX_ENVP_COUNT
+        || n_actions > spawn_contract::MAX_ACTION_COUNT
+    {
         return Err(Errno::EINVAL);
     }
 
-    let mut cursor = HEADER_LEN;
+    let mut cursor = spawn_contract::WIRE_HEADER_BYTES;
 
     // Argv offsets table.
     let argv_offsets_size = argc.checked_mul(4).ok_or(Errno::EINVAL)?;
@@ -211,7 +282,7 @@ pub fn parse_blob(bytes: &[u8]) -> Result<ParsedBlob, Errno> {
 
     // Action records.
     let actions_size = n_actions
-        .checked_mul(ACTION_RECORD_LEN)
+        .checked_mul(spawn_contract::WIRE_ACTION_RECORD_BYTES)
         .ok_or(Errno::EINVAL)?;
     let actions_end = cursor.checked_add(actions_size).ok_or(Errno::EINVAL)?;
     let actions_bytes = bytes.get(cursor..actions_end).ok_or(Errno::EINVAL)?;
@@ -226,11 +297,30 @@ pub fn parse_blob(bytes: &[u8]) -> Result<ParsedBlob, Errno> {
     // a malformed blob can't read past the end.
     let argv = decode_strings_by_offset(&argv_offsets, strings)?;
     let envp = decode_strings_by_offset(&envp_offsets, strings)?;
+    // ARG_MAX accounts for the source pointer arrays as well as the string
+    // bytes. Four-byte pointers are the smaller supported representation, so
+    // this rejects a blob that could not have been valid on either wasm32 or
+    // wasm64 while leaving the host's source-width check authoritative.
+    let pointer_bytes = argc
+        .checked_add(envc)
+        .and_then(|count| count.checked_add(2))
+        .and_then(|count| count.checked_mul(4))
+        .ok_or(Errno::E2BIG)?;
+    let represented_bytes = argv
+        .iter()
+        .chain(envp.iter())
+        .try_fold(pointer_bytes, |total, value| {
+            total.checked_add(value.len()).and_then(|n| n.checked_add(1))
+        })
+        .ok_or(Errno::E2BIG)?;
+    if represented_bytes > spawn_contract::POSIX_ARG_MAX_BYTES {
+        return Err(Errno::E2BIG);
+    }
 
     // Decode action records.
     let mut file_actions: Vec<FileAction> = Vec::with_capacity(n_actions);
     for i in 0..n_actions {
-        let base = i * ACTION_RECORD_LEN;
+        let base = i * spawn_contract::WIRE_ACTION_RECORD_BYTES;
         let op = read_u32(actions_bytes, base)?;
         let fd = read_i32(actions_bytes, base + 4)?;
         let newfd = read_i32(actions_bytes, base + 8)?;
@@ -293,6 +383,33 @@ fn decode_strings_by_offset(offsets: &[u32], strings: &[u8]) -> Result<Vec<Vec<u
 #[cfg(test)]
 mod parser_tests {
     use super::*;
+
+    #[test]
+    fn growable_scratch_reports_owned_capacity_and_reuses_or_replaces_safely() {
+        let mut scratch = SpawnScratchBuffer::new();
+        assert_eq!(scratch.reserve(0), Err(Errno::EINVAL));
+        assert_eq!(
+            scratch.reserve(spawn_contract::WIRE_MAX_BYTES + 1),
+            Err(Errno::E2BIG)
+        );
+
+        let (first_pointer, first_capacity) =
+            scratch.reserve(84 * 1024).expect("first reserve");
+        assert_ne!(first_pointer, 0);
+        assert!(first_capacity >= 84 * 1024);
+        assert_eq!(scratch.capacity(), first_capacity);
+
+        let (reused_pointer, reused_capacity) =
+            scratch.reserve(80 * 1024).expect("reuse");
+        assert_eq!(reused_pointer, first_pointer);
+        assert_eq!(reused_capacity, first_capacity);
+
+        let (grown_pointer, grown_capacity) =
+            scratch.reserve(first_capacity + 1).expect("grow");
+        assert_ne!(grown_pointer, 0);
+        assert!(grown_capacity > first_capacity);
+        assert_eq!(scratch.capacity(), grown_capacity);
+    }
 
     /// Build a well-formed blob with a single argv entry, a single envp
     /// entry, one Close action, and SETPGROUP attrs. Used to anchor the
@@ -402,7 +519,10 @@ mod parser_tests {
         blob.extend_from_slice(&0u64.to_le_bytes()); // sigdef
         blob.extend_from_slice(&0u64.to_le_bytes()); // sigmask
         blob.extend_from_slice(&99u32.to_le_bytes()); // op = 99 (unknown)
-        blob.extend_from_slice(&[0u8; ACTION_RECORD_LEN - 4]);
+        blob.extend_from_slice(&[
+            0u8;
+            spawn_contract::WIRE_ACTION_RECORD_BYTES - 4
+        ]);
         assert!(matches!(parse_blob(&blob), Err(Errno::EINVAL)));
     }
 
@@ -413,7 +533,106 @@ mod parser_tests {
         blob.extend_from_slice(&u32::MAX.to_le_bytes());
         blob.extend_from_slice(&0u32.to_le_bytes());
         blob.extend_from_slice(&0u32.to_le_bytes());
-        blob.extend_from_slice(&[0u8; 28]);
+        blob.extend_from_slice(&[
+            0u8;
+            spawn_contract::WIRE_HEADER_BYTES - 12
+        ]);
         assert!(matches!(parse_blob(&blob), Err(Errno::EINVAL)));
+    }
+
+    fn header(argc: u32, envc: u32, n_actions: u32) -> Vec<u8> {
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&argc.to_le_bytes());
+        blob.extend_from_slice(&envc.to_le_bytes());
+        blob.extend_from_slice(&n_actions.to_le_bytes());
+        blob.extend_from_slice(&[0u8; spawn_contract::WIRE_HEADER_BYTES - 12]);
+        blob
+    }
+
+    #[test]
+    fn parse_blob_rejects_each_count_at_limit_plus_one() {
+        for (argc, envc, n_actions) in [
+            ((spawn_contract::MAX_ARGV_COUNT + 1) as u32, 0, 0),
+            (0, (spawn_contract::MAX_ENVP_COUNT + 1) as u32, 0),
+            (0, 0, (spawn_contract::MAX_ACTION_COUNT + 1) as u32),
+        ] {
+            assert!(matches!(
+                parse_blob(&header(argc, envc, n_actions)),
+                Err(Errno::EINVAL)
+            ));
+        }
+    }
+
+    #[test]
+    fn parse_blob_rejects_truncated_tables_at_each_exact_count_cap() {
+        for (argc, envc, n_actions) in [
+            (spawn_contract::MAX_ARGV_COUNT as u32, 0, 0),
+            (0, spawn_contract::MAX_ENVP_COUNT as u32, 0),
+            (0, 0, spawn_contract::MAX_ACTION_COUNT as u32),
+        ] {
+            assert!(matches!(
+                parse_blob(&header(argc, envc, n_actions)),
+                Err(Errno::EINVAL)
+            ));
+        }
+    }
+
+    #[test]
+    fn parse_blob_accepts_exact_arg_max_and_rejects_arg_max_plus_one() {
+        // One argv pointer, its terminator, and the envp terminator consume
+        // twelve bytes of the wasm32 source representation.
+        let string_bytes = spawn_contract::POSIX_ARG_MAX_BYTES - 12;
+        let mut exact = header(1, 0, 0);
+        exact.extend_from_slice(&0u32.to_le_bytes());
+        exact.extend(core::iter::repeat_n(b'a', string_bytes - 1));
+        exact.push(0);
+        assert!(parse_blob(&exact).is_ok());
+
+        let mut oversized = exact;
+        oversized.insert(oversized.len() - 1, b'a');
+        assert!(matches!(parse_blob(&oversized), Err(Errno::E2BIG)));
+    }
+
+    #[test]
+    fn parse_blob_bounds_action_paths_by_path_max() {
+        fn action_blob(path_bytes: usize) -> Vec<u8> {
+            let mut blob = header(0, 0, 1);
+            blob.extend_from_slice(&fdop::CHDIR.to_le_bytes());
+            blob.extend_from_slice(&0i32.to_le_bytes());
+            blob.extend_from_slice(&0i32.to_le_bytes());
+            blob.extend_from_slice(&0u32.to_le_bytes());
+            blob.extend_from_slice(&(path_bytes as u32).to_le_bytes());
+            blob.extend_from_slice(&0i32.to_le_bytes());
+            blob.extend_from_slice(&0u32.to_le_bytes());
+            blob.extend(core::iter::repeat_n(b'a', path_bytes - 1));
+            blob.push(0);
+            blob
+        }
+
+        assert!(parse_blob(&action_blob(spawn_contract::POSIX_PATH_MAX_BYTES)).is_ok());
+        assert!(matches!(
+            parse_blob(&action_blob(spawn_contract::POSIX_PATH_MAX_BYTES + 1)),
+            Err(Errno::ENAMETOOLONG)
+        ));
+    }
+
+    #[test]
+    fn parse_blob_rejects_an_interior_nul_in_an_action_path() {
+        let mut blob = header(0, 0, 1);
+        blob.extend_from_slice(&fdop::CHDIR.to_le_bytes());
+        blob.extend_from_slice(&0i32.to_le_bytes());
+        blob.extend_from_slice(&0i32.to_le_bytes());
+        blob.extend_from_slice(&0u32.to_le_bytes());
+        blob.extend_from_slice(&4u32.to_le_bytes());
+        blob.extend_from_slice(&0i32.to_le_bytes());
+        blob.extend_from_slice(&0u32.to_le_bytes());
+        blob.extend_from_slice(b"a\0b\0");
+        assert!(matches!(parse_blob(&blob), Err(Errno::EINVAL)));
+    }
+
+    #[test]
+    fn parse_blob_rejects_whole_blob_limit_plus_one() {
+        let blob = alloc::vec![0; spawn_contract::WIRE_MAX_BYTES + 1];
+        assert!(matches!(parse_blob(&blob), Err(Errno::E2BIG)));
     }
 }

@@ -23,6 +23,15 @@
 
 import { negErrno, WasmPosixKernel, type KernelPointer } from "./kernel";
 import {
+  allocateKernelScratchRegion,
+  checkedMemoryRange,
+  checkedWasmPointer,
+  KernelScratchError,
+  reserveKernelScratchRegion,
+  type KernelScratchLease,
+  type KernelScratchRegion,
+} from "./kernel-scratch";
+import {
   buildRawHttpRequest,
   parseRawHttpResponse,
   type HttpRequest,
@@ -62,9 +71,19 @@ import {
   PROCESS_STATE_EXITED,
   PROCESS_STATE_RUNNING,
   PROCESS_STATE_STOPPED,
+  POSIX_ARG_MAX_BYTES,
+  POSIX_IOV_MAX,
+  POSIX_PATH_MAX_BYTES,
   SCHED_AFFINITY_MASK_SIZE,
+  SPAWN_MAX_ACTION_COUNT,
+  SPAWN_MAX_ARGV_COUNT,
+  SPAWN_MAX_ENVP_COUNT,
+  SPAWN_WIRE_ACTION_RECORD_BYTES,
+  SPAWN_WIRE_HEADER_BYTES,
+  SPAWN_WIRE_MAX_BYTES,
   STRUCT_SIZE_KERNEL_WAIT_RESULT,
   STRUCT_SIZE_WASM_RUSAGE_WIRE,
+  STRUCT_SIZE_WASM_STAT,
   SYSCALL_ARGS,
   WAIT_EVENT_CONTINUED,
   WAIT_EVENT_EXITED,
@@ -209,15 +228,8 @@ function isValidMemoryRange(
  * _SC_ARG_MAX boundary without imposing a separate argument-count ceiling.
  * Individual entries must also fit one bounded host scratch transfer.
  */
-const EXEC_METADATA_MAX_BYTES = 4 * 1024 * 1024;
-const EXEC_PATH_MAX_BYTES = 4096;
 const PROCESS_METADATA_ARGV = 0;
 const PROCESS_METADATA_ENVIRONMENT = 1;
-const SPAWN_HEADER_BYTES = 40;
-const SPAWN_ACTION_RECORD_BYTES = 28;
-const SPAWN_MAX_ARGV = 4096;
-const SPAWN_MAX_ENVP = 4096;
-const SPAWN_MAX_ACTIONS = 1024;
 
 /**
  * Largest complete SYS_SPAWN wire blob accepted by the host.
@@ -228,10 +240,7 @@ const SPAWN_MAX_ACTIONS = 1024;
  * whole-blob bound because this representation also carries file actions,
  * which ARG_MAX itself does not count.
  */
-export const SPAWN_BLOB_MAX_BYTES =
-  EXEC_METADATA_MAX_BYTES
-  + SPAWN_HEADER_BYTES
-  + SPAWN_MAX_ACTIONS * (SPAWN_ACTION_RECORD_BYTES + EXEC_PATH_MAX_BYTES);
+export const SPAWN_BLOB_MAX_BYTES = SPAWN_WIRE_MAX_BYTES;
 
 /** Syscall numbers for sleep/delay */
 const SYS_NANOSLEEP = ABI_SYSCALLS.Nanosleep;
@@ -352,6 +361,7 @@ const SYS_ACCEPT4 = ABI_SYSCALLS.Accept4;
 const SYS_CONNECT = ABI_SYSCALLS.Connect;
 
 const MSG_DONTWAIT = 0x0040;
+const MSG_TRUNC = 0x0020;
 
 /** mmap flags */
 const MAP_SHARED = 0x01;
@@ -471,6 +481,47 @@ const CH_SIG_ALT_SIZE = CH_SIG_BASE + 40;  // u32: alt stack size
  * Same as channel layout but used as the kernel-side buffer. */
 const SCRATCH_SIZE = CH_TOTAL_SIZE;
 
+interface CheckedProcessIovec {
+  base: number;
+  len: number;
+}
+
+interface CheckedProcessIovecs {
+  entries: CheckedProcessIovec[];
+  totalData: number;
+}
+
+interface CheckedProcessMessage {
+  pointerWidth: 4 | 8;
+  messagePointer: number;
+  name: { pointer: number; length: number };
+  control: { pointer: number; length: number };
+  iovecs: CheckedProcessIovecs;
+}
+
+interface KernelMessageLayout {
+  footprint: number;
+  nameOffset: number;
+  controlOffset: number;
+  iovecOffset: number;
+  dataOffsets: number[];
+}
+
+interface PlannedChannelScratchArg {
+  desc: SyscallArgDesc;
+  processPointer: number;
+  scratchOffset: number;
+  size: number;
+  inputBytes: Uint8Array | null;
+}
+
+interface PlannedScratchWrite {
+  argIndex: number;
+  scratchOffset: number;
+  size: number;
+  inputBytes: Uint8Array | null;
+}
+
 /**
  * One captured syscall, surfaced by the opt-in trace ring buffer
  * (enableSyscallTrace + drainSyscallTrace). Used by Kandelo Inspector →
@@ -552,7 +603,7 @@ function parseProcSnapshots(mem: Uint8Array): ProcessSnapshot[] {
  * Throws on malformed input. Callers should treat the throw as EINVAL.
  */
 function decodeSpawnBlobStrings(blob: Uint8Array): { argv: string[]; envp: string[] } {
-  if (blob.byteLength < SPAWN_HEADER_BYTES) {
+  if (blob.byteLength < SPAWN_WIRE_HEADER_BYTES) {
     throw new Error("blob too short for header");
   }
   const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
@@ -562,17 +613,17 @@ function decodeSpawnBlobStrings(blob: Uint8Array): { argv: string[]; envp: strin
 
   // Cap counts to mirror the kernel parser's adversarial-input cap.
   if (
-    argc > SPAWN_MAX_ARGV
-    || envc > SPAWN_MAX_ENVP
-    || nActions > SPAWN_MAX_ACTIONS
+    argc > SPAWN_MAX_ARGV_COUNT
+    || envc > SPAWN_MAX_ENVP_COUNT
+    || nActions > SPAWN_MAX_ACTION_COUNT
   ) {
     throw new Error("blob count exceeds limit");
   }
 
-  const argvOffsetsAt = SPAWN_HEADER_BYTES;
+  const argvOffsetsAt = SPAWN_WIRE_HEADER_BYTES;
   const envpOffsetsAt = argvOffsetsAt + argc * 4;
   const actionsAt     = envpOffsetsAt + envc * 4;
-  const stringsAt     = actionsAt + nActions * SPAWN_ACTION_RECORD_BYTES;
+  const stringsAt     = actionsAt + nActions * SPAWN_WIRE_ACTION_RECORD_BYTES;
 
   if (stringsAt > blob.byteLength) {
     throw new Error("blob truncated before strings region");
@@ -795,9 +846,11 @@ interface WaitingForChild {
   syscallNr: number;
 }
 
+type ChannelOutputWrite = { ptr: number; bytes: Uint8Array };
+
 interface PreparedChannelCompletion {
   kind: "marshalled" | "raw";
-  outputWrites: Array<{ ptr: number; bytes: Uint8Array }>;
+  outputWrites: ChannelOutputWrite[];
   retVal: number;
   errVal: number;
   /** Output bytes/shared backing have reached guest-visible memory. */
@@ -1088,9 +1141,16 @@ export class CentralizedKernelWorker {
   private activeChannels: ChannelInfo[] = [];
   /** Pids whose old image committed exec but whose replacement has no channel yet. */
   private execHandoffPids = new Set<number>();
-  private scratchOffset = 0;
+  /** Capacity travels with the allocator-owned pointer. */
+  private scratchRegion: KernelScratchRegion | null = null;
   /** Kernel-owned transport for spawn blobs larger than one syscall channel. */
-  private largeSpawnScratchOffset = 0;
+  private largeSpawnScratchRegion: KernelScratchRegion | null = null;
+  /**
+   * A legacy kernel has no scratch free operation. Remember a failed fixed
+   * allocation so a bad allocator range cannot leak another worst-case region
+   * on every later spawn attempt.
+   */
+  private largeSpawnScratchFallbackFailure: number | null = null;
   private initialized = false;
   /**
    * Maps a pthread syscall mailbox to its kernel/libc thread id.
@@ -1249,7 +1309,7 @@ export class CentralizedKernelWorker {
   /** UDP virtual-network endpoint bindings: "pid:sockIdx" */
   private udpBindings = new Set<string>();
   /** Separate scratch buffer for TCP data pumping */
-  private tcpScratchOffset = 0;
+  private tcpScratchRegion: KernelScratchRegion | null = null;
   /** Node.js net module (loaded dynamically for browser compatibility) */
   private netModule: typeof import("net") | null = null;
   /** Deferred waitpid/waitid completions. Child matching/reap state is Rust-owned. */
@@ -1285,8 +1345,6 @@ export class CentralizedKernelWorker {
     Set<DeferredProcessWorkerStart>
   >();
   /** Cached kernel memory typed array view (invalidated on memory.grow) */
-  private cachedKernelMem: Uint8Array | null = null;
-  private cachedKernelBuffer: ArrayBuffer | null = null;
   /** Pending poll/ppoll retries keyed by exact channel generation. */
   private pendingPollRetries = new Map<ChannelInfo, {
     timer: any;  // setImmediate or setTimeout handle
@@ -1380,7 +1438,6 @@ export class CentralizedKernelWorker {
     number,
     Array<{
       sendPipeIdx: number;
-      scratchOffset: number;
       clientSocket: import("net").Socket;
       recvPipeIdx: number;
       schedulePump: () => void;
@@ -1636,11 +1693,13 @@ export class CentralizedKernelWorker {
     // scratch data and kernel heap structures like Vec<MappedRegion>).
     const allocScratch = this.kernelInstance.exports.kernel_alloc_scratch as
       (size: number) => KernelPointer;
-    this.scratchOffset = Number(allocScratch(SCRATCH_SIZE));
-    if (this.scratchOffset === 0) {
-      throw new Error("Failed to allocate kernel scratch buffer");
-    }
-
+    this.scratchRegion = allocateKernelScratchRegion(
+      this.kernelMemory,
+      allocScratch,
+      SCRATCH_SIZE,
+      this.kernel.getKernelPtrWidth(),
+      "kernel syscall scratch",
+    );
     // Try to load Node.js net module for TCP bridging
     try {
       const net = await import("net");
@@ -1653,12 +1712,281 @@ export class CentralizedKernelWorker {
     }
 
     // Allocate a separate scratch buffer for TCP data pumping
-    this.tcpScratchOffset = Number(allocScratch(65536));
-    if (this.tcpScratchOffset === 0) {
-      throw new Error("Failed to allocate TCP scratch buffer");
-    }
-
+    this.tcpScratchRegion = allocateKernelScratchRegion(
+      this.kernelMemory,
+      allocScratch,
+      65536,
+      this.kernel.getKernelPtrWidth(),
+      "kernel TCP scratch",
+    );
     this.initialized = true;
+  }
+
+  private requireMainScratchRegion(): KernelScratchRegion {
+    if (!this.scratchRegion) {
+      throw new KernelScratchError("kernel syscall scratch is not allocated");
+    }
+    return this.scratchRegion;
+  }
+
+  private requireTcpScratchRegion(): KernelScratchRegion {
+    if (!this.tcpScratchRegion) {
+      throw new KernelScratchError("kernel TCP scratch is not allocated");
+    }
+    return this.tcpScratchRegion;
+  }
+
+  /**
+   * Run one synchronous Rust producer into main scratch and detach its output.
+   *
+   * The returned byte count is part of the producer contract, not proof of
+   * allocation ownership. Validate it against the requested capacity while
+   * the region remains exclusively leased, then return host-owned bytes.
+   */
+  private captureMainScratchOutput(
+    capacity: number,
+    label: string,
+    produce: (pointer: KernelPointer, capacity: number) => number,
+  ): { result: number; bytes: Uint8Array } {
+    return this.requireMainScratchRegion().withLease((lease) => {
+      const pointer = lease.address(0, capacity);
+      const result = produce(this.toKernelPtr(pointer), capacity);
+      if (!Number.isSafeInteger(result)) {
+        throw new KernelScratchError(
+          `${label} returned a non-integer byte count`,
+          EIO,
+        );
+      }
+      if (result <= 0) return { result, bytes: new Uint8Array(0) };
+      if (result > capacity) {
+        throw new KernelScratchError(
+          `${label} returned ${result} bytes for capacity ${capacity}`,
+          EIO,
+        );
+      }
+      return { result, bytes: lease.copyOut(0, result) };
+    });
+  }
+
+  private checkedProcessRange(
+    channel: ChannelInfo,
+    pointer: number | bigint,
+    length: number | bigint,
+    field: string,
+    allowAddressZero = false,
+  ): { pointer: number; length: number; end: number } {
+    return checkedMemoryRange(
+      channel.memory,
+      pointer,
+      length,
+      this.getPtrWidth(channel.pid),
+      field,
+      allowAddressZero,
+    );
+  }
+
+  private checkedProcessIovecs(
+    channel: ChannelInfo,
+    iovPointer: number | bigint,
+    iovCount: number,
+    allowEmpty: boolean,
+  ): CheckedProcessIovecs {
+    if (
+      !Number.isSafeInteger(iovCount) ||
+      iovCount < (allowEmpty ? 0 : 1) ||
+      iovCount > POSIX_IOV_MAX
+    ) {
+      throw new KernelScratchError(
+        `iovec count must be ${allowEmpty ? "between 0" : "between 1"} and ${POSIX_IOV_MAX}`,
+        EINVAL,
+      );
+    }
+    if (iovCount === 0) return { entries: [], totalData: 0 };
+    const pointerWidth = this.getPtrWidth(channel.pid);
+    const entrySize = pointerWidth === 8 ? 16 : 8;
+    const tableBytes = iovCount * entrySize;
+    const table = this.checkedProcessRange(
+      channel,
+      iovPointer,
+      tableBytes,
+      "process iovec table",
+      true,
+    );
+    const processView = new DataView(
+      channel.memory.buffer,
+      table.pointer,
+      table.length,
+    );
+    const entries: CheckedProcessIovec[] = [];
+    let totalData = 0;
+    for (let index = 0; index < iovCount; index++) {
+      const offset = index * entrySize;
+      const rawBase = pointerWidth === 8
+        ? processView.getBigUint64(offset, true)
+        : processView.getUint32(offset, true);
+      const rawLength = pointerWidth === 8
+        ? processView.getBigUint64(offset + 8, true)
+        : processView.getUint32(offset + 4, true);
+      const base = checkedWasmPointer(
+        rawBase,
+        pointerWidth,
+        `iovec[${index}] base`,
+      );
+      const lengthRange = rawLength === 0n || rawLength === 0
+        ? { pointer: base, length: 0 }
+        : this.checkedProcessRange(
+            channel,
+            rawBase,
+            rawLength,
+            `iovec[${index}] data`,
+            true,
+          );
+      const len = lengthRange.length;
+      totalData += len;
+      if (!Number.isSafeInteger(totalData) || totalData > 0x7fff_ffff) {
+        throw new KernelScratchError(
+          "aggregate iovec length exceeds SSIZE_MAX",
+          EINVAL,
+        );
+      }
+      entries.push({ base, len });
+    }
+    return { entries, totalData };
+  }
+
+  private rejectScratchTransfer(
+    channel: ChannelInfo,
+    error: unknown,
+  ): void {
+    const errno = error instanceof KernelScratchError ? error.errno : EFAULT;
+    this.completeChannelRaw(channel, -1, errno);
+    this.relistenChannel(channel);
+  }
+
+  private kernelIovecFootprint(entries: CheckedProcessIovec[]): number {
+    let offset = entries.length * 8;
+    for (const entry of entries) {
+      offset += entry.len;
+      if (!Number.isSafeInteger(offset)) {
+        throw new KernelScratchError("kernel iovec layout overflows", EINVAL);
+      }
+      offset = Math.ceil(offset / 4) * 4;
+    }
+    return offset;
+  }
+
+  private checkedProcessMessage(
+    channel: ChannelInfo,
+    messagePointerValue: number | bigint,
+  ): CheckedProcessMessage {
+    const pointerWidth = this.getPtrWidth(channel.pid);
+    const messageSize = pointerWidth === 8 ? 48 : 28;
+    const message = this.checkedProcessRange(
+      channel,
+      messagePointerValue,
+      messageSize,
+      "process msghdr",
+    );
+    const view = new DataView(
+      channel.memory.buffer,
+      message.pointer,
+      message.length,
+    );
+    const rawNamePointer = pointerWidth === 8
+      ? view.getBigUint64(0, true)
+      : view.getUint32(0, true);
+    const nameLength = view.getUint32(pointerWidth === 8 ? 8 : 4, true);
+    const rawIovecPointer = pointerWidth === 8
+      ? view.getBigUint64(16, true)
+      : view.getUint32(8, true);
+    const iovecCount = view.getUint32(pointerWidth === 8 ? 24 : 12, true);
+    const rawControlPointer = pointerWidth === 8
+      ? view.getBigUint64(32, true)
+      : view.getUint32(16, true);
+    const controlLength = view.getUint32(pointerWidth === 8 ? 40 : 20, true);
+
+    const checkedOptionalRange = (
+      pointer: number | bigint,
+      length: number,
+      field: string,
+    ): { pointer: number; length: number } => {
+      if (length === 0) {
+        return {
+          pointer: checkedWasmPointer(pointer, pointerWidth, `${field} pointer`),
+          length: 0,
+        };
+      }
+      return this.checkedProcessRange(channel, pointer, length, field);
+    };
+
+    return {
+      pointerWidth,
+      messagePointer: message.pointer,
+      name: checkedOptionalRange(
+        rawNamePointer,
+        nameLength,
+        "msg_name",
+      ),
+      control: checkedOptionalRange(
+        rawControlPointer,
+        controlLength,
+        "msg_control",
+      ),
+      iovecs: this.checkedProcessIovecs(
+        channel,
+        rawIovecPointer,
+        iovecCount,
+        true,
+      ),
+    };
+  }
+
+  private kernelMessageLayout(
+    message: CheckedProcessMessage,
+  ): KernelMessageLayout {
+    let offset = 28;
+    const append = (length: number): number => {
+      const start = offset;
+      offset += length;
+      if (!Number.isSafeInteger(offset)) {
+        throw new KernelScratchError("kernel msghdr layout overflows", EINVAL);
+      }
+      offset = Math.ceil(offset / 4) * 4;
+      return start;
+    };
+    const nameOffset = message.name.length > 0
+      ? append(message.name.length)
+      : 0;
+    const controlOffset = message.control.length > 0
+      ? append(message.control.length)
+      : 0;
+    const iovecOffset = message.iovecs.entries.length > 0
+      ? append(message.iovecs.entries.length * 8)
+      : 0;
+    const dataOffsets = message.iovecs.entries.map((entry) =>
+      entry.len > 0 ? append(entry.len) : 0
+    );
+    return {
+      footprint: offset,
+      nameOffset,
+      controlOffset,
+      iovecOffset,
+      dataOffsets,
+    };
+  }
+
+  private checkedKernelWirePointer(pointer: number): number {
+    if (
+      !Number.isSafeInteger(pointer) ||
+      pointer < 0 ||
+      pointer > 0xffff_ffff
+    ) {
+      throw new KernelScratchError(
+        "kernel wire pointer does not fit its u32 field",
+        EIO,
+      );
+    }
+    return pointer;
   }
 
   /**
@@ -1843,7 +2171,7 @@ export class CentralizedKernelWorker {
       const encodedLength = encoder.encode(value).byteLength;
       if (encodedLength > CH_DATA_SIZE) return -E2BIG;
       totalBytes += ptrWidth + encodedLength + 1;
-      if (!Number.isSafeInteger(totalBytes) || totalBytes > EXEC_METADATA_MAX_BYTES) {
+      if (!Number.isSafeInteger(totalBytes) || totalBytes > POSIX_ARG_MAX_BYTES) {
         return -E2BIG;
       }
     }
@@ -1893,15 +2221,14 @@ export class CentralizedKernelWorker {
           `Legacy process argv exceeds bounded scratch transport: errno ${E2BIG}`,
         );
       }
-      new Uint8Array(this.kernelMemory!.buffer).set(
-        encoded,
-        this.scratchOffset,
-      );
-      const result = setArgv(
-        pid,
-        this.toKernelPtr(this.scratchOffset),
-        encoded.byteLength,
-      );
+      const result = this.requireMainScratchRegion().withLease((scratch) => {
+        scratch.copyFrom(encoded);
+        return setArgv(
+          pid,
+          this.toKernelPtr(scratch.address(0, encoded.byteLength)),
+          encoded.byteLength,
+        );
+      });
       if (result < 0) {
         throw new Error(
           `Failed to replace process argv for pid ${pid}: errno ${-result}`,
@@ -1925,16 +2252,17 @@ export class CentralizedKernelWorker {
           `Process metadata entry exceeds bounded scratch transport: errno ${E2BIG}`,
         );
       }
-      // A preceding Rust push can allocate and grow kernel Wasm memory,
-      // detaching the old ArrayBuffer view. Refresh it for every entry.
-      const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
-      kernelMem.set(encoded, this.scratchOffset);
-      const pushResult = push(
-        pid,
-        kind,
-        this.toKernelPtr(this.scratchOffset),
-        encoded.byteLength,
-      );
+      // A Rust push can grow memory. A fresh lease rechecks the replacement
+      // buffer and owns the bytes through the complete synchronous parse.
+      const pushResult = this.requireMainScratchRegion().withLease((scratch) => {
+        scratch.copyFrom(encoded);
+        return push(
+          pid,
+          kind,
+          this.toKernelPtr(scratch.address(0, encoded.byteLength)),
+          encoded.byteLength,
+        );
+      });
       if (pushResult < 0) {
         throw new Error(`Failed to append process metadata for pid ${pid}: errno ${-pushResult}`);
       }
@@ -2010,9 +2338,31 @@ export class CentralizedKernelWorker {
     const kernelPtyMasterWrite = this.kernelInstance!.exports.kernel_pty_master_write as
       ((ptyIdx: number, bufPtr: KernelPointer, bufLen: number) => number) | undefined;
     if (!kernelPtyMasterWrite) return;
-    const buf = new Uint8Array(this.kernelMemory!.buffer);
-    buf.set(data, this.scratchOffset);
-    kernelPtyMasterWrite(ptyIdx, this.toKernelPtr(this.scratchOffset), data.length);
+    const scratch = this.requireMainScratchRegion();
+    scratch.withLease((lease) => {
+      let offset = 0;
+      while (offset < data.byteLength) {
+        const chunkLength = Math.min(
+          data.byteLength - offset,
+          scratch.capacity,
+        );
+        lease.copyFrom(data, 0, offset, chunkLength);
+        const written = kernelPtyMasterWrite(
+          ptyIdx,
+          this.toKernelPtr(lease.address(0, chunkLength)),
+          chunkLength,
+        );
+        if (!Number.isSafeInteger(written) || written > chunkLength) {
+          throw new KernelScratchError(
+            "kernel PTY write exceeded its staged input",
+            EIO,
+          );
+        }
+        if (written <= 0) break;
+        offset += written;
+        if (written < chunkLength) break;
+      }
+    });
     // Drain echo/output produced by the line discipline
     this.drainPtyOutput(ptyIdx);
     // Wake any process blocked on slave read
@@ -2027,11 +2377,23 @@ export class CentralizedKernelWorker {
     const kernelPtyMasterRead = this.kernelInstance!.exports.kernel_pty_master_read as
       ((ptyIdx: number, bufPtr: KernelPointer, bufLen: number) => number) | undefined;
     if (!kernelPtyMasterRead) return null;
-    const SCRATCH_READ_SIZE = 4096;
-    const n = kernelPtyMasterRead(ptyIdx, this.toKernelPtr(this.scratchOffset), SCRATCH_READ_SIZE);
-    if (n <= 0) return null;
-    const buf = new Uint8Array(this.kernelMemory!.buffer);
-    return buf.slice(this.scratchOffset, this.scratchOffset + n);
+    const scratch = this.requireMainScratchRegion();
+    const request = Math.min(4096, scratch.capacity);
+    return scratch.withLease((lease) => {
+      const n = kernelPtyMasterRead(
+        ptyIdx,
+        this.toKernelPtr(lease.address(0, request)),
+        request,
+      );
+      if (n <= 0) return null;
+      if (!Number.isSafeInteger(n) || n > request) {
+        throw new KernelScratchError(
+          "kernel PTY read exceeded its requested scratch capacity",
+          EIO,
+        );
+      }
+      return lease.copyOut(0, n);
+    });
   }
 
   /**
@@ -2109,14 +2471,19 @@ export class CentralizedKernelWorker {
       ((pid: number, ptr: KernelPointer, len: number) => number) | undefined;
     if (!kernelSetCwd) return; // older kernel without this export
     const encoded = new TextEncoder().encode(cwd);
-    // Use the pre-allocated scratch area in kernel memory
-    const buf = new Uint8Array(this.kernelMemory!.buffer);
-    buf.set(encoded, this.scratchOffset);
-    const result = kernelSetCwd(
-      pid,
-      this.toKernelPtr(this.scratchOffset),
-      encoded.length,
-    );
+    // kernel_set_cwd applies PATH_MAX too, but that would be after the host
+    // copy. Reject first so an oversized pathname never reaches scratch.
+    if (encoded.byteLength >= POSIX_PATH_MAX_BYTES) {
+      throw new Error(`setCwd failed for pid ${pid}: cwd exceeds PATH_MAX`);
+    }
+    const result = this.requireMainScratchRegion().withLease((scratch) => {
+      scratch.copyFrom(encoded);
+      return kernelSetCwd(
+        pid,
+        this.toKernelPtr(scratch.address(0, encoded.byteLength)),
+        encoded.byteLength,
+      );
+    });
     if (result < 0) {
       throw new Error(`setCwd failed for pid ${pid}: errno ${-result}`);
     }
@@ -2190,17 +2557,23 @@ export class CentralizedKernelWorker {
     const enumProcs = this.kernelInstance!.exports.kernel_enum_procs as
       ((ptr: KernelPointer, len: number) => number) | undefined;
     if (!enumProcs) return [];
-    const n = enumProcs(this.toKernelPtr(this.scratchOffset), SCRATCH_SIZE);
-    if (n <= 0) return [];
-    // The kernel memory is a SharedArrayBuffer; TextDecoder refuses
-    // shared views. Copy to a regular ArrayBuffer before parsing.
-    const shared = new Uint8Array(
-      this.kernelMemory!.buffer,
-      this.scratchOffset,
-      n,
-    );
-    const owned = new Uint8Array(n);
-    owned.set(shared);
+    const scratch = this.requireMainScratchRegion();
+    const owned = scratch.withLease((lease) => {
+      const request = Math.min(SCRATCH_SIZE, scratch.capacity);
+      const n = enumProcs(
+        this.toKernelPtr(lease.address(0, request)),
+        request,
+      );
+      if (n <= 0) return null;
+      if (!Number.isSafeInteger(n) || n > request) {
+        throw new KernelScratchError(
+          "kernel process enumeration exceeded scratch capacity",
+          EIO,
+        );
+      }
+      return lease.copyOut(0, n);
+    });
+    if (!owned) return [];
     const snapshots = parseProcSnapshots(owned);
     for (const snapshot of snapshots) {
       const registration = this.processes.get(snapshot.pid);
@@ -2221,18 +2594,25 @@ export class CentralizedKernelWorker {
     const readMaps = this.kernelInstance!.exports.kernel_read_proc_maps as
       ((pid: number, ptr: KernelPointer, len: number) => number) | undefined;
     if (!readMaps) return null;
-    const n = readMaps(pid, this.toKernelPtr(this.scratchOffset), SCRATCH_SIZE);
-    if (n < 0) return null; // -ESRCH or similar
-    if (n === 0) return "";
-    // SharedArrayBuffer view → TextDecoder doesn't accept shared views.
-    // Copy out before decoding.
-    const shared = new Uint8Array(
-      this.kernelMemory!.buffer,
-      this.scratchOffset,
-      n,
-    );
-    const owned = new Uint8Array(n);
-    owned.set(shared);
+    const scratch = this.requireMainScratchRegion();
+    const owned = scratch.withLease((lease) => {
+      const request = Math.min(SCRATCH_SIZE, scratch.capacity);
+      const n = readMaps(
+        pid,
+        this.toKernelPtr(lease.address(0, request)),
+        request,
+      );
+      if (n < 0) return null; // -ESRCH or similar
+      if (n === 0) return new Uint8Array(0);
+      if (!Number.isSafeInteger(n) || n > request) {
+        throw new KernelScratchError(
+          "kernel process maps output exceeded scratch capacity",
+          EIO,
+        );
+      }
+      return lease.copyOut(0, n);
+    });
+    if (owned === null) return null;
     return new TextDecoder("utf-8", { fatal: false }).decode(owned);
   }
 
@@ -3364,15 +3744,6 @@ export class CentralizedKernelWorker {
    * 7. Set status to COMPLETE and notify process
    * 8. Re-listen for next syscall
    */
-  private getKernelMem(): Uint8Array {
-    const buf = this.kernelMemory!.buffer;
-    if (buf !== this.cachedKernelBuffer) {
-      this.cachedKernelMem = new Uint8Array(buf);
-      this.cachedKernelBuffer = buf;
-    }
-    return this.cachedKernelMem!;
-  }
-
   /** Get pointer width for a process (4=wasm32, 8=wasm64). */
   private getPtrWidth(pid: number): 4 | 8 {
     return this.processes.get(pid)?.ptrWidth ?? 4;
@@ -3634,8 +4005,10 @@ export class CentralizedKernelWorker {
     // Read syscall number and args from process channel
     const syscallNr = processView.getUint32(CH_SYSCALL, true);
     const origArgs: number[] = [];
+    const rawArgs: bigint[] = [];
     for (let i = 0; i < CH_ARGS_COUNT; i++) {
       const rawArg = processView.getBigInt64(CH_ARGS + i * CH_ARG_SIZE, true);
+      rawArgs.push(rawArg);
       // Linux declares sched_getaffinity's length as unsigned int even for a
       // 64-bit caller. Normalize it while it is still a bigint, before a
       // memory64 value can lose precision in a JavaScript number.
@@ -3962,8 +4335,6 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-
     // Copy raw args to kernel scratch header (will be adjusted below)
     const adjustedArgs = [...origArgs];
 
@@ -3971,15 +4342,15 @@ export class CentralizedKernelWorker {
     const argDescs = SYSCALL_ARGS[syscallNr];
     let dataOffset = 0; // Offset within scratch data area for allocations
     let schedGetaffinityOutputInvalid = false;
+    const plannedChannelScratchArgs: PlannedChannelScratchArg[] = [];
+    const plannedScratchWrites: PlannedScratchWrite[] = [];
 
     if (argDescs) {
       // Re-create typed views (memory may have grown)
       const processMem = new Uint8Array(channel.memory.buffer);
-      const kernelMem = this.getKernelMem();
-      const dataStart = this.scratchOffset + CH_DATA;
+      const pointerWidth = this.getPtrWidth(channel.pid);
 
       for (const desc of argDescs) {
-        const ptr = origArgs[desc.argIndex];
         const scalarTcflushArg =
           syscallNr === SYS_IOCTL &&
           (origArgs[1] >>> 0) === TCFLSH &&
@@ -3990,21 +4361,51 @@ export class CentralizedKernelWorker {
           // tcflush(fd, queue) sends TCIFLUSH/TCOFLUSH/TCIOFLUSH directly as
           // the integer value 0/1/2. Materialize that scalar in kernel scratch
           // instead of interpreting the value as a process-memory address.
-          const kernelPtr = dataStart + dataOffset;
-          new DataView(this.kernelMemory!.buffer).setInt32(
-            kernelPtr,
-            origArgs[2],
-            true,
-          );
-          adjustedArgs[2] = kernelPtr;
+          const inputBytes = new Uint8Array(4);
+          new DataView(inputBytes.buffer).setInt32(0, origArgs[2], true);
+          plannedScratchWrites.push({
+            argIndex: 2,
+            scratchOffset: CH_DATA + dataOffset,
+            size: inputBytes.byteLength,
+            inputBytes,
+          });
+          adjustedArgs[2] = 0;
           dataOffset = (dataOffset + 4 + 7) & ~7;
           continue;
         }
+        const rawPtr = rawArgs[desc.argIndex]!;
         const deferSchedGetaffinityOutputError =
           syscallNr === SYS_SCHED_GETAFFINITY
           && desc.argIndex === 2
           && desc.direction === "out";
-        if (ptr === 0 && !deferSchedGetaffinityOutputError) {
+        let ptr: number;
+        try {
+          ptr = checkedWasmPointer(
+            rawPtr,
+            pointerWidth,
+            `syscall ${syscallNr} arg ${desc.argIndex} pointer`,
+          );
+        } catch {
+          if (deferSchedGetaffinityOutputError) {
+            // WHY: Linux resolves the selected task before copying the mask.
+            // Keep a lossy/invalid guest pointer out of kernel memory, but
+            // still dispatch through safe scratch so ESRCH can take precedence
+            // over the eventual EFAULT.
+            schedGetaffinityOutputInvalid = true;
+            ptr = 0;
+          } else {
+            this.completeChannel(
+              channel,
+              syscallNr,
+              origArgs,
+              undefined,
+              -1,
+              EFAULT,
+            );
+            return;
+          }
+        }
+        if (rawPtr === 0n && !deferSchedGetaffinityOutputError) {
           const required = desc.required === true
             || (desc.size.type === "cstring" && desc.nullable !== true);
           if (required) {
@@ -4042,14 +4443,37 @@ export class CentralizedKernelWorker {
           }
           size = result.size;
         } else if (desc.size.type === "arg") {
-          size =
-            origArgs[desc.size.argIndex] * (desc.size.multiplier ?? 1)
-            + (desc.size.add ?? 0);
+          const rawCount = rawArgs[desc.size.argIndex]!;
+          if (
+            rawCount < 0n
+            || rawCount > BigInt(Number.MAX_SAFE_INTEGER)
+          ) {
+            this.completeChannel(
+              channel,
+              syscallNr,
+              origArgs,
+              undefined,
+              -1,
+              EINVAL,
+            );
+            return;
+          }
+          const multiplier = desc.size.multiplier ?? 1;
+          const add = desc.size.add ?? 0;
+          size = Number(rawCount) * multiplier + add;
         } else if (desc.size.type === "deref") {
           // Dereference: arg is a pointer to a u32 value (e.g. socklen_t*)
-          const derefPtr = origArgs[desc.size.argIndex];
-          if (derefPtr === 0) continue;
-          if (!isValidMemoryRange(processMem, derefPtr, 4)) {
+          const rawDerefPtr = rawArgs[desc.size.argIndex]!;
+          if (rawDerefPtr === 0n) continue;
+          let derefPtr: number;
+          try {
+            derefPtr = this.checkedProcessRange(
+              channel,
+              rawDerefPtr,
+              4,
+              `syscall ${syscallNr} length pointer`,
+            ).pointer;
+          } catch {
             this.completeChannel(
               channel,
               syscallNr,
@@ -4060,32 +4484,78 @@ export class CentralizedKernelWorker {
             );
             return;
           }
-          size = processMem[derefPtr] | (processMem[derefPtr + 1] << 8)
-               | (processMem[derefPtr + 2] << 16) | (processMem[derefPtr + 3] << 24);
+          size = new DataView(
+            processMem.buffer,
+            processMem.byteOffset,
+            processMem.byteLength,
+          ).getUint32(derefPtr, true);
         } else {
           size = desc.size.size;
         }
 
-        if (size <= 0) continue;
+        if (!Number.isSafeInteger(size) || size < 0) {
+          this.completeChannel(
+            channel,
+            syscallNr,
+            origArgs,
+            undefined,
+            -1,
+            EINVAL,
+          );
+          return;
+        }
+        if (size === 0) {
+          // Never leak a process-space pointer into the kernel address space,
+          // even when the associated count is zero.
+          adjustedArgs[desc.argIndex] = 0;
+          continue;
+        }
 
         // Cap size to fit in the channel data buffer. For read/write-like
         // syscalls where the size comes from another arg, also update that
         // arg so the kernel uses the capped count. The caller (musl libc)
         // will see a short read/write and retry for the remainder.
         if (dataOffset + size > CH_DATA_SIZE) {
+          const simpleCount =
+            desc.size.type === "arg"
+            && (desc.size.multiplier ?? 1) === 1
+            && (desc.size.add ?? 0) === 0;
+          if (!simpleCount) {
+            this.completeChannel(
+              channel,
+              syscallNr,
+              origArgs,
+              undefined,
+              -1,
+              EINVAL,
+            );
+            return;
+          }
           size = CH_DATA_SIZE - dataOffset;
-          if (size <= 0) continue;
           if (desc.size.type === "arg") {
             adjustedArgs[desc.size.argIndex] = size;
           }
+          if (size === 0) {
+            adjustedArgs[desc.argIndex] = 0;
+            continue;
+          }
         }
 
-        if (!isValidMemoryRange(processMem, ptr, size)) {
+        let processRangeValid = true;
+        try {
+          this.checkedProcessRange(
+            channel,
+            rawPtr,
+            size,
+            `syscall ${syscallNr} arg ${desc.argIndex} data`,
+          );
+        } catch {
           if (deferSchedGetaffinityOutputError) {
             // Linux resolves the requested task before copying its affinity
             // mask. Use safe kernel scratch now, then convert a successful
             // lookup to EFAULT below; an ESRCH result must take precedence.
             schedGetaffinityOutputInvalid = true;
+            processRangeValid = false;
           } else {
             this.completeChannel(
               channel,
@@ -4099,18 +4569,30 @@ export class CentralizedKernelWorker {
           }
         }
 
-        const kernelPtr = dataStart + dataOffset;
+        const scratchOffset = CH_DATA + dataOffset;
+        const inputBytes =
+          processRangeValid &&
+            (desc.direction === "in" || desc.direction === "inout")
+            ? processMem.slice(ptr, ptr + size)
+            : null;
+        const plannedArg: PlannedChannelScratchArg = {
+          desc,
+          processPointer: ptr,
+          scratchOffset,
+          size,
+          inputBytes,
+        };
+        plannedChannelScratchArgs.push(plannedArg);
+        plannedScratchWrites.push({
+          argIndex: desc.argIndex,
+          scratchOffset,
+          size,
+          inputBytes,
+        });
 
-        // Copy input data from process to kernel
-        if (desc.direction === "in" || desc.direction === "inout") {
-          kernelMem.set(processMem.subarray(ptr, ptr + size), kernelPtr);
-        } else {
-          // Output-only: zero the kernel scratch area
-          kernelMem.fill(0, kernelPtr, kernelPtr + size);
-        }
-
-        // Update arg to point to kernel memory
-        adjustedArgs[desc.argIndex] = kernelPtr;
+        // Install the allocator-selected pointer only while the final
+        // exclusive lease is active.
+        adjustedArgs[desc.argIndex] = 0;
 
         dataOffset += size;
         // Kernel exports may dereference i64-bearing structs and scalar output
@@ -4118,32 +4600,63 @@ export class CentralizedKernelWorker {
         // CH_DATA itself is eight-byte aligned.
         dataOffset = (dataOffset + 7) & ~7;
       }
+      // WHY: guest inputs are detached into host-owned bytes during planning.
+      // File-backed mmap preparation and other callbacks below may re-enter
+      // host code, so no bytes enter shared kernel scratch until the one lease
+      // that also writes the header and invokes kernel_handle_channel.
     }
 
     // ppoll: convert timespec pointer and sigset pointer to scalar values.
     // musl sends: (fds, nfds, timespec_ptr, sigset_ptr, sigset_size)
     // kernel expects: (fds, nfds, timeout_ms, has_mask, mask_lo, mask_hi)
     if (syscallNr === SYS_PPOLL) {
-      const tsPtr = origArgs[2];
-      if (tsPtr !== 0) {
-        // time64: timespec is {int64 sec, int64 nsec} = 16 bytes
-        const pv = new DataView(channel.memory.buffer, tsPtr);
-        const sec = Number(pv.getBigInt64(0, true));
-        const nsec = Number(pv.getBigInt64(8, true));
-        adjustedArgs[2] = sec * 1000 + Math.floor(nsec / 1000000);
-      } else {
-        adjustedArgs[2] = -1; // infinite timeout
-      }
-      const maskPtr = origArgs[3];
-      if (maskPtr !== 0) {
-        const pv = new DataView(channel.memory.buffer, maskPtr);
-        adjustedArgs[3] = 1; // has_mask = true
-        adjustedArgs[4] = pv.getUint32(0, true); // mask_lo
-        adjustedArgs[5] = pv.getUint32(4, true); // mask_hi
-      } else {
-        adjustedArgs[3] = 0; // has_mask = false
-        adjustedArgs[4] = 0;
-        adjustedArgs[5] = 0;
+      try {
+        const rawTimespecPointer = rawArgs[2];
+        if (rawTimespecPointer !== 0n) {
+          // time64: timespec is {int64 sec, int64 nsec} = 16 bytes.
+          // WHY: ppoll's scalar conversion is outside SYSCALL_ARGS, so prove
+          // this caller-owned source independently before staging its values.
+          const range = this.checkedProcessRange(
+            channel,
+            rawTimespecPointer,
+            16,
+            "ppoll timeout",
+          );
+          const pv = new DataView(
+            channel.memory.buffer,
+            range.pointer,
+            range.length,
+          );
+          const sec = Number(pv.getBigInt64(0, true));
+          const nsec = Number(pv.getBigInt64(8, true));
+          adjustedArgs[2] = sec * 1000 + Math.floor(nsec / 1000000);
+        } else {
+          adjustedArgs[2] = -1; // infinite timeout
+        }
+        const rawMaskPointer = rawArgs[3];
+        if (rawMaskPointer !== 0n) {
+          const range = this.checkedProcessRange(
+            channel,
+            rawMaskPointer,
+            8,
+            "ppoll signal mask",
+          );
+          const pv = new DataView(
+            channel.memory.buffer,
+            range.pointer,
+            range.length,
+          );
+          adjustedArgs[3] = 1; // has_mask = true
+          adjustedArgs[4] = pv.getUint32(0, true); // mask_lo
+          adjustedArgs[5] = pv.getUint32(4, true); // mask_hi
+        } else {
+          adjustedArgs[3] = 0; // has_mask = false
+          adjustedArgs[4] = 0;
+          adjustedArgs[5] = 0;
+        }
+      } catch (error) {
+        this.rejectScratchTransfer(channel, error);
+        return;
       }
     }
 
@@ -4249,15 +4762,6 @@ export class CentralizedKernelWorker {
           }
         }
 
-        // Write adjusted args to kernel scratch
-        kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-        for (let i = 0; i < CH_ARGS_COUNT; i++) {
-          kernelView.setBigInt64(
-            CH_ARGS + i * CH_ARG_SIZE,
-            BigInt(adjustedArgs[i]),
-            true,
-          );
-        }
       } catch (err) {
         if (fileSharedMmapPreparation?.kind === "prepared") {
           this.releasePreparedSharedMmap(fileSharedMmapPreparation.context);
@@ -4313,8 +4817,81 @@ export class CentralizedKernelWorker {
         }
         g.__sysprofLastSeen.set(channel.pid, sysprofStart);
       }
+      let kernelResult: {
+        retVal: number;
+        errVal: number;
+        outputWrites: ChannelOutputWrite[];
+        sleepDelayMs: number | undefined;
+      };
       try {
-        handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
+        kernelResult = this.requireMainScratchRegion().withLease((lease) => {
+          const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
+          for (const write of plannedScratchWrites) {
+            if (write.inputBytes) {
+              lease.copyFrom(
+                write.inputBytes,
+                write.scratchOffset,
+                0,
+                write.size,
+              );
+            } else {
+              lease.fill(0, write.scratchOffset, write.size);
+            }
+            adjustedArgs[write.argIndex] = lease.address(
+              write.scratchOffset,
+              write.size,
+            );
+          }
+          kernelView.setUint32(CH_SYSCALL, syscallNr, true);
+          for (let i = 0; i < CH_ARGS_COUNT; i++) {
+            kernelView.setBigInt64(
+              CH_ARGS + i * CH_ARG_SIZE,
+              BigInt(adjustedArgs[i]),
+              true,
+            );
+          }
+          handleChannel(
+            this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+            channel.pid,
+          );
+          const resultView = lease.dataView(0, CH_TOTAL_SIZE);
+          let retVal = Number(resultView.getBigInt64(CH_RETURN, true));
+          let errVal = resultView.getUint32(CH_ERRNO, true);
+          if (
+            syscallNr === SYS_SCHED_GETAFFINITY
+            && schedGetaffinityOutputInvalid
+            && retVal >= 0
+          ) {
+            retVal = -1;
+            errVal = EFAULT;
+          }
+          let sleepDelayMs: number | undefined;
+          if (
+            retVal >= 0
+            && (
+              syscallNr === SYS_NANOSLEEP
+              || syscallNr === SYS_CLOCK_NANOSLEEP
+            )
+          ) {
+            const timespec = lease.dataView(CH_DATA, 12);
+            const sec = timespec.getUint32(0, true);
+            const nsec = timespec.getUint32(8, true);
+            sleepDelayMs =
+              sec * 1000 + Math.floor(nsec / 1_000_000);
+          }
+          return {
+            retVal,
+            errVal,
+            outputWrites: this.snapshotPlannedChannelOutput(
+              channel,
+              syscallNr,
+              retVal,
+              plannedChannelScratchArgs,
+              lease,
+            ),
+            sleepDelayMs,
+          };
+        });
       } catch (err) {
         if (fileSharedMmapPreparation?.kind === "prepared") {
           this.releasePreparedSharedMmap(fileSharedMmapPreparation.context);
@@ -4370,9 +4947,10 @@ export class CentralizedKernelWorker {
         return;
       }
 
-      // Read return value and errno from kernel scratch
-      let retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-      let errVal = kernelView.getUint32(CH_ERRNO, true);
+      // The kernel result and every descriptor output are host-owned now.
+      // Postprocessing below may run nested synthetic syscalls or wake another
+      // channel, so it must never retain or reread the shared allocation.
+      let { retVal, errVal } = kernelResult;
       if (
         syscallNr === SYS_RT_SIGTIMEDWAIT &&
         !(retVal === -1 && errVal === EAGAIN)
@@ -4380,14 +4958,6 @@ export class CentralizedKernelWorker {
         this.signalWaitDeadlines.delete(
           `${channel.pid}:${channel.channelOffset}`,
         );
-      }
-      if (
-        syscallNr === SYS_SCHED_GETAFFINITY
-        && schedGetaffinityOutputInvalid
-        && retVal >= 0
-      ) {
-        retVal = -1;
-        errVal = EFAULT;
       }
       if (
         syscallNr === SYS_MMAP &&
@@ -4654,7 +5224,16 @@ export class CentralizedKernelWorker {
 
       // 2. Sleep syscalls: kernel returned success immediately, but we need
       //    to delay the response to simulate the sleep duration.
-      if (this.handleSleepDelay(channel, syscallNr, origArgs, retVal, errVal)) {
+      if (
+        this.handleSleepDelay(
+          channel,
+          syscallNr,
+          origArgs,
+          retVal,
+          errVal,
+          kernelResult.sleepDelayMs,
+        )
+      ) {
         return;
       }
 
@@ -4722,6 +5301,7 @@ export class CentralizedKernelWorker {
         argDescs,
         retVal,
         errVal,
+        kernelResult.outputWrites,
       );
     } catch (err) {
       if (fileSharedMmapPreparation?.kind === "prepared") {
@@ -4755,14 +5335,23 @@ export class CentralizedKernelWorker {
       ((pid: number, tid: number, outPtr: KernelPointer) => number) | undefined;
     if (!dequeueSignal) return 0;
 
-    // Use the signal area in kernel scratch as the output buffer
     const tid = this.guestTidForChannel(channel);
-    const sigOutOffset = this.scratchOffset + CH_SIG_BASE;
-    const sigResult = dequeueSignal(
-      channel.pid,
-      tid,
-      this.toKernelPtr(sigOutOffset),
-    );
+    // Copy the fixed signal record to host-owned bytes before releasing the
+    // region. Completion can synchronously wake another channel and reuse it.
+    const snapshot = this.requireMainScratchRegion().withLease((lease) => {
+      const sigResult = dequeueSignal(
+        channel.pid,
+        tid,
+        this.toKernelPtr(lease.address(CH_SIG_BASE, 44)),
+      );
+      return {
+        sigResult,
+        bytes: sigResult > 0
+          ? lease.copyOut(CH_SIG_BASE, 44)
+          : new Uint8Array(0),
+      };
+    });
+    const { sigResult } = snapshot;
     if (sigResult < 0) {
       throw new KernelTaskBindingError(
         channel.pid,
@@ -4775,10 +5364,9 @@ export class CentralizedKernelWorker {
       // Copy 44 bytes of signal delivery info from kernel scratch to process channel
       // Layout: signum(4) + handler(4) + flags(4) + si_value(4) + old_mask(8)
       //       + si_code(4) + si_pid(4) + si_uid(4) + alt_sp(4) + alt_size(4) = 44 bytes
-      const kernelMem = this.getKernelMem();
       const processMem = new Uint8Array(channel.memory.buffer);
       processMem.set(
-        kernelMem.subarray(sigOutOffset, sigOutOffset + 44),
+        snapshot.bytes,
         channel.channelOffset + CH_SIG_BASE,
       );
       return sigResult;
@@ -4800,19 +5388,20 @@ export class CentralizedKernelWorker {
     argDescs: SyscallArgDesc[] | undefined,
     retVal: number,
     errVal: number,
+    detachedOutput?: ChannelOutputWrite[],
   ): void {
     // Snapshot all scratch-backed output before processing kernel wake events:
     // parent notification and waiter completion can re-enter the kernel and
     // reuse the one shared scratch buffer.
     const prepared: PreparedChannelCompletion = {
       kind: "marshalled",
-      outputWrites: this.snapshotChannelOutput(
-        channel,
-        syscallNr,
-        origArgs,
-        argDescs,
-        retVal,
-      ),
+      outputWrites: detachedOutput ?? this.snapshotChannelOutput(
+          channel,
+          syscallNr,
+          origArgs,
+          argDescs,
+          retVal,
+        ),
       retVal,
       errVal,
       materialized: false,
@@ -4846,109 +5435,162 @@ export class CentralizedKernelWorker {
     this.publishOrParkChannelCompletion(channel, prepared);
   }
 
+  /**
+   * Detach descriptor output using the exact capacity-checked layout that was
+   * staged for this dispatch. Recomputing sizes from mutable guest memory here
+   * could select different offsets after a synchronous host callback.
+   */
+  private snapshotPlannedChannelOutput(
+    channel: ChannelInfo,
+    syscallNr: number,
+    retVal: number,
+    plannedArgs: PlannedChannelScratchArg[],
+    lease: KernelScratchLease,
+  ): ChannelOutputWrite[] {
+    const writes: ChannelOutputWrite[] = [];
+    for (const planned of plannedArgs) {
+      const { desc } = planned;
+      if (desc.direction !== "out" && desc.direction !== "inout") continue;
+      // Pure output is unspecified on failure; preserve caller-owned bytes.
+      if (desc.direction === "out" && retVal < 0) continue;
+
+      let copySize = planned.size;
+      if (desc.direction === "out" && desc.size.type === "arg") {
+        const copyRetvalAdd = desc.copyRetvalAdd ?? 0;
+        if (retVal === 0) {
+          copySize = Math.min(copyRetvalAdd, copySize);
+        } else if (retVal + copyRetvalAdd < copySize) {
+          copySize = retVal + copyRetvalAdd;
+        }
+      }
+      if (copySize <= 0) continue;
+
+      let bytes = lease.copyOut(planned.scratchOffset, copySize);
+      if (
+        syscallNr === SYS_RT_SIGTIMEDWAIT &&
+        desc.argIndex === 1 &&
+        this.getPtrWidth(channel.pid) === 8 &&
+        copySize >= 32
+      ) {
+        // The kernel channel uses the packed wasm32 siginfo layout. Expand its
+        // fixed fields at the host boundary for wasm64 musl.
+        bytes.copyWithin(16, 12, 24);
+        bytes.fill(0, 12, 16);
+      }
+      writes.push({ ptr: planned.processPointer, bytes });
+    }
+    return writes;
+  }
+
   private snapshotChannelOutput(
     channel: ChannelInfo,
     syscallNr: number,
     origArgs: number[],
     argDescs: SyscallArgDesc[] | undefined,
     retVal: number,
-  ): Array<{ ptr: number; bytes: Uint8Array }> {
+    activeLease?: KernelScratchLease,
+  ): ChannelOutputWrite[] {
     if (!argDescs) return [];
 
-    const writes: Array<{ ptr: number; bytes: Uint8Array }> = [];
+    const writes: ChannelOutputWrite[] = [];
     const processMem = new Uint8Array(channel.memory.buffer);
-    const kernelMem = this.getKernelMem();
-    const dataStart = this.scratchOffset + CH_DATA;
-    let outOffset = 0;
+    const processView = new DataView(
+      processMem.buffer,
+      processMem.byteOffset,
+      processMem.byteLength,
+    );
+    const scratch = this.requireMainScratchRegion();
 
-    for (const desc of argDescs) {
-      const origPtr = origArgs[desc.argIndex];
-      if (
-        syscallNr === SYS_IOCTL &&
-        (origArgs[1] >>> 0) === TCFLSH &&
-        desc.argIndex === 2
-      ) {
-        // The guest supplied a scalar queue selector, not an output pointer.
-        continue;
-      }
-      if (origPtr === 0) continue;
+    const snapshot = (lease: KernelScratchLease): ChannelOutputWrite[] => {
+      let outOffset = 0;
 
-      let size: number;
-      if (desc.size.type === "cstring") {
-        let len = 0;
-        while (
-          len < CH_DATA_SIZE - outOffset - 1 &&
-          processMem[origPtr + len] !== 0
+      for (const desc of argDescs) {
+        const origPtr = origArgs[desc.argIndex];
+        if (
+          syscallNr === SYS_IOCTL &&
+          (origArgs[1] >>> 0) === TCFLSH &&
+          desc.argIndex === 2
         ) {
-          len++;
+          // The guest supplied a scalar queue selector, not an output pointer.
+          continue;
         }
-        size = len + 1;
-      } else if (desc.size.type === "arg") {
-        size =
-          origArgs[desc.size.argIndex] * (desc.size.multiplier ?? 1) +
-          (desc.size.add ?? 0);
-      } else if (desc.size.type === "deref") {
-        const derefPtr = origArgs[desc.size.argIndex];
-        if (derefPtr === 0) continue;
-        size =
-          processMem[derefPtr] |
-          (processMem[derefPtr + 1] << 8) |
-          (processMem[derefPtr + 2] << 16) |
-          (processMem[derefPtr + 3] << 24);
-      } else {
-        size = desc.size.size;
-      }
+        if (origPtr === 0) continue;
 
-      if (size <= 0) continue;
-      if (outOffset + size > CH_DATA_SIZE) {
-        size = CH_DATA_SIZE - outOffset;
-        if (size <= 0) continue;
-      }
-
-      const kernelPtr = dataStart + outOffset;
-      if (desc.direction === "out" || desc.direction === "inout") {
-        // Pure output is unspecified on failure; preserve the caller's bytes.
-        if (!(desc.direction === "out" && retVal < 0)) {
-          let copySize = size;
-          if (desc.direction === "out" && desc.size.type === "arg") {
-            // For read/recv/getdents-like syscalls, retVal is the number of
-            // bytes produced. Successful EOF must not copy the zero-filled
-            // scratch buffer over bytes the caller already owns. Some
-            // descriptors prepend fixed metadata that is still produced when
-            // the variable-length result is empty.
-            const copyRetvalAdd = desc.copyRetvalAdd ?? 0;
-            if (retVal === 0) {
-              copySize = Math.min(copyRetvalAdd, size);
-            } else if (retVal + copyRetvalAdd < size) {
-              copySize = retVal + copyRetvalAdd;
-            }
-          }
-          let bytes = new Uint8Array(copySize);
-          bytes.set(kernelMem.subarray(kernelPtr, kernelPtr + copySize));
-          if (
-            syscallNr === SYS_RT_SIGTIMEDWAIT &&
-            desc.argIndex === 1 &&
-            this.getPtrWidth(channel.pid) === 8 &&
-            copySize >= 32
+        let size: number;
+        if (desc.size.type === "cstring") {
+          let len = 0;
+          while (
+            len < CH_DATA_SIZE - outOffset - 1 &&
+            processMem[origPtr + len] !== 0
           ) {
-            // The kernel channel carries siginfo's meaningful fields in the
-            // fixed wasm32 layout: header at 0, the first union words at
-            // 12/16, and sival_int at 20. Musl's wasm64 siginfo_t aligns the
-            // union to eight bytes, moving those fields to 16/20/24. Expand
-            // the fixed channel record at the host boundary, where the guest
-            // pointer width is known.
-            bytes.copyWithin(16, 12, 24);
-            bytes.fill(0, 12, 16);
+            len++;
           }
-          writes.push({ ptr: origPtr, bytes });
+          size = len + 1;
+        } else if (desc.size.type === "arg") {
+          size =
+            origArgs[desc.size.argIndex] * (desc.size.multiplier ?? 1) +
+            (desc.size.add ?? 0);
+        } else if (desc.size.type === "deref") {
+          const derefPtr = origArgs[desc.size.argIndex];
+          if (derefPtr === 0) continue;
+          size = processView.getUint32(derefPtr, true);
+        } else {
+          size = desc.size.size;
         }
+
+        if (size <= 0) continue;
+        if (outOffset + size > CH_DATA_SIZE) {
+          size = CH_DATA_SIZE - outOffset;
+        }
+        if (size <= 0) continue;
+
+        if (desc.direction === "out" || desc.direction === "inout") {
+          // Pure output is unspecified on failure; preserve the caller's bytes.
+          if (!(desc.direction === "out" && retVal < 0)) {
+            let copySize = size;
+            if (desc.direction === "out" && desc.size.type === "arg") {
+              // For read/recv/getdents-like syscalls, retVal is the number of
+              // bytes produced. Successful EOF must not copy the zero-filled
+              // scratch buffer over bytes the caller already owns. Some
+              // descriptors prepend fixed metadata that is still produced when
+              // the variable-length result is empty.
+              const copyRetvalAdd = desc.copyRetvalAdd ?? 0;
+              if (retVal === 0) {
+                copySize = Math.min(copyRetvalAdd, size);
+              } else if (retVal + copyRetvalAdd < size) {
+                copySize = retVal + copyRetvalAdd;
+              }
+            }
+            let bytes = lease.copyOut(CH_DATA + outOffset, copySize);
+            if (
+              syscallNr === SYS_RT_SIGTIMEDWAIT &&
+              desc.argIndex === 1 &&
+              this.getPtrWidth(channel.pid) === 8 &&
+              copySize >= 32
+            ) {
+              // The kernel channel carries siginfo's meaningful fields in the
+              // fixed wasm32 layout: header at 0, the first union words at
+              // 12/16, and sival_int at 20. Musl's wasm64 siginfo_t aligns the
+              // union to eight bytes, moving those fields to 16/20/24. Expand
+              // the fixed channel record at the host boundary, where the guest
+              // pointer width is known.
+              bytes.copyWithin(16, 12, 24);
+              bytes.fill(0, 12, 16);
+            }
+            writes.push({ ptr: origPtr, bytes });
+          }
+        }
+
+        outOffset += size;
+        outOffset = (outOffset + 7) & ~7;
       }
 
-      outOffset += size;
-      outOffset = (outOffset + 7) & ~7;
-    }
-
-    return writes;
+      // WHY: wake processing may re-enter the kernel and reuse main scratch.
+      // Snapshot every output byte under one synchronous lease before any
+      // lifecycle observer or callback can run.
+      return writes;
+    };
+    return activeLease ? snapshot(activeLease) : scratch.withLease(snapshot);
   }
 
   private publishOrParkChannelCompletion(
@@ -5956,23 +6598,40 @@ export class CentralizedKernelWorker {
     // reuse this scratch allocation.
     const events: OwnedKernelWakeEvent[] = [];
     for (;;) {
-      const count = drainFn(
-        this.toKernelPtr(this.scratchOffset),
-        bufSize,
-        MAX_EVENTS,
-      );
+      const batch = this.requireMainScratchRegion().withLease((lease) => {
+        const count = drainFn(
+          this.toKernelPtr(lease.address(0, bufSize)),
+          bufSize,
+          MAX_EVENTS,
+        );
+        if (
+          !Number.isSafeInteger(count)
+          || count > MAX_EVENTS
+        ) {
+          throw new KernelScratchError(
+            `kernel wake drain returned invalid event count ${count}`,
+            EIO,
+          );
+        }
+        return {
+          count,
+          bytes: count > 0
+            ? lease.copyOut(0, count * BYTES_PER_EVENT)
+            : new Uint8Array(0),
+        };
+      });
+      const { count } = batch;
       if (count <= 0) break;
-      const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
       for (let i = 0; i < count; i++) {
-        const off = this.scratchOffset + i * BYTES_PER_EVENT;
+        const off = i * BYTES_PER_EVENT;
         events.push({
           wakeIdx:
-            (kernelMem[off] |
-              (kernelMem[off + 1] << 8) |
-              (kernelMem[off + 2] << 16) |
-              (kernelMem[off + 3] << 24)) >>>
+            (batch.bytes[off] |
+              (batch.bytes[off + 1] << 8) |
+              (batch.bytes[off + 2] << 16) |
+              (batch.bytes[off + 3] << 24)) >>>
             0,
-          wakeType: kernelMem[off + 4],
+          wakeType: batch.bytes[off + 4],
         });
       }
       if (count < MAX_EVENTS) break;
@@ -6617,16 +7276,14 @@ export class CentralizedKernelWorker {
 
     const pipeRead = this.kernelInstance!.exports.kernel_pipe_read as
       (pid: number, pipeIdx: number, bufPtr: KernelPointer, bufLen: number) => number;
-    const mem = this.getKernelMem();
-
     // Injected-connection pipes live in the global pipe table; pid=0
     // tells kernel_pipe_read to use it directly. See kernel_inject_connection.
     for (const conn of conns) {
       // Drain all available data from the send pipe (not just one chunk)
       for (;;) {
-        const readN = pipeRead(0, conn.sendPipeIdx, this.toKernelPtr(conn.scratchOffset), 65536);
-        if (readN <= 0) break;
-        const outData = Buffer.from(mem.slice(conn.scratchOffset, conn.scratchOffset + readN));
+        const bytes = this.readPipeChunk(pipeRead, 0, conn.sendPipeIdx);
+        if (!bytes) break;
+        const outData = Buffer.from(bytes);
         if (!conn.clientSocket.destroyed) {
           conn.clientSocket.write(outData);
         }
@@ -6822,7 +7479,27 @@ export class CentralizedKernelWorker {
       } else {
         const tsPtr = origArgs[2];
         if (tsPtr !== 0) {
-          const pv = new DataView(channel.memory.buffer, tsPtr);
+          // Every retry re-enters _handleSyscallInner, which validates this
+          // special ppoll source before the kernel returns EAGAIN. Repeat the
+          // range proof here rather than treating that earlier proof as a
+          // lifetime guarantee for caller memory.
+          let range: { pointer: number; length: number };
+          try {
+            range = this.checkedProcessRange(
+              channel,
+              tsPtr,
+              16,
+              "ppoll retry timeout",
+            );
+          } catch (error) {
+            this.rejectScratchTransfer(channel, error);
+            return;
+          }
+          const pv = new DataView(
+            channel.memory.buffer,
+            range.pointer,
+            range.length,
+          );
           const sec = Number(pv.getBigInt64(0, true));
           const nsec = Number(pv.getBigInt64(8, true));
           timeoutMs = sec * 1000 + Math.floor(nsec / 1000000);
@@ -7222,22 +7899,17 @@ export class CentralizedKernelWorker {
     origArgs: number[],
     retVal: number,
     errVal: number,
+    capturedDelayMs?: number,
   ): boolean {
     let delayMs = 0;
 
     if (syscallNr === SYS_NANOSLEEP && retVal >= 0) {
-      const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-      const sec = kernelView.getUint32(CH_DATA, true);
-      const nsec = kernelView.getUint32(CH_DATA + 8, true);
-      delayMs = sec * 1000 + Math.floor(nsec / 1_000_000);
+      delayMs = capturedDelayMs ?? 0;
     } else if (syscallNr === SYS_USLEEP && retVal >= 0) {
       const usec = origArgs[0] >>> 0;
       delayMs = Math.max(1, Math.floor(usec / 1000));
     } else if (syscallNr === SYS_CLOCK_NANOSLEEP && retVal >= 0) {
-      const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-      const sec = kernelView.getUint32(CH_DATA, true);
-      const nsec = kernelView.getUint32(CH_DATA + 8, true);
-      delayMs = sec * 1000 + Math.floor(nsec / 1_000_000);
+      delayMs = capturedDelayMs ?? 0;
     }
 
     if (delayMs > 0) {
@@ -7319,36 +7991,59 @@ export class CentralizedKernelWorker {
       );
       return;
     }
-    const kernelMem = this.getKernelMem();
-    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    const dataStart = this.scratchOffset + CH_DATA;
-
-    // Copy flock struct from process → kernel scratch
-    kernelMem.set(processMem.subarray(flockPtr, flockPtr + FLOCK_SIZE), dataStart);
-
-    // Write syscall header to kernel scratch
-    kernelView.setUint32(CH_SYSCALL, SYS_FCNTL, true);
-    kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(origArgs[0]), true); // fd
-    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(origArgs[1]), true); // cmd
-    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(dataStart), true); // flock_ptr in kernel memory
-    for (let i = 3; i < CH_ARGS_COUNT; i++) {
-      kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, BigInt(origArgs[i]), true);
-    }
-
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: KernelPointer, pid: number) => number;
-    this.bindKernelTidForChannel(channel);
-    this.currentHandlePid = channel.pid;
+    let result: { retVal: number; errVal: number; flock: Uint8Array | null };
     try {
-      handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
-    } finally {
-      this.currentHandlePid = 0;
+      result = this.requireMainScratchRegion().withLease((lease) => {
+        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
+        lease.copyFrom(processMem, CH_DATA, flockPtr, FLOCK_SIZE);
+        kernelView.setUint32(CH_SYSCALL, SYS_FCNTL, true);
+        kernelView.setBigInt64(CH_ARGS, BigInt(origArgs[0]), true);
+        kernelView.setBigInt64(
+          CH_ARGS + CH_ARG_SIZE,
+          BigInt(origArgs[1]),
+          true,
+        );
+        kernelView.setBigInt64(
+          CH_ARGS + 2 * CH_ARG_SIZE,
+          BigInt(lease.address(CH_DATA, FLOCK_SIZE)),
+          true,
+        );
+        for (let i = 3; i < CH_ARGS_COUNT; i++) {
+          kernelView.setBigInt64(
+            CH_ARGS + i * CH_ARG_SIZE,
+            BigInt(origArgs[i]),
+            true,
+          );
+        }
+
+        this.bindKernelTidForChannel(channel);
+        this.currentHandlePid = channel.pid;
+        try {
+          handleChannel(
+            this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+            channel.pid,
+          );
+        } finally {
+          this.currentHandlePid = 0;
+        }
+        const resultView = lease.dataView(0, CH_TOTAL_SIZE);
+        const retVal = Number(resultView.getBigInt64(CH_RETURN, true));
+        return {
+          retVal,
+          errVal: resultView.getUint32(CH_ERRNO, true),
+          flock: retVal >= 0 ? lease.copyOut(CH_DATA, FLOCK_SIZE) : null,
+        };
+      });
+    } catch (error) {
+      this.rejectScratchTransfer(channel, error);
+      return;
     }
 
     if (this.finishSignalTermination(channel)) return;
 
-    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-    const errVal = kernelView.getUint32(CH_ERRNO, true);
+    const { retVal, errVal } = result;
     // This marshalling path bypasses the generic syscall completion path,
     // so it must also dequeue a caught signal itself. A conflicting blocking
     // request is interruptible: once a handler signal is prepared for this
@@ -7357,9 +8052,8 @@ export class CentralizedKernelWorker {
     if (this.finishSignalTermination(channel)) return;
 
     // Copy flock struct back from kernel → process (F_GETLK writes to it)
-    if (retVal >= 0) {
-      const freshProcessMem = new Uint8Array(channel.memory.buffer);
-      freshProcessMem.set(kernelMem.subarray(dataStart, dataStart + FLOCK_SIZE), flockPtr);
+    if (result.flock) {
+      new Uint8Array(channel.memory.buffer).set(result.flock, flockPtr);
     }
 
     const cmd = origArgs[1];
@@ -7425,6 +8119,120 @@ export class CentralizedKernelWorker {
     return false;
   }
 
+  /**
+   * Marshal one select-family attempt while holding the main scratch lease.
+   *
+   * WHY: retries may cross timers, but a single attempt copies caller bytes,
+   * invokes Rust, and snapshots every output synchronously. No scratch view
+   * survives into the asynchronous retry state.
+   */
+  private runSelectKernelAttempt(
+    channel: ChannelInfo,
+    syscallNr: number,
+    nfds: number,
+    readPtr: number,
+    writePtr: number,
+    exceptPtr: number,
+    timeoutMs: number,
+    maskPtr: number,
+  ): {
+    retVal: number;
+    errVal: number;
+    read: Uint8Array | null;
+    write: Uint8Array | null;
+    except: Uint8Array | null;
+    usedMask: boolean;
+  } {
+    const FD_SET_SIZE = 128;
+    const processMem = new Uint8Array(channel.memory.buffer);
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+      (offset: KernelPointer, pid: number) => number;
+    const scratch = this.requireMainScratchRegion();
+
+    return scratch.withLease((lease) => {
+      const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
+      const fdSetOffset = (index: number) => CH_DATA + index * FD_SET_SIZE;
+      for (const [index, pointer] of [readPtr, writePtr, exceptPtr].entries()) {
+        if (pointer !== 0) {
+          lease.copyFrom(
+            processMem,
+            fdSetOffset(index),
+            pointer,
+            FD_SET_SIZE,
+          );
+        } else {
+          lease.fill(0, fdSetOffset(index), FD_SET_SIZE);
+        }
+      }
+      const maskOffset = fdSetOffset(3);
+      if (maskPtr !== 0) {
+        lease.copyFrom(processMem, maskOffset, maskPtr, 8);
+      }
+
+      kernelView.setUint32(CH_SYSCALL, syscallNr, true);
+      for (let index = 0; index < CH_ARGS_COUNT; index++) {
+        kernelView.setBigInt64(CH_ARGS + index * CH_ARG_SIZE, 0n, true);
+      }
+      kernelView.setBigInt64(CH_ARGS, BigInt(nfds), true);
+      kernelView.setBigInt64(
+        CH_ARGS + CH_ARG_SIZE,
+        BigInt(readPtr !== 0 ? lease.address(fdSetOffset(0), FD_SET_SIZE) : 0),
+        true,
+      );
+      kernelView.setBigInt64(
+        CH_ARGS + 2 * CH_ARG_SIZE,
+        BigInt(writePtr !== 0 ? lease.address(fdSetOffset(1), FD_SET_SIZE) : 0),
+        true,
+      );
+      kernelView.setBigInt64(
+        CH_ARGS + 3 * CH_ARG_SIZE,
+        BigInt(exceptPtr !== 0 ? lease.address(fdSetOffset(2), FD_SET_SIZE) : 0),
+        true,
+      );
+      kernelView.setBigInt64(
+        CH_ARGS + 4 * CH_ARG_SIZE,
+        BigInt(timeoutMs),
+        true,
+      );
+      if (syscallNr === SYS_PSELECT6 && maskPtr !== 0) {
+        kernelView.setBigInt64(
+          CH_ARGS + 5 * CH_ARG_SIZE,
+          BigInt(lease.address(maskOffset, 8)),
+          true,
+        );
+      }
+
+      this.bindKernelTidForChannel(channel);
+      this.currentHandlePid = channel.pid;
+      try {
+        handleChannel(
+          this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+          channel.pid,
+        );
+      } finally {
+        this.currentHandlePid = 0;
+      }
+
+      const resultView = lease.dataView(0, CH_TOTAL_SIZE);
+      const retVal = Number(resultView.getBigInt64(CH_RETURN, true));
+      const errVal = resultView.getUint32(CH_ERRNO, true);
+      return {
+        retVal,
+        errVal,
+        read: retVal >= 0 && readPtr !== 0
+          ? lease.copyOut(fdSetOffset(0), FD_SET_SIZE)
+          : null,
+        write: retVal >= 0 && writePtr !== 0
+          ? lease.copyOut(fdSetOffset(1), FD_SET_SIZE)
+          : null,
+        except: retVal >= 0 && exceptPtr !== 0
+          ? lease.copyOut(fdSetOffset(2), FD_SET_SIZE)
+          : null,
+        usedMask: maskPtr !== 0,
+      };
+    });
+  }
+
   private handleSelect(channel: ChannelInfo, origArgs: number[]): void {
     if (this.deferChannelWhileStopped(channel)) return;
     const FD_SET_SIZE = 128;
@@ -7433,13 +8241,35 @@ export class CentralizedKernelWorker {
     const writePtr = origArgs[2];
     const exceptPtr = origArgs[3];
     const tvPtr = origArgs[4];
+    const pointerWidth = this.getPtrWidth(channel.pid);
+    try {
+      for (const [pointer, field] of [
+        [readPtr, "select read fd_set"],
+        [writePtr, "select write fd_set"],
+        [exceptPtr, "select except fd_set"],
+      ] as const) {
+        if (pointer !== 0) {
+          this.checkedProcessRange(channel, pointer, FD_SET_SIZE, field);
+        }
+      }
+      if (tvPtr !== 0) {
+        this.checkedProcessRange(
+          channel,
+          tvPtr,
+          pointerWidth === 8 ? 16 : 8,
+          "select timeout",
+        );
+      }
+    } catch (error) {
+      this.rejectScratchTransfer(channel, error);
+      return;
+    }
 
     let timeoutMs = -1; // -1 = infinite (NULL timeval)
     if (tvPtr !== 0) {
-      const ptrWidth = this.getPtrWidth(channel.pid);
       const pv = new DataView(channel.memory.buffer, tvPtr);
       let sec: number, usec: number;
-      if (ptrWidth === 8) {
+      if (pointerWidth === 8) {
         sec = Number(pv.getBigInt64(0, true));
         usec = Number(pv.getBigInt64(8, true));
       } else {
@@ -7488,70 +8318,27 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // General case: dispatch to the kernel's sys_select with timeout_ms in
-    // arg5. fd_sets are copied via the standard pre-existing scratch flow
-    // (kernel_select reads readfds_ptr/writefds_ptr/exceptfds_ptr into
-    // process memory directly, so we copy them in just like handlePselect6).
-    const processMem = new Uint8Array(channel.memory.buffer);
-    const kernelMem = this.getKernelMem();
-    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    const dataStart = this.scratchOffset + CH_DATA;
-
-    if (readPtr !== 0) {
-      kernelMem.set(processMem.subarray(readPtr, readPtr + FD_SET_SIZE), dataStart);
-    } else {
-      kernelMem.fill(0, dataStart, dataStart + FD_SET_SIZE);
-    }
-    if (writePtr !== 0) {
-      kernelMem.set(processMem.subarray(writePtr, writePtr + FD_SET_SIZE), dataStart + FD_SET_SIZE);
-    } else {
-      kernelMem.fill(0, dataStart + FD_SET_SIZE, dataStart + 2 * FD_SET_SIZE);
-    }
-    if (exceptPtr !== 0) {
-      kernelMem.set(processMem.subarray(exceptPtr, exceptPtr + FD_SET_SIZE), dataStart + 2 * FD_SET_SIZE);
-    } else {
-      kernelMem.fill(0, dataStart + 2 * FD_SET_SIZE, dataStart + 3 * FD_SET_SIZE);
-    }
-
-    kernelView.setUint32(CH_SYSCALL, SYS_SELECT, true);
-    kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(nfds), true);
-    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(readPtr !== 0 ? dataStart : 0), true);
-    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(writePtr !== 0 ? dataStart + FD_SET_SIZE : 0), true);
-    kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(exceptPtr !== 0 ? dataStart + 2 * FD_SET_SIZE : 0), true);
-    kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(kernelTimeoutMs), true);
-
-    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-      (offset: KernelPointer, pid: number) => number;
-    this.bindKernelTidForChannel(channel);
-    this.currentHandlePid = channel.pid;
+    let attempt: ReturnType<typeof this.runSelectKernelAttempt>;
     try {
-      handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
-    } finally {
-      this.currentHandlePid = 0;
+      attempt = this.runSelectKernelAttempt(
+        channel,
+        SYS_SELECT,
+        nfds,
+        readPtr,
+        writePtr,
+        exceptPtr,
+        kernelTimeoutMs,
+        0,
+      );
+    } catch (error) {
+      this.rejectScratchTransfer(channel, error);
+      return;
     }
-
-    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-    const errVal = kernelView.getUint32(CH_ERRNO, true);
-
-    // Copy fd_sets back from kernel → process on success
-    if (retVal >= 0) {
-      const freshProcessMem = new Uint8Array(channel.memory.buffer);
-      if (readPtr !== 0) {
-        freshProcessMem.set(kernelMem.subarray(dataStart, dataStart + FD_SET_SIZE), readPtr);
-      }
-      if (writePtr !== 0) {
-        freshProcessMem.set(
-          kernelMem.subarray(dataStart + FD_SET_SIZE, dataStart + 2 * FD_SET_SIZE),
-          writePtr,
-        );
-      }
-      if (exceptPtr !== 0) {
-        freshProcessMem.set(
-          kernelMem.subarray(dataStart + 2 * FD_SET_SIZE, dataStart + 3 * FD_SET_SIZE),
-          exceptPtr,
-        );
-      }
-    }
+    const { retVal, errVal } = attempt;
+    const freshProcessMem = new Uint8Array(channel.memory.buffer);
+    if (attempt.read) freshProcessMem.set(attempt.read, readPtr);
+    if (attempt.write) freshProcessMem.set(attempt.write, writePtr);
+    if (attempt.except) freshProcessMem.set(attempt.except, exceptPtr);
 
     if (this.completeSelectSignalOutcome(
       channel,
@@ -7606,12 +8393,6 @@ export class CentralizedKernelWorker {
     if (this.deferChannelWhileStopped(channel)) return;
     const FD_SET_SIZE = 128;
     const processMem = new Uint8Array(channel.memory.buffer);
-    const kernelMem = this.getKernelMem();
-    const kernelView = new DataView(
-      this.kernelMemory!.buffer,
-      this.scratchOffset,
-    );
-    const dataStart = this.scratchOffset + CH_DATA;
 
     const nfds = origArgs[0];
     const readPtr = origArgs[1];
@@ -7619,22 +8400,53 @@ export class CentralizedKernelWorker {
     const exceptPtr = origArgs[3];
     const tsPtr = origArgs[4];
     const maskDataPtr = origArgs[5]; // pointer to {sigset_t *mask, size_t size}
-
-    // Copy fd_sets from process → kernel scratch
-    if (readPtr !== 0) {
-      kernelMem.set(processMem.subarray(readPtr, readPtr + FD_SET_SIZE), dataStart);
-    } else {
-      kernelMem.fill(0, dataStart, dataStart + FD_SET_SIZE);
-    }
-    if (writePtr !== 0) {
-      kernelMem.set(processMem.subarray(writePtr, writePtr + FD_SET_SIZE), dataStart + FD_SET_SIZE);
-    } else {
-      kernelMem.fill(0, dataStart + FD_SET_SIZE, dataStart + 2 * FD_SET_SIZE);
-    }
-    if (exceptPtr !== 0) {
-      kernelMem.set(processMem.subarray(exceptPtr, exceptPtr + FD_SET_SIZE), dataStart + 2 * FD_SET_SIZE);
-    } else {
-      kernelMem.fill(0, dataStart + 2 * FD_SET_SIZE, dataStart + 3 * FD_SET_SIZE);
+    let checkedMaskPtr = 0;
+    try {
+      for (const [pointer, field] of [
+        [readPtr, "pselect6 read fd_set"],
+        [writePtr, "pselect6 write fd_set"],
+        [exceptPtr, "pselect6 except fd_set"],
+      ] as const) {
+        if (pointer !== 0) {
+          this.checkedProcessRange(channel, pointer, FD_SET_SIZE, field);
+        }
+      }
+      if (tsPtr !== 0) {
+        this.checkedProcessRange(channel, tsPtr, 16, "pselect6 timeout");
+      }
+      if (maskDataPtr !== 0) {
+        const pointerWidth = this.getPtrWidth(channel.pid);
+        const outer = this.checkedProcessRange(
+          channel,
+          maskDataPtr,
+          pointerWidth === 8 ? 16 : 8,
+          "pselect6 mask descriptor",
+        );
+        const descriptor = new DataView(
+          channel.memory.buffer,
+          outer.pointer,
+          outer.length,
+        );
+        const rawMaskPointer = pointerWidth === 8
+          ? descriptor.getBigUint64(0, true)
+          : descriptor.getUint32(0, true);
+        checkedMaskPtr = checkedWasmPointer(
+          rawMaskPointer,
+          pointerWidth,
+          "pselect6 mask pointer",
+        );
+        if (checkedMaskPtr !== 0) {
+          this.checkedProcessRange(
+            channel,
+            rawMaskPointer,
+            8,
+            "pselect6 signal mask",
+          );
+        }
+      }
+    } catch (error) {
+      this.rejectScratchTransfer(channel, error);
+      return;
     }
 
     // Decode timeout: timespec {i64 sec, i64 nsec} → ms
@@ -7665,64 +8477,27 @@ export class CentralizedKernelWorker {
     // call, letting the next kill(getpid, SIGTERM) fire the main-thread
     // handler before the dedicated `signal_hand` thread could `sigwait` it
     // — `wait_for_signal_thread_to_end` then spun forever.
-    const maskOffset = dataStart + 3 * FD_SET_SIZE;
-    let kernelMaskPtr = 0; // 0 = no mask swap
-    if (maskDataPtr !== 0) {
-      const pw = this.getPtrWidth(channel.pid);
-      const mdv = new DataView(channel.memory.buffer, maskDataPtr);
-      const maskPtr = pw === 8
-        ? Number(mdv.getBigUint64(0, true))
-        : mdv.getUint32(0, true);
-      if (maskPtr !== 0) {
-        kernelMem.set(processMem.subarray(maskPtr, maskPtr + 8), maskOffset);
-        kernelMaskPtr = maskOffset;
-      }
-    }
-
-    // Write args: (nfds, readfds_kernel_ptr, writefds_kernel_ptr,
-    //              exceptfds_kernel_ptr, timeout_ms, mask_kernel_ptr)
-    kernelView.setUint32(CH_SYSCALL, SYS_PSELECT6, true);
-    kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(nfds), true);
-    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(readPtr !== 0 ? dataStart : 0), true);
-    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(writePtr !== 0 ? dataStart + FD_SET_SIZE : 0), true);
-    kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(exceptPtr !== 0 ? dataStart + 2 * FD_SET_SIZE : 0), true);
-    kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(kernelTimeoutMs), true);
-    kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, BigInt(kernelMaskPtr), true);
-
-    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-      (offset: KernelPointer, pid: number) => number;
-    this.bindKernelTidForChannel(channel);
-    this.currentHandlePid = channel.pid;
+    let attempt: ReturnType<typeof this.runSelectKernelAttempt>;
     try {
-      handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
-    } finally {
-      this.currentHandlePid = 0;
+      attempt = this.runSelectKernelAttempt(
+        channel,
+        SYS_PSELECT6,
+        nfds,
+        readPtr,
+        writePtr,
+        exceptPtr,
+        kernelTimeoutMs,
+        checkedMaskPtr,
+      );
+    } catch (error) {
+      this.rejectScratchTransfer(channel, error);
+      return;
     }
-
-    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-    const errVal = kernelView.getUint32(CH_ERRNO, true);
-
-    // pselect6 debug logging disabled
-
-    // Copy fd_sets back from kernel → process
-    if (retVal >= 0) {
-      const freshProcessMem = new Uint8Array(channel.memory.buffer);
-      if (readPtr !== 0) {
-        freshProcessMem.set(kernelMem.subarray(dataStart, dataStart + FD_SET_SIZE), readPtr);
-      }
-      if (writePtr !== 0) {
-        freshProcessMem.set(
-          kernelMem.subarray(dataStart + FD_SET_SIZE, dataStart + 2 * FD_SET_SIZE),
-          writePtr,
-        );
-      }
-      if (exceptPtr !== 0) {
-        freshProcessMem.set(
-          kernelMem.subarray(dataStart + 2 * FD_SET_SIZE, dataStart + 3 * FD_SET_SIZE),
-          exceptPtr,
-        );
-      }
-    }
+    const { retVal, errVal } = attempt;
+    const freshProcessMem = new Uint8Array(channel.memory.buffer);
+    if (attempt.read) freshProcessMem.set(attempt.read, readPtr);
+    if (attempt.write) freshProcessMem.set(attempt.write, writePtr);
+    if (attempt.except) freshProcessMem.set(attempt.except, exceptPtr);
 
     if (this.completeSelectSignalOutcome(
       channel,
@@ -7745,7 +8520,7 @@ export class CentralizedKernelWorker {
 
       // pselect6 with a non-null sigmask pointer has the same late-signal
       // race as ppoll. See scheduleWakeBlockedRetriesDeferred.
-      const needsSignalSafeWake = kernelMaskPtr !== 0;
+      const needsSignalSafeWake = attempt.usedMask;
 
       // nfds=0: pure sleep/sigsuspend-like behavior.
       // With finite timeout: sleep for that duration.
@@ -7806,32 +8581,45 @@ export class CentralizedKernelWorker {
    * then initialise an empty interest list on the host side.
    */
   private handleEpollCreate(channel: ChannelInfo, syscallNr: number, origArgs: number[]): void {
-    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const flags = origArgs[0];
 
     // For SYS_EPOLL_CREATE, kernel expects flags=0 (size arg ignored)
     const actualFlags = syscallNr === SYS_EPOLL_CREATE ? 0 : flags;
-
-    kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-    kernelView.setBigInt64(CH_ARGS, BigInt(actualFlags), true);
-    for (let i = 1; i < CH_ARGS_COUNT; i++) {
-      kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
-    }
-
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: KernelPointer, pid: number) => number;
-    this.bindKernelTidForChannel(channel);
-    this.currentHandlePid = channel.pid;
+    let result: { retVal: number; errVal: number };
     try {
-      handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
-    } finally {
-      this.currentHandlePid = 0;
+      result = this.requireMainScratchRegion().withLease((lease) => {
+        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
+        kernelView.setUint32(CH_SYSCALL, syscallNr, true);
+        kernelView.setBigInt64(CH_ARGS, BigInt(actualFlags), true);
+        for (let i = 1; i < CH_ARGS_COUNT; i++) {
+          kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
+        }
+        this.bindKernelTidForChannel(channel);
+        this.currentHandlePid = channel.pid;
+        try {
+          handleChannel(
+            this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+            channel.pid,
+          );
+        } finally {
+          this.currentHandlePid = 0;
+        }
+        const resultView = lease.dataView(0, CH_TOTAL_SIZE);
+        return {
+          retVal: Number(resultView.getBigInt64(CH_RETURN, true)),
+          errVal: resultView.getUint32(CH_ERRNO, true),
+        };
+      });
+    } catch (error) {
+      this.rejectScratchTransfer(channel, error);
+      return;
     }
 
     if (this.finishSignalTermination(channel)) return;
 
-    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-    const errVal = kernelView.getUint32(CH_ERRNO, true);
+    const { retVal, errVal } = result;
 
     // If successful, initialise the host-side interest mirror
     if (retVal >= 0) {
@@ -7856,44 +8644,80 @@ export class CentralizedKernelWorker {
     let events = 0;
     let data = 0n;
     if (eventPtr !== 0) {
-      const pv = new DataView(channel.memory.buffer, eventPtr);
+      let eventRange: { pointer: number; length: number; end: number };
+      try {
+        eventRange = this.checkedProcessRange(
+          channel,
+          eventPtr,
+          12,
+          "epoll_ctl event",
+        );
+      } catch (error) {
+        this.rejectScratchTransfer(channel, error);
+        return;
+      }
+      const pv = new DataView(
+        channel.memory.buffer,
+        eventRange.pointer,
+        eventRange.length,
+      );
       events = pv.getUint32(0, true);
       data = pv.getBigUint64(4, true);
     }
 
-    // Call kernel — copy event struct to scratch
-    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    const kernelMem = this.getKernelMem();
-    const dataStart = this.scratchOffset + CH_DATA;
-
-    // Copy 12-byte epoll_event to kernel scratch
-    if (eventPtr !== 0) {
-      const processMem = new Uint8Array(channel.memory.buffer);
-      kernelMem.set(processMem.subarray(eventPtr, eventPtr + 12), dataStart);
-    }
-
-    kernelView.setUint32(CH_SYSCALL, SYS_EPOLL_CTL, true);
-    kernelView.setBigInt64(CH_ARGS, BigInt(epfd), true);
-    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(op), true);
-    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(fd), true);
-    kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(eventPtr !== 0 ? dataStart : 0), true);
-    kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(0), true);
-    kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, BigInt(0), true);
-
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: KernelPointer, pid: number) => number;
-    this.bindKernelTidForChannel(channel);
-    this.currentHandlePid = channel.pid;
+    let result: { retVal: number; errVal: number };
     try {
-      handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
-    } finally {
-      this.currentHandlePid = 0;
+      result = this.requireMainScratchRegion().withLease((lease) => {
+        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
+        const dataPointer = eventPtr !== 0
+          ? lease.address(CH_DATA, 12)
+          : 0;
+        if (eventPtr !== 0) {
+          lease.copyFrom(
+            new Uint8Array(channel.memory.buffer),
+            CH_DATA,
+            eventPtr,
+            12,
+          );
+        }
+        kernelView.setUint32(CH_SYSCALL, SYS_EPOLL_CTL, true);
+        kernelView.setBigInt64(CH_ARGS, BigInt(epfd), true);
+        kernelView.setBigInt64(CH_ARGS + CH_ARG_SIZE, BigInt(op), true);
+        kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(fd), true);
+        kernelView.setBigInt64(
+          CH_ARGS + 3 * CH_ARG_SIZE,
+          BigInt(dataPointer),
+          true,
+        );
+        kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
+        kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
+
+        this.bindKernelTidForChannel(channel);
+        this.currentHandlePid = channel.pid;
+        try {
+          handleChannel(
+            this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+            channel.pid,
+          );
+        } finally {
+          this.currentHandlePid = 0;
+        }
+        const resultView = lease.dataView(0, CH_TOTAL_SIZE);
+        return {
+          retVal: Number(resultView.getBigInt64(CH_RETURN, true)),
+          errVal: resultView.getUint32(CH_ERRNO, true),
+        };
+      });
+    } catch (error) {
+      this.rejectScratchTransfer(channel, error);
+      return;
     }
 
     if (this.finishSignalTermination(channel)) return;
 
-    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-    const errVal = kernelView.getUint32(CH_ERRNO, true);
+    const { retVal, errVal } = result;
 
     // Mirror the change on the host side if the kernel succeeded
     if (retVal === 0) {
@@ -7959,6 +8783,22 @@ export class CentralizedKernelWorker {
     if (maxevents <= 0) {
       this.completeChannelRaw(channel, -22, 22); // -EINVAL
       this.relistenChannel(channel);
+      return;
+    }
+    if (!Number.isSafeInteger(maxevents)) {
+      this.completeChannelRaw(channel, -1, EINVAL);
+      this.relistenChannel(channel);
+      return;
+    }
+    try {
+      this.checkedProcessRange(
+        channel,
+        eventsPtr,
+        maxevents * 12,
+        "epoll output events",
+      );
+    } catch (error) {
+      this.rejectScratchTransfer(channel, error);
       return;
     }
 
@@ -8029,44 +8869,63 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    const kernelMem = this.getKernelMem();
-    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    const dataStart = this.scratchOffset + CH_DATA;
-
-    // Write pollfds to kernel scratch
-    for (let i = 0; i < nfds; i++) {
-      const interest = interests[i];
-      const off = dataStart + i * 8;
-      let pollEvents = 0;
-      if (interest.events & EPOLLIN) pollEvents |= POLLIN;
-      if (interest.events & EPOLLOUT) pollEvents |= POLLOUT;
-      new DataView(this.kernelMemory!.buffer).setInt32(off, interest.fd, true);
-      new DataView(this.kernelMemory!.buffer).setInt16(off + 4, pollEvents, true);
-      new DataView(this.kernelMemory!.buffer).setInt16(off + 6, 0, true); // revents=0
-    }
-
-    // Call kernel with SYS_POLL: (fds_ptr, nfds, timeout_ms=0)
-    // Always use timeout=0 — we manage blocking/retry on the host side
-    kernelView.setUint32(CH_SYSCALL, SYS_POLL, true);
-    kernelView.setBigInt64(CH_ARGS, BigInt(dataStart), true);
-    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(nfds), true);
-    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(0), true); // timeout=0 for non-blocking poll
-    for (let i = 3; i < CH_ARGS_COUNT; i++) {
-      kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
-    }
-
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: KernelPointer, pid: number) => number;
-    this.bindKernelTidForChannel(channel);
-    this.currentHandlePid = channel.pid;
+    let pollResult: {
+      retVal: number;
+      errVal: number;
+      pollfds: Uint8Array;
+    };
     try {
-      handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
-    } finally {
-      this.currentHandlePid = 0;
+      pollResult = this.requireMainScratchRegion().withLease((lease) => {
+        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
+        const pollfdsView = lease.dataView(CH_DATA, pollfdSize);
+        for (let i = 0; i < nfds; i++) {
+          const interest = interests[i]!;
+          const off = i * 8;
+          let pollEvents = 0;
+          if (interest.events & EPOLLIN) pollEvents |= POLLIN;
+          if (interest.events & EPOLLOUT) pollEvents |= POLLOUT;
+          pollfdsView.setInt32(off, interest.fd, true);
+          pollfdsView.setInt16(off + 4, pollEvents, true);
+          pollfdsView.setInt16(off + 6, 0, true);
+        }
+
+        kernelView.setUint32(CH_SYSCALL, SYS_POLL, true);
+        kernelView.setBigInt64(
+          CH_ARGS,
+          BigInt(lease.address(CH_DATA, pollfdSize)),
+          true,
+        );
+        kernelView.setBigInt64(CH_ARGS + CH_ARG_SIZE, BigInt(nfds), true);
+        kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, 0n, true);
+        for (let i = 3; i < CH_ARGS_COUNT; i++) {
+          kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
+        }
+
+        this.bindKernelTidForChannel(channel);
+        this.currentHandlePid = channel.pid;
+        try {
+          handleChannel(
+            this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+            channel.pid,
+          );
+        } finally {
+          this.currentHandlePid = 0;
+        }
+        const resultView = lease.dataView(0, CH_TOTAL_SIZE);
+        return {
+          retVal: Number(resultView.getBigInt64(CH_RETURN, true)),
+          errVal: resultView.getUint32(CH_ERRNO, true),
+          pollfds: lease.copyOut(CH_DATA, pollfdSize),
+        };
+      });
+    } catch (error) {
+      this.rejectScratchTransfer(channel, error);
+      return;
     }
 
-    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-    const errVal = kernelView.getUint32(CH_ERRNO, true);
+    const { retVal, errVal, pollfds } = pollResult;
 
     // This host-side emulation performs a nonblocking poll and owns the
     // wait/retry loop, so it must preserve the syscall-boundary signal
@@ -8088,9 +8947,14 @@ export class CentralizedKernelWorker {
     let readyCount = 0;
     if (retVal > 0) {
       const processView = new DataView(channel.memory.buffer);
+      const pollfdsView = new DataView(
+        pollfds.buffer,
+        pollfds.byteOffset,
+        pollfds.byteLength,
+      );
       for (let i = 0; i < nfds && readyCount < maxevents; i++) {
-        const off = dataStart + i * 8;
-        const revents = new DataView(this.kernelMemory!.buffer).getInt16(off + 6, true);
+        const off = i * 8;
+        const revents = pollfdsView.getInt16(off + 6, true);
         if (revents !== 0) {
           // Map poll revents back to epoll events
           let epEvents = 0;
@@ -8468,93 +9332,100 @@ export class CentralizedKernelWorker {
     const fd = origArgs[0];
     const iovPtr = origArgs[1];
     const iovcnt = origArgs[2];
-
     const processMem = new Uint8Array(channel.memory.buffer);
-    const processView = new DataView(channel.memory.buffer);
-    const kernelMem = this.getKernelMem();
-    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    const dataStart = this.scratchOffset + CH_DATA;
-
-    // iovec struct: { void* iov_base, size_t iov_len }
-    // wasm32: 8 bytes per entry (4+4), wasm64: 16 bytes per entry (8+8)
-    const pw = this.getPtrWidth(channel.pid);
-    const iovEntrySize = pw === 8 ? 16 : 8;
-
-    if (iovcnt <= 0 || iovcnt > 1024) {
-      this.completeChannelRaw(channel, -1, EINVAL);
-      this.relistenChannel(channel);
+    let checkedIovecs: CheckedProcessIovecs;
+    try {
+      checkedIovecs = this.checkedProcessIovecs(
+        channel,
+        iovPtr,
+        iovcnt,
+        false,
+      );
+    } catch (error) {
+      this.rejectScratchTransfer(channel, error);
       return;
     }
+    const { entries, totalData } = checkedIovecs;
+    const scratch = this.requireMainScratchRegion();
+    const footprint = this.kernelIovecFootprint(entries);
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+      (offset: KernelPointer, pid: number) => number;
 
-    // Read iov entries from process memory
-    interface IovEntry { base: number; len: number }
-    const entries: IovEntry[] = [];
-    let totalData = 0;
-    for (let i = 0; i < iovcnt; i++) {
-      let base: number, len: number;
-      if (pw === 8) {
-        base = Number(processView.getBigUint64(iovPtr + i * iovEntrySize, true));
-        len = Number(processView.getBigUint64(iovPtr + i * iovEntrySize + 8, true));
-      } else {
-        base = processView.getUint32(iovPtr + i * iovEntrySize, true);
-        len = processView.getUint32(iovPtr + i * iovEntrySize + 4, true);
-      }
-      entries.push({ base, len });
-      totalData += len;
-    }
-    if (!Number.isSafeInteger(totalData) || totalData > 0x7FFFFFFF) {
-      this.completeChannelRaw(channel, -1, EINVAL);
-      this.relistenChannel(channel);
-      return;
-    }
-
-    // Max data that fits in scratch: CH_DATA_SIZE minus space for iov entries
-    const iovSize = iovcnt * 8;
-    const maxDataPerCall = CH_DATA_SIZE - iovSize;
-
-    if (totalData <= maxDataPerCall) {
+    if (footprint <= CH_DATA_SIZE) {
       // Fast path: all data fits in one kernel call
-      let dataOff = iovSize;
-
-      for (let i = 0; i < iovcnt; i++) {
-        const kernelBase = dataStart + dataOff;
-
-        if (entries[i].len > 0) {
-          kernelMem.set(processMem.subarray(entries[i].base, entries[i].base + entries[i].len), kernelBase);
+      const result = scratch.withLease((lease) => {
+        lease.address(CH_DATA, footprint);
+        let dataOffset = entries.length * 8;
+        for (let index = 0; index < entries.length; index++) {
+          const entry = entries[index];
+          const kernelBase = lease.address(
+            CH_DATA + dataOffset,
+            entry.len,
+          );
+          if (entry.len > 0) {
+            lease.copyFrom(
+              processMem,
+              CH_DATA + dataOffset,
+              entry.base,
+              entry.len,
+            );
+          }
+          const kernelIovec = lease.dataView(CH_DATA + index * 8, 8);
+          kernelIovec.setUint32(
+            0,
+            this.checkedKernelWirePointer(kernelBase),
+            true,
+          );
+          kernelIovec.setUint32(4, entry.len, true);
+          dataOffset = Math.ceil((dataOffset + entry.len) / 4) * 4;
         }
 
-        const iovAddr = dataStart + i * 8;
-        new DataView(kernelMem.buffer).setUint32(iovAddr, kernelBase, true);
-        new DataView(kernelMem.buffer).setUint32(iovAddr + 4, entries[i].len, true);
-
-        dataOff += entries[i].len;
-        dataOff = (dataOff + 3) & ~3; // align
-      }
-
-      kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-      kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
-      kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(dataStart), true);
-      kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(iovcnt), true);
-      if (syscallNr === SYS_PWRITEV) {
-        kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(origArgs[3]), true);
-        kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(origArgs[4]), true);
-      }
-
-      const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-        (offset: KernelPointer, pid: number) => number;
-      this.bindKernelTidForChannel(channel);
-      this.currentHandlePid = channel.pid;
-      try {
-        handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
-      } finally {
-        this.currentHandlePid = 0;
-      }
+        const kernelView = lease.dataView(0, CH_DATA);
+        kernelView.setUint32(CH_SYSCALL, syscallNr, true);
+        kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
+        kernelView.setBigInt64(
+          CH_ARGS + CH_ARG_SIZE,
+          BigInt(lease.address(CH_DATA, entries.length * 8)),
+          true,
+        );
+        kernelView.setBigInt64(
+          CH_ARGS + 2 * CH_ARG_SIZE,
+          BigInt(iovcnt),
+          true,
+        );
+        if (syscallNr === SYS_PWRITEV) {
+          kernelView.setBigInt64(
+            CH_ARGS + 3 * CH_ARG_SIZE,
+            BigInt(origArgs[3]),
+            true,
+          );
+          kernelView.setBigInt64(
+            CH_ARGS + 4 * CH_ARG_SIZE,
+            BigInt(origArgs[4]),
+            true,
+          );
+        }
+        this.bindKernelTidForChannel(channel);
+        this.currentHandlePid = channel.pid;
+        try {
+          handleChannel(
+            this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+            channel.pid,
+          );
+        } finally {
+          this.currentHandlePid = 0;
+        }
+        const resultView = lease.dataView(0, CH_DATA);
+        return {
+          retVal: Number(resultView.getBigInt64(CH_RETURN, true)),
+          errVal: resultView.getUint32(CH_ERRNO, true),
+        };
+      });
 
       this.dequeueSignalForDelivery(channel);
       if (this.finishSignalTermination(channel)) return;
 
-      const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-      const errVal = kernelView.getUint32(CH_ERRNO, true);
+      const { retVal, errVal } = result;
 
       if (retVal === -1 && errVal === EAGAIN) {
         this.handleBlockingRetry(channel, syscallNr, origArgs);
@@ -8568,8 +9439,6 @@ export class CentralizedKernelWorker {
     } else {
       // Slow path: total data exceeds scratch buffer. Issue individual SYS_WRITEV
       // calls with one iov entry each, chunked to fit in CH_DATA_SIZE.
-      const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-        (offset: KernelPointer, pid: number) => number;
       const isPwritev = syscallNr === SYS_PWRITEV;
       let fileOffset = isPwritev
         ? (origArgs[3] >>> 0) + (origArgs[4] | 0) * 0x100000000
@@ -8585,7 +9454,7 @@ export class CentralizedKernelWorker {
       let totalWritten = 0;
       let gotEagain = false;
       let firstError: { retVal: number; errVal: number } | null = null;
-      const maxChunk = CH_DATA_SIZE - 8; // space for 1 iov entry (8B) + data
+      const maxChunk = CH_DATA_SIZE - 8;
 
       for (const entry of entries) {
         if (totalWritten >= operationLen) break;
@@ -8598,44 +9467,74 @@ export class CentralizedKernelWorker {
             maxChunk,
             operationLen - totalWritten,
           );
-          const kernelBuf = dataStart + 8; // single iov entry at dataStart, data after
-
-          // Copy data from process to kernel scratch
-          kernelMem.set(
-            processMem.subarray(entry.base + entryWritten, entry.base + entryWritten + chunkLen),
-            kernelBuf,
-          );
-
-          // Set up single iov entry
-          new DataView(kernelMem.buffer).setUint32(dataStart, kernelBuf, true);
-          new DataView(kernelMem.buffer).setUint32(dataStart + 4, chunkLen, true);
-
-          if (isPwritev) {
-            kernelView.setUint32(CH_SYSCALL, SYS_PWRITEV, true);
+          const result = scratch.withLease((lease) => {
+            const kernelIovecPointer = lease.address(CH_DATA, 8);
+            const kernelBufferPointer = lease.address(
+              CH_DATA + 8,
+              chunkLen,
+            );
+            lease.copyFrom(
+              processMem,
+              CH_DATA + 8,
+              entry.base + entryWritten,
+              chunkLen,
+            );
+            const kernelIovec = lease.dataView(CH_DATA, 8);
+            kernelIovec.setUint32(
+              0,
+              this.checkedKernelWirePointer(kernelBufferPointer),
+              true,
+            );
+            kernelIovec.setUint32(4, chunkLen, true);
+            const kernelView = lease.dataView(0, CH_DATA);
+            kernelView.setUint32(
+              CH_SYSCALL,
+              isPwritev ? SYS_PWRITEV : SYS_WRITEV,
+              true,
+            );
             kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
-            kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(dataStart), true);
-            kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(1), true);
-            kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(fileOffset & 0xFFFFFFFF), true);
-            kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(Math.floor(fileOffset / 0x100000000)), true);
-          } else {
-            kernelView.setUint32(CH_SYSCALL, SYS_WRITEV, true);
-            kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
-            kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(dataStart), true);
-            kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(1), true);
-          }
-
-          this.bindKernelTidForChannel(channel);
-          this.currentHandlePid = channel.pid;
-          try {
-            handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
-          } finally {
-            this.currentHandlePid = 0;
-          }
+            kernelView.setBigInt64(
+              CH_ARGS + CH_ARG_SIZE,
+              BigInt(kernelIovecPointer),
+              true,
+            );
+            kernelView.setBigInt64(
+              CH_ARGS + 2 * CH_ARG_SIZE,
+              1n,
+              true,
+            );
+            if (isPwritev) {
+              kernelView.setBigInt64(
+                CH_ARGS + 3 * CH_ARG_SIZE,
+                BigInt(fileOffset & 0xffff_ffff),
+                true,
+              );
+              kernelView.setBigInt64(
+                CH_ARGS + 4 * CH_ARG_SIZE,
+                BigInt(Math.floor(fileOffset / 0x1_0000_0000)),
+                true,
+              );
+            }
+            this.bindKernelTidForChannel(channel);
+            this.currentHandlePid = channel.pid;
+            try {
+              handleChannel(
+                this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+                channel.pid,
+              );
+            } finally {
+              this.currentHandlePid = 0;
+            }
+            const resultView = lease.dataView(0, CH_DATA);
+            return {
+              retVal: Number(resultView.getBigInt64(CH_RETURN, true)),
+              errVal: resultView.getUint32(CH_ERRNO, true),
+            };
+          });
 
           if (this.finishSignalTermination(channel)) return;
 
-          const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-          const errVal = kernelView.getUint32(CH_ERRNO, true);
+          const { retVal, errVal } = result;
 
           if (retVal === -1) {
             if (errVal === EAGAIN && totalWritten === 0) {
@@ -8643,6 +9542,10 @@ export class CentralizedKernelWorker {
             } else if (totalWritten === 0) {
               firstError = { retVal, errVal };
             }
+            break;
+          }
+          if (!Number.isSafeInteger(retVal) || retVal > chunkLen) {
+            firstError = { retVal: -1, errVal: EIO };
             break;
           }
 
@@ -8698,6 +9601,17 @@ export class CentralizedKernelWorker {
       this.relistenChannel(channel);
       return;
     }
+    try {
+      this.checkedProcessRange(
+        channel,
+        bufPtr,
+        totalLen,
+        "large write source",
+      );
+    } catch (error) {
+      this.rejectScratchTransfer(channel, error);
+      return;
+    }
     const isPwrite = syscallNr === SYS_PWRITE;
     // pwrite offset is a single i64 arg (arg index 3)
     let fileOffset = isPwrite ? origArgs[3] : 0;
@@ -8711,9 +9625,7 @@ export class CentralizedKernelWorker {
     if (operationLen === null) return;
 
     const processMem = new Uint8Array(channel.memory.buffer);
-    const kernelMem = this.getKernelMem();
-    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    const dataStart = this.scratchOffset + CH_DATA;
+    const scratch = this.requireMainScratchRegion();
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: KernelPointer, pid: number) => number;
 
@@ -8722,25 +9634,52 @@ export class CentralizedKernelWorker {
     while (totalWritten < operationLen) {
       const chunkLen = Math.min(operationLen - totalWritten, CH_DATA_SIZE);
 
-      // Copy chunk from process memory to kernel scratch
-      kernelMem.set(
-        processMem.subarray(bufPtr + totalWritten, bufPtr + totalWritten + chunkLen),
-        dataStart,
-      );
-
-      // Set up syscall in kernel scratch
-      kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-      kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
-      kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(dataStart), true);
-      kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(chunkLen), true);
-      if (isPwrite) {
-        kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(fileOffset), true);
-      }
-
-      this.bindKernelTidForChannel(channel);
-      this.currentHandlePid = channel.pid;
+      let result: { retVal: number; errVal: number };
       try {
-        handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
+        result = scratch.withLease((lease) => {
+          const kernelBuffer = lease.address(CH_DATA, chunkLen);
+          lease.copyFrom(
+            processMem,
+            CH_DATA,
+            bufPtr + totalWritten,
+            chunkLen,
+          );
+          const kernelView = lease.dataView(0, CH_DATA);
+          kernelView.setUint32(CH_SYSCALL, syscallNr, true);
+          kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
+          kernelView.setBigInt64(
+            CH_ARGS + CH_ARG_SIZE,
+            BigInt(kernelBuffer),
+            true,
+          );
+          kernelView.setBigInt64(
+            CH_ARGS + 2 * CH_ARG_SIZE,
+            BigInt(chunkLen),
+            true,
+          );
+          if (isPwrite) {
+            kernelView.setBigInt64(
+              CH_ARGS + 3 * CH_ARG_SIZE,
+              BigInt(fileOffset),
+              true,
+            );
+          }
+          this.bindKernelTidForChannel(channel);
+          this.currentHandlePid = channel.pid;
+          try {
+            handleChannel(
+              this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+              channel.pid,
+            );
+          } finally {
+            this.currentHandlePid = 0;
+          }
+          const resultView = lease.dataView(0, CH_DATA);
+          return {
+            retVal: Number(resultView.getBigInt64(CH_RETURN, true)),
+            errVal: resultView.getUint32(CH_ERRNO, true),
+          };
+        });
       } catch (err) {
         console.error(`[handleLargeWrite] kernel threw for pid=${channel.pid}:`, err);
         if (totalWritten > 0) {
@@ -8754,14 +9693,11 @@ export class CentralizedKernelWorker {
         }
         this.relistenChannel(channel);
         return;
-      } finally {
-        this.currentHandlePid = 0;
       }
 
       if (this.finishSignalTermination(channel)) return;
 
-      const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-      const errVal = kernelView.getUint32(CH_ERRNO, true);
+      const { retVal, errVal } = result;
 
       if (retVal === -1 && errVal === EAGAIN) {
         if (totalWritten > 0) {
@@ -8796,6 +9732,11 @@ export class CentralizedKernelWorker {
         this.relistenChannel(channel);
         return;
       }
+      if (!Number.isSafeInteger(retVal) || retVal > chunkLen) {
+        this.completeChannelRaw(channel, -1, EIO);
+        this.relistenChannel(channel);
+        return;
+      }
 
       totalWritten += retVal;
       if (isPwrite) fileOffset += retVal;
@@ -8822,13 +9763,31 @@ export class CentralizedKernelWorker {
     const fd = origArgs[0];
     const bufPtr = origArgs[1];
     const totalLen = origArgs[2];
+    if (
+      !Number.isSafeInteger(totalLen) ||
+      totalLen < 0 ||
+      totalLen > 0x7fff_ffff
+    ) {
+      this.completeChannelRaw(channel, -1, EINVAL);
+      this.relistenChannel(channel);
+      return;
+    }
+    try {
+      this.checkedProcessRange(
+        channel,
+        bufPtr,
+        totalLen,
+        "large read destination",
+      );
+    } catch (error) {
+      this.rejectScratchTransfer(channel, error);
+      return;
+    }
     const isPread = syscallNr === SYS_PREAD;
     let fileOffset = isPread ? origArgs[3] : 0;
 
     const processMem = new Uint8Array(channel.memory.buffer);
-    const kernelMem = this.getKernelMem();
-    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    const dataStart = this.scratchOffset + CH_DATA;
+    const scratch = this.requireMainScratchRegion();
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: KernelPointer, pid: number) => number;
 
@@ -8837,22 +9796,54 @@ export class CentralizedKernelWorker {
     while (totalRead < totalLen) {
       const chunkLen = Math.min(totalLen - totalRead, CH_DATA_SIZE);
 
-      // Zero the scratch data area for the read output
-      kernelMem.fill(0, dataStart, dataStart + chunkLen);
-
-      // Set up syscall in kernel scratch
-      kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-      kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
-      kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(dataStart), true);
-      kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(chunkLen), true);
-      if (isPread) {
-        kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(fileOffset), true);
-      }
-
-      this.bindKernelTidForChannel(channel);
-      this.currentHandlePid = channel.pid;
+      let result: { retVal: number; errVal: number };
       try {
-        handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
+        result = scratch.withLease((lease) => {
+          const kernelBuffer = lease.address(CH_DATA, chunkLen);
+          lease.fill(0, CH_DATA, chunkLen);
+          const kernelView = lease.dataView(0, CH_DATA);
+          kernelView.setUint32(CH_SYSCALL, syscallNr, true);
+          kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
+          kernelView.setBigInt64(
+            CH_ARGS + CH_ARG_SIZE,
+            BigInt(kernelBuffer),
+            true,
+          );
+          kernelView.setBigInt64(
+            CH_ARGS + 2 * CH_ARG_SIZE,
+            BigInt(chunkLen),
+            true,
+          );
+          if (isPread) {
+            kernelView.setBigInt64(
+              CH_ARGS + 3 * CH_ARG_SIZE,
+              BigInt(fileOffset),
+              true,
+            );
+          }
+          this.bindKernelTidForChannel(channel);
+          this.currentHandlePid = channel.pid;
+          try {
+            handleChannel(
+              this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+              channel.pid,
+            );
+          } finally {
+            this.currentHandlePid = 0;
+          }
+          const resultView = lease.dataView(0, CH_DATA);
+          const retVal = Number(resultView.getBigInt64(CH_RETURN, true));
+          const errVal = resultView.getUint32(CH_ERRNO, true);
+          if (retVal > 0 && retVal <= chunkLen) {
+            lease.copyTo(
+              processMem,
+              CH_DATA,
+              bufPtr + totalRead,
+              retVal,
+            );
+          }
+          return { retVal, errVal };
+        });
       } catch (err) {
         console.error(`[handleLargeRead] kernel threw for pid=${channel.pid}:`, err);
         if (totalRead > 0) {
@@ -8863,14 +9854,11 @@ export class CentralizedKernelWorker {
         }
         this.relistenChannel(channel);
         return;
-      } finally {
-        this.currentHandlePid = 0;
       }
 
       if (this.finishSignalTermination(channel)) return;
 
-      const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-      const errVal = kernelView.getUint32(CH_ERRNO, true);
+      const { retVal, errVal } = result;
 
       if (retVal === -1 && errVal === EAGAIN) {
         if (totalRead > 0) {
@@ -8893,12 +9881,11 @@ export class CentralizedKernelWorker {
         this.relistenChannel(channel);
         return;
       }
-
-      // Copy read data from kernel scratch to process memory
-      processMem.set(
-        kernelMem.subarray(dataStart, dataStart + retVal),
-        bufPtr + totalRead,
-      );
+      if (!Number.isSafeInteger(retVal) || retVal > chunkLen) {
+        this.completeChannelRaw(channel, -1, EIO);
+        this.relistenChannel(channel);
+        return;
+      }
 
       totalRead += retVal;
       if (isPread) fileOffset += retVal;
@@ -8924,108 +9911,132 @@ export class CentralizedKernelWorker {
     const iovcnt = origArgs[2];
 
     const processMem = new Uint8Array(channel.memory.buffer);
-    const processView = new DataView(channel.memory.buffer);
-    const kernelMem = this.getKernelMem();
-    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    const dataStart = this.scratchOffset + CH_DATA;
-
-    // iovec struct: wasm32 = 8B per entry, wasm64 = 16B per entry
-    const pw = this.getPtrWidth(channel.pid);
-    const iovEntrySize = pw === 8 ? 16 : 8;
-
-    // Read iov entries from process memory
-    interface IovEntry { base: number; len: number }
-    const entries: IovEntry[] = [];
-    let totalData = 0;
-    for (let i = 0; i < iovcnt; i++) {
-      let base: number, len: number;
-      if (pw === 8) {
-        base = Number(processView.getBigUint64(iovPtr + i * iovEntrySize, true));
-        len = Number(processView.getBigUint64(iovPtr + i * iovEntrySize + 8, true));
-      } else {
-        base = processView.getUint32(iovPtr + i * iovEntrySize, true);
-        len = processView.getUint32(iovPtr + i * iovEntrySize + 4, true);
-      }
-      entries.push({ base, len });
-      totalData += len;
+    let checkedIovecs: CheckedProcessIovecs;
+    try {
+      checkedIovecs = this.checkedProcessIovecs(
+        channel,
+        iovPtr,
+        iovcnt,
+        false,
+      );
+    } catch (error) {
+      this.rejectScratchTransfer(channel, error);
+      return;
     }
-
-    // Max data that fits in scratch: CH_DATA_SIZE minus space for one iov entry (8 bytes)
+    const { entries } = checkedIovecs;
+    const footprint = this.kernelIovecFootprint(entries);
+    const scratch = this.requireMainScratchRegion();
     const maxDataPerCall = CH_DATA_SIZE - 8;
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+      (offset: KernelPointer, pid: number) => number;
 
-    if (totalData <= maxDataPerCall && iovcnt <= Math.floor(CH_DATA_SIZE / 8)) {
+    if (footprint <= CH_DATA_SIZE) {
       // Fast path: everything fits in one kernel call
       const iovSize = iovcnt * 8;
-      let dataOff = iovSize;
-      const kernelEntries: { base: number; kernelBase: number; len: number }[] = [];
-
-      for (let i = 0; i < iovcnt; i++) {
-        const kernelBase = dataStart + dataOff;
-        kernelEntries.push({ base: entries[i].base, kernelBase, len: entries[i].len });
-
-        if (entries[i].len > 0) {
-          kernelMem.fill(0, kernelBase, kernelBase + entries[i].len);
+      const result = scratch.withLease((lease) => {
+        lease.address(CH_DATA, footprint);
+        let dataOffset = iovSize;
+        const kernelEntries: Array<{
+          base: number;
+          scratchOffset: number;
+          len: number;
+        }> = [];
+        for (let index = 0; index < entries.length; index++) {
+          const entry = entries[index];
+          const scratchOffset = CH_DATA + dataOffset;
+          const kernelBase = lease.address(scratchOffset, entry.len);
+          kernelEntries.push({
+            base: entry.base,
+            scratchOffset,
+            len: entry.len,
+          });
+          if (entry.len > 0) lease.fill(0, scratchOffset, entry.len);
+          const kernelIovec = lease.dataView(CH_DATA + index * 8, 8);
+          kernelIovec.setUint32(
+            0,
+            this.checkedKernelWirePointer(kernelBase),
+            true,
+          );
+          kernelIovec.setUint32(4, entry.len, true);
+          dataOffset = Math.ceil((dataOffset + entry.len) / 4) * 4;
         }
-
-        const iovAddr = dataStart + i * 8;
-        new DataView(kernelMem.buffer).setUint32(iovAddr, kernelBase, true);
-        new DataView(kernelMem.buffer).setUint32(iovAddr + 4, entries[i].len, true);
-
-        dataOff += entries[i].len;
-        dataOff = (dataOff + 3) & ~3;
-      }
-
-      kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-      kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
-      kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(dataStart), true);
-      kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(iovcnt), true);
-      if (syscallNr === SYS_PREADV) {
-        kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(origArgs[3]), true);
-        kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(origArgs[4]), true);
-      }
-
-      const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-        (offset: KernelPointer, pid: number) => number;
-      this.bindKernelTidForChannel(channel);
-      this.currentHandlePid = channel.pid;
-      try {
-        handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
-      } finally {
-        this.currentHandlePid = 0;
-      }
+        const kernelView = lease.dataView(0, CH_DATA);
+        kernelView.setUint32(CH_SYSCALL, syscallNr, true);
+        kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
+        kernelView.setBigInt64(
+          CH_ARGS + CH_ARG_SIZE,
+          BigInt(lease.address(CH_DATA, iovSize)),
+          true,
+        );
+        kernelView.setBigInt64(
+          CH_ARGS + 2 * CH_ARG_SIZE,
+          BigInt(iovcnt),
+          true,
+        );
+        if (syscallNr === SYS_PREADV) {
+          kernelView.setBigInt64(
+            CH_ARGS + 3 * CH_ARG_SIZE,
+            BigInt(origArgs[3]),
+            true,
+          );
+          kernelView.setBigInt64(
+            CH_ARGS + 4 * CH_ARG_SIZE,
+            BigInt(origArgs[4]),
+            true,
+          );
+        }
+        this.bindKernelTidForChannel(channel);
+        this.currentHandlePid = channel.pid;
+        try {
+          handleChannel(
+            this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+            channel.pid,
+          );
+        } finally {
+          this.currentHandlePid = 0;
+        }
+        const resultView = lease.dataView(0, CH_DATA);
+        const retVal = Number(resultView.getBigInt64(CH_RETURN, true));
+        const errVal = resultView.getUint32(CH_ERRNO, true);
+        if (
+          retVal > checkedIovecs.totalData ||
+          !Number.isSafeInteger(retVal)
+        ) {
+          return { retVal: -1, errVal: EIO };
+        }
+        if (retVal > 0) {
+          let remaining = retVal;
+          for (const entry of kernelEntries) {
+            if (remaining <= 0) break;
+            const copyLength = Math.min(entry.len, remaining);
+            lease.copyTo(
+              processMem,
+              entry.scratchOffset,
+              entry.base,
+              copyLength,
+            );
+            remaining -= copyLength;
+          }
+        }
+        return { retVal, errVal };
+      });
 
       if (this.finishSignalTermination(channel)) return;
 
-      const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-      const errVal = kernelView.getUint32(CH_ERRNO, true);
+      const { retVal, errVal } = result;
 
       if (retVal === -1 && errVal === EAGAIN) {
         this.handleBlockingRetry(channel, syscallNr, origArgs);
         return;
       }
 
-      if (retVal > 0) {
-        let remaining = retVal;
-        for (const entry of kernelEntries) {
-          if (remaining <= 0) break;
-          const copyLen = Math.min(entry.len, remaining);
-          processMem.set(
-            kernelMem.subarray(entry.kernelBase, entry.kernelBase + copyLen),
-            entry.base,
-          );
-          remaining -= copyLen;
-        }
-      }
-
       this.completeChannel(channel, syscallNr, origArgs, undefined, retVal, errVal);
     } else {
       // Slow path: total data exceeds scratch buffer. Issue one SYS_READ per iov entry,
       // chunked to fit in CH_DATA_SIZE. Use pread to maintain file offset for preadv.
-      const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-        (offset: KernelPointer, pid: number) => number;
       const isPreadv = syscallNr === SYS_PREADV;
       let fileOffset = isPreadv
-        ? (origArgs[3] | 0) + (origArgs[4] | 0) * 0x100000000
+        ? (origArgs[3] >>> 0) + (origArgs[4] | 0) * 0x100000000
         : 0;
       let totalRead = 0;
       let lastErr = 0;
@@ -9037,41 +10048,80 @@ export class CentralizedKernelWorker {
 
         while (entryRead < entry.len) {
           const chunkLen = Math.min(entry.len - entryRead, maxDataPerCall);
-          const kernelBuf = dataStart + 8; // single iov entry at dataStart, data after
-
-          // Set up single iov entry
-          new DataView(kernelMem.buffer).setUint32(dataStart, kernelBuf, true);
-          new DataView(kernelMem.buffer).setUint32(dataStart + 4, chunkLen, true);
-          kernelMem.fill(0, kernelBuf, kernelBuf + chunkLen);
-
-          if (isPreadv) {
-            // Use preadv with 1 iov
-            kernelView.setUint32(CH_SYSCALL, SYS_PREADV, true);
+          const result = scratch.withLease((lease) => {
+            const kernelIovecPointer = lease.address(CH_DATA, 8);
+            const kernelBufferOffset = CH_DATA + 8;
+            const kernelBufferPointer = lease.address(
+              kernelBufferOffset,
+              chunkLen,
+            );
+            const kernelIovec = lease.dataView(CH_DATA, 8);
+            kernelIovec.setUint32(
+              0,
+              this.checkedKernelWirePointer(kernelBufferPointer),
+              true,
+            );
+            kernelIovec.setUint32(4, chunkLen, true);
+            lease.fill(0, kernelBufferOffset, chunkLen);
+            const kernelView = lease.dataView(0, CH_DATA);
+            kernelView.setUint32(
+              CH_SYSCALL,
+              isPreadv ? SYS_PREADV : SYS_READV,
+              true,
+            );
             kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
-            kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(dataStart), true);
-            kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(1), true);
-            kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(fileOffset & 0xFFFFFFFF), true);
-            kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(Math.floor(fileOffset / 0x100000000)), true);
-          } else {
-            // Use readv with 1 iov
-            kernelView.setUint32(CH_SYSCALL, SYS_READV, true);
-            kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
-            kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(dataStart), true);
-            kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(1), true);
-          }
-
-          this.bindKernelTidForChannel(channel);
-          this.currentHandlePid = channel.pid;
-          try {
-            handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
-          } finally {
-            this.currentHandlePid = 0;
-          }
+            kernelView.setBigInt64(
+              CH_ARGS + CH_ARG_SIZE,
+              BigInt(kernelIovecPointer),
+              true,
+            );
+            kernelView.setBigInt64(
+              CH_ARGS + 2 * CH_ARG_SIZE,
+              1n,
+              true,
+            );
+            if (isPreadv) {
+              kernelView.setBigInt64(
+                CH_ARGS + 3 * CH_ARG_SIZE,
+                BigInt(fileOffset & 0xffff_ffff),
+                true,
+              );
+              kernelView.setBigInt64(
+                CH_ARGS + 4 * CH_ARG_SIZE,
+                BigInt(Math.floor(fileOffset / 0x1_0000_0000)),
+                true,
+              );
+            }
+            this.bindKernelTidForChannel(channel);
+            this.currentHandlePid = channel.pid;
+            try {
+              handleChannel(
+                this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+                channel.pid,
+              );
+            } finally {
+              this.currentHandlePid = 0;
+            }
+            const resultView = lease.dataView(0, CH_DATA);
+            const retVal = Number(resultView.getBigInt64(CH_RETURN, true));
+            const errVal = resultView.getUint32(CH_ERRNO, true);
+            if (!Number.isSafeInteger(retVal) || retVal > chunkLen) {
+              return { retVal: -1, errVal: EIO };
+            }
+            if (retVal > 0) {
+              lease.copyTo(
+                processMem,
+                kernelBufferOffset,
+                entry.base + entryRead,
+                retVal,
+              );
+            }
+            return { retVal, errVal };
+          });
 
           if (this.finishSignalTermination(channel)) return;
 
-          const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-          const errVal = kernelView.getUint32(CH_ERRNO, true);
+          const { retVal, errVal } = result;
 
           if (retVal === -1) {
             if (errVal === EAGAIN && totalRead === 0) {
@@ -9083,12 +10133,6 @@ export class CentralizedKernelWorker {
           }
 
           if (retVal === 0) break; // EOF
-
-          // Copy data to process memory
-          processMem.set(
-            kernelMem.subarray(kernelBuf, kernelBuf + retVal),
-            entry.base + entryRead,
-          );
 
           entryRead += retVal;
           totalRead += retVal;
@@ -9119,120 +10163,152 @@ export class CentralizedKernelWorker {
     const fd = origArgs[0];
     const msgPtr = origArgs[1];
     const flags = origArgs[2];
-
     const processMem = new Uint8Array(channel.memory.buffer);
-    const processView = new DataView(channel.memory.buffer);
-    const kernelMem = this.getKernelMem();
-    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    const dataStart = this.scratchOffset + CH_DATA;
-    const pw = this.getPtrWidth(channel.pid);
-
-    // Parse msghdr from process memory (ptrWidth-aware).
-    // wasm32 layout (28B): name(4), namelen(4), iov(4), iovlen(4), control(4), controllen(4), flags(4)
-    // wasm64 layout (48B): name(8), namelen(4), pad(4), iov(8), iovlen(4), pad(4), control(8), controllen(4), flags(4)
-    let namePtr: number, nameLen: number, iovPtr: number, iovCnt: number;
-    let controlPtr: number, controlLen: number;
-    if (pw === 8) {
-      namePtr = Number(processView.getBigUint64(msgPtr, true));
-      nameLen = processView.getUint32(msgPtr + 8, true);
-      iovPtr = Number(processView.getBigUint64(msgPtr + 16, true));
-      iovCnt = processView.getUint32(msgPtr + 24, true);
-      controlPtr = Number(processView.getBigUint64(msgPtr + 32, true));
-      controlLen = processView.getUint32(msgPtr + 40, true);
-    } else {
-      namePtr = processView.getUint32(msgPtr, true);
-      nameLen = processView.getUint32(msgPtr + 4, true);
-      iovPtr = processView.getUint32(msgPtr + 8, true);
-      iovCnt = processView.getUint32(msgPtr + 12, true);
-      controlPtr = processView.getUint32(msgPtr + 16, true);
-      controlLen = processView.getUint32(msgPtr + 20, true);
-    }
-
-    // Build kernel-side msghdr in wasm32 (28B) format (kernel uses explicit u32 parsing)
-    const kMsgPtr = dataStart;
-    const kv = new DataView(kernelMem.buffer);
-    kv.setUint32(kMsgPtr, namePtr, true);
-    kv.setUint32(kMsgPtr + 4, nameLen, true);
-    kv.setUint32(kMsgPtr + 8, iovPtr, true);  // will be updated below
-    kv.setUint32(kMsgPtr + 12, iovCnt, true);
-    kv.setUint32(kMsgPtr + 16, controlPtr, true);  // will be updated below
-    kv.setUint32(kMsgPtr + 20, controlLen, true);
-    kv.setUint32(kMsgPtr + 24, 0, true);  // msg_flags
-
-    let dataOff = 28; // after kernel-format msghdr
-
-    // Copy msg_name to kernel scratch
-    if (namePtr !== 0 && nameLen > 0 && dataOff + nameLen <= CH_DATA_SIZE) {
-      const kNamePtr = dataStart + dataOff;
-      kernelMem.set(processMem.subarray(namePtr, namePtr + nameLen), kNamePtr);
-      kv.setUint32(kMsgPtr, kNamePtr, true); // update msg_name ptr
-      dataOff += nameLen;
-      dataOff = (dataOff + 3) & ~3;
-    }
-
-    // Copy msg_control (ancillary data, e.g. SCM_RIGHTS) to kernel scratch
-    if (controlPtr !== 0 && controlLen > 0 && dataOff + controlLen <= CH_DATA_SIZE) {
-      const kCtrlPtr = dataStart + dataOff;
-      kernelMem.set(processMem.subarray(controlPtr, controlPtr + controlLen), kCtrlPtr);
-      kv.setUint32(kMsgPtr + 16, kCtrlPtr, true); // update msg_control ptr
-      dataOff += controlLen;
-      dataOff = (dataOff + 3) & ~3;
-    }
-
-    // Copy iov array and iov data to kernel scratch
-    const iovEntrySize = pw === 8 ? 16 : 8;
-    if (iovCnt > 0 && iovPtr !== 0) {
-      const kIovSize = iovCnt * 8; // kernel-side iov is always 8 bytes per entry (u32 base + u32 len)
-      const kIovPtr = dataStart + dataOff;
-      dataOff += kIovSize;
-      dataOff = (dataOff + 3) & ~3;
-
-      kv.setUint32(kMsgPtr + 8, kIovPtr, true); // update msg_iov ptr
-
-      // Copy each iov buffer data
-      for (let i = 0; i < iovCnt; i++) {
-        let base: number, len: number;
-        if (pw === 8) {
-          base = Number(processView.getBigUint64(iovPtr + i * iovEntrySize, true));
-          len = Number(processView.getBigUint64(iovPtr + i * iovEntrySize + 8, true));
-        } else {
-          base = processView.getUint32(iovPtr + i * 8, true);
-          len = processView.getUint32(iovPtr + i * 8 + 4, true);
-        }
-        // Write kernel-format iov entry (always u32 base + u32 len)
-        kv.setUint32(kIovPtr + i * 8, 0, true); // will be updated if data copied
-        kv.setUint32(kIovPtr + i * 8 + 4, len, true);
-
-        if (len > 0 && dataOff + len <= CH_DATA_SIZE) {
-          const kBufPtr = dataStart + dataOff;
-          kernelMem.set(processMem.subarray(base, base + len), kBufPtr);
-          kv.setUint32(kIovPtr + i * 8, kBufPtr, true);
-          dataOff += len;
-          dataOff = (dataOff + 3) & ~3;
-        }
+    let message: CheckedProcessMessage;
+    let layout: KernelMessageLayout;
+    try {
+      message = this.checkedProcessMessage(channel, msgPtr);
+      layout = this.kernelMessageLayout(message);
+      if (layout.footprint > CH_DATA_SIZE) {
+        throw new KernelScratchError(
+          "sendmsg payload exceeds bounded kernel transport",
+          90,
+        );
       }
+    } catch (error) {
+      this.rejectScratchTransfer(channel, error);
+      return;
     }
-
-    // Call kernel
-    kernelView.setUint32(CH_SYSCALL, SYS_SENDMSG, true);
-    kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
-    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(kMsgPtr), true);
-    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(flags), true);
-
+    const scratch = this.requireMainScratchRegion();
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: KernelPointer, pid: number) => number;
-    this.bindKernelTidForChannel(channel);
-    this.currentHandlePid = channel.pid;
-    try {
-      handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
-    } finally {
-      this.currentHandlePid = 0;
-    }
+    const result = scratch.withLease((lease) => {
+      lease.address(CH_DATA, layout.footprint);
+      const kernelMessagePointer = this.checkedKernelWirePointer(
+        lease.address(CH_DATA, 28),
+      );
+      const kernelMessage = lease.dataView(CH_DATA, 28);
+
+      const namePointer = layout.nameOffset === 0
+        ? 0
+        : this.checkedKernelWirePointer(
+            lease.address(
+              CH_DATA + layout.nameOffset,
+              message.name.length,
+            ),
+          );
+      if (message.name.length > 0) {
+        lease.copyFrom(
+          processMem,
+          CH_DATA + layout.nameOffset,
+          message.name.pointer,
+          message.name.length,
+        );
+      }
+
+      const controlPointer = layout.controlOffset === 0
+        ? 0
+        : this.checkedKernelWirePointer(
+            lease.address(
+              CH_DATA + layout.controlOffset,
+              message.control.length,
+            ),
+          );
+      if (message.control.length > 0) {
+        lease.copyFrom(
+          processMem,
+          CH_DATA + layout.controlOffset,
+          message.control.pointer,
+          message.control.length,
+        );
+      }
+
+      const iovecPointer = layout.iovecOffset === 0
+        ? 0
+        : this.checkedKernelWirePointer(
+            lease.address(
+              CH_DATA + layout.iovecOffset,
+              message.iovecs.entries.length * 8,
+            ),
+          );
+      for (
+        let index = 0;
+        index < message.iovecs.entries.length;
+        index++
+      ) {
+        const entry = message.iovecs.entries[index];
+        const dataOffset = layout.dataOffsets[index];
+        const dataPointer = dataOffset === 0
+          ? 0
+          : this.checkedKernelWirePointer(
+              lease.address(CH_DATA + dataOffset, entry.len),
+            );
+        if (entry.len > 0) {
+          lease.copyFrom(
+            processMem,
+            CH_DATA + dataOffset,
+            entry.base,
+            entry.len,
+          );
+        }
+        const kernelIovec = lease.dataView(
+          CH_DATA + layout.iovecOffset + index * 8,
+          8,
+        );
+        kernelIovec.setUint32(0, dataPointer, true);
+        kernelIovec.setUint32(4, entry.len, true);
+      }
+
+      kernelMessage.setUint32(0, namePointer, true);
+      kernelMessage.setUint32(4, message.name.length, true);
+      kernelMessage.setUint32(8, iovecPointer, true);
+      kernelMessage.setUint32(
+        12,
+        message.iovecs.entries.length,
+        true,
+      );
+      kernelMessage.setUint32(16, controlPointer, true);
+      kernelMessage.setUint32(20, message.control.length, true);
+      kernelMessage.setUint32(24, 0, true);
+
+      const kernelView = lease.dataView(0, CH_DATA);
+      kernelView.setUint32(CH_SYSCALL, SYS_SENDMSG, true);
+      kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
+      kernelView.setBigInt64(
+        CH_ARGS + CH_ARG_SIZE,
+        BigInt(kernelMessagePointer),
+        true,
+      );
+      kernelView.setBigInt64(
+        CH_ARGS + 2 * CH_ARG_SIZE,
+        BigInt(flags),
+        true,
+      );
+      this.bindKernelTidForChannel(channel);
+      this.currentHandlePid = channel.pid;
+      try {
+        handleChannel(
+          this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+          channel.pid,
+        );
+      } finally {
+        this.currentHandlePid = 0;
+      }
+      const resultView = lease.dataView(0, CH_DATA);
+      const retVal = Number(resultView.getBigInt64(CH_RETURN, true));
+      const errVal = resultView.getUint32(CH_ERRNO, true);
+      if (
+        !Number.isSafeInteger(retVal) ||
+        retVal > message.iovecs.totalData
+      ) {
+        return { retVal: -1, errVal: EIO };
+      }
+      return { retVal, errVal };
+    });
 
     if (this.finishSignalTermination(channel)) return;
 
-    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-    const errVal = kernelView.getUint32(CH_ERRNO, true);
+    const { retVal, errVal } = result;
 
     if (retVal === -1 && errVal === EAGAIN) {
       this.handleBlockingRetry(channel, SYS_SENDMSG, origArgs);
@@ -9252,169 +10328,217 @@ export class CentralizedKernelWorker {
     const flags = origArgs[2];
 
     const processMem = new Uint8Array(channel.memory.buffer);
-    const processView = new DataView(channel.memory.buffer);
-    const kernelMem = this.getKernelMem();
-    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    const dataStart = this.scratchOffset + CH_DATA;
-    const pw = this.getPtrWidth(channel.pid);
-
-    // Parse msghdr from process memory (ptrWidth-aware)
-    let namePtr: number, nameLen: number, iovPtr: number, iovCnt: number;
-    let controlPtr: number, controlLen: number;
-    if (pw === 8) {
-      namePtr = Number(processView.getBigUint64(msgPtr, true));
-      nameLen = processView.getUint32(msgPtr + 8, true);
-      iovPtr = Number(processView.getBigUint64(msgPtr + 16, true));
-      iovCnt = processView.getUint32(msgPtr + 24, true);
-      controlPtr = Number(processView.getBigUint64(msgPtr + 32, true));
-      controlLen = processView.getUint32(msgPtr + 40, true);
-    } else {
-      namePtr = processView.getUint32(msgPtr, true);
-      nameLen = processView.getUint32(msgPtr + 4, true);
-      iovPtr = processView.getUint32(msgPtr + 8, true);
-      iovCnt = processView.getUint32(msgPtr + 12, true);
-      controlPtr = processView.getUint32(msgPtr + 16, true);
-      controlLen = processView.getUint32(msgPtr + 20, true);
-    }
-
-    // Build kernel-side msghdr in wasm32 (28B) format
-    const kMsgPtr = dataStart;
-    const kv = new DataView(kernelMem.buffer);
-    kv.setUint32(kMsgPtr, namePtr, true);
-    kv.setUint32(kMsgPtr + 4, nameLen, true);
-    kv.setUint32(kMsgPtr + 8, iovPtr, true);
-    kv.setUint32(kMsgPtr + 12, iovCnt, true);
-    kv.setUint32(kMsgPtr + 16, controlPtr, true);
-    kv.setUint32(kMsgPtr + 20, controlLen, true);
-    kv.setUint32(kMsgPtr + 24, 0, true);
-
-    let dataOff = 28;
-
-    // Set up msg_name output buffer
-    let kNamePtr = 0;
-    if (namePtr !== 0 && nameLen > 0 && dataOff + nameLen <= CH_DATA_SIZE) {
-      kNamePtr = dataStart + dataOff;
-      kernelMem.fill(0, kNamePtr, kNamePtr + nameLen);
-      kv.setUint32(kMsgPtr, kNamePtr, true);
-      dataOff += nameLen;
-      dataOff = (dataOff + 3) & ~3;
-    }
-
-    // Set up msg_control output buffer for ancillary data (SCM_RIGHTS)
-    let kCtrlPtr = 0;
-    if (controlPtr !== 0 && controlLen > 0 && dataOff + controlLen <= CH_DATA_SIZE) {
-      kCtrlPtr = dataStart + dataOff;
-      kernelMem.fill(0, kCtrlPtr, kCtrlPtr + controlLen);
-      kv.setUint32(kMsgPtr + 16, kCtrlPtr, true);
-      dataOff += controlLen;
-      dataOff = (dataOff + 3) & ~3;
-    }
-
-    // Set up iov array and output buffers
-    interface IovEntry { base: number; len: number; kernelBase: number }
-    const entries: IovEntry[] = [];
-    const iovEntrySize = pw === 8 ? 16 : 8;
-
-    if (iovCnt > 0 && iovPtr !== 0) {
-      const kIovSize = iovCnt * 8; // kernel-side iov always 8B per entry
-      const kIovPtr = dataStart + dataOff;
-      dataOff += kIovSize;
-      dataOff = (dataOff + 3) & ~3;
-
-      kv.setUint32(kMsgPtr + 8, kIovPtr, true);
-
-      for (let i = 0; i < iovCnt; i++) {
-        let base: number, len: number;
-        if (pw === 8) {
-          base = Number(processView.getBigUint64(iovPtr + i * iovEntrySize, true));
-          len = Number(processView.getBigUint64(iovPtr + i * iovEntrySize + 8, true));
-        } else {
-          base = processView.getUint32(iovPtr + i * 8, true);
-          len = processView.getUint32(iovPtr + i * 8 + 4, true);
-        }
-        if (len > 0 && dataOff + len <= CH_DATA_SIZE) {
-          const kBufPtr = dataStart + dataOff;
-          kernelMem.fill(0, kBufPtr, kBufPtr + len);
-          kv.setUint32(kIovPtr + i * 8, kBufPtr, true);
-          kv.setUint32(kIovPtr + i * 8 + 4, len, true);
-          entries.push({ base, len, kernelBase: kBufPtr });
-          dataOff += len;
-          dataOff = (dataOff + 3) & ~3;
-        } else {
-          kv.setUint32(kIovPtr + i * 8, 0, true);
-          kv.setUint32(kIovPtr + i * 8 + 4, len, true);
-        }
+    let message: CheckedProcessMessage;
+    let layout: KernelMessageLayout;
+    try {
+      message = this.checkedProcessMessage(channel, msgPtr);
+      layout = this.kernelMessageLayout(message);
+      if (layout.footprint > CH_DATA_SIZE) {
+        throw new KernelScratchError(
+          "recvmsg buffers exceed bounded kernel transport",
+          90,
+        );
       }
+    } catch (error) {
+      this.rejectScratchTransfer(channel, error);
+      return;
     }
-
-    // Call kernel
-    kernelView.setUint32(CH_SYSCALL, SYS_RECVMSG, true);
-    kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
-    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(kMsgPtr), true);
-    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(flags), true);
-
+    const scratch = this.requireMainScratchRegion();
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: KernelPointer, pid: number) => number;
-    this.bindKernelTidForChannel(channel);
-    this.currentHandlePid = channel.pid;
-    try {
-      handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
-    } finally {
-      this.currentHandlePid = 0;
-    }
+    const result = scratch.withLease((lease) => {
+      lease.address(CH_DATA, layout.footprint);
+      const kernelMessagePointer = this.checkedKernelWirePointer(
+        lease.address(CH_DATA, 28),
+      );
+      const kernelMessage = lease.dataView(CH_DATA, 28);
+      const namePointer = layout.nameOffset === 0
+        ? 0
+        : this.checkedKernelWirePointer(
+            lease.address(
+              CH_DATA + layout.nameOffset,
+              message.name.length,
+            ),
+          );
+      if (message.name.length > 0) {
+        lease.fill(0, CH_DATA + layout.nameOffset, message.name.length);
+      }
+      const controlPointer = layout.controlOffset === 0
+        ? 0
+        : this.checkedKernelWirePointer(
+            lease.address(
+              CH_DATA + layout.controlOffset,
+              message.control.length,
+            ),
+          );
+      if (message.control.length > 0) {
+        lease.fill(
+          0,
+          CH_DATA + layout.controlOffset,
+          message.control.length,
+        );
+      }
+      const iovecPointer = layout.iovecOffset === 0
+        ? 0
+        : this.checkedKernelWirePointer(
+            lease.address(
+              CH_DATA + layout.iovecOffset,
+              message.iovecs.entries.length * 8,
+            ),
+          );
+      for (
+        let index = 0;
+        index < message.iovecs.entries.length;
+        index++
+      ) {
+        const entry = message.iovecs.entries[index];
+        const dataOffset = layout.dataOffsets[index];
+        const dataPointer = dataOffset === 0
+          ? 0
+          : this.checkedKernelWirePointer(
+              lease.address(CH_DATA + dataOffset, entry.len),
+            );
+        if (entry.len > 0) {
+          lease.fill(0, CH_DATA + dataOffset, entry.len);
+        }
+        const kernelIovec = lease.dataView(
+          CH_DATA + layout.iovecOffset + index * 8,
+          8,
+        );
+        kernelIovec.setUint32(0, dataPointer, true);
+        kernelIovec.setUint32(4, entry.len, true);
+      }
+      kernelMessage.setUint32(0, namePointer, true);
+      kernelMessage.setUint32(4, message.name.length, true);
+      kernelMessage.setUint32(8, iovecPointer, true);
+      kernelMessage.setUint32(
+        12,
+        message.iovecs.entries.length,
+        true,
+      );
+      kernelMessage.setUint32(16, controlPointer, true);
+      kernelMessage.setUint32(20, message.control.length, true);
+      kernelMessage.setUint32(24, 0, true);
+
+      const kernelView = lease.dataView(0, CH_DATA);
+      kernelView.setUint32(CH_SYSCALL, SYS_RECVMSG, true);
+      kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
+      kernelView.setBigInt64(
+        CH_ARGS + CH_ARG_SIZE,
+        BigInt(kernelMessagePointer),
+        true,
+      );
+      kernelView.setBigInt64(
+        CH_ARGS + 2 * CH_ARG_SIZE,
+        BigInt(flags),
+        true,
+      );
+      this.bindKernelTidForChannel(channel);
+      this.currentHandlePid = channel.pid;
+      try {
+        handleChannel(
+          this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+          channel.pid,
+        );
+      } finally {
+        this.currentHandlePid = 0;
+      }
+
+      const resultView = lease.dataView(0, CH_DATA);
+      const retVal = Number(resultView.getBigInt64(CH_RETURN, true));
+      const errVal = resultView.getUint32(CH_ERRNO, true);
+      const updatedMessage = lease.dataView(CH_DATA, 28);
+      const nameLength = updatedMessage.getUint32(4, true);
+      const controlLength = updatedMessage.getUint32(20, true);
+      const messageFlags = updatedMessage.getUint32(24, true);
+      // WHY: MSG_TRUNC deliberately reports the complete datagram length even
+      // though only the bounded iovec prefix exists in scratch to copy back.
+      if (
+        !Number.isSafeInteger(retVal) ||
+        (
+          retVal > message.iovecs.totalData &&
+          (flags & MSG_TRUNC) === 0
+        )
+      ) {
+        return {
+          retVal: -1,
+          errVal: EIO,
+          nameLength,
+          controlLength,
+          messageFlags,
+        };
+      }
+      if (retVal > 0) {
+        let remaining = retVal;
+        for (
+          let index = 0;
+          index < message.iovecs.entries.length && remaining > 0;
+          index++
+        ) {
+          const entry = message.iovecs.entries[index];
+          const copyLength = Math.min(entry.len, remaining);
+          lease.copyTo(
+            processMem,
+            CH_DATA + layout.dataOffsets[index],
+            entry.base,
+            copyLength,
+          );
+          remaining -= copyLength;
+        }
+      }
+      if (message.name.length > 0) {
+        lease.copyTo(
+          processMem,
+          CH_DATA + layout.nameOffset,
+          message.name.pointer,
+          Math.min(message.name.length, nameLength),
+        );
+      }
+      if (message.control.length > 0 && controlLength > 0) {
+        lease.copyTo(
+          processMem,
+          CH_DATA + layout.controlOffset,
+          message.control.pointer,
+          Math.min(message.control.length, controlLength),
+        );
+      }
+      return {
+        retVal,
+        errVal,
+        nameLength,
+        controlLength,
+        messageFlags,
+      };
+    });
 
     if (this.finishSignalTermination(channel)) return;
 
-    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-    const errVal = kernelView.getUint32(CH_ERRNO, true);
+    const {
+      retVal,
+      errVal,
+      nameLength,
+      controlLength,
+      messageFlags,
+    } = result;
 
     if (retVal === -1 && errVal === EAGAIN) {
       this.handleBlockingRetry(channel, SYS_RECVMSG, origArgs);
       return;
     }
 
-    // Copy received data back to process memory
-    if (retVal > 0) {
-      let remaining = retVal;
-      for (const entry of entries) {
-        if (remaining <= 0) break;
-        const copyLen = Math.min(entry.len, remaining);
-        processMem.set(
-          kernelMem.subarray(entry.kernelBase, entry.kernelBase + copyLen),
-          entry.base,
-        );
-        remaining -= copyLen;
-      }
-    }
-
-    // Copy msg_name (source address) back to process memory
-    if (kNamePtr !== 0 && namePtr !== 0 && nameLen > 0) {
-      processMem.set(kernelMem.subarray(kNamePtr, kNamePtr + nameLen), namePtr);
-    }
-
-    // Copy msg_control (ancillary data) back to process memory
-    if (kCtrlPtr !== 0 && controlPtr !== 0) {
-      const actualControlLen = kv.getUint32(kMsgPtr + 20, true);
-      if (actualControlLen > 0 && actualControlLen <= controlLen) {
-        processMem.set(
-          kernelMem.subarray(kCtrlPtr, kCtrlPtr + actualControlLen),
-          controlPtr,
-        );
-      }
-    }
-
-    // Copy updated msghdr fields back to process memory (ptrWidth-aware)
-    const kNamelenVal = kv.getUint32(kMsgPtr + 4, true);
-    const kControllenVal = kv.getUint32(kMsgPtr + 20, true);
-    const kMsgflags = kv.getUint32(kMsgPtr + 24, true);
-    if (pw === 8) {
-      processView.setUint32(msgPtr + 8, kNamelenVal, true);   // msg_namelen
-      processView.setUint32(msgPtr + 40, kControllenVal, true); // msg_controllen
-      processView.setUint32(msgPtr + 44, kMsgflags, true);     // msg_flags
+    const processView = new DataView(
+      channel.memory.buffer,
+      message.messagePointer,
+      message.pointerWidth === 8 ? 48 : 28,
+    );
+    if (message.pointerWidth === 8) {
+      processView.setUint32(8, nameLength, true);
+      processView.setUint32(40, controlLength, true);
+      processView.setUint32(44, messageFlags, true);
     } else {
-      processView.setUint32(msgPtr + 4, kNamelenVal, true);   // msg_namelen
-      processView.setUint32(msgPtr + 20, kControllenVal, true); // msg_controllen
-      processView.setUint32(msgPtr + 24, kMsgflags, true);     // msg_flags
+      processView.setUint32(4, nameLength, true);
+      processView.setUint32(20, controlLength, true);
+      processView.setUint32(24, messageFlags, true);
     }
 
     this.completeChannel(channel, SYS_RECVMSG, origArgs, undefined, retVal, errVal);
@@ -9625,7 +10749,7 @@ export class CentralizedKernelWorker {
       this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, EINVAL);
       return;
     }
-    if (pathLen >= EXEC_PATH_MAX_BYTES) {
+    if (pathLen >= POSIX_PATH_MAX_BYTES) {
       this.completeChannel(
         channel,
         SYS_SPAWN,
@@ -9636,32 +10760,46 @@ export class CentralizedKernelWorker {
       );
       return;
     }
-    if (
-      pathLen > 0 &&
-      !isValidMemoryRange(processMem, pathPtr, pathLen)
-    ) {
-      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, EFAULT);
-      return;
-    }
     if (blobLen > SPAWN_BLOB_MAX_BYTES) {
       this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, E2BIG);
       return;
     }
-    if (!isValidMemoryRange(processMem, blobPtr, blobLen)) {
-      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, EFAULT);
-      return;
-    }
-    if (
-      pidOutPtr !== 0 &&
-      !isValidMemoryRange(processMem, pidOutPtr, 4)
-    ) {
+    let checkedPathPtr = pathPtr;
+    let checkedBlobPtr: number;
+    let checkedPidOutPtr = pidOutPtr;
+    try {
+      if (pathLen > 0) {
+        checkedPathPtr = this.checkedProcessRange(
+          channel,
+          pathPtr,
+          pathLen,
+          "spawn path",
+        ).pointer;
+      }
+      checkedBlobPtr = this.checkedProcessRange(
+        channel,
+        blobPtr,
+        blobLen,
+        "spawn blob",
+      ).pointer;
+      if (pidOutPtr !== 0) {
+        checkedPidOutPtr = this.checkedProcessRange(
+          channel,
+          pidOutPtr,
+          4,
+          "spawn pid output",
+        ).pointer;
+      }
+    } catch {
       this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, EFAULT);
       return;
     }
 
     let path = "";
     if (pathLen > 0) {
-      path = new TextDecoder().decode(processMem.slice(pathPtr, pathPtr + pathLen));
+      path = new TextDecoder().decode(
+        processMem.slice(checkedPathPtr, checkedPathPtr + pathLen),
+      );
       // Strip trailing NUL if the user copied a C string with the terminator.
       if (path.endsWith("\0")) path = path.slice(0, -1);
     }
@@ -9671,7 +10809,10 @@ export class CentralizedKernelWorker {
     }
 
     // .slice copies into a regular ArrayBuffer (TextDecoder rejects SAB views).
-    const blobBytes = processMem.slice(blobPtr, blobPtr + blobLen);
+    const blobBytes = processMem.slice(
+      checkedBlobPtr,
+      checkedBlobPtr + blobLen,
+    );
 
     // ── Decode argv + envp host-side ──
     // The kernel parses the blob too, but onSpawn needs string[] for the
@@ -9737,7 +10878,15 @@ export class CentralizedKernelWorker {
         return;
       }
       this.handleSpawnAfterResolve(
-        channel, origArgs, parentPid, callerTid, pidOutPtr, blobBytes, blobLen, resolved, envp,
+        channel,
+        origArgs,
+        parentPid,
+        callerTid,
+        checkedPidOutPtr,
+        blobBytes,
+        blobLen,
+        resolved,
+        envp,
       );
     }).catch((err) => {
       if (!this.isAsyncChannelProcessActive(channel)) return;
@@ -9751,25 +10900,101 @@ export class CentralizedKernelWorker {
    * validated, compiled program. Now safe to ask the kernel to build the
    * child (which will apply file_actions exactly once).
    */
-  private scratchOffsetForSpawnBlob(blobLen: number): number {
-    if (blobLen <= SCRATCH_SIZE) return this.scratchOffset;
-    if ((this.largeSpawnScratchOffset ?? 0) !== 0) {
+  private scratchRegionForSpawnBlob(
+    blobLen: number,
+  ): { region: KernelScratchRegion | null; errno: number } {
+    if (blobLen <= SCRATCH_SIZE) {
+      try {
+        return { region: this.requireMainScratchRegion(), errno: 0 };
+      } catch {
+        return { region: null, errno: EIO };
+      }
+    }
+    if (this.largeSpawnScratchRegion) {
       // WHY: resolution may be asynchronous, but every completion runs on this
       // worker's single event loop and copy + kernel_spawn_process contain no
       // await. One shared buffer therefore cannot be observed half-written.
-      return this.largeSpawnScratchOffset;
+      if (blobLen <= this.largeSpawnScratchRegion.capacity) {
+        return { region: this.largeSpawnScratchRegion, errno: 0 };
+      }
     }
 
-    // WHY: kernel_alloc_scratch owns its allocation for the kernel lifetime
-    // and has no matching free operation. Allocate the complete bounded
-    // transport once, then reuse it, instead of leaking one allocation for
-    // every large spawn or letting the host grow memory behind Rust's heap.
-    const allocScratch = this.kernelInstance!.exports.kernel_alloc_scratch as
+    const kernelExports = this.kernelInstance!.exports;
+    const reserveSpawnScratch = kernelExports.kernel_spawn_scratch_reserve as
+      ((minimumCapacity: KernelPointer) => KernelPointer) | undefined;
+    const spawnScratchCapacity = kernelExports.kernel_spawn_scratch_capacity as
+      (() => KernelPointer) | undefined;
+    if (
+      typeof reserveSpawnScratch === "function" &&
+      typeof spawnScratchCapacity === "function"
+    ) {
+      // WHY: reserve may reallocate Rust's Vec. Clear the old region before
+      // making that call, and never carry a lease across it. The subsequent
+      // copy and parser call are synchronous on the dedicated kernel worker.
+      this.largeSpawnScratchRegion = null;
+      let reservationPointer: KernelPointer = 0;
+      try {
+        const region = reserveKernelScratchRegion(
+          this.kernelMemory!,
+          (minimumCapacity) => {
+            reservationPointer = reserveSpawnScratch(
+              this.toKernelPtr(minimumCapacity),
+            );
+            return {
+              pointer: reservationPointer,
+              capacity: spawnScratchCapacity(),
+            };
+          },
+          blobLen,
+          this.kernel.getKernelPtrWidth(),
+          "kernel growable spawn scratch",
+        );
+        this.largeSpawnScratchRegion = region;
+        return { region, errno: 0 };
+      } catch {
+        const failed = typeof reservationPointer === "bigint"
+          ? reservationPointer === 0n
+          : reservationPointer === 0;
+        return { region: null, errno: failed ? ENOMEM : EIO };
+      }
+    }
+
+    // Compatibility fallback for a kernel built before the additive growable
+    // exports existed. kernel_alloc_scratch owns this allocation for the
+    // kernel lifetime and has no matching free operation, so allocate the
+    // complete bounded transport once rather than leaking on every spawn.
+    if (this.largeSpawnScratchFallbackFailure != null) {
+      return {
+        region: null,
+        errno: this.largeSpawnScratchFallbackFailure,
+      };
+    }
+    const allocScratch = kernelExports.kernel_alloc_scratch as
       (size: number) => KernelPointer;
-    this.largeSpawnScratchOffset = Number(
-      allocScratch(SPAWN_BLOB_MAX_BYTES),
-    );
-    return this.largeSpawnScratchOffset;
+    let allocatorResult: KernelPointer = 0;
+    try {
+      this.largeSpawnScratchRegion = allocateKernelScratchRegion(
+        this.kernelMemory!,
+        (capacity) => {
+          allocatorResult = allocScratch(capacity);
+          return allocatorResult;
+        },
+        SPAWN_BLOB_MAX_BYTES,
+        this.kernel.getKernelPtrWidth(),
+        "kernel large spawn scratch",
+      );
+      return { region: this.largeSpawnScratchRegion, errno: 0 };
+    } catch {
+      const failed = typeof allocatorResult === "bigint"
+        ? allocatorResult === 0n
+        : allocatorResult === 0;
+      const errno = failed ? ENOMEM : EIO;
+      // WHY: the legacy allocator cannot release a nonzero invalid range.
+      // Caching the failure gives that protocol violation a strict one-region
+      // lifetime bound instead of leaking on every retry.
+      this.largeSpawnScratchFallbackFailure = errno;
+      return { region: null, errno };
+    }
   }
 
   private handleSpawnAfterResolve(
@@ -9793,21 +11018,18 @@ export class CentralizedKernelWorker {
       this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, errno);
       return;
     }
-    const spawnScratchOffset = this.scratchOffsetForSpawnBlob(blobLen);
-    if (blobLen > SCRATCH_SIZE && spawnScratchOffset === 0) {
-      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, ENOMEM);
+    const transport = this.scratchRegionForSpawnBlob(blobLen);
+    if (!transport.region) {
+      this.completeChannel(
+        channel,
+        SYS_SPAWN,
+        origArgs,
+        undefined,
+        -1,
+        transport.errno,
+      );
       return;
     }
-    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
-    if (
-      !Number.isSafeInteger(spawnScratchOffset) ||
-      spawnScratchOffset < 0 ||
-      spawnScratchOffset > kernelMem.byteLength - blobLen
-    ) {
-      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, EIO);
-      return;
-    }
-    kernelMem.set(blobBytes, spawnScratchOffset);
 
     // ── Ask the kernel to build the child descriptor ──
     const kernelSpawn = this.kernelInstance!.exports.kernel_spawn_process as
@@ -9817,12 +11039,21 @@ export class CentralizedKernelWorker {
         blobPtr: KernelPointer,
         blobLen: KernelPointer,
       ) => number;
-    const result = kernelSpawn(
-      parentPid,
-      callerTid,
-      this.toKernelPtr(spawnScratchOffset),
-      this.toKernelPtr(blobLen),
-    );
+    let result: number;
+    try {
+      result = transport.region.withLease((scratch) => {
+        scratch.copyFrom(blobBytes, 0, 0, blobLen);
+        return kernelSpawn(
+          parentPid,
+          callerTid,
+          this.toKernelPtr(scratch.address(0, blobLen)),
+          this.toKernelPtr(blobLen),
+        );
+      });
+    } catch {
+      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, EIO);
+      return;
+    }
     if (result <= 0) {
       const errno = result < 0 ? (-result) >>> 0 : EIO;
       this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, errno);
@@ -9921,13 +11152,13 @@ export class CentralizedKernelWorker {
     }
 
     const available = mem.byteLength - ptr;
-    const scanLength = Math.min(available, EXEC_PATH_MAX_BYTES);
+    const scanLength = Math.min(available, POSIX_PATH_MAX_BYTES);
     let byteLength = 0;
     while (byteLength < scanLength && mem[ptr + byteLength] !== 0) {
       byteLength++;
     }
     if (byteLength === scanLength) {
-      return { errno: available >= EXEC_PATH_MAX_BYTES ? ENAMETOOLONG : EFAULT };
+      return { errno: available >= POSIX_PATH_MAX_BYTES ? ENAMETOOLONG : EFAULT };
     }
 
     return {
@@ -9954,7 +11185,7 @@ export class CentralizedKernelWorker {
     // entry consumes at least ptrWidth + one NUL byte, so this byte budget also
     // provides a finite loop bound for arrays containing empty strings.
     let representedBytes = ptrWidth;
-    for (let i = 0; representedBytes <= EXEC_METADATA_MAX_BYTES; i++) {
+    for (let i = 0; representedBytes <= POSIX_ARG_MAX_BYTES; i++) {
       const pointerOffset = arrayPtr + i * ptrWidth;
       if (!Number.isSafeInteger(pointerOffset) || pointerOffset < 0
           || pointerOffset + ptrWidth > view.byteLength) {
@@ -9983,7 +11214,7 @@ export class CentralizedKernelWorker {
 
       representedBytes += ptrWidth + byteLength + 1;
       if (!Number.isSafeInteger(representedBytes)
-          || representedBytes > EXEC_METADATA_MAX_BYTES) {
+          || representedBytes > POSIX_ARG_MAX_BYTES) {
         return { errno: E2BIG };
       }
 
@@ -10072,10 +11303,18 @@ export class CentralizedKernelWorker {
     const getCwd = this.kernelInstance!.exports.kernel_get_cwd as
       ((pid: number, bufPtr: KernelPointer, bufLen: number) => number) | undefined;
     if (!getCwd) return path;
-    const cwdLen = getCwd(pid, this.toKernelPtr(this.scratchOffset), 4096);
-    if (cwdLen <= 0) return path;
-    const kernelBuf = new Uint8Array(this.kernelMemory!.buffer);
-    const cwd = new TextDecoder().decode(kernelBuf.slice(this.scratchOffset, this.scratchOffset + cwdLen));
+    let output: { result: number; bytes: Uint8Array };
+    try {
+      output = this.captureMainScratchOutput(
+        POSIX_PATH_MAX_BYTES,
+        "kernel_get_cwd",
+        (pointer, capacity) => getCwd(pid, pointer, capacity),
+      );
+    } catch {
+      return path;
+    }
+    if (output.result <= 0) return path;
+    const cwd = new TextDecoder().decode(output.bytes);
     const joined = cwd.endsWith("/") ? cwd + path : cwd + "/" + path;
     // Normalize . and .. components (e.g. /data/spawn/./prog → /data/spawn/prog)
     const parts = joined.split("/");
@@ -10131,14 +11370,26 @@ export class CentralizedKernelWorker {
         this.completeChannel(channel, SYS_EXECVEAT, origArgs, undefined, -1, 38); // ENOSYS
         return;
       }
-      const result = getFdPath(channel.pid, dirfd, this.toKernelPtr(this.scratchOffset), 4096);
-      if (result <= 0) {
-        const errno = result < 0 ? (-result) >>> 0 : 2; // ENOENT
+      let output: { result: number; bytes: Uint8Array };
+      try {
+        output = this.captureMainScratchOutput(
+          POSIX_PATH_MAX_BYTES,
+          "kernel_get_fd_path",
+          (pointer, capacity) =>
+            getFdPath(channel.pid, dirfd, pointer, capacity),
+        );
+      } catch (error) {
+        this.rejectScratchTransfer(channel, error);
+        return;
+      }
+      if (output.result <= 0) {
+        const errno = output.result < 0
+          ? (-output.result) >>> 0
+          : 2; // ENOENT
         this.completeChannel(channel, SYS_EXECVEAT, origArgs, undefined, -1, errno);
         return;
       }
-      const kernelBuf = new Uint8Array(this.kernelMemory!.buffer);
-      execPath = new TextDecoder().decode(kernelBuf.slice(this.scratchOffset, this.scratchOffset + result));
+      execPath = new TextDecoder().decode(output.bytes);
     } else if (pathStr.startsWith("/")) {
       execPath = pathStr;
     } else {
@@ -10147,14 +11398,21 @@ export class CentralizedKernelWorker {
       // The kernel's sys_execveat already resolves this, but since we intercept
       // host-side, we need to do it ourselves.
       const getCwd = this.kernelInstance!.exports.kernel_get_cwd as
-        ((pid: number, bufPtr: number, bufLen: number) => number) | undefined;
+        ((pid: number, bufPtr: KernelPointer, bufLen: number) => number) | undefined;
       if (getCwd) {
-        const cwdLen = getCwd(channel.pid, this.scratchOffset, 4096);
-        if (cwdLen > 0) {
-          const kernelBuf = new Uint8Array(this.kernelMemory!.buffer);
-          const cwd = new TextDecoder().decode(
-            kernelBuf.slice(this.scratchOffset, this.scratchOffset + cwdLen),
+        let output: { result: number; bytes: Uint8Array };
+        try {
+          output = this.captureMainScratchOutput(
+            POSIX_PATH_MAX_BYTES,
+            "kernel_get_cwd",
+            (pointer, capacity) => getCwd(channel.pid, pointer, capacity),
           );
+        } catch (error) {
+          this.rejectScratchTransfer(channel, error);
+          return;
+        }
+        if (output.result > 0) {
+          const cwd = new TextDecoder().decode(output.bytes);
           execPath = cwd.endsWith("/") ? cwd + pathStr : cwd + "/" + pathStr;
         } else {
           execPath = pathStr;
@@ -10224,24 +11482,36 @@ export class CentralizedKernelWorker {
 
     // Route through kernel_handle_channel — the kernel allocates a TID and
     // stores ThreadInfo. The dispatch table remaps args correctly.
-    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    kernelView.setUint32(CH_SYSCALL, SYS_CLONE, true);
-    for (let i = 0; i < CH_ARGS_COUNT; i++) {
-      kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, BigInt(origArgs[i]), true);
-    }
-
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: KernelPointer, pid: number) => number;
-    this.bindKernelTidForChannel(channel);
-    this.currentHandlePid = channel.pid;
-    try {
-      handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
-    } finally {
-      this.currentHandlePid = 0;
-    }
-
-    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-    const errVal = kernelView.getUint32(CH_ERRNO, true);
+    const { retVal, errVal } = this.requireMainScratchRegion().withLease(
+      (lease) => {
+        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
+        kernelView.setUint32(CH_SYSCALL, SYS_CLONE, true);
+        for (let i = 0; i < CH_ARGS_COUNT; i++) {
+          kernelView.setBigInt64(
+            CH_ARGS + i * CH_ARG_SIZE,
+            BigInt(origArgs[i]),
+            true,
+          );
+        }
+        this.bindKernelTidForChannel(channel);
+        this.currentHandlePid = channel.pid;
+        try {
+          handleChannel(
+            this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+            channel.pid,
+          );
+        } finally {
+          this.currentHandlePid = 0;
+        }
+        const resultView = lease.dataView(0, CH_TOTAL_SIZE);
+        return {
+          retVal: Number(resultView.getBigInt64(CH_RETURN, true)),
+          errVal: resultView.getUint32(CH_ERRNO, true),
+        };
+      },
+    );
 
     if (retVal <= 0) {
       const errno = retVal < 0 ? errVal : EIO;
@@ -10436,15 +11706,20 @@ export class CentralizedKernelWorker {
     // Run the kernel's exit path so it closes all FDs (including pipe
     // write ends). kernel_exit calls sys_exit then traps — catch the trap.
     {
-      const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-      kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-      kernelView.setBigInt64(CH_ARGS, BigInt(exitStatus), true);
       const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
         (offset: KernelPointer, pid: number) => number;
       this.bindKernelTidForChannel(channel);
       this.currentHandlePid = channel.pid;
       try {
-        handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
+        this.requireMainScratchRegion().withLease((lease) => {
+          const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
+          kernelView.setUint32(CH_SYSCALL, syscallNr, true);
+          kernelView.setBigInt64(CH_ARGS, BigInt(exitStatus), true);
+          handleChannel(
+            this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+            channel.pid,
+          );
+        });
       } catch {
         // Expected: kernel_exit traps with unreachable after closing FDs
       } finally {
@@ -10825,24 +12100,28 @@ export class CentralizedKernelWorker {
       flags: number,
       resultPtr: KernelPointer,
     ) => number;
-    const result = waitPoll(
-      channel.pid,
-      this.guestTidForChannel(channel),
-      targetPid,
-      eventMask,
-      flags,
-      this.toKernelPtr(this.scratchOffset),
-    );
-    if (result > 0) {
-      const source = new Uint8Array(
-        this.kernelMemory!.buffer,
-        this.scratchOffset,
-        STRUCT_SIZE_KERNEL_WAIT_RESULT,
+    const output = this.requireMainScratchRegion().withLease((lease) => {
+      const result = waitPoll(
+        channel.pid,
+        this.guestTidForChannel(channel),
+        targetPid,
+        eventMask,
+        flags,
+        this.toKernelPtr(
+          lease.address(0, STRUCT_SIZE_KERNEL_WAIT_RESULT),
+        ),
       );
-      const owned = new Uint8Array(STRUCT_SIZE_KERNEL_WAIT_RESULT);
-      owned.set(source);
-      const view = new DataView(owned.buffer);
-      const rusage = owned.subarray(
+      return {
+        result,
+        bytes: result > 0
+          ? lease.copyOut(0, STRUCT_SIZE_KERNEL_WAIT_RESULT)
+          : new Uint8Array(0),
+      };
+    });
+    const { result } = output;
+    if (result > 0) {
+      const view = new DataView(output.bytes.buffer);
+      const rusage = output.bytes.subarray(
         KERNEL_WAIT_RESULT_RUSAGE_OFFSET,
         KERNEL_WAIT_RESULT_RUSAGE_OFFSET + STRUCT_SIZE_WASM_RUSAGE_WIRE,
       );
@@ -11656,18 +12935,6 @@ export class CentralizedKernelWorker {
     // that expires in that handoff window from being lost.
 
     if (queueSignal) {
-      const kernelView = new DataView(
-        this.kernelMemory.buffer,
-        this.scratchOffset,
-      );
-      // Write SYS_KILL into scratch: kill(targetPid, signum)
-      kernelView.setUint32(CH_SYSCALL, SYS_KILL, true);
-      kernelView.setBigInt64(CH_ARGS, BigInt(targetPid), true); // arg0 = pid
-      kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(signum), true); // arg1 = sig
-      for (let i = 2; i < CH_ARGS_COUNT; i++) {
-        kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
-      }
-
       const handleChannel = this.kernelInstance.exports
         .kernel_handle_channel as (
         offset: KernelPointer,
@@ -11683,7 +12950,24 @@ export class CentralizedKernelWorker {
       }
       this.currentHandlePid = targetPid;
       try {
-        handleChannel(this.toKernelPtr(this.scratchOffset), targetPid);
+        this.requireMainScratchRegion().withLease((lease) => {
+          const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
+          // Write SYS_KILL into scratch: kill(targetPid, signum)
+          kernelView.setUint32(CH_SYSCALL, SYS_KILL, true);
+          kernelView.setBigInt64(CH_ARGS, BigInt(targetPid), true);
+          kernelView.setBigInt64(
+            CH_ARGS + CH_ARG_SIZE,
+            BigInt(signum),
+            true,
+          );
+          for (let i = 2; i < CH_ARGS_COUNT; i++) {
+            kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
+          }
+          handleChannel(
+            this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+            targetPid,
+          );
+        });
       } catch (err) {
         // Non-fatal — signal delivery is best-effort from the host side
         console.error(
@@ -12242,23 +13526,50 @@ export class CentralizedKernelWorker {
   ): SharedMmapHostResult<SharedMmapFdStat> {
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: KernelPointer, pid: number) => number;
-    const statPtr = this.scratchOffset + CH_DATA;
-    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    kernelView.setUint32(CH_SYSCALL, ABI_SYSCALLS.Fstat, true);
-    kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
-    kernelView.setBigInt64(CH_ARGS + CH_ARG_SIZE, BigInt(statPtr), true);
-    for (let i = 2; i < CH_ARGS_COUNT; i++) {
-      kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
-    }
-
     const previousPid = this.currentHandlePid;
-    let hostHandle: number | null = null;
+    let captured: {
+      result: number;
+      errno: number;
+      dev: bigint;
+      ino: bigint;
+      mode: number;
+      size64: bigint;
+      hostHandle: number | null;
+    };
     try {
       this.bindKernelTidForChannel(channel as ChannelInfo);
       this.currentHandlePid = channel.pid;
-      hostHandle = this.kernel.withFstatHandleCapture(() =>
-        handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid)
-      ).handle;
+      captured = this.requireMainScratchRegion().withLease((lease) => {
+        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
+        const statPtr = lease.address(CH_DATA, STRUCT_SIZE_WASM_STAT);
+        kernelView.setUint32(CH_SYSCALL, ABI_SYSCALLS.Fstat, true);
+        kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
+        kernelView.setBigInt64(
+          CH_ARGS + CH_ARG_SIZE,
+          BigInt(statPtr),
+          true,
+        );
+        for (let i = 2; i < CH_ARGS_COUNT; i++) {
+          kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
+        }
+        const hostHandle = this.kernel.withFstatHandleCapture(() =>
+          handleChannel(
+            this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+            channel.pid,
+          )
+        ).handle;
+        const resultView = lease.dataView(0, CH_TOTAL_SIZE);
+        const statView = lease.dataView(CH_DATA, STRUCT_SIZE_WASM_STAT);
+        return {
+          result: Number(resultView.getBigInt64(CH_RETURN, true)),
+          errno: resultView.getUint32(CH_ERRNO, true),
+          dev: statView.getBigUint64(0, true),
+          ino: statView.getBigUint64(8, true),
+          mode: statView.getUint32(16, true),
+          size64: statView.getBigUint64(32, true),
+          hostHandle,
+        };
+      });
     } catch {
       return { kind: "error", errno: EIO };
     } finally {
@@ -12267,9 +13578,7 @@ export class CentralizedKernelWorker {
     if (this.finishSignalTermination(channel as ChannelInfo)) {
       return { kind: "error", errno: EINTR_ERRNO };
     }
-    const resultView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    const result = Number(resultView.getBigInt64(CH_RETURN, true));
-    const errno = resultView.getUint32(CH_ERRNO, true);
+    const { result, errno, dev, ino, mode, size64, hostHandle } = captured;
     if (result !== 0 || errno !== 0) {
       return {
         kind: "error",
@@ -12277,11 +13586,6 @@ export class CentralizedKernelWorker {
       };
     }
 
-    const statView = new DataView(this.kernelMemory!.buffer, statPtr);
-    const dev = statView.getBigUint64(0, true);
-    const ino = statView.getBigUint64(8, true);
-    const mode = statView.getUint32(16, true);
-    const size64 = statView.getBigUint64(32, true);
     return {
       kind: "ok",
       value: {
@@ -12303,25 +13607,23 @@ export class CentralizedKernelWorker {
     const getFdPath = this.kernelInstance!.exports.kernel_get_fd_path as
       ((pid: number, fd: number, bufPtr: KernelPointer, bufLen: number) => number) | undefined;
     if (!getFdPath) return { kind: "error", errno: ENOSYS };
-    const ptr = this.scratchOffset + CH_DATA;
-    let len: number;
+    let output: { result: number; bytes: Uint8Array };
     try {
-      len = getFdPath(
-        channel.pid,
-        fd,
-        this.toKernelPtr(ptr),
-        Math.min(4096, CH_DATA_SIZE),
+      output = this.captureMainScratchOutput(
+        Math.min(POSIX_PATH_MAX_BYTES, CH_DATA_SIZE),
+        "kernel_get_fd_path",
+        (pointer, capacity) =>
+          getFdPath(channel.pid, fd, pointer, capacity),
       );
     } catch {
       return { kind: "error", errno: EIO };
     }
+    const len = output.result;
     if (len < 0) return { kind: "error", errno: -len };
     if (len === 0) return { kind: "error", errno: ENOENT };
     return {
       kind: "ok",
-      value: new TextDecoder().decode(
-        new Uint8Array(this.kernelMemory!.buffer).slice(ptr, ptr + len),
-      ),
+      value: new TextDecoder().decode(output.bytes),
     };
   }
 
@@ -12331,19 +13633,33 @@ export class CentralizedKernelWorker {
   ): SharedMmapHostResult<number> {
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: KernelPointer, pid: number) => number;
-    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    kernelView.setUint32(CH_SYSCALL, SYS_FCNTL, true);
-    kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
-    kernelView.setBigInt64(CH_ARGS + CH_ARG_SIZE, BigInt(F_GETFL), true);
-    for (let i = 2; i < CH_ARGS_COUNT; i++) {
-      kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
-    }
-
     const previousPid = this.currentHandlePid;
+    let captured: { result: number; errno: number };
     try {
       this.bindKernelTidForChannel(channel as ChannelInfo);
       this.currentHandlePid = channel.pid;
-      handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
+      captured = this.requireMainScratchRegion().withLease((lease) => {
+        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
+        kernelView.setUint32(CH_SYSCALL, SYS_FCNTL, true);
+        kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
+        kernelView.setBigInt64(
+          CH_ARGS + CH_ARG_SIZE,
+          BigInt(F_GETFL),
+          true,
+        );
+        for (let i = 2; i < CH_ARGS_COUNT; i++) {
+          kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
+        }
+        handleChannel(
+          this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+          channel.pid,
+        );
+        const resultView = lease.dataView(0, CH_TOTAL_SIZE);
+        return {
+          result: Number(resultView.getBigInt64(CH_RETURN, true)),
+          errno: resultView.getUint32(CH_ERRNO, true),
+        };
+      });
     } catch {
       return { kind: "error", errno: EIO };
     } finally {
@@ -12352,9 +13668,7 @@ export class CentralizedKernelWorker {
     if (this.finishSignalTermination(channel as ChannelInfo)) {
       return { kind: "error", errno: EINTR_ERRNO };
     }
-    const resultView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    const result = Number(resultView.getBigInt64(CH_RETURN, true));
-    const errno = resultView.getUint32(CH_ERRNO, true);
+    const { result, errno } = captured;
     if (result < 0 || errno !== 0) {
       return {
         kind: "error",
@@ -12875,17 +14189,15 @@ export class CentralizedKernelWorker {
         const getCwd = this.kernelInstance!.exports.kernel_get_cwd as
           ((pid: number, bufPtr: KernelPointer, bufLen: number) => number) | undefined;
         if (!getCwd) return { kind: "error", errno: ENOSYS };
-        const cwdLen = getCwd(
-          channel.pid,
-          this.toKernelPtr(this.scratchOffset),
-          Math.min(4096, CH_DATA_SIZE),
+        const output = this.captureMainScratchOutput(
+          Math.min(POSIX_PATH_MAX_BYTES, CH_DATA_SIZE),
+          "kernel_get_cwd",
+          (pointer, capacity) => getCwd(channel.pid, pointer, capacity),
         );
+        const cwdLen = output.result;
         if (cwdLen < 0) return { kind: "error", errno: -cwdLen };
         if (cwdLen === 0) return { kind: "error", errno: ENOENT };
-        base = new TextDecoder().decode(
-          new Uint8Array(this.kernelMemory!.buffer)
-            .slice(this.scratchOffset, this.scratchOffset + cwdLen),
-        );
+        base = new TextDecoder().decode(output.bytes);
       }
       return {
         kind: "ok",
@@ -13392,44 +14704,73 @@ export class CentralizedKernelWorker {
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: KernelPointer, pid: number) => number;
-    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
-    const dataStart = this.scratchOffset + CH_DATA;
+    const scratch = this.requireMainScratchRegion();
 
     let written = 0;
     while (written < mapLen) {
       const chunkSize = Math.min(CH_DATA_SIZE, mapLen - written);
 
-      // Set up pread syscall in kernel scratch:
-      // SYS_PREAD (64): (fd, buf_ptr, count, signed i64 offset)
-      kernelView.setUint32(CH_SYSCALL, SYS_PREAD, true);
-      kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(fd), true);        // fd
-      kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(dataStart), true);  // buf_ptr (kernel memory)
-      kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(chunkSize), true);  // count
-      kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(fileOffset), true);
-      kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
-      kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, BigInt(0), true);
-
-      this.bindKernelTidForChannel(channel);
-      this.currentHandlePid = channel.pid;
+      let attempt: { bytesRead: number; bytes: Uint8Array };
       try {
-        handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
+        attempt = scratch.withLease((lease) => {
+          const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
+          kernelView.setUint32(CH_SYSCALL, SYS_PREAD, true);
+          kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
+          kernelView.setBigInt64(
+            CH_ARGS + CH_ARG_SIZE,
+            BigInt(lease.address(CH_DATA, chunkSize)),
+            true,
+          );
+          kernelView.setBigInt64(
+            CH_ARGS + 2 * CH_ARG_SIZE,
+            BigInt(chunkSize),
+            true,
+          );
+          kernelView.setBigInt64(
+            CH_ARGS + 3 * CH_ARG_SIZE,
+            BigInt(fileOffset),
+            true,
+          );
+          kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
+          kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
+
+          this.bindKernelTidForChannel(channel);
+          this.currentHandlePid = channel.pid;
+          try {
+            handleChannel(
+              this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+              channel.pid,
+            );
+          } finally {
+            this.currentHandlePid = 0;
+          }
+          const bytesRead = Number(
+            lease.dataView(0, CH_TOTAL_SIZE).getBigInt64(CH_RETURN, true),
+          );
+          if (
+            !Number.isSafeInteger(bytesRead)
+            || bytesRead < 0
+            || bytesRead > chunkSize
+          ) {
+            return { bytesRead, bytes: new Uint8Array(0) };
+          }
+          return {
+            bytesRead,
+            bytes: lease.copyOut(CH_DATA, bytesRead),
+          };
+        });
       } catch {
         break; // pread failed, leave rest as zeros
-      } finally {
-        this.currentHandlePid = 0;
       }
       if (this.finishSignalTermination(channel)) return;
 
-      const bytesRead = Number(kernelView.getBigInt64(CH_RETURN, true));
-      if (bytesRead <= 0) break; // EOF or error
+      const { bytesRead } = attempt;
+      if (!Number.isSafeInteger(bytesRead) || bytesRead <= 0) break;
+      if (bytesRead > chunkSize) break;
 
       // Copy from kernel scratch data area to process memory
       const processMem = new Uint8Array(channel.memory.buffer);
-      processMem.set(
-        kernelMem.subarray(dataStart, dataStart + bytesRead),
-        mmapAddr + written,
-      );
+      processMem.set(attempt.bytes, mmapAddr + written);
 
       written += bytesRead;
       fileOffset += bytesRead;
@@ -13509,45 +14850,67 @@ export class CentralizedKernelWorker {
   ): boolean {
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: KernelPointer, pid: number) => number;
-    const dataStart = this.scratchOffset + CH_DATA;
+    const scratch = this.requireMainScratchRegion();
 
-    if (processAddr + len > channel.memory.buffer.byteLength) return false;
+    try {
+      this.checkedProcessRange(
+        channel,
+        processAddr,
+        len,
+        "shared mmap writeback source",
+      );
+    } catch {
+      return false;
+    }
     const previousPid = this.currentHandlePid;
     try {
       let written = 0;
       while (written < len) {
         const chunkSize = Math.min(CH_DATA_SIZE, len - written);
-        // pwrite can grow an in-kernel Vec and therefore the kernel Wasm
-        // memory. Reacquire scratch views for every chunk; a view cached
-        // across kernel_handle_channel may have been detached by memory.grow.
-        const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-        const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
-
-        // Copy chunk from process memory to kernel scratch data area
         const processMem = new Uint8Array(channel.memory.buffer);
-        kernelMem.set(
-          processMem.subarray(processAddr + written, processAddr + written + chunkSize),
-          dataStart,
-        );
-
-        // Set up pwrite syscall in kernel scratch:
-        // SYS_PWRITE (65): (fd, buf_ptr, count, signed i64 offset)
         const curOffset = fileOffset + written;
-        kernelView.setUint32(CH_SYSCALL, SYS_PWRITE, true);
-        kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(fd), true);
-        kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(dataStart), true);
-        kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(chunkSize), true);
-        kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(curOffset), true);
-        kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
-        kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, BigInt(0), true);
+        const bytesWritten = scratch.withLease((lease) => {
+          const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
+          lease.copyFrom(
+            processMem,
+            CH_DATA,
+            processAddr + written,
+            chunkSize,
+          );
+          kernelView.setUint32(CH_SYSCALL, SYS_PWRITE, true);
+          kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
+          kernelView.setBigInt64(
+            CH_ARGS + CH_ARG_SIZE,
+            BigInt(lease.address(CH_DATA, chunkSize)),
+            true,
+          );
+          kernelView.setBigInt64(
+            CH_ARGS + 2 * CH_ARG_SIZE,
+            BigInt(chunkSize),
+            true,
+          );
+          kernelView.setBigInt64(
+            CH_ARGS + 3 * CH_ARG_SIZE,
+            BigInt(curOffset),
+            true,
+          );
+          kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
+          kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
 
-        this.bindKernelTidForChannel(channel);
-        this.currentHandlePid = channel.pid;
-        handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
+          this.bindKernelTidForChannel(channel);
+          this.currentHandlePid = channel.pid;
+          handleChannel(
+            this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+            channel.pid,
+          );
+          // A synchronous kernel import may grow its Memory and detach every
+          // host view created before the call. Reacquire through the lease so
+          // both current-memory bounds and allocation capacity are rechecked.
+          return Number(
+            lease.dataView(0, CH_TOTAL_SIZE).getBigInt64(CH_RETURN, true),
+          );
+        });
         if (this.finishSignalTermination(channel)) return false;
-
-        const resultView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-        const bytesWritten = Number(resultView.getBigInt64(CH_RETURN, true));
         if (bytesWritten <= 0 || bytesWritten > chunkSize) return false;
 
         written += bytesWritten;
@@ -13891,23 +15254,35 @@ export class CentralizedKernelWorker {
       ((shmid: number, offset: number, outPtr: KernelPointer, maxLen: number) => number) | undefined;
     if (!readChunk) return null;
     const result = new Uint8Array(len);
+    const scratch = this.requireMainScratchRegion();
     let transferred = 0;
     while (transferred < len) {
       const toRead = Math.min(CH_DATA_SIZE, len - transferred);
-      const chunkPtr = this.scratchOffset + CH_DATA;
-      const nRead = readChunk(
-        segId,
-        offset + transferred,
-        this.toKernelPtr(chunkPtr),
-        toRead,
-      );
-      if (nRead < 0 || nRead > toRead) return null;
-      if (nRead === 0) break;
-      result.set(
-        new Uint8Array(this.kernelMemory!.buffer, chunkPtr, nRead),
-        transferred,
-      );
-      transferred += nRead;
+      const attempt = scratch.withLease((lease) => {
+        const nRead = readChunk(
+          segId,
+          offset + transferred,
+          this.toKernelPtr(lease.address(CH_DATA, toRead)),
+          toRead,
+        );
+        if (
+          !Number.isSafeInteger(nRead)
+          || nRead < 0
+          || nRead > toRead
+        ) {
+          return { nRead, bytes: null };
+        }
+        return {
+          nRead,
+          bytes: nRead > 0 ? lease.copyOut(CH_DATA, nRead) : null,
+        };
+      });
+      if (attempt.nRead < 0 || attempt.nRead > toRead || !attempt.bytes) {
+        if (attempt.nRead === 0) break;
+        return null;
+      }
+      result.set(attempt.bytes, transferred);
+      transferred += attempt.nRead;
     }
     return result;
   }
@@ -13916,21 +15291,22 @@ export class CentralizedKernelWorker {
     const writeChunk = this.kernelInstance!.exports.kernel_ipc_shm_write_chunk as
       ((shmid: number, offset: number, dataPtr: KernelPointer, dataLen: number) => number) | undefined;
     if (!writeChunk) return false;
+    const scratch = this.requireMainScratchRegion();
     let transferred = 0;
     while (transferred < bytes.length) {
       const toWrite = Math.min(CH_DATA_SIZE, bytes.length - transferred);
-      const chunkPtr = this.scratchOffset + CH_DATA;
-      new Uint8Array(this.kernelMemory!.buffer).set(
-        bytes.subarray(transferred, transferred + toWrite),
-        chunkPtr,
-      );
-      const written = writeChunk(
-        segId,
-        offset + transferred,
-        this.toKernelPtr(chunkPtr),
-        toWrite,
-      );
-      if (written <= 0 || written > toWrite) return false;
+      const written = scratch.withLease((lease) => {
+        lease.copyFrom(bytes, CH_DATA, transferred, toWrite);
+        return writeChunk(
+          segId,
+          offset + transferred,
+          this.toKernelPtr(lease.address(CH_DATA, toWrite)),
+          toWrite,
+        );
+      });
+      if (!Number.isSafeInteger(written) || written <= 0 || written > toWrite) {
+        return false;
+      }
       transferred += written;
     }
     return true;
@@ -14233,6 +15609,28 @@ export class CentralizedKernelWorker {
       throw new Error("kernel_get_memory_pages export is unavailable");
     }
     return fn() >>> 0;
+  }
+
+  /**
+   * Retained capacity of the kernel-owned large-spawn reservation in bytes.
+   *
+   * Zero means no large spawn has needed a reservation. The compatibility
+   * fallback reports its cached fixed region when paired with an older kernel
+   * that lacks the additive Rust Vec capacity export.
+   */
+  getSpawnScratchCapacity(): number {
+    const fn = this.kernelInstance?.exports.kernel_spawn_scratch_capacity as
+      (() => KernelPointer) | undefined;
+    const raw = typeof fn === "function"
+      ? fn()
+      : this.largeSpawnScratchRegion?.capacity ?? 0;
+    const capacity = typeof raw === "bigint" ? Number(raw) : raw;
+    if (!Number.isSafeInteger(capacity) || capacity < 0) {
+      throw new Error(
+        `kernel returned an invalid spawn scratch capacity: ${String(raw)}`,
+      );
+    }
+    return capacity;
   }
 
   /**
@@ -14642,25 +16040,93 @@ export class CentralizedKernelWorker {
    * pipe stops accepting or we've written everything. Returns total bytes
    * written.
    */
+  private readPipeChunk(
+    pipeRead: (
+      pid: number,
+      pipeIdx: number,
+      bufPtr: KernelPointer,
+      bufLen: number,
+    ) => number,
+    pid: number,
+    pipeIdx: number,
+  ): Uint8Array | null {
+    const scratch = this.requireTcpScratchRegion();
+    return scratch.withLease((lease) => {
+      const n = pipeRead(
+        pid,
+        pipeIdx,
+        this.toKernelPtr(lease.address(0, scratch.capacity)),
+        scratch.capacity,
+      );
+      if (n <= 0) return null;
+      if (!Number.isSafeInteger(n) || n > scratch.capacity) {
+        throw new KernelScratchError(
+          "kernel pipe read exceeded TCP scratch capacity",
+          EIO,
+        );
+      }
+      return lease.copyOut(0, n);
+    });
+  }
+
   private writePipeChunked(
     pipeWrite: (pid: number, pipeIdx: number, bufPtr: KernelPointer, bufLen: number) => number,
     pid: number,
     pipeIdx: number,
     data: Uint8Array,
   ): number {
-    const scratchOffset = this.tcpScratchOffset;
-    const PAGE = 65536;
+    const scratch = this.requireTcpScratchRegion();
     let written = 0;
     while (written < data.length) {
-      const chunk = Math.min(data.length - written, PAGE);
-      // Re-acquire view each iteration — memory.grow can detach the buffer.
-      const mem = this.getKernelMem();
-      mem.set(data.subarray(written, written + chunk), scratchOffset);
-      const n = pipeWrite(pid, pipeIdx, this.toKernelPtr(scratchOffset), chunk);
-      if (n <= 0) break;
+      const chunk = Math.min(data.length - written, scratch.capacity);
+      const n = scratch.withLease((lease) => {
+        lease.copyFrom(data, 0, written, chunk);
+        return pipeWrite(
+          pid,
+          pipeIdx,
+          this.toKernelPtr(lease.address(0, chunk)),
+          chunk,
+        );
+      });
+      if (!Number.isSafeInteger(n) || n <= 0 || n > chunk) break;
       written += n;
     }
     return written;
+  }
+
+  /** Read all currently available pipe bytes through the owned TCP region. */
+  readPipeAvailable(pid: number, pipeIdx: number): Uint8Array | null {
+    const pipeRead = this.kernelInstance?.exports.kernel_pipe_read as
+      | ((
+          pid: number,
+          pipeIdx: number,
+          bufPtr: KernelPointer,
+          bufLen: number,
+        ) => number)
+      | undefined;
+    if (!pipeRead) return null;
+    const chunks: Uint8Array[] = [];
+    for (;;) {
+      const chunk = this.readPipeChunk(pipeRead, pid, pipeIdx);
+      if (!chunk) break;
+      chunks.push(chunk);
+    }
+    return chunks.length > 0 ? concatChunksLocal(chunks) : null;
+  }
+
+  /** Write host bytes to a kernel pipe through the owned TCP region. */
+  writePipeData(pid: number, pipeIdx: number, data: Uint8Array): number {
+    const pipeWrite = this.kernelInstance?.exports.kernel_pipe_write as
+      | ((
+          pid: number,
+          pipeIdx: number,
+          bufPtr: KernelPointer,
+          bufLen: number,
+        ) => number)
+      | undefined;
+    return pipeWrite
+      ? this.writePipeChunked(pipeWrite, pid, pipeIdx, data)
+      : -1;
   }
 
   /**
@@ -14683,8 +16149,6 @@ export class CentralizedKernelWorker {
       const chunks: Uint8Array[] = [];
       const start = Date.now();
       let sawWriteOpen = false;
-      const scratchOffset = this.tcpScratchOffset;
-      const PAGE = 65536;
 
       const finish = (response: HttpResponse) => {
         pipeCloseRead(pid, sendPipeIdx);
@@ -14703,11 +16167,10 @@ export class CentralizedKernelWorker {
         // Drain whatever is currently in the pipe.
         let gotData = false;
         for (;;) {
-          const n = pipeRead(pid, sendPipeIdx, this.toKernelPtr(scratchOffset), PAGE);
-          if (n <= 0) break;
+          const chunk = this.readPipeChunk(pipeRead, pid, sendPipeIdx);
+          if (!chunk) break;
           gotData = true;
-          const mem = this.getKernelMem();
-          chunks.push(mem.slice(scratchOffset, scratchOffset + n));
+          chunks.push(chunk);
         }
 
         if (gotData) {
@@ -14799,8 +16262,6 @@ export class CentralizedKernelWorker {
     let pumpPending = false;
     let cleaned = false;
 
-    const scratchOffset = this.tcpScratchOffset;
-
     const pipeIsWriteOpen = this.kernelInstance!.exports.kernel_pipe_is_write_open as
       (pid: number, pipeIdx: number) => number;
 
@@ -14819,13 +16280,15 @@ export class CentralizedKernelWorker {
         if (clientEnded) closeRecvPipeWrite();
         return;
       }
-      const mem = this.getKernelMem();
       let wroteAny = false;
       while (inboundQueue.length > 0) {
         const chunk = inboundQueue[0]!;
-        const toWrite = Math.min(chunk.length, 65536);
-        mem.set(chunk.subarray(0, toWrite), scratchOffset);
-        const written = pipeWrite(GLOBAL_PIPE_PID, recvPipeIdx, this.toKernelPtr(scratchOffset), toWrite);
+        const written = this.writePipeChunked(
+          pipeWrite,
+          GLOBAL_PIPE_PID,
+          recvPipeIdx,
+          chunk,
+        );
         if (written <= 0) break; // Pipe full, retry next pump
         wroteAny = true;
         if (written >= chunk.length) {
@@ -14844,16 +16307,19 @@ export class CentralizedKernelWorker {
 
     // Read send pipe → TCP socket (drains all available data)
     const drainOutbound = () => {
-      const mem = this.getKernelMem();
       let totalRead = 0;
       // Loop to drain the entire pipe, not just one 65KB chunk.
       // Responses larger than 65KB (e.g. 662KB site-editor.php) need
       // multiple reads to fully transfer.
       for (;;) {
-        const readN = pipeRead(GLOBAL_PIPE_PID, sendPipeIdx, this.toKernelPtr(scratchOffset), 65536);
-        if (readN <= 0) break;
-        totalRead += readN;
-        const outData = Buffer.from(mem.slice(scratchOffset, scratchOffset + readN));
+        const bytes = this.readPipeChunk(
+          pipeRead,
+          GLOBAL_PIPE_PID,
+          sendPipeIdx,
+        );
+        if (!bytes) break;
+        totalRead += bytes.byteLength;
+        const outData = Buffer.from(bytes);
         if (!clientSocket.destroyed) {
           clientSocket.write(outData);
         }
@@ -14951,7 +16417,7 @@ export class CentralizedKernelWorker {
       conns = [];
       this.tcpConnections.set(pid, conns);
     }
-    const connEntry = { sendPipeIdx, scratchOffset, clientSocket, recvPipeIdx, schedulePump };
+    const connEntry = { sendPipeIdx, clientSocket, recvPipeIdx, schedulePump };
     conns.push(connEntry);
 
     const cleanup = () => {
@@ -15029,7 +16495,6 @@ export class CentralizedKernelWorker {
     let guestWriteEnded = false;
     let pendingInbound: Uint8Array | null = null;
     let pumpPending = false;
-    const scratchOffset = this.tcpScratchOffset;
 
     const closeRecvPipeWrite = () => {
       if (recvPipeWriteClosed) return;
@@ -15089,12 +16554,15 @@ export class CentralizedKernelWorker {
     };
 
     const drainOutbound = () => {
-      const mem = this.getKernelMem();
       for (;;) {
-        const n = pipeRead(GLOBAL_PIPE_PID, sendPipeIdx, this.toKernelPtr(scratchOffset), 65536);
-        if (n <= 0) break;
+        const bytes = this.readPipeChunk(
+          pipeRead,
+          GLOBAL_PIPE_PID,
+          sendPipeIdx,
+        );
+        if (!bytes) break;
         try {
-          peer.send(mem.slice(scratchOffset, scratchOffset + n), 0);
+          peer.send(bytes, 0);
         } catch {
           cleanup();
           return;
@@ -15153,24 +16621,24 @@ export class CentralizedKernelWorker {
         dataPtr: KernelPointer, dataLen: number) => number) | undefined;
     if (!injectDatagram) return 38; // ENOSYS
 
-    const scratchOffset = this.tcpScratchOffset;
-    const mem = this.getKernelMem();
-    mem.set(datagram.data, scratchOffset);
-    const result = injectDatagram(
-      pid,
-      datagram.dstAddr[0] ?? 0,
-      datagram.dstAddr[1] ?? 0,
-      datagram.dstAddr[2] ?? 0,
-      datagram.dstAddr[3] ?? 0,
-      datagram.dstPort,
-      datagram.srcAddr[0] ?? 0,
-      datagram.srcAddr[1] ?? 0,
-      datagram.srcAddr[2] ?? 0,
-      datagram.srcAddr[3] ?? 0,
-      datagram.srcPort,
-      this.toKernelPtr(scratchOffset),
-      datagram.data.length,
-    );
+    const result = this.requireTcpScratchRegion().withLease((scratch) => {
+      scratch.copyFrom(datagram.data);
+      return injectDatagram(
+        pid,
+        datagram.dstAddr[0] ?? 0,
+        datagram.dstAddr[1] ?? 0,
+        datagram.dstAddr[2] ?? 0,
+        datagram.dstAddr[3] ?? 0,
+        datagram.dstPort,
+        datagram.srcAddr[0] ?? 0,
+        datagram.srcAddr[1] ?? 0,
+        datagram.srcAddr[2] ?? 0,
+        datagram.srcAddr[3] ?? 0,
+        datagram.srcPort,
+        this.toKernelPtr(scratch.address(0, datagram.data.length)),
+        datagram.data.length,
+      );
+    });
     if (result < 0) return -result;
     this.scheduleWakeBlockedRetries();
     return 0;
@@ -15242,6 +16710,78 @@ export class CentralizedKernelWorker {
   // semctl is intercepted because arg[3] is cmd-dependent (scalar vs pointer).
   // =========================================================================
 
+  /**
+   * Compatibility sizing for an ABI-42 kernel built before
+   * `kernel_semctl_array_bytes` was added.
+   *
+   * WHY: the old fixed 1,024-byte copy is not a safe fallback. IPC_STAT is a
+   * read-only way to obtain sem_nsems, and its 72-byte result has a fixed
+   * kernel ABI layout. The one-shot task binding is consumed by this dispatch,
+   * so the real semctl call binds the caller again afterward.
+   */
+  private legacySemctlArrayBytes(
+    channel: ChannelInfo,
+    semid: number,
+    rawCmd: number,
+  ): number {
+    const IPC_STAT = 2;
+    const SETALL = 17;
+    const SEMID_DS_BYTES = 72;
+    const SEM_NSEMS_OFFSET = 56;
+    const handleChannel = this.kernelInstance!.exports
+      .kernel_handle_channel as (
+        offset: KernelPointer,
+        pid: number,
+      ) => number;
+
+    this.bindKernelTidForChannel(channel);
+    return this.requireMainScratchRegion().withLease((lease) => {
+      const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
+      const dataPointer = lease.address(CH_DATA, SEMID_DS_BYTES);
+      lease.fill(0, CH_DATA, SEMID_DS_BYTES);
+      kernelView.setUint32(CH_SYSCALL, SYS_SEMCTL, true);
+      kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(semid), true);
+      kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, 0n, true);
+      kernelView.setBigInt64(
+        CH_ARGS + 2 * CH_ARG_SIZE,
+        BigInt(IPC_STAT | (rawCmd & IPC_64)),
+        true,
+      );
+      kernelView.setBigInt64(
+        CH_ARGS + 3 * CH_ARG_SIZE,
+        BigInt(dataPointer),
+        true,
+      );
+      kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
+      kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
+
+      this.currentHandlePid = channel.pid;
+      try {
+        handleChannel(
+          this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+          channel.pid,
+        );
+      } finally {
+        this.currentHandlePid = 0;
+      }
+
+      const resultView = lease.dataView(0, CH_TOTAL_SIZE);
+      const retVal = Number(resultView.getBigInt64(CH_RETURN, true));
+      if (retVal < 0) {
+        // The older kernel's SETALL path maps a failed internal IPC_STAT to
+        // EINVAL. Preserve that observable result in the compatibility path.
+        const errno = (rawCmd & ~IPC_64) === SETALL
+          ? EINVAL
+          : resultView.getUint32(CH_ERRNO, true) || EIO;
+        return -errno;
+      }
+      return resultView.getUint16(
+        CH_DATA + SEM_NSEMS_OFFSET,
+        true,
+      ) * 2;
+    });
+  }
+
   /** semctl: cmd-dependent arg handling — can't use SYSCALL_ARGS since arg[3]
    *  is a scalar for some commands and a pointer for others. */
   private handleSemctl(channel: ChannelInfo, origArgs: number[]): void {
@@ -15250,110 +16790,120 @@ export class CentralizedKernelWorker {
     const IPC_STAT = 2;
     const GETALL = 13;
     const SETALL = 17;
-
-    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as (offset: KernelPointer, pid: number) => number;
-    const kernelMem = this.getKernelMem();
-    const dataStart = this.scratchOffset + CH_DATA;
-
-    if (cmd === IPC_STAT && arg !== 0) {
-      // arg is an output pointer to semid_ds (72 bytes)
-      kernelView.setUint32(CH_SYSCALL, SYS_SEMCTL, true);
-      kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(semid), true);
-      kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(semnum), true);
-      kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(rawCmd), true);
-      kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(dataStart), true); // redirect to scratch
-      kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(0), true);
-      kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, BigInt(0), true);
-      kernelMem.fill(0, dataStart, dataStart + 72);
-
-      this.bindKernelTidForChannel(channel);
-      this.currentHandlePid = channel.pid;
-      try { handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid); } finally { this.currentHandlePid = 0; }
-
-      const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-      const errVal = kernelView.getUint32(CH_ERRNO, true);
-      if (retVal >= 0) {
-        // Copy 72-byte struct back to process memory
-        const processMem = new Uint8Array(channel.memory.buffer);
-        processMem.set(kernelMem.subarray(dataStart, dataStart + 72), arg);
+    const pointerCommand = cmd === IPC_STAT || cmd === GETALL || cmd === SETALL;
+    let transferBytes = 0;
+    try {
+      if (pointerCommand) {
+        if (arg === 0) {
+          throw new KernelScratchError("semctl pointer is null", EFAULT);
+        }
+        if (cmd === IPC_STAT) {
+          transferBytes = 72;
+        } else {
+          const arrayBytes = this.kernelInstance!.exports
+            .kernel_semctl_array_bytes as
+            | ((
+                pid: number,
+                tid: number,
+                semid: number,
+                command: number,
+              ) => number)
+            | undefined;
+          let result: number;
+          if (arrayBytes) {
+            result = arrayBytes(
+              channel.pid,
+              this.guestTidForChannel(channel),
+              semid,
+              rawCmd,
+            );
+          } else {
+            result = this.legacySemctlArrayBytes(channel, semid, rawCmd);
+          }
+          if (result < 0) {
+            this.completeChannelRaw(channel, -1, -result);
+            this.relistenChannel(channel);
+            return;
+          }
+          if (
+            !Number.isSafeInteger(result)
+            || result <= 0
+            || result > CH_DATA_SIZE
+          ) {
+            throw new KernelScratchError(
+              "kernel returned an invalid semctl array size",
+              EIO,
+            );
+          }
+          transferBytes = result;
+        }
+        this.checkedProcessRange(
+          channel,
+          arg,
+          transferBytes,
+          "semctl caller buffer",
+        );
       }
-      this.completeChannelRaw(channel, retVal, errVal);
-      this.relistenChannel(channel);
-      return;
-    }
 
-    if (cmd === GETALL && arg !== 0) {
-      // arg is an output pointer to u16[nsems] — allocate generous space
-      const maxBytes = 1024; // up to 512 semaphores
-      kernelView.setUint32(CH_SYSCALL, SYS_SEMCTL, true);
-      kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(semid), true);
-      kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(semnum), true);
-      kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(rawCmd), true);
-      kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(dataStart), true);
-      kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(0), true);
-      kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, BigInt(0), true);
-      kernelMem.fill(0, dataStart, dataStart + maxBytes);
-
-      this.bindKernelTidForChannel(channel);
-      this.currentHandlePid = channel.pid;
-      try { handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid); } finally { this.currentHandlePid = 0; }
-
-      const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-      const errVal = kernelView.getUint32(CH_ERRNO, true);
-      if (retVal >= 0) {
-        // Copy written data back — kernel wrote u16[] to scratch
-        const processMem = new Uint8Array(channel.memory.buffer);
-        processMem.set(kernelMem.subarray(dataStart, dataStart + maxBytes), arg);
-      }
-      this.completeChannelRaw(channel, retVal, errVal);
-      this.relistenChannel(channel);
-      return;
-    }
-
-    if (cmd === SETALL && arg !== 0) {
-      // arg is an input pointer to u16[nsems] — copy generous amount to scratch
-      const maxBytes = 1024;
       const processMem = new Uint8Array(channel.memory.buffer);
-      kernelMem.set(processMem.subarray(arg, arg + maxBytes), dataStart);
+      const handleChannel = this.kernelInstance!.exports
+        .kernel_handle_channel as (
+          offset: KernelPointer,
+          pid: number,
+        ) => number;
+      const scratch = this.requireMainScratchRegion();
+      const result = scratch.withLease((lease) => {
+        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
+        const dataPointer = pointerCommand
+          ? lease.address(CH_DATA, transferBytes)
+          : arg;
 
-      kernelView.setUint32(CH_SYSCALL, SYS_SEMCTL, true);
-      kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(semid), true);
-      kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(semnum), true);
-      kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(rawCmd), true);
-      kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(dataStart), true);
-      kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(0), true);
-      kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, BigInt(0), true);
+        if (cmd === SETALL) {
+          lease.copyFrom(processMem, CH_DATA, arg, transferBytes);
+        } else if (pointerCommand) {
+          lease.fill(0, CH_DATA, transferBytes);
+        }
 
-      this.bindKernelTidForChannel(channel);
-      this.currentHandlePid = channel.pid;
-      try { handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid); } finally { this.currentHandlePid = 0; }
+        kernelView.setUint32(CH_SYSCALL, SYS_SEMCTL, true);
+        kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(semid), true);
+        kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(semnum), true);
+        kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(rawCmd), true);
+        kernelView.setBigInt64(
+          CH_ARGS + 3 * CH_ARG_SIZE,
+          BigInt(dataPointer),
+          true,
+        );
+        kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
+        kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
 
-      const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-      const errVal = kernelView.getUint32(CH_ERRNO, true);
-      this.completeChannelRaw(channel, retVal, errVal);
+        this.bindKernelTidForChannel(channel);
+        this.currentHandlePid = channel.pid;
+        try {
+          handleChannel(
+            this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+            channel.pid,
+          );
+        } finally {
+          this.currentHandlePid = 0;
+        }
+
+        const resultView = lease.dataView(0, CH_TOTAL_SIZE);
+        const retVal = Number(resultView.getBigInt64(CH_RETURN, true));
+        const errVal = resultView.getUint32(CH_ERRNO, true);
+        const output = retVal >= 0 && (cmd === IPC_STAT || cmd === GETALL)
+          ? lease.copyOut(CH_DATA, transferBytes)
+          : null;
+        return { retVal, errVal, output };
+      });
+
+      if (result.output) {
+        processMem.set(result.output, arg);
+      }
+      this.completeChannelRaw(channel, result.retVal, result.errVal);
       this.relistenChannel(channel);
-      return;
+    } catch (error) {
+      this.rejectScratchTransfer(channel, error);
     }
-
-    // Scalar commands (SETVAL, GETVAL, GETPID, GETNCNT, GETZCNT, IPC_RMID):
-    // arg is a scalar value, pass through directly to kernel
-    kernelView.setUint32(CH_SYSCALL, SYS_SEMCTL, true);
-    kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(semid), true);
-    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(semnum), true);
-    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(rawCmd), true);
-    kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(arg), true);
-    kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(0), true);
-    kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, BigInt(0), true);
-
-    this.bindKernelTidForChannel(channel);
-    this.currentHandlePid = channel.pid;
-    try { handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid); } finally { this.currentHandlePid = 0; }
-
-    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-    const errVal = kernelView.getUint32(CH_ERRNO, true);
-    this.completeChannelRaw(channel, retVal, errVal);
-    this.relistenChannel(channel);
   }
 
   private runSyntheticMemorySyscall(
@@ -15361,29 +16911,40 @@ export class CentralizedKernelWorker {
     syscallNr: number,
     args: number[],
   ): { retVal: number; errVal: number } {
-    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-    for (let i = 0; i < CH_ARGS_COUNT; i++) {
-      kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, BigInt(args[i] ?? 0), true);
-    }
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: KernelPointer, pid: number) => number;
     const previousPid = this.currentHandlePid;
     this.bindKernelTidForChannel(channel);
     this.currentHandlePid = channel.pid;
+    let captured: { retVal: number; errVal: number };
     try {
-      handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
+      captured = this.requireMainScratchRegion().withLease((lease) => {
+        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
+        kernelView.setUint32(CH_SYSCALL, syscallNr, true);
+        for (let i = 0; i < CH_ARGS_COUNT; i++) {
+          kernelView.setBigInt64(
+            CH_ARGS + i * CH_ARG_SIZE,
+            BigInt(args[i] ?? 0),
+            true,
+          );
+        }
+        handleChannel(
+          this.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+          channel.pid,
+        );
+        const resultView = lease.dataView(0, CH_TOTAL_SIZE);
+        return {
+          retVal: Number(resultView.getBigInt64(CH_RETURN, true)),
+          errVal: resultView.getUint32(CH_ERRNO, true),
+        };
+      });
     } finally {
       this.currentHandlePid = previousPid;
     }
     if (this.finishSignalTermination(channel)) {
       return { retVal: -EINTR_ERRNO, errVal: EINTR_ERRNO };
     }
-    const resultView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    return {
-      retVal: Number(resultView.getBigInt64(CH_RETURN, true)),
-      errVal: resultView.getUint32(CH_ERRNO, true),
-    };
+    return captured;
   }
 
   /** shmat: allocate a process interval and attach it to authoritative bytes. */
@@ -15564,16 +17125,21 @@ export class CentralizedKernelWorker {
       ((outPtr: KernelPointer) => number) | undefined;
     if (!drain) return;
 
-    // Use kernel scratch as output buffer for (pid: u32, signo: u32)
-    const outOffset = this.scratchOffset;
-    const hasPending = drain(this.toKernelPtr(outOffset));
-    if (hasPending) {
-      const dv = new DataView(this.kernelMemory!.buffer, outOffset);
-      const pid = dv.getUint32(0, true);
-      const signo = dv.getUint32(4, true);
-      if (signo > 0) {
-        this.sendSignalToProcess(pid, signo);
-      }
+    const notification = this.requireMainScratchRegion().withLease((lease) => {
+      const hasPending = drain(
+        this.toKernelPtr(lease.address(0, 8)),
+      );
+      if (!hasPending) return null;
+      const view = lease.dataView(0, 8);
+      return {
+        pid: view.getUint32(0, true),
+        signo: view.getUint32(4, true),
+      };
+    });
+    // sendSignalToProcess reuses main scratch, so the output lease must be
+    // released before delivering the detached notification.
+    if (notification && notification.signo > 0) {
+      this.sendSignalToProcess(notification.pid, notification.signo);
     }
   }
 

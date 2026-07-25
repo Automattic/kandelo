@@ -93,6 +93,42 @@ pub const ABI_VERSION: u32 = 42;
 /// changing this width is an ABI change.
 pub const SCHED_AFFINITY_MASK_SIZE: u32 = 4;
 
+/// Kandelo's advertised cross-layer POSIX limits.
+///
+/// Keep these outside any one syscall protocol: libc headers, Rust syscall
+/// implementations, and TypeScript host validation all consume the generated
+/// values. Parser-specific defensive limits belong with their parser instead.
+pub mod platform_limits {
+    pub const ARG_MAX_BYTES: usize = 4 * 1024 * 1024;
+    pub const PATH_MAX_BYTES: usize = 4096;
+    pub const IOV_MAX: usize = 1024;
+}
+
+/// Cross-layer layout values and defensive limits for the non-forking spawn
+/// protocol.
+///
+/// The `POSIX_*` aliases deliberately refer to the advertised platform
+/// limits. The count caps are defensive parser limits for this wire
+/// representation, not additional POSIX limits on applications.
+pub mod spawn_contract {
+    use super::platform_limits;
+
+    pub const POSIX_ARG_MAX_BYTES: usize = platform_limits::ARG_MAX_BYTES;
+    pub const POSIX_PATH_MAX_BYTES: usize = platform_limits::PATH_MAX_BYTES;
+
+    pub const WIRE_HEADER_BYTES: usize = 40;
+    pub const WIRE_ACTION_RECORD_BYTES: usize = 28;
+    pub const MAX_ARGV_COUNT: usize = 4096;
+    pub const MAX_ENVP_COUNT: usize = 4096;
+    pub const MAX_ACTION_COUNT: usize = 1024;
+
+    /// Complete transport ceiling: POSIX argv/environment budget plus the
+    /// defensive maximum number of PATH_MAX-sized file actions.
+    pub const WIRE_MAX_BYTES: usize = POSIX_ARG_MAX_BYTES
+        + WIRE_HEADER_BYTES
+        + MAX_ACTION_COUNT * (WIRE_ACTION_RECORD_BYTES + POSIX_PATH_MAX_BYTES);
+}
+
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]

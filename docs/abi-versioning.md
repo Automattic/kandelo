@@ -318,6 +318,20 @@ Fields are sorted alphabetically at every level, and the generator
 writes the same bytes for the same input — the snapshot is a pure
 function of the checked-in source.
 
+The same generator also owns cross-language constants that are checked for
+freshness even when they are not separate JSON snapshot fields. Advertised
+`ARG_MAX`, `PATH_MAX`, and `IOV_MAX` live in
+`crates/shared/src/lib.rs::platform_limits`; `cargo xtask dump-abi` writes
+their TypeScript consumer and the public musl
+`bits/kandelo_limits.h`. The non-forking spawn wire contract lives separately
+in `crates/shared/src/lib.rs::spawn_contract`; the generator writes its C
+consumer to
+`libc/musl-overlay/src/process/wasm32posix/spawn_contract.h`. The private spawn
+header aliases the public generated limits and adds the 40-byte header,
+28-byte action record, argv/environment/action count caps, and derived
+8,417,320-byte whole-blob ceiling. The count and complete-wire caps are
+defensive parser/transport limits, not new POSIX promises.
+
 ## Developer workflow
 
 On a change:
@@ -394,3 +408,14 @@ so additive kernel API growth does not force every package to rebuild.
 Packages built after an additive change may depend on the new syscall or
 export; those packages should be resolved with the matching current
 kernel, even though the ABI epoch did not change.
+
+An additive export is compatible only while existing required capabilities and
+existing semantics remain unchanged. For example, the kernel-owned scratch
+hardening added `kernel_semctl_array_bytes`,
+`kernel_spawn_scratch_reserve`, and `kernel_spawn_scratch_capacity` without
+adding them to the required host-adapter manifest. New hosts retain a safe
+fallback for an older kernel in the same ABI epoch: spawn retains the bounded
+fixed-allocation path, and semaphore-array sizing uses a bounded, read-only
+`IPC_STAT` compatibility query. The snapshot records the three additions, but
+identical generated spawn constants and an internal TypeScript
+pointer-plus-capacity value do not by themselves require an ABI version bump.

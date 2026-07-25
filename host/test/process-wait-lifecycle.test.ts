@@ -29,6 +29,7 @@ import {
   WAKE_PROCESS_STOPPED,
 } from "../src/generated/abi";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 const SIGCHLD = 17;
 const SIGCONT = 18;
@@ -69,7 +70,7 @@ describe("Rust-owned process wait lifecycle", () => {
       kernel_reap_exited_child: reapExitedChild,
     });
     worker.kernelMemory = kernelMemory;
-    worker.scratchOffset = 128;
+    installKernelWorkerTestScratch(worker, kernelMemory);
     worker.completeWaitpid = vi.fn();
 
     const rusagePtr = 512;
@@ -96,6 +97,7 @@ describe("Rust-owned process wait lifecycle", () => {
     const waitChildPoll = vi.fn(() => 0);
     const worker = createWorkerHarness({ kernel_wait_child_poll: waitChildPoll });
     worker.kernelMemory = createSharedMemory();
+    installKernelWorkerTestScratch(worker, worker.kernelMemory);
     worker.waitingForChild = [];
     worker.completeWaitpid = vi.fn();
 
@@ -174,6 +176,7 @@ describe("Rust-owned process wait lifecycle", () => {
   it("wait4 WNOHANG completes without queuing when Rust reports no event", () => {
     const worker = createWorkerHarness({ kernel_wait_child_poll: vi.fn(() => 0) });
     worker.kernelMemory = createSharedMemory();
+    installKernelWorkerTestScratch(worker, worker.kernelMemory);
     worker.waitingForChild = [];
     worker.completeWaitpid = vi.fn();
 
@@ -193,6 +196,7 @@ describe("Rust-owned process wait lifecycle", () => {
     const waitChildPoll = vi.fn(() => 0);
     const worker = createWorkerHarness({ kernel_wait_child_poll: waitChildPoll }, 8);
     worker.kernelMemory = createSharedMemory();
+    installKernelWorkerTestScratch(worker, worker.kernelMemory, 128, 8);
     worker.waitingForChild = [];
     worker.completeWaitpid = vi.fn();
 
@@ -260,6 +264,7 @@ describe("Rust-owned process wait lifecycle", () => {
     });
     const worker = createWorkerHarness({ kernel_wait_child_poll: waitChildPoll });
     worker.kernelMemory = kernelMemory;
+    installKernelWorkerTestScratch(worker, kernelMemory);
     worker.completeWaitid = vi.fn();
     const args = [1, 44, siginfoPtr, WAIT_WSTOPPED | WAIT_WNOWAIT, rusagePtr];
 
@@ -320,6 +325,7 @@ describe("Rust-owned process wait lifecycle", () => {
       8,
     );
     worker.kernelMemory = kernelMemory;
+    installKernelWorkerTestScratch(worker, kernelMemory, 128, 8);
     worker.processes = new Map([[7, {
       channels: [channel],
       memory: processMemory,
@@ -395,6 +401,7 @@ describe("Rust-owned process wait lifecycle", () => {
     });
     const worker = createWorkerHarness({ kernel_drain_wakeup_events: drain });
     worker.kernelMemory = kernelMemory;
+    installKernelWorkerTestScratch(worker, kernelMemory);
     worker.stoppedPids = new Set();
     worker.notifyParentOfChildStateTransition = vi.fn(() => {
       new Uint8Array(kernelMemory.buffer).fill(0xff);
@@ -425,6 +432,7 @@ describe("Rust-owned process wait lifecycle", () => {
     });
     const worker = createWorkerHarness({ kernel_drain_wakeup_events: drain });
     worker.kernelMemory = kernelMemory;
+    installKernelWorkerTestScratch(worker, kernelMemory);
     worker.pendingPipeReaders = new Map();
     worker.pendingPipeWriters = new Map();
     worker.resumeStoppedProcess = vi.fn(() => false);
@@ -466,6 +474,7 @@ describe("Rust-owned process wait lifecycle", () => {
     });
     const worker = createWorkerHarness({ kernel_drain_wakeup_events: drain });
     worker.kernelMemory = kernelMemory;
+    installKernelWorkerTestScratch(worker, kernelMemory);
     worker.stoppedPids = new Set();
     worker.pendingPipeReaders = new Map();
     worker.pendingPipeWriters = new Map();
@@ -497,6 +506,7 @@ describe("Rust-owned process wait lifecycle", () => {
     });
     const worker = createWorkerHarness({ kernel_drain_wakeup_events: drain });
     worker.kernelMemory = kernelMemory;
+    installKernelWorkerTestScratch(worker, kernelMemory);
     worker.stoppedPids = new Set();
     worker.pendingPipeReaders = new Map();
     worker.pendingPipeWriters = new Map();
@@ -526,6 +536,7 @@ describe("Rust-owned process wait lifecycle", () => {
       kernel_get_process_exit_signal: vi.fn(() => exitSignal),
     });
     worker.kernelMemory = kernelMemory;
+    installKernelWorkerTestScratch(worker, kernelMemory);
     worker.processes = new Map([[42, {
       channels: [channel],
       memory: processMemory,
@@ -649,6 +660,7 @@ describe("Rust-owned process wait lifecycle", () => {
     });
     const worker = createWorkerHarness({ kernel_wait_child_poll: waitChildPoll });
     worker.kernelMemory = kernelMemory;
+    installKernelWorkerTestScratch(worker, kernelMemory);
     worker.processes = new Map([[7, {
       channels: [first, second],
       memory: processMemory,
@@ -708,6 +720,7 @@ describe("Rust-owned process wait lifecycle", () => {
     });
     const worker = createWorkerHarness({ kernel_wait_child_poll: waitChildPoll });
     worker.kernelMemory = kernelMemory;
+    installKernelWorkerTestScratch(worker, kernelMemory);
     worker.processes = new Map([[7, {
       channels: [first, second, running],
       memory: processMemory,
@@ -769,6 +782,7 @@ describe("Rust-owned process wait lifecycle", () => {
       kernel_dequeue_signal: dequeue,
     });
     worker.kernelMemory = kernelMemory;
+    installKernelWorkerTestScratch(worker, kernelMemory);
     worker.processes = new Map([[7, {
       channels: [channel],
       memory: processMemory,
@@ -994,6 +1008,7 @@ describe("Rust-owned process wait lifecycle", () => {
       kernel_get_process_exit_signal: vi.fn(() => -1),
     });
     worker.kernelMemory = kernelMemory;
+    installKernelWorkerTestScratch(worker, kernelMemory);
     worker.processes = new Map([[42, {
       channels: [channel],
       memory: processMemory,
@@ -1053,6 +1068,7 @@ describe("Rust-owned process wait lifecycle", () => {
       kernel_get_process_exit_signal: vi.fn(() => -1),
     });
     worker.kernelMemory = kernelMemory;
+    installKernelWorkerTestScratch(worker, kernelMemory);
     worker.processes = new Map([[42, {
       channels: [first, second],
       memory: processMemory,
@@ -1122,6 +1138,7 @@ describe("Rust-owned process wait lifecycle", () => {
       kernel_get_process_exit_signal: vi.fn(() => -1),
     });
     worker.kernelMemory = kernelMemory;
+    installKernelWorkerTestScratch(worker, kernelMemory);
     worker.processes = new Map([[7, {
       channels: [channel],
       memory: processMemory,
@@ -1187,6 +1204,7 @@ describe("Rust-owned process wait lifecycle", () => {
     new Uint8Array(kernelMemory.buffer, 128 + CH_DATA, 4).set([9, 8, 7, 6]);
     const worker = createWorkerHarness({});
     worker.kernelMemory = kernelMemory;
+    installKernelWorkerTestScratch(worker, kernelMemory);
     worker.processes = new Map([[42, { channels: [channel], memory: processMemory }]]);
     worker.stoppedPids = new Set([42]);
     worker.parkedChannelCompletions = new Map();
@@ -1718,7 +1736,8 @@ describe("Rust-owned process wait lifecycle", () => {
 });
 
 function createWorkerHarness(exports: Record<string, unknown>, kernelPtrWidth: 4 | 8 = 4): any {
-  return Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+  const kernelMemory = createSharedMemory();
+  const worker = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
     kernel: {
       toKernelPtr(value: number | bigint): number | bigint {
         const numberValue = typeof value === "bigint" ? Number(value) : value;
@@ -1733,13 +1752,14 @@ function createWorkerHarness(exports: Record<string, unknown>, kernelPtrWidth: 4
         ...exports,
       },
     },
-    kernelMemory: createSharedMemory(),
-    scratchOffset: 128,
+    kernelMemory,
     processes: new Map(),
     channelTids: new Map(),
     pendingCancels: new Set(),
     deferredProcessWorkerStarts: new Map(),
   });
+  installKernelWorkerTestScratch(worker, kernelMemory, 128, kernelPtrWidth);
+  return worker;
 }
 
 function createSharedMemory(): WebAssembly.Memory {

@@ -1774,7 +1774,7 @@ fn check_access_for_ids(
 /// canonical paths may be longer when resolving a short relative pathname
 /// from a deep CWD. Component limits are byte limits as required by the guest
 /// ABI, not JavaScript UTF-16 code-unit limits in a host backend.
-const NAMESPACE_PATH_MAX: usize = 4096;
+const NAMESPACE_PATH_MAX: usize = wasm_posix_shared::platform_limits::PATH_MAX_BYTES;
 const NAMESPACE_NAME_MAX: usize = 255;
 
 #[derive(Clone, Copy)]
@@ -13776,7 +13776,8 @@ pub fn sys_uname(buf: &mut [u8]) -> Result<(), Errno> {
 /// sysconf — get configurable system variables
 pub fn sys_sysconf(name: i32) -> Result<i64, Errno> {
     match name {
-        0 => Ok(4 * 1024 * 1024), // _SC_ARG_MAX: host exec argv+env aggregate cap
+        // _SC_ARG_MAX: host exec argv+env aggregate cap.
+        0 => Ok(wasm_posix_shared::platform_limits::ARG_MAX_BYTES as i64),
         1 => Ok(0),      // _SC_CHILD_MAX (unspecified)
         2 => Ok(100),    // _SC_CLK_TCK
         4 => Ok(1024),   // _SC_OPEN_MAX
@@ -24817,7 +24818,10 @@ mod tests {
 
     #[test]
     fn test_sysconf_arg_max_matches_exec_metadata_boundary() {
-        assert_eq!(sys_sysconf(0), Ok(4 * 1024 * 1024)); // _SC_ARG_MAX
+        assert_eq!(
+            sys_sysconf(0),
+            Ok(wasm_posix_shared::platform_limits::ARG_MAX_BYTES as i64)
+        ); // _SC_ARG_MAX
     }
 
     #[test]

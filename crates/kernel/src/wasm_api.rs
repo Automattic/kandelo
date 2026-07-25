@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 use core::slice;
 
 use wasm_posix_shared::{
-    Errno, KernelWaitResult, WasmDirent, WasmStat, WasmStatfs, WasmTimespec,
+    Errno, KernelWaitResult, WasmDirent, WasmStat, WasmStatfs, WasmTimespec, platform_limits,
 };
 
 use crate::ofd::FileType;
@@ -1211,6 +1211,23 @@ pub extern "C" fn kernel_alloc_scratch(size: u32) -> usize {
         return 0;
     }
     ptr as usize
+}
+
+/// Reserve the kernel-owned reusable SYS_SPAWN transport.
+///
+/// Returns zero on failure. A successful reserve may move the allocation, so
+/// the host must discard any older pointer before calling this export and read
+/// `kernel_spawn_scratch_capacity` after it returns.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_spawn_scratch_reserve(minimum_capacity: usize) -> usize {
+    crate::spawn::reserve_spawn_scratch(minimum_capacity).unwrap_or(0)
+}
+
+/// Writable byte capacity of the pointer most recently returned by
+/// `kernel_spawn_scratch_reserve`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_spawn_scratch_capacity() -> usize {
+    crate::spawn::spawn_scratch_capacity()
 }
 
 /// Read the approximate Wasm stack pointer for debugging.
@@ -4427,6 +4444,35 @@ pub extern "C" fn kernel_ipc_shm_write_chunk(
     match ipc.shm_write_chunk(shmid, offset, data) {
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
+    }
+}
+
+/// Return the exact kernel-owned array size used by semctl GETALL/SETALL.
+///
+/// The host validates the caller range against this value before moving any
+/// bytes into or out of kernel scratch. Permission checking happens here so
+/// the sizing preflight cannot disclose metadata the command itself could not
+/// access. PID and TID are explicit because a sizing query must not install or
+/// consume the one-shot ambient binding reserved for `kernel_handle_channel`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_semctl_array_bytes(
+    pid: u32,
+    tid: u32,
+    semid: i32,
+    cmd: i32,
+) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    if let Err(error) = table.validate_task(pid, tid) {
+        return -(error as i32);
+    }
+    let (uid, gid) = match table.get(pid) {
+        Some(process) => (process.euid, process.egid),
+        None => return -(Errno::ESRCH as i32),
+    };
+    let ipc = unsafe { crate::ipc::global_ipc_table() };
+    match ipc.semctl_array_bytes(semid, cmd & !0x100, uid, gid) {
+        Ok(bytes) => i32::try_from(bytes).unwrap_or(-(Errno::EOVERFLOW as i32)),
+        Err(error) => -(error as i32),
     }
 }
 
@@ -8796,7 +8842,7 @@ pub extern "C" fn kernel_writev(fd: i32, iov_ptr: *const u8, iovcnt: i32) -> i32
     let mut host = WasmHostIO;
 
     let result = 'done: {
-        if iovcnt <= 0 || iovcnt > 1024 {
+        if iovcnt <= 0 || iovcnt as usize > platform_limits::IOV_MAX {
             break 'done -(Errno::EINVAL as i32);
         }
 
@@ -8830,7 +8876,7 @@ pub extern "C" fn kernel_readv(fd: i32, iov_ptr: *mut u8, iovcnt: i32) -> i32 {
     let mut host = WasmHostIO;
 
     let result = 'done: {
-        if iovcnt <= 0 || iovcnt > 1024 {
+        if iovcnt <= 0 || iovcnt as usize > platform_limits::IOV_MAX {
             break 'done -(Errno::EINVAL as i32);
         }
 
@@ -8883,7 +8929,7 @@ pub extern "C" fn kernel_preadv(
     let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
 
     let result = 'done: {
-        if iovcnt <= 0 || iovcnt > 1024 {
+        if iovcnt <= 0 || iovcnt as usize > platform_limits::IOV_MAX {
             break 'done -(Errno::EINVAL as i32);
         }
 
@@ -8938,7 +8984,7 @@ pub extern "C" fn kernel_pwritev(
     let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
 
     let result = 'done: {
-        if iovcnt <= 0 || iovcnt > 1024 {
+        if iovcnt <= 0 || iovcnt as usize > platform_limits::IOV_MAX {
             break 'done -(Errno::EINVAL as i32);
         }
 

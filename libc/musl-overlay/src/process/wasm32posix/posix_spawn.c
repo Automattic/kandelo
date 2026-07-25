@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../fdop.h"
+#include "spawn_contract.h"
 
 /* SYS_SPAWN syscall number — keep in lockstep with
  * `libc/glue/channel_syscall.c` and `crates/shared/src/lib.rs`. */
@@ -44,9 +45,6 @@
 #define WIRE_OP_CHDIR  3u
 #define WIRE_OP_FCHDIR 4u
 
-#define HEADER_LEN        40
-#define ACTION_RECORD_LEN 28
-
 /* Matches the definition in libc/glue/channel_syscall.c — all six syscall args
  * are passed as long long (i64). Declaring them as plain `long` produces
  * an i32-vs-i64 signature mismatch at link time on wasm32. */
@@ -56,20 +54,39 @@ extern long __syscall6(long n, long long a1, long long a2, long long a3,
 static const posix_spawnattr_t empty_attr;
 static const posix_spawn_file_actions_t empty_fa;
 
-/* Count entries in a NULL-terminated argv-style array. */
-static unsigned count_strings(char *const *list) {
-	unsigned n = 0;
-	if (!list) return 0;
-	while (list[n]) n++;
-	return n;
+static int checked_add_size(size_t lhs, size_t rhs, size_t *out)
+{
+	if (rhs > SIZE_MAX - lhs) return E2BIG;
+	*out = lhs + rhs;
+	return 0;
 }
 
-/* Sum of strlen(str) + 1 over a NULL-terminated array. */
-static size_t total_string_bytes(char *const *list) {
+static int checked_mul_size(size_t lhs, size_t rhs, size_t *out)
+{
+	if (lhs != 0 && rhs > SIZE_MAX / lhs) return E2BIG;
+	*out = lhs * rhs;
+	return 0;
+}
+
+/* Count and size a NULL-terminated argv-style array without allowing either
+ * arithmetic wraparound or a protocol count beyond the generated parser cap. */
+static int scan_strings(char *const *list, unsigned max_count,
+	unsigned *out_count, size_t *out_bytes)
+{
+	unsigned count = 0;
 	size_t total = 0;
-	if (!list) return 0;
-	for (unsigned i = 0; list[i]; i++) total += strlen(list[i]) + 1;
-	return total;
+	if (list) {
+		while (list[count]) {
+			if (count >= max_count) return E2BIG;
+			size_t len = strlen(list[count]);
+			if (len == SIZE_MAX || checked_add_size(total, len + 1, &total))
+				return E2BIG;
+			count++;
+		}
+	}
+	*out_count = count;
+	*out_bytes = total;
+	return 0;
 }
 
 /* Walk the fdop list to count actions and total path bytes that need to
@@ -83,17 +100,25 @@ static size_t total_string_bytes(char *const *list) {
  * insertion order, so the emit-side walk uses `op->prev` from the tail
  * — see `emit_actions`. The count/scan walk direction doesn't matter
  * (we only need totals). */
-static void scan_actions(struct fdop *head, unsigned *out_count, size_t *out_path_bytes) {
+static int scan_actions(struct fdop *head, unsigned *out_count,
+	size_t *out_path_bytes)
+{
 	unsigned n = 0;
 	size_t path_bytes = 0;
 	for (struct fdop *op = head; op; op = op->next) {
+		if (n >= WASM_POSIX_SPAWN_MAX_ACTION_COUNT) return E2BIG;
 		n++;
 		if (op->cmd == FDOP_OPEN || op->cmd == FDOP_CHDIR) {
-			path_bytes += strlen(op->path) + 1;
+			size_t path_len = strlen(op->path);
+			if (path_len >= WASM_POSIX_PATH_MAX_BYTES)
+				return ENAMETOOLONG;
+			if (checked_add_size(path_bytes, path_len + 1, &path_bytes))
+				return E2BIG;
 		}
 	}
 	*out_count = n;
 	*out_path_bytes = path_bytes;
+	return 0;
 }
 
 /* Translate musl's FDOP_* code into the wire-format op code. */
@@ -123,6 +148,7 @@ int posix_spawn(pid_t *restrict res, const char *restrict path,
 	char *const argv[restrict], char *const envp[restrict])
 {
 	if (!path) return EINVAL;
+	if (strlen(path) >= WASM_POSIX_PATH_MAX_BYTES) return ENAMETOOLONG;
 
 	const posix_spawnattr_t *a = attr ? attr : &empty_attr;
 	const posix_spawn_file_actions_t *f = fa ? fa : &empty_fa;
@@ -131,22 +157,53 @@ int posix_spawn(pid_t *restrict res, const char *restrict path,
 	extern char **__environ;
 	char *const *env = envp ? envp : (char *const *)__environ;
 
-	unsigned argc = count_strings(argv);
-	unsigned envc = count_strings(env);
+	unsigned argc = 0;
+	unsigned envc = 0;
 	unsigned n_actions = 0;
+	size_t argv_bytes = 0;
+	size_t envp_bytes = 0;
 	size_t action_path_bytes = 0;
-	scan_actions((struct fdop *)f->__actions, &n_actions, &action_path_bytes);
+	int error = scan_strings(argv, WASM_POSIX_SPAWN_MAX_ARGV_COUNT,
+		&argc, &argv_bytes);
+	if (error) return error;
+	error = scan_strings(env, WASM_POSIX_SPAWN_MAX_ENVP_COUNT,
+		&envc, &envp_bytes);
+	if (error) return error;
+	error = scan_actions((struct fdop *)f->__actions,
+		&n_actions, &action_path_bytes);
+	if (error) return error;
 
-	size_t argv_bytes = total_string_bytes(argv);
-	size_t envp_bytes = total_string_bytes(env);
+	/* ARG_MAX includes both string bytes and the source pointer arrays,
+	 * including their two terminating NULL entries. */
+	size_t pointer_count;
+	size_t pointer_bytes;
+	size_t metadata_bytes;
+	if (checked_add_size((size_t)argc, (size_t)envc, &pointer_count)
+	    || checked_add_size(pointer_count, 2, &pointer_count)
+	    || checked_mul_size(pointer_count, sizeof(char *), &pointer_bytes)
+	    || checked_add_size(argv_bytes, envp_bytes, &metadata_bytes)
+	    || checked_add_size(metadata_bytes, pointer_bytes, &metadata_bytes))
+		return E2BIG;
+	if (metadata_bytes > WASM_POSIX_ARG_MAX_BYTES) return E2BIG;
 
-	size_t header_bytes  = HEADER_LEN;
-	size_t argv_off_bytes = (size_t)argc * 4;
-	size_t envp_off_bytes = (size_t)envc * 4;
-	size_t actions_bytes  = (size_t)n_actions * ACTION_RECORD_LEN;
-	size_t strings_bytes  = argv_bytes + envp_bytes + action_path_bytes;
-	size_t blob_len = header_bytes + argv_off_bytes + envp_off_bytes
-	                + actions_bytes + strings_bytes;
+	size_t header_bytes = WASM_POSIX_SPAWN_HEADER_BYTES;
+	size_t argv_off_bytes;
+	size_t envp_off_bytes;
+	size_t actions_bytes;
+	size_t strings_bytes;
+	size_t blob_len;
+	if (checked_mul_size((size_t)argc, sizeof(uint32_t), &argv_off_bytes)
+	    || checked_mul_size((size_t)envc, sizeof(uint32_t), &envp_off_bytes)
+	    || checked_mul_size((size_t)n_actions,
+		WASM_POSIX_SPAWN_ACTION_RECORD_BYTES, &actions_bytes)
+	    || checked_add_size(argv_bytes, envp_bytes, &strings_bytes)
+	    || checked_add_size(strings_bytes, action_path_bytes, &strings_bytes)
+	    || checked_add_size(header_bytes, argv_off_bytes, &blob_len)
+	    || checked_add_size(blob_len, envp_off_bytes, &blob_len)
+	    || checked_add_size(blob_len, actions_bytes, &blob_len)
+	    || checked_add_size(blob_len, strings_bytes, &blob_len))
+		return E2BIG;
+	if (blob_len > WASM_POSIX_SPAWN_WIRE_MAX_BYTES) return E2BIG;
 
 	/* Allocate on the heap; alloca() of unbounded size is unsafe and
 	 * fork-instrument's switch-dispatch interacts poorly with large
@@ -215,8 +272,10 @@ int posix_spawn(pid_t *restrict res, const char *restrict path,
 	}
 	unsigned ai = 0;
 	for (struct fdop *op = tail; op; op = op->prev) {
-		uint32_t *r32  = (uint32_t *)(actions + ai * ACTION_RECORD_LEN);
-		int32_t  *r32s = (int32_t  *)(actions + ai * ACTION_RECORD_LEN);
+		uint32_t *r32  = (uint32_t *)(actions
+			+ ai * WASM_POSIX_SPAWN_ACTION_RECORD_BYTES);
+		int32_t  *r32s = (int32_t  *)(actions
+			+ ai * WASM_POSIX_SPAWN_ACTION_RECORD_BYTES);
 		r32[0] = wire_op_for(op->cmd);
 		if (op->cmd == FDOP_DUP2) {
 			r32s[1] = op->srcfd;  /* record.fd    = source */

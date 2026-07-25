@@ -155,6 +155,12 @@ export interface GetKernelMemoryPagesRequestMessage {
   requestId: number;
 }
 
+/** Read the retained capacity of the kernel-owned large-spawn region. */
+export interface GetSpawnScratchCapacityRequestMessage {
+  type: "get_spawn_scratch_capacity";
+  requestId: number;
+}
+
 export interface ResolveExecResponseMessage {
   type: "resolve_exec_response";
   requestId: number;
@@ -234,6 +240,7 @@ export type MainToKernelMessage =
   | ReadVfsFileMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
+  | GetSpawnScratchCapacityRequestMessage
   | ResolveExecResponseMessage
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage

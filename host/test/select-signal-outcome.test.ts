@@ -6,6 +6,7 @@ import {
   CH_SIG_BASE,
 } from "../src/generated/abi";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 const EAGAIN = 11;
 const EINTR = 4;
@@ -31,8 +32,8 @@ function createHarness(options: {
     channelOffset: 0,
     memory: processMemory,
   };
-  const handleChannel = vi.fn(() => {
-    const view = new DataView(kernelMemory.buffer);
+  const handleChannel = vi.fn((offset: number) => {
+    const view = new DataView(kernelMemory.buffer, offset);
     view.setBigInt64(CH_RETURN, BigInt(returnValue), true);
     view.setUint32(CH_ERRNO, errno, true);
     return 0;
@@ -57,7 +58,6 @@ function createHarness(options: {
       },
     },
     kernelMemory,
-    scratchOffset: 0,
     currentHandlePid: 0,
     processes: new Map([
       [42, { pid: 42, memory: processMemory, channels: [channel], ptrWidth: 4 }],
@@ -72,6 +72,7 @@ function createHarness(options: {
     completeChannel,
     handleProcessTerminated,
   });
+  installKernelWorkerTestScratch(worker, kernelMemory);
 
   return {
     channel,

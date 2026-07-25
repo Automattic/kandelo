@@ -1,15 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 const WAKE_DATAGRAM_WRITABLE = 8;
 
 function createSharedMemory(): WebAssembly.Memory {
-  return new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+  return new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true });
 }
 
 function createWorkerHarness(): any {
   const memory = createSharedMemory();
-  const scratchOffset = 128;
   const drain = (outPtr: number): number => {
     const bytes = new Uint8Array(memory.buffer, outPtr, 5);
     bytes.fill(0);
@@ -17,11 +17,10 @@ function createWorkerHarness(): any {
     return 1;
   };
 
-  return Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+  const worker = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
     kernel: { toKernelPtr: (value: number | bigint) => Number(value) },
     kernelInstance: { exports: { kernel_drain_wakeup_events: drain } },
     kernelMemory: memory,
-    scratchOffset,
     processes: new Map(),
     pendingPollRetries: new Map(),
     pendingSelectRetries: new Map(),
@@ -29,6 +28,8 @@ function createWorkerHarness(): any {
     pendingPipeWriters: new Map(),
     wakeScheduled: false,
   });
+  installKernelWorkerTestScratch(worker, memory);
+  return worker;
 }
 
 afterEach(() => {

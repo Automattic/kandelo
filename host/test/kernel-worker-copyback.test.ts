@@ -10,6 +10,7 @@ import {
   type SyscallArgDesc,
   SYSCALL_ARGS,
 } from "../src/generated/abi";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 interface TestChannel {
   pid: number;
@@ -51,7 +52,6 @@ function makeCopybackHarness() {
     Object.create(CentralizedKernelWorker.prototype),
     {
       kernelMemory,
-      scratchOffset: 0,
       cachedKernelMem: null,
       cachedKernelBuffer: null,
       processes: new Map([
@@ -75,11 +75,15 @@ function makeCopybackHarness() {
       relistenChannel: () => {},
     },
   ) as CopybackHarnessWorker;
+  const scratchPointer = installKernelWorkerTestScratch(
+    worker as unknown as Record<string, unknown>,
+    kernelMemory,
+  );
 
   return {
     worker,
     channel,
-    kernelMem: new Uint8Array(kernelMemory.buffer),
+    kernelMem: new Uint8Array(kernelMemory.buffer, scratchPointer),
     processMem: new Uint8Array(processMemory.buffer),
   };
 }
