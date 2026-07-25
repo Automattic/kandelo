@@ -20,7 +20,7 @@ use std::collections::HashSet;
 use fork_instrument::runtime::names as runtime_names;
 use fork_instrument::{Options, instrument};
 use walrus::{
-    ExportItem, FunctionId, FunctionKind, LocalFunction, Module,
+    ExportItem, FunctionId, FunctionKind, LocalFunction, Module, ValType,
     ir::{self, Instr, InstrSeqId},
 };
 
@@ -528,7 +528,7 @@ fn multivalue_return_wraps_and_validates() {
 #[test]
 fn instrument_functions_returns_rewritten_set() {
     use fork_instrument::call_graph;
-    use fork_instrument::instrument::{B1ScratchPlan, instrument_functions};
+    use fork_instrument::instrument::{PlainCatchPlan, instrument_functions};
     use fork_instrument::runtime::inject_runtime;
 
     let bytes = wat::parse_str(FIXTURE_TRANSITIVE).unwrap();
@@ -537,8 +537,8 @@ fn instrument_functions_returns_rewritten_set() {
     let seed =
         call_graph::find_import_func(&module, "kernel.kernel_fork").expect("seed import present");
     let fork_path = call_graph::reaching_closure(&module, seed);
-    let runtime = inject_runtime(&mut module, 0);
-    let b1_plan = B1ScratchPlan::default();
+    let runtime = inject_runtime(&mut module);
+    let b1_plan = PlainCatchPlan::default();
     let rewritten = instrument_functions(&mut module, &runtime, &fork_path, &b1_plan);
 
     let names: HashSet<String> = rewritten
@@ -1765,11 +1765,10 @@ fn nested_seqs_in_test(instr: &Instr) -> Vec<InstrSeqId> {
     }
 }
 
-// --- B1 Stage 1 Task 1.2 — plan_b1_scratch tests ----------------------
+// --- Plain-catch static planning --------------------------------------
 
 #[test]
-fn b1_scratch_plan_empty_targets_is_zero_sized() {
-    // Self-review: empty target list → empty plan, zero bytes.
+fn plain_catch_plan_empty_targets_has_no_functions() {
     let wat = r#"
         (module
           (func $caller (export "caller") (result i32) i32.const 0)
@@ -1777,8 +1776,7 @@ fn b1_scratch_plan_empty_targets_is_zero_sized() {
     "#;
     let bytes = parse_wat(wat);
     let module = walrus::Module::from_buffer(&bytes).unwrap();
-    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[]);
-    assert_eq!(plan.total_bytes, 0, "no targets → zero scratch bytes");
+    let plan = fork_instrument::instrument::plan_plain_catches(&module, &[]);
     assert!(
         plan.per_function.is_empty(),
         "no targets → empty per_function map"
@@ -1786,8 +1784,7 @@ fn b1_scratch_plan_empty_targets_is_zero_sized() {
 }
 
 #[test]
-fn b1_scratch_plan_empty_payload_arm_is_4_bytes() {
-    // Tag with no payload → tuple_size = 4 (just arm_id).
+fn plain_catch_plan_preserves_empty_payload_arm() {
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -1802,7 +1799,7 @@ fn b1_scratch_plan_empty_payload_arm_is_4_bytes() {
     let bytes = parse_wat(wat);
     let module = walrus::Module::from_buffer(&bytes).unwrap();
     let caller = func_by_name(&module, "caller");
-    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    let plan = fork_instrument::instrument::plan_plain_catches(&module, &[caller]);
     assert_eq!(
         plan.per_function.len(),
         1,
@@ -1810,16 +1807,14 @@ fn b1_scratch_plan_empty_payload_arm_is_4_bytes() {
     );
     let per_func = &plan.per_function[&caller];
     assert_eq!(per_func.len(), 1, "one try_table with plain-catch arms");
-    let (_body_seq, slots) = &per_func[0];
-    assert_eq!(slots.len(), 1, "one plain-catch arm");
-    assert_eq!(slots[0].tuple_size, 4, "no payload → arm_id only");
-    assert_eq!(slots[0].scratch_offset, 0, "first slot at offset 0");
-    assert_eq!(plan.total_bytes, 8, "rounded up to 8-byte alignment");
+    let (_body_seq, arms) = &per_func[0];
+    assert_eq!(arms.len(), 1, "one plain-catch arm");
+    assert_eq!(arms[0].arm_idx, 0);
+    assert!(arms[0].operand_tys.is_empty());
 }
 
 #[test]
-fn b1_scratch_plan_i32_payload_arm_is_8_bytes() {
-    // Tag with i32 payload → tuple_size = 4 + 4 = 8.
+fn plain_catch_plan_preserves_i32_payload_type() {
     //
     // Catch label semantics: branching to a `block` carries the
     // block's RESULT types (forward-branch arity), so a tag with a
@@ -1842,20 +1837,14 @@ fn b1_scratch_plan_i32_payload_arm_is_8_bytes() {
     let bytes = parse_wat(wat);
     let module = walrus::Module::from_buffer(&bytes).unwrap();
     let caller = func_by_name(&module, "caller");
-    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    let plan = fork_instrument::instrument::plan_plain_catches(&module, &[caller]);
     let per_func = &plan.per_function[&caller];
-    let (_, slots) = &per_func[0];
-    assert_eq!(slots[0].tuple_size, 8, "arm_id (4) + i32 payload (4)");
-    assert_eq!(slots[0].scratch_offset, 0);
-    assert_eq!(plan.total_bytes, 8);
+    let (_, arms) = &per_func[0];
+    assert_eq!(arms[0].operand_tys, vec![ValType::I32]);
 }
 
 #[test]
-fn b1_scratch_plan_two_arms_align_to_8_bytes_each() {
-    // Two arms in one function, payload sizes 0 and 8.
-    // First arm: tuple_size=4 → aligned start 0, end 4
-    // Second arm: aligned to 8 → start 8, end 8 + (4 + 8) = 20
-    // total_bytes rounds up to 24.
+fn plain_catch_plan_preserves_regions_in_source_order() {
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -1877,30 +1866,17 @@ fn b1_scratch_plan_two_arms_align_to_8_bytes_each() {
     let bytes = parse_wat(wat);
     let module = walrus::Module::from_buffer(&bytes).unwrap();
     let caller = func_by_name(&module, "caller");
-    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    let plan = fork_instrument::instrument::plan_plain_catches(&module, &[caller]);
     let per_func = &plan.per_function[&caller];
     assert_eq!(per_func.len(), 2, "two try_tables");
-    let (_, slots_a) = &per_func[0];
-    let (_, slots_b) = &per_func[1];
-    assert_eq!(slots_a[0].scratch_offset, 0);
-    assert_eq!(slots_a[0].tuple_size, 4);
-    assert_eq!(
-        slots_b[0].scratch_offset, 8,
-        "second arm aligned to next 8-byte boundary"
-    );
-    assert_eq!(slots_b[0].tuple_size, 12, "arm_id (4) + i64 (8)");
-    assert_eq!(
-        plan.total_bytes, 24,
-        "rounded up from 20 to next 8-byte boundary"
-    );
+    let (_, arms_a) = &per_func[0];
+    let (_, arms_b) = &per_func[1];
+    assert!(arms_a[0].operand_tys.is_empty());
+    assert_eq!(arms_b[0].operand_tys, vec![ValType::I64]);
 }
 
 #[test]
-fn b1_scratch_plan_arm_with_8_aligned_tuple_needs_no_padding() {
-    // Two arms, both with i32 payload (tuple_size = 8 each).
-    // Arm 0: aligned=0, tuple=8, cursor=8.
-    // Arm 1: aligned=align_up_8(8)=8 (no padding), tuple=8, cursor=8+8=16.
-    // total_bytes = align_up_8(16) = 16 (no spurious padding).
+fn plain_catch_plan_preserves_same_typed_arms_across_regions() {
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -1925,25 +1901,17 @@ fn b1_scratch_plan_arm_with_8_aligned_tuple_needs_no_padding() {
     let bytes = parse_wat(wat);
     let module = walrus::Module::from_buffer(&bytes).unwrap();
     let caller = func_by_name(&module, "caller");
-    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    let plan = fork_instrument::instrument::plan_plain_catches(&module, &[caller]);
     let per_func = &plan.per_function[&caller];
     assert_eq!(per_func.len(), 2, "two try_tables");
-    let (_, slots_a) = &per_func[0];
-    let (_, slots_b) = &per_func[1];
-    assert_eq!(slots_a[0].scratch_offset, 0);
-    assert_eq!(slots_a[0].tuple_size, 8);
-    assert_eq!(
-        slots_b[0].scratch_offset, 8,
-        "8-aligned tuple end means next arm needs no padding"
-    );
-    assert_eq!(slots_b[0].tuple_size, 8);
-    assert_eq!(plan.total_bytes, 16, "no spurious padding inserted");
+    let (_, arms_a) = &per_func[0];
+    let (_, arms_b) = &per_func[1];
+    assert_eq!(arms_a[0].operand_tys, vec![ValType::I32]);
+    assert_eq!(arms_b[0].operand_tys, vec![ValType::I32]);
 }
 
 #[test]
-fn b1_scratch_plan_handles_f32_f64_operand_sizes() {
-    // tag with (param f32 f64) → tuple = 4 (arm_id) + 4 (f32) + 8 (f64) = 16.
-    // Verifies scalar_size correctly maps f32→4, f64→8 through the planner.
+fn plain_catch_plan_preserves_f32_f64_operand_types() {
     //
     // Catch label semantics (mirroring existing i32-payload test): branching
     // to a `(block $h (result f32 f64))` carries the block's RESULT types,
@@ -1969,21 +1937,16 @@ fn b1_scratch_plan_handles_f32_f64_operand_sizes() {
     let bytes = parse_wat(wat);
     let module = walrus::Module::from_buffer(&bytes).unwrap();
     let caller = func_by_name(&module, "caller");
-    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    let plan = fork_instrument::instrument::plan_plain_catches(&module, &[caller]);
     let per_func = &plan.per_function[&caller];
-    let (_, slots) = &per_func[0];
-    assert_eq!(
-        slots[0].tuple_size, 16,
-        "arm_id (4) + f32 (4) + f64 (8) = 16"
-    );
-    assert_eq!(slots[0].scratch_offset, 0);
-    assert_eq!(plan.total_bytes, 16);
+    let (_, arms) = &per_func[0];
+    assert_eq!(arms[0].operand_tys, vec![ValType::F32, ValType::F64]);
 }
 
 // --- B1 Stage 2 Task 2.1 — operand-type carve-out tests ----------------
 
 #[test]
-fn b1_scratch_plan_ref_operand_function_is_carved_out() {
+fn plain_catch_plan_ref_operand_function_is_carved_out() {
     // A try_table with a tag whose payload includes externref.
     // The function should land in b2_carveout, NOT in per_function.
     //
@@ -2008,7 +1971,7 @@ fn b1_scratch_plan_ref_operand_function_is_carved_out() {
     let bytes = parse_wat(wat);
     let module = walrus::Module::from_buffer(&bytes).unwrap();
     let caller = func_by_name(&module, "caller");
-    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    let plan = fork_instrument::instrument::plan_plain_catches(&module, &[caller]);
     assert!(
         !plan.per_function.contains_key(&caller),
         "carved-out function must not appear in per_function"
@@ -2017,14 +1980,10 @@ fn b1_scratch_plan_ref_operand_function_is_carved_out() {
         plan.b2_carveout.contains(&caller),
         "carved-out function must be in b2_carveout"
     );
-    assert_eq!(
-        plan.total_bytes, 0,
-        "no scratch allocated for carved-out function"
-    );
 }
 
 #[test]
-fn b1_scratch_plan_mixed_ref_and_scalar_arms_carves_whole_function() {
+fn plain_catch_plan_mixed_ref_and_scalar_arms_carves_whole_function() {
     // A function with two try_tables: one with i32 payload (supported),
     // one with externref (unsupported). The whole function gets carved
     // out because we don't selectively drop arms — Task 2.3's rewind
@@ -2053,7 +2012,7 @@ fn b1_scratch_plan_mixed_ref_and_scalar_arms_carves_whole_function() {
     let bytes = parse_wat(wat);
     let module = walrus::Module::from_buffer(&bytes).unwrap();
     let caller = func_by_name(&module, "caller");
-    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    let plan = fork_instrument::instrument::plan_plain_catches(&module, &[caller]);
     assert!(
         plan.b2_carveout.contains(&caller),
         "carve-out must include functions with mixed scalar+ref arms"
@@ -2063,14 +2022,10 @@ fn b1_scratch_plan_mixed_ref_and_scalar_arms_carves_whole_function() {
         "carved-out function must not appear in per_function even \
          though one arm is otherwise supported"
     );
-    assert_eq!(
-        plan.total_bytes, 0,
-        "carved-out functions allocate no scratch"
-    );
 }
 
 #[test]
-fn b1_scratch_plan_scalar_only_function_is_not_carved_out() {
+fn plain_catch_plan_scalar_only_function_is_not_carved_out() {
     // Sanity: the existing scalar-only fixture must NOT be carved out.
     // Mirrors the scalar tests above to ensure carve-out is gated
     // strictly on ref-typed operands and doesn't accidentally trip
@@ -2089,7 +2044,7 @@ fn b1_scratch_plan_scalar_only_function_is_not_carved_out() {
     let bytes = parse_wat(wat);
     let module = walrus::Module::from_buffer(&bytes).unwrap();
     let caller = func_by_name(&module, "caller");
-    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    let plan = fork_instrument::instrument::plan_plain_catches(&module, &[caller]);
     assert!(
         !plan.b2_carveout.contains(&caller),
         "scalar-only function must not be in b2_carveout"
@@ -2101,7 +2056,7 @@ fn b1_scratch_plan_scalar_only_function_is_not_carved_out() {
 }
 
 #[test]
-fn b1_scratch_plan_multi_target_plain_catch_carved_out() {
+fn plain_catch_plan_multi_target_plain_catch_carved_out() {
     // Two arms in one try_table, pointing at different labels.
     // Should be carved out (Task 2.4 conservative guard: multi-target
     // plain-catch fork has not been verified end-to-end).
@@ -2121,7 +2076,7 @@ fn b1_scratch_plan_multi_target_plain_catch_carved_out() {
     let bytes = parse_wat(wat);
     let module = walrus::Module::from_buffer(&bytes).unwrap();
     let caller = func_by_name(&module, "caller");
-    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    let plan = fork_instrument::instrument::plan_plain_catches(&module, &[caller]);
     assert!(
         plan.b2_carveout.contains(&caller),
         "multi-target try_table should be carved out"
@@ -2133,7 +2088,7 @@ fn b1_scratch_plan_multi_target_plain_catch_carved_out() {
 }
 
 #[test]
-fn b1_scratch_plan_single_target_multi_arm_is_supported() {
+fn plain_catch_plan_single_target_multi_arm_is_supported() {
     // Two arms in one try_table, both pointing at the SAME label.
     // Should NOT be carved out (this is the supported multi-arm case
     // — Task 2.4's guard only triggers when arms diverge).
@@ -2152,7 +2107,7 @@ fn b1_scratch_plan_single_target_multi_arm_is_supported() {
     let bytes = parse_wat(wat);
     let module = walrus::Module::from_buffer(&bytes).unwrap();
     let caller = func_by_name(&module, "caller");
-    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    let plan = fork_instrument::instrument::plan_plain_catches(&module, &[caller]);
     assert!(
         !plan.b2_carveout.contains(&caller),
         "single-target multi-arm should be supported"
@@ -2234,7 +2189,7 @@ fn collect_try_tables(f: &LocalFunction) -> Vec<ir::TryTable> {
 }
 
 #[test]
-fn b1_stage_2_plain_catch_arm_retargets_to_capture_block() {
+fn b1_stage_2_plain_catch_arm_uses_frame_backed_state() {
     // After instrumentation, the original try_table's plain Catch
     // clause should point at an injected capture block, not at the
     // original handler label `$h`. The capture block contains the
@@ -2279,33 +2234,23 @@ fn b1_stage_2_plain_catch_arm_retargets_to_capture_block() {
         "should be a plain Catch clause"
     );
 
-    // 2. Byte-level (wasmprinter): the cap block must contain the B1
-    //    save sequence (i32.store of arm_id followed by local.set of
-    //    in_catch / catch_region_id locals) and an outer `br` of the
-    //    handler. We grep for the i32.store + local.set pattern that
-    //    is unique to B1's emission. (Walrus drops these on re-parse
-    //    because they're after the unconditional `br $b1_outer`.)
+    // 2. Byte-level (wasmprinter): active-arm is an ordinary scalar
+    //    local and therefore round-trips through the function frame at
+    //    the first offset after its 16-byte header.
     let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
     let caller_section = extract_function_text(&printed, "caller");
     assert!(
         caller_section.contains("try_table"),
         "caller must still have a try_table:\n{caller_section}"
     );
-    // The save sequence: `i32.store offset=N` is unique to the B1
-    // emission. (The frame-IO emissions use offset=0/4/8/12 only.)
-    // For the no-operand fixture, slot.scratch_offset = 0 within the
-    // scratch area, and runtime.b1_scratch_base is where the scratch
-    // starts (at 8 in this module: 2P=8 with no saved globals + B=8
-    // rounded). We look for ANY of i32.store with offset >= 16 that
-    // follows a global.get $_wpk_fork_buf — the unique B1 pattern.
-    // Easier signature: the literal sequence "i32.const 0\n  ...
-    // i32.store offset=8" stores arm_idx 0 at scratch offset 0
-    // (absolute = b1_scratch_base = 8). The exact offset depends on
-    // saved globals; the only invariant is *some* store happens.
     assert!(
-        caller_section.contains("i32.store offset=8"),
-        "caller must contain i32.store at the B1 scratch arm_id offset \
-         (= b1_scratch_base + 0 = 8 for this fixture):\n{caller_section}"
+        caller_section.contains("i32.store offset=16"),
+        "active-arm local must be serialized after the frame header:\n\
+         {caller_section}"
+    );
+    assert!(
+        caller_section.contains("i32.load offset=16"),
+        "active-arm local must be restored from its frame:\n{caller_section}"
     );
 }
 
@@ -2389,12 +2334,9 @@ fn b1_stage_2_b2_carveout_function_is_not_transformed() {
          (B1 must NOT have transformed it)"
     );
 
-    // Byte-level: with the function in `b2_carveout`, the plan
-    // reserves zero scratch bytes for it — `B1ScratchPlan.total_bytes
-    // == 0` and `runtime.b1_scratch_size == 0`. We confirm via the
-    // direct planner API: a fresh plan over `[caller]` must list it
-    // in b2_carveout, not per_function.
-    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    // The direct planner API must list the function in b2_carveout,
+    // not per_function.
+    let plan = fork_instrument::instrument::plan_plain_catches(&module, &[caller]);
     assert!(
         plan.b2_carveout.contains(&caller),
         "carved-out function (ref-typed catch operand) must be in \
@@ -2403,11 +2345,6 @@ fn b1_stage_2_b2_carveout_function_is_not_transformed() {
     assert!(
         !plan.per_function.contains_key(&caller),
         "carved-out function must NOT have a per_function entry"
-    );
-    assert_eq!(
-        plan.total_bytes, 0,
-        "no scratch reservation expected when only function is carved \
-         out"
     );
 }
 
@@ -2556,13 +2493,59 @@ fn b1_stage_2_rewind_stub_has_plain_catch_dispatch() {
         "rewind stub must contain a `throw $exn` for the plain-catch \
          arm dispatch:\n{caller_section}"
     );
-    // ref.is_null indicates the sentinel check (B1 selects between
-    // catch_ref and plain-catch paths based on whether the exnref
-    // stash slot is null).
+    // The mode decision must be frame-owned. Stale contents in the
+    // static exnref table cannot decide whether this activation took
+    // a plain or ref catch.
     assert!(
-        caller_section.contains("ref.is_null"),
-        "rewind stub must use ref.is_null on the exnref stash to \
-         choose between catch_ref and plain-catch paths:\n{caller_section}"
+        !caller_section.contains("ref.is_null"),
+        "rewind stub must dispatch from frame-backed active_arm, not \
+         exnref-table nullness:\n{caller_section}"
+    );
+}
+
+#[test]
+fn mixed_plain_and_catch_ref_uses_frame_backed_arm_kind() {
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $plain (param i32))
+          (tag $with_ref)
+          (func $caller (export "caller") (param $take_plain i32) (result i32)
+            (block $done (result i32)
+              (block $plain_handler (result i32)
+                (block $ref_handler (result exnref)
+                  (try_table (result exnref)
+                      (catch $plain $plain_handler)
+                      (catch_ref $with_ref $ref_handler)
+                    call $fork
+                    drop
+                    local.get $take_plain
+                    if
+                      i32.const 41
+                      throw $plain
+                    else
+                      throw $with_ref
+                    end
+                    unreachable))
+              drop
+              i32.const 42
+              br $done)
+            br $done))
+          (memory 1))
+    "#;
+    let bytes = instrument_wat(wat);
+    validate(&bytes);
+    let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
+    let caller_section = extract_function_text(&printed, "caller");
+    assert!(
+        caller_section.contains("i32.const -1"),
+        "catch_ref capture must mark the frame-backed active arm as \
+         non-plain:\n{caller_section}",
+    );
+    assert!(
+        !caller_section.contains("ref.is_null"),
+        "mixed replay must not use static exnref-table contents as \
+         capture-kind state:\n{caller_section}",
     );
 }
 
@@ -2610,8 +2593,7 @@ fn b1_stage_2_rewind_stub_dispatches_two_arms() {
 fn b1_stage_2_carved_out_function_no_b1_dispatch_emitted() {
     // A function in `b2_carveout` (here: ref-typed catch payload)
     // must NOT receive B1's plain-catch dispatch — its rewind stub
-    // should retain Phase 6's pre-B1 form (throw_ref only) and
-    // contain no `ref.is_null`-based sentinel.
+    // should retain Phase 6's throw_ref-only form.
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -2631,15 +2613,14 @@ fn b1_stage_2_carved_out_function_no_b1_dispatch_emitted() {
     let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
     let caller_section = extract_function_text(&printed, "caller");
     // The carved-out function's rewind stub uses ONLY Phase 6's
-    // throw_ref path. It must NOT contain B1's `ref.is_null` sentinel
-    // (which would indicate a B1 plain-catch dispatch was emitted).
+    // throw_ref path and no plain-catch tag throw.
     assert!(
         caller_section.contains("throw_ref"),
         "carved-out function must retain Phase 6's throw_ref:\n{caller_section}"
     );
     assert!(
         !caller_section.contains("ref.is_null"),
-        "carved-out function must NOT have B1's ref.is_null sentinel \
-         (no plain-catch dispatch should be emitted):\n{caller_section}"
+        "carved-out function must not consult exnref nullness as mode \
+         state:\n{caller_section}"
     );
 }

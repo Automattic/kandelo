@@ -292,4 +292,111 @@ describe("plain-catch payload lifetime", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("distinguishes plain and catch_ref state in either reuse order", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kandelo-mixed-catch-lifetime-"));
+    try {
+      const watPath = join(dir, "mixed-catch-lifetime.wat");
+      const rawPath = join(dir, "mixed-catch-lifetime.wasm");
+      const instrumentedPath = join(dir, "mixed-catch-lifetime.instrumented.wasm");
+      writeFileSync(watPath, `(module
+        (import "kernel" "kernel_fork" (func $fork (result i32)))
+        (import "env" "memory" (memory 4))
+        (tag $plain (param i32))
+        (tag $with_ref)
+        (func (export "run") (param $take_plain i32) (result i32)
+          (block $done (result i32)
+            (block $plain_handler (result i32)
+              (block $ref_handler (result exnref)
+                (try_table (result exnref)
+                    (catch $plain $plain_handler)
+                    (catch_ref $with_ref $ref_handler)
+                  local.get $take_plain
+                  if
+                    i32.const 41
+                    throw $plain
+                  else
+                    throw $with_ref
+                  end
+                  unreachable))
+              drop
+              call $fork
+              i32.const 42
+              i32.add
+              br $done)
+            call $fork
+            i32.add
+            br $done)))`);
+      execFileSync("wat2wasm", [
+        "--enable-exceptions",
+        watPath,
+        "-o",
+        rawPath,
+      ]);
+      const instrumenterPath = fileURLToPath(
+        new URL("../../tools/bin/wasm-fork-instrument", import.meta.url),
+      );
+      execFileSync(instrumenterPath, [rawPath, "-o", instrumentedPath]);
+      const module = new WebAssembly.Module(readFileSync(instrumentedPath));
+
+      const runOrder = (modes: readonly number[]): void => {
+        const memory = new WebAssembly.Memory({ initial: 4 });
+        let instance: WebAssembly.Instance;
+        let moduleBuffer = 0;
+        const continuation = new LinkedForkContinuation(
+          memory,
+          readLinkedFrameFormat(module),
+          () => 65_536,
+          () => {},
+          "mixed-catch-lifetime",
+        );
+        instance = new WebAssembly.Instance(module, {
+          env: {
+            memory,
+            __wpk_fork_frame_reserve: (size: number) =>
+              continuation.reserveFrame(size),
+            __wpk_fork_frame_commit: (payload: number) =>
+              continuation.commitFrame(payload),
+            __wpk_fork_frame_next: (size: number) =>
+              continuation.nextFrame(size),
+          },
+          kernel: {
+            kernel_fork: () => {
+              const state = (instance.exports.wpk_fork_state as () => number)();
+              if (state === 2) {
+                (instance.exports.wpk_fork_rewind_end as () => void)();
+                continuation.finishReplayAndRelease();
+                return 7;
+              }
+              moduleBuffer = Number(continuation.beginUnwind());
+              (instance.exports.wpk_fork_unwind_begin as (addr: number) => void)(
+                moduleBuffer,
+              );
+              return 0;
+            },
+          },
+        });
+        const run = instance.exports.run as (takePlain: number) => number;
+
+        for (const mode of modes) {
+          expect(run(mode)).toBe(0);
+          (instance.exports.wpk_fork_unwind_end as () => void)();
+          continuation.finishUnwind();
+          continuation.beginReplay();
+          (instance.exports.wpk_fork_rewind_begin as (addr: number) => void)(
+            moduleBuffer,
+          );
+          expect(run(mode)).toBe((mode ? 41 : 42) + 7);
+        }
+      };
+
+      // WHY: the exnref table is intentionally reused. A stale non-null
+      // entry after catch_ref must not make the next plain activation take
+      // throw_ref, and a preceding plain catch must not suppress catch_ref.
+      runOrder([0, 1]);
+      runOrder([1, 0]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

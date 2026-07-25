@@ -200,7 +200,7 @@ pub struct FrameFormatDescriptor {
     pub chunk_header_size: u32,
     pub node_header_size: u32,
     /// Bytes at the start of the root chunk's payload reserved for the
-    /// instrumented runtime header, saved globals, and exception scratch.
+    /// instrumented runtime header, saved globals, and abort selector.
     pub fixed_prefix_size: u32,
 }
 
