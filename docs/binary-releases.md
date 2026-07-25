@@ -74,32 +74,64 @@ artifacts appears in the main repository's `binaries-abi-v<N>` `index.toml`
 ledger. See [docs/homebrew-publishing.md](homebrew-publishing.md) for formula
 authoring, the immutable VFS descriptor contract, and operations.
 
-Package archives admitted to a Homebrew/durable-package generation and the
-resulting bottles are produced only after their source changes land. Their
-recorded Kandelo source repository and SHA must be
-`https://github.com/Automattic/kandelo` and the live
-`Automattic/kandelo` `refs/heads/main` commit when the producer admits the
-build and immediately before each publication mutation. Pull-request staging
-and dry-run artifacts are noncanonical Homebrew validation evidence; ancestry,
-tree equality, tags, and special merge methods cannot promote them into
-production bottle inputs.
+Current `Automattic/kandelo` `refs/heads/main` is the sole mutation authority
+for Homebrew/durable-package generation and the resulting bottles. Recheck its
+exact commit immediately before every publication mutation. The ordinary path
+builds archives after their source changes land and records
+`https://github.com/Automattic/kandelo` plus that exact main SHA.
+
+The versioned `kandelo-package-generation-v2` compatibility path can instead
+preserve archives from one immutable producer commit `S` when trusted current
+main `M` independently binds the source release's direct tag anchor `R` and
+requires every selected archive to identify that same `S`.
+`identical-git-tree-v1` proves complete `S^{tree} == M^{tree}`. The narrower
+`identical-package-cache-projection-v1` migration bridge allows distinct trees
+only when current-main code derives byte-identical selected projections,
+expected ledgers, and canonical selected build-input component closures from
+both trees. The component closure explicitly binds manifests, parsed recipes,
+declared and Git inputs, direct dependency cache identities, global toolchain
+inputs, fork-instrument inputs, architecture, and ABI. A schema-2 source-only
+dependency remains bound in the projection and direct dependency identities
+without acquiring a materializable component or archive.
+
+Complete, non-truncated tree IDs remain in the evidence for audit, and the two
+authority validators use exact pinned old/new blob IDs. Unrelated host/runtime
+leaves do not affect the selected package closure; any selected component
+change fails. The method is hard-bound to #1097 producer
+`748c2609954d2809bbcbbcb642fa7d257fc0dbc6` and the
+`pr-1097-staging` source capture. Admission does not consume that mutable tag
+directly. Current main first publishes an evidence-only, content-addressed
+`preserved-package-generation-...` release, then admission uses that exact
+preservation tag. The audited H-to-M equality holds for schema-1
+`rootfs`/`wasm32` only; `lamp`, `nginx-php-vfs`, and `wordpress` changed cache
+identities in the broader browser selection, so this bridge must not admit
+that root set.
+
+That bounded method is not ancestry, payload byte equivalence, or a claim that
+a hypothetical rebuild at `M` would be identical. The archives retain truthful
+producer SHA `S`; the durable generation records and targets validated main
+`M`. `R` is independently rechecked release-container identity; its tree is
+not package provenance and need not equal `S` or `M`. Neither the release
+anchor nor producer checkout is executable authority.
 
 The general `binaries-abi-v<N>` resolver release has a separate responsibility:
 post-merge activation may copy an exact tested-tree candidate into that mutable
 ledger so ordinary consumers retain the package gate's tested bytes. Such an
-archive is canonical resolver state but is explicitly ineligible for a
-Homebrew/durable-package generation. `force-rebuild.yml`, dispatched from the
-live `main` workflow SHA, source-builds the selected closure, stamps each
+archive is not a Homebrew input merely because it entered the resolver ledger;
+it needs either a normal exact-main rebuild or one of the v2 versioned
+admission receipts above. `force-rebuild.yml`, dispatched from the live `main`
+workflow SHA, source-builds the selected closure, stamps each
 archive's embedded `[build]` provenance with that exact SHA, and rechecks live
 main before each archive and index mutation. During that exact-main rebuild,
 the canonical index transaction engine carries the admitted SHA through
 recovery and publication and rechecks it immediately before every release-asset
 upload, rename/label update, and delete; an advance of `main` therefore stops
 the transaction before its next mutation. Durable generation validates those
-embedded fields and rejects activated PR/synthetic-merge bytes. The producer
+embedded fields and rejects activated PR/synthetic-merge bytes that lack v2
+admission. The producer
 partitions the complete selected dependency graph into explicit topological
 levels. Packages within one level build concurrently; every edge to a later
-level must consume the earlier level's same-run exact-main archive, with no
+level must consume the earlier level's same-run producer archive, with no
 fallback to an older canonical index entry or prior local cache entry. Each
 archive build resolves through an empty job-local cache. Its sysroot/libcxx
 toolchain cache is keyed by the exact main SHA and source-builds libcxx before
@@ -108,27 +140,61 @@ that cache can be created.
 ### Durable package generations for cross-workflow publication
 
 A Homebrew publication may need an exact Kandelo package selection after the
-source change has landed. A PR's `pr-<N>-staging` release is never that
-durable input: staging is temporary, pre-main, and deleted after the PR closes.
-Only after coherent package activation is complete on `refs/heads/main` may
-the manual `promote-package-generation.yml` workflow snapshot selected
-canonical package bytes into an append-only prerelease. Its tags have this
-form:
+source change has landed. The manual `promote-package-generation.yml` workflow
+runs at exact current main `M` and snapshots immutable producer bytes into an
+append-only prerelease. Producer tag and commit are explicit dispatch inputs;
+new generations use the v2 versioned validation evidence described below.
+Their tags have this form:
 
 ```
 package-generation-<selection>-<arch>-abi-v<N>-sha256-<full-identity-sha256>
 ```
 
-`generation.json` binds the exact freshly queried main commit and tree,
-`binaries-abi-v<N>` release/tag identity, ABI, selected package projection,
-fresh expected ledger, validated source snapshot, minimal index, and every
+The #1097 cache-projection bridge has a separate preservation step before
+promotion. `preserve-pr-package-generation.yml` reads the mutable PR release
+and its exact workflow run without release-write permission. Current-main code
+derives the selected projection and expected ledger from the producer checkout
+as inert data, validates every archive twice—once from the PR release and once
+from the same workflow run—and publishes this evidence-only shape:
+
+```
+preserved-package-generation-<selection>-<arch>-abi-v<N>-source-<S>-sha256-<full-identity-sha256>
+```
+
+Its `kandelo-preserved-pr-package-generation-v1` manifest records
+`admission = "none"` and binds the original PR release/tag observation, exact
+run ID and attempt, workflow path and head SHA, selected same-run artifacts,
+root-job log digest, projection, expected ledger, validated snapshot, minimal
+index, every archive, and the exact publisher-authority commit. The direct
+preservation tag points at `S`. The writer independently reconstructs the
+mutable source immediately before uploading `generation.json` and again before
+publishing the release. Once public, an exact retry only verifies the immutable
+release and does not require the temporary PR source to remain available.
+
+Preservation is not package admission. Ordinary materializers reject a
+`preserved-package-generation-...` tag. The later promotion must receive that
+actual tag returned by the preservation dispatch, anonymously reconstruct and
+validate its complete bundle, and embed the complete preserved manifest plus
+release asset inventory in v2 producer evidence. Current authority then
+rederives the producer and current-main projection, ledger, and selected
+build-input component closure. Only the resulting
+`package-generation-...` release is consumable.
+
+`generation.json` independently binds the source release's direct tag anchor
+`R`, immutable archive producer `S`, freshly queried main `M`, the complete
+trees of `S` and `M`, ABI and ABI snapshot digest, selected package projection,
+fresh expected ledger, validated producer snapshot, minimal index, and every
 archive name, byte count, and SHA-256. Every selected archive's embedded
-`[build].repo_url` must name `https://github.com/Automattic/kandelo` and
-`[build].commit` must equal that same main SHA. An ancestor, PR head, tested
-merge, tag target, or same-tree commit cannot substitute for it. The full
-64-character identity digest determines the generation tag. The generated
-`index.toml` names only assets under that tag and has no fallback or mutable
-source-release URL.
+`[build].repo_url` must name
+`https://github.com/Automattic/kandelo` and `[build].commit` must equal `S`.
+The validation method is either complete-tree
+`identical-git-tree-v1` or the bounded, fail-closed
+`identical-package-cache-projection-v1` migration method described above.
+The source release tag remains a rechecked locator, not archive-provenance
+evidence; its tree may differ. The new public generation release and direct
+tag both target `M`. The full 64-character identity digest determines the
+generation tag. Its `index.toml` names only assets under that tag and has no
+fallback or mutable producer-release URL.
 
 There are two projection schemas:
 
@@ -160,34 +226,46 @@ Duplicate or reordered roots, a missing or extra root, substituted dependency,
 changed kind/disposition, stale cache identity, expected-ledger drift, or an
 archive-inventory difference fails closed.
 
-Root and closure counts are derived evidence, not acceptance constants. A
-durable generation may not consume a PR release, PR head, tested merge,
-ancestor, tag target, same-tree commit, or staging cache identity. It
-recomputes everything from the exact activated main commit and rejects a
+Root and closure counts are derived evidence, not acceptance constants. A v1
+generation consumes only its canonical release at exact main. A v2 generation
+may consume a canonical release or the narrowly preserved #1097 producer, but
+only when every selected archive names one coherent producer `S` under one of
+the content-bound versioned compatibility proofs. It recomputes everything
+using trusted current-main code at `M` and rejects mixed producer commits or a
 wrong-architecture omission even when the same package name exists for both
 architectures.
 
 The authority relationships are:
 
-1. Workflow authority and package source are the same exact clean SHA freshly
-   read from `refs/heads/main`.
-2. Canonical activation is the live `binaries-abi-v<N>` release inventory at
-   that moment; each selected archive embeds the exact main SHA.
-3. A later consumer may have another SHA only when current authority freshly
+1. Workflow and mutation authority is exact clean `M`, freshly read from
+   `refs/heads/main`.
+2. The source release is a direct tag at anchor `R`; its release/tag/assets are
+   rechecked, but the tag does not stand in for archive provenance.
+3. Every selected archive embeds the same immutable producer `S`; mixed or
+   stale archive producers are rejected.
+4. `validated_against_main` binds `M`, `M^{tree}`, ABI version, ABI snapshot
+   digest, and the selected versioned method. Exact-tree validation requires
+   `S^{tree} == M^{tree}`; bounded cache-projection validation instead binds
+   equal projection/ledger digests, the byte-identical canonical selected
+   build-input closure, and exact pinned validator transitions.
+5. A later consumer may have another SHA only when current authority freshly
    derives a byte-identical projection and expected ledger from that checkout.
 
 Preparation has read-only repository permission and no persisted credentials.
-It records and later rechecks the main ref, canonical release/tag/assets,
-source commit, local HEAD/tree/clean state, and every materialized byte. One
+It records and later rechecks the main ref, producer release/tag/assets,
+producer and main commits/trees, local HEAD/tree/clean state, ABI snapshot, and
+every materialized byte. One
 strict current Rust `staging-reuse validate-generation` command validates the
 exact index package/arch set, strict TOML/JSON, snapshot, sorted asset
-inventory, digests, archive manifests, immutable Git inputs, and embedded main
-commit. Preparation, publication, and materialization all use that validator.
+inventory, digests, archive manifests, immutable Git inputs, and embedded
+producer commit. Preparation, publication, and materialization all use that
+validator. Existing v1 manifests remain materializable; new preparation emits
+v2.
 
 The writer binds every dispatch input to `generation.json`, independently
 rederives the architecture-scoped source projection and expected ledger from
 its own exact-main checkout, reacquires its state lock, requeries live main and
-canonical package assets, and repeats local rehashing and semantic validation
+producer package assets, and repeats local rehashing and semantic validation
 immediately before uploading `generation.json` as the application seal and
 before publishing the release. The materializer anonymously downloads every
 asset, requeries release/tag/asset metadata, reruns the same semantic
@@ -335,10 +413,14 @@ preserved snapshot never upgrades itself into one.
 
 #### Promotion and recovery
 
-Dispatch only from the exact current `main` commit after canonical package
-activation has completed. `package-source-sha` must equal both the workflow
-authority SHA and the freshly queried `refs/heads/main`; `source-tag` must
-be the matching canonical ABI release:
+Dispatch only from exact current `main` commit `M` after the selected source
+release is complete. `validated-main-sha` must equal both workflow authority
+and freshly queried `refs/heads/main`. `producer-sha` names the one `S`
+embedded by every selected archive. Select `identical-git-tree-v1` when the
+complete trees match; use `identical-package-cache-projection-v1` only for its
+audited bounded migration case. `source-tag` names independently rechecked
+release anchor `R`; the normal exact-main path uses the matching canonical ABI
+release with `S == M`:
 
 ```bash
 main_sha="$(gh api repos/Automattic/kandelo/git/ref/heads/main --jq .object.sha)"
@@ -347,13 +429,41 @@ for arch in wasm32 wasm64; do
     --repo Automattic/kandelo \
     --ref main \
     -f source-tag=binaries-abi-v42 \
-    -f package-source-sha="$main_sha" \
+    -f producer-sha="$main_sha" \
+    -f validated-main-sha="$main_sha" \
+    -f validation-method=identical-git-tree-v1 \
     -f expected-abi=42 \
     -f selection-kind=browser-inputs \
     -f root-package=rootfs \
     -f arch="$arch"
 done
 ```
+
+For the one-shot #1097 bridge, run the preservation command above first and
+copy the exact `preserved-package-generation-...` tag from that run's job
+summary. After that release is green:
+
+```bash
+main_sha="$(gh api repos/Automattic/kandelo/git/ref/heads/main --jq .object.sha)"
+producer_sha=748c2609954d2809bbcbbcb642fa7d257fc0dbc6
+preserved_tag=<exact-tag-from-preservation-summary>
+gh workflow run promote-package-generation.yml \
+  --repo Automattic/kandelo \
+  --ref main \
+  -f source-tag="$preserved_tag" \
+  -f producer-sha="$producer_sha" \
+  -f validated-main-sha="$main_sha" \
+  -f validation-method=identical-package-cache-projection-v1 \
+  -f expected-abi=42 \
+  -f selection-kind=root-package \
+  -f root-package=rootfs \
+  -f arch=wasm32 \
+  -f release-retained-source=false
+```
+
+Use the complete preservation tag, never `pr-1097-staging`, for admission.
+The cache-projection method cannot admit another producer, source capture,
+selection, architecture, or guessed preservation tag.
 
 Use `selection-kind=root-package` for one named root closure. The
 `root-package=rootfs` default remains present for a `browser-inputs`

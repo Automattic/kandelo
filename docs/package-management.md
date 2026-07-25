@@ -1151,15 +1151,43 @@ continue through ordinary resolution. For example, the main-shell proof uses
 it to guarantee that the shell composer runs while its reviewed Homebrew
 bottles remain ordinary immutable inputs.
 
-The canonical exact-main producer adds a stricter orchestration contract around
-that deliberately narrow flag. It expands selected roots to their complete
-buildable closure, partitions the graph into topological levels, and
-materializes only same-run exact-main dependency archives between levels.
+The canonical producer adds a stricter orchestration contract around that
+deliberately narrow flag. It expands selected roots to their complete buildable
+closure, partitions the graph into topological levels, and materializes only
+same-run dependency archives between levels. The normal producer is exact
+main. A v2 durable generation may retain the same-run closure from immutable
+producer `S` only when trusted current main `M` records the versioned,
+content-bound proof that source-release anchor `R`, archive producer `S`, and
+main `M` are independently bound. Normally `identical-git-tree-v1` requires
+identical complete Git trees.
+
+The bounded migration-only
+`identical-package-cache-projection-v1` method instead requires exact selected
+projection/ledger equality and a byte-identical canonical component ledger for
+every selected manifest, parsed recipe, declared and Git input, direct
+dependency identity, global toolchain input, fork-instrument input,
+architecture, and ABI. Schema-2 source-only dependencies remain in the
+projection and direct-dependency evidence but not in the archive/component
+set. Complete tree IDs remain audit evidence and the validator transition is
+exactly pinned. It does not claim that rebuilding at `M` would reproduce `S`.
+It is hard-bound to #1097 producer
+`748c2609954d2809bbcbbcb642fa7d257fc0dbc6` and the
+`pr-1097-staging` source capture, not a reusable historical-cache escape hatch.
+The audited H-to-M equality is limited to schema-1 `rootfs`/`wasm32`; the
+broader browser projection differs.
+
+Current authority first freezes that mutable source into an evidence-only
+`preserved-package-generation-...` release. Admission takes the exact
+published preservation tag, embeds its complete manifest and asset inventory,
+and rejects direct use of either the mutable PR tag or the preservation release
+by ordinary consumers. Archives continue to identify `S`; the preservation tag
+locates the sealed evidence and does not claim to have produced them.
+
 Missing current-run artifacts are errors, not permission to consult the
 mutable canonical index, and each archive uses an empty job-local cache so a
 prior cache entry cannot bypass those overlays. Its commit-keyed toolchain
 source-builds libcxx, so an older cache-equivalent C++ runtime cannot enter the
-claimed exact-main closure.
+claimed producer closure.
 
 When `archive-stage --cache-root <dir>` also uses `--binaries-dir`, later
 processes consuming that symlink mirror must set
@@ -1257,10 +1285,19 @@ on a consumer machine.
 
 Source `package.toml` deliberately does not carry the repository or commit:
 those values describe one producer checkout, not the portable recipe.
-Pull-request staging records its exact PR or synthetic-merge commit. A
-post-merge canonical rebuild records the exact live `main` commit, allowing a
-Homebrew generation to reject pre-main archives without treating ancestry,
-tree equality, or a tag as equivalent provenance.
+Pull-request staging records its exact PR or synthetic-merge commit. A normal
+post-merge canonical rebuild records the exact live `main` commit. A v2
+durable generation may instead bind immutable producer `S`, its release assets,
+independently resolved release anchor `R`, current main `M`, and the main ABI
+snapshot under a versioned method. `identical-git-tree-v1` proves
+`S^{tree} == M^{tree}`. The bounded
+`identical-package-cache-projection-v1` migration method proves exact selected
+projection/ledger equality plus the byte-identical canonical selected
+build-input component ledger. It retains complete `S` and `M` tree IDs for
+audit and exact-pins the validators that interpret the ledger. It is hard-bound
+to #1097's exact producer/source capture and intentionally not general payload
+equivalence. Ancestry, reachability, a tag, or a bare cache-key match is not
+equivalent provenance.
 
 ### Why `cache_key_sha` is the strict equivalence check
 
@@ -1329,16 +1366,27 @@ before exposing the localized `file://` index. Missing, extra, changed, or
 reordered Git inputs; a mismatched archive identity; duplicate/noncanonical
 `manifest.toml`; or a symlinked archive fails closed.
 
-PR staging is not a durable dependency for a later workflow and cannot be
-promoted as final provenance. After a package change and its coherent canonical
-activation have landed, dispatch `promote-package-generation.yml` from the
-same exact `refs/heads/main` SHA as described in
+PR staging is not itself a durable dependency or final bottle provenance.
+Normally, after a package change and its coherent canonical activation have
+landed, dispatch `promote-package-generation.yml` from the same exact
+`refs/heads/main` SHA as described in
 [Binary releases: durable package generations](binary-releases.md#durable-package-generations-for-cross-workflow-publication).
-The source tag must be `binaries-abi-v<N>`, not `pr-<N>-staging`. The
-promoter materializes only archives whose embedded build commit equals that
-freshly queried main SHA, rebuilds a minimal exact index, drops unrelated
-entries and every fallback, and rewrites URLs to the content-addressed
-generation tag.
+The normal source tag is `binaries-abi-v<N>`. A retained merged
+`pr-<N>-staging` source is accepted only by the versioned v2 contracts: exact
+complete-tree equality, or the one-shot PR #1097 cache-projection bridge
+hard-bound to its immutable producer and source capture. The promoter rebuilds
+a minimal exact index, drops unrelated entries and every fallback, and rewrites
+URLs to the content-addressed generation tag. It preserves the archive's
+truthful producer separately from validated current main; later Homebrew
+bottles are compiled at that validated main commit and record it as their own
+producer.
+
+For the #1097 method, “source tag” at promotion means the exact
+`preserved-package-generation-...` tag returned by the preceding preservation
+workflow. The embedded preservation manifest must still identify
+`pr-1097-staging`, the exact producer, same-run artifacts, and root-job log.
+`materialize-durable-package-generation.sh` rejects the preservation tag
+itself; only the admitted `package-generation-...` result is resolver input.
 
 Schema 1 selects one program root and its dependency closure. Schema 2
 `browser-inputs` binds the sorted browser roots, with `shell` excluded and

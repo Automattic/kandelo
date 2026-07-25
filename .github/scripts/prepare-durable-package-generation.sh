@@ -306,10 +306,11 @@ run_authority_xtask_without_credentials staging-reuse scan-source \
 
 cache_projection_args=()
 if [ "$VALIDATION_METHOD" = identical-package-cache-projection-v1 ]; then
-  # WHY: current main's scanner interprets both inert source trees. Equality
-  # under that declared cache model is necessary but not sufficient, so the
-  # evidence command also rejects every changed Git leaf outside the audited
-  # publication/docs policy.
+  # WHY: current main's scanner interprets both inert source trees. The
+  # evidence requires an identical selected build-input closure and pins the
+  # exact validator transition through each recursive Git tree. Unrelated
+  # leaves need not match because the closure proves they are not package
+  # inputs.
   run_authority_xtask_without_credentials staging-reuse scan-source \
     --source-root "$PRODUCER_ROOT" \
     --expected-abi "$EXPECTED_ABI" \

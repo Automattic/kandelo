@@ -66,24 +66,71 @@ Binary materialization is not package rebuilding. Fetching, verifying,
 overlaying, or symlinking existing archives should be tested as materialization
 behavior. Rebuild package archives only when package archive inputs changed.
 
-Package archives admitted to a Homebrew or durable-package generation, and
-Homebrew bottles themselves, must be built after their source changes land,
-from a checkout whose exact lowercase commit SHA equals the live
-default-branch `main` SHA. The general resolver release may temporarily contain
-an activated tested-tree candidate, but that archive is not Homebrew-generation
-eligible until an exact-main force rebuild replaces it. Pull-request staging
-and dry-run outputs are validation evidence only: do not promote them, bless
-them through ancestry or tree equality, or use a special merge method to make
-them canonical. Recheck the exact `main` identity immediately before each
-Homebrew-eligible archive, bottle, index, tap, or release mutation.
-For that exact-main rebuild, "built from main" covers the selected archive's
-transitive buildable dependency artifacts too: partition the selected closure
-into topological levels, consume only same-run exact-main artifacts across
-dependency edges, and fail rather than falling back to an older
-cache-equivalent archive. Resolve those overlays through an empty job-local
-cache so prior runner state cannot satisfy an exact-main dependency edge.
-Ordinary resolver/cache reuse outside this canonical producer retains its
-existing semantics.
+Current `main` is the only authority that may admit package archives into
+Homebrew production or mutate a durable generation, bottle, index, tap, or
+release. Recheck its exact lowercase commit SHA immediately before each
+mutation. Normally the archives are rebuilt after their source changes land
+and record that exact `main` SHA.
+
+One narrow, versioned compatibility path may preserve archives from a distinct
+immutable producer commit `S`: `kandelo-package-generation-v2` records
+`validated_against_main` commit `M` using `identical-git-tree-v1`. The trusted
+current-`main` implementation must independently bind the source release's
+direct tag anchor `R`, require every selected archive to identify the same
+producer `S`, and freshly prove `S^{tree} == M^{tree}`. It binds the release
+and direct tag at `R`, producer and main commits and trees, the ABI snapshot,
+release assets, selected projection, expected ledger, and archive bytes into
+`generation.json`, then targets the durable release at `M`. The tag is an
+independently rechecked asset-container locator, not archive provenance, so its
+tree need not equal either `S` or `M`. Archives truthfully retain
+`[build].commit = S`; do not rewrite their provenance. The producer checkout
+is inert data and must never supply executable workflow authority. Ancestry,
+reachability, a tag, a merge method, or equality of only selected files is not
+this proof. Existing v1 generations remain readable, but new preparation uses
+v2.
+
+The bounded migration-only
+`identical-package-cache-projection-v1` method may admit distinct complete
+trees without claiming payload equivalence. Current-main code must derive the
+exact same selected package projection, expected ledger, and canonical
+per-package build-input component closure from inert `S` and `M`. That closure
+binds each package manifest, parsed build recipe and Git inputs, every declared
+input digest, direct dependency cache identities, the global toolchain,
+fork-instrument inputs when used, architecture, and ABI. In schema-2
+selections, source-only dependencies remain bound by the full projection and
+direct dependency records but never acquire archive components. Complete
+non-truncated Git tree IDs remain bound for audit, and the exact validator
+transition is pinned; unrelated host/runtime leaves are not package inputs and
+therefore do not require a broad path exception.
+
+This one-shot method is hard-bound to #1097 producer
+`748c2609954d2809bbcbbcb642fa7d257fc0dbc6` and
+the `pr-1097-staging` source capture; do not generalize it to another producer
+or source. Before admission, current-main code must preserve that mutable
+source as an evidence-only `preserved-package-generation-...` release. The
+preserved manifest binds the complete selected archives, minimal index,
+projection, expected ledger, same-run workflow artifacts, and root-job log,
+and must claim `admission = "none"`. Cache-projection promotion takes the exact
+published preservation tag, embeds and revalidates its complete manifest and
+release inventory, and only then emits an admitted
+`package-generation-...` tag. Never dispatch this method from the mutable PR
+tag, and never materialize a preserved release directly. The audited H-to-M
+comparison is equal only for the schema-1 `rootfs`/`wasm32` selection.
+`lamp`, `nginx-php-vfs`, and `wordpress` changed cache identities in the
+schema-2 browser selection, so this bridge must not admit that broader closure.
+Any difference in the selected recipe, declared inputs, dependency identities,
+toolchain, fork instrumentation, architecture, ABI, projection, expected
+ledger, or preserved archive evidence fails closed. All selected archives
+still use one coherent `S`; mixed producers remain invalid.
+
+For either a normal exact-main rebuild or a producer admitted by one of these
+versioned v2 methods, the selected archive's transitive buildable dependencies
+must come from the same producer closure: partition it into topological levels,
+consume only same-run artifacts across dependency edges, and fail rather than
+falling back to an older cache-equivalent archive. Resolve those overlays
+through an empty job-local cache so prior runner state cannot satisfy an edge.
+Ordinary resolver/cache reuse outside this production path retains its existing
+semantics.
 
 Multi-output paths are resolver-owned. Do not hardcode
 `binaries/programs/<arch>/...`; ask

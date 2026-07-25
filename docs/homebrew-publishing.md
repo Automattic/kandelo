@@ -922,37 +922,54 @@ refreshes and mutates the current protected branch under the tap-wide state
 lock.
 
 An ABI transition lands its coherent source and package changes through the
-ordinary Kandelo merge process first. The final package archives and canonical
-bottles are then rebuilt from the exact resulting `main` SHA. Pull-request
-staging and dry-run artifacts may validate the candidate, but they are
-noncanonical and cannot be promoted into the production bottle namespace.
-Making a candidate commit reachable from `main`, preserving its SHA with a
-special merge, or joining it to current history does not substitute for this
-post-merge rebuild.
+ordinary Kandelo merge process first. The normal path then rebuilds final
+package archives and canonical bottles from exact resulting `main`. When an
+already-built immutable producer `S` has the complete Git tree of current main
+`M`, a v2 durable generation may preserve those archive bytes and their
+truthful `S` provenance. The one-shot #1097 migration may also use the bounded
+cache-projection method after exact same-run closure evidence is recorded. The
+main-owned validator binds both trees, ABI snapshot, producer release,
+projection/ledger and selected build-input component evidence, and assets
+before bottle production. That bridge is limited to the byte-identical
+schema-1 `rootfs`/`wasm32` selection; the broader browser selection changed
+package cache identities and requires a generation actually built for `M`.
+Merely making `S` reachable, preserving its SHA with a special merge, or
+joining it to history is still insufficient.
 
-Post-merge package preparation uses `force-rebuild.yml` from the exact live
-main SHA. That workflow source-builds each selected target and embeds
+Normal post-merge package preparation uses `force-rebuild.yml` from the exact
+live main SHA. That workflow source-builds each selected target and embeds
 `[build].repo_url = "https://github.com/Automattic/kandelo"` plus
 `[build].commit = "<exact-main-sha>"` in its archive manifest. The durable
-generation revalidates both fields for every selected archive. An archive that
-entered the mutable resolver ledger through ordinary merge-candidate activation
-remains useful to general consumers, but it is not a bottle input until this
-exact-main rebuild replaces it.
+generation revalidates both fields for every selected archive. Under v2, the
+same validation instead requires the archive commit to equal immutable
+producer `S` and the content-bound receipt to prove either complete
+`S^{tree} == M^{tree}` or the hard-bound #1097 cache-projection contract.
+An archive that entered the mutable resolver ledger through ordinary
+merge-candidate activation without either proof remains useful to general
+consumers but is not a bottle input.
 The rebuild expands selected roots to their transitive buildable dependencies
 and executes explicit topological levels. Members of a level remain parallel;
-each later member consumes only the prior levels' same-run exact-main
+each later member consumes only the prior levels' same-run producer
 artifacts. A missing producer artifact fails the run instead of falling back
 to an older cache-equivalent archive; an empty job-local resolver cache also
 prevents prior runner state from satisfying that edge. The commit-keyed
 toolchain source-builds libcxx before it can be reused.
 
-Incremental bottle planning applies the same rule to reuse. A matching cache
-key, ABI, release tag, and bottle URL are not enough to skip a build: the
-selected architecture's own `built_from.kandelo_repository` and
-`built_from.kandelo_commit` fields must name `Automattic/kandelo` at the exact
-admitted `main` SHA. The check is per bottle because merging sidecars preserves
-unchanged architectures from earlier runs; top-level metadata from a newer run
-cannot make an older bottle current.
+Incremental bottle planning must keep bottle-production provenance distinct
+from package-generation input provenance. A new target Formula is recompiled
+by the admitted checkout `M` (`brew install --build-bottle`, or the attested
+Tier-2 script with the `M` SDK/sysroot/instrumenter), so that bottle's
+`built_from.kandelo_repository` and `built_from.kandelo_commit` truthfully name
+`M`. A generation producer `S` supplied resolver/test programs; it belongs only
+in the separate digest-bound package-generation input receipt and must not
+replace `built_from`.
+
+A matching cache key, ABI, release tag, and bottle URL are still not enough to
+reuse an older bottle. Historical reuse needs its own content-bound
+`validated_against_main` evidence proving that historical build producer
+remains admissible for current `M`; top-level metadata from a newer run cannot
+make an older architecture current. That broader historical-reuse receipt is a
+follow-up and does not change the actual producer of a newly compiled bottle.
 
 A dry run keeps those repository identities fixed, but may select a reviewed,
 valid Git branch name or an exact lowercase 40-character commit SHA from each
