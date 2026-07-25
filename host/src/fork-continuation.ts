@@ -103,9 +103,26 @@ export function readForkContinuationAnchor(
   const value = ptrWidth === 8
     ? Number(view.getBigUint64(anchorAddr, true))
     : view.getUint32(anchorAddr, true);
-  if (!Number.isSafeInteger(value) || value <= 0) {
+  const pointerFormat = linkedFramePointerFormat(ptrWidth);
+  if (!pointerFormat) {
+    throw new Error(`unsupported fork continuation pointer width ${ptrWidth}`);
+  }
+  const root = value - pointerFormat.chunkHeaderSize;
+  if (
+    !Number.isSafeInteger(value)
+    || value <= 0
+    || !Number.isSafeInteger(root)
+    || root <= 0
+    || root % WASM_PAGE_SIZE !== 0
+    || root + WASM_PAGE_SIZE > memory.buffer.byteLength
+  ) {
     throw new Error(`invalid fork continuation anchor ${String(value)}`);
   }
+  // WHY: this boundary can prove the outer allocation geometry without
+  // executing or compiling the guest module. The child worker later validates
+  // the complete linked-frame chain against that module's format descriptor;
+  // treating this lightweight check as full chain validation would create a
+  // second, incomplete parser in the syscall dispatcher.
   return value;
 }
 

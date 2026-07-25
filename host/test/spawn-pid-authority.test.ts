@@ -13,10 +13,15 @@ import { FORK_SAVE_BUFFER_SIZE } from "../src/process-memory";
 import {
   HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS,
   HOST_INTERCEPTED_SYSCALLS,
+  WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
 } from "../src/generated/abi";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const TEST_FORK_CONTINUATION = 2 * WASM_PAGE_SIZE;
+const WASM32_CONTINUATION_HEADER_SIZE =
+  WPK_FORK_LINKED_FRAME_POINTER_WIDTHS.find(({ bytes }) => bytes === 4)!
+    .chunkHeaderSize;
+const TEST_FORK_CONTINUATION =
+  2 * WASM_PAGE_SIZE + WASM32_CONTINUATION_HEADER_SIZE;
 
 function publishMainForkContinuation(
   memory: WebAssembly.Memory,

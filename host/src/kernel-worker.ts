@@ -9466,8 +9466,10 @@ export class CentralizedKernelWorker {
     }
 
     // The process worker publishes this anchor before sending SYS_FORK.
-    // Resolve it before creating the Rust child so corrupt continuation state
-    // cannot leave an allocated-but-unlaunchable child behind.
+    // Resolve and geometry-check it before creating the Rust child so a
+    // missing, imprecise, or impossible root allocation cannot consume a PID.
+    // The child worker performs the format-aware linked-chain validation after
+    // copying memory because only it owns the program module descriptor.
     const threadKey = `${parentPid}:${channel.channelOffset}`;
     const threadCtx = this.threadForkContexts.get(threadKey);
     const callerSlotStart =

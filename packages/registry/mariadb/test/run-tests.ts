@@ -205,6 +205,14 @@ async function main() {
                 parentMemory,
                 continuation,
             }) => {
+                // WHY: this package harness launches every child through
+                // _start and does not retain pthread entry roots. Reject that
+                // unsupported shape instead of creating an invalid child.
+                if (continuation.kind !== "main") {
+                    throw new Error(
+                        "MariaDB test harness does not support fork from a pthread-created thread",
+                    );
+                }
                 const parentBuf = new Uint8Array(parentMemory.buffer);
                 const parentPages = Math.ceil(parentBuf.byteLength / 65536);
                 const childMemory = new WebAssembly.Memory({
