@@ -393,8 +393,13 @@ the broader phases, inventory, deferred work, or completion criteria below:
   expected ledger or the browser closure: current `main` has 81 expected
   archive entries, while the 44 direct browser roots produce a 61-identity
   closure (51 programs, 9 libraries, and the source-only `pcre2-source`) with
-  its own typed archive/source-only dispositions. Only after the staging input
-  is durably consumed and promoted may #1094 close and its cleanup delete the
+  60 materialized archives. Exact #1094 source
+  `6d923c6454dd7174082f25c3d3991d03f86f5ddb` adds the `homebrew-bootstrap`
+  program root and therefore derives 45 roots, 62 typed closure identities
+  (52 programs, 9 libraries, and `pcre2-source`), and 61 archives. Derive these
+  sets from the exact package source rather than
+  hard-coding either checkpoint's counts. Only after the staging input is
+  durably consumed and promoted may #1094 close and its cleanup delete the
   mutable PR tag.
 - Preserve the two exact Git identities carried by that promotion instead of
   rewriting one into the other. Every package job explicitly checks out
