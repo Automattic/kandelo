@@ -120,6 +120,15 @@ expect_failure "a malformed projection" \
   run_derive "$TMP_ROOT/out/malformed.json"
 
 write_valid_index
+jq 'del(.packages.rootfs)' \
+  "$TMP_ROOT/repo/packages/registry/program-packages.json" \
+  >"$TMP_ROOT/bad.json"
+mv "$TMP_ROOT/bad.json" \
+  "$TMP_ROOT/repo/packages/registry/program-packages.json"
+expect_failure "a missing rootfs projection" \
+  run_derive "$TMP_ROOT/out/missing-rootfs.json"
+
+write_valid_index
 jq '.packages.rootfs.arches += ["wasm64"] |
     .packages.rootfs.cacheKeys.wasm64 = .identities.rootfs.cacheKeys.wasm64 |
     .packages.rootfs.dependencyClosures.wasm64 = []' \
