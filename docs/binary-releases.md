@@ -83,10 +83,12 @@ resolver: the staging release is intentionally temporary. Ordinarily,
 maintainer-applied `retain-package-staging` label is the narrow exception: both
 close-event cleanup and the scheduled sweep retain its staging release so
 post-merge validation can copy one fully validated closure into a public
-content-addressed prerelease. Closed-unmerged PRs are never retained by that
-label, and GitHub API uncertainty retains evidence rather than deleting it.
-The manual `promote-package-generation.yml` workflow performs the copy. Its
-tags have this form:
+content-addressed prerelease. The label also retains a same-repository producer
+branch, keeping the exact source commit explicitly fetchable while validation
+runs. Closed-unmerged PRs are never retained by that label, and GitHub API
+uncertainty retains evidence rather than deleting it. The manual
+`promote-package-generation.yml` workflow performs the copy. Its tags have
+this form:
 
 ```
 package-generation-<root>-<arch>-abi-v<N>-sha256-<full-identity-sha256>
@@ -135,7 +137,8 @@ Promotion does not change cleanup for durable tags. Tags outside the exact
 `pr-<N>-staging` pattern are not cleanup inputs. After every required
 generation has been promoted and verified, remove `retain-package-staging`
 from the source PR and manually dispatch `staging-cleanup.yml`; leaving the
-label in place deliberately retains the temporary source.
+label in place deliberately retains both the temporary release and its exact
+same-repository producer branch.
 
 #### Promotion and recovery
 

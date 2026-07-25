@@ -693,6 +693,10 @@ cleanup_on_close=$(job_block "$CLEANUP_WORKFLOW" cleanup-on-close)
 grep -Fq "contains(github.event.pull_request.labels.*.name, 'retain-package-staging')" \
   <<<"$cleanup_on_close" || \
   fail "PR-close cleanup does not recognize explicit package-staging retention"
+branch_cleanup=$(step_block "$CLEANUP_WORKFLOW" "Delete merged ready-to-ship PR branch")
+grep -Fq "!contains(github.event.pull_request.labels.*.name, 'retain-package-staging')" \
+  <<<"$branch_cleanup" || \
+  fail "PR-close cleanup can delete a retained package producer branch"
 grep -Fq "github.event.pull_request.merged != true" <<<"$cleanup_on_close" || \
   fail "abandoned PR staging must remain eligible for immediate cleanup"
 grep -Fq -- '--json state,mergedAt,labels' <<<"$cleanup_sweep" || \
@@ -702,6 +706,12 @@ grep -Fq 'if ! decision=$(bash .github/scripts/classify-pr-staging.sh "$pr_json"
   fail "scheduled staging cleanup does not fail closed through its tested classifier"
 grep -Fq 'Keeping $TAG because PR state is unavailable' <<<"$cleanup_sweep" || \
   fail "scheduled staging cleanup must retain evidence when GitHub state is unavailable"
+grep -Fq -- '--json number,headRefName,headRefOid,isCrossRepository,labels' \
+  <<<"$cleanup_sweep" || \
+  fail "scheduled branch cleanup does not inspect package-retention labels"
+grep -Fq '([.labels[].name] | index("retain-package-staging") | not)' \
+  <<<"$cleanup_sweep" || \
+  fail "scheduled branch cleanup can delete a retained package producer branch"
 grep -Fq 'PR #$pr state is unavailable' "$CLEANUP_SCRIPT" || \
   fail "cleanup must retain a candidate when PR state lookup fails"
 grep -Fq 'if [ "$state" = open ]' "$CLEANUP_SCRIPT" || \
