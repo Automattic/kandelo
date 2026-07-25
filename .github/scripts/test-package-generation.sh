@@ -561,8 +561,12 @@ grep -Fq "prepare-durable-package-generation.sh" <<<"$prepare_job"
 grep -Fq -- "--producer-sha" <<<"$prepare_job"
 grep -Fq -- "--validated-main-sha" <<<"$prepare_job"
 grep -Fq "selection-kind" "$promotion_workflow"
-grep -Fq "release-retained-source" "$promotion_workflow"
-grep -Fq -- "--remove-label retain-package-staging" "$promotion_workflow"
+if grep -Fq "release-retained-source" "$promotion_workflow" ||
+   grep -Fq "gh release delete" "$promotion_workflow" ||
+   grep -Fq -- "--remove-label retain-package-staging" "$promotion_workflow"; then
+  echo "durable promotion still mutates its retained source lifecycle" >&2
+  exit 1
+fi
 grep -Fq "scripts/dev-shell.sh" <<<"$prepare_job"
 grep -Fq "npm ci --ignore-scripts --no-audit --no-fund" <<<"$prepare_job"
 grep -Fq -- "--browser-inputs" <<<"$prepare_job"

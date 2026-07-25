@@ -53,12 +53,6 @@ on:
         options:
           - wasm32
           - wasm64
-      release-retained-source:
-        description: 'Cleanup-only rerun after all parallel generations succeed: delete retained pr-N-staging and remove its label'
-        required: true
-        default: false
-        type: boolean
-
 permissions:
   contents: read
 
@@ -280,27 +274,3 @@ jobs:
           path: ${{ runner.temp }}/package-generation-receipt.json
           if-no-files-found: error
           retention-days: 30
-
-      - name: Release the retained staging source after the final promotion
-        if: inputs.release-retained-source
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_TAG: ${{ inputs.source-tag }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          if ! [[ "$SOURCE_TAG" =~ ^pr-([1-9][0-9]*)-staging$ ]]; then
-            echo "release-retained-source requires a pr-N-staging source" >&2
-            exit 2
-          fi
-          pr_number="${BASH_REMATCH[1]}"
-          jq -e --arg source "$SOURCE_TAG" \
-            '.schema == 2 and .producer.release_tag == $source' \
-            "$RUNNER_TEMP/package-generation-receipt.json" >/dev/null
-          # Delete the source before removing its retention marker. A failed
-          # deletion therefore remains retryable and cannot reopen the race.
-          gh release delete "$SOURCE_TAG" \
-            --repo "$REPOSITORY" --yes --cleanup-tag
-          gh pr edit "$pr_number" \
-            --repo "$REPOSITORY" \
-            --remove-label retain-package-staging

@@ -318,9 +318,11 @@ projection (15 archives for ABI 42).
 Apply `retain-package-staging` before merging when this capture cannot finish
 before the PR closes. For a merged same-repository PR, that label temporarily
 retains both the staging release and producer branch; it does not admit either
-as main. Closed-unmerged PRs are never retained by the label. Remove it and
-dispatch `staging-cleanup.yml` after the preserved generation is sealed and
-verified. Retaining or restoring pre-main staging is exclusively an evidence
+as main. Closed-unmerged PRs are never retained by the label. Durable promotion
+does not delete or relabel its source; the content-addressed preserved release
+remains independent evidence after admission. Any later retirement of temporary
+PR staging belongs to the separate staging lifecycle, after every source use is
+complete. Retaining or restoring pre-main staging is exclusively an evidence
 preservation operation; it is not recovery for an admitted durable generation.
 
 The source staging run does not need to finish unrelated matrix jobs. The
@@ -464,13 +466,14 @@ gh workflow run promote-package-generation.yml \
   -f expected-abi=42 \
   -f selection-kind=root-package \
   -f root-package=rootfs \
-  -f arch=wasm32 \
-  -f release-retained-source=false
+  -f arch=wasm32
 ```
 
 Use the complete preservation tag, never `pr-1097-staging`, for admission.
 The cache-projection method cannot admit another producer, source capture,
-selection, architecture, or guessed preservation tag.
+selection, architecture, or guessed preservation tag. Promotion never deletes
+that preservation source or treats successful admission as staging-cleanup
+authority.
 
 Use `selection-kind=root-package` for one named root closure. The
 `root-package=rootfs` default remains present for a `browser-inputs`
