@@ -215,9 +215,12 @@ context as well as the buffer:
   `wpk_fork_rewind_begin` around the pthread function, using
   a dynamically mapped root chunk. `channelOffset - FORK_BUF_SIZE` now stores
   only the active root address used by the kernel-worker fork handoff.
-- `handleFork` passes a `ForkFromThreadContext` through the host `onFork`
-  callback. Node and browser hosts copy `forkBufAddr`, `fnPtr`, and `argPtr`
-  into the child init message.
+- `handleFork` passes one `ForkLaunchRequest` through the host `onFork`
+  callback. Its discriminated continuation context always carries the exact
+  linked-frame anchor. For pthread forks it additionally carries `fnPtr`,
+  `argPtr`, and the caller's slot range. Node and browser hosts copy that
+  authority into the child init message rather than deriving an address from
+  the child channel layout.
 - The same context carries the caller's exact dynamic pthread slot range
   (`slotStart`, `slotLen`). After the kernel clones the child process state,
   the host calls `kernel_reserve_host_region_at(childPid, slotStart, slotLen)`

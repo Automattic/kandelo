@@ -3,6 +3,8 @@ export type { KernelCallbacks } from "./kernel";
 export { CentralizedKernelWorker } from "./kernel-worker";
 export type {
   CentralizedKernelCallbacks,
+  ForkContinuationContext,
+  ForkLaunchRequest,
   ProcessSnapshot,
   SyscallTraceEvent,
   ThreadChannelAttachment,

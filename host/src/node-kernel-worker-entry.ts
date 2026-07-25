@@ -25,7 +25,7 @@ import {
   TERMINAL_STDIO,
 } from "./kernel-worker";
 import type {
-  ForkFromThreadContext,
+  ForkContinuationContext,
   ResolvedSpawnProgram,
   SpawnProgramResolution,
   ThreadChannelAttachment,
@@ -52,7 +52,6 @@ import { DeferredWorkerHandle } from "./deferred-worker-handle";
 import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
-import { readForkContinuationAnchor } from "./fork-continuation";
 import { detectPtrWidth, extractAbiVersion, extractHeapBase, isWasmModuleBytes } from "./constants";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import {
@@ -70,7 +69,6 @@ import {
   computeProcessMemoryLayout,
   createProcessMemory,
   DEFAULT_PROCESS_THREAD_SLOTS,
-  FORK_SAVE_BUFFER_SIZE,
   type ProcessMemoryLayout,
 } from "./process-memory";
 import type { PlatformIO } from "./types";
@@ -655,12 +653,12 @@ async function handleInit(msg: InitMessage) {
     },
     io,
     {
-      onFork: (parentPid, childPid, parentMemory, threadFork) => {
+      onFork: ({ parentPid, childPid, parentMemory, continuation }) => {
         // Notify the main thread of every kernel-side process event so
         // Inspector-style UIs (Kandelo) can refresh their process table
         // event-driven. Mirrors the browser-side worker entry.
         post({ type: "proc_event", kind: "spawn", pid: childPid, ppid: parentPid });
-        return handleFork(parentPid, childPid, parentMemory, threadFork);
+        return handleFork(parentPid, childPid, parentMemory, continuation);
       },
       onExec: async (pid, path, argv, envp, callerTid) => {
         const previousWorker = processes.get(pid)?.worker;
@@ -829,7 +827,7 @@ async function handleFork(
   parentPid: number,
   childPid: number,
   parentMemory: WebAssembly.Memory,
-  threadFork?: ForkFromThreadContext,
+  continuation: ForkContinuationContext,
 ): Promise<number[]> {
   const parentInfo = processes.get(parentPid);
   const parentProgram = parentInfo?.programBytes;
@@ -863,16 +861,12 @@ async function handleFork(
   });
   kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
 
-  const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
-  const activeForkBufAddr = threadFork?.forkBufAddr ?? readForkContinuationAnchor(
-    parentMemory,
-    parentInfo.channelOffset - FORK_BUF_SIZE,
-    ptrWidth,
-  );
-  const forkReplayContext: ForkReplayContext | undefined = threadFork
+  const activeForkBufAddr = continuation.forkBufAddr;
+  const forkReplayContext: ForkReplayContext | undefined =
+    continuation.kind === "thread"
     ? {
-        fnPtr: threadFork.fnPtr,
-        argPtr: threadFork.argPtr,
+        fnPtr: continuation.fnPtr,
+        argPtr: continuation.argPtr,
         forkBufAddr: activeForkBufAddr,
       }
     : parentInfo.forkReplayContext
@@ -1322,7 +1316,7 @@ async function handleClone(
     throw e;
   }
   // Register fnPtr/argPtr so that handleFork can route a fork() from
-  // this thread back through its entry point (see ForkFromThreadContext
+  // this thread back through its entry point (see ForkContinuationContext
   // in kernel-worker.ts).
   try {
     kernelWorker.attachThreadChannel(attachment, alloc.channelOffset);

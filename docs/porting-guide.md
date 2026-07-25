@@ -186,9 +186,17 @@ const kernelWorker = new CentralizedKernelWorker(
   { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
   io,
   {
-    onFork: async (parentPid, childPid, parentMemory) => {
+    onFork: async ({
+      parentPid,
+      childPid,
+      parentMemory,
+      continuation,
+    }) => {
       // childPid is already allocated by Rust. Copy parent memory,
-      // attach the child host state, and spawn its worker.
+      // attach the child host state, and spawn its worker. Pass
+      // continuation.forkBufAddr to the child init message; it is the
+      // kernel worker's authoritative linked-frame address, not an address
+      // that can be derived from the child channel.
       // See examples/run-example.ts for full implementation
     },
     onExec: async (pid, path, argv, envp) => {

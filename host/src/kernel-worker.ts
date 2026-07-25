@@ -127,11 +127,13 @@ export function shouldDeliverPosixTimerSignal(signo: number): boolean {
 }
 
 /**
- * Size of the wpk_fork save buffer. Each channel reserves
- * `[channelOffset - FORK_BUF_SIZE, channelOffset)` for the unwind frames and
- * saved globals that the instrumented module writes during fork(). Must match
- * the constant in `worker-main.ts` and the onFork handlers in
- * node-kernel-worker-entry.ts / browser-kernel-worker-entry.ts.
+ * Legacy fork-control span below each syscall channel.
+ *
+ * ABI 42 linked continuations allocate their frames through mmap; the first
+ * pointer-sized word at `channelOffset - FORK_BUF_SIZE` is only the
+ * authoritative anchor for that allocation. Keeping the anchor geometry here,
+ * instead of asking each onFork consumer to reconstruct it, prevents a stale
+ * fixed-buffer address from being mistaken for the linked continuation.
  */
 const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
 
@@ -829,18 +831,15 @@ export type ProcessWorkerStartDisposition =
   "started" | "deferred" | "dead" | "stale";
 
 /**
- * Context describing a fork() initiated from a non-main thread. Set on
- * `onFork`'s optional `threadFork` arg by `handleFork` when it detects
- * the syscall arrived on a channel registered via clone() (tid > 0).
+ * Context describing a fork() initiated from a non-main thread.
  *
  * - `fnPtr` / `argPtr`: the pthread_create entry point + userdata that
  *   the kernel-worker stored when the thread was registered through
  *   `attachThreadChannel`. The child Worker uses these to enter the thread
  *   function directly (skipping `_start`).
- * - `forkBufAddr`: the wpk_fork buffer address corresponding to the
- *   *thread's* channel — i.e. `thread_channelOffset - FORK_BUF_SIZE`.
- *   In the child's memory copy this offset holds the saved frames and globals
- *   the parent thread wrote during its wpk_fork unwind.
+ * - `forkBufAddr`: the dynamically allocated linked-continuation address read
+ *   from the caller thread's channel anchor. In the child's memory copy this
+ *   allocation holds the frames and globals saved by the parent thread.
  * - `slotStart`/`slotLen`: the dynamic pthread control reservation that
  *   contains the caller's TLS, fork-save buffer, and channel. Fork children
  *   retain this one slot and discard all other parent pthread reservations.
@@ -851,6 +850,29 @@ export interface ForkFromThreadContext {
   forkBufAddr: number;
   slotStart: number;
   slotLen: number;
+}
+
+/**
+ * The exact continuation that a fork child must replay.
+ *
+ * WHY: the linked-frame address is runtime state, not a child-channel layout
+ * calculation. Carry it in the kernel-owned fork request so every host and
+ * test harness launches the child from the same authoritative anchor.
+ */
+export type ForkContinuationContext =
+  | {
+      readonly kind: "main";
+      readonly forkBufAddr: number;
+    }
+  | ({
+      readonly kind: "thread";
+    } & Readonly<ForkFromThreadContext>);
+
+export interface ForkLaunchRequest {
+  readonly parentPid: number;
+  readonly childPid: number;
+  readonly parentMemory: WebAssembly.Memory;
+  readonly continuation: ForkContinuationContext;
 }
 
 export interface ResolvedSpawnProgram {
@@ -956,8 +978,8 @@ export interface CentralizedKernelCallbacks {
    * a copy of the parent's Memory and register it with the kernel.
    * Returns the channel offsets allocated for the child.
    *
-   * `threadFork` is set when the parent issued the fork() syscall from a
-   * thread spawned via pthread_create (i.e. on a channel registered
+   * `request.continuation.kind` is `"thread"` when the parent issued the
+   * fork() syscall from a pthread-created thread (i.e. on a channel registered
    * through a host-side `ThreadChannelAttachment` bound to the kernel's exact
    * clone result, with tid > 0).
    * The host must:
@@ -969,15 +991,10 @@ export interface CentralizedKernelCallbacks {
    *     fork-path call chain and rewinding through it would never reach
    *     the saved fork() call site.
    *
-   * If `threadFork` is omitted the callback handles the fork as a
-   * fork-from-main-thread (the existing path).
+   * Main-thread and pthread forks both carry the authoritative linked
+   * continuation address in `request.continuation.forkBufAddr`.
    */
-  onFork?: (
-    parentPid: number,
-    childPid: number,
-    parentMemory: WebAssembly.Memory,
-    threadFork?: ForkFromThreadContext,
-  ) => Promise<number[]>;
+  onFork?: (request: ForkLaunchRequest) => Promise<number[]>;
 
   /**
    * Called when a process calls execve. The callback should resolve the
@@ -9448,6 +9465,30 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    // The process worker publishes this anchor before sending SYS_FORK.
+    // Resolve it before creating the Rust child so corrupt continuation state
+    // cannot leave an allocated-but-unlaunchable child behind.
+    const threadKey = `${parentPid}:${channel.channelOffset}`;
+    const threadCtx = this.threadForkContexts.get(threadKey);
+    const callerSlotStart =
+      channel.channelOffset - PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE * WASM_PAGE_SIZE;
+    const callerSlotLen = PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE;
+    const forkBufAddr = readForkContinuationAnchor(
+      channel.memory,
+      channel.channelOffset - FORK_BUF_SIZE,
+      this.processes.get(parentPid)?.ptrWidth ?? 4,
+    );
+    const continuation: ForkContinuationContext = threadCtx
+      ? {
+          kind: "thread",
+          fnPtr: threadCtx.fnPtr,
+          argPtr: threadCtx.argPtr,
+          forkBufAddr,
+          slotStart: callerSlotStart,
+          slotLen: callerSlotLen,
+        }
+      : { kind: "main", forkBufAddr };
+
     // Fork atomically allocates the child PID and inserts its Process in Rust.
     // The host receives that identity only after the authoritative state exists.
     const kernelForkProcess = this.kernelInstance!.exports.kernel_fork_process as
@@ -9469,33 +9510,13 @@ export class CentralizedKernelWorker {
       ((pid: number) => number) | undefined;
     if (clearForkChild) clearForkChild(childPid);
 
-    // If the syscall arrived on a thread channel (registered via clone()
-    // with tid > 0), the wpk_fork save buffer is at THIS channel's offset
-    // and the unwind frames are rooted in the pthread entry function, not
-    // _start. Pass that context to onFork so the child Worker can rewind
-    // correctly.
-    const threadKey = `${parentPid}:${channel.channelOffset}`;
-    const threadCtx = this.threadForkContexts.get(threadKey);
-    const callerSlotStart =
-      channel.channelOffset - PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE * WASM_PAGE_SIZE;
-    const callerSlotLen = PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE;
-    const threadFork: ForkFromThreadContext | undefined = threadCtx
-      ? {
-          fnPtr: threadCtx.fnPtr,
-          argPtr: threadCtx.argPtr,
-          forkBufAddr: readForkContinuationAnchor(
-            channel.memory,
-            channel.channelOffset - FORK_BUF_SIZE,
-            this.processes.get(parentPid)?.ptrWidth ?? 4,
-          ),
-          slotStart: callerSlotStart,
-          slotLen: callerSlotLen,
-        }
-      : undefined;
-
-    if (threadFork) {
+    if (continuation.kind === "thread") {
       try {
-        this.reserveHostRegionAt(childPid, threadFork.slotStart, threadFork.slotLen);
+        this.reserveHostRegionAt(
+          childPid,
+          continuation.slotStart,
+          continuation.slotLen,
+        );
       } catch (err) {
         try {
           this.removeFromKernelProcessTable(childPid);
@@ -9556,7 +9577,12 @@ export class CentralizedKernelWorker {
     try {
       this.inheritHostFdMirrors(parentPid, childPid);
       launch = Promise.resolve(
-        this.callbacks.onFork(parentPid, childPid, channel.memory, threadFork),
+        this.callbacks.onFork({
+          parentPid,
+          childPid,
+          parentMemory: channel.memory,
+          continuation,
+        }),
       );
     } catch (err) {
       rollbackFork(err);

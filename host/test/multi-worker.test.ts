@@ -14,8 +14,10 @@ import { NodePlatformIO } from "../src/platform/node";
 import {
   computeProcessMemoryLayout,
   createProcessMemory as createLayoutMemory,
+  FORK_SAVE_BUFFER_SIZE,
   type ProcessMemoryLayout,
 } from "../src/process-memory";
+import { writeForkContinuationAnchor } from "../src/fork-continuation";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, WASM_PAGE_SIZE } from "../src/constants";
 import {
   ABI_SYSCALLS,
@@ -26,10 +28,26 @@ import {
   CH_RETURN,
   CH_SYSCALL,
   HOST_INTERCEPTED_SYSCALLS,
+  PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
+  PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
   PROCESS_STATE_EXITED,
 } from "../src/generated/abi";
 
 const MAX_PAGES = 1024; // 64 MiB: enough to prove initial < maximum.
+const TEST_FORK_CONTINUATION = 3 * WASM_PAGE_SIZE;
+const TEST_THREAD_FORK_CONTINUATION = 6 * WASM_PAGE_SIZE;
+
+function publishMainForkContinuation(
+  memory: WebAssembly.Memory,
+  channelOffset: number,
+): void {
+  writeForkContinuationAnchor(
+    memory,
+    channelOffset - FORK_SAVE_BUFFER_SIZE,
+    4,
+    TEST_FORK_CONTINUATION,
+  );
+}
 
 function loadKernelWasm(): ArrayBuffer {
   const buf = readFileSync(resolveBinary("kernel.wasm"));
@@ -126,6 +144,7 @@ describe("CentralizedKernelWorker Process Management", () => {
     const parentPid = 77;
     const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
     const channel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
+    publishMainForkContinuation(memory, channel.channelOffset);
     const kernelForkProcess = vi.fn(() => 101);
     const completeChannel = vi.fn();
     const onFork = vi.fn(() => Promise.resolve([WASM_PAGE_SIZE]));
@@ -152,7 +171,15 @@ describe("CentralizedKernelWorker Process Management", () => {
 
     expect(kernelForkProcess).toHaveBeenCalledOnce();
     expect(kernelForkProcess).toHaveBeenCalledWith(parentPid, parentPid);
-    expect(onFork).toHaveBeenCalledWith(parentPid, 101, memory, undefined);
+    expect(onFork).toHaveBeenCalledWith({
+      parentPid,
+      childPid: 101,
+      parentMemory: memory,
+      continuation: {
+        kind: "main",
+        forkBufAddr: TEST_FORK_CONTINUATION,
+      },
+    });
     expect(completeChannel).toHaveBeenCalledWith(
       channel,
       HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
@@ -163,10 +190,142 @@ describe("CentralizedKernelWorker Process Management", () => {
     );
   });
 
+  it("carries the exact pthread continuation anchor into the fork launch", async () => {
+    const parentPid = 77;
+    const childPid = 102;
+    const threadTid = 911;
+    const fnPtr = 0x1234;
+    const argPtr = 0x5678;
+    const mainChannelOffset = WASM_PAGE_SIZE;
+    const threadChannelOffset = 3 * WASM_PAGE_SIZE;
+    const memory = new WebAssembly.Memory({
+      initial: 8,
+      maximum: 8,
+      shared: true,
+    });
+    const mainChannel = {
+      pid: parentPid,
+      channelOffset: mainChannelOffset,
+      memory,
+    };
+    const threadChannel = {
+      pid: parentPid,
+      channelOffset: threadChannelOffset,
+      memory,
+    };
+    writeForkContinuationAnchor(
+      memory,
+      threadChannelOffset - FORK_SAVE_BUFFER_SIZE,
+      4,
+      TEST_THREAD_FORK_CONTINUATION,
+    );
+    const onFork = vi.fn(() => Promise.resolve([threadChannelOffset]));
+    const reserveHostRegionAt = vi.fn();
+    const completeChannel = vi.fn();
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: { onFork },
+      processes: new Map([
+        [parentPid, {
+          channels: [mainChannel, threadChannel],
+          ptrWidth: 4,
+        }],
+      ]),
+      channelTids: new Map([
+        [`${parentPid}:${threadChannelOffset}`, threadTid],
+      ]),
+      threadForkContexts: new Map([
+        [`${parentPid}:${threadChannelOffset}`, { fnPtr, argPtr }],
+      ]),
+      sharedMappings: new Map(),
+      tcpListenerTargets: new Map(),
+      epollInterests: new Map(),
+      reserveHostRegionAt,
+      completeChannel,
+      kernelInstance: {
+        exports: {
+          kernel_fork_process: vi.fn(() => childPid),
+          kernel_clear_fork_child: vi.fn(() => 0),
+          kernel_get_process_exit_signal: vi.fn(() => -1),
+        },
+      },
+    }) as CentralizedKernelWorker;
+
+    (kw as any).handleFork(threadChannel, [0]);
+    await Promise.resolve();
+
+    const slotStart =
+      threadChannelOffset
+      - PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE * WASM_PAGE_SIZE;
+    const slotLen =
+      PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE;
+    expect(reserveHostRegionAt).toHaveBeenCalledWith(
+      childPid,
+      slotStart,
+      slotLen,
+    );
+    expect(onFork).toHaveBeenCalledWith({
+      parentPid,
+      childPid,
+      parentMemory: memory,
+      continuation: {
+        kind: "thread",
+        fnPtr,
+        argPtr,
+        forkBufAddr: TEST_THREAD_FORK_CONTINUATION,
+        slotStart,
+        slotLen,
+      },
+    });
+    expect(completeChannel).toHaveBeenCalledWith(
+      threadChannel,
+      HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
+      [0],
+      undefined,
+      childPid,
+      0,
+    );
+  });
+
+  it("rejects a missing continuation anchor before allocating a child", () => {
+    const parentPid = 77;
+    const memory = new WebAssembly.Memory({
+      initial: 4,
+      maximum: 4,
+      shared: true,
+    });
+    const channel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
+    const kernelForkProcess = vi.fn(() => 101);
+    const onFork = vi.fn(() => Promise.resolve([WASM_PAGE_SIZE]));
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: { onFork },
+      processes: new Map([
+        [parentPid, { channels: [channel], ptrWidth: 4 }],
+      ]),
+      channelTids: new Map(),
+      threadForkContexts: new Map(),
+      sharedMappings: new Map(),
+      tcpListenerTargets: new Map(),
+      epollInterests: new Map(),
+      kernelInstance: {
+        exports: {
+          kernel_fork_process: kernelForkProcess,
+          kernel_get_process_exit_signal: vi.fn(() => -1),
+        },
+      },
+    }) as CentralizedKernelWorker;
+
+    expect(() => (kw as any).handleFork(channel, [0])).toThrow(
+      "invalid fork continuation anchor 0",
+    );
+    expect(kernelForkProcess).not.toHaveBeenCalled();
+    expect(onFork).not.toHaveBeenCalled();
+  });
+
   it("inherits child fd mirrors when the parent channel becomes stale during fork", async () => {
     const parentPid = 77;
     const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
     const oldChannel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
+    publishMainForkContinuation(memory, oldChannel.channelOffset);
     const replacementChannel = {
       pid: parentPid,
       channelOffset: 2 * WASM_PAGE_SIZE,
@@ -230,6 +389,7 @@ describe("CentralizedKernelWorker Process Management", () => {
     const parentPid = 77;
     const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
     const channel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
+    publishMainForkContinuation(memory, channel.channelOffset);
     const completeChannel = vi.fn();
     const deactivateProcess = vi.fn();
     const removeProcess = vi.fn(() => 0);
@@ -273,6 +433,7 @@ describe("CentralizedKernelWorker Process Management", () => {
     const childPid = 100;
     const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
     const channel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
+    publishMainForkContinuation(memory, channel.channelOffset);
     const completeChannel = vi.fn();
     const deactivateProcess = vi.fn();
     const removeProcess = vi.fn(() => -5);

@@ -18,7 +18,6 @@ import { resolve, dirname } from "path";
 import { createConnection, createServer, type Socket } from "net";
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
-import { FORK_SAVE_BUFFER_SIZE } from "../../../../host/src/process-memory";
 import { NodeWorkerAdapter } from "../../../../host/src/worker-adapter";
 import { patchWasmForThread } from "../../../../host/src/worker-main";
 import { resolveBinary, tryResolveBinary } from "../../../../host/src/binary-resolver";
@@ -201,7 +200,11 @@ async function main() {
         { maxWorkers: 16, dataBufferSize: 65536, useSharedMemory: true },
         io,
         {
-            onFork: async (parentPid, childPid, parentMemory) => {
+            onFork: async ({
+                childPid,
+                parentMemory,
+                continuation,
+            }) => {
                 const parentBuf = new Uint8Array(parentMemory.buffer);
                 const parentPages = Math.ceil(parentBuf.byteLength / 65536);
                 const childMemory = new WebAssembly.Memory({
@@ -217,13 +220,13 @@ async function main() {
 
                 kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset]);
 
-                const forkBufAddr = childChannelOffset - FORK_SAVE_BUFFER_SIZE;
                 const childInitData: CentralizedWorkerInitMessage = {
                     type: "centralized_init",
                     pid: childPid,
                     programBytes: mysqldBytes, memory: childMemory,
                     channelOffset: childChannelOffset,
-                    isForkChild: true, forkBufAddr,
+                    isForkChild: true,
+                    forkBufAddr: continuation.forkBufAddr,
                 };
                 const childWorker = workerAdapter.createWorker(childInitData);
                 workers.set(childPid, childWorker);

@@ -8,11 +8,9 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
 import { NodePlatformIO } from "../src/platform/node";
-import { FORK_SAVE_BUFFER_SIZE } from "../src/process-memory";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { detectPtrWidth, extractHeapBase } from "../src/constants";
 import { tryResolveBinary } from "../src/binary-resolver";
-import { readForkContinuationAnchor } from "../src/fork-continuation";
 import { GlMuxer } from "../src/webgl/muxer";
 import type { GlBinding } from "../src/webgl/registry";
 import type {
@@ -107,7 +105,12 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
         },
         io,
         {
-          onFork: async (parentForkPid, childPid, parentMemory) => {
+          onFork: async ({
+            parentPid: parentForkPid,
+            childPid,
+            parentMemory,
+            continuation,
+          }) => {
             const parentBuf = new Uint8Array(parentMemory.buffer);
             const parentPages = Math.ceil(parentBuf.byteLength / 65536);
             const childMemory = createProcessMemory(parentPages);
@@ -127,12 +130,6 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
             // (gl_muxers is a WeakMap keyed by context).
             kernel.gl.attachCanvas(childPid, fakeCanvas);
 
-            const forkBufAddr = readForkContinuationAnchor(
-              parentMemory,
-              childChannelOffset - FORK_SAVE_BUFFER_SIZE,
-              ptrWidth,
-            );
-
             const childInit: CentralizedWorkerInitMessage = {
               type: "centralized_init",
               pid: childPid,
@@ -140,7 +137,7 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
               memory: childMemory,
               channelOffset: childChannelOffset,
               isForkChild: true,
-              forkBufAddr,
+              forkBufAddr: continuation.forkBufAddr,
               ptrWidth,
             };
 

@@ -17,11 +17,9 @@ import { detectPtrWidth, extractHeapBase, PAGES_PER_THREAD, WASM_PAGE_SIZE } fro
 import {
   computeProcessMemoryLayout,
   createProcessMemory,
-  FORK_SAVE_BUFFER_SIZE,
   type ProcessMemoryLayout,
 } from "../src/process-memory";
 import { NodeKernelHost } from "../src/node-kernel-host";
-import { readForkContinuationAnchor } from "../src/fork-continuation";
 import type { HostDiagnostic } from "../src/host-diagnostic";
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage, WorkerToHostMessage } from "../src/worker-protocol";
 import type { PlatformIO } from "../src/types";
@@ -341,7 +339,12 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true, enableSyscallLog: !!process.env.KERNEL_SYSCALL_LOG },
     io,
     {
-      onFork: async (parentPid, childPid, parentMemory, threadFork) => {
+      onFork: async ({
+        parentPid,
+        childPid,
+        parentMemory,
+        continuation,
+      }) => {
         const parentBuf = new Uint8Array(parentMemory.buffer);
         const parentPages = Math.ceil(parentBuf.byteLength / 65536);
         const childLayout = processLayouts.get(parentPid);
@@ -364,17 +367,13 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         });
         kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
 
-        const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
-        const activeForkBufAddr = threadFork?.forkBufAddr ?? readForkContinuationAnchor(
-          parentMemory,
-          childChannelOffset - FORK_BUF_SIZE,
-          parentPtrWidth,
-        );
+        const activeForkBufAddr = continuation.forkBufAddr;
         const parentForkReplayContext = forkReplayContexts.get(parentPid);
-        const forkReplayContext: ForkReplayContext | undefined = threadFork
+        const forkReplayContext: ForkReplayContext | undefined =
+          continuation.kind === "thread"
           ? {
-              fnPtr: threadFork.fnPtr,
-              argPtr: threadFork.argPtr,
+              fnPtr: continuation.fnPtr,
+              argPtr: continuation.argPtr,
               forkBufAddr: activeForkBufAddr,
             }
           : parentForkReplayContext

@@ -8,12 +8,27 @@ import {
   CentralizedKernelWorker,
 } from "../src/kernel-worker";
 import { WASM_PAGE_SIZE } from "../src/constants";
+import { writeForkContinuationAnchor } from "../src/fork-continuation";
+import { FORK_SAVE_BUFFER_SIZE } from "../src/process-memory";
 import {
   HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS,
   HOST_INTERCEPTED_SYSCALLS,
 } from "../src/generated/abi";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const TEST_FORK_CONTINUATION = 2 * WASM_PAGE_SIZE;
+
+function publishMainForkContinuation(
+  memory: WebAssembly.Memory,
+  channelOffset: number,
+): void {
+  writeForkContinuationAnchor(
+    memory,
+    channelOffset - FORK_SAVE_BUFFER_SIZE,
+    4,
+    TEST_FORK_CONTINUATION,
+  );
+}
 
 describe("kernel task-ID authority", () => {
   it("does not substitute the process leader for a pthread missing its TID mapping", () => {
@@ -97,6 +112,7 @@ describe("kernel task-ID authority", () => {
     const parentPid = 77;
     const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
     const channel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
+    publishMainForkContinuation(memory, channel.channelOffset);
     const completeChannel = vi.fn();
     const onFork = vi.fn();
     const kernelForkProcess = vi.fn(() => 0);
@@ -190,6 +206,7 @@ describe("kernel task-ID authority", () => {
     const childPid = 347;
     const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
     const channel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
+    publishMainForkContinuation(memory, channel.channelOffset);
     const completeChannel = vi.fn();
     let finishForkRegistration!: (offsets: number[]) => void;
     const forkRegistration = new Promise<number[]>((resolve) => {
@@ -222,7 +239,15 @@ describe("kernel task-ID authority", () => {
 
     expect(kernelForkProcess).toHaveBeenCalledOnce();
     expect(kernelForkProcess).toHaveBeenCalledWith(parentPid, parentPid);
-    expect(onFork).toHaveBeenCalledWith(parentPid, childPid, memory, undefined);
+    expect(onFork).toHaveBeenCalledWith({
+      parentPid,
+      childPid,
+      parentMemory: memory,
+      continuation: {
+        kind: "main",
+        forkBufAddr: TEST_FORK_CONTINUATION,
+      },
+    });
     expect((kernelWorker as any).processes.has(childPid)).toBe(false);
     expect("allocateTopLevelSpawnPid" in kernelWorker).toBe(false);
 

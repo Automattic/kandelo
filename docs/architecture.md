@@ -693,7 +693,9 @@ POSIX `fork()` from a multithreaded process creates a child with exactly one liv
 The dynamic slot rules follow that POSIX shape:
 
 - fork from the main thread copies memory and kernel process state but inherits no dynamic pthread slot reservations;
-- fork from a pthread records `forkBufAddr`, `fnPtr`, `argPtr`, and the caller's exact slot range in `ForkFromThreadContext`;
+- every fork resolves the caller's linked-frame anchor before allocating the
+  child and carries it in a `ForkLaunchRequest`; pthread requests additionally
+  carry `fnPtr`, `argPtr`, and the caller's exact slot range;
 - after `kernel_fork_process` creates the child kernel process, the host calls `kernel_reserve_host_region_at(childPid, slotStart, slotLen)` to retain only the caller's copied pthread slot;
 - the child worker uses the copied pthread fork-save buffer and enters the saved pthread function before `wpk_fork_rewind_begin` replays to the fork call site;
 - all other parent pthread slots become ordinary copied memory bytes in the child and may be reused later by child `brk`, `mmap`, or new pthread slots.

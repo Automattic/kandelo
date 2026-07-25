@@ -17,7 +17,7 @@ import {
   TERMINAL_STDIO,
 } from "./kernel-worker";
 import type {
-  ForkFromThreadContext,
+  ForkContinuationContext,
   ResolvedSpawnProgram,
   SpawnProgramResolution,
   ThreadChannelAttachment,
@@ -43,7 +43,6 @@ import { TlsNetworkBackend } from "./networking/tls-network-backend";
 import { patchWasmForThread } from "./worker-main";
 import { detectPtrWidth, extractAbiVersion, extractHeapBase, isWasmModuleBytes } from "./constants";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
-import { readForkContinuationAnchor } from "./fork-continuation";
 import {
   classifiedSignalOrFallback,
   classifiedTrapExitStatus,
@@ -66,7 +65,6 @@ import {
   computeProcessMemoryLayout,
   createProcessMemory,
   DEFAULT_PROCESS_THREAD_SLOTS,
-  FORK_SAVE_BUFFER_SIZE,
   type ProcessMemoryLayout,
 } from "./process-memory";
 import type {
@@ -76,8 +74,6 @@ import type {
 } from "./browser-kernel-protocol";
 
 const PAGE_SIZE = 65536;
-const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
-
 // State
 let kernelWorker: CentralizedKernelWorker;
 let workerAdapter: BrowserWorkerAdapter;
@@ -650,11 +646,11 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     },
     io,
     {
-      onFork: (parentPid, childPid, parentMemory, threadFork) => {
+      onFork: ({ parentPid, childPid, parentMemory, continuation }) => {
         // Tell the main thread a kernel-side fork happened so Inspector
         // panes can refresh their process table without polling.
         post({ type: "proc_event", kind: "spawn", pid: childPid, ppid: parentPid });
-        return handleFork(parentPid, childPid, parentMemory, threadFork);
+        return handleFork(parentPid, childPid, parentMemory, continuation);
       },
       onExec: async (pid, path, argv, envp, callerTid) => {
         const previousWorker = processes.get(pid)?.worker;
@@ -1012,7 +1008,7 @@ async function handleFork(
   parentPid: number,
   childPid: number,
   parentMemory: WebAssembly.Memory,
-  threadFork?: ForkFromThreadContext,
+  continuation: ForkContinuationContext,
 ): Promise<number[]> {
   const parentInfo = processes.get(parentPid);
   if (!parentInfo || parentInfo.memory !== parentMemory) {
@@ -1050,15 +1046,12 @@ async function handleFork(
   });
   kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
 
-  const activeForkBufAddr = threadFork?.forkBufAddr ?? readForkContinuationAnchor(
-    parentMemory,
-    parentInfo.channelOffset - FORK_BUF_SIZE,
-    ptrWidth,
-  );
-  const forkReplayContext: ForkReplayContext | undefined = threadFork
+  const activeForkBufAddr = continuation.forkBufAddr;
+  const forkReplayContext: ForkReplayContext | undefined =
+    continuation.kind === "thread"
     ? {
-        fnPtr: threadFork.fnPtr,
-        argPtr: threadFork.argPtr,
+        fnPtr: continuation.fnPtr,
+        argPtr: continuation.argPtr,
         forkBufAddr: activeForkBufAddr,
       }
     : parentInfo.forkReplayContext
