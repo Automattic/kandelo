@@ -6,6 +6,9 @@ on:
       mode:
         type: string
         default: rebuild
+      kandelo-ref:
+        type: string
+        default: ""
       tap-ref:
         type: string
         default: ""
@@ -53,6 +56,7 @@ jobs:
           CALLER_REF: ${{ github.ref }}
           CALLER_REPOSITORY: ${{ github.repository }}
           CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+          KANDELO_REF: ${{ inputs.kandelo-ref }}
           MODE: ${{ inputs.mode }}
           TAP_REF: ${{ inputs.tap-ref }}
         run: |
@@ -72,6 +76,9 @@ jobs:
           }
           case "$MODE" in
             rebuild)
+              [[ "$KANDELO_REF" =~ ^[0-9a-f]{40}$ ]] || {
+                echo "::error::maintenance rebuild requires an exact lowercase 40-character Kandelo commit SHA"; exit 2;
+              }
               [[ "$TAP_REF" =~ ^[0-9a-f]{40}$ ]] || {
                 echo "::error::maintenance rebuild requires an exact reviewed lowercase 40-character tap commit SHA"; exit 2;
               }
@@ -90,7 +97,7 @@ jobs:
     uses: ./.github/workflows/reusable-homebrew-bottle-publish.yml
     with:
       kandelo-repository: Automattic/kandelo
-      kandelo-ref: main
+      kandelo-ref: ${{ inputs.kandelo-ref }}
       tap-repository: kandelo-dev/homebrew-tap-core
       tap-name: kandelo-dev/tap-core
       tap-ref: ${{ inputs.tap-ref }}

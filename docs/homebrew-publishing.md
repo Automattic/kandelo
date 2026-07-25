@@ -843,6 +843,7 @@ jobs:
       actions: read
     uses: Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-publish.yml@<trusted-ref>
     with:
+      kandelo-ref: ${{ github.event.client_payload.kandelo_sha }}
       tap-repository: kandelo-dev/homebrew-tap-core
       tap-name: kandelo-dev/tap-core
       tap-ref: ${{ github.event.client_payload.tap_sha }}
@@ -878,12 +879,20 @@ workflow name. The three dispatch events are `publish-kandelo-bottles`,
 `dry-run-kandelo-bottles`, and `maintain-kandelo-bottles`. Publish and dry-run
 payloads must select at least one Formula and architecture; an absent or empty
 selection is an error, not a successful no-op.
-Write publication is fixed to the exact `tap_sha` in the dispatch payload and
-normally to `Automattic/kandelo@main`. The caller passes that payload value as
-`tap-ref` without a fallback. A missing value, mutable ref, abbreviated SHA, or
-uppercase SHA is rejected before checkout. The publisher checks out that exact
-commit, proves the checkout matches the request, and requires the commit to
-remain the current protected-main commit or its ancestor.
+Write publication is fixed to exact `kandelo_sha` and `tap_sha` values in the
+dispatch payload. The caller passes them as `kandelo-ref` and `tap-ref` without
+fallbacks. A missing value, mutable ref, abbreviated SHA, or uppercase SHA is
+rejected before checkout. The tap checkout must equal the requested tap SHA,
+which must remain the current protected tap `main` commit or its ancestor.
+
+Kandelo has a stricter source rule: `kandelo_sha` must equal the commit named by
+`Automattic/kandelo`'s live `refs/heads/main`, not merely an ancestor, an
+equal-tree commit, a tag target, or a pull-request head. The planner queries
+that ref before checkout and verifies the resulting checkout. Every
+credentialed bottle, version-index, tap-state, failure-report, and immutable
+VFS mutation queries the ref again immediately before writing. If `main`
+advances during a run, the next mutation fails closed; run-scoped build
+handoffs do not authorize publication from the now-stale source.
 
 The payload SHA is intentionally distinct from `github.sha`.
 `repository_dispatch` may be admitted while protected `main` is at one commit
@@ -894,79 +903,24 @@ use the same exact source contract. Rollback does not consume `tap_sha`; it
 refreshes and mutates the current protected branch under the tap-wide state
 lock.
 
-During an ABI transition, the protected tap caller may hardcode one reviewed,
-exact lowercase 40-character Kandelo commit so the new-ABI bottles exist before
-the bottle-backed shell can validate. The Kandelo PR must then merge without
-rewriting that commit, making the published source commit an ancestor of
-`main`; immediately afterward, rotate the tap caller back to Kandelo `main`.
-Write publication never accepts a non-main Kandelo branch.
-
-An ABI bootstrap may need package archives produced by the reviewed commit
-immediately before the publisher workflow plumbing. Every bootstrap batch uses
-this explicit staging tag and package-producing SHA pair:
-
-```yaml
-prepublication-staging-tag: pr-<number>-staging
-prepublication-staging-kandelo-sha: <exact package-producing commit>
-```
-
-Only the designated batch that would otherwise require the dependency-bearing
-VFS proof also uses:
-
-```yaml
-require-vfs-acceptance: true
-defer-vfs-acceptance-until-postpublication: true
-```
-
-Other bootstrap batches keep both acceptance booleans false.
-
-The tag and package-producing SHA are an all-or-none pair. They are accepted
-only for a non-dry write publication whose `kandelo-ref` is also an exact
-40-character commit. The package-producing commit must be an ancestor of the
-workflow commit. Make the workflow commit reachable from a temporary repository
-branch first; do not move the package-producing PR head while its staging
-release is the publication source. After the exact tap transition and public
-shell proof are green, fast-forward the PR head to the workflow commit and run
-fresh checks against the canonical bottles before merging that exact head.
-
-The planner compiles its index tooling in a credential-free step. The freezer
-removes GitHub and package credentials before projections and transformations,
-reintroduces the workflow token only for the GitHub release snapshot and asset
-downloads, and removes it again from the release validator's pure index/archive
-commands. The planner then derives the wasm32 `rootfs` package and its exact
-runtime dependency closure from each commit's checked-in
-`program-packages.json`, recomputes both expected ledgers, and requires the
-selected closure projections and filtered ledgers to match. It then validates
-and downloads every selected staging archive, including its embedded manifest,
-rebuilds an index from only those verified archives, rewrites their relative
-names to the exact staging release URLs, and uploads the resulting index and
-evidence as one same-run Actions artifact. Its manifest records the SHA-256
-and byte size of the index, projection, expected ledger, staging snapshot, and
-release asset inventory. Activation verifies every binding, requires the
-exact package/architecture/cache-key identity set to agree across all three
-closure ledgers, and checks each selected snapshot archive against its unique
-uploaded release asset record. Both the builder and the independent verifier
-download that artifact and set `WASM_POSIX_BINARY_INDEX_URL` to its local
-`file://` index before any resolver use. Extra entries in the mutable staging
-index therefore cannot become resolver candidates.
-
-The deferral flag is narrower than disabling VFS acceptance. It is valid only
-when the sealed generation pair is present and
-`require-vfs-acceptance: true` remains set. Formula build/test, public bottle
-upload, anonymous verification, version-index publication, and atomic tap
-finalization still run. Only the dependency-bearing Node/Chromium VFS proof,
-its handoff, and its immutable VFS release wait until the just-published
-bottles are canonical. A postpublication descendant must bind the final tap
-commit and rerun that acceptance without the deferral. Normal main/canonical
-publication supplies none of these inputs and is unchanged.
+An ABI transition lands its coherent source and package changes through the
+ordinary Kandelo merge process first. The final package archives and canonical
+bottles are then rebuilt from the exact resulting `main` SHA. Pull-request
+staging and dry-run artifacts may validate the candidate, but they are
+noncanonical and cannot be promoted into the production bottle namespace.
+Making a candidate commit reachable from `main`, preserving its SHA with a
+special merge, or joining it to current history does not substitute for this
+post-merge rebuild.
 
 A dry run keeps those repository identities fixed, but may select a reviewed,
 valid Git branch name or an exact lowercase 40-character commit SHA from each
 repository. The trust step normalizes branch names under `refs/heads/`, and the
 planning job resolves both selections to immutable commits before any matrix
-job starts. These source selections are data passed to the already-reviewed
-caller and reusable workflow definitions; they do not select either workflow
-definition. The bottle root is never caller-selected:
+job starts. Dry-run outputs are validation evidence only and cannot be
+promoted into canonical bottle, index, tap, or VFS state. These source
+selections are data passed to the already-reviewed caller and reusable workflow
+definitions; they do not select either workflow definition. The bottle root is
+never caller-selected:
 the workflow rejects a non-empty `bottle-root-url` and derives
 `https://ghcr.io/v2/<lowercase-owner>/<lowercase-homebrew-repository>` from the
 validated tap repository. The separate reusable maintenance workflow remains first-party
@@ -2158,26 +2112,14 @@ checks negative ABI-mismatch and missing-bottle cases.
 
 Browser compatibility requires a separate browser smoke. For the current
 `file-formula` path, the trusted publisher builds a precomposed wasm32 VFS image,
-serves it through the browser demo, and executes:
+serves it through the browser demo, runs Chromium Playwright against
+`apps/browser-demos/test/kandelo-homebrew.spec.ts`, and executes:
 
 ```bash
 /home/linuxbrew/.linuxbrew/bin/file --version
 ```
 
-Normal publication prepares the complete supported browser graph and runs
-Chromium Playwright against
-`apps/browser-demos/test/kandelo-homebrew.spec.ts`. A sealed prepublication
-generation cannot prepare that graph because it contains packages whose
-bottles the bootstrap is creating. In that mode, the publisher builds only the
-host and selects the existing `homebrew-vfs-test` Vite input and
-`homebrew-brewfile-vfs.spec.ts`. That focused test binds the exact generated
-VFS SHA-256, exact local kernel SHA-256, executable, argument vector, and
-expected output. It is stronger bottle/image/kernel execution evidence but
-narrower UI-integration evidence; the required post-transition main-shell
-Chromium acceptance closes the full browser integration after the bottles are
-canonical.
-
-Only after the applicable smoke passes may sidecars record
+Only after that smoke passes may sidecars record
 `runtime_support = ["node", "browser"]` and `browser_compatible = true`.
 Packages without a successful browser smoke remain Node-only.
 
@@ -2190,11 +2132,11 @@ fetch only the base command set and `rootfs`; their focused Vite input does not
 scan the interactive demo. Schema 2 acceptance also boots the image-owned
 default shell through the full machine UI, so the selected acceptance matrix
 entry materializes the supported interactive graph through
-`./run.sh --fetch-only prepare-browser` before that smoke. The normal
-`file-formula` gallery smoke materializes the same graph. Browser preparation
-excludes packages whose demos are provided by the external software gallery.
-Those platform assets are not the migrated package under test, and unrelated
-gallery packages are not bottle verification prerequisites.
+`./run.sh --fetch-only prepare-browser` before that smoke. The `file-formula` gallery
+smoke materializes the same graph. Browser preparation excludes packages whose
+demos are provided by the external software gallery. Those platform assets are
+not the migrated package under test, and unrelated gallery packages are not
+bottle verification prerequisites.
 
 ## Durable Browser-Proven VFS Releases
 
@@ -2626,9 +2568,10 @@ Use this checklist once for each new public tap repository:
    caller `actions: read`, `contents: write`, and `packages: write`; the reusable
    publisher narrows those permissions per job.
 4. Pass the exact caller repository as `tap-repository` and the canonical tap
-   name as `tap-name`. Every write dispatch must also record the reviewed
-   protected-main commit as the exact lowercase `tap_sha` payload field. Do not
-   pass a bottle root: the publisher must derive
+   name as `tap-name`. Every write dispatch must record both the exact current
+   Kandelo `main` commit as lowercase `kandelo_sha` and the reviewed protected
+   tap-main commit as lowercase `tap_sha`. Do not pass a bottle root: the
+   publisher must derive
    `https://ghcr.io/v2/<owner>/<homebrew-repository>`.
 5. Use only the caller's built-in `GITHUB_TOKEN`. Do not configure
    `HOMEBREW_GITHUB_PACKAGES_TOKEN`, a package PAT, or a package-visibility API
@@ -2794,6 +2737,7 @@ gh api --method POST \
 {
   "event_type": "publish-kandelo-bottles",
   "client_payload": {
+    "kandelo_sha": "<exact-current-Automattic-kandelo-main-sha>",
     "tap_sha": "<exact-reviewed-protected-main-sha>",
     "formulae": "zlib",
     "arches": "wasm32"
@@ -2806,6 +2750,7 @@ gh api --method POST \
 {
   "event_type": "publish-kandelo-bottles",
   "client_payload": {
+    "kandelo_sha": "<the-same-exact-current-Automattic-kandelo-main-sha>",
     "tap_sha": "<the-same-exact-reviewed-protected-main-sha>",
     "formulae": "bzip2",
     "arches": "wasm32"

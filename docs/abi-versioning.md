@@ -381,6 +381,13 @@ matrix flow's per-entry `scripts/index-update.sh` invocations
 populate the new tag's `index.toml` atomically as each archive
 publishes.
 
+For an ABI transition that also publishes Homebrew bottles, land the coherent
+ABI and package-source changes first. The canonical package archives and
+bottles are rebuilt afterward from the exact resulting `main` commit and record
+that SHA as producer provenance. Pull-request staging builds may exercise the
+new ABI, but they are noncanonical and cannot be promoted by later making their
+commit an ancestor of `main`.
+
 ### Additive changes within an ABI epoch
 
 Pure additions do not bump `ABI_VERSION`. Existing binaries still carry

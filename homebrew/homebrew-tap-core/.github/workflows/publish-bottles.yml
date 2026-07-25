@@ -13,7 +13,7 @@ jobs:
     uses: Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-publish.yml@main
     with:
       kandelo-repository: Automattic/kandelo
-      kandelo-ref: main
+      kandelo-ref: ${{ github.event.client_payload.kandelo_sha }}
       tap-repository: kandelo-dev/homebrew-tap-core
       tap-name: kandelo-dev/tap-core
       tap-ref: ${{ github.event.client_payload.tap_sha }}

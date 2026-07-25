@@ -544,101 +544,39 @@ canonical release):
   Canonical activation also waits for the shared product-VFS headroom fix, its
   derived-product regression, and the final exact restack against landed
   prerequisites.
-- ABI 42 creates a real publication cycle: the bottle-backed shell cannot
-  validate until ABI-42 tap metadata exists, while normal write publication
-  builds only from Kandelo `main`. Break that cycle without accepting a mutable
-  source ref:
+- ABI 42 creates a real publication cycle: the strict bottle-backed shell
+  cannot validate until ABI-42 tap metadata exists, while canonical package
+  archives and bottles must be built from Kandelo `main`. Resolve the cycle
+  main-first instead of legitimizing pre-main artifacts through Git history:
 
-  1. finish every non-cyclic #1079 validation and freeze its reviewed
-     package-producing head `F`;
-  2. make the reviewed publisher descendant `H` reachable from a temporary
-     Automattic/kandelo branch without moving #1079's head, then have protected
-     tap `main` pin the reusable workflow to exact `H` while separately naming
-     exact `F` as the staged package generation; `H` must retain `F`'s exact
-     sealed `rootfs` closure identities;
-  3. publish only the complete intended ABI-42 closure, then update the shell
-     lock to the exact resulting tap commit and run exact Node/Chromium and
-     staging acceptance;
-  4. only after the exact tap commit and public shell proof are green,
-     fast-forward #1079's head from `F` to `H`, rerun fresh checks against the
-     canonical ABI-42 bottles, and merge the exact checked head without
-     rewriting it; then verify ancestry and immediately rotate the tap caller
-     back to landed Kandelo `main`;
-  5. restore the repository's normal merge-method setting after that one
-     cutover.
+  1. use #1094 only as rehearsal evidence. Its PR-built package archives and
+     bottles remain noncanonical even if that commit later becomes reachable
+     from `main`;
+  2. land the coherent ABI, package-source, publisher, and temporary consumer
+     changes through the ordinary Kandelo merge process. Keep `main` deployable
+     during the publication window with a bounded source-built shell bridge:
+     the source `rootfs` closure plus direct Bash, fbdoom, and modeset resolver
+     outputs, with Bash eager at `/bin/bash` and `/usr/bin/bash` and unrelated
+     entries retaining their lazy policy;
+  3. read the exact resulting default-branch SHA `M` from
+     `Automattic/kandelo` `refs/heads/main`. The canonical producer must check
+     out exact `M`, rebuild the package archives from that checkout, and record
+     `M` as their source identity. A PR staging generation is validation
+     evidence only and cannot be promoted;
+  4. dispatch the protected tap caller with exact `M` as `kandelo_sha` and the
+     reviewed tap commit as `tap_sha`. The reusable publisher must require
+     `M == refs/heads/main` at admission and recheck that identity immediately
+     before every canonical bottle, version-index, tap-state, and VFS release
+     mutation. If `main` advances, stop and redispatch from the new exact
+     `main` commit;
+  5. publish the complete intended ABI-42 closure, then update the shell lock
+     to the exact resulting tap commit, remove the source-built bridge, and run
+     exact-byte Node.js and Chromium acceptance against the strict bottle
+     closure.
 
-  Protocol refinement (2026-07-24): package staging and bottle publication
-  form a two-stage cycle, so one Kandelo commit cannot honestly provide both
-  prepublication package inputs and postpublication bottle-backed VFS
-  acceptance.
-
-  1. Keep #1079's exact package-producing commit
-     `437fde2524ea6ad9c44933f8abbf995a46841009` as generation `F`. Validate and
-     materialize the exact 15-entry `rootfs` wasm32 runtime closure derived
-     from `F`'s committed `program-packages.json`.
-  2. Create and review publisher descendant `H`, then push it to a temporary
-     Automattic/kandelo branch so its reusable workflow SHA is reachable.
-     `H` changes the publisher workflow, its tests, and documentation, plus
-     the two narrow legacy `vim-browser-bundle` and
-     `nethack-browser-bundle` output-ownership corrections exposed by `F`'s
-     staging run. Those bundles are neither members of the sealed `rootfs`
-     closure nor Formulae in the Homebrew tap; their generated cache
-     identities are refreshed in `H`, while all 15 sealed closure identities
-     remain exactly equal to `F`. Do **not** move #1079's head from `F` yet:
-     this keeps its staging tag and package-generation checks undisturbed
-     during tap publication. The protected tap pins both reusable `uses` and
-     `kandelo-ref` to exact `H`, while the publisher separately names exact
-     `F` and `pr-1079-staging`. The publisher must
-     prove `F` is an ancestor of `H`, derive byte-identical expected ledgers
-     from both checkouts, validate every selected archive and embedded
-     manifest, rebuild a minimal index from only those verified archives, and
-     carry that index between jobs as an immutable same-run artifact. Build
-     and independent verification resolve through its local `file://` URL.
-     The artifact manifest binds the hash and size of every evidence file;
-     activation also requires identical package/architecture/cache-key sets
-     across the projection, expected ledger, and staging snapshot and binds
-     each selected snapshot archive to its unique release asset record.
-     Unselected staging entries remain unusable even when the mutable release
-     index contains them.
-  3. Supply the `F`/staging-tag pair to every bootstrap batch. For the one
-     designated batch that would otherwise require dependency-bearing VFS
-     acceptance, retain `require-vfs-acceptance: true` and set the separately
-     reviewed explicit deferral flag; all other batches keep both acceptance
-     booleans false. Ordinary Formula build, bottle verification, anonymous
-     readback, public index publication, and tap finalization still run. Only
-     the dependency-bearing VFS boot, its handoff, and immutable VFS release
-     wait, because those proofs require the bottles this stage is publishing.
-     An absent sealed generation, mutable Kandelo ref, dry run, or deferral
-     without required acceptance fails closed.
-  4. Atomically finalize the ABI-42 tap transition and call its still-symbolic
-     exact immutable commit `T42`. Replace `T42` with its real SHA as soon as
-     it exists; do not let the symbolic name enter a workflow input or
-     artifact record.
-  5. Build the postpublication Kandelo descendant tranche against exact `T42`:
-     `shell`, `lamp`, `nginx-php-vfs`, `nginx-vfs`, `node-vfs`, and
-     `wordpress`. This is the first stage that can close the previously
-     deferred dependency-bearing VFS acceptance without a package/bottle
-     cycle.
-  6. Re-run the existing exact Node.js and Chromium main-shell language
-     acceptance against that descendant and `T42`. It must retain the already
-     proven lazy Python, Perl, Erlang, and Ruby behavior; the sealed
-     prepublication exception is complete only when this postpublication
-     acceptance and immutable VFS publication are green.
-  7. After `T42` and the public shell proof are green, fast-forward #1079's
-     head from `F` to exact `H`. Let fresh PR checks consume the now-canonical
-     ABI-42 bottles and rebuild the two corrected browser-bundle packages,
-     then merge that exact checked head without a squash or rebase. The
-     temporary workflow branch may be removed only after `H` is reachable
-     from landed `main` and the tap caller has rotated back to `main`.
-
-  This refinement supersedes only the assumption that all ABI-42 package and
-  VFS acceptance can occur in one commit/run. It does not remove the merge-SHA
-  preservation, atomic tap transition, full catalog rollout, lazy-shell,
-  guest-Homebrew, registry-retirement, manual-page, or composable-VFS scope
-  elsewhere in this plan.
-
-  Rebase or squash is not acceptable for this transition because GitHub
-  rewrites the source SHA recorded by the bottle handoffs and sidecars.
+  Git ancestry is review evidence, not producer provenance. Do not enable merge
+  commits, preserve a PR head, create an equal-tree history join, or retain
+  #1095 merely to make #1094's rehearsal artifacts appear canonical.
 
   Make the tap-side transition one atomic `main` update rather than merging
   the native-Requirement change, bottle-identity reservations, and publisher
@@ -646,11 +584,11 @@ canonical release):
   canary `repository_dispatch` caller and wait until no older caller run is
   queued or active; an already-loaded old caller could otherwise check out the
   new tap tree. Recheck all 63 deterministic next-rebuild top-level GHCR tags
-  immediately before merging the combined tap PR. Afterward, enable only the
-  core production publisher while the frozen Kandelo SHA is not yet on `main`.
-  Dry-run selection can still choose pre-transition Kandelo `main`, and
-  maintenance resolves Kandelo `main` internally, so both remain disabled
-  until #1079 is merge-committed and the tap pins are normalized. The
+  immediately before merging the combined tap PR. Merge the Kandelo activation
+  first, rebuild its canonical package generation from exact current `main`,
+  then enable the core production publisher with that exact SHA. Keep dry-run
+  and maintenance callers disabled until their payloads and reusable-workflow
+  inputs carry the same exact-main contract. The
   historical repository-namespace canary remains disabled, and the independent
   canary stays disabled until its vendored support, core lock, and publisher
   pin are updated together. The base-owned tap trust check intentionally
