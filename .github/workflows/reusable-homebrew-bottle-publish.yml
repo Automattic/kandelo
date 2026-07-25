@@ -3645,6 +3645,7 @@ jobs:
               --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
               --status success
               --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
+              --exact-kandelo-main-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"
               --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
             )
             while IFS= read -r -d '' formula &&
@@ -3725,6 +3726,7 @@ jobs:
               --status failed
               --error "$error_text"
               --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
+              --exact-kandelo-main-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"
               --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
             )
             if [ -n "$error_detail_file" ]; then

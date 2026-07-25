@@ -171,12 +171,19 @@ jobs:
             echo "::error::invalid bottle release tag for rollback"
             exit 2
           fi
+          kandelo_commit="$(git -C "$GITHUB_WORKSPACE/kandelo" rev-parse HEAD)"
+          if ! [[ "$kandelo_commit" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::rollback Kandelo checkout has an invalid commit identity"
+            exit 2
+          fi
           publish_args=(
             --tap-root "$GITHUB_WORKSPACE/tap"
             --formula "$KANDELO_HOMEBREW_FORMULA"
             --arch "$KANDELO_HOMEBREW_ARCH"
             --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
             --status rollback
+            --kandelo-commit "$kandelo_commit"
+            --exact-kandelo-main-sha "$kandelo_commit"
             --reason "$KANDELO_HOMEBREW_ROLLBACK_REASON"
           )
           if [ -n "$KANDELO_HOMEBREW_ROLLBACK_REF" ]; then

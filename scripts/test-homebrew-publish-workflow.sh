@@ -6001,9 +6001,11 @@ assert_write_publish_requires_attached_branch_and_pushes_explicit_ref() {
   local seed="$TMPDIR/publish-seed"
   local tap="$TMPDIR/publish-tap"
   local report_tap="$TMPDIR/publish-report-tap"
+  local race_tap="$TMPDIR/publish-race-tap"
   local updater="$TMPDIR/publish-updater"
+  local bin="$TMPDIR/publish-bin"
   local err="$TMPDIR/detached-publish.err"
-  local local_head remote_head report planned_tap planned_kandelo
+  local local_head remote_head report planned_tap planned_kandelo remote_before
 
   git init --bare -q "$remote"
   make_tap "$seed"
@@ -6016,6 +6018,18 @@ assert_write_publish_requires_attached_branch_and_pushes_explicit_ref() {
   git -C "$tap" config user.email "kandelo-test@example.invalid"
   planned_tap="$(git -C "$tap" rev-parse HEAD)"
   planned_kandelo="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+  mkdir -p "$bin"
+  cat >"$bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$#" -ne 4 ] || [ "$1" != api ] ||
+   [ "$2" != /repos/Automattic/kandelo/git/ref/heads/main ] ||
+   [ "$3" != --jq ] || [ "$4" != .object.sha ]; then
+  exit 2
+fi
+printf '%s\n' "$MOCK_KANDELO_MAIN_SHA"
+EOF
+  chmod +x "$bin/gh"
 
   git -C "$tap" checkout -q --detach
   if GITHUB_SHA="cccccccccccccccccccccccccccccccccccccccc" \
@@ -6096,13 +6110,39 @@ assert_write_publish_requires_attached_branch_and_pushes_explicit_ref() {
   git -C "$updater" commit -q -m "advance tap main"
   git -C "$updater" push -q origin main
 
+  git clone -q "$remote" "$race_tap"
+  remote_before="$(git --git-dir="$remote" rev-parse refs/heads/main)"
+  err="$TMPDIR/advanced-main-push.err"
+  if PATH="$bin:$PATH" GH_TOKEN=test-token \
+    MOCK_KANDELO_MAIN_SHA=ffffffffffffffffffffffffffffffffffffffff \
+    bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+      --tap-root "$race_tap" \
+      --kandelo-commit "$planned_kandelo" \
+      --exact-kandelo-main-sha "$planned_kandelo" \
+      --tap-commit "$planned_tap" \
+      --formula hello \
+      --arch wasm32 \
+      --release-tag bottles-abi-v15 \
+      --status failed \
+      --error "main advanced before tap push" \
+      --no-lock >/dev/null 2>"$err"; then
+    fail "tap publication pushed after Kandelo main advanced"
+  fi
+  grep -F "source SHA must equal the current refs/heads/main commit" "$err" >/dev/null ||
+    fail "tap publication did not explain its final exact-main rejection"
+  [ "$(git --git-dir="$remote" rev-parse refs/heads/main)" = "$remote_before" ] ||
+    fail "tap origin changed despite the final exact-main rejection"
+
   git clone -q "$remote" "$report_tap"
   git -C "$report_tap" checkout -q --detach "$planned_tap"
   git -C "$report_tap" switch -q --force-create main "$planned_tap"
+  PATH="$bin:$PATH" GH_TOKEN=test-token \
+  MOCK_KANDELO_MAIN_SHA="$planned_kandelo" \
   GITHUB_SHA="cccccccccccccccccccccccccccccccccccccccc" \
   bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
     --tap-root "$report_tap" \
     --kandelo-commit "$planned_kandelo" \
+    --exact-kandelo-main-sha "$planned_kandelo" \
     --tap-commit "$planned_tap" \
     --formula hello \
     --arch wasm32 \

@@ -26,10 +26,10 @@ PUBLISHER_BUILD_DIGEST = "44416f36bdf7a70f5319381df7255affcd2f46446287bbae314d41
 PUBLISHER_UPLOAD_DIGEST = "a44f8b7b2eb1d4b9436496cc9a099b80fb70be52143820e77fb7196e807d302f"
 PUBLISHER_INDEX_DIGEST = "7b05a7e4b076628ab999f9edb2e39a6641c4bb9a2563afcf19be15a119566bbe"
 PUBLISHER_VERIFY_DIGEST = "97a75eded2045581401d0389fd76ae32ac18b51431bf6bfd02f1a0b3f783f15b"
-PUBLISHER_FINALIZE_DIGEST = "b2aa633a3ca77db5902f02cb137f32404878043a3f685285ef49a8fa02401daf"
+PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a0335816a0886b"
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
 MAINTENANCE_VALIDATE_DIGEST = "30ebccd5d44e004e37f168e81284d7ceb18accfa067c05248c1cc19398a7515f"
-MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
+MAINTENANCE_ROLLBACK_DIGEST = "f82d9f351202c3a20824e4525eb88ce7f75879740014d3232e69f3d585ed5781"
 REPOSITORY_CANARY_STEPS_DIGEST = "9cf30d889bd1bf6d0ab5b5f99e35f552d40f78f9b7dcb5fd40a07041b4c0f453"
 SELF_TEST_TAP_SHA = "e" * 40
 SELF_TEST_KANDELO_MAIN_SHA = "a351fc9b18da032c09160c95f1da672374ade700"
@@ -1609,6 +1609,9 @@ def check_publisher(workflow)
   failure_write = named_step(
     finalize_steps, "Record failed attempt without replacing last-green metadata"
   )
+  check(failure_write.fetch("run").include?(
+          '--exact-kandelo-main-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"'
+        ), "publisher failure report drops exact-main authority before the tap writer")
   check_exact_main_recheck(
     failure_write.fetch("run"),
     "bash scripts/dev-shell.sh env",
@@ -4753,6 +4756,9 @@ def check_publisher(workflow)
   publish_run = publish_step.fetch("run")
   check(publish_run.include?("scripts/homebrew-publish-sidecars.sh") &&
         publish_run.include?('publish_args+=(--publication "$formula" "$arch" "$handoff")') &&
+        publish_run.include?(
+          '--exact-kandelo-main-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"'
+        ) &&
         publish_run.include?('[ -f "$handoff_paths" ] && [ ! -L "$handoff_paths" ]') &&
         publish_run.include?('done <"$handoff_paths"') &&
         publish_run.include?(') 2>"$error_file"') &&
@@ -4789,6 +4795,15 @@ def check_publisher(workflow)
   ].each do |fragment|
     check(finalizer_source.include?(fragment),
           "publisher failure report lacks bounded exact finalizer detail: #{fragment}")
+  end
+  [
+    '--exact-kandelo-main-sha) EXACT_KANDELO_MAIN_SHA=',
+    '--exact-kandelo-main-sha is required before a tap push',
+    'bash "$KANDELO_ROOT/.github/scripts/require-exact-kandelo-main.sh"',
+    '--source-sha "$EXACT_KANDELO_MAIN_SHA"',
+  ].each do |fragment|
+    check(finalizer_source.include?(fragment),
+          "publisher tap push lacks final exact-main guard: #{fragment}")
   end
   [
     'SOURCE_TAP_ROOT="$COMPOSE_PARENT/source-tap"',
@@ -5145,6 +5160,9 @@ def check_maintenance(workflow)
     'case "$KANDELO_HOMEBREW_ARCH" in',
     "wasm32|wasm64) ;;",
     '[[ "$KANDELO_HOMEBREW_RELEASE_TAG" =~ ^bottles-abi-v[1-9][0-9]*$ ]]',
+    'kandelo_commit="$(git -C "$GITHUB_WORKSPACE/kandelo" rev-parse HEAD)"',
+    '--kandelo-commit "$kandelo_commit"',
+    '--exact-kandelo-main-sha "$kandelo_commit"',
   ].each do |fragment|
     check(record_run.include?(fragment), "maintenance rollback lacks #{fragment}")
   end

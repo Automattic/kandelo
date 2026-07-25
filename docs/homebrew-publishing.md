@@ -1381,8 +1381,12 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    The unchanged whole-tap semantic validator then checks the complete detached
    candidate and the exact staged attached-`main` tree. Only after both checks
    pass does one purpose-prefixed commit push all Formulae, sidecars, and
-   recomputed provenance together. It does not load Formula Ruby or run Homebrew
-   in the credentialed role.
+   recomputed provenance together. Immediately before `git push`, the tap
+   writer itself re-reads `Automattic/kandelo`'s protected `main` ref and
+   requires it to equal the commit recorded by the publication; this closes a
+   race after the workflow's earlier check and after potentially long
+   composition. It does not load Formula Ruby or run Homebrew in the
+   credentialed role.
 6. `publish-vfs-release` runs only when `require-vfs-acceptance: true`, every
    verifier matrix entry succeeded, and the atomic tap finalizer succeeded. The
    verifier exports only the selected wasm32 image, its deterministic lazy
@@ -1409,6 +1413,8 @@ Tap writes use a tap-wide state lock, an attached `main` checkout, an explicit
 remote-main refresh, and an explicit `HEAD:refs/heads/main` push. The workflow
 uses a separate clean checkout for failure reports so a partially generated or
 locally committed success attempt cannot enter a last-green failure commit.
+Maintenance rollback resolves its freshly checked-out Kandelo `main` commit and
+passes that same identity as both report provenance and push authority.
 
 Use `dry-run: true` for local or CI validation that must not push GHCR blobs or
 tap commits. Dry runs still build bottles and validate the generated metadata
