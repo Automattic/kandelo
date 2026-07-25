@@ -189,13 +189,24 @@ Unlike ordinary durable promotion, this narrowly scoped preservation workflow
 never executes tooling from the unmerged producer. It treats that checkout's
 registry, ABI declaration, and `program-packages.json` as inert data and uses
 only current default-branch authority to derive identities, parse archives,
-seal evidence, and publish. Cache-key derivation also treats the producer's
-Cargo manifests and lockfile as declarative data: current-authority `xtask`
-invokes the current Cargo binary with `metadata --locked --offline`, a
+seal evidence, and publish. Before inspecting producer declarations, the
+workflow runs `cargo fetch --locked` against the trusted current-authority
+workspace and lockfile into a new, isolated Cargo home. That makes every
+current-authority checksum-bound registry package available even when building
+`xtask` alone did not need it, while lock drift or a checksum mismatch fails
+before producer inspection. The prefetch never reads the producer manifest,
+lockfile, Cargo configuration, wrappers, or credentials.
+
+Cache-key derivation then treats the producer's Cargo manifests and lockfile as
+declarative data: current-authority `xtask` invokes the current Cargo binary
+with `metadata --locked --offline`, the same isolated Cargo home, a
 current-authority working directory, and credential/network/wrapper variables
-removed. Every local package returned by Cargo must remain beneath the producer
-checkout, and `fork-instrument` must resolve from its exact expected manifest;
-no producer binary, build script, test, or repository helper is run.
+removed. A producer whose external locked dependencies are not already in the
+trusted current-authority lock cannot expand this fetch boundary; preservation
+fails offline instead. Every local package returned by Cargo must remain
+beneath the producer checkout, and `fork-instrument` must resolve from its exact
+expected manifest; no producer binary, build script, test, or repository helper
+is run.
 
 The shared publisher uploads archives, the fresh index, and
 `rootfs-job.log` before uploading `generation.json` as the application seal.
