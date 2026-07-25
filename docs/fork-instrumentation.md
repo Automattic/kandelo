@@ -95,7 +95,8 @@ wpk_fork_unwind_begin(buf: ptr) -> ()
 
 wpk_fork_unwind_end() -> ()
   Precondition:  state == UNWINDING and all frames have been drained.
-  Postcondition: state := NORMAL
+  Postcondition: _wpk_fork_buf := 0
+                 state := NORMAL
 
 wpk_fork_rewind_begin(buf: ptr) -> ()
   Precondition:  state == NORMAL (in a freshly-instantiated child)
@@ -105,7 +106,8 @@ wpk_fork_rewind_begin(buf: ptr) -> ()
 
 wpk_fork_rewind_end() -> ()
   Precondition:  state == REWINDING and all frames have been reloaded.
-  Postcondition: state := NORMAL
+  Postcondition: _wpk_fork_buf := 0
+                 state := NORMAL
 
 wpk_fork_abort_begin(buf: ptr) -> ()
   Precondition:  state == UNWINDING after a typed frame-allocation failure.
@@ -116,7 +118,8 @@ wpk_fork_abort_begin(buf: ptr) -> ()
 wpk_fork_abort_end() -> ()
   Precondition:  state == ABORT_UNWINDING and all committed inner frames
                  have been reloaded.
-  Postcondition: state := NORMAL
+  Postcondition: _wpk_fork_buf := 0
+                 state := NORMAL
 
 wpk_fork_state() -> i32
   Returns current state. Exported for host-side assertions.
@@ -174,12 +177,19 @@ advance `ABI_VERSION` and regenerate `abi/snapshot.json` atomically.
 tool picks the pointer width from the module's primary memory — a memory64
 memory yields `i64`, anything else yields `i32`.
 
-`wpk_fork_unwind_begin` self-initializes `*(buf + 0)` with the address of the
-first byte after the fixed prefix before touching user state. During linked
-unwind and rewind, generated code overwrites that word with the payload address
-returned by the corresponding host hook. The host allocates the root chunk and
-passes `root + chunk_header_size` as `buf`; no caller computes or preallocates a
-worst-case frame-data footprint.
+`wpk_fork_unwind_begin` self-initializes `*(buf + 0)` with
+`buf + frames_start_offset` before touching user state. In the linked format,
+that initial address is the 16-byte abort selector inside the fixed prefix.
+During linked unwind and rewind, generated code overwrites the word with the
+payload address returned by the corresponding host hook. The host allocates
+the root chunk and passes `root + chunk_header_size` as `buf`; no caller
+computes or preallocates a worst-case frame-data footprint.
+
+Every end export clears `_wpk_fork_buf` before publishing `NORMAL`. This
+removes the module's stale alias when the host releases or reuses continuation
+storage. Address zero is ordinary linear memory, so the clear is an ownership
+invariant and defense, not a substitute for correct generated code: no
+ordinary-execution path may dereference the buffer global.
 
 ## Host Threading Contract
 
@@ -311,11 +321,18 @@ chunks contain only a chunk header and nodes. Version-1 chunk headers are:
 | `+8+4P` | `P` | used | First unused byte |
 | `+8+5P` | `P` | committed tail | Newest committed node; meaningful on root |
 
-The module prefix retains the runtime's pointer word, reserved pointer word,
-saved scalar globals, B1 plain-catch scratch, and a 16-byte abort selector.
-`frames_start_offset = 2P + N + B` identifies the selector, while the
-host-visible fixed-prefix size is `frames_start_offset + 16`. Frame nodes are
-not stored in that prefix.
+The module prefix retains the runtime's active-frame pointer word, a reserved
+pointer word, saved scalar globals, and a 16-byte abort selector.
+`frames_start_offset = 2P + N` identifies the selector, while the host-visible
+fixed-prefix size is `frames_start_offset + 16`. Frame nodes and
+plain-catch activation state are not stored in that prefix.
+
+This does not introduce a new linked-frame encoding. `fixed_prefix_size` has
+always been a module-specific value in the version-1 descriptor, and each node
+already declares its function-specific payload size. Existing artifacts retain
+and report their larger historical prefix; newly instrumented artifacts report
+the prefix they actually use. Import/export names, descriptor fields, and host
+parsing semantics are unchanged.
 
 At the first fork call, the host maps one page-rounded root large enough for
 the chunk header and fixed prefix. Each postamble already knows its own exact
@@ -345,10 +362,6 @@ Parent and child independently walk and unmap their copies after rewind. The
 linked format makes chunk boundaries explicit, but version 1 does not rebase
 internal pointers or relocate the chain in the child.
 
-The `b1_scratch` region is empty (`B == 0`) when no fork-path function in the
-module has a plain (non-`_ref`) catch arm — this is the case for every
-shipping port today other than future C++ EH ports.
-
 Ref-typed mutable globals (`funcref` / `externref` / `exnref`) are not stored
 in the linear-memory header — they would need aux-table spill slots, which is
 a future extension. The tool currently ignores them when snapshotting globals.
@@ -356,8 +369,9 @@ a future extension. The tool currently ignores them when snapshotting globals.
 ## Frame format
 
 Each instrumented function has a statically known payload size. The size
-depends on how many scalar user locals the function has, but the payload header
-is uniform. Each payload is preceded by a linked-node header: `KFCN` magic,
+depends on its scalar user locals and instrumenter-owned frame locals, but the
+payload header is uniform. Each payload is preceded by a linked-node header:
+`KFCN` magic,
 format version, transactional state, previous-node pointer, payload size, and
 total aligned node size. That header costs 24 bytes on wasm32 and 32 bytes on
 wasm64 before alignment.
@@ -367,8 +381,8 @@ wasm64 before alignment.
 | `+0`   | 4    | `func_index`      | Ordinal assigned at instrument time      |
 | `+4`   | 4    | `call_index`      | Which call site within the function      |
 | `+8`   | 4    | `catch_region_id` | 0 in normal flow; non-zero for catches   |
-| `+12`  | 4    | `exnref_slot`     | Valid when `catch_region_id != 0`        |
-| `+16`  | var  | `saved_locals[]`  | Scalar user locals, natural-aligned      |
+| `+12`  | 4    | `exnref_slot`     | Aux-table slot for `_ref` catch replay   |
+| `+16`  | var  | `saved_locals[]`  | User and synthetic scalars, aligned      |
 
 Ref-typed user locals (funcref, externref, exnref) do **not** appear in this
 frame. They are spilled to auxiliary tables — see [Auxiliary
@@ -376,11 +390,17 @@ tables](#auxiliary-tables) below. The frame only records the ordinal identity
 of the function and its call-site, which together with the ref-table slot
 assignment is sufficient to restore the ref-typed locals during rewind.
 
+Synthetic frame locals include call-argument and operand-stack carryover
+spills. For each supported plain-catch region they also include one
+`active_arm` i32 and typed scalar operand locals for every static arm. Capture
+therefore belongs to one function activation, and recursive activations
+serialize distinct values in distinct linked frames.
+
 `catch_region_id` is zero in the common case (the frame was captured outside
 any catch handler). When non-zero, it identifies the `try_table` whose catch
-handler the frame lives in, and `exnref_slot` points at the `_wpk_fork_exnref_stash`
-table slot that holds the caught exnref. The rewind preamble uses both fields
-to route control back through the original catch clause — see [Catch-handler
+handler the frame lives in. For a `_ref` catch, `exnref_slot` identifies the
+auxiliary-table entry. For a plain catch, the restored `active_arm` and operand
+locals select and reconstruct the exact arm. See [Catch-handler
 resume](#catch-handler-resume).
 
 ## Dispatch schemes
@@ -525,7 +545,8 @@ Numbered callouts:
 1. **Preamble (Phase 4d).** Every instrumented function opens with a state
    test. Under `REWINDING`, the preamble calls
    `__wpk_fork_frame_next(frame_size)`, stores the returned payload in
-   `*(buf + 0)`, and deserializes each scalar user local. Dispatch reads
+   `*(buf + 0)`, and deserializes every frame scalar: user locals,
+   argument/carryover spills, and plain-catch activation state. Dispatch reads
    `call_index` directly from that active frame payload.
 2. **Body wrapper (Phase 4b/4c).** The original body is wrapped in a `$unwind_save`
    block. On `REWINDING`, a `br_table` keyed by `frame.call_index` jumps to
@@ -539,10 +560,10 @@ Numbered callouts:
    `frame.call_index` and exits `$unwind_save`. If the callee did not begin
    unwinding, execution continues normally.
 5. **Postamble (Phase 4d).** Emits the remaining frame header fields
-   (func_index, catch_region_id, exnref_slot), writes each scalar user local,
-   commits the reserved node, and returns a default value of the function's
-   result type. Callers see the default on the unwind path but discard it
-   because their own postamble runs next.
+   (func_index, catch_region_id, exnref_slot), writes every user and synthetic
+   frame scalar, commits the reserved node, and returns a default value of the
+   function's result type. Callers see the default on the unwind path but
+   discard it because their own postamble runs next.
 
 ### (b) Fork from inside a catch handler
 
@@ -920,14 +941,19 @@ continues to the fork call site.
 ```
 
 `catch_ref` and `catch_all_ref` clauses use the exnref stash + `throw_ref`
-flow above. Plain (non-`_ref`) `catch` clauses have no exnref to re-throw,
-so B1 stages 1+2 add a parallel scratch-replay path: each fork-path plain-catch
-arm stashes its operand tuple to the module-level B1 scratch region on
-NORMAL entry and replays the operand tuple on REWIND. The unified rewind-throw
-stub uses `ref.is_null` on the exnref slot to discriminate between the two
-modes, and an arm-id if-chain to dispatch among multiple arms in the same
-try_table. See [Fork-from-plain-catch (B1 stages 1+2)](#fork-from-plain-catch-b1-stages-12)
-under "Maintainer notes" for the implementation.
+flow above. Plain (non-`_ref`) `catch` clauses have no exnref to re-throw.
+For those clauses, normal capture stores the exact nonnegative catch-list arm
+index and scalar operand tuple in activation-local frame locals. Rewind
+compares the restored arm index, pushes that arm's restored operands, and
+throws the original tag back through the same `try_table`.
+
+In a region that mixes `_ref` and plain catches, `_ref` capture stores
+`active_arm = -1`; exact nonnegative IDs select plain arms and every other
+value falls through to `throw_ref`. The mode is deliberately frame-owned.
+Auxiliary-table nullness is neither activation identity nor reliable handler
+kind state because a static table entry can retain an older value. See
+[Fork-from-plain-catch](#fork-from-plain-catch) under "Maintainer notes" for
+the implementation.
 
 ## Call-graph discovery
 
@@ -996,9 +1022,10 @@ K-04, and K-07 cover the current behavior.
   `wpk_fork_unwind_begin` and restored in `wpk_fork_rewind_begin`.
   Includes `__stack_pointer`, `__tls_base`, and any program-declared
   mutable globals.
-- **try_table context.** Frames captured inside a fork-path catch handler
-  carry the active `catch_region_id` and exnref stash slot, and rewind
-  re-enters the handler via `throw_ref` (Phase 6).
+- **try_table context.** Frames captured inside a supported fork-path catch
+  handler carry the active `catch_region_id`. `_ref` catches replay from their
+  exnref stash slot; plain catches replay from activation-local arm and scalar
+  payload state serialized in the same frame.
 - **Kernel-side-effect calls don't re-fire during REWIND.** Switch-dispatch
   (the only live scheme post-commit-4) skips the body chunks before the
   matching `POST_K` entirely on REWIND, so non-fork-path direct calls
@@ -1015,14 +1042,22 @@ K-04, and K-07 cover the current behavior.
   whose operand tuple includes an `(ref ...)` value (typically a function or
   GC ref) are carved out of the fork-path set at instrument time. Spilling
   ref-typed catch operands would require per-arm aux-table slots. The current
-  PR deliberately keeps the safe `B1ScratchPlan::b2_carveout` behavior and
-  covers it with WAT-level tests. This is an unanticipated Wasm-level case,
+  implementation deliberately keeps the safe
+  `PlainCatchPlan::b2_carveout` behavior and covers it with WAT-level tests.
+  This is an unanticipated Wasm-level case,
   not expected output from ordinary C++ EH lowering: C++ exception payloads
   live in linear memory / libc++abi state rather than as `funcref` or
   `externref` plain-catch tag operands. If a future language frontend or
   hand-written Wasm module needs it, implement per-arm funcref/externref
   aux-table stashing and promote C-08/C-09 from carve-out validation to full
   replay tests.
+- **Recursive/reentrant ref activation state.** Auxiliary-table slots for
+  ref-typed user locals and caught exnrefs are assigned statically per
+  function or `try_table`. Recursive or reentrant activations that keep
+  distinct ref values live across one fork can therefore alias those slots.
+  Scalar plain-catch arm/payload state does not have this limitation because
+  it is serialized per activation. Closing the ref case requires
+  activation-aware auxiliary storage and executable recursive regressions.
 - **IfElse with operand-stack carryover.** A fork-bearing `if/else`
   enclosing a stack value that survives across the branch is rejected by
   `seq_has_unsupported_carryover` — the cond rewrite via `select` (see
@@ -1100,6 +1135,13 @@ The module-format fixed cost is three imports, two abort exports, plus the
 encoding. The fixed 60 KiB host-reserved control-region geometry remains in
 ABI 42, but it is no longer continuation capacity: only its anchor word is
 used to find the dynamically allocated root chunk.
+
+A function with supported plain catches adds one i32 `active_arm` local per
+plain-capable region plus typed scalar operand locals for every supported arm
+to each activation's frame payload. This can use more aggregate continuation
+bytes than one module-global tuple, but distinct activation storage is required
+for recursion and reentrancy correctness and removes normal-execution writes
+to continuation-owned memory.
 
 As a narrow size check, instrumenting the P-10 deep-recursion fixture from the
 same 27,886-byte raw Wasm produced 50,873 bytes with the ABI 41 instrumenter
@@ -1221,7 +1263,7 @@ the containing switch-dispatch shape skips that opcode on REWIND. Existing
 examples are the S-01..S-08 host fixtures plus the WAT-level table-operation
 tests in `crates/fork-instrument/tests/coverage_wat.rs`.
 
-### Fork-from-plain-catch (B1 stages 1+2)
+### Fork-from-plain-catch
 
 Plain (non-`_ref`) `catch` arms unwrap the thrown exception's operand tuple
 onto the operand stack at handler entry, but unlike `catch_ref` /
@@ -1230,47 +1272,39 @@ reaches the handler by `throw_ref`-ing a saved exnref into the original
 try_table's catch clause; with a plain catch there is no exnref to save, so
 some other resume path is needed.
 
-B1 stages 1+2 add that path:
+The implementation adds that path without accessing continuation memory during
+ordinary catch execution:
 
-1. **Discovery (Stage 1, `instrument::discover_plain_catch_arms`).** Walks
-   each function and collects every plain-catch arm's tag, target label, and
-   operand-tuple types. Stage 1 also assigns each arm a `B1ScratchPlanSlot`
-   with a per-arm offset into the module-level scratch region (computed by
-   `plan_b1_scratch`). Each arm's slot is sized to the natural-aligned
-   total of its operand tuple's scalar widths.
-2. **Capture-block emission (Stage 2 Task 2.2,
-   `apply_plain_catch_handlers`).** Every plain-catch arm gets a wrapping
-   `$capture` block injected around its handler body. On entry the block
-   pops the arm's operand tuple off the stack, stores each value into the
-   arm's `b1_scratch` slot, sets `$catch_region_id_local` and a
-   per-handler arm-id, then re-pushes the operands and falls through to the
-   user handler. On REWIND the rewind-throw stub uses the arm-id to dispatch
-   into a synthesized re-throw that lands the operands back on the stack
-   from `b1_scratch` and re-enters the user handler with the same operand
-   shape it would have seen on the NORMAL pass.
-3. **Multi-arm dispatch (Stage 2 Task 2.3, in `inject_rewind_throw_stubs`).**
-   The pre-existing rewind-throw stub used a single `(if (state == REWINDING
-   && catch_region_id == K))` check, fine for catch_ref's exnref-stash path.
-   For plain catches the stub now also discriminates on `arm_id` via an
-   if-chain so a try_table with multiple plain-catch arms reaches the
-   correct one. The stub still uses `ref.is_null` on the exnref slot to
-   select between catch_ref-style throw_ref and plain-catch-style operand
-   replay.
-4. **Carve-out (Stage 2 Task 2.1, in `plan_b1_scratch`).** Functions whose
-   plain-catch arms carry ref-typed operands (`(ref T)` other than `exnref`)
-   are removed from the fork-path set rather than instrumented, since the
-   scratch region only stores scalar tuples. This is the safe path for an
-   unanticipated Wasm-level case: ordinary C++ EH is not expected to emit
-   funcref/externref plain-catch payloads, and no current shipping port
-   needs them. Stage 2 Task 2.4 also detects multi-target plain-catch
-   try_tables and applies the same carve-out.
+1. **Static discovery (`plan_plain_catches`).** Walk each fork-path function
+   and collect every supported plain-catch arm's tag, target label, catch-list
+   index, and operand types. This plan contains no runtime addresses or
+   activation state.
+2. **Activation allocation (`allocate_plain_catch_state`).** Allocate one
+   `PlainCatchRegionState` per static region: an i32 `active_arm` plus typed
+   scalar operand locals for every supported arm.
+3. **Frame ownership (`append_plain_catch_frame_scalars`).** Add those locals
+   before frame offsets and size are assigned. Each recursive activation then
+   saves and restores its own catch values in its own linked frame.
+4. **Capture and replay.** `apply_plain_catch_handlers` stores the incoming
+   operand tuple and exact arm index in those locals, then re-pushes the
+   operands for the user handler. `inject_rewind_throw_stubs` dispatches on
+   the restored exact arm index and rethrows its tag with the restored tuple.
+   Mixed `_ref` capture records `-1`, which selects the `throw_ref` fallback
+   without consulting stale table nullness.
+5. **Carve-out (`PlainCatchPlan::b2_carveout`).** A function whose plain-catch
+   arms carry ref-typed operands or use an unverified multi-target shape is
+   removed from the supported fork path. Scalar frame serialization does not
+   solve reference ownership; that needs activation-aware auxiliary-table
+   storage.
 
-The carve-out is reported via `B1ScratchPlan::b2_carveout`; the scratch
-region is sized only for the surviving fork-path arms. C-08/C-09 in
+The lifetime boundary is load-bearing: a plain catch can run before any fork
+or after a prior continuation has been released. Its normal capture path must
+therefore never dereference `_wpk_fork_buf`.
+
+C-08/C-09 in
 `crates/fork-instrument/tests/coverage_wat.rs` verify that funcref and
 externref catch operands take this safe carve-out path rather than panicking
-or producing invalid wasm. For shipping ports the carve-out is empty in the
-current matrix, so it is not a merge blocker for PR #307.
+or producing invalid wasm.
 
 ## See also
 
