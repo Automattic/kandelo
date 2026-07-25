@@ -71,13 +71,18 @@ rebuild Bash while reusing its unchanged `libcxx` and `ncurses` bottles and
 deferring unrelated Formulae. No corrected campaign has been initialized or
 dispatched yet.
 
-The first conservative inventory contains 70 architecture-specific bottle
-objects: 23 fork-instrumented objects whose payload-producing instrumenter
-changed and 47 candidates for reuse plus current-main revalidation. The
-47-object main-shell closure has 18 rebuild candidates and 29 reuse candidates.
-These counts are planning inputs, not acceptance gates; the exact named sets
-and dependency propagation still need to be regenerated from the completed
-versioned payload-identity contract before publication.
+The corrected tap inventory contains 63 Formulae and 70
+architecture-specific bottle objects. Of those, 44 Formulae/50 objects already
+have ABI-42 bottles and 19 Formulae/20 objects still have ABI-41 bottles. The
+current conservative full-tap classification is therefore 35 Formulae/36
+objects to rebuild and 28 Formulae/34 objects to reuse. The rebuild set combines
+the still-ABI-41 objects, changed package or Formula inputs, the 23 Formulae
+whose outputs use the changed fork instrumenter, and affected payload
+dependents. The first product proof is intentionally narrower: rebuild Bash,
+reuse its unchanged `libcxx` and `ncurses` bottles, and defer the other 60
+Formulae. These counts are planning inputs, not acceptance gates; the exact
+named sets and dependency propagation still need to be regenerated from the
+completed versioned payload-identity contract before publication.
 
 ## Source Plans And Preservation Rule
 
