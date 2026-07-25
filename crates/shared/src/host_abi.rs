@@ -9,8 +9,7 @@ use core::mem::size_of;
 
 use crate::abi::extended_syscalls as extra_syscalls;
 use crate::{
-    SCHED_AFFINITY_MASK_SIZE, Syscall, WASM_RUSAGE_WIRE_SIZE, WasmStat, WasmStatfs,
-    WasmTimespec,
+    SCHED_AFFINITY_MASK_SIZE, Syscall, WASM_RUSAGE_WIRE_SIZE, WasmStat, WasmStatfs, WasmTimespec,
 };
 
 /// Direction of a marshalled pointer argument.
@@ -330,10 +329,7 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     entry!(Syscall::Sigsuspend as u32, [desc!(0, In, fixed!(8))]),
     entry!(
         Syscall::Pathconf as u32,
-        [
-            desc!(0, In, cstring!()),
-            desc!(2, Out, fixed!(8), required),
-        ]
+        [desc!(0, In, cstring!()), desc!(2, Out, fixed!(8), required),]
     ),
     entry!(
         Syscall::Fpathconf as u32,
@@ -625,8 +621,7 @@ mod tests {
         );
         assert!(waitid[1].nullable);
 
-        let sched_getaffinity =
-            find(extra_syscalls::SYS_SCHED_GETAFFINITY).args[0];
+        let sched_getaffinity = find(extra_syscalls::SYS_SCHED_GETAFFINITY).args[0];
         assert_eq!(sched_getaffinity.arg_index, 2);
         assert_eq!(sched_getaffinity.direction, SyscallArgDirection::Out);
         assert_eq!(

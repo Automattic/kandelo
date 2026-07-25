@@ -287,15 +287,22 @@ fn no_catch_switch_dispatch_omits_frame_header_state_locals() {
     let caller = extract_function_text(&printed, "caller");
     let locals = declared_scalar_local_count(&caller);
     assert_eq!(
-        locals, 2,
-        "no-catch top-level fork path should declare only the original local and \
-         abort_live_frame; \
-         call_idx and frame_ptr are loaded from the frame header, and \
+        locals, 1,
+        "no-catch top-level fork path should declare only the original local; \
+         the static call boundary must not need an abort-frame/selector local, \
+         saved call_idx and frame_ptr are loaded from the frame header, and \
          unconditional catch metadata locals would raise this count:\n{caller}"
     );
     assert!(
-        caller.contains("i32.store offset=4"),
-        "unwind call site must still write frame.call_index before the shared postamble:\n{caller}"
+        caller.contains("call $__wpk_fork_select_unwind_frame"),
+        "unwind call site must pass its static call index to the shared \
+         frame selector before the postamble:\n{caller}"
+    );
+    let selector = extract_function_text(&printed, "__wpk_fork_select_unwind_frame");
+    assert!(
+        selector.contains("i32.store offset=4"),
+        "the shared frame selector must publish frame.call_index before \
+         returning success or synchronous-abort routing:\n{selector}"
     );
 }
 
@@ -322,9 +329,9 @@ fn top_level_indirect_switch_dispatch_omits_frame_header_state_locals() {
     let caller = extract_function_text(&printed, "caller");
     let locals = declared_scalar_local_count(&caller);
     assert_eq!(
-        locals, 1,
-        "top-level indirect call with a pure table index should need only \
-         abort_live_frame, with no arg, frame_ptr, or call_idx locals:\n{caller}"
+        locals, 0,
+        "top-level indirect call with a pure table index should need no \
+         arg, abort-frame, selector, frame_ptr, or saved-call-index locals:\n{caller}"
     );
 }
 
@@ -339,10 +346,10 @@ fn nested_direct_switch_dispatch_omits_frame_header_state_locals() {
     let main = extract_function_text(&printed, "main");
     let locals = declared_scalar_local_count(&main);
     assert_eq!(
-        locals, 3,
-        "nested block dispatch should retain only the two source locals and \
-         abort_live_frame; \
-         frame_ptr and call_idx must not be declared locals:\n{main}"
+        locals, 2,
+        "nested block dispatch should retain only the two source locals; \
+         static call boundaries do not require an activation-local selector, \
+         frame_ptr and saved call_idx must not be declared locals:\n{main}"
     );
 }
 
@@ -368,10 +375,10 @@ fn nested_if_else_dispatch_omits_frame_header_state_locals() {
     let main = extract_function_text(&printed, "main");
     let locals = declared_scalar_local_count(&main);
     assert_eq!(
-        locals, 1,
+        locals, 0,
         "nested if/else dispatch should replay a pure condition without cond_swap; \
-         abort_live_frame is the only declared local, params are not declared locals, \
-         and frame_ptr/call_idx must be loaded from the frame:\n{main}"
+         no abort-frame or call-selector local is declared, \
+         params are not declared locals, and frame_ptr/saved call_idx come from the frame:\n{main}"
     );
 }
 
@@ -403,20 +410,592 @@ fn pr701_shape_replays_pure_condition_and_recursive_arg() {
     let walk = extract_function_text(&printed, "walk");
     let locals = declared_scalar_local_count(&walk);
     assert_eq!(
-        locals, 1,
+        locals, 0,
         "PR701-shaped pure condition and recursive arg should not allocate \
-         arg-spill or condition/carryover locals beyond abort_live_frame:\n{walk}"
+         arg-spill, condition/carryover, abort-frame, or active-call selector \
+         locals:\n{walk}"
     );
+    let normalized = walk.lines().map(str::trim).collect::<Vec<_>>().join("\n");
     assert!(
-        walk.contains("local.get 0\n        i32.eqz\n        global.get $_wpk_fork_state"),
+        normalized.contains("local.get 0\ni32.eqz\nglobal.get $_wpk_fork_state"),
         "rewritten IfElse landing should replay the pure eqz(depth) condition \
          before selecting NORMAL vs REWIND:\n{walk}"
     );
     assert!(
-        walk.contains("local.get 0\n          i32.const 1\n          i32.sub\n          call $walk"),
-        "recursive call landing should replay pure depth - 1 argument tail \
-         before the call:\n{walk}"
+        !normalized.contains("local.set 1"),
+        "recursive call landing must use its statically known call index rather \
+         than adding an activation-local selector:\n{walk}"
     );
+    assert!(
+        normalized.contains("local.get 0\ni32.const 1\ni32.sub\ncall $walk"),
+        "recursive call landing should replay pure depth - 1 argument tail \
+         on the lexical branch without allocating an argument local:\n{walk}"
+    );
+}
+
+#[test]
+fn reference_recipe_vector_adds_no_ordinary_activation_local() {
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $kernel_fork (result i32)))
+          (memory (export "memory") 1)
+          (func $walk (export "reference_walk")
+            (param $depth i32)
+            (param $value externref)
+            local.get $depth
+            i32.eqz
+            if
+              call $kernel_fork
+              drop
+              local.get $value
+              drop
+            else
+              local.get $depth
+              i32.const 1
+              i32.sub
+              local.get $value
+              call $walk
+            end))
+    "#;
+    let input = wat::parse_str(wat).expect("wat parse");
+    let output = instrument(&input, &Options::default()).expect("instrument");
+    validate(&output);
+
+    let printed = wasmprinter::print_bytes(&output).expect("wasmprinter");
+    let walk = extract_function_text(&printed, "walk");
+    let locals = declared_scalar_local_count(&walk);
+    assert_eq!(
+        locals, 0,
+        "activation-owned reference recipes must use the reserved frame word \
+         and process vector directly; adding a recipe/vector scratch local \
+         would repeat the V8 recursion regression fixed by PR #713. Static \
+         call boundaries must not add an abort-frame/selector local either:\n{walk}"
+    );
+}
+
+#[test]
+fn catch_ref_arm_count_does_not_scale_native_local_tuple() {
+    fn fixture(arm_count: usize) -> String {
+        assert!(arm_count > 0);
+        let tags = (0..arm_count)
+            .map(|index| format!("(tag $tag{index} (param i32 i64))"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let catches = (0..arm_count)
+            .map(|index| format!("(catch_ref $tag{index} $handler)"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            r#"
+                (module
+                  (import "kernel" "kernel_fork" (func $kernel_fork (result i32)))
+                  {tags}
+                  (memory (export "memory") 1)
+                  (func $caller (export "catch_ref_scaling")
+                    (block $handler (result i32 i64 exnref)
+                      (try_table (result i32 i64 exnref)
+                          {catches}
+                        call $kernel_fork
+                        drop
+                        i32.const 17
+                        i64.const 23
+                        throw $tag0))
+                    drop
+                    drop
+                    drop))
+            "#,
+        )
+    }
+
+    fn counts(arm_count: usize) -> (GeneratedLocalCounts, String) {
+        let input = wat::parse_str(fixture(arm_count)).expect("wat parse");
+        let output = instrument(&input, &Options::default()).expect("instrument");
+        validate(&output);
+        let printed = wasmprinter::print_bytes(&output).expect("wasmprinter");
+        (
+            generated_local_counts(&output, "catch_ref_scaling"),
+            extract_function_text(&printed, "caller"),
+        )
+    }
+
+    let (one_arm, one_arm_wat) = counts(1);
+    let (many_arms, many_arms_wat) = counts(32);
+    assert_eq!(
+        one_arm,
+        GeneratedLocalCounts {
+            i32: 2,
+            i64: 1,
+            f32: 0,
+            f64: 0,
+            v128: 0,
+            nullable_exnref: 1,
+            other_reference: 0,
+            total: 4,
+        },
+        "one scalar CatchRef arm should need one selector i32, one typed \
+         i32/i64 payload union, and one forwarding exnref; the call boundary \
+         adds no local:\n{one_arm_wat}",
+    );
+    assert_eq!(
+        many_arms, one_arm,
+        "adding scalar CatchRef arms to one mutually-exclusive try_table must \
+         not add native activation locals by type:\n{many_arms_wat}",
+    );
+}
+
+#[test]
+fn catch_region_count_does_not_add_control_locals_or_frame_bytes() {
+    fn fixture(region_count: usize) -> String {
+        assert!(region_count > 0);
+        let regions = (0..region_count)
+            .map(|index| {
+                format!(
+                    r#"
+                      (block $handler{index}
+                        (try_table (catch $tag $handler{index})
+                          nop))
+                    "#,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            r#"
+                (module
+                  (import "kernel" "kernel_fork" (func $kernel_fork (result i32)))
+                  (tag $tag)
+                  (memory (export "memory") 1)
+                  (func $caller (export "catch_region_scaling")
+                    {regions}
+                    call $kernel_fork
+                    drop))
+            "#,
+        )
+    }
+
+    fn measure(region_count: usize) -> (GeneratedLocalCounts, Vec<i32>, String) {
+        let input = wat::parse_str(fixture(region_count)).expect("wat parse");
+        let output = instrument(&input, &Options::default()).expect("instrument");
+        validate(&output);
+        let printed = wasmprinter::print_bytes(&output).expect("wasmprinter");
+        (
+            generated_local_counts(&output, "catch_region_scaling"),
+            frame_reserve_sizes(&output, "catch_region_scaling"),
+            extract_function_text(&printed, "caller"),
+        )
+    }
+
+    let (one_region, one_frame_sizes, one_region_wat) = measure(1);
+    let (many_regions, many_frame_sizes, many_regions_wat) = measure(32);
+    assert_eq!(
+        one_region,
+        GeneratedLocalCounts {
+            i32: 1,
+            i64: 0,
+            f32: 0,
+            f64: 0,
+            v128: 0,
+            nullable_exnref: 0,
+            other_reference: 0,
+            total: 1,
+        },
+        "one empty-payload catch region needs only the activation's exact-arm \
+         selector; the call boundary adds no local:\n{one_region_wat}",
+    );
+    assert_eq!(
+        many_regions, one_region,
+        "static catch-region count must not recreate the old one-i32-per-region \
+         marker cost in every native activation:\n{many_regions_wat}",
+    );
+    assert!(
+        one_frame_sizes.iter().all(|size| *size == 16)
+            && many_frame_sizes.iter().all(|size| *size == 16),
+        "empty-payload catch regions reuse header selector word +8 and must not \
+         enlarge a linked activation frame: one={one_frame_sizes:?}, \
+         many={many_frame_sizes:?}",
+    );
+}
+
+#[test]
+fn catch_region_count_uses_one_function_wide_operand_union() {
+    fn fixture(region_count: usize) -> String {
+        assert!(region_count > 0);
+        let regions = (0..region_count)
+            .map(|index| {
+                format!(
+                    r#"
+                      (block $handler{index} (result i32 i64 exnref)
+                        (try_table (result i32 i64 exnref)
+                            (catch_ref $tag $handler{index})
+                          i32.const {index}
+                          i64.const {index}
+                          throw $tag))
+                      drop
+                      drop
+                      drop
+                    "#,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            r#"
+                (module
+                  (import "kernel" "kernel_fork" (func $kernel_fork (result i32)))
+                  (tag $tag (param i32 i64))
+                  (memory (export "memory") 1)
+                  (func $caller (export "catch_region_operand_scaling")
+                    {regions}
+                    call $kernel_fork
+                    drop))
+            "#,
+        )
+    }
+
+    fn measure(region_count: usize) -> (GeneratedLocalCounts, Vec<i32>, String) {
+        let input = wat::parse_str(fixture(region_count)).expect("wat parse");
+        let output = instrument(&input, &Options::default()).expect("instrument");
+        validate(&output);
+        let printed = wasmprinter::print_bytes(&output).expect("wasmprinter");
+        (
+            generated_local_counts(&output, "catch_region_operand_scaling"),
+            frame_reserve_sizes(&output, "catch_region_operand_scaling"),
+            extract_function_text(&printed, "caller"),
+        )
+    }
+
+    let (one_region, one_frame_sizes, one_region_wat) = measure(1);
+    let (many_regions, many_frame_sizes, many_regions_wat) = measure(32);
+    assert_eq!(
+        one_region,
+        GeneratedLocalCounts {
+            i32: 2,
+            i64: 1,
+            f32: 0,
+            f64: 0,
+            v128: 0,
+            nullable_exnref: 1,
+            other_reference: 0,
+            total: 4,
+        },
+        "one scalar CatchRef region needs one selector i32, one typed i32/i64 \
+         operand union, and one forwarding exnref; the call boundary adds no \
+         local:\n{one_region_wat}",
+    );
+    assert_eq!(
+        many_regions, one_region,
+        "capture scratch belongs to the dynamically selected catch, so static \
+         region count must not add native operand tuples:\n{many_regions_wat}",
+    );
+    assert!(
+        one_frame_sizes.iter().all(|size| *size == 28)
+            && many_frame_sizes.iter().all(|size| *size == 28),
+        "all regions overlay the same 12-byte scalar catch payload range: \
+         one={one_frame_sizes:?}, many={many_frame_sizes:?}",
+    );
+}
+
+#[test]
+fn recipe_backed_catch_arm_count_uses_one_region_local_and_header_only_frame() {
+    fn fixture(arm_count: usize) -> String {
+        assert!(arm_count > 0);
+        let tags = (0..arm_count)
+            .map(|index| format!("(tag $tag{index} (param externref))"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let catches = (0..arm_count)
+            .map(|index| format!("(catch_ref $tag{index} $handler)"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            r#"
+                (module
+                  (import "kernel" "kernel_fork" (func $kernel_fork (result i32)))
+                  {tags}
+                  (memory (export "memory") 1)
+                  (func $caller (export "catch_ref_recipe_scaling")
+                    (block $handler (result externref exnref)
+                      (try_table (result externref exnref)
+                          {catches}
+                        call $kernel_fork
+                        drop
+                        ref.null extern
+                        throw $tag0))
+                    drop
+                    drop))
+            "#,
+        )
+    }
+
+    fn counts(arm_count: usize) -> (GeneratedLocalCounts, Vec<i32>, String) {
+        let input = wat::parse_str(fixture(arm_count)).expect("wat parse");
+        let output = instrument(&input, &Options::default()).expect("instrument");
+        validate(&output);
+        let printed = wasmprinter::print_bytes(&output).expect("wasmprinter");
+        (
+            generated_local_counts(&output, "catch_ref_recipe_scaling"),
+            frame_reserve_sizes(&output, "catch_ref_recipe_scaling"),
+            extract_function_text(&printed, "caller"),
+        )
+    }
+
+    let (one_arm, one_frame_sizes, one_arm_wat) = counts(1);
+    let (many_arms, many_frame_sizes, many_arms_wat) = counts(32);
+    assert_eq!(
+        one_arm,
+        GeneratedLocalCounts {
+            i32: 1,
+            i64: 0,
+            f32: 0,
+            f64: 0,
+            v128: 0,
+            nullable_exnref: 1,
+            other_reference: 1,
+            total: 3,
+        },
+        "one reference-payload CatchRef arm should need one selector i32, \
+         one operand-forwarding externref, and one retained region exnref; \
+         the call boundary adds no local:\n{one_arm_wat}",
+    );
+    assert_eq!(
+        many_arms, one_arm,
+        "mutually exclusive recipe-backed arms in one try_table must share \
+         both their typed operand union and retained exception local:\n\
+         {many_arms_wat}",
+    );
+    assert!(
+        one_frame_sizes.iter().all(|size| *size == 16)
+            && many_frame_sizes.iter().all(|size| *size == 16),
+        "reference-bearing catch payloads belong to the recipe vector; adding \
+         static arms must not grow the 16-byte linked-frame payload header: \
+         one={one_frame_sizes:?}, many={many_frame_sizes:?}",
+    );
+}
+
+#[test]
+fn recipe_backed_catch_region_count_uses_one_function_local_and_header_only_frame() {
+    fn fixture(region_count: usize) -> String {
+        assert!(region_count > 0);
+        let regions = (0..region_count)
+            .map(|index| {
+                format!(
+                    r#"
+                      (block $handler{index} (result externref exnref)
+                        (try_table (result externref exnref)
+                            (catch_ref $tag $handler{index})
+                          ref.null extern
+                          throw $tag))
+                      drop
+                      drop
+                    "#,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            r#"
+                (module
+                  (import "kernel" "kernel_fork" (func $kernel_fork (result i32)))
+                  (tag $tag (param externref))
+                  (memory (export "memory") 1)
+                  (func $caller (export "catch_ref_recipe_region_scaling")
+                    {regions}
+                    call $kernel_fork
+                    drop))
+            "#,
+        )
+    }
+
+    fn measure(region_count: usize) -> (GeneratedLocalCounts, Vec<i32>, String) {
+        let input = wat::parse_str(fixture(region_count)).expect("wat parse");
+        let output = instrument(&input, &Options::default()).expect("instrument");
+        validate(&output);
+        let printed = wasmprinter::print_bytes(&output).expect("wasmprinter");
+        (
+            generated_local_counts(&output, "catch_ref_recipe_region_scaling"),
+            frame_reserve_sizes(&output, "catch_ref_recipe_region_scaling"),
+            extract_function_text(&printed, "caller"),
+        )
+    }
+
+    let (one_region, one_frame_sizes, one_region_wat) = measure(1);
+    let (many_regions, many_frame_sizes, many_regions_wat) = measure(32);
+    assert_eq!(
+        one_region,
+        GeneratedLocalCounts {
+            i32: 1,
+            i64: 0,
+            f32: 0,
+            f64: 0,
+            v128: 0,
+            nullable_exnref: 1,
+            other_reference: 1,
+            total: 3,
+        },
+        "one recipe-backed region should need one selector i32, one shared \
+         operand-forwarding externref, and one retained exception; the call \
+         boundary adds no local:\n{one_region_wat}",
+    );
+    assert_eq!(
+        many_regions, one_region,
+        "the one live catch selector can name only one complete-exception \
+         recipe, so 32 static regions must not add 32 native exnref locals:\n\
+         {many_regions_wat}",
+    );
+    assert!(
+        one_frame_sizes.iter().all(|size| *size == 16)
+            && many_frame_sizes.iter().all(|size| *size == 16),
+        "recipe-backed regions must share the process reference vector's one \
+         selected exception and must not grow the 16-byte linked frame: \
+         one={one_frame_sizes:?}, many={many_frame_sizes:?}",
+    );
+}
+
+#[test]
+fn v128_catch_arm_count_uses_one_region_local_and_header_only_frame() {
+    fn fixture(arm_count: usize) -> String {
+        assert!(arm_count > 0);
+        let tags = (0..arm_count)
+            .map(|index| format!("(tag $tag{index} (param v128))"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let catches = (0..arm_count)
+            .map(|index| format!("(catch_ref $tag{index} $handler)"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            r#"
+                (module
+                  (import "kernel" "kernel_fork" (func $kernel_fork (result i32)))
+                  {tags}
+                  (memory (export "memory") 1)
+                  (func $caller (export "catch_ref_v128_scaling")
+                    (block $handler (result v128 exnref)
+                      (try_table (result v128 exnref)
+                          {catches}
+                        call $kernel_fork
+                        drop
+                        v128.const i32x4 1 2 3 4
+                        throw $tag0))
+                    drop
+                    drop))
+            "#,
+        )
+    }
+
+    fn counts(arm_count: usize) -> (GeneratedLocalCounts, Vec<i32>, String) {
+        let input = wat::parse_str(fixture(arm_count)).expect("wat parse");
+        let output = instrument(&input, &Options::default()).expect("instrument");
+        validate(&output);
+        let printed = wasmprinter::print_bytes(&output).expect("wasmprinter");
+        (
+            generated_local_counts(&output, "catch_ref_v128_scaling"),
+            frame_reserve_sizes(&output, "catch_ref_v128_scaling"),
+            extract_function_text(&printed, "caller"),
+        )
+    }
+
+    let (one_arm, one_frame_sizes, one_arm_wat) = counts(1);
+    let (many_arms, many_frame_sizes, many_arms_wat) = counts(32);
+    assert_eq!(
+        one_arm,
+        GeneratedLocalCounts {
+            i32: 1,
+            i64: 0,
+            f32: 0,
+            f64: 0,
+            v128: 1,
+            nullable_exnref: 1,
+            other_reference: 0,
+            total: 3,
+        },
+        "one v128-payload CatchRef arm should need one selector i32, \
+         one operand-forwarding v128, and one retained region exnref; the \
+         call boundary adds no local:\n{one_arm_wat}",
+    );
+    assert_eq!(
+        many_arms, one_arm,
+        "mutually exclusive v128 recipe-backed arms in one try_table must \
+         share both their typed operand union and retained exception local:\n\
+         {many_arms_wat}",
+    );
+    assert!(
+        one_frame_sizes.iter().all(|size| *size == 16)
+            && many_frame_sizes.iter().all(|size| *size == 16),
+        "v128 catch payloads belong to the complete-exception recipe; adding \
+         static arms must not grow the 16-byte linked-frame payload header: \
+         one={one_frame_sizes:?}, many={many_frame_sizes:?}",
+    );
+}
+
+#[test]
+fn catch_all_forms_use_one_retained_exception_local_and_no_frame_payload() {
+    let fixtures = [
+        (
+            "catch_all",
+            r#"
+                (module
+                  (import "kernel" "kernel_fork" (func $kernel_fork (result i32)))
+                  (tag $failure)
+                  (memory (export "memory") 1)
+                  (func $caller (export "catch_all_recipe_footprint")
+                    (block $handler
+                      (try_table (catch_all $handler)
+                        call $kernel_fork
+                        drop
+                        throw $failure))))
+            "#,
+            "catch_all_recipe_footprint",
+        ),
+        (
+            "catch_all_ref",
+            r#"
+                (module
+                  (import "kernel" "kernel_fork" (func $kernel_fork (result i32)))
+                  (tag $failure)
+                  (memory (export "memory") 1)
+                  (func $caller (export "catch_all_ref_recipe_footprint")
+                    (block $handler (result exnref)
+                      (try_table (result exnref) (catch_all_ref $handler)
+                        call $kernel_fork
+                        drop
+                        throw $failure))
+                    drop))
+            "#,
+            "catch_all_ref_recipe_footprint",
+        ),
+    ];
+
+    for (label, wat, export_name) in fixtures {
+        let input = wat::parse_str(wat).unwrap_or_else(|error| panic!("{label}: {error}"));
+        let output = instrument(&input, &Options::default())
+            .unwrap_or_else(|error| panic!("{label}: {error:#}"));
+        validate(&output);
+        let printed = wasmprinter::print_bytes(&output).expect("wasmprinter");
+        let caller = extract_function_text(&printed, "caller");
+        assert_eq!(
+            generated_local_counts(&output, export_name),
+            GeneratedLocalCounts {
+                i32: 1,
+                i64: 0,
+                f32: 0,
+                f64: 0,
+                v128: 0,
+                nullable_exnref: 1,
+                other_reference: 0,
+                total: 2,
+            },
+            "{label}: an untagged catch needs one selector i32 and exactly \
+             one retained region exception local; the call boundary adds no \
+             local:\n{caller}",
+        );
+        let frame_sizes = frame_reserve_sizes(&output, export_name);
+        assert!(
+            frame_sizes.iter().all(|size| *size == 16),
+            "{label}: the complete exception belongs to the recipe vector, \
+             not additional linked-frame bytes: {frame_sizes:?}",
+        );
+    }
 }
 
 // -- Helper predicates ----------------------------------------------
@@ -478,6 +1057,147 @@ fn declared_scalar_local_count(func_text: &str) -> usize {
                 .count()
         })
         .sum()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GeneratedLocalCounts {
+    i32: usize,
+    i64: usize,
+    f32: usize,
+    f64: usize,
+    v128: usize,
+    nullable_exnref: usize,
+    other_reference: usize,
+    total: usize,
+}
+
+fn generated_local_counts(bytes: &[u8], export_name: &str) -> GeneratedLocalCounts {
+    let mut imported_functions = 0u32;
+    let mut exported_function = None;
+    let mut defined_function = 0u32;
+    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
+        match payload.expect("parse generated module") {
+            wasmparser::Payload::ImportSection(imports) => {
+                for import in imports.into_imports() {
+                    if matches!(
+                        import.expect("parse generated import").ty,
+                        wasmparser::TypeRef::Func(_) | wasmparser::TypeRef::FuncExact(_)
+                    ) {
+                        imported_functions += 1;
+                    }
+                }
+            }
+            wasmparser::Payload::ExportSection(exports) => {
+                for export in exports {
+                    let export = export.expect("parse generated export");
+                    if export.name == export_name && export.kind == wasmparser::ExternalKind::Func {
+                        exported_function = Some(export.index);
+                    }
+                }
+            }
+            wasmparser::Payload::CodeSectionEntry(body) => {
+                let function_index = imported_functions + defined_function;
+                defined_function += 1;
+                if Some(function_index) != exported_function {
+                    continue;
+                }
+
+                let mut counts = GeneratedLocalCounts {
+                    i32: 0,
+                    i64: 0,
+                    f32: 0,
+                    f64: 0,
+                    v128: 0,
+                    nullable_exnref: 0,
+                    other_reference: 0,
+                    total: 0,
+                };
+                for local in body
+                    .get_locals_reader()
+                    .expect("read generated locals")
+                    .into_iter()
+                {
+                    let (count, ty) = local.expect("parse generated local");
+                    let count = count as usize;
+                    counts.total += count;
+                    match ty {
+                        wasmparser::ValType::I32 => counts.i32 += count,
+                        wasmparser::ValType::I64 => counts.i64 += count,
+                        wasmparser::ValType::F32 => counts.f32 += count,
+                        wasmparser::ValType::F64 => counts.f64 += count,
+                        wasmparser::ValType::V128 => counts.v128 += count,
+                        wasmparser::ValType::Ref(wasmparser::RefType::EXNREF) => {
+                            counts.nullable_exnref += count;
+                        }
+                        wasmparser::ValType::Ref(_) => counts.other_reference += count,
+                    }
+                }
+                return counts;
+            }
+            _ => {}
+        }
+    }
+    panic!("generated function export `{export_name}` has no code body");
+}
+
+fn frame_reserve_sizes(bytes: &[u8], export_name: &str) -> Vec<i32> {
+    let module = Module::from_buffer(bytes).expect("parse generated module");
+    let frame_select = module
+        .funcs
+        .iter()
+        .find(|function| function.name.as_deref() == Some("__wpk_fork_select_unwind_frame"))
+        .expect("generated unwind-frame selector")
+        .id();
+    let function_id = module
+        .exports
+        .iter()
+        .find_map(|export| {
+            (export.name == export_name).then(|| match export.item {
+                walrus::ExportItem::Function(function) => Some(function),
+                _ => None,
+            })?
+        })
+        .unwrap_or_else(|| panic!("generated function export `{export_name}` not found"));
+    let function = local_func(&module, function_id);
+    let mut sizes = Vec::new();
+
+    fn collect(
+        function: &LocalFunction,
+        sequence: InstrSeqId,
+        frame_select: FunctionId,
+        sizes: &mut Vec<i32>,
+    ) {
+        let instructions = &function.block(sequence).instrs;
+        for (index, (instruction, _)) in instructions.iter().enumerate() {
+            if matches!(instruction, Instr::Call(call) if call.func == frame_select) {
+                let Some((
+                    Instr::Const(Const {
+                        value: Value::I32(size),
+                    }),
+                    _,
+                )) = index
+                    .checked_sub(2)
+                    .and_then(|previous| instructions.get(previous))
+                else {
+                    panic!(
+                        "unwind-frame selector must be preceded by its exact \
+                         static size and call index"
+                    );
+                };
+                sizes.push(*size);
+            }
+            for child in nested_of(instruction) {
+                collect(function, child, frame_select, sizes);
+            }
+        }
+    }
+
+    collect(function, function.entry_block(), frame_select, &mut sizes);
+    assert!(
+        !sizes.is_empty(),
+        "generated function export `{export_name}` has no unwind-frame selection"
+    );
+    sizes
 }
 
 fn find_import_func(module: &Module, qualified: &str) -> FunctionId {

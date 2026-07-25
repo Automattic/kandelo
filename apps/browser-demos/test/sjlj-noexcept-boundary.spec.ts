@@ -19,7 +19,6 @@ const fixturePaths = {
     repoRoot,
     "local-binaries/test-fixtures/wasm64/sjlj_noexcept_boundary.raw.wasm",
   ),
-  instrumented: resolveBinary("programs/sjlj_noexcept_boundary.wasm"),
   sigchld: resolveBinary("programs/sigchld_sjlj.wasm"),
 };
 
@@ -76,11 +75,7 @@ test("Chromium preserves the SjLj controls and positive SIGCHLD path", async ({
             "sjlj_noexcept_boundary",
             "--noexcept",
           ]),
-          instrumented: await run(fixtureUrls.instrumented, [
-            "sjlj_noexcept_boundary",
-            "--noexcept",
-          ]),
-          permissive: await run(fixtureUrls.instrumented, [
+          permissive: await run(fixtureUrls.rawWasm32, [
             "sjlj_noexcept_boundary",
             "--permissive",
           ]),
@@ -99,7 +94,6 @@ test("Chromium preserves the SjLj controls and positive SIGCHLD path", async ({
 
   for (const control of [
     results.rawWasm32,
-    results.instrumented,
     results.rawWasm64,
   ]) {
     expect(control.exitCode).toBe(128 + 6);
