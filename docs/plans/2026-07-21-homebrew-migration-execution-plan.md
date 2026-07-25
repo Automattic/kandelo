@@ -61,6 +61,24 @@ did change, so fork-instrumented outputs remain a legitimate targeted rebuild
 set. Quantify the complete reuse/rebuild/missing inventory before creating any
 new immutable GHCR identities.
 
+Core-tap PR #109 landed the operational safeguard at
+`3b3a92c60208a99cde491ba46927cb02a5232da0`. ABI rollout state now carries an
+exact, canonical partition of Formulae into `rebuild`, `reuse`, and `deferred`
+sets. Only the rebuild set may reserve successor identities, dispatch package
+builds, or require absent successor GHCR tags; Formulae in the other two sets
+must remain byte-for-byte unchanged. This permits a shell-first campaign to
+rebuild Bash while reusing its unchanged `libcxx` and `ncurses` bottles and
+deferring unrelated Formulae. No corrected campaign has been initialized or
+dispatched yet.
+
+The first conservative inventory contains 70 architecture-specific bottle
+objects: 23 fork-instrumented objects whose payload-producing instrumenter
+changed and 47 candidates for reuse plus current-main revalidation. The
+47-object main-shell closure has 18 rebuild candidates and 29 reuse candidates.
+These counts are planning inputs, not acceptance gates; the exact named sets
+and dependency propagation still need to be regenerated from the completed
+versioned payload-identity contract before publication.
+
 ## Source Plans And Preservation Rule
 
 This plan reconciles, rather than silently replaces, the earlier Homebrew work:
