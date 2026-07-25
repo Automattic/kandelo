@@ -20,7 +20,33 @@ shift || true
   case "$cmd" in
   api)
     if [[ "$*" == *"/git/ref/heads/main"* ]]; then
-      printf '%s\n' "${GH_STUB_MAIN_SHA:?}"
+      main_sha="${GH_STUB_MAIN_SHA:?}"
+      if [ -n "${GH_STUB_STATE_DIR:-}" ]; then
+        count=0
+        [ ! -f "$GH_STUB_STATE_DIR/main-check-count" ] ||
+          count=$(cat "$GH_STUB_STATE_DIR/main-check-count")
+        count=$((count + 1))
+        printf '%s\n' "$count" >"$GH_STUB_STATE_DIR/main-check-count"
+        if [ -n "${GH_STUB_MAIN_FLIP_AFTER:-}" ] &&
+           [ "$count" -gt "$GH_STUB_MAIN_FLIP_AFTER" ]; then
+          main_sha="${GH_STUB_NEXT_MAIN_SHA:?}"
+        fi
+      fi
+      printf '%s\n' "$main_sha"
+      exit 0
+    fi
+    if [[ "$*" == *"-X DELETE"* ]]; then
+      delete_count=0
+      [ ! -f "$GH_STUB_STATE_DIR/delete-attempt-count" ] ||
+        delete_count=$(cat "$GH_STUB_STATE_DIR/delete-attempt-count")
+      delete_count=$((delete_count + 1))
+      printf '%s\n' "$delete_count" >"$GH_STUB_STATE_DIR/delete-attempt-count"
+      if [ "${GH_STUB_DELETE_FAIL_ONCE:-0}" = 1 ] &&
+         [ "$delete_count" = 1 ]; then
+        echo "injected delete failure" >&2
+        exit 1
+      fi
+      rm -f "$GH_STUB_STATE_DIR/existing-archive"
       exit 0
     fi
     asset_name=""
@@ -41,6 +67,9 @@ shift || true
         printf '1\t123\tsha256:stub\n'
       elif [ "$asset_name" = "ready.json" ] && [ "${GH_STUB_HAS_READY:-0}" = "1" ]; then
         printf '2\t123\tsha256:stub\n'
+      elif [ -f "${GH_STUB_STATE_DIR:-/nonexistent}/existing-archive" ] &&
+           [ "$asset_name" = "${GH_STUB_EXISTING_ARCHIVE_NAME:-}" ]; then
+        printf '3\t1\tsha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\n'
       fi
     fi
     ;;
@@ -49,6 +78,11 @@ shift || true
     shift || true
     case "$sub" in
       view)
+        if [ "${GH_STUB_RELEASE_MISSING:-0}" = 1 ] &&
+           [ ! -f "${GH_STUB_STATE_DIR:?}/release-created" ]; then
+          echo "release not found" >&2
+          exit 1
+        fi
         exit 0
         ;;
       download)
@@ -77,6 +111,9 @@ shift || true
         done
         ;;
       create)
+        if [ -n "${GH_STUB_STATE_DIR:-}" ]; then
+          touch "$GH_STUB_STATE_DIR/release-created"
+        fi
         exit 0
         ;;
       *)
@@ -199,14 +236,23 @@ run_index_update() {
   local has_ready="${5:-0}"
   local repository="${6:-example/repo}"
   local canonical_source_sha="${7:-}"
+  local release_missing="${8:-0}"
+  local main_flip_after="${9:-}"
+  local existing_archive="${10:-0}"
+  local delete_fail_once="${11:-0}"
 
-  local case_dir archive_path upload_dir
+  local case_dir archive_path upload_dir state_dir
   local -a authority_args=()
   case_dir="$(mktemp -d "$TMP_ROOT/case.XXXXXX")"
   archive_path="$case_dir/foo-1.0-rev1-abi${archive_abi}-wasm32-deadbeef.tar.zst"
   upload_dir="$case_dir/uploads"
+  state_dir="$case_dir/gh-state"
+  LAST_INDEX_UPDATE_CASE_DIR="$case_dir"
   printf 'archive bytes\n' > "$archive_path"
-  mkdir -p "$upload_dir"
+  mkdir -p "$upload_dir" "$state_dir"
+  if [ "$existing_archive" = 1 ]; then
+    touch "$state_dir/existing-archive"
+  fi
   if [ -n "$canonical_source_sha" ]; then
     authority_args+=(--canonical-source-sha "$canonical_source_sha")
   fi
@@ -216,6 +262,12 @@ run_index_update() {
        GH_STUB_UPLOAD_DIR="$upload_dir" \
        GH_STUB_HAS_READY="$has_ready" \
        GH_STUB_MAIN_SHA="0123456789abcdef0123456789abcdef01234567" \
+       GH_STUB_NEXT_MAIN_SHA="ffffffffffffffffffffffffffffffffffffffff" \
+       GH_STUB_MAIN_FLIP_AFTER="$main_flip_after" \
+       GH_STUB_RELEASE_MISSING="$release_missing" \
+       GH_STUB_EXISTING_ARCHIVE_NAME="$(basename "$archive_path")" \
+       GH_STUB_DELETE_FAIL_ONCE="$delete_fail_once" \
+       GH_STUB_STATE_DIR="$state_dir" \
        GH_TOKEN="test-token" \
        GITHUB_REPOSITORY="$repository" \
        GITHUB_SHA="0123456789abcdef0123456789abcdef01234567" \
@@ -335,6 +387,39 @@ then
 fi
 grep -Fq "source SHA must equal the current refs/heads/main commit" \
   "$TMP_ROOT/stale-authority.err"
+
+if run_index_update \
+    "binaries-abi-v42" 42 0 "" 0 "Automattic/kandelo" \
+    "$canonical_sha" 1 1 \
+    >/dev/null 2>"$TMP_ROOT/create-race.err"
+then
+  echo "expected main advance before canonical release creation to fail" >&2
+  exit 1
+fi
+grep -Fq "source SHA must equal the current refs/heads/main commit" \
+  "$TMP_ROOT/create-race.err"
+[ "$(cat "$LAST_INDEX_UPDATE_CASE_DIR/gh-state/main-check-count")" = 2 ]
+if [ -e "$LAST_INDEX_UPDATE_CASE_DIR/gh-state/release-created" ]; then
+  echo "canonical release was created after its source stopped being main" >&2
+  exit 1
+fi
+
+if run_index_update \
+    "binaries-abi-v42" 42 0 "" 0 "Automattic/kandelo" \
+    "$canonical_sha" 0 2 1 1 \
+    >/dev/null 2>"$TMP_ROOT/delete-retry-race.err"
+then
+  echo "expected main advance before an archive delete retry to fail" >&2
+  exit 1
+fi
+grep -Fq "source SHA must equal the current refs/heads/main commit" \
+  "$TMP_ROOT/delete-retry-race.err"
+[ "$(cat "$LAST_INDEX_UPDATE_CASE_DIR/gh-state/main-check-count")" = 3 ]
+[ "$(cat "$LAST_INDEX_UPDATE_CASE_DIR/gh-state/delete-attempt-count")" = 1 ]
+if [ ! -f "$LAST_INDEX_UPDATE_CASE_DIR/gh-state/existing-archive" ]; then
+  echo "stale source authority retried the canonical archive delete" >&2
+  exit 1
+fi
 
 candidate_index="$(run_index_update "merge-candidate-abi-v${CURRENT_ABI}-pr-595-run-123-attempt-1" "$CURRENT_ABI" 0)"
 assert_index_abi "$candidate_index" "$CURRENT_ABI"

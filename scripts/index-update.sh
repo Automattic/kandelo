@@ -141,6 +141,11 @@ archive_name_abi() {
 }
 
 gh_retry() {
+  local require_authority=0
+  if [ "${1:-}" = "--canonical-mutation" ]; then
+    require_authority=1
+    shift
+  fi
   local attempt=1
   local max_attempts=4
   local delay=2
@@ -154,6 +159,11 @@ gh_retry() {
     : >"$stdout_file"
     : >"$stderr_file"
 
+    if [ "$require_authority" = 1 ] &&
+       ! require_canonical_source_authority; then
+      rm -f "$stdout_file" "$stderr_file"
+      return 86
+    fi
     if "$@" >"$stdout_file" 2>"$stderr_file"; then
       cat "$stdout_file"
       rm -f "$stdout_file" "$stderr_file"
@@ -306,7 +316,13 @@ Binaries for ABI v${ABI}")
       ;;
   esac
 
-  if ! gh_retry gh release create "${release_args[@]}"; then
+  local create_rc=0
+  gh_retry --canonical-mutation gh release create "${release_args[@]}" ||
+    create_rc=$?
+  if [ "$create_rc" -ne 0 ]; then
+    # WHY: authority failure is definitive, not an ambiguous GitHub write that
+    # a read-after-write reconciliation can turn into success.
+    [ "$create_rc" -ne 86 ] || return 1
     # Another writer may have created the release after our miss. Treat
     # that race as success only if the release is now visible.
     gh_retry gh release view "$TARGET_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
@@ -350,8 +366,7 @@ upload_archive_asset() {
     fi
 
     echo "index-update.sh: archive asset $ARCHIVE_NAME exists but does not match staged bytes; replacing it." >&2
-    require_canonical_source_authority
-    gh_retry gh api \
+    gh_retry --canonical-mutation gh api \
       -X DELETE \
       "/repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
       >/dev/null
@@ -361,7 +376,7 @@ upload_archive_asset() {
   local max_attempts=4
   local delay=2
   while true; do
-    require_canonical_source_authority
+    require_canonical_source_authority || return 1
     if gh release upload "$TARGET_TAG" \
          --repo "$GITHUB_REPOSITORY" \
          "$ARCHIVE_PATH"
@@ -374,8 +389,7 @@ upload_archive_asset() {
       if [ -n "$info" ]; then
         local retry_asset_id
         read -r retry_asset_id _ _ <<< "$info"
-        require_canonical_source_authority
-        gh_retry gh api \
+        gh_retry --canonical-mutation gh api \
           -X DELETE \
           "/repos/${GITHUB_REPOSITORY}/releases/assets/${retry_asset_id}" \
           >/dev/null

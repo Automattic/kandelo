@@ -150,11 +150,28 @@ ensure_guard_line="$(
 
 upload_line="$(grep -n '^[[:space:]]*if gh release upload ' "$INDEX_UPDATE" | cut -d: -f1)"
 upload_guard_line="$(
-  grep -n '^[[:space:]]*require_canonical_source_authority$' "$INDEX_UPDATE" |
+  grep -n '^[[:space:]]*require_canonical_source_authority || return 1$' "$INDEX_UPDATE" |
     awk -F: -v mutation="$upload_line" '$1 < mutation { line = $1 } END { print line }'
 )"
 [ -n "$upload_guard_line" ] && [ "$upload_guard_line" -lt "$upload_line" ] ||
   fail "archive upload is not preceded by a live-main recheck"
+
+canonical_retry_count="$(
+  grep -Fc 'gh_retry --canonical-mutation' "$INDEX_UPDATE"
+)"
+[ "$canonical_retry_count" -eq 3 ] ||
+  fail "release creation and archive deletes must recheck main on every retry"
+retry_guard_line="$(
+  grep -n '! require_canonical_source_authority' "$INDEX_UPDATE" |
+    head -1 | cut -d: -f1
+)"
+retry_command_line="$(
+  grep -n '^[[:space:]]*if "\$@"' "$INDEX_UPDATE" |
+    head -1 | cut -d: -f1
+)"
+[ -n "$retry_guard_line" ] && [ -n "$retry_command_line" ] &&
+  [ "$retry_guard_line" -lt "$retry_command_line" ] ||
+  fail "canonical mutation retry does not recheck main before its command"
 
 publish_line="$(
   grep -n 'bash "$RELEASE_INDEX_STATE_SCRIPT" publish' "$INDEX_UPDATE" |
