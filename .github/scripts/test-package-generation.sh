@@ -587,6 +587,30 @@ if grep -Fq "contents: write" <<<"$preserve_prepare_job"; then
 fi
 grep -Fq "prepare-preserved-pr-package-generation.sh" \
   <<<"$preserve_prepare_job"
+grep -Fq 'cargo_home="$RUNNER_TEMP/prepare-authority-cargo-home"' \
+  <<<"$preserve_prepare_job"
+grep -Fq 'export CARGO_HOME="$cargo_home"' <<<"$preserve_prepare_job"
+grep -Fq 'cargo fetch --locked --manifest-path Cargo.toml' \
+  <<<"$preserve_prepare_job"
+grep -Fq 'CARGO_HOME="$authority_cargo_home"' <<<"$preserve_prepare_job"
+fetch_line="$(
+  grep -nF 'cargo fetch --locked --manifest-path Cargo.toml' \
+    "$preservation_workflow" | cut -d: -f1
+)"
+build_line="$(
+  grep -nF 'cargo build --release -p xtask' \
+    "$preservation_workflow" | head -1 | cut -d: -f1
+)"
+if [ -z "$fetch_line" ] || [ -z "$build_line" ] ||
+   [ "$fetch_line" -ge "$build_line" ]; then
+  echo "preservation does not warm the isolated authority lock before building the validator" >&2
+  exit 1
+fi
+if grep -F 'cargo fetch' "$preservation_workflow" |
+   grep -Fq 'package-source'; then
+  echo "preservation fetch consults the unmerged producer checkout" >&2
+  exit 1
+fi
 if grep -Fq "working-directory: package-source" <<<"$preserve_prepare_job" ||
    grep -Fq "package-source-target" <<<"$preserve_prepare_job" ||
    grep -Fq "source-xtask" <<<"$preserve_prepare_job"; then
