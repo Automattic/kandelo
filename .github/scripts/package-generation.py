@@ -22,14 +22,25 @@ PACKAGE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 ARCH = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 ASSET = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.tar\.zst$")
 SUPPORTING_ASSET = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-STAGING_TAG = re.compile(r"^pr-[1-9][0-9]*-staging$")
 CANONICAL_BINARY_TAG = re.compile(r"^binaries-abi-v[1-9][0-9]*$")
+PR_STAGING_TAG = re.compile(r"^pr-[1-9][0-9]*-staging$")
+STAGING_TAG = PR_STAGING_TAG
+PRESERVED_TAG = re.compile(
+    r"^preserved-package-generation-[a-z0-9][a-z0-9._-]*-"
+    r"[a-z0-9][a-z0-9._-]*-abi-v[1-9][0-9]*-source-[0-9a-f]{40}-"
+    r"sha256-[0-9a-f]{64}$"
+)
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 IDENTITY_FORMAT = "kandelo-package-generation-identity-v1"
 MANIFEST_FORMAT = "kandelo-package-generation-v1"
+IDENTITY_FORMAT_V2 = "kandelo-package-generation-identity-v2"
+MANIFEST_FORMAT_V2 = "kandelo-package-generation-v2"
 PRESERVED_IDENTITY_FORMAT = "kandelo-preserved-pr-package-generation-identity-v1"
 PRESERVED_MANIFEST_FORMAT = "kandelo-preserved-pr-package-generation-v1"
 SOURCE_CAPTURE_FORMAT = "kandelo-preserved-pr-source-capture-v1"
+PRESERVED_PRODUCER_EVIDENCE_FORMAT = (
+    "kandelo-preserved-package-producer-release-v1"
+)
 SINGLE_ROOT_PROJECTION_SCHEMA = 1
 ROOT_SET_PROJECTION_SCHEMA = 2
 BROWSER_INPUTS_ROOT_SET = "browser-inputs"
@@ -38,9 +49,35 @@ PROGRAM_ARCHIVE_DISPOSITION = "program-archive"
 LIBRARY_ARCHIVE_DISPOSITION = "library-archive"
 SOURCE_ONLY_DISPOSITION = "source-only"
 MAIN_SOURCE_EVIDENCE_FORMAT = "kandelo-main-package-activation-v1"
+PRODUCER_RELEASE_EVIDENCE_FORMAT = "kandelo-package-producer-release-v1"
+MAIN_VALIDATION_EVIDENCE_FORMAT = "kandelo-package-main-validation-v1"
+IDENTICAL_GIT_TREE_METHOD = "identical-git-tree-v1"
+IDENTICAL_PACKAGE_CACHE_PROJECTION_METHOD = (
+    "identical-package-cache-projection-v1"
+)
+PACKAGE_CACHE_PROJECTION_EVIDENCE_FORMAT = (
+    "kandelo-package-cache-projection-v1"
+)
+PACKAGE_CACHE_PROJECTION_POLICY = "selected-build-input-closure-v1"
+SELECTED_BUILD_INPUT_CLOSURE_FORMAT = (
+    "kandelo-selected-package-build-input-closure-v1"
+)
+# WHY: cache-projection validation is a deliberately one-shot bridge for the
+# already-built #1097 staging closure. Binding both immutable inputs here keeps
+# this narrower proof from silently becoming a general way to publish old
+# package caches after unrelated future changes.
+CACHE_PROJECTION_BRIDGE_PRODUCER_SHA = (
+    "748c2609954d2809bbcbbcb642fa7d257fc0dbc6"
+)
+CACHE_PROJECTION_BRIDGE_SOURCE_TAG = "pr-1097-staging"
+VALIDATION_METHODS = {
+    IDENTICAL_GIT_TREE_METHOD,
+    IDENTICAL_PACKAGE_CACHE_PROJECTION_METHOD,
+}
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_INDEX_BYTES = 16 * 1024 * 1024
 MAX_ARCHIVES = 256
+MAX_TREE_ENTRIES = 100_000
 MAX_ROOTS_BYTES = 64 * 1024
 MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_TOTAL_ARCHIVE_BYTES = 16 * 1024 * 1024 * 1024
@@ -49,9 +86,30 @@ MAX_SUPPORTING_ASSET_BYTES = 256 * 1024 * 1024
 MAX_ROOT_JOB_LOG_BYTES = 16 * 1024 * 1024
 MAX_GITHUB_METADATA_BYTES = 32 * 1024 * 1024
 
+# WHY: current authority computes the selected build-input closure for both
+# trees, so unrelated host/runtime changes are irrelevant by construction.
+# These two readers still define that compatibility decision; pinning their
+# exact H→M transition prevents a later validator rewrite from reinterpreting
+# the one-shot #1097 evidence.
+#
+# These validated-main blob IDs are provisional until this replay's exact tree
+# is merged and read back from `main`. They already name the candidate bytes,
+# so the final check should confirm them rather than substitute a commit-based
+# approximation; any subsequent edit to either file requires new pins.
+PACKAGE_CACHE_PROJECTION_PINNED_TRANSITIONS = {
+    "tools/xtask/src/build_deps.rs": {
+        "producer": "9c8930dd137fcb836756657c43288e76e55fce36",
+        "validated_main": "d8a095c60ed3bb90831afc11ec586c21abd886ee",
+    },
+    "tools/xtask/src/staging_reuse.rs": {
+        "producer": "66a19dfc1542ef4f33e6b2ca06e8a3b170959508",
+        "validated_main": "76a582453e25c35258b98c63040b0d4478634dbb",
+    },
+}
+
 
 class ContractError(ValueError):
-    """An input violates a package-generation contract."""
+    """An input violates the durable package-generation contract."""
 
 
 def fail(message: str) -> None:
@@ -261,6 +319,1226 @@ def derive_main_source_evidence(
     )
 
 
+def package_release_kind(tag: str) -> str:
+    if CANONICAL_BINARY_TAG.fullmatch(tag) is not None:
+        return "canonical"
+    if PR_STAGING_TAG.fullmatch(tag) is not None:
+        return "pr-staging"
+    fail("package producer tag is neither canonical nor PR staging")
+
+
+def validate_ordinary_producer_release_evidence(value: Any) -> dict[str, Any]:
+    evidence = exact_keys(
+        value,
+        {
+            "format",
+            "repository",
+            "tag",
+            "release_id",
+            "tag_sha",
+            "producer_sha",
+            "producer_tree_sha",
+            "release_kind",
+        },
+        "package producer release evidence",
+    )
+    if evidence["format"] != PRODUCER_RELEASE_EVIDENCE_FORMAT:
+        fail("package producer release evidence format is unsupported")
+    tag = evidence["tag"]
+    if not isinstance(tag, str):
+        fail("package producer tag has an invalid value")
+    release_kind = package_release_kind(tag)
+    if evidence["release_kind"] != release_kind:
+        fail("package producer release kind differs from its tag")
+    producer_sha = text_matching(
+        evidence["producer_sha"], HEX_40, "package producer SHA"
+    )
+    tag_sha = text_matching(
+        evidence["tag_sha"], HEX_40, "package producer tag SHA"
+    )
+    return {
+        "format": PRODUCER_RELEASE_EVIDENCE_FORMAT,
+        "repository": text_matching(
+            evidence["repository"], REPOSITORY, "package producer repository"
+        ),
+        "tag": tag,
+        "release_id": integer(
+            evidence["release_id"], "package producer release id", minimum=1
+        ),
+        "tag_sha": tag_sha,
+        "producer_sha": producer_sha,
+        "producer_tree_sha": text_matching(
+            evidence["producer_tree_sha"], HEX_40, "package producer tree SHA"
+        ),
+        "release_kind": release_kind,
+    }
+
+
+def derive_producer_release_evidence(
+    *,
+    repository: str,
+    source_tag: str,
+    producer_sha: str,
+    release: Any,
+    tag_ref: Any,
+    producer_commit: Any,
+) -> dict[str, Any]:
+    text_matching(repository, REPOSITORY, "repository")
+    release_kind = package_release_kind(source_tag)
+    text_matching(producer_sha, HEX_40, "package producer SHA")
+    expected_prerelease = release_kind == "pr-staging"
+    if (
+        not isinstance(release, dict)
+        or release.get("tag_name") != source_tag
+        or release.get("draft") is not False
+        or release.get("prerelease") is not expected_prerelease
+    ):
+        fail("package producer release identity is malformed")
+    release_id = integer(
+        release.get("id"), "package producer release id", minimum=1
+    )
+    tag_object = mapping_field(tag_ref, "object", "package producer tag")
+    tag_sha = text_matching(
+        tag_object.get("sha"), HEX_40, "package producer tag SHA"
+    )
+    if (
+        not isinstance(tag_ref, dict)
+        or tag_ref.get("ref") != f"refs/tags/{source_tag}"
+        or tag_object.get("type") != "commit"
+    ):
+        fail("package producer release tag is not a direct commit reference")
+    # WHY: a release tag is an asset locator, not proof of which checkout
+    # produced each archive. Archive manifests establish the coherent producer
+    # independently.
+    if release.get("target_commitish") != tag_sha:
+        fail("package producer release target differs from its direct tag")
+    producer_tree = mapping_field(
+        producer_commit, "tree", "package producer commit"
+    )
+    if (
+        not isinstance(producer_commit, dict)
+        or producer_commit.get("sha") != producer_sha
+    ):
+        fail("package producer commit metadata differs from the producer SHA")
+    return validate_ordinary_producer_release_evidence(
+        {
+            "format": PRODUCER_RELEASE_EVIDENCE_FORMAT,
+            "repository": repository,
+            "tag": source_tag,
+            "release_id": release_id,
+            "tag_sha": tag_sha,
+            "producer_sha": producer_sha,
+            "producer_tree_sha": text_matching(
+                producer_tree.get("sha"), HEX_40, "package producer tree SHA"
+            ),
+            "release_kind": release_kind,
+        }
+    )
+
+
+def preserved_manifest_inventory(
+    manifest: dict[str, Any],
+    *,
+    manifest_sha256: str,
+    manifest_bytes: int,
+) -> list[dict[str, Any]]:
+    identity = manifest["identity"]
+    return sorted(
+        [
+            {
+                "name": "generation.json",
+                "bytes": manifest_bytes,
+                "sha256": manifest_sha256,
+            },
+            {
+                "name": manifest["index"]["name"],
+                "bytes": manifest["index"]["bytes"],
+                "sha256": manifest["index"]["sha256"],
+            },
+            *[
+                {
+                    "name": record["name"],
+                    "bytes": record["bytes"],
+                    "sha256": record["sha256"],
+                }
+                for record in identity["archives"]
+            ],
+            *[
+                {
+                    "name": record["name"],
+                    "bytes": record["bytes"],
+                    "sha256": record["sha256"],
+                }
+                for record in identity["supporting_assets"]
+            ],
+        ],
+        key=lambda record: record["name"],
+    )
+
+
+def validate_preserved_producer_release_evidence(
+    value: Any,
+) -> dict[str, Any]:
+    evidence = exact_keys(
+        value,
+        {
+            "format",
+            "repository",
+            "tag",
+            "release_id",
+            "tag_sha",
+            "producer_sha",
+            "producer_tree_sha",
+            "release_kind",
+            "manifest_sha256",
+            "manifest_bytes",
+            "preserved_manifest",
+            "assets",
+        },
+        "preserved package producer evidence",
+    )
+    if evidence["format"] != PRESERVED_PRODUCER_EVIDENCE_FORMAT:
+        fail("preserved package producer evidence format is unsupported")
+    repository = text_matching(
+        evidence["repository"], REPOSITORY, "preserved producer repository"
+    )
+    tag = text_matching(evidence["tag"], PRESERVED_TAG, "preserved producer tag")
+    producer_sha = text_matching(
+        evidence["producer_sha"], HEX_40, "preserved producer SHA"
+    )
+    tag_sha = text_matching(
+        evidence["tag_sha"], HEX_40, "preserved producer tag SHA"
+    )
+    if tag_sha != producer_sha or evidence["release_kind"] != "preserved-evidence":
+        fail("preserved producer tag must directly anchor its package source")
+    manifest_sha256 = text_matching(
+        evidence["manifest_sha256"], HEX_64, "preserved manifest digest"
+    )
+    manifest_bytes = integer(
+        evidence["manifest_bytes"],
+        "preserved manifest size",
+        minimum=1,
+        maximum=MAX_MANIFEST_BYTES,
+    )
+    manifest, identity, manifest_tag = validate_manifest(
+        evidence["preserved_manifest"]
+    )
+    if (
+        manifest["format"] != PRESERVED_MANIFEST_FORMAT
+        or identity["format"] != PRESERVED_IDENTITY_FORMAT
+        or identity["admission"] != "none"
+        or identity["repository"] != repository
+        or identity["package_source_sha"] != producer_sha
+        or manifest_tag != tag
+    ):
+        fail("preserved manifest does not bind the producer release")
+    manifest_body = canonical_bytes(manifest)
+    if (
+        len(manifest_body) != manifest_bytes
+        or sha256_bytes(manifest_body) != manifest_sha256
+    ):
+        fail("preserved manifest bytes differ from producer evidence")
+
+    assets = evidence["assets"]
+    if not isinstance(assets, list):
+        fail("preserved producer assets must be an array")
+    normalized_assets: list[dict[str, Any]] = []
+    for index, raw in enumerate(assets):
+        record = exact_keys(
+            raw,
+            {"id", "name", "bytes", "sha256"},
+            f"preserved producer asset {index}",
+        )
+        normalized_assets.append(
+            {
+                "id": integer(
+                    record["id"], "preserved release asset ID", minimum=1
+                ),
+                "name": bounded_text(
+                    record["name"], "preserved release asset name", maximum=256
+                ),
+                "bytes": integer(
+                    record["bytes"],
+                    "preserved release asset size",
+                    minimum=1,
+                    maximum=MAX_ARCHIVE_BYTES,
+                ),
+                "sha256": text_matching(
+                    record["sha256"], HEX_64, "preserved release asset digest"
+                ),
+            }
+        )
+    if normalized_assets != sorted(
+        normalized_assets, key=lambda record: record["name"]
+    ):
+        fail("preserved producer assets must be sorted")
+    if len({record["id"] for record in normalized_assets}) != len(
+        normalized_assets
+    ):
+        fail("preserved producer asset IDs must be unique")
+    expected_inventory = preserved_manifest_inventory(
+        manifest,
+        manifest_sha256=manifest_sha256,
+        manifest_bytes=manifest_bytes,
+    )
+    if [
+        {
+            "name": record["name"],
+            "bytes": record["bytes"],
+            "sha256": record["sha256"],
+        }
+        for record in normalized_assets
+    ] != expected_inventory:
+        fail("preserved producer release differs from its application seal")
+    return {
+        "format": PRESERVED_PRODUCER_EVIDENCE_FORMAT,
+        "repository": repository,
+        "tag": tag,
+        "release_id": integer(
+            evidence["release_id"], "preserved producer release ID", minimum=1
+        ),
+        "tag_sha": tag_sha,
+        "producer_sha": producer_sha,
+        "producer_tree_sha": text_matching(
+            evidence["producer_tree_sha"], HEX_40, "preserved producer tree SHA"
+        ),
+        "release_kind": "preserved-evidence",
+        "manifest_sha256": manifest_sha256,
+        "manifest_bytes": manifest_bytes,
+        "preserved_manifest": manifest,
+        "assets": normalized_assets,
+    }
+
+
+def validate_producer_release_evidence(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        fail("package producer evidence must be an object")
+    if value.get("format") == PRODUCER_RELEASE_EVIDENCE_FORMAT:
+        return validate_ordinary_producer_release_evidence(value)
+    if value.get("format") == PRESERVED_PRODUCER_EVIDENCE_FORMAT:
+        return validate_preserved_producer_release_evidence(value)
+    fail("package producer release evidence format is unsupported")
+
+
+def derive_preserved_producer_release_evidence(
+    *,
+    repository: str,
+    source_tag: str,
+    producer_sha: str,
+    release: Any,
+    tag_ref: Any,
+    producer_commit: Any,
+    preserved_manifest: Any,
+    release_assets: Any,
+) -> dict[str, Any]:
+    repository = text_matching(repository, REPOSITORY, "repository")
+    source_tag = text_matching(
+        source_tag, PRESERVED_TAG, "preserved producer tag"
+    )
+    producer_sha = text_matching(
+        producer_sha, HEX_40, "preserved package producer SHA"
+    )
+    manifest, identity, manifest_tag = validate_manifest(preserved_manifest)
+    if (
+        manifest["format"] != PRESERVED_MANIFEST_FORMAT
+        or identity["admission"] != "none"
+        or identity["repository"] != repository
+        or identity["package_source_sha"] != producer_sha
+        or manifest_tag != source_tag
+    ):
+        fail("preserved manifest differs from the requested producer")
+    if (
+        not isinstance(release, dict)
+        or release.get("tag_name") != source_tag
+        or release.get("target_commitish") != producer_sha
+        or release.get("draft") is not False
+        or release.get("prerelease") is not True
+        or release.get("name") != manifest["release"]["title"]
+        or release.get("body") != manifest["release"]["body"]
+    ):
+        fail("preserved producer release identity is malformed")
+    release_id = integer(
+        release.get("id"), "preserved producer release ID", minimum=1
+    )
+    tag_object = mapping_field(tag_ref, "object", "preserved producer tag")
+    tag_sha = text_matching(
+        tag_object.get("sha"), HEX_40, "preserved producer tag SHA"
+    )
+    if (
+        not isinstance(tag_ref, dict)
+        or tag_ref.get("ref") != f"refs/tags/{source_tag}"
+        or tag_object.get("type") != "commit"
+        or tag_sha != producer_sha
+    ):
+        fail("preserved producer tag does not directly anchor the package source")
+    producer_tree = mapping_field(
+        producer_commit, "tree", "preserved package producer commit"
+    )
+    if (
+        not isinstance(producer_commit, dict)
+        or producer_commit.get("sha") != producer_sha
+    ):
+        fail("preserved producer commit metadata differs from the producer SHA")
+
+    manifest_body = canonical_bytes(manifest)
+    manifest_sha256 = sha256_bytes(manifest_body)
+    manifest_bytes = len(manifest_body)
+    expected_inventory = preserved_manifest_inventory(
+        manifest,
+        manifest_sha256=manifest_sha256,
+        manifest_bytes=manifest_bytes,
+    )
+    if not isinstance(release_assets, list):
+        fail("preserved release assets must be an array")
+    assets_by_name: dict[str, dict[str, Any]] = {}
+    for index, raw in enumerate(release_assets):
+        if not isinstance(raw, dict) or not isinstance(raw.get("name"), str):
+            fail(f"preserved release asset {index} is malformed")
+        name = raw["name"]
+        if name in assets_by_name:
+            fail(f"preserved release contains duplicate asset {name!r}")
+        assets_by_name[name] = raw
+    if set(assets_by_name) != {
+        record["name"] for record in expected_inventory
+    }:
+        fail("preserved release asset names differ from its application seal")
+    normalized_assets: list[dict[str, Any]] = []
+    for wanted in expected_inventory:
+        raw = assets_by_name[wanted["name"]]
+        digest = raw.get("digest")
+        if (
+            raw.get("state") != "uploaded"
+            or raw.get("size") != wanted["bytes"]
+            or digest != f"sha256:{wanted['sha256']}"
+        ):
+            fail(
+                "preserved release asset metadata differs from its application "
+                f"seal: {wanted['name']}"
+            )
+        normalized_assets.append(
+            {
+                "id": integer(
+                    raw.get("id"), "preserved release asset ID", minimum=1
+                ),
+                **wanted,
+            }
+        )
+    return validate_preserved_producer_release_evidence(
+        {
+            "format": PRESERVED_PRODUCER_EVIDENCE_FORMAT,
+            "repository": repository,
+            "tag": source_tag,
+            "release_id": release_id,
+            "tag_sha": tag_sha,
+            "producer_sha": producer_sha,
+            "producer_tree_sha": text_matching(
+                producer_tree.get("sha"), HEX_40, "preserved producer tree SHA"
+            ),
+            "release_kind": "preserved-evidence",
+            "manifest_sha256": manifest_sha256,
+            "manifest_bytes": manifest_bytes,
+            "preserved_manifest": manifest,
+            "assets": normalized_assets,
+        }
+    )
+
+
+def validate_main_validation_evidence(value: Any) -> dict[str, Any]:
+    evidence = exact_keys(
+        value,
+        {
+            "format",
+            "repository",
+            "default_ref",
+            "commit",
+            "tree_sha",
+            "abi_version",
+            "abi_snapshot_sha256",
+            "method",
+        },
+        "main package validation evidence",
+    )
+    if evidence["format"] != MAIN_VALIDATION_EVIDENCE_FORMAT:
+        fail("main package validation evidence format is unsupported")
+    if evidence["default_ref"] != "main":
+        fail("main package validation evidence must name refs/heads/main")
+    method = evidence["method"]
+    if method not in VALIDATION_METHODS:
+        fail("main package validation method is unsupported")
+    return {
+        "format": MAIN_VALIDATION_EVIDENCE_FORMAT,
+        "repository": text_matching(
+            evidence["repository"], REPOSITORY, "main validation repository"
+        ),
+        "default_ref": "main",
+        "commit": text_matching(
+            evidence["commit"], HEX_40, "validated main commit"
+        ),
+        "tree_sha": text_matching(
+            evidence["tree_sha"], HEX_40, "validated main tree SHA"
+        ),
+        "abi_version": integer(
+            evidence["abi_version"], "validated main ABI", minimum=1
+        ),
+        "abi_snapshot_sha256": text_matching(
+            evidence["abi_snapshot_sha256"],
+            HEX_64,
+            "validated main ABI snapshot digest",
+        ),
+        "method": method,
+    }
+
+
+def derive_main_validation_evidence(
+    *,
+    repository: str,
+    default_ref: str,
+    validated_main_sha: str,
+    abi_version: int,
+    default_ref_value: Any,
+    main_commit: Any,
+    abi_snapshot_path: Path,
+    method: str,
+) -> dict[str, Any]:
+    text_matching(repository, REPOSITORY, "repository")
+    if default_ref != "main":
+        fail("durable generation validation ref must be refs/heads/main")
+    text_matching(validated_main_sha, HEX_40, "validated main commit")
+    integer(abi_version, "validated main ABI", minimum=1)
+    if method not in VALIDATION_METHODS:
+        fail("main package validation method is unsupported")
+    default_object = mapping_field(
+        default_ref_value, "object", "default branch reference"
+    )
+    if (
+        not isinstance(default_ref_value, dict)
+        or default_ref_value.get("ref") != f"refs/heads/{default_ref}"
+        or default_object.get("type") != "commit"
+        or default_object.get("sha") != validated_main_sha
+    ):
+        fail("default branch does not point at the validated main commit")
+    main_tree = mapping_field(main_commit, "tree", "validated main commit")
+    if (
+        not isinstance(main_commit, dict)
+        or main_commit.get("sha") != validated_main_sha
+    ):
+        fail("validated main commit metadata differs from the default ref")
+    snapshot = read_json(abi_snapshot_path, max_bytes=MAX_MANIFEST_BYTES)
+    if (
+        not isinstance(snapshot, dict)
+        or snapshot.get("abi_version") != abi_version
+    ):
+        fail("validated main ABI snapshot differs from the selected ABI")
+    return validate_main_validation_evidence(
+        {
+            "format": MAIN_VALIDATION_EVIDENCE_FORMAT,
+            "repository": repository,
+            "default_ref": default_ref,
+            "commit": validated_main_sha,
+            "tree_sha": text_matching(
+                main_tree.get("sha"), HEX_40, "validated main tree SHA"
+            ),
+            "abi_version": abi_version,
+            "abi_snapshot_sha256": sha256_file(abi_snapshot_path),
+            "method": method,
+        }
+    )
+
+
+def normalized_git_path(value: Any, context: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value.startswith("/")
+        or "\\" in value
+        or "\0" in value
+        or any(part in {"", ".", ".."} for part in value.split("/"))
+    ):
+        fail(f"{context} must be a normalized repository-relative path")
+    return value
+
+
+def validate_component_records(value: Any, context: str) -> list[dict[str, str]]:
+    if not isinstance(value, list) or not value or len(value) > 512:
+        fail(f"{context} must contain 1..512 component records")
+    records: list[dict[str, str]] = []
+    for index, raw in enumerate(value):
+        record = exact_keys(
+            raw,
+            {"label", "sha256"},
+            f"{context} record {index}",
+        )
+        records.append(
+            {
+                "label": bounded_text(
+                    record["label"],
+                    f"{context} record {index} label",
+                    maximum=1024,
+                ),
+                "sha256": text_matching(
+                    record["sha256"],
+                    HEX_64,
+                    f"{context} record {index} digest",
+                ),
+            }
+        )
+    labels = [record["label"] for record in records]
+    if len(labels) != len(set(labels)):
+        fail(f"{context} contains duplicate labels")
+    return records
+
+
+def validate_selected_build_input_closure(value: Any) -> dict[str, Any]:
+    closure = exact_keys(
+        value,
+        {
+            "format",
+            "abi_version",
+            "arch",
+            "global_toolchain_components",
+            "fork_instrument",
+            "packages",
+        },
+        "selected package build-input closure",
+    )
+    if closure["format"] != SELECTED_BUILD_INPUT_CLOSURE_FORMAT:
+        fail("selected package build-input closure format is unsupported")
+    abi_version = integer(
+        closure["abi_version"], "selected build-input ABI", minimum=1
+    )
+    arch = text_matching(
+        closure["arch"], ARCH, "selected build-input architecture"
+    )
+    global_components = validate_component_records(
+        closure["global_toolchain_components"],
+        "global toolchain components",
+    )
+
+    raw_packages = closure["packages"]
+    if (
+        not isinstance(raw_packages, list)
+        or not raw_packages
+        or len(raw_packages) > MAX_ARCHIVES
+    ):
+        fail(
+            f"selected build-input closure must contain 1..{MAX_ARCHIVES} packages"
+        )
+    packages: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_packages):
+        package = exact_keys(
+            raw,
+            {
+                "package",
+                "kind",
+                "version",
+                "revision",
+                "manifest_sha256",
+                "cache_key_sha",
+                "build",
+                "input_components",
+                "direct_dependencies",
+                "uses_fork_instrument",
+            },
+            f"selected build-input package {index}",
+        )
+        name = text_matching(
+            package["package"], PACKAGE, f"selected build-input package {index} name"
+        )
+        kind = package["kind"]
+        if kind not in {"library", "program"}:
+            fail(f"selected build-input package {name!r} has unsupported kind")
+        build = exact_keys(
+            package["build"],
+            {"script_path", "inputs", "git_inputs"},
+            f"selected build-input package {name!r} build metadata",
+        )
+        script_path = normalized_git_path(
+            build["script_path"],
+            f"selected build-input package {name!r} script path",
+        )
+        raw_inputs = build["inputs"]
+        if not isinstance(raw_inputs, list) or len(raw_inputs) > 512:
+            fail(f"selected build-input package {name!r} has invalid input list")
+        inputs = [
+            normalized_git_path(
+                item, f"selected build-input package {name!r} input {item!r}"
+            )
+            for item in raw_inputs
+        ]
+        if len(inputs) != len(set(inputs)):
+            fail(f"selected build-input package {name!r} has duplicate inputs")
+        raw_git_inputs = build["git_inputs"]
+        if not isinstance(raw_git_inputs, list) or len(raw_git_inputs) > 64:
+            fail(
+                f"selected build-input package {name!r} has invalid Git input list"
+            )
+        git_inputs: list[dict[str, str]] = []
+        for git_index, raw_git in enumerate(raw_git_inputs):
+            git_input = exact_keys(
+                raw_git,
+                {"name", "repository", "commit"},
+                f"selected build-input package {name!r} Git input {git_index}",
+            )
+            git_inputs.append(
+                {
+                    "name": text_matching(
+                        git_input["name"],
+                        PACKAGE,
+                        f"selected build-input package {name!r} Git input name",
+                    ),
+                    "repository": bounded_text(
+                        git_input["repository"],
+                        f"selected build-input package {name!r} Git repository",
+                        maximum=512,
+                    ),
+                    "commit": text_matching(
+                        git_input["commit"],
+                        HEX_40,
+                        f"selected build-input package {name!r} Git commit",
+                    ),
+                }
+            )
+        if len({item["name"] for item in git_inputs}) != len(git_inputs):
+            fail(f"selected build-input package {name!r} has duplicate Git inputs")
+
+        raw_dependencies = package["direct_dependencies"]
+        if not isinstance(raw_dependencies, list) or len(raw_dependencies) > MAX_ARCHIVES:
+            fail(
+                f"selected build-input package {name!r} has invalid dependency list"
+            )
+        dependencies: list[dict[str, str]] = []
+        for dependency_index, raw_dependency in enumerate(raw_dependencies):
+            dependency = exact_keys(
+                raw_dependency,
+                {"package", "version", "cache_key_sha"},
+                f"selected build-input package {name!r} dependency {dependency_index}",
+            )
+            dependencies.append(
+                {
+                    "package": text_matching(
+                        dependency["package"],
+                        PACKAGE,
+                        f"selected build-input package {name!r} dependency name",
+                    ),
+                    "version": bounded_text(
+                        dependency["version"],
+                        f"selected build-input package {name!r} dependency version",
+                        maximum=256,
+                    ),
+                    "cache_key_sha": text_matching(
+                        dependency["cache_key_sha"],
+                        HEX_64,
+                        f"selected build-input package {name!r} dependency cache key",
+                    ),
+                }
+            )
+        if dependencies != sorted(
+            dependencies, key=lambda dependency: dependency["package"]
+        ) or len({item["package"] for item in dependencies}) != len(dependencies):
+            fail(
+                f"selected build-input package {name!r} dependencies are not canonical"
+            )
+        uses_fork = package["uses_fork_instrument"]
+        if not isinstance(uses_fork, bool):
+            fail(
+                f"selected build-input package {name!r} fork policy must be boolean"
+            )
+        packages.append(
+            {
+                "package": name,
+                "kind": kind,
+                "version": bounded_text(
+                    package["version"],
+                    f"selected build-input package {name!r} version",
+                    maximum=256,
+                ),
+                "revision": integer(
+                    package["revision"],
+                    f"selected build-input package {name!r} revision",
+                    minimum=1,
+                ),
+                "manifest_sha256": text_matching(
+                    package["manifest_sha256"],
+                    HEX_64,
+                    f"selected build-input package {name!r} manifest digest",
+                ),
+                "cache_key_sha": text_matching(
+                    package["cache_key_sha"],
+                    HEX_64,
+                    f"selected build-input package {name!r} cache key",
+                ),
+                "build": {
+                    "script_path": script_path,
+                    "inputs": inputs,
+                    "git_inputs": git_inputs,
+                },
+                "input_components": validate_component_records(
+                    package["input_components"],
+                    f"selected build-input package {name!r} components",
+                ),
+                "direct_dependencies": dependencies,
+                "uses_fork_instrument": uses_fork,
+            }
+        )
+    if packages != sorted(packages, key=lambda package: package["package"]):
+        fail("selected build-input packages must be sorted")
+    names = [package["package"] for package in packages]
+    if len(names) != len(set(names)):
+        fail("selected build-input closure contains duplicate packages")
+    fork = exact_keys(
+        closure["fork_instrument"],
+        {"users", "components"},
+        "selected fork-instrument closure",
+    )
+    raw_users = fork["users"]
+    if not isinstance(raw_users, list) or len(raw_users) > MAX_ARCHIVES:
+        fail("selected fork-instrument users must be an array")
+    users = [
+        text_matching(user, PACKAGE, "selected fork-instrument user")
+        for user in raw_users
+    ]
+    expected_users = [
+        package["package"] for package in packages if package["uses_fork_instrument"]
+    ]
+    if users != expected_users:
+        fail("selected fork-instrument users differ from package policies")
+    if users:
+        fork_components = validate_component_records(
+            fork["components"], "fork-instrument components"
+        )
+    elif fork["components"] == []:
+        fork_components = []
+    else:
+        fail("unused fork-instrument closure must have no components")
+    return {
+        "format": SELECTED_BUILD_INPUT_CLOSURE_FORMAT,
+        "abi_version": abi_version,
+        "arch": arch,
+        "global_toolchain_components": global_components,
+        "fork_instrument": {
+            "users": users,
+            "components": fork_components,
+        },
+        "packages": packages,
+    }
+
+
+def validate_git_leaf_identity(value: Any, context: str) -> dict[str, str]:
+    entry = exact_keys(value, {"mode", "type", "sha"}, context)
+    entry_type = entry["type"]
+    allowed_modes = {
+        "blob": {"100644", "100755", "120000"},
+        "commit": {"160000"},
+    }
+    if entry_type not in allowed_modes or entry["mode"] not in allowed_modes[entry_type]:
+        fail(f"{context} has an unsupported Git type or mode")
+    return {
+        "mode": entry["mode"],
+        "type": entry_type,
+        "sha": text_matching(entry["sha"], HEX_40, f"{context} object SHA"),
+    }
+
+
+def validate_recursive_git_tree(
+    value: Any, *, expected_tree_sha: str, context: str
+) -> dict[str, dict[str, str]]:
+    if not isinstance(value, dict):
+        fail(f"{context} must be a GitHub recursive tree object")
+    if value.get("sha") != expected_tree_sha:
+        fail(f"{context} does not identify the expected Git tree")
+    if value.get("truncated") is not False:
+        fail(f"{context} must be a complete, non-truncated recursive Git tree")
+    entries = value.get("tree")
+    if (
+        not isinstance(entries, list)
+        or len(entries) > MAX_TREE_ENTRIES
+    ):
+        fail(f"{context} contains too many Git tree entries")
+    leaves: dict[str, dict[str, str]] = {}
+    seen: set[str] = set()
+    for index, raw in enumerate(entries):
+        if not isinstance(raw, dict):
+            fail(f"{context} entry {index} must be an object")
+        path = normalized_git_path(raw.get("path"), f"{context} entry {index} path")
+        if path in seen:
+            fail(f"{context} contains duplicate Git path {path!r}")
+        seen.add(path)
+        entry_type = raw.get("type")
+        mode = raw.get("mode")
+        sha = text_matching(
+            raw.get("sha"), HEX_40, f"{context} entry {index} object SHA"
+        )
+        if entry_type == "tree":
+            if mode != "040000":
+                fail(f"{context} entry {index} has an invalid tree mode")
+            continue
+        leaves[path] = validate_git_leaf_identity(
+            {"mode": mode, "type": entry_type, "sha": sha},
+            f"{context} entry {index}",
+        )
+    return leaves
+
+
+def validate_cache_projection_evidence(value: Any) -> dict[str, Any]:
+    evidence = exact_keys(
+        value,
+        {
+            "format",
+            "policy",
+            "producer",
+            "validated_main",
+            "projection_sha256",
+            "expected_ledger_sha256",
+            "selected_build_inputs",
+            "selected_build_inputs_sha256",
+            "validator_transitions",
+        },
+        "package cache projection evidence",
+    )
+    if evidence["format"] != PACKAGE_CACHE_PROJECTION_EVIDENCE_FORMAT:
+        fail("package cache projection evidence format is unsupported")
+    if evidence["policy"] != PACKAGE_CACHE_PROJECTION_POLICY:
+        fail("package cache projection evidence policy is unsupported")
+    producer = exact_keys(
+        evidence["producer"],
+        {"commit", "tree_sha"},
+        "cache projection producer",
+    )
+    validated_main = exact_keys(
+        evidence["validated_main"],
+        {"commit", "tree_sha"},
+        "cache projection validated main",
+    )
+    normalized_producer = {
+        "commit": text_matching(
+            producer["commit"], HEX_40, "cache projection producer commit"
+        ),
+        "tree_sha": text_matching(
+            producer["tree_sha"], HEX_40, "cache projection producer tree"
+        ),
+    }
+    normalized_main = {
+        "commit": text_matching(
+            validated_main["commit"],
+            HEX_40,
+            "cache projection validated main commit",
+        ),
+        "tree_sha": text_matching(
+            validated_main["tree_sha"],
+            HEX_40,
+            "cache projection validated main tree",
+        ),
+    }
+    if normalized_producer["tree_sha"] == normalized_main["tree_sha"]:
+        fail("cache projection compatibility requires distinct Git trees")
+
+    selected_build_inputs = validate_selected_build_input_closure(
+        evidence["selected_build_inputs"]
+    )
+    selected_build_inputs_sha256 = text_matching(
+        evidence["selected_build_inputs_sha256"],
+        HEX_64,
+        "selected package build-input closure digest",
+    )
+    if selected_build_inputs_sha256 != sha256_bytes(
+        canonical_bytes(selected_build_inputs)
+    ):
+        fail("selected package build-input closure digest is invalid")
+
+    transitions = evidence["validator_transitions"]
+    if not isinstance(transitions, list):
+        fail("cache projection validator transitions must be an array")
+    normalized_transitions: list[dict[str, Any]] = []
+    for index, raw in enumerate(transitions):
+        transition = exact_keys(
+            raw,
+            {"path", "producer", "validated_main"},
+            f"cache projection validator transition {index}",
+        )
+        path = normalized_git_path(
+            transition["path"],
+            f"cache projection validator transition {index} path",
+        )
+        producer_leaf = validate_git_leaf_identity(
+            transition["producer"],
+            f"cache projection validator transition {index} producer",
+        )
+        main_leaf = validate_git_leaf_identity(
+            transition["validated_main"],
+            f"cache projection validator transition {index} validated main",
+        )
+        pinned = PACKAGE_CACHE_PROJECTION_PINNED_TRANSITIONS.get(path)
+        if (
+            pinned is None
+            or producer_leaf
+            != {"mode": "100644", "type": "blob", "sha": pinned["producer"]}
+            or main_leaf
+            != {
+                "mode": "100644",
+                "type": "blob",
+                "sha": pinned["validated_main"],
+            }
+        ):
+            fail(
+                "cache projection compatibility requires the exact reviewed "
+                f"validator transition for {path!r}"
+            )
+        normalized_transitions.append(
+            {
+                "path": path,
+                "producer": producer_leaf,
+                "validated_main": main_leaf,
+            }
+        )
+    expected_paths = sorted(PACKAGE_CACHE_PROJECTION_PINNED_TRANSITIONS)
+    if [transition["path"] for transition in normalized_transitions] != expected_paths:
+        fail("cache projection evidence lacks the exact validator transitions")
+    return {
+        "format": PACKAGE_CACHE_PROJECTION_EVIDENCE_FORMAT,
+        "policy": PACKAGE_CACHE_PROJECTION_POLICY,
+        "producer": normalized_producer,
+        "validated_main": normalized_main,
+        "projection_sha256": text_matching(
+            evidence["projection_sha256"],
+            HEX_64,
+            "cache projection digest",
+        ),
+        "expected_ledger_sha256": text_matching(
+            evidence["expected_ledger_sha256"],
+            HEX_64,
+            "cache projection expected-ledger digest",
+        ),
+        "selected_build_inputs": selected_build_inputs,
+        "selected_build_inputs_sha256": selected_build_inputs_sha256,
+        "validator_transitions": normalized_transitions,
+    }
+
+
+def canonical_projection_and_expected(
+    projection_path: Path, expected_path: Path, context: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    projection_raw = read_json(projection_path, max_bytes=MAX_MANIFEST_BYTES)
+    projection = validate_projection(projection_raw)
+    if projection != projection_raw:
+        fail(f"{context} projection is not canonical")
+    expected_raw = read_json(expected_path, max_bytes=MAX_MANIFEST_BYTES)
+    if not isinstance(expected_raw, dict):
+        fail(f"{context} expected ledger must be an object")
+    abi_version = integer(
+        expected_raw.get("abi_version"), f"{context} expected ABI", minimum=1
+    )
+    expected = select_expected(expected_raw, projection, abi_version)
+    if expected != expected_raw:
+        fail(f"{context} expected ledger is not canonical")
+    return projection, expected
+
+
+def validate_build_inputs_against_selection(
+    closure: dict[str, Any],
+    projection: dict[str, Any],
+    expected: dict[str, Any],
+) -> None:
+    if (
+        closure["abi_version"] != expected["abi_version"]
+        or closure["arch"] != projection["arch"]
+    ):
+        fail("selected build-input closure differs from the selected ABI or arch")
+    # WHY: `projection_entries()` intentionally returns only materializable
+    # records for archive selection. Compatibility evidence must additionally
+    # see schema-2 source-only records so a recipe cannot change one of those
+    # direct dependency identities without invalidating the proof.
+    selected_projection_entries = (
+        projection["entries"]
+        if projection["schema"] == SINGLE_ROOT_PROJECTION_SCHEMA
+        else projection["closure"]
+    )
+    projection_by_package = {
+        entry["package"]: entry for entry in selected_projection_entries
+    }
+    expected_by_package = {
+        entry["package"]: entry for entry in expected["entries"]
+    }
+    closure_by_package = {
+        package["package"]: package for package in closure["packages"]
+    }
+    # WHY: a schema-2 root set binds source-only identities in its projection,
+    # but those entries do not have archives or executable build scripts. The
+    # component ledger covers exactly the materializable expected entries;
+    # producer/main projection equality still binds every source-only manifest
+    # and cache identity.
+    materializable_projection = {
+        name: entry
+        for name, entry in projection_by_package.items()
+        if entry.get("disposition") != SOURCE_ONLY_DISPOSITION
+    }
+    if (
+        set(closure_by_package) != set(materializable_projection)
+        or set(closure_by_package) != set(expected_by_package)
+    ):
+        fail("selected build-input closure differs from the package selection")
+    for name, package in closure_by_package.items():
+        projected = projection_by_package[name]
+        wanted = expected_by_package[name]
+        if (
+            package["manifest_sha256"] != projected["manifest_sha256"]
+            or package["cache_key_sha"] != projected["cache_key_sha"]
+            or package["cache_key_sha"] != wanted["cache_key_sha"]
+            or package["kind"] != wanted["kind"]
+            or package["version"] != wanted["version"]
+            or package["revision"] != wanted["revision"]
+            or package["build"]["git_inputs"] != wanted["git_inputs"]
+        ):
+            fail(
+                f"selected build-input package {name!r} differs from its projection"
+            )
+        if package["build"]["script_path"] not in package["build"]["inputs"]:
+            fail(
+                f"selected build-input package {name!r} does not declare its build script"
+            )
+        expected_component_labels = [
+            *package["build"]["inputs"],
+            *[
+                f"git-input:{index}:{git_input['name']}"
+                for index, git_input in enumerate(package["build"]["git_inputs"])
+            ],
+        ]
+        if [
+            component["label"] for component in package["input_components"]
+        ] != expected_component_labels:
+            fail(
+                f"selected build-input package {name!r} component labels are incomplete"
+            )
+        for dependency in package["direct_dependencies"]:
+            dependency_name = dependency["package"]
+            selected_dependency = projection_by_package.get(dependency_name)
+            if (
+                selected_dependency is None
+                or dependency["cache_key_sha"]
+                != selected_dependency["cache_key_sha"]
+            ):
+                fail(
+                    f"selected build-input package {name!r} dependency cache key differs"
+                )
+            if (
+                selected_dependency.get("disposition")
+                != SOURCE_ONLY_DISPOSITION
+                and dependency_name not in closure_by_package
+            ):
+                fail(
+                    "selected build-input closure omits materializable dependency "
+                    f"{dependency_name!r} of {name!r}"
+                )
+
+
+def derive_cache_projection_evidence(
+    *,
+    producer_sha: str,
+    producer_tree_sha: str,
+    validated_main_sha: str,
+    validated_main_tree_sha: str,
+    producer_projection_path: Path,
+    producer_expected_path: Path,
+    main_projection_path: Path,
+    main_expected_path: Path,
+    producer_components_path: Path,
+    main_components_path: Path,
+    producer_tree_value: Any,
+    main_tree_value: Any,
+) -> dict[str, Any]:
+    producer_sha = text_matching(
+        producer_sha, HEX_40, "cache projection producer commit"
+    )
+    producer_tree_sha = text_matching(
+        producer_tree_sha, HEX_40, "cache projection producer tree"
+    )
+    validated_main_sha = text_matching(
+        validated_main_sha, HEX_40, "cache projection validated main commit"
+    )
+    validated_main_tree_sha = text_matching(
+        validated_main_tree_sha,
+        HEX_40,
+        "cache projection validated main tree",
+    )
+    if producer_tree_sha == validated_main_tree_sha:
+        fail("cache projection compatibility requires distinct Git trees")
+    producer_projection, producer_expected = canonical_projection_and_expected(
+        producer_projection_path, producer_expected_path, "producer"
+    )
+    main_projection, main_expected = canonical_projection_and_expected(
+        main_projection_path, main_expected_path, "validated main"
+    )
+    if producer_projection != main_projection:
+        fail("producer and validated main package projections differ")
+    if producer_expected != main_expected:
+        fail("producer and validated main expected ledgers differ")
+    producer_components_raw = read_json(
+        producer_components_path, max_bytes=MAX_MANIFEST_BYTES
+    )
+    producer_components = validate_selected_build_input_closure(
+        producer_components_raw
+    )
+    if producer_components != producer_components_raw:
+        fail("producer selected build-input closure is not canonical")
+    main_components_raw = read_json(
+        main_components_path, max_bytes=MAX_MANIFEST_BYTES
+    )
+    main_components = validate_selected_build_input_closure(main_components_raw)
+    if main_components != main_components_raw:
+        fail("validated-main selected build-input closure is not canonical")
+    validate_build_inputs_against_selection(
+        producer_components, producer_projection, producer_expected
+    )
+    validate_build_inputs_against_selection(
+        main_components, main_projection, main_expected
+    )
+    if producer_components != main_components:
+        fail("producer and validated main selected build-input closures differ")
+
+    producer_leaves = validate_recursive_git_tree(
+        producer_tree_value,
+        expected_tree_sha=producer_tree_sha,
+        context="producer recursive Git tree",
+    )
+    main_leaves = validate_recursive_git_tree(
+        main_tree_value,
+        expected_tree_sha=validated_main_tree_sha,
+        context="validated-main recursive Git tree",
+    )
+    validator_transitions = []
+    for path in sorted(PACKAGE_CACHE_PROJECTION_PINNED_TRANSITIONS):
+        producer_leaf = producer_leaves.get(path)
+        main_leaf = main_leaves.get(path)
+        if producer_leaf is None or main_leaf is None:
+            fail(f"cache projection validator path is absent: {path!r}")
+        validator_transitions.append(
+            {
+                "path": path,
+                "producer": producer_leaf,
+                "validated_main": main_leaf,
+            }
+        )
+    evidence = {
+        "format": PACKAGE_CACHE_PROJECTION_EVIDENCE_FORMAT,
+        "policy": PACKAGE_CACHE_PROJECTION_POLICY,
+        "producer": {
+            "commit": producer_sha,
+            "tree_sha": producer_tree_sha,
+        },
+        "validated_main": {
+            "commit": validated_main_sha,
+            "tree_sha": validated_main_tree_sha,
+        },
+        "projection_sha256": sha256_bytes(canonical_bytes(main_projection)),
+        "expected_ledger_sha256": sha256_bytes(canonical_bytes(main_expected)),
+        "selected_build_inputs": main_components,
+        "selected_build_inputs_sha256": sha256_bytes(
+            canonical_bytes(main_components)
+        ),
+        "validator_transitions": validator_transitions,
+    }
+    return validate_cache_projection_evidence(evidence)
+
+
 def validate_projection_entries(value: Any, arch: str) -> list[dict[str, str]]:
     entries = value
     if (
@@ -447,6 +1725,12 @@ def validate_preserved_projection(value: Any) -> dict[str, Any]:
     if projection["schema"] != SINGLE_ROOT_PROJECTION_SCHEMA:
         fail("preserved PR package generations require a schema-1 projection")
     return projection
+
+
+def require_preservable_projection(projection: dict[str, Any]) -> dict[str, Any]:
+    # Exact-tree admission also accepts only the already audited single-root
+    # preserved closure. Keep one schema check for both entry points.
+    return validate_preserved_projection(projection)
 
 
 def projection_entries(projection: dict[str, Any]) -> list[dict[str, str]]:
@@ -1207,7 +2491,9 @@ def projection_label(projection: dict[str, Any]) -> str:
 
 
 def source_activation_tag(identity: dict[str, Any]) -> str:
-    return identity["source_activation"]["evidence"]["tag"]
+    if identity["format"] == IDENTITY_FORMAT:
+        return identity["source_activation"]["evidence"]["tag"]
+    return identity["producer"]["evidence"]["tag"]
 
 
 def generation_tag(identity: dict[str, Any], digest: str) -> str:
@@ -1228,7 +2514,7 @@ def release_fields(identity: dict[str, Any], tag: str) -> dict[str, Any]:
     projection = identity["projection"]
     if identity["format"] == PRESERVED_IDENTITY_FORMAT:
         title = (
-            f"Preserved PR package closure: {projection['root_package']} "
+            f"Preserved PR package closure: {projection_label(projection)} "
             f"{projection['arch']}, ABI {identity['abi_version']}"
         )
         body = (
@@ -1260,28 +2546,44 @@ def release_fields(identity: dict[str, Any], tag: str) -> dict[str, Any]:
         f"Package generation: {projection_label(projection)} {projection['arch']}, "
         f"ABI {identity['abi_version']}"
     )
-    source_line = (
-        "Activated main source: "
-        f"`{identity['source_activation']['evidence']['package_source_sha']}`\n"
-    )
-    body = (
-        "Durable Kandelo package generation.\n\n"
-        f"Package source: `{identity['package_source_sha']}`\n"
-        f"Activated package release: `{source_activation_tag(identity)}`\n"
-        f"{source_line}"
-        f"Content identity: `{tag.rsplit('-sha256-', 1)[1]}`\n\n"
-        "Consumers must validate `generation.json` and every asset; this "
-        "prerelease is append-only by contract."
-    )
+    if identity["format"] == IDENTITY_FORMAT:
+        target_commitish = identity["package_source_sha"]
+        body = (
+            "Durable Kandelo package generation.\n\n"
+            f"Package source: `{identity['package_source_sha']}`\n"
+            f"Activated package release: `{source_activation_tag(identity)}`\n"
+            "Activated main source: "
+            f"`{identity['source_activation']['evidence']['package_source_sha']}`\n"
+            f"Content identity: `{tag.rsplit('-sha256-', 1)[1]}`\n\n"
+            "Consumers must validate `generation.json` and every asset; this "
+            "prerelease is append-only by contract."
+        )
+    else:
+        producer_sha = identity["producer"]["evidence"]["producer_sha"]
+        # WHY: archives must continue to identify the commit that built them,
+        # while only reviewed current main is allowed to own the new public
+        # generation tag and release.
+        target_commitish = identity["validated_against_main"]["commit"]
+        body = (
+            "Durable Kandelo package generation.\n\n"
+            f"Immutable package producer: `{producer_sha}`\n"
+            f"Validated current main: `{target_commitish}`\n"
+            "Validation method: "
+            f"`{identity['validated_against_main']['method']}`\n"
+            f"Activated package release: `{source_activation_tag(identity)}`\n"
+            f"Content identity: `{tag.rsplit('-sha256-', 1)[1]}`\n\n"
+            "Consumers must validate `generation.json` and every asset; this "
+            "prerelease is append-only by contract."
+        )
     return {
         "title": title,
         "body": body,
-        "target_commitish": identity["package_source_sha"],
+        "target_commitish": target_commitish,
         "prerelease": True,
     }
 
 
-def validate_identity(value: Any) -> dict[str, Any]:
+def validate_identity_v1(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or not isinstance(value.get("projection"), dict):
         fail("generation identity must contain a package projection")
     identity_keys = {
@@ -1355,6 +2657,186 @@ def validate_identity(value: Any) -> dict[str, Any]:
     )
     if identity["archives"] != derived_archives:
         fail("generation archives differ from the validated staging snapshot")
+    return identity
+
+
+def validate_identity_v2(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or not isinstance(value.get("projection"), dict):
+        fail("generation identity must contain a package projection")
+    identity = exact_keys(
+        value,
+        {
+            "format",
+            "repository",
+            "abi_version",
+            "authority_sha",
+            "producer",
+            "validated_against_main",
+            "cache_projection",
+            "projection",
+            "expected_ledger",
+            "validated_snapshot",
+            "localized_index",
+            "archives",
+        },
+        "generation identity",
+    )
+    if identity["format"] != IDENTITY_FORMAT_V2:
+        fail("generation identity format is unsupported")
+    repository = text_matching(
+        identity["repository"], REPOSITORY, "generation repository"
+    )
+    abi_version = integer(identity["abi_version"], "generation ABI", minimum=1)
+    projection = validate_projection(identity["projection"])
+    authority_sha = text_matching(
+        identity["authority_sha"], HEX_40, "workflow authority SHA"
+    )
+    producer = exact_keys(
+        identity["producer"],
+        {"evidence", "index_sha256", "index_bytes"},
+        "package producer identity",
+    )
+    producer_evidence = validate_producer_release_evidence(producer["evidence"])
+    if (
+        producer_evidence != producer["evidence"]
+        or producer_evidence["repository"] != repository
+    ):
+        fail("package producer evidence differs from the generation source")
+    text_matching(producer["index_sha256"], HEX_64, "producer index digest")
+    integer(
+        producer["index_bytes"],
+        "producer index size",
+        minimum=1,
+        maximum=MAX_INDEX_BYTES,
+    )
+    validation = validate_main_validation_evidence(
+        identity["validated_against_main"]
+    )
+    if (
+        validation != identity["validated_against_main"]
+        or validation["repository"] != repository
+        or validation["abi_version"] != abi_version
+    ):
+        fail("main validation evidence differs from the generation identity")
+    if authority_sha != validation["commit"]:
+        fail("workflow authority SHA differs from the validated main commit")
+    if validation["method"] == IDENTICAL_GIT_TREE_METHOD:
+        # WHY: commit ancestry does not prove that build inputs are equal. The
+        # exact-tree method admits a distinct immutable producer only when Git
+        # says its complete repository tree is byte-for-byte current main.
+        if producer_evidence["producer_tree_sha"] != validation["tree_sha"]:
+            fail("package producer tree differs from validated main")
+        if identity["cache_projection"] is not None:
+            fail("exact-tree generation must not carry cache projection evidence")
+    else:
+        # WHY: the PR release is mutable and therefore cannot be the admission
+        # source. The separate preservation release binds its complete bytes,
+        # same-run artifacts, and source log before this one-shot H→M proof.
+        if producer_evidence["format"] != PRESERVED_PRODUCER_EVIDENCE_FORMAT:
+            fail(
+                "cache projection admission requires sealed preserved "
+                "producer evidence"
+            )
+        bridge_source_tag = producer_evidence["preserved_manifest"]["identity"][
+            "source_capture"
+        ]["source_staging"]["tag"]
+        if (
+            producer_evidence["producer_sha"]
+            != CACHE_PROJECTION_BRIDGE_PRODUCER_SHA
+            or bridge_source_tag != CACHE_PROJECTION_BRIDGE_SOURCE_TAG
+        ):
+            fail(
+                "cache projection compatibility is restricted to the "
+                "retained PR #1097 staging producer"
+            )
+        cache_projection = validate_cache_projection_evidence(
+            identity["cache_projection"]
+        )
+        if cache_projection != identity["cache_projection"]:
+            fail("package cache projection evidence is not canonical")
+        if cache_projection["producer"] != {
+            "commit": producer_evidence["producer_sha"],
+            "tree_sha": producer_evidence["producer_tree_sha"],
+        }:
+            fail("cache projection evidence differs from the package producer")
+        if cache_projection["validated_main"] != {
+            "commit": validation["commit"],
+            "tree_sha": validation["tree_sha"],
+        }:
+            fail("cache projection evidence differs from validated main")
+        if cache_projection["projection_sha256"] != sha256_bytes(
+            canonical_bytes(projection)
+        ):
+            fail("cache projection evidence differs from the generation projection")
+    source_tag = producer_evidence["tag"]
+    if (
+        producer_evidence["release_kind"] == "canonical"
+        and source_tag != f"binaries-abi-v{abi_version}"
+    ):
+        fail("canonical producer release tag differs from the generation ABI")
+    expected = select_expected(identity["expected_ledger"], projection, abi_version)
+    if expected != identity["expected_ledger"]:
+        fail("generation expected ledger is not canonical")
+    if validation["method"] == IDENTICAL_PACKAGE_CACHE_PROJECTION_METHOD:
+        validate_build_inputs_against_selection(
+            cache_projection["selected_build_inputs"],
+            projection,
+            expected,
+        )
+    if producer_evidence["format"] == PRESERVED_PRODUCER_EVIDENCE_FORMAT:
+        preserved = producer_evidence["preserved_manifest"]
+        preserved_identity = preserved["identity"]
+        preserved_archives = [
+            {
+                "package": record["package"],
+                "arch": record["arch"],
+                "name": record["name"],
+                "sha256": record["sha256"],
+                "bytes": record["bytes"],
+            }
+            for record in preserved_identity["archives"]
+        ]
+        if (
+            preserved_identity["projection"] != projection
+            or preserved_identity["expected_ledger"] != expected
+            or preserved_identity["abi_version"] != abi_version
+            or producer["index_sha256"] != preserved["index"]["sha256"]
+            or producer["index_bytes"] != preserved["index"]["bytes"]
+            or identity["archives"] != preserved_archives
+        ):
+            fail(
+                "admitted package generation differs from the complete "
+                "preserved producer seal"
+            )
+    if (
+        validation["method"] == IDENTICAL_PACKAGE_CACHE_PROJECTION_METHOD
+        and cache_projection["expected_ledger_sha256"]
+        != sha256_bytes(canonical_bytes(expected))
+    ):
+        fail(
+            "cache projection evidence differs from the generation expected ledger"
+        )
+    localized = exact_keys(
+        identity["localized_index"],
+        {"sha256", "bytes"},
+        "localized index identity",
+    )
+    text_matching(localized["sha256"], HEX_64, "localized index digest")
+    integer(
+        localized["bytes"],
+        "localized index size",
+        minimum=1,
+        maximum=MAX_INDEX_BYTES,
+    )
+    _, derived_archives = validate_snapshot(
+        identity["validated_snapshot"],
+        projection,
+        expected,
+        source_tag,
+        abi_version,
+    )
+    if identity["archives"] != derived_archives:
+        fail("generation archives differ from the validated producer snapshot")
     return identity
 
 
@@ -1443,6 +2925,21 @@ def validate_preserved_identity(value: Any) -> dict[str, Any]:
     return identity
 
 
+def validate_identity(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        fail("generation identity must be an object")
+    # WHY: already-published v1 generations are immutable consumer inputs.
+    # Their one SHA remains both producer and main; interpreting it through v2
+    # would retroactively change a public content-addressed contract.
+    if value.get("format") == IDENTITY_FORMAT:
+        return validate_identity_v1(value)
+    if value.get("format") == IDENTITY_FORMAT_V2:
+        return validate_identity_v2(value)
+    if value.get("format") == PRESERVED_IDENTITY_FORMAT:
+        return validate_preserved_identity(value)
+    fail("generation identity format is unsupported")
+
+
 def validate_manifest(value: Any) -> tuple[dict[str, Any], dict[str, Any], str]:
     manifest = exact_keys(
         value,
@@ -1456,14 +2953,20 @@ def validate_manifest(value: Any) -> tuple[dict[str, Any], dict[str, Any], str]:
         },
         "generation manifest",
     )
-    if manifest["format"] not in {MANIFEST_FORMAT, PRESERVED_MANIFEST_FORMAT}:
+    if manifest["format"] not in {
+        MANIFEST_FORMAT,
+        MANIFEST_FORMAT_V2,
+        PRESERVED_MANIFEST_FORMAT,
+    }:
         fail("generation manifest format is unsupported")
-    if manifest["format"] == MANIFEST_FORMAT:
-        identity = validate_identity(manifest["identity"])
-    else:
-        identity = validate_preserved_identity(manifest["identity"])
-        if identity["format"] != PRESERVED_IDENTITY_FORMAT:
-            fail("preserved manifest has the wrong identity format")
+    identity = validate_identity(manifest["identity"])
+    expected_manifest_format = {
+        IDENTITY_FORMAT: MANIFEST_FORMAT,
+        IDENTITY_FORMAT_V2: MANIFEST_FORMAT_V2,
+        PRESERVED_IDENTITY_FORMAT: PRESERVED_MANIFEST_FORMAT,
+    }[identity["format"]]
+    if manifest["format"] != expected_manifest_format:
+        fail("generation manifest and identity formats do not correspond")
     digest = sha256_bytes(canonical_bytes(identity))
     if manifest["identity_sha256"] != digest:
         fail("generation identity digest is incorrect")
@@ -1483,22 +2986,6 @@ def validate_manifest(value: Any) -> tuple[dict[str, Any], dict[str, Any], str]:
     if manifest["release"] != release_fields(identity, expected_tag):
         fail("generation release metadata is not derived from its identity")
     return manifest, identity, expected_tag
-
-
-def command_main_source_evidence(args: argparse.Namespace) -> None:
-    evidence = derive_main_source_evidence(
-        repository=args.repository,
-        source_tag=args.source_tag,
-        default_ref=args.default_ref,
-        package_source_sha=args.package_source_sha,
-        release=read_json(args.release, max_bytes=MAX_MANIFEST_BYTES),
-        tag_ref=read_json(args.tag_ref, max_bytes=MAX_MANIFEST_BYTES),
-        default_ref_value=read_json(
-            args.default_ref_value, max_bytes=MAX_MANIFEST_BYTES
-        ),
-        source_commit=read_json(args.source_commit, max_bytes=MAX_MANIFEST_BYTES),
-    )
-    write_json(args.output, evidence)
 
 
 def command_select(args: argparse.Namespace) -> None:
@@ -1839,31 +3326,188 @@ def command_capture_source(args: argparse.Namespace) -> None:
     write_json(args.capture_out, capture)
 
 
+def command_main_source_evidence(args: argparse.Namespace) -> None:
+    evidence = derive_main_source_evidence(
+        repository=args.repository,
+        source_tag=args.source_tag,
+        default_ref=args.default_ref,
+        package_source_sha=args.package_source_sha,
+        release=read_json(args.release, max_bytes=MAX_MANIFEST_BYTES),
+        tag_ref=read_json(args.tag_ref, max_bytes=MAX_MANIFEST_BYTES),
+        default_ref_value=read_json(
+            args.default_ref_value, max_bytes=MAX_MANIFEST_BYTES
+        ),
+        source_commit=read_json(args.source_commit, max_bytes=MAX_MANIFEST_BYTES),
+    )
+    write_json(args.output, evidence)
+
+
+def command_producer_release_evidence(args: argparse.Namespace) -> None:
+    preserved_mode = (
+        args.preserved_manifest is not None or args.release_assets is not None
+    )
+    if preserved_mode:
+        if args.preserved_manifest is None or args.release_assets is None:
+            fail(
+                "preserved producer evidence requires both manifest and asset metadata"
+            )
+        evidence = derive_preserved_producer_release_evidence(
+            repository=args.repository,
+            source_tag=args.source_tag,
+            producer_sha=args.producer_sha,
+            release=read_json(args.release, max_bytes=MAX_GITHUB_METADATA_BYTES),
+            tag_ref=read_json(args.tag_ref, max_bytes=MAX_GITHUB_METADATA_BYTES),
+            producer_commit=read_json(
+                args.producer_commit, max_bytes=MAX_GITHUB_METADATA_BYTES
+            ),
+            preserved_manifest=read_json(
+                args.preserved_manifest, max_bytes=MAX_MANIFEST_BYTES
+            ),
+            release_assets=read_json(
+                args.release_assets, max_bytes=MAX_GITHUB_METADATA_BYTES
+            ),
+        )
+    else:
+        evidence = derive_producer_release_evidence(
+            repository=args.repository,
+            source_tag=args.source_tag,
+            producer_sha=args.producer_sha,
+            release=read_json(args.release, max_bytes=MAX_MANIFEST_BYTES),
+            tag_ref=read_json(args.tag_ref, max_bytes=MAX_MANIFEST_BYTES),
+            producer_commit=read_json(
+                args.producer_commit, max_bytes=MAX_MANIFEST_BYTES
+            ),
+        )
+    write_json(args.output, evidence)
+
+
+def command_main_validation_evidence(args: argparse.Namespace) -> None:
+    evidence = derive_main_validation_evidence(
+        repository=args.repository,
+        default_ref=args.default_ref,
+        validated_main_sha=args.validated_main_sha,
+        abi_version=args.abi_version,
+        default_ref_value=read_json(
+            args.default_ref_value, max_bytes=MAX_MANIFEST_BYTES
+        ),
+        main_commit=read_json(args.main_commit, max_bytes=MAX_MANIFEST_BYTES),
+        abi_snapshot_path=args.abi_snapshot,
+        method=args.method,
+    )
+    write_json(args.output, evidence)
+
+
+def command_cache_projection_evidence(args: argparse.Namespace) -> None:
+    evidence = derive_cache_projection_evidence(
+        producer_sha=args.producer_sha,
+        producer_tree_sha=args.producer_tree_sha,
+        validated_main_sha=args.validated_main_sha,
+        validated_main_tree_sha=args.validated_main_tree_sha,
+        producer_projection_path=args.producer_projection,
+        producer_expected_path=args.producer_expected_ledger,
+        main_projection_path=args.main_projection,
+        main_expected_path=args.main_expected_ledger,
+        producer_components_path=args.producer_components,
+        main_components_path=args.main_components,
+        producer_tree_value=read_json(
+            args.producer_tree, max_bytes=MAX_INDEX_BYTES
+        ),
+        main_tree_value=read_json(args.main_tree, max_bytes=MAX_INDEX_BYTES),
+    )
+    write_json(args.output, evidence)
+
+
 def command_prepare(args: argparse.Namespace) -> None:
     repository = text_matching(args.repository, REPOSITORY, "repository")
-    package_source_sha = text_matching(
-        args.package_source_sha, HEX_40, "package source SHA"
-    )
-    source_tag = text_matching(
-        args.source_tag, CANONICAL_BINARY_TAG, "canonical binary tag"
-    )
+    source_tag = args.source_tag
+    if not isinstance(source_tag, str):
+        fail("package source tag has an invalid value")
     if args.output_dir.exists() or args.output_dir.is_symlink():
         fail(f"output already exists: {args.output_dir}")
     projection = validate_projection(read_json(args.projection))
-    if args.source_evidence is None:
-        fail("a durable generation requires main activation evidence")
-    source_evidence = validate_main_source_evidence(read_json(args.source_evidence))
-    if (
-        source_evidence["repository"] != repository
-        or source_evidence["tag"] != source_tag
-        or source_evidence["package_source_sha"] != package_source_sha
-    ):
-        fail("main activation evidence does not bind the generation inputs")
+    legacy_mode = args.source_evidence is not None or args.package_source_sha is not None
+    exact_tree_mode = (
+        args.producer_evidence is not None
+        or args.main_validation is not None
+        or args.producer_sha is not None
+    )
+    if legacy_mode == exact_tree_mode:
+        fail("prepare requires exactly one complete v1 or v2 provenance mode")
+    authority_sha = text_matching(
+        args.authority_sha, HEX_40, "workflow authority SHA"
+    )
+    if legacy_mode:
+        if args.source_evidence is None or args.package_source_sha is None:
+            fail("v1 preparation requires source evidence and package source SHA")
+        package_source_sha = text_matching(
+            args.package_source_sha, HEX_40, "package source SHA"
+        )
+        text_matching(source_tag, CANONICAL_BINARY_TAG, "canonical binary tag")
+        source_evidence = validate_main_source_evidence(
+            read_json(args.source_evidence)
+        )
+        if (
+            source_evidence["repository"] != repository
+            or source_evidence["tag"] != source_tag
+            or source_evidence["package_source_sha"] != package_source_sha
+        ):
+            fail("main activation evidence does not bind the generation inputs")
+    else:
+        if (
+            args.producer_evidence is None
+            or args.main_validation is None
+            or args.producer_sha is None
+        ):
+            fail(
+                "v2 preparation requires producer evidence, main validation, and producer SHA"
+            )
+        producer_sha = text_matching(
+            args.producer_sha, HEX_40, "package producer SHA"
+        )
+        producer_evidence = validate_producer_release_evidence(
+            read_json(args.producer_evidence)
+        )
+        main_validation = validate_main_validation_evidence(
+            read_json(args.main_validation)
+        )
+        if (
+            producer_evidence["repository"] != repository
+            or producer_evidence["tag"] != source_tag
+            or producer_evidence["producer_sha"] != producer_sha
+            or main_validation["repository"] != repository
+            or main_validation["commit"] != authority_sha
+        ):
+            fail("v2 evidence does not bind the generation inputs")
+        if main_validation["method"] == IDENTICAL_GIT_TREE_METHOD:
+            if args.cache_projection is not None:
+                fail("exact-tree preparation must not receive cache projection evidence")
+            if (
+                producer_evidence["producer_tree_sha"]
+                != main_validation["tree_sha"]
+            ):
+                fail("exact-tree evidence does not bind the generation inputs")
+            cache_projection = None
+        else:
+            if args.cache_projection is None:
+                fail("cache-projection preparation requires projection evidence")
+            cache_projection = validate_cache_projection_evidence(
+                read_json(args.cache_projection, max_bytes=MAX_MANIFEST_BYTES)
+            )
+            if cache_projection["producer"] != {
+                "commit": producer_evidence["producer_sha"],
+                "tree_sha": producer_evidence["producer_tree_sha"],
+            } or cache_projection["validated_main"] != {
+                "commit": main_validation["commit"],
+                "tree_sha": main_validation["tree_sha"],
+            }:
+                fail("cache projection evidence does not bind the generation inputs")
     expected_raw = read_json(args.expected_ledger)
     abi_version = integer(expected_raw.get("abi_version"), "expected ABI", minimum=1)
     expected = select_expected(expected_raw, projection, abi_version)
     if expected != expected_raw:
         fail("selected expected ledger is not canonical")
+    if not legacy_mode and main_validation["abi_version"] != abi_version:
+        fail("main validation evidence differs from the selected ABI")
     snapshot, archives = validate_snapshot(
         read_json(args.snapshot),
         projection,
@@ -1887,29 +3531,45 @@ def command_prepare(args: argparse.Namespace) -> None:
             or sha256_file(archive) != record["sha256"]
         ):
             fail(f"validated archive bytes changed: {record['name']}")
-    source_activation = {
-        "evidence": source_evidence,
+    source_release = {
+        "evidence": source_evidence if legacy_mode else producer_evidence,
         "index_sha256": sha256_file(args.source_index),
         "index_bytes": args.source_index.stat().st_size,
     }
-    identity = {
-        "format": IDENTITY_FORMAT,
+    common_identity = {
         "repository": repository,
-        "package_source_sha": package_source_sha,
         "abi_version": abi_version,
+        "authority_sha": authority_sha,
         "projection": projection,
         "expected_ledger": expected,
         "validated_snapshot": snapshot,
-        "source_activation": source_activation,
         "localized_index": {
             "sha256": sha256_bytes(localized_bytes),
             "bytes": len(localized_bytes),
         },
         "archives": archives,
     }
-    identity["authority_sha"] = text_matching(
-        args.authority_sha, HEX_40, "workflow authority SHA"
-    )
+    if legacy_mode:
+        # WHY: v1 keeps its original exact-source meaning for byte-compatible
+        # materialization of generations that are already public.
+        identity = {
+            "format": IDENTITY_FORMAT,
+            "package_source_sha": package_source_sha,
+            "source_activation": source_release,
+            **common_identity,
+        }
+        manifest_format = MANIFEST_FORMAT
+    else:
+        # WHY: do not rewrite truthful archive provenance to M. The v2 receipt
+        # binds immutable producer S to current-main authority M separately.
+        identity = {
+            "format": IDENTITY_FORMAT_V2,
+            "producer": source_release,
+            "validated_against_main": main_validation,
+            "cache_projection": cache_projection,
+            **common_identity,
+        }
+        manifest_format = MANIFEST_FORMAT_V2
     validate_identity(identity)
     identity_digest = sha256_bytes(canonical_bytes(identity))
     tag = generation_tag(identity, identity_digest)
@@ -1918,7 +3578,7 @@ def command_prepare(args: argparse.Namespace) -> None:
     )
     remote_index = rewrite_localized_index(localized_bytes, archive_names, release_prefix)
     manifest = {
-        "format": MANIFEST_FORMAT,
+        "format": manifest_format,
         "tag": tag,
         "identity_sha256": identity_digest,
         "identity": identity,
@@ -2204,22 +3864,6 @@ def parser() -> argparse.ArgumentParser:
     select.add_argument("--expected-out", type=Path, required=True)
     select.set_defaults(action=command_select)
 
-    main_source_evidence = subcommands.add_parser("main-source-evidence")
-    main_source_evidence.add_argument("--repository", required=True)
-    main_source_evidence.add_argument("--source-tag", required=True)
-    main_source_evidence.add_argument("--default-ref", required=True)
-    main_source_evidence.add_argument("--package-source-sha", required=True)
-    main_source_evidence.add_argument("--release", type=Path, required=True)
-    main_source_evidence.add_argument("--tag-ref", type=Path, required=True)
-    main_source_evidence.add_argument(
-        "--default-ref-value", type=Path, required=True
-    )
-    main_source_evidence.add_argument(
-        "--source-commit", type=Path, required=True
-    )
-    main_source_evidence.add_argument("--output", type=Path, required=True)
-    main_source_evidence.set_defaults(action=command_main_source_evidence)
-
     select_assets = subcommands.add_parser("select-source-assets")
     select_assets.add_argument("--source-tag", required=True)
     select_assets.add_argument("--projection", type=Path, required=True)
@@ -2249,13 +3893,87 @@ def parser() -> argparse.ArgumentParser:
     capture.add_argument("--capture-out", type=Path, required=True)
     capture.set_defaults(action=command_capture_source)
 
+    main_source_evidence = subcommands.add_parser("main-source-evidence")
+    main_source_evidence.add_argument("--repository", required=True)
+    main_source_evidence.add_argument("--source-tag", required=True)
+    main_source_evidence.add_argument("--default-ref", required=True)
+    main_source_evidence.add_argument("--package-source-sha", required=True)
+    main_source_evidence.add_argument("--release", type=Path, required=True)
+    main_source_evidence.add_argument("--tag-ref", type=Path, required=True)
+    main_source_evidence.add_argument(
+        "--default-ref-value", type=Path, required=True
+    )
+    main_source_evidence.add_argument(
+        "--source-commit", type=Path, required=True
+    )
+    main_source_evidence.add_argument("--output", type=Path, required=True)
+    main_source_evidence.set_defaults(action=command_main_source_evidence)
+
+    producer_evidence = subcommands.add_parser("producer-release-evidence")
+    producer_evidence.add_argument("--repository", required=True)
+    producer_evidence.add_argument("--source-tag", required=True)
+    producer_evidence.add_argument("--producer-sha", required=True)
+    producer_evidence.add_argument("--release", type=Path, required=True)
+    producer_evidence.add_argument("--tag-ref", type=Path, required=True)
+    producer_evidence.add_argument(
+        "--producer-commit", type=Path, required=True
+    )
+    producer_evidence.add_argument("--preserved-manifest", type=Path)
+    producer_evidence.add_argument("--release-assets", type=Path)
+    producer_evidence.add_argument("--output", type=Path, required=True)
+    producer_evidence.set_defaults(action=command_producer_release_evidence)
+
+    main_validation = subcommands.add_parser("main-validation-evidence")
+    main_validation.add_argument("--repository", required=True)
+    main_validation.add_argument("--default-ref", required=True)
+    main_validation.add_argument("--validated-main-sha", required=True)
+    main_validation.add_argument("--abi-version", type=int, required=True)
+    main_validation.add_argument(
+        "--method", choices=sorted(VALIDATION_METHODS), required=True
+    )
+    main_validation.add_argument(
+        "--default-ref-value", type=Path, required=True
+    )
+    main_validation.add_argument("--main-commit", type=Path, required=True)
+    main_validation.add_argument("--abi-snapshot", type=Path, required=True)
+    main_validation.add_argument("--output", type=Path, required=True)
+    main_validation.set_defaults(action=command_main_validation_evidence)
+
+    cache_projection = subcommands.add_parser("cache-projection-evidence")
+    cache_projection.add_argument("--producer-sha", required=True)
+    cache_projection.add_argument("--producer-tree-sha", required=True)
+    cache_projection.add_argument("--validated-main-sha", required=True)
+    cache_projection.add_argument("--validated-main-tree-sha", required=True)
+    cache_projection.add_argument(
+        "--producer-projection", type=Path, required=True
+    )
+    cache_projection.add_argument(
+        "--producer-expected-ledger", type=Path, required=True
+    )
+    cache_projection.add_argument("--main-projection", type=Path, required=True)
+    cache_projection.add_argument(
+        "--main-expected-ledger", type=Path, required=True
+    )
+    cache_projection.add_argument(
+        "--producer-components", type=Path, required=True
+    )
+    cache_projection.add_argument("--main-components", type=Path, required=True)
+    cache_projection.add_argument("--producer-tree", type=Path, required=True)
+    cache_projection.add_argument("--main-tree", type=Path, required=True)
+    cache_projection.add_argument("--output", type=Path, required=True)
+    cache_projection.set_defaults(action=command_cache_projection_evidence)
+
     prepare = subcommands.add_parser("prepare")
     prepare.add_argument("--repository", required=True)
-    prepare.add_argument("--package-source-sha", required=True)
+    prepare.add_argument("--package-source-sha")
+    prepare.add_argument("--producer-sha")
     prepare.add_argument("--source-tag", required=True)
     prepare.add_argument("--authority-sha")
     prepare.add_argument("--source-index", type=Path, required=True)
     prepare.add_argument("--source-evidence", type=Path)
+    prepare.add_argument("--producer-evidence", type=Path)
+    prepare.add_argument("--main-validation", type=Path)
+    prepare.add_argument("--cache-projection", type=Path)
     prepare.add_argument("--projection", type=Path, required=True)
     prepare.add_argument("--expected-ledger", type=Path, required=True)
     prepare.add_argument("--snapshot", type=Path, required=True)

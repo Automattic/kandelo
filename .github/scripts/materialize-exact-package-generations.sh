@@ -5,6 +5,7 @@ set -euo pipefail
 
 WASM32_TAG=""
 WASM64_TAG=""
+SELECTION_KIND=""
 CONSUMER_ROOT=""
 CONSUMER_SHA=""
 AUTHORITY_XTASK=""
@@ -15,6 +16,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --wasm32-tag) WASM32_TAG="$2"; shift 2 ;;
     --wasm64-tag) WASM64_TAG="$2"; shift 2 ;;
+    --selection-kind) SELECTION_KIND="$2"; shift 2 ;;
     --consumer-root) CONSUMER_ROOT="$2"; shift 2 ;;
     --consumer-sha) CONSUMER_SHA="$2"; shift 2 ;;
     --authority-xtask) AUTHORITY_XTASK="$2"; shift 2 ;;
@@ -27,10 +29,32 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if ! [[ "$WASM32_TAG" =~ ^package-generation-browser-inputs-wasm32-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}$ ]] ||
-   { [ -n "$WASM64_TAG" ] &&
-     ! [[ "$WASM64_TAG" =~ ^package-generation-browser-inputs-wasm64-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}$ ]]; } ||
-   ! [[ "$CONSUMER_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+case "$SELECTION_KIND" in
+  browser-inputs)
+    if ! [[ "$WASM32_TAG" =~ ^package-generation-browser-inputs-wasm32-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}$ ]] ||
+       { [ -n "$WASM64_TAG" ] &&
+         ! [[ "$WASM64_TAG" =~ ^package-generation-browser-inputs-wasm64-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}$ ]]; }; then
+      echo "materialize-exact-package-generations: browser-inputs requires architecture-bound browser-inputs content tags" >&2
+      exit 2
+    fi
+    ;;
+  rootfs-wasm32)
+    # WHY: schema-1 rootfs is the deliberately narrow recovery input for the
+    # first Bash/M4 bottle wave. Requiring an explicit selection kind prevents
+    # a caller from relabeling it as the wider browser-input generation.
+    if ! [[ "$WASM32_TAG" =~ ^package-generation-rootfs-wasm32-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}$ ]] ||
+       [ -n "$WASM64_TAG" ]; then
+      echo "materialize-exact-package-generations: rootfs-wasm32 requires one rootfs wasm32 content tag and no wasm64 tag" >&2
+      exit 2
+    fi
+    ;;
+  *)
+    echo "materialize-exact-package-generations: --selection-kind must be browser-inputs or rootfs-wasm32" >&2
+    exit 2
+    ;;
+esac
+
+if ! [[ "$CONSUMER_SHA" =~ ^[0-9a-f]{40}$ ]] ||
    [ "$REPOSITORY" != "Automattic/kandelo" ] ||
    [ ! -d "$CONSUMER_ROOT" ] || [ -L "$CONSUMER_ROOT" ] ||
    [ ! -f "$AUTHORITY_XTASK" ] || [ -L "$AUTHORITY_XTASK" ] ||
@@ -71,10 +95,14 @@ fi
 mkdir -p "$TMP_ROOT/output/resolver" "$TMP_ROOT/output/generations"
 cp "$TMP_ROOT/wasm32/release/generation.json" \
   "$TMP_ROOT/output/generations/wasm32.json"
+cp "$TMP_ROOT/wasm32/package-generation-input.json" \
+  "$TMP_ROOT/output/generations/wasm32.input.json"
 
 if [ -n "$WASM64_TAG" ]; then
   cp "$TMP_ROOT/wasm64/release/generation.json" \
     "$TMP_ROOT/output/generations/wasm64.json"
+  cp "$TMP_ROOT/wasm64/package-generation-input.json" \
+    "$TMP_ROOT/output/generations/wasm64.input.json"
   jq -S '.identity.expected_ledger' \
     "$TMP_ROOT/wasm64/release/generation.json" \
     >"$TMP_ROOT/wasm64-expected.json"

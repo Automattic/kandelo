@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::build_deps::{
-    Registry, compute_cache_key_sha_for_package, source_cache_identities,
+    Registry, compute_cache_key_sha_for_package, source_build_input_components,
+    source_cache_identities,
 };
 use crate::index_toml::{EntryStatus, IndexToml, PackageEntry};
 use crate::pkg_manifest::{
@@ -233,6 +234,7 @@ fn run_scan_source(args: &[String]) -> Result<(), String> {
         "--roots-file",
         "--projection-output",
         "--expected-output",
+        "--components-output",
     ])?;
     let source_root = flags.required_path("--source-root")?;
     require_nonsymlink_dir(source_root, "package source root")?;
@@ -292,7 +294,33 @@ fn run_scan_source(args: &[String]) -> Result<(), String> {
         schema,
     )?;
     write_json(flags.required_path("--projection-output")?, &projection)?;
-    write_json(flags.required_path("--expected-output")?, &expected)
+    write_json(flags.required_path("--expected-output")?, &expected)?;
+    let component_outputs = flags.values("--components-output").collect::<Vec<_>>();
+    match component_outputs.as_slice() {
+        [] => Ok(()),
+        [output] => {
+            // WHY: a schema-2 projection also binds source-only dependency
+            // identities, but only expected-ledger entries can materialize as
+            // archives. Component evidence covers those executable builds;
+            // projection equality independently keeps source-only identities
+            // bound across producer and main.
+            let selected = expected
+                .entries
+                .iter()
+                .map(|entry| entry.package.clone())
+                .collect::<BTreeSet<_>>();
+            let components = source_build_input_components(
+                source_root,
+                &registry,
+                &selected,
+                arch,
+                expected_abi,
+                &fresh_cache_identities,
+            )?;
+            write_json(Path::new(output), &components)
+        }
+        _ => Err("--components-output must be provided at most once".into()),
+    }
 }
 
 fn build_source_selection(
@@ -2330,6 +2358,53 @@ cache_key_sha = "{SHA}"
                 .iter()
                 .all(|entry| entry.package != "pcre2-source")
         );
+        let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let registry = Registry {
+            roots: vec![source_root.join("packages/registry")],
+        };
+        let selected = expected
+            .entries
+            .iter()
+            .map(|entry| entry.package.clone())
+            .collect::<BTreeSet<_>>();
+        let fresh_cache_identities = index
+            .identities
+            .iter()
+            .map(|(name, identity)| (name.clone(), identity.cache_keys.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let components = source_build_input_components(
+            &source_root,
+            &registry,
+            &selected,
+            TargetArch::Wasm32,
+            wasm_posix_shared::ABI_VERSION,
+            &fresh_cache_identities,
+        )
+        .unwrap();
+        assert!(
+            components["packages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|package| package["package"] != "pcre2-source")
+        );
+        let mariadb = components["packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|package| package["package"] == "mariadb")
+            .unwrap();
+        assert!(
+            mariadb["direct_dependencies"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|dependency| {
+                    dependency["package"] == "pcre2-source"
+                        && dependency["cache_key_sha"]
+                            == fresh_cache_identities["pcre2-source"]["wasm32"]
+                })
+        );
         assert!(
             build_source_selection(
                 &packages,
@@ -2373,6 +2448,59 @@ cache_key_sha = "{SHA}"
                 .entries
                 .iter()
                 .map(|entry| entry.package.as_str())
+                .collect::<Vec<_>>()
+        );
+
+        let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let registry = Registry {
+            roots: vec![source_root.join("packages/registry")],
+        };
+        let selected = expected
+            .entries
+            .iter()
+            .map(|entry| entry.package.clone())
+            .collect::<BTreeSet<_>>();
+        let fresh_cache_identities = index
+            .identities
+            .iter()
+            .map(|(name, identity)| (name.clone(), identity.cache_keys.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let components = source_build_input_components(
+            &source_root,
+            &registry,
+            &selected,
+            TargetArch::Wasm32,
+            wasm_posix_shared::ABI_VERSION,
+            &fresh_cache_identities,
+        )
+        .unwrap();
+        assert_eq!(
+            components["format"],
+            "kandelo-selected-package-build-input-closure-v1"
+        );
+        assert_eq!(
+            components["packages"].as_array().unwrap().len(),
+            expected.entries.len()
+        );
+        let rootfs = components["packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|package| package["package"] == "rootfs")
+            .unwrap();
+        let rootfs_build =
+            BuildToml::load(&source_root.join("packages/registry/rootfs")).unwrap();
+        assert_eq!(
+            rootfs["input_components"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|component| component["label"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            rootfs_build
+                .inputs
+                .iter()
+                .map(String::as_str)
                 .collect::<Vec<_>>()
         );
     }

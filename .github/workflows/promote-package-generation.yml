@@ -1,20 +1,32 @@
 name: Promote durable package generation
 
-# Snapshot one exact, coherently activated main package selection into a
-# content-addressed public prerelease. Both jobs execute only the exact current
-# main authority; the second checkout is inert source data at the same SHA.
+# Snapshot one immutable producer after a versioned validation against current
+# main into a content-addressed public prerelease. Both jobs execute only exact
+# current-main authority; the producer checkout remains inert source data.
 on:
   workflow_dispatch:
     inputs:
       source-tag:
-        description: 'Activated canonical package release, for example binaries-abi-v42'
+        description: 'Exact published source tag; cache-projection admission requires the preservation dispatch result'
         required: true
         default: binaries-abi-v42
         type: string
-      package-source-sha:
-        description: 'Full 40-character activated default-branch commit'
+      producer-sha:
+        description: 'Full 40-character commit that produced the immutable package archives'
         required: true
         type: string
+      validated-main-sha:
+        description: 'Full 40-character current main commit that validates and publishes the generation'
+        required: true
+        type: string
+      validation-method:
+        description: 'How producer source is proven compatible with validated current main'
+        required: true
+        default: identical-git-tree-v1
+        type: choice
+        options:
+          - identical-git-tree-v1
+          - identical-package-cache-projection-v1
       expected-abi:
         description: 'Kernel ABI carried by the package generation'
         required: true
@@ -41,12 +53,17 @@ on:
         options:
           - wasm32
           - wasm64
+      release-retained-source:
+        description: 'Cleanup-only rerun after all parallel generations succeed: delete retained pr-N-staging and remove its label'
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: durable-package-generation-${{ inputs.package-source-sha }}-${{ inputs.selection-kind }}-${{ inputs.root-package }}-${{ inputs.arch }}
+  group: durable-package-generation-${{ inputs.producer-sha }}-${{ inputs.validated-main-sha }}-${{ inputs.validation-method }}-${{ inputs.selection-kind }}-${{ inputs.root-package }}-${{ inputs.arch }}
   cancel-in-progress: false
 
 jobs:
@@ -56,6 +73,7 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: read
+      pull-requests: read
     steps:
       - name: Checkout current publishing authority
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -65,13 +83,13 @@ jobs:
           persist-credentials: false
           path: authority
 
-      - name: Checkout exact activated main source as inert data
+      - name: Checkout immutable package producer as inert data
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ inputs.package-source-sha }}
+          ref: ${{ inputs.producer-sha }}
           fetch-depth: 1
           persist-credentials: false
-          path: package-source
+          path: producer
 
       - name: Set up declared build tools
         uses: ./authority/.github/actions/setup-nix
@@ -104,7 +122,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          PACKAGE_SOURCE_SHA: ${{ inputs.package-source-sha }}
+          PRODUCER_SHA: ${{ inputs.producer-sha }}
+          VALIDATED_MAIN_SHA: ${{ inputs.validated-main-sha }}
+          VALIDATION_METHOD: ${{ inputs.validation-method }}
           SOURCE_TAG: ${{ inputs.source-tag }}
           EXPECTED_ABI: ${{ inputs.expected-abi }}
           SELECTION_KIND: ${{ inputs.selection-kind }}
@@ -129,8 +149,10 @@ jobs:
           bash scripts/dev-shell.sh \
             bash .github/scripts/prepare-durable-package-generation.sh \
             --source-tag "$SOURCE_TAG" \
-            --package-source-root "$GITHUB_WORKSPACE/package-source" \
-            --package-source-sha "$PACKAGE_SOURCE_SHA" \
+            --producer-root "$GITHUB_WORKSPACE/producer" \
+            --producer-sha "$PRODUCER_SHA" \
+            --validated-main-sha "$VALIDATED_MAIN_SHA" \
+            --validation-method "$VALIDATION_METHOD" \
             --authority-sha "$AUTHORITY_SHA" \
             --default-ref "$DEFAULT_REF" \
             --expected-abi "$EXPECTED_ABI" \
@@ -156,6 +178,7 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - name: Checkout current publishing authority without persisted credentials
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -163,12 +186,22 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+          path: authority
+
+      - name: Checkout immutable package producer as inert data
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.producer-sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: producer
 
       - name: Set up declared build tools
-        uses: ./.github/actions/setup-nix
+        uses: ./authority/.github/actions/setup-nix
 
       - name: Install current browser-root parser dependencies
         if: inputs.selection-kind == 'browser-inputs'
+        working-directory: authority
         run: |
           # The writer independently derives roots from exact main; it does not
           # trust the roots embedded in the transferred preparation artifact.
@@ -176,6 +209,7 @@ jobs:
             npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Build current authority validator
+        working-directory: authority
         run: |
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
@@ -195,11 +229,14 @@ jobs:
           path: ${{ runner.temp }}/package-generation
 
       - name: Revalidate, publish, and anonymously read back every asset
+        working-directory: authority
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           SOURCE_TAG: ${{ inputs.source-tag }}
-          PACKAGE_SOURCE_SHA: ${{ inputs.package-source-sha }}
+          PRODUCER_SHA: ${{ inputs.producer-sha }}
+          VALIDATED_MAIN_SHA: ${{ inputs.validated-main-sha }}
+          VALIDATION_METHOD: ${{ inputs.validation-method }}
           EXPECTED_ABI: ${{ inputs.expected-abi }}
           SELECTION_KIND: ${{ inputs.selection-kind }}
           ROOT_PACKAGE: ${{ inputs.root-package }}
@@ -212,10 +249,13 @@ jobs:
           bash .github/scripts/publish-durable-package-generation.sh \
             --bundle "$RUNNER_TEMP/package-generation" \
             --authority-xtask "$authority_xtask" \
-            --lock-root "$GITHUB_WORKSPACE" \
+            --lock-root "$GITHUB_WORKSPACE/authority" \
             --receipt "$RUNNER_TEMP/package-generation-receipt.json" \
             --source-tag "$SOURCE_TAG" \
-            --package-source-sha "$PACKAGE_SOURCE_SHA" \
+            --producer-sha "$PRODUCER_SHA" \
+            --producer-root "$GITHUB_WORKSPACE/producer" \
+            --validated-main-sha "$VALIDATED_MAIN_SHA" \
+            --validation-method "$VALIDATION_METHOD" \
             --expected-abi "$EXPECTED_ABI" \
             --selection-kind "$SELECTION_KIND" \
             --root-package "$ROOT_PACKAGE" \
@@ -227,9 +267,10 @@ jobs:
             echo "## Durable package generation"
             echo
             echo "- Tag: \`$tag\`"
-            echo "- Package source: \`${{ inputs.package-source-sha }}\`"
-            echo "- Activated package release: \`${{ inputs.source-tag }}\`"
-            echo "- Activated main source: \`${{ inputs.package-source-sha }}\`"
+            echo "- Immutable package producer: \`${{ inputs.producer-sha }}\`"
+            echo "- Producer release: \`${{ inputs.source-tag }}\`"
+            echo "- Validated current main: \`${{ inputs.validated-main-sha }}\`"
+            echo "- Validation method: \`${{ inputs.validation-method }}\`"
           } >>"$GITHUB_STEP_SUMMARY"
 
       - name: Retain the exact publication receipt
@@ -239,3 +280,27 @@ jobs:
           path: ${{ runner.temp }}/package-generation-receipt.json
           if-no-files-found: error
           retention-days: 30
+
+      - name: Release the retained staging source after the final promotion
+        if: inputs.release-retained-source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_TAG: ${{ inputs.source-tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$SOURCE_TAG" =~ ^pr-([1-9][0-9]*)-staging$ ]]; then
+            echo "release-retained-source requires a pr-N-staging source" >&2
+            exit 2
+          fi
+          pr_number="${BASH_REMATCH[1]}"
+          jq -e --arg source "$SOURCE_TAG" \
+            '.schema == 2 and .producer.release_tag == $source' \
+            "$RUNNER_TEMP/package-generation-receipt.json" >/dev/null
+          # Delete the source before removing its retention marker. A failed
+          # deletion therefore remains retryable and cannot reopen the race.
+          gh release delete "$SOURCE_TAG" \
+            --repo "$REPOSITORY" --yes --cleanup-tag
+          gh pr edit "$pr_number" \
+            --repo "$REPOSITORY" \
+            --remove-label retain-package-staging

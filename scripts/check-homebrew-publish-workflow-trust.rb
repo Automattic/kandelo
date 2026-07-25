@@ -21,11 +21,11 @@ MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
-PUBLISHER_PLAN_DIGEST = "81e27dd489457e6418fe1318aacf622d147240ef0e2f971ee3b6b7221af277db"
-PUBLISHER_BUILD_DIGEST = "2846d699f03bca813097949d848fb93696e59052e537f107a56ffb4fccdb04c7"
+PUBLISHER_PLAN_DIGEST = "5e6e251b42e49953b67e61232e9679036954c4bbd487068ea46d831b24a3669b"
+PUBLISHER_BUILD_DIGEST = "5ae1f09b7cd82e2efc0a7788ec0ab39b0b5ca4edc87fd7750c0caed30a11cf34"
 PUBLISHER_UPLOAD_DIGEST = "a44f8b7b2eb1d4b9436496cc9a099b80fb70be52143820e77fb7196e807d302f"
 PUBLISHER_INDEX_DIGEST = "7b05a7e4b076628ab999f9edb2e39a6641c4bb9a2563afcf19be15a119566bbe"
-PUBLISHER_VERIFY_DIGEST = "a621279fe7414c974042c3852e3bf0fef6d133cb8b0b7ccbae4da7047e2888e6"
+PUBLISHER_VERIFY_DIGEST = "325e261ba0aeb205b16c81d4d22bfbeba697391e9c2a5ed66e24b2238f8b905f"
 PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a0335816a0886b"
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
 MAINTENANCE_VALIDATE_DIGEST = "30ebccd5d44e004e37f168e81284d7ceb18accfa067c05248c1cc19398a7515f"
@@ -37,6 +37,8 @@ SELF_TEST_PACKAGE_GENERATION_WASM32 =
   "package-generation-browser-inputs-wasm32-abi-v42-sha256-#{"c" * 64}"
 SELF_TEST_PACKAGE_GENERATION_WASM64 =
   "package-generation-browser-inputs-wasm64-abi-v42-sha256-#{"d" * 64}"
+SELF_TEST_PACKAGE_GENERATION_ROOTFS =
+  "package-generation-rootfs-wasm32-abi-v42-sha256-#{"f" * 64}"
 
 def check(condition, message)
   raise message unless condition
@@ -224,11 +226,14 @@ def tap_source_binding_result(source, overrides = {})
   end
 end
 
-def expected_caller_outputs(kandelo_ref, tap_ref, wasm32: "", wasm64: "")
+def expected_caller_outputs(
+  kandelo_ref, tap_ref, wasm32: "", wasm64: "", kind: "none"
+)
   "kandelo-ref=#{kandelo_ref}\n" \
     "tap-ref=#{tap_ref}\n" \
     "package-generation-wasm32=#{wasm32}\n" \
-    "package-generation-wasm64=#{wasm64}\n"
+    "package-generation-wasm64=#{wasm64}\n" \
+    "package-generation-kind=#{kind}\n"
 end
 
 def check_caller_validation_behavior(workflow)
@@ -299,7 +304,8 @@ def check_caller_validation_behavior(workflow)
           kandelo_sha,
           SELF_TEST_TAP_SHA,
           wasm32: SELF_TEST_PACKAGE_GENERATION_WASM32,
-          wasm64: SELF_TEST_PACKAGE_GENERATION_WASM64
+          wasm64: SELF_TEST_PACKAGE_GENERATION_WASM64,
+          kind: "browser-inputs"
         ),
         "publisher write path does not accept an exact reviewed Kandelo commit")
 
@@ -312,9 +318,23 @@ def check_caller_validation_behavior(workflow)
           "refs/heads/main",
           "refs/heads/main",
           wasm32: SELF_TEST_PACKAGE_GENERATION_WASM32,
-          wasm64: SELF_TEST_PACKAGE_GENERATION_WASM64
+          wasm64: SELF_TEST_PACKAGE_GENERATION_WASM64,
+          kind: "browser-inputs"
         ),
         "publisher dry-run does not preserve optional exact generation tags")
+
+  rootfs_write = caller_validation_result(source, write_caller.merge({
+    "PACKAGE_GENERATION_WASM32" => SELF_TEST_PACKAGE_GENERATION_ROOTFS,
+    "PACKAGE_GENERATION_WASM64" => "",
+  }))
+  check(rootfs_write["status"] == 0 &&
+        rootfs_write["outputs"] == expected_caller_outputs(
+          SELF_TEST_KANDELO_MAIN_SHA,
+          SELF_TEST_TAP_SHA,
+          wasm32: SELF_TEST_PACKAGE_GENERATION_ROOTFS,
+          kind: "rootfs-wasm32"
+        ),
+        "publisher write path does not admit the bounded rootfs-wasm32 lane")
 
   {
     "wasm32 tag bound to wasm64" => {
@@ -333,7 +353,7 @@ def check_caller_validation_behavior(workflow)
     rejected = caller_validation_result(source, override)
     arch = override.key?("PACKAGE_GENERATION_WASM32") ? "wasm32" : "wasm64"
     check(rejected["status"] == 2 && rejected["stderr"].include?(
-            "package-generation-#{arch} must be an exact browser-inputs content tag"
+            "package-generation-#{arch} must be an exact supported content tag"
           ), "publisher dry-run accepts #{label}")
   end
 
@@ -343,9 +363,17 @@ def check_caller_validation_behavior(workflow)
   ].each do |label, missing|
     rejected = caller_validation_result(source, write_caller.merge(missing => ""))
     check(rejected["status"] == 2 && rejected["stderr"].include?(
-            "#{missing.downcase.tr('_', '-')} must be an exact browser-inputs content tag"
+            "#{missing.downcase.tr('_', '-')} must be an exact supported content tag"
           ), "publisher write path accepts #{label}")
   end
+
+  rootfs_with_wasm64 = caller_validation_result(source, write_caller.merge({
+    "PACKAGE_GENERATION_WASM32" => SELF_TEST_PACKAGE_GENERATION_ROOTFS,
+  }))
+  check(rootfs_with_wasm64["status"] == 2 &&
+        rootfs_with_wasm64["stderr"].include?(
+          "the rootfs-wasm32 publication lane forbids a wasm64 generation"
+        ), "publisher write path combines rootfs-wasm32 with wasm64")
 
   write_branch = caller_validation_result(source, write_caller.merge({
     "KANDELO_REF" => "review/homebrew",
@@ -973,8 +1001,11 @@ def check_publisher(workflow)
     'normalize_write_tap_ref()',
     'write publication requires an exact reviewed lowercase 40-character tap commit SHA',
     'normalize_package_generation()',
-    'package-generation-browser-inputs-wasm32-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}',
+    'package-generation-(browser-inputs|rootfs)-wasm32-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}',
     'package-generation-browser-inputs-wasm64-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}',
+    'validated_generation_kind="rootfs-wasm32"',
+    'validated_generation_kind="browser-inputs"',
+    'the rootfs-wasm32 publication lane forbids a wasm64 generation',
     'normalize_package_generation wasm32 "$PACKAGE_GENERATION_WASM32"',
     'normalize_package_generation wasm64 "$PACKAGE_GENERATION_WASM64"',
     'validated_kandelo_ref="$(normalize_dry_run_source_ref "Kandelo" "$KANDELO_REF")"',
@@ -985,6 +1016,7 @@ def check_publisher(workflow)
     'echo "tap-ref=$validated_tap_ref"',
     'echo "package-generation-wasm32=$validated_generation_wasm32"',
     'echo "package-generation-wasm64=$validated_generation_wasm64"',
+    'echo "package-generation-kind=$validated_generation_kind"',
   ].each do |predicate|
     check(validation_run.include?(predicate), "publisher caller validation lacks #{predicate}")
   end
@@ -1056,6 +1088,7 @@ def check_publisher(workflow)
         vfs_selection["id"] == "vfs-acceptance" &&
         vfs_selection["shell"] == "bash" && vfs_selection["env"] == {
           "DRY_RUN" => "${{ inputs.dry-run }}",
+          "PACKAGE_GENERATION_KIND" => "${{ steps.trust.outputs.package-generation-kind }}",
           "PLANNED_MATRIX" => "${{ steps.matrix.outputs.matrix }}",
           "REQUIRE_VFS_ACCEPTANCE" => "${{ inputs.require-vfs-acceptance }}",
           "TAP_NAME" => "${{ inputs.tap-name }}",
@@ -1095,6 +1128,8 @@ def check_publisher(workflow)
     'required dependency-bearing VFS acceptance needs a non-dry-run publication',
     'use force when its bottle is already current',
     'echo "formula=$selected_formula" >> "$GITHUB_OUTPUT"',
+    '[ "$PACKAGE_GENERATION_KIND" = "rootfs-wasm32" ]',
+    'bounded rootfs-wasm32 bottle lane intentionally skips dependency-bearing legacy VFS acceptance',
   ].each do |fragment|
     check(vfs_selection_run.include?(fragment),
           "publisher VFS acceptance planning lacks #{fragment}")
@@ -1120,6 +1155,8 @@ def check_publisher(workflow)
           "EXPECTED_KANDELO_REPOSITORY" => "${{ inputs.kandelo-repository }}",
           "FORCE_REBUILD" => "${{ inputs.force }}",
           "FORMULAE" => "${{ inputs.formulae }}",
+          "PACKAGE_GENERATION_KIND" => "${{ steps.trust.outputs.package-generation-kind }}",
+          "REQUIRE_VFS_ACCEPTANCE" => "${{ inputs.require-vfs-acceptance }}",
         }, "publisher matrix planner mapping changed")
   matrix_plan_run = matrix_plan.fetch("run")
   [
@@ -1130,6 +1167,11 @@ def check_publisher(workflow)
     'expected_args+=(--expected-kandelo-commit "$EXPECTED_KANDELO_COMMIT")',
     '--tap-root "$GITHUB_WORKSPACE/tap"', '--formulae "$FORMULAE"',
     '--arches "$ARCHES"', '"${expected_args[@]}"',
+    '[ "$PACKAGE_GENERATION_KIND" = "rootfs-wasm32" ]',
+    '[ "$normalized_arches" = "wasm32" ]',
+    'bash|m4|bash,m4)',
+    'rootfs-wasm32 publication lane is limited to Bash and M4',
+    '[ "$REQUIRE_VFS_ACCEPTANCE" = "false" ]',
   ].each do |fragment|
     check(matrix_plan_run.include?(fragment),
           "publisher matrix planner lacks #{fragment}")
@@ -1226,6 +1268,7 @@ def check_publisher(workflow)
     "tap-sha" => "${{ steps.source-commits.outputs.tap-sha }}",
     "package-generation-wasm32" => "${{ steps.trust.outputs.package-generation-wasm32 }}",
     "package-generation-wasm64" => "${{ steps.trust.outputs.package-generation-wasm64 }}",
+    "package-generation-kind" => "${{ steps.trust.outputs.package-generation-kind }}",
     "core-dependency-tap-sha" => "${{ steps.dependency-taps.outputs.core-tap-sha }}",
     "vfs-acceptance-formula" => "${{ steps.vfs-acceptance.outputs.formula }}",
   }, "publisher plan outputs changed")
@@ -1596,7 +1639,7 @@ def check_publisher(workflow)
     build_steps, "Materialize exact-main Formula runtime packages"
   )
   verify_generations = named_step(
-    verify_steps, "Materialize exact-main browser runtime packages"
+    verify_steps, "Materialize exact-main verification runtime packages"
   )
   check(build_generation.keys.sort == %w[env if name run shell] &&
         build_generation["if"] == "${{ !inputs.dry-run }}" &&
@@ -1604,6 +1647,8 @@ def check_publisher(workflow)
         build_generation["env"] == {
           "GH_TOKEN" => "${{ github.token }}",
           "KANDELO_SHA" => "${{ needs.plan.outputs.kandelo-sha }}",
+          "PACKAGE_GENERATION_KIND" =>
+            "${{ needs.plan.outputs.package-generation-kind }}",
           "PACKAGE_GENERATION_WASM32" =>
             "${{ needs.plan.outputs.package-generation-wasm32 }}",
         }, "publisher exact Formula generation mapping changed")
@@ -1613,6 +1658,8 @@ def check_publisher(workflow)
         verify_generations["env"] == {
           "GH_TOKEN" => "${{ github.token }}",
           "KANDELO_SHA" => "${{ needs.plan.outputs.kandelo-sha }}",
+          "PACKAGE_GENERATION_KIND" =>
+            "${{ needs.plan.outputs.package-generation-kind }}",
           "PACKAGE_GENERATION_WASM32" =>
             "${{ needs.plan.outputs.package-generation-wasm32 }}",
           "PACKAGE_GENERATION_WASM64" =>
@@ -1622,6 +1669,7 @@ def check_publisher(workflow)
   common_generation_fragments = [
     "bash scripts/dev-shell.sh cargo build --release -p xtask",
     "bash .github/scripts/materialize-exact-package-generations.sh",
+    '--selection-kind "$PACKAGE_GENERATION_KIND"',
     '--consumer-root "$PWD"',
     '--consumer-sha "$KANDELO_SHA"',
     '--authority-xtask "$PWD/target/$host/release/xtask"',
@@ -1679,6 +1727,10 @@ def check_publisher(workflow)
     File.join(REPO_ROOT, ".github/scripts/materialize-durable-package-generation.sh")
   )
   [
+    '--selection-kind) SELECTION_KIND="$2"',
+    'rootfs-wasm32)',
+    'package-generation-rootfs-wasm32-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}',
+    'rootfs-wasm32 requires one rootfs wasm32 content tag and no wasm64 tag',
     '--required-package-source-sha "$CONSUMER_SHA"',
     '--base-index "$TMP_ROOT/wasm32/resolver/index.toml"',
     '--overlay-index "$TMP_ROOT/wasm64/resolver/index.toml"',
@@ -1690,8 +1742,9 @@ def check_publisher(workflow)
           "exact package-generation materializer lacks #{fragment}")
   end
   [
-    '[ "$package_source_sha" != "$REQUIRED_PACKAGE_SOURCE_SHA" ]',
-    "generation package source differs from the required exact main commit",
+    '[ "$validated_main_sha" != "$REQUIRED_PACKAGE_SOURCE_SHA" ]',
+    "generation validation differs from the required exact main commit",
+    'archive_source_args=(--package-source-sha "$package_producer_sha")',
     'run_without_credentials "$AUTHORITY_XTASK" staging-reuse validate-generation',
     '[ "$(git -C "$CONSUMER_ROOT" rev-parse HEAD)" != "$CONSUMER_SHA" ]',
     'printf \'file://%s/resolver/index.toml\\n\' "$OUTPUT_DIR"',
@@ -4478,7 +4531,9 @@ def check_publisher(workflow)
   acceptance_step = named_step(
     verify_steps, "Boot an exact dependency-bearing Brewfile image on Node and Chromium"
   )
-  check(acceptance_step.keys.sort == %w[env name run shell] &&
+  check(acceptance_step.keys.sort == %w[env if name run shell] &&
+        acceptance_step["if"] ==
+          "${{ needs.plan.outputs.package-generation-kind != 'rootfs-wasm32' }}" &&
         acceptance_step["shell"] == "bash" && acceptance_step["env"] == {
           "KANDELO_HOMEBREW_ACCEPTANCE_ARCH" => "${{ matrix.arch }}",
           "KANDELO_HOMEBREW_ACCEPTANCE_DRY_RUN" => "${{ inputs.dry-run }}",
@@ -5693,18 +5748,18 @@ def self_test(publisher, maintenance, repository_canary)
         '[ "$index_url" = "$expected_index_url" ]', "true"
       )
     },
-    "browser generation omits wasm64" => lambda { |w|
+    "complete generation omits wasm64" => lambda { |w|
       step = mutate_named_step(
-        w, "verify-bottle", "Materialize exact-main browser runtime packages"
+        w, "verify-bottle", "Materialize exact-main verification runtime packages"
       )
       step["run"] = step.fetch("run").sub(
         '--wasm64-tag "$PACKAGE_GENERATION_WASM64" \\',
         ""
       )
     },
-    "browser generation activates mutable resolver" => lambda { |w|
+    "verification generation activates mutable resolver" => lambda { |w|
       step = mutate_named_step(
-        w, "verify-bottle", "Materialize exact-main browser runtime packages"
+        w, "verify-bottle", "Materialize exact-main verification runtime packages"
       )
       step["run"] = step.fetch("run").sub(
         'echo "WASM_POSIX_BINARY_INDEX_URL=$index_url" >> "$GITHUB_ENV"',
