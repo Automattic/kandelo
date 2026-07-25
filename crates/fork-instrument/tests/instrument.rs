@@ -10,7 +10,8 @@
 //! - **guard-dispatch**: used when any fork-path call is nested inside
 //!   a block/loop/if/try_table. Each call site carries an in-place
 //!   if-else guard that fires on `(NORMAL) || (REWIND && call_idx ==
-//!   N)`; Phase 4g gates state-mutating ops during REWIND replay.
+//!   N)`; replay restores activation-owned frame state before entering
+//!   the selected continuation.
 //!
 //! Both schemes share the same frame layout and a result-typed restart loop
 //! containing `[preamble-ifelse, Block($unwind_save), postamble]`.
@@ -33,6 +34,13 @@ fn parse_wat(wat_src: &str) -> Vec<u8> {
 fn instrument_wat(wat_src: &str) -> Vec<u8> {
     let bytes = parse_wat(wat_src);
     instrument(&bytes, &Options::default()).expect("instrument")
+}
+
+fn instrument_wat_error(wat_src: &str) -> String {
+    let bytes = parse_wat(wat_src);
+    instrument(&bytes, &Options::default())
+        .expect_err("instrumentation should reject this module")
+        .to_string()
 }
 
 fn validate(bytes: &[u8]) {
@@ -1019,7 +1027,11 @@ fn postamble_writes_and_commits_the_reserved_linked_frame() {
         InstrKind::GlobalGet,
         InstrKind::Other, // Load current frame
         InstrKind::Const,
-        InstrKind::Other, // Store packed zero catch_region_id + exnref_slot
+        InstrKind::Other, // Store zero catch_region_id
+        InstrKind::GlobalGet,
+        InstrKind::Other, // Load current frame
+        InstrKind::Const,
+        InstrKind::Other, // Store reserved zero catch metadata
         InstrKind::GlobalGet,
         InstrKind::Other, // Load current frame
         InstrKind::Call,  // __wpk_fork_frame_commit
@@ -1029,20 +1041,20 @@ fn postamble_writes_and_commits_the_reserved_linked_frame() {
 }
 
 #[test]
-fn no_catch_postamble_packs_zero_catch_header_fields() {
+fn no_catch_postamble_writes_deterministic_zero_catch_header_fields() {
     let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
     validate(&bytes);
 
     let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
     let caller_section = extract_function_text(&printed, "caller");
     assert!(
-        caller_section.contains("i64.store offset=8"),
-        "no-catch postamble should pack catch_region_id/exnref_slot zeroes:\n{caller_section}",
+        caller_section.contains("i32.store offset=8")
+            && caller_section.contains("i32.store offset=12"),
+        "no-catch postamble should zero the catch region and reserved field:\n{caller_section}",
     );
     assert!(
-        !(caller_section.contains("i32.store offset=8")
-            && caller_section.contains("i32.store offset=12")),
-        "no-catch postamble should not emit separate zero stores:\n{caller_section}",
+        !caller_section.contains("i64.store offset=8"),
+        "ABI 43 uses explicit versioned header fields:\n{caller_section}",
     );
 }
 
@@ -1059,7 +1071,7 @@ fn catch_capable_postamble_keeps_dynamic_catch_header_stores() {
     );
     assert!(
         caller_section.contains("i32.store offset=12"),
-        "catch-capable postamble must store dynamic exnref_slot:\n{caller_section}",
+        "catch-capable postamble must zero the reserved former exnref slot:\n{caller_section}",
     );
     assert!(
         !caller_section.contains("i64.store offset=8"),
@@ -1106,15 +1118,17 @@ fn postamble_serializes_user_scalar_locals() {
     let postamble = &kinds[postamble_start..];
 
     // Postamble with one user local:
-    //   4 current-frame pointer loads/stores plus three payload stores
-    //   (func_index, packed zero catch fields, user_x) = 7 Others. The linked
-    //   commit replaces the legacy current_pos bump.
+    //   4 current-frame pointer loads/stores plus four payload stores
+    //   (func_index, catch_region_id, reserved zero, user_x) = 8 stores/loads,
+    //   plus the linked-frame reservation result = 9 Others. The catch fields
+    //   remain separate i32 slots so a catch-capable function can store its
+    //   dynamic region identifier without changing the frame shape.
     let other_count = postamble
         .iter()
         .filter(|k| matches!(k, InstrKind::Other))
         .count();
     assert_eq!(
-        other_count, 7,
+        other_count, 9,
         "postamble should load/store the active payload and serialize its fields: {postamble:?}",
     );
 }
@@ -1138,89 +1152,60 @@ fn postamble_emits_defaults_for_each_result_type() {
     );
 }
 
-// --- Aux-table (Phase 4f) tests --------------------------------------
+// --- Fresh-instance reference-state validation -----------------------
 
 #[test]
-fn funcref_local_triggers_aux_table_injection() {
-    let bytes = instrument_wat(FIXTURE_FUNCREF_LOCAL);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    let stash_count = module
-        .tables
-        .iter()
-        .filter(|t| t.name.as_deref() == Some("_wpk_fork_funcref_stash"))
-        .count();
-    assert_eq!(stash_count, 1, "expected exactly one funcref stash table");
-
-    let stash = module
-        .tables
-        .iter()
-        .find(|t| t.name.as_deref() == Some("_wpk_fork_funcref_stash"))
-        .unwrap();
-    assert_eq!(stash.initial, 1);
-}
-
-#[test]
-fn funcref_local_is_spilled_to_table_and_reloaded() {
-    let bytes = instrument_wat(FIXTURE_FUNCREF_LOCAL);
-    let module = Module::from_buffer(&bytes).unwrap();
-    let caller = func_by_name(&module, "caller");
-    let f = local_func(&module, caller);
-
-    // Count TableSet and TableGet anywhere in the function.
-    let mut table_sets = 0usize;
-    let mut table_gets = 0usize;
-    walk_all(f, f.entry_block(), &mut |_, instr| match instr {
-        Instr::TableSet(_) => table_sets += 1,
-        Instr::TableGet(_) => table_gets += 1,
-        _ => {}
-    });
-
-    assert_eq!(table_sets, 1, "postamble must spill the one funcref local");
-    assert_eq!(
-        table_gets, 1,
-        "preamble-then must reload the one funcref local",
+fn funcref_local_in_fork_closure_is_rejected() {
+    let error = instrument_wat_error(FIXTURE_FUNCREF_LOCAL);
+    assert!(
+        error.contains("reference local/parameter") && error.contains("not transferable"),
+        "unexpected diagnostic: {error}",
     );
 }
 
 #[test]
-fn functions_without_ref_locals_inject_no_aux_tables() {
+fn reference_parameter_in_fork_closure_is_rejected() {
+    let error = instrument_wat_error(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (func $caller (param funcref) (result i32)
+            call $fork)
+          (memory 1))
+        "#,
+    );
+    assert!(error.contains("reference local/parameter"), "{error}");
+}
+
+#[test]
+fn instrumented_modules_never_emit_legacy_reference_tables() {
     let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
     let module = Module::from_buffer(&bytes).unwrap();
 
-    let stash_names = [
+    let legacy_reference_table_names = [
         "_wpk_fork_funcref_stash",
         "_wpk_fork_externref_stash",
         "_wpk_fork_exnref_stash",
     ];
-    for name in stash_names {
+    for name in legacy_reference_table_names {
         assert!(
             !module
                 .tables
                 .iter()
                 .any(|t| t.name.as_deref() == Some(name)),
-            "module without ref locals should not have `{name}`",
+            "ABI 43 must not emit retired module-instance table `{name}`",
         );
     }
 }
 
 #[test]
-fn slot_counts_aggregate_across_functions() {
-    let bytes = instrument_wat(FIXTURE_TWO_FUNCREF_CALLERS);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    let stash = module
-        .tables
-        .iter()
-        .find(|t| t.name.as_deref() == Some("_wpk_fork_funcref_stash"))
-        .expect("funcref stash should be injected");
-    assert_eq!(stash.initial, 2);
+fn recursive_reference_locals_are_rejected_instead_of_sharing_static_slots() {
+    let error = instrument_wat_error(FIXTURE_TWO_FUNCREF_CALLERS);
+    assert!(error.contains("reference local/parameter"), "{error}");
 }
 
 #[test]
-fn externref_local_routes_through_externref_stash() {
+fn externref_local_is_rejected() {
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -1233,29 +1218,12 @@ fn externref_local_routes_through_externref_stash() {
             drop)
           (memory 1))
     "#;
-    let bytes = instrument_wat(wat);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    assert!(
-        module
-            .tables
-            .iter()
-            .any(|t| t.name.as_deref() == Some("_wpk_fork_externref_stash")),
-        "externref local should trigger externref stash injection",
-    );
-    assert!(
-        !module
-            .tables
-            .iter()
-            .any(|t| t.name.as_deref() == Some("_wpk_fork_funcref_stash")),
-        "externref-only module should not inject funcref stash",
-    );
+    let error = instrument_wat_error(wat);
+    assert!(error.contains("reference local/parameter"), "{error}");
 }
 
 #[test]
-#[should_panic(expected = "fork-instrument 4f")]
-fn unsupported_ref_type_panics_with_diagnostic() {
+fn unsupported_gc_ref_type_returns_a_diagnostic() {
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -1268,11 +1236,126 @@ fn unsupported_ref_type_panics_with_diagnostic() {
             drop)
           (memory 1))
     "#;
-    let _ = instrument_wat(wat);
+    let error = instrument_wat_error(wat);
+    assert!(error.contains("reference local/parameter"), "{error}");
 }
 
 #[test]
-fn module_without_try_tables_skips_exnref_stash() {
+fn nullable_reference_operand_stack_carryover_is_rejected() {
+    let error = instrument_wat_error(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (func $caller (result i32)
+            ref.null extern
+            call $fork
+            drop
+            drop
+            i32.const 0)
+          (memory 1))
+        "#,
+    );
+    assert!(
+        error.contains("reference operand-stack carryover"),
+        "{error}"
+    );
+}
+
+#[test]
+fn catch_ref_exception_must_be_consumed_before_fork() {
+    let error = instrument_wat_error(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $exn)
+          (func $caller (result i32)
+            (block $handler (result exnref)
+              (try_table (result exnref) (catch_ref $exn $handler)
+                throw $exn))
+            call $fork
+            drop
+            drop
+            i32.const 0)
+          (memory 1))
+        "#,
+    );
+    assert!(
+        error.contains("reference operand-stack carryover"),
+        "{error}"
+    );
+}
+
+#[test]
+fn table_reference_operand_stack_carryover_is_rejected() {
+    let error = instrument_wat_error(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (table 1 funcref)
+          (func $target)
+          (elem (i32.const 0) func $target)
+          (func $caller (result i32)
+            i32.const 0
+            table.get
+            call $fork
+            drop
+            drop
+            i32.const 0)
+          (memory 1))
+        "#,
+    );
+    assert!(
+        error.contains("reference operand-stack carryover"),
+        "{error}"
+    );
+}
+
+#[test]
+fn nonnullable_ref_func_instruction_is_rejected_in_fork_closure() {
+    let error = instrument_wat_error(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (elem declare func $target)
+          (func $target)
+          (func $caller (result i32)
+            ref.func $target
+            drop
+            call $fork)
+          (memory 1))
+        "#,
+    );
+    assert!(
+        error.contains("nonnullable/concrete/GC reference instruction")
+            && error.contains("ref.func"),
+        "{error}",
+    );
+}
+
+#[test]
+fn gc_allocation_instruction_is_rejected_in_fork_closure() {
+    let error = instrument_wat_error(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (type $pair (struct (field i32)))
+          (func $caller (result i32)
+            i32.const 7
+            struct.new $pair
+            drop
+            call $fork)
+          (memory 1))
+        "#,
+    );
+    assert!(
+        error.contains("nonnullable/concrete/GC reference instruction")
+            && error.contains("struct.new"),
+        "{error}",
+    );
+}
+
+#[test]
+fn module_without_try_tables_has_no_legacy_reference_storage() {
     let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
     let module = Module::from_buffer(&bytes).unwrap();
     assert!(
@@ -1280,8 +1363,191 @@ fn module_without_try_tables_skips_exnref_stash() {
             .tables
             .iter()
             .any(|t| t.name.as_deref() == Some("_wpk_fork_exnref_stash")),
-        "module with no try_tables should not inject the exnref stash",
+        "module with no try_tables must not inject retired exnref storage",
     );
+}
+
+#[test]
+fn mutable_reference_global_is_rejected() {
+    let error = instrument_wat_error(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (global $callback (mut funcref) (ref.null func))
+          (func $caller (result i32) call $fork)
+          (memory 1))
+        "#,
+    );
+    assert!(error.contains("mutable reference global"), "{error}");
+}
+
+#[test]
+fn reference_global_read_in_fork_closure_is_rejected() {
+    let error = instrument_wat_error(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (global $callback funcref (ref.null func))
+          (func $caller (result i32)
+            global.get $callback
+            drop
+            call $fork)
+          (memory 1))
+        "#,
+    );
+    assert!(error.contains("reads reference global"), "{error}");
+}
+
+#[test]
+fn immutable_reference_global_outside_fork_closure_remains_legal() {
+    let bytes = instrument_wat(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (global $callback funcref (ref.null func))
+          (func $unrelated (export "unrelated")
+            global.get $callback
+            drop)
+          (func $caller (result i32) call $fork)
+          (memory 1))
+        "#,
+    );
+    validate(&bytes);
+}
+
+#[test]
+fn reference_typed_call_in_fork_closure_is_rejected() {
+    let error = instrument_wat_error(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (import "env" "consume" (func $consume (param externref)))
+          (func $caller (result i32)
+            ref.null extern
+            call $consume
+            call $fork)
+          (memory 1))
+        "#,
+    );
+    assert!(error.contains("reference-typed signature"), "{error}");
+}
+
+#[test]
+fn references_outside_the_fork_closure_remain_legal() {
+    let bytes = instrument_wat(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (elem declare func $target)
+          (func $target)
+          (func $unrelated (export "unrelated")
+            (local $value externref)
+            ref.null extern
+            local.set $value
+            local.get $value
+            ref.func $target
+            drop
+            drop)
+          (func $caller (result i32) call $fork)
+          (memory 1))
+        "#,
+    );
+    validate(&bytes);
+}
+
+#[test]
+fn catch_all_ref_is_rejected_before_rewrite() {
+    let error = instrument_wat_error(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $exn)
+          (func $caller (result i32)
+            (block $handler (result exnref)
+              (try_table (result exnref) (catch_all_ref $handler)
+                throw $exn))
+            drop
+            call $fork)
+          (memory 1))
+        "#,
+    );
+    assert!(error.contains("CatchAllRef"), "{error}");
+}
+
+#[test]
+fn untagged_plain_catch_is_rejected_before_rewrite() {
+    let error = instrument_wat_error(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $exn)
+          (func $caller (result i32)
+            (block $handler
+              (try_table (catch_all $handler)
+                throw $exn))
+            call $fork)
+          (memory 1))
+        "#,
+    );
+    assert!(error.contains("uses CatchAll"), "{error}");
+}
+
+#[test]
+fn every_wasm_table_mutation_is_rejected_module_wide() {
+    let cases = [
+        ("table.set", "i32.const 0 ref.null func table.set", ""),
+        (
+            "table.fill",
+            "i32.const 0 ref.null func i32.const 1 table.fill",
+            "",
+        ),
+        (
+            "table.copy",
+            "i32.const 0 i32.const 0 i32.const 1 table.copy",
+            "",
+        ),
+        (
+            "table.init",
+            "i32.const 0 i32.const 0 i32.const 1 table.init $elements",
+            "(elem $elements funcref (ref.null func))",
+        ),
+        (
+            "table.grow",
+            "ref.null func i32.const 1 table.grow drop",
+            "",
+        ),
+    ];
+    for (name, operation, element) in cases {
+        let wat = format!(
+            r#"
+            (module
+              (import "kernel" "kernel_fork" (func $fork (result i32)))
+              (table 1 funcref)
+              {element}
+              (func $unrelated {operation})
+              (func $caller (result i32) call $fork)
+              (memory 1))
+            "#,
+        );
+        let error = instrument_wat_error(&wat);
+        assert!(error.contains(name), "{name}: {error}");
+    }
+}
+
+#[test]
+fn static_table_initialization_is_recreated_and_remains_legal() {
+    let bytes = instrument_wat(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (table 1 funcref)
+          (func $target)
+          (elem (i32.const 0) func $target)
+          (func $caller (result i32) call $fork)
+          (memory 1))
+        "#,
+    );
+    validate(&bytes);
 }
 
 // --- Non-fork-path try_tables ----------------------------------------
@@ -1328,7 +1594,7 @@ fn try_table_on_non_fork_path_is_not_instrumented() {
             .tables
             .iter()
             .any(|t| t.name.as_deref() == Some("_wpk_fork_exnref_stash")),
-        "non-fork-path try_tables should not force exnref stash injection",
+        "non-fork-path references must not cause legacy reference storage",
     );
 }
 
@@ -1418,16 +1684,12 @@ fn fork_inside_try_body_uses_per_block_switch_dispatch() {
          (br_table emitted), not guard-dispatch's body-replay",
     );
 
-    // The exnref stash and Phase 6a/6c/6d plumbing are still injected
-    // for try_tables — the per-block dispatch overlays on top of the
-    // existing catch-handler scaffolding (used by fork-from-catch in
-    // the B1 follow-up).
     assert!(
-        module
+        !module
             .tables
             .iter()
             .any(|t| t.name.as_deref() == Some("_wpk_fork_exnref_stash")),
-        "Phase 6a must inject exnref stash for a fork-path try_table",
+        "fork-path try_tables must not inject module-instance exnref storage",
     );
 }
 
@@ -1498,7 +1760,7 @@ fn fork_in_both_top_level_and_nested_uses_per_block_switch_dispatch() {
     );
 }
 
-// --- Phase 6 (guard-dispatch only) tests -------------------------------------
+// --- Tagged-catch reconstruction (guard-dispatch) tests ----------------------
 //
 // These pin down the Phase 6 plumbing that guard-dispatch uses for
 // `try_table` catch-handler reconstruction. The fixtures all have
@@ -1553,20 +1815,12 @@ fn distinct_try_tables_get_sequential_region_ids() {
     collect_try_table_bodies(f, f.entry_block(), &mut bodies);
     assert_eq!(bodies.len(), 2, "fixture has two try_tables");
 
-    // After per-block switch-dispatch lands on a try_table body's
-    // seq, the body is rebuilt as [Block(POST_{n-1}), post-call,
-    // chunks[n], ...]. Phase 6c stubs (which run before the rebuild)
-    // are folded into the cascade — they live somewhere in the
-    // chunks but are no longer at fixed positions. Just verify the
-    // exnref stash is injected with one slot per try_table.
-    let stash = module
-        .tables
-        .iter()
-        .find(|t| t.name.as_deref() == Some("_wpk_fork_exnref_stash"))
-        .expect("stash must be injected");
-    assert_eq!(
-        stash.initial, 2,
-        "two try_tables → two exnref stash slots (one region_id each)",
+    assert!(
+        !module
+            .tables
+            .iter()
+            .any(|t| t.name.as_deref() == Some("_wpk_fork_exnref_stash")),
+        "region identity must live in activation frames, not module tables",
     );
 }
 
@@ -1943,17 +2197,10 @@ fn plain_catch_plan_preserves_f32_f64_operand_types() {
     assert_eq!(arms[0].operand_tys, vec![ValType::F32, ValType::F64]);
 }
 
-// --- B1 Stage 2 Task 2.1 — operand-type carve-out tests ----------------
+// --- Unsupported tag payloads and multi-target support ----------------
 
 #[test]
-fn plain_catch_plan_ref_operand_function_is_carved_out() {
-    // A try_table with a tag whose payload includes externref.
-    // The function should land in b2_carveout, NOT in per_function.
-    //
-    // Catch label semantics mirror the existing scalar tests: the
-    // block's RESULT type matches the tag's payload arity, and the
-    // body drops the value before falling through to a synthesized
-    // ref to keep stack arity consistent.
+fn reference_typed_catch_payload_is_rejected() {
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -1968,26 +2215,12 @@ fn plain_catch_plan_ref_operand_function_is_carved_out() {
             call $fork)
           (memory 1))
     "#;
-    let bytes = parse_wat(wat);
-    let module = walrus::Module::from_buffer(&bytes).unwrap();
-    let caller = func_by_name(&module, "caller");
-    let plan = fork_instrument::instrument::plan_plain_catches(&module, &[caller]);
-    assert!(
-        !plan.per_function.contains_key(&caller),
-        "carved-out function must not appear in per_function"
-    );
-    assert!(
-        plan.b2_carveout.contains(&caller),
-        "carved-out function must be in b2_carveout"
-    );
+    let error = instrument_wat_error(wat);
+    assert!(error.contains("reference-typed catch payload"), "{error}");
 }
 
 #[test]
-fn plain_catch_plan_mixed_ref_and_scalar_arms_carves_whole_function() {
-    // A function with two try_tables: one with i32 payload (supported),
-    // one with externref (unsupported). The whole function gets carved
-    // out because we don't selectively drop arms — Task 2.3's rewind
-    // dispatcher needs the whole function's regions or none.
+fn one_reference_typed_arm_rejects_the_complete_artifact() {
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -2009,27 +2242,12 @@ fn plain_catch_plan_mixed_ref_and_scalar_arms_carves_whole_function() {
             call $fork)
           (memory 1))
     "#;
-    let bytes = parse_wat(wat);
-    let module = walrus::Module::from_buffer(&bytes).unwrap();
-    let caller = func_by_name(&module, "caller");
-    let plan = fork_instrument::instrument::plan_plain_catches(&module, &[caller]);
-    assert!(
-        plan.b2_carveout.contains(&caller),
-        "carve-out must include functions with mixed scalar+ref arms"
-    );
-    assert!(
-        !plan.per_function.contains_key(&caller),
-        "carved-out function must not appear in per_function even \
-         though one arm is otherwise supported"
-    );
+    let error = instrument_wat_error(wat);
+    assert!(error.contains("reference-typed catch payload"), "{error}");
 }
 
 #[test]
-fn plain_catch_plan_scalar_only_function_is_not_carved_out() {
-    // Sanity: the existing scalar-only fixture must NOT be carved out.
-    // Mirrors the scalar tests above to ensure carve-out is gated
-    // strictly on ref-typed operands and doesn't accidentally trip
-    // for the supported case.
+fn plain_catch_plan_scalar_only_function_is_supported() {
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -2046,20 +2264,13 @@ fn plain_catch_plan_scalar_only_function_is_not_carved_out() {
     let caller = func_by_name(&module, "caller");
     let plan = fork_instrument::instrument::plan_plain_catches(&module, &[caller]);
     assert!(
-        !plan.b2_carveout.contains(&caller),
-        "scalar-only function must not be in b2_carveout"
-    );
-    assert!(
         plan.per_function.contains_key(&caller),
         "scalar-only function must have a per_function entry"
     );
 }
 
 #[test]
-fn plain_catch_plan_multi_target_plain_catch_carved_out() {
-    // Two arms in one try_table, pointing at different labels.
-    // Should be carved out (Task 2.4 conservative guard: multi-target
-    // plain-catch fork has not been verified end-to-end).
+fn plain_catch_plan_multi_target_plain_catch_is_supported() {
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -2077,21 +2288,14 @@ fn plain_catch_plan_multi_target_plain_catch_carved_out() {
     let module = walrus::Module::from_buffer(&bytes).unwrap();
     let caller = func_by_name(&module, "caller");
     let plan = fork_instrument::instrument::plan_plain_catches(&module, &[caller]);
-    assert!(
-        plan.b2_carveout.contains(&caller),
-        "multi-target try_table should be carved out"
-    );
-    assert!(
-        !plan.per_function.contains_key(&caller),
-        "carved-out function should not have a slot plan"
-    );
+    let regions = &plan.per_function[&caller];
+    assert_eq!(regions.len(), 1);
+    assert_eq!(regions[0].1.len(), 2);
+    assert_ne!(regions[0].1[0].label, regions[0].1[1].label);
 }
 
 #[test]
 fn plain_catch_plan_single_target_multi_arm_is_supported() {
-    // Two arms in one try_table, both pointing at the SAME label.
-    // Should NOT be carved out (this is the supported multi-arm case
-    // — Task 2.4's guard only triggers when arms diverge).
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -2108,10 +2312,6 @@ fn plain_catch_plan_single_target_multi_arm_is_supported() {
     let module = walrus::Module::from_buffer(&bytes).unwrap();
     let caller = func_by_name(&module, "caller");
     let plan = fork_instrument::instrument::plan_plain_catches(&module, &[caller]);
-    assert!(
-        !plan.b2_carveout.contains(&caller),
-        "single-target multi-arm should be supported"
-    );
     assert!(plan.per_function.contains_key(&caller));
     let per_func = &plan.per_function[&caller];
     assert_eq!(per_func.len(), 1, "one try_table");
@@ -2276,21 +2476,7 @@ fn extract_function_text<'a>(printed: &'a str, name: &str) -> String {
 }
 
 #[test]
-fn b1_stage_2_b2_carveout_function_is_not_transformed() {
-    // A function whose plain-catch arm has a ref-typed payload is in
-    // b2_carveout (per Task 2.1). For these functions, B1 emission
-    // is skipped, so the byte output must NOT contain the B1 capture
-    // block's save-to-scratch pattern. The Catch clause must still
-    // be present (Phase 6 doesn't intercept plain catch).
-    //
-    // Note: ref-typed catch payloads are not yet supported by the
-    // existing Phase-6 ref-local pipeline (function would panic with
-    // a "non-nullable or non-abstract ref" or fail wasm validation in
-    // some shapes). We use a fork-bearing function that *contains*
-    // a try_table whose tag has a ref operand, but the catch handler
-    // itself stays simple. To avoid type-mismatch errors during wat
-    // parse, we feed the catch via `throw`-then-`drop` inside a block
-    // typed `(result externref)`.
+fn reference_payload_artifact_is_rejected_before_transform() {
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -2304,44 +2490,8 @@ fn b1_stage_2_b2_carveout_function_is_not_transformed() {
             call $fork)
           (memory 1))
     "#;
-    let bytes = instrument_wat(wat);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-    let caller = func_by_name(&module, "caller");
-    let f = local_func(&module, caller);
-
-    // Carve-out functions have NO B1 transform applied. The try_table
-    // is preserved with its catches as-emitted by Phase 6 (which
-    // doesn't intercept plain Catch clauses; only catch_ref / catch_all_ref).
-    let try_tables = collect_try_tables(f);
-    assert_eq!(
-        try_tables.len(),
-        1,
-        "carved-out function must still have exactly one try_table"
-    );
-    let tt = &try_tables[0];
-    let has_catch = tt
-        .catches
-        .iter()
-        .any(|c| matches!(c, ir::TryTableCatch::Catch { .. }));
-    assert!(
-        has_catch,
-        "carved-out function's plain Catch clause must be preserved \
-         (B1 must NOT have transformed it)"
-    );
-
-    // The direct planner API must list the function in b2_carveout,
-    // not per_function.
-    let plan = fork_instrument::instrument::plan_plain_catches(&module, &[caller]);
-    assert!(
-        plan.b2_carveout.contains(&caller),
-        "carved-out function (ref-typed catch operand) must be in \
-         b2_carveout"
-    );
-    assert!(
-        !plan.per_function.contains_key(&caller),
-        "carved-out function must NOT have a per_function entry"
-    );
+    let error = instrument_wat_error(wat);
+    assert!(error.contains("reference-typed catch payload"), "{error}");
 }
 
 #[test]
@@ -2457,8 +2607,7 @@ fn fork_instrumentation_keeps_dylink_section_first() {
 #[test]
 fn b1_stage_2_rewind_stub_has_plain_catch_dispatch() {
     // The rewind-throw stub for a region with a plain-catch arm must
-    // include a `throw $tag` (in addition to Phase 6's existing
-    // `throw_ref`) so that on REWIND the original handler observes
+    // include a `throw $tag` so that on REWIND the original handler observes
     // the same exception class. The exact wat shape varies with
     // walrus's emitter, so we just check the key semantic markers.
     let wat = r#"
@@ -2477,25 +2626,18 @@ fn b1_stage_2_rewind_stub_has_plain_catch_dispatch() {
 
     let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
     let caller_section = extract_function_text(&printed, "caller");
-    // Both stub paths must be present:
-    //   - throw_ref (Phase 6 catch_ref re-throw)
-    //   - throw $exn (B1 plain-catch arm dispatch)
     assert!(
-        caller_section.contains("throw_ref"),
-        "rewind stub must retain Phase 6's throw_ref path:\n{caller_section}"
+        !caller_section.contains("throw_ref"),
+        "ABI 43 replay must not depend on a saved exnref:\n{caller_section}"
     );
     assert!(
         caller_section.contains("throw $exn") || caller_section.contains("throw 0"),
         "rewind stub must contain a `throw $exn` for the plain-catch \
          arm dispatch:\n{caller_section}"
     );
-    // The mode decision must be frame-owned. Stale contents in the
-    // static exnref table cannot decide whether this activation took
-    // a plain or ref catch.
     assert!(
-        !caller_section.contains("ref.is_null"),
-        "rewind stub must dispatch from frame-backed active_arm, not \
-         exnref-table nullness:\n{caller_section}"
+        !caller_section.contains("_wpk_fork_exnref_stash"),
+        "rewind stub must be activation-owned:\n{caller_section}"
     );
 }
 
@@ -2534,14 +2676,16 @@ fn mixed_plain_and_catch_ref_uses_frame_backed_arm_kind() {
     let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
     let caller_section = extract_function_text(&printed, "caller");
     assert!(
-        caller_section.contains("i32.const -1"),
-        "catch_ref capture must mark the frame-backed active arm as \
-         non-plain:\n{caller_section}",
+        caller_section.contains("throw $plain") || caller_section.contains("throw 0"),
+        "plain arm must have a tagged reconstruction path:\n{caller_section}",
     );
     assert!(
-        !caller_section.contains("ref.is_null"),
-        "mixed replay must not use static exnref-table contents as \
-         capture-kind state:\n{caller_section}",
+        caller_section.contains("throw $with_ref") || caller_section.contains("throw 1"),
+        "CatchRef arm must reconstruct by rethrowing its static tag:\n{caller_section}",
+    );
+    assert!(
+        !caller_section.contains("throw_ref") && !caller_section.contains("_wpk_fork_exnref_stash"),
+        "mixed replay must not retain or reload an old-instance exnref:\n{caller_section}",
     );
 }
 
@@ -2586,10 +2730,7 @@ fn b1_stage_2_rewind_stub_dispatches_two_arms() {
 }
 
 #[test]
-fn b1_stage_2_carved_out_function_no_b1_dispatch_emitted() {
-    // A function in `b2_carveout` (here: ref-typed catch payload)
-    // must NOT receive B1's plain-catch dispatch — its rewind stub
-    // should retain Phase 6's throw_ref-only form.
+fn reference_payload_never_emits_a_partial_dispatch() {
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -2603,20 +2744,6 @@ fn b1_stage_2_carved_out_function_no_b1_dispatch_emitted() {
             call $fork)
           (memory 1))
     "#;
-    let bytes = instrument_wat(wat);
-    validate(&bytes);
-
-    let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
-    let caller_section = extract_function_text(&printed, "caller");
-    // The carved-out function's rewind stub uses ONLY Phase 6's
-    // throw_ref path and no plain-catch tag throw.
-    assert!(
-        caller_section.contains("throw_ref"),
-        "carved-out function must retain Phase 6's throw_ref:\n{caller_section}"
-    );
-    assert!(
-        !caller_section.contains("ref.is_null"),
-        "carved-out function must not consult exnref nullness as mode \
-         state:\n{caller_section}"
-    );
+    let error = instrument_wat_error(wat);
+    assert!(error.contains("reference-typed catch payload"), "{error}");
 }

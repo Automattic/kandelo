@@ -23,7 +23,7 @@
 //!   (if (i32.eq (global.get $_wpk_fork_state) (i32.const 2))
 //!     (then
 //!       ;; pop frame from save buffer, then restore catch_region_id,
-//!       ;; exnref_slot, scalar locals, and arg-spill locals
+//!       ;; reserved catch metadata, scalar locals, and arg-spill locals
 //!     ))
 //!
 //!   ;; --- DISPATCH + WRAPPER + NESTED POST LABELS ---
@@ -43,7 +43,7 @@
 //!         )  ;; end $POST_0 — also the br_table landing for call_idx==0
 //!         <reload args for call 0>
 //!         (call $callee_0)           ;; or call_indirect
-//!         <Phase 6e: set catch_region_id_local / exnref_slot_local>
+//!         <Phase 6e: set catch_region_id_local>
 //!         (global.get $_wpk_fork_state) (i32.const 1) (i32.eq)
 //!         (if (then
 //!           ;; frame.call_index = 0
@@ -65,26 +65,26 @@
 //!
 //!   ;; --- POSTAMBLE (runs only when branched-to via br $unwind_save) ---
 //!   ;; push frame header fields except call_index, save scalar user locals,
-//!   ;; save arg-spill locals, spill ref-typed user locals to aux tables,
-//!   ;; advance current_pos, push defaults for the function's result types
+//!   ;; save arg-spill locals, advance current_pos, push defaults for the
+//!   ;; function's result types
 //! )
 //! ```
 //!
-//! ## MVP scope
+//! ## Supported replay surface
 //!
-//! - **Top-level fork-path calls only.**  A fork-path call nested
-//!   inside a `block`/`loop`/`if`/`try_table` causes `br_table` to be
-//!   unable to land at its site (wasm semantics forbid branching into
-//!   a block from outside).  The tool panics with a diagnostic in
-//!   that case; the function must be restructured or the tool
-//!   extended.
-//! - **Fork from modern `try_table` catches is supported.** Plain-catch
-//!   arm identity and scalar payloads are frame-backed per activation;
-//!   catch_ref values use the exnref auxiliary table. Legacy `try`
-//!   catch handlers remain unsupported.
-//! - **Scalar args only for fork-path calls.**  If a fork-path call
-//!   has a ref-typed argument, we'd need to spill it through an aux
-//!   table (not currently wired up).  Panic in that case.
+//! - **Top-level and nested fork-path calls.** Top-level calls use the
+//!   function switch-dispatch. Calls nested in structured control flow use a
+//!   per-block switch-dispatch so rewind never branches into a block from
+//!   outside it.
+//! - **Fork from statically tagged modern `try_table` catches is
+//!   supported.** Catch and CatchRef arm identity and scalar tag
+//!   payloads are frame-backed per activation. Rewind throws the tag
+//!   again so the fresh module instance creates a fresh exnref.
+//!   Legacy `try` catch handlers remain unsupported.
+//! - **Reference state is rejected conservatively.** Reference locals,
+//!   parameters, call carryovers, mutable reference globals, untagged
+//!   catches, reference tag payloads, and Wasm table mutation have no
+//!   transferable representation in the linked continuation.
 //!
 //! ## Frame layout (unchanged from the previous transform)
 //!
@@ -95,22 +95,22 @@
 //! | 0             | 4    | `func_index`      |
 //! | 4             | 4    | `call_index`      |
 //! | 8             | 4    | `catch_region_id` |
-//! | 12            | 4    | `exnref_slot`     |
-//! | 16..          | var  | scalar locals (user, arg spills, plain-catch state) |
+//! | 12            | 4    | reserved (zero)   |
+//! | 16..          | var  | scalar locals (user, arg spills, tagged-catch state) |
 //!
-//! Ref-typed user locals are routed through module-level auxiliary
-//! tables; their storage is outside the frame.
+//! There is deliberately no module-instance auxiliary reference storage:
+//! workers reconstruct a child from linear memory in a fresh Wasm instance.
 //!
 //! ## What's preserved verbatim
 //!
 //! - `crates/fork-instrument/src/call_graph.rs` — fork-path closure
 //!   discovery (direct + indirect).
-//! - `crates/fork-instrument/src/runtime.rs` — state machine, five
+//! - `crates/fork-instrument/src/runtime.rs` — state machine, seven
 //!   exported control functions, save-buffer layout, saved-globals
 //!   handling.
-//! - Phase 4f aux-table injection for ref-typed user locals.
-//! - Phase 6a–6d plumbing for `try_table` / catch-handler resume.
+//! - Phase 6a–6d plumbing for `try_table` / tagged-catch resume.
 
+use anyhow::{Result, bail};
 use std::collections::{HashMap, HashSet};
 
 use walrus::{
@@ -119,8 +119,8 @@ use walrus::{
     ir::{
         AtomicWidth, BinaryOp, Binop, Block, Br, BrTable, Call, CallIndirect, Const, GlobalGet,
         IfElse, Instr, InstrLocId, InstrSeqId, InstrSeqType, LegacyCatch, LoadKind, LocalGet,
-        LocalSet, LocalTee, Loop, MemArg, RefAsNonNull, RefNull, Return, StoreKind, TableGet,
-        TableSet, Throw, ThrowRef, TryTable, TryTableCatch, UnaryOp, Value,
+        LocalSet, LocalTee, Loop, MemArg, RefAsNonNull, RefNull, Return, StoreKind, Throw,
+        TryTable, TryTableCatch, UnaryOp, Unreachable, Value,
     },
 };
 
@@ -137,6 +137,251 @@ fn is_host_parsed_marker_function(module: &Module, id: FunctionId) -> bool {
         HOST_PARSED_MARKER_EXPORTS.contains(&export.name.as_str())
             && matches!(export.item, ExportItem::Function(func) if func == id)
     })
+}
+
+/// Reject fork-reachable state that a fresh Wasm instance cannot reconstruct.
+///
+/// WHY this runs before any rewriting: the host creates fork children by
+/// copying linear memory into a newly instantiated module. References, mutable
+/// globals containing references, and Wasm table mutations belong to the old
+/// module instance and are therefore not continuation state. Rejecting the
+/// source shape gives the artifact a deterministic build-time failure instead
+/// of a delayed child-only trap.
+pub fn validate_activation_state(module: &Module, fork_path: &HashSet<FunctionId>) -> Result<()> {
+    if fork_path.is_empty() {
+        return Ok(());
+    }
+
+    for global in module.globals.iter() {
+        if global.mutable && matches!(global.ty, ValType::Ref(_)) {
+            let name = global.name.as_deref().unwrap_or("<unnamed>");
+            bail!(
+                "fork-instrument: mutable reference global `{name}` has no \
+                 fresh-instance reconstruction recipe"
+            );
+        }
+    }
+
+    // A table is module-instance state even when the instruction that mutates
+    // it is outside the call-graph closure: that mutation can happen before a
+    // later call into fork(). Static element initialization is intentionally
+    // absent from this list because instantiation reconstructs it.
+    for function in module.funcs.iter() {
+        let FunctionKind::Local(local) = &function.kind else {
+            continue;
+        };
+        if let Some(op) = find_table_mutation(local, local.entry_block()) {
+            let name = function.name.as_deref().unwrap_or("<unnamed>");
+            bail!(
+                "fork-instrument: function `{name}` uses `{op}`; mutable table \
+                 state has no fresh-instance reconstruction owner"
+            );
+        }
+    }
+
+    let mut targets: Vec<FunctionId> = fork_path.iter().copied().collect();
+    targets.sort();
+    for func_id in targets {
+        let function = module.funcs.get(func_id);
+        let FunctionKind::Local(local) = &function.kind else {
+            continue;
+        };
+        if is_host_parsed_marker_function(module, func_id) {
+            continue;
+        }
+        let name = function.name.as_deref().unwrap_or("<unnamed>");
+
+        for (local_id, ty) in collect_user_locals(module, func_id) {
+            if let ValType::Ref(reference) = ty {
+                bail!(
+                    "fork-instrument: fork-reachable function `{name}` has \
+                     reference local/parameter {local_id:?} ({reference:?}); \
+                     reference activations are not transferable"
+                );
+            }
+        }
+
+        let signature = module.types.get(function.ty());
+        if let Some(reference) = signature
+            .params()
+            .iter()
+            .chain(signature.results())
+            .find_map(|ty| match ty {
+                ValType::Ref(reference) => Some(reference),
+                _ => None,
+            })
+        {
+            bail!(
+                "fork-instrument: fork-reachable function `{name}` has a \
+                 reference-typed signature ({reference:?})"
+            );
+        }
+
+        validate_fork_reachable_seq(module, local, local.entry_block(), name)?;
+        if let Some(carryovers) = compute_nested_carryover_types(module, func_id, fork_path) {
+            if let Some(reference) = carryovers.values().flatten().find_map(|ty| match ty {
+                ValType::Ref(reference) => Some(reference),
+                _ => None,
+            }) {
+                bail!(
+                    "fork-instrument: fork-reachable function `{name}` has a \
+                     reference operand-stack carryover ({reference:?}); values \
+                     live across a fork-path call must be activation-owned bytes"
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn find_table_mutation(local: &LocalFunction, seq: InstrSeqId) -> Option<&'static str> {
+    for (instr, _) in &local.block(seq).instrs {
+        let mutation = match instr {
+            Instr::TableSet(_) => Some("table.set"),
+            Instr::TableFill(_) => Some("table.fill"),
+            Instr::TableCopy(_) => Some("table.copy"),
+            Instr::TableInit(_) => Some("table.init"),
+            Instr::TableGrow(_) => Some("table.grow"),
+            _ => None,
+        };
+        if mutation.is_some() {
+            return mutation;
+        }
+        for child in nested_seqs(instr) {
+            if let Some(mutation) = find_table_mutation(local, child) {
+                return Some(mutation);
+            }
+        }
+    }
+    None
+}
+
+fn type_has_reference(module: &Module, ty: TypeId) -> Option<RefType> {
+    let ty = module.types.get(ty);
+    ty.params()
+        .iter()
+        .chain(ty.results())
+        .find_map(|ty| match ty {
+            ValType::Ref(reference) => Some(*reference),
+            _ => None,
+        })
+}
+
+fn validate_fork_reachable_seq(
+    module: &Module,
+    local: &LocalFunction,
+    seq: InstrSeqId,
+    function_name: &str,
+) -> Result<()> {
+    for (instr, _) in &local.block(seq).instrs {
+        if let Some(op) = unsupported_reference_instruction(instr) {
+            bail!(
+                "fork-instrument: fork-reachable function `{function_name}` \
+                 uses unsupported nonnullable/concrete/GC reference instruction \
+                 `{op}`"
+            );
+        }
+
+        let call_type = match instr {
+            Instr::Call(call) => Some(module.funcs.get(call.func).ty()),
+            Instr::ReturnCall(call) => Some(module.funcs.get(call.func).ty()),
+            Instr::CallIndirect(call) => Some(call.ty),
+            Instr::ReturnCallIndirect(call) => Some(call.ty),
+            Instr::CallRef(_) | Instr::ReturnCallRef(_) => {
+                bail!(
+                    "fork-instrument: fork-reachable function `{function_name}` \
+                     uses call_ref/return_call_ref; reference call state is not \
+                     transferable"
+                );
+            }
+            _ => None,
+        };
+        if let Some(call_type) = call_type {
+            if let Some(reference) = type_has_reference(module, call_type) {
+                bail!(
+                    "fork-instrument: fork-reachable function `{function_name}` \
+                     calls a reference-typed signature ({reference:?}); reference \
+                     arguments/results cannot be carried through replay"
+                );
+            }
+        }
+
+        if let Instr::GlobalGet(GlobalGet { global }) = instr {
+            if let ValType::Ref(reference) = module.globals.get(*global).ty {
+                bail!(
+                    "fork-instrument: fork-reachable function `{function_name}` \
+                     reads reference global ({reference:?}); reference global \
+                     values have no fresh-instance reconstruction recipe"
+                );
+            }
+        }
+
+        if let Instr::TryTable(try_table) = instr {
+            for catch in &try_table.catches {
+                match catch {
+                    TryTableCatch::Catch { tag, .. } | TryTableCatch::CatchRef { tag, .. } => {
+                        if let Some(reference) =
+                            type_has_reference(module, module.tags.get(*tag).ty())
+                        {
+                            bail!(
+                                "fork-instrument: fork-reachable function \
+                                 `{function_name}` has a reference-typed catch \
+                                 payload ({reference:?})"
+                            );
+                        }
+                    }
+                    TryTableCatch::CatchAll { .. } => {
+                        bail!(
+                            "fork-instrument: fork-reachable function \
+                             `{function_name}` uses CatchAll, whose missing tag \
+                             cannot be reconstructed in a fresh child"
+                        );
+                    }
+                    TryTableCatch::CatchAllRef { .. } => {
+                        bail!(
+                            "fork-instrument: fork-reachable function \
+                             `{function_name}` uses CatchAllRef, whose exception \
+                             reference cannot be reconstructed in a fresh child"
+                        );
+                    }
+                }
+            }
+        }
+
+        for child in nested_seqs(instr) {
+            validate_fork_reachable_seq(module, local, child, function_name)?;
+        }
+    }
+    Ok(())
+}
+
+fn unsupported_reference_instruction(instr: &Instr) -> Option<&'static str> {
+    match instr {
+        Instr::RefFunc(_) => Some("ref.func"),
+        Instr::RefI31(_) => Some("ref.i31"),
+        Instr::StructNew(_) => Some("struct.new"),
+        Instr::StructNewDefault(_) => Some("struct.new_default"),
+        Instr::StructGet(_) => Some("struct.get"),
+        Instr::StructGetS(_) => Some("struct.get_s"),
+        Instr::StructGetU(_) => Some("struct.get_u"),
+        Instr::StructSet(_) => Some("struct.set"),
+        Instr::ArrayNew(_) => Some("array.new"),
+        Instr::ArrayNewDefault(_) => Some("array.new_default"),
+        Instr::ArrayNewFixed(_) => Some("array.new_fixed"),
+        Instr::ArrayNewData(_) => Some("array.new_data"),
+        Instr::ArrayNewElem(_) => Some("array.new_elem"),
+        Instr::ArrayGet(_) => Some("array.get"),
+        Instr::ArrayGetS(_) => Some("array.get_s"),
+        Instr::ArrayGetU(_) => Some("array.get_u"),
+        Instr::ArraySet(_) => Some("array.set"),
+        Instr::ArrayLen(_) => Some("array.len"),
+        Instr::ArrayFill(_) => Some("array.fill"),
+        Instr::ArrayCopy(_) => Some("array.copy"),
+        Instr::ArrayInitData(_) => Some("array.init_data"),
+        Instr::ArrayInitElem(_) => Some("array.init_elem"),
+        _ => None,
+    }
 }
 
 /// Instrument every function in `fork_path` that we can instrument.
@@ -167,14 +412,12 @@ pub fn instrument_functions(
         .collect();
     targets.sort();
 
-    let (aux_tables, ref_plan, catch_plans) = plan_and_inject_aux_tables(module, &targets);
+    let catch_plans = plan_catch_regions(module, &targets);
 
     let empty_plain_catches: Vec<(InstrSeqId, Vec<PlainCatchArm>)> = Vec::new();
 
     let mut instrumented = HashSet::new();
     for (ordinal, id) in targets.iter().enumerate() {
-        let empty_plan: Vec<RefLocalSlot> = Vec::new();
-        let this_plan = ref_plan.get(id).unwrap_or(&empty_plan);
         let empty_catch_plan: Vec<CatchRegionPlan> = Vec::new();
         let this_catch_plan = catch_plans.get(id).unwrap_or(&empty_catch_plan);
         let this_plain_catches = plain_catch_plan
@@ -187,8 +430,6 @@ pub fn instrument_functions(
             runtime,
             fork_path,
             ordinal as u32,
-            &aux_tables,
-            this_plan,
             this_catch_plan,
             this_plain_catches,
         );
@@ -205,7 +446,7 @@ const HEADER_SIZE: u32 = 16;
 const FUNC_INDEX_OFFSET: u64 = 0;
 const CALL_INDEX_OFFSET: u64 = 4;
 const CATCH_REGION_OFFSET: u64 = 8;
-const EXNREF_SLOT_OFFSET: u64 = 12;
+const RESERVED_CATCH_STATE_OFFSET: u64 = 12;
 const LOCALS_START_OFFSET: u32 = HEADER_SIZE;
 
 // ----------------------------------------------------------------------
@@ -229,7 +470,6 @@ struct CallSiteInfo {
 #[derive(Debug, Clone, Copy)]
 struct CatchStateLocals {
     catch_region_id: LocalId,
-    exnref_slot: LocalId,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -245,8 +485,6 @@ fn instrument_one_function(
     runtime: &Runtime,
     fork_path: &HashSet<FunctionId>,
     func_ordinal: u32,
-    aux_tables: &AuxTables,
-    ref_plan: &[RefLocalSlot],
     catch_plan: &[CatchRegionPlan],
     plain_catches: &[(InstrSeqId, Vec<PlainCatchArm>)],
 ) {
@@ -274,8 +512,8 @@ fn instrument_one_function(
     // capture block mechanism (see Phase 6 + B1 stages 1+2 docs).
     //
     // Both schemes:
-    // - share the same fork-resume contract (state machine, frame
-    //   layout, aux-table ref-typed spills, throw_ref catch resume).
+    // - share the same fork-resume contract (state machine, linked
+    //   activation frames, and deterministic tagged-catch rethrow).
     // - skip body chunks before the chosen POST_K on REWIND, so
     //   non-fork-path calls and side-effect ops in those chunks run
     //   exactly once on NORMAL — no per-op gating needed (the
@@ -296,8 +534,6 @@ fn instrument_one_function(
                 runtime,
                 fork_path,
                 func_ordinal,
-                aux_tables,
-                ref_plan,
                 catch_plan,
                 plain_catches,
             );
@@ -362,8 +598,6 @@ fn instrument_one_function(
                 runtime,
                 fork_path,
                 func_ordinal,
-                aux_tables,
-                ref_plan,
                 catch_plan,
                 plain_catches,
             );
@@ -388,8 +622,6 @@ fn instrument_one_function(
         runtime,
         fork_path,
         func_ordinal,
-        aux_tables,
-        ref_plan,
         catch_plan,
         plain_catches,
     );
@@ -406,13 +638,11 @@ fn instrument_one_function_switch(
     runtime: &Runtime,
     fork_path: &HashSet<FunctionId>,
     func_ordinal: u32,
-    aux_tables: &AuxTables,
-    ref_plan: &[RefLocalSlot],
     catch_plan: &[CatchRegionPlan],
     plain_catches: &[(InstrSeqId, Vec<PlainCatchArm>)],
 ) {
-    // Pre-existing user locals (args + referenced in body). Scalars
-    // live in the frame; ref-typed locals go through aux tables.
+    // Pre-existing user locals (args + referenced in body). Validation
+    // guarantees that every one is scalar and therefore frame-owned.
     let all_user_locals = collect_user_locals(module, func_id);
     let user_scalar_locals: Vec<(LocalId, ValType)> = all_user_locals
         .iter()
@@ -441,7 +671,6 @@ fn instrument_one_function_switch(
     } else {
         Some(CatchStateLocals {
             catch_region_id: module.locals.add(ValType::I32),
-            exnref_slot: module.locals.add(ValType::I32),
         })
     };
     let abort_live_frame = module.locals.add(ValType::I32);
@@ -459,8 +688,7 @@ fn instrument_one_function_switch(
                     let name = func_name(module, func_id);
                     panic!(
                         "fork-instrument: function `{name}` has a fork-path call with a ref-typed \
-                     argument ({ty:?}). Ref-typed call arguments need aux-table spilling, \
-                     which the MVP switch-dispatch transform does not yet support.",
+                         argument ({ty:?}) after activation-state validation",
                     );
                 }
             }
@@ -527,29 +755,22 @@ fn instrument_one_function_switch(
     };
     let restart_loop_ty = InstrSeqType::new(&mut module.types, &[], &result_types);
 
-    // Plan catch-handler entry-capture (Phase 6d). We allocate in_catch
-    // and captured_exnref locals now; the IR rewrite is applied later,
-    // after the body has been rebuilt.
-    let catch_handlers =
-        plan_catch_ref_handlers(module, func_id, catch_plan, aux_tables, &plain_catch_state);
+    let catch_handlers = plan_catch_ref_handlers(module, catch_plan, &plain_catch_state);
 
     // Build the new body: preamble-if + Block($unwind_save) + postamble.
     let memory = first_memory(module);
     let ptr_ty = runtime.buf_type;
 
-    // Phase 6c rewind-throw stubs: prepended to each fork-path
-    // try_table body. Phase 6 covers catch_ref / catch_all_ref.
-    // B1 Stage 2 (Task 2.3) extends the same stub with a plain-catch
-    // dispatch when `plain_catches` lists arms for the region.
-    if !catch_plan.is_empty() && aux_tables.exnref.is_some() {
+    // Rewind rethrows the frame-restored tag and scalar payload. CatchRef
+    // clauses then manufacture a fresh instance-local exnref.
+    if !plain_catch_state.is_empty() {
         let catch_state =
-            catch_state_locals.expect("exnref catch plan requires catch-state locals");
+            catch_state_locals.expect("tagged catch plan requires catch-state locals");
         inject_rewind_throw_stubs(
             module,
             func_id,
             runtime,
             catch_state.catch_region_id,
-            aux_tables,
             catch_plan,
             &plain_catch_state,
         );
@@ -604,8 +825,6 @@ fn instrument_one_function_switch(
         ptr_ty,
         catch_state_locals,
         &locals_with_offsets,
-        ref_plan,
-        aux_tables,
         frame_size,
     );
 
@@ -637,8 +856,6 @@ fn instrument_one_function_switch(
         ptr_ty,
         catch_state_locals,
         &locals_with_offsets,
-        ref_plan,
-        aux_tables,
         frame_size,
         func_ordinal,
         &result_types,
@@ -697,16 +914,9 @@ fn instrument_one_function_switch(
     entry_seq.clear();
     push_instr(entry_seq, Instr::Loop(Loop { seq: restart_loop }));
 
-    // Phase 6d application: replaces each fork-path try_table with
-    // an $outer/$capture wrap so caught exnrefs are stashed and the
-    // original handler is re-entered via `br`. Runs after body rebuild
-    // so it finds the try_tables at their new locations inside chunks.
-    apply_catch_ref_handlers(module, func_id, &catch_handlers, aux_tables);
-
-    // Stage 2 (B1) plain-catch capture-block emission: per-arm
-    // captures intercept plain catch dispatch so the operand tuple
-    // can be saved at unwind time. Runs AFTER Phase 6 so it finds
-    // try_tables at their post-Phase-6 locations.
+    // Per-arm captures intercept both Catch and CatchRef dispatch after the
+    // body rebuild, save only transferable state, and forward the original
+    // handler operands.
     if let Some(catch_state) = catch_state_locals {
         apply_plain_catch_handlers(
             module,
@@ -1061,23 +1271,15 @@ fn top_level_stack_effect(module: &Module, local: &LocalFunction, instr: &Instr)
     }
 }
 
-fn seq_scalar_result_types(
+fn seq_result_types(
     module: &Module,
     local: &LocalFunction,
     seq_id: InstrSeqId,
 ) -> Option<Vec<ValType>> {
     match local.block(seq_id).ty {
         InstrSeqType::Simple(None) => Some(Vec::new()),
-        InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => Some(vec![ty]),
-        InstrSeqType::Simple(Some(_)) => None,
-        InstrSeqType::MultiValue(ty_id) => {
-            let results = module.types.get(ty_id).results();
-            if results.iter().all(|&ty| is_scalar(ty)) {
-                Some(results.to_vec())
-            } else {
-                None
-            }
-        }
+        InstrSeqType::Simple(Some(ty)) => Some(vec![ty]),
+        InstrSeqType::MultiValue(ty_id) => Some(module.types.get(ty_id).results().to_vec()),
     }
 }
 
@@ -1088,7 +1290,7 @@ fn push_structured_results(
     seq_id: InstrSeqId,
     fallback_pushes: usize,
 ) {
-    match seq_scalar_result_types(module, local, seq_id) {
+    match seq_result_types(module, local, seq_id) {
         Some(types) => {
             for ty in types {
                 stack.push(Some(ty));
@@ -1245,7 +1447,7 @@ fn atomic_width_pushes(width: AtomicWidth) -> ValType {
 
 fn select_pushes(explicit: Option<ValType>, pre_stack: &[Option<ValType>]) -> Option<ValType> {
     if let Some(ty) = explicit {
-        return is_scalar(ty).then_some(ty);
+        return Some(ty);
     }
     if pre_stack.len() < 3 {
         return None;
@@ -1253,9 +1455,9 @@ fn select_pushes(explicit: Option<ValType>, pre_stack: &[Option<ValType>]) -> Op
     let lhs = pre_stack[pre_stack.len() - 3];
     let rhs = pre_stack[pre_stack.len() - 2];
     match (lhs, rhs) {
-        (Some(a), Some(b)) if a == b && is_scalar(a) => Some(a),
-        (Some(a), None) if is_scalar(a) => Some(a),
-        (None, Some(b)) if is_scalar(b) => Some(b),
+        (Some(a), Some(b)) if a == b => Some(a),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
         _ => None,
     }
 }
@@ -1277,6 +1479,31 @@ fn typed_single_push(
             Some(module.locals.get(*l).ty())
         }
         Instr::GlobalGet(GlobalGet { global: g }) => Some(module.globals.get(*g).ty),
+        Instr::TableGet(table_get) => {
+            Some(ValType::Ref(module.tables.get(table_get.table).element_ty))
+        }
+        Instr::RefNull(reference) => Some(ValType::Ref(reference.ty)),
+        Instr::RefFunc(_) => Some(ValType::Ref(RefType {
+            nullable: false,
+            heap_type: HeapType::Abstract(AbstractHeapType::Func),
+        })),
+        Instr::RefAsNonNull(_) => pre_stack.last().copied().flatten().map(|ty| match ty {
+            ValType::Ref(mut reference) => {
+                reference.nullable = false;
+                ValType::Ref(reference)
+            }
+            other => other,
+        }),
+        Instr::RefI31(_) => Some(ValType::Ref(RefType {
+            nullable: false,
+            heap_type: HeapType::Abstract(AbstractHeapType::I31),
+        })),
+        Instr::RefCast(cast) => Some(ValType::Ref(RefType {
+            nullable: cast.nullable,
+            heap_type: cast.heap_type,
+        })),
+        Instr::AnyConvertExtern(_) => Some(ValType::Ref(RefType::ANYREF)),
+        Instr::ExternConvertAny(_) => Some(ValType::Ref(RefType::EXTERNREF)),
         Instr::Load(load) => Some(load_pushes(&load.kind)),
         Instr::LoadSimd(_) => Some(ValType::V128),
         Instr::Binop(b) => Some(binop_pushes(&b.op)),
@@ -2816,18 +3043,6 @@ fn emit_phase_6e_writes(
                 local: catch_state.catch_region_id,
             }),
         );
-        push_instr(
-            s,
-            Instr::Const(Const {
-                value: Value::I32(0),
-            }),
-        );
-        push_instr(
-            s,
-            Instr::LocalSet(LocalSet {
-                local: catch_state.exnref_slot,
-            }),
-        );
     }
     for info in catch_handlers {
         let if_ty = InstrSeqType::Simple(None);
@@ -2845,18 +3060,6 @@ fn emit_phase_6e_writes(
                 s,
                 Instr::LocalSet(LocalSet {
                     local: catch_state.catch_region_id,
-                }),
-            );
-            push_instr(
-                s,
-                Instr::Const(Const {
-                    value: Value::I32(info.exnref_slot as i32),
-                }),
-            );
-            push_instr(
-                s,
-                Instr::LocalSet(LocalSet {
-                    local: catch_state.exnref_slot,
                 }),
             );
         }
@@ -3073,8 +3276,6 @@ fn populate_preamble_then(
     ptr_ty: ValType,
     catch_state_locals: Option<CatchStateLocals>,
     locals_with_offsets: &[(LocalId, ValType, u32)],
-    ref_plan: &[RefLocalSlot],
-    aux_tables: &AuxTables,
     frame_size: u32,
 ) {
     let s = &mut local.block_mut(preamble_then).instrs;
@@ -3110,22 +3311,14 @@ fn populate_preamble_then(
     push_instr(s, store_ptr(memory, ptr_ty, 0));
 
     if let Some(catch_state) = catch_state_locals {
-        // catch_region_id_local / exnref_slot_local
+        // Catch arm identity and payload locals live in the scalar portion of
+        // this activation frame. The header selects the lexical region.
         push_current_frame_ptr(s, runtime, memory, ptr_ty);
         push_instr(s, load_i32(memory, CATCH_REGION_OFFSET));
         push_instr(
             s,
             Instr::LocalSet(LocalSet {
                 local: catch_state.catch_region_id,
-            }),
-        );
-
-        push_current_frame_ptr(s, runtime, memory, ptr_ty);
-        push_instr(s, load_i32(memory, EXNREF_SLOT_OFFSET));
-        push_instr(
-            s,
-            Instr::LocalSet(LocalSet {
-                local: catch_state.exnref_slot,
             }),
         );
     }
@@ -3135,21 +3328,6 @@ fn populate_preamble_then(
         push_current_frame_ptr(s, runtime, memory, ptr_ty);
         push_instr(s, load_scalar(memory, ty, off as u64));
         push_instr(s, Instr::LocalSet(LocalSet { local: lid }));
-    }
-
-    // Restore ref-typed user locals from aux tables.
-    for slot in ref_plan {
-        let table = aux_tables
-            .table_for(slot.class)
-            .expect("aux table for this ref class must be injected");
-        push_instr(
-            s,
-            Instr::Const(Const {
-                value: Value::I32(slot.slot as i32),
-            }),
-        );
-        push_instr(s, Instr::TableGet(TableGet { table }));
-        push_instr(s, Instr::LocalSet(LocalSet { local: slot.local }));
     }
 }
 
@@ -3161,8 +3339,6 @@ fn populate_postamble(
     ptr_ty: ValType,
     catch_state_locals: Option<CatchStateLocals>,
     locals_with_offsets: &[(LocalId, ValType, u32)],
-    ref_plan: &[RefLocalSlot],
-    aux_tables: &AuxTables,
     frame_size: u32,
     func_ordinal: u32,
     result_types: &[ValType],
@@ -3187,27 +3363,27 @@ fn populate_postamble(
             }),
         );
         push_instr(out, store_i32(memory, CATCH_REGION_OFFSET));
-
-        // frame[12] = dynamic exnref_slot for catch-capable functions.
-        push_current_frame_ptr(out, runtime, memory, ptr_ty);
-        push_instr(
-            out,
-            Instr::LocalGet(LocalGet {
-                local: catch_state.exnref_slot,
-            }),
-        );
-        push_instr(out, store_i32(memory, EXNREF_SLOT_OFFSET));
     } else {
-        // frame[8..16] = zero catch_region_id + exnref_slot.
+        // frame[8] = no active catch region.
         push_current_frame_ptr(out, runtime, memory, ptr_ty);
         push_instr(
             out,
             Instr::Const(Const {
-                value: Value::I64(0),
+                value: Value::I32(0),
             }),
         );
-        push_instr(out, store_scalar(memory, ValType::I64, CATCH_REGION_OFFSET));
+        push_instr(out, store_i32(memory, CATCH_REGION_OFFSET));
     }
+    // ABI 43 reserves frame[12] and requires deterministic zero rather than a
+    // module-instance table slot.
+    push_current_frame_ptr(out, runtime, memory, ptr_ty);
+    push_instr(
+        out,
+        Instr::Const(Const {
+            value: Value::I32(0),
+        }),
+    );
+    push_instr(out, store_i32(memory, RESERVED_CATCH_STATE_OFFSET));
 
     // Save scalar user + arg-spill locals
     for &(lid, ty, off) in locals_with_offsets {
@@ -3216,23 +3392,8 @@ fn populate_postamble(
         push_instr(out, store_scalar(memory, ty, off as u64));
     }
 
-    // Spill ref-typed user locals to aux tables.
-    for slot in ref_plan {
-        let table = aux_tables
-            .table_for(slot.class)
-            .expect("aux table for this ref class must be injected");
-        push_instr(
-            out,
-            Instr::Const(Const {
-                value: Value::I32(slot.slot as i32),
-            }),
-        );
-        push_instr(out, Instr::LocalGet(LocalGet { local: slot.local }));
-        push_instr(out, Instr::TableSet(TableSet { table }));
-    }
-
     if let Some(frame_commit) = runtime.frame_commit {
-        // Publish only after the complete payload and reference stashes exist.
+        // Publish only after the complete activation-owned payload exists.
         push_current_frame_ptr(out, runtime, memory, ptr_ty);
         push_instr(out, Instr::Call(Call { func: frame_commit }));
     } else {
@@ -3274,8 +3435,7 @@ fn populate_postamble(
 /// Post-call sequence for call site K, appended to sequence `seq_id`:
 /// - reload spilled args
 /// - emit the call instruction
-/// - Phase 6e writes (compute catch_region_id / exnref_slot from active
-///   in_catch flags)
+/// - Phase 6e writes (compute catch_region_id from active in_catch flags)
 /// - if state == UNWINDING, write K to frame.call_index and branch to
 ///   `$unwind_save`
 ///
@@ -3631,183 +3791,34 @@ fn push_current_call_index(
 }
 
 // ----------------------------------------------------------------------
-// Phase 4f — ref-typed local spilling via aux tables
+// Tagged-catch region planning
 // ----------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RefClass {
-    Funcref,
-    Externref,
-    Exnref,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct RefLocalSlot {
-    pub local: LocalId,
-    pub class: RefClass,
-    pub slot: u32,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct AuxTables {
-    pub funcref: Option<TableId>,
-    pub externref: Option<TableId>,
-    pub exnref: Option<TableId>,
-}
-
-impl AuxTables {
-    pub fn table_for(&self, class: RefClass) -> Option<TableId> {
-        match class {
-            RefClass::Funcref => self.funcref,
-            RefClass::Externref => self.externref,
-            RefClass::Exnref => self.exnref,
-        }
-    }
-}
-
-fn classify_ref(rt: RefType) -> Option<RefClass> {
-    if !rt.nullable {
-        return None;
-    }
-    match rt.heap_type {
-        HeapType::Abstract(AbstractHeapType::Func) => Some(RefClass::Funcref),
-        HeapType::Abstract(AbstractHeapType::NoFunc) => Some(RefClass::Funcref),
-        HeapType::Abstract(AbstractHeapType::Extern) => Some(RefClass::Externref),
-        HeapType::Abstract(AbstractHeapType::NoExtern) => Some(RefClass::Externref),
-        HeapType::Abstract(AbstractHeapType::Exn) => Some(RefClass::Exnref),
-        HeapType::Abstract(AbstractHeapType::NoExn) => Some(RefClass::Exnref),
-        _ => None,
-    }
-}
-
-fn plan_and_inject_aux_tables(
-    module: &mut Module,
+fn plan_catch_regions(
+    module: &Module,
     targets: &[FunctionId],
-) -> (
-    AuxTables,
-    HashMap<FunctionId, Vec<RefLocalSlot>>,
-    HashMap<FunctionId, Vec<CatchRegionPlan>>,
-) {
-    let mut funcref_cursor: u32 = 0;
-    let mut externref_cursor: u32 = 0;
-    let mut exnref_cursor: u32 = 0;
-
-    let mut plan: HashMap<FunctionId, Vec<RefLocalSlot>> = HashMap::new();
-
-    for &id in targets {
-        let mut per_func: Vec<RefLocalSlot> = Vec::new();
-        for (local, ty) in collect_user_locals(module, id) {
-            let rt = match ty {
-                ValType::Ref(rt) => rt,
-                _ => continue,
-            };
-            let class = classify_ref(rt).unwrap_or_else(|| {
-                let name = module.funcs.get(id).name.as_deref().unwrap_or("<anon>");
-                panic!(
-                    "fork-instrument 4f: function `{name}` has a ref-typed local of \
-                     type {rt:?} which is not yet supported (non-nullable or non-abstract \
-                     ref).",
-                )
-            });
-            let slot = match class {
-                RefClass::Funcref => {
-                    let s = funcref_cursor;
-                    funcref_cursor += 1;
-                    s
-                }
-                RefClass::Externref => {
-                    let s = externref_cursor;
-                    externref_cursor += 1;
-                    s
-                }
-                RefClass::Exnref => {
-                    let s = exnref_cursor;
-                    exnref_cursor += 1;
-                    s
-                }
-            };
-            per_func.push(RefLocalSlot { local, class, slot });
-        }
-        if !per_func.is_empty() {
-            plan.insert(id, per_func);
-        }
-    }
-
+) -> HashMap<FunctionId, Vec<CatchRegionPlan>> {
     let mut catch_plans: HashMap<FunctionId, Vec<CatchRegionPlan>> = HashMap::new();
     for &id in targets {
         let bodies = discover_try_table_bodies(module, id);
         let mut per_func: Vec<CatchRegionPlan> = Vec::with_capacity(bodies.len());
         for (lex_idx, body_seq) in bodies.into_iter().enumerate() {
-            let slot = exnref_cursor;
-            exnref_cursor += 1;
             per_func.push(CatchRegionPlan {
                 body_seq,
                 catch_region_id: (lex_idx as u32) + 1,
-                exnref_slot: slot,
             });
         }
         if !per_func.is_empty() {
             catch_plans.insert(id, per_func);
         }
     }
-
-    let funcref = if funcref_cursor > 0 {
-        let id = module.tables.add_local(
-            false,
-            funcref_cursor as u64,
-            Some(funcref_cursor as u64),
-            RefType::FUNCREF,
-        );
-        module.tables.get_mut(id).name = Some("_wpk_fork_funcref_stash".into());
-        Some(id)
-    } else {
-        None
-    };
-    let externref = if externref_cursor > 0 {
-        let id = module.tables.add_local(
-            false,
-            externref_cursor as u64,
-            Some(externref_cursor as u64),
-            RefType::EXTERNREF,
-        );
-        module.tables.get_mut(id).name = Some("_wpk_fork_externref_stash".into());
-        Some(id)
-    } else {
-        None
-    };
-    let exnref = if exnref_cursor > 0 {
-        let exn_rt = RefType {
-            nullable: true,
-            heap_type: HeapType::Abstract(AbstractHeapType::Exn),
-        };
-        let id = module.tables.add_local(
-            false,
-            exnref_cursor as u64,
-            Some(exnref_cursor as u64),
-            exn_rt,
-        );
-        module.tables.get_mut(id).name = Some("_wpk_fork_exnref_stash".into());
-        Some(id)
-    } else {
-        None
-    };
-
-    (
-        AuxTables {
-            funcref,
-            externref,
-            exnref,
-        },
-        plan,
-        catch_plans,
-    )
+    catch_plans
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct CatchRegionPlan {
     pub body_seq: InstrSeqId,
     pub catch_region_id: u32,
-    pub exnref_slot: u32,
 }
 
 fn discover_try_table_bodies(module: &Module, func_id: FunctionId) -> Vec<InstrSeqId> {
@@ -3831,9 +3842,15 @@ fn visit_try_tables(f: &LocalFunction, seq: InstrSeqId, out: &mut Vec<InstrSeqId
     }
 }
 
-/// Stage 1 (B1) — describes a single `catch $tag $label` clause in a
-/// fork-path try_table. Discovered alongside `CatchRegionPlan` and
-/// recorded per-region for later Stage 2 wiring.
+/// A statically tagged catch shape whose identity and scalar payload can be
+/// serialized in an activation frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaggedCatchKind {
+    Plain,
+    Ref,
+}
+
+/// Describes one `catch` or `catch_ref` clause in a fork-path try_table.
 #[derive(Debug, Clone)]
 pub struct PlainCatchArm {
     /// Index of this arm within its try_table's `catches` list. Stage 2
@@ -3843,6 +3860,9 @@ pub struct PlainCatchArm {
     /// `catch_region_id` (tracked by `CatchRegionPlan`), the pair is
     /// unique within the function — no module-wide arm_id is needed.
     pub arm_idx: u32,
+    /// Whether normal handler entry receives only the tag payload or the tag
+    /// payload followed by an instance-local exnref.
+    pub kind: TaggedCatchKind,
     /// Tag this arm catches.
     pub tag: TagId,
     /// Label the arm branches to on catch (target block id).
@@ -3854,10 +3874,9 @@ pub struct PlainCatchArm {
 }
 
 /// Stage 1 (B1) — for each try_table in `func_id`, returns
-/// `(body_seq, plain_catch_arms)` where `plain_catch_arms` lists
-/// every plain `Catch { tag, label }` clause. Following Phase 6's
-/// pattern: catch_ref / catch_all_ref clauses are skipped (Phase 6
-/// territory); plain catch is enumerated unfiltered.
+/// `(body_seq, tagged_catch_arms)` where the arms include both plain Catch and
+/// CatchRef. Untagged catches and reference payloads have already been rejected
+/// by [`validate_activation_state`].
 ///
 /// Function-level filtering happens at the call site (caller passes
 /// only fork-path `FunctionId`s, mirroring `discover_try_table_bodies`).
@@ -3887,19 +3906,25 @@ fn visit_for_plain_catch(
         if let Instr::TryTable(tt) = instr {
             let mut arms: Vec<PlainCatchArm> = Vec::new();
             for (i, c) in tt.catches.iter().enumerate() {
-                let (tag, label) = match c {
-                    TryTableCatch::Catch { tag, label } => (*tag, *label),
-                    _ => continue, // CatchRef / CatchAllRef: handled by Phase 6.
-                                   // CatchAll: unsupported today; not in B1 scope
-                                   // (no tag → no operand_tys to save).
+                let (kind, tag, label) = match c {
+                    TryTableCatch::Catch { tag, label } => (TaggedCatchKind::Plain, *tag, *label),
+                    TryTableCatch::CatchRef { tag, label } => (TaggedCatchKind::Ref, *tag, *label),
+                    TryTableCatch::CatchAll { .. } | TryTableCatch::CatchAllRef { .. } => continue,
                 };
                 let operand_tys: Vec<ValType> = module
                     .types
                     .get(module.tags.get(tag).ty())
                     .params()
                     .to_vec();
+                // A reference payload is never a partial-success case. If its
+                // handler can reach fork, validation rejects the artifact; if
+                // it cannot, leave this unrelated catch entirely untouched.
+                if operand_tys.iter().any(|ty| matches!(ty, ValType::Ref(_))) {
+                    continue;
+                }
                 arms.push(PlainCatchArm {
                     arm_idx: i as u32,
+                    kind,
                     tag,
                     label,
                     operand_tys,
@@ -3915,78 +3940,25 @@ fn visit_for_plain_catch(
     }
 }
 
-/// Module-wide static plain-catch plan.
-///
-/// Stage 2 (Task 2.1) adds `b2_carveout`: functions whose plain-catch
-/// arms include unsupported operand types (e.g., ref-typed) land here
-/// instead of `per_function`. Stage 2 emission tasks check this set
-/// and skip plain-catch instrumentation for carved-out functions —
-/// falling back to today's behavior (Phase 6 catch_ref still works,
-/// plain-catch fork remains unsupported for those specific shapes).
+/// Module-wide static tagged-catch plan.
 #[derive(Debug, Clone, Default)]
 pub struct PlainCatchPlan {
     /// Per-function per-region arm metadata. Outer Vec
     /// parallels `discover_plain_catch_arms`'s return shape (one
     /// entry per try_table that has at least one plain-catch arm).
     pub per_function: std::collections::HashMap<FunctionId, Vec<(InstrSeqId, Vec<PlainCatchArm>)>>,
-    /// Stage 2 (B1): functions whose plain-catch arms include
-    /// unsupported operand types (e.g., ref-typed). For these
-    /// functions, B1 emission tasks fall back to today's behavior
-    /// (Phase 6 doesn't intercept plain-catch arms — the function
-    /// works for catch_ref but is unsupported for plain-catch fork).
-    pub b2_carveout: std::collections::HashSet<FunctionId>,
 }
 
-/// Discover supported plain-catch arms across all fork-path functions.
+/// Discover reconstructible tagged catches across fork-path functions.
 ///
-/// Operand types are restricted to scalars (i32/i64/f32/f64/v128).
-/// Ref-typed operands (externref/funcref/exnref/GC refs) require
-/// auxiliary-table spilling and remain a conservative carve-out.
-///
-/// Stage 2 (Task 2.1) detects ref-typed payloads here and routes the
-/// affected function to `PlainCatchPlan.b2_carveout` instead of
-/// `per_function`. Stage 2 emission tasks check the carve-out set
-/// and skip plain-catch instrumentation for those functions.
-///
-/// The carve-out is whole-function: if any arm in any region of a
-/// function has a ref-typed operand, the entire function's
-/// plain-catch instrumentation is skipped. We don't selectively drop
-/// arms because Task 2.3's rewind dispatcher needs the whole
-/// region's arm set or none.
-///
+/// Validation is deliberately separate and fallible. Once this function runs,
+/// every arm has a scalar payload and every region is complete; silently
+/// omitting one arm would turn an unsupported artifact into a child-only trap.
 pub fn plan_plain_catches(module: &Module, targets: &[FunctionId]) -> PlainCatchPlan {
     let mut plan = PlainCatchPlan::default();
     for &fid in targets {
         let arms_per_region = discover_plain_catch_arms(module, fid);
         if arms_per_region.is_empty() {
-            continue;
-        }
-        // Stage 2 (B1): detect unsupported operand types and carve out
-        // the entire function. We can't selectively drop just the bad
-        // arms because replay needs a complete region-wide arm set.
-        let has_unsupported = arms_per_region.iter().any(|(_, arms)| {
-            arms.iter()
-                .any(|arm| arm.operand_tys.iter().any(|t| matches!(t, ValType::Ref(_))))
-        });
-        // Stage 2 (B1) Task 2.4: multi-target plain-catch guard.
-        // A try_table whose plain-catch arms branch to *different*
-        // labels has not been verified end-to-end. Per-arm capture
-        // blocks each branch to their own original target label, and
-        // the rewind dispatcher's re-throw routes through the
-        // try_table's catch clauses to reach those captures, so in
-        // principle multi-target should work — but until a real port
-        // exercises it, conservatively treat such functions as
-        // b2_carveout. Single-target multi-arm (multiple catches all
-        // pointing at the same label) remains supported.
-        let has_multi_target = arms_per_region.iter().any(|(_, arms)| {
-            if arms.len() <= 1 {
-                return false;
-            }
-            let first = arms[0].label;
-            arms.iter().any(|arm| arm.label != first)
-        });
-        if has_unsupported || has_multi_target {
-            plan.b2_carveout.insert(fid);
             continue;
         }
         plan.per_function.insert(fid, arms_per_region);
@@ -3999,6 +3971,9 @@ pub fn plan_plain_catches(module: &Module, targets: &[FunctionId]) -> PlainCatch
 struct PlainCatchArmState {
     arm: PlainCatchArm,
     operand_locals: Vec<LocalId>,
+    /// Temporary only: never frame-backed. A replayed CatchRef rethrows the
+    /// saved tag payload and receives a new exnref from this module instance.
+    captured_exnref: Option<LocalId>,
 }
 
 /// Activation-owned state for one try_table with plain catches.
@@ -4030,9 +4005,16 @@ fn allocate_plain_catch_state(
                         .iter()
                         .map(|&ty| module.locals.add(ty))
                         .collect();
+                    let captured_exnref = (arm.kind == TaggedCatchKind::Ref).then(|| {
+                        module.locals.add(ValType::Ref(RefType {
+                            nullable: true,
+                            heap_type: HeapType::Abstract(AbstractHeapType::Exn),
+                        }))
+                    });
                     PlainCatchArmState {
                         arm,
                         operand_locals,
+                        captured_exnref,
                     }
                 })
                 .collect(),
@@ -4070,27 +4052,17 @@ fn append_plain_catch_frame_scalars(
 /// exception that was caught pre-fork. The shape depends on what kind
 /// of catch was originally taken:
 ///
-/// Plain catches restore a frame-backed active-arm local and operand locals,
-/// then throw the matching tag. A catch_ref capture writes active-arm `-1`,
-/// so a mixed region falls through to the exnref `throw_ref` path without
-/// treating stale auxiliary-table contents as mode state.
+/// Both Catch and CatchRef restore a frame-backed active-arm local and scalar
+/// tag operands, then throw the matching tag. The original CatchRef clause
+/// creates a fresh exnref in the child instance.
 fn inject_rewind_throw_stubs(
     module: &mut Module,
     func_id: FunctionId,
     runtime: &Runtime,
     catch_region_id_local: LocalId,
-    aux_tables: &AuxTables,
     catch_plan: &[CatchRegionPlan],
     plain_catches: &[PlainCatchRegionState],
 ) {
-    let exnref_table = match aux_tables.exnref {
-        Some(t) => t,
-        None => {
-            debug_assert!(catch_plan.is_empty());
-            return;
-        }
-    };
-
     let plain_lookup: HashMap<InstrSeqId, &PlainCatchRegionState> = plain_catches
         .iter()
         .map(|region| (region.body_seq, region))
@@ -4099,39 +4071,25 @@ fn inject_rewind_throw_stubs(
     for plan in catch_plan {
         let body_seq_id = plan.body_seq;
         let region_id = plan.catch_region_id;
-        let slot = plan.exnref_slot;
-        let plain_region = plain_lookup.get(&body_seq_id).copied();
+        let Some(region) = plain_lookup.get(&body_seq_id).copied() else {
+            continue;
+        };
 
-        // Build the inner "catch_ref path" sequence (Phase 6's existing
-        // logic). Always emitted — used either as the only path or as
-        // the fallback when no exact plain arm is active.
-        let throw_ref_seq_id = {
+        // An unknown arm means the continuation is corrupt or from an
+        // incompatible artifact. There is no module-instance reference
+        // fallback in ABI 43.
+        let invalid_arm = {
             let local = local_mut(module, func_id);
             let s = local
                 .builder_mut()
                 .dangling_instr_seq(InstrSeqType::Simple(None))
                 .id();
             let block = &mut local.block_mut(s).instrs;
-            push_instr(
-                block,
-                Instr::Const(Const {
-                    value: Value::I32(slot as i32),
-                }),
-            );
-            push_instr(
-                block,
-                Instr::TableGet(TableGet {
-                    table: exnref_table,
-                }),
-            );
-            push_instr(block, Instr::RefAsNonNull(RefAsNonNull {}));
-            push_instr(block, Instr::ThrowRef(ThrowRef {}));
+            push_instr(block, Instr::Unreachable(Unreachable {}));
             s
         };
 
-        let dispatch_seq_id = plain_region.map_or(throw_ref_seq_id, |region| {
-            build_plain_catch_dispatch(module, func_id, region, throw_ref_seq_id)
-        });
+        let dispatch_seq_id = build_plain_catch_dispatch(module, func_id, region, invalid_arm);
 
         // Build the empty else for the outer REWIND-match guard.
         let else_id = {
@@ -4203,20 +4161,16 @@ fn inject_rewind_throw_stubs(
     }
 }
 
-/// Build a dangling sequence that rethrows one frame-restored plain catch.
-///
-/// Exact nonnegative arm IDs select plain catches. `-1` deliberately falls
-/// through to `throw_ref_fallback`, which is what a catch_ref capture records
-/// for a mixed region.
+/// Build a dangling sequence that rethrows one frame-restored tagged catch.
 fn build_plain_catch_dispatch(
     module: &mut Module,
     func_id: FunctionId,
     region: &PlainCatchRegionState,
-    throw_ref_fallback: InstrSeqId,
+    invalid_arm: InstrSeqId,
 ) -> InstrSeqId {
     debug_assert!(!region.arms.is_empty());
 
-    let mut chain = throw_ref_fallback;
+    let mut chain = invalid_arm;
     for arm in region.arms.iter().rev() {
         let throw_id = {
             let local = local_mut(module, func_id);
@@ -4281,241 +4235,38 @@ fn build_plain_catch_dispatch(
 #[derive(Debug, Clone, Copy)]
 struct CatchHandlerInfo {
     catch_region_id: u32,
-    exnref_slot: u32,
     body_seq: InstrSeqId,
-    target_label: InstrSeqId,
     in_catch_local: LocalId,
-    captured_exnref_local: LocalId,
-    plain_active_arm: Option<LocalId>,
 }
 
 fn plan_catch_ref_handlers(
     module: &mut Module,
-    func_id: FunctionId,
     catch_plan: &[CatchRegionPlan],
-    aux_tables: &AuxTables,
     plain_catches: &[PlainCatchRegionState],
 ) -> Vec<CatchHandlerInfo> {
-    let mut infos = Vec::new();
-    if aux_tables.exnref.is_none() {
-        return infos;
-    }
-    let exnref_ty = RefType {
-        nullable: true,
-        heap_type: HeapType::Abstract(AbstractHeapType::Exn),
-    };
-
-    for plan in catch_plan {
-        let target_label_opt = {
-            let local = match &module.funcs.get(func_id).kind {
-                FunctionKind::Local(l) => l,
-                _ => continue,
-            };
-            let (_, tt) = match find_try_table_parent_seq(local, local.entry_block(), plan.body_seq)
-            {
-                Some(v) => v,
-                None => continue,
-            };
-
-            let mut ref_targets: HashSet<InstrSeqId> = HashSet::new();
-            for c in &tt.catches {
-                match c {
-                    TryTableCatch::CatchRef { label, .. }
-                    | TryTableCatch::CatchAllRef { label } => {
-                        ref_targets.insert(*label);
-                    }
-                    _ => {}
-                }
-            }
-            if ref_targets.len() != 1 {
-                None
-            } else {
-                Some(*ref_targets.iter().next().unwrap())
-            }
-        };
-        let target_label = match target_label_opt {
-            Some(t) => t,
-            None => continue,
-        };
-
-        let in_catch_local = module.locals.add(ValType::I32);
-        let captured_exnref_local = module.locals.add(ValType::Ref(exnref_ty));
-
-        infos.push(CatchHandlerInfo {
-            catch_region_id: plan.catch_region_id,
-            exnref_slot: plan.exnref_slot,
-            body_seq: plan.body_seq,
-            target_label,
-            in_catch_local,
-            captured_exnref_local,
-            plain_active_arm: plain_catches
+    plain_catches
+        .iter()
+        .filter_map(|region| {
+            catch_plan
                 .iter()
-                .find(|region| region.body_seq == plan.body_seq)
-                .map(|region| region.active_arm),
-        });
-    }
-
-    infos
-}
-
-fn apply_catch_ref_handlers(
-    module: &mut Module,
-    func_id: FunctionId,
-    handlers: &[CatchHandlerInfo],
-    aux_tables: &AuxTables,
-) {
-    let exnref_table = match aux_tables.exnref {
-        Some(t) => t,
-        None => return,
-    };
-
-    for info in handlers {
-        let (parent_seq, original_catches, try_table_type, catch_sig_type) = {
-            let local = match &module.funcs.get(func_id).kind {
-                FunctionKind::Local(l) => l,
-                _ => continue,
-            };
-            let (parent, tt) =
-                match find_try_table_parent_seq(local, local.entry_block(), info.body_seq) {
-                    Some(v) => v,
-                    None => continue,
-                };
-            let catches = tt.catches.clone();
-            let try_sig = local.block(info.body_seq).ty;
-            let catch_sig = local.block(info.target_label).ty;
-            (parent, catches, try_sig, catch_sig)
-        };
-
-        let (outer_seq_id, capture_seq_id) = {
-            let local = local_mut(module, func_id);
-            let cap = local.builder_mut().dangling_instr_seq(catch_sig_type).id();
-            let out = local.builder_mut().dangling_instr_seq(try_table_type).id();
-            (out, cap)
-        };
-
-        let new_catches: Vec<TryTableCatch> = original_catches
-            .iter()
-            .map(|c| match c {
-                TryTableCatch::CatchRef { tag, .. } => TryTableCatch::CatchRef {
-                    tag: *tag,
-                    label: capture_seq_id,
-                },
-                TryTableCatch::CatchAllRef { .. } => TryTableCatch::CatchAllRef {
-                    label: capture_seq_id,
-                },
-                TryTableCatch::Catch { tag, label } => TryTableCatch::Catch {
-                    tag: *tag,
-                    label: *label,
-                },
-                TryTableCatch::CatchAll { label } => TryTableCatch::CatchAll { label: *label },
-            })
-            .collect();
-
-        {
-            let local = local_mut(module, func_id);
-            let s = &mut local.block_mut(capture_seq_id).instrs;
-            push_instr(
-                s,
-                Instr::TryTable(TryTable {
-                    seq: info.body_seq,
-                    catches: new_catches,
-                }),
-            );
-            push_instr(
-                s,
-                Instr::Br(Br {
-                    block: outer_seq_id,
-                }),
-            );
-        }
-
-        {
-            let local = local_mut(module, func_id);
-            let s = &mut local.block_mut(outer_seq_id).instrs;
-            push_instr(
-                s,
-                Instr::Block(Block {
-                    seq: capture_seq_id,
-                }),
-            );
-            push_instr(
-                s,
-                Instr::LocalTee(LocalTee {
-                    local: info.captured_exnref_local,
-                }),
-            );
-            if let Some(active_arm) = info.plain_active_arm {
-                // WHY: mixed catch regions must restore their capture kind
-                // from frame-owned state. A negative arm cannot match any
-                // plain catch, so replay falls through to throw_ref without
-                // consulting possibly stale exnref-table nullness.
-                push_instr(
-                    s,
-                    Instr::Const(Const {
-                        value: Value::I32(-1),
-                    }),
-                );
-                push_instr(s, Instr::LocalSet(LocalSet { local: active_arm }));
-            }
-            push_instr(
-                s,
-                Instr::Const(Const {
-                    value: Value::I32(1),
-                }),
-            );
-            push_instr(
-                s,
-                Instr::LocalSet(LocalSet {
-                    local: info.in_catch_local,
-                }),
-            );
-            push_instr(
-                s,
-                Instr::Const(Const {
-                    value: Value::I32(info.exnref_slot as i32),
-                }),
-            );
-            push_instr(
-                s,
-                Instr::LocalGet(LocalGet {
-                    local: info.captured_exnref_local,
-                }),
-            );
-            push_instr(
-                s,
-                Instr::TableSet(TableSet {
-                    table: exnref_table,
-                }),
-            );
-            push_instr(
-                s,
-                Instr::Br(Br {
-                    block: info.target_label,
-                }),
-            );
-        }
-
-        {
-            let local = local_mut(module, func_id);
-            let parent_instrs = &mut local.block_mut(parent_seq).instrs;
-            let tt_idx = parent_instrs
-                .iter()
-                .position(|(i, _)| matches!(i, Instr::TryTable(tt) if tt.seq == info.body_seq))
-                .expect("try_table not found in its parent");
-            parent_instrs[tt_idx].0 = Instr::Block(Block { seq: outer_seq_id });
-        }
-    }
+                .find(|plan| plan.body_seq == region.body_seq)
+                .map(|plan| CatchHandlerInfo {
+                    catch_region_id: plan.catch_region_id,
+                    body_seq: plan.body_seq,
+                    in_catch_local: module.locals.add(ValType::I32),
+                })
+        })
+        .collect()
 }
 
 // ----------------------------------------------------------------------
-// Stage 2 (B1) — per-arm capture-block emission for plain catch
+// Per-arm capture-block emission for tagged catches
 // ----------------------------------------------------------------------
 
-/// Stage 2 (B1) — emit per-arm capture blocks that intercept plain
-/// catch dispatch.
+/// Emit per-arm capture blocks that intercept Catch and CatchRef dispatch.
 ///
-/// For each fork-path try_table that has at least one plain-catch arm
-/// (and whose function is NOT in `b2_carveout`), this rewrites:
+/// For each fork-path try_table that has at least one supported tagged Catch or
+/// CatchRef arm, this rewrites:
 ///
 /// ```wat
 /// (try_table (catch $tag $h) ... body ...)   ;; original
@@ -4540,13 +4291,9 @@ fn apply_catch_ref_handlers(
 ///      region_id`.
 ///   3. re-pushed (in declaration order) and `br $hJ` executes.
 ///
-/// CatchAll/CatchRef/CatchAllRef clauses are preserved verbatim. If
-/// Phase 6 already retargeted CatchRef/CatchAllRef clauses, those
-/// retargets are passed through unchanged.
-///
-/// `catch_handlers` is Phase 6's per-region info; the `in_catch_local`
-/// is reused for any region that overlaps with B1's emission. For
-/// plain-catch-only regions, a fresh `in_catch_local` is allocated.
+/// CatchRef captures spill only the scalar tag payload into the frame. The
+/// exnref is a temporary instance-local value, forwarded to the original
+/// handler and cleared from the synthetic local before the branch.
 ///
 fn apply_plain_catch_handlers(
     module: &mut Module,
@@ -4567,10 +4314,6 @@ fn apply_plain_catch_handlers(
             continue;
         }
 
-        // Phase 6's `apply_catch_ref_handlers` may have moved this
-        // try_table inside its own capture block. `find_try_table_parent_seq`
-        // walks recursively from the entry block, so the new parent
-        // is discovered automatically.
         let (parent_seq, original_catches, try_table_type) = {
             let local = match &module.funcs.get(func_id).kind {
                 FunctionKind::Local(l) => l,
@@ -4584,18 +4327,13 @@ fn apply_plain_catch_handlers(
             (parent, tt.catches.clone(), local.block(body_seq).ty)
         };
 
-        // Look up region_id from catch_plan (every fork-path try_table
-        // gets a catch_region_id assigned in plan_and_inject_aux_tables).
+        // Look up the stable lexical region identity.
         let catch_region_id = catch_plan
             .iter()
             .find(|p| p.body_seq == body_seq)
             .map(|p| p.catch_region_id)
             .unwrap_or(0);
 
-        // Reuse Phase 6's in_catch_local if the region overlaps; else
-        // allocate a fresh one. (Mixed catch_ref+plain regions share
-        // the same flag so post-call dispatch sees a single signal per
-        // region.)
         let in_catch_local = catch_handlers
             .iter()
             .find(|h| h.body_seq == body_seq)
@@ -4614,12 +4352,19 @@ fn apply_plain_catch_handlers(
             local.builder_mut().dangling_instr_seq(try_table_type).id()
         };
 
-        // Build per-arm InstrSeqType up-front (mutates module.types)
-        // before any &mut LocalFunction borrow is needed.
-        let cap_types: Vec<InstrSeqType> = arm_states
-            .iter()
-            .map(|state| InstrSeqType::new(&mut module.types, &[], &state.arm.operand_tys))
-            .collect();
+        // The original target label already carries the exact catch branch
+        // type. For CatchRef that is tag.params followed by a non-null exnref.
+        // Reusing it avoids weakening concrete EH reference types.
+        let cap_types: Vec<InstrSeqType> = {
+            let local = match &module.funcs.get(func_id).kind {
+                FunctionKind::Local(local) => local,
+                _ => continue,
+            };
+            arm_states
+                .iter()
+                .map(|state| local.block(state.arm.label).ty)
+                .collect()
+        };
 
         let mut cap_seq_ids: Vec<InstrSeqId> = Vec::with_capacity(arm_states.len());
         for cap_ty in &cap_types {
@@ -4628,10 +4373,7 @@ fn apply_plain_catch_handlers(
         }
 
         // ----------------------------------------------------------
-        // Rewrite the inner try_table's catches: each plain Catch
-        // arm now points at its capture block; everything else (incl.
-        // catch_ref/catch_all_ref already retargeted by Phase 6) is
-        // preserved verbatim.
+        // Rewrite every planned tagged arm to its activation capture.
         //
         // We map by arm position within `arm_states` -- each entry's
         // `arm.arm_idx` is the arm's index in the original try_table's
@@ -4642,12 +4384,22 @@ fn apply_plain_catch_handlers(
         for (j, state) in arm_states.iter().enumerate() {
             let arm_idx = state.arm.arm_idx as usize;
             if let Some(c) = new_catches.get_mut(arm_idx) {
-                if let TryTableCatch::Catch { tag, .. } = c {
-                    *c = TryTableCatch::Catch {
-                        tag: *tag,
-                        label: cap_seq_ids[j],
-                    };
-                }
+                let replacement = match (state.arm.kind, &*c) {
+                    (TaggedCatchKind::Plain, TryTableCatch::Catch { tag, .. }) => {
+                        TryTableCatch::Catch {
+                            tag: *tag,
+                            label: cap_seq_ids[j],
+                        }
+                    }
+                    (TaggedCatchKind::Ref, TryTableCatch::CatchRef { tag, .. }) => {
+                        TryTableCatch::CatchRef {
+                            tag: *tag,
+                            label: cap_seq_ids[j],
+                        }
+                    }
+                    _ => unreachable!("validated catch plan no longer matches try_table"),
+                };
+                *c = replacement;
             }
         }
 
@@ -4787,14 +4539,13 @@ fn apply_plain_catch_handlers(
     }
 }
 
-/// Emit the capture-block "tail" for a single plain-catch arm: at the
-/// point where this is invoked, `tag.params()` are on the operand
-/// stack. The emitted sequence:
+/// Emit the capture-block tail for one tagged catch. The operand stack holds
+/// `tag.params()` and, for CatchRef, a final exnref.
 ///
-///   1. Spill operands to per-arm frame locals (top-of-stack first).
+///   1. Temporarily pop CatchRef's exnref, then spill scalar operands.
 ///   2. Set the region's frame-backed active arm.
 ///   3. Set `in_catch_local = 1`, `catch_region_id_local = region_id`.
-///   4. Re-push operands (declaration order).
+///   4. Re-push operands and the fresh exnref; clear the temporary ref local.
 ///   5. `br arm.label` (original handler).
 fn emit_capture_save_and_branch(
     module: &mut Module,
@@ -4808,6 +4559,17 @@ fn emit_capture_save_and_branch(
 ) {
     let local = local_mut(module, func_id);
     let s = &mut local.block_mut(cap_seq_id).instrs;
+
+    // CatchRef appends exnref after the tag payload, so it is first off the
+    // stack. It is intentionally not part of frame state.
+    if let Some(captured_exnref) = arm.captured_exnref {
+        push_instr(
+            s,
+            Instr::LocalSet(LocalSet {
+                local: captured_exnref,
+            }),
+        );
+    }
 
     // 1. Spill operands. Operands were declared L-to-R but appear on
     //    the stack with the LAST one on top — so we spill in reverse
@@ -4859,6 +4621,32 @@ fn emit_capture_save_and_branch(
     // 4. Re-push operands in declaration order.
     for &operand in &arm.operand_locals {
         push_instr(s, Instr::LocalGet(LocalGet { local: operand }));
+    }
+    if let Some(captured_exnref) = arm.captured_exnref {
+        push_instr(
+            s,
+            Instr::LocalGet(LocalGet {
+                local: captured_exnref,
+            }),
+        );
+        push_instr(s, Instr::RefAsNonNull(RefAsNonNull {}));
+        // WHY: leaving a synthetic exnref local populated after the handler
+        // branch would retain an otherwise-dead exception as a GC root.
+        push_instr(
+            s,
+            Instr::RefNull(RefNull {
+                ty: RefType {
+                    nullable: true,
+                    heap_type: HeapType::Abstract(AbstractHeapType::Exn),
+                },
+            }),
+        );
+        push_instr(
+            s,
+            Instr::LocalSet(LocalSet {
+                local: captured_exnref,
+            }),
+        );
     }
 
     // 5. Branch to original handler.
@@ -5100,8 +4888,6 @@ fn instrument_one_function_trampoline_dispatch(
     _runtime: &Runtime,
     _fork_path: &HashSet<FunctionId>,
     _func_ordinal: u32,
-    _aux_tables: &AuxTables,
-    _ref_plan: &[RefLocalSlot],
     _catch_plan: &[CatchRegionPlan],
     _plain_catches: &[(InstrSeqId, Vec<PlainCatchArm>)],
 ) {
@@ -5900,8 +5686,6 @@ fn instrument_one_function_nested_switch(
     runtime: &Runtime,
     fork_path: &HashSet<FunctionId>,
     func_ordinal: u32,
-    aux_tables: &AuxTables,
-    ref_plan: &[RefLocalSlot],
     catch_plan: &[CatchRegionPlan],
     plain_catches: &[(InstrSeqId, Vec<PlainCatchArm>)],
 ) {
@@ -5927,8 +5711,6 @@ fn instrument_one_function_nested_switch(
             runtime,
             fork_path,
             func_ordinal,
-            aux_tables,
-            ref_plan,
             catch_plan,
             plain_catches,
         );
@@ -5985,8 +5767,7 @@ fn instrument_one_function_nested_switch(
                         let name = func_name(module, func_id);
                         panic!(
                             "fork-instrument: function `{name}` has a nested fork-path call \
-                     with a ref-typed argument ({ty:?}). Aux-table arg spilling \
-                     is not yet supported in the nested per-block transform."
+                             with a ref-typed argument ({ty:?}) after activation-state validation"
                         );
                     }
                 }
@@ -6070,7 +5851,6 @@ fn instrument_one_function_nested_switch(
     } else {
         Some(CatchStateLocals {
             catch_region_id: module.locals.add(ValType::I32),
-            exnref_slot: module.locals.add(ValType::I32),
         })
     };
     // Tmp i32 used by the IfElse cond rewrite to swap stack order
@@ -6234,28 +6014,19 @@ fn instrument_one_function_nested_switch(
     };
     let restart_loop_ty = InstrSeqType::new(&mut module.types, &[], &result_types);
 
-    // Plan catch handlers (Phase 6d). These remain dead code for the
-    // nested transform's MVP (no fork-from-catch), but the plumbing is
-    // preserved for ref-typed exnref locals that still round-trip.
-    let catch_handlers =
-        plan_catch_ref_handlers(module, func_id, catch_plan, aux_tables, &plain_catch_state);
+    let catch_handlers = plan_catch_ref_handlers(module, catch_plan, &plain_catch_state);
 
     let memory = first_memory(module);
     let ptr_ty = runtime.buf_type;
 
-    // Phase 6c rewind-throw stubs (still emitted for try_table bodies
-    // without fork-path calls — preserves the exnref serialization
-    // path). Extended by B1 Stage 2 Task 2.3 with plain-catch arm
-    // dispatch when `plain_catches` lists arms for the region.
-    if !catch_plan.is_empty() && aux_tables.exnref.is_some() {
+    if !plain_catch_state.is_empty() {
         let catch_state =
-            catch_state_locals.expect("exnref catch plan requires catch-state locals");
+            catch_state_locals.expect("tagged catch plan requires catch-state locals");
         inject_rewind_throw_stubs(
             module,
             func_id,
             runtime,
             catch_state.catch_region_id,
-            aux_tables,
             catch_plan,
             &plain_catch_state,
         );
@@ -6289,8 +6060,6 @@ fn instrument_one_function_nested_switch(
         ptr_ty,
         catch_state_locals,
         &locals_with_offsets,
-        ref_plan,
-        aux_tables,
         frame_size,
     );
 
@@ -6397,8 +6166,6 @@ fn instrument_one_function_nested_switch(
         ptr_ty,
         catch_state_locals,
         &locals_with_offsets,
-        ref_plan,
-        aux_tables,
         frame_size,
         func_ordinal,
         &result_types,
@@ -6465,10 +6232,7 @@ fn instrument_one_function_nested_switch(
     entry_seq.clear();
     push_instr(entry_seq, Instr::Loop(Loop { seq: restart_loop }));
 
-    apply_catch_ref_handlers(module, func_id, &catch_handlers, aux_tables);
-
-    // Stage 2 (B1) plain-catch capture-block emission. Runs AFTER
-    // Phase 6 so it sees post-Phase-6 try_table locations.
+    // Tagged-catch capture emission runs after the nested body rebuild.
     if let Some(catch_state) = catch_state_locals {
         apply_plain_catch_handlers(
             module,
@@ -7965,10 +7729,10 @@ mod trampoline_tests {
     }
 
     #[test]
-    fn compute_carryover_types_unknown_producer_in_carryover_returns_none() {
-        // Contrast case: a ref-typed producer's value IS the carryover
-        // at a fork-path call. The switch-dispatch spill path only
-        // supports scalar ValTypes, so the analyser correctly fails.
+    fn compute_carryover_types_preserves_reference_for_validation() {
+        // A reference producer's value is the carryover at a fork-path call.
+        // Preserve the exact type so activation-state validation can reject it
+        // with a reference-specific diagnostic before rewriting begins.
         let wat = r#"
             (module
               (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -7987,9 +7751,7 @@ mod trampoline_tests {
         let main = find_func_id(&module, "main");
         let fork_path = build_fork_path(&module, &["fork", "main"]);
         let result = compute_carryover_types(&module, main, &fork_path);
-        // Carryover would be [None] (the ref-typed result). Analyser
-        // refuses -> None.
-        assert_eq!(result, None);
+        assert_eq!(result, Some(vec![vec![ValType::Ref(RefType::EXTERNREF)]]));
     }
 
     // Sub-commit 2.5a: nested-aware carryover analyser. The analyser

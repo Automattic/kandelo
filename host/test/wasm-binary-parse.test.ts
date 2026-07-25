@@ -15,6 +15,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   ABI_VERSION,
+  WPK_FORK_CAPABILITIES_SECTION,
+  WPK_FORK_CAPABILITIES_VERSION,
+  WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+  WPK_FORK_CAP_KNOWN_MASK,
   WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE,
   WPK_FORK_LINKED_FRAME_FORMAT_MAGIC,
   WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
@@ -223,6 +227,10 @@ function completeForkWasm(options: {
   pointerWidth?: 4 | 8;
   memoryPointerWidth?: 4 | 8;
   exportPointerWidth?: 4 | 8;
+  capabilityFlags?: number | null;
+  capabilityPayloads?: number[][];
+  abiVersion?: number;
+  includeAbiMarker?: boolean;
 } = {}): ArrayBuffer {
   const pointerWidth = options.pointerWidth ?? 4;
   const pointerType = pointerWidth === 8 ? I64 : I32;
@@ -247,11 +255,25 @@ function completeForkWasm(options: {
     return requirement.params.length === 1 ? 1 : 2;
   });
   const firstDefinedFunction = funcImports.length;
+  const capabilityFlags =
+    options.capabilityFlags === undefined
+      ? WPK_FORK_CAP_ACTIVATION_STATE_SAFE
+      : options.capabilityFlags;
+  const capabilityPayloads = options.capabilityPayloads ??
+    (capabilityFlags === null
+      ? []
+      : [[WPK_FORK_CAPABILITIES_VERSION, capabilityFlags]]);
   return buildWasm({
-    customSections: [{
-      name: WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
-      data: linkedFrameDescriptor(pointerWidth),
-    }],
+    customSections: [
+      ...capabilityPayloads.map((data) => ({
+        name: WPK_FORK_CAPABILITIES_SECTION,
+        data,
+      })),
+      {
+        name: WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
+        data: linkedFrameDescriptor(pointerWidth),
+      },
+    ],
     types,
     funcImports,
     funcTypes: [...forkTypeIndices, 0],
@@ -262,10 +284,20 @@ function completeForkWasm(options: {
         kind: 0 as const,
         index: firstDefinedFunction + index,
       })),
-      {
+      ...(options.includeAbiMarker === false ? [] : [{
         name: "__abi_version",
-        kind: 0,
+        kind: 0 as const,
         index: firstDefinedFunction + forkTypeIndices.length,
+      }]),
+    ],
+    funcBodies: [
+      ...WPK_FORK_REQUIRED_EXPORTS.map((requirement) => ({
+        locals: [0],
+        instructions: requirement.results.length === 1 ? [0x41, 0] : [],
+      })),
+      {
+        locals: [0],
+        instructions: [0x41, ...sleb128_i32(options.abiVersion ?? ABI_VERSION)],
       },
     ],
   });
@@ -512,23 +544,105 @@ describe("wasm artifact policy helpers", () => {
       `missing required ${WPK_FORK_LINKED_FRAME_FORMAT_SECTION} descriptor`,
     );
     expect(failures).toContain(
-      "incomplete ABI 42 linked-frame imports; missing env.__wpk_fork_frame_commit, env.__wpk_fork_frame_next, env.__wpk_fork_frame_reserve",
+      "incomplete ABI 43 linked-frame imports; missing env.__wpk_fork_frame_commit, env.__wpk_fork_frame_next, env.__wpk_fork_frame_reserve",
     );
   });
 
-  it("accepts the complete ABI 42 contract for wasm32 and wasm64", () => {
+  it("accepts the complete ABI 43 contract for wasm32 and wasm64", () => {
     for (const pointerWidth of [4, 8] as const) {
       const wasm = completeForkWasm({ pointerWidth });
       expect(wasmHasCompleteForkInstrumentation(wasm)).toBe(true);
-      expect(describeWasmArtifactPolicyFailures(wasm, { expectedAbi: 12 })).toEqual([]);
+      expect(describeWasmArtifactPolicyFailures(wasm, { expectedAbi: ABI_VERSION })).toEqual([]);
     }
+  });
+
+  it("rejects every malformed or unsafe activation-state capability shape", () => {
+    const cases: Array<{
+      label: string;
+      options: Parameters<typeof completeForkWasm>[0];
+      diagnostic: string;
+    }> = [
+      {
+        label: "missing",
+        options: { capabilityFlags: null },
+        diagnostic: `missing required ${WPK_FORK_CAPABILITIES_SECTION} capability`,
+      },
+      {
+        label: "unsafe flags",
+        options: { capabilityFlags: 0 },
+        diagnostic: "omit required activation-state safety flags",
+      },
+      {
+        label: "short payload",
+        options: {
+          capabilityPayloads: [[WPK_FORK_CAPABILITIES_VERSION]],
+        },
+        diagnostic: "has 1 bytes, expected 2",
+      },
+      {
+        label: "unsupported version",
+        options: {
+          capabilityPayloads: [[
+            WPK_FORK_CAPABILITIES_VERSION + 1,
+            WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+          ]],
+        },
+        diagnostic: "version 2 is unsupported",
+      },
+      {
+        label: "unknown flags",
+        options: {
+          capabilityPayloads: [[
+            WPK_FORK_CAPABILITIES_VERSION,
+            WPK_FORK_CAP_KNOWN_MASK | 0x80,
+          ]],
+        },
+        diagnostic: "has unknown flags",
+      },
+      {
+        label: "duplicate",
+        options: {
+          capabilityPayloads: [
+            [WPK_FORK_CAPABILITIES_VERSION, WPK_FORK_CAP_ACTIVATION_STATE_SAFE],
+            [WPK_FORK_CAPABILITIES_VERSION, WPK_FORK_CAP_ACTIVATION_STATE_SAFE],
+          ],
+        },
+        diagnostic: "sections, expected exactly one",
+      },
+    ];
+
+    for (const { label, options, diagnostic } of cases) {
+      const wasm = completeForkWasm(options);
+      expect(wasmHasCompleteForkInstrumentation(wasm)).toBe(false);
+      expect(
+        describeWasmArtifactPolicyFailures(wasm).join("\n"),
+        label,
+      ).toContain(diagnostic);
+    }
+  });
+
+  it("does not let an ABI 42 artifact masquerade as ABI 43 with a copied capability", () => {
+    const wasm = completeForkWasm({ abiVersion: ABI_VERSION - 1 });
+    expect(describeWasmArtifactPolicyFailures(wasm, {
+      expectedAbi: ABI_VERSION,
+    })).toContain(`ABI ${ABI_VERSION - 1}, expected ${ABI_VERSION}`);
+  });
+
+  it("does not accept a fork capability without an ABI epoch marker", () => {
+    const wasm = completeForkWasm({ includeAbiMarker: false });
+    expect(describeWasmArtifactPolicyFailures(wasm, {
+      expectedAbi: ABI_VERSION,
+    })).toContain(
+      `ABI ${ABI_VERSION} fork artifact is missing __abi_version; ` +
+        "the activation-state capability epoch cannot be verified",
+    );
   });
 
   it("rejects descriptor and module-memory pointer-width drift", () => {
     const wasm = completeForkWasm({ pointerWidth: 8, memoryPointerWidth: 4 });
     expect(wasmHasCompleteForkInstrumentation(wasm)).toBe(false);
     expect(describeWasmArtifactPolicyFailures(wasm)).toContain(
-      "ABI 42 linked-frame descriptor declares an 8-byte pointer but the module memory uses 4-byte addresses",
+      "ABI 43 linked-frame descriptor declares an 8-byte pointer but the module memory uses 4-byte addresses",
     );
   });
 
@@ -536,7 +650,7 @@ describe("wasm artifact policy helpers", () => {
     const wasm = completeForkWasm({ pointerWidth: 8, exportPointerWidth: 4 });
     expect(wasmHasCompleteForkInstrumentation(wasm)).toBe(false);
     expect(describeWasmArtifactPolicyFailures(wasm)).toContain(
-      "ABI 42 wasm-fork-instrument export wpk_fork_abort_begin has the wrong signature; expected (i64) -> ()",
+      "ABI 43 wasm-fork-instrument export wpk_fork_abort_begin has the wrong signature; expected (i64) -> ()",
     );
   });
 
@@ -627,7 +741,7 @@ describe("wasm artifact policy helpers", () => {
       expectedAbi: 12,
       requireForkInstrumentation: false,
       forbidForkInstrumentation: true,
-    })).toContain("contains ABI 42 wasm-fork-instrument metadata, imports, or exports");
+    })).toContain("contains ABI 43 wasm-fork-instrument metadata, imports, or exports");
   });
 });
 

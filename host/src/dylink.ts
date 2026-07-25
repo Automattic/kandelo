@@ -8,9 +8,16 @@
 
 import {
   ABI_VERSION,
+  WPK_FORK_CAPABILITIES_SECTION,
+  WPK_FORK_CAPABILITIES_VERSION,
+  WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+  WPK_FORK_CAP_DYLINK_MAIN,
+  WPK_FORK_CAP_KNOWN_MASK,
+  WPK_FORK_CAP_SIDE_ENTRY,
   WPK_FORK_REQUIRED_EXPORTS,
   WPK_FORK_REQUIRED_IMPORTS,
 } from "./generated/abi";
+import { extractAbiVersion } from "./constants";
 import {
   ContinuationAllocationError,
   invokeForkContinuationBegin,
@@ -34,11 +41,12 @@ export const SIDE_MODULE_FORK_EXPORTS = WPK_FORK_REQUIRED_EXPORTS.map(
   ({ name }) => name,
 );
 
-export const FORK_CAPABILITIES_SECTION = "kandelo.wpk_fork.capabilities";
-export const FORK_CAPABILITIES_VERSION = 1;
-export const FORK_CAP_SIDE_ENTRY = 1 << 0;
-export const FORK_CAP_DYLINK_MAIN = 1 << 1;
-const FORK_CAP_KNOWN_MASK = FORK_CAP_SIDE_ENTRY | FORK_CAP_DYLINK_MAIN;
+export const FORK_CAPABILITIES_SECTION = WPK_FORK_CAPABILITIES_SECTION;
+export const FORK_CAPABILITIES_VERSION = WPK_FORK_CAPABILITIES_VERSION;
+export const FORK_CAP_SIDE_ENTRY = WPK_FORK_CAP_SIDE_ENTRY;
+export const FORK_CAP_DYLINK_MAIN = WPK_FORK_CAP_DYLINK_MAIN;
+export const FORK_CAP_ACTIVATION_STATE_SAFE = WPK_FORK_CAP_ACTIVATION_STATE_SAFE;
+const FORK_CAP_KNOWN_MASK = WPK_FORK_CAP_KNOWN_MASK;
 export const FORK_CAPABILITIES_REQUIRED_ABI = 17;
 
 const WPK_FORK_NORMAL = 0;
@@ -750,6 +758,37 @@ function instantiateSharedLibrary(
       `${name}: incomplete wasm-fork-instrument exports; missing ${missing.join(", ")}`,
     );
   }
+  if (
+    hasCompleteForkInstrumentation &&
+    (
+      !forkCapabilityClaim.present ||
+      (forkCapabilityClaim.flags & FORK_CAP_ACTIVATION_STATE_SAFE) === 0
+    )
+  ) {
+    throw new Error(
+      `${name}: wasm-fork-instrument artifact lacks the ABI 43 ` +
+      "activation-state-safe capability; rebuild the side module",
+    );
+  }
+  if (hasCompleteForkInstrumentation) {
+    const artifactBytes = wasmBytes.buffer.slice(
+      wasmBytes.byteOffset,
+      wasmBytes.byteOffset + wasmBytes.byteLength,
+    ) as ArrayBuffer;
+    const declaredAbi = extractAbiVersion(artifactBytes);
+    if (declaredAbi === null) {
+      throw new Error(
+        `${name}: ABI 43 fork-instrumented side module is missing __abi_version; ` +
+          "the activation-state capability epoch cannot be verified",
+      );
+    }
+    if (declaredAbi !== ABI_VERSION) {
+      throw new Error(
+        `${name}: fork-instrumented side module declares ABI ${declaredAbi}, ` +
+          `but the host requires ABI ${ABI_VERSION}`,
+      );
+    }
+  }
   if (importsFork && !hasCompleteForkInstrumentation) {
     throw new Error(
       `${name}: env.fork requires complete side-module instrumentation; ` +
@@ -766,7 +805,7 @@ function instantiateSharedLibrary(
     throw new Error(`${name}: incomplete linked fork instrumentation imports; rebuild the module`);
   }
   if (importsFork && linkedFrameImportCount !== linkedFrameImportNames.length) {
-    throw new Error(`${name}: env.fork requires ABI 42 linked continuation imports`);
+    throw new Error(`${name}: env.fork requires ABI 43 linked continuation imports`);
   }
   if (claimsSideEntry && !importsFork) {
     throw new Error(`${name}: side-entry capability is present without an env.fork import`);

@@ -49,7 +49,8 @@ kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
   explicitly and coordinate the host implementation in the same ABI epoch.
 - Changing the name, version, encoding, or role semantics of the
   `kandelo.wpk_fork.capabilities` custom section. The host uses these claims to
-  decide whether a main/side-module pair can safely coordinate fork replay.
+  decide whether a main/side-module pair can safely coordinate fork replay and,
+  in ABI 43, whether the artifact satisfies activation-state ownership.
 - Renaming the ABI custom section or the process-expected globals.
 - Changing the meaning of a syscall argument, errno, or blocking
   behavior without changing its signature. **This is not caught
@@ -58,7 +59,11 @@ kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
 The fork-capability section has an explicit ABI transition rule. ABI 16 accepts
 an absent section through the pre-existing five-export fallback, while treating
 a present marker as authoritative. ABI 17 was intentionally skipped; ABI 18
-was the first epoch above 16 and made the role marker mandatory.
+was the first epoch above 16 and made the role marker mandatory. ABI 43 adds
+`FORK_CAP_ACTIVATION_STATE_SAFE` and requires it on every fork-instrumented
+main or side module. An ABI 42 artifact does not become ABI 43-compatible by
+copying the new capability byte: the embedded ABI version and the capability
+contract are validated together.
 
 ABI 26 also makes `kernel_get_process_exit_signal` a required host-adapter
 export. The host uses the query unconditionally to distinguish signal death
@@ -254,6 +259,58 @@ later failure enters `ABORT_UNWINDING`, reconstructs the committed inner
 frames, releases the partial continuation, and returns the errno from the
 original `fork()` call without terminating the parent.
 
+### ABI 43 activation-owned fork replay
+
+ABI 43 closes the remaining dependency on mutable state in the parent Wasm
+instance. A fork child receives copied linear memory but a newly instantiated
+module, globals, tables, exception tags, and host Store. Module-static
+reference tables therefore cannot prove that a replay value survived fork.
+
+Every ABI 43 fork artifact carries the version-1
+`kandelo.wpk_fork.capabilities` section with
+`FORK_CAP_ACTIVATION_STATE_SAFE`. Instrumentation, package guards, Node and
+browser executable resolution, worker launch, pthread launch, and side-module
+loading treat the capability as part of the artifact contract. Missing,
+duplicate, malformed, unknown-version, unknown-bit, or safety-bit-free
+capabilities fail before execution.
+
+The instrumenter also rejects any input that already carries fork control
+exports, linked-frame imports, or fork metadata. This prevents a transformed
+ABI 42 module from being run through the ABI 43 tool merely to acquire the new
+safety claim; package builds must instrument raw linker output.
+
+The frame contract remains version 1 and keeps its existing size and offsets,
+but the formerly reference-stash-related word at frame offset `+12` is now
+reserved zero. The instrumenter no longer creates
+`_wpk_fork_funcref_stash`, `_wpk_fork_externref_stash`, or
+`_wpk_fork_exnref_stash`. Supported statically tagged `Catch` and `CatchRef`
+arms serialize their exact arm and scalar tag operands in each activation's
+linked frame. During rewind the tool executes `throw` with that reconstructed
+tag payload; the original `CatchRef` clause creates a fresh child-instance
+exnref.
+
+Until a transferable representation or explicit versioned reconstruction
+owner exists, the instrumenter rejects fork-reachable reference locals and
+parameters, reference signatures and call carryovers, reference global reads,
+reference operand-stack carryovers, reference-typed catch payloads,
+`CatchAll`/`CatchAllRef`, and unsupported non-nullable, concrete, and Wasm-GC
+references. References outside the conservative fork closure remain legal.
+Mutable reference globals and guest table mutation are module-wide rejection
+boundaries in a fork-using artifact; static element initialization remains
+legal because instantiation recreates it. Dlopen is the explicit table-state
+exception: host replay preserves the exact table base and re-instantiates each
+side module's static element initialization in the child.
+
+This is an incompatible artifact epoch even though the linked-frame descriptor
+version is unchanged. All fork-instrumented programs, side modules, package
+bottles, binary indexes, shell closures, and VFS images must be rebuilt from
+source. Existing C++ modern-EH outputs that retain exnref locals or use
+`CatchAllRef` are truthful rebuild blockers, not candidates for metadata
+relabeling or package-specific bypasses. The current Dash build is likewise
+blocked by a fork-reachable exnref local in `expandstr`, so no ABI 43 shell
+closure or rootfs/VFS image is presently publishable. Broad bottle, index,
+shell, and image publication requires explicit release coordination.
+
 ## The snapshot
 
 `abi/snapshot.json` is generated by `cargo xtask dump-abi` from the
@@ -290,15 +347,17 @@ captures:
   contract.
 - `custom_sections` — names of wasm custom sections that participate in
   the ABI: `wasm-posix-abi` for the per-binary version and
-  `kandelo.wpk_fork.linked_frames` for the linked-continuation layout.
+  `kandelo.wpk_fork.linked_frames` for the linked-continuation layout, and
+  `kandelo.wpk_fork.capabilities` for fork role and activation-safety claims.
 - `process_expected_globals` — globals every user process instance is
   expected to expose for the host to thread through fork/exec.
 - `program_artifact` — requirements checked on instrumented user programs
   before they can be published: the linked-frame descriptor schema, its
   wasm32/wasm64 header sizes, the three transactional frame imports, and
-  the seven `wpk_fork_*` control exports with pointer-width-aware signatures.
-  The descriptor width, function signatures, and the module's single memory
-  address width are validated as one contract.
+  the seven `wpk_fork_*` control exports with pointer-width-aware signatures,
+  plus the capability-section version, known bits, and required safety bit.
+  The descriptor width, function signatures, capability claims, and the
+  module's single memory address width are validated as one contract.
   WHY this is snapshot-owned: a program can otherwise pass kernel ABI checks
   yet fail only when its first `fork()` reaches a newer host.
 - `kernel_exports` — every non-toolchain export in the built kernel

@@ -249,6 +249,34 @@ fn render_ts_module() -> String {
         ));
     }
     out.push_str("] as const;\n");
+    out.push_str(&format!(
+        "export const WPK_FORK_CAPABILITIES_SECTION = {:?} as const;\n",
+        shared::abi::WPK_FORK_CAPABILITIES_SECTION
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_CAPABILITIES_VERSION = {} as const;\n",
+        shared::abi::WPK_FORK_CAPABILITIES_VERSION
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_CAP_SIDE_ENTRY = {} as const;\n",
+        shared::abi::WPK_FORK_CAP_SIDE_ENTRY
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_CAP_DYLINK_MAIN = {} as const;\n",
+        shared::abi::WPK_FORK_CAP_DYLINK_MAIN
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_CAP_ACTIVATION_STATE_SAFE = {} as const;\n",
+        shared::abi::WPK_FORK_CAP_ACTIVATION_STATE_SAFE
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_CAP_KNOWN_MASK = {} as const;\n",
+        shared::abi::WPK_FORK_CAP_KNOWN_MASK
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_CAP_REQUIRED_FLAGS = {} as const;\n",
+        shared::abi::WPK_FORK_CAP_REQUIRED_FLAGS
+    ));
     out.push_str("export const WPK_FORK_REQUIRED_IMPORTS = [\n");
     for requirement in shared::abi::WPK_FORK_REQUIRED_IMPORTS {
         out.push_str(&format!(
@@ -1874,6 +1902,7 @@ fn channel_status_codes() -> Value {
 fn custom_sections() -> Value {
     let mut sections = vec![
         shared::abi::ABI_CUSTOM_SECTION,
+        shared::abi::WPK_FORK_CAPABILITIES_SECTION,
         shared::abi::WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
     ];
     sections.sort();
@@ -1888,13 +1917,15 @@ fn process_expected_globals() -> Value {
 
 fn program_artifact() -> Value {
     use shared::abi::{
-        ProgramArtifactValueType, WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE,
-        WPK_FORK_LINKED_FRAME_FLAG_ABORT_UNWINDING, WPK_FORK_LINKED_FRAME_FLAG_TRANSACTIONAL_NODES,
-        WPK_FORK_LINKED_FRAME_FORMAT_MAGIC, WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
-        WPK_FORK_LINKED_FRAME_FORMAT_VERSION, WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
-        WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT, WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
-        WPK_FORK_REQUIRED_EXPORTS, WPK_FORK_REQUIRED_IMPORTS, wpk_fork_linked_chunk_header_size,
-        wpk_fork_linked_node_header_size,
+        ProgramArtifactValueType, WPK_FORK_CAP_ACTIVATION_STATE_SAFE, WPK_FORK_CAP_DYLINK_MAIN,
+        WPK_FORK_CAP_KNOWN_MASK, WPK_FORK_CAP_REQUIRED_FLAGS, WPK_FORK_CAP_SIDE_ENTRY,
+        WPK_FORK_CAPABILITIES_SECTION, WPK_FORK_CAPABILITIES_VERSION,
+        WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE, WPK_FORK_LINKED_FRAME_FLAG_ABORT_UNWINDING,
+        WPK_FORK_LINKED_FRAME_FLAG_TRANSACTIONAL_NODES, WPK_FORK_LINKED_FRAME_FORMAT_MAGIC,
+        WPK_FORK_LINKED_FRAME_FORMAT_SECTION, WPK_FORK_LINKED_FRAME_FORMAT_VERSION,
+        WPK_FORK_LINKED_FRAME_POINTER_WIDTHS, WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT,
+        WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS, WPK_FORK_REQUIRED_EXPORTS, WPK_FORK_REQUIRED_IMPORTS,
+        wpk_fork_linked_chunk_header_size, wpk_fork_linked_node_header_size,
     };
 
     let value_types = |values: &[ProgramArtifactValueType]| {
@@ -1999,7 +2030,28 @@ fn program_artifact() -> Value {
         json!(WPK_FORK_LINKED_FRAME_FORMAT_VERSION),
     );
 
+    let mut capabilities: JsonMap = BTreeMap::new();
+    capabilities.insert("section".into(), json!(WPK_FORK_CAPABILITIES_SECTION));
+    capabilities.insert("version".into(), json!(WPK_FORK_CAPABILITIES_VERSION));
+    capabilities.insert("known_mask".into(), json!(WPK_FORK_CAP_KNOWN_MASK));
+    capabilities.insert("required_flags".into(), json!(WPK_FORK_CAP_REQUIRED_FLAGS));
+    capabilities.insert(
+        "flags".into(),
+        json!([
+            {"bit": WPK_FORK_CAP_SIDE_ENTRY, "name": "side_entry"},
+            {"bit": WPK_FORK_CAP_DYLINK_MAIN, "name": "dylink_main"},
+            {
+                "bit": WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+                "name": "activation_state_safe"
+            }
+        ]),
+    );
+
     let mut fork: JsonMap = BTreeMap::new();
+    fork.insert(
+        "capabilities".into(),
+        Value::Object(capabilities.into_iter().collect()),
+    );
     fork.insert(
         "linked_frame_descriptor".into(),
         Value::Object(descriptor.into_iter().collect()),
@@ -2533,7 +2585,7 @@ mod tests {
     }
 
     #[test]
-    fn program_artifact_snapshot_captures_complete_abi42_fork_contract() {
+    fn program_artifact_snapshot_captures_complete_abi43_fork_contract() {
         let artifact = program_artifact();
         let fork = &artifact["fork_instrumentation"];
         let descriptor = &fork["linked_frame_descriptor"];
@@ -2545,6 +2597,20 @@ mod tests {
         assert_eq!(descriptor["version"], json!(1));
         assert_eq!(descriptor["descriptor_size"], json!(24));
         assert_eq!(descriptor["required_flags"], json!(3));
+        assert_eq!(
+            fork["capabilities"],
+            json!({
+                "section": "kandelo.wpk_fork.capabilities",
+                "version": 1,
+                "known_mask": 7,
+                "required_flags": 4,
+                "flags": [
+                    {"bit": 1, "name": "side_entry"},
+                    {"bit": 2, "name": "dylink_main"},
+                    {"bit": 4, "name": "activation_state_safe"}
+                ]
+            })
+        );
         assert_eq!(
             descriptor["pointer_widths"],
             json!([
@@ -2581,11 +2647,16 @@ mod tests {
 
         assert_eq!(
             custom_sections(),
-            json!(["kandelo.wpk_fork.linked_frames", "wasm-posix-abi"])
+            json!([
+                "kandelo.wpk_fork.capabilities",
+                "kandelo.wpk_fork.linked_frames",
+                "wasm-posix-abi"
+            ])
         );
         let rendered = render_ts_module();
         for expected in [
             "export const WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE = 24 as const;",
+            "export const WPK_FORK_CAP_ACTIVATION_STATE_SAFE = 4 as const;",
             "name: \"__wpk_fork_frame_reserve\", params: [\"ptr\"], results: [\"ptr\"]",
             "name: \"wpk_fork_abort_end\", params: [], results: []",
         ] {

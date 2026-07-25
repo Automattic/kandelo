@@ -190,79 +190,65 @@ describe("fork_instrument_coverage / D-* dispatch", () => {
 // ---------------------------------------------------------------------------
 
 describe("fork_instrument_coverage / C-* catch-handler resume", () => {
-  it("C-01 try { fork() } catch (int) — no throw, fork in try body", async () => {
+  // LLVM 21 currently adds exnref locals and/or untagged cleanup catches to
+  // these C++ functions. ABI 43 rejects those raw modules during
+  // instrumentation; the supported tagged Catch/CatchRef surface is exercised
+  // in catch-ref-fresh-worker.test.ts and plain-catch-payload-lifetime.test.ts.
+  it.skip("C-01 compiler EH output requires transferable cleanup state", async () => {
     await runFixture("programs/c_01_fork_in_try_no_throw.wasm", {
       contains: ["IN_TRY", "PRE_FORK", "CHILD: ok", "PASS: C-01"],
     });
   });
 
-  // C-02: B1 plain catch, single arm — fork inside catch handler.
-  // The B1-stages-1+2 machinery (Phase 6 rewind-throw stub + capture
-  // block + exnref stash) handles this correctly under modern wasm-EH
-  // lowering. Was `it.fails` pre-2026-05-14 because the SDK emitted
-  // legacy `try`/`catch`; the B1 machinery is structured for modern
-  // `try_table`/`catch_ref`/`throw_ref` only. Commit 9's SDK flip
-  // (with the empirical 2026-05-14 follow-up adding
-  // `-wasm-use-legacy-eh=false` explicitly) made this case actually
-  // exercise the existing modern-EH path.
-  it("C-02 fork inside single-arm plain catch (B1)", async () => {
+  // C-02..C-07 retain their source fixtures as compiler-policy probes. The
+  // build requires a precise instrumentation rejection and keeps the raw
+  // modules only under test-fixtures/unsupported-abi43.
+  it.skip("C-02 compiler EH output requires transferable cleanup state", async () => {
     await runFixture("programs/c_02_fork_in_catch.wasm", {
       contains: ["THROWING", "CAUGHT: 7", "PRE_FORK", "CHILD: ok", "PASS: C-02"],
     });
   });
 
-  // C-03: multi-arm plain-catch try_tables. The B1 stage 2 machinery's
-  // per-arm capture-block emission handles multi-arm under modern EH.
-  it("C-03 fork in multi-arm plain catch", async () => {
+  it.skip("C-03 compiler EH output requires transferable cleanup state", async () => {
     await runFixture("programs/c_03_fork_in_multi_arm_catch.wasm", {
       contains: ["THROWING", "CAUGHT_STR: x", "PRE_FORK", "CHILD: ok", "PASS: C-03"],
     });
   });
 
-  // C-04: throw originates outside the instrumented region. Switch-
-  // dispatch's body-skip-on-REWIND construction means the throw
-  // doesn't re-fire on REWIND — no gating needed.
-  it("C-04 fork in catch where throw originates outside instrumented region (B2)", async () => {
+  it.skip("C-04 compiler EH output requires transferable cleanup state", async () => {
     await runFixture("programs/c_04_fork_in_catch_external_throw.wasm", {
       contains: ["CALLING_HELPER", "IN_HELPER", "CAUGHT: 99", "PRE_FORK", "CHILD: ok", "PASS: C-04"],
     });
   });
 
-  // C-05..C-07: modern wasm-EH variants. Post-commit-9 + 2026-05-14
-  // follow-up, ALL C++ programs lower via modern EH, so these are
-  // effectively duplicates of C-02 / C-03 / multi-typed-catch under
-  // the unified lowering — but kept distinct in case future toolchain
-  // versions reintroduce divergence.
-  it("C-05 modern EH single-clause typed catch + fork", async () => {
+  it.skip("C-05 compiler EH output requires transferable cleanup state", async () => {
     await runFixture("programs/c_05_fork_modern_eh_single.wasm", {
       contains: ["THROWING", "CAUGHT: 1", "PRE_FORK", "CHILD: ok", "PASS: C-05"],
     });
   });
 
-  it("C-06 modern EH multi-target *_ref try_table + fork", async () => {
+  it.skip("C-06 compiler EH output requires transferable cleanup state", async () => {
     await runFixture("programs/c_06_fork_modern_eh_multi_ref.wasm", {
       contains: ["THROWING", "CAUGHT_DOUBLE: 3.14", "PRE_FORK", "CHILD: ok", "PASS: C-06"],
     });
   });
 
-  it("C-07 modern EH multi-arm plain catches + fork", async () => {
+  it.skip("C-07 compiler EH output requires transferable cleanup state", async () => {
     await runFixture("programs/c_07_fork_modern_eh_multi_plain.wasm", {
       contains: ["THROWING", "CAUGHT_LONG: 1234567", "PRE_FORK", "CHILD: ok", "PASS: C-07"],
     });
   });
 
-  // C-08, C-09 — A4 funcref/externref catch operands. No C-source
-  // surface; covered by `crates/fork-instrument/tests/coverage_wat.rs`
-  // which verifies fork-instrument doesn't panic on these patterns.
-  // Full A4 implementation (per-arm aux-table spilling for ref-typed
-  // catch operands) is future work — today the affected function is
-  // carved out of the fork-path set via b2_carveout.
+  // C-08, C-09 — funcref/externref catch operands. There is no C-source
+  // surface, so `crates/fork-instrument/tests/coverage_wat.rs` verifies the
+  // ABI 43 boundary directly: a reference payload in the fork closure is
+  // rejected during instrumentation instead of being placed in
+  // module-instance scratch state.
   it.skip("C-08 plain catch arm with funcref operand [tested via crates/fork-instrument/tests/coverage_wat.rs]", () => {});
   it.skip("C-09 plain catch arm with externref operand [tested via crates/fork-instrument/tests/coverage_wat.rs]", () => {});
 
-  // C-10: fork in BOTH try body and catch handler. Combines D-06 with
-  // C-02. Passes under modern EH.
-  it("C-10 fork in both try body and catch handler", async () => {
+  // C-10/C-11 are part of the same compiler-output rejection boundary.
+  it.skip("C-10 compiler EH output requires transferable cleanup state", async () => {
     await runFixture("programs/c_10_fork_in_try_and_catch.wasm", {
       contains: [
         "IN_TRY", "PRE_FORK_TRY", "CHILD_TRY: ok",
@@ -272,10 +258,7 @@ describe("fork_instrument_coverage / C-* catch-handler resume", () => {
     });
   });
 
-  // C-11: post-catch fork (catch frame fully popped). Repro of the
-  // SpiderMonkey spike test (b). Closed by commit 9 + follow-up
-  // alongside C-02 — same root cause (modern-EH-only B1 machinery).
-  it("C-11 fork after fully-popped catch frame (spike test b)", async () => {
+  it.skip("C-11 compiler EH output requires transferable cleanup state", async () => {
     await runFixture("programs/c_11_post_catch_fork.wasm", {
       contains: ["CAUGHT: 42", "PRE_FORK", "CHILD: ok", "PASS: C-11"],
     });
@@ -321,10 +304,8 @@ describe("fork_instrument_coverage / S-* side effects during rewind", () => {
   it.skip("S-06 table.grow before fork [tested via crates/fork-instrument/tests/coverage_wat.rs]", () => {});
   it.skip("S-07 non-nullable funcref direct-call result before fork [tested via crates/fork-instrument/tests/coverage_wat.rs]", () => {});
 
-  // S-08: throw from outside instrumented region, caught inside,
-  // fork in catch. Sibling of C-04. Closed by commit 9 + 2026-05-14
-  // follow-up (explicit modern EH).
-  it("S-08 throw from outside instrumented region, fork in catch (B2)", async () => {
+  // S-08's current LLVM output retains an exnref local across the fork path.
+  it.skip("S-08 compiler EH output requires transferable cleanup state", async () => {
     await runFixture("programs/s_08_external_throw_fork_in_catch.wasm", {
       contains: ["ENTER_OUTER", "ENTER_INNER", "THROWING", "CAUGHT: 73", "PRE_FORK", "CHILD: ok", "PASS: S-08"],
     });
@@ -379,10 +360,9 @@ describe("fork_instrument_coverage / K-* callback fork roots", () => {
     });
   });
 
-  // K-06: fork() from a C++ destructor. Unusual but legal RAII
-  // pattern. The dtor is called as part of stack unwinding when
-  // the object goes out of scope; fork() inside it must work.
-  it("K-06 fork from C++ destructor (RAII)", async () => {
+  // K-06 lowers destructor cleanup to an untagged CatchAll. ABI 43 rejects it
+  // until that cleanup state has a deterministic child reconstruction recipe.
+  it.skip("K-06 compiler CatchAll cleanup is not reconstructible", async () => {
     await runFixture("programs/k_06_fork_from_dtor.wasm", {
       contains: ["IN_SCOPE", "IN_DTOR", "PRE_FORK", "CHILD: ok", "PARENT: child=", "PASS: K-06"],
     });
@@ -480,7 +460,7 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
 
   // P-10: 4,096 live recursive activations require more frame payload than
   // ABI 41's retired 60 KiB contiguous reserve. This is the end-to-end guard
-  // that the ABI 42 host grows a linked continuation and replays it safely.
+  // that the current host grows a linked continuation and replays it safely.
   it("P-10 continuation grows beyond the retired fixed reserve", async () => {
     await runFixture("programs/p_10_deep_linked_continuation.wasm", {
       contains: ["PRE_DEEP_FORK", "DEEP_CHILD: ok", "DEEP_PARENT: child=", "PASS: P-10"],

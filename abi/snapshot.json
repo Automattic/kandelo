@@ -1,5 +1,5 @@
 {
-  "abi_version": 42,
+  "abi_version": 43,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -88,6 +88,7 @@
     }
   ],
   "custom_sections": [
+    "kandelo.wpk_fork.capabilities",
     "kandelo.wpk_fork.linked_frames",
     "wasm-posix-abi"
   ],
@@ -114,7 +115,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 42,
+      "abi_version": 43,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -3217,6 +3218,26 @@
   },
   "program_artifact": {
     "fork_instrumentation": {
+      "capabilities": {
+        "flags": [
+          {
+            "bit": 1,
+            "name": "side_entry"
+          },
+          {
+            "bit": 2,
+            "name": "dylink_main"
+          },
+          {
+            "bit": 4,
+            "name": "activation_state_safe"
+          }
+        ],
+        "known_mask": 7,
+        "required_flags": 4,
+        "section": "kandelo.wpk_fork.capabilities",
+        "version": 1
+      },
       "linked_frame_descriptor": {
         "alignment": 8,
         "descriptor_size": 24,

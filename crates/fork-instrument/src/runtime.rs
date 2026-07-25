@@ -9,7 +9,7 @@
 //!   `wpk_fork_unwind_end`, `wpk_fork_rewind_begin`,
 //!   `wpk_fork_rewind_end`, `wpk_fork_abort_begin`,
 //!   `wpk_fork_abort_end`, and `wpk_fork_state`.
-//! - In the ABI 42 linked format, three host imports that reserve, commit, and
+//! - In the ABI 42+ linked format, three host imports that reserve, commit, and
 //!   replay variable-sized frame nodes.
 //!
 //! ## Phase 4e additions: saved-globals area
@@ -22,8 +22,9 @@
 //! excluded: they are set explicitly by each begin function to the
 //! known transition values.
 //!
-//! Ref-typed mutable globals (funcref/externref/exnref) require
-//! auxiliary tables (Phase 4f); this phase skips them.
+//! Mutable reference globals belong to one module instance and cannot be
+//! represented in the linked continuation. Fork-capable modules reject them
+//! before this runtime is injected.
 //!
 //! Module-prefix layout (all offsets byte-exact; `P` is pointer width —
 //! 4 bytes on wasm32 and 8 on wasm64):
@@ -190,7 +191,13 @@ fn inject_runtime_with_frame_storage(module: &mut Module, linked_frames: bool) -
             continue;
         }
         if matches!(g.ty, ValType::Ref(_)) {
-            // Ref-typed globals need auxiliary tables (Phase 4f).
+            assert!(
+                !linked_frames,
+                "linked fork runtime requires mutable reference globals to be \
+                 rejected before injection"
+            );
+            // A no-seed runtime never replays; unrelated reference state is
+            // legal in that inert module.
             continue;
         }
         if matches!(g.kind, walrus::GlobalKind::Import(_)) {

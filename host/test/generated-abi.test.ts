@@ -61,6 +61,13 @@ import {
   STRUCT_SIZE_WASM_STATFS,
   STRUCT_SIZE_WASM_TIMESPEC,
   SYSCALL_ARGS,
+  WPK_FORK_CAPABILITIES_SECTION,
+  WPK_FORK_CAPABILITIES_VERSION,
+  WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+  WPK_FORK_CAP_DYLINK_MAIN,
+  WPK_FORK_CAP_KNOWN_MASK,
+  WPK_FORK_CAP_REQUIRED_FLAGS,
+  WPK_FORK_CAP_SIDE_ENTRY,
   WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE,
   WPK_FORK_LINKED_FRAME_FORMAT_MAGIC,
   WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
@@ -112,7 +119,20 @@ function hostAdapterManifestField(name: string): { offset: number; size: number 
 describe("generated host ABI bindings", () => {
   it("match the complete fork-artifact contract", () => {
     const fork = snapshot.program_artifact.fork_instrumentation;
+    const capabilities = fork.capabilities;
     const descriptor = fork.linked_frame_descriptor;
+    expect(WPK_FORK_CAPABILITIES_SECTION).toBe(capabilities.section);
+    expect(WPK_FORK_CAPABILITIES_VERSION).toBe(capabilities.version);
+    expect(WPK_FORK_CAP_KNOWN_MASK).toBe(capabilities.known_mask);
+    expect(WPK_FORK_CAP_REQUIRED_FLAGS).toBe(capabilities.required_flags);
+    expect([
+      { bit: WPK_FORK_CAP_SIDE_ENTRY, name: "side_entry" },
+      { bit: WPK_FORK_CAP_DYLINK_MAIN, name: "dylink_main" },
+      {
+        bit: WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+        name: "activation_state_safe",
+      },
+    ]).toEqual(capabilities.flags);
     expect(WPK_FORK_LINKED_FRAME_FORMAT_SECTION).toBe(descriptor.section);
     expect(WPK_FORK_LINKED_FRAME_FORMAT_VERSION).toBe(descriptor.version);
     expect(WPK_FORK_LINKED_FRAME_FORMAT_MAGIC).toEqual(descriptor.magic_bytes);

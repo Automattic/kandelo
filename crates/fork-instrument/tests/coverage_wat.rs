@@ -1,33 +1,20 @@
 //! WAT-fixture coverage for fork-instrument patterns that don't have a
 //! direct C/C++ source surface:
 //!
-//! - **S-04..S-07**: side-effect operations (table.fill, table.copy,
-//!   table.grow, non-nullable funcref Call result) before fork.
-//!   Switch-dispatch's body-skip-on-REWIND construction means these
-//!   ops run exactly once on NORMAL; the test verifies fork-instrument
-//!   produces validating wasm for these shapes.
-//! - **F-03/F-04**: wasm-GC accepted limits. fork-instrument must
-//!   panic with a clear error rather than silently miscompile.
-//! - **C-08/C-09**: ref-typed catch operands. Currently A4
-//!   territory — fork-instrument either supports via aux-table
-//!   spilling (future) or panics with a clear error today.
+//! - **S-04..S-06**: mutable table operations are rejected because a
+//!   fresh child instance cannot inherit the mutated table.
+//! - **S-07**: a reference-typed call result in the fork closure is
+//!   rejected rather than being carried through module-instance state.
+//! - **F-03/F-04**: wasm-GC references are rejected with a precise
+//!   diagnostic rather than silently miscompiled.
+//! - **C-08/C-09**: ref-typed catch operands are rejected because only
+//!   scalar tagged-catch payloads have a reconstruction recipe.
 //!
 //! These complement `host/test/fork-instrument-coverage.test.ts`
 //! by covering patterns whose validation can be done at the
 //! fork-instrument tool level without requiring a runnable program.
 
 use fork_instrument::{Options, instrument};
-
-fn assert_instruments_and_validates(wat: &str, label: &str) {
-    let input = wat::parse_str(wat).unwrap_or_else(|e| panic!("{label}: wat parse: {e}"));
-    let output = instrument(&input, &Options::default())
-        .unwrap_or_else(|e| panic!("{label}: instrument: {e}"));
-    let mut validator =
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::default());
-    validator
-        .validate_all(&output)
-        .unwrap_or_else(|e| panic!("{label}: wasmparser validation: {e}"));
-}
 
 fn assert_instrument_rejects(wat: &str, label: &str, expected: &[&str]) {
     let input = wat::parse_str(wat).unwrap_or_else(|e| panic!("{label}: wat parse: {e}"));
@@ -50,15 +37,12 @@ fn assert_instrument_rejects(wat: &str, label: &str, expected: &[&str]) {
 }
 
 // ---------------------------------------------------------------------
-// S-04..S-07: side effects before fork
+// S-04..S-07: non-reconstructible state before fork
 // ---------------------------------------------------------------------
 //
-// Switch-dispatch's body-skip-on-REWIND construction (sub-commits
-// 2.4c/2.5c/2.6c) means the body chunks BEFORE the chosen POST_K
-// never re-execute on REWIND — non-fork-path calls and side-effect
-// ops in those chunks run exactly once on NORMAL. These tests
-// verify fork-instrument produces validating wasm for each
-// side-effect op pattern.
+// Skipping an operation during rewind is not enough: the fork child starts
+// with a freshly instantiated table. These shapes must therefore fail during
+// instrumentation unless a future owner provides deterministic reconstruction.
 
 #[test]
 fn s_04_table_fill_before_fork() {
@@ -77,7 +61,11 @@ fn s_04_table_fill_before_fork() {
             (drop (call $fork))
             (i32.const 0)))
     "#;
-    assert_instruments_and_validates(wat, "S-04 table.fill");
+    assert_instrument_rejects(
+        wat,
+        "S-04 table.fill",
+        &["table.fill", "no fresh-instance reconstruction owner"],
+    );
 }
 
 #[test]
@@ -97,7 +85,11 @@ fn s_05_table_copy_before_fork() {
             (drop (call $fork))
             (i32.const 0)))
     "#;
-    assert_instruments_and_validates(wat, "S-05 table.copy");
+    assert_instrument_rejects(
+        wat,
+        "S-05 table.copy",
+        &["table.copy", "no fresh-instance reconstruction owner"],
+    );
 }
 
 #[test]
@@ -117,28 +109,17 @@ fn s_06_table_grow_before_fork() {
             (drop (call $fork))
             (i32.const 0)))
     "#;
-    assert_instruments_and_validates(wat, "S-06 table.grow");
+    assert_instrument_rejects(
+        wat,
+        "S-06 table.grow",
+        &["table.grow", "no fresh-instance reconstruction owner"],
+    );
 }
 
 #[test]
 fn s_07_non_nullable_funcref_call_result_before_fork() {
-    // S-07 originally targets the case where a direct call returns
-    // a non-nullable Ref and that result is consumed AFTER fork
-    // (the result would need to be saved across the fork boundary,
-    // but ref-typed values can't be stored in scalar frame slots).
-    //
-    // For switch-dispatch's body-skip path, the call's result lives
-    // in the chunk BEFORE the fork; on REWIND that chunk is skipped
-    // and the result is never produced. As long as no instruction
-    // between the call and fork consumes the ref, this validates.
-    //
-    // Today fork-instrument REJECTS fork-path functions with ref-
-    // typed argument types via a panic ("ref-typed argument
-    // ... needs aux-table spilling, which the MVP switch-dispatch
-    // transform does not yet support"). To exercise this case
-    // cleanly we use a non-nullable funcref CALLED-RESULT (not
-    // arg). The non-nullable funcref result of a direct call is
-    // dropped immediately so no spilling is needed.
+    // Even when immediately dropped, a reference-typed call is not accepted in
+    // the fork closure until the analysis can prove it is never a carryover.
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -157,17 +138,24 @@ fn s_07_non_nullable_funcref_call_result_before_fork() {
             (drop (call $fork))
             (i32.const 0)))
     "#;
-    assert_instruments_and_validates(wat, "S-07 non-nullable funcref call result");
+    assert_instrument_rejects(
+        wat,
+        "S-07 non-nullable funcref call result",
+        &[
+            "calls a reference-typed signature",
+            "cannot be carried through replay",
+        ],
+    );
 }
 
 // ---------------------------------------------------------------------
-// F-03 / F-04: wasm-GC accepted limits — must panic loudly
+// F-03 / F-04: wasm-GC accepted limits — must reject loudly
 // ---------------------------------------------------------------------
 //
 // Per docs/fork-instrumentation.md §Not guaranteed, abstract and
 // concrete wasm-GC reference types on the fork path are explicitly
-// out of scope. fork-instrument must reject them at the
-// `classify_ref` step rather than silently miscompile.
+// out of scope. fork-instrument must reject them before rewriting rather than
+// silently miscompile.
 
 #[test]
 fn f_03_anyref_on_fork_path_rejects_with_diagnostic() {
@@ -185,7 +173,15 @@ fn f_03_anyref_on_fork_path_rejects_with_diagnostic() {
             drop
             (i32.const 0)))
     "#;
-    assert_instrument_rejects(wat, "F-03 anyref", &["fork-instrument 4f", "not yet supported"]);
+    assert_instrument_rejects(
+        wat,
+        "F-03 anyref",
+        &[
+            "fork-reachable function `main`",
+            "reference local/parameter",
+            "reference activations are not transferable",
+        ],
+    );
 }
 
 #[test]
@@ -209,24 +205,27 @@ fn f_04_struct_ref_on_fork_path_rejects_with_diagnostic() {
             drop
             (i32.const 0)))
     "#;
-    assert_instrument_rejects(wat, "F-04 struct ref", &["fork-instrument 4f", "not yet supported"]);
+    assert_instrument_rejects(
+        wat,
+        "F-04 struct ref",
+        &[
+            "fork-reachable function `main`",
+            "reference local/parameter",
+            "Concrete",
+        ],
+    );
 }
 
 // ---------------------------------------------------------------------
-// C-08 / C-09: ref-typed catch operands (A4 territory)
+// C-08 / C-09: ref-typed catch operands
 // ---------------------------------------------------------------------
 //
-// Per the unsupported-cases review doc, a function whose plain-catch
-// arms carry ref-typed operands (funcref / externref) is excluded from
-// plain-catch replay support via `PlainCatchPlan::b2_carveout`. The
-// function can still be instrumented for other fork sites; a fork reached
-// from the affected handler remains explicitly unsupported. A future A4
-// implementation would extend per-arm auxiliary storage to support these
-// operands. The current coverage proves the tool accepts the Wasm shape
-// without trying to serialize references as scalars.
+// CatchRef reconstruction supports statically tagged scalar payloads. A tag
+// payload containing a reference cannot cross the fresh-instance boundary and
+// must be rejected before instrumentation.
 
 #[test]
-fn c_08_funcref_catch_operand_does_not_panic() {
+fn c_08_funcref_catch_operand_is_rejected() {
     // Try_table with a `catch` clause whose tag has a funcref
     // operand. Since the wat crate may not parse arbitrary tag
     // signatures with ref types, this test gracefully skips on
@@ -246,10 +245,14 @@ fn c_08_funcref_catch_operand_does_not_panic() {
     "#;
     match wat::parse_str(wat) {
         Ok(input) => {
-            // Should NOT panic. The instrumenter excludes this function
-            // from plain-catch replay without serializing the reference.
-            let _ = instrument(&input, &Options::default())
-                .expect("fork-instrument should not error on funcref catch arm");
+            let error = instrument(&input, &Options::default())
+                .expect_err("fork-instrument should reject a funcref catch payload");
+            let message = error.to_string();
+            assert!(
+                message.contains("reference-typed catch payload"),
+                "{message}"
+            );
+            assert!(message.contains("Abstract(Func)"), "{message}");
         }
         Err(e) => {
             eprintln!("skip: wat crate did not parse funcref tag: {e}");
@@ -258,7 +261,7 @@ fn c_08_funcref_catch_operand_does_not_panic() {
 }
 
 #[test]
-fn c_09_externref_catch_operand_does_not_panic() {
+fn c_09_externref_catch_operand_is_rejected() {
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -274,8 +277,14 @@ fn c_09_externref_catch_operand_does_not_panic() {
     "#;
     match wat::parse_str(wat) {
         Ok(input) => {
-            let _ = instrument(&input, &Options::default())
-                .expect("fork-instrument should not error on externref catch arm");
+            let error = instrument(&input, &Options::default())
+                .expect_err("fork-instrument should reject an externref catch payload");
+            let message = error.to_string();
+            assert!(
+                message.contains("reference-typed catch payload"),
+                "{message}"
+            );
+            assert!(message.contains("Abstract(Extern)"), "{message}");
         }
         Err(e) => {
             eprintln!("skip: wat crate did not parse externref tag: {e}");

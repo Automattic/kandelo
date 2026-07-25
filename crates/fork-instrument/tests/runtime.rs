@@ -15,11 +15,12 @@ use fork_instrument::linked_frames::{
     FrameFormatDescriptor, LINKED_FRAME_FORMAT_SECTION, PointerWidth,
 };
 use fork_instrument::runtime::names;
-use fork_instrument::{
-    FORK_CAP_DYLINK_MAIN, FORK_CAP_SIDE_ENTRY, FORK_CAPABILITIES_SECTION,
-    FORK_CAPABILITIES_VERSION, Options, instrument,
-};
+use fork_instrument::{Options, instrument};
 use walrus::{ExportItem, Module, ValType};
+use wasm_posix_shared::abi::{
+    WPK_FORK_CAP_ACTIVATION_STATE_SAFE, WPK_FORK_CAP_DYLINK_MAIN, WPK_FORK_CAP_SIDE_ENTRY,
+    WPK_FORK_CAPABILITIES_SECTION, WPK_FORK_CAPABILITIES_VERSION,
+};
 use wasmparser::{Parser, Payload};
 
 fn instrument_wat(wat_src: &str) -> Vec<u8> {
@@ -37,7 +38,7 @@ fn fork_capabilities(bytes: &[u8]) -> Vec<Vec<u8>> {
     Parser::new(0)
         .parse_all(bytes)
         .filter_map(|payload| match payload.expect("parse payload") {
-            Payload::CustomSection(section) if section.name() == FORK_CAPABILITIES_SECTION => {
+            Payload::CustomSection(section) if section.name() == WPK_FORK_CAPABILITIES_SECTION => {
                 Some(section.data().to_vec())
             }
             _ => None,
@@ -73,6 +74,16 @@ const EMPTY_MODULE_WITH_FORK: &str = r#"
 fn instrumented_module_validates() {
     let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK);
     validate(&bytes);
+}
+
+#[test]
+fn preinstrumented_artifact_cannot_be_restamped_as_activation_safe() {
+    let once = instrument_wat(EMPTY_MODULE_WITH_FORK);
+    let error = instrument(&once, &Options::default())
+        .expect_err("an existing fork transform must not be restamped");
+    let message = error.to_string();
+    assert!(message.contains("input already contains wasm-fork-instrument"), "{message}");
+    assert!(message.contains("raw linker output"), "{message}");
 }
 
 #[test]
@@ -213,7 +224,10 @@ fn marks_dlopen_main_indirect_boundary_separately() {
     let output = instrument_wat(wat);
     assert_eq!(
         fork_capabilities(&output),
-        vec![vec![FORK_CAPABILITIES_VERSION, FORK_CAP_DYLINK_MAIN]],
+        vec![vec![
+            WPK_FORK_CAPABILITIES_VERSION,
+            WPK_FORK_CAP_DYLINK_MAIN | WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+        ]],
     );
 }
 
@@ -237,7 +251,10 @@ fn marks_env_fork_side_entry_separately() {
     .expect("instrument side");
     assert_eq!(
         fork_capabilities(&output),
-        vec![vec![FORK_CAPABILITIES_VERSION, FORK_CAP_SIDE_ENTRY]],
+        vec![vec![
+            WPK_FORK_CAPABILITIES_VERSION,
+            WPK_FORK_CAP_SIDE_ENTRY | WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+        ]],
     );
 }
 
@@ -246,7 +263,10 @@ fn generic_runtime_exports_do_not_claim_side_or_dylink_coverage() {
     let output = instrument_wat(EMPTY_MODULE_WITH_FORK);
     assert_eq!(
         fork_capabilities(&output),
-        vec![vec![FORK_CAPABILITIES_VERSION, 0]],
+        vec![vec![
+            WPK_FORK_CAPABILITIES_VERSION,
+            WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+        ]],
     );
 }
 
@@ -496,8 +516,9 @@ fn wasm64_saved_globals_use_16_byte_header() {
 }
 
 #[test]
-fn ref_typed_mutable_globals_are_skipped_in_4e() {
-    // Phase 4e handles scalar globals only; ref-typed ones await 4f.
+fn inert_no_seed_runtime_does_not_snapshot_reference_globals() {
+    // The inert runtime never replays. Linked fork-capable artifacts reject
+    // mutable reference globals before runtime injection.
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -509,7 +530,7 @@ fn ref_typed_mutable_globals_are_skipped_in_4e() {
     let mut module = Module::from_buffer(&bytes).unwrap();
     let runtime = inject_runtime(&mut module);
 
-    // Only the i32 scalar should have been picked up.
+    // Only the scalar is part of the no-seed runtime prefix.
     assert_eq!(runtime.saved_globals.len(), 1);
     assert_eq!(runtime.saved_globals[0].ty, walrus::ValType::I32);
 }

@@ -1,4 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBinary } from "../../../host/src/binary-resolver";
@@ -11,6 +13,14 @@ const browserKernelModulePath = resolve(
 const memoryFsModulePath = resolve(
   __dirname,
   "../../../host/src/vfs/memory-fs.ts",
+);
+const catchRefFixtureSource = resolve(
+  __dirname,
+  "../../../host/test/fixtures/catch-ref-fresh-worker.wat",
+);
+const forkInstrumenterPath = resolve(
+  __dirname,
+  "../../../tools/bin/wasm-fork-instrument",
 );
 
 interface BrowserFixtureResult {
@@ -162,4 +172,48 @@ test("Chromium preserves the parent across root and later continuation ENOMEM", 
   expect(result.stdout).toContain("PASS: P-11");
   expect(result.stderr).toBe("");
   expect(result.diagnostics).toEqual([]);
+});
+
+test("Chromium reconstructs CatchRef state in a fresh child worker", async ({
+  page,
+  baseURL,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "the aggregate browser gate uses Chromium");
+  test.setTimeout(180_000);
+  expect(baseURL).toBeTruthy();
+
+  const workDir = mkdtempSync(
+    // Vite deliberately refuses to serve arbitrary host temporary paths.
+    // Keep this generated fixture under the checked-out test tree so the
+    // browser receives bytes from this exact worktree's allow-listed root.
+    resolve(__dirname, ".catch-ref-fresh-worker-"),
+  );
+  try {
+    const rawPath = resolve(workDir, "catch-ref-fresh-worker.raw.wasm");
+    const programPath = resolve(workDir, "catch-ref-fresh-worker.wasm");
+    execFileSync("wat2wasm", [
+      "--enable-exceptions",
+      "--enable-threads",
+      catchRefFixtureSource,
+      "-o",
+      rawPath,
+    ]);
+    execFileSync(forkInstrumenterPath, [rawPath, "-o", programPath]);
+
+    // The parent waits for the child, whose exit 91 means CatchRef payload
+    // reconstruction failed after the browser worker instantiated a fresh
+    // module. The parent reports that wait failure as exit 92.
+    const result = await runBrowserFixture(
+      page,
+      baseURL!,
+      programPath,
+      "catch-ref-fresh-worker",
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.diagnostics).toEqual([]);
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
 });
