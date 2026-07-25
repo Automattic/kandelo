@@ -534,8 +534,14 @@ caller now take.
    &pid_out, 0)`. Wire format documented in
    `docs/plans/2026-05-04-non-forking-posix-spawn-design.md` Section 1.
 2. Host (`handleSpawn` in `kernel-worker.ts`) reads the blob from
-   caller memory, copies it to kernel scratch, and calls
-   `kernel_spawn_process(parent_pid, caller_tid, blob_ptr, blob_len)`.
+   caller memory, validates argv + envp against the same 4 MiB `ARG_MAX`
+   contract as `execve`, copies it to bounded kernel-owned scratch, and calls
+   `kernel_spawn_process(parent_pid, caller_tid, blob_ptr, blob_len)`. Ordinary
+   blobs reuse the channel-sized syscall scratch. A blob above that size
+   lazily allocates one whole-spawn buffer and reuses it for the kernel
+   lifetime. Keeping both paths kernel-owned prevents a large environment or
+   file-action list from overwriting adjacent Rust heap state; the explicit
+   whole-blob ceiling also bounds data that `ARG_MAX` does not count.
 3. Kernel parses the blob (`crates/kernel/src/spawn.rs::parse_blob` —
    the trust boundary; bails with EINVAL on any malformed offset), validates
    `caller_tid` as a live task belonging to the parent, and calls

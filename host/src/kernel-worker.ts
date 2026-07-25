@@ -213,6 +213,25 @@ const EXEC_METADATA_MAX_BYTES = 4 * 1024 * 1024;
 const EXEC_PATH_MAX_BYTES = 4096;
 const PROCESS_METADATA_ARGV = 0;
 const PROCESS_METADATA_ENVIRONMENT = 1;
+const SPAWN_HEADER_BYTES = 40;
+const SPAWN_ACTION_RECORD_BYTES = 28;
+const SPAWN_MAX_ARGV = 4096;
+const SPAWN_MAX_ENVP = 4096;
+const SPAWN_MAX_ACTIONS = 1024;
+
+/**
+ * Largest complete SYS_SPAWN wire blob accepted by the host.
+ *
+ * argv + envp retain the public 4 MiB ARG_MAX contract. The remaining room
+ * is an aggregate file-action budget equivalent to the parser's 1,024-action
+ * ceiling with one PATH_MAX-sized path per action. The host needs an explicit
+ * whole-blob bound because this representation also carries file actions,
+ * which ARG_MAX itself does not count.
+ */
+export const SPAWN_BLOB_MAX_BYTES =
+  EXEC_METADATA_MAX_BYTES
+  + SPAWN_HEADER_BYTES
+  + SPAWN_MAX_ACTIONS * (SPAWN_ACTION_RECORD_BYTES + EXEC_PATH_MAX_BYTES);
 
 /** Syscall numbers for sleep/delay */
 const SYS_NANOSLEEP = ABI_SYSCALLS.Nanosleep;
@@ -533,9 +552,7 @@ function parseProcSnapshots(mem: Uint8Array): ProcessSnapshot[] {
  * Throws on malformed input. Callers should treat the throw as EINVAL.
  */
 function decodeSpawnBlobStrings(blob: Uint8Array): { argv: string[]; envp: string[] } {
-  const HEADER_LEN = 40;
-  const ACTION_RECORD_LEN = 28;
-  if (blob.byteLength < HEADER_LEN) {
+  if (blob.byteLength < SPAWN_HEADER_BYTES) {
     throw new Error("blob too short for header");
   }
   const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
@@ -544,14 +561,18 @@ function decodeSpawnBlobStrings(blob: Uint8Array): { argv: string[]; envp: strin
   const nActions  = view.getUint32(8, true);
 
   // Cap counts to mirror the kernel parser's adversarial-input cap.
-  if (argc > 4096 || envc > 4096 || nActions > 1024) {
+  if (
+    argc > SPAWN_MAX_ARGV
+    || envc > SPAWN_MAX_ENVP
+    || nActions > SPAWN_MAX_ACTIONS
+  ) {
     throw new Error("blob count exceeds limit");
   }
 
-  const argvOffsetsAt = HEADER_LEN;
+  const argvOffsetsAt = SPAWN_HEADER_BYTES;
   const envpOffsetsAt = argvOffsetsAt + argc * 4;
   const actionsAt     = envpOffsetsAt + envc * 4;
-  const stringsAt     = actionsAt + nActions * ACTION_RECORD_LEN;
+  const stringsAt     = actionsAt + nActions * SPAWN_ACTION_RECORD_BYTES;
 
   if (stringsAt > blob.byteLength) {
     throw new Error("blob truncated before strings region");
@@ -1068,6 +1089,8 @@ export class CentralizedKernelWorker {
   /** Pids whose old image committed exec but whose replacement has no channel yet. */
   private execHandoffPids = new Set<number>();
   private scratchOffset = 0;
+  /** Kernel-owned transport for spawn blobs larger than one syscall channel. */
+  private largeSpawnScratchOffset = 0;
   private initialized = false;
   /**
    * Maps a pthread syscall mailbox to its kernel/libc thread id.
@@ -9593,8 +9616,51 @@ export class CentralizedKernelWorker {
 
     // ── Read path + blob from caller memory ──
     const processMem = new Uint8Array(channel.memory.buffer);
+    if (
+      !Number.isSafeInteger(pathLen) ||
+      pathLen < 0 ||
+      !Number.isSafeInteger(blobLen) ||
+      blobLen <= 0
+    ) {
+      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, EINVAL);
+      return;
+    }
+    if (pathLen >= EXEC_PATH_MAX_BYTES) {
+      this.completeChannel(
+        channel,
+        SYS_SPAWN,
+        origArgs,
+        undefined,
+        -1,
+        ENAMETOOLONG,
+      );
+      return;
+    }
+    if (
+      pathLen > 0 &&
+      !isValidMemoryRange(processMem, pathPtr, pathLen)
+    ) {
+      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, EFAULT);
+      return;
+    }
+    if (blobLen > SPAWN_BLOB_MAX_BYTES) {
+      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, E2BIG);
+      return;
+    }
+    if (!isValidMemoryRange(processMem, blobPtr, blobLen)) {
+      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, EFAULT);
+      return;
+    }
+    if (
+      pidOutPtr !== 0 &&
+      !isValidMemoryRange(processMem, pidOutPtr, 4)
+    ) {
+      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, EFAULT);
+      return;
+    }
+
     let path = "";
-    if (pathPtr !== 0 && pathLen > 0) {
+    if (pathLen > 0) {
       path = new TextDecoder().decode(processMem.slice(pathPtr, pathPtr + pathLen));
       // Strip trailing NUL if the user copied a C string with the terminator.
       if (path.endsWith("\0")) path = path.slice(0, -1);
@@ -9604,10 +9670,6 @@ export class CentralizedKernelWorker {
       path = this.resolveExecPathAgainstCwd(parentPid, path);
     }
 
-    if (blobLen <= 0 || (blobPtr === 0 && blobLen > 0)) {
-      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, 22); // EINVAL
-      return;
-    }
     // .slice copies into a regular ArrayBuffer (TextDecoder rejects SAB views).
     const blobBytes = processMem.slice(blobPtr, blobPtr + blobLen);
 
@@ -9623,6 +9685,22 @@ export class CentralizedKernelWorker {
       envp = decoded.envp;
     } catch (_e) {
       this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, 22); // EINVAL
+      return;
+    }
+    const metadataResult = this.validateExecMetadata(
+      argv,
+      envp,
+      this.getPtrWidth(parentPid),
+    );
+    if (metadataResult < 0) {
+      this.completeChannel(
+        channel,
+        SYS_SPAWN,
+        origArgs,
+        undefined,
+        -1,
+        -metadataResult,
+      );
       return;
     }
 
@@ -9673,6 +9751,27 @@ export class CentralizedKernelWorker {
    * validated, compiled program. Now safe to ask the kernel to build the
    * child (which will apply file_actions exactly once).
    */
+  private scratchOffsetForSpawnBlob(blobLen: number): number {
+    if (blobLen <= SCRATCH_SIZE) return this.scratchOffset;
+    if ((this.largeSpawnScratchOffset ?? 0) !== 0) {
+      // WHY: resolution may be asynchronous, but every completion runs on this
+      // worker's single event loop and copy + kernel_spawn_process contain no
+      // await. One shared buffer therefore cannot be observed half-written.
+      return this.largeSpawnScratchOffset;
+    }
+
+    // WHY: kernel_alloc_scratch owns its allocation for the kernel lifetime
+    // and has no matching free operation. Allocate the complete bounded
+    // transport once, then reuse it, instead of leaking one allocation for
+    // every large spawn or letting the host grow memory behind Rust's heap.
+    const allocScratch = this.kernelInstance!.exports.kernel_alloc_scratch as
+      (size: number) => KernelPointer;
+    this.largeSpawnScratchOffset = Number(
+      allocScratch(SPAWN_BLOB_MAX_BYTES),
+    );
+    return this.largeSpawnScratchOffset;
+  }
+
   private handleSpawnAfterResolve(
     channel: ChannelInfo,
     origArgs: number[],
@@ -9685,12 +9784,30 @@ export class CentralizedKernelWorker {
     envp: string[],
   ): void {
     // ── Copy blob to kernel scratch ──
-    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
-    if (blobLen > kernelMem.byteLength - this.scratchOffset) {
-      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, 22); // EINVAL
+    if (
+      blobLen !== blobBytes.byteLength ||
+      blobLen <= 0 ||
+      blobLen > SPAWN_BLOB_MAX_BYTES
+    ) {
+      const errno = blobLen > SPAWN_BLOB_MAX_BYTES ? E2BIG : EINVAL;
+      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, errno);
       return;
     }
-    kernelMem.set(blobBytes, this.scratchOffset);
+    const spawnScratchOffset = this.scratchOffsetForSpawnBlob(blobLen);
+    if (blobLen > SCRATCH_SIZE && spawnScratchOffset === 0) {
+      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, ENOMEM);
+      return;
+    }
+    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    if (
+      !Number.isSafeInteger(spawnScratchOffset) ||
+      spawnScratchOffset < 0 ||
+      spawnScratchOffset > kernelMem.byteLength - blobLen
+    ) {
+      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, EIO);
+      return;
+    }
+    kernelMem.set(blobBytes, spawnScratchOffset);
 
     // ── Ask the kernel to build the child descriptor ──
     const kernelSpawn = this.kernelInstance!.exports.kernel_spawn_process as
@@ -9703,7 +9820,7 @@ export class CentralizedKernelWorker {
     const result = kernelSpawn(
       parentPid,
       callerTid,
-      this.toKernelPtr(this.scratchOffset),
+      this.toKernelPtr(spawnScratchOffset),
       this.toKernelPtr(blobLen),
     );
     if (result <= 0) {
