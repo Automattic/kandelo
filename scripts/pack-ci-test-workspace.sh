@@ -67,27 +67,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-relative_cache_link() {
-    local mirror_relative="$1"
-    local cache_relative="$2"
-    local parent=""
-    case "$mirror_relative" in
-        */*) parent="${mirror_relative%/*}" ;;
-    esac
-    # The mirror is rooted below binaries/, while the portable cache is a
-    # sibling of binaries/ at the archive root.
-    local prefix="../"
-    while [ -n "$parent" ]; do
-        prefix="../$prefix"
-        case "$parent" in
-            */*) parent="${parent%/*}" ;;
-            *) parent="" ;;
-        esac
-    done
-    printf '%s%s/programs/%s\n' \
-        "$prefix" "$PORTABLE_CACHE_REL" "$cache_relative"
-}
-
 relative_root_link() {
     local mirror_relative="$1"
     local target_relative="$2"
@@ -107,19 +86,6 @@ relative_root_link() {
 }
 
 if [ -e binaries ] || [ -L binaries ]; then
-    if [ ! -d binaries ] || [ -L binaries ]; then
-        echo "pack-ci-test-workspace: binaries must be a real directory" >&2
-        exit 1
-    fi
-    flattened_program="$(
-        find binaries/programs -type f -print -quit 2>/dev/null || true
-    )"
-    if [ -n "$flattened_program" ]; then
-        echo "pack-ci-test-workspace: fetched program mirrors must remain generation symlinks, found regular file: $flattened_program" >&2
-        exit 1
-    fi
-    cp -a binaries "$stage/binaries"
-
     source_cache_root="$("$xtask_path" build-deps cache-root)"
     case "$source_cache_root" in
         /*) ;;
@@ -128,90 +94,12 @@ if [ -e binaries ] || [ -L binaries ]; then
             exit 1
             ;;
     esac
-    source_program_cache="$source_cache_root/programs"
-    if find binaries/programs -type l -print -quit 2>/dev/null | grep -q .; then
-        if [ ! -d "$source_program_cache" ] || [ -L "$source_program_cache" ]; then
-            echo "pack-ci-test-workspace: resolver links exist but the program cache is not a real directory: $source_program_cache" >&2
-            exit 1
-        fi
-        source_program_cache="$(realpath "$source_program_cache")"
-        mkdir -p "$stage/$PORTABLE_CACHE_REL/programs"
-    fi
-
-    while IFS= read -r -d '' mirror; do
-        mirror_relative="${mirror#binaries/}"
-        if [ "$mirror_relative" = "$mirror" ]; then
-            echo "pack-ci-test-workspace: resolver link escaped binaries/: $mirror" >&2
-            exit 1
-        fi
-        target="$(realpath "$mirror")"
-        if [ ! -f "$target" ] || [ -L "$target" ]; then
-            echo "pack-ci-test-workspace: resolver link is not a readable regular file: $mirror" >&2
-            exit 1
-        fi
-
-        staged_mirror="$stage/binaries/$mirror_relative"
-        rm "$staged_mirror"
-        case "$mirror_relative" in
-            programs/*)
-                case "$target" in
-                    "$source_program_cache"/*)
-                        cache_relative="${target#"$source_program_cache"/}"
-                        ;;
-                    *)
-                        echo "pack-ci-test-workspace: program resolver link targets a noncanonical cache: $mirror -> $target" >&2
-                        exit 1
-                        ;;
-                esac
-                generation="${cache_relative%%/*}"
-                if [ -z "$generation" ] || [ "$generation" = "$cache_relative" ]; then
-                    echo "pack-ci-test-workspace: program resolver link has no generation member: $mirror -> $target" >&2
-                    exit 1
-                fi
-                if [ ! -e "$stage/$PORTABLE_CACHE_REL/programs/$generation" ]; then
-                    cp -a \
-                        "$source_program_cache/$generation" \
-                        "$stage/$PORTABLE_CACHE_REL/programs/$generation"
-                fi
-                link_target="$(relative_cache_link "$mirror_relative" "$cache_relative")"
-                ln -s "$link_target" "$staged_mirror"
-                ;;
-            *)
-                # Kernel/userspace and other scalar resolver entries do not
-                # carry a package-generation closure. Preserve their verified
-                # bytes as regular files instead of retaining a host path.
-                cp -p "$target" "$staged_mirror"
-                ;;
-        esac
-    done < <(find binaries -type l -print0)
-
-    resolver_scan_roots=("$stage/binaries")
-    if [ -d "$stage/$PORTABLE_CACHE_REL" ]; then
-        resolver_scan_roots+=("$stage/$PORTABLE_CACHE_REL")
-    fi
-    unsafe_link="$(
-        find "${resolver_scan_roots[@]}" -type l -print0 |
-        while IFS= read -r -d '' link; do
-            case "$(readlink "$link")" in
-                /*)
-                    printf '%s\n' "$link"
-                    break
-                    ;;
-            esac
-            resolved="$(realpath "$link" 2>/dev/null || true)"
-            case "$resolved" in
-                "$stage"/*) ;;
-                *)
-                    printf '%s\n' "$link"
-                    break
-                    ;;
-            esac
-        done
-    )"
-    if [ -n "$unsafe_link" ]; then
-        echo "pack-ci-test-workspace: portable resolver closure contains an absolute, dangling, or escaping link: $unsafe_link" >&2
-        exit 1
-    fi
+    # WHY: prepared conformance workspaces and isolated Homebrew Formula tests
+    # must transport package generations identically. A shared staging helper
+    # prevents either path from flattening package mirrors into ordinary files
+    # and silently discarding the resolver's single-generation identity.
+    bash scripts/stage-portable-resolver-binaries.sh \
+        "$REPO_ROOT/binaries" "$source_cache_root" "$stage"
 fi
 
 if [ -e local-binaries ] || [ -L local-binaries ]; then

@@ -199,6 +199,20 @@ kandelo_package_stage_verified_source fixture "$archive_dest" "" \
 grep -Fx "archive-selected source" "$archive_dest/archive.txt" >/dev/null ||
     fail "source URL/hash archive was not selected and extracted"
 
+# The rootfs closure contains both gzip and xz upstreams. One shared staging
+# helper must select decompression from the verified bytes, not a fake suffix.
+xz_parent="$TMP_ROOT/xz-parent"
+mkdir -p "$xz_parent/upstream-xz-1.0"
+printf 'xz-selected source\n' >"$xz_parent/upstream-xz-1.0/archive.txt"
+xz_archive="$TMP_ROOT/source.tar.xz"
+tar cJf "$xz_archive" -C "$xz_parent" upstream-xz-1.0
+xz_sha="$(shasum -a 256 "$xz_archive" | awk '{print $1}')"
+xz_dest="$TMP_ROOT/xz-dest"
+kandelo_package_stage_verified_source fixture-xz "$xz_dest" "" \
+    "file://$xz_archive" "$xz_sha" "$work_root"
+grep -Fx "xz-selected source" "$xz_dest/archive.txt" >/dev/null ||
+    fail "verified xz source archive was not extracted"
+
 # A staged archive can live below an unrelated Git checkout during direct and
 # package-staging builds. Patch paths must remain relative to that source root,
 # including files introduced by a patch, rather than inheriting the parent

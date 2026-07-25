@@ -1,10 +1,25 @@
 import { zstdCompressSync } from "node:zlib";
-import { readdirSync, readFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadShellBaseFileSystemFromImage } from "../../images/vfs/scripts/shell-vfs-build";
+import {
+  loadShellBaseFileSystemFromImage,
+  populateShellEnvironment,
+  saveShellDerivedVfsImage,
+} from "../../images/vfs/scripts/shell-vfs-build";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import type { ZipEntry } from "../src/vfs/zip";
+import {
+  SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+} from "../../web-libs/kandelo-session/src/vfs-capacity";
 
 const MiB = 1024 * 1024;
 const O_RDONLY = 0x0000;
@@ -89,6 +104,39 @@ function expectContentsPreserved(fs: MemoryFileSystem): void {
 }
 
 describe("shell VFS base composition", () => {
+  it("never replaces a missing strict dependency with ambient magic data", () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-strict-shell-resolver-"));
+    const genericArtifact = join(root, "program.wasm");
+    const ambientFileDir = join(root, "ambient-file");
+    mkdirSync(ambientFileDir);
+    writeFileSync(genericArtifact, "fixture");
+    writeFileSync(join(ambientFileDir, "magic.lite"), "ambient magic");
+    const key = "WASM_POSIX_DEP_FILE_DIR";
+    const prior = process.env[key];
+    process.env[key] = ambientFileDir;
+    try {
+      const fs = MemoryFileSystem.create(
+        new SharedArrayBuffer(4 * MiB, { maxByteLength: 16 * MiB }),
+        16 * MiB,
+      );
+      expect(() =>
+        populateShellEnvironment(fs, {
+          eagerBinaries: true,
+          resolveArtifact: (resolverPath) => {
+            if (resolverPath.endsWith("magic.lite")) {
+              throw new Error("declared file dependency omitted magic.lite");
+            }
+            return genericArtifact;
+          },
+        }),
+      ).toThrow("declared file dependency omitted magic.lite");
+    } finally {
+      if (prior === undefined) delete process.env[key];
+      else process.env[key] = prior;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("routes every shell-derived product builder through the headroom gate", () => {
     const scriptsDir = join(import.meta.dirname, "../../images/vfs/scripts");
     const builders = readdirSync(scriptsDir)
@@ -150,5 +198,72 @@ describe("shell VFS base composition", () => {
     expect(restored.sharedBuffer.byteLength).toBe(4 * MiB);
     expect(restored.sharedBuffer.maxByteLength).toBe(8 * MiB);
     expectContentsPreserved(restored);
+  });
+
+  it("rejects an image that drifts from the standard product capacity", async () => {
+    const largerProfile = 1024 * MiB;
+    const fs = MemoryFileSystem.create(
+      new SharedArrayBuffer(16 * MiB, { maxByteLength: largerProfile }),
+      largerProfile,
+    );
+
+    await expect(
+      saveShellDerivedVfsImage(fs, "/tmp/not-written.vfs.zst"),
+    ).rejects.toThrow(
+      new RegExp(
+        `${largerProfile}-byte VFS capacity.*` +
+          `${SHELL_DERIVED_VFS_PROFILE_MAX_BYTES} bytes are required`,
+      ),
+    );
+  });
+
+  it("rejects an explicit product profile below the standard capacity", () => {
+    const smallerProfile = 512 * MiB;
+    const fs = MemoryFileSystem.create(
+      new SharedArrayBuffer(16 * MiB, { maxByteLength: smallerProfile }),
+      smallerProfile,
+    );
+
+    expect(() =>
+      saveShellDerivedVfsImage(fs, "/tmp/not-written.vfs.zst", {
+        expectedMaxByteLength: smallerProfile,
+      })
+    ).toThrow(
+      new RegExp(
+        `must use the standard ${SHELL_DERIVED_VFS_PROFILE_MAX_BYTES}-byte ` +
+          "product profile or an explicitly reviewed, strictly larger profile",
+      ),
+    );
+  });
+
+  const capacityProfiles: Array<[string, number, number | undefined]> = [
+    ["the standard profile", SHELL_DERIVED_VFS_PROFILE_MAX_BYTES, undefined],
+    ["an explicit larger product profile", 1024 * MiB, 1024 * MiB],
+  ];
+
+  it.each(capacityProfiles)("saves %s only under its exact declared capacity", async (
+    _label,
+    profileMaxBytes,
+    expectedMaxByteLength,
+  ) => {
+    const fs = MemoryFileSystem.create(
+      new SharedArrayBuffer(16 * MiB, { maxByteLength: profileMaxBytes }),
+      profileMaxBytes,
+    );
+    writeFile(fs, "/product.txt", "complete product");
+    const dir = mkdtempSync(join(tmpdir(), "shell-derived-capacity-"));
+    try {
+      const image = await saveShellDerivedVfsImage(
+        fs,
+        join(dir, "product.vfs.zst"),
+        expectedMaxByteLength === undefined ? {} : { expectedMaxByteLength },
+      );
+
+      expect(MemoryFileSystem.readImageCapacity(image).maxByteLength).toBe(
+        profileMaxBytes,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

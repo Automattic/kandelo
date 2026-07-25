@@ -359,6 +359,14 @@ exists. A versioned installed host package is one immutable installation
 identity, so a complete
 all-regular-file closure under its `wasm/` tree remains supported;
 regular-file/symlink mixtures and installed symlink closures are rejected.
+Relocatable prepared workspaces preserve fetched package identity by copying
+each referenced canonical generation under `.ci-test-binary-cache/programs/`
+and rewriting the `binaries/` mirrors as contained relative symlinks. Consumers
+must select that transported cache explicitly with
+`WASM_POSIX_BINARY_CACHE_ROOT`; the resolver does not implicitly trust a hidden
+directory merely because it is inside a source checkout. Formula-test
+publication and conformance-workspace packing share one staging helper so
+neither path can regress to identityless regular-file mirrors.
 
 Changing a package from a multi-member directory layout to a scalar flat path
 does not delete the former package directory. The generated projection makes
@@ -410,6 +418,14 @@ policy before instrumentation or filesystem mutation. It never guesses a path
 for an unregistered or malformed package. Package publication does not create
 a second `sh` resolver output; guest images own their explicit `/bin/sh`
 symlink to the shell they include.
+
+Executable registration also fails closed on unresolved imports in Kandelo's
+reserved `env.__wasm_posix_*` namespace. The SDK deliberately permits undefined
+symbols for real host APIs, but a new reserved import is accepted only after
+the host implements it and the shared artifact guard explicitly allows it.
+This prevents an ABI-current glue object linked against a stale musl sysroot
+from turning a private libc helper into a runtime trap and then caching or
+publishing that broken executable.
 
 A sealed publisher instead sets
 `WASM_POSIX_INSTALL_LOCAL_MIRROR=0`, provides
@@ -532,6 +548,26 @@ first content access downloads and verifies the complete Formula bottle and
 atomically materializes its guest projection. It does not fetch individual TAR
 members or use HTTP ranges. Dependency bottles have separate identities and
 remain unfetched until a path owned by that dependency is used.
+
+The guest `brew` implementation is distributed separately from Formula
+bottles as the `homebrew-bootstrap` program package. Its single declared
+artifact, `homebrew-bootstrap.zip`, is a deterministic archive of one exact
+upstream Homebrew commit plus Kandelo's reviewed guest-platform patch. Although
+the artifact is not Wasm, it uses the ordinary program-package resolver,
+program projection, cache key, and release archive contracts; its output
+therefore declares `fork_instrumentation = "disabled"`.
+
+`homebrew/homebrew-bootstrap-source-lock.json` is the reviewed source/output
+identity. It binds the upstream archive URL and SHA-256, sealed
+`[[git_inputs]]` commit, patch path/SHA-256/license, patched Git and normalized
+tree identities, portable Ruby version, archive-producing Git version, and
+final ZIP SHA-256/byte count. The package build imports the resolver-owned
+exact Git checkout into private scratch storage and performs no source fetch
+of its own. The lock also records the dedicated package output's exact SHA-256
+and byte count, so a rebuild cannot silently change guest Homebrew bytes.
+Shell and bootstrap-image consumer cutover remains a separate change. Run the
+build through `scripts/dev-shell.sh`; a different Git ZIP implementation fails
+the exact output lock instead of publishing different bytes.
 
 See [docs/homebrew-publishing.md](homebrew-publishing.md) for the Homebrew
 formula, sidecar, GHCR, VFS, and runtime validation contract.
@@ -715,7 +751,7 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_DEP_SOURCE_URL` | Upstream tarball URL (`source.url` from package.toml). |
 | `WASM_POSIX_DEP_SOURCE_SHA256` | Expected sha256 of the downloaded tarball. Scripts **must** verify after download — the resolver does not fetch. |
 | `WASM_POSIX_DEP_TARGET_ARCH` | Requested package architecture (`wasm32` or `wasm64`). A package that supports only one must reject the other before invoking its toolchain. |
-| `WASM_POSIX_DEP_WORK_DIR` | Optional caller-owned scratch root. The sealed Homebrew Formula bridge sets this because its reviewed Kandelo checkout is read-only. Direct developer builds may retain a package-local default. |
+| `WASM_POSIX_DEP_WORK_DIR` | Caller-owned, single-writer scratch root disjoint from `OUT_DIR`. The resolver creates a fresh private directory for every source build and removes it on success or failure. The sealed Homebrew Formula bridge provides the equivalent boundary from Homebrew's buildpath. Direct ad-hoc script invocation may retain a package-local default. |
 | `WASM_POSIX_DEP_SOURCE_DIR` | Optional caller-verified, already-extracted source root. When present it takes precedence over downloading `SOURCE_URL`; the URL and SHA remain provenance/cache identity. |
 | `WASM_POSIX_DEP_<UPPER>_DIR` | For each *direct* dep, the resolved path to that dep's build output. `<UPPER>` is the dep name upper-cased, with `-` → `_` (e.g. `zlib-ng` → `ZLIB_NG`). Transitive deps are not surfaced — scripts that need them should declare them in `depends_on`. |
 | `WASM_POSIX_BUILD_GIT_<NAME>_DIR` | Read-only detached checkout for a `build.toml` `[[git_inputs]]` declaration. `<NAME>` is the injective uppercase form of the validated lowercase name. |
@@ -1094,7 +1130,9 @@ cargo xtask archive-stage \
     --arch wasm32 \
     --out /tmp/archives \
     --build-timestamp 2026-04-26T10:00:00Z \
-    --build-host github.com/foo/bar@<sha>
+    --build-host github.com/foo/bar@<sha> \
+    --source-repository https://github.com/foo/bar \
+    --source-commit <full-lowercase-sha>
 ```
 
 It loads the package manifest, calls `ensure_built` to populate
@@ -1112,6 +1150,16 @@ binary-index reuse only for the package passed to `--package`; dependencies
 continue through ordinary resolution. For example, the main-shell proof uses
 it to guarantee that the shell composer runs while its reviewed Homebrew
 bottles remain ordinary immutable inputs.
+
+The canonical exact-main producer adds a stricter orchestration contract around
+that deliberately narrow flag. It expands selected roots to their complete
+buildable closure, partitions the graph into topological levels, and
+materializes only same-run exact-main dependency archives between levels.
+Missing current-run artifacts are errors, not permission to consult the
+mutable canonical index, and each archive uses an empty job-local cache so a
+prior cache entry cannot bypass those overlays. Its commit-keyed toolchain
+source-builds libcxx, so an older cache-equivalent C++ runtime cannot enter the
+claimed exact-main closure.
 
 When `archive-stage --cache-root <dir>` also uses `--binaries-dir`, later
 processes consuming that symlink mirror must set
@@ -1177,8 +1225,10 @@ The resolver:
 
 ### The injected `[compatibility]` block
 
-`archive-stage` reads each package's source `package.toml`,
-appends a `[compatibility]` block, and writes the result as
+`archive-stage` reads each package's source `package.toml`, injects the
+producer's required `--source-repository` and `--source-commit` as structured
+`[build].repo_url` and `[build].commit` archive provenance, appends a
+`[compatibility]` block, and writes the result as
 `manifest.toml` at the root of the archive (alongside an
 `artifacts/` subtree carrying the built files). The block
 carries five fields:
@@ -1204,6 +1254,13 @@ The producer round-trips its emitted text through
 `parse_archived` before calling the tar/zstd writer, so
 malformed output rejects at archive-creation time rather than
 on a consumer machine.
+
+Source `package.toml` deliberately does not carry the repository or commit:
+those values describe one producer checkout, not the portable recipe.
+Pull-request staging records its exact PR or synthetic-merge commit. A
+post-merge canonical rebuild records the exact live `main` commit, allowing a
+Homebrew generation to reject pre-main archives without treating ancestry,
+tree equality, or a tag as equivalent provenance.
 
 ### Why `cache_key_sha` is the strict equivalence check
 
@@ -1272,24 +1329,42 @@ before exposing the localized `file://` index. Missing, extra, changed, or
 reordered Git inputs; a mismatched archive identity; duplicate/noncanonical
 `manifest.toml`; or a symlinked archive fails closed.
 
-PR staging is not a durable dependency for a later workflow. When another
-publication pipeline needs the exact selected closure after PR close, first
-promote it through `promote-package-generation.yml` as described in
+PR staging is not a durable dependency for a later workflow and cannot be
+promoted as final provenance. After a package change and its coherent canonical
+activation have landed, dispatch `promote-package-generation.yml` from the
+same exact `refs/heads/main` SHA as described in
 [Binary releases: durable package generations](binary-releases.md#durable-package-generations-for-cross-workflow-publication).
-The promoter rebuilds a minimal index from only the fully materialized
-archives. It deliberately drops unrelated staging entries and all last-green
-fallbacks, then rewrites the selected archive URLs to one content-addressed
+The source tag must be `binaries-abi-v<N>`, not `pr-<N>-staging`. The
+promoter materializes only archives whose embedded build commit equals that
+freshly queried main SHA, rebuilds a minimal exact index, drops unrelated
+entries and every fallback, and rewrites URLs to the content-addressed
 generation tag.
 
-`.github/scripts/materialize-durable-package-generation.sh` activates such a
-generation for a checkout. It downloads every asset anonymously, validates the
-manifest/tag/release/direct-commit relationship and exact asset inventory,
-revalidates archive manifests with current authority, and computes the
-consumer checkout's own projection and expected ledger with its exact
-credential-free `xtask`. Only exact equality exposes a local `file://` index.
-The workflow authority commit, package-source commit, and consumer commit are
-independent inputs; a newer consumer SHA alone is never evidence of package
-compatibility.
+Schema 1 selects one program root and its dependency closure. Schema 2
+`browser-inputs` binds the sorted browser roots, with `shell` excluded and
+`rootfs` included, plus the deterministic typed union of their closures.
+Every identity records manifest, contextual cache key, package kind, and
+disposition: `program-archive`, `library-archive`, or `source-only`.
+Source-only inputs remain in the projection but are absent from the expected
+archive ledger, minimal index, and asset inventory.
+
+Only the current exact-main authority executes. It runs its browser-root
+scanner against source or consumer trees as inert data and uses its versioned
+Rust reader to parse their package manifests, build metadata, and checked
+program projection. That reader freshly traverses dependencies and recomputes
+cache identities. It does not execute a source/consumer dev shell, npm package,
+Cargo command, xtask, or repository script. Unsupported source formats,
+overlays, stale cache records, omissions, and substitutions fail closed.
+
+`.github/scripts/materialize-durable-package-generation.sh` downloads every
+asset anonymously, validates the manifest/release/direct-tag relationship,
+requeries the exact asset inventory, and uses the shared current Rust
+`validate-generation` command to verify strict index structure, snapshot,
+hashes, archive manifests, immutable Git inputs, and embedded main commit. It
+then derives the consumer projection with current authority and exposes a local
+`file://` index only on exact equality. A consumer SHA alone, ancestry,
+same-tree relationship, PR identity, or tag identity is never compatibility
+evidence.
 
 For pre-push iteration on packages whose source build is fast,
 just rely on the resolver's fall-through: edit `package.toml`,
@@ -1422,7 +1497,10 @@ before materialization. Omitting `--package` preserves the full-registry walk.
 The package workflows retain the same per-entry build shape but publish to
 different lifecycle states. `staging-build.yml` writes a per-PR staging tag;
 `prepare-merge.yml` writes and tests a run-specific isolated candidate; and
-`force-rebuild.yml` is the manual canonical rebuild path. Post-merge
+`force-rebuild.yml` is the maintainer-dispatched exact-main rebuild path.
+That workflow preserves concurrency within each true dependency level while
+strictly sequencing levels; it never relies on GitHub matrix scheduling order.
+Post-merge
 `activate-merge-candidate.yml` verifies the exact merged tree, copies all
 required archives, then publishes one complete canonical ledger through the
 journaled release-index state machine. There is no bot rewrite of
@@ -1585,6 +1663,16 @@ A manifest can declare host-side prerequisites — `cmake`,
 each one before invoking the build script, so a missing or
 too-old tool fails up front with a platform-keyed install hint
 rather than mid-build with a cryptic shell error.
+
+The manifest declares executable prerequisites; the source recipe still owns
+any project-local dependency tree used by those executables. For example, a
+recipe that runs a JavaScript tool from a committed `package-lock.json` must
+install and verify that locked tree in its normal build path, below the
+resolver-owned build output or scratch tree rather than in the shared source
+checkout. Do not provision it only in selected CI callers: archive validation
+can reject a same-run or published artifact and fall through to the source
+recipe from any local, direct-dependency, transitive-dependency, or concurrent
+resolve.
 
 **Inline declaration**
 

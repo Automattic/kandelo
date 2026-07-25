@@ -31,12 +31,15 @@ struct Args {
     out_dir: PathBuf,
     build_timestamp: String,
     build_host: String,
+    source_repository: String,
+    source_commit: String,
     abi: Option<u32>,
     cache_root: Option<PathBuf>,
     registry_root: Option<PathBuf>,
     binaries_dir: Option<PathBuf>,
     expected_cache_key_sha: Option<String>,
     force_source_build: bool,
+    force_source_closure: bool,
 }
 
 /// CLI entry point for `xtask archive-stage`.
@@ -51,6 +54,8 @@ struct Args {
 ///                                         created if missing.
 ///   --build-timestamp  <ISO-8601 UTC>    Pinned for reproducibility.
 ///   --build-host       <string>          Pinned for reproducibility.
+///   --source-repository <GitHub URL>      Canonical source repository.
+///   --source-commit    <40-hex>           Exact checked-out source commit.
 ///
 /// Optional:
 ///   --abi          <u32>    Override the ABI version (defaults to
@@ -72,6 +77,10 @@ struct Args {
 ///   --force-source-build    Bypass the selected package's cache and binary
 ///                           index entry, and execute its source build. This
 ///                           does not force-build its dependencies.
+///   --force-source-closure  Bypass cache and binary index entries for the
+///                           selected package and every buildable transitive
+///                           dependency. Immutable source-kind inputs remain
+///                           content-hash verified and reusable.
 ///
 /// On success: prints the absolute path of the produced archive to
 /// stdout (one line, no trailing whitespace beyond the newline).
@@ -150,9 +159,17 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     // Resolve / build the cache entry. local_libs is intentionally
     // None — staged archives must reproduce from source / cache, never
     // from a developer's hand-patched checkout.
-    let force_source_build = parsed
-        .force_source_build
-        .then(|| BTreeSet::from([manifest.name.clone()]));
+    let force_source_build = if parsed.force_source_closure {
+        Some(build_deps::buildable_transitive_closure(
+            &manifest,
+            &registry,
+            parsed.arch,
+        )?)
+    } else {
+        parsed
+            .force_source_build
+            .then(|| BTreeSet::from([manifest.name.clone()]))
+    };
     let resolve_opts = ResolveOpts {
         cache_root: &cache_root,
         local_libs: None,
@@ -188,6 +205,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         cache_key_sha: sha_hex,
         build_timestamp: parsed.build_timestamp.clone(),
         build_host: parsed.build_host.clone(),
+        source_repository: parsed.source_repository.clone(),
+        source_commit: parsed.source_commit.clone(),
         git_inputs,
     };
     archive_stage::stage_archive_with_options(
@@ -247,12 +266,15 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
     let mut out_dir: Option<PathBuf> = None;
     let mut build_timestamp: Option<String> = None;
     let mut build_host: Option<String> = None;
+    let mut source_repository: Option<String> = None;
+    let mut source_commit: Option<String> = None;
     let mut abi: Option<u32> = None;
     let mut cache_root: Option<PathBuf> = None;
     let mut registry_root: Option<PathBuf> = None;
     let mut binaries_dir: Option<PathBuf> = None;
     let mut expected_cache_key_sha: Option<String> = None;
     let mut force_source_build = false;
+    let mut force_source_closure = false;
 
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -299,6 +321,24 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
                 take_value(&mut it, "--build-host")?,
                 "--build-host",
             )?;
+        } else if let Some(v) = a.strip_prefix("--source-repository=") {
+            assign_once(
+                &mut source_repository,
+                v.to_string(),
+                "--source-repository",
+            )?;
+        } else if a == "--source-repository" {
+            assign_once(
+                &mut source_repository,
+                take_value(&mut it, "--source-repository")?,
+                "--source-repository",
+            )?;
+        } else if let Some(v) = a.strip_prefix("--source-commit=") {
+            let value = validate_source_commit(v)?;
+            assign_once(&mut source_commit, value, "--source-commit")?;
+        } else if a == "--source-commit" {
+            let value = validate_source_commit(&take_value(&mut it, "--source-commit")?)?;
+            assign_once(&mut source_commit, value, "--source-commit")?;
         } else if let Some(v) = a.strip_prefix("--abi=") {
             let n: u32 = v.parse().map_err(|e| format!("--abi: {e}"))?;
             assign_once(&mut abi, n, "--abi")?;
@@ -350,6 +390,11 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
                 return Err("--force-source-build given more than once".to_string());
             }
             force_source_build = true;
+        } else if a == "--force-source-closure" {
+            if force_source_closure {
+                return Err("--force-source-closure given more than once".to_string());
+            }
+            force_source_closure = true;
         } else {
             return Err(format!("unexpected argument {a:?}"));
         }
@@ -364,6 +409,19 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
         .ok_or_else(|| "archive-stage: --build-timestamp <ISO-8601-UTC> is required".to_string())?;
     let build_host =
         build_host.ok_or_else(|| "archive-stage: --build-host <string> is required".to_string())?;
+    let source_repository = source_repository.ok_or_else(|| {
+        "archive-stage: --source-repository <https://github.com/owner/repository> is required"
+            .to_string()
+    })?;
+    let source_commit = source_commit.ok_or_else(|| {
+        "archive-stage: --source-commit <lowercase-40-hex> is required".to_string()
+    })?;
+    archive_stage::validate_source_identity(&source_repository, &source_commit)?;
+    if force_source_build && force_source_closure {
+        return Err(
+            "--force-source-build and --force-source-closure are mutually exclusive".to_string(),
+        );
+    }
 
     Ok(Args {
         package_dir,
@@ -371,13 +429,29 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
         out_dir,
         build_timestamp,
         build_host,
+        source_repository,
+        source_commit,
         abi,
         cache_root,
         registry_root,
         binaries_dir,
         expected_cache_key_sha,
         force_source_build,
+        force_source_closure,
     })
+}
+
+fn validate_source_commit(value: &str) -> Result<String, String> {
+    if value.len() != 40
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(format!(
+            "--source-commit must be a lowercase 40-character Git SHA, got {value:?}"
+        ));
+    }
+    Ok(value.to_string())
 }
 
 fn validate_cache_key_sha(value: &str, flag: &str) -> Result<String, String> {
@@ -725,6 +799,10 @@ built_by = "test"
             "2026-07-21T00:00:00Z".into(),
             "--build-host".into(),
             "test-host".into(),
+            "--source-repository".into(),
+            "https://github.com/Automattic/kandelo".into(),
+            "--source-commit".into(),
+            "1111111111111111111111111111111111111111".into(),
             "--abi".into(),
             shared::ABI_VERSION.to_string(),
             "--cache-root".into(),
@@ -757,6 +835,10 @@ built_by = "test"
             "2026-05-05T00:00:00Z".into(),
             "--build-host".into(),
             "test-host".into(),
+            "--source-repository".into(),
+            "https://github.com/Automattic/kandelo".into(),
+            "--source-commit".into(),
+            "1111111111111111111111111111111111111111".into(),
             "--abi".into(),
             shared::ABI_VERSION.to_string(),
             "--cache-root".into(),
@@ -839,6 +921,10 @@ built_by = "test"
             "2026-05-05T00:00:00Z".into(),
             "--build-host".into(),
             "test-host".into(),
+            "--source-repository".into(),
+            "https://github.com/Automattic/kandelo".into(),
+            "--source-commit".into(),
+            "1111111111111111111111111111111111111111".into(),
             "--abi".into(),
             "4".into(),
             "--cache-root".into(),
@@ -882,6 +968,10 @@ built_by = "test"
             "2026-05-05T00:00:00Z".into(),
             "--build-host".into(),
             "test-host".into(),
+            "--source-repository".into(),
+            "https://github.com/Automattic/kandelo".into(),
+            "--source-commit".into(),
+            "1111111111111111111111111111111111111111".into(),
             "--abi".into(),
             "4".into(),
             "--cache-root".into(),
@@ -939,6 +1029,10 @@ echo changed > "$script_dir/input.txt"
             "2026-05-05T00:00:00Z".into(),
             "--build-host".into(),
             "test-host".into(),
+            "--source-repository".into(),
+            "https://github.com/Automattic/kandelo".into(),
+            "--source-commit".into(),
+            "1111111111111111111111111111111111111111".into(),
             "--abi".into(),
             "4".into(),
             "--cache-root".into(),
@@ -980,6 +1074,10 @@ echo changed > "$script_dir/input.txt"
             "2026-05-05T00:00:00Z".into(),
             "--build-host".into(),
             "test-host".into(),
+            "--source-repository".into(),
+            "https://github.com/Automattic/kandelo".into(),
+            "--source-commit".into(),
+            "1111111111111111111111111111111111111111".into(),
             "--abi".into(),
             "4".into(),
             "--cache-root".into(),
@@ -1031,6 +1129,10 @@ echo changed > "$script_dir/input.txt"
                 "2026-05-05T00:00:00Z".into(),
                 "--build-host".into(),
                 "test-host".into(),
+                "--source-repository".into(),
+                "https://github.com/Automattic/kandelo".into(),
+                "--source-commit".into(),
+                "1111111111111111111111111111111111111111".into(),
                 "--abi".into(),
                 "4".into(),
                 "--cache-root".into(),
@@ -1084,6 +1186,10 @@ echo changed > "$script_dir/input.txt"
             "2026-05-05T00:00:00Z".into(),
             "--build-host".into(),
             "test-host".into(),
+            "--source-repository".into(),
+            "https://github.com/Automattic/kandelo".into(),
+            "--source-commit".into(),
+            "1111111111111111111111111111111111111111".into(),
             "--abi".into(),
             "4".into(),
             "--cache-root".into(),
@@ -1130,6 +1236,10 @@ echo changed > "$script_dir/input.txt"
             "2026-05-05T00:00:00Z".into(),
             "--build-host".into(),
             "test-host".into(),
+            "--source-repository".into(),
+            "https://github.com/Automattic/kandelo".into(),
+            "--source-commit".into(),
+            "1111111111111111111111111111111111111111".into(),
             "--abi".into(),
             "4".into(),
             "--cache-root".into(),
@@ -1172,6 +1282,63 @@ echo changed > "$script_dir/input.txt"
     }
 
     #[test]
+    fn cli_requires_canonical_source_identity() {
+        let base = archive_stage_args(
+            Path::new("/registry"),
+            Path::new("/cache"),
+            Path::new("/out"),
+            "shell",
+        );
+
+        let without_pair = |flag: &str| {
+            let index = base.iter().position(|value| value == flag).unwrap();
+            base.iter()
+                .enumerate()
+                .filter(|(offset, _)| *offset != index && *offset != index + 1)
+                .map(|(_, value)| value.clone())
+                .collect::<Vec<_>>()
+        };
+        let err = super::parse_args(without_pair("--source-repository"))
+            .expect_err("source repository must be explicit");
+        assert!(err.contains("--source-repository"), "got: {err}");
+        let err = super::parse_args(without_pair("--source-commit"))
+            .expect_err("source commit must be explicit");
+        assert!(err.contains("--source-commit"), "got: {err}");
+
+        for invalid in [
+            "111111111111111111111111111111111111111",
+            "111111111111111111111111111111111111111G",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "refs/heads/main",
+        ] {
+            let mut args = base.clone();
+            let index = args
+                .iter()
+                .position(|value| value == "--source-commit")
+                .unwrap();
+            args[index + 1] = invalid.to_string();
+            let err = super::parse_args(args).expect_err("invalid source commit must fail");
+            assert!(err.contains("lowercase 40-character"), "got: {err}");
+        }
+
+        for invalid in [
+            "git@github.com:Automattic/kandelo.git",
+            "https://github.com/Automattic/kandelo.git",
+            "https://github.com/Automattic/kandelo/tree/main",
+            "https://example.test/Automattic/kandelo",
+        ] {
+            let mut args = base.clone();
+            let index = args
+                .iter()
+                .position(|value| value == "--source-repository")
+                .unwrap();
+            args[index + 1] = invalid.to_string();
+            let err = super::parse_args(args).expect_err("invalid source repository must fail");
+            assert!(err.contains("canonical https://github.com"), "got: {err}");
+        }
+    }
+
+    #[test]
     fn cli_force_source_build_is_a_single_valueless_flag() {
         let args = archive_stage_args(
             Path::new("/registry"),
@@ -1209,6 +1376,38 @@ echo changed > "$script_dir/input.txt"
         assigned.push("--force-source-build=true".into());
         let err = super::parse_args(assigned).expect_err("force flag must not take a value");
         assert!(err.contains("unexpected argument"), "got: {err}");
+    }
+
+    #[test]
+    fn cli_force_source_closure_is_explicit_and_mutually_exclusive() {
+        let args = archive_stage_args(
+            Path::new("/registry"),
+            Path::new("/cache"),
+            Path::new("/out"),
+            "shell",
+        );
+        let mut closure = args.clone();
+        closure.push("--force-source-closure".into());
+        let parsed = super::parse_args(closure).unwrap();
+        assert!(parsed.force_source_closure);
+        assert!(!parsed.force_source_build);
+
+        let mut duplicate = args.clone();
+        duplicate.extend([
+            "--force-source-closure".into(),
+            "--force-source-closure".into(),
+        ]);
+        let err = super::parse_args(duplicate).expect_err("duplicate closure flag must fail");
+        assert!(err.contains("given more than once"), "got: {err}");
+
+        let mut conflicting = args;
+        conflicting.extend([
+            "--force-source-build".into(),
+            "--force-source-closure".into(),
+        ]);
+        let err =
+            super::parse_args(conflicting).expect_err("force modes must not be ambiguous");
+        assert!(err.contains("mutually exclusive"), "got: {err}");
     }
 
     #[test]
@@ -1276,6 +1475,50 @@ echo changed > "$script_dir/input.txt"
     }
 
     #[test]
+    fn cli_force_source_closure_bypasses_target_and_dependency_caches() {
+        let dir = tempdir("force-closure-cache");
+        let registry = dir.join("registry");
+        let cache_root = dir.join("cache");
+        let dependency_counter = dir.join("dependency-counter");
+        let target_counter = dir.join("target-counter");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&cache_root).unwrap();
+        write_counted_lib_fixture(&registry, "dependency", &[], &dependency_counter);
+        write_counted_lib_fixture(
+            &registry,
+            "composer",
+            &["dependency@1.0.0"],
+            &target_counter,
+        );
+
+        super::run(archive_stage_args(
+            &registry,
+            &cache_root,
+            &dir.join("first"),
+            "composer",
+        ))
+        .expect("initial source build must succeed");
+
+        let mut forced =
+            archive_stage_args(&registry, &cache_root, &dir.join("forced"), "composer");
+        forced.push("--force-source-closure".into());
+        super::run(forced).expect("forced source closure must succeed");
+        assert_eq!(
+            fs::read_to_string(&dependency_counter)
+                .unwrap()
+                .lines()
+                .count(),
+            2,
+            "the dependency cache must not satisfy an exact-source closure"
+        );
+        assert_eq!(
+            fs::read_to_string(&target_counter).unwrap().lines().count(),
+            2,
+            "the target cache must not satisfy an exact-source closure"
+        );
+    }
+
+    #[test]
     fn cli_force_source_build_bypasses_valid_index_archive() {
         let dir = tempdir("force-target-index");
         let registry = dir.join("registry");
@@ -1328,6 +1571,102 @@ echo changed > "$script_dir/input.txt"
             fs::read_to_string(counter).unwrap().lines().count(),
             1,
             "the selected package's source recipe must run despite a valid index archive"
+        );
+    }
+
+    #[test]
+    fn cli_force_source_closure_bypasses_target_and_dependency_index_archives() {
+        let dir = tempdir("force-closure-index");
+        let registry = dir.join("registry");
+        let cache_root = dir.join("cache");
+        let dependency_counter = dir.join("dependency-counter");
+        let target_counter = dir.join("target-counter");
+        let index_path = dir.join("index.toml");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&cache_root).unwrap();
+        write_counted_lib_fixture(&registry, "dependency", &[], &dependency_counter);
+        write_counted_lib_fixture(
+            &registry,
+            "composer",
+            &["dependency@1.0.0"],
+            &target_counter,
+        );
+        write_index_build_toml(&registry, "dependency", &index_path);
+        write_index_build_toml(&registry, "composer", &index_path);
+
+        let reg = Registry {
+            roots: vec![registry.clone()],
+        };
+        let mut entries = Vec::new();
+        for name in ["dependency", "composer"] {
+            let manifest = DepsManifest::load_with_overlay(&registry.join(name)).unwrap();
+            let cache_key_sha = super::compute_sha_hex(
+                &manifest,
+                &reg,
+                TargetArch::Wasm32,
+                shared::ABI_VERSION,
+            )
+            .unwrap();
+            let archive_path = dir.join(format!("{name}-remote.tar.zst"));
+            let archive = crate::remote_fetch::build_test_archive(
+                &archived_lib_manifest(name, &cache_key_sha),
+                &[("lib/out.a", b"REMOTE\n")],
+            );
+            fs::write(&archive_path, &archive).unwrap();
+            entries.push((
+                name,
+                archive_path,
+                sha256_hex(&archive),
+                cache_key_sha,
+            ));
+        }
+        let mut index = format!(
+            "abi_version = {}\ngenerated_at = \"2026-07-21T00:00:00Z\"\n\
+             generator = \"archive-stage force-source-closure test\"\n",
+            shared::ABI_VERSION,
+        );
+        for (name, archive_path, archive_sha256, cache_key_sha) in &entries {
+            index.push_str(&format!(
+                r#"
+[[packages]]
+name = "{name}"
+version = "1.0.0"
+revision = 1
+
+[packages.binary.wasm32]
+status = "success"
+archive_url = "file://{archive_path}"
+archive_sha256 = "{archive_sha256}"
+cache_key_sha = "{cache_key_sha}"
+built_at = "2026-07-21T00:00:00Z"
+built_by = "test"
+"#,
+                archive_path = archive_path.display(),
+            ));
+        }
+        fs::write(&index_path, index).unwrap();
+
+        super::run(archive_stage_args(
+            &registry,
+            &cache_root,
+            &dir.join("remote"),
+            "composer",
+        ))
+        .expect("ordinary archive-stage must accept both valid index archives");
+        assert!(!dependency_counter.exists());
+        assert!(!target_counter.exists());
+
+        let mut forced =
+            archive_stage_args(&registry, &cache_root, &dir.join("forced"), "composer");
+        forced.push("--force-source-closure".into());
+        super::run(forced).expect("forced source closure must bypass both index archives");
+        assert_eq!(
+            fs::read_to_string(dependency_counter).unwrap().lines().count(),
+            1,
+        );
+        assert_eq!(
+            fs::read_to_string(target_counter).unwrap().lines().count(),
+            1,
         );
     }
 }

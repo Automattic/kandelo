@@ -16,6 +16,8 @@ on:
       - "flake.lock"
       - "flake.nix"
       - "homebrew/main-shell*"
+      - "homebrew/source-rootfs-shell-default.json"
+      - "homebrew/source-rootfs-shell-dependencies.json"
       - "host/package-lock.json"
       - "host/package.json"
       - "host/src/**"
@@ -24,6 +26,7 @@ on:
       - "images/vfs/scripts/build-homebrew-materialized-vfs-image.ts"
       - "images/vfs/scripts/build-homebrew-vfs-image.ts"
       - "images/vfs/scripts/build-shell-vfs-image.ts"
+      - "images/vfs/scripts/build-source-rootfs-shell-image.ts"
       - "images/vfs/scripts/main-shell-demo-config.ts"
       - "images/vfs/scripts/vfs-image-helpers.ts"
       - "package-lock.json"
@@ -41,6 +44,8 @@ on:
       - "scripts/homebrew-brewfile-selection.rb"
       - "scripts/homebrew-language-runtime-contract.ts"
       - "scripts/homebrew-main-shell-node-smoke.ts"
+      - "scripts/source-rootfs-shell-node-smoke.ts"
+      - "scripts/source-rootfs-shell-dependency-contract.mjs"
       - "scripts/homebrew-main-shell-image-contract*.ts"
       - "scripts/homebrew-vfs-acceptance-smoke.ts"
       - "scripts/install-local-binary.sh"
@@ -77,6 +82,8 @@ on:
       - "flake.lock"
       - "flake.nix"
       - "homebrew/main-shell*"
+      - "homebrew/source-rootfs-shell-default.json"
+      - "homebrew/source-rootfs-shell-dependencies.json"
       - "host/package-lock.json"
       - "host/package.json"
       - "host/src/**"
@@ -85,6 +92,7 @@ on:
       - "images/vfs/scripts/build-homebrew-materialized-vfs-image.ts"
       - "images/vfs/scripts/build-homebrew-vfs-image.ts"
       - "images/vfs/scripts/build-shell-vfs-image.ts"
+      - "images/vfs/scripts/build-source-rootfs-shell-image.ts"
       - "images/vfs/scripts/main-shell-demo-config.ts"
       - "images/vfs/scripts/vfs-image-helpers.ts"
       - "package-lock.json"
@@ -102,6 +110,8 @@ on:
       - "scripts/homebrew-brewfile-selection.rb"
       - "scripts/homebrew-language-runtime-contract.ts"
       - "scripts/homebrew-main-shell-node-smoke.ts"
+      - "scripts/source-rootfs-shell-node-smoke.ts"
+      - "scripts/source-rootfs-shell-dependency-contract.mjs"
       - "scripts/homebrew-main-shell-image-contract*.ts"
       - "scripts/homebrew-vfs-acceptance-smoke.ts"
       - "scripts/install-local-binary.sh"
@@ -142,12 +152,16 @@ permissions:
 
 jobs:
   exact-public-bottle-closure:
-    name: exact lazy shell (Node + Chromium)
+    name: exact current lazy shell (Node + Chromium)
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
       TRANSPORT_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.transport_mode || 'closed' }}
+      # WHY: rehearsal bottles are not main-produced artifacts. Keep required
+      # PR/main browser gates on the source-rootfs bridge until every final
+      # bottle has been rebuilt by a job whose checkout is exact main.
+      SHELL_ACTIVATION_MODE: source-rootfs
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -217,37 +231,107 @@ jobs:
             npx playwright install chromium --with-deps
           )
 
-      - name: Resolve current direct browser bundling inputs and build the exact candidate kernel
+      - name: Select one verified package generation
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           abi=$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
             crates/shared/src/lib.rs)
-          export WASM_POSIX_BINARY_INDEX_URL="https://github.com/Automattic/kandelo/releases/download/binaries-abi-v${abi}/index.toml"
-          # Vite resolves static @binaries imports across the wider demo app.
-          # Derive those registry roots from the imports and package manifests
-          # so adding an import cannot silently leave this browser proof stale.
-          # They are browser bundling inputs, not shell VFS inputs: archive-stage
-          # builds shell's dependency-free package from public bottles, and the
-          # exact archive replaces shell before either runtime proof starts.
-          # Use the normal resolver contract for these supporting packages. A
-          # matching public archive is reused; a PR that changes one of its
-          # declared build inputs source-builds the exact current recipe. Using
-          # --fetch-only here would make such a PR impossible to validate until
-          # after its new support-package archive was already published.
-          browser_package_file="$RUNNER_TEMP/browser-binary-packages.txt"
-          node scripts/browser-binary-package-roots.mjs \
-            --exclude-package shell \
-            --include-package rootfs \
-            > "$browser_package_file"
-          mapfile -t browser_input_packages < "$browser_package_file"
-          [ "${#browser_input_packages[@]}" -gt 0 ]
-          [ "$(printf '%s\n' "${browser_input_packages[@]}" | sort -u | wc -l)" \
-            -eq "${#browser_input_packages[@]}" ]
-          fetch_args=()
-          for package in "${browser_input_packages[@]}"; do
-            fetch_args+=(--package "$package")
-          done
-          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh "${fetch_args[@]}"
+          [[ "$abi" =~ ^[0-9]+$ ]]
+          if [ "$SHELL_ACTIVATION_MODE" = source-rootfs ]; then
+            empty_index="$RUNNER_TEMP/source-rootfs-empty-index.toml"
+            source_cache="$RUNNER_TEMP/source-rootfs-exact-cache"
+            test ! -e "$empty_index"
+            test ! -e "$source_cache"
+            cat >"$empty_index" <<EOF
+          abi_version = $abi
+          generated_at = "1970-01-01T00:00:00Z"
+          generator = "exact-main source-rootfs closure"
+          EOF
+            # WHY: a closed PR staging generation can contain rehearsal bytes
+            # whose producer is not main. Source activation gets an empty
+            # index and a fresh cache so no prior bottle can enter its closure.
+            echo "SOURCE_SHELL_BINARY_INDEX_URL=file://${empty_index}" >> "$GITHUB_ENV"
+            echo "SOURCE_SHELL_BINARY_CACHE_ROOT=$source_cache" >> "$GITHUB_ENV"
+          fi
+          canonical_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${abi}/index.toml"
+          selected_url="$canonical_url"
+
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            pr_number=$(jq -er '.pull_request.number' "$GITHUB_EVENT_PATH")
+            [[ "$pr_number" =~ ^[1-9][0-9]*$ ]]
+            target_tag="pr-${pr_number}-staging"
+            expected="$RUNNER_TEMP/homebrew-main-shell-staging-expected.json"
+            snapshot="$RUNNER_TEMP/homebrew-main-shell-staging-snapshot"
+
+            # WHY: an ABI bump has no canonical package release yet. Reuse the
+            # parallel staging build only after proving it is a complete,
+            # exact-current generation; accepting a partial mutable index would
+            # mix packages from different builds or silently source-build gaps.
+            if bash scripts/dev-shell.sh env \
+                EXPECTED="$expected" \
+                SNAPSHOT="$snapshot" \
+                TARGET_TAG="$target_tag" \
+                ABI="$abi" \
+                bash -c '
+                  set -euo pipefail
+                  host_target=$(rustc -vV | awk "/^host/ {print \$2}")
+                  cargo build --release -p xtask --target "$host_target"
+                  xtask="target/$host_target/release/xtask"
+                  "$xtask" staging-reuse expected \
+                    --registry packages/registry \
+                    --expected-abi "$ABI" \
+                    --exclude erlang-vfs,perl,perl-vfs,python-vfs,redis,texlive \
+                    --output "$EXPECTED"
+                  bash .github/scripts/validate-staging-release.sh \
+                    --tag "$TARGET_TAG" \
+                    --expected-ledger "$EXPECTED" \
+                    --mode current \
+                    --output-dir "$SNAPSHOT" \
+                    --xtask "$xtask"
+                '; then
+              frozen_index="$snapshot/frozen-index.toml"
+              target_index_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${target_tag}/index.toml"
+              # WHY: index freezing consumes only the bytes already validated
+              # above. Remove network credentials so this pure transformation
+              # cannot accidentally grow an authenticated code path.
+              env -u GH_TOKEN -u GITHUB_TOKEN \
+                -u HOMEBREW_GITHUB_API_TOKEN \
+                -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+                bash scripts/dev-shell.sh env \
+                SOURCE_INDEX="$snapshot/source-index.toml" \
+                FROZEN_INDEX="$frozen_index" \
+                TARGET_INDEX_URL="$target_index_url" \
+                ABI="$abi" \
+                bash -c '
+                  set -euo pipefail
+                  host_target=$(rustc -vV | awk "/^host/ {print \$2}")
+                  xtask="target/$host_target/release/xtask"
+                  # WHY: the PR release tag remains mutable. Keep the validated
+                  # index bytes local while rewriting relative archive names to
+                  # their exact release URLs; archive hashes still fail closed.
+                  "$xtask" index-candidate seed \
+                    --canonical-index "$SOURCE_INDEX" \
+                    --candidate-index "$FROZEN_INDEX" \
+                    --canonical-index-url "$TARGET_INDEX_URL" \
+                    --expected-abi "$ABI" \
+                    --generated-at "1970-01-01T00:00:00Z" \
+                    --generator "Homebrew main-shell frozen staging generation"
+                '
+              selected_url="file://${frozen_index}"
+              echo "Using complete verified package generation from $target_tag"
+            else
+              echo "Complete current $target_tag generation is unavailable; using canonical/source fallback"
+            fi
+          fi
+
+          echo "WASM_POSIX_BINARY_INDEX_URL=$selected_url" >> "$GITHUB_ENV"
+
+      - name: Build the exact candidate kernel
+        run: |
+          set -euo pipefail
+          test -n "${WASM_POSIX_BINARY_INDEX_URL:-}"
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
             cargo build --release -p kandelo -Z build-std=core,alloc
@@ -256,8 +340,106 @@ jobs:
               local-binaries/kernel.wasm
           '
 
+      - name: Build the exact source-rootfs activation shell
+        if: env.SHELL_ACTIVATION_MODE == 'source-rootfs'
+        id: source_candidate
+        run: |
+          set -euo pipefail
+          candidate_root="$RUNNER_TEMP/source-rootfs-main-shell-candidate"
+          archive_root="$candidate_root/archive"
+          test ! -e "$candidate_root"
+          mkdir -p "$archive_root"
+          env \
+            WASM_POSIX_BINARY_INDEX_URL="$SOURCE_SHELL_BINARY_INDEX_URL" \
+            bash scripts/dev-shell.sh env \
+              WASM_POSIX_BINARY_CACHE_ROOT="$SOURCE_SHELL_BINARY_CACHE_ROOT" \
+              bash -c '
+            set -euo pipefail
+            candidate_root="$1"
+            archive_root="$2"
+            host_target=$(rustc -vV | awk "/^host/ {print \$2}")
+            cargo build --release -p xtask --target "$host_target"
+            xtask="target/$host_target/release/xtask"
+            # WHY: no pull-request, rehearsal, or old-main artifact may satisfy
+            # any buildable node in this activation closure. Immutable source
+            # archives remain reusable only after their declared hash verifies.
+            "$xtask" archive-stage \
+              --package packages/registry/shell \
+              --arch wasm32 \
+              --binaries-dir local-binaries \
+              --out "$archive_root" \
+              --build-timestamp "1970-01-01T00:00:00Z" \
+              --build-host "source-rootfs-main-shell-ci" \
+              --source-repository "https://github.com/${GITHUB_REPOSITORY}" \
+              --source-commit "$GITHUB_SHA" \
+              --cache-root "$WASM_POSIX_BINARY_CACHE_ROOT" \
+              --force-source-closure
+            mapfile -t archives < <(
+              find "$archive_root" -maxdepth 1 -type f -name "*.tar.zst" -print
+            )
+            [ "${#archives[@]}" -eq 1 ]
+            manifest="$candidate_root/source-package-manifest.toml"
+            zstd -dc -- "${archives[0]}" | tar -xOf - manifest.toml >"$manifest"
+            archive_repository=$(sed -nE \
+              "s/^repo_url[[:space:]]*=[[:space:]]*\"([^\"]+)\"$/\1/p" \
+              "$manifest")
+            archive_commit=$(sed -nE \
+              "s/^commit[[:space:]]*=[[:space:]]*\"([0-9a-f]{40})\"$/\1/p" \
+              "$manifest")
+            # WHY: CLI intent is not provenance evidence. Fail on the staged
+            # bytes if a legacy build.toml repository or UNPUBLISHED marker
+            # survived archive-stage instead of the exact event checkout.
+            [ "$archive_repository" = \
+              "https://github.com/${GITHUB_REPOSITORY}" ]
+            [ "$archive_commit" = "$GITHUB_SHA" ]
+            ! grep -Fq "UNPUBLISHED" "$manifest"
+            # WHY: this lane deliberately has an empty binary index, so asking
+            # the resolver to rediscover the just-built shell would either
+            # fail or permit the substitution this proof excludes. Consume the
+            # declared file from the exact archive whose provenance was checked.
+            "$xtask" archive-extract-member \
+              --archive "${archives[0]}" \
+              --member artifacts/shell.vfs.zst \
+              --out "$candidate_root/main-shell.vfs.zst"
+          ' bash "$candidate_root" "$archive_root"
+          image="$candidate_root/main-shell.vfs.zst"
+          report="$candidate_root/source-rootfs-main-shell-report.json"
+          image_sha=$(sha256sum "$image" | awk '{print $1}')
+          image_bytes=$(wc -c <"$image" | tr -d '[:space:]')
+          [[ "$image_sha" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$image_bytes" =~ ^[1-9][0-9]*$ ]]
+          jq -n \
+            --arg source_sha "$GITHUB_SHA" \
+            --arg image_sha256 "$image_sha" \
+            --argjson image_bytes "$image_bytes" \
+            '{
+              schema: 1,
+              kind: "kandelo-source-rootfs-shell-activation",
+              source_sha: $source_sha,
+              image: {sha256: $image_sha256, bytes: $image_bytes}
+            }' >"$report"
+          {
+            echo "image=$image"
+            echo "report=$report"
+            echo "manifest=$candidate_root/source-package-manifest.toml"
+            source_assets="$candidate_root/source-local-binaries.sha256"
+            source_links="$candidate_root/source-local-binaries.symlinks"
+            find local-binaries \( -type f -o -type l \) -print0 |
+              sort -z |
+              xargs -0 sha256sum >"$source_assets"
+            find local-binaries -type l -print0 |
+              sort -z |
+              while IFS= read -r -d '' path; do
+                printf '%s\0%s\0' "$path" "$(readlink "$path")"
+              done >"$source_links"
+            test -s "$source_assets"
+            echo "local_manifest=$source_assets"
+            echo "link_manifest=$source_links"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build the exact lazy shell from public bottles
-        id: candidate
+        if: env.SHELL_ACTIVATION_MODE == 'bottles'
+        id: bottle_candidate
         run: |
           set -euo pipefail
           tap_sha=$(jq -er '.catalog.tap_commit' \
@@ -296,10 +478,55 @@ jobs:
             echo "tap_sha=$tap_sha"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Resolve current direct browser bundling inputs
+        run: |
+          set -euo pipefail
+          test -n "${WASM_POSIX_BINARY_INDEX_URL:-}"
+          # Vite resolves static @binaries imports across the wider demo app.
+          # Derive those registry roots from imports and package manifests so a
+          # new product asset cannot silently be absent from the real shell
+          # acceptance tree. The exact source-built shell closure is already in
+          # local-binaries; unrelated gallery roots may use the independently
+          # verified staging or canonical package generation.
+          browser_package_file="$RUNNER_TEMP/browser-binary-packages.txt"
+          {
+            node scripts/browser-binary-package-roots.mjs \
+              --arch wasm32 \
+              --exclude-package shell \
+              --include-package rootfs
+            node scripts/browser-binary-package-roots.mjs \
+              --arch wasm64 \
+              --exclude-package shell
+          } | sort -u > "$browser_package_file"
+          mapfile -t browser_input_packages < "$browser_package_file"
+          [ "${#browser_input_packages[@]}" -gt 0 ]
+          [ "$(printf '%s\n' "${browser_input_packages[@]}" | sort -u | wc -l)" \
+            -eq "${#browser_input_packages[@]}" ]
+          fetch_args=()
+          for package in "${browser_input_packages[@]}"; do
+            fetch_args+=(--package "$package")
+          done
+          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh "${fetch_args[@]}"
+          if [ "$SHELL_ACTIVATION_MODE" = source-rootfs ]; then
+            # WHY: unrelated browser roots may use the verified staging or
+            # canonical index, but they must never replace the exact-source
+            # shell closure that Vite resolves from local-binaries first.
+            sha256sum --check \
+              "${{ steps.source_candidate.outputs.local_manifest }}"
+            current_links="$RUNNER_TEMP/source-local-binaries-current.symlinks"
+            find local-binaries -type l -print0 |
+              sort -z |
+              while IFS= read -r -d '' path; do
+                printf '%s\0%s\0' "$path" "$(readlink "$path")"
+              done >"$current_links"
+            cmp "${{ steps.source_candidate.outputs.link_manifest }}" \
+              "$current_links"
+          fi
+
       - name: Install the candidate's exact shell bytes
         id: image
         env:
-          CANDIDATE_PATH: ${{ steps.candidate.outputs.image }}
+          CANDIDATE_PATH: ${{ steps.source_candidate.outputs.image || steps.bottle_candidate.outputs.image }}
         run: |
           set -euo pipefail
           browser_copy=apps/browser-demos/public/shell.vfs.zst
@@ -323,15 +550,17 @@ jobs:
           image_sha=$(sha256sum "$CANDIDATE_PATH" | awk '{print $1}')
           [[ "$image_sha" =~ ^[0-9a-f]{64}$ ]]
           echo "sha256=$image_sha" >> "$GITHUB_OUTPUT"
+          echo "path=$CANDIDATE_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Recover the exact bottle mirror from anonymous source packages
+        if: env.SHELL_ACTIVATION_MODE == 'bottles'
         id: mirror
         run: |
           set -euo pipefail
           mirror_dir="$RUNNER_TEMP/homebrew-main-shell-bottles"
           mirror_report="$RUNNER_TEMP/homebrew-main-shell-bottle-recovery.json"
           expected_assets=$(jq -er '.bottle_mirror.assets | length' \
-            "${{ steps.candidate.outputs.report }}")
+            "${{ steps.bottle_candidate.outputs.report }}")
           expected_files=$((expected_assets + 1))
           env -u GH_TOKEN -u GITHUB_TOKEN \
             -u HOMEBREW_GITHUB_API_TOKEN \
@@ -339,7 +568,7 @@ jobs:
             -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
             bash scripts/dev-shell.sh npx tsx \
               scripts/recover-homebrew-bottle-mirror.ts \
-              --image "${{ steps.candidate.outputs.image }}" \
+              --image "${{ steps.bottle_candidate.outputs.image }}" \
               --out "$mirror_dir" \
               --report "$mirror_report"
           test "$(find "$mirror_dir" -maxdepth 1 -type f | wc -l)" \
@@ -357,7 +586,7 @@ jobs:
               --recovery-report "$mirror_report" \
               --out "$publish_manifest"
           jq -e \
-            --arg target "${{ steps.candidate.outputs.tap_sha }}" \
+            --arg target "${{ steps.bottle_candidate.outputs.tap_sha }}" \
             --argjson expected_files "$expected_files" '
             .schema == 1 and .target_commitish == $target and
             (.assets | length) == $expected_files and
@@ -381,35 +610,66 @@ jobs:
           fi
           echo "plan=$mirror_dir/kandelo-homebrew-bottle-mirror-plan.json" >> "$GITHUB_OUTPUT"
 
+      - name: Build the sealed browser product tree
+        working-directory: apps/browser-demos
+        run: |
+          set -euo pipefail
+          build_env=()
+          if [ "$SHELL_ACTIVATION_MODE" = bottles ] &&
+             [ "$TRANSPORT_MODE" = closed ]; then
+            build_env+=(
+              "VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT=/homebrew-main-shell-bottles"
+            )
+          fi
+          bash ../../scripts/dev-shell.sh env "${build_env[@]}" npm run build
+          test -f dist/index.html
+          test -f dist/shell.vfs.zst
+
       - name: Boot the exact installed bytes in Node
         run: |
-          node_smoke_args=(
-            --image "${{ steps.candidate.outputs.image }}"
-            --migration-lock homebrew/main-shell-migration-lock.json
-            --demo-config homebrew/main-shell-demo.json
-            --transport-mode "$TRANSPORT_MODE"
-          )
-          case "$TRANSPORT_MODE" in
-            closed)
-              node_smoke_args+=(
-                --bottle-mirror-plan "${{ steps.mirror.outputs.plan }}"
-              )
+          set -euo pipefail
+          case "$SHELL_ACTIVATION_MODE" in
+            source-rootfs)
+              bash scripts/dev-shell.sh npx tsx \
+                scripts/source-rootfs-shell-node-smoke.ts \
+                --image "${{ steps.image.outputs.path }}" \
+                --kernel local-binaries/kernel.wasm \
+                --shell-config homebrew/source-rootfs-shell-default.json \
+                --demo-config homebrew/main-shell-demo.json
               ;;
-            public)
+            bottles)
+              node_smoke_args=(
+                --image "${{ steps.image.outputs.path }}"
+                --migration-lock homebrew/main-shell-migration-lock.json
+                --demo-config homebrew/main-shell-demo.json
+                --transport-mode "$TRANSPORT_MODE"
+              )
+              case "$TRANSPORT_MODE" in
+                closed)
+                  node_smoke_args+=(
+                    --bottle-mirror-plan "${{ steps.mirror.outputs.plan }}"
+                  )
+                  ;;
+                public)
+                  ;;
+                *)
+                  echo "unsupported transport mode: $TRANSPORT_MODE" >&2
+                  exit 1
+                  ;;
+              esac
+              bash scripts/dev-shell.sh npx tsx \
+                scripts/homebrew-main-shell-node-smoke.ts \
+                "${node_smoke_args[@]}"
               ;;
             *)
-              echo "unsupported transport mode: $TRANSPORT_MODE" >&2
+              echo "unsupported shell activation mode: $SHELL_ACTIVATION_MODE" >&2
               exit 1
               ;;
           esac
-          bash scripts/dev-shell.sh npx tsx \
-            scripts/homebrew-main-shell-node-smoke.ts \
-            "${node_smoke_args[@]}"
 
       - name: Boot the current main-shell path in Chromium
         env:
-          KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "1"
-          KANDELO_HOMEBREW_MAIN_SHELL_SHA256: ${{ steps.image.outputs.sha256 }}
+          KANDELO_MAIN_SHELL_SHA256: ${{ steps.image.outputs.sha256 }}
           KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE: ${{ env.TRANSPORT_MODE }}
           KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL: /homebrew-main-shell-bottles/kandelo-homebrew-bottle-mirror-plan.json
         run: |
@@ -417,27 +677,42 @@ jobs:
           shell_report="$RUNNER_TEMP/homebrew-main-shell-playwright.json"
           modeset_report="$RUNNER_TEMP/homebrew-main-shell-modeset-playwright.json"
           playwright_env=(
-            "KANDELO_HOMEBREW_MAIN_SHELL_STRICT=$KANDELO_HOMEBREW_MAIN_SHELL_STRICT"
-            "KANDELO_HOMEBREW_MAIN_SHELL_SHA256=$KANDELO_HOMEBREW_MAIN_SHELL_SHA256"
-            "KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE=$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE"
-            "KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL=$KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL"
+            "KANDELO_MAIN_SHELL_SHA256=$KANDELO_MAIN_SHELL_SHA256"
+            "KANDELO_PLAYWRIGHT_SERVE_DIST=1"
           )
-          if [ "$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" = closed ]; then
-            playwright_env+=(
-              "VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT=/homebrew-main-shell-bottles"
-            )
-          elif [ "$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" = public ]; then
-            unset VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT
-          else
-            echo "unsupported transport mode: $KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" >&2
-            exit 1
-          fi
+          case "$SHELL_ACTIVATION_MODE" in
+            source-rootfs)
+              shell_spec=test/kandelo-source-rootfs-shell.spec.ts
+              playwright_env+=("KANDELO_SOURCE_ROOTFS_SHELL_STRICT=1")
+              ;;
+            bottles)
+              shell_spec=test/kandelo-homebrew-main-shell.spec.ts
+              playwright_env+=(
+                "KANDELO_HOMEBREW_MAIN_SHELL_STRICT=1"
+                "KANDELO_HOMEBREW_MAIN_SHELL_SHA256=$KANDELO_MAIN_SHELL_SHA256"
+                "KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE=$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE"
+                "KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL=$KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL"
+              )
+              if [ "$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" = closed ]; then
+                playwright_env+=(
+                  "VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT=/homebrew-main-shell-bottles"
+                )
+              elif [ "$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" != public ]; then
+                echo "unsupported transport mode: $KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "unsupported shell activation mode: $SHELL_ACTIVATION_MODE" >&2
+              exit 1
+              ;;
+          esac
           (
             cd apps/browser-demos
             bash ../../scripts/dev-shell.sh env \
               "PLAYWRIGHT_JSON_OUTPUT_FILE=$shell_report" \
               "${playwright_env[@]}" \
-              npx playwright test test/kandelo-homebrew-main-shell.spec.ts \
+              npx playwright test "$shell_spec" \
               --project=chromium --reporter=json
             # The shell VFS and worker occupy roughly 512 MiB, making browser-
             # process lifetime part of this proof. Start MODESET in a fresh
@@ -462,8 +737,10 @@ jobs:
         with:
           name: homebrew-main-shell-closure
           path: |
-            ${{ steps.candidate.outputs.image }}
-            ${{ steps.candidate.outputs.report }}
+            ${{ steps.image.outputs.path }}
+            ${{ steps.source_candidate.outputs.report }}
+            ${{ steps.source_candidate.outputs.manifest }}
+            ${{ steps.bottle_candidate.outputs.report }}
             ${{ runner.temp }}/homebrew-main-shell-bottles
             ${{ runner.temp }}/homebrew-main-shell-bottle-recovery.json
             ${{ runner.temp }}/homebrew-main-shell-bottle-publish.json

@@ -643,7 +643,16 @@ function checkProgramIndexesInSourceContext(): void {
   }
 
   const xtaskPath = prepareProgramIndexChecker(sourceRepoRoot);
-  const args = ["build-deps", "program-index-context-check"];
+  // WHY: a relocated, sealed xtask still contains the checkout path where it
+  // was compiled. Carry the already-authenticated source root in argv so every
+  // package identity input comes from this protected source projection, not
+  // from compile-time or caller-controlled ambient state.
+  const args = [
+    "build-deps",
+    "program-index-context-check",
+    "--source-repo-root",
+    sourceRepoRoot,
+  ];
   const result = spawnSync(xtaskPath, args, {
     cwd: sourceRepoRoot,
     encoding: "utf8",

@@ -5,10 +5,10 @@
  * CPU-bound Wasm loop. The kernel worker owns this timer instead and writes
  * the runtime's interrupt flags through the process's shared memory.
  *
- * The generation object is deliberately part of every entry. A numeric PID
- * can be reused by exec or a later process, so neither a queued timer callback
- * nor a stale worker message may act on whatever generation happens to own the
- * PID later.
+ * The generation object is deliberately part of every entry. Task IDs are
+ * never reassigned, but exec preserves its PID while replacing the host-side
+ * execution generation. Neither a queued timer callback nor a stale worker
+ * message may act on that replacement image.
  */
 
 export const MAX_VM_INTERRUPT_TIMER_DELAY_MS = 0x7fffffff;
@@ -138,7 +138,7 @@ export class VmInterruptTimerManager<
     return true;
   }
 
-  /** Cancel only when the caller still owns the current PID generation. */
+  /** Cancel only when the caller still owns the current execution generation. */
   cancel(pid: number, generation: Generation): boolean {
     if (this.currentGeneration(pid) !== generation) return false;
     this.clear(pid, generation);

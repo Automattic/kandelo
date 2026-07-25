@@ -8,6 +8,7 @@ TAP_REPOSITORY=""
 TAP_NAME_INPUT=""
 FORMULA=""
 OUT_JSON=""
+EXACT_KANDELO_MAIN_SHA=""
 DRY_RUN=0
 AUTH_DIR=""
 AUTH_CONFIG=""
@@ -26,7 +27,7 @@ trap cleanup EXIT
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-ghcr-upload.sh --layout <oci-layout> --layout-receipt <json> --tap-repository <owner/repo> [--tap-name <owner/name>] --formula <name> --out-json <json> [--auth-mode <automatic|github-token|pat>] [--require-pat <true|false>] [--registry-user <login>] [--destination-mode <repository|repository-canary>] [--dry-run]
+usage: scripts/homebrew-ghcr-upload.sh --layout <oci-layout> --layout-receipt <json> --tap-repository <owner/repo> [--tap-name <owner/name>] --formula <name> --out-json <json> [--exact-kandelo-main-sha <sha>] [--auth-mode <automatic|github-token|pat>] [--require-pat <true|false>] [--registry-user <login>] [--destination-mode <repository|repository-canary>] [--dry-run]
 
 Validates an explicit local OCI layout, preflights the destination reference,
 and uses ORAS only to copy that immutable layout to the exact tap-repository
@@ -52,6 +53,7 @@ while [ "$#" -gt 0 ]; do
     --tap-name) TAP_NAME_INPUT="${2:-}"; shift 2 ;;
     --formula) FORMULA="${2:-}"; shift 2 ;;
     --out-json) OUT_JSON="${2:-}"; shift 2 ;;
+    --exact-kandelo-main-sha) EXACT_KANDELO_MAIN_SHA="${2:-}"; shift 2 ;;
     --auth-mode) AUTH_MODE="${2:-}"; shift 2 ;;
     --require-pat) REQUIRE_PAT="${2:-}"; shift 2 ;;
     --registry-user) REGISTRY_USER_INPUT="${2:-}"; shift 2 ;;
@@ -78,6 +80,11 @@ done
 if ! [[ "$TAP_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
    ! [[ "$FORMULA" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
   echo "homebrew-ghcr-upload.sh: invalid publication identity" >&2
+  exit 2
+fi
+if [ -n "$EXACT_KANDELO_MAIN_SHA" ] &&
+   ! [[ "$EXACT_KANDELO_MAIN_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "homebrew-ghcr-upload.sh: --exact-kandelo-main-sha must be an exact lowercase 40-character SHA" >&2
   exit 2
 fi
 if [ ! -d "$LAYOUT" ] || [ -L "$LAYOUT" ] ||
@@ -368,7 +375,17 @@ status=already-present
 if [ "$REMOTE_DIGEST" != "$EXPECTED_DIGEST" ]; then
   status=dry-run
   if [ "$DRY_RUN" != 1 ]; then
+    if [ -z "$EXACT_KANDELO_MAIN_SHA" ]; then
+      echo "homebrew-ghcr-upload.sh: --exact-kandelo-main-sha is required before a GHCR mutation" >&2
+      exit 2
+    fi
     ensure_authenticated_config
+    # WHY: registry preflight and authentication may outlive the main commit
+    # that authorized this run. Re-read protected main at the final write
+    # boundary so a branch advance cannot publish stale-source bottle bytes.
+    bash "$SCRIPT_ROOT/../.github/scripts/require-exact-kandelo-main.sh" \
+      --repository Automattic/kandelo \
+      --source-sha "$EXACT_KANDELO_MAIN_SHA" >/dev/null
     env -u GH_TOKEN -u GITHUB_TOKEN -u HOMEBREW_GITHUB_API_TOKEN \
       -u HOMEBREW_GITHUB_PACKAGES_TOKEN -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
       oras cp --from-oci-layout --to-registry-config "$AUTH_CONFIG" \

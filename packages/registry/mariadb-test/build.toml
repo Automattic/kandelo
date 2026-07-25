@@ -6,6 +6,7 @@ inputs = [
   "images/vfs/scripts/dinit-image-helpers.ts",
   "images/rootfs/etc/services",
   "images/vfs/scripts/mariadb-image-helpers.ts",
+  "images/vfs/scripts/mariadb-test-source-copy.ts",
   "images/vfs/scripts/source-extract-helper.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
   "host/src/binary-resolver.ts",

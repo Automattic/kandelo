@@ -3,7 +3,10 @@
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
 import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
-import { rewriteShellLazyFileUrls } from "../../../lib/init/shell-lazy-files";
+import {
+  assertShellLazyUrlsResolved,
+  rewriteShellLazyFileUrls,
+} from "../../../lib/init/shell-lazy-files";
 import { resolveShellLazyArchiveUrl } from "../../../lib/init/lazy-archives";
 import {
   WORDPRESS_CONFIG_INIT_SCRIPT,
@@ -1193,6 +1196,7 @@ async function bootProfile(
   }
   buildFs.rewriteLazyArchiveUrls(resolveShellLazyArchiveUrl);
   rewriteShellLazyFileUrls(buildFs);
+  assertShellLazyUrlsResolved(buildFs);
   if (profile.includeNodeUtility) {
     rewriteNodeLazyFileUrl(buildFs);
   }

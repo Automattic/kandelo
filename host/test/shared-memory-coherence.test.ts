@@ -234,9 +234,11 @@ function sysvHarness() {
   const memories = new Map(pids.map((pid) => [pid, sharedMemory()]));
   const kernelMemory = new WebAssembly.Memory({ initial: 2 });
   const segment = new Uint8Array(size);
-  const setCurrentPid = vi.fn();
   const shmat = vi.fn(() => size);
   const shmdt = vi.fn(() => 0);
+  const shmatForTask = vi.fn(() => size);
+  const shmdtForTask = vi.fn(() => 0);
+  const validateTask = vi.fn(() => 0);
   const readChunk = vi.fn((id: number, offset: number, outPtr: number, maxLen: number) => {
     expect(id).toBe(segId);
     const len = Math.min(maxLen, segment.length - offset);
@@ -261,15 +263,18 @@ function sysvHarness() {
   }));
   const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
     currentHandlePid: 0,
+    channelTids: new Map(),
     kernel: { toKernelPtr: (value: number | bigint) => Number(value) },
     kernelMemory,
     kernelInstance: {
       exports: {
-        kernel_set_current_pid: setCurrentPid,
-        kernel_ipc_shmat: shmat,
-        kernel_ipc_shmdt: shmdt,
+        kernel_ipc_shmat_for_process: shmat,
+        kernel_ipc_shmat_for_task: shmatForTask,
+        kernel_ipc_shmdt_for_process: shmdt,
+        kernel_ipc_shmdt_for_task: shmdtForTask,
         kernel_ipc_shm_read_chunk: readChunk,
         kernel_ipc_shm_write_chunk: writeChunk,
+        kernel_validate_task: validateTask,
       },
     },
     scratchOffset: 0,
@@ -282,7 +287,20 @@ function sysvHarness() {
     ]),
     shmSegmentVersions: new Map([[segId, 0]]),
   }) as CentralizedKernelWorker;
-  return { kw, mapAddr, memories, pids, segment, segId, shmat, shmdt, size };
+  return {
+    kw,
+    mapAddr,
+    memories,
+    pids,
+    segment,
+    segId,
+    shmat,
+    shmatForTask,
+    shmdt,
+    shmdtForTask,
+    size,
+    validateTask,
+  };
 }
 
 describe("SysV SHM coherence and lifecycle", () => {
@@ -330,11 +348,12 @@ describe("SysV SHM coherence and lifecycle", () => {
   it("increments inherited nattch and detaches the child exactly once", () => {
     const h = sysvHarness();
     h.kw.inheritProcessSharedMappings(h.pids[0], h.pids[2]);
-    expect(h.shmat).toHaveBeenCalledWith(h.segId, h.mapAddr, 0);
+    expect(h.shmat).toHaveBeenCalledWith(h.pids[2], h.segId, h.mapAddr, 0);
     expect((h.kw as any).shmMappings.get(h.pids[2]).size).toBe(1);
 
     (h.kw as any).releaseAllSharedMemoryForProcess(h.pids[2]);
     expect(h.shmdt).toHaveBeenCalledTimes(1);
+    expect(h.shmdt).toHaveBeenCalledWith(h.pids[2], h.segId);
     (h.kw as any).releaseAllSharedMemoryForProcess(h.pids[2]);
     expect(h.shmdt).toHaveBeenCalledTimes(1);
   });
@@ -366,12 +385,36 @@ describe("SysV SHM coherence and lifecycle", () => {
       completeChannelRaw: complete,
       relistenChannel: relisten,
     });
-    const memory = h.memories.get(h.pids[2])!;
-    const channel = { pid: h.pids[2], memory, channelOffset: 0 };
+    const channel = (h.kw as any).processes.get(h.pids[2]).channels[0];
 
     (h.kw as any).handleIpcShmat(channel, [h.segId, 0, 0]);
+    expect(h.validateTask).toHaveBeenCalledWith(h.pids[2], h.pids[2]);
+    expect(h.shmatForTask).toHaveBeenCalledWith(
+      h.pids[2],
+      h.pids[2],
+      h.segId,
+      0,
+      0,
+    );
     expect(h.shmdt).toHaveBeenCalledTimes(1);
     expect(complete).toHaveBeenCalledWith(channel, -12, 12);
     expect(relisten).toHaveBeenCalledWith(channel);
+  });
+
+  it("rejects a stale task before changing kernel or host attachment state", () => {
+    const h = sysvHarness();
+    h.validateTask.mockReturnValue(-3);
+    const syncSegment = vi.fn();
+    (h.kw as any).syncSysvShmSegmentFromMappedProcesses = syncSegment;
+    const channel = (h.kw as any).processes.get(h.pids[2]).channels[0];
+
+    expect(() => {
+      (h.kw as any).handleIpcShmat(channel, [h.segId, 0, 0]);
+    }).toThrow(/rejected tid/);
+
+    expect(h.validateTask).toHaveBeenCalledWith(h.pids[2], h.pids[2]);
+    expect(syncSegment).not.toHaveBeenCalled();
+    expect(h.shmatForTask).not.toHaveBeenCalled();
+    expect((h.kw as any).shmMappings.has(h.pids[2])).toBe(false);
   });
 });

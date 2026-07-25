@@ -139,7 +139,9 @@ impl TerminalState {
                 ws_xpixel: 0,
                 ws_ypixel: 0,
             },
-            foreground_pgid: 1, // default to PID 1's group
+            // No foreground process group exists until a Process or PTY
+            // allocation binds this terminal to authoritative process state.
+            foreground_pgid: 0,
             session_id: 0,
             line_buffer: Vec::new(),
             cooked_buffer: Vec::new(),

@@ -236,6 +236,7 @@ aliases = ["/bin/file"]
 
 [[packages.outputs]]
 binary = "programs/wasm32/file/file-magic.lite"
+source_artifact = "magic.lite"
 path = "/usr/share/misc/magic.mgc"
 install = "eager"
 mode = "0644"

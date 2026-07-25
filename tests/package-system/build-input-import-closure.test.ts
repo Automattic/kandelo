@@ -1,9 +1,4 @@
-import {
-  existsSync,
-  lstatSync,
-  readFileSync,
-  readdirSync,
-} from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import {
   dirname,
   extname,
@@ -48,25 +43,36 @@ describe("package build input import closure", () => {
 
     expect(packagesAffectedBy("host/src/vfs/memory-fs.ts")).toEqual(packages);
 
-    expect(packagesAffectedBy("host/src/homebrew-bottle-relocation.ts"))
-      .toEqual(packages);
+    expect(
+      packagesAffectedBy("host/src/homebrew-bottle-relocation.ts"),
+    ).toEqual(packages);
 
     for (const changedPath of [
       "host/src/homebrew-runtime-layer-policy.ts",
       "host/src/homebrew-lazy-layer-descriptor.ts",
-      "host/src/vfs/tar.ts",
     ]) {
-      expect(packagesAffectedBy(changedPath)).toContain("shell");
+      // The temporary source-rootfs bridge does not execute the dormant
+      // bottle composer. Exact-main bottle activation will add these cache
+      // inputs back when the shell package actually consumes them again.
+      expect(packagesAffectedBy(changedPath)).not.toContain("shell");
     }
+    expect(
+      packagesAffectedBy(
+        "images/vfs/scripts/build-source-rootfs-shell-image.ts",
+      ),
+    ).toContain("shell");
+    expect(packagesAffectedBy("host/src/vfs/tar.ts")).toContain("shell");
   });
 
   it("keeps materialized shell composition behind its candidate entrypoint", () => {
-    const canonicalClosure = new Set(runtimeImportClosure(
-      "images/vfs/scripts/build-homebrew-vfs-image.ts",
-    ));
-    const candidateClosure = new Set(runtimeImportClosure(
-      "images/vfs/scripts/build-homebrew-materialized-vfs-image.ts",
-    ));
+    const canonicalClosure = new Set(
+      runtimeImportClosure("images/vfs/scripts/build-homebrew-vfs-image.ts"),
+    );
+    const candidateClosure = new Set(
+      runtimeImportClosure(
+        "images/vfs/scripts/build-homebrew-materialized-vfs-image.ts",
+      ),
+    );
     const composerClosure = runtimeImportClosure(
       "host/src/homebrew-vfs-composer.ts",
     );
@@ -87,9 +93,66 @@ describe("package build input import closure", () => {
     expect(
       composerClosure.filter((path) => !candidateClosure.has(path)),
     ).toEqual([]);
-    expect(candidateClosure.has(
-      "images/vfs/scripts/build-homebrew-vfs-image.ts",
-    )).toBe(true);
+    expect(
+      candidateClosure.has("images/vfs/scripts/build-homebrew-vfs-image.ts"),
+    ).toBe(true);
+  });
+
+  it("keeps local WordPress setup aliases outside product VFS builds", () => {
+    for (const [packageName, buildScript] of [
+      ["lamp", "packages/registry/lamp/build-lamp.sh"],
+      ["wordpress", "packages/registry/wordpress/build-wordpress.sh"],
+    ] as const) {
+      const executableLines = readFileSync(join(repoRoot, buildScript), "utf8")
+        .split(/\r?\n/)
+        .filter(
+          (line) => line.trim() !== "" && !line.trimStart().startsWith("#"),
+        );
+      expect(executableLines.join("\n")).not.toContain("setup.sh");
+      expect(
+        readFileSync(
+          join(repoRoot, "packages", "registry", packageName, "build.toml"),
+          "utf8",
+        ),
+      ).not.toContain("packages/registry/wordpress/setup.sh");
+    }
+
+    for (const imageBuilder of [
+      "images/vfs/scripts/build-lamp-vfs-image.ts",
+      "images/vfs/scripts/build-wp-vfs-image.ts",
+    ]) {
+      const source = readFileSync(join(repoRoot, imageBuilder), "utf8");
+      expect(source).toContain("resolveWordPressCoreSource(REPO_ROOT)");
+      expect(source).toContain("copyWordPressCoreSource(fs, WP_DIR)");
+    }
+
+    const sqliteImageBuilder = readFileSync(
+      join(repoRoot, "images/vfs/scripts/build-wp-vfs-image.ts"),
+      "utf8",
+    );
+    expect(sqliteImageBuilder).toContain(
+      "resolveWordPressSqlitePluginSource()",
+    );
+    expect(sqliteImageBuilder).toContain(
+      "materializeWordPressSqlitePlugin(fs, SQLITE_DIR)",
+    );
+
+    for (const localDemoScript of [
+      "packages/registry/wordpress/demo/build.sh",
+      "packages/registry/wordpress/demo/run.sh",
+    ]) {
+      const executableLines = readFileSync(
+        join(repoRoot, localDemoScript),
+        "utf8",
+      )
+        .split(/\r?\n/)
+        .filter(
+          (line) => line.trim() !== "" && !line.trimStart().startsWith("#"),
+        );
+      expect(executableLines.join("\n")).toContain(
+        'bash "$SCRIPT_DIR/../setup.sh"',
+      );
+    }
   });
 
   for (const packageName of packages) {
@@ -103,8 +166,12 @@ describe("package build input import closure", () => {
       );
       const buildToml = readFileSync(buildTomlPath, "utf8");
       const declaredInputs = parseBuildInputs(buildToml);
-      const declaredPaths = declaredInputs.map((input) => resolve(repoRoot, input));
-      const scriptPath = buildToml.match(/^script_path\s*=\s*"([^"]+)"\s*$/m)?.[1];
+      const declaredPaths = declaredInputs.map((input) =>
+        resolve(repoRoot, input),
+      );
+      const scriptPath = buildToml.match(
+        /^script_path\s*=\s*"([^"]+)"\s*$/m,
+      )?.[1];
 
       expect(declaredInputs.length).toBeGreaterThan(0);
       expect(declaredInputs).toEqual([...new Set(declaredInputs)]);
@@ -148,12 +215,17 @@ describe("package build input import closure", () => {
             `${relative(repoRoot, sourcePath)} imports outside the repository: ${specifier}`,
           ).toBe(true);
 
-          if (!declaredPaths.some((declaredPath) => covers(declaredPath, importedPath))) {
+          if (
+            !declaredPaths.some((declaredPath) =>
+              covers(declaredPath, importedPath),
+            )
+          ) {
             missing.add(
               `${relative(repoRoot, importedPath)} (imported by ${relative(repoRoot, sourcePath)})`,
             );
           }
-          if (sourceExtensions.has(extname(importedPath))) sourceQueue.push(importedPath);
+          if (sourceExtensions.has(extname(importedPath)))
+            sourceQueue.push(importedPath);
         }
       }
 
@@ -175,7 +247,9 @@ describe("package build input import closure", () => {
         "utf8",
       );
       const builder = readFileSync(join(repoRoot, builderPath), "utf8");
-      const revision = Number(buildToml.match(/^revision\s*=\s*(\d+)\s*$/m)?.[1]);
+      const revision = Number(
+        buildToml.match(/^revision\s*=\s*(\d+)\s*$/m)?.[1],
+      );
 
       expect(manifest).toMatch(
         /^depends_on\s*=\s*\[[\s\S]*?"coreutils@9\.6"[\s\S]*?\]/m,
@@ -206,7 +280,7 @@ function packagesAffectedBy(changedPath: string): string[] {
         readFileSync(buildTomlPath, "utf8"),
       ).map((input) => resolve(repoRoot, input));
       return declaredPaths.some((declaredPath) =>
-        covers(declaredPath, absoluteChangedPath)
+        covers(declaredPath, absoluteChangedPath),
       );
     })
     .sort();
@@ -225,7 +299,7 @@ function discoverVfsImagePackages(): string[] {
         .split(/^\s*\[\[outputs\]\]\s*$/m)
         .slice(1)
         .some((block) =>
-          /^\s*wasm\s*=\s*"[^"]+\.vfs(?:\.zst)?"\s*(?:#.*)?$/m.test(block)
+          /^\s*wasm\s*=\s*"[^"]+\.vfs(?:\.zst)?"\s*(?:#.*)?$/m.test(block),
         );
     })
     .sort();
@@ -256,9 +330,7 @@ function runtimeImportClosure(entryPath: string): string[] {
     }
   }
 
-  return [...inspected]
-    .map((path) => relative(repoRoot, path))
-    .sort();
+  return [...inspected].map((path) => relative(repoRoot, path)).sort();
 }
 
 function parseBuildInputs(buildToml: string): string[] {
@@ -293,12 +365,16 @@ function relativeImportSpecifiers(source: string): string[] {
     /\brequire(?:\.resolve)?\s*\(\s*["'](\.[^"']*)["']\s*\)/g,
   ];
   for (const pattern of patterns) {
-    for (const match of runtimeSource.matchAll(pattern)) specifiers.add(match[1]);
+    for (const match of runtimeSource.matchAll(pattern))
+      specifiers.add(match[1]);
   }
   return [...specifiers];
 }
 
-function resolveImport(sourcePath: string, rawSpecifier: string): string | null {
+function resolveImport(
+  sourcePath: string,
+  rawSpecifier: string,
+): string | null {
   const specifier = rawSpecifier.replace(/[?#].*$/, "");
   const unresolved = resolve(dirname(sourcePath), specifier);
   const extension = extname(unresolved);
@@ -321,21 +397,28 @@ function resolveImport(sourcePath: string, rawSpecifier: string): string | null 
     candidates.push(unresolved + ".json");
   }
 
-  return candidates.find(
-    (candidate) => existsSync(candidate) && !lstatSync(candidate).isDirectory(),
-  ) ?? null;
+  return (
+    candidates.find(
+      (candidate) =>
+        existsSync(candidate) && !lstatSync(candidate).isDirectory(),
+    ) ?? null
+  );
 }
 
 function covers(declaredPath: string, importedPath: string): boolean {
   if (declaredPath === importedPath) return true;
-  return lstatSync(declaredPath).isDirectory() && isWithin(declaredPath, importedPath);
+  return (
+    lstatSync(declaredPath).isDirectory() &&
+    isWithin(declaredPath, importedPath)
+  );
 }
 
 function isWithin(parent: string, child: string): boolean {
   const childRelative = relative(parent, child);
-  return childRelative === "" || (
-    !isAbsolute(childRelative) &&
-    childRelative !== ".." &&
-    !childRelative.startsWith(`..${sep}`)
+  return (
+    childRelative === "" ||
+    (!isAbsolute(childRelative) &&
+      childRelative !== ".." &&
+      !childRelative.startsWith(`..${sep}`))
   );
 }

@@ -6,6 +6,7 @@ import {
   CH_SIG_FLAGS,
   CH_SIG_SIGNUM,
   CH_STATUS,
+  CH_SYSCALL,
   CHANNEL_STATUS_COMPLETE,
   CHANNEL_STATUS_PENDING,
   KERNEL_WAIT_RESULT_CHILD_UID_OFFSET,
@@ -47,6 +48,7 @@ describe("Rust-owned process wait lifecycle", () => {
     );
     const waitChildPoll = vi.fn((
       _parentPid: number,
+      _callerTid: number,
       _targetPid: number,
       _eventMask: number,
       _flags: number,
@@ -71,12 +73,10 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.completeWaitpid = vi.fn();
 
     const rusagePtr = 512;
-    worker.handleWaitpid(
-      createChannel(7, processMemory),
-      [-1, statusPtr, 0, rusagePtr],
-    );
+    const channel = registerMainChannel(worker, createChannel(7, processMemory));
+    worker.handleWaitpid(channel, [-1, statusPtr, 0, rusagePtr]);
 
-    expect(waitChildPoll).toHaveBeenCalledWith(7, -1, WAIT_EVENT_EXITED, 0, 128);
+    expect(waitChildPoll).toHaveBeenCalledWith(7, 7, -1, WAIT_EVENT_EXITED, 0, 128);
     expect(reapExitedChild).not.toHaveBeenCalled();
     expect(new DataView(processMemory.buffer).getInt32(statusPtr, true)).toBe(waitStatus);
     expect(new Uint8Array(
@@ -100,6 +100,7 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.completeWaitpid = vi.fn();
 
     const channel = createChannel(7, createSharedMemory());
+    registerMainChannel(worker, channel);
     worker.handleWaitpid(channel, [-1, 0, 0, 0]);
 
     expect(worker.completeWaitpid).not.toHaveBeenCalled();
@@ -176,7 +177,8 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.waitingForChild = [];
     worker.completeWaitpid = vi.fn();
 
-    worker.handleWaitpid(createChannel(7, createSharedMemory()), [-1, 0, WAIT_WNOHANG, 0]);
+    const channel = registerMainChannel(worker, createChannel(7, createSharedMemory()));
+    worker.handleWaitpid(channel, [-1, 0, WAIT_WNOHANG, 0]);
 
     expect(worker.waitingForChild).toEqual([]);
     expect(worker.completeWaitpid).toHaveBeenCalledWith(
@@ -194,9 +196,11 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.waitingForChild = [];
     worker.completeWaitpid = vi.fn();
 
-    worker.handleWaitpid(createChannel(7, createSharedMemory()), [-1, 0, WAIT_WNOHANG, 0]);
+    const channel = registerMainChannel(worker, createChannel(7, createSharedMemory()));
+    worker.handleWaitpid(channel, [-1, 0, WAIT_WNOHANG, 0]);
 
     expect(waitChildPoll).toHaveBeenCalledWith(
+      7,
       7,
       -1,
       WAIT_EVENT_EXITED,
@@ -239,6 +243,7 @@ describe("Rust-owned process wait lifecycle", () => {
     const rusage = new Uint8Array(STRUCT_SIZE_WASM_RUSAGE_WIRE).fill(0x5a);
     const waitChildPoll = vi.fn((
       _parentPid: number,
+      _callerTid: number,
       _targetPid: number,
       _eventMask: number,
       _flags: number,
@@ -258,9 +263,11 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.completeWaitid = vi.fn();
     const args = [1, 44, siginfoPtr, WAIT_WSTOPPED | WAIT_WNOWAIT, rusagePtr];
 
-    worker.handleWaitid(createChannel(7, processMemory), args);
+    const channel = registerMainChannel(worker, createChannel(7, processMemory));
+    worker.handleWaitid(channel, args);
 
     expect(waitChildPoll).toHaveBeenCalledWith(
+      7,
       7,
       44,
       WAIT_EVENT_STOPPED,
@@ -293,6 +300,7 @@ describe("Rust-owned process wait lifecycle", () => {
     const siginfoPtr = 512;
     const waitChildPoll = vi.fn((
       _parentPid: number,
+      _callerTid: number,
       _targetPid: number,
       _eventMask: number,
       _flags: number,
@@ -346,7 +354,8 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.completeWaitid = vi.fn();
     const args = [0, 0, siginfoPtr, WAIT_WEXITED | WAIT_WNOHANG, rusagePtr];
 
-    worker.handleWaitid(createChannel(7, processMemory), args);
+    const channel = registerMainChannel(worker, createChannel(7, processMemory));
+    worker.handleWaitid(channel, args);
 
     expect(new Uint8Array(processMemory.buffer, siginfoPtr, 128))
       .toEqual(new Uint8Array(128));
@@ -574,6 +583,7 @@ describe("Rust-owned process wait lifecycle", () => {
 
     expect(waitChildPoll).toHaveBeenCalledWith(
       7,
+      7,
       0,
       WAIT_EVENT_EXITED,
       WAIT_WNOWAIT,
@@ -621,6 +631,7 @@ describe("Rust-owned process wait lifecycle", () => {
     let pollCount = 0;
     const waitChildPoll = vi.fn((
       _parentPid: number,
+      _callerTid: number,
       _targetPid: number,
       _eventMask: number,
       _flags: number,
@@ -642,6 +653,7 @@ describe("Rust-owned process wait lifecycle", () => {
       channels: [first, second],
       memory: processMemory,
     }]]);
+    worker.channelTids = new Map([["7:256", 8]]);
     worker.completeWaitpid = vi.fn();
     worker.waitingForChild = [
       {
@@ -678,6 +690,7 @@ describe("Rust-owned process wait lifecycle", () => {
     const running = createChannel(7, processMemory, 512);
     const waitChildPoll = vi.fn((
       _parentPid: number,
+      _callerTid: number,
       targetPid: number,
       _eventMask: number,
       _flags: number,
@@ -699,6 +712,10 @@ describe("Rust-owned process wait lifecycle", () => {
       channels: [first, second, running],
       memory: processMemory,
     }]]);
+    worker.channelTids = new Map([
+      ["7:256", 8],
+      ["7:512", 9],
+    ]);
     worker.completeWaitid = vi.fn();
     const options = WAIT_WEXITED | WAIT_WNOWAIT;
     const makeWaiter = (channel: any, pid: number, siginfoPtr: number) => ({
@@ -720,10 +737,10 @@ describe("Rust-owned process wait lifecycle", () => {
 
     expect(worker.waitingForChild).toEqual([runningWaiter]);
     expect(worker.completeWaitid).toHaveBeenCalledTimes(2);
-    expect(waitChildPoll.mock.calls.filter((call: unknown[]) => call[1] === 42))
+    expect(waitChildPoll.mock.calls.filter((call: unknown[]) => call[2] === 42))
       .toEqual([
-        [7, 42, WAIT_EVENT_EXITED, WAIT_WNOWAIT, 128],
-        [7, 42, WAIT_EVENT_EXITED, WAIT_WNOWAIT, 128],
+        [7, 7, 42, WAIT_EVENT_EXITED, WAIT_WNOWAIT, 128],
+        [7, 8, 42, WAIT_EVENT_EXITED, WAIT_WNOWAIT, 128],
       ]);
     expect(new DataView(processMemory.buffer).getInt32(1024 + 12, true)).toBe(42);
     expect(new DataView(processMemory.buffer).getInt32(1280 + 12, true)).toBe(42);
@@ -741,7 +758,7 @@ describe("Rust-owned process wait lifecycle", () => {
       shared: true,
     });
     const channel = createChannel(7, processMemory);
-    const dequeue = vi.fn((_pid: number, outPtr: number) => {
+    const dequeue = vi.fn((_pid: number, _tid: number, outPtr: number) => {
       const view = new DataView(kernelMemory.buffer);
       view.setUint32(outPtr, SIGUSR1, true);
       view.setUint32(outPtr + 8, SA_RESTART, true);
@@ -968,7 +985,7 @@ describe("Rust-owned process wait lifecycle", () => {
       shared: true,
     });
     const channel = createChannel(42, processMemory);
-    const dequeue = vi.fn((_pid: number, outPtr: number) => {
+    const dequeue = vi.fn((_pid: number, _tid: number, outPtr: number) => {
       new DataView(kernelMemory.buffer).setUint32(outPtr, SIGCONT, true);
       return SIGCONT;
     });
@@ -1017,8 +1034,8 @@ describe("Rust-owned process wait lifecycle", () => {
     let state = PROCESS_STATE_STOPPED;
     let currentTid = 0;
     let secondScans = 0;
-    const dequeue = vi.fn((_pid: number, outPtr: number) => {
-      if (currentTid === 101) {
+    const dequeue = vi.fn((_pid: number, tid: number, outPtr: number) => {
+      if (tid === 101) {
         new DataView(kernelMemory.buffer).setUint32(outPtr, SIGCONT, true);
         return SIGCONT;
       }
@@ -1028,7 +1045,10 @@ describe("Rust-owned process wait lifecycle", () => {
     });
     const worker = createWorkerHarness({
       kernel_get_process_state: vi.fn(() => state),
-      kernel_set_current_tid: vi.fn((tid: number) => { currentTid = tid; }),
+      kernel_set_current_tid: vi.fn((_pid: number, tid: number) => {
+        currentTid = tid;
+        return 0;
+      }),
       kernel_dequeue_signal: dequeue,
       kernel_get_process_exit_signal: vi.fn(() => -1),
     });
@@ -1092,7 +1112,7 @@ describe("Rust-owned process wait lifecycle", () => {
     const channel = createChannel(7, processMemory);
     markPending(channel);
     let state = PROCESS_STATE_STOPPED;
-    const dequeue = vi.fn((_pid: number, outPtr: number) => {
+    const dequeue = vi.fn((_pid: number, _tid: number, outPtr: number) => {
       new DataView(kernelMemory.buffer).setUint32(outPtr, SIGUSR1, true);
       return SIGUSR1;
     });
@@ -1296,6 +1316,227 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(onExit).toHaveBeenCalledWith(42, 137);
   });
 
+  it("settles only the exit handshake after Rust has reaped a process", () => {
+    const memory = createSharedMemory();
+    const channel = createChannel(42, memory);
+    const setCurrentTid = vi.fn(() => -3);
+    const handleChannel = vi.fn();
+    const worker = createWorkerHarness({
+      kernel_set_current_tid: setCurrentTid,
+      kernel_handle_channel: handleChannel,
+    });
+    worker.processes = new Map([[42, { channels: [channel], memory }]]);
+    worker.hostReaped = new Set([42]);
+    worker.completeChannelRaw = vi.fn();
+    worker.relistenChannel = vi.fn();
+    const processView = new DataView(memory.buffer, channel.channelOffset);
+
+    processView.setUint32(CH_SYSCALL, ABI_SYSCALLS.ExitGroup, true);
+    worker.handleSyscall(channel);
+
+    expect(worker.completeChannelRaw).toHaveBeenCalledWith(channel, 0, 0);
+    expect(worker.relistenChannel).toHaveBeenCalledOnce();
+    expect(worker.relistenChannel).toHaveBeenCalledWith(channel);
+
+    processView.setUint32(CH_SYSCALL, ABI_SYSCALLS.Exit, true);
+    worker.handleSyscall(channel);
+
+    expect(worker.completeChannelRaw).toHaveBeenCalledTimes(2);
+    expect(worker.relistenChannel).toHaveBeenCalledOnce();
+    expect(setCurrentTid).not.toHaveBeenCalled();
+    expect(handleChannel).not.toHaveBeenCalled();
+  });
+
+  it("parks non-exit syscalls from a process Rust has already reaped", () => {
+    const memory = createSharedMemory();
+    const channel = createChannel(42, memory);
+    markPending(channel);
+    const setCurrentTid = vi.fn(() => -3);
+    const handleChannel = vi.fn();
+    const worker = createWorkerHarness({
+      kernel_set_current_tid: setCurrentTid,
+      kernel_handle_channel: handleChannel,
+    });
+    worker.processes = new Map([[42, { channels: [channel], memory }]]);
+    worker.hostReaped = new Set([42]);
+    worker.completeChannelRaw = vi.fn();
+    worker.relistenChannel = vi.fn();
+    new DataView(memory.buffer, channel.channelOffset).setUint32(
+      CH_SYSCALL,
+      ABI_SYSCALLS.SchedYield,
+      true,
+    );
+
+    worker.handleSyscall(channel);
+
+    expect(readStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
+    expect(channel.handling).toBe(true);
+    expect(worker.completeChannelRaw).not.toHaveBeenCalled();
+    expect(worker.relistenChannel).not.toHaveBeenCalled();
+    expect(setCurrentTid).not.toHaveBeenCalled();
+    expect(handleChannel).not.toHaveBeenCalled();
+  });
+
+  it("terminates a live process whose channel cannot bind to a kernel task", () => {
+    const pid = 42;
+    const tid = 101;
+    const memory = createSharedMemory();
+    const channel = createChannel(pid, memory);
+    const setCurrentTid = vi.fn(() => -3);
+    const onExit = vi.fn();
+    const worker = createWorkerHarness({ kernel_set_current_tid: setCurrentTid });
+    worker.processes = new Map([[pid, { channels: [channel], memory }]]);
+    worker.hostReaped = new Set();
+    worker.callbacks = { onExit };
+    worker.notifyHostProcessCrashed = vi.fn();
+    worker.completeChannelRaw = vi.fn();
+    worker.relistenChannel = vi.fn();
+    worker._handleSyscallInner = vi.fn(() => worker.bindKernelTid(pid, tid));
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      worker.handleSyscall(channel);
+
+      expect(setCurrentTid).toHaveBeenCalledWith(pid, tid);
+      expect(worker.notifyHostProcessCrashed).toHaveBeenCalledWith(pid, 11);
+      expect(onExit).toHaveBeenCalledWith(pid, 139);
+      expect(channel.handling).toBe(true);
+      expect(worker.completeChannelRaw).not.toHaveBeenCalled();
+      expect(worker.relistenChannel).not.toHaveBeenCalled();
+      expect(error).toHaveBeenCalledWith(
+        "[handleSyscall] FATAL task binding error: " +
+          `Kernel rejected tid ${tid} for process ${pid}: errno 3`,
+      );
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("terminates instead of substituting the leader for a pthread with no TID mapping", () => {
+    const pid = 42;
+    const memory = createSharedMemory();
+    const mainChannel = createChannel(pid, memory);
+    const threadChannel = createChannel(pid, memory, 256);
+    const onExit = vi.fn();
+    const worker = createWorkerHarness();
+    worker.processes = new Map([[pid, {
+      channels: [mainChannel, threadChannel],
+      memory,
+    }]]);
+    worker.channelTids = new Map();
+    worker.hostReaped = new Set();
+    worker.callbacks = { onExit };
+    worker.notifyHostProcessCrashed = vi.fn();
+    worker.completeChannelRaw = vi.fn();
+    worker.relistenChannel = vi.fn();
+    worker._handleSyscallInner = vi.fn(() =>
+      worker.guestTidForChannel(threadChannel));
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const expected =
+      `No kernel-validated TID for non-main channel ${threadChannel.channelOffset} ` +
+      `of process ${pid}`;
+
+    try {
+      worker.handleSyscall(threadChannel);
+
+      expect(worker.notifyHostProcessCrashed).toHaveBeenCalledWith(pid, 11);
+      expect(onExit).toHaveBeenCalledWith(pid, 139);
+      expect(threadChannel.handling).toBe(true);
+      expect(worker.completeChannelRaw).not.toHaveBeenCalled();
+      expect(worker.relistenChannel).not.toHaveBeenCalled();
+      expect(error).toHaveBeenCalledWith(
+        `[handleSyscall] FATAL task binding error: ${expected}`,
+      );
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("still requests Worker teardown when recording a binding crash fails", () => {
+    const pid = 42;
+    const tid = 101;
+    const memory = createSharedMemory();
+    const channel = createChannel(pid, memory);
+    const transitionError = new Error("kernel crash transition failed");
+    const onExit = vi.fn();
+    const worker = createWorkerHarness({
+      kernel_set_current_tid: vi.fn(() => -3),
+    });
+    worker.processes = new Map([[pid, { channels: [channel], memory }]]);
+    worker.hostReaped = new Set();
+    worker.callbacks = { onExit };
+    worker.notifyHostProcessCrashed = vi.fn(() => {
+      throw transitionError;
+    });
+    worker._handleSyscallInner = vi.fn(() => worker.bindKernelTid(pid, tid));
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      expect(() => worker.handleSyscall(channel)).toThrow(transitionError);
+
+      expect(worker.notifyHostProcessCrashed).toHaveBeenCalledWith(pid, 11);
+      expect(onExit).toHaveBeenCalledWith(pid, 139);
+      expect(channel.handling).toBe(true);
+      expect(error).toHaveBeenCalledWith(
+        `[handleSyscall] Failed to record process ${pid} crash in kernel:`,
+        transitionError,
+      );
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("retires stale pthread transport metadata when deactivating a zombie", () => {
+    const pid = 42;
+    const otherPid = 420;
+    const worker = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      retireAsyncChannelsForProcess: vi.fn(),
+      discardStoppedChannelStateForProcess: vi.fn(),
+      waitingForChild: [],
+      releaseAllSharedMemoryForProcess: vi.fn(),
+      activeChannels: [{ pid }, { pid: otherPid }],
+      channelTids: new Map([
+        [`${pid}:1000`, 1001],
+        [`${otherPid}:2000`, 2001],
+      ]),
+      threadForkContexts: new Map([
+        [`${pid}:1000`, { fnPtr: 1, argPtr: 2 }],
+        [`${otherPid}:2000`, { fnPtr: 3, argPtr: 4 }],
+      ]),
+      threadCtidPtrs: new Map([
+        [`${pid}:1001`, 3000],
+        [`${otherPid}:2001`, 4000],
+      ]),
+      processes: new Map([[pid, {}], [otherPid, {}]]),
+      execHandoffPids: new Set([pid]),
+      stdinFinite: new Set([pid]),
+      stdinBuffers: new Map([[pid, new Uint8Array()]]),
+      alarmTimers: new Map(),
+      posixTimers: new Map(),
+      cancelPendingSleepsForProcess: vi.fn(),
+      cleanupPendingPollRetries: vi.fn(),
+      cleanupPendingSelectRetries: vi.fn(),
+      cleanupPendingSignalWaits: vi.fn(),
+      cleanupUdpBindings: vi.fn(),
+      cleanupTcpListeners: vi.fn(),
+      hostReaped: new Set([pid]),
+    }) as any;
+
+    worker.deactivateProcess(pid);
+
+    expect(Array.from(worker.channelTids.entries())).toEqual([
+      [`${otherPid}:2000`, 2001],
+    ]);
+    expect(Array.from(worker.threadForkContexts.entries())).toEqual([
+      [`${otherPid}:2000`, { fnPtr: 3, argPtr: 4 }],
+    ]);
+    expect(Array.from(worker.threadCtidPtrs.entries())).toEqual([
+      [`${otherPid}:2001`, 4000],
+    ]);
+    expect(worker.processes.has(pid)).toBe(false);
+    expect(worker.activeChannels).toEqual([{ pid: otherPid }]);
+  });
+
   it("host-observed crashes are marked in Rust before parent notification", () => {
     const calls: string[] = [];
     const markProcessSignaled = vi.fn(() => {
@@ -1317,6 +1558,44 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.sendSignalToProcess).toHaveBeenCalledWith(7, SIGCHLD);
     expect(calls).toEqual(["mark", "signal"]);
     expect(worker.sharedMappings.has(42)).toBe(false);
+  });
+
+  it("does not publish a host crash when the kernel transition export is missing", () => {
+    const worker = createWorkerHarness({});
+    worker.hostReaped = new Set();
+    worker.discardStoppedChannelStateForProcess = vi.fn();
+    worker.releaseAllSharedMemoryForProcess = vi.fn();
+    worker.notifyParentOfExitedProcess = vi.fn();
+
+    expect(() => worker.notifyHostProcessCrashed(42, 11)).toThrow(
+      "Kernel missing required kernel_mark_process_signaled export",
+    );
+
+    expect(worker.hostReaped.has(42)).toBe(false);
+    expect(worker.discardStoppedChannelStateForProcess).not.toHaveBeenCalled();
+    expect(worker.releaseAllSharedMemoryForProcess).not.toHaveBeenCalled();
+    expect(worker.notifyParentOfExitedProcess).not.toHaveBeenCalled();
+  });
+
+  it("does not publish a host crash rejected by the kernel", () => {
+    const markProcessSignaled = vi.fn(() => -3);
+    const worker = createWorkerHarness({
+      kernel_mark_process_signaled: markProcessSignaled,
+    });
+    worker.hostReaped = new Set();
+    worker.discardStoppedChannelStateForProcess = vi.fn();
+    worker.releaseAllSharedMemoryForProcess = vi.fn();
+    worker.notifyParentOfExitedProcess = vi.fn();
+
+    expect(() => worker.notifyHostProcessCrashed(42, 11)).toThrow(
+      "Kernel rejected signal-death transition for process 42: errno 3",
+    );
+
+    expect(markProcessSignaled).toHaveBeenCalledWith(42, 11);
+    expect(worker.hostReaped.has(42)).toBe(false);
+    expect(worker.discardStoppedChannelStateForProcess).not.toHaveBeenCalled();
+    expect(worker.releaseAllSharedMemoryForProcess).not.toHaveBeenCalled();
+    expect(worker.notifyParentOfExitedProcess).not.toHaveBeenCalled();
   });
 
   it("marks a host crash reaped before shared-state teardown can re-enter", () => {
@@ -1354,6 +1633,46 @@ describe("Rust-owned process wait lifecycle", () => {
 
     expect(worker.handleProcessTerminated).toHaveBeenCalledWith(channel);
     expect(kernelHandle).not.toHaveBeenCalled();
+  });
+
+  it("does not publish a clean exit when the trapped kernel leaves the process live", () => {
+    const pid = 42;
+    const memory = createSharedMemory();
+    const channel = createChannel(pid, memory);
+    const markProcessSignaled = vi.fn(() => 0);
+    const onExit = vi.fn();
+    const worker = createWorkerHarness({
+      kernel_handle_channel: vi.fn(() => {
+        throw new WebAssembly.RuntimeError("unreachable");
+      }),
+      kernel_get_process_state: vi.fn(() => PROCESS_STATE_RUNNING),
+      kernel_mark_process_signaled: markProcessSignaled,
+    });
+    worker.processes = new Map([[pid, { channels: [channel], memory }]]);
+    worker.hostReaped = new Set();
+    worker.callbacks = { onExit };
+    worker.releaseAllSharedMemoryForProcess = vi.fn();
+    worker.discardStoppedChannelStateForProcess = vi.fn();
+    worker.drainAndProcessWakeupEvents = vi.fn();
+    worker.notifyParentOfExitedProcess = vi.fn();
+    worker.completeProcessExitHandshake = vi.fn();
+    worker.scheduleWakeBlockedRetries = vi.fn();
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      worker.handleExit(channel, ABI_SYSCALLS.ExitGroup, [7]);
+
+      expect(markProcessSignaled).toHaveBeenCalledWith(pid, 11);
+      expect(worker.hostReaped.has(pid)).toBe(true);
+      expect(onExit).toHaveBeenCalledWith(pid, 139);
+      expect(onExit).not.toHaveBeenCalledWith(pid, 7);
+      expect(worker.completeProcessExitHandshake).not.toHaveBeenCalled();
+      expect(error).toHaveBeenCalledWith(
+        `[handleSyscall] FATAL kernel exit left process ${pid} in state ${PROCESS_STATE_RUNNING}`,
+      );
+    } finally {
+      error.mockRestore();
+    }
   });
 
   it("uses the explicit termination signal instead of classifying high exit codes", () => {
@@ -1410,6 +1729,7 @@ function createWorkerHarness(exports: Record<string, unknown>, kernelPtrWidth: 4
       exports: {
         kernel_get_process_exit_signal: vi.fn(() => -1),
         kernel_get_process_state: vi.fn(() => PROCESS_STATE_RUNNING),
+        kernel_set_current_tid: vi.fn(() => 0),
         ...exports,
       },
     },
@@ -1438,6 +1758,15 @@ function createChannel(pid: number, memory: WebAssembly.Memory, channelOffset = 
     i32View: new Int32Array(memory.buffer, channelOffset),
     consecutiveSyscalls: 0,
   };
+}
+
+function registerMainChannel(worker: any, channel: any): any {
+  worker.processes.set(channel.pid, {
+    pid: channel.pid,
+    memory: channel.memory,
+    channels: [channel],
+  });
+  return channel;
 }
 
 function writeKernelWaitResult(

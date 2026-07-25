@@ -405,6 +405,7 @@ dependencies = [
  "anyhow",
  "clap",
  "walrus",
+ "wasm-posix-shared",
  "wasmparser 0.247.0",
  "wasmprinter",
  "wat",

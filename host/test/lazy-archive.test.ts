@@ -1137,6 +1137,20 @@ describe("Lazy archive export/import", () => {
       .toBe("#!/bin/sh\necho hello");
   });
 
+  it("stores one canonical mount prefix before and after serialization", async () => {
+    const mfs = createMemfs();
+    const { entries } = makeRealZip();
+    mfs.registerLazyArchiveFromEntries(
+      "https://example.com/test.zip",
+      entries,
+      "/opt/",
+    );
+    expect(mfs.exportLazyArchiveEntries()[0]?.mountPrefix).toBe("/opt");
+
+    const restored = MemoryFileSystem.fromImage(await mfs.saveImage());
+    expect(restored.exportLazyArchiveEntries()[0]?.mountPrefix).toBe("/opt");
+  });
+
   it("retains the original archive member name when importing legacy metadata", async () => {
     const sab = new SharedArrayBuffer(4 * 1024 * 1024);
     const owner = MemoryFileSystem.create(sab);

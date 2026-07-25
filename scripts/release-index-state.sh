@@ -23,6 +23,7 @@ OUTPUT=""
 HEAD_FILE=""
 INDEX_PATH=""
 EXPECTED_HEAD=""
+CANONICAL_SOURCE_SHA=""
 MAX_ASSET_PAGES="${INDEX_STATE_MAX_ASSET_PAGES:-20}"
 ASSET_PER_PAGE="${INDEX_STATE_ASSET_PER_PAGE:-100}"
 RETRY_DELAY_SECONDS="${INDEX_STATE_RETRY_DELAY_SECONDS:-2}"
@@ -35,6 +36,7 @@ while [ "$#" -gt 0 ]; do
     --head-file) HEAD_FILE="$2"; shift 2 ;;
     --index-path) INDEX_PATH="$2"; shift 2 ;;
     --expected-head) EXPECTED_HEAD="$2"; shift 2 ;;
+    --canonical-source-sha) CANONICAL_SOURCE_SHA="$2"; shift 2 ;;
     --max-asset-pages) MAX_ASSET_PAGES="$2"; shift 2 ;;
     --asset-per-page) ASSET_PER_PAGE="$2"; shift 2 ;;
     *) echo "release-index-state: unknown flag $1" >&2; exit 2 ;;
@@ -70,6 +72,19 @@ if ! [[ "$MAX_ASSET_PAGES" =~ ^[0-9]+$ ]] || [ "$MAX_ASSET_PAGES" = 0 ] ||
 fi
 
 REPOSITORY="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}"
+NORMALIZED_REPOSITORY="$(printf '%s' "$REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+# WHY: this state machine also activates tested merge candidates into the
+# general resolver ledger. Exact-main Homebrew publication supplies a narrower
+# authority capability; callers from that separate activation contract do not
+# pretend their candidate archives were built from main.
+if [ -n "$CANONICAL_SOURCE_SHA" ]; then
+  if [ "$NORMALIZED_REPOSITORY" != "automattic/kandelo" ] ||
+     [ "$TARGET_TAG" != "binaries-abi-v${EXPECTED_ABI}" ] ||
+     ! [[ "$CANONICAL_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "release-index-state: --canonical-source-sha requires the matching Automattic/kandelo binaries-abi-v<N> release and an exact lowercase 40-character SHA" >&2
+    exit 2
+  fi
+fi
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 RELEASE_JSON="$TMP_ROOT/release.json"
@@ -95,6 +110,18 @@ sha256_text() {
 }
 
 file_size() { wc -c < "$1" | tr -d '[:space:]'; }
+
+require_canonical_source_authority() {
+  [ -n "$CANONICAL_SOURCE_SHA" ] || return 0
+  # WHY: an outer admission check cannot authorize a later release write after
+  # main advances. Re-read the protected ref beside every mutation so a
+  # transaction stops before publishing any further stale-source state.
+  GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}" \
+    bash "$REPO_ROOT/.github/scripts/require-exact-kandelo-main.sh" \
+      --repository Automattic/kandelo \
+      --source-sha "$CANONICAL_SOURCE_SHA" \
+      >/dev/null
+}
 
 failpoint() {
   if [ "${INDEX_STATE_FAILPOINT:-}" = "$1" ]; then
@@ -215,6 +242,7 @@ upload_exact_asset() {
     fi
     mkdir -p "$upload_dir"
     cp "$source" "$upload_dir/$name"
+    require_canonical_source_authority || return 1
     if gh release upload "$TARGET_TAG" --repo "$REPOSITORY" "$upload_dir/$name"; then :; fi
     refresh_state
     asset=$(asset_by_name "$name")
@@ -230,6 +258,7 @@ upload_exact_asset() {
 patch_asset() {
   local id="$1" field="$2" value="$3" attempt=1 asset actual
   while true; do
+    require_canonical_source_authority || return 1
     if gh api --method PATCH "/repos/${REPOSITORY}/releases/assets/${id}" \
         -f "${field}=${value}" >/dev/null
     then :; fi
@@ -247,6 +276,7 @@ patch_asset() {
 delete_asset() {
   local id="$1" attempt=1
   while true; do
+    require_canonical_source_authority || return 1
     if gh api --method DELETE "/repos/${REPOSITORY}/releases/assets/${id}" >/dev/null; then :; fi
     refresh_state
     if [ -z "$(asset_by_id "$id")" ]; then return 0; fi

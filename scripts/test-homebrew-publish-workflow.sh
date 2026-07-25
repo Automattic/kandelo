@@ -250,6 +250,7 @@ make_formula_runner_fixture() {
     "$REPO_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
     "$REPO_ROOT/scripts/homebrew-formula-support-inputs.sh" \
     "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+    "$REPO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh" \
     "$REPO_ROOT/scripts/homebrew-tap-identity.sh" \
     "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/"
   : >"$FORMULA_RUNNER_FIXTURE_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
@@ -736,6 +737,7 @@ assert_matrix() {
 assert_matrix_skips_unchanged_cache_key() {
   local tap="$TMPDIR/matrix-skip-tap"
   local expected="$TMPDIR/expected-cache-keys.json"
+  local kandelo_commit="0123456789abcdef0123456789abcdef01234567"
   make_tap "$tap"
   cat >"$tap/Kandelo/metadata.json" <<'EOF'
 {
@@ -750,14 +752,22 @@ assert_matrix_skips_unchanged_cache_key() {
           "status": "success",
           "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "url": "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/hello/blobs/sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "cache_key_sha": "cache-key-current"
+          "cache_key_sha": "cache-key-current",
+          "built_from": {
+            "kandelo_repository": "Automattic/kandelo",
+            "kandelo_commit": "0123456789abcdef0123456789abcdef01234567"
+          }
         },
         {
           "arch": "wasm64",
           "status": "success",
           "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "url": "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/hello/blobs/sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-          "cache_key_sha": "cache-key-old"
+          "cache_key_sha": "cache-key-old",
+          "built_from": {
+            "kandelo_repository": "Automattic/kandelo",
+            "kandelo_commit": "0123456789abcdef0123456789abcdef01234567"
+          }
         }
       ]
     }
@@ -772,31 +782,69 @@ EOF
   }
 }
 EOF
+  local -a expected_args=(
+    --expected-cache-keys "$expected"
+    --expected-abi 40
+    --expected-bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core
+    --expected-kandelo-repository Automattic/kandelo
+    --expected-kandelo-commit "$kandelo_commit"
+  )
   local matrix
   matrix="$(bash "$REPO_ROOT/scripts/homebrew-plan-matrix.sh" \
     --tap-root "$tap" \
     --formulae "hello" \
     --arches "wasm64,wasm32" \
-    --expected-cache-keys "$expected" \
-    --expected-abi 40 \
-    --expected-bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core)"
+    "${expected_args[@]}")"
   printf '%s\n' "$matrix" | jq -e '
     length == 1 and
     .[0] == {"formula":"hello","arch":"wasm64"}
   ' >/dev/null || fail "expected unchanged wasm32 entry to be skipped: $matrix"
 
-  jq '.packages[0].bottles[0].url =
-    "https://ghcr.io/v2/kandelo-dev/tap-core/hello/blobs/sha256:" +
-    .packages[0].bottles[0].sha256' \
+  jq '.packages[0].bottles[0].built_from.kandelo_commit =
+    "ffffffffffffffffffffffffffffffffffffffff"' \
     "$tap/Kandelo/metadata.json" >"$tap/Kandelo/metadata.json.tmp"
+  mv "$tap/Kandelo/metadata.json.tmp" "$tap/Kandelo/metadata.json"
+  matrix="$(bash "$REPO_ROOT/scripts/homebrew-plan-matrix.sh" \
+    --tap-root "$tap" --formulae hello --arches wasm32 \
+    "${expected_args[@]}")"
+  [ "$matrix" = '[{"formula":"hello","arch":"wasm32"}]' ] ||
+    fail "stale per-bottle source commit was reused: $matrix"
+
+  jq --arg commit "$kandelo_commit" '
+    .packages[0].bottles[0].built_from.kandelo_commit = $commit |
+    .packages[0].bottles[0].built_from.kandelo_repository = "example/kandelo"
+  ' "$tap/Kandelo/metadata.json" >"$tap/Kandelo/metadata.json.tmp"
+  mv "$tap/Kandelo/metadata.json.tmp" "$tap/Kandelo/metadata.json"
+  matrix="$(bash "$REPO_ROOT/scripts/homebrew-plan-matrix.sh" \
+    --tap-root "$tap" --formulae hello --arches wasm32 \
+    "${expected_args[@]}")"
+  [ "$matrix" = '[{"formula":"hello","arch":"wasm32"}]' ] ||
+    fail "wrong per-bottle source repository was reused: $matrix"
+
+  jq 'del(.packages[0].bottles[0].built_from)' \
+    "$tap/Kandelo/metadata.json" >"$tap/Kandelo/metadata.json.tmp"
+  mv "$tap/Kandelo/metadata.json.tmp" "$tap/Kandelo/metadata.json"
+  matrix="$(bash "$REPO_ROOT/scripts/homebrew-plan-matrix.sh" \
+    --tap-root "$tap" --formulae hello --arches wasm32 \
+    "${expected_args[@]}")"
+  [ "$matrix" = '[{"formula":"hello","arch":"wasm32"}]' ] ||
+    fail "bottle without source provenance was reused: $matrix"
+
+  jq --arg commit "$kandelo_commit" '
+    .packages[0].bottles[0].built_from = {
+      kandelo_repository: "Automattic/kandelo",
+      kandelo_commit: $commit
+    } |
+    .packages[0].bottles[0].url =
+      "https://ghcr.io/v2/kandelo-dev/tap-core/hello/blobs/sha256:" +
+      .packages[0].bottles[0].sha256
+  ' "$tap/Kandelo/metadata.json" >"$tap/Kandelo/metadata.json.tmp"
   mv "$tap/Kandelo/metadata.json.tmp" "$tap/Kandelo/metadata.json"
   matrix="$(bash "$REPO_ROOT/scripts/homebrew-plan-matrix.sh" \
     --tap-root "$tap" \
     --formulae "hello" \
     --arches "wasm32" \
-    --expected-cache-keys "$expected" \
-    --expected-abi 40 \
-    --expected-bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core)"
+    "${expected_args[@]}")"
   printf '%s\n' "$matrix" | jq -e '
     . == [{"formula":"hello","arch":"wasm32"}]
   ' >/dev/null || fail "old-root cache metadata skipped the repository-root migration: $matrix"
@@ -805,9 +853,7 @@ EOF
     --tap-root "$tap" \
     --formulae "hello" \
     --arches "wasm64,wasm32" \
-    --expected-cache-keys "$expected" \
-    --expected-abi 40 \
-    --expected-bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    "${expected_args[@]}" \
     --force)"
   printf '%s\n' "$matrix" | jq -e '
     length == 2 and
@@ -821,10 +867,25 @@ EOF
     --arches "wasm32" \
     --expected-cache-keys "$expected" \
     --expected-abi 41 \
-    --expected-bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core)"
+    --expected-bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --expected-kandelo-repository Automattic/kandelo \
+    --expected-kandelo-commit "$kandelo_commit")"
   printf '%s\n' "$matrix" | jq -e '
     . == [{"formula":"hello","arch":"wasm32"}]
   ' >/dev/null || fail "older-ABI cache metadata skipped the new ABI build: $matrix"
+
+  if bash "$REPO_ROOT/scripts/homebrew-plan-matrix.sh" \
+    --tap-root "$tap" --formulae hello --arches wasm32 \
+    --expected-cache-keys "$expected" --expected-abi 40 \
+    --expected-bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --expected-kandelo-repository Automattic/kandelo >/dev/null 2>&1; then
+    fail "planner accepted cache reuse without an exact Kandelo commit"
+  fi
+  if bash "$REPO_ROOT/scripts/homebrew-plan-matrix.sh" \
+    --tap-root "$tap" --formulae hello --arches wasm32 \
+    --expected-kandelo-commit "$kandelo_commit" >/dev/null 2>&1; then
+    fail "planner accepted source provenance without cache-key planning"
+  fi
 }
 
 assert_upload_dry_run() {
@@ -3069,6 +3130,9 @@ assert_bottle_build_trusts_selected_tap() {
   local log="$TMPDIR/bottle-trust.log"
   local lifecycle_log="$TMPDIR/bottle-trust-lifecycle.log"
   local ci_err="$TMPDIR/bottle-trust-ci.err"
+  local checker_err="$TMPDIR/bottle-trust-checker.err"
+  local shared_temp="$TMPDIR/bottle-trust-shared-temp"
+  local different_checker
   local caller_config="$TMPDIR/caller-homebrew-config"
   local symlink_target="$TMPDIR/runner-write-target"
   local ci_tapped="$TMPDIR/bottle-trust-ci-tapped"
@@ -3081,7 +3145,7 @@ assert_bottle_build_trusts_selected_tap() {
 class Zlib < Formula
 end
 EOF
-  mkdir -p "$brew_repo" "$brew_prefix" "$caller_config"
+  mkdir -p "$brew_repo" "$brew_prefix" "$caller_config" "$shared_temp"
   printf 'sentinel\n' >"$symlink_target"
 
   cat >"$fake_brew" <<'EOF'
@@ -3168,6 +3232,35 @@ EOF
     "$ci_err" >/dev/null ||
     fail "CI bottle build did not explain its isolated-identity requirement"
   : >"$log"
+
+  different_checker="$FORMULA_RUNNER_FIXTURE_ROOT/target/different-safe-host/release/xtask"
+  mkdir -p "${different_checker%/*}"
+  cp "$FORMULA_RUNNER_FIXTURE_ROOT/target/$(rustc -vV | sed -n 's/^host: //p')/release/xtask" \
+    "$different_checker"
+  if FAKE_BREW_LOG="$log" \
+    FAKE_REALM_LIFECYCLE_LOG="$lifecycle_log" \
+    FAKE_BREW_PREFIX="$brew_prefix" \
+    FAKE_BREW_REPOSITORY="$brew_repo" \
+    FAKE_TAP_ROOT="$ci_tapped" \
+    FAKE_SYMLINK_TARGET="$symlink_target" \
+    HOMEBREW_BREW_FILE="$fake_brew" \
+    KANDELO_HOMEBREW_BUILD_USER=fixture-build-user \
+    KANDELO_HOMEBREW_SHARED_TEMP="$shared_temp" \
+    WASM_POSIX_XTASK_BIN="$different_checker" \
+    GITHUB_ACTIONS=true \
+    bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-bottle-build.sh" \
+      --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello \
+      --arch wasm32 \
+      --out "$out" \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      >/dev/null 2>"$checker_err"; then
+    fail "isolated bottle build accepted another safe target-triple checker"
+  fi
+  grep -F "scoped program-index checker differs from the exact host xtask" \
+    "$checker_err" >/dev/null ||
+    fail "isolated bottle build did not explain the mismatched checker authority"
 
   prepare_formula_runner_tapped_clone \
     "$tap" "$tapped" "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"
@@ -4167,6 +4260,8 @@ assert_bottle_verifier_installs_test_dependencies() {
   local shared_temp="$root/shared-temp"
   local renamed_err="$root/renamed-bottle.err"
   local nested_target_err="$root/nested-target.err"
+  local checker_err="$root/checker.err"
+  local exact_checker different_checker
   local bottle_sha bottle_bytes tap_commit native_prefix real_python3 real_rm host_git_bin
   local KANDELO_HOMEBREW_RESOLVED_TAPS_FILE
 
@@ -4468,6 +4563,7 @@ EOF
 
   run_bottle_verifier_fixture() {
     local evidence_out="$1"
+    local checker="${2:-$exact_checker}"
     PATH="$fake_bin:$PATH" \
       REAL_PYTHON3="$real_python3" \
       REAL_RM="$real_rm" \
@@ -4495,6 +4591,7 @@ EOF
       KANDELO_HOMEBREW_BUILD_USER=fixture-build-user \
       KANDELO_HOMEBREW_SHARED_TEMP="$shared_temp" \
       KANDELO_HOMEBREW_SUDO_BIN="$fake_bin/sudo" \
+      WASM_POSIX_XTASK_BIN="$checker" \
       HOMEBREW_KANDELO_BOTTLE_TAG=caller-poison \
       KANDELO_HOMEBREW_BOTTLE_TAG=caller-poison \
       HOMEBREW_RELOCATE_BUILD_PREFIX=caller-poison \
@@ -4519,6 +4616,18 @@ EOF
         --sysroot-build-root "$sysroot_build_root" \
         --out "$evidence_out"
   }
+
+  exact_checker="$FORMULA_RUNNER_FIXTURE_ROOT/target/$(rustc -vV | sed -n 's/^host: //p')/release/xtask"
+  different_checker="$FORMULA_RUNNER_FIXTURE_ROOT/target/verifier-different-safe-host/release/xtask"
+  mkdir -p "${different_checker%/*}"
+  cp "$exact_checker" "$different_checker"
+  if run_bottle_verifier_fixture "$root/checker-runtime-evidence.json" \
+      "$different_checker" >/dev/null 2>"$checker_err"; then
+    fail "isolated bottle verifier accepted another safe target-triple checker"
+  fi
+  grep -F "scoped program-index checker differs from the exact host xtask" \
+    "$checker_err" >/dev/null ||
+    fail "isolated bottle verifier did not explain the mismatched checker authority"
 
   rm "$target_opt_prefix"
   ln -s ../Cellar/hello/nested/Cellar/hello/1.0 "$target_opt_prefix"
@@ -5892,9 +6001,11 @@ assert_write_publish_requires_attached_branch_and_pushes_explicit_ref() {
   local seed="$TMPDIR/publish-seed"
   local tap="$TMPDIR/publish-tap"
   local report_tap="$TMPDIR/publish-report-tap"
+  local race_tap="$TMPDIR/publish-race-tap"
   local updater="$TMPDIR/publish-updater"
+  local bin="$TMPDIR/publish-bin"
   local err="$TMPDIR/detached-publish.err"
-  local local_head remote_head report planned_tap planned_kandelo
+  local local_head remote_head report planned_tap planned_kandelo remote_before
 
   git init --bare -q "$remote"
   make_tap "$seed"
@@ -5907,6 +6018,18 @@ assert_write_publish_requires_attached_branch_and_pushes_explicit_ref() {
   git -C "$tap" config user.email "kandelo-test@example.invalid"
   planned_tap="$(git -C "$tap" rev-parse HEAD)"
   planned_kandelo="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+  mkdir -p "$bin"
+  cat >"$bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$#" -ne 4 ] || [ "$1" != api ] ||
+   [ "$2" != /repos/Automattic/kandelo/git/ref/heads/main ] ||
+   [ "$3" != --jq ] || [ "$4" != .object.sha ]; then
+  exit 2
+fi
+printf '%s\n' "$MOCK_KANDELO_MAIN_SHA"
+EOF
+  chmod +x "$bin/gh"
 
   git -C "$tap" checkout -q --detach
   if GITHUB_SHA="cccccccccccccccccccccccccccccccccccccccc" \
@@ -5987,13 +6110,39 @@ assert_write_publish_requires_attached_branch_and_pushes_explicit_ref() {
   git -C "$updater" commit -q -m "advance tap main"
   git -C "$updater" push -q origin main
 
+  git clone -q "$remote" "$race_tap"
+  remote_before="$(git --git-dir="$remote" rev-parse refs/heads/main)"
+  err="$TMPDIR/advanced-main-push.err"
+  if PATH="$bin:$PATH" GH_TOKEN=test-token \
+    MOCK_KANDELO_MAIN_SHA=ffffffffffffffffffffffffffffffffffffffff \
+    bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+      --tap-root "$race_tap" \
+      --kandelo-commit "$planned_kandelo" \
+      --exact-kandelo-main-sha "$planned_kandelo" \
+      --tap-commit "$planned_tap" \
+      --formula hello \
+      --arch wasm32 \
+      --release-tag bottles-abi-v15 \
+      --status failed \
+      --error "main advanced before tap push" \
+      --no-lock >/dev/null 2>"$err"; then
+    fail "tap publication pushed after Kandelo main advanced"
+  fi
+  grep -F "source SHA must equal the current refs/heads/main commit" "$err" >/dev/null ||
+    fail "tap publication did not explain its final exact-main rejection"
+  [ "$(git --git-dir="$remote" rev-parse refs/heads/main)" = "$remote_before" ] ||
+    fail "tap origin changed despite the final exact-main rejection"
+
   git clone -q "$remote" "$report_tap"
   git -C "$report_tap" checkout -q --detach "$planned_tap"
   git -C "$report_tap" switch -q --force-create main "$planned_tap"
+  PATH="$bin:$PATH" GH_TOKEN=test-token \
+  MOCK_KANDELO_MAIN_SHA="$planned_kandelo" \
   GITHUB_SHA="cccccccccccccccccccccccccccccccccccccccc" \
   bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
     --tap-root "$report_tap" \
     --kandelo-commit "$planned_kandelo" \
+    --exact-kandelo-main-sha "$planned_kandelo" \
     --tap-commit "$planned_tap" \
     --formula hello \
     --arch wasm32 \
@@ -6107,6 +6256,8 @@ assert_rollback_deletion_requires_reason() {
 }
 
 assert_publisher_trust_contract() {
+  bash "$REPO_ROOT/.github/scripts/test-require-exact-kandelo-main.sh"
+  bash "$REPO_ROOT/.github/scripts/test-materialize-exact-package-generations.sh"
   ruby "$REPO_ROOT/scripts/check-homebrew-publish-workflow-trust.rb"
 }
 
@@ -6555,8 +6706,39 @@ class Escape < Formula
   end
 end
 EOF
+  cat >"$tap/Formula/native-support.rb" <<'EOF'
+require (Tap.fetch("kandelo-dev", "tap-core").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
+class NativeSupport < Formula
+  depends_on KandeloFormulaSupport::BinaryenRequirement => :build
+  depends_on KandeloFormulaSupport::WabtRequirement => [:build, :test]
+  include KandeloFormulaSupport
+end
+EOF
+  cat >"$tap/Formula/dynamic-support.rb" <<'EOF'
+require (Tap.fetch("kandelo-dev", "tap-core").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
+class DynamicSupport < Formula
+  depends_on KandeloFormulaSupport.const_get("WabtRequirement") => [:build, :test]
+  include KandeloFormulaSupport
+end
+EOF
   write_canonical_formula_support \
     "$tap/Kandelo/formula_support/kandelo_formula_support.rb" <<'EOF'
+  class BinaryenRequirement < Requirement
+    KANDELO_NATIVE_FORMULA = "binaryen"
+    KANDELO_NATIVE_SENTINEL = "wasm-opt"
+    fatal true
+    satisfy(build_env: false) { which("wasm-opt") }
+  end
+
+  class WabtRequirement < Requirement
+    KANDELO_NATIVE_FORMULA = "wabt"
+    KANDELO_NATIVE_SENTINEL = "wasm-validate"
+    fatal true
+    satisfy(build_env: false) { which("wasm-validate") }
+  end
+
   def kandelo_runner_command
     runner = Pathname(__dir__)/"run-network-wasm.ts"
     command = +""
@@ -6609,6 +6791,30 @@ EOF
     --formula hello \
     --base-ref "$base" \
     --reviewed-tap-root "$reviewed" >/dev/null
+
+  # Canonical native Requirement declarations name the support module without
+  # loading another local source. Both closure validators must accept that
+  # static reference while the Formula parser retains semantic authority.
+  bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --formula native-support \
+    --base-ref "$base" >/dev/null
+  bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --formula native-support \
+    --base-ref "$base" \
+    --reviewed-tap-root "$reviewed" >/dev/null
+  if bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --formula dynamic-support \
+    --base-ref "$base" >/dev/null 2>"$err"; then
+    fail "Formula source-closure validator accepted a dynamic Requirement reference"
+  fi
+  grep -F "Formula support reference is not a bounded canonical closure" "$err" >/dev/null ||
+    fail "Formula source-closure validator did not explain the dynamic Requirement reference"
 
   printf 'test-only-v2\n' \
     >"$tap/Kandelo/formula_support/test/kandelo_formula_support_test.rb"
@@ -6957,8 +7163,26 @@ EOF
     fail "under-lock publisher does not revalidate the Formula source closure"
 }
 
+assert_exact_source_program_projection_is_fresh() {
+  local host_target xtask_bin
+  host_target="$(rustc -vV | sed -n 's/^host: //p')"
+  xtask_bin="$REPO_ROOT/target/$host_target/release/xtask"
+  [ -n "$host_target" ] && [ -f "$xtask_bin" ] && [ ! -L "$xtask_bin" ] &&
+    [ -x "$xtask_bin" ] ||
+    fail "exact-source projection regression lacks the prebuilt host xtask"
+
+  # WHY: dev-shell.sh is a global package-toolchain input. Passing the scoped
+  # Formula checker through the workflow command argv must not edit that file
+  # or silently invalidate every committed program package cache key.
+  WASM_POSIX_DEPS_REGISTRY="$REPO_ROOT/packages/registry" \
+    "$xtask_bin" build-deps program-index-context-check \
+      --source-repo-root "$REPO_ROOT" ||
+    fail "Formula checker handoff made the exact-source program projection stale"
+}
+
 assert_canonical_formula_support_is_load_order_independent
 make_formula_runner_fixture
+assert_exact_source_program_projection_is_fresh
 assert_formula_support_test_pruning_is_bounded
 assert_local_root_spill_uses_caller_work_root
 assert_ghcr_auth_env_does_not_cross_dev_shell
@@ -6967,6 +7191,7 @@ assert_matrix_skips_unchanged_cache_key
 assert_resolved_primary_override_is_bounded
 bash "$REPO_ROOT/scripts/test-homebrew-tap-identity.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-publisher-overlay-patch.sh"
+bash "$REPO_ROOT/scripts/test-homebrew-publisher-real-lifecycle.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-oci-layout.sh"
 assert_index_artifact_download_topologies
 assert_publish_handoff_download_topologies
@@ -6978,6 +7203,7 @@ assert_bottle_verifier_installs_test_dependencies
 bash "$REPO_ROOT/scripts/test-homebrew-provision-formula-browser.sh"
 bash "$REPO_ROOT/scripts/test-materialize-resolver-binaries.sh"
 bash "$REPO_ROOT/scripts/test-install-local-binary-sealed.sh"
+bash "$REPO_ROOT/scripts/test-seal-homebrew-formula-checker.sh"
 assert_dependency_pour_provenance_is_bounded
 assert_static_formula_closure_is_fail_closed
 assert_generator_validates_homebrew_commit_as_data
@@ -7002,8 +7228,10 @@ bash "$REPO_ROOT/scripts/test-homebrew-sibling-bottle-policy.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-patched-launcher.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-inspect-bottle.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-formula-runtime-closure.sh"
+bash "$REPO_ROOT/scripts/test-homebrew-validate-host-dependency-plan.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-bottle-runtime-evidence.sh"
 bash "$REPO_ROOT/scripts/test-publish-immutable-github-release.sh"
+bash "$REPO_ROOT/.github/scripts/test-validate-staging-release.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-vfs-release.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-main-shell-closure.sh"
 assert_formula_composition_is_static_and_lossless

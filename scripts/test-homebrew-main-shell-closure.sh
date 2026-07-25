@@ -12,7 +12,9 @@ WORKFLOW="$REPO_ROOT/.github/workflows/homebrew-main-shell-ci.yml"
 IMAGE_CONTRACT="$REPO_ROOT/scripts/homebrew-main-shell-image-contract.ts"
 IMAGE_CONTRACT_TEST="$REPO_ROOT/scripts/homebrew-main-shell-image-contract.test.ts"
 NODE_SMOKE="$REPO_ROOT/scripts/homebrew-main-shell-node-smoke.ts"
+SOURCE_NODE_SMOKE="$REPO_ROOT/scripts/source-rootfs-shell-node-smoke.ts"
 BROWSER_SMOKE="$REPO_ROOT/apps/browser-demos/test/kandelo-homebrew-main-shell.spec.ts"
+SOURCE_BROWSER_SMOKE="$REPO_ROOT/apps/browser-demos/test/kandelo-source-rootfs-shell.spec.ts"
 MODESET_SMOKE="$REPO_ROOT/apps/browser-demos/test/kandelo-modeset.spec.ts"
 EAGER_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts"
 MATERIALIZED_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-materialized-vfs-image.ts"
@@ -20,7 +22,10 @@ STAGING_WORKFLOW="$REPO_ROOT/.github/workflows/staging-build.yml"
 PREPARE_MERGE_WORKFLOW="$REPO_ROOT/.github/workflows/prepare-merge.yml"
 FORCE_REBUILD_WORKFLOW="$REPO_ROOT/.github/workflows/force-rebuild.yml"
 SHELL_BUILD_TOML="$REPO_ROOT/packages/registry/shell/build.toml"
+SHELL_PACKAGE_TOML="$REPO_ROOT/packages/registry/shell/package.toml"
 SHELL_BUILDER="$REPO_ROOT/packages/registry/shell/build-shell.sh"
+SHELL_TOOL_PREPARER="$REPO_ROOT/packages/registry/shell/prepare-build-tools.sh"
+SHELL_TOOL_PREPARER_TEST="$REPO_ROOT/packages/registry/shell/test-prepare-build-tools.sh"
 RUN_SH="$REPO_ROOT/run.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
@@ -71,11 +76,14 @@ for required_path in \
   "apps/browser-demos/**" \
   "crates/shared/**" \
   "homebrew/main-shell*" \
+  "homebrew/source-rootfs-shell-default.json" \
+  "homebrew/source-rootfs-shell-dependencies.json" \
   "host/src/**" \
   "host/test/**" \
   "images/rootfs/**" \
   "images/vfs/scripts/build-homebrew-materialized-vfs-image.ts" \
   "images/vfs/scripts/build-shell-vfs-image.ts" \
+  "images/vfs/scripts/build-source-rootfs-shell-image.ts" \
   "images/vfs/scripts/main-shell-demo-config.ts" \
   "images/vfs/scripts/vfs-image-helpers.ts" \
   "libc/**" \
@@ -89,6 +97,8 @@ for required_path in \
   "scripts/homebrew-brewfile-selection.rb" \
   "scripts/homebrew-language-runtime-contract.ts" \
   "scripts/homebrew-main-shell-image-contract*.ts" \
+  "scripts/source-rootfs-shell-node-smoke.ts" \
+  "scripts/source-rootfs-shell-dependency-contract.mjs" \
   "scripts/install-local-binary.sh" \
   "scripts/install-overlay-headers.sh" \
   "scripts/resolve-binary.sh" \
@@ -115,6 +125,38 @@ checker_line="$(grep -n 'node scripts/check-homebrew-main-shell-brewfile.mjs' "$
 [ -n "$setup_node_line" ] && [ -n "$checker_line" ] &&
   [ "$setup_node_line" -lt "$checker_line" ] ||
   fail "pinned Node setup must precede the main-shell contract checker"
+
+generation_block="$(sed -n \
+  '/- name: Select one verified package generation/,/- name: Build the exact candidate kernel/p' \
+  "$WORKFLOW")"
+grep -Fq 'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}' <<<"$generation_block" ||
+  fail "package-generation validation needs only the workflow's read token"
+grep -Fq 'staging-reuse expected \' <<<"$generation_block" &&
+  grep -Fq 'validate-staging-release.sh \' <<<"$generation_block" &&
+  grep -Fq -- '--mode current \' <<<"$generation_block" ||
+  fail "main-shell CI must accept only a complete current PR package generation"
+grep -Fq 'index-candidate seed \' <<<"$generation_block" &&
+  grep -Fq 'selected_url="file://${frozen_index}"' <<<"$generation_block" ||
+  fail "main-shell CI must freeze the validated mutable staging index locally"
+grep -Fq 'env -u GH_TOKEN -u GITHUB_TOKEN \' <<<"$generation_block" &&
+  grep -Fq -- '-u HOMEBREW_GITHUB_PACKAGES_TOKEN \' <<<"$generation_block" ||
+  fail "local index freezing must run without GitHub credentials"
+grep -Fq 'selected_url="$canonical_url"' <<<"$generation_block" ||
+  fail "main-shell CI must retain the canonical/source-build fallback"
+grep -Fq 'echo "WASM_POSIX_BINARY_INDEX_URL=$selected_url" >> "$GITHUB_ENV"' \
+  <<<"$generation_block" ||
+  fail "main-shell CI must pass the selected generation through the resolver contract"
+grep -Fq 'echo "SOURCE_SHELL_BINARY_INDEX_URL=file://${empty_index}" >> "$GITHUB_ENV"' \
+  <<<"$generation_block" &&
+  grep -Fq 'echo "SOURCE_SHELL_BINARY_CACHE_ROOT=$source_cache" >> "$GITHUB_ENV"' \
+    <<<"$generation_block" ||
+  fail "source activation must publish a closure-local empty index and fresh cache"
+grep -Fq 'exit 0' <<<"$generation_block" &&
+  fail "source activation must still select a normal generation for unrelated browser roots"
+grep -Fq 'GH_TOKEN:' <<<"$(sed -n \
+  '/- name: Build the exact candidate kernel/,/- name: Install the candidate\x27s exact shell bytes/p' \
+  "$WORKFLOW")" &&
+  fail "browser package resolution must not retain the staging-validation token"
 
 grep -Fq '(.selection.requested_packages | length) == $expected_root_count' "$BUILDER" ||
   fail "$BUILDER does not bind the requested-root count to the migration lock"
@@ -144,15 +186,31 @@ bash "$LAZY_ARTIFACT_CHECKER" \
 grep -Fq -- '--artifact "$OUT"' "$BUILDER" ||
   fail "strict shell composer must verify the final compressed artifact"
 
-for variable in \
-  KANDELO_HOMEBREW_MAIN_SHELL_STRICT \
-  KANDELO_HOMEBREW_MAIN_SHELL_SHA256
-do
-  grep -Fq -- "\"$variable=\$$variable\"" "$WORKFLOW" ||
-    fail "main-shell workflow must pass $variable explicitly to its isolated consumer"
+for variable in KANDELO_HOMEBREW_MAIN_SHELL_STRICT KANDELO_HOMEBREW_MAIN_SHELL_SHA256; do
   grep -Fq -- "--keep $variable " "$REPO_ROOT/scripts/dev-shell.sh" &&
     fail "dev shell must not globally preserve main-shell-only input $variable"
 done
+grep -Fq 'SHELL_ACTIVATION_MODE: source-rootfs' "$WORKFLOW" ||
+  fail "required main-shell CI must select the temporary source-rootfs bridge"
+grep -Fq '"KANDELO_SOURCE_ROOTFS_SHELL_STRICT=1"' "$WORKFLOW" ||
+  fail "source-rootfs browser proof must be enabled only by the activation branch"
+browser_smoke_workflow_block="$(sed -n \
+  '/- name: Boot the current main-shell path in Chromium/,/- name: Upload acceptance evidence/p' \
+  "$WORKFLOW")"
+grep -Fq 'source-rootfs)' <<<"$browser_smoke_workflow_block" &&
+  grep -Fq '"KANDELO_SOURCE_ROOTFS_SHELL_STRICT=1"' \
+    <<<"$browser_smoke_workflow_block" ||
+  fail "source-rootfs branch must pass only its explicit strict smoke selector"
+grep -Fq 'bottles)' <<<"$browser_smoke_workflow_block" &&
+  grep -Fq '"KANDELO_HOMEBREW_MAIN_SHELL_STRICT=1"' \
+    <<<"$browser_smoke_workflow_block" &&
+  grep -Fq \
+    '"KANDELO_HOMEBREW_MAIN_SHELL_SHA256=$KANDELO_MAIN_SHELL_SHA256"' \
+    <<<"$browser_smoke_workflow_block" ||
+  fail "bottle branch must pass its strict mode and exact image digest explicitly"
+grep -Fq -- '--keep KANDELO_SOURCE_ROOTFS_SHELL_STRICT ' \
+  "$REPO_ROOT/scripts/dev-shell.sh" &&
+  fail "dev shell must not globally preserve the source-rootfs smoke selector"
 
 grep -Fq 'persist-credentials: false' "$WORKFLOW" ||
   fail "main-shell proof checkout must not persist repository credentials"
@@ -179,15 +237,70 @@ grep -Fq 'test ! -e "$source_root/.git"' "$WORKFLOW" ||
 grep -Fq 'test -z "$(git -C "$GITHUB_WORKSPACE/libc/musl" status --porcelain=v1 --untracked-files=all)"' "$WORKFLOW" ||
   fail "main-shell proof must verify that sysroot preparation leaves package cache inputs clean"
 grep -Fq 'GH_TOKEN: ${{ github.token }}' "$WORKFLOW" &&
-  fail "main-shell proof must not expose the workflow token to package composition"
+  fail "main-shell proof must not expose the implicit workflow token to package composition"
 grep -Fq 'scripts/homebrew-checkout-public-tap.sh' "$WORKFLOW" &&
   fail "candidate proof must use its one explicit exact tap checkout"
 grep -Fq 'bash packages/registry/shell/build-shell.sh' "$WORKFLOW" &&
   fail "candidate proof must not invoke the canonical shell package wrapper"
 grep -Fq 'compute-cache-key-sha \' "$WORKFLOW" &&
   fail "candidate proof must not compute or activate a canonical package identity"
-grep -Fq 'archive-stage \' "$WORKFLOW" &&
-  fail "candidate proof must not publish or stage the canonical shell package"
+source_candidate_block="$(sed -n \
+  '/- name: Build the exact source-rootfs activation shell/,/- name: Build the exact lazy shell from public bottles/p' \
+  "$WORKFLOW")"
+grep -Fq "if: env.SHELL_ACTIVATION_MODE == 'source-rootfs'" \
+  <<<"$source_candidate_block" ||
+  fail "source-rootfs candidate must be selected only during activation"
+grep -Fq 'archive-stage \' <<<"$source_candidate_block" &&
+  grep -Fq -- '--package packages/registry/shell \' <<<"$source_candidate_block" &&
+  grep -Fq -- '--force-source-closure' <<<"$source_candidate_block" ||
+  fail "activation CI must force-build every buildable package in the exact current shell closure"
+grep -Fq -- '--cache-root "$WASM_POSIX_BINARY_CACHE_ROOT" \' \
+  <<<"$source_candidate_block" ||
+  fail "activation CI must isolate its complete source-built package cache"
+grep -Fq 'WASM_POSIX_BINARY_INDEX_URL="$SOURCE_SHELL_BINARY_INDEX_URL" \' \
+  <<<"$source_candidate_block" &&
+  grep -Fq 'WASM_POSIX_BINARY_CACHE_ROOT="$SOURCE_SHELL_BINARY_CACHE_ROOT" \' \
+    <<<"$source_candidate_block" ||
+  fail "only the forced shell closure may use the empty source index and fresh cache"
+grep -Fq -- '--binaries-dir local-binaries \' <<<"$source_candidate_block" ||
+  fail "source-rootfs candidate must publish through the resolver artifact tree"
+grep -Fq -- '--source-repository "https://github.com/${GITHUB_REPOSITORY}" \' \
+  <<<"$source_candidate_block" &&
+  grep -Fq -- '--source-commit "$GITHUB_SHA" \' \
+    <<<"$source_candidate_block" ||
+  fail "source-rootfs candidate must record its exact checked-out source identity"
+grep -Fq 'zstd -dc -- "${archives[0]}" | tar -xOf - manifest.toml >"$manifest"' \
+  <<<"$source_candidate_block" &&
+  grep -Fq '[ "$archive_repository" = \' \
+    <<<"$source_candidate_block" &&
+  grep -Fq '"https://github.com/${GITHUB_REPOSITORY}" ]' \
+    <<<"$source_candidate_block" &&
+  grep -Fq '[ "$archive_commit" = "$GITHUB_SHA" ]' \
+    <<<"$source_candidate_block" &&
+  grep -Fq '! grep -Fq "UNPUBLISHED" "$manifest"' \
+    <<<"$source_candidate_block" ||
+  fail "source-rootfs candidate must verify exact provenance in its staged archive"
+grep -Fq '"$xtask" archive-extract-member \' <<<"$source_candidate_block" &&
+  grep -Fq -- '--archive "${archives[0]}" \' <<<"$source_candidate_block" &&
+  grep -Fq -- '--member artifacts/shell.vfs.zst \' <<<"$source_candidate_block" &&
+  grep -Fq -- '--out "$candidate_root/main-shell.vfs.zst"' \
+    <<<"$source_candidate_block" &&
+  ! grep -Fq 'resolve-binary.sh programs/shell.vfs.zst' \
+    <<<"$source_candidate_block" ||
+  fail "source-rootfs candidate must extract the exact staged shell archive member"
+grep -Fq 'kind: "kandelo-source-rootfs-shell-activation"' \
+  <<<"$source_candidate_block" ||
+  fail "source-rootfs candidate must emit explicit activation evidence"
+grep -Fq 'echo "local_manifest=$source_assets"' \
+  <<<"$source_candidate_block" &&
+  grep -Fq 'find local-binaries \( -type f -o -type l \) -print0' \
+    <<<"$source_candidate_block" &&
+  grep -Fq 'echo "link_manifest=$source_links"' \
+    <<<"$source_candidate_block" &&
+  grep -Fq 'readlink "$path"' <<<"$source_candidate_block" ||
+  fail "source-rootfs candidate must record the exact local closure bytes"
+grep -Fq "if: env.SHELL_ACTIVATION_MODE == 'bottles'" "$WORKFLOW" ||
+  fail "strict bottle candidate must remain dormant until exact-main cutover"
 grep -Fq 'git -C "$tap_root" fetch --depth=1 origin "$tap_sha"' "$WORKFLOW" ||
   fail "candidate proof must fetch the exact reviewed tap commit"
 grep -Fq 'test "$(git -C "$tap_root" rev-parse HEAD)" = "$tap_sha"' "$WORKFLOW" ||
@@ -199,6 +312,9 @@ grep -Fq 'scripts/build-homebrew-main-shell-closure.sh \' "$WORKFLOW" ||
 candidate_install_workflow_block="$(sed -n \
   "/- name: Install the candidate's exact shell bytes/,/- name: Recover the exact bottle mirror/p" \
   "$WORKFLOW")"
+grep -Fq '${{ steps.source_candidate.outputs.image || steps.bottle_candidate.outputs.image }}' \
+  <<<"$candidate_install_workflow_block" ||
+  fail "candidate installer must select exactly one activation or bottle image"
 grep -Fq 'WASM_POSIX_LOCAL_INSTALL_SOURCE="$1"' \
   <<<"$candidate_install_workflow_block" ||
   fail "candidate proof must give the exact candidate to the package installer"
@@ -232,17 +348,26 @@ grep -Fq 'cp "$CANDIDATE_PATH" "$browser_copy"' \
 grep -Eq '(^|[[:space:]])(cp|mv|install|ln)[[:space:]].*(local-binaries|\$installed)' \
   <<<"$candidate_install_workflow_block" &&
   fail "candidate proof must not write or copy directly into local-binaries"
-grep -Fq -- '--image "${{ steps.candidate.outputs.image }}"' "$WORKFLOW" ||
-  fail "Node proof must boot the exact candidate bytes directly"
+grep -Fq -- '--image "${{ steps.image.outputs.path }}"' "$WORKFLOW" ||
+  fail "Node proofs must boot the exact installed candidate bytes directly"
+grep -Fq -- '--kernel local-binaries/kernel.wasm' "$WORKFLOW" ||
+  fail "source-rootfs Node proof must boot the exact current candidate kernel"
 grep -Fq -- '--migration-lock homebrew/main-shell-migration-lock.json' "$WORKFLOW" ||
   fail "post-archive Node proof must validate against the reviewed migration lock"
+grep -Fq -- '--shell-config homebrew/source-rootfs-shell-default.json' "$WORKFLOW" ||
+  fail "source-rootfs Node proof must validate the tracked shell config bytes"
 grep -Fq -- '--demo-config homebrew/main-shell-demo.json' "$WORKFLOW" ||
   fail "post-archive Node proof must validate the canonical demo config bytes"
 node_smoke_workflow_block="$(sed -n \
   '/- name: Boot the exact installed bytes in Node/,/- name: Boot the current main-shell path in Chromium/p' \
   "$WORKFLOW")"
 grep -Fq 'node_smoke_args=(' <<<"$node_smoke_workflow_block" ||
-  fail "Node proof must build one explicit transport-aware argument vector"
+  fail "dormant bottle Node proof must build one transport-aware argument vector"
+grep -Fq 'scripts/source-rootfs-shell-node-smoke.ts \' \
+  <<<"$node_smoke_workflow_block" ||
+  fail "activation Node proof must execute the source-rootfs smoke"
+grep -Fq 'case "$SHELL_ACTIVATION_MODE" in' <<<"$node_smoke_workflow_block" ||
+  fail "Node proof must select source-rootfs or bottle semantics explicitly"
 grep -Fq 'case "$TRANSPORT_MODE" in' <<<"$node_smoke_workflow_block" ||
   fail "Node proof must branch explicitly on closed versus public transport"
 grep -Fq '"${node_smoke_args[@]}"' <<<"$node_smoke_workflow_block" ||
@@ -260,10 +385,11 @@ grep -Fq '(mode === "closed" && !plan)' "$NODE_SMOKE" ||
   fail "Node smoke must require a local mirror plan in closed mode"
 grep -Fq '(mode === "public" && plan !== undefined)' "$NODE_SMOKE" ||
   fail "Node smoke must reject a local mirror plan in public mode"
-grep -Fq '${{ steps.candidate.outputs.image }}' "$WORKFLOW" ||
-  fail "main-shell evidence must retain the exact candidate image"
-grep -Fq '${{ steps.candidate.outputs.report }}' "$WORKFLOW" ||
-  fail "main-shell evidence must retain the candidate composition report"
+grep -Fq '${{ steps.image.outputs.path }}' "$WORKFLOW" ||
+  fail "main-shell evidence must retain the exact selected image"
+grep -Fq '${{ steps.source_candidate.outputs.report }}' "$WORKFLOW" &&
+  grep -Fq '${{ steps.bottle_candidate.outputs.report }}' "$WORKFLOW" ||
+  fail "main-shell evidence must retain the selected candidate report"
 grep -Fq 'apps/browser-demos/test-results' "$WORKFLOW" ||
   fail "main-shell evidence must retain browser failure traces"
 grep -Fq '${{ runner.temp }}/homebrew-main-shell-modeset-playwright.json' \
@@ -275,14 +401,24 @@ grep -Fq '"PLAYWRIGHT_JSON_OUTPUT_FILE=$shell_report"' "$WORKFLOW" ||
   fail "shell acceptance must have Playwright write JSON directly to its report file"
 grep -Fq '"PLAYWRIGHT_JSON_OUTPUT_FILE=$modeset_report"' "$WORKFLOW" ||
   fail "MODESET acceptance must have Playwright write JSON directly to its report file"
-grep -Fq 'npx playwright test test/kandelo-homebrew-main-shell.spec.ts \' "$WORKFLOW" ||
-  fail "browser acceptance must run the exact Homebrew shell proof"
+grep -Fq 'shell_spec=test/kandelo-source-rootfs-shell.spec.ts' "$WORKFLOW" &&
+  grep -Fq 'shell_spec=test/kandelo-homebrew-main-shell.spec.ts' "$WORKFLOW" &&
+  grep -Fq 'npx playwright test "$shell_spec" \' "$WORKFLOW" ||
+  fail "browser acceptance must select the exact activation or bottle shell proof"
 grep -Fq 'npx playwright test test/kandelo-modeset.spec.ts \' "$WORKFLOW" ||
   fail "browser acceptance must preserve MODESET in a fresh process"
 grep -Fq 'for report in "$shell_report" "$modeset_report"; do' "$WORKFLOW" ||
   fail "browser acceptance must validate both isolated Playwright reports"
 grep -Fq 'page.goto("/?demo=modeset"' "$BROWSER_SMOKE" &&
   fail "Homebrew shell acceptance must not start a second VFS in its browser process"
+grep -Fq 'page.goto("/?demo=modeset"' "$SOURCE_BROWSER_SMOKE" &&
+  fail "source-rootfs shell acceptance must not start a second VFS in its browser process"
+grep -Fq 'fs.isPathDeferred("/bin/grep")' "$SOURCE_NODE_SMOKE" ||
+  fail "source-rootfs Node smoke must prove an unrelated program remains deferred"
+grep -Fq 'source-rootfs-shell-node-ok:' "$SOURCE_NODE_SMOKE" ||
+  fail "source-rootfs Node smoke must execute image-owned Bash"
+grep -Fq 'SOURCE_ROOTFS_GREP_OK' "$SOURCE_BROWSER_SMOKE" ||
+  fail "source-rootfs browser smoke must execute a retained lazy program"
 grep -Fq 'gotoOrSkip(page, "/?demo=modeset")' "$MODESET_SMOKE" ||
   fail "isolated MODESET acceptance must boot the MODESET demo"
 grep -Fq -- '--project=chromium --reporter=json >"$report"' "$WORKFLOW" &&
@@ -294,7 +430,7 @@ grep -Fq 'fetch_args+=(--package "$package")' "$WORKFLOW" ||
 grep -Fq 'scripts/fetch-binaries.sh "${fetch_args[@]}"' "$WORKFLOW" ||
   fail "binary fetch must materialize only direct browser bundling inputs"
 browser_fetch_block="$(sed -n \
-  '/- name: Resolve current direct browser bundling inputs/,/- name: Build the exact lazy shell from public bottles/p' \
+  '/- name: Resolve current direct browser bundling inputs/,/- name: Install the candidate\x27s exact shell bytes/p' \
   "$WORKFLOW")"
 grep -Fq 'fetch_args=()' <<<"$browser_fetch_block" ||
   fail "browser support inputs must use the normal current-recipe resolver path"
@@ -304,33 +440,64 @@ grep -Fq 'WASM_POSIX_FETCH_SKIP_PKGS:' "$WORKFLOW" &&
   fail "main-shell proof must not use a negative package skip list"
 grep -Fq 'node scripts/browser-binary-package-roots.mjs \' "$WORKFLOW" ||
   fail "main-shell workflow must derive browser package roots from source imports"
+grep -Fq -- '--arch wasm32 \' "$WORKFLOW" ||
+  fail "browser package derivation must include architecture-scoped wasm32 roots"
+grep -Fq -- '--arch wasm64 \' "$WORKFLOW" ||
+  fail "browser package derivation must include architecture-scoped wasm64 roots"
 grep -Fq -- '--exclude-package shell \' "$WORKFLOW" ||
-  fail "browser package derivation must reserve shell for the exact bottle archive"
-grep -Fq -- '--include-package rootfs \' "$WORKFLOW" ||
+  fail "browser package derivation must reserve shell for the exact candidate build"
+# WHY: rootfs may be the final argument (no continuation) or move earlier in
+# the command; validate the CLI token instead of enforcing YAML formatting.
+grep -Eq -- '^[[:space:]]*--include-package[[:space:]]+rootfs([[:space:]]*\\)?[[:space:]]*$' \
+  <<<"$browser_fetch_block" ||
   fail "browser package derivation must include the non-@binaries rootfs alias"
 grep -Fq 'mapfile -t browser_input_packages < "$browser_package_file"' "$WORKFLOW" ||
   fail "main-shell workflow must consume the derived browser package roots"
 grep -Fq 'browser_input_packages=(' "$WORKFLOW" &&
   fail "main-shell workflow must not hand-maintain a partial browser package list"
+grep -Fq 'sha256sum --check \' <<<"$browser_fetch_block" &&
+  grep -Fq '${{ steps.source_candidate.outputs.local_manifest }}' \
+    <<<"$browser_fetch_block" &&
+  grep -Fq '${{ steps.source_candidate.outputs.link_manifest }}' \
+    <<<"$browser_fetch_block" &&
+  grep -Fq 'cmp "${{ steps.source_candidate.outputs.link_manifest }}" \' \
+    <<<"$browser_fetch_block" ||
+  fail "unrelated browser resolution must not replace exact-source shell closure bytes"
 
 for package_workflow in \
   "$STAGING_WORKFLOW" \
   "$PREPARE_MERGE_WORKFLOW" \
   "$FORCE_REBUILD_WORKFLOW"
 do
-  [ "$(grep -Fc 'npm --prefix tools/mkrootfs ci --no-audit --no-fund' "$package_workflow")" -eq 1 ] ||
-    fail "$package_workflow must install mkrootfs exactly once for the shell program wave"
-  grep -Fq "if: \${{ matrix.package == 'shell' }}" "$package_workflow" ||
-    fail "$package_workflow must limit the mkrootfs prerequisite to the shell package"
-  install_line="$(grep -nF 'npm --prefix tools/mkrootfs ci --no-audit --no-fund' "$package_workflow" | cut -d: -f1)"
-  if [ "$package_workflow" = "$FORCE_REBUILD_WORKFLOW" ]; then
-    build_line="$(grep -nF '              archive-stage \' "$package_workflow" | tail -1 | cut -d: -f1)"
-  else
-    build_line="$(grep -nF 'uses: ./.github/actions/package-archive-build' "$package_workflow" | tail -1 | cut -d: -f1)"
-  fi
-  [ -n "$install_line" ] && [ -n "$build_line" ] && [ "$install_line" -lt "$build_line" ] ||
-    fail "$package_workflow must install mkrootfs before the shell archive build"
+  grep -Fq 'Install shell VFS composer dependencies' "$package_workflow" &&
+    fail "$package_workflow must not own a shell-recipe prerequisite"
 done
+
+# The old preparer remains covered because the strict bottle composer will use
+# it again after exact-main bottles exist. The temporary source bridge must not
+# execute or cache-key that network-capable tool installation path.
+bash "$SHELL_TOOL_PREPARER_TEST" ||
+  fail "dormant bottle build-tool preparation tests failed"
+grep -Fq 'prepare-build-tools.sh' "$SHELL_BUILDER" &&
+  fail "source-rootfs shell bridge must not install composer dependencies"
+grep -Fq '"packages/registry/shell/prepare-build-tools.sh"' \
+  "$SHELL_BUILD_TOML" &&
+  fail "source-rootfs shell cache identity must exclude dormant bottle tooling"
+grep -A4 -F 'name = "node"' "$SHELL_PACKAGE_TOML" |
+  grep -Fq 'version_constraint = ">=20.0"' ||
+  fail "source-rootfs shell package must declare its Node host tool"
+grep -Fq 'name = "npm"' "$SHELL_PACKAGE_TOML" &&
+  fail "source-rootfs shell package must not declare an npm tool it never executes"
+grep -Fq '# WHY: the package resolver may source-build shell' \
+  "$SHELL_TOOL_PREPARER" ||
+  fail "dormant bottle tool ownership boundary must retain its WHY comment"
+grep -Fq 'env -i \' "$SHELL_TOOL_PREPARER" ||
+  fail "dormant bottle tool installs must start from a scrubbed environment"
+grep -Fq 'npm_config_registry="https://registry.npmjs.org/"' \
+  "$SHELL_TOOL_PREPARER" ||
+  fail "dormant bottle tool installs must pin the public npm registry"
+grep -Fq 'npm ci' "$SHELL_BUILDER" &&
+  fail "shell wrapper must not mutate checkout-global dependency trees"
 
 # The dev-shell wrapper intentionally reports Nix lookup and shell-hook details
 # on stdout. Playwright must own the JSON file directly so those diagnostics can
@@ -360,18 +527,20 @@ jq -e '
 grep -Fq "flake.nix" "$playwright_report" &&
   fail "dev-shell diagnostics leaked into the direct Playwright JSON report"
 
-grep -Fq 'name = "homebrew_tap_core"' "$SHELL_BUILD_TOML" ||
-  fail "shell build.toml must declare the canonical tap Git input"
-grep -Fq 'repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"' \
-  "$SHELL_BUILD_TOML" ||
-  fail "shell Git input must use the public canonical tap repository"
-locked_tap_sha="$(jq -er '.catalog.tap_commit' "$SOURCE_LOCK")"
-grep -Fq "commit = \"$locked_tap_sha\"" "$SHELL_BUILD_TOML" ||
-  fail "shell Git input commit must equal the reviewed migration lock"
-grep -Eq '^revision[[:space:]]*=[[:space:]]*18$' "$SHELL_BUILD_TOML" ||
-  fail "language-expanded lazy shell must publish canonical shell revision 18"
+grep -Fq '[[git_inputs]]' "$SHELL_BUILD_TOML" &&
+  fail "source-rootfs shell bridge must not declare a tap Git input"
+grep -Eq '^revision[[:space:]]*=[[:space:]]*21$' "$SHELL_BUILD_TOML" ||
+  fail "source-rootfs activation bridge must publish shell revision 21"
 for shell_input in \
+  homebrew/source-rootfs-shell-default.json \
+  homebrew/source-rootfs-shell-dependencies.json \
   homebrew/main-shell-demo.json \
+  scripts/source-rootfs-shell-dependency-contract.mjs \
+  images/vfs/scripts/build-source-rootfs-shell-image.ts \
+  images/vfs/scripts/shell-vfs-build.ts \
+  images/vfs/scripts/shell-lazy-archives.ts \
+  images/vfs/lib/init/shell-binaries.ts \
+  web-libs/kandelo-session/src/shell-config.ts \
   web-libs/kandelo-session/src/demo-config.ts
 do
   grep -Fq "\"$shell_input\"" "$SHELL_BUILD_TOML" ||
@@ -387,8 +556,8 @@ for materialized_shell_input in \
   host/src/homebrew-vfs-materialization-policy.ts \
   scripts/verify-homebrew-main-shell-artifact-lock.sh
 do
-  grep -Fq "\"$materialized_shell_input\"" "$SHELL_BUILD_TOML" ||
-    fail "lazy shell build cache inputs omit $materialized_shell_input"
+  grep -Fq "\"$materialized_shell_input\"" "$SHELL_BUILD_TOML" &&
+    fail "source-rootfs bridge cache identity includes dormant bottle input $materialized_shell_input"
 done
 grep -Fq \
   'VFS_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts"' \
@@ -404,40 +573,48 @@ grep -Fq 'from "../../../host/src/homebrew-vfs-composer"' \
   "$MATERIALIZED_IMAGE_BUILDER" ||
   fail "materialized image entrypoint must own the candidate composer import"
 for generic_input in \
-  WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_DIR \
-  WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_COMMIT
+  WASM_POSIX_DEP_ROOTFS_DIR \
+  WASM_POSIX_DEP_BASH_DIR \
+  WASM_POSIX_DEP_FBDOOM_DIR \
+  WASM_POSIX_DEP_MODESET_DIR
 do
   grep -Fq "$generic_input" "$SHELL_BUILDER" ||
     fail "shell builder must consume generic resolver input $generic_input"
 done
 grep -Fq 'KANDELO_HOMEBREW_MAIN_SHELL_TAP_' "$SHELL_BUILDER" &&
   fail "shell builder must not retain the workflow-only tap injection path"
-[ "$(grep -Fc -- '--lazy-shell' "$SHELL_BUILDER")" -eq 1 ] ||
-  fail "canonical package wrapper must activate lazy composition exactly once"
+grep -Fq 'WASM_POSIX_BUILD_GIT_' "$SHELL_BUILDER" &&
+  fail "source-rootfs shell bridge must not consume a Git/tap input"
+grep -Fq 'build-homebrew-main-shell-closure.sh' "$SHELL_BUILDER" &&
+  fail "source-rootfs shell bridge must not execute the bottle composer"
 grep -Fq 'build-shell-vfs-image.sh' "$SHELL_BUILDER" &&
   fail "shell builder must not retain the legacy registry-composition fallback"
-for isolated_flag in '--work-dir "$WORK_DIR"' '--report "$REPORT"' '--bottle-cache "$BOTTLE_CACHE"'; do
-  grep -Fq -- "$isolated_flag" "$SHELL_BUILDER" ||
-    fail "shell builder must pass isolated composer option $isolated_flag"
-done
+grep -Fq -- '--rootfs "$ROOTFS"' "$SHELL_BUILDER" ||
+  fail "source-rootfs shell wrapper must pass the exact rootfs dependency"
+grep -Fq -- '--bash "$BASH"' "$SHELL_BUILDER" ||
+  fail "source-rootfs shell wrapper must pass the exact eager Bash dependency"
+grep -Fq -- '--fbdoom "$FBDOOM"' "$SHELL_BUILDER" ||
+  fail "source-rootfs shell wrapper must pass the exact fbdoom dependency"
+grep -Fq -- '--modeset "$MODESET"' "$SHELL_BUILDER" ||
+  fail "source-rootfs shell wrapper must pass the exact modeset dependency"
 grep -Fq 'WORK_DIR="$REPO_ROOT/target/homebrew-main-shell"' "$BUILDER" &&
   fail "Homebrew composer must not use a shared repository target workspace"
 grep -Fq 'homebrew-main-shell-node-smoke.ts' "$BUILDER" &&
   fail "cached shell composition must not consume ambient runtime acceptance artifacts"
 grep -Fq 'scripts/homebrew-main-shell-node-smoke.ts' "$WORKFLOW" ||
   fail "exact candidate shell bytes must retain post-build Node acceptance"
-grep -Eq '^depends_on = \[\]$' "$REPO_ROOT/packages/registry/shell/package.toml" ||
-  fail "canonical bottle-only shell package must not pre-resolve the legacy registry graph"
+grep -Fq 'source-rootfs-shell-dependency-contract.mjs' "$SHELL_BUILDER" ||
+  fail "source-rootfs shell wrapper must derive resolver inputs from the shared dependency contract"
 
 shell_build_function="$TMP_ROOT/build-shell-vfs-function.sh"
 sed -n '/^build_shell_vfs()/,/^}/p' "$RUN_SH" >"$shell_build_function"
 grep -Fq 'resolve_args+=(resolve shell)' "$shell_build_function" ||
   fail "run.sh must resolve the shell package through the package system"
-grep -Fq 'need_shell_vfs_build_tools' "$shell_build_function" ||
-  fail "run.sh must prepare lockfile-owned tools before shell source fallback"
+grep -Fq 'need_shell_vfs_build_tools' "$RUN_SH" &&
+  fail "run.sh must not duplicate prerequisites owned by the shell recipe"
 grep -Fq 'if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then' \
   "$shell_build_function" ||
-  fail "run.sh must distinguish an explicit fetch-only resolve from normal fallback"
+  fail "run.sh must preserve an explicit fetch-only resolve"
 grep -Fq 'resolve_args+=("${FETCH_ONLY_ARGS[@]}")' \
   "$shell_build_function" ||
   fail "run.sh must forward the caller's fetch-only contract to the shell resolver"
@@ -445,26 +622,13 @@ fetch_condition_line="$(grep -nF 'if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then' \
   "$shell_build_function" | cut -d: -f1)"
 fetch_forward_line="$(grep -nF 'resolve_args+=("${FETCH_ONLY_ARGS[@]}")' \
   "$shell_build_function" | cut -d: -f1)"
-fallback_else_line="$(grep -nE '^    else$' "$shell_build_function" | cut -d: -f1)"
-fallback_tools_line="$(grep -nF '        need_shell_vfs_build_tools' \
-  "$shell_build_function" | cut -d: -f1)"
-fallback_fi_line="$(awk -v start="$fallback_tools_line" \
+fetch_fi_line="$(awk -v start="$fetch_forward_line" \
   'NR > start && /^    fi$/ { print NR; exit }' "$shell_build_function")"
 [ "$fetch_condition_line" -lt "$fetch_forward_line" ] &&
-  [ "$fetch_forward_line" -lt "$fallback_else_line" ] &&
-  [ "$fallback_else_line" -lt "$fallback_tools_line" ] &&
-  [ "$fallback_tools_line" -lt "$fallback_fi_line" ] ||
-  fail "run.sh must skip composer tools only on the fetch-only branch"
-shell_tools_function="$TMP_ROOT/need-shell-vfs-build-tools-function.sh"
-sed -n '/^need_shell_vfs_build_tools()/,/^}/p' "$RUN_SH" >"$shell_tools_function"
-grep -Fq 'npm ci --no-audit --no-fund --prefer-offline' \
-  "$shell_tools_function" ||
-  fail "run.sh must install root shell-composer dependencies from the lockfile"
-grep -Fq 'npm --prefix "$REPO_ROOT/tools/mkrootfs" ci' \
-  "$shell_tools_function" ||
-  fail "run.sh must install mkrootfs dependencies from the lockfile"
-grep -Eq '(^|[[:space:]])if[[:space:]]' "$shell_tools_function" &&
-  fail "shell source fallback must not accept dependency presence as lockfile identity"
+  [ "$fetch_forward_line" -lt "$fetch_fi_line" ] ||
+  fail "run.sh must limit fetch-only forwarding to the explicit branch"
+grep -Fq 'npm ci' "$shell_build_function" &&
+  fail "run.sh must not predict whether the package resolver will source-build shell"
 grep -Fq -- '--binaries-dir "$REPO_ROOT/local-binaries"' "$RUN_SH" ||
   fail "run.sh must materialize the resolved shell package for local consumers"
 grep -Fq 'pkg_has_output shell shell.vfs.zst' "$RUN_SH" ||
@@ -472,7 +636,7 @@ grep -Fq 'pkg_has_output shell shell.vfs.zst' "$RUN_SH" ||
 grep -Fq 'packages/registry/shell/build-shell.sh' "$RUN_SH" &&
   fail "run.sh must not bypass the resolver by invoking the shell recipe directly"
 grep -Fq 'build_fbdoom' "$shell_build_function" &&
-  fail "the bottle-built shell resolver path must not retain the obsolete fbdoom prerequisite"
+  fail "run.sh must let the resolver own the shell package's fbdoom dependency"
 grep -Fq '[ "${KANDELO_REBUILD_TARGET:-}" != "shell-vfs" ] && has_shell_vfs' \
   "$shell_build_function" ||
   fail "rebuild shell-vfs must not short-circuit on a fetched or local artifact"
@@ -503,22 +667,33 @@ done
   npx tsx --test "$IMAGE_CONTRACT_TEST"
 ) || fail "post-archive image contract unit tests failed"
 
-# Exercise the package wrapper twice at once while replacing only its composer
-# subprocess. Each invocation must receive an exclusive resolver-owned
-# workspace, publish only the declared VFS, discard its report/cache scratch,
-# and remove every ambient GitHub/Homebrew credential before composition.
-fake_bin="$TMP_ROOT/fake-composer-bin"
+# Exercise the temporary source bridge twice at once while replacing only its
+# Node process. Each invocation must receive exact resolver-owned dependency
+# files, use an exclusive work directory, publish only the declared VFS, and
+# remove ambient credentials/module/network configuration before composition.
+fake_bin="$TMP_ROOT/fake-source-composer-bin"
 fake_log="$TMP_ROOT/fake-composer.log"
 mkdir -p "$fake_bin"
-apply_fake_composer="$fake_bin/bash"
-cat >"$apply_fake_composer" <<'FAKE_COMPOSER'
+fake_node="$fake_bin/node"
+real_node="$(command -v node)"
+cat >"$fake_node" <<'FAKE_NODE'
 #!/bin/bash
 set -euo pipefail
-composer="${1:-}"
-shift
-[[ "$composer" == */scripts/build-homebrew-main-shell-closure.sh ]]
+if [[ "${1:-}" == */scripts/source-rootfs-shell-dependency-contract.mjs ]]; then
+  exec "$FAKE_REAL_NODE" "$@"
+fi
+tsx_cli="${1:-}"
+composer="${2:-}"
+shift 2
+[[ "$tsx_cli" == */node_modules/tsx/dist/cli.mjs ]]
+[[ "$composer" == */images/vfs/scripts/build-source-rootfs-shell-image.ts ]]
 for token in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
-  HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN; do
+  HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN \
+  NPM_TOKEN NODE_AUTH_TOKEN NODE_OPTIONS NODE_PATH \
+  NPM_CONFIG_USERCONFIG NPM_CONFIG_GLOBALCONFIG NPM_CONFIG_REGISTRY \
+  npm_config_userconfig npm_config_globalconfig npm_config_registry \
+  ALL_PROXY HTTPS_PROXY HTTP_PROXY NO_PROXY \
+  all_proxy https_proxy http_proxy no_proxy; do
   if [ "${!token+x}" = x ]; then
     echo "credential leaked to composer: $token" >&2
     exit 80
@@ -528,49 +703,103 @@ done
   echo "canonical shell wrapper did not pin SOURCE_DATE_EPOCH=0" >&2
   exit 79
 }
-work="" report="" cache="" out="" lazy_shell=false
+rootfs="" bash="" fbdoom="" modeset="" shell_config="" demo_config="" out=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --lazy-shell) lazy_shell=true; shift ;;
-    --work-dir) work="$2"; shift 2 ;;
-    --report) report="$2"; shift 2 ;;
-    --bottle-cache) cache="$2"; shift 2 ;;
+    --rootfs) rootfs="$2"; shift 2 ;;
+    --bash) bash="$2"; shift 2 ;;
+    --fbdoom) fbdoom="$2"; shift 2 ;;
+    --modeset) modeset="$2"; shift 2 ;;
+    --shell-config) shell_config="$2"; shift 2 ;;
+    --demo-config) demo_config="$2"; shift 2 ;;
     --out) out="$2"; shift 2 ;;
-    --tap-root|--expected-tap-sha) shift 2 ;;
-    *) echo "unexpected fake-composer option: $1" >&2; exit 81 ;;
+    *) echo "unexpected source-composer option: $1" >&2; exit 81 ;;
   esac
 done
-[ -n "$work" ] && [ -n "$report" ] && [ -n "$cache" ] && [ -n "$out" ]
-[ "$lazy_shell" = true ]
-[ ! -e "$work" ] && [ ! -L "$work" ]
-mkdir "$work"
-mkdir "$cache"
-printf '%s\n' "$WASM_POSIX_DEP_OUT_DIR" >"$out"
-printf '{}\n' >"$report"
-printf '%s|%s|%s|%s|%s\n' \
-  "$WASM_POSIX_DEP_OUT_DIR" "$work" "$report" "$cache" "$out" \
+for input in "$rootfs" "$bash" "$fbdoom" "$modeset" "$shell_config" "$demo_config"; do
+  [ -f "$input" ] && [ ! -L "$input" ]
+done
+[ "$rootfs" = "$WASM_POSIX_DEP_ROOTFS_DIR/rootfs.vfs" ]
+[ "$bash" = "$WASM_POSIX_DEP_BASH_DIR/bash.wasm" ]
+[ "$fbdoom" = "$WASM_POSIX_DEP_FBDOOM_DIR/fbdoom.wasm" ]
+[ "$modeset" = "$WASM_POSIX_DEP_MODESET_DIR/modeset.wasm" ]
+[[ "$out" == "$WASM_POSIX_DEP_WORK_DIR"/source-rootfs-shell.*/shell.vfs.zst ]]
+printf '%s\n' "source-rootfs-shell" >"$out"
+printf '%s|%s|%s|%s|%s|%s|%s\n' \
+  "$WASM_POSIX_DEP_OUT_DIR" "$WASM_POSIX_DEP_WORK_DIR" "$out" \
+  "$rootfs" "$bash" "$fbdoom" "$modeset" \
   >>"$FAKE_COMPOSER_LOG"
-FAKE_COMPOSER
-chmod 0755 "$apply_fake_composer"
+FAKE_NODE
+chmod 0755 "$fake_node"
 
-tap_sha=1111111111111111111111111111111111111111
+dependency_root="$TMP_ROOT/source-shell-dependencies"
+mkdir -p \
+  "$dependency_root/rootfs" \
+  "$dependency_root/bash" \
+  "$dependency_root/fbdoom" \
+  "$dependency_root/modeset"
+printf '%s\n' rootfs >"$dependency_root/rootfs/rootfs.vfs"
+printf '%s\n' bash >"$dependency_root/bash/bash.wasm"
+printf '%s\n' fbdoom >"$dependency_root/fbdoom/fbdoom.wasm"
+printf '%s\n' modeset >"$dependency_root/modeset/modeset.wasm"
+mapfile -t source_extended_dependencies < <(
+  node "$REPO_ROOT/scripts/source-rootfs-shell-dependency-contract.mjs" \
+    --print-resolver-owned \
+    "$REPO_ROOT/homebrew/source-rootfs-shell-dependencies.json"
+)
+[ "${#source_extended_dependencies[@]}" -gt 0 ] ||
+  fail "source dependency contract fixture produced no resolver inputs"
+for dependency in "${source_extended_dependencies[@]}"; do
+  mkdir -p "$dependency_root/$dependency"
+done
 parallel_one="$TMP_ROOT/parallel-shell-one"
 parallel_two="$TMP_ROOT/parallel-shell-two"
-mkdir "$parallel_one" "$parallel_two"
+mkdir -p \
+  "$parallel_one/out" "$parallel_one/work" \
+  "$parallel_two/out" "$parallel_two/work"
 run_fake_shell_build() {
-  local out_dir="$1"
+  local invocation_root="$1"
+  local dependency
+  local dependency_key
+  local resolver_env=()
+  for dependency in "${source_extended_dependencies[@]}"; do
+    dependency_key="$(printf '%s' "$dependency" | tr '[:lower:]-' '[:upper:]_')"
+    resolver_env+=(
+      "WASM_POSIX_DEP_${dependency_key}_DIR=$dependency_root/$dependency"
+    )
+  done
   env \
     PATH="$fake_bin:$PATH" \
+    KANDELO_DEV_SHELL_TOOL_PATH="$fake_bin" \
+    FAKE_REAL_NODE="$real_node" \
     FAKE_COMPOSER_LOG="$fake_log" \
     GH_TOKEN=forbidden \
     GITHUB_TOKEN=forbidden \
     HOMEBREW_GITHUB_API_TOKEN=forbidden \
     HOMEBREW_GITHUB_PACKAGES_TOKEN=forbidden \
     HOMEBREW_DOCKER_REGISTRY_TOKEN=forbidden \
-    WASM_POSIX_DEP_OUT_DIR="$out_dir" \
+    NPM_TOKEN=forbidden \
+    NODE_AUTH_TOKEN=forbidden \
+    NODE_OPTIONS=--trace-warnings \
+    NODE_PATH="$TMP_ROOT/forbidden-node-path" \
+    NPM_CONFIG_USERCONFIG="$TMP_ROOT/forbidden-user.npmrc" \
+    NPM_CONFIG_GLOBALCONFIG="$TMP_ROOT/forbidden-global.npmrc" \
+    NPM_CONFIG_REGISTRY=https://attacker.invalid/ \
+    npm_config_userconfig="$TMP_ROOT/forbidden-lower-user.npmrc" \
+    npm_config_globalconfig="$TMP_ROOT/forbidden-lower-global.npmrc" \
+    npm_config_registry=https://lower-attacker.invalid/ \
+    HTTP_PROXY=https://proxy.invalid/ \
+    HTTPS_PROXY=https://proxy.invalid/ \
+    ALL_PROXY=https://proxy.invalid/ \
+    NO_PROXY=attacker.invalid \
+    WASM_POSIX_DEP_OUT_DIR="$invocation_root/out" \
+    WASM_POSIX_DEP_WORK_DIR="$invocation_root/work" \
+    WASM_POSIX_DEP_ROOTFS_DIR="$dependency_root/rootfs" \
+    WASM_POSIX_DEP_BASH_DIR="$dependency_root/bash" \
+    WASM_POSIX_DEP_FBDOOM_DIR="$dependency_root/fbdoom" \
+    WASM_POSIX_DEP_MODESET_DIR="$dependency_root/modeset" \
     WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
-    WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_DIR="$TMP_ROOT/fake-tap" \
-    WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_COMMIT="$tap_sha" \
+    "${resolver_env[@]}" \
     /bin/bash "$SHELL_BUILDER"
 }
 run_fake_shell_build "$parallel_one" &
@@ -582,22 +811,28 @@ wait "$parallel_two_pid" || fail "second concurrent shell wrapper failed"
 
 [ "$(wc -l <"$fake_log" | tr -d '[:space:]')" -eq 2 ] ||
   fail "concurrent shell wrappers did not produce two composer records"
-for out_dir in "$parallel_one" "$parallel_two"; do
+for invocation_root in "$parallel_one" "$parallel_two"; do
+  out_dir="$invocation_root/out"
   [ -f "$out_dir/shell.vfs.zst" ] || fail "shell wrapper omitted final VFS in $out_dir"
   [ "$(find "$out_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d '[:space:]')" -eq 1 ] ||
     fail "shell wrapper leaked scratch outputs into $out_dir"
-  [ ! -e "$out_dir/.homebrew-shell-build" ] ||
-    fail "shell wrapper did not clean resolver-owned scratch in $out_dir"
-  grep -Fq "$out_dir|$out_dir/.homebrew-shell-build/work|" "$fake_log" ||
-    fail "composer did not receive the exclusive workspace below $out_dir"
+  [ "$(find "$invocation_root/work" -mindepth 1 -print | wc -l | tr -d '[:space:]')" -eq 0 ] ||
+    fail "shell wrapper did not clean resolver-owned composition scratch"
+  grep -Fq "$out_dir|$invocation_root/work|" "$fake_log" ||
+    fail "composer did not receive its resolver-owned output and work roots"
 done
-[ "$(cut -d'|' -f2 "$fake_log" | sort -u | wc -l | tr -d '[:space:]')" -eq 2 ] ||
+[ "$(cut -d'|' -f3 "$fake_log" | sort -u | wc -l | tr -d '[:space:]')" -eq 2 ] ||
   fail "concurrent shell wrappers shared one composer workspace"
 grep -Fq "$REPO_ROOT/target/homebrew-main-shell" "$fake_log" &&
   fail "composer reused the repository-global Homebrew target workspace"
 
-expect_failure "requires build.toml git input homebrew_tap_core" \
-  env WASM_POSIX_DEP_OUT_DIR="$TMP_ROOT/missing-git-input" \
+expect_failure "WASM_POSIX_DEP_ROOTFS_DIR is required" \
+  env KANDELO_DEV_SHELL_TOOL_PATH="$fake_bin" \
+    WASM_POSIX_DEP_OUT_DIR="$TMP_ROOT/missing-rootfs/out" \
+    WASM_POSIX_DEP_WORK_DIR="$TMP_ROOT/missing-rootfs/work" \
+    WASM_POSIX_DEP_BASH_DIR="$dependency_root/bash" \
+    WASM_POSIX_DEP_FBDOOM_DIR="$dependency_root/fbdoom" \
+    WASM_POSIX_DEP_MODESET_DIR="$dependency_root/modeset" \
     WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
   bash "$SHELL_BUILDER"
 

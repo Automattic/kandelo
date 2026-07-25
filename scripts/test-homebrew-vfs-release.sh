@@ -1520,7 +1520,15 @@ def by_id(state, release_id):
     )
 
 args = sys.argv[1:]
-if args[:2] == ["api", "--include"]:
+if args == [
+    "api", "/repos/Automattic/kandelo/git/ref/heads/main",
+    "--jq", ".object.sha",
+]:
+    print(os.environ.get(
+        "FAKE_KANDELO_MAIN_SHA",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ))
+elif args[:2] == ["api", "--include"]:
     endpoint = args[2]
     state = load()
     if "/releases/tags/" in endpoint:

@@ -342,6 +342,7 @@ function createWorkerHarness(
       exports: {
         kernel_get_process_state: getProcessState,
         kernel_get_process_exit_signal: vi.fn(() => -1),
+        kernel_set_current_tid: vi.fn(() => 0),
       },
     },
     processes: new Map([[41, { memory, channels: [channel] }]]),

@@ -34,7 +34,7 @@ kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
   (`WasmStat`, `WasmDirent`, `WasmFlock`, `WasmTimespec`, `WasmPollFd`,
   `WasmStatfs`), or changing a field's type in a way that shifts offsets
   or span.
-- Changing the five `wpk_fork_*` export names or the save-buffer /
+- Changing the required `wpk_fork_*` export names or the save-buffer /
   frame format emitted by
   [`wasm-fork-instrument`](fork-instrumentation.md) into every
   fork-using user program. The kernel does not read these exports
@@ -125,6 +125,135 @@ rebuilding because the public process-memory layout belongs to ABI 41. ABI 41
 candidate programs created before publication remain mechanically valid when
 only this host-supplied reserve grows and the frame format stays unchanged.
 
+### ABI 42 kernel-owned task identities and scalable fork continuations
+
+ABI 42 makes the Rust `ProcessTable` the sole authority for process and thread
+identities. One monotonically increasing positive signed task-ID sequence starts
+at 100 and serves top-level process creation, fork, non-forking `posix_spawn`,
+and thread-style clone. IDs are not reused after process reaping or thread exit;
+allocating `i32::MAX` succeeds, and only the following allocation returns
+`EAGAIN`. PID 1 is created separately as the synthetic init reservation and
+never names a user Wasm worker.
+
+The kernel implementation enforces that ownership with a linear
+`AllocatedTaskId`: only `ProcessTable` can mint one, and production `Process` or
+`ThreadInfo` construction consumes it. PID, TID, and thread-membership views are
+not mutable outside that path. Caller-selected constructors remain test-only,
+and fork deserialization restores non-identity state into an already-authorized
+child instead of constructing a PID from serialized or host input. These are
+internal Rust invariants rather than additional Wasm exports.
+
+The kernel creation exports now return their assigned identities:
+`kernel_create_process()` takes no PID, and
+`kernel_create_process_with_stdio(stdin_kind, stdout_kind, stderr_kind)` takes
+only stdio kinds. `kernel_fork_process(parent_pid, caller_tid)` takes no child
+PID and returns the allocated child. The new
+`kernel_spawn_process(parent_pid, caller_tid, blob_ptr, blob_len)` signature
+likewise names the already-existing calling task, not a proposed child
+identity. The kernel validates that `caller_tid` is the parent's live main task
+or one of its live kernel-allocated threads before either operation; an unknown,
+stale, or cross-process caller returns `ESRCH`. The caller-selected
+`kernel_init(pid)` and `kernel_init_from_fork(..., child_pid)` constructors are
+removed. Host `createProcess` asks the kernel for an identity, while
+`registerProcess` only attaches memory, channels, and worker metadata to
+existing kernel state; no host allocator or task-ID watermark remains.
+Thread-style clone likewise validates its bound caller against the owning
+process before consuming a task ID. The host adapter manifest and kernel
+artifact gates require the create, fork, spawn, exact exec, and thread-exit
+exports, so a stale kernel cannot defer a missing authority or lifecycle path
+until the first child, exec, or thread exit.
+
+Exec is an exact-caller two-step operation. The required
+`kernel_exec_prepare(pid, caller_tid)` export validates the live task and
+applies deferred file actions before the irreversible transition. The required
+`kernel_exec_setup_for_thread(pid, caller_tid)` export performs the in-place
+exec reset while preserving the calling task's mask and directed signal state.
+The required `kernel_thread_exit(pid, tid)` export removes only that process's
+exact live thread; unknown, already-exited, and cross-process TIDs return
+`ESRCH` rather than falling back to a host-side lifecycle decision.
+
+Fork and spawn use the validated caller identity to select the calling task's
+blocked signal mask. A fork child inherits that mask, and a spawn child inherits
+it unless `POSIX_SPAWN_SETSIGMASK` supplies a replacement. The obsolete
+`kernel_reset_signal_mask` export is removed; clearing the fork child's mask in
+the host would violate pthread-fork semantics. On the child rewind path, libc
+refreshes the copied pthread TID from the kernel through `set_tid_address`
+before returning from `fork()`.
+
+Channel identity binding is kernel-validated in the same epoch.
+`kernel_set_current_tid(pid, tid) -> 0 | -errno` replaces the former unchecked
+one-argument setter. It accepts only the process's main task or a thread that
+the same `ProcessTable` has already allocated for that process; a host cannot
+invent a TID or bind one process's channel to another process's task. The
+read-only `kernel_validate_task(pid, tid)` export lets the host validate channel
+registration without installing dispatch authority. Clone callbacks attach a
+mailbox by consuming a one-shot host transport proof whose immutable PID/TID
+pair comes from that exact kernel clone result. The public attachment path does
+not accept a numeric TID, and rejects proof replay, duplicate offsets, duplicate
+TID ownership, and attempts to substitute a different valid sibling task. A
+successful `kernel_set_current_tid` binding authorizes exactly one
+`kernel_handle_channel` call and is cleared after every return. Because
+`_exit` intentionally traps instead of returning through the dispatcher, it
+clears the binding before trapping. Missing, rejected, stale, or exited task
+bindings fail closed with `ESRCH`; no PID-only ambient selector remains.
+
+All host-initiated guest mutations that previously depended on such a selector
+now carry their authority explicitly. `kernel_dequeue_signal(pid, tid,
+out_ptr)`, `kernel_wait_child_poll(parent_pid, caller_tid, target_pid,
+event_mask, flags, out_ptr)`, and `kernel_prepare_write_operation(pid, tid,
+fd, offset, len, positioned)` validate the exact live caller before consuming
+signal or wait state or applying write-limit side effects. Guest SysV shared
+memory calls use `kernel_ipc_shmat_for_task(pid, tid, ...)` and
+`kernel_ipc_shmdt_for_task(pid, tid, ...)`; lifecycle-only inheritance,
+rollback, and teardown use the separate explicit-process
+`kernel_ipc_shmat_for_process` and `kernel_ipc_shmdt_for_process` exports.
+The former `kernel_set_current_pid` export is removed.
+
+The Rust kernel Wasm's obsolete direct `kernel_fork` export and its
+host-supplied `host_fork` and `host_clone` imports are also removed. Guest libc
+still imports `kernel_fork` from its process-worker adapter; that adapter routes
+the request through the centralized host, which calls
+`kernel_fork_process(parent_pid, caller_tid)` and uses the PID returned by
+`ProcessTable`.
+
+Exact-thread signal delivery is strict in ABI 42. `tkill` and `tgkill` deliver
+only to a retained live task record in the calling process. TID 0 and unknown
+or exited TIDs return `ESRCH`; they are not reinterpreted as process-wide
+signal requests. Cross-process exact-thread delivery remains unsupported.
+Machine-wide `kill` target selection, including process groups and `kill(-1)`,
+now runs entirely against `ProcessTable`; the former `host_kill` import and
+host-side `DeliverSignalMessage` routing path are removed.
+
+These removals and signature/return-semantics changes, including task
+creation, `kernel_set_current_tid`, signal dequeue, child wait, write prepare,
+SysV attachment, exact exec, and exact thread exit, are incompatible kernel
+Wasm changes. Kernels, hosts, packages, guest binaries, and VFS images from
+ABI 41 must be rebuilt rather than mixed with ABI 42 artifacts.
+#### Scalable fork continuations
+
+ABI 42 replaces the fixed-capacity contiguous save buffer with dynamically
+mapped linked chunks. Instrumented modules carry the strict version-1
+`kandelo.wpk_fork.linked_frames` descriptor and import
+`env.__wpk_fork_frame_reserve`, `env.__wpk_fork_frame_commit`, and
+`env.__wpk_fork_frame_next`. The host validates the descriptor, owns chunk
+allocation and cleanup, and rejects incomplete or stale instrumentation.
+
+The transition is incompatible: generated postambles depend on
+reserve-before-write and commit-after-write semantics, replay uses a validated
+linked-node order, and instrumented modules require the seven-export control
+set including `wpk_fork_abort_begin` and `wpk_fork_abort_end`. The old
+channel-adjacent area is only an active-root handoff anchor. ABI 41 and older
+programs must be rebuilt with the ABI 42 instrumenter and package/VFS artifacts
+must be republished for the new ABI epoch.
+
+Version 1 keeps inherited chunks at the parent's virtual addresses in the
+child. Relocating and rebasing a serialized continuation is not part of this
+ABI. The linked descriptor requires transactional-node and abort-unwinding
+flags. A typed allocation failure before unwind returns its errno directly; a
+later failure enters `ABORT_UNWINDING`, reconstructs the committed inner
+frames, releases the partial continuation, and returns the errno from the
+original `fork()` call without terminating the parent.
+
 ## The snapshot
 
 `abi/snapshot.json` is generated by `cargo xtask dump-abi` from the
@@ -160,9 +289,18 @@ captures:
   pthread slot page offsets, and the process-wasm thread-slot declaration
   contract.
 - `custom_sections` — names of wasm custom sections that participate in
-  the ABI (currently `wasm-posix-abi` for the per-binary version).
+  the ABI: `wasm-posix-abi` for the per-binary version and
+  `kandelo.wpk_fork.linked_frames` for the linked-continuation layout.
 - `process_expected_globals` — globals every user process instance is
   expected to expose for the host to thread through fork/exec.
+- `program_artifact` — requirements checked on instrumented user programs
+  before they can be published: the linked-frame descriptor schema, its
+  wasm32/wasm64 header sizes, the three transactional frame imports, and
+  the seven `wpk_fork_*` control exports with pointer-width-aware signatures.
+  The descriptor width, function signatures, and the module's single memory
+  address width are validated as one contract.
+  WHY this is snapshot-owned: a program can otherwise pass kernel ABI checks
+  yet fail only when its first `fork()` reaches a newer host.
 - `kernel_exports` — every non-toolchain export in the built kernel
   `.wasm`: function signatures (`(params) -> (results)`), global
   types/mutability, memory + table entries. Toolchain-internal
@@ -242,6 +380,13 @@ constant bumps — no per-package URL pinning in-tree to amend. The
 matrix flow's per-entry `scripts/index-update.sh` invocations
 populate the new tag's `index.toml` atomically as each archive
 publishes.
+
+For an ABI transition that also publishes Homebrew bottles, land the coherent
+ABI and package-source changes first. The canonical package archives and
+bottles are rebuilt afterward from the exact resulting `main` commit and record
+that SHA as producer provenance. Pull-request staging builds may exercise the
+new ABI, but they are noncanonical and cannot be promoted by later making their
+commit an ancestor of `main`.
 
 ### Additive changes within an ABI epoch
 

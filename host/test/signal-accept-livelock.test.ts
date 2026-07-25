@@ -19,9 +19,17 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
+import {
+  CH_ARGS,
+  CH_ARG_SIZE,
+  CH_ERRNO,
+  CH_RETURN,
+  CH_SYSCALL,
+} from "../src/generated/abi";
 
 const SIGCHLD = 17;
 const SIGTERM = 15;
+const SYS_TKILL = 204;
 
 function createSharedMemory(): WebAssembly.Memory {
   return new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true });
@@ -39,7 +47,7 @@ function createWorkerHarness(): any {
     kernelInstance: {
       exports: {
         kernel_handle_channel: () => 0,
-        kernel_set_current_tid: () => {},
+        kernel_set_current_tid: () => 0,
         kernel_pick_signal_target_tid: (pid: number) => pid,
         kernel_thread_has_deliverable: () => 1,
         kernel_get_process_exit_signal: () => -1,
@@ -178,12 +186,12 @@ describe("signal delivery to a process blocked in accept()", () => {
     }
   });
 
-  it("binds a sleeping pthread before dequeuing its pending signal", () => {
+  it("passes a sleeping pthread's exact TID when dequeuing its pending signal", () => {
     const worker = createWorkerHarness();
     const pid = 46;
     const tid = 47;
     const channel = createChannel(pid, 256);
-    const setCurrentTid = vi.fn();
+    const setCurrentTid = vi.fn(() => 0);
     const dequeueSignal = vi.fn(() => 0);
     worker.channelTids.set(`${pid}:${channel.channelOffset}`, tid);
     worker.kernelInstance.exports.kernel_set_current_tid = setCurrentTid;
@@ -192,24 +200,37 @@ describe("signal delivery to a process blocked in accept()", () => {
 
     worker.completeSleepWithSignalCheck(channel, 1, [], 0, 0);
 
-    expect(setCurrentTid).toHaveBeenCalledWith(tid);
-    expect(dequeueSignal).toHaveBeenCalledWith(pid, expect.any(Number));
-    expect(setCurrentTid.mock.invocationCallOrder[0]).toBeLessThan(
-      dequeueSignal.mock.invocationCallOrder[0],
-    );
+    expect(setCurrentTid).not.toHaveBeenCalled();
+    expect(dequeueSignal).toHaveBeenCalledWith(pid, tid, expect.any(Number));
   });
 
   it("does not rebind an ordinary synchronous signal dequeue", () => {
     const worker = createWorkerHarness();
     const pid = 48;
     const channel = createChannel(pid, 0);
-    const setCurrentTid = vi.fn();
+    const setCurrentTid = vi.fn(() => 0);
+    worker.channelTids.set(`${pid}:${channel.channelOffset}`, pid);
     worker.kernelInstance.exports.kernel_set_current_tid = setCurrentTid;
-    worker.kernelInstance.exports.kernel_dequeue_signal = vi.fn(() => 0);
+    const dequeueSignal = vi.fn(() => 0);
+    worker.kernelInstance.exports.kernel_dequeue_signal = dequeueSignal;
 
     worker.dequeueSignalForDelivery(channel);
 
     expect(setCurrentTid).not.toHaveBeenCalled();
+    expect(dequeueSignal).toHaveBeenCalledWith(pid, pid, expect.any(Number));
+  });
+
+  it("fails closed when Rust rejects an exact signal dequeue task", () => {
+    const worker = createWorkerHarness();
+    const pid = 48;
+    const tid = 49;
+    const channel = createChannel(pid, 256);
+    worker.channelTids.set(`${pid}:${channel.channelOffset}`, tid);
+    worker.kernelInstance.exports.kernel_dequeue_signal = vi.fn(() => -3);
+
+    expect(() => worker.dequeueSignalForDelivery(channel)).toThrow(
+      /Kernel rejected signal dequeue/,
+    );
   });
 
   it("does not resume a sleeping pthread after dequeue terminates it", () => {
@@ -313,5 +334,71 @@ describe("signal delivery to a process blocked in accept()", () => {
     } finally {
       error.mockRestore();
     }
+  });
+
+  it("does not change the ambient host PID when signal TID binding is rejected", () => {
+    const worker = createWorkerHarness();
+    const targetPid = 54;
+    const priorPid = 91;
+    const setCurrentTid = vi.fn(() => -3);
+    const handleChannel = vi.fn();
+    worker.currentHandlePid = priorPid;
+    worker.kernelInstance.exports.kernel_set_current_tid = setCurrentTid;
+    worker.kernelInstance.exports.kernel_handle_channel = handleChannel;
+
+    worker.sendSignalToProcess(targetPid, SIGTERM);
+
+    expect(setCurrentTid).toHaveBeenCalledWith(targetPid, targetPid);
+    expect(handleChannel).not.toHaveBeenCalled();
+    expect(worker.currentHandlePid).toBe(priorPid);
+  });
+
+  it("does not downgrade a successful directed tkill to a shared waiter wake", () => {
+    const worker = createWorkerHarness();
+    const pid = 55;
+    const targetTid = 56;
+    const channel = createChannel(pid, 0);
+    worker.channelTids.set(`${pid}:${channel.channelOffset}`, pid);
+    const processView = new DataView(channel.memory.buffer);
+    processView.setUint32(CH_SYSCALL, SYS_TKILL, true);
+    processView.setBigInt64(CH_ARGS, BigInt(targetTid), true);
+    processView.setBigInt64(CH_ARGS + CH_ARG_SIZE, BigInt(SIGCHLD), true);
+
+    Object.assign(worker, {
+      config: { enableSyscallLog: false },
+      syscallRing: new Map(),
+      syscallTraceEnabled: false,
+      sharedMmapBackings: new Map(),
+      hostReaped: new Set(),
+      synchronizeSharedMemoryForBoundary: vi.fn(),
+      dequeueSignalForDelivery: vi.fn(() => false),
+      handlePendingInetConnect: vi.fn(() => false),
+      handleFlockConflict: vi.fn(() => false),
+      handleSleepDelay: vi.fn(() => false),
+      drainAndProcessWakeupEvents: vi.fn(),
+      scheduleWakeBlockedRetries: vi.fn(),
+      reapKilledProcessesAfterSyscall: vi.fn(),
+      wakePendingSignalWaits: vi.fn(),
+      completeChannel: vi.fn(),
+      currentHandlePid: 0,
+    });
+    const exactWake = vi.fn(() => false);
+    const sharedWake = vi.fn();
+    worker.interruptWaitingChildForDirectedSignal = exactWake;
+    worker.interruptWaitingChildrenForGeneratedSignal = sharedWake;
+    worker.kernelInstance.exports.kernel_handle_channel = vi.fn(() => {
+      const kernelView = new DataView(
+        worker.kernelMemory.buffer,
+        worker.scratchOffset,
+      );
+      kernelView.setBigInt64(CH_RETURN, 0n, true);
+      kernelView.setUint32(CH_ERRNO, 0, true);
+      return 0;
+    });
+
+    worker._handleSyscallInner(channel);
+
+    expect(exactWake).toHaveBeenCalledWith(pid, targetTid);
+    expect(sharedWake).not.toHaveBeenCalled();
   });
 });

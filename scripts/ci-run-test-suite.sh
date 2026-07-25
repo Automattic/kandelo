@@ -118,7 +118,7 @@ case "$suite" in
             run_timed 10m "Run cross-browser contract smoke suite" \
                 npx playwright test \
                     test/coi.spec.ts \
-                    test/browser-kernel-lazy-registration.spec.ts \
+                    test/package-deferred-tree-browser.spec.ts \
                     test/wasm-trap-signal.spec.ts \
                     --project=chromium --project=firefox --project=webkit
         )

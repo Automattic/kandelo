@@ -116,7 +116,7 @@ describe.skipIf(!hasArtifacts)("dinit supervisor", () => {
         ).toContain("[  OK  ] one-shot");
 
         // A successful scripted service means dinit forked and exec'd the
-        // helper, reaped its zero exit status, and stayed alive as PID 1.
+        // helper, reaped its zero exit status, and stayed alive as supervisor.
         // Leaving dasynq's pselect pull_events() noexcept makes the Wasm SjLj
         // transfer reach std::terminate while handling SIGCHLD instead.
         expect(events).toEqual(expect.arrayContaining([

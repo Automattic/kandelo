@@ -8,13 +8,16 @@
 //!                         Args: --package <dir> --arch <wasm32|wasm64>. Used by the
 //!                         pre-flight workflow to skip already-published
 //!                         matrix entries.
-//!   sort-package-matrix   Order a package matrix so selected program dependencies
+//!   sort-package-matrix   Order a package matrix so selected package dependencies
 //!                         appear before their dependents.
+//!   partition-package-matrix
+//!                         Select an exact root closure and partition it into
+//!                         dependency-safe parallel build levels.
 //!   staging-reuse         Build and validate the exact package ledger used to
 //!                         reuse a complete PR-staging release safely.
 //!   package-dependency-artifacts
 //!                         Print workflow artifact names for selected direct
-//!                         program dependencies of one package matrix entry.
+//!                         package dependencies of one package matrix entry.
 //!   materialize-package-output
 //!                         Fetch one declared program output from an exact
 //!                         index snapshot and emit its immutable provenance
@@ -23,6 +26,9 @@
 //!                         Args: --package <dir> --arch <wasm32|wasm64>
 //!                               --out <dir> --build-timestamp <ISO> --build-host <s>.
 //!                         Used by matrix-build entries.
+//!   archive-extract-member
+//!                         Stream one exact regular package-archive member to
+//!                         a new output file without exposing partial bytes.
 //!   build-index           Emit `index.toml` (the post-publish provenance
 //!                         manifest) from a directory of staged
 //!                         `.tar.zst` archives. Args: --abi <N>
@@ -50,10 +56,14 @@
 //!                         authoritative in-tree registry recipe.
 //!   homebrew-validate     Validate Kandelo/Homebrew tap sidecar metadata.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::rc::Rc;
 
+mod archive_extract_member;
 mod archive_stage;
 mod archive_stage_cli;
 mod build_deps;
@@ -76,6 +86,7 @@ mod host_tool_probe;
 mod index_candidate;
 mod index_toml;
 mod index_update;
+mod package_archive_limits;
 mod package_archive_name;
 mod package_matrix;
 mod package_output_receipt;
@@ -93,7 +104,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, package-dependency-artifacts, materialize-package-output, staging-reuse, archive-stage, build-index, set-build-commit, set-package-binary, index-update, index-candidate, homebrew-sidecars, homebrew-tier2-preflight, homebrew-validate"
+                "subcommands: dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, materialize-package-output, staging-reuse, archive-stage, archive-extract-member, build-index, set-build-commit, set-package-binary, index-update, index-candidate, homebrew-sidecars, homebrew-tier2-preflight, homebrew-validate"
             );
             return ExitCode::from(2);
         }
@@ -105,10 +116,12 @@ fn main() -> ExitCode {
         "build-deps" => build_deps::run(rest),
         "compute-cache-key-sha" => build_deps::run_compute_cache_key_sha(rest),
         "sort-package-matrix" => package_matrix::run_sort(rest),
+        "partition-package-matrix" => package_matrix::run_partition(rest),
         "package-dependency-artifacts" => package_matrix::run_dependency_artifacts(rest),
         "materialize-package-output" => package_output_receipt::run(rest),
         "staging-reuse" => staging_reuse::run(rest),
         "archive-stage" => archive_stage_cli::run(rest),
+        "archive-extract-member" => archive_extract_member::run(rest),
         "build-index" => build_index::run(rest),
         "set-build-commit" => update_pkg_manifest::run(rest),
         "set-package-binary" => update_pkg_manifest::run_set_package_binary(rest),
@@ -131,7 +144,45 @@ fn main() -> ExitCode {
     }
 }
 
+thread_local! {
+    static REPO_ROOT_OVERRIDE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+pub(crate) struct RepoRootOverrideGuard {
+    // The guard resets thread-local state and therefore must be dropped on the
+    // same thread that installed it.
+    _not_send: PhantomData<Rc<()>>,
+}
+
+impl Drop for RepoRootOverrideGuard {
+    fn drop(&mut self) {
+        REPO_ROOT_OVERRIDE.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
+    }
+}
+
+pub(crate) fn install_repo_root_override(root: PathBuf) -> Result<RepoRootOverrideGuard, String> {
+    REPO_ROOT_OVERRIDE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_some() {
+            return Err("xtask repository-root override is already installed".to_string());
+        }
+        *slot = Some(root);
+        Ok(())
+    })?;
+    // WHY: the override belongs to one build-deps command, not ambient process
+    // state. Restoring it on every return (including unwinding) keeps unit tests
+    // and future in-process callers from inheriting another command's identity.
+    Ok(RepoRootOverrideGuard {
+        _not_send: PhantomData,
+    })
+}
+
 pub fn repo_root() -> PathBuf {
+    if let Some(root) = REPO_ROOT_OVERRIDE.with(|slot| slot.borrow().clone()) {
+        return root;
+    }
     // CARGO_MANIFEST_DIR points to tools/xtask/; go up two levels.
     let manifest = env!("CARGO_MANIFEST_DIR");
     Path::new(manifest)

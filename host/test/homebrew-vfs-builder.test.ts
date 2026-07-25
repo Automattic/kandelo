@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import { gzipSync } from "fflate";
+import { gzipSync, zipSync, type Zippable } from "fflate";
 import { ABI_VERSION } from "../src/generated/abi";
 import {
   buildHomebrewVfs,
@@ -61,6 +61,11 @@ import {
   type HomebrewVfsPlan,
 } from "../src/homebrew-vfs-planner";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import {
+  derivePackageDeferredZipTree,
+  registerPackageDeferredZipTree,
+  type PackageDeferredZipTreeSpec,
+} from "../src/vfs/package-deferred-tree";
 import {
   VFS_DEFERRED_TREE_COLLECTION_LIMITS,
   VFS_DEFERRED_TREE_LIMITS,
@@ -3517,6 +3522,60 @@ describe("Homebrew VFS builder", () => {
         return bytesByPackage.get(pkg.name)!;
       },
     });
+
+    const packageTreeArchive = zipSync({
+      "bin/": [new Uint8Array(), {
+        os: 3,
+        attrs: ((0o040755 << 16) >>> 0),
+      }],
+      "bin/tool": [utf8("package tree\n"), {
+        os: 3,
+        attrs: ((0o100755 << 16) >>> 0),
+      }],
+    } satisfies Zippable);
+    const packageTreeSpec = {
+      schema: 1,
+      kind: "kandelo-package-deferred-zip-tree",
+      id: "shell/package-bootstrap",
+      content_role: "source-tree",
+      package: { name: "shell", output: "package-bootstrap.zip" },
+      archive: {
+        url: "package-bootstrap.zip",
+        mode_policy: "portable-posix-v1",
+      },
+      mount_prefix: "/opt/package-bootstrap",
+      owner: { uid: 0, gid: 0 },
+      activation: {
+        mode: "first-use",
+        capabilities: ["package:bootstrap"],
+        roots: ["/opt/package-bootstrap/bin/tool"],
+      },
+    } as const satisfies PackageDeferredZipTreeSpec;
+    const withPackageTree = MemoryFileSystem.fromImage(await fs.saveImage());
+    registerPackageDeferredZipTree(
+      withPackageTree,
+      derivePackageDeferredZipTree(packageTreeSpec, packageTreeArchive),
+    );
+    expect(() => assertHomebrewVfsMaterialization(
+      withPackageTree,
+      result.evidence,
+    )).not.toThrow();
+
+    const withUnexpectedBottle = MemoryFileSystem.fromImage(await fs.saveImage());
+    registerPackageDeferredZipTree(
+      withUnexpectedBottle,
+      derivePackageDeferredZipTree({
+        ...packageTreeSpec,
+        activation: {
+          ...packageTreeSpec.activation,
+          capabilities: ["homebrew-bottle:unexpected"],
+        },
+      }, packageTreeArchive),
+    );
+    expect(() => assertHomebrewVfsMaterialization(
+      withUnexpectedBottle,
+      result.evidence,
+    )).toThrow(/pending deferred trees differ/);
 
     expect(result.selection.embeddedPackages.map((pkg) => pkg.fullName)).toEqual(
       policy.embedded_package_order,

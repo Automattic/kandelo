@@ -14,7 +14,7 @@ package_archive_changed_files() {
     -e '^sdk/(activate\.sh|config\.site|package(-lock)?\.json|tsconfig\.json)$' \
     -e '^sdk/(bin|kandelo|src)/' \
     -e '^tools/xtask/Cargo\.toml$' \
-    -e '^tools/xtask/src/(archive_stage|archive_stage_cli|build_deps|host_tool_probe|main|package_archive_name|pkg_manifest|source_extract|util)\.rs$' \
+    -e '^tools/xtask/src/(archive_stage|archive_stage_cli|build_deps|host_tool_probe|main|package_archive_name|package_matrix|pkg_manifest|source_extract|util)\.rs$' \
     -e '^tools/mkrootfs/(bin|src)/' \
     -e '^tools/mkrootfs/(package(-lock)?\.json|tsconfig\.json)$' \
     -e '^crates/fork-instrument/(Cargo\.toml|src/)' \
@@ -22,7 +22,7 @@ package_archive_changed_files() {
     -e '^libc/musl($|/)' \
     -e '^images/vfs/' \
     -e '^examples/lsof\.c$' \
-    -e '^\.github/actions/(package-archive-build|package-toolchain|fetch-submodules|download-run-artifacts)/' \
+    -e '^\.github/actions/(exact-main-package-rebuild|package-archive-build|package-toolchain|fetch-submodules|download-run-artifacts)/' \
     -e '^\.github/scripts/download-dependency-artifacts\.sh$' \
     -e '^(Cargo\.(lock|toml)|flake\.(nix|lock)|rust-toolchain\.toml|\.gitmodules|package(-lock)?\.json|host/package(-lock)?\.json|sdk/package(-lock)?\.json|tools/mkrootfs/package(-lock)?\.json)$' \
     -e '^scripts/(build-fork-instrument-tool|build-musl|check-libcxx-toolchain-version|dev-shell|install-local-binary|install-overlay-headers|run-wasm-fork-instrument)\.sh$' \
@@ -48,9 +48,10 @@ package_publish_flow_changed_files() {
   grep -E \
     -e '^\.github/actions/detect-change-scope/(ci-scope-paths|test-ci-scope-paths)\.sh$' \
     -e '^\.github/workflows/(staging-build|prepare-merge|activate-merge-candidate|recover-rejected-merge-candidate|staging-cleanup|force-rebuild|reusable-package-source-publish|promote-package-generation)\.yml$' \
-    -e '^\.github/scripts/(activate-merge-candidate|cleanup-merge-candidates|clone-rejected-merge-candidate|compose-staging-release-snapshots|download-verified-release-asset|fetch-canonical-index|github-api-get|init-merge-candidate|latest-merge-gate-status|mark-merge-candidate-ready|materialize-durable-package-generation|prepare-durable-package-generation|publish-durable-package-generation|reconcile-merge-candidates|recover-canonical-indexes|require-exact-head-approval|select-package-archive-source|state-lock|test-activate-merge-candidate|test-cleanup-merge-candidates|test-clone-rejected-merge-candidate|test-download-verified-release-asset|test-fetch-canonical-index|test-init-merge-candidate|test-latest-merge-gate-status|test-merge-candidate-workflows|test-package-generation|test-publish-durable-package-generation|test-reconcile-merge-candidates|test-recover-canonical-indexes|test-require-exact-head-approval|test-select-package-archive-source|test-state-lock|test-validate-staging-release|test-verify-merge-candidate|validate-staging-release|verify-merge-candidate)\.sh$' \
+    -e '^\.github/actions/exact-main-package-rebuild/' \
+    -e '^\.github/scripts/(activate-merge-candidate|cleanup-merge-candidates|clone-rejected-merge-candidate|compose-staging-release-snapshots|download-verified-release-asset|fetch-canonical-index|github-api-get|init-merge-candidate|latest-merge-gate-status|mark-merge-candidate-ready|materialize-durable-package-generation|prepare-durable-package-generation|publish-durable-package-generation|reconcile-merge-candidates|recover-canonical-indexes|require-exact-head-approval|require-exact-kandelo-main|select-package-archive-source|state-lock|test-activate-merge-candidate|test-cleanup-merge-candidates|test-clone-rejected-merge-candidate|test-download-verified-release-asset|test-exact-main-package-publication|test-fetch-canonical-index|test-init-merge-candidate|test-latest-merge-gate-status|test-merge-candidate-workflows|test-package-generation|test-publish-durable-package-generation|test-reconcile-merge-candidates|test-recover-canonical-indexes|test-require-exact-head-approval|test-require-exact-kandelo-main|test-select-package-archive-source|test-state-lock|test-validate-staging-release|test-verify-merge-candidate|validate-staging-release|verify-merge-candidate)\.sh$' \
     -e '^\.github/scripts/package-generation\.py$' \
-    -e '^tools/xtask/src/(build_index|bundle_program|index_candidate|index_toml|index_update|package_archive_name|staging_reuse|update_pkg_manifest)\.rs$' \
+    -e '^tools/xtask/src/(build_index|bundle_program|index_candidate|index_toml|index_update|package_archive_name|package_matrix|staging_reuse|update_pkg_manifest)\.rs$' \
     -e '^scripts/(compose-initial-index|index-has-current-entry|index-update|prepare-sdk-package|publish-package-source|release-index-state|sync-package-source)\.sh$' \
     -e '^tests/scripts/(index-update|package-publish-flow|release-index-state)\.sh$' \
     || true
@@ -59,7 +60,7 @@ package_publish_flow_changed_files() {
 binary_materialization_changed_files() {
   grep -E \
     -e '^tools/xtask/src/(index_toml|remote_fetch|util)\.rs$' \
-    -e '^scripts/(fetch-binaries|install-local-binary|materialize-pr-overlays|pack-ci-test-workspace|resolve-binary|test-wasm-artifact-guards|wasm-artifact-guards)\.sh$' \
+    -e '^scripts/(fetch-binaries|install-local-binary|materialize-pr-overlays|materialize-resolver-binaries|pack-ci-test-workspace|resolve-binary|stage-portable-resolver-binaries|test-wasm-artifact-guards|wasm-artifact-guards)\.sh$' \
     -e '^scripts/(build-resolve-binary-bundle|test-resolve-binary-bundle)\.sh$' \
     -e '^scripts/resolve-binary\.(ts|bundle\.mjs|bundle\.LICENSES\.txt)$' \
     -e '^scripts/vfs-has-stale-abi\.mjs$' \
@@ -80,8 +81,10 @@ kernel_runtime_changed_files() {
 ci_control_changed_files() {
   grep -E \
     -e '^\.github/workflows/(staging-build|prepare-merge|activate-merge-candidate|recover-rejected-merge-candidate|staging-cleanup|force-rebuild|reusable-package-source-publish|promote-package-generation)\.yml$' \
-    -e '^\.github/scripts/(activate-merge-candidate|cleanup-merge-candidates|clone-rejected-merge-candidate|compose-staging-release-snapshots|download-verified-release-asset|fetch-canonical-index|github-api-get|init-merge-candidate|latest-merge-gate-status|mark-merge-candidate-ready|materialize-durable-package-generation|prepare-durable-package-generation|publish-durable-package-generation|reconcile-merge-candidates|recover-canonical-indexes|require-exact-head-approval|select-package-archive-source|state-lock|test-activate-merge-candidate|test-cleanup-merge-candidates|test-clone-rejected-merge-candidate|test-download-verified-release-asset|test-fetch-canonical-index|test-init-merge-candidate|test-latest-merge-gate-status|test-merge-candidate-workflows|test-package-generation|test-publish-durable-package-generation|test-reconcile-merge-candidates|test-recover-canonical-indexes|test-require-exact-head-approval|test-select-package-archive-source|test-state-lock|test-validate-staging-release|test-verify-merge-candidate|validate-staging-release|verify-merge-candidate)\.sh$' \
+    -e '^\.github/actions/exact-main-package-rebuild/' \
+    -e '^\.github/scripts/(activate-merge-candidate|cleanup-merge-candidates|clone-rejected-merge-candidate|compose-staging-release-snapshots|download-verified-release-asset|fetch-canonical-index|github-api-get|init-merge-candidate|latest-merge-gate-status|mark-merge-candidate-ready|materialize-durable-package-generation|prepare-durable-package-generation|publish-durable-package-generation|reconcile-merge-candidates|recover-canonical-indexes|require-exact-head-approval|require-exact-kandelo-main|select-package-archive-source|state-lock|test-activate-merge-candidate|test-cleanup-merge-candidates|test-clone-rejected-merge-candidate|test-download-verified-release-asset|test-exact-main-package-publication|test-fetch-canonical-index|test-init-merge-candidate|test-latest-merge-gate-status|test-merge-candidate-workflows|test-package-generation|test-publish-durable-package-generation|test-reconcile-merge-candidates|test-recover-canonical-indexes|test-require-exact-head-approval|test-require-exact-kandelo-main|test-select-package-archive-source|test-state-lock|test-validate-staging-release|test-verify-merge-candidate|validate-staging-release|verify-merge-candidate)\.sh$' \
     -e '^\.github/scripts/package-generation\.py$' \
+    -e '^tools/xtask/src/package_matrix\.rs$' \
     -e '^scripts/(compose-initial-index|index-update|release-index-state)\.sh$' \
     -e '^tests/scripts/(index-update|package-publish-flow|release-index-state)\.sh$' \
     -e '^tests/scripts/ci-run-test-suite-groups\.test\.sh$' \

@@ -190,7 +190,10 @@ kandelo_package_stage_verified_source() {
     fi
 
     download_dir="$(mktemp -d "$work_dir/kandelo-${label}-source.XXXXXX")" || return
-    tarball="$download_dir/source.tar.gz"
+    # WHY keep the staged name compression-neutral: package manifests include
+    # both gzip and xz archives, and tar should select the decompressor from
+    # the verified bytes rather than a recipe-specific filename convention.
+    tarball="$download_dir/source.archive"
     if ! curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
         -fsSL "$source_url" -o "$tarball"; then
         rm -rf "$download_dir"
@@ -201,7 +204,7 @@ kandelo_package_stage_verified_source() {
         return 1
     fi
     mkdir -p "$dest"
-    if ! tar xzf "$tarball" -C "$dest" --strip-components=1; then
+    if ! tar xf "$tarball" -C "$dest" --strip-components=1; then
         rm -rf "$dest" "$download_dir"
         return 1
     fi

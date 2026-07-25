@@ -8,24 +8,33 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::build_deps::{Registry, compute_cache_key_sha_for_package};
-use crate::index_toml::{EntryStatus, IndexToml};
+use crate::build_deps::{
+    Registry, compute_cache_key_sha_for_package, source_cache_identities,
+};
+use crate::index_toml::{EntryStatus, IndexToml, PackageEntry};
 use crate::pkg_manifest::{
     BuildToml, DepsManifest, GitBuildInput, ManifestKind, TargetArch, validate_git_build_inputs,
 };
 
+const SOURCE_IDENTITY_ALGORITHM: &str =
+    "kandelo-program-packages-v2-manifest-closure-v1";
+const CANONICAL_PACKAGE_SOURCE_REPOSITORY: &str =
+    "https://github.com/Automattic/kandelo";
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 struct ExpectedLedger {
     abi_version: u32,
     entries: Vec<ExpectedEntry>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 struct ExpectedEntry {
     package: String,
     kind: ExpectedKind,
@@ -44,6 +53,7 @@ enum ExpectedKind {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ReleaseAsset {
     name: String,
     state: String,
@@ -52,6 +62,7 @@ struct ReleaseAsset {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 struct ValidatedSnapshot {
     abi_version: u32,
     release_tag: String,
@@ -60,6 +71,7 @@ struct ValidatedSnapshot {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 struct ValidatedEntry {
     package: String,
     kind: ExpectedKind,
@@ -89,20 +101,82 @@ enum ArchiveValidationScope {
     CurrentDeclaredGitInputs,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct SourceProgramIndex {
+    format: String,
+    identities: BTreeMap<String, SourcePackageIdentity>,
+    packages: BTreeMap<String, SourceProgramProjection>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct SourcePackageIdentity {
+    manifest_sha256: String,
+    cache_keys: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct SourceProgramProjection {
+    manifest_sha256: String,
+    arches: Vec<String>,
+    cache_keys: BTreeMap<String, String>,
+    dependency_closures: BTreeMap<String, Vec<SourceDependencyIdentity>>,
+    members: Vec<SourceProjectionMember>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct SourceDependencyIdentity {
+    package_name: String,
+    manifest_sha256: String,
+    cache_key: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+enum SourceProjectionMember {
+    #[serde(rename_all = "camelCase")]
+    Output {
+        source_artifact: String,
+        mirror_path: String,
+        output_name: String,
+        fork_instrumentation: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    RuntimeFile {
+        source_artifact: String,
+        mirror_path: String,
+        guest_path: String,
+        mode: u32,
+    },
+}
+
+#[derive(Debug)]
+struct SourcePackage {
+    manifest_path: PathBuf,
+    manifest_sha256: String,
+    manifest: DepsManifest,
+    git_inputs: Vec<GitBuildInput>,
+}
+
 pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     let Some((action, rest)) = args.split_first() else {
         return Err(
-            "usage: xtask staging-reuse <expected|validate|validate-archives|compose> [args]"
+            "usage: xtask staging-reuse <expected|scan-source|validate|validate-archives|validate-generation|compose> [args]"
                 .into(),
         );
     };
     match action.as_str() {
         "expected" => run_expected(rest),
+        "scan-source" => run_scan_source(rest),
         "validate" => run_validate(rest),
         "validate-archives" => run_validate_archives(rest),
+        "validate-generation" => run_validate_generation(rest),
         "compose" => run_compose(rest),
         other => Err(format!(
-            "staging-reuse action must be expected, validate, validate-archives, or compose, got {other:?}"
+            "staging-reuse action must be expected, scan-source, validate, validate-archives, validate-generation, or compose, got {other:?}"
         )),
     }
 }
@@ -146,6 +220,641 @@ fn run_expected(args: &[String]) -> Result<(), String> {
         .collect();
     let ledger = build_expected_ledger(registry, abi, &excluded)?;
     write_json(output, &ledger)
+}
+
+fn run_scan_source(args: &[String]) -> Result<(), String> {
+    let flags = Flags::parse(args)?;
+    flags.reject_unknown(&[
+        "--source-root",
+        "--expected-abi",
+        "--arch",
+        "--root-package",
+        "--root-set",
+        "--roots-file",
+        "--projection-output",
+        "--expected-output",
+    ])?;
+    let source_root = flags.required_path("--source-root")?;
+    require_nonsymlink_dir(source_root, "package source root")?;
+    let registry_path = source_root.join("packages/registry");
+    require_nonsymlink_dir(&registry_path, "package source registry")?;
+    let expected_abi = flags.required_u32("--expected-abi")?;
+    let arch = parse_arch(flags.required("--arch")?)?;
+    let root_packages = flags.values("--root-package").collect::<Vec<_>>();
+    let root_sets = flags.values("--root-set").collect::<Vec<_>>();
+    let roots_files = flags.values("--roots-file").collect::<Vec<_>>();
+    let (schema, roots) = match (root_packages.as_slice(), root_sets.as_slice()) {
+        ([root], []) => {
+            if !roots_files.is_empty() {
+                return Err("--roots-file is not valid with --root-package".into());
+            }
+            (1_u32, vec![validate_package_name(root)?.to_owned()])
+        }
+        ([], ["browser-inputs"]) => {
+            let [path] = roots_files.as_slice() else {
+                return Err(
+                    "--root-set browser-inputs requires exactly one --roots-file".into(),
+                );
+            };
+            (2_u32, read_source_roots(Path::new(path))?)
+        }
+        ([], [other]) => {
+            return Err(format!("unsupported source root set {other:?}"));
+        }
+        _ => {
+            return Err(
+                "exactly one --root-package or --root-set must be provided".into(),
+            );
+        }
+    };
+
+    let packages = load_source_packages(&registry_path)?;
+    let program_index_path = registry_path.join("program-packages.json");
+    require_regular_file(&program_index_path, "program package identity index")?;
+    let program_index: SourceProgramIndex = read_json(&program_index_path)?;
+    let registry = Registry {
+        roots: vec![registry_path.clone()],
+    };
+    let fresh_cache_identities =
+        source_cache_identities(source_root, &registry, expected_abi)?;
+    validate_source_program_index(
+        &program_index,
+        &packages,
+        &fresh_cache_identities,
+    )?;
+
+    let (projection, expected) = build_source_selection(
+        &packages,
+        &program_index,
+        &roots,
+        arch,
+        expected_abi,
+        schema,
+    )?;
+    write_json(flags.required_path("--projection-output")?, &projection)?;
+    write_json(flags.required_path("--expected-output")?, &expected)
+}
+
+fn build_source_selection(
+    packages: &BTreeMap<String, SourcePackage>,
+    program_index: &SourceProgramIndex,
+    roots: &[String],
+    arch: TargetArch,
+    expected_abi: u32,
+    schema: u32,
+) -> Result<(serde_json::Value, ExpectedLedger), String> {
+    let mut selected = BTreeSet::new();
+    for root in roots {
+        let root_manifest = packages
+            .get(root)
+            .ok_or_else(|| format!("source root package {root:?} is absent"))?;
+        if root_manifest.manifest.kind != ManifestKind::Program {
+            return Err(format!("source root package {root:?} is not a program"));
+        }
+        let root_projection = program_index
+            .packages
+            .get(root)
+            .ok_or_else(|| format!("source root package {root:?} is not projected"))?;
+        if !root_projection
+            .arches
+            .iter()
+            .any(|candidate| candidate == arch.as_str())
+        {
+            return Err(format!(
+                "source root package {root:?} does not support {}",
+                arch.as_str()
+            ));
+        }
+        selected.insert(root.clone());
+        collect_source_dependency_names(root, packages, &mut selected, &mut Vec::new())?;
+    }
+
+    let mut expected_entries = Vec::new();
+    let mut projection_entries = Vec::new();
+    for package_name in selected {
+        let package = packages
+            .get(&package_name)
+            .expect("selected source package was loaded");
+        let identity = program_index
+            .identities
+            .get(&package_name)
+            .expect("validated program index has every package identity");
+        let cache_key_sha = identity
+            .cache_keys
+            .get(arch.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "source identity for {package_name:?} lacks {} cache key",
+                    arch.as_str()
+                )
+            })?
+            .clone();
+        let (kind, disposition) = match package.manifest.kind {
+            ManifestKind::Program => ("program", "program-archive"),
+            ManifestKind::Library => ("library", "library-archive"),
+            ManifestKind::Source => ("source", "source-only"),
+        };
+        projection_entries.push(serde_json::json!({
+            "package": package_name,
+            "arch": arch.as_str(),
+            "kind": kind,
+            "disposition": disposition,
+            "manifest_sha256": package.manifest_sha256,
+            "cache_key_sha": cache_key_sha,
+        }));
+        if package.manifest.kind == ManifestKind::Source {
+            continue;
+        }
+        if !package
+            .manifest
+            .target_arches
+            .iter()
+            .any(|candidate| *candidate == arch)
+        {
+            return Err(format!(
+                "selected source package {:?} does not publish {}",
+                package.manifest.name,
+                arch.as_str()
+            ));
+        }
+        if package.manifest.build.script_path.is_none() {
+            return Err(format!(
+                "selected source package {:?} has no materializable build script",
+                package.manifest.name
+            ));
+        }
+        expected_entries.push(ExpectedEntry {
+            package: package.manifest.name.clone(),
+            kind: match package.manifest.kind {
+                ManifestKind::Program => ExpectedKind::Program,
+                ManifestKind::Library => ExpectedKind::Library,
+                ManifestKind::Source => unreachable!(),
+            },
+            arch,
+            version: package.manifest.version.clone(),
+            revision: package.manifest.revision,
+            cache_key_sha,
+            git_inputs: package.git_inputs.clone(),
+        });
+    }
+    expected_entries.sort_by(|a, b| (&a.package, a.arch).cmp(&(&b.package, b.arch)));
+    let expected = ExpectedLedger {
+        abi_version: expected_abi,
+        entries: expected_entries,
+    };
+    validate_expected_ledger(&expected)?;
+
+    let projection = if schema == 1 {
+        if projection_entries
+            .iter()
+            .any(|entry| entry["disposition"] == "source-only")
+        {
+            return Err(
+                "legacy single-root projection cannot represent a source-only dependency".into(),
+            );
+        }
+        let entries = projection_entries
+            .into_iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "package": entry["package"],
+                    "arch": entry["arch"],
+                    "manifest_sha256": entry["manifest_sha256"],
+                    "cache_key_sha": entry["cache_key_sha"],
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "schema": 1,
+            "root_package": roots[0],
+            "arch": arch.as_str(),
+            "entries": entries,
+        })
+    } else if schema == 2 {
+        serde_json::json!({
+            "schema": 2,
+            "identity_algorithm": SOURCE_IDENTITY_ALGORITHM,
+            "root_set": "browser-inputs",
+            "roots": roots,
+            "arch": arch.as_str(),
+            "closure": projection_entries,
+        })
+    } else {
+        return Err(format!("unsupported source projection schema {schema}"));
+    };
+    Ok((projection, expected))
+}
+
+fn require_nonsymlink_dir(path: &Path, context: &str) -> Result<(), String> {
+    let metadata =
+        std::fs::symlink_metadata(path).map_err(|e| format!("inspect {}: {e}", path.display()))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(format!(
+            "{context} must be a non-symlink directory: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn require_regular_file(path: &Path, context: &str) -> Result<(), String> {
+    let metadata =
+        std::fs::symlink_metadata(path).map_err(|e| format!("inspect {}: {e}", path.display()))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(format!(
+            "{context} must be a regular non-symlink file: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn validate_package_name(value: &str) -> Result<&str, String> {
+    if value.is_empty()
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte))
+        || !value.as_bytes()[0].is_ascii_lowercase()
+            && !value.as_bytes()[0].is_ascii_digit()
+    {
+        return Err(format!("invalid package name {value:?}"));
+    }
+    Ok(value)
+}
+
+fn parse_arch(value: &str) -> Result<TargetArch, String> {
+    match value {
+        "wasm32" => Ok(TargetArch::Wasm32),
+        "wasm64" => Ok(TargetArch::Wasm64),
+        other => Err(format!("unsupported target architecture {other:?}")),
+    }
+}
+
+fn read_source_roots(path: &Path) -> Result<Vec<String>, String> {
+    require_regular_file(path, "source root list")?;
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("read source root list {}: {e}", path.display()))?;
+    if bytes.is_empty() || bytes.len() > 64 * 1024 {
+        return Err("source root list must contain 1..65536 bytes".into());
+    }
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|e| format!("source root list is not UTF-8: {e}"))?;
+    let roots = text
+        .lines()
+        .map(|root| validate_package_name(root).map(ToOwned::to_owned))
+        .collect::<Result<Vec<_>, _>>()?;
+    if roots.is_empty() || roots.len() > 256 {
+        return Err("source root list must contain 1..256 roots".into());
+    }
+    let canonical = roots
+        .iter()
+        .map(|root| format!("{root}\n"))
+        .collect::<String>();
+    if canonical.as_bytes() != bytes {
+        return Err("source root list must be sorted canonical newline-delimited UTF-8".into());
+    }
+    let mut sorted = roots.clone();
+    sorted.sort();
+    sorted.dedup();
+    if sorted != roots {
+        return Err("source root list must be sorted and unique".into());
+    }
+    Ok(roots)
+}
+
+fn load_source_packages(registry_path: &Path) -> Result<BTreeMap<String, SourcePackage>, String> {
+    let mut package_dirs = Vec::new();
+    for entry in std::fs::read_dir(registry_path)
+        .map_err(|e| format!("read source registry {}: {e}", registry_path.display()))?
+    {
+        let entry = entry.map_err(|e| format!("read source registry entry: {e}"))?;
+        let package_dir = entry.path();
+        let manifest_path = package_dir.join("package.toml");
+        if !manifest_path.exists() {
+            continue;
+        }
+        require_nonsymlink_dir(&package_dir, "source package directory")?;
+        require_regular_file(&manifest_path, "source package manifest")?;
+        package_dirs.push(package_dir);
+    }
+    package_dirs.sort();
+
+    let mut packages = BTreeMap::new();
+    for package_dir in package_dirs {
+        let manifest_path = package_dir.join("package.toml");
+        let overlay_path = package_dir.join("package.pr.toml");
+        if overlay_path.exists() || overlay_path.is_symlink() {
+            return Err(format!(
+                "activated main source must not contain a PR package overlay: {}",
+                overlay_path.display()
+            ));
+        }
+        let mut manifest = DepsManifest::load(&manifest_path)?;
+        let directory_name = package_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                format!(
+                    "source package directory is not valid UTF-8: {}",
+                    package_dir.display()
+                )
+            })?;
+        if manifest.name != directory_name {
+            return Err(format!(
+                "{} names package {:?}, expected directory {:?}",
+                manifest_path.display(),
+                manifest.name,
+                directory_name
+            ));
+        }
+        let build_path = package_dir.join("build.toml");
+        let git_inputs = if build_path.exists() {
+            require_regular_file(&build_path, "source package build metadata")?;
+            let build = BuildToml::load(&package_dir)
+                .map_err(|e| format!("{}: {e}", build_path.display()))?;
+            if let Some(revision) = build.revision {
+                manifest.revision = revision;
+            }
+            build.git_inputs
+        } else {
+            Vec::new()
+        };
+        let manifest_sha256 = sha256_file(&manifest_path)?;
+        if packages
+            .insert(
+                manifest.name.clone(),
+                SourcePackage {
+                    manifest_path,
+                    manifest_sha256,
+                    manifest,
+                    git_inputs,
+                },
+            )
+            .is_some()
+        {
+            return Err(format!("duplicate source package {directory_name:?}"));
+        }
+    }
+    if packages.is_empty() {
+        return Err("package source registry is empty".into());
+    }
+    Ok(packages)
+}
+
+fn collect_source_dependency_names(
+    package_name: &str,
+    packages: &BTreeMap<String, SourcePackage>,
+    selected: &mut BTreeSet<String>,
+    visiting: &mut Vec<String>,
+) -> Result<(), String> {
+    if visiting.iter().any(|name| name == package_name) {
+        return Err(format!(
+            "cycle in source package graph: {} -> {package_name}",
+            visiting.join(" -> ")
+        ));
+    }
+    let package = packages
+        .get(package_name)
+        .ok_or_else(|| format!("source package {package_name:?} is absent"))?;
+    visiting.push(package_name.to_owned());
+    for dependency in &package.manifest.depends_on {
+        let child = packages.get(&dependency.name).ok_or_else(|| {
+            format!(
+                "{} depends on absent source package {}@{}",
+                package.manifest.spec(),
+                dependency.name,
+                dependency.version
+            )
+        })?;
+        if child.manifest.version != dependency.version {
+            return Err(format!(
+                "{} depends on {}@{}, source registry has {}",
+                package.manifest.spec(),
+                dependency.name,
+                dependency.version,
+                child.manifest.spec()
+            ));
+        }
+        let inserted = selected.insert(dependency.name.clone());
+        if inserted {
+            collect_source_dependency_names(&dependency.name, packages, selected, visiting)?;
+        } else if visiting.iter().any(|name| name == &dependency.name) {
+            return Err(format!(
+                "cycle in source package graph: {} -> {}",
+                visiting.join(" -> "),
+                dependency.name
+            ));
+        }
+    }
+    visiting.pop();
+    Ok(())
+}
+
+fn source_dependency_closure(
+    package_name: &str,
+    arch: TargetArch,
+    packages: &BTreeMap<String, SourcePackage>,
+    identities: &BTreeMap<String, SourcePackageIdentity>,
+) -> Result<Vec<SourceDependencyIdentity>, String> {
+    let mut names = BTreeSet::new();
+    collect_source_dependency_names(package_name, packages, &mut names, &mut Vec::new())?;
+    names.remove(package_name);
+    names
+        .into_iter()
+        .map(|name| {
+            let package = packages
+                .get(&name)
+                .expect("fresh dependency traversal only selects loaded packages");
+            let identity = identities
+                .get(&name)
+                .ok_or_else(|| format!("program index lacks source identity for {name:?}"))?;
+            let cache_key = identity
+                .cache_keys
+                .get(arch.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "program index identity for {name:?} lacks {} cache key",
+                        arch.as_str()
+                    )
+                })?
+                .clone();
+            Ok(SourceDependencyIdentity {
+                package_name: name,
+                manifest_sha256: package.manifest_sha256.clone(),
+                cache_key,
+            })
+        })
+        .collect()
+}
+
+fn source_projection_members(manifest: &DepsManifest) -> Result<Vec<SourceProjectionMember>, String> {
+    let mut members = Vec::new();
+    for output in &manifest.program_outputs {
+        let mirror_path = manifest
+            .output_dest_rel_for(output)
+            .to_str()
+            .ok_or_else(|| format!("{} output mirror path is not UTF-8", manifest.spec()))?
+            .to_owned();
+        members.push(SourceProjectionMember::Output {
+            source_artifact: output.wasm.clone(),
+            mirror_path,
+            output_name: output.name.clone(),
+            fork_instrumentation: output.fork_instrumentation.as_str().to_owned(),
+        });
+    }
+    for runtime_file in &manifest.runtime_files {
+        let mirror_path = manifest
+            .runtime_file_dest_rel_for(runtime_file)
+            .to_str()
+            .ok_or_else(|| format!("{} runtime mirror path is not UTF-8", manifest.spec()))?
+            .to_owned();
+        members.push(SourceProjectionMember::RuntimeFile {
+            source_artifact: runtime_file.artifact.clone(),
+            mirror_path,
+            guest_path: runtime_file.guest_path.clone(),
+            mode: runtime_file.mode,
+        });
+    }
+    Ok(members)
+}
+
+fn validate_source_program_index(
+    index: &SourceProgramIndex,
+    packages: &BTreeMap<String, SourcePackage>,
+    fresh_cache_identities: &BTreeMap<String, BTreeMap<String, String>>,
+) -> Result<(), String> {
+    if index.format != "kandelo-program-packages-v2" {
+        return Err(format!(
+            "unsupported source program identity format {:?}",
+            index.format
+        ));
+    }
+    if index.identities.keys().ne(packages.keys()) {
+        return Err(
+            "source program index identities do not exactly cover package.toml manifests".into(),
+        );
+    }
+    if fresh_cache_identities.keys().ne(packages.keys()) {
+        return Err(
+            "fresh source cache identities do not exactly cover package.toml manifests".into(),
+        );
+    }
+    let expected_identity_arches = BTreeSet::from(["wasm32", "wasm64"]);
+    for (name, package) in packages {
+        let identity = index
+            .identities
+            .get(name)
+            .expect("source identity key set was compared");
+        validate_sha256(&identity.manifest_sha256, "source manifest_sha256")?;
+        if identity.manifest_sha256 != package.manifest_sha256 {
+            return Err(format!(
+                "source program identity for {name:?} has stale manifest digest (manifest {})",
+                package.manifest_path.display()
+            ));
+        }
+        if identity
+            .cache_keys
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+            != expected_identity_arches
+        {
+            return Err(format!(
+                "source program identity for {name:?} must bind wasm32 and wasm64 cache keys"
+            ));
+        }
+        for cache_key in identity.cache_keys.values() {
+            validate_sha256(cache_key, "source cache key")?;
+        }
+        if fresh_cache_identities.get(name) != Some(&identity.cache_keys) {
+            return Err(format!(
+                "source program identity for {name:?} has a stale contextual cache key"
+            ));
+        }
+    }
+
+    let expected_programs = packages
+        .iter()
+        .filter_map(|(name, package)| {
+            (package.manifest.kind == ManifestKind::Program
+                && !package.manifest.uses_root_binary_mirror())
+            .then_some(name.as_str())
+        })
+        .collect::<BTreeSet<_>>();
+    let actual_programs = index
+        .packages
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if actual_programs != expected_programs {
+        return Err(
+            "source program projections do not exactly cover eligible program manifests".into(),
+        );
+    }
+
+    for (name, projection) in &index.packages {
+        let package = packages
+            .get(name)
+            .expect("source program projection set was compared");
+        let identity = index
+            .identities
+            .get(name)
+            .expect("source identity set was compared");
+        if projection.manifest_sha256 != package.manifest_sha256
+            || projection.manifest_sha256 != identity.manifest_sha256
+        {
+            return Err(format!(
+                "source program projection for {name:?} has a stale manifest identity"
+            ));
+        }
+        let expected_arches = package
+            .manifest
+            .target_arches
+            .iter()
+            .map(|arch| arch.as_str().to_owned())
+            .collect::<Vec<_>>();
+        if projection.arches != expected_arches {
+            return Err(format!(
+                "source program projection for {name:?} has stale target arches"
+            ));
+        }
+        let expected_arch_keys = expected_arches.iter().cloned().collect::<BTreeSet<_>>();
+        if projection.cache_keys.keys().cloned().collect::<BTreeSet<_>>()
+            != expected_arch_keys
+            || projection
+                .dependency_closures
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                != expected_arch_keys
+        {
+            return Err(format!(
+                "source program projection for {name:?} does not exactly cover its arches"
+            ));
+        }
+        for arch_name in &expected_arches {
+            let arch = parse_arch(arch_name)?;
+            if projection.cache_keys.get(arch_name) != identity.cache_keys.get(arch_name) {
+                return Err(format!(
+                    "source program projection for {name:?} has a non-contextual {arch_name} cache key"
+                ));
+            }
+            let expected_closure =
+                source_dependency_closure(name, arch, packages, &index.identities)?;
+            if projection.dependency_closures.get(arch_name) != Some(&expected_closure) {
+                return Err(format!(
+                    "source program projection for {name:?} has a stale or substituted {arch_name} dependency closure"
+                ));
+            }
+        }
+        let expected_members = source_projection_members(&package.manifest)?;
+        if projection.members != expected_members {
+            return Err(format!(
+                "source program projection for {name:?} has stale output members"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn run_validate(args: &[String]) -> Result<(), String> {
@@ -219,6 +928,256 @@ fn run_validate_archives(args: &[String]) -> Result<(), String> {
         flags.required_path("--archives-dir")?,
         scope,
     )
+}
+
+fn run_validate_generation(args: &[String]) -> Result<(), String> {
+    let flags = Flags::parse(args)?;
+    flags.reject_unknown(&[
+        "--expected-ledger",
+        "--snapshot",
+        "--index",
+        "--assets",
+        "--bundle-dir",
+        "--release-tag",
+        "--release-base-url",
+        "--package-source-sha",
+    ])?;
+    let expected: ExpectedLedger = read_json(flags.required_path("--expected-ledger")?)?;
+    let declared_snapshot: ValidatedSnapshot =
+        read_json(flags.required_path("--snapshot")?)?;
+    let index_path = flags.required_path("--index")?;
+    require_regular_file(index_path, "durable generation index")?;
+    let index_text = std::fs::read_to_string(index_path)
+        .map_err(|e| format!("read {}: {e}", index_path.display()))?;
+    let index =
+        IndexToml::parse(&index_text).map_err(|e| format!("{}: {e}", index_path.display()))?;
+    let assets: Vec<ReleaseAsset> = read_json(flags.required_path("--assets")?)?;
+    let release_tag = flags.required("--release-tag")?;
+    validate_release_tag(release_tag)?;
+    let release_base_url = flags.required("--release-base-url")?;
+    validate_release_base_url(release_base_url, release_tag)?;
+    let package_source_sha = flags.required("--package-source-sha")?;
+    validate_git_sha(package_source_sha, "package source SHA")?;
+    let bundle_dir = flags.required_path("--bundle-dir")?;
+    require_nonsymlink_dir(bundle_dir, "durable generation bundle")?;
+
+    validate_exact_generation_index(&index, &expected)?;
+    let computed_snapshot = validate_release(
+        &expected,
+        &index,
+        &assets,
+        release_tag,
+        release_base_url,
+        ValidationMode::Current,
+    )?;
+    if !declared_snapshot.complete_current || computed_snapshot != declared_snapshot {
+        return Err(
+            "durable generation snapshot differs from its exact current index and assets".into(),
+        );
+    }
+    validate_exact_generation_assets(&assets, &declared_snapshot, bundle_dir)?;
+    validate_archive_snapshot(
+        &expected,
+        &declared_snapshot,
+        bundle_dir,
+        ArchiveValidationScope::All,
+    )?;
+    validate_generation_archive_source(
+        &declared_snapshot,
+        bundle_dir,
+        package_source_sha,
+    )
+}
+
+fn validate_generation_archive_source(
+    snapshot: &ValidatedSnapshot,
+    bundle_dir: &Path,
+    package_source_sha: &str,
+) -> Result<(), String> {
+    for entry in &snapshot.entries {
+        let archive = read_archive_manifest(&bundle_dir.join(&entry.asset))?;
+        if archive.build.repo_url.as_deref()
+            != Some(CANONICAL_PACKAGE_SOURCE_REPOSITORY)
+            || archive.build.commit.as_deref() != Some(package_source_sha)
+        {
+            return Err(format!(
+                "durable generation archive {:?} was not built by {} at exact main source {}",
+                entry.asset, CANONICAL_PACKAGE_SOURCE_REPOSITORY, package_source_sha
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_exact_generation_index(
+    index: &IndexToml,
+    expected: &ExpectedLedger,
+) -> Result<(), String> {
+    validate_expected_ledger(expected)?;
+    if index.generated_at.is_empty() || index.generator.is_empty() {
+        return Err("durable generation index provenance fields must be non-empty".into());
+    }
+    if index.abi_version != expected.abi_version {
+        return Err(format!(
+            "durable generation index ABI {} differs from expected {}",
+            index.abi_version, expected.abi_version
+        ));
+    }
+    let expected_by_key = expected
+        .entries
+        .iter()
+        .map(|entry| ((entry.package.as_str(), entry.arch), entry))
+        .collect::<BTreeMap<_, _>>();
+    let mut actual_keys = BTreeSet::new();
+    let mut package_names = BTreeSet::new();
+    for package in &index.packages {
+        if !package_names.insert(package.name.as_str()) {
+            return Err(format!(
+                "durable generation index splits or duplicates package {:?}",
+                package.name
+            ));
+        }
+        if package.binary.is_empty() {
+            return Err(format!(
+                "durable generation index package {:?} has no binary entry",
+                package.name
+            ));
+        }
+        for (&arch, binary) in &package.binary {
+            let key = (package.name.as_str(), arch);
+            let wanted = expected_by_key.get(&key).ok_or_else(|| {
+                format!(
+                    "durable generation index contains unexpected package/arch {} {}",
+                    package.name,
+                    arch.as_str()
+                )
+            })?;
+            if !actual_keys.insert(key) {
+                return Err(format!(
+                    "durable generation index duplicates package/arch {} {}",
+                    package.name,
+                    arch.as_str()
+                ));
+            }
+            if package.version != wanted.version || package.revision != wanted.revision {
+                return Err(format!(
+                    "durable generation index identity for {} {} differs from the fresh source ledger",
+                    package.name,
+                    arch.as_str()
+                ));
+            }
+            if binary.status != EntryStatus::Success
+                || binary.archive_url.is_none()
+                || binary.archive_sha256.is_none()
+                || binary.cache_key_sha.as_deref() != Some(wanted.cache_key_sha.as_str())
+                || binary.built_at.as_deref().is_none_or(str::is_empty)
+                || binary.built_by.as_deref().is_none_or(str::is_empty)
+                || binary.error.is_some()
+                || binary.last_attempt.is_some()
+                || binary.last_attempt_by.is_some()
+                || binary.fallback_archive_url.is_some()
+                || binary.fallback_archive_sha256.is_some()
+                || binary.fallback_cache_key_sha.is_some()
+                || binary.fallback_built_at.is_some()
+            {
+                return Err(format!(
+                    "durable generation index {} {} is not one exact success entry",
+                    package.name,
+                    arch.as_str()
+                ));
+            }
+        }
+    }
+    if actual_keys != expected_by_key.keys().copied().collect() {
+        return Err("durable generation index omits a fresh source-ledger identity".into());
+    }
+    Ok(())
+}
+
+fn validate_exact_generation_assets(
+    assets: &[ReleaseAsset],
+    snapshot: &ValidatedSnapshot,
+    bundle_dir: &Path,
+) -> Result<(), String> {
+    if assets.is_empty() {
+        return Err("durable generation asset inventory is empty".into());
+    }
+    let mut expected_names = snapshot
+        .entries
+        .iter()
+        .map(|entry| entry.asset.clone())
+        .collect::<BTreeSet<_>>();
+    expected_names.insert("index.toml".into());
+    expected_names.insert("generation.json".into());
+    if expected_names.len() != snapshot.entries.len() + 2 {
+        return Err("durable generation maps multiple identities to one asset name".into());
+    }
+
+    let names = assets
+        .iter()
+        .map(|asset| asset.name.as_str())
+        .collect::<Vec<_>>();
+    let mut sorted_names = names.clone();
+    sorted_names.sort_unstable();
+    sorted_names.dedup();
+    if names != sorted_names {
+        return Err("durable generation asset inventory must be sorted and unique".into());
+    }
+    if names.iter().copied().collect::<BTreeSet<_>>()
+        != expected_names.iter().map(String::as_str).collect()
+    {
+        return Err(
+            "durable generation asset inventory has a missing or unexpected asset".into(),
+        );
+    }
+
+    let actual_names = std::fs::read_dir(bundle_dir)
+        .map_err(|e| format!("read durable generation bundle {}: {e}", bundle_dir.display()))?
+        .map(|entry| {
+            entry
+                .map_err(|e| format!("read durable generation bundle entry: {e}"))
+                .and_then(|entry| {
+                    let name = entry.file_name().into_string().map_err(|_| {
+                        "durable generation bundle contains a non-UTF-8 asset".to_string()
+                    })?;
+                    require_regular_file(&entry.path(), "durable generation asset")?;
+                    Ok(name)
+                })
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    if actual_names != expected_names {
+        return Err("durable generation bundle has a missing or unexpected asset".into());
+    }
+
+    for asset in assets {
+        if asset.state != "uploaded" || asset.size == 0 {
+            return Err(format!(
+                "durable generation asset {:?} is not a non-empty uploaded asset",
+                asset.name
+            ));
+        }
+        let digest = asset
+            .digest
+            .as_deref()
+            .and_then(|value| value.strip_prefix("sha256:"))
+            .ok_or_else(|| {
+                format!(
+                    "durable generation asset {:?} lacks a sha256 digest",
+                    asset.name
+                )
+            })?;
+        validate_sha256(digest, "durable generation asset digest")?;
+        let path = bundle_dir.join(&asset.name);
+        let metadata = std::fs::metadata(&path)
+            .map_err(|e| format!("inspect durable generation asset {}: {e}", path.display()))?;
+        if metadata.len() != asset.size || sha256_file(&path)? != digest {
+            return Err(format!(
+                "durable generation asset {:?} bytes differ from the canonical inventory",
+                asset.name
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn build_expected_ledger(
@@ -777,16 +1736,34 @@ fn compose_indexes(
                 wanted.arch.as_str()
             ));
         }
-        let target_package = composed
+        if let Some(target_package) = composed
             .packages
             .iter_mut()
             .find(|package| package.name == wanted.package)
-            .ok_or_else(|| format!("base index lacks package {}", wanted.package))?;
-        target_package.version = source_package.version.clone();
-        target_package.revision = source_package.revision;
-        target_package
-            .binary
-            .insert(wanted.arch, source_entry.clone());
+        {
+            if target_package.version != source_package.version
+                || target_package.revision != source_package.revision
+            {
+                return Err(format!(
+                    "base and overlay indexes disagree on {} package identity",
+                    wanted.package
+                ));
+            }
+            target_package
+                .binary
+                .insert(wanted.arch, source_entry.clone());
+        } else {
+            // WHY: architecture-specific durable generations can contain a
+            // package that has no output for the other architecture. Adding
+            // exactly the expected overlay entry lets consumers combine those
+            // sealed generations without consulting a mutable base index.
+            composed.packages.push(PackageEntry {
+                name: source_package.name.clone(),
+                version: source_package.version.clone(),
+                revision: source_package.revision,
+                binary: BTreeMap::from([(wanted.arch, source_entry.clone())]),
+            });
+        }
     }
     composed.generated_at = std::cmp::max(&base.generated_at, &overlay.generated_at).clone();
     composed.generator = "xtask staging-reuse compose".into();
@@ -842,6 +1819,19 @@ fn validate_sha256(value: &str, field: &str) -> Result<(), String> {
     {
         return Err(format!(
             "{field} must be 64 lowercase hexadecimal characters, got {value:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_git_sha(value: &str, field: &str) -> Result<(), String> {
+    if value.len() != 40
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(format!(
+            "{field} must be 40 lowercase hexadecimal characters, got {value:?}"
         ));
     }
     Ok(())
@@ -1031,6 +2021,13 @@ cache_key_sha = "{SHA}"
         )
     }
 
+    fn archived_manifest_at_main(git_inputs: &[GitBuildInput], commit: &str) -> String {
+        format!(
+            "{}\n[build]\nscript_path = \"packages/registry/zlib/build-zlib.sh\"\nrepo_url = \"https://github.com/Automattic/kandelo\"\ncommit = {commit:?}\n",
+            archived_manifest(git_inputs)
+        )
+    }
+
     fn write_test_archive(
         path: &Path,
         first_path: &str,
@@ -1102,6 +2099,180 @@ cache_key_sha = "{SHA}"
         }
     }
 
+    fn fresh_source_fixture() -> (
+        BTreeMap<String, SourcePackage>,
+        SourceProgramIndex,
+    ) {
+        let source_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let registry_path = source_root.join("packages/registry");
+        let packages = load_source_packages(&registry_path).unwrap();
+        let registry = Registry {
+            roots: vec![registry_path],
+        };
+        let fresh =
+            source_cache_identities(&source_root, &registry, 42).unwrap();
+        let identities = packages
+            .iter()
+            .map(|(name, package)| {
+                (
+                    name.clone(),
+                    SourcePackageIdentity {
+                        manifest_sha256: package.manifest_sha256.clone(),
+                        cache_keys: fresh[name].clone(),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut programs = BTreeMap::new();
+        for (name, package) in &packages {
+            if package.manifest.kind != ManifestKind::Program
+                || package.manifest.uses_root_binary_mirror()
+            {
+                continue;
+            }
+            let arches = package
+                .manifest
+                .target_arches
+                .iter()
+                .map(|arch| arch.as_str().to_owned())
+                .collect::<Vec<_>>();
+            let cache_keys = arches
+                .iter()
+                .map(|arch| (arch.clone(), identities[name].cache_keys[arch].clone()))
+                .collect::<BTreeMap<_, _>>();
+            let dependency_closures = arches
+                .iter()
+                .map(|arch| {
+                    let parsed = parse_arch(arch).unwrap();
+                    (
+                        arch.clone(),
+                        source_dependency_closure(
+                            name,
+                            parsed,
+                            &packages,
+                            &identities,
+                        )
+                        .unwrap(),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            programs.insert(
+                name.clone(),
+                SourceProgramProjection {
+                    manifest_sha256: package.manifest_sha256.clone(),
+                    arches,
+                    cache_keys,
+                    dependency_closures,
+                    members: source_projection_members(&package.manifest).unwrap(),
+                },
+            );
+        }
+        (
+            packages,
+            SourceProgramIndex {
+                format: "kandelo-program-packages-v2".into(),
+                identities,
+                packages: programs,
+            },
+        )
+    }
+
+    #[test]
+    fn current_reader_rejects_source_identity_omission_substitution_and_stale_cache() {
+        let (packages, index) = fresh_source_fixture();
+        let fresh = index
+            .identities
+            .iter()
+            .map(|(name, identity)| (name.clone(), identity.cache_keys.clone()))
+            .collect::<BTreeMap<_, _>>();
+        validate_source_program_index(&index, &packages, &fresh).unwrap();
+
+        let mut omitted = index.clone();
+        let omitted_name = omitted.identities.keys().next().unwrap().clone();
+        omitted.identities.remove(&omitted_name);
+        assert!(
+            validate_source_program_index(&omitted, &packages, &fresh)
+                .unwrap_err()
+                .contains("exactly cover")
+        );
+
+        let mut stale = index.clone();
+        let stale_name = stale.identities.keys().next().unwrap().clone();
+        stale
+            .identities
+            .get_mut(&stale_name)
+            .unwrap()
+            .cache_keys
+            .insert("wasm32".into(), "f".repeat(64));
+        assert!(
+            validate_source_program_index(&stale, &packages, &fresh)
+                .unwrap_err()
+                .contains("stale contextual cache key")
+        );
+
+        let mut substituted = index.clone();
+        let projection = substituted
+            .packages
+            .values_mut()
+            .find(|projection| {
+                projection
+                    .dependency_closures
+                    .values()
+                    .any(|closure| !closure.is_empty())
+            })
+            .expect("repository fixture has a program dependency");
+        let closure = projection
+            .dependency_closures
+            .values_mut()
+            .find(|closure| !closure.is_empty())
+            .unwrap();
+        closure[0].cache_key = "e".repeat(64);
+        assert!(
+            validate_source_program_index(&substituted, &packages, &fresh)
+                .unwrap_err()
+                .contains("stale or substituted")
+        );
+    }
+
+    #[test]
+    fn source_selection_keeps_source_only_identity_but_omits_archive_expectation() {
+        let (packages, index) = fresh_source_fixture();
+        let roots = vec!["mariadb".to_string()];
+        let (projection, expected) = build_source_selection(
+            &packages,
+            &index,
+            &roots,
+            TargetArch::Wasm32,
+            42,
+            2,
+        )
+        .unwrap();
+        assert!(projection["closure"].as_array().unwrap().iter().any(|entry| {
+            entry["package"] == "pcre2-source"
+                && entry["kind"] == "source"
+                && entry["disposition"] == "source-only"
+        }));
+        assert!(
+            expected
+                .entries
+                .iter()
+                .all(|entry| entry.package != "pcre2-source")
+        );
+        assert!(
+            build_source_selection(
+                &packages,
+                &index,
+                &roots,
+                TargetArch::Wasm32,
+                42,
+                1,
+            )
+            .unwrap_err()
+            .contains("source-only")
+        );
+    }
+
     #[test]
     fn expected_ledger_requires_explicit_git_provenance() {
         let missing = format!(
@@ -1109,6 +2280,28 @@ cache_key_sha = "{SHA}"
         );
         let error = serde_json::from_str::<ExpectedLedger>(&missing).unwrap_err();
         assert!(error.to_string().contains("git_inputs"), "{error}");
+    }
+
+    #[test]
+    fn generation_validator_json_inputs_reject_unknown_fields() {
+        let ledger = format!(
+            r#"{{"abi_version":{ABI},"entries":[{{"package":"zlib","kind":"library","arch":"wasm32","version":"1.3.1","revision":2,"cache_key_sha":"{SHA}","git_inputs":[]}}],"ignored":true}}"#,
+        );
+        assert!(
+            serde_json::from_str::<ExpectedLedger>(&ledger)
+                .unwrap_err()
+                .to_string()
+                .contains("unknown field")
+        );
+        let asset = format!(
+            r#"{{"name":"zlib.tar.zst","state":"uploaded","size":1,"digest":"sha256:{SHA}","ignored":true}}"#
+        );
+        assert!(
+            serde_json::from_str::<ReleaseAsset>(&asset)
+                .unwrap_err()
+                .to_string()
+                .contains("unknown field")
+        );
     }
 
     fn binary() -> crate::index_toml::BinaryEntry {
@@ -1411,6 +2604,115 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
     }
 
     #[test]
+    fn exact_generation_index_rejects_extra_missing_duplicate_and_fallback_entries() {
+        validate_exact_generation_index(&index(), &expected()).unwrap();
+
+        let mut extra = index();
+        let mut extra_package = extra.packages[0].clone();
+        extra_package.name = "unexpected".into();
+        extra.packages.push(extra_package);
+        assert!(validate_exact_generation_index(&extra, &expected()).is_err());
+
+        let mut missing = index();
+        missing.packages.clear();
+        assert!(
+            validate_exact_generation_index(&missing, &expected())
+                .unwrap_err()
+                .contains("omits")
+        );
+
+        let mut duplicate = index();
+        duplicate.packages.push(duplicate.packages[0].clone());
+        assert!(
+            validate_exact_generation_index(&duplicate, &expected())
+                .unwrap_err()
+                .contains("duplicates")
+        );
+
+        let mut fallback = index();
+        fallback.packages[0]
+            .binary
+            .get_mut(&TargetArch::Wasm32)
+            .unwrap()
+            .fallback_archive_url = Some("old.tar.zst".into());
+        assert!(
+            validate_exact_generation_index(&fallback, &expected())
+                .unwrap_err()
+                .contains("exact success")
+        );
+    }
+
+    #[test]
+    fn exact_generation_assets_reject_missing_extra_duplicate_and_swapped_bytes() {
+        let dir = archive_tempdir("generation-assets");
+        let archive_name = "zlib.tar.zst";
+        fs::write(dir.join(archive_name), b"archive").unwrap();
+        fs::write(dir.join("generation.json"), b"generation").unwrap();
+        fs::write(dir.join("index.toml"), b"index").unwrap();
+        let snapshot = ValidatedSnapshot {
+            abi_version: ABI,
+            release_tag: "package-generation-zlib-wasm32-abi-v39-sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            complete_current: true,
+            entries: vec![ValidatedEntry {
+                package: "zlib".into(),
+                kind: ExpectedKind::Library,
+                arch: TargetArch::Wasm32,
+                version: "1.3.1".into(),
+                revision: 2,
+                cache_key_sha: SHA.into(),
+                current: true,
+                asset: archive_name.into(),
+                archive_sha256: sha256_file(&dir.join(archive_name)).unwrap(),
+                size: fs::metadata(dir.join(archive_name)).unwrap().len(),
+            }],
+        };
+        let asset = |name: &str| {
+            let path = dir.join(name);
+            ReleaseAsset {
+                name: name.into(),
+                state: "uploaded".into(),
+                size: fs::metadata(&path).unwrap().len(),
+                digest: Some(format!("sha256:{}", sha256_file(&path).unwrap())),
+            }
+        };
+        let valid = vec![
+            asset("generation.json"),
+            asset("index.toml"),
+            asset(archive_name),
+        ];
+        validate_exact_generation_assets(&valid, &snapshot, &dir).unwrap();
+
+        let mut missing = valid.clone();
+        missing.pop();
+        assert!(validate_exact_generation_assets(&missing, &snapshot, &dir).is_err());
+
+        let mut duplicate = valid.clone();
+        duplicate.insert(1, duplicate[0].clone());
+        assert!(
+            validate_exact_generation_assets(&duplicate, &snapshot, &dir)
+                .unwrap_err()
+                .contains("sorted and unique")
+        );
+
+        fs::write(dir.join("extra.tar.zst"), b"extra").unwrap();
+        let mut extra = valid.clone();
+        extra.push(asset("extra.tar.zst"));
+        extra.sort_by(|left, right| left.name.cmp(&right.name));
+        assert!(validate_exact_generation_assets(&extra, &snapshot, &dir).is_err());
+        fs::remove_file(dir.join("extra.tar.zst")).unwrap();
+
+        let mut swapped = valid.clone();
+        let first_digest = swapped[0].digest.clone();
+        swapped[0].digest = swapped[1].digest.clone();
+        swapped[1].digest = first_digest;
+        assert!(
+            validate_exact_generation_assets(&swapped, &snapshot, &dir)
+                .unwrap_err()
+                .contains("bytes differ")
+        );
+    }
+
+    #[test]
     fn rejects_managed_package_split_across_version_blocks_and_arches() {
         let mut expected = expected();
         let mut wasm64 = expected.entries[0].clone();
@@ -1525,6 +2827,21 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
     }
 
     #[test]
+    fn compose_adds_an_architecture_only_overlay_package() {
+        let base = IndexToml::empty(ABI, "base".into(), "base".into());
+        let composed = compose_indexes(&base, &index(), &expected()).unwrap();
+
+        assert_eq!(composed.packages.len(), 1);
+        assert_eq!(composed.packages[0].name, "zlib");
+        assert_eq!(
+            composed.packages[0].binary[&TargetArch::Wasm32]
+                .cache_key_sha
+                .as_deref(),
+            Some(SHA)
+        );
+    }
+
+    #[test]
     fn compose_rejects_incomplete_or_noncurrent_overlay() {
         let base = index();
 
@@ -1551,6 +2868,24 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
             .unwrap()
             .status = EntryStatus::Failed;
         assert!(compose_indexes(&base, &failed, &expected()).is_err());
+
+        for incompatible_base in [
+            {
+                let mut value = index();
+                value.packages[0].version = "older".into();
+                value
+            },
+            {
+                let mut value = index();
+                value.packages[0].revision -= 1;
+                value
+            },
+        ] {
+            assert!(
+                compose_indexes(&incompatible_base, &index(), &expected()).is_err(),
+                "combining architecture generations must not relabel an existing package"
+            );
+        }
     }
 
     #[test]
@@ -1571,6 +2906,50 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
             ArchiveValidationScope::All,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn generation_archive_requires_exact_main_commit_not_another_commit() {
+        let dir = archive_tempdir("exact-main");
+        let path = dir.join("zlib.tar.zst");
+        let main_sha = "1".repeat(40);
+        write_test_archive(
+            &path,
+            "manifest.toml",
+            archived_manifest_at_main(&[], &main_sha).as_bytes(),
+            false,
+        );
+        let snapshot = snapshot_for_archive(&path, true);
+        validate_generation_archive_source(&snapshot, &dir, &main_sha).unwrap();
+        let error = validate_generation_archive_source(
+            &snapshot,
+            &dir,
+            &"2".repeat(40),
+        )
+        .unwrap_err();
+        assert!(error.contains("exact main source"), "{error}");
+
+        let wrong_repo_path = dir.join("wrong-repository.tar.zst");
+        let wrong_repo_manifest = archived_manifest_at_main(&[], &main_sha).replace(
+            CANONICAL_PACKAGE_SOURCE_REPOSITORY,
+            "https://github.com/example/fork",
+        );
+        write_test_archive(
+            &wrong_repo_path,
+            "manifest.toml",
+            wrong_repo_manifest.as_bytes(),
+            false,
+        );
+        let error = validate_generation_archive_source(
+            &snapshot_for_archive(&wrong_repo_path, true),
+            &dir,
+            &main_sha,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains(CANONICAL_PACKAGE_SOURCE_REPOSITORY),
+            "{error}"
+        );
     }
 
     #[test]

@@ -9,19 +9,22 @@ METADATA_PATH=""
 EXPECTED_CACHE_KEYS=""
 EXPECTED_ABI=""
 EXPECTED_BOTTLE_ROOT_URL=""
+EXPECTED_KANDELO_REPOSITORY=""
+EXPECTED_KANDELO_COMMIT=""
 FORCE=0
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-plan-matrix.sh --tap-root <tap-root> [--formulae <list|all>] [--arches <list>] [--metadata <path>] [--expected-cache-keys <path> --expected-abi <N> --expected-bottle-root-url <url>] [--force]
+usage: scripts/homebrew-plan-matrix.sh --tap-root <tap-root> [--formulae <list|all>] [--arches <list>] [--metadata <path>] [--expected-cache-keys <path> --expected-abi <N> --expected-bottle-root-url <url> --expected-kandelo-repository <owner/repo> --expected-kandelo-commit <sha>] [--force]
 
 Lists may be comma, space, or newline separated. Output is a JSON array of
 {"formula": "...", "arch": "..."} entries.
 
 When --expected-cache-keys is provided, entries whose current successful tap
 metadata already carries the expected cache key under the exact expected ABI
-and release tag and repository-rooted bottle URL are skipped unless --force is
-set. The expected cache-key JSON may be either {"formula":"sha"} or
+and release tag, repository-rooted bottle URL, and per-bottle Kandelo source
+repository and commit are skipped unless --force is set. The expected
+cache-key JSON may be either {"formula":"sha"} or
 {"formula":{"wasm32":"sha","wasm64":"sha"}}.
 EOF
 }
@@ -35,6 +38,8 @@ while [ "$#" -gt 0 ]; do
     --expected-cache-keys) EXPECTED_CACHE_KEYS="${2:-}"; shift 2 ;;
     --expected-abi) EXPECTED_ABI="${2:-}"; shift 2 ;;
     --expected-bottle-root-url) EXPECTED_BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
+    --expected-kandelo-repository) EXPECTED_KANDELO_REPOSITORY="${2:-}"; shift 2 ;;
+    --expected-kandelo-commit) EXPECTED_KANDELO_COMMIT="${2:-}"; shift 2 ;;
     --force) FORCE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "homebrew-plan-matrix.sh: unknown flag $1" >&2; usage; exit 2 ;;
@@ -75,11 +80,25 @@ if [ -n "$EXPECTED_CACHE_KEYS" ]; then
     echo "homebrew-plan-matrix.sh: --expected-bottle-root-url is required with cache keys and must be a GHCR v2 root" >&2
     exit 2
   fi
+  if [ "$EXPECTED_KANDELO_REPOSITORY" != "Automattic/kandelo" ]; then
+    echo "homebrew-plan-matrix.sh: --expected-kandelo-repository must be Automattic/kandelo with cache keys" >&2
+    exit 2
+  fi
+  if ! [[ "$EXPECTED_KANDELO_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "homebrew-plan-matrix.sh: --expected-kandelo-commit is required with cache keys and must be an exact lowercase 40-character SHA" >&2
+    exit 2
+  fi
 elif [ -n "$EXPECTED_ABI" ]; then
   echo "homebrew-plan-matrix.sh: --expected-abi requires --expected-cache-keys" >&2
   exit 2
 elif [ -n "$EXPECTED_BOTTLE_ROOT_URL" ]; then
   echo "homebrew-plan-matrix.sh: --expected-bottle-root-url requires --expected-cache-keys" >&2
+  exit 2
+elif [ -n "$EXPECTED_KANDELO_REPOSITORY" ]; then
+  echo "homebrew-plan-matrix.sh: --expected-kandelo-repository requires --expected-cache-keys" >&2
+  exit 2
+elif [ -n "$EXPECTED_KANDELO_COMMIT" ]; then
+  echo "homebrew-plan-matrix.sh: --expected-kandelo-commit requires --expected-cache-keys" >&2
   exit 2
 fi
 
@@ -164,7 +183,9 @@ jq -c \
   --argjson expected "$expected_json" \
   --argjson force "$force_json" \
   --arg expected_abi "$EXPECTED_ABI" \
-  --arg expected_bottle_root_url "$EXPECTED_BOTTLE_ROOT_URL" '
+  --arg expected_bottle_root_url "$EXPECTED_BOTTLE_ROOT_URL" \
+  --arg expected_kandelo_repository "$EXPECTED_KANDELO_REPOSITORY" \
+  --arg expected_kandelo_commit "$EXPECTED_KANDELO_COMMIT" '
   def expected_key($formula; $arch):
     if $expected == null then
       null
@@ -188,6 +209,11 @@ jq -c \
         | (.bottles // [])[]?
         | select(
             .arch == $arch and ((.status // "success") == "success") and
+            # WHY: merged sidecars preserve architecture-specific original
+            # provenance. Top-level metadata can therefore describe a newer
+            # run while this selected bottle still came from an older source.
+            .built_from.kandelo_repository == $expected_kandelo_repository and
+            .built_from.kandelo_commit == $expected_kandelo_commit and
             (.sha256 | type) == "string" and
             .url == ($expected_bottle_root_url + "/" + $formula +
               "/blobs/sha256:" + .sha256)

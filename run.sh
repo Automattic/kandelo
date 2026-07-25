@@ -179,15 +179,31 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_alloc_scratch
     kernel_create_process
     kernel_create_process_with_stdio
+    kernel_dequeue_signal
+    kernel_exec_prepare
+    kernel_exec_setup_for_thread
+    kernel_fork_process
     kernel_get_parent_pid
+    kernel_get_process_exit_signal
     kernel_get_process_state
     kernel_handle_channel
     kernel_has_sa_nocldstop
     kernel_host_adapter_manifest_len
     kernel_host_adapter_manifest_ptr
+    kernel_ipc_shmat_for_process
+    kernel_ipc_shmat_for_task
+    kernel_ipc_shmdt_for_process
+    kernel_ipc_shmdt_for_task
     kernel_mark_process_signaled
+    kernel_pipe_has_readers
+    kernel_posix_timer_fire
+    kernel_prepare_write_operation
     kernel_reap_exited_child
     kernel_remove_process
+    kernel_set_current_tid
+    kernel_spawn_process
+    kernel_thread_exit
+    kernel_validate_task
     kernel_wait_child_poll
 )
 
@@ -479,23 +495,6 @@ need_node_modules() {
         warn "Installing root npm dependencies"
         cd "$REPO_ROOT" && npm install --prefer-offline
     fi
-}
-
-# Source composition of the bottle-built shell uses the repository's pinned
-# tsx and mkrootfs dependency trees. Run exact lockfile installs every time the
-# source-capable path is selected: presence checks cannot prove that an old
-# node_modules tree matches the cache key's current package-lock inputs.
-need_shell_vfs_build_tools() {
-    step "Installing locked Shell VFS TypeScript dependencies"
-    (cd "$REPO_ROOT" && \
-        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
-        npm ci --no-audit --no-fund --prefer-offline)
-    info "Shell VFS TypeScript dependencies installed"
-
-    step "Installing locked mkrootfs dependencies"
-    npm --prefix "$REPO_ROOT/tools/mkrootfs" ci \
-        --no-audit --no-fund --prefer-offline
-    info "mkrootfs dependencies installed"
 }
 
 # ─── Build targets ────────────────────────────────────────────────────────────
@@ -976,14 +975,8 @@ build_shell_vfs() {
     )
     if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then
         # Preserve the caller's explicit no-source-build contract. This
-        # path needs no composer dependencies because any archive miss or
-        # verification failure must remain a failure.
+        # remains an error on any archive miss or verification failure.
         resolve_args+=("${FETCH_ONLY_ARGS[@]}")
-    else
-        # The normal resolver may use a valid public archive or execute
-        # the source composer. Prepare the latter's exact lockfile-owned
-        # tools so fallback never depends on ambient npm state.
-        need_shell_vfs_build_tools
     fi
     resolve_args+=(resolve shell)
     xtask="$(pkg_xtask_bin)" || {

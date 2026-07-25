@@ -41,6 +41,7 @@ import type { SaveImageOptions } from "./vfs-image-helpers";
 import {
   SHELL_DERIVED_VFS_MIN_FREE_BYTES,
   SHELL_DERIVED_VFS_MIN_FREE_INODES,
+  SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
 } from "../../../web-libs/kandelo-session/src/vfs-capacity";
 
 function depEnvKey(name: string): string {
@@ -91,10 +92,34 @@ export function loadShellBaseFileSystem(maxByteLength: number): MemoryFileSystem
 export function saveShellDerivedVfsImage(
   fs: MemoryFileSystem,
   outFile: string,
-  options: Omit<SaveImageOptions, "headroom"> = {},
+  options: Omit<
+    SaveImageOptions,
+    "headroom" | "expectedMaxByteLength"
+  > & {
+    /** Explicit escape hatch for a reviewed product profile above 768 MiB. */
+    expectedMaxByteLength?: number;
+  } = {},
 ): Promise<Uint8Array> {
+  const {
+    expectedMaxByteLength = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+    ...saveOptions
+  } = options;
+  if (
+    expectedMaxByteLength !== SHELL_DERIVED_VFS_PROFILE_MAX_BYTES &&
+    (
+      !Number.isSafeInteger(expectedMaxByteLength) ||
+      expectedMaxByteLength <= SHELL_DERIVED_VFS_PROFILE_MAX_BYTES
+    )
+  ) {
+    throw new Error(
+      `${outFile} expectedMaxByteLength must use the standard ` +
+        `${SHELL_DERIVED_VFS_PROFILE_MAX_BYTES}-byte product profile or ` +
+        "an explicitly reviewed, strictly larger profile",
+    );
+  }
   return saveImage(fs, outFile, {
-    ...options,
+    ...saveOptions,
+    expectedMaxByteLength,
     headroom: {
       minimumFreeBytes: SHELL_DERIVED_VFS_MIN_FREE_BYTES,
       minimumFreeInodes: SHELL_DERIVED_VFS_MIN_FREE_INODES,
@@ -149,6 +174,14 @@ export interface ShellVfsOptions {
    * overlays shell/demo-specific directories, config, and non-base tools.
    */
   baseProvided?: boolean;
+  /**
+   * Resolve every package-owned artifact used by this composition.
+   *
+   * Package recipes should provide a strict resolver backed only by their
+   * declared dependency directories. Interactive builders may omit it and use
+   * the repository binary resolver for backwards compatibility.
+   */
+  resolveArtifact?: ShellLazyArchiveResolver;
 }
 
 /**
@@ -165,31 +198,33 @@ export function populateShellEnvironment(
   fs: MemoryFileSystem,
   opts: ShellVfsOptions,
 ): void {
+  const resolveArtifact = opts.resolveArtifact ?? resolveVfsArtifact;
+  const strictArtifactResolution = opts.resolveArtifact !== undefined;
   if (opts.baseProvided) {
     populateShellOverlay(fs);
   } else {
     populateSystem(fs);
-    populateDash(fs);
-    if (opts.eagerBinaries) populateBash(fs);
-    if (!opts.eagerBinaries) populateLazyBinaries(fs);
+    populateDash(fs, resolveArtifact);
+    if (opts.eagerBinaries) populateBash(fs, resolveArtifact);
+    if (!opts.eagerBinaries) populateLazyBinaries(fs, resolveArtifact);
     populateCoreutilsSymlinks(fs);
-    if (opts.eagerBinaries) populateCoreutils(fs);
+    if (opts.eagerBinaries) populateCoreutils(fs, resolveArtifact);
     populateGrepSedSymlinks(fs);
     if (opts.eagerBinaries) {
-      populateGrep(fs);
-      populateSed(fs);
+      populateGrep(fs, resolveArtifact);
+      populateSed(fs, resolveArtifact);
     }
     populateBaseExtendedSymlinks(fs);
-    if (opts.eagerBinaries) populateBaseExtendedBinaries(fs);
-    populateMagic(fs);
+    if (opts.eagerBinaries) populateBaseExtendedBinaries(fs, resolveArtifact);
+    populateMagic(fs, resolveArtifact, strictArtifactResolution);
   }
   if (opts.baseProvided && !opts.eagerBinaries) {
-    populateLazyBinaries(fs, { skipExisting: true });
+    populateLazyBinaries(fs, resolveArtifact, { skipExisting: true });
   }
-  populateVimArchive(fs);
-  populateNetHackArchive(fs);
+  populateVimArchive(fs, resolveArtifact);
+  populateNetHackArchive(fs, resolveArtifact);
   populateDemoExtendedSymlinks(fs);
-  if (opts.eagerBinaries) populateDemoExtendedBinaries(fs);
+  if (opts.eagerBinaries) populateDemoExtendedBinaries(fs, resolveArtifact);
 }
 
 // ── System layout ───────────────────────────────────────────────
@@ -307,16 +342,22 @@ function populateNetHackPlayground(fs: MemoryFileSystem): void {
 
 // ── Shell binaries ──────────────────────────────────────────────
 
-function populateDash(fs: MemoryFileSystem): void {
-  const dashBytes = readFileSync(resolveVfsArtifact("programs/dash.wasm", "dash"));
+function populateDash(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
+  const dashBytes = readFileSync(resolveArtifact("programs/dash.wasm", "dash"));
   writeVfsBinary(fs, "/bin/dash", new Uint8Array(dashBytes));
   symlink(fs, "/bin/dash", "/bin/sh");
   symlink(fs, "/bin/dash", "/usr/bin/dash");
   symlink(fs, "/bin/dash", "/usr/bin/sh");
 }
 
-function populateBash(fs: MemoryFileSystem): void {
-  const bashBytes = readFileSync(resolveVfsArtifact("programs/bash.wasm", "bash"));
+function populateBash(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
+  const bashBytes = readFileSync(resolveArtifact("programs/bash.wasm", "bash"));
   writeVfsBinary(fs, "/usr/bin/bash", new Uint8Array(bashBytes));
   symlink(fs, "/usr/bin/bash", "/bin/bash");
 }
@@ -328,8 +369,11 @@ function populateCoreutilsSymlinks(fs: MemoryFileSystem): void {
   }
 }
 
-function populateCoreutils(fs: MemoryFileSystem): void {
-  const bytes = readFileSync(resolveVfsArtifact("programs/coreutils.wasm", "coreutils"));
+function populateCoreutils(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
+  const bytes = readFileSync(resolveArtifact("programs/coreutils.wasm", "coreutils"));
   writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(bytes));
 }
 
@@ -343,23 +387,30 @@ function populateGrepSedSymlinks(fs: MemoryFileSystem): void {
   symlink(fs, "/usr/bin/sed", "/bin/sed");
 }
 
-function populateGrep(fs: MemoryFileSystem): void {
-  const bytes = readFileSync(resolveVfsArtifact("programs/grep.wasm", "grep"));
+function populateGrep(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
+  const bytes = readFileSync(resolveArtifact("programs/grep.wasm", "grep"));
   writeVfsBinary(fs, "/usr/bin/grep", new Uint8Array(bytes));
 }
 
-function populateSed(fs: MemoryFileSystem): void {
-  const bytes = readFileSync(resolveVfsArtifact("programs/sed.wasm", "sed"));
+function populateSed(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
+  const bytes = readFileSync(resolveArtifact("programs/sed.wasm", "sed"));
   writeVfsBinary(fs, "/usr/bin/sed", new Uint8Array(bytes));
 }
 
 function populateLazyBinaries(
   fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
   opts: { skipExisting?: boolean } = {},
 ): void {
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
     if (opts.skipExisting && fs.getLazyEntry(spec.vfsPath)) continue;
-    const resolved = resolveVfsArtifact(spec.resolverPath, spec.id);
+    const resolved = resolveArtifact(spec.resolverPath, spec.id);
     const size = statSync(resolved).size;
     fs.registerLazyFile(
       spec.vfsPath,
@@ -440,7 +491,10 @@ function populateDemoExtendedSymlinks(fs: MemoryFileSystem): void {
   symlink(fs, "/usr/bin/lsof", "/bin/lsof");
 }
 
-function populateBaseExtendedBinaries(fs: MemoryFileSystem): void {
+function populateBaseExtendedBinaries(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
   const extended: Array<{ relPath: string; vfsPath: string }> = [
     { relPath: "programs/bc.wasm",                   vfsPath: "/usr/bin/bc" },
     { relPath: "programs/file/file.wasm",            vfsPath: "/usr/bin/file" },
@@ -448,13 +502,16 @@ function populateBaseExtendedBinaries(fs: MemoryFileSystem): void {
     { relPath: "programs/make.wasm",                 vfsPath: "/usr/bin/make" },
   ];
   for (const { relPath, vfsPath } of extended) {
-    const bytes = readFileSync(resolveBinary(relPath));
+    const bytes = readFileSync(resolveArtifact(relPath, artifactDepName(relPath)));
     writeVfsBinary(fs, vfsPath, new Uint8Array(bytes));
   }
 }
 
 /** Bake every demo extended-toolset binary. Required for kernelOwnedFs demos. */
-function populateDemoExtendedBinaries(fs: MemoryFileSystem): void {
+function populateDemoExtendedBinaries(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
   const extended: Array<{ relPath: string; vfsPath: string }> = [
     { relPath: "programs/less.wasm",                 vfsPath: "/usr/bin/less" },
     { relPath: "programs/tar.wasm",                  vfsPath: "/usr/bin/tar" },
@@ -473,7 +530,7 @@ function populateDemoExtendedBinaries(fs: MemoryFileSystem): void {
     { relPath: "programs/lsof.wasm",                 vfsPath: "/usr/bin/lsof" },
   ];
   for (const { relPath, vfsPath } of extended) {
-    const bytes = readFileSync(resolveVfsArtifact(relPath));
+    const bytes = readFileSync(resolveArtifact(relPath, artifactDepName(relPath)));
     writeVfsBinary(fs, vfsPath, new Uint8Array(bytes));
   }
 }
@@ -488,7 +545,16 @@ function populateDemoExtendedBinaries(fs: MemoryFileSystem): void {
  * magic.lite was fetched. The xtask fallback covers source-built
  * scenarios; the in-tree fallback covers direct build-file.sh runs.
  */
-function resolveMagicPath(): string {
+function resolveMagicPath(
+  resolveArtifact: ShellLazyArchiveResolver,
+  strictArtifactResolution: boolean,
+): string {
+  // WHY: package builds must fail when a declared dependency is incomplete.
+  // Falling through to a developer's ambient binary tree would make the same
+  // recipe produce different bytes outside CI.
+  if (strictArtifactResolution) {
+    return resolveArtifact("programs/file/magic.lite", "file");
+  }
   const directDep = tryResolveVfsArtifact("programs/file/magic.lite", "file");
   if (directDep) return directDep;
   const released = tryResolveBinary("programs/file/magic.lite");
@@ -514,8 +580,12 @@ function resolveMagicPath(): string {
   return join(findRepoRoot(), "packages/registry/file/bin/magic.lite");
 }
 
-function populateMagic(fs: MemoryFileSystem): void {
-  const magicPath = resolveMagicPath();
+function populateMagic(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+  strictArtifactResolution: boolean,
+): void {
+  const magicPath = resolveMagicPath(resolveArtifact, strictArtifactResolution);
   try {
     statSync(magicPath);
   } catch {
@@ -530,18 +600,24 @@ function populateMagic(fs: MemoryFileSystem): void {
 
 // ── Lazy archives ───────────────────────────────────────────────
 
-function populateVimArchive(fs: MemoryFileSystem): void {
+function populateVimArchive(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
   registerDeclaredShellLazyArchive(
     fs,
     SHELL_LAZY_ARCHIVE_SPECS[0],
-    resolveVfsArtifact,
+    resolveArtifact,
   );
 }
 
-function populateNetHackArchive(fs: MemoryFileSystem): void {
+function populateNetHackArchive(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
   registerDeclaredShellLazyArchive(
     fs,
     SHELL_LAZY_ARCHIVE_SPECS[1],
-    resolveVfsArtifact,
+    resolveArtifact,
   );
 }

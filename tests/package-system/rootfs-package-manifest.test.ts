@@ -3,10 +3,12 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -34,10 +36,11 @@ function writeArtifact(root: string, rel: string, bytes: string): string {
   return path;
 }
 
-function runGenerator(args: string[]) {
+function runGenerator(args: string[], env: NodeJS.ProcessEnv = {}) {
   return spawnSync(process.execPath, [generator, ...args], {
     cwd: repoRoot,
     encoding: "utf8",
+    env: { ...process.env, ...env },
   });
 }
 
@@ -47,6 +50,277 @@ afterEach(() => {
 });
 
 describe("generate-rootfs-package-manifest artifact provenance", () => {
+  it("stages exact resolver dependency outputs into a fresh private tree", () => {
+    const scratch = makeScratch();
+    const dependencyRoot = join(scratch, "fixture-dependency");
+    writeArtifact(dependencyRoot, "fixture.wasm", "wasm-bytes");
+    writeArtifact(dependencyRoot, "runtime.dat", "runtime-bytes");
+    const packages = join(scratch, "PACKAGES.toml");
+    writeFileSync(
+      packages,
+      [
+        'lazy_url_prefix = "binaries/"',
+        "[[packages]]",
+        'name = "fixture-package"',
+        "[[packages.outputs]]",
+        'binary = "programs/wasm32/fixture-package/fixture.wasm"',
+        'path = "/usr/bin/fixture"',
+        "[[packages.outputs]]",
+        'binary = "programs/wasm32/fixture-package/renamed.dat"',
+        'source_artifact = "runtime.dat"',
+        'path = "/usr/share/fixture/runtime.dat"',
+        'install = "eager"',
+        'mode = "0644"',
+        "",
+      ].join("\n"),
+    );
+    const stageRoot = join(scratch, "resolver-stage");
+    const out = join(scratch, "resolver.MANIFEST");
+
+    const result = runGenerator(
+      [
+        "--packages",
+        packages,
+        "--stage-resolver-binaries",
+        stageRoot,
+        "--out",
+        out,
+      ],
+      {
+        WASM_POSIX_DEP_FIXTURE_PACKAGE_DIR: dependencyRoot,
+      },
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(
+      readFileSync(
+        join(
+          stageRoot,
+          "programs/wasm32/fixture-package/fixture.wasm",
+        ),
+        "utf8",
+      ),
+    ).toBe("wasm-bytes");
+    expect(
+      readFileSync(
+        join(stageRoot, "programs/wasm32/fixture-package/renamed.dat"),
+        "utf8",
+      ),
+    ).toBe("runtime-bytes");
+    const manifest = readFileSync(out, "utf8");
+    expect(manifest).toContain(
+      "lazy_url=binaries/programs/wasm32/fixture-package/fixture.wasm lazy_size=10",
+    );
+    expect(manifest).toContain(`src=${relative(
+      repoRoot,
+      join(stageRoot, "programs/wasm32/fixture-package/renamed.dat"),
+    )}`);
+  });
+
+  it("requires a fresh stage and the exact declared dependency environment", () => {
+    const scratch = makeScratch();
+    const dependencyRoot = join(scratch, "fixture-dependency");
+    writeArtifact(dependencyRoot, "fixture.wasm", "bytes");
+    const packages = join(scratch, "PACKAGES.toml");
+    writeFileSync(
+      packages,
+      [
+        "[[packages]]",
+        'name = "fixture"',
+        "[[packages.outputs]]",
+        'binary = "programs/wasm32/fixture.wasm"',
+        'path = "/usr/bin/fixture"',
+        "",
+      ].join("\n"),
+    );
+
+    const missing = runGenerator([
+      "--packages",
+      packages,
+      "--stage-resolver-binaries",
+      join(scratch, "missing-env-stage"),
+      "--out",
+      join(scratch, "missing-env.MANIFEST"),
+    ]);
+    expect(missing.status).toBe(1);
+    expect(missing.stderr).toContain("WASM_POSIX_DEP_FIXTURE_DIR is required");
+
+    const occupiedStage = join(scratch, "occupied-stage");
+    mkdirSync(occupiedStage);
+    const occupied = runGenerator(
+      [
+        "--packages",
+        packages,
+        "--stage-resolver-binaries",
+        occupiedStage,
+        "--out",
+        join(scratch, "occupied.MANIFEST"),
+      ],
+      { WASM_POSIX_DEP_FIXTURE_DIR: dependencyRoot },
+    );
+    expect(occupied.status).toBe(1);
+    expect(occupied.stderr).toContain(
+      "refusing to reuse staged artifacts",
+    );
+  });
+
+  it("rejects a linked resolver artifact rather than following it", () => {
+    const scratch = makeScratch();
+    const dependencyRoot = join(scratch, "fixture-dependency");
+    mkdirSync(dependencyRoot);
+    const external = writeArtifact(scratch, "external.wasm", "outside");
+    symlinkSync(external, join(dependencyRoot, "fixture.wasm"));
+    const packages = join(scratch, "PACKAGES.toml");
+    writeFileSync(
+      packages,
+      [
+        "[[packages]]",
+        'name = "fixture"',
+        "[[packages.outputs]]",
+        'binary = "programs/wasm32/fixture.wasm"',
+        'path = "/usr/bin/fixture"',
+        "",
+      ].join("\n"),
+    );
+
+    const result = runGenerator(
+      [
+        "--packages",
+        packages,
+        "--stage-resolver-binaries",
+        join(scratch, "resolver-stage"),
+        "--out",
+        join(scratch, "resolver.MANIFEST"),
+      ],
+      { WASM_POSIX_DEP_FIXTURE_DIR: dependencyRoot },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "resolver artifact must be a regular file, not a link",
+    );
+  });
+
+  it("rejects a linked resolver dependency root rather than trusting its target", () => {
+    const scratch = makeScratch();
+    const dependencyRoot = join(scratch, "fixture-dependency");
+    writeArtifact(dependencyRoot, "fixture.wasm", "bytes");
+    const linkedRoot = join(scratch, "linked-dependency");
+    symlinkSync(dependencyRoot, linkedRoot);
+    const packages = join(scratch, "PACKAGES.toml");
+    writeFileSync(
+      packages,
+      [
+        "[[packages]]",
+        'name = "fixture"',
+        "[[packages.outputs]]",
+        'binary = "programs/wasm32/fixture.wasm"',
+        'path = "/usr/bin/fixture"',
+        "",
+      ].join("\n"),
+    );
+
+    const result = runGenerator(
+      [
+        "--packages",
+        packages,
+        "--stage-resolver-binaries",
+        join(scratch, "resolver-stage"),
+        "--out",
+        join(scratch, "resolver.MANIFEST"),
+      ],
+      { WASM_POSIX_DEP_FIXTURE_DIR: linkedRoot },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "WASM_POSIX_DEP_FIXTURE_DIR must name a real directory, not a link",
+    );
+  });
+
+  it("rejects a source_artifact that escapes its resolver dependency root", () => {
+    const scratch = makeScratch();
+    const dependencyRoot = join(scratch, "fixture-dependency");
+    writeArtifact(dependencyRoot, "fixture.wasm", "bytes");
+    writeArtifact(scratch, "outside.wasm", "outside");
+    const packages = join(scratch, "PACKAGES.toml");
+    writeFileSync(
+      packages,
+      [
+        "[[packages]]",
+        'name = "fixture"',
+        "[[packages.outputs]]",
+        'binary = "programs/wasm32/fixture.wasm"',
+        'source_artifact = "../outside.wasm"',
+        'path = "/usr/bin/fixture"',
+        "",
+      ].join("\n"),
+    );
+
+    const result = runGenerator(
+      [
+        "--packages",
+        packages,
+        "--stage-resolver-binaries",
+        join(scratch, "resolver-stage"),
+        "--out",
+        join(scratch, "resolver.MANIFEST"),
+      ],
+      { WASM_POSIX_DEP_FIXTURE_DIR: dependencyRoot },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "source_artifact must be a canonical NFC relative POSIX path",
+    );
+    expect(result.stderr).not.toContain("outside");
+  });
+
+  it.each([
+    ["output", "resolver output root"],
+    ["work", "resolver work root"],
+  ] as const)(
+    "rejects a resolver %s root in the checkout before mutating it",
+    (repoRootKind, errorLabel) => {
+      const checkoutRoot = makeScratch();
+      const externalRoot = mkdtempSync(
+        join(tmpdir(), "kandelo-rootfs-wrapper-"),
+      );
+      scratchRoots.push(externalRoot);
+      const repoBound = join(checkoutRoot, repoRootKind);
+      const external = join(externalRoot, "resolver-root");
+      mkdirSync(repoBound);
+      mkdirSync(external);
+      writeFileSync(join(repoBound, "sentinel"), "unchanged");
+      const before = readdirSync(repoBound);
+      const outRoot = repoRootKind === "output" ? repoBound : external;
+      const workRoot = repoRootKind === "work" ? repoBound : external;
+
+      const result = spawnSync(
+        "bash",
+        [join(repoRoot, "packages/registry/rootfs/build-rootfs-package.sh")],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            WASM_POSIX_DEP_OUT_DIR: outRoot,
+            WASM_POSIX_DEP_WORK_DIR: workRoot,
+          },
+        },
+      );
+
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(
+        `${errorLabel} must be outside the source checkout`,
+      );
+      expect(readdirSync(repoBound)).toEqual(before);
+      expect(readFileSync(join(repoBound, "sentinel"), "utf8")).toBe(
+        "unchanged",
+      );
+    },
+  );
+
   it("uses only the explicitly selected artifact tree", () => {
     const scratch = makeScratch();
     const unique = `manifest-provenance-${process.pid}-${Date.now()}`;

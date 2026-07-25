@@ -30,38 +30,49 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/ncurses-src"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/ncurses-src"
+HOST_BUILD_DIR="$WORK_DIR/ncurses-host-build"
+TERMINFO_DIR="$WORK_DIR/terminfo"
+WASM_BUILD_DIR="$WORK_DIR/ncurses-wasm-build"
+BIN_DIR="$WORK_DIR/bin"
 
 # --- Inputs from resolver, with legacy fallbacks ---
 NCURSES_VERSION="${WASM_POSIX_DEP_VERSION:-${NCURSES_VERSION:-6.5}}"
-INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/ncurses-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/gnu/ncurses/ncurses-${NCURSES_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+INSTALL_DIR="${KANDELO_PACKAGE_OUT_DIR:-$WORK_DIR/ncurses-install}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftp.gnu.org/gnu/ncurses/ncurses-${NCURSES_VERSION}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6}"
+VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
+SOURCE_MARKER="$SRC_DIR/.kandelo-ncurses-source"
+
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 if ! command -v wasm32posix-cc &>/dev/null; then
     echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
-# --- Fetch + verify source ---
+# --- Stage verified source ---
+expected_source_marker="$(printf '%s\n%s\n%s' \
+    "$NCURSES_VERSION" "$SOURCE_URL" "$SOURCE_SHA256")"
+if [ -d "$SRC_DIR" ] && \
+   [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_source_marker" ]; then
+    rm -rf "$SRC_DIR" "$HOST_BUILD_DIR" "$TERMINFO_DIR" "$WASM_BUILD_DIR" "$BIN_DIR"
+fi
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading ncurses $NCURSES_VERSION..."
-    TARBALL="/tmp/ncurses-${NCURSES_VERSION}.tar.gz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    else
-        echo "==> (no SOURCE_SHA256 declared; skipping verification)"
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
+    echo "==> Staging verified ncurses $NCURSES_VERSION source..."
+    kandelo_package_stage_verified_source ncurses "$SRC_DIR" \
+        "$VERIFIED_SOURCE_DIR" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
+    printf '%s\n' "$expected_source_marker" >"$SOURCE_MARKER"
 fi
 
 # --- Build host tic + infocmp once (needed to generate fallback.c) ---
-HOST_BUILD_DIR="$SCRIPT_DIR/ncurses-host-build"
 HOST_TIC="$HOST_BUILD_DIR/progs/tic"
 HOST_INFOCMP="$HOST_BUILD_DIR/progs/infocmp"
 if [ ! -f "$HOST_TIC" ] || [ ! -f "$HOST_INFOCMP" ]; then
@@ -89,7 +100,6 @@ fi
 
 # --- Compile minimal terminfo DB (build-time intermediate, not a declared output) ---
 # Fed into MKfallback.sh below to produce the compiled-in fallback table.
-TERMINFO_DIR="$SCRIPT_DIR/terminfo"
 if [ ! -f "$TERMINFO_DIR/x/xterm-256color" ]; then
     echo "==> Compiling host-side terminfo database..."
     mkdir -p "$TERMINFO_DIR"
@@ -102,7 +112,6 @@ fi
 # cache-miss invocations, and autoconf bakes the prefix into the
 # Makefile, so reusing a stale wasm-build dir would `make install`
 # into the wrong path.
-WASM_BUILD_DIR="$SCRIPT_DIR/ncurses-wasm-build"
 rm -rf "$WASM_BUILD_DIR" "$INSTALL_DIR"
 mkdir -p "$WASM_BUILD_DIR"
 
@@ -239,7 +248,6 @@ NCURSES_PROGRAMS=(
     captoinfo
     infotocap
 )
-BIN_DIR="$SCRIPT_DIR/bin"
 rm -rf "$BIN_DIR"
 mkdir -p "$BIN_DIR"
 

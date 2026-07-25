@@ -5,16 +5,19 @@
 //!
 //! - Two mutable globals: `_wpk_fork_state` (i32) and `_wpk_fork_buf`
 //!   (i32 for wasm32, i64 for wasm64).
-//! - Five exported control functions: `wpk_fork_unwind_begin`,
+//! - Seven exported control functions: `wpk_fork_unwind_begin`,
 //!   `wpk_fork_unwind_end`, `wpk_fork_rewind_begin`,
-//!   `wpk_fork_rewind_end`, `wpk_fork_state`.
+//!   `wpk_fork_rewind_end`, `wpk_fork_abort_begin`,
+//!   `wpk_fork_abort_end`, and `wpk_fork_state`.
+//! - In the ABI 42 linked format, three host imports that reserve, commit, and
+//!   replay variable-sized frame nodes.
 //!
 //! ## Phase 4e additions: saved-globals area
 //!
 //! To fork correctly, the child process's Wasm instance must see the
 //! same mutable globals as the parent at fork time. `wpk_fork_unwind_begin`
 //! takes a snapshot of every pre-existing mutable *scalar* global
-//! into the save buffer, and `wpk_fork_rewind_begin` reloads it. The
+//! into the root chunk's fixed prefix, and `wpk_fork_rewind_begin` reloads it. The
 //! two runtime-owned globals (`_wpk_fork_state`, `_wpk_fork_buf`) are
 //! excluded: they are set explicitly by each begin function to the
 //! known transition values.
@@ -22,22 +25,20 @@
 //! Ref-typed mutable globals (funcref/externref/exnref) require
 //! auxiliary tables (Phase 4f); this phase skips them.
 //!
-//! Buffer layout (all offsets byte-exact; `P` is pointer width —
-//! 4 bytes on wasm32, 8 on wasm64; `B` is the B1 plain-catch scratch
-//! reservation, 0 when no fork-path function has a plain catch):
+//! Module-prefix layout (all offsets byte-exact; `P` is pointer width —
+//! 4 bytes on wasm32 and 8 on wasm64):
 //!
 //! ```text
-//! +0          P     current_pos        Absolute address of next free frame byte
-//! +P          P     end_pos            One past end of buffer
+//! +0          P     active_frame       Current frame payload during save/replay
+//! +P          P     reserved           Reserved pointer word
 //! +2P         N     saved_globals[]    Mutable scalar globals, declaration order
-//! +2P+N       B     b1_scratch[]       Per-arm scratch tuples (Stage 1 B1)
-//! +2P+N+B     -     frame data         Grows upward from here
+//! +2P+N    16    abort_selector     Live-frame call-site selector
 //! ```
 //!
-//! `frames_start_offset` in [`Runtime`] exposes `2P + N + B` so the
-//! runtime can initialize `current_pos` to `buf + frames_start_offset`.
-//! `b1_scratch_base` exposes `2P + N` (== `frames_start_offset` when
-//! `B == 0`) and `b1_scratch_size` exposes `B` (rounded up to 8).
+//! `frames_start_offset` in [`Runtime`] exposes the abort-selector offset
+//! `2P + N`; `fixed_prefix_size` includes the following 16 bytes. In the
+//! linked runtime, frame payloads live after per-node headers in host-managed
+//! chunks rather than directly after this prefix.
 
 use walrus::{
     ConstExpr, FunctionBuilder, FunctionId, GlobalId, InstrSeqBuilder, MemoryId, Module, ValType,
@@ -49,6 +50,8 @@ use walrus::{
 pub const STATE_NORMAL: i32 = 0;
 pub const STATE_UNWINDING: i32 = 1;
 pub const STATE_REWINDING: i32 = 2;
+pub const STATE_ABORT_UNWINDING: i32 = 3;
+pub const ABORT_SELECTOR_SIZE: u32 = 16;
 
 /// Names for the runtime globals and exported control functions.
 /// Centralized so the rest of the crate doesn't hardcode spellings.
@@ -56,11 +59,17 @@ pub mod names {
     pub const GLOBAL_STATE: &str = "_wpk_fork_state";
     pub const GLOBAL_BUF: &str = "_wpk_fork_buf";
 
-    pub const EXPORT_UNWIND_BEGIN: &str = "wpk_fork_unwind_begin";
-    pub const EXPORT_UNWIND_END: &str = "wpk_fork_unwind_end";
-    pub const EXPORT_REWIND_BEGIN: &str = "wpk_fork_rewind_begin";
-    pub const EXPORT_REWIND_END: &str = "wpk_fork_rewind_end";
-    pub const EXPORT_STATE: &str = "wpk_fork_state";
+    pub const EXPORT_UNWIND_BEGIN: &str = wasm_posix_shared::abi::WPK_FORK_EXPORT_UNWIND_BEGIN;
+    pub const EXPORT_UNWIND_END: &str = wasm_posix_shared::abi::WPK_FORK_EXPORT_UNWIND_END;
+    pub const EXPORT_REWIND_BEGIN: &str = wasm_posix_shared::abi::WPK_FORK_EXPORT_REWIND_BEGIN;
+    pub const EXPORT_REWIND_END: &str = wasm_posix_shared::abi::WPK_FORK_EXPORT_REWIND_END;
+    pub const EXPORT_ABORT_BEGIN: &str = wasm_posix_shared::abi::WPK_FORK_EXPORT_ABORT_BEGIN;
+    pub const EXPORT_ABORT_END: &str = wasm_posix_shared::abi::WPK_FORK_EXPORT_ABORT_END;
+    pub const EXPORT_STATE: &str = wasm_posix_shared::abi::WPK_FORK_EXPORT_STATE;
+
+    pub const IMPORT_FRAME_RESERVE: &str = wasm_posix_shared::abi::WPK_FORK_FRAME_IMPORT_RESERVE;
+    pub const IMPORT_FRAME_COMMIT: &str = wasm_posix_shared::abi::WPK_FORK_FRAME_IMPORT_COMMIT;
+    pub const IMPORT_FRAME_NEXT: &str = wasm_posix_shared::abi::WPK_FORK_FRAME_IMPORT_NEXT;
 }
 
 /// Metadata about a saved mutable global.
@@ -85,28 +94,30 @@ pub struct Runtime {
     pub unwind_end: FunctionId,
     pub rewind_begin: FunctionId,
     pub rewind_end: FunctionId,
+    pub abort_begin: FunctionId,
+    pub abort_end: FunctionId,
     pub state: FunctionId,
+
+    /// Host-managed linked-frame hooks. All three are present together for
+    /// the scalable format and absent for the legacy contiguous format.
+    pub frame_reserve: Option<FunctionId>,
+    pub frame_commit: Option<FunctionId>,
+    pub frame_next: Option<FunctionId>,
 
     /// Mutable scalar globals that `wpk_fork_unwind_begin` snapshots
     /// and `wpk_fork_rewind_begin` restores. Declaration order.
     pub saved_globals: Vec<SavedGlobal>,
 
-    /// Byte offset at which frame data begins. Includes any space
-    /// reserved for B1's plain-catch scratch area
-    /// (see `b1_scratch_base` / `b1_scratch_size`).
-    /// `wpk_fork_unwind_begin` adds the save-buffer base to this value
-    /// before storing the absolute `current_pos` pointer at offset 0.
-    /// The buffer must be sized such that
-    /// `frames_start_offset + sum_of_frame_sizes <= buffer_size`.
+    /// Offset of the linked runtime's abort selector.
+    /// `wpk_fork_unwind_begin` adds the module-buffer base to this value for
+    /// the initial active-frame word. Linked postambles replace that word with
+    /// the payload returned by the reserve hook before writing any frame data.
     pub frames_start_offset: u32,
 
-    /// Stage 1 (B1): byte offset at which the plain-catch scratch
-    /// area begins. Equals `2P + N` (header + saved_globals).
-    pub b1_scratch_base: u32,
-    /// Stage 1 (B1): bytes reserved for the plain-catch scratch area.
-    /// Zero when no fork-path function in the module has a plain catch.
-    /// `b1_scratch_base + b1_scratch_size == frames_start_offset`.
-    pub b1_scratch_size: u32,
+    /// Host-visible fixed prefix. Linked runtimes reserve one selector-sized
+    /// area after `frames_start_offset` for the still-live activation that
+    /// reverses a failed partial unwind.
+    pub fixed_prefix_size: u32,
 }
 
 /// Return the pointer type appropriate for the module's primary
@@ -150,21 +161,15 @@ fn zero_const(ptr_ty: ValType) -> ConstExpr {
 /// the module has linear memory — the per-global save/restore
 /// machinery in `wpk_fork_unwind_begin` / `wpk_fork_rewind_begin`.
 ///
-/// `b1_scratch_size` is the number of bytes B1 (Stage 1 plain-catch
-/// scratch area) needs reserved between `saved_globals` and
-/// `frame data` in the save buffer. It is zero when no fork-path
-/// function in the module has a plain catch — preserving byte-identical
-/// behavior to pre-B1 for modules that don't exercise the feature.
-/// The value is rounded up to 8-byte alignment internally so frame
-/// data starts aligned regardless of saved-globals payload size.
-///
-/// **Why a parameter and not a setter:** `frames_start_offset` gets
-/// baked into `wpk_fork_unwind_begin`'s body as a constant during this
-/// call (see step 3 in [`emit_unwind_begin`]). Shifting the offset
-/// after `inject_runtime` returns would silently desync the const and
-/// the host-visible offset. Computing the B1 plan first and passing
-/// the size in keeps everything consistent.
-pub fn inject_runtime(module: &mut Module, b1_scratch_size: u32) -> Runtime {
+pub fn inject_runtime(module: &mut Module) -> Runtime {
+    inject_runtime_with_frame_storage(module, false)
+}
+
+pub fn inject_linked_runtime(module: &mut Module) -> Runtime {
+    inject_runtime_with_frame_storage(module, true)
+}
+
+fn inject_runtime_with_frame_storage(module: &mut Module, linked_frames: bool) -> Runtime {
     let ptr_ty = ptr_type(module);
     let memory = module.memories.iter().next().map(|m| m.id());
 
@@ -204,24 +209,16 @@ pub fn inject_runtime(module: &mut Module, b1_scratch_size: u32) -> Runtime {
         });
         next_off += scalar_size(g.ty);
     }
-    // B1 plain-catch scratch area sits between saved_globals and
-    // frame data. When `b1_scratch_size == 0` (the common case for
-    // modules without plain-catch fork) this is a no-op and
-    // `frames_start_offset` is byte-identical to pre-B1.
-    let b1_scratch_base = next_off;
-    let aligned_b1_size = align_up_8(b1_scratch_size);
-    let frames_start_offset = b1_scratch_base + aligned_b1_size;
-    // Invariant: `b1_scratch_base + b1_scratch_size == frames_start_offset`
-    // holds by construction here — `frames_start_offset` is defined as
-    // the sum on the previous line, and `b1_scratch_size` is stored as
-    // `aligned_b1_size`. This is documented in the `Runtime` struct doc
-    // and the leading buffer-layout comment block; we don't enforce it
-    // via debug_assert! because any check using the same locals is
-    // tautological, and a stronger check (e.g., 8-alignment of
-    // `frames_start_offset`) doesn't hold for all currently-shipping
-    // modules — the pre-B1 code already permits non-aligned values
-    // because wasm tolerates unaligned i64 stores.
-
+    // Plain-catch payloads are ordinary activation locals and therefore
+    // serialize inside each function frame. The module prefix owns only
+    // runtime-global state; no code may use it as NORMAL-state scratch.
+    let frames_start_offset = next_off;
+    let fixed_prefix_size = frames_start_offset
+        + if linked_frames {
+            ABORT_SELECTOR_SIZE
+        } else {
+            0
+        };
     // --- Runtime globals (state + buf) ---
     let state_global = module.globals.add_local(
         ValType::I32,
@@ -236,6 +233,21 @@ pub fn inject_runtime(module: &mut Module, b1_scratch_size: u32) -> Runtime {
         zero_const(ptr_ty),
     );
 
+    let (frame_reserve, frame_commit, frame_next) = if linked_frames {
+        let reserve_ty = module.types.add(&[ptr_ty], &[ptr_ty]);
+        let commit_ty = module.types.add(&[ptr_ty], &[]);
+        let next_ty = module.types.add(&[ptr_ty], &[ptr_ty]);
+        let import_module = wasm_posix_shared::abi::WPK_FORK_FRAME_IMPORT_MODULE;
+        let (reserve, _) =
+            module.add_import_func(import_module, names::IMPORT_FRAME_RESERVE, reserve_ty);
+        let (commit, _) =
+            module.add_import_func(import_module, names::IMPORT_FRAME_COMMIT, commit_ty);
+        let (next, _) = module.add_import_func(import_module, names::IMPORT_FRAME_NEXT, next_ty);
+        (Some(reserve), Some(commit), Some(next))
+    } else {
+        (None, None, None)
+    };
+
     // --- Control functions ---
     let unwind_begin = emit_unwind_begin(
         module,
@@ -246,7 +258,7 @@ pub fn inject_runtime(module: &mut Module, b1_scratch_size: u32) -> Runtime {
         &saved_globals,
         frames_start_offset,
     );
-    let unwind_end = emit_end_fn(module, state_global);
+    let unwind_end = emit_end_fn(module, state_global, buf_global, ptr_ty);
     let rewind_begin = emit_rewind_begin(
         module,
         ptr_ty,
@@ -254,19 +266,28 @@ pub fn inject_runtime(module: &mut Module, b1_scratch_size: u32) -> Runtime {
         buf_global,
         memory,
         &saved_globals,
+        STATE_REWINDING,
     );
-    let rewind_end = emit_end_fn(module, state_global);
+    let rewind_end = emit_end_fn(module, state_global, buf_global, ptr_ty);
+    let abort_begin = emit_rewind_begin(
+        module,
+        ptr_ty,
+        state_global,
+        buf_global,
+        memory,
+        &saved_globals,
+        STATE_ABORT_UNWINDING,
+    );
+    let abort_end = emit_end_fn(module, state_global, buf_global, ptr_ty);
     let state = emit_state_fn(module, state_global);
 
     // --- Exports ---
-    module
-        .exports
-        .add(names::EXPORT_UNWIND_BEGIN, unwind_begin);
+    module.exports.add(names::EXPORT_UNWIND_BEGIN, unwind_begin);
     module.exports.add(names::EXPORT_UNWIND_END, unwind_end);
-    module
-        .exports
-        .add(names::EXPORT_REWIND_BEGIN, rewind_begin);
+    module.exports.add(names::EXPORT_REWIND_BEGIN, rewind_begin);
     module.exports.add(names::EXPORT_REWIND_END, rewind_end);
+    module.exports.add(names::EXPORT_ABORT_BEGIN, abort_begin);
+    module.exports.add(names::EXPORT_ABORT_END, abort_end);
     module.exports.add(names::EXPORT_STATE, state);
 
     module.globals.get_mut(state_global).name = Some(names::GLOBAL_STATE.into());
@@ -275,6 +296,8 @@ pub fn inject_runtime(module: &mut Module, b1_scratch_size: u32) -> Runtime {
     module.funcs.get_mut(unwind_end).name = Some(names::EXPORT_UNWIND_END.into());
     module.funcs.get_mut(rewind_begin).name = Some(names::EXPORT_REWIND_BEGIN.into());
     module.funcs.get_mut(rewind_end).name = Some(names::EXPORT_REWIND_END.into());
+    module.funcs.get_mut(abort_begin).name = Some(names::EXPORT_ABORT_BEGIN.into());
+    module.funcs.get_mut(abort_end).name = Some(names::EXPORT_ABORT_END.into());
     module.funcs.get_mut(state).name = Some(names::EXPORT_STATE.into());
 
     Runtime {
@@ -285,19 +308,23 @@ pub fn inject_runtime(module: &mut Module, b1_scratch_size: u32) -> Runtime {
         unwind_end,
         rewind_begin,
         rewind_end,
+        abort_begin,
+        abort_end,
         state,
+        frame_reserve,
+        frame_commit,
+        frame_next,
         saved_globals,
         frames_start_offset,
-        b1_scratch_base,
-        b1_scratch_size: aligned_b1_size,
+        fixed_prefix_size,
     }
 }
 
 /// Emit `wpk_fork_unwind_begin(buf: ptr) -> ()`:
 /// 1. `_wpk_fork_state := UNWINDING`
 /// 2. `_wpk_fork_buf := buf`
-/// 3. `*(buf + 0) := buf + frames_start_offset` — seed the absolute
-///    `current_pos` pointer while keeping the host buffer-geometry-agnostic.
+/// 3. `*(buf + 0) := buf + frames_start_offset` — seed the active-frame word;
+///    linked postambles replace it with each reserved payload address.
 /// 4. For each saved global `g` at offset `off`:
 ///        `*(buf + off) = g`
 ///
@@ -325,11 +352,9 @@ fn emit_unwind_begin(
             .global_set(buf_global);
 
         if let Some(mem) = memory {
-            // Step 3: seed current_pos at buf + 0 with the absolute frame
-            // start address. Frame save/restore treats current_pos as a
-            // linear-memory pointer, so storing only the relative offset
-            // would make every pthread instance share the same low-memory
-            // frame payload.
+            // Step 3: seed the active-frame word at buf + 0. The linked
+            // emitter overwrites it with the host-reserved payload before any
+            // frame write; legacy direct-runtime tests retain cursor behavior.
             body.local_get(buf_param);
             match ptr_ty {
                 ValType::I32 => {
@@ -378,13 +403,14 @@ fn emit_rewind_begin(
     buf_global: GlobalId,
     memory: Option<MemoryId>,
     saved_globals: &[SavedGlobal],
+    state: i32,
 ) -> FunctionId {
     let mut builder = FunctionBuilder::new(&mut module.types, &[ptr_ty], &[]);
     let buf_param = module.locals.add(ptr_ty);
 
     {
         let mut body = builder.func_body();
-        body.i32_const(STATE_REWINDING)
+        body.i32_const(state)
             .global_set(state_global)
             .local_get(buf_param)
             .global_set(buf_global);
@@ -406,16 +432,14 @@ fn emit_save_globals(
     saved_globals: &[SavedGlobal],
 ) {
     for sg in saved_globals {
-        body.global_get(buf_global)
-            .global_get(sg.id)
-            .store(
-                memory,
-                store_kind_for(sg.ty),
-                MemArg {
-                    align: natural_align(sg.ty),
-                    offset: sg.offset as u64,
-                },
-            );
+        body.global_get(buf_global).global_get(sg.id).store(
+            memory,
+            store_kind_for(sg.ty),
+            MemArg {
+                align: natural_align(sg.ty),
+                offset: sg.offset as u64,
+            },
+        );
     }
 }
 
@@ -468,20 +492,31 @@ fn natural_align(ty: ValType) -> u32 {
     scalar_size(ty)
 }
 
-/// Round `x` up to the nearest 8-byte boundary. Mirrors the helper
-/// in `instrument.rs`; kept private here to avoid widening visibility
-/// for a one-line helper. A future cleanup pass can consolidate.
-fn align_up_8(x: u32) -> u32 {
-    (x + 7) & !7u32
-}
-
-/// Emit a `() -> ()` function that resets state to NORMAL.
-fn emit_end_fn(module: &mut Module, state_global: GlobalId) -> FunctionId {
+/// Emit a `() -> ()` function that releases active-buffer ownership and
+/// resets state to NORMAL.
+fn emit_end_fn(
+    module: &mut Module,
+    state_global: GlobalId,
+    buf_global: GlobalId,
+    ptr_ty: ValType,
+) -> FunctionId {
     let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
-    builder
-        .func_body()
-        .i32_const(STATE_NORMAL)
-        .global_set(state_global);
+    let mut body = builder.func_body();
+    // WHY: a continuation mapping stops belonging to this module at every end
+    // transition. Clear the alias to released/reusable storage before
+    // publishing NORMAL; correctness still comes from having no NORMAL-state
+    // buffer accesses, because linear-memory address zero is itself valid.
+    match ptr_ty {
+        ValType::I32 => {
+            body.i32_const(0);
+        }
+        ValType::I64 => {
+            body.i64_const(0);
+        }
+        other => unreachable!("unsupported ptr_ty: {other:?}"),
+    }
+    body.global_set(buf_global);
+    body.i32_const(STATE_NORMAL).global_set(state_global);
     builder.finish(vec![], &mut module.funcs)
 }
 

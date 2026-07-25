@@ -25,7 +25,7 @@ depends_on = [
 ]
 
 # Pre-built VFS image for the MariaDB test runner: mariadbd binary,
-# mysql-test test files (curated 185 tests), system-table SQL,
+# mysql-test test files (curated 184 tests), system-table SQL,
 # and init descriptors. Source at
 # images/vfs/scripts/build-mariadb-test-vfs-image.ts. Used by
 # apps/browser-demos/pages/mariadb-test/main.ts (Playwright harness).

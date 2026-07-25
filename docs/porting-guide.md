@@ -169,7 +169,7 @@ The simplest way to run a Wasm program is with `examples/run-example.ts`. For cu
 
 ```typescript
 import { readFileSync } from "fs";
-import { CentralizedKernelWorker } from "../host/src/kernel-worker";
+import { CAPTURED_STDIO, CentralizedKernelWorker } from "../host/src/kernel-worker";
 import { NodePlatformIO } from "../host/src/platform/node";
 import { NodeWorkerAdapter } from "../host/src/worker-adapter";
 
@@ -187,16 +187,21 @@ const kernelWorker = new CentralizedKernelWorker(
   io,
   {
     onFork: async (parentPid, childPid, parentMemory) => {
-      // Copy parent memory, register child, spawn child worker
+      // childPid is already allocated by Rust. Copy parent memory,
+      // attach the child host state, and spawn its worker.
       // See examples/run-example.ts for full implementation
     },
     onExec: async (pid, path, argv, envp) => {
       // Resolve path to wasm binary, replace process
       // Return 0 on success, -2 (ENOENT) if not found
     },
-    onClone: async (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
-      // Allocate thread channel, spawn thread worker
-      // Return tid on success
+    onClone: async (attachment) => {
+      const { pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory } =
+        attachment;
+      // PID/TID and launch values are bound to Rust's exact clone result by a
+      // one-shot host transport proof. Allocate a mailbox, consume it with
+      // kernelWorker.attachThreadChannel(attachment, channelOffset), then
+      // spawn the thread worker. The host never supplies a numeric TID.
     },
     onExit: (pid, status) => {
       // Handle process exit
@@ -217,8 +222,8 @@ memory.grow(MAX_PAGES - 17);
 const channelOffset = (MAX_PAGES - 2) * 65536;
 new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-// Register and spawn process
-const pid = 100;
+// Ask Rust to create the process, then attach its host memory and channel.
+const pid = kernelWorker.createProcess(CAPTURED_STDIO);
 kernelWorker.registerProcess(pid, memory, [channelOffset]);
 ```
 
@@ -230,14 +235,14 @@ For a complete example with fork/exec/clone support, see `examples/run-example.t
 // Initialize with kernel wasm bytes
 await kernelWorker.init(kernelWasmBytes: ArrayBuffer)
 
-// Register a process
+// Create a kernel Process and receive its assigned PID
+const pid = kernelWorker.createProcess(CAPTURED_STDIO)
+
+// Attach host memory and channels to that existing Process
 kernelWorker.registerProcess(pid, memory, channelOffsets, options?)
 
 // Set process working directory
 kernelWorker.setCwd(pid, path)
-
-// Set next PID for child processes
-kernelWorker.setNextChildPid(pid)
 
 // Provide stdin data
 kernelWorker.setStdinData(pid, data: Uint8Array)
@@ -249,6 +254,11 @@ kernelWorker.unregisterProcess(pid)
 // For zombies (keep in kernel until reaped)
 kernelWorker.deactivateProcess(pid)
 ```
+
+`ProcessTable` in the Rust kernel owns the only PID/TID sequence. It starts at
+100 and allocates identities for top-level creation, fork, `posix_spawn`, and
+thread clone. Integration code must treat callback PIDs/TIDs as read-only:
+there is no host watermark or API for choosing the next identity.
 
 ## Browser UI Integration
 
@@ -574,7 +584,7 @@ library dep) for canonical references; the schema reference is in
 kind = "program"           # or "library" or "source"
 name = "myprog"
 version = "1.2.3"
-kernel_abi = 41            # current ABI_VERSION; required for packages with a [build] block
+kernel_abi = 42            # current ABI_VERSION; required for packages with a [build] block
 depends_on = ["zlib@1.3.1"]   # transitive deps the resolver will pull first
 
 [source]

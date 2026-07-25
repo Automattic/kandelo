@@ -12,6 +12,7 @@ import { FORK_SAVE_BUFFER_SIZE } from "../src/process-memory";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { detectPtrWidth, extractHeapBase } from "../src/constants";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { readForkContinuationAnchor } from "../src/fork-continuation";
 import { GlMuxer } from "../src/webgl/muxer";
 import type { GlBinding } from "../src/webgl/registry";
 import type {
@@ -87,7 +88,7 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
       const workerAdapter = new NodeWorkerAdapter();
       const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
 
-      const parentPid = 100;
+      let parentPid = 0;
       let stdout = "";
       let stderr = "";
       let resolveExit: (s: number) => void;
@@ -118,20 +119,23 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
             new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
 
             kernel.registerProcess(childPid, childMemory, [childChannelOffset], {
-              skipKernelCreate: true,
               ptrWidth,
             });
+            kernel.inheritProcessSharedMappings(parentForkPid, childPid);
 
             // Same canvas → same WebGL2 context → same muxer instance
             // (gl_muxers is a WeakMap keyed by context).
             kernel.gl.attachCanvas(childPid, fakeCanvas);
 
-            const forkBufAddr = childChannelOffset - FORK_SAVE_BUFFER_SIZE;
+            const forkBufAddr = readForkContinuationAnchor(
+              parentMemory,
+              childChannelOffset - FORK_SAVE_BUFFER_SIZE,
+              ptrWidth,
+            );
 
             const childInit: CentralizedWorkerInitMessage = {
               type: "centralized_init",
               pid: childPid,
-              ppid: parentForkPid,
               programBytes,
               memory: childMemory,
               channelOffset: childChannelOffset,
@@ -181,13 +185,14 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
       });
 
       await kernel.init(kernelWasmBytes);
+      parentPid = kernel.createProcess(CAPTURED_STDIO);
 
       const memory = createProcessMemory(17);
       const channelOffset = (MAX_PAGES - 2) * 65536;
       memory.grow(MAX_PAGES - 17);
       new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-      kernel.registerProcess(parentPid, memory, [channelOffset], { ptrWidth, stdio: CAPTURED_STDIO });
+      kernel.registerProcess(parentPid, memory, [channelOffset], { ptrWidth });
       const heapBase = extractHeapBase(programBytes);
       if (heapBase !== null) kernel.setBrkBase(parentPid, heapBase);
 
@@ -198,7 +203,6 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
       const initData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
         pid: parentPid,
-        ppid: 0,
         programBytes,
         memory,
         channelOffset,

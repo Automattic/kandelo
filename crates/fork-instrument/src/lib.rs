@@ -20,6 +20,7 @@ use wasmparser::{Parser, Payload};
 
 pub mod call_graph;
 pub mod instrument;
+pub mod linked_frames;
 pub mod runtime;
 
 /// Versioned artifact claim emitted by `wasm-fork-instrument` and consumed by
@@ -62,8 +63,7 @@ pub struct Analysis {
 /// Phase 2 scope: direct-call closure only. Phase 3 extends to
 /// indirect calls.
 pub fn analyze(input: &[u8], opts: &Options) -> Result<Analysis> {
-    let module = walrus::Module::from_buffer(input)
-        .context("failed to parse input wasm module")?;
+    let module = walrus::Module::from_buffer(input).context("failed to parse input wasm module")?;
 
     let Some(entry) = call_graph::find_import_func(&module, &opts.entry_import) else {
         bail!(
@@ -93,8 +93,8 @@ pub fn analyze(input: &[u8], opts: &Options) -> Result<Analysis> {
 /// tool is invoked by build scripts across programs that may or may
 /// not use `fork()`.
 pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
-    let mut module = walrus::Module::from_buffer(input)
-        .context("failed to parse input wasm module")?;
+    let mut module =
+        walrus::Module::from_buffer(input).context("failed to parse input wasm module")?;
 
     // Discover the fork-path closure *before* we mutate the module so
     // the runtime's own injected functions are not mistaken for
@@ -127,32 +127,30 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     // exported ABI is stable regardless of whether any caller was
     // actually rewritten.
     //
-    // Stage 1 (B1): reserve plain-catch scratch space in the save
-    // buffer. `total_bytes` is 0 when no fork-path function has a
-    // plain catch — preserves byte-identical behavior to pre-B1
-    // for all currently-shipping ports. The plan must be computed
-    // *before* `inject_runtime` because the resulting size shifts
-    // `frames_start_offset`, which gets baked into the unwind_begin
-    // body as a constant. Filter to local functions and sort to
-    // match the determinism of `instrument_functions`'s target walk
-    // — Stage 2 reads `B1ScratchPlan.per_function[fid]` and the
-    // per-function scratch_offset values must be stable across runs
-    // for byte-reproducible builds. We do NOT also filter
-    // `runtime_funcs` here because they don't exist yet at this
-    // point in the pipeline (they're added by `inject_runtime` on
-    // the next line).
+    // Discover supported plain-catch regions before injecting the runtime.
+    // The plan contains only static tag/label/type metadata; activation state
+    // is allocated later as ordinary frame-backed function locals. Sort the
+    // targets to keep local allocation and emitted bytes deterministic.
     let mut fork_path_targets: Vec<walrus::FunctionId> = fork_path
         .iter()
         .copied()
         .filter(|id| matches!(module.funcs.get(*id).kind, walrus::FunctionKind::Local(_)))
         .collect();
     fork_path_targets.sort();
-    let b1_plan = instrument::plan_b1_scratch(&module, &fork_path_targets);
-    let runtime = runtime::inject_runtime(&mut module, b1_plan.total_bytes);
+    let plain_catch_plan = instrument::plan_plain_catches(&module, &fork_path_targets);
+    // Only modules with the configured fork seed need linked-frame imports.
+    // Runtime exports and metadata remain stable for no-seed modules, but
+    // adding unused host imports would make an otherwise inert side module
+    // impossible to instantiate through the dynamic linker.
+    let runtime = if entry.is_some() {
+        runtime::inject_linked_runtime(&mut module)
+    } else {
+        runtime::inject_runtime(&mut module)
+    };
 
     // Phase 4b: structural wrap of each fork-path function's body.
     // No-op when `fork_path` is empty (module doesn't use fork).
-    instrument::instrument_functions(&mut module, &runtime, &fork_path, &b1_plan);
+    instrument::instrument_functions(&mut module, &runtime, &fork_path, &plain_catch_plan);
 
     loop {
         let existing = module
@@ -166,6 +164,30 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     module.customs.add(RawCustomSection {
         name: FORK_CAPABILITIES_SECTION.into(),
         data: vec![FORK_CAPABILITIES_VERSION, fork_capabilities],
+    });
+
+    loop {
+        let existing = module
+            .customs
+            .iter()
+            .find(|(_, section)| section.name() == linked_frames::LINKED_FRAME_FORMAT_SECTION)
+            .map(|(id, _)| id);
+        let Some(existing) = existing else { break };
+        module.customs.delete(existing);
+    }
+    let pointer_width = match runtime.buf_type {
+        walrus::ValType::I32 => linked_frames::PointerWidth::Wasm32,
+        walrus::ValType::I64 => linked_frames::PointerWidth::Wasm64,
+        other => unreachable!("unsupported fork buffer pointer type: {other:?}"),
+    };
+    module.customs.add(RawCustomSection {
+        name: linked_frames::LINKED_FRAME_FORMAT_SECTION.into(),
+        data: linked_frames::FrameFormatDescriptor::current(
+            pointer_width,
+            runtime.fixed_prefix_size,
+        )
+        .encode()
+        .to_vec(),
     });
 
     // Historical phase list (Phase 4b/4c/4d/4e/4f/5/6) was an artefact

@@ -3,6 +3,7 @@ set -euo pipefail
 
 REPOSITORY=""
 REVISION=""
+SOURCE_CHECKOUT=""
 PATCH_FILE=""
 EXPECTED_PATCH_SHA256=""
 ARCH=""
@@ -21,6 +22,7 @@ patch to a temporary Git index, and write deterministic bootstrap inputs.
 Options:
   --repository <url>              upstream Homebrew Git repository
   --revision <sha>                exact 40-character upstream commit
+  --source-checkout <path>        optional exact resolver-owned checkout
   --patch <path>                  Kandelo Homebrew patch
   --expected-patch-sha256 <sha>   reviewed patch digest
   --arch <wasm32|wasm64>          guest Homebrew userland architecture
@@ -38,6 +40,7 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --repository) REPOSITORY="${2:-}"; shift 2 ;;
         --revision) REVISION="${2:-}"; shift 2 ;;
+        --source-checkout) SOURCE_CHECKOUT="${2:-}"; shift 2 ;;
         --patch) PATCH_FILE="${2:-}"; shift 2 ;;
         --expected-patch-sha256) EXPECTED_PATCH_SHA256="${2:-}"; shift 2 ;;
         --arch) ARCH="${2:-}"; shift 2 ;;
@@ -93,12 +96,55 @@ if [ ! -f "$PATCH_FILE" ]; then
     exit 2
 fi
 
-for tool in git node sha256sum; do
+for tool in git node; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "prepare-homebrew-bootstrap-source: $tool not found; run through scripts/dev-shell.sh" >&2
         exit 2
     }
 done
+
+# Git is a source parser here, not an ambient developer tool. Remove repository
+# redirection, injected `-c` entries, executable lookup, tracing, templates,
+# hooks, credential helpers, and worktree state before inspecting either the
+# sealed checkout or our object store. Clearing every caller-provided `GIT_*`
+# variable also fails closed for variables introduced by future Git versions.
+# Exact command-line overrides below neutralize repository-local hook,
+# fsmonitor, attribute, exclude, and credential configuration.
+REQUESTED_GIT_DIR="$GIT_DIR"
+while IFS= read -r git_variable; do
+    case "$git_variable" in
+        GIT_*)
+            unset "$git_variable"
+            ;;
+    esac
+done < <(compgen -A variable)
+unset SSH_ASKPASS
+unset GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
+    HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN
+GIT_DIR="$REQUESTED_GIT_DIR"
+export GIT_ATTR_NOSYSTEM=1
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_NOSYSTEM=1
+export GIT_OPTIONAL_LOCKS=0
+export GIT_PAGER=cat
+export GIT_TERMINAL_PROMPT=0
+
+sha256_file() {
+    node --input-type=module -e '
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+process.stdout.write(createHash("sha256").update(readFileSync(process.argv[1])).digest("hex"));
+' "$1"
+}
+
+sha256_stdin() {
+    node --input-type=module -e '
+import { createHash } from "node:crypto";
+const hash = createHash("sha256");
+for await (const chunk of process.stdin) hash.update(chunk);
+process.stdout.write(hash.digest("hex"));
+'
+}
 
 PATCH_FILE="$(cd "$(dirname "$PATCH_FILE")" && pwd)/$(basename "$PATCH_FILE")"
 GIT_DIR="$(mkdir -p "$(dirname "$GIT_DIR")" && cd "$(dirname "$GIT_DIR")" && pwd)/$(basename "$GIT_DIR")"
@@ -106,57 +152,148 @@ for output in "$ARCHIVE" "$ENV_FILE" "$PROVENANCE"; do
     mkdir -p "$(dirname "$output")"
 done
 
-ACTUAL_PATCH_SHA256="$(sha256sum "$PATCH_FILE" | awk '{print $1}')"
+GIT_ISOLATION_ROOT="$(
+    mktemp -d "$(dirname "$GIT_DIR")/.kandelo-homebrew-git.XXXXXX"
+)"
+GIT_HOOKS_DIR="$GIT_ISOLATION_ROOT/hooks"
+GIT_TEMPLATE_DIR_PRIVATE="$GIT_ISOLATION_ROOT/template"
+mkdir -m 0700 "$GIT_HOOKS_DIR" "$GIT_TEMPLATE_DIR_PRIVATE"
+INDEX_TMP="$GIT_ISOLATION_ROOT/index"
+ARCHIVE_TMP="$ARCHIVE.tmp.$$"
+ENV_TMP="$ENV_FILE.tmp.$$"
+PROVENANCE_TMP="$PROVENANCE.tmp.$$"
+cleanup() {
+    rm -f -- "$INDEX_TMP" "$ARCHIVE_TMP" "$ENV_TMP" "$PROVENANCE_TMP"
+    rm -rf -- "$GIT_ISOLATION_ROOT"
+}
+trap cleanup EXIT
+
+GIT_ISOLATION_ARGS=(
+    -c "core.hooksPath=$GIT_HOOKS_DIR"
+    -c core.fsmonitor=false
+    -c core.untrackedCache=false
+    -c core.attributesFile=/dev/null
+    -c core.excludesFile=/dev/null
+    -c credential.helper=
+    -c credential.interactive=false
+    -c http.extraHeader=
+)
+isolated_git() {
+    command git "${GIT_ISOLATION_ARGS[@]}" "$@"
+}
+
+verify_local_git_config() {
+    local label="$1"
+    shift
+    local config_keys
+    local key
+    if ! config_keys="$(
+        isolated_git "$@" config --local --no-includes --name-only --list
+    )"; then
+        echo "prepare-homebrew-bootstrap-source: cannot inspect $label Git configuration" >&2
+        exit 2
+    fi
+    if [ -n "$config_keys" ]; then
+        while IFS= read -r key; do
+            case "$key" in
+                core.repositoryformatversion|core.filemode|core.bare|\
+                core.logallrefupdates|core.ignorecase|core.precomposeunicode|\
+                remote.origin.url|remote.origin.fetch)
+                    ;;
+                *)
+                    echo "prepare-homebrew-bootstrap-source: $label has unsupported local Git configuration: $key" >&2
+                    exit 2
+                    ;;
+            esac
+        done <<<"$config_keys"
+    fi
+}
+
+if [ -n "$SOURCE_CHECKOUT" ]; then
+    if [ ! -d "$SOURCE_CHECKOUT" ] || [ -L "$SOURCE_CHECKOUT" ]; then
+        echo "prepare-homebrew-bootstrap-source: --source-checkout is not a real Git worktree: $SOURCE_CHECKOUT" >&2
+        exit 2
+    fi
+    SOURCE_CHECKOUT="$(cd "$SOURCE_CHECKOUT" && pwd -P)"
+    if [ "$(isolated_git -C "$SOURCE_CHECKOUT" rev-parse --is-inside-work-tree 2>/dev/null || true)" != "true" ]; then
+        echo "prepare-homebrew-bootstrap-source: --source-checkout is not a Git worktree: $SOURCE_CHECKOUT" >&2
+        exit 2
+    fi
+    verify_local_git_config "source checkout" -C "$SOURCE_CHECKOUT"
+    SOURCE_REVISION="$(isolated_git -C "$SOURCE_CHECKOUT" rev-parse 'HEAD^{commit}')"
+    if [ "$SOURCE_REVISION" != "$REVISION" ]; then
+        echo "prepare-homebrew-bootstrap-source: source checkout HEAD $SOURCE_REVISION does not match $REVISION" >&2
+        exit 1
+    fi
+    SOURCE_STATUS="$(
+        isolated_git -C "$SOURCE_CHECKOUT" status \
+            --porcelain=v1 --untracked-files=all --ignored=matching
+    )"
+    if [ -n "$SOURCE_STATUS" ]; then
+        echo "prepare-homebrew-bootstrap-source: source checkout is dirty" >&2
+        printf '%s\n' "$SOURCE_STATUS" >&2
+        exit 1
+    fi
+fi
+
+ACTUAL_PATCH_SHA256="$(sha256_file "$PATCH_FILE")"
 if [ "$ACTUAL_PATCH_SHA256" != "$EXPECTED_PATCH_SHA256" ]; then
     echo "prepare-homebrew-bootstrap-source: patch sha256 $ACTUAL_PATCH_SHA256 does not match reviewed $EXPECTED_PATCH_SHA256" >&2
     exit 1
 fi
 
 if [ ! -d "$GIT_DIR" ]; then
-    git init --bare -q "$GIT_DIR"
+    isolated_git init --bare -q --template="$GIT_TEMPLATE_DIR_PRIVATE" "$GIT_DIR"
 fi
-if ! IS_BARE_REPOSITORY="$(git --git-dir="$GIT_DIR" rev-parse --is-bare-repository 2>/dev/null)"; then
+verify_local_git_config "bare object store" --git-dir="$GIT_DIR"
+if ! IS_BARE_REPOSITORY="$(isolated_git --git-dir="$GIT_DIR" rev-parse --is-bare-repository 2>/dev/null)"; then
     IS_BARE_REPOSITORY=""
 fi
 if [ "$IS_BARE_REPOSITORY" != "true" ]; then
     echo "prepare-homebrew-bootstrap-source: --git-dir is not a bare Git repository: $GIT_DIR" >&2
     exit 2
 fi
-if git --git-dir="$GIT_DIR" remote get-url origin >/dev/null 2>&1; then
-    git --git-dir="$GIT_DIR" remote set-url origin "$REPOSITORY"
+
+git_store() {
+    command git "${GIT_ISOLATION_ARGS[@]}" --git-dir="$GIT_DIR" "$@"
+}
+
+if [ -z "$SOURCE_CHECKOUT" ]; then
+    if git_store remote get-url origin >/dev/null 2>&1; then
+        git_store remote set-url origin "$REPOSITORY"
+    else
+        git_store remote add origin "$REPOSITORY"
+    fi
+    echo "==> Fetching Homebrew $REVISION"
+    git_store fetch -q --no-tags --depth=1 origin "$REVISION"
+    RESOLVED_REVISION="$(git_store rev-parse 'FETCH_HEAD^{commit}')"
 else
-    git --git-dir="$GIT_DIR" remote add origin "$REPOSITORY"
+    # Package builds import the exact revision from the resolver's sealed local
+    # checkout without reaching the network or mutating that checkout. Before
+    # this local upload-pack runs, global/system/injected configuration is
+    # disabled and every source-local key outside the inert structural
+    # allowlist above is rejected, including hooks, fsmonitor, credentials,
+    # upload-pack hooks, URL rewrites, and aliases.
+    echo "==> Importing Homebrew $REVISION from exact source checkout"
+    git_store fetch -q --no-tags --depth=1 "$SOURCE_CHECKOUT" "$REVISION"
+    RESOLVED_REVISION="$(git_store rev-parse 'FETCH_HEAD^{commit}')"
 fi
 
-echo "==> Fetching Homebrew $REVISION"
-git --git-dir="$GIT_DIR" fetch -q --depth=1 origin "$REVISION"
-RESOLVED_REVISION="$(git --git-dir="$GIT_DIR" rev-parse 'FETCH_HEAD^{commit}')"
 if [ "$RESOLVED_REVISION" != "$REVISION" ]; then
-    echo "prepare-homebrew-bootstrap-source: fetched $RESOLVED_REVISION, expected $REVISION" >&2
+    echo "prepare-homebrew-bootstrap-source: resolved $RESOLVED_REVISION, expected $REVISION" >&2
     exit 1
 fi
 
-INDEX_TMP="$GIT_DIR/kandelo-bootstrap-index.$$"
-ARCHIVE_TMP="$ARCHIVE.tmp.$$"
-ENV_TMP="$ENV_FILE.tmp.$$"
-PROVENANCE_TMP="$PROVENANCE.tmp.$$"
-cleanup() {
-    rm -f "$INDEX_TMP" "$ARCHIVE_TMP" "$ENV_TMP" "$PROVENANCE_TMP"
-}
-trap cleanup EXIT
-
-GIT_INDEX_FILE="$INDEX_TMP" git --git-dir="$GIT_DIR" read-tree "$REVISION"
-if ! GIT_INDEX_FILE="$INDEX_TMP" git --git-dir="$GIT_DIR" \
-    apply --cached --check --whitespace=nowarn "$PATCH_FILE"; then
+export GIT_INDEX_FILE="$INDEX_TMP"
+git_store read-tree "$REVISION"
+if ! git_store apply --cached --check --whitespace=nowarn "$PATCH_FILE"; then
     echo "prepare-homebrew-bootstrap-source: Kandelo patch does not apply to pinned Homebrew $REVISION" >&2
     exit 1
 fi
-GIT_INDEX_FILE="$INDEX_TMP" git --git-dir="$GIT_DIR" \
-    apply --cached --whitespace=nowarn "$PATCH_FILE"
+git_store apply --cached --whitespace=nowarn "$PATCH_FILE"
 
 mapfile -t CHANGED_PATHS < <(
-    GIT_INDEX_FILE="$INDEX_TMP" git --git-dir="$GIT_DIR" \
-        diff --cached --name-only "$REVISION" -- | LC_ALL=C sort
+    git_store diff --cached --name-only "$REVISION" -- | LC_ALL=C sort
 )
 EXPECTED_PATHS=(
     "Library/Homebrew/extend/os/mac/utils/bottles.rb"
@@ -171,14 +308,15 @@ if [ "${CHANGED_PATHS[*]}" != "${EXPECTED_PATHS[*]}" ]; then
     exit 1
 fi
 
-UPSTREAM_TREE="$(git --git-dir="$GIT_DIR" rev-parse "$REVISION^{tree}")"
-PATCHED_TREE="$(GIT_INDEX_FILE="$INDEX_TMP" git --git-dir="$GIT_DIR" write-tree)"
+UPSTREAM_TREE="$(git_store rev-parse "$REVISION^{tree}")"
+PATCHED_TREE="$(git_store write-tree)"
+unset GIT_INDEX_FILE
 if [ "$PATCHED_TREE" = "$UPSTREAM_TREE" ]; then
     echo "prepare-homebrew-bootstrap-source: patch produced the unmodified upstream tree" >&2
     exit 1
 fi
 
-UPSTREAM_COMMIT_TIME="$(git --git-dir="$GIT_DIR" show -s --format=%ct "$REVISION")"
+UPSTREAM_COMMIT_TIME="$(git_store show -s --format=%ct "$REVISION")"
 if ! [[ "$UPSTREAM_COMMIT_TIME" =~ ^[1-9][0-9]*$ ]]; then
     echo "prepare-homebrew-bootstrap-source: upstream commit has an invalid timestamp" >&2
     exit 1
@@ -187,11 +325,11 @@ fi
 # A fixed mtime makes both serializations reproducible. The normalized tar
 # digest is a second provenance identity for the patched Git tree used by the ZIP.
 PATCHED_TREE_SHA256="$({
-    TZ=UTC git --git-dir="$GIT_DIR" archive --format=tar --mtime="@$UPSTREAM_COMMIT_TIME" "$PATCHED_TREE"
-} | sha256sum | awk '{print $1}')"
-TZ=UTC git --git-dir="$GIT_DIR" archive --format=zip --mtime="@$UPSTREAM_COMMIT_TIME" \
+    TZ=UTC git_store archive --format=tar --mtime="@$UPSTREAM_COMMIT_TIME" "$PATCHED_TREE"
+} | sha256_stdin)"
+TZ=UTC git_store archive --format=zip --mtime="@$UPSTREAM_COMMIT_TIME" \
     -o "$ARCHIVE_TMP" "$PATCHED_TREE"
-ARCHIVE_SHA256="$(sha256sum "$ARCHIVE_TMP" | awk '{print $1}')"
+ARCHIVE_SHA256="$(sha256_file "$ARCHIVE_TMP")"
 
 BOTTLE_TAG="${ARCH}_kandelo"
 cat >"$ENV_TMP" <<EOF

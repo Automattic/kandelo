@@ -80,13 +80,12 @@ async function main() {
   memory.grow(MAX_PAGES - 17);
   new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-  const pid = 1;
-  kernelWorker.registerProcess(pid, memory, [channelOffset], { stdio: CAPTURED_STDIO });
+  const pid = kernelWorker.createProcess(CAPTURED_STDIO);
+  kernelWorker.registerProcess(pid, memory, [channelOffset]);
 
   const initData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
     pid,
-    ppid: 0,
     programBytes,
     memory,
     channelOffset,

@@ -4,7 +4,9 @@
  * and per-service config files into the image alongside the demo's
  * binaries and content.
  *
- * The browser demo fetches the resulting .vfs and boots dinit as PID 1.
+ * The browser demo fetches the resulting .vfs and boots dinit as the first
+ * user process (normally PID 100). PID 1 is a kernel-reserved synthetic
+ * process record, not the dinit worker.
  * In container mode, pass a long-running target service such as `nginx`
  * (for example `["/sbin/dinit", "--container", "nginx"]`). The generated
  * `boot` service is only a dependency aggregator; as an initial container

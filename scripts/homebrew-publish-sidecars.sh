@@ -23,6 +23,7 @@ STATUS=""
 ERROR_TEXT=""
 ERROR_DETAIL_FILE=""
 KANDELO_COMMIT=""
+EXACT_KANDELO_MAIN_SHA=""
 TAP_COMMIT=""
 REASON_TEXT=""
 ROLLBACK_REF=""
@@ -41,7 +42,7 @@ COMPOSED_FORMULAE=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-publish-sidecars.sh --tap-root <tap-root> [--tap-repository <owner/repo>] [--tap-name <owner/name>] --release-tag <tag> --status <success|failed|rollback> [--kandelo-commit <sha>] [--tap-commit <sha>] [--publication <formula> <wasm32|wasm64> <handoff> ... | --formula <name> --arch <wasm32|wasm64> [--publication-handoff <dir> | --sidecar-root <dir>]] [--error <text>] [--error-detail-file <path>] [--reason <text>] [--rollback-ref <ref>] [--deleted-package-url <url> --deletion-reason <text>] [--repair-only] [--dry-run] [--no-lock]
+usage: scripts/homebrew-publish-sidecars.sh --tap-root <tap-root> [--tap-repository <owner/repo>] [--tap-name <owner/name>] --release-tag <tag> --status <success|failed|rollback> [--kandelo-commit <sha>] [--exact-kandelo-main-sha <sha>] [--tap-commit <sha>] [--publication <formula> <wasm32|wasm64> <handoff> ... | --formula <name> --arch <wasm32|wasm64> [--publication-handoff <dir> | --sidecar-root <dir>]] [--error <text>] [--error-detail-file <path>] [--reason <text>] [--rollback-ref <ref>] [--deleted-package-url <url> --deletion-reason <text>] [--repair-only] [--dry-run] [--no-lock]
 
 Success either composes one or more validated package-scoped --publication
 handoffs against refreshed tap state under one lock or publishes a generated
@@ -80,6 +81,7 @@ while [ "$#" -gt 0 ]; do
     --error) ERROR_TEXT="${2:-}"; shift 2 ;;
     --error-detail-file) ERROR_DETAIL_FILE="${2:-}"; shift 2 ;;
     --kandelo-commit) KANDELO_COMMIT="${2:-}"; shift 2 ;;
+    --exact-kandelo-main-sha) EXACT_KANDELO_MAIN_SHA="${2:-}"; shift 2 ;;
     --tap-commit) TAP_COMMIT="${2:-}"; shift 2 ;;
     --reason) REASON_TEXT="${2:-}"; shift 2 ;;
     --rollback-ref) ROLLBACK_REF="${2:-}"; shift 2 ;;
@@ -210,6 +212,16 @@ if ! [[ "$KANDELO_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
   echo "homebrew-publish-sidecars.sh: invalid Kandelo commit: $KANDELO_COMMIT" >&2
   exit 2
 fi
+if [ -n "$EXACT_KANDELO_MAIN_SHA" ] &&
+   ! [[ "$EXACT_KANDELO_MAIN_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "homebrew-publish-sidecars.sh: --exact-kandelo-main-sha must be an exact lowercase 40-character SHA" >&2
+  exit 2
+fi
+if [ -n "$EXACT_KANDELO_MAIN_SHA" ] &&
+   [ "$EXACT_KANDELO_MAIN_SHA" != "$KANDELO_COMMIT" ]; then
+  echo "homebrew-publish-sidecars.sh: exact-main authority must match the recorded Kandelo commit" >&2
+  exit 2
+fi
 if ! [[ "$TAP_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
   echo "homebrew-publish-sidecars.sh: invalid tap commit: $TAP_COMMIT" >&2
   exit 2
@@ -288,6 +300,16 @@ commit_and_push() {
       echo "homebrew-publish-sidecars.sh: tap publication branch changed after refresh" >&2
       exit 1
     fi
+    if [ -z "$EXACT_KANDELO_MAIN_SHA" ]; then
+      echo "homebrew-publish-sidecars.sh: --exact-kandelo-main-sha is required before a tap push" >&2
+      exit 2
+    fi
+    # WHY: composing and validating a complete tap update can take long enough
+    # for Kandelo main to advance. Only a fresh identity check at the push
+    # boundary prevents stale-source metadata from becoming canonical.
+    bash "$KANDELO_ROOT/.github/scripts/require-exact-kandelo-main.sh" \
+      --repository Automattic/kandelo \
+      --source-sha "$EXACT_KANDELO_MAIN_SHA" >/dev/null
     git -C "$TAP_ROOT" push origin "HEAD:refs/heads/$PUBLISH_BRANCH"
   fi
 }

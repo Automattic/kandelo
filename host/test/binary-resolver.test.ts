@@ -420,6 +420,76 @@ describe("program package source freshness boundary", () => {
     ).toThrow("injected stale program projection");
   });
 
+  it("uses one prepared checker across every public resolver boundary without host tools", () => {
+    const relPath = fixtureRelPath(".dat");
+    const path = writeCandidate(
+      localBinariesDir(),
+      relPath,
+      new TextEncoder().encode("program data"),
+    );
+    const checkerRoot = mkdtempSync(
+      join(tmpdir(), "kandelo-resolver-prepared-checker-"),
+    );
+    cleanupDirs.add(checkerRoot);
+    const checkerPath = join(checkerRoot, "xtask");
+    const checkerLog = join(checkerRoot, "calls");
+    writeFileSync(
+      checkerPath,
+      `#!/bin/sh
+[ "$#" = 4 ]
+[ "$1" = build-deps ]
+[ "$2" = program-index-context-check ]
+[ "$3" = --source-repo-root ]
+[ "$4" = "${realpathSync(findRepoRoot())}" ]
+[ "$WASM_POSIX_DEPS_REGISTRY" = "${fixtureRegistryRoot}" ]
+printf 'checked\\n' >>"${checkerLog}"
+`,
+    );
+    chmodSync(checkerPath, 0o755);
+    const savedXtask = process.env.WASM_POSIX_XTASK_BIN;
+    const hadSavedXtask = Object.prototype.hasOwnProperty.call(
+      process.env,
+      "WASM_POSIX_XTASK_BIN",
+    );
+    const savedPath = process.env.PATH;
+    const hadSavedPath = Object.prototype.hasOwnProperty.call(
+      process.env,
+      "PATH",
+    );
+    process.env.WASM_POSIX_XTASK_BIN = checkerPath;
+    // WHY: an empty PATH makes this the same least-authority environment as
+    // Formula tests: the explicit checker must work without finding Bash,
+    // Cargo, rustc, Nix, or scripts/dev-shell.sh.
+    process.env.PATH = "";
+    setProgramIndexContextCheckerForTests(null);
+    try {
+      expect(programOutputClosureRelPaths(relPath)).toBeNull();
+      expect(resolveBinary(relPath)).toBe(path);
+      expect(tryResolveBinary(relPath)).toBe(path);
+      expect(tryResolveBinaries([relPath])).toEqual([path]);
+      expect(tryResolveBinarySet([relPath])).toEqual([path]);
+      expect(readFileSync(checkerLog, "utf8").trim().split("\n")).toEqual([
+        "checked",
+        "checked",
+        "checked",
+        "checked",
+        "checked",
+      ]);
+    } finally {
+      if (hadSavedXtask) {
+        process.env.WASM_POSIX_XTASK_BIN = savedXtask ?? "";
+      } else {
+        delete process.env.WASM_POSIX_XTASK_BIN;
+      }
+      if (hadSavedPath) {
+        process.env.PATH = savedPath ?? "";
+      } else {
+        delete process.env.PATH;
+      }
+      setProgramIndexContextCheckerForTests(() => {});
+    }
+  });
+
   it("executes the production checker command and fails closed on its error", () => {
     const checkerRoot = mkdtempSync(
       join(tmpdir(), "kandelo-resolver-checker-command-"),
@@ -429,7 +499,8 @@ describe("program package source freshness boundary", () => {
     writeFileSync(
       checkerPath,
       `#!/bin/sh
-printf 'checker args: %s %s\\nregistry: %s\\n' "$1" "$2" "$WASM_POSIX_DEPS_REGISTRY" >&2
+printf 'checker args: %s\\n' "$*" >&2
+printf 'registry: %s\\n' "$WASM_POSIX_DEPS_REGISTRY" >&2
 exit 23
 `,
     );
@@ -442,12 +513,21 @@ exit 23
     process.env.WASM_POSIX_XTASK_BIN = checkerPath;
     setProgramIndexContextCheckerForTests(null);
     try {
+      const sourceRepoRootPattern = realpathSync(findRepoRoot()).replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&",
+      );
       expect(() =>
         programOutputClosureRelPaths(
           "programs/wasm32/production-check/production-check.wasm",
         )
       ).toThrow(
-        /program-index-context-check failed with status 23[\s\S]*checker args: build-deps program-index-context-check/,
+        new RegExp(
+          "program-index-context-check --source-repo-root "
+            + `${sourceRepoRootPattern} failed with status 23[\\s\\S]*`
+            + "checker args: build-deps program-index-context-check "
+            + `--source-repo-root ${sourceRepoRootPattern}`,
+        ),
       );
     } finally {
       if (hadSavedXtask) {
@@ -2148,6 +2228,16 @@ guest_path = '/usr/share/runtime.dat'
       packer,
     );
     chmodSync(packer, 0o755);
+    const portableStager = join(
+      sourceRepo,
+      "scripts",
+      "stage-portable-resolver-binaries.sh",
+    );
+    copyFileSync(
+      join(actualRepo, "scripts", "stage-portable-resolver-binaries.sh"),
+      portableStager,
+    );
+    chmodSync(portableStager, 0o755);
 
     const fakeBin = join(sourceRepo, "fixture-bin");
     mkdirSync(fakeBin, { recursive: true });

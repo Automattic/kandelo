@@ -124,6 +124,7 @@ function createFileHarness() {
     io,
     kernel,
     processes,
+    channelTids: new Map(),
     sharedMappings: new Map(),
     anonymousSharedBackings: new Map(),
     sharedMmapBackings: new Map(),
@@ -823,7 +824,6 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     Object.assign(h.kw as any, {
       callbacks: { onFork: vi.fn() },
       kernelInstance: { exports: { kernel_fork_process: kernelForkProcess } },
-      nextChildPid: 100,
     });
 
     expect(() => (h.kw as any).handleFork(channel, [])).toThrow(

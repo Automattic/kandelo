@@ -1,21 +1,15 @@
 name: Force rebuild
 
-# Manually-triggered escape hatch for refreshing the durable binaries
-# release. Drives the same per-package matrix flow as prepare-merge.yml
-# (preflight + toolchain-cache + matrix-build + test-gate), with one
-# adjustment: the named packages BYPASS preflight's "already-published"
-# skip-check. Use this when the cache_key composition is suspected
-# incomplete (e.g., a toolchain pin was bumped without invalidating
-# package archives) and you want to confirm the published archives match
-# a fresh source build.
+# Maintainer-triggered exact-main producer for the durable binaries release.
+# It source-builds the requested root closure after those sources land on main;
+# PR and synthetic-merge artifacts are never promoted through this path.
 #
 # Flow (see docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md):
 #   * targets the undated `binaries-abi-v<N>` tag (per-archive uploads),
-#   * forces the listed packages back into the matrix even when their
-#     cache_key_sha is already published (preflight's skip-check is
-#     suppressed for them),
-#   * builds each `(package, arch)` pair in parallel via `xtask
-#     archive-stage`,
+#   * expands listed roots to their complete buildable dependency closure,
+#   * partitions that closure into explicit topological levels,
+#   * builds each level in parallel while requiring every dependency edge to
+#     consume the prior level's same-run exact-main archive,
 #   * each matrix entry publishes its archive AND updates
 #     index.toml atomically via scripts/index-update.sh under the
 #     workflow-level state-lock subject for the target tag, then
@@ -28,21 +22,19 @@ name: Force rebuild
 # Inputs (rendered in the GitHub Actions "Run workflow" modal):
 #   packages       — `all` (default) or a comma-separated list of
 #                    package.toml names (e.g. `php,mariadb`). `all`
-#                    forces every library + program manifest in the
-#                    registry into the build matrix; a list narrows it.
-#                    All listed packages bypass D3 (the "already
-#                    published" skip-check); unlisted packages still go
-#                    through the normal cache_key_sha gate.
+#                    selects every library + program manifest; a list
+#                    selects those roots plus their transitive buildable
+#                    dependencies.
 #   arches         — comma-separated subset of `wasm32,wasm64`
-#                    (default: both). Manifests whose `target_arches`
-#                    don't include a requested arch are silently
-#                    skipped.
-#   ref            — git ref to build from. Defaults to the branch the
-#                    workflow was triggered from (`github.ref_name`),
-#                    so dispatching from a PR branch tests the PR's
-#                    sources rather than silently building `main`. Set
-#                    to a specific tag/sha for a one-shot rebuild from
-#                    history.
+#                    (default: both) for selected roots. Dependency arch
+#                    fallback remains graph-owned (for example a wasm64
+#                    root may require a wasm32-only dependency).
+#   ref            — optional exact lowercase SHA of the current
+#                    `refs/heads/main` commit. Empty uses the workflow
+#                    dispatch SHA. Branches, tags, pull-request refs,
+#                    ancestors, descendants, and equal-tree commits are
+#                    rejected because this workflow mutates the canonical
+#                    `binaries-abi-v<N>` release.
 #   skip_tests     — when true, publishes without running the test
 #                    suites. Defaults to false (tests must pass before
 #                    publish). workflow_dispatch is maintainer-only,
@@ -63,7 +55,7 @@ on:
   workflow_dispatch:
     inputs:
       packages:
-        description: 'Comma-separated package names, or `all`. Names match package.toml entries (e.g. php,mariadb). Listed packages bypass the cache-skip check.'
+        description: 'Comma-separated root package names, or `all`. The exact-main build includes their transitive buildable dependencies.'
         required: false
         default: 'all'
         type: string
@@ -73,7 +65,7 @@ on:
         default: 'wasm32,wasm64'
         type: string
       ref:
-        description: 'Git ref to build from. Empty = the branch the workflow was triggered from.'
+        description: 'Optional exact lowercase SHA of the current main commit. Empty uses the workflow dispatch SHA; other refs are rejected.'
         required: false
         default: ''
         type: string
@@ -102,7 +94,7 @@ jobs:
       actions: read
       contents: read
     outputs:
-      build_ref: ${{ steps.resolve.outputs.build_ref }}
+      source_sha: ${{ steps.resolve.outputs.source_sha }}
     steps:
       - name: Resolve inputs + validate
         id: resolve
@@ -110,15 +102,44 @@ jobs:
           INPUT_PACKAGES: ${{ inputs.packages }}
           INPUT_ARCHES: ${{ inputs.arches }}
           INPUT_REF: ${{ inputs.ref }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          # Resolve ref: explicit input wins, else the dispatching ref.
-          BUILD_REF="${INPUT_REF}"
-          if [ -z "$BUILD_REF" ]; then
-            BUILD_REF="${{ github.ref_name }}"
-          fi
-          echo "build_ref=$BUILD_REF" >> "$GITHUB_OUTPUT"
+          [ "${{ github.repository }}" = "Automattic/kandelo" ] || {
+            echo "::error::canonical package rebuilds require Automattic/kandelo"
+            exit 1
+          }
+          [ "${{ github.ref }}" = "refs/heads/main" ] || {
+            echo "::error::canonical package rebuilds must be dispatched from refs/heads/main"
+            exit 1
+          }
+          [ "${{ github.workflow_ref }}" = "Automattic/kandelo/.github/workflows/force-rebuild.yml@refs/heads/main" ] || {
+            echo "::error::canonical package rebuilds require the reviewed workflow on main"
+            exit 1
+          }
+
+          SOURCE_SHA="${INPUT_REF:-${{ github.sha }}}"
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::ref must be empty or the exact lowercase 40-character main SHA"
+            exit 1
+          }
+          [ "$SOURCE_SHA" = "${{ github.sha }}" ] || {
+            echo "::error::ref must equal the workflow dispatch commit"
+            exit 1
+          }
+          main_sha="$(gh api /repos/Automattic/kandelo/git/ref/heads/main --jq .object.sha)"
+          [[ "$main_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::refs/heads/main returned a noncanonical commit identity"
+            exit 1
+          }
+          # WHY: graph reachability and equal trees do not prove that these
+          # exact archive bytes were built after their source landed.
+          [ "$SOURCE_SHA" = "$main_sha" ] || {
+            echo "::error::canonical package rebuild source must equal the live refs/heads/main commit"
+            exit 1
+          }
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
           # Validate `packages`: non-empty.
           if [ -z "$INPUT_PACKAGES" ]; then
@@ -141,38 +162,44 @@ jobs:
             esac
           done
 
-          echo "force-rebuild gate ok: ref=$BUILD_REF packages=$INPUT_PACKAGES arches=$INPUT_ARCHES skip_tests=${{ inputs.skip_tests }} bump_packages=${{ inputs.bump_packages }}"
+          echo "force-rebuild gate ok: source_sha=$SOURCE_SHA packages=$INPUT_PACKAGES arches=$INPUT_ARCHES skip_tests=${{ inputs.skip_tests }} bump_packages=${{ inputs.bump_packages }}"
 
   # ---------------------------------------------------------------------
   # Per-package matrix flow.
   #
-  # Mirrors prepare-merge.yml's preflight + toolchain-cache +
-  # matrix-build + test-gate, with one adjustment: preflight reads
-  # `INPUT_PACKAGES` and force-includes listed packages in the
-  # matrix even if their cache_key_sha is already published. This is
-  # the D3 bypass. Each matrix-build job publishes its own archive +
-  # index entry atomically via `scripts/index-update.sh`.
-  #
-  # A future cleanup PR can extract this shape into a reusable
-  # `workflow_call` workflow shared between staging-build, prepare-merge,
-  # and force-rebuild. For the Phase C cutover we deliberately copy-paste
-  # to keep the diff localized.
+  # Preflight computes the selected closure once. Fixed workflow jobs consume
+  # its bounded dependency levels through one shared composite action, avoiding
+  # both source duplication and scheduler-order assumptions.
   # ---------------------------------------------------------------------
 
   preflight:
     needs: [gate]
     runs-on: ubuntu-latest
     permissions:
-      contents: read           # gh release view (target tag probe)
+      contents: read
     outputs:
-      library_matrix: ${{ steps.compute.outputs.library_matrix }}
-      program_matrix: ${{ steps.compute.outputs.program_matrix }}
+      package_matrix: ${{ steps.compute.outputs.package_matrix }}
+      level_0_matrix: ${{ steps.compute.outputs.level_0_matrix }}
+      level_1_matrix: ${{ steps.compute.outputs.level_1_matrix }}
+      level_2_matrix: ${{ steps.compute.outputs.level_2_matrix }}
+      level_3_matrix: ${{ steps.compute.outputs.level_3_matrix }}
+      level_4_matrix: ${{ steps.compute.outputs.level_4_matrix }}
+      level_5_matrix: ${{ steps.compute.outputs.level_5_matrix }}
+      level_6_matrix: ${{ steps.compute.outputs.level_6_matrix }}
+      level_7_matrix: ${{ steps.compute.outputs.level_7_matrix }}
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.gate.outputs.build_ref }}
+          ref: ${{ needs.gate.outputs.source_sha }}
+
+      - name: Verify exact-main preflight source
+        run: |
+          [ "$(git rev-parse HEAD)" = "${{ needs.gate.outputs.source_sha }}" ] || {
+            echo "::error::preflight checkout differs from the admitted main commit"
+            exit 1
+          }
 
       - name: Fetch musl submodule
         # Hardened submodule fetch via the reusable action (PR #435).
@@ -208,7 +235,7 @@ jobs:
             cargo build --release -p xtask --target "$HOST_TARGET"
           '
 
-      - name: Compute matrix (with D3 bypass for force-rebuild list)
+      - name: Compute exact-main dependency closure
         id: compute
         env:
           GH_TOKEN: ${{ github.token }}
@@ -228,42 +255,8 @@ jobs:
             TARGET_TAG="binaries-abi-v${ABI}"
             echo "target_tag=$TARGET_TAG" >> "$GITHUB_OUTPUT"
 
-            # Build a comma-list of package names whose skip-check is
-            # bypassed. `all` means every package; a name list narrows.
-            FORCE_ALL=0
-            FORCE_LIST=""
-            if [ "$INPUT_PACKAGES" = "all" ]; then
-              FORCE_ALL=1
-            else
-              # Normalise (strip whitespace, drop empties).
-              IFS="," read -ra _names <<< "$INPUT_PACKAGES"
-              for n in "${_names[@]}"; do
-                n="${n#"${n%%[![:space:]]*}"}"
-                n="${n%"${n##*[![:space:]]}"}"
-                [ -n "$n" ] && FORCE_LIST="$FORCE_LIST,$n,"
-              done
-            fi
-            echo "force-rebuild bypass: all=$FORCE_ALL list=$FORCE_LIST"
-
-            # Restrict arches per the workflow input. Empty input
-            # (already rejected by gate) would mean "no arches"; a
-            # well-formed input is a comma list of wasm32/wasm64.
-            ARCH_FILTER=""
-            IFS="," read -ra _arches <<< "$INPUT_ARCHES"
-            for a in "${_arches[@]}"; do
-              a="${a#"${a%%[![:space:]]*}"}"
-              a="${a%"${a##*[![:space:]]}"}"
-              [ -n "$a" ] && ARCH_FILTER="$ARCH_FILTER,$a,"
-            done
-
-            existing_assets=$(gh release view "$TARGET_TAG" --repo "${{ github.repository }}" --json assets --jq "[.assets[].name]" 2>/dev/null || echo "[]")
-            echo "existing-assets:"
-            echo "$existing_assets" | jq -r ".[0:20][]"
-            echo "..."
-
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            library_matrix="[]"
-            program_matrix="[]"
+            all_matrix="[]"
 
             for pkg_dir in packages/registry/*/; do
               pkg=$(basename "$pkg_dir")
@@ -277,14 +270,6 @@ jobs:
                 *) echo "preflight: skipping $pkg (kind=$kind)" >&2; continue ;;
               esac
 
-              if [ "$FORCE_ALL" = "1" ]; then
-                bypass=1
-              elif [ -n "$FORCE_LIST" ] && echo "$FORCE_LIST" | grep -q ",${pkg},"; then
-                bypass=1
-              else
-                bypass=0
-              fi
-
               # Version + revision for the per-matrix-entry
               # scripts/index-update.sh invocation downstream.
               version=$(sed -nE "s/^version *= *\"([^\"]+)\".*/\\1/p" "$pkg_dir/package.toml" | head -1)
@@ -296,50 +281,43 @@ jobs:
               arches=$(awk -F'"'"'[][]'"'"' '"'"'/^arches *=/ {print $2}'"'"' "$pkg_dir/package.toml" | tr -d '"'"' "'"'"' | tr '"'"','"'"' '"'"' '"'"')
               arches=${arches:-wasm32}
               for arch in $arches; do
-                if ! echo "$ARCH_FILTER" | grep -q ",${arch},"; then
-                  continue
-                fi
-
                 sha=$(cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
                   compute-cache-key-sha --package "$pkg_dir" --arch "$arch" 2>/dev/null) || {
                   echo "preflight: skipping $pkg/$arch (compute-cache-key-sha failed)" >&2
                   continue
                 }
                 short=${sha:0:8}
-                prefix="${pkg}-"
-                suffix="-abi${ABI}-${arch}-${short}.tar.zst"
-
-                if [ "$bypass" = "1" ]; then
-                  echo "preflight: FORCE $pkg/$arch (sha $short, bypass=on)"
-                elif echo "$existing_assets" | jq -e --arg pre "$prefix" --arg suf "$suffix" \
-                    "any(.[]; startswith(\$pre) and endswith(\$suf))" >/dev/null; then
-                  echo "preflight: skip $pkg/$arch (sha $short already published, not in force list)"
-                  continue
-                fi
+                echo "preflight: candidate $pkg/$arch (sha $short)"
                 entry=$(jq -nc --arg pkg "$pkg" --arg arch "$arch" --arg sha "$sha" \
                                 --arg ver "$version" --argjson rev "$revision" \
                   "{package: \$pkg, arch: \$arch, sha: \$sha, version: \$ver, revision: \$rev}")
-                if [ "$kind" = "library" ]; then
-                  library_matrix=$(echo "$library_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
-                else
-                  program_matrix=$(echo "$program_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
-                fi
+                all_matrix=$(echo "$all_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
               done
             done
 
-            program_matrix_file=$(mktemp)
-            printf "%s" "$program_matrix" > "$program_matrix_file"
-            program_matrix=$(cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              sort-package-matrix \
+            all_matrix_file=$(mktemp)
+            printf "%s" "$all_matrix" > "$all_matrix_file"
+            levels=$(cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+              partition-package-matrix \
                 --registry packages/registry \
-                --matrix "$program_matrix_file")
-            rm -f "$program_matrix_file"
+                --matrix "$all_matrix_file" \
+                --roots "$INPUT_PACKAGES" \
+                --root-arches "$INPUT_ARCHES")
+            rm -f "$all_matrix_file"
 
-            echo "library_matrix=$library_matrix" >> "$GITHUB_OUTPUT"
-            echo "program_matrix=$program_matrix" >> "$GITHUB_OUTPUT"
-            echo "preflight: library=$(echo "$library_matrix" | jq length) program=$(echo "$program_matrix" | jq length)"
-            echo "library_matrix:"; echo "$library_matrix" | jq .
-            echo "program_matrix:"; echo "$program_matrix" | jq .
+            level_count=$(jq length <<<"$levels")
+            if [ "$level_count" -gt 8 ]; then
+              echo "::error::selected package closure requires $level_count dependency levels; workflow supports 8"
+              exit 1
+            fi
+            package_matrix=$(jq -c "[.[] | .[]]" <<<"$levels")
+            echo "package_matrix=$package_matrix" >> "$GITHUB_OUTPUT"
+            for level in $(seq 0 7); do
+              matrix=$(jq -c ".[$level] // []" <<<"$levels")
+              echo "level_${level}_matrix=$matrix" >> "$GITHUB_OUTPUT"
+              echo "preflight: level $level has $(jq length <<<"$matrix") packages"
+              jq . <<<"$matrix"
+            done
           '
 
   toolchain-cache:
@@ -348,7 +326,14 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.gate.outputs.build_ref }}
+          ref: ${{ needs.gate.outputs.source_sha }}
+
+      - name: Verify exact-main toolchain source
+        run: |
+          [ "$(git rev-parse HEAD)" = "${{ needs.gate.outputs.source_sha }}" ] || {
+            echo "::error::toolchain checkout differs from the admitted main commit"
+            exit 1
+          }
 
       - name: Fetch musl submodule
         run: |
@@ -362,11 +347,11 @@ jobs:
         run: bash scripts/dev-shell.sh bash scripts/check-libcxx-toolchain-version.sh
 
       - name: Compute cache key
-        # Mirrors `prepare-merge.yml` / `staging-build.yml`'s formula
-        # exactly so a hit on either workflow's cache warms this one.
+        # WHY: a cache-equivalent libcxx built at an older commit is valid for
+        # ordinary consumers but cannot substantiate an exact-main closure.
         id: key
         run: |
-          KEY="musl-sysroot-v4-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'packages/registry/libcxx/**', 'libc/musl-overlay/**', 'libc/glue/**') }}"
+          KEY="exact-main-sysroot-v1-${{ runner.os }}-${{ needs.gate.outputs.source_sha }}-${{ hashFiles('scripts/build-musl.sh', 'packages/registry/libcxx/**', 'libc/musl-overlay/**', 'libc/glue/**') }}"
           echo "value=$KEY" >> "$GITHUB_OUTPUT"
           echo "toolchain-cache key: $KEY"
 
@@ -389,15 +374,15 @@ jobs:
             HOST_TARGET="$(rustc -vV | awk "/^host/ {print \$2}")"
             for arch in wasm32 wasm64; do
               cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
-                build-deps resolve libcxx --arch "$arch"
+                build-deps resolve libcxx --arch "$arch" --force-source-build
               prefix="$(cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
                 build-deps path libcxx --arch "$arch")"
               if [ "$arch" = "wasm64" ]; then sysroot="sysroot64"; else sysroot="sysroot"; fi
               mkdir -p "$sysroot/lib" "$sysroot/include/c++"
-              ln -sf "$prefix/lib/libc++.a"    "$sysroot/lib/libc++.a"
-              ln -sf "$prefix/lib/libc++abi.a" "$sysroot/lib/libc++abi.a"
+              install -m 0644 "$prefix/lib/libc++.a" "$sysroot/lib/libc++.a"
+              install -m 0644 "$prefix/lib/libc++abi.a" "$sysroot/lib/libc++abi.a"
               rm -rf "$sysroot/include/c++/v1"
-              ln -sfn "$prefix/include/c++/v1" "$sysroot/include/c++/v1"
+              cp -a "$prefix/include/c++/v1" "$sysroot/include/c++/v1"
             done
           '
 
@@ -417,349 +402,279 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  # Library wave — kind=library packages. See staging-build.yml.
-  lib-matrix-build:
+  # GitHub does not promise matrix scheduling order. Split the selected graph
+  # into explicit topological levels so a runner-concurrency cap cannot start
+  # dependents that occupy every slot while their producers remain queued.
+  # Members within one level retain full concurrency.
+  matrix-build-level-0:
     needs: [gate, preflight, toolchain-cache]
-    if: needs.preflight.outputs.library_matrix != '[]'
+    if: needs.preflight.outputs.level_0_matrix != '[]'
     runs-on: ubuntu-latest
     permissions:
-      actions: read      # verify a previous state-lock owner is terminal
-      contents: write    # state-lock git push + gh release create/upload
+      actions: read
+      contents: write
     env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
       WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
     strategy:
       fail-fast: false
       max-parallel: 10
       matrix:
-        include: ${{ fromJSON(needs.preflight.outputs.library_matrix) }}
+        include: ${{ fromJSON(needs.preflight.outputs.level_0_matrix) }}
     steps:
-      - id: checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.gate.outputs.build_ref }}
-
-      - name: Compute commit-bound build provenance
-        id: provenance
-        run: |
-          ts=$(git log -1 --format=%aI HEAD)
-          echo "build-timestamp=$ts" >> "$GITHUB_OUTPUT"
-          echo "build-host=${{ github.repository }}@${{ github.sha }}" >> "$GITHUB_OUTPUT"
-
-      - name: Fetch musl submodule
-        uses: ./.github/actions/fetch-submodules
+          ref: ${{ needs.gate.outputs.source_sha }}
+      - uses: ./.github/actions/exact-main-package-rebuild
         with:
-          submodules: libc/musl
+          source-sha: ${{ needs.gate.outputs.source_sha }}
+          target-tag: ${{ needs.preflight.outputs.target_tag }}
+          package-matrix: ${{ needs.preflight.outputs.package_matrix }}
+          package: ${{ matrix.package }}
+          arch: ${{ matrix.arch }}
+          cache-key-sha: ${{ matrix.sha }}
+          version: ${{ matrix.version }}
+          revision: ${{ matrix.revision }}
 
-      - name: Set up Nix
-        uses: ./.github/actions/setup-nix
-
-      - name: Download toolchain sysroots artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: toolchain-sysroots
-          path: ${{ runner.temp }}/toolchain
-
-      - name: Extract toolchain sysroots
-        run: |
-          tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
-
-      - name: Install host npm deps (build prereq)
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-            cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-          '
-
-      - name: Build ${{ matrix.package }} (${{ matrix.arch }})
-        id: build
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              archive-stage \
-                --package "packages/registry/${{ matrix.package }}" \
-                --arch "${{ matrix.arch }}" \
-                --out "$RUNNER_TEMP/staged" \
-                --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
-                --build-host "${{ steps.provenance.outputs.build-host }}" \
-                --binaries-dir "$(pwd)/binaries" \
-                --expected-cache-key-sha "${{ matrix.sha }}"
-          '
-          archive_path=$(find "$RUNNER_TEMP/staged" -name '*.tar.zst' -print -quit)
-          archive_name=$(basename "$archive_path")
-          echo "archive-path=$archive_path" >> "$GITHUB_OUTPUT"
-          echo "archive-name=$archive_name" >> "$GITHUB_OUTPUT"
-
-      - name: Upload archive as workflow artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ${{ matrix.package }}-${{ matrix.arch }}
-          path: ${{ runner.temp }}/staged/*.tar.zst
-          retention-days: 7
-          if-no-files-found: error
-
-      # Atomic per-matrix-entry publish. See prepare-merge.yml /
-      # staging-build.yml for the rationale; force-rebuild reuses the
-      # same scripts/index-update.sh entry point and per-tag
-      # state-lock subjects.
-      - name: Publish archive + index entry
-        if: success()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          bash scripts/index-update.sh \
-            --target-tag "${{ needs.preflight.outputs.target_tag }}" \
-            --package "${{ matrix.package }}" \
-            --version "${{ matrix.version }}" \
-            --revision "${{ matrix.revision }}" \
-            --arch "${{ matrix.arch }}" \
-            --status success \
-            --archive-path "${{ steps.build.outputs.archive-path }}" \
-            --archive-name "${{ steps.build.outputs.archive-name }}" \
-            --cache-key-sha "${{ matrix.sha }}"
-
-      - name: Record failed build in index
-        if: ${{ failure() && steps.checkout.outcome == 'success' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          bash scripts/index-update.sh \
-            --target-tag "${{ needs.preflight.outputs.target_tag }}" \
-            --package "${{ matrix.package }}" \
-            --version "${{ matrix.version }}" \
-            --revision "${{ matrix.revision }}" \
-            --arch "${{ matrix.arch }}" \
-            --status failed \
-            --error "matrix-build failed; see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            || true
-
-  # Program wave — kind=program packages, gated on the library wave.
-  matrix-build:
-    needs: [gate, preflight, toolchain-cache, lib-matrix-build]
-    if: ${{ !cancelled() && needs.preflight.outputs.program_matrix != '[]' }}
+  matrix-build-level-1:
+    needs: [gate, preflight, toolchain-cache, matrix-build-level-0]
+    if: ${{ !cancelled() && needs.matrix-build-level-0.result == 'success' && needs.preflight.outputs.level_1_matrix != '[]' }}
     runs-on: ubuntu-latest
     permissions:
-      actions: read      # gh run download for selected program dependency artifacts
-      contents: write    # state-lock git push + gh release create/upload
+      actions: read
+      contents: write
     env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
       WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
     strategy:
       fail-fast: false
       max-parallel: 10
       matrix:
-        include: ${{ fromJSON(needs.preflight.outputs.program_matrix) }}
+        include: ${{ fromJSON(needs.preflight.outputs.level_1_matrix) }}
     steps:
-      - id: checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.gate.outputs.build_ref }}
-
-      - name: Compute commit-bound build provenance
-        id: provenance
-        run: |
-          ts=$(git log -1 --format=%aI HEAD)
-          echo "build-timestamp=$ts" >> "$GITHUB_OUTPUT"
-          echo "build-host=${{ github.repository }}@${{ github.sha }}" >> "$GITHUB_OUTPUT"
-          echo "provenance: build-timestamp=$ts" >&2
-
-      - name: Fetch musl submodule
-        uses: ./.github/actions/fetch-submodules
+          ref: ${{ needs.gate.outputs.source_sha }}
+      - uses: ./.github/actions/exact-main-package-rebuild
         with:
-          submodules: libc/musl
+          source-sha: ${{ needs.gate.outputs.source_sha }}
+          target-tag: ${{ needs.preflight.outputs.target_tag }}
+          package-matrix: ${{ needs.preflight.outputs.package_matrix }}
+          package: ${{ matrix.package }}
+          arch: ${{ matrix.arch }}
+          cache-key-sha: ${{ matrix.sha }}
+          version: ${{ matrix.version }}
+          revision: ${{ matrix.revision }}
 
-      - name: Set up Nix
-        uses: ./.github/actions/setup-nix
-
-      - name: Download toolchain sysroots artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+  matrix-build-level-2:
+    needs: [gate, preflight, toolchain-cache, matrix-build-level-1]
+    if: ${{ !cancelled() && needs.matrix-build-level-1.result == 'success' && needs.preflight.outputs.level_2_matrix != '[]' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        include: ${{ fromJSON(needs.preflight.outputs.level_2_matrix) }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          name: toolchain-sysroots
-          path: ${{ runner.temp }}/toolchain
-
-      - name: Extract toolchain sysroots
-        run: |
-          tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
-
-      - name: Install host npm deps (build prereq)
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-            cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-          '
-
-      - name: Install shell VFS composer dependencies
-        if: ${{ matrix.package == 'shell' }}
-        run: |
-          bash scripts/dev-shell.sh \
-            npm --prefix tools/mkrootfs ci --no-audit --no-fund
-
-      - name: Resolve selected library artifacts
-        if: needs.preflight.outputs.library_matrix != '[]'
-        run: |
-          set -euo pipefail
-          matrix_file="$RUNNER_TEMP/library-matrix.json"
-          artifact_file="$RUNNER_TEMP/library-dependency-artifacts.txt"
-          printf '%s\n' '${{ needs.preflight.outputs.library_matrix }}' > "$matrix_file"
-          jq -r '.[] | "\(.package)-\(.arch)"' "$matrix_file" > "$artifact_file"
-
-          if [ -s "$artifact_file" ]; then
-            while IFS= read -r artifact; do
-              if ! [[ "$artifact" =~ ^[A-Za-z0-9._-]+-wasm(32|64)$ ]]; then
-                echo "::error::invalid library artifact name from library matrix: '$artifact'"
-                exit 1
-              fi
-            done < "$artifact_file"
-            echo "selected library dependency artifacts:"
-            sed 's/^/  /' "$artifact_file"
-          else
-            echo "selected library dependency artifacts: none"
-          fi
-
-      - name: Resolve selected program dependency artifacts
-        id: program-deps
-        run: |
-          set -euo pipefail
-          matrix_file="$RUNNER_TEMP/program-matrix.json"
-          artifact_file="$RUNNER_TEMP/program-dependency-artifacts.txt"
-          printf '%s\n' '${{ needs.preflight.outputs.program_matrix }}' > "$matrix_file"
-          bash scripts/dev-shell.sh bash -lc '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              package-dependency-artifacts \
-                --registry packages/registry \
-                --matrix "$RUNNER_TEMP/program-matrix.json" \
-                --package "${{ matrix.package }}" \
-                --arch "${{ matrix.arch }}" \
-                > "$RUNNER_TEMP/program-dependency-artifacts.txt"
-          '
-
-          if [ -s "$artifact_file" ]; then
-            while IFS= read -r artifact; do
-              if ! [[ "$artifact" =~ ^[A-Za-z0-9._-]+-wasm(32|64)$ ]]; then
-                echo "::error::invalid dependency artifact name from package-dependency-artifacts: '$artifact'"
-                exit 1
-              fi
-            done < "$artifact_file"
-            echo "has-dependencies=true" >> "$GITHUB_OUTPUT"
-            echo "selected program dependency artifacts:"
-            sed 's/^/  /' "$artifact_file"
-          else
-            echo "has-dependencies=false" >> "$GITHUB_OUTPUT"
-            echo "selected program dependency artifacts: none"
-          fi
-
-      - name: Collect dependency artifacts
-        id: deps
-        run: |
-          set -euo pipefail
-          artifacts_file="$RUNNER_TEMP/dependency-artifacts.txt"
-          : > "$artifacts_file"
-          for file in \
-            "$RUNNER_TEMP/library-dependency-artifacts.txt" \
-            "$RUNNER_TEMP/program-dependency-artifacts.txt"
-          do
-            [ -f "$file" ] || continue
-            cat "$file"
-          done | sed '/^$/d' | sort -u > "$artifacts_file"
-
-          if [ -s "$artifacts_file" ]; then
-            echo "has-dependencies=true" >> "$GITHUB_OUTPUT"
-            echo "dependency artifacts to download:"
-            sed 's/^/  /' "$artifacts_file"
-          else
-            echo "has-dependencies=false" >> "$GITHUB_OUTPUT"
-            echo "dependency artifacts to download: none"
-          fi
-
-      - name: Download selected dependency archives
-        if: ${{ steps.deps.outputs.has-dependencies == 'true' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          bash .github/scripts/download-dependency-artifacts.sh "$RUNNER_TEMP/dependency-artifacts.txt" "$RUNNER_TEMP/lib-archives"
-
-      - name: Materialize dependency overlays
-        if: ${{ steps.deps.outputs.has-dependencies == 'true' }}
-        run: |
-          bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/lib-archives"
-
-      - name: Build ${{ matrix.package }} (${{ matrix.arch }})
-        id: build
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              archive-stage \
-                --package "packages/registry/${{ matrix.package }}" \
-                --arch "${{ matrix.arch }}" \
-                --out "$RUNNER_TEMP/staged" \
-                --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
-                --build-host "${{ steps.provenance.outputs.build-host }}" \
-                --binaries-dir "$(pwd)/binaries" \
-                --expected-cache-key-sha "${{ matrix.sha }}"
-          '
-          archive_path=$(find "$RUNNER_TEMP/staged" -name '*.tar.zst' -print -quit)
-          archive_name=$(basename "$archive_path")
-          echo "archive-path=$archive_path" >> "$GITHUB_OUTPUT"
-          echo "archive-name=$archive_name" >> "$GITHUB_OUTPUT"
-
-      - name: Upload archive as workflow artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          ref: ${{ needs.gate.outputs.source_sha }}
+      - uses: ./.github/actions/exact-main-package-rebuild
         with:
-          name: ${{ matrix.package }}-${{ matrix.arch }}
-          path: ${{ runner.temp }}/staged/*.tar.zst
-          retention-days: 7
-          if-no-files-found: error
+          source-sha: ${{ needs.gate.outputs.source_sha }}
+          target-tag: ${{ needs.preflight.outputs.target_tag }}
+          package-matrix: ${{ needs.preflight.outputs.package_matrix }}
+          package: ${{ matrix.package }}
+          arch: ${{ matrix.arch }}
+          cache-key-sha: ${{ matrix.sha }}
+          version: ${{ matrix.version }}
+          revision: ${{ matrix.revision }}
 
-      # Atomic per-matrix-entry publish — same flow as
-      # lib-matrix-build above. force-rebuild typically targets the
-      # durable binaries-abi-v<N> tag, so this writes into the same
-      # state-lock subject prepare-merge uses. The lock serializes
-      # them.
-      - name: Publish archive + index entry
-        if: success()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          bash scripts/index-update.sh \
-            --target-tag "${{ needs.preflight.outputs.target_tag }}" \
-            --package "${{ matrix.package }}" \
-            --version "${{ matrix.version }}" \
-            --revision "${{ matrix.revision }}" \
-            --arch "${{ matrix.arch }}" \
-            --status success \
-            --archive-path "${{ steps.build.outputs.archive-path }}" \
-            --archive-name "${{ steps.build.outputs.archive-name }}" \
-            --cache-key-sha "${{ matrix.sha }}"
+  matrix-build-level-3:
+    needs: [gate, preflight, toolchain-cache, matrix-build-level-2]
+    if: ${{ !cancelled() && needs.matrix-build-level-2.result == 'success' && needs.preflight.outputs.level_3_matrix != '[]' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        include: ${{ fromJSON(needs.preflight.outputs.level_3_matrix) }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.gate.outputs.source_sha }}
+      - uses: ./.github/actions/exact-main-package-rebuild
+        with:
+          source-sha: ${{ needs.gate.outputs.source_sha }}
+          target-tag: ${{ needs.preflight.outputs.target_tag }}
+          package-matrix: ${{ needs.preflight.outputs.package_matrix }}
+          package: ${{ matrix.package }}
+          arch: ${{ matrix.arch }}
+          cache-key-sha: ${{ matrix.sha }}
+          version: ${{ matrix.version }}
+          revision: ${{ matrix.revision }}
 
-      - name: Record failed build in index
-        if: ${{ failure() && steps.checkout.outcome == 'success' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          bash scripts/index-update.sh \
-            --target-tag "${{ needs.preflight.outputs.target_tag }}" \
-            --package "${{ matrix.package }}" \
-            --version "${{ matrix.version }}" \
-            --revision "${{ matrix.revision }}" \
-            --arch "${{ matrix.arch }}" \
-            --status failed \
-            --error "matrix-build failed; see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            || true
+  matrix-build-level-4:
+    needs: [gate, preflight, toolchain-cache, matrix-build-level-3]
+    if: ${{ !cancelled() && needs.matrix-build-level-3.result == 'success' && needs.preflight.outputs.level_4_matrix != '[]' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        include: ${{ fromJSON(needs.preflight.outputs.level_4_matrix) }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.gate.outputs.source_sha }}
+      - uses: ./.github/actions/exact-main-package-rebuild
+        with:
+          source-sha: ${{ needs.gate.outputs.source_sha }}
+          target-tag: ${{ needs.preflight.outputs.target_tag }}
+          package-matrix: ${{ needs.preflight.outputs.package_matrix }}
+          package: ${{ matrix.package }}
+          arch: ${{ matrix.arch }}
+          cache-key-sha: ${{ matrix.sha }}
+          version: ${{ matrix.version }}
+          revision: ${{ matrix.revision }}
+
+  matrix-build-level-5:
+    needs: [gate, preflight, toolchain-cache, matrix-build-level-4]
+    if: ${{ !cancelled() && needs.matrix-build-level-4.result == 'success' && needs.preflight.outputs.level_5_matrix != '[]' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        include: ${{ fromJSON(needs.preflight.outputs.level_5_matrix) }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.gate.outputs.source_sha }}
+      - uses: ./.github/actions/exact-main-package-rebuild
+        with:
+          source-sha: ${{ needs.gate.outputs.source_sha }}
+          target-tag: ${{ needs.preflight.outputs.target_tag }}
+          package-matrix: ${{ needs.preflight.outputs.package_matrix }}
+          package: ${{ matrix.package }}
+          arch: ${{ matrix.arch }}
+          cache-key-sha: ${{ matrix.sha }}
+          version: ${{ matrix.version }}
+          revision: ${{ matrix.revision }}
+
+  matrix-build-level-6:
+    needs: [gate, preflight, toolchain-cache, matrix-build-level-5]
+    if: ${{ !cancelled() && needs.matrix-build-level-5.result == 'success' && needs.preflight.outputs.level_6_matrix != '[]' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        include: ${{ fromJSON(needs.preflight.outputs.level_6_matrix) }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.gate.outputs.source_sha }}
+      - uses: ./.github/actions/exact-main-package-rebuild
+        with:
+          source-sha: ${{ needs.gate.outputs.source_sha }}
+          target-tag: ${{ needs.preflight.outputs.target_tag }}
+          package-matrix: ${{ needs.preflight.outputs.package_matrix }}
+          package: ${{ matrix.package }}
+          arch: ${{ matrix.arch }}
+          cache-key-sha: ${{ matrix.sha }}
+          version: ${{ matrix.version }}
+          revision: ${{ matrix.revision }}
+
+  matrix-build-level-7:
+    needs: [gate, preflight, toolchain-cache, matrix-build-level-6]
+    if: ${{ !cancelled() && needs.matrix-build-level-6.result == 'success' && needs.preflight.outputs.level_7_matrix != '[]' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        include: ${{ fromJSON(needs.preflight.outputs.level_7_matrix) }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.gate.outputs.source_sha }}
+      - uses: ./.github/actions/exact-main-package-rebuild
+        with:
+          source-sha: ${{ needs.gate.outputs.source_sha }}
+          target-tag: ${{ needs.preflight.outputs.target_tag }}
+          package-matrix: ${{ needs.preflight.outputs.package_matrix }}
+          package: ${{ matrix.package }}
+          arch: ${{ matrix.arch }}
+          cache-key-sha: ${{ matrix.sha }}
+          version: ${{ matrix.version }}
+          revision: ${{ matrix.revision }}
 
   test-gate-prepare:
-    needs: [gate, preflight, toolchain-cache, lib-matrix-build, matrix-build]
+    needs:
+      - gate
+      - preflight
+      - toolchain-cache
+      - matrix-build-level-0
+      - matrix-build-level-1
+      - matrix-build-level-2
+      - matrix-build-level-3
+      - matrix-build-level-4
+      - matrix-build-level-5
+      - matrix-build-level-6
+      - matrix-build-level-7
     # Skip when both matrices are empty (nothing rebuilt) or
     # skip_tests=true. `!cancelled()` so a fail-fast in matrix-build
     # doesn't silently skip test preparation for sibling packages that
     # did succeed.
     if: |
       !cancelled() &&
-      (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') &&
+      !contains(needs.*.result, 'failure') &&
+      needs.preflight.outputs.package_matrix != '[]' &&
       inputs.skip_tests != true
     runs-on: ubuntu-latest
     permissions:
@@ -769,7 +684,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.gate.outputs.build_ref }}
+          ref: ${{ needs.gate.outputs.source_sha }}
 
       - name: Fetch submodules (musl, libc-test, os-test)
         run: |
@@ -891,7 +806,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.gate.outputs.build_ref }}
+          ref: ${{ needs.gate.outputs.source_sha }}
 
       - name: Fetch submodules (musl, libc-test, os-test)
         if: matrix.needs_submodules == true

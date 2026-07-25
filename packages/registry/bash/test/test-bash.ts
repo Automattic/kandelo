@@ -58,6 +58,29 @@ const cases: [string, string, string][] = [
   ["s=hello; echo ${s^^}", "HELLO\n", "case-mod expansion (bashism)"],
   ["type history >/dev/null && echo y", "y\n", "history builtin available"],
   ["type bind >/dev/null && echo y", "y\n", "readline bind builtin available"],
+  [
+    'test "$(type -t printf)" = builtin; ' +
+      "builtin enable -n printf; " +
+      'test "$(type -t printf)" != builtin; ' +
+      "builtin enable printf; " +
+      'test "$(type -t printf)" = builtin; ' +
+      "printf() { echo shadowed; }; " +
+      "builtin enable compgen unset; " +
+      "saw_compgen= saw_unset=; " +
+      "for cmd in $(builtin compgen -A builtin); do " +
+      'case "$cmd" in compgen) saw_compgen=yes ;; unset) saw_unset=yes ;; esac; ' +
+      'builtin unset -f "$cmd"; ' +
+      'builtin enable "$cmd"; ' +
+      "done; " +
+      'test "$saw_compgen" = yes && test "$saw_unset" = yes && ' +
+      'test "$(type -t compgen)" = builtin && ' +
+      'test "$(type -t complete)" = builtin && ' +
+      'test "$(type -t unset)" = builtin && ' +
+      'test "$(type -t printf)" = builtin && ' +
+      'printf "homebrew-builtins-ready\\n"',
+    "homebrew-builtins-ready\n",
+    "Homebrew builtin restoration contract",
+  ],
   ["echo hello | cat", "hello\n", "simple pipe (cat)"],
   ["echo hello world | wc -c", "12\n", "pipe to wc -c"],
   ["printf 'b\\na\\n' | sort", "a\nb\n", "pipe to sort"],
