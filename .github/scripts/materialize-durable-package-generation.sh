@@ -243,7 +243,9 @@ run_without_credentials "$AUTHORITY_XTASK" staging-reuse validate-archives \
   --expected-ledger "$TMP_ROOT/expected.json" \
   --snapshot "$TMP_ROOT/snapshot.json" \
   --archives-dir "$TMP_ROOT/bundle" \
-  --scope all
+  --scope all \
+  --expected-source-repository "https://github.com/$REPOSITORY" \
+  --expected-source-commit "$package_source_sha"
 
 # Recheck mutable GitHub metadata after all downloads to close the same race as
 # promotion. A changed public release is rejected even if cached bytes remain.

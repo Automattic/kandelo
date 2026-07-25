@@ -300,6 +300,117 @@ fn package_context_cache_keys_with_global_toolchain_inputs(
     Ok(cache_keys)
 }
 
+/// Recompute contextual package identities for an inert source checkout.
+///
+/// WHY: preservation may need to inspect an unmerged producer tree, but that
+/// tree must never supply executable tooling. The current checkout's xtask
+/// reads and hashes the source manifests and declared inputs directly. Cargo's
+/// dependency graph is the sole derived input; current Cargo resolves it from
+/// the source declarations in bounded, offline metadata-only mode.
+pub(crate) fn source_cache_identities(
+    source_root: &Path,
+    registry: &Registry,
+    abi_version: u32,
+) -> Result<BTreeMap<String, BTreeMap<String, String>>, String> {
+    validate_inert_source_cargo_context(source_root)?;
+    let authority_root = repo_root();
+    let global_toolchain_inputs =
+        global_package_build_input_digests_for(source_root, GLOBAL_PACKAGE_TOOLCHAIN_INPUTS)?;
+    let mut fork_instrument_inputs =
+        global_package_build_input_digests_for(source_root, FORK_INSTRUMENT_TOOL_INPUTS)?;
+    fork_instrument_inputs.push(BuildInputDigest {
+        label: "cargo-metadata:fork-instrument-build-deps".to_string(),
+        // WHY: this must describe the producer's dependency graph, not the
+        // current checkout's. Current authority invokes Cargo only as a
+        // token-free, offline declarative reader; no source binary, build
+        // script, test, or repository tool is executed.
+        digest: fork_instrument_cargo_dependency_digest_for_inert_source(
+            &authority_root,
+            source_root,
+        )?,
+    });
+
+    let mut memo = BTreeMap::new();
+    let mut result = BTreeMap::new();
+    for (name, manifest) in registry.walk_all()? {
+        let mut cache_keys = BTreeMap::new();
+        for arch in PROGRAM_PACKAGE_CONTEXT_ARCHES {
+            let digest = compute_sha_with_identity_context(
+                &manifest,
+                registry,
+                arch,
+                abi_version,
+                &mut memo,
+                &mut Vec::new(),
+                Some(&global_toolchain_inputs),
+                source_root,
+                Some(&fork_instrument_inputs),
+            )?;
+            cache_keys.insert(arch.as_str().to_owned(), hex(&digest));
+        }
+        result.insert(name, cache_keys);
+    }
+    Ok(result)
+}
+
+fn validate_inert_source_cargo_context(source_root: &Path) -> Result<(), String> {
+    let source_workspace_path = source_root.join("Cargo.toml");
+    require_regular_nonsymlink_file(&source_workspace_path, "source Cargo workspace manifest")?;
+    require_regular_nonsymlink_file(&source_root.join("Cargo.lock"), "source Cargo lockfile")?;
+    let source_workspace_text = std::fs::read_to_string(&source_workspace_path).map_err(|e| {
+        format!(
+            "read inert source Cargo context {}: {e}",
+            source_workspace_path.display()
+        )
+    })?;
+    let workspace: toml::Value = toml::from_str(&source_workspace_text).map_err(|e| {
+        format!(
+            "parse inert source Cargo context {}: {e}",
+            source_workspace_path.display()
+        )
+    })?;
+    let members = workspace
+        .get("workspace")
+        .and_then(|workspace| workspace.get("members"))
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| {
+            "source Cargo workspace must declare an explicit members array".to_string()
+        })?;
+    for member in members {
+        let member = member
+            .as_str()
+            .ok_or_else(|| "source Cargo workspace member must be a string".to_string())?;
+        if member.is_empty()
+            || member.contains('*')
+            || Path::new(member).is_absolute()
+            || Path::new(member)
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(format!(
+                "unsupported source Cargo workspace member {member:?}"
+            ));
+        }
+        require_regular_nonsymlink_file(
+            &source_root.join(member).join("Cargo.toml"),
+            "source Cargo workspace member manifest",
+        )?;
+    }
+    Ok(())
+}
+
+fn require_regular_nonsymlink_file(path: &Path, context: &str) -> Result<(), String> {
+    let metadata =
+        std::fs::symlink_metadata(path).map_err(|e| format!("inspect {}: {e}", path.display()))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(format!(
+            "{context} must be a regular non-symlink file: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 fn collect_program_dependency_identities(
     target: &DepsManifest,
     registry: &Registry,
@@ -1281,15 +1392,7 @@ pub fn compute_sha(
     memo: &mut BTreeMap<String, [u8; 32]>,
     chain: &mut Vec<String>,
 ) -> Result<[u8; 32], String> {
-    compute_sha_with_global_toolchain_inputs(
-        target,
-        registry,
-        arch,
-        abi_version,
-        memo,
-        chain,
-        None,
-    )
+    compute_sha_with_global_toolchain_inputs(target, registry, arch, abi_version, memo, chain, None)
 }
 
 fn compute_sha_with_global_toolchain_inputs(
@@ -1300,6 +1403,31 @@ fn compute_sha_with_global_toolchain_inputs(
     memo: &mut BTreeMap<String, [u8; 32]>,
     chain: &mut Vec<String>,
     global_toolchain_inputs_override: Option<&[BuildInputDigest]>,
+) -> Result<[u8; 32], String> {
+    let main_repo_root = repo_root();
+    compute_sha_with_identity_context(
+        target,
+        registry,
+        arch,
+        abi_version,
+        memo,
+        chain,
+        global_toolchain_inputs_override,
+        &main_repo_root,
+        None,
+    )
+}
+
+fn compute_sha_with_identity_context(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+    memo: &mut BTreeMap<String, [u8; 32]>,
+    chain: &mut Vec<String>,
+    global_toolchain_inputs_override: Option<&[BuildInputDigest]>,
+    main_repo_root: &Path,
+    fork_instrument_tool_inputs_override: Option<&[BuildInputDigest]>,
 ) -> Result<[u8; 32], String> {
     if chain.iter().any(|s| s == &target.name) {
         return Err(format!(
@@ -1337,7 +1465,7 @@ fn compute_sha_with_global_toolchain_inputs(
                 child.spec()
             ));
         }
-        let child_sha = compute_sha_with_global_toolchain_inputs(
+        let child_sha = compute_sha_with_identity_context(
             &child,
             registry,
             arch,
@@ -1345,6 +1473,8 @@ fn compute_sha_with_global_toolchain_inputs(
             memo,
             chain,
             global_toolchain_inputs_override,
+            main_repo_root,
+            fork_instrument_tool_inputs_override,
         )?;
         dep_shas.push((dref.clone(), child_sha));
     }
@@ -1352,18 +1482,19 @@ fn compute_sha_with_global_toolchain_inputs(
 
     chain.pop();
 
-    let build_inputs = build_input_digests(target, registry)?;
+    let build_inputs = build_input_digests_from_repo(target, registry, main_repo_root)?;
     let global_toolchain_inputs = match target.kind {
-        ManifestKind::Library | ManifestKind::Program => {
-            match global_toolchain_inputs_override {
-                Some(inputs) => inputs.to_vec(),
-                None => global_package_toolchain_digests()?,
-            }
-        }
+        ManifestKind::Library | ManifestKind::Program => match global_toolchain_inputs_override {
+            Some(inputs) => inputs.to_vec(),
+            None => global_package_toolchain_digests()?,
+        },
         ManifestKind::Source => Vec::new(),
     };
     let fork_instrument_tool_inputs = if package_uses_fork_instrument_tool(target) {
-        fork_instrument_tool_digests()?
+        match fork_instrument_tool_inputs_override {
+            Some(inputs) => inputs.to_vec(),
+            None => fork_instrument_tool_digests()?,
+        }
     } else {
         Vec::new()
     };
@@ -1604,14 +1735,92 @@ struct CargoLockPackage {
 fn fork_instrument_cargo_dependency_digest(root: &Path) -> Result<[u8; 32], String> {
     let host_target = host_target_triple()?;
     let output = Command::new("cargo")
-        .arg("metadata")
-        .arg("--format-version=1")
-        .arg("--locked")
-        .arg("--filter-platform")
-        .arg(&host_target)
+        .args([
+            "metadata",
+            "--format-version=1",
+            "--locked",
+            "--filter-platform",
+            &host_target,
+        ])
         .current_dir(root)
         .output()
         .map_err(|e| format!("run cargo metadata for fork-instrument cache key: {e}"))?;
+    fork_instrument_cargo_dependency_digest_from_output(root, output, None)
+}
+
+fn fork_instrument_cargo_dependency_digest_for_inert_source(
+    authority_root: &Path,
+    source_root: &Path,
+) -> Result<[u8; 32], String> {
+    let host_target = host_target_triple()?;
+    let mut command =
+        inert_source_cargo_metadata_command(authority_root, source_root, &host_target);
+    let output = command
+        .output()
+        .map_err(|e| format!("run offline Cargo metadata for inert source cache key: {e}"))?;
+    fork_instrument_cargo_dependency_digest_from_output(source_root, output, Some(source_root))
+}
+
+fn inert_source_cargo_metadata_command(
+    authority_root: &Path,
+    source_root: &Path,
+    host_target: &str,
+) -> Command {
+    let mut command = Command::new("cargo");
+    command
+        .args([
+            "metadata",
+            "--format-version=1",
+            "--locked",
+            "--offline",
+            "--filter-platform",
+            host_target,
+            "--manifest-path",
+        ])
+        .arg(source_root.join("Cargo.toml"))
+        // WHY: Cargo discovers repository-local configuration from its process
+        // cwd. Keeping cwd on current authority prevents the inert source from
+        // supplying aliases, credential providers, rustc wrappers, or network
+        // configuration while --manifest-path still selects its declarations.
+        .current_dir(authority_root)
+        .env("CARGO_NET_OFFLINE", "true");
+    for name in [
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+        "ACTIONS_RUNTIME_TOKEN",
+        "ALL_PROXY",
+        "CARGO_BUILD_RUSTC",
+        "CARGO_BUILD_RUSTC_WRAPPER",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "CARGO_HTTP_PROXY",
+        "CARGO_REGISTRIES_CRATES_IO_TOKEN",
+        "CARGO_REGISTRY_TOKEN",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "HOMEBREW_DOCKER_REGISTRY_TOKEN",
+        "HOMEBREW_GITHUB_API_TOKEN",
+        "HOMEBREW_GITHUB_PACKAGES_TOKEN",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "RUSTDOC",
+        "RUSTDOCFLAGS",
+        "RUSTFLAGS",
+        "all_proxy",
+        "http_proxy",
+        "https_proxy",
+    ] {
+        command.env_remove(name);
+    }
+    command
+}
+
+fn fork_instrument_cargo_dependency_digest_from_output(
+    root: &Path,
+    output: std::process::Output,
+    inert_source_root: Option<&Path>,
+) -> Result<[u8; 32], String> {
     if !output.status.success() {
         return Err(format!(
             "cargo metadata for fork-instrument cache key failed: {}",
@@ -1621,11 +1830,93 @@ fn fork_instrument_cargo_dependency_digest(root: &Path) -> Result<[u8; 32], Stri
 
     let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)
         .map_err(|e| format!("parse cargo metadata for fork-instrument cache key: {e}"))?;
+    if let Some(source_root) = inert_source_root {
+        validate_inert_source_cargo_metadata(source_root, &metadata)?;
+    }
     let lock_text = std::fs::read_to_string(root.join("Cargo.lock"))
         .map_err(|e| format!("read Cargo.lock for fork-instrument cache key: {e}"))?;
     let lock: CargoLock = toml::from_str(&lock_text)
         .map_err(|e| format!("parse Cargo.lock for fork-instrument cache key: {e}"))?;
     fork_instrument_cargo_dependency_digest_from_metadata(root, &metadata, &lock)
+}
+
+fn validate_inert_source_cargo_metadata(
+    source_root: &Path,
+    metadata: &serde_json::Value,
+) -> Result<(), String> {
+    let canonical_root = std::fs::canonicalize(source_root).map_err(|e| {
+        format!(
+            "canonicalize inert source root {}: {e}",
+            source_root.display()
+        )
+    })?;
+    let canonical_fork_manifest = canonical_root.join("crates/fork-instrument/Cargo.toml");
+    let mut found_fork_manifest = false;
+    for package in metadata_array(metadata, "packages")? {
+        if package
+            .get("source")
+            .is_some_and(|source| !source.is_null())
+        {
+            continue;
+        }
+        let manifest_path = PathBuf::from(metadata_str(package, "manifest_path")?);
+        let canonical_manifest = std::fs::canonicalize(&manifest_path).map_err(|e| {
+            format!(
+                "canonicalize inert source Cargo manifest {}: {e}",
+                manifest_path.display()
+            )
+        })?;
+        if !canonical_manifest.starts_with(&canonical_root) {
+            return Err(format!(
+                "inert source Cargo metadata contains a local package outside the producer checkout: {}",
+                manifest_path.display()
+            ));
+        }
+        require_path_beneath_without_symlinks(
+            &canonical_root,
+            &canonical_manifest,
+            "inert source Cargo package manifest",
+        )?;
+        if metadata_str(package, "name")? == "fork-instrument" {
+            if canonical_manifest != canonical_fork_manifest {
+                return Err(format!(
+                    "inert source fork-instrument manifest must be exactly {}",
+                    canonical_fork_manifest.display()
+                ));
+            }
+            found_fork_manifest = true;
+        }
+    }
+    if !found_fork_manifest {
+        return Err(format!(
+            "inert source Cargo metadata is missing exact fork-instrument manifest {}",
+            canonical_fork_manifest.display()
+        ));
+    }
+    Ok(())
+}
+
+fn require_path_beneath_without_symlinks(
+    root: &Path,
+    path: &Path,
+    context: &str,
+) -> Result<(), String> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| format!("{context} escapes {}", root.display()))?;
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        current.push(component);
+        let metadata = std::fs::symlink_metadata(&current)
+            .map_err(|e| format!("inspect {context} {}: {e}", current.display()))?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "{context} must not traverse a symlink: {}",
+                current.display()
+            ));
+        }
+    }
+    require_regular_nonsymlink_file(path, context)
 }
 
 fn host_target_triple() -> Result<String, String> {
@@ -1923,9 +2214,18 @@ fn hash_gitlink_input(root: &Path, input: &str) -> Result<Option<[u8; 32]>, Stri
     Ok(Some(h.finalize().into()))
 }
 
+#[cfg(test)]
 fn build_input_digests(
     target: &DepsManifest,
     registry: &Registry,
+) -> Result<Vec<BuildInputDigest>, String> {
+    build_input_digests_from_repo(target, registry, &repo_root())
+}
+
+fn build_input_digests_from_repo(
+    target: &DepsManifest,
+    registry: &Registry,
+    main_repo_root: &Path,
 ) -> Result<Vec<BuildInputDigest>, String> {
     if !target.dir.join("build.toml").exists() {
         return Ok(Vec::new());
@@ -1933,7 +2233,7 @@ fn build_input_digests(
     let build = BuildToml::load(&target.dir)?;
     let mut out = Vec::with_capacity(build.inputs.len() + build.git_inputs.len());
     for input in &build.inputs {
-        let path = resolve_build_input_path(target, registry, input)?;
+        let path = resolve_build_input_path_from_repo(target, registry, input, main_repo_root)?;
         out.push(BuildInputDigest {
             label: input.clone(),
             digest: hash_build_input(&path)?,
@@ -1963,14 +2263,6 @@ fn build_input_digests(
     Ok(out)
 }
 
-fn resolve_build_input_path(
-    target: &DepsManifest,
-    registry: &Registry,
-    input: &str,
-) -> Result<PathBuf, String> {
-    resolve_build_input_path_from_repo(target, registry, input, &repo_root())
-}
-
 fn resolve_build_input_path_from_repo(
     target: &DepsManifest,
     registry: &Registry,
@@ -1985,11 +2277,9 @@ fn resolve_build_input_path_from_repo(
     if let Ok(registry_relative) = Path::new(input).strip_prefix("packages/registry") {
         let (package_name, package_relative) =
             split_registry_build_input(registry_relative, input)?;
-        if let Some(selected) = selected_registry_package_dir(
-            registry,
-            main_repo_root,
-            package_name,
-        ) {
+        if let Some(selected) =
+            selected_registry_package_dir(registry, main_repo_root, package_name)
+        {
             return require_selected_registry_build_input(
                 target,
                 input,
@@ -9945,6 +10235,175 @@ index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
             !FORK_INSTRUMENT_TOOL_INPUTS.contains(&"Cargo.lock"),
             "raw Cargo.lock changes are too broad for program package cache keys"
         );
+    }
+
+    fn write_inert_cargo_fixture(root: &Path, fork_depends_on_helper: bool) {
+        fs::create_dir_all(root.join("crates/fork-instrument")).unwrap();
+        fs::create_dir_all(root.join("crates/helper")).unwrap();
+        fs::create_dir_all(root.join("crates/fork-instrument/src")).unwrap();
+        fs::create_dir_all(root.join("crates/helper/src")).unwrap();
+        fs::write(root.join("crates/fork-instrument/src/lib.rs"), "").unwrap();
+        fs::write(root.join("crates/helper/src/lib.rs"), "").unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            r#"[workspace]
+members = ["crates/fork-instrument", "crates/helper"]
+resolver = "2"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("crates/helper/Cargo.toml"),
+            r#"[package]
+name = "helper"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        let dependency = if fork_depends_on_helper {
+            "\n[dependencies]\nhelper = { path = \"../helper\" }\n"
+        } else {
+            ""
+        };
+        fs::write(
+            root.join("crates/fork-instrument/Cargo.toml"),
+            format!(
+                r#"[package]
+name = "fork-instrument"
+version = "0.1.0"
+edition = "2021"
+{dependency}"#
+            ),
+        )
+        .unwrap();
+        let lock_dependency = if fork_depends_on_helper {
+            "dependencies = [\"helper\"]\n"
+        } else {
+            ""
+        };
+        fs::write(
+            root.join("Cargo.lock"),
+            format!(
+                r#"# This file is automatically @generated by Cargo.
+# It is not intended for manual editing.
+version = 4
+
+[[package]]
+name = "fork-instrument"
+version = "0.1.0"
+{lock_dependency}
+[[package]]
+name = "helper"
+version = "0.1.0"
+"#
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn inert_source_metadata_command_is_offline_token_free_and_authority_rooted() {
+        let authority = Path::new("/trusted/current-authority");
+        let source = Path::new("/inert/unmerged-source");
+        let command = inert_source_cargo_metadata_command(authority, source, "test-host-target");
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            [
+                "metadata",
+                "--format-version=1",
+                "--locked",
+                "--offline",
+                "--filter-platform",
+                "test-host-target",
+                "--manifest-path",
+                "/inert/unmerged-source/Cargo.toml",
+            ]
+        );
+        assert_eq!(command.get_current_dir(), Some(authority));
+        let environment = command
+            .get_envs()
+            .map(|(name, value)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            environment.get("CARGO_NET_OFFLINE"),
+            Some(&Some("true".into()))
+        );
+        for removed in [
+            "CARGO_REGISTRY_TOKEN",
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "HTTPS_PROXY",
+            "RUSTC_WRAPPER",
+            "RUSTC_WORKSPACE_WRAPPER",
+        ] {
+            assert_eq!(
+                environment.get(removed),
+                Some(&None),
+                "{removed} must be removed from the inert metadata reader"
+            );
+        }
+    }
+
+    #[test]
+    fn inert_source_fork_dependency_edge_changes_derived_digest() {
+        let without_dependency = tempdir("inert-cargo-no-fork-dependency");
+        let with_dependency = tempdir("inert-cargo-with-fork-dependency");
+        write_inert_cargo_fixture(&without_dependency, false);
+        write_inert_cargo_fixture(&with_dependency, true);
+
+        let authority = crate::repo_root();
+        let before = fork_instrument_cargo_dependency_digest_for_inert_source(
+            &authority,
+            &without_dependency,
+        )
+        .unwrap();
+        let after =
+            fork_instrument_cargo_dependency_digest_for_inert_source(&authority, &with_dependency)
+                .unwrap();
+        assert_ne!(
+            before, after,
+            "the producer's own Cargo dependency edge must determine its fork-tool cache identity"
+        );
+    }
+
+    #[test]
+    fn inert_source_metadata_rejects_local_packages_outside_source_root() {
+        let root = tempdir("inert-cargo-bounded-root");
+        write_inert_cargo_fixture(&root, false);
+        let outside = tempdir("inert-cargo-outside-package");
+        let outside_manifest = outside.join("Cargo.toml");
+        fs::write(
+            &outside_manifest,
+            "[package]\nname = \"outside\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let metadata = json!({
+            "packages": [
+                {
+                    "name": "fork-instrument",
+                    "manifest_path": root.join("crates/fork-instrument/Cargo.toml"),
+                    "source": null
+                },
+                {
+                    "name": "outside",
+                    "manifest_path": outside_manifest,
+                    "source": null
+                }
+            ]
+        });
+
+        let error = validate_inert_source_cargo_metadata(&root, &metadata).unwrap_err();
+        assert!(error.contains("outside the producer checkout"), "{error}");
     }
 
     #[test]
