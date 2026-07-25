@@ -7,6 +7,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FORCE_REBUILD="$REPO_ROOT/.github/workflows/force-rebuild.yml"
 EXACT_REBUILD_ACTION="$REPO_ROOT/.github/actions/exact-main-package-rebuild/action.yml"
 INDEX_UPDATE="$REPO_ROOT/scripts/index-update.sh"
+INDEX_STATE="$REPO_ROOT/scripts/release-index-state.sh"
 ARCHIVE_ACTION="$REPO_ROOT/.github/actions/package-archive-build/action.yml"
 STAGING="$REPO_ROOT/.github/workflows/staging-build.yml"
 PREPARE="$REPO_ROOT/.github/workflows/prepare-merge.yml"
@@ -165,6 +166,28 @@ publish_guard_line="$(
 )"
 [ -n "$publish_guard_line" ] && [ "$publish_guard_line" -lt "$publish_line" ] ||
   fail "canonical index publication is not preceded by a live-main recheck"
+
+grep -Fq -- '--canonical-source-sha) CANONICAL_SOURCE_SHA="$2"; shift 2' \
+  "$INDEX_STATE" ||
+  fail "release-index transaction does not parse exact-main authority"
+index_state_thread_count="$(
+  grep -Fc -- '"${index_state_authority_args[@]}"' "$INDEX_UPDATE"
+)"
+[ "$index_state_thread_count" -eq 2 ] ||
+  fail "canonical index read and publish must both carry exact-main authority"
+for mutation in \
+  'gh release upload "$TARGET_TAG"' \
+  'gh api --method PATCH' \
+  'gh api --method DELETE'
+do
+  mutation_line="$(grep -nF "$mutation" "$INDEX_STATE" | head -1 | cut -d: -f1)"
+  guard_line="$(
+    grep -n '^[[:space:]]*require_canonical_source_authority || return 1$' "$INDEX_STATE" |
+      awk -F: -v mutation="$mutation_line" '$1 < mutation { line = $1 } END { print line }'
+  )"
+  [ -n "$guard_line" ] && [ "$guard_line" -lt "$mutation_line" ] ||
+    fail "release-index mutation is not preceded by a live-main recheck: $mutation"
+done
 
 for input in source-repository source-commit; do
   grep -A3 "^  $input:" "$ARCHIVE_ACTION" | grep -Fq 'required: true' ||

@@ -500,11 +500,16 @@ INDEX_PATH="$INDEX_DIR/index.toml"
 INDEX_HEAD_FILE="$INDEX_DIR/head"
 
 if [ "$IS_CANONICAL" = 1 ]; then
+  index_state_authority_args=()
+  if [ -n "$CANONICAL_SOURCE_SHA" ]; then
+    index_state_authority_args+=(--canonical-source-sha "$CANONICAL_SOURCE_SHA")
+  fi
   bash "$RELEASE_INDEX_STATE_SCRIPT" read \
     --target-tag "$TARGET_TAG" \
     --expected-abi "$EXPECTED_ABI" \
     --output "$INDEX_PATH" \
-    --head-file "$INDEX_HEAD_FILE"
+    --head-file "$INDEX_HEAD_FILE" \
+    "${index_state_authority_args[@]}"
 else
   index_info="$(release_asset_info 'index.toml')"
   if [ -n "$index_info" ]; then
@@ -554,7 +559,8 @@ if [ "$IS_CANONICAL" = 1 ]; then
     --target-tag "$TARGET_TAG" \
     --expected-abi "$EXPECTED_ABI" \
     --index-path "$INDEX_PATH" \
-    --expected-head "$(cat "$INDEX_HEAD_FILE")"
+    --expected-head "$(cat "$INDEX_HEAD_FILE")" \
+    "${index_state_authority_args[@]}"
 else
   gh_retry gh release upload "$TARGET_TAG" \
     --repo "$GITHUB_REPOSITORY" \

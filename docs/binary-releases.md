@@ -91,7 +91,11 @@ archive is canonical resolver state but is explicitly ineligible for a
 Homebrew/durable-package generation. `force-rebuild.yml`, dispatched from the
 live `main` workflow SHA, source-builds the selected closure, stamps each
 archive's embedded `[build]` provenance with that exact SHA, and rechecks live
-main before each archive and index mutation. Durable generation validates those
+main before each archive and index mutation. During that exact-main rebuild,
+the canonical index transaction engine carries the admitted SHA through
+recovery and publication and rechecks it immediately before every release-asset
+upload, rename/label update, and delete; an advance of `main` therefore stops
+the transaction before its next mutation. Durable generation validates those
 embedded fields and rejects activated PR/synthetic-merge bytes. The producer
 partitions the complete selected dependency graph into explicit topological
 levels. Packages within one level build concurrently; every edge to a later
