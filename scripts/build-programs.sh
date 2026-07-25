@@ -174,6 +174,8 @@ build_program() {
     local name arch=""
     name=$(basename "$src" .c)
     local wasm="$out_dir/${name}.wasm"
+    local raw_wasm="$out_dir/${name}.raw.wasm"
+    local next_wasm="$out_dir/${name}.next.wasm"
 
     case "$out_dir" in
         "$OUT_DIR_32") arch=wasm32 ;;
@@ -210,6 +212,9 @@ build_program() {
     fi
 
     echo "  Compiling $name..."
+    # WHY: a failed compile or instrumentation pass must not leave a raw or
+    # stale-ABI module at the resolver-visible final path.
+    rm -f "$wasm" "$raw_wasm" "$next_wasm"
     # Bash 3.2 (macOS system bash) under `set -u` treats expansion of
     # an empty array as unbound; the `${arr[@]+...}` guard suppresses
     # that when extra_libs is empty.
@@ -217,15 +222,38 @@ build_program() {
         "${LINK_PRE_LIBS[@]}" \
         ${extra_libs[@]+"${extra_libs[@]}"} \
         "${LINK_POST_LIBS[@]}" \
-        -o "$wasm"
+        -o "$raw_wasm"
 
-    # Apply fork instrumentation if the program uses fork. The tool is a
-    # no-op for modules without `kernel.kernel_fork`, so it's safe to run
-    # unconditionally on every program. Programs without fork stay
-    # byte-identical except for a small ABI metadata section the tool
-    # always emits (see runtime::inject_runtime).
-    "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr"
-    mv "$wasm.instr" "$wasm"
+    # Apply fork instrumentation if the program can participate in fork. The
+    # tool returns standalone executables without a fork or dynamic-loader
+    # boundary byte-for-byte unchanged, so it is safe to run unconditionally.
+    # Side modules and loader-capable mains still receive process-image state
+    # helpers even when they have no local fork import.
+    "$FORK_INSTRUMENT" "$raw_wasm" -o "$next_wasm"
+    mv "$next_wasm" "$wasm"
+    rm -f "$raw_wasm"
+}
+
+cpp_requires_activation_state_rejection() {
+    case "$1" in
+        c_01_fork_in_try_no_throw|\
+        c_02_fork_in_catch|\
+        c_03_fork_in_multi_arm_catch|\
+        c_04_fork_in_catch_external_throw|\
+        c_05_fork_modern_eh_single|\
+        c_06_fork_modern_eh_multi_ref|\
+        c_07_fork_modern_eh_multi_plain|\
+        c_10_fork_in_try_and_catch|\
+        c_11_post_catch_fork|\
+        k_06_fork_from_dtor|\
+        s_08_external_throw_fork_in_catch|\
+        sjlj_noexcept_boundary)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 # Build a C++ program via the SDK's wasm32posix-c++ wrapper. The SDK
@@ -240,8 +268,19 @@ build_cpp_program() {
     local name
     name=$(basename "$src" .cpp)
     local wasm="$out_dir/${name}.wasm"
+    local raw_wasm="$out_dir/${name}.raw.wasm"
+    local next_wasm="$out_dir/${name}.next.wasm"
+    local rejection_expected=false
+
+    if cpp_requires_activation_state_rejection "$name"; then
+        rejection_expected=true
+        mkdir -p "$TEST_FIXTURE_DIR/wasm32/unsupported-abi43"
+        raw_wasm="$TEST_FIXTURE_DIR/wasm32/unsupported-abi43/${name}.raw.wasm"
+        next_wasm="$TEST_FIXTURE_DIR/wasm32/unsupported-abi43/${name}.unexpected.wasm"
+    fi
 
     echo "  Compiling $name (C++)..."
+    rm -f "$wasm" "$raw_wasm" "$next_wasm"
     # -fwasm-exceptions is required for clang to lower C++ try/catch
     # to wasm-EH `try`/`catch` instructions. Without it clang emits
     # `__cxa_throw; unreachable` and DCEs the catch handlers, so the
@@ -252,24 +291,49 @@ build_cpp_program() {
         -fwasm-exceptions \
         "$src" \
         -lc++ -lc++abi \
-        -o "$wasm"
+        -o "$raw_wasm"
 
-    # Preserve a real pre-instrumentation control for issue #918. The source
-    # contains an unreachable-at-test-time fork branch solely so the normal
-    # output is transformed below. A raw module with kernel_fork but without
-    # wpk_fork_* exports is test evidence, not a distributable program, so it
-    # lives outside the resolver's programs tree.
+    # Preserve a launchable no-fork control for issue #918. The fork-bearing
+    # compiler output is retained under unsupported-abi43 and must fail the
+    # instrumenter rather than enter the resolver's programs tree.
     if [ "$name" = "sjlj_noexcept_boundary" ]; then
         mkdir -p "$TEST_FIXTURE_DIR/wasm32"
-        cp "$wasm" "$TEST_FIXTURE_DIR/wasm32/${name}.raw.wasm"
+        # Keep the unrelated SjLj/noexcept control launchable under ABI 43 by
+        # omitting its dormant fork anchor. The fork-bearing compiler output is
+        # retained separately above as explicit unsupported-artifact evidence.
+        wasm32posix-c++ \
+            -O2 \
+            -fwasm-exceptions \
+            -DKANDELO_SJLJ_NO_FORK_ANCHOR \
+            "$src" \
+            -lc++ -lc++abi \
+            -o "$TEST_FIXTURE_DIR/wasm32/${name}.raw.wasm"
     fi
 
-    # Phase 7: fork support comes from wasm-fork-instrument. The tool is
-    # a no-op for modules without `kernel.kernel_fork`, so it's safe to
-    # run unconditionally — programs without fork stay byte-identical
-    # except for the ABI metadata section.
-    "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr"
-    mv "$wasm.instr" "$wasm"
+    if [ "$rejection_expected" = true ]; then
+        local diagnostic="$raw_wasm.instrument-error.txt"
+        rm -f "$diagnostic"
+        if "$FORK_INSTRUMENT" "$raw_wasm" -o "$next_wasm" 2>"$diagnostic"; then
+            echo "Error: $name unexpectedly became activation-state safe; update its ABI 43 coverage before publishing it." >&2
+            rm -f "$next_wasm"
+            exit 1
+        fi
+        if ! grep -Eq \
+            'reference local/parameter|uses CatchAll|uses CatchAllRef|reference-typed catch payload' \
+            "$diagnostic"; then
+            echo "Error: $name failed instrumentation for an unexpected reason:" >&2
+            cat "$diagnostic" >&2
+            exit 1
+        fi
+        echo "  Expected ABI 43 rejection: $name (see $diagnostic)"
+        return 0
+    fi
+
+    # Publish the resolver-visible path only after instrumentation and its
+    # complete ABI 43 artifact contract succeed.
+    "$FORK_INSTRUMENT" "$raw_wasm" -o "$next_wasm"
+    mv "$next_wasm" "$wasm"
+    rm -f "$raw_wasm"
 }
 
 ensure_libcxx_in_sysroot() {

@@ -428,6 +428,7 @@ cat >"$work/complete-fork.wat" <<'WAT'
 (module
   (@custom "kandelo.wpk_fork.linked_frames"
     "KLCF\01\00\18\00\04\08\03\00\20\00\00\00\18\00\00\00\10\00\00\00")
+  (@custom "kandelo.wpk_fork.capabilities" "\01\04")
   (import "kernel" "kernel_fork" (func $kernel_fork))
   (import "env" "__wpk_fork_frame_reserve"
     (func $frame_reserve (param i32) (result i32)))
@@ -458,10 +459,73 @@ if wasm_has_missing_fork_instrumentation "$work/complete-fork.wasm"; then
 fi
 wasm_require_fork_instrumentation_if_needed "$work/complete-fork.wasm"
 
+assert_rejects_fork_capability() {
+    local wat_path="$1"
+    local description="$2"
+    local wasm_path="${wat_path%.wat}.wasm"
+    local error_path="${wat_path%.wat}.error"
+
+    wat2wasm --enable-annotations "$wat_path" -o "$wasm_path"
+    if wasm_has_complete_fork_instrumentation "$wasm_path"; then
+        echo "ERROR: complete-fork predicate accepted $description" >&2
+        exit 1
+    fi
+    if ! wasm_has_missing_fork_instrumentation "$wasm_path"; then
+        echo "ERROR: missing-fork predicate accepted $description" >&2
+        exit 1
+    fi
+    if wasm_require_fork_instrumentation_if_needed "$wasm_path" 2>"$error_path"; then
+        echo "ERROR: fork guard accepted $description" >&2
+        exit 1
+    fi
+    grep -F '       capability:' "$error_path" >/dev/null || {
+        echo "ERROR: fork guard did not identify the capability failure for $description" >&2
+        cat "$error_path" >&2
+        exit 1
+    }
+}
+
+sed '/kandelo\.wpk_fork\.capabilities/d' \
+    "$work/complete-fork.wat" >"$work/missing-fork-capability.wat"
+assert_rejects_fork_capability \
+    "$work/missing-fork-capability.wat" \
+    "an ABI 42-style artifact with no activation-state capability"
+
+sed 's/"\\01\\04"/"\\01\\00"/' \
+    "$work/complete-fork.wat" >"$work/unsafe-fork-capability.wat"
+assert_rejects_fork_capability \
+    "$work/unsafe-fork-capability.wat" \
+    "a capability that omits activation-state safety"
+
+sed 's/"\\01\\04"/"\\02\\04"/' \
+    "$work/complete-fork.wat" >"$work/versioned-fork-capability.wat"
+assert_rejects_fork_capability \
+    "$work/versioned-fork-capability.wat" \
+    "an unsupported capability version"
+
+sed 's/"\\01\\04"/"\\01\\84"/' \
+    "$work/complete-fork.wat" >"$work/unknown-fork-capability.wat"
+assert_rejects_fork_capability \
+    "$work/unknown-fork-capability.wat" \
+    "a capability with unknown flags"
+
+sed 's/"\\01\\04"/"\\01"/' \
+    "$work/complete-fork.wat" >"$work/malformed-fork-capability.wat"
+assert_rejects_fork_capability \
+    "$work/malformed-fork-capability.wat" \
+    "a malformed capability payload"
+
+sed '/kandelo\.wpk_fork\.capabilities/p' \
+    "$work/complete-fork.wat" >"$work/duplicate-fork-capability.wat"
+assert_rejects_fork_capability \
+    "$work/duplicate-fork-capability.wat" \
+    "duplicate capability sections"
+
 cat >"$work/complete-fork-wasm64.wat" <<'WAT'
 (module
   (@custom "kandelo.wpk_fork.linked_frames"
     "KLCF\01\00\18\00\08\08\03\00\38\00\00\00\20\00\00\00\10\00\00\00")
+  (@custom "kandelo.wpk_fork.capabilities" "\01\04")
   (import "kernel" "kernel_fork" (func $kernel_fork))
   (import "env" "__wpk_fork_frame_reserve"
     (func $frame_reserve (param i64) (result i64)))
@@ -493,6 +557,7 @@ cat >"$work/partial-fork.wat" <<'WAT'
 (module
   (@custom "kandelo.wpk_fork.linked_frames"
     "KLCF\01\00\18\00\04\08\03\00\20\00\00\00\18\00\00\00\10\00\00\00")
+  (@custom "kandelo.wpk_fork.capabilities" "\01\04")
   (import "kernel" "kernel_fork" (func $kernel_fork))
   (import "env" "__wpk_fork_frame_reserve"
     (func $frame_reserve (param i32) (result i32)))
@@ -525,7 +590,8 @@ grep -Fqx '       missing: wpk_fork_state' "$partial_fork_error" || {
 
 # A section name is not sufficient evidence. Publication must reject a missing
 # payload, malformed layout fields, or a partially installed transaction hook.
-sed '/(@custom/,+1d' "$work/complete-fork.wat" >"$work/missing-fork-descriptor.wat"
+sed '/kandelo\.wpk_fork\.linked_frames/,+1d' \
+    "$work/complete-fork.wat" >"$work/missing-fork-descriptor.wat"
 wat2wasm --enable-annotations "$work/missing-fork-descriptor.wat" \
     -o "$work/missing-fork-descriptor.wasm"
 if wasm_require_fork_instrumentation_if_needed \
@@ -613,6 +679,7 @@ cat >"$work/inert-fork.wat" <<'WAT'
 (module
   (@custom "kandelo.wpk_fork.linked_frames"
     "KLCF\01\00\18\00\04\08\03\00\20\00\00\00\18\00\00\00\10\00\00\00")
+  (@custom "kandelo.wpk_fork.capabilities" "\01\04")
   (memory 1)
   (func (export "wpk_fork_abort_begin") (param i32))
   (func (export "wpk_fork_abort_end"))
@@ -660,9 +727,9 @@ count_file="$work/wasm-objdump.count"
     wasm_require_fork_instrumentation_if_needed "$work/complete-fork.wasm"
 )
 [ "$(grep -c '^-x$' "$count_file")" = 1 ] &&
-    [ "$(grep -c '^-s$' "$count_file")" = 1 ] &&
-    [ "$(wc -l <"$count_file" | tr -d ' ')" = 2 ] || {
-    echo "ERROR: fork validation did not use one structure pass and one descriptor pass" >&2
+    [ "$(grep -c '^-s$' "$count_file")" = 2 ] &&
+    [ "$(wc -l <"$count_file" | tr -d ' ')" = 3 ] || {
+    echo "ERROR: fork validation did not use one structure and two metadata passes" >&2
     cat "$count_file" >&2
     exit 1
 }

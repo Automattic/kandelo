@@ -1,5 +1,5 @@
 {
-  "abi_version": 42,
+  "abi_version": 43,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -36,10 +36,22 @@
         "offset": 64,
         "size": 4,
         "type": "i32"
+      },
+      {
+        "name": "request_flags",
+        "offset": 68,
+        "size": 4,
+        "type": "u32"
       }
     ],
     "size": 72
   },
+  "channel_request_flags": [
+    {
+      "bit": 1,
+      "name": "defer_signal_delivery"
+    }
+  ],
   "channel_signal_area": {
     "base": 65560,
     "slots": [
@@ -88,7 +100,15 @@
     }
   ],
   "custom_sections": [
+    "kandelo.wpk_fork.capabilities",
+    "kandelo.wpk_fork.exception_codec",
+    "kandelo.wpk_fork.gc_codec",
+    "kandelo.wpk_fork.imported_globals",
+    "kandelo.wpk_fork.imported_tables",
     "kandelo.wpk_fork.linked_frames",
+    "kandelo.wpk_fork.module_state",
+    "kandelo.wpk_fork.static_root_catalog",
+    "kandelo.wpk_fork.unwind_transport",
     "wasm-posix-abi"
   ],
   "export_deny": {
@@ -114,7 +134,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 42,
+      "abi_version": 43,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -3217,6 +3237,270 @@
   },
   "program_artifact": {
     "fork_instrumentation": {
+      "capabilities": {
+        "flags": [
+          {
+            "bit": 1,
+            "name": "side_entry"
+          },
+          {
+            "bit": 2,
+            "name": "dylink_main"
+          },
+          {
+            "bit": 4,
+            "name": "activation_state_safe"
+          }
+        ],
+        "known_mask": 7,
+        "required_flags": 4,
+        "section": "kandelo.wpk_fork.capabilities",
+        "version": 1
+      },
+      "exception_codec": {
+        "activation_import": {
+          "module": "env",
+          "mutable": false,
+          "name": "__wpk_fork_module_activation",
+          "type": "i32"
+        },
+        "header_size": 8,
+        "section": "kandelo.wpk_fork.exception_codec",
+        "tag_record_size": 16,
+        "version": 1
+      },
+      "gc_codec": {
+        "field_record": {
+          "fields": [
+            {
+              "name": "storage",
+              "offset": 0,
+              "size": 1
+            },
+            {
+              "name": "flags",
+              "offset": 1,
+              "size": 1
+            },
+            {
+              "name": "reserved",
+              "offset": 2,
+              "size": 2
+            },
+            {
+              "name": "scalar_offset_or_none",
+              "offset": 4,
+              "size": 4
+            },
+            {
+              "name": "reference_ordinal_or_none",
+              "offset": 8,
+              "size": 4
+            }
+          ],
+          "size": 12
+        },
+        "header_size": 16,
+        "layout_record": {
+          "fields": [
+            {
+              "name": "layout_id",
+              "offset": 0,
+              "size": 4
+            },
+            {
+              "name": "type_ordinal",
+              "offset": 4,
+              "size": 4
+            },
+            {
+              "name": "kind",
+              "offset": 8,
+              "size": 1
+            },
+            {
+              "name": "constructor",
+              "offset": 9,
+              "size": 1
+            },
+            {
+              "name": "flags",
+              "offset": 10,
+              "size": 2
+            },
+            {
+              "name": "snapshot_scalar_len_or_stride",
+              "offset": 12,
+              "size": 4
+            },
+            {
+              "name": "field_start",
+              "offset": 16,
+              "size": 4
+            },
+            {
+              "name": "field_count",
+              "offset": 20,
+              "size": 4
+            },
+            {
+              "name": "super_type_ordinal_or_none",
+              "offset": 24,
+              "size": 4
+            },
+            {
+              "name": "base_layout_id",
+              "offset": 28,
+              "size": 4
+            },
+            {
+              "name": "auxiliary",
+              "offset": 32,
+              "size": 4
+            },
+            {
+              "name": "provenance_scalar_len",
+              "offset": 36,
+              "size": 4
+            },
+            {
+              "name": "provenance_ref_count",
+              "offset": 40,
+              "size": 4
+            }
+          ],
+          "size": 44
+        },
+        "magic_bytes": [
+          75,
+          70,
+          71,
+          67
+        ],
+        "section": "kandelo.wpk_fork.gc_codec",
+        "transit_table": {
+          "element": "anyref",
+          "maximum": null,
+          "minimum": 1,
+          "module": "env",
+          "name": "__wpk_fork_ref_gc_transit",
+          "table64": false
+        },
+        "version": 1
+      },
+      "imported_globals": {
+        "header_size": 16,
+        "known_flags": 3,
+        "magic_bytes": [
+          75,
+          70,
+          73,
+          71
+        ],
+        "mutable_flag": 1,
+        "record_fields": [
+          {
+            "name": "record_size",
+            "offset": 0,
+            "size": 4
+          },
+          {
+            "name": "owner",
+            "offset": 4,
+            "size": 4
+          },
+          {
+            "name": "value_type",
+            "offset": 8,
+            "size": 1
+          },
+          {
+            "name": "flags",
+            "offset": 9,
+            "size": 1
+          },
+          {
+            "name": "reserved",
+            "offset": 10,
+            "size": 2
+          },
+          {
+            "name": "module_name_length",
+            "offset": 12,
+            "size": 4
+          },
+          {
+            "name": "field_name_length",
+            "offset": 16,
+            "size": 4
+          },
+          {
+            "name": "import_ordinal",
+            "offset": 20,
+            "size": 4
+          }
+        ],
+        "record_header_size": 24,
+        "section": "kandelo.wpk_fork.imported_globals",
+        "shared_flag": 2,
+        "version": 1
+      },
+      "imported_tables": {
+        "header_size": 16,
+        "known_flags": 1,
+        "magic_bytes": [
+          75,
+          70,
+          73,
+          84
+        ],
+        "record_fields": [
+          {
+            "name": "record_size",
+            "offset": 0,
+            "size": 4
+          },
+          {
+            "name": "owner",
+            "offset": 4,
+            "size": 4
+          },
+          {
+            "name": "element_type",
+            "offset": 8,
+            "size": 1
+          },
+          {
+            "name": "flags",
+            "offset": 9,
+            "size": 1
+          },
+          {
+            "name": "reserved",
+            "offset": 10,
+            "size": 2
+          },
+          {
+            "name": "module_name_length",
+            "offset": 12,
+            "size": 4
+          },
+          {
+            "name": "field_name_length",
+            "offset": 16,
+            "size": 4
+          },
+          {
+            "name": "import_ordinal",
+            "offset": 20,
+            "size": 4
+          }
+        ],
+        "record_header_size": 24,
+        "section": "kandelo.wpk_fork.imported_tables",
+        "table64_flag": 1,
+        "version": 1
+      },
       "linked_frame_descriptor": {
         "alignment": 8,
         "descriptor_size": 24,
@@ -3252,7 +3536,574 @@
         "section": "kandelo.wpk_fork.linked_frames",
         "version": 1
       },
+      "module_state": {
+        "arena": {
+          "chunk_flags": [
+            {
+              "bit": 1,
+              "name": "root"
+            },
+            {
+              "bit": 2,
+              "name": "sealed"
+            }
+          ],
+          "chunk_magic_bytes": [
+            75,
+            70,
+            77,
+            67
+          ],
+          "known_chunk_flags": 3,
+          "pointer_widths": [
+            {
+              "bytes": 4,
+              "chunk_header_size": 40
+            },
+            {
+              "bytes": 8,
+              "chunk_header_size": 56
+            }
+          ],
+          "record": {
+            "alignment": 8,
+            "header_size": 24,
+            "kinds": [
+              {
+                "name": "module",
+                "number": 1
+              },
+              {
+                "name": "reference_recipe",
+                "number": 2
+              },
+              {
+                "name": "mutable_global",
+                "number": 3
+              },
+              {
+                "name": "table",
+                "number": 4
+              },
+              {
+                "name": "table_page",
+                "number": 5
+              },
+              {
+                "name": "element_segments",
+                "number": 6
+              },
+              {
+                "name": "data_segments",
+                "number": 7
+              },
+              {
+                "name": "replay_events",
+                "number": 8
+              },
+              {
+                "name": "imported_global_bindings",
+                "number": 9
+              },
+              {
+                "name": "activation_continuations",
+                "number": 10
+              },
+              {
+                "name": "imported_table_bindings",
+                "number": 11
+              },
+              {
+                "name": "reference_recipe_segment",
+                "number": 12
+              },
+              {
+                "name": "replay_event_segment",
+                "number": 13
+              }
+            ],
+            "magic_bytes": [
+              75,
+              70,
+              77,
+              82
+            ],
+            "version": 1
+          },
+          "version": 1
+        },
+        "descriptor": {
+          "alignment": 8,
+          "descriptor_size": 24,
+          "flags": [
+            {
+              "bit": 1,
+              "name": "root_prefix_pointer"
+            },
+            {
+              "bit": 2,
+              "name": "explicit_owners"
+            },
+            {
+              "bit": 4,
+              "name": "sparse_tables"
+            }
+          ],
+          "known_flags": 7,
+          "magic_bytes": [
+            75,
+            70,
+            77,
+            68
+          ],
+          "required_flags": 7,
+          "root_pointer_word_offset": 1,
+          "section": "kandelo.wpk_fork.module_state",
+          "version": 1
+        },
+        "record_payloads": {
+          "activation_continuations": {
+            "entry_fields": [
+              {
+                "name": "activation_id",
+                "offset": 0,
+                "size": 4
+              },
+              {
+                "name": "flags",
+                "offset": 4,
+                "size": 4
+              },
+              {
+                "name": "root",
+                "offset": 8,
+                "size": 8
+              }
+            ],
+            "entry_known_flags": 0,
+            "entry_size": 16,
+            "header_size": 24,
+            "known_flags": 0,
+            "magic_bytes": [
+              75,
+              70,
+              65,
+              67
+            ],
+            "owner": 3,
+            "version": 1
+          },
+          "data_segments": {
+            "header_size": 8
+          },
+          "element_segments": {
+            "header_size": 8
+          },
+          "imported_global_bindings": {
+            "binding_kinds": [
+              {
+                "name": "raw_number",
+                "number": 1
+              },
+              {
+                "name": "raw_bigint",
+                "number": 2
+              },
+              {
+                "name": "raw_reference",
+                "number": 3
+              },
+              {
+                "name": "activation_global",
+                "number": 4
+              },
+              {
+                "name": "base_import",
+                "number": 5
+              }
+            ],
+            "entry_fields": [
+              {
+                "name": "consumer_activation",
+                "offset": 0,
+                "size": 4
+              },
+              {
+                "name": "consumer_owner",
+                "offset": 4,
+                "size": 4
+              },
+              {
+                "name": "source_activation",
+                "offset": 8,
+                "size": 4
+              },
+              {
+                "name": "source_owner",
+                "offset": 12,
+                "size": 4
+              },
+              {
+                "name": "reserved",
+                "offset": 16,
+                "size": 4
+              },
+              {
+                "name": "recipe_id",
+                "offset": 20,
+                "size": 4
+              },
+              {
+                "name": "raw_bits",
+                "offset": 24,
+                "size": 8
+              },
+              {
+                "name": "binding_kind",
+                "offset": 32,
+                "size": 1
+              },
+              {
+                "name": "import_flags",
+                "offset": 33,
+                "size": 1
+              },
+              {
+                "name": "value_type",
+                "offset": 34,
+                "size": 1
+              },
+              {
+                "name": "reserved",
+                "offset": 35,
+                "size": 5
+              }
+            ],
+            "entry_size": 40,
+            "header_size": 24,
+            "known_flags": 0,
+            "magic_bytes": [
+              75,
+              70,
+              66,
+              71
+            ],
+            "owner": 2,
+            "version": 1
+          },
+          "imported_table_bindings": {
+            "binding_kinds": [
+              {
+                "name": "activation_table",
+                "number": 1
+              },
+              {
+                "name": "base_import",
+                "number": 2
+              }
+            ],
+            "entry_fields": [
+              {
+                "name": "consumer_activation",
+                "offset": 0,
+                "size": 4
+              },
+              {
+                "name": "consumer_owner",
+                "offset": 4,
+                "size": 4
+              },
+              {
+                "name": "source_activation",
+                "offset": 8,
+                "size": 4
+              },
+              {
+                "name": "source_owner",
+                "offset": 12,
+                "size": 4
+              },
+              {
+                "name": "reserved",
+                "offset": 16,
+                "size": 4
+              },
+              {
+                "name": "binding_kind",
+                "offset": 20,
+                "size": 1
+              },
+              {
+                "name": "reserved",
+                "offset": 21,
+                "size": 3
+              }
+            ],
+            "entry_size": 24,
+            "header_size": 24,
+            "known_flags": 0,
+            "magic_bytes": [
+              75,
+              70,
+              66,
+              84
+            ],
+            "owner": 4,
+            "version": 1
+          },
+          "module": {
+            "known_flags": 0,
+            "payload_size": 40,
+            "template_id_size": 32
+          },
+          "mutable_global": {
+            "header_size": 8,
+            "value_types": [
+              {
+                "bytes": 4,
+                "name": "i32",
+                "number": 1
+              },
+              {
+                "bytes": 8,
+                "name": "i64",
+                "number": 2
+              },
+              {
+                "bytes": 4,
+                "name": "f32",
+                "number": 3
+              },
+              {
+                "bytes": 8,
+                "name": "f64",
+                "number": 4
+              },
+              {
+                "bytes": 16,
+                "name": "v128",
+                "number": 5
+              },
+              {
+                "bytes": 4,
+                "name": "funcref_recipe",
+                "number": 6
+              },
+              {
+                "bytes": 4,
+                "name": "externref_recipe",
+                "number": 7
+              },
+              {
+                "bytes": 4,
+                "name": "exnref_recipe",
+                "number": 8
+              },
+              {
+                "bytes": 4,
+                "name": "anyref_recipe",
+                "number": 9
+              }
+            ]
+          },
+          "reference_transaction": {
+            "known_flags": 1,
+            "magic": [
+              75,
+              70,
+              82,
+              86
+            ],
+            "manifest_size": 96,
+            "node_record_size": 48,
+            "owner": 1,
+            "sealed_flag": 1,
+            "sections": [
+              {
+                "name": "nodes",
+                "number": 1
+              },
+              {
+                "name": "edges",
+                "number": 2
+              },
+              {
+                "name": "scalars",
+                "number": 3
+              },
+              {
+                "name": "vector_index",
+                "number": 4
+              },
+              {
+                "name": "vector_entries",
+                "number": 5
+              }
+            ],
+            "segment_header_size": 40,
+            "segment_known_flags": 0,
+            "segment_magic": [
+              75,
+              70,
+              82,
+              83
+            ],
+            "vector_index_size": 16,
+            "version": 2
+          },
+          "replay_events": {
+            "entry_size": 8,
+            "header_size": 40,
+            "known_flags": 0,
+            "magic": [
+              75,
+              70,
+              82,
+              69
+            ],
+            "owner": 1,
+            "segment_capacity": 4080,
+            "segment_header_size": 24,
+            "segment_known_flags": 0,
+            "segment_version": 1,
+            "version": 2
+          },
+          "table": {
+            "baseline_fingerprint_size": 32,
+            "descriptor_payload_size": 56,
+            "flags": [
+              {
+                "bit": 1,
+                "name": "sparse_overrides"
+              }
+            ],
+            "known_flags": 1,
+            "max_page_shift": 20,
+            "min_page_shift": 4,
+            "page_header_size": 16,
+            "page_shift": 10,
+            "run_header_size": 8
+          }
+        }
+      },
       "required_exports": [
+        {
+          "kind": "func",
+          "name": "__wpk_fork_exception_materialize",
+          "params": [
+            "i32"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "name": "__wpk_fork_ref_decode_exnref",
+          "params": [
+            "i32"
+          ],
+          "results": [
+            "exnref"
+          ]
+        },
+        {
+          "kind": "func",
+          "name": "__wpk_fork_ref_encode_exnref",
+          "params": [
+            "exnref"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "name": "__wpk_fork_ref_exn_abort",
+          "params": [],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "name": "__wpk_fork_ref_exn_clear",
+          "params": [],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "name": "__wpk_fork_ref_exn_encode_ingress",
+          "params": [
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "name": "__wpk_fork_ref_exn_throw_recipe",
+          "params": [
+            "i32"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "name": "__wpk_fork_ref_exn_throw_slot",
+          "params": [
+            "i32"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "name": "__wpk_fork_ref_gc_allocate",
+          "params": [
+            "i32"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "name": "__wpk_fork_ref_gc_encode_slot",
+          "params": [
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "name": "__wpk_fork_ref_gc_fill",
+          "params": [
+            "i32"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "name": "__wpk_fork_ref_gc_probe",
+          "params": [
+            "i32"
+          ],
+          "results": [
+            "i64"
+          ]
+        },
+        {
+          "kind": "func",
+          "name": "__wpk_fork_ref_gc_publish_externref",
+          "params": [
+            "i32",
+            "externref"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "name": "__wpk_fork_static_root_harvest",
+          "params": [],
+          "results": []
+        },
         {
           "kind": "func",
           "name": "wpk_fork_abort_begin",
@@ -3264,6 +4115,58 @@
         {
           "kind": "func",
           "name": "wpk_fork_abort_end",
+          "params": [],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "name": "wpk_fork_module_bootstrap",
+          "params": [],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "name": "wpk_fork_module_state_finish_restore",
+          "params": [
+            "i32"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "name": "wpk_fork_module_state_restore",
+          "params": [
+            "i32"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "name": "wpk_fork_module_state_save",
+          "params": [
+            "i32"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "name": "wpk_fork_module_table_state_restore",
+          "params": [
+            "i32"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "name": "wpk_fork_module_table_state_save",
+          "params": [
+            "i32"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "name": "wpk_fork_module_thread_bootstrap",
           "params": [],
           "results": []
         },
@@ -3328,6 +4231,17 @@
         {
           "kind": "func",
           "module": "env",
+          "name": "__wpk_fork_frame_peek",
+          "params": [
+            "ptr"
+          ],
+          "results": [
+            "ptr"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
           "name": "__wpk_fork_frame_reserve",
           "params": [
             "ptr"
@@ -3335,8 +4249,525 @@
           "results": [
             "ptr"
           ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_module_state_record_commit",
+          "params": [
+            "ptr"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_module_state_record_find",
+          "params": [
+            "i32",
+            "i32",
+            "i32",
+            "i32"
+          ],
+          "results": [
+            "ptr"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_module_state_record_reserve",
+          "params": [
+            "i32",
+            "i32",
+            "i32",
+            "ptr"
+          ],
+          "results": [
+            "ptr"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_module_state_table_dirty_count",
+          "params": [
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_module_state_table_dirty_mark",
+          "params": [
+            "i32",
+            "i64",
+            "i64"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_module_state_table_dirty_page",
+          "params": [
+            "i32",
+            "i32"
+          ],
+          "results": [
+            "i64"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_module_state_table_mutation_abort",
+          "params": [],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_module_state_table_mutation_begin",
+          "params": [],
+          "results": [
+            "i64"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_module_state_table_mutation_commit",
+          "params": [
+            "i32",
+            "i64",
+            "i64"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_module_state_table_reconcile",
+          "params": [],
+          "results": [
+            "i64"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_module_state_table_state_owned",
+          "params": [
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_decode_funcref",
+          "params": [
+            "i32"
+          ],
+          "results": [
+            "funcref"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_encode_funcref",
+          "params": [
+            "funcref"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_exn_broker_encode",
+          "params": [
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_exn_broker_throw_recipe",
+          "params": [
+            "i32"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_exn_cache_index",
+          "params": [
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_exn_claim",
+          "params": [
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_exn_define",
+          "params": [
+            "i32",
+            "i32",
+            "i32",
+            "i32",
+            "ptr",
+            "i32",
+            "ptr",
+            "i32"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_exn_ingress_throw",
+          "params": [
+            "i32"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_exn_load",
+          "params": [
+            "i32",
+            "i32",
+            "i32",
+            "i32",
+            "ptr",
+            "i32",
+            "ptr",
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_exn_lookup",
+          "params": [
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_exn_route",
+          "params": [
+            "i32",
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_gc_broker_encode",
+          "params": [
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_gc_capture_layout",
+          "params": [
+            "i32",
+            "i32",
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_gc_claim",
+          "params": [
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_gc_define",
+          "params": [
+            "i32",
+            "i32",
+            "i32",
+            "i32",
+            "i32",
+            "ptr",
+            "i32",
+            "i32"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_gc_i31",
+          "params": [
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_gc_load",
+          "params": [
+            "i32",
+            "i32",
+            "i32",
+            "i32",
+            "i32",
+            "ptr",
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_gc_lookup",
+          "params": [
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_gc_payload_len",
+          "params": [
+            "i32",
+            "i32",
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_gc_provenance_begin",
+          "params": [
+            "i32",
+            "i32",
+            "i32",
+            "i32",
+            "i64",
+            "i64",
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_gc_provenance_end",
+          "params": [
+            "i32"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_gc_provenance_ref",
+          "params": [
+            "i32",
+            "i32",
+            "i32"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_gc_route",
+          "params": [
+            "i32",
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_scratch_release",
+          "params": [
+            "ptr",
+            "ptr"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_scratch_reserve",
+          "params": [
+            "ptr"
+          ],
+          "results": [
+            "ptr"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_vector_append",
+          "params": [
+            "i32",
+            "i32"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_vector_begin",
+          "params": [
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_vector_finish",
+          "params": [
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_ref_vector_get",
+          "params": [
+            "i32",
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_resume_peek",
+          "params": [
+            "i32"
+          ],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "element": "anyref",
+          "kind": "table",
+          "maximum": null,
+          "minimum": 1,
+          "module": "env",
+          "name": "__wpk_fork_ref_gc_transit",
+          "table64": false
+        },
+        {
+          "element": "funcref",
+          "kind": "table",
+          "maximum": null,
+          "minimum": 1,
+          "module": "env",
+          "name": "__wpk_fork_resume_table",
+          "table64": false
         }
-      ]
+      ],
+      "static_root_catalog": {
+        "export": "__wpk_fork_static_root_catalog",
+        "harvest_export": "__wpk_fork_static_root_harvest",
+        "header_size": 12,
+        "magic_bytes": [
+          75,
+          70,
+          83,
+          82
+        ],
+        "section": "kandelo.wpk_fork.static_root_catalog",
+        "version": 1
+      },
+      "unwind_transport": {
+        "import": {
+          "kind": "tag",
+          "module": "env",
+          "name": "__wpk_fork_unwind"
+        },
+        "payload_arity": 0,
+        "section": "kandelo.wpk_fork.unwind_transport",
+        "version": 1
+      }
     }
   },
   "syscall_arg_descriptors": {
