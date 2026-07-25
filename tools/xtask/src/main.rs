@@ -26,6 +26,9 @@
 //!                         Args: --package <dir> --arch <wasm32|wasm64>
 //!                               --out <dir> --build-timestamp <ISO> --build-host <s>.
 //!                         Used by matrix-build entries.
+//!   archive-extract-member
+//!                         Stream one exact regular package-archive member to
+//!                         a new output file without exposing partial bytes.
 //!   build-index           Emit `index.toml` (the post-publish provenance
 //!                         manifest) from a directory of staged
 //!                         `.tar.zst` archives. Args: --abi <N>
@@ -60,6 +63,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
 
+mod archive_extract_member;
 mod archive_stage;
 mod archive_stage_cli;
 mod build_deps;
@@ -82,6 +86,7 @@ mod host_tool_probe;
 mod index_candidate;
 mod index_toml;
 mod index_update;
+mod package_archive_limits;
 mod package_archive_name;
 mod package_matrix;
 mod package_output_receipt;
@@ -99,7 +104,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, materialize-package-output, staging-reuse, archive-stage, build-index, set-build-commit, set-package-binary, index-update, index-candidate, homebrew-sidecars, homebrew-tier2-preflight, homebrew-validate"
+                "subcommands: dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, materialize-package-output, staging-reuse, archive-stage, archive-extract-member, build-index, set-build-commit, set-package-binary, index-update, index-candidate, homebrew-sidecars, homebrew-tier2-preflight, homebrew-validate"
             );
             return ExitCode::from(2);
         }
@@ -116,6 +121,7 @@ fn main() -> ExitCode {
         "materialize-package-output" => package_output_receipt::run(rest),
         "staging-reuse" => staging_reuse::run(rest),
         "archive-stage" => archive_stage_cli::run(rest),
+        "archive-extract-member" => archive_extract_member::run(rest),
         "build-index" => build_index::run(rest),
         "set-build-commit" => update_pkg_manifest::run(rest),
         "set-package-binary" => update_pkg_manifest::run_set_package_binary(rest),
