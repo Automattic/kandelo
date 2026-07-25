@@ -421,6 +421,16 @@ verify_authority_checkout() {
   fi
 }
 
+verify_producer_checkout() {
+  if [ "$VALIDATION_METHOD" = identical-package-cache-projection-v1 ] &&
+     { [ "$(git -C "$PRODUCER_ROOT" rev-parse HEAD)" != "$PRODUCER_SHA" ] ||
+       [ "$(git -C "$PRODUCER_ROOT" rev-parse 'HEAD^{tree}')" != "$producer_tree" ] ||
+       [ -n "$(git -C "$PRODUCER_ROOT" status --porcelain=v1 --untracked-files=all)" ]; }; then
+    echo "publish-durable-package-generation: producer checkout changed" >&2
+    return 1
+  fi
+}
+
 verify_preserved_source_evidence() {
   [ "$IS_PRESERVED" = true ] || return 0
   # WHY: the read-only prepare job observed a mutable source. The release
@@ -528,34 +538,125 @@ require_pr_staging_retention() {
   fi
 }
 
+capture_live_main_source_snapshot() {
+  local prefix="$1"
+  local source_release="$TMP_ROOT/$prefix-source-release.json"
+  local source_tag_ref="$TMP_ROOT/$prefix-source-tag.json"
+  local default_ref_value="$TMP_ROOT/$prefix-main-ref.json"
+  local producer_commit="$TMP_ROOT/$prefix-producer-commit.json"
+  local main_commit="$TMP_ROOT/$prefix-main-commit.json"
+  local source_pages="$TMP_ROOT/$prefix-source-asset-pages.json"
+  local source_assets="$TMP_ROOT/$prefix-source-assets.json"
+  local snapshot="$TMP_ROOT/$prefix-source-snapshot.json"
+  local source_release_id
+
+  require_pr_staging_retention
+  gh api "/repos/$REPOSITORY/releases/tags/$SOURCE_TAG" >"$source_release"
+  gh api "/repos/$REPOSITORY/git/ref/tags/$SOURCE_TAG" >"$source_tag_ref"
+  gh api "/repos/$REPOSITORY/git/ref/heads/$DEFAULT_REF" >"$default_ref_value"
+  source_release_id="$(jq -er '.id | select(type == "number" and . > 0)' \
+    "$source_release")"
+  gh api --paginate --slurp \
+    "/repos/$REPOSITORY/releases/$source_release_id/assets?per_page=100" \
+    >"$source_pages"
+  jq -e 'type == "array" and all(.[]; type == "array")' \
+    "$source_pages" >/dev/null
+  jq '[.[][]]' "$source_pages" >"$source_assets"
+
+  if [ "$legacy_dispatch" = true ]; then
+    printf 'null\n' >"$producer_commit"
+    gh api "/repos/$REPOSITORY/git/commits/$PACKAGE_SOURCE_SHA" >"$main_commit"
+  else
+    gh api "/repos/$REPOSITORY/git/commits/$PRODUCER_SHA" >"$producer_commit"
+    gh api "/repos/$REPOSITORY/git/commits/$VALIDATED_MAIN_SHA" >"$main_commit"
+  fi
+
+  # WHY: these are the remote fields that authorize publication. Presentation
+  # URLs and download counters are deliberately excluded because they do not
+  # identify source bytes and may change after an authenticated read.
+  jq -nS \
+    --arg mode "$(if [ "$legacy_dispatch" = true ]; then printf legacy; else printf v2; fi)" \
+    --slurpfile release "$source_release" \
+    --slurpfile tag "$source_tag_ref" \
+    --slurpfile main_ref "$default_ref_value" \
+    --slurpfile producer_commit "$producer_commit" \
+    --slurpfile main_commit "$main_commit" \
+    --slurpfile assets "$source_assets" '
+      def direct_ref:
+        {ref, object:{type:.object.type, sha:.object.sha}};
+      def commit_identity:
+        if . == null then null
+        else {
+          sha,
+          tree:{sha:.tree.sha},
+          parents:[.parents[]? | {sha}]
+        }
+        end;
+      {
+        mode:$mode,
+        release:($release[0] | {
+          id,tag_name,target_commitish,name,body,draft,prerelease,immutable
+        }),
+        direct_tag:($tag[0] | direct_ref),
+        main_ref:($main_ref[0] | direct_ref),
+        producer_commit:($producer_commit[0] | commit_identity),
+        main_commit:($main_commit[0] | commit_identity),
+        assets:($assets[0] |
+          map({id,name,state,size,digest}) | sort_by(.name))
+      }
+    ' >"$snapshot"
+}
+
+assert_live_main_source_snapshot() {
+  local prefix="$1"
+  local baseline="$TMP_ROOT/live-main-source-baseline.json"
+  local observed="$TMP_ROOT/$prefix-source-snapshot.json"
+
+  capture_live_main_source_snapshot "$prefix"
+  if [ -f "$baseline" ]; then
+    cmp "$baseline" "$observed" >/dev/null || {
+      echo "publish-durable-package-generation: live publication source changed" >&2
+      return 1
+    }
+  else
+    cp "$observed" "$baseline"
+  fi
+}
+
+authorize_publication_mutation() {
+  verify_authority_checkout
+  verify_producer_checkout
+  if [ "$IS_PRESERVED" = false ]; then
+    if [ ! -f "$TMP_ROOT/live-main-source-baseline.json" ]; then
+      validate_live_main_source
+    else
+      # WHY: the full semantic check establishes this immutable baseline.
+      # Every write then takes one fresh, bounded remote snapshot so a long
+      # upload sequence cannot publish after main, the producer tag/release,
+      # commit metadata, or source assets move.
+      assert_live_main_source_snapshot live-before-mutation
+    fi
+  fi
+}
+
 validate_live_main_source() {
-  local source_release="$TMP_ROOT/live-producer-release.json"
-  local source_tag_ref="$TMP_ROOT/live-producer-tag.json"
-  local producer_commit="$TMP_ROOT/live-producer-commit.json"
-  local default_ref_value="$TMP_ROOT/live-main-ref.json"
-  local main_commit="$TMP_ROOT/live-main-commit.json"
-  local source_pages="$TMP_ROOT/live-source-asset-pages.json"
-  local source_assets="$TMP_ROOT/live-source-assets.json"
+  local source_release="$TMP_ROOT/live-before-source-release.json"
+  local source_tag_ref="$TMP_ROOT/live-before-source-tag.json"
+  local producer_commit="$TMP_ROOT/live-before-producer-commit.json"
+  local default_ref_value="$TMP_ROOT/live-before-main-ref.json"
+  local main_commit="$TMP_ROOT/live-before-main-commit.json"
+  local source_assets="$TMP_ROOT/live-before-source-assets.json"
   local producer_evidence="$TMP_ROOT/live-producer-evidence.json"
   local main_validation="$TMP_ROOT/live-main-validation.json"
   local producer_tree_json="$TMP_ROOT/live-producer-tree.json"
   local main_tree_json="$TMP_ROOT/live-main-tree.json"
   local cache_projection="$TMP_ROOT/live-cache-projection.json"
   local preserved_manifest="$TMP_ROOT/live-preserved-generation.json"
-  local source_assets_full="$TMP_ROOT/live-source-assets-full.json"
   local source_evidence_extra_args=()
-  local source_release_id
-  require_pr_staging_retention
-  gh api "/repos/$REPOSITORY/releases/tags/$SOURCE_TAG" >"$source_release"
-  gh api "/repos/$REPOSITORY/git/ref/tags/$SOURCE_TAG" >"$source_tag_ref"
-  gh api "/repos/$REPOSITORY/git/ref/heads/$DEFAULT_REF" >"$default_ref_value"
+  local generation_digest generation_id generation_size
+
+  assert_live_main_source_snapshot live-before
   if [[ "$SOURCE_TAG" =~ ^preserved-package-generation- ]]; then
-    source_release_id="$(jq -er '.id | select(type == "number" and . > 0)' \
-      "$source_release")"
-    gh api --paginate --slurp \
-      "/repos/$REPOSITORY/releases/$source_release_id/assets?per_page=100" \
-      >"$source_pages"
-    jq '[.[][]]' "$source_pages" >"$source_assets_full"
     generation_id="$(jq -er '
       [.[] | select(
         .name == "generation.json" and .state == "uploaded" and
@@ -564,15 +665,15 @@ validate_live_main_source() {
         (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))
       )] |
       if length == 1 then .[0].id else empty end
-    ' "$source_assets_full")"
+    ' "$source_assets")"
     gh api -H 'Accept: application/octet-stream' \
       "/repos/$REPOSITORY/releases/assets/$generation_id" \
       >"$preserved_manifest"
     generation_size="$(jq -er --argjson id "$generation_id" \
-      '.[] | select(.id == $id) | .size' "$source_assets_full")"
+      '.[] | select(.id == $id) | .size' "$source_assets")"
     generation_digest="$(jq -er --argjson id "$generation_id" \
       '.[] | select(.id == $id) | .digest | sub("^sha256:";"")' \
-      "$source_assets_full")"
+      "$source_assets")"
     [ "$(file_bytes "$preserved_manifest")" = "$generation_size" ] &&
       [ "$(sha256_file "$preserved_manifest")" = "$generation_digest" ] || {
       echo "publish-durable-package-generation: preserved producer seal differs from GitHub metadata" >&2
@@ -580,11 +681,10 @@ validate_live_main_source() {
     }
     source_evidence_extra_args=(
       --preserved-manifest "$preserved_manifest"
-      --release-assets "$source_assets_full"
+      --release-assets "$source_assets"
     )
   fi
   if [ "$legacy_dispatch" = true ]; then
-    gh api "/repos/$REPOSITORY/git/commits/$PACKAGE_SOURCE_SHA" >"$main_commit"
     env -u GH_TOKEN -u GITHUB_TOKEN \
       -u HOMEBREW_GITHUB_API_TOKEN \
       -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
@@ -616,8 +716,6 @@ validate_live_main_source() {
     # WHY: both names can move independently after preparation. Re-deriving
     # both receipts with current-main code closes that race before writes and
     # again before the seal and public transition.
-    gh api "/repos/$REPOSITORY/git/commits/$PRODUCER_SHA" >"$producer_commit"
-    gh api "/repos/$REPOSITORY/git/commits/$VALIDATED_MAIN_SHA" >"$main_commit"
     env -u GH_TOKEN -u GITHUB_TOKEN \
       -u HOMEBREW_GITHUB_API_TOKEN \
       -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
@@ -705,40 +803,9 @@ validate_live_main_source() {
       }
     fi
   fi
-  source_release_id="$(jq -er '.id' "$source_release")"
-  gh api --paginate --slurp \
-    "/repos/$REPOSITORY/releases/$source_release_id/assets?per_page=100" \
-    >"$source_pages"
-  jq '[.[][]]' "$source_pages" >"$TMP_ROOT/live-source-assets-full-after.json"
-  jq '[.[][]] | sort_by(.name) | map({name,state,size,digest})' \
-    "$source_pages" >"$source_assets"
-  if [[ "$SOURCE_TAG" =~ ^preserved-package-generation- ]]; then
-    env -u GH_TOKEN -u GITHUB_TOKEN \
-      -u HOMEBREW_GITHUB_API_TOKEN \
-      -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-      -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
-      -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
-      -u ACTIONS_ID_TOKEN_REQUEST_URL \
-      -u ACTIONS_RUNTIME_TOKEN \
-      python3 "$SCRIPT_DIR/package-generation.py" producer-release-evidence \
-        --repository "$REPOSITORY" \
-        --source-tag "$SOURCE_TAG" \
-        --producer-sha "$PRODUCER_SHA" \
-        --release "$source_release" \
-        --tag-ref "$source_tag_ref" \
-        --producer-commit "$producer_commit" \
-        --preserved-manifest "$preserved_manifest" \
-        --release-assets "$TMP_ROOT/live-source-assets-full-after.json" \
-        --output "$TMP_ROOT/live-producer-evidence-after.json"
-    cmp "$producer_evidence" \
-      "$TMP_ROOT/live-producer-evidence-after.json" >/dev/null || {
-      echo "publish-durable-package-generation: preserved producer evidence changed during validation" >&2
-      return 1
-    }
-  fi
   jq -e --arg source_field "$generation_source_field" \
     --slurpfile manifest "$MANIFEST" '
-    . as $assets |
+    (map({name,state,size,digest})) as $assets |
     ($manifest[0]) as $generation |
     ([{
       name:"index.toml",
@@ -760,6 +827,10 @@ validate_live_main_source() {
     echo "publish-durable-package-generation: producer package assets changed after preparation" >&2
     return 1
   }
+  # WHY: cache scans and recursive tree reads can be slow. Re-reading every
+  # mutable remote authority field closes the interval between the evidence
+  # used above and the publication decision made by the caller.
+  assert_live_main_source_snapshot live-after
   if [ "$(git -C "$REPO_ROOT" rev-parse HEAD)" != "$AUTHORITY_SHA" ] ||
      [ "$(git -C "$REPO_ROOT" rev-parse 'HEAD^{tree}')" != "$authority_tree" ] ||
      [ -n "$(git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all)" ] ||
@@ -908,6 +979,7 @@ ensure_direct_tag() {
   if [ "$rc" -ne 44 ]; then
     return 1
   fi
+  authorize_publication_mutation
   if gh api --method POST "/repos/$REPOSITORY/git/refs" \
       -f "ref=refs/tags/$TAG" -f "sha=$TARGET_COMMIT" >"$create_json"; then
     validate_direct_tag_json "$create_json"
@@ -921,6 +993,7 @@ ensure_direct_tag() {
 
 create_or_discover_release() {
   local create_json="$TMP_ROOT/create.json" rc=0 release_id
+  authorize_publication_mutation
   if gh api --method POST "/repos/$REPOSITORY/releases" \
       -f "tag_name=$TAG" \
       -f "target_commitish=$TARGET_COMMIT" \
@@ -1012,6 +1085,7 @@ ensure_asset() {
     echo "publish-durable-package-generation: public generation is missing $name" >&2
     return 1
   fi
+  authorize_publication_mutation
   gh release upload "$TAG" --repo "$REPOSITORY" "$BUNDLE/$name" || true
   refresh_release_by_id "$(jq -er .id "$RELEASE_JSON")"
   assert_inventory_allowed
@@ -1024,6 +1098,7 @@ publish_release() {
   if [ "$(jq -r .draft "$RELEASE_JSON")" = false ]; then
     return 0
   fi
+  authorize_publication_mutation
   gh api --method PATCH "/repos/$REPOSITORY/releases/$release_id" \
     -f make_latest=false -F draft=false -F prerelease=true >/dev/null || true
   refresh_release_by_id "$release_id"
