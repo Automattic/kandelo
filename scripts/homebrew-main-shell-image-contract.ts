@@ -12,6 +12,13 @@ import {
   DOOM_WAD_SHA256,
   DOOM_WAD_URL,
 } from "../web-libs/kandelo-session/src/demo-guides";
+import {
+  assertMainShellGuestCatalogIdentity,
+} from "./homebrew-main-shell-catalog-contract";
+export {
+  assertMainShellGuestCatalogIdentity,
+  type MainShellCatalogIdentity,
+} from "./homebrew-main-shell-catalog-contract";
 
 const EXPECTED_ARCH = "wasm32";
 const EXPECTED_SHELL_PATH = "/home/linuxbrew/.linuxbrew/bin/bash";
@@ -93,11 +100,11 @@ export function assertMainShellImageContract(input: MainShellImageContractInput)
     requestedPackagesSha256,
     "guest Homebrew requested_packages_sha256",
   );
-  assertCatalog(requiredRecord(guest.catalog, "guest Homebrew catalog"), {
+  assertMainShellGuestCatalogIdentity(guest, {
     tapRepository,
     tapName,
     tapCommit,
-  }, "guest Homebrew catalog", "snake");
+  });
   assertLockBinding(
     requiredRecord(guest.migration_lock, "guest Homebrew migration_lock"),
     input,

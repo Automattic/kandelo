@@ -24,6 +24,10 @@ import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
 import { loadHomebrewBottleMirrorClosedAssets } from "../../../../../host/src/homebrew-bottle-mirror-browser";
 import { HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH } from "../../../../../host/src/homebrew-bottle-mirror-plan";
 import {
+  loadClosedLazyAssetSources,
+  type ClosedLazyAsset,
+} from "../../../../../host/src/vfs/closed-lazy-assets";
+import {
   composeBootDescriptorVfs,
   homebrewRuntimeLayerReferences,
 } from "../../../lib/init/homebrew-package-layers";
@@ -49,9 +53,7 @@ import {
   type DemoPresentation,
   type GalleryItem,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-import {
-  validateBootDescriptor,
-} from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
+import { validateBootDescriptor } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
 import {
   genericDemoPresentation,
   resolveDemoAssets,
@@ -60,9 +62,7 @@ import {
   type DemoAssetConfig,
   type KandeloDemoConfig,
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
-import {
-  readKandeloDemoConfigFromVfs,
-} from "../../../../../web-libs/kandelo-session/src/demo-config-vfs";
+import { readKandeloDemoConfigFromVfs } from "../../../../../web-libs/kandelo-session/src/demo-config-vfs";
 import {
   KANDELO_SHELL_CONFIG_PATH,
   MAX_KANDELO_SHELL_CONFIG_BYTES,
@@ -108,27 +108,51 @@ const DEFAULT_SOFTWARE_MANIFEST_URLS = [
 ];
 
 const OPTIONAL_BINARY_URLS = {
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/fbtest.wasm", {
-    query: "?url", import: "default",
-  }),
+  ...import.meta.glob(
+    "../../../../../local-binaries/programs/wasm32/fbtest.wasm",
+    {
+      query: "?url",
+      import: "default",
+    },
+  ),
   ...import.meta.glob("../../../../../binaries/programs/wasm32/fbtest.wasm", {
-    query: "?url", import: "default",
+    query: "?url",
+    import: "default",
   }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/nginx-vfs.vfs.zst", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/nginx-vfs.vfs.zst", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/nginx-php-vfs.vfs.zst", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/nginx-php-vfs.vfs.zst", {
-    query: "?url", import: "default",
-  }),
+  ...import.meta.glob(
+    "../../../../../local-binaries/programs/wasm32/nginx-vfs.vfs.zst",
+    {
+      query: "?url",
+      import: "default",
+    },
+  ),
+  ...import.meta.glob(
+    "../../../../../binaries/programs/wasm32/nginx-vfs.vfs.zst",
+    {
+      query: "?url",
+      import: "default",
+    },
+  ),
+  ...import.meta.glob(
+    "../../../../../local-binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
+    {
+      query: "?url",
+      import: "default",
+    },
+  ),
+  ...import.meta.glob(
+    "../../../../../binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
+    {
+      query: "?url",
+      import: "default",
+    },
+  ),
 } as Record<string, () => Promise<string>>;
 
-async function optionalBinaryUrl(relPaths: string[], label: string): Promise<string> {
+async function optionalBinaryUrl(
+  relPaths: string[],
+  label: string,
+): Promise<string> {
   for (const relPath of relPaths) {
     const loader = OPTIONAL_BINARY_URLS[relPath];
     if (loader) return loader();
@@ -226,12 +250,7 @@ class BootSuperseded extends Error {
 }
 
 type LiveVfsImage =
-  | "shell"
-  | "node"
-  | "nginx"
-  | "nginx-php"
-  | "wordpress"
-  | "lamp";
+  "shell" | "node" | "nginx" | "nginx-php" | "wordpress" | "lamp";
 
 type LiveVfsSource =
   | { kind: "url"; url: string }
@@ -291,7 +310,13 @@ const VFS_SOURCES: Record<LiveVfsImage, LiveVfsSource> = {
   lamp: { kind: "optional-demo", image: "lamp" },
 };
 
-const DINIT_NGINX_ARGV = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"];
+const DINIT_NGINX_ARGV = [
+  "/sbin/dinit",
+  "--container",
+  "-p",
+  "/tmp/dinitctl",
+  "nginx",
+];
 
 const LIVE_DEMO_IDS = [
   "shell",
@@ -304,7 +329,7 @@ const LIVE_DEMO_IDS = [
   "modeset",
 ] as const;
 
-type LiveDemoId = typeof LIVE_DEMO_IDS[number];
+type LiveDemoId = (typeof LIVE_DEMO_IDS)[number];
 
 // Boot-resource reclamation (worker-owned live filesystems and transient
 // image-build buffers) lives in the shared helper so every kernel-owned demo
@@ -521,7 +546,11 @@ const SHELL_PROFILES: Record<ShellProfile, { env: string[]; cwd: string }> = {
 
 const INIT_ENV_PROFILES: Record<InitEnvProfile, () => string[]> = {
   service: () => SERVICE_ENV,
-  wordpress: () => [...SERVICE_ENV, `WP_APP_PATH=${APP_PATH}`, `WP_PROTO=${PROTO}`],
+  wordpress: () => [
+    ...SERVICE_ENV,
+    `WP_APP_PATH=${APP_PATH}`,
+    `WP_PROTO=${PROTO}`,
+  ],
 };
 
 export type FbDemo = "none" | "test";
@@ -532,7 +561,9 @@ export interface CreateLiveHostOptions {
   fb?: FbDemo;
 }
 
-export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<LiveKernelHost> {
+export async function createLiveHost(
+  opts: CreateLiveHostOptions = {},
+): Promise<LiveKernelHost> {
   let currentKernel: BrowserKernel | null = null;
   let bootSeq = 0;
   let serviceWorkerReady: Promise<ServiceWorker> | null = null;
@@ -548,7 +579,9 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
     },
   });
 
-  const requireServiceWorker = (tick?: (msg: string) => void): Promise<ServiceWorker> => {
+  const requireServiceWorker = (
+    tick?: (msg: string) => void,
+  ): Promise<ServiceWorker> => {
     if (!serviceWorkerReady) {
       tick?.("preparing service worker...");
       serviceWorkerReady = ensureServiceWorkerReady(SW_URL)
@@ -562,18 +595,22 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
             sessionStorage.removeItem(COI_RELOAD_SESSION_KEY);
             throw new Error(
               "Kandelo could not enable cross-origin isolation after the service worker became active. " +
-              "Reload the page; if this persists, clear site data for this site and check whether a browser extension is blocking service workers or COOP/COEP headers.",
+                "Reload the page; if this persists, clear site data for this site and check whether a browser extension is blocking service workers or COOP/COEP headers.",
             );
           }
 
           sessionStorage.setItem(COI_RELOAD_SESSION_KEY, "1");
-          tick?.("service worker active; reloading to enable cross-origin isolation...");
+          tick?.(
+            "service worker active; reloading to enable cross-origin isolation...",
+          );
           window.location.reload();
           return new Promise<never>((_, reject) => {
             window.setTimeout(() => {
-              reject(new Error(
-                "Kandelo requested a reload to enable cross-origin isolation, but the page did not unload.",
-              ));
+              reject(
+                new Error(
+                  "Kandelo requested a reload to enable cross-origin isolation, but the page did not unload.",
+                ),
+              );
             }, 5_000);
           });
         })
@@ -584,12 +621,18 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
     }
     const ready = serviceWorkerReady;
     if (!ready) {
-      throw new Error("Kandelo service worker readiness promise was not initialized.");
+      throw new Error(
+        "Kandelo service worker readiness promise was not initialized.",
+      );
     }
     return ready;
   };
 
-  void startBoot(host, profileForDescriptor(initialDescriptor, opts.fb), initialDescriptor);
+  void startBoot(
+    host,
+    profileForDescriptor(initialDescriptor, opts.fb),
+    initialDescriptor,
+  );
   void requireServiceWorker()
     .then(() => refreshSoftwareGallery(host, localGalleryItems))
     .catch((err) => {
@@ -694,17 +737,21 @@ function descriptorForBootQuery(
 
   const liveId = liveDemoIdForVfsImageUrl(normalizedVfsUrl);
   const base = descriptorFor(liveId ?? "shell");
-  return descriptorWithVfsImageUrl(base, normalizedVfsUrl, liveId
-    ? {
-      id: liveId,
-      title: base.title,
-      packages: base.packages,
-    }
-    : {
-      id: demoIdFromVfsImageUrl(normalizedVfsUrl),
-      title: titleFromVfsImageUrl(normalizedVfsUrl),
-      packages: [],
-    });
+  return descriptorWithVfsImageUrl(
+    base,
+    normalizedVfsUrl,
+    liveId
+      ? {
+          id: liveId,
+          title: base.title,
+          packages: base.packages,
+        }
+      : {
+          id: demoIdFromVfsImageUrl(normalizedVfsUrl),
+          title: titleFromVfsImageUrl(normalizedVfsUrl),
+          packages: [],
+        },
+  );
 }
 
 function profileForDescriptor(desc: BootDescriptor, fb?: FbDemo): LiveProfile {
@@ -774,7 +821,8 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
     descriptor: desc,
     shell: spec.shell ?? "default",
     includeNodeUtility: spec.includeNodeUtility ?? false,
-    maxVfsByteLength: spec.maxVfsByteLength ??
+    maxVfsByteLength:
+      spec.maxVfsByteLength ??
       (spec.image === "shell"
         ? MAIN_SHELL_VFS_PROFILE_MAX_BYTES
         : DEFAULT_VFS_PROFILE_MAX_BYTES),
@@ -813,7 +861,10 @@ function shellCwdFor(profile: ShellProfile): string {
   return SHELL_PROFILES[profile].cwd;
 }
 
-function shellIdentityForProfile(profile: LiveProfile, boot?: BootDescriptor["boot"]): {
+function shellIdentityForProfile(
+  profile: LiveProfile,
+  boot?: BootDescriptor["boot"],
+): {
   env: string[];
   cwd: string;
   uid: number;
@@ -821,11 +872,29 @@ function shellIdentityForProfile(profile: LiveProfile, boot?: BootDescriptor["bo
 } {
   let identity: { env: string[]; cwd: string; uid: number; gid: number };
   if (profile.shell === "node") {
-    identity = { env: shellEnvFor(profile.shell), cwd: shellCwdFor(profile.shell), uid: DEMO_UID, gid: DEMO_GID };
-  } else if (profile.software?.shellEnv && profile.software.shellEnv !== SERVICE_ENV) {
-    identity = { env: profile.software.shellEnv, cwd: DEMO_HOME, uid: DEMO_UID, gid: DEMO_GID };
+    identity = {
+      env: shellEnvFor(profile.shell),
+      cwd: shellCwdFor(profile.shell),
+      uid: DEMO_UID,
+      gid: DEMO_GID,
+    };
+  } else if (
+    profile.software?.shellEnv &&
+    profile.software.shellEnv !== SERVICE_ENV
+  ) {
+    identity = {
+      env: profile.software.shellEnv,
+      cwd: DEMO_HOME,
+      uid: DEMO_UID,
+      gid: DEMO_GID,
+    };
   } else {
-    identity = { env: shellEnvFor(profile.shell), cwd: shellCwdFor(profile.shell), uid: DEMO_UID, gid: DEMO_GID };
+    identity = {
+      env: shellEnvFor(profile.shell),
+      cwd: shellCwdFor(profile.shell),
+      uid: DEMO_UID,
+      gid: DEMO_GID,
+    };
   }
   if (!boot) return identity;
   return {
@@ -875,8 +944,8 @@ function presentationForProfile(
     runningPrimary: [
       "web",
       "syslog",
-      ...presentation.runningPrimary.filter((surface) =>
-        surface !== "web" && surface !== "syslog"
+      ...presentation.runningPrimary.filter(
+        (surface) => surface !== "web" && surface !== "syslog",
       ),
     ],
   };
@@ -912,9 +981,15 @@ class DinitBootStatusTracker {
 
   observeProcessOutput(text: string, stream: string): void {
     if (!text) return;
-    const normalized = `${this.outputTails.get(stream) ?? ""}${text}`.replace(/\r/g, "");
+    const normalized = `${this.outputTails.get(stream) ?? ""}${text}`.replace(
+      /\r/g,
+      "",
+    );
     const lines = normalized.split("\n");
-    this.outputTails.set(stream, text.endsWith("\n") ? "" : lines.pop() ?? "");
+    this.outputTails.set(
+      stream,
+      text.endsWith("\n") ? "" : (lines.pop() ?? ""),
+    );
     for (const line of lines) {
       const serviceName = parseDinitCompletionLine(line);
       if (!serviceName) continue;
@@ -944,7 +1019,9 @@ class DinitBootStatusTracker {
 }
 
 function parseDinitCompletionLine(line: string): string | null {
-  const match = stripAnsi(line).trim().match(/^\[(?:\s*OK\s*|FAILED)\]\s+(.+)$/);
+  const match = stripAnsi(line)
+    .trim()
+    .match(/^\[(?:\s*OK\s*|FAILED)\]\s+(.+)$/);
   return match?.[1]?.trim() || null;
 }
 
@@ -1000,17 +1077,16 @@ function startDinitStartingPoller(options: {
 
 async function readDinitctlList(kernel: BrowserKernel): Promise<string | null> {
   const chunks: Uint8Array[] = [];
-  const { pid, exit } = await kernel.spawnFromVfs(DINITCTL_PATH, [
+  const { pid, exit } = await kernel.spawnFromVfs(
     DINITCTL_PATH,
-    "-p",
-    DINITCTL_SOCKET_PATH,
-    "list",
-  ], {
-    cwd: "/",
-    uid: ROOT_UID,
-    gid: ROOT_GID,
-    pty: true,
-  });
+    [DINITCTL_PATH, "-p", DINITCTL_SOCKET_PATH, "list"],
+    {
+      cwd: "/",
+      uid: ROOT_UID,
+      gid: ROOT_GID,
+      pty: true,
+    },
+  );
   kernel.onPtyOutput(pid, (data) => {
     chunks.push(data.slice());
   });
@@ -1062,7 +1138,9 @@ async function bootProfile(
   requestedDescriptor: BootDescriptor,
   bootStartedAt: number,
   isCurrent: () => boolean,
-  requireServiceWorker: (tick?: (msg: string) => void) => Promise<ServiceWorker>,
+  requireServiceWorker: (
+    tick?: (msg: string) => void,
+  ) => Promise<ServiceWorker>,
 ): Promise<BrowserKernel> {
   const assertCurrent = () => {
     if (!isCurrent()) throw new BootSuperseded();
@@ -1084,19 +1162,26 @@ async function bootProfile(
   host.setDescriptor({
     ...profile.descriptor,
     title: requestedDescriptor.title || profile.descriptor.title,
-    packages: requestedDescriptor.packages.length > 0
-      ? requestedDescriptor.packages
-      : profile.descriptor.packages,
+    packages:
+      requestedDescriptor.packages.length > 0
+        ? requestedDescriptor.packages
+        : profile.descriptor.packages,
     mounts: requestedDescriptor.mounts,
     boot: effectiveBoot,
   });
-  const genericPresentation = profile.fallbackPresentation ?? genericPresentationForProfile(profile);
+  const genericPresentation =
+    profile.fallbackPresentation ?? genericPresentationForProfile(profile);
   host.setPresentation(genericPresentation);
   host.setStatus("booting");
 
   const tick = (msg: string) => {
     if (!isCurrent()) return;
-    host.pushDmesg({ t: bootElapsedMs(bootStartedAt), level: "info", facility: "kandelo", msg });
+    host.pushDmesg({
+      t: bootElapsedMs(bootStartedAt),
+      level: "info",
+      facility: "kandelo",
+      msg,
+    });
   };
   let maybeUpdateWebReadiness = () => {};
   const dinitBootTracker = new DinitBootStatusTracker(tick, () => {
@@ -1114,13 +1199,17 @@ async function bootProfile(
   tick("service worker active and cross-origin isolated");
   tick(`loading ${profile.id} profile...`);
   const [kernelBytes, vfsBytes, softwareBinaries] = await Promise.all([
-    fetch(kernelWasmUrl).then(failOn("kernel.wasm")).then((r) => r.arrayBuffer()),
+    fetch(kernelWasmUrl)
+      .then(failOn("kernel.wasm"))
+      .then((r) => r.arrayBuffer()),
     loadVfsImageBytes(profile),
     loadSoftwareBinaries(profile.software),
   ]);
   assertCurrent();
 
-  tick(`kernel: ${kib(kernelBytes.byteLength)} · vfs: ${kib(vfsBytes.byteLength)}`);
+  tick(
+    `kernel: ${kib(kernelBytes.byteLength)} · vfs: ${kib(vfsBytes.byteLength)}`,
+  );
   const fetchedVfsImageBytes = new Uint8Array(vfsBytes);
   const vfsMetadata = MemoryFileSystem.readImageMetadata(fetchedVfsImageBytes);
   assertVfsImageFitsProfile(
@@ -1144,9 +1233,11 @@ async function bootProfile(
   const runtimeLayers = homebrewRuntimeLayerReferences(requestedDescriptor);
   let buildFs: MemoryFileSystem;
   if (runtimeLayers.length > 0) {
-    tick(`verifying ${runtimeLayers.length} selected runtime layer${
-      runtimeLayers.length === 1 ? "" : "s"
-    }...`);
+    tick(
+      `verifying ${runtimeLayers.length} selected runtime layer${
+        runtimeLayers.length === 1 ? "" : "s"
+      }...`,
+    );
     const composed = await composeBootDescriptorVfs({
       descriptor: requestedDescriptor,
       baseImageBytes: fetchedVfsImageBytes,
@@ -1156,7 +1247,9 @@ async function bootProfile(
     });
     buildFs = composed.fs;
     assertCurrent();
-    tick("runtime layer files registered; archives remain lazy until first use");
+    tick(
+      "runtime layer files registered; archives remain lazy until first use",
+    );
   } else {
     buildFs = MemoryFileSystem.fromImage(fetchedVfsImageBytes, {
       maxByteLength: profile.maxVfsByteLength,
@@ -1204,8 +1297,12 @@ async function bootProfile(
     assertImageShellExecutable(buildFs, shellConfig.path);
   } else {
     const [bashBytes, dashBytes] = await Promise.all([
-      fetch(bashWasmUrl).then(failOn("bash.wasm")).then((r) => r.arrayBuffer()),
-      fetch(dashWasmUrl).then(failOn("dash.wasm")).then((r) => r.arrayBuffer()),
+      fetch(bashWasmUrl)
+        .then(failOn("bash.wasm"))
+        .then((r) => r.arrayBuffer()),
+      fetch(dashWasmUrl)
+        .then(failOn("dash.wasm"))
+        .then((r) => r.arrayBuffer()),
     ]);
     assertCurrent();
     stageShellUtilities(buildFs, dashBytes, bashBytes);
@@ -1214,16 +1311,21 @@ async function bootProfile(
   stageSoftwareBinaries(buildFs, softwareBinaries);
   const hasDinitctl = vfsPathExists(buildFs, DINITCTL_PATH);
   const imageConfig = readImageConfig(buildFs);
-  const rawPresentation = (imageConfig ? resolveDemoPresentation(imageConfig, profile.id) : null)
-    ?? builtinDemoPresentation(profile.id)
-    ?? genericPresentation;
+  const rawPresentation =
+    (imageConfig ? resolveDemoPresentation(imageConfig, profile.id) : null) ??
+    builtinDemoPresentation(profile.id) ??
+    genericPresentation;
   const presentation = presentationForProfile(profile, rawPresentation);
   host.setPresentation(presentation);
-  const demoGuide = (imageConfig ? resolveDemoGuide(imageConfig, profile.id) : null)
-    ?? builtinDemoGuide(profile.id);
+  const demoGuide =
+    (imageConfig ? resolveDemoGuide(imageConfig, profile.id) : null) ??
+    builtinDemoGuide(profile.id);
   host.setDemoGuide(demoGuide);
-  const imageAssets = imageConfig ? resolveDemoAssets(imageConfig, profile.id) : [];
-  const assets = imageAssets.length > 0 ? imageAssets : builtinDemoAssets(profile.id);
+  const imageAssets = imageConfig
+    ? resolveDemoAssets(imageConfig, profile.id)
+    : [];
+  const assets =
+    imageAssets.length > 0 ? imageAssets : builtinDemoAssets(profile.id);
   await stageConfiguredAssets(buildFs, assets, tick);
   assertCurrent();
 
@@ -1278,17 +1380,20 @@ async function bootProfile(
           msg: diagnostic.message,
         });
       },
-      onProcessEvent: (event) => { if (isCurrent()) host.emitProcessEvent(event); },
+      onProcessEvent: (event) => {
+        if (isCurrent()) host.emitProcessEvent(event);
+      },
       onHttpBridgePendingRequests: (count) => {
         if (isCurrent()) host.setWebPreviewPendingRequests(count);
       },
       onListenTcp: (pid, _fd, port) => {
         if (!isCurrent()) return;
         seenPorts.add(port);
-        void reportTcpListener(kernel!, pid, port, tick, isCurrent)
-          .finally(() => {
+        void reportTcpListener(kernel!, pid, port, tick, isCurrent).finally(
+          () => {
             maybeUpdateWebReadiness();
-          });
+          },
+        );
       },
     });
     await kernel.initFromImage({
@@ -1298,7 +1403,10 @@ async function bootProfile(
     });
     assertCurrent();
     host.attachKernel(kernel);
-    const shellIdentity = shellIdentityForProfile(profile, profile.init ? undefined : effectiveBoot);
+    const shellIdentity = shellIdentityForProfile(
+      profile,
+      profile.init ? undefined : effectiveBoot,
+    );
     host.setDefaultShell({
       programPath: shellConfig?.path ?? "/bin/bash",
       ...(shellProgramBytes ? { programBytes: shellProgramBytes } : {}),
@@ -1323,13 +1431,20 @@ async function bootProfile(
         // fresh random id per boot; when machines become persistable this is
         // where their durable id would be passed instead.
         const sessionId = crypto.randomUUID();
-        await setupServiceWorkerFetchBridge(SW_URL, APP_PREFIX, kernel, HTTP_PORT, sessionId, {
-          timeoutMs: 90_000,
-          debugLog: (line) => tick(line),
-          onPendingRequests: (count) => {
-            if (isCurrent()) host.setWebPreviewPendingRequests(count);
+        await setupServiceWorkerFetchBridge(
+          SW_URL,
+          APP_PREFIX,
+          kernel,
+          HTTP_PORT,
+          sessionId,
+          {
+            timeoutMs: 90_000,
+            debugLog: (line) => tick(line),
+            onPendingRequests: (count) => {
+              if (isCurrent()) host.setWebPreviewPendingRequests(count);
+            },
           },
-        });
+        );
         assertCurrent();
         bridgeSent = true;
         maybeUpdateWebReadiness();
@@ -1347,17 +1462,25 @@ async function bootProfile(
     }
 
     if (profile.init) {
-      const initArgv = effectiveBoot.argv.length > 0 ? effectiveBoot.argv : profile.init.argv;
+      const initArgv =
+        effectiveBoot.argv.length > 0 ? effectiveBoot.argv : profile.init.argv;
       tick(`spawning ${initArgv[0]}...`);
       // The init binary lives in the kernel-owned VFS; spawn it by path rather
       // than shipping bytes the kernel already has.
-      const { exit: initExit } = await kernel.spawnFromVfs(initArgv[0], initArgv, {
-        env: mergeEnvArrays(profile.init.env ?? [], envArray(effectiveBoot.env)),
-        cwd: effectiveBoot.cwd || profile.init.cwd || ROOT_HOME,
-        uid: effectiveBoot.uid ?? profile.init.uid ?? ROOT_UID,
-        gid: effectiveBoot.gid ?? profile.init.gid ?? ROOT_GID,
-        stdin: new Uint8Array(),
-      });
+      const { exit: initExit } = await kernel.spawnFromVfs(
+        initArgv[0],
+        initArgv,
+        {
+          env: mergeEnvArrays(
+            profile.init.env ?? [],
+            envArray(effectiveBoot.env),
+          ),
+          cwd: effectiveBoot.cwd || profile.init.cwd || ROOT_HOME,
+          uid: effectiveBoot.uid ?? profile.init.uid ?? ROOT_UID,
+          gid: effectiveBoot.gid ?? profile.init.gid ?? ROOT_GID,
+          stdin: new Uint8Array(),
+        },
+      );
       stopDinitStartingPoller = startDinitStartingPoller({
         kernel,
         hasDinitctl,
@@ -1394,20 +1517,33 @@ async function bootProfile(
     maybeUpdateWebReadiness();
 
     if (profile.framebufferTest) {
-      const fbtestWasmUrl = await optionalBinaryUrl([
-        "../../../../../local-binaries/programs/wasm32/fbtest.wasm",
-        "../../../../../binaries/programs/wasm32/fbtest.wasm",
-      ], "fbtest.wasm");
-      void spawnLazy(kernel, "/usr/local/bin/fbtest", fbtestWasmUrl, ["fbtest"], tick);
+      const fbtestWasmUrl = await optionalBinaryUrl(
+        [
+          "../../../../../local-binaries/programs/wasm32/fbtest.wasm",
+          "../../../../../binaries/programs/wasm32/fbtest.wasm",
+        ],
+        "fbtest.wasm",
+      );
+      void spawnLazy(
+        kernel,
+        "/usr/local/bin/fbtest",
+        fbtestWasmUrl,
+        ["fbtest"],
+        tick,
+      );
     } else if (presentation?.autoCommand) {
       tick("starting configured command from the default shell...");
       void host.runShellCommand(presentation.autoCommand).catch((err) => {
-        tick(`configured command failed: ${err instanceof Error ? err.message : String(err)}`);
+        tick(
+          `configured command failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
       });
     } else if (profile.autoCommand) {
       tick(`running ${profile.autoCommand}...`);
       void host.runShellCommand(profile.autoCommand).catch((err) => {
-        tick(`command failed: ${err instanceof Error ? err.message : String(err)}`);
+        tick(
+          `command failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
       });
     }
 
@@ -1428,7 +1564,10 @@ function genericPresentationForProfile(profile: LiveProfile): DemoPresentation {
   if (profile.descriptor.runtime.features.includes("kms")) {
     return genericDemoPresentation("kms");
   }
-  if (profile.framebufferTest || profile.descriptor.runtime.features.includes("framebuffer")) {
+  if (
+    profile.framebufferTest ||
+    profile.descriptor.runtime.features.includes("framebuffer")
+  ) {
     return genericDemoPresentation("framebuffer");
   }
   return genericDemoPresentation("terminal");
@@ -1443,11 +1582,27 @@ function stageShellUtilities(
   ensureDirRecursive(fs, "/bin");
   ensureDirRecursive(fs, "/usr/bin");
   writeVfsBinary(fs, "/bin/dash", new Uint8Array(dashBytes), 0o755);
-  try { fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
-  try { fs.symlink("/bin/dash", "/usr/bin/dash"); } catch { /* exists */ }
-  try { fs.symlink("/bin/dash", "/usr/bin/sh"); } catch { /* exists */ }
+  try {
+    fs.symlink("/bin/dash", "/bin/sh");
+  } catch {
+    /* exists */
+  }
+  try {
+    fs.symlink("/bin/dash", "/usr/bin/dash");
+  } catch {
+    /* exists */
+  }
+  try {
+    fs.symlink("/bin/dash", "/usr/bin/sh");
+  } catch {
+    /* exists */
+  }
   writeVfsBinary(fs, "/bin/bash", new Uint8Array(bashBytes), 0o755);
-  try { fs.symlink("/bin/bash", "/usr/bin/bash"); } catch { /* exists */ }
+  try {
+    fs.symlink("/bin/bash", "/usr/bin/bash");
+  } catch {
+    /* exists */
+  }
 }
 
 function rewriteNodeLazyFileUrl(fs: MemoryFileSystem): void {
@@ -1482,16 +1637,34 @@ function patchWordPressRuntimeConfig(
   kind: WordPressDatabaseKind,
 ): void {
   writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
-  writeVfsFile(fs, "/etc/wp-config-template.php", wordpressConfigTemplate(kind));
-  writeVfsFile(fs, "/var/www/html/wp-config.php", renderWordPressConfig(kind, APP_PATH, PROTO));
+  writeVfsFile(
+    fs,
+    "/etc/wp-config-template.php",
+    wordpressConfigTemplate(kind),
+  );
+  writeVfsFile(
+    fs,
+    "/var/www/html/wp-config.php",
+    renderWordPressConfig(kind, APP_PATH, PROTO),
+  );
   if (kind === "sqlite") {
-    ensureOwnedDir(fs, "/var/www/html/wp-content/database", 0o775, PHP_FPM_UID, PHP_FPM_GID);
+    ensureOwnedDir(
+      fs,
+      "/var/www/html/wp-content/database",
+      0o775,
+      PHP_FPM_UID,
+      PHP_FPM_GID,
+    );
   } else if (kind === "mariadb") {
     for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/test"]) {
       ensureOwnedDir(fs, dir, 0o775, MYSQL_UID, MYSQL_GID);
     }
     patchWordPressPersistentMysqli(fs);
-    writeVfsFile(fs, "/var/www/html/kandelo-mysql-bench.php", MYSQL_BENCHMARK_PHP);
+    writeVfsFile(
+      fs,
+      "/var/www/html/kandelo-mysql-bench.php",
+      MYSQL_BENCHMARK_PHP,
+    );
   }
   ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
   writeVfsFile(
@@ -1532,7 +1705,8 @@ function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
     const patched = mariadbService
       .replace(/--socket=(?:\S*)?/g, `--socket=${MARIADB_SOCKET_PATH}`)
       .replace(/\s*--thread-handling=no-threads\b/g, "");
-    if (patched !== mariadbService) writeVfsFile(fs, mariadbServicePath, patched);
+    if (patched !== mariadbService)
+      writeVfsFile(fs, mariadbServicePath, patched);
   }
 
   ensureMariaDbReadyService(fs);
@@ -1541,7 +1715,10 @@ function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
 
 function ensureMariaDbReadyService(fs: MemoryFileSystem): void {
   ensureDirRecursive(fs, dirname(MARIADB_READY_SCRIPT_PATH));
-  writeVfsFile(fs, MARIADB_READY_SCRIPT_PATH, `#!/bin/sh
+  writeVfsFile(
+    fs,
+    MARIADB_READY_SCRIPT_PATH,
+    `#!/bin/sh
 set -u
 
 i=0
@@ -1555,19 +1732,29 @@ done
 
 echo "MariaDB readiness timed out waiting for ${MARIADB_SOCKET_PATH}" >&2
 exit 1
-`, 0o755);
-  writeVfsFile(fs, `/etc/dinit.d/${MARIADB_READY_SERVICE}`, `type = scripted
+`,
+    0o755,
+  );
+  writeVfsFile(
+    fs,
+    `/etc/dinit.d/${MARIADB_READY_SERVICE}`,
+    `type = scripted
 command = /bin/sh ${MARIADB_READY_SCRIPT_PATH}
 depends-on = mariadb
 restart = false
-`);
+`,
+  );
 }
 
 function patchPhpFpmMariaDbDependency(fs: MemoryFileSystem): void {
   const phpFpmServicePath = "/etc/dinit.d/php-fpm";
   const phpFpmService = readOptionalVfsText(fs, phpFpmServicePath);
   if (phpFpmService === null) return;
-  if (new RegExp(`^depends-on\\s*=\\s*${MARIADB_READY_SERVICE}$`, "m").test(phpFpmService)) {
+  if (
+    new RegExp(`^depends-on\\s*=\\s*${MARIADB_READY_SERVICE}$`, "m").test(
+      phpFpmService,
+    )
+  ) {
     return;
   }
   const patched = phpFpmService.replace(
@@ -1600,7 +1787,9 @@ function patchWordPressPersistentMysqli(fs: MemoryFileSystem): void {
 async function loadVfsImageBytes(profile: LiveProfile): Promise<ArrayBuffer> {
   if (!profile.software) {
     const vfsUrl = await resolveProfileVfsUrl(profile);
-    return fetch(vfsUrl).then(failOn(`${profile.id}.vfs.zst`)).then((r) => r.arrayBuffer());
+    return fetch(vfsUrl)
+      .then(failOn(`${profile.id}.vfs.zst`))
+      .then((r) => r.arrayBuffer());
   }
   const vfsImage = await loadArchiveArtifact(
     profile.software.vfsArchiveUrl,
@@ -1617,7 +1806,10 @@ async function resolveProfileVfsUrl(profile: LiveProfile): Promise<string> {
     return resolveOptionalDemoVfsUrl(profile.vfsSource.image);
   }
   if (profile.vfsSource?.kind === "optional-binary") {
-    return optionalBinaryUrl(profile.vfsSource.relPaths, profile.vfsSource.label);
+    return optionalBinaryUrl(
+      profile.vfsSource.relPaths,
+      profile.vfsSource.label,
+    );
   }
   if (profile.vfsUrl) return profile.vfsUrl;
   throw new Error(`No VFS image URL configured for ${profile.id}`);
@@ -1627,10 +1819,12 @@ async function loadSoftwareBinaries(
   software: SoftwareProfile | undefined,
 ): Promise<Array<{ spec: SoftwareBinary; bytes: Uint8Array }>> {
   if (!software) return [];
-  return Promise.all(software.binaries.map(async (spec) => ({
-    spec,
-    bytes: await loadArchiveArtifact(spec.archiveUrl, spec.artifactPath),
-  })));
+  return Promise.all(
+    software.binaries.map(async (spec) => ({
+      spec,
+      bytes: await loadArchiveArtifact(spec.archiveUrl, spec.artifactPath),
+    })),
+  );
 }
 
 function stageSoftwareBinaries(
@@ -1642,7 +1836,11 @@ function stageSoftwareBinaries(
     writeVfsBinary(fs, spec.installPath, bytes, 0o755);
     for (const symlinkPath of spec.symlinks ?? []) {
       ensureDirRecursive(fs, dirname(symlinkPath));
-      try { fs.symlink(spec.installPath, symlinkPath); } catch { /* exists */ }
+      try {
+        fs.symlink(spec.installPath, symlinkPath);
+      } catch {
+        /* exists */
+      }
     }
   }
 }
@@ -1664,7 +1862,10 @@ async function reportTcpListener(
   tick(`${processName ?? "service"} listening on :${port}`);
 }
 
-async function processNameForPid(kernel: BrowserKernel, pid: number): Promise<string | null> {
+async function processNameForPid(
+  kernel: BrowserKernel,
+  pid: number,
+): Promise<string | null> {
   if (pid <= 0) return null;
   const proc = (await kernel.enumProcs()).find((entry) => entry.pid === pid);
   if (!proc) return null;
@@ -1679,7 +1880,10 @@ function basename(path: string): string {
   return idx < 0 ? path : path.slice(idx + 1);
 }
 
-async function loadArchiveArtifact(archiveUrl: string, artifactPath: string): Promise<Uint8Array> {
+async function loadArchiveArtifact(
+  archiveUrl: string,
+  artifactPath: string,
+): Promise<Uint8Array> {
   const archiveBytes = await fetchBytesNoStore(archiveUrl);
   const tarBytes = decompressZstd(archiveBytes);
   const artifact = extractTarFile(tarBytes, artifactPath);
@@ -1689,7 +1893,10 @@ async function loadArchiveArtifact(archiveUrl: string, artifactPath: string): Pr
   return artifact;
 }
 
-function extractTarFile(tarBytes: Uint8Array, wantedPath: string): Uint8Array | undefined {
+function extractTarFile(
+  tarBytes: Uint8Array,
+  wantedPath: string,
+): Uint8Array | undefined {
   for (let offset = 0; offset + 512 <= tarBytes.length;) {
     const header = tarBytes.subarray(offset, offset + 512);
     if (header.every((byte) => byte === 0)) return undefined;
@@ -1713,7 +1920,9 @@ function extractTarFile(tarBytes: Uint8Array, wantedPath: string): Uint8Array | 
 }
 
 function tarString(block: Uint8Array, offset: number, length: number): string {
-  return tarDecoder.decode(block.subarray(offset, offset + length)).replace(/\0.*$/, "");
+  return tarDecoder
+    .decode(block.subarray(offset, offset + length))
+    .replace(/\0.*$/, "");
 }
 
 async function spawnLazy(
@@ -1725,7 +1934,9 @@ async function spawnLazy(
 ): Promise<void> {
   try {
     tick(`fetching ${argv[0]}...`);
-    const bytes = await fetch(url).then(failOn(argv[0])).then((r) => r.arrayBuffer());
+    const bytes = await fetch(url)
+      .then(failOn(argv[0]))
+      .then((r) => r.arrayBuffer());
     tick(`spawning ${argv[0]}...`);
     await kernel.spawn(bytes, argv, {
       env: SHELL_ENV,
@@ -1735,7 +1946,9 @@ async function spawnLazy(
     });
     tick(`${argv[0]} exited`);
   } catch (err) {
-    tick(`${argv[0]} failed: ${err instanceof Error ? err.message : String(err)}`);
+    tick(
+      `${argv[0]} failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 }
 
@@ -1753,7 +1966,9 @@ async function stageConfiguredAssets(
     if (asset.sha256) {
       const digest = await sha256Hex(buffer);
       if (digest !== asset.sha256) {
-        throw new Error(`${asset.path} sha256 mismatch: expected ${asset.sha256}, got ${digest}`);
+        throw new Error(
+          `${asset.path} sha256 mismatch: expected ${asset.sha256}, got ${digest}`,
+        );
       }
     }
     writeVfsBinary(fs, asset.path, bytes, asset.mode ?? 0o644);
@@ -1787,10 +2002,13 @@ function maybeMarkWebReady(
   const web = profile.init?.web;
   if (!web) return;
   const portsReady = web.requiredPorts.every((p) => seenPorts.has(p));
-  const servicesReady = (web.requiredServices ?? [])
-    .every((serviceName) => dinitBootTracker.hasCompleted(serviceName));
+  const servicesReady = (web.requiredServices ?? []).every((serviceName) =>
+    dinitBootTracker.hasCompleted(serviceName),
+  );
   if (!portsReady || !servicesReady || !bridgeSent) return;
-  const readyMessage = web.probeHttp ? "HTTP bridge ready" : "Service stack ready";
+  const readyMessage = web.probeHttp
+    ? "HTTP bridge ready"
+    : "Service stack ready";
   if (readiness.ready) {
     if (!isCurrent()) return;
     host.setWebPreview({
@@ -1819,35 +2037,41 @@ function maybeMarkWebReady(
     label: web.label,
     url: APP_PREFIX,
     status: "starting",
-    message: web.probePath ? "Waiting for application readiness" : "Waiting for HTTP response",
+    message: web.probePath
+      ? "Waiting for application readiness"
+      : "Waiting for HTTP response",
   });
-  void waitForHttpPreview(probeUrl, 90_000, { requireOk: Boolean(web.probePath) }).then(
-    () => {
+  void waitForHttpPreview(probeUrl, 90_000, {
+    requireOk: Boolean(web.probePath),
+  })
+    .then(
+      () => {
+        if (!isCurrent()) return;
+        readiness.ready = true;
+        tick("HTTP preview ready");
+        host.setWebPreview({
+          label: web.label,
+          url: APP_PREFIX,
+          status: "running",
+          message: "HTTP bridge ready",
+        });
+      },
+      (err) => {
+        if (!isCurrent()) return;
+        const message = err instanceof Error ? err.message : String(err);
+        host.setWebPreview({
+          label: web.label,
+          url: APP_PREFIX,
+          status: "error",
+          message: "HTTP preview did not become ready",
+        });
+        tick(`HTTP preview readiness failed: ${message}`);
+      },
+    )
+    .finally(() => {
       if (!isCurrent()) return;
-      readiness.ready = true;
-      tick("HTTP preview ready");
-      host.setWebPreview({
-        label: web.label,
-        url: APP_PREFIX,
-        status: "running",
-        message: "HTTP bridge ready",
-      });
-    },
-    (err) => {
-      if (!isCurrent()) return;
-      const message = err instanceof Error ? err.message : String(err);
-      host.setWebPreview({
-        label: web.label,
-        url: APP_PREFIX,
-        status: "error",
-        message: "HTTP preview did not become ready",
-      });
-      tick(`HTTP preview readiness failed: ${message}`);
-    },
-  ).finally(() => {
-    if (!isCurrent()) return;
-    readiness.probing = false;
-  });
+      readiness.probing = false;
+    });
 }
 
 async function waitForHttpPreview(
@@ -1880,7 +2104,10 @@ function previewUrlForPath(path: string): string {
   return new URL(normalized || ".", root).href;
 }
 
-async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
+async function fetchWithTimeout(
+  url: string,
+  timeoutMs: number,
+): Promise<Response> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -1903,42 +2130,71 @@ function descriptorBootIdentity(
   software: SoftwareProfile | undefined,
   shell: ShellProfile,
 ): { env: string[]; cwd: string; uid: number; gid: number } {
-  const serviceIds = new Set(["nginx", "nginx-php", "wordpress-sqlite", "wordpress-mariadb"]);
-  if (software?.init || serviceIds.has(id) || software?.shellEnv === SERVICE_ENV) {
-    return { env: software?.shellEnv ?? SERVICE_ENV, cwd: ROOT_HOME, uid: ROOT_UID, gid: ROOT_GID };
+  const serviceIds = new Set([
+    "nginx",
+    "nginx-php",
+    "wordpress-sqlite",
+    "wordpress-mariadb",
+  ]);
+  if (
+    software?.init ||
+    serviceIds.has(id) ||
+    software?.shellEnv === SERVICE_ENV
+  ) {
+    return {
+      env: software?.shellEnv ?? SERVICE_ENV,
+      cwd: ROOT_HOME,
+      uid: ROOT_UID,
+      gid: ROOT_GID,
+    };
   }
   if (id === "node" || shell === "node") {
-    return { env: shellEnvFor(shell), cwd: shellCwdFor(shell), uid: DEMO_UID, gid: DEMO_GID };
+    return {
+      env: shellEnvFor(shell),
+      cwd: shellCwdFor(shell),
+      uid: DEMO_UID,
+      gid: DEMO_GID,
+    };
   }
-  return { env: software?.shellEnv ?? shellEnvFor(shell), cwd: shellCwdFor(shell), uid: DEMO_UID, gid: DEMO_GID };
+  return {
+    env: software?.shellEnv ?? shellEnvFor(shell),
+    cwd: shellCwdFor(shell),
+    uid: DEMO_UID,
+    gid: DEMO_GID,
+  };
 }
 
 function envRecord(env: string[]): Record<string, string> {
-  return Object.fromEntries(env.map((kv) => {
-    const idx = kv.indexOf("=");
-    return [kv.slice(0, idx), kv.slice(idx + 1)];
-  }));
+  return Object.fromEntries(
+    env.map((kv) => {
+      const idx = kv.indexOf("=");
+      return [kv.slice(0, idx), kv.slice(idx + 1)];
+    }),
+  );
 }
 
 function descriptorFor(id: string): BootDescriptor {
   const software = SOFTWARE_PROFILES.get(id);
-  const normalized = software ? "shell" : normalizeDemoId(id) ?? "shell";
+  const normalized = software ? "shell" : (normalizeDemoId(id) ?? "shell");
   const spec = LIVE_PROFILE_SPECS[normalized];
   const item = software
     ? liveGalleryItems().find((p) => p.id === "shell")!
-    : liveGalleryItems().find((p) => p.id === normalized) ?? liveGalleryItems()[0];
+    : (liveGalleryItems().find((p) => p.id === normalized) ??
+      liveGalleryItems()[0]);
   const shell = spec.shell ?? "default";
-  const network = software ? false : spec.network ?? false;
+  const network = software ? false : (spec.network ?? false);
   const bootIdentity = descriptorBootIdentity(normalized, software, shell);
   return {
     version: 1,
     id: software?.id ?? item.id,
-    title: software ? software.id.replace(/^kandelo-software-/, "") : item.title,
+    title: software
+      ? software.id.replace(/^kandelo-software-/, "")
+      : item.title,
     base: software ? `kandelo:shell@abi${ABI_VERSION}` : item.base,
     runtime: {
       arch: "wasm32",
       kernel: "kernel@local",
-      memoryPages: software ? 4096 : spec.memoryPages ?? 2048,
+      memoryPages: software ? 4096 : (spec.memoryPages ?? 2048),
       features: [
         "shared-array-buffer",
         "pty",
@@ -1949,11 +2205,20 @@ function descriptorFor(id: string): BootDescriptor {
     },
     packages: software ? [] : item.packages,
     mounts: [
-      { path: "/", source: "image", ref: `${software?.id ?? item.id}.vfs@local`, readonly: false },
+      {
+        path: "/",
+        source: "image",
+        ref: `${software?.id ?? item.id}.vfs@local`,
+        readonly: false,
+      },
       { path: "/tmp", source: "scratch", ephemeral: true },
     ],
     boot: {
-      argv: software?.init ? software.init.argv : software ? ["bash", "-l", "-i"] : item.bootCommand,
+      argv: software?.init
+        ? software.init.argv
+        : software
+          ? ["bash", "-l", "-i"]
+          : item.bootCommand,
       cwd: bootIdentity.cwd,
       env: envRecord(bootIdentity.env),
       uid: bootIdentity.uid,
@@ -1997,7 +2262,10 @@ function vfsImageUrlResolverForPreset(
   const source = VFS_SOURCES[LIVE_PROFILE_SPECS[liveId].image];
   if (source.kind !== "optional-demo") return undefined;
   return async () => {
-    const url = new URL(await resolveOptionalDemoVfsUrl(source.image), location.href);
+    const url = new URL(
+      await resolveOptionalDemoVfsUrl(source.image),
+      location.href,
+    );
     url.hash = liveId;
     return url.href;
   };
@@ -2052,18 +2320,25 @@ async function refreshSoftwareGallery(
 }
 
 async function loadKandeloSoftwareGalleryItems(): Promise<GalleryItem[]> {
-  const groups = await Promise.all(softwareManifestUrls().map(async (manifestUrl) => {
-    try {
-      return await loadSoftwareGalleryItemsFromManifest(manifestUrl);
-    } catch (err) {
-      console.warn(`Could not load Kandelo software gallery manifest ${manifestUrl}:`, err);
-      return [];
-    }
-  }));
+  const groups = await Promise.all(
+    softwareManifestUrls().map(async (manifestUrl) => {
+      try {
+        return await loadSoftwareGalleryItemsFromManifest(manifestUrl);
+      } catch (err) {
+        console.warn(
+          `Could not load Kandelo software gallery manifest ${manifestUrl}:`,
+          err,
+        );
+        return [];
+      }
+    }),
+  );
   return groups.flat();
 }
 
-async function loadSoftwareGalleryItemsFromManifest(manifestUrl: string): Promise<GalleryItem[]> {
+async function loadSoftwareGalleryItemsFromManifest(
+  manifestUrl: string,
+): Promise<GalleryItem[]> {
   const resolvedManifestUrl = new URL(manifestUrl, location.href).href;
   const manifestText = await fetchTextNoStore(resolvedManifestUrl);
   const manifest = JSON.parse(manifestText) as SoftwareGalleryManifest;
@@ -2089,15 +2364,19 @@ async function loadSoftwareGalleryItemsFromManifest(manifestUrl: string): Promis
 
 function softwareManifestUrls(): string[] {
   const params = new URLSearchParams(location.search);
-  const queryUrls = params.getAll("softwareManifest").flatMap(splitManifestUrls);
+  const queryUrls = params
+    .getAll("softwareManifest")
+    .flatMap(splitManifestUrls);
   const envUrls = splitManifestUrls(
-    (import.meta.env.VITE_KANDELO_SOFTWARE_MANIFEST_URLS as string | undefined) ?? "",
+    (import.meta.env.VITE_KANDELO_SOFTWARE_MANIFEST_URLS as
+      string | undefined) ?? "",
   );
-  const urls = queryUrls.length > 0
-    ? queryUrls
-    : envUrls.length > 0
-      ? envUrls
-      : DEFAULT_SOFTWARE_MANIFEST_URLS;
+  const urls =
+    queryUrls.length > 0
+      ? queryUrls
+      : envUrls.length > 0
+        ? envUrls
+        : DEFAULT_SOFTWARE_MANIFEST_URLS;
   return [...new Set(urls)];
 }
 
@@ -2108,12 +2387,21 @@ function splitManifestUrls(value: string): string[] {
     .filter(Boolean);
 }
 
-function sourceIdForManifest(manifest: SoftwareGalleryManifest, manifestUrl: string): string {
-  const raw = manifest.source_id
-    ?? manifest.repository?.split("/").pop()
-    ?? new URL(manifestUrl, location.href).pathname.split("/").filter(Boolean)[0]
-    ?? "software";
-  const normalized = raw.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+function sourceIdForManifest(
+  manifest: SoftwareGalleryManifest,
+  manifestUrl: string,
+): string {
+  const raw =
+    manifest.source_id ??
+    manifest.repository?.split("/").pop() ??
+    new URL(manifestUrl, location.href).pathname
+      .split("/")
+      .filter(Boolean)[0] ??
+    "software";
+  const normalized = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
   return normalized || "software";
 }
 
@@ -2127,7 +2415,13 @@ function softwareEntryToGalleryItem(
   const archiveUrl = archiveUrlFor(index, indexUrl, primaryPackage);
   if (!primaryPackage || !archiveUrl) return null;
   const id = `${sourceId}-${entry.id}`;
-  const profile = softwareProfileForEntry(id, entry, index, indexUrl, archiveUrl);
+  const profile = softwareProfileForEntry(
+    id,
+    entry,
+    index,
+    indexUrl,
+    archiveUrl,
+  );
   if (!profile) return null;
   SOFTWARE_PROFILES.set(id, profile);
   return {
@@ -2169,19 +2463,26 @@ function softwareProfileForEntry(
     if (!runtimeArchiveUrl) return null;
     return {
       ...base,
-      binaries: [{
-        archiveUrl: runtimeArchiveUrl,
-        artifactPath: "artifacts/python.wasm",
-        installPath: "/usr/bin/python",
-        symlinks: ["/usr/bin/python3", "/usr/local/bin/python", "/usr/local/bin/python3"],
-      }],
+      binaries: [
+        {
+          archiveUrl: runtimeArchiveUrl,
+          artifactPath: "artifacts/python.wasm",
+          installPath: "/usr/bin/python",
+          symlinks: [
+            "/usr/bin/python3",
+            "/usr/local/bin/python",
+            "/usr/local/bin/python3",
+          ],
+        },
+      ],
       shellEnv: [
         ...SHELL_ENV,
         "PYTHONHOME=/usr",
         "PYTHONDONTWRITEBYTECODE=1",
         "PYTHONNOUSERSITE=1",
       ],
-      autoCommand: "python3 -c \"import sys, json; print('Python', sys.version.split()[0]); print(json.dumps({'kandelo': 'software'}))\"",
+      autoCommand:
+        "python3 -c \"import sys, json; print('Python', sys.version.split()[0]); print(json.dumps({'kandelo': 'software'}))\"",
     };
   }
 
@@ -2191,12 +2492,14 @@ function softwareProfileForEntry(
     if (!runtimeArchiveUrl) return null;
     return {
       ...base,
-      binaries: [{
-        archiveUrl: runtimeArchiveUrl,
-        artifactPath: "artifacts/perl.wasm",
-        installPath: "/usr/bin/perl",
-        symlinks: ["/usr/local/bin/perl"],
-      }],
+      binaries: [
+        {
+          archiveUrl: runtimeArchiveUrl,
+          artifactPath: "artifacts/perl.wasm",
+          installPath: "/usr/bin/perl",
+          symlinks: ["/usr/local/bin/perl"],
+        },
+      ],
       shellEnv: [...SHELL_ENV, "PERL5LIB=/usr/lib/perl5"],
       autoCommand: "perl -e 'print \"Perl $^V from kandelo-software\\n\"'",
     };
@@ -2208,12 +2511,14 @@ function softwareProfileForEntry(
     if (!runtimeArchiveUrl) return null;
     return {
       ...base,
-      binaries: [{
-        archiveUrl: runtimeArchiveUrl,
-        artifactPath: "artifacts/erlang.wasm",
-        installPath: "/usr/bin/erlang",
-        symlinks: ["/usr/bin/erl", "/usr/local/bin/erl"],
-      }],
+      binaries: [
+        {
+          archiveUrl: runtimeArchiveUrl,
+          artifactPath: "artifacts/erlang.wasm",
+          installPath: "/usr/bin/erlang",
+          symlinks: ["/usr/bin/erl", "/usr/local/bin/erl"],
+        },
+      ],
       shellEnv: [
         ...SHELL_ENV,
         "ROOTDIR=/usr/local/lib/erlang",
@@ -2248,7 +2553,8 @@ function softwareProfileForEntry(
         terminalAccess: "primary",
         internalsAccess: "drawer",
       },
-      autoCommand: "echo 'Redis VFS from kandelo-software'; ls -l /usr/local/bin/redis-server /etc/dinit.d/redis",
+      autoCommand:
+        "echo 'Redis VFS from kandelo-software'; ls -l /usr/local/bin/redis-server /etc/dinit.d/redis",
     };
   }
 
@@ -2272,9 +2578,11 @@ function packageAvailable(
   requirement: GalleryPackageRequirement,
 ): boolean {
   const wasm32 = index.packages.get(packageKey(requirement))?.binary.wasm32;
-  return stringTomlValue(wasm32?.status) === "success" &&
+  return (
+    stringTomlValue(wasm32?.status) === "success" &&
     Boolean(stringTomlValue(wasm32?.archive_url)) &&
-    booleanTomlValue(wasm32?.browser_compatible) === true;
+    booleanTomlValue(wasm32?.browser_compatible) === true
+  );
 }
 
 function archiveUrlFor(
@@ -2356,7 +2664,10 @@ function parseIndexToml(text: string): SoftwareIndex {
     const value = parseTomlValue(rawValue);
     if (!currentPackage) {
       if (key === "abi_version") {
-        const parsed = typeof value === "number" ? value : Number.parseInt(String(value), 10);
+        const parsed =
+          typeof value === "number"
+            ? value
+            : Number.parseInt(String(value), 10);
         if (Number.isFinite(parsed)) abiVersion = parsed;
       }
       continue;
@@ -2368,7 +2679,10 @@ function parseIndexToml(text: string): SoftwareIndex {
       if (!stringValue) continue;
       currentPackage[key] = stringValue;
       if (currentPackage.name && currentPackage.version) {
-        packages.set(`${currentPackage.name}@${currentPackage.version}`, currentPackage);
+        packages.set(
+          `${currentPackage.name}@${currentPackage.version}`,
+          currentPackage,
+        );
       }
     }
   }
@@ -2378,13 +2692,15 @@ function parseIndexToml(text: string): SoftwareIndex {
 
 async function fetchTextNoStore(url: string): Promise<string> {
   const response = await fetch(url, { cache: "no-store" });
-  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  if (!response.ok)
+    throw new Error(`${response.status} ${response.statusText}`);
   return await response.text();
 }
 
 async function fetchBytesNoStore(url: string): Promise<Uint8Array> {
   const response = await fetch(url, { cache: "no-store" });
-  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  if (!response.ok)
+    throw new Error(`${response.status} ${response.statusText}`);
   return new Uint8Array(await response.arrayBuffer());
 }
 
@@ -2397,7 +2713,8 @@ function accentForSoftwareEntry(id: string): string {
 }
 
 function glyphForSoftwareEntry(entry: SoftwareGalleryEntry): string {
-  const packageName = entry.packages[entry.packages.length - 1]?.name ?? entry.id;
+  const packageName =
+    entry.packages[entry.packages.length - 1]?.name ?? entry.id;
   const parts = packageName.split(/[-_]/).filter(Boolean);
   if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toLowerCase();
   return packageName.slice(0, 3).toLowerCase();
@@ -2434,7 +2751,9 @@ function readImageShellConfig(fs: MemoryFileSystem): KandeloShellConfig | null {
   );
   const config = parseKandeloShellConfig(json);
   if (!config) {
-    throw new Error(`VFS image has unsupported ${KANDELO_SHELL_CONFIG_PATH} version`);
+    throw new Error(
+      `VFS image has unsupported ${KANDELO_SHELL_CONFIG_PATH} version`,
+    );
   }
   return config;
 }
@@ -2445,7 +2764,8 @@ async function loadProfileClosedLazyAssets(
   tick: (message: string) => void,
 ) {
   const bundleRoot = (
-    import.meta.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT as string | undefined
+    import.meta.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT as
+      string | undefined
   )?.trim();
   if (!bundleRoot || profile.image !== "shell") return undefined;
   if (import.meta.env.PROD) {
@@ -2461,8 +2781,95 @@ async function loadProfileClosedLazyAssets(
     embeddedPlanBytes,
     bundleRoot,
   });
-  tick(`verified ${bundle.assets.length} exact deferred bottle payloads`);
-  return bundle.assets;
+  const packageAssets = await loadHomebrewBootstrapClosedAssets(fs);
+  tick(
+    `verified ${bundle.assets.length} exact deferred bottle payloads and ` +
+      `${packageAssets.length} package source tree`,
+  );
+  return [...bundle.assets, ...packageAssets];
+}
+
+async function loadHomebrewBootstrapClosedAssets(
+  fs: MemoryFileSystem,
+): Promise<ClosedLazyAsset[]> {
+  const metadata = fs.getImageMetadata();
+  if (metadata === null || !Array.isArray(metadata.packageDeferredTrees)) {
+    throw new Error("closed shell image omits packageDeferredTrees metadata");
+  }
+  const matches = metadata.packageDeferredTrees.filter(
+    (
+      value,
+    ): value is {
+      package: { name: string; output: string };
+      archive: { output: string; url: string; sha256: string; bytes: number };
+      state: string;
+    } => {
+      if (
+        !isPlainRecord(value) ||
+        !isPlainRecord(value.package) ||
+        !isPlainRecord(value.archive)
+      )
+        return false;
+      return value.package.name === "homebrew-bootstrap";
+    },
+  );
+  if (matches.length !== 1) {
+    throw new Error(
+      `closed shell image has ${matches.length} Homebrew bootstrap bindings`,
+    );
+  }
+  const binding = matches[0]!;
+  if (
+    binding.state !== "deferred" ||
+    binding.package.output !== "homebrew-bootstrap.zip" ||
+    binding.archive.output !== binding.package.output ||
+    binding.archive.url !== binding.package.output ||
+    !/^[0-9a-f]{64}$/.test(binding.archive.sha256) ||
+    !Number.isSafeInteger(binding.archive.bytes) ||
+    binding.archive.bytes <= 0
+  ) {
+    throw new Error(
+      "closed shell image has an invalid Homebrew bootstrap binding",
+    );
+  }
+  const sourceUrl = resolveShellLazyArchiveUrl(binding.archive.url);
+  const closedUrl =
+    `https://closed-lazy.kandelo.invalid/homebrew-bootstrap/` +
+    `${binding.archive.sha256}/${binding.package.output}`;
+  // WHY: rewriteLazyArchiveUrls is filesystem-wide. Refuse an ambiguous source
+  // URL so binding this one verified package cannot retarget another lazy tree.
+  const pendingForSource = fs
+    .exportLazyArchiveEntries()
+    .filter((tree) =>
+      tree.content?.transports.some((transport) => transport === sourceUrl),
+    );
+  if (
+    pendingForSource.length !== 1 ||
+    pendingForSource[0]!.content?.sha256 !== binding.archive.sha256 ||
+    pendingForSource[0]!.content?.bytes !== binding.archive.bytes ||
+    pendingForSource[0]!.content?.transports.length !== 1
+  ) {
+    throw new Error(
+      "closed shell image does not bind the Homebrew bootstrap source " +
+        "to exactly one matching pending tree",
+    );
+  }
+  // WHY: the worker's closed fetcher intentionally rejects every unbound URL.
+  // Keep the Vite file as an acceptance-only transport source, then bind its
+  // verified bytes to one canonical HTTPS identity before worker ownership.
+  fs.rewriteLazyArchiveUrls((url) => (url === sourceUrl ? closedUrl : url));
+  return loadClosedLazyAssetSources([
+    {
+      url: closedUrl,
+      sourceUrl,
+      sha256: binding.archive.sha256,
+      size: binding.archive.bytes,
+    },
+  ]);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function assertImageShellExecutable(fs: MemoryFileSystem, path: string): void {
@@ -2489,7 +2896,10 @@ function readImageConfig(fs: MemoryFileSystem): KandeloDemoConfig | null {
   return readKandeloDemoConfigFromVfs(fs);
 }
 
-function readOptionalVfsText(fs: MemoryFileSystem, path: string): string | null {
+function readOptionalVfsText(
+  fs: MemoryFileSystem,
+  path: string,
+): string | null {
   try {
     return new TextDecoder().decode(new Uint8Array(readVfsFile(fs, path)));
   } catch (err) {
@@ -2527,7 +2937,8 @@ function readVfsFile(fs: MemoryFileSystem, path: string): ArrayBuffer {
 
 function failOn(label: string): (r: Response) => Response {
   return (r) => {
-    if (!r.ok) throw new Error(`fetch failed for ${label}: ${r.status} ${r.statusText}`);
+    if (!r.ok)
+      throw new Error(`fetch failed for ${label}: ${r.status} ${r.statusText}`);
     return r;
   };
 }

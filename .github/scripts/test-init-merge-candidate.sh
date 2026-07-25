@@ -100,7 +100,7 @@ CANONICAL="$TMP_ROOT/canonical.toml"
 printf 'abi_version = 39\n' > "$CANONICAL"
 TAG=merge-candidate-abi-v39-pr-1-run-2-attempt-1
 run_init() {
-  local store="$1" fail="${2:-}"
+  local store="$1" fail="${2:-}" merge_method="${3:-squash}"
   GH_INIT_STORE="$store" GH_INIT_TAG="$TAG" GH_INIT_UPLOAD_LOG="$store/uploads.log" \
     GITHUB_API_RETRY_DELAY_SECONDS=0 GITHUB_REPOSITORY=example/repo \
     CANDIDATE_INIT_FAIL_AFTER_ASSET="$fail" STATE_LOCK_SCRIPT="$LOCK" \
@@ -112,7 +112,7 @@ run_init() {
       --head-sha 2222222222222222222222222222222222222222 \
       --synthetic-merge-sha 3333333333333333333333333333333333333333 \
       --synthetic-tree-sha 4444444444444444444444444444444444444444 \
-      --merge-method squash --pr-commit-count 1 --run-id 2 --run-attempt 1
+      --merge-method "$merge_method" --pr-commit-count 1 --run-id 2 --run-attempt 1
 }
 
 for fail_asset in candidate.json base-index.toml index.toml; do
@@ -145,5 +145,22 @@ if run_init "$store" >"$store/mismatch.out" 2>"$store/mismatch.err"; then
   echo "candidate init accepted mismatched partial metadata" >&2; exit 1
 fi
 grep -q 'different bytes' "$store/mismatch.err"
+
+store="$TMP_ROOT/merge-method"
+mkdir -p "$store"
+printf '100\n' > "$store/.next-id"
+: > "$store/uploads.log"
+run_init "$store" "" merge >"$store/merge.out"
+jq -e '.merge_method == "merge"' "$store/candidate.json" >/dev/null
+
+store="$TMP_ROOT/invalid-method"
+mkdir -p "$store"
+printf '100\n' > "$store/.next-id"
+: > "$store/uploads.log"
+if run_init "$store" "" octopus >"$store/out" 2>"$store/err"; then
+  echo "candidate init accepted an unsupported merge method" >&2
+  exit 1
+fi
+grep -q 'must be squash, rebase, or merge' "$store/err"
 
 echo "merge candidate initialization tests passed"

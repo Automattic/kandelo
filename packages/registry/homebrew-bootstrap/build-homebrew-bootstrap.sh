@@ -124,11 +124,14 @@ PROVENANCE="$BUILD_DIR/homebrew-source.json"
   --provenance "$PROVENANCE"
 
 OUTPUT="$KANDELO_PACKAGE_OUT_DIR/homebrew-bootstrap.zip"
-if [ -e "$OUTPUT" ] || [ -L "$OUTPUT" ]; then
-  echo "ERROR: homebrew-bootstrap output already exists: $OUTPUT" >&2
+ENV_OUTPUT="$KANDELO_PACKAGE_OUT_DIR/homebrew-brew.env"
+if [ -e "$OUTPUT" ] || [ -L "$OUTPUT" ] ||
+   [ -e "$ENV_OUTPUT" ] || [ -L "$ENV_OUTPUT" ]; then
+  echo "ERROR: homebrew-bootstrap output already exists" >&2
   exit 1
 fi
 cp "$ARCHIVE" "$OUTPUT"
+cp "$ENV_FILE" "$ENV_OUTPUT"
 node "$VERIFY" \
   --lock "$LOCK" \
   --package-name "$PACKAGE_NAME" \
@@ -144,4 +147,4 @@ node "$VERIFY" \
   --provenance "$PROVENANCE" \
   --archive "$OUTPUT"
 
-echo "==> Built provenance-locked Homebrew bootstrap: $OUTPUT"
+echo "==> Built provenance-locked Homebrew bootstrap: $OUTPUT + $ENV_OUTPUT"

@@ -4,9 +4,11 @@ version = "0.1.0"
 kernel_abi = 7
 # The canonical shell closure is selected by the reviewed Brewfile and comes
 # from the immutable Homebrew tap declared in build.toml. It deliberately has
-# no package-registry dependencies: resolving the retired rootfs/program graph
-# would make a bottle-only build depend on artifacts it never consumes.
-depends_on = []
+# no legacy rootfs/program dependencies: resolving the retired graph would make
+# a bottle-only build depend on artifacts it never consumes. Homebrew itself is
+# a separate product package because the shell only needs its source tree when
+# a guest actually invokes `brew`.
+depends_on = ["homebrew-bootstrap@6.0.3-4-g4ead861"]
 
 # Composite VFS image for the browser shell demo: a platform-only base plus the
 # exact reviewed Homebrew bottle closure and shell configuration. The image is
@@ -46,6 +48,12 @@ probe = { args = ["--version"], version_regex = "v(\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 
 [[host_tools]]
+name = "npm"
+version_constraint = ">=10.0"
+probe = { args = ["--version"], version_regex = "(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
 name = "ruby"
 version_constraint = ">=3.0"
 probe = { args = ["--version"], version_regex = "ruby (\\d+\\.\\d+(?:\\.\\d+)?)" }
@@ -55,6 +63,12 @@ install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run thro
 name = "sha256sum"
 version_constraint = ">=8.0"
 probe = { args = ["--version"], version_regex = "coreutils\\) (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "tar"
+version_constraint = ">=1.30"
+probe = { args = ["--version"], version_regex = "(?:bsdtar|tar).*?(\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 
 [[host_tools]]

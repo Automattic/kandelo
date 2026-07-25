@@ -3,7 +3,10 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { resolve } from "node:path";
-import { assertMainShellImageContract } from "./homebrew-main-shell-image-contract";
+import {
+  assertMainShellGuestCatalogIdentity,
+  assertMainShellImageContract,
+} from "./homebrew-main-shell-image-contract";
 
 const lock = JSON.parse(
   readFileSync(resolve("homebrew/main-shell-migration-lock.json"), "utf8"),
@@ -204,6 +207,31 @@ function fixture(): Parameters<typeof assertMainShellImageContract>[0] {
 
 test("accepts the exact reviewed root and Formula identities", () => {
   assert.doesNotThrow(() => assertMainShellImageContract(fixture()));
+});
+
+test("shares the authoritative guest catalog parser with narrow consumers", () => {
+  const guestManifest = fixture().guestManifest as Record<string, any>;
+  const expected = {
+    tapRepository: lock.tap_repository,
+    tapName: lock.tap_name,
+    tapCommit: lock.catalog.tap_commit,
+  };
+  assert.doesNotThrow(() =>
+    assertMainShellGuestCatalogIdentity(guestManifest, expected)
+  );
+
+  for (const [key, replacement, message] of [
+    ["tap_repository", "someone/else", "tap_repository"],
+    ["tap_name", "someone/else", "tap_name"],
+    ["checkout_commit", "0".repeat(40), "checkout_commit"],
+  ] as const) {
+    const changed = structuredClone(guestManifest);
+    changed.catalog[key] = replacement;
+    assert.throws(
+      () => assertMainShellGuestCatalogIdentity(changed, expected),
+      new RegExp(message),
+    );
+  }
 });
 
 for (const [name, mutate, expected] of [

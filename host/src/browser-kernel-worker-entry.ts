@@ -55,6 +55,7 @@ import {
   threadWorkerFailureDisposition,
 } from "./thread-worker-disposition";
 import { VmInterruptTimerManager } from "./vm-interrupt-timer";
+import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
 import type {
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
@@ -96,6 +97,7 @@ type LazyRegistrationMessage = Extract<
 let initReady = false;
 let initFailure: string | null = null;
 const pendingLazyRegistrationMessages: LazyRegistrationMessage[] = [];
+const rootfsSnapshotGate = new RootfsSnapshotGate();
 
 // Process tracking
 interface ForkReplayContext {
@@ -358,6 +360,13 @@ function respond(requestId: number, result: unknown) {
   post({ type: "response", requestId, result });
 }
 
+function respondTransferredBytes(requestId: number, result: Uint8Array) {
+  post(
+    { type: "response", requestId, result },
+    [result.buffer as ArrayBuffer],
+  );
+}
+
 function respondError(requestId: number, error: string) {
   post({ type: "response", requestId, result: null, error });
 }
@@ -423,12 +432,18 @@ function handleLazyRegistration(msg: LazyRegistrationMessage): void {
     pendingLazyRegistrationMessages.push(msg);
     return;
   }
+  let releaseMutation: (() => void) | undefined;
   try {
+    releaseMutation = rootfsSnapshotGate.beginMutation(
+      "register lazy rootfs entries",
+    );
     applyLazyRegistration(msg);
   } catch (err) {
     const error = formatError(err);
     respondErrorIfRequested(msg, error);
     reportWorkerProtocolError(`${msg.type} failed: ${error}`);
+  } finally {
+    releaseMutation?.();
   }
 }
 
@@ -778,8 +793,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
 // ── Spawn ──
 
 async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>) {
+  let releaseMutation: (() => void) | undefined;
   let createdPid: number | undefined;
   try {
+    releaseMutation = rootfsSnapshotGate.beginMutation("spawn a process");
     await waitForProcessTeardowns();
 
     let programBytes: ArrayBuffer;
@@ -888,6 +905,8 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       kernelWorker.removeProcessFromKernelTable(createdPid);
     }
     respondError(msg.requestId, String(e));
+  } finally {
+    releaseMutation?.();
   }
 }
 
@@ -1716,8 +1735,18 @@ async function handleReadVfsFile(
   msg: Extract<MainToKernelMessage, { type: "read_vfs_file" }>,
 ) {
   if (!io) { respond(msg.requestId, null); return; }
+  let releaseMutation: (() => void) | undefined;
   try {
+    // A read can materialize a lazy file/tree and is therefore serialized
+    // with snapshots even though an already-materialized read is non-mutating.
+    releaseMutation = rootfsSnapshotGate.beginMutation(
+      "read or materialize a rootfs file",
+    );
     const { data, stat } = await readPreparedPlatformFile(io, msg.path);
+    if ((stat.mode & 0o170000) !== 0o100000) {
+      respond(msg.requestId, null);
+      return;
+    }
     // Copy into a plain (non-shared) ArrayBuffer so it structured-clones back.
     const result = data.slice();
     respond(
@@ -1727,6 +1756,8 @@ async function handleReadVfsFile(
   } catch (error) {
     if (isMissingPathError(error)) respond(msg.requestId, null);
     else respondError(msg.requestId, formatError(error));
+  } finally {
+    releaseMutation?.();
   }
 }
 
@@ -1735,8 +1766,10 @@ async function handleReadVfsFile(
 // stage transient files between process spawns.
 function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs_file" }>) {
   if (!io) { respondError(msg.requestId, "VFS is not initialized"); return; }
+  let releaseMutation: (() => void) | undefined;
   let fd: number | null = null;
   try {
+    releaseMutation = rootfsSnapshotGate.beginMutation("write a rootfs file");
     fd = io.open(msg.path, 0o1101 /* O_WRONLY|O_CREAT|O_TRUNC */, msg.mode & 0o7777);
     let offset = 0;
     while (offset < msg.data.byteLength) {
@@ -1762,12 +1795,16 @@ function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs
       try { io.close(fd); } catch { /* preserve the original failure */ }
     }
     respondError(msg.requestId, formatError(err));
+  } finally {
+    releaseMutation?.();
   }
 }
 
 function handleUnlinkVfsFile(msg: Extract<MainToKernelMessage, { type: "unlink_vfs_file" }>) {
   if (!io) { respondError(msg.requestId, "VFS is not initialized"); return; }
+  let releaseMutation: (() => void) | undefined;
   try {
+    releaseMutation = rootfsSnapshotGate.beginMutation("unlink a rootfs file");
     try {
       io.lstat(msg.path);
     } catch {
@@ -1778,6 +1815,38 @@ function handleUnlinkVfsFile(msg: Extract<MainToKernelMessage, { type: "unlink_v
     respond(msg.requestId, true);
   } catch (err) {
     respondError(msg.requestId, formatError(err));
+  } finally {
+    releaseMutation?.();
+  }
+}
+
+async function handleExportRootfsImage(
+  msg: Extract<MainToKernelMessage, { type: "export_rootfs_image" }>,
+) {
+  if (!memfs) {
+    respondError(msg.requestId, "VFS is not initialized");
+    return;
+  }
+  if (!initReady) {
+    respondError(msg.requestId, "rootfs export requires an initialized kernel");
+    return;
+  }
+  try {
+    const image = await rootfsSnapshotGate.runSnapshot(async () => {
+      if (
+        processes.size !== 0 ||
+        processTeardowns.size !== 0 ||
+        workerTeardowns.size !== 0
+      ) {
+        throw new Error(
+          "rootfs export requires a quiescent kernel with no live or tearing-down processes",
+        );
+      }
+      return memfs.saveImage();
+    });
+    respondTransferredBytes(msg.requestId, image);
+  } catch (error) {
+    respondError(msg.requestId, formatError(error));
   }
 }
 
@@ -2213,6 +2282,7 @@ sw.onmessage = (e: MessageEvent) => {
     case "read_vfs_file": void handleReadVfsFile(msg); break;
     case "write_vfs_file": handleWriteVfsFile(msg); break;
     case "unlink_vfs_file": handleUnlinkVfsFile(msg); break;
+    case "export_rootfs_image": void handleExportRootfsImage(msg); break;
     case "append_stdin_data": kernelWorker.appendStdinData(msg.pid, msg.data); break;
     case "set_stdin_data": kernelWorker.setStdinData(msg.pid, msg.data); break;
     case "pty_write": handlePtyWrite(msg); break;

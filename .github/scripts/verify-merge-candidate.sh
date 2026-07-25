@@ -85,7 +85,8 @@ if ! jq -e '
     (.head_sha | test("^[0-9a-f]{40}$")) and
     (.synthetic_merge_sha | test("^[0-9a-f]{40}$")) and
     (.synthetic_tree_sha | test("^[0-9a-f]{40}$")) and
-    (.merge_method == "squash" or .merge_method == "rebase") and
+    (.merge_method == "squash" or .merge_method == "rebase" or
+      .merge_method == "merge") and
     (.pr_commit_count | type == "number" and . > 0 and floor == .) and
     (.abi_version | type == "number" and . > 0 and floor == .) and
     (.candidate_tag | type == "string" and length > 0) and
@@ -261,6 +262,17 @@ case "$merge_method" in
     if [ "$merged_commit_count" != "$pr_commit_count" ]; then
       terminal_fail rebase-commit-count-mismatch \
         "rebased merge contains $merged_commit_count commits after the prepared base, expected $pr_commit_count"
+    fi
+    ;;
+  merge)
+    merged_parents=$(git show -s --format=%P "$merge_commit_sha")
+    expected_parents="$base_sha $head_sha"
+    # WHY: tree equality alone would let a lookalike commit activate package
+    # bytes while the reviewed/published PR head remained unreachable. Exact
+    # parent order proves both the prepared base and head entered main.
+    if [ "$merged_parents" != "$expected_parents" ]; then
+      terminal_fail merge-parent-mismatch \
+        "merge commit parents $merged_parents do not match prepared base and head $expected_parents"
     fi
     ;;
 esac

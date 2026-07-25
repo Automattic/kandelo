@@ -97,10 +97,10 @@ export const LANGUAGE_RUNTIME_INVOCATIONS: readonly LanguageRuntimeInvocation[] 
     erlangInvocation("keg", `${ERLANG_KEG}/bin/erl`),
   ];
 
-export interface MainShellLanguageRuntimeInvocation
-  extends LanguageRuntimeInvocation {
+export interface MainShellLanguageRuntimeInvocation extends LanguageRuntimeInvocation {
   packageName: string;
   dependencyPackages: readonly string[];
+  launcherPackages: readonly string[];
   terminalCommand: string;
 }
 
@@ -154,16 +154,17 @@ const MAIN_SHELL_PERL_PROGRAM = [
   'print "main-shell-perl-ok:v5.40.3\\n"',
 ].join("; ");
 
-const MAIN_SHELL_ERLANG_EXPRESSION = [
-  'ok = file:write_file("/tmp/kandelo-erlang-runtime.txt", <<"erlang-file-ok">>)',
-  '{ok, <<"erlang-file-ok">>} = file:read_file("/tmp/kandelo-erlang-runtime.txt")',
-  'ok = file:delete("/tmp/kandelo-erlang-runtime.txt")',
-  'Parent = self()',
-  'spawn(fun() -> Parent ! {child, lists:sum([1,2,3])} end)',
-  'receive {child, 6} -> ok after 5000 -> erlang:error(child_timeout) end',
-  'io:format("main-shell-erlang-ok:28.2~n")',
-  "halt()",
-].join(", ") + ".";
+const MAIN_SHELL_ERLANG_EXPRESSION =
+  [
+    'ok = file:write_file("/tmp/kandelo-erlang-runtime.txt", <<"erlang-file-ok">>)',
+    '{ok, <<"erlang-file-ok">>} = file:read_file("/tmp/kandelo-erlang-runtime.txt")',
+    'ok = file:delete("/tmp/kandelo-erlang-runtime.txt")',
+    "Parent = self()",
+    "spawn(fun() -> Parent ! {child, lists:sum([1,2,3])} end)",
+    "receive {child, 6} -> ok after 5000 -> erlang:error(child_timeout) end",
+    'io:format("main-shell-erlang-ok:28.2~n")',
+    "halt()",
+  ].join(", ") + ".";
 
 const MAIN_SHELL_RUBY_PROGRAM = [
   "raise 'RUBYLIB leaked' if ENV.key?('RUBYLIB')",
@@ -171,7 +172,7 @@ const MAIN_SHELL_RUBY_PROGRAM = [
   "require 'rbconfig'",
   "prefix = RbConfig::CONFIG['prefix']",
   `allowed = ['${HOMEBREW_PREFIX}/opt/ruby', '${HOMEBREW_PREFIX}/Cellar/ruby/4.0.5_1']`,
-  "raise \"wrong Ruby prefix: #{prefix}\" unless allowed.include?(prefix)",
+  'raise "wrong Ruby prefix: #{prefix}" unless allowed.include?(prefix)',
   "require 'pathname'",
   "require 'json'",
   "require 'yaml'",
@@ -195,6 +196,7 @@ function mainShellInvocation(
   label: string,
   packageName: string,
   dependencyPackages: readonly string[],
+  launcherPackages: readonly string[],
   command: string,
   args: readonly string[],
   expectedStdout: string,
@@ -204,6 +206,7 @@ function mainShellInvocation(
     label,
     packageName,
     dependencyPackages,
+    launcherPackages,
     executable: SHELL,
     argv,
     expectedStdout,
@@ -221,12 +224,13 @@ function shellQuote(value: string): string {
  * the main shell. These deliberately use only the normal PATH and package
  * wrappers: no language-specific runtime or library-path overrides are allowed.
  */
-export const MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS:
-  readonly MainShellLanguageRuntimeInvocation[] = [
+export const MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS: readonly MainShellLanguageRuntimeInvocation[] =
+  [
     mainShellInvocation(
       "main-shell Python",
       "kandelo-dev/tap-core/python",
       ["kandelo-dev/tap-core/zlib"],
+      [],
       "python",
       ["-c", MAIN_SHELL_PYTHON_PROGRAM],
       "main-shell-python-ok:3.13.3\n",
@@ -234,6 +238,7 @@ export const MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS:
     mainShellInvocation(
       "main-shell Perl",
       "kandelo-dev/tap-core/perl",
+      [],
       [],
       "perl",
       ["-e", MAIN_SHELL_PERL_PROGRAM],
@@ -243,6 +248,9 @@ export const MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS:
       "main-shell Erlang",
       "kandelo-dev/tap-core/erlang",
       [],
+      // WHY: erl is installed as a #!/bin/sh wrapper. Track the selected
+      // shell bottle explicitly without pretending it is an Erlang library.
+      ["kandelo-dev/tap-core/dash"],
       "erl",
       [...ERLANG_ARGS, "-eval", MAIN_SHELL_ERLANG_EXPRESSION],
       "main-shell-erlang-ok:28.2\n",
@@ -251,6 +259,7 @@ export const MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS:
       "main-shell Ruby",
       "kandelo-dev/tap-core/ruby",
       ["kandelo-dev/tap-core/zlib"],
+      [],
       "ruby",
       ["-e", MAIN_SHELL_RUBY_PROGRAM],
       "main-shell-ruby-ok:4.0.5:rubygems-4.0.10:bundler-4.0.10\n",

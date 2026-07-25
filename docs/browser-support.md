@@ -57,6 +57,12 @@ Service Worker ──MessagePort──> Kernel Worker       │
   `writeFileToVfs`, and `unlinkFileFromVfs`). The owning worker performs those
   mutations through the mounted VFS; the main thread never receives the live
   VFS `SharedArrayBuffer`.
+  A quiescent machine can return durable root-image bytes through
+  `BrowserKernel.exportRootfsImage()`. The worker rejects export while a guest
+  process or teardown is live, serializes it against the same staging and lazy
+  materialization RPCs, and transfers only the `/` image backend. Scratch,
+  device, and shared-memory mounts are boot-local and are recreated when those
+  bytes start another machine.
 - **Legacy shared VFS** (`memfs:` constructor option + `kernel.spawn()`): main thread holds a `MemoryFileSystem` and shares the SAB with the kernel worker. Used by demos that fetch transient binaries at runtime (test runners, REPLs that load arbitrary user code, benchmark suites). The main thread transfers each program's bytes, but the Rust `ProcessTable` allocates the PID and the worker returns it. Top-level creation, guest fork/spawn, and thread clone all draw from that one authoritative task-ID sequence; no browser or host-side allocator exists.
 - **Exec reads from filesystem**: Like a real OS, `exec()` reads binaries from the kernel-side `MemoryFileSystem`. Programs are baked into the VFS image at build time (or written by the page in the legacy path before spawning). Symlinks are used for multicall binaries (e.g., coreutils).
 - **dinit for service supervision**: Multi-process demos (nginx, redis, mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and per-service files under `/etc/dinit.d/` into the VFS image via `addDinitInit()` (`images/vfs/scripts/dinit-image-helpers.ts`). dinit is the first user process, not PID 1. It reaps its directly supervised children and handles `depends-on` ordering and bootstrap-then-daemon chains. Synthetic PID 1 has no wait loop, so Kandelo does not yet reap children reparented to it. Page code waits for service-ready via `onListenTcp` (port-bind) callbacks, then starts driving the demo over kernel-loopback TCP or the HTTP bridge.

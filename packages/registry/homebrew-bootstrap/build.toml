@@ -10,7 +10,7 @@ inputs = [
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 1
+revision = 2
 
 [[git_inputs]]
 name = "homebrew_brew"

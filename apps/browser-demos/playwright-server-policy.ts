@@ -1,5 +1,6 @@
 export interface PlaywrightServerEnvironment {
   CI?: string;
+  KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE?: string;
   KANDELO_HOMEBREW_MAIN_SHELL_STRICT?: string;
 }
 
@@ -12,5 +13,7 @@ export interface PlaywrightServerEnvironment {
 export function shouldReuseExistingPlaywrightServer(
   env: PlaywrightServerEnvironment,
 ): boolean {
-  return !env.CI && env.KANDELO_HOMEBREW_MAIN_SHELL_STRICT !== "1";
+  return !env.CI &&
+    env.KANDELO_HOMEBREW_MAIN_SHELL_STRICT !== "1" &&
+    env.KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE !== "1";
 }

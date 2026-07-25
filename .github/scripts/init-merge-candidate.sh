@@ -70,8 +70,9 @@ if ! [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && \
   echo "init-merge-candidate: candidate commit identities must be 40-char lowercase hex" >&2
   exit 2
 fi
-if [ "$MERGE_METHOD" != "squash" ] && [ "$MERGE_METHOD" != "rebase" ]; then
-  echo "init-merge-candidate: merge method must be squash or rebase" >&2
+if [ "$MERGE_METHOD" != "squash" ] && [ "$MERGE_METHOD" != "rebase" ] &&
+   [ "$MERGE_METHOD" != "merge" ]; then
+  echo "init-merge-candidate: merge method must be squash, rebase, or merge" >&2
   exit 2
 fi
 

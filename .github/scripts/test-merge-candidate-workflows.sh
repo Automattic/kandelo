@@ -110,6 +110,12 @@ fi
 if grep -Eq -- '--target-tag[[:space:]]+"?binaries-abi-v' "$PREPARE"; then
   fail "Prepare merge still has a pre-merge canonical index writer"
 fi
+grep -Fq "contains(github.event.pull_request.labels.*.name, 'preserve-head-commit') && 'merge'" \
+  "$PREPARE" || fail "Prepare merge does not select merge-commit verification for preserve-head-commit"
+grep -Fq 'batched-changes and preserve-head-commit are mutually exclusive' "$PREPARE" || \
+  fail "Prepare merge does not reject conflicting history-method labels"
+grep -Fq 'expected_parents="$base_sha $head_sha"' "$VERIFY_SCRIPT" || \
+  fail "merge-commit activation does not bind the exact prepared base and head parents"
 
 index_writer_count=$(grep -c 'bash scripts/index-update.sh' "$PREPARE")
 candidate_target_count=$(grep -c -- '--target-tag "${{ needs.preflight.outputs.target_tag }}"' "$PREPARE")

@@ -542,12 +542,15 @@ members or use HTTP ranges. Dependency bottles have separate identities and
 remain unfetched until a path owned by that dependency is used.
 
 The guest `brew` implementation is distributed separately from Formula
-bottles as the `homebrew-bootstrap` program package. Its single declared
-artifact, `homebrew-bootstrap.zip`, is a deterministic archive of one exact
-upstream Homebrew commit plus Kandelo's reviewed guest-platform patch. Although
-the artifact is not Wasm, it uses the ordinary program-package resolver,
-program projection, cache key, and release archive contracts; its output
-therefore declares `fork_instrumentation = "disabled"`.
+bottles as the `homebrew-bootstrap` program package. One package generation
+contains two declared outputs: `homebrew-bootstrap.zip`, a deterministic
+archive of one exact upstream Homebrew commit plus Kandelo's reviewed
+guest-platform patch, and `homebrew-brew.env`, the architecture tag and system
+environment policy consumed with that exact tree. Consumers resolve both from
+the same immutable generation; they must not reconstruct the environment file
+or combine it with a ZIP from another build. Neither output is Wasm, but both
+use the ordinary program-package resolver, projection, cache key, and release
+archive contracts and therefore declare `fork_instrumentation = "disabled"`.
 
 `homebrew/homebrew-bootstrap-source-lock.json` is the reviewed source/output
 identity. It binds the upstream archive URL and SHA-256, sealed
@@ -556,10 +559,12 @@ tree identities, portable Ruby version, archive-producing Git version, and
 final ZIP SHA-256/byte count. The package build imports the resolver-owned
 exact Git checkout into private scratch storage and performs no source fetch
 of its own. The lock also records the dedicated package output's exact SHA-256
-and byte count, so a rebuild cannot silently change guest Homebrew bytes.
-Shell and bootstrap-image consumer cutover remains a separate change. Run the
-build through `scripts/dev-shell.sh`; a different Git ZIP implementation fails
-the exact output lock instead of publishing different bytes.
+and byte count, so a rebuild cannot silently change guest Homebrew source
+bytes. The package recipe emits the environment member in the same atomic
+generation, and the program projection records both canonical nested member
+paths. Run the build through `scripts/dev-shell.sh`; a different Git ZIP
+implementation fails the exact output lock instead of publishing different
+bytes.
 
 See [docs/homebrew-publishing.md](homebrew-publishing.md) for the Homebrew
 formula, sidecar, GHCR, VFS, and runtime validation contract.
@@ -1594,6 +1599,16 @@ A manifest can declare host-side prerequisites — `cmake`,
 each one before invoking the build script, so a missing or
 too-old tool fails up front with a platform-keyed install hint
 rather than mid-build with a cryptic shell error.
+
+The manifest declares executable prerequisites; the source recipe still owns
+any project-local dependency tree used by those executables. For example, a
+recipe that runs a JavaScript tool from a committed `package-lock.json` must
+install and verify that locked tree in its normal build path, below the
+resolver-owned build output or scratch tree rather than in the shared source
+checkout. Do not provision it only in selected CI callers: archive validation
+can reject a same-run or published artifact and fall through to the source
+recipe from any local, direct-dependency, transitive-dependency, or concurrent
+resolve.
 
 **Inline declaration**
 
