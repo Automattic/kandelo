@@ -718,8 +718,13 @@ Completed rehearsal evidence:
     build-deps program-index-context-check --source-repo-root "$PWD"
   ```
 
-  The temporary fresh projection is build evidence, not an intended source
-  change; the committed file was restored byte-for-byte to the exact base.
+  The fresh projection has SHA-256
+  `949acb0096bd3595d785367dfb1864cbe488ff85d2a57464e47e70630b53433c`
+  and is committed because leaving the base projection in place makes the
+  package-build-root contract fail as stale after the ABI/source changes.
+- `bash scripts/dev-shell.sh bash scripts/test-package-build-roots.sh`: passed
+  after regenerating the projection. The first CI run exposed the stale
+  projection honestly; no freshness bypass or test exception was added.
 - `bash scripts/dev-shell.sh npx tsx benchmarks/run.ts --host=node
   --suite=spawn-scratch --rounds=3` and the corresponding `--host=browser`
   command both passed. The browser command drove real Chromium. This evidence
