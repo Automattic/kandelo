@@ -236,7 +236,10 @@ if args == [
     else:
         print(os.environ["FAKE_KANDELO_MAIN_SHA"])
 elif args[:2] == ["api", "--include"]:
-    endpoint = args[2]
+    if "Cache-Control: no-cache" not in args:
+        print("authoritative GET did not bypass cached state", file=sys.stderr)
+        sys.exit(2)
+    endpoint = next(value for value in args[2:] if value.startswith("/"))
     state = load()
     if "/releases/tags/" in endpoint:
         tag = endpoint.split("/releases/tags/", 1)[1]

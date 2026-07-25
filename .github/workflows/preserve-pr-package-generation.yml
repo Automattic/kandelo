@@ -134,11 +134,15 @@ jobs:
       - name: Transfer the inert preserved bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: preserved-package-generation-${{ github.run_id }}-${{ github.run_attempt }}
+          # WHY: "rerun failed jobs" does not rerun a successful producer, so
+          # the consumer must not look for a new run-attempt-specific name.
+          # A full rerun deterministically replaces this inert, sealed bundle.
+          name: preserved-package-generation-${{ github.run_id }}
           path: ${{ runner.temp }}/preserved-package-generation
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
+          overwrite: true
 
   publish:
     needs: [prepare]
@@ -174,7 +178,7 @@ jobs:
       - name: Download the inert preserved bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: preserved-package-generation-${{ github.run_id }}-${{ github.run_attempt }}
+          name: preserved-package-generation-${{ github.run_id }}
           path: ${{ runner.temp }}/preserved-package-generation
 
       - name: Revalidate, publish, and anonymously read back every asset

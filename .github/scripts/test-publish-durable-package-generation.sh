@@ -452,8 +452,15 @@ if [ "$method" = POST ] && [[ "$endpoint" == */git/refs ]]; then
       sha=*) printf '%s' "${field#sha=}" >"$root/ref-sha" ;;
     esac
   done
+  if [ "${STALE_TAG_READS_AFTER_CREATE:-0}" -gt 0 ]; then
+    printf '%s\n' "$STALE_TAG_READS_AFTER_CREATE" >"$root/stale-tag-reads"
+  fi
   printf 'post-tag\n' >>"${WRITE_LOG:?}"
-  printf '{}\n'
+  jq -n \
+    --arg tag "$(cat "$root/ref-tag")" \
+    --arg sha "$(cat "$root/ref-sha")" '{
+      ref:("refs/tags/"+$tag),object:{type:"commit",sha:$sha}
+    }'
   exit 0
 fi
 if [ "$method" = POST ] && [[ "$endpoint" == */releases ]]; then
@@ -500,6 +507,13 @@ if [[ "$endpoint" == */git/commits/"${TEST_SOURCE_SHA:?}" ]]; then
 fi
 if [[ "$endpoint" == */git/ref/tags/* ]]; then
   [ -f "$root/ref-tag" ] || emit_404
+  if [ -f "$root/stale-tag-reads" ]; then
+    stale_reads="$(cat "$root/stale-tag-reads")"
+    if [ "$stale_reads" -gt 0 ]; then
+      printf '%s\n' "$((stale_reads - 1))" >"$root/stale-tag-reads"
+      emit_404
+    fi
+  fi
   emit_get "$(jq -n \
     --arg tag "$(cat "$root/ref-tag")" \
     --arg sha "$(cat "$root/ref-sha")" '{
@@ -638,6 +652,7 @@ run_publisher() {
     NODE_EXPECTED_SCRIPT="$publisher_authority_root/scripts/browser-binary-package-roots.mjs" \
     NODE_EXPECTED_ROOT="$publisher_authority_root" \
     BROWSER_INPUT_ROOTS="${TEST_RUN_BROWSER_INPUT_ROOTS:-rootfs}" \
+    STALE_TAG_READS_AFTER_CREATE="${STALE_TAG_READS_AFTER_CREATE:-0}" \
     WRITE_LOG="$TMP_ROOT/writes.log" \
     LOCK_LOG="$TMP_ROOT/locks.log" \
     STATE_LOCK_SCRIPT="$TMP_ROOT/bin/state-lock" \
@@ -656,12 +671,16 @@ cp "$TMP_ROOT/archives/rootfs-1-rev1-abi42-wasm32-aaaaaaaa.tar.zst" \
   "$TMP_ROOT/remote/source-assets/rootfs-1-rev1-abi42-wasm32-aaaaaaaa.tar.zst"
 : >"$TMP_ROOT/writes.log"
 : >"$TMP_ROOT/locks.log"
-run_publisher
+# Reproduce GitHub serving its cached pre-write 404 after accepting tag
+# creation. Publication must reconcile the completed write without issuing a
+# second POST or requiring a whole workflow retry.
+STALE_TAG_READS_AFTER_CREATE=2 run_publisher
 [ "$(jq -r .application_sealed "$TMP_ROOT/receipt.json")" = true ]
 [ "$(cat "$TMP_ROOT/remote/draft")" = false ]
 [ "$(find "$TMP_ROOT/remote/assets" -type f | wc -l | tr -d '[:space:]')" = 3 ]
 [ "$(tail -n 2 "$TMP_ROOT/writes.log" | head -n 1)" = "upload generation.json" ]
 [ "$(tail -n 1 "$TMP_ROOT/writes.log")" = "patch-release" ]
+[ "$(grep -Fxc post-tag "$TMP_ROOT/writes.log")" = 1 ]
 sed 's/ .*//' "$TMP_ROOT/locks.log" | grep -Fxq acquire
 grep -Fxq release "$TMP_ROOT/locks.log"
 

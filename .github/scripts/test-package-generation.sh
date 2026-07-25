@@ -1206,5 +1206,17 @@ grep -Fq -- '--expected-authority-sha "$GITHUB_SHA"' \
 grep -Fq "verify-preserved-package-source.sh" \
   "$SCRIPT_DIR/publish-durable-package-generation.sh"
 grep -Fq "publish-durable-package-generation.sh" <<<"$preserve_publish_job"
+stable_bundle_name='name: preserved-package-generation-${{ github.run_id }}'
+[ "$(grep -Fxc "          $stable_bundle_name" "$preservation_workflow")" = 2 ] || {
+  echo "preservation producer and consumer do not share one rerun-stable bundle name" >&2
+  exit 1
+}
+if grep -F \
+     'name: preserved-package-generation-${{ github.run_id }}-${{ github.run_attempt }}' \
+     "$preservation_workflow" >/dev/null; then
+  echo "preservation bundle is incorrectly coupled to the current rerun attempt" >&2
+  exit 1
+fi
+grep -Fq "          overwrite: true" <<<"$preserve_prepare_job"
 
 echo "test-package-generation: ok"
