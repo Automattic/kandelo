@@ -426,17 +426,30 @@ channel, fork-context, and clear-TID metadata.
 ### fork()
 
 Fork uses the in-tree `wasm-fork-instrument` tool to snapshot the Wasm call stack (details in [fork-instrumentation.md](fork-instrumentation.md)):
+Before compilation or worker launch, Node and browser hosts validate the
+embedded ABI version, linked-frame contract, control exports, and ABI 43
+`FORK_CAP_ACTIVATION_STATE_SAFE` claim. Pthread and side-module entry points
+apply the same policy.
 
 1. User calls `fork()` → musl → `__syscall(SYS_clone, ...)` → glue
 2. The host's `kernel_fork` override maps a root continuation chunk and calls `wpk_fork_unwind_begin(root + chunk_header_size)`. The tool-injected export sets state to UNWINDING and snapshots every mutable scalar global (including `__tls_base` and `__stack_pointer`) into the root's fixed prefix.
-3. The return-to-caller chain unwinds. After each fork-path call returns in the unwinding state, the caller asks the host to reserve a complete node before its first frame write; its postamble commits the node only after all scalar and reference state has been saved. The host maps additional page-rounded chunks when necessary.
+3. The return-to-caller chain unwinds. After each fork-path call returns in the
+   unwinding state, the caller asks the host to reserve a complete node before
+   its first frame write; its postamble commits the node only after all
+   activation-owned scalar state has been saved. The host maps additional
+   page-rounded chunks when necessary. No accepted frame names a
+   module-instance reference-table slot.
 4. Once `_start` returns (top-of-stack), the host sends SYS_FORK through the channel.
 5. Kernel's `kernel_fork_process(parent_pid, caller_tid)` validates the caller,
    allocates the child PID from the global task-ID sequence, and copies process
    metadata and the fd/OFD tables. The child receives the calling task's blocked
    signal mask, while inherited stateful descriptors retain references to their
    existing kernel-global backings.
-6. Host copies the parent's linear memory, including continuation mappings, to a new `WebAssembly.Memory` and spawns a child worker. Kernel mmap metadata is inherited with the process state.
+6. Host copies the parent's linear memory, including continuation mappings, to
+   a new `WebAssembly.Memory` and spawns a child worker. Kernel mmap metadata is
+   inherited with the process state. The worker creates a fresh Wasm instance:
+   mutable globals, tables, exception references, and Store-owned references
+   are not copied and are not evidence that replay state survived.
 7. Child worker attaches to the copied root and calls `wpk_fork_rewind_begin(buf)` — the tool's export restores all saved globals. The host then calls `setupChannelBase(...)` (which reads the now-correct `__tls_base`) and invokes `_start`.
 8. Each instrumented function's preamble requests and validates the next committed frame, then re-enters the call site where the parent was interrupted. Eventually it reaches the `kernel_fork` call site in the leaf function, which returns 0. Libc then refreshes the copied pthread TID from the kernel through `set_tid_address` before returning to user code.
 9. `wpk_fork_rewind_end` resets state; parent and child independently unmap their continuation chunks; fork returns 0 in child and the child PID in the parent.
@@ -469,17 +482,32 @@ errno. A negative `SYS_FORK` result after step 4 instead uses the complete
 parent rewind. These resource failures create no child and leave the parent in
 `NORMAL`, able to continue or retry `fork()`.
 
-The instrumentation handles LLVM's new-EH `try_table` output correctly, including fork from inside C++ catch handlers. See [fork-instrumentation.md](fork-instrumentation.md) for the current guarantees and documented unanticipated Wasm-level carve-outs.
+ABI 43 accepts statically tagged `Catch` and `CatchRef` handlers with scalar tag
+payloads. Their exact arm and operands are activation-owned bytes; rewind
+rethrows the tag so the original `CatchRef` clause creates a fresh
+instance-local exnref. Fork-reachable reference locals, `CatchAllRef`, reference
+payloads and carryovers, mutable reference globals, and arbitrary guest table
+mutation are rejected during instrumentation. Current LLVM C++ output that
+uses cleanup exnref locals or `CatchAllRef` therefore remains an explicit
+unsupported artifact boundary rather than appearing to work through
+parent-instance scratch. See
+[fork-instrumentation.md](fork-instrumentation.md) for the exact accepted and
+rejected shapes.
 
 A fork reached directly inside an instrumented dlopened side module uses two
 ordered state machines and two linked continuations: side then main during unwind, main
 then side during rewind. Versioned fork-instrument capability metadata lets
-marker-present artifacts prove their role. ABI 16 defines the historical
+marker-present artifacts prove their role, and ABI 43 additionally requires
+`FORK_CAP_ACTIVATION_STATE_SAFE` before launch. ABI 16 defines the historical
 five-export fallback, while ABI 18 and later require role claims and reject
 stale call-graph artifacts. The ABI 36 epoch combines that contract with
 side-module replay state and concurrent pthread-fork arbitration. Dlopen replay
 records both the parent's memory base and exact table base, including null gaps
-left by failed loads. TLS-bearing side modules additionally record their live,
+left by failed loads, then re-instantiates each side module's static element
+initialization at that exact base in the child. This host-owned, versioned replay
+path is the explicit reconstruction owner for supported dlopen table state;
+guest `table.set`/`fill`/`copy`/`init`/`grow` effects are not accepted.
+TLS-bearing side modules additionally record their live,
 positive `__tls_base`. A child restores the pointer-width-correct mutable
 global without calling `__wasm_init_tls`, because copied memory already holds
 the parent's live TLS bytes and reinitialization would reset C++ unwinder state

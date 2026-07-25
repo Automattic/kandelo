@@ -4,27 +4,23 @@
 //! Every generator output is a syntactically well-formed module that
 //! imports `kernel.kernel_fork` so the instrumenter has work to do.
 //!
-//! Covers: single or nested try_tables, all four catch-clause shapes,
+//! Covers: single or nested try_tables, tagged Catch/CatchRef clauses,
 //! and 0..=4 scalar locals of varying numeric type. Nested shape wraps
 //! an inner try_table in an outer try_table of the *same* clause
 //! variant to keep block result types trivially lined up.
 
 use arbitrary::{Arbitrary, Unstructured};
 
-/// Which catch-clause shape the generated try_table uses. Covers all
-/// four `try_table` catch variants so the instrumenter's rewrite of
-/// `call $fork` inside an exception-handled region is exercised across
-/// ref-returning and non-ref clauses.
+/// Which supported tagged catch shape the generated try_table uses.
+///
+/// CatchAll and CatchAllRef have no deterministic tag reconstruction recipe
+/// and have precise rejection tests outside this successful-output fuzzer.
 #[derive(Debug, Clone, Copy, arbitrary::Arbitrary)]
 enum ClauseVariant {
     /// (catch_ref $exn $handler) — handler receives exnref; try_table result is exnref.
     CatchRef,
-    /// (catch_all_ref $handler) — handler receives exnref; try_table result is exnref.
-    CatchAllRef,
     /// (catch $exn $handler) — handler receives nothing (tag has no params); try_table empty result.
     Catch,
-    /// (catch_all $handler) — handler receives nothing; try_table empty result.
-    CatchAll,
 }
 
 impl ClauseVariant {
@@ -41,14 +37,7 @@ impl ClauseVariant {
                 "ref.null exn",
                 "drop",
             ),
-            ClauseVariant::CatchAllRef => (
-                format!("(catch_all_ref {label})"),
-                "(result (ref null exn))",
-                "ref.null exn",
-                "drop",
-            ),
             ClauseVariant::Catch => (format!("(catch {tag} {label})"), "", "", ""),
-            ClauseVariant::CatchAll => (format!("(catch_all {label})"), "", "", ""),
         }
     }
 }
@@ -73,26 +62,6 @@ impl ScalarLocalTy {
     }
 }
 
-/// Reference type used for a generated local declaration. Exercises
-/// Phase 4f aux-table spill handling (for funcref/externref) and Phase
-/// 6's `captured_exnref_K` non-spill invariant (for exnref).
-#[derive(Debug, Clone, Copy, arbitrary::Arbitrary)]
-enum RefLocalTy {
-    FuncRef,
-    ExternRef,
-    ExnRef,
-}
-
-impl RefLocalTy {
-    fn as_wat(&self) -> &'static str {
-        match self {
-            RefLocalTy::FuncRef => "(ref null func)",
-            RefLocalTy::ExternRef => "(ref null extern)",
-            RefLocalTy::ExnRef => "(ref null exn)",
-        }
-    }
-}
-
 /// One generated program. Keep fields private so future generator
 /// extensions don't require downstream changes.
 #[derive(Debug)]
@@ -112,9 +81,6 @@ pub struct WatProgram {
     /// variant ensures the block result types line up trivially —
     /// mixed families are not generated here.
     wrap_in_outer: bool,
-    /// 0..=2 ref-typed locals. Exercises Phase 4f aux-table spill and
-    /// Phase 6's captured_exnref_K non-spill invariant.
-    ref_locals: Vec<RefLocalTy>,
     /// When true, adds a second function `$inner_fork` called via
     /// call_indirect through a funcref table, instead of calling
     /// `$fork` directly. Exercises indirect-call closure (Phase 3a/3b).
@@ -128,17 +94,11 @@ impl<'a> Arbitrary<'a> for WatProgram {
         for _ in 0..count {
             scalar_locals.push(ScalarLocalTy::arbitrary(u)?);
         }
-        let ref_count = (u8::arbitrary(u)? & 0b11).min(2); // 0..=2
-        let mut ref_locals = Vec::with_capacity(ref_count as usize);
-        for _ in 0..ref_count {
-            ref_locals.push(RefLocalTy::arbitrary(u)?);
-        }
         Ok(Self {
             scalar_locals,
             has_memory_grow: bool::arbitrary(u)?,
             clause_variant: ClauseVariant::arbitrary(u)?,
             wrap_in_outer: bool::arbitrary(u)?,
-            ref_locals,
             has_indirect_call: bool::arbitrary(u)?,
         })
     }
@@ -151,12 +111,6 @@ impl WatProgram {
     pub fn to_wat(&self) -> String {
         let locals_wat: String = self
             .scalar_locals
-            .iter()
-            .map(|ty| format!("(local {}) ", ty.as_wat()))
-            .collect();
-
-        let ref_locals_wat: String = self
-            .ref_locals
             .iter()
             .map(|ty| format!("(local {}) ", ty.as_wat()))
             .collect();
@@ -212,7 +166,7 @@ impl WatProgram {
   (tag $exn)
   {extra_decls}
   (func $caller (export "caller") (result i32)
-    {locals_wat}{ref_locals_wat}
+    {locals_wat}
     {body}
     i32.const 0)
   (memory 1))

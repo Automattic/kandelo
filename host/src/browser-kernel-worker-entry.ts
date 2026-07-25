@@ -39,7 +39,13 @@ import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
 import { patchWasmForThread } from "./worker-main";
-import { detectPtrWidth, extractAbiVersion, extractHeapBase, isWasmModuleBytes } from "./constants";
+import {
+  describeWasmArtifactPolicyFailures,
+  detectPtrWidth,
+  extractAbiVersion,
+  extractHeapBase,
+  isWasmModuleBytes,
+} from "./constants";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
 import {
   classifiedSignalOrFallback,
@@ -218,6 +224,10 @@ async function resolveExecutableForLaunch(
   const shebang = parseShebang(bytes);
   if (!shebang) {
     if (!isWasmModuleBytes(bytes)) return { errno: ENOEXEC };
+    const artifactFailures = describeWasmArtifactPolicyFailures(bytes, {
+      expectedAbi: kernelWorker.getKernelAbiVersion(),
+    });
+    if (artifactFailures.length > 0) return { errno: ENOEXEC };
     let programModule: WebAssembly.Module;
     try {
       programModule = await WebAssembly.compile(bytes);

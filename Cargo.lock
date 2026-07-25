@@ -404,6 +404,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "sha2",
  "walrus",
  "wasm-posix-shared",
  "wasmparser 0.247.0",
@@ -1523,9 +1524,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "walrus"
-version = "0.26.1"
+version = "0.26.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e151599d689dac80e85c66a7cfa6ffd1b2ab79220517f9161040a87a5041aee3"
+checksum = "3bfa49767bb3a9e1afb02aa95bbcbde8d82f2db4ca377afae94d688f14f62378"
 dependencies = [
  "anyhow",
  "gimli",

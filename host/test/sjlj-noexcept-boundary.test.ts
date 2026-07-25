@@ -13,28 +13,32 @@ const rawWasm64Fixture = join(
   repoRoot,
   "local-binaries/test-fixtures/wasm64/sjlj_noexcept_boundary.raw.wasm",
 );
-const instrumentedFixture = resolveBinary(
-  "programs/sjlj_noexcept_boundary.wasm",
+const unsupportedForkFixture = join(
+  repoRoot,
+  "local-binaries/test-fixtures/wasm32/unsupported-abi43/sjlj_noexcept_boundary.raw.wasm",
 );
+const unsupportedForkDiagnostic = `${unsupportedForkFixture}.instrument-error.txt`;
 const sigchldFixture = resolveBinary("programs/sigchld_sjlj.wasm");
 const TERMINATED_BY_SIGABRT = 128 + 6;
 
 describe("LLVM Wasm SjLj across a noexcept boundary", () => {
   it("keeps the raw wasm32 control independent of fork instrumentation", () => {
     const rawModule = new WebAssembly.Module(readFileSync(rawWasm32Fixture));
-    const instrumentedModule = new WebAssembly.Module(
-      readFileSync(instrumentedFixture),
-    );
     const exportNames = (module: WebAssembly.Module) =>
       WebAssembly.Module.exports(module).map(({ name }) => name);
 
     expect(exportNames(rawModule)).not.toContain("wpk_fork_state");
-    expect(exportNames(instrumentedModule)).toContain("wpk_fork_state");
+  });
+
+  it("keeps the fork-bearing compiler output outside the ABI 43 resolver", () => {
+    expect(readFileSync(unsupportedForkFixture).byteLength).toBeGreaterThan(0);
+    expect(readFileSync(unsupportedForkDiagnostic, "utf8")).toMatch(
+      /reference local\/parameter|uses CatchAll|uses CatchAllRef/,
+    );
   });
 
   it.each([
     ["raw wasm32", rawWasm32Fixture],
-    ["fork-instrumented wasm32", instrumentedFixture],
     ["raw wasm64", rawWasm64Fixture],
   ])("documents the pinned LLVM failure in the %s control", async (_, path) => {
     const result = await runCentralizedProgram({
@@ -52,7 +56,7 @@ describe("LLVM Wasm SjLj across a noexcept boundary", () => {
 
   it("resumes the same SjLj tag when it does not cross noexcept", async () => {
     const result = await runCentralizedProgram({
-      programPath: instrumentedFixture,
+      programPath: rawWasm32Fixture,
       argv: ["sjlj_noexcept_boundary", "--permissive"],
       timeout: 10_000,
       useDefaultRootfs: false,

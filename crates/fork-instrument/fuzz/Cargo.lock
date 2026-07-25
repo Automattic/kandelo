@@ -185,6 +185,8 @@ dependencies = [
  "anyhow",
  "clap",
  "walrus",
+ "wasm-posix-shared",
+ "wasmparser 0.247.0",
 ]
 
 [[package]]
@@ -492,6 +494,10 @@ dependencies = [
  "leb128fmt",
  "wasmparser 0.247.0",
 ]
+
+[[package]]
+name = "wasm-posix-shared"
+version = "0.1.0"
 
 [[package]]
 name = "wasmparser"
