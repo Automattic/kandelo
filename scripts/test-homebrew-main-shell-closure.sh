@@ -280,9 +280,14 @@ grep -Fq 'zstd -dc -- "${archives[0]}" | tar -xOf - manifest.toml >"$manifest"' 
   grep -Fq '! grep -Fq "UNPUBLISHED" "$manifest"' \
     <<<"$source_candidate_block" ||
   fail "source-rootfs candidate must verify exact provenance in its staged archive"
-grep -Fq 'resolved=$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)' \
-  <<<"$source_candidate_block" ||
-  fail "source-rootfs candidate must resolve the exact staged shell output"
+grep -Fq '"$xtask" archive-extract-member \' <<<"$source_candidate_block" &&
+  grep -Fq -- '--archive "${archives[0]}" \' <<<"$source_candidate_block" &&
+  grep -Fq -- '--member artifacts/shell.vfs.zst \' <<<"$source_candidate_block" &&
+  grep -Fq -- '--out "$candidate_root/main-shell.vfs.zst"' \
+    <<<"$source_candidate_block" &&
+  ! grep -Fq 'resolve-binary.sh programs/shell.vfs.zst' \
+    <<<"$source_candidate_block" ||
+  fail "source-rootfs candidate must extract the exact staged shell archive member"
 grep -Fq 'kind: "kandelo-source-rootfs-shell-activation"' \
   <<<"$source_candidate_block" ||
   fail "source-rootfs candidate must emit explicit activation evidence"

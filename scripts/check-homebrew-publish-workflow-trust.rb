@@ -3361,7 +3361,8 @@ def check_publisher(workflow)
     '"--property=BindReadOnlyPaths=$REPO_ROOT:$source_alias"',
     '"--property=InaccessiblePaths=$REPO_ROOT"',
     '--source-repo-root "$source_alias"',
-    'global package build input \"flake.nix\" not found',
+    "Match the inaccessible compile root rather than coupling this regression",
+    %q{*"build input \""*"\" not found"*"$original_root/"*)},
   ].each do |fragment|
     check(launcher_test.include?(fragment),
           "launcher checker regression lacks #{fragment}")

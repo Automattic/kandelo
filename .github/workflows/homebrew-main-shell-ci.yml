@@ -393,9 +393,14 @@ jobs:
               "https://github.com/${GITHUB_REPOSITORY}" ]
             [ "$archive_commit" = "$GITHUB_SHA" ]
             ! grep -Fq "UNPUBLISHED" "$manifest"
-            resolved=$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)
-            test -f "$resolved"
-            cp "$resolved" "$candidate_root/main-shell.vfs.zst"
+            # WHY: this lane deliberately has an empty binary index, so asking
+            # the resolver to rediscover the just-built shell would either
+            # fail or permit the substitution this proof excludes. Consume the
+            # declared file from the exact archive whose provenance was checked.
+            "$xtask" archive-extract-member \
+              --archive "${archives[0]}" \
+              --member artifacts/shell.vfs.zst \
+              --out "$candidate_root/main-shell.vfs.zst"
           ' bash "$candidate_root" "$archive_root"
           image="$candidate_root/main-shell.vfs.zst"
           report="$candidate_root/source-rootfs-main-shell-report.json"
