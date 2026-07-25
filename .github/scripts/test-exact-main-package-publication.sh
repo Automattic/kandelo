@@ -196,6 +196,29 @@ for input in source-repository source-commit; do
     fail "archive action does not pass required input $input to archive-stage"
 done
 
+archive_provenance_block="$(
+  awk '
+    /- name: Compute commit-bound build provenance/ { inside = 1 }
+    inside && /- name: Fetch musl submodule/ { exit }
+    inside { print }
+  ' "$ARCHIVE_ACTION"
+)"
+for checkout_binding in \
+  'EXPECTED_SOURCE_REPOSITORY: ${{ github.server_url }}/${{ github.repository }}' \
+  'SOURCE_COMMIT: ${{ inputs.source-commit }}' \
+  'SOURCE_REPOSITORY: ${{ inputs.source-repository }}' \
+  'WORKSPACE_ROOT: ${{ github.workspace }}' \
+  'git rev-parse --show-toplevel' \
+  "git rev-parse --verify 'HEAD^{commit}'" \
+  '[ "$checkout_root" != "$workspace_root" ]' \
+  '[ "$SOURCE_REPOSITORY" != "$EXPECTED_SOURCE_REPOSITORY" ]' \
+  '[ "$checkout_commit" != "$SOURCE_COMMIT" ]' \
+  'git status --porcelain=v1 --untracked-files=all'
+do
+  grep -Fq "$checkout_binding" <<<"$archive_provenance_block" ||
+    fail "archive action does not bind its source stamp to the checkout: $checkout_binding"
+done
+
 for workflow in "$STAGING" "$PREPARE"; do
   action_count="$(
     grep -Fc 'uses: ./.github/actions/package-archive-build' "$workflow"

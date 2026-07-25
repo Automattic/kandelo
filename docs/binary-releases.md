@@ -333,6 +333,9 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
   2. Run `xtask archive-stage` to produce the per-entry `.tar.zst`
      (pinned commit-bound `--build-timestamp` + `--build-host`, plus
      structured exact `--source-repository` + `--source-commit` provenance).
+     The shared archive action first requires a clean workflow-root checkout
+     whose repository identity and exact `HEAD` equal those source fields, so
+     a caller cannot stamp an archive with a commit it did not build.
   3. Invoke `scripts/index-update.sh --target-tag <tag> --package
      <name> --version <v> --revision <r> --arch <a> --status success
      --archive-path <staged> --archive-name <n> --cache-key-sha <s>`.
