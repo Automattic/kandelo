@@ -37,12 +37,12 @@ name: Force rebuild
 #                    (default: both). Manifests whose `target_arches`
 #                    don't include a requested arch are silently
 #                    skipped.
-#   ref            — git ref to build from. Defaults to the branch the
-#                    workflow was triggered from (`github.ref_name`),
-#                    so dispatching from a PR branch tests the PR's
-#                    sources rather than silently building `main`. Set
-#                    to a specific tag/sha for a one-shot rebuild from
-#                    history.
+#   ref            — optional exact lowercase SHA of the current
+#                    `refs/heads/main` commit. Empty uses the workflow
+#                    dispatch SHA. Branches, tags, pull-request refs,
+#                    ancestors, descendants, and equal-tree commits are
+#                    rejected because this workflow mutates the canonical
+#                    `binaries-abi-v<N>` release.
 #   skip_tests     — when true, publishes without running the test
 #                    suites. Defaults to false (tests must pass before
 #                    publish). workflow_dispatch is maintainer-only,
@@ -73,7 +73,7 @@ on:
         default: 'wasm32,wasm64'
         type: string
       ref:
-        description: 'Git ref to build from. Empty = the branch the workflow was triggered from.'
+        description: 'Optional exact lowercase SHA of the current main commit. Empty uses the workflow dispatch SHA; other refs are rejected.'
         required: false
         default: ''
         type: string
@@ -102,7 +102,7 @@ jobs:
       actions: read
       contents: read
     outputs:
-      build_ref: ${{ steps.resolve.outputs.build_ref }}
+      source_sha: ${{ steps.resolve.outputs.source_sha }}
     steps:
       - name: Resolve inputs + validate
         id: resolve
@@ -110,15 +110,44 @@ jobs:
           INPUT_PACKAGES: ${{ inputs.packages }}
           INPUT_ARCHES: ${{ inputs.arches }}
           INPUT_REF: ${{ inputs.ref }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          # Resolve ref: explicit input wins, else the dispatching ref.
-          BUILD_REF="${INPUT_REF}"
-          if [ -z "$BUILD_REF" ]; then
-            BUILD_REF="${{ github.ref_name }}"
-          fi
-          echo "build_ref=$BUILD_REF" >> "$GITHUB_OUTPUT"
+          [ "${{ github.repository }}" = "Automattic/kandelo" ] || {
+            echo "::error::canonical package rebuilds require Automattic/kandelo"
+            exit 1
+          }
+          [ "${{ github.ref }}" = "refs/heads/main" ] || {
+            echo "::error::canonical package rebuilds must be dispatched from refs/heads/main"
+            exit 1
+          }
+          [ "${{ github.workflow_ref }}" = "Automattic/kandelo/.github/workflows/force-rebuild.yml@refs/heads/main" ] || {
+            echo "::error::canonical package rebuilds require the reviewed workflow on main"
+            exit 1
+          }
+
+          SOURCE_SHA="${INPUT_REF:-${{ github.sha }}}"
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::ref must be empty or the exact lowercase 40-character main SHA"
+            exit 1
+          }
+          [ "$SOURCE_SHA" = "${{ github.sha }}" ] || {
+            echo "::error::ref must equal the workflow dispatch commit"
+            exit 1
+          }
+          main_sha="$(gh api /repos/Automattic/kandelo/git/ref/heads/main --jq .object.sha)"
+          [[ "$main_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::refs/heads/main returned a noncanonical commit identity"
+            exit 1
+          }
+          # WHY: graph reachability and equal trees do not prove that these
+          # exact archive bytes were built after their source landed.
+          [ "$SOURCE_SHA" = "$main_sha" ] || {
+            echo "::error::canonical package rebuild source must equal the live refs/heads/main commit"
+            exit 1
+          }
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
           # Validate `packages`: non-empty.
           if [ -z "$INPUT_PACKAGES" ]; then
@@ -141,7 +170,7 @@ jobs:
             esac
           done
 
-          echo "force-rebuild gate ok: ref=$BUILD_REF packages=$INPUT_PACKAGES arches=$INPUT_ARCHES skip_tests=${{ inputs.skip_tests }} bump_packages=${{ inputs.bump_packages }}"
+          echo "force-rebuild gate ok: source_sha=$SOURCE_SHA packages=$INPUT_PACKAGES arches=$INPUT_ARCHES skip_tests=${{ inputs.skip_tests }} bump_packages=${{ inputs.bump_packages }}"
 
   # ---------------------------------------------------------------------
   # Per-package matrix flow.
@@ -172,7 +201,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.gate.outputs.build_ref }}
+          ref: ${{ needs.gate.outputs.source_sha }}
 
       - name: Fetch musl submodule
         # Hardened submodule fetch via the reusable action (PR #435).
@@ -348,7 +377,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.gate.outputs.build_ref }}
+          ref: ${{ needs.gate.outputs.source_sha }}
 
       - name: Fetch musl submodule
         run: |
@@ -436,14 +465,19 @@ jobs:
       - id: checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.gate.outputs.build_ref }}
+          ref: ${{ needs.gate.outputs.source_sha }}
 
       - name: Compute commit-bound build provenance
         id: provenance
         run: |
+          source_sha="${{ needs.gate.outputs.source_sha }}"
+          [ "$(git rev-parse HEAD)" = "$source_sha" ] || {
+            echo "::error::library checkout differs from the admitted main commit"
+            exit 1
+          }
           ts=$(git log -1 --format=%aI HEAD)
           echo "build-timestamp=$ts" >> "$GITHUB_OUTPUT"
-          echo "build-host=${{ github.repository }}@${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "build-host=${{ github.repository }}@$source_sha" >> "$GITHUB_OUTPUT"
 
       - name: Fetch musl submodule
         uses: ./.github/actions/fetch-submodules
@@ -482,8 +516,11 @@ jobs:
                 --out "$RUNNER_TEMP/staged" \
                 --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
                 --build-host "${{ steps.provenance.outputs.build-host }}" \
+                --source-repository "https://github.com/${{ github.repository }}" \
+                --source-commit "${{ needs.gate.outputs.source_sha }}" \
                 --binaries-dir "$(pwd)/binaries" \
-                --expected-cache-key-sha "${{ matrix.sha }}"
+                --expected-cache-key-sha "${{ matrix.sha }}" \
+                --force-source-build
           '
           archive_path=$(find "$RUNNER_TEMP/staged" -name '*.tar.zst' -print -quit)
           archive_name=$(basename "$archive_path")
@@ -517,7 +554,8 @@ jobs:
             --status success \
             --archive-path "${{ steps.build.outputs.archive-path }}" \
             --archive-name "${{ steps.build.outputs.archive-name }}" \
-            --cache-key-sha "${{ matrix.sha }}"
+            --cache-key-sha "${{ matrix.sha }}" \
+            --canonical-source-sha "${{ needs.gate.outputs.source_sha }}"
 
       - name: Record failed build in index
         if: ${{ failure() && steps.checkout.outcome == 'success' }}
@@ -533,6 +571,7 @@ jobs:
             --arch "${{ matrix.arch }}" \
             --status failed \
             --error "matrix-build failed; see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --canonical-source-sha "${{ needs.gate.outputs.source_sha }}" \
             || true
 
   # Program wave — kind=program packages, gated on the library wave.
@@ -554,14 +593,19 @@ jobs:
       - id: checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.gate.outputs.build_ref }}
+          ref: ${{ needs.gate.outputs.source_sha }}
 
       - name: Compute commit-bound build provenance
         id: provenance
         run: |
+          source_sha="${{ needs.gate.outputs.source_sha }}"
+          [ "$(git rev-parse HEAD)" = "$source_sha" ] || {
+            echo "::error::program checkout differs from the admitted main commit"
+            exit 1
+          }
           ts=$(git log -1 --format=%aI HEAD)
           echo "build-timestamp=$ts" >> "$GITHUB_OUTPUT"
-          echo "build-host=${{ github.repository }}@${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "build-host=${{ github.repository }}@$source_sha" >> "$GITHUB_OUTPUT"
           echo "provenance: build-timestamp=$ts" >&2
 
       - name: Fetch musl submodule
@@ -691,8 +735,11 @@ jobs:
                 --out "$RUNNER_TEMP/staged" \
                 --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
                 --build-host "${{ steps.provenance.outputs.build-host }}" \
+                --source-repository "https://github.com/${{ github.repository }}" \
+                --source-commit "${{ needs.gate.outputs.source_sha }}" \
                 --binaries-dir "$(pwd)/binaries" \
-                --expected-cache-key-sha "${{ matrix.sha }}"
+                --expected-cache-key-sha "${{ matrix.sha }}" \
+                --force-source-build
           '
           archive_path=$(find "$RUNNER_TEMP/staged" -name '*.tar.zst' -print -quit)
           archive_name=$(basename "$archive_path")
@@ -727,7 +774,8 @@ jobs:
             --status success \
             --archive-path "${{ steps.build.outputs.archive-path }}" \
             --archive-name "${{ steps.build.outputs.archive-name }}" \
-            --cache-key-sha "${{ matrix.sha }}"
+            --cache-key-sha "${{ matrix.sha }}" \
+            --canonical-source-sha "${{ needs.gate.outputs.source_sha }}"
 
       - name: Record failed build in index
         if: ${{ failure() && steps.checkout.outcome == 'success' }}
@@ -743,6 +791,7 @@ jobs:
             --arch "${{ matrix.arch }}" \
             --status failed \
             --error "matrix-build failed; see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --canonical-source-sha "${{ needs.gate.outputs.source_sha }}" \
             || true
 
   test-gate-prepare:
@@ -763,7 +812,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.gate.outputs.build_ref }}
+          ref: ${{ needs.gate.outputs.source_sha }}
 
       - name: Fetch submodules (musl, libc-test, os-test)
         run: |
@@ -885,7 +934,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.gate.outputs.build_ref }}
+          ref: ${{ needs.gate.outputs.source_sha }}
 
       - name: Fetch submodules (musl, libc-test, os-test)
         if: matrix.needs_submodules == true

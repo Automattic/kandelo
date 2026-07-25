@@ -13,6 +13,12 @@ inputs:
   build-host:
     description: Stable build host/provenance string embedded in manifest.toml.
     required: true
+  source-repository:
+    description: Canonical HTTPS GitHub repository whose checkout produced the archive.
+    required: true
+  source-commit:
+    description: Exact lowercase 40-character checkout commit embedded in manifest.toml.
+    required: true
   expected-cache-key-sha:
     description: Preflight-computed cache_key_sha this archive must carry.
     required: true
@@ -189,6 +195,8 @@ runs:
               --out "$RUNNER_TEMP/staged" \
               --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
               --build-host "${{ steps.provenance.outputs.build-host }}" \
+              --source-repository "${{ inputs.source-repository }}" \
+              --source-commit "${{ inputs.source-commit }}" \
               --binaries-dir "$(pwd)/binaries" \
               --expected-cache-key-sha "${{ inputs.expected-cache-key-sha }}"
         '

@@ -912,6 +912,15 @@ Making a candidate commit reachable from `main`, preserving its SHA with a
 special merge, or joining it to current history does not substitute for this
 post-merge rebuild.
 
+Post-merge package preparation uses `force-rebuild.yml` from the exact live
+main SHA. That workflow source-builds each selected target and embeds
+`[build].repo_url = "https://github.com/Automattic/kandelo"` plus
+`[build].commit = "<exact-main-sha>"` in its archive manifest. The durable
+generation revalidates both fields for every selected archive. An archive that
+entered the mutable resolver ledger through ordinary merge-candidate activation
+remains useful to general consumers, but it is not a bottle input until this
+exact-main rebuild replaces it.
+
 A dry run keeps those repository identities fixed, but may select a reviewed,
 valid Git branch name or an exact lowercase 40-character commit SHA from each
 repository. The trust step normalizes branch names under `refs/heads/`, and the

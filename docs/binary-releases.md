@@ -74,13 +74,25 @@ artifacts appears in the main repository's `binaries-abi-v<N>` `index.toml`
 ledger. See [docs/homebrew-publishing.md](homebrew-publishing.md) for formula
 authoring, the immutable VFS descriptor contract, and operations.
 
-Canonical Homebrew package archives and bottles are produced only after their
-source changes land. Their recorded Kandelo source SHA must equal the live
+Package archives admitted to a Homebrew/durable-package generation and the
+resulting bottles are produced only after their source changes land. Their
+recorded Kandelo source repository and SHA must be
+`https://github.com/Automattic/kandelo` and the live
 `Automattic/kandelo` `refs/heads/main` commit when the producer admits the
-build and immediately before each canonical publication mutation. Pull-request
-staging and dry-run artifacts are noncanonical validation evidence; ancestry,
+build and immediately before each publication mutation. Pull-request staging
+and dry-run artifacts are noncanonical Homebrew validation evidence; ancestry,
 tree equality, tags, and special merge methods cannot promote them into
-production artifacts.
+production bottle inputs.
+
+The general `binaries-abi-v<N>` resolver release has a separate responsibility:
+post-merge activation may copy an exact tested-tree candidate into that mutable
+ledger so ordinary consumers retain the package gate's tested bytes. Such an
+archive is canonical resolver state but is explicitly ineligible for a
+Homebrew/durable-package generation. `force-rebuild.yml`, dispatched from the
+live `main` workflow SHA, source-builds the selected closure, stamps each
+archive's embedded `[build]` provenance with that exact SHA, and rechecks live
+main before each archive and index mutation. Durable generation validates those
+embedded fields and rejects activated PR/synthetic-merge bytes.
 
 ### Durable package generations for cross-workflow publication
 
@@ -289,7 +301,8 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
   Per-entry steps:
   1. Download the toolchain artifact.
   2. Run `xtask archive-stage` to produce the per-entry `.tar.zst`
-     (pinned commit-bound `--build-timestamp` + `--build-host`).
+     (pinned commit-bound `--build-timestamp` + `--build-host`, plus
+     structured exact `--source-repository` + `--source-commit` provenance).
   3. Invoke `scripts/index-update.sh --target-tag <tag> --package
      <name> --version <v> --revision <r> --arch <a> --status success
      --archive-path <staged> --archive-name <n> --cache-key-sha <s>`.
@@ -930,8 +943,9 @@ copy.
 
 ## Reproducibility
 
-`xtask archive-stage` requires `--build-timestamp <ISO>` and
-`--build-host <s>`. Both are pinned to commit-bound values in CI
+`xtask archive-stage` requires `--build-timestamp <ISO>`,
+`--build-host <s>`, `--source-repository <canonical-GitHub-URL>`, and
+`--source-commit <40-hex>`. All are pinned to commit-bound values in CI
 (commit author date for timestamp, `<repo>@<sha>` for host) so
 re-running the same SHA at any wall-clock time produces
 byte-identical archives. This is load-bearing: test-gate re-installs
@@ -943,6 +957,14 @@ indexed archive. A producer that must prove execution of the selected source
 recipe passes `--force-source-build`. The option is deliberately narrow: it
 bypasses cache and index reuse for `--package` only, while dependencies retain
 normal resolver behavior.
+
+`force-rebuild.yml` is the canonical exact-main producer, not a historical-ref
+escape hatch. It must be dispatched from `refs/heads/main`; its optional legacy
+`ref` input may only repeat the exact lowercase workflow SHA. The gate requires
+that SHA to equal live GitHub `refs/heads/main`, every job checks out the exact
+SHA, and each package target uses `--force-source-build`. If main advances
+before an archive or index write, the write fails closed and the rebuild must
+be redispatched at the newer main SHA.
 
 The `[compatibility]` block injected into each archive's
 `manifest.toml` is also a pure function of the build inputs (no

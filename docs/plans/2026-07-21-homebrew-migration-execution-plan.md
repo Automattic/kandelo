@@ -560,9 +560,12 @@ canonical release):
      entries retaining their lazy policy;
   3. read the exact resulting default-branch SHA `M` from
      `Automattic/kandelo` `refs/heads/main`. The canonical producer must check
-     out exact `M`, rebuild the package archives from that checkout, and record
-     `M` as their source identity. A PR staging generation is validation
-     evidence only and cannot be promoted;
+     out exact `M`, dispatch `force-rebuild.yml` from that workflow SHA,
+     source-build every selected target, and record
+     `https://github.com/Automattic/kandelo@M` in every archive manifest.
+     The workflow rechecks `M == refs/heads/main` before archive and index
+     mutations. A PR staging or merge-candidate generation is validation
+     evidence only and cannot become a Homebrew/durable-package generation;
   4. dispatch the protected tap caller with exact `M` as `kandelo_sha` and the
      reviewed tap commit as `tap_sha`. The reusable publisher must require
      `M == refs/heads/main` at admission and recheck that identity immediately

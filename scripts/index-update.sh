@@ -34,6 +34,10 @@
 # For --status failed, omit --archive-path/--archive-name/--cache-key-sha
 # and pass --error "<text>" instead.
 #
+# Canonical exact-main rebuilds also pass --canonical-source-sha. The helper
+# then rechecks live GitHub main immediately before every archive mutation and
+# before committing the index transaction.
+#
 # To repair only release-level index metadata such as abi_version:
 #   bash scripts/index-update.sh --target-tag pr-595-staging --repair-only
 set -euo pipefail
@@ -52,6 +56,7 @@ ARCHIVE_NAME=""
 CACHE_KEY_SHA=""
 ERROR=""
 REPAIR_ONLY=0
+CANONICAL_SOURCE_SHA=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -65,6 +70,7 @@ while [[ $# -gt 0 ]]; do
     --archive-name)  ARCHIVE_NAME="$2"; shift 2 ;;
     --cache-key-sha) CACHE_KEY_SHA="$2"; shift 2 ;;
     --error)         ERROR="$2"; shift 2 ;;
+    --canonical-source-sha) CANONICAL_SOURCE_SHA="$2"; shift 2 ;;
     --repair-only)   REPAIR_ONLY=1; shift ;;
     *)
       echo "index-update.sh: unknown flag $1" >&2
@@ -72,6 +78,15 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+require_canonical_source_authority() {
+  [ -n "$CANONICAL_SOURCE_SHA" ] || return 0
+  GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}" \
+    bash .github/scripts/require-exact-kandelo-main.sh \
+      --repository "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}" \
+      --source-sha "$CANONICAL_SOURCE_SHA" \
+      >/dev/null
+}
 
 require() {
   local name="$1" value="$2"
@@ -335,6 +350,7 @@ upload_archive_asset() {
     fi
 
     echo "index-update.sh: archive asset $ARCHIVE_NAME exists but does not match staged bytes; replacing it." >&2
+    require_canonical_source_authority
     gh_retry gh api \
       -X DELETE \
       "/repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
@@ -345,6 +361,7 @@ upload_archive_asset() {
   local max_attempts=4
   local delay=2
   while true; do
+    require_canonical_source_authority
     if gh release upload "$TARGET_TAG" \
          --repo "$GITHUB_REPOSITORY" \
          "$ARCHIVE_PATH"
@@ -357,6 +374,7 @@ upload_archive_asset() {
       if [ -n "$info" ]; then
         local retry_asset_id
         read -r retry_asset_id _ _ <<< "$info"
+        require_canonical_source_authority
         gh_retry gh api \
           -X DELETE \
           "/repos/${GITHUB_REPOSITORY}/releases/assets/${retry_asset_id}" \
@@ -425,6 +443,14 @@ EXPECTED_ABI="$(expected_abi_for_target_tag)"
 RELEASE_INDEX_STATE_SCRIPT="${RELEASE_INDEX_STATE_SCRIPT:-scripts/release-index-state.sh}"
 IS_CANONICAL=0
 case "$TARGET_TAG" in binaries-abi-v*) IS_CANONICAL=1 ;; esac
+if [ -n "$CANONICAL_SOURCE_SHA" ]; then
+  if [ "$IS_CANONICAL" != 1 ] ||
+     [ "${GITHUB_REPOSITORY:-}" != "Automattic/kandelo" ] ||
+     ! [[ "$CANONICAL_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "index-update.sh: --canonical-source-sha requires an Automattic/kandelo binaries-abi-v<N> target and an exact lowercase 40-character SHA" >&2
+    exit 2
+  fi
+fi
 if [ -n "$ARCHIVE_NAME" ]; then
   ARCHIVE_ABI="$(archive_name_abi "$ARCHIVE_NAME")"
   if [ -n "$ARCHIVE_ABI" ] && [ "$ARCHIVE_ABI" != "$EXPECTED_ABI" ]; then
@@ -443,6 +469,7 @@ bash "$STATE_LOCK_SCRIPT" acquire "$TARGET_TAG"
 trap 'bash "$STATE_LOCK_SCRIPT" release || true' EXIT
 
 # 2. Ensure the release exists.
+require_canonical_source_authority
 ensure_release_exists
 
 # A ready marker seals the exact candidate index exercised by the test gate.
@@ -512,6 +539,7 @@ if [ "$STATUS" = "success" ]; then
   upload_archive_asset
 fi
 if [ "$IS_CANONICAL" = 1 ]; then
+  require_canonical_source_authority
   bash "$RELEASE_INDEX_STATE_SCRIPT" publish \
     --target-tag "$TARGET_TAG" \
     --expected-abi "$EXPECTED_ABI" \

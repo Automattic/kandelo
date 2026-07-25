@@ -1079,6 +1079,8 @@ jobs:
           package: ${{ matrix.package }}
           arch: ${{ matrix.arch }}
           build-host: ${{ github.repository }}@${{ needs.synthesize-merge.outputs.merge_sha }}
+          source-repository: https://github.com/${{ github.repository }}
+          source-commit: ${{ needs.synthesize-merge.outputs.merge_sha }}
           expected-cache-key-sha: ${{ matrix.sha }}
 
       # Atomic per-matrix-entry publish: archive upload + index.toml
@@ -1189,6 +1191,8 @@ jobs:
           package: ${{ matrix.package }}
           arch: ${{ matrix.arch }}
           build-host: ${{ github.repository }}@${{ needs.synthesize-merge.outputs.merge_sha }}
+          source-repository: https://github.com/${{ github.repository }}
+          source-commit: ${{ needs.synthesize-merge.outputs.merge_sha }}
           expected-cache-key-sha: ${{ matrix.sha }}
           materialize-library-overlays: ${{ needs.preflight.outputs.library_matrix != '[]' }}
           library-matrix: ${{ needs.preflight.outputs.library_matrix }}

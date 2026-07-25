@@ -526,7 +526,9 @@ jobs:
         with:
           package: ${{ matrix.package }}
           arch: ${{ matrix.arch }}
-          build-host: ${{ github.repository }}@${{ github.sha }}
+          build-host: ${{ github.repository }}@${{ github.event.pull_request.head.sha }}
+          source-repository: https://github.com/${{ github.repository }}
+          source-commit: ${{ github.event.pull_request.head.sha }}
           expected-cache-key-sha: ${{ matrix.sha }}
 
       # Atomic per-matrix-entry publish to the pr-<N>-staging tag.
@@ -602,7 +604,9 @@ jobs:
         with:
           package: ${{ matrix.package }}
           arch: ${{ matrix.arch }}
-          build-host: ${{ github.repository }}@${{ github.sha }}
+          build-host: ${{ github.repository }}@${{ github.event.pull_request.head.sha }}
+          source-repository: https://github.com/${{ github.repository }}
+          source-commit: ${{ github.event.pull_request.head.sha }}
           expected-cache-key-sha: ${{ matrix.sha }}
           materialize-library-overlays: ${{ needs.preflight.outputs.library_matrix != '[]' }}
           library-matrix: ${{ needs.preflight.outputs.library_matrix }}

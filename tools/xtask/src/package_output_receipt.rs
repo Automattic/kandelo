@@ -500,6 +500,8 @@ index_url = "https://example.invalid/index.toml"
                 cache_key_sha: cache_key.clone(),
                 build_timestamp: "2026-07-21T00:00:00Z".to_string(),
                 build_host: "test".to_string(),
+                source_repository: "https://github.com/Automattic/kandelo".to_string(),
+                source_commit: "1".repeat(40),
                 git_inputs,
             },
         )

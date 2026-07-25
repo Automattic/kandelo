@@ -1122,7 +1122,9 @@ cargo xtask archive-stage \
     --arch wasm32 \
     --out /tmp/archives \
     --build-timestamp 2026-04-26T10:00:00Z \
-    --build-host github.com/foo/bar@<sha>
+    --build-host github.com/foo/bar@<sha> \
+    --source-repository https://github.com/foo/bar \
+    --source-commit <full-lowercase-sha>
 ```
 
 It loads the package manifest, calls `ensure_built` to populate
@@ -1205,8 +1207,10 @@ The resolver:
 
 ### The injected `[compatibility]` block
 
-`archive-stage` reads each package's source `package.toml`,
-appends a `[compatibility]` block, and writes the result as
+`archive-stage` reads each package's source `package.toml`, injects the
+producer's required `--source-repository` and `--source-commit` as structured
+`[build].repo_url` and `[build].commit` archive provenance, appends a
+`[compatibility]` block, and writes the result as
 `manifest.toml` at the root of the archive (alongside an
 `artifacts/` subtree carrying the built files). The block
 carries five fields:
@@ -1232,6 +1236,13 @@ The producer round-trips its emitted text through
 `parse_archived` before calling the tar/zstd writer, so
 malformed output rejects at archive-creation time rather than
 on a consumer machine.
+
+Source `package.toml` deliberately does not carry the repository or commit:
+those values describe one producer checkout, not the portable recipe.
+Pull-request staging records its exact PR or synthetic-merge commit. A
+post-merge canonical rebuild records the exact live `main` commit, allowing a
+Homebrew generation to reject pre-main archives without treating ancestry,
+tree equality, or a tag as equivalent provenance.
 
 ### Why `cache_key_sha` is the strict equivalence check
 

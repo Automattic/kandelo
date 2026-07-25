@@ -190,6 +190,15 @@ assert_matches package_publish_flow_changed_files \
   ".github/scripts/require-exact-head-approval.sh" \
   ".github/scripts/require-exact-head-approval.sh"
 assert_matches package_publish_flow_changed_files \
+  ".github/scripts/require-exact-kandelo-main.sh" \
+  ".github/scripts/require-exact-kandelo-main.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-require-exact-kandelo-main.sh" \
+  ".github/scripts/test-require-exact-kandelo-main.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-exact-main-package-publication.sh" \
+  ".github/scripts/test-exact-main-package-publication.sh"
+assert_matches package_publish_flow_changed_files \
   ".github/scripts/latest-merge-gate-status.sh" \
   ".github/scripts/latest-merge-gate-status.sh"
 assert_matches package_publish_flow_changed_files \
@@ -329,6 +338,15 @@ assert_matches ci_control_changed_files \
 assert_matches ci_control_changed_files \
   ".github/scripts/require-exact-head-approval.sh" \
   ".github/scripts/require-exact-head-approval.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/require-exact-kandelo-main.sh" \
+  ".github/scripts/require-exact-kandelo-main.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/test-require-exact-kandelo-main.sh" \
+  ".github/scripts/test-require-exact-kandelo-main.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/test-exact-main-package-publication.sh" \
+  ".github/scripts/test-exact-main-package-publication.sh"
 assert_matches ci_control_changed_files \
   ".github/scripts/latest-merge-gate-status.sh" \
   ".github/scripts/latest-merge-gate-status.sh"

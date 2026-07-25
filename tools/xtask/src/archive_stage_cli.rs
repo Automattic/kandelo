@@ -31,6 +31,8 @@ struct Args {
     out_dir: PathBuf,
     build_timestamp: String,
     build_host: String,
+    source_repository: String,
+    source_commit: String,
     abi: Option<u32>,
     cache_root: Option<PathBuf>,
     registry_root: Option<PathBuf>,
@@ -51,6 +53,8 @@ struct Args {
 ///                                         created if missing.
 ///   --build-timestamp  <ISO-8601 UTC>    Pinned for reproducibility.
 ///   --build-host       <string>          Pinned for reproducibility.
+///   --source-repository <GitHub URL>      Canonical source repository.
+///   --source-commit    <40-hex>           Exact checked-out source commit.
 ///
 /// Optional:
 ///   --abi          <u32>    Override the ABI version (defaults to
@@ -188,6 +192,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         cache_key_sha: sha_hex,
         build_timestamp: parsed.build_timestamp.clone(),
         build_host: parsed.build_host.clone(),
+        source_repository: parsed.source_repository.clone(),
+        source_commit: parsed.source_commit.clone(),
         git_inputs,
     };
     archive_stage::stage_archive_with_options(
@@ -247,6 +253,8 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
     let mut out_dir: Option<PathBuf> = None;
     let mut build_timestamp: Option<String> = None;
     let mut build_host: Option<String> = None;
+    let mut source_repository: Option<String> = None;
+    let mut source_commit: Option<String> = None;
     let mut abi: Option<u32> = None;
     let mut cache_root: Option<PathBuf> = None;
     let mut registry_root: Option<PathBuf> = None;
@@ -299,6 +307,24 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
                 take_value(&mut it, "--build-host")?,
                 "--build-host",
             )?;
+        } else if let Some(v) = a.strip_prefix("--source-repository=") {
+            assign_once(
+                &mut source_repository,
+                v.to_string(),
+                "--source-repository",
+            )?;
+        } else if a == "--source-repository" {
+            assign_once(
+                &mut source_repository,
+                take_value(&mut it, "--source-repository")?,
+                "--source-repository",
+            )?;
+        } else if let Some(v) = a.strip_prefix("--source-commit=") {
+            let value = validate_source_commit(v)?;
+            assign_once(&mut source_commit, value, "--source-commit")?;
+        } else if a == "--source-commit" {
+            let value = validate_source_commit(&take_value(&mut it, "--source-commit")?)?;
+            assign_once(&mut source_commit, value, "--source-commit")?;
         } else if let Some(v) = a.strip_prefix("--abi=") {
             let n: u32 = v.parse().map_err(|e| format!("--abi: {e}"))?;
             assign_once(&mut abi, n, "--abi")?;
@@ -364,6 +390,14 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
         .ok_or_else(|| "archive-stage: --build-timestamp <ISO-8601-UTC> is required".to_string())?;
     let build_host =
         build_host.ok_or_else(|| "archive-stage: --build-host <string> is required".to_string())?;
+    let source_repository = source_repository.ok_or_else(|| {
+        "archive-stage: --source-repository <https://github.com/owner/repository> is required"
+            .to_string()
+    })?;
+    let source_commit = source_commit.ok_or_else(|| {
+        "archive-stage: --source-commit <lowercase-40-hex> is required".to_string()
+    })?;
+    archive_stage::validate_source_identity(&source_repository, &source_commit)?;
 
     Ok(Args {
         package_dir,
@@ -371,6 +405,8 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
         out_dir,
         build_timestamp,
         build_host,
+        source_repository,
+        source_commit,
         abi,
         cache_root,
         registry_root,
@@ -378,6 +414,19 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
         expected_cache_key_sha,
         force_source_build,
     })
+}
+
+fn validate_source_commit(value: &str) -> Result<String, String> {
+    if value.len() != 40
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(format!(
+            "--source-commit must be a lowercase 40-character Git SHA, got {value:?}"
+        ));
+    }
+    Ok(value.to_string())
 }
 
 fn validate_cache_key_sha(value: &str, flag: &str) -> Result<String, String> {
@@ -725,6 +774,10 @@ built_by = "test"
             "2026-07-21T00:00:00Z".into(),
             "--build-host".into(),
             "test-host".into(),
+            "--source-repository".into(),
+            "https://github.com/Automattic/kandelo".into(),
+            "--source-commit".into(),
+            "1111111111111111111111111111111111111111".into(),
             "--abi".into(),
             shared::ABI_VERSION.to_string(),
             "--cache-root".into(),
@@ -757,6 +810,10 @@ built_by = "test"
             "2026-05-05T00:00:00Z".into(),
             "--build-host".into(),
             "test-host".into(),
+            "--source-repository".into(),
+            "https://github.com/Automattic/kandelo".into(),
+            "--source-commit".into(),
+            "1111111111111111111111111111111111111111".into(),
             "--abi".into(),
             shared::ABI_VERSION.to_string(),
             "--cache-root".into(),
@@ -839,6 +896,10 @@ built_by = "test"
             "2026-05-05T00:00:00Z".into(),
             "--build-host".into(),
             "test-host".into(),
+            "--source-repository".into(),
+            "https://github.com/Automattic/kandelo".into(),
+            "--source-commit".into(),
+            "1111111111111111111111111111111111111111".into(),
             "--abi".into(),
             "4".into(),
             "--cache-root".into(),
@@ -882,6 +943,10 @@ built_by = "test"
             "2026-05-05T00:00:00Z".into(),
             "--build-host".into(),
             "test-host".into(),
+            "--source-repository".into(),
+            "https://github.com/Automattic/kandelo".into(),
+            "--source-commit".into(),
+            "1111111111111111111111111111111111111111".into(),
             "--abi".into(),
             "4".into(),
             "--cache-root".into(),
@@ -939,6 +1004,10 @@ echo changed > "$script_dir/input.txt"
             "2026-05-05T00:00:00Z".into(),
             "--build-host".into(),
             "test-host".into(),
+            "--source-repository".into(),
+            "https://github.com/Automattic/kandelo".into(),
+            "--source-commit".into(),
+            "1111111111111111111111111111111111111111".into(),
             "--abi".into(),
             "4".into(),
             "--cache-root".into(),
@@ -980,6 +1049,10 @@ echo changed > "$script_dir/input.txt"
             "2026-05-05T00:00:00Z".into(),
             "--build-host".into(),
             "test-host".into(),
+            "--source-repository".into(),
+            "https://github.com/Automattic/kandelo".into(),
+            "--source-commit".into(),
+            "1111111111111111111111111111111111111111".into(),
             "--abi".into(),
             "4".into(),
             "--cache-root".into(),
@@ -1031,6 +1104,10 @@ echo changed > "$script_dir/input.txt"
                 "2026-05-05T00:00:00Z".into(),
                 "--build-host".into(),
                 "test-host".into(),
+                "--source-repository".into(),
+                "https://github.com/Automattic/kandelo".into(),
+                "--source-commit".into(),
+                "1111111111111111111111111111111111111111".into(),
                 "--abi".into(),
                 "4".into(),
                 "--cache-root".into(),
@@ -1084,6 +1161,10 @@ echo changed > "$script_dir/input.txt"
             "2026-05-05T00:00:00Z".into(),
             "--build-host".into(),
             "test-host".into(),
+            "--source-repository".into(),
+            "https://github.com/Automattic/kandelo".into(),
+            "--source-commit".into(),
+            "1111111111111111111111111111111111111111".into(),
             "--abi".into(),
             "4".into(),
             "--cache-root".into(),
@@ -1130,6 +1211,10 @@ echo changed > "$script_dir/input.txt"
             "2026-05-05T00:00:00Z".into(),
             "--build-host".into(),
             "test-host".into(),
+            "--source-repository".into(),
+            "https://github.com/Automattic/kandelo".into(),
+            "--source-commit".into(),
+            "1111111111111111111111111111111111111111".into(),
             "--abi".into(),
             "4".into(),
             "--cache-root".into(),
@@ -1169,6 +1254,63 @@ echo changed > "$script_dir/input.txt"
         ])
         .expect_err("duplicate --package must error");
         assert!(err.contains("--package"), "got: {err}");
+    }
+
+    #[test]
+    fn cli_requires_canonical_source_identity() {
+        let base = archive_stage_args(
+            Path::new("/registry"),
+            Path::new("/cache"),
+            Path::new("/out"),
+            "shell",
+        );
+
+        let without_pair = |flag: &str| {
+            let index = base.iter().position(|value| value == flag).unwrap();
+            base.iter()
+                .enumerate()
+                .filter(|(offset, _)| *offset != index && *offset != index + 1)
+                .map(|(_, value)| value.clone())
+                .collect::<Vec<_>>()
+        };
+        let err = super::parse_args(without_pair("--source-repository"))
+            .expect_err("source repository must be explicit");
+        assert!(err.contains("--source-repository"), "got: {err}");
+        let err = super::parse_args(without_pair("--source-commit"))
+            .expect_err("source commit must be explicit");
+        assert!(err.contains("--source-commit"), "got: {err}");
+
+        for invalid in [
+            "111111111111111111111111111111111111111",
+            "111111111111111111111111111111111111111G",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "refs/heads/main",
+        ] {
+            let mut args = base.clone();
+            let index = args
+                .iter()
+                .position(|value| value == "--source-commit")
+                .unwrap();
+            args[index + 1] = invalid.to_string();
+            let err = super::parse_args(args).expect_err("invalid source commit must fail");
+            assert!(err.contains("lowercase 40-character"), "got: {err}");
+        }
+
+        for invalid in [
+            "git@github.com:Automattic/kandelo.git",
+            "https://github.com/Automattic/kandelo.git",
+            "https://github.com/Automattic/kandelo/tree/main",
+            "https://example.test/Automattic/kandelo",
+        ] {
+            let mut args = base.clone();
+            let index = args
+                .iter()
+                .position(|value| value == "--source-repository")
+                .unwrap();
+            args[index + 1] = invalid.to_string();
+            let err = super::parse_args(args).expect_err("invalid source repository must fail");
+            assert!(err.contains("canonical https://github.com"), "got: {err}");
+        }
     }
 
     #[test]

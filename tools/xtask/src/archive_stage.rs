@@ -34,6 +34,11 @@ pub struct StageOptions {
     pub build_timestamp: String,
     /// e.g. `"darwin-arm64"`, `"linux-x86_64"`. Free-form; informational.
     pub build_host: String,
+    /// Canonical HTTPS GitHub repository whose exact source tree produced the
+    /// archive.
+    pub source_repository: String,
+    /// Exact lowercase 40-hex commit checked out by the producer.
+    pub source_commit: String,
     /// Exact external Git identities declared by the package recipe. These
     /// travel with the archive so cache identity and human-auditable
     /// provenance describe the same immutable inputs.
@@ -69,6 +74,7 @@ pub fn stage_archive_with_options(
             cache_dir.display()
         ));
     }
+    validate_source_identity(&opts.source_repository, &opts.source_commit)?;
 
     // A direct archive-stage invocation must enforce the same declared
     // artifact closure as a resolver build/fetch. In particular, do not ship
@@ -168,6 +174,42 @@ pub fn stage_archive_with_options(
     Ok(())
 }
 
+pub(crate) fn validate_source_identity(repository: &str, commit: &str) -> Result<(), String> {
+    let Some(path) = repository.strip_prefix("https://github.com/") else {
+        return Err(format!(
+            "archive_stage: source repository must be a canonical https://github.com/owner/repository URL, got {repository:?}"
+        ));
+    };
+    let mut parts = path.split('/');
+    let owner = parts.next().unwrap_or_default();
+    let name = parts.next().unwrap_or_default();
+    let valid_component = |value: &str| {
+        !value.is_empty()
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    };
+    if !valid_component(owner)
+        || !valid_component(name)
+        || name.ends_with(".git")
+        || parts.next().is_some()
+    {
+        return Err(format!(
+            "archive_stage: source repository must be a canonical https://github.com/owner/repository URL, got {repository:?}"
+        ));
+    }
+    if commit.len() != 40
+        || !commit
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(format!(
+            "archive_stage: source commit must be a lowercase 40-character Git SHA, got {commit:?}"
+        ));
+    }
+    Ok(())
+}
+
 /// Recursively collect every archive leaf under `dir`. Contained symlinks are
 /// deliberately dereferenced into regular archive entries so compatibility
 /// aliases survive the existing tar format. External/cyclic symlinks and
@@ -239,12 +281,12 @@ fn collect_files_inner(
     Ok(())
 }
 
-/// Read the source `package.toml`, append a `[compatibility]` block
-/// populated from `arch`/`abi_version`/`opts`, and round-trip the
-/// result through [`DepsManifest::parse_archived`] so any injection
-/// bug (malformed source TOML, pre-existing `[compatibility]`,
-/// invalid sha) rejects at archive-creation time rather than at
-/// fetch time on the consumer.
+/// Read the source `package.toml`, inject the exact source checkout into its
+/// archived `[build]` table, append a `[compatibility]` block populated from
+/// `arch`/`abi_version`/`opts`, and round-trip the result through
+/// [`DepsManifest::parse_archived`] so any injection bug (malformed source
+/// TOML, pre-existing `[compatibility]`, invalid sha) rejects at
+/// archive-creation time rather than at fetch time on the consumer.
 fn build_archive_manifest_text(
     target: &DepsManifest,
     arch: TargetArch,
@@ -273,13 +315,36 @@ fn build_archive_manifest_text(
         .map(|(i, _)| i)
         .unwrap_or(raw_src.len());
 
-    let mut text = String::with_capacity(raw_src.len() + 64);
+    let mut text = String::with_capacity(raw_src.len() + 256);
     text.push_str(&raw_src[..first_table_idx]);
     text.push_str(&format!("revision = {}\n", target.revision));
     text.push_str(&raw_src[first_table_idx..]);
     if !text.ends_with('\n') {
         text.push('\n');
     }
+    let build_header = text
+        .lines()
+        .scan(0usize, |offset, line| {
+            let start = *offset;
+            *offset += line.len() + 1;
+            Some((start, line))
+        })
+        .find(|(_, line)| line.trim() == "[build]");
+    let provenance = format!(
+        "repo_url = \"{}\"\ncommit = \"{}\"\n",
+        opts.source_repository, opts.source_commit
+    );
+    if let Some((start, header)) = build_header {
+        let insert_at = start + header.len() + 1;
+        text.insert_str(insert_at, &provenance);
+    } else {
+        text.push_str("\n[build]\n");
+        text.push_str(&provenance);
+    }
+    // WHY: source package.toml deliberately omits project publication state,
+    // but archive consumers need a structured exact-commit identity. Keeping
+    // it in the archived [build] table lets staging record its tested PR/tree
+    // source while exact-main publication can reject those same bytes.
     text.push_str(&format!(
         "\n[compatibility]\ntarget_arch = \"{}\"\nabi_versions = [{}]\n\
          cache_key_sha = \"{}\"\nbuild_timestamp = \"{}\"\nbuild_host = \"{}\"\n",
@@ -343,6 +408,8 @@ spdx = "BSD-3-Clause"
             cache_key_sha: "0".repeat(64),
             build_timestamp: "2026-04-26T10:00:00Z".to_string(),
             build_host: "darwin-arm64".to_string(),
+            source_repository: "https://github.com/Automattic/kandelo".to_string(),
+            source_commit: "1".repeat(40),
             git_inputs: vec![],
         };
         let err =
@@ -398,6 +465,8 @@ headers = ["include/zlib.h"]
             cache_key_sha,
             build_timestamp: "2026-04-26T10:00:00Z".to_string(),
             build_host: "darwin-arm64".to_string(),
+            source_repository: "https://github.com/Automattic/kandelo".to_string(),
+            source_commit: "1".repeat(40),
             git_inputs: vec![],
         };
         (cache_dir, archive_path, m, opts)
@@ -514,6 +583,8 @@ mode = 420
             cache_key_sha,
             build_timestamp: "2026-07-12T00:00:00Z".to_string(),
             build_host: "test-host".to_string(),
+            source_repository: "https://github.com/Automattic/kandelo".to_string(),
+            source_commit: "1".repeat(40),
             git_inputs: vec![],
         };
         stage_archive_with_options(
@@ -718,6 +789,14 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
         );
         assert_eq!(c.build_host.as_deref(), Some(opts.build_host.as_str()));
         assert_eq!(c.git_inputs, opts.git_inputs);
+        assert_eq!(
+            parsed.build.repo_url.as_deref(),
+            Some(opts.source_repository.as_str())
+        );
+        assert_eq!(
+            parsed.build.commit.as_deref(),
+            Some(opts.source_commit.as_str())
+        );
 
         // Consume those same bytes through the remote installer. This proves
         // the authored vector becomes an adjacent local-cache marker and is
@@ -823,6 +902,8 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
             cache_key_sha,
             build_timestamp: "2026-04-26T00:00:00Z".to_string(),
             build_host: "test-host".to_string(),
+            source_repository: "https://github.com/Automattic/kandelo".to_string(),
+            source_commit: "1".repeat(40),
             git_inputs: vec![],
         };
 
@@ -863,6 +944,8 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
             cache_key_sha: "0".repeat(64),
             build_timestamp: "2026-04-26T00:00:00Z".to_string(),
             build_host: "test-host".to_string(),
+            source_repository: "https://github.com/Automattic/kandelo".to_string(),
+            source_commit: "1".repeat(40),
             git_inputs: vec![],
         };
         let err =
@@ -895,6 +978,8 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
             cache_key_sha: "b".repeat(64),
             build_timestamp: "2026-04-26T10:00:00Z".to_string(),
             build_host: "darwin-arm64".to_string(),
+            source_repository: "https://github.com/Automattic/kandelo".to_string(),
+            source_commit: "1".repeat(40),
             git_inputs: vec![],
         };
         let err =

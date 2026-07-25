@@ -66,13 +66,16 @@ Binary materialization is not package rebuilding. Fetching, verifying,
 overlaying, or symlinking existing archives should be tested as materialization
 behavior. Rebuild package archives only when package archive inputs changed.
 
-Canonical package archives and Homebrew bottles must be built after their
-source changes land, from a checkout whose exact lowercase commit SHA equals
-the live default-branch `main` SHA. Pull-request staging and dry-run outputs are
-validation evidence only: do not promote them, bless them through ancestry or
-tree equality, or use a special merge method to make them canonical. Recheck
-the exact `main` identity immediately before each canonical bottle, index, tap,
-or release mutation.
+Package archives admitted to a Homebrew or durable-package generation, and
+Homebrew bottles themselves, must be built after their source changes land,
+from a checkout whose exact lowercase commit SHA equals the live
+default-branch `main` SHA. The general resolver release may temporarily contain
+an activated tested-tree candidate, but that archive is not Homebrew-generation
+eligible until an exact-main force rebuild replaces it. Pull-request staging
+and dry-run outputs are validation evidence only: do not promote them, bless
+them through ancestry or tree equality, or use a special merge method to make
+them canonical. Recheck the exact `main` identity immediately before each
+Homebrew-eligible archive, bottle, index, tap, or release mutation.
 
 Multi-output paths are resolver-owned. Do not hardcode
 `binaries/programs/<arch>/...`; ask
