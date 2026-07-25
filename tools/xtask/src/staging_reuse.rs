@@ -910,6 +910,8 @@ fn run_validate_archives(args: &[String]) -> Result<(), String> {
         "--snapshot",
         "--archives-dir",
         "--scope",
+        "--expected-source-repository",
+        "--expected-source-commit",
     ])?;
     let expected: ExpectedLedger = read_json(flags.required_path("--expected-ledger")?)?;
     let snapshot: ValidatedSnapshot = read_json(flags.required_path("--snapshot")?)?;
@@ -922,11 +924,55 @@ fn run_validate_archives(args: &[String]) -> Result<(), String> {
             ));
         }
     };
+    let source_repositories: Vec<_> = flags.values("--expected-source-repository").collect();
+    let source_commits: Vec<_> = flags.values("--expected-source-commit").collect();
+    let expected_source = match (source_repositories.as_slice(), source_commits.as_slice()) {
+        ([], []) => None,
+        ([repository], [commit]) => {
+            let valid_repository_component = |component: &str| {
+                !component.is_empty()
+                    && component.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
+                    })
+            };
+            let repository_parts = repository
+                .strip_prefix("https://github.com/")
+                .map(|path| path.split('/').collect::<Vec<_>>())
+                .unwrap_or_default();
+            if repository_parts.len() != 2
+                || !repository_parts
+                    .iter()
+                    .all(|component| valid_repository_component(component))
+            {
+                return Err(
+                    "--expected-source-repository must be a canonical HTTPS GitHub repository URL"
+                        .into(),
+                );
+            }
+            if commit.len() != 40
+                || !commit
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(
+                    "--expected-source-commit must be 40 lowercase hexadecimal characters".into(),
+                );
+            }
+            Some((*repository, *commit))
+        }
+        _ => {
+            return Err(
+                "--expected-source-repository and --expected-source-commit must be provided exactly once together"
+                    .into(),
+            );
+        }
+    };
     validate_archive_snapshot(
         &expected,
         &snapshot,
         flags.required_path("--archives-dir")?,
         scope,
+        expected_source,
     )
 }
 
@@ -981,6 +1027,10 @@ fn run_validate_generation(args: &[String]) -> Result<(), String> {
         &declared_snapshot,
         bundle_dir,
         ArchiveValidationScope::All,
+        Some((
+            CANONICAL_PACKAGE_SOURCE_REPOSITORY,
+            package_source_sha,
+        )),
     )?;
     validate_generation_archive_source(
         &declared_snapshot,
@@ -1437,6 +1487,7 @@ fn validate_archive_snapshot(
     snapshot: &ValidatedSnapshot,
     archives_dir: &Path,
     scope: ArchiveValidationScope,
+    expected_source: Option<(&str, &str)>,
 ) -> Result<(), String> {
     validate_expected_ledger(expected)?;
     if snapshot.abi_version != expected.abi_version {
@@ -1530,6 +1581,17 @@ fn validate_archive_snapshot(
             ));
         }
         let archived = read_archive_manifest(&archive_path)?;
+        if let Some((repository, commit)) = expected_source
+            && (archived.build.repo_url.as_deref() != Some(repository)
+                || archived.build.commit.as_deref() != Some(commit))
+        {
+            return Err(format!(
+                "staging archive {} producer provenance differs from {}@{}",
+                archive_path.display(),
+                repository,
+                commit
+            ));
+        }
         let compatibility = archived
             .compatibility
             .as_ref()
@@ -1967,6 +2029,8 @@ mod tests {
     const ABI: u32 = 39;
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const ARCHIVE_SHA: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const SOURCE_REPOSITORY: &str = "https://github.com/Automattic/kandelo";
+    const SOURCE_COMMIT: &str = "1111111111111111111111111111111111111111";
 
     fn archive_tempdir(label: &str) -> std::path::PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -2008,6 +2072,9 @@ depends_on = []
 [source]
 url = "https://example.test/zlib.tar.gz"
 sha256 = "{source_sha}"
+[build]
+repo_url = "{SOURCE_REPOSITORY}"
+commit = "{SOURCE_COMMIT}"
 [license]
 spdx = "Zlib"
 [outputs]
@@ -2022,9 +2089,9 @@ cache_key_sha = "{SHA}"
     }
 
     fn archived_manifest_at_main(git_inputs: &[GitBuildInput], commit: &str) -> String {
-        format!(
-            "{}\n[build]\nscript_path = \"packages/registry/zlib/build-zlib.sh\"\nrepo_url = \"https://github.com/Automattic/kandelo\"\ncommit = {commit:?}\n",
-            archived_manifest(git_inputs)
+        archived_manifest(git_inputs).replace(
+            &format!("commit = {SOURCE_COMMIT:?}"),
+            &format!("commit = {commit:?}"),
         )
     }
 
@@ -2270,6 +2337,39 @@ cache_key_sha = "{SHA}"
             )
             .unwrap_err()
             .contains("source-only")
+        );
+    }
+
+    #[test]
+    fn source_scanner_selects_exact_rootfs_archive_closure() {
+        let (packages, index) = fresh_source_fixture();
+        let roots = vec!["rootfs".to_string()];
+        let (projection, expected) = build_source_selection(
+            &packages,
+            &index,
+            &roots,
+            TargetArch::Wasm32,
+            42,
+            1,
+        )
+        .unwrap();
+        assert_eq!(projection["schema"], 1);
+        assert_eq!(projection["root_package"], "rootfs");
+        assert_eq!(projection["arch"], "wasm32");
+        assert_eq!(projection["entries"].as_array().unwrap().len(), 15);
+        assert_eq!(expected.entries.len(), 15);
+        assert_eq!(
+            projection["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| entry["package"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            expected
+                .entries
+                .iter()
+                .map(|entry| entry.package.as_str())
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2904,6 +3004,7 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
             &snapshot_for_archive(&path, true),
             &dir,
             ArchiveValidationScope::All,
+            None,
         )
         .unwrap();
     }
@@ -2953,6 +3054,49 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
     }
 
     #[test]
+    fn archive_snapshot_requires_exact_package_source_when_requested() {
+        let dir = archive_tempdir("exact-package-source");
+        let path = dir.join("zlib.tar.zst");
+        write_test_archive(
+            &path,
+            "manifest.toml",
+            archived_manifest(&[]).as_bytes(),
+            false,
+        );
+        let snapshot = snapshot_for_archive(&path, true);
+
+        validate_archive_snapshot(
+            &expected(),
+            &snapshot,
+            &dir,
+            ArchiveValidationScope::All,
+            Some((SOURCE_REPOSITORY, SOURCE_COMMIT)),
+        )
+        .unwrap();
+
+        for expected_source in [
+            (
+                "https://github.com/Automattic/not-kandelo",
+                SOURCE_COMMIT,
+            ),
+            (
+                SOURCE_REPOSITORY,
+                "2222222222222222222222222222222222222222",
+            ),
+        ] {
+            let error = validate_archive_snapshot(
+                &expected(),
+                &snapshot,
+                &dir,
+                ArchiveValidationScope::All,
+                Some(expected_source),
+            )
+            .unwrap_err();
+            assert!(error.contains("producer provenance"), "{error}");
+        }
+    }
+
+    #[test]
     fn archive_snapshot_rejects_missing_extra_wrong_or_reordered_git_provenance() {
         let expected_inputs = vec![git_input("tap", '1'), git_input("support", '2')];
         let cases = [
@@ -2988,6 +3132,7 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
                 &snapshot_for_archive(&path, true),
                 &dir,
                 ArchiveValidationScope::All,
+                None,
             )
             .unwrap_err();
             assert!(error.contains("immutable Git inputs"), "{label}: {error}");
@@ -3007,9 +3152,14 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
 
         let mut wrong_size = snapshot_for_archive(&path, true);
         wrong_size.entries[0].size += 1;
-        let error =
-            validate_archive_snapshot(&expected(), &wrong_size, &dir, ArchiveValidationScope::All)
-                .unwrap_err();
+        let error = validate_archive_snapshot(
+            &expected(),
+            &wrong_size,
+            &dir,
+            ArchiveValidationScope::All,
+            None,
+        )
+        .unwrap_err();
         assert!(error.contains("validated snapshot requires"), "{error}");
 
         let mut wrong_digest = snapshot_for_archive(&path, true);
@@ -3019,6 +3169,7 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
             &wrong_digest,
             &dir,
             ArchiveValidationScope::All,
+            None,
         )
         .unwrap_err();
         assert!(error.contains("sha256"), "{error}");
@@ -3044,14 +3195,25 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
                 size: 123,
             }],
         };
-        let error =
-            validate_archive_snapshot(&expected(), &snapshot, &dir, ArchiveValidationScope::All)
-                .unwrap_err();
+        let error = validate_archive_snapshot(
+            &expected(),
+            &snapshot,
+            &dir,
+            ArchiveValidationScope::All,
+            None,
+        )
+        .unwrap_err();
         assert!(error.contains("unsafe archive snapshot asset"), "{error}");
 
         snapshot.entries[0].asset = "nested/zlib.tar.zst".into();
         assert!(
-            validate_archive_snapshot(&expected(), &snapshot, &dir, ArchiveValidationScope::All,)
+            validate_archive_snapshot(
+                &expected(),
+                &snapshot,
+                &dir,
+                ArchiveValidationScope::All,
+                None,
+            )
                 .unwrap_err()
                 .contains("unsafe archive snapshot asset")
         );
@@ -3074,9 +3236,14 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
         symlink(&target, &link).unwrap();
         let mut snapshot = snapshot_for_archive(&target, true);
         snapshot.entries[0].asset = "zlib.tar.zst".into();
-        let error =
-            validate_archive_snapshot(&expected(), &snapshot, &dir, ArchiveValidationScope::All)
-                .unwrap_err();
+        let error = validate_archive_snapshot(
+            &expected(),
+            &snapshot,
+            &dir,
+            ArchiveValidationScope::All,
+            None,
+        )
+        .unwrap_err();
         assert!(error.contains("regular non-symlink file"), "{error}");
     }
 
@@ -3160,10 +3327,17 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
             &snapshot,
             &dir,
             ArchiveValidationScope::CurrentDeclaredGitInputs,
+            None,
         )
         .unwrap();
         assert!(
-            validate_archive_snapshot(&expected(), &snapshot, &dir, ArchiveValidationScope::All,)
+            validate_archive_snapshot(
+                &expected(),
+                &snapshot,
+                &dir,
+                ArchiveValidationScope::All,
+                None,
+            )
                 .is_err()
         );
 
@@ -3174,6 +3348,7 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
             &stale_snapshot,
             &dir,
             ArchiveValidationScope::CurrentDeclaredGitInputs,
+            None,
         )
         .unwrap();
     }

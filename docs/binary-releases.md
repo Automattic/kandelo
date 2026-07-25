@@ -189,11 +189,10 @@ rederives the architecture-scoped source projection and expected ledger from
 its own exact-main checkout, reacquires its state lock, requeries live main and
 canonical package assets, and repeats local rehashing and semantic validation
 immediately before uploading `generation.json` as the application seal and
-before publishing the release.
-The materializer anonymously downloads every asset, requeries release/tag/asset
-metadata, reruns the same semantic validator, recomputes the consumer
-projection, and rechecks both clean checkouts immediately before exposing a
-local resolver index.
+before publishing the release. The materializer anonymously downloads every
+asset, requeries release/tag/asset metadata, reruns the same semantic
+validator, recomputes the consumer projection, and rechecks both clean
+checkouts immediately before exposing a local resolver index.
 
 Projection-compatible consumers may deliberately use a generation produced by
 another exact-main commit. Canonical Homebrew production is stricter:
@@ -221,6 +220,106 @@ partial draft, but never changes a public generation. Any metadata, asset,
 digest, direct-tag, or anonymous-readback mutation fails closed. Ordinary
 `pr-<N>-staging` cleanup remains unchanged because durable tags are outside
 that namespace.
+
+#### Preserving a pre-merge closure without admitting it
+
+Sometimes a completed package closure must survive before its producer commit
+has landed on `main`. Do not use ordinary durable promotion for that case:
+its direct tag represents a package generation that may be materialized by an
+exact compatible consumer. Use `preserve-pr-package-generation.yml` instead.
+The preservation workflow currently accepts only the exact `rootfs`/`wasm32`
+projection (15 archives for ABI 42).
+
+Apply `retain-package-staging` before merging when this capture cannot finish
+before the PR closes. For a merged same-repository PR, that label temporarily
+retains both the staging release and producer branch; it does not admit either
+as main. Closed-unmerged PRs are never retained by the label. Remove it and
+dispatch `staging-cleanup.yml` after the preserved generation is sealed and
+verified.
+
+The source staging run does not need to finish unrelated matrix jobs. The
+selected rootfs job must be complete and successful, all 15 selected workflow
+artifacts must exist in that same run, and each extracted workflow archive
+must byte-match the selected staging-release archive. The preserved
+`rootfs-job.log` must show the exact selected program dependencies, successful
+downloads for all 14 rootfs dependencies, and no selected-dependency fallback.
+The workflow derives a new minimal index from those 15 archives; it neither
+trusts nor preserves the staging release's mutable full index.
+
+Before sealing, preparation re-reads the source release/tag anchor, the 15
+selected release asset IDs/names/sizes/digests, the 15 selected workflow
+artifact identities, and the rootfs job/log. Unrelated asset uploads and
+unrelated job progress are deliberately ignored. A selected change fails
+closed.
+
+The mutable `pr-<N>-staging` tag is only a locator. It can still point to an
+older PR commit, so the capture records and race-rechecks that observed anchor
+without treating it as producer authority. Producer authority comes from the
+exact workflow-run head, selected artifact identities and bytes from that run,
+byte equality with the selected release assets, and each archive's embedded
+repository and producer commit.
+
+Preserved tags have this form:
+
+```
+preserved-package-generation-<root>-<arch>-abi-v<N>-source-<full-producer-sha>-sha256-<full-identity-sha256>
+```
+
+The direct tag targets the exact unmerged producer so that source object stays
+reachable after its temporary PR refs are removed. `generation.json`
+separately binds the current default-branch publisher authority, records the
+source run and release evidence, and declares `admission: "none"`. The
+producer tag is reachability evidence: it neither makes the producer an
+ancestor of `main` nor claims compatibility with current `main`. The ordinary
+durable materializer rejects this format.
+
+Unlike ordinary durable promotion, this narrowly scoped preservation workflow
+never executes tooling from the unmerged producer. It treats that checkout's
+registry, ABI declaration, and `program-packages.json` as inert data and uses
+only current default-branch authority to derive identities, parse archives,
+seal evidence, and publish. Cache-key derivation also treats the producer's
+Cargo manifests and lockfile as declarative data: current-authority `xtask`
+invokes the current Cargo binary with `metadata --locked --offline`, a
+current-authority working directory, and credential/network/wrapper variables
+removed. Every local package returned by Cargo must remain beneath the producer
+checkout, and `fork-instrument` must resolve from its exact expected manifest;
+no producer binary, build script, test, or repository helper is run.
+
+The shared publisher uploads archives, the fresh index, and
+`rootfs-job.log` before uploading `generation.json` as the application seal.
+The rootfs log is bounded to 16 MiB and its run must be a `pull_request`.
+Before uploading that seal and again before making its draft public, the
+writer independently re-queries the selected release, tag, run, jobs, and
+artifacts using only current-authority code. It redownloads both release and
+same-run copies of all 15 archives, compares them to the bundle, reparses the
+rootfs log, and requires the reconstructed canonical capture to equal
+`generation.json`. Unrelated jobs and assets remain outside that comparison.
+
+For preserved generations the writer also requires
+`identity.authority_sha`, the workflow's exact `github.sha`, and the clean
+publisher checkout's `HEAD` to be identical. It rechecks that clean authority
+tree at both publication boundaries. The publisher supports exact resumable
+drafts and performs authenticated plus anonymous readback. The contract does
+not call the GitHub release immutable; it detects later mutation on
+validation.
+
+Dispatch only reviewed authority from the default branch:
+
+```bash
+gh workflow run preserve-pr-package-generation.yml \
+  --repo Automattic/kandelo \
+  --ref main \
+  -f source-tag=pr-1097-staging \
+  -f source-run-id=30161296461 \
+  -f package-source-sha=748c2609954d2809bbcbbcb642fa7d257fc0dbc6 \
+  -f expected-abi=42 \
+  -f root-package=rootfs \
+  -f arch=wasm32
+```
+
+After the producer lands on `main`, a later admission step must independently
+prove compatibility and publish or activate a normal durable generation. The
+preserved snapshot never upgrades itself into one.
 
 #### Promotion and recovery
 
@@ -263,9 +362,12 @@ verified subset, uploads missing non-seal assets, uploads
 asset. If `main`, canonical package assets, local authority state, or any
 input changes, create a new content-derived generation instead.
 
-Never repair a public generation in place. Preserve failed evidence and
-publish changed content under its naturally different tag. A pre-main staging
-release cannot be restored or substituted to finish a durable generation.
+If a public generation fails validation, do not repair it in place. Preserve
+the evidence and publish changed content under its naturally different tag.
+Apply `retain-package-staging` before merging whenever promotion must happen
+after merge. If source staging cleanup nevertheless wins the race before a
+generation is sealed, restore or rebuild the exact source staging generation
+first; never substitute another commit's similarly named archives.
 
 These content-addressed releases share one manifest-driven immutable-release
 publisher. Before using a credential it stages and verifies the manifest's
@@ -274,9 +376,9 @@ digests. Under a tag-specific
 state lock it can resume an exact partial draft, but rejects unknown, duplicate,
 or changed assets. It verifies every complete draft asset through the
 authenticated API and establishes an exact lightweight tag at the planned tap
-commit before publishing. It then requires GitHub release immutability and
-exact anonymous readback before
-atomically emitting a machine-readable receipt. Release and asset discovery are
+commit before publishing. It performs exact anonymous readback before
+atomically emitting a machine-readable receipt and does not rely on
+repository-wide release immutability. Release and asset discovery are
 paginated, so the same protocol covers the production shell mirror's 35 bottle
 objects and canonical plan rather than relying on the small embedded asset list
 in a release response.

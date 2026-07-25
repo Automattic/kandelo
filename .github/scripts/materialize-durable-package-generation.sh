@@ -304,6 +304,13 @@ run_without_credentials python3 "$SCRIPT_DIR/package-generation.py" validate \
   --localized-index-out "$localized_index" >/dev/null
 jq -S '.identity.expected_ledger' "$manifest" >"$TMP_ROOT/expected.json"
 jq -S '.identity.validated_snapshot' "$manifest" >"$TMP_ROOT/snapshot.json"
+run_without_credentials "$AUTHORITY_XTASK" staging-reuse validate-archives \
+  --expected-ledger "$TMP_ROOT/expected.json" \
+  --snapshot "$TMP_ROOT/snapshot.json" \
+  --archives-dir "$TMP_ROOT/bundle" \
+  --scope all \
+  --expected-source-repository "https://github.com/$REPOSITORY" \
+  --expected-source-commit "$package_source_sha"
 
 # Recheck mutable GitHub metadata after all downloads to close the same race as
 # publication. A changed public release is rejected even if cached bytes remain.

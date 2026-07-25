@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Publish one validated content-addressed package generation. Public
-# generations are read-only under this contract even when repository-wide
-# GitHub release immutability cannot be enabled.
+# Publish one validated content-addressed package generation. This common
+# writer supports admitted durable generations and evidence-only preserved PR
+# closures; both are application-sealed and read-only after publication.
 set -euo pipefail
 
 BUNDLE=""
@@ -16,6 +16,7 @@ ROOT_PACKAGE=""
 ARCH=""
 AUTHORITY_SHA=""
 DEFAULT_REF=""
+EXPECTED_AUTHORITY_SHA=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -31,6 +32,7 @@ while [ "$#" -gt 0 ]; do
     --arch) ARCH="$2"; shift 2 ;;
     --authority-sha) AUTHORITY_SHA="$2"; shift 2 ;;
     --default-ref) DEFAULT_REF="$2"; shift 2 ;;
+    --expected-authority-sha) EXPECTED_AUTHORITY_SHA="$2"; shift 2 ;;
     *) echo "publish-durable-package-generation: unknown flag $1" >&2; exit 2 ;;
   esac
 done
@@ -39,14 +41,6 @@ if [ ! -d "$BUNDLE" ] || [ -L "$BUNDLE" ] ||
    [ ! -d "$LOCK_ROOT" ] || [ -L "$LOCK_ROOT" ] ||
    [ ! -f "$AUTHORITY_XTASK" ] || [ -L "$AUTHORITY_XTASK" ] ||
    [ ! -x "$AUTHORITY_XTASK" ] ||
-   ! [[ "$SOURCE_TAG" =~ ^binaries-abi-v[1-9][0-9]*$ ]] ||
-   ! [[ "$PACKAGE_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] ||
-   ! [[ "$EXPECTED_ABI" =~ ^[1-9][0-9]*$ ]] ||
-   ! [[ "$ARCH" =~ ^[a-z0-9][a-z0-9._-]*$ ]] ||
-   ! [[ "$AUTHORITY_SHA" =~ ^[0-9a-f]{40}$ ]] ||
-   [ "$DEFAULT_REF" != main ] ||
-   { [ "$SELECTION_KIND" != root-package ] &&
-     [ "$SELECTION_KIND" != browser-inputs ]; } ||
    [ -z "$RECEIPT" ]; then
   echo "publish-durable-package-generation: regular bundle, lock root, and receipt are required" >&2
   exit 2
@@ -54,14 +48,8 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
+current_authority_sha="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 authority_tree="$(git -C "$REPO_ROOT" rev-parse 'HEAD^{tree}')"
-if [ "$(git -C "$REPO_ROOT" rev-parse HEAD)" != "$AUTHORITY_SHA" ] ||
-   [ "$AUTHORITY_SHA" != "$PACKAGE_SOURCE_SHA" ] ||
-   [ "$SOURCE_TAG" != "binaries-abi-v$EXPECTED_ABI" ] ||
-   [ -n "$(git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all)" ]; then
-  echo "publish-durable-package-generation: writer authority is not the exact clean activated main SHA" >&2
-  exit 2
-fi
 STATE_LOCK_SCRIPT="${STATE_LOCK_SCRIPT:-$REPO_ROOT/.github/scripts/state-lock.sh}"
 RETRY_DELAY="${PACKAGE_GENERATION_RETRY_DELAY_SECONDS:-2}"
 if ! [[ "$RETRY_DELAY" =~ ^[0-9]+$ ]]; then
@@ -105,6 +93,7 @@ env -u GH_TOKEN -u GITHUB_TOKEN \
     --bundle "$BUNDLE" >/dev/null
 
 MANIFEST="$BUNDLE/generation.json"
+GENERATION_FORMAT="$(jq -er .format "$MANIFEST")"
 expected_ledger="$TMP_ROOT/expected-ledger.json"
 validated_snapshot="$TMP_ROOT/validated-snapshot.json"
 jq -S '.identity.expected_ledger' "$MANIFEST" >"$expected_ledger"
@@ -114,56 +103,120 @@ TAG="$(jq -er '.tag' "$MANIFEST")"
 TARGET_COMMIT="$(jq -er '.release.target_commitish' "$MANIFEST")"
 TITLE="$(jq -er '.release.title' "$MANIFEST")"
 BODY="$(jq -er '.release.body' "$MANIFEST")"
+package_source_sha="$(jq -er '.identity.package_source_sha' "$MANIFEST")"
 manifest_abi="$(jq -er '.identity.abi_version' "$MANIFEST")"
 manifest_arch="$(jq -er '.identity.projection.arch' "$MANIFEST")"
 projection_schema="$(jq -er '.identity.projection.schema' "$MANIFEST")"
-manifest_source_tag="$(jq -er '.identity.source_activation.evidence.tag' "$MANIFEST")"
-if [ "$TARGET_COMMIT" != "$PACKAGE_SOURCE_SHA" ] ||
-   [ "$manifest_abi" != "$EXPECTED_ABI" ] ||
-   [ "$manifest_arch" != "$ARCH" ] ||
-   [ "$manifest_source_tag" != "$SOURCE_TAG" ]; then
-  echo "publish-durable-package-generation: generation manifest differs from dispatch inputs" >&2
-  exit 2
-fi
-case "$SELECTION_KIND:$projection_schema" in
-  root-package:1)
-    [ "$(jq -er '.identity.projection.root_package' "$MANIFEST")" = "$ROOT_PACKAGE" ] || {
-      echo "publish-durable-package-generation: root-package dispatch differs from generation" >&2
-      exit 2
-    }
-    ;;
-  browser-inputs:2)
-    [ "$ROOT_PACKAGE" = rootfs ] &&
-      [ "$(jq -er '.identity.projection.root_set' "$MANIFEST")" = browser-inputs ] &&
-      [ "$(jq -er '.identity.authority_sha' "$MANIFEST")" = "$AUTHORITY_SHA" ] || {
-      echo "publish-durable-package-generation: browser-inputs dispatch differs from generation" >&2
-      exit 2
-    }
-    ;;
-  *)
-    echo "publish-durable-package-generation: selection kind and projection schema disagree" >&2
-    exit 2
-    ;;
-esac
+PRESERVED_FORMAT="kandelo-preserved-pr-package-generation-v1"
+ADMITTED_FORMAT="kandelo-package-generation-v1"
+IS_PRESERVED=false
 
-manifest_projection="$TMP_ROOT/manifest-projection.json"
-rederived_projection="$TMP_ROOT/rederived-projection.json"
-rederived_expected="$TMP_ROOT/rederived-expected.json"
-jq -S '.identity.projection' "$MANIFEST" >"$manifest_projection"
-source_selection_args=()
-if [ "$SELECTION_KIND" = browser-inputs ]; then
-  browser_roots_script="$REPO_ROOT/scripts/browser-binary-package-roots.mjs"
-  if [ ! -f "$browser_roots_script" ] || [ -L "$browser_roots_script" ]; then
-    echo "publish-durable-package-generation: exact main lacks the browser root scanner" >&2
+verify_authority_checkout() {
+  if [ "$(git -C "$REPO_ROOT" rev-parse HEAD)" != "$EXPECTED_AUTHORITY_SHA" ] ||
+     [ "$(git -C "$REPO_ROOT" rev-parse 'HEAD^{tree}')" != "$authority_tree" ] ||
+     [ -n "$(git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all)" ]; then
+    echo "publish-durable-package-generation: publisher authority HEAD/tree changed" >&2
+    return 1
+  fi
+}
+
+if [ "$GENERATION_FORMAT" = "$PRESERVED_FORMAT" ]; then
+  IS_PRESERVED=true
+  if ! [[ "$EXPECTED_AUTHORITY_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+     [ "$current_authority_sha" != "$EXPECTED_AUTHORITY_SHA" ] ||
+     [ "$(jq -er .identity.authority_sha "$MANIFEST")" != "$EXPECTED_AUTHORITY_SHA" ] ||
+     [ "$TARGET_COMMIT" != "$package_source_sha" ] ||
+     [ -n "$SOURCE_TAG$PACKAGE_SOURCE_SHA$EXPECTED_ABI$SELECTION_KIND$ROOT_PACKAGE$ARCH$AUTHORITY_SHA$DEFAULT_REF" ]; then
+    echo "publish-durable-package-generation: preserved generation differs from its publisher authority or dispatch" >&2
     exit 2
   fi
-  # WHY: the writer is a separate trust boundary from preparation. Rebuilding
-  # architecture-scoped browser roots from its own exact-main checkout
-  # prevents an internally consistent but incomplete transferred bundle from
-  # becoming canonical.
-  browser_root_args=(--arch "$ARCH" --exclude-package shell)
-  if [ "$ARCH" = wasm32 ]; then
-    browser_root_args+=(--include-package rootfs)
+  # WHY: a preserved bundle was prepared by a separate read-only job. Before
+  # trusting it for writes, bind both the manifest and executing scripts to the
+  # exact clean default-branch commit selected by this workflow dispatch.
+  verify_authority_checkout
+elif [ "$GENERATION_FORMAT" = "$ADMITTED_FORMAT" ]; then
+  if [ -n "$EXPECTED_AUTHORITY_SHA" ] ||
+     ! [[ "$SOURCE_TAG" =~ ^binaries-abi-v[1-9][0-9]*$ ]] ||
+     ! [[ "$PACKAGE_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+     ! [[ "$EXPECTED_ABI" =~ ^[1-9][0-9]*$ ]] ||
+     ! [[ "$ARCH" =~ ^[a-z0-9][a-z0-9._-]*$ ]] ||
+     ! [[ "$AUTHORITY_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+     [ "$DEFAULT_REF" != main ] ||
+     { [ "$SELECTION_KIND" != root-package ] &&
+       [ "$SELECTION_KIND" != browser-inputs ]; } ||
+     [ "$current_authority_sha" != "$AUTHORITY_SHA" ] ||
+     [ "$AUTHORITY_SHA" != "$PACKAGE_SOURCE_SHA" ] ||
+     [ "$SOURCE_TAG" != "binaries-abi-v$EXPECTED_ABI" ] ||
+     [ -n "$(git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all)" ]; then
+    echo "publish-durable-package-generation: writer authority is not the exact clean activated main SHA" >&2
+    exit 2
+  fi
+  manifest_source_tag="$(jq -er '.identity.source_activation.evidence.tag' "$MANIFEST")"
+  if [ "$TARGET_COMMIT" != "$PACKAGE_SOURCE_SHA" ] ||
+     [ "$package_source_sha" != "$PACKAGE_SOURCE_SHA" ] ||
+     [ "$manifest_abi" != "$EXPECTED_ABI" ] ||
+     [ "$manifest_arch" != "$ARCH" ] ||
+     [ "$manifest_source_tag" != "$SOURCE_TAG" ]; then
+    echo "publish-durable-package-generation: generation manifest differs from dispatch inputs" >&2
+    exit 2
+  fi
+  case "$SELECTION_KIND:$projection_schema" in
+    root-package:1)
+      [ "$(jq -er '.identity.projection.root_package' "$MANIFEST")" = "$ROOT_PACKAGE" ] || {
+        echo "publish-durable-package-generation: root-package dispatch differs from generation" >&2
+        exit 2
+      }
+      ;;
+    browser-inputs:2)
+      [ "$ROOT_PACKAGE" = rootfs ] &&
+        [ "$(jq -er '.identity.projection.root_set' "$MANIFEST")" = browser-inputs ] &&
+        [ "$(jq -er '.identity.authority_sha' "$MANIFEST")" = "$AUTHORITY_SHA" ] || {
+        echo "publish-durable-package-generation: browser-inputs dispatch differs from generation" >&2
+        exit 2
+      }
+      ;;
+    *)
+      echo "publish-durable-package-generation: selection kind and projection schema disagree" >&2
+      exit 2
+      ;;
+  esac
+
+  manifest_projection="$TMP_ROOT/manifest-projection.json"
+  rederived_projection="$TMP_ROOT/rederived-projection.json"
+  rederived_expected="$TMP_ROOT/rederived-expected.json"
+  jq -S '.identity.projection' "$MANIFEST" >"$manifest_projection"
+  source_selection_args=()
+  if [ "$SELECTION_KIND" = browser-inputs ]; then
+    browser_roots_script="$REPO_ROOT/scripts/browser-binary-package-roots.mjs"
+    if [ ! -f "$browser_roots_script" ] || [ -L "$browser_roots_script" ]; then
+      echo "publish-durable-package-generation: exact main lacks the browser root scanner" >&2
+      exit 2
+    fi
+    # WHY: the writer is a separate trust boundary from preparation. Rebuilding
+    # architecture-scoped browser roots from its own exact-main checkout
+    # prevents an internally consistent but incomplete transferred bundle from
+    # becoming canonical.
+    browser_root_args=(--arch "$ARCH" --exclude-package shell)
+    if [ "$ARCH" = wasm32 ]; then
+      browser_root_args+=(--include-package rootfs)
+    fi
+    env -u GH_TOKEN -u GITHUB_TOKEN \
+      -u HOMEBREW_GITHUB_API_TOKEN \
+      -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+      -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+      -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+      -u ACTIONS_ID_TOKEN_REQUEST_URL \
+      -u ACTIONS_RUNTIME_TOKEN \
+      -u WASM_POSIX_DEPS_REGISTRY \
+      node "$browser_roots_script" \
+        --source-root "$REPO_ROOT" \
+        "${browser_root_args[@]}" >"$TMP_ROOT/browser-inputs-roots.txt"
+    source_selection_args=(
+      --root-set browser-inputs
+      --roots-file "$TMP_ROOT/browser-inputs-roots.txt"
+    )
+  else
+    source_selection_args=(--root-package "$ROOT_PACKAGE")
   fi
   env -u GH_TOKEN -u GITHUB_TOKEN \
     -u HOMEBREW_GITHUB_API_TOKEN \
@@ -173,36 +226,22 @@ if [ "$SELECTION_KIND" = browser-inputs ]; then
     -u ACTIONS_ID_TOKEN_REQUEST_URL \
     -u ACTIONS_RUNTIME_TOKEN \
     -u WASM_POSIX_DEPS_REGISTRY \
-    node "$browser_roots_script" \
+    "$AUTHORITY_XTASK" staging-reuse scan-source \
       --source-root "$REPO_ROOT" \
-      "${browser_root_args[@]}" >"$TMP_ROOT/browser-inputs-roots.txt"
-  source_selection_args=(
-    --root-set browser-inputs
-    --roots-file "$TMP_ROOT/browser-inputs-roots.txt"
-  )
+      --expected-abi "$EXPECTED_ABI" \
+      --arch "$ARCH" \
+      "${source_selection_args[@]}" \
+      --projection-output "$TMP_ROOT/rederived-projection.raw.json" \
+      --expected-output "$TMP_ROOT/rederived-expected.raw.json"
+  jq -S . "$TMP_ROOT/rederived-projection.raw.json" >"$rederived_projection"
+  jq -S . "$TMP_ROOT/rederived-expected.raw.json" >"$rederived_expected"
+  if ! cmp "$manifest_projection" "$rederived_projection" >/dev/null ||
+     ! cmp "$expected_ledger" "$rederived_expected" >/dev/null; then
+    echo "publish-durable-package-generation: transferred bundle differs from the exact-main source projection" >&2
+    exit 2
+  fi
 else
-  source_selection_args=(--root-package "$ROOT_PACKAGE")
-fi
-env -u GH_TOKEN -u GITHUB_TOKEN \
-  -u HOMEBREW_GITHUB_API_TOKEN \
-  -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-  -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
-  -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
-  -u ACTIONS_ID_TOKEN_REQUEST_URL \
-  -u ACTIONS_RUNTIME_TOKEN \
-  -u WASM_POSIX_DEPS_REGISTRY \
-  "$AUTHORITY_XTASK" staging-reuse scan-source \
-    --source-root "$REPO_ROOT" \
-    --expected-abi "$EXPECTED_ABI" \
-    --arch "$ARCH" \
-    "${source_selection_args[@]}" \
-    --projection-output "$TMP_ROOT/rederived-projection.raw.json" \
-    --expected-output "$TMP_ROOT/rederived-expected.raw.json"
-jq -S . "$TMP_ROOT/rederived-projection.raw.json" >"$rederived_projection"
-jq -S . "$TMP_ROOT/rederived-expected.raw.json" >"$rederived_expected"
-if ! cmp "$manifest_projection" "$rederived_projection" >/dev/null ||
-   ! cmp "$expected_ledger" "$rederived_expected" >/dev/null; then
-  echo "publish-durable-package-generation: transferred bundle differs from the exact-main source projection" >&2
+  echo "publish-durable-package-generation: unsupported generation format" >&2
   exit 2
 fi
 
@@ -243,6 +282,14 @@ retry_command() {
   done
 }
 
+verify_preserved_source_evidence() {
+  [ "$IS_PRESERVED" = true ] || return 0
+  # WHY: the read-only prepare job observed a mutable source. The release
+  # writer must independently reconstruct that evidence using only reviewed
+  # current-authority code before either irreversible publication boundary.
+  bash "$SCRIPT_DIR/verify-preserved-package-source.sh" --bundle "$BUNDLE"
+}
+
 generation_sha="$(sha256_file "$MANIFEST")"
 generation_bytes="$(file_bytes "$MANIFEST")"
 index_sha="$(sha256_file "$BUNDLE/index.toml")"
@@ -274,23 +321,45 @@ jq -S \
     }] |
     sort_by(.name)
   ' "$MANIFEST" >"$VALIDATOR_ASSETS"
-env -u GH_TOKEN -u GITHUB_TOKEN \
-  -u HOMEBREW_GITHUB_API_TOKEN \
-  -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-  -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
-  -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
-  -u ACTIONS_ID_TOKEN_REQUEST_URL \
-  -u ACTIONS_RUNTIME_TOKEN \
-  -u WASM_POSIX_DEPS_REGISTRY \
-  "$AUTHORITY_XTASK" staging-reuse validate-generation \
-    --expected-ledger "$expected_ledger" \
-    --snapshot "$validated_snapshot" \
-    --index "$BUNDLE/index.toml" \
-    --assets "$VALIDATOR_ASSETS" \
-    --bundle-dir "$BUNDLE" \
-    --release-tag "$TAG" \
-    --release-base-url "https://github.com/$REPOSITORY/releases/download/$TAG/" \
-    --package-source-sha "$PACKAGE_SOURCE_SHA"
+validate_local_generation() {
+  if [ "$IS_PRESERVED" = true ]; then
+    env -u GH_TOKEN -u GITHUB_TOKEN \
+      -u HOMEBREW_GITHUB_API_TOKEN \
+      -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+      -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+      -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+      -u ACTIONS_ID_TOKEN_REQUEST_URL \
+      -u ACTIONS_RUNTIME_TOKEN \
+      -u WASM_POSIX_DEPS_REGISTRY \
+      "$AUTHORITY_XTASK" staging-reuse validate-archives \
+        --expected-ledger "$expected_ledger" \
+        --snapshot "$validated_snapshot" \
+        --archives-dir "$BUNDLE" \
+        --scope all \
+        --expected-source-repository "https://github.com/$REPOSITORY" \
+        --expected-source-commit "$package_source_sha"
+    return
+  fi
+  env -u GH_TOKEN -u GITHUB_TOKEN \
+    -u HOMEBREW_GITHUB_API_TOKEN \
+    -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+    -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+    -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+    -u ACTIONS_ID_TOKEN_REQUEST_URL \
+    -u ACTIONS_RUNTIME_TOKEN \
+    -u WASM_POSIX_DEPS_REGISTRY \
+    "$AUTHORITY_XTASK" staging-reuse validate-generation \
+      --expected-ledger "$expected_ledger" \
+      --snapshot "$validated_snapshot" \
+      --index "$BUNDLE/index.toml" \
+      --assets "$VALIDATOR_ASSETS" \
+      --bundle-dir "$BUNDLE" \
+      --release-tag "$TAG" \
+      --release-base-url "https://github.com/$REPOSITORY/releases/download/$TAG/" \
+      --package-source-sha "$PACKAGE_SOURCE_SHA"
+}
+
+validate_local_generation
 jq -S \
   --arg generation_sha "$generation_sha" \
   --argjson generation_bytes "$generation_bytes" \
@@ -311,6 +380,9 @@ jq -S \
       }
     ] +
     [.identity.archives[] | {
+      name: .name, sha256: .sha256, bytes: .bytes, seal: false
+    }] +
+    [(.identity.supporting_assets // [])[] | {
       name: .name, sha256: .sha256, bytes: .bytes, seal: false
     }] |
     sort_by(.name)
@@ -425,7 +497,7 @@ refresh_assets() {
   # WHY: one generation may contain the bounded 256-archive closure plus its
   # resolver index and generation.json seal.
   jq -e '
-    type == "array" and length <= 258 and
+    type == "array" and length <= 266 and
     all(.[]; (
       (.id | type == "number" and . > 0) and
       (.name | type == "string" and length > 0) and
@@ -485,7 +557,8 @@ validate_direct_tag() {
     .ref == ("refs/tags/" + $tag) and
     .object.type == "commit" and .object.sha == $sha
   ' "$tag_json" >/dev/null || {
-    echo "publish-durable-package-generation: generation tag does not directly reference the package-source SHA" >&2
+    echo "publish-durable-package-generation: generation tag does not directly reference its declared release target" \
+      >&2
     return 1
   }
 }
@@ -624,7 +697,7 @@ STATE_LOCK_OWNER_DETAIL="${STATE_LOCK_OWNER_DETAIL:-package generation $TAG}" \
     bash "$LOCK_ROOT" "$STATE_LOCK_SCRIPT" "$TAG"
 LOCK_ACQUIRED=true
 
-validate_live_main_source
+[ "$IS_PRESERVED" = true ] || validate_live_main_source
 ensure_direct_tag
 release_rc=0
 refresh_public_release || release_rc=$?
@@ -651,36 +724,34 @@ fi
 while IFS= read -r name; do
   ensure_asset "$name"
 done < <(jq -r '.[] | select(.seal == false) | .name' "$EXPECTED_ASSETS")
-# Rehash and semantically revalidate the complete local bundle immediately
-# before the application seal can make it public.
-env -u GH_TOKEN -u GITHUB_TOKEN \
-  -u HOMEBREW_GITHUB_API_TOKEN \
-  -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-  -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
-  -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
-  -u ACTIONS_ID_TOKEN_REQUEST_URL \
-  -u ACTIONS_RUNTIME_TOKEN \
-  PYTHONDONTWRITEBYTECODE=1 \
-  python3 "$SCRIPT_DIR/package-generation.py" validate \
-    --bundle "$BUNDLE" >/dev/null
-env -u GH_TOKEN -u GITHUB_TOKEN \
-  -u HOMEBREW_GITHUB_API_TOKEN \
-  -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-  -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
-  -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
-  -u ACTIONS_ID_TOKEN_REQUEST_URL \
-  -u ACTIONS_RUNTIME_TOKEN \
-  -u WASM_POSIX_DEPS_REGISTRY \
-  "$AUTHORITY_XTASK" staging-reuse validate-generation \
-    --expected-ledger "$expected_ledger" \
-    --snapshot "$validated_snapshot" \
-    --index "$BUNDLE/index.toml" \
-    --assets "$VALIDATOR_ASSETS" \
-    --bundle-dir "$BUNDLE" \
-    --release-tag "$TAG" \
-    --release-base-url "https://github.com/$REPOSITORY/releases/download/$TAG/" \
-    --package-source-sha "$PACKAGE_SOURCE_SHA"
-validate_live_main_source
+refresh_release_by_id "$(jq -er .id "$RELEASE_JSON")"
+assert_inventory_allowed
+seal_missing=false
+if ! jq -e 'any(.[]; .name == "generation.json")' \
+    "$ASSETS_JSON" >/dev/null; then
+  seal_missing=true
+fi
+if [ "$IS_PRESERVED" = false ] || [ "$seal_missing" = true ]; then
+  # Rehash and semantically revalidate the complete local bundle immediately
+  # before the application seal can make it public.
+  env -u GH_TOKEN -u GITHUB_TOKEN \
+    -u HOMEBREW_GITHUB_API_TOKEN \
+    -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+    -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+    -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+    -u ACTIONS_ID_TOKEN_REQUEST_URL \
+    -u ACTIONS_RUNTIME_TOKEN \
+    PYTHONDONTWRITEBYTECODE=1 \
+    python3 "$SCRIPT_DIR/package-generation.py" validate \
+      --bundle "$BUNDLE" >/dev/null
+  validate_local_generation
+fi
+if [ "$seal_missing" = true ] && [ "$IS_PRESERVED" = true ]; then
+  verify_preserved_source_evidence
+  verify_authority_checkout
+elif [ "$IS_PRESERVED" = false ]; then
+  validate_live_main_source
+fi
 ensure_asset generation.json
 
 refresh_release_by_id "$(jq -er .id "$RELEASE_JSON")"
@@ -689,7 +760,16 @@ while IFS= read -r name; do
   verify_authenticated_asset "$name"
 done < <(jq -r '.[].name' "$EXPECTED_ASSETS")
 validate_direct_tag
-validate_live_main_source
+if [ "$(jq -r .draft "$RELEASE_JSON")" = true ]; then
+  if [ "$IS_PRESERVED" = true ]; then
+    verify_preserved_source_evidence
+    verify_authority_checkout
+  else
+    validate_live_main_source
+  fi
+elif [ "$IS_PRESERVED" = false ]; then
+  validate_live_main_source
+fi
 publish_release
 
 refresh_release_by_id "$(jq -er .id "$RELEASE_JSON")"
@@ -723,9 +803,9 @@ while IFS= read -r name; do
     '{name:$name,url:$url,sha256:$sha256,bytes:$bytes}' >>"$asset_receipts"
 done < <(jq -r '.[].name' "$EXPECTED_ASSETS")
 
-# GitHub does not enforce immutability for this repository. Re-snapshot the
-# public identity after anonymous downloads so the receipt never describes an
-# inventory that changed during its own verification window.
+# The application seal does not rely on GitHub release immutability.
+# Re-snapshot the public identity after anonymous downloads so the receipt
+# never describes an inventory that changed during its own verification window.
 refresh_release_by_id "$(jq -er .id "$RELEASE_JSON")"
 [ "$(jq -r .draft "$RELEASE_JSON")" = false ] || {
   echo "publish-durable-package-generation: public release reverted to draft" >&2
@@ -760,4 +840,4 @@ jq -nS \
 chmod 600 "$receipt_tmp"
 mv "$receipt_tmp" "$RECEIPT"
 
-echo "Published durable package generation: https://github.com/$REPOSITORY/releases/tag/$TAG"
+echo "Published application-sealed package generation: https://github.com/$REPOSITORY/releases/tag/$TAG"

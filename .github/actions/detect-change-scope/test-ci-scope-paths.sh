@@ -232,6 +232,12 @@ assert_matches package_publish_flow_changed_files \
   ".github/scripts/prepare-durable-package-generation.sh" \
   ".github/scripts/prepare-durable-package-generation.sh"
 assert_matches package_publish_flow_changed_files \
+  ".github/scripts/prepare-preserved-pr-package-generation.sh" \
+  ".github/scripts/prepare-preserved-pr-package-generation.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/verify-preserved-package-source.sh" \
+  ".github/scripts/verify-preserved-package-source.sh"
+assert_matches package_publish_flow_changed_files \
   ".github/scripts/materialize-durable-package-generation.sh" \
   ".github/scripts/materialize-durable-package-generation.sh"
 assert_matches package_publish_flow_changed_files \
@@ -246,6 +252,9 @@ assert_matches package_publish_flow_changed_files \
 assert_matches package_publish_flow_changed_files \
   ".github/workflows/promote-package-generation.yml" \
   ".github/workflows/promote-package-generation.yml"
+assert_matches package_publish_flow_changed_files \
+  ".github/workflows/preserve-pr-package-generation.yml" \
+  ".github/workflows/preserve-pr-package-generation.yml"
 assert_matches package_publish_flow_changed_files \
   "tools/xtask/src/staging_reuse.rs" \
   "tools/xtask/src/staging_reuse.rs"
@@ -387,6 +396,12 @@ assert_matches ci_control_changed_files \
   ".github/scripts/prepare-durable-package-generation.sh" \
   ".github/scripts/prepare-durable-package-generation.sh"
 assert_matches ci_control_changed_files \
+  ".github/scripts/prepare-preserved-pr-package-generation.sh" \
+  ".github/scripts/prepare-preserved-pr-package-generation.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/verify-preserved-package-source.sh" \
+  ".github/scripts/verify-preserved-package-source.sh"
+assert_matches ci_control_changed_files \
   ".github/scripts/materialize-durable-package-generation.sh" \
   ".github/scripts/materialize-durable-package-generation.sh"
 assert_matches ci_control_changed_files \
@@ -401,6 +416,9 @@ assert_matches ci_control_changed_files \
 assert_matches ci_control_changed_files \
   ".github/workflows/promote-package-generation.yml" \
   ".github/workflows/promote-package-generation.yml"
+assert_matches ci_control_changed_files \
+  ".github/workflows/preserve-pr-package-generation.yml" \
+  ".github/workflows/preserve-pr-package-generation.yml"
 assert_matches ci_control_changed_files \
   ".github/scripts/recover-canonical-indexes.sh" \
   ".github/scripts/recover-canonical-indexes.sh"
