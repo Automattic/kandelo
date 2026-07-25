@@ -312,6 +312,28 @@ pub(crate) struct PendingDirEntry {
 }
 
 impl OpenFileDesc {
+    /// Whether this open description denotes a terminal endpoint.
+    ///
+    /// Host-backed standard streams predate the dedicated PTY file types, so
+    /// they remain encoded as `CharDevice` OFDs with their canonical stdio
+    /// paths and non-negative host stream handles. Kernel-owned character
+    /// devices use negative handles instead (`/dev/null`, framebuffer, DRM,
+    /// and so on) and must not acquire terminal semantics merely because
+    /// `stat(2)` reports `S_IFCHR`.
+    pub(crate) fn is_terminal(&self) -> bool {
+        match self.file_type {
+            FileType::PtyMaster | FileType::PtySlave => true,
+            FileType::CharDevice => {
+                self.host_handle >= 0
+                    && matches!(
+                        self.path.as_slice(),
+                        b"/dev/stdin" | b"/dev/stdout" | b"/dev/stderr"
+                    )
+            }
+            _ => false,
+        }
+    }
+
     /// Drop process-local directory-iterator state while preserving the
     /// guest-visible position at which a newly inherited or transferred
     /// descriptor must resume.
