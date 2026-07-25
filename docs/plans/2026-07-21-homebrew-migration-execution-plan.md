@@ -84,6 +84,38 @@ Formulae. These counts are planning inputs, not acceptance gates; the exact
 named sets and dependency propagation still need to be regenerated from the
 completed versioned payload-identity contract before publication.
 
+The read-only 2026-07-25 audit produced the following reviewed initial
+partition relative to the current ABI-42 producer:
+
+- rebuild 16 Formulae/16 objects: `bash`, `bc`, `coreutils`, `dash`,
+  `diffutils`, `ed`, `findutils`, `gawk`, `git`, `less`, `m4`, `pcre2`,
+  `perl`, `ruby`, `tar`, and `vim`;
+- reuse 28 Formulae/34 objects: `asa`, `binutils`, `bzip2`, `ctags`, `curl`,
+  `fbdoom`, `gencat`, `getconf`, `grep`, `gzip`, `icu`, `libcurl`, `libcxx`,
+  `libiconv`, `libzip`, `lsof`, `modeset`, `musl-fts`, `ncompress`,
+  `ncurses`, `netcat`, `openssl`, `posix-utils-lite`, `procps`, `sed`, `xz`,
+  `zlib`, and `zstd`; and
+- defer 19 Formulae/20 legacy ABI-41 objects: `dinit`, `erlang`,
+  `file-formula`, `libmagic`, `libpng`, `libxml2`, `make`, `nano`, `nethack`,
+  `patch`, `pax`, `python`, `sqlite`, `tcl`, `texlive`, `unzip`, `wget`,
+  `what`, and `zip`.
+
+Moving that final deferred set into `rebuild` completes the 35-Formula,
+36-object full-tap ABI-42 campaign. The 16 current-ABI rebuilds comprise 13
+fork-instrumented Formulae, changed Tier-2 `bc`, and dependency propagation to
+`less` and `m4` through changed Dash.
+
+Do not treat this audit as a substitute for a mechanically complete payload
+identity. Current Formula sidecars do not bind dependency bottle digests,
+Tier-2 attestations omit some auxiliary inputs, and `netcat/build.toml` does
+not declare the four patches its script consumes. Whole helper-file hashing
+also overinvalidates packages when an unused or validation-only function
+changes. The durable fix must automatically bind the selected build script,
+classify payload, validation, and archive-envelope inputs, make dependency
+payload identities explicit, and reject undeclared inputs. Until that exists,
+reuse remains a conservative reviewed decision backed by exact bytes and
+current-main runtime validation.
+
 ## Source Plans And Preservation Rule
 
 This plan reconciles, rather than silently replaces, the earlier Homebrew work:
