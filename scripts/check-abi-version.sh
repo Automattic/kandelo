@@ -21,6 +21,10 @@ fi
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
+bash scripts/check-sysv-ipc-layouts.sh
+bash scripts/check-process-native-layouts.sh
+bash scripts/check-fixed-process-layouts.sh
+
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 
 # The snapshot includes exports parsed from the built kernel wasm. We

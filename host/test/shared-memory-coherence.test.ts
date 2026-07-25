@@ -421,4 +421,88 @@ describe("SysV SHM coherence and lifecycle", () => {
     expect(h.shmatForTask).not.toHaveBeenCalled();
     expect((h.kw as any).shmMappings.has(h.pids[2])).toBe(false);
   });
+
+  it("preserves a wasm64 shmat hint above 4 GiB until mmap rejects it", () => {
+    const h = sysvHarness();
+    const process = (h.kw as any).processes.get(h.pids[2]);
+    process.ptrWidth = 8;
+    const complete = vi.fn();
+    const relisten = vi.fn();
+    const mmap = vi.fn(() => ({ retVal: -1, errVal: 12 }));
+    Object.assign(h.kw as any, {
+      completeChannelRaw: complete,
+      relistenChannel: relisten,
+      runSyntheticMemorySyscall: mmap,
+    });
+    const channel = process.channels[0];
+    const highHint = 0x1_0000_0000n;
+
+    (h.kw as any).handleIpcShmat(
+      channel,
+      [h.segId, Number(highHint), 0],
+      [BigInt(h.segId), highHint, 0n],
+    );
+
+    // The legacy kernel attachment helper does not own the process mapping
+    // address, but the host mmap path must retain every wasm64 pointer bit.
+    expect(h.shmatForTask).toHaveBeenCalledWith(
+      h.pids[2],
+      h.pids[2],
+      h.segId,
+      0,
+      0,
+    );
+    expect(mmap.mock.calls[0]?.[2]?.[0]).toBe(Number(highHint));
+    expect(complete).toHaveBeenCalledWith(channel, -12, 12);
+    expect(relisten).toHaveBeenCalledWith(channel);
+  });
+
+  it("rejects a non-lossless wasm64 shmat hint before attachment state changes", () => {
+    const h = sysvHarness();
+    const process = (h.kw as any).processes.get(h.pids[2]);
+    process.ptrWidth = 8;
+    const complete = vi.fn();
+    const relisten = vi.fn();
+    Object.assign(h.kw as any, {
+      completeChannelRaw: complete,
+      relistenChannel: relisten,
+    });
+    const channel = process.channels[0];
+    const unsafeHint = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
+
+    (h.kw as any).handleIpcShmat(
+      channel,
+      [h.segId, Number(unsafeHint), 0],
+      [BigInt(h.segId), unsafeHint, 0n],
+    );
+
+    expect(h.shmatForTask).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledWith(channel, -1, 14);
+    expect(relisten).toHaveBeenCalledWith(channel);
+  });
+
+  it("does not alias a wasm64 shmdt address to an existing low mapping", () => {
+    const h = sysvHarness();
+    const process = (h.kw as any).processes.get(h.pids[0]);
+    process.ptrWidth = 8;
+    const complete = vi.fn();
+    const relisten = vi.fn();
+    Object.assign(h.kw as any, {
+      completeChannelRaw: complete,
+      relistenChannel: relisten,
+    });
+    const channel = process.channels[0];
+    const highAddress = BigInt(h.mapAddr) + 0x1_0000_0000n;
+
+    (h.kw as any).handleIpcShmdt(
+      channel,
+      [Number(highAddress)],
+      [highAddress],
+    );
+
+    expect((h.kw as any).shmMappings.get(h.pids[0]).has(h.mapAddr)).toBe(true);
+    expect(h.shmdtForTask).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledWith(channel, -22, 22);
+    expect(relisten).toHaveBeenCalledWith(channel);
+  });
 });

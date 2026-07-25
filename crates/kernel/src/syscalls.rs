@@ -809,6 +809,51 @@ fn release_dri_handle(
     Ok(())
 }
 
+fn handle_drm_version(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
+    use wasm_posix_shared::dri::{DRM_IOCTL_VERSION, DRM_IOCTL_VERSION_WASM64};
+
+    let (size, name_ptr_offset, date_ptr_offset, desc_ptr_offset, pointer_size) =
+        if request == DRM_IOCTL_VERSION {
+            (36usize, 16usize, 24usize, 32usize, 4usize)
+        } else if request == DRM_IOCTL_VERSION_WASM64 {
+            (64usize, 24usize, 40usize, 56usize, 8usize)
+        } else {
+            return Err(Errno::EINVAL);
+        };
+    if buf.len() < size {
+        return Err(Errno::EINVAL);
+    }
+
+    let mut name_ptr = [0u8; 8];
+    let mut date_ptr = [0u8; 8];
+    let mut desc_ptr = [0u8; 8];
+    name_ptr[..pointer_size]
+        .copy_from_slice(&buf[name_ptr_offset..name_ptr_offset + pointer_size]);
+    date_ptr[..pointer_size]
+        .copy_from_slice(&buf[date_ptr_offset..date_ptr_offset + pointer_size]);
+    desc_ptr[..pointer_size]
+        .copy_from_slice(&buf[desc_ptr_offset..desc_ptr_offset + pointer_size]);
+
+    buf[..size].fill(0);
+    buf[0..4].copy_from_slice(&1i32.to_le_bytes());
+    buf[name_ptr_offset..name_ptr_offset + pointer_size]
+        .copy_from_slice(&name_ptr[..pointer_size]);
+    buf[date_ptr_offset..date_ptr_offset + pointer_size]
+        .copy_from_slice(&date_ptr[..pointer_size]);
+    buf[desc_ptr_offset..desc_ptr_offset + pointer_size]
+        .copy_from_slice(&desc_ptr[..pointer_size]);
+    Ok(())
+}
+
+/// Convert a fixed-width DRM UAPI pointer to the process-memory bridge.
+///
+/// WHY: KMS structs use `u64` pointers even for wasm32 compatibility, while
+/// the current host bridge accepts only a lossless `u32` process address.
+/// Truncation would redirect a wasm64 pointer into unrelated low memory.
+fn checked_dri_process_pointer(pointer: u64) -> Result<u32, Errno> {
+    u32::try_from(pointer).map_err(|_| Errno::EFAULT)
+}
+
 /// Shared render-node ioctls: probe (VERSION / GET_CAP), the dumb-buffer
 /// quartet (CREATE / MAP / DESTROY / GEM_CLOSE), PRIME export/import, and
 /// GLES2 session ioctls. Unknown requests return `ENOSYS` so libdrm
@@ -824,28 +869,7 @@ fn handle_dri_ioctl(
     use wasm_posix_shared::gl;
     let pid = proc.pid as i32;
     match request {
-        DRM_IOCTL_VERSION => {
-            if buf.len() < core::mem::size_of::<WpkDrmVersion>() {
-                return Err(Errno::EINVAL);
-            }
-            let v_in: WpkDrmVersion =
-                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-            let v_out = WpkDrmVersion {
-                version_major: 1,
-                version_minor: 0,
-                version_patchlevel: 0,
-                name_len: 0,
-                name_ptr: v_in.name_ptr,
-                date_len: 0,
-                date_ptr: v_in.date_ptr,
-                desc_len: 0,
-                desc_ptr: v_in.desc_ptr,
-            };
-            unsafe {
-                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, v_out);
-            }
-            Ok(())
-        }
+        DRM_IOCTL_VERSION | DRM_IOCTL_VERSION_WASM64 => handle_drm_version(request, buf),
         DRM_IOCTL_GET_CAP => {
             if buf.len() < core::mem::size_of::<WpkDrmGetCap>() {
                 return Err(Errno::EINVAL);
@@ -1316,24 +1340,33 @@ fn handle_dri_card_ioctl(
             }
             let req: WpkDrmModeCardRes =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-            if req.count_crtcs >= 1 && req.crtc_id_ptr != 0 {
-                let rc = host.proc_write_bytes(pid, req.crtc_id_ptr as u32, &1u32.to_le_bytes());
+            // Validate every nested address before the first write so a later
+            // unrepresentable wasm64 pointer cannot leave earlier outputs
+            // partially updated.
+            let crtc_id_ptr = (req.count_crtcs >= 1 && req.crtc_id_ptr != 0)
+                .then(|| checked_dri_process_pointer(req.crtc_id_ptr))
+                .transpose()?;
+            let connector_id_ptr =
+                (req.count_connectors >= 1 && req.connector_id_ptr != 0)
+                    .then(|| checked_dri_process_pointer(req.connector_id_ptr))
+                    .transpose()?;
+            let encoder_id_ptr = (req.count_encoders >= 1 && req.encoder_id_ptr != 0)
+                .then(|| checked_dri_process_pointer(req.encoder_id_ptr))
+                .transpose()?;
+            if let Some(pointer) = crtc_id_ptr {
+                let rc = host.proc_write_bytes(pid, pointer, &1u32.to_le_bytes());
                 if rc < 0 {
                     return Err(Errno::EFAULT);
                 }
             }
-            if req.count_connectors >= 1 && req.connector_id_ptr != 0 {
-                let rc = host.proc_write_bytes(
-                    pid,
-                    req.connector_id_ptr as u32,
-                    &1u32.to_le_bytes(),
-                );
+            if let Some(pointer) = connector_id_ptr {
+                let rc = host.proc_write_bytes(pid, pointer, &1u32.to_le_bytes());
                 if rc < 0 {
                     return Err(Errno::EFAULT);
                 }
             }
-            if req.count_encoders >= 1 && req.encoder_id_ptr != 0 {
-                let rc = host.proc_write_bytes(pid, req.encoder_id_ptr as u32, &1u32.to_le_bytes());
+            if let Some(pointer) = encoder_id_ptr {
+                let rc = host.proc_write_bytes(pid, pointer, &1u32.to_le_bytes());
                 if rc < 0 {
                     return Err(Errno::EFAULT);
                 }
@@ -1401,7 +1434,13 @@ fn handle_dri_card_ioctl(
             if req.connector_id != 1 {
                 return Err(Errno::ENOENT);
             }
-            if req.count_modes >= 1 && req.modes_ptr != 0 {
+            let modes_ptr = (req.count_modes >= 1 && req.modes_ptr != 0)
+                .then(|| checked_dri_process_pointer(req.modes_ptr))
+                .transpose()?;
+            let encoders_ptr = (req.count_encoders >= 1 && req.encoders_ptr != 0)
+                .then(|| checked_dri_process_pointer(req.encoders_ptr))
+                .transpose()?;
+            if let Some(pointer) = modes_ptr {
                 let mode = host.kms_mode_info(1);
                 let mode_bytes = unsafe {
                     core::slice::from_raw_parts(
@@ -1409,14 +1448,13 @@ fn handle_dri_card_ioctl(
                         core::mem::size_of::<WpkDrmModeModeinfo>(),
                     )
                 };
-                let rc = host.proc_write_bytes(pid, req.modes_ptr as u32, mode_bytes);
+                let rc = host.proc_write_bytes(pid, pointer, mode_bytes);
                 if rc < 0 {
                     return Err(Errno::EFAULT);
                 }
             }
-            if req.count_encoders >= 1 && req.encoders_ptr != 0 {
-                let rc =
-                    host.proc_write_bytes(pid, req.encoders_ptr as u32, &1u32.to_le_bytes());
+            if let Some(pointer) = encoders_ptr {
+                let rc = host.proc_write_bytes(pid, pointer, &1u32.to_le_bytes());
                 if rc < 0 {
                     return Err(Errno::EFAULT);
                 }
@@ -11311,7 +11349,13 @@ pub fn sys_getaddrinfo(
     if result_buf.len() < 4 {
         return Err(Errno::EINVAL);
     }
-    host.host_getaddrinfo(name, result_buf)
+    let written = host.host_getaddrinfo(name, result_buf)?;
+    // WHY: a host-reported producer count is not proof that those bytes fit
+    // the kernel-owned destination it was lent.
+    if written > result_buf.len() {
+        return Err(Errno::EIO);
+    }
+    Ok(written)
 }
 
 /// Send a message on a socket to a specific address.
@@ -12338,7 +12382,8 @@ pub fn sys_renameat(
 }
 
 /// tcgetattr -- get terminal attributes (custom syscall 70).
-/// Uses kernel's 48-byte format for backward compat: 4×u32 flags + c_cc[32].
+///
+/// The custom syscall uses the same exact 60-byte musl layout as TCGETS.
 pub fn sys_tcgetattr(proc: &mut Process, fd: i32, buf: &mut [u8]) -> Result<(), Errno> {
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
@@ -12349,7 +12394,7 @@ pub fn sys_tcgetattr(proc: &mut Process, fd: i32, buf: &mut [u8]) -> Result<(), 
     ) {
         return Err(Errno::ENOTTY);
     }
-    if buf.len() < 48 {
+    if buf.len() != crate::terminal::TERMIOS_SIZE {
         return Err(Errno::EINVAL);
     }
     let ts = match ofd.file_type {
@@ -12362,16 +12407,13 @@ pub fn sys_tcgetattr(proc: &mut Process, fd: i32, buf: &mut [u8]) -> Result<(), 
     };
     // Safety: we hold &mut proc, and PTY table is kernel-global with single-threaded access
     let ts = unsafe { &*ts };
-    buf[0..4].copy_from_slice(&ts.c_iflag.to_le_bytes());
-    buf[4..8].copy_from_slice(&ts.c_oflag.to_le_bytes());
-    buf[8..12].copy_from_slice(&ts.c_cflag.to_le_bytes());
-    buf[12..16].copy_from_slice(&ts.c_lflag.to_le_bytes());
-    buf[16..48].copy_from_slice(&ts.c_cc);
+    ts.write_termios(buf);
     Ok(())
 }
 
 /// tcsetattr -- set terminal attributes (custom syscall 71).
-/// Uses kernel's 48-byte format for backward compat: 4×u32 flags + c_cc[32].
+///
+/// The custom syscall uses the same exact 60-byte musl layout as TCSETS.
 pub fn sys_tcsetattr(proc: &mut Process, fd: i32, action: u32, buf: &[u8]) -> Result<(), Errno> {
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
@@ -12382,7 +12424,7 @@ pub fn sys_tcsetattr(proc: &mut Process, fd: i32, action: u32, buf: &[u8]) -> Re
     ) {
         return Err(Errno::ENOTTY);
     }
-    if buf.len() < 48 {
+    if buf.len() != crate::terminal::TERMIOS_SIZE {
         return Err(Errno::EINVAL);
     }
     if !matches!(
@@ -12400,20 +12442,12 @@ pub fn sys_tcsetattr(proc: &mut Process, fd: i32, action: u32, buf: &[u8]) -> Re
             let pty_idx = ofd.host_handle as usize;
             let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
             pty.prepare_termios_change(next_lflag, discard_input);
-            pty.terminal.c_iflag = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-            pty.terminal.c_oflag = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
-            pty.terminal.c_cflag = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
-            pty.terminal.c_lflag = next_lflag;
-            pty.terminal.c_cc.copy_from_slice(&buf[16..48]);
+            pty.terminal.read_termios(buf);
         }
         _ => {
             proc.terminal
                 .prepare_termios_change(next_lflag, discard_input);
-            proc.terminal.c_iflag = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-            proc.terminal.c_oflag = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
-            proc.terminal.c_cflag = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
-            proc.terminal.c_lflag = next_lflag;
-            proc.terminal.c_cc.copy_from_slice(&buf[16..48]);
+            proc.terminal.read_termios(buf);
         }
     }
     Ok(())
@@ -15000,38 +15034,39 @@ pub fn sys_waitpid(
     host.host_waitpid(pid, options)
 }
 
-/// sysinfo — return system information.
-///
-/// Fills a struct sysinfo buffer with plausible values.
-/// On wasm32, unsigned long is 4 bytes. Layout:
-///   uptime(4) loads[3](12) totalram(4) freeram(4) sharedram(4)
-///   bufferram(4) totalswap(4) freeswap(4) procs(2) pad(2)
-///   totalhigh(4) freehigh(4) mem_unit(4) __reserved(256)
-///   Total: 312 bytes
-pub fn sys_sysinfo(buf: &mut [u8]) -> Result<(), Errno> {
-    const SYSINFO_SIZE: usize = 312;
-    if buf.len() < SYSINFO_SIZE {
-        return Err(Errno::EFAULT);
-    }
-    // Zero the buffer first
-    for b in buf[..SYSINFO_SIZE].iter_mut() {
-        *b = 0;
-    }
-    let total_ram: u32 = 512 * 1024 * 1024; // 512 MB
-    let free_ram: u32 = 256 * 1024 * 1024; // 256 MB
+/// Width-independent system information serialized at the Wasm boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KernelSysinfo {
+    pub uptime: u64,
+    pub loads: [u64; 3],
+    pub totalram: u64,
+    pub freeram: u64,
+    pub sharedram: u64,
+    pub bufferram: u64,
+    pub totalswap: u64,
+    pub freeswap: u64,
+    pub procs: u16,
+    pub totalhigh: u64,
+    pub freehigh: u64,
+    pub mem_unit: u32,
+}
 
-    // uptime = 1 second
-    buf[0..4].copy_from_slice(&1u32.to_le_bytes());
-    // loads[0..3] = 0 (already zeroed)
-    // totalram @ offset 16
-    buf[16..20].copy_from_slice(&total_ram.to_le_bytes());
-    // freeram @ offset 20
-    buf[20..24].copy_from_slice(&free_ram.to_le_bytes());
-    // procs @ offset 40 (u16)
-    buf[40..42].copy_from_slice(&1u16.to_le_bytes());
-    // mem_unit @ offset 52
-    buf[52..56].copy_from_slice(&1u32.to_le_bytes());
-    Ok(())
+/// sysinfo — return width-independent system information.
+pub fn sys_sysinfo() -> KernelSysinfo {
+    KernelSysinfo {
+        uptime: 1,
+        loads: [0; 3],
+        totalram: 512 * 1024 * 1024,
+        freeram: 256 * 1024 * 1024,
+        sharedram: 0,
+        bufferram: 0,
+        totalswap: 0,
+        freeswap: 0,
+        procs: 1,
+        totalhigh: 0,
+        freehigh: 0,
+        mem_unit: 1,
+    }
 }
 
 /// memfd_create — create an anonymous file backed by in-memory storage.
@@ -15191,8 +15226,8 @@ mod tests {
             Ok(bytes)
         }
 
-        fn custom_attrs(&mut self, fd: i32) -> [u8; 48] {
-            let mut attrs = [0; 48];
+        fn custom_attrs(&mut self, fd: i32) -> [u8; crate::terminal::TERMIOS_SIZE] {
+            let mut attrs = [0; crate::terminal::TERMIOS_SIZE];
             sys_tcgetattr(&mut self.proc, fd, &mut attrs).unwrap();
             attrs
         }
@@ -15462,6 +15497,7 @@ mod tests {
         gbm_bo_unbind_calls: Vec<(i32, u32, usize, usize)>,
         /// Recorded pid for every `gl_unbind` call.
         gl_unbind_calls: Vec<i32>,
+        proc_write_calls: Vec<(i32, u32, Vec<u8>)>,
         /// Override for `gbm_bo_bind`'s return value (0 = success, negative
         /// = errno). Defaults to 0.
         gbm_bo_bind_rc: i32,
@@ -15473,6 +15509,8 @@ mod tests {
         net_send_result: Result<usize, Errno>,
         net_connect_calls: Vec<(i32, Vec<u8>, u16)>,
         net_listen_calls: Vec<(i32, u16, [u8; 4])>,
+        getaddrinfo_bytes: Option<Vec<u8>>,
+        getaddrinfo_reported: usize,
         chown_calls: Vec<(Vec<u8>, u32, u32)>,
         lchown_calls: Vec<(Vec<u8>, u32, u32)>,
         fchown_calls: Vec<(i64, u32, u32)>,
@@ -15520,6 +15558,7 @@ mod tests {
                 gbm_bo_bind_calls: Vec::new(),
                 gbm_bo_unbind_calls: Vec::new(),
                 gl_unbind_calls: Vec::new(),
+                proc_write_calls: Vec::new(),
                 gbm_bo_bind_rc: 0,
                 gl_submit_rc: 0,
                 net_connect_result: Err(Errno::ECONNREFUSED),
@@ -15527,6 +15566,8 @@ mod tests {
                 net_send_result: Err(Errno::ENOTCONN),
                 net_connect_calls: Vec::new(),
                 net_listen_calls: Vec::new(),
+                getaddrinfo_bytes: None,
+                getaddrinfo_reported: 0,
                 chown_calls: Vec::new(),
                 lchown_calls: Vec::new(),
                 fchown_calls: Vec::new(),
@@ -16137,8 +16178,13 @@ mod tests {
             self.net_listen_calls.push((fd, port, *addr));
             Ok(())
         }
-        fn host_getaddrinfo(&mut self, _name: &[u8], _result: &mut [u8]) -> Result<usize, Errno> {
-            Err(Errno::ENOENT)
+        fn host_getaddrinfo(&mut self, _name: &[u8], result: &mut [u8]) -> Result<usize, Errno> {
+            let Some(bytes) = self.getaddrinfo_bytes.as_deref() else {
+                return Err(Errno::ENOENT);
+            };
+            let copied = bytes.len().min(result.len());
+            result[..copied].copy_from_slice(&bytes[..copied]);
+            Ok(self.getaddrinfo_reported)
         }
         fn host_futex_wait(
             &mut self,
@@ -16192,6 +16238,10 @@ mod tests {
         }
         fn gl_submit(&mut self, _pid: i32, _offset: usize, _length: usize) -> i32 {
             self.gl_submit_rc
+        }
+        fn proc_write_bytes(&mut self, pid: i32, ptr: u32, bytes: &[u8]) -> i32 {
+            self.proc_write_calls.push((pid, ptr, bytes.to_vec()));
+            0
         }
     }
 
@@ -23787,16 +23837,19 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_termios_round_trip_preserves_all_flags_and_control_bytes() {
+    fn test_custom_termios_round_trip_preserves_full_musl_layout() {
         let mut proc = terminal_process(1);
-        let mut attrs = [0u8; 48];
+        let mut attrs = [0u8; crate::terminal::TERMIOS_SIZE];
         attrs[0..4].copy_from_slice(&0x0102_0304u32.to_le_bytes());
         attrs[4..8].copy_from_slice(&0x1112_1314u32.to_le_bytes());
         attrs[8..12].copy_from_slice(&0x2122_2324u32.to_le_bytes());
         attrs[12..16].copy_from_slice(&0x3132_3334u32.to_le_bytes());
-        for (index, byte) in attrs[16..48].iter_mut().enumerate() {
+        attrs[16] = 7;
+        for (index, byte) in attrs[17..49].iter_mut().enumerate() {
             *byte = index as u8;
         }
+        attrs[52..56].copy_from_slice(&0x4142_4344u32.to_le_bytes());
+        attrs[56..60].copy_from_slice(&0x5152_5354u32.to_le_bytes());
 
         sys_tcsetattr(
             &mut proc,
@@ -23805,7 +23858,7 @@ mod tests {
             &attrs,
         )
         .unwrap();
-        let mut observed = [0u8; 48];
+        let mut observed = [0u8; crate::terminal::TERMIOS_SIZE];
         sys_tcgetattr(&mut proc, 0, &mut observed).unwrap();
         assert_eq!(observed, attrs);
     }
@@ -23853,16 +23906,27 @@ mod tests {
         let bad_fd = 99;
         let regular = sys_open(&mut proc, &mut host, b"/tmp/file", O_RDWR, 0).unwrap();
 
-        // The legacy API requires its complete 48-byte layout for get and
-        // every set action.
-        assert_eq!(sys_tcgetattr(&mut proc, 0, &mut [0; 47]), Err(Errno::EINVAL));
+        // Both entry points require the complete native musl layout.
+        assert_eq!(
+            sys_tcgetattr(
+                &mut proc,
+                0,
+                &mut [0; crate::terminal::TERMIOS_SIZE - 1],
+            ),
+            Err(Errno::EINVAL),
+        );
         for action in [
             crate::terminal::TCSANOW,
             crate::terminal::TCSADRAIN,
             crate::terminal::TCSAFLUSH,
         ] {
             assert_eq!(
-                sys_tcsetattr(&mut proc, 0, action, &[0; 47]),
+                sys_tcsetattr(
+                    &mut proc,
+                    0,
+                    action,
+                    &[0; crate::terminal::TERMIOS_SIZE - 1],
+                ),
                 Err(Errno::EINVAL),
             );
         }
@@ -23906,10 +23970,14 @@ mod tests {
             Err(Errno::EINVAL),
         );
 
-        // Bad descriptors are symmetric across legacy get/set and ioctl
+        // Bad descriptors are symmetric across custom get/set and ioctl
         // get/set/flush.
         assert_eq!(
-            sys_tcgetattr(&mut proc, bad_fd, &mut [0; 48]),
+            sys_tcgetattr(
+                &mut proc,
+                bad_fd,
+                &mut [0; crate::terminal::TERMIOS_SIZE],
+            ),
             Err(Errno::EBADF),
         );
         for action in [
@@ -23918,7 +23986,12 @@ mod tests {
             crate::terminal::TCSAFLUSH,
         ] {
             assert_eq!(
-                sys_tcsetattr(&mut proc, bad_fd, action, &[0; 48]),
+                sys_tcsetattr(
+                    &mut proc,
+                    bad_fd,
+                    action,
+                    &[0; crate::terminal::TERMIOS_SIZE],
+                ),
                 Err(Errno::EBADF),
             );
         }
@@ -23961,7 +24034,11 @@ mod tests {
 
         // A valid regular descriptor is consistently ENOTTY.
         assert_eq!(
-            sys_tcgetattr(&mut proc, regular, &mut [0; 48]),
+            sys_tcgetattr(
+                &mut proc,
+                regular,
+                &mut [0; crate::terminal::TERMIOS_SIZE],
+            ),
             Err(Errno::ENOTTY),
         );
         for action in [
@@ -23970,7 +24047,12 @@ mod tests {
             crate::terminal::TCSAFLUSH,
         ] {
             assert_eq!(
-                sys_tcsetattr(&mut proc, regular, action, &[0; 48]),
+                sys_tcsetattr(
+                    &mut proc,
+                    regular,
+                    action,
+                    &[0; crate::terminal::TERMIOS_SIZE],
+                ),
                 Err(Errno::ENOTTY),
             );
         }
@@ -24025,7 +24107,7 @@ mod tests {
                 proc.terminal.process_input_byte(byte);
             }
 
-            let mut attrs = [0; 48];
+            let mut attrs = [0; crate::terminal::TERMIOS_SIZE];
             sys_tcgetattr(&mut proc, 0, &mut attrs).unwrap();
             let lflag = u32::from_le_bytes(attrs[12..16].try_into().unwrap());
             attrs[12..16].copy_from_slice(&(lflag & !crate::terminal::ICANON).to_le_bytes());
@@ -24085,7 +24167,7 @@ mod tests {
         }
         let cooked_before = proc.terminal.cooked_buffer.clone();
         let line_before = proc.terminal.line_buffer.clone();
-        let mut attrs_before = [0; 48];
+        let mut attrs_before = [0; crate::terminal::TERMIOS_SIZE];
         sys_tcgetattr(&mut proc, 0, &mut attrs_before).unwrap();
         let mut changed = attrs_before;
         let lflag = u32::from_le_bytes(changed[12..16].try_into().unwrap());
@@ -24095,7 +24177,7 @@ mod tests {
             sys_tcsetattr(&mut proc, 0, u32::MAX, &changed),
             Err(Errno::EINVAL),
         );
-        let mut attrs_after = [0; 48];
+        let mut attrs_after = [0; crate::terminal::TERMIOS_SIZE];
         sys_tcgetattr(&mut proc, 0, &mut attrs_after).unwrap();
         assert_eq!(attrs_after, attrs_before);
         assert_eq!(proc.terminal.cooked_buffer, cooked_before);
@@ -27688,6 +27770,37 @@ mod tests {
         let mut result = [0u8; 16];
         let err = sys_getaddrinfo(&mut proc, &mut host, b"example.com", &mut result).unwrap_err();
         assert_eq!(err, Errno::ENOENT);
+    }
+
+    #[test]
+    fn test_getaddrinfo_checks_exact_four_byte_capacity_and_host_count() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.getaddrinfo_bytes = Some(vec![10, 88, 0, 7]);
+        host.getaddrinfo_reported = 4;
+        let mut guarded = [0xa5, 0, 0, 0, 0, 0x5a];
+
+        let written = sys_getaddrinfo(
+            &mut proc,
+            &mut host,
+            b"example.test",
+            &mut guarded[1..5],
+        )
+        .expect("exact IPv4 result");
+        assert_eq!(written, 4);
+        assert_eq!(&guarded, &[0xa5, 10, 88, 0, 7, 0x5a]);
+
+        host.getaddrinfo_reported = 5;
+        let err = sys_getaddrinfo(
+            &mut proc,
+            &mut host,
+            b"example.test",
+            &mut guarded[1..5],
+        )
+        .unwrap_err();
+        assert_eq!(err, Errno::EIO);
+        assert_eq!(guarded[0], 0xa5);
+        assert_eq!(guarded[5], 0x5a);
     }
 
     #[test]
@@ -32179,30 +32292,13 @@ mod tests {
 
     #[test]
     fn test_sysinfo() {
-        let mut buf = [0u8; 312];
-        sys_sysinfo(&mut buf).unwrap();
-        // uptime = 1
-        assert_eq!(u32::from_le_bytes(buf[0..4].try_into().unwrap()), 1);
-        // totalram = 512 MB
-        assert_eq!(
-            u32::from_le_bytes(buf[16..20].try_into().unwrap()),
-            512 * 1024 * 1024
-        );
-        // freeram = 256 MB
-        assert_eq!(
-            u32::from_le_bytes(buf[20..24].try_into().unwrap()),
-            256 * 1024 * 1024
-        );
-        // procs = 1
-        assert_eq!(u16::from_le_bytes(buf[40..42].try_into().unwrap()), 1);
-        // mem_unit = 1
-        assert_eq!(u32::from_le_bytes(buf[52..56].try_into().unwrap()), 1);
-    }
-
-    #[test]
-    fn test_sysinfo_buffer_too_small() {
-        let mut buf = [0u8; 100];
-        assert_eq!(sys_sysinfo(&mut buf).unwrap_err(), Errno::EFAULT);
+        let info = sys_sysinfo();
+        assert_eq!(info.uptime, 1);
+        assert_eq!(info.loads, [0; 3]);
+        assert_eq!(info.totalram, 512 * 1024 * 1024);
+        assert_eq!(info.freeram, 256 * 1024 * 1024);
+        assert_eq!(info.procs, 1);
+        assert_eq!(info.mem_unit, 1);
     }
 
     #[test]
@@ -33867,7 +33963,8 @@ mod tests {
             desc_ptr: 0xabad_1dea,
             ..Default::default()
         };
-        let mut buf = [0u8; core::mem::size_of::<WpkDrmVersion>()];
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmVersion>() + 1];
+        *buf.last_mut().unwrap() = 0xa5;
         unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmVersion, v_in) };
         sys_ioctl(&mut proc, &mut host,fd, DRM_IOCTL_VERSION, &mut buf).unwrap();
         let v_out: WpkDrmVersion =
@@ -33881,6 +33978,119 @@ mod tests {
         assert_eq!(v_out.name_ptr, 0xdead_beef);
         assert_eq!(v_out.date_ptr, 0xcafe_1234);
         assert_eq!(v_out.desc_ptr, 0xabad_1dea);
+        assert_eq!(*buf.last().unwrap(), 0xa5);
+    }
+
+    #[test]
+    fn dri_ioctl_version_uses_native_wasm64_layout_without_pointer_truncation() {
+        use wasm_posix_shared::dri::DRM_IOCTL_VERSION_WASM64;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd =
+            sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut buf = [0u8; 65];
+        let name_ptr = 0x0000_0001_dead_beefu64;
+        let date_ptr = 0x0000_0002_cafe_1234u64;
+        let desc_ptr = 0x0000_0003_abad_1deau64;
+        buf[16..24].copy_from_slice(&64u64.to_le_bytes());
+        buf[24..32].copy_from_slice(&name_ptr.to_le_bytes());
+        buf[32..40].copy_from_slice(&64u64.to_le_bytes());
+        buf[40..48].copy_from_slice(&date_ptr.to_le_bytes());
+        buf[48..56].copy_from_slice(&64u64.to_le_bytes());
+        buf[56..64].copy_from_slice(&desc_ptr.to_le_bytes());
+        buf[64] = 0xa5;
+
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            DRM_IOCTL_VERSION_WASM64,
+            &mut buf,
+        )
+        .unwrap();
+
+        assert_eq!(i32::from_le_bytes(buf[0..4].try_into().unwrap()), 1);
+        assert_eq!(u64::from_le_bytes(buf[16..24].try_into().unwrap()), 0);
+        assert_eq!(
+            u64::from_le_bytes(buf[24..32].try_into().unwrap()),
+            name_ptr,
+        );
+        assert_eq!(u64::from_le_bytes(buf[32..40].try_into().unwrap()), 0);
+        assert_eq!(
+            u64::from_le_bytes(buf[40..48].try_into().unwrap()),
+            date_ptr,
+        );
+        assert_eq!(u64::from_le_bytes(buf[48..56].try_into().unwrap()), 0);
+        assert_eq!(
+            u64::from_le_bytes(buf[56..64].try_into().unwrap()),
+            desc_ptr,
+        );
+        assert_eq!(buf[64], 0xa5);
+    }
+
+    #[test]
+    fn dri_nested_u64_pointer_rejects_instead_of_aliasing_low_memory() {
+        use wasm_posix_shared::dri::{
+            DRM_IOCTL_MODE_GETCONNECTOR, DRM_IOCTL_MODE_GETRESOURCES,
+            WpkDrmModeCardRes, WpkDrmModeGetConnector,
+        };
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+
+        let resources = WpkDrmModeCardRes {
+            crtc_id_ptr: 0x1234,
+            connector_id_ptr: 0x0000_0001_0000_5678,
+            count_crtcs: 1,
+            count_connectors: 1,
+            ..Default::default()
+        };
+        let mut resource_buf = [0u8; core::mem::size_of::<WpkDrmModeCardRes>()];
+        unsafe {
+            core::ptr::write_unaligned(
+                resource_buf.as_mut_ptr() as *mut WpkDrmModeCardRes,
+                resources,
+            );
+        }
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                DRM_IOCTL_MODE_GETRESOURCES,
+                &mut resource_buf,
+            ),
+            Err(Errno::EFAULT),
+        );
+        assert!(host.proc_write_calls.is_empty());
+
+        let connector = WpkDrmModeGetConnector {
+            modes_ptr: 0x0000_0001_0000_5678,
+            count_modes: 1,
+            connector_id: 1,
+            ..Default::default()
+        };
+        let mut connector_buf =
+            [0u8; core::mem::size_of::<WpkDrmModeGetConnector>()];
+        unsafe {
+            core::ptr::write_unaligned(
+                connector_buf.as_mut_ptr() as *mut WpkDrmModeGetConnector,
+                connector,
+            );
+        }
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                DRM_IOCTL_MODE_GETCONNECTOR,
+                &mut connector_buf,
+            ),
+            Err(Errno::EFAULT),
+        );
+        assert!(host.proc_write_calls.is_empty());
     }
 
     #[test]

@@ -79,31 +79,6 @@ const suite: BenchmarkSuite = {
     if (clone.exitCode !== 0) throw new Error(`clone-bench failed: ${clone.stderr}`);
     Object.assign(results, parseMetrics(clone.stdout));
 
-    // posix_spawn — the non-forking SYS_SPAWN fast path. Distinct from
-    // exec_ms (which times execve replacing the same process) and
-    // fork_ms (which times fork rewind). spawn_ms exists
-    // because popen / system / shell pipelines all go through
-    // posix_spawn, and that path used to cost a fork-instrument unwind
-    // we no longer pay.
-    const spawnBench = await runCentralizedProgram({
-      programPath: resolve(wasmDir, "spawn-bench.wasm"),
-      argv: ["spawn-bench"],
-      execPrograms,
-      timeout: 30_000,
-      captureSpawnScratchStats: true,
-    });
-    if (spawnBench.exitCode !== 0) throw new Error(`spawn-bench failed: ${spawnBench.stderr}`);
-    Object.assign(results, parseMetrics(spawnBench.stdout));
-    if (
-      spawnBench.spawnScratchCapacity === undefined ||
-      spawnBench.kernelMemoryPages === undefined
-    ) {
-      throw new Error("spawn-bench did not return kernel scratch telemetry");
-    }
-    results.spawn_scratch_retained_bytes = spawnBench.spawnScratchCapacity;
-    results.spawn_scratch_kernel_bytes =
-      spawnBench.kernelMemoryPages * 65_536;
-
     return results;
   },
 };

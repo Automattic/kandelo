@@ -85,7 +85,7 @@ fn ipc_check_owner(uid: u32, owner_uid: u32, creator_uid: u32) -> Result<(), Err
 
 /// A single message in a SysV message queue.
 struct MsgEntry {
-    mtype: i32,
+    mtype: i64,
     data: Vec<u8>,
 }
 
@@ -132,7 +132,7 @@ pub struct MsgQueueInfo {
 /// Result of msgrcv.
 #[derive(Debug)]
 pub struct MsgRcvResult {
-    pub mtype: i32,
+    pub mtype: i64,
     pub data: Vec<u8>,
 }
 
@@ -329,7 +329,7 @@ impl IpcTable {
     pub fn msgsnd(
         &mut self,
         qid: i32,
-        mtype: i32,
+        mtype: i64,
         data: &[u8],
         flags: u32,
         pid: u32,
@@ -371,7 +371,35 @@ impl IpcTable {
         &mut self,
         qid: i32,
         max_size: u32,
-        msgtype: i32,
+        msgtype: i64,
+        flags: u32,
+        pid: u32,
+        uid: u32,
+        gid: u32,
+    ) -> Result<MsgRcvResult, Errno> {
+        self.msgrcv_with_mtype_max(
+            qid,
+            max_size,
+            msgtype,
+            i64::MAX,
+            flags,
+            pid,
+            uid,
+            gid,
+        )
+    }
+
+    /// Receive while proving the selected mtype fits the caller's native long.
+    ///
+    /// A Kandelo queue can be shared by wasm32 and wasm64 processes. Reject
+    /// before removal when an LP64 sender's type cannot be represented by an
+    /// ILP32 receiver, so the host never has to truncate a consumed message.
+    pub fn msgrcv_with_mtype_max(
+        &mut self,
+        qid: i32,
+        max_size: u32,
+        msgtype: i64,
+        max_output_mtype: i64,
         flags: u32,
         pid: u32,
         uid: u32,
@@ -397,7 +425,7 @@ impl IpcTable {
             }
         } else {
             // msgtype < 0: first message with type <= |msgtype|
-            let abs_type = -msgtype;
+            let abs_type = msgtype.saturating_abs();
             q.messages.iter().position(|m| m.mtype <= abs_type)
         };
 
@@ -412,6 +440,10 @@ impl IpcTable {
         };
 
         let msg = &q.messages[idx];
+
+        if msg.mtype > max_output_mtype {
+            return Err(Errno::EOVERFLOW);
+        }
 
         // Check size
         if msg.data.len() > max_size as usize {
@@ -476,13 +508,35 @@ impl IpcTable {
                 Ok(None)
             }
             IPC_SET => {
-                let q = self.msg_queues.get_mut(&qid).ok_or(Errno::EINVAL)?;
-                ipc_check_owner(uid, q.uid, q.cuid)?;
-                q.ctime = crate::current_time_secs();
-                Ok(None)
+                // IPC_SET carries a target-width msqid_ds and is applied by
+                // msgctl_set after the wire layer has parsed permitted fields.
+                Err(Errno::EINVAL)
             }
             _ => Err(Errno::EINVAL),
         }
+    }
+
+    /// Apply the fields Linux permits msgctl IPC_SET to replace.
+    pub fn msgctl_set(
+        &mut self,
+        qid: i32,
+        new_uid: u32,
+        new_gid: u32,
+        new_mode: u32,
+        new_qbytes: u32,
+        uid: u32,
+    ) -> Result<(), Errno> {
+        let q = self.msg_queues.get_mut(&qid).ok_or(Errno::EINVAL)?;
+        ipc_check_owner(uid, q.uid, q.cuid)?;
+        if new_qbytes > MSGMNB && uid != 0 {
+            return Err(Errno::EPERM);
+        }
+        q.uid = new_uid;
+        q.gid = new_gid;
+        q.mode = new_mode & IPC_PERM_MASK;
+        q.qbytes = new_qbytes;
+        q.ctime = crate::current_time_secs();
+        Ok(())
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -748,6 +802,32 @@ impl IpcTable {
         Ok(())
     }
 
+    /// Decode and apply the little-endian `unsigned short[]` used by SETALL.
+    ///
+    /// WHY: SETALL requires write permission only. Discovering the array
+    /// length through IPC_STAT would incorrectly add a read-permission
+    /// requirement before the actual write.
+    pub fn semctl_set_all_bytes(
+        &mut self,
+        semid: i32,
+        bytes: &[u8],
+        uid: u32,
+        gid: u32,
+    ) -> Result<(), Errno> {
+        let expected = self.semctl_array_bytes(semid, SETALL, uid, gid)?;
+        if bytes.len() != expected {
+            return Err(Errno::EINVAL);
+        }
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(expected / core::mem::size_of::<u16>())
+            .map_err(|_| Errno::ENOMEM)?;
+        for value in bytes.chunks_exact(core::mem::size_of::<u16>()) {
+            values.push(u16::from_le_bytes([value[0], value[1]]));
+        }
+        self.semctl_set_all(semid, &values, uid, gid)
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // Shared Memory
     // ═══════════════════════════════════════════════════════════════
@@ -909,13 +989,30 @@ impl IpcTable {
                 Ok(None)
             }
             IPC_SET => {
-                let seg = self.shm_segments.get_mut(&shmid).ok_or(Errno::EINVAL)?;
-                ipc_check_owner(uid, seg.uid, seg.cuid)?;
-                seg.ctime = crate::current_time_secs();
-                Ok(None)
+                // IPC_SET carries a target-width shmid_ds and is applied by
+                // shmctl_set after the wire layer has parsed permitted fields.
+                Err(Errno::EINVAL)
             }
             _ => Err(Errno::EINVAL),
         }
+    }
+
+    /// Apply the fields Linux permits shmctl IPC_SET to replace.
+    pub fn shmctl_set(
+        &mut self,
+        shmid: i32,
+        new_uid: u32,
+        new_gid: u32,
+        new_mode: u32,
+        uid: u32,
+    ) -> Result<(), Errno> {
+        let seg = self.shm_segments.get_mut(&shmid).ok_or(Errno::EINVAL)?;
+        ipc_check_owner(uid, seg.uid, seg.cuid)?;
+        seg.uid = new_uid;
+        seg.gid = new_gid;
+        seg.mode = new_mode & IPC_PERM_MASK;
+        seg.ctime = crate::current_time_secs();
+        Ok(())
     }
 }
 
@@ -1020,6 +1117,46 @@ mod tests {
     }
 
     #[test]
+    fn test_wasm64_message_type_round_trips_without_i32_truncation() {
+        let mut t = IpcTable::new();
+        let qid = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap();
+        let mtype = i32::MAX as i64 + 0x1020_3040;
+
+        t.msgsnd(qid, mtype, b"wide", 0, 1, 0, 0).unwrap();
+        let msg = t.msgrcv(qid, 100, mtype, 0, 1, 0, 0).unwrap();
+
+        assert_eq!(msg.mtype, mtype);
+        assert_eq!(msg.data, b"wide");
+    }
+
+    #[test]
+    fn test_wasm32_receive_rejects_wide_type_before_queue_removal() {
+        let mut t = IpcTable::new();
+        let qid = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap();
+        let mtype = i32::MAX as i64 + 1;
+
+        t.msgsnd(qid, mtype, b"wide", 0, 1, 0, 0).unwrap();
+        assert_eq!(
+            t.msgrcv_with_mtype_max(
+                qid,
+                100,
+                0,
+                i32::MAX as i64,
+                0,
+                1,
+                0,
+                0,
+            )
+            .unwrap_err(),
+            Errno::EOVERFLOW,
+        );
+
+        let msg = t.msgrcv(qid, 100, 0, 0, 1, 0, 0).unwrap();
+        assert_eq!(msg.mtype, mtype);
+        assert_eq!(msg.data, b"wide");
+    }
+
+    #[test]
     fn test_msgrcv_negative_type() {
         let mut t = IpcTable::new();
         let qid = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap();
@@ -1099,6 +1236,41 @@ mod tests {
         assert_eq!(info.qnum, 1);
         assert_eq!(info.cbytes, 4);
         assert_eq!(info.lspid, 42);
+    }
+
+    #[test]
+    fn test_msgctl_set_applies_permitted_fields_and_permissions() {
+        let mut t = IpcTable::new();
+        let qid = t
+            .msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 1000, 1000)
+            .unwrap();
+
+        t.msgctl_set(qid, 2000, 2001, 0o1764, 8192, 1000)
+            .unwrap();
+        let info = t.msgctl(qid, IPC_STAT, 1, 0, 0).unwrap().unwrap();
+        assert_eq!(info.uid, 2000);
+        assert_eq!(info.gid, 2001);
+        assert_eq!(info.cuid, 1000);
+        assert_eq!(info.cgid, 1000);
+        assert_eq!(info.mode, 0o764);
+        assert_eq!(info.qbytes, 8192);
+
+        assert_eq!(
+            t.msgctl_set(qid, 3000, 3001, 0o600, 4096, 3000),
+            Err(Errno::EPERM)
+        );
+        assert_eq!(
+            t.msgctl_set(qid, 2000, 2001, 0o600, MSGMNB + 1, 2000),
+            Err(Errno::EPERM)
+        );
+
+        t.msgctl_set(qid, 0, 0, 0o600, MSGMNB + 1, 0)
+            .unwrap();
+        let info = t.msgctl(qid, IPC_STAT, 1, 0, 0).unwrap().unwrap();
+        assert_eq!(info.uid, 0);
+        assert_eq!(info.gid, 0);
+        assert_eq!(info.mode, 0o600);
+        assert_eq!(info.qbytes, MSGMNB + 1);
     }
 
     #[test]
@@ -1392,6 +1564,44 @@ mod tests {
     }
 
     #[test]
+    fn test_semctl_set_all_bytes_accepts_write_only_sets_without_ipc_stat() {
+        let mut t = IpcTable::new();
+        let write_only = t
+            .semget(IPC_PRIVATE, 2, IPC_CREAT | 0o200, 1, 1000, 1000)
+            .unwrap();
+
+        t.semctl_set_all_bytes(write_only, &[10, 0, 20, 0], 1000, 1000)
+            .unwrap();
+        assert!(matches!(
+            t.semctl(write_only, 0, GETALL, 1, 0, 1000, 1000),
+            Err(Errno::EACCES)
+        ));
+        // Root reads the values only to verify the write; the operation above
+        // succeeded using the owning process's write-only permission.
+        let values = match t
+            .semctl(write_only, 0, GETALL, 1, 0, 0, 0)
+            .unwrap()
+        {
+            SemCtlResult::All(values) => values,
+            _ => panic!("expected all semaphore values"),
+        };
+        assert_eq!(values, vec![10, 20]);
+
+        assert_eq!(
+            t.semctl_set_all_bytes(write_only, &[30, 0], 1000, 1000),
+            Err(Errno::EINVAL)
+        );
+
+        let read_only = t
+            .semget(IPC_PRIVATE, 1, IPC_CREAT | 0o400, 1, 1000, 1000)
+            .unwrap();
+        assert_eq!(
+            t.semctl_set_all_bytes(read_only, &[40, 0], 1000, 1000),
+            Err(Errno::EACCES)
+        );
+    }
+
+    #[test]
     fn test_semctl_stat() {
         let mut t = IpcTable::new();
         let id = t.semget(5678, 4, IPC_CREAT | 0o666, 1, 1000, 1000).unwrap();
@@ -1550,6 +1760,32 @@ mod tests {
         assert_eq!(info.segsz, 4096);
         assert_eq!(info.cpid, 42);
         assert_eq!(info.mode, 0o666);
+    }
+
+    #[test]
+    fn test_shmctl_set_applies_permitted_fields_and_permissions() {
+        let mut t = IpcTable::new();
+        let id = t
+            .shmget(IPC_PRIVATE, 4096, IPC_CREAT | 0o666, 1, 1000, 1000)
+            .unwrap();
+
+        t.shmctl_set(id, 2000, 2001, 0o1640, 1000).unwrap();
+        let info = t.shmctl(id, IPC_STAT, 1, 0, 0).unwrap().unwrap();
+        assert_eq!(info.uid, 2000);
+        assert_eq!(info.gid, 2001);
+        assert_eq!(info.cuid, 1000);
+        assert_eq!(info.cgid, 1000);
+        assert_eq!(info.mode, 0o640);
+        assert_eq!(info.segsz, 4096);
+
+        assert_eq!(
+            t.shmctl_set(id, 3000, 3001, 0o600, 3000),
+            Err(Errno::EPERM)
+        );
+        let info = t.shmctl(id, IPC_STAT, 1, 0, 0).unwrap().unwrap();
+        assert_eq!(info.uid, 2000);
+        assert_eq!(info.gid, 2001);
+        assert_eq!(info.mode, 0o640);
     }
 
     #[test]

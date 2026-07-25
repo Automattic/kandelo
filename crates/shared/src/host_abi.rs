@@ -8,10 +8,14 @@
 use core::mem::size_of;
 
 use crate::abi::extended_syscalls as extra_syscalls;
-use crate::{
-    SCHED_AFFINITY_MASK_SIZE, Syscall, WASM_RUSAGE_WIRE_SIZE, WasmStat, WasmStatfs,
-    WasmTimespec,
-};
+use crate::process_layout;
+use crate::{SCHED_AFFINITY_MASK_SIZE, Syscall, WASM_RUSAGE_WIRE_SIZE, WasmTimespec};
+
+/// Private channel argument used to carry the calling process's pointer width.
+///
+/// WHY: one kernel Wasm instance may serve wasm32 and wasm64 processes, so its
+/// own compilation target cannot select a caller-native structure layout.
+pub const PROCESS_POINTER_WIDTH_ARG_INDEX: u8 = 5;
 
 /// Direction of a marshalled pointer argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +41,13 @@ pub enum SyscallArgSize {
     Deref { arg_index: u8 },
     /// Fixed byte length.
     Fixed { size: u32 },
+    /// Fixed native structure size selected from the calling process's data
+    /// model.  Encountering this form also makes the host write the process
+    /// pointer width to [`PROCESS_POINTER_WIDTH_ARG_INDEX`].
+    ProcessLayout {
+        wasm32_size: u32,
+        wasm64_size: u32,
+    },
 }
 
 /// One pointer argument descriptor for host-side marshalling.
@@ -49,10 +60,6 @@ pub struct SyscallArgDesc {
     pub nullable: bool,
     /// Whether a non-C-string pointer must be non-null.
     pub required: bool,
-    /// Extra bytes to copy back when an output `Arg`-sized buffer's copied
-    /// length is based on the syscall return value. `msgrcv` returns only
-    /// `mtext` length, but the scratch buffer also includes the leading mtype.
-    pub copy_retval_add: u32,
 }
 
 /// All pointer argument descriptors for one syscall number.
@@ -106,6 +113,15 @@ macro_rules! fixed {
     };
 }
 
+macro_rules! process_layout {
+    ($wasm32_size:expr, $wasm64_size:expr) => {
+        SyscallArgSize::ProcessLayout {
+            wasm32_size: $wasm32_size,
+            wasm64_size: $wasm64_size,
+        }
+    };
+}
+
 macro_rules! desc {
     ($arg_index:expr, $direction:ident, $size:expr) => {
         SyscallArgDesc {
@@ -114,7 +130,6 @@ macro_rules! desc {
             size: $size,
             nullable: false,
             required: false,
-            copy_retval_add: 0,
         }
     };
     ($arg_index:expr, $direction:ident, $size:expr, nullable) => {
@@ -124,7 +139,6 @@ macro_rules! desc {
             size: $size,
             nullable: true,
             required: false,
-            copy_retval_add: 0,
         }
     };
     ($arg_index:expr, $direction:ident, $size:expr, required) => {
@@ -134,17 +148,6 @@ macro_rules! desc {
             size: $size,
             nullable: false,
             required: true,
-            copy_retval_add: 0,
-        }
-    };
-    ($arg_index:expr, $direction:ident, $size:expr, copy_retval_add $copy_retval_add:expr) => {
-        SyscallArgDesc {
-            arg_index: $arg_index,
-            direction: SyscallArgDirection::$direction,
-            size: $size,
-            nullable: false,
-            required: false,
-            copy_retval_add: $copy_retval_add,
         }
     };
 }
@@ -158,13 +161,9 @@ macro_rules! entry {
     };
 }
 
-const WASM_STAT_SIZE: u32 = size_of::<WasmStat>() as u32;
 const WASM_TIMESPEC_SIZE: u32 = size_of::<WasmTimespec>() as u32;
-const WASM_STATFS_SIZE: u32 = size_of::<WasmStatfs>() as u32;
 
-const ITIMERVAL_SIZE: u32 = 16;
 const RLIMIT_SIZE: u32 = 16;
-const STACK_T_SIZE: u32 = 12;
 
 /// Host-side syscall pointer argument descriptors.
 ///
@@ -176,21 +175,36 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     entry!(Syscall::Write as u32, [desc!(1, In, arg!(2))]),
     entry!(
         Syscall::Fstat as u32,
-        [desc!(1, Out, fixed!(WASM_STAT_SIZE))]
+        [desc!(
+            1,
+            Out,
+            fixed!(process_layout::stat::SIZE),
+            required
+        )]
     ),
     entry!(Syscall::Pipe as u32, [desc!(0, Out, fixed!(8))]),
     entry!(
         Syscall::Stat as u32,
         [
             desc!(0, In, cstring!()),
-            desc!(1, Out, fixed!(WASM_STAT_SIZE)),
+            desc!(
+                1,
+                Out,
+                fixed!(process_layout::stat::SIZE),
+                required
+            ),
         ]
     ),
     entry!(
         Syscall::Lstat as u32,
         [
             desc!(0, In, cstring!()),
-            desc!(1, Out, fixed!(WASM_STAT_SIZE)),
+            desc!(
+                1,
+                Out,
+                fixed!(process_layout::stat::SIZE),
+                required
+            ),
         ]
     ),
     entry!(Syscall::Mkdir as u32, [desc!(0, In, cstring!())]),
@@ -277,9 +291,14 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     entry!(Syscall::Pread as u32, [desc!(1, Out, arg!(2))]),
     entry!(Syscall::Pwrite as u32, [desc!(1, In, arg!(2))]),
     entry!(Syscall::Openat as u32, [desc!(1, In, cstring!())]),
-    entry!(Syscall::Tcgetattr as u32, [desc!(1, Out, fixed!(256))]),
-    entry!(Syscall::Tcsetattr as u32, [desc!(2, In, fixed!(256))]),
-    entry!(Syscall::Ioctl as u32, [desc!(2, InOut, fixed!(256))]),
+    entry!(
+        Syscall::Tcgetattr as u32,
+        [desc!(1, Out, fixed!(crate::ioctl_contract::TERMIOS_SIZE), required)]
+    ),
+    entry!(
+        Syscall::Tcsetattr as u32,
+        [desc!(2, In, fixed!(crate::ioctl_contract::TERMIOS_SIZE), required)]
+    ),
     entry!(Syscall::Uname as u32, [desc!(0, Out, fixed!(390))]),
     entry!(Syscall::Pipe2 as u32, [desc!(0, Out, fixed!(8))]),
     entry!(
@@ -295,7 +314,12 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         Syscall::Fstatat as u32,
         [
             desc!(1, In, cstring!()),
-            desc!(2, Out, fixed!(WASM_STAT_SIZE)),
+            desc!(
+                2,
+                Out,
+                fixed!(process_layout::stat::SIZE),
+                required
+            ),
         ]
     ),
     entry!(Syscall::Unlinkat as u32, [desc!(1, In, cstring!())]),
@@ -369,12 +393,28 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         Syscall::Statfs as u32,
         [
             desc!(0, In, cstring!()),
-            desc!(2, Out, fixed!(WASM_STATFS_SIZE)),
+            desc!(
+                2,
+                Out,
+                process_layout!(
+                    process_layout::statfs::WASM32_SIZE,
+                    process_layout::statfs::WASM64_SIZE
+                ),
+                required
+            ),
         ]
     ),
     entry!(
         Syscall::Fstatfs as u32,
-        [desc!(2, Out, fixed!(WASM_STATFS_SIZE))]
+        [desc!(
+            2,
+            Out,
+            process_layout!(
+                process_layout::statfs::WASM32_SIZE,
+                process_layout::statfs::WASM64_SIZE
+            ),
+            required
+        )]
     ),
     entry!(
         Syscall::Getresuid as u32,
@@ -392,8 +432,10 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
             desc!(2, Out, fixed!(4)),
         ]
     ),
-    entry!(Syscall::Sendmsg as u32, [desc!(1, In, arg!(2))]),
-    entry!(Syscall::Recvmsg as u32, [desc!(1, InOut, arg!(2))]),
+    entry!(
+        Syscall::Setgroups as u32,
+        [desc!(1, In, arg!(0, mul 4), required)]
+    ),
     entry!(
         Syscall::Wait4 as u32,
         [
@@ -403,11 +445,25 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     ),
     entry!(
         Syscall::Getaddrinfo as u32,
-        [desc!(0, In, cstring!()), desc!(1, Out, fixed!(256)),]
+        [
+            desc!(0, In, cstring!()),
+            // WHY: musl's lookup_name.c supplies exactly one four-byte IPv4
+            // result. A larger copy-out contract overwrites caller-owned bytes
+            // even though the kernel produces only this meaningful address.
+            desc!(1, Out, fixed!(4)),
+        ]
     ),
     entry!(
         extra_syscalls::SYS_RT_SIGQUEUEINFO,
-        [desc!(2, In, fixed!(128))]
+        [desc!(
+            2,
+            In,
+            process_layout!(
+                process_layout::rt_sigqueueinfo::WASM32_SIZE,
+                process_layout::rt_sigqueueinfo::WASM64_SIZE
+            ),
+            required
+        )]
     ),
     entry!(
         extra_syscalls::SYS_RT_SIGPENDING,
@@ -424,8 +480,22 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     entry!(
         extra_syscalls::SYS_SIGALTSTACK,
         [
-            desc!(0, In, fixed!(STACK_T_SIZE)),
-            desc!(1, Out, fixed!(STACK_T_SIZE)),
+            desc!(
+                0,
+                In,
+                process_layout!(
+                    process_layout::sigaltstack::WASM32_SIZE,
+                    process_layout::sigaltstack::WASM64_SIZE
+                )
+            ),
+            desc!(
+                1,
+                Out,
+                process_layout!(
+                    process_layout::sigaltstack::WASM32_SIZE,
+                    process_layout::sigaltstack::WASM64_SIZE
+                )
+            ),
         ]
     ),
     entry!(
@@ -435,18 +505,64 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     entry!(extra_syscalls::SYS_PRCTL, [desc!(1, InOut, fixed!(16))]),
     entry!(
         extra_syscalls::SYS_GETITIMER,
-        [desc!(1, Out, fixed!(ITIMERVAL_SIZE))]
+        [desc!(
+            1,
+            Out,
+            process_layout!(
+                process_layout::itimerval::WASM32_SIZE,
+                process_layout::itimerval::WASM64_SIZE
+            ),
+            required
+        )]
     ),
     entry!(
         extra_syscalls::SYS_SETITIMER,
         [
-            desc!(1, In, fixed!(ITIMERVAL_SIZE)),
-            desc!(2, Out, fixed!(ITIMERVAL_SIZE)),
+            desc!(
+                1,
+                In,
+                process_layout!(
+                    process_layout::itimerval::WASM32_SIZE,
+                    process_layout::itimerval::WASM64_SIZE
+                ),
+                required
+            ),
+            desc!(
+                2,
+                Out,
+                process_layout!(
+                    process_layout::itimerval::WASM32_SIZE,
+                    process_layout::itimerval::WASM64_SIZE
+                )
+            ),
         ]
     ),
     entry!(
         extra_syscalls::SYS_SCHED_GETPARAM,
-        [desc!(1, Out, fixed!(36))]
+        [desc!(
+            1,
+            Out,
+            fixed!(process_layout::sched_param::SIZE),
+            required
+        )]
+    ),
+    entry!(
+        extra_syscalls::SYS_SCHED_SETPARAM,
+        [desc!(
+            1,
+            In,
+            fixed!(process_layout::sched_param::SIZE),
+            required
+        )]
+    ),
+    entry!(
+        extra_syscalls::SYS_SCHED_SETSCHEDULER,
+        [desc!(
+            2,
+            In,
+            fixed!(process_layout::sched_param::SIZE),
+            required
+        )]
     ),
     entry!(
         extra_syscalls::SYS_SCHED_RR_GET_INTERVAL,
@@ -457,13 +573,44 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(2, Out, fixed!(SCHED_AFFINITY_MASK_SIZE), required)]
     ),
     entry!(
+        extra_syscalls::SYS_TIMERFD_SETTIME,
+        [
+            desc!(2, In, fixed!(32), required),
+            desc!(3, Out, fixed!(32), nullable),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_TIMERFD_GETTIME,
+        [desc!(1, Out, fixed!(32), required)]
+    ),
+    entry!(
+        extra_syscalls::SYS_SIGNALFD4,
+        [desc!(1, In, fixed!(8), required)]
+    ),
+    entry!(
         extra_syscalls::SYS_PRLIMIT64,
         [desc!(2, In, fixed!(16)), desc!(3, Out, fixed!(16)),]
     ),
     entry!(extra_syscalls::SYS_PPOLL, [desc!(0, InOut, arg!(1, mul 8))]),
     entry!(
+        extra_syscalls::SYS_MEMFD_CREATE,
+        [desc!(0, In, cstring!(), required)]
+    ),
+    entry!(
         extra_syscalls::SYS_STATX,
         [desc!(1, In, cstring!()), desc!(4, Out, fixed!(256)),]
+    ),
+    entry!(
+        extra_syscalls::SYS_SYSINFO,
+        [desc!(
+            0,
+            Out,
+            process_layout!(
+                process_layout::sysinfo::WASM32_SIZE,
+                process_layout::sysinfo::WASM64_SIZE
+            ),
+            required
+        )]
     ),
     entry!(extra_syscalls::SYS_MKNOD, [desc!(0, In, cstring!())]),
     entry!(extra_syscalls::SYS_MKNODAT, [desc!(1, In, cstring!())]),
@@ -474,7 +621,36 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
             desc!(4, Out, fixed!(WASM_RUSAGE_WIRE_SIZE), nullable),
         ]
     ),
+    entry!(
+        extra_syscalls::SYS_COPY_FILE_RANGE,
+        [
+            desc!(1, InOut, fixed!(8), nullable),
+            desc!(3, InOut, fixed!(8), nullable),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_SPLICE,
+        [
+            desc!(1, InOut, fixed!(8), nullable),
+            desc!(3, InOut, fixed!(8), nullable),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_SENDFILE,
+        [desc!(2, InOut, fixed!(8), nullable)]
+    ),
     entry!(extra_syscalls::SYS_LCHOWN, [desc!(0, In, cstring!())]),
+    entry!(
+        extra_syscalls::SYS_RENAMEAT2,
+        [desc!(1, In, cstring!()), desc!(3, In, cstring!()),]
+    ),
+    entry!(
+        extra_syscalls::SYS_GETCPU,
+        [
+            desc!(0, Out, fixed!(4), nullable),
+            desc!(1, Out, fixed!(4), nullable),
+        ]
+    ),
     entry!(
         extra_syscalls::SYS_TIMER_CREATE,
         [desc!(1, In, fixed!(16)), desc!(2, Out, fixed!(4)),]
@@ -489,7 +665,17 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     ),
     entry!(
         extra_syscalls::SYS_MQ_OPEN,
-        [desc!(0, In, cstring!()), desc!(3, In, fixed!(32)),]
+        [
+            desc!(0, In, cstring!()),
+            desc!(
+                3,
+                In,
+                process_layout!(
+                    process_layout::mq_attr::WASM32_SIZE,
+                    process_layout::mq_attr::WASM64_SIZE
+                )
+            ),
+        ]
     ),
     entry!(extra_syscalls::SYS_MQ_UNLINK, [desc!(0, In, cstring!())]),
     entry!(
@@ -507,19 +693,43 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
             desc!(4, In, fixed!(WASM_TIMESPEC_SIZE)),
         ]
     ),
-    entry!(extra_syscalls::SYS_MQ_NOTIFY, [desc!(1, In, fixed!(16))]),
+    entry!(
+        extra_syscalls::SYS_MQ_NOTIFY,
+        [desc!(
+            1,
+            In,
+            process_layout!(
+                process_layout::sigevent::WASM32_SIZE,
+                process_layout::sigevent::WASM64_SIZE
+            )
+        )]
+    ),
     entry!(
         extra_syscalls::SYS_MQ_GETSETATTR,
-        [desc!(1, In, fixed!(32)), desc!(2, Out, fixed!(32)),]
+        [
+            desc!(
+                1,
+                In,
+                process_layout!(
+                    process_layout::mq_attr::WASM32_SIZE,
+                    process_layout::mq_attr::WASM64_SIZE
+                )
+            ),
+            desc!(
+                2,
+                Out,
+                process_layout!(
+                    process_layout::mq_attr::WASM32_SIZE,
+                    process_layout::mq_attr::WASM64_SIZE
+                )
+            ),
+        ]
     ),
-    entry!(
-        extra_syscalls::SYS_MSGRCV,
-        [desc!(1, Out, arg!(2, add 4), copy_retval_add 4)]
-    ),
-    entry!(extra_syscalls::SYS_MSGSND, [desc!(1, In, arg!(2, add 4))]),
-    entry!(extra_syscalls::SYS_MSGCTL, [desc!(2, InOut, fixed!(96))]),
     entry!(extra_syscalls::SYS_SEMOP, [desc!(1, In, arg!(2, mul 6))]),
-    entry!(extra_syscalls::SYS_SHMCTL, [desc!(2, InOut, fixed!(88))]),
+    entry!(
+        extra_syscalls::SYS_SIGNALFD,
+        [desc!(1, In, fixed!(8), required)]
+    ),
     entry!(extra_syscalls::SYS_FACCESSAT2, [desc!(1, In, cstring!())]),
     entry!(extra_syscalls::SYS_FCHMODAT2, [desc!(1, In, cstring!())]),
     entry!(
@@ -558,16 +768,13 @@ mod tests {
             }
         );
 
-        let msgrcv = find(extra_syscalls::SYS_MSGRCV).args[0];
-        assert_eq!(
-            msgrcv.size,
-            SyscallArgSize::Arg {
-                arg_index: 2,
-                multiplier: 1,
-                add: 4,
-            }
+        assert!(
+            SYSCALL_ARG_DESCRIPTORS
+                .iter()
+                .all(|entry| entry.syscall_number != extra_syscalls::SYS_MSGRCV
+                    && entry.syscall_number != extra_syscalls::SYS_MSGSND),
+            "native-long SysV messages must use the width-aware host handler"
         );
-        assert_eq!(msgrcv.copy_retval_add, 4);
 
         let lchown = find(extra_syscalls::SYS_LCHOWN).args[0];
         assert_eq!(lchown.arg_index, 0);
@@ -625,6 +832,15 @@ mod tests {
         );
         assert!(waitid[1].nullable);
 
+        let getaddrinfo = find(Syscall::Getaddrinfo as u32).args;
+        assert_eq!(getaddrinfo[1].arg_index, 1);
+        assert_eq!(getaddrinfo[1].direction, SyscallArgDirection::Out);
+        assert_eq!(
+            getaddrinfo[1].size,
+            SyscallArgSize::Fixed { size: 4 },
+            "musl gives SYS_getaddrinfo exactly one four-byte IPv4 result"
+        );
+
         let sched_getaffinity =
             find(extra_syscalls::SYS_SCHED_GETAFFINITY).args[0];
         assert_eq!(sched_getaffinity.arg_index, 2);
@@ -636,6 +852,107 @@ mod tests {
             }
         );
         assert!(sched_getaffinity.required);
+
+        let timerfd_settime =
+            find(extra_syscalls::SYS_TIMERFD_SETTIME).args;
+        assert_eq!(timerfd_settime[0].arg_index, 2);
+        assert_eq!(timerfd_settime[0].direction, SyscallArgDirection::In);
+        assert_eq!(
+            timerfd_settime[0].size,
+            SyscallArgSize::Fixed { size: 32 }
+        );
+        assert!(timerfd_settime[0].required);
+        assert_eq!(timerfd_settime[1].arg_index, 3);
+        assert_eq!(timerfd_settime[1].direction, SyscallArgDirection::Out);
+        assert_eq!(
+            timerfd_settime[1].size,
+            SyscallArgSize::Fixed { size: 32 }
+        );
+        assert!(timerfd_settime[1].nullable);
+
+        let timerfd_gettime =
+            find(extra_syscalls::SYS_TIMERFD_GETTIME).args[0];
+        assert_eq!(timerfd_gettime.arg_index, 1);
+        assert_eq!(timerfd_gettime.direction, SyscallArgDirection::Out);
+        assert_eq!(
+            timerfd_gettime.size,
+            SyscallArgSize::Fixed { size: 32 }
+        );
+        assert!(timerfd_gettime.required);
+
+        for syscall in [
+            extra_syscalls::SYS_SIGNALFD4,
+            extra_syscalls::SYS_SIGNALFD,
+        ] {
+            let mask = find(syscall).args[0];
+            assert_eq!(mask.arg_index, 1);
+            assert_eq!(mask.direction, SyscallArgDirection::In);
+            assert_eq!(mask.size, SyscallArgSize::Fixed { size: 8 });
+            assert!(mask.required);
+        }
+
+        let memfd_name = find(extra_syscalls::SYS_MEMFD_CREATE).args[0];
+        assert_eq!(memfd_name.arg_index, 0);
+        assert_eq!(memfd_name.direction, SyscallArgDirection::In);
+        assert_eq!(memfd_name.size, SyscallArgSize::CString);
+        assert!(memfd_name.required);
+
+        for syscall in [
+            extra_syscalls::SYS_COPY_FILE_RANGE,
+            extra_syscalls::SYS_SPLICE,
+        ] {
+            let offsets = find(syscall).args;
+            assert_eq!(offsets.len(), 2);
+            for (offset, arg_index) in offsets.iter().zip([1, 3]) {
+                assert_eq!(offset.arg_index, arg_index);
+                assert_eq!(offset.direction, SyscallArgDirection::InOut);
+                assert_eq!(offset.size, SyscallArgSize::Fixed { size: 8 });
+                assert!(offset.nullable);
+            }
+        }
+
+        let sendfile_offset = find(extra_syscalls::SYS_SENDFILE).args[0];
+        assert_eq!(sendfile_offset.arg_index, 2);
+        assert_eq!(
+            sendfile_offset.direction,
+            SyscallArgDirection::InOut
+        );
+        assert_eq!(
+            sendfile_offset.size,
+            SyscallArgSize::Fixed { size: 8 }
+        );
+        assert!(sendfile_offset.nullable);
+
+        let renameat2 = find(extra_syscalls::SYS_RENAMEAT2).args;
+        assert_eq!(renameat2.len(), 2);
+        for (path, arg_index) in renameat2.iter().zip([1, 3]) {
+            assert_eq!(path.arg_index, arg_index);
+            assert_eq!(path.direction, SyscallArgDirection::In);
+            assert_eq!(path.size, SyscallArgSize::CString);
+            assert!(!path.nullable);
+        }
+
+        let getcpu = find(extra_syscalls::SYS_GETCPU).args;
+        assert_eq!(getcpu.len(), 2);
+        for (output, arg_index) in getcpu.iter().zip([0, 1]) {
+            assert_eq!(output.arg_index, arg_index);
+            assert_eq!(output.direction, SyscallArgDirection::Out);
+            assert_eq!(output.size, SyscallArgSize::Fixed { size: 4 });
+            assert!(output.nullable);
+        }
+
+        let setgroups = find(Syscall::Setgroups as u32).args[0];
+        assert_eq!(setgroups.arg_index, 1);
+        assert_eq!(setgroups.direction, SyscallArgDirection::In);
+        assert_eq!(
+            setgroups.size,
+            SyscallArgSize::Arg {
+                arg_index: 0,
+                multiplier: 4,
+                add: 0,
+            }
+        );
+        assert!(setgroups.required);
 
         let semop = find(extra_syscalls::SYS_SEMOP).args[0].size;
         assert_eq!(
@@ -649,9 +966,211 @@ mod tests {
     }
 
     #[test]
+    fn process_native_layouts_carry_both_widths_and_width_slot() {
+        assert_eq!(PROCESS_POINTER_WIDTH_ARG_INDEX, 5);
+
+        fn assert_layout(
+            syscall: u32,
+            arg_index: u8,
+            direction: SyscallArgDirection,
+            wasm32_size: u32,
+            wasm64_size: u32,
+        ) {
+            let arg = find(syscall)
+                .args
+                .iter()
+                .find(|arg| arg.arg_index == arg_index)
+                .expect("missing process-layout argument");
+            assert_eq!(arg.direction, direction);
+            assert_eq!(
+                arg.size,
+                SyscallArgSize::ProcessLayout {
+                    wasm32_size,
+                    wasm64_size,
+                }
+            );
+        }
+
+        assert_layout(
+            Syscall::Statfs as u32,
+            2,
+            SyscallArgDirection::Out,
+            process_layout::statfs::WASM32_SIZE,
+            process_layout::statfs::WASM64_SIZE,
+        );
+        assert_layout(
+            Syscall::Fstatfs as u32,
+            2,
+            SyscallArgDirection::Out,
+            process_layout::statfs::WASM32_SIZE,
+            process_layout::statfs::WASM64_SIZE,
+        );
+        for (arg_index, direction) in [
+            (0, SyscallArgDirection::In),
+            (1, SyscallArgDirection::Out),
+        ] {
+            assert_layout(
+                extra_syscalls::SYS_SIGALTSTACK,
+                arg_index,
+                direction,
+                process_layout::sigaltstack::WASM32_SIZE,
+                process_layout::sigaltstack::WASM64_SIZE,
+            );
+        }
+        assert_layout(
+            extra_syscalls::SYS_GETITIMER,
+            1,
+            SyscallArgDirection::Out,
+            process_layout::itimerval::WASM32_SIZE,
+            process_layout::itimerval::WASM64_SIZE,
+        );
+        for (arg_index, direction) in [
+            (1, SyscallArgDirection::In),
+            (2, SyscallArgDirection::Out),
+        ] {
+            assert_layout(
+                extra_syscalls::SYS_SETITIMER,
+                arg_index,
+                direction,
+                process_layout::itimerval::WASM32_SIZE,
+                process_layout::itimerval::WASM64_SIZE,
+            );
+        }
+        for (syscall, arg_index) in [
+            (Syscall::Statfs as u32, 2),
+            (Syscall::Fstatfs as u32, 2),
+            (extra_syscalls::SYS_GETITIMER, 1),
+            (extra_syscalls::SYS_SETITIMER, 1),
+        ] {
+            assert!(
+                find(syscall)
+                    .args
+                    .iter()
+                    .find(|arg| arg.arg_index == arg_index)
+                    .expect("missing required process-layout argument")
+                    .required
+            );
+        }
+        assert_layout(
+            extra_syscalls::SYS_SYSINFO,
+            0,
+            SyscallArgDirection::Out,
+            process_layout::sysinfo::WASM32_SIZE,
+            process_layout::sysinfo::WASM64_SIZE,
+        );
+        assert_layout(
+            extra_syscalls::SYS_MQ_OPEN,
+            3,
+            SyscallArgDirection::In,
+            process_layout::mq_attr::WASM32_SIZE,
+            process_layout::mq_attr::WASM64_SIZE,
+        );
+        assert_layout(
+            extra_syscalls::SYS_MQ_NOTIFY,
+            1,
+            SyscallArgDirection::In,
+            process_layout::sigevent::WASM32_SIZE,
+            process_layout::sigevent::WASM64_SIZE,
+        );
+        for (arg_index, direction) in [
+            (1, SyscallArgDirection::In),
+            (2, SyscallArgDirection::Out),
+        ] {
+            assert_layout(
+                extra_syscalls::SYS_MQ_GETSETATTR,
+                arg_index,
+                direction,
+                process_layout::mq_attr::WASM32_SIZE,
+                process_layout::mq_attr::WASM64_SIZE,
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_native_records_use_complete_required_buffers() {
+        for (syscall, arg_index) in [
+            (Syscall::Fstat as u32, 1),
+            (Syscall::Stat as u32, 1),
+            (Syscall::Lstat as u32, 1),
+            (Syscall::Fstatat as u32, 2),
+        ] {
+            let stat = find(syscall)
+                .args
+                .iter()
+                .find(|arg| arg.arg_index == arg_index)
+                .expect("missing stat output");
+            assert_eq!(stat.direction, SyscallArgDirection::Out);
+            assert_eq!(
+                stat.size,
+                SyscallArgSize::Fixed {
+                    size: process_layout::stat::SIZE,
+                }
+            );
+            assert!(stat.required);
+        }
+
+        let queued = find(extra_syscalls::SYS_RT_SIGQUEUEINFO).args[0];
+        assert_eq!(queued.arg_index, 2);
+        assert_eq!(queued.direction, SyscallArgDirection::In);
+        assert_eq!(
+            queued.size,
+            SyscallArgSize::ProcessLayout {
+                wasm32_size: process_layout::rt_sigqueueinfo::WASM32_SIZE,
+                wasm64_size: process_layout::rt_sigqueueinfo::WASM64_SIZE,
+            }
+        );
+        assert!(queued.required);
+
+        for (syscall, arg_index, direction) in [
+            (
+                extra_syscalls::SYS_SCHED_GETPARAM,
+                1,
+                SyscallArgDirection::Out,
+            ),
+            (
+                extra_syscalls::SYS_SCHED_SETPARAM,
+                1,
+                SyscallArgDirection::In,
+            ),
+            (
+                extra_syscalls::SYS_SCHED_SETSCHEDULER,
+                2,
+                SyscallArgDirection::In,
+            ),
+        ] {
+            let param = find(syscall).args[0];
+            assert_eq!(param.arg_index, arg_index);
+            assert_eq!(param.direction, direction);
+            assert_eq!(
+                param.size,
+                SyscallArgSize::Fixed {
+                    size: process_layout::sched_param::SIZE,
+                }
+            );
+            assert!(param.required);
+        }
+    }
+
+    #[test]
     fn nested_pointer_syscalls_stay_out_of_simple_descriptors() {
-        assert!(maybe_find(Syscall::Writev as u32).is_none());
-        assert!(maybe_find(Syscall::Readv as u32).is_none());
+        for syscall in [
+            Syscall::Writev as u32,
+            Syscall::Readv as u32,
+            extra_syscalls::SYS_PREADV,
+            extra_syscalls::SYS_PWRITEV,
+            extra_syscalls::SYS_PREADV2,
+            extra_syscalls::SYS_PWRITEV2,
+            Syscall::Sendmsg as u32,
+            Syscall::Recvmsg as u32,
+            Syscall::Getgroups as u32,
+            extra_syscalls::SYS_MSGRCV,
+            extra_syscalls::SYS_MSGSND,
+        ] {
+            assert!(
+                maybe_find(syscall).is_none(),
+                "nested iovec syscall {syscall} needs its reviewed host handler"
+            );
+        }
     }
 
     fn find(syscall_number: u32) -> &'static SyscallArgDescriptor {

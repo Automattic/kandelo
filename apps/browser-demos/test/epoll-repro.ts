@@ -4,6 +4,10 @@
  */
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "../../../host/src/kernel-worker.ts";
 import { resolveBinary } from "../../../host/src/binary-resolver.ts";
+import {
+  STRUCT_SIZE_WASM_EPOLL_EVENT,
+  WASM_EPOLL_EVENT_DATA_OFFSET,
+} from "../../../host/src/generated/abi.ts";
 import type { KernelScratchRegion } from "../../../host/src/kernel-scratch.ts";
 import { VirtualPlatformIO, MemoryFileSystem, DeviceFileSystem } from "../../../host/src/vfs/index.ts";
 import { readFileSync } from "fs";
@@ -118,14 +122,19 @@ async function main() {
 
     // 3. epoll_ctl(epfd, EPOLL_CTL_ADD=1, pipeR, event)
     kernelView.setUint32(CH_DATA, 1, true); // EPOLLIN
-    kernelView.setBigUint64(CH_DATA + 4, BigInt(pipeR), true);
+    kernelView.setUint32(CH_DATA + 4, 0, true); // native alignment padding
+    kernelView.setBigUint64(
+      CH_DATA + WASM_EPOLL_EVENT_DATA_OFFSET,
+      BigInt(pipeR),
+      true,
+    );
     kernelView.setUint32(CH_SYSCALL, 240, true);
     kernelView.setBigInt64(CH_ARGS, BigInt(epfd), true);
     kernelView.setBigInt64(CH_ARGS + CH_ARG_SIZE, 1n, true);
     kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(pipeR), true);
     kernelView.setBigInt64(
       CH_ARGS + 3 * CH_ARG_SIZE,
-      BigInt(scratch.address(CH_DATA, 12)),
+      BigInt(scratch.address(CH_DATA, STRUCT_SIZE_WASM_EPOLL_EVENT)),
       true,
     );
     for (let i = 4; i < 6; i++) {
@@ -141,7 +150,7 @@ async function main() {
       kernelView.setBigInt64(CH_ARGS, BigInt(epfd), true);
       kernelView.setBigInt64(
         CH_ARGS + CH_ARG_SIZE,
-        BigInt(scratch.address(CH_DATA, 12)),
+        BigInt(scratch.address(CH_DATA, STRUCT_SIZE_WASM_EPOLL_EVENT)),
         true,
       );
       kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, 1n, true);

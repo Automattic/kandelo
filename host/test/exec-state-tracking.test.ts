@@ -177,6 +177,14 @@ describe("exec host-state transition", () => {
       const mainChannel = createChannel(7, memory, 0);
       const threadChannel = createChannel(7, memory, 0x10000);
       const completeSleep = vi.fn();
+      const mainDetachedOutput = [{
+        ptr: 0x800,
+        bytes: Uint8Array.of(1),
+      }];
+      const threadDetachedOutput = [{
+        ptr: 0x900,
+        bytes: Uint8Array.of(2),
+      }];
       const worker = createWorker({
         processes: new Map([[7, {
           channels: [mainChannel, threadChannel],
@@ -186,24 +194,46 @@ describe("exec host-state transition", () => {
       });
 
       expect(worker.handleSleepDelay(
-        mainChannel, ABI_SYSCALLS.Usleep, [50_000], 0, 0,
+        mainChannel,
+        ABI_SYSCALLS.Usleep,
+        [50_000],
+        0,
+        0,
+        undefined,
+        mainDetachedOutput,
       )).toBe(true);
       expect(worker.handleSleepDelay(
-        threadChannel, ABI_SYSCALLS.Usleep, [10_000], 0, 0,
+        threadChannel,
+        ABI_SYSCALLS.Usleep,
+        [10_000],
+        0,
+        0,
+        undefined,
+        threadDetachedOutput,
       )).toBe(true);
       expect(worker.pendingSleeps.size).toBe(2);
 
       await vi.advanceTimersByTimeAsync(10);
       expect(completeSleep).toHaveBeenCalledTimes(1);
       expect(completeSleep).toHaveBeenLastCalledWith(
-        threadChannel, ABI_SYSCALLS.Usleep, [10_000], 0, 0,
+        threadChannel,
+        ABI_SYSCALLS.Usleep,
+        [10_000],
+        0,
+        0,
+        threadDetachedOutput,
       );
       expect(worker.pendingSleeps.has(mainChannel)).toBe(true);
 
       await vi.advanceTimersByTimeAsync(40);
       expect(completeSleep).toHaveBeenCalledTimes(2);
       expect(completeSleep).toHaveBeenLastCalledWith(
-        mainChannel, ABI_SYSCALLS.Usleep, [50_000], 0, 0,
+        mainChannel,
+        ABI_SYSCALLS.Usleep,
+        [50_000],
+        0,
+        0,
+        mainDetachedOutput,
       );
       expect(worker.pendingSleeps.size).toBe(0);
     } finally {

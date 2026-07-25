@@ -1285,6 +1285,34 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     expect(backing.version).toBeGreaterThan(version);
   });
 
+  it("does not alias an unsafe exact pwrite offset in shared-mapping state", () => {
+    const h = createFileHarness();
+    const pid = h.pids[0];
+    const addr = 0x1000;
+    expect(h.map(pid, 4, addr)).toBe(true);
+    const exactOffset = BigInt(Number.MAX_SAFE_INTEGER) + 2n;
+    const reload = vi.spyOn(
+      h.kw as any,
+      "reloadSharedMmapBackingForFd",
+    ).mockImplementation(() => {});
+    const update = vi.spyOn(
+      h.kw as any,
+      "updateSharedMmapBackingFromProcessBuffer",
+    );
+
+    (h.kw as any).handleSharedMappingsAfterFileSyscall(
+      h.channels.get(pid),
+      ABI_SYSCALLS.Pwrite,
+      [4, 0x7000, 1, Number(exactOffset)],
+      1,
+      0,
+      exactOffset,
+    );
+
+    expect(update).not.toHaveBeenCalled();
+    expect(reload).toHaveBeenCalledWith(h.channels.get(pid), 4);
+  });
+
   it("rejects shared memfd mappings deliberately without affecting private mmap", () => {
     const h = createFileHarness();
     (h.kw as any).getFdStatForSharedMapping.mockReturnValue({

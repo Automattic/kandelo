@@ -5,7 +5,9 @@
  * The TypeScript suite wrapper picks up the printed metrics. Mirrors
  * `fork-bench.c` (which times fork()) and `exec-bench.c` (which times
  * execve()) — these metrics exist to catch the spawn fast-path's contribution
- * that those don't measure.
+ * that those don't measure. The ordinary environment is fixed rather than
+ * inherited from the benchmark runner, and a sample is valid only when the
+ * waited child exits normally with status zero.
  *
  * Loaded via execPrograms-mapped /bin/hello (the same binary
  * exec-bench targets). The harness sets execPrograms[/bin/hello] to
@@ -20,7 +22,7 @@
 #include <sys/time.h>
 #include <sys/wait.h>
 
-extern char **environ;
+#include "../../libc/musl-overlay/src/process/wasm32posix/spawn_contract.h"
 
 static long long now_us(void) {
     struct timeval tv;
@@ -40,8 +42,29 @@ static int spawn_and_wait(char *const envp[], long long *elapsed_us) {
     }
 
     int status;
-    if (waitpid(pid, &status, 0) < 0) {
+    pid_t waited = waitpid(pid, &status, 0);
+    if (waited < 0) {
         perror("waitpid");
+        return -1;
+    }
+    if (waited != pid) {
+        fprintf(stderr, "waitpid returned unexpected child %d\n", (int)waited);
+        return -1;
+    }
+    if (!WIFEXITED(status)) {
+        if (WIFSIGNALED(status)) {
+            fprintf(
+                stderr,
+                "spawn child terminated by signal %d\n",
+                WTERMSIG(status)
+            );
+        } else {
+            fprintf(stderr, "spawn child did not exit normally: status=%d\n", status);
+        }
+        return -1;
+    }
+    if (WEXITSTATUS(status) != 0) {
+        fprintf(stderr, "spawn child exited with status %d\n", WEXITSTATUS(status));
         return -1;
     }
 
@@ -53,6 +76,22 @@ enum {
     LARGE_ENV_COUNT = 84,
     LARGE_ENV_ENTRY_BYTES = 1000,
     LARGE_REPEAT_COUNT = 5,
+    LARGE_ARG_COUNT = 1,
+    LARGE_ARG_STRING_BYTES = sizeof("hello"),
+    LARGE_WIRE_BYTES =
+        WASM_POSIX_SPAWN_HEADER_BYTES
+        + WASM_POSIX_SPAWN_STRING_OFFSET_BYTES
+            * (LARGE_ARG_COUNT + LARGE_ENV_COUNT)
+        + LARGE_ARG_STRING_BYTES
+        + LARGE_ENV_COUNT * LARGE_ENV_ENTRY_BYTES,
+};
+
+static char ordinary_lang[] = "LANG=C";
+static char ordinary_path[] = "PATH=/bin";
+static char *const ordinary_envp[] = {
+    ordinary_lang,
+    ordinary_path,
+    NULL,
 };
 
 static char **make_large_environment(void) {
@@ -95,7 +134,7 @@ static void free_large_environment(char **envp) {
 
 int main(void) {
     long long ordinary_us;
-    if (spawn_and_wait(environ, &ordinary_us) != 0) return 1;
+    if (spawn_and_wait(ordinary_envp, &ordinary_us) != 0) return 1;
     printf("spawn_ms=%f\n", ordinary_us / 1000.0);
 
     char **large_envp = make_large_environment();
@@ -103,6 +142,7 @@ int main(void) {
         perror("large spawn environment");
         return 2;
     }
+    printf("spawn_large_wire_bytes=%u\n", (unsigned)LARGE_WIRE_BYTES);
 
     long long first_large_us;
     if (spawn_and_wait(large_envp, &first_large_us) != 0) {

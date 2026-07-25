@@ -1195,13 +1195,24 @@ describe("Rust-owned process wait lifecycle", () => {
       .toBe(SIGUSR1);
   });
 
-  it("materializes stopped descriptor output before wake scratch is reused", () => {
+  it("materializes detached descriptor output before wake scratch is reused", () => {
     const kernelMemory = createSharedMemory();
     const processMemory = createSharedMemory();
     const channel = createChannel(42, processMemory);
     const outputPtr = 2048;
     markPending(channel);
     new Uint8Array(kernelMemory.buffer, 128 + CH_DATA, 4).set([9, 8, 7, 6]);
+    // WHY: completeChannel consumes bytes detached while the scratch lease is
+    // still active. It must never reconstruct output later from shared scratch,
+    // which a lifecycle wake may synchronously reuse.
+    const detachedOutput = [{
+      ptr: outputPtr,
+      bytes: new Uint8Array(
+        kernelMemory.buffer,
+        128 + CH_DATA,
+        4,
+      ).slice(),
+    }];
     const worker = createWorkerHarness({});
     worker.kernelMemory = kernelMemory;
     installKernelWorkerTestScratch(worker, kernelMemory);
@@ -1236,6 +1247,7 @@ describe("Rust-owned process wait lifecycle", () => {
       }],
       4,
       0,
+      detachedOutput,
     );
 
     expect(readStatus(channel)).toBe(CHANNEL_STATUS_PENDING);

@@ -171,16 +171,76 @@ fn render_spawn_contract_header() -> String {
          \n\
          #define WASM_POSIX_ARG_MAX_BYTES KANDELO_POSIX_ARG_MAX_BYTES\n\
          #define WASM_POSIX_PATH_MAX_BYTES KANDELO_POSIX_PATH_MAX_BYTES\n\
+         #define WASM_POSIX_SYS_SPAWN {sys_spawn}u\n\
          #define WASM_POSIX_SPAWN_HEADER_BYTES {header_bytes}u\n\
+         #define WASM_POSIX_SPAWN_STRING_OFFSET_BYTES {string_offset_bytes}u\n\
+         #define WASM_POSIX_SPAWN_HEADER_ARGC_OFFSET {header_argc_offset}u\n\
+         #define WASM_POSIX_SPAWN_HEADER_ENVC_OFFSET {header_envc_offset}u\n\
+         #define WASM_POSIX_SPAWN_HEADER_ACTION_COUNT_OFFSET {header_action_count_offset}u\n\
+         #define WASM_POSIX_SPAWN_HEADER_ATTR_FLAGS_OFFSET {header_attr_flags_offset}u\n\
+         #define WASM_POSIX_SPAWN_HEADER_PGRP_OFFSET {header_pgrp_offset}u\n\
+         #define WASM_POSIX_SPAWN_HEADER_PAD_OFFSET {header_pad_offset}u\n\
+         #define WASM_POSIX_SPAWN_HEADER_SIGDEF_OFFSET {header_sigdef_offset}u\n\
+         #define WASM_POSIX_SPAWN_HEADER_SIGMASK_OFFSET {header_sigmask_offset}u\n\
          #define WASM_POSIX_SPAWN_ACTION_RECORD_BYTES {action_bytes}u\n\
+         #define WASM_POSIX_SPAWN_ACTION_OP_OFFSET {action_op_offset}u\n\
+         #define WASM_POSIX_SPAWN_ACTION_FD_OFFSET {action_fd_offset}u\n\
+         #define WASM_POSIX_SPAWN_ACTION_NEWFD_OFFSET {action_newfd_offset}u\n\
+         #define WASM_POSIX_SPAWN_ACTION_PATH_OFF_OFFSET {action_path_off_offset}u\n\
+         #define WASM_POSIX_SPAWN_ACTION_PATH_LEN_OFFSET {action_path_len_offset}u\n\
+         #define WASM_POSIX_SPAWN_ACTION_OFLAG_OFFSET {action_oflag_offset}u\n\
+         #define WASM_POSIX_SPAWN_ACTION_MODE_OFFSET {action_mode_offset}u\n\
+         #define WASM_POSIX_SPAWN_OP_OPEN {op_open}u\n\
+         #define WASM_POSIX_SPAWN_OP_CLOSE {op_close}u\n\
+         #define WASM_POSIX_SPAWN_OP_DUP2 {op_dup2}u\n\
+         #define WASM_POSIX_SPAWN_OP_CHDIR {op_chdir}u\n\
+         #define WASM_POSIX_SPAWN_OP_FCHDIR {op_fchdir}u\n\
+         #define WASM_POSIX_SPAWN_ATTR_RESETIDS {attr_resetids}u\n\
+         #define WASM_POSIX_SPAWN_ATTR_SETPGROUP {attr_setpgroup}u\n\
+         #define WASM_POSIX_SPAWN_ATTR_SETSIGDEF {attr_setsigdef}u\n\
+         #define WASM_POSIX_SPAWN_ATTR_SETSIGMASK {attr_setsigmask}u\n\
+         #define WASM_POSIX_SPAWN_ATTR_SETSCHEDPARAM {attr_setschedparam}u\n\
+         #define WASM_POSIX_SPAWN_ATTR_SETSCHEDULER {attr_setscheduler}u\n\
+         #define WASM_POSIX_SPAWN_ATTR_USEVFORK {attr_usevfork}u\n\
+         #define WASM_POSIX_SPAWN_ATTR_SETSID {attr_setsid}u\n\
          #define WASM_POSIX_SPAWN_MAX_ARGV_COUNT {max_argv}u\n\
          #define WASM_POSIX_SPAWN_MAX_ENVP_COUNT {max_envp}u\n\
          #define WASM_POSIX_SPAWN_MAX_ACTION_COUNT {max_actions}u\n\
          #define WASM_POSIX_SPAWN_WIRE_MAX_BYTES {wire_max}u\n\
          \n\
          #endif /* WASM_POSIX_SPAWN_CONTRACT_H */\n",
+        sys_spawn = shared::abi::host_intercepted::SYS_SPAWN,
         header_bytes = spawn_contract::WIRE_HEADER_BYTES,
+        string_offset_bytes = spawn_contract::WIRE_STRING_OFFSET_BYTES,
+        header_argc_offset = spawn_contract::WIRE_HEADER_ARGC_OFFSET,
+        header_envc_offset = spawn_contract::WIRE_HEADER_ENVC_OFFSET,
+        header_action_count_offset = spawn_contract::WIRE_HEADER_ACTION_COUNT_OFFSET,
+        header_attr_flags_offset = spawn_contract::WIRE_HEADER_ATTR_FLAGS_OFFSET,
+        header_pgrp_offset = spawn_contract::WIRE_HEADER_PGRP_OFFSET,
+        header_pad_offset = spawn_contract::WIRE_HEADER_PAD_OFFSET,
+        header_sigdef_offset = spawn_contract::WIRE_HEADER_SIGDEF_OFFSET,
+        header_sigmask_offset = spawn_contract::WIRE_HEADER_SIGMASK_OFFSET,
         action_bytes = spawn_contract::WIRE_ACTION_RECORD_BYTES,
+        action_op_offset = spawn_contract::WIRE_ACTION_OP_OFFSET,
+        action_fd_offset = spawn_contract::WIRE_ACTION_FD_OFFSET,
+        action_newfd_offset = spawn_contract::WIRE_ACTION_NEWFD_OFFSET,
+        action_path_off_offset = spawn_contract::WIRE_ACTION_PATH_OFF_OFFSET,
+        action_path_len_offset = spawn_contract::WIRE_ACTION_PATH_LEN_OFFSET,
+        action_oflag_offset = spawn_contract::WIRE_ACTION_OFLAG_OFFSET,
+        action_mode_offset = spawn_contract::WIRE_ACTION_MODE_OFFSET,
+        op_open = spawn_contract::WIRE_OP_OPEN,
+        op_close = spawn_contract::WIRE_OP_CLOSE,
+        op_dup2 = spawn_contract::WIRE_OP_DUP2,
+        op_chdir = spawn_contract::WIRE_OP_CHDIR,
+        op_fchdir = spawn_contract::WIRE_OP_FCHDIR,
+        attr_resetids = spawn_contract::ATTR_RESETIDS,
+        attr_setpgroup = spawn_contract::ATTR_SETPGROUP,
+        attr_setsigdef = spawn_contract::ATTR_SETSIGDEF,
+        attr_setsigmask = spawn_contract::ATTR_SETSIGMASK,
+        attr_setschedparam = spawn_contract::ATTR_SETSCHEDPARAM,
+        attr_setscheduler = spawn_contract::ATTR_SETSCHEDULER,
+        attr_usevfork = spawn_contract::ATTR_USEVFORK,
+        attr_setsid = spawn_contract::ATTR_SETSID,
         max_argv = spawn_contract::MAX_ARGV_COUNT,
         max_envp = spawn_contract::MAX_ENVP_COUNT,
         max_actions = spawn_contract::MAX_ACTION_COUNT,
@@ -245,14 +305,19 @@ fn classify_compat_files(
 /// C header consumed by `libc/glue/channel_syscall.c` and any other C code
 /// that needs to agree with Rust on ABI-surface constants.
 fn render_c_header() -> String {
-    format!(
+    let mut out = format!(
         "/* GENERATED by `cargo xtask dump-abi`. Do not edit by hand. */\n\
          /* Regenerated by scripts/check-abi-version.sh; drift is a CI failure. */\n\
          #ifndef WASM_POSIX_ABI_CONSTANTS_H\n\
          #define WASM_POSIX_ABI_CONSTANTS_H\n\
          \n\
+         #include <stdint.h>\n\
+         \n\
          /* Mirrors wasm_posix_shared::ABI_VERSION. */\n\
          #define WASM_POSIX_ABI_VERSION {version}u\n\
+         \n\
+         /* Non-forking spawn syscall number. */\n\
+         #define WASM_POSIX_SYS_SPAWN {sys_spawn}u\n\
          \n\
          /* Default process-wasm pthread slot declaration. */\n\
          #define WASM_POSIX_THREAD_SLOT_DECL_DEFAULT {thread_slots_default}\n\
@@ -260,11 +325,48 @@ fn render_c_header() -> String {
          /* Fixed kernel/musl resource-usage wire record size. */\n\
          #define WASM_POSIX_RUSAGE_WIRE_SIZE {rusage_wire_size}u\n\
          \n\
-         #endif /* WASM_POSIX_ABI_CONSTANTS_H */\n",
+         /* Exact musl termios wire record size. */\n\
+         #define WASM_POSIX_TERMIOS_SIZE {termios_size}u\n\
+         \n\
+         /* A known request without a lossless layout for this caller. */\n\
+         #define WASM_POSIX_IOCTL_UNSUPPORTED_SIZE UINT32_MAX\n\
+         \n\
+         static inline uint32_t\n\
+         wasm_posix_ioctl_arg_size(uint32_t request, uint32_t pointer_width)\n\
+         {{\n\
+             switch (request) {{\n",
         version = shared::ABI_VERSION,
+        sys_spawn = shared::abi::host_intercepted::SYS_SPAWN,
         thread_slots_default = shared::process_memory::THREAD_SLOTS_USE_HOST_DEFAULT,
         rusage_wire_size = shared::WASM_RUSAGE_WIRE_SIZE,
-    )
+        termios_size = shared::ioctl_contract::TERMIOS_SIZE,
+    );
+    for contract in shared::ioctl_contract::IOCTL_REQUEST_CONTRACTS {
+        let wasm32 = contract
+            .wasm32_size
+            .map(|size| format!("{size}u"))
+            .unwrap_or_else(|| "WASM_POSIX_IOCTL_UNSUPPORTED_SIZE".into());
+        let wasm64 = contract
+            .wasm64_size
+            .map(|size| format!("{size}u"))
+            .unwrap_or_else(|| "WASM_POSIX_IOCTL_UNSUPPORTED_SIZE".into());
+        out.push_str(&format!(
+            "             case 0x{:08x}u:\n\
+                         return pointer_width == 4u ? {wasm32} :\n\
+                                pointer_width == 8u ? {wasm64} :\n\
+                                WASM_POSIX_IOCTL_UNSUPPORTED_SIZE;\n",
+            contract.request
+        ));
+    }
+    out.push_str(
+        "             default:\n\
+                     return 0u;\n\
+             }\n\
+         }\n\
+         \n\
+         #endif /* WASM_POSIX_ABI_CONSTANTS_H */\n",
+    );
+    out
 }
 
 /// TypeScript bindings consumed by `host/src/*`.
@@ -369,8 +471,124 @@ fn render_ts_module() -> String {
         shared::spawn_contract::WIRE_HEADER_BYTES
     ));
     out.push_str(&format!(
+        "export const SPAWN_WIRE_STRING_OFFSET_BYTES = {} as const;\n",
+        shared::spawn_contract::WIRE_STRING_OFFSET_BYTES
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_WIRE_HEADER_ARGC_OFFSET = {} as const;\n",
+        shared::spawn_contract::WIRE_HEADER_ARGC_OFFSET
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_WIRE_HEADER_ENVC_OFFSET = {} as const;\n",
+        shared::spawn_contract::WIRE_HEADER_ENVC_OFFSET
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_WIRE_HEADER_ACTION_COUNT_OFFSET = {} as const;\n",
+        shared::spawn_contract::WIRE_HEADER_ACTION_COUNT_OFFSET
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_WIRE_HEADER_ATTR_FLAGS_OFFSET = {} as const;\n",
+        shared::spawn_contract::WIRE_HEADER_ATTR_FLAGS_OFFSET
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_WIRE_HEADER_PGRP_OFFSET = {} as const;\n",
+        shared::spawn_contract::WIRE_HEADER_PGRP_OFFSET
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_WIRE_HEADER_PAD_OFFSET = {} as const;\n",
+        shared::spawn_contract::WIRE_HEADER_PAD_OFFSET
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_WIRE_HEADER_SIGDEF_OFFSET = {} as const;\n",
+        shared::spawn_contract::WIRE_HEADER_SIGDEF_OFFSET
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_WIRE_HEADER_SIGMASK_OFFSET = {} as const;\n",
+        shared::spawn_contract::WIRE_HEADER_SIGMASK_OFFSET
+    ));
+    out.push_str(&format!(
         "export const SPAWN_WIRE_ACTION_RECORD_BYTES = {} as const;\n",
         shared::spawn_contract::WIRE_ACTION_RECORD_BYTES
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_WIRE_ACTION_OP_OFFSET = {} as const;\n",
+        shared::spawn_contract::WIRE_ACTION_OP_OFFSET
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_WIRE_ACTION_FD_OFFSET = {} as const;\n",
+        shared::spawn_contract::WIRE_ACTION_FD_OFFSET
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_WIRE_ACTION_NEWFD_OFFSET = {} as const;\n",
+        shared::spawn_contract::WIRE_ACTION_NEWFD_OFFSET
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_WIRE_ACTION_PATH_OFF_OFFSET = {} as const;\n",
+        shared::spawn_contract::WIRE_ACTION_PATH_OFF_OFFSET
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_WIRE_ACTION_PATH_LEN_OFFSET = {} as const;\n",
+        shared::spawn_contract::WIRE_ACTION_PATH_LEN_OFFSET
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_WIRE_ACTION_OFLAG_OFFSET = {} as const;\n",
+        shared::spawn_contract::WIRE_ACTION_OFLAG_OFFSET
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_WIRE_ACTION_MODE_OFFSET = {} as const;\n",
+        shared::spawn_contract::WIRE_ACTION_MODE_OFFSET
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_WIRE_OP_OPEN = {} as const;\n",
+        shared::spawn_contract::WIRE_OP_OPEN
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_WIRE_OP_CLOSE = {} as const;\n",
+        shared::spawn_contract::WIRE_OP_CLOSE
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_WIRE_OP_DUP2 = {} as const;\n",
+        shared::spawn_contract::WIRE_OP_DUP2
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_WIRE_OP_CHDIR = {} as const;\n",
+        shared::spawn_contract::WIRE_OP_CHDIR
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_WIRE_OP_FCHDIR = {} as const;\n",
+        shared::spawn_contract::WIRE_OP_FCHDIR
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_ATTR_RESETIDS = {} as const;\n",
+        shared::spawn_contract::ATTR_RESETIDS
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_ATTR_SETPGROUP = {} as const;\n",
+        shared::spawn_contract::ATTR_SETPGROUP
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_ATTR_SETSIGDEF = {} as const;\n",
+        shared::spawn_contract::ATTR_SETSIGDEF
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_ATTR_SETSIGMASK = {} as const;\n",
+        shared::spawn_contract::ATTR_SETSIGMASK
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_ATTR_SETSCHEDPARAM = {} as const;\n",
+        shared::spawn_contract::ATTR_SETSCHEDPARAM
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_ATTR_SETSCHEDULER = {} as const;\n",
+        shared::spawn_contract::ATTR_SETSCHEDULER
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_ATTR_USEVFORK = {} as const;\n",
+        shared::spawn_contract::ATTR_USEVFORK
+    ));
+    out.push_str(&format!(
+        "export const SPAWN_ATTR_SETSID = {} as const;\n",
+        shared::spawn_contract::ATTR_SETSID
     ));
     out.push_str(&format!(
         "export const SPAWN_MAX_ARGV_COUNT = {} as const;\n",
@@ -698,8 +916,24 @@ fn render_ts_module() -> String {
         size_of::<shared::WasmPollFd>()
     ));
     out.push_str(&format!(
+        "export const STRUCT_SIZE_WASM_EPOLL_EVENT = {} as const;\n",
+        size_of::<shared::WasmEpollEvent>()
+    ));
+    out.push_str(&format!(
+        "export const WASM_EPOLL_EVENT_DATA_OFFSET = {} as const;\n",
+        offset_of!(shared::WasmEpollEvent, data)
+    ));
+    out.push_str(&format!(
+        "export const STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER = {} as const;\n",
+        size_of::<shared::WasmSysvMessageHeader>()
+    ));
+    out.push_str(&format!(
         "export const STRUCT_SIZE_WASM_STATFS = {} as const;\n",
         size_of::<shared::WasmStatfs>()
+    ));
+    out.push_str(&format!(
+        "export const STRUCT_SIZE_WPK_DRM_MODE_MODEINFO = {} as const;\n",
+        size_of::<shared::dri::WpkDrmModeModeinfo>()
     ));
     out.push_str(&format!(
         "export const STRUCT_SIZE_WASM_RUSAGE_WIRE = {} as const;\n",
@@ -762,15 +996,46 @@ fn render_ts_module() -> String {
     out.push_str("  | { type: \"cstring\" }\n");
     out.push_str("  | { type: \"arg\"; argIndex: number; multiplier?: number; add?: number }\n");
     out.push_str("  | { type: \"deref\"; argIndex: number }\n");
-    out.push_str("  | { type: \"fixed\"; size: number };\n\n");
+    out.push_str("  | { type: \"fixed\"; size: number }\n");
+    out.push_str(
+        "  | { type: \"process-layout\"; wasm32Size: number; wasm64Size: number };\n\n",
+    );
+    out.push_str(&format!(
+        "export const PROCESS_POINTER_WIDTH_ARG_INDEX = {} as const;\n\n",
+        shared::host_abi::PROCESS_POINTER_WIDTH_ARG_INDEX
+    ));
     out.push_str("export interface SyscallArgDesc {\n");
     out.push_str("  argIndex: number;\n");
     out.push_str("  direction: SyscallArgDirection;\n");
     out.push_str("  size: SyscallArgSizeSpec;\n");
     out.push_str("  nullable?: boolean;\n");
     out.push_str("  required?: boolean;\n");
-    out.push_str("  copyRetvalAdd?: number;\n");
     out.push_str("}\n\n");
+
+    out.push_str("export type IoctlArgKind = \"none\" | \"scalar-i32\" | \"pointer\";\n");
+    out.push_str(
+        "export type IoctlDirection = \"none\" | \"in\" | \"out\" | \"inout\";\n\n",
+    );
+    out.push_str("export interface IoctlRequestContract {\n");
+    out.push_str("  argKind: IoctlArgKind;\n");
+    out.push_str("  direction: IoctlDirection;\n");
+    out.push_str("  wasm32Size: number | null;\n");
+    out.push_str("  wasm64Size: number | null;\n");
+    out.push_str("}\n\n");
+    out.push_str(
+        "export const IOCTL_REQUESTS: Record<number, IoctlRequestContract> = {\n",
+    );
+    for contract in shared::ioctl_contract::IOCTL_REQUEST_CONTRACTS {
+        out.push_str(&format!(
+            "  {}: {{ argKind: {:?}, direction: {:?}, wasm32Size: {}, wasm64Size: {} }},\n",
+            contract.request,
+            ioctl_arg_kind_name(contract.arg_kind),
+            ioctl_direction_name(contract.direction),
+            ts_optional_u32(contract.wasm32_size),
+            ts_optional_u32(contract.wasm64_size),
+        ));
+    }
+    out.push_str("};\n\n");
 
     out.push_str("export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {\n");
     for entry in shared::host_abi::SYSCALL_ARG_DESCRIPTORS {
@@ -812,9 +1077,6 @@ fn ts_syscall_arg_desc(desc: &shared::host_abi::SyscallArgDesc) -> String {
     if desc.required {
         s.push_str(", required: true");
     }
-    if desc.copy_retval_add != 0 {
-        s.push_str(&format!(", copyRetvalAdd: {}", desc.copy_retval_add));
-    }
     s.push_str(" }");
     s
 }
@@ -843,6 +1105,12 @@ fn ts_syscall_arg_size(size: shared::host_abi::SyscallArgSize) -> String {
             format!("{{ type: \"deref\", argIndex: {arg_index} }}")
         }
         SyscallArgSize::Fixed { size } => format!("{{ type: \"fixed\", size: {size} }}"),
+        SyscallArgSize::ProcessLayout {
+            wasm32_size,
+            wasm64_size,
+        } => format!(
+            "{{ type: \"process-layout\", wasm32Size: {wasm32_size}, wasm64Size: {wasm64_size} }}"
+        ),
     }
 }
 
@@ -854,6 +1122,33 @@ fn syscall_arg_direction_name(direction: shared::host_abi::SyscallArgDirection) 
         SyscallArgDirection::Out => "out",
         SyscallArgDirection::InOut => "inout",
     }
+}
+
+fn ioctl_arg_kind_name(kind: shared::ioctl_contract::IoctlArgKind) -> &'static str {
+    use shared::ioctl_contract::IoctlArgKind;
+
+    match kind {
+        IoctlArgKind::None => "none",
+        IoctlArgKind::ScalarI32 => "scalar-i32",
+        IoctlArgKind::Pointer => "pointer",
+    }
+}
+
+fn ioctl_direction_name(direction: shared::ioctl_contract::IoctlDirection) -> &'static str {
+    use shared::ioctl_contract::IoctlDirection;
+
+    match direction {
+        IoctlDirection::None => "none",
+        IoctlDirection::In => "in",
+        IoctlDirection::Out => "out",
+        IoctlDirection::InOut => "inout",
+    }
+}
+
+fn ts_optional_u32(value: Option<u32>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".into())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -983,6 +1278,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     );
     root.insert("host_adapter".into(), host_adapter());
     root.insert("syscall_arg_descriptors".into(), syscall_arg_descriptors());
+    root.insert("ioctl_request_contracts".into(), ioctl_request_contracts());
     root.insert("channel_status_codes".into(), channel_status_codes());
     root.insert("process_memory_layout".into(), process_memory_layout());
     root.insert("custom_sections".into(), custom_sections());
@@ -1212,8 +1508,8 @@ fn marshalled_structs() -> Value {
     use shared::fbdev::{FbBitfield, FbFixScreenInfo, FbVarScreenInfo};
     use shared::gl::{GlContextAttrs, GlQueryInfo, GlSubmitInfo, GlSurfaceAttrs};
     use shared::{
-        KernelWaitResult, WasmDirent, WasmFlock, WasmPollFd, WasmRusageWire, WasmStat,
-        WasmStatfs, WasmTimespec,
+        KernelWaitResult, WasmDirent, WasmEpollEvent, WasmFlock, WasmPollFd,
+        WasmRusageWire, WasmStat, WasmStatfs, WasmSysvMessageHeader, WasmTimespec,
     };
 
     let mut structs: JsonMap = BTreeMap::new();
@@ -1267,6 +1563,14 @@ fn marshalled_structs() -> Value {
             events,
             revents
         }),
+    );
+    structs.insert(
+        "WasmEpollEvent".into(),
+        struct_layout!(WasmEpollEvent { events, _pad, data }),
+    );
+    structs.insert(
+        "WasmSysvMessageHeader".into(),
+        struct_layout!(WasmSysvMessageHeader { mtype }),
     );
     structs.insert(
         "WasmStatfs".into(),
@@ -1822,6 +2126,28 @@ fn syscall_arg_descriptors() -> Value {
     Value::Object(descriptors.into_iter().collect())
 }
 
+fn ioctl_request_contracts() -> Value {
+    let mut contracts: JsonMap = BTreeMap::new();
+    for contract in shared::ioctl_contract::IOCTL_REQUEST_CONTRACTS {
+        let mut value: JsonMap = BTreeMap::new();
+        value.insert(
+            "argKind".into(),
+            json!(ioctl_arg_kind_name(contract.arg_kind)),
+        );
+        value.insert(
+            "direction".into(),
+            json!(ioctl_direction_name(contract.direction)),
+        );
+        value.insert("wasm32Size".into(), json!(contract.wasm32_size));
+        value.insert("wasm64Size".into(), json!(contract.wasm64_size));
+        contracts.insert(
+            contract.request.to_string(),
+            Value::Object(value.into_iter().collect()),
+        );
+    }
+    Value::Object(contracts.into_iter().collect())
+}
+
 fn host_adapter() -> Value {
     let manifest = shared::abi::HOST_ADAPTER_MANIFEST;
 
@@ -1928,9 +2254,6 @@ fn syscall_arg_desc_json(desc: &shared::host_abi::SyscallArgDesc) -> Value {
     if desc.required {
         m.insert("required".into(), json!(true));
     }
-    if desc.copy_retval_add != 0 {
-        m.insert("copyRetvalAdd".into(), json!(desc.copy_retval_add));
-    }
     Value::Object(m.into_iter().collect())
 }
 
@@ -1963,6 +2286,14 @@ fn syscall_arg_size_json(size: shared::host_abi::SyscallArgSize) -> Value {
         SyscallArgSize::Fixed { size } => {
             m.insert("type".into(), json!("fixed"));
             m.insert("size".into(), json!(size));
+        }
+        SyscallArgSize::ProcessLayout {
+            wasm32_size,
+            wasm64_size,
+        } => {
+            m.insert("type".into(), json!("process-layout"));
+            m.insert("wasm32Size".into(), json!(wasm32_size));
+            m.insert("wasm64Size".into(), json!(wasm64_size));
         }
     }
     Value::Object(m.into_iter().collect())
@@ -2714,6 +3045,7 @@ mod tests {
     fn generated_wait_abi_metadata_matches_shared_layouts() {
         let rendered = render_ts_module();
         for expected in [
+            "export const STRUCT_SIZE_WPK_DRM_MODE_MODEINFO = 68 as const;",
             "export const STRUCT_SIZE_WASM_RUSAGE_WIRE = 144 as const;",
             "export const STRUCT_SIZE_KERNEL_WAIT_RESULT = 160 as const;",
             "export const KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET = 0 as const;",

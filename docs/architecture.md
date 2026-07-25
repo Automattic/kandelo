@@ -88,9 +88,16 @@ kernel_ipc_shmdt_for_task(pid, tid, shmid) → 0 | -errno
 kernel_ipc_shmat_for_process(pid, shmid, addr, flags) → segment_size | -errno
 kernel_ipc_shmdt_for_process(pid, shmid) → 0 | -errno
 kernel_alloc_scratch(size) → kernel_owned_pointer | 0
-kernel_spawn_scratch_reserve(minimum_capacity) → kernel_owned_pointer | 0
-kernel_spawn_scratch_capacity() → retained_capacity
-kernel_semctl_array_bytes(semid, command) → bytes | -errno
+kernel_spawn_scratch_begin(minimum_capacity) → reservation_token | -errno
+kernel_spawn_scratch_pointer(reservation_token) → kernel_owned_pointer | 0
+kernel_spawn_scratch_capacity(reservation_token) → reservation_capacity | 0
+kernel_spawn_scratch_retained_capacity() → retained_capacity
+kernel_spawn_scratch_cancel(reservation_token) → 0 | -errno
+kernel_spawn_reserved_process(parent_pid, caller_tid, reservation_token, blob_len) → assigned_child_pid | -errno
+kernel_msqid_ds_bytes(process_pointer_width) → bytes | -errno
+kernel_semctl_array_bytes(pid, tid, semid, command) → bytes | -errno
+kernel_semid_ds_bytes(process_pointer_width) → bytes | -errno
+kernel_shmid_ds_bytes(process_pointer_width) → bytes | -errno
 kernel_get_cwd(pid, buf, len) → bytes_written
 kernel_set_max_addr(pid, addr) → 0
 kernel_set_brk_base(pid, addr) → 0
@@ -151,6 +158,13 @@ Key host components:
 | NodeWorkerAdapter | `worker-adapter.ts` | Creates Node.js worker_threads |
 | BrowserWorkerAdapter | `worker-adapter-browser.ts` | Creates Web Workers |
 
+Kernel module instantiation snapshots the caller's exact intrinsic
+`ArrayBuffer`, typed-array, or `DataView` byte window before inspecting it.
+Pointer-width detection and `WebAssembly.compile` consume that same detached
+snapshot. This prevents an overridden view getter or a later caller mutation
+from making the host configure wasm32 imports for a different wasm64 module,
+or vice versa.
+
 ### Kernel-owned scratch transfers
 
 The host moves syscall payloads through allocations owned by the Rust kernel.
@@ -174,28 +188,127 @@ The central worker owns separate main-syscall and TCP regions for the kernel
 lifetime. Sequential operations reuse them cheaply. A lease rejects nested or
 promise-returning work, and a guarded data view is revoked when the lease ends,
 so a callback or retry cannot observe bytes replaced by another operation.
+The lease is revoked before the callback's return value is inspected for a
+promise/thenable, so even an adversarial `then` getter cannot perform one last
+scratch access. Bulk copies read intrinsic typed-array slots and detach output
+before invoking caller-owned receivers; subclass overrides cannot widen a
+checked source or retain a live kernel view.
+Scalar access checks the lease on every operation. The native `DataView` stays
+private and may be reused only while `Memory.buffer` has the same identity; a
+`memory.grow()` replaces that buffer and forces the complete capacity and
+current-memory proof to run again before the view is refreshed.
 Async syscall preparation detaches caller data into host-owned arrays; the
 final stage, Rust call, and output snapshot happen in one lease without an
-`await`.
+`await`. Retry, timeout, stopped-process, and signal completion state carries
+only those detached writes; `completeChannel` never rereads reusable scratch
+after the lease has ended.
 
 Large spawn blobs use a different kernel-owned high-water region in
-`crates/kernel/src/spawn.rs::SpawnScratchBuffer`. Its synchronous reserve
-operation may move the Rust `Vec`, so the host discards the old region before
-reserving and holds no lease across that call. It then consumes the returned
-pointer and capacity as one value. The allocation lives until the kernel
-instance ends and grows only to the largest accepted blob seen, rather than
-reserving the 8,417,320-byte protocol ceiling on the first approximately
-65 KiB overflow. Older ABI-compatible kernels without the additive reserve
-exports retain the safe fixed-ceiling fallback.
+`crates/kernel/src/spawn.rs::SpawnScratchBuffer`. Every large operation calls
+`kernel_spawn_scratch_begin`, which may grow the Rust `Vec` only while no
+reservation is active and returns a fresh positive token. Begin and the
+pointer/capacity queries are nonblocking: mutex contention makes begin return
+`EBUSY` and makes query exports return zero. The host then reads the token's
+pointer and capacity together, proves that the complete blob fits both that
+allocation and the current `Memory.buffer`, and copies under one synchronous
+lease. `kernel_spawn_reserved_process` accepts no host-selected pointer: it
+consumes the matching token, parses the selected prefix into Rust-owned
+vectors, and releases the scratch mutex before entering the process table or
+any host import. After every successful begin, including setup or copy failure,
+the host invokes cancellation in a `finally` block. Commit and cancellation
+wait through mutex contention; neither guarded path can call a host import, so
+each returns with a definitive token state. Cancellation success releases an
+unconsumed matching token; `EINVAL` means the never-reused token was already
+consumed or is stale. For the just-issued in-contract token after commit, the
+consumed case is expected.
+Stale tokens, overlapping reservations, and reentrant large-spawn attempts
+fail without replacing live bytes. The reservation-derived host region is
+single-use and is revoked after the attempt, so a later Rust-owned `Vec`
+growth cannot revive its old pointer/capacity pair.
+
+The allocation lives until the kernel instance ends and may retain the
+largest accepted blob seen. A three-round rehearsal comparison used the
+fixed-buffer kernel from exact #1094 head plus a fingerprinted host-only
+telemetry shim. After the deterministic Homebrew-like workload, the growable
+design reported 84,386 bytes of retained scratch capacity instead of
+8,417,320 bytes. Post-run kernel linear memory fell from 26,017,792 to
+17,694,720 bytes; for this workload that is also peak memory because
+WebAssembly memory cannot shrink. The timing sample and baseline-harness
+provenance do not establish a speedup or broad no-regression claim. The exact
+workload, artifact fingerprints, host-specific medians, and remaining
+application-suite block are recorded in
+`docs/plans/2026-07-25-kernel-scratch-transfer-audit.md`. ABI 43 requires the
+complete transactional export set. There is no older-kernel fixed-buffer
+fallback under the same ABI version. These are rehearsal results, not
+final-base evidence: #1097 has not merged, and the comparison must be repeated
+after retargeting to its actual merged result.
 
 Rust-lent host-import destinations are deliberately separate. Rust supplies a
 pointer and capacity valid for that synchronous import, so
-`WasmPosixKernel.writeKernelBytes` and `kernelDestinationView` check that range
-without claiming it came from the scratch allocator. Process memory,
+`checkedWasmImportMemoryRange` normalizes the raw wasm32/wasm64 import value
+and `WasmPosixKernel.writeKernelBytes` checks that range and the producer's
+intrinsic byte span without claiming it came from the scratch allocator.
+Process memory,
 framebuffers, and explicit shared-memory mappings keep their own ownership
-models. `host/test/kernel-scratch-contract.test.ts` rejects future bare scratch
-pointers or direct variable-size kernel-memory writes outside these reviewed
-paths.
+models. A TypeScript compiler-backed repository audit follows kernel-memory
+ownership through aliases, parameters, and returns and reports raw views,
+writes, escapes, and allocator/reservation calls. Its exact multiset allowlist
+names every necessary exception with a reason and fails if an occurrence is
+added, duplicated, or removed. This keeps framebuffer, process-memory, and
+shared-memory paths explicit without conflating their ownership with kernel
+scratch.
+
+The low-level `WasmPosixKernel.getMemory/getInstance` and
+`CentralizedKernelWorker.getKernel/getKernelInstance` accessors are unsafe
+trusted-embedder/debug escape hatches, not scratch-transfer APIs. A consumer
+that calls raw pointer-returning exports and mutates the returned memory has
+opted out of the capacity and lease guarantees above. Kandelo's own runtime
+does not use those accessors for transfers, and the compiler-backed audit
+covers repository source rather than arbitrary downstream mutations.
+
+System V control operations use the same capacity-bearing main region, but
+their wire sizes also depend on the caller. The required structure-size exports
+select musl's target structure from the process pointer width:
+
+| Structure | wasm32 time64 | wasm64 LP64 |
+|---|---:|---:|
+| `msqid_ds` | 96 bytes | 120 bytes |
+| `semid_ds` | 72 bytes | 88 bytes |
+| `shmid_ds` | 88 bytes | 112 bytes |
+
+The host stages `msgctl`/`shmctl` `IPC_STAT` and `IPC_SET` according to the
+command and passes that process pointer width in the otherwise host-private
+sixth dispatch slot. The kernel Wasm's own width is not a valid substitute
+because one kernel may serve both guest widths.
+`kernel_semctl_array_bytes(pid, tid, semid, command)` separately performs the
+permission-aware GETALL/SETALL size preflight. All four sizing exports are
+required in ABI 43. There is no `IPC_STAT` sizing fallback for semaphore
+arrays: a process may have permission to write a semaphore set without
+permission to read its metadata.
+
+Other caller-native records use the generated
+`SyscallArgSize::ProcessLayout` descriptor. Encountering that descriptor makes
+the host select the exact size from the process width and carry the same width
+in the private sixth dispatch slot:
+
+| Record | wasm32 | wasm64 |
+|---|---:|---:|
+| `stack_t` | 12 bytes | 24 bytes |
+| kernel-facing `itimerval` | 16 bytes | 32 bytes |
+| `mq_attr` | 32 bytes | 64 bytes |
+| `sigevent` | 64 bytes | 64 bytes |
+| `statfs` | 88 bytes | 120 bytes |
+| `sysinfo` | 312 bytes | 368 bytes |
+| `siginfo_t` for `rt_sigqueueinfo` | 128 bytes | 128 bytes |
+
+The timer distinction is intentional: wasm32 musl translates its public
+time64 `itimerval` to four native `long` values before entering the kernel.
+Rust parses or serializes each complete caller-native record into a
+capacity-bounded scratch slice and initializes padding and reserved bytes.
+The kernel Wasm's own pointer width is never used to infer the process layout.
+The generated fixed-size descriptors separately carry `stat` (112 bytes) and
+`sched_param` (48 bytes); those two records do not use width selection or the
+private process-width dispatch slot.
 
 ### Kernel heap lifetime
 
@@ -538,7 +651,7 @@ remaining POSIX gap is tracked in [posix-status.md](posix-status.md) and
 
 1. User calls `execve(path, argv, envp)` → kernel returns exec request to host
 2. Host resolves `path` to a Wasm binary (via filesystem or program map)
-3. The host compiles the replacement module, checks its ABI marker, and preallocates its fresh `WebAssembly.Memory` before the irreversible transition. It also validates a 4 MiB combined argv/environment representation (UTF-8 strings, NUL terminators, and caller-width pointer entries, with each string limited to one 64 KiB scratch transfer); oversized metadata returns `E2BIG` to the old image. After commit, argv and environment entries cross into the kernel one at a time, so the fixed host scratch allocation is never overrun and an empty environment explicitly clears the prior one.
+3. The host compiles the replacement module, checks its ABI marker, and preallocates its fresh `WebAssembly.Memory` before the irreversible transition. It also validates a 4 MiB combined argv/environment representation (UTF-8 strings, NUL terminators, and caller-width pointer entries). Independently, each string must fit the current 64 KiB process-metadata transfer; that is an implementation transport limit, not part of the public aggregate `ARG_MAX` definition. Oversized metadata returns `E2BIG` to the old image. After commit, argv and environment entries cross into the kernel one at a time, so the fixed host scratch allocation is never overrun and an empty environment explicitly clears the prior one.
 4. The host calls `kernel_exec_prepare(pid, caller_tid)` while the old image is
    still live. The kernel validates that the exact caller is a live task owned
    by the process and applies deferred `posix_spawn` file actions; any failure
@@ -585,20 +698,45 @@ caller now take.
    `docs/plans/2026-05-04-non-forking-posix-spawn-design.md` Section 1.
 2. Host (`handleSpawn` in `kernel-worker.ts`) reads the blob from
    caller memory, validates argv + envp against the same 4 MiB `ARG_MAX`
-   contract as `execve`, copies it to bounded kernel-owned scratch, and calls
-   `kernel_spawn_process(parent_pid, caller_tid, blob_ptr, blob_len)`. Ordinary
-   blobs reuse the channel-sized syscall scratch. A blob above that size
-   reserves a Rust-owned reusable region to the requested high-water mark and
-   reuses it for the kernel lifetime. Keeping both paths kernel-owned prevents
-   a large environment or file-action list from overwriting adjacent Rust heap
-   state; the explicit 8,417,320-byte whole-blob ceiling also bounds file-action
-   data that `ARG_MAX` does not count. The advertised 4 MiB `ARG_MAX`,
+   contract as `execve`, and copies it to bounded kernel-owned scratch.
+   Each argv/environment entry also has the separate 64 KiB
+   process-metadata transport limit described for `execve`; this
+   implementation ceiling is not `ARG_MAX`.
+   Ordinary blobs reuse the channel-sized syscall region and call
+   `kernel_spawn_process(parent_pid, caller_tid, blob_ptr, blob_len)` while its
+   lease is active. A blob above that size begins an exclusive tokenized
+   reservation in the Rust-owned reusable region, reads its pointer and
+   capacity, copies under a lease, and commits with
+   `kernel_spawn_reserved_process(parent_pid, caller_tid, token, blob_len)`.
+   Begin and the pointer/capacity queries are nonblocking and report
+   contention as `EBUSY` or zero. Commit consumes the token before parsing.
+   After every successful begin, the host unconditionally calls cancellation
+   from a `finally` block, including setup and copy failures. Cancellation
+   success releases an unconsumed matching token; `EINVAL` means the
+   never-reused token was already consumed or is stale. For the just-issued
+   in-contract token after commit, consumption is expected. Commit and
+   cancellation use a blocking critical section that performs no host imports,
+   so both return with a definitive token state.
+   Host-side reentry protection rejects a second large spawn while the first
+   reservation is active. Keeping both paths kernel-owned prevents a
+   large environment or file-action list from overwriting adjacent Rust heap
+   state. Merely fitting within the total kernel `Memory` would not establish
+   this allocation-ownership fact. The explicit 8,417,320-byte whole-blob
+   ceiling also bounds file-action data that `ARG_MAX` does not count. The
+   advertised 4 MiB `ARG_MAX`,
    4,096-byte `PATH_MAX`, and 1,024-entry `IOV_MAX` live in
    `crates/shared/src/lib.rs::platform_limits` and generate the Rust,
    TypeScript, and musl consumers. The separate authoritative spawn wire
-   contract generates the 40-byte header, 28-byte action records, 4,096 argv
-   and environment entry caps, 1,024 actions, and complete ceiling. Count caps
-   are defensive parser limits; they are not additional POSIX platform limits.
+   contract generates the four-byte string-offset width; every offset in the
+   40-byte header and 28-byte action record; the `OPEN`, `CLOSE`, `DUP2`,
+   `CHDIR`, and `FCHDIR` opcodes; musl's complete transported spawn-attribute
+   byte; the 4,096 argv and environment entry caps; 1,024 actions; and the
+   complete ceiling. Transporting an attribute bit does not claim its
+   behavior is implemented: the kernel currently interprets only
+   `SETPGROUP`, `SETSIGDEF`, `SETSIGMASK`, and `SETSID`; `RESETIDS`,
+   `SETSCHEDPARAM`, `SETSCHEDULER`, and `USEVFORK` remain unimplemented. Count
+   caps are defensive parser limits; they are not additional POSIX platform
+   limits.
 3. Kernel parses the blob (`crates/kernel/src/spawn.rs::parse_blob` —
    the trust boundary; bails with EINVAL on any malformed offset), validates
    `caller_tid` as a live task belonging to the parent, and calls
@@ -1517,12 +1655,12 @@ For schema, resolver behavior, and the build-script contract see [docs/package-m
 
 ## Test Suites
 
-| Suite | Command | What it tests |
-|-------|---------|---------------|
-| Cargo | `cargo test -p kandelo --target aarch64-apple-darwin --lib` | Kernel unit tests (610+) |
-| Vitest | `cd host && npx vitest run` | Host integration tests (227+) — runs real Wasm programs |
-| libc-test | `scripts/run-libc-tests.sh` | musl libc conformance (C standard library) |
-| POSIX | `scripts/run-posix-tests.sh` | Open POSIX Test Suite (POSIX API conformance) |
-| Sortix | `scripts/run-sortix-tests.sh --all` | Sortix os-test suite (4817+ tests, most comprehensive) |
-
-All five suites must pass with 0 unexpected failures before merging changes.
+Validation always runs through `scripts/dev-shell.sh`. Kernel, host, ABI,
+libc, Open POSIX, Sortix, fork-instrument, and real-browser suites prove
+different contracts; there is no fixed short list whose success establishes
+every change. Use the CI-shaped commands and change-to-suite matrix in
+[`docs/agent-guidance/validation.md`](agent-guidance/validation.md), including
+generated-file/snapshot checks for ABI-adjacent work and real Chromium
+evidence for shared browser runtime changes. Report exact commands, counts,
+unexpected failures, skipped suites, and environmental blocks rather than
+using a narrow passing suite as a broad readiness claim.

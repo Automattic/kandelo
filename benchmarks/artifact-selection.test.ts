@@ -7,11 +7,16 @@ import {
   BENCHMARK_STATIC_ARTIFACTS,
   RUNNABLE_BENCHMARK_SUITES,
   benchmarkInputEvidenceFlags,
+  benchmarkRuntimeArtifactEvidenceFlags,
   benchmarkStaticArtifactEvidenceFlags,
   selectBrowserBenchmarkRuntimeArtifacts,
   selectNodeBenchmarkRuntimeArtifacts,
 } from "./artifact-selection.js";
 import { assertRequiredBenchmarkArtifacts } from "./artifact-evidence.js";
+import {
+  collectSpawnScratchEvidence,
+  SPAWN_SCRATCH_LARGE_WIRE_BYTES,
+} from "./spawn-scratch-evidence.js";
 import type { BenchmarkArtifacts } from "./types.js";
 import { resolveRootfsArtifact } from "../host/src/node-kernel-host.js";
 
@@ -56,6 +61,21 @@ test("browser selection uses the same policy-aware kernel resolver as Vite", () 
 
   assert.deepEqual(resolverRequests, ["kernel.wasm"]);
   assert.equal(selections.kernel.selectedPath, "/selected/resolver-kernel.wasm");
+  assert.equal(selections.rootfs, undefined);
+});
+
+test("Node selection does not resolve a rootfs for a self-contained suite", () => {
+  let rootfsCalls = 0;
+  const selections = selectNodeBenchmarkRuntimeArtifacts({
+    resolveOptional: () => "/selected/kernel.wasm",
+    resolveRootfs() {
+      rootfsCalls++;
+      throw new Error("must not be called");
+    },
+    includeRootfs: false,
+  });
+
+  assert.equal(rootfsCalls, 0);
   assert.equal(selections.rootfs, undefined);
 });
 
@@ -135,6 +155,9 @@ test("static Wasm evidence follows the selected suite and host", () => {
     "benchmarks/wasm/fork-bench.wasm",
     "benchmarks/wasm/exec-bench.wasm",
     "benchmarks/wasm/clone-bench.wasm",
+  ]);
+  assert.deepEqual(usedPaths("node", "spawn-scratch"), [
+    "benchmarks/wasm/hello.wasm",
     "benchmarks/wasm/spawn-bench.wasm",
   ]);
   assert.deepEqual(usedPaths("browser", "process-lifecycle"), [
@@ -151,6 +174,119 @@ test("static Wasm evidence follows the selected suite and host", () => {
     usedPaths("browser", "process-lifecycle"),
   );
   assert.deepEqual(usedPaths("node", "wordpress"), []);
+});
+
+test("only the dedicated spawn scratch benchmark opts out of the Node rootfs", () => {
+  assert.deepEqual(
+    benchmarkRuntimeArtifactEvidenceFlags({
+      host: "node",
+      suiteFilter: "process-lifecycle",
+      artifactName: "rootfs",
+    }),
+    { required: true, used: true },
+  );
+  assert.deepEqual(
+    benchmarkRuntimeArtifactEvidenceFlags({
+      host: "node",
+      suiteFilter: "spawn-scratch",
+      artifactName: "rootfs",
+    }),
+    { required: false, used: false },
+  );
+  assert.deepEqual(
+    benchmarkRuntimeArtifactEvidenceFlags({
+      host: "node",
+      suiteFilter: "syscall-io",
+      artifactName: "rootfs",
+    }),
+    { required: true, used: true },
+  );
+  assert.deepEqual(
+    benchmarkRuntimeArtifactEvidenceFlags({
+      host: "browser",
+      suiteFilter: "process-lifecycle",
+      artifactName: "rootfs",
+    }),
+    { required: false, used: false },
+  );
+});
+
+test("Node process metrics keep default-rootfs semantics", () => {
+  const processSource = readFileSync(
+    resolve(__dirname, "suites/process-lifecycle.ts"),
+    "utf8",
+  );
+  const spawnSource = readFileSync(
+    resolve(__dirname, "suites/spawn-scratch.ts"),
+    "utf8",
+  );
+
+  assert.doesNotMatch(processSource, /useDefaultRootfs\s*:\s*false/);
+  assert.match(spawnSource, /useDefaultRootfs\s*:\s*false/);
+});
+
+test("spawn scratch workload fixes its ordinary env and validates child exit", () => {
+  const source = readFileSync(
+    resolve(__dirname, "programs/spawn-bench.c"),
+    "utf8",
+  );
+
+  assert.doesNotMatch(source, /extern\s+char\s+\*\*environ/);
+  assert.match(source, /spawn_and_wait\(ordinary_envp,\s*&ordinary_us\)/);
+  assert.match(source, /"LANG=C"/);
+  assert.match(source, /"PATH=\/bin"/);
+  assert.match(source, /if\s*\(!WIFEXITED\(status\)\)/);
+  assert.match(source, /if\s*\(WEXITSTATUS\(status\)\s*!=\s*0\)/);
+});
+
+test("spawn scratch evidence rejects missing timings and unexercised capacity", () => {
+  const stdout = [
+    "spawn_ms=1.25",
+    `spawn_large_wire_bytes=${SPAWN_SCRATCH_LARGE_WIRE_BYTES}`,
+    "spawn_large_first_ms=2.5",
+    "spawn_large_repeat_ms=2.25",
+  ].join("\n");
+
+  assert.equal(SPAWN_SCRATCH_LARGE_WIRE_BYTES, 84_386);
+  assert.deepEqual(
+    collectSpawnScratchEvidence({
+      stdout,
+      retainedCapacity: SPAWN_SCRATCH_LARGE_WIRE_BYTES,
+      kernelMemoryPages: 270,
+    }),
+    {
+      spawn_ms: 1.25,
+      spawn_large_wire_bytes: SPAWN_SCRATCH_LARGE_WIRE_BYTES,
+      spawn_large_first_ms: 2.5,
+      spawn_large_repeat_ms: 2.25,
+      spawn_scratch_retained_bytes: SPAWN_SCRATCH_LARGE_WIRE_BYTES,
+      spawn_scratch_kernel_bytes: 17_694_720,
+    },
+  );
+  assert.throws(
+    () => collectSpawnScratchEvidence({
+      stdout: stdout.replace("spawn_large_first_ms=2.5\n", ""),
+      retainedCapacity: SPAWN_SCRATCH_LARGE_WIRE_BYTES,
+      kernelMemoryPages: 270,
+    }),
+    /spawn_large_first_ms/,
+  );
+  assert.throws(
+    () => collectSpawnScratchEvidence({
+      stdout,
+      retainedCapacity: SPAWN_SCRATCH_LARGE_WIRE_BYTES - 1,
+      kernelMemoryPages: 270,
+    }),
+    /did not retain enough scratch/,
+  );
+  assert.throws(
+    () => collectSpawnScratchEvidence({
+      stdout,
+      retainedCapacity: SPAWN_SCRATCH_LARGE_WIRE_BYTES,
+      kernelMemoryPages: 0,
+    }),
+    /kernel memory pages/,
+  );
 });
 
 test("browser static evidence matches the benchmark page's top-level Wasm imports", () => {

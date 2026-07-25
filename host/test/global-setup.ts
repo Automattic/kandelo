@@ -4,8 +4,10 @@
  * installed before tests run.
  *
  * Uses wasm32posix-cc from the SDK for C, and wat2wasm (wabt) for WAT
- * fixtures. Outputs are only rebuilt when the source is newer. The
- * chromium check is a no-op when the binary is already cached.
+ * fixtures. C outputs are rebuilt unless their embedded content digest covers
+ * the exact source, compiler wrapper/version, installed sysroot, and (where
+ * used) instrumenter binary. The chromium check is a no-op when the binary is
+ * already cached.
  */
 
 import { execFileSync } from "node:child_process";
@@ -13,6 +15,12 @@ import { statSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
+import {
+  captureProgramFixtureBuildContract,
+  programFixtureNeedsRebuild,
+  stampProgramFixture,
+  type ProgramFixtureBuildContract,
+} from "./program-fixture-freshness";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../..");
@@ -49,6 +57,8 @@ const TEST_PROGRAMS = [
   "unix_listener_exec_test.c",
   "putenv_test.c",
   "getaddrinfo_test.c",
+  "process_native_layout_test.c",
+  "timerfd_signalfd_scratch_test.c",
   "sysv_ipc_test.c",
   "wasm_trap_test.c",
   "oob_trap_test.c",
@@ -96,9 +106,53 @@ function needsRebuild(srcFile: string, outFile: string): boolean {
   return srcStat.mtimeMs > outStat.mtimeMs;
 }
 
+function fixtureBuildContract(
+  arch: "wasm32" | "wasm64",
+  forkInstrumented: boolean,
+): ProgramFixtureBuildContract {
+  const compiler = `${arch}posix-cc`;
+  const compilerVersion = execFileSync(compiler, ["--version"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const inputs = [
+    join(repoRoot, "sdk/bin"),
+    join(repoRoot, "sdk/src"),
+    join(repoRoot, "sdk/package.json"),
+    join(repoRoot, "sdk/package-lock.json"),
+    join(repoRoot, arch === "wasm64" ? "sysroot64" : "sysroot"),
+  ];
+  if (forkInstrumented) {
+    const configuredTool = process.env.WASM_POSIX_FORK_INSTRUMENT;
+    const instrumenter = configuredTool
+      ? configuredTool
+      : join(repoRoot, "tools/bin/wasm-fork-instrument");
+    if (!existsSync(instrumenter) && !configuredTool) {
+      execFileSync(
+        "bash",
+        [join(repoRoot, "scripts/build-fork-instrument-tool.sh")],
+        { cwd: repoRoot, stdio: "pipe" },
+      );
+    }
+    inputs.push(
+      join(repoRoot, "scripts/run-wasm-fork-instrument.sh"),
+      instrumenter,
+    );
+  }
+  return captureProgramFixtureBuildContract(
+    repoRoot,
+    `${arch}\nfork=${forkInstrumented}\n${compilerVersion}`,
+    inputs,
+  );
+}
+
 export async function setup() {
+  const wasm32Contract = fixtureBuildContract("wasm32", false);
+  const wasm32ForkContract = fixtureBuildContract("wasm32", true);
+
   for (const { src, out } of RESOLVED_PROGRAM_FIXTURES) {
-    if (!needsRebuild(src, out)) continue;
+    if (!programFixtureNeedsRebuild(src, out, wasm32Contract)) continue;
 
     mkdirSync(dirname(out), { recursive: true });
     console.log(`[global-setup] Compiling ${src.slice(repoRoot.length + 1)}...`);
@@ -106,6 +160,7 @@ export async function setup() {
       cwd: repoRoot,
       stdio: "pipe",
     });
+    stampProgramFixture(src, out, wasm32Contract);
   }
 
   for (const cFile of TEST_PROGRAMS) {
@@ -117,7 +172,10 @@ export async function setup() {
       continue;
     }
 
-    if (!needsRebuild(src, out)) continue;
+    const contract = FORK_INSTRUMENTED_PROGRAMS.has(cFile)
+      ? wasm32ForkContract
+      : wasm32Contract;
+    if (!programFixtureNeedsRebuild(src, out, contract)) continue;
 
     console.log(`[global-setup] Compiling ${cFile}...`);
     if (FORK_INSTRUMENTED_PROGRAMS.has(cFile)) {
@@ -146,6 +204,7 @@ export async function setup() {
         stdio: "pipe",
       });
     }
+    stampProgramFixture(src, out, contract);
   }
 
   for (const watFile of WAT_FIXTURES) {

@@ -280,6 +280,7 @@ describe("stopped process Worker launch gate", () => {
       consecutiveSyscalls: 0,
     };
     const ptidPtr = 512;
+    const replacementPtidPtr = 768;
     const tid = 99;
     const view = new DataView(memory.buffer);
     view.setUint32(CH_SYSCALL, ABI_SYSCALLS.Clone, true);
@@ -303,7 +304,12 @@ describe("stopped process Worker launch gate", () => {
         outputWrites: [],
         retVal: tid,
         errVal: 0,
+        materialized: true,
         relistenRequested: true,
+        deferredClone: {
+          tid,
+          parentTidPointer: ptidPtr,
+        },
       },
       relistenRequested: true,
     });
@@ -314,12 +320,24 @@ describe("stopped process Worker launch gate", () => {
       ),
     ).toBe("deferred");
 
+    // A sibling sharing this process memory may replace mailbox bytes while
+    // the stopped completion is parked. Rollback must retain the pointer
+    // validated for the original clone instead of trusting this replacement.
+    view.setBigInt64(CH_ARGS, BigInt(0x00100000), true);
+    view.setBigInt64(
+      CH_ARGS + 2 * CH_ARG_SIZE,
+      BigInt(replacementPtidPtr),
+      true,
+    );
+    view.setInt32(replacementPtidPtr, 0x12345678, true);
+
     processState = 0;
     worker.resumeStoppedProcess(41);
 
     expect(cancel).toHaveBeenCalledOnce();
     expect(notifyCrash).not.toHaveBeenCalled();
     expect(view.getInt32(ptidPtr, true)).toBe(0);
+    expect(view.getInt32(replacementPtidPtr, true)).toBe(0x12345678);
     expect(publish).toHaveBeenCalledWith(
       channel,
       expect.objectContaining({ retVal: -1, errVal: 12 }),

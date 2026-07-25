@@ -340,6 +340,11 @@ describe("kernel TID authority", () => {
       undefined,
       KERNEL_TID,
       0,
+      [],
+      {
+        tid: KERNEL_TID,
+        parentTidPointer: undefined,
+      },
     );
   });
 

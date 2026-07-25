@@ -254,6 +254,101 @@ later failure enters `ABORT_UNWINDING`, reconstructs the committed inner
 frames, releases the partial continuation, and returns the errno from the
 original `fork()` call without terminating the parent.
 
+### ABI 43 capacity-bound kernel scratch transfers
+
+The current #1094-based rehearsal assigns this incompatible contract to ABI
+43. PR #1097 has not merged, so the epoch number must be reevaluated after
+retargeting; if that integrated result already occupies ABI 43, this work must
+advance instead of hiding an incompatible change under the occupied epoch.
+
+ABI 43 in this rehearsal makes variable-size host writes into reusable kernel
+scratch an explicit ownership protocol. A host write is valid only after it
+independently proves the caller source range, the kernel-owned destination
+allocation, the allocation's declared capacity, the current kernel-memory
+range, the allocation lifetime, exclusion of overlapping replacement, and
+lossless wasm32/wasm64 pointer conversion. The fact that a destination range
+fits somewhere in the kernel's total WebAssembly linear memory does not prove
+that the Rust allocator assigned those bytes to the destination object.
+
+Ordinary channel-sized transfers carry the kernel pointer and capacity
+together in a host-side `KernelScratchRegion` and can be accessed only through
+a synchronous lease. Large `SYS_SPAWN` blobs use a Rust-owned reusable
+`Vec<u8>` with a tokenized transaction:
+
+1. `kernel_spawn_scratch_begin(minimum_capacity)` returns a fresh positive
+   reservation token or a negated errno. Begin is nonblocking; mutex
+   contention returns `EBUSY`.
+2. `kernel_spawn_scratch_pointer(token)` and
+   `kernel_spawn_scratch_capacity(token)` are read after begin; both return
+   zero for a stale or non-current token or for mutex contention. The separate
+   pointer-free
+   `kernel_spawn_scratch_retained_capacity()` export reports the retained
+   high-water allocation for diagnostics without granting write authority and
+   likewise returns zero on contention.
+3. The host proves the complete pointer-plus-capacity range and copies without
+   yielding.
+4. `kernel_spawn_reserved_process(parent_pid, caller_tid, token, blob_len)`
+   consumes that exact token, parses into Rust-owned data, and releases the
+   scratch lock before process-table work or host imports.
+5. After every successful begin, the host calls
+   `kernel_spawn_scratch_cancel(token)` in a `finally` block, including setup
+   and copy failures. Success releases an unconsumed matching token; `EINVAL`
+   means the never-reused token was already consumed or is stale. For the
+   just-issued in-contract token after commit, the consumed case is expected.
+   Commit and cancellation wait on the same no-host-import critical section,
+   so both return with a definitive token state instead of stranding authority
+   on transient contention.
+
+Every large operation begins a new reservation even when the retained vector
+already has enough capacity. Stale tokens, concurrent reservations, and
+reentrant host operations cannot replace bytes being consumed. The previous
+pointer-returning `kernel_spawn_scratch_reserve` interface and fixed
+worst-case compatibility fallback are not part of ABI 43.
+
+ABI 43 also makes System V IPC control-structure sizing explicit. Required
+pointer-width queries report the target musl layouts: `msqid_ds` is 96 bytes
+on wasm32 time64 and 120 bytes on wasm64 LP64, `semid_ds` is 72/88 bytes, and
+`shmid_ds` is 88/112 bytes. The process width is authoritative even when it
+differs from the kernel Wasm width. The host stages `msgctl`/`shmctl`
+`IPC_STAT` and `IPC_SET` according to the command and carries that width in its
+private sixth kernel-dispatch slot. The required
+`kernel_semctl_array_bytes(pid, tid, semid, command)` export performs the
+permission-aware GETALL/SETALL size preflight; the host does not substitute a
+read-only `IPC_STAT` query for a write-only SETALL operation.
+
+Generated process-layout descriptors apply the same caller-width rule to
+`stack_t` (12/24 bytes), the kernel-facing four-native-`long` `itimerval`
+(16/32), `mq_attr` (32/64), `sigevent` (64/64), `statfs` (88/120), and
+`sysinfo` (312/368), and `siginfo_t` for `rt_sigqueueinfo` (128/128). The host
+stages exactly the selected record and carries the process width in its
+private sixth dispatch slot. Rust rejects any other width and parses or
+serializes the exact bounded slice; padding and reserved output bytes are
+initialized. This prevents the kernel Wasm's own wasm32 data model from
+truncating a wasm64 process record. Fixed generated descriptors separately
+carry `stat` (112 bytes) and `sched_param` (48 bytes); those records do not use
+width selection or the private process-width slot.
+
+The ABI 43 required host-adapter export set retains the ABI 42-required
+`kernel_spawn_process` and adds
+`kernel_msqid_ds_bytes`, `kernel_semctl_array_bytes`,
+`kernel_semid_ds_bytes`, `kernel_shmid_ds_bytes`,
+`kernel_spawn_reserved_process`,
+`kernel_spawn_scratch_begin`,
+`kernel_spawn_scratch_cancel`, `kernel_spawn_scratch_capacity`,
+`kernel_spawn_scratch_pointer`, and
+`kernel_spawn_scratch_retained_capacity`. The required capabilities and large-spawn
+semantics changed, so this is incompatible rather than bookkeeping around
+additive constants. Kernels, hosts, packages, guest binaries, and VFS images
+from ABI 42 must be rebuilt rather than mixed with ABI 43 artifacts.
+
+The authoritative platform and spawn-wire constants remain generated from the
+Rust ABI sources. Moving identical constants to that generation path would not
+by itself require a bump; the required transactional exports and semantics do.
+Focused before/after Node.js and Chromium measurements establish the reported
+retained-capacity and kernel-linear-memory effect for one deterministic
+workload. They do not establish a latency improvement or broad performance
+no-regression.
+
 ## The snapshot
 
 `abi/snapshot.json` is generated by `cargo xtask dump-abi` from the
@@ -327,10 +422,16 @@ their TypeScript consumer and the public musl
 in `crates/shared/src/lib.rs::spawn_contract`; the generator writes its C
 consumer to
 `libc/musl-overlay/src/process/wasm32posix/spawn_contract.h`. The private spawn
-header aliases the public generated limits and adds the 40-byte header,
-28-byte action record, argv/environment/action count caps, and derived
-8,417,320-byte whole-blob ceiling. The count and complete-wire caps are
-defensive parser/transport limits, not new POSIX promises.
+header aliases the public generated limits and adds the four-byte string-offset
+width; all field offsets in the 40-byte header and 28-byte action record; the
+five action opcodes; musl's complete transported attribute byte; the
+argv/environment/action count caps; and the derived 8,417,320-byte whole-blob
+ceiling. Rust, TypeScript, and C therefore consume the same numeric wire
+contract. Transporting all eight attribute bits is distinct from implementing
+them: the kernel currently acts on `SETPGROUP`, `SETSIGDEF`, `SETSIGMASK`, and
+`SETSID`, while `RESETIDS`, `SETSCHEDPARAM`, `SETSCHEDULER`, and `USEVFORK`
+remain uninterpreted. The count and complete-wire caps are defensive
+parser/transport limits, not new POSIX promises.
 
 ## Developer workflow
 
@@ -340,19 +441,19 @@ On a change:
 # 1. Make your change to kernel / shared / glue as needed.
 # 2. Regenerate the snapshot. This rebuilds the kernel wasm first so
 #    a stale binary can't defeat the check.
-bash scripts/check-abi-version.sh update
+scripts/dev-shell.sh bash scripts/check-abi-version.sh update
 # 3. Inspect the diff. If it's empty, the change didn't touch the ABI.
 #    If it is only an additive-compatible change, commit the snapshot
 #    without bumping ABI_VERSION. If it changes existing ABI surface,
 #    bump ABI_VERSION in crates/shared/src/lib.rs in the same commit.
 # 4. Verify.
-bash scripts/check-abi-version.sh
+scripts/dev-shell.sh bash scripts/check-abi-version.sh
 ```
 
 In CI:
 
 ```bash
-bash scripts/check-abi-version.sh
+scripts/dev-shell.sh bash scripts/check-abi-version.sh
 ```
 
 Fails if the committed snapshot drifts from the source. If the snapshot
@@ -417,12 +518,9 @@ export; those packages should be resolved with the matching current
 kernel, even though the ABI epoch did not change.
 
 An additive export is compatible only while existing required capabilities and
-existing semantics remain unchanged. For example, the kernel-owned scratch
-hardening added `kernel_semctl_array_bytes`,
-`kernel_spawn_scratch_reserve`, and `kernel_spawn_scratch_capacity` without
-adding them to the required host-adapter manifest. New hosts retain a safe
-fallback for an older kernel in the same ABI epoch: spawn retains the bounded
-fixed-allocation path, and semaphore-array sizing uses a bounded, read-only
-`IPC_STAT` compatibility query. The snapshot records the three additions, but
-identical generated spawn constants and an internal TypeScript
-pointer-plus-capacity value do not by themselves require an ABI version bump.
+existing semantics remain unchanged. ABI 43's scratch work is deliberately not
+such an addition: it expands the required host-adapter export set, removes the
+older large-spawn reservation/fallback contract, and changes the synchronization
+semantics of reusable storage. By contrast, identical generated spawn constants
+and an internal TypeScript pointer-plus-capacity value would not by themselves
+require an ABI version bump.
