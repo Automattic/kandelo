@@ -549,15 +549,19 @@ canonical release):
   archives and bottles must be built from Kandelo `main`. Resolve the cycle
   main-first instead of legitimizing pre-main artifacts through Git history:
 
-  1. use #1094 only as rehearsal evidence. Its PR-built package archives and
-     bottles remain noncanonical even if that commit later becomes reachable
-     from `main`;
+  1. keep closed PR #1094 only as rehearsal evidence. Its PR-built package
+     archives and bottles remain noncanonical even if one of its commits is
+     already reachable from `main`;
   2. land the coherent ABI, package-source, publisher, and temporary consumer
      changes through the ordinary Kandelo merge process. Keep `main` deployable
-     during the publication window with a bounded source-built shell bridge:
-     the source `rootfs` closure plus direct Bash, fbdoom, and modeset resolver
-     outputs, with Bash eager at `/bin/bash` and `/usr/bin/bash` and unrelated
-     entries retaining their lazy policy;
+     during the publication window with a source-built shell bridge. That
+     bridge must use a fresh resolver cache, bypass binary indexes for the
+     complete transitive buildable shell closure, and preserve the shared
+     current product-shell contract: eager Bash, all existing lazy utilities,
+     Vim and NetHack package-owned lazy trees, profiles, aliases, ownership,
+     modes, fbdoom, and modeset. A reduced Bash-only proof or an exact-looking
+     outer shell archive whose dependencies came from PR staging is not an
+     acceptable bridge;
   3. read the exact resulting default-branch SHA `M` from
      `Automattic/kandelo` `refs/heads/main`. The canonical producer must check
      out exact `M`, dispatch `force-rebuild.yml` from that workflow SHA,
