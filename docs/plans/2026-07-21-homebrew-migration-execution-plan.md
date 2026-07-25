@@ -1,7 +1,7 @@
 # Homebrew Migration Living Execution Plan
 
 - Status: active
-- Last reconciled: 2026-07-24
+- Last reconciled: 2026-07-25
 - Primary repositories: `Automattic/kandelo` and
   `Kandelo-dev/homebrew-tap-core`
 - Purpose: preserve the complete Homebrew migration scope, record what has
@@ -195,6 +195,7 @@ complete here only when its exact accepted artifact has been verified.
 | Third-party tap model | Live publisher proof complete; guest use remains | The stricter load-order-independent cross-tap runtime contract landed in Kandelo as PR #1046 at `bd2b090e3e6998350be24ed018bbb76d3eb5b012`, in the core tap as PR #82 at `caad125218a2e3c6f05d290151a32128ec6c54ac`, and in the canary as PR #13 at `25069ad2acb7f86746ec3d119a823e8210a7a1eb`. PR #1049 landed the active-repository tap-store correction at `466a685d9366d3b712c4fe998307e00157bd5d15`; core-tap PR #83 pinned it at `cbb439454adf2718b010d0fe2caffe7158340a0e`, and canary PR #14 pinned it at `ee4464b87b988b163608b6c3520c2260907bda61`. Independent run `29886510154` is completely green: public M4 package and index, anonymous exact-byte pour, dependency-bearing Node.js and Chromium image proof, transactional tap finalization, and immutable five-asset VFS release `homebrew-vfs-sha256-40a44df5c6f139a4e9105b5155040be757bc20596dc5dce2d7a64286447d9f3e`. Conventional third-party `brew tap` and `brew install` inside the guest remain Phase 5 work. |
 | Deferred bottle trees | Generic producer and Phase 3 public proof complete; Phase 4 mirror public and relocation locally validated | PR #1051 landed the generic first-use substrate at `122e62a77ffeb40039bee3f2b29cd5f82ed6b1fe`. PR #1054 landed the exact original-bottle producer at `c16a48c693c8a6dea4ca14e7886b735bf685d51d`: one independently lazy tree per Formula, complete source and guest inventories, exact compressed transport identity, hardlinks, and independent TypeScript/Python validation. PR #1055 composes the exact 38-Formula namespace, PR #1060's exact head proves its immutable public mirror and canonical revision-17 cutover, and PR #1056 landed the aggregate-budget correction. The Phase 4 worktree adds receipt-owned relocation before exposing language runtimes, because exact bottle bytes are transport truth while a correct pour may replace only the placeholders named by that bottle's `INSTALL_RECEIPT.json`; its complete 39-bottle browser mirror is public and immutable. |
 | Browser deployment and exact bottle delivery | Complete for the bounded current contract | PR #1064 landed bounded, single-writer Pages publication. PR #1070 landed exact browser bottle-download delivery. Production verification reached GitHub Pages commit `418bd04` through successful Pages run `29994147876`; the app, guide, API, and service worker returned HTTP 200. This evidence closes the observed deployment failure, but does not remove later Phase 4/5 product activation work. |
+| Durable Kandelo package inputs | Single-root recovery is public; browser-input mechanism implemented, publication pending | The existing schema-1 rootfs generation remains available at `package-generation-rootfs-wasm32-abi-v42-sha256-cc8a6460221f68b077a640c39d8e63de32d3847e90e1bdac4065f060e4fb35dc`. The additive schema-2 `browser-inputs` contract derives the exact roots from browser imports at both promotion and consumption, records the root list, and promotes their deterministic typed dependency union without changing schema-1 identities. Base `a351fc9b18da032c09160c95f1da672374ade700` has 44 direct browser roots and 61 selected wasm32 closure identities: 51 program archives, 9 library archives, and 1 source-only input, for 60 materialized archives. Exact #1094 source `6d923c6454dd7174082f25c3d3991d03f86f5ddb` adds the materialized `homebrew-bootstrap` root and therefore derives 45 roots, 62 identities, and 61 archives. Contract tests cover root omission/addition/duplication/order, shared manifest/cache/kind/disposition drift, tested-merge and PR-head evidence, content tags, exact archive inventories, and anonymous materialization. No browser-inputs generation or downstream Homebrew activation is claimed until the exact dispatch seals a public release and anonymous readback succeeds. |
 | Atomic package-generation foundation | Ready for PR and landing on the exact fixture-ownership baseline | The packaging/build worktree makes Rust-generated program policy, scalar mirrors, and multi-member mirror directories publish as validated atomic generations. It aligns Rust, TypeScript, shell, Vite, external registries, and the standalone npm package on one complete highest-priority registry projection, with self-contained lower-root fallbacks. Fixture-ownership PR #802 landed as `427185cff21ed213de8b8b6573b4f1a3757aa80d`; this active foundation is rebased on that exact commit, its `program-packages.json` was regenerated there, and a repository source audit now rejects obsolete flat package paths while preserving inventory-owned and direct-source test fixtures. Independent High/Medium review found no remaining blocker. Exact-baseline validation is green across all 507 xtask tests, all 105 package-system tests, host typechecking, Chromium/Firefox/WebKit Vite boundaries, package-root and sealed/local-generation contracts, resolver-bundle freshness, Pages/CI/merge-workflow contracts, and the 17-case Homebrew shell closure. This foundation does not by itself activate the Phase 4 shell candidate, guest `brew`, registry retirement, or bottle-declared VFS packages. |
 | Guest upstream `brew` | Stock tap and bottle-pour proof complete in the opt-in image; product lifecycle incomplete | Draft PR #1059 pins upstream Homebrew, gives its unprivileged guest state the conventional writable layout, and passes exact Node.js/Chromium startup, config, operational doctor, first-party tap, and independent third-party tap discovery. An unmodified stock Bzip2 install pours and runs the public bottle once Homebrew can resolve the exact 19-Formula metadata closure for publisher-only native dependencies. Full `homebrew/core` is infeasible in the guest (about 1.3 GiB, including a 1.22 GiB Git pack); the product fix is a separately reviewed allowlist of custom Homebrew `Requirement` classes, not a partial core tap or unsupported dependency bypass. Main-shell activation, install/reinstall/uninstall, durable reboot state, and cross-tap M4 installation remain. |
 | Registry replacement | Incomplete | Formulae are increasingly authoritative, but `packages/registry` still owns recipes, platform artifacts, tests, and composite-image definitions. It cannot be deleted yet. |
@@ -702,6 +703,53 @@ canonical release):
   architecture dependencies are ready. The ABI-42 `python` wasm32 dispatch
   must require the configured dependency-bearing VFS acceptance after `dash`
   and `zlib` are finalized.
+
+Durable package-input checkpoint (2026-07-25; publication still pending):
+
+- The original single-root projection remains schema 1, so the published
+  rootfs generation keeps its exact canonical identity and recovery behavior.
+- Schema 2 reserves `browser-inputs` for the program roots authoritatively
+  derived from the exact browser imports with `shell` excluded and `rootfs`
+  included. Promotion unions their exact typed dependency closures; consumption
+  independently derives the consumer roots and requires exact root,
+  projection, expected-ledger, archive, and content-tag equality. The measured
+  closure has 61 identities: 51 program archives, 9 library archives, and 1
+  source-only input, so it materializes 60 archives. The separate PR #1094
+  cold/stale rebuild workload has 75 changed generations (61 programs and 14
+  build libraries); that is not the browser selection or a repository-total
+  count.
+- Schema 2 also binds the temporary source release's tested merge to the open
+  PR's exact base and package-source head. The tested merge must have ordered
+  base/head parents and the exact head tree, and preparation rechecks the
+  evidence after materialization. Schema 1 retains its existing direct
+  tag-to-source bytes and behavior.
+- Activation from base `a351fc9b18da032c09160c95f1da672374ade700`
+  currently fails closed before publication: its checked-in Bash cache key
+  begins `a43cb889`, while its freshly computed key begins `5e3266de`. PR
+  #1094's exact head `6d923c6454dd7174082f25c3d3991d03f86f5ddb` is internally
+  current at its different post-fork-fix key beginning `1d813d7f`; that
+  branch-specific projection must not be copied onto this base. A source
+  generation is eligible only after its own checked-in projection, fresh
+  expected ledger, and staging archives agree.
+- The read-only 2026-07-25 PR-source check validates the live #1094
+  dual identity: `pr-1094-staging` and its release target tested merge
+  `0968e0bc70b87097fd3cfd4a5d8785f3a2bf6174`, whose ordered parents are
+  base `df8fd92319c0f02143dd8bf1c7864f5847fd0bd6` and package-source head
+  `6d923c6454dd7174082f25c3d3991d03f86f5ddb`, with the exact head tree.
+  Promotion must derive and recheck this relationship live; these recorded
+  SHAs are evidence, not a bypass when GitHub refreshes the merge ref.
+- The same exact-source audit builds #1094's own `xtask` and passes the
+  schema-2 selector with 45 roots, 62 closure identities, and 61 archives.
+  Relative to the 44-root base, `homebrew-bootstrap` is the one added
+  materialized program root; `pcre2-source` remains source-only. These
+  source-derived counts are not acceptance constants and must not be confused
+  with #1094's separate 75 scheduled changed builds.
+- This closes the lifecycle design gap between temporary PR staging and later
+  Homebrew/browser validation. It does not itself publish the current
+  44-root, 61-identity browser selection, preserve a source staging release,
+  activate the revision-18 shell, or prove a downstream browser run. Those
+  remain explicit operations with their own public-readback and product
+  evidence.
 
 ### Phase 5: Ship usable upstream Homebrew inside Kandelo
 

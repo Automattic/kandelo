@@ -32,36 +32,59 @@ Homebrew's `bottle do` block.
 ## Durable Kandelo Package Input
 
 The Homebrew publisher may consume Kandelo package archives while validating
-or building bottles. A PR's `pr-<N>-staging` release is not a valid durable
-input: Kandelo deletes it after the source PR closes. Before a later
-publication workflow depends on that closure, run
-`promote-package-generation.yml`. The resulting public prerelease has a
+or building bottles, but a PR's `pr-<N>-staging` release is never a durable
+input. After coherent canonical activation has landed, dispatch
+`promote-package-generation.yml` from the exact freshly queried
+`refs/heads/main` SHA. The resulting append-only prerelease has a
 content-derived tag such as:
 
 ```
 package-generation-rootfs-wasm32-abi-v42-sha256-<full-identity-sha256>
+package-generation-browser-inputs-wasm32-abi-v42-sha256-<full-identity-sha256>
 ```
 
-This is still a Kandelo package-archive generation, not a Homebrew bottle
-release. It carries the exact selected rootfs closure and a minimal package
-index so the Homebrew workflow can reproducibly obtain its platform inputs.
-Bottle outputs continue through the tap and GHCR path documented below.
+This is a Kandelo package generation, not a Homebrew bottle release. Schema 1
+contains one selected root closure. Schema 2 `browser-inputs` contains the
+sorted authoritative browser roots and deterministic typed closure union.
+Program and library identities have archives; source-only identities remain
+bound without an invented archive. Homebrew formulae, bottle blocks, tap
+commits, and GHCR objects continue through the independent bottle contract
+below.
 
-Keep three authorities explicit:
+Durable generation admission is exact-main only:
 
-- the current default-branch workflow commit owns validation and release
-  writes;
-- the exact package-source commit owns the promoted package identities and is
-  the durable tag's direct target; and
-- the selected consumer commit must independently reproduce the same
-  projection and expected ledger.
+- workflow authority, package source, and freshly queried
+  `refs/heads/main` must be the same SHA;
+- `source-tag` must be the matching `binaries-abi-v<N>` release;
+- every final package archive's embedded `[build].commit` must equal that
+  main SHA;
+- the canonical index, selected snapshot, and exact release asset metadata
+  must agree byte-for-byte;
+- a later consumer must independently reproduce the same fresh projection and
+  expected ledger.
 
-Preparation executes historical source tooling only in a read-only job with
-persisted credentials disabled. The writer revalidates the transferred bytes
-with current code and never executes that source tool. Public generation
-retries are read-only. The publisher must consume the materializer's verified
-local index, never reconstruct a URL to the temporary staging release or fall
-back to a mutable canonical index.
+An ancestor, PR head, tested merge, direct tag, reachability proof, or
+same-tree commit cannot authorize final package inputs. Pre-main #1094
+45-root/62-identity/61-archive values remain selection regression evidence
+only; the final generation must derive new identities and accept only
+main-stamped archives after activation.
+
+For `browser-inputs`, projection equality includes the complete sorted root
+list, typed source-only entries, manifests, and contextual cache keys—not only
+the archive set. Current main authority runs its own browser-root scanner
+against source/consumer trees as inert data and parses their manifests with
+its versioned Rust reader. It never executes a historical or consumer dev
+shell, npm package, Cargo invocation, xtask, or repository script.
+
+Preparation, publication, and materialization share one strict Rust generation
+validator for the exact index set, strict TOML/JSON, validated snapshot, sorted
+asset inventory, hashes, archive manifests, Git inputs, and embedded main
+commit. The writer requeries live main and canonical package assets immediately
+before the seal and public release. The materializer anonymously downloads and
+rehashes every asset, requeries immutable generation release/tag metadata, and
+rechecks clean authority/consumer state immediately before exposing the
+resolver index. The Homebrew publisher must consume that verified local index;
+it must never reconstruct a staging or mutable canonical URL.
 
 See
 [Binary releases: durable package generations](binary-releases.md#durable-package-generations-for-cross-workflow-publication)

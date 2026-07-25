@@ -300,6 +300,119 @@ fn package_context_cache_keys_with_global_toolchain_inputs(
     Ok(cache_keys)
 }
 
+/// Recompute the contextual cache identities of an inert source checkout.
+///
+/// The source tree is data only: this reader hashes manifests and declared
+/// inputs itself. The one Cargo-derived input is computed from the current
+/// authority checkout only, and is reusable for the source tree only when the
+/// complete workspace manifest/lock context is byte-identical. Unsupported
+/// historical Cargo contexts therefore fail closed instead of executing.
+pub(crate) fn source_cache_identities(
+    source_root: &Path,
+    registry: &Registry,
+    abi_version: u32,
+) -> Result<BTreeMap<String, BTreeMap<String, String>>, String> {
+    validate_supported_source_cargo_context(source_root)?;
+    let authority_root = repo_root();
+    let global_toolchain_inputs =
+        global_package_build_input_digests_for(source_root, GLOBAL_PACKAGE_TOOLCHAIN_INPUTS)?;
+    let mut fork_instrument_inputs =
+        global_package_build_input_digests_for(source_root, FORK_INSTRUMENT_TOOL_INPUTS)?;
+    fork_instrument_inputs.push(BuildInputDigest {
+        label: "cargo-metadata:fork-instrument-build-deps".to_string(),
+        // This invokes only the current authority's Cargo metadata reader. The
+        // source checkout was proved to have the same declarative workspace
+        // context immediately above and is never used as a process cwd.
+        digest: fork_instrument_cargo_dependency_digest(&authority_root)?,
+    });
+
+    let mut memo = BTreeMap::new();
+    let mut result = BTreeMap::new();
+    for (name, manifest) in registry.walk_all()? {
+        let mut cache_keys = BTreeMap::new();
+        for arch in PROGRAM_PACKAGE_CONTEXT_ARCHES {
+            let digest = compute_sha_with_identity_context(
+                &manifest,
+                registry,
+                arch,
+                abi_version,
+                &mut memo,
+                &mut Vec::new(),
+                Some(&global_toolchain_inputs),
+                source_root,
+                Some(&fork_instrument_inputs),
+            )?;
+            cache_keys.insert(arch.as_str().to_owned(), hex(&digest));
+        }
+        result.insert(name, cache_keys);
+    }
+    Ok(result)
+}
+
+fn validate_supported_source_cargo_context(source_root: &Path) -> Result<(), String> {
+    let authority_root = repo_root();
+    let source_workspace_path = source_root.join("Cargo.toml");
+    let source_workspace_text = std::fs::read_to_string(&source_workspace_path).map_err(|e| {
+        format!(
+            "read supported source Cargo context {}: {e}",
+            source_workspace_path.display()
+        )
+    })?;
+    let workspace: toml::Value = toml::from_str(&source_workspace_text).map_err(|e| {
+        format!(
+            "parse supported source Cargo context {}: {e}",
+            source_workspace_path.display()
+        )
+    })?;
+    let members = workspace
+        .get("workspace")
+        .and_then(|workspace| workspace.get("members"))
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| {
+            "source Cargo workspace must declare an explicit members array".to_string()
+        })?;
+    let mut relative_files = BTreeSet::from([
+        PathBuf::from("Cargo.toml"),
+        PathBuf::from("Cargo.lock"),
+    ]);
+    for member in members {
+        let member = member
+            .as_str()
+            .ok_or_else(|| "source Cargo workspace member must be a string".to_string())?;
+        if member.is_empty()
+            || member.contains('*')
+            || Path::new(member).is_absolute()
+            || Path::new(member)
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(format!(
+                "unsupported source Cargo workspace member {member:?}"
+            ));
+        }
+        relative_files.insert(Path::new(member).join("Cargo.toml"));
+    }
+    for relative in relative_files {
+        let source_path = source_root.join(&relative);
+        let authority_path = authority_root.join(&relative);
+        let source_bytes = std::fs::read(&source_path)
+            .map_err(|e| format!("read source Cargo context {}: {e}", source_path.display()))?;
+        let authority_bytes = std::fs::read(&authority_path).map_err(|e| {
+            format!(
+                "read current authority Cargo context {}: {e}",
+                authority_path.display()
+            )
+        })?;
+        if source_bytes != authority_bytes {
+            return Err(format!(
+                "source Cargo context {} is unsupported by the current declarative identity reader",
+                relative.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn collect_program_dependency_identities(
     target: &DepsManifest,
     registry: &Registry,
@@ -1301,6 +1414,31 @@ fn compute_sha_with_global_toolchain_inputs(
     chain: &mut Vec<String>,
     global_toolchain_inputs_override: Option<&[BuildInputDigest]>,
 ) -> Result<[u8; 32], String> {
+    let main_repo_root = repo_root();
+    compute_sha_with_identity_context(
+        target,
+        registry,
+        arch,
+        abi_version,
+        memo,
+        chain,
+        global_toolchain_inputs_override,
+        &main_repo_root,
+        None,
+    )
+}
+
+fn compute_sha_with_identity_context(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+    memo: &mut BTreeMap<String, [u8; 32]>,
+    chain: &mut Vec<String>,
+    global_toolchain_inputs_override: Option<&[BuildInputDigest]>,
+    main_repo_root: &Path,
+    fork_instrument_tool_inputs_override: Option<&[BuildInputDigest]>,
+) -> Result<[u8; 32], String> {
     if chain.iter().any(|s| s == &target.name) {
         return Err(format!(
             "cycle in dep graph: {} -> {}",
@@ -1337,7 +1475,7 @@ fn compute_sha_with_global_toolchain_inputs(
                 child.spec()
             ));
         }
-        let child_sha = compute_sha_with_global_toolchain_inputs(
+        let child_sha = compute_sha_with_identity_context(
             &child,
             registry,
             arch,
@@ -1345,6 +1483,8 @@ fn compute_sha_with_global_toolchain_inputs(
             memo,
             chain,
             global_toolchain_inputs_override,
+            main_repo_root,
+            fork_instrument_tool_inputs_override,
         )?;
         dep_shas.push((dref.clone(), child_sha));
     }
@@ -1352,7 +1492,7 @@ fn compute_sha_with_global_toolchain_inputs(
 
     chain.pop();
 
-    let build_inputs = build_input_digests(target, registry)?;
+    let build_inputs = build_input_digests_from_repo(target, registry, main_repo_root)?;
     let global_toolchain_inputs = match target.kind {
         ManifestKind::Library | ManifestKind::Program => {
             match global_toolchain_inputs_override {
@@ -1363,7 +1503,10 @@ fn compute_sha_with_global_toolchain_inputs(
         ManifestKind::Source => Vec::new(),
     };
     let fork_instrument_tool_inputs = if package_uses_fork_instrument_tool(target) {
-        fork_instrument_tool_digests()?
+        match fork_instrument_tool_inputs_override {
+            Some(inputs) => inputs.to_vec(),
+            None => fork_instrument_tool_digests()?,
+        }
     } else {
         Vec::new()
     };
@@ -1949,9 +2092,18 @@ fn hash_gitlink_input(root: &Path, input: &str) -> Result<Option<[u8; 32]>, Stri
     Ok(Some(h.finalize().into()))
 }
 
+#[cfg(test)]
 fn build_input_digests(
     target: &DepsManifest,
     registry: &Registry,
+) -> Result<Vec<BuildInputDigest>, String> {
+    build_input_digests_from_repo(target, registry, &repo_root())
+}
+
+fn build_input_digests_from_repo(
+    target: &DepsManifest,
+    registry: &Registry,
+    main_repo_root: &Path,
 ) -> Result<Vec<BuildInputDigest>, String> {
     if !target.dir.join("build.toml").exists() {
         return Ok(Vec::new());
@@ -1959,7 +2111,8 @@ fn build_input_digests(
     let build = BuildToml::load(&target.dir)?;
     let mut out = Vec::with_capacity(build.inputs.len() + build.git_inputs.len());
     for input in &build.inputs {
-        let path = resolve_build_input_path(target, registry, input)?;
+        let path =
+            resolve_build_input_path_from_repo(target, registry, input, main_repo_root)?;
         out.push(BuildInputDigest {
             label: input.clone(),
             digest: hash_build_input(&path)?,
@@ -1987,14 +2140,6 @@ fn build_input_digests(
         });
     }
     Ok(out)
-}
-
-fn resolve_build_input_path(
-    target: &DepsManifest,
-    registry: &Registry,
-    input: &str,
-) -> Result<PathBuf, String> {
-    resolve_build_input_path_from_repo(target, registry, input, &repo_root())
 }
 
 fn resolve_build_input_path_from_repo(

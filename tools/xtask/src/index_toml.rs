@@ -19,6 +19,7 @@ use crate::pkg_manifest::TargetArch;
 use crate::util::hex;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct IndexToml {
     pub abi_version: u32,
     pub generated_at: String,
@@ -28,6 +29,7 @@ pub struct IndexToml {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct PackageEntry {
     pub name: String,
     pub version: String,
@@ -49,6 +51,7 @@ pub struct PackageEntry {
 ///     report during a rebuild; resolver falls back to source build
 ///     unless `fallback_*` is populated.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct BinaryEntry {
     pub status: EntryStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -484,6 +487,35 @@ built_by       = "https://example.com/run/1"
         );
         assert_eq!(entry.archive_sha256.as_deref(), Some("deadbeef"));
         assert_eq!(entry.cache_key_sha.as_deref(), Some("abc12345"));
+    }
+
+    #[test]
+    fn rejects_unknown_top_level_package_and_binary_fields() {
+        use super::*;
+
+        let base = r#"
+abi_version = 8
+generated_at = "now"
+generator = "test"
+[[packages]]
+name = "foo"
+version = "1"
+revision = 1
+[packages.binary.wasm32]
+status = "success"
+"#;
+        for mutated in [
+            format!("ignored = true\n{base}"),
+            base.replace("name = \"foo\"", "name = \"foo\"\nignored = true"),
+            format!("{base}\nignored = true\n"),
+        ] {
+            assert!(
+                IndexToml::parse(&mutated)
+                    .unwrap_err()
+                    .contains("unknown field"),
+                "{mutated}"
+            );
+        }
     }
 
     #[test]

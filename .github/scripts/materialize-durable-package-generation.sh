@@ -7,7 +7,6 @@ set -euo pipefail
 TAG=""
 CONSUMER_ROOT=""
 CONSUMER_SHA=""
-CONSUMER_XTASK=""
 AUTHORITY_XTASK=""
 REPOSITORY=""
 OUTPUT_DIR=""
@@ -17,7 +16,6 @@ while [ "$#" -gt 0 ]; do
     --tag) TAG="$2"; shift 2 ;;
     --consumer-root) CONSUMER_ROOT="$2"; shift 2 ;;
     --consumer-sha) CONSUMER_SHA="$2"; shift 2 ;;
-    --consumer-xtask) CONSUMER_XTASK="$2"; shift 2 ;;
     --authority-xtask) AUTHORITY_XTASK="$2"; shift 2 ;;
     --repository) REPOSITORY="$2"; shift 2 ;;
     --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
@@ -29,12 +27,10 @@ if ! [[ "$TAG" =~ ^package-generation-[a-z0-9][a-z0-9._-]*-[a-z0-9][a-z0-9._-]*-
    ! [[ "$CONSUMER_SHA" =~ ^[0-9a-f]{40}$ ]] ||
    [ "$REPOSITORY" != "Automattic/kandelo" ] ||
    [ ! -d "$CONSUMER_ROOT" ] || [ -L "$CONSUMER_ROOT" ] ||
-   [ ! -f "$CONSUMER_XTASK" ] || [ -L "$CONSUMER_XTASK" ] ||
-   [ ! -x "$CONSUMER_XTASK" ] ||
    [ ! -f "$AUTHORITY_XTASK" ] || [ -L "$AUTHORITY_XTASK" ] ||
    [ ! -x "$AUTHORITY_XTASK" ] ||
    [ -z "$OUTPUT_DIR" ] || [ "$OUTPUT_DIR" = / ]; then
-  echo "materialize-durable-package-generation: exact tag, consumer, xtasks, repository, and output are required" >&2
+  echo "materialize-durable-package-generation: exact tag, consumer, current authority xtask, repository, and output are required" >&2
   exit 2
 fi
 if [ -e "$OUTPUT_DIR" ] || [ -L "$OUTPUT_DIR" ]; then
@@ -48,6 +44,14 @@ if [ "$(git -C "$CONSUMER_ROOT" rev-parse HEAD)" != "$CONSUMER_SHA" ] ||
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+AUTHORITY_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
+authority_sha="$(git -C "$AUTHORITY_ROOT" rev-parse HEAD)"
+authority_tree="$(git -C "$AUTHORITY_ROOT" rev-parse 'HEAD^{tree}')"
+consumer_tree="$(git -C "$CONSUMER_ROOT" rev-parse 'HEAD^{tree}')"
+if [ -n "$(git -C "$AUTHORITY_ROOT" status --porcelain=v1 --untracked-files=all)" ]; then
+  echo "materialize-durable-package-generation: current authority checkout is not clean" >&2
+  exit 2
+fi
 PARENT="$(dirname "$OUTPUT_DIR")"
 mkdir -p "$PARENT"
 TMP_ROOT="$(mktemp -d "$PARENT/.materialized-package-generation.XXXXXX")"
@@ -118,8 +122,8 @@ fi
 
 manifest="$TMP_ROOT/bundle/generation.json"
 # compare-consumer fully validates the canonical manifest before selecting the
-# consumer closure. The source-specific xtask computes identities without any
-# publication or Actions credentials.
+# consumer closure. Historical/candidate source remains inert: only the current
+# authority parser reads its manifests and checked identity records.
 run_without_credentials() {
   env -u GH_TOKEN -u GITHUB_TOKEN \
     -u HOMEBREW_GITHUB_API_TOKEN \
@@ -131,23 +135,64 @@ run_without_credentials() {
     "$@"
 }
 abi_version="$(jq -er '.identity.abi_version' "$manifest")"
-root_package="$(jq -er '.identity.projection.root_package' "$manifest")"
 arch="$(jq -er '.identity.projection.arch' "$manifest")"
+projection_schema="$(jq -er '.identity.projection.schema' "$manifest")"
+source_release_tag="$(jq -er '.identity.source_activation.evidence.tag' "$manifest")"
+[ "$source_release_tag" = "binaries-abi-v$abi_version" ] || {
+  echo "materialize-durable-package-generation: generation was not sourced from coherent main activation" >&2
+  exit 1
+}
+consumer_selection_args=()
+case "$projection_schema" in
+  1)
+    selection_label="$(jq -er '.identity.projection.root_package' "$manifest")"
+    consumer_selection_args=(--root-package "$selection_label")
+    ;;
+  2)
+    selection_label="$(jq -er '.identity.projection.root_set' "$manifest")"
+    [ "$selection_label" = browser-inputs ] || {
+      echo "materialize-durable-package-generation: public manifest names an unsupported root set" >&2
+      exit 1
+    }
+    browser_roots_script="$AUTHORITY_ROOT/scripts/browser-binary-package-roots.mjs"
+    if [ ! -f "$browser_roots_script" ] || [ -L "$browser_roots_script" ]; then
+      echo "materialize-durable-package-generation: current authority lacks the browser root scanner" >&2
+      exit 1
+    fi
+    # WHY: recompute roots from the exact consumer checkout instead of trusting
+    # the release's list. compare-consumer then binds both that list and its
+    # dependency union, catching omissions even if archive identities overlap.
+    run_without_credentials node "$browser_roots_script" \
+        --source-root "$CONSUMER_ROOT" \
+        --exclude-package shell \
+        --include-package rootfs >"$TMP_ROOT/consumer-browser-inputs-roots.txt"
+    consumer_selection_args=(
+      --root-set browser-inputs
+      --roots-file "$TMP_ROOT/consumer-browser-inputs-roots.txt"
+    )
+    ;;
+  *)
+    echo "materialize-durable-package-generation: public manifest names an unsupported projection schema" >&2
+    exit 1
+    ;;
+esac
 grep -Fxq "pub const ABI_VERSION: u32 = $abi_version;" \
   "$CONSUMER_ROOT/crates/shared/src/lib.rs" || {
   echo "materialize-durable-package-generation: consumer checkout declares a different ABI" >&2
   exit 1
 }
-run_without_credentials "$CONSUMER_XTASK" staging-reuse expected \
-  --registry "$CONSUMER_ROOT/packages/registry" \
+run_without_credentials "$AUTHORITY_XTASK" staging-reuse scan-source \
+  --source-root "$CONSUMER_ROOT" \
   --expected-abi "$abi_version" \
-  --output "$TMP_ROOT/consumer-full-expected.json"
+  --arch "$arch" \
+  "${consumer_selection_args[@]}" \
+  --projection-output "$TMP_ROOT/consumer-projection.json" \
+  --expected-output "$TMP_ROOT/consumer-expected.json"
 manifest_tag="$(run_without_credentials \
   python3 "$SCRIPT_DIR/package-generation.py" compare-consumer \
     --generation-manifest "$manifest" \
-    --program-packages \
-      "$CONSUMER_ROOT/packages/registry/program-packages.json" \
-    --full-expected-ledger "$TMP_ROOT/consumer-full-expected.json")"
+    --consumer-projection "$TMP_ROOT/consumer-projection.json" \
+    --consumer-expected-ledger "$TMP_ROOT/consumer-expected.json")"
 [ "$manifest_tag" = "$TAG" ] || {
   echo "materialize-durable-package-generation: public manifest belongs to another tag" >&2
   exit 1
@@ -159,7 +204,9 @@ if ! jq -e \
     --arg tag "$TAG" \
     --arg source "$package_source_sha" \
     --arg title "$release_title" \
-    --arg body "$release_body" '
+    --arg body "$release_body" \
+    --argjson release_id "$release_id" '
+      .id == $release_id and
       .tag_name == $tag and .target_commitish == $source and
       .name == $title and .body == $body and
       .draft == false and .prerelease == true
@@ -239,14 +286,9 @@ run_without_credentials python3 "$SCRIPT_DIR/package-generation.py" validate \
   --localized-index-out "$localized_index" >/dev/null
 jq -S '.identity.expected_ledger' "$manifest" >"$TMP_ROOT/expected.json"
 jq -S '.identity.validated_snapshot' "$manifest" >"$TMP_ROOT/snapshot.json"
-run_without_credentials "$AUTHORITY_XTASK" staging-reuse validate-archives \
-  --expected-ledger "$TMP_ROOT/expected.json" \
-  --snapshot "$TMP_ROOT/snapshot.json" \
-  --archives-dir "$TMP_ROOT/bundle" \
-  --scope all
 
 # Recheck mutable GitHub metadata after all downloads to close the same race as
-# promotion. A changed public release is rejected even if cached bytes remain.
+# publication. A changed public release is rejected even if cached bytes remain.
 gh api "/repos/$REPOSITORY/releases/tags/$TAG" >"$TMP_ROOT/release-after.json"
 gh api "/repos/$REPOSITORY/git/ref/tags/$TAG" >"$TMP_ROOT/tag-after.json"
 gh api --paginate --slurp \
@@ -276,6 +318,39 @@ then
   exit 1
 fi
 
+# Build the shared validator's strict inventory from the final remote response.
+# It intentionally excludes GitHub's mutable asset IDs while preserving every
+# byte- and state-bearing field.
+jq 'map({name,state,size,digest})' "$TMP_ROOT/assets-after.json" \
+  >"$TMP_ROOT/validator-assets.json"
+
+# Rehash and semantically revalidate every downloaded byte after the final
+# remote requery, then recreate the localized resolver index from those same
+# bytes. The current authority executable is the only code that runs; the
+# consumer checkout and release payload remain inert data throughout.
+run_without_credentials python3 "$SCRIPT_DIR/package-generation.py" validate \
+  --bundle "$TMP_ROOT/bundle" \
+  --expected-tag "$TAG" \
+  --localized-index-out "$localized_index" >/dev/null
+run_without_credentials "$AUTHORITY_XTASK" staging-reuse validate-generation \
+  --expected-ledger "$TMP_ROOT/expected.json" \
+  --snapshot "$TMP_ROOT/snapshot.json" \
+  --index "$TMP_ROOT/bundle/index.toml" \
+  --assets "$TMP_ROOT/validator-assets.json" \
+  --bundle-dir "$TMP_ROOT/bundle" \
+  --release-tag "$TAG" \
+  --release-base-url "https://github.com/$REPOSITORY/releases/download/$TAG/" \
+  --package-source-sha "$package_source_sha"
+if [ "$(git -C "$AUTHORITY_ROOT" rev-parse HEAD)" != "$authority_sha" ] ||
+   [ "$(git -C "$AUTHORITY_ROOT" rev-parse 'HEAD^{tree}')" != "$authority_tree" ] ||
+   [ -n "$(git -C "$AUTHORITY_ROOT" status --porcelain=v1 --untracked-files=all)" ] ||
+   [ "$(git -C "$CONSUMER_ROOT" rev-parse HEAD)" != "$CONSUMER_SHA" ] ||
+   [ "$(git -C "$CONSUMER_ROOT" rev-parse 'HEAD^{tree}')" != "$consumer_tree" ] ||
+   [ -n "$(git -C "$CONSUMER_ROOT" status --porcelain=v1 --untracked-files=all)" ]; then
+  echo "materialize-durable-package-generation: authority or consumer checkout changed during materialization" >&2
+  exit 1
+fi
+
 mkdir "$TMP_ROOT/output" "$TMP_ROOT/output/resolver"
 cp "$localized_index" "$TMP_ROOT/output/resolver/index.toml"
 while IFS= read -r name; do
@@ -287,4 +362,4 @@ printf 'file://%s/resolver/index.toml\n' "$OUTPUT_DIR" \
 mv "$TMP_ROOT/output" "$OUTPUT_DIR"
 rm -rf "$TMP_ROOT"
 trap - EXIT
-echo "materialize-durable-package-generation: activated $TAG for consumer $CONSUMER_SHA ($root_package $arch ABI $abi_version)"
+echo "materialize-durable-package-generation: activated $TAG for consumer $CONSUMER_SHA ($selection_label $arch ABI $abi_version)"

@@ -1300,24 +1300,42 @@ before exposing the localized `file://` index. Missing, extra, changed, or
 reordered Git inputs; a mismatched archive identity; duplicate/noncanonical
 `manifest.toml`; or a symlinked archive fails closed.
 
-PR staging is not a durable dependency for a later workflow. When another
-publication pipeline needs the exact selected closure after PR close, first
-promote it through `promote-package-generation.yml` as described in
+PR staging is not a durable dependency for a later workflow and cannot be
+promoted as final provenance. After a package change and its coherent canonical
+activation have landed, dispatch `promote-package-generation.yml` from the
+same exact `refs/heads/main` SHA as described in
 [Binary releases: durable package generations](binary-releases.md#durable-package-generations-for-cross-workflow-publication).
-The promoter rebuilds a minimal index from only the fully materialized
-archives. It deliberately drops unrelated staging entries and all last-green
-fallbacks, then rewrites the selected archive URLs to one content-addressed
+The source tag must be `binaries-abi-v<N>`, not `pr-<N>-staging`. The
+promoter materializes only archives whose embedded build commit equals that
+freshly queried main SHA, rebuilds a minimal exact index, drops unrelated
+entries and every fallback, and rewrites URLs to the content-addressed
 generation tag.
 
-`.github/scripts/materialize-durable-package-generation.sh` activates such a
-generation for a checkout. It downloads every asset anonymously, validates the
-manifest/tag/release/direct-commit relationship and exact asset inventory,
-revalidates archive manifests with current authority, and computes the
-consumer checkout's own projection and expected ledger with its exact
-credential-free `xtask`. Only exact equality exposes a local `file://` index.
-The workflow authority commit, package-source commit, and consumer commit are
-independent inputs; a newer consumer SHA alone is never evidence of package
-compatibility.
+Schema 1 selects one program root and its dependency closure. Schema 2
+`browser-inputs` binds the sorted browser roots, with `shell` excluded and
+`rootfs` included, plus the deterministic typed union of their closures.
+Every identity records manifest, contextual cache key, package kind, and
+disposition: `program-archive`, `library-archive`, or `source-only`.
+Source-only inputs remain in the projection but are absent from the expected
+archive ledger, minimal index, and asset inventory.
+
+Only the current exact-main authority executes. It runs its browser-root
+scanner against source or consumer trees as inert data and uses its versioned
+Rust reader to parse their package manifests, build metadata, and checked
+program projection. That reader freshly traverses dependencies and recomputes
+cache identities. It does not execute a source/consumer dev shell, npm package,
+Cargo command, xtask, or repository script. Unsupported source formats,
+overlays, stale cache records, omissions, and substitutions fail closed.
+
+`.github/scripts/materialize-durable-package-generation.sh` downloads every
+asset anonymously, validates the manifest/release/direct-tag relationship,
+requeries the exact asset inventory, and uses the shared current Rust
+`validate-generation` command to verify strict index structure, snapshot,
+hashes, archive manifests, immutable Git inputs, and embedded main commit. It
+then derives the consumer projection with current authority and exposes a local
+`file://` index only on exact equality. A consumer SHA alone, ancestry,
+same-tree relationship, PR identity, or tag identity is never compatibility
+evidence.
 
 For pre-push iteration on packages whose source build is fast,
 just rely on the resolver's fall-through: edit `package.toml`,

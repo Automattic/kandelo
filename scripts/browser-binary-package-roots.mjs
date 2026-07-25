@@ -581,7 +581,7 @@ function parseCliArgs(argv) {
     if (
       flag !== "--include-package" &&
       flag !== "--exclude-package" &&
-      flag !== "--repo-root"
+      flag !== "--source-root"
     ) {
       throw new Error(`unknown argument: ${flag}`);
     }
@@ -591,7 +591,7 @@ function parseCliArgs(argv) {
     index += 1;
     if (flag === "--include-package") options.includePackages.push(value);
     if (flag === "--exclude-package") options.excludePackages.push(value);
-    if (flag === "--repo-root") repoRoot = resolve(value);
+    if (flag === "--source-root") repoRoot = resolve(value);
   }
   return { repoRoot, options };
 }
