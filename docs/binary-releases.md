@@ -200,6 +200,16 @@ generations, composes only their verified local indexes, and exposes one
 `file://` resolver index beside the exact downloaded archives. It never uses
 the mutable `binaries-abi-v<N>` index as a base or fallback.
 
+The protected Homebrew publish and maintenance callers must carry both exact
+content tags. The reusable publisher validates their architecture in its first
+trust step, admits the current exact Kandelo `main` SHA, and then materializes
+the wasm32 generation before Formula build/test package resolution. Its browser
+verifier materializes and combines both architectures before any browser
+package resolution. The workflow accepts a resolver activation only when the
+reported URL exactly names the regular, non-symlink local index it just
+materialized. Dry runs may omit generation tags because they cannot mutate
+canonical state; supplied dry-run tags are still validated.
+
 Repository-wide GitHub Release immutability cannot be assumed because
 `binaries-abi-v<N>` is intentionally updated. Durable generation releases are
 therefore append-only by application contract. A retry may resume an exact

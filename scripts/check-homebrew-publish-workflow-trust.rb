@@ -21,11 +21,11 @@ MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
-PUBLISHER_PLAN_DIGEST = "96c39424b46eb259181226e6f5d76500017b9d4e37f41ef7d16a6f91924d14ae"
-PUBLISHER_BUILD_DIGEST = "44416f36bdf7a70f5319381df7255affcd2f46446287bbae314d41fb39e07514"
+PUBLISHER_PLAN_DIGEST = "81e27dd489457e6418fe1318aacf622d147240ef0e2f971ee3b6b7221af277db"
+PUBLISHER_BUILD_DIGEST = "2846d699f03bca813097949d848fb93696e59052e537f107a56ffb4fccdb04c7"
 PUBLISHER_UPLOAD_DIGEST = "a44f8b7b2eb1d4b9436496cc9a099b80fb70be52143820e77fb7196e807d302f"
 PUBLISHER_INDEX_DIGEST = "7b05a7e4b076628ab999f9edb2e39a6641c4bb9a2563afcf19be15a119566bbe"
-PUBLISHER_VERIFY_DIGEST = "97a75eded2045581401d0389fd76ae32ac18b51431bf6bfd02f1a0b3f783f15b"
+PUBLISHER_VERIFY_DIGEST = "a621279fe7414c974042c3852e3bf0fef6d133cb8b0b7ccbae4da7047e2888e6"
 PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a0335816a0886b"
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
 MAINTENANCE_VALIDATE_DIGEST = "30ebccd5d44e004e37f168e81284d7ceb18accfa067c05248c1cc19398a7515f"
@@ -33,6 +33,10 @@ MAINTENANCE_ROLLBACK_DIGEST = "f82d9f351202c3a20824e4525eb88ce7f75879740014d3232
 REPOSITORY_CANARY_STEPS_DIGEST = "9cf30d889bd1bf6d0ab5b5f99e35f552d40f78f9b7dcb5fd40a07041b4c0f453"
 SELF_TEST_TAP_SHA = "e" * 40
 SELF_TEST_KANDELO_MAIN_SHA = "a351fc9b18da032c09160c95f1da672374ade700"
+SELF_TEST_PACKAGE_GENERATION_WASM32 =
+  "package-generation-browser-inputs-wasm32-abi-v42-sha256-#{"c" * 64}"
+SELF_TEST_PACKAGE_GENERATION_WASM64 =
+  "package-generation-browser-inputs-wasm64-abi-v42-sha256-#{"d" * 64}"
 
 def check(condition, message)
   raise message unless condition
@@ -113,6 +117,8 @@ def caller_validation_result(source, overrides = {})
     "DRY_RUN" => "true",
     "KANDELO_REPOSITORY" => "Automattic/kandelo",
     "KANDELO_REF" => "main",
+    "PACKAGE_GENERATION_WASM32" => "",
+    "PACKAGE_GENERATION_WASM64" => "",
     "TAP_NAME" => "kandelo-dev/tap-core",
     "TAP_REPOSITORY" => "kandelo-dev/homebrew-tap-core",
     "TAP_REF" => "main",
@@ -218,6 +224,13 @@ def tap_source_binding_result(source, overrides = {})
   end
 end
 
+def expected_caller_outputs(kandelo_ref, tap_ref, wasm32: "", wasm64: "")
+  "kandelo-ref=#{kandelo_ref}\n" \
+    "tap-ref=#{tap_ref}\n" \
+    "package-generation-wasm32=#{wasm32}\n" \
+    "package-generation-wasm64=#{wasm64}\n"
+end
+
 def check_caller_validation_behavior(workflow)
   plan_steps = job_steps(workflow_jobs(workflow).fetch("plan"), "publisher plan")
   source = named_step(plan_steps, "Validate caller trust boundary").fetch("run")
@@ -226,6 +239,8 @@ def check_caller_validation_behavior(workflow)
       "kandelo-dev/homebrew-tap-core/.github/workflows/publish-bottles.yml@refs/heads/main",
     "DRY_RUN" => "false",
     "KANDELO_REF" => SELF_TEST_KANDELO_MAIN_SHA,
+    "PACKAGE_GENERATION_WASM32" => SELF_TEST_PACKAGE_GENERATION_WASM32,
+    "PACKAGE_GENERATION_WASM64" => SELF_TEST_PACKAGE_GENERATION_WASM64,
     "TAP_REF" => SELF_TEST_TAP_SHA,
   }.freeze
 
@@ -233,9 +248,10 @@ def check_caller_validation_behavior(workflow)
     "KANDELO_REF" => "review/homebrew_source-1.2",
     "TAP_REF" => "formula/pilot_1.2",
   })
-  check(branch["status"] == 0 && branch["outputs"] ==
-        "kandelo-ref=refs/heads/review/homebrew_source-1.2\n" \
-        "tap-ref=refs/heads/formula/pilot_1.2\n",
+  check(branch["status"] == 0 && branch["outputs"] == expected_caller_outputs(
+          "refs/heads/review/homebrew_source-1.2",
+          "refs/heads/formula/pilot_1.2"
+        ),
         "publisher dry-run does not normalize reviewed branch names")
 
   kandelo_sha = "a" * 40
@@ -245,7 +261,7 @@ def check_caller_validation_behavior(workflow)
     "TAP_REF" => tap_sha,
   })
   check(exact["status"] == 0 && exact["outputs"] ==
-        "kandelo-ref=#{kandelo_sha}\ntap-ref=#{tap_sha}\n",
+        expected_caller_outputs(kandelo_sha, tap_sha),
         "publisher dry-run does not accept exact source commits")
 
   data_only = caller_validation_result(source, {
@@ -263,7 +279,7 @@ def check_caller_validation_behavior(workflow)
     "TAP_REPOSITORY" => "KANDELO-DEV/HOMEBREW-TAP-CORE",
   })
   check(mixed_case["status"] == 0 && mixed_case["outputs"] ==
-        "kandelo-ref=refs/heads/main\ntap-ref=refs/heads/main\n",
+        expected_caller_outputs("refs/heads/main", "refs/heads/main"),
         "publisher does not compare GitHub repository identities case-insensitively")
 
   case_variant_workflow = caller_validation_result(source, {
@@ -279,8 +295,57 @@ def check_caller_validation_behavior(workflow)
     "KANDELO_REF" => kandelo_sha,
   }))
   check(write_sha["status"] == 0 && write_sha["outputs"] ==
-        "kandelo-ref=#{kandelo_sha}\ntap-ref=#{SELF_TEST_TAP_SHA}\n",
+        expected_caller_outputs(
+          kandelo_sha,
+          SELF_TEST_TAP_SHA,
+          wasm32: SELF_TEST_PACKAGE_GENERATION_WASM32,
+          wasm64: SELF_TEST_PACKAGE_GENERATION_WASM64
+        ),
         "publisher write path does not accept an exact reviewed Kandelo commit")
+
+  dry_generations = caller_validation_result(source, {
+    "PACKAGE_GENERATION_WASM32" => SELF_TEST_PACKAGE_GENERATION_WASM32,
+    "PACKAGE_GENERATION_WASM64" => SELF_TEST_PACKAGE_GENERATION_WASM64,
+  })
+  check(dry_generations["status"] == 0 &&
+        dry_generations["outputs"] == expected_caller_outputs(
+          "refs/heads/main",
+          "refs/heads/main",
+          wasm32: SELF_TEST_PACKAGE_GENERATION_WASM32,
+          wasm64: SELF_TEST_PACKAGE_GENERATION_WASM64
+        ),
+        "publisher dry-run does not preserve optional exact generation tags")
+
+  {
+    "wasm32 tag bound to wasm64" => {
+      "PACKAGE_GENERATION_WASM32" => SELF_TEST_PACKAGE_GENERATION_WASM64,
+    },
+    "wasm64 tag bound to wasm32" => {
+      "PACKAGE_GENERATION_WASM64" => SELF_TEST_PACKAGE_GENERATION_WASM32,
+    },
+    "mutable wasm32 generation name" => {
+      "PACKAGE_GENERATION_WASM32" => "package-generation-browser-inputs-wasm32-latest",
+    },
+    "uppercase wasm64 digest" => {
+      "PACKAGE_GENERATION_WASM64" => SELF_TEST_PACKAGE_GENERATION_WASM64.upcase,
+    },
+  }.each do |label, override|
+    rejected = caller_validation_result(source, override)
+    arch = override.key?("PACKAGE_GENERATION_WASM32") ? "wasm32" : "wasm64"
+    check(rejected["status"] == 2 && rejected["stderr"].include?(
+            "package-generation-#{arch} must be an exact browser-inputs content tag"
+          ), "publisher dry-run accepts #{label}")
+  end
+
+  [
+    ["missing wasm32 generation", "PACKAGE_GENERATION_WASM32"],
+    ["missing wasm64 generation", "PACKAGE_GENERATION_WASM64"],
+  ].each do |label, missing|
+    rejected = caller_validation_result(source, write_caller.merge(missing => ""))
+    check(rejected["status"] == 2 && rejected["stderr"].include?(
+            "#{missing.downcase.tr('_', '-')} must be an exact browser-inputs content tag"
+          ), "publisher write path accepts #{label}")
+  end
 
   write_branch = caller_validation_result(source, write_caller.merge({
     "KANDELO_REF" => "review/homebrew",
@@ -552,6 +617,10 @@ def check_tap_callers
     "arches" => "${{ github.event.client_payload.arches || 'wasm32' }}",
     "release-tag" => "${{ github.event.client_payload.release_tag || '' }}",
     "expected-cache-keys" => "${{ github.event.client_payload.expected_cache_keys || '' }}",
+    "package-generation-wasm32" =>
+      "${{ github.event.client_payload.package_generation_wasm32 }}",
+    "package-generation-wasm64" =>
+      "${{ github.event.client_payload.package_generation_wasm64 }}",
     "force" => "${{ github.event.client_payload.force || false }}",
     "dry-run" => false,
   }
@@ -576,6 +645,10 @@ def check_tap_callers
       "tap-repository" => "${{ github.event.client_payload.tap_repository || 'kandelo-dev/homebrew-tap-core' }}",
       "tap-name" => "${{ github.event.client_payload.tap_name || 'kandelo-dev/tap-core' }}",
       "tap-ref" => "${{ github.event.client_payload.tap_ref || 'main' }}",
+      "package-generation-wasm32" =>
+        "${{ github.event.client_payload.package_generation_wasm32 || '' }}",
+      "package-generation-wasm64" =>
+        "${{ github.event.client_payload.package_generation_wasm64 || '' }}",
       "dry-run" => true,
     }),
   )
@@ -594,6 +667,10 @@ def check_tap_callers
       "arches" => "${{ github.event.client_payload.arches || 'wasm32' }}",
       "release-tag" => "${{ github.event.client_payload.release_tag || '' }}",
       "expected-cache-keys" => "${{ github.event.client_payload.expected_cache_keys || '' }}",
+      "package-generation-wasm32" =>
+        "${{ github.event.client_payload.package_generation_wasm32 }}",
+      "package-generation-wasm64" =>
+        "${{ github.event.client_payload.package_generation_wasm64 }}",
       "force" => "${{ github.event.client_payload.force || false }}",
       "rollback-reason" => "${{ github.event.client_payload.rollback_reason || '' }}",
       "rollback-ref" => "${{ github.event.client_payload.rollback_ref || '' }}",
@@ -728,6 +805,8 @@ def check_publisher(workflow)
     "release-tag" => { "type" => "string", "default" => "" },
     "bottle-root-url" => { "type" => "string", "default" => "" },
     "expected-cache-keys" => { "type" => "string", "default" => "" },
+    "package-generation-wasm32" => { "type" => "string", "default" => "" },
+    "package-generation-wasm64" => { "type" => "string", "default" => "" },
     "force" => { "type" => "boolean", "default" => false },
     "dry-run" => { "type" => "boolean", "default" => false },
     "require-vfs-acceptance" => { "type" => "boolean", "default" => false },
@@ -854,6 +933,8 @@ def check_publisher(workflow)
           "DRY_RUN" => "${{ inputs.dry-run }}",
           "KANDELO_REPOSITORY" => "${{ inputs.kandelo-repository }}",
           "KANDELO_REF" => "${{ inputs.kandelo-ref }}",
+          "PACKAGE_GENERATION_WASM32" => "${{ inputs.package-generation-wasm32 }}",
+          "PACKAGE_GENERATION_WASM64" => "${{ inputs.package-generation-wasm64 }}",
           "TAP_NAME" => "${{ inputs.tap-name }}",
           "TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
           "TAP_REF" => "${{ inputs.tap-ref }}",
@@ -885,12 +966,19 @@ def check_publisher(workflow)
     'write publication requires an exact lowercase 40-character Kandelo commit SHA',
     'normalize_write_tap_ref()',
     'write publication requires an exact reviewed lowercase 40-character tap commit SHA',
+    'normalize_package_generation()',
+    'package-generation-browser-inputs-wasm32-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}',
+    'package-generation-browser-inputs-wasm64-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}',
+    'normalize_package_generation wasm32 "$PACKAGE_GENERATION_WASM32"',
+    'normalize_package_generation wasm64 "$PACKAGE_GENERATION_WASM64"',
     'validated_kandelo_ref="$(normalize_dry_run_source_ref "Kandelo" "$KANDELO_REF")"',
     'validated_tap_ref="$(normalize_dry_run_source_ref "tap" "$TAP_REF")"',
     'validated_kandelo_ref="$(normalize_write_kandelo_ref "$KANDELO_REF")"',
     'validated_tap_ref="$(normalize_write_tap_ref "$TAP_REF")"',
     'echo "kandelo-ref=$validated_kandelo_ref"',
     'echo "tap-ref=$validated_tap_ref"',
+    'echo "package-generation-wasm32=$validated_generation_wasm32"',
+    'echo "package-generation-wasm64=$validated_generation_wasm64"',
   ].each do |predicate|
     check(validation_run.include?(predicate), "publisher caller validation lacks #{predicate}")
   end
@@ -911,6 +999,14 @@ def check_publisher(workflow)
   write_tap_ref_index = validation_run.index(
     'validated_tap_ref="$(normalize_write_tap_ref "$TAP_REF")"'
   )
+  write_generation_wasm32_index = validation_run.index(
+    'validated_generation_wasm32="$(',
+    write_tap_ref_index
+  )
+  write_generation_wasm64_index = validation_run.index(
+    'validated_generation_wasm64="$(',
+    write_generation_wasm32_index
+  )
   check(dry_index && caller_index && kandelo_index && tap_name_index &&
         caller_index < dry_index && kandelo_index < dry_index && tap_name_index < dry_index,
         "publisher dry-run can bypass caller authority validation")
@@ -918,6 +1014,10 @@ def check_publisher(workflow)
         dry_index < dry_kandelo_ref_index && dry_kandelo_ref_index < write_kandelo_ref_index &&
         dry_kandelo_ref_index < write_tap_ref_index,
         "publisher does not separate selectable dry-run refs from reviewed write refs")
+  check(write_generation_wasm32_index && write_generation_wasm64_index &&
+        write_tap_ref_index < write_generation_wasm32_index &&
+        write_generation_wasm32_index < write_generation_wasm64_index,
+        "publisher does not require both exact package generations on its write path")
 
   main_admission = named_step(plan_steps, "Admit exact Kandelo main source")
   check(main_admission.keys.sort == %w[env if name run shell] &&
@@ -1118,6 +1218,8 @@ def check_publisher(workflow)
     "bottle-root-prefix" => "${{ steps.release.outputs.bottle-root-prefix }}",
     "kandelo-sha" => "${{ steps.source-commits.outputs.kandelo-sha }}",
     "tap-sha" => "${{ steps.source-commits.outputs.tap-sha }}",
+    "package-generation-wasm32" => "${{ steps.trust.outputs.package-generation-wasm32 }}",
+    "package-generation-wasm64" => "${{ steps.trust.outputs.package-generation-wasm64 }}",
     "core-dependency-tap-sha" => "${{ steps.dependency-taps.outputs.core-tap-sha }}",
     "vfs-acceptance-formula" => "${{ steps.vfs-acceptance.outputs.formula }}",
   }, "publisher plan outputs changed")
@@ -1484,6 +1586,114 @@ def check_publisher(workflow)
     "kandelo"
   )
 
+  build_generation = named_step(
+    build_steps, "Materialize exact-main Formula runtime packages"
+  )
+  verify_generations = named_step(
+    verify_steps, "Materialize exact-main browser runtime packages"
+  )
+  check(build_generation.keys.sort == %w[env if name run shell] &&
+        build_generation["if"] == "${{ !inputs.dry-run }}" &&
+        build_generation["shell"] == "bash" &&
+        build_generation["env"] == {
+          "GH_TOKEN" => "${{ github.token }}",
+          "KANDELO_SHA" => "${{ needs.plan.outputs.kandelo-sha }}",
+          "PACKAGE_GENERATION_WASM32" =>
+            "${{ needs.plan.outputs.package-generation-wasm32 }}",
+        }, "publisher exact Formula generation mapping changed")
+  check(verify_generations.keys.sort == %w[env if name run shell] &&
+        verify_generations["if"] == "${{ !inputs.dry-run }}" &&
+        verify_generations["shell"] == "bash" &&
+        verify_generations["env"] == {
+          "GH_TOKEN" => "${{ github.token }}",
+          "KANDELO_SHA" => "${{ needs.plan.outputs.kandelo-sha }}",
+          "PACKAGE_GENERATION_WASM32" =>
+            "${{ needs.plan.outputs.package-generation-wasm32 }}",
+          "PACKAGE_GENERATION_WASM64" =>
+            "${{ needs.plan.outputs.package-generation-wasm64 }}",
+        }, "publisher exact browser generations mapping changed")
+
+  common_generation_fragments = [
+    "bash scripts/dev-shell.sh cargo build --release -p xtask",
+    "bash .github/scripts/materialize-exact-package-generations.sh",
+    '--consumer-root "$PWD"',
+    '--consumer-sha "$KANDELO_SHA"',
+    '--authority-xtask "$PWD/target/$host/release/xtask"',
+    "--repository Automattic/kandelo",
+    'resolver_index="$generation_root/resolver/index.toml"',
+    'expected_index_url="file://$resolver_index"',
+    'index_url="$(cat "$generation_root/index-url.txt")"',
+    '[ -f "$resolver_index" ] && [ ! -L "$resolver_index" ]',
+    '[ "$(realpath -- "$resolver_index")" = "$resolver_index" ]',
+    '[ "$index_url" = "$expected_index_url" ]',
+    'echo "WASM_POSIX_BINARY_INDEX_URL=$index_url" >> "$GITHUB_ENV"',
+  ]
+  build_generation_run = build_generation.fetch("run")
+  verify_generations_run = verify_generations.fetch("run")
+  common_generation_fragments.each do |fragment|
+    check(build_generation_run.include?(fragment),
+          "publisher Formula generation activation lacks #{fragment}")
+    check(verify_generations_run.include?(fragment),
+          "publisher browser generation activation lacks #{fragment}")
+  end
+  check(build_generation_run.include?(
+          '--wasm32-tag "$PACKAGE_GENERATION_WASM32"'
+        ) &&
+        !build_generation_run.include?("--wasm64-tag") &&
+        build_generation_run.include?(
+          "Formula build/test helpers execute as universal wasm32"
+        ), "publisher Formula build does not use only its exact wasm32 runtime generation")
+  check(verify_generations_run.include?(
+          '--wasm32-tag "$PACKAGE_GENERATION_WASM32"'
+        ) &&
+        verify_generations_run.include?(
+          '--wasm64-tag "$PACKAGE_GENERATION_WASM64"'
+        ), "publisher browser verification does not combine both exact generations")
+
+  build_warm = named_step(build_steps, "Warm Kandelo dev shell")
+  verify_warm = named_step(verify_steps, "Warm Kandelo dev shell")
+  build_sysroot = named_step(build_steps, "Build Kandelo sysroot")
+  verify_handoff = named_step(verify_steps, "Download strict build handoff")
+  check(build_steps.index(build_generation) == build_steps.index(build_warm) + 1 &&
+        build_steps.index(build_generation) < build_steps.index(build_sysroot),
+        "publisher can resolve Formula runtime packages before exact generation activation")
+  check(verify_steps.index(verify_generations) == verify_steps.index(verify_warm) + 1 &&
+        verify_steps.index(verify_generations) < verify_steps.index(verify_handoff),
+        "publisher can verify browser packages before exact generation activation")
+  check(publisher_source.scan(
+          /echo "WASM_POSIX_BINARY_INDEX_URL=\$index_url" >> "\$GITHUB_ENV"/
+        ).length == 2 &&
+        !build_generation_run.include?("binaries-abi-v") &&
+        !verify_generations_run.include?("binaries-abi-v"),
+        "publisher permits a mutable or non-local package resolver activation")
+  exact_materializer_source = File.read(
+    File.join(REPO_ROOT, ".github/scripts/materialize-exact-package-generations.sh")
+  )
+  durable_materializer_source = File.read(
+    File.join(REPO_ROOT, ".github/scripts/materialize-durable-package-generation.sh")
+  )
+  [
+    '--required-package-source-sha "$CONSUMER_SHA"',
+    '--base-index "$TMP_ROOT/wasm32/resolver/index.toml"',
+    '--overlay-index "$TMP_ROOT/wasm64/resolver/index.toml"',
+    'link_generation_archives "$TMP_ROOT/wasm32/resolver"',
+    'link_generation_archives "$TMP_ROOT/wasm64/resolver"',
+    'printf \'file://%s/resolver/index.toml\\n\' "$OUTPUT_DIR"',
+  ].each do |fragment|
+    check(exact_materializer_source.include?(fragment),
+          "exact package-generation materializer lacks #{fragment}")
+  end
+  [
+    '[ "$package_source_sha" != "$REQUIRED_PACKAGE_SOURCE_SHA" ]',
+    "generation package source differs from the required exact main commit",
+    'run_without_credentials "$AUTHORITY_XTASK" staging-reuse validate-generation',
+    '[ "$(git -C "$CONSUMER_ROOT" rev-parse HEAD)" != "$CONSUMER_SHA" ]',
+    'printf \'file://%s/resolver/index.toml\\n\' "$OUTPUT_DIR"',
+  ].each do |fragment|
+    check(durable_materializer_source.include?(fragment),
+          "durable package-generation materializer lacks #{fragment}")
+  end
+
   credential_names = %w[
     GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN HOMEBREW_GITHUB_PACKAGES_TOKEN
     HOMEBREW_DOCKER_REGISTRY_TOKEN
@@ -1499,9 +1709,18 @@ def check_publisher(workflow)
       "GH_TOKEN" => "${{ github.token }}",
     }
   end, "publisher plan credential escapes source validation")
-  [build_steps, verify_steps].each do |steps|
-    exposed = steps.flat_map { |step| step.fetch("env", {}).keys & credential_names }
-    check(exposed.empty?, "unprivileged publisher phase exposes a credential environment")
+  {
+    build_steps => build_generation,
+    verify_steps => verify_generations,
+  }.each do |steps, generation_step|
+    credential_steps = steps.select do |step|
+      !(step.fetch("env", {}).keys & credential_names).empty?
+    end
+    check(credential_steps == [generation_step] &&
+          generation_step.fetch("env").slice(*credential_names) == {
+            "GH_TOKEN" => "${{ github.token }}",
+          },
+          "publisher read credential escapes exact public-generation metadata fetch")
     check(steps.select { |step| step["uses"] == CHECKOUT_ACTION }.all? do |step|
       step.dig("with", "persist-credentials") == false
     end, "unprivileged publisher phase persists checkout credentials")
@@ -5007,6 +5226,8 @@ def check_maintenance(workflow)
     "arches" => { "type" => "string", "default" => "wasm32" },
     "release-tag" => { "type" => "string", "default" => "" },
     "expected-cache-keys" => { "type" => "string", "default" => "" },
+    "package-generation-wasm32" => { "type" => "string", "default" => "" },
+    "package-generation-wasm64" => { "type" => "string", "default" => "" },
     "force" => { "type" => "boolean", "default" => false },
     "rollback-reason" => { "type" => "string", "default" => "" },
     "rollback-ref" => { "type" => "string", "default" => "" },
@@ -5124,6 +5345,8 @@ def check_maintenance(workflow)
     "arches" => "${{ inputs.arches }}",
     "release-tag" => "${{ inputs.release-tag }}",
     "expected-cache-keys" => "${{ inputs.expected-cache-keys }}",
+    "package-generation-wasm32" => "${{ inputs.package-generation-wasm32 }}",
+    "package-generation-wasm64" => "${{ inputs.package-generation-wasm64 }}",
     "force" => "${{ inputs.force }}",
     "dry-run" => false,
   }, "maintenance rebuild input wiring changed")
@@ -5324,6 +5547,17 @@ def self_test(publisher, maintenance, repository_canary)
         'validated_kandelo_ref="$KANDELO_REF"'
       )
     },
+    "write wasm32 package generation omitted" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Validate caller trust boundary")
+      step.fetch("env")["PACKAGE_GENERATION_WASM32"] = ""
+    },
+    "write package generation architecture check bypass" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Validate caller trust boundary")
+      step["run"] = step.fetch("run").sub(
+        "normalize_package_generation wasm64 \"$PACKAGE_GENERATION_WASM64\"",
+        "printf '%s\\n' \"$PACKAGE_GENERATION_WASM64\""
+      )
+    },
     "exact-main admission uses a commit lookup instead of protected main" => lambda { |w|
       step = mutate_named_step(w, "plan", "Admit exact Kandelo main source")
       step["run"] = step.fetch("run").sub(
@@ -5437,6 +5671,38 @@ def self_test(publisher, maintenance, repository_canary)
     },
     "build authority escalation" => lambda { |w|
       w.fetch("jobs").fetch("build-and-test").fetch("permissions")["packages"] = "write"
+    },
+    "Formula generation activation skipped" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test", "Materialize exact-main Formula runtime packages"
+      )
+      step["if"] = "${{ false }}"
+    },
+    "Formula generation local resolver check bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test", "Materialize exact-main Formula runtime packages"
+      )
+      step["run"] = step.fetch("run").sub(
+        '[ "$index_url" = "$expected_index_url" ]', "true"
+      )
+    },
+    "browser generation omits wasm64" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Materialize exact-main browser runtime packages"
+      )
+      step["run"] = step.fetch("run").sub(
+        '--wasm64-tag "$PACKAGE_GENERATION_WASM64" \\',
+        ""
+      )
+    },
+    "browser generation activates mutable resolver" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Materialize exact-main browser runtime packages"
+      )
+      step["run"] = step.fetch("run").sub(
+        'echo "WASM_POSIX_BINARY_INDEX_URL=$index_url" >> "$GITHUB_ENV"',
+        'echo "WASM_POSIX_BINARY_INDEX_URL=https://example.invalid/index.toml" >> "$GITHUB_ENV"'
+      )
     },
     "uploader authority escalation" => lambda { |w|
       w.fetch("jobs").fetch("upload-bottle").fetch("permissions")["contents"] = "write"

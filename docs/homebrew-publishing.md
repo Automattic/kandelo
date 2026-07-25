@@ -87,12 +87,22 @@ resolver index. The Homebrew publisher must consume that verified local index;
 it must never reconstruct a staging or mutable canonical URL.
 
 For a canonical bottle run, both architecture-specific `browser-inputs` tags
-are explicit dispatch inputs. The publisher requires their embedded package
-source to equal its admitted exact-main SHA, anonymously materializes them, and
-combines only their local verified indexes and archives into one `file://`
-resolver generation. Matching recipes from an ancestor, equal tree, or older
-main commit remain valid for ordinary projection-compatible consumers but are
-not bottle-production authority.
+are explicit `package_generation_wasm32` and `package_generation_wasm64`
+dispatch fields. The protected callers forward them as
+`package-generation-wasm32` and `package-generation-wasm64`; a mutating publish
+or maintenance rebuild rejects either missing tag. A dry run may omit either
+tag because it cannot write, but any supplied tag still has to be an exact
+architecture-bound content tag.
+
+The publisher requires each generation's embedded package source to equal its
+admitted exact-main SHA and materializes it before package resolution. Formula
+build/test helpers use the verified local wasm32 generation because those
+helpers are wasm32 programs for both bottle architectures. Browser verification
+combines both independently verified generations. Both phases export only the
+resulting exact `file://` index beside the downloaded archives; neither may use
+the mutable `binaries-abi-v<N>` index as a base or fallback. Matching recipes
+from an ancestor, equal tree, or older main commit remain valid for ordinary
+projection-compatible consumers but are not bottle-production authority.
 
 See
 [Binary releases: durable package generations](binary-releases.md#durable-package-generations-for-cross-workflow-publication)

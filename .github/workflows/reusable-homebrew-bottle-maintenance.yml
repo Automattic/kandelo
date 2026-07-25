@@ -24,6 +24,12 @@ on:
       expected-cache-keys:
         type: string
         default: ""
+      package-generation-wasm32:
+        type: string
+        default: ""
+      package-generation-wasm64:
+        type: string
+        default: ""
       force:
         type: boolean
         default: false
@@ -105,6 +111,8 @@ jobs:
       arches: ${{ inputs.arches }}
       release-tag: ${{ inputs.release-tag }}
       expected-cache-keys: ${{ inputs.expected-cache-keys }}
+      package-generation-wasm32: ${{ inputs.package-generation-wasm32 }}
+      package-generation-wasm64: ${{ inputs.package-generation-wasm64 }}
       force: ${{ inputs.force }}
       dry-run: false
 

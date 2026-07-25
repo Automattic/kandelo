@@ -574,12 +574,14 @@ canonical release):
      The workflow rechecks `M == refs/heads/main` before archive and index
      mutations. A PR staging or merge-candidate generation is validation
      evidence only and cannot become a Homebrew/durable-package generation;
-  4. dispatch the protected tap caller with exact `M` as `kandelo_sha` and the
-     reviewed tap commit as `tap_sha`. The reusable publisher must require
-     `M == refs/heads/main` at admission and recheck that identity immediately
-     before every canonical bottle, version-index, tap-state, and VFS release
-     mutation. If `main` advances, stop and redispatch from the new exact
-     `main` commit;
+  4. dispatch the protected tap caller with exact `M` as `kandelo_sha`, the
+     reviewed tap commit as `tap_sha`, and both exact durable content tags as
+     `package_generation_wasm32` and `package_generation_wasm64`. The reusable
+     publisher must require `M == refs/heads/main` at admission, materialize
+     only those local verified generations before package resolution, and
+     recheck main identity immediately before every canonical bottle,
+     version-index, tap-state, and VFS release mutation. If `main` advances,
+     stop and redispatch from the new exact `main` commit;
   5. publish the complete intended ABI-42 closure, then update the shell lock
      to the exact resulting tap commit, remove the source-built bridge, and run
      exact-byte Node.js and Chromium acceptance against the strict bottle
@@ -683,6 +685,13 @@ Durable package-input checkpoint (2026-07-25; publication still pending):
   an acceptance constant. A generation is eligible only when the exact-main
   projection, fresh expected ledger, canonical activation, embedded archive
   source provenance, and complete byte inventory all agree.
+- Protected production and maintenance rebuild callers carry both exact
+  architecture content tags. Canonical Formula builds activate only the local
+  verified wasm32 index; browser verification activates only the combined
+  wasm32/wasm64 local index. Dry runs may omit the tags because they cannot
+  write, but supplied tags still undergo the same format and architecture
+  checks. This consumer wiring is implemented; publication of the two public
+  browser-input generations remains the activation gate.
 - This closes the lifecycle design gap between temporary PR staging and later
   Homebrew/browser validation without promoting PR artifacts. It does not by
   itself publish either browser generation, activate the shell, or prove a

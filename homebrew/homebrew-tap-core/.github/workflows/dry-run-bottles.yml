@@ -21,5 +21,7 @@ jobs:
       arches: ${{ github.event.client_payload.arches || 'wasm32' }}
       release-tag: ${{ github.event.client_payload.release_tag || '' }}
       expected-cache-keys: ${{ github.event.client_payload.expected_cache_keys || '' }}
+      package-generation-wasm32: ${{ github.event.client_payload.package_generation_wasm32 || '' }}
+      package-generation-wasm64: ${{ github.event.client_payload.package_generation_wasm64 || '' }}
       force: ${{ github.event.client_payload.force || false }}
       dry-run: true

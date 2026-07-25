@@ -33,6 +33,12 @@ on:
       expected-cache-keys:
         type: string
         default: ""
+      package-generation-wasm32:
+        type: string
+        default: ""
+      package-generation-wasm64:
+        type: string
+        default: ""
       force:
         type: boolean
         default: false
@@ -56,6 +62,8 @@ jobs:
       bottle-root-prefix: ${{ steps.release.outputs.bottle-root-prefix }}
       kandelo-sha: ${{ steps.source-commits.outputs.kandelo-sha }}
       tap-sha: ${{ steps.source-commits.outputs.tap-sha }}
+      package-generation-wasm32: ${{ steps.trust.outputs.package-generation-wasm32 }}
+      package-generation-wasm64: ${{ steps.trust.outputs.package-generation-wasm64 }}
       core-dependency-tap-sha: ${{ steps.dependency-taps.outputs.core-tap-sha }}
       vfs-acceptance-formula: ${{ steps.vfs-acceptance.outputs.formula }}
     steps:
@@ -70,6 +78,8 @@ jobs:
           DRY_RUN: ${{ inputs.dry-run }}
           KANDELO_REPOSITORY: ${{ inputs.kandelo-repository }}
           KANDELO_REF: ${{ inputs.kandelo-ref }}
+          PACKAGE_GENERATION_WASM32: ${{ inputs.package-generation-wasm32 }}
+          PACKAGE_GENERATION_WASM64: ${{ inputs.package-generation-wasm64 }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
           TAP_REF: ${{ inputs.tap-ref }}
@@ -124,6 +134,26 @@ jobs:
             return 2
           }
 
+          normalize_package_generation() {
+            local arch="$1"
+            local tag="$2"
+            local pattern
+            case "$arch" in
+              wasm32)
+                pattern='^package-generation-browser-inputs-wasm32-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}$'
+                ;;
+              wasm64)
+                pattern='^package-generation-browser-inputs-wasm64-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}$'
+                ;;
+              *) echo "::error::unsupported package-generation architecture" >&2; return 2 ;;
+            esac
+            [[ "$tag" =~ $pattern ]] || {
+              echo "::error::package-generation-$arch must be an exact browser-inputs content tag" >&2
+              return 2
+            }
+            printf '%s\n' "$tag"
+          }
+
           normalized_caller_repository="$(printf '%s' "$CALLER_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           normalized_tap_repository="$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           normalized_tap_name="$(printf '%s' "$TAP_NAME" | tr '[:upper:]' '[:lower:]')"
@@ -156,6 +186,18 @@ jobs:
             }
             validated_kandelo_ref="$(normalize_dry_run_source_ref "Kandelo" "$KANDELO_REF")"
             validated_tap_ref="$(normalize_dry_run_source_ref "tap" "$TAP_REF")"
+            validated_generation_wasm32=""
+            validated_generation_wasm64=""
+            if [ -n "$PACKAGE_GENERATION_WASM32" ]; then
+              validated_generation_wasm32="$(
+                normalize_package_generation wasm32 "$PACKAGE_GENERATION_WASM32"
+              )"
+            fi
+            if [ -n "$PACKAGE_GENERATION_WASM64" ]; then
+              validated_generation_wasm64="$(
+                normalize_package_generation wasm64 "$PACKAGE_GENERATION_WASM64"
+              )"
+            fi
           else
             case "$CALLER_WORKFLOW_REF" in
               "$CALLER_REPOSITORY/.github/workflows/publish-bottles.yml@refs/heads/main"|\
@@ -164,10 +206,21 @@ jobs:
             esac
             validated_kandelo_ref="$(normalize_write_kandelo_ref "$KANDELO_REF")"
             validated_tap_ref="$(normalize_write_tap_ref "$TAP_REF")"
+            # WHY: canonical jobs must not reconstruct a resolver from the
+            # mutable binaries-abi-vN release. The two content tags bind the
+            # exact architecture-specific inputs admitted for this main SHA.
+            validated_generation_wasm32="$(
+              normalize_package_generation wasm32 "$PACKAGE_GENERATION_WASM32"
+            )"
+            validated_generation_wasm64="$(
+              normalize_package_generation wasm64 "$PACKAGE_GENERATION_WASM64"
+            )"
           fi
           {
             echo "kandelo-ref=$validated_kandelo_ref"
             echo "tap-ref=$validated_tap_ref"
+            echo "package-generation-wasm32=$validated_generation_wasm32"
+            echo "package-generation-wasm64=$validated_generation_wasm64"
           } >> "$GITHUB_OUTPUT"
 
       - name: Admit exact Kandelo main source
@@ -701,6 +754,44 @@ jobs:
         run: |
           cd kandelo
           bash scripts/dev-shell.sh true
+
+      - name: Materialize exact-main Formula runtime packages
+        if: ${{ !inputs.dry-run }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          PACKAGE_GENERATION_WASM32: ${{ needs.plan.outputs.package-generation-wasm32 }}
+        run: |
+          set -euo pipefail
+          cd kandelo
+          host="$(bash scripts/dev-shell.sh rustc -vV | sed -n 's/^host: //p')"
+          [ -n "$host" ] || {
+            echo "::error::unable to resolve the Rust host target"; exit 2;
+          }
+          bash scripts/dev-shell.sh cargo build --release -p xtask \
+            --target "$host" --quiet
+          generation_root="$RUNNER_TEMP/homebrew-package-generation-wasm32"
+          # WHY: Formula build/test helpers execute as universal wasm32
+          # programs even for a wasm64 bottle. Browser verification below
+          # separately combines both admitted architecture generations.
+          bash .github/scripts/materialize-exact-package-generations.sh \
+            --wasm32-tag "$PACKAGE_GENERATION_WASM32" \
+            --consumer-root "$PWD" \
+            --consumer-sha "$KANDELO_SHA" \
+            --authority-xtask "$PWD/target/$host/release/xtask" \
+            --repository Automattic/kandelo \
+            --output-dir "$generation_root"
+          resolver_index="$generation_root/resolver/index.toml"
+          expected_index_url="file://$resolver_index"
+          index_url="$(cat "$generation_root/index-url.txt")"
+          [ -f "$resolver_index" ] && [ ! -L "$resolver_index" ] &&
+            [ "$(realpath -- "$resolver_index")" = "$resolver_index" ] &&
+            [ "$index_url" = "$expected_index_url" ] || {
+            echo "::error::exact package generation did not produce its expected local resolver"
+            exit 2
+          }
+          echo "WASM_POSIX_BINARY_INDEX_URL=$index_url" >> "$GITHUB_ENV"
 
       - name: Build Kandelo sysroot
         shell: bash
@@ -1975,6 +2066,43 @@ jobs:
         run: |
           cd kandelo
           bash scripts/dev-shell.sh true
+
+      - name: Materialize exact-main browser runtime packages
+        if: ${{ !inputs.dry-run }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          PACKAGE_GENERATION_WASM32: ${{ needs.plan.outputs.package-generation-wasm32 }}
+          PACKAGE_GENERATION_WASM64: ${{ needs.plan.outputs.package-generation-wasm64 }}
+        run: |
+          set -euo pipefail
+          cd kandelo
+          host="$(bash scripts/dev-shell.sh rustc -vV | sed -n 's/^host: //p')"
+          [ -n "$host" ] || {
+            echo "::error::unable to resolve the Rust host target"; exit 2;
+          }
+          bash scripts/dev-shell.sh cargo build --release -p xtask \
+            --target "$host" --quiet
+          generation_root="$RUNNER_TEMP/homebrew-package-generations"
+          bash .github/scripts/materialize-exact-package-generations.sh \
+            --wasm32-tag "$PACKAGE_GENERATION_WASM32" \
+            --wasm64-tag "$PACKAGE_GENERATION_WASM64" \
+            --consumer-root "$PWD" \
+            --consumer-sha "$KANDELO_SHA" \
+            --authority-xtask "$PWD/target/$host/release/xtask" \
+            --repository Automattic/kandelo \
+            --output-dir "$generation_root"
+          resolver_index="$generation_root/resolver/index.toml"
+          expected_index_url="file://$resolver_index"
+          index_url="$(cat "$generation_root/index-url.txt")"
+          [ -f "$resolver_index" ] && [ ! -L "$resolver_index" ] &&
+            [ "$(realpath -- "$resolver_index")" = "$resolver_index" ] &&
+            [ "$index_url" = "$expected_index_url" ] || {
+            echo "::error::exact package generations did not produce their expected local resolver"
+            exit 2
+          }
+          echo "WASM_POSIX_BINARY_INDEX_URL=$index_url" >> "$GITHUB_ENV"
 
       - name: Download strict build handoff
         id: build-handoff
