@@ -4,18 +4,19 @@
 //! See `docs/plans/2026-04-20-fork-instrumentation-design.md` for the
 //! full design.
 //!
-//! Phase 1 (current): skeleton only. Parses a wasm binary, validates
-//! it, and emits it unchanged. Subsequent phases add:
-//!
-//! - Phase 2: direct-call graph discovery
-//! - Phase 3: indirect-call graph discovery
-//! - Phase 4: core instrumentation (state machine, frame save/restore)
-//! - Phase 5: reference-typed local spilling
-//! - Phase 6: catch-handler region support
-//! - Phase 7: production rollout
+//! The ABI 43 transform discovers the direct/indirect fork closure, validates
+//! that every replay value is transferable, and emits the linked-frame state
+//! machine. Scalar locals and statically tagged catch payloads are serialized
+//! per activation. Reference state without a deterministic reconstruction
+//! recipe is rejected before rewriting.
 
 use anyhow::{Context, Result, bail, ensure};
 use walrus::RawCustomSection;
+use wasm_posix_shared::abi::{
+    WPK_FORK_CAP_ACTIVATION_STATE_SAFE, WPK_FORK_CAP_DYLINK_MAIN, WPK_FORK_CAP_SIDE_ENTRY,
+    WPK_FORK_CAPABILITIES_SECTION, WPK_FORK_CAPABILITIES_VERSION, WPK_FORK_REQUIRED_EXPORTS,
+    WPK_FORK_REQUIRED_IMPORTS,
+};
 use wasmparser::{Parser, Payload};
 
 pub mod call_graph;
@@ -23,12 +24,36 @@ pub mod instrument;
 pub mod linked_frames;
 pub mod runtime;
 
-/// Versioned artifact claim emitted by `wasm-fork-instrument` and consumed by
-/// the host before it enables cross-module fork coordination.
-pub const FORK_CAPABILITIES_SECTION: &str = "kandelo.wpk_fork.capabilities";
-pub const FORK_CAPABILITIES_VERSION: u8 = 1;
-pub const FORK_CAP_SIDE_ENTRY: u8 = 1 << 0;
-pub const FORK_CAP_DYLINK_MAIN: u8 = 1 << 1;
+fn reject_preinstrumented_artifact(module: &walrus::Module) -> Result<()> {
+    let has_control_export = module.exports.iter().any(|export| {
+        WPK_FORK_REQUIRED_EXPORTS
+            .iter()
+            .any(|requirement| requirement.name == export.name)
+    });
+    let has_frame_import = module.imports.iter().any(|import| {
+        WPK_FORK_REQUIRED_IMPORTS
+            .iter()
+            .any(|requirement| requirement.module == import.module && requirement.name == import.name)
+    });
+    let has_fork_metadata = module.customs.iter().any(|(_, section)| {
+        matches!(
+            section.name(),
+            WPK_FORK_CAPABILITIES_SECTION | linked_frames::LINKED_FRAME_FORMAT_SECTION
+        )
+    });
+    if has_control_export || has_frame_import || has_fork_metadata {
+        // WHY: restamping an ABI 42 transform would certify code whose frames
+        // may still name parent-instance reference-table slots. Always rebuild
+        // from the raw linker output so the ABI 43 validator sees the original
+        // activation and table state.
+        bail!(
+            "fork-instrument: input already contains wasm-fork-instrument \
+             imports, exports, or metadata; rebuild and instrument the raw \
+             linker output instead of restamping an older artifact"
+        );
+    }
+    Ok(())
+}
 
 /// Options controlling instrumentation. Fields will grow as phases
 /// land; a `Default` implementation keeps call sites stable.
@@ -36,8 +61,7 @@ pub const FORK_CAP_DYLINK_MAIN: u8 = 1 << 1;
 pub struct Options {
     /// The fully-qualified name of the import whose callers should be
     /// instrumented. Format: `module.field` (e.g.
-    /// `kernel.kernel_fork`). Future phases read this to seed the
-    /// call-graph discovery; Phase 1 ignores it.
+    /// `kernel.kernel_fork`). This import seeds call-graph discovery.
     pub entry_import: String,
 }
 
@@ -81,20 +105,19 @@ pub fn analyze(input: &[u8], opts: &Options) -> Result<Analysis> {
 /// Instruments `input` (a complete wasm binary) according to `opts`
 /// and returns the transformed binary.
 ///
-/// Current scope: Phase 4a (runtime scaffolding) + Phase 4b
-/// (per-function structural wrap). Future phases 4c–6 extend the
-/// per-function transform with call-site state-machine wrapping,
-/// frame save/restore, mutable-global save/restore, ref-typed local
-/// spilling, and catch-handler resume.
+/// The complete transform includes runtime scaffolding, per-function
+/// switch-dispatch, linked-frame save/restore, mutable scalar-global
+/// save/restore, and activation-owned tagged-catch replay.
 ///
 /// Modules that do not import the configured entry (default
-/// `kernel.kernel_fork`) are returned unchanged — there is nothing
-/// to instrument. We do **not** treat this as an error because the
-/// tool is invoked by build scripts across programs that may or may
-/// not use `fork()`.
+/// `kernel.kernel_fork`) receive only the inert control runtime, descriptor,
+/// and capability metadata; no user function is rewritten and no linked-frame
+/// host hook is imported. We do **not** treat this as an error because build
+/// scripts invoke the tool across programs that may or may not use `fork()`.
 pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     let mut module =
         walrus::Module::from_buffer(input).context("failed to parse input wasm module")?;
+    reject_preinstrumented_artifact(&module)?;
 
     // Discover the fork-path closure *before* we mutate the module so
     // the runtime's own injected functions are not mistaken for
@@ -105,6 +128,7 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
         Some(seed) => call_graph::reaching_closure(&module, seed),
         None => Default::default(),
     };
+    instrument::validate_activation_state(&module, &fork_path)?;
 
     // The five wpk_fork_* exports prove only that some instrumentation runtime
     // was injected. They do not prove which import seeded the transformed call
@@ -112,22 +136,22 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     // call_indirect boundary. Emit a separate, versioned claim for exactly the
     // transformations performed in this invocation so the host can reject
     // stale or generically instrumented artifacts instead of mis-resuming.
-    let mut fork_capabilities = 0;
+    let mut fork_capabilities = WPK_FORK_CAP_ACTIVATION_STATE_SAFE;
     if entry.is_some() && opts.entry_import == "env.fork" {
-        fork_capabilities |= FORK_CAP_SIDE_ENTRY;
+        fork_capabilities |= WPK_FORK_CAP_SIDE_ENTRY;
     }
     if entry.is_some()
         && opts.entry_import == "kernel.kernel_fork"
         && call_graph::has_dynamic_linker_imports(&module)
     {
-        fork_capabilities |= FORK_CAP_DYLINK_MAIN;
+        fork_capabilities |= WPK_FORK_CAP_DYLINK_MAIN;
     }
 
     // Phase 4a: runtime scaffolding. Always injected so the module's
     // exported ABI is stable regardless of whether any caller was
     // actually rewritten.
     //
-    // Discover supported plain-catch regions before injecting the runtime.
+    // Discover supported tagged-catch regions before injecting the runtime.
     // The plan contains only static tag/label/type metadata; activation state
     // is allocated later as ordinary frame-backed function locals. Sort the
     // targets to keep local allocation and emitted bytes deterministic.
@@ -156,14 +180,14 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
         let existing = module
             .customs
             .iter()
-            .find(|(_, section)| section.name() == FORK_CAPABILITIES_SECTION)
+            .find(|(_, section)| section.name() == WPK_FORK_CAPABILITIES_SECTION)
             .map(|(id, _)| id);
         let Some(existing) = existing else { break };
         module.customs.delete(existing);
     }
     module.customs.add(RawCustomSection {
-        name: FORK_CAPABILITIES_SECTION.into(),
-        data: vec![FORK_CAPABILITIES_VERSION, fork_capabilities],
+        name: WPK_FORK_CAPABILITIES_SECTION.into(),
+        data: vec![WPK_FORK_CAPABILITIES_VERSION, fork_capabilities],
     });
 
     loop {

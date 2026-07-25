@@ -53,7 +53,13 @@ import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
 import { readForkContinuationAnchor } from "./fork-continuation";
-import { detectPtrWidth, extractAbiVersion, extractHeapBase, isWasmModuleBytes } from "./constants";
+import {
+  describeWasmArtifactPolicyFailures,
+  detectPtrWidth,
+  extractAbiVersion,
+  extractHeapBase,
+  isWasmModuleBytes,
+} from "./constants";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import {
   classifiedSignalOrFallback,
@@ -525,6 +531,10 @@ async function resolveExecutableForLaunch(
   const shebang = parseShebang(bytes);
   if (!shebang) {
     if (!isWasmModuleBytes(bytes)) return { errno: ENOEXEC };
+    const artifactFailures = describeWasmArtifactPolicyFailures(bytes, {
+      expectedAbi: kernelWorker.getKernelAbiVersion(),
+    });
+    if (artifactFailures.length > 0) return { errno: ENOEXEC };
     let programModule: WebAssembly.Module;
     try {
       programModule = await WebAssembly.compile(bytes);

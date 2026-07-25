@@ -33,6 +33,10 @@ describe("fork-from-non-main-thread", () => {
         programPath: forkFromThreadBinary!,
         argv: ["fork-from-thread"],
         timeout: 15_000,
+        // This fixture exercises worker/continuation ownership only and never
+        // touches the VFS. Keep the pthread fork proof independent of the
+        // separately versioned rootfs package rebuild.
+        useDefaultRootfs: false,
       });
 
       expect(result.exitCode, `stderr=${result.stderr}\nstdout=${result.stdout}`).toBe(0);
@@ -65,6 +69,7 @@ describe("fork-from-non-main-thread", () => {
         programPath: concurrentForkBinary!,
         argv: ["fork-from-concurrent-threads"],
         timeout: 60_000,
+        useDefaultRootfs: false,
       });
 
       expect(result.exitCode, `stderr=${result.stderr}\nstdout=${result.stdout}`).toBe(0);

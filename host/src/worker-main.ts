@@ -22,7 +22,11 @@ import {
   type LoadedSharedLibrary,
   type SideModuleForkState,
 } from "./dylink";
-import { extractAbiVersion, WASM_PAGE_SIZE } from "./constants";
+import {
+  describeWasmArtifactPolicyFailures,
+  extractAbiVersion,
+  WASM_PAGE_SIZE,
+} from "./constants";
 import {
   ABI_SYSCALLS,
   CHANNEL_STATUS_IDLE,
@@ -38,6 +42,7 @@ import {
   HOST_INTERCEPTED_SYSCALLS,
   WPK_FORK_REQUIRED_EXPORTS,
   WPK_FORK_REQUIRED_IMPORTS,
+  WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
 } from "./generated/abi";
 import {
   FORK_SAVE_BUFFER_SIZE,
@@ -1353,7 +1358,7 @@ const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
 /**
  * Detect a legacy contiguous fork-save-buffer overrun after unwind.
  *
- * ABI 42 linked continuations do not use this check. It remains exported for
+ * Linked continuations do not use this check. It remains exported for
  * stale-buffer regression coverage. Legacy instrumentation keeps
  * `current_pos` — the pointer-width integer at the
  * base of the save buffer (`forkBufAddr + 0`) — seeded to the absolute address
@@ -1460,9 +1465,10 @@ const DLOPEN_ENTRY_SIZE_WASM64 = 72;
 const WPK_FORK_EXPORTS = WPK_FORK_REQUIRED_EXPORTS.map(({ name }) => name);
 
 function hasCompleteForkInstrumentation(
-  moduleExports: WebAssembly.ModuleExportDescriptor[],
+  module: WebAssembly.Module,
   pid: number,
 ): boolean {
+  const moduleExports = WebAssembly.Module.exports(module);
   const exportNames = new Set(moduleExports.map((e) => e.name));
   const legacyAsyncifyExports = [...exportNames].filter((name) => name.startsWith("asyncify_"));
   if (legacyAsyncifyExports.length > 0) {
@@ -1482,7 +1488,20 @@ function hasCompleteForkInstrumentation(
     );
   }
 
-  return presentWpkExports.length === WPK_FORK_EXPORTS.length;
+  const complete = presentWpkExports.length === WPK_FORK_EXPORTS.length;
+  if (complete) {
+    const claim = readForkInstrumentCapabilityClaim(module);
+    if (
+      !claim.present ||
+      (claim.flags & WPK_FORK_CAP_ACTIVATION_STATE_SAFE) === 0
+    ) {
+      throw new Error(
+        `pid=${pid}: wasm-fork-instrument artifact lacks the required ` +
+          "activation-state-safe capability; rebuild it for ABI 43.",
+      );
+    }
+  }
+  return complete;
 }
 
 /**
@@ -1551,6 +1570,15 @@ export async function centralizedWorkerMain(
   try {
     const { memory, programBytes, channelOffset, pid } = initData;
     const ptrWidth = initData.ptrWidth ?? 4;
+    const artifactFailures = describeWasmArtifactPolicyFailures(programBytes, {
+      expectedAbi: initData.kernelAbiVersion,
+    });
+    if (artifactFailures.length > 0) {
+      throw new Error(
+        `pid=${pid}: refusing unsafe program artifact before execution: ` +
+          artifactFailures.join("; "),
+      );
+    }
     // Use pre-compiled module if provided (avoids recompilation in workers)
     const module = initData.programModule
       ? initData.programModule
@@ -1632,8 +1660,7 @@ export async function centralizedWorkerMain(
 
     // Check if the module has complete wpk_fork_* instrumentation exports,
     // and reject stale legacy fork artifacts before they can run.
-    const moduleExports = WebAssembly.Module.exports(module);
-    const hasForkInstrumentation = hasCompleteForkInstrumentation(moduleExports, pid);
+    const hasForkInstrumentation = hasCompleteForkInstrumentation(module, pid);
     const forkCapabilityClaim = readForkInstrumentCapabilityClaim(module);
     const hasDylinkForkRole = forkInstrumentRoleAvailable(
       forkCapabilityClaim,
@@ -2651,8 +2678,7 @@ export async function centralizedThreadWorkerMain(
       ? initData.programModule
       : new WebAssembly.Module(programBytes!);
 
-    const moduleExports = WebAssembly.Module.exports(module);
-    const hasForkInstrumentation = hasCompleteForkInstrumentation(moduleExports, pid);
+    const hasForkInstrumentation = hasCompleteForkInstrumentation(module, pid);
     let forkBufAddr = 0;
     const forkAnchorAddr = channelOffset - FORK_BUF_SIZE;
     const threadForkContinuation = hasForkInstrumentation

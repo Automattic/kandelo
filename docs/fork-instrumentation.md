@@ -20,7 +20,7 @@ For motivation, tradeoffs, and the rollout plan that led here, read
 for the post-rollout switch-dispatch redesign and non-fork-path-call gating
 that fix the kernel-side-effect re-fire bug, read
 [`plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md`](plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md).
-ABI version: `42` (see
+ABI version: `43` (see
 [`crates/shared/src/lib.rs`](../crates/shared/src/lib.rs) — see
 [abi-versioning.md](abi-versioning.md) for the policy).
 
@@ -33,6 +33,13 @@ ABI version: `42` (see
 - Missing instrumentation is a build/runtime error, not an optional feature
   loss. A fork-using program without complete `wpk_fork_*` exports cannot
   resume the child at the fork call site.
+- Every value needed after replay must be either activation-owned bytes in the
+  linked continuation or the output of a versioned deterministic
+  reconstruction recipe in the fresh child. Module globals and tables are
+  instance state, not evidence that a value survived `fork()`.
+- ABI 43 fork artifacts must carry the activation-state-safe capability. An
+  unsupported reference or table shape fails during instrumentation or
+  pre-launch artifact validation; it must not become a child-only trap.
 - Binaries exporting legacy `asyncify_*` symbols are stale and must be rebuilt.
   Do not add host support for them.
 - Do not keep compiler/linker flags solely for the retired legacy path. The
@@ -125,17 +132,17 @@ wpk_fork_state() -> i32
   Returns current state. Exported for host-side assertions.
 ```
 
-ABI 42 modules additionally import three exact `env` functions. A module that
+ABI 42 and later modules additionally import three exact `env` functions. A module that
 imports any one of them must import all three and carry the linked-frame custom
 section described below.
 
 ```
 __wpk_fork_frame_reserve(frame_size: ptr) -> ptr
   Reserves a complete node and returns its payload address before any frame
-  bytes or reference-table entries are written.
+  bytes are written.
 
 __wpk_fork_frame_commit(payload: ptr) -> ()
-  Publishes the pending node after all payload and reference writes complete.
+  Publishes the pending node after the activation-owned payload is complete.
 
 __wpk_fork_frame_next(expected_frame_size: ptr) -> ptr
   Returns the next committed payload during rewind and rejects size/order
@@ -151,27 +158,46 @@ section `kandelo.wpk_fork.capabilities`. Its two-byte payload is
   `env.fork`-importing side module has complete side-entry coverage;
 - bit 1 (`0x02`): a default-entry main module imported Kandelo's dynamic-linker
   functions and conservatively instrumented every `call_indirect` boundary
-  plus its direct callers.
+  plus its direct callers;
+- bit 2 (`0x04`, `WPK_FORK_CAP_ACTIVATION_STATE_SAFE`): the instrumenter
+  validated the complete fork closure and rejected state that cannot be
+  reconstructed in a fresh module instance.
 
-Capability enforcement follows the compiled kernel ABI. ABI 16 predates this
-section, so an artifact with no section retains the legacy five-export fallback
-and can still coordinate a main/side-module fork. If an ABI-16 artifact does
-carry the section, its marker is authoritative and malformed, unknown, or
-role-inconsistent claims fail loudly. Starting with ABI 18, the
-role-appropriate bit is mandatory: generic five-export artifacts and binaries
-produced by the older call-graph pass fail with a rebuild diagnostic. This
-threshold ensures that mandatory enforcement and the incompatible artifact
-contract activate in the same ABI-bump commit. Changing the meaning or encoding
-of these capability claims changes fork replay assumptions and must follow the
-ABI-versioning policy.
+ABI 43 requires exactly one two-byte capability section, version 1, with bit 2
+set. Unknown bits, missing/duplicate/malformed sections, or a missing safety bit
+fail artifact validation before execution. Role bits retain their existing
+meaning and are still required for side-entry and dynamic-linking replay where
+applicable. The safety bit is not inferred from the seven control exports:
+ABI 42 emitted those exports while still depending on module-instance
+reference tables. A copied safety claim also cannot upgrade a normal ABI 42
+program because the program ABI marker must match 43.
 
-ABI 17 was intentionally skipped. ABI 18 activated the mandatory role marker.
-ABI 16 remains only a historical compatibility boundary. The reconstructed
-line enforces role claims and this ABI 36 epoch adds side-module replay state
-and pthread-fork arbitration. ABI-16 artifacts without a marker remain
-historical inputs for the parser's explicit compatibility tests; they do not
-satisfy an ABI-36 launch. Any future capability-contract change must still
-advance `ABI_VERSION` and regenerate `abi/snapshot.json` atomically.
+ABI 16/18 role-marker compatibility remains historical parser-test coverage;
+it is not a launch fallback for an ABI 43 kernel. Changing the capability
+encoding or meaning requires another ABI bump and regenerated snapshot.
+
+### ABI 43 deployment and rebuild boundary
+
+ABI 43 is an artifact epoch, not a host-only update. All fork-instrumented main
+programs and side modules must be rebuilt with the ABI 43 instrumenter, then
+the affected package archives, bottles, binary indexes, shell closure, and VFS
+images must be regenerated against the new cache keys. Kernel, host, SDK/libc,
+and generated ABI constants must ship as one coordinated set.
+
+Do not republish ABI 42 artifacts with edited metadata or a copied capability.
+The ABI 43 instrumenter refuses inputs that already contain fork control
+exports, linked-frame imports, or fork metadata; builds must start from raw
+linker output so the new validation sees the original activation and table
+state.
+The source package projection may be regenerated while developing this epoch,
+but broad bottle/index/VFS publication requires explicit release coordination.
+Modern C++ exception artifacts that contain fork-reachable `exnref` locals or
+`CatchAllRef` are currently rebuild blockers: the ABI 43 instrumenter rejects
+them truthfully until a sound liveness or reconstruction design exists.
+The current source build of Dash is blocked for the same reason in
+`expandstr`, where LLVM emits a fork-reachable `exnref` local. Consequently,
+the ABI 43 shell closure and canonical rootfs/VFS images cannot be rebuilt or
+published yet; ABI 42 images must not be relabeled for this epoch.
 
 `ptr` is `i32` on wasm32 user programs and `i64` on wasm64 user programs. The
 tool picks the pointer width from the module's primary memory — a memory64
@@ -325,7 +351,7 @@ The module prefix retains the runtime's active-frame pointer word, a reserved
 pointer word, saved scalar globals, and a 16-byte abort selector.
 `frames_start_offset = 2P + N` identifies the selector, while the host-visible
 fixed-prefix size is `frames_start_offset + 16`. Frame nodes and
-plain-catch activation state are not stored in that prefix.
+tagged-catch activation state are not stored in that prefix.
 
 This does not introduce a new linked-frame encoding. `fixed_prefix_size` has
 always been a module-specific value in the version-1 descriptor, and each node
@@ -342,7 +368,7 @@ not fit the next complete node, the host maps another page-rounded chunk. A
 single node larger than a WebAssembly page receives a multi-page chunk.
 
 Allocation is transactional: a reserved node is not linked from the committed
-tail until all scalar and reference writes finish. If a later chunk allocation
+tail until all activation-owned bytes are written. If a later chunk allocation
 fails, the reserve import records the positive errno, enters
 `ABORT_UNWINDING`, and returns a zero pointer. The still-live activation stores
 only its call-site selector in the fixed-prefix scratch and restarts; already
@@ -362,9 +388,11 @@ Parent and child independently walk and unmap their copies after rewind. The
 linked format makes chunk boundaries explicit, but version 1 does not rebase
 internal pointers or relocate the chain in the child.
 
-Ref-typed mutable globals (`funcref` / `externref` / `exnref`) are not stored
-in the linear-memory header — they would need aux-table spill slots, which is
-a future extension. The tool currently ignores them when snapshotting globals.
+Mutable reference globals (`funcref` / `externref` / `exnref`) are not stored
+in the linear-memory header. A fork-capable module containing one is rejected
+before runtime injection because its current value belongs to the parent module
+instance. The inert runtime injected into a module with no fork seed may leave
+unrelated reference globals alone because that module never replays.
 
 ## Frame format
 
@@ -381,27 +409,26 @@ wasm64 before alignment.
 | `+0`   | 4    | `func_index`      | Ordinal assigned at instrument time      |
 | `+4`   | 4    | `call_index`      | Which call site within the function      |
 | `+8`   | 4    | `catch_region_id` | 0 in normal flow; non-zero for catches   |
-| `+12`  | 4    | `exnref_slot`     | Aux-table slot for `_ref` catch replay   |
+| `+12`  | 4    | reserved          | Deterministic zero in ABI 43             |
 | `+16`  | var  | `saved_locals[]`  | User and synthetic scalars, aligned      |
 
-Ref-typed user locals (funcref, externref, exnref) do **not** appear in this
-frame. They are spilled to auxiliary tables — see [Auxiliary
-tables](#auxiliary-tables) below. The frame only records the ordinal identity
-of the function and its call-site, which together with the ref-table slot
-assignment is sufficient to restore the ref-typed locals during rewind.
+Every value in a frame is scalar. Fork-reachable reference locals, parameters,
+signatures, global reads, call carryovers, and reference-typed catch payloads
+are rejected before rewriting; the instrumenter never substitutes a
+module-instance table slot for a transferable value.
 
 Synthetic frame locals include call-argument and operand-stack carryover
-spills. For each supported plain-catch region they also include one
+spills. For each supported tagged-catch region they also include one
 `active_arm` i32 and typed scalar operand locals for every static arm. Capture
 therefore belongs to one function activation, and recursive activations
 serialize distinct values in distinct linked frames.
 
 `catch_region_id` is zero in the common case (the frame was captured outside
 any catch handler). When non-zero, it identifies the `try_table` whose catch
-handler the frame lives in. For a `_ref` catch, `exnref_slot` identifies the
-auxiliary-table entry. For a plain catch, the restored `active_arm` and operand
-locals select and reconstruct the exact arm. See [Catch-handler
-resume](#catch-handler-resume).
+handler the frame lives in. The restored `active_arm` and operand locals select
+the exact static `Catch` or `CatchRef` clause. Rewind throws that arm's tag and
+scalar payload; for `CatchRef`, normal Wasm exception dispatch creates a fresh
+child-instance exnref. See [Catch-handler resume](#catch-handler-resume).
 
 ## Dispatch schemes
 
@@ -437,8 +464,8 @@ Both shapes share:
 
 - The state machine, exported ABI, and save-buffer header.
 - The per-function frame layout (header + scalar locals).
-- Aux-table spill for ref-typed user locals (Phase 4f).
-- Catch-handler resume via `throw_ref` (Phase 6).
+- Activation-owned tagged-catch arm and scalar payload state.
+- Catch-handler reconstruction by throwing the saved static tag.
 
 Switch-dispatch avoids the need for per-call gating: no chunk before the
 chosen `POST_K` runs on REWIND, so non-fork-path calls and side-effect ops
@@ -546,7 +573,7 @@ Numbered callouts:
    test. Under `REWINDING`, the preamble calls
    `__wpk_fork_frame_next(frame_size)`, stores the returned payload in
    `*(buf + 0)`, and deserializes every frame scalar: user locals,
-   argument/carryover spills, and plain-catch activation state. Dispatch reads
+   argument/carryover spills, and tagged-catch activation state. Dispatch reads
    `call_index` directly from that active frame payload.
 2. **Body wrapper (Phase 4b/4c).** The original body is wrapped in a `$unwind_save`
    block. On `REWINDING`, a `br_table` keyed by `frame.call_index` jumps to
@@ -560,10 +587,10 @@ Numbered callouts:
    `frame.call_index` and exits `$unwind_save`. If the callee did not begin
    unwinding, execution continues normally.
 5. **Postamble (Phase 4d).** Emits the remaining frame header fields
-   (func_index, catch_region_id, exnref_slot), writes every user and synthetic
-   frame scalar, commits the reserved node, and returns a default value of the
-   function's result type. Callers see the default on the unwind path but
-   discard it because their own postamble runs next.
+   (`func_index`, `catch_region_id`, and a zero reserved word), writes every
+   user and synthetic frame scalar, commits the reserved node, and returns a
+   default value of the function's result type. Callers see the default on the
+   unwind path but discard it because their own postamble runs next.
 
 ### (b) Fork from inside a catch handler
 
@@ -572,65 +599,67 @@ Fixture: `FIXTURE_FORK_FROM_CATCH_HANDLER` (see
 
 ```wat
 (func $caller (result i32)
-  (block $handler (result (ref null exn))
-    (try_table (result (ref null exn)) (catch_ref $exn $handler)
-      ref.null exn))
+  (local $caught i32)
+  (block $handler (result i32 exnref)
+    (try_table (result i32 exnref) (catch_ref $exn $handler)
+      i32.const 7
+      throw $exn))
   drop
+  local.set $caught
   call $fork)
 ```
 
-After instrumentation the try_table clause gets wrapped in two injected
-blocks, `$outer` and `$capture`, and the try_table body gets a rewind-throw
-stub prepended:
+After instrumentation the `CatchRef` clause targets an injected capture block
+and the try_table body gets a rewind-throw stub. The exact emitted nesting is
+omitted here; the important dataflow is:
 
 ```wat
-(block $outer (result (ref null exn))
-  (block $capture (result (ref null exn) exnref)
-    (try_table (result (ref null exn)) (catch_ref $exn $capture)
-      ;; [6c] Rewind-throw stub: executed lexically first on every entry.
-      (if (i32.and
-            (i32.eq (global.get $_wpk_fork_state) (i32.const 2))
-            (i32.eq (local.get $catch_region_id_local) (i32.const 1)))
-        (then
-          ;; Resume into this try_table's catch handler by re-throwing
-          ;; the saved exnref.
-          (throw_ref
-            (ref.as_non_null
-              (table.get $_wpk_fork_exnref_stash
-                (local.get $exnref_slot_local))))))
+;; Inside the original try_table body:
+(if (i32.and
+      (i32.ge_u (global.get $_wpk_fork_state) (i32.const 2))
+      (i32.eq (local.get $catch_region_id) (i32.const 1)))
+  (then
+    (if (i32.eq (local.get $active_arm) (i32.const 0))
+      (then
+        ;; The frame restored 7 (or the actual scalar payload).
+        local.get $saved_payload
+        throw $exn)
+      (else unreachable))))
 
-      ;; Original try_table body.
-      (ref.null exn)))
+;; On CatchRef dispatch, stack = (i32 payload, non-null exnref):
+local.set $temporary_exnref
+local.set $saved_payload
+i32.const 0
+local.set $active_arm
+i32.const 1
+local.set $in_catch
+i32.const 1
+local.set $catch_region_id
 
-  ;; [6d] On catch_ref dispatch, stack = (ref null exn, exnref).
-  (local.tee $captured_exnref_1)
-  (local.set $in_catch_1 (i32.const 1))
-  (table.set $_wpk_fork_exnref_stash
-    (i32.const 0 (; slot ;))
-    (local.get $captured_exnref_1))
-  (br $outer))   ;; fall through to the original handler continuation
+;; Forward the original handler values, but retain no synthetic GC root.
+local.get $saved_payload
+local.get $temporary_exnref
+ref.as_non_null
+ref.null exn
+local.set $temporary_exnref
+br $handler
 ```
 
 Numbered callouts:
 
-- **6c — Rewind-throw stub.** Prepended to every fork-path try_table body.
-  On `REWINDING` with a matching `catch_region_id`, it re-throws the saved
-  exnref using `throw_ref`. The try_table's own catch clause catches it,
-  which dispatches into `$capture` exactly as if the original exception had
-  been thrown by the body.
-- **6d — Capture block.** The tool rewrites every `catch_ref` / `catch_all_ref`
-  clause to target an injected `$capture` block rather than the user's
-  original handler. `$capture` stashes the exnref into
-  `_wpk_fork_exnref_stash`, sets the `$in_catch_K` flag, then unconditionally
-  branches to `$outer`, which is the block the user's original handler falls
-  through from. The net effect: the user's handler code runs with the exnref
-  already stashed and `in_catch_K == 1`, ready for a later fork call to
-  record it.
-- **6e — Call-site region writes.** Any call site inside the handler
-  observes `$in_catch_K == 1` and writes the active region's id and exnref
-  slot into `$catch_region_id_local` / `$exnref_slot_local` before the
-  unwind-only call-index store and `$unwind_save` branch, so the frame
-  carries the handler identity into the save buffer.
+- **Rewind-throw stub.** On replay with a matching `catch_region_id`, dispatch
+  validates the restored arm index, pushes that arm's restored scalar payload,
+  and executes `throw $tag`. The original `CatchRef` clause catches this new
+  exception and creates a fresh exnref in the child instance.
+- **Capture block.** Every statically tagged `Catch` and `CatchRef` clause is
+  retargeted through a per-arm capture. It stores only the arm index and scalar
+  payload in frame-backed locals. A `CatchRef` exnref is temporarily forwarded
+  to the original handler; the synthetic local is nulled before the branch so
+  successful replay and abort paths do not retain a stale GC root.
+- **Call-site region writes.** A call inside the handler observes the
+  activation-local `$in_catch_K` flag and records the lexical region in the
+  frame before unwinding. There is no reference slot or module-global
+  reference state.
 
 ### (c) Indirect fork through `call_indirect`
 
@@ -861,47 +890,50 @@ The same `Option<ValType>` policy applies to the top-level
 function still reaches an unsupported carryover shape, the tool rejects that
 shape loudly; there is no guard-dispatch fallback after the mega-PR cleanup.
 
-## Auxiliary tables
+## Reference and table-state validation
 
-When the module has at least one fork-path ref-typed user local of a given
-class, the tool emits a per-class stash table:
+ABI 43 retires `_wpk_fork_funcref_stash`,
+`_wpk_fork_externref_stash`, and `_wpk_fork_exnref_stash`. The tool never
+emits them. Static slots were unsafe twice over: recursive/reentrant
+activations could alias, and every fork child starts from a fresh module
+instance whose tables are empty. JavaScript cannot generically transfer
+`funcref`/`externref` across workers or Stores, and the Table API cannot copy
+`exnref`.
 
-```
-(table $_wpk_fork_funcref_stash   <n_funcref>   funcref)
-(table $_wpk_fork_externref_stash <n_externref> externref)
-(table $_wpk_fork_exnref_stash    <n_exnref>    (ref null exn))
-```
+Validation runs after fork-closure discovery and before runtime injection. In a
+fork-reachable function it rejects:
 
-Modules with no ref-typed fork-path locals of a given class emit no table for
-that class. A module with no fork-path try_tables and no fork-path ref-typed
-locals emits zero aux tables.
+- reference locals, parameters, function signatures, global reads, call
+  signatures, and operand-stack carryovers;
+- `CallRef`/`ReturnCallRef`, unsupported nonnullable/concrete/GC reference
+  instructions, and reference-typed catch tag payloads;
+- `CatchAll` and `CatchAllRef`, because there is no static tag identity to save.
 
-Slot assignment is per-class and contiguous:
+Reference-bearing functions outside the fork closure remain legal and are not
+rewritten. Mutable reference globals are rejected module-wide in a
+fork-capable module because code outside the closure may mutate them before a
+later call into `fork()`.
 
-- The tool walks the fork-path functions in deterministic order.
-- For each function, each ref-typed user local gets the next slot in its
-  class's table.
-- For each fork-path `try_table`, the exnref class additionally reserves one
-  slot to hold the currently-caught exnref while a handler runs.
-
-Each table's `initial` size is set to exactly the assigned slot count so the
-cost is bounded. Slot indices are baked into the postamble (as `table.set`)
-and preamble (as `table.get`) of the owning function, and into the `$capture`
-blocks emitted for fork-path `catch_ref` / `catch_all_ref` clauses.
-
-Scalar operand-stack values at call sites are spilled to synthetic scalar
-locals, not tables — they are scoped to a single call-site window and do not
-cross the unwind/rewind boundary.
+Wasm table mutation is likewise module-instance state. If a module can fork,
+the presence of `table.set`, `table.fill`, `table.copy`, `table.init`, or
+`table.grow` anywhere in its local functions rejects the artifact. Active
+static element initialization remains legal because instantiation recreates
+it. Dynamic linking is an explicit host-owned reconstruction boundary rather
+than an exception to this rule: the dlopen archive preserves each side
+module's exact table base, the child replays libraries in order, and normal
+side-module instantiation recreates their static elements. A different table
+mutation owner must define and test an equally deterministic recipe before
+the instrumenter may accept it.
 
 ## Catch-handler resume
 
-Catch-handler resume is the subtlest piece of the tool. The overall idea:
-at unwind time, save the caught exnref into the stash table and record the
-try_table's `catch_region_id` in the frame. At rewind time, re-throw the
-saved exnref *from inside the same try_table body*, so the normal wasm
-exception-dispatch rules deliver it back to the original catch clause, which
-sends control into the handler — whose own state-machine preamble then
-continues to the fork call site.
+Catch-handler resume saves a reconstruction recipe, never an exception
+reference. Normal handler entry records the lexical region, exact catch-list
+arm, and that static tag's scalar payload in activation-owned locals. Those
+locals serialize with the function frame. Rewind dispatches inside the same
+`try_table` body, restores the selected scalar tuple, and executes the
+selected arm's `throw $tag`. Normal Wasm exception dispatch reaches the
+original clause; `CatchRef` receives a new exnref owned by the child instance.
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
@@ -915,9 +947,8 @@ continues to the fork call site.
 │       more_handler_code                                            │
 └────────────────────────────────────────────────────────────────────┘
                         │
-                        │  unwind: save exnref X to stash,
-                        │          frame.catch_region_id = K,
-                        │          frame.exnref_slot = S,
+                        │  unwind: save region K, arm A,
+                        │          and scalar tag payload in this frame,
                         │          drain frames to top.
                         ▼
 ┌────────────────────────────────────────────────────────────────────┐
@@ -928,10 +959,9 @@ continues to the fork call site.
 │                                                                    │
 │   try_table body rewind-throw stub:                                │
 │     state == REWINDING && catch_region_id == K →                   │
-│       throw_ref (table.get $_wpk_fork_exnref_stash S)              │
-│     ← caught by try_table's own catch clause, dispatches to        │
-│       the $capture block; $capture branches to $outer, placing     │
-│       control at the top of the user's handler code.               │
+│       validate arm A; push saved scalar payload; throw $tag_A      │
+│     ← caught by the original Catch/CatchRef clause; CatchRef       │
+│       creates a fresh child-instance exnref.                       │
 │                                                                    │
 │   handler-level preamble (state still REWINDING):                  │
 │     resume at the fork() call site with return value = child pid 0 │
@@ -940,20 +970,13 @@ continues to the fork call site.
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-`catch_ref` and `catch_all_ref` clauses use the exnref stash + `throw_ref`
-flow above. Plain (non-`_ref`) `catch` clauses have no exnref to re-throw.
-For those clauses, normal capture stores the exact nonnegative catch-list arm
-index and scalar operand tuple in activation-local frame locals. Rewind
-compares the restored arm index, pushes that arm's restored operands, and
-throws the original tag back through the same `try_table`.
-
-In a region that mixes `_ref` and plain catches, `_ref` capture stores
-`active_arm = -1`; exact nonnegative IDs select plain arms and every other
-value falls through to `throw_ref`. The mode is deliberately frame-owned.
-Auxiliary-table nullness is neither activation identity nor reliable handler
-kind state because a static table entry can retain an older value. See
-[Fork-from-plain-catch](#fork-from-plain-catch) under "Maintainer notes" for
-the implementation.
+Mixed `Catch`/`CatchRef` lists, multiple arms, and distinct target labels use
+the same exact catch-list index. An unknown restored index executes
+`unreachable`; it cannot fall back to old instance state. `CatchAllRef` is
+rejected, as are reference-typed tag payloads and a caught exnref that remains
+live in a local or operand-stack carryover at the fork call. See
+[Fork from a tagged catch](#fork-from-a-tagged-catch) under "Maintainer notes"
+for the implementation.
 
 ## Call-graph discovery
 
@@ -1011,9 +1034,11 @@ K-04, and K-07 cover the current behavior.
   invoked `fork()`.
 - **Scalar user locals.** All i32, i64, f32, f64, and v128 locals on the
   fork-path are saved to linear memory at unwind and restored at rewind.
-- **Ref-typed user locals.** funcref, externref, and exnref locals are
-  spilled to aux tables at unwind and restored at rewind. Slot assignments
-  are deterministic per module.
+- **Fresh-instance ownership.** Every accepted replay value is either scalar
+  activation state in the linked continuation or state rebuilt by an explicit,
+  versioned reconstruction owner. Instrumented modules carry
+  `FORK_CAP_ACTIVATION_STATE_SAFE`; ABI 43 hosts and artifact guards reject a
+  fork-shaped artifact without that capability before execution.
 - **Byte-reproducible instrumentation.** Given the same input bytes, CLI
   options, and built tool, separate processes emit byte-identical Wasm.
   Synthetic locals and nested regions are assigned in canonical sequence-ID
@@ -1023,9 +1048,16 @@ K-04, and K-07 cover the current behavior.
   Includes `__stack_pointer`, `__tls_base`, and any program-declared
   mutable globals.
 - **try_table context.** Frames captured inside a supported fork-path catch
-  handler carry the active `catch_region_id`. `_ref` catches replay from their
-  exnref stash slot; plain catches replay from activation-local arm and scalar
-  payload state serialized in the same frame.
+  handler carry the active `catch_region_id`, exact catch-list arm, and scalar
+  tag operands. Rewind rethrows the restored tag and operands through the
+  original `Catch` or `CatchRef` clause. A `CatchRef` clause therefore creates
+  a fresh exnref in the child instance; no parent-instance reference is
+  serialized or consulted.
+- **No retained replay references.** The instrumenter emits none of the
+  historical `_wpk_fork_*ref_stash` tables. The temporary exnref used while a
+  `CatchRef` handler enters is cleared immediately after the original handler
+  value has been re-pushed, so normal completion, rewind, and abort do not
+  retain it as an instrumentation-owned GC root.
 - **Kernel-side-effect calls don't re-fire during REWIND.** Switch-dispatch
   (the only live scheme post-commit-4) skips the body chunks before the
   matching `POST_K` entirely on REWIND, so non-fork-path direct calls
@@ -1038,37 +1070,37 @@ K-04, and K-07 cover the current behavior.
 - **`makecontext` / `swapcontext` / `getcontext` / `setcontext`.** Userspace
   stack-switching primitives are unsupported and not on any roadmap. See
   [posix-status.md](posix-status.md) for rationale.
-- **Functions whose plain-catch arms carry ref-typed operands.** Catch arms
-  whose operand tuple includes an `(ref ...)` value (typically a function or
-  GC ref) are excluded from plain-catch replay support at instrument time.
-  The function may still be instrumented for other fork sites, but a fork
-  reached from the affected handler remains unsupported. Spilling ref-typed
-  catch operands would require per-arm activation-aware auxiliary storage.
-  The current implementation keeps that explicit
-  `PlainCatchPlan::b2_carveout` boundary and covers it with WAT-level tests.
-  This is an unanticipated Wasm-level case,
-  not expected output from ordinary C++ EH lowering: C++ exception payloads
-  live in linear memory / libc++abi state rather than as `funcref` or
-  `externref` plain-catch tag operands. If a future language frontend or
-  hand-written Wasm module needs it, implement per-arm funcref/externref
-  aux-table stashing and promote C-08/C-09 from carve-out validation to full
-  replay tests.
-- **Recursive/reentrant ref activation state.** Auxiliary-table slots for
-  ref-typed user locals and caught exnrefs are assigned statically per
-  function or `try_table`. Recursive or reentrant activations that keep
-  distinct ref values live across one fork can therefore alias those slots.
-  Scalar plain-catch arm/payload state does not have this limitation because
-  it is serialized per activation. Closing the ref case requires
-  activation-aware auxiliary storage and executable recursive regressions.
+- **Reference activation state.** Reference-typed locals or parameters,
+  reference function signatures and call carryovers, reference global reads,
+  reference operand-stack carryovers, and reference-typed catch payloads are
+  rejected when they are in the conservative fork closure. `CatchAll` and
+  `CatchAllRef` are also rejected there because they provide no statically
+  tagged scalar reconstruction recipe. References in functions outside the
+  fork closure remain legal.
+- **Module-owned mutable reference state.** A mutable reference global is
+  rejected whenever a module has a fork closure. The child receives a fresh
+  module instance, so copying linear memory cannot reproduce that global.
+- **Mutable table state.** Guest `table.set`, `table.fill`, `table.copy`,
+  `table.init`, and `table.grow` are rejected in a fork-using module. Static
+  element initialization is recreated by instantiation and remains supported.
+  Host-owned dlopen replay is a separate explicit reconstruction boundary: it
+  preserves the exact table base and re-instantiates the side module's static
+  elements in the child.
 - **IfElse with operand-stack carryover.** A fork-bearing `if/else`
   enclosing a stack value that survives across the branch is rejected by
   `seq_has_unsupported_carryover` — the cond rewrite via `select` (see
   §IfElse cond rewrite) doesn't currently compose with carryover spilling.
   Rare in LLVM output; not tracked as a current blocker.
-- **Wasm-GC refs.** Abstract `any` / `eq` / `struct` / `array` / `i31` refs
-  and concrete GC refs are rejected at the `classify_ref` step — the tool
-  panics rather than produce a silently-broken module. Add classes in
-  `crates/fork-instrument/src/instrument.rs` when a real program needs them.
+- **Non-nullable, concrete, and Wasm-GC refs.** Unsupported reference
+  construction and GC operations in the fork closure are rejected before
+  rewriting. Support requires an activation-owned byte representation or a
+  deterministic fresh-instance reconstruction recipe, not a new module-static
+  table.
+- **Current C++ cleanup-EH shapes.** LLVM output that keeps exnref locals live
+  across fork or lowers cleanup regions to `CatchAllRef` is intentionally
+  rejected. Those programs must remain unavailable in ABI 43 until the
+  compiler output or replay design satisfies the ownership invariant; a
+  capability stamp or package patch must not hide this boundary.
 
 #### Closed since the mega-PR's 2.5/2.6 sub-commits
 
@@ -1135,15 +1167,15 @@ and loop structure but does not allocate continuation memory.
 The module-format fixed cost is three imports, two abort exports, plus the
 24-byte `kandelo.wpk_fork.linked_frames` descriptor and normal Wasm section/name
 encoding. The fixed 60 KiB host-reserved control-region geometry remains in
-ABI 42, but it is no longer continuation capacity: only its anchor word is
-used to find the dynamically allocated root chunk.
+place from ABI 42, but it is no longer continuation capacity: only its anchor
+word is used to find the dynamically allocated root chunk.
 
-A function with supported plain catches adds one i32 `active_arm` local per
-plain-capable region plus typed scalar operand locals for every supported arm
-to each activation's frame payload. This can use more aggregate continuation
-bytes than one module-global tuple, but distinct activation storage is required
-for recursion and reentrancy correctness and removes normal-execution writes
-to continuation-owned memory.
+A function with supported tagged catches adds one i32 `active_arm` local per
+region plus typed scalar operand locals for every supported `Catch` or
+`CatchRef` arm to each activation's frame payload. This can use more aggregate
+continuation bytes than one module-global tuple, but distinct activation
+storage is required for recursion and reentrancy correctness and avoids any
+module-global replay tuple.
 
 As a narrow size check, instrumenting the P-10 deep-recursion fixture from the
 same 27,886-byte raw Wasm produced 50,873 bytes with the ABI 41 instrumenter
@@ -1240,22 +1272,24 @@ interceptor recurses into ASAN init which holds a spin mutex). The fuzzer
 targets validator/semantic divergence rather than memory-safety, so ASAN is
 not load-bearing.
 
-### Adding a new ref type
+### Supporting additional reference state
 
-Ref types accepted for local / global spilling are gated by `classify_ref`
-in `crates/fork-instrument/src/instrument.rs`. To add support for a new
-class:
+Do not add a module-static reference stash. A fresh fork child has a new Wasm
+instance, table, Store, and exception-tag identity, so a slot number is not a
+transferable value even if it happens to fix same-instance recursion.
 
-1. Extend the `RefClass` enum with the new class.
-2. Map the corresponding `HeapType` variant in `classify_ref` to the new
-   class.
-3. If the new class cannot share an existing stash table (e.g. it is a
-   wasm-GC ref that requires `ref.cast` at reload time), add a new table to
-   `AuxTables`, size it the same way the existing classes do, and extend
-   the spill / reload emitters to target it.
-4. Add a fixture test under `tests/instrument.rs` that exercises the new
-   type both as a local and as a function parameter, and confirms the
-   module validates after round-tripping through the tool.
+Support for a new reference shape requires one of two complete designs:
+
+1. Encode every value needed by replay as versioned activation-owned bytes in
+   the linked continuation, then reconstruct the reference deterministically
+   in the child.
+2. Name an explicit host reconstruction owner, version its recipe, and prove
+   Node, browser, pthread, and side-module parity.
+
+Add rejection tests first, then fresh-instance replay tests that would fail if
+the parent module's globals or tables were consulted. Update the capability
+contract and bump the ABI if the accepted artifact surface or reconstruction
+format changes.
 
 ### Extending side-effect coverage
 
@@ -1265,48 +1299,46 @@ the containing switch-dispatch shape skips that opcode on REWIND. Existing
 examples are the S-01..S-08 host fixtures plus the WAT-level table-operation
 tests in `crates/fork-instrument/tests/coverage_wat.rs`.
 
-### Fork-from-plain-catch
+### Fork from a tagged catch
 
-Plain (non-`_ref`) `catch` arms unwrap the thrown exception's operand tuple
-onto the operand stack at handler entry, but unlike `catch_ref` /
-`catch_all_ref` they do not push an exnref. The Phase 6 rewind-throw stub
-reaches the handler by `throw_ref`-ing a saved exnref into the original
-try_table's catch clause; with a plain catch there is no exnref to save, so
-some other resume path is needed.
+`Catch` arms unwrap the thrown exception's operand tuple at handler entry.
+`CatchRef` arms additionally push an instance-local exnref. Neither reference
+identity nor module scratch is available in a fresh child, so both forms replay
+from the same statically tagged scalar recipe.
 
 The implementation adds that path without accessing continuation memory during
 ordinary catch execution:
 
-1. **Static discovery (`plan_plain_catches`).** Walk each fork-path function
-   and collect every supported plain-catch arm's tag, target label, catch-list
-   index, and operand types. This plan contains no runtime addresses or
-   activation state.
-2. **Activation allocation (`allocate_plain_catch_state`).** Allocate one
-   `PlainCatchRegionState` per static region: an i32 `active_arm` plus typed
-   scalar operand locals for every supported arm.
-3. **Frame ownership (`append_plain_catch_frame_scalars`).** Add those locals
-   before frame offsets and size are assigned. Each recursive activation then
-   saves and restores its own catch values in its own linked frame.
-4. **Capture and replay.** `apply_plain_catch_handlers` stores the incoming
-   operand tuple and exact arm index in those locals, then re-pushes the
-   operands for the user handler. `inject_rewind_throw_stubs` dispatches on
-   the restored exact arm index and rethrows its tag with the restored tuple.
-   Mixed `_ref` capture records `-1`, which selects the `throw_ref` fallback
-   without consulting stale table nullness.
-5. **Carve-out (`PlainCatchPlan::b2_carveout`).** A function whose plain-catch
-   arms carry ref-typed operands or use an unverified multi-target shape is
-   excluded from supported plain-catch replay. Other fork sites in that
-   function may still be instrumented. Scalar frame serialization does not
-   solve reference ownership; that needs activation-aware auxiliary storage.
+1. **Static discovery (`plan_plain_catches`).** Walk each fork-path
+   function and collect each supported `Catch` or `CatchRef` arm's tag, target
+   label, exact catch-list index, kind, and scalar operand types. This plan has
+   no runtime addresses or activation state.
+2. **Activation allocation.** Allocate one region-local i32 arm selector plus
+   typed scalar operand locals for every supported arm. A `CatchRef` arm also
+   gets one temporary nullable exnref local used only while entering the
+   capture block.
+3. **Frame ownership.** Append the selector and scalar operands before frame
+   offsets are assigned. Each recursive or reentrant activation therefore
+   owns a distinct serialized catch recipe.
+4. **Capture.** A generated block stores the incoming scalar tuple and exact
+   arm index, then restores the original handler stack. For `CatchRef`, it
+   temporarily stores the exnref, pushes it back as non-null for the original
+   target, and clears the synthetic local immediately so instrumentation does
+   not retain a stale GC root.
+5. **Replay.** `inject_rewind_throw_stubs` dispatches on the restored exact arm
+   index, pushes its scalar tuple, and executes `throw` with the original tag.
+   The original clause then reconstructs either the plain payload or a fresh
+   child-local exnref. An unknown arm traps instead of consulting old instance
+   state.
 
-The lifetime boundary is load-bearing: a plain catch can run before any fork
-or after a prior continuation has been released. Its normal capture path must
+The lifetime boundary is load-bearing: a catch can run before any fork or
+after a prior continuation has been released. Its normal capture path must
 therefore never dereference `_wpk_fork_buf`.
 
 C-08/C-09 in
 `crates/fork-instrument/tests/coverage_wat.rs` verify that funcref and
-externref catch operands retain this explicit unsupported boundary rather than
-being serialized as scalars.
+externref catch operands are rejected precisely rather than serialized as
+scalars or placed in a module-static table.
 
 ## See also
 

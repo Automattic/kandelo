@@ -84,7 +84,12 @@ pub mod host_abi;
 ///     and fork exports return kernel-allocated identities; instrumented
 ///     modules declare the continuation format and import reserve, commit, and
 ///     replay hooks.
-pub const ABI_VERSION: u32 = 42;
+/// 43: fork artifacts prove activation-state safety explicitly. Tagged
+///     CatchRef replay reconstructs an instance-local exception from
+///     frame-owned tag identity and scalar payloads; non-transferable
+///     reference, mutable-global, and mutable-table state is rejected before
+///     launch.
+pub const ABI_VERSION: u32 = 43;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -1305,7 +1310,7 @@ pub mod abi {
         pub results: &'static [ProgramArtifactValueType],
     }
 
-    /// ABI 42 linked-continuation metadata and function surface.
+    /// ABI 42+ linked-continuation metadata and function surface.
     ///
     /// WHY this lives in `shared::abi`: these names and descriptor fields are
     /// consumed before a program starts, by the instrumenter, host, package
@@ -1323,6 +1328,20 @@ pub mod abi {
     pub const WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS: u16 =
         WPK_FORK_LINKED_FRAME_FLAG_TRANSACTIONAL_NODES | WPK_FORK_LINKED_FRAME_FLAG_ABORT_UNWINDING;
     pub const WPK_FORK_LINKED_FRAME_POINTER_WIDTHS: &[u8] = &[4, 8];
+
+    /// Versioned instrumentation claims required by ABI 43.
+    ///
+    /// Role flags say which call graph was transformed. The activation-state
+    /// bit is stronger: it proves the artifact was instrumented only after
+    /// rejecting state that cannot be reconstructed in a fresh Wasm instance.
+    pub const WPK_FORK_CAPABILITIES_SECTION: &str = "kandelo.wpk_fork.capabilities";
+    pub const WPK_FORK_CAPABILITIES_VERSION: u8 = 1;
+    pub const WPK_FORK_CAP_SIDE_ENTRY: u8 = 1 << 0;
+    pub const WPK_FORK_CAP_DYLINK_MAIN: u8 = 1 << 1;
+    pub const WPK_FORK_CAP_ACTIVATION_STATE_SAFE: u8 = 1 << 2;
+    pub const WPK_FORK_CAP_KNOWN_MASK: u8 =
+        WPK_FORK_CAP_SIDE_ENTRY | WPK_FORK_CAP_DYLINK_MAIN | WPK_FORK_CAP_ACTIVATION_STATE_SAFE;
+    pub const WPK_FORK_CAP_REQUIRED_FLAGS: u8 = WPK_FORK_CAP_ACTIVATION_STATE_SAFE;
 
     pub const WPK_FORK_FRAME_IMPORT_MODULE: &str = "env";
     pub const WPK_FORK_FRAME_IMPORT_RESERVE: &str = "__wpk_fork_frame_reserve";

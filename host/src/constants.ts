@@ -3,6 +3,10 @@ import {
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   PROCESS_MEMORY_THREAD_SLOT_DECL_EXPORT,
   PROCESS_MEMORY_WASM_PAGE_SIZE,
+  WPK_FORK_CAPABILITIES_SECTION,
+  WPK_FORK_CAPABILITIES_VERSION,
+  WPK_FORK_CAP_KNOWN_MASK,
+  WPK_FORK_CAP_REQUIRED_FLAGS,
   WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE,
   WPK_FORK_LINKED_FRAME_FORMAT_MAGIC,
   WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
@@ -292,6 +296,7 @@ interface WasmForkArtifactFacts {
   functionImports: Map<string, WasmFunctionSignature[]>;
   functionExports: Map<string, WasmFunctionSignature[]>;
   memoryPointerWidths: number[];
+  forkCapabilities: Uint8Array[];
   linkedFrameDescriptors: Uint8Array[];
   importsKernelFork: boolean;
 }
@@ -325,7 +330,7 @@ function readLimits(
 }
 
 /**
- * Parse the portions of a final Wasm module that jointly define the ABI 42
+ * Parse the portions of a final Wasm module that jointly define the ABI 43
  * fork-artifact contract.
  *
  * WHY: names alone can look complete while the host and guest disagree about
@@ -343,6 +348,7 @@ function readWasmForkArtifactFacts(programBytes: ArrayBuffer): WasmForkArtifactF
     functionImports: new Map(),
     functionExports: new Map(),
     memoryPointerWidths: [],
+    forkCapabilities: [],
     linkedFrameDescriptors: [],
     importsKernelFork: false,
   };
@@ -361,6 +367,8 @@ function readWasmForkArtifactFacts(programBytes: ArrayBuffer): WasmForkArtifactF
       const [name, afterName] = readName(src, pos);
       if (name === WPK_FORK_LINKED_FRAME_FORMAT_SECTION) {
         facts.linkedFrameDescriptors.push(src.slice(afterName, sectionEnd));
+      } else if (name === WPK_FORK_CAPABILITIES_SECTION) {
+        facts.forkCapabilities.push(src.slice(afterName, sectionEnd));
       }
     } else if (sectionId === 1) {
       requireFullyConsumed = true;
@@ -511,6 +519,40 @@ function validateLinkedFrameDescriptor(descriptor: Uint8Array): number {
   return pointerFormat.bytes;
 }
 
+function validateForkCapabilities(sections: Uint8Array[]): string[] {
+  if (sections.length === 0) {
+    return [`missing required ${WPK_FORK_CAPABILITIES_SECTION} capability`];
+  }
+  if (sections.length !== 1) {
+    return [
+      `has ${sections.length} ${WPK_FORK_CAPABILITIES_SECTION} sections, expected exactly one`,
+    ];
+  }
+  const capability = sections[0];
+  if (capability.byteLength !== 2) {
+    return [
+      `${WPK_FORK_CAPABILITIES_SECTION} has ${capability.byteLength} bytes, expected 2`,
+    ];
+  }
+  if (capability[0] !== WPK_FORK_CAPABILITIES_VERSION) {
+    return [
+      `${WPK_FORK_CAPABILITIES_SECTION} version ${capability[0]} is unsupported`,
+    ];
+  }
+  const flags = capability[1]!;
+  if ((flags & ~WPK_FORK_CAP_KNOWN_MASK) !== 0) {
+    return [
+      `${WPK_FORK_CAPABILITIES_SECTION} has unknown flags 0x${flags.toString(16)}`,
+    ];
+  }
+  if ((flags & WPK_FORK_CAP_REQUIRED_FLAGS) !== WPK_FORK_CAP_REQUIRED_FLAGS) {
+    return [
+      `${WPK_FORK_CAPABILITIES_SECTION} flags 0x${flags.toString(16)} omit required activation-state safety flags 0x${WPK_FORK_CAP_REQUIRED_FLAGS.toString(16)}`,
+    ];
+  }
+  return [];
+}
+
 function expectedWasmValueType(
   value: "ptr" | "i32",
   pointerWidth: number,
@@ -549,11 +591,12 @@ function describeForkArtifactContractFailures(
   facts: WasmForkArtifactFacts,
 ): string[] {
   const failures: string[] = [];
+  failures.push(...validateForkCapabilities(facts.forkCapabilities));
   for (const requirement of WPK_FORK_REQUIRED_EXPORTS) {
     const signatures = facts.functionExports.get(requirement.name);
     if (!signatures) continue;
     if (signatures.length !== 1) {
-      failures.push(`duplicate ABI 42 wasm-fork-instrument export ${requirement.name}`);
+      failures.push(`duplicate ABI 43 wasm-fork-instrument export ${requirement.name}`);
     }
   }
   const missingExports = WPK_FORK_REQUIRED_EXPORTS
@@ -590,14 +633,14 @@ function describeForkArtifactContractFailures(
       .map(({ module, name }) => `${module}.${name}`);
     if (missingImports.length > 0) {
       failures.push(
-        `incomplete ABI 42 linked-frame imports; missing ${missingImports.join(", ")}`,
+        `incomplete ABI 43 linked-frame imports; missing ${missingImports.join(", ")}`,
       );
     }
     for (const requirement of WPK_FORK_REQUIRED_IMPORTS) {
       const identity = `${requirement.module}.${requirement.name}`;
       const signatures = facts.functionImports.get(identity);
       if (signatures && signatures.length !== 1) {
-        failures.push(`duplicate ABI 42 linked-frame import ${identity}`);
+        failures.push(`duplicate ABI 43 linked-frame import ${identity}`);
       }
     }
   }
@@ -605,12 +648,12 @@ function describeForkArtifactContractFailures(
   if (pointerWidth !== null) {
     if (facts.memoryPointerWidths.length !== 1) {
       failures.push(
-        `ABI 42 fork instrumentation requires exactly one module memory, found ${facts.memoryPointerWidths.length}`,
+        `ABI 43 fork instrumentation requires exactly one module memory, found ${facts.memoryPointerWidths.length}`,
       );
     } else if (facts.memoryPointerWidths[0] !== pointerWidth) {
       const article = pointerWidth === 8 ? "an" : "a";
       failures.push(
-        `ABI 42 linked-frame descriptor declares ${article} ${pointerWidth}-byte pointer but the module memory uses ${facts.memoryPointerWidths[0]}-byte addresses`,
+        `ABI 43 linked-frame descriptor declares ${article} ${pointerWidth}-byte pointer but the module memory uses ${facts.memoryPointerWidths[0]}-byte addresses`,
       );
     }
     for (const requirement of WPK_FORK_REQUIRED_EXPORTS) {
@@ -625,7 +668,7 @@ function describeForkArtifactContractFailures(
         )
       ) {
         failures.push(
-          `ABI 42 wasm-fork-instrument export ${requirement.name} has the wrong signature; expected ${
+          `ABI 43 wasm-fork-instrument export ${requirement.name} has the wrong signature; expected ${
             signatureText(requirement.params, requirement.results, pointerWidth)
           }`,
         );
@@ -645,7 +688,7 @@ function describeForkArtifactContractFailures(
           )
         ) {
           failures.push(
-            `ABI 42 linked-frame import ${identity} has the wrong signature; expected ${
+            `ABI 43 linked-frame import ${identity} has the wrong signature; expected ${
               signatureText(requirement.params, requirement.results, pointerWidth)
             }`,
           );
@@ -797,14 +840,15 @@ export function describeWasmArtifactPolicyFailures(
   } = {},
 ): string[] {
   const failures: string[] = [];
+  let declaredAbi: number | null = null;
   if (wasmContainsLegacyAsyncify(programBytes)) {
     failures.push("contains asyncify_");
   }
 
   if (options.expectedAbi !== undefined && options.expectedAbi !== null) {
-    const abi = extractAbiVersion(programBytes);
-    if (abi !== null && abi !== options.expectedAbi) {
-      failures.push(`ABI ${abi}, expected ${options.expectedAbi}`);
+    declaredAbi = extractAbiVersion(programBytes);
+    if (declaredAbi !== null && declaredAbi !== options.expectedAbi) {
+      failures.push(`ABI ${declaredAbi}, expected ${options.expectedAbi}`);
     }
   }
 
@@ -825,10 +869,28 @@ export function describeWasmArtifactPolicyFailures(
   const descriptorCount = customSections.filter((name) =>
     name === WPK_FORK_LINKED_FRAME_FORMAT_SECTION
   ).length;
+  const capabilityCount = customSections.filter((name) =>
+    name === WPK_FORK_CAPABILITIES_SECTION
+  ).length;
   const hasForkArtifactSurface =
-    presentWpkExports.length > 0 || presentWpkImports.length > 0 || descriptorCount > 0;
+    presentWpkExports.length > 0 || presentWpkImports.length > 0 ||
+    descriptorCount > 0 || capabilityCount > 0;
+  if (
+    options.expectedAbi !== undefined &&
+    options.expectedAbi !== null &&
+    hasForkArtifactSurface &&
+    declaredAbi === null
+  ) {
+    // WHY: the safety bit names an ABI-epoch contract. Without the program's
+    // ABI marker, copied capability metadata could make an ABI 42 transform
+    // look safe to an ABI 43 host.
+    failures.push(
+      `ABI ${options.expectedAbi} fork artifact is missing __abi_version; ` +
+        "the activation-state capability epoch cannot be verified",
+    );
+  }
   if (options.forbidForkInstrumentation && hasForkArtifactSurface) {
-    failures.push("contains ABI 42 wasm-fork-instrument metadata, imports, or exports");
+    failures.push("contains ABI 43 wasm-fork-instrument metadata, imports, or exports");
   }
 
   const requireForkInstrumentation =
@@ -843,7 +905,7 @@ export function describeWasmArtifactPolicyFailures(
       );
     } catch (error) {
       failures.push(
-        `cannot validate ABI 42 fork-artifact contract: ${
+        `cannot validate ABI 43 fork-artifact contract: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
