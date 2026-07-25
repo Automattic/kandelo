@@ -61,8 +61,6 @@ pub struct InFlightFd {
     /// For kernel-backed pipe FDs: the exact reference transferred to the
     /// receiver. Non-pipe descriptors leave this as `None`.
     pub pipe_ref_kind: Option<InFlightPipeRefKind>,
-    /// For socket FDs: serialized socket state.
-    pub socket: Option<InFlightSocket>,
     /// True after this queued payload has acquired its one machine-wide
     /// backing and OfdId reference. Ownership transfers to the receiver or is
     /// released through the deferred queue on drop.
@@ -88,7 +86,6 @@ impl InFlightFd {
             offset,
             path,
             pipe_ref_kind: None,
-            socket: None,
             owns_reference: false,
         }
     }
@@ -99,14 +96,6 @@ impl InFlightFd {
             file_type: self.file_type,
             host_handle: self.host_handle,
             pipe_ref_kind: self.pipe_ref_kind,
-            socket_send_idx: self.socket.as_ref().and_then(|socket| socket.send_buf_idx),
-            socket_recv_idx: self.socket.as_ref().and_then(|socket| socket.recv_buf_idx),
-            socket_domain: self.socket.as_ref().map(|socket| socket.domain),
-            socket_type: self.socket.as_ref().map(|socket| socket.sock_type),
-            socket_global_pipes: self
-                .socket
-                .as_ref()
-                .is_some_and(|socket| socket.global_pipes),
         }
     }
 
@@ -116,6 +105,10 @@ impl InFlightFd {
         if self.owns_reference {
             return Ok(());
         }
+        // Keep the lowest ownership primitive closed too. Callers must not be
+        // able to bypass sendmsg's complete-batch validation and retain a
+        // description the receiver cannot reconstruct.
+        crate::syscalls::validate_scm_rights_in_flight_fd(self)?;
         reserve_deferred_in_flight_release()?;
         if let Err(err) = crate::ofd::retain_in_flight_ofd(self.ofd_id) {
             cancel_deferred_in_flight_release();
@@ -142,14 +135,18 @@ impl InFlightFd {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn owns_reference(&self) -> bool {
-        self.owns_reference
-    }
-}
-
-impl Clone for InFlightFd {
-    fn clone(&self) -> Self {
+    /// Clone one queued descriptor while acquiring an independent in-flight
+    /// reference.
+    ///
+    /// `MSG_PEEK` installs a new descriptor for each successful peek while
+    /// leaving the original message queued. Keep that allocation fallible so
+    /// resource pressure returns an errno instead of panicking after the
+    /// caller has observed a partial ancillary result.
+    pub(crate) fn try_clone_retained(&self) -> Result<Self, Errno> {
+        let mut path = Vec::new();
+        path.try_reserve_exact(self.path.len())
+            .map_err(|_| Errno::ENOMEM)?;
+        path.extend_from_slice(&self.path);
         let mut cloned = Self {
             ofd_id: self.ofd_id,
             file_id: self.file_id,
@@ -157,17 +154,18 @@ impl Clone for InFlightFd {
             status_flags: self.status_flags,
             host_handle: self.host_handle,
             offset: self.offset,
-            path: self.path.clone(),
+            path,
             pipe_ref_kind: self.pipe_ref_kind,
-            socket: self.socket.clone(),
             owns_reference: false,
         };
         if self.owns_reference {
-            cloned
-                .retain_reference()
-                .expect("failed to retain cloned in-flight OFD reference");
+            cloned.retain_reference()?;
         }
-        cloned
+        Ok(cloned)
+    }
+
+    pub(crate) fn owns_reference(&self) -> bool {
+        self.owns_reference
     }
 }
 
@@ -182,24 +180,6 @@ impl Drop for InFlightFd {
     }
 }
 
-/// Serialized socket state for SCM_RIGHTS FD passing.
-#[derive(Clone)]
-pub struct InFlightSocket {
-    pub domain: u8,    // 0=Unix, 1=Inet, 2=Inet6
-    pub sock_type: u8, // 0=Stream, 1=Dgram
-    pub protocol: u32,
-    pub state: u8, // 0=Unbound, ..., 4=Closed
-    pub send_buf_idx: Option<usize>,
-    pub recv_buf_idx: Option<usize>,
-    pub global_pipes: bool,
-    pub shut_rd: bool,
-    pub shut_wr: bool,
-    pub bind_addr: [u8; 4],
-    pub bind_port: u16,
-    pub peer_addr: [u8; 4],
-    pub peer_port: u16,
-}
-
 /// Fixed cleanup metadata queued by `InFlightFd::drop`. Drop never re-enters
 /// the pipe, PTY, or descriptor-backing globals because it may itself be
 /// running while one of those tables is mutably borrowed.
@@ -209,11 +189,6 @@ pub(crate) struct DeferredInFlightFdRelease {
     file_type: FileType,
     host_handle: i64,
     pipe_ref_kind: Option<InFlightPipeRefKind>,
-    socket_send_idx: Option<usize>,
-    socket_recv_idx: Option<usize>,
-    socket_domain: Option<u8>,
-    socket_type: Option<u8>,
-    socket_global_pipes: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -221,6 +196,29 @@ pub(crate) struct ReleasedInFlightFd {
     pub ofd_id: OfdId,
     pub final_ofd_reference: bool,
     pub host_close: Option<i64>,
+}
+
+/// One SCM_RIGHTS batch attached to an exact byte range in a stream pipe.
+///
+/// Positions use the pipe's absolute byte sequence so ordinary reads stay
+/// O(1) regardless of how many later descriptor messages are queued.
+struct StreamAncillary {
+    start: u64,
+    end: u64,
+    fds: Vec<InFlightFd>,
+}
+
+/// Result of one message-aware stream read.
+pub(crate) struct PipeMessageRead {
+    pub bytes_read: usize,
+    pub hit_ancillary_barrier: bool,
+    pub ancillary_fds: Option<Vec<InFlightFd>>,
+}
+
+/// Result of a stream read that cannot return ancillary data.
+pub(crate) struct PipePlainRead {
+    pub bytes_read: usize,
+    pub hit_ancillary_barrier: bool,
 }
 
 struct DeferredInFlightReleaseQueue {
@@ -275,10 +273,23 @@ pub(crate) fn pop_deferred_in_flight_release() -> Option<DeferredInFlightFdRelea
     deferred_in_flight_releases().records.pop()
 }
 
+/// Return whether an ownership drop still needs its outer resource cleanup.
+///
+/// Direct host pipe exports use this after ending their pipe-table borrow, so
+/// the ordinary host-TCP path pays only a queue-length check while any future
+/// ancillary-capable caller cannot strand a deferred backing release.
+pub(crate) fn has_deferred_in_flight_releases() -> bool {
+    !deferred_in_flight_releases().records.is_empty()
+}
+
 #[cfg(test)]
 pub(crate) fn deferred_in_flight_release_state() -> (usize, usize, usize) {
     let queue = deferred_in_flight_releases();
-    (queue.records.len(), queue.reserved, queue.records.capacity())
+    (
+        queue.records.len(),
+        queue.reserved,
+        queue.records.capacity(),
+    )
 }
 
 fn retain_in_flight_resource(release: DeferredInFlightFdRelease) -> Result<(), Errno> {
@@ -303,24 +314,6 @@ fn retain_in_flight_resource(release: DeferredInFlightFdRelease) -> Result<(), E
             let kind = release.pipe_ref_kind.ok_or(Errno::EINVAL)?;
             pipe.retain_in_flight_reference(kind);
         }
-        FileType::Socket if release.socket_global_pipes => {
-            let pipes = unsafe { global_pipe_table() };
-            if release
-                .socket_send_idx
-                .is_some_and(|idx| pipes.get(idx).is_none())
-                || release
-                    .socket_recv_idx
-                    .is_some_and(|idx| pipes.get(idx).is_none())
-            {
-                return Err(Errno::EBADF);
-            }
-            if let Some(idx) = release.socket_send_idx {
-                pipes.get_mut(idx).unwrap().retain_in_flight_writer();
-            }
-            if let Some(idx) = release.socket_recv_idx {
-                pipes.get_mut(idx).unwrap().retain_in_flight_reader();
-            }
-        }
         FileType::PtyMaster | FileType::PtySlave => {
             let pty = crate::pty::get_pty(release.host_handle as usize).ok_or(Errno::EBADF)?;
             if release.file_type == FileType::PtyMaster {
@@ -329,7 +322,7 @@ fn retain_in_flight_resource(release: DeferredInFlightFdRelease) -> Result<(), E
                 pty.slave_refs = pty.slave_refs.checked_add(1).ok_or(Errno::EOVERFLOW)?;
             }
         }
-        FileType::Epoll => return Err(Errno::EINVAL),
+        FileType::Socket | FileType::Epoll => return Err(Errno::EOPNOTSUPP),
         _ => {}
     }
     Ok(())
@@ -346,19 +339,6 @@ fn transfer_in_flight_resource(release: DeferredInFlightFdRelease) {
                 release.pipe_ref_kind,
             ) {
                 pipe.adopt_in_flight_reference(kind);
-            }
-        }
-        FileType::Socket if release.socket_global_pipes => {
-            let pipes = unsafe { global_pipe_table() };
-            if let Some(idx) = release.socket_send_idx {
-                if let Some(pipe) = pipes.get_mut(idx) {
-                    pipe.adopt_in_flight_writer();
-                }
-            }
-            if let Some(idx) = release.socket_recv_idx {
-                if let Some(pipe) = pipes.get_mut(idx) {
-                    pipe.adopt_in_flight_reader();
-                }
             }
         }
         _ => {}
@@ -402,27 +382,6 @@ pub(crate) fn release_deferred_in_flight_resource(
                 }
                 pipes.free_if_closed(pipe_idx);
             }
-            FileType::Socket if release.socket_global_pipes => {
-                let pipes = unsafe { global_pipe_table() };
-                if let Some(idx) = release.socket_send_idx {
-                    if let Some(pipe) = pipes.get_mut(idx) {
-                        pipe.release_in_flight_writer();
-                    }
-                    pipes.free_if_closed(idx);
-                }
-                if let Some(idx) = release.socket_recv_idx {
-                    if let Some(pipe) = pipes.get_mut(idx) {
-                        let orderly_tcp_close = release.socket_type == Some(0)
-                            && matches!(release.socket_domain, Some(1 | 2));
-                        if orderly_tcp_close {
-                            pipe.release_in_flight_reader_orderly();
-                        } else {
-                            pipe.release_in_flight_reader();
-                        }
-                    }
-                    pipes.free_if_closed(idx);
-                }
-            }
             FileType::PtyMaster | FileType::PtySlave => {
                 let pty_idx = release.host_handle as usize;
                 if let Some(pty) = crate::pty::get_pty(pty_idx) {
@@ -460,11 +419,13 @@ pub struct PipeBuffer {
     head: usize,
     tail: usize,
     len: usize,
+    /// Absolute sequence number of the byte at `head`.
+    stream_position: u64,
     read_count: u32,
     write_count: u32,
     /// Endpoint references owned by descriptors queued in SCM_RIGHTS messages.
     /// These are included in read_count/write_count, but tracked separately so
-    /// unreachable cycles of queued socket descriptors can be collected.
+    /// a carrier queue with no externally owned reader can be discarded.
     in_flight_read_count: u32,
     in_flight_write_count: u32,
     /// The receive half of a normally closed TCP endpoint remains as an
@@ -499,9 +460,14 @@ pub struct PipeBuffer {
     /// prevents the counterpart from returning into an apparent zero-reader
     /// or zero-writer pipe before this thread gets scheduled again.
     fifo_open_waiters: BTreeMap<u64, FifoOpenWaiter>,
-    /// Ancillary data queue for SCM_RIGHTS FD passing.
-    /// Each entry is a batch of FDs sent with one sendmsg call.
-    ancillary_fds: VecDeque<Vec<InFlightFd>>,
+    /// SCM_RIGHTS batches attached to exact stream byte ranges.
+    ///
+    /// WHY: a detached FIFO of descriptor batches can deliver rights while
+    /// reading earlier plain bytes, or leave stale rights after `read(2)`
+    /// consumes their carrier. The byte range makes each sendmsg an
+    /// explicit receive barrier and keeps ordinary reads and peeks coherent.
+    /// Absolute positions avoid walking every later record on each read.
+    ancillary_fds: VecDeque<StreamAncillary>,
 }
 
 impl PipeBuffer {
@@ -514,6 +480,7 @@ impl PipeBuffer {
             head: 0,
             tail: 0,
             len: 0,
+            stream_position: 0,
             read_count: 1,
             write_count: 1,
             in_flight_read_count: 0,
@@ -853,6 +820,19 @@ impl PipeBuffer {
     /// Performs a partial write if the buffer does not have enough free space
     /// for all of `data`. Returns 0 if the buffer is full.
     pub fn write(&mut self, data: &[u8]) -> usize {
+        let previous_len = self.len;
+        let bytes_written = self.write_without_wakeup(data);
+        if self.len != previous_len {
+            crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_READABLE);
+        }
+        bytes_written
+    }
+
+    /// Mutate buffered bytes without publishing a readable wakeup.
+    ///
+    /// SCM_RIGHTS uses this so the carrier bytes and their ownership record
+    /// become visible as one transaction before a waiter may run.
+    fn write_without_wakeup(&mut self, data: &[u8]) -> usize {
         if self.read_count == 0 {
             return if self.orphaned_read { data.len() } else { 0 };
         }
@@ -861,6 +841,7 @@ impl PipeBuffer {
         if n == 0 {
             return 0;
         }
+        self.ensure_stream_sequence_room(n);
         let first = cap - self.tail;
         if n <= first {
             self.buf[self.tail..self.tail + n].copy_from_slice(&data[..n]);
@@ -870,9 +851,217 @@ impl PipeBuffer {
         }
         self.tail = (self.tail + n) % cap;
         self.len += n;
-        // Data written → pipe became readable
-        crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_READABLE);
         n
+    }
+
+    /// Write stream bytes and attach one retained SCM_RIGHTS batch to the
+    /// exact successfully written range.
+    ///
+    /// Queue capacity is reserved before bytes become visible. This prevents
+    /// a successful data write followed by a failed best-effort ancillary
+    /// enqueue, which would silently separate the descriptors from their
+    /// carrier bytes.
+    pub(crate) fn write_with_ancillary(
+        &mut self,
+        data: &[u8],
+        fds: Vec<InFlightFd>,
+    ) -> Result<usize, Errno> {
+        if fds.is_empty() {
+            return Ok(self.write(data));
+        }
+        if data.is_empty() {
+            return Ok(0);
+        }
+        self.ancillary_fds
+            .try_reserve(1)
+            .map_err(|_| Errno::ENOMEM)?;
+        let previous_len = self.len;
+        let bytes_written = self.write_without_wakeup(data);
+        if bytes_written == 0 {
+            return Ok(0);
+        }
+        if self.len == previous_len {
+            // An orphaned TCP read side is an explicit discard sink. Data may
+            // report success there, but there is no readable carrier range to
+            // which descriptors could safely remain attached.
+            return Ok(bytes_written);
+        }
+        let start = self
+            .stream_position
+            .checked_add(previous_len as u64)
+            .expect("stream sequence was rebased before write");
+        let end = start
+            .checked_add(bytes_written as u64)
+            .expect("stream sequence was rebased before write");
+        self.ancillary_fds
+            .push_back(StreamAncillary { start, end, fds });
+        // WHY: publish only after both the bytes and their descriptor ownership
+        // are installed, so a callback or nested operation cannot observe one
+        // half of the message.
+        crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_READABLE);
+        Ok(bytes_written)
+    }
+
+    /// Maximum bytes one receive may cross without passing a descriptor
+    /// barrier.
+    fn message_read_len(&self, requested: usize) -> usize {
+        let mut bytes = requested.min(self.len);
+        if let Some(ancillary) = self.ancillary_fds.front() {
+            let requested_end = self
+                .stream_position
+                .checked_add(bytes as u64)
+                .expect("live pipe range fits in stream sequence");
+            if ancillary.start < requested_end {
+                let barrier_len = ancillary
+                    .end
+                    .checked_sub(self.stream_position)
+                    .expect("ancillary barrier cannot precede read head");
+                bytes = bytes.min(barrier_len as usize);
+            }
+        }
+        bytes
+    }
+
+    /// Whether the currently available prefix reaches the first descriptor
+    /// barrier for a receive of at most `requested` bytes.
+    pub(crate) fn ancillary_barrier_within(&self, requested: usize) -> bool {
+        let bytes = requested.min(self.len);
+        let read_end = self
+            .stream_position
+            .checked_add(bytes as u64)
+            .expect("live pipe range fits in stream sequence");
+        self.ancillary_fds
+            .front()
+            .is_some_and(|ancillary| ancillary.start < read_end)
+    }
+
+    /// Rebase the absolute stream sequence only at the practically unreachable
+    /// u64 boundary. The ordinary hot path never walks queued records.
+    fn ensure_stream_sequence_room(&mut self, additional: usize) {
+        let buffered_and_new = self
+            .len
+            .checked_add(additional)
+            .expect("pipe capacity bounds buffered stream bytes");
+        if self
+            .stream_position
+            .checked_add(buffered_and_new as u64)
+            .is_some()
+        {
+            return;
+        }
+        let old_position = self.stream_position;
+        for ancillary in &mut self.ancillary_fds {
+            ancillary.start -= old_position;
+            ancillary.end -= old_position;
+        }
+        self.stream_position = 0;
+    }
+
+    fn copy_from_head(&self, buf: &mut [u8], bytes: usize) {
+        if bytes == 0 {
+            return;
+        }
+        let cap = self.capacity();
+        let first = (cap - self.head).min(bytes);
+        buf[..first].copy_from_slice(&self.buf[self.head..self.head + first]);
+        if first < bytes {
+            buf[first..bytes].copy_from_slice(&self.buf[..bytes - first]);
+        }
+    }
+
+    fn consume_from_head(&mut self, bytes: usize) {
+        if bytes == 0 {
+            return;
+        }
+        self.ensure_stream_sequence_room(0);
+        self.head = (self.head + bytes) % self.capacity();
+        self.len -= bytes;
+        self.stream_position = self
+            .stream_position
+            .checked_add(bytes as u64)
+            .expect("stream sequence was rebased before consume");
+        crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
+    }
+
+    /// Read one stream segment and return the first ancillary batch crossed.
+    ///
+    /// A non-peek receive moves the queued batch. A peek fallibly clones its
+    /// retained references and leaves both bytes and the original batch in
+    /// place, matching Linux's repeated-peek descriptor semantics.
+    pub(crate) fn recv_message(
+        &mut self,
+        buf: &mut [u8],
+        peek: bool,
+    ) -> Result<PipeMessageRead, Errno> {
+        let bytes_read = self.message_read_len(buf.len());
+        let read_end = self
+            .stream_position
+            .checked_add(bytes_read as u64)
+            .expect("live pipe range fits in stream sequence");
+        let crosses_ancillary = self
+            .ancillary_fds
+            .front()
+            .is_some_and(|ancillary| ancillary.start < read_end);
+        let ancillary_fds = if !crosses_ancillary {
+            None
+        } else if peek {
+            let mut cloned = Vec::new();
+            let original = &self
+                .ancillary_fds
+                .front()
+                .expect("crossed ancillary record exists")
+                .fds;
+            cloned
+                .try_reserve_exact(original.len())
+                .map_err(|_| Errno::ENOMEM)?;
+            for fd in original {
+                cloned.push(fd.try_clone_retained()?);
+            }
+            Some(cloned)
+        } else {
+            Some(
+                self.ancillary_fds
+                    .pop_front()
+                    .expect("crossed ancillary record exists")
+                    .fds,
+            )
+        };
+
+        self.copy_from_head(buf, bytes_read);
+        if !peek {
+            self.consume_from_head(bytes_read);
+        }
+        Ok(PipeMessageRead {
+            bytes_read,
+            hit_ancillary_barrier: crosses_ancillary,
+            ancillary_fds,
+        })
+    }
+
+    /// Read stream bytes for `read(2)`, `recv(2)`, or `recvfrom(2)`, none of
+    /// which can return ancillary data. A consuming call discards a crossed
+    /// descriptor batch; a peek leaves the batch queued.
+    pub(crate) fn recv_plain(&mut self, buf: &mut [u8], peek: bool) -> PipePlainRead {
+        let bytes_read = self.message_read_len(buf.len());
+        let read_end = self
+            .stream_position
+            .checked_add(bytes_read as u64)
+            .expect("live pipe range fits in stream sequence");
+        let hit_ancillary_barrier = self
+            .ancillary_fds
+            .front()
+            .is_some_and(|ancillary| ancillary.start < read_end);
+        self.copy_from_head(buf, bytes_read);
+        if !peek {
+            if hit_ancillary_barrier {
+                drop(self.ancillary_fds.pop_front());
+            }
+            self.consume_from_head(bytes_read);
+        }
+        PipePlainRead {
+            bytes_read,
+            hit_ancillary_barrier,
+        }
     }
 
     /// Read data from the ring buffer without consuming it, returning the
@@ -883,19 +1072,9 @@ impl PipeBuffer {
     ///
     /// Returns 0 if the buffer is empty.
     pub fn peek(&self, buf: &mut [u8]) -> usize {
-        let cap = self.capacity();
-        let n = buf.len().min(self.len);
-        if n == 0 {
-            return 0;
-        }
-        let first = cap - self.head;
-        if n <= first {
-            buf[..n].copy_from_slice(&self.buf[self.head..self.head + n]);
-        } else {
-            buf[..first].copy_from_slice(&self.buf[self.head..self.head + first]);
-            buf[first..n].copy_from_slice(&self.buf[0..n - first]);
-        }
-        n
+        let bytes_read = self.message_read_len(buf.len());
+        self.copy_from_head(buf, bytes_read);
+        bytes_read
     }
 
     /// Read data from the ring buffer into `buf`, returning the number of
@@ -903,23 +1082,7 @@ impl PipeBuffer {
     ///
     /// Returns 0 if the buffer is empty.
     pub fn read(&mut self, buf: &mut [u8]) -> usize {
-        let cap = self.capacity();
-        let n = buf.len().min(self.len);
-        if n == 0 {
-            return 0;
-        }
-        let first = cap - self.head;
-        if n <= first {
-            buf[..n].copy_from_slice(&self.buf[self.head..self.head + n]);
-        } else {
-            buf[..first].copy_from_slice(&self.buf[self.head..self.head + first]);
-            buf[first..n].copy_from_slice(&self.buf[0..n - first]);
-        }
-        self.head = (self.head + n) % cap;
-        self.len -= n;
-        // Data consumed → pipe became writable
-        crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
-        n
+        self.recv_plain(buf, false).bytes_read
     }
 
     /// Close one read end of the pipe. Decrements the read reference count.
@@ -934,6 +1097,9 @@ impl PipeBuffer {
             // them only enqueues fixed cleanup metadata; resource tables are
             // drained after this PipeBuffer borrow ends.
             self.discard_unreceivable_ancillary();
+            if self.ancillary_fds.is_empty() {
+                self.stream_position = 0;
+            }
         }
         // Read end closed → pipe became writable (writers get EPIPE/SIGPIPE)
         crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
@@ -953,6 +1119,9 @@ impl PipeBuffer {
             self.len = 0;
             self.orphaned_read = self.write_count > 0;
             self.discard_unreceivable_ancillary();
+            if self.ancillary_fds.is_empty() {
+                self.stream_position = 0;
+            }
         }
         crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
     }
@@ -986,16 +1155,6 @@ impl PipeBuffer {
         crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_READABLE);
     }
 
-    fn retain_in_flight_reader(&mut self) {
-        self.add_reader();
-        self.in_flight_read_count += 1;
-    }
-
-    fn retain_in_flight_writer(&mut self) {
-        self.add_writer();
-        self.in_flight_write_count += 1;
-    }
-
     fn adopt_in_flight_reader(&mut self) {
         debug_assert!(self.in_flight_read_count > 0);
         self.in_flight_read_count = self.in_flight_read_count.saturating_sub(1);
@@ -1004,24 +1163,6 @@ impl PipeBuffer {
     fn adopt_in_flight_writer(&mut self) {
         debug_assert!(self.in_flight_write_count > 0);
         self.in_flight_write_count = self.in_flight_write_count.saturating_sub(1);
-    }
-
-    fn release_in_flight_reader(&mut self) {
-        debug_assert!(self.in_flight_read_count > 0);
-        self.in_flight_read_count = self.in_flight_read_count.saturating_sub(1);
-        self.close_read_end();
-    }
-
-    fn release_in_flight_reader_orderly(&mut self) {
-        debug_assert!(self.in_flight_read_count > 0);
-        self.in_flight_read_count = self.in_flight_read_count.saturating_sub(1);
-        self.close_read_end_orderly();
-    }
-
-    fn release_in_flight_writer(&mut self) {
-        debug_assert!(self.in_flight_write_count > 0);
-        self.in_flight_write_count = self.in_flight_write_count.saturating_sub(1);
-        self.close_write_end();
     }
 
     fn has_external_reader(&self) -> bool {
@@ -1033,7 +1174,7 @@ impl PipeBuffer {
         if self
             .ancillary_fds
             .iter()
-            .flatten()
+            .flat_map(|record| &record.fds)
             .any(|fd| !fd.owns_reference)
         {
             // Local PipeTable unit fixtures exercise the lower-level reference
@@ -1095,18 +1236,6 @@ impl PipeBuffer {
             && self.write_count == 0
             && !self.orphaned_read
             && (!self.is_fifo || (self.fifo_names == 0 && self.fifo_path_refs == 0))
-    }
-
-    /// Push ancillary FDs (SCM_RIGHTS) to be delivered with the next recvmsg.
-    fn push_ancillary(&mut self, fds: Vec<InFlightFd>) {
-        if !fds.is_empty() {
-            self.ancillary_fds.push_back(fds);
-        }
-    }
-
-    /// Pop ancillary FDs (SCM_RIGHTS) for the next recvmsg call.
-    pub fn pop_ancillary(&mut self) -> Option<Vec<InFlightFd>> {
-        self.ancillary_fds.pop_front()
     }
 
     /// Returns true if there are ancillary FDs pending delivery.
@@ -1190,21 +1319,22 @@ impl PipeTable {
         self.pipes.get_mut(idx).and_then(|p| p.as_mut())
     }
 
-    /// Queue SCM_RIGHTS entries that already own their machine-wide references.
-    /// The message is collected immediately if no live or reachable socket
-    /// endpoint can ever receive it.
-    pub fn queue_retained_ancillary(
+    /// Atomically publish stream data and its already-retained SCM_RIGHTS
+    /// descriptors, then discard any carrier queue that has no external
+    /// receiver.
+    pub(crate) fn write_retained_ancillary(
         &mut self,
         carrier_idx: usize,
+        data: &[u8],
         fds: Vec<InFlightFd>,
-    ) -> bool {
+    ) -> Result<usize, Errno> {
         debug_assert!(fds.iter().all(|fd| fd.owns_reference));
-        if self.get(carrier_idx).is_none() {
-            return false;
-        }
-        self.get_mut(carrier_idx).unwrap().push_ancillary(fds);
+        let bytes_written = self
+            .get_mut(carrier_idx)
+            .ok_or(Errno::EBADF)?
+            .write_with_ancillary(data, fds)?;
         self.collect_unreachable_ancillary();
-        true
+        Ok(bytes_written)
     }
 
     /// Lower-level resource accounting used by the local PipeTable tests.
@@ -1213,7 +1343,13 @@ impl PipeTable {
         if self.get(carrier_idx).is_none() || !self.retain_ancillary_resources(&fds) {
             return false;
         }
-        self.get_mut(carrier_idx).unwrap().push_ancillary(fds);
+        let result = self
+            .get_mut(carrier_idx)
+            .unwrap()
+            .write_with_ancillary(b"x", fds);
+        if result != Ok(1) {
+            return false;
+        }
         self.collect_unreachable_ancillary();
         true
     }
@@ -1263,7 +1399,7 @@ impl PipeTable {
     }
 
     /// Complete a popped SCM_RIGHTS batch after every reference was adopted or
-    /// released, then collect cycles made unreachable by removing that queue.
+    /// released, then discard carrier queues that no external reader can reach.
     pub fn finish_ancillary_transition(&mut self) {
         self.collect_unreachable_ancillary();
     }
@@ -1279,32 +1415,6 @@ impl PipeTable {
                 return false;
             };
             pipe.retain_in_flight_reference(kind);
-        } else if fd.file_type == FileType::Socket {
-            let Some(socket) = fd.socket.as_ref() else {
-                return true;
-            };
-            if !socket.global_pipes {
-                return true;
-            }
-
-            if let Some(send_idx) = socket.send_buf_idx {
-                let Some(pipe) = self.get_mut(send_idx) else {
-                    return false;
-                };
-                pipe.retain_in_flight_writer();
-            }
-            if let Some(recv_idx) = socket.recv_buf_idx {
-                let Some(pipe) = self.get_mut(recv_idx) else {
-                    if let Some(send_idx) = socket.send_buf_idx {
-                        if let Some(pipe) = self.get_mut(send_idx) {
-                            pipe.release_in_flight_writer();
-                        }
-                        self.free_fully_closed_inner(send_idx);
-                    }
-                    return false;
-                };
-                pipe.retain_in_flight_reader();
-            }
         }
         true
     }
@@ -1316,23 +1426,6 @@ impl PipeTable {
             if let Some(pipe) = self.get_mut(pipe_idx) {
                 if let Some(kind) = fd.pipe_ref_kind {
                     pipe.adopt_in_flight_reference(kind);
-                }
-            }
-        } else if fd.file_type == FileType::Socket {
-            let Some(socket) = fd.socket.as_ref() else {
-                return;
-            };
-            if !socket.global_pipes {
-                return;
-            }
-            if let Some(send_idx) = socket.send_buf_idx {
-                if let Some(pipe) = self.get_mut(send_idx) {
-                    pipe.adopt_in_flight_writer();
-                }
-            }
-            if let Some(recv_idx) = socket.recv_buf_idx {
-                if let Some(pipe) = self.get_mut(recv_idx) {
-                    pipe.adopt_in_flight_reader();
                 }
             }
         }
@@ -1348,32 +1441,6 @@ impl PipeTable {
                 }
             }
             self.free_fully_closed_inner(pipe_idx);
-        } else if fd.file_type == FileType::Socket {
-            let Some(socket) = fd.socket.as_ref() else {
-                return;
-            };
-            if !socket.global_pipes {
-                return;
-            }
-
-            if let Some(send_idx) = socket.send_buf_idx {
-                if let Some(pipe) = self.get_mut(send_idx) {
-                    pipe.release_in_flight_writer();
-                }
-                self.free_fully_closed_inner(send_idx);
-            }
-            if let Some(recv_idx) = socket.recv_buf_idx {
-                if let Some(pipe) = self.get_mut(recv_idx) {
-                    let orderly_tcp_close = socket.sock_type == 0
-                        && matches!(socket.domain, 1 | 2);
-                    if orderly_tcp_close {
-                        pipe.release_in_flight_reader_orderly();
-                    } else {
-                        pipe.release_in_flight_reader();
-                    }
-                }
-                self.free_fully_closed_inner(recv_idx);
-            }
         }
     }
 
@@ -1395,76 +1462,38 @@ impl PipeTable {
 
         let pipe = self.pipes[idx].take().unwrap();
         self.free_list.push(idx);
-        for fds in pipe.ancillary_fds {
+        for record in pipe.ancillary_fds {
             #[cfg(test)]
-            for fd in &fds {
+            for fd in &record.fds {
                 if !fd.owns_reference {
                     self.release_ancillary_resource_inner(fd);
                 }
             }
-            drop(fds);
+            drop(record);
         }
     }
 
-    /// Collect ancillary queues that cannot be reached from an externally
-    /// owned receive endpoint. Queued socket descriptors form graph edges to
-    /// their receive pipes; the mark phase preserves every transitively
-    /// receivable cycle and the sweep drops only components with no root.
+    /// Drop ancillary queues whose carrier has no externally owned reader.
+    ///
+    /// Socket descriptors are rejected before retain, so queued rights no
+    /// longer form graph edges between carrier pipes. A direct sweep is both
+    /// sufficient and less likely to imply that lossy socket snapshots exist.
     fn collect_unreachable_ancillary(&mut self) {
-        let mut reachable = Vec::new();
-        reachable.resize(self.pipes.len(), false);
-        let mut work = VecDeque::new();
-        for (idx, pipe) in self.pipes.iter().enumerate() {
-            if pipe.as_ref().is_some_and(PipeBuffer::has_external_reader) {
-                reachable[idx] = true;
-                work.push_back(idx);
-            }
-        }
-
-        while let Some(carrier_idx) = work.pop_front() {
-            let Some(pipe) = self.get(carrier_idx) else {
-                continue;
-            };
-            for batch in &pipe.ancillary_fds {
-                for fd in batch {
-                    if fd.file_type != FileType::Socket {
-                        continue;
-                    }
-                    let Some(socket) = fd.socket.as_ref() else {
-                        continue;
-                    };
-                    if !socket.global_pipes {
-                        continue;
-                    }
-                    let Some(recv_idx) = socket.recv_buf_idx else {
-                        continue;
-                    };
-                    if recv_idx < reachable.len() && !reachable[recv_idx] {
-                        reachable[recv_idx] = true;
-                        work.push_back(recv_idx);
-                    }
-                }
-            }
-        }
-
         let mut dropped = Vec::new();
-        for (idx, pipe) in self.pipes.iter_mut().enumerate() {
-            if !reachable[idx] {
-                if let Some(pipe) = pipe.as_mut() {
-                    dropped.extend(pipe.ancillary_fds.drain(..));
-                }
+        for pipe in self.pipes.iter_mut().flatten() {
+            if !pipe.has_external_reader() {
+                dropped.extend(pipe.ancillary_fds.drain(..));
             }
         }
         for batch in dropped {
             #[cfg(test)]
-            for fd in &batch {
+            for fd in &batch.fds {
                 if !fd.owns_reference {
                     self.release_ancillary_resource_inner(fd);
                 }
             }
             drop(batch);
         }
-
     }
 
     /// Release both endpoints of a newly allocated buffer that was never
@@ -1487,12 +1516,7 @@ impl PipeTable {
         self.free_if_closed(idx);
     }
 
-    pub fn remove_fifo_name_at(
-        &mut self,
-        idx: usize,
-        ctime_sec: u64,
-        ctime_nsec: u32,
-    ) {
+    pub fn remove_fifo_name_at(&mut self, idx: usize, ctime_sec: u64, ctime_nsec: u32) {
         if let Some(pipe) = self.get_mut(idx) {
             pipe.remove_fifo_name_at(ctime_sec, ctime_nsec);
         }
@@ -1507,10 +1531,7 @@ impl PipeTable {
         })
     }
 
-    pub fn take_ready_fifo_open(
-        &mut self,
-        owner: u64,
-    ) -> Option<(usize, FifoOpenWaiter)> {
+    pub fn take_ready_fifo_open(&mut self, owner: u64) -> Option<(usize, FifoOpenWaiter)> {
         let idx = self.find_fifo_open(owner)?;
         let waiter = self.get_mut(idx)?.take_ready_fifo_open(owner)?;
         Some((idx, waiter))
@@ -1572,6 +1593,18 @@ pub unsafe fn global_pipe_table() -> &'static mut PipeTable {
 mod tests {
     use super::*;
 
+    fn test_ancillary_fd(id: u64) -> InFlightFd {
+        InFlightFd::new(
+            OfdId(id),
+            None,
+            FileType::Regular,
+            wasm_posix_shared::flags::O_RDONLY,
+            id as i64,
+            0,
+            b"/tmp/right".to_vec(),
+        )
+    }
+
     fn fifo_metadata() -> WasmStat {
         WasmStat {
             st_dev: 1,
@@ -1616,16 +1649,140 @@ mod tests {
     }
 
     #[test]
+    fn stream_ancillary_follows_its_carrier_byte_range() {
+        let mut pipe = PipeBuffer::new(32);
+        assert_eq!(pipe.write(b"AAAA"), 4);
+        assert_eq!(
+            pipe.write_with_ancillary(b"B", vec![test_ancillary_fd(1)]),
+            Ok(1)
+        );
+        assert_eq!(pipe.write(b"CCCC"), 4);
+
+        let mut first = [0u8; 1];
+        let received = pipe.recv_message(&mut first, false).unwrap();
+        assert_eq!(received.bytes_read, 1);
+        assert!(!received.hit_ancillary_barrier);
+        assert!(received.ancillary_fds.is_none());
+        assert_eq!(&first, b"A");
+
+        let mut through_carrier = [0u8; 8];
+        let received = pipe.recv_message(&mut through_carrier, false).unwrap();
+        assert_eq!(received.bytes_read, 4);
+        assert!(received.hit_ancillary_barrier);
+        assert_eq!(received.ancillary_fds.as_ref().unwrap()[0].ofd_id, OfdId(1));
+        assert_eq!(&through_carrier[..4], b"AAAB");
+
+        let mut tail = [0u8; 8];
+        assert_eq!(pipe.read(&mut tail), 4);
+        assert_eq!(&tail[..4], b"CCCC");
+    }
+
+    #[test]
+    fn stream_receive_stops_at_each_ancillary_barrier() {
+        let mut pipe = PipeBuffer::new(8);
+        assert_eq!(
+            pipe.write_with_ancillary(b"A", vec![test_ancillary_fd(1)]),
+            Ok(1)
+        );
+        assert_eq!(
+            pipe.write_with_ancillary(b"B", vec![test_ancillary_fd(2)]),
+            Ok(1)
+        );
+
+        let mut bytes = [0u8; 2];
+        let first = pipe.recv_message(&mut bytes, false).unwrap();
+        assert_eq!(first.bytes_read, 1);
+        assert_eq!(first.ancillary_fds.unwrap()[0].ofd_id, OfdId(1));
+        assert_eq!(bytes[0], b'A');
+
+        let second = pipe.recv_message(&mut bytes, false).unwrap();
+        assert_eq!(second.bytes_read, 1);
+        assert_eq!(second.ancillary_fds.unwrap()[0].ofd_id, OfdId(2));
+        assert_eq!(bytes[0], b'B');
+    }
+
+    #[test]
+    fn plain_read_discards_crossed_ancillary_batch() {
+        let mut pipe = PipeBuffer::new(8);
+        assert_eq!(
+            pipe.write_with_ancillary(b"A", vec![test_ancillary_fd(1)]),
+            Ok(1)
+        );
+        let mut byte = [0u8; 1];
+        assert_eq!(pipe.read(&mut byte), 1);
+        assert_eq!(&byte, b"A");
+        assert!(!pipe.has_ancillary());
+    }
+
+    #[test]
+    fn stream_ancillary_peek_is_repeatable_and_non_consuming() {
+        let mut pipe = PipeBuffer::new(8);
+        assert_eq!(
+            pipe.write_with_ancillary(b"P", vec![test_ancillary_fd(1)]),
+            Ok(1)
+        );
+        let mut byte = [0u8; 1];
+        for _ in 0..2 {
+            let peeked = pipe.recv_message(&mut byte, true).unwrap();
+            assert_eq!(peeked.bytes_read, 1);
+            assert_eq!(peeked.ancillary_fds.unwrap()[0].ofd_id, OfdId(1));
+            assert!(pipe.has_ancillary());
+        }
+        let consumed = pipe.recv_message(&mut byte, false).unwrap();
+        assert_eq!(consumed.ancillary_fds.unwrap()[0].ofd_id, OfdId(1));
+        assert!(!pipe.has_ancillary());
+    }
+
+    #[test]
+    fn stream_sequence_rebases_queued_ancillary_near_u64_max() {
+        let mut pipe = PipeBuffer::new(16);
+        pipe.stream_position = u64::MAX - 5;
+        assert_eq!(pipe.write(b"A"), 1);
+        assert_eq!(
+            pipe.write_with_ancillary(b"B", vec![test_ancillary_fd(7)]),
+            Ok(1)
+        );
+
+        // This ordinary write would overflow stream_position + buffered bytes.
+        // It performs the rare checked rebase and keeps the queued range exact.
+        assert_eq!(pipe.write(b"CDEF"), 4);
+        assert_eq!(pipe.stream_position, 0);
+
+        let mut bytes = [0u8; 8];
+        let received = pipe.recv_message(&mut bytes, false).unwrap();
+        assert_eq!(received.bytes_read, 2);
+        assert_eq!(&bytes[..2], b"AB");
+        assert_eq!(received.ancillary_fds.unwrap()[0].ofd_id, OfdId(7));
+        assert_eq!(pipe.read(&mut bytes), 4);
+        assert_eq!(&bytes[..4], b"CDEF");
+    }
+
+    #[test]
+    fn failed_or_partial_stream_send_never_detaches_rights() {
+        let mut full = PipeBuffer::new(1);
+        assert_eq!(full.write(b"X"), 1);
+        assert_eq!(
+            full.write_with_ancillary(b"Y", vec![test_ancillary_fd(1)]),
+            Ok(0)
+        );
+        assert!(!full.has_ancillary());
+
+        let mut partial = PipeBuffer::new(2);
+        assert_eq!(
+            partial.write_with_ancillary(b"ABC", vec![test_ancillary_fd(2)]),
+            Ok(2)
+        );
+        let mut bytes = [0u8; 3];
+        let received = partial.recv_message(&mut bytes, false).unwrap();
+        assert_eq!(received.bytes_read, 2);
+        assert_eq!(&bytes[..2], b"AB");
+        assert_eq!(received.ancillary_fds.unwrap()[0].ofd_id, OfdId(2));
+    }
+
+    #[test]
     fn fifo_reader_observes_writer_close_before_open_resumes() {
         let mut pipe = PipeBuffer::new_fifo(DEFAULT_PIPE_CAPACITY, fifo_metadata());
-        assert!(pipe.reserve_fifo_open(
-            1,
-            FifoOpenSide::Reader,
-            b"/tmp/fifo".to_vec(),
-            0,
-            0,
-            3,
-        ));
+        assert!(pipe.reserve_fifo_open(1, FifoOpenSide::Reader, b"/tmp/fifo".to_vec(), 0, 0, 3,));
 
         pipe.add_fifo_endpoint_ref(FifoOpenSide::Writer);
         pipe.publish_fifo_open(FifoOpenSide::Writer);
@@ -1873,11 +2030,7 @@ mod tests {
         fd
     }
 
-    fn in_flight_fifo(
-        pipe_idx: usize,
-        status_flags: u32,
-        kind: InFlightPipeRefKind,
-    ) -> InFlightFd {
+    fn in_flight_fifo(pipe_idx: usize, status_flags: u32, kind: InFlightPipeRefKind) -> InFlightFd {
         let mut fd = InFlightFd::new(
             OfdId(1),
             None,
@@ -1891,44 +2044,6 @@ mod tests {
         fd
     }
 
-    fn in_flight_socket(send_idx: usize, recv_idx: usize) -> InFlightFd {
-        let mut fd = InFlightFd::new(
-            OfdId(1),
-            None,
-            FileType::Socket,
-            wasm_posix_shared::flags::O_RDWR,
-            -1,
-            0,
-            b"socket".to_vec(),
-        );
-        fd.socket = Some(InFlightSocket {
-                domain: 0,
-                sock_type: 0,
-                protocol: 0,
-                state: 3,
-                send_buf_idx: Some(send_idx),
-                recv_buf_idx: Some(recv_idx),
-                global_pipes: true,
-                shut_rd: false,
-                shut_wr: false,
-                bind_addr: [0; 4],
-                bind_port: 0,
-                peer_addr: [0; 4],
-                peer_port: 0,
-            });
-        fd
-    }
-
-    fn close_external_endpoints(table: &mut PipeTable, indices: &[usize]) {
-        for &idx in indices {
-            if let Some(pipe) = table.get_mut(idx) {
-                pipe.close_read_end();
-                pipe.close_write_end();
-            }
-            table.free_if_closed(idx);
-        }
-    }
-
     #[test]
     fn scm_rights_reference_becomes_received_pipe_endpoint() {
         let mut table = PipeTable::new();
@@ -1939,7 +2054,10 @@ mod tests {
         table.adopt_ancillary_resource(&right);
         table.finish_ancillary_transition();
         table.get_mut(pipe_idx).unwrap().close_read_end();
-        assert_eq!(table.get_mut(pipe_idx).unwrap().write(b"still connected"), 15);
+        assert_eq!(
+            table.get_mut(pipe_idx).unwrap().write(b"still connected"),
+            15
+        );
 
         // Receiving transfers the retained reference to the new OFD. Its final
         // close, not installation, consumes that same reference.
@@ -2049,45 +2167,5 @@ mod tests {
         table.get_mut(pipe_idx).unwrap().close_write_end();
         table.free_if_closed(pipe_idx);
         assert!(table.get(pipe_idx).is_none());
-    }
-
-    #[test]
-    fn unreachable_self_socket_right_cycle_is_collected_and_slots_reused() {
-        let mut table = PipeTable::new();
-
-        for _ in 0..32 {
-            let (carrier_idx, peer_send_idx) =
-                table.alloc_pair(PipeBuffer::new(64), PipeBuffer::new(64));
-            assert_eq!((carrier_idx, peer_send_idx), (0, 1));
-
-            // The peer socket receives from carrier_idx. Queuing that peer on
-            // carrier_idx creates the canonical SCM_RIGHTS self-cycle.
-            let peer = in_flight_socket(peer_send_idx, carrier_idx);
-            assert!(table.queue_ancillary(carrier_idx, vec![peer]));
-            assert!(table.get(carrier_idx).unwrap().has_ancillary());
-
-            close_external_endpoints(&mut table, &[carrier_idx, peer_send_idx]);
-            assert_eq!(table.count_active(), 0);
-        }
-    }
-
-    #[test]
-    fn unreachable_cross_socket_right_cycle_is_collected() {
-        let mut table = PipeTable::new();
-        let (a_recv_idx, a_send_idx) =
-            table.alloc_pair(PipeBuffer::new(64), PipeBuffer::new(64));
-        let (b_recv_idx, b_send_idx) =
-            table.alloc_pair(PipeBuffer::new(64), PipeBuffer::new(64));
-
-        let a = in_flight_socket(a_send_idx, a_recv_idx);
-        let b = in_flight_socket(b_send_idx, b_recv_idx);
-        assert!(table.queue_ancillary(a_recv_idx, vec![b]));
-        assert!(table.queue_ancillary(b_recv_idx, vec![a]));
-
-        close_external_endpoints(
-            &mut table,
-            &[a_recv_idx, a_send_idx, b_recv_idx, b_send_idx],
-        );
-        assert_eq!(table.count_active(), 0);
     }
 }

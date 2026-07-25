@@ -11,6 +11,7 @@ import {
 } from "../src/generated/abi";
 import { WasmPosixKernel } from "../src/kernel";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 const MAP_SHARED = 1;
 const MAP_PRIVATE = 2;
@@ -199,18 +200,19 @@ type FileHarness = ReturnType<typeof createFileHarness>;
 function configureKernelSyscallHarness(h: FileHarness, pid: number) {
   const kernelHandle = vi.fn();
   const completeChannel = vi.fn();
+  const kernelMemory = new WebAssembly.Memory({ initial: 2 });
   Object.assign(h.kw as any, {
     config: {},
     syscallRing: new Map(),
     syscallTraceEnabled: false,
-    kernelMemory: new WebAssembly.Memory({ initial: 2 }),
-    scratchOffset: 0,
+    kernelMemory,
     kernelInstance: { exports: { kernel_handle_channel: kernelHandle } },
     formatSyscallEntry: vi.fn(() => "memory syscall"),
     synchronizeSharedMemoryForBoundary: vi.fn(),
     flushSharedMappingsBeforeFileSyscall: vi.fn(() => true),
     completeChannel,
   });
+  installKernelWorkerTestScratch(h.kw as any, kernelMemory);
   return { completeChannel, kernelHandle };
 }
 
@@ -297,18 +299,19 @@ describe("file/POSIX MAP_SHARED page cache", () => {
 
     const kernelHandle = vi.fn();
     const completeChannel = vi.fn();
+    const kernelMemory = new WebAssembly.Memory({ initial: 2 });
     Object.assign(h.kw as any, {
       config: {},
       syscallRing: new Map(),
       syscallTraceEnabled: false,
-      kernelMemory: new WebAssembly.Memory({ initial: 2 }),
-      scratchOffset: 0,
+      kernelMemory,
       kernelInstance: { exports: { kernel_handle_channel: kernelHandle } },
       formatSyscallEntry: vi.fn(() => "mmap"),
       synchronizeSharedMemoryForBoundary: vi.fn(),
       flushSharedMappingsBeforeFileSyscall: vi.fn(() => true),
       completeChannel,
     });
+    installKernelWorkerTestScratch(h.kw as any, kernelMemory);
 
     const args = [addr, 4096, PROT_WRITE, MAP_SHARED | MAP_FIXED, 4, 0];
     const view = new DataView(channel.memory.buffer, channel.channelOffset);
@@ -1193,18 +1196,19 @@ describe("file/POSIX MAP_SHARED page cache", () => {
 
     const kernelHandle = vi.fn();
     const relistenChannel = vi.fn();
+    const kernelMemory = new WebAssembly.Memory({ initial: 2 });
     Object.assign(h.kw as any, {
       config: {},
       syscallRing: new Map(),
       syscallTraceEnabled: false,
-      kernelMemory: new WebAssembly.Memory({ initial: 2 }),
-      scratchOffset: 0,
+      kernelMemory,
       kernelInstance: { exports: { kernel_handle_channel: kernelHandle } },
       clearSocketTimeout: vi.fn(),
       clearReadinessWait: vi.fn(),
       pendingCancels: new Set(),
       relistenChannel,
     });
+    installKernelWorkerTestScratch(h.kw as any, kernelMemory);
     writeChannelSyscall(channel, ABI_SYSCALLS.Getpid, []);
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -1279,6 +1283,34 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     );
     expect(backing.sizeValid).toBe(false);
     expect(backing.version).toBeGreaterThan(version);
+  });
+
+  it("does not alias an unsafe exact pwrite offset in shared-mapping state", () => {
+    const h = createFileHarness();
+    const pid = h.pids[0];
+    const addr = 0x1000;
+    expect(h.map(pid, 4, addr)).toBe(true);
+    const exactOffset = BigInt(Number.MAX_SAFE_INTEGER) + 2n;
+    const reload = vi.spyOn(
+      h.kw as any,
+      "reloadSharedMmapBackingForFd",
+    ).mockImplementation(() => {});
+    const update = vi.spyOn(
+      h.kw as any,
+      "updateSharedMmapBackingFromProcessBuffer",
+    );
+
+    (h.kw as any).handleSharedMappingsAfterFileSyscall(
+      h.channels.get(pid),
+      ABI_SYSCALLS.Pwrite,
+      [4, 0x7000, 1, Number(exactOffset)],
+      1,
+      0,
+      exactOffset,
+    );
+
+    expect(update).not.toHaveBeenCalled();
+    expect(reload).toHaveBeenCalledWith(h.channels.get(pid), 4);
   });
 
   it("rejects shared memfd mappings deliberately without affecting private mmap", () => {

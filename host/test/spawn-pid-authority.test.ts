@@ -15,6 +15,7 @@ import {
   HOST_INTERCEPTED_SYSCALLS,
   WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
 } from "../src/generated/abi";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const WASM32_CONTINUATION_HEADER_SIZE =
@@ -159,7 +160,7 @@ describe("kernel task-ID authority", () => {
     const parentPid = 77;
     const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
     const channel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
-    const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
+    const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
     const completeChannel = vi.fn();
     const onSpawn = vi.fn(async () => 0);
     const kernelSpawnProcess = vi.fn(() => 0);
@@ -173,13 +174,16 @@ describe("kernel task-ID authority", () => {
           },
         },
         kernelMemory,
-        scratchOffset: 0,
         completeChannel,
         kernelInstance: {
           exports: { kernel_spawn_process: kernelSpawnProcess },
         },
       },
     ) as CentralizedKernelWorker;
+    const scratchPointer = installKernelWorkerTestScratch(
+      kernelWorker as unknown as Record<string, unknown>,
+      kernelMemory,
+    );
     const origArgs = [1, 2, 3, 4, 5, 0];
 
     (kernelWorker as any).handleSpawnAfterResolve(
@@ -194,7 +198,12 @@ describe("kernel task-ID authority", () => {
       [],
     );
 
-    expect(kernelSpawnProcess).toHaveBeenCalledWith(parentPid, parentPid, 0, 1);
+    expect(kernelSpawnProcess).toHaveBeenCalledWith(
+      parentPid,
+      parentPid,
+      scratchPointer,
+      1,
+    );
     expect(onSpawn).not.toHaveBeenCalled();
     expect(completeChannel).toHaveBeenCalledWith(
       channel,

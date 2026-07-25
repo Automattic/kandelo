@@ -21,6 +21,10 @@ fi
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
+bash scripts/check-sysv-ipc-layouts.sh
+bash scripts/check-process-native-layouts.sh
+bash scripts/check-fixed-process-layouts.sh
+
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 
 # The snapshot includes exports parsed from the built kernel wasm. We
@@ -87,9 +91,9 @@ version_bumped=0
 snapshot_changed=0
 if git rev-parse --verify --quiet "$base_ref" >/dev/null ; then
     if ! git diff --quiet "$base_ref" -- crates/shared/src/lib.rs 2>/dev/null ; then
-        # Do not use `grep -q` here: with pipefail, an early match can close
-        # the pipe while a large ABI diff is still being written, turning
-        # git's SIGPIPE into a false "version was not bumped" result.
+        # WHY: do not use grep -q here. Under pipefail, an early successful
+        # grep closes the pipe, git diff receives SIGPIPE, and a real bump is
+        # misclassified as absent.
         if git diff "$base_ref" -- crates/shared/src/lib.rs \
             | grep -E '^\+pub const ABI_VERSION: u32 = ' >/dev/null ; then
             version_bumped=1

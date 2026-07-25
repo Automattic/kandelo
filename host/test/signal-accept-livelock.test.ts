@@ -19,6 +19,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 import {
   CH_ARGS,
   CH_ARG_SIZE,
@@ -28,6 +29,7 @@ import {
   CH_RETURN,
   CH_SIG_SIGNUM,
   CH_SYSCALL,
+  KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES,
 } from "../src/generated/abi";
 
 const SIGCHLD = 17;
@@ -45,6 +47,7 @@ function createChannel(pid: number, channelOffset: number): any {
 /** A worker whose kernel exports are all inert — signal delivery is
  *  best-effort host bookkeeping, so the kernel side is a no-op here. */
 function createWorkerHarness(): any {
+  const kernelMemory = createSharedMemory();
   const worker: any = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
     kernel: { toKernelPtr: (v: number | bigint) => (typeof v === "bigint" ? Number(v) : v) },
     kernelInstance: {
@@ -56,8 +59,7 @@ function createWorkerHarness(): any {
         kernel_get_process_exit_signal: () => -1,
       },
     },
-    kernelMemory: createSharedMemory(),
-    scratchOffset: 128,
+    kernelMemory,
     processes: new Map(),
     channelTids: new Map(),
     pendingSleeps: new Map(),
@@ -66,6 +68,10 @@ function createWorkerHarness(): any {
     pendingPollRetries: new Map(),
     pendingSelectRetries: new Map(),
   });
+  worker.testScratchPointer = installKernelWorkerTestScratch(
+    worker,
+    kernelMemory,
+  );
   return worker;
 }
 
@@ -204,7 +210,12 @@ describe("signal delivery to a process blocked in accept()", () => {
     worker.completeSleepWithSignalCheck(channel, 1, [], 0, 0);
 
     expect(setCurrentTid).not.toHaveBeenCalled();
-    expect(dequeueSignal).toHaveBeenCalledWith(pid, tid, expect.any(Number));
+    expect(dequeueSignal).toHaveBeenCalledWith(
+      pid,
+      tid,
+      expect.any(Number),
+      KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES,
+    );
   });
 
   it("does not rebind an ordinary synchronous signal dequeue", () => {
@@ -220,7 +231,12 @@ describe("signal delivery to a process blocked in accept()", () => {
     worker.dequeueSignalForDelivery(channel);
 
     expect(setCurrentTid).not.toHaveBeenCalled();
-    expect(dequeueSignal).toHaveBeenCalledWith(pid, pid, expect.any(Number));
+    expect(dequeueSignal).toHaveBeenCalledWith(
+      pid,
+      pid,
+      expect.any(Number),
+      KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES,
+    );
   });
 
   it("hands a deferred signal from a JavaScript completion to the next guest checkpoint", () => {
@@ -424,7 +440,7 @@ describe("signal delivery to a process blocked in accept()", () => {
     worker.kernelInstance.exports.kernel_handle_channel = vi.fn(() => {
       const kernelView = new DataView(
         worker.kernelMemory.buffer,
-        worker.scratchOffset,
+        worker.testScratchPointer,
       );
       kernelView.setBigInt64(CH_RETURN, 0n, true);
       kernelView.setUint32(CH_ERRNO, 0, true);

@@ -48,13 +48,13 @@ describe("host readdir retry atomicity", () => {
     expect(result).toBeLessThan(0);
     expect(io.readdir).toHaveBeenCalledTimes(1);
 
-    expect(hostReaddir(7n, 0, 128, 64)).toBe(1);
+    expect(hostReaddir(7n, 16, 128, 64)).toBe(1);
     expect(io.readdir).toHaveBeenCalledTimes(1);
 
     const view = new DataView(memory.buffer);
-    expect(view.getBigUint64(0, true)).toBe(42n);
-    expect(view.getUint32(8, true)).toBe(8);
-    expect(view.getUint32(12, true)).toBe(entry.name.length);
+    expect(view.getBigUint64(16, true)).toBe(42n);
+    expect(view.getUint32(24, true)).toBe(8);
+    expect(view.getUint32(28, true)).toBe(entry.name.length);
     expect(
       new TextDecoder().decode(
         new Uint8Array(memory.buffer, 128, entry.name.length),
@@ -83,7 +83,7 @@ describe("host readdir retry atomicity", () => {
       bridge.hostReaddir(7n, memory.buffer.byteLength - 4, 128, 64),
     ).toBeLessThan(0);
     expect(bridge.hostClosedir(7n)).toBe(0);
-    expect(bridge.hostReaddir(7n, 0, 128, 64)).toBe(1);
+    expect(bridge.hostReaddir(7n, 16, 128, 64)).toBe(1);
 
     expect(io.closedir).toHaveBeenCalledWith(7);
     expect(io.readdir).toHaveBeenCalledTimes(2);

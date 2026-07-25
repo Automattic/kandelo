@@ -76,17 +76,28 @@ kernel_set_current_tid(pid, tid) → 0 | -errno
 kernel_fork_process(parent_pid, caller_tid) → assigned_child_pid | -errno
 kernel_spawn_process(parent_pid, caller_tid, blob_ptr, blob_len) → assigned_child_pid | -errno
 kernel_remove_process(pid) → 0
-kernel_handle_channel(channel_offset, pid) → result
+kernel_handle_channel(channel_offset, channel_capacity, pid) → result
 kernel_exec_prepare(pid, caller_tid) → 0 | -errno
 kernel_exec_setup_for_thread(pid, caller_tid) → 0 | -errno
 kernel_thread_exit(pid, tid) → 0 | -errno
-kernel_dequeue_signal(pid, tid, out_ptr) → 0 | signum | -errno
-kernel_wait_child_poll(parent_pid, caller_tid, target_pid, event_mask, flags, out_ptr) → child_pid | 0 | -errno
+kernel_dequeue_signal(pid, tid, out_ptr, out_capacity) → 0 | signum | -errno
+kernel_wait_child_poll(parent_pid, caller_tid, target_pid, event_mask, flags, out_ptr, out_capacity) → child_pid | 0 | -errno
 kernel_prepare_write_operation(pid, tid, fd, offset, len, positioned) → allowed_len | -errno
 kernel_ipc_shmat_for_task(pid, tid, shmid, addr, flags) → segment_size | -errno
 kernel_ipc_shmdt_for_task(pid, tid, shmid) → 0 | -errno
 kernel_ipc_shmat_for_process(pid, shmid, addr, flags) → segment_size | -errno
 kernel_ipc_shmdt_for_process(pid, shmid) → 0 | -errno
+kernel_alloc_scratch(size) → kernel_owned_pointer | 0
+kernel_spawn_scratch_begin(minimum_capacity) → reservation_token | -errno
+kernel_spawn_scratch_pointer(reservation_token) → kernel_owned_pointer | 0
+kernel_spawn_scratch_capacity(reservation_token) → reservation_capacity | 0
+kernel_spawn_scratch_retained_capacity() → retained_capacity
+kernel_spawn_scratch_cancel(reservation_token) → 0 | -errno
+kernel_spawn_reserved_process(parent_pid, caller_tid, reservation_token, blob_len) → assigned_child_pid | -errno
+kernel_msqid_ds_bytes(process_pointer_width) → bytes | -errno
+kernel_semctl_array_bytes(pid, tid, semid, command) → bytes | -errno
+kernel_semid_ds_bytes(process_pointer_width) → bytes | -errno
+kernel_shmid_ds_bytes(process_pointer_width) → bytes | -errno
 kernel_get_cwd(pid, buf, len) → bytes_written
 kernel_set_max_addr(pid, addr) → 0
 kernel_set_brk_base(pid, addr) → 0
@@ -147,6 +158,287 @@ Key host components:
 | NodeWorkerAdapter | `worker-adapter.ts` | Creates Node.js worker_threads |
 | BrowserWorkerAdapter | `worker-adapter-browser.ts` | Creates Web Workers |
 
+Kernel module instantiation snapshots the caller's exact intrinsic
+`ArrayBuffer`, typed-array, or `DataView` byte window before inspecting it.
+Pointer-width detection and `WebAssembly.compile` consume that same detached
+snapshot. This prevents an overridden view getter or a later caller mutation
+from making the host configure wasm32 imports for a different wasm64 module,
+or vice versa.
+
+A `WasmPosixKernel` wrapper owns exactly one instantiated kernel generation.
+`init` and `initWithMemory` are mutually exclusive one-shot entry points:
+concurrent or post-success calls reject before changing pointer width, memory,
+instance, or cached scratch authority. A failed first attempt clears its
+partially published state and may be retried. This matters because a
+`KernelScratchRegion` is bound to the exact allocator, instance, memory,
+pointer, and capacity that created it; replacing the wrapper generation while
+retaining an audio or public-API region would make the old allocation appear
+valid under unrelated new state.
+
+### Kernel-owned scratch transfers
+
+The host moves syscall payloads through allocations owned by the Rust kernel.
+`host/src/kernel-scratch.ts::KernelScratchRegion` carries each allocation's
+pointer and declared capacity together. The exported region, lease, and
+guarded-data-view names are structural interfaces; their concrete classes are
+module-private. A compiler-backed contract inventories every direct or aliased
+factory call, so repository runtime code cannot add a callback that merely
+claims an arbitrary pointer/capacity pair without a new exact review entry.
+Callers can read or write a region only inside a synchronous
+`KernelScratchLease`, which checks:
+
+1. safe-integer and non-negative offsets and lengths;
+2. lossless wasm32/wasm64 pointer conversion;
+3. the requested range against the allocation capacity; and
+4. the resulting address against the current kernel `Memory.buffer`.
+
+This contract is ABI 43 on top of PR #1097's merged ABI-42 result,
+`c7d039794a43788acfa0b0aea30a700c257f57cb`. The bump is required by actual
+incompatible exports and wires: among them, `kernel_handle_channel`,
+`kernel_dequeue_signal`, and `kernel_wait_child_poll` gain capacity arguments,
+and the signal-delivery record changes size. Centralizing unchanged constants
+alone would not require a bump. Exact final-head validation remains a PR
+readiness gate and must be recorded with the commit SHA it actually tested.
+
+The capacity check and memory-buffer check answer different questions. The
+second proves that an address exists in linear memory. It does not prove that
+the allocator assigned all of those bytes to this scratch region. For example,
+a 70 KiB write may fit comfortably in a multi-megabyte `Memory` while crossing
+the end of a 65 KiB scratch allocation and corrupting the next Rust heap
+object.
+
+The central worker owns separate main-syscall and TCP regions for the kernel
+lifetime. Sequential operations reuse them cheaply. A lease rejects nested or
+promise-returning work, and a guarded data view is revoked when the lease ends,
+so a callback or retry cannot observe bytes replaced by another operation.
+The lease is revoked before the callback's return value is inspected for a
+promise/thenable, so even an adversarial `then` getter cannot perform one last
+scratch access. Bulk copies read intrinsic typed-array slots and detach output;
+constructors, slot getters, `set`, `fill`, DataView methods, and
+`Reflect.apply` are captured at module initialization. Each bulk write receiver
+spans exactly the checked allocation range, so a replaced live prototype or
+subclass override cannot widen or intercept the write, reenter the lease, or
+retain a live kernel view.
+Scalar access checks the lease on every operation. The native `DataView` stays
+private and may be reused only while `Memory.buffer` has the same identity; a
+`memory.grow()` replaces that buffer and forces the complete capacity and
+current-memory proof to run again before the view is refreshed.
+Async syscall preparation detaches caller data into host-owned arrays; the
+final stage, Rust call, and output snapshot happen in one lease without an
+`await`. Retry, timeout, stopped-process, and signal completion state carries
+only those detached writes; `completeChannel` never rereads reusable scratch
+after the lease has ended.
+
+The Rust channel dispatcher carries the same ownership boundary numerically as
+`ChannelScratchRegion { start, capacity }`. The host passes the complete
+channel capacity to `kernel_handle_channel`; Rust rejects any value other than
+the canonical allocation size before decoding the header. Generated pointer
+descriptors classify every argument as exactly one of required or nullable.
+A null pointer with positive extent is accepted only when that shared
+descriptor explicitly permits null. An argument-sized null pointer with zero
+extent is instead canonicalized to a non-null, allocator-owned empty range, so
+an arbitrary process-space address never crosses into the kernel merely
+because its byte count is zero.
+
+Before laying out any descriptor, the host captures every `Deref`-derived
+`u32` length, such as a `socklen_t`, from the validated caller range. The same
+captured value sizes the destination and stages the length record, independent
+of generated descriptor order. A non-null outer buffer with no length pointer
+fails before dispatch. Rust then validates descriptor order, eight-byte
+alignment, non-overlap, and every complete subrange against the same channel
+allocation. Bespoke vector, message, polling, System V IPC, message-queue, and
+other manual wire layouts have corresponding Rust validators rather than a
+raw channel-pointer escape.
+
+The generic aligned wire does not carry a second unpadded suballocation
+capacity for each descriptor. Rust therefore recomputes a dynamic range from
+the staged length and cannot independently distinguish a hypothetical
+post-staging length change that remains within the same eight-byte alignment
+bucket. The host's pre-captured value is the exact-capacity authority, and the
+stage, Rust call, and output snapshot occur in one non-reentrant synchronous
+lease, so repository runtime code has no interval in which to make that
+change. A stronger independent cross-check would require an additional ABI
+capacity field or a wire layout without alignment slack; the existing Rust
+proof should not be described as reconstructing information the wire does not
+encode.
+
+`prctl` is kept out of generic pointer metadata because its second argument is
+option-sensitive. `PR_SET_NAME` and `PR_GET_NAME` stage one required, exact
+16-byte buffer; every other supported option preserves the low 32-bit scalar
+value and stages no scratch pointer. The two option numbers, name-buffer size,
+fixed Fcntl lock-record size, and fixed signal-mask size live in shared Rust
+ABI modules and are generated into the TypeScript host, so the bespoke
+validators cannot drift by repeating protocol literals.
+
+A C-string argument is accepted only when its pointer is inside the exact
+channel data allocation and a NUL terminator occurs before the allocation
+ends. This allocation bound is not a substitute for a syscall's semantic
+limit: pathname consumers still apply the generated `PATH_MAX`, while generic
+C-string consumers may validly use more than `PATH_MAX` when the complete
+string fits channel scratch.
+
+Vector-message syscalls add a width-translation boundary. Musl's native
+`iovec`, `msghdr`, and `cmsghdr` layouts differ between wasm32 and wasm64, so
+their sizes, offsets, and alignments are generated from the shared Rust ABI
+source into TypeScript and a musl contract header. The kernel scratch wire is
+deliberately fixed: an eight-byte `KernelIovecWire`, a 28-byte
+`KernelMsghdrWire`, and a 12-byte-aligned `KernelCmsghdrWire`. These are
+separate contracts; copying a native wasm64 header and hoping the fixed parser
+interprets it is invalid even when the bytes fit in linear memory.
+
+For `sendmsg`, the host validates the complete native header and iovec table,
+every nested caller range, `IOV_MAX`, and the complete fixed-wire footprint.
+It translates each ancillary record, flattens all caller iovecs in order into
+one capacity-owned payload, and invokes Rust with a zero-or-one-iovec wire
+inside one synchronous lease. Rust validates the complete aligned ancillary
+stream and the receiver-reconstructibility of every requested `SCM_RIGHTS`
+description before retaining any reference or publishing carrier bytes. Socket
+descriptions are not reconstructible from a process-local socket snapshot, so
+an ancillary batch containing one fails atomically with `EOPNOTSUPP`; Kandelo
+does not pretend that a copied socket record is the original endpoint. The
+exact flattened-iovec count is generated from the shared protocol contract,
+and a Rust compile-time guard makes changing that count fail until the fixed
+parser changes with it.
+For `recvmsg`, the host
+derives fixed-wire control capacity from the caller-native data capacity,
+snapshots the result, validates the entire returned record, expands it with
+zeroed native padding, and scatters payload bytes across every caller iovec.
+A retry or malformed kernel result publishes none of those detached outputs.
+This flatten/scatter design preserves the public multi-iovec behavior while
+keeping the ordinary transport allocation fixed and cheap.
+
+Large spawn blobs use a different kernel-owned high-water region in
+`crates/kernel/src/spawn.rs::SpawnScratchBuffer`. Every large operation calls
+`kernel_spawn_scratch_begin`, which may grow the Rust `Vec` only while no
+reservation is active and returns a fresh positive token. Begin and the
+pointer/capacity queries are nonblocking: mutex contention makes begin return
+`EBUSY` and makes query exports return zero. The host then reads the token's
+pointer and capacity together, proves that the complete blob fits both that
+allocation and the current `Memory.buffer`, and copies under one synchronous
+lease. `kernel_spawn_reserved_process` accepts no host-selected pointer: it
+consumes the matching token, parses the selected prefix into Rust-owned
+vectors, and releases the scratch mutex before entering the process table or
+any host import. After every successful begin, including setup or copy failure,
+the host invokes cancellation in a `finally` block. Commit and cancellation
+wait through mutex contention; neither guarded path can call a host import, so
+each returns with a definitive token state. Cancellation success releases an
+unconsumed matching token; `EINVAL` means the never-reused token was already
+consumed or is stale. For the just-issued in-contract token after commit, the
+consumed case is expected.
+Stale tokens, overlapping reservations, and reentrant large-spawn attempts
+fail without replacing live bytes. The reservation-derived host region is
+single-use and is revoked after the attempt, so a later Rust-owned `Vec`
+growth cannot revive its old pointer/capacity pair.
+
+The allocation lives until the kernel instance ends and may retain the
+largest accepted blob seen. A three-round historical comparison used the
+fixed-buffer kernel from exact #1094 head plus a fingerprinted host-only
+telemetry shim. A post-retarget dirty-worktree rerun exercised the same
+deterministic Homebrew-like workload on Node.js and real Chromium. In both
+hosts, the growable design reported 84,386 bytes of retained scratch capacity
+instead of 8,417,320 bytes, and post-run kernel linear memory was 17,694,720
+rather than the fixed design's 26,017,792 bytes. Because WebAssembly memory
+cannot shrink, post-run memory was also that workload's peak. The dirty-source
+run has complete source and runtime-artifact fingerprints but is historical
+evidence. The three-round timing sample and baseline-harness provenance
+establish neither a speedup nor broad no-regression. The exact
+workload, fingerprints, host-specific medians, and remaining
+application-suite block are recorded in
+`docs/plans/2026-07-25-kernel-scratch-transfer-audit.md`. ABI 43 requires the
+complete transactional export set. There is no older-kernel fixed-buffer
+fallback under the same ABI version. Exact-head Node.js and Chromium results
+belong in the draft PR ledger after the commit is frozen, so the evidence names
+the head it actually exercised.
+
+Rust-lent host-import destinations are deliberately separate. Rust supplies a
+pointer and capacity valid for that synchronous import, so
+`checkedWasmImportMemoryRange` normalizes the raw wasm32/wasm64 import value
+and `WasmPosixKernel.writeKernelBytes` checks that range and the producer's
+intrinsic byte span without claiming it came from the scratch allocator.
+Process memory,
+framebuffers, and explicit shared-memory mappings keep their own ownership
+models. A TypeScript-compiler-backed JavaScript/TypeScript repository audit
+follows kernel-memory ownership through aliases, parameters, and returns and
+reports raw views, writes, escapes, and allocator/reservation calls. Its exact
+multiset allowlist names every necessary exception with a reason and fails if
+an occurrence is added, duplicated, or removed. This keeps framebuffer,
+process-memory, and shared-memory paths explicit without conflating their
+ownership with kernel scratch. Because untyped JavaScript can erase a receiver
+type, the audit also treats a zero-argument `.getMemory()` call in JavaScript
+source as the documented raw kernel-memory accessor and follows its result into
+aliases, helper parameters, views, and writes. Same-named non-kernel APIs need
+an exact reviewed allowance. This narrow backstop is not a claim of sound
+general JavaScript taint analysis.
+
+The Rust dispatcher has a separate source-contract test for raw process
+addresses. It rejects the former raw-channel-pointer macro, matches every
+remaining `process_address!` use against its exact reviewed syscall context,
+and also checks the total use count. Those sites represent guest virtual
+addresses for memory-management, clone, futex, and related operations; they
+are not authority to dereference kernel scratch. A new site, a removed site
+paired with an unrelated replacement, or a reintroduced bare channel pointer
+therefore requires an explicit review instead of passing a count-only
+allowlist.
+
+The low-level `WasmPosixKernel.getMemory/getInstance` and
+`CentralizedKernelWorker.getKernel/getKernelInstance` accessors are unsafe
+trusted-embedder/debug escape hatches, not scratch-transfer APIs. A consumer
+that calls raw pointer-returning exports and mutates the returned memory has
+opted out of the capacity and lease guarantees above. Kandelo's own runtime
+does not use those accessors for transfers, and the compiler-backed audit
+covers repository source rather than arbitrary downstream mutations.
+
+Current host-adapter admission requires `kernel_set_cwd`,
+`kernel_clear_process_metadata`, and
+`kernel_push_process_metadata_entry`. Initial cwd and process argv/environment
+therefore cannot silently fall back to an older pointer-only aggregate setter
+or a no-op after the runtime has negotiated the capacity-owned scratch
+contract.
+
+System V control operations use the same capacity-bearing main region, but
+their wire sizes also depend on the caller. The required structure-size exports
+select musl's target structure from the process pointer width:
+
+| Structure | wasm32 time64 | wasm64 LP64 |
+|---|---:|---:|
+| `msqid_ds` | 96 bytes | 120 bytes |
+| `semid_ds` | 72 bytes | 88 bytes |
+| `shmid_ds` | 88 bytes | 112 bytes |
+
+The host stages `msgctl`/`shmctl` `IPC_STAT` and `IPC_SET` according to the
+command and passes that process pointer width in the otherwise host-private
+sixth dispatch slot. The kernel Wasm's own width is not a valid substitute
+because one kernel may serve both guest widths.
+`kernel_semctl_array_bytes(pid, tid, semid, command)` separately performs the
+permission-aware GETALL/SETALL size preflight. All four sizing exports are
+required in ABI 43. There is no `IPC_STAT` sizing fallback for semaphore
+arrays: a process may have permission to write a semaphore set without
+permission to read its metadata.
+
+Other caller-native records use the generated
+`SyscallArgSize::ProcessLayout` descriptor. Encountering that descriptor makes
+the host select the exact size from the process width and carry the same width
+in the private sixth dispatch slot:
+
+| Record | wasm32 | wasm64 |
+|---|---:|---:|
+| `stack_t` | 12 bytes | 24 bytes |
+| kernel-facing `itimerval` | 16 bytes | 32 bytes |
+| `mq_attr` | 32 bytes | 64 bytes |
+| `sigevent` | 64 bytes | 64 bytes |
+| `statfs` | 88 bytes | 120 bytes |
+| `sysinfo` | 312 bytes | 368 bytes |
+| `siginfo_t` for `rt_sigqueueinfo` | 128 bytes | 128 bytes |
+
+The timer distinction is intentional: wasm32 musl translates its public
+time64 `itimerval` to four native `long` values before entering the kernel.
+Rust parses or serializes each complete caller-native record into a
+capacity-bounded scratch slice and initializes padding and reserved bytes.
+The kernel Wasm's own pointer width is never used to infer the process layout.
+The generated fixed-size descriptors separately carry `stat` (112 bytes) and
+`sched_param` (48 bytes); those two records do not use width selection or the
+private process-width dispatch slot.
+
 ### Kernel heap lifetime
 
 The Rust kernel uses a reclaiming `dlmalloc` heap inside its own Wasm linear
@@ -201,18 +493,46 @@ capacity checks all happen in Rust. Conflicts are reported as `EAGAIN` before
 capacity is considered; a mutation that would exceed the record limit or
 cannot reserve its final capacity returns `ENOLCK` without partial state.
 
-An `SCM_RIGHTS` queue entry retains the source description's `OfdId`, `FileId`,
-and real backing reference. It therefore participates in final-reference
-checks even after the sender closes its descriptor. Successful receipt
-transfers that retained reference into the receiver without changing lock
-ownership; a discarded message or failed receiver fd allocation releases it
-and removes OFD/`flock()` records only if it was the true final reference.
-Destructors enqueue fixed cleanup metadata into pre-reserved, high-water
-storage, and cleanup runs after pipe-table borrows end. The host schedules the
-syscall but never stores or examines lock state. Ordinary regular-file offsets
-and status flags still live in per-process OFD records, so their sharing across
-fork and `SCM_RIGHTS` remains the separate global-OFD gap documented in
+For a supported `SCM_RIGHTS` description, the queue entry retains the source
+description's `OfdId`, `FileId`, and a live reconstructible backing reference.
+Transfer validation is repeated before retain and before receiver
+installation; stale, non-owning, structurally incomplete, socket, epoll, and
+other process-owned descriptions fail with `EOPNOTSUPP` instead of becoming a
+lossy snapshot. In particular, a batch containing a socket fails before its
+carrier data or rights become visible. Supporting socket transfer requires one
+authoritative machine-wide socket backing and is not approximated here with a
+copied process-local record.
+
+A valid queued reference participates in final-reference checks even after the
+sender closes its descriptor. Successful receipt transfers that retained
+reference into the receiver without changing lock ownership; a discarded
+message or failed receiver fd allocation releases it and removes
+OFD/`flock()` records only if it was the true final reference. Destructors
+enqueue fixed cleanup metadata into pre-reserved, high-water storage, and
+cleanup runs after pipe-table borrows end. The host schedules the syscall but
+never stores or examines lock state. Ordinary regular-file offsets and status
+flags still live in per-process OFD records, so their sharing across fork and
+`SCM_RIGHTS` remains the separate global-OFD gap documented in
 [future-improvements.md](future-improvements.md).
+
+On an AF_UNIX stream, retained rights are associated with absolute byte ranges
+in the stream rather than a separate first-in/first-out side queue. A receive
+cannot observe a descriptor before it reaches that record's carrier bytes, and
+`MSG_WAITALL` stops at an ancillary boundary instead of consuming bytes beyond
+the rights it can return. Ordinary `read()` discards rights only when it
+consumes their carrier range. `MSG_PEEK` fallibly duplicates the retained
+references without consuming either bytes or rights, so a short control buffer
+can report `MSG_CTRUNC` repeatedly and a later full receive still obtains the
+descriptors.
+
+An AF_UNIX datagram stores payload, source address, and retained rights in one
+queue entry. Publication is atomic: a full queue or failed descriptor retain
+publishes neither bytes nor rights. Zero-length datagrams remain real messages,
+so `recvmsg()` with no iovecs can consume one and receive its control records;
+ordinary `read(fd, ..., 0)` remains a no-op and cannot consume it. Addressed
+and connected same-process AF_UNIX datagram sends use this same ownership
+path. Cross-process AF_UNIX datagram routing remains unsupported as documented
+in the networking section.
 
 ABI 40 removes the required `host_fcntl_lock` import and the public
 `SharedLockTable` host-package export. This is an intentional host API break:
@@ -322,7 +642,8 @@ Process Worker                          Kernel Worker (host)
 4. Atomics.wait(status, SYSCALL_READY)
    ─── blocks ───                      5. Atomics.waitAsync detects change
                                         6. Read channel: syscall + args
-                                        7. Call kernel_handle_channel(offset, pid)
+                                        7. Call kernel_handle_channel(offset,
+                                                                      capacity, pid)
                                         8. Kernel reads args from process memory
                                         9. Kernel executes syscall logic
                                        10. Kernel writes return_value + errno
@@ -623,7 +944,7 @@ remaining POSIX gap is tracked in [posix-status.md](posix-status.md) and
 
 1. User calls `execve(path, argv, envp)` → kernel returns exec request to host
 2. Host resolves `path` to a Wasm binary (via filesystem or program map)
-3. The host compiles the replacement module, checks its ABI marker, and preallocates its fresh `WebAssembly.Memory` before the irreversible transition. It also validates a 4 MiB combined argv/environment representation (UTF-8 strings, NUL terminators, and caller-width pointer entries, with each string limited to one 64 KiB scratch transfer); oversized metadata returns `E2BIG` to the old image. After commit, argv and environment entries cross into the kernel one at a time, so the fixed host scratch allocation is never overrun and an empty environment explicitly clears the prior one.
+3. The host compiles the replacement module, checks its ABI marker, and preallocates its fresh `WebAssembly.Memory` before the irreversible transition. It also validates a 4 MiB combined argv/environment representation (UTF-8 strings, NUL terminators, and caller-width pointer entries). Independently, each string must fit the current 64 KiB process-metadata transfer; that is an implementation transport limit, not part of the public aggregate `ARG_MAX` definition. Oversized metadata returns `E2BIG` to the old image. After commit, argv and environment entries cross into the kernel one at a time, so the fixed host scratch allocation is never overrun and an empty environment explicitly clears the prior one.
 4. The host calls `kernel_exec_prepare(pid, caller_tid)` while the old image is
    still live. The kernel validates that the exact caller is a live task owned
    by the process and applies deferred `posix_spawn` file actions; any failure
@@ -670,13 +991,45 @@ caller now take.
    `docs/plans/2026-05-04-non-forking-posix-spawn-design.md` Section 1.
 2. Host (`handleSpawn` in `kernel-worker.ts`) reads the blob from
    caller memory, validates argv + envp against the same 4 MiB `ARG_MAX`
-   contract as `execve`, copies it to bounded kernel-owned scratch, and calls
-   `kernel_spawn_process(parent_pid, caller_tid, blob_ptr, blob_len)`. Ordinary
-   blobs reuse the channel-sized syscall scratch. A blob above that size
-   lazily allocates one whole-spawn buffer and reuses it for the kernel
-   lifetime. Keeping both paths kernel-owned prevents a large environment or
-   file-action list from overwriting adjacent Rust heap state; the explicit
-   whole-blob ceiling also bounds data that `ARG_MAX` does not count.
+   contract as `execve`, and copies it to bounded kernel-owned scratch.
+   Each argv/environment entry also has the separate 64 KiB
+   process-metadata transport limit described for `execve`; this
+   implementation ceiling is not `ARG_MAX`.
+   Ordinary blobs reuse the channel-sized syscall region and call
+   `kernel_spawn_process(parent_pid, caller_tid, blob_ptr, blob_len)` while its
+   lease is active. A blob above that size begins an exclusive tokenized
+   reservation in the Rust-owned reusable region, reads its pointer and
+   capacity, copies under a lease, and commits with
+   `kernel_spawn_reserved_process(parent_pid, caller_tid, token, blob_len)`.
+   Begin and the pointer/capacity queries are nonblocking and report
+   contention as `EBUSY` or zero. Commit consumes the token before parsing.
+   After every successful begin, the host unconditionally calls cancellation
+   from a `finally` block, including setup and copy failures. Cancellation
+   success releases an unconsumed matching token; `EINVAL` means the
+   never-reused token was already consumed or is stale. For the just-issued
+   in-contract token after commit, consumption is expected. Commit and
+   cancellation use a blocking critical section that performs no host imports,
+   so both return with a definitive token state.
+   Host-side reentry protection rejects a second large spawn while the first
+   reservation is active. Keeping both paths kernel-owned prevents a
+   large environment or file-action list from overwriting adjacent Rust heap
+   state. Merely fitting within the total kernel `Memory` would not establish
+   this allocation-ownership fact. The explicit 8,417,320-byte whole-blob
+   ceiling also bounds file-action data that `ARG_MAX` does not count. The
+   advertised 4 MiB `ARG_MAX`,
+   4,096-byte `PATH_MAX`, and 1,024-entry `IOV_MAX` live in
+   `crates/shared/src/lib.rs::platform_limits` and generate the Rust,
+   TypeScript, and musl consumers. The separate authoritative spawn wire
+   contract generates the four-byte string-offset width; every offset in the
+   40-byte header and 28-byte action record; the `OPEN`, `CLOSE`, `DUP2`,
+   `CHDIR`, and `FCHDIR` opcodes; musl's complete transported spawn-attribute
+   byte; the 4,096 argv and environment entry caps; 1,024 actions; and the
+   complete ceiling. Transporting an attribute bit does not claim its
+   behavior is implemented: the kernel currently interprets only
+   `SETPGROUP`, `SETSIGDEF`, `SETSIGMASK`, and `SETSID`; `RESETIDS`,
+   `SETSCHEDPARAM`, `SETSCHEDULER`, and `USEVFORK` remain unimplemented. Count
+   caps are defensive parser limits; they are not additional POSIX platform
+   limits.
 3. Kernel parses the blob (`crates/kernel/src/spawn.rs::parse_blob` —
    the trust boundary; bails with EINVAL on any malformed offset), validates
    `caller_tid` as a live task belonging to the parent, and calls
@@ -1312,8 +1665,12 @@ extension reports the original datagram length while copying no more than the
 supplied buffer. Without `MSG_PEEK`, the datagram is consumed and any uncopied
 suffix is discarded; with `MSG_PEEK`, it remains queued. This receive-side
 truncation does not weaken AF_UNIX send reliability or its full-queue
-backpressure contract above. The current `recvmsg()` wrapper does not populate
-output `msg_flags`, so it cannot report output `MSG_TRUNC` there.
+backpressure contract above. `recvmsg()` independently reports output
+`MSG_TRUNC` whenever the datagram was longer than the supplied payload
+capacity; the input flag controls only whether its return value is the copied
+prefix length or the full datagram length. `MSG_CMSG_CLOEXEC` installs every
+received descriptor with `FD_CLOEXEC`, and that reflected flag is published
+atomically with the returned control data.
 
 Loopback addresses are scoped to one Kandelo machine, but not every socket path is machine-wide yet. IPv4 and IPv6 loopback TCP and AF_UNIX streams have explicit cross-process paths. Current in-kernel IPv4/IPv6 loopback datagrams, AF_UNIX datagrams, and IPv4 multicast delivery are confined to the sending process. Forked sockets retain their kernel-local bind reservations and local lookup targets, but host-backed UDP endpoint registrations are not yet shared or transferred between processes. AF_INET6 represents `sockaddr_in6`, supports `::`/`::1`, and models dual-stack wildcard stream-port reservation, but it has no external or virtual-network IPv6 transport and no IPv6 multicast delivery. AF_INET6 datagrams therefore report `IPV6_V6ONLY=1`; disabling it fails until dual-stack datagram routing exists.
 
@@ -1481,10 +1838,21 @@ not synthesize timer signals or fall back to a process-wide notification.
 
 Musl implements POSIX `SIGEV_THREAD` with a detached helper pthread and an
 exact-thread kernel notification. The helper retains the callback and native
-`union sigval` locally—including a full-width wasm64 pointer—while the
-kernel-facing `sigevent` remains a fixed four-i32 wire. Direct wasm64 signal
-notifications therefore remain limited to `sival_int` until that wire is
-extended in a later ABI.
+`union sigval` locally. Other timer notifications stage the complete generated
+caller-native 64-byte `sigevent`; the process pointer width selects the union
+width, and Rust retains its raw bits in a `u64`. The fixed channel delivery
+record also carries eight raw value bytes. A wasm64 recipient therefore
+receives the complete `sival_ptr`; a wasm32 recipient receives the
+target-native low 32 bits. The glue reconstructs the recipient's native union
+with `memcpy` so it does not select the wrong union member.
+
+POSIX message-queue notification uses the same Rust-owned signal metadata.
+Registration accepts a `SIGEV_SIGNAL` notification only when
+`1 <= signo < NSIG`; the first message sent to an empty queue queues one
+`SI_MESGQ` record with the registering process's complete `union sigval` and
+authoritative sender credentials. The small host drain record is only a wake
+instruction—the host does not synthesize a second signal or replace the queued
+metadata.
 
 Normal exit status and signal termination are stored separately. `_exit()` and
 `exit_group()` retain the low eight status bits, including values 128 through
@@ -1712,12 +2080,12 @@ For schema, resolver behavior, and the build-script contract see [docs/package-m
 
 ## Test Suites
 
-| Suite | Command | What it tests |
-|-------|---------|---------------|
-| Cargo | `cargo test -p kandelo --target aarch64-apple-darwin --lib` | Kernel unit tests (610+) |
-| Vitest | `cd host && npx vitest run` | Host integration tests (227+) — runs real Wasm programs |
-| libc-test | `scripts/run-libc-tests.sh` | musl libc conformance (C standard library) |
-| POSIX | `scripts/run-posix-tests.sh` | Open POSIX Test Suite (POSIX API conformance) |
-| Sortix | `scripts/run-sortix-tests.sh --all` | Sortix os-test suite (4817+ tests, most comprehensive) |
-
-All five suites must pass with 0 unexpected failures before merging changes.
+Validation always runs through `scripts/dev-shell.sh`. Kernel, host, ABI,
+libc, Open POSIX, Sortix, fork-instrument, and real-browser suites prove
+different contracts; there is no fixed short list whose success establishes
+every change. Use the CI-shaped commands and change-to-suite matrix in
+[`docs/agent-guidance/validation.md`](agent-guidance/validation.md), including
+generated-file/snapshot checks for ABI-adjacent work and real Chromium
+evidence for shared browser runtime changes. Report exact commands, counts,
+unexpected failures, skipped suites, and environmental blocks rather than
+using a narrow passing suite as a broad readiness claim.

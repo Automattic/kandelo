@@ -150,6 +150,9 @@ export interface RunProgramOptions {
    *  non-forking-spawn regression tests. Worker-thread mode uses live samples;
    *  main-thread fixtures still return the final value as `forkCount`. */
   captureForkCount?: boolean;
+  /** Capture kernel-owned large-spawn retention and memory pages immediately
+   * after program exit, before the dedicated kernel worker is destroyed. */
+  captureSpawnScratchStats?: boolean;
   /** Use the canonical rootfs image in worker-thread mode. Defaults to true. */
   useDefaultRootfs?: boolean;
   /** Exact VFS image for tests that stage package runtime files. Overrides
@@ -179,6 +182,8 @@ export interface RunProgramResult {
   /** Final fork counter captured before main-thread-mode teardown. Main-thread
    *  test fixtures do not use the production host-owned reaping path. */
   forkCount?: bigint;
+  spawnScratchCapacity?: number;
+  kernelMemoryPages?: number;
 }
 
 /**
@@ -302,6 +307,8 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
 
   let exitCode: number;
   let forkCountSamples: bigint[] | undefined;
+  let spawnScratchCapacity: number | undefined;
+  let kernelMemoryPages: number | undefined;
   try {
     exitCode = await Promise.race([exitPromise, timeoutPromise]);
     if (options.captureForkCount) {
@@ -309,6 +316,10 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
       if (forkCountSamples.length === 0) {
         throw new Error("captureForkCount observed no guest child creation");
       }
+    }
+    if (options.captureSpawnScratchStats) {
+      spawnScratchCapacity = await host.getSpawnScratchCapacity();
+      kernelMemoryPages = await host.getKernelMemoryPages();
     }
   } finally {
     if (timeoutId !== undefined) clearTimeout(timeoutId);
@@ -330,6 +341,8 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     hostDiagnostics,
     stdoutBytes,
     forkCountSamples,
+    spawnScratchCapacity,
+    kernelMemoryPages,
   };
 }
 
@@ -375,6 +388,8 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   const externrefGenerations = new Map<number, ForkExternrefGeneration>();
   const processForkHostImports = new Map<number, ForkHostImportOwnerWorker>();
   let mainThreadForkCount: bigint | undefined;
+  let spawnScratchCapacity: number | undefined;
+  let kernelMemoryPages: number | undefined;
 
   let pid = 0;
 
@@ -577,8 +592,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
       onExec: async (execPid, path, argv, envp, callerTid) => {
         const wasmPath = options.execPrograms?.get(path);
         if (!wasmPath) return -2;
-        if (!kernelWorker.supportsExecMetadataReplacement()) return -38;
-
         const newProgramBytes = loadProgramWasm(wasmPath);
         const newPtrWidth = detectPtrWidth(newProgramBytes);
         const sourcePtrWidth = processPtrWidths.get(execPid) ?? newPtrWidth;
@@ -982,6 +995,10 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
 
   const exitCode = await exitPromise;
   clearTimeout(timer);
+  if (options.captureSpawnScratchStats) {
+    spawnScratchCapacity = kernelWorker.getSpawnScratchCapacity();
+    kernelMemoryPages = kernelWorker.getKernelMemoryPages();
+  }
 
   const totalLen = stdoutChunks.reduce((sum, c) => sum + c.length, 0);
   const stdoutBytes = new Uint8Array(totalLen);
@@ -998,5 +1015,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     hostDiagnostics: [],
     stdoutBytes,
     forkCount: mainThreadForkCount,
+    spawnScratchCapacity,
+    kernelMemoryPages,
   };
 }
