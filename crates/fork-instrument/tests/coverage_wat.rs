@@ -219,7 +219,7 @@ fn f_04_struct_ref_on_fork_path_rejects_with_diagnostic() {
 // Per the unsupported-cases review doc, fork-path functions whose
 // plain-catch arms carry ref-typed operands (funcref / externref)
 // are CARVED OUT of the fork-path set at instrument time (via
-// `B1ScratchPlan::b2_carveout`). A future A4 implementation would
+// `PlainCatchPlan::b2_carveout`). A future A4 implementation would
 // extend per-arm aux-table spilling to support these. The current
 // behavior: fork-instrument processes the module without panic;
 // the function with the ref-typed catch arm doesn't get
