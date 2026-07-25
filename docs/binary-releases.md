@@ -78,11 +78,15 @@ authoring, the immutable VFS descriptor contract, and operations.
 
 A Homebrew publication may need an exact Kandelo package closure after the
 source PR has closed. It must not use `pr-<N>-staging` as that long-lived
-resolver: the staging release is intentionally temporary, and
-`staging-cleanup.yml` deletes it after the PR closes. The manual
-`promote-package-generation.yml` workflow copies one fully validated closure
-into a public content-addressed prerelease before cleanup. Its tags have this
-form:
+resolver: the staging release is intentionally temporary. Ordinarily,
+`staging-cleanup.yml` deletes it after the PR closes. A merged PR carrying the
+maintainer-applied `retain-package-staging` label is the narrow exception: both
+close-event cleanup and the scheduled sweep retain its staging release so
+post-merge validation can copy one fully validated closure into a public
+content-addressed prerelease. Closed-unmerged PRs are never retained by that
+label, and GitHub API uncertainty retains evidence rather than deleting it.
+The manual `promote-package-generation.yml` workflow performs the copy. Its
+tags have this form:
 
 ```
 package-generation-<root>-<arch>-abi-v<N>-sha256-<full-identity-sha256>
@@ -127,8 +131,11 @@ asset inventory, digests, authenticated bytes where credentials exist, and
 anonymous bytes. An administrator can still mutate a GitHub release, but the
 next use fails closed rather than trusting that mutation.
 
-Promotion does not change ordinary staging cleanup. Tags outside the exact
-`pr-<N>-staging` pattern are not cleanup inputs.
+Promotion does not change cleanup for durable tags. Tags outside the exact
+`pr-<N>-staging` pattern are not cleanup inputs. After every required
+generation has been promoted and verified, remove `retain-package-staging`
+from the source PR and manually dispatch `staging-cleanup.yml`; leaving the
+label in place deliberately retains the temporary source.
 
 #### Promotion and recovery
 
@@ -166,9 +173,10 @@ content-derived tag.
 
 If a public generation fails validation, do not repair it in place. Preserve
 the evidence and publish changed content under its naturally different tag.
-If source staging cleanup wins the race before a generation is sealed, restore
-or rebuild the exact source staging generation first; never substitute another
-commit's similarly named archives.
+Apply `retain-package-staging` before merging whenever promotion must happen
+after merge. If source staging cleanup nevertheless wins the race before a
+generation is sealed, restore or rebuild the exact source staging generation
+first; never substitute another commit's similarly named archives.
 
 These content-addressed releases share one manifest-driven immutable-release
 publisher. Before using a credential it stages and verifies the manifest's

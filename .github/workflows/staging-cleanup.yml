@@ -1,9 +1,11 @@
 name: Staging cleanup
 
-# Deletes pr-<NNN>-staging pre-releases when the corresponding PR closes
-# and deletes same-repo branches for merged `ready-to-ship` PRs. The daily
-# sweep classifies every merge-candidate release from current GitHub state.
-# Only authoritative ready candidates and recent terminal-rejection evidence
+# Deletes pr-<NNN>-staging pre-releases when the corresponding PR closes,
+# except for a merged PR explicitly labeled `retain-package-staging`, and
+# deletes same-repo branches for merged `ready-to-ship` PRs. The daily sweep
+# applies the same staging-retention rule and classifies every merge-candidate
+# release from current GitHub state. Only explicitly retained package inputs,
+# authoritative ready candidates, and recent terminal-rejection evidence
 # survive after merge; API uncertainty always retains evidence.
 #
 # See docs/plans/2026-04-29-pr-package-builds-design.md §4.3.
@@ -24,7 +26,19 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Retain package staging for post-merge validation
+        if: |
+          github.event.pull_request.merged == true &&
+          contains(github.event.pull_request.labels.*.name, 'retain-package-staging')
+        run: |
+          # WHY: a durable package generation may validate the exact producer
+          # only after that producer is reachable from main.
+          echo "Keeping pr-${{ github.event.pull_request.number }}-staging for post-merge package validation"
+
       - name: Delete pr-${{ github.event.pull_request.number }}-staging
+        if: |
+          github.event.pull_request.merged != true ||
+          !contains(github.event.pull_request.labels.*.name, 'retain-package-staging')
         run: |
           TAG="pr-${{ github.event.pull_request.number }}-staging"
           if gh release view "$TAG" --repo ${{ github.repository }} >/dev/null 2>&1; then
@@ -104,6 +118,7 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           sparse-checkout: |
             .github/scripts/cleanup-merge-candidates.sh
+            .github/scripts/classify-pr-staging.sh
             .github/scripts/github-api-get.sh
             .github/scripts/latest-merge-gate-status.sh
             .github/scripts/state-lock.sh
@@ -124,13 +139,34 @@ jobs:
                   echo "WARN: cannot parse PR number from $TAG, skipping"
                   continue
                 fi
-                STATE=$(gh pr view "$PR" --repo ${{ github.repository }} --json state -q .state 2>/dev/null || echo "MISSING")
-                if [ "$STATE" != "OPEN" ]; then
-                  echo "Deleting orphan $TAG (PR state: $STATE)"
-                  gh release delete "$TAG" --repo ${{ github.repository }} --yes --cleanup-tag
-                else
-                  echo "Keeping $TAG (PR is OPEN)"
+                pr_json="$RUNNER_TEMP/pr-$PR.json"
+                if ! gh pr view "$PR" --repo ${{ github.repository }} \
+                    --json state,mergedAt,labels >"$pr_json"
+                then
+                  # WHY: an API failure cannot prove that post-merge package
+                  # validation no longer owns this staging generation.
+                  echo "::warning::Keeping $TAG because PR state is unavailable"
+                  continue
                 fi
+                if ! decision=$(bash .github/scripts/classify-pr-staging.sh "$pr_json"); then
+                  echo "::warning::Keeping $TAG because PR state is malformed"
+                  continue
+                fi
+                case "$decision" in
+                  retain-open)
+                    echo "Keeping $TAG (PR is open)"
+                    ;;
+                  retain-merged)
+                    echo "Keeping $TAG (merged PR retains package staging)"
+                    ;;
+                  delete)
+                    echo "Deleting orphan $TAG"
+                    gh release delete "$TAG" --repo ${{ github.repository }} --yes --cleanup-tag
+                    ;;
+                  *)
+                    echo "::warning::Keeping $TAG because cleanup returned an unknown decision"
+                    ;;
+                esac
               done
 
       - name: Sweep completed merge-candidate releases

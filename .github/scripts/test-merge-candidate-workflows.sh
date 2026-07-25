@@ -685,10 +685,23 @@ done
 grep -Fq 'cleanup-merge-candidates.sh' "$CLEANUP_WORKFLOW" || \
   fail "staging cleanup must delegate candidate lifecycle to the tested helper"
 cleanup_sweep=$(job_block "$CLEANUP_WORKFLOW" sweep)
-for helper in cleanup-merge-candidates.sh github-api-get.sh latest-merge-gate-status.sh state-lock.sh; do
+for helper in classify-pr-staging.sh cleanup-merge-candidates.sh github-api-get.sh latest-merge-gate-status.sh state-lock.sh; do
   grep -Fq ".github/scripts/$helper" <<<"$cleanup_sweep" || \
     fail "staging cleanup sparse checkout lacks $helper"
 done
+cleanup_on_close=$(job_block "$CLEANUP_WORKFLOW" cleanup-on-close)
+grep -Fq "contains(github.event.pull_request.labels.*.name, 'retain-package-staging')" \
+  <<<"$cleanup_on_close" || \
+  fail "PR-close cleanup does not recognize explicit package-staging retention"
+grep -Fq "github.event.pull_request.merged != true" <<<"$cleanup_on_close" || \
+  fail "abandoned PR staging must remain eligible for immediate cleanup"
+grep -Fq -- '--json state,mergedAt,labels' <<<"$cleanup_sweep" || \
+  fail "scheduled staging cleanup does not inspect merged retention state"
+grep -Fq 'if ! decision=$(bash .github/scripts/classify-pr-staging.sh "$pr_json")' \
+  <<<"$cleanup_sweep" || \
+  fail "scheduled staging cleanup does not fail closed through its tested classifier"
+grep -Fq 'Keeping $TAG because PR state is unavailable' <<<"$cleanup_sweep" || \
+  fail "scheduled staging cleanup must retain evidence when GitHub state is unavailable"
 grep -Fq 'PR #$pr state is unavailable' "$CLEANUP_SCRIPT" || \
   fail "cleanup must retain a candidate when PR state lookup fails"
 grep -Fq 'if [ "$state" = open ]' "$CLEANUP_SCRIPT" || \
