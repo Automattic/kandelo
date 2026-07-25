@@ -7,6 +7,7 @@ cd "$REPO_ROOT"
 bash "$REPO_ROOT/.github/actions/detect-change-scope/test-ci-scope-paths.sh"
 HOST_TARGET=$(rustc -vV | awk '/^host:/ {print $2}')
 cargo test -p xtask --target "$HOST_TARGET" staging_reuse --no-fail-fast
+cargo test -p xtask --target "$HOST_TARGET" package_matrix --no-fail-fast
 bash "$REPO_ROOT/tests/scripts/index-update.sh"
 bash "$REPO_ROOT/tests/scripts/release-index-state.sh"
 bash "$REPO_ROOT/.github/scripts/test-state-lock.sh"

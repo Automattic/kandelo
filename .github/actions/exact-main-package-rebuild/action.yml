@@ -1,0 +1,198 @@
+name: Rebuild one exact-main package
+description: Build and publish one package after its same-run dependency level completes.
+
+inputs:
+  source-sha:
+    description: Exact live Automattic/kandelo main commit admitted by the caller.
+    required: true
+  target-tag:
+    description: Canonical binaries-abi-v<N> release tag.
+    required: true
+  package-matrix:
+    description: Complete selected closure used to derive direct dependency artifacts.
+    required: true
+  package:
+    description: Package name.
+    required: true
+  arch:
+    description: Package target architecture.
+    required: true
+  cache-key-sha:
+    description: Exact package cache identity.
+    required: true
+  version:
+    description: Package version.
+    required: true
+  revision:
+    description: Package recipe revision.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Verify exact source checkout
+      id: provenance
+      shell: bash
+      run: |
+        set -euo pipefail
+        source_sha="${{ inputs.source-sha }}"
+        [ "$(git rev-parse HEAD)" = "$source_sha" ] || {
+          echo "::error::package checkout differs from the admitted main commit"
+          exit 1
+        }
+        timestamp="$(git log -1 --format=%aI HEAD)"
+        echo "build-timestamp=$timestamp" >> "$GITHUB_OUTPUT"
+        echo "build-host=${{ github.repository }}@$source_sha" >> "$GITHUB_OUTPUT"
+
+    - name: Fetch musl submodule
+      uses: ./.github/actions/fetch-submodules
+      with:
+        submodules: libc/musl
+
+    - name: Set up Nix
+      uses: ./.github/actions/setup-nix
+
+    - name: Download exact-main toolchain
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: toolchain-sysroots
+        path: ${{ runner.temp }}/toolchain
+
+    - name: Extract exact-main toolchain
+      shell: bash
+      run: tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
+
+    - name: Install host npm dependencies
+      shell: bash
+      run: |
+        bash scripts/dev-shell.sh bash -c '
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+          cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+        '
+
+    - name: Select same-run direct dependency artifacts
+      id: dependencies
+      shell: bash
+      env:
+        PACKAGE_MATRIX: ${{ inputs.package-matrix }}
+      run: |
+        set -euo pipefail
+        matrix_file="$RUNNER_TEMP/package-matrix.json"
+        artifact_file="$RUNNER_TEMP/package-dependency-artifacts.txt"
+        printf '%s\n' "$PACKAGE_MATRIX" > "$matrix_file"
+        bash scripts/dev-shell.sh bash -lc '
+          HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+          cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+            package-dependency-artifacts \
+              --registry packages/registry \
+              --matrix "$RUNNER_TEMP/package-matrix.json" \
+              --package "${{ inputs.package }}" \
+              --arch "${{ inputs.arch }}" \
+              > "$RUNNER_TEMP/package-dependency-artifacts.txt"
+        '
+        while IFS= read -r artifact; do
+          [ -n "$artifact" ] || continue
+          [[ "$artifact" =~ ^[A-Za-z0-9._-]+-wasm(32|64)$ ]] || {
+            echo "::error::invalid exact-main dependency artifact name: '$artifact'"
+            exit 1
+          }
+        done < "$artifact_file"
+        if [ -s "$artifact_file" ]; then
+          echo "has-dependencies=true" >> "$GITHUB_OUTPUT"
+          echo "same-run dependency artifacts:"
+          sed 's/^/  /' "$artifact_file"
+        else
+          echo "has-dependencies=false" >> "$GITHUB_OUTPUT"
+          echo "same-run dependency artifacts: none"
+        fi
+
+    - name: Download and materialize same-run dependencies
+      if: steps.dependencies.outputs.has-dependencies == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # WHY: exact-main publication cannot silently fall back to an older
+        # cache-equivalent release or spend an hour polling after the previous
+        # dependency level has already completed. Its artifact must exist now.
+        DEPENDENCY_ARTIFACT_ATTEMPTS=1 \
+          DEPENDENCY_ARTIFACT_POLL_SECONDS=0 \
+          bash .github/scripts/download-dependency-artifacts.sh \
+          --list "$RUNNER_TEMP/package-dependency-artifacts.txt" \
+          --output "$RUNNER_TEMP/dependency-archives" \
+          --no-allow-missing-completed
+        bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/dependency-archives"
+
+    - name: Build exact-main package archive
+      id: build
+      shell: bash
+      run: |
+        # WHY: even a cache entry with the same recipe digest could have been
+        # produced by an older commit. An empty job-local cache forces every
+        # buildable dependency edge through the same-run overlay downloaded
+        # above, while the explicit source-build override executes the target.
+        EXACT_MAIN_PACKAGE_CACHE_ROOT="$(
+          mktemp -d "$RUNNER_TEMP/exact-main-package-cache.XXXXXX"
+        )"
+        export EXACT_MAIN_PACKAGE_CACHE_ROOT
+        bash scripts/dev-shell.sh bash -c '
+          HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+          cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+            archive-stage \
+              --package "packages/registry/${{ inputs.package }}" \
+              --arch "${{ inputs.arch }}" \
+              --out "$RUNNER_TEMP/staged" \
+              --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
+              --build-host "${{ steps.provenance.outputs.build-host }}" \
+              --source-repository "https://github.com/${{ github.repository }}" \
+              --source-commit "${{ inputs.source-sha }}" \
+              --cache-root "$EXACT_MAIN_PACKAGE_CACHE_ROOT" \
+              --binaries-dir "$(pwd)/binaries" \
+              --expected-cache-key-sha "${{ inputs.cache-key-sha }}" \
+              --force-source-build
+        '
+        archive_path="$(find "$RUNNER_TEMP/staged" -name '*.tar.zst' -print -quit)"
+        [ -n "$archive_path" ] || {
+          echo "::error::archive-stage produced no package archive"
+          exit 1
+        }
+        echo "archive-path=$archive_path" >> "$GITHUB_OUTPUT"
+        echo "archive-name=$(basename "$archive_path")" >> "$GITHUB_OUTPUT"
+
+    - name: Upload same-run package artifact
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ inputs.package }}-${{ inputs.arch }}
+        path: ${{ runner.temp }}/staged/*.tar.zst
+        retention-days: 7
+        if-no-files-found: error
+
+    - name: Publish archive and canonical index entry
+      if: success()
+      shell: bash
+      run: |
+        bash scripts/index-update.sh \
+          --target-tag "${{ inputs.target-tag }}" \
+          --package "${{ inputs.package }}" \
+          --version "${{ inputs.version }}" \
+          --revision "${{ inputs.revision }}" \
+          --arch "${{ inputs.arch }}" \
+          --status success \
+          --archive-path "${{ steps.build.outputs.archive-path }}" \
+          --archive-name "${{ steps.build.outputs.archive-name }}" \
+          --cache-key-sha "${{ inputs.cache-key-sha }}" \
+          --canonical-source-sha "${{ inputs.source-sha }}"
+
+    - name: Record failed exact-main build
+      if: failure() && steps.provenance.outcome == 'success'
+      shell: bash
+      run: |
+        bash scripts/index-update.sh \
+          --target-tag "${{ inputs.target-tag }}" \
+          --package "${{ inputs.package }}" \
+          --version "${{ inputs.version }}" \
+          --revision "${{ inputs.revision }}" \
+          --arch "${{ inputs.arch }}" \
+          --status failed \
+          --error "exact-main package build failed; see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+          --canonical-source-sha "${{ inputs.source-sha }}" \
+          || true

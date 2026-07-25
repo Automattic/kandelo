@@ -36,7 +36,9 @@
 //!                          normalised.
 //!   sha      <name>        Print the cache-key sha (transitive).
 //!   path     <name>        Print the canonical cache path.
-//!   resolve  <name>        Ensure the lib is built, print its path.
+//!   resolve  <name>        Ensure the package is built, print its path.
+//!                          `--force-source-build` bypasses the selected
+//!                          package's cache/index entry.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::AsFd;
@@ -5518,6 +5520,26 @@ fn extract_fetch_only_flag(args: Vec<String>) -> (bool, Vec<String>) {
     (fetch_only, rest)
 }
 
+/// Extract the explicit source-build override used by exact-source producer
+/// workflows. It is intentionally scoped to the selected `resolve` target;
+/// dependencies still need an explicit same-run overlay or their own
+/// dependency-level build.
+fn extract_force_source_build_flag(args: Vec<String>) -> Result<(bool, Vec<String>), String> {
+    let mut force_source_build = false;
+    let mut rest = Vec::with_capacity(args.len());
+    for arg in args {
+        if arg == "--force-source-build" {
+            if force_source_build {
+                return Err("--force-source-build given more than once".to_string());
+            }
+            force_source_build = true;
+        } else {
+            rest.push(arg);
+        }
+    }
+    Ok((force_source_build, rest))
+}
+
 /// Extract the source checkout identity used by the public program-index
 /// freshness boundary. Unlike resolver/cache configuration, this is command
 /// authority and therefore travels in argv rather than mutable ambient state.
@@ -5628,10 +5650,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     // location-independent, matching `--arch`'s shape.
     let (binaries_dir, rest) = extract_binaries_dir_flag(rest)?;
     let (fetch_only, rest) = extract_fetch_only_flag(rest);
+    let (force_source_build, rest) = extract_force_source_build_flag(rest)?;
 
     let mut it = rest.into_iter();
     let sub = it.next().ok_or(
-        "usage: xtask build-deps [--arch=wasm32|wasm64] [--binaries-dir <path>] [--fetch-only] \
+        "usage: xtask build-deps [--arch=wasm32|wasm64] [--binaries-dir <path>] [--fetch-only] [--force-source-build] \
          [--source-repo-root <absolute-canonical-path>] \
          <parse|sha|path|resolve|check|cache-root|program-index|program-index-check|program-index-context-check|install-local-artifact|output-metadata|output-path|runtime-file-path|runtime-file-metadata|output-fork-instrumentation|output-fork-instrumentation-for-rel> \
          [<name|path> [<wasm-basename>]]",
@@ -5673,6 +5696,17 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         return Err(format!(
             "build-deps {sub}: --fetch-only is only valid for `resolve`"
         ));
+    }
+    if force_source_build && sub != "resolve" {
+        return Err(format!(
+            "build-deps {sub}: --force-source-build is only valid for `resolve`"
+        ));
+    }
+    if fetch_only && force_source_build {
+        return Err(
+            "build-deps resolve: --fetch-only and --force-source-build are mutually exclusive"
+                .to_string(),
+        );
     }
 
     match sub.as_str() {
@@ -5753,6 +5787,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                         arch,
                         binaries_dir.as_deref(),
                         fetch_only,
+                        force_source_build,
                     )
                 }
                 "install-local-artifact" => {
@@ -6053,13 +6088,15 @@ fn cmd_resolve(
     arch: TargetArch,
     binaries_dir: Option<&Path>,
     fetch_only: bool,
+    force_source_build: bool,
 ) -> Result<(), String> {
     let cache_root = default_cache_root();
     let local_libs = repo.join("local-libs");
+    let forced = BTreeSet::from([m.name.clone()]);
     let opts = ResolveOpts {
         cache_root: &cache_root,
         local_libs: Some(&local_libs),
-        force_source_build: None,
+        force_source_build: force_source_build.then_some(&forced),
         fetch_only,
         repo_root: Some(repo),
         // Plumb binaries_dir into ensure_built so place_binaries_symlinks
@@ -17919,6 +17956,27 @@ libs = ["lib/libF3b.a"]
             extract_fetch_only_flag(vec!["resolve".into(), "--fetch-only".into(), "bash".into()]);
         assert!(got);
         assert_eq!(rest, vec!["resolve".to_string(), "bash".into()]);
+    }
+
+    #[test]
+    fn extract_force_source_build_flag_is_explicit_and_single() {
+        let (got, rest) = extract_force_source_build_flag(vec![
+            "resolve".into(),
+            "libcxx".into(),
+            "--force-source-build".into(),
+        ])
+        .unwrap();
+        assert!(got);
+        assert_eq!(rest, vec!["resolve".to_string(), "libcxx".into()]);
+
+        let error = extract_force_source_build_flag(vec![
+            "--force-source-build".into(),
+            "resolve".into(),
+            "--force-source-build".into(),
+            "libcxx".into(),
+        ])
+        .unwrap_err();
+        assert!(error.contains("more than once"), "got: {error}");
     }
 
     #[test]

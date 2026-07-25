@@ -563,6 +563,14 @@ canonical release):
      out exact `M`, dispatch `force-rebuild.yml` from that workflow SHA,
      source-build every selected target, and record
      `https://github.com/Automattic/kandelo@M` in every archive manifest.
+     Expand each requested root to its transitive buildable dependency closure
+     and build that graph in explicit topological levels: preserve full
+     concurrency within a level, but require later levels to consume only
+     same-run `M` artifacts. Missing or failed current-run dependency artifacts
+     must stop publication rather than fall back to an older cache-equivalent
+     archive, and each archive build must use an empty job-local resolver cache
+     so prior runner state cannot bypass those overlays. Bind the sysroot/libcxx
+     toolchain cache to `M` and source-build libcxx before creating it.
      The workflow rechecks `M == refs/heads/main` before archive and index
      mutations. A PR staging or merge-candidate generation is validation
      evidence only and cannot become a Homebrew/durable-package generation;

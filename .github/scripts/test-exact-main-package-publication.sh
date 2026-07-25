@@ -5,6 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FORCE_REBUILD="$REPO_ROOT/.github/workflows/force-rebuild.yml"
+EXACT_REBUILD_ACTION="$REPO_ROOT/.github/actions/exact-main-package-rebuild/action.yml"
 INDEX_UPDATE="$REPO_ROOT/scripts/index-update.sh"
 ARCHIVE_ACTION="$REPO_ROOT/.github/actions/package-archive-build/action.yml"
 STAGING="$REPO_ROOT/.github/workflows/staging-build.yml"
@@ -53,26 +54,78 @@ exact_checkout_count="$(
 [ "$checkout_count" -eq "$exact_checkout_count" ] ||
   fail "all force-rebuild checkouts must use the admitted exact-main SHA"
 
-archive_count="$(grep -c '^[[:space:]]*archive-stage \\' "$FORCE_REBUILD")"
+archive_count="$(grep -c '^[[:space:]]*archive-stage \\' "$EXACT_REBUILD_ACTION")"
 [ "$archive_count" -gt 0 ] ||
   fail "force-rebuild has no archive producers"
 for required_arg in \
   '--source-repository "https://github.com/${{ github.repository }}"' \
-  '--source-commit "${{ needs.gate.outputs.source_sha }}"' \
+  '--source-commit "${{ inputs.source-sha }}"' \
+  '--cache-root "$EXACT_MAIN_PACKAGE_CACHE_ROOT"' \
   '--force-source-build'
 do
-  count="$(grep -Fc -- "$required_arg" "$FORCE_REBUILD")"
+  count="$(grep -Fc -- "$required_arg" "$EXACT_REBUILD_ACTION")"
   [ "$count" -eq "$archive_count" ] ||
     fail "every force-rebuild archive producer must pass $required_arg"
 done
+grep -Fq 'mktemp -d "$RUNNER_TEMP/exact-main-package-cache.XXXXXX"' \
+  "$EXACT_REBUILD_ACTION" ||
+  fail "exact-main archive builds may reuse an older cache-equivalent dependency"
 
-index_writer_count="$(grep -c 'bash scripts/index-update.sh' "$FORCE_REBUILD")"
+index_writer_count="$(grep -c 'bash scripts/index-update.sh' "$EXACT_REBUILD_ACTION")"
 guarded_writer_count="$(
-  grep -Fc -- '--canonical-source-sha "${{ needs.gate.outputs.source_sha }}"' \
-    "$FORCE_REBUILD"
+  grep -Fc -- '--canonical-source-sha "${{ inputs.source-sha }}"' \
+    "$EXACT_REBUILD_ACTION"
 )"
 [ "$index_writer_count" -eq "$guarded_writer_count" ] ||
   fail "every force-rebuild canonical index writer must carry exact-main authority"
+
+grep -Fq 'partition-package-matrix \' "$FORCE_REBUILD" ||
+  fail "force-rebuild does not partition the selected package closure"
+grep -Fq 'selected package closure requires $level_count dependency levels; workflow supports 8' \
+  "$FORCE_REBUILD" ||
+  fail "force-rebuild does not fail closed when its explicit level bound is exceeded"
+if grep -Eq 'lib-matrix-build|library_matrix|program_matrix' "$FORCE_REBUILD"; then
+  fail "force-rebuild still splits dependency scheduling by package kind"
+fi
+for level in $(seq 0 7); do
+  grep -Fq "matrix-build-level-$level:" "$FORCE_REBUILD" ||
+    fail "force-rebuild lacks explicit dependency level $level"
+  grep -Fq "include: \${{ fromJSON(needs.preflight.outputs.level_${level}_matrix) }}" \
+    "$FORCE_REBUILD" ||
+    fail "dependency level $level does not consume its exact partition"
+done
+for level in $(seq 1 7); do
+  previous=$((level - 1))
+  grep -Fq "needs: [gate, preflight, toolchain-cache, matrix-build-level-$previous]" \
+    "$FORCE_REBUILD" ||
+    fail "dependency level $level does not wait for level $previous"
+done
+[ "$(grep -Fc 'uses: ./.github/actions/exact-main-package-rebuild' "$FORCE_REBUILD")" -eq 8 ] ||
+  fail "every dependency level must use the shared exact-main rebuild action"
+[ "$(grep -Fc 'max-parallel: 10' "$FORCE_REBUILD")" -eq 8 ] ||
+  fail "each dependency level must retain bounded within-level concurrency"
+
+grep -Fq 'package-dependency-artifacts \' "$EXACT_REBUILD_ACTION" ||
+  fail "exact-main package rebuild does not derive direct dependency artifacts"
+grep -Fq -- '--no-allow-missing-completed' "$EXACT_REBUILD_ACTION" ||
+  fail "exact-main dependency download can fall back after a same-run producer failure"
+grep -Fq 'DEPENDENCY_ARTIFACT_ATTEMPTS=1 \' "$EXACT_REBUILD_ACTION" ||
+  fail "exact-main dependency download may poll after its producer level completed"
+grep -Fq 'DEPENDENCY_ARTIFACT_POLL_SECONDS=0 \' "$EXACT_REBUILD_ACTION" ||
+  fail "exact-main dependency download retains an unnecessary retry delay"
+grep -Fq -- '--list "$RUNNER_TEMP/package-dependency-artifacts.txt"' \
+  "$EXACT_REBUILD_ACTION" ||
+  fail "exact-main dependencies are not selected by the graph-owned exact list"
+
+grep -Fq 'exact-main-sysroot-v1-${{ runner.os }}-${{ needs.gate.outputs.source_sha }}-' \
+  "$FORCE_REBUILD" ||
+  fail "exact-main toolchain cache is not commit-bound"
+grep -Fq 'build-deps resolve libcxx --arch "$arch" --force-source-build' \
+  "$FORCE_REBUILD" ||
+  fail "exact-main toolchain may reuse an older libcxx archive"
+if grep -Eq 'ln -s.*libc\\+\\+|ln -s.*include/c\\+\\+/v1' "$FORCE_REBUILD"; then
+  fail "exact-main toolchain artifact still contains external libcxx cache symlinks"
+fi
 
 grep -Fq -- '--canonical-source-sha) CANONICAL_SOURCE_SHA="$2"; shift 2' \
   "$INDEX_UPDATE" ||

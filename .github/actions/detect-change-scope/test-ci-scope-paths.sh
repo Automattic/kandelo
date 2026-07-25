@@ -286,6 +286,12 @@ assert_matches package_publish_flow_changed_files \
   ".github/workflows/force-rebuild.yml" \
   ".github/workflows/force-rebuild.yml"
 assert_matches package_publish_flow_changed_files \
+  ".github/actions/exact-main-package-rebuild/action.yml" \
+  ".github/actions/exact-main-package-rebuild/action.yml"
+assert_matches package_publish_flow_changed_files \
+  "tools/xtask/src/package_matrix.rs" \
+  "tools/xtask/src/package_matrix.rs"
+assert_matches package_publish_flow_changed_files \
   ".github/workflows/reusable-package-source-publish.yml" \
   ".github/workflows/reusable-package-source-publish.yml"
 assert_not_matches package_publish_flow_changed_files \
@@ -338,6 +344,12 @@ assert_matches ci_control_changed_files \
 assert_matches ci_control_changed_files \
   ".github/scripts/require-exact-head-approval.sh" \
   ".github/scripts/require-exact-head-approval.sh"
+assert_matches ci_control_changed_files \
+  ".github/actions/exact-main-package-rebuild/action.yml" \
+  ".github/actions/exact-main-package-rebuild/action.yml"
+assert_matches ci_control_changed_files \
+  "tools/xtask/src/package_matrix.rs" \
+  "tools/xtask/src/package_matrix.rs"
 assert_matches ci_control_changed_files \
   ".github/scripts/require-exact-kandelo-main.sh" \
   ".github/scripts/require-exact-kandelo-main.sh"

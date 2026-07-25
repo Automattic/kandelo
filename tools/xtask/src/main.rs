@@ -8,13 +8,16 @@
 //!                         Args: --package <dir> --arch <wasm32|wasm64>. Used by the
 //!                         pre-flight workflow to skip already-published
 //!                         matrix entries.
-//!   sort-package-matrix   Order a package matrix so selected program dependencies
+//!   sort-package-matrix   Order a package matrix so selected package dependencies
 //!                         appear before their dependents.
+//!   partition-package-matrix
+//!                         Select an exact root closure and partition it into
+//!                         dependency-safe parallel build levels.
 //!   staging-reuse         Build and validate the exact package ledger used to
 //!                         reuse a complete PR-staging release safely.
 //!   package-dependency-artifacts
 //!                         Print workflow artifact names for selected direct
-//!                         program dependencies of one package matrix entry.
+//!                         package dependencies of one package matrix entry.
 //!   materialize-package-output
 //!                         Fetch one declared program output from an exact
 //!                         index snapshot and emit its immutable provenance
@@ -96,7 +99,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, package-dependency-artifacts, materialize-package-output, staging-reuse, archive-stage, build-index, set-build-commit, set-package-binary, index-update, index-candidate, homebrew-sidecars, homebrew-tier2-preflight, homebrew-validate"
+                "subcommands: dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, materialize-package-output, staging-reuse, archive-stage, build-index, set-build-commit, set-package-binary, index-update, index-candidate, homebrew-sidecars, homebrew-tier2-preflight, homebrew-validate"
             );
             return ExitCode::from(2);
         }
@@ -108,6 +111,7 @@ fn main() -> ExitCode {
         "build-deps" => build_deps::run(rest),
         "compute-cache-key-sha" => build_deps::run_compute_cache_key_sha(rest),
         "sort-package-matrix" => package_matrix::run_sort(rest),
+        "partition-package-matrix" => package_matrix::run_partition(rest),
         "package-dependency-artifacts" => package_matrix::run_dependency_artifacts(rest),
         "materialize-package-output" => package_output_receipt::run(rest),
         "staging-reuse" => staging_reuse::run(rest),

@@ -92,7 +92,14 @@ Homebrew/durable-package generation. `force-rebuild.yml`, dispatched from the
 live `main` workflow SHA, source-builds the selected closure, stamps each
 archive's embedded `[build]` provenance with that exact SHA, and rechecks live
 main before each archive and index mutation. Durable generation validates those
-embedded fields and rejects activated PR/synthetic-merge bytes.
+embedded fields and rejects activated PR/synthetic-merge bytes. The producer
+partitions the complete selected dependency graph into explicit topological
+levels. Packages within one level build concurrently; every edge to a later
+level must consume the earlier level's same-run exact-main archive, with no
+fallback to an older canonical index entry or prior local cache entry. Each
+archive build resolves through an empty job-local cache. Its sysroot/libcxx
+toolchain cache is keyed by the exact main SHA and source-builds libcxx before
+that cache can be created.
 
 ### Durable package generations for cross-workflow publication
 
@@ -354,8 +361,8 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
 same build shape against an isolated merge-candidate prerelease. It does not
 write `binaries-abi-v<N>/index.toml` before merge. See "Merge candidates and
 canonical activation" below.
-`force-rebuild.yml` is the manual escape hatch (`workflow_dispatch`)
-for republishing selected packages.
+`force-rebuild.yml` is the maintainer-dispatched exact-main producer for
+republishing selected root closures.
 
 ## Merge candidates and canonical activation
 
@@ -956,7 +963,10 @@ Ordinary `archive-stage` calls may reuse a valid resolver cache entry or
 indexed archive. A producer that must prove execution of the selected source
 recipe passes `--force-source-build`. The option is deliberately narrow: it
 bypasses cache and index reuse for `--package` only, while dependencies retain
-normal resolver behavior.
+normal resolver behavior. The exact-main workflow does not broaden this flag;
+instead it selects the root's complete buildable closure, schedules that graph
+in dependency levels, and overlays each same-run dependency archive before
+source-building its dependent.
 
 `force-rebuild.yml` is the canonical exact-main producer, not a historical-ref
 escape hatch. It must be dispatched from `refs/heads/main`; its optional legacy
@@ -969,6 +979,9 @@ this at the writer boundary: a case-insensitive `Automattic/kandelo`
 `binaries-abi-v<N>` target is rejected unless the caller supplies the exact
 main SHA. External package-source repositories may continue to own their own
 canonical-shaped release tags without claiming Kandelo's publication authority.
+A missing or failed same-run dependency also fails closed rather than consulting
+an older cache-equivalent archive. The fixed workflow level bound is checked
+during preflight, while all packages within a level retain bounded parallelism.
 
 The `[compatibility]` block injected into each archive's
 `manifest.toml` is also a pure function of the build inputs (no

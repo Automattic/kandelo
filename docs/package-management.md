@@ -1143,6 +1143,16 @@ continue through ordinary resolution. For example, the main-shell proof uses
 it to guarantee that the shell composer runs while its reviewed Homebrew
 bottles remain ordinary immutable inputs.
 
+The canonical exact-main producer adds a stricter orchestration contract around
+that deliberately narrow flag. It expands selected roots to their complete
+buildable closure, partitions the graph into topological levels, and
+materializes only same-run exact-main dependency archives between levels.
+Missing current-run artifacts are errors, not permission to consult the
+mutable canonical index, and each archive uses an empty job-local cache so a
+prior cache entry cannot bypass those overlays. Its commit-keyed toolchain
+source-builds libcxx, so an older cache-equivalent C++ runtime cannot enter the
+claimed exact-main closure.
+
 When `archive-stage --cache-root <dir>` also uses `--binaries-dir`, later
 processes consuming that symlink mirror must set
 `WASM_POSIX_BINARY_CACHE_ROOT=<dir>`. This couples the mirror's canonical
@@ -1479,7 +1489,10 @@ before materialization. Omitting `--package` preserves the full-registry walk.
 The package workflows retain the same per-entry build shape but publish to
 different lifecycle states. `staging-build.yml` writes a per-PR staging tag;
 `prepare-merge.yml` writes and tests a run-specific isolated candidate; and
-`force-rebuild.yml` is the manual canonical rebuild path. Post-merge
+`force-rebuild.yml` is the maintainer-dispatched exact-main rebuild path.
+That workflow preserves concurrency within each true dependency level while
+strictly sequencing levels; it never relies on GitHub matrix scheduling order.
+Post-merge
 `activate-merge-candidate.yml` verifies the exact merged tree, copies all
 required archives, then publishes one complete canonical ledger through the
 journaled release-index state machine. There is no bot rewrite of

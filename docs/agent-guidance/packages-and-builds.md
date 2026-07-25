@@ -76,6 +76,14 @@ and dry-run outputs are validation evidence only: do not promote them, bless
 them through ancestry or tree equality, or use a special merge method to make
 them canonical. Recheck the exact `main` identity immediately before each
 Homebrew-eligible archive, bottle, index, tap, or release mutation.
+For that exact-main rebuild, "built from main" covers the selected archive's
+transitive buildable dependency artifacts too: partition the selected closure
+into topological levels, consume only same-run exact-main artifacts across
+dependency edges, and fail rather than falling back to an older
+cache-equivalent archive. Resolve those overlays through an empty job-local
+cache so prior runner state cannot satisfy an exact-main dependency edge.
+Ordinary resolver/cache reuse outside this canonical producer retains its
+existing semantics.
 
 Multi-output paths are resolver-owned. Do not hardcode
 `binaries/programs/<arch>/...`; ask

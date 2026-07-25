@@ -920,6 +920,13 @@ generation revalidates both fields for every selected archive. An archive that
 entered the mutable resolver ledger through ordinary merge-candidate activation
 remains useful to general consumers, but it is not a bottle input until this
 exact-main rebuild replaces it.
+The rebuild expands selected roots to their transitive buildable dependencies
+and executes explicit topological levels. Members of a level remain parallel;
+each later member consumes only the prior levels' same-run exact-main
+artifacts. A missing producer artifact fails the run instead of falling back
+to an older cache-equivalent archive; an empty job-local resolver cache also
+prevents prior runner state from satisfying that edge. The commit-keyed
+toolchain source-builds libcxx before it can be reused.
 
 Incremental bottle planning applies the same rule to reuse. A matching cache
 key, ABI, release tag, and bottle URL are not enough to skip a build: the
