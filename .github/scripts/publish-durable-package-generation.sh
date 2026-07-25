@@ -294,12 +294,8 @@ discover_release() {
   refresh_release_by_id "$(jq -er '.id' "$RELEASE_JSON")"
 }
 
-validate_direct_tag() {
-  local tag_json="$TMP_ROOT/tag.json" rc=0
-  GITHUB_API_CONTEXT=publish-durable-package-generation \
-    github_api_get_json \
-      "/repos/$REPOSITORY/git/ref/tags/$TAG" "$tag_json" || rc=$?
-  [ "$rc" -eq 0 ] || return "$rc"
+validate_direct_tag_json() {
+  local tag_json="$1"
   jq -e --arg tag "$TAG" --arg sha "$TARGET_COMMIT" '
     .ref == ("refs/tags/" + $tag) and
     .object.type == "commit" and .object.sha == $sha
@@ -310,8 +306,38 @@ validate_direct_tag() {
   }
 }
 
+validate_direct_tag() {
+  local tag_json="$TMP_ROOT/tag.json" rc=0
+  GITHUB_API_CONTEXT=publish-durable-package-generation \
+    github_api_get_json \
+      "/repos/$REPOSITORY/git/ref/tags/$TAG" "$tag_json" || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  validate_direct_tag_json "$tag_json"
+}
+
+wait_for_direct_tag() {
+  local attempt=1 rc=0
+  while true; do
+    rc=0
+    validate_direct_tag || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      return 0
+    fi
+    if [ "$rc" -ne 44 ]; then
+      return 1
+    fi
+    if [ "$attempt" -ge 4 ]; then
+      echo "publish-durable-package-generation: created generation tag did not become readable" >&2
+      return 1
+    fi
+    echo "publish-durable-package-generation: generation tag is not readable yet; retrying" >&2
+    pause_before_retry
+    attempt=$((attempt + 1))
+  done
+}
+
 ensure_direct_tag() {
-  local rc=0
+  local create_json="$TMP_ROOT/create-tag.json" rc=0
   validate_direct_tag || rc=$?
   if [ "$rc" -eq 0 ]; then
     return 0
@@ -319,9 +345,15 @@ ensure_direct_tag() {
   if [ "$rc" -ne 44 ]; then
     return 1
   fi
-  gh api --method POST "/repos/$REPOSITORY/git/refs" \
-    -f "ref=refs/tags/$TAG" -f "sha=$TARGET_COMMIT" >/dev/null || true
-  validate_direct_tag
+  if gh api --method POST "/repos/$REPOSITORY/git/refs" \
+      -f "ref=refs/tags/$TAG" -f "sha=$TARGET_COMMIT" >"$create_json"; then
+    validate_direct_tag_json "$create_json"
+  else
+    # The request may have committed even when its response was lost. Reconcile
+    # through a cache-bypassing read instead of issuing a second write.
+    echo "publish-durable-package-generation: tag creation was ambiguous; reconciling" >&2
+  fi
+  wait_for_direct_tag
 }
 
 create_or_discover_release() {
