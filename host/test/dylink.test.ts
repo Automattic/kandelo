@@ -10,6 +10,7 @@ import {
   loadSharedLibrary,
   loadSharedLibrarySync,
   DynamicLinker,
+  FORK_CAP_ACTIVATION_STATE_SAFE,
   FORK_CAP_DYLINK_MAIN,
   FORK_CAP_SIDE_ENTRY,
   FORK_CAPABILITIES_SECTION,
@@ -25,6 +26,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { LINKED_FRAME_FORMAT_SECTION } from "../src/fork-continuation";
+import { ABI_VERSION } from "../src/generated/abi";
 
 function hasCompiler(compiler = "wasm32posix-cc"): boolean {
   try {
@@ -79,18 +81,26 @@ function buildDylinkWat(
   memorySize = 0,
   wat2wasmFlags: string[] = [],
   tlsExports: string[] = [],
+  abiVersion: number | null = ABI_VERSION,
 ): Uint8Array {
   const dir = join(tmpdir(), "wasm-dylink-wat-test");
   mkdirSync(dir, { recursive: true });
   const watPath = join(dir, `${name}.wat`);
   const wasmPath = join(dir, `${name}.wasm`);
-  const linkedWat = forkCapabilities !== undefined
+  let linkedWat = forkCapabilities !== undefined
       && (forkCapabilities & FORK_CAP_SIDE_ENTRY) !== 0
     ? wat.replace("(module", `(module
           (import "env" "__wpk_fork_frame_reserve" (func (param i32) (result i32)))
           (import "env" "__wpk_fork_frame_commit" (func (param i32)))
           (import "env" "__wpk_fork_frame_next" (func (param i32) (result i32)))`)
     : wat;
+  if (forkCapabilities !== undefined && abiVersion !== null) {
+    const moduleEnd = linkedWat.lastIndexOf(")");
+    if (moduleEnd < 0) throw new Error("test WAT has no module terminator");
+    linkedWat = `${linkedWat.slice(0, moduleEnd)}
+          (func (export "__abi_version") (result i32) i32.const ${abiVersion})
+        ${linkedWat.slice(moduleEnd)}`;
+  }
   writeFileSync(watPath, linkedWat);
   execFileSync("wat2wasm", ["--enable-threads", ...wat2wasmFlags, watPath, "-o", wasmPath], {
     stdio: "pipe",
@@ -124,7 +134,10 @@ function buildDylinkWat(
   let marked = appendCustomSection(
         out,
         FORK_CAPABILITIES_SECTION,
-        new Uint8Array([FORK_CAPABILITIES_VERSION, forkCapabilities]),
+        new Uint8Array([
+          FORK_CAPABILITIES_VERSION,
+          forkCapabilities | FORK_CAP_ACTIVATION_STATE_SAFE,
+        ]),
       );
   if ((forkCapabilities & FORK_CAP_SIDE_ENTRY) !== 0) {
     marked = appendCustomSection(
@@ -708,7 +721,7 @@ describe("side-module fork contract", () => {
     if (legacyAllowed) {
       expect(load).not.toThrow();
     } else {
-      expect(load).toThrow(/versioned side-entry capability/);
+      expect(load).toThrow(/activation-state-safe capability/);
     }
   });
 
@@ -757,6 +770,46 @@ describe("side-module fork contract", () => {
       .toThrow(/versioned side-entry capability/);
   });
 
+  it("binds a side module's activation-safety claim to ABI 43", () => {
+    const sideWat = `
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (func (export "wpk_fork_unwind_begin") (param i32))
+        (func (export "wpk_fork_unwind_end"))
+        (func (export "wpk_fork_rewind_begin") (param i32))
+        (func (export "wpk_fork_rewind_end"))
+        (func (export "wpk_fork_abort_begin") (param i32))
+        (func (export "wpk_fork_abort_end"))
+        (func (export "wpk_fork_state") (result i32) i32.const 0))
+    `;
+    const options = createSideForkLoadOptions();
+    const stale = buildDylinkWat(
+      sideWat,
+      "side-fork-stale-abi",
+      0,
+      0,
+      0,
+      [],
+      [],
+      ABI_VERSION - 1,
+    );
+    expect(() => loadSharedLibrarySync("libstale.so", stale, options))
+      .toThrow(/declares ABI 42, but the host requires ABI 43/);
+
+    const missing = buildDylinkWat(
+      sideWat,
+      "side-fork-missing-abi",
+      0,
+      0,
+      0,
+      [],
+      [],
+      null,
+    );
+    expect(() => loadSharedLibrarySync("libmissing.so", missing, options))
+      .toThrow(/missing __abi_version/);
+  });
+
   it("reads the versioned side-entry capability independently", () => {
     const wasmBytes = buildDylinkWat(`
       (module (import "env" "memory" (memory 1 100 shared)))
@@ -764,9 +817,11 @@ describe("side-module fork contract", () => {
     const module = new WebAssembly.Module(wasmBytes as unknown as BufferSource);
     expect(readForkInstrumentCapabilityClaim(module)).toEqual({
       present: true,
-      flags: FORK_CAP_SIDE_ENTRY,
+      flags: FORK_CAP_SIDE_ENTRY | FORK_CAP_ACTIVATION_STATE_SAFE,
     });
-    expect(readForkInstrumentCapabilities(module)).toBe(FORK_CAP_SIDE_ENTRY);
+    expect(readForkInstrumentCapabilities(module)).toBe(
+      FORK_CAP_SIDE_ENTRY | FORK_CAP_ACTIVATION_STATE_SAFE,
+    );
   });
 
   it("rejects a malformed marker even during the ABI-16 compatibility window", () => {

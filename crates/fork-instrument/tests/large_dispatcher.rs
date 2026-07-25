@@ -182,14 +182,20 @@ fn dispatcher_call_count(bytes: &[u8]) -> usize {
     count
 }
 
-/// `instrument_one_function_switch` places the preamble, unwind-save block,
-/// and postamble inside one result-typed restart loop.
+/// `instrument_one_function_switch` places the replay preamble before one
+/// result-typed live-restart loop containing the unwind-save block and
+/// postamble.
 fn dispatcher_unwind_save(local: &LocalFunction) -> InstrSeqId {
     let entry = local.block(local.entry_block());
-    let restart = match entry.instrs.as_slice() {
-        [(Instr::Loop(ir::Loop { seq }), _)] => *seq,
-        other => panic!("expected one top-level restart Loop, got {other:?}"),
-    };
+    let restart = entry
+        .instrs
+        .iter()
+        .filter_map(|(instruction, _)| match instruction {
+            Instr::Loop(ir::Loop { seq }) => Some(*seq),
+            _ => None,
+        })
+        .next_back()
+        .unwrap_or_else(|| panic!("expected a top-level live-restart Loop: {:?}", entry.instrs));
     let blocks: Vec<InstrSeqId> = local
         .block(restart)
         .instrs
@@ -382,13 +388,12 @@ fn bucketed_depth_indirect_dispatcher_passes_v8_limit() {
     }
 }
 
-/// Every per-call UNWIND branch must target the function-level
-/// `$unwind_save`. A regression re-pointing them at a leaf-local
-/// `$child_K` / `$dispatch_normal` would still validate as wasm but
-/// scramble the fork frame on the next REWIND. The dispatcher
-/// fixtures emit only the successful-unwind branch and the allocation-failure
-/// branch back to the restart loop, so their exact target counts pin
-/// `(global.get state, const UNWINDING, i32.eq, if)` sequence.
+/// Every per-call private-tag handler must target `$unwind_save` after a
+/// successful reservation and the live-restart loop after synchronous
+/// allocation failure. A regression re-pointing a site at a leaf-local
+/// `$child_K` / `$dispatch_normal` would still validate as wasm but scramble
+/// the fork frame on the next REWIND. Exact target counts pin one statically
+/// indexed boundary per lexical call, with no function-wide selector handler.
 ///
 /// N=33 straddles `BUCKET_SIZE=32` to force one full leaf + one
 /// singleton leaf — exercises both first-leaf and last-leaf paths.
@@ -411,10 +416,16 @@ fn leaf_unwind_br_targets_function_level_unwind_save() {
             };
 
             let unwind_save = dispatcher_unwind_save(local);
-            let restart_loop = match local.block(local.entry_block()).instrs.as_slice() {
-                [(Instr::Loop(ir::Loop { seq }), _)] => *seq,
-                other => panic!("expected restart loop, got {other:?}"),
-            };
+            let restart_loop = local
+                .block(local.entry_block())
+                .instrs
+                .iter()
+                .filter_map(|(instruction, _)| match instruction {
+                    Instr::Loop(ir::Loop { seq }) => Some(*seq),
+                    _ => None,
+                })
+                .next_back()
+                .expect("expected live-restart loop");
             let targets = collect_br_targets(local);
 
             assert_eq!(
@@ -423,7 +434,7 @@ fn leaf_unwind_br_targets_function_level_unwind_save() {
                     .filter(|&&target| target == unwind_save)
                     .count(),
                 n,
-                "{label} N={n}: each call site must branch to unwind-save after commit",
+                "{label} N={n}: each static call boundary must branch to unwind-save after commit",
             );
             assert_eq!(
                 targets
@@ -431,9 +442,15 @@ fn leaf_unwind_br_targets_function_level_unwind_save() {
                     .filter(|&&target| target == restart_loop)
                     .count(),
                 n,
-                "{label} N={n}: each call site must branch to restart on allocation failure",
+                "{label} N={n}: each static call boundary must branch to restart on allocation failure",
             );
-            assert_eq!(targets.len(), 2 * n, "{label} N={n}: unexpected Br target");
+            assert_eq!(
+                targets.len(),
+                3 * n,
+                "{label} N={n}: expected one normal result-boundary branch, \
+                 one successful-unwind branch, and one abort-restart branch \
+                 per static call",
+            );
         }
     }
 }
