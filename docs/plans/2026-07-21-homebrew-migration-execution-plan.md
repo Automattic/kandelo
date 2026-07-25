@@ -383,13 +383,32 @@ the broader phases, inventory, deferred work, or completion criteria below:
   later step fails, reserve rebuild 6 instead of blindly retrying rebuild 5.
 - Once the Bash publisher has finished consuming its sealed snapshot, remove
   only `stage-rootfs-closure-only` from the still-open #1094. That same-head
-  event builds all 75 current generations (14 libraries and 61 programs);
+  event schedules the 75 cold or stale generations affected by this change
+  (14 libraries and 61 programs);
   61 of 65 wasm32 program identities changed with the shared host-runtime fix,
   so an older release cannot truthfully serve as their base. Wait for all
   writers and one post-writer current-mode materialization, then promote the
-  complete generation to a durable content-addressed release. Only after the
-  staging input is durably consumed and promoted may #1094 close and its
-  cleanup delete the mutable PR tag.
+  exact browser-input closure to a durable content-addressed release. Do not
+  describe those 75 scheduled builds as either the repository's complete
+  expected ledger or the browser closure: current `main` has 81 expected
+  archive entries, while the 44 direct browser roots produce a 61-identity
+  closure (51 programs, 9 libraries, and the source-only `pcre2-source`) with
+  its own typed archive/source-only dispositions. Only after the staging input
+  is durably consumed and promoted may #1094 close and its cleanup delete the
+  mutable PR tag.
+- Preserve the two exact Git identities carried by that promotion instead of
+  rewriting one into the other. Every package job explicitly checks out
+  #1094's source head
+  `6d923c6454dd7174082f25c3d3991d03f86f5ddb`, while GitHub's
+  `pull_request` event makes the mutable release/tag target the tested merge
+  `0968e0bc70b87097fd3cfd4a5d8785f3a2bf6174`. The tested merge has ordered
+  parents `[df8fd92319c0f02143dd8bf1c7864f5847fd0bd6,
+  6d923c6454dd7174082f25c3d3991d03f86f5ddb]` and the exact source-head
+  tree. Durable promotion must derive the PR number from the
+  staging tag, verify the live PR head/base, ordered parents, and tree equality
+  fail closed, and record both the tested-merge and package-source identities.
+  Do not manually retarget the staging tag or weaken the exact-source
+  validator to make this transient PR shape look like a direct source tag.
 - The core tap's `main` branch currently has neither branch protection nor a
   repository ruleset. The one-shot controller must therefore freeze and verify
   its exact base, head, merge parents, and resulting commit before dispatch;
