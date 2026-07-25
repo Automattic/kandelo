@@ -192,6 +192,7 @@ jobs:
             --bundle "$RUNNER_TEMP/preserved-package-generation" \
             --authority-xtask "$authority_xtask" \
             --expected-authority-sha "$GITHUB_SHA" \
+            --default-ref main \
             --lock-root "$GITHUB_WORKSPACE" \
             --receipt "$RUNNER_TEMP/preserved-package-generation-receipt.json"
           tag="$(jq -r .tag "$RUNNER_TEMP/preserved-package-generation/generation.json")"

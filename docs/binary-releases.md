@@ -397,10 +397,13 @@ rootfs log, and requires the reconstructed canonical capture to equal
 For preserved generations the writer also requires
 `identity.authority_sha`, the workflow's exact `github.sha`, and the clean
 publisher checkout's `HEAD` to be identical. It rechecks that clean authority
-tree at both publication boundaries. The publisher supports exact resumable
-drafts and performs authenticated plus anonymous readback. The contract does
-not call the GitHub release immutable; it detects later mutation on
-validation.
+tree at both publication boundaries, and requires GitHub's direct
+`refs/heads/main` to still name that exact SHA immediately before direct-tag
+creation, draft creation, every asset upload, and the public transition. An
+already-public exact retry is read-only and does not require an old publisher
+SHA to remain main. The publisher supports exact resumable drafts and performs
+authenticated plus anonymous readback. The contract does not call the GitHub
+release immutable; it detects later mutation on validation.
 
 Dispatch only reviewed authority from the default branch:
 
@@ -482,39 +485,41 @@ only to the wasm32 root set. The current checkout installs
 only its own pinned root npm dependencies with lifecycle scripts disabled;
 historical or source checkout dependencies are never installed.
 
-Do not replace derivation with a count gate and do not dispatch from a PR
-release. A selection becomes eligible only when its freshly derived identities
-and archives stamped with the canonical repository and exact main commit exist
-after exact-main activation.
+Do not replace derivation with a count gate and do not dispatch admission from
+a mutable PR release. A selection becomes eligible only when its freshly
+derived identities match archives stamped with the canonical repository and
+one coherent producer commit. That producer must either be exact main or carry
+the applicable v2 validation receipt from current main.
 
 If a runner stops while the generation release is a draft, repeat the
-identical dispatch from the same exact-main package-source commit. The writer
-accepts only an exact verified subset, uploads missing non-seal assets, uploads
-`generation.json` last, and publishes. It never deletes or overwrites a draft
-asset. If `main`, canonical package assets, local authority state, or any
-input changes, create a new generation from the new exact-main state instead.
+identical dispatch with the same producer `S`, validated main `M`, source tag,
+validation method, and selection. The writer accepts only an exact verified
+subset, uploads missing non-seal assets, uploads `generation.json` last, and
+publishes. It never deletes or overwrites a draft asset. If `main`, producer
+package assets, local authority state, or any input changes, prepare a new
+generation from the newly validated state instead.
 
 If a public generation fails validation, do not repair it in place. Preserve
-the evidence and publish a new exact-main generation under its naturally
-different content-derived tag. Pre-main staging retention and restoration
-apply only to the evidence-preservation workflow described above. Admitted
-recovery either resumes the same exact draft from the same exact-main inputs or
-publishes a new generation from a newly validated exact-main state; it never
-substitutes another commit's similarly named archives.
+the evidence and publish a new generation validated by current main under its
+naturally different content-derived tag. Pre-main staging retention and
+restoration apply only to the evidence-preservation workflow described above.
+Admitted recovery either resumes the same exact draft from the same `S`/`M`
+inputs or publishes a new generation from a newly validated current-main
+state; it never substitutes another commit's similarly named archives.
 
 These content-addressed releases share one manifest-driven immutable-release
 publisher. Before using a credential it stages and verifies the manifest's
 bounded duplicate-free JSON, safe unique basenames, exact sizes, and SHA-256
-digests. Under a tag-specific
-state lock it can resume an exact partial draft, but rejects unknown, duplicate,
-or changed assets. It verifies every complete draft asset through the
-authenticated API and establishes an exact lightweight tag at the generation's
-declared package-source commit before publishing. It performs exact anonymous
-readback before atomically emitting a machine-readable receipt and does not
-rely on repository-wide release immutability. Release and asset discovery are
-paginated, so the same protocol covers the production shell mirror's 35 bottle
-objects and canonical plan rather than relying on the small embedded asset list
-in a release response.
+digests. Under a tag-specific state lock it can resume an exact partial draft,
+but rejects unknown, duplicate, or changed assets. It verifies every complete
+draft asset through the authenticated API and establishes an exact lightweight
+tag at the generation's declared release target—validated main `M` for
+v2—before publishing. It performs exact anonymous readback before atomically
+emitting a machine-readable receipt and does not rely on repository-wide
+release immutability. Release and asset discovery are paginated, so the same
+protocol covers the production shell mirror's 35 bottle objects and canonical
+plan rather than relying on the small embedded asset list in a release
+response.
 
 The unprivileged Homebrew build job fetch-only materializes the wasm32 Dash,
 Coreutils, Grep, and Sed artifacts from `binaries-abi-v<N>` so Formula tests can
