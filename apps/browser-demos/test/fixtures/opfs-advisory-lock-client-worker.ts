@@ -16,6 +16,7 @@ import {
   createProcessMemory,
   type ProcessMemoryLayout,
 } from "../../../../host/src/process-memory";
+import type { KernelScratchRegion } from "../../../../host/src/kernel-scratch";
 import { OpfsFileSystem } from "../../../../host/src/vfs/opfs";
 import { BrowserTimeProvider } from "../../../../host/src/vfs/time";
 import { VirtualPlatformIO } from "../../../../host/src/vfs/vfs";
@@ -44,6 +45,31 @@ interface SyscallResult {
   errno: number;
 }
 
+interface ScratchArgument {
+  kind: "scratch";
+  offset: number;
+  length: number;
+}
+
+type SyscallArgument = number | bigint | ScratchArgument;
+
+type ScratchPreparation =
+  | {
+      kind: "copy";
+      source: Uint8Array;
+      destinationOffset: number;
+    }
+  | {
+      kind: "flock";
+      start: bigint;
+      len: bigint;
+      type: number;
+    };
+
+function scratchArgument(offset: number, length: number): ScratchArgument {
+  return { kind: "scratch", offset, length };
+}
+
 interface ChannelInfoForTest {
   pid: number;
   memory: WebAssembly.Memory;
@@ -51,8 +77,7 @@ interface ChannelInfoForTest {
 }
 
 interface KernelWorkerInternals {
-  kernelMemory: WebAssembly.Memory;
-  scratchOffset: number;
+  scratchRegion: KernelScratchRegion;
   kernelInstance: WebAssembly.Instance;
   processes: Map<number, { channels: ChannelInfoForTest[] }>;
   pendingAdvisoryLockRetries: Map<ChannelInfoForTest, unknown>;
@@ -101,38 +126,70 @@ function issue(
   worker: CentralizedKernelWorker,
   pid: number,
   syscall: number,
-  args: Array<number | bigint>,
+  args: readonly SyscallArgument[],
+  preparation?: ScratchPreparation,
 ): SyscallResult {
   const state = internals(worker);
-  const channel = new DataView(state.kernelMemory.buffer, state.scratchOffset);
-  channel.setUint32(CH_SYSCALL, syscall, true);
-  channel.setUint32(CH_ERRNO, 0, true);
-  channel.setBigInt64(CH_RETURN, 0n, true);
-  for (let index = 0; index < 6; index++) {
-    channel.setBigInt64(
-      CH_ARGS + index * CH_ARG_SIZE,
-      BigInt(args[index] ?? 0),
-      true,
-    );
-  }
+  return state.scratchRegion.withLease((scratch) => {
+    // WHY: preparation is data, not a callback receiving the lease. Keeping
+    // every scratch operation in this synchronous callback prevents a helper
+    // from retaining the lease after withLease revokes it.
+    if (preparation?.kind === "copy") {
+      scratch.copyFrom(
+        preparation.source,
+        preparation.destinationOffset,
+      );
+    } else if (preparation?.kind === "flock") {
+      scratch.fill(0, CH_DATA, 32);
+      const flock = scratch.dataView(CH_DATA, 32);
+      flock.setInt16(0, preparation.type, true);
+      flock.setInt16(2, 0, true); // SEEK_SET
+      flock.setBigInt64(8, preparation.start, true);
+      flock.setBigInt64(16, preparation.len, true);
+    }
+    const channel = scratch.dataView(0, CH_TOTAL_SIZE);
+    channel.setUint32(CH_SYSCALL, syscall, true);
+    channel.setUint32(CH_ERRNO, 0, true);
+    channel.setBigInt64(CH_RETURN, 0n, true);
+    for (let index = 0; index < 6; index++) {
+      const argument = args[index] ?? 0;
+      if (typeof argument === "object") {
+        // WHY: the descriptor carries only an offset and capacity. The
+        // lease writes its checked address without exposing a primitive that
+        // could outlive revocation.
+        scratch.writeAddress(
+          CH_ARGS + index * CH_ARG_SIZE,
+          argument.offset,
+          argument.length,
+          "u64-le",
+        );
+      } else {
+        channel.setBigInt64(
+          CH_ARGS + index * CH_ARG_SIZE,
+          BigInt(argument),
+          true,
+        );
+      }
+    }
 
-  const handleChannel = state.kernelInstance.exports.kernel_handle_channel as (
-    offset: number | bigint,
-    pid: number,
-  ) => number;
-  const setCurrentTid = state.kernelInstance.exports.kernel_set_current_tid as (
-    pid: number,
-    tid: number,
-  ) => number;
-  const bindResult = setCurrentTid(pid, pid);
-  if (bindResult !== 0) {
-    throw new Error(`kernel_set_current_tid(${pid}, ${pid}) failed: ${bindResult}`);
-  }
-  handleChannel(worker.toKernelPtr(state.scratchOffset), pid);
-  return {
-    value: Number(channel.getBigInt64(CH_RETURN, true)),
-    errno: channel.getUint32(CH_ERRNO, true),
-  };
+    const setCurrentTid = state.kernelInstance.exports.kernel_set_current_tid as (
+      pid: number,
+      tid: number,
+    ) => number;
+    const bindResult = setCurrentTid(pid, pid);
+    if (bindResult !== 0) {
+      throw new Error(`kernel_set_current_tid(${pid}, ${pid}) failed: ${bindResult}`);
+    }
+    scratch.invokeKernelExport("kernel_handle_channel", [
+      scratch.exportPointer(0, CH_TOTAL_SIZE),
+      CH_TOTAL_SIZE,
+      pid,
+    ]);
+    return {
+      value: Number(channel.getBigInt64(CH_RETURN, true)),
+      errno: channel.getUint32(CH_ERRNO, true),
+    };
+  });
 }
 
 function openFile(
@@ -140,13 +197,22 @@ function openFile(
   pid: number,
   path: string,
 ): number {
-  const state = internals(worker);
-  const pathPtr = state.scratchOffset + CH_DATA;
-  new Uint8Array(state.kernelMemory.buffer).set(
-    new TextEncoder().encode(`${path}\0`),
-    pathPtr,
+  const pathBytes = new TextEncoder().encode(`${path}\0`);
+  const result = issue(
+    worker,
+    pid,
+    ABI_SYSCALLS.Open,
+    [
+      scratchArgument(CH_DATA, pathBytes.byteLength),
+      O_RDWR,
+      0,
+    ],
+    {
+      kind: "copy",
+      source: pathBytes,
+      destinationOffset: CH_DATA,
+    },
   );
-  const result = issue(worker, pid, ABI_SYSCALLS.Open, [pathPtr, O_RDWR, 0]);
   if (result.errno !== 0 || result.value < 3) {
     throw new Error(
       `kernel open failed for pid ${pid}: value=${result.value} errno=${result.errno}`,
@@ -192,10 +258,22 @@ function lock(
   type = F_WRLCK,
   command = F_SETLK64,
 ): SyscallResult {
-  const state = internals(worker);
-  const flockPtr = state.scratchOffset + CH_DATA;
-  writeFlock(state.kernelMemory, start, len, type, flockPtr);
-  return issue(worker, pid, ABI_SYSCALLS.Fcntl, [fd, command, flockPtr]);
+  return issue(
+    worker,
+    pid,
+    ABI_SYSCALLS.Fcntl,
+    [
+      fd,
+      command,
+      scratchArgument(CH_DATA, 32),
+    ],
+    {
+      kind: "flock",
+      start,
+      len,
+      type,
+    },
+  );
 }
 
 function prepareProcessFcntl(

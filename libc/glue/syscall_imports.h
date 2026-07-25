@@ -245,15 +245,20 @@ int32_t kernel_signal(uint32_t signum, uint32_t handler);
 KERNEL_IMPORT(kernel_sigprocmask)
 int64_t kernel_sigprocmask(uint32_t how, uint32_t set_lo, uint32_t set_hi);
 
+KERNEL_IMPORT(kernel_sigaltstack)
+int32_t kernel_sigaltstack(const uint8_t *ss_ptr, uint8_t *old_ss_ptr,
+                           int64_t process_pointer_width);
+
 KERNEL_IMPORT(kernel_alarm)
 int32_t kernel_alarm(uint32_t seconds);
 
 KERNEL_IMPORT(kernel_setitimer)
 int32_t kernel_setitimer(uint32_t which, const uint8_t *new_ptr,
-                         uint8_t *old_ptr);
+                         uint8_t *old_ptr, int64_t process_pointer_width);
 
 KERNEL_IMPORT(kernel_getitimer)
-int32_t kernel_getitimer(uint32_t which, uint8_t *curr_ptr);
+int32_t kernel_getitimer(uint32_t which, uint8_t *curr_ptr,
+                         int64_t process_pointer_width);
 
 KERNEL_IMPORT(kernel_sigsuspend)
 int32_t kernel_sigsuspend(uint32_t mask_lo, uint32_t mask_hi);
@@ -329,7 +334,7 @@ int32_t kernel_tcsetattr(int32_t fd, uint32_t action, const uint8_t *buf_ptr,
 
 KERNEL_IMPORT(kernel_ioctl)
 int32_t kernel_ioctl(int32_t fd, uint32_t request, uint8_t *buf_ptr,
-                     uint32_t buf_len);
+                     uint32_t buf_len, uint32_t process_pointer_width);
 
 /* ------------------------------------------------------------------ */
 /* Memory                                                              */
@@ -683,10 +688,11 @@ int32_t kernel_madvise(uint32_t addr, uint32_t len, uint32_t advice);
 
 KERNEL_IMPORT(kernel_statfs)
 int32_t kernel_statfs(const uint8_t *path_ptr, uint32_t path_len,
-                      uint8_t *buf_ptr);
+                      uint8_t *buf_ptr, int64_t process_pointer_width);
 
 KERNEL_IMPORT(kernel_fstatfs)
-int32_t kernel_fstatfs(int32_t fd, uint8_t *buf_ptr);
+int32_t kernel_fstatfs(int32_t fd, uint8_t *buf_ptr,
+                       int64_t process_pointer_width);
 
 /* ------------------------------------------------------------------ */
 /* Identity (res* variants)                                            */
@@ -707,7 +713,8 @@ int32_t kernel_getresgid(uint32_t *rgid_ptr, uint32_t *egid_ptr,
                          uint32_t *sgid_ptr);
 
 KERNEL_IMPORT(kernel_getgroups)
-int32_t kernel_getgroups(uint32_t size, uint32_t *list_ptr);
+int32_t kernel_getgroups(uint32_t size, uint32_t *list_ptr,
+                         uint32_t list_capacity_bytes);
 
 KERNEL_IMPORT(kernel_setgroups)
 int32_t kernel_setgroups(uint32_t size, const uint32_t *list_ptr);

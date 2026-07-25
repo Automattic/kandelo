@@ -51,28 +51,15 @@ pub const TCSANOW: u32 = 0;
 pub const TCSADRAIN: u32 = 1;
 pub const TCSAFLUSH: u32 = 2;
 
-/// ioctl commands — terminal
-pub const TCGETS: u32 = 0x5401;
-pub const TCSETS: u32 = 0x5402;
-pub const TCSETSW: u32 = 0x5403;
-pub const TCSETSF: u32 = 0x5404;
-pub const TCSBRK: u32 = 0x5409;
-pub const TCXONC: u32 = 0x540A;
-pub const TCFLSH: u32 = 0x540B;
-pub const TIOCSCTTY: u32 = 0x540E;
-pub const TIOCGPGRP: u32 = 0x540F;
-pub const TIOCSPGRP: u32 = 0x5410;
-pub const TIOCGWINSZ: u32 = 0x5413;
-pub const TIOCSWINSZ: u32 = 0x5414;
-pub const TIOCNOTTY: u32 = 0x5422;
-pub const TIOCGSID: u32 = 0x5429;
-
-/// ioctl commands — PTY
-pub const TIOCGPTN: u32 = 0x80045430;
-pub const TIOCSPTLCK: u32 = 0x40045431;
+// WHY: these values also select host scratch direction and capacity. Re-export
+// the shared contract instead of maintaining a kernel-only mirror.
+pub use wasm_posix_shared::ioctl_contract::{
+    TCGETS, TCSETS, TCSETSF, TCSETSW, TCFLSH, TCSBRK, TIOCGPGRP, TIOCGPTN, TIOCGSID,
+    TIOCGWINSZ, TIOCNOTTY, TIOCSPGRP, TIOCSPTLCK, TIOCSCTTY, TIOCSWINSZ, TCXONC,
+};
 
 /// musl struct termios size: 4 flags (16) + c_line (1) + c_cc (32) + pad (3) + speeds (8) = 60
-pub const TERMIOS_SIZE: usize = 60;
+pub const TERMIOS_SIZE: usize = wasm_posix_shared::ioctl_contract::TERMIOS_SIZE as usize;
 
 /// Window size structure
 #[repr(C)]

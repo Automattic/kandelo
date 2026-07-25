@@ -55,4 +55,66 @@ describe("checkedWasmGuestPointerOffset", () => {
         ),
       );
   });
+
+  it("rejects runtime pointer widths other than wasm32 and wasm64", () => {
+    expect(() => checkedWasmGuestPointerOffset(
+      0,
+      5 as 4,
+      "invalid-width test",
+    )).toThrow(
+      new TypeError(
+        "invalid-width test: pointer width must be exactly 4 or 8",
+      ),
+    );
+  });
+
+  it("uses captured numeric intrinsics after host globals are replaced", () => {
+    const originalBigInt = globalThis.BigInt;
+    const originalNumber = globalThis.Number;
+    const originalAsUintN = originalBigInt.asUintN;
+    const originalIsSafeInteger = originalNumber.isSafeInteger;
+    let memory32Result: number | undefined;
+    let memory64Result: number | undefined;
+    let invalidMemory32Error: unknown;
+
+    try {
+      globalThis.BigInt = (() => 0n) as BigIntConstructor;
+      globalThis.Number = (() => -1) as NumberConstructor;
+      originalBigInt.asUintN = () => 0n;
+      originalNumber.isSafeInteger = () => true;
+
+      memory32Result = checkedWasmGuestPointerOffset(
+        -1,
+        4,
+        "mutated memory32 test",
+      );
+      memory64Result = checkedWasmGuestPointerOffset(
+        0x1_0000_0000n,
+        8,
+        "mutated memory64 test",
+      );
+      try {
+        checkedWasmGuestPointerOffset(
+          1.5,
+          4,
+          "mutated invalid memory32 test",
+        );
+      } catch (error) {
+        invalidMemory32Error = error;
+      }
+    } finally {
+      originalBigInt.asUintN = originalAsUintN;
+      originalNumber.isSafeInteger = originalIsSafeInteger;
+      globalThis.BigInt = originalBigInt;
+      globalThis.Number = originalNumber;
+    }
+
+    expect(memory32Result).toBe(0xffff_ffff);
+    expect(memory64Result).toBe(0x1_0000_0000);
+    expect(invalidMemory32Error).toEqual(
+      new TypeError(
+        "mutated invalid memory32 test: expected an exact memory32 pointer",
+      ),
+    );
+  });
 });

@@ -558,7 +558,8 @@ pub struct TimerFdState {
 pub struct PosixTimerState {
     pub clock_id: u32,
     pub sigev_signo: u32,
-    pub sigev_value: i32,
+    /// Raw `union sigval` bits, zero-extended when supplied by wasm32.
+    pub sigev_value_bits: u64,
     /// Kernel-facing notification mode (`SIGEV_SIGNAL`, `SIGEV_NONE`, or
     /// Linux's `SIGEV_THREAD_ID`). musl implements POSIX `SIGEV_THREAD` by
     /// creating a helper pthread and asking the kernel to target that TID.
@@ -607,7 +608,10 @@ fn posix_timer_notification_validates_and_normalizes_signals() {
     assert_eq!(normalize_posix_timer_signo(SIGEV_SIGNAL, 64).unwrap(), 64);
     assert!(normalize_posix_timer_signo(SIGEV_SIGNAL, 0).is_err());
     assert!(normalize_posix_timer_signo(SIGEV_SIGNAL, 65).is_err());
-    assert_eq!(normalize_posix_timer_signo(SIGEV_THREAD_ID, 14).unwrap(), 14);
+    assert_eq!(
+        normalize_posix_timer_signo(SIGEV_THREAD_ID, 14).unwrap(),
+        14
+    );
     assert!(normalize_posix_timer_signo(SIGEV_THREAD_ID, 0).is_err());
 }
 
@@ -715,7 +719,8 @@ pub struct Process {
     pub rlimits: [[u64; 2]; 16], // [soft, hard] pairs for each resource
     pub alarm_deadline_ns: u64,
     pub alarm_interval_ns: u64,
-    pub thread_name: [u8; 16],
+    pub thread_name:
+        [u8; wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize],
     /// True if this process is a fork child that should exec on startup.
     pub fork_child: bool,
     /// Saved signal mask during sigsuspend host retry.
@@ -741,9 +746,9 @@ pub struct Process {
     /// POSIX timers (timer_create / timer_settime).
     pub posix_timers: Vec<Option<PosixTimerState>>,
     /// Alternate signal stack (sigaltstack): ss_sp, ss_flags, ss_size.
-    pub alt_stack_sp: usize,
+    pub alt_stack_sp: u64,
     pub alt_stack_flags: u32,
-    pub alt_stack_size: usize,
+    pub alt_stack_size: u64,
     /// Number of nested signal handlers running with SA_ONSTACK on alt stack.
     /// When > 0, SS_ONSTACK is set in alt_stack_flags.
     pub alt_stack_depth: u32,
@@ -947,7 +952,8 @@ impl Process {
             rlimits,
             alarm_deadline_ns: 0,
             alarm_interval_ns: 0,
-            thread_name: [0u8; 16],
+            thread_name:
+                [0u8; wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize],
             fork_child: false,
             sigsuspend_saved_mask: None,
             fork_exec_path: None,
@@ -991,13 +997,7 @@ impl Process {
         self.fork_count += 1;
     }
 
-    fn set_wait_event(
-        &mut self,
-        event_mask: u32,
-        wait_status: i32,
-        si_code: i32,
-        si_status: i32,
-    ) {
+    fn set_wait_event(&mut self, event_mask: u32, wait_status: i32, si_code: i32, si_status: i32) {
         self.wait_event = Some(ChildWaitEvent {
             event_mask,
             wait_status,
@@ -1092,9 +1092,7 @@ impl Process {
     /// Apply process-control effects when a signal is generated, before the
     /// signal is queued or tested against a mask/disposition.
     fn prepare_signal_generation(&mut self, signum: u32) {
-        use wasm_posix_shared::signal::{
-            NSIG, SIGCONT, SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU,
-        };
+        use wasm_posix_shared::signal::{NSIG, SIGCONT, SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU};
 
         if signum == 0 || signum >= NSIG {
             return;
@@ -1116,9 +1114,9 @@ impl Process {
         self.signals.raise(signum)
     }
 
-    pub fn raise_signal_with_value(&mut self, signum: u32, si_value: i32) -> bool {
+    pub fn raise_signal_with_value(&mut self, signum: u32, si_value_bits: u64) -> bool {
         self.prepare_signal_generation(signum);
-        self.signals.raise_with_value(signum, si_value)
+        self.signals.raise_with_value(signum, si_value_bits)
     }
 
     /// Queue a process-directed signal with the generation metadata exposed
@@ -1127,15 +1125,19 @@ impl Process {
     pub(crate) fn raise_signal_with_metadata(
         &mut self,
         signum: u32,
-        si_value: i32,
+        si_value_bits: u64,
         si_code: i32,
+        sender_pid: u32,
+        sender_uid: u32,
     ) -> bool {
-        debug_assert!(matches!(si_code, 0 | -1));
-        if si_code == 0 {
-            self.raise_signal(signum)
-        } else {
-            self.raise_signal_with_value(signum, si_value)
-        }
+        self.prepare_signal_generation(signum);
+        self.signals.raise_with_metadata(
+            signum,
+            si_value_bits,
+            si_code,
+            sender_pid,
+            sender_uid,
+        )
     }
 
     /// Compatibility helper for the legacy pipe slot vector, reusing the first
@@ -1454,7 +1456,7 @@ impl Process {
         &mut self,
         tid: u32,
         signum: u32,
-        si_value: i32,
+        si_value_bits: u64,
     ) -> bool {
         if signum == 0 || signum >= wasm_posix_shared::signal::NSIG {
             return false;
@@ -1469,9 +1471,51 @@ impl Process {
         }
         if self.is_main_thread(tid) {
             self.main_thread_signals
-                .raise_with_value(signum, si_value)
+                .raise_with_value(signum, si_value_bits)
         } else if let Some(thread) = self.get_thread_mut(tid) {
-            thread.signals.raise_with_value(signum, si_value)
+            thread.signals.raise_with_value(signum, si_value_bits)
+        } else {
+            false
+        }
+    }
+
+    /// Queue a directed signal with authoritative sender metadata.
+    pub(crate) fn raise_for_thread_with_metadata(
+        &mut self,
+        tid: u32,
+        signum: u32,
+        si_value_bits: u64,
+        si_code: i32,
+        sender_pid: u32,
+        sender_uid: u32,
+    ) -> bool {
+        if signum == 0 || signum >= wasm_posix_shared::signal::NSIG {
+            return false;
+        }
+        if !self.is_main_thread(tid) && self.get_thread(tid).is_none() {
+            return false;
+        }
+        self.prepare_signal_generation(signum);
+        let handler = self.signals.get_handler(signum);
+        if crate::signal::should_discard_pending(signum, &handler) {
+            return true;
+        }
+        if self.is_main_thread(tid) {
+            self.main_thread_signals.raise_with_metadata(
+                signum,
+                si_value_bits,
+                si_code,
+                sender_pid,
+                sender_uid,
+            )
+        } else if let Some(thread) = self.get_thread_mut(tid) {
+            thread.signals.raise_with_metadata(
+                signum,
+                si_value_bits,
+                si_code,
+                sender_pid,
+                sender_uid,
+            )
         } else {
             false
         }
@@ -1483,7 +1527,7 @@ impl Process {
         &mut self,
         tid: u32,
         signum: u32,
-        si_value: i32,
+        si_value_bits: u64,
         timer_id: u32,
     ) -> bool {
         if signum == 0 || signum >= wasm_posix_shared::signal::NSIG {
@@ -1499,9 +1543,11 @@ impl Process {
         }
         if self.is_main_thread(tid) {
             self.main_thread_signals
-                .raise_timer(signum, si_value, timer_id)
+                .raise_timer(signum, si_value_bits, timer_id)
         } else if let Some(thread) = self.get_thread_mut(tid) {
-            thread.signals.raise_timer(signum, si_value, timer_id)
+            thread
+                .signals
+                .raise_timer(signum, si_value_bits, timer_id)
         } else {
             false
         }
@@ -1614,9 +1660,7 @@ impl Process {
     /// Purge a deleted timer's queued notification before its slot is reused.
     pub fn remove_posix_timer_notification(&mut self, timer_id: u32) -> bool {
         let mut removed = self.signals.remove_timer_notification(timer_id);
-        removed |= self
-            .main_thread_signals
-            .remove_timer_notification(timer_id);
+        removed |= self.main_thread_signals.remove_timer_notification(timer_id);
         for thread in &mut self.identity.threads {
             removed |= thread
                 .state_mut()
@@ -1905,8 +1949,7 @@ mod tests {
     fn child_status_record_is_replaced_by_each_new_transition() {
         use wasm_posix_shared::signal::{SIGCONT, SIGTERM, SIGTSTP};
         use wasm_posix_shared::wait::{
-            CLD_CONTINUED, CLD_KILLED, CLD_STOPPED, EVENT_CONTINUED, EVENT_EXITED,
-            EVENT_STOPPED,
+            CLD_CONTINUED, CLD_KILLED, CLD_STOPPED, EVENT_CONTINUED, EVENT_EXITED, EVENT_STOPPED,
         };
 
         let mut proc = Process::new(41);
@@ -2020,7 +2063,7 @@ mod tests {
         proc.posix_timers.push(Some(PosixTimerState {
             clock_id: 1,
             sigev_signo: 32,
-            sigev_value: 7,
+            sigev_value_bits: 7,
             sigev_notify: 0,
             sigev_tid: 0,
             interval_sec: 0,
@@ -2092,7 +2135,7 @@ mod tests {
         proc.posix_timers.push(Some(PosixTimerState {
             clock_id: 1,
             sigev_signo: 10,
-            sigev_value: 7,
+            sigev_value_bits: 7,
             sigev_notify: 0,
             sigev_tid: 0,
             interval_sec: 0,
@@ -2121,7 +2164,7 @@ mod tests {
         proc.posix_timers.push(Some(PosixTimerState {
             clock_id: 1,
             sigev_signo: 10,
-            sigev_value: 7,
+            sigev_value_bits: 7,
             sigev_notify: 4,
             sigev_tid: 2,
             interval_sec: 0,
@@ -2132,13 +2175,16 @@ mod tests {
             overrun_current: 2,
             overrun_last: 0,
         }));
-        proc.get_thread_mut(2).unwrap().signals.raise_timer(10, 7, 0);
+        proc.get_thread_mut(2)
+            .unwrap()
+            .signals
+            .raise_timer(10, 7, 0);
 
         assert!(proc.remove_posix_timer_notification(0));
         proc.posix_timers[0] = Some(PosixTimerState {
             clock_id: 1,
             sigev_signo: 10,
-            sigev_value: 8,
+            sigev_value_bits: 8,
             sigev_notify: 0,
             sigev_tid: 0,
             interval_sec: 0,
@@ -2196,7 +2242,8 @@ mod tests {
         let mut host = test_host::NoopHost;
         let child_pid = table
             .spawn_child_for_caller(
-                parent_pid, parent_pid,
+                parent_pid,
+                parent_pid,
                 &[b"/bin/echo".as_slice(), b"hi".as_slice()],
                 &[b"PATH=/bin".as_slice()],
                 &[],
@@ -2254,7 +2301,8 @@ mod tests {
         let mut host = test_host::NoopHost;
         let _child_pid = table
             .spawn_child_for_caller(
-                parent_pid, parent_pid,
+                parent_pid,
+                parent_pid,
                 &[b"a".as_slice()],
                 &[],
                 &[],
@@ -2270,7 +2318,9 @@ mod tests {
         );
 
         // Same slot should also bump on fork — the helper is shared.
-        table.fork_process_for_caller(parent_pid, parent_pid).expect("fork_process");
+        table
+            .fork_process_for_caller(parent_pid, parent_pid)
+            .expect("fork_process");
         let after_fork = unsafe { shared_listener_backlog_table().entries[backlog_idx].ref_count };
         assert_eq!(
             after_fork, 3,
@@ -2311,7 +2361,8 @@ mod tests {
         let mut host = test_host::NoopHost;
         let _child = table
             .spawn_child_for_caller(
-                parent_pid, parent_pid,
+                parent_pid,
+                parent_pid,
                 &[b"a".as_slice()],
                 &[],
                 &[],
@@ -2326,7 +2377,9 @@ mod tests {
         );
 
         // Forking again bumps once more.
-        table.fork_process_for_caller(parent_pid, parent_pid).expect("fork_process");
+        table
+            .fork_process_for_caller(parent_pid, parent_pid)
+            .expect("fork_process");
         assert_eq!(
             host_net_handle_ref_count(HANDLE),
             3,
@@ -2397,7 +2450,8 @@ mod tests {
         let mut host = test_host::NoopHost;
         let child_pid = table
             .spawn_child_for_caller(
-                parent_pid, parent_pid,
+                parent_pid,
+                parent_pid,
                 &[b"a".as_slice()],
                 &[],
                 &[],
@@ -2463,7 +2517,8 @@ mod tests {
         let mut host = test_host::NoopHost;
         let spawn_child = table
             .spawn_child_for_caller(
-                parent_pid, parent_pid,
+                parent_pid,
+                parent_pid,
                 &[b"a".as_slice()],
                 &[],
                 &[],
@@ -2484,7 +2539,9 @@ mod tests {
         );
 
         // Fork child must NOT inherit them either.
-        let fork_child = table.fork_process_for_caller(parent_pid, parent_pid).expect("fork_process");
+        let fork_child = table
+            .fork_process_for_caller(parent_pid, parent_pid)
+            .expect("fork_process");
         assert!(
             table
                 .get(fork_child)
@@ -2538,7 +2595,8 @@ mod tests {
         let mut host = test_host::NoopHost;
         let child_pid = table
             .spawn_child_for_caller(
-                parent_pid, parent_pid,
+                parent_pid,
+                parent_pid,
                 &[b"a".as_slice()],
                 &[],
                 &[],
@@ -2596,7 +2654,9 @@ mod tests {
             .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
             .unwrap();
 
-        let child_pid = table.fork_process_for_caller(parent_pid, parent_pid).expect("fork_process");
+        let child_pid = table
+            .fork_process_for_caller(parent_pid, parent_pid)
+            .expect("fork_process");
         assert_eq!(host_handle_ref_count(HANDLE), 2);
 
         let child = table.remove_process(child_pid).expect("remove child");
@@ -2674,7 +2734,8 @@ mod tests {
         let mut host = test_host::NoopHost;
         let child_pid = table
             .spawn_child_for_caller(
-                parent_pid, parent_pid,
+                parent_pid,
+                parent_pid,
                 &[b"a".as_slice()],
                 &[],
                 &[FileAction::Close { fd: 5 }],
@@ -2728,7 +2789,8 @@ mod tests {
         let mut host = test_host::NoopHost;
         let child_pid = table
             .spawn_child_for_caller(
-                parent_pid, parent_pid,
+                parent_pid,
+                parent_pid,
                 &[b"a".as_slice()],
                 &[],
                 &[FileAction::Dup2 { srcfd: 5, fd: 1 }],
@@ -2773,7 +2835,8 @@ mod tests {
         let mut host = test_host::NoopHost;
         let err = table
             .spawn_child_for_caller(
-                parent_pid, parent_pid,
+                parent_pid,
+                parent_pid,
                 &[b"a".as_slice()],
                 &[],
                 &[FileAction::Dup2 { srcfd: 999, fd: 1 }],
@@ -2812,7 +2875,15 @@ mod tests {
         };
         let mut host = test_host::NoopHost;
         let cpid = table
-            .spawn_child_for_caller(parent_pid, parent_pid, &[b"a".as_slice()], &[], &[], &attrs, &mut host)
+            .spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
+                &[b"a".as_slice()],
+                &[],
+                &[],
+                &attrs,
+                &mut host,
+            )
             .unwrap();
 
         let child = table.get(cpid).unwrap();
@@ -2840,7 +2911,15 @@ mod tests {
         };
         let mut host = test_host::NoopHost;
         let cpid = table
-            .spawn_child_for_caller(parent_pid, parent_pid, &[b"a".as_slice()], &[], &[], &attrs, &mut host)
+            .spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
+                &[b"a".as_slice()],
+                &[],
+                &[],
+                &attrs,
+                &mut host,
+            )
             .unwrap();
         assert_eq!(
             table.get(cpid).unwrap().pgid,
@@ -2865,7 +2944,15 @@ mod tests {
         };
         let mut host = test_host::NoopHost;
         let cpid = table
-            .spawn_child_for_caller(parent_pid, parent_pid, &[b"a".as_slice()], &[], &[], &attrs, &mut host)
+            .spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
+                &[b"a".as_slice()],
+                &[],
+                &[],
+                &attrs,
+                &mut host,
+            )
             .unwrap();
         assert_eq!(table.get(cpid).unwrap().pgid, 42);
     }
@@ -2893,7 +2980,15 @@ mod tests {
         };
         let mut host = test_host::NoopHost;
         let cpid = table
-            .spawn_child_for_caller(parent_pid, parent_pid, &[b"a".as_slice()], &[], &[], &attrs, &mut host)
+            .spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
+                &[b"a".as_slice()],
+                &[],
+                &[],
+                &attrs,
+                &mut host,
+            )
             .unwrap();
         assert_eq!(
             table.get(cpid).unwrap().signals.blocked,
@@ -2920,7 +3015,8 @@ mod tests {
         let mut host = test_host::NoopHost;
         let cpid = table
             .spawn_child_for_caller(
-                parent_pid, parent_pid,
+                parent_pid,
+                parent_pid,
                 &[b"a".as_slice()],
                 &[],
                 &[],
@@ -2955,7 +3051,8 @@ mod tests {
         let mut host = test_host::NoopHost;
         let cpid = table
             .spawn_child_for_caller(
-                parent_pid, parent_pid,
+                parent_pid,
+                parent_pid,
                 &[b"a".as_slice()],
                 &[],
                 &[],
@@ -3007,7 +3104,15 @@ mod tests {
         };
         let mut host = test_host::NoopHost;
         let cpid = table
-            .spawn_child_for_caller(parent_pid, parent_pid, &[b"a".as_slice()], &[], &[], &attrs, &mut host)
+            .spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
+                &[b"a".as_slice()],
+                &[],
+                &[],
+                &attrs,
+                &mut host,
+            )
             .unwrap();
 
         let child = table.get(cpid).unwrap();
@@ -3023,10 +3128,18 @@ mod tests {
         // Sanity: counter starts at 0.
         assert_eq!(table.get(100).unwrap().fork_count(), 0);
 
-        assert_eq!(table.fork_process_for_caller(100, 100).expect("first fork"), 101);
+        assert_eq!(
+            table.fork_process_for_caller(100, 100).expect("first fork"),
+            101
+        );
         assert_eq!(table.get(100).unwrap().fork_count(), 1);
 
-        assert_eq!(table.fork_process_for_caller(100, 100).expect("second fork"), 102);
+        assert_eq!(
+            table
+                .fork_process_for_caller(100, 100)
+                .expect("second fork"),
+            102
+        );
         assert_eq!(table.get(100).unwrap().fork_count(), 2);
 
         // Children's counters are independent and start at 0 — they have not
@@ -3102,14 +3215,16 @@ mod tests {
         use wasm_posix_shared::signal::SIGUSR1;
 
         let mut proc = Process::new(100);
-        proc.raise_signal_with_metadata(SIGUSR1, 0, 0);
+        proc.raise_signal_with_metadata(SIGUSR1, 0, 0, 41, 42);
         let plain = proc.consume_signal_for(proc.pid, SIGUSR1).unwrap();
         assert_eq!(plain.si_code, 0);
-        assert_eq!(plain.si_value, 0);
+        assert_eq!(plain.si_value_bits, 0);
+        assert_eq!((plain.sender_pid, plain.sender_uid), (41, 42));
 
-        proc.raise_signal_with_metadata(SIGUSR1, 0x1234, -1);
+        proc.raise_signal_with_metadata(SIGUSR1, 0x1234, -1, 51, 52);
         let queued = proc.consume_signal_for(proc.pid, SIGUSR1).unwrap();
         assert_eq!(queued.si_code, -1);
-        assert_eq!(queued.si_value, 0x1234);
+        assert_eq!(queued.si_value_bits, 0x1234);
+        assert_eq!((queued.sender_pid, queued.sender_uid), (51, 52));
     }
 }

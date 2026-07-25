@@ -1,4 +1,10 @@
 import { defineConfig } from "tsup";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { hostBuildFingerprintBanner } from "./src/compiled-worker-entry";
+
+const hostRoot = dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   entry: [
@@ -19,8 +25,7 @@ export default defineConfig({
   clean: true,
   target: "es2022",
   splitting: false,
-  // Exact ABI-staging runtime artifacts execute outside this checkout. Keep
-  // production host dependencies inside the inventory-bound bundles so Node
-  // cannot resolve an ambient node_modules tree.
-  noExternal: ["fflate", "fzstd"],
+  banner: {
+    js: hostBuildFingerprintBanner(hostRoot),
+  },
 });
