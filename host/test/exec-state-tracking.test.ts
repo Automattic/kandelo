@@ -20,6 +20,7 @@ import {
   HOST_INTERCEPTED_SYSCALLS,
 } from "../src/generated/abi";
 import { EXEC_RETIRE_SIGNAL_CODE } from "../src/worker-protocol";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 describe("exec host-state transition", () => {
   it("retires only the exact pending exec generation without relistening", () => {
@@ -254,6 +255,14 @@ describe("exec host-state transition", () => {
       const mainChannel = createChannel(7, memory, 0);
       const threadChannel = createChannel(7, memory, 0x10000);
       const completeSleep = vi.fn();
+      const mainDetachedOutput = [{
+        ptr: 0x800,
+        bytes: Uint8Array.of(1),
+      }];
+      const threadDetachedOutput = [{
+        ptr: 0x900,
+        bytes: Uint8Array.of(2),
+      }];
       const worker = createWorker({
         processes: new Map([[7, {
           channels: [mainChannel, threadChannel],
@@ -263,24 +272,46 @@ describe("exec host-state transition", () => {
       });
 
       expect(worker.handleSleepDelay(
-        mainChannel, ABI_SYSCALLS.Usleep, [50_000], 0, 0,
+        mainChannel,
+        ABI_SYSCALLS.Usleep,
+        [50_000],
+        0,
+        0,
+        undefined,
+        mainDetachedOutput,
       )).toBe(true);
       expect(worker.handleSleepDelay(
-        threadChannel, ABI_SYSCALLS.Usleep, [10_000], 0, 0,
+        threadChannel,
+        ABI_SYSCALLS.Usleep,
+        [10_000],
+        0,
+        0,
+        undefined,
+        threadDetachedOutput,
       )).toBe(true);
       expect(worker.pendingSleeps.size).toBe(2);
 
       await vi.advanceTimersByTimeAsync(10);
       expect(completeSleep).toHaveBeenCalledTimes(1);
       expect(completeSleep).toHaveBeenLastCalledWith(
-        threadChannel, ABI_SYSCALLS.Usleep, [10_000], 0, 0,
+        threadChannel,
+        ABI_SYSCALLS.Usleep,
+        [10_000],
+        0,
+        0,
+        threadDetachedOutput,
       );
       expect(worker.pendingSleeps.has(mainChannel)).toBe(true);
 
       await vi.advanceTimersByTimeAsync(40);
       expect(completeSleep).toHaveBeenCalledTimes(2);
       expect(completeSleep).toHaveBeenLastCalledWith(
-        mainChannel, ABI_SYSCALLS.Usleep, [50_000], 0, 0,
+        mainChannel,
+        ABI_SYSCALLS.Usleep,
+        [50_000],
+        0,
+        0,
+        mainDetachedOutput,
       );
       expect(worker.pendingSleeps.size).toBe(0);
     } finally {
@@ -441,8 +472,7 @@ describe("exec host-state transition", () => {
       processes: new Map([[7, { channels: [channel], memory }]]),
       callbacks: { onSpawn },
       completeChannel,
-      kernelMemory: new WebAssembly.Memory({ initial: 1 }),
-      scratchOffset: 0,
+      kernelMemory: new WebAssembly.Memory({ initial: 2 }),
       toKernelPtr: (value: number) => value,
       kernelInstance: {
         exports: {
@@ -492,8 +522,7 @@ describe("exec host-state transition", () => {
       processes: new Map([[7, { channels: [channel], memory }]]),
       callbacks: { onSpawn: vi.fn(() => spawned) },
       completeChannel: vi.fn(),
-      kernelMemory: new WebAssembly.Memory({ initial: 1 }),
-      scratchOffset: 0,
+      kernelMemory: new WebAssembly.Memory({ initial: 2 }),
       toKernelPtr: (value: number) => value,
       kernelInstance: {
         exports: {
@@ -686,12 +715,10 @@ describe("exec host-state transition", () => {
 
   it("replaces metadata entry by entry and clears an empty environment", () => {
     const kernelMemory = new WebAssembly.Memory({ initial: 2 });
-    const scratchOffset = 1024;
     const clears: Array<[number, number]> = [];
     const pushes: Array<{ pid: number; kind: number; bytes: Uint8Array }> = [];
     const worker = createWorker({
       kernelMemory,
-      scratchOffset,
       toKernelPtr: (value: number) => value,
       kernelInstance: {
         exports: {
@@ -731,28 +758,30 @@ describe("exec host-state transition", () => {
     ]);
   });
 
-  it("feature-detects metadata replacement and retains legacy small argv", () => {
-    const kernelMemory = new WebAssembly.Memory({ initial: 1 });
-    const setArgv = vi.fn((_pid: number, _ptr: number, len: number) => {
-      expect(new TextDecoder().decode(
-        new Uint8Array(kernelMemory.buffer, 0, len),
-      )).toBe("program\0arg");
-      return 0;
-    });
+  it.each([
+    "kernel_clear_process_metadata",
+    "kernel_push_process_metadata_entry",
+  ])("fails loudly when required metadata export %s is absent", (missing) => {
+    const kernelMemory = new WebAssembly.Memory({ initial: 2 });
+    const clear = vi.fn(() => 0);
+    const push = vi.fn(() => 0);
+    const exports: Record<string, unknown> = {
+      kernel_clear_process_metadata: clear,
+      kernel_push_process_metadata_entry: push,
+    };
+    delete exports[missing];
     const worker = createWorker({
       kernelMemory,
-      scratchOffset: 0,
       toKernelPtr: (value: number) => value,
-      kernelInstance: {
-        exports: { kernel_set_process_argv: setArgv },
-      },
+      kernelInstance: { exports },
     });
+    const scratchBefore = new Uint8Array(kernelMemory.buffer).slice();
 
-    expect(worker.supportsExecMetadataReplacement()).toBe(false);
-    worker.replaceProcessMetadata(7, 0, ["program", "arg"]);
-    expect(setArgv).toHaveBeenCalled();
-    expect(() => worker.replaceProcessMetadata(7, 1, []))
-      .toThrow(/missing bounded process metadata exports/);
+    expect(() => worker.replaceProcessMetadata(7, 0, ["program", "arg"]))
+      .toThrow(/required bounded process metadata exports/);
+    expect(clear).not.toHaveBeenCalled();
+    expect(push).not.toHaveBeenCalled();
+    expect(new Uint8Array(kernelMemory.buffer)).toEqual(scratchBefore);
   });
 
   it("flushes file-backed mappings before commit and forgets them afterward", () => {
@@ -826,19 +855,18 @@ describe("exec host-state transition", () => {
     const worker = createWorker({
       currentHandlePid: 0,
       kernelMemory,
-      scratchOffset: 0,
       toKernelPtr: (value: number) => value,
       bindKernelTidForChannel: vi.fn(),
       kernelInstance: {
         exports: {
-          kernel_handle_channel: () => {
-            const args = new DataView(kernelMemory.buffer);
+          kernel_handle_channel: (offset: number) => {
+            const args = new DataView(kernelMemory.buffer, offset);
             const requested = Number(args.getBigInt64(
               CH_ARGS + 2 * CH_ARG_SIZE,
               true,
             ));
             kernelMemory.grow(1);
-            new DataView(kernelMemory.buffer).setBigInt64(
+            new DataView(kernelMemory.buffer, offset).setBigInt64(
               CH_RETURN,
               BigInt(requested),
               true,
@@ -884,7 +912,6 @@ describe("exec host-state transition", () => {
       shmSegmentVersions: new Map([[3, 0]]),
       currentHandlePid: 0,
       kernelMemory,
-      scratchOffset: 0,
       getKernelMem: () => new Uint8Array(kernelMemory.buffer),
       toKernelPtr: (value: number) => value,
       kernelInstance: {
@@ -897,7 +924,12 @@ describe("exec host-state transition", () => {
     });
 
     expect(worker.prepareAddressSpaceForExec(7)).toBe(0);
-    expect(writeChunk).toHaveBeenCalledWith(3, 0, 72, 4);
+    expect(writeChunk).toHaveBeenCalledWith(
+      3,
+      0,
+      worker.testScratchPointer + CH_DATA,
+      4,
+    );
     expect(detach).not.toHaveBeenCalled();
     expect(worker.shmMappings.has(7)).toBe(true);
 
@@ -1227,6 +1259,12 @@ function createWorker(overrides: Record<string, unknown>): any {
       ...(kernelInstance.exports ?? {}),
     },
   };
+  if (worker.kernelMemory instanceof WebAssembly.Memory) {
+    worker.testScratchPointer = installKernelWorkerTestScratch(
+      worker,
+      worker.kernelMemory,
+    );
+  }
   return worker;
 }
 
@@ -1237,8 +1275,7 @@ function issueThreadAttachment(
   fnPtr = 1,
   argPtr = 2,
 ) {
-  const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
-  const kernelView = new DataView(kernelMemory.buffer);
+  const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
   let attachment: Parameters<CentralizedKernelWorker["attachThreadChannel"]>[0]
     | undefined;
   new DataView(channel.memory.buffer, channel.channelOffset)
@@ -1259,15 +1296,18 @@ function issueThreadAttachment(
       releaseProcessViews: vi.fn(),
     },
     kernelMemory,
-    scratchOffset: 0,
     currentHandlePid: 0,
     threadCtidPtrs: (worker as any).threadCtidPtrs ?? new Map(),
     bindKernelTidForChannel: vi.fn(),
   });
-  (worker as any).kernelInstance.exports.kernel_handle_channel = vi.fn(() => {
-    kernelView.setBigInt64(CH_RETURN, BigInt(tid), true);
-    return 0;
-  });
+  installKernelWorkerTestScratch(worker as any, kernelMemory);
+  (worker as any).kernelInstance.exports.kernel_handle_channel = vi.fn(
+    (offset: number) => {
+      const kernelView = new DataView(kernelMemory.buffer, offset);
+      kernelView.setBigInt64(CH_RETURN, BigInt(tid), true);
+      return 0;
+    },
+  );
   (worker as any).handleClone(channel, [0, 0, 0, 0, 0, 0]);
   if (!attachment) throw new Error("clone callback did not receive attachment");
   return attachment;

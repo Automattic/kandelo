@@ -11,7 +11,8 @@ The host runtime includes a built-in syscall profiler that measures every syscal
 Set the `WASM_POSIX_PROFILE` environment variable before starting the kernel:
 
 ```bash
-WASM_POSIX_PROFILE=1 npx tsx examples/run-example.ts hello
+scripts/dev-shell.sh env WASM_POSIX_PROFILE=1 \
+  npx tsx examples/run-example.ts hello
 ```
 
 ### Collecting Results
@@ -79,8 +80,11 @@ The benchmark suite runs reproducible workloads on both Node.js and browser host
 Build the kernel and benchmark programs:
 
 ```bash
-bash build.sh
-scripts/build-programs.sh
+# Required first whenever libc/musl-overlay or libc/glue changed.
+scripts/dev-shell.sh bash scripts/build-musl.sh
+
+scripts/dev-shell.sh bash build.sh
+scripts/dev-shell.sh bash scripts/build-programs.sh
 ```
 
 Some suites require additional binaries:
@@ -89,6 +93,7 @@ Some suites require additional binaries:
 |-------|----------|
 | `syscall-io` | Base sysroot + benchmark programs |
 | `process-lifecycle` | Base sysroot + benchmark programs |
+| `spawn-scratch` | Benchmark programs; supplies both executables and uses an empty VFS |
 | `erlang-ring` | Pre-built Erlang binary |
 | `wordpress` | Pre-built PHP, nginx, WordPress |
 | `mariadb` | Pre-built MariaDB |
@@ -101,19 +106,23 @@ the prerequisite before running it.
 
 ```bash
 # All suites on Node.js (3 rounds each, reports median)
-npx tsx benchmarks/run.ts
+scripts/dev-shell.sh npx tsx benchmarks/run.ts
 
 # All suites in the browser (via Playwright)
-npx tsx benchmarks/run.ts --host=browser
+scripts/dev-shell.sh npx tsx benchmarks/run.ts --host=browser
 
 # Single suite
-npx tsx benchmarks/run.ts --suite=syscall-io
+scripts/dev-shell.sh npx tsx benchmarks/run.ts --suite=syscall-io
 
 # More rounds for stability
-npx tsx benchmarks/run.ts --rounds=5
+scripts/dev-shell.sh npx tsx benchmarks/run.ts --rounds=5
 
 # Combine options
-npx tsx benchmarks/run.ts --host=browser --suite=process-lifecycle --rounds=5
+scripts/dev-shell.sh npx tsx benchmarks/run.ts --host=browser --suite=process-lifecycle --rounds=5
+
+# Focused host-to-kernel spawn scratch evidence
+scripts/dev-shell.sh npx tsx benchmarks/run.ts --suite=spawn-scratch --rounds=3
+scripts/dev-shell.sh npx tsx benchmarks/run.ts --host=browser --suite=spawn-scratch --rounds=3
 ```
 
 Results are saved as JSON in `benchmarks/results/`.
@@ -128,16 +137,26 @@ Resolver-selected paths are retained alongside the logical artifact names;
 browser VFS evidence reflects the public asset that the benchmark page selects
 first. Kernel fingerprints use the same policy-aware binary resolver as each
 host. Node rootfs evidence records which of the runtime's `rootfs.vfs` then
-`programs/rootfs.vfs` fallback requests won, and is required only for the
-syscall/process suites that boot that default image. Browser benchmarks do not
-record or require the default rootfs because they boot generated empty or app
-images.
-Node static benchmark Wasm inputs are required only by the syscall or process
-suite that consumes them. The browser benchmark page imports its seven micro
-Wasm URLs at module load, so every runnable browser suite requires all seven;
+`programs/rootfs.vfs` fallback requests won, and is required for the
+`syscall-io` and established `process-lifecycle` suites that boot that default
+image. The Node `spawn-scratch` suite supplies both of its executables and
+explicitly uses an empty VFS, so it neither resolves nor records a rootfs.
+Browser benchmarks do not record or require the default rootfs because they
+boot generated empty or app images.
+Node static benchmark Wasm inputs are required only by the selected suite that
+consumes them. The browser benchmark page imports its seven micro Wasm URLs at
+module load, so every runnable browser suite requires all seven;
 `exec-bench.wasm` remains Node-only.
 After printing the artifact report, the runner stops before workloads when a
 required, selected input is missing.
+
+Results also fingerprint `host/src`. Node results fingerprint the compiled
+worker bundle and reject a bundle whose recorded TypeScript input content does
+not match the current source. `gitHead` and `gitRef` do not record worktree
+dirtiness, so benchmark-relevant sources and rebuilt artifacts must match the
+exact committed final head. Preserve and report unrelated user-owned worktree
+or submodule changes rather than cleaning them to manufacture a globally clean
+status.
 
 ### Available Suites
 
@@ -175,8 +194,8 @@ artifact for each side's ABI epoch; an ABI 39 benchmark must not be reused with
 an ABI 40 kernel, or vice versa:
 
 ```bash
-npx tsx benchmarks/run.ts --suite=syscall-io --rounds=3
-npx tsx benchmarks/run.ts --host=browser --suite=syscall-io --rounds=3
+scripts/dev-shell.sh npx tsx benchmarks/run.ts --suite=syscall-io --rounds=3
+scripts/dev-shell.sh npx tsx benchmarks/run.ts --host=browser --suite=syscall-io --rounds=3
 ```
 
 The complete Node and browser suite is still required before making a broad
@@ -185,7 +204,9 @@ that the lock-manager migration is faster, slower, or neutral.
 
 #### process-lifecycle
 
-Measures process management primitives.
+Measures process management primitives against the default Node rootfs. The
+suite keeps that established environment so a focused scratch measurement
+cannot silently change the meaning of the hello/fork/exec/clone results.
 
 | Metric | Unit | What it measures |
 |--------|------|------------------|
@@ -193,6 +214,32 @@ Measures process management primitives.
 | `fork_ms` | ms | Fork a child + wait for it to exit |
 | `exec_ms` | ms | Exec a new program |
 | `clone_ms` | ms | Create a thread via clone |
+
+#### spawn-scratch
+
+Measures `posix_spawn` transport latency and the retained kernel-owned scratch
+high-water mark. The workload supplies `spawn-bench.wasm` and `/bin/hello`
+directly and uses an empty VFS, independently of the default-rootfs
+`process-lifecycle` suite. Its ordinary spawn uses the fixed environment
+`LANG=C`, `PATH=/bin`; the large cases use a deterministic 84,386-byte complete
+wire blob. Every sample is accepted only after `waitpid` reports that the child
+exited normally with status zero.
+
+| Metric | Unit | What it measures |
+|--------|------|------------------|
+| `spawn_ms` | ms | One ordinary spawn plus successful child wait |
+| `spawn_large_wire_bytes` | bytes | Complete deterministic large-spawn wire size asserted by both host wrappers |
+| `spawn_large_first_ms` | ms | First spawn with an 84,386-byte complete wire blob |
+| `spawn_large_repeat_ms` | ms | Mean of five subsequent 84,386-byte spawns in the same kernel |
+| `spawn_scratch_retained_bytes` | bytes | Rust-owned spawn scratch capacity retained after the workload |
+| `spawn_scratch_kernel_bytes` | bytes | Kernel WebAssembly memory size after the workload |
+
+For this workload, post-run kernel memory is also peak kernel memory only
+because WebAssembly memory grows monotonically and cannot shrink. Likewise,
+post-run Rust `Vec<u8>` capacity is the retained scratch high-water mark because
+the kernel keeps that reusable allocation and does not shrink it between
+spawns. These are properties of the measured implementation, not a general
+claim that a final sample can substitute for peak-memory instrumentation.
 
 #### erlang-ring
 
@@ -207,11 +254,14 @@ Runs the Erlang/OTP BEAM VM, spawning 1000 lightweight processes in a ring topol
 
 | Component | Path | Build command |
 |-----------|------|---------------|
-| BEAM VM | `packages/registry/erlang/bin/beam.wasm` | `bash packages/registry/erlang/build-erlang.sh` |
+| BEAM VM | `packages/registry/erlang/bin/beam.wasm` | `scripts/dev-shell.sh bash packages/registry/erlang/build-erlang.sh` |
 | OTP libraries | `packages/registry/erlang/erlang-install/` | (built by same script) |
 | Ring program | `packages/registry/erlang/demo/ring.beam` | (included in repo) |
 
-Build requirements: host Erlang/OTP 28 (`brew install erlang`), `wasm32posix-cc` SDK (`cd sdk && npm link`).
+Build requirements: Erlang/OTP 28 and the `wasm32posix-cc` SDK supplied through
+the declared development shell. If a required tool is absent there, report the
+block and update the declared environment rather than substituting an
+undeclared Homebrew binary for validation.
 
 #### wordpress
 
@@ -237,7 +287,7 @@ benchmark processes, or worktrees.
 
 | Component | Path | Build command |
 |-----------|------|---------------|
-| PHP CLI | `packages/registry/php/php-src/sapi/cli/php` | `bash packages/registry/php/build-php.sh` |
+| PHP CLI | `packages/registry/php/php-src/sapi/cli/php` | `scripts/dev-shell.sh bash packages/registry/php/build-php.sh` |
 | WordPress | `packages/registry/wordpress/wordpress/wp-settings.php` | See below |
 | Router script | `packages/registry/wordpress/demo/router.php` | (included in repo) |
 
@@ -270,12 +320,17 @@ Set `MARIADB_BENCH_VERBOSE=1` to forward mariadbd stdout/stderr to the shell (us
 
 | Component | Path | Build command |
 |-----------|------|---------------|
-| MariaDB server (wasm32) | `packages/registry/mariadb/mariadb-install/bin/mariadbd.wasm` | `bash packages/registry/mariadb/build-mariadb.sh` |
-| MariaDB server (wasm64) | `packages/registry/mariadb/mariadb-install-64/bin/mariadbd.wasm` | `bash packages/registry/mariadb/build-mariadb.sh --wasm64` |
+| MariaDB server (wasm32) | `packages/registry/mariadb/mariadb-install/bin/mariadbd.wasm` | `scripts/dev-shell.sh bash packages/registry/mariadb/build-mariadb.sh` |
+| MariaDB server (wasm64) | `packages/registry/mariadb/mariadb-install-64/bin/mariadbd.wasm` | `scripts/dev-shell.sh bash packages/registry/mariadb/build-mariadb.sh --wasm64` |
 | mysqltest client        | `<install-dir>/bin/mysqltest.wasm` | (built by same script) |
 | System table SQL        | `<install-dir>/share/mysql/mysql_system_tables*.sql` | (built by same script) |
 
-Build requirements: `cmake` (`brew install cmake`), `wasm32posix-cc` / `wasm64posix-cc` SDK. The build is a two-phase cross-compilation (host build for code generators, then wasm cross-compile). The wasm64 build uses `-O1` instead of `-O2` to avoid an LLVM 21 wasm64 backend miscompilation in table-lookup sign-extension.
+Build requirements: `cmake` and the `wasm32posix-cc` / `wasm64posix-cc` SDK
+supplied through the declared development shell. The build is a two-phase
+cross-compilation (host build for code generators, then wasm cross-compile).
+The wasm64 build uses `-O1` instead of `-O2` to avoid an LLVM 21 wasm64 backend
+miscompilation in table-lookup sign-extension. A missing declared tool is a
+reported environment block, not permission to use an undeclared host binary.
 
 ### Building All Suite Prerequisites
 
@@ -283,21 +338,21 @@ To run the complete benchmark suite, build all prerequisites in order:
 
 ```bash
 # 1. SDK toolchain (required by all application suites)
-cd sdk && npm link && cd ..
+scripts/dev-shell.sh bash -lc 'cd sdk && npm link'
 
-# 2. Base benchmark programs (syscall-io, process-lifecycle)
-scripts/build-programs.sh
+# 2. Base benchmark programs (syscall-io, process-lifecycle, spawn-scratch)
+scripts/dev-shell.sh bash scripts/build-programs.sh
 
-# 3. Erlang/OTP (requires: brew install erlang)
-bash packages/registry/erlang/build-erlang.sh
+# 3. Erlang/OTP
+scripts/dev-shell.sh bash packages/registry/erlang/build-erlang.sh
 
 # 4. PHP + WordPress (PHP build includes SQLite, zlib, OpenSSL, libxml2)
-bash packages/registry/php/build-php.sh
+scripts/dev-shell.sh bash packages/registry/php/build-php.sh
 # Download WordPress into packages/registry/wordpress/wordpress/
 
-# 5. MariaDB (requires: brew install cmake)
-bash packages/registry/mariadb/build-mariadb.sh          # wasm32
-bash packages/registry/mariadb/build-mariadb.sh --wasm64 # wasm64 (optional, for dual-arch comparison)
+# 5. MariaDB
+scripts/dev-shell.sh bash packages/registry/mariadb/build-mariadb.sh          # wasm32
+scripts/dev-shell.sh bash packages/registry/mariadb/build-mariadb.sh --wasm64 # wasm64 (optional)
 ```
 
 ### Running the Complete Suite for Performance Work
@@ -310,17 +365,17 @@ micro-benchmarks miss.
 ```bash
 # Full comparison workflow:
 # 1. Run baseline on both hosts
-npx tsx benchmarks/run.ts --rounds=3
-npx tsx benchmarks/run.ts --host=browser --rounds=3
+scripts/dev-shell.sh npx tsx benchmarks/run.ts --rounds=3
+scripts/dev-shell.sh npx tsx benchmarks/run.ts --host=browser --rounds=3
 
 # 2. Apply changes
 
 # 3. Run again on both hosts
-npx tsx benchmarks/run.ts --rounds=3
-npx tsx benchmarks/run.ts --host=browser --rounds=3
+scripts/dev-shell.sh npx tsx benchmarks/run.ts --rounds=3
+scripts/dev-shell.sh npx tsx benchmarks/run.ts --host=browser --rounds=3
 
 # 4. Compare
-npx tsx benchmarks/compare.ts benchmarks/results/<before>.json benchmarks/results/<after>.json
+scripts/dev-shell.sh npx tsx benchmarks/compare.ts benchmarks/results/<before>.json benchmarks/results/<after>.json
 ```
 
 When a required binary is missing, the runner prints the artifact report and
@@ -332,7 +387,7 @@ before drawing conclusions about performance impact.
 Use the comparison tool to diff two benchmark runs:
 
 ```bash
-npx tsx benchmarks/compare.ts benchmarks/results/before.json benchmarks/results/after.json
+scripts/dev-shell.sh npx tsx benchmarks/compare.ts benchmarks/results/before.json benchmarks/results/after.json
 ```
 
 Output is a markdown table with percentage change for each metric. Regressions (>5% worse) are bolded:

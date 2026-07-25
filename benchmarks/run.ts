@@ -36,12 +36,14 @@ import {
   BENCHMARK_STATIC_ARTIFACTS,
   RUNNABLE_BENCHMARK_SUITES,
   benchmarkInputEvidenceFlags,
+  benchmarkRuntimeArtifactEvidenceFlags,
   benchmarkStaticArtifactEvidenceFlags,
   selectBrowserBenchmarkRuntimeArtifacts,
   selectNodeBenchmarkRuntimeArtifacts,
   type BenchmarkRuntimeArtifactSelections,
 } from "./artifact-selection.js";
 import { assertRequiredBenchmarkArtifacts } from "./artifact-evidence.js";
+import { compiledWorkerEntryIsCurrent } from "../host/src/compiled-worker-entry.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -453,12 +455,9 @@ function collectRuntimeArtifacts(
   options: { host: "node" | "browser"; suiteFilter?: string },
 ): void {
   for (const [name, selection] of Object.entries(selections)) {
-    const evidenceFlags = benchmarkInputEvidenceFlags({
+    const evidenceFlags = benchmarkRuntimeArtifactEvidenceFlags({
       ...options,
-      suites: name === "rootfs"
-        ? ["syscall-io", "process-lifecycle"]
-        : RUNNABLE_BENCHMARK_SUITES,
-      ...(name === "rootfs" ? { hosts: ["node" as const] } : {}),
+      artifactName: name,
     });
     files[`runtime.${name}`] = fingerprintSelectedFile(
       selection.logicalPath,
@@ -503,9 +502,45 @@ export async function collectBenchmarkArtifacts(options: {
     }),
   );
   const directories: Record<string, BenchmarkArtifactDirectory> = {};
+  const hostSourceRoot = resolve(repoRoot, "host/src");
+  directories["runtime.hostSources"] = fingerprintDirectory(
+    "host/src",
+    hostSourceRoot,
+    [],
+  );
+  if (options.host === "node") {
+    const workerSource = resolve(
+      hostSourceRoot,
+      "node-kernel-worker-entry.ts",
+    );
+    const workerBundle = resolve(
+      repoRoot,
+      "host/dist/node-kernel-worker-entry.js",
+    );
+    const bundleEvidence = fingerprintSelectedFile(
+      "host/dist/node-kernel-worker-entry.js",
+      workerBundle,
+      { required: true, used: true },
+    );
+    if (
+      bundleEvidence.missing !== true
+      && !compiledWorkerEntryIsCurrent(workerSource, workerBundle)
+    ) {
+      bundleEvidence.missing = true;
+      bundleEvidence.error =
+        "worker bundle is older than at least one host/src TypeScript input";
+    }
+    files["runtime.nodeWorkerBundle"] = bundleEvidence;
+  }
   const runtimeSelections = options.runtimeSelections ?? (
     options.host === "node"
-      ? selectNodeBenchmarkRuntimeArtifacts()
+      ? selectNodeBenchmarkRuntimeArtifacts({
+        includeRootfs: benchmarkRuntimeArtifactEvidenceFlags({
+          host: options.host,
+          suiteFilter: options.suiteFilter,
+          artifactName: "rootfs",
+        }).used,
+      })
       : selectBrowserBenchmarkRuntimeArtifacts()
   );
   collectRuntimeArtifacts(runtimeSelections, files, options);
@@ -573,6 +608,7 @@ function logArtifacts(artifacts: BenchmarkArtifacts) {
 const SUITE_MODULES: Record<string, string> = {
   "syscall-io": "./suites/syscall-io.js",
   "process-lifecycle": "./suites/process-lifecycle.js",
+  "spawn-scratch": "./suites/spawn-scratch.js",
   "erlang-ring": "./suites/erlang-ring.js",
   "wordpress": "./suites/wordpress.js",
   "mariadb-aria": "./suites/mariadb-aria.js",

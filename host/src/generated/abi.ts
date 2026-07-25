@@ -343,6 +343,109 @@ export const WPK_FORK_REQUIRED_EXPORTS = [
 
 export const SCHED_AFFINITY_MASK_SIZE = 4 as const;
 
+export const KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES = 56 as const;
+export const KERNEL_SCRATCH_FD_PAIR_BYTES = 8 as const;
+export const KERNEL_SCRATCH_MQUEUE_NOTIFICATION_BYTES = 8 as const;
+export const KERNEL_SCRATCH_SOCKLEN_BYTES = 4 as const;
+export const PR_SET_NAME = 15 as const;
+export const PR_GET_NAME = 16 as const;
+export const PRCTL_NAME_BYTES = 16 as const;
+export const FCNTL_FLOCK_BYTES = 32 as const;
+export const SIGNAL_MASK_BYTES = 8 as const;
+
+export const POSIX_ARG_MAX_BYTES = 4194304 as const;
+export const POSIX_PATH_MAX_BYTES = 4096 as const;
+export const POSIX_IOV_MAX = 1024 as const;
+export const SELECT_FD_SETSIZE = 1024 as const;
+export const SELECT_FD_SET_BYTES = 128 as const;
+export const PROCESS_IOVEC_WASM32_SIZE = 8 as const;
+export const PROCESS_IOVEC_WASM32_BASE_OFFSET = 0 as const;
+export const PROCESS_IOVEC_WASM32_LEN_OFFSET = 4 as const;
+export const PROCESS_IOVEC_WASM64_SIZE = 16 as const;
+export const PROCESS_IOVEC_WASM64_BASE_OFFSET = 0 as const;
+export const PROCESS_IOVEC_WASM64_LEN_OFFSET = 8 as const;
+export const PROCESS_MSGHDR_WASM32_SIZE = 28 as const;
+export const PROCESS_MSGHDR_WASM32_NAME_OFFSET = 0 as const;
+export const PROCESS_MSGHDR_WASM32_NAMELEN_OFFSET = 4 as const;
+export const PROCESS_MSGHDR_WASM32_IOV_OFFSET = 8 as const;
+export const PROCESS_MSGHDR_WASM32_IOVLEN_OFFSET = 12 as const;
+export const PROCESS_MSGHDR_WASM32_CONTROL_OFFSET = 16 as const;
+export const PROCESS_MSGHDR_WASM32_CONTROLLEN_OFFSET = 20 as const;
+export const PROCESS_MSGHDR_WASM32_FLAGS_OFFSET = 24 as const;
+export const PROCESS_MSGHDR_WASM64_SIZE = 56 as const;
+export const PROCESS_MSGHDR_WASM64_NAME_OFFSET = 0 as const;
+export const PROCESS_MSGHDR_WASM64_NAMELEN_OFFSET = 8 as const;
+export const PROCESS_MSGHDR_WASM64_IOV_OFFSET = 16 as const;
+export const PROCESS_MSGHDR_WASM64_IOVLEN_OFFSET = 24 as const;
+export const PROCESS_MSGHDR_WASM64_CONTROL_OFFSET = 32 as const;
+export const PROCESS_MSGHDR_WASM64_CONTROLLEN_OFFSET = 40 as const;
+export const PROCESS_MSGHDR_WASM64_FLAGS_OFFSET = 48 as const;
+export const PROCESS_CMSGHDR_WASM32_SIZE = 12 as const;
+export const PROCESS_CMSGHDR_WASM32_ALIGN = 4 as const;
+export const PROCESS_CMSGHDR_WASM32_LEN_OFFSET = 0 as const;
+export const PROCESS_CMSGHDR_WASM32_LEVEL_OFFSET = 4 as const;
+export const PROCESS_CMSGHDR_WASM32_TYPE_OFFSET = 8 as const;
+export const PROCESS_CMSGHDR_WASM32_DATA_OFFSET = 12 as const;
+export const PROCESS_CMSGHDR_WASM64_SIZE = 16 as const;
+export const PROCESS_CMSGHDR_WASM64_ALIGN = 8 as const;
+export const PROCESS_CMSGHDR_WASM64_LEN_OFFSET = 0 as const;
+export const PROCESS_CMSGHDR_WASM64_LEVEL_OFFSET = 8 as const;
+export const PROCESS_CMSGHDR_WASM64_TYPE_OFFSET = 12 as const;
+export const PROCESS_CMSGHDR_WASM64_DATA_OFFSET = 16 as const;
+export const PROCESS_SIGINFO_SIGNO_OFFSET = 0 as const;
+export const PROCESS_SIGINFO_ERRNO_OFFSET = 4 as const;
+export const PROCESS_SIGINFO_CODE_OFFSET = 8 as const;
+export const PROCESS_SIGINFO_WASM32_SIZE = 128 as const;
+export const PROCESS_SIGINFO_WASM32_PID_OFFSET = 12 as const;
+export const PROCESS_SIGINFO_WASM32_UID_OFFSET = 16 as const;
+export const PROCESS_SIGINFO_WASM32_VALUE_OFFSET = 20 as const;
+export const PROCESS_SIGINFO_WASM32_VALUE_SIZE = 4 as const;
+export const PROCESS_SIGINFO_WASM64_SIZE = 128 as const;
+export const PROCESS_SIGINFO_WASM64_PID_OFFSET = 16 as const;
+export const PROCESS_SIGINFO_WASM64_UID_OFFSET = 20 as const;
+export const PROCESS_SIGINFO_WASM64_VALUE_OFFSET = 24 as const;
+export const PROCESS_SIGINFO_WASM64_VALUE_SIZE = 8 as const;
+export const SOCKET_SOL_SOCKET = 1 as const;
+export const SOCKET_SCM_RIGHTS = 1 as const;
+export const SOCKET_MSG_TRUNC = 32 as const;
+export const SCM_RIGHTS_FD_BYTES = 4 as const;
+export const KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT = 1 as const;
+export const SPAWN_WIRE_HEADER_BYTES = 40 as const;
+export const SPAWN_WIRE_STRING_OFFSET_BYTES = 4 as const;
+export const SPAWN_WIRE_HEADER_ARGC_OFFSET = 0 as const;
+export const SPAWN_WIRE_HEADER_ENVC_OFFSET = 4 as const;
+export const SPAWN_WIRE_HEADER_ACTION_COUNT_OFFSET = 8 as const;
+export const SPAWN_WIRE_HEADER_ATTR_FLAGS_OFFSET = 12 as const;
+export const SPAWN_WIRE_HEADER_PGRP_OFFSET = 16 as const;
+export const SPAWN_WIRE_HEADER_PAD_OFFSET = 20 as const;
+export const SPAWN_WIRE_HEADER_SIGDEF_OFFSET = 24 as const;
+export const SPAWN_WIRE_HEADER_SIGMASK_OFFSET = 32 as const;
+export const SPAWN_WIRE_ACTION_RECORD_BYTES = 28 as const;
+export const SPAWN_WIRE_ACTION_OP_OFFSET = 0 as const;
+export const SPAWN_WIRE_ACTION_FD_OFFSET = 4 as const;
+export const SPAWN_WIRE_ACTION_NEWFD_OFFSET = 8 as const;
+export const SPAWN_WIRE_ACTION_PATH_OFF_OFFSET = 12 as const;
+export const SPAWN_WIRE_ACTION_PATH_LEN_OFFSET = 16 as const;
+export const SPAWN_WIRE_ACTION_OFLAG_OFFSET = 20 as const;
+export const SPAWN_WIRE_ACTION_MODE_OFFSET = 24 as const;
+export const SPAWN_WIRE_OP_OPEN = 0 as const;
+export const SPAWN_WIRE_OP_CLOSE = 1 as const;
+export const SPAWN_WIRE_OP_DUP2 = 2 as const;
+export const SPAWN_WIRE_OP_CHDIR = 3 as const;
+export const SPAWN_WIRE_OP_FCHDIR = 4 as const;
+export const SPAWN_ATTR_RESETIDS = 1 as const;
+export const SPAWN_ATTR_SETPGROUP = 2 as const;
+export const SPAWN_ATTR_SETSIGDEF = 4 as const;
+export const SPAWN_ATTR_SETSIGMASK = 8 as const;
+export const SPAWN_ATTR_SETSCHEDPARAM = 16 as const;
+export const SPAWN_ATTR_SETSCHEDULER = 32 as const;
+export const SPAWN_ATTR_USEVFORK = 64 as const;
+export const SPAWN_ATTR_SETSID = 128 as const;
+export const SPAWN_MAX_ARGV_COUNT = 4096 as const;
+export const SPAWN_MAX_ENVP_COUNT = 4096 as const;
+export const SPAWN_MAX_ACTION_COUNT = 1024 as const;
+export const SPAWN_WIRE_MAX_BYTES = 8417320 as const;
+
 export const HOST_ADAPTER_VERSION = 1 as const;
 export const HOST_ADAPTER_MANIFEST_MAGIC = 1296781399 as const;
 export const HOST_ADAPTER_MANIFEST_VERSION = 1 as const;
@@ -359,6 +462,7 @@ export const HOST_ADAPTER_WORKER_FEATURES = {
 export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "__abi_version",
   "kernel_alloc_scratch",
+  "kernel_clear_process_metadata",
   "kernel_create_process",
   "kernel_create_process_with_stdio",
   "kernel_dequeue_signal",
@@ -377,13 +481,25 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_ipc_shmdt_for_process",
   "kernel_ipc_shmdt_for_task",
   "kernel_mark_process_signaled",
+  "kernel_msqid_ds_bytes",
   "kernel_pipe_has_readers",
   "kernel_posix_timer_fire",
   "kernel_prepare_write_operation",
+  "kernel_push_process_metadata_entry",
   "kernel_reap_exited_child",
   "kernel_remove_process",
+  "kernel_semctl_array_bytes",
+  "kernel_semid_ds_bytes",
   "kernel_set_current_tid",
+  "kernel_set_cwd",
+  "kernel_shmid_ds_bytes",
   "kernel_spawn_process",
+  "kernel_spawn_reserved_process",
+  "kernel_spawn_scratch_begin",
+  "kernel_spawn_scratch_cancel",
+  "kernel_spawn_scratch_capacity",
+  "kernel_spawn_scratch_pointer",
+  "kernel_spawn_scratch_retained_capacity",
   "kernel_thread_exit",
   "kernel_validate_task",
   "kernel_wait_child_poll",
@@ -392,10 +508,8 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
 export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_reserve_host_region",
   "kernel_reserve_host_region_at",
-  "kernel_set_cwd",
   "kernel_set_max_addr",
   "kernel_set_mmap_base",
-  "kernel_set_process_argv",
 ] as const;
 
 export const HOST_ADAPTER_MANIFEST_FIELDS = {
@@ -458,11 +572,19 @@ export const PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE = 2 as const;
 export const PROCESS_MEMORY_THREAD_SLOT_CHANNEL_SPILL_PAGE = 3 as const;
 export const PROCESS_MEMORY_PAGES_PER_THREAD_SLOT = 4 as const;
 
-export const CH_SIG_BASE = 65560 as const;
-export const CH_SIG_SIGNUM = 65560 as const;
-export const CH_SIG_HANDLER = 65564 as const;
-export const CH_SIG_FLAGS = 65568 as const;
-export const CH_SIG_OLD_MASK = 65576 as const;
+export const CH_SIG_BASE = 65552 as const;
+export const CH_SIG_AREA_SIZE = 56 as const;
+export const CH_SIG_DELIVERY_SIZE = 56 as const;
+export const CH_SIG_SIGNUM = 65552 as const;
+export const CH_SIG_HANDLER = 65556 as const;
+export const CH_SIG_FLAGS = 65560 as const;
+export const CH_SIG_SI_VALUE = 65564 as const;
+export const CH_SIG_OLD_MASK = 65572 as const;
+export const CH_SIG_SI_CODE = 65580 as const;
+export const CH_SIGINFO_WORD_1 = 65584 as const;
+export const CH_SIGINFO_WORD_2 = 65588 as const;
+export const CH_SIG_ALT_SP = 65592 as const;
+export const CH_SIG_ALT_SIZE = 65600 as const;
 
 export const WAIT_EVENT_EXITED = 1 as const;
 export const WAIT_EVENT_STOPPED = 2 as const;
@@ -487,7 +609,35 @@ export const STRUCT_SIZE_WASM_STAT = 88 as const;
 export const STRUCT_SIZE_WASM_DIRENT = 16 as const;
 export const STRUCT_SIZE_WASM_TIMESPEC = 16 as const;
 export const STRUCT_SIZE_WASM_POLL_FD = 8 as const;
+export const WASM_POLL_FD_FD_OFFSET = 0 as const;
+export const WASM_POLL_FD_EVENTS_OFFSET = 4 as const;
+export const WASM_POLL_FD_REVENTS_OFFSET = 6 as const;
+export const STRUCT_SIZE_KERNEL_IOVEC_WIRE = 8 as const;
+export const KERNEL_IOVEC_WIRE_ALIGN = 4 as const;
+export const KERNEL_IOVEC_WIRE_BASE_OFFSET = 0 as const;
+export const KERNEL_IOVEC_WIRE_LEN_OFFSET = 4 as const;
+export const STRUCT_SIZE_KERNEL_MSGHDR_WIRE = 28 as const;
+export const KERNEL_MSGHDR_WIRE_ALIGN = 4 as const;
+export const KERNEL_MSGHDR_WIRE_NAME_OFFSET = 0 as const;
+export const KERNEL_MSGHDR_WIRE_NAMELEN_OFFSET = 4 as const;
+export const KERNEL_MSGHDR_WIRE_IOV_OFFSET = 8 as const;
+export const KERNEL_MSGHDR_WIRE_IOVLEN_OFFSET = 12 as const;
+export const KERNEL_MSGHDR_WIRE_CONTROL_OFFSET = 16 as const;
+export const KERNEL_MSGHDR_WIRE_CONTROLLEN_OFFSET = 20 as const;
+export const KERNEL_MSGHDR_WIRE_FLAGS_OFFSET = 24 as const;
+export const STRUCT_SIZE_KERNEL_CMSGHDR_WIRE = 12 as const;
+export const KERNEL_CMSGHDR_WIRE_ALIGN = 4 as const;
+export const KERNEL_CMSGHDR_WIRE_LEN_OFFSET = 0 as const;
+export const KERNEL_CMSGHDR_WIRE_LEVEL_OFFSET = 4 as const;
+export const KERNEL_CMSGHDR_WIRE_TYPE_OFFSET = 8 as const;
+export const KERNEL_CMSGHDR_WIRE_DATA_OFFSET = 12 as const;
+export const STRUCT_SIZE_WASM_EPOLL_EVENT = 16 as const;
+export const WASM_EPOLL_EVENT_EVENTS_OFFSET = 0 as const;
+export const WASM_EPOLL_EVENT_PAD_OFFSET = 4 as const;
+export const WASM_EPOLL_EVENT_DATA_OFFSET = 8 as const;
+export const STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER = 8 as const;
 export const STRUCT_SIZE_WASM_STATFS = 72 as const;
+export const STRUCT_SIZE_WPK_DRM_MODE_MODEINFO = 68 as const;
 export const STRUCT_SIZE_WASM_RUSAGE_WIRE = 144 as const;
 export const STRUCT_SIZE_KERNEL_WAIT_RESULT = 160 as const;
 export const KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET = 0 as const;
@@ -649,6 +799,7 @@ export const ABI_SYSCALLS = {
   Clone: 201,
   Gettid: 202,
   SetTidAddress: 203,
+  Tkill: 204,
   RtSigqueueinfo: 205,
   RtSigpending: 206,
   RtSigtimedwait: 207,
@@ -663,26 +814,40 @@ export const ABI_SYSCALLS = {
   ClockSettime: 226,
   SchedYield: 229,
   SchedGetparam: 230,
+  SchedSetparam: 231,
+  SchedSetscheduler: 233,
   SchedRrGetInterval: 236,
   SchedGetaffinity: 238,
   EpollCreate1: 239,
   EpollCtl: 240,
   EpollPwait: 241,
+  TimerfdCreate: 243,
+  TimerfdSettime: 244,
+  TimerfdGettime: 245,
+  Signalfd4: 246,
   Prlimit64: 250,
   Ppoll: 251,
   Pselect6: 252,
+  MemfdCreate: 256,
   Statx: 260,
   SetRobustList: 261,
   GetRobustList: 262,
+  Sysinfo: 269,
   Mknod: 271,
   Mknodat: 272,
   Msync: 278,
   Waitid: 288,
+  CopyFileRange: 290,
+  Splice: 291,
   Sendfile: 294,
   Preadv: 295,
   Pwritev: 296,
+  Preadv2: 297,
+  Pwritev2: 298,
   Lchown: 299,
+  Renameat2: 306,
   Fallocate: 308,
+  Getcpu: 325,
   TimerCreate: 326,
   TimerSettime: 327,
   TimerGettime: 328,
@@ -705,6 +870,7 @@ export const ABI_SYSCALLS = {
   Shmat: 345,
   Shmdt: 346,
   Shmctl: 347,
+  Signalfd: 377,
   EpollCreate: 378,
   EpollWait: 379,
   Faccessat2: 382,
@@ -886,6 +1052,7 @@ export const ABI_SYSCALL_NAMES: Record<number, string> = {
   201: "clone",
   202: "gettid",
   203: "set_tid_address",
+  204: "tkill",
   205: "rt_sigqueueinfo",
   206: "rt_sigpending",
   207: "rt_sigtimedwait",
@@ -903,26 +1070,40 @@ export const ABI_SYSCALL_NAMES: Record<number, string> = {
   226: "clock_settime",
   229: "sched_yield",
   230: "sched_getparam",
+  231: "sched_setparam",
+  233: "sched_setscheduler",
   236: "sched_rr_get_interval",
   238: "sched_getaffinity",
   239: "epoll_create1",
   240: "epoll_ctl",
   241: "epoll_pwait",
+  243: "timerfd_create",
+  244: "timerfd_settime",
+  245: "timerfd_gettime",
+  246: "signalfd4",
   250: "prlimit64",
   251: "ppoll",
   252: "pselect6",
+  256: "memfd_create",
   260: "statx",
   261: "set_robust_list",
   262: "get_robust_list",
+  269: "sysinfo",
   271: "mknod",
   272: "mknodat",
   278: "msync",
   288: "waitid",
+  290: "copy_file_range",
+  291: "splice",
   294: "sendfile",
   295: "preadv",
   296: "pwritev",
+  297: "preadv2",
+  298: "pwritev2",
   299: "lchown",
+  306: "renameat2",
   308: "fallocate",
+  325: "getcpu",
   326: "timer_create",
   327: "timer_settime",
   328: "timer_gettime",
@@ -945,6 +1126,7 @@ export const ABI_SYSCALL_NAMES: Record<number, string> = {
   345: "shmat",
   346: "shmdt",
   347: "shmctl",
+  377: "signalfd",
   378: "epoll_create",
   379: "epoll_wait",
   382: "faccessat2",
@@ -962,7 +1144,10 @@ export type SyscallArgSizeSpec =
   | { type: "cstring" }
   | { type: "arg"; argIndex: number; multiplier?: number; add?: number }
   | { type: "deref"; argIndex: number }
-  | { type: "fixed"; size: number };
+  | { type: "fixed"; size: number }
+  | { type: "process-layout"; wasm32Size: number; wasm64Size: number };
+
+export const PROCESS_POINTER_WIDTH_ARG_INDEX = 5 as const;
 
 export interface SyscallArgDesc {
   argIndex: number;
@@ -970,404 +1155,506 @@ export interface SyscallArgDesc {
   size: SyscallArgSizeSpec;
   nullable?: boolean;
   required?: boolean;
-  copyRetvalAdd?: number;
 }
+
+export type IoctlArgKind = "none" | "scalar-i32" | "pointer";
+export type IoctlDirection = "none" | "in" | "out" | "inout";
+
+export interface IoctlRequestContract {
+  argKind: IoctlArgKind;
+  direction: IoctlDirection;
+  wasm32Size: number | null;
+  wasm64Size: number | null;
+}
+
+export const IOCTL_REQUESTS: Record<number, IoctlRequestContract> = {
+  64: { argKind: "pointer", direction: "in", wasm32Size: 4, wasm64Size: 4 },
+  65: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
+  66: { argKind: "pointer", direction: "in", wasm32Size: 16, wasm64Size: 16 },
+  67: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
+  68: { argKind: "pointer", direction: "in", wasm32Size: 32, wasm64Size: 32 },
+  69: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
+  70: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
+  71: { argKind: "pointer", direction: "in", wasm32Size: 8, wasm64Size: 8 },
+  72: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
+  73: { argKind: "pointer", direction: "in", wasm32Size: 24, wasm64Size: null },
+  17920: { argKind: "pointer", direction: "out", wasm32Size: 160, wasm64Size: 160 },
+  17921: { argKind: "pointer", direction: "in", wasm32Size: 160, wasm64Size: 160 },
+  17922: { argKind: "pointer", direction: "out", wasm32Size: 80, wasm64Size: 80 },
+  17926: { argKind: "pointer", direction: "in", wasm32Size: 160, wasm64Size: 160 },
+  19251: { argKind: "pointer", direction: "out", wasm32Size: 1, wasm64Size: 1 },
+  19268: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
+  19269: { argKind: "scalar-i32", direction: "none", wasm32Size: 0, wasm64Size: 0 },
+  20480: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
+  20481: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
+  21505: { argKind: "pointer", direction: "out", wasm32Size: 60, wasm64Size: 60 },
+  21506: { argKind: "pointer", direction: "in", wasm32Size: 60, wasm64Size: 60 },
+  21507: { argKind: "pointer", direction: "in", wasm32Size: 60, wasm64Size: 60 },
+  21508: { argKind: "pointer", direction: "in", wasm32Size: 60, wasm64Size: 60 },
+  21513: { argKind: "scalar-i32", direction: "none", wasm32Size: 0, wasm64Size: 0 },
+  21514: { argKind: "scalar-i32", direction: "none", wasm32Size: 0, wasm64Size: 0 },
+  21515: { argKind: "scalar-i32", direction: "none", wasm32Size: 0, wasm64Size: 0 },
+  21518: { argKind: "scalar-i32", direction: "none", wasm32Size: 0, wasm64Size: 0 },
+  21519: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
+  21520: { argKind: "pointer", direction: "in", wasm32Size: 4, wasm64Size: 4 },
+  21523: { argKind: "pointer", direction: "out", wasm32Size: 8, wasm64Size: 8 },
+  21524: { argKind: "pointer", direction: "in", wasm32Size: 8, wasm64Size: 8 },
+  21531: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
+  21537: { argKind: "pointer", direction: "in", wasm32Size: 4, wasm64Size: 4 },
+  21538: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
+  21545: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
+  21584: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
+  21585: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
+  21586: { argKind: "pointer", direction: "in", wasm32Size: 4, wasm64Size: 4 },
+  25630: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
+  25631: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
+  35077: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
+  1074025521: { argKind: "pointer", direction: "in", wasm32Size: 4, wasm64Size: 4 },
+  1074291721: { argKind: "pointer", direction: "in", wasm32Size: 8, wasm64Size: 8 },
+  2147766283: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
+  2147767344: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
+  3221508098: { argKind: "pointer", direction: "inout", wasm32Size: 4, wasm64Size: 4 },
+  3221508099: { argKind: "pointer", direction: "inout", wasm32Size: 4, wasm64Size: 4 },
+  3221508101: { argKind: "pointer", direction: "inout", wasm32Size: 4, wasm64Size: 4 },
+  3221508102: { argKind: "pointer", direction: "inout", wasm32Size: 4, wasm64Size: 4 },
+  3221508106: { argKind: "pointer", direction: "inout", wasm32Size: 4, wasm64Size: 4 },
+  3221513391: { argKind: "pointer", direction: "in", wasm32Size: 4, wasm64Size: 4 },
+  3221513396: { argKind: "pointer", direction: "in", wasm32Size: 4, wasm64Size: 4 },
+  3222037549: { argKind: "pointer", direction: "inout", wasm32Size: 12, wasm64Size: 12 },
+  3222037550: { argKind: "pointer", direction: "inout", wasm32Size: 12, wasm64Size: 12 },
+  3222299660: { argKind: "pointer", direction: "inout", wasm32Size: 16, wasm64Size: 16 },
+  3222299706: { argKind: "pointer", direction: "inout", wasm32Size: 16, wasm64Size: 16 },
+  3222299827: { argKind: "pointer", direction: "inout", wasm32Size: 16, wasm64Size: 16 },
+  3222561958: { argKind: "pointer", direction: "inout", wasm32Size: 20, wasm64Size: 20 },
+  3222824112: { argKind: "pointer", direction: "in", wasm32Size: 24, wasm64Size: 24 },
+  3223348402: { argKind: "pointer", direction: "inout", wasm32Size: 32, wasm64Size: 32 },
+  3223610368: { argKind: "pointer", direction: "inout", wasm32Size: 36, wasm64Size: null },
+  3225445376: { argKind: "pointer", direction: "inout", wasm32Size: null, wasm64Size: 64 },
+  3225445536: { argKind: "pointer", direction: "inout", wasm32Size: 64, wasm64Size: 64 },
+  3226494119: { argKind: "pointer", direction: "inout", wasm32Size: 80, wasm64Size: 80 },
+  3228066977: { argKind: "pointer", direction: "inout", wasm32Size: 104, wasm64Size: 104 },
+  3228066978: { argKind: "pointer", direction: "in", wasm32Size: 104, wasm64Size: 104 },
+  3228067000: { argKind: "pointer", direction: "inout", wasm32Size: 104, wasm64Size: 104 },
+};
 
 export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   1: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
   ],
   3: [
-    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 }, required: true },
   ],
   4: [
-    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } },
+    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 }, required: true },
   ],
   6: [
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 88 } },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 112 }, required: true },
   ],
   9: [
-    { argIndex: 0, direction: "out", size: { type: "fixed", size: 8 } },
+    { argIndex: 0, direction: "out", size: { type: "fixed", size: 8 }, required: true },
   ],
   11: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 88 } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 112 }, required: true },
   ],
   12: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 88 } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 112 }, required: true },
   ],
   13: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
   ],
   14: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
   ],
   15: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
   ],
   16: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
   ],
   17: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
   ],
   18: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
   ],
   19: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
-    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 }, required: true },
   ],
   20: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
   ],
   21: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
   ],
   22: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
   ],
   23: [
-    { argIndex: 0, direction: "out", size: { type: "arg", argIndex: 1 } },
+    { argIndex: 0, direction: "out", size: { type: "arg", argIndex: 1 }, required: true },
   ],
   24: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
   ],
   25: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
   ],
   26: [
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 } },
-    { argIndex: 2, direction: "out", size: { type: "arg", argIndex: 3 } },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 }, required: true },
+    { argIndex: 2, direction: "out", size: { type: "arg", argIndex: 3 }, required: true },
   ],
   36: [
-    { argIndex: 1, direction: "in", size: { type: "fixed", size: 16 } },
-    { argIndex: 2, direction: "out", size: { type: "fixed", size: 16 } },
+    { argIndex: 1, direction: "in", size: { type: "fixed", size: 16 }, nullable: true },
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: 16 }, nullable: true },
   ],
   37: [
-    { argIndex: 1, direction: "in", size: { type: "fixed", size: 8 } },
-    { argIndex: 2, direction: "out", size: { type: "fixed", size: 8 } },
+    { argIndex: 1, direction: "in", size: { type: "fixed", size: 8 }, nullable: true },
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: 8 }, nullable: true },
   ],
   40: [
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 } },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 }, required: true },
   ],
   41: [
-    { argIndex: 0, direction: "in", size: { type: "fixed", size: 16 } },
+    { argIndex: 0, direction: "in", size: { type: "fixed", size: 16 }, required: true },
   ],
   43: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
-    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 }, required: true },
   ],
   44: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
   ],
   45: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
   ],
   51: [
-    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } },
+    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 }, required: true },
   ],
   53: [
-    { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 } },
-    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 } },
+    { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 }, nullable: true },
+    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 }, nullable: true },
   ],
   54: [
-    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } },
+    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 }, required: true },
   ],
   55: [
-    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } },
+    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 }, required: true },
   ],
   56: [
-    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 }, required: true },
   ],
   58: [
-    { argIndex: 3, direction: "out", size: { type: "deref", argIndex: 4 } },
-    { argIndex: 4, direction: "inout", size: { type: "fixed", size: 4 } },
+    { argIndex: 3, direction: "out", size: { type: "deref", argIndex: 4 }, required: true },
+    { argIndex: 4, direction: "inout", size: { type: "fixed", size: 4 }, required: true },
   ],
   59: [
-    { argIndex: 3, direction: "in", size: { type: "arg", argIndex: 4 } },
+    { argIndex: 3, direction: "in", size: { type: "arg", argIndex: 4 }, required: true },
   ],
   60: [
-    { argIndex: 0, direction: "inout", size: { type: "arg", argIndex: 1, multiplier: 8 } },
+    { argIndex: 0, direction: "inout", size: { type: "arg", argIndex: 1, multiplier: 8 }, required: true },
   ],
   61: [
-    { argIndex: 3, direction: "out", size: { type: "fixed", size: 8 } },
+    { argIndex: 3, direction: "out", size: { type: "fixed", size: 8 }, required: true },
   ],
   62: [
-    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } },
-    { argIndex: 4, direction: "in", size: { type: "arg", argIndex: 5 } },
+    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 }, required: true },
+    { argIndex: 4, direction: "in", size: { type: "arg", argIndex: 5 }, required: true },
   ],
   63: [
-    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },
-    { argIndex: 4, direction: "out", size: { type: "deref", argIndex: 5 } },
-    { argIndex: 5, direction: "inout", size: { type: "fixed", size: 4 } },
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 }, required: true },
+    { argIndex: 4, direction: "out", size: { type: "deref", argIndex: 5 }, nullable: true },
+    { argIndex: 5, direction: "inout", size: { type: "fixed", size: 4 }, nullable: true },
   ],
   64: [
-    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 }, required: true },
   ],
   65: [
-    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } },
+    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 }, required: true },
   ],
   69: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
   ],
   70: [
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 256 } },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 60 }, required: true },
   ],
   71: [
-    { argIndex: 2, direction: "in", size: { type: "fixed", size: 256 } },
-  ],
-  72: [
-    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 256 } },
+    { argIndex: 2, direction: "in", size: { type: "fixed", size: 60 }, required: true },
   ],
   75: [
-    { argIndex: 0, direction: "out", size: { type: "fixed", size: 390 } },
+    { argIndex: 0, direction: "out", size: { type: "fixed", size: 390 }, required: true },
   ],
   78: [
-    { argIndex: 0, direction: "out", size: { type: "fixed", size: 8 } },
+    { argIndex: 0, direction: "out", size: { type: "fixed", size: 8 }, required: true },
   ],
   83: [
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 } },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 }, required: true },
   ],
   84: [
-    { argIndex: 1, direction: "in", size: { type: "fixed", size: 16 } },
+    { argIndex: 1, direction: "in", size: { type: "fixed", size: 16 }, required: true },
   ],
   85: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
   ],
   93: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },
-    { argIndex: 2, direction: "out", size: { type: "fixed", size: 88 } },
+    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: 112 }, required: true },
   ],
   94: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
   ],
   95: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
   ],
   96: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },
-    { argIndex: 3, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 3, direction: "in", size: { type: "cstring" }, required: true },
   ],
   97: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
   ],
   98: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
   ],
   99: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
   ],
   100: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },
-    { argIndex: 3, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 3, direction: "in", size: { type: "cstring" }, required: true },
   ],
   101: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
-    { argIndex: 2, direction: "in", size: { type: "cstring" } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 2, direction: "in", size: { type: "cstring" }, required: true },
   ],
   102: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },
-    { argIndex: 2, direction: "out", size: { type: "arg", argIndex: 3 } },
+    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 2, direction: "out", size: { type: "arg", argIndex: 3 }, required: true },
   ],
   108: [
     { argIndex: 1, direction: "out", size: { type: "fixed", size: 144 }, required: true },
   ],
   109: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
-    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 }, required: true },
   ],
   110: [
-    { argIndex: 0, direction: "in", size: { type: "fixed", size: 8 } },
+    { argIndex: 0, direction: "in", size: { type: "fixed", size: 8 }, required: true },
   ],
   112: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
     { argIndex: 2, direction: "out", size: { type: "fixed", size: 8 }, required: true },
   ],
   113: [
     { argIndex: 2, direction: "out", size: { type: "fixed", size: 8 }, required: true },
   ],
   114: [
-    { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 } },
-    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 } },
+    { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 }, required: true },
+    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 }, required: true },
   ],
   115: [
-    { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 } },
-    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 } },
+    { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 }, required: true },
+    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 }, required: true },
   ],
   119: [
-    { argIndex: 3, direction: "out", size: { type: "fixed", size: 8 } },
+    { argIndex: 3, direction: "out", size: { type: "fixed", size: 8 }, required: true },
   ],
   120: [
-    { argIndex: 0, direction: "out", size: { type: "arg", argIndex: 1 } },
+    { argIndex: 0, direction: "out", size: { type: "arg", argIndex: 1 }, required: true },
   ],
   122: [
-    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 }, required: true },
   ],
   123: [
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 } },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 }, nullable: true },
   ],
   124: [
-    { argIndex: 2, direction: "in", size: { type: "fixed", size: 16 } },
+    { argIndex: 2, direction: "in", size: { type: "fixed", size: 16 }, required: true },
   ],
   125: [
     { argIndex: 1, direction: "in", size: { type: "cstring" }, nullable: true },
-    { argIndex: 2, direction: "in", size: { type: "fixed", size: 32 } },
+    { argIndex: 2, direction: "in", size: { type: "fixed", size: 32 }, nullable: true },
   ],
   129: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
-    { argIndex: 2, direction: "out", size: { type: "fixed", size: 72 } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 2, direction: "out", size: { type: "process-layout", wasm32Size: 88, wasm64Size: 120 }, required: true },
   ],
   130: [
-    { argIndex: 2, direction: "out", size: { type: "fixed", size: 72 } },
+    { argIndex: 2, direction: "out", size: { type: "process-layout", wasm32Size: 88, wasm64Size: 120 }, required: true },
   ],
   132: [
-    { argIndex: 0, direction: "out", size: { type: "fixed", size: 4 } },
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 } },
-    { argIndex: 2, direction: "out", size: { type: "fixed", size: 4 } },
+    { argIndex: 0, direction: "out", size: { type: "fixed", size: 4 }, required: true },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 }, required: true },
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: 4 }, required: true },
   ],
   134: [
-    { argIndex: 0, direction: "out", size: { type: "fixed", size: 4 } },
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 } },
-    { argIndex: 2, direction: "out", size: { type: "fixed", size: 4 } },
+    { argIndex: 0, direction: "out", size: { type: "fixed", size: 4 }, required: true },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 }, required: true },
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: 4 }, required: true },
   ],
-  137: [
-    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } },
-  ],
-  138: [
-    { argIndex: 1, direction: "inout", size: { type: "arg", argIndex: 2 } },
+  136: [
+    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 0, multiplier: 4 }, required: true },
   ],
   139: [
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 } },
-    { argIndex: 3, direction: "out", size: { type: "fixed", size: 144 } },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 }, nullable: true },
+    { argIndex: 3, direction: "out", size: { type: "fixed", size: 144 }, nullable: true },
   ],
   140: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 256 } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 }, required: true },
   ],
   205: [
-    { argIndex: 2, direction: "in", size: { type: "fixed", size: 128 } },
+    { argIndex: 2, direction: "in", size: { type: "process-layout", wasm32Size: 128, wasm64Size: 128 }, required: true },
   ],
   206: [
-    { argIndex: 0, direction: "out", size: { type: "fixed", size: 8 } },
+    { argIndex: 0, direction: "out", size: { type: "fixed", size: 8 }, required: true },
   ],
   207: [
-    { argIndex: 0, direction: "in", size: { type: "fixed", size: 8 } },
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 128 } },
-    { argIndex: 2, direction: "in", size: { type: "fixed", size: 16 } },
+    { argIndex: 0, direction: "in", size: { type: "fixed", size: 8 }, required: true },
+    { argIndex: 1, direction: "out", size: { type: "process-layout", wasm32Size: 128, wasm64Size: 128 }, nullable: true },
+    { argIndex: 2, direction: "in", size: { type: "fixed", size: 16 }, nullable: true },
   ],
   209: [
-    { argIndex: 0, direction: "in", size: { type: "fixed", size: 12 } },
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 12 } },
+    { argIndex: 0, direction: "in", size: { type: "process-layout", wasm32Size: 12, wasm64Size: 24 }, nullable: true },
+    { argIndex: 1, direction: "out", size: { type: "process-layout", wasm32Size: 12, wasm64Size: 24 }, nullable: true },
   ],
   211: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
-  ],
-  223: [
-    { argIndex: 1, direction: "inout", size: { type: "fixed", size: 16 } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
   ],
   224: [
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 } },
+    { argIndex: 1, direction: "out", size: { type: "process-layout", wasm32Size: 16, wasm64Size: 32 }, required: true },
   ],
   225: [
-    { argIndex: 1, direction: "in", size: { type: "fixed", size: 16 } },
-    { argIndex: 2, direction: "out", size: { type: "fixed", size: 16 } },
+    { argIndex: 1, direction: "in", size: { type: "process-layout", wasm32Size: 16, wasm64Size: 32 }, required: true },
+    { argIndex: 2, direction: "out", size: { type: "process-layout", wasm32Size: 16, wasm64Size: 32 }, nullable: true },
   ],
   230: [
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 36 } },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 48 }, required: true },
+  ],
+  231: [
+    { argIndex: 1, direction: "in", size: { type: "fixed", size: 48 }, required: true },
+  ],
+  233: [
+    { argIndex: 2, direction: "in", size: { type: "fixed", size: 48 }, required: true },
   ],
   236: [
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 } },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 }, required: true },
   ],
   238: [
     { argIndex: 2, direction: "out", size: { type: "fixed", size: 4 }, required: true },
   ],
+  244: [
+    { argIndex: 2, direction: "in", size: { type: "fixed", size: 32 }, required: true },
+    { argIndex: 3, direction: "out", size: { type: "fixed", size: 32 }, nullable: true },
+  ],
+  245: [
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 32 }, required: true },
+  ],
+  246: [
+    { argIndex: 1, direction: "in", size: { type: "fixed", size: 8 }, required: true },
+  ],
   250: [
-    { argIndex: 2, direction: "in", size: { type: "fixed", size: 16 } },
-    { argIndex: 3, direction: "out", size: { type: "fixed", size: 16 } },
+    { argIndex: 2, direction: "in", size: { type: "fixed", size: 16 }, nullable: true },
+    { argIndex: 3, direction: "out", size: { type: "fixed", size: 16 }, nullable: true },
   ],
   251: [
-    { argIndex: 0, direction: "inout", size: { type: "arg", argIndex: 1, multiplier: 8 } },
+    { argIndex: 0, direction: "inout", size: { type: "arg", argIndex: 1, multiplier: 8 }, required: true },
+  ],
+  256: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
   ],
   260: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },
-    { argIndex: 4, direction: "out", size: { type: "fixed", size: 256 } },
+    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 4, direction: "out", size: { type: "fixed", size: 256 }, required: true },
+  ],
+  269: [
+    { argIndex: 0, direction: "out", size: { type: "process-layout", wasm32Size: 312, wasm64Size: 368 }, required: true },
   ],
   271: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
   ],
   272: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
   ],
   288: [
-    { argIndex: 2, direction: "out", size: { type: "fixed", size: 128 }, required: true },
+    { argIndex: 2, direction: "out", size: { type: "process-layout", wasm32Size: 128, wasm64Size: 128 }, required: true },
     { argIndex: 4, direction: "out", size: { type: "fixed", size: 144 }, nullable: true },
   ],
+  290: [
+    { argIndex: 1, direction: "inout", size: { type: "fixed", size: 8 }, nullable: true },
+    { argIndex: 3, direction: "inout", size: { type: "fixed", size: 8 }, nullable: true },
+  ],
+  291: [
+    { argIndex: 1, direction: "inout", size: { type: "fixed", size: 8 }, nullable: true },
+    { argIndex: 3, direction: "inout", size: { type: "fixed", size: 8 }, nullable: true },
+  ],
+  294: [
+    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 8 }, nullable: true },
+  ],
   299: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+  ],
+  306: [
+    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 3, direction: "in", size: { type: "cstring" }, required: true },
+  ],
+  325: [
+    { argIndex: 0, direction: "out", size: { type: "fixed", size: 4 }, nullable: true },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 }, nullable: true },
   ],
   326: [
-    { argIndex: 1, direction: "in", size: { type: "fixed", size: 16 } },
-    { argIndex: 2, direction: "out", size: { type: "fixed", size: 4 } },
+    { argIndex: 1, direction: "in", size: { type: "process-layout", wasm32Size: 64, wasm64Size: 64 }, nullable: true },
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: 4 }, required: true },
   ],
   327: [
-    { argIndex: 2, direction: "in", size: { type: "fixed", size: 32 } },
-    { argIndex: 3, direction: "out", size: { type: "fixed", size: 32 } },
+    { argIndex: 2, direction: "in", size: { type: "fixed", size: 32 }, required: true },
+    { argIndex: 3, direction: "out", size: { type: "fixed", size: 32 }, nullable: true },
   ],
   328: [
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 32 } },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 32 }, required: true },
   ],
   331: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
-    { argIndex: 3, direction: "in", size: { type: "fixed", size: 32 } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 3, direction: "in", size: { type: "process-layout", wasm32Size: 32, wasm64Size: 64 }, nullable: true },
   ],
   332: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
   ],
   333: [
-    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } },
-    { argIndex: 4, direction: "in", size: { type: "fixed", size: 16 } },
+    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 }, required: true },
+    { argIndex: 4, direction: "in", size: { type: "fixed", size: 16 }, nullable: true },
   ],
   334: [
-    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },
-    { argIndex: 3, direction: "out", size: { type: "fixed", size: 4 } },
-    { argIndex: 4, direction: "in", size: { type: "fixed", size: 16 } },
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 }, required: true },
+    { argIndex: 3, direction: "out", size: { type: "fixed", size: 4 }, nullable: true },
+    { argIndex: 4, direction: "in", size: { type: "fixed", size: 16 }, nullable: true },
   ],
   335: [
-    { argIndex: 1, direction: "in", size: { type: "fixed", size: 16 } },
+    { argIndex: 1, direction: "in", size: { type: "process-layout", wasm32Size: 64, wasm64Size: 64 }, nullable: true },
   ],
   336: [
-    { argIndex: 1, direction: "in", size: { type: "fixed", size: 32 } },
-    { argIndex: 2, direction: "out", size: { type: "fixed", size: 32 } },
-  ],
-  338: [
-    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2, add: 4 }, copyRetvalAdd: 4 },
-  ],
-  339: [
-    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2, add: 4 } },
-  ],
-  340: [
-    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 96 } },
+    { argIndex: 1, direction: "in", size: { type: "process-layout", wasm32Size: 32, wasm64Size: 64 }, nullable: true },
+    { argIndex: 2, direction: "out", size: { type: "process-layout", wasm32Size: 32, wasm64Size: 64 }, nullable: true },
   ],
   342: [
-    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2, multiplier: 6 } },
+    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2, multiplier: 6 }, required: true },
   ],
-  347: [
-    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 88 } },
+  377: [
+    { argIndex: 1, direction: "in", size: { type: "fixed", size: 8 }, required: true },
   ],
   382: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
   ],
   383: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
   ],
   384: [
-    { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 } },
-    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 } },
+    { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 }, nullable: true },
+    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 }, nullable: true },
   ],
 };

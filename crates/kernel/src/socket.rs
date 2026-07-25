@@ -87,7 +87,6 @@ pub enum SocketState {
 }
 
 /// A received UDP datagram.
-#[derive(Clone)]
 pub struct Datagram {
     pub data: Vec<u8>,
     pub src_addr: [u8; 4],
@@ -539,12 +538,7 @@ pub fn tcp6_can_bind(pid: u32, sock_idx: usize, addr: [u8; 16], port: u16) -> bo
     })
 }
 
-pub fn tcp6_register(
-    pid: u32,
-    sock_idx: usize,
-    addr: [u8; 16],
-    port: u16,
-) -> Result<(), Errno> {
+pub fn tcp6_register(pid: u32, sock_idx: usize, addr: [u8; 16], port: u16) -> Result<(), Errno> {
     if port == 0 {
         return Err(Errno::EINVAL);
     }
@@ -1092,32 +1086,34 @@ mod tests {
         // A dual-stack wildcard listener reserves the same socket identity in
         // both protocol-family tables.
         tcp6_register(PARENT, DUAL_STACK_TCP_IDX, [0; 16], TCP_PORT).unwrap();
-        tcp_register(
-            PARENT,
-            DUAL_STACK_TCP_IDX,
-            [0, 0, 0, 0],
-            TCP_PORT,
-        )
-        .unwrap();
+        tcp_register(PARENT, DUAL_STACK_TCP_IDX, [0, 0, 0, 0], TCP_PORT).unwrap();
 
         inherit_inet_binding_owners(PARENT, CHILD, UDP4_IDX);
         inherit_inet_binding_owners(PARENT, CHILD, UDP6_IDX);
         inherit_inet_binding_owners(PARENT, CHILD, DUAL_STACK_TCP_IDX);
 
         let udp4_targets = udp_lookup([127, 0, 0, 1], UDP4_PORT);
-        assert!(udp4_targets
-            .iter()
-            .any(|target| target.pid == PARENT && target.sock_idx == UDP4_IDX));
-        assert!(udp4_targets
-            .iter()
-            .any(|target| target.pid == CHILD && target.sock_idx == UDP4_IDX));
+        assert!(
+            udp4_targets
+                .iter()
+                .any(|target| target.pid == PARENT && target.sock_idx == UDP4_IDX)
+        );
+        assert!(
+            udp4_targets
+                .iter()
+                .any(|target| target.pid == CHILD && target.sock_idx == UDP4_IDX)
+        );
         let udp6_targets = udp6_lookup(LOOPBACK6, UDP6_PORT);
-        assert!(udp6_targets
-            .iter()
-            .any(|target| target.pid == PARENT && target.sock_idx == UDP6_IDX));
-        assert!(udp6_targets
-            .iter()
-            .any(|target| target.pid == CHILD && target.sock_idx == UDP6_IDX));
+        assert!(
+            udp6_targets
+                .iter()
+                .any(|target| target.pid == PARENT && target.sock_idx == UDP6_IDX)
+        );
+        assert!(
+            udp6_targets
+                .iter()
+                .any(|target| target.pid == CHILD && target.sock_idx == UDP6_IDX)
+        );
 
         // Parent close removes only the parent's process-local identity.
         udp_unregister(PARENT, UDP4_IDX);
@@ -1127,10 +1123,16 @@ mod tests {
 
         let udp4_targets = udp_lookup([127, 0, 0, 1], UDP4_PORT);
         assert_eq!(udp4_targets.len(), 1);
-        assert_eq!((udp4_targets[0].pid, udp4_targets[0].sock_idx), (CHILD, UDP4_IDX));
+        assert_eq!(
+            (udp4_targets[0].pid, udp4_targets[0].sock_idx),
+            (CHILD, UDP4_IDX)
+        );
         let udp6_targets = udp6_lookup(LOOPBACK6, UDP6_PORT);
         assert_eq!(udp6_targets.len(), 1);
-        assert_eq!((udp6_targets[0].pid, udp6_targets[0].sock_idx), (CHILD, UDP6_IDX));
+        assert_eq!(
+            (udp6_targets[0].pid, udp6_targets[0].sock_idx),
+            (CHILD, UDP6_IDX)
+        );
         assert!(!udp_can_bind(
             CONTENDER,
             1,
@@ -1138,19 +1140,8 @@ mod tests {
             UDP4_PORT,
             false
         ));
-        assert!(!udp6_can_bind(
-            CONTENDER,
-            2,
-            LOOPBACK6,
-            UDP6_PORT,
-            false
-        ));
-        assert!(!tcp_can_bind(
-            CONTENDER,
-            3,
-            [0, 0, 0, 0],
-            TCP_PORT
-        ));
+        assert!(!udp6_can_bind(CONTENDER, 2, LOOPBACK6, UDP6_PORT, false));
+        assert!(!tcp_can_bind(CONTENDER, 3, [0, 0, 0, 0], TCP_PORT));
         assert!(!tcp6_can_bind(CONTENDER, 3, [0; 16], TCP_PORT));
 
         // Final close drops each logical reservation.
@@ -1160,26 +1151,9 @@ mod tests {
         tcp6_unregister(CHILD, DUAL_STACK_TCP_IDX);
         assert!(udp_lookup([127, 0, 0, 1], UDP4_PORT).is_empty());
         assert!(udp6_lookup(LOOPBACK6, UDP6_PORT).is_empty());
-        assert!(udp_can_bind(
-            CONTENDER,
-            1,
-            [127, 0, 0, 1],
-            UDP4_PORT,
-            false
-        ));
-        assert!(udp6_can_bind(
-            CONTENDER,
-            2,
-            LOOPBACK6,
-            UDP6_PORT,
-            false
-        ));
-        assert!(tcp_can_bind(
-            CONTENDER,
-            3,
-            [0, 0, 0, 0],
-            TCP_PORT
-        ));
+        assert!(udp_can_bind(CONTENDER, 1, [127, 0, 0, 1], UDP4_PORT, false));
+        assert!(udp6_can_bind(CONTENDER, 2, LOOPBACK6, UDP6_PORT, false));
+        assert!(tcp_can_bind(CONTENDER, 3, [0, 0, 0, 0], TCP_PORT));
         assert!(tcp6_can_bind(CONTENDER, 3, [0; 16], TCP_PORT));
     }
 
@@ -1199,21 +1173,22 @@ mod tests {
         inherit_inet_binding_owners(PARENT, CHILD, FIRST_IDX);
         let targets = udp_lookup([127, 0, 0, 1], PORT);
         assert_eq!(targets.len(), 3);
-        assert!(targets
-            .iter()
-            .any(|target| target.pid == CHILD && target.sock_idx == FIRST_IDX));
-        assert!(!targets
-            .iter()
-            .any(|target| target.pid == CHILD && target.sock_idx == SECOND_IDX));
+        assert!(
+            targets
+                .iter()
+                .any(|target| target.pid == CHILD && target.sock_idx == FIRST_IDX)
+        );
+        assert!(
+            !targets
+                .iter()
+                .any(|target| target.pid == CHILD && target.sock_idx == SECOND_IDX)
+        );
 
         udp_unregister(PARENT, FIRST_IDX);
         udp_unregister(CHILD, FIRST_IDX);
         let targets = udp_lookup([127, 0, 0, 1], PORT);
         assert_eq!(targets.len(), 1);
-        assert_eq!(
-            (targets[0].pid, targets[0].sock_idx),
-            (PARENT, SECOND_IDX)
-        );
+        assert_eq!((targets[0].pid, targets[0].sock_idx), (PARENT, SECOND_IDX));
 
         udp_unregister(PARENT, SECOND_IDX);
     }

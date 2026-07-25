@@ -7,6 +7,7 @@
  * Supported suites:
  *   - "syscall-io": pipe/file throughput and syscall latency
  *   - "process-lifecycle": hello start, fork, clone
+ *   - "spawn-scratch": ordinary/large spawn and retained scratch capacity
  *   - "wordpress": nginx + PHP-FPM boot with WordPress page load
  *   - "mariadb-aria": MariaDB with Aria engine
  *   - "mariadb-innodb": MariaDB with InnoDB engine
@@ -21,6 +22,7 @@ import {
 } from "../../lib/kernel-owned-boot";
 import { writeVfsFile } from "../../lib/init/vfs-utils";
 import { MySqlBrowserClient } from "../../lib/mysql-client";
+import { collectSpawnScratchEvidence } from "../../../../benchmarks/spawn-scratch-evidence";
 
 // Micro-benchmark wasm URLs (always built by scripts/build-programs.sh)
 import pipeWasmUrl from "../../../../benchmarks/wasm/pipe-throughput.wasm?url";
@@ -34,140 +36,27 @@ import helloWasmUrl from "../../../../benchmarks/wasm/hello.wasm?url";
 // Kernel
 import kernelWasmUrl from "@kernel-wasm?url";
 
-/**
- * Optional application-binary URL imports are resolved via `import.meta.glob`.
- * Static top-level `?url` imports fail the whole page load if any file is
- * missing, which hangs every suite on the Playwright harness — even
- * micro-benchmarks that don't need the missing binary. `import.meta.glob`
- * returns an empty map for missing files, so missing binaries surface as a
- * per-suite failure with a helpful build hint instead of blocking page load.
- */
-// Paths are relative to this file (apps/browser-demos/pages/benchmark/main.ts).
-// Vite normalizes glob result keys, so callers must use the same relative
-// strings declared here.
-const OPTIONAL_URLS = {
-  ...import.meta.glob("../../../../packages/registry/erlang/bin/beam.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../packages/registry/erlang/beam.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../packages/registry/nginx/nginx.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../local-binaries/programs/wasm32/nginx.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../binaries/programs/wasm32/nginx.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../binaries/programs/wasm32/php/php-fpm.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../local-binaries/programs/wasm32/php/php-fpm.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../packages/registry/coreutils/bin/coreutils.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../local-binaries/programs/wasm32/coreutils.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../binaries/programs/wasm32/coreutils.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../packages/registry/grep/bin/grep.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../local-binaries/programs/wasm32/grep.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../binaries/programs/wasm32/grep.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../packages/registry/sed/bin/sed.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../local-binaries/programs/wasm32/sed.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../binaries/programs/wasm32/sed.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../packages/registry/mariadb/mariadb-install/bin/mariadbd.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../local-binaries/programs/wasm32/mariadb/mariadbd.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../binaries/programs/wasm32/mariadb/mariadbd.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../packages/registry/mariadb/mariadb-install/share/mysql/mysql_system_tables.sql", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../packages/registry/mariadb/mariadb-install/share/mysql/mysql_system_tables_data.sql", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../packages/registry/mariadb/mariadb-install-64/bin/mariadbd.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../local-binaries/programs/wasm64/mariadb/mariadbd.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../binaries/programs/wasm64/mariadb/mariadbd.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../packages/registry/mariadb/mariadb-install-64/share/mysql/mysql_system_tables.sql", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../packages/registry/mariadb/mariadb-install-64/share/mysql/mysql_system_tables_data.sql", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../local-binaries/programs/wasm32/erlang-vfs.vfs.zst", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../binaries/programs/wasm32/erlang-vfs.vfs.zst", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../public/erlang.vfs.zst", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../local-binaries/programs/wasm32/wordpress.vfs.zst", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../binaries/programs/wasm32/wordpress.vfs.zst", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../public/wordpress.vfs.zst", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../public/mariadb.vfs.zst", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../public/mariadb-64.vfs.zst", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../local-binaries/programs/wasm32/mariadb-vfs.vfs.zst", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../binaries/programs/wasm32/mariadb-vfs.vfs.zst", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../local-binaries/programs/wasm64/mariadb-vfs.vfs.zst", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../binaries/programs/wasm64/mariadb-vfs.vfs.zst", {
-    query: "?url", import: "default",
-  }),
-} as Record<string, () => Promise<string>>;
+type OptionalUrlLoaders = Record<string, () => Promise<string>>;
+
+let optionalUrlLoadersPromise: Promise<OptionalUrlLoaders> | undefined;
+
+function optionalUrlLoaders(): Promise<OptionalUrlLoaders> {
+  // WHY: process/syscall micro-benchmarks do not consume application packages.
+  // Loading this graph only for application suites keeps an unrelated missing
+  // package from blocking those measurements; the application suite still
+  // resolves the same policy-checked URL when it actually requests the asset.
+  optionalUrlLoadersPromise ??= import("./optional-urls").then(
+    ({ OPTIONAL_URLS }) => OPTIONAL_URLS,
+  );
+  return optionalUrlLoadersPromise;
+}
 
 async function loadOptionalUrl(
   relPath: string,
   label: string,
   buildHint: string,
 ): Promise<string> {
-  const loader = OPTIONAL_URLS[relPath];
+  const loader = (await optionalUrlLoaders())[relPath];
   if (!loader) {
     throw new Error(`${label} is not built. Run: ${buildHint}`);
   }
@@ -179,9 +68,10 @@ async function loadOptionalUrlFrom(
   label: string,
   buildHint: string,
 ): Promise<string> {
+  const loaders = await optionalUrlLoaders();
   for (const relPath of relPaths) {
-    const loader = OPTIONAL_URLS[relPath];
-    if (loader) return loadOptionalUrl(relPath, label, buildHint);
+    const loader = loaders[relPath];
+    if (loader) return loader();
   }
   throw new Error(`${label} is not built. Run: ${buildHint}`);
 }
@@ -258,7 +148,12 @@ async function runProgramWithExecMap(
   programBytes: ArrayBuffer,
   argv: string[],
   execMap: Array<{ path: string; url: string; size: number }>,
-): Promise<{ exitCode: number; stdout: string }> {
+): Promise<{
+  exitCode: number;
+  stdout: string;
+  spawnScratchCapacity: number;
+  kernelMemoryPages: number;
+}> {
   let stdout = "";
   // Bake the exec-map entries into the image as lazy files; the worker fetches
   // them on demand when the child execs them.
@@ -276,7 +171,12 @@ async function runProgramWithExecMap(
   try {
     await kernel.initFromImage({ vfsImage });
     const exitCode = await kernel.spawn(programBytes, argv);
-    return { exitCode, stdout };
+    return {
+      exitCode,
+      stdout,
+      spawnScratchCapacity: await kernel.getSpawnScratchCapacity(),
+      kernelMemoryPages: await kernel.getKernelMemoryPages(),
+    };
   } finally {
     try { await kernel.destroy(); } catch {}
     await settleWebKitReclaim();
@@ -333,6 +233,12 @@ async function runProcessLifecycle(): Promise<Record<string, number>> {
   if (clone.exitCode !== 0) throw new Error("clone-bench failed");
   Object.assign(results, parseMetrics(clone.stdout));
 
+  return results;
+}
+
+// ─── spawn-scratch ─────────────────────────────────────────────────────────
+
+async function runSpawnScratch(): Promise<Record<string, number>> {
   log("  Running spawn-bench...");
   // posix_spawn — non-forking SYS_SPAWN fast path. The child is the
   // existing hello.wasm; pre-stage it at /bin/hello via registerLazyFiles
@@ -345,9 +251,11 @@ async function runProcessLifecycle(): Promise<Record<string, number>> {
     { path: "/bin/hello", url: helloWasmUrl, size: helloSize },
   ]);
   if (spawn.exitCode !== 0) throw new Error(`spawn-bench failed: ${spawn.stdout}`);
-  Object.assign(results, parseMetrics(spawn.stdout));
-
-  return results;
+  return collectSpawnScratchEvidence({
+    stdout: spawn.stdout,
+    retainedCapacity: spawn.spawnScratchCapacity,
+    kernelMemoryPages: spawn.kernelMemoryPages,
+  });
 }
 
 // ─── erlang-ring ────────────────────────────────────────────────────────────
@@ -984,6 +892,7 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
 const SUITES: Record<string, () => Promise<Record<string, number>>> = {
   "syscall-io": runSyscallIo,
   "process-lifecycle": runProcessLifecycle,
+  "spawn-scratch": runSpawnScratch,
   "wordpress": runWordPress,
   "mariadb-aria": () => runMariaDbWithEngine("Aria", "wasm32"),
   "mariadb-aria-64": () => runMariaDbWithEngine("Aria", "wasm64"),

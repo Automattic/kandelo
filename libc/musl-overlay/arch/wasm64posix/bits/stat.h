@@ -1,11 +1,11 @@
 /* bits/stat.h — wasm64posix struct stat
  *
- * The kernel's WasmStat writes the first 88 bytes of this structure
- * (through st_ctim). The remaining fields (st_rdev, st_blksize,
- * st_blocks) are populated by musl's fstatat conversion logic or
- * remain zero.
+ * The kernel writes a complete 112-byte native kstat and musl converts it to
+ * this same-sized public record.  The first 88 bytes carry WasmStat's
+ * filesystem metadata and the final three fields are initialized explicitly,
+ * even when the filesystem does not yet provide them.
  *
- * Field layout through st_ctim MUST match crates/shared/src/lib.rs.
+ * The complete layout MUST match crates/shared/src/process_layout.rs.
  */
 
 struct stat {
@@ -19,13 +19,13 @@ struct stat {
 	struct timespec    st_atim;         /* offset 40  (16 bytes on wasm64) */
 	struct timespec    st_mtim;         /* offset 56  (16 bytes) */
 	struct timespec    st_ctim;         /* offset 72  (16 bytes) */
-	/* --- end of kernel WasmStat (88 bytes) --- */
+	/* --- end of the kernel's internal WasmStat prefix (88 bytes) --- */
 	unsigned long long st_rdev;         /* offset 88 */
 	int                st_blksize;      /* offset 96 */
-	long long          st_blocks;       /* offset 100 (pad to 104? or 108) */
+	long long          st_blocks;       /* offset 104 */
 };
 
-/* Key kernel-layout offsets must still match */
+_Static_assert(sizeof(struct stat) == 112, "struct stat size mismatch");
 _Static_assert(__builtin_offsetof(struct stat, st_size) == 32,
 	"st_size offset mismatch");
 _Static_assert(__builtin_offsetof(struct stat, st_atim) == 40,
@@ -34,3 +34,9 @@ _Static_assert(__builtin_offsetof(struct stat, st_mtim) == 56,
 	"st_mtim offset mismatch");
 _Static_assert(__builtin_offsetof(struct stat, st_ctim) == 72,
 	"st_ctim offset mismatch");
+_Static_assert(__builtin_offsetof(struct stat, st_rdev) == 88,
+	"st_rdev offset mismatch");
+_Static_assert(__builtin_offsetof(struct stat, st_blksize) == 96,
+	"st_blksize offset mismatch");
+_Static_assert(__builtin_offsetof(struct stat, st_blocks) == 104,
+	"st_blocks offset mismatch");

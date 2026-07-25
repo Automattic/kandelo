@@ -1,6 +1,8 @@
 #![no_std]
 
 pub mod host_abi;
+pub mod ioctl_contract;
+pub mod process_layout;
 
 /// Kernel ABI version.
 ///
@@ -88,6 +90,11 @@ pub mod host_abi;
 ///     references, complete exceptions, mutable reference globals, and mutable
 ///     tables are serialized as versioned process-owned recipes and rebuilt
 ///     with fresh instance-local identities before continuation replay.
+///     Variable-sized host writes into reusable kernel spawn storage use a
+///     tokenized begin/copy/commit transaction, and System V IPC control
+///     transfers plus caller-native signal-stack, interval-timer, POSIX
+///     message-queue, filesystem-statistics, and system-information records
+///     use required pointer-width-aware kernel structure sizes.
 pub const ABI_VERSION: u32 = 43;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
@@ -96,6 +103,201 @@ pub const ABI_VERSION: u32 = 43;
 /// wasm32 and wasm64 guests therefore receive the same four-byte raw mask;
 /// changing this width is an ABI change.
 pub const SCHED_AFFINITY_MASK_SIZE: u32 = 4;
+
+/// Kandelo's advertised cross-layer POSIX limits.
+///
+/// Keep these outside any one syscall protocol: libc headers, Rust syscall
+/// implementations, and TypeScript host validation all consume the generated
+/// values. Parser-specific defensive limits belong with their parser instead.
+pub mod platform_limits {
+    pub const ARG_MAX_BYTES: usize = 4 * 1024 * 1024;
+    pub const PATH_MAX_BYTES: usize = 4096;
+    pub const IOV_MAX: usize = 1024;
+}
+
+/// Cross-layer layout values and defensive limits for the non-forking spawn
+/// protocol.
+///
+/// The `POSIX_*` aliases deliberately refer to the advertised platform
+/// limits. The count caps are defensive parser limits for this wire
+/// representation, not additional POSIX limits on applications.
+pub mod spawn_contract {
+    use core::mem::size_of;
+
+    use super::platform_limits;
+
+    pub const POSIX_ARG_MAX_BYTES: usize = platform_limits::ARG_MAX_BYTES;
+    pub const POSIX_PATH_MAX_BYTES: usize = platform_limits::PATH_MAX_BYTES;
+
+    pub const WIRE_STRING_OFFSET_BYTES: usize = size_of::<u32>();
+
+    pub const WIRE_HEADER_ARGC_OFFSET: usize = 0;
+    pub const WIRE_HEADER_ENVC_OFFSET: usize = WIRE_HEADER_ARGC_OFFSET + size_of::<u32>();
+    pub const WIRE_HEADER_ACTION_COUNT_OFFSET: usize = WIRE_HEADER_ENVC_OFFSET + size_of::<u32>();
+    pub const WIRE_HEADER_ATTR_FLAGS_OFFSET: usize =
+        WIRE_HEADER_ACTION_COUNT_OFFSET + size_of::<u32>();
+    pub const WIRE_HEADER_PGRP_OFFSET: usize = WIRE_HEADER_ATTR_FLAGS_OFFSET + size_of::<u32>();
+    pub const WIRE_HEADER_PAD_OFFSET: usize = WIRE_HEADER_PGRP_OFFSET + size_of::<i32>();
+    pub const WIRE_HEADER_SIGDEF_OFFSET: usize = WIRE_HEADER_PAD_OFFSET + size_of::<u32>();
+    pub const WIRE_HEADER_SIGMASK_OFFSET: usize = WIRE_HEADER_SIGDEF_OFFSET + size_of::<u64>();
+    pub const WIRE_HEADER_BYTES: usize = WIRE_HEADER_SIGMASK_OFFSET + size_of::<u64>();
+
+    pub const WIRE_ACTION_OP_OFFSET: usize = 0;
+    pub const WIRE_ACTION_FD_OFFSET: usize = WIRE_ACTION_OP_OFFSET + size_of::<u32>();
+    pub const WIRE_ACTION_NEWFD_OFFSET: usize = WIRE_ACTION_FD_OFFSET + size_of::<i32>();
+    pub const WIRE_ACTION_PATH_OFF_OFFSET: usize = WIRE_ACTION_NEWFD_OFFSET + size_of::<i32>();
+    pub const WIRE_ACTION_PATH_LEN_OFFSET: usize = WIRE_ACTION_PATH_OFF_OFFSET + size_of::<u32>();
+    pub const WIRE_ACTION_OFLAG_OFFSET: usize = WIRE_ACTION_PATH_LEN_OFFSET + size_of::<u32>();
+    pub const WIRE_ACTION_MODE_OFFSET: usize = WIRE_ACTION_OFLAG_OFFSET + size_of::<i32>();
+    pub const WIRE_ACTION_RECORD_BYTES: usize = WIRE_ACTION_MODE_OFFSET + size_of::<u32>();
+
+    pub const WIRE_OP_OPEN: u32 = 0;
+    pub const WIRE_OP_CLOSE: u32 = 1;
+    pub const WIRE_OP_DUP2: u32 = 2;
+    pub const WIRE_OP_CHDIR: u32 = 3;
+    pub const WIRE_OP_FCHDIR: u32 = 4;
+
+    // These are every musl flag bit transported byte-for-byte in the blob.
+    // Kernel support remains an explicit subset in `kernel::spawn::attr_flags`;
+    // defining a transport value here does not claim the behavior exists.
+    pub const ATTR_RESETIDS: u32 = 0x01;
+    pub const ATTR_SETPGROUP: u32 = 0x02;
+    pub const ATTR_SETSIGDEF: u32 = 0x04;
+    pub const ATTR_SETSIGMASK: u32 = 0x08;
+    pub const ATTR_SETSCHEDPARAM: u32 = 0x10;
+    pub const ATTR_SETSCHEDULER: u32 = 0x20;
+    pub const ATTR_USEVFORK: u32 = 0x40;
+    pub const ATTR_SETSID: u32 = 0x80;
+    pub const MAX_ARGV_COUNT: usize = 4096;
+    pub const MAX_ENVP_COUNT: usize = 4096;
+    pub const MAX_ACTION_COUNT: usize = 1024;
+
+    /// Complete transport ceiling: POSIX argv/environment budget plus the
+    /// defensive maximum number of PATH_MAX-sized file actions.
+    pub const WIRE_MAX_BYTES: usize = POSIX_ARG_MAX_BYTES
+        + WIRE_HEADER_BYTES
+        + MAX_ACTION_COUNT * (WIRE_ACTION_RECORD_BYTES + POSIX_PATH_MAX_BYTES);
+
+    // WHY: counts, string offsets, and action path lengths are serialized as
+    // u32. Keep the complete representation within that address domain so a
+    // future platform-limit change cannot make the C encoder truncate a
+    // `size_t` cursor while Rust and TypeScript continue accepting the blob.
+    const _: () = {
+        assert!(MAX_ARGV_COUNT <= u32::MAX as usize);
+        assert!(MAX_ENVP_COUNT <= u32::MAX as usize);
+        assert!(MAX_ACTION_COUNT <= u32::MAX as usize);
+        assert!(POSIX_PATH_MAX_BYTES <= u32::MAX as usize);
+        assert!(WIRE_MAX_BYTES <= u32::MAX as usize);
+    };
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn wire_layout_fields_are_contiguous_and_cover_the_records() {
+            assert_eq!(WIRE_STRING_OFFSET_BYTES, size_of::<u32>());
+
+            assert_eq!(WIRE_HEADER_ARGC_OFFSET, 0);
+            assert_eq!(
+                WIRE_HEADER_ENVC_OFFSET,
+                WIRE_HEADER_ARGC_OFFSET + size_of::<u32>()
+            );
+            assert_eq!(
+                WIRE_HEADER_ACTION_COUNT_OFFSET,
+                WIRE_HEADER_ENVC_OFFSET + size_of::<u32>()
+            );
+            assert_eq!(
+                WIRE_HEADER_ATTR_FLAGS_OFFSET,
+                WIRE_HEADER_ACTION_COUNT_OFFSET + size_of::<u32>()
+            );
+            assert_eq!(
+                WIRE_HEADER_PGRP_OFFSET,
+                WIRE_HEADER_ATTR_FLAGS_OFFSET + size_of::<u32>()
+            );
+            assert_eq!(
+                WIRE_HEADER_PAD_OFFSET,
+                WIRE_HEADER_PGRP_OFFSET + size_of::<i32>()
+            );
+            assert_eq!(
+                WIRE_HEADER_SIGDEF_OFFSET,
+                WIRE_HEADER_PAD_OFFSET + size_of::<u32>()
+            );
+            assert_eq!(
+                WIRE_HEADER_SIGMASK_OFFSET,
+                WIRE_HEADER_SIGDEF_OFFSET + size_of::<u64>()
+            );
+            assert_eq!(
+                WIRE_HEADER_BYTES,
+                WIRE_HEADER_SIGMASK_OFFSET + size_of::<u64>()
+            );
+            assert_eq!(WIRE_HEADER_BYTES, 40);
+
+            assert_eq!(WIRE_ACTION_OP_OFFSET, 0);
+            assert_eq!(
+                WIRE_ACTION_FD_OFFSET,
+                WIRE_ACTION_OP_OFFSET + size_of::<u32>()
+            );
+            assert_eq!(
+                WIRE_ACTION_NEWFD_OFFSET,
+                WIRE_ACTION_FD_OFFSET + size_of::<i32>()
+            );
+            assert_eq!(
+                WIRE_ACTION_PATH_OFF_OFFSET,
+                WIRE_ACTION_NEWFD_OFFSET + size_of::<i32>()
+            );
+            assert_eq!(
+                WIRE_ACTION_PATH_LEN_OFFSET,
+                WIRE_ACTION_PATH_OFF_OFFSET + size_of::<u32>()
+            );
+            assert_eq!(
+                WIRE_ACTION_OFLAG_OFFSET,
+                WIRE_ACTION_PATH_LEN_OFFSET + size_of::<u32>()
+            );
+            assert_eq!(
+                WIRE_ACTION_MODE_OFFSET,
+                WIRE_ACTION_OFLAG_OFFSET + size_of::<i32>()
+            );
+            assert_eq!(
+                WIRE_ACTION_RECORD_BYTES,
+                WIRE_ACTION_MODE_OFFSET + size_of::<u32>()
+            );
+            assert_eq!(WIRE_ACTION_RECORD_BYTES, 28);
+        }
+
+        #[test]
+        fn transported_attr_bits_cover_musls_complete_flag_byte() {
+            assert_eq!(ATTR_RESETIDS, 0x01);
+            assert_eq!(ATTR_SETPGROUP, 0x02);
+            assert_eq!(ATTR_SETSIGDEF, 0x04);
+            assert_eq!(ATTR_SETSIGMASK, 0x08);
+            assert_eq!(ATTR_SETSCHEDPARAM, 0x10);
+            assert_eq!(ATTR_SETSCHEDULER, 0x20);
+            assert_eq!(ATTR_USEVFORK, 0x40);
+            assert_eq!(ATTR_SETSID, 0x80);
+            assert_eq!(
+                ATTR_RESETIDS
+                    | ATTR_SETPGROUP
+                    | ATTR_SETSIGDEF
+                    | ATTR_SETSIGMASK
+                    | ATTR_SETSCHEDPARAM
+                    | ATTR_SETSCHEDULER
+                    | ATTR_USEVFORK
+                    | ATTR_SETSID,
+                0xff
+            );
+        }
+
+        #[test]
+        fn wire_counts_lengths_and_offsets_are_u32_representable() {
+            assert!(MAX_ARGV_COUNT <= u32::MAX as usize);
+            assert!(MAX_ENVP_COUNT <= u32::MAX as usize);
+            assert!(MAX_ACTION_COUNT <= u32::MAX as usize);
+            assert!(POSIX_PATH_MAX_BYTES <= u32::MAX as usize);
+            assert!(WIRE_MAX_BYTES <= u32::MAX as usize);
+        }
+    }
+}
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -458,12 +660,16 @@ pub enum ChannelStatus {
 impl ChannelStatus {
     /// Convert a raw u32 value to a ChannelStatus variant.
     pub fn from_u32(val: u32) -> Option<ChannelStatus> {
-        match val {
-            0 => Some(ChannelStatus::Idle),
-            1 => Some(ChannelStatus::Pending),
-            2 => Some(ChannelStatus::Complete),
-            3 => Some(ChannelStatus::Error),
-            _ => None,
+        if val == Self::Idle as u32 {
+            Some(Self::Idle)
+        } else if val == Self::Pending as u32 {
+            Some(Self::Pending)
+        } else if val == Self::Complete as u32 {
+            Some(Self::Complete)
+        } else if val == Self::Error as u32 {
+            Some(Self::Error)
+        } else {
+            None
         }
     }
 }
@@ -650,6 +856,12 @@ pub mod fcntl_cmd {
     pub const F_OFD_SETLKW: u32 = 38;
 }
 
+/// `prctl(2)` operation constants implemented by the kernel.
+pub mod prctl {
+    pub const PR_SET_NAME: u32 = 15;
+    pub const PR_GET_NAME: u32 = 16;
+}
+
 /// Lock type constants for advisory record locking.
 pub mod lock_type {
     pub const F_RDLCK: u32 = 0;
@@ -695,6 +907,15 @@ pub mod socket {
     pub const SOCK_CLOEXEC: u32 = 0o2000000;
     pub const SOL_SOCKET: u32 = 1;
     pub const SCM_RIGHTS: u32 = 1;
+    /// Serialized width of one file descriptor in SCM_RIGHTS payload data.
+    pub const SCM_RIGHTS_FD_BYTES: usize = 4;
+    /// Exact iovec-record count in a nonempty flattened kernel message wire.
+    ///
+    /// WHY: public sendmsg/recvmsg still accept IOV_MAX native entries. The
+    /// host flattens or scatters those entries through one canonical scratch
+    /// iovec so Rust never interprets a caller-width table. An empty caller
+    /// list uses zero records; every nonempty list uses exactly this count.
+    pub const KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT: u32 = 1;
     pub const SCM_CREDENTIALS: u32 = 2;
     pub const SO_REUSEADDR: u32 = 2;
     pub const SO_ERROR: u32 = 4;
@@ -772,6 +993,7 @@ pub mod socket {
     pub const MSG_TRUNC: u32 = 0x20;
     pub const MSG_DONTWAIT: u32 = 64;
     pub const MSG_NOSIGNAL: u32 = 0x4000;
+    pub const MSG_CMSG_CLOEXEC: u32 = 0x4000_0000;
 }
 
 /// Poll constants.
@@ -854,49 +1076,125 @@ pub mod mode {
 ///   68      4B    request flags
 ///   72      64KB  data transfer buffer
 pub mod channel {
+    use super::kernel_scratch_wire;
+    use core::mem::size_of;
+
     /// Byte offset of the status field (i32, atomic).
     pub const STATUS_OFFSET: usize = 0;
+    pub const STATUS_SIZE: usize = size_of::<u32>();
     /// Byte offset of the syscall number field (i32).
-    pub const SYSCALL_OFFSET: usize = 4;
+    pub const SYSCALL_OFFSET: usize = STATUS_OFFSET + STATUS_SIZE;
+    pub const SYSCALL_SIZE: usize = size_of::<u32>();
     /// Byte offset of the first argument slot (i64 each, 8 bytes).
-    pub const ARGS_OFFSET: usize = 8;
+    pub const ARGS_OFFSET: usize = SYSCALL_OFFSET + SYSCALL_SIZE;
     /// Number of argument slots.
     pub const ARGS_COUNT: usize = 6;
     /// Size of each argument slot in bytes.
-    pub const ARG_SIZE: usize = 8;
+    pub const ARG_SIZE: usize = size_of::<i64>();
     /// Byte offset of the return value field (i64).
-    pub const RETURN_OFFSET: usize = 56;
+    pub const RETURN_OFFSET: usize = ARGS_OFFSET + ARGS_COUNT * ARG_SIZE;
+    pub const RETURN_SIZE: usize = size_of::<i64>();
     /// Byte offset of the errno field (i32).
-    pub const ERRNO_OFFSET: usize = 64;
+    pub const ERRNO_OFFSET: usize = RETURN_OFFSET + RETURN_SIZE;
+    pub const ERRNO_SIZE: usize = size_of::<u32>();
     /// Byte offset of host/process request flags (u32).
-    pub const REQUEST_FLAGS_OFFSET: usize = 68;
+    pub const REQUEST_FLAGS_OFFSET: usize = ERRNO_OFFSET + ERRNO_SIZE;
+    pub const REQUEST_FLAGS_SIZE: usize = size_of::<u32>();
     /// The request completion is consumed by process-worker JavaScript, not
     /// the libc channel trampoline. Caught signals must remain kernel-pending
     /// until an explicit guest checkpoint can invoke the handler after the
     /// owning host transition returns.
     pub const REQUEST_FLAG_DEFER_SIGNAL_DELIVERY: u32 = 1 << 0;
+    /// Total header size before data buffer.
+    pub const HEADER_SIZE: usize = REQUEST_FLAGS_OFFSET + REQUEST_FLAGS_SIZE;
     /// Byte offset of the data buffer region.
-    pub const DATA_OFFSET: usize = 72;
+    pub const DATA_OFFSET: usize = HEADER_SIZE;
     /// Size of the data buffer.
     pub const DATA_SIZE: usize = 65536;
-    /// Total header size before data buffer.
-    pub const HEADER_SIZE: usize = 72;
     /// Minimum total size of a channel in bytes (header + 64 KiB data buffer).
     pub const MIN_CHANNEL_SIZE: usize = HEADER_SIZE + DATA_SIZE;
 
-    // Signal delivery area — last 48 bytes of the data buffer.
+    // Signal delivery area — reserved at the end of the data buffer.
     // After each syscall, if a signal with a Handler disposition is pending,
     // the kernel writes delivery info here so the glue code can invoke it.
+    /// Bytes populated by the kernel signal-delivery wire.
+    pub const SIG_DELIVERY_SIZE: usize = kernel_scratch_wire::SIGNAL_DELIVERY_BYTES as usize;
+    /// Keep the reserved tail naturally aligned even though the wire is packed.
+    pub const SIG_AREA_ALIGNMENT: usize = core::mem::align_of::<u64>();
+    /// Complete reserved signal area, including any trailing alignment pad.
+    pub const SIG_AREA_SIZE: usize =
+        (SIG_DELIVERY_SIZE + SIG_AREA_ALIGNMENT - 1) / SIG_AREA_ALIGNMENT * SIG_AREA_ALIGNMENT;
     /// Base offset of signal delivery area.
-    pub const SIG_BASE: usize = DATA_OFFSET + DATA_SIZE - 48;
+    pub const SIG_BASE: usize = DATA_OFFSET + DATA_SIZE - SIG_AREA_SIZE;
     /// Signal number to deliver (u32). 0 = no signal.
-    pub const SIG_SIGNUM: usize = SIG_BASE;
+    pub const SIG_SIGNUM: usize = SIG_BASE + kernel_scratch_wire::SIGNAL_SIGNUM_OFFSET;
     /// Handler function table index (u32).
-    pub const SIG_HANDLER: usize = SIG_BASE + 4;
+    pub const SIG_HANDLER: usize = SIG_BASE + kernel_scratch_wire::SIGNAL_HANDLER_OFFSET;
     /// sa_flags from sigaction (u32).
-    pub const SIG_FLAGS: usize = SIG_BASE + 8;
+    pub const SIG_FLAGS: usize = SIG_BASE + kernel_scratch_wire::SIGNAL_FLAGS_OFFSET;
+    /// Raw `union sigval` payload bits (u64).
+    ///
+    /// wasm32 callers use the low 32 bits. Keeping the channel field at the
+    /// widest supported pointer width lets wasm64 `sival_ptr` values survive
+    /// delivery without narrowing.
+    pub const SIG_SI_VALUE: usize = SIG_BASE + kernel_scratch_wire::SIGNAL_SI_VALUE_OFFSET;
     /// Saved blocked mask before handler (u64, little-endian).
-    pub const SIG_OLD_MASK: usize = SIG_BASE + 16;
+    pub const SIG_OLD_MASK: usize = SIG_BASE + kernel_scratch_wire::SIGNAL_OLD_MASK_OFFSET;
+    /// siginfo si_code (i32).
+    pub const SIG_SI_CODE: usize = SIG_BASE + kernel_scratch_wire::SIGNAL_SI_CODE_OFFSET;
+    /// First siginfo union word: pid for ordinary signals, timer ID for SI_TIMER.
+    pub const SIGINFO_WORD_1: usize = SIG_BASE + kernel_scratch_wire::SIGNAL_SIGINFO_WORD_1_OFFSET;
+    /// Second siginfo union word: uid for ordinary signals, overrun for SI_TIMER.
+    pub const SIGINFO_WORD_2: usize = SIG_BASE + kernel_scratch_wire::SIGNAL_SIGINFO_WORD_2_OFFSET;
+    /// Alternate signal-stack pointer, or zero when no switch is needed.
+    pub const SIG_ALT_SP: usize = SIG_BASE + kernel_scratch_wire::SIGNAL_ALT_SP_OFFSET;
+    /// Alternate signal-stack size.
+    pub const SIG_ALT_SIZE: usize = SIG_BASE + kernel_scratch_wire::SIGNAL_ALT_SIZE_OFFSET;
+}
+
+#[cfg(test)]
+mod channel_abi_tests {
+    use super::{channel, kernel_scratch_wire};
+
+    #[test]
+    fn signal_delivery_wire_fits_the_reserved_channel_tail() {
+        assert_eq!(channel::SYSCALL_OFFSET, channel::STATUS_SIZE);
+        assert_eq!(
+            channel::ARGS_OFFSET,
+            channel::SYSCALL_OFFSET + channel::SYSCALL_SIZE,
+        );
+        assert_eq!(
+            channel::RETURN_OFFSET,
+            channel::ARGS_OFFSET + channel::ARGS_COUNT * channel::ARG_SIZE,
+        );
+        assert_eq!(
+            channel::ERRNO_OFFSET,
+            channel::RETURN_OFFSET + channel::RETURN_SIZE,
+        );
+        assert_eq!(
+            channel::REQUEST_FLAGS_OFFSET,
+            channel::ERRNO_OFFSET + channel::ERRNO_SIZE,
+        );
+        assert_eq!(
+            channel::DATA_OFFSET,
+            channel::REQUEST_FLAGS_OFFSET + channel::REQUEST_FLAGS_SIZE,
+        );
+        assert_eq!(
+            channel::SIG_BASE + channel::SIG_AREA_SIZE,
+            channel::DATA_OFFSET + channel::DATA_SIZE,
+        );
+        assert_eq!(
+            channel::SIG_ALT_SIZE + kernel_scratch_wire::SIGNAL_ALT_SIZE_BYTES,
+            channel::SIG_BASE + channel::SIG_DELIVERY_SIZE,
+        );
+        assert_eq!(
+            channel::SIG_DELIVERY_SIZE,
+            kernel_scratch_wire::SIGNAL_DELIVERY_BYTES as usize,
+        );
+        assert!(channel::SIG_DELIVERY_SIZE <= channel::SIG_AREA_SIZE);
+        assert_eq!(channel::SIG_AREA_SIZE - channel::SIG_DELIVERY_SIZE, 0);
+        assert_eq!(channel::SIG_BASE % channel::SIG_AREA_ALIGNMENT, 0);
+    }
 }
 
 /// Stat structure for the Wasm POSIX interface.
@@ -1106,6 +1404,41 @@ pub struct KernelWaitResult {
 
 pub const KERNEL_WAIT_RESULT_SIZE: u32 = core::mem::size_of::<KernelWaitResult>() as u32;
 
+/// Fixed host/kernel records borrowed through kernel-owned scratch.
+///
+/// These are representation limits, not public POSIX limits. Keeping them in
+/// the shared ABI source lets Rust validate every explicit export capacity and
+/// lets generated host code size the matching opaque borrow without copying
+/// protocol literals across languages.
+pub mod kernel_scratch_wire {
+    use super::WasmFlock;
+    use core::mem::size_of;
+
+    pub const SIGNAL_WORD_BYTES: usize = size_of::<u32>();
+    pub const SIGNAL_SI_VALUE_BYTES: usize = size_of::<u64>();
+    pub const SIGNAL_OLD_MASK_BYTES: usize = size_of::<u64>();
+    pub const SIGNAL_ALT_SP_BYTES: usize = size_of::<u64>();
+    pub const SIGNAL_ALT_SIZE_BYTES: usize = size_of::<u64>();
+    pub const SIGNAL_SIGNUM_OFFSET: usize = 0;
+    pub const SIGNAL_HANDLER_OFFSET: usize = SIGNAL_SIGNUM_OFFSET + SIGNAL_WORD_BYTES;
+    pub const SIGNAL_FLAGS_OFFSET: usize = SIGNAL_HANDLER_OFFSET + SIGNAL_WORD_BYTES;
+    pub const SIGNAL_SI_VALUE_OFFSET: usize = SIGNAL_FLAGS_OFFSET + SIGNAL_WORD_BYTES;
+    pub const SIGNAL_OLD_MASK_OFFSET: usize = SIGNAL_SI_VALUE_OFFSET + SIGNAL_SI_VALUE_BYTES;
+    pub const SIGNAL_SI_CODE_OFFSET: usize = SIGNAL_OLD_MASK_OFFSET + SIGNAL_OLD_MASK_BYTES;
+    pub const SIGNAL_SIGINFO_WORD_1_OFFSET: usize = SIGNAL_SI_CODE_OFFSET + SIGNAL_WORD_BYTES;
+    pub const SIGNAL_SIGINFO_WORD_2_OFFSET: usize =
+        SIGNAL_SIGINFO_WORD_1_OFFSET + SIGNAL_WORD_BYTES;
+    pub const SIGNAL_ALT_SP_OFFSET: usize = SIGNAL_SIGINFO_WORD_2_OFFSET + SIGNAL_WORD_BYTES;
+    pub const SIGNAL_ALT_SIZE_OFFSET: usize = SIGNAL_ALT_SP_OFFSET + SIGNAL_ALT_SP_BYTES;
+    pub const SIGNAL_DELIVERY_BYTES: u32 = (SIGNAL_ALT_SIZE_OFFSET + SIGNAL_ALT_SIZE_BYTES) as u32;
+    pub const FD_PAIR_BYTES: u32 = 8;
+    pub const MQUEUE_NOTIFICATION_BYTES: u32 = 8;
+    pub const SOCKLEN_BYTES: u32 = 4;
+    pub const PRCTL_NAME_BYTES: u32 = 16;
+    pub const FCNTL_FLOCK_BYTES: u32 = size_of::<WasmFlock>() as u32;
+    pub const SIGNAL_MASK_BYTES: u32 = size_of::<u64>() as u32;
+}
+
 #[cfg(test)]
 mod wait_abi_tests {
     use super::{KERNEL_WAIT_RESULT_SIZE, KernelWaitResult, WASM_RUSAGE_WIRE_SIZE, WasmRusageWire};
@@ -1174,6 +1507,69 @@ pub struct WasmPollFd {
     pub revents: i16,
 }
 
+/// Fixed u32-pointer iovec used only inside kernel-owned scratch.
+///
+/// Guest wasm64 `struct iovec` is wider. The host validates and translates
+/// caller-native records before Rust receives this width-independent wire.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KernelIovecWire {
+    pub base: u32,
+    pub len: u32,
+}
+
+/// Fixed u32-pointer `msghdr` used only inside kernel-owned scratch.
+///
+/// The pointed-to name, control, iovec, and data ranges all live within the
+/// same synchronously leased kernel allocation.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KernelMsghdrWire {
+    pub name: u32,
+    pub name_len: u32,
+    pub iov: u32,
+    pub iov_len: u32,
+    pub control: u32,
+    pub control_len: u32,
+    pub flags: u32,
+}
+
+/// Fixed ancillary-message header used only inside kernel-owned scratch.
+///
+/// This matches the wasm32 C layout by design, but it is not a caller-native
+/// structure. The host translates wasm64 headers and eight-byte CMSG
+/// alignment before and after the synchronous kernel call.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KernelCmsghdrWire {
+    pub cmsg_len: u32,
+    pub cmsg_level: u32,
+    pub cmsg_type: u32,
+}
+
+/// Canonical `struct epoll_event` layout used by both Kandelo musl targets.
+///
+/// The C ABI aligns `epoll_data_t` to eight bytes on wasm32 and wasm64, so
+/// bytes 4..8 are padding. Keep this explicit: treating the record as packed
+/// changes both its stride and the location of `data`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WasmEpollEvent {
+    pub events: u32,
+    pub _pad: u32,
+    pub data: u64,
+}
+
+/// Fixed kernel-scratch header for System V message payloads.
+///
+/// Guest `long` is four bytes on wasm32 and eight on wasm64. The host converts
+/// either native prefix to this width-independent record before invoking Rust.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WasmSysvMessageHeader {
+    pub mtype: i64,
+}
+
 /// Statfs structure for the Wasm POSIX interface.
 ///
 /// Uses `repr(C)` for a stable, predictable memory layout matching
@@ -1193,6 +1589,68 @@ pub struct WasmStatfs {
     pub f_frsize: u32,
     pub f_flags: u32,
     pub _pad: u32,
+}
+
+#[cfg(test)]
+mod native_wire_layout_tests {
+    use super::{
+        KernelCmsghdrWire, KernelIovecWire, KernelMsghdrWire, WasmEpollEvent, WasmFlock,
+        WasmSysvMessageHeader, kernel_scratch_wire, prctl,
+    };
+    use core::mem::{align_of, offset_of, size_of};
+
+    #[test]
+    fn epoll_event_layout_matches_both_kandelo_musl_targets() {
+        assert_eq!(size_of::<WasmEpollEvent>(), 16);
+        assert_eq!(offset_of!(WasmEpollEvent, events), 0);
+        assert_eq!(offset_of!(WasmEpollEvent, _pad), 4);
+        assert_eq!(offset_of!(WasmEpollEvent, data), 8);
+    }
+
+    #[test]
+    fn sysv_message_header_is_one_canonical_i64() {
+        assert_eq!(size_of::<WasmSysvMessageHeader>(), 8);
+        assert_eq!(offset_of!(WasmSysvMessageHeader, mtype), 0);
+    }
+
+    #[test]
+    fn kernel_socket_scratch_wires_use_fixed_u32_fields() {
+        assert_eq!(size_of::<KernelIovecWire>(), 8);
+        assert_eq!(align_of::<KernelIovecWire>(), 4);
+        assert_eq!(offset_of!(KernelIovecWire, base), 0);
+        assert_eq!(offset_of!(KernelIovecWire, len), 4);
+
+        assert_eq!(size_of::<KernelMsghdrWire>(), 28);
+        assert_eq!(align_of::<KernelMsghdrWire>(), 4);
+        assert_eq!(offset_of!(KernelMsghdrWire, name), 0);
+        assert_eq!(offset_of!(KernelMsghdrWire, name_len), 4);
+        assert_eq!(offset_of!(KernelMsghdrWire, iov), 8);
+        assert_eq!(offset_of!(KernelMsghdrWire, iov_len), 12);
+        assert_eq!(offset_of!(KernelMsghdrWire, control), 16);
+        assert_eq!(offset_of!(KernelMsghdrWire, control_len), 20);
+        assert_eq!(offset_of!(KernelMsghdrWire, flags), 24);
+
+        assert_eq!(size_of::<KernelCmsghdrWire>(), 12);
+        assert_eq!(align_of::<KernelCmsghdrWire>(), 4);
+        assert_eq!(offset_of!(KernelCmsghdrWire, cmsg_len), 0);
+        assert_eq!(offset_of!(KernelCmsghdrWire, cmsg_level), 4);
+        assert_eq!(offset_of!(KernelCmsghdrWire, cmsg_type), 8);
+    }
+
+    #[test]
+    fn special_scratch_contracts_derive_record_sizes_once() {
+        assert_eq!(prctl::PR_SET_NAME, 15);
+        assert_eq!(prctl::PR_GET_NAME, 16);
+        assert_eq!(kernel_scratch_wire::PRCTL_NAME_BYTES, 16);
+        assert_eq!(
+            kernel_scratch_wire::FCNTL_FLOCK_BYTES,
+            size_of::<WasmFlock>() as u32,
+        );
+        assert_eq!(
+            kernel_scratch_wire::SIGNAL_MASK_BYTES,
+            size_of::<u64>() as u32,
+        );
+    }
 }
 
 /// Process memory layout ABI metadata.
@@ -2303,6 +2761,7 @@ pub mod abi {
     pub const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS: &[&str] = &[
         "__abi_version",
         "kernel_alloc_scratch",
+        "kernel_clear_process_metadata",
         "kernel_create_process",
         "kernel_create_process_with_stdio",
         "kernel_dequeue_signal",
@@ -2321,13 +2780,25 @@ pub mod abi {
         "kernel_ipc_shmdt_for_process",
         "kernel_ipc_shmdt_for_task",
         "kernel_mark_process_signaled",
+        "kernel_msqid_ds_bytes",
         "kernel_pipe_has_readers",
         "kernel_posix_timer_fire",
         "kernel_prepare_write_operation",
+        "kernel_push_process_metadata_entry",
         "kernel_reap_exited_child",
         "kernel_remove_process",
+        "kernel_semctl_array_bytes",
+        "kernel_semid_ds_bytes",
         "kernel_set_current_tid",
+        "kernel_set_cwd",
+        "kernel_shmid_ds_bytes",
         "kernel_spawn_process",
+        "kernel_spawn_reserved_process",
+        "kernel_spawn_scratch_begin",
+        "kernel_spawn_scratch_cancel",
+        "kernel_spawn_scratch_capacity",
+        "kernel_spawn_scratch_pointer",
+        "kernel_spawn_scratch_retained_capacity",
         "kernel_thread_exit",
         "kernel_validate_task",
         "kernel_wait_child_poll",
@@ -2336,10 +2807,8 @@ pub mod abi {
     pub const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS: &[&str] = &[
         "kernel_reserve_host_region",
         "kernel_reserve_host_region_at",
-        "kernel_set_cwd",
         "kernel_set_max_addr",
         "kernel_set_mmap_base",
-        "kernel_set_process_argv",
     ];
 
     pub static HOST_ADAPTER_MANIFEST: HostAdapterManifest = HostAdapterManifest {
@@ -2380,6 +2849,7 @@ pub mod abi {
         pub const SYS_CLONE: u32 = 201;
         pub const SYS_GETTID: u32 = 202;
         pub const SYS_SET_TID_ADDRESS: u32 = 203;
+        pub const SYS_TKILL: u32 = 204;
         pub const SYS_RT_SIGQUEUEINFO: u32 = 205;
         pub const SYS_RT_SIGPENDING: u32 = 206;
         pub const SYS_RT_SIGTIMEDWAIT: u32 = 207;
@@ -2394,26 +2864,40 @@ pub mod abi {
         pub const SYS_CLOCK_SETTIME: u32 = 226;
         pub const SYS_SCHED_YIELD: u32 = 229;
         pub const SYS_SCHED_GETPARAM: u32 = 230;
+        pub const SYS_SCHED_SETPARAM: u32 = 231;
+        pub const SYS_SCHED_SETSCHEDULER: u32 = 233;
         pub const SYS_SCHED_RR_GET_INTERVAL: u32 = 236;
         pub const SYS_SCHED_GETAFFINITY: u32 = 238;
         pub const SYS_EPOLL_CREATE1: u32 = 239;
         pub const SYS_EPOLL_CTL: u32 = 240;
         pub const SYS_EPOLL_PWAIT: u32 = 241;
+        pub const SYS_TIMERFD_CREATE: u32 = 243;
+        pub const SYS_TIMERFD_SETTIME: u32 = 244;
+        pub const SYS_TIMERFD_GETTIME: u32 = 245;
+        pub const SYS_SIGNALFD4: u32 = 246;
         pub const SYS_PRLIMIT64: u32 = 250;
         pub const SYS_PPOLL: u32 = 251;
         pub const SYS_PSELECT6: u32 = 252;
+        pub const SYS_MEMFD_CREATE: u32 = 256;
         pub const SYS_STATX: u32 = 260;
         pub const SYS_SET_ROBUST_LIST: u32 = 261;
         pub const SYS_GET_ROBUST_LIST: u32 = 262;
+        pub const SYS_SYSINFO: u32 = 269;
         pub const SYS_MKNOD: u32 = 271;
         pub const SYS_MKNODAT: u32 = 272;
         pub const SYS_MSYNC: u32 = 278;
         pub const SYS_WAITID: u32 = 288;
+        pub const SYS_COPY_FILE_RANGE: u32 = 290;
+        pub const SYS_SPLICE: u32 = 291;
         pub const SYS_SENDFILE: u32 = 294;
         pub const SYS_PREADV: u32 = 295;
         pub const SYS_PWRITEV: u32 = 296;
+        pub const SYS_PREADV2: u32 = 297;
+        pub const SYS_PWRITEV2: u32 = 298;
         pub const SYS_LCHOWN: u32 = 299;
+        pub const SYS_RENAMEAT2: u32 = 306;
         pub const SYS_FALLOCATE: u32 = 308;
+        pub const SYS_GETCPU: u32 = 325;
         pub const SYS_TIMER_CREATE: u32 = 326;
         pub const SYS_TIMER_SETTIME: u32 = 327;
         pub const SYS_TIMER_GETTIME: u32 = 328;
@@ -2436,6 +2920,7 @@ pub mod abi {
         pub const SYS_SHMAT: u32 = 345;
         pub const SYS_SHMDT: u32 = 346;
         pub const SYS_SHMCTL: u32 = 347;
+        pub const SYS_SIGNALFD: u32 = 377;
         pub const SYS_EPOLL_CREATE: u32 = 378;
         pub const SYS_EPOLL_WAIT: u32 = 379;
         pub const SYS_FACCESSAT2: u32 = 382;
@@ -2472,6 +2957,10 @@ pub mod abi {
             AbiSyscallNumber {
                 name: "SetTidAddress",
                 number: SYS_SET_TID_ADDRESS,
+            },
+            AbiSyscallNumber {
+                name: "Tkill",
+                number: SYS_TKILL,
             },
             AbiSyscallNumber {
                 name: "RtSigqueueinfo",
@@ -2530,6 +3019,14 @@ pub mod abi {
                 number: SYS_SCHED_GETPARAM,
             },
             AbiSyscallNumber {
+                name: "SchedSetparam",
+                number: SYS_SCHED_SETPARAM,
+            },
+            AbiSyscallNumber {
+                name: "SchedSetscheduler",
+                number: SYS_SCHED_SETSCHEDULER,
+            },
+            AbiSyscallNumber {
                 name: "SchedRrGetInterval",
                 number: SYS_SCHED_RR_GET_INTERVAL,
             },
@@ -2550,6 +3047,22 @@ pub mod abi {
                 number: SYS_EPOLL_PWAIT,
             },
             AbiSyscallNumber {
+                name: "TimerfdCreate",
+                number: SYS_TIMERFD_CREATE,
+            },
+            AbiSyscallNumber {
+                name: "TimerfdSettime",
+                number: SYS_TIMERFD_SETTIME,
+            },
+            AbiSyscallNumber {
+                name: "TimerfdGettime",
+                number: SYS_TIMERFD_GETTIME,
+            },
+            AbiSyscallNumber {
+                name: "Signalfd4",
+                number: SYS_SIGNALFD4,
+            },
+            AbiSyscallNumber {
                 name: "Prlimit64",
                 number: SYS_PRLIMIT64,
             },
@@ -2562,6 +3075,10 @@ pub mod abi {
                 number: SYS_PSELECT6,
             },
             AbiSyscallNumber {
+                name: "MemfdCreate",
+                number: SYS_MEMFD_CREATE,
+            },
+            AbiSyscallNumber {
                 name: "Statx",
                 number: SYS_STATX,
             },
@@ -2572,6 +3089,10 @@ pub mod abi {
             AbiSyscallNumber {
                 name: "GetRobustList",
                 number: SYS_GET_ROBUST_LIST,
+            },
+            AbiSyscallNumber {
+                name: "Sysinfo",
+                number: SYS_SYSINFO,
             },
             AbiSyscallNumber {
                 name: "Mknod",
@@ -2590,6 +3111,14 @@ pub mod abi {
                 number: SYS_WAITID,
             },
             AbiSyscallNumber {
+                name: "CopyFileRange",
+                number: SYS_COPY_FILE_RANGE,
+            },
+            AbiSyscallNumber {
+                name: "Splice",
+                number: SYS_SPLICE,
+            },
+            AbiSyscallNumber {
                 name: "Sendfile",
                 number: SYS_SENDFILE,
             },
@@ -2602,12 +3131,28 @@ pub mod abi {
                 number: SYS_PWRITEV,
             },
             AbiSyscallNumber {
+                name: "Preadv2",
+                number: SYS_PREADV2,
+            },
+            AbiSyscallNumber {
+                name: "Pwritev2",
+                number: SYS_PWRITEV2,
+            },
+            AbiSyscallNumber {
                 name: "Lchown",
                 number: SYS_LCHOWN,
             },
             AbiSyscallNumber {
+                name: "Renameat2",
+                number: SYS_RENAMEAT2,
+            },
+            AbiSyscallNumber {
                 name: "Fallocate",
                 number: SYS_FALLOCATE,
+            },
+            AbiSyscallNumber {
+                name: "Getcpu",
+                number: SYS_GETCPU,
             },
             AbiSyscallNumber {
                 name: "TimerCreate",
@@ -2696,6 +3241,10 @@ pub mod abi {
             AbiSyscallNumber {
                 name: "Shmctl",
                 number: SYS_SHMCTL,
+            },
+            AbiSyscallNumber {
+                name: "Signalfd",
+                number: SYS_SIGNALFD,
             },
             AbiSyscallNumber {
                 name: "EpollCreate",
@@ -3456,8 +4005,14 @@ pub mod dri {
     /// `_IOWR('d', 0x00, drm_version)` — driver name / date / desc query.
     /// `struct drm_version` is 36 bytes on wasm32 (ilp32: 3 × `int` + 3 ×
     /// `__kernel_size_t` + 3 × `char *`, all 4-byte). Ioctl number encodes
-    /// 36 → `0xc0246400`. Linux x86_64's 60-byte layout is not us.
+    /// 36 → `0xc0246400`.
     pub const DRM_IOCTL_VERSION: u32 = 0xc024_6400;
+
+    /// Native wasm64 `_IOWR('d', 0x00, drm_version)`.
+    ///
+    /// wasm64 follows the 64-bit Linux UAPI layout: three `int` fields,
+    /// four bytes of alignment, then three `(size_t, pointer)` pairs.
+    pub const DRM_IOCTL_VERSION_WASM64: u32 = 0xc040_6400;
 
     /// `_IOWR('d', 0x0c, drm_get_cap)` — feature capability query.
     pub const DRM_IOCTL_GET_CAP: u32 = 0xc010_640c;
@@ -3879,6 +4434,7 @@ mod dri_tests {
             DRM_IOCTL_VERSION,
             ioc(iowr, 'd' as u32, 0x00, size_of::<WpkDrmVersion>() as u32)
         );
+        assert_eq!(DRM_IOCTL_VERSION_WASM64, ioc(iowr, 'd' as u32, 0x00, 64));
         assert_eq!(
             DRM_IOCTL_GET_CAP,
             ioc(iowr, 'd' as u32, 0x0c, size_of::<WpkDrmGetCap>() as u32)

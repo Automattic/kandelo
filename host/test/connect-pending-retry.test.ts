@@ -8,6 +8,7 @@ import {
   CH_SYSCALL,
 } from "../src/generated/abi";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 const EINPROGRESS = 115;
 const EALREADY = 114;
@@ -45,10 +46,10 @@ function createConnectHarness(
   new Uint8Array(processMemory.buffer, addrPtr + 4, 4).set([203, 0, 113, 9]);
 
   let resultIndex = 0;
-  const handleChannel = vi.fn(() => {
+  const handleChannel = vi.fn((offset: number) => {
     const result = results[Math.min(resultIndex, results.length - 1)];
     resultIndex++;
-    const kernelView = new DataView(kernelMemory.buffer);
+    const kernelView = new DataView(kernelMemory.buffer, offset);
     kernelView.setBigInt64(CH_RETURN, BigInt(result.retVal), true);
     kernelView.setUint32(CH_ERRNO, result.errVal, true);
     return 0;
@@ -63,7 +64,7 @@ function createConnectHarness(
       },
     },
     kernelMemory,
-    scratchOffset: 0,
+    processes: new Map([[channel.pid, { ptrWidth: 4 }]]),
     currentHandlePid: 0,
     config: {},
     syscallRing: new Map(),
@@ -90,6 +91,7 @@ function createConnectHarness(
     completeChannelRaw: vi.fn(),
     relistenChannel: vi.fn(),
   });
+  installKernelWorkerTestScratch(worker, kernelMemory);
 
   return { args, channel, completeChannel, handleChannel, worker };
 }
@@ -132,7 +134,7 @@ describe("pending AF_INET connect routing", () => {
 
     expect(harness.handleChannel).toHaveBeenCalledTimes(2);
     expect(harness.completeChannel).toHaveBeenCalledOnce();
-    expect(harness.completeChannel.mock.calls[0].slice(-2)).toEqual([0, 0]);
+    expect(harness.completeChannel.mock.calls[0].slice(4, 6)).toEqual([0, 0]);
     expect(harness.worker.pendingPollRetries.size).toBe(0);
   });
 
@@ -154,7 +156,7 @@ describe("pending AF_INET connect routing", () => {
 
     expect(harness.handleChannel).toHaveBeenCalledTimes(3);
     expect(harness.completeChannel).toHaveBeenCalledOnce();
-    expect(harness.completeChannel.mock.calls[0].slice(-2)).toEqual([-1, ECONNREFUSED]);
+    expect(harness.completeChannel.mock.calls[0].slice(4, 6)).toEqual([-1, ECONNREFUSED]);
     expect(harness.worker.pendingPollRetries.size).toBe(0);
   });
 
@@ -167,7 +169,7 @@ describe("pending AF_INET connect routing", () => {
     harness.worker.handleSyscall(harness.channel);
 
     expect(harness.completeChannel).toHaveBeenCalledOnce();
-    expect(harness.completeChannel.mock.calls[0].slice(-2)).toEqual([-1, EINPROGRESS]);
+    expect(harness.completeChannel.mock.calls[0].slice(4, 6)).toEqual([-1, EINPROGRESS]);
     expect(harness.worker.pendingPollRetries.size).toBe(0);
   });
 

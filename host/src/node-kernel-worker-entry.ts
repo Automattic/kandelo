@@ -1464,8 +1464,6 @@ async function handleExec(
 ): Promise<number> {
   const initiatingInfo = processes.get(pid);
   if (!initiatingInfo) return -3; // ESRCH
-  if (!kernelWorker.supportsExecMetadataReplacement()) return -38; // ENOSYS
-
   const resolved = await resolveExecutableForLaunch(path, argv);
   if (!resolved) return -2; // ENOENT
   if ("errno" in resolved) return -resolved.errno;
@@ -2796,6 +2794,23 @@ port.on("message", (msg: MainToKernelMessage) => {
           type: "response",
           requestId: msg.requestId,
           result: kernelWorker.getKernelMemoryPages(),
+        });
+      } catch (err) {
+        post({
+          type: "response",
+          requestId: msg.requestId,
+          result: undefined,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
+      break;
+    }
+    case "get_spawn_scratch_capacity": {
+      try {
+        post({
+          type: "response",
+          requestId: msg.requestId,
+          result: kernelWorker.getSpawnScratchCapacity(),
         });
       } catch (err) {
         post({

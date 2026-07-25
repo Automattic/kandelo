@@ -217,8 +217,7 @@ static TIMERFDS: GlobalBackingTable<TimerFdState> = GlobalBackingTable::new();
 static SIGNALFDS: GlobalBackingTable<SignalFdState> = GlobalBackingTable::new();
 static MEMFDS: GlobalBackingTable<MemFdBacking> = GlobalBackingTable::new();
 static PROCFS_BUFS: GlobalBackingTable<ProcfsBacking> = GlobalBackingTable::new();
-static SYNTHETIC_REGULARS: GlobalBackingTable<SyntheticRegularBacking> =
-    GlobalBackingTable::new();
+static SYNTHETIC_REGULARS: GlobalBackingTable<SyntheticRegularBacking> = GlobalBackingTable::new();
 
 // Keep synthetic backing handles disjoint from the small negative sentinels
 // used by pipes, devices, and procfs.
@@ -300,6 +299,36 @@ pub fn manages_ofd(file_type: FileType, host_handle: i64) -> bool {
     ) || (file_type == FileType::Regular
         && (crate::procfs::is_procfs_buf_handle(host_handle)
             || is_synthetic_regular_handle(host_handle)))
+}
+
+/// Whether an encoded handle currently names a live backing owned here.
+///
+/// Shape recognition alone is insufficient at trust boundaries: a stale
+/// negative index has the right bit pattern but cannot reconstruct an open
+/// file description.
+pub(crate) fn is_live_managed_ofd(file_type: FileType, host_handle: i64) -> bool {
+    match file_type {
+        FileType::EventFd => negative_handle_idx(host_handle)
+            .is_ok_and(|idx| with_eventfds(|table| table.get(idx).is_some())),
+        FileType::TimerFd => negative_handle_idx(host_handle)
+            .is_ok_and(|idx| with_timerfds(|table| table.get(idx).is_some())),
+        FileType::SignalFd => negative_handle_idx(host_handle)
+            .is_ok_and(|idx| with_signalfds(|table| table.get(idx).is_some())),
+        FileType::MemFd => negative_handle_idx(host_handle)
+            .is_ok_and(|idx| with_memfds(|table| table.get(idx).is_some())),
+        FileType::Regular if crate::procfs::is_procfs_buf_handle(host_handle) => {
+            with_procfs_bufs(|table| {
+                table
+                    .get(crate::procfs::procfs_buf_idx(host_handle))
+                    .is_some()
+            })
+        }
+        FileType::Regular if is_synthetic_regular_handle(host_handle) => {
+            synthetic_regular_idx(host_handle)
+                .is_ok_and(|idx| with_synthetic_regulars(|table| table.get(idx).is_some()))
+        }
+        _ => false,
+    }
 }
 
 /// Plan ownership transfer for the legacy serialize/init exec ABI. Surviving
@@ -470,9 +499,7 @@ pub fn release_for_ofd(file_type: FileType, host_handle: i64) -> bool {
         FileType::MemFd => negative_handle_idx(host_handle)
             .is_ok_and(|idx| with_memfds(|table| table.release(idx))),
         FileType::Regular if crate::procfs::is_procfs_buf_handle(host_handle) => {
-            with_procfs_bufs(|table| {
-                table.release(crate::procfs::procfs_buf_idx(host_handle))
-            })
+            with_procfs_bufs(|table| table.release(crate::procfs::procfs_buf_idx(host_handle)))
         }
         FileType::Regular if is_synthetic_regular_handle(host_handle) => {
             synthetic_regular_idx(host_handle)

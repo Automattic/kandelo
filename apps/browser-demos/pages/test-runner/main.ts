@@ -13,16 +13,17 @@ import {
   settleWebKitReclaim,
 } from "../../lib/kernel-owned-boot";
 import kernelWasmUrl from "@kernel-wasm?url";
-import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
-import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils.wasm?url";
-import grepWasmUrl from "@binaries/programs/wasm32/grep.wasm?url";
-import sedWasmUrl from "@binaries/programs/wasm32/sed.wasm?url";
-import genCatWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/gencat.wasm?url";
+import type { ExecBinarySupport } from "./exec-binaries";
 
 interface DataFile {
   path: string;
   data?: number[]; // byte array (transferred as JSON-safe array)
   useWasmBytes?: boolean; // if true, use the wasmBytes as file content
+}
+
+interface PtyInput {
+  data: Uint8Array;
+  readyMarker: string;
 }
 
 declare global {
@@ -36,6 +37,7 @@ declare global {
         dataFiles?: DataFile[];
         cwd?: string;
         env?: string[];
+        ptyInput?: PtyInput;
       },
     ) => Promise<{
       exitCode: number;
@@ -48,103 +50,32 @@ declare global {
   }
 }
 
-// --- Tool binaries (pre-fetched at init) ---
 let kernelWasmBytes: ArrayBuffer | null = null;
-let dashBytes: ArrayBuffer | null = null;
-let coreutilsBytes: ArrayBuffer | null = null;
-let grepBytes: ArrayBuffer | null = null;
-let sedBytes: ArrayBuffer | null = null;
-let genCatBytes: ArrayBuffer | null = null;
+let execBinarySupport: ExecBinarySupport | null = null;
 
 const corsProxyUrl = new URL(
   `${import.meta.env.BASE_URL}__kandelo_cors_proxy?url=`,
   window.location.href,
 ).href;
 
-const COREUTILS_NAMES = [
-  "arch", "b2sum", "base32", "base64", "basename", "basenc", "cat",
-  "chcon", "chgrp", "chmod", "chown", "chroot", "cksum", "comm", "cp",
-  "csplit", "cut", "date", "dd", "df", "dir", "dircolors", "dirname",
-  "du", "echo", "env", "expand", "expr", "factor", "false", "fmt",
-  "fold", "groups", "head", "hostid", "id", "install", "join", "link",
-  "ln", "logname", "ls", "md5sum", "mkdir", "mkfifo", "mknod", "mktemp",
-  "mv", "nice", "nl", "nohup", "nproc", "numfmt", "od", "paste",
-  "pathchk", "pr", "printenv", "printf", "ptx", "pwd", "readlink",
-  "realpath", "rm", "rmdir", "runcon", "seq", "sha1sum", "sha224sum",
-  "sha256sum", "sha384sum", "sha512sum", "shred", "shuf", "sleep",
-  "sort", "split", "stat", "stty", "sum", "sync", "tac", "tail",
-  "tee", "test", "timeout", "touch", "tr", "true", "truncate", "tsort",
-  "tty", "uname", "unexpand", "uniq", "unlink", "vdir", "wc", "whoami",
-  "yes",
-];
-
-/** Write a binary file to the virtual filesystem. */
-function writeFileToFs(fs: import("@host/browser-kernel-host").BrowserKernel["fs"], path: string, data: ArrayBuffer): void {
-  const bytes = new Uint8Array(data);
-  const fd = fs.open(path, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o755);
-  fs.write(fd, bytes, null, bytes.length);
-  fs.close(fd);
-}
-
-/** Populate VFS with actual executable binaries and symlinks for exec. */
-function populateExecBinaries(fs: import("@host/vfs/memory-fs").MemoryFileSystem): void {
-  for (const dir of ["/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin"]) {
-    try { fs.mkdir(dir, 0o755); } catch { /* exists */ }
-  }
-
-  if (dashBytes) {
-    writeFileToFs(fs, "/bin/dash", dashBytes);
-    try { fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
-    try { fs.symlink("/bin/dash", "/usr/bin/dash"); } catch { /* exists */ }
-    try { fs.symlink("/bin/dash", "/usr/bin/sh"); } catch { /* exists */ }
-  }
-
-  if (coreutilsBytes) {
-    writeFileToFs(fs, "/bin/coreutils", coreutilsBytes);
-    for (const name of COREUTILS_NAMES) {
-      try { fs.symlink("/bin/coreutils", `/bin/${name}`); } catch { /* exists */ }
-      try { fs.symlink("/bin/coreutils", `/usr/bin/${name}`); } catch { /* exists */ }
-    }
-    try { fs.symlink("/bin/coreutils", "/bin/["); } catch { /* exists */ }
-    try { fs.symlink("/bin/coreutils", "/usr/bin/["); } catch { /* exists */ }
-  }
-
-  if (grepBytes) {
-    writeFileToFs(fs, "/bin/grep", grepBytes);
-    try { fs.symlink("/bin/grep", "/bin/egrep"); } catch { /* exists */ }
-    try { fs.symlink("/bin/grep", "/bin/fgrep"); } catch { /* exists */ }
-    try { fs.symlink("/bin/grep", "/usr/bin/grep"); } catch { /* exists */ }
-    try { fs.symlink("/bin/grep", "/usr/bin/egrep"); } catch { /* exists */ }
-    try { fs.symlink("/bin/grep", "/usr/bin/fgrep"); } catch { /* exists */ }
-  }
-
-  if (sedBytes) {
-    writeFileToFs(fs, "/bin/sed", sedBytes);
-    try { fs.symlink("/bin/sed", "/usr/bin/sed"); } catch { /* exists */ }
-  }
-
-  if (genCatBytes) {
-    writeFileToFs(fs, "/bin/gencat", genCatBytes);
-    try { fs.symlink("/bin/gencat", "/usr/bin/gencat"); } catch { /* exists */ }
-  }
-}
-
 async function init() {
-  // Fetch kernel wasm and tool binaries in parallel
-  const fetches = await Promise.allSettled([
-    fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
-    fetch(dashWasmUrl).then((r) => r.arrayBuffer()),
-    fetch(coreutilsWasmUrl).then((r) => r.arrayBuffer()),
-    fetch(grepWasmUrl).then((r) => r.arrayBuffer()),
-    fetch(sedWasmUrl).then((r) => r.arrayBuffer()),
-    fetch(genCatWasmUrl).then((r) => r.arrayBuffer()),
+  const minimal = new URLSearchParams(window.location.search).get("minimal") === "1";
+  /*
+   * WHY: tests that never exec shell tools must not activate unrelated
+   * optional package generations. The default path still imports the checked
+   * tool module; minimal mode simply never requests those bytes.
+   */
+  const execBinarySupportPromise = minimal
+    ? Promise.resolve(null)
+    : import("./exec-binaries").then((module) =>
+      module.loadExecBinarySupport()
+    );
+  [kernelWasmBytes, execBinarySupport] = await Promise.all([
+    fetch(kernelWasmUrl)
+      .then((response) => response.arrayBuffer())
+      .catch(() => null),
+    execBinarySupportPromise,
   ]);
-  kernelWasmBytes = fetches[0].status === "fulfilled" ? fetches[0].value : null;
-  dashBytes = fetches[1].status === "fulfilled" ? fetches[1].value : null;
-  coreutilsBytes = fetches[2].status === "fulfilled" ? fetches[2].value : null;
-  grepBytes = fetches[3].status === "fulfilled" ? fetches[3].value : null;
-  sedBytes = fetches[4].status === "fulfilled" ? fetches[4].value : null;
-  genCatBytes = fetches[5].status === "fulfilled" ? fetches[5].value : null;
 
   if (!kernelWasmBytes) {
     throw new Error("Failed to fetch kernel wasm");
@@ -160,6 +91,7 @@ async function init() {
       dataFiles?: DataFile[];
       cwd?: string;
       env?: string[];
+      ptyInput?: PtyInput;
     },
   ) => {
     let stdout = "";
@@ -171,7 +103,7 @@ async function init() {
     // transient build FS, then hand ownership to the kernel worker so the main
     // thread holds no VFS SharedArrayBuffer across the per-test loop.
     const buildFs = await createBuildFsWithEtc();
-    populateExecBinaries(buildFs);
+    execBinarySupport?.populate(buildFs);
     if (options?.dataFiles) {
       for (const file of options.dataFiles) {
         // Ensure parent directories exist
@@ -219,9 +151,46 @@ async function init() {
 
       // Run the test with a timeout
       const cwd = options?.cwd;
-      const spawnOpts: { cwd?: string; env?: string[] } = {};
+      const ptyInput = options?.ptyInput;
+      const spawnOpts: {
+        cwd?: string;
+        env?: string[];
+        pty?: boolean;
+        onStarted?: (pid: number) => Promise<void>;
+      } = {};
       if (cwd) spawnOpts.cwd = cwd;
       if (options?.env) spawnOpts.env = options.env;
+      if (ptyInput) {
+        if (!(ptyInput.data instanceof Uint8Array)) {
+          throw new TypeError("ptyInput.data must be a Uint8Array");
+        }
+        if (ptyInput.readyMarker.length === 0) {
+          throw new TypeError("ptyInput.readyMarker must not be empty");
+        }
+        spawnOpts.pty = true;
+        spawnOpts.onStarted = async (pid) => {
+          let observed = "";
+          let markReady: (() => void) | null = null;
+          const ready = new Promise<void>((resolve) => {
+            markReady = resolve;
+          });
+          kernel.onPtyOutput(pid, (data) => {
+            const text = new TextDecoder().decode(data);
+            stdout += text;
+            combined += text;
+            observed += text;
+            if (observed.includes(ptyInput.readyMarker)) markReady?.();
+          });
+          /*
+           * WHY: ptyWrite enters the kernel's current line discipline
+           * synchronously. Wait until the guest confirms its terminal mode,
+           * and register the callback first so output buffered before the
+           * spawn acknowledgement cannot lose the readiness transition.
+           */
+          await ready;
+          kernel.ptyWrite(pid, ptyInput.data);
+        };
+      }
       const exitCode = await Promise.race([
         kernel.spawn(wasmBytes, argv ?? ["test"], spawnOpts),
         new Promise<number>((_, reject) =>

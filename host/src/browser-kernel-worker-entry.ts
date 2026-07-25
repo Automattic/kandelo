@@ -1772,8 +1772,6 @@ async function handleExec(
 ): Promise<number> {
   const initiatingInfo = processes.get(pid);
   if (!initiatingInfo) return -3; // ESRCH
-  if (!kernelWorker.supportsExecMetadataReplacement()) return -38; // ENOSYS
-
   const resolved = await resolveExecutableForLaunch(path, argv);
   if (!resolved) return -2; // ENOENT
   if ("errno" in resolved) return -resolved.errno;
@@ -2937,22 +2935,19 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
 // ── Pipe operations ──
 
 function handlePipeRead(msg: Extract<MainToKernelMessage, { type: "pipe_read" }>) {
-  if (!initReady) {
-    respond(msg.requestId, uninitializedKernelPipeResult("read"));
-    return;
-  }
-  respond(msg.requestId, kernelWorker.readHostPipe(msg.pid, msg.pipeIdx));
+  if (!kernelInstance) { respond(msg.requestId, null); return; }
+  respond(
+    msg.requestId,
+    kernelWorker.readPipeAvailable(msg.pid, msg.pipeIdx),
+  );
 }
 
 function handlePipeWrite(msg: Extract<MainToKernelMessage, { type: "pipe_write" }>) {
-  if (!initReady) {
-    respond(msg.requestId, uninitializedKernelPipeResult("write"));
-    return;
-  }
-  respond(
-    msg.requestId,
-    kernelWorker.writeHostPipe(msg.pid, msg.pipeIdx, msg.data),
-  );
+  if (!kernelInstance) { respond(msg.requestId, -1); return; }
+  const written = kernelWorker.writePipeData(msg.pid, msg.pipeIdx, msg.data);
+  // Wake readers + pollers watching this pipe + broad wake.
+  kernelWorker.notifyPipeReadable(msg.pipeIdx);
+  respond(msg.requestId, written);
 }
 
 function handlePipeCloseRead(msg: Extract<MainToKernelMessage, { type: "pipe_close_read" }>) {
@@ -3403,6 +3398,14 @@ sw.onmessage = (e: MessageEvent) => {
     case "get_kernel_memory_pages": {
       try {
         respond(msg.requestId, kernelWorker.getKernelMemoryPages());
+      } catch (err) {
+        respondError(msg.requestId, (err as Error)?.message ?? String(err));
+      }
+      break;
+    }
+    case "get_spawn_scratch_capacity": {
+      try {
+        respond(msg.requestId, kernelWorker.getSpawnScratchCapacity());
       } catch (err) {
         respondError(msg.requestId, (err as Error)?.message ?? String(err));
       }

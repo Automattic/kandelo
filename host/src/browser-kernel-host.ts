@@ -706,6 +706,24 @@ export class BrowserKernel {
   }
 
   /**
+   * Return the retained capacity of the kernel-owned large-spawn region.
+   * Zero means no spawn has exceeded the ordinary channel-sized scratch.
+   */
+  async getSpawnScratchCapacity(): Promise<number> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "get_spawn_scratch_capacity",
+      requestId,
+    });
+    if (!Number.isSafeInteger(result) || result < 0) {
+      throw new Error(
+        `kernel worker returned an invalid spawn scratch capacity: ${String(result)}`,
+      );
+    }
+    return result;
+  }
+
+  /**
    * Snapshot the kernel's process table — one row per live process. Used
    * by Kandelo's Inspector → Procs tab. Mirrors `NodeKernelHost.enumProcs`.
    */
