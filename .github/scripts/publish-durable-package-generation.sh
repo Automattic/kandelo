@@ -67,7 +67,8 @@ elif [ -z "$PACKAGE_SOURCE_SHA" ] &&
 elif [[ "$EXPECTED_AUTHORITY_SHA" =~ ^[0-9a-f]{40}$ ]] &&
      [ -z "$SOURCE_TAG$PACKAGE_SOURCE_SHA$PRODUCER_SHA$PRODUCER_ROOT" ] &&
      [ -z "$VALIDATED_MAIN_SHA$VALIDATION_METHOD$EXPECTED_ABI" ] &&
-     [ -z "$SELECTION_KIND$ROOT_PACKAGE$ARCH$AUTHORITY_SHA$DEFAULT_REF" ]; then
+     [ -z "$SELECTION_KIND$ROOT_PACKAGE$ARCH$AUTHORITY_SHA" ] &&
+     [ "$DEFAULT_REF" = main ]; then
   preserved_dispatch=true
 else
   echo "publish-durable-package-generation: exactly one complete admitted or preserved provenance mode is required" >&2
@@ -439,6 +440,23 @@ verify_preserved_source_evidence() {
   bash "$SCRIPT_DIR/verify-preserved-package-source.sh" --bundle "$BUNDLE"
 }
 
+verify_live_preserved_authority() {
+  local main_ref="$TMP_ROOT/live-preserved-main-ref.json"
+  gh api "/repos/$REPOSITORY/git/ref/heads/$DEFAULT_REF" >"$main_ref"
+  # WHY: a clean old checkout is not publication authority after main moves.
+  # Preserved evidence can be retried read-only later, but every durable write
+  # must still be authorized by the exact commit currently at the direct ref.
+  jq -e \
+    --arg ref "refs/heads/$DEFAULT_REF" \
+    --arg expected "$EXPECTED_AUTHORITY_SHA" '
+      .ref == $ref and .object.type == "commit" and
+      .object.sha == $expected
+    ' "$main_ref" >/dev/null || {
+    echo "publish-durable-package-generation: preserved publisher is no longer live main" >&2
+    return 1
+  }
+}
+
 generation_sha="$(sha256_file "$MANIFEST")"
 generation_bytes="$(file_bytes "$MANIFEST")"
 index_sha="$(sha256_file "$BUNDLE/index.toml")"
@@ -626,7 +644,9 @@ assert_live_main_source_snapshot() {
 authorize_publication_mutation() {
   verify_authority_checkout
   verify_producer_checkout
-  if [ "$IS_PRESERVED" = false ]; then
+  if [ "$IS_PRESERVED" = true ]; then
+    verify_live_preserved_authority
+  else
     if [ ! -f "$TMP_ROOT/live-main-source-baseline.json" ]; then
       validate_live_main_source
     else

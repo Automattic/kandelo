@@ -1408,9 +1408,9 @@ overlays, stale cache records, omissions, and substitutions fail closed.
 asset anonymously, validates the manifest/release/direct-tag relationship,
 requeries the exact asset inventory, and uses the shared current Rust
 `validate-generation` command to verify strict index structure, snapshot,
-hashes, archive manifests, immutable Git inputs, and embedded main commit. It
-then derives the consumer projection with current authority and exposes a local
-`file://` index only on exact equality. A consumer SHA alone, ancestry,
+hashes, archive manifests, immutable Git inputs, and embedded producer commit.
+It then derives the consumer projection with current authority and exposes a
+local `file://` index only on exact equality. A consumer SHA alone, ancestry,
 same-tree relationship, PR identity, or tag identity is never compatibility
 evidence.
 

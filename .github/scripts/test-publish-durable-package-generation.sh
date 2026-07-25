@@ -528,6 +528,9 @@ if [ "$1 $2" = "release upload" ]; then
           '::warning::dependency artifact dep-wasm32 is absent; continuing without overlay' \
           >>"$source_root/rootfs-job.log"
         ;;
+      main)
+        : >"$root/force-source-mutation-main"
+        ;;
     esac
     if [ "${DIRTY_AUTHORITY_AFTER_SEAL:-false}" = true ]; then
       printf 'dirty\n' >"${AUTHORITY_REPO:?}/dirty-after-seal"
@@ -712,7 +715,7 @@ if [[ "$endpoint" == */git/ref/tags/binaries-abi-v42 ]]; then
   exit 0
 fi
 if [[ "$endpoint" == */git/ref/heads/main ]]; then
-  main_ref_sha="${TEST_SOURCE_SHA:?}"
+  main_ref_sha="${TEST_MAIN_SHA:-${TEST_SOURCE_SHA:?}}"
   if source_mutated main; then
     main_ref_sha="$(printf '0%.0s' {1..40})"
   fi
@@ -875,7 +878,10 @@ run_publisher() {
     use_cache_source=true
   fi
   if [ "$format" = kandelo-preserved-pr-package-generation-v1 ]; then
-    authority_args=(--expected-authority-sha "$expected_authority")
+    authority_args=(
+      --expected-authority-sha "$expected_authority"
+      --default-ref main
+    )
   elif [ "$format" = kandelo-package-generation-v2 ]; then
     authority_args=(
       --source-tag "$(jq -er .identity.producer.evidence.tag "$bundle/generation.json")"
@@ -931,6 +937,7 @@ run_publisher() {
     MUTATE_LIVE_SOURCE_AFTER_WRITE="${MUTATE_LIVE_SOURCE_AFTER_WRITE:-}" \
     DIRTY_AUTHORITY_AFTER_SEAL="${DIRTY_AUTHORITY_AFTER_SEAL:-false}" \
     TEST_SOURCE_SHA="$bundle_source_sha" \
+    TEST_MAIN_SHA="$expected_authority" \
     TEST_ARCHIVE_SOURCE_SHA="$bundle_archive_source_sha" \
     TEST_TREE_SHA="$tree_sha" \
     TEST_PRODUCER_TREE_SHA="$preserved_tree_sha" \
@@ -1212,6 +1219,38 @@ fi
 [ ! -s "$TMP_ROOT/writes.log" ]
 rm "$TMP_ROOT/authority/untracked-dirty"
 
+# A preservation job dispatched from an old main commit must not create even
+# its first direct tag after the repository's direct main ref advances.
+mkdir "$TMP_ROOT/preserved-moved-main-before-write"
+: >"$TMP_ROOT/preserved-moved-main-before-write/force-source-mutation-main"
+: >"$TMP_ROOT/writes.log"
+if run_publisher \
+    "$TMP_ROOT/preserved-moved-main-before-write" \
+    "$TMP_ROOT/preserved-moved-main-before-write-receipt.json" \
+    "$TMP_ROOT/preserved-bundle"; then
+  echo "preserved writer accepted stale main before its first write" >&2
+  exit 1
+fi
+[ ! -s "$TMP_ROOT/writes.log" ]
+
+# The direct main check repeats before every write, so advancing main after a
+# reversible draft upload cannot cross the application-seal boundary.
+mkdir "$TMP_ROOT/preserved-main-moves-between-writes"
+: >"$TMP_ROOT/writes.log"
+if MUTATE_LIVE_SOURCE_AFTER_WRITE=main run_publisher \
+    "$TMP_ROOT/preserved-main-moves-between-writes" \
+    "$TMP_ROOT/preserved-main-moves-between-writes-receipt.json" \
+    "$TMP_ROOT/preserved-bundle"; then
+  echo "preserved writer continued after main moved between writes" >&2
+  exit 1
+fi
+grep -Fxq "upload index.toml" "$TMP_ROOT/writes.log"
+if grep -Fxq "upload generation.json" "$TMP_ROOT/writes.log" ||
+   grep -Fxq "patch-release" "$TMP_ROOT/writes.log"; then
+  echo "preserved writer crossed a seal boundary after main moved" >&2
+  exit 1
+fi
+
 mkdir "$TMP_ROOT/preserved-remote"
 : >"$TMP_ROOT/writes.log"
 run_publisher \
@@ -1236,14 +1275,17 @@ second_source_verify="$(
 [ "$second_source_verify" -lt "$patch_line" ]
 
 # Once public, an exact verification-only retry performs no write boundary and
-# therefore must not depend on temporary PR staging evidence that may be gone.
+# therefore must not depend on temporary PR staging evidence or the old writer
+# remaining current main.
 mv "$TMP_ROOT/preserved-source" "$TMP_ROOT/preserved-source-after-public"
+: >"$TMP_ROOT/preserved-remote/force-source-mutation-main"
 : >"$TMP_ROOT/writes.log"
 run_publisher \
   "$TMP_ROOT/preserved-remote" \
   "$TMP_ROOT/preserved-public-retry-receipt.json" \
   "$TMP_ROOT/preserved-bundle"
 [ ! -s "$TMP_ROOT/writes.log" ]
+rm "$TMP_ROOT/preserved-remote/force-source-mutation-main"
 mv "$TMP_ROOT/preserved-source-after-public" "$TMP_ROOT/preserved-source"
 
 assert_source_json_rejected() {
@@ -1357,6 +1399,24 @@ mv \
   "$TMP_ROOT/preserved-source/rootfs-job.before-public.backup" \
   "$TMP_ROOT/preserved-source/rootfs-job.log"
 
+# Main authority is checked separately from preserved source evidence after the
+# application seal and immediately before the final public transition.
+mkdir "$TMP_ROOT/main-moves-before-public"
+: >"$TMP_ROOT/writes.log"
+if MUTATE_SOURCE_AFTER_SEAL=main run_publisher \
+    "$TMP_ROOT/main-moves-before-public" \
+    "$TMP_ROOT/main-moves-before-public-receipt.json" \
+    "$TMP_ROOT/preserved-bundle"; then
+  echo "preserved writer published after main moved post-seal" >&2
+  exit 1
+fi
+[ -f "$TMP_ROOT/main-moves-before-public/assets/generation.json" ]
+[ "$(cat "$TMP_ROOT/main-moves-before-public/draft")" = true ]
+if grep -Fxq "patch-release" "$TMP_ROOT/writes.log"; then
+  echo "preserved writer patched public after main moved post-seal" >&2
+  exit 1
+fi
+
 # The authority tree is checked again after the second source read, not just at
 # process startup.
 mkdir "$TMP_ROOT/authority-dirties-before-public"
@@ -1378,7 +1438,7 @@ rm "$TMP_ROOT/authority/dirty-after-seal"
 
 # Exercise the migration bridge as one complete lifecycle, not just as
 # disconnected evidence constructors. The schema-1 preservation release stays
-# admission:none; a distinct schema-2 generation alone may become consumable
+# admission:none; a distinct v2 admitted generation alone may become consumable
 # after selected projection, expected ledger, build inputs, and validator
 # transitions all match current main.
 preserved_tag="$(jq -er .tag "$TMP_ROOT/preserved-bundle/generation.json")"
@@ -1549,6 +1609,56 @@ jq -e \
       "identical-package-cache-projection-v1" and
     .release.target_commitish == $main
   ' "$TMP_ROOT/cache-bundle/generation.json" >/dev/null
+
+# The compatibility proof is deliberately one-shot. Generic generation tools
+# may describe other coherent projections, but #1097's audited H→M comparison
+# authorizes only the schema-1 rootfs/wasm32/ABI-42 closure.
+for policy_case in schema2 root arch abi; do
+  policy_bundle="$TMP_ROOT/cache-policy-$policy_case"
+  cp -R "$TMP_ROOT/cache-bundle" "$policy_bundle"
+  case "$policy_case" in
+    schema2)
+      jq -cS --slurpfile projection "$TMP_ROOT/browser-projection.json" \
+        '.identity.projection = $projection[0]' \
+        "$TMP_ROOT/cache-bundle/generation.json" \
+        >"$policy_bundle/generation.json"
+      ;;
+    root)
+      jq -cS '
+        .identity.projection.root_package = "other-root" |
+        .identity.projection.entries[0].package = "other-root"
+      ' "$TMP_ROOT/cache-bundle/generation.json" \
+        >"$policy_bundle/generation.json"
+      ;;
+    arch)
+      jq -cS '
+        .identity.projection.arch = "wasm64" |
+        .identity.projection.entries[0].arch = "wasm64"
+      ' "$TMP_ROOT/cache-bundle/generation.json" \
+        >"$policy_bundle/generation.json"
+      ;;
+    abi)
+      jq -cS '
+        .identity.abi_version = 43 |
+        .identity.validated_against_main.abi_version = 43
+      ' "$TMP_ROOT/cache-bundle/generation.json" \
+        >"$policy_bundle/generation.json"
+      ;;
+  esac
+  if python3 "$TOOL" validate --bundle "$policy_bundle" \
+      >"$TMP_ROOT/cache-policy-$policy_case.out" \
+      2>"$TMP_ROOT/cache-policy-$policy_case.err"; then
+    echo "cache admission accepted unauthorized $policy_case selection" >&2
+    exit 1
+  fi
+  if ! grep -Fq \
+      "cache projection compatibility is restricted to the reviewed rootfs wasm32 ABI 42 selection" \
+      "$TMP_ROOT/cache-policy-$policy_case.err"; then
+    echo "unauthorized $policy_case selection missed the one-shot policy boundary" >&2
+    sed -n '1,20p' "$TMP_ROOT/cache-policy-$policy_case.err" >&2
+    exit 1
+  fi
+done
 
 mkdir "$TMP_ROOT/cache-remote"
 : >"$TMP_ROOT/writes.log"

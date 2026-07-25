@@ -70,6 +70,10 @@ CACHE_PROJECTION_BRIDGE_PRODUCER_SHA = (
     "748c2609954d2809bbcbbcb642fa7d257fc0dbc6"
 )
 CACHE_PROJECTION_BRIDGE_SOURCE_TAG = "pr-1097-staging"
+CACHE_PROJECTION_BRIDGE_ABI_VERSION = 42
+CACHE_PROJECTION_BRIDGE_PROJECTION_SCHEMA = SINGLE_ROOT_PROJECTION_SCHEMA
+CACHE_PROJECTION_BRIDGE_ROOT_PACKAGE = "rootfs"
+CACHE_PROJECTION_BRIDGE_ARCH = "wasm32"
 VALIDATION_METHODS = {
     IDENTICAL_GIT_TREE_METHOD,
     IDENTICAL_PACKAGE_CACHE_PROJECTION_METHOD,
@@ -1727,12 +1731,6 @@ def validate_preserved_projection(value: Any) -> dict[str, Any]:
     return projection
 
 
-def require_preservable_projection(projection: dict[str, Any]) -> dict[str, Any]:
-    # Exact-tree admission also accepts only the already audited single-root
-    # preserved closure. Keep one schema check for both entry points.
-    return validate_preserved_projection(projection)
-
-
 def projection_entries(projection: dict[str, Any]) -> list[dict[str, str]]:
     if projection["schema"] == SINGLE_ROOT_PROJECTION_SCHEMA:
         return projection["entries"]
@@ -2748,6 +2746,21 @@ def validate_identity_v2(value: Any) -> dict[str, Any]:
             fail(
                 "cache projection compatibility is restricted to the "
                 "retained PR #1097 staging producer"
+            )
+        # WHY: the H→M audit covered exactly the preserved rootfs closure, not
+        # every internally coherent selection that generic generation tooling
+        # could construct from the same historical producer.
+        if (
+            abi_version != CACHE_PROJECTION_BRIDGE_ABI_VERSION
+            or projection.get("schema")
+            != CACHE_PROJECTION_BRIDGE_PROJECTION_SCHEMA
+            or projection.get("root_package")
+            != CACHE_PROJECTION_BRIDGE_ROOT_PACKAGE
+            or projection.get("arch") != CACHE_PROJECTION_BRIDGE_ARCH
+        ):
+            fail(
+                "cache projection compatibility is restricted to the "
+                "reviewed rootfs wasm32 ABI 42 selection"
             )
         cache_projection = validate_cache_projection_evidence(
             identity["cache_projection"]

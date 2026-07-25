@@ -599,6 +599,11 @@ fi
 grep -Fq "browser-binary-package-roots.mjs" \
   "$SCRIPT_DIR/materialize-durable-package-generation.sh"
 grep -Fq "contents: write" <<<"$publish_job"
+grep -Fq "pull-requests: read" <<<"$publish_job"
+if grep -Fq "pull-requests: write" <<<"$publish_job"; then
+  echo "durable publisher retains unnecessary PR mutation authority" >&2
+  exit 1
+fi
 grep -Fq "persist-credentials: false" <<<"$publish_job"
 grep -Fq "publish-durable-package-generation.sh" <<<"$publish_job"
 grep -Fq -- "--authority-xtask" <<<"$publish_job"
@@ -1522,6 +1527,7 @@ grep -Fq "contents: write" <<<"$preserve_publish_job"
 grep -Fq "actions: read" <<<"$preserve_publish_job"
 grep -Fq -- '--expected-authority-sha "$GITHUB_SHA"' \
   <<<"$preserve_publish_job"
+grep -Fq -- '--default-ref main' <<<"$preserve_publish_job"
 grep -Fq "verify-preserved-package-source.sh" \
   "$SCRIPT_DIR/publish-durable-package-generation.sh"
 grep -Fq "publish-durable-package-generation.sh" <<<"$preserve_publish_job"
