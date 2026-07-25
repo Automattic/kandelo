@@ -21,7 +21,7 @@ MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
-PUBLISHER_PLAN_DIGEST = "5d279ae866c2cb5d878ab8b690e8a161b8237908bd3188625ce2c33e19e4cfee"
+PUBLISHER_PLAN_DIGEST = "96c39424b46eb259181226e6f5d76500017b9d4e37f41ef7d16a6f91924d14ae"
 PUBLISHER_BUILD_DIGEST = "44416f36bdf7a70f5319381df7255affcd2f46446287bbae314d41fb39e07514"
 PUBLISHER_UPLOAD_DIGEST = "eb6c2abb3510208146490119b280abdb5d2d355a2fe08bb307d0a5a0f8fdb44e"
 PUBLISHER_INDEX_DIGEST = "59a6a319aa2c2c948f0012e7892146f64f52923229a7a79a0de9402748e57b74"
@@ -1009,6 +1009,9 @@ def check_publisher(workflow)
           "EXPECTED_BOTTLE_ROOT_URL" =>
             "${{ steps.release.outputs.bottle-root-prefix }}",
           "EXPECTED_CACHE_KEYS_JSON" => "${{ inputs.expected-cache-keys }}",
+          "EXPECTED_KANDELO_COMMIT" =>
+            "${{ steps.source-commits.outputs.kandelo-sha }}",
+          "EXPECTED_KANDELO_REPOSITORY" => "${{ inputs.kandelo-repository }}",
           "FORCE_REBUILD" => "${{ inputs.force }}",
           "FORMULAE" => "${{ inputs.formulae }}",
         }, "publisher matrix planner mapping changed")
@@ -1017,6 +1020,8 @@ def check_publisher(workflow)
     'expected_args+=(--expected-cache-keys "$expected_file")',
     'expected_args+=(--expected-abi "$EXPECTED_ABI")',
     'expected_args+=(--expected-bottle-root-url "$EXPECTED_BOTTLE_ROOT_URL")',
+    'expected_args+=(--expected-kandelo-repository "$EXPECTED_KANDELO_REPOSITORY")',
+    'expected_args+=(--expected-kandelo-commit "$EXPECTED_KANDELO_COMMIT")',
     '--tap-root "$GITHUB_WORKSPACE/tap"', '--formulae "$FORMULAE"',
     '--arches "$ARCHES"', '"${expected_args[@]}"',
   ].each do |fragment|
@@ -1025,6 +1030,9 @@ def check_publisher(workflow)
   end
   check(matrix_plan_run.scan("--expected-bottle-root-url").length == 1,
         "publisher matrix planner root argument changed")
+  check(matrix_plan_run.scan("--expected-kandelo-repository").length == 1 &&
+        matrix_plan_run.scan("--expected-kandelo-commit").length == 1,
+        "publisher matrix planner exact-main provenance arguments changed")
 
   release_step = named_step(plan_steps, "Resolve release and bottle root")
   check(release_step.fetch("env") == {
@@ -1042,8 +1050,20 @@ def check_publisher(workflow)
         ), "publisher does not bind release tag and bottle root to resolved identities")
   planner_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-plan-matrix.sh"))
   check(planner_source.include?("formula selection must not be empty") &&
-        planner_source.include?("architecture selection must not be empty"),
-        "publisher planner permits a green empty dispatch")
+        planner_source.include?("architecture selection must not be empty") &&
+        planner_source.include?(
+          ".built_from.kandelo_repository == $expected_kandelo_repository"
+        ) &&
+        planner_source.include?(
+          ".built_from.kandelo_commit == $expected_kandelo_commit"
+        ) &&
+        planner_source.include?(
+          "--expected-kandelo-repository must be Automattic/kandelo"
+        ) &&
+        planner_source.include?(
+          "--expected-kandelo-commit is required with cache keys"
+        ),
+        "publisher planner selection or exact-main reuse boundary changed")
   dependency_taps_source = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-dependency-taps.py")
   )

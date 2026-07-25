@@ -737,6 +737,7 @@ assert_matrix() {
 assert_matrix_skips_unchanged_cache_key() {
   local tap="$TMPDIR/matrix-skip-tap"
   local expected="$TMPDIR/expected-cache-keys.json"
+  local kandelo_commit="0123456789abcdef0123456789abcdef01234567"
   make_tap "$tap"
   cat >"$tap/Kandelo/metadata.json" <<'EOF'
 {
@@ -751,14 +752,22 @@ assert_matrix_skips_unchanged_cache_key() {
           "status": "success",
           "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "url": "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/hello/blobs/sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "cache_key_sha": "cache-key-current"
+          "cache_key_sha": "cache-key-current",
+          "built_from": {
+            "kandelo_repository": "Automattic/kandelo",
+            "kandelo_commit": "0123456789abcdef0123456789abcdef01234567"
+          }
         },
         {
           "arch": "wasm64",
           "status": "success",
           "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "url": "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/hello/blobs/sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-          "cache_key_sha": "cache-key-old"
+          "cache_key_sha": "cache-key-old",
+          "built_from": {
+            "kandelo_repository": "Automattic/kandelo",
+            "kandelo_commit": "0123456789abcdef0123456789abcdef01234567"
+          }
         }
       ]
     }
@@ -773,31 +782,69 @@ EOF
   }
 }
 EOF
+  local -a expected_args=(
+    --expected-cache-keys "$expected"
+    --expected-abi 40
+    --expected-bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core
+    --expected-kandelo-repository Automattic/kandelo
+    --expected-kandelo-commit "$kandelo_commit"
+  )
   local matrix
   matrix="$(bash "$REPO_ROOT/scripts/homebrew-plan-matrix.sh" \
     --tap-root "$tap" \
     --formulae "hello" \
     --arches "wasm64,wasm32" \
-    --expected-cache-keys "$expected" \
-    --expected-abi 40 \
-    --expected-bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core)"
+    "${expected_args[@]}")"
   printf '%s\n' "$matrix" | jq -e '
     length == 1 and
     .[0] == {"formula":"hello","arch":"wasm64"}
   ' >/dev/null || fail "expected unchanged wasm32 entry to be skipped: $matrix"
 
-  jq '.packages[0].bottles[0].url =
-    "https://ghcr.io/v2/kandelo-dev/tap-core/hello/blobs/sha256:" +
-    .packages[0].bottles[0].sha256' \
+  jq '.packages[0].bottles[0].built_from.kandelo_commit =
+    "ffffffffffffffffffffffffffffffffffffffff"' \
     "$tap/Kandelo/metadata.json" >"$tap/Kandelo/metadata.json.tmp"
+  mv "$tap/Kandelo/metadata.json.tmp" "$tap/Kandelo/metadata.json"
+  matrix="$(bash "$REPO_ROOT/scripts/homebrew-plan-matrix.sh" \
+    --tap-root "$tap" --formulae hello --arches wasm32 \
+    "${expected_args[@]}")"
+  [ "$matrix" = '[{"formula":"hello","arch":"wasm32"}]' ] ||
+    fail "stale per-bottle source commit was reused: $matrix"
+
+  jq --arg commit "$kandelo_commit" '
+    .packages[0].bottles[0].built_from.kandelo_commit = $commit |
+    .packages[0].bottles[0].built_from.kandelo_repository = "example/kandelo"
+  ' "$tap/Kandelo/metadata.json" >"$tap/Kandelo/metadata.json.tmp"
+  mv "$tap/Kandelo/metadata.json.tmp" "$tap/Kandelo/metadata.json"
+  matrix="$(bash "$REPO_ROOT/scripts/homebrew-plan-matrix.sh" \
+    --tap-root "$tap" --formulae hello --arches wasm32 \
+    "${expected_args[@]}")"
+  [ "$matrix" = '[{"formula":"hello","arch":"wasm32"}]' ] ||
+    fail "wrong per-bottle source repository was reused: $matrix"
+
+  jq 'del(.packages[0].bottles[0].built_from)' \
+    "$tap/Kandelo/metadata.json" >"$tap/Kandelo/metadata.json.tmp"
+  mv "$tap/Kandelo/metadata.json.tmp" "$tap/Kandelo/metadata.json"
+  matrix="$(bash "$REPO_ROOT/scripts/homebrew-plan-matrix.sh" \
+    --tap-root "$tap" --formulae hello --arches wasm32 \
+    "${expected_args[@]}")"
+  [ "$matrix" = '[{"formula":"hello","arch":"wasm32"}]' ] ||
+    fail "bottle without source provenance was reused: $matrix"
+
+  jq --arg commit "$kandelo_commit" '
+    .packages[0].bottles[0].built_from = {
+      kandelo_repository: "Automattic/kandelo",
+      kandelo_commit: $commit
+    } |
+    .packages[0].bottles[0].url =
+      "https://ghcr.io/v2/kandelo-dev/tap-core/hello/blobs/sha256:" +
+      .packages[0].bottles[0].sha256
+  ' "$tap/Kandelo/metadata.json" >"$tap/Kandelo/metadata.json.tmp"
   mv "$tap/Kandelo/metadata.json.tmp" "$tap/Kandelo/metadata.json"
   matrix="$(bash "$REPO_ROOT/scripts/homebrew-plan-matrix.sh" \
     --tap-root "$tap" \
     --formulae "hello" \
     --arches "wasm32" \
-    --expected-cache-keys "$expected" \
-    --expected-abi 40 \
-    --expected-bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core)"
+    "${expected_args[@]}")"
   printf '%s\n' "$matrix" | jq -e '
     . == [{"formula":"hello","arch":"wasm32"}]
   ' >/dev/null || fail "old-root cache metadata skipped the repository-root migration: $matrix"
@@ -806,9 +853,7 @@ EOF
     --tap-root "$tap" \
     --formulae "hello" \
     --arches "wasm64,wasm32" \
-    --expected-cache-keys "$expected" \
-    --expected-abi 40 \
-    --expected-bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    "${expected_args[@]}" \
     --force)"
   printf '%s\n' "$matrix" | jq -e '
     length == 2 and
@@ -822,10 +867,25 @@ EOF
     --arches "wasm32" \
     --expected-cache-keys "$expected" \
     --expected-abi 41 \
-    --expected-bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core)"
+    --expected-bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --expected-kandelo-repository Automattic/kandelo \
+    --expected-kandelo-commit "$kandelo_commit")"
   printf '%s\n' "$matrix" | jq -e '
     . == [{"formula":"hello","arch":"wasm32"}]
   ' >/dev/null || fail "older-ABI cache metadata skipped the new ABI build: $matrix"
+
+  if bash "$REPO_ROOT/scripts/homebrew-plan-matrix.sh" \
+    --tap-root "$tap" --formulae hello --arches wasm32 \
+    --expected-cache-keys "$expected" --expected-abi 40 \
+    --expected-bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --expected-kandelo-repository Automattic/kandelo >/dev/null 2>&1; then
+    fail "planner accepted cache reuse without an exact Kandelo commit"
+  fi
+  if bash "$REPO_ROOT/scripts/homebrew-plan-matrix.sh" \
+    --tap-root "$tap" --formulae hello --arches wasm32 \
+    --expected-kandelo-commit "$kandelo_commit" >/dev/null 2>&1; then
+    fail "planner accepted source provenance without cache-key planning"
+  fi
 }
 
 assert_upload_dry_run() {

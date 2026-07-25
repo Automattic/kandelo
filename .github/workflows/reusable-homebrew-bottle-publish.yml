@@ -363,6 +363,8 @@ jobs:
           EXPECTED_ABI: ${{ steps.release.outputs.abi }}
           EXPECTED_BOTTLE_ROOT_URL: ${{ steps.release.outputs.bottle-root-prefix }}
           EXPECTED_CACHE_KEYS_JSON: ${{ inputs.expected-cache-keys }}
+          EXPECTED_KANDELO_COMMIT: ${{ steps.source-commits.outputs.kandelo-sha }}
+          EXPECTED_KANDELO_REPOSITORY: ${{ inputs.kandelo-repository }}
           FORCE_REBUILD: ${{ inputs.force }}
           FORMULAE: ${{ inputs.formulae }}
         run: |
@@ -375,6 +377,8 @@ jobs:
             expected_args+=(--expected-cache-keys "$expected_file")
             expected_args+=(--expected-abi "$EXPECTED_ABI")
             expected_args+=(--expected-bottle-root-url "$EXPECTED_BOTTLE_ROOT_URL")
+            expected_args+=(--expected-kandelo-repository "$EXPECTED_KANDELO_REPOSITORY")
+            expected_args+=(--expected-kandelo-commit "$EXPECTED_KANDELO_COMMIT")
           fi
           if [ "$FORCE_REBUILD" = "true" ]; then
             expected_args+=(--force)

@@ -921,6 +921,14 @@ entered the mutable resolver ledger through ordinary merge-candidate activation
 remains useful to general consumers, but it is not a bottle input until this
 exact-main rebuild replaces it.
 
+Incremental bottle planning applies the same rule to reuse. A matching cache
+key, ABI, release tag, and bottle URL are not enough to skip a build: the
+selected architecture's own `built_from.kandelo_repository` and
+`built_from.kandelo_commit` fields must name `Automattic/kandelo` at the exact
+admitted `main` SHA. The check is per bottle because merging sidecars preserves
+unchanged architectures from earlier runs; top-level metadata from a newer run
+cannot make an older bottle current.
+
 A dry run keeps those repository identities fixed, but may select a reviewed,
 valid Git branch name or an exact lowercase 40-character commit SHA from each
 repository. The trust step normalizes branch names under `refs/heads/`, and the
