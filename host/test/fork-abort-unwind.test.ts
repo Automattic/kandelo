@@ -145,4 +145,219 @@ describe("instrumented ABORT_UNWINDING", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("preserves recursive plain-catch ownership across abort recovery", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kandelo-fork-abort-catch-"));
+    try {
+      const rawPath = join(dir, "abort-catch.wasm");
+      const instrumentedPath = join(dir, "abort-catch.instrumented.wasm");
+      const outerLocalCount = 9_000;
+      const outerLocalInit = Array.from(
+        { length: outerLocalCount },
+        (_, index) => `i64.const ${index} local.set ${index}`,
+      ).join("\n");
+      const wat = `(module
+        (import "kernel" "kernel_fork" (func $fork (result i32)))
+        (import "env" "memory" (memory 8))
+        (tag $payload (param i32))
+        (func $recurse (param $depth i32) (result i32)
+          (local $caught i32)
+          (block $handler (result i32)
+            (try_table (catch $payload $handler)
+              local.get $depth
+              i32.const 100
+              i32.add
+              throw $payload
+              unreachable)
+            unreachable)
+          local.set $caught
+          local.get $depth
+          if (result i32)
+            local.get $depth
+            i32.const 1
+            i32.sub
+            call $recurse
+          else
+            call $fork
+          end
+          local.get $caught
+          i32.add)
+        (func (export "run") (result i32)
+          (local ${"i64 ".repeat(outerLocalCount)})
+          (local $guard i32)
+          ${outerLocalInit}
+          i32.const 7
+          local.set $guard
+          i32.const 2
+          call $recurse
+          local.get $guard
+          i32.add))`;
+      const watPath = join(dir, "abort-catch.wat");
+      writeFileSync(watPath, wat);
+      execFileSync("wat2wasm", [
+        "--enable-exceptions",
+        watPath,
+        "-o",
+        rawPath,
+      ]);
+      execFileSync(fileURLToPath(new URL(
+        "../../tools/bin/wasm-fork-instrument",
+        import.meta.url,
+      )), [
+        rawPath,
+        "-o",
+        instrumentedPath,
+      ]);
+
+      const module = new WebAssembly.Module(readFileSync(instrumentedPath));
+      const memory = new WebAssembly.Memory({ initial: 8 });
+      const view = new DataView(memory.buffer);
+      let instance: WebAssembly.Instance;
+      let moduleBuffer = 0;
+      let failGrowth = true;
+      let nextAddress = 65_536;
+      let abortCommits = 0;
+      let successfulCommits = 0;
+      let lowMemoryUntouched = false;
+      let retiredStorageUntouched = false;
+      const allocationSizes: number[] = [];
+      const released: Array<{ addr: number; size: number }> = [];
+
+      // WHY: this fixture has no mutable guest globals. In the retired
+      // module-wide design, the plain-catch arm and payload occupied these
+      // two words after the linked prefix's pointer words. They let the test
+      // distinguish a stale-buffer write from merely clearing the buffer
+      // global and redirecting the same invalid write to address zero.
+      const scratchArmOffset = 8;
+      const scratchPayloadOffset = 12;
+      const sentinel = 0xa5a5a5a5;
+      const fillScratchWords = (base: number): void => {
+        view.setUint32(base + scratchArmOffset, sentinel, true);
+        view.setUint32(base + scratchPayloadOffset, sentinel, true);
+      };
+      const scratchWordsAreUntouched = (base: number): boolean =>
+        view.getUint32(base + scratchArmOffset, true) === sentinel
+        && view.getUint32(base + scratchPayloadOffset, true) === sentinel;
+
+      const continuation = new LinkedForkContinuation(
+        memory,
+        readLinkedFrameFormat(module),
+        (size) => {
+          allocationSizes.push(size);
+          if (failGrowth && nextAddress !== 65_536) {
+            throw new ContinuationAllocationError(12, size, "injected ENOMEM");
+          }
+          const addr = nextAddress;
+          nextAddress += size;
+          return addr;
+        },
+        (addr, size) => released.push({ addr, size }),
+        "abort-catch-e2e",
+      );
+
+      const imports = {
+        env: {
+          memory,
+          __wpk_fork_frame_reserve: (size: number) => {
+            const frame = continuation.reserveFrame(size);
+            if (frame === 0) {
+              (instance.exports.wpk_fork_abort_begin as (addr: number) => void)(
+                moduleBuffer,
+              );
+            }
+            return frame;
+          },
+          __wpk_fork_frame_commit: (payload: number) => {
+            continuation.commitFrame(payload);
+            if (failGrowth) {
+              abortCommits++;
+            } else {
+              successfulCommits++;
+            }
+          },
+          __wpk_fork_frame_next: (size: number) => continuation.nextFrame(size),
+        },
+        kernel: {
+          kernel_fork: () => {
+            const state = (instance.exports.wpk_fork_state as () => number)();
+            if (state === 2) {
+              (instance.exports.wpk_fork_rewind_end as () => void)();
+              continuation.finishReplayAndRelease();
+              return 17;
+            }
+            if (state === 3) {
+              const errno = continuation.abortErrno();
+              (instance.exports.wpk_fork_abort_end as () => void)();
+              continuation.finishAbortReplayAndRelease();
+              return -errno;
+            }
+
+            if (!failGrowth) {
+              // Check before beginUnwind legitimately reclaims and initializes
+              // the same mapping. All three recursive catches have run by now.
+              lowMemoryUntouched = scratchWordsAreUntouched(0);
+              retiredStorageUntouched = scratchWordsAreUntouched(moduleBuffer);
+            }
+            moduleBuffer = Number(continuation.beginUnwind());
+            (instance.exports.wpk_fork_unwind_begin as (addr: number) => void)(
+              moduleBuffer,
+            );
+            return 0;
+          },
+        },
+      };
+      instance = new WebAssembly.Instance(module, imports);
+      const run = instance.exports.run as () => number;
+      const state = instance.exports.wpk_fork_state as () => number;
+
+      // The three recursive activations commit distinct payloads (102, 101,
+      // 100) into the root chunk. The roughly 72 KiB outer activation then
+      // needs a second mapping, where allocation failure is injected.
+      const abortResult = run();
+      expect(state()).toBe(0);
+      expect(continuation.hasActiveContinuation()).toBe(false);
+      expect(released).toEqual([{ addr: 65_536, size: 65_536 }]);
+
+      // Once abort replay releases the root, later catch capture must own its
+      // state in activation locals rather than either retired storage or low
+      // memory. Reuse the same root address for the successful fork so this
+      // also covers the real allocator-reuse lifecycle.
+      fillScratchWords(0);
+      fillScratchWords(moduleBuffer);
+      failGrowth = false;
+      nextAddress = 65_536;
+      const unwindResult = run();
+      expect(unwindResult).toBe(0);
+      expect(state()).toBe(1);
+      (instance.exports.wpk_fork_unwind_end as () => void)();
+      continuation.finishUnwind();
+      continuation.beginReplay();
+      (instance.exports.wpk_fork_rewind_begin as (addr: number) => void)(
+        moduleBuffer,
+      );
+      const successfulResult = run();
+
+      expect({
+        abortResult,
+        abortCommits,
+        allocationSizes,
+        lowMemoryUntouched,
+        retiredStorageUntouched,
+        successfulCommits,
+        successfulResult,
+      }).toEqual({
+        abortResult: 298, // -ENOMEM + 100 + 101 + 102 + the outer guard 7
+        abortCommits: 3,
+        allocationSizes: [65_536, 131_072, 65_536, 131_072],
+        lowMemoryUntouched: true,
+        retiredStorageUntouched: true,
+        successfulCommits: 4,
+        successfulResult: 327, // fork result 17 + payloads + outer guard
+      });
+      expect(state()).toBe(0);
+      expect(continuation.hasActiveContinuation()).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
