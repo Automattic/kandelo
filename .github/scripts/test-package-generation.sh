@@ -566,6 +566,8 @@ grep -Fq -- "--exclude-package shell" \
   "$SCRIPT_DIR/prepare-durable-package-generation.sh"
 grep -Fq -- "--include-package rootfs" \
   "$SCRIPT_DIR/prepare-durable-package-generation.sh"
+grep -Fq -- '--arch "$ARCH"' \
+  "$SCRIPT_DIR/prepare-durable-package-generation.sh"
 grep -Fq '/git/ref/heads/$DEFAULT_REF' \
   "$SCRIPT_DIR/prepare-durable-package-generation.sh"
 grep -Fq "main-source-evidence-after.json" \
@@ -581,6 +583,10 @@ grep -Fq "contents: write" <<<"$publish_job"
 grep -Fq "persist-credentials: false" <<<"$publish_job"
 grep -Fq "publish-durable-package-generation.sh" <<<"$publish_job"
 grep -Fq -- "--authority-xtask" <<<"$publish_job"
+grep -Fq "staging-reuse scan-source" \
+  "$SCRIPT_DIR/publish-durable-package-generation.sh"
+grep -Fq "rederived-projection" \
+  "$SCRIPT_DIR/publish-durable-package-generation.sh"
 if grep -Fq "package-source-target" <<<"$publish_job"; then
   echo "release writer executes historical package-source tooling" >&2
   exit 1

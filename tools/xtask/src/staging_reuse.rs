@@ -23,6 +23,8 @@ use crate::pkg_manifest::{
 
 const SOURCE_IDENTITY_ALGORITHM: &str =
     "kandelo-program-packages-v2-manifest-closure-v1";
+const CANONICAL_PACKAGE_SOURCE_REPOSITORY: &str =
+    "https://github.com/Automattic/kandelo";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -994,10 +996,13 @@ fn validate_generation_archive_source(
 ) -> Result<(), String> {
     for entry in &snapshot.entries {
         let archive = read_archive_manifest(&bundle_dir.join(&entry.asset))?;
-        if archive.build.commit.as_deref() != Some(package_source_sha) {
+        if archive.build.repo_url.as_deref()
+            != Some(CANONICAL_PACKAGE_SOURCE_REPOSITORY)
+            || archive.build.commit.as_deref() != Some(package_source_sha)
+        {
             return Err(format!(
-                "durable generation archive {:?} was not built from exact main source {}",
-                entry.asset, package_source_sha
+                "durable generation archive {:?} was not built by {} at exact main source {}",
+                entry.asset, CANONICAL_PACKAGE_SOURCE_REPOSITORY, package_source_sha
             ));
         }
     }
@@ -2872,6 +2877,28 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
         )
         .unwrap_err();
         assert!(error.contains("exact main source"), "{error}");
+
+        let wrong_repo_path = dir.join("wrong-repository.tar.zst");
+        let wrong_repo_manifest = archived_manifest_at_main(&[], &main_sha).replace(
+            CANONICAL_PACKAGE_SOURCE_REPOSITORY,
+            "https://github.com/example/fork",
+        );
+        write_test_archive(
+            &wrong_repo_path,
+            "manifest.toml",
+            wrong_repo_manifest.as_bytes(),
+            false,
+        );
+        let error = validate_generation_archive_source(
+            &snapshot_for_archive(&wrong_repo_path, true),
+            &dir,
+            &main_sha,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains(CANONICAL_PACKAGE_SOURCE_REPOSITORY),
+            "{error}"
+        );
     }
 
     #[test]

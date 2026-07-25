@@ -146,6 +146,66 @@ case "$SELECTION_KIND:$projection_schema" in
     ;;
 esac
 
+manifest_projection="$TMP_ROOT/manifest-projection.json"
+rederived_projection="$TMP_ROOT/rederived-projection.json"
+rederived_expected="$TMP_ROOT/rederived-expected.json"
+jq -S '.identity.projection' "$MANIFEST" >"$manifest_projection"
+source_selection_args=()
+if [ "$SELECTION_KIND" = browser-inputs ]; then
+  browser_roots_script="$REPO_ROOT/scripts/browser-binary-package-roots.mjs"
+  if [ ! -f "$browser_roots_script" ] || [ -L "$browser_roots_script" ]; then
+    echo "publish-durable-package-generation: exact main lacks the browser root scanner" >&2
+    exit 2
+  fi
+  # WHY: the writer is a separate trust boundary from preparation. Rebuilding
+  # architecture-scoped browser roots from its own exact-main checkout
+  # prevents an internally consistent but incomplete transferred bundle from
+  # becoming canonical.
+  browser_root_args=(--arch "$ARCH" --exclude-package shell)
+  if [ "$ARCH" = wasm32 ]; then
+    browser_root_args+=(--include-package rootfs)
+  fi
+  env -u GH_TOKEN -u GITHUB_TOKEN \
+    -u HOMEBREW_GITHUB_API_TOKEN \
+    -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+    -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+    -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+    -u ACTIONS_ID_TOKEN_REQUEST_URL \
+    -u ACTIONS_RUNTIME_TOKEN \
+    -u WASM_POSIX_DEPS_REGISTRY \
+    node "$browser_roots_script" \
+      --source-root "$REPO_ROOT" \
+      "${browser_root_args[@]}" >"$TMP_ROOT/browser-inputs-roots.txt"
+  source_selection_args=(
+    --root-set browser-inputs
+    --roots-file "$TMP_ROOT/browser-inputs-roots.txt"
+  )
+else
+  source_selection_args=(--root-package "$ROOT_PACKAGE")
+fi
+env -u GH_TOKEN -u GITHUB_TOKEN \
+  -u HOMEBREW_GITHUB_API_TOKEN \
+  -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+  -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+  -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+  -u ACTIONS_ID_TOKEN_REQUEST_URL \
+  -u ACTIONS_RUNTIME_TOKEN \
+  -u WASM_POSIX_DEPS_REGISTRY \
+  "$AUTHORITY_XTASK" staging-reuse scan-source \
+    --source-root "$REPO_ROOT" \
+    --expected-abi "$EXPECTED_ABI" \
+    --arch "$ARCH" \
+    "${source_selection_args[@]}" \
+    --projection-output "$TMP_ROOT/rederived-projection.raw.json" \
+    --expected-output "$TMP_ROOT/rederived-expected.raw.json"
+jq -S . "$TMP_ROOT/rederived-projection.raw.json" >"$rederived_projection"
+jq -S . "$TMP_ROOT/rederived-expected.raw.json" >"$rederived_expected"
+if ! cmp "$manifest_projection" "$rederived_projection" >/dev/null ||
+   ! cmp "$expected_ledger" "$rederived_expected" >/dev/null; then
+  echo "publish-durable-package-generation: transferred bundle differs from the exact-main source projection" >&2
+  exit 2
+fi
+
 if [ "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}" != "$REPOSITORY" ]; then
   echo "publish-durable-package-generation: workflow repository differs from generation repository" >&2
   exit 2
@@ -221,6 +281,7 @@ env -u GH_TOKEN -u GITHUB_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_URL \
   -u ACTIONS_RUNTIME_TOKEN \
+  -u WASM_POSIX_DEPS_REGISTRY \
   "$AUTHORITY_XTASK" staging-reuse validate-generation \
     --expected-ledger "$expected_ledger" \
     --snapshot "$validated_snapshot" \
@@ -609,6 +670,7 @@ env -u GH_TOKEN -u GITHUB_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_URL \
   -u ACTIONS_RUNTIME_TOKEN \
+  -u WASM_POSIX_DEPS_REGISTRY \
   "$AUTHORITY_XTASK" staging-reuse validate-generation \
     --expected-ledger "$expected_ledger" \
     --snapshot "$validated_snapshot" \

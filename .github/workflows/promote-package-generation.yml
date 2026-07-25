@@ -34,10 +34,13 @@ on:
         default: rootfs
         type: string
       arch:
-        description: 'Target architecture for the selected closure'
+        description: 'Target architecture; browser inputs derive the imported roots for this architecture'
         required: true
         default: wasm32
-        type: string
+        type: choice
+        options:
+          - wasm32
+          - wasm64
 
 permissions:
   contents: read
@@ -163,6 +166,14 @@ jobs:
 
       - name: Set up declared build tools
         uses: ./.github/actions/setup-nix
+
+      - name: Install current browser-root parser dependencies
+        if: inputs.selection-kind == 'browser-inputs'
+        run: |
+          # The writer independently derives roots from exact main; it does not
+          # trust the roots embedded in the transferred preparation artifact.
+          bash scripts/dev-shell.sh \
+            npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Build current authority validator
         run: |

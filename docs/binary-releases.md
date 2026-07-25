@@ -100,6 +100,7 @@ package-generation-<selection>-<arch>-abi-v<N>-sha256-<full-identity-sha256>
 `binaries-abi-v<N>` release/tag identity, ABI, selected package projection,
 fresh expected ledger, validated source snapshot, minimal index, and every
 archive name, byte count, and SHA-256. Every selected archive's embedded
+`[build].repo_url` must name `https://github.com/Automattic/kandelo` and
 `[build].commit` must equal that same main SHA. An ancestor, PR head, tested
 merge, tag target, or same-tree commit cannot substitute for it. The full
 64-character identity digest determines the generation tag. The generated
@@ -110,7 +111,9 @@ There are two projection schemas:
 
 - schema 1 selects one `root_package` and its exact dependency closure;
 - schema 2 names the reserved `browser-inputs` root set, records every sorted
-  root, and deterministically unions their typed dependency closures.
+  root for one explicit architecture, and deterministically unions their typed
+  dependency closures. Publish separate schema-2 generations for `wasm32` and
+  `wasm64`; neither may stand in for the other.
 
 Every closure identity records package, architecture, kind, disposition,
 manifest digest, and fresh contextual cache key. Program and library entries
@@ -119,7 +122,9 @@ fictional archive.
 
 The current main authority derives browser roots by running its own
 `scripts/browser-binary-package-roots.mjs` against the source tree as inert
-data, with `shell` excluded and `rootfs` included. Its current Rust reader
+data, filtering owners to the selected architecture. `shell` is excluded;
+the non-`@binaries` `rootfs` alias is included only in the `wasm32`
+generation. Its current Rust reader
 parses source `package.toml`, `build.toml`, and
 `program-packages.json` bytes and freshly recomputes dependency closures and
 cache identities. No source, consumer, PR, or historical checkout supplies an
@@ -132,16 +137,12 @@ Duplicate or reordered roots, a missing or extra root, substituted dependency,
 changed kind/disposition, stale cache identity, expected-ledger drift, or an
 archive-inventory difference fails closed.
 
-On base `a351fc9b18da032c09160c95f1da672374ade700`, selection finds
-44 browser roots, 61 closure identities, and 60 archives, but fresh validation
-rejects the stale checked-in Bash cache identity. Exact pre-main #1094 source
-`6d923c6454dd7174082f25c3d3991d03f86f5ddb` selects 45 roots, 62
-identities, and 61 archives, adding `homebrew-bootstrap`; `pcre2-source`
-is source-only. These values are regression evidence for source selection,
-not publication provenance. A durable generation may not consume #1094's PR
-release, PR head, tested merge, or staging cache identities. It recomputes
-everything from the eventual exact activated main commit. The separate 75
-changed-build workload is not a browser projection count.
+Root and closure counts are derived evidence, not acceptance constants. A
+durable generation may not consume a PR release, PR head, tested merge,
+ancestor, tag target, same-tree commit, or staging cache identity. It
+recomputes everything from the exact activated main commit and rejects a
+wrong-architecture omission even when the same package name exists for both
+architectures.
 
 The authority relationships are:
 
@@ -160,10 +161,12 @@ exact index package/arch set, strict TOML/JSON, snapshot, sorted asset
 inventory, digests, archive manifests, immutable Git inputs, and embedded main
 commit. Preparation, publication, and materialization all use that validator.
 
-The writer binds every dispatch input to `generation.json`, reacquires its
-state lock, requeries live main and canonical package assets, and repeats local
-rehashing and semantic validation immediately before uploading
-`generation.json` as the application seal and before publishing the release.
+The writer binds every dispatch input to `generation.json`, independently
+rederives the architecture-scoped source projection and expected ledger from
+its own exact-main checkout, reacquires its state lock, requeries live main and
+canonical package assets, and repeats local rehashing and semantic validation
+immediately before uploading `generation.json` as the application seal and
+before publishing the release.
 The materializer anonymously downloads every asset, requeries release/tag/asset
 metadata, reruns the same semantic validator, recomputes the consumer
 projection, and rechecks both clean checkouts immediately before exposing a
@@ -186,27 +189,30 @@ be the matching canonical ABI release:
 
 ```bash
 main_sha="$(gh api repos/Automattic/kandelo/git/ref/heads/main --jq .object.sha)"
-gh workflow run promote-package-generation.yml \
-  --repo Automattic/kandelo \
-  --ref main \
-  -f source-tag=binaries-abi-v42 \
-  -f package-source-sha="$main_sha" \
-  -f expected-abi=42 \
-  -f selection-kind=browser-inputs \
-  -f root-package=rootfs \
-  -f arch=wasm32
+for arch in wasm32 wasm64; do
+  gh workflow run promote-package-generation.yml \
+    --repo Automattic/kandelo \
+    --ref main \
+    -f source-tag=binaries-abi-v42 \
+    -f package-source-sha="$main_sha" \
+    -f expected-abi=42 \
+    -f selection-kind=browser-inputs \
+    -f root-package=rootfs \
+    -f arch="$arch"
+done
 ```
 
 Use `selection-kind=root-package` for one named root closure. The
 `root-package=rootfs` default remains present for a `browser-inputs`
-dispatch but is not its selection authority. The current checkout installs
+dispatch but is not its selection authority. The scanner adds the rootfs alias
+only to the wasm32 root set. The current checkout installs
 only its own pinned root npm dependencies with lifecycle scripts disabled;
 historical or source checkout dependencies are never installed.
 
 Do not replace derivation with a count gate and do not dispatch from a PR
-release. The #1094 45-root/62-identity/61-archive result proves only selection
-behavior. It becomes eligible only if the same freshly derived identities and
-newly main-stamped archives exist after exact-main canonical activation.
+release. A selection becomes eligible only when its freshly derived identities
+and archives stamped with the canonical repository and exact main commit exist
+after exact-main activation.
 
 If a runner stops while the generation release is a draft, repeat the
 identical dispatch from the same main SHA. The writer accepts only an exact

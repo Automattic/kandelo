@@ -141,6 +141,30 @@ python3 "$TOOL" prepare \
   --archives-dir "$TMP_ROOT/archives" \
   --output-dir "$TMP_ROOT/browser-bundle" >/dev/null
 
+jq -S \
+  --arg a "$hex_a" \
+  --arg manifest "$root_manifest_sha" '
+    .roots = ["additional-browser-input", "rootfs"] |
+    .closure = [
+      {
+        package:"additional-browser-input",arch:"wasm32",
+        kind:"program",disposition:"program-archive",
+        manifest_sha256:$manifest,cache_key_sha:$a
+      },
+      .closure[0]
+    ]
+  ' "$TMP_ROOT/browser-projection.json" \
+  >"$TMP_ROOT/expanded-browser-projection.json"
+jq -S --arg a "$hex_a" '
+  .entries = [
+    {
+      package:"additional-browser-input",kind:"program",arch:"wasm32",
+      version:"1",revision:1,cache_key_sha:$a,git_inputs:[]
+    },
+    .entries[0]
+  ]
+' "$TMP_ROOT/expected.json" >"$TMP_ROOT/expanded-browser-expected.json"
+
 cat >"$TMP_ROOT/bin/authority-xtask" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -149,7 +173,7 @@ for name in \
   HOMEBREW_GITHUB_API_TOKEN HOMEBREW_GITHUB_PACKAGES_TOKEN \
   HOMEBREW_DOCKER_REGISTRY_TOKEN \
   ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL \
-  ACTIONS_RUNTIME_TOKEN; do
+  ACTIONS_RUNTIME_TOKEN WASM_POSIX_DEPS_REGISTRY; do
   [ -z "${!name:-}" ] || {
     echo "authority xtask inherited $name" >&2
     exit 97
@@ -189,15 +213,16 @@ case "$action" in
     ;;
   "staging-reuse scan-source")
     if [ "$root_set" = browser-inputs ]; then
-      [ "$(cat "$roots_file")" = rootfs ] || {
+      [ "$(cat "$roots_file")" = "${TEST_BROWSER_ROOTS:-rootfs}" ] || {
         echo "source root list is not canonical and unique" >&2
         exit 1
       }
-      cp "${TEST_BROWSER_PROJECTION:?}" "$projection_output"
+      cp "${TEST_REDERIVED_BROWSER_PROJECTION:-${TEST_BROWSER_PROJECTION:?}}" \
+        "$projection_output"
     else
       cp "${TEST_PROJECTION:?}" "$projection_output"
     fi
-    cp "${TEST_EXPECTED:?}" "$expected_output"
+    cp "${TEST_REDERIVED_EXPECTED:-${TEST_EXPECTED:?}}" "$expected_output"
     ;;
   *)
     echo "unexpected authority xtask action: $action" >&2
@@ -466,6 +491,7 @@ run_publisher() {
     ACTIONS_ID_TOKEN_REQUEST_TOKEN=test-oidc-token \
     ACTIONS_ID_TOKEN_REQUEST_URL=https://example.invalid/oidc \
     ACTIONS_RUNTIME_TOKEN=test-runtime-token \
+    WASM_POSIX_DEPS_REGISTRY=/tmp/untrusted-registry \
     GITHUB_REPOSITORY=Automattic/kandelo \
     GITHUB_RUN_ID=123 \
     GITHUB_RUN_ATTEMPT=1 \
@@ -477,6 +503,9 @@ run_publisher() {
     TEST_PROJECTION="$TMP_ROOT/projection.json" \
     TEST_BROWSER_PROJECTION="$TMP_ROOT/browser-projection.json" \
     TEST_EXPECTED="$TMP_ROOT/expected.json" \
+    NODE_EXPECTED_SCRIPT="$AUTHORITY_ROOT/scripts/browser-binary-package-roots.mjs" \
+    NODE_EXPECTED_ROOT="$AUTHORITY_ROOT" \
+    BROWSER_INPUT_ROOTS="${TEST_RUN_BROWSER_INPUT_ROOTS:-rootfs}" \
     WRITE_LOG="$TMP_ROOT/writes.log" \
     LOCK_LOG="$TMP_ROOT/locks.log" \
     STATE_LOCK_SCRIPT="$TMP_ROOT/bin/state-lock" \
@@ -555,18 +584,19 @@ for name in \
   HOMEBREW_GITHUB_API_TOKEN HOMEBREW_GITHUB_PACKAGES_TOKEN \
   HOMEBREW_DOCKER_REGISTRY_TOKEN \
   ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL \
-  ACTIONS_RUNTIME_TOKEN; do
+  ACTIONS_RUNTIME_TOKEN WASM_POSIX_DEPS_REGISTRY; do
   [ -z "${!name:-}" ] || {
     echo "browser root authority inherited $name" >&2
     exit 97
   }
 done
-[ "$#" -eq 7 ]
+[ "$#" -eq 9 ]
 [ "$1" = "${NODE_EXPECTED_SCRIPT:?}" ]
-[ "$2 $4 $6" = "--source-root --exclude-package --include-package" ]
+[ "$2 $4 $6 $8" = "--source-root --arch --exclude-package --include-package" ]
 [ "$3" = "${NODE_EXPECTED_ROOT:?}" ]
-[ "$5" = shell ]
-[ "$7" = rootfs ]
+[ "$5" = wasm32 ]
+[ "$7" = shell ]
+[ "$9" = rootfs ]
 printf '%s\n' "${BROWSER_INPUT_ROOTS:-rootfs}"
 EOF
 chmod +x "$TMP_ROOT/bin/node"
@@ -582,6 +612,7 @@ env \
   ACTIONS_ID_TOKEN_REQUEST_TOKEN=test-oidc-token \
   ACTIONS_ID_TOKEN_REQUEST_URL=https://example.invalid/oidc \
   ACTIONS_RUNTIME_TOKEN=test-runtime-token \
+  WASM_POSIX_DEPS_REGISTRY=/tmp/untrusted-registry \
   GH_STUB_ROOT="$TMP_ROOT/remote" \
   TEST_SOURCE_SHA="$source_sha" \
   TEST_TREE_SHA="$tree_sha" \
@@ -619,6 +650,28 @@ run_publisher \
 browser_tag="$(jq -r .tag "$TMP_ROOT/browser-bundle/generation.json")"
 [[ "$browser_tag" =~ ^package-generation-browser-inputs-wasm32-abi-v42-sha256-[0-9a-f]{64}$ ]]
 
+# A transferred bundle can be perfectly self-consistent yet omit a package
+# that exact main now imports. The writer must independently derive the source
+# projection and reject before its first release write.
+mkdir -p "$TMP_ROOT/incomplete-remote/source-assets"
+cp "$TMP_ROOT/source-index.toml" \
+  "$TMP_ROOT/incomplete-remote/source-assets/index.toml"
+cp "$TMP_ROOT/archives/rootfs.tar.zst" \
+  "$TMP_ROOT/incomplete-remote/source-assets/rootfs.tar.zst"
+: >"$TMP_ROOT/writes.log"
+if TEST_REDERIVED_BROWSER_PROJECTION="$TMP_ROOT/expanded-browser-projection.json" \
+   TEST_REDERIVED_EXPECTED="$TMP_ROOT/expanded-browser-expected.json" \
+   TEST_BROWSER_ROOTS=$'additional-browser-input\nrootfs' \
+   TEST_RUN_BROWSER_INPUT_ROOTS=$'additional-browser-input\nrootfs' \
+   run_publisher \
+     "$TMP_ROOT/incomplete-remote" \
+     "$TMP_ROOT/incomplete-receipt.json" \
+     "$TMP_ROOT/browser-bundle"; then
+  echo "publisher accepted an internally consistent incomplete browser bundle" >&2
+  exit 1
+fi
+[ ! -s "$TMP_ROOT/writes.log" ]
+
 if env \
     PATH="$TMP_ROOT/bin:$PATH" \
     GH_TOKEN=test-token \
@@ -629,6 +682,7 @@ if env \
     ACTIONS_ID_TOKEN_REQUEST_TOKEN=test-oidc-token \
     ACTIONS_ID_TOKEN_REQUEST_URL=https://example.invalid/oidc \
     ACTIONS_RUNTIME_TOKEN=test-runtime-token \
+    WASM_POSIX_DEPS_REGISTRY=/tmp/untrusted-registry \
     GH_STUB_ROOT="$TMP_ROOT/browser-remote" \
     TEST_SOURCE_SHA="$source_sha" \
     TEST_TREE_SHA="$tree_sha" \
@@ -660,6 +714,7 @@ env \
   ACTIONS_ID_TOKEN_REQUEST_TOKEN=test-oidc-token \
   ACTIONS_ID_TOKEN_REQUEST_URL=https://example.invalid/oidc \
   ACTIONS_RUNTIME_TOKEN=test-runtime-token \
+  WASM_POSIX_DEPS_REGISTRY=/tmp/untrusted-registry \
   GH_STUB_ROOT="$TMP_ROOT/browser-remote" \
   TEST_SOURCE_SHA="$source_sha" \
   TEST_TREE_SHA="$tree_sha" \
