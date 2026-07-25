@@ -25,6 +25,10 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+if [[ "$TAG" =~ ^preserved-package-generation- ]]; then
+  echo "materialize-durable-package-generation: preserved PR closures are evidence only; admit them into a package-generation tag before use" >&2
+  exit 2
+fi
 if ! [[ "$TAG" =~ ^package-generation-[a-z0-9][a-z0-9._-]*-[a-z0-9][a-z0-9._-]*-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}$ ]] ||
    ! [[ "$CONSUMER_SHA" =~ ^[0-9a-f]{40}$ ]] ||
    { [ -n "$REQUIRED_PACKAGE_SOURCE_SHA" ] &&
@@ -142,11 +146,35 @@ run_without_credentials() {
 abi_version="$(jq -er '.identity.abi_version' "$manifest")"
 arch="$(jq -er '.identity.projection.arch' "$manifest")"
 projection_schema="$(jq -er '.identity.projection.schema' "$manifest")"
-source_release_tag="$(jq -er '.identity.source_activation.evidence.tag' "$manifest")"
-[ "$source_release_tag" = "binaries-abi-v$abi_version" ] || {
-  echo "materialize-durable-package-generation: generation was not sourced from coherent main activation" >&2
-  exit 1
-}
+manifest_format="$(jq -er .format "$manifest")"
+case "$manifest_format" in
+  kandelo-package-generation-v1)
+    # WHY: immutable v1 generations predate split producer/main evidence. Their
+    # single SHA remains exact archive producer and release target.
+    source_release_tag="$(jq -er '.identity.source_activation.evidence.tag' "$manifest")"
+    package_producer_sha="$(jq -er '.identity.package_source_sha' "$manifest")"
+    validated_main_sha="$package_producer_sha"
+    archive_source_args=(--package-source-sha "$package_producer_sha")
+    [ "$source_release_tag" = "binaries-abi-v$abi_version" ] || {
+      echo "materialize-durable-package-generation: v1 generation was not sourced from coherent main activation" >&2
+      exit 1
+    }
+    ;;
+  kandelo-package-generation-v2)
+    # WHY: archive manifests must match truthful producer S, while release/tag
+    # identity and a caller's exact-main requirement bind validated M.
+    source_release_tag="$(jq -er '.identity.producer.evidence.tag' "$manifest")"
+    package_producer_sha="$(jq -er '.identity.producer.evidence.producer_sha' "$manifest")"
+    validated_main_sha="$(jq -er '.identity.validated_against_main.commit' "$manifest")"
+    # WHY: this legacy validator flag names the archive-embedded producer H/S.
+    # It does not grant H/S publication authority or relabel it as main M.
+    archive_source_args=(--package-source-sha "$package_producer_sha")
+    ;;
+  *)
+    echo "materialize-durable-package-generation: unsupported generation format" >&2
+    exit 1
+    ;;
+esac
 consumer_selection_args=()
 case "$projection_schema" in
   1)
@@ -206,21 +234,21 @@ manifest_tag="$(run_without_credentials \
   echo "materialize-durable-package-generation: public manifest belongs to another tag" >&2
   exit 1
 }
-package_source_sha="$(jq -er '.identity.package_source_sha' "$manifest")"
 if [ -n "$REQUIRED_PACKAGE_SOURCE_SHA" ] &&
-   [ "$package_source_sha" != "$REQUIRED_PACKAGE_SOURCE_SHA" ]; then
+   [ "$validated_main_sha" != "$REQUIRED_PACKAGE_SOURCE_SHA" ]; then
   # WHY: matching recipes and cache keys are useful for ordinary consumers,
-  # but a canonical bottle build must consume only the generation produced by
-  # its admitted exact-main checkout. An ancestor or equal-tree generation is
-  # not evidence that the bottle was built against that main commit.
-  echo "materialize-durable-package-generation: generation package source differs from the required exact main commit" >&2
+  # but a canonical bottle build must consume only a generation explicitly
+  # validated against its admitted exact-main commit. v2 may have a distinct
+  # immutable producer, but its content-bound validation receipt must name M.
+  echo "materialize-durable-package-generation: generation validation differs from the required exact main commit" >&2
   exit 1
 fi
+release_target_sha="$validated_main_sha"
 release_title="$(jq -er '.release.title' "$manifest")"
 release_body="$(jq -er '.release.body' "$manifest")"
 if ! jq -e \
     --arg tag "$TAG" \
-    --arg source "$package_source_sha" \
+    --arg source "$release_target_sha" \
     --arg title "$release_title" \
     --arg body "$release_body" \
     --argjson release_id "$release_id" '
@@ -229,7 +257,7 @@ if ! jq -e \
       .name == $title and .body == $body and
       .draft == false and .prerelease == true
     ' "$release_json" >/dev/null ||
-   ! jq -e --arg tag "$TAG" --arg source "$package_source_sha" '
+   ! jq -e --arg tag "$TAG" --arg source "$release_target_sha" '
       .ref == ("refs/tags/" + $tag) and
       .object.type == "commit" and .object.sha == $source
     ' "$tag_json" >/dev/null
@@ -304,13 +332,6 @@ run_without_credentials python3 "$SCRIPT_DIR/package-generation.py" validate \
   --localized-index-out "$localized_index" >/dev/null
 jq -S '.identity.expected_ledger' "$manifest" >"$TMP_ROOT/expected.json"
 jq -S '.identity.validated_snapshot' "$manifest" >"$TMP_ROOT/snapshot.json"
-run_without_credentials "$AUTHORITY_XTASK" staging-reuse validate-archives \
-  --expected-ledger "$TMP_ROOT/expected.json" \
-  --snapshot "$TMP_ROOT/snapshot.json" \
-  --archives-dir "$TMP_ROOT/bundle" \
-  --scope all \
-  --expected-source-repository "https://github.com/$REPOSITORY" \
-  --expected-source-commit "$package_source_sha"
 
 # Recheck mutable GitHub metadata after all downloads to close the same race as
 # publication. A changed public release is rejected even if cached bytes remain.
@@ -326,14 +347,14 @@ jq 'sort_by(.name) | map({id,name,state,size,digest})' "$assets_json" \
   >"$TMP_ROOT/assets-before.json"
 if ! jq -e \
     --arg tag "$TAG" \
-    --arg source "$package_source_sha" \
+    --arg source "$release_target_sha" \
     --arg title "$release_title" \
     --arg body "$release_body" '
       .tag_name == $tag and .target_commitish == $source and
       .name == $title and .body == $body and
       .draft == false and .prerelease == true
     ' "$TMP_ROOT/release-after.json" >/dev/null ||
-   ! jq -e --arg tag "$TAG" --arg source "$package_source_sha" '
+   ! jq -e --arg tag "$TAG" --arg source "$release_target_sha" '
       .ref == ("refs/tags/" + $tag) and
       .object.type == "commit" and .object.sha == $source
     ' "$TMP_ROOT/tag-after.json" >/dev/null ||
@@ -365,7 +386,7 @@ run_without_credentials "$AUTHORITY_XTASK" staging-reuse validate-generation \
   --bundle-dir "$TMP_ROOT/bundle" \
   --release-tag "$TAG" \
   --release-base-url "https://github.com/$REPOSITORY/releases/download/$TAG/" \
-  --package-source-sha "$package_source_sha"
+  "${archive_source_args[@]}"
 if [ "$(git -C "$AUTHORITY_ROOT" rev-parse HEAD)" != "$authority_sha" ] ||
    [ "$(git -C "$AUTHORITY_ROOT" rev-parse 'HEAD^{tree}')" != "$authority_tree" ] ||
    [ -n "$(git -C "$AUTHORITY_ROOT" status --porcelain=v1 --untracked-files=all)" ] ||
@@ -376,6 +397,19 @@ if [ "$(git -C "$AUTHORITY_ROOT" rev-parse HEAD)" != "$authority_sha" ] ||
   exit 1
 fi
 
+# WHY: H is the producer of the resolver/test archives, while M is the source
+# that validated and consumes them. Keep those roles in a separate,
+# digest-bound input receipt; neither may impersonate the actual producer M of
+# a later Homebrew bottle that is recompiled by the consumer workflow.
+if [ "$manifest_format" = kandelo-package-generation-v1 ]; then
+  input_method="v1-single-source"
+  cache_projection=null
+else
+  input_method="$(jq -er '.identity.validated_against_main.method' "$manifest")"
+  cache_projection="$(jq -cS '.identity.cache_projection' "$manifest")"
+fi
+identity_sha256="$(jq -er .identity_sha256 "$manifest")"
+
 mkdir "$TMP_ROOT/output" "$TMP_ROOT/output/resolver"
 cp "$localized_index" "$TMP_ROOT/output/resolver/index.toml"
 while IFS= read -r name; do
@@ -384,6 +418,51 @@ done < <(jq -r '.identity.archives[].name' "$manifest")
 mv "$TMP_ROOT/bundle" "$TMP_ROOT/output/release"
 printf 'file://%s/resolver/index.toml\n' "$OUTPUT_DIR" \
   >"$TMP_ROOT/output/index-url.txt"
+jq -cnS \
+  --arg tag "$TAG" \
+  --arg repository "$REPOSITORY" \
+  --arg arch "$arch" \
+  --argjson abi_version "$abi_version" \
+  --arg source_release_tag "$source_release_tag" \
+  --arg manifest_sha256 "$generation_digest" \
+  --arg identity_sha256 "$identity_sha256" \
+  --arg producer "$package_producer_sha" \
+  --arg validated_main "$validated_main_sha" \
+  --arg method "$input_method" \
+  --argjson cache_projection "$cache_projection" '{
+    format:"kandelo-materialized-package-generation-input-v1",
+    repository:$repository,
+    arch:$arch,
+    abi_version:$abi_version,
+    source_release_tag:$source_release_tag,
+    generation:{
+      tag:$tag,
+      manifest_sha256:$manifest_sha256,
+      identity_sha256:$identity_sha256
+    },
+    archive_producer:{commit:$producer},
+    validated_against_main:{
+      commit:$validated_main,
+      method:$method,
+      cache_projection:$cache_projection
+    }
+  }' >"$TMP_ROOT/output/package-generation-input.json"
+jq -e \
+  --arg producer "$package_producer_sha" \
+  --arg validated_main "$validated_main_sha" \
+  --arg repository "$REPOSITORY" \
+  --arg arch "$arch" \
+  --arg source_release_tag "$source_release_tag" \
+  --argjson abi_version "$abi_version" '
+    .repository == $repository and
+    .arch == $arch and
+    .abi_version == $abi_version and
+    .source_release_tag == $source_release_tag and
+    .archive_producer.commit == $producer and
+    .validated_against_main.commit == $validated_main and
+    .archive_producer.commit != "" and
+    .validated_against_main.commit != ""
+  ' "$TMP_ROOT/output/package-generation-input.json" >/dev/null
 mv "$TMP_ROOT/output" "$OUTPUT_DIR"
 rm -rf "$TMP_ROOT"
 trap - EXIT

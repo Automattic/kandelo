@@ -534,6 +534,7 @@ fi
 cleanup_workflow="$SCRIPT_DIR/../workflows/staging-cleanup.yml"
 grep -Fq 'startswith("pr-")' "$cleanup_workflow"
 grep -Fq 'endswith("-staging")' "$cleanup_workflow"
+grep -Fq 'retain-package-staging' "$cleanup_workflow"
 if [[ "$tag" == pr-*-staging ]]; then
   echo "durable tag overlaps the staging-cleanup namespace" >&2
   exit 1
@@ -557,7 +558,11 @@ if grep -Fq "contents: write" <<<"$prepare_job"; then
 fi
 grep -Fq "persist-credentials: false" <<<"$prepare_job"
 grep -Fq "prepare-durable-package-generation.sh" <<<"$prepare_job"
+grep -Fq -- "--producer-sha" <<<"$prepare_job"
+grep -Fq -- "--validated-main-sha" <<<"$prepare_job"
 grep -Fq "selection-kind" "$promotion_workflow"
+grep -Fq "release-retained-source" "$promotion_workflow"
+grep -Fq -- "--remove-label retain-package-staging" "$promotion_workflow"
 grep -Fq "scripts/dev-shell.sh" <<<"$prepare_job"
 grep -Fq "npm ci --ignore-scripts --no-audit --no-fund" <<<"$prepare_job"
 grep -Fq -- "--browser-inputs" <<<"$prepare_job"
@@ -571,9 +576,18 @@ grep -Fq -- '--arch "$ARCH"' \
   "$SCRIPT_DIR/prepare-durable-package-generation.sh"
 grep -Fq '/git/ref/heads/$DEFAULT_REF' \
   "$SCRIPT_DIR/prepare-durable-package-generation.sh"
-grep -Fq "main-source-evidence-after.json" \
+grep -Fq "producer-evidence-after.json" \
   "$SCRIPT_DIR/prepare-durable-package-generation.sh"
-if grep -Eq '/pulls/|tested_merge|merge_commit_sha' \
+if [ "$(grep -Fc "require_pr_staging_retention" \
+       "$SCRIPT_DIR/prepare-durable-package-generation.sh")" -lt 3 ]; then
+  echo "preparation does not recheck PR staging retention" >&2
+  exit 1
+fi
+grep -Fq "main-validation-after.json" \
+  "$SCRIPT_DIR/prepare-durable-package-generation.sh"
+grep -Fq '/pulls/$pr_number' \
+  "$SCRIPT_DIR/prepare-durable-package-generation.sh"
+if grep -Eq 'tested_merge|merge_commit_sha' \
     "$SCRIPT_DIR/prepare-durable-package-generation.sh"; then
   echo "durable preparation retained PR/merge provenance authority" >&2
   exit 1
@@ -584,10 +598,17 @@ grep -Fq "contents: write" <<<"$publish_job"
 grep -Fq "persist-credentials: false" <<<"$publish_job"
 grep -Fq "publish-durable-package-generation.sh" <<<"$publish_job"
 grep -Fq -- "--authority-xtask" <<<"$publish_job"
+grep -Fq -- "--producer-sha" <<<"$publish_job"
+grep -Fq -- "--validated-main-sha" <<<"$publish_job"
 grep -Fq "staging-reuse scan-source" \
   "$SCRIPT_DIR/publish-durable-package-generation.sh"
 grep -Fq "rederived-projection" \
   "$SCRIPT_DIR/publish-durable-package-generation.sh"
+if [ "$(grep -Fc "validate_publication_source" \
+       "$SCRIPT_DIR/publish-durable-package-generation.sh")" -lt 4 ]; then
+  echo "publisher does not recheck live provenance at both seal boundaries" >&2
+  exit 1
+fi
 if grep -Fq "package-source-target" <<<"$publish_job"; then
   echo "release writer executes historical package-source tooling" >&2
   exit 1
@@ -599,6 +620,300 @@ validated_tag="$(python3 "$TOOL" validate \
   --localized-index-out "$TMP_ROOT/recovered-index.toml")"
 [ "$validated_tag" = "$tag" ]
 cmp "$TMP_ROOT/localized-index.toml" "$TMP_ROOT/recovered-index.toml"
+
+# A v2 generation may retain archives from producer S only when current-main
+# evidence proves the configured relationship between S and authority M.
+producer_sha="$source_sha"
+validated_main_sha="$other_source_sha"
+producer_tag_sha="$(printf '3%.0s' {1..40})"
+staging_tag="pr-1097-staging"
+mkdir "$TMP_ROOT/v2-evidence"
+jq -nS --arg tag "$staging_tag" --arg tag_sha "$producer_tag_sha" '{
+  id:23,tag_name:$tag,target_commitish:$tag_sha,
+  draft:false,prerelease:true
+}' >"$TMP_ROOT/v2-evidence/release.json"
+jq -nS --arg tag "$staging_tag" --arg tag_sha "$producer_tag_sha" '{
+  ref:("refs/tags/" + $tag),object:{type:"commit",sha:$tag_sha}
+}' >"$TMP_ROOT/v2-evidence/tag.json"
+jq -nS --arg producer "$producer_sha" --arg tree "$tree_sha" '{
+  sha:$producer,tree:{sha:$tree},parents:[]
+}' >"$TMP_ROOT/v2-evidence/producer-commit.json"
+jq -nS --arg main "$validated_main_sha" '{
+  ref:"refs/heads/main",object:{type:"commit",sha:$main}
+}' >"$TMP_ROOT/v2-evidence/main-ref.json"
+jq -nS --arg main "$validated_main_sha" --arg tree "$tree_sha" '{
+  sha:$main,tree:{sha:$tree},parents:[]
+}' >"$TMP_ROOT/v2-evidence/main-commit.json"
+printf '{"abi_version":42}\n' >"$TMP_ROOT/v2-evidence/abi-snapshot.json"
+python3 "$TOOL" producer-release-evidence \
+  --repository Automattic/kandelo \
+  --source-tag "$staging_tag" \
+  --producer-sha "$producer_sha" \
+  --release "$TMP_ROOT/v2-evidence/release.json" \
+  --tag-ref "$TMP_ROOT/v2-evidence/tag.json" \
+  --producer-commit "$TMP_ROOT/v2-evidence/producer-commit.json" \
+  --output "$TMP_ROOT/v2-evidence/producer-evidence.json"
+python3 "$TOOL" main-validation-evidence \
+  --repository Automattic/kandelo \
+  --default-ref main \
+  --validated-main-sha "$validated_main_sha" \
+  --abi-version 42 \
+  --method identical-git-tree-v1 \
+  --default-ref-value "$TMP_ROOT/v2-evidence/main-ref.json" \
+  --main-commit "$TMP_ROOT/v2-evidence/main-commit.json" \
+  --abi-snapshot "$TMP_ROOT/v2-evidence/abi-snapshot.json" \
+  --output "$TMP_ROOT/v2-evidence/main-validation.json"
+jq --arg tag "$staging_tag" '.release_tag = $tag' \
+  "$TMP_ROOT/snapshot.json" >"$TMP_ROOT/v2-snapshot.json"
+
+prepare_v2() {
+  local output="$1"
+  local main_validation="${2:-$TMP_ROOT/v2-evidence/main-validation.json}"
+  local authority="${3:-$validated_main_sha}"
+  python3 "$TOOL" prepare \
+    --repository Automattic/kandelo \
+    --producer-sha "$producer_sha" \
+    --authority-sha "$authority" \
+    --source-tag "$staging_tag" \
+    --producer-evidence "$TMP_ROOT/v2-evidence/producer-evidence.json" \
+    --main-validation "$main_validation" \
+    --source-index "$TMP_ROOT/source-index.toml" \
+    --projection "$TMP_ROOT/projection.json" \
+    --expected-ledger "$TMP_ROOT/expected.json" \
+    --snapshot "$TMP_ROOT/v2-snapshot.json" \
+    --localized-index "$TMP_ROOT/localized-index.toml" \
+    --archives-dir "$TMP_ROOT/archives" \
+    --output-dir "$output"
+}
+
+v2_tag="$(prepare_v2 "$TMP_ROOT/v2-bundle")"
+python3 "$TOOL" validate \
+  --bundle "$TMP_ROOT/v2-bundle" \
+  --expected-tag "$v2_tag" >/dev/null
+jq -e \
+  --arg producer "$producer_sha" \
+  --arg main "$validated_main_sha" \
+  --arg tree "$tree_sha" '
+    .format == "kandelo-package-generation-v2" and
+    .identity.format == "kandelo-package-generation-identity-v2" and
+    .identity.producer.evidence.producer_sha == $producer and
+    .identity.producer.evidence.producer_tree_sha == $tree and
+    .identity.validated_against_main.commit == $main and
+    .identity.validated_against_main.tree_sha == $tree and
+    .identity.validated_against_main.method == "identical-git-tree-v1" and
+    .identity.cache_projection == null and
+    .release.target_commitish == $main
+  ' "$TMP_ROOT/v2-bundle/generation.json" >/dev/null
+jq '.tree_sha = ("6" * 40)' \
+  "$TMP_ROOT/v2-evidence/main-validation.json" \
+  >"$TMP_ROOT/v2-evidence/wrong-tree-main-validation.json"
+if prepare_v2 \
+    "$TMP_ROOT/v2-wrong-tree" \
+    "$TMP_ROOT/v2-evidence/wrong-tree-main-validation.json"; then
+  echo "v2 generation accepted unequal producer and main trees" >&2
+  exit 1
+fi
+if prepare_v2 "$TMP_ROOT/v2-wrong-authority" \
+    "$TMP_ROOT/v2-evidence/main-validation.json" "$producer_sha"; then
+  echo "v2 generation accepted authority other than validated main" >&2
+  exit 1
+fi
+
+# The selected-input bridge excludes source-only entries from archive
+# components while retaining their identity in the schema-2 projection and in
+# each materializable package's direct dependency list.
+cache_producer_sha="748c2609954d2809bbcbbcb642fa7d257fc0dbc6"
+cache_producer_tree="$(printf '6%.0s' {1..40})"
+cache_main_tree="$(printf '7%.0s' {1..40})"
+main_build_deps_blob="$(git -C "$SCRIPT_DIR/../.." \
+  hash-object tools/xtask/src/build_deps.rs)"
+main_staging_reuse_blob="$(git -C "$SCRIPT_DIR/../.." \
+  hash-object tools/xtask/src/staging_reuse.rs)"
+mkdir "$TMP_ROOT/cache-evidence"
+jq -nS \
+  --arg a "$hex_a" \
+  --arg b "$hex_b" \
+  --arg c "$hex_c" \
+  --arg e "$hex_e" \
+  --arg browser_manifest "$browser_manifest" \
+  --arg dep_manifest "$dep_manifest" \
+  --arg root_manifest "$root_manifest" '{
+    format:"kandelo-selected-package-build-input-closure-v1",
+    abi_version:42,
+    arch:"wasm32",
+    global_toolchain_components:[
+      {label:"flake.nix",sha256:("1" * 64)}
+    ],
+    fork_instrument:{
+      users:["browser-app","rootfs"],
+      components:[
+        {label:"crates/fork-instrument/src",sha256:("2" * 64)}
+      ]
+    },
+    packages:[
+      {
+        package:"browser-app",kind:"program",version:"1",revision:1,
+        manifest_sha256:$browser_manifest,cache_key_sha:$c,
+        build:{
+          script_path:"packages/registry/browser-app/build.sh",
+          inputs:["packages/registry/browser-app/build.sh"],
+          git_inputs:[]
+        },
+        input_components:[
+          {
+            label:"packages/registry/browser-app/build.sh",
+            sha256:("3" * 64)
+          }
+        ],
+        direct_dependencies:[
+          {package:"dep",version:"1",cache_key_sha:$a},
+          {package:"source-input",version:"1",cache_key_sha:$e}
+        ],
+        uses_fork_instrument:true
+      },
+      {
+        package:"dep",kind:"program",version:"1",revision:1,
+        manifest_sha256:$dep_manifest,cache_key_sha:$a,
+        build:{
+          script_path:"packages/registry/dep/build.sh",
+          inputs:["packages/registry/dep/build.sh"],
+          git_inputs:[]
+        },
+        input_components:[
+          {label:"packages/registry/dep/build.sh",sha256:("4" * 64)}
+        ],
+        direct_dependencies:[],
+        uses_fork_instrument:false
+      },
+      {
+        package:"rootfs",kind:"program",version:"1",revision:1,
+        manifest_sha256:$root_manifest,cache_key_sha:$b,
+        build:{
+          script_path:"packages/registry/rootfs/build.sh",
+          inputs:["packages/registry/rootfs/build.sh"],
+          git_inputs:[]
+        },
+        input_components:[
+          {label:"packages/registry/rootfs/build.sh",sha256:("5" * 64)}
+        ],
+        direct_dependencies:[
+          {package:"dep",version:"1",cache_key_sha:$a}
+        ],
+        uses_fork_instrument:true
+      }
+    ]
+  }' >"$TMP_ROOT/cache-evidence/components.json"
+jq -nS \
+  --arg tree "$cache_producer_tree" '{
+    sha:$tree,truncated:false,tree:[
+      {
+        path:"tools/xtask/src/build_deps.rs",
+        mode:"100644",type:"blob",
+        sha:"9c8930dd137fcb836756657c43288e76e55fce36"
+      },
+      {
+        path:"tools/xtask/src/staging_reuse.rs",
+        mode:"100644",type:"blob",
+        sha:"66a19dfc1542ef4f33e6b2ca06e8a3b170959508"
+      },
+      {
+        path:"host/src/kernel-worker.ts",
+        mode:"100644",type:"blob",sha:("8" * 40)
+      }
+    ]
+  }' >"$TMP_ROOT/cache-evidence/producer-tree.json"
+jq -nS \
+  --arg tree "$cache_main_tree" \
+  --arg build_deps "$main_build_deps_blob" \
+  --arg staging_reuse "$main_staging_reuse_blob" '{
+    sha:$tree,truncated:false,tree:[
+      {
+        path:"tools/xtask/src/build_deps.rs",
+        mode:"100644",type:"blob",sha:$build_deps
+      },
+      {
+        path:"tools/xtask/src/staging_reuse.rs",
+        mode:"100644",type:"blob",sha:$staging_reuse
+      },
+      {
+        path:"host/src/kernel-worker.ts",
+        mode:"100644",type:"blob",sha:("9" * 40)
+      }
+    ]
+  }' >"$TMP_ROOT/cache-evidence/main-tree.json"
+
+cache_evidence_command=(
+  python3 "$TOOL" cache-projection-evidence
+  --producer-sha "$cache_producer_sha"
+  --producer-tree-sha "$cache_producer_tree"
+  --validated-main-sha "$validated_main_sha"
+  --validated-main-tree-sha "$cache_main_tree"
+  --producer-projection "$TMP_ROOT/browser-projection.json"
+  --producer-expected-ledger "$TMP_ROOT/browser-expected.json"
+  --main-projection "$TMP_ROOT/browser-projection.json"
+  --main-expected-ledger "$TMP_ROOT/browser-expected.json"
+  --producer-components "$TMP_ROOT/cache-evidence/components.json"
+  --main-components "$TMP_ROOT/cache-evidence/components.json"
+  --producer-tree "$TMP_ROOT/cache-evidence/producer-tree.json"
+  --main-tree "$TMP_ROOT/cache-evidence/main-tree.json"
+)
+"${cache_evidence_command[@]}" \
+  --output "$TMP_ROOT/cache-evidence/cache-projection.json"
+jq -e '
+  .format == "kandelo-package-cache-projection-v1" and
+  .policy == "selected-build-input-closure-v1" and
+  [.validator_transitions[].path] == [
+    "tools/xtask/src/build_deps.rs",
+    "tools/xtask/src/staging_reuse.rs"
+  ] and
+  [.selected_build_inputs.packages[].package] ==
+    ["browser-app","dep","rootfs"] and
+  (.selected_build_inputs.packages[0].direct_dependencies |
+    map(.package)) == ["dep","source-input"]
+' "$TMP_ROOT/cache-evidence/cache-projection.json" >/dev/null
+
+jq '(.packages[0].direct_dependencies[] |
+      select(.package == "source-input").cache_key_sha) = ("0" * 64)' \
+  "$TMP_ROOT/cache-evidence/components.json" \
+  >"$TMP_ROOT/cache-evidence/source-drift-components.json"
+cache_source_drift=("${cache_evidence_command[@]}")
+cache_source_drift[20]="$TMP_ROOT/cache-evidence/source-drift-components.json"
+if "${cache_source_drift[@]}" \
+    --output "$TMP_ROOT/cache-evidence/rejected-source-drift.json"; then
+  echo "cache projection accepted source-only dependency identity drift" >&2
+  exit 1
+fi
+jq '(.packages[1].input_components[0].sha256) = ("0" * 64)' \
+  "$TMP_ROOT/cache-evidence/components.json" \
+  >"$TMP_ROOT/cache-evidence/component-drift.json"
+cache_component_drift=("${cache_evidence_command[@]}")
+cache_component_drift[20]="$TMP_ROOT/cache-evidence/component-drift.json"
+if "${cache_component_drift[@]}" \
+    --output "$TMP_ROOT/cache-evidence/rejected-component-drift.json"; then
+  echo "cache projection accepted changed selected build input bytes" >&2
+  exit 1
+fi
+jq '.truncated = true' "$TMP_ROOT/cache-evidence/main-tree.json" \
+  >"$TMP_ROOT/cache-evidence/truncated-main-tree.json"
+cache_truncated=("${cache_evidence_command[@]}")
+cache_truncated[26]="$TMP_ROOT/cache-evidence/truncated-main-tree.json"
+if "${cache_truncated[@]}" \
+    --output "$TMP_ROOT/cache-evidence/rejected-truncated-tree.json"; then
+  echo "cache projection accepted a truncated recursive Git tree" >&2
+  exit 1
+fi
+jq '(.tree[] | select(
+      .path == "tools/xtask/src/build_deps.rs"
+    ).sha) = ("0" * 40)' \
+  "$TMP_ROOT/cache-evidence/main-tree.json" \
+  >"$TMP_ROOT/cache-evidence/unreviewed-validator-tree.json"
+cache_unreviewed=("${cache_evidence_command[@]}")
+cache_unreviewed[26]="$TMP_ROOT/cache-evidence/unreviewed-validator-tree.json"
+if "${cache_unreviewed[@]}" \
+    --output "$TMP_ROOT/cache-evidence/rejected-validator.json"; then
+  echo "cache projection accepted unreviewed validator bytes" >&2
+  exit 1
+fi
 
 # The consumer scanner output is already current-authority data. Comparison
 # accepts only the exact projection and exact expected archive ledger.

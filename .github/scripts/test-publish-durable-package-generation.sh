@@ -11,7 +11,8 @@ mkdir -p "$TMP_ROOT/bin" "$TMP_ROOT/archives" "$TMP_ROOT/lock"
 # checkout. The production scripts intentionally reject dirty or substituted
 # authority trees, including the working tree in which this test is running.
 AUTHORITY_ROOT="$TMP_ROOT/authority"
-mkdir -p "$AUTHORITY_ROOT/.github/scripts" "$AUTHORITY_ROOT/scripts"
+mkdir -p "$AUTHORITY_ROOT/.github/scripts" "$AUTHORITY_ROOT/scripts" \
+  "$AUTHORITY_ROOT/abi"
 for name in \
   publish-durable-package-generation.sh \
   materialize-durable-package-generation.sh \
@@ -23,6 +24,7 @@ do
 done
 cp "$SCRIPT_DIR/../../scripts/browser-binary-package-roots.mjs" \
   "$AUTHORITY_ROOT/scripts/browser-binary-package-roots.mjs"
+printf '{"abi_version":42}\n' >"$AUTHORITY_ROOT/abi/snapshot.json"
 git -C "$AUTHORITY_ROOT" init -q
 git -C "$AUTHORITY_ROOT" config user.name "Kandelo test"
 git -C "$AUTHORITY_ROOT" config user.email test@example.invalid
@@ -146,6 +148,55 @@ python3 "$TOOL" prepare \
   --archives-dir "$TMP_ROOT/archives" \
   --output-dir "$TMP_ROOT/browser-bundle" >/dev/null
 
+# Exercise the v2 writer contract independently of the migration-only cache
+# bridge. Here S == M and complete-tree equality is the compatibility proof.
+jq -nS --arg source "$source_sha" '{
+  id:19,tag_name:"binaries-abi-v42",target_commitish:$source,
+  draft:false,prerelease:false
+}' >"$TMP_ROOT/v2-release.json"
+jq -nS --arg source "$source_sha" '{
+  ref:"refs/tags/binaries-abi-v42",
+  object:{type:"commit",sha:$source}
+}' >"$TMP_ROOT/v2-tag.json"
+jq -nS --arg source "$source_sha" --arg tree "$tree_sha" '{
+  sha:$source,tree:{sha:$tree},parents:[]
+}' >"$TMP_ROOT/v2-commit.json"
+jq -nS --arg source "$source_sha" '{
+  ref:"refs/heads/main",object:{type:"commit",sha:$source}
+}' >"$TMP_ROOT/v2-main-ref.json"
+python3 "$TOOL" producer-release-evidence \
+  --repository Automattic/kandelo \
+  --source-tag binaries-abi-v42 \
+  --producer-sha "$source_sha" \
+  --release "$TMP_ROOT/v2-release.json" \
+  --tag-ref "$TMP_ROOT/v2-tag.json" \
+  --producer-commit "$TMP_ROOT/v2-commit.json" \
+  --output "$TMP_ROOT/v2-producer-evidence.json"
+python3 "$TOOL" main-validation-evidence \
+  --repository Automattic/kandelo \
+  --default-ref main \
+  --validated-main-sha "$source_sha" \
+  --abi-version 42 \
+  --method identical-git-tree-v1 \
+  --default-ref-value "$TMP_ROOT/v2-main-ref.json" \
+  --main-commit "$TMP_ROOT/v2-commit.json" \
+  --abi-snapshot "$AUTHORITY_ROOT/abi/snapshot.json" \
+  --output "$TMP_ROOT/v2-main-validation.json"
+python3 "$TOOL" prepare \
+  --repository Automattic/kandelo \
+  --producer-sha "$source_sha" \
+  --authority-sha "$source_sha" \
+  --source-tag binaries-abi-v42 \
+  --producer-evidence "$TMP_ROOT/v2-producer-evidence.json" \
+  --main-validation "$TMP_ROOT/v2-main-validation.json" \
+  --source-index "$TMP_ROOT/source-index.toml" \
+  --projection "$TMP_ROOT/projection.json" \
+  --expected-ledger "$TMP_ROOT/expected.json" \
+  --snapshot "$TMP_ROOT/snapshot.json" \
+  --localized-index "$TMP_ROOT/localized-index.toml" \
+  --archives-dir "$TMP_ROOT/archives" \
+  --output-dir "$TMP_ROOT/v2-bundle" >/dev/null
+
 jq -S \
   --arg a "$hex_a" \
   --arg manifest "$root_manifest_sha" '
@@ -188,8 +239,10 @@ action="$1 $2"
 shift 2
 projection_output=""
 expected_output=""
+components_output=""
 bundle=""
 package_source_sha=""
+producer_sha=""
 source_repository=""
 root_set=""
 roots_file=""
@@ -200,10 +253,12 @@ while [ "$#" -gt 0 ]; do
     --bundle-dir) bundle="$2"; shift 2 ;;
     --archives-dir) bundle="$2"; shift 2 ;;
     --package-source-sha) package_source_sha="$2"; shift 2 ;;
+    --producer-sha) producer_sha="$2"; shift 2 ;;
     --expected-source-commit) package_source_sha="$2"; shift 2 ;;
     --expected-source-repository) source_repository="$2"; shift 2 ;;
     --projection-output) projection_output="$2"; shift 2 ;;
     --expected-output) expected_output="$2"; shift 2 ;;
+    --components-output) components_output="$2"; shift 2 ;;
     --root-set) root_set="$2"; shift 2 ;;
     --root-package) shift 2 ;;
     --roots-file) roots_file="$2"; shift 2 ;;
@@ -217,7 +272,7 @@ case "$action" in
   "staging-reuse validate-generation")
     [ "$(jq -r .abi_version "$expected")" = 42 ]
     [ "$(jq -r .complete_current "$snapshot")" = true ]
-    [ "$package_source_sha" = "${TEST_SOURCE_SHA:?}" ]
+    [ "${producer_sha:-$package_source_sha}" = "${TEST_SOURCE_SHA:?}" ]
     [ -f "$bundle/rootfs-1-rev1-abi42-wasm32-aaaaaaaa.tar.zst" ]
     ;;
   "staging-reuse validate-archives")
@@ -239,6 +294,9 @@ case "$action" in
       cp "${TEST_PROJECTION:?}" "$projection_output"
     fi
     cp "${TEST_REDERIVED_EXPECTED:-${TEST_EXPECTED:?}}" "$expected_output"
+    if [ -n "$components_output" ]; then
+      printf '{}\n' >"$components_output"
+    fi
     ;;
   *)
     echo "unexpected authority xtask action: $action" >&2
@@ -608,9 +666,27 @@ run_publisher() {
   format="$(jq -er .format "$bundle/generation.json")"
   # WHY: admitted and preserved bundles intentionally name different source
   # authorities, so every stubbed source check must follow the bundle under test.
-  bundle_source_sha="$(jq -er .identity.package_source_sha "$bundle/generation.json")"
+  bundle_source_sha="$(jq -er '
+    if .format == "kandelo-package-generation-v2"
+    then .identity.validated_against_main.commit
+    else .identity.package_source_sha
+    end
+  ' "$bundle/generation.json")"
   if [ "$format" = kandelo-preserved-pr-package-generation-v1 ]; then
     authority_args=(--expected-authority-sha "$expected_authority")
+  elif [ "$format" = kandelo-package-generation-v2 ]; then
+    authority_args=(
+      --source-tag "$(jq -er .identity.producer.evidence.tag "$bundle/generation.json")"
+      --producer-sha "$(jq -er .identity.producer.evidence.producer_sha "$bundle/generation.json")"
+      --validated-main-sha "$bundle_source_sha"
+      --validation-method "$(jq -er .identity.validated_against_main.method "$bundle/generation.json")"
+      --expected-abi 42
+      --selection-kind "$(if [ "$(jq -r .identity.projection.schema "$bundle/generation.json")" = 2 ]; then printf browser-inputs; else printf root-package; fi)"
+      --root-package rootfs
+      --arch wasm32
+      --authority-sha "$bundle_source_sha"
+      --default-ref main
+    )
   else
     authority_args=(
       --source-tag binaries-abi-v42
@@ -683,6 +759,23 @@ STALE_TAG_READS_AFTER_CREATE=2 run_publisher
 [ "$(grep -Fxc post-tag "$TMP_ROOT/writes.log")" = 1 ]
 sed 's/ .*//' "$TMP_ROOT/locks.log" | grep -Fxq acquire
 grep -Fxq release "$TMP_ROOT/locks.log"
+
+mkdir -p "$TMP_ROOT/v2-remote/source-assets"
+cp "$TMP_ROOT/source-index.toml" \
+  "$TMP_ROOT/v2-remote/source-assets/index.toml"
+cp "$TMP_ROOT/archives/rootfs-1-rev1-abi42-wasm32-aaaaaaaa.tar.zst" \
+  "$TMP_ROOT/v2-remote/source-assets/rootfs-1-rev1-abi42-wasm32-aaaaaaaa.tar.zst"
+: >"$TMP_ROOT/writes.log"
+: >"$TMP_ROOT/locks.log"
+run_publisher \
+  "$TMP_ROOT/v2-remote" \
+  "$TMP_ROOT/v2-receipt.json" \
+  "$TMP_ROOT/v2-bundle"
+[ "$(jq -r .application_sealed "$TMP_ROOT/v2-receipt.json")" = true ]
+[ "$(cat "$TMP_ROOT/v2-remote/draft")" = false ]
+[ "$(cat "$TMP_ROOT/v2-remote/ref-sha")" = "$source_sha" ]
+[ "$(jq -r .release.target_commitish \
+    "$TMP_ROOT/v2-bundle/generation.json")" = "$source_sha" ]
 
 # The common writer also publishes evidence-only preserved closures, including
 # their supporting log before the manifest seal.
@@ -1122,6 +1215,32 @@ env \
 [ -f "$TMP_ROOT/materialized/resolver/index.toml" ]
 grep -Fxq "file://$TMP_ROOT/materialized/resolver/index.toml" \
   "$TMP_ROOT/materialized/index-url.txt"
+
+v2_tag="$(jq -r .tag "$TMP_ROOT/v2-bundle/generation.json")"
+env \
+  PATH="$TMP_ROOT/bin:$PATH" \
+  GH_TOKEN=test-token \
+  GITHUB_TOKEN=test-fallback-token \
+  GH_STUB_ROOT="$TMP_ROOT/v2-remote" \
+  TEST_SOURCE_SHA="$source_sha" \
+  TEST_TREE_SHA="$tree_sha" \
+  TEST_PROJECTION="$TMP_ROOT/projection.json" \
+  TEST_BROWSER_PROJECTION="$TMP_ROOT/browser-projection.json" \
+  TEST_EXPECTED="$TMP_ROOT/expected.json" \
+  bash "$MATERIALIZE" \
+    --tag "$v2_tag" \
+    --consumer-root "$TMP_ROOT/consumer" \
+    --consumer-sha "$consumer_sha" \
+    --authority-xtask "$TMP_ROOT/bin/authority-xtask" \
+    --repository Automattic/kandelo \
+    --required-package-source-sha "$source_sha" \
+    --output-dir "$TMP_ROOT/v2-materialized"
+[ -f "$TMP_ROOT/v2-materialized/package-generation-input.json" ]
+jq -e --arg source "$source_sha" '
+  .validated_against_main.commit == $source and
+  .archive_producer.commit == $source and
+  .validated_against_main.method == "identical-git-tree-v1"
+' "$TMP_ROOT/v2-materialized/package-generation-input.json" >/dev/null
 
 # Matching package recipes are not enough for a canonical producer. Requiring
 # the consumer commit here would attempt to treat an equal projection as the

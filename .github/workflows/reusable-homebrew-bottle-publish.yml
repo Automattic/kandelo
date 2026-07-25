@@ -64,6 +64,7 @@ jobs:
       tap-sha: ${{ steps.source-commits.outputs.tap-sha }}
       package-generation-wasm32: ${{ steps.trust.outputs.package-generation-wasm32 }}
       package-generation-wasm64: ${{ steps.trust.outputs.package-generation-wasm64 }}
+      package-generation-kind: ${{ steps.trust.outputs.package-generation-kind }}
       core-dependency-tap-sha: ${{ steps.dependency-taps.outputs.core-tap-sha }}
       vfs-acceptance-formula: ${{ steps.vfs-acceptance.outputs.formula }}
     steps:
@@ -140,7 +141,7 @@ jobs:
             local pattern
             case "$arch" in
               wasm32)
-                pattern='^package-generation-browser-inputs-wasm32-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}$'
+                pattern='^package-generation-(browser-inputs|rootfs)-wasm32-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}$'
                 ;;
               wasm64)
                 pattern='^package-generation-browser-inputs-wasm64-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}$'
@@ -148,7 +149,7 @@ jobs:
               *) echo "::error::unsupported package-generation architecture" >&2; return 2 ;;
             esac
             [[ "$tag" =~ $pattern ]] || {
-              echo "::error::package-generation-$arch must be an exact browser-inputs content tag" >&2
+              echo "::error::package-generation-$arch must be an exact supported content tag" >&2
               return 2
             }
             printf '%s\n' "$tag"
@@ -188,15 +189,29 @@ jobs:
             validated_tap_ref="$(normalize_dry_run_source_ref "tap" "$TAP_REF")"
             validated_generation_wasm32=""
             validated_generation_wasm64=""
+            validated_generation_kind="none"
             if [ -n "$PACKAGE_GENERATION_WASM32" ]; then
               validated_generation_wasm32="$(
                 normalize_package_generation wasm32 "$PACKAGE_GENERATION_WASM32"
               )"
+              case "$validated_generation_wasm32" in
+                package-generation-rootfs-wasm32-*)
+                  validated_generation_kind="rootfs-wasm32"
+                  ;;
+                package-generation-browser-inputs-wasm32-*)
+                  validated_generation_kind="browser-inputs"
+                  ;;
+                *) echo "::error::unsupported wasm32 package-generation kind"; exit 2 ;;
+              esac
             fi
             if [ -n "$PACKAGE_GENERATION_WASM64" ]; then
               validated_generation_wasm64="$(
                 normalize_package_generation wasm64 "$PACKAGE_GENERATION_WASM64"
               )"
+              [ "$validated_generation_kind" != "rootfs-wasm32" ] || {
+                echo "::error::a rootfs-wasm32 generation cannot be combined with wasm64" >&2; exit 2;
+              }
+              validated_generation_kind="browser-inputs"
             fi
           else
             case "$CALLER_WORKFLOW_REF" in
@@ -212,15 +227,29 @@ jobs:
             validated_generation_wasm32="$(
               normalize_package_generation wasm32 "$PACKAGE_GENERATION_WASM32"
             )"
-            validated_generation_wasm64="$(
-              normalize_package_generation wasm64 "$PACKAGE_GENERATION_WASM64"
-            )"
+            case "$validated_generation_wasm32" in
+              package-generation-rootfs-wasm32-*)
+                [ -z "$PACKAGE_GENERATION_WASM64" ] || {
+                  echo "::error::the rootfs-wasm32 publication lane forbids a wasm64 generation" >&2; exit 2;
+                }
+                validated_generation_wasm64=""
+                validated_generation_kind="rootfs-wasm32"
+                ;;
+              package-generation-browser-inputs-wasm32-*)
+                validated_generation_wasm64="$(
+                  normalize_package_generation wasm64 "$PACKAGE_GENERATION_WASM64"
+                )"
+                validated_generation_kind="browser-inputs"
+                ;;
+              *) echo "::error::unsupported wasm32 package-generation kind"; exit 2 ;;
+            esac
           fi
           {
             echo "kandelo-ref=$validated_kandelo_ref"
             echo "tap-ref=$validated_tap_ref"
             echo "package-generation-wasm32=$validated_generation_wasm32"
             echo "package-generation-wasm64=$validated_generation_wasm64"
+            echo "package-generation-kind=$validated_generation_kind"
           } >> "$GITHUB_OUTPUT"
 
       - name: Admit exact Kandelo main source
@@ -420,8 +449,34 @@ jobs:
           EXPECTED_KANDELO_REPOSITORY: ${{ inputs.kandelo-repository }}
           FORCE_REBUILD: ${{ inputs.force }}
           FORMULAE: ${{ inputs.formulae }}
+          PACKAGE_GENERATION_KIND: ${{ steps.trust.outputs.package-generation-kind }}
+          REQUIRE_VFS_ACCEPTANCE: ${{ inputs.require-vfs-acceptance }}
         run: |
           set -euo pipefail
+          if [ "$PACKAGE_GENERATION_KIND" = "rootfs-wasm32" ]; then
+            # WHY: the schema-1 rootfs generation is a bounded first-wave
+            # bridge, not a substitute for the complete browser generations.
+            # Keep it confined to the Bash/M4 wasm32 proof and keep the legacy
+            # shell/VFS acceptance graph out of that publication run.
+            normalized_arches="$(
+              printf '%s\n' "$ARCHES" | tr ',[:space:]' '\n' |
+                sed '/^$/d' | sort -u | paste -sd, -
+            )"
+            normalized_formulae="$(
+              printf '%s\n' "$FORMULAE" | tr ',[:space:]' '\n' |
+                sed '/^$/d' | sort -u | paste -sd, -
+            )"
+            [ "$normalized_arches" = "wasm32" ] || {
+              echo "::error::the rootfs-wasm32 publication lane supports only wasm32"; exit 2;
+            }
+            case "$normalized_formulae" in
+              bash|m4|bash,m4) ;;
+              *) echo "::error::the rootfs-wasm32 publication lane is limited to Bash and M4"; exit 2 ;;
+            esac
+            [ "$REQUIRE_VFS_ACCEPTANCE" = "false" ] || {
+              echo "::error::the rootfs-wasm32 publication lane cannot materialize the legacy VFS acceptance image"; exit 2;
+            }
+          fi
           expected_args=()
           if [ -n "$EXPECTED_CACHE_KEYS_JSON" ]; then
             expected_file="$RUNNER_TEMP/homebrew-expected-cache-keys.json"
@@ -455,6 +510,7 @@ jobs:
           DRY_RUN: ${{ inputs.dry-run }}
           PLANNED_MATRIX: ${{ steps.matrix.outputs.matrix }}
           REQUIRE_VFS_ACCEPTANCE: ${{ inputs.require-vfs-acceptance }}
+          PACKAGE_GENERATION_KIND: ${{ steps.trust.outputs.package-generation-kind }}
           TAP_NAME: ${{ inputs.tap-name }}
         run: |
           set -euo pipefail
@@ -462,6 +518,10 @@ jobs:
             true|false) ;;
             *) echo "::error::require-vfs-acceptance must be true or false"; exit 2 ;;
           esac
+          if [ "$PACKAGE_GENERATION_KIND" = "rootfs-wasm32" ]; then
+            echo "::notice::the bounded rootfs-wasm32 bottle lane intentionally skips dependency-bearing legacy VFS acceptance"
+            exit 0
+          fi
 
           tap_root="$(realpath "$GITHUB_WORKSPACE/tap")"
           policy_dir="$GITHUB_WORKSPACE/tap/Kandelo"
@@ -761,6 +821,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          PACKAGE_GENERATION_KIND: ${{ needs.plan.outputs.package-generation-kind }}
           PACKAGE_GENERATION_WASM32: ${{ needs.plan.outputs.package-generation-wasm32 }}
         run: |
           set -euo pipefail
@@ -776,6 +837,7 @@ jobs:
           # programs even for a wasm64 bottle. Browser verification below
           # separately combines both admitted architecture generations.
           bash .github/scripts/materialize-exact-package-generations.sh \
+            --selection-kind "$PACKAGE_GENERATION_KIND" \
             --wasm32-tag "$PACKAGE_GENERATION_WASM32" \
             --consumer-root "$PWD" \
             --consumer-sha "$KANDELO_SHA" \
@@ -2067,12 +2129,13 @@ jobs:
           cd kandelo
           bash scripts/dev-shell.sh true
 
-      - name: Materialize exact-main browser runtime packages
+      - name: Materialize exact-main verification runtime packages
         if: ${{ !inputs.dry-run }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          PACKAGE_GENERATION_KIND: ${{ needs.plan.outputs.package-generation-kind }}
           PACKAGE_GENERATION_WASM32: ${{ needs.plan.outputs.package-generation-wasm32 }}
           PACKAGE_GENERATION_WASM64: ${{ needs.plan.outputs.package-generation-wasm64 }}
         run: |
@@ -2086,6 +2149,7 @@ jobs:
             --target "$host" --quiet
           generation_root="$RUNNER_TEMP/homebrew-package-generations"
           bash .github/scripts/materialize-exact-package-generations.sh \
+            --selection-kind "$PACKAGE_GENERATION_KIND" \
             --wasm32-tag "$PACKAGE_GENERATION_WASM32" \
             --wasm64-tag "$PACKAGE_GENERATION_WASM64" \
             --consumer-root "$PWD" \
@@ -3039,6 +3103,7 @@ jobs:
           KANDELO_HOMEBREW_BROWSER_SMOKE
 
       - name: Boot an exact dependency-bearing Brewfile image on Node and Chromium
+        if: ${{ needs.plan.outputs.package-generation-kind != 'rootfs-wasm32' }}
         shell: bash
         env:
           KANDELO_HOMEBREW_ACCEPTANCE_ARCH: ${{ matrix.arch }}

@@ -357,6 +357,151 @@ pub(crate) fn source_cache_identities(
     Ok(result)
 }
 
+/// Emit the canonical build-input closure for materializable packages selected
+/// from an inert source checkout.
+///
+/// WHY: cache keys are the compact compatibility decision, but an admission
+/// receipt also needs reviewable evidence of which recipes, declared inputs,
+/// toolchain files, fork post-processor, and dependency identities produced
+/// that decision. Current-authority code reads these inert source bytes
+/// directly; it never executes producer tooling.
+pub(crate) fn source_build_input_components(
+    source_root: &Path,
+    registry: &Registry,
+    selected_packages: &BTreeSet<String>,
+    arch: TargetArch,
+    abi_version: u32,
+    cache_identities: &BTreeMap<String, BTreeMap<String, String>>,
+) -> Result<serde_json::Value, String> {
+    validate_inert_source_cargo_context(source_root)?;
+    if selected_packages.is_empty() {
+        return Err("selected package build-input closure is empty".into());
+    }
+
+    let global_toolchain_inputs =
+        global_package_build_input_digests_for(source_root, GLOBAL_PACKAGE_TOOLCHAIN_INPUTS)?;
+    let mut fork_instrument_inputs =
+        global_package_build_input_digests_for(source_root, FORK_INSTRUMENT_TOOL_INPUTS)?;
+    fork_instrument_inputs.push(BuildInputDigest {
+        label: "cargo-metadata:fork-instrument-build-deps".to_string(),
+        digest: fork_instrument_cargo_dependency_digest_for_inert_source(
+            &repo_root(),
+            source_root,
+        )?,
+    });
+
+    let component_values = |inputs: &[BuildInputDigest]| {
+        inputs
+            .iter()
+            .map(|input| {
+                serde_json::json!({
+                    "label": input.label.as_str(),
+                    "sha256": hex(&input.digest),
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let mut packages = Vec::with_capacity(selected_packages.len());
+    let mut fork_users = Vec::new();
+    for name in selected_packages {
+        let manifest = registry.load(name)?;
+        if manifest.name != *name {
+            return Err(format!(
+                "selected package {name:?} loaded manifest for {:?}",
+                manifest.name
+            ));
+        }
+        if manifest.kind == ManifestKind::Source {
+            return Err(format!(
+                "selected materializable package {name:?} unexpectedly has source kind"
+            ));
+        }
+        let manifest_path = manifest.dir.join("package.toml");
+        require_regular_nonsymlink_file(&manifest_path, "selected package manifest")?;
+        let build_path = manifest.dir.join("build.toml");
+        require_regular_nonsymlink_file(&build_path, "selected package build metadata")?;
+        let build = BuildToml::load(&manifest.dir)?;
+        let revision = build.revision.unwrap_or(manifest.revision);
+        let build_inputs = build_input_digests_from_repo(&manifest, registry, source_root)?;
+        let cache_key_sha = cache_identities
+            .get(name)
+            .and_then(|identities| identities.get(arch.as_str()))
+            .ok_or_else(|| {
+                format!(
+                    "selected package {name:?} lacks a fresh {} cache identity",
+                    arch.as_str()
+                )
+            })?;
+
+        let mut dependencies = manifest.depends_on.clone();
+        dependencies.sort_by(|left, right| left.name.cmp(&right.name));
+        let dependencies = dependencies
+            .into_iter()
+            .map(|dependency| {
+                let dependency_cache_key = cache_identities
+                    .get(&dependency.name)
+                    .and_then(|identities| identities.get(arch.as_str()))
+                    .ok_or_else(|| {
+                        format!(
+                            "selected dependency {:?} lacks a fresh {} cache identity",
+                            dependency.name,
+                            arch.as_str()
+                        )
+                    })?;
+                Ok(serde_json::json!({
+                    "package": dependency.name,
+                    "version": dependency.version,
+                    "cache_key_sha": dependency_cache_key,
+                }))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+
+        let uses_fork_instrument = package_uses_fork_instrument_tool(&manifest);
+        if uses_fork_instrument {
+            fork_users.push(name.clone());
+        }
+        let kind = match manifest.kind {
+            ManifestKind::Library => "library",
+            ManifestKind::Program => "program",
+            ManifestKind::Source => unreachable!(),
+        };
+        packages.push(serde_json::json!({
+            "package": name,
+            "kind": kind,
+            "version": manifest.version,
+            "revision": revision,
+            "manifest_sha256": package_manifest_sha256(&manifest_path)?,
+            "cache_key_sha": cache_key_sha,
+            "build": {
+                "script_path": build.script_path,
+                "inputs": build.inputs,
+                "git_inputs": build.git_inputs,
+            },
+            "input_components": component_values(&build_inputs),
+            "direct_dependencies": dependencies,
+            "uses_fork_instrument": uses_fork_instrument,
+        }));
+    }
+
+    let has_fork_users = !fork_users.is_empty();
+    Ok(serde_json::json!({
+        "format": "kandelo-selected-package-build-input-closure-v1",
+        "abi_version": abi_version,
+        "arch": arch.as_str(),
+        "global_toolchain_components": component_values(&global_toolchain_inputs),
+        "fork_instrument": {
+            "users": fork_users,
+            "components": if has_fork_users {
+                component_values(&fork_instrument_inputs)
+            } else {
+                Vec::<serde_json::Value>::new()
+            },
+        },
+        "packages": packages,
+    }))
+}
+
 fn validate_inert_source_cargo_context(source_root: &Path) -> Result<(), String> {
     let source_workspace_path = source_root.join("Cargo.toml");
     require_regular_nonsymlink_file(&source_workspace_path, "source Cargo workspace manifest")?;
