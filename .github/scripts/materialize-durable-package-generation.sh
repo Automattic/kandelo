@@ -10,6 +10,7 @@ CONSUMER_SHA=""
 AUTHORITY_XTASK=""
 REPOSITORY=""
 OUTPUT_DIR=""
+REQUIRED_PACKAGE_SOURCE_SHA=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -19,12 +20,15 @@ while [ "$#" -gt 0 ]; do
     --authority-xtask) AUTHORITY_XTASK="$2"; shift 2 ;;
     --repository) REPOSITORY="$2"; shift 2 ;;
     --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
+    --required-package-source-sha) REQUIRED_PACKAGE_SOURCE_SHA="$2"; shift 2 ;;
     *) echo "materialize-durable-package-generation: unknown flag $1" >&2; exit 2 ;;
   esac
 done
 
 if ! [[ "$TAG" =~ ^package-generation-[a-z0-9][a-z0-9._-]*-[a-z0-9][a-z0-9._-]*-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}$ ]] ||
    ! [[ "$CONSUMER_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+   { [ -n "$REQUIRED_PACKAGE_SOURCE_SHA" ] &&
+     ! [[ "$REQUIRED_PACKAGE_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; } ||
    [ "$REPOSITORY" != "Automattic/kandelo" ] ||
    [ ! -d "$CONSUMER_ROOT" ] || [ -L "$CONSUMER_ROOT" ] ||
    [ ! -f "$AUTHORITY_XTASK" ] || [ -L "$AUTHORITY_XTASK" ] ||
@@ -203,6 +207,15 @@ manifest_tag="$(run_without_credentials \
   exit 1
 }
 package_source_sha="$(jq -er '.identity.package_source_sha' "$manifest")"
+if [ -n "$REQUIRED_PACKAGE_SOURCE_SHA" ] &&
+   [ "$package_source_sha" != "$REQUIRED_PACKAGE_SOURCE_SHA" ]; then
+  # WHY: matching recipes and cache keys are useful for ordinary consumers,
+  # but a canonical bottle build must consume only the generation produced by
+  # its admitted exact-main checkout. An ancestor or equal-tree generation is
+  # not evidence that the bottle was built against that main commit.
+  echo "materialize-durable-package-generation: generation package source differs from the required exact main commit" >&2
+  exit 1
+fi
 release_title="$(jq -er '.release.title' "$manifest")"
 release_body="$(jq -er '.release.body' "$manifest")"
 if ! jq -e \

@@ -191,6 +191,15 @@ metadata, reruns the same semantic validator, recomputes the consumer
 projection, and rechecks both clean checkouts immediately before exposing a
 local resolver index.
 
+Projection-compatible consumers may deliberately use a generation produced by
+another exact-main commit. Canonical Homebrew production is stricter:
+`.github/scripts/materialize-exact-package-generations.sh` requires each
+generation's `package_source_sha` to equal the admitted producer checkout
+exactly. It materializes the independent wasm32 and wasm64 `browser-inputs`
+generations, composes only their verified local indexes, and exposes one
+`file://` resolver index beside the exact downloaded archives. It never uses
+the mutable `binaries-abi-v<N>` index as a base or fallback.
+
 Repository-wide GitHub Release immutability cannot be assumed because
 `binaries-abi-v<N>` is intentionally updated. Durable generation releases are
 therefore append-only by application contract. A retry may resume an exact

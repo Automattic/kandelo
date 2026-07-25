@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use crate::build_deps::{
     Registry, compute_cache_key_sha_for_package, source_cache_identities,
 };
-use crate::index_toml::{EntryStatus, IndexToml};
+use crate::index_toml::{EntryStatus, IndexToml, PackageEntry};
 use crate::pkg_manifest::{
     BuildToml, DepsManifest, GitBuildInput, ManifestKind, TargetArch, validate_git_build_inputs,
 };
@@ -1736,16 +1736,34 @@ fn compose_indexes(
                 wanted.arch.as_str()
             ));
         }
-        let target_package = composed
+        if let Some(target_package) = composed
             .packages
             .iter_mut()
             .find(|package| package.name == wanted.package)
-            .ok_or_else(|| format!("base index lacks package {}", wanted.package))?;
-        target_package.version = source_package.version.clone();
-        target_package.revision = source_package.revision;
-        target_package
-            .binary
-            .insert(wanted.arch, source_entry.clone());
+        {
+            if target_package.version != source_package.version
+                || target_package.revision != source_package.revision
+            {
+                return Err(format!(
+                    "base and overlay indexes disagree on {} package identity",
+                    wanted.package
+                ));
+            }
+            target_package
+                .binary
+                .insert(wanted.arch, source_entry.clone());
+        } else {
+            // WHY: architecture-specific durable generations can contain a
+            // package that has no output for the other architecture. Adding
+            // exactly the expected overlay entry lets consumers combine those
+            // sealed generations without consulting a mutable base index.
+            composed.packages.push(PackageEntry {
+                name: source_package.name.clone(),
+                version: source_package.version.clone(),
+                revision: source_package.revision,
+                binary: BTreeMap::from([(wanted.arch, source_entry.clone())]),
+            });
+        }
     }
     composed.generated_at = std::cmp::max(&base.generated_at, &overlay.generated_at).clone();
     composed.generator = "xtask staging-reuse compose".into();
@@ -2809,6 +2827,21 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
     }
 
     #[test]
+    fn compose_adds_an_architecture_only_overlay_package() {
+        let base = IndexToml::empty(ABI, "base".into(), "base".into());
+        let composed = compose_indexes(&base, &index(), &expected()).unwrap();
+
+        assert_eq!(composed.packages.len(), 1);
+        assert_eq!(composed.packages[0].name, "zlib");
+        assert_eq!(
+            composed.packages[0].binary[&TargetArch::Wasm32]
+                .cache_key_sha
+                .as_deref(),
+            Some(SHA)
+        );
+    }
+
+    #[test]
     fn compose_rejects_incomplete_or_noncurrent_overlay() {
         let base = index();
 
@@ -2835,6 +2868,24 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
             .unwrap()
             .status = EntryStatus::Failed;
         assert!(compose_indexes(&base, &failed, &expected()).is_err());
+
+        for incompatible_base in [
+            {
+                let mut value = index();
+                value.packages[0].version = "older".into();
+                value
+            },
+            {
+                let mut value = index();
+                value.packages[0].revision -= 1;
+                value
+            },
+        ] {
+            assert!(
+                compose_indexes(&incompatible_base, &index(), &expected()).is_err(),
+                "combining architecture generations must not relabel an existing package"
+            );
+        }
     }
 
     #[test]

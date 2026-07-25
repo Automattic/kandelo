@@ -625,11 +625,45 @@ env \
     --consumer-sha "$consumer_sha" \
     --authority-xtask "$TMP_ROOT/bin/authority-xtask" \
     --repository Automattic/kandelo \
+    --required-package-source-sha "$source_sha" \
     --output-dir "$TMP_ROOT/materialized"
 [ -f "$TMP_ROOT/materialized/release/generation.json" ]
 [ -f "$TMP_ROOT/materialized/resolver/index.toml" ]
 grep -Fxq "file://$TMP_ROOT/materialized/resolver/index.toml" \
   "$TMP_ROOT/materialized/index-url.txt"
+
+# Matching package recipes are not enough for a canonical producer. Requiring
+# the consumer commit here would attempt to treat an equal projection as the
+# build authority even though this generation records another exact-main SHA.
+if env \
+    PATH="$TMP_ROOT/bin:$PATH" \
+    GH_TOKEN=test-token \
+    GITHUB_TOKEN=test-fallback-token \
+    HOMEBREW_GITHUB_API_TOKEN=test-api-token \
+    HOMEBREW_GITHUB_PACKAGES_TOKEN=test-packages-token \
+    HOMEBREW_DOCKER_REGISTRY_TOKEN=test-registry-token \
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN=test-oidc-token \
+    ACTIONS_ID_TOKEN_REQUEST_URL=https://example.invalid/oidc \
+    ACTIONS_RUNTIME_TOKEN=test-runtime-token \
+    WASM_POSIX_DEPS_REGISTRY=/tmp/untrusted-registry \
+    GH_STUB_ROOT="$TMP_ROOT/remote" \
+    TEST_SOURCE_SHA="$source_sha" \
+    TEST_TREE_SHA="$tree_sha" \
+    TEST_PROJECTION="$TMP_ROOT/projection.json" \
+    TEST_BROWSER_PROJECTION="$TMP_ROOT/browser-projection.json" \
+    TEST_EXPECTED="$TMP_ROOT/expected.json" \
+    bash "$MATERIALIZE" \
+      --tag "$tag" \
+      --consumer-root "$TMP_ROOT/consumer" \
+      --consumer-sha "$consumer_sha" \
+      --authority-xtask "$TMP_ROOT/bin/authority-xtask" \
+      --repository Automattic/kandelo \
+      --required-package-source-sha "$consumer_sha" \
+      --output-dir "$TMP_ROOT/wrong-source-materialized"; then
+  echo "materializer accepted a generation from another exact-main source" >&2
+  exit 1
+fi
+[ ! -e "$TMP_ROOT/wrong-source-materialized" ]
 
 # A browser-inputs generation uses the same append-only publisher, but
 # materialization independently derives the named roots from the exact clean
@@ -730,6 +764,7 @@ env \
     --consumer-sha "$consumer_sha" \
     --authority-xtask "$TMP_ROOT/bin/authority-xtask" \
     --repository Automattic/kandelo \
+    --required-package-source-sha "$source_sha" \
     --output-dir "$TMP_ROOT/browser-materialized"
 [ -f "$TMP_ROOT/browser-materialized/release/generation.json" ]
 [ -f "$TMP_ROOT/browser-materialized/resolver/rootfs.tar.zst" ]
