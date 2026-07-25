@@ -607,7 +607,7 @@ def check_tap_caller(path, expected_name:, event_type:, job_name:, reusable:, in
 end
 
 def check_tap_callers
-  publish_inputs = {
+  common_publish_inputs = {
     "kandelo-repository" => "Automattic/kandelo",
     "kandelo-ref" => "${{ github.event.client_payload.kandelo_sha }}",
     "tap-repository" => "kandelo-dev/homebrew-tap-core",
@@ -624,13 +624,19 @@ def check_tap_callers
     "force" => "${{ github.event.client_payload.force || false }}",
     "dry-run" => false,
   }
+  write_publish_inputs = common_publish_inputs.merge({
+    # Required VFS acceptance needs bottles published by this invocation.
+    # Keep the caller-selected gate out of the non-writing dry-run contract.
+    "require-vfs-acceptance" =>
+      "${{ github.event.client_payload.require_vfs_acceptance || false }}",
+  })
   check_tap_caller(
     File.join(TAP_CALLER_ROOT, "publish-bottles.yml"),
     expected_name: "Publish Kandelo bottles",
     event_type: "publish-kandelo-bottles",
     job_name: "publish",
     reusable: "Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-publish.yml@main",
-    inputs: publish_inputs,
+    inputs: write_publish_inputs,
   )
 
   check_tap_caller(
@@ -639,7 +645,7 @@ def check_tap_callers
     event_type: "dry-run-kandelo-bottles",
     job_name: "dry-run",
     reusable: "Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-publish.yml@main",
-    inputs: publish_inputs.merge({
+    inputs: common_publish_inputs.merge({
       "kandelo-repository" => "${{ github.event.client_payload.kandelo_repository || 'Automattic/kandelo' }}",
       "kandelo-ref" => "${{ github.event.client_payload.kandelo_ref || 'main' }}",
       "tap-repository" => "${{ github.event.client_payload.tap_repository || 'kandelo-dev/homebrew-tap-core' }}",

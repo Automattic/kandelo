@@ -24,4 +24,8 @@ jobs:
       package-generation-wasm32: ${{ github.event.client_payload.package_generation_wasm32 }}
       package-generation-wasm64: ${{ github.event.client_payload.package_generation_wasm64 }}
       force: ${{ github.event.client_payload.force || false }}
+      # WHY: dependency-bearing acceptance is a production publication gate.
+      # The dry-run caller intentionally keeps the reusable workflow's false
+      # default because it cannot publish the bottles that acceptance consumes.
+      require-vfs-acceptance: ${{ github.event.client_payload.require_vfs_acceptance || false }}
       dry-run: false
