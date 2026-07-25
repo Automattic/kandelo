@@ -122,6 +122,14 @@ grep -Fq 'description="Limited rootfs staging only; remove the scope label befor
   fail "Limited rootfs staging can look like merge authorization"
 grep -Fq 'bash .github/scripts/derive-rootfs-staging-scope.sh' "$STAGING_WORKFLOW" || \
   fail "Staging does not derive the rootfs scope from the validated package projection"
+if grep -Fq 'rootfs_scope=$(mktemp)' "$STAGING_WORKFLOW"; then
+  fail "Staging passes an already-created file to the no-clobber rootfs scope helper"
+fi
+grep -Fq 'rootfs_scope_dir=$(mktemp -d)' "$STAGING_WORKFLOW" || \
+  fail "Staging preflight does not reserve a private parent for its new rootfs scope"
+grep -Fq 'ROOTFS_SCOPE_DIR=$(mktemp -d "$RUNNER_TEMP/staging-rootfs-scope.XXXXXX")' \
+  "$STAGING_WORKFLOW" || \
+  fail "Staging finalization does not reserve a private parent for its new rootfs scope"
 grep -Fq '[ "$ROOTFS_STAGING_ONLY" != "true" ] &&' "$STAGING_WORKFLOW" || \
   fail "Limited rootfs staging can skip entries already present in the canonical release"
 grep -Fq 'limited rootfs staging target changed after preflight; refusing canonical supplementation' \

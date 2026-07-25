@@ -251,7 +251,11 @@ jobs:
             XTASK="target/$HOST_TARGET/release/xtask"
             rootfs_scope=""
             if [ "$ROOTFS_STAGING_ONLY" = "true" ]; then
-              rootfs_scope=$(mktemp)
+              # WHY: the derivation helper refuses to overwrite an existing
+              # path, so give it a new filename inside a private temp dir
+              # instead of passing the file that plain `mktemp` creates.
+              rootfs_scope_dir=$(mktemp -d)
+              rootfs_scope="$rootfs_scope_dir/scope.json"
               bash .github/scripts/derive-rootfs-staging-scope.sh \
                 --repo-root "$PWD" \
                 --xtask "$XTASK" \
@@ -1007,7 +1011,10 @@ jobs:
                 --exclude cpython,erlang,erlang-vfs,perl,perl-vfs,python-vfs,redis,texlive \
                 --output "$FULL_EXPECTED"
               if [ "$ROOTFS_STAGING_ONLY" = "true" ]; then
-                ROOTFS_SCOPE="$RUNNER_TEMP/staging-rootfs-scope.json"
+                # WHY: preserve the helper no-clobber contract even when a
+                # runner is reused or a job step is retried.
+                ROOTFS_SCOPE_DIR=$(mktemp -d "$RUNNER_TEMP/staging-rootfs-scope.XXXXXX")
+                ROOTFS_SCOPE="$ROOTFS_SCOPE_DIR/scope.json"
                 bash .github/scripts/derive-rootfs-staging-scope.sh \
                   --repo-root "$PWD" \
                   --xtask "$XTASK" \
