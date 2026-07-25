@@ -155,4 +155,141 @@ describe("plain-catch payload lifetime", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("preserves each recursive activation's caught payload", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kandelo-plain-catch-recursion-"));
+    try {
+      const watPath = join(dir, "plain-catch-recursion.wat");
+      const rawPath = join(dir, "plain-catch-recursion.wasm");
+      const instrumentedPath = join(
+        dir,
+        "plain-catch-recursion.instrumented.wasm",
+      );
+      writeFileSync(watPath, `(module
+        (import "kernel" "kernel_fork" (func $fork (result i32)))
+        (import "env" "memory" (memory 4))
+        (tag $payload (param i32))
+        (func $recurse (export "run") (param $depth i32) (result i32)
+          (local $caught i32)
+          (local $child_result i32)
+          (block $handler (result i32)
+            (try_table (catch $payload $handler)
+              local.get $depth
+              i32.const 100
+              i32.add
+              throw $payload
+              unreachable)
+            unreachable)
+          local.set $caught
+          local.get $depth
+          if (result i32)
+            local.get $depth
+            i32.const 1
+            i32.sub
+            call $recurse
+          else
+            call $fork
+          end
+          local.set $child_result
+          i32.const 4096
+          local.get $depth
+          i32.const 2
+          i32.shl
+          i32.add
+          local.get $caught
+          i32.store
+          local.get $child_result
+          local.get $caught
+          i32.add))`);
+      execFileSync("wat2wasm", [
+        "--enable-exceptions",
+        watPath,
+        "-o",
+        rawPath,
+      ]);
+      const instrumenterPath = fileURLToPath(
+        new URL("../../tools/bin/wasm-fork-instrument", import.meta.url),
+      );
+      execFileSync(instrumenterPath, [rawPath, "-o", instrumentedPath]);
+
+      const module = new WebAssembly.Module(readFileSync(instrumentedPath));
+      const memory = new WebAssembly.Memory({ initial: 4 });
+      const view = new DataView(memory.buffer);
+      let instance: WebAssembly.Instance;
+      let moduleBuffer = 0;
+      let normalForkCalls = 0;
+      let recursiveCaptureKeptLowMemory = false;
+      const continuation = new LinkedForkContinuation(
+        memory,
+        readLinkedFrameFormat(module),
+        () => 65_536,
+        () => {},
+        "plain-catch-recursion",
+      );
+
+      instance = new WebAssembly.Instance(module, {
+        env: {
+          memory,
+          __wpk_fork_frame_reserve: (size: number) =>
+            continuation.reserveFrame(size),
+          __wpk_fork_frame_commit: (payload: number) =>
+            continuation.commitFrame(payload),
+          __wpk_fork_frame_next: (size: number) =>
+            continuation.nextFrame(size),
+        },
+        kernel: {
+          kernel_fork: () => {
+            const state = (instance.exports.wpk_fork_state as () => number)();
+            if (state === 2) {
+              (instance.exports.wpk_fork_rewind_end as () => void)();
+              continuation.finishReplayAndRelease();
+              return 7;
+            }
+            normalForkCalls++;
+            recursiveCaptureKeptLowMemory =
+              view.getUint32(SCRATCH_ARM_OFFSET, true) === SENTINEL &&
+              view.getUint32(SCRATCH_PAYLOAD_OFFSET, true) === SENTINEL;
+            moduleBuffer = Number(continuation.beginUnwind());
+            (instance.exports.wpk_fork_unwind_begin as (addr: number) => void)(
+              moduleBuffer,
+            );
+            return 0;
+          },
+        },
+      });
+
+      const run = instance.exports.run as (depth: number) => number;
+      view.setUint32(SCRATCH_ARM_OFFSET, SENTINEL, true);
+      view.setUint32(SCRATCH_PAYLOAD_OFFSET, SENTINEL, true);
+      expect(run(2)).toBe(0);
+      (instance.exports.wpk_fork_unwind_end as () => void)();
+      continuation.finishUnwind();
+      continuation.beginReplay();
+      (instance.exports.wpk_fork_rewind_begin as (addr: number) => void)(
+        moduleBuffer,
+      );
+
+      // WHY: all three calls execute the same static catch arm, but each
+      // activation owns a distinct payload (102, 101, 100). The result slots
+      // prove each restored activation retained its own value; the sentinel
+      // proves capture did not borrow low memory before the continuation
+      // existed. A module-wide tuple violates that ownership boundary even if
+      // other frame locals happen to preserve the final arithmetic result.
+      expect(run(2)).toBe(7 + 100 + 101 + 102);
+      expect([
+        view.getUint32(4096, true),
+        view.getUint32(4100, true),
+        view.getUint32(4104, true),
+      ]).toEqual([100, 101, 102]);
+      expect({
+        normalForkCalls,
+        recursiveCaptureKeptLowMemory,
+      }).toEqual({
+        normalForkCalls: 1,
+        recursiveCaptureKeptLowMemory: true,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
