@@ -19,6 +19,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 import {
   CH_ARGS,
   CH_ARG_SIZE,
@@ -42,6 +43,7 @@ function createChannel(pid: number, channelOffset: number): any {
 /** A worker whose kernel exports are all inert — signal delivery is
  *  best-effort host bookkeeping, so the kernel side is a no-op here. */
 function createWorkerHarness(): any {
+  const kernelMemory = createSharedMemory();
   const worker: any = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
     kernel: { toKernelPtr: (v: number | bigint) => (typeof v === "bigint" ? Number(v) : v) },
     kernelInstance: {
@@ -53,8 +55,7 @@ function createWorkerHarness(): any {
         kernel_get_process_exit_signal: () => -1,
       },
     },
-    kernelMemory: createSharedMemory(),
-    scratchOffset: 128,
+    kernelMemory,
     processes: new Map(),
     channelTids: new Map(),
     pendingSleeps: new Map(),
@@ -63,6 +64,10 @@ function createWorkerHarness(): any {
     pendingPollRetries: new Map(),
     pendingSelectRetries: new Map(),
   });
+  worker.testScratchPointer = installKernelWorkerTestScratch(
+    worker,
+    kernelMemory,
+  );
   return worker;
 }
 
@@ -389,7 +394,7 @@ describe("signal delivery to a process blocked in accept()", () => {
     worker.kernelInstance.exports.kernel_handle_channel = vi.fn(() => {
       const kernelView = new DataView(
         worker.kernelMemory.buffer,
-        worker.scratchOffset,
+        worker.testScratchPointer,
       );
       kernelView.setBigInt64(CH_RETURN, 0n, true);
       kernelView.setUint32(CH_ERRNO, 0, true);

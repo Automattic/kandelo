@@ -110,6 +110,18 @@ The blob is a transient request: the kernel copies it to scratch like every
 other syscall, parses it once, and never references it again. The descriptor
 the kernel constructs for the child lives in `ProcessTable`.
 
+Implementation note (2026-07-25): the finalized transport keeps the small-blob
+path in the 65,608-byte kernel-owned syscall region. A larger blob reserves a
+Rust-owned reusable `Vec<u8>` to its requested high-water mark; no host view or
+pointer survives a reserve that may move that vector. The authoritative
+advertised `ARG_MAX` and `PATH_MAX` live in
+`crates/shared/src/lib.rs::platform_limits`. The separate 40-byte header,
+28-byte action record, count caps, and 8,417,320-byte complete ceiling live in
+`crates/shared/src/lib.rs::spawn_contract`; together they generate the C and
+TypeScript consumers. See
+`docs/plans/2026-07-25-kernel-scratch-transfer-audit.md` for the ownership
+proof and retained-memory measurements.
+
 ## Section 2 — Kernel side
 
 ### `ProcessTable::spawn_child`

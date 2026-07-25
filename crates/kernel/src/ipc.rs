@@ -708,6 +708,26 @@ impl IpcTable {
         }
     }
 
+    /// Return the exact byte length of a GETALL/SETALL value array after
+    /// applying the same permission check as the requested command.
+    pub fn semctl_array_bytes(
+        &self,
+        semid: i32,
+        cmd: i32,
+        uid: u32,
+        gid: u32,
+    ) -> Result<usize, Errno> {
+        let set = self.sem_sets.get(&semid).ok_or(Errno::EINVAL)?;
+        let permission = match cmd {
+            GETALL => IPC_R,
+            SETALL => IPC_W,
+            _ => return Err(Errno::EINVAL),
+        };
+        ipc_check_perm(uid, gid, set.uid, set.gid, set.mode, permission)?;
+        set.values.len().checked_mul(core::mem::size_of::<u16>())
+            .ok_or(Errno::EOVERFLOW)
+    }
+
     /// Set all semaphore values in a set (SETALL command).
     pub fn semctl_set_all(
         &mut self,
@@ -1337,6 +1357,38 @@ mod tests {
             _ => panic!("expected All"),
         };
         assert_eq!(vals, vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn test_semctl_array_bytes_matches_size_and_command_permissions() {
+        let mut t = IpcTable::new();
+        let read_only = t
+            .semget(IPC_PRIVATE, 3, IPC_CREAT | 0o400, 1, 1000, 1000)
+            .unwrap();
+        assert_eq!(
+            t.semctl_array_bytes(read_only, GETALL, 1000, 1000),
+            Ok(3 * core::mem::size_of::<u16>())
+        );
+        assert_eq!(
+            t.semctl_array_bytes(read_only, SETALL, 1000, 1000),
+            Err(Errno::EACCES)
+        );
+
+        let write_only = t
+            .semget(IPC_PRIVATE, 2, IPC_CREAT | 0o200, 1, 1000, 1000)
+            .unwrap();
+        assert_eq!(
+            t.semctl_array_bytes(write_only, SETALL, 1000, 1000),
+            Ok(2 * core::mem::size_of::<u16>())
+        );
+        assert_eq!(
+            t.semctl_array_bytes(write_only, GETALL, 1000, 1000),
+            Err(Errno::EACCES)
+        );
+        assert_eq!(
+            t.semctl_array_bytes(write_only, IPC_STAT, 1000, 1000),
+            Err(Errno::EINVAL)
+        );
     }
 
     #[test]

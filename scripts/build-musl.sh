@@ -94,6 +94,15 @@ if [ -d "$OVERLAY_DIR/src" ]; then
     fi
 fi
 
+# The installed overlay headers are normally copied after `make install`, but
+# limits are also compiled into musl's sysconf implementation. Stage these two
+# generated/consumer headers in the source tree before `make` so the runtime
+# answer and the public header cannot advertise different Kandelo contracts.
+cp "$OVERLAY_DIR/include/limits.h" "$MUSL_DIR/include/limits.h"
+mkdir -p "$MUSL_DIR/include/bits"
+cp "$OVERLAY_DIR/include/bits/kandelo_limits.h" \
+    "$MUSL_DIR/include/bits/kandelo_limits.h"
+
 # musl's src/internal/syscall.h uses syscall_arg_t for the public
 # varargs syscall() path and also hard-codes it into the non-varargs
 # __syscall_cp() cancellation-point prototype. On wasm32posix those

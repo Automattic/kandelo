@@ -32,6 +32,16 @@ export const WPK_FORK_REQUIRED_EXPORTS = [
 
 export const SCHED_AFFINITY_MASK_SIZE = 4 as const;
 
+export const POSIX_ARG_MAX_BYTES = 4194304 as const;
+export const POSIX_PATH_MAX_BYTES = 4096 as const;
+export const POSIX_IOV_MAX = 1024 as const;
+export const SPAWN_WIRE_HEADER_BYTES = 40 as const;
+export const SPAWN_WIRE_ACTION_RECORD_BYTES = 28 as const;
+export const SPAWN_MAX_ARGV_COUNT = 4096 as const;
+export const SPAWN_MAX_ENVP_COUNT = 4096 as const;
+export const SPAWN_MAX_ACTION_COUNT = 1024 as const;
+export const SPAWN_WIRE_MAX_BYTES = 8417320 as const;
+
 export const HOST_ADAPTER_VERSION = 1 as const;
 export const HOST_ADAPTER_MANIFEST_MAGIC = 1296781399 as const;
 export const HOST_ADAPTER_MANIFEST_VERSION = 1 as const;

@@ -90,9 +90,19 @@ const suite: BenchmarkSuite = {
       argv: ["spawn-bench"],
       execPrograms,
       timeout: 30_000,
+      captureSpawnScratchStats: true,
     });
     if (spawnBench.exitCode !== 0) throw new Error(`spawn-bench failed: ${spawnBench.stderr}`);
     Object.assign(results, parseMetrics(spawnBench.stdout));
+    if (
+      spawnBench.spawnScratchCapacity === undefined ||
+      spawnBench.kernelMemoryPages === undefined
+    ) {
+      throw new Error("spawn-bench did not return kernel scratch telemetry");
+    }
+    results.spawn_scratch_retained_bytes = spawnBench.spawnScratchCapacity;
+    results.spawn_scratch_kernel_bytes =
+      spawnBench.kernelMemoryPages * 65_536;
 
     return results;
   },
