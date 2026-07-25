@@ -2,11 +2,12 @@ name: Staging cleanup
 
 # Deletes pr-<NNN>-staging pre-releases when the corresponding PR closes,
 # except for a merged PR explicitly labeled `retain-package-staging`, and
-# deletes same-repo branches for merged `ready-to-ship` PRs. The daily sweep
-# applies the same staging-retention rule and classifies every merge-candidate
-# release from current GitHub state. Only explicitly retained package inputs,
-# authoritative ready candidates, and recent terminal-rejection evidence
-# survive after merge; API uncertainty always retains evidence.
+# deletes same-repo branches for merged `ready-to-ship` PRs unless that label
+# still owns their exact source commit. The daily sweep applies the same
+# staging-retention rule and classifies every merge-candidate release from
+# current GitHub state. Only explicitly retained package inputs, authoritative
+# ready candidates, and recent terminal-rejection evidence survive after
+# merge; API uncertainty always retains evidence.
 #
 # See docs/plans/2026-04-29-pr-package-builds-design.md §4.3.
 
@@ -52,7 +53,8 @@ jobs:
         if: |
           github.event.pull_request.merged == true &&
           github.event.pull_request.head.repo.full_name == github.repository &&
-          contains(github.event.pull_request.labels.*.name, 'ready-to-ship')
+          contains(github.event.pull_request.labels.*.name, 'ready-to-ship') &&
+          !contains(github.event.pull_request.labels.*.name, 'retain-package-staging')
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
@@ -235,8 +237,11 @@ jobs:
               --base "$DEFAULT_BRANCH" \
               --label ready-to-ship \
               --limit 200 \
-              --json number,headRefName,headRefOid,isCrossRepository \
-              -q '.[] | select(.isCrossRepository == false) | [.number, .headRefName, .headRefOid] | @tsv' \
+              --json number,headRefName,headRefOid,isCrossRepository,labels \
+              -q '.[] | select(
+                    .isCrossRepository == false and
+                    ([.labels[].name] | index("retain-package-staging") | not)
+                  ) | [.number, .headRefName, .headRefOid] | @tsv' \
             | while IFS=$'\t' read -r pr_number head_ref head_sha; do
                 delete_branch "$pr_number" "$head_ref" "$head_sha"
               done
