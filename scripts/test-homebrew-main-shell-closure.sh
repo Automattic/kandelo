@@ -441,7 +441,10 @@ grep -Fq -- '--arch wasm64 \' "$WORKFLOW" ||
   fail "browser package derivation must include architecture-scoped wasm64 roots"
 grep -Fq -- '--exclude-package shell \' "$WORKFLOW" ||
   fail "browser package derivation must reserve shell for the exact candidate build"
-grep -Fq -- '--include-package rootfs \' "$WORKFLOW" ||
+# WHY: rootfs may be the final argument (no continuation) or move earlier in
+# the command; validate the CLI token instead of enforcing YAML formatting.
+grep -Eq -- '^[[:space:]]*--include-package[[:space:]]+rootfs([[:space:]]*\\)?[[:space:]]*$' \
+  <<<"$browser_fetch_block" ||
   fail "browser package derivation must include the non-@binaries rootfs alias"
 grep -Fq 'mapfile -t browser_input_packages < "$browser_package_file"' "$WORKFLOW" ||
   fail "main-shell workflow must consume the derived browser package roots"
