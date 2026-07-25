@@ -1392,6 +1392,18 @@ case "${1:-}" in
 esac
 EOF
 chmod +x "$MOCK_BIN/oras"
+cat >"$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$#" -ne 4 ] || [ "$1" != api ] ||
+   [ "$2" != /repos/Automattic/kandelo/git/ref/heads/main ] ||
+   [ "$3" != --jq ] || [ "$4" != .object.sha ]; then
+  exit 2
+fi
+[ -z "${MOCK_GH_LOG:-}" ] || printf '%s\n' "$*" >>"$MOCK_GH_LOG"
+printf '%s\n' "${MOCK_KANDELO_MAIN_SHA:-2222222222222222222222222222222222222222}"
+EOF
+chmod +x "$MOCK_BIN/gh"
 
 assert_logged_auth_configs_retired() {
   local config
@@ -1506,6 +1518,7 @@ ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-missing-present \
     --layout-receipt "$TMP_ROOT/child32/receipt.json" \
     --tap-repository kandelo-dev/homebrew-tap-core \
     --formula hello \
+    --exact-kandelo-main-sha "$KANDELO_COMMIT" \
     --auth-mode pat \
     --require-pat true \
     --registry-user package-bot \
@@ -1579,6 +1592,7 @@ ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-missing-present \
     --layout-receipt "$TMP_ROOT/child32/receipt.json" \
     --tap-repository kandelo-dev/homebrew-tap-core \
     --formula hello \
+    --exact-kandelo-main-sha "$KANDELO_COMMIT" \
     --auth-mode github-token \
     --require-pat false \
     --registry-user package-bot \
@@ -1608,6 +1622,7 @@ ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-canary-missing-present \
     --layout-receipt "$TMP_ROOT/child32/receipt.json" \
     --tap-repository kandelo-dev/homebrew-tap-core \
     --formula hello \
+    --exact-kandelo-main-sha "$KANDELO_COMMIT" \
     --auth-mode github-token \
     --require-pat false \
     --destination-mode repository-canary \
@@ -1678,6 +1693,7 @@ expect_failure repository-canary-existing \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
       --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello \
+      --exact-kandelo-main-sha "$KANDELO_COMMIT" \
       --auth-mode github-token --require-pat false \
       --destination-mode repository-canary \
       --out-json "$TMP_ROOT/repository-canary-existing.json"
@@ -1699,6 +1715,7 @@ expect_failure repository-canary-private \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
       --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello \
+      --exact-kandelo-main-sha "$KANDELO_COMMIT" \
       --auth-mode github-token --require-pat false \
       --destination-mode repository-canary \
       --out-json "$TMP_ROOT/repository-canary-private.json"
@@ -1999,6 +2016,51 @@ expect_failure transport-repository-auth-denied \
 }
 assert_logged_auth_configs_retired
 
+: >"$ORAS_LOG"
+expect_failure transport-missing-main-authority \
+  "exact-kandelo-main-sha is required before a GHCR mutation" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-missing-present \
+    ORAS_STATE="$TMP_ROOT/missing-main-authority-state" \
+    ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
+    PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello --out-json "$TMP_ROOT/missing-main-authority.json"
+! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
+  echo "missing exact-main authority reached the credentialed OCI copy" >&2
+  exit 1
+}
+
+gh_race_log="$TMP_ROOT/exact-main-race-gh.log"
+: >"$ORAS_LOG"
+: >"$gh_race_log"
+expect_failure transport-main-advanced \
+  "source SHA must equal the current refs/heads/main commit" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-missing-present \
+    ORAS_STATE="$TMP_ROOT/main-advanced-state" \
+    ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
+    MOCK_GH_LOG="$gh_race_log" \
+    MOCK_KANDELO_MAIN_SHA=3333333333333333333333333333333333333333 \
+    PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello --exact-kandelo-main-sha "$KANDELO_COMMIT" \
+      --out-json "$TMP_ROOT/main-advanced.json"
+grep -F "api /repos/Automattic/kandelo/git/ref/heads/main --jq .object.sha" \
+  "$gh_race_log" >/dev/null || {
+  echo "GHCR transport did not re-read protected main at its mutation boundary" >&2
+  exit 1
+}
+! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
+  echo "advanced main reached the credentialed OCI copy" >&2
+  exit 1
+}
+assert_logged_auth_configs_retired
+
 expect_failure transport-race "different digest after upload" \
   env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=missing-present \
     ORAS_STATE="$TMP_ROOT/race-oras-state" \
@@ -2009,7 +2071,8 @@ expect_failure transport-race "different digest after upload" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
       --tap-repository kandelo-dev/homebrew-tap-core \
-      --formula hello --out-json "$TMP_ROOT/race-upload.json"
+      --formula hello --exact-kandelo-main-sha "$KANDELO_COMMIT" \
+      --out-json "$TMP_ROOT/race-upload.json"
 : >"$ORAS_LOG"
 expect_failure transport-private-after-upload "authorized owner must make the GHCR package public" \
   env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-missing-private \
@@ -2020,7 +2083,8 @@ expect_failure transport-private-after-upload "authorized owner must make the GH
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
       --tap-repository kandelo-dev/homebrew-tap-core \
-      --formula hello --out-json "$TMP_ROOT/private-upload.json"
+      --formula hello --exact-kandelo-main-sha "$KANDELO_COMMIT" \
+      --out-json "$TMP_ROOT/private-upload.json"
 grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
   echo "first private GHCR package did not upload before the visibility boundary" >&2
   exit 1
@@ -2035,6 +2099,7 @@ expect_failure transport-not-public "did not become anonymously readable" \
       --layout "$TMP_ROOT/child32/layout" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
       --tap-repository kandelo-dev/homebrew-tap-core \
-      --formula hello --out-json "$TMP_ROOT/not-public-upload.json"
+      --formula hello --exact-kandelo-main-sha "$KANDELO_COMMIT" \
+      --out-json "$TMP_ROOT/not-public-upload.json"
 
 echo "test-homebrew-oci-layout.sh: ok"

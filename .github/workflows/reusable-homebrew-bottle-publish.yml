@@ -1453,6 +1453,7 @@ jobs:
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             --formula "$KANDELO_HOMEBREW_FORMULA"
+            --exact-kandelo-main-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             --auth-mode github-token
             --require-pat false
             --destination-mode repository
@@ -1787,6 +1788,7 @@ jobs:
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
             --formula "$KANDELO_HOMEBREW_FORMULA" \
+            --exact-kandelo-main-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT" \
             --auth-mode github-token \
             --require-pat false \
             --destination-mode repository \

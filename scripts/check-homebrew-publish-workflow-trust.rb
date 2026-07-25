@@ -23,8 +23,8 @@ DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a54
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "96c39424b46eb259181226e6f5d76500017b9d4e37f41ef7d16a6f91924d14ae"
 PUBLISHER_BUILD_DIGEST = "44416f36bdf7a70f5319381df7255affcd2f46446287bbae314d41fb39e07514"
-PUBLISHER_UPLOAD_DIGEST = "eb6c2abb3510208146490119b280abdb5d2d355a2fe08bb307d0a5a0f8fdb44e"
-PUBLISHER_INDEX_DIGEST = "59a6a319aa2c2c948f0012e7892146f64f52923229a7a79a0de9402748e57b74"
+PUBLISHER_UPLOAD_DIGEST = "a44f8b7b2eb1d4b9436496cc9a099b80fb70be52143820e77fb7196e807d302f"
+PUBLISHER_INDEX_DIGEST = "7b05a7e4b076628ab999f9edb2e39a6641c4bb9a2563afcf19be15a119566bbe"
 PUBLISHER_VERIFY_DIGEST = "97a75eded2045581401d0389fd76ae32ac18b51431bf6bfd02f1a0b3f783f15b"
 PUBLISHER_FINALIZE_DIGEST = "b2aa633a3ca77db5902f02cb137f32404878043a3f685285ef49a8fa02401daf"
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
@@ -3565,6 +3565,9 @@ def check_publisher(workflow)
         upload_validate.fetch("run").include?('--tap-name "$KANDELO_HOMEBREW_TAP_NAME"') &&
         upload_attempt.fetch("run").include?("scripts/homebrew-ghcr-upload.sh") &&
         upload_attempt.fetch("run").include?('--tap-name "$KANDELO_HOMEBREW_TAP_NAME"') &&
+        upload_attempt.fetch("run").include?(
+          '--exact-kandelo-main-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"'
+        ) &&
         upload_attempt.fetch("run").include?("--auth-mode github-token") &&
         upload_attempt.fetch("run").include?("--require-pat false") &&
         upload_attempt.fetch("run").include?("--destination-mode repository") &&
@@ -3576,6 +3579,9 @@ def check_publisher(workflow)
     'REQUIRE_PAT="false"',
     'DESTINATION_MODE="repository"',
     'repository) REMOTE="ghcr.io/${NORMALIZED_TAP_REPOSITORY}/${FORMULA}" ;;',
+    '--exact-kandelo-main-sha is required before a GHCR mutation',
+    'bash "$SCRIPT_ROOT/../.github/scripts/require-exact-kandelo-main.sh"',
+    '--source-sha "$EXACT_KANDELO_MAIN_SHA"',
   ].each do |fragment|
     check(ghcr_uploader_source.include?(fragment),
           "publisher GHCR transport lacks #{fragment}")
@@ -3896,6 +3902,7 @@ def check_publisher(workflow)
     "--auth-mode github-token",
     "--require-pat false",
     "--destination-mode repository",
+    '--exact-kandelo-main-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"',
     '--out-json "$RUNNER_TEMP/homebrew-complete-index/transport-receipt.json"',
   ].each do |fragment|
     check(index_publish_run.include?(fragment),

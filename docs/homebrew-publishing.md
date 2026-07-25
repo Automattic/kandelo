@@ -1213,8 +1213,12 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    repository-namespace canary is stricter: it always requires an authenticated
    missing-repository result so an existing public package with a new tag cannot
    produce a false positive. The uploader copies only the validated child
-   layout to its content-derived tag, retires the isolated ORAS authentication
-   state, and requires an anonymous exact-digest readback. Its only output is a
+   layout to its content-derived tag. Immediately before that credentialed
+   `oras cp`, the transport itself re-reads `Automattic/kandelo`'s protected
+   `main` ref and requires it to equal the explicit publication SHA; an earlier
+   workflow check cannot authorize a copy after `main` advances. The uploader
+   retires the isolated ORAS authentication state and requires an anonymous
+   exact-digest readback. Its only output is a
    strict data receipt binding the canonical layout receipt to that public
    readback.
 3. `publish-bottle-index` receives `packages: write` once per Formula. The
