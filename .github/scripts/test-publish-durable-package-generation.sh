@@ -29,12 +29,14 @@ git -C "$AUTHORITY_ROOT" config user.email test@example.invalid
 git -C "$AUTHORITY_ROOT" add .
 git -C "$AUTHORITY_ROOT" commit -qm "test authority"
 AUTHORITY_ROOT="$(git -C "$AUTHORITY_ROOT" rev-parse --show-toplevel)"
-PUBLISH="$AUTHORITY_ROOT/.github/scripts/publish-durable-package-generation.sh"
 MATERIALIZE="$AUTHORITY_ROOT/.github/scripts/materialize-durable-package-generation.sh"
 
 hex_a="$(printf 'a%.0s' {1..64})"
 source_sha="$(git -C "$AUTHORITY_ROOT" rev-parse HEAD)"
 authority_sha="$source_sha"
+# WHY: the preserved producer is deliberately not the trusted publisher
+# commit. This keeps the fixture honest about the evidence-only boundary.
+preserved_source_sha="$(printf '5%.0s' {1..40})"
 tree_sha="$(git -C "$AUTHORITY_ROOT" rev-parse 'HEAD^{tree}')"
 cat >"$TMP_ROOT/rootfs-package.toml" <<'EOF'
 kind = "program"
@@ -584,20 +586,26 @@ run_publisher() {
   local receipt="${2:-$TMP_ROOT/receipt.json}"
   local bundle="${3:-$TMP_ROOT/bundle}"
   local expected_authority="${4:-$authority_sha}"
-  local format
+  local publisher_authority_root="${PUBLISHER_AUTHORITY_ROOT:-$AUTHORITY_ROOT}"
+  local publisher_script
+  local format bundle_source_sha
   local -a authority_args
+  publisher_script="$publisher_authority_root/.github/scripts/publish-durable-package-generation.sh"
   format="$(jq -er .format "$bundle/generation.json")"
+  # WHY: admitted and preserved bundles intentionally name different source
+  # authorities, so every stubbed source check must follow the bundle under test.
+  bundle_source_sha="$(jq -er .identity.package_source_sha "$bundle/generation.json")"
   if [ "$format" = kandelo-preserved-pr-package-generation-v1 ]; then
     authority_args=(--expected-authority-sha "$expected_authority")
   else
     authority_args=(
       --source-tag binaries-abi-v42
-      --package-source-sha "$source_sha"
+      --package-source-sha "$bundle_source_sha"
       --expected-abi 42
       --selection-kind "$(if [ "$(jq -r .identity.projection.schema "$bundle/generation.json")" = 2 ]; then printf browser-inputs; else printf root-package; fi)"
       --root-package rootfs
       --arch wasm32
-      --authority-sha "$source_sha"
+      --authority-sha "$bundle_source_sha"
       --default-ref main
     )
   fi
@@ -619,22 +627,22 @@ run_publisher() {
     GITHUB_WORKFLOW=test \
     GH_STUB_ROOT="$remote" \
     GH_SOURCE_ROOT="$TMP_ROOT/preserved-source" \
-    AUTHORITY_REPO="$AUTHORITY_ROOT" \
+    AUTHORITY_REPO="$publisher_authority_root" \
     MUTATE_SOURCE_AFTER_SEAL="${MUTATE_SOURCE_AFTER_SEAL:-}" \
     DIRTY_AUTHORITY_AFTER_SEAL="${DIRTY_AUTHORITY_AFTER_SEAL:-false}" \
-    TEST_SOURCE_SHA="$source_sha" \
+    TEST_SOURCE_SHA="$bundle_source_sha" \
     TEST_TREE_SHA="$tree_sha" \
     TEST_PROJECTION="$TMP_ROOT/projection.json" \
     TEST_BROWSER_PROJECTION="$TMP_ROOT/browser-projection.json" \
     TEST_EXPECTED="$TMP_ROOT/expected.json" \
-    NODE_EXPECTED_SCRIPT="$AUTHORITY_ROOT/scripts/browser-binary-package-roots.mjs" \
-    NODE_EXPECTED_ROOT="$AUTHORITY_ROOT" \
+    NODE_EXPECTED_SCRIPT="$publisher_authority_root/scripts/browser-binary-package-roots.mjs" \
+    NODE_EXPECTED_ROOT="$publisher_authority_root" \
     BROWSER_INPUT_ROOTS="${TEST_RUN_BROWSER_INPUT_ROOTS:-rootfs}" \
     WRITE_LOG="$TMP_ROOT/writes.log" \
     LOCK_LOG="$TMP_ROOT/locks.log" \
     STATE_LOCK_SCRIPT="$TMP_ROOT/bin/state-lock" \
     PACKAGE_GENERATION_RETRY_DELAY_SECONDS=0 \
-    bash "$PUBLISH" \
+    bash "$publisher_script" \
       --bundle "$bundle" \
       --authority-xtask "$TMP_ROOT/bin/authority-xtask" \
       "${authority_args[@]}" \
@@ -671,7 +679,7 @@ else
 fi
 root_log_size="$(wc -c <"$TMP_ROOT/preserved-supporting/rootfs-job.log" | tr -d '[:space:]')"
 jq -nS \
-  --arg source_sha "$source_sha" \
+  --arg source_sha "$preserved_source_sha" \
   --arg archive_sha "$archive_sha" \
   --arg log_sha "$root_log_sha" \
   --argjson archive_size "$archive_size" \
@@ -727,7 +735,7 @@ jq -nS \
     id:902,name:"rootfs-1-rev1-abi42-wasm32-aaaaaaaa.tar.zst",state:"uploaded",
     size:$archive_size,digest:("sha256:" + $archive_sha)
   }]' >"$TMP_ROOT/preserved-source/release-assets.json"
-jq -nS --arg source_sha "$source_sha" '{
+jq -nS --arg source_sha "$preserved_source_sha" '{
   id:903,run_attempt:1,event:"pull_request",
   path:".github/workflows/staging-build.yml",head_sha:$source_sha,
   status:"completed",conclusion:"cancelled"
@@ -743,7 +751,7 @@ jq -nS --argjson archive_size "$archive_size" '[{
 
 python3 "$TOOL" prepare-preserved \
   --repository Automattic/kandelo \
-  --package-source-sha "$source_sha" \
+  --package-source-sha "$preserved_source_sha" \
   --authority-sha "$authority_sha" \
   --source-capture "$TMP_ROOT/preserved-capture.json" \
   --projection "$TMP_ROOT/projection.json" \
@@ -769,7 +777,7 @@ fi
 
 python3 "$TOOL" prepare-preserved \
   --repository Automattic/kandelo \
-  --package-source-sha "$source_sha" \
+  --package-source-sha "$preserved_source_sha" \
   --authority-sha "$wrong_authority_sha" \
   --source-capture "$TMP_ROOT/preserved-capture.json" \
   --projection "$TMP_ROOT/projection.json" \
@@ -786,6 +794,28 @@ if run_publisher \
     "$TMP_ROOT/wrong-manifest-authority-receipt.json" \
     "$TMP_ROOT/preserved-wrong-manifest-authority"; then
   echo "preserved writer accepted a mismatched manifest authority" >&2
+  exit 1
+fi
+[ ! -s "$TMP_ROOT/writes.log" ]
+
+# A clean checkout is still the wrong authority when its HEAD differs from the
+# reviewed commit sealed into the preserved manifest.
+git clone -q "$AUTHORITY_ROOT" "$TMP_ROOT/different-clean-authority"
+git -C "$TMP_ROOT/different-clean-authority" config user.name "Kandelo test"
+git -C "$TMP_ROOT/different-clean-authority" config user.email test@example.invalid
+printf 'different clean authority\n' \
+  >"$TMP_ROOT/different-clean-authority/authority-change"
+git -C "$TMP_ROOT/different-clean-authority" add authority-change
+git -C "$TMP_ROOT/different-clean-authority" \
+  commit -qm "test different clean authority"
+mkdir "$TMP_ROOT/different-clean-authority-remote"
+: >"$TMP_ROOT/writes.log"
+if PUBLISHER_AUTHORITY_ROOT="$TMP_ROOT/different-clean-authority" \
+   run_publisher \
+     "$TMP_ROOT/different-clean-authority-remote" \
+     "$TMP_ROOT/different-clean-authority-receipt.json" \
+     "$TMP_ROOT/preserved-bundle"; then
+  echo "preserved writer accepted a different clean authority HEAD" >&2
   exit 1
 fi
 [ ! -s "$TMP_ROOT/writes.log" ]
@@ -1027,6 +1057,21 @@ done
 printf '%s\n' "${BROWSER_INPUT_ROOTS:-rootfs}"
 EOF
 chmod +x "$TMP_ROOT/bin/node"
+
+# Preserved releases retain evidence only. The ordinary consumer path must
+# reject their distinct tag before attempting to download or activate bytes.
+preserved_tag="$(jq -er .tag "$TMP_ROOT/preserved-bundle/generation.json")"
+if bash "$MATERIALIZE" \
+    --tag "$preserved_tag" \
+    --consumer-root "$TMP_ROOT/consumer" \
+    --consumer-sha "$consumer_sha" \
+    --authority-xtask "$TMP_ROOT/bin/authority-xtask" \
+    --repository Automattic/kandelo \
+    --output-dir "$TMP_ROOT/preserved-materialized"; then
+  echo "ordinary materializer accepted a preserved evidence tag" >&2
+  exit 1
+fi
+[ ! -e "$TMP_ROOT/preserved-materialized" ]
 
 tag="$(jq -r .tag "$TMP_ROOT/bundle/generation.json")"
 env \

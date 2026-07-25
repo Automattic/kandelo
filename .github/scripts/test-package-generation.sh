@@ -1030,6 +1030,29 @@ mv "$TMP_ROOT/preserved-run-original.json" "$TMP_ROOT/preserved-run.json"
 
 cp "$TMP_ROOT/preserved-rootfs-job.log" \
   "$TMP_ROOT/preserved-supporting/rootfs-job.log"
+if python3 "$TOOL" prepare-preserved \
+    --repository Automattic/kandelo \
+    --package-source-sha "$source_sha" \
+    --authority-sha "$authority_sha" \
+    --source-capture "$TMP_ROOT/preserved-capture.json" \
+    --projection "$TMP_ROOT/browser-projection.json" \
+    --expected-ledger "$TMP_ROOT/expected.json" \
+    --snapshot "$TMP_ROOT/preserved-snapshot.json" \
+    --localized-index "$TMP_ROOT/preserved-local-index.toml" \
+    --archives-dir "$TMP_ROOT/preserved-archives" \
+    --supporting-assets-dir "$TMP_ROOT/preserved-supporting" \
+    --output-dir "$TMP_ROOT/preserved-schema2-bundle" \
+    2>"$TMP_ROOT/preserved-schema2.err"; then
+  echo "preserved evidence accepted a schema-2 root-set projection" >&2
+  exit 1
+fi
+grep -Fq \
+  "preserved PR package generations require a schema-1 projection" \
+  "$TMP_ROOT/preserved-schema2.err"
+if grep -Fq "Traceback" "$TMP_ROOT/preserved-schema2.err"; then
+  echo "schema-2 preserved projection failed through an internal exception" >&2
+  exit 1
+fi
 preserved_tag="$(python3 "$TOOL" prepare-preserved \
   --repository Automattic/kandelo \
   --package-source-sha "$source_sha" \
@@ -1057,8 +1080,8 @@ python3 "$TOOL" validate \
   --expected-tag "$preserved_tag" >/dev/null
 if python3 "$TOOL" compare-consumer \
     --generation-manifest "$TMP_ROOT/preserved-bundle/generation.json" \
-    --program-packages "$TMP_ROOT/program-packages.json" \
-    --full-expected-ledger "$TMP_ROOT/full-expected.json"; then
+    --consumer-projection "$TMP_ROOT/projection.json" \
+    --consumer-expected-ledger "$TMP_ROOT/expected.json"; then
   echo "preserved evidence was admitted for consumer materialization" >&2
   exit 1
 fi

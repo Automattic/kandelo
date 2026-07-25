@@ -2177,8 +2177,12 @@ cache_key_sha = "{SHA}"
         let registry = Registry {
             roots: vec![registry_path],
         };
-        let fresh =
-            source_cache_identities(&source_root, &registry, 42).unwrap();
+        let fresh = source_cache_identities(
+            &source_root,
+            &registry,
+            wasm_posix_shared::ABI_VERSION,
+        )
+        .unwrap();
         let identities = packages
             .iter()
             .map(|(name, package)| {
@@ -2311,7 +2315,7 @@ cache_key_sha = "{SHA}"
             &index,
             &roots,
             TargetArch::Wasm32,
-            42,
+            wasm_posix_shared::ABI_VERSION,
             2,
         )
         .unwrap();
@@ -2332,7 +2336,7 @@ cache_key_sha = "{SHA}"
                 &index,
                 &roots,
                 TargetArch::Wasm32,
-                42,
+                wasm_posix_shared::ABI_VERSION,
                 1,
             )
             .unwrap_err()
@@ -2349,7 +2353,7 @@ cache_key_sha = "{SHA}"
             &index,
             &roots,
             TargetArch::Wasm32,
-            42,
+            wasm_posix_shared::ABI_VERSION,
             1,
         )
         .unwrap();

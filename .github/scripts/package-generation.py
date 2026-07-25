@@ -439,6 +439,16 @@ def validate_projection(value: Any) -> dict[str, Any]:
     }
 
 
+def validate_preserved_projection(value: Any) -> dict[str, Any]:
+    projection = validate_projection(value)
+    # WHY: preserved evidence is intentionally limited to one audited root
+    # closure. A schema-2 root set has no single root_package and must fail as a
+    # contract violation, not later through an incidental dictionary lookup.
+    if projection["schema"] != SINGLE_ROOT_PROJECTION_SCHEMA:
+        fail("preserved PR package generations require a schema-1 projection")
+    return projection
+
+
 def projection_entries(projection: dict[str, Any]) -> list[dict[str, str]]:
     if projection["schema"] == SINGLE_ROOT_PROJECTION_SCHEMA:
         return projection["entries"]
@@ -1380,7 +1390,7 @@ def validate_preserved_identity(value: Any) -> dict[str, Any]:
     if identity["admission"] != "none":
         fail("preserved PR package generations must not claim package admission")
     abi_version = integer(identity["abi_version"], "preserved ABI", minimum=1)
-    projection = validate_projection(identity["projection"])
+    projection = validate_preserved_projection(identity["projection"])
     expected = select_expected(identity["expected_ledger"], projection, abi_version)
     if expected != identity["expected_ledger"]:
         fail("preserved expected ledger is not canonical")
@@ -1507,7 +1517,7 @@ def command_select(args: argparse.Namespace) -> None:
 
 def command_select_source_assets(args: argparse.Namespace) -> None:
     source_tag = text_matching(args.source_tag, STAGING_TAG, "source staging tag")
-    projection = validate_projection(read_json(args.projection))
+    projection = validate_preserved_projection(read_json(args.projection))
     expected_raw = read_json(args.expected_ledger)
     abi_version = integer(expected_raw.get("abi_version"), "expected ABI", minimum=1)
     expected = select_expected(expected_raw, projection, abi_version)
@@ -1630,7 +1640,7 @@ def command_capture_source(args: argparse.Namespace) -> None:
         args.package_source_sha, HEX_40, "package source SHA"
     )
     source_tag = text_matching(args.source_tag, STAGING_TAG, "source staging tag")
-    projection = validate_projection(read_json(args.projection))
+    projection = validate_preserved_projection(read_json(args.projection))
     expected_raw = read_json(args.expected_ledger)
     abi_version = integer(expected_raw.get("abi_version"), "expected ABI", minimum=1)
     expected = select_expected(expected_raw, projection, abi_version)
@@ -1950,7 +1960,7 @@ def command_prepare_preserved(args: argparse.Namespace) -> None:
     )
     if args.output_dir.exists() or args.output_dir.is_symlink():
         fail(f"output already exists: {args.output_dir}")
-    projection = validate_projection(read_json(args.projection))
+    projection = validate_preserved_projection(read_json(args.projection))
     expected_raw = read_json(args.expected_ledger)
     abi_version = integer(expected_raw.get("abi_version"), "expected ABI", minimum=1)
     expected = select_expected(expected_raw, projection, abi_version)

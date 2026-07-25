@@ -235,7 +235,8 @@ before the PR closes. For a merged same-repository PR, that label temporarily
 retains both the staging release and producer branch; it does not admit either
 as main. Closed-unmerged PRs are never retained by the label. Remove it and
 dispatch `staging-cleanup.yml` after the preserved generation is sealed and
-verified.
+verified. Retaining or restoring pre-main staging is exclusively an evidence
+preservation operation; it is not recovery for an admitted durable generation.
 
 The source staging run does not need to finish unrelated matrix jobs. The
 selected rootfs job must be complete and successful, all 15 selected workflow
@@ -356,18 +357,19 @@ and archives stamped with the canonical repository and exact main commit exist
 after exact-main activation.
 
 If a runner stops while the generation release is a draft, repeat the
-identical dispatch from the same main SHA. The writer accepts only an exact
-verified subset, uploads missing non-seal assets, uploads
+identical dispatch from the same exact-main package-source commit. The writer
+accepts only an exact verified subset, uploads missing non-seal assets, uploads
 `generation.json` last, and publishes. It never deletes or overwrites a draft
 asset. If `main`, canonical package assets, local authority state, or any
-input changes, create a new content-derived generation instead.
+input changes, create a new generation from the new exact-main state instead.
 
 If a public generation fails validation, do not repair it in place. Preserve
-the evidence and publish changed content under its naturally different tag.
-Apply `retain-package-staging` before merging whenever promotion must happen
-after merge. If source staging cleanup nevertheless wins the race before a
-generation is sealed, restore or rebuild the exact source staging generation
-first; never substitute another commit's similarly named archives.
+the evidence and publish a new exact-main generation under its naturally
+different content-derived tag. Pre-main staging retention and restoration
+apply only to the evidence-preservation workflow described above. Admitted
+recovery either resumes the same exact draft from the same exact-main inputs or
+publishes a new generation from a newly validated exact-main state; it never
+substitutes another commit's similarly named archives.
 
 These content-addressed releases share one manifest-driven immutable-release
 publisher. Before using a credential it stages and verifies the manifest's
@@ -375,10 +377,10 @@ bounded duplicate-free JSON, safe unique basenames, exact sizes, and SHA-256
 digests. Under a tag-specific
 state lock it can resume an exact partial draft, but rejects unknown, duplicate,
 or changed assets. It verifies every complete draft asset through the
-authenticated API and establishes an exact lightweight tag at the planned tap
-commit before publishing. It performs exact anonymous readback before
-atomically emitting a machine-readable receipt and does not rely on
-repository-wide release immutability. Release and asset discovery are
+authenticated API and establishes an exact lightweight tag at the generation's
+declared package-source commit before publishing. It performs exact anonymous
+readback before atomically emitting a machine-readable receipt and does not
+rely on repository-wide release immutability. Release and asset discovery are
 paginated, so the same protocol covers the production shell mirror's 35 bottle
 objects and canonical plan rather than relying on the small embedded asset list
 in a release response.

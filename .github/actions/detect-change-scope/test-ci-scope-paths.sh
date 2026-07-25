@@ -238,6 +238,18 @@ assert_matches package_publish_flow_changed_files \
   ".github/scripts/verify-preserved-package-source.sh" \
   ".github/scripts/verify-preserved-package-source.sh"
 assert_matches package_publish_flow_changed_files \
+  ".github/scripts/classify-pr-staging.sh" \
+  ".github/scripts/classify-pr-staging.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-classify-pr-staging.sh" \
+  ".github/scripts/test-classify-pr-staging.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/materialize-exact-package-generations.sh" \
+  ".github/scripts/materialize-exact-package-generations.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-materialize-exact-package-generations.sh" \
+  ".github/scripts/test-materialize-exact-package-generations.sh"
+assert_matches package_publish_flow_changed_files \
   ".github/scripts/materialize-durable-package-generation.sh" \
   ".github/scripts/materialize-durable-package-generation.sh"
 assert_matches package_publish_flow_changed_files \
@@ -258,6 +270,12 @@ assert_matches package_publish_flow_changed_files \
 assert_matches package_publish_flow_changed_files \
   "tools/xtask/src/staging_reuse.rs" \
   "tools/xtask/src/staging_reuse.rs"
+assert_matches package_publish_flow_changed_files \
+  "tools/xtask/src/build_deps.rs" \
+  "tools/xtask/src/build_deps.rs"
+assert_matches package_publish_flow_changed_files \
+  "tools/xtask/src/pkg_manifest.rs" \
+  "tools/xtask/src/pkg_manifest.rs"
 assert_matches package_publish_flow_changed_files \
   ".github/scripts/recover-canonical-indexes.sh" \
   ".github/scripts/recover-canonical-indexes.sh"
@@ -401,6 +419,18 @@ assert_matches ci_control_changed_files \
 assert_matches ci_control_changed_files \
   ".github/scripts/verify-preserved-package-source.sh" \
   ".github/scripts/verify-preserved-package-source.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/classify-pr-staging.sh" \
+  ".github/scripts/classify-pr-staging.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/test-classify-pr-staging.sh" \
+  ".github/scripts/test-classify-pr-staging.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/materialize-exact-package-generations.sh" \
+  ".github/scripts/materialize-exact-package-generations.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/test-materialize-exact-package-generations.sh" \
+  ".github/scripts/test-materialize-exact-package-generations.sh"
 assert_matches ci_control_changed_files \
   ".github/scripts/materialize-durable-package-generation.sh" \
   ".github/scripts/materialize-durable-package-generation.sh"
