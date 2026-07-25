@@ -25,11 +25,11 @@ on:
 # a new push/label event aborts an in-flight run — fine, the overlay is
 # content-keyed.
 #
-# `labeled`/`unlabeled` is only active for the skip-staging-tests label.
-# Other PR labels, including ready-to-ship, get an isolated concurrency
-# group so they cannot cancel a real staging run before the jobs skip.
+# `labeled`/`unlabeled` is active only for the two staging-control labels.
+# Other PR labels, including ready-to-ship, get an isolated concurrency group
+# so they cannot cancel a real staging run before the jobs skip.
 concurrency:
-  group: staging-build-pr-${{ github.event.pull_request.number }}-${{ (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'skip-staging-tests' && github.run_id || 'active' }}
+  group: staging-build-pr-${{ github.event.pull_request.number }}-${{ (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'skip-staging-tests' && github.event.label.name != 'stage-rootfs-closure-only' && github.run_id || 'active' }}
   cancel-in-progress: true
 
 jobs:
@@ -58,7 +58,8 @@ jobs:
       (
         github.event.action != 'labeled' &&
         github.event.action != 'unlabeled' ||
-        github.event.label.name == 'skip-staging-tests'
+        github.event.label.name == 'skip-staging-tests' ||
+        github.event.label.name == 'stage-rootfs-closure-only'
       )
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -72,19 +73,28 @@ jobs:
       kernel_runtime_changed: ${{ steps.scope.outputs.kernel_runtime_changed }}
       test_gate_required: ${{ steps.scope.outputs.test_gate_required }}
       docs_only: ${{ steps.scope.outputs.docs_only }}
-      package_staging_required: ${{ steps.scope.outputs.package_staging_required }}
+      package_staging_required: ${{ steps.scope.outputs.package_staging_required == 'true' || steps.controls.outputs.rootfs_staging_only == 'true' }}
       package_staging_reason: ${{ steps.scope.outputs.package_staging_reason }}
-      skip_staging_tests: ${{ steps.skip.outputs.skip_staging_tests }}
+      skip_staging_tests: ${{ steps.controls.outputs.skip_staging_tests }}
+      rootfs_staging_only: ${{ steps.controls.outputs.rootfs_staging_only }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
-      - name: Detect staging test skip label
-        id: skip
+      - name: Detect staging control labels
+        id: controls
         run: |
-          if [ "${{ contains(github.event.pull_request.labels.*.name, 'skip-staging-tests') }}" = "true" ]; then
+          rootfs_only="${{ contains(github.event.pull_request.labels.*.name, 'stage-rootfs-closure-only') }}"
+          echo "rootfs_staging_only=$rootfs_only" >> "$GITHUB_OUTPUT"
+          if [ "$rootfs_only" = "true" ]; then
+            # WHY: a rootfs-only run proves package publication, not the full
+            # runtime. Keeping the expensive suites out also prevents their
+            # success from making this deliberately partial run look mergeable.
+            echo "skip_staging_tests=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::stage-rootfs-closure-only label present; only the fresh rootfs wasm32 closure will be staged. All other generations and full tests are deferred."
+          elif [ "${{ contains(github.event.pull_request.labels.*.name, 'skip-staging-tests') }}" = "true" ]; then
             echo "skip_staging_tests=true" >> "$GITHUB_OUTPUT"
             echo "::notice::skip-staging-tests label present; staging-build will materialize artifacts and defer expensive tests to prepare-merge."
           else
@@ -121,6 +131,8 @@ jobs:
       target_tag: ${{ steps.compute.outputs.target_tag }}
       baseline_tag: ${{ steps.compute.outputs.baseline_tag }}
       reuse_staging: ${{ steps.compute.outputs.reuse_staging }}
+      limited_scope: ${{ steps.compute.outputs.limited_scope }}
+      deferred_program_count: ${{ steps.compute.outputs.deferred_program_count }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -176,6 +188,9 @@ jobs:
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
             PACKAGE_STAGING_REQUIRED="${{ needs.change-scope.outputs.package_staging_required }}"
+            ROOTFS_STAGING_ONLY="${{ needs.change-scope.outputs.rootfs_staging_only }}"
+            echo "limited_scope=$ROOTFS_STAGING_ONLY" >> "$GITHUB_OUTPUT"
+            echo "deferred_program_count=0" >> "$GITHUB_OUTPUT"
 
             ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk "{print \$4}")
             echo "abi=$ABI" >> "$GITHUB_OUTPUT"
@@ -223,6 +238,7 @@ jobs:
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
             library_matrix="[]"
             program_matrix="[]"
+            scope_seen="[]"
 
             # Temporarily disabled packages — too slow to rebuild in
             # CI while we have no separate prebuilt-package repo to
@@ -232,13 +248,60 @@ jobs:
             # mirror in prepare-merge.yml) to re-enable rebuilds.
             disabled_pkgs=" erlang-vfs perl perl-vfs python-vfs redis texlive "
 
-            expected_ledger=$(mktemp)
             XTASK="target/$HOST_TARGET/release/xtask"
+            rootfs_scope=""
+            if [ "$ROOTFS_STAGING_ONLY" = "true" ]; then
+              rootfs_scope=$(mktemp)
+              bash .github/scripts/derive-rootfs-staging-scope.sh \
+                --repo-root "$PWD" \
+                --xtask "$XTASK" \
+                --output "$rootfs_scope"
+            fi
+
+            full_expected_ledger=$(mktemp)
             "$XTASK" staging-reuse expected \
               --registry packages/registry \
               --expected-abi "$ABI" \
               --exclude "${disabled_pkgs// /,}" \
-              --output "$expected_ledger"
+              --output "$full_expected_ledger"
+            expected_ledger=$(mktemp)
+            if [ "$ROOTFS_STAGING_ONLY" = "true" ]; then
+              jq -S --slurpfile scope "$rootfs_scope" "
+                .entries |= map(. as \$entry |
+                  select(any(\$scope[0].entries[];
+                    .package == \$entry.package and .arch == \$entry.arch)))
+              " "$full_expected_ledger" >"$expected_ledger"
+              jq -e --slurpfile scope "$rootfs_scope" "
+                (.entries | length) == (\$scope[0].entries | length) and
+                all(.entries[]; . as \$entry |
+                  .kind == \"program\" and
+                  any(\$scope[0].entries[];
+                    .package == \$entry.package and
+                    .arch == \$entry.arch and
+                    .cache_key_sha == \$entry.cache_key_sha))
+              " "$expected_ledger" >/dev/null || {
+                echo "preflight: rootfs scope does not exactly match the expected package ledger" >&2
+                exit 1
+              }
+              deferred_program_count=$(jq --slurpfile scope "$rootfs_scope" "
+                [.entries[] | . as \$entry |
+                  select(.kind == \"program\") |
+                  select(all(\$scope[0].entries[];
+                    .package != \$entry.package or .arch != \$entry.arch))] |
+                length
+              " "$full_expected_ledger")
+              echo "deferred_program_count=$deferred_program_count" >> "$GITHUB_OUTPUT"
+              echo "::notice::Limited rootfs proof selected $(jq ".entries | length" "$rootfs_scope") wasm32 generations and deferred $deferred_program_count other program generations."
+              jq -r --slurpfile scope "$rootfs_scope" "
+                .entries[] | . as \$entry |
+                select(.kind == \"program\") |
+                select(all(\$scope[0].entries[];
+                  .package != \$entry.package or .arch != \$entry.arch)) |
+                \"::notice::deferred package generation: \(.package)/\(.arch)\"
+              " "$full_expected_ledger"
+            else
+              cp "$full_expected_ledger" "$expected_ledger"
+            fi
 
             # Reusing individual assets from a partial mutable release is not
             # safe: an empty matrix would then make test-gate resolve entries
@@ -266,6 +329,12 @@ jobs:
               if [ "$stale_count" -eq 0 ]; then
                 reuse_staging=target
                 echo "preflight: reusing fully current, asset-verified $TARGET_TAG"
+              elif [ "$ROOTFS_STAGING_ONLY" = "true" ]; then
+                # WHY: a canonical supplement is sufficient for ordinary test
+                # materialization, but the prepublication freezer validates
+                # pr-<N>-staging by itself. Rebuild the complete scope so that
+                # target has all current entries without a second release.
+                echo "preflight: limited rootfs target has $stale_count stale entries; forcing the complete target generation"
               else
                 canonical_reuse_dir=$(mktemp -d)
                 rm -rf "$canonical_reuse_dir"
@@ -336,11 +405,39 @@ jobs:
               arches=$(awk -F'"'"'[][]'"'"' '"'"'/^arches *=/ {print $2}'"'"' "$pkg_dir/package.toml" | tr -d '"'"' "'"'"' | tr '"'"','"'"' '"'"' '"'"')
               arches=${arches:-wasm32}
               for arch in $arches; do
+                if [ "$ROOTFS_STAGING_ONLY" = "true" ]; then
+                  if ! jq -e --arg pkg "$pkg" --arg arch "$arch" "
+                      any(.entries[];
+                        .package == \$pkg and .arch == \$arch)
+                    " "$rootfs_scope" >/dev/null; then
+                    continue
+                  fi
+                  scope_seen=$(jq -nc \
+                    --argjson seen "$scope_seen" \
+                    --arg pkg "$pkg" \
+                    --arg arch "$arch" \
+                    "\$seen + [{package:\$pkg, arch:\$arch}]")
+                fi
                 sha=$(cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
                   compute-cache-key-sha --package "$pkg_dir" --arch "$arch" 2>/dev/null) || {
+                  if [ "$ROOTFS_STAGING_ONLY" = "true" ]; then
+                    echo "preflight: selected rootfs generation $pkg/$arch has no cache key" >&2
+                    exit 1
+                  fi
                   echo "preflight: skipping $pkg/$arch (compute-cache-key-sha failed)" >&2
                   continue
                 }
+                if [ "$ROOTFS_STAGING_ONLY" = "true" ]; then
+                  expected_sha=$(jq -r --arg pkg "$pkg" --arg arch "$arch" "
+                    .entries[] |
+                    select(.package == \$pkg and .arch == \$arch) |
+                    .cache_key_sha
+                  " "$rootfs_scope")
+                  if [ "$sha" != "$expected_sha" ]; then
+                    echo "preflight: selected rootfs generation $pkg/$arch differs from its fresh projection" >&2
+                    exit 1
+                  fi
+                fi
                 short=${sha:0:8}
                 if [ "$reuse_staging" != false ] &&
                    jq -e --arg pkg "$pkg" --arg arch "$arch" "
@@ -362,7 +459,13 @@ jobs:
                 suffix="-abi${ABI}-${arch}-${short}.tar.zst"
                 existing_archive=$(echo "$existing_assets" | jq -r --arg pre "$prefix" --arg suf "$suffix" \
                     "first(.[] | select(startswith(\$pre) and endswith(\$suf))) // \"\"")
-                if [ -n "$existing_archive" ] && scripts/index-has-current-entry.sh "$existing_index" "$pkg" "$arch" "$sha" "$revision"; then
+                # WHY: the freeze step consumes the PR tag alone. A matching
+                # canonical archive therefore cannot remove an entry from this
+                # forced scope; every one of the 15 current generations must
+                # be written to the target staging release itself.
+                if [ "$ROOTFS_STAGING_ONLY" != "true" ] &&
+                   [ -n "$existing_archive" ] &&
+                   scripts/index-has-current-entry.sh "$existing_index" "$pkg" "$arch" "$sha" "$revision"; then
                   echo "preflight: skip $pkg/$arch (sha $short already indexed)"
                   continue
                 fi
@@ -376,6 +479,19 @@ jobs:
                 fi
               done
             done
+
+            if [ "$ROOTFS_STAGING_ONLY" = "true" ]; then
+              selected_pairs=$(mktemp)
+              seen_pairs=$(mktemp)
+              jq -S "[.entries[] | {package, arch}] | sort_by(.package, .arch)" \
+                "$rootfs_scope" >"$selected_pairs"
+              printf "%s" "$scope_seen" |
+                jq -S "sort_by(.package, .arch)" >"$seen_pairs"
+              cmp "$selected_pairs" "$seen_pairs" || {
+                echo "preflight: registry matrix did not cover the exact rootfs scope" >&2
+                exit 1
+              }
+            fi
 
             program_matrix_file=$(mktemp)
             printf "%s" "$program_matrix" > "$program_matrix_file"
@@ -432,12 +548,17 @@ jobs:
             echo "merge-gate already success on ${{ github.event.pull_request.head.sha }}; skipping pending post."
             exit 0
           fi
+          if [ "${{ needs.change-scope.outputs.rootfs_staging_only }}" = "true" ]; then
+            description="Limited rootfs staging only; remove the scope label before prepare-merge."
+          else
+            description="Tests green. Apply the ready-to-ship label to build the durable release and merge."
+          fi
           gh api -X POST \
             -H "Accept: application/vnd.github+json" \
             "/repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }}" \
             -f state=pending \
             -f context=merge-gate \
-            -f description="Tests green. Apply the ready-to-ship label to build the durable release and merge." \
+            -f description="$description" \
             -f target_url="https://github.com/${{ github.repository }}/blob/main/docs/plans/2026-04-29-pr-package-builds-design.md"
 
   package-staging-not-required:
@@ -823,6 +944,7 @@ jobs:
       PACKAGE_BASELINE_TAG: ${{ needs.preflight.outputs.baseline_tag }}
       PACKAGE_REUSE_STAGING: ${{ needs.preflight.outputs.reuse_staging }}
       SKIP_STAGING_TESTS: ${{ needs.change-scope.outputs.skip_staging_tests }}
+      ROOTFS_STAGING_ONLY: ${{ needs.change-scope.outputs.rootfs_staging_only }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -871,17 +993,37 @@ jobs:
               SNAPSHOT="$SNAPSHOT" \
               PACKAGE_TARGET_TAG="$PACKAGE_TARGET_TAG" \
               PACKAGE_BASELINE_TAG="$PACKAGE_BASELINE_TAG" \
+              ROOTFS_STAGING_ONLY="$ROOTFS_STAGING_ONLY" \
               ABI="$ABI" \
               bash -c '
               set -euo pipefail
               HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
               cargo build --release -p xtask --target "$HOST_TARGET"
               XTASK="target/$HOST_TARGET/release/xtask"
+              FULL_EXPECTED="$RUNNER_TEMP/staging-full-expected.json"
               "$XTASK" staging-reuse expected \
                 --registry packages/registry \
                 --expected-abi "$ABI" \
                 --exclude cpython,erlang,erlang-vfs,perl,perl-vfs,python-vfs,redis,texlive \
-                --output "$EXPECTED"
+                --output "$FULL_EXPECTED"
+              if [ "$ROOTFS_STAGING_ONLY" = "true" ]; then
+                ROOTFS_SCOPE="$RUNNER_TEMP/staging-rootfs-scope.json"
+                bash .github/scripts/derive-rootfs-staging-scope.sh \
+                  --repo-root "$PWD" \
+                  --xtask "$XTASK" \
+                  --output "$ROOTFS_SCOPE"
+                jq -S --slurpfile scope "$ROOTFS_SCOPE" "
+                  .entries |= map(. as \$entry |
+                    select(any(\$scope[0].entries[];
+                      .package == \$entry.package and
+                      .arch == \$entry.arch and
+                      .cache_key_sha == \$entry.cache_key_sha)))
+                " "$FULL_EXPECTED" >"$EXPECTED"
+                [ "$(jq ".entries | length" "$EXPECTED")" = \
+                  "$(jq ".entries | length" "$ROOTFS_SCOPE")" ]
+              else
+                mv "$FULL_EXPECTED" "$EXPECTED"
+              fi
               TARGET_SNAPSHOT="$RUNNER_TEMP/fresh-target-snapshot"
               bash .github/scripts/validate-staging-release.sh \
                 --tag "$PACKAGE_TARGET_TAG" \
@@ -931,7 +1073,15 @@ jobs:
             export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml"
           fi
           echo "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" >> "$GITHUB_ENV"
-          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --fetch-only
+          if [ "$ROOTFS_STAGING_ONLY" = "true" ]; then
+            # WHY: the limited proof intentionally materializes only the same
+            # root whose exact closure was staged. A full registry walk would
+            # demand the generations explicitly deferred by this label.
+            bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh \
+              --fetch-only --package rootfs
+          else
+            bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --fetch-only
+          fi
 
       - name: Skip staging test suites
         if: env.SKIP_STAGING_TESTS == 'true'

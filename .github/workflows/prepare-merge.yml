@@ -40,6 +40,7 @@ on:
 env:
   BATCHED_CHANGES: ${{ contains(github.event.pull_request.labels.*.name, 'batched-changes') }}
   PRESERVE_HEAD_COMMIT: ${{ contains(github.event.pull_request.labels.*.name, 'preserve-head-commit') }}
+  LIMITED_ROOTFS_STAGING: ${{ contains(github.event.pull_request.labels.*.name, 'stage-rootfs-closure-only') }}
   PREPARE_MERGE_METHOD: ${{ contains(github.event.pull_request.labels.*.name, 'preserve-head-commit') && 'merge' || contains(github.event.pull_request.labels.*.name, 'batched-changes') && 'rebase' || 'squash' }}
   GIT_FETCH_RETRY_FUNC: |
     git_fetch_retry() {
@@ -107,6 +108,13 @@ jobs:
         id: synthesize
         run: |
           set -euo pipefail
+          # WHY: stage-rootfs-closure-only deliberately defers package
+          # generations and full suites. It may prove prepublication bytes,
+          # but it must never become authority for a merge.
+          if [ "$LIMITED_ROOTFS_STAGING" = true ]; then
+            echo "::error::Remove stage-rootfs-closure-only and complete an ordinary staging run before prepare-merge."
+            exit 1
+          fi
           # WHY: each label selects a different post-merge history proof.
           # Silently preferring one would let the operator perform the other
           # method and leave an otherwise valid candidate terminally rejected.
@@ -197,7 +205,12 @@ jobs:
         if: failure()
         run: |
           gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
-          gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: prepare-merge could not synthesize and persist a merge of PR head \`$PR_HEAD_SHA\` into the current \`$BASE_REF\` base. Please rebase or merge \`$BASE_REF\` if there are conflicts, then re-apply \`ready-to-ship\`." || true
+          if [ "$LIMITED_ROOTFS_STAGING" = true ]; then
+            body="Cannot prepare merge while \`stage-rootfs-closure-only\` is present. That run stages only the rootfs wasm32 closure and deliberately defers the rest. Remove the limited-scope label, let ordinary staging finish, then re-apply \`ready-to-ship\`."
+          else
+            body="Cannot prepare merge: prepare-merge could not synthesize and persist a merge of PR head \`$PR_HEAD_SHA\` into the current \`$BASE_REF\` base. Please rebase or merge \`$BASE_REF\` if there are conflicts, then re-apply \`ready-to-ship\`."
+          fi
+          gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "$body" || true
 
   # ---------------------------------------------------------------------
   # gate — review state + required-checks + wait-for-staging-build

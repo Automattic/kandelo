@@ -114,6 +114,16 @@ grep -Fq "contains(github.event.pull_request.labels.*.name, 'preserve-head-commi
   "$PREPARE" || fail "Prepare merge does not select merge-commit verification for preserve-head-commit"
 grep -Fq 'batched-changes and preserve-head-commit are mutually exclusive' "$PREPARE" || \
   fail "Prepare merge does not reject conflicting history-method labels"
+grep -Fq 'Remove stage-rootfs-closure-only and complete an ordinary staging run before prepare-merge.' \
+  "$PREPARE" || \
+  fail "Prepare merge does not reject the limited rootfs staging scope"
+grep -Fq 'description="Limited rootfs staging only; remove the scope label before prepare-merge."' \
+  "$STAGING_WORKFLOW" || \
+  fail "Limited rootfs staging can look like merge authorization"
+grep -Fq 'bash .github/scripts/derive-rootfs-staging-scope.sh' "$STAGING_WORKFLOW" || \
+  fail "Staging does not derive the rootfs scope from the validated package projection"
+grep -Fq '[ "$ROOTFS_STAGING_ONLY" != "true" ] &&' "$STAGING_WORKFLOW" || \
+  fail "Limited rootfs staging can skip entries already present in the canonical release"
 grep -Fq 'expected_parents="$base_sha $head_sha"' "$VERIFY_SCRIPT" || \
   fail "merge-commit activation does not bind the exact prepared base and head parents"
 

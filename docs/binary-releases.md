@@ -117,6 +117,16 @@ PR's [Phase 10 workflow rewrite](plans/2026-05-13-binary-resolution-via-index-le
 preflight → toolchain-cache → matrix-build → test-gate → merge-gate
 ```
 
+The maintainer-only `stage-rootfs-closure-only` label is a bounded
+prepublication accelerator. It first rejects a stale
+`program-packages.json`, then mechanically selects `rootfs/wasm32` and that
+entry's complete wasm32 dependency closure. It forces every selected
+generation into the PR staging release even when the canonical release already
+has matching bytes, while recording every other program generation as
+deferred. This limited run keeps `merge-gate` pending and skips the full test
+surface. `prepare-merge` rejects the label; remove it and complete ordinary
+staging before asking the merge workflow to run.
+
 - **preflight** asks `xtask staging-reuse expected` for the complete,
   cache-keyed package/arch ledger. It may reuse `pr-<N>-staging` only
   directly when the target index has the exact ABI, covers every managed entry
