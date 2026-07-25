@@ -246,8 +246,8 @@ fn c_08_funcref_catch_operand_does_not_panic() {
     "#;
     match wat::parse_str(wat) {
         Ok(input) => {
-            // Should NOT panic. fork-instrument carves out the
-            // function or accepts it gracefully.
+            // Should NOT panic. The instrumenter excludes this function
+            // from plain-catch replay without serializing the reference.
             let _ = instrument(&input, &Options::default())
                 .expect("fork-instrument should not error on funcref catch arm");
         }

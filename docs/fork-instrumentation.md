@@ -1295,9 +1295,9 @@ ordinary catch execution:
    without consulting stale table nullness.
 5. **Carve-out (`PlainCatchPlan::b2_carveout`).** A function whose plain-catch
    arms carry ref-typed operands or use an unverified multi-target shape is
-   removed from the supported fork path. Scalar frame serialization does not
-   solve reference ownership; that needs activation-aware auxiliary-table
-   storage.
+   excluded from supported plain-catch replay. Other fork sites in that
+   function may still be instrumented. Scalar frame serialization does not
+   solve reference ownership; that needs activation-aware auxiliary storage.
 
 The lifetime boundary is load-bearing: a plain catch can run before any fork
 or after a prior continuation has been released. Its normal capture path must
@@ -1305,8 +1305,8 @@ therefore never dereference `_wpk_fork_buf`.
 
 C-08/C-09 in
 `crates/fork-instrument/tests/coverage_wat.rs` verify that funcref and
-externref catch operands take this safe carve-out path rather than panicking
-or producing invalid wasm.
+externref catch operands retain this explicit unsupported boundary rather than
+being serialized as scalars.
 
 ## See also
 
