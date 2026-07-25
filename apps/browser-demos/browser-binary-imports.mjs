@@ -23,6 +23,11 @@ function walkFiles(root) {
     const full = join(root, entry.name);
     if (entry.isDirectory()) {
       out.push(...walkFiles(full));
+    } else if (entry.isSymbolicLink()) {
+      // WHY: the browser-input projection is content-bound to a Git tree.
+      // Following a symlink would let untracked ambient bytes change which
+      // packages a clean commit appears to import.
+      throw new Error(`browser source tree contains a symlink: ${full}`);
     } else if (/\.[cm]?[jt]sx?$/.test(entry.name)) {
       out.push(full);
     }

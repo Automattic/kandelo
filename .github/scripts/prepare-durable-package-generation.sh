@@ -141,6 +141,7 @@ run_authority_xtask_without_credentials() {
     -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_URL \
     -u ACTIONS_RUNTIME_TOKEN \
+    -u WASM_POSIX_DEPS_REGISTRY \
     "$AUTHORITY_XTASK" "$@"
 }
 
@@ -154,6 +155,10 @@ if [ "$BROWSER_INPUTS" = true ]; then
   # WHY: the durable identity must bind the browser imports owned by this
   # exact source checkout. A caller-provided list could silently omit a newly
   # imported program even when the resulting archive union happened to match.
+  browser_root_args=(--arch "$ARCH" --exclude-package shell)
+  if [ "$ARCH" = wasm32 ]; then
+    browser_root_args+=(--include-package rootfs)
+  fi
   env -u GH_TOKEN -u GITHUB_TOKEN \
     -u HOMEBREW_GITHUB_API_TOKEN \
     -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
@@ -161,10 +166,10 @@ if [ "$BROWSER_INPUTS" = true ]; then
     -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_URL \
     -u ACTIONS_RUNTIME_TOKEN \
+    -u WASM_POSIX_DEPS_REGISTRY \
     node "$browser_roots_script" \
       --source-root "$PACKAGE_SOURCE_ROOT" \
-      --exclude-package shell \
-      --include-package rootfs >"$TMP_ROOT/browser-inputs-roots.txt"
+      "${browser_root_args[@]}" >"$TMP_ROOT/browser-inputs-roots.txt"
   selection_args=(
     --root-set browser-inputs
     --roots-file "$TMP_ROOT/browser-inputs-roots.txt"

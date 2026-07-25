@@ -132,6 +132,7 @@ run_without_credentials() {
     -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
     -u ACTIONS_ID_TOKEN_REQUEST_URL \
     -u ACTIONS_RUNTIME_TOKEN \
+    -u WASM_POSIX_DEPS_REGISTRY \
     "$@"
 }
 abi_version="$(jq -er '.identity.abi_version' "$manifest")"
@@ -162,10 +163,14 @@ case "$projection_schema" in
     # WHY: recompute roots from the exact consumer checkout instead of trusting
     # the release's list. compare-consumer then binds both that list and its
     # dependency union, catching omissions even if archive identities overlap.
+    browser_root_args=(--arch "$arch" --exclude-package shell)
+    if [ "$arch" = wasm32 ]; then
+      browser_root_args+=(--include-package rootfs)
+    fi
     run_without_credentials node "$browser_roots_script" \
-        --source-root "$CONSUMER_ROOT" \
-        --exclude-package shell \
-        --include-package rootfs >"$TMP_ROOT/consumer-browser-inputs-roots.txt"
+      --source-root "$CONSUMER_ROOT" \
+      "${browser_root_args[@]}" \
+      >"$TMP_ROOT/consumer-browser-inputs-roots.txt"
     consumer_selection_args=(
       --root-set browser-inputs
       --roots-file "$TMP_ROOT/consumer-browser-inputs-roots.txt"

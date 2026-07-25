@@ -332,9 +332,13 @@ grep -Fq 'WASM_POSIX_FETCH_SKIP_PKGS:' "$WORKFLOW" &&
   fail "main-shell proof must not use a negative package skip list"
 grep -Fq 'node scripts/browser-binary-package-roots.mjs \' "$WORKFLOW" ||
   fail "main-shell workflow must derive browser package roots from source imports"
+grep -Fq -- '--arch wasm32 \' "$WORKFLOW" ||
+  fail "browser package derivation must include architecture-scoped wasm32 roots"
+grep -Fq -- '--arch wasm64 \' "$WORKFLOW" ||
+  fail "browser package derivation must include architecture-scoped wasm64 roots"
 grep -Fq -- '--exclude-package shell \' "$WORKFLOW" ||
   fail "browser package derivation must reserve shell for the exact bottle archive"
-grep -Fq -- '--include-package rootfs \' "$WORKFLOW" ||
+grep -Fq -- '--include-package rootfs' "$WORKFLOW" ||
   fail "browser package derivation must include the non-@binaries rootfs alias"
 grep -Fq 'mapfile -t browser_input_packages < "$browser_package_file"' "$WORKFLOW" ||
   fail "main-shell workflow must consume the derived browser package roots"

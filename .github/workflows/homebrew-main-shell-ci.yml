@@ -314,10 +314,15 @@ jobs:
           # --fetch-only here would make such a PR impossible to validate until
           # after its new support-package archive was already published.
           browser_package_file="$RUNNER_TEMP/browser-binary-packages.txt"
-          node scripts/browser-binary-package-roots.mjs \
-            --exclude-package shell \
-            --include-package rootfs \
-            > "$browser_package_file"
+          {
+            node scripts/browser-binary-package-roots.mjs \
+              --arch wasm32 \
+              --exclude-package shell \
+              --include-package rootfs
+            node scripts/browser-binary-package-roots.mjs \
+              --arch wasm64 \
+              --exclude-package shell
+          } | sort -u > "$browser_package_file"
           mapfile -t browser_input_packages < "$browser_package_file"
           [ "${#browser_input_packages[@]}" -gt 0 ]
           [ "$(printf '%s\n' "${browser_input_packages[@]}" | sort -u | wc -l)" \
