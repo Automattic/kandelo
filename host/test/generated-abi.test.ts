@@ -19,10 +19,18 @@ import {
   CH_REQUEST_FLAGS,
   CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY,
   CH_RETURN,
+  CH_SIG_ALT_SIZE,
+  CH_SIG_ALT_SP,
+  CH_SIG_AREA_SIZE,
   CH_SIG_BASE,
+  CH_SIG_DELIVERY_SIZE,
   CH_SIG_FLAGS,
   CH_SIG_HANDLER,
+  CH_SIGINFO_WORD_1,
+  CH_SIGINFO_WORD_2,
   CH_SIG_OLD_MASK,
+  CH_SIG_SI_CODE,
+  CH_SIG_SI_VALUE,
   CH_SIG_SIGNUM,
   CH_STATUS,
   CH_SYSCALL,
@@ -57,6 +65,19 @@ import {
   PROCESS_MEMORY_THREAD_SLOTS_NONE,
   PROCESS_MEMORY_THREAD_SLOTS_USE_HOST_DEFAULT,
   PROCESS_MEMORY_WASM_PAGE_SIZE,
+  PROCESS_SIGINFO_CODE_OFFSET,
+  PROCESS_SIGINFO_ERRNO_OFFSET,
+  PROCESS_SIGINFO_SIGNO_OFFSET,
+  PROCESS_SIGINFO_WASM32_PID_OFFSET,
+  PROCESS_SIGINFO_WASM32_SIZE,
+  PROCESS_SIGINFO_WASM32_UID_OFFSET,
+  PROCESS_SIGINFO_WASM32_VALUE_OFFSET,
+  PROCESS_SIGINFO_WASM32_VALUE_SIZE,
+  PROCESS_SIGINFO_WASM64_PID_OFFSET,
+  PROCESS_SIGINFO_WASM64_SIZE,
+  PROCESS_SIGINFO_WASM64_UID_OFFSET,
+  PROCESS_SIGINFO_WASM64_VALUE_OFFSET,
+  PROCESS_SIGINFO_WASM64_VALUE_SIZE,
   STRUCT_SIZE_WASM_DIRENT,
   STRUCT_SIZE_WASM_POLL_FD,
   STRUCT_SIZE_WASM_STAT,
@@ -390,7 +411,20 @@ describe("generated host ABI bindings", () => {
     expect(CH_SIG_SIGNUM).toBe(signalOffset("SIG_SIGNUM"));
     expect(CH_SIG_HANDLER).toBe(signalOffset("SIG_HANDLER"));
     expect(CH_SIG_FLAGS).toBe(signalOffset("SIG_FLAGS"));
+    expect(CH_SIG_SI_VALUE).toBe(signalOffset("SIG_SI_VALUE"));
     expect(CH_SIG_OLD_MASK).toBe(signalOffset("SIG_OLD_MASK"));
+    expect(CH_SIG_SI_CODE).toBe(signalOffset("SIG_SI_CODE"));
+    expect(CH_SIGINFO_WORD_1).toBe(signalOffset("SIGINFO_WORD_1"));
+    expect(CH_SIGINFO_WORD_2).toBe(signalOffset("SIGINFO_WORD_2"));
+    expect(CH_SIG_ALT_SP).toBe(signalOffset("SIG_ALT_SP"));
+    expect(CH_SIG_ALT_SIZE).toBe(signalOffset("SIG_ALT_SIZE"));
+    expect(CH_SIG_AREA_SIZE).toBe(snapshot.channel_signal_area.area_size);
+    expect(CH_SIG_DELIVERY_SIZE).toBe(
+      snapshot.channel_signal_area.delivery_size,
+    );
+    expect(
+      CH_SIG_AREA_SIZE - CH_SIG_DELIVERY_SIZE,
+    ).toBe(snapshot.channel_signal_area.reserved_tail_size);
   });
 
   it("match Rust-owned syscall and struct metadata", () => {
@@ -412,6 +446,42 @@ describe("generated host ABI bindings", () => {
     expect(STRUCT_SIZE_WASM_STATFS).toBe(snapshot.marshalled_structs.WasmStatfs.size);
 
     expect(SYSCALL_ARGS).toEqual(snapshot.syscall_arg_descriptors);
+  });
+
+  it("match caller-native siginfo layouts for both pointer widths", () => {
+    const siginfo = snapshot.process_native_layouts.siginfo;
+    expect(PROCESS_SIGINFO_SIGNO_OFFSET).toBe(siginfo.signo_offset);
+    expect(PROCESS_SIGINFO_ERRNO_OFFSET).toBe(siginfo.errno_offset);
+    expect(PROCESS_SIGINFO_CODE_OFFSET).toBe(siginfo.code_offset);
+    expect({
+      size: PROCESS_SIGINFO_WASM32_SIZE,
+      pid_offset: PROCESS_SIGINFO_WASM32_PID_OFFSET,
+      uid_offset: PROCESS_SIGINFO_WASM32_UID_OFFSET,
+      value_offset: PROCESS_SIGINFO_WASM32_VALUE_OFFSET,
+      value_size: PROCESS_SIGINFO_WASM32_VALUE_SIZE,
+    }).toEqual(siginfo.wasm32);
+    expect({
+      size: PROCESS_SIGINFO_WASM64_SIZE,
+      pid_offset: PROCESS_SIGINFO_WASM64_PID_OFFSET,
+      uid_offset: PROCESS_SIGINFO_WASM64_UID_OFFSET,
+      value_offset: PROCESS_SIGINFO_WASM64_VALUE_OFFSET,
+      value_size: PROCESS_SIGINFO_WASM64_VALUE_SIZE,
+    }).toEqual(siginfo.wasm64);
+  });
+
+  it("makes every generated pointer nullability decision explicit", () => {
+    for (const [syscall, descriptors] of Object.entries(SYSCALL_ARGS)) {
+      for (const descriptor of descriptors) {
+        const nullable = descriptor.nullable === true;
+        const required = descriptor.required === true;
+        if (nullable === required) {
+          throw new Error(
+            `syscall ${syscall} arg ${descriptor.argIndex} must be exactly one of nullable or required`,
+          );
+        }
+      }
+    }
+    expect(SYSCALL_ARGS[ABI_SYSCALLS.Prctl]).toBeUndefined();
   });
 
   it("match Rust-owned host adapter manifest metadata", () => {

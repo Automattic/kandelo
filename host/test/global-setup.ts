@@ -4,8 +4,10 @@
  * installed before tests run.
  *
  * Uses wasm32posix-cc from the SDK for C, and wat2wasm (wabt) for WAT
- * fixtures. Outputs are only rebuilt when the source is newer. The
- * chromium check is a no-op when the binary is already cached.
+ * fixtures. C outputs are rebuilt unless their embedded content digest covers
+ * the exact source, compiler wrapper/version, installed sysroot, and (where
+ * used) instrumenter binary. The chromium check is a no-op when the binary is
+ * already cached.
  */
 
 import { execFileSync } from "node:child_process";
@@ -13,6 +15,12 @@ import { statSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
+import {
+  captureProgramFixtureBuildContract,
+  programFixtureNeedsRebuild,
+  stampProgramFixture,
+  type ProgramFixtureBuildContract,
+} from "./program-fixture-freshness";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../..");
@@ -37,10 +45,35 @@ const C_TEST_FIXTURES = [
 /** Program fixtures resolved through the normal local-binaries contract. */
 const RESOLVED_PROGRAM_FIXTURES = [
   {
+    arch: "wasm32",
     src: join(repoRoot, "programs/scm-rights-pipe-lifetime.c"),
     out: join(
       repoRoot,
       "local-binaries/programs/wasm32/scm-rights-pipe-lifetime.wasm",
+    ),
+  },
+  {
+    arch: "wasm64",
+    src: join(repoRoot, "programs/scm-rights-pipe-lifetime.c"),
+    out: join(
+      repoRoot,
+      "local-binaries/programs/wasm64/scm-rights-pipe-lifetime.wasm",
+    ),
+  },
+  {
+    arch: "wasm32",
+    src: join(repoRoot, "programs/scm-rights-semantics.c"),
+    out: join(
+      repoRoot,
+      "local-binaries/programs/wasm32/scm-rights-semantics.wasm",
+    ),
+  },
+  {
+    arch: "wasm64",
+    src: join(repoRoot, "programs/scm-rights-semantics.c"),
+    out: join(
+      repoRoot,
+      "local-binaries/programs/wasm64/scm-rights-semantics.wasm",
     ),
   },
 ];
@@ -60,10 +93,13 @@ const TEST_PROGRAMS = [
   "getdents_boundary_test.c",
   "terminal_attributes_api_test.c",
   "rlimit_fsize_test.c",
+  "kernel_scratch_browser_test.c",
   "socket_timeout_options_test.c",
   "unix_listener_exec_test.c",
   "putenv_test.c",
   "getaddrinfo_test.c",
+  "process_native_layout_test.c",
+  "timerfd_signalfd_scratch_test.c",
   "sysv_ipc_test.c",
   "wasm_trap_test.c",
   "oob_trap_test.c",
@@ -145,23 +181,76 @@ function compileCTestProgram(
   }
 }
 
-export async function setup() {
-  for (const { src, out, forkInstrument = false } of C_TEST_FIXTURES) {
-    if (!needsRebuild(src, out)) continue;
+function fixtureBuildContract(
+  arch: "wasm32" | "wasm64",
+  forkInstrumented: boolean,
+): ProgramFixtureBuildContract {
+  const compiler = `${arch}posix-cc`;
+  const compilerVersion = execFileSync(compiler, ["--version"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const inputs = [
+    join(repoRoot, "sdk/bin"),
+    join(repoRoot, "sdk/src"),
+    join(repoRoot, "sdk/package.json"),
+    join(repoRoot, "sdk/package-lock.json"),
+    join(repoRoot, arch === "wasm64" ? "sysroot64" : "sysroot"),
+  ];
+  if (forkInstrumented) {
+    const configuredTool = process.env.WASM_POSIX_FORK_INSTRUMENT;
+    const instrumenter = configuredTool
+      ? configuredTool
+      : join(repoRoot, "tools/bin/wasm-fork-instrument");
+    if (!existsSync(instrumenter) && !configuredTool) {
+      execFileSync(
+        "bash",
+        [join(repoRoot, "scripts/build-fork-instrument-tool.sh")],
+        { cwd: repoRoot, stdio: "pipe" },
+      );
+    }
+    inputs.push(
+      join(repoRoot, "scripts/run-wasm-fork-instrument.sh"),
+      instrumenter,
+    );
+  }
+  return captureProgramFixtureBuildContract(
+    repoRoot,
+    `${arch}\nfork=${forkInstrumented}\n${compilerVersion}`,
+    inputs,
+  );
+}
 
-    console.log(`[global-setup] Compiling ${src.slice(repoRoot.length + 1)}...`);
+export async function setup() {
+  const wasm32Contract = fixtureBuildContract("wasm32", false);
+  const wasm32ForkContract = fixtureBuildContract("wasm32", true);
+  const wasm64Contract = fixtureBuildContract("wasm64", false);
+
+  for (const { src, out, forkInstrument = false } of C_TEST_FIXTURES) {
+    const contract = forkInstrument ? wasm32ForkContract : wasm32Contract;
+    if (!programFixtureNeedsRebuild(src, out, contract)) continue;
+
+    console.log(
+      `[global-setup] Compiling ${src.slice(repoRoot.length + 1)}...`,
+    );
     compileCTestProgram(src, out, forkInstrument);
+    stampProgramFixture(src, out, contract);
   }
 
-  for (const { src, out } of RESOLVED_PROGRAM_FIXTURES) {
-    if (!needsRebuild(src, out)) continue;
+  for (const { arch, src, out } of RESOLVED_PROGRAM_FIXTURES) {
+    const contract = arch === "wasm64" ? wasm64Contract : wasm32Contract;
+    if (!programFixtureNeedsRebuild(src, out, contract)) continue;
 
     mkdirSync(dirname(out), { recursive: true });
-    console.log(`[global-setup] Compiling ${src.slice(repoRoot.length + 1)}...`);
-    execFileSync("wasm32posix-cc", [src, "-o", out], {
+    console.log(
+      `[global-setup] Compiling ${src.slice(repoRoot.length + 1)} (${arch})...`,
+    );
+    execFileSync(`${arch}posix-cc`, [src, "-o", out], {
       cwd: repoRoot,
       stdio: "pipe",
     });
+    stampProgramFixture(src, out, contract);
   }
 
   for (const cFile of TEST_PROGRAMS) {
@@ -173,10 +262,14 @@ export async function setup() {
       continue;
     }
 
-    if (!needsRebuild(src, out)) continue;
+    const contract = FORK_INSTRUMENTED_PROGRAMS.has(cFile)
+      ? wasm32ForkContract
+      : wasm32Contract;
+    if (!programFixtureNeedsRebuild(src, out, contract)) continue;
 
     console.log(`[global-setup] Compiling ${cFile}...`);
     compileCTestProgram(src, out, FORK_INSTRUMENTED_PROGRAMS.has(cFile));
+    stampProgramFixture(src, out, contract);
   }
 
   for (const watFile of WAT_FIXTURES) {

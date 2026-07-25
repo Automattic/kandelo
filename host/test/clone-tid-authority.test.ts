@@ -8,6 +8,7 @@ import {
   CH_ERRNO,
   CH_RETURN,
 } from "../src/generated/abi";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 const PID = 47;
 const KERNEL_TID = 318;
@@ -29,8 +30,7 @@ function makeCloneHarness(
   processView.setUint32(CH_DATA, 11, true);
   processView.setUint32(CH_DATA + 4, 22, true);
 
-  const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
-  const kernelView = new DataView(kernelMemory.buffer);
+  const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
   const completeChannel = vi.fn();
   const notifyThreadExit = vi.fn();
   const worker = Object.assign(
@@ -43,7 +43,6 @@ function makeCloneHarness(
         },
       },
       kernelMemory,
-      scratchOffset: 0,
       currentHandlePid: 0,
       activeChannels: [channel],
       channelTids: new Map<string, number>(),
@@ -66,7 +65,8 @@ function makeCloneHarness(
         exports: {
           kernel_get_process_exit_signal: vi.fn(() => -1),
           kernel_validate_task: vi.fn(() => 0),
-          kernel_handle_channel: vi.fn(() => {
+          kernel_handle_channel: vi.fn((offset: number) => {
+            const kernelView = new DataView(kernelMemory.buffer, offset);
             kernelView.setBigInt64(CH_RETURN, BigInt(kernelTid), true);
             kernelView.setUint32(CH_ERRNO, 0, true);
             return 0;
@@ -75,6 +75,10 @@ function makeCloneHarness(
       },
     },
   ) as CentralizedKernelWorker;
+  installKernelWorkerTestScratch(
+    worker as unknown as Record<string, unknown>,
+    kernelMemory,
+  );
   (worker as any).callbacks = {
     onClone: (attachment: unknown) => {
       if (autoAttach) {
@@ -112,8 +116,7 @@ function makeChannelOwnershipHarness() {
   };
   const validateTask = vi.fn(() => 0);
   const retireExactChannelAsyncState = vi.fn();
-  const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
-  const kernelView = new DataView(kernelMemory.buffer);
+  const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
   let nextKernelTid = 0;
   const worker = Object.assign(
     Object.create(CentralizedKernelWorker.prototype),
@@ -125,7 +128,6 @@ function makeChannelOwnershipHarness() {
         },
       },
       kernelMemory,
-      scratchOffset: 0,
       currentHandlePid: 0,
       activeChannels: [mainChannel],
       channelTids: new Map<string, number>(),
@@ -150,7 +152,8 @@ function makeChannelOwnershipHarness() {
         exports: {
           kernel_get_process_exit_signal: vi.fn(() => -1),
           kernel_validate_task: validateTask,
-          kernel_handle_channel: vi.fn(() => {
+          kernel_handle_channel: vi.fn((offset: number) => {
+            const kernelView = new DataView(kernelMemory.buffer, offset);
             kernelView.setBigInt64(CH_RETURN, BigInt(nextKernelTid), true);
             kernelView.setUint32(CH_ERRNO, 0, true);
             return 0;
@@ -159,6 +162,10 @@ function makeChannelOwnershipHarness() {
       },
     },
   ) as CentralizedKernelWorker;
+  installKernelWorkerTestScratch(
+    worker as unknown as Record<string, unknown>,
+    kernelMemory,
+  );
 
   return {
     mainChannel,
@@ -333,6 +340,11 @@ describe("kernel TID authority", () => {
       undefined,
       KERNEL_TID,
       0,
+      [],
+      {
+        tid: KERNEL_TID,
+        parentTidPointer: undefined,
+      },
     );
   });
 

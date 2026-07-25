@@ -1,4 +1,7 @@
-import { PATHCONF_NAMES } from "./generated/abi";
+import {
+  PATHCONF_NAMES,
+  POSIX_PATH_MAX_BYTES,
+} from "./generated/abi";
 import type { PathconfValue, StatResult } from "./types";
 
 export interface PathconfProfile {
@@ -30,7 +33,7 @@ export function filesystemPathconf(
     case PATHCONF_NAMES.NAME_MAX:
       return 255; // enforced in bytes by the common namespace resolver
     case PATHCONF_NAMES.PATH_MAX:
-      return 4096; // enforced in bytes by the common namespace resolver
+      return POSIX_PATH_MAX_BYTES; // enforced by the common namespace resolver
     case PATHCONF_NAMES.CHOWN_RESTRICTED:
       // The kernel enforces chown authorization before every backend call,
       // including backends without persistent ownership metadata.

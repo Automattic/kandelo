@@ -12,7 +12,7 @@
  *   const exitCode = await host.spawn(programBytes, ["hello"], { env: [...] });
  *   await host.destroy();
  */
-import { readFileSync, existsSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pathToFileURL } from "node:url";
@@ -28,6 +28,7 @@ import type {
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/memory-fs";
+import { compiledWorkerEntryIsCurrent } from "./compiled-worker-entry";
 import {
   snapshotClosedLazyAssets,
   snapshotClosedLazyAssetSources,
@@ -600,6 +601,24 @@ export class NodeKernelHost {
   }
 
   /**
+   * Return the retained capacity of the kernel-owned large-spawn region.
+   * Zero means no spawn has exceeded the ordinary channel-sized scratch.
+   */
+  async getSpawnScratchCapacity(): Promise<number> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "get_spawn_scratch_capacity",
+      requestId,
+    });
+    if (!Number.isSafeInteger(result) || result < 0) {
+      throw new Error(
+        `kernel worker returned an invalid spawn scratch capacity: ${String(result)}`,
+      );
+    }
+    return result;
+  }
+
+  /**
    * Snapshot the kernel's process table — one row per live process. Used
    * by Kandelo's Inspector → Procs tab. Mirrors `BrowserKernel.enumProcs`.
    */
@@ -1010,10 +1029,10 @@ function spawnKernelWorkerThread(): NodeThreadWorker {
   const distJs = entryTs.replace(/\/src\/([^/]+)\.ts$/, "/dist/$1.js");
 
   // Check for compiled .js version first (much faster startup)
-  if (compiledEntryIsCurrent(entryTs, distJs)) {
+  if (compiledWorkerEntryIsCurrent(entryTs, distJs)) {
     return new NodeThreadWorker(distJs);
   }
-  if (compiledEntryIsCurrent(entryTs, entryJs)) {
+  if (compiledWorkerEntryIsCurrent(entryTs, entryJs)) {
     return new NodeThreadWorker(entryJs);
   }
 
@@ -1028,10 +1047,4 @@ function spawnKernelWorkerThread(): NodeThreadWorker {
     `await import('${entryUrl}');`,
   ].join("\n");
   return new NodeThreadWorker(bootstrap, { eval: true });
-}
-
-function compiledEntryIsCurrent(sourcePath: string, compiledPath: string): boolean {
-  if (!existsSync(compiledPath)) return false;
-  if (!existsSync(sourcePath)) return true;
-  return statSync(compiledPath).mtimeMs >= statSync(sourcePath).mtimeMs;
 }

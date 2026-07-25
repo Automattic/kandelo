@@ -872,6 +872,42 @@ describe("BrowserKernel", () => {
     await expect(invalidPromise).rejects.toThrow("invalid memory-page count");
   });
 
+  it("reads and validates retained spawn scratch telemetry", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
+
+    const capacityPromise = kernel.getSpawnScratchCapacity();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const request = worker.lastMessage("get_spawn_scratch_capacity");
+    expect(request).toBeDefined();
+    worker.simulateMessage({
+      type: "response",
+      requestId: request.requestId,
+      result: 84_386,
+    });
+    await expect(capacityPromise).resolves.toBe(84_386);
+
+    const invalidPromise = kernel.getSpawnScratchCapacity();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const invalidRequest = worker.lastMessage("get_spawn_scratch_capacity");
+    worker.simulateMessage({
+      type: "response",
+      requestId: invalidRequest.requestId,
+      result: -1,
+    });
+    await expect(invalidPromise).rejects.toThrow(
+      "invalid spawn scratch capacity",
+    );
+  });
+
   describe("fetchInKernel", () => {
     async function bootedKernel() {
       const BrowserKernel = await loadBrowserKernel();

@@ -40,7 +40,9 @@ for (const program of programs) {
         runtimeErrors.push(`pageerror: ${error.message}`);
       });
 
-      await page.goto(new URL("/pages/test-runner/", baseURL).href);
+      await page.goto(
+        new URL("/pages/test-runner/?minimal=1", baseURL).href,
+      );
       await page.waitForFunction(
         () => (window as any).__testRunnerReady === true,
       );

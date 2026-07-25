@@ -320,10 +320,6 @@
 #define FCNTL_F_SETLK  13
 #define FCNTL_F_SETLKW 14
 
-/* Buffer size hints for ioctl/termios where kernel needs a length */
-#define IOCTL_BUF_SIZE    256
-#define TERMIOS_BUF_SIZE  256
-
 /* mmap2 page unit — musl divides the byte offset by this before syscall */
 #define MMAP2_UNIT 4096U
 
@@ -734,48 +730,18 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     case SYS_SIGNAL:
         return (long)kernel_signal((uint32_t)a1, (uint32_t)a2);
 
-    /* sigaltstack — (ss, old_ss)
-     * Store/retrieve alternate signal stack info.
-     * Note: Wasm cannot truly use alternate stacks, but we track the state
-     * so sigaltstack queries work and programs don't get ENOSYS.
-     * struct stack_t { void *ss_sp; int ss_flags; size_t ss_size; } = 12 bytes. */
-    case SYS_SIGALTSTACK: {
-        static uint32_t alt_sp = 0;
-        static int32_t  alt_flags = 2; /* SS_DISABLE initially */
-        static uint32_t alt_size = 0;
-
-        const uint32_t *ss_new = (const uint32_t *)(uintptr_t)a1;
-        uint32_t *ss_old = (uint32_t *)(uintptr_t)a2;
-
-        /* Write old value first */
-        if (ss_old) {
-            ss_old[0] = alt_sp;
-            ss_old[1] = (uint32_t)alt_flags;
-            ss_old[2] = alt_size;
-        }
-
-        /* Set new value */
-        if (ss_new) {
-            int32_t flags = (int32_t)ss_new[1];
-            uint32_t size = ss_new[2];
-
-            /* Validate flags — only SS_DISABLE (2) and 0 are valid */
-            if (flags & ~(0x2 | 0x1)) /* ~(SS_DISABLE | SS_ONSTACK) */
-                return -22; /* -EINVAL */
-
-            if (!(flags & 0x2)) { /* not SS_DISABLE */
-                /* Check minimum size */
-                if (size < 2048) /* MINSIGSTKSZ */
-                    return -12; /* -ENOMEM */
-            }
-
-            alt_sp = ss_new[0];
-            alt_flags = flags;
-            alt_size = size;
-        }
-
-        return 0;
-    }
+    /*
+     * sigaltstack — (ss, old_ss)
+     *
+     * WHY: stack_t contains a pointer and size_t, so parsing it as three
+     * uint32_t values truncates wasm64 callers. Keep the kernel as the one
+     * owner of signal-stack state and pass the caller's data model explicitly.
+     */
+    case SYS_SIGALTSTACK:
+        return (long)kernel_sigaltstack(
+            (const uint8_t *)(uintptr_t)a1,
+            (uint8_t *)(uintptr_t)a2,
+            (int64_t)sizeof(void *));
 
     /* rt_sigsuspend — (set_ptr, sigsetsize)
      * set_ptr points to unsigned long[2] signal mask */
@@ -830,25 +796,25 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     case SYS_ISATTY:
         return (long)kernel_isatty((int32_t)a1);
 
-    /* tcgetattr — (fd, termios_ptr)
-     * kernel needs buf_len; provide generous hint */
+    /* tcgetattr — (fd, termios_ptr), exact musl layout */
     case SYS_TCGETATTR:
         return (long)kernel_tcgetattr((int32_t)a1,
                                       (uint8_t *)(uintptr_t)a2,
-                                      TERMIOS_BUF_SIZE);
+                                      WASM_POSIX_TERMIOS_SIZE);
 
     /* tcsetattr — (fd, action, termios_ptr) */
     case SYS_TCSETATTR:
         return (long)kernel_tcsetattr((int32_t)a1, (uint32_t)a2,
                                       (const uint8_t *)(uintptr_t)a3,
-                                      TERMIOS_BUF_SIZE);
+                                      WASM_POSIX_TERMIOS_SIZE);
 
-    /* ioctl — (fd, request, arg_ptr)
-     * kernel needs buf_len; provide generous hint */
+    /* ioctl — (fd, request, request-specific scalar/pointer argument) */
     case SYS_IOCTL:
         return (long)kernel_ioctl((int32_t)a1, (uint32_t)a2,
                                   (uint8_t *)(uintptr_t)a3,
-                                  IOCTL_BUF_SIZE);
+                                  wasm_posix_ioctl_arg_size(
+                                      (uint32_t)a2, sizeof(void *)),
+                                  sizeof(void *));
 
     /* ============================================================== */
     /* Environment                                                     */
@@ -1319,14 +1285,16 @@ static long __do_syscall(long n, long a1, long a2, long a3,
         const char *p = (const char *)(uintptr_t)a1;
         uint8_t *buf = a3 ? (uint8_t *)(uintptr_t)a3
                           : (uint8_t *)(uintptr_t)a2;
-        return (long)kernel_statfs((const uint8_t *)p, slen(p), buf);
+        return (long)kernel_statfs((const uint8_t *)p, slen(p), buf,
+                                   (int64_t)sizeof(void *));
     }
 
     /* fstatfs / fstatfs64 — same 3-arg pattern: (fd, sizeof buf, buf) */
     case SYS_FSTATFS: {
         uint8_t *buf = a3 ? (uint8_t *)(uintptr_t)a3
                           : (uint8_t *)(uintptr_t)a2;
-        return (long)kernel_fstatfs((int32_t)a1, buf);
+        return (long)kernel_fstatfs((int32_t)a1, buf,
+                                    (int64_t)sizeof(void *));
     }
 
     /* ============================================================== */
@@ -1355,8 +1323,12 @@ static long __do_syscall(long n, long a1, long a2, long a3,
 
     /* getgroups — (size, list_ptr) */
     case SYS_GETGROUPS:
-        return (long)kernel_getgroups((uint32_t)a1,
-                                      (uint32_t *)(uintptr_t)a2);
+        if (a1 < 0)
+            return -22; /* EINVAL */
+        return (long)kernel_getgroups(
+            (uint32_t)a1,
+            (uint32_t *)(uintptr_t)a2,
+            a1 > 0 ? (uint32_t)sizeof(uint32_t) : 0);
 
     /* setgroups — (size, list_ptr) */
     case SYS_SETGROUPS:
@@ -1553,11 +1525,13 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     case SYS_SETITIMER:
         return (long)kernel_setitimer((uint32_t)a1,
                                       (const uint8_t *)(uintptr_t)a2,
-                                      (uint8_t *)(uintptr_t)a3);
+                                      (uint8_t *)(uintptr_t)a3,
+                                      (int64_t)sizeof(void *));
 
     case SYS_GETITIMER:
         return (long)kernel_getitimer((uint32_t)a1,
-                                      (uint8_t *)(uintptr_t)a2);
+                                      (uint8_t *)(uintptr_t)a2,
+                                      (int64_t)sizeof(void *));
 
     /* ============================================================== */
     /* rt_sigtimedwait — wait for signal from set                      */

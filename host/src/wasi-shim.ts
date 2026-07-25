@@ -26,7 +26,14 @@ import {
   CH_RETURN,
   CH_STATUS,
   CH_SYSCALL,
+  PROCESS_IOVEC_WASM32_BASE_OFFSET,
+  PROCESS_IOVEC_WASM32_LEN_OFFSET,
+  PROCESS_IOVEC_WASM32_SIZE,
   STRUCT_SIZE_WASM_STAT,
+  STRUCT_SIZE_WASM_POLL_FD,
+  WASM_POLL_FD_EVENTS_OFFSET,
+  WASM_POLL_FD_FD_OFFSET,
+  WASM_POLL_FD_REVENTS_OFFSET,
 } from "./generated/abi";
 
 // --- Channel layout (must match crates/shared/src/lib.rs + libc/glue/channel_syscall.c) ---
@@ -730,7 +737,12 @@ export class WasiShim {
     // Calculate total read size from iovecs
     let totalLen = 0;
     for (let i = 0; i < iovsLen; i++) {
-      totalLen += view.getUint32(iovsPtr + i * 8 + 4, true);
+      totalLen += view.getUint32(
+        iovsPtr
+          + i * PROCESS_IOVEC_WASM32_SIZE
+          + PROCESS_IOVEC_WASM32_LEN_OFFSET,
+        true,
+      );
     }
     totalLen = Math.min(totalLen, CH_DATA_SIZE - 256);
 
@@ -745,8 +757,15 @@ export class WasiShim {
     let remaining = result;
     let srcOff = 0;
     for (let i = 0; i < iovsLen && remaining > 0; i++) {
-      const bufPtr = view.getUint32(iovsPtr + i * 8, true);
-      const bufLen = view.getUint32(iovsPtr + i * 8 + 4, true);
+      const entry = iovsPtr + i * PROCESS_IOVEC_WASM32_SIZE;
+      const bufPtr = view.getUint32(
+        entry + PROCESS_IOVEC_WASM32_BASE_OFFSET,
+        true,
+      );
+      const bufLen = view.getUint32(
+        entry + PROCESS_IOVEC_WASM32_LEN_OFFSET,
+        true,
+      );
       const copyLen = Math.min(bufLen, remaining);
       mem.copyWithin(bufPtr, this.dataArea + srcOff, this.dataArea + srcOff + copyLen);
       srcOff += copyLen;
@@ -766,8 +785,15 @@ export class WasiShim {
     // Gather iovec data into data area
     let totalLen = 0;
     for (let i = 0; i < iovsLen; i++) {
-      const bufPtr = view.getUint32(iovsPtr + i * 8, true);
-      const bufLen = view.getUint32(iovsPtr + i * 8 + 4, true);
+      const entry = iovsPtr + i * PROCESS_IOVEC_WASM32_SIZE;
+      const bufPtr = view.getUint32(
+        entry + PROCESS_IOVEC_WASM32_BASE_OFFSET,
+        true,
+      );
+      const bufLen = view.getUint32(
+        entry + PROCESS_IOVEC_WASM32_LEN_OFFSET,
+        true,
+      );
       const copyLen = Math.min(bufLen, CH_DATA_SIZE - 256 - totalLen);
       mem.copyWithin(this.dataArea + totalLen, bufPtr, bufPtr + copyLen);
       totalLen += copyLen;
@@ -1337,12 +1363,18 @@ export class WasiShim {
       }
     }
 
-    // Write pollfd structs: fd(i32) + events(i16) + revents(i16) = 8 bytes
+    // WASI Preview 1 is wasm32-only here, but poll(2) still consumes the
+    // generated Kandelo syscall record rather than a private shim layout.
     const pollfdAddr = this.dataArea;
     for (let i = 0; i < pollfds.length; i++) {
-      view.setInt32(pollfdAddr + i * 8, pollfds[i].fd, true);
-      view.setInt16(pollfdAddr + i * 8 + 4, pollfds[i].events, true);
-      view.setInt16(pollfdAddr + i * 8 + 6, 0, true);
+      const entry = pollfdAddr + i * STRUCT_SIZE_WASM_POLL_FD;
+      view.setInt32(entry + WASM_POLL_FD_FD_OFFSET, pollfds[i].fd, true);
+      view.setInt16(
+        entry + WASM_POLL_FD_EVENTS_OFFSET,
+        pollfds[i].events,
+        true,
+      );
+      view.setInt16(entry + WASM_POLL_FD_REVENTS_OFFSET, 0, true);
     }
 
     const { errno } = this.doSyscall(
@@ -1353,7 +1385,12 @@ export class WasiShim {
     // Read results and write WASI events
     let nevents = 0;
     for (let i = 0; i < pollfds.length; i++) {
-      const revents = view.getInt16(pollfdAddr + i * 8 + 6, true);
+      const revents = view.getInt16(
+        pollfdAddr
+          + i * STRUCT_SIZE_WASM_POLL_FD
+          + WASM_POLL_FD_REVENTS_OFFSET,
+        true,
+      );
       if (revents) {
         const evBase = outPtr + nevents * 32;
         view.setBigUint64(evBase, pollfds[i].userdata, true);
@@ -1393,7 +1430,12 @@ export class WasiShim {
     // Gather total size from iovecs, read into data area, then scatter
     let totalLen = 0;
     for (let i = 0; i < iovsLen; i++) {
-      totalLen += view.getUint32(iovsPtr + i * 8 + 4, true);
+      totalLen += view.getUint32(
+        iovsPtr
+          + i * PROCESS_IOVEC_WASM32_SIZE
+          + PROCESS_IOVEC_WASM32_LEN_OFFSET,
+        true,
+      );
     }
     totalLen = Math.min(totalLen, CH_DATA_SIZE - 256);
 
@@ -1406,8 +1448,15 @@ export class WasiShim {
     let remaining = result;
     let srcOff = 0;
     for (let i = 0; i < iovsLen && remaining > 0; i++) {
-      const bufPtr = view.getUint32(iovsPtr + i * 8, true);
-      const bufLen = view.getUint32(iovsPtr + i * 8 + 4, true);
+      const entry = iovsPtr + i * PROCESS_IOVEC_WASM32_SIZE;
+      const bufPtr = view.getUint32(
+        entry + PROCESS_IOVEC_WASM32_BASE_OFFSET,
+        true,
+      );
+      const bufLen = view.getUint32(
+        entry + PROCESS_IOVEC_WASM32_LEN_OFFSET,
+        true,
+      );
       const copyLen = Math.min(bufLen, remaining);
       mem.copyWithin(bufPtr, this.dataArea + srcOff, this.dataArea + srcOff + copyLen);
       srcOff += copyLen;
@@ -1429,8 +1478,15 @@ export class WasiShim {
     // Gather from iovecs into data area
     let totalLen = 0;
     for (let i = 0; i < iovsLen; i++) {
-      const bufPtr = view.getUint32(iovsPtr + i * 8, true);
-      const bufLen = view.getUint32(iovsPtr + i * 8 + 4, true);
+      const entry = iovsPtr + i * PROCESS_IOVEC_WASM32_SIZE;
+      const bufPtr = view.getUint32(
+        entry + PROCESS_IOVEC_WASM32_BASE_OFFSET,
+        true,
+      );
+      const bufLen = view.getUint32(
+        entry + PROCESS_IOVEC_WASM32_LEN_OFFSET,
+        true,
+      );
       const copyLen = Math.min(bufLen, CH_DATA_SIZE - 256 - totalLen);
       mem.copyWithin(this.dataArea + totalLen, bufPtr, bufPtr + copyLen);
       totalLen += copyLen;

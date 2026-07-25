@@ -15,8 +15,19 @@ import {
   KERNEL_WAIT_RESULT_SI_STATUS_OFFSET,
   KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET,
   PROCESS_STATE_EXITED,
+  PROCESS_SIGINFO_CODE_OFFSET,
+  PROCESS_SIGINFO_SIGNO_OFFSET,
+  PROCESS_SIGINFO_WASM32_PID_OFFSET,
+  PROCESS_SIGINFO_WASM32_SIZE,
+  PROCESS_SIGINFO_WASM32_UID_OFFSET,
+  PROCESS_SIGINFO_WASM32_VALUE_OFFSET,
+  PROCESS_SIGINFO_WASM64_PID_OFFSET,
+  PROCESS_SIGINFO_WASM64_SIZE,
+  PROCESS_SIGINFO_WASM64_UID_OFFSET,
+  PROCESS_SIGINFO_WASM64_VALUE_OFFSET,
   PROCESS_STATE_RUNNING,
   PROCESS_STATE_STOPPED,
+  STRUCT_SIZE_KERNEL_WAIT_RESULT,
   STRUCT_SIZE_WASM_RUSAGE_WIRE,
   WAIT_CLD_EXITED,
   WAIT_CLD_STOPPED,
@@ -30,6 +41,7 @@ import {
   WAKE_PROCESS_STOPPED,
 } from "../src/generated/abi";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 const SIGCHLD = 17;
 const SIGCONT = 18;
@@ -47,44 +59,61 @@ describe("Rust-owned process wait lifecycle", () => {
       { length: STRUCT_SIZE_WASM_RUSAGE_WIRE },
       (_, index) => index & 0xff,
     );
-    const waitChildPoll = vi.fn((
-      _parentPid: number,
-      _callerTid: number,
-      _targetPid: number,
-      _eventMask: number,
-      _flags: number,
-      resultPtr: number | bigint,
-    ) => {
-      writeKernelWaitResult(kernelMemory, Number(resultPtr), {
-        waitStatus,
-        siCode: 1,
-        siStatus: 5,
-        childUid: 123,
-        rusage,
-      });
-      return 42;
-    });
+    const waitChildPoll = vi.fn(
+      (
+        _parentPid: number,
+        _callerTid: number,
+        _targetPid: number,
+        _eventMask: number,
+        _flags: number,
+        resultPtr: number | bigint,
+      ) => {
+        writeKernelWaitResult(kernelMemory, Number(resultPtr), {
+          waitStatus,
+          siCode: 1,
+          siStatus: 5,
+          childUid: 123,
+          rusage,
+        });
+        return 42;
+      },
+    );
     const reapExitedChild = vi.fn(() => 0);
     const worker = createWorkerHarness({
       kernel_wait_child_poll: waitChildPoll,
       kernel_reap_exited_child: reapExitedChild,
     });
     worker.kernelMemory = kernelMemory;
-    worker.scratchOffset = 128;
+    installKernelWorkerTestScratch(worker, kernelMemory);
     worker.completeWaitpid = vi.fn();
 
     const rusagePtr = 512;
-    const channel = registerMainChannel(worker, createChannel(7, processMemory));
+    const channel = registerMainChannel(
+      worker,
+      createChannel(7, processMemory),
+    );
     worker.handleWaitpid(channel, [-1, statusPtr, 0, rusagePtr]);
 
-    expect(waitChildPoll).toHaveBeenCalledWith(7, 7, -1, WAIT_EVENT_EXITED, 0, 128);
+    expect(waitChildPoll).toHaveBeenCalledWith(
+      7,
+      7,
+      -1,
+      WAIT_EVENT_EXITED,
+      0,
+      128,
+      STRUCT_SIZE_KERNEL_WAIT_RESULT,
+    );
     expect(reapExitedChild).not.toHaveBeenCalled();
-    expect(new DataView(processMemory.buffer).getInt32(statusPtr, true)).toBe(waitStatus);
-    expect(new Uint8Array(
-      processMemory.buffer,
-      rusagePtr,
-      STRUCT_SIZE_WASM_RUSAGE_WIRE,
-    )).toEqual(rusage);
+    expect(new DataView(processMemory.buffer).getInt32(statusPtr, true)).toBe(
+      waitStatus,
+    );
+    expect(
+      new Uint8Array(
+        processMemory.buffer,
+        rusagePtr,
+        STRUCT_SIZE_WASM_RUSAGE_WIRE,
+      ),
+    ).toEqual(rusage);
     expect(worker.completeWaitpid).toHaveBeenCalledWith(
       expect.any(Object),
       [-1, statusPtr, 0, rusagePtr],
@@ -95,8 +124,11 @@ describe("Rust-owned process wait lifecycle", () => {
 
   it("wait4 leaves blocking waits in the host queue when Rust reports a running child", () => {
     const waitChildPoll = vi.fn(() => 0);
-    const worker = createWorkerHarness({ kernel_wait_child_poll: waitChildPoll });
+    const worker = createWorkerHarness({
+      kernel_wait_child_poll: waitChildPoll,
+    });
     worker.kernelMemory = createSharedMemory();
+    installKernelWorkerTestScratch(worker, worker.kernelMemory);
     worker.waitingForChild = [];
     worker.completeWaitpid = vi.fn();
 
@@ -121,11 +153,18 @@ describe("Rust-owned process wait lifecycle", () => {
     const waitChildPoll = vi.fn(() => 0);
     const processMemory = createSharedMemory();
     const channel = createChannel(7, processMemory);
-    const worker = createWorkerHarness({ kernel_wait_child_poll: waitChildPoll });
-    worker.processes = new Map([[7, {
-      channels: [channel],
-      memory: processMemory,
-    }]]);
+    const worker = createWorkerHarness({
+      kernel_wait_child_poll: waitChildPoll,
+    });
+    worker.processes = new Map([
+      [
+        7,
+        {
+          channels: [channel],
+          memory: processMemory,
+        },
+      ],
+    ]);
     worker.pendingCancels = new Set([channel]);
     worker.waitingForChild = [];
     worker.completeChannelRaw = vi.fn();
@@ -148,37 +187,40 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.completeChannelRaw = vi.fn();
     worker.relistenChannel = vi.fn();
 
-    expect(worker.interruptPendingFifoOpenCancellation(
-      channel,
-      ABI_SYSCALLS.Getpid,
-    )).toBe(false);
+    expect(
+      worker.interruptPendingFifoOpenCancellation(channel, ABI_SYSCALLS.Getpid),
+    ).toBe(false);
     expect(worker.pendingCancels.has(channel)).toBe(true);
     expect(worker.cancelParkedFifoOpen).not.toHaveBeenCalled();
 
-    expect(worker.interruptPendingFifoOpenCancellation(
-      channel,
-      ABI_SYSCALLS.Open,
-    )).toBe(true);
+    expect(
+      worker.interruptPendingFifoOpenCancellation(channel, ABI_SYSCALLS.Open),
+    ).toBe(true);
     expect(worker.pendingCancels.has(channel)).toBe(false);
     expect(worker.cancelParkedFifoOpen).toHaveBeenCalledOnce();
     expect(worker.completeChannelRaw).toHaveBeenCalledOnce();
     expect(worker.completeChannelRaw).toHaveBeenCalledWith(channel, -4, 4);
     expect(worker.relistenChannel).toHaveBeenCalledOnce();
 
-    expect(worker.interruptPendingFifoOpenCancellation(
-      channel,
-      ABI_SYSCALLS.Open,
-    )).toBe(false);
+    expect(
+      worker.interruptPendingFifoOpenCancellation(channel, ABI_SYSCALLS.Open),
+    ).toBe(false);
     expect(worker.completeChannelRaw).toHaveBeenCalledOnce();
   });
 
   it("wait4 WNOHANG completes without queuing when Rust reports no event", () => {
-    const worker = createWorkerHarness({ kernel_wait_child_poll: vi.fn(() => 0) });
+    const worker = createWorkerHarness({
+      kernel_wait_child_poll: vi.fn(() => 0),
+    });
     worker.kernelMemory = createSharedMemory();
+    installKernelWorkerTestScratch(worker, worker.kernelMemory);
     worker.waitingForChild = [];
     worker.completeWaitpid = vi.fn();
 
-    const channel = registerMainChannel(worker, createChannel(7, createSharedMemory()));
+    const channel = registerMainChannel(
+      worker,
+      createChannel(7, createSharedMemory()),
+    );
     worker.handleWaitpid(channel, [-1, 0, WAIT_WNOHANG, 0]);
 
     expect(worker.waitingForChild).toEqual([]);
@@ -192,12 +234,19 @@ describe("Rust-owned process wait lifecycle", () => {
 
   it("wait4 passes a bigint status pointer for wasm64 kernels", () => {
     const waitChildPoll = vi.fn(() => 0);
-    const worker = createWorkerHarness({ kernel_wait_child_poll: waitChildPoll }, 8);
+    const worker = createWorkerHarness(
+      { kernel_wait_child_poll: waitChildPoll },
+      8,
+    );
     worker.kernelMemory = createSharedMemory();
+    installKernelWorkerTestScratch(worker, worker.kernelMemory, 128, 8);
     worker.waitingForChild = [];
     worker.completeWaitpid = vi.fn();
 
-    const channel = registerMainChannel(worker, createChannel(7, createSharedMemory()));
+    const channel = registerMainChannel(
+      worker,
+      createChannel(7, createSharedMemory()),
+    );
     worker.handleWaitpid(channel, [-1, 0, WAIT_WNOHANG, 0]);
 
     expect(waitChildPoll).toHaveBeenCalledWith(
@@ -207,6 +256,7 @@ describe("Rust-owned process wait lifecycle", () => {
       WAIT_EVENT_EXITED,
       0,
       BigInt(128),
+      STRUCT_SIZE_KERNEL_WAIT_RESULT,
     );
     expect(worker.waitingForChild).toEqual([]);
     expect(worker.completeWaitpid).toHaveBeenCalledWith(
@@ -219,7 +269,9 @@ describe("Rust-owned process wait lifecycle", () => {
 
   it("returns EFAULT before polling or consuming an event for invalid wait4 outputs", () => {
     const waitChildPoll = vi.fn(() => 42);
-    const worker = createWorkerHarness({ kernel_wait_child_poll: waitChildPoll });
+    const worker = createWorkerHarness({
+      kernel_wait_child_poll: waitChildPoll,
+    });
     worker.completeWaitpid = vi.fn();
     const processMemory = createSharedMemory();
     const invalidStatusPtr = processMemory.buffer.byteLength - 2;
@@ -242,29 +294,37 @@ describe("Rust-owned process wait lifecycle", () => {
     const siginfoPtr = 512;
     const rusagePtr = 1024;
     const rusage = new Uint8Array(STRUCT_SIZE_WASM_RUSAGE_WIRE).fill(0x5a);
-    const waitChildPoll = vi.fn((
-      _parentPid: number,
-      _callerTid: number,
-      _targetPid: number,
-      _eventMask: number,
-      _flags: number,
-      resultPtr: number | bigint,
-    ) => {
-      writeKernelWaitResult(kernelMemory, Number(resultPtr), {
-        waitStatus: (19 << 8) | 0x7f,
-        siCode: WAIT_CLD_STOPPED,
-        siStatus: 19,
-        childUid: 4242,
-        rusage,
-      });
-      return 44;
+    const waitChildPoll = vi.fn(
+      (
+        _parentPid: number,
+        _callerTid: number,
+        _targetPid: number,
+        _eventMask: number,
+        _flags: number,
+        resultPtr: number | bigint,
+      ) => {
+        writeKernelWaitResult(kernelMemory, Number(resultPtr), {
+          waitStatus: (19 << 8) | 0x7f,
+          siCode: WAIT_CLD_STOPPED,
+          siStatus: 19,
+          childUid: 4242,
+          rusage,
+        });
+        return 44;
+      },
+    );
+    const worker = createWorkerHarness({
+      kernel_wait_child_poll: waitChildPoll,
     });
-    const worker = createWorkerHarness({ kernel_wait_child_poll: waitChildPoll });
     worker.kernelMemory = kernelMemory;
+    installKernelWorkerTestScratch(worker, kernelMemory);
     worker.completeWaitid = vi.fn();
     const args = [1, 44, siginfoPtr, WAIT_WSTOPPED | WAIT_WNOWAIT, rusagePtr];
 
-    const channel = registerMainChannel(worker, createChannel(7, processMemory));
+    const channel = registerMainChannel(
+      worker,
+      createChannel(7, processMemory),
+    );
     worker.handleWaitid(channel, args);
 
     expect(waitChildPoll).toHaveBeenCalledWith(
@@ -274,18 +334,31 @@ describe("Rust-owned process wait lifecycle", () => {
       WAIT_EVENT_STOPPED,
       WAIT_WNOWAIT,
       128,
+      STRUCT_SIZE_KERNEL_WAIT_RESULT,
     );
     const siginfo = new DataView(processMemory.buffer);
-    expect(siginfo.getInt32(siginfoPtr, true)).toBe(SIGCHLD);
-    expect(siginfo.getInt32(siginfoPtr + 8, true)).toBe(WAIT_CLD_STOPPED);
-    expect(siginfo.getInt32(siginfoPtr + 12, true)).toBe(44);
-    expect(siginfo.getUint32(siginfoPtr + 16, true)).toBe(4242);
-    expect(siginfo.getInt32(siginfoPtr + 20, true)).toBe(19);
-    expect(new Uint8Array(
-      processMemory.buffer,
-      rusagePtr,
-      STRUCT_SIZE_WASM_RUSAGE_WIRE,
-    )).toEqual(rusage);
+    expect(
+      siginfo.getInt32(siginfoPtr + PROCESS_SIGINFO_SIGNO_OFFSET, true),
+    ).toBe(SIGCHLD);
+    expect(
+      siginfo.getInt32(siginfoPtr + PROCESS_SIGINFO_CODE_OFFSET, true),
+    ).toBe(WAIT_CLD_STOPPED);
+    expect(
+      siginfo.getInt32(siginfoPtr + PROCESS_SIGINFO_WASM32_PID_OFFSET, true),
+    ).toBe(44);
+    expect(
+      siginfo.getUint32(siginfoPtr + PROCESS_SIGINFO_WASM32_UID_OFFSET, true),
+    ).toBe(4242);
+    expect(
+      siginfo.getInt32(siginfoPtr + PROCESS_SIGINFO_WASM32_VALUE_OFFSET, true),
+    ).toBe(19);
+    expect(
+      new Uint8Array(
+        processMemory.buffer,
+        rusagePtr,
+        STRUCT_SIZE_WASM_RUSAGE_WIRE,
+      ),
+    ).toEqual(rusage);
     expect(worker.completeWaitid).toHaveBeenCalledWith(
       expect.any(Object),
       args,
@@ -299,72 +372,119 @@ describe("Rust-owned process wait lifecycle", () => {
     const processMemory = createSharedMemory();
     const channel = createChannel(7, processMemory);
     const siginfoPtr = 512;
-    const waitChildPoll = vi.fn((
-      _parentPid: number,
-      _callerTid: number,
-      _targetPid: number,
-      _eventMask: number,
-      _flags: number,
-      resultPtr: number | bigint,
-    ) => {
-      writeKernelWaitResult(kernelMemory, Number(resultPtr), {
-        waitStatus: 9 << 8,
-        siCode: WAIT_CLD_EXITED,
-        siStatus: 9,
-        childUid: 5150,
-        rusage: new Uint8Array(STRUCT_SIZE_WASM_RUSAGE_WIRE),
-      });
-      return 44;
-    });
+    const waitChildPoll = vi.fn(
+      (
+        _parentPid: number,
+        _callerTid: number,
+        _targetPid: number,
+        _eventMask: number,
+        _flags: number,
+        resultPtr: number | bigint,
+      ) => {
+        writeKernelWaitResult(kernelMemory, Number(resultPtr), {
+          waitStatus: 9 << 8,
+          siCode: WAIT_CLD_EXITED,
+          siStatus: 9,
+          childUid: 5150,
+          rusage: new Uint8Array(STRUCT_SIZE_WASM_RUSAGE_WIRE),
+        });
+        return 44;
+      },
+    );
     const worker = createWorkerHarness(
       { kernel_wait_child_poll: waitChildPoll },
       8,
     );
     worker.kernelMemory = kernelMemory;
-    worker.processes = new Map([[7, {
-      channels: [channel],
-      memory: processMemory,
-      ptrWidth: 8,
-    }]]);
+    installKernelWorkerTestScratch(worker, kernelMemory, 128, 8);
+    worker.processes = new Map([
+      [
+        7,
+        {
+          channels: [channel],
+          memory: processMemory,
+          ptrWidth: 8,
+        },
+      ],
+    ]);
     worker.completeWaitid = vi.fn();
     const args = [1, 44, siginfoPtr, WAIT_WEXITED, 0];
+    new Uint8Array(
+      processMemory.buffer,
+      siginfoPtr,
+      PROCESS_SIGINFO_WASM64_SIZE,
+    ).fill(0xa5);
 
     worker.handleWaitid(channel, args);
 
     const siginfo = new DataView(processMemory.buffer);
-    expect(siginfo.getInt32(siginfoPtr, true)).toBe(SIGCHLD);
-    expect(siginfo.getInt32(siginfoPtr + 8, true)).toBe(WAIT_CLD_EXITED);
-    expect(siginfo.getUint32(siginfoPtr + 12, true)).toBe(0);
-    expect(siginfo.getInt32(siginfoPtr + 16, true)).toBe(44);
-    expect(siginfo.getUint32(siginfoPtr + 20, true)).toBe(5150);
-    expect(siginfo.getInt32(siginfoPtr + 24, true)).toBe(9);
+    expect(
+      siginfo.getInt32(siginfoPtr + PROCESS_SIGINFO_SIGNO_OFFSET, true),
+    ).toBe(SIGCHLD);
+    expect(
+      siginfo.getInt32(siginfoPtr + PROCESS_SIGINFO_CODE_OFFSET, true),
+    ).toBe(WAIT_CLD_EXITED);
+    expect(
+      siginfo.getUint32(
+        siginfoPtr + PROCESS_SIGINFO_CODE_OFFSET + Int32Array.BYTES_PER_ELEMENT,
+        true,
+      ),
+    ).toBe(0);
+    expect(
+      siginfo.getInt32(siginfoPtr + PROCESS_SIGINFO_WASM64_PID_OFFSET, true),
+    ).toBe(44);
+    expect(
+      siginfo.getUint32(siginfoPtr + PROCESS_SIGINFO_WASM64_UID_OFFSET, true),
+    ).toBe(5150);
+    expect(
+      siginfo.getInt32(siginfoPtr + PROCESS_SIGINFO_WASM64_VALUE_OFFSET, true),
+    ).toBe(9);
+    expect(siginfo.getUint8(siginfoPtr + PROCESS_SIGINFO_WASM64_SIZE - 1)).toBe(
+      0,
+    );
   });
 
   it("waitid WNOHANG zeros all siginfo bytes and leaves rusage untouched", () => {
     const processMemory = createSharedMemory();
     const siginfoPtr = 512;
     const rusagePtr = 1024;
-    new Uint8Array(processMemory.buffer, siginfoPtr, 128).fill(0xa5);
+    new Uint8Array(
+      processMemory.buffer,
+      siginfoPtr,
+      PROCESS_SIGINFO_WASM32_SIZE,
+    ).fill(0xa5);
     new Uint8Array(
       processMemory.buffer,
       rusagePtr,
       STRUCT_SIZE_WASM_RUSAGE_WIRE,
     ).fill(0x6b);
     const waitChildPoll = vi.fn(() => 0);
-    const worker = createWorkerHarness({ kernel_wait_child_poll: waitChildPoll });
+    const worker = createWorkerHarness({
+      kernel_wait_child_poll: waitChildPoll,
+    });
     worker.completeWaitid = vi.fn();
     const args = [0, 0, siginfoPtr, WAIT_WEXITED | WAIT_WNOHANG, rusagePtr];
 
-    const channel = registerMainChannel(worker, createChannel(7, processMemory));
+    const channel = registerMainChannel(
+      worker,
+      createChannel(7, processMemory),
+    );
     worker.handleWaitid(channel, args);
 
-    expect(new Uint8Array(processMemory.buffer, siginfoPtr, 128))
-      .toEqual(new Uint8Array(128));
-    expect(new Uint8Array(
-      processMemory.buffer,
-      rusagePtr,
-      STRUCT_SIZE_WASM_RUSAGE_WIRE,
-    )).toEqual(new Uint8Array(STRUCT_SIZE_WASM_RUSAGE_WIRE).fill(0x6b));
+    expect(
+      new Uint8Array(
+        processMemory.buffer,
+        siginfoPtr,
+        PROCESS_SIGINFO_WASM32_SIZE,
+      ),
+    ).toEqual(new Uint8Array(PROCESS_SIGINFO_WASM32_SIZE));
+    expect(
+      new Uint8Array(
+        processMemory.buffer,
+        rusagePtr,
+        STRUCT_SIZE_WASM_RUSAGE_WIRE,
+      ),
+    ).toEqual(new Uint8Array(STRUCT_SIZE_WASM_RUSAGE_WIRE).fill(0x6b));
     expect(worker.completeWaitid).toHaveBeenCalledWith(
       expect.any(Object),
       args,
@@ -375,7 +495,9 @@ describe("Rust-owned process wait lifecycle", () => {
 
   it("rejects invalid waitid idtypes and required null siginfo before polling", () => {
     const waitChildPoll = vi.fn(() => 0);
-    const worker = createWorkerHarness({ kernel_wait_child_poll: waitChildPoll });
+    const worker = createWorkerHarness({
+      kernel_wait_child_poll: waitChildPoll,
+    });
     worker.completeWaitid = vi.fn();
     const channel = createChannel(7, createSharedMemory());
 
@@ -383,8 +505,9 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.handleWaitid(channel, [0, 0, 0, WAIT_WEXITED, 0]);
 
     expect(waitChildPoll).not.toHaveBeenCalled();
-    expect(worker.completeWaitid.mock.calls.map((call: unknown[]) => call[3]))
-      .toEqual([22, 14]);
+    expect(
+      worker.completeWaitid.mock.calls.map((call: unknown[]) => call[3]),
+    ).toEqual([22, 14]);
   });
 
   it("owns a drained wake batch before nested SIGCHLD work reuses scratch", () => {
@@ -396,6 +519,7 @@ describe("Rust-owned process wait lifecycle", () => {
     });
     const worker = createWorkerHarness({ kernel_drain_wakeup_events: drain });
     worker.kernelMemory = kernelMemory;
+    installKernelWorkerTestScratch(worker, kernelMemory);
     worker.stoppedPids = new Set();
     worker.notifyParentOfChildStateTransition = vi.fn(() => {
       new Uint8Array(kernelMemory.buffer).fill(0xff);
@@ -415,17 +539,12 @@ describe("Rust-owned process wait lifecycle", () => {
     const drain = vi.fn((outPtr: number) => {
       if (drained) return 0;
       drained = true;
-      writeWakeEvent(
-        kernelMemory,
-        outPtr,
-        0,
-        43,
-        WAKE_PROCESS_CONTINUED,
-      );
+      writeWakeEvent(kernelMemory, outPtr, 0, 43, WAKE_PROCESS_CONTINUED);
       return 1;
     });
     const worker = createWorkerHarness({ kernel_drain_wakeup_events: drain });
     worker.kernelMemory = kernelMemory;
+    installKernelWorkerTestScratch(worker, kernelMemory);
     worker.pendingPipeReaders = new Map();
     worker.pendingPipeWriters = new Map();
     worker.resumeStoppedProcess = vi.fn(() => false);
@@ -444,29 +563,18 @@ describe("Rust-owned process wait lifecycle", () => {
     let batch = 0;
     const drain = vi.fn((outPtr: number) => {
       if (batch++ === 0) {
-        writeWakeEvent(
-          kernelMemory,
-          outPtr,
-          0,
-          43,
-          WAKE_PROCESS_CONTINUED,
-        );
+        writeWakeEvent(kernelMemory, outPtr, 0, 43, WAKE_PROCESS_CONTINUED);
         return 1;
       }
       if (batch === 2) {
-        writeWakeEvent(
-          kernelMemory,
-          outPtr,
-          0,
-          43,
-          WAKE_PROCESS_STOPPED,
-        );
+        writeWakeEvent(kernelMemory, outPtr, 0, 43, WAKE_PROCESS_STOPPED);
         return 1;
       }
       return 0;
     });
     const worker = createWorkerHarness({ kernel_drain_wakeup_events: drain });
     worker.kernelMemory = kernelMemory;
+    installKernelWorkerTestScratch(worker, kernelMemory);
     worker.stoppedPids = new Set();
     worker.pendingPipeReaders = new Map();
     worker.pendingPipeWriters = new Map();
@@ -498,6 +606,7 @@ describe("Rust-owned process wait lifecycle", () => {
     });
     const worker = createWorkerHarness({ kernel_drain_wakeup_events: drain });
     worker.kernelMemory = kernelMemory;
+    installKernelWorkerTestScratch(worker, kernelMemory);
     worker.stoppedPids = new Set();
     worker.pendingPipeReaders = new Map();
     worker.pendingPipeWriters = new Map();
@@ -527,10 +636,16 @@ describe("Rust-owned process wait lifecycle", () => {
       kernel_get_process_exit_signal: vi.fn(() => exitSignal),
     });
     worker.kernelMemory = kernelMemory;
-    worker.processes = new Map([[42, {
-      channels: [channel],
-      memory: processMemory,
-    }]]);
+    installKernelWorkerTestScratch(worker, kernelMemory);
+    worker.processes = new Map([
+      [
+        42,
+        {
+          channels: [channel],
+          memory: processMemory,
+        },
+      ],
+    ]);
     worker.hostReaped = new Set();
     worker.stoppedPids = new Set([42]);
     worker.parkedChannelCompletions = new Map();
@@ -538,7 +653,9 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.deferredProcessWorkerStarts = new Map();
     worker.pendingSleeps = new Map();
     worker.releaseAllSharedMemoryForProcess = vi.fn();
-    worker.notifyParentOfExitedProcess = vi.fn(() => { exitSignal = -3; });
+    worker.notifyParentOfExitedProcess = vi.fn(() => {
+      exitSignal = -3;
+    });
     worker.resumeStoppedProcess = vi.fn();
     worker.notifyParentOfChildStateTransition = vi.fn();
     worker.callbacks = { onExit };
@@ -569,16 +686,22 @@ describe("Rust-owned process wait lifecycle", () => {
     const waitChildPoll = vi.fn(() => 0);
     const processMemory = createSharedMemory();
     const channel = createChannel(7, processMemory);
-    const worker = createWorkerHarness({ kernel_wait_child_poll: waitChildPoll });
-    worker.processes = new Map([[7, { channels: [channel], memory: processMemory }]]);
-    worker.waitingForChild = [{
-      parentPid: 7,
-      channel,
-      origArgs: [0, 0, 0, 0],
-      pid: 0,
-      options: 0,
-      syscallNr: ABI_SYSCALLS.Wait4,
-    }];
+    const worker = createWorkerHarness({
+      kernel_wait_child_poll: waitChildPoll,
+    });
+    worker.processes = new Map([
+      [7, { channels: [channel], memory: processMemory }],
+    ]);
+    worker.waitingForChild = [
+      {
+        parentPid: 7,
+        channel,
+        origArgs: [0, 0, 0, 0],
+        pid: 0,
+        options: 0,
+        syscallNr: ABI_SYSCALLS.Wait4,
+      },
+    ];
 
     worker.recheckDeferredWaitpids();
 
@@ -589,24 +712,32 @@ describe("Rust-owned process wait lifecycle", () => {
       WAIT_EVENT_EXITED,
       WAIT_WNOWAIT,
       128,
+      STRUCT_SIZE_KERNEL_WAIT_RESULT,
     );
   });
 
   it("services status that becomes eligible after a process-group change", () => {
     const channel = createChannel(7, createSharedMemory());
     const worker = createWorkerHarness({});
-    worker.processes = new Map([[7, {
-      channels: [channel],
-      memory: channel.memory,
-    }]]);
-    worker.waitingForChild = [{
-      parentPid: 7,
-      channel,
-      origArgs: [0, 0, 0, 0],
-      pid: 0,
-      options: 0,
-      syscallNr: ABI_SYSCALLS.Wait4,
-    }];
+    worker.processes = new Map([
+      [
+        7,
+        {
+          channels: [channel],
+          memory: channel.memory,
+        },
+      ],
+    ]);
+    worker.waitingForChild = [
+      {
+        parentPid: 7,
+        channel,
+        origArgs: [0, 0, 0, 0],
+        pid: 0,
+        options: 0,
+        syscallNr: ABI_SYSCALLS.Wait4,
+      },
+    ];
     worker.pollWaitableChild = vi.fn(() => ({
       kind: "event",
       childPid: 42,
@@ -630,30 +761,40 @@ describe("Rust-owned process wait lifecycle", () => {
     const first = createChannel(7, processMemory, 0);
     const second = createChannel(7, processMemory, 256);
     let pollCount = 0;
-    const waitChildPoll = vi.fn((
-      _parentPid: number,
-      _callerTid: number,
-      _targetPid: number,
-      _eventMask: number,
-      _flags: number,
-      resultPtr: number,
-    ) => {
-      if (pollCount++ > 0) return -10; // ECHILD after the first wait reaps.
-      writeKernelWaitResult(kernelMemory, resultPtr, {
-        waitStatus: 3 << 8,
-        siCode: WAIT_CLD_EXITED,
-        siStatus: 3,
-        childUid: 12,
-        rusage: new Uint8Array(STRUCT_SIZE_WASM_RUSAGE_WIRE),
-      });
-      return 42;
+    const waitChildPoll = vi.fn(
+      (
+        _parentPid: number,
+        _callerTid: number,
+        _targetPid: number,
+        _eventMask: number,
+        _flags: number,
+        resultPtr: number,
+      ) => {
+        if (pollCount++ > 0) return -10; // ECHILD after the first wait reaps.
+        writeKernelWaitResult(kernelMemory, resultPtr, {
+          waitStatus: 3 << 8,
+          siCode: WAIT_CLD_EXITED,
+          siStatus: 3,
+          childUid: 12,
+          rusage: new Uint8Array(STRUCT_SIZE_WASM_RUSAGE_WIRE),
+        });
+        return 42;
+      },
+    );
+    const worker = createWorkerHarness({
+      kernel_wait_child_poll: waitChildPoll,
     });
-    const worker = createWorkerHarness({ kernel_wait_child_poll: waitChildPoll });
     worker.kernelMemory = kernelMemory;
-    worker.processes = new Map([[7, {
-      channels: [first, second],
-      memory: processMemory,
-    }]]);
+    installKernelWorkerTestScratch(worker, kernelMemory);
+    worker.processes = new Map([
+      [
+        7,
+        {
+          channels: [first, second],
+          memory: processMemory,
+        },
+      ],
+    ]);
     worker.channelTids = new Map([["7:256", 8]]);
     worker.completeWaitpid = vi.fn();
     worker.waitingForChild = [
@@ -678,9 +819,15 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.wakeWaitingParent(7);
 
     expect(worker.waitingForChild).toEqual([]);
-    expect(worker.completeWaitpid.mock.calls.map((call: unknown[]) => call.slice(2)))
-      .toEqual([[42, 0], [-1, 10]]);
-    expect(new DataView(processMemory.buffer).getInt32(1024, true)).toBe(3 << 8);
+    expect(
+      worker.completeWaitpid.mock.calls.map((call: unknown[]) => call.slice(2)),
+    ).toEqual([
+      [42, 0],
+      [-1, 10],
+    ]);
+    expect(new DataView(processMemory.buffer).getInt32(1024, true)).toBe(
+      3 << 8,
+    );
   });
 
   it("completes every matching WNOWAIT waiter while leaving a running waiter blocked", () => {
@@ -689,30 +836,40 @@ describe("Rust-owned process wait lifecycle", () => {
     const first = createChannel(7, processMemory, 0);
     const second = createChannel(7, processMemory, 256);
     const running = createChannel(7, processMemory, 512);
-    const waitChildPoll = vi.fn((
-      _parentPid: number,
-      _callerTid: number,
-      targetPid: number,
-      _eventMask: number,
-      _flags: number,
-      resultPtr: number,
-    ) => {
-      if (targetPid === 43) return 0;
-      writeKernelWaitResult(kernelMemory, resultPtr, {
-        waitStatus: 0,
-        siCode: WAIT_CLD_EXITED,
-        siStatus: 0,
-        childUid: 99,
-        rusage: new Uint8Array(STRUCT_SIZE_WASM_RUSAGE_WIRE),
-      });
-      return 42;
+    const waitChildPoll = vi.fn(
+      (
+        _parentPid: number,
+        _callerTid: number,
+        targetPid: number,
+        _eventMask: number,
+        _flags: number,
+        resultPtr: number,
+      ) => {
+        if (targetPid === 43) return 0;
+        writeKernelWaitResult(kernelMemory, resultPtr, {
+          waitStatus: 0,
+          siCode: WAIT_CLD_EXITED,
+          siStatus: 0,
+          childUid: 99,
+          rusage: new Uint8Array(STRUCT_SIZE_WASM_RUSAGE_WIRE),
+        });
+        return 42;
+      },
+    );
+    const worker = createWorkerHarness({
+      kernel_wait_child_poll: waitChildPoll,
     });
-    const worker = createWorkerHarness({ kernel_wait_child_poll: waitChildPoll });
     worker.kernelMemory = kernelMemory;
-    worker.processes = new Map([[7, {
-      channels: [first, second, running],
-      memory: processMemory,
-    }]]);
+    installKernelWorkerTestScratch(worker, kernelMemory);
+    worker.processes = new Map([
+      [
+        7,
+        {
+          channels: [first, second, running],
+          memory: processMemory,
+        },
+      ],
+    ]);
     worker.channelTids = new Map([
       ["7:256", 8],
       ["7:512", 9],
@@ -738,13 +895,40 @@ describe("Rust-owned process wait lifecycle", () => {
 
     expect(worker.waitingForChild).toEqual([runningWaiter]);
     expect(worker.completeWaitid).toHaveBeenCalledTimes(2);
-    expect(waitChildPoll.mock.calls.filter((call: unknown[]) => call[2] === 42))
-      .toEqual([
-        [7, 7, 42, WAIT_EVENT_EXITED, WAIT_WNOWAIT, 128],
-        [7, 8, 42, WAIT_EVENT_EXITED, WAIT_WNOWAIT, 128],
-      ]);
-    expect(new DataView(processMemory.buffer).getInt32(1024 + 12, true)).toBe(42);
-    expect(new DataView(processMemory.buffer).getInt32(1280 + 12, true)).toBe(42);
+    expect(
+      waitChildPoll.mock.calls.filter((call: unknown[]) => call[2] === 42),
+    ).toEqual([
+      [
+        7,
+        7,
+        42,
+        WAIT_EVENT_EXITED,
+        WAIT_WNOWAIT,
+        128,
+        STRUCT_SIZE_KERNEL_WAIT_RESULT,
+      ],
+      [
+        7,
+        8,
+        42,
+        WAIT_EVENT_EXITED,
+        WAIT_WNOWAIT,
+        128,
+        STRUCT_SIZE_KERNEL_WAIT_RESULT,
+      ],
+    ]);
+    expect(
+      new DataView(processMemory.buffer).getInt32(
+        1024 + PROCESS_SIGINFO_WASM32_PID_OFFSET,
+        true,
+      ),
+    ).toBe(42);
+    expect(
+      new DataView(processMemory.buffer).getInt32(
+        1280 + PROCESS_SIGINFO_WASM32_PID_OFFSET,
+        true,
+      ),
+    ).toBe(42);
   });
 
   it("interrupts the exact host-deferred wait thread with its caught signal", () => {
@@ -770,18 +954,26 @@ describe("Rust-owned process wait lifecycle", () => {
       kernel_dequeue_signal: dequeue,
     });
     worker.kernelMemory = kernelMemory;
-    worker.processes = new Map([[7, {
-      channels: [channel],
-      memory: processMemory,
-    }]]);
-    worker.waitingForChild = [{
-      parentPid: 7,
-      channel,
-      origArgs: [-1, 0, 0, 0],
-      pid: -1,
-      options: 0,
-      syscallNr: ABI_SYSCALLS.Wait4,
-    }];
+    installKernelWorkerTestScratch(worker, kernelMemory);
+    worker.processes = new Map([
+      [
+        7,
+        {
+          channels: [channel],
+          memory: processMemory,
+        },
+      ],
+    ]);
+    worker.waitingForChild = [
+      {
+        parentPid: 7,
+        channel,
+        origArgs: [-1, 0, 0, 0],
+        pid: -1,
+        options: 0,
+        syscallNr: ABI_SYSCALLS.Wait4,
+      },
+    ];
     worker.wakeWaitingParent = vi.fn();
     worker.finishSignalTermination = vi.fn(() => false);
     worker.completeChannel = vi.fn();
@@ -807,10 +999,15 @@ describe("Rust-owned process wait lifecycle", () => {
     const caller = createChannel(7, memory, 0);
     const target = createChannel(7, memory, 256);
     const worker = createWorkerHarness({});
-    worker.processes = new Map([[7, {
-      channels: [caller, target],
-      memory,
-    }]]);
+    worker.processes = new Map([
+      [
+        7,
+        {
+          channels: [caller, target],
+          memory,
+        },
+      ],
+    ]);
     worker.channelTids = new Map([["7:256", 99]]);
     worker.pendingCancels = new Set();
     worker.pendingFutexWaits = new Map();
@@ -818,14 +1015,16 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.pendingSelectRetries = new Map();
     worker.pendingPipeReaders = new Map();
     worker.pendingPipeWriters = new Map();
-    worker.waitingForChild = [{
-      parentPid: 7,
-      channel: target,
-      origArgs: [-1, 0, 0, 0],
-      pid: -1,
-      options: 0,
-      syscallNr: ABI_SYSCALLS.Wait4,
-    }];
+    worker.waitingForChild = [
+      {
+        parentPid: 7,
+        channel: target,
+        origArgs: [-1, 0, 0, 0],
+        pid: -1,
+        options: 0,
+        syscallNr: ABI_SYSCALLS.Wait4,
+      },
+    ];
     worker.runSyntheticMemorySyscall = vi.fn(() => ({ retVal: 0, errVal: 0 }));
     worker.completeChannelRaw = vi.fn();
     worker.relistenChannel = vi.fn();
@@ -840,12 +1039,7 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.waitingForChild).toEqual([]);
     expect(worker.pendingCancels.has(target)).toBe(true);
     expect(worker.completeChannelRaw).toHaveBeenNthCalledWith(1, caller, 0, 0);
-    expect(worker.completeChannelRaw).toHaveBeenNthCalledWith(
-      2,
-      target,
-      -4,
-      4,
-    );
+    expect(worker.completeChannelRaw).toHaveBeenNthCalledWith(2, target, -4, 4);
     expect(worker.relistenChannel).toHaveBeenCalledWith(target);
   });
 
@@ -857,10 +1051,15 @@ describe("Rust-owned process wait lifecycle", () => {
     const futexPtr = 4096;
     new Int32Array(memory.buffer)[futexPtr >>> 2] = 0;
     const worker = createWorkerHarness({});
-    worker.processes = new Map([[7, {
-      channels: [first, second, waker],
-      memory,
-    }]]);
+    worker.processes = new Map([
+      [
+        7,
+        {
+          channels: [first, second, waker],
+          memory,
+        },
+      ],
+    ]);
     worker.pendingFutexWaits = new Map();
     worker.completeChannelRaw = vi.fn();
     worker.relistenChannel = vi.fn();
@@ -901,10 +1100,15 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.pendingCancels = new Set([channel]);
     worker.waitingForChild = [];
     worker.pendingSleeps = new Map();
-    worker.pendingFutexWaits = new Map([[channel, {
-      futexIndex: 1024,
-      retire,
-    }]]);
+    worker.pendingFutexWaits = new Map([
+      [
+        channel,
+        {
+          futexIndex: 1024,
+          retire,
+        },
+      ],
+    ]);
     worker.pendingPollRetries = new Map();
     worker.pendingSelectRetries = new Map();
     worker.pendingPipeReaders = new Map();
@@ -958,8 +1162,9 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(readStatus(second)).toBe(CHANNEL_STATUS_PENDING);
     // A peer mapping the same SharedArrayBuffer observes completed syscall
     // output even though this stopped process remains parked at CH_PENDING.
-    expect(new Uint8Array(memory.buffer, 2048, 3))
-      .toEqual(Uint8Array.of(1, 2, 3));
+    expect(new Uint8Array(memory.buffer, 2048, 3)).toEqual(
+      Uint8Array.of(1, 2, 3),
+    );
     expect(worker.synchronizeSharedMemoryForBoundary).toHaveBeenCalledTimes(2);
 
     worker.resumeStoppedProcess(42);
@@ -967,9 +1172,21 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.parkedChannelCompletions.size).toBe(0);
     expect(readStatus(first)).toBe(CHANNEL_STATUS_COMPLETE);
     expect(readStatus(second)).toBe(CHANNEL_STATUS_COMPLETE);
-    expect(new DataView(memory.buffer, first.channelOffset).getBigInt64(CH_RETURN, true)).toBe(7n);
-    expect(new DataView(memory.buffer, second.channelOffset).getBigInt64(CH_RETURN, true)).toBe(8n);
-    expect(new Uint8Array(memory.buffer, 2048, 3)).toEqual(Uint8Array.of(1, 2, 3));
+    expect(
+      new DataView(memory.buffer, first.channelOffset).getBigInt64(
+        CH_RETURN,
+        true,
+      ),
+    ).toBe(7n);
+    expect(
+      new DataView(memory.buffer, second.channelOffset).getBigInt64(
+        CH_RETURN,
+        true,
+      ),
+    ).toBe(8n);
+    expect(new Uint8Array(memory.buffer, 2048, 3)).toEqual(
+      Uint8Array.of(1, 2, 3),
+    );
     expect(worker.relistenChannel).toHaveBeenCalledOnce();
     expect(worker.relistenChannel).toHaveBeenCalledWith(first);
   });
@@ -995,23 +1212,34 @@ describe("Rust-owned process wait lifecycle", () => {
       kernel_get_process_exit_signal: vi.fn(() => -1),
     });
     worker.kernelMemory = kernelMemory;
-    worker.processes = new Map([[42, {
-      channels: [channel],
-      memory: processMemory,
-    }]]);
+    installKernelWorkerTestScratch(worker, kernelMemory);
+    worker.processes = new Map([
+      [
+        42,
+        {
+          channels: [channel],
+          memory: processMemory,
+        },
+      ],
+    ]);
     worker.channelTids = new Map();
     worker.hostReaped = new Set();
     worker.stoppedPids = new Set([42]);
-    worker.parkedChannelCompletions = new Map([[channel, {
-      prepared: {
-        kind: "raw",
-        outputWrites: [],
-        retVal: 0,
-        errVal: 0,
-        relistenRequested: false,
-      },
-      relistenRequested: false,
-    }]]);
+    worker.parkedChannelCompletions = new Map([
+      [
+        channel,
+        {
+          prepared: {
+            kind: "raw",
+            outputWrites: [],
+            retVal: 0,
+            errVal: 0,
+            relistenRequested: false,
+          },
+          relistenRequested: false,
+        },
+      ],
+    ]);
     worker.deferredStoppedChannels = new Map();
     worker.deferredProcessWorkerStarts = new Map();
     worker.publishPreparedChannelCompletion = vi.fn();
@@ -1019,8 +1247,9 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.resumeStoppedProcess(42);
 
     expect(dequeue).toHaveBeenCalledOnce();
-    expect(new DataView(processMemory.buffer).getUint32(CH_SIG_SIGNUM, true))
-      .toBe(SIGCONT);
+    expect(
+      new DataView(processMemory.buffer).getUint32(CH_SIG_SIGNUM, true),
+    ).toBe(SIGCONT);
     expect(worker.publishPreparedChannelCompletion).toHaveBeenCalledOnce();
   });
 
@@ -1054,10 +1283,16 @@ describe("Rust-owned process wait lifecycle", () => {
       kernel_get_process_exit_signal: vi.fn(() => -1),
     });
     worker.kernelMemory = kernelMemory;
-    worker.processes = new Map([[42, {
-      channels: [first, second],
-      memory: processMemory,
-    }]]);
+    installKernelWorkerTestScratch(worker, kernelMemory);
+    worker.processes = new Map([
+      [
+        42,
+        {
+          channels: [first, second],
+          memory: processMemory,
+        },
+      ],
+    ]);
     worker.channelTids = new Map([
       ["42:0", 101],
       ["42:256", 102],
@@ -1080,20 +1315,18 @@ describe("Rust-owned process wait lifecycle", () => {
     const publish = vi.fn();
     worker.publishPreparedChannelCompletion = publish;
 
-    expect(worker.startProcessWorkerWhenRunnable(
-      42,
-      processMemory,
-      start,
-      cancel,
-    )).toBe("deferred");
+    expect(
+      worker.startProcessWorkerWhenRunnable(42, processMemory, start, cancel),
+    ).toBe("deferred");
 
     state = PROCESS_STATE_RUNNING;
     expect(worker.resumeStoppedProcess(42)).toBe(false);
     expect(start).not.toHaveBeenCalled();
     expect(publish).not.toHaveBeenCalled();
     expect(worker.parkedChannelCompletions.size).toBe(2);
-    expect(new DataView(processMemory.buffer).getUint32(CH_SIG_SIGNUM, true))
-      .toBe(SIGCONT);
+    expect(
+      new DataView(processMemory.buffer).getUint32(CH_SIG_SIGNUM, true),
+    ).toBe(SIGCONT);
 
     state = PROCESS_STATE_RUNNING;
     expect(worker.resumeStoppedProcess(42)).toBe(true);
@@ -1103,8 +1336,9 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(dequeue).toHaveBeenCalledTimes(3);
     // The first channel's caught signal was not dequeued/cleared again on the
     // second resume attempt.
-    expect(new DataView(processMemory.buffer).getUint32(CH_SIG_SIGNUM, true))
-      .toBe(SIGCONT);
+    expect(
+      new DataView(processMemory.buffer).getUint32(CH_SIG_SIGNUM, true),
+    ).toBe(SIGCONT);
   });
 
   it("interrupts a stopped exact wait thread with its retained caught signal", () => {
@@ -1123,18 +1357,26 @@ describe("Rust-owned process wait lifecycle", () => {
       kernel_get_process_exit_signal: vi.fn(() => -1),
     });
     worker.kernelMemory = kernelMemory;
-    worker.processes = new Map([[7, {
-      channels: [channel],
-      memory: processMemory,
-    }]]);
-    worker.waitingForChild = [{
-      parentPid: 7,
-      channel,
-      origArgs: [-1, 0, 0, 0],
-      pid: -1,
-      options: 0,
-      syscallNr: ABI_SYSCALLS.Wait4,
-    }];
+    installKernelWorkerTestScratch(worker, kernelMemory);
+    worker.processes = new Map([
+      [
+        7,
+        {
+          channels: [channel],
+          memory: processMemory,
+        },
+      ],
+    ]);
+    worker.waitingForChild = [
+      {
+        parentPid: 7,
+        channel,
+        origArgs: [-1, 0, 0, 0],
+        pid: -1,
+        options: 0,
+        syscallNr: ABI_SYSCALLS.Wait4,
+      },
+    ];
     worker.stoppedPids = new Set([7]);
     worker.parkedChannelCompletions = new Map();
     worker.deferredStoppedChannels = new Map();
@@ -1154,41 +1396,56 @@ describe("Rust-owned process wait lifecycle", () => {
     const sequence: string[] = [];
     const start = vi.fn(() => sequence.push("start"));
     const cancel = vi.fn();
-    worker.publishPreparedChannelCompletion = vi.fn((_channel: unknown, prepared: {
-      retVal: number;
-      errVal: number;
-    }) => {
-      sequence.push("publish");
-      expect(prepared.retVal).toBe(-1);
-      expect(prepared.errVal).toBe(4);
-    });
+    worker.publishPreparedChannelCompletion = vi.fn(
+      (
+        _channel: unknown,
+        prepared: {
+          retVal: number;
+          errVal: number;
+        },
+      ) => {
+        sequence.push("publish");
+        expect(prepared.retVal).toBe(-1);
+        expect(prepared.errVal).toBe(4);
+      },
+    );
 
-    expect(worker.startProcessWorkerWhenRunnable(
-      7,
-      processMemory,
-      start,
-      cancel,
-    )).toBe("deferred");
+    expect(
+      worker.startProcessWorkerWhenRunnable(7, processMemory, start, cancel),
+    ).toBe("deferred");
     state = PROCESS_STATE_RUNNING;
     expect(worker.resumeStoppedProcess(7)).toBe(true);
 
     expect(worker.waitingForChild).toEqual([]);
     expect(dequeue).toHaveBeenCalledOnce();
     expect(sequence).toEqual(["start", "publish"]);
-    expect(new DataView(processMemory.buffer).getUint32(CH_SIG_SIGNUM, true))
-      .toBe(SIGUSR1);
+    expect(
+      new DataView(processMemory.buffer).getUint32(CH_SIG_SIGNUM, true),
+    ).toBe(SIGUSR1);
   });
 
-  it("materializes stopped descriptor output before wake scratch is reused", () => {
+  it("materializes detached descriptor output before wake scratch is reused", () => {
     const kernelMemory = createSharedMemory();
     const processMemory = createSharedMemory();
     const channel = createChannel(42, processMemory);
     const outputPtr = 2048;
     markPending(channel);
     new Uint8Array(kernelMemory.buffer, 128 + CH_DATA, 4).set([9, 8, 7, 6]);
+    // WHY: completeChannel consumes bytes detached while the scratch lease is
+    // still active. It must never reconstruct output later from shared scratch,
+    // which a lifecycle wake may synchronously reuse.
+    const detachedOutput = [
+      {
+        ptr: outputPtr,
+        bytes: new Uint8Array(kernelMemory.buffer, 128 + CH_DATA, 4).slice(),
+      },
+    ];
     const worker = createWorkerHarness({});
     worker.kernelMemory = kernelMemory;
-    worker.processes = new Map([[42, { channels: [channel], memory: processMemory }]]);
+    installKernelWorkerTestScratch(worker, kernelMemory);
+    worker.processes = new Map([
+      [42, { channels: [channel], memory: processMemory }],
+    ]);
     worker.stoppedPids = new Set([42]);
     worker.parkedChannelCompletions = new Map();
     worker.deferredStoppedChannels = new Map();
@@ -1203,8 +1460,9 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.relistenChannel = vi.fn();
     worker.drainAndProcessWakeupEvents = vi.fn(() => {
       sequence.push("drain");
-      expect(new Uint8Array(processMemory.buffer, outputPtr, 4))
-        .toEqual(Uint8Array.of(9, 8, 7, 6));
+      expect(new Uint8Array(processMemory.buffer, outputPtr, 4)).toEqual(
+        Uint8Array.of(9, 8, 7, 6),
+      );
       new Uint8Array(kernelMemory.buffer, 128 + CH_DATA, 4).fill(0xee);
     });
 
@@ -1212,23 +1470,28 @@ describe("Rust-owned process wait lifecycle", () => {
       channel,
       ABI_SYSCALLS.Read,
       [0, outputPtr, 4],
-      [{
-        argIndex: 1,
-        direction: "out",
-        size: { type: "arg", argIndex: 2 },
-      }],
+      [
+        {
+          argIndex: 1,
+          direction: "out",
+          size: { type: "arg", argIndex: 2 },
+        },
+      ],
       4,
       0,
+      detachedOutput,
     );
 
     expect(readStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
-    expect(new Uint8Array(processMemory.buffer, outputPtr, 4))
-      .toEqual(Uint8Array.of(9, 8, 7, 6));
+    expect(new Uint8Array(processMemory.buffer, outputPtr, 4)).toEqual(
+      Uint8Array.of(9, 8, 7, 6),
+    );
     expect(worker.synchronizeSharedMemoryForBoundary).toHaveBeenCalledOnce();
     expect(sequence).toEqual(["sync", "drain"]);
     worker.resumeStoppedProcess(42);
-    expect(new Uint8Array(processMemory.buffer, outputPtr, 4))
-      .toEqual(Uint8Array.of(9, 8, 7, 6));
+    expect(new Uint8Array(processMemory.buffer, outputPtr, 4)).toEqual(
+      Uint8Array.of(9, 8, 7, 6),
+    );
   });
 
   it("synchronizes raw completion before lifecycle wake observers", () => {
@@ -1261,7 +1524,9 @@ describe("Rust-owned process wait lifecycle", () => {
   it("defers an exact retry while stopped and re-arms it on continuation", () => {
     const channel = createChannel(42, createSharedMemory());
     const worker = createWorkerHarness({});
-    worker.processes = new Map([[42, { channels: [channel], memory: channel.memory }]]);
+    worker.processes = new Map([
+      [42, { channels: [channel], memory: channel.memory }],
+    ]);
     worker.stoppedPids = new Set([42]);
     worker.deferredStoppedChannels = new Map();
     worker.parkedChannelCompletions = new Map();
@@ -1290,16 +1555,19 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.processes = new Map([[42, { channels: [first, second], memory }]]);
     worker.stoppedPids = new Set([42]);
     worker.parkedChannelCompletions = new Map([
-      [first, {
-        prepared: {
-          kind: "raw",
-          outputWrites: [],
-          retVal: 1,
-          errVal: 0,
+      [
+        first,
+        {
+          prepared: {
+            kind: "raw",
+            outputWrites: [],
+            retVal: 1,
+            errVal: 0,
+            relistenRequested: false,
+          },
           relistenRequested: false,
         },
-        relistenRequested: false,
-      }],
+      ],
     ]);
     worker.deferredStoppedChannels = new Map([[second, true]]);
     worker.hostReaped = new Set();
@@ -1385,7 +1653,9 @@ describe("Rust-owned process wait lifecycle", () => {
     const channel = createChannel(pid, memory);
     const setCurrentTid = vi.fn(() => -3);
     const onExit = vi.fn();
-    const worker = createWorkerHarness({ kernel_set_current_tid: setCurrentTid });
+    const worker = createWorkerHarness({
+      kernel_set_current_tid: setCurrentTid,
+    });
     worker.processes = new Map([[pid, { channels: [channel], memory }]]);
     worker.hostReaped = new Set();
     worker.callbacks = { onExit };
@@ -1420,10 +1690,15 @@ describe("Rust-owned process wait lifecycle", () => {
     const threadChannel = createChannel(pid, memory, 256);
     const onExit = vi.fn();
     const worker = createWorkerHarness();
-    worker.processes = new Map([[pid, {
-      channels: [mainChannel, threadChannel],
-      memory,
-    }]]);
+    worker.processes = new Map([
+      [
+        pid,
+        {
+          channels: [mainChannel, threadChannel],
+          memory,
+        },
+      ],
+    ]);
     worker.channelTids = new Map();
     worker.hostReaped = new Set();
     worker.callbacks = { onExit };
@@ -1431,7 +1706,8 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.completeChannelRaw = vi.fn();
     worker.relistenChannel = vi.fn();
     worker._handleSyscallInner = vi.fn(() =>
-      worker.guestTidForChannel(threadChannel));
+      worker.guestTidForChannel(threadChannel),
+    );
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const expected =
       `No kernel-validated TID for non-main channel ${threadChannel.channelOffset} ` +
@@ -1490,39 +1766,45 @@ describe("Rust-owned process wait lifecycle", () => {
   it("retires stale pthread transport metadata when deactivating a zombie", () => {
     const pid = 42;
     const otherPid = 420;
-    const worker = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-      retireAsyncChannelsForProcess: vi.fn(),
-      discardStoppedChannelStateForProcess: vi.fn(),
-      waitingForChild: [],
-      releaseAllSharedMemoryForProcess: vi.fn(),
-      activeChannels: [{ pid }, { pid: otherPid }],
-      channelTids: new Map([
-        [`${pid}:1000`, 1001],
-        [`${otherPid}:2000`, 2001],
-      ]),
-      threadForkContexts: new Map([
-        [`${pid}:1000`, { fnPtr: 1, argPtr: 2 }],
-        [`${otherPid}:2000`, { fnPtr: 3, argPtr: 4 }],
-      ]),
-      threadCtidPtrs: new Map([
-        [`${pid}:1001`, 3000],
-        [`${otherPid}:2001`, 4000],
-      ]),
-      processes: new Map([[pid, {}], [otherPid, {}]]),
-      execHandoffPids: new Set([pid]),
-      stdinFinite: new Set([pid]),
-      stdinBuffers: new Map([[pid, new Uint8Array()]]),
-      alarmTimers: new Map(),
-      posixTimers: new Map(),
-      cancelPendingSleepsForProcess: vi.fn(),
-      cleanupPendingPollRetries: vi.fn(),
-      cleanupPendingSelectRetries: vi.fn(),
-      cleanupPendingSignalWaits: vi.fn(),
-      cleanupUdpBindings: vi.fn(),
-      cleanupTcpListeners: vi.fn(),
-      hostReaped: new Set([pid]),
-      kernel: { releaseProcessViews: vi.fn() },
-    }) as any;
+    const worker = Object.assign(
+      Object.create(CentralizedKernelWorker.prototype),
+      {
+        retireAsyncChannelsForProcess: vi.fn(),
+        discardStoppedChannelStateForProcess: vi.fn(),
+        waitingForChild: [],
+        releaseAllSharedMemoryForProcess: vi.fn(),
+        activeChannels: [{ pid }, { pid: otherPid }],
+        channelTids: new Map([
+          [`${pid}:1000`, 1001],
+          [`${otherPid}:2000`, 2001],
+        ]),
+        threadForkContexts: new Map([
+          [`${pid}:1000`, { fnPtr: 1, argPtr: 2 }],
+          [`${otherPid}:2000`, { fnPtr: 3, argPtr: 4 }],
+        ]),
+        threadCtidPtrs: new Map([
+          [`${pid}:1001`, 3000],
+          [`${otherPid}:2001`, 4000],
+        ]),
+        processes: new Map([
+          [pid, {}],
+          [otherPid, {}],
+        ]),
+        execHandoffPids: new Set([pid]),
+        stdinFinite: new Set([pid]),
+        stdinBuffers: new Map([[pid, new Uint8Array()]]),
+        alarmTimers: new Map(),
+        posixTimers: new Map(),
+        cancelPendingSleepsForProcess: vi.fn(),
+        cleanupPendingPollRetries: vi.fn(),
+        cleanupPendingSelectRetries: vi.fn(),
+        cleanupPendingSignalWaits: vi.fn(),
+        cleanupUdpBindings: vi.fn(),
+        cleanupTcpListeners: vi.fn(),
+        hostReaped: new Set([pid]),
+        kernel: { releaseProcessViews: vi.fn() },
+      },
+    ) as any;
 
     worker.deactivateProcess(pid);
 
@@ -1750,9 +2032,14 @@ describe("Rust-owned process wait lifecycle", () => {
   );
 
   it("uses the explicit termination signal instead of classifying high exit codes", () => {
-    const exitSignals = new Map([[42, 0], [43, 15]]);
+    const exitSignals = new Map([
+      [42, 0],
+      [43, 15],
+    ]);
     const worker = createWorkerHarness({
-      kernel_get_process_exit_signal: vi.fn((pid: number) => exitSignals.get(pid) ?? -1),
+      kernel_get_process_exit_signal: vi.fn(
+        (pid: number) => exitSignals.get(pid) ?? -1,
+      ),
     });
     const normalChannel = createChannel(42, createSharedMemory());
     const signaledChannel = createChannel(43, createSharedMemory());
@@ -1767,7 +2054,9 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.reapKilledProcessesAfterSyscall();
 
     expect(worker.handleProcessTerminated).toHaveBeenCalledOnce();
-    expect(worker.handleProcessTerminated).toHaveBeenCalledWith(signaledChannel);
+    expect(worker.handleProcessTerminated).toHaveBeenCalledWith(
+      signaledChannel,
+    );
   });
 
   it("SA_NOCLDWAIT auto-reaps through Rust without SIGCHLD", () => {
@@ -1791,29 +2080,37 @@ describe("Rust-owned process wait lifecycle", () => {
   });
 });
 
-function createWorkerHarness(exports: Record<string, unknown>, kernelPtrWidth: 4 | 8 = 4): any {
-  return Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-    kernel: {
-      toKernelPtr(value: number | bigint): number | bigint {
-        const numberValue = typeof value === "bigint" ? Number(value) : value;
-        return kernelPtrWidth === 8 ? BigInt(numberValue) : numberValue;
+function createWorkerHarness(
+  exports: Record<string, unknown>,
+  kernelPtrWidth: 4 | 8 = 4,
+): any {
+  const kernelMemory = createSharedMemory();
+  const worker = Object.assign(
+    Object.create(CentralizedKernelWorker.prototype),
+    {
+      kernel: {
+        toKernelPtr(value: number | bigint): number | bigint {
+          const numberValue = typeof value === "bigint" ? Number(value) : value;
+          return kernelPtrWidth === 8 ? BigInt(numberValue) : numberValue;
+        },
       },
-    },
-    kernelInstance: {
-      exports: {
-        kernel_get_process_exit_signal: vi.fn(() => -1),
-        kernel_get_process_state: vi.fn(() => PROCESS_STATE_RUNNING),
-        kernel_set_current_tid: vi.fn(() => 0),
-        ...exports,
+      kernelInstance: {
+        exports: {
+          kernel_get_process_exit_signal: vi.fn(() => -1),
+          kernel_get_process_state: vi.fn(() => PROCESS_STATE_RUNNING),
+          kernel_set_current_tid: vi.fn(() => 0),
+          ...exports,
+        },
       },
+      kernelMemory,
+      processes: new Map(),
+      channelTids: new Map(),
+      pendingCancels: new Set(),
+      deferredProcessWorkerStarts: new Map(),
     },
-    kernelMemory: createSharedMemory(),
-    scratchOffset: 128,
-    processes: new Map(),
-    channelTids: new Map(),
-    pendingCancels: new Set(),
-    deferredProcessWorkerStarts: new Map(),
-  });
+  );
+  installKernelWorkerTestScratch(worker, kernelMemory, 128, kernelPtrWidth);
+  return worker;
 }
 
 function createSharedMemory(): WebAssembly.Memory {
@@ -1824,7 +2121,11 @@ function createSharedMemory(): WebAssembly.Memory {
   });
 }
 
-function createChannel(pid: number, memory: WebAssembly.Memory, channelOffset = 0): any {
+function createChannel(
+  pid: number,
+  memory: WebAssembly.Memory,
+  channelOffset = 0,
+): any {
   return {
     pid,
     memory,
@@ -1855,12 +2156,27 @@ function writeKernelWaitResult(
   },
 ): void {
   const view = new DataView(memory.buffer);
-  view.setInt32(ptr + KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET, result.waitStatus, true);
+  view.setInt32(
+    ptr + KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET,
+    result.waitStatus,
+    true,
+  );
   view.setInt32(ptr + KERNEL_WAIT_RESULT_SI_CODE_OFFSET, result.siCode, true);
-  view.setInt32(ptr + KERNEL_WAIT_RESULT_SI_STATUS_OFFSET, result.siStatus, true);
-  view.setUint32(ptr + KERNEL_WAIT_RESULT_CHILD_UID_OFFSET, result.childUid, true);
-  new Uint8Array(memory.buffer, ptr + KERNEL_WAIT_RESULT_RUSAGE_OFFSET, result.rusage.length)
-    .set(result.rusage);
+  view.setInt32(
+    ptr + KERNEL_WAIT_RESULT_SI_STATUS_OFFSET,
+    result.siStatus,
+    true,
+  );
+  view.setUint32(
+    ptr + KERNEL_WAIT_RESULT_CHILD_UID_OFFSET,
+    result.childUid,
+    true,
+  );
+  new Uint8Array(
+    memory.buffer,
+    ptr + KERNEL_WAIT_RESULT_RUSAGE_OFFSET,
+    result.rusage.length,
+  ).set(result.rusage);
 }
 
 function writeWakeEvent(

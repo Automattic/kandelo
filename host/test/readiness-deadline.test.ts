@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ABI_SYSCALLS, CH_SIG_BASE } from "../src/generated/abi";
+import {
+  ABI_SYSCALLS,
+  CH_SIG_BASE,
+  KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES,
+} from "../src/generated/abi";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 function createSharedMemory(pages = 1): WebAssembly.Memory {
   return new WebAssembly.Memory({ initial: pages, maximum: pages, shared: true });
@@ -119,7 +124,8 @@ describe("host-emulated epoll signal delivery", () => {
     expect(harness.dequeueSignal).toHaveBeenCalledWith(
       harness.channel.pid,
       harness.channel.pid,
-      CH_SIG_BASE,
+      harness.scratchPointer + CH_SIG_BASE,
+      KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES,
     );
     expect(
       new DataView(harness.processMemory.buffer).getUint32(CH_SIG_BASE, true),
@@ -158,7 +164,12 @@ function createEpollSignalHarness(
     channelOffset: 0,
     memory: processMemory,
   };
-  const dequeueSignal = vi.fn((_pid: number, _tid: number, outPtr: number) => {
+  const dequeueSignal = vi.fn((
+    _pid: number,
+    _tid: number,
+    outPtr: number,
+    _outCapacity: number,
+  ) => {
     if (handlerSignal > 0) {
       new DataView(kernelMemory.buffer).setUint32(outPtr, handlerSignal, true);
     }
@@ -178,7 +189,10 @@ function createEpollSignalHarness(
       },
     },
     kernelMemory,
-    scratchOffset: 0,
+    processes: new Map([[channel.pid, {
+      channels: [channel],
+      ptrWidth: 4,
+    }]]),
     currentHandlePid: 0,
     channelTids: new Map([["42:0", 42]]),
     epollInterests: new Map([
@@ -191,6 +205,7 @@ function createEpollSignalHarness(
     relistenChannel,
     handleProcessTerminated,
   });
+  const scratchPointer = installKernelWorkerTestScratch(worker, kernelMemory);
   return {
     channel,
     completeChannelRaw,
@@ -199,6 +214,7 @@ function createEpollSignalHarness(
     handleProcessTerminated,
     processMemory,
     relistenChannel,
+    scratchPointer,
     worker,
   };
 }

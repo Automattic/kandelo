@@ -34,7 +34,7 @@ declare global {
 
 /** Suites available in the browser benchmark page. */
 const BROWSER_SUITES = [
-  "syscall-io", "process-lifecycle", "wordpress",
+  "syscall-io", "process-lifecycle", "spawn-scratch", "wordpress",
   "mariadb-aria", "mariadb-aria-64",
   "mariadb-innodb", "mariadb-innodb-64",
 ];
@@ -47,6 +47,7 @@ const DISABLED_BROWSER_SUITES: Record<string, string> = {
 const SUITE_TIMEOUTS: Record<string, number> = {
   "syscall-io": 60_000,
   "process-lifecycle": 60_000,
+  "spawn-scratch": 60_000,
   "wordpress": 300_000,
   "mariadb-aria": 600_000,
   "mariadb-aria-64": 600_000,
