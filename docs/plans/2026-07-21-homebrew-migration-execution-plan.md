@@ -586,10 +586,24 @@ canonical release):
      recheck main identity immediately before every canonical bottle,
      version-index, tap-state, and VFS release mutation. If `main` advances,
      stop and redispatch from the new exact `main` commit;
-  5. publish the complete intended ABI-42 closure, then update the shell lock
-     to the exact resulting tap commit, remove the source-built bridge, and run
-     exact-byte Node.js and Chromium acceptance against the strict bottle
-     closure.
+  5. publish the complete intended ABI-42 closure and record the resulting tap
+     commit as `TF`. Land an intermediate Kandelo commit `Mpre` that pins `TF`
+     and adds the immutable bottle-mirror publisher, but deliberately retains
+     the source-built shell bridge in CI and Pages. From a tap-owned
+     `repository_dispatch` run, use a Kandelo reusable workflow to prepare the
+     exact `Mpre`/`TF` mirror without credentials, publish it with the tap's
+     own `GITHUB_TOKEN`, and anonymously verify the public image in Node.js and
+     Chromium. Only after that proof may `Mfinal` remove the source bridge and
+     switch the product shell to the strict bottle closure.
+
+  The mirror lane must not download a broad artifact from a Kandelo workflow:
+  cross-repository artifact access would require a PAT or GitHub App token and
+  would move publication authority outside the tap. Instead, the tap-owned
+  caller invokes the reusable workflow so its prepare, narrow data-only
+  handoff, publication, and public-verification jobs all share one tap run.
+  `Mpre` and both repositories' `main` refs remain fixed throughout the
+  publication. This two-commit cutover prevents Pages from deploying lazy URLs
+  before their immutable public mirror exists.
 
   Git ancestry is review evidence, not producer provenance. Do not enable merge
   commits, preserve a PR head, create an equal-tree history join, or retain
