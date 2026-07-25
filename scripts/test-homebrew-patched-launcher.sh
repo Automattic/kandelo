@@ -111,8 +111,11 @@ if negative_output="$(
   echo "relocated checker unexpectedly used its inaccessible compile checkout" >&2
   exit 1
 fi
+# WHY: The package closure can gain an earlier required source input over time.
+# Match the inaccessible compile root rather than coupling this regression to
+# whichever input the resolver happens to validate first.
 case "$negative_output" in
-  *"global package build input \"flake.nix\" not found at $original_root/flake.nix"*) ;;
+  *"build input \""*"\" not found"*"$original_root/"*) ;;
   *)
     echo "relocated checker negative control failed for the wrong reason:" >&2
     echo "$negative_output" >&2
