@@ -2124,11 +2124,9 @@ fn plain_catch_plan_single_target_multi_arm_is_supported() {
 // ======================================================================
 
 #[test]
-fn b1_stage_1_module_without_plain_catch_validates_and_b1_size_zero() {
-    // A fork-using module with no plain catch should be byte-identical
-    // (instrumentation-wise) to pre-B1 — Stage 1 only adds bookkeeping;
-    // emission is unchanged. The standard wpk_fork_* exports must
-    // still be present.
+fn plain_catch_plan_module_without_plain_catch_validates() {
+    // A fork-using module with no plain catch needs no activation-owned
+    // catch locals. The standard wpk_fork_* exports must still be present.
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -2141,17 +2139,15 @@ fn b1_stage_1_module_without_plain_catch_validates_and_b1_size_zero() {
     let module = Module::from_buffer(&bytes).unwrap();
     assert!(
         module.exports.iter().any(|e| e.name == "wpk_fork_state"),
-        "wpk_fork_state export must remain after Stage 1"
+        "wpk_fork_state export must remain without plain catches"
     );
 }
 
 #[test]
-fn b1_stage_1_module_with_plain_catch_still_validates() {
-    // The plain-catch fixture from Tasks 1.1/1.2: B1 plan computes a
-    // non-zero scratch size, frames_start_offset shifts, but the
-    // emitted module still validates and exposes the standard
-    // wpk_fork_* exports. Behavioral assertions (parent forks → child
-    // resumes inside catch) come in Stage 2.
+fn plain_catch_plan_module_validates_without_prefix_scratch() {
+    // Plain-catch state belongs to frame-backed locals, so discovering this
+    // catch does not reserve module-prefix scratch. The emitted module still
+    // validates and exposes the standard wpk_fork_* exports.
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -2168,7 +2164,7 @@ fn b1_stage_1_module_with_plain_catch_still_validates() {
     let module = Module::from_buffer(&bytes).unwrap();
     assert!(
         module.exports.iter().any(|e| e.name == "wpk_fork_state"),
-        "wpk_fork_state export must remain after Stage 1"
+        "wpk_fork_state export must remain with plain catches"
     );
 }
 

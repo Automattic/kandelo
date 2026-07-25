@@ -1040,10 +1040,12 @@ K-04, and K-07 cover the current behavior.
   [posix-status.md](posix-status.md) for rationale.
 - **Functions whose plain-catch arms carry ref-typed operands.** Catch arms
   whose operand tuple includes an `(ref ...)` value (typically a function or
-  GC ref) are carved out of the fork-path set at instrument time. Spilling
-  ref-typed catch operands would require per-arm aux-table slots. The current
-  implementation deliberately keeps the safe
-  `PlainCatchPlan::b2_carveout` behavior and covers it with WAT-level tests.
+  GC ref) are excluded from plain-catch replay support at instrument time.
+  The function may still be instrumented for other fork sites, but a fork
+  reached from the affected handler remains unsupported. Spilling ref-typed
+  catch operands would require per-arm activation-aware auxiliary storage.
+  The current implementation keeps that explicit
+  `PlainCatchPlan::b2_carveout` boundary and covers it with WAT-level tests.
   This is an unanticipated Wasm-level case,
   not expected output from ordinary C++ EH lowering: C++ exception payloads
   live in linear memory / libc++abi state rather than as `funcref` or

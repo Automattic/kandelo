@@ -216,16 +216,14 @@ fn f_04_struct_ref_on_fork_path_rejects_with_diagnostic() {
 // C-08 / C-09: ref-typed catch operands (A4 territory)
 // ---------------------------------------------------------------------
 //
-// Per the unsupported-cases review doc, fork-path functions whose
-// plain-catch arms carry ref-typed operands (funcref / externref)
-// are CARVED OUT of the fork-path set at instrument time (via
-// `PlainCatchPlan::b2_carveout`). A future A4 implementation would
-// extend per-arm aux-table spilling to support these. The current
-// behavior: fork-instrument processes the module without panic;
-// the function with the ref-typed catch arm doesn't get
-// instrumented (which is correct: it's not actually on the
-// fork-call path if the carve-out is right, OR it's a
-// surprise-fork-path that the carve-out preserves safety for).
+// Per the unsupported-cases review doc, a function whose plain-catch
+// arms carry ref-typed operands (funcref / externref) is excluded from
+// plain-catch replay support via `PlainCatchPlan::b2_carveout`. The
+// function can still be instrumented for other fork sites; a fork reached
+// from the affected handler remains explicitly unsupported. A future A4
+// implementation would extend per-arm auxiliary storage to support these
+// operands. The current coverage proves the tool accepts the Wasm shape
+// without trying to serialize references as scalars.
 
 #[test]
 fn c_08_funcref_catch_operand_does_not_panic() {
