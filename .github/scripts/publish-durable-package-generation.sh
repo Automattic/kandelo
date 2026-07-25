@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Publish one validated content-addressed package generation. Public
-# generations are read-only under this contract even when repository-wide
-# GitHub release immutability cannot be enabled.
+# Publish one validated content-addressed package generation. This common
+# writer supports admitted durable generations and evidence-only preserved PR
+# closures; both are application-sealed and read-only after publication.
 set -euo pipefail
 
 BUNDLE=""
 LOCK_ROOT=""
 RECEIPT=""
 AUTHORITY_XTASK=""
+EXPECTED_AUTHORITY_SHA=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -15,6 +16,7 @@ while [ "$#" -gt 0 ]; do
     --lock-root) LOCK_ROOT="$2"; shift 2 ;;
     --receipt) RECEIPT="$2"; shift 2 ;;
     --authority-xtask) AUTHORITY_XTASK="$2"; shift 2 ;;
+    --expected-authority-sha) EXPECTED_AUTHORITY_SHA="$2"; shift 2 ;;
     *) echo "publish-durable-package-generation: unknown flag $1" >&2; exit 2 ;;
   esac
 done
@@ -72,14 +74,17 @@ env -u GH_TOKEN -u GITHUB_TOKEN \
     --bundle "$BUNDLE" >/dev/null
 
 MANIFEST="$BUNDLE/generation.json"
+GENERATION_FORMAT="$(jq -er .format "$MANIFEST")"
 expected_ledger="$TMP_ROOT/expected-ledger.json"
 validated_snapshot="$TMP_ROOT/validated-snapshot.json"
 jq -S '.identity.expected_ledger' "$MANIFEST" >"$expected_ledger"
 jq -S '.identity.validated_snapshot' "$MANIFEST" >"$validated_snapshot"
+package_source_sha="$(jq -er '.identity.package_source_sha' "$MANIFEST")"
+repository="$(jq -er '.identity.repository' "$MANIFEST")"
 # WHY: hashes prove these are the promoted bytes; parsing every embedded
 # archive manifest again with current authority proves they still implement
-# the package ledger the manifest claims. The writer never executes source
-# generation code.
+# the package ledger and exact producer the manifest claims. The writer never
+# executes source-generation code.
 env -u GH_TOKEN -u GITHUB_TOKEN \
   -u HOMEBREW_GITHUB_API_TOKEN \
   -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
@@ -91,13 +96,44 @@ env -u GH_TOKEN -u GITHUB_TOKEN \
     --expected-ledger "$expected_ledger" \
     --snapshot "$validated_snapshot" \
     --archives-dir "$BUNDLE" \
-    --scope all
+    --scope all \
+    --expected-source-repository "https://github.com/$repository" \
+    --expected-source-commit "$package_source_sha"
 
 REPOSITORY="$(jq -er '.identity.repository' "$MANIFEST")"
 TAG="$(jq -er '.tag' "$MANIFEST")"
 TARGET_COMMIT="$(jq -er '.release.target_commitish' "$MANIFEST")"
 TITLE="$(jq -er '.release.title' "$MANIFEST")"
 BODY="$(jq -er '.release.body' "$MANIFEST")"
+PRESERVED_FORMAT="kandelo-preserved-pr-package-generation-v1"
+IS_PRESERVED=false
+
+verify_authority_checkout() {
+  local actual_head
+  actual_head="$(git -C "$REPO_ROOT" rev-parse --verify HEAD)"
+  if [ "$actual_head" != "$EXPECTED_AUTHORITY_SHA" ] ||
+     [ -n "$(git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all)" ]; then
+    echo "publish-durable-package-generation: publisher authority HEAD/tree changed" >&2
+    return 1
+  fi
+}
+
+if [ "$GENERATION_FORMAT" = "$PRESERVED_FORMAT" ]; then
+  IS_PRESERVED=true
+  if ! [[ "$EXPECTED_AUTHORITY_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+     [ "$(jq -er .identity.authority_sha "$MANIFEST")" != \
+       "$EXPECTED_AUTHORITY_SHA" ]; then
+    echo "publish-durable-package-generation: preserved generation does not bind the expected publisher authority" >&2
+    exit 2
+  fi
+  # WHY: a preserved bundle was prepared by a separate read-only job. Before
+  # trusting it for writes, bind both the manifest and executing scripts to the
+  # exact clean default-branch commit selected by this workflow dispatch.
+  verify_authority_checkout
+elif [ -n "$EXPECTED_AUTHORITY_SHA" ]; then
+  echo "publish-durable-package-generation: authority binding is reserved for preserved generations" >&2
+  exit 2
+fi
 
 if [ "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}" != "$REPOSITORY" ]; then
   echo "publish-durable-package-generation: workflow repository differs from generation repository" >&2
@@ -136,6 +172,14 @@ retry_command() {
   done
 }
 
+verify_preserved_source_evidence() {
+  [ "$IS_PRESERVED" = true ] || return 0
+  # WHY: the read-only prepare job observed a mutable source. The release
+  # writer must independently reconstruct that evidence using only reviewed
+  # current-authority code before either irreversible publication boundary.
+  bash "$SCRIPT_DIR/verify-preserved-package-source.sh" --bundle "$BUNDLE"
+}
+
 generation_sha="$(sha256_file "$MANIFEST")"
 generation_bytes="$(file_bytes "$MANIFEST")"
 index_sha="$(sha256_file "$BUNDLE/index.toml")"
@@ -160,6 +204,9 @@ jq -S \
       }
     ] +
     [.identity.archives[] | {
+      name: .name, sha256: .sha256, bytes: .bytes, seal: false
+    }] +
+    [(.identity.supporting_assets // [])[] | {
       name: .name, sha256: .sha256, bytes: .bytes, seal: false
     }] |
     sort_by(.name)
@@ -197,7 +244,7 @@ refresh_assets() {
   # WHY: one generation may contain the bounded 256-archive closure plus its
   # resolver index and generation.json seal.
   jq -e '
-    type == "array" and length <= 258 and
+    type == "array" and length <= 266 and
     all(.[]; (
       (.id | type == "number" and . > 0) and
       (.name | type == "string" and length > 0) and
@@ -257,7 +304,8 @@ validate_direct_tag() {
     .ref == ("refs/tags/" + $tag) and
     .object.type == "commit" and .object.sha == $sha
   ' "$tag_json" >/dev/null || {
-    echo "publish-durable-package-generation: generation tag does not directly reference the package-source SHA" >&2
+    echo "publish-durable-package-generation: generation tag does not directly reference its declared release target" \
+      >&2
     return 1
   }
 }
@@ -422,6 +470,14 @@ fi
 while IFS= read -r name; do
   ensure_asset "$name"
 done < <(jq -r '.[] | select(.seal == false) | .name' "$EXPECTED_ASSETS")
+
+refresh_release_by_id "$(jq -er .id "$RELEASE_JSON")"
+assert_inventory_allowed
+if ! jq -e 'any(.[]; .name == "generation.json")' \
+    "$ASSETS_JSON" >/dev/null; then
+  verify_preserved_source_evidence
+  [ "$IS_PRESERVED" = false ] || verify_authority_checkout
+fi
 ensure_asset generation.json
 
 refresh_release_by_id "$(jq -er .id "$RELEASE_JSON")"
@@ -430,6 +486,12 @@ while IFS= read -r name; do
   verify_authenticated_asset "$name"
 done < <(jq -r '.[].name' "$EXPECTED_ASSETS")
 validate_direct_tag
+
+refresh_release_by_id "$(jq -er .id "$RELEASE_JSON")"
+if [ "$(jq -r .draft "$RELEASE_JSON")" = true ]; then
+  verify_preserved_source_evidence
+  [ "$IS_PRESERVED" = false ] || verify_authority_checkout
+fi
 publish_release
 
 refresh_release_by_id "$(jq -er .id "$RELEASE_JSON")"
@@ -463,9 +525,9 @@ while IFS= read -r name; do
     '{name:$name,url:$url,sha256:$sha256,bytes:$bytes}' >>"$asset_receipts"
 done < <(jq -r '.[].name' "$EXPECTED_ASSETS")
 
-# GitHub does not enforce immutability for this repository. Re-snapshot the
-# public identity after anonymous downloads so the receipt never describes an
-# inventory that changed during its own verification window.
+# The application seal does not rely on GitHub release immutability.
+# Re-snapshot the public identity after anonymous downloads so the receipt
+# never describes an inventory that changed during its own verification window.
 refresh_release_by_id "$(jq -er .id "$RELEASE_JSON")"
 [ "$(jq -r .draft "$RELEASE_JSON")" = false ] || {
   echo "publish-durable-package-generation: public release reverted to draft" >&2
@@ -500,4 +562,4 @@ jq -nS \
 chmod 600 "$receipt_tmp"
 mv "$receipt_tmp" "$RECEIPT"
 
-echo "Published durable package generation: https://github.com/$REPOSITORY/releases/tag/$TAG"
+echo "Published application-sealed package generation: https://github.com/$REPOSITORY/releases/tag/$TAG"
