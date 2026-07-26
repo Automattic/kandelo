@@ -287,6 +287,12 @@ assert_matches package_publish_flow_changed_files \
   "tools/xtask/src/pkg_manifest.rs" \
   "tools/xtask/src/pkg_manifest.rs"
 assert_matches package_publish_flow_changed_files \
+  "tools/xtask/src/publication_policy.rs" \
+  "tools/xtask/src/publication_policy.rs"
+assert_matches package_archive_changed_files \
+  "tools/xtask/src/publication_policy.rs" \
+  "tools/xtask/src/publication_policy.rs"
+assert_matches package_publish_flow_changed_files \
   ".github/scripts/recover-canonical-indexes.sh" \
   ".github/scripts/recover-canonical-indexes.sh"
 assert_matches package_publish_flow_changed_files \

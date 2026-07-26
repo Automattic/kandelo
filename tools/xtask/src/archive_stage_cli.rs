@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use crate::archive_stage::{self, StageOptions};
 use crate::build_deps::{self, default_cache_root, parse_target_arch, Registry, ResolveOpts};
 use crate::pkg_manifest::{BuildToml, DepsManifest, ManifestKind, TargetArch};
+use crate::publication_policy::PublicationPolicy;
 use crate::repo_root;
 use crate::util::hex;
 
@@ -126,14 +127,34 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         ));
     }
 
-    let abi = parsed.abi.unwrap_or(shared::ABI_VERSION);
-    let cache_root = parsed.cache_root.clone().unwrap_or_else(default_cache_root);
     let registry = if let Some(r) = parsed.registry_root.clone() {
         Registry { roots: vec![r] }
     } else {
         Registry::from_env(&repo_root())
     };
+    if let Some(chain) =
+        PublicationPolicy::default().blocker_chain(&manifest, &registry)?
+    {
+        // WHY: pending is a publisher boundary, not a hint to the recipe.
+        // Reject the complete reverse-dependent closure before cache/output
+        // creation, dependency resolution, external Git fetches, or source
+        // build scripts can have side effects.
+        return Err(format!(
+            "archive-stage: package {:?} publication is blocked by pending \
+             dependency chain {}; set the pending package to \"ready\" only \
+             after its release authority is complete",
+            manifest.name,
+            chain.join(" -> ")
+        ));
+    }
+    let build_toml = if manifest.dir.join("build.toml").exists() {
+        Some(BuildToml::load(&manifest.dir)?)
+    } else {
+        None
+    };
 
+    let abi = parsed.abi.unwrap_or(shared::ABI_VERSION);
+    let cache_root = parsed.cache_root.clone().unwrap_or_else(default_cache_root);
     fs::create_dir_all(&parsed.out_dir)
         .map_err(|e| format!("mkdir {}: {e}", parsed.out_dir.display()))?;
 
@@ -196,11 +217,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         ));
     }
 
-    let git_inputs = if manifest.dir.join("build.toml").exists() {
-        BuildToml::load(&manifest.dir)?.git_inputs
-    } else {
-        Vec::new()
-    };
+    let git_inputs = build_toml
+        .map(|build| build.git_inputs)
+        .unwrap_or_default();
     let opts = StageOptions {
         cache_key_sha: sha_hex,
         build_timestamp: parsed.build_timestamp.clone(),
@@ -637,6 +656,26 @@ index_url = "file:///tmp/wpk-nonexistent-binaries-abi-v{{abi}}/index.toml"
         fs::write(registry.join(name).join("build.toml"), build_toml).unwrap();
     }
 
+    fn write_build_toml_publication_state(
+        registry: &Path,
+        name: &str,
+        publication_state: &str,
+    ) {
+        let build_toml = format!(
+            r#"
+script_path = "{name}/build-{name}.sh"
+repo_url = "https://example.test/repo.git"
+commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision = 1
+publication_state = "{publication_state}"
+
+[binary]
+index_url = "file:///tmp/wpk-nonexistent-binaries-abi-v{{abi}}/index.toml"
+"#
+        );
+        fs::write(registry.join(name).join("build.toml"), build_toml).unwrap();
+    }
+
     fn write_build_toml_inputs(registry: &Path, name: &str, inputs: &[&str]) {
         let inputs_toml = inputs
             .iter()
@@ -945,6 +984,54 @@ built_by = "test"
         );
         let name = &entries[0];
         assert!(name.starts_with("z-1.0.0-rev2-abi4-wasm32-"), "got: {name}");
+    }
+
+    #[test]
+    fn cli_rejects_transitive_pending_publication_before_side_effects() {
+        let dir = tempdir("pending-publication-closure");
+        let registry = dir.join("registry");
+        let cache_root = dir.join("cache-must-not-exist");
+        let out_dir = dir.join("out-must-not-exist");
+        fs::create_dir_all(&registry).unwrap();
+
+        write_program_fixture(&registry, "pending", &[], "pending", "pending.wasm");
+        write_program_fixture(
+            &registry,
+            "direct",
+            &["pending@1.0.0"],
+            "direct",
+            "direct.wasm",
+        );
+        write_program_fixture(
+            &registry,
+            "transitive",
+            &["direct@1.0.0"],
+            "transitive",
+            "transitive.wasm",
+        );
+        write_build_toml_publication_state(&registry, "pending", "pending");
+        write_build_toml_publication_state(&registry, "direct", "ready");
+        write_build_toml_publication_state(&registry, "transitive", "ready");
+
+        let error = super::run(archive_stage_args(
+            &registry,
+            &cache_root,
+            &out_dir,
+            "transitive",
+        ))
+        .unwrap_err();
+        assert!(
+            error.contains("transitive -> direct -> pending"),
+            "error must name the complete blocker chain: {error}"
+        );
+        assert!(
+            !cache_root.exists(),
+            "publication rejection must precede cache creation"
+        );
+        assert!(
+            !out_dir.exists(),
+            "publication rejection must precede output creation"
+        );
     }
 
     #[test]

@@ -21,6 +21,7 @@ use crate::index_toml::{EntryStatus, IndexToml, PackageEntry};
 use crate::pkg_manifest::{
     BuildToml, DepsManifest, GitBuildInput, ManifestKind, TargetArch, validate_git_build_inputs,
 };
+use crate::publication_policy::PublicationPolicy;
 
 const SOURCE_IDENTITY_ALGORITHM: &str =
     "kandelo-program-packages-v2-manifest-closure-v1";
@@ -44,6 +45,20 @@ struct ExpectedEntry {
     revision: u32,
     cache_key_sha: String,
     git_inputs: Vec<GitBuildInput>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct PublicationBlockerReport {
+    abi_version: u32,
+    entries: Vec<PublicationBlockerEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct PublicationBlockerEntry {
+    package: String,
+    blocker_chain: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -165,19 +180,23 @@ struct SourcePackage {
 pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     let Some((action, rest)) = args.split_first() else {
         return Err(
-            "usage: xtask staging-reuse <expected|scan-source|validate|validate-archives|validate-generation|compose> [args]"
+            "usage: xtask staging-reuse <expected|scan-source|scan-source-admitted|validate|validate-archives|validate-generation|compose> [args]"
                 .into(),
         );
     };
     match action.as_str() {
         "expected" => run_expected(rest),
-        "scan-source" => run_scan_source(rest),
+        // Evidence preservation and consumption may describe bytes that are
+        // not currently publishable. Only the explicit admitted action is a
+        // durable publication boundary.
+        "scan-source" => run_scan_source(rest, false),
+        "scan-source-admitted" => run_scan_source(rest, true),
         "validate" => run_validate(rest),
         "validate-archives" => run_validate_archives(rest),
         "validate-generation" => run_validate_generation(rest),
         "compose" => run_compose(rest),
         other => Err(format!(
-            "staging-reuse action must be expected, scan-source, validate, validate-archives, validate-generation, or compose, got {other:?}"
+            "staging-reuse action must be expected, scan-source, scan-source-admitted, validate, validate-archives, validate-generation, or compose, got {other:?}"
         )),
     }
 }
@@ -209,7 +228,14 @@ fn read_index(path: &Path) -> Result<IndexToml, String> {
 
 fn run_expected(args: &[String]) -> Result<(), String> {
     let flags = Flags::parse(args)?;
-    flags.reject_unknown(&["--registry", "--expected-abi", "--exclude", "--output"])?;
+    flags.reject_unknown(&[
+        "--registry",
+        "--expected-abi",
+        "--exclude",
+        "--require-root",
+        "--blocked-output",
+        "--output",
+    ])?;
     let registry = flags.required_path("--registry")?;
     let abi = flags.required_u32("--expected-abi")?;
     let output = flags.required_path("--output")?;
@@ -219,11 +245,52 @@ fn run_expected(args: &[String]) -> Result<(), String> {
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .collect();
-    let ledger = build_expected_ledger(registry, abi, &excluded)?;
-    write_json(output, &ledger)
+    let required_roots = parse_required_roots(flags.values("--require-root"))?;
+    require_publishable_registry_roots(registry, &required_roots)?;
+    let (ledger, blockers) = build_expected_projection(registry, abi, &excluded)?;
+    let blocked_outputs = flags.values("--blocked-output").collect::<Vec<_>>();
+    let blocked_output = match blocked_outputs.as_slice() {
+        [] => None,
+        [path] => Some(Path::new(path)),
+        _ => return Err("--blocked-output must be provided at most once".into()),
+    };
+    if blocked_output == Some(output) {
+        return Err("--blocked-output must differ from --output".into());
+    }
+    write_json(output, &ledger)?;
+    if let Some(path) = blocked_output {
+        write_json(path, &blockers)?;
+    }
+    Ok(())
 }
 
-fn run_scan_source(args: &[String]) -> Result<(), String> {
+fn parse_required_roots<'a>(
+    values: impl Iterator<Item = &'a str>,
+) -> Result<Vec<String>, String> {
+    let values = values.collect::<Vec<_>>();
+    if values.as_slice() == ["all"] || values.is_empty() {
+        return Ok(Vec::new());
+    }
+    if values.iter().any(|value| {
+        value
+            .split(',')
+            .any(|root| root.is_empty() || root == "all")
+    }) {
+        return Err(
+            "--require-root must be `all` or one or more comma-separated package names".into(),
+        );
+    }
+    let mut roots = values
+        .into_iter()
+        .flat_map(|value| value.split(','))
+        .map(|root| validate_package_name(root).map(ToOwned::to_owned))
+        .collect::<Result<Vec<_>, _>>()?;
+    roots.sort();
+    roots.dedup();
+    Ok(roots)
+}
+
+fn run_scan_source(args: &[String], require_publication_admission: bool) -> Result<(), String> {
     let flags = Flags::parse(args)?;
     flags.reject_unknown(&[
         "--source-root",
@@ -277,6 +344,7 @@ fn run_scan_source(args: &[String]) -> Result<(), String> {
     let registry = Registry {
         roots: vec![registry_path.clone()],
     };
+    enforce_source_publication_mode(require_publication_admission, &roots, &registry)?;
     let fresh_cache_identities =
         source_cache_identities(source_root, &registry, expected_abi)?;
     validate_source_program_index(
@@ -320,6 +388,54 @@ fn run_scan_source(args: &[String]) -> Result<(), String> {
             write_json(Path::new(output), &components)
         }
         _ => Err("--components-output must be provided at most once".into()),
+    }
+}
+
+fn require_publishable_roots(
+    roots: &[String],
+    registry: &Registry,
+    context: &str,
+) -> Result<(), String> {
+    let mut policy = PublicationPolicy::default();
+    for root in roots {
+        let manifest = registry.load(root)?;
+        if let Some(chain) = policy.blocker_chain(&manifest, registry)? {
+            // WHY: every publisher must apply the same dependency-closed
+            // policy before it can turn staged bytes into live authority.
+            return Err(format!(
+                "{context} {root:?} publication is blocked by pending \
+                 dependency chain {}",
+                chain.join(" -> ")
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn require_publishable_registry_roots(
+    registry_path: &Path,
+    roots: &[String],
+) -> Result<(), String> {
+    let registry = Registry {
+        roots: vec![registry_path.to_path_buf()],
+    };
+    // WHY: callers that request a named root need a loud policy error instead
+    // of an empty/missing matrix after the general ledger omits its closure.
+    require_publishable_roots(roots, &registry, "requested package root")
+}
+
+fn enforce_source_publication_mode(
+    require_publication_admission: bool,
+    roots: &[String],
+    registry: &Registry,
+) -> Result<(), String> {
+    if require_publication_admission {
+        require_publishable_roots(roots, registry, "durable source root")
+    } else {
+        // Evidence and consumption retain exact identities without publishing
+        // them. Bytes produced while pending can therefore be admitted after
+        // the live authority independently becomes ready.
+        Ok(())
     }
 }
 
@@ -1258,11 +1374,21 @@ fn validate_exact_generation_assets(
     Ok(())
 }
 
+#[cfg(test)]
 fn build_expected_ledger(
     registry_path: &Path,
     abi_version: u32,
     excluded: &BTreeSet<String>,
 ) -> Result<ExpectedLedger, String> {
+    build_expected_projection(registry_path, abi_version, excluded)
+        .map(|(ledger, _)| ledger)
+}
+
+fn build_expected_projection(
+    registry_path: &Path,
+    abi_version: u32,
+    excluded: &BTreeSet<String>,
+) -> Result<(ExpectedLedger, PublicationBlockerReport), String> {
     let registry = Registry {
         roots: vec![registry_path.to_path_buf()],
     };
@@ -1278,10 +1404,12 @@ fn build_expected_ledger(
     dirs.sort();
 
     let mut entries = Vec::new();
+    let mut blocker_entries = Vec::new();
     let mut keys = BTreeSet::new();
+    let mut publication_policy = PublicationPolicy::default();
     for package_dir in dirs {
         let manifest = DepsManifest::load_with_overlay(&package_dir)?;
-        if excluded.contains(&manifest.name) || manifest.build.script_path.is_none() {
+        if manifest.build.script_path.is_none() {
             continue;
         }
         let kind = match manifest.kind {
@@ -1289,8 +1417,24 @@ fn build_expected_ledger(
             ManifestKind::Program => ExpectedKind::Program,
             ManifestKind::Source => continue,
         };
+        if excluded.contains(&manifest.name) {
+            continue;
+        }
+        if let Some(blocker_chain) =
+            publication_policy.blocker_chain(&manifest, &registry)?
+        {
+            // WHY: publishability is closed over dependencies. Omitting only
+            // the pending node would let a reverse-dependent matrix job
+            // source-build it and fail after doing substantial work.
+            blocker_entries.push(PublicationBlockerEntry {
+                package: manifest.name,
+                blocker_chain,
+            });
+            continue;
+        }
         let git_inputs = if package_dir.join("build.toml").exists() {
-            BuildToml::load(&package_dir)?.git_inputs
+            let build = BuildToml::load(&package_dir)?;
+            build.git_inputs
         } else {
             Vec::new()
         };
@@ -1318,10 +1462,16 @@ fn build_expected_ledger(
         }
     }
     entries.sort_by(|a, b| (&a.package, a.arch).cmp(&(&b.package, b.arch)));
-    Ok(ExpectedLedger {
-        abi_version,
-        entries,
-    })
+    Ok((
+        ExpectedLedger {
+            abi_version,
+            entries,
+        },
+        PublicationBlockerReport {
+            abi_version,
+            entries: blocker_entries,
+        },
+    ))
 }
 
 fn validate_release(
@@ -2194,6 +2344,65 @@ cache_key_sha = "{SHA}"
         }
     }
 
+    fn write_expected_package(
+        registry: &Path,
+        name: &str,
+        dependencies: &[&str],
+        publication_state: &str,
+    ) {
+        let package = registry.join(name);
+        fs::create_dir_all(&package).unwrap();
+        let dependencies = dependencies
+            .iter()
+            .map(|dependency| format!("{dependency:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        fs::write(
+            package.join("package.toml"),
+            format!(
+                r#"kind = "program"
+name = "{name}"
+version = "1.0.0"
+kernel_abi = {kernel_abi}
+depends_on = [{dependencies}]
+
+[source]
+url = "https://example.test/{name}.tar.gz"
+sha256 = "{source_sha}"
+
+[license]
+spdx = "TestLicense"
+
+[build]
+script_path = "{name}/build-{name}.sh"
+
+[[outputs]]
+name = "{name}"
+wasm = "{name}.wasm"
+"#,
+                source_sha = "0".repeat(64),
+                kernel_abi = wasm_posix_shared::ABI_VERSION,
+            ),
+        )
+        .unwrap();
+        fs::write(package.join(format!("build-{name}.sh")), "#!/bin/sh\n").unwrap();
+        fs::write(
+            package.join("build.toml"),
+            format!(
+                r#"script_path = "{name}/build-{name}.sh"
+repo_url = "https://example.test/repo.git"
+commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision = 1
+publication_state = "{publication_state}"
+
+[binary]
+index_url = "https://example.test/binaries-abi-v{{abi}}/index.toml"
+"#
+            ),
+        )
+        .unwrap();
+    }
+
     fn fresh_source_fixture() -> (
         BTreeMap<String, SourcePackage>,
         SourceProgramIndex,
@@ -2512,6 +2721,213 @@ cache_key_sha = "{SHA}"
         );
         let error = serde_json::from_str::<ExpectedLedger>(&missing).unwrap_err();
         assert!(error.to_string().contains("git_inputs"), "{error}");
+    }
+
+    #[test]
+    fn expected_ledger_omits_pending_reverse_closure_and_ready_restores_it() {
+        let registry = archive_tempdir("pending-expected-ledger");
+        write_expected_package(&registry, "pending", &[], "pending");
+        write_expected_package(&registry, "direct", &["pending@1.0.0"], "ready");
+        write_expected_package(&registry, "transitive", &["direct@1.0.0"], "ready");
+        write_expected_package(&registry, "unrelated", &[], "ready");
+        let registry_context = Registry {
+            roots: vec![registry.clone()],
+        };
+        let pending_cache_key = compute_cache_key_sha_for_package(
+            &registry.join("pending"),
+            &registry_context,
+            TargetArch::Wasm32,
+            ABI,
+        )
+        .unwrap();
+
+        let (pending, blockers) =
+            build_expected_projection(&registry, ABI, &BTreeSet::new()).unwrap();
+        assert_eq!(
+            pending
+                .entries
+                .iter()
+                .map(|entry| entry.package.as_str())
+                .collect::<Vec<_>>(),
+            vec!["unrelated"],
+            "pending package, direct dependent, and transitive dependent must all be absent"
+        );
+        assert_eq!(
+            blockers.entries,
+            vec![
+                PublicationBlockerEntry {
+                    package: "direct".into(),
+                    blocker_chain: vec!["direct".into(), "pending".into()],
+                },
+                PublicationBlockerEntry {
+                    package: "pending".into(),
+                    blocker_chain: vec!["pending".into()],
+                },
+                PublicationBlockerEntry {
+                    package: "transitive".into(),
+                    blocker_chain: vec![
+                        "transitive".into(),
+                        "direct".into(),
+                        "pending".into(),
+                    ],
+                },
+            ],
+            "the typed report must distinguish each exact policy blocker"
+        );
+        let (_, excluded_blockers) = build_expected_projection(
+            &registry,
+            ABI,
+            &BTreeSet::from(["pending".into()]),
+        )
+        .unwrap();
+        assert_eq!(
+            excluded_blockers
+                .entries
+                .iter()
+                .map(|entry| entry.package.as_str())
+                .collect::<Vec<_>>(),
+            vec!["direct", "transitive"],
+            "an excluded pending root is not managed, but its non-excluded reverse dependents remain blocked"
+        );
+        let direct_error =
+            require_publishable_registry_roots(&registry, &["direct".into()]).unwrap_err();
+        assert!(
+            direct_error.contains("direct -> pending"),
+            "an explicitly requested dependent must name its blocker chain: {direct_error}"
+        );
+        let transitive_error =
+            require_publishable_registry_roots(&registry, &["transitive".into()]).unwrap_err();
+        assert!(
+            transitive_error.contains("transitive -> direct -> pending"),
+            "an explicitly requested transitive dependent must name its blocker chain: {transitive_error}"
+        );
+        require_publishable_registry_roots(&registry, &["unrelated".into()]).unwrap();
+
+        let pending_build = registry.join("pending/build.toml");
+        fs::write(
+            &pending_build,
+            fs::read_to_string(&pending_build)
+                .unwrap()
+                .replace(
+                    "publication_state = \"pending\"",
+                    "publication_state = \"ready\"",
+                ),
+        )
+        .unwrap();
+        let ready_cache_key = compute_cache_key_sha_for_package(
+            &registry.join("pending"),
+            &registry_context,
+            TargetArch::Wasm32,
+            ABI,
+        )
+        .unwrap();
+        assert_eq!(
+            pending_cache_key, ready_cache_key,
+            "distribution readiness must not pretend package bytes changed"
+        );
+        let (ready, ready_blockers) =
+            build_expected_projection(&registry, ABI, &BTreeSet::new()).unwrap();
+        assert_eq!(
+            ready
+                .entries
+                .iter()
+                .map(|entry| entry.package.as_str())
+                .collect::<Vec<_>>(),
+            vec!["direct", "pending", "transitive", "unrelated"],
+            "ready must restore the unchanged package identities to staging"
+        );
+        assert!(ready_blockers.entries.is_empty());
+        require_publishable_registry_roots(&registry, &["transitive".into()]).unwrap();
+    }
+
+    #[test]
+    fn expected_projection_failure_cannot_publish_a_partial_blocker_report() {
+        let registry = archive_tempdir("failed-blocker-report");
+        write_expected_package(&registry, "broken", &["missing@1.0.0"], "ready");
+        let output = registry.join("expected.json");
+        let blocked_output = registry.join("blocked.json");
+        let args = vec![
+            "--registry".into(),
+            registry.to_string_lossy().into_owned(),
+            "--expected-abi".into(),
+            ABI.to_string(),
+            "--require-root".into(),
+            "all".into(),
+            "--output".into(),
+            output.to_string_lossy().into_owned(),
+            "--blocked-output".into(),
+            blocked_output.to_string_lossy().into_owned(),
+        ];
+        let error = run_expected(&args).unwrap_err();
+        assert!(error.contains("missing"), "{error}");
+        assert!(!output.exists());
+        assert!(!blocked_output.exists());
+    }
+
+    #[test]
+    fn expected_ledger_required_roots_are_canonical_and_all_means_policy_filtered_ledger() {
+        assert!(parse_required_roots(std::iter::empty()).unwrap().is_empty());
+        assert!(
+            parse_required_roots(["all"].into_iter())
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            parse_required_roots(["zlib,bash", "zlib"].into_iter()).unwrap(),
+            vec!["bash", "zlib"]
+        );
+        for invalid in [
+            &["all,zlib"][..],
+            &["all", "zlib"][..],
+            &["zlib,"][..],
+            &["Zlib"][..],
+        ] {
+            assert!(
+                parse_required_roots(invalid.iter().copied()).is_err(),
+                "{invalid:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn admitted_source_selection_rejects_direct_and_transitive_pending_closures() {
+        let registry_path = archive_tempdir("pending-admitted-source");
+        write_expected_package(&registry_path, "pending", &[], "pending");
+        write_expected_package(
+            &registry_path,
+            "direct",
+            &["pending@1.0.0"],
+            "ready",
+        );
+        write_expected_package(
+            &registry_path,
+            "transitive",
+            &["direct@1.0.0"],
+            "ready",
+        );
+        write_expected_package(&registry_path, "unrelated", &[], "ready");
+        let registry = Registry {
+            roots: vec![registry_path],
+        };
+
+        enforce_source_publication_mode(false, &["transitive".into()], &registry)
+            .expect("producer evidence may retain pending identities");
+        let direct_error =
+            enforce_source_publication_mode(true, &["direct".into()], &registry)
+                .unwrap_err();
+        assert!(
+            direct_error.contains("direct -> pending"),
+            "direct admission error must name the blocker chain: {direct_error}"
+        );
+        let transitive_error =
+            enforce_source_publication_mode(true, &["transitive".into()], &registry)
+                .unwrap_err();
+        assert!(
+            transitive_error.contains("transitive -> direct -> pending"),
+            "transitive admission error must name the blocker chain: {transitive_error}"
+        );
+        enforce_source_publication_mode(true, &["unrelated".into()], &registry)
+            .unwrap();
     }
 
     #[test]

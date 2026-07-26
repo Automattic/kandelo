@@ -41,6 +41,7 @@ env:
   BATCHED_CHANGES: ${{ contains(github.event.pull_request.labels.*.name, 'batched-changes') }}
   PRESERVE_HEAD_COMMIT: ${{ contains(github.event.pull_request.labels.*.name, 'preserve-head-commit') }}
   PREPARE_MERGE_METHOD: ${{ contains(github.event.pull_request.labels.*.name, 'preserve-head-commit') && 'merge' || contains(github.event.pull_request.labels.*.name, 'batched-changes') && 'rebase' || 'squash' }}
+  PACKAGE_STAGING_EXCLUSIONS: erlang-vfs,perl,perl-vfs,python-vfs,redis,texlive
   GIT_FETCH_RETRY_FUNC: |
     git_fetch_retry() {
       local attempt=1
@@ -682,6 +683,7 @@ jobs:
         run: |
           bash scripts/dev-shell.sh env \
             PR_COMMIT_COUNT="$SYNTH_PR_COMMIT_COUNT" \
+            PACKAGE_STAGING_EXCLUSIONS="$PACKAGE_STAGING_EXCLUSIONS" \
             bash -c '
             set -euo pipefail
             PACKAGE_STAGING_REQUIRED="${{ needs.change-scope.outputs.package_staging_required }}"
@@ -785,104 +787,77 @@ jobs:
             fi
 
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+            XTASK="target/$HOST_TARGET/release/xtask"
             library_matrix="[]"
             program_matrix="[]"
             promote_matrix="[]"
 
-            # Temporarily disabled packages — too slow to rebuild in
-            # CI while we have no separate prebuilt-package repo to
-            # offload them to. Each is still consumable via its
-            # existing `[binary]` pin in package.toml; prepare-merge
-            # just refuses to redo the work. Remove an entry here
-            # (and mirror in staging-build.yml) to re-enable rebuilds.
-            disabled_pkgs=" erlang-vfs perl perl-vfs python-vfs redis texlive "
+            expected_ledger=$(mktemp)
+            "$XTASK" staging-reuse expected \
+              --registry packages/registry \
+              --expected-abi "$ABI" \
+              --exclude "$PACKAGE_STAGING_EXCLUSIONS" \
+              --output "$expected_ledger"
 
-            for pkg_dir in packages/registry/*/; do
-              pkg=$(basename "$pkg_dir")
-              if ! grep -q "^\[build\]" "$pkg_dir/package.toml"; then
+            # WHY: promotion and build matrices come from the same Rust-owned
+            # expected ledger. A pending package and every reverse dependent
+            # are therefore absent before either path can mutate a release.
+            while IFS= read -r expected_entry; do
+              pkg=$(echo "$expected_entry" | jq -r .package)
+              kind=$(echo "$expected_entry" | jq -r .kind)
+              arch=$(echo "$expected_entry" | jq -r .arch)
+              sha=$(echo "$expected_entry" | jq -r .cache_key_sha)
+              version=$(echo "$expected_entry" | jq -r .version)
+              revision=$(echo "$expected_entry" | jq -r .revision)
+              short=${sha:0:8}
+              prefix="${pkg}-"
+              suffix="-abi${ABI}-${arch}-${short}.tar.zst"
+              existing_archive=$(echo "$existing_assets" | jq -r --arg pre "$prefix" --arg suf "$suffix" \
+                  "first(.[] | select(startswith(\$pre) and endswith(\$suf))) // \"\"")
+              if [ -n "$existing_archive" ] && scripts/index-has-current-entry.sh "$existing_index" "$pkg" "$arch" "$sha" "$revision"; then
+                echo "preflight: skip $pkg/$arch (sha $short already indexed)"
                 continue
               fi
-
-              # Disabled-package skip (see `disabled_pkgs` above).
-              if [[ "$disabled_pkgs" == *" $pkg "* ]]; then
-                echo "preflight: skipping $pkg (temporarily disabled)" >&2
-                continue
-              fi
-
-              kind=$(sed -nE "s/^kind *= *\"([^\"]+)\".*/\\1/p" "$pkg_dir/package.toml" | head -1)
-              case "$kind" in
-                library|program) ;;
-                *) echo "preflight: skipping $pkg (kind=$kind)" >&2; continue ;;
-              esac
-
-              # Version comes from package.toml (recipe). Revision
-              # comes from build.toml (project view); defaults to 1
-              # when build.toml omits it.
-              version=$(sed -nE "s/^version *= *\"([^\"]+)\".*/\\1/p" "$pkg_dir/package.toml" | head -1)
-              revision=1
-              if [ -f "$pkg_dir/build.toml" ]; then
-                revision=$(sed -nE "s/^revision *= *([0-9]+).*/\\1/p" "$pkg_dir/build.toml" | head -1)
-                revision=${revision:-1}
-              fi
-              arches=$(awk -F'"'"'[][]'"'"' '"'"'/^arches *=/ {print $2}'"'"' "$pkg_dir/package.toml" | tr -d '"'"' "'"'"' | tr '"'"','"'"' '"'"' '"'"')
-              arches=${arches:-wasm32}
-              for arch in $arches; do
-                sha=$(cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-                  compute-cache-key-sha --package "$pkg_dir" --arch "$arch" 2>/dev/null) || {
-                  echo "preflight: skipping $pkg/$arch (compute-cache-key-sha failed)" >&2
-                  continue
-                }
-                short=${sha:0:8}
-                prefix="${pkg}-"
-                suffix="-abi${ABI}-${arch}-${short}.tar.zst"
-                existing_archive=$(echo "$existing_assets" | jq -r --arg pre "$prefix" --arg suf "$suffix" \
-                    "first(.[] | select(startswith(\$pre) and endswith(\$suf))) // \"\"")
-                if [ -n "$existing_archive" ] && scripts/index-has-current-entry.sh "$existing_index" "$pkg" "$arch" "$sha" "$revision"; then
-                  echo "preflight: skip $pkg/$arch (sha $short already indexed)"
-                  continue
-                fi
-                entry=$(jq -nc --arg pkg "$pkg" --arg arch "$arch" --arg sha "$sha" \
-                                --arg ver "$version" --argjson rev "$revision" \
-                  "{package: \$pkg, arch: \$arch, sha: \$sha, version: \$ver, revision: \$rev}")
-                source=$(bash .github/scripts/select-package-archive-source.sh \
-                  --canonical-assets "$existing_asset_metadata_file" \
-                  --staging-assets "$staging_assets_file" \
-                  --canonical-tag "$CANONICAL_TAG" \
-                  --staging-tag "$STAGING_TAG" \
-                  --prefix "$prefix" \
-                  --suffix "$suffix")
-                source_kind=$(jq -r .source <<<"$source")
-                if [ "$source_kind" = canonical ] || [ "$source_kind" = staging ]; then
-                  promote_entry=$(jq -nc \
-                    --argjson entry "$entry" \
-                    --argjson source "$source" \
-                    "\$entry + {
-                      archive_name: \$source.archive_name,
-                      archive_sha256: \$source.archive_sha256,
-                      archive_size: \$source.archive_size,
-                      source_tag: \$source.source_tag,
-                      source: \$source.source
-                    }")
-                  promote_matrix=$(echo "$promote_matrix" | jq -c --argjson e "$promote_entry" ". + [\$e]")
-                  if [ "$source_kind" = canonical ]; then
-                    echo "preflight: repair $pkg/$arch index (sha $short from existing $CANONICAL_TAG asset)"
-                  else
-                    echo "preflight: promote $pkg/$arch (sha $short from $STAGING_TAG)"
-                  fi
-                  continue
-                fi
-                if [ "$kind" = "library" ]; then
-                  library_matrix=$(echo "$library_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
+              entry=$(jq -nc --arg pkg "$pkg" --arg arch "$arch" --arg sha "$sha" \
+                              --arg ver "$version" --argjson rev "$revision" \
+                "{package: \$pkg, arch: \$arch, sha: \$sha, version: \$ver, revision: \$rev}")
+              source=$(bash .github/scripts/select-package-archive-source.sh \
+                --canonical-assets "$existing_asset_metadata_file" \
+                --staging-assets "$staging_assets_file" \
+                --canonical-tag "$CANONICAL_TAG" \
+                --staging-tag "$STAGING_TAG" \
+                --prefix "$prefix" \
+                --suffix "$suffix")
+              source_kind=$(jq -r .source <<<"$source")
+              if [ "$source_kind" = canonical ] || [ "$source_kind" = staging ]; then
+                promote_entry=$(jq -nc \
+                  --argjson entry "$entry" \
+                  --argjson source "$source" \
+                  "\$entry + {
+                    archive_name: \$source.archive_name,
+                    archive_sha256: \$source.archive_sha256,
+                    archive_size: \$source.archive_size,
+                    source_tag: \$source.source_tag,
+                    source: \$source.source
+                  }")
+                promote_matrix=$(echo "$promote_matrix" | jq -c --argjson e "$promote_entry" ". + [\$e]")
+                if [ "$source_kind" = canonical ]; then
+                  echo "preflight: repair $pkg/$arch index (sha $short from existing $CANONICAL_TAG asset)"
                 else
-                  program_matrix=$(echo "$program_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
+                  echo "preflight: promote $pkg/$arch (sha $short from $STAGING_TAG)"
                 fi
-              done
-            done
+                continue
+              fi
+              if [ "$kind" = "library" ]; then
+                library_matrix=$(echo "$library_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
+              else
+                program_matrix=$(echo "$program_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
+              fi
+            done < <(jq -c ".entries[]" "$expected_ledger")
 
             program_matrix_file=$(mktemp)
             printf "%s" "$program_matrix" > "$program_matrix_file"
-            program_matrix=$(cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              sort-package-matrix \
+            program_matrix=$("$XTASK" sort-package-matrix \
                 --registry packages/registry \
                 --matrix "$program_matrix_file")
             rm -f "$program_matrix_file"
@@ -1544,6 +1519,22 @@ jobs:
         # resolve from candidate assets or local build overlays.
         run: |
           set -euo pipefail
+          ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
+          EXPECTED="$RUNNER_TEMP/prepare-expected.json"
+          bash scripts/dev-shell.sh env \
+            EXPECTED="$EXPECTED" \
+            PACKAGE_STAGING_EXCLUSIONS="$PACKAGE_STAGING_EXCLUSIONS" \
+            ABI="$ABI" \
+            bash -c '
+              set -euo pipefail
+              HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+              cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+                staging-reuse expected \
+                  --registry packages/registry \
+                  --expected-abi "$ABI" \
+                  --exclude "$PACKAGE_STAGING_EXCLUSIONS" \
+                  --output "$EXPECTED"
+            '
           if [ "$PACKAGE_STAGING_REQUIRED" = "true" ]; then
             index_dir="$RUNNER_TEMP/tested-candidate-index"
             rm -rf "$index_dir"
@@ -1554,7 +1545,6 @@ jobs:
               --dir "$index_dir"
             mv "$index_dir/index.toml" "$index_dir/source-index.toml"
             sha=$(sha256sum "$index_dir/source-index.toml" | awk '{print $1}')
-            ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
             candidate_index_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_TARGET_TAG}/index.toml"
             bash scripts/dev-shell.sh env \
               SOURCE_INDEX="$index_dir/source-index.toml" \
@@ -1581,11 +1571,12 @@ jobs:
               bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/staged-archives" "$STAGE"
             fi
           else
-            ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
             export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml"
           fi
           echo "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" >> "$GITHUB_ENV"
-          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --fetch-only
+          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh \
+            --fetch-only \
+            --expected-ledger "$EXPECTED"
 
       - name: Build kernel + test programs + rootfs
         # Browser downloads and suite-specific Node dependencies are installed

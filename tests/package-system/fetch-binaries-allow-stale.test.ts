@@ -43,6 +43,7 @@ import {
   rmSync,
   chmodSync,
   copyFileSync,
+  symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -57,6 +58,12 @@ try {
   execFileSync("rustc", ["-vV"], { encoding: "utf8" });
 } catch {
   rustcAvailable = false;
+}
+let jqAvailable = true;
+try {
+  execFileSync("jq", ["--version"], { encoding: "utf8" });
+} catch {
+  jqAvailable = false;
 }
 
 describe.skipIf(!rustcAvailable)("fetch-binaries.sh per-package walk", () => {
@@ -258,6 +265,24 @@ exit 0
     return log.split("\n").filter((l) => pattern.test(l));
   }
 
+  function writeExpectedLedger(
+    name: string,
+    packages: string[],
+  ): string {
+    const ledger = path.join(fakeRepoRoot, name);
+    writeFileSync(
+      ledger,
+      `${JSON.stringify({
+        abi_version: 42,
+        entries: packages.map((packageName, index) => ({
+          package: packageName,
+          arch: index % 2 === 0 ? "wasm32" : "wasm64",
+        })),
+      })}\n`,
+    );
+    return ledger;
+  }
+
   it("walks every package with build.toml, once per declared arch", () => {
     const { status, stdout, stderr } = runScript([]);
     expect(status, `stderr:\n${stderr}\nstdout:\n${stdout}`).toBe(0);
@@ -379,6 +404,173 @@ exit 0
     expect(logLines(/build-deps.*resolve\s+bravo\b/).length).toBe(2);
     expect(logLines(/build-deps.*resolve\s+alpha\b/).length).toBe(0);
   });
+
+  it.skipIf(!jqAvailable)(
+    "materializes exactly the unique expected-ledger roots without a registry fallback",
+    () => {
+      const ledger = writeExpectedLedger(
+        "expected-ledger.json",
+        ["bravo", "alpha", "bravo"],
+      );
+      const { status, stdout, stderr } = runScript([
+        "--fetch-only",
+        "--expected-ledger",
+        ledger,
+      ]);
+      expect(status, `stderr:\n${stderr}\nstdout:\n${stdout}`).toBe(0);
+
+      expect(logLines(/build-deps.*resolve\s+alpha\b/).length).toBe(1);
+      expect(logLines(/build-deps.*resolve\s+bravo\b/).length).toBe(2);
+      expect(logLines(/build-deps.*resolve\s+charlie\b/)).toEqual([]);
+      expect(logLines(/build-deps.*resolve\s+delta\b/)).toEqual([]);
+      expect(stdout).toContain(
+        "selected roots from expected ledger: alpha bravo",
+      );
+      expect(stdout).toMatch(/resolved=3\s+total=3\s+skipped=0/);
+      expect(
+        logLines(/build-deps.*resolve\s+(?:alpha|bravo)\b/).every(
+          (line) => /--fetch-only/.test(line),
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it.skipIf(!jqAvailable)(
+    "rejects every ambiguous expected-ledger selection mode before resolving",
+    () => {
+      const ledger = writeExpectedLedger("selection-ledger.json", ["alpha"]);
+      const cases: Array<{
+        args: string[];
+        env?: NodeJS.ProcessEnv;
+        error: RegExp;
+      }> = [
+        {
+          args: ["--expected-ledger", ledger, "--package", "alpha"],
+          error: /--expected-ledger and --package are mutually exclusive/,
+        },
+        {
+          args: ["--package=alpha", `--expected-ledger=${ledger}`],
+          error: /--expected-ledger and --package are mutually exclusive/,
+        },
+        {
+          args: ["--expected-ledger", ledger, "--expected-ledger", ledger],
+          error: /--expected-ledger may be provided only once/,
+        },
+        {
+          args: ["--expected-ledger", ""],
+          error: /--expected-ledger requires a non-empty path/,
+        },
+        {
+          args: ["--expected-ledger="],
+          error: /--expected-ledger requires a non-empty path/,
+        },
+        {
+          args: ["--expected-ledger"],
+          error: /--expected-ledger requires a path/,
+        },
+      ];
+      for (const testCase of cases) {
+        const { status, stderr } = runScript(
+          testCase.args,
+          testCase.env ?? {},
+        );
+        expect(status, `${testCase.args.join(" ")}\n${stderr}`).toBe(2);
+        expect(stderr).toMatch(testCase.error);
+        expect(logLines(/build-deps.*resolve/)).toEqual([]);
+      }
+    },
+  );
+
+  it.skipIf(!jqAvailable)(
+    "allows resolver skips to narrow a ledger without adding registry packages",
+    () => {
+      const ledger = writeExpectedLedger(
+        "skip-ledger.json",
+        ["alpha", "bravo"],
+      );
+      const { status, stdout, stderr } = runScript(
+        ["--expected-ledger", ledger],
+        { WASM_POSIX_FETCH_SKIP_PKGS: "bravo charlie" },
+      );
+      expect(status, `stderr:\n${stderr}\nstdout:\n${stdout}`).toBe(0);
+      expect(logLines(/build-deps.*resolve\s+alpha\b/).length).toBe(1);
+      expect(logLines(/build-deps.*resolve\s+bravo\b/)).toEqual([]);
+      expect(logLines(/build-deps.*resolve\s+charlie\b/)).toEqual([]);
+      expect(stdout).toContain(
+        "ledger package bravo omitted by WASM_POSIX_FETCH_SKIP_PKGS",
+      );
+      expect(stdout).toMatch(/resolved=1\s+total=1\s+skipped=0/);
+
+      const skipAll = runScript(
+        ["--expected-ledger", ledger],
+        { WASM_POSIX_FETCH_SKIP_PKGS: "alpha bravo charlie" },
+      );
+      expect(skipAll.status).toBe(2);
+      expect(skipAll.stderr).toMatch(
+        /expected ledger selection is empty/,
+      );
+      expect(logLines(/build-deps.*resolve/)).toEqual([]);
+    },
+  );
+
+  it.skipIf(!jqAvailable)(
+    "rejects unknown, non-publishable, empty, and unsafe ledger roots",
+    () => {
+      const cases = [
+        {
+          ledger: writeExpectedLedger("missing-root-ledger.json", ["missing"]),
+          error: /selected package 'missing' does not exist/,
+        },
+        {
+          ledger: writeExpectedLedger("nonpublishable-ledger.json", ["delta"]),
+          error: /selected package 'delta' has no publishable build\.toml/,
+        },
+        {
+          ledger: writeExpectedLedger("empty-root-ledger.json", [""]),
+          error: /requires a safe non-empty package name/,
+        },
+        {
+          ledger: writeExpectedLedger("unsafe-root-ledger.json", ["../alpha"]),
+          error: /requires a safe non-empty package name/,
+        },
+      ];
+      for (const testCase of cases) {
+        const { status, stderr } = runScript([
+          "--expected-ledger",
+          testCase.ledger,
+        ]);
+        expect(status, `${testCase.ledger}\n${stderr}`).toBe(2);
+        expect(stderr).toMatch(testCase.error);
+        expect(logLines(/build-deps.*resolve/)).toEqual([]);
+      }
+    },
+  );
+
+  it.skipIf(!jqAvailable)(
+    "rejects malformed, empty, directory, and symlink ledgers without resolving",
+    () => {
+      const malformed = path.join(fakeRepoRoot, "malformed-ledger.json");
+      writeFileSync(malformed, "{not json}\n");
+      const empty = writeExpectedLedger("empty-ledger.json", []);
+      const directory = path.join(fakeRepoRoot, "ledger-directory");
+      mkdirSync(directory);
+      const valid = writeExpectedLedger("linked-ledger-target.json", ["alpha"]);
+      const linked = path.join(fakeRepoRoot, "linked-ledger.json");
+      symlinkSync(valid, linked);
+
+      for (const ledger of [malformed, empty, directory, linked]) {
+        const { status, stderr } = runScript([
+          "--expected-ledger",
+          ledger,
+        ]);
+        expect(status, `${ledger}\n${stderr}`).toBe(2);
+        expect(stderr).toMatch(
+          /expected ledger (?:is malformed or empty|must be a regular non-symlink file)/,
+        );
+        expect(logLines(/build-deps.*resolve/)).toEqual([]);
+      }
+    },
+  );
 
   it("--allow-stale resolves the same packages as the default (banner printed)", () => {
     const { status, stdout, stderr } = runScript(["--allow-stale"]);

@@ -302,7 +302,7 @@ case "$action" in
     [ "$source_repository" = "https://github.com/Automattic/kandelo" ]
     [ -f "$bundle/rootfs-1-rev1-abi42-wasm32-aaaaaaaa.tar.zst" ]
     ;;
-  "staging-reuse scan-source")
+  "staging-reuse scan-source"|"staging-reuse scan-source-admitted")
     if [ "$root_set" = browser-inputs ]; then
       [ "$(cat "$roots_file")" = "${TEST_BROWSER_ROOTS:-rootfs}" ] || {
         echo "source root list is not canonical and unique" >&2

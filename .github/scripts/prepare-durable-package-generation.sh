@@ -295,7 +295,7 @@ fi
 
 # WHY: S supplies only immutable bytes and provenance. Deriving selection with
 # M prevents historical workflow code from interpreting or narrowing inputs.
-run_authority_xtask_without_credentials staging-reuse scan-source \
+run_authority_xtask_without_credentials staging-reuse scan-source-admitted \
   --source-root "$AUTHORITY_ROOT" \
   --expected-abi "$EXPECTED_ABI" \
   --arch "$ARCH" \

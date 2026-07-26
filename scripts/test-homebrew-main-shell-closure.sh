@@ -716,8 +716,11 @@ grep -Fq 'repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"' \
 locked_tap_sha="$(jq -er '.catalog.tap_commit' "$SOURCE_LOCK")"
 grep -Fq "commit = \"$locked_tap_sha\"" "$SHELL_BUILD_TOML" ||
   fail "shell Git input commit must equal the reviewed migration lock"
-grep -Eq '^revision[[:space:]]*=[[:space:]]*20$' "$SHELL_BUILD_TOML" ||
-  fail "reduced lazy shell must publish canonical shell revision 20"
+grep -Eq '^revision[[:space:]]*=[[:space:]]*22$' "$SHELL_BUILD_TOML" ||
+  fail "reduced lazy shell must reserve the next canonical shell revision 22"
+grep -Eq '^publication_state[[:space:]]*=[[:space:]]*"pending"$' \
+  "$SHELL_BUILD_TOML" ||
+  fail "pre-cutover shell publication must remain pending"
 for shell_input in \
   homebrew/main-shell-demo.json \
   web-libs/kandelo-session/src/demo-config.ts

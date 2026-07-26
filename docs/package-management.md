@@ -462,6 +462,8 @@ inputs = ["packages/registry/zlib/build-zlib.sh"]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "<commit at last successful build>"
 revision    = 1
+# Optional distribution gate; omitted means "ready".
+publication_state = "ready"
 
 [[git_inputs]]
 name       = "homebrew_tap_core"
@@ -492,7 +494,21 @@ index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-ab
 - `revision` is the publish-time counter the resolver hashes into
   the cache-key. Bump when output bytes legitimately change (build
   flag tweaks, fork-instrument output, etc.). Don't bump for doc-only
-  changes — it triggers a needless rebuild across the matrix.
+  changes — it triggers a needless rebuild across the matrix. The release
+  index writer refuses to replace an existing package version with a lower
+  revision; a new upstream version may restart the counter.
+- `publication_state` is an optional project/distribution gate. It defaults
+  to `"ready"`. `"pending"` keeps the recipe usable for source resolution but
+  excludes the package and its complete reverse-dependent closure from
+  staging and prepare-merge publication matrices. Direct archive staging
+  and admitted durable-generation preparation/publishing reject the same
+  dependency chain before creating output, cache, or release state. Manual
+  exact-main rebuilds and package-source publication derive their selections
+  from that same policy ledger; a named blocked root fails with its complete
+  dependency chain rather than being recorded as a failed build.
+  The field is intentionally absent from package cache identity: flip it to
+  `"ready"` only after release authority is complete, without pretending the
+  package bytes changed. Unknown states are rejected.
 - `[[git_inputs]]` declares an external repository whose exact commit is part
   of the build recipe. Names start with a lowercase letter and contain only
   lowercase letters, digits, and underscores; repository URLs are anonymous

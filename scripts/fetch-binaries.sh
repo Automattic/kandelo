@@ -40,6 +40,11 @@
 #                  each selected root's declared dependency closure. Repeated
 #                  names are de-duplicated in first-requested order. With no
 #                  --package flags, the existing full-registry walk is used.
+#   --expected-ledger <path>
+#                  Materialize exactly the unique package roots present in a
+#                  Rust-generated staging expected ledger, optionally narrowed
+#                  by WASM_POSIX_FETCH_SKIP_PKGS. This is mutually exclusive
+#                  with --package and never falls back to a registry walk.
 #   --offline      Set `WASM_POSIX_OFFLINE=1` so the resolver refuses
 #                  to hit the network. (No-op if every archive is
 #                  already in the cache.)
@@ -79,9 +84,8 @@
 #                  and verify the current PR's staging index first.
 #   WASM_POSIX_FETCH_SKIP_PKGS
 #                  Space-separated package names to skip entirely.
-#                  CI uses this for packages temporarily disabled from
-#                  staging/prepare matrices so test-gate does not
-#                  source-build them while materializing binaries.
+#                  With an expected ledger this may only subtract roots; it
+#                  cannot add a package outside the publication selection.
 #
 # Exit codes:
 #   0  every package resolved successfully (archive fetched OR
@@ -101,13 +105,21 @@ ALLOW_STALE=0
 FETCH_ONLY=0
 SKIP_PKGS=" ${WASM_POSIX_FETCH_SKIP_PKGS:-} "
 SELECTED_PKGS=()
+EXPECTED_LEDGER=""
+EXPECTED_LEDGER_SET=0
+PACKAGE_FLAG_COUNT=0
+
+require_safe_package_name() {
+    local pkg="$1"
+    if [[ ! "$pkg" =~ ^[a-z0-9][a-z0-9._+-]*$ ]]; then
+        echo "fetch-binaries: package selection requires a safe non-empty package name, got '$pkg'" >&2
+        exit 2
+    fi
+}
 
 add_selected_package() {
     local pkg="$1"
-    if [[ ! "$pkg" =~ ^[a-z0-9][a-z0-9._+-]*$ ]]; then
-        echo "fetch-binaries: --package requires a safe non-empty package name, got '$pkg'" >&2
-        exit 2
-    fi
+    require_safe_package_name "$pkg"
     local selected
     for selected in "${SELECTED_PKGS[@]}"; do
         [ "$selected" = "$pkg" ] && return 0
@@ -122,11 +134,35 @@ while [ $# -gt 0 ]; do
                 echo "fetch-binaries: --package requires a package name" >&2
                 exit 2
             }
+            PACKAGE_FLAG_COUNT=$((PACKAGE_FLAG_COUNT + 1))
             add_selected_package "$2"
             shift 2
             ;;
         --package=*)
+            PACKAGE_FLAG_COUNT=$((PACKAGE_FLAG_COUNT + 1))
             add_selected_package "${1#--package=}"
+            shift
+            ;;
+        --expected-ledger)
+            [ $# -ge 2 ] || {
+                echo "fetch-binaries: --expected-ledger requires a path" >&2
+                exit 2
+            }
+            [ "$EXPECTED_LEDGER_SET" -eq 0 ] || {
+                echo "fetch-binaries: --expected-ledger may be provided only once" >&2
+                exit 2
+            }
+            EXPECTED_LEDGER="$2"
+            EXPECTED_LEDGER_SET=1
+            shift 2
+            ;;
+        --expected-ledger=*)
+            [ "$EXPECTED_LEDGER_SET" -eq 0 ] || {
+                echo "fetch-binaries: --expected-ledger may be provided only once" >&2
+                exit 2
+            }
+            EXPECTED_LEDGER="${1#--expected-ledger=}"
+            EXPECTED_LEDGER_SET=1
             shift
             ;;
         --offline)     OFFLINE=1; shift ;;
@@ -147,6 +183,15 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+if [ "$EXPECTED_LEDGER_SET" -eq 1 ] && [ -z "$EXPECTED_LEDGER" ]; then
+    echo "fetch-binaries: --expected-ledger requires a non-empty path" >&2
+    exit 2
+fi
+if [ "$EXPECTED_LEDGER_SET" -eq 1 ] && [ "$PACKAGE_FLAG_COUNT" -ne 0 ]; then
+    echo "fetch-binaries: --expected-ledger and --package are mutually exclusive" >&2
+    exit 2
+fi
+
 # --- Prerequisites --------------------------------------------------------
 for tool in cargo rustc; do
     command -v "$tool" >/dev/null 2>&1 || {
@@ -157,6 +202,48 @@ done
 
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 [ -n "$HOST_TARGET" ] || { echo "fetch-binaries: rustc -vV did not report host triple" >&2; exit 2; }
+
+if [ "$EXPECTED_LEDGER_SET" -eq 1 ]; then
+    command -v jq >/dev/null 2>&1 || {
+        echo "fetch-binaries: jq is required with --expected-ledger" >&2
+        exit 2
+    }
+    [ -f "$EXPECTED_LEDGER" ] && [ ! -L "$EXPECTED_LEDGER" ] || {
+        echo "fetch-binaries: expected ledger must be a regular non-symlink file" >&2
+        exit 2
+    }
+    ledger_packages="$(
+        jq -er '
+            if type != "object" or
+               (.abi_version | type) != "number" or
+               (.entries | type) != "array" or
+               (.entries | length) == 0 or
+               any(.entries[]; (.package | type) != "string")
+            then error("invalid expected ledger")
+            else [.entries[].package] | unique[]
+            end
+        ' "$EXPECTED_LEDGER"
+    )" || {
+        echo "fetch-binaries: expected ledger is malformed or empty" >&2
+        exit 2
+    }
+    while IFS= read -r pkg; do
+        require_safe_package_name "$pkg"
+        if [[ "$SKIP_PKGS" == *" $pkg "* ]]; then
+            echo "fetch-binaries: ledger package $pkg omitted by WASM_POSIX_FETCH_SKIP_PKGS"
+            continue
+        fi
+        add_selected_package "$pkg"
+    done <<<"$ledger_packages"
+    [ "${#SELECTED_PKGS[@]}" -gt 0 ] || {
+        echo "fetch-binaries: expected ledger selection is empty" >&2
+        exit 2
+    }
+    # WHY: package publication and test materialization must consume the same
+    # policy projection. A raw registry fallback here would resurrect pending
+    # packages that the build matrix intentionally omitted.
+    echo "fetch-binaries: selected roots from expected ledger: ${SELECTED_PKGS[*]}"
+fi
 
 if [ "$ALLOW_STALE" = "1" ]; then
     # The resolver source-builds automatically on archive verification

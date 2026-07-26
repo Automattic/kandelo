@@ -256,44 +256,21 @@ jobs:
             echo "target_tag=$TARGET_TAG" >> "$GITHUB_OUTPUT"
 
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            all_matrix="[]"
-
-            for pkg_dir in packages/registry/*/; do
-              pkg=$(basename "$pkg_dir")
-              if ! grep -q "^\[build\]" "$pkg_dir/package.toml"; then
-                continue
-              fi
-
-              kind=$(sed -nE "s/^kind *= *\"([^\"]+)\".*/\\1/p" "$pkg_dir/package.toml" | head -1)
-              case "$kind" in
-                library|program) ;;
-                *) echo "preflight: skipping $pkg (kind=$kind)" >&2; continue ;;
-              esac
-
-              # Version + revision for the per-matrix-entry
-              # scripts/index-update.sh invocation downstream.
-              version=$(sed -nE "s/^version *= *\"([^\"]+)\".*/\\1/p" "$pkg_dir/package.toml" | head -1)
-              revision=1
-              if [ -f "$pkg_dir/build.toml" ]; then
-                revision=$(sed -nE "s/^revision *= *([0-9]+).*/\\1/p" "$pkg_dir/build.toml" | head -1)
-                revision=${revision:-1}
-              fi
-              arches=$(awk -F'"'"'[][]'"'"' '"'"'/^arches *=/ {print $2}'"'"' "$pkg_dir/package.toml" | tr -d '"'"' "'"'"' | tr '"'"','"'"' '"'"' '"'"')
-              arches=${arches:-wasm32}
-              for arch in $arches; do
-                sha=$(cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-                  compute-cache-key-sha --package "$pkg_dir" --arch "$arch" 2>/dev/null) || {
-                  echo "preflight: skipping $pkg/$arch (compute-cache-key-sha failed)" >&2
-                  continue
-                }
-                short=${sha:0:8}
-                echo "preflight: candidate $pkg/$arch (sha $short)"
-                entry=$(jq -nc --arg pkg "$pkg" --arg arch "$arch" --arg sha "$sha" \
-                                --arg ver "$version" --argjson rev "$revision" \
-                  "{package: \$pkg, arch: \$arch, sha: \$sha, version: \$ver, revision: \$rev}")
-                all_matrix=$(echo "$all_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
-              done
-            done
+            XTASK="target/$HOST_TARGET/release/xtask"
+            expected_ledger=$(mktemp)
+            # WHY: the shared ledger is the publication-policy authority.
+            # `all` omits pending packages and every reverse dependent; a
+            # named blocked root instead fails here with its full dependency
+            # chain, before any package job can mutate the canonical release.
+            "$XTASK" staging-reuse expected \
+              --registry packages/registry \
+              --expected-abi "$ABI" \
+              --require-root "$INPUT_PACKAGES" \
+              --output "$expected_ledger"
+            all_matrix=$(jq -c \
+              "[.entries[] | {package, arch, sha: .cache_key_sha, version, revision}]" \
+              "$expected_ledger")
+            rm -f "$expected_ledger"
 
             all_matrix_file=$(mktemp)
             printf "%s" "$all_matrix" > "$all_matrix_file"

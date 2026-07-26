@@ -133,6 +133,17 @@ synthesize_job=$(job_block "$PREPARE" synthesize-merge)
 synthesize_step=$(step_run_block "$PREPARE" "Capture base and synthesize PR merge")
 preflight_job=$(job_block "$PREPARE" preflight)
 preflight_step=$(step_run_block "$PREPARE" "Compute matrix")
+for workflow_step in "$preflight_step" \
+  "$(step_run_block "$STAGING_WORKFLOW" "Compute matrix")"
+do
+  grep -Fq 'staging-reuse expected' <<<"$workflow_step" ||
+    fail "package matrices must derive from the Rust expected ledger"
+  grep -Fq 'done < <(jq -c ".entries[]" "$expected_ledger")' <<<"$workflow_step" ||
+    fail "package matrices must iterate only expected-ledger entries"
+  if grep -Fq 'compute-cache-key-sha --package "$pkg_dir"' <<<"$workflow_step"; then
+    fail "package matrices must not bypass publication policy with a raw registry scan"
+  fi
+done
 grep -Fq 'pr_commit_count: ${{ steps.synthesize.outputs.pr_commit_count }}' <<<"$synthesize_job" || \
   fail "synthesize-merge must export the full-history PR commit count"
 grep -Fq 'PR_COMMIT_COUNT=$(git rev-list --count "$BASE_SHA..$PR_HEAD_SHA")' <<<"$synthesize_step" || \
@@ -368,7 +379,7 @@ grep -Fq 'WASM_POSIX_BINARY_INDEX_URL="file://$index_dir/index.toml"' \
   fail "test preparation must resolve every package from the frozen local index"
 snapshot_line=$(grep -n 'mv "$index_dir/index.toml" "$index_dir/source-index.toml"' \
   <<<"$materialize_candidate_step" | cut -d: -f1)
-resolver_line=$(grep -n 'fetch-binaries.sh --fetch-only' \
+resolver_line=$(grep -n -- '--expected-ledger "$EXPECTED"' \
   <<<"$materialize_candidate_step" | cut -d: -f1)
 if [ "$snapshot_line" -ge "$resolver_line" ]; then
   fail "candidate index capture must precede binary materialization"
@@ -628,6 +639,11 @@ grep -Fq 'kandelo-index-transaction-v1-' "$INDEX_STATE_SCRIPT" || \
 # first/partial runs retain the canonical + local-overlay path.
 grep -Fq 'reuse_staging: ${{ steps.compute.outputs.reuse_staging }}' "$STAGING_WORKFLOW" || \
   fail "staging preflight must expose its release-reuse decision"
+[ "$(grep -Fc -- '--exclude "$PACKAGE_STAGING_EXCLUSIONS"' "$STAGING_WORKFLOW")" -eq 2 ] || \
+  fail "staging preflight and test-gate must share one publication exclusion contract"
+grep -Fq 'PACKAGE_STAGING_EXCLUSIONS="$PACKAGE_STAGING_EXCLUSIONS"' \
+  "$STAGING_WORKFLOW" || \
+  fail "test-gate must carry the shared publication exclusion contract into the dev shell"
 grep -Fq -- '--mode structural' "$STAGING_WORKFLOW" || \
   fail "staging preflight must validate complete target-release structure"
 grep -Fq 'validated target/canonical union did not cover the computed matrix' "$STAGING_WORKFLOW" || \
@@ -637,6 +653,21 @@ grep -Fq 'PACKAGE_REUSE_STAGING: ${{ needs.preflight.outputs.reuse_staging }}' "
 materialize_step=$(step_block "$STAGING_WORKFLOW" "Materialize binaries")
 grep -Fq 'GH_TOKEN: ${{ github.token }}' <<<"$materialize_step" || \
   fail "staging materialization must authenticate release snapshot reads"
+for workflow in "$STAGING_WORKFLOW" "$PREPARE"; do
+  materialize_step=$(step_run_block "$workflow" "Materialize binaries")
+  grep -Fq 'staging-reuse expected \' <<<"$materialize_step" ||
+    fail "$(basename "$workflow") test-gate does not rederive the publication ledger"
+  grep -Fq -- '--exclude "$PACKAGE_STAGING_EXCLUSIONS"' <<<"$materialize_step" ||
+    fail "$(basename "$workflow") test-gate does not share preflight exclusions"
+  grep -Fq -- '--expected-ledger "$EXPECTED"' <<<"$materialize_step" ||
+    fail "$(basename "$workflow") test-gate can still raw-walk packages outside its publication ledger"
+done
+[ "$(grep -Fc -- '--exclude "$PACKAGE_STAGING_EXCLUSIONS"' "$PREPARE")" -eq 2 ] || \
+  fail "prepare preflight and test-gate must share one publication exclusion contract"
+for workflow in "$STAGING_WORKFLOW" "$PREPARE"; do
+  grep -Fq 'WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang ' "$workflow" ||
+    fail "$(basename "$workflow") lost its heavy-runtime materialization optimization"
+done
 grep -Fq "needs.preflight.outputs.reuse_staging == 'false'" "$STAGING_WORKFLOW" || \
   fail "reused staging runs must not download absent matrix artifacts"
 grep -Fq -- '--mode current' "$STAGING_WORKFLOW" || \
@@ -666,6 +697,9 @@ for step in "Compute matrix" "Materialize binaries"; do
     fail "staging workflow step $step is not valid nested shell syntax"
   fi
 done
+if ! step_run_block "$PREPARE" "Compute matrix" | bash -n; then
+  fail "prepare-merge workflow step Compute matrix is not valid nested shell syntax"
+fi
 
 for workflow in "$STAGING_WORKFLOW" "$PREPARE"; do
   validation_job="$(job_block "$workflow" test-gate-validation)"

@@ -1060,6 +1060,8 @@ script_path = "packages/registry/zlib/build-zlib.sh"
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "<commit at last successful build>"
 revision    = 1
+# Optional distribution gate; omitted means "ready".
+publication_state = "ready"
 
 [[git_inputs]]
 name       = "homebrew_tap_core"
@@ -1073,7 +1075,26 @@ index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-ab
 - `{abi}` is substituted with the current `ABI_VERSION` at resolve
   time, so one `build.toml` survives ABI bumps.
 - `revision` is the publish-time counter the resolver hashes into
-  the cache-key — bump it when output bytes legitimately change.
+  the cache-key — bump it when output bytes legitimately change. The locked
+  index writer rejects a lower revision for an already-recorded package
+  version on both success and failure updates; a new upstream version may
+  restart the counter.
+- `publication_state` defaults to `"ready"`. A project can set it to
+  `"pending"` while an exact artifact or release authority is still being
+  reviewed. Pending packages and all packages that depend on them are omitted
+  from staging and prepare-merge matrices; `archive-stage` enforces the same
+  graph rule before side effects, and both admitted durable-generation
+  boundaries independently rederive it. Exact-main and package-source
+  publishers also preflight their selected roots through that ledger, so a
+  policy rejection cannot become a failed canonical index entry.
+  Preservation-only evidence and consumption of an existing generation do not
+  publish new bytes and may still describe pending packages; marking a recipe
+  pending does not revoke artifacts that were already admitted. Historical
+  producer source is likewise evidence, so bytes built while pending can be
+  admitted after the live authority becomes ready. The state is not part of
+  cache identity, so changing it to `"ready"` re-enables publication of the
+  already-reviewed recipe rather than forcing a synthetic rebuild. Unknown
+  states fail parsing.
 - Each optional `[[git_inputs]]` tuple is an immutable external build input.
   The resolver hashes its exact identity, fetches it anonymously at a detached
   HEAD, exposes a sealed read-only checkout to the build, and records the same

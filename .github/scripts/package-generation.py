@@ -107,7 +107,7 @@ PACKAGE_CACHE_PROJECTION_PINNED_TRANSITIONS = {
     },
     "tools/xtask/src/staging_reuse.rs": {
         "producer": "66a19dfc1542ef4f33e6b2ca06e8a3b170959508",
-        "validated_main": "76a582453e25c35258b98c63040b0d4478634dbb",
+        "validated_main": "d7621c09f93b07b12251ace21126393b9e2f251d",
     },
 }
 

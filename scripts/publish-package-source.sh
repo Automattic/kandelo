@@ -97,6 +97,113 @@ read_package_list() {
   sed -E 's/#.*$//' "$PACKAGE_LIST" | awk 'NF {print $1}'
 }
 
+publication_ledger_for_roots() {
+  local roots="$1"
+  local output="$2"
+  local blocked_output="${3:-}"
+  local args=(
+    staging-reuse expected
+    --registry "$KANDELO_ROOT/packages/registry"
+    --expected-abi "$ABI"
+    --require-root "$roots"
+    --output "$output"
+  )
+  if [ -n "$blocked_output" ]; then
+    args+=(--blocked-output "$blocked_output")
+  fi
+  cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+    "${args[@]}"
+}
+
+# WHY: establish policy before any package or gallery asset can be uploaded.
+# A named selection fails as one batch when blocked; `all` uses the same
+# policy-filtered ledger semantics as force-rebuild. The archive writer then
+# independently rechecks each admitted package.
+REQUESTED_PACKAGES=()
+while IFS= read -r pkg; do
+  [ -n "$pkg" ] || continue
+  want_pkg "$pkg" || continue
+  REQUESTED_PACKAGES+=("$pkg")
+done < <(read_package_list)
+[ "${#REQUESTED_PACKAGES[@]}" -gt 0 ] || {
+  echo "publish-package-source: package selection is empty" >&2
+  exit 1
+}
+if [ "$PACKAGE_SELECTION" = "all" ] || [ -z "$PACKAGE_SELECTION" ]; then
+  policy_roots="all"
+else
+  policy_roots="$(IFS=,; echo "${REQUESTED_PACKAGES[*]}")"
+fi
+PUBLICATION_EXPECTED="$(mktemp "${RUNNER_TEMP:-/tmp}/package-publication-expected.XXXXXX")"
+PUBLICATION_BLOCKERS="$(mktemp "${RUNNER_TEMP:-/tmp}/package-publication-blockers.XXXXXX")"
+if ! publication_ledger_for_roots \
+  "$policy_roots" "$PUBLICATION_EXPECTED" "$PUBLICATION_BLOCKERS"
+then
+  echo "publish-package-source: selected package publication is not admitted" >&2
+  exit 1
+fi
+jq -e --argjson abi "$ABI" '
+  type == "object" and
+  keys == ["abi_version", "entries"] and
+  .abi_version == $abi and
+  (.entries | type) == "array" and
+  ([.entries[].package] | length) ==
+    ([.entries[].package] | unique | length) and
+  all(.entries[];
+    type == "object" and
+    keys == ["blocker_chain", "package"] and
+    (.package | type) == "string" and
+    (.blocker_chain | type) == "array" and
+    (.blocker_chain | length) > 0 and
+    .blocker_chain[0] == .package and
+    all(.blocker_chain[]; type == "string" and length > 0)
+  )
+' "$PUBLICATION_BLOCKERS" >/dev/null || {
+  echo "publish-package-source: publication blocker report is malformed" >&2
+  exit 1
+}
+SELECTED_PACKAGES=()
+for pkg in "${REQUESTED_PACKAGES[@]}"; do
+  pkg_dir="$KANDELO_ROOT/packages/registry/$pkg"
+  [ -d "$pkg_dir" ] && [ -f "$pkg_dir/package.toml" ] &&
+    [ -f "$pkg_dir/build.toml" ] || {
+      echo "publish-package-source: requested package $pkg is missing publishable metadata after sync" >&2
+      exit 1
+    }
+  if jq -e --arg package "$pkg" \
+    'any(.entries[]; .package == $package)' \
+    "$PUBLICATION_EXPECTED" >/dev/null
+  then
+    SELECTED_PACKAGES+=("$pkg")
+  elif [ "$policy_roots" = "all" ] &&
+    jq -e --arg package "$pkg" \
+      'any(.entries[]; .package == $package)' \
+      "$PUBLICATION_BLOCKERS" >/dev/null
+  then
+    blocker_chain="$(jq -r --arg package "$pkg" '
+      first(.entries[] | select(.package == $package) | .blocker_chain) |
+      join(" -> ")
+    ' "$PUBLICATION_BLOCKERS")"
+    echo "publish-package-source: omit $pkg (blocked by $blocker_chain)"
+  else
+    echo "publish-package-source: selected package $pkg has no publishable ledger entry" >&2
+    exit 1
+  fi
+done
+[ "${#SELECTED_PACKAGES[@]}" -gt 0 ] || {
+  echo "publish-package-source: publication ledger selection is empty" >&2
+  exit 1
+}
+
+publication_selected() {
+  local wanted="$1"
+  local selected
+  for selected in "${SELECTED_PACKAGES[@]}"; do
+    [ "$selected" = "$wanted" ] && return 0
+  done
+  return 1
+}
+
 build_publish_one() {
   local pkg="$1"
   local version="$2"
@@ -104,7 +211,17 @@ build_publish_one() {
   local arch="$4"
   local pkg_dir="$KANDELO_ROOT/packages/registry/$pkg"
 
-  local sha short suffix out_dir archive_path archive_name
+  local sha short suffix out_dir archive_path archive_name policy_recheck
+  jq -e \
+    --arg package "$pkg" \
+    --arg arch "$arch" \
+    'any(.entries[]; .package == $package and .arch == $arch)' \
+    "$PUBLICATION_EXPECTED" >/dev/null || {
+      # WHY: a selected package/arch missing from the shared policy ledger is
+      # not a build failure and must never create a failed canonical entry.
+      echo "publish-package-source: $pkg/$arch is not admitted for publication" >&2
+      exit 1
+    }
   sha="$(cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
     compute-cache-key-sha --package "$pkg_dir" --arch "$arch")"
   short="${sha:0:8}"
@@ -133,6 +250,19 @@ build_publish_one() {
       --source-commit "$BUILD_COMMIT" \
       --expected-cache-key-sha "$sha"
   then
+    policy_recheck="$(mktemp "${RUNNER_TEMP:-/tmp}/package-publication-recheck.XXXXXX")"
+    if ! publication_ledger_for_roots "$pkg" "$policy_recheck" ||
+      ! jq -e \
+        --arg package "$pkg" \
+        --arg arch "$arch" \
+        'any(.entries[]; .package == $package and .arch == $arch)' \
+        "$policy_recheck" >/dev/null
+    then
+      rm -f "$policy_recheck"
+      echo "publish-package-source: could not prove $pkg/$arch remains admitted; canonical index left unchanged" >&2
+      return 1
+    fi
+    rm -f "$policy_recheck"
     bash "$KANDELO_ROOT/scripts/index-update.sh" \
       --target-tag "$TARGET_TAG" \
       --package "$pkg" \
@@ -166,7 +296,7 @@ build_publish_one() {
 FAILED=()
 while IFS= read -r pkg; do
   [ -n "$pkg" ] || continue
-  want_pkg "$pkg" || continue
+  publication_selected "$pkg" || continue
 
   pkg_dir="$KANDELO_ROOT/packages/registry/$pkg"
   [ -d "$pkg_dir" ] || {
@@ -202,3 +332,5 @@ if [ "${#FAILED[@]}" -gt 0 ]; then
   printf '  %s\n' "${FAILED[@]}" >&2
   exit 1
 fi
+
+rm -f "$PUBLICATION_EXPECTED" "$PUBLICATION_BLOCKERS"

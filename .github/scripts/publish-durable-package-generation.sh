@@ -323,7 +323,7 @@ env -u GH_TOKEN -u GITHUB_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_URL \
   -u ACTIONS_RUNTIME_TOKEN \
   -u WASM_POSIX_DEPS_REGISTRY \
-  "$AUTHORITY_XTASK" staging-reuse scan-source \
+  "$AUTHORITY_XTASK" staging-reuse scan-source-admitted \
     --source-root "$REPO_ROOT" \
     --expected-abi "$EXPECTED_ABI" \
     --arch "$ARCH" \

@@ -64,7 +64,12 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 20
+revision    = 22
+# The canonical bottle recipe is intentionally present for validation, but its
+# final tap commit and reviewed VFS digest do not exist until the exact-main
+# bottle cutover. Generic archive publication must remain fail closed until
+# that authority is sealed, then this flips to "ready".
+publication_state = "pending"
 
 [[git_inputs]]
 name = "homebrew_tap_core"

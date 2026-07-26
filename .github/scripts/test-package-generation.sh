@@ -625,6 +625,15 @@ grep -Fq "npm ci --ignore-scripts --no-audit --no-fund" <<<"$prepare_job"
 grep -Fq -- "--browser-inputs" <<<"$prepare_job"
 grep -Fq "browser-binary-package-roots.mjs" \
   "$SCRIPT_DIR/prepare-durable-package-generation.sh"
+grep -Fq "staging-reuse scan-source-admitted" \
+  "$SCRIPT_DIR/prepare-durable-package-generation.sh"
+if [ "$(grep -Fc "staging-reuse scan-source-admitted" \
+       "$SCRIPT_DIR/prepare-durable-package-generation.sh")" -ne 1 ] ||
+   [ "$(grep -Fc "staging-reuse scan-source" \
+       "$SCRIPT_DIR/prepare-durable-package-generation.sh")" -ne 2 ]; then
+  echo "durable preparation must gate live authority while treating producer source as evidence" >&2
+  exit 1
+fi
 grep -Fq -- "--exclude-package shell" \
   "$SCRIPT_DIR/prepare-durable-package-generation.sh"
 grep -Fq -- "--include-package rootfs" \
@@ -662,8 +671,15 @@ grep -Fq "publish-durable-package-generation.sh" <<<"$publish_job"
 grep -Fq -- "--authority-xtask" <<<"$publish_job"
 grep -Fq -- "--producer-sha" <<<"$publish_job"
 grep -Fq -- "--validated-main-sha" <<<"$publish_job"
-grep -Fq "staging-reuse scan-source" \
+grep -Fq "staging-reuse scan-source-admitted" \
   "$SCRIPT_DIR/publish-durable-package-generation.sh"
+if [ "$(grep -Fc "staging-reuse scan-source-admitted" \
+       "$SCRIPT_DIR/publish-durable-package-generation.sh")" -ne 1 ] ||
+   [ "$(grep -Fc "staging-reuse scan-source" \
+       "$SCRIPT_DIR/publish-durable-package-generation.sh")" -ne 2 ]; then
+  echo "durable publisher must gate live authority while treating producer source as evidence" >&2
+  exit 1
+fi
 grep -Fq "rederived-projection" \
   "$SCRIPT_DIR/publish-durable-package-generation.sh"
 if [ "$(grep -Fc "validate_publication_source" \
@@ -1549,6 +1565,11 @@ fi
 grep -Fq "working-directory: authority" <<<"$preserve_prepare_job"
 grep -Fq "staging-reuse scan-source" \
   "$SCRIPT_DIR/prepare-preserved-pr-package-generation.sh"
+if grep -Fq "staging-reuse scan-source-admitted" \
+     "$SCRIPT_DIR/prepare-preserved-pr-package-generation.sh"; then
+  echo "preservation-only evidence unexpectedly requires publication admission" >&2
+  exit 1
+fi
 if grep -Fq "staging-reuse expected" \
      "$SCRIPT_DIR/prepare-preserved-pr-package-generation.sh" ||
    grep -Fq "package-generation.py\" select " \
