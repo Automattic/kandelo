@@ -877,30 +877,42 @@ shell_build_function="$TMP_ROOT/build-shell-vfs-function.sh"
 sed -n '/^build_shell_vfs()/,/^}/p' "$RUN_SH" >"$shell_build_function"
 grep -Fq 'resolve_args+=(resolve shell)' "$shell_build_function" ||
   fail "run.sh must resolve the shell package through the package system"
+source_validate_function="$TMP_ROOT/validate-source-rootfs-shell-pages-function.sh"
+source_initialize_function="$TMP_ROOT/initialize-source-rootfs-shell-pages-function.sh"
 source_stage_function="$TMP_ROOT/stage-source-rootfs-shell-function.sh"
 source_install_function="$TMP_ROOT/install-source-rootfs-shell-function.sh"
 source_verify_function="$TMP_ROOT/verify-source-rootfs-shell-function.sh"
+source_runtime_verify_function="$TMP_ROOT/verify-source-rootfs-shell-runtime-function.sh"
 source_closure_function="$TMP_ROOT/verify-source-rootfs-shell-browser-closure-function.sh"
 source_override_function="$TMP_ROOT/activate-source-rootfs-shell-resolver-override-function.sh"
+source_release_function="$TMP_ROOT/release-source-rootfs-shell-resolver-override-function.sh"
 source_cleanup_function="$TMP_ROOT/cleanup-source-rootfs-shell-work-root-function.sh"
-source_deactivate_function="$TMP_ROOT/deactivate-source-rootfs-shell-function.sh"
+source_exit_cleanup_function="$TMP_ROOT/source-rootfs-shell-exit-cleanup-function.sh"
 source_clear_fetched_function="$TMP_ROOT/clear-source-rootfs-shell-transient-fetched-mirror-function.sh"
 browser_fetch_function="$TMP_ROOT/fetch-browser-binaries-function.sh"
 prepare_browser_function="$TMP_ROOT/prepare-browser-function.sh"
+sed -n '/^validate_source_rootfs_shell_pages_mode()/,/^}/p' "$RUN_SH" \
+  >"$source_validate_function"
+sed -n '/^initialize_source_rootfs_shell_pages_mode()/,/^}/p' "$RUN_SH" \
+  >"$source_initialize_function"
 sed -n '/^stage_source_rootfs_shell_vfs()/,/^}/p' "$RUN_SH" \
   >"$source_stage_function"
 sed -n '/^install_source_rootfs_shell_vfs()/,/^}/p' "$RUN_SH" \
   >"$source_install_function"
 sed -n '/^verify_source_rootfs_shell_vfs()/,/^}/p' "$RUN_SH" \
   >"$source_verify_function"
+sed -n '/^verify_source_rootfs_shell_runtime_vfs()/,/^}/p' "$RUN_SH" \
+  >"$source_runtime_verify_function"
 sed -n '/^verify_source_rootfs_shell_browser_closure()/,/^}/p' "$RUN_SH" \
   >"$source_closure_function"
 sed -n '/^activate_source_rootfs_shell_resolver_override()/,/^}/p' "$RUN_SH" \
   >"$source_override_function"
+sed -n '/^release_source_rootfs_shell_runtime_override()/,/^}/p' "$RUN_SH" \
+  >"$source_release_function"
 sed -n '/^cleanup_source_rootfs_shell_work_root()/,/^}/p' "$RUN_SH" \
   >"$source_cleanup_function"
-sed -n '/^deactivate_source_rootfs_shell_if_present()/,/^}/p' "$RUN_SH" \
-  >"$source_deactivate_function"
+sed -n '/^source_rootfs_shell_exit_cleanup()/,/^}/p' "$RUN_SH" \
+  >"$source_exit_cleanup_function"
 sed -n '/^clear_source_rootfs_shell_transient_fetched_mirror()/,/^}/p' "$RUN_SH" \
   >"$source_clear_fetched_function"
 sed -n '/^fetch_browser_binaries()/,/^}/p' "$RUN_SH" \
@@ -908,17 +920,221 @@ sed -n '/^fetch_browser_binaries()/,/^}/p' "$RUN_SH" \
 sed -n '/^cmd_prepare_browser()/,/^}/p' "$RUN_SH" \
   >"$prepare_browser_function"
 grep -Fq -- '--source-rootfs-shell)' "$RUN_SH" &&
-  grep -Fq \
+grep -Fq \
     'export WASM_POSIX_SOURCE_ROOTFS_SHELL=$SOURCE_ROOTFS_SHELL' "$RUN_SH" ||
   fail "run.sh must expose one explicit source-rootfs browser preparation mode"
 grep -Fq -- \
-  '--source-rootfs-shell is supported only by prepare-browser and browser.' \
+  '--source-rootfs-shell is internal to the GitHub Pages prepare-browser job.' \
   "$RUN_SH" ||
-  fail "source-rootfs selection must not change unrelated run.sh commands"
+  fail "source-rootfs selection must be restricted to the Pages preparation command"
+grep -Fq 'INTERNAL: Pages deploy job only.' "$RUN_SH" &&
+  grep -Fq 'pages-exact-main-v1 attestation' "$RUN_SH" &&
+  ! grep -Fq '  ./run.sh prepare-browser --source-rootfs-shell' "$RUN_SH" ||
+  fail "ordinary help must identify source-rootfs mode as internal workflow plumbing"
+
+for validation_contract in \
+  'WASM_POSIX_SOURCE_ROOTFS_SHELL_ISOLATION:-}" = "pages-exact-main-v1"' \
+  'GITHUB_ACTIONS:-}" = "true"' \
+  'GITHUB_WORKFLOW:-}" = "Deploy GitHub Pages"' \
+  'GITHUB_JOB:-}" = "deploy"' \
+  'GITHUB_SERVER_URL:-}" = "https://github.com"' \
+  'push|workflow_dispatch)' \
+  'GITHUB_REF:-}" = "refs/heads/main"' \
+  'GITHUB_REF_NAME:-}" = "main"' \
+  'WASM_POSIX_SOURCE_ROOTFS_SHELL_RUNNER_ENVIRONMENT:-}" = "github-hosted"' \
+  'RUNNER_OS:-}" = "Linux"' \
+  'workspace_physical" = "$repo_physical"' \
+  'source_repository" = "https://github.com/$github_repository"' \
+  'source_commit" = "$GITHUB_SHA"' \
+  'git -C "$REPO_ROOT" rev-parse HEAD' \
+  'file:///*)' \
+  'generator = "exact-main Pages source closure"' \
+  'cache must be a nonexistent direct child of RUNNER_TEMP' \
+  '"$REPO_ROOT/local-binaries"' \
+  '"$REPO_ROOT/binaries"' \
+  '"$REPO_ROOT/local-libs"' \
+  '"$REPO_ROOT/apps/browser-demos/public/shell.vfs.zst"'
+do
+  grep -Fq "$validation_contract" "$source_validate_function" ||
+    fail "source-rootfs Pages validation omits: $validation_contract"
+done
+grep -Fq '[ "$ALREADY_MATERIALIZED" -eq 0 ]' "$source_validate_function" &&
+  grep -Fq '[ "${#FETCH_ONLY_ARGS[@]}" -eq 0 ]' "$source_validate_function" &&
+  grep -Fq '[ "$USE_PR_STAGING" -eq 0 ]' "$source_validate_function" ||
+  fail "source-rootfs Pages mode must reject incompatible materialization modes"
+
+validation_probe="$TMP_ROOT/source-pages-validation"
+validation_repo="$validation_probe/repo"
+validation_runner_temp="$validation_probe/runner"
+mkdir -p "$validation_repo/crates/shared/src" \
+  "$validation_repo/apps/browser-demos/public" "$validation_runner_temp"
+validation_runner_temp="$(cd "$validation_runner_temp" && pwd -P)"
+printf 'pub const ABI_VERSION: u32 = 42;\n' \
+  >"$validation_repo/crates/shared/src/lib.rs"
+(
+  cd "$validation_repo"
+  git init -q
+  git config user.email validation@example.invalid
+  git config user.name Validation
+  git add crates apps
+  git commit -qm validation
+)
+validation_sha="$(git -C "$validation_repo" rev-parse HEAD)"
+validation_index="$validation_runner_temp/empty-index.toml"
+validation_cache="$validation_runner_temp/fresh-cache"
+cat >"$validation_index" <<'EOF'
+abi_version = 42
+generated_at = "1970-01-01T00:00:00Z"
+generator = "exact-main Pages source closure"
+EOF
+validation_runner="$validation_probe/validate.sh"
+{
+  printf 'set -euo pipefail\n'
+  printf 'REPO_ROOT=%q\n' "$validation_repo"
+  printf 'ALREADY_MATERIALIZED="${TEST_ALREADY_MATERIALIZED:-0}"\n'
+  printf 'FETCH_ONLY_ARGS=()\n'
+  printf '[ "${TEST_FETCH_ONLY:-0}" = 0 ] || FETCH_ONLY_ARGS=(--fetch-only)\n'
+  printf 'USE_PR_STAGING="${TEST_PR_STAGING:-0}"\n'
+  printf 'SOURCE_ROOTFS_SHELL_RUNNER_TEMP=""\n'
+  printf 'SOURCE_ROOTFS_SHELL_PREFLIGHT_VALIDATED=0\n'
+  printf 'err() { printf "%%s\\n" "$*" >&2; }\n'
+  cat "$source_validate_function"
+  printf 'validate_source_rootfs_shell_pages_mode\n'
+} >"$validation_runner"
+chmod +x "$validation_runner"
+validation_env=(
+  GITHUB_ACTIONS=true
+  GITHUB_WORKFLOW="Deploy GitHub Pages"
+  GITHUB_JOB=deploy
+  GITHUB_SERVER_URL=https://github.com
+  GITHUB_EVENT_NAME=push
+  GITHUB_REF=refs/heads/main
+  GITHUB_REF_NAME=main
+  GITHUB_RUN_ID=123
+  GITHUB_RUN_ATTEMPT=1
+  GITHUB_WORKSPACE="$validation_repo"
+  GITHUB_REPOSITORY=example/kandelo
+  GITHUB_SHA="$validation_sha"
+  RUNNER_OS=Linux
+  RUNNER_TEMP="$validation_runner_temp"
+  WASM_POSIX_SOURCE_ROOTFS_SHELL_ISOLATION=pages-exact-main-v1
+  WASM_POSIX_SOURCE_ROOTFS_SHELL_RUNNER_ENVIRONMENT=github-hosted
+  WASM_POSIX_SOURCE_ROOTFS_SHELL_REPOSITORY=https://github.com/example/kandelo
+  WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT="$validation_sha"
+  WASM_POSIX_BINARY_INDEX_URL="file://$validation_index"
+  WASM_POSIX_BINARY_CACHE_ROOT="$validation_cache"
+)
+env "${validation_env[@]}" bash "$validation_runner" ||
+  fail "source-rootfs Pages validation rejected its exact isolated context"
+
+expect_validation_rejected() {
+  local expected="$1"
+  shift
+  expect_failure "$expected" env "${validation_env[@]}" "$@" \
+    bash "$validation_runner"
+}
+
+expect_validation_rejected "Pages exact-main isolation contract" \
+  WASM_POSIX_SOURCE_ROOTFS_SHELL_ISOLATION=
+expect_validation_rejected "restricted to the Deploy GitHub Pages/deploy job" \
+  GITHUB_ACTIONS=false
+expect_validation_rejected "restricted to the Deploy GitHub Pages/deploy job" \
+  GITHUB_WORKFLOW="Another workflow"
+expect_validation_rejected "restricted to the Deploy GitHub Pages/deploy job" \
+  GITHUB_JOB=test
+expect_validation_rejected "supported github.com Pages event" \
+  GITHUB_SERVER_URL=https://github.example.invalid
+expect_validation_rejected "supported github.com Pages event" \
+  GITHUB_EVENT_NAME=pull_request
+expect_validation_rejected "exact main branch checkout" \
+  GITHUB_REF=refs/heads/topic
+expect_validation_rejected "real GitHub Actions run identity" \
+  GITHUB_RUN_ID=not-a-run
+expect_validation_rejected "attested GitHub-hosted Linux Pages runner" \
+  WASM_POSIX_SOURCE_ROOTFS_SHELL_RUNNER_ENVIRONMENT=self-hosted
+expect_validation_rejected "attested GitHub-hosted Linux Pages runner" \
+  RUNNER_OS=macOS
+expect_validation_rejected "GitHub Actions workspace root" \
+  GITHUB_WORKSPACE="$validation_probe"
+expect_validation_rejected "repository provenance must match" \
+  GITHUB_REPOSITORY=other/kandelo
+expect_validation_rejected "commit provenance must match" \
+  WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT=0000000000000000000000000000000000000000
+expect_validation_rejected "workflow-created local empty index" \
+  WASM_POSIX_BINARY_INDEX_URL=https://example.invalid/index.toml
+
+wrong_abi_index="$validation_runner_temp/wrong-abi.toml"
+cat >"$wrong_abi_index" <<'EOF'
+abi_version = 41
+generated_at = "1970-01-01T00:00:00Z"
+generator = "exact-main Pages source closure"
+EOF
+expect_validation_rejected "exact empty current-ABI Pages index" \
+  WASM_POSIX_BINARY_INDEX_URL="file://$wrong_abi_index"
+nonempty_index="$validation_runner_temp/nonempty-index.toml"
+cp "$validation_index" "$nonempty_index"
+printf '\n[[packages]]\nname = "shell"\n' >>"$nonempty_index"
+expect_validation_rejected "exact empty current-ABI Pages index" \
+  WASM_POSIX_BINARY_INDEX_URL="file://$nonempty_index"
+index_symlink="$validation_runner_temp/index-symlink.toml"
+ln -s "$validation_index" "$index_symlink"
+expect_validation_rejected "regular direct child of RUNNER_TEMP" \
+  WASM_POSIX_BINARY_INDEX_URL="file://$index_symlink"
+
+mkdir "$validation_cache"
+expect_validation_rejected "cache must be a nonexistent direct child"
+rmdir "$validation_cache"
+cache_target="$validation_runner_temp/cache-target"
+cache_symlink="$validation_runner_temp/cache-symlink"
+mkdir "$cache_target"
+ln -s "$cache_target" "$cache_symlink"
+expect_validation_rejected "cache must be a nonexistent direct child" \
+  WASM_POSIX_BINARY_CACHE_ROOT="$cache_symlink"
+expect_validation_rejected "cannot combine with already-materialized" \
+  TEST_ALREADY_MATERIALIZED=1
+expect_validation_rejected "cannot combine with already-materialized" \
+  TEST_FETCH_ONLY=1
+expect_validation_rejected "cannot combine with already-materialized" \
+  TEST_PR_STAGING=1
+mkdir "$validation_repo/local-binaries"
+expect_validation_rejected "requires an unmaterialized Pages workspace"
+rmdir "$validation_repo/local-binaries"
+[ ! -e "$validation_cache" ] && [ ! -L "$validation_cache" ] ||
+  fail "rejected source-rootfs validation mutated the fresh cache path"
+
+validation_call_line="$(grep -nF 'validate_source_rootfs_shell_pages_mode' \
+  "$source_initialize_function" | cut -d: -f1)"
+trap_line="$(grep -nF 'trap source_rootfs_shell_exit_cleanup EXIT' \
+  "$source_initialize_function" | cut -d: -f1)"
+work_mkdir_line="$(grep -nF 'mkdir "$SOURCE_ROOTFS_SHELL_WORK_ROOT"' \
+  "$source_initialize_function" | cut -d: -f1)"
+cache_mkdir_line="$(grep -nF 'mkdir "$WASM_POSIX_BINARY_CACHE_ROOT"' \
+  "$source_initialize_function" | cut -d: -f1)"
+[ "$validation_call_line" -lt "$trap_line" ] &&
+  [ "$validation_call_line" -lt "$work_mkdir_line" ] &&
+  [ "$validation_call_line" -lt "$cache_mkdir_line" ] ||
+  fail "source-rootfs Pages validation must complete before any mutation"
+grep -Fq '[ "$SOURCE_ROOTFS_SHELL_PREFLIGHT_VALIDATED" -eq 1 ]' \
+  "$source_stage_function" ||
+  fail "source-rootfs staging must require a completed Pages preflight"
+initialize_line="$(grep -nF 'initialize_source_rootfs_shell_pages_mode' \
+  "$source_install_function" | cut -d: -f1)"
+stage_line="$(grep -nF 'stage_source_rootfs_shell_vfs' \
+  "$source_install_function" | cut -d: -f1)"
+install_xtask_line="$(grep -nF 'xtask="$(pkg_xtask_bin)"' \
+  "$source_install_function" | cut -d: -f1)"
+[ "$initialize_line" -lt "$stage_line" ] &&
+  [ "$stage_line" -lt "$install_xtask_line" ] ||
+  fail "source-rootfs install must preflight and inspect staging before canonical helpers"
+
 grep -Fq -- \
   '--package "$REPO_ROOT/homebrew/source-rootfs-shell-package"' \
   "$source_stage_function" &&
-  grep -Fq -- '--force-source-closure' "$source_stage_function" ||
+  grep -Fq -- '--force-source-closure' "$source_stage_function" &&
+  grep -Fq -- '--binaries-dir "$SOURCE_ROOTFS_SHELL_STAGE_BINARIES"' \
+    "$source_stage_function" &&
+  ! grep -Fq -- '--binaries-dir "$REPO_ROOT/local-binaries"' \
+    "$source_stage_function" ||
   fail "source-rootfs mode must force-stage the distinct bridge recipe"
 grep -Fq '[ "${package_names[0]}" = "source-rootfs-shell" ]' \
   "$source_stage_function" &&
@@ -938,10 +1154,13 @@ grep -Fq 'WASM_POSIX_LOCAL_INSTALL_SOURCE="$SOURCE_ROOTFS_SHELL_CANDIDATE"' \
   "$source_install_function" &&
   grep -Fq 'install-local-artifact shell shell.vfs.zst' \
     "$source_install_function" &&
-  grep -Fq 'write_source_rootfs_shell_marker' "$source_install_function" &&
-  grep -Fq 'cp "$SOURCE_ROOTFS_SHELL_CANDIDATE" "$browser_copy"' \
+  grep -Fq 'cp -- "$SOURCE_ROOTFS_SHELL_CANDIDATE" "$SOURCE_ROOTFS_SHELL_PUBLIC_TEMP"' \
+    "$source_install_function" &&
+  grep -Fq 'cmp "$SOURCE_ROOTFS_SHELL_CANDIDATE" "$SOURCE_ROOTFS_SHELL_PUBLIC_TEMP"' \
+    "$source_install_function" &&
+  grep -Fq 'mv -- "$SOURCE_ROOTFS_SHELL_PUBLIC_TEMP" "$browser_copy"' \
     "$source_install_function" ||
-  fail "source-rootfs mode must install exact bridge bytes through canonical package ownership"
+  fail "source-rootfs mode must install canonical bytes and atomically publish the verified public copy"
 grep -Fq 'activate_source_rootfs_shell_resolver_override' \
   "$source_install_function" &&
   grep -Fq 'local shell_dir="$local_libs/shell"' "$source_override_function" &&
@@ -980,6 +1199,8 @@ source_override_runner="$source_override_probe/run.sh"
   printf 'SOURCE_ROOTFS_SHELL_OVERRIDE_TARGET=""\n'
   printf 'SOURCE_ROOTFS_SHELL_OVERRIDE_SHELL_DIR_CREATED=0\n'
   printf 'SOURCE_ROOTFS_SHELL_OVERRIDE_LOCAL_LIBS_CREATED=0\n'
+  printf 'SOURCE_ROOTFS_SHELL_FETCHED_MIRROR=""\n'
+  printf 'SOURCE_ROOTFS_SHELL_TRANSIENT_FETCHED_TARGET=""\n'
   printf 'err() { printf "%%s\\n" "$*" >&2; }\n'
   printf 'pkg_output_rel() { printf "shell.vfs.zst\\n"; }\n'
   sed -n '/^activate_source_rootfs_shell_resolver_override()/,/^}/p' "$RUN_SH"
@@ -993,16 +1214,12 @@ bash "$source_override_runner" ||
 
 source_reject_probe="$TMP_ROOT/source-rejected-override-probe"
 source_reject_generation="$source_reject_probe/local-binaries/.kandelo-local-generations/wasm32/shell/exact/session"
-source_reject_override="$source_reject_probe/local-libs/shell/build"
-source_reject_fetched="$source_reject_probe/binaries/programs/wasm32/shell.vfs.zst"
 source_reject_candidate="$source_reject_probe/candidate.vfs.zst"
 mkdir -p "$source_reject_probe/scripts" "$source_reject_generation" \
-  "$(dirname "$source_reject_override")" "$(dirname "$source_reject_fetched")"
+  "$source_reject_probe/local-libs"
 printf 'exact-source-shell\n' \
   >"$source_reject_generation/shell.vfs.zst"
 printf 'exact-source-shell\n' >"$source_reject_candidate"
-ln -s "$source_reject_generation" "$source_reject_override"
-ln -s "$source_reject_override/shell.vfs.zst" "$source_reject_fetched"
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" %q\n' \
   "$source_reject_generation/shell.vfs.zst" \
   >"$source_reject_probe/scripts/resolve-binary.sh"
@@ -1012,8 +1229,6 @@ source_reject_runner="$source_reject_probe/run.sh"
   printf 'set -euo pipefail\n'
   printf 'REPO_ROOT=%q\n' "$source_reject_probe"
   printf 'SOURCE_ROOTFS_SHELL_CANDIDATE=%q\n' "$source_reject_candidate"
-  printf 'SOURCE_ROOTFS_SHELL_WORK_ROOT=""\n'
-  printf 'SOURCE_ROOTFS_SHELL_WORK_PREFIX=""\n'
   printf 'SOURCE_ROOTFS_SHELL_OVERRIDE_PATH=""\n'
   printf 'SOURCE_ROOTFS_SHELL_OVERRIDE_TARGET=""\n'
   printf 'SOURCE_ROOTFS_SHELL_OVERRIDE_SHELL_DIR_CREATED=0\n'
@@ -1023,15 +1238,10 @@ source_reject_runner="$source_reject_probe/run.sh"
   printf 'err() { printf "%%s\\n" "$*" >&2; }\n'
   printf 'pkg_output_rel() { printf "shell.vfs.zst\\n"; }\n'
   sed -n '/^activate_source_rootfs_shell_resolver_override()/,/^}/p' "$RUN_SH"
-  sed -n '/^cleanup_source_rootfs_shell_work_root()/,/^}/p' "$RUN_SH"
   printf 'if activate_source_rootfs_shell_resolver_override; then exit 1; fi\n'
-  printf 'cleanup_source_rootfs_shell_work_root\n'
-  printf '[ -L %q ] && [ "$(readlink %q)" = %q ]\n' \
-    "$source_reject_override" "$source_reject_override" \
-    "$source_reject_generation"
-  printf '[ -L %q ] && [ "$(readlink %q)" = %q ]\n' \
-    "$source_reject_fetched" "$source_reject_fetched" \
-    "$source_reject_override/shell.vfs.zst"
+  printf '[ -d %q ]\n' "$source_reject_probe/local-libs"
+  printf '[ -z "$SOURCE_ROOTFS_SHELL_OVERRIDE_PATH" ]\n'
+  printf '[ -z "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR" ]\n'
 } >"$source_reject_runner"
 bash "$source_reject_runner" ||
   fail "rejected source-rootfs activation claimed a preexisting override or fetched link"
@@ -1044,9 +1254,13 @@ override_ownership_line="$(grep -nF \
 fetched_ownership_line="$(grep -nF \
   'SOURCE_ROOTFS_SHELL_FETCHED_MIRROR="$fetched_mirror"' \
   "$source_override_function" | cut -d: -f1)"
-[ "$override_create_line" -lt "$override_ownership_line" ] &&
-  [ "$override_create_line" -lt "$fetched_ownership_line" ] ||
-  fail "source-rootfs cleanup ownership must begin only after creating its override"
+override_mkdir_line="$(grep -nF 'mkdir "$local_libs"' \
+  "$source_override_function" | cut -d: -f1)"
+[ "$override_ownership_line" -lt "$override_mkdir_line" ] &&
+  [ "$fetched_ownership_line" -lt "$override_mkdir_line" ] &&
+  [ "$override_ownership_line" -lt "$override_create_line" ] &&
+  [ "$fetched_ownership_line" -lt "$override_create_line" ] ||
+  fail "source-rootfs cleanup ownership must precede every override mutation"
 
 grep -Fq 'local install_session="source-rootfs-shell-' \
   "$source_install_function" &&
@@ -1057,6 +1271,10 @@ grep -Fq 'cmp "$SOURCE_ROOTFS_SHELL_CANDIDATE" "$resolved"' \
   grep -Fq 'cmp "$SOURCE_ROOTFS_SHELL_CANDIDATE" "$browser_copy"' \
     "$source_verify_function" ||
   fail "source-rootfs mode must compare both canonical browser paths with its staged bytes"
+grep -Fq 'verify_source_rootfs_shell_vfs' "$source_runtime_verify_function" &&
+  grep -Fq '[ ! -L "$SOURCE_ROOTFS_SHELL_OVERRIDE_PATH" ]' \
+    "$source_runtime_verify_function" ||
+  fail "source-rootfs runtime verification must bind the temporary override"
 grep -Fq 'pkg_has_output homebrew-bootstrap homebrew-bootstrap.zip' \
   "$source_closure_function" &&
   grep -Fq 'pkg_has_output homebrew-bootstrap homebrew-brew.env' \
@@ -1088,73 +1306,182 @@ source_clear_runner="$source_clear_probe/run.sh"
   printf 'SOURCE_ROOTFS_SHELL_TRANSIENT_FETCHED_TARGET=%q\n' \
     "$source_clear_transient"
   printf 'SOURCE_CLEAR_UNRELATED=%q\n' "$source_clear_unrelated"
+  printf 'err() { printf "%%s\\n" "$*" >&2; }\n'
   sed -n '/^clear_source_rootfs_shell_transient_fetched_mirror()/,/^}/p' \
     "$RUN_SH"
   printf 'clear_source_rootfs_shell_transient_fetched_mirror\n'
   printf '[ ! -e "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR" ] && '
   printf '[ ! -L "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR" ]\n'
   printf 'ln -s "$SOURCE_CLEAR_UNRELATED" "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR"\n'
+  printf 'set +e\n'
   printf 'clear_source_rootfs_shell_transient_fetched_mirror\n'
+  printf 'clear_status=$?\n'
+  printf 'set -e\n'
+  printf '[ "$clear_status" -ne 0 ]\n'
   printf '[ -L "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR" ] && '
   printf '[ "$(readlink "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR")" = "$SOURCE_CLEAR_UNRELATED" ]\n'
 } >"$source_clear_runner"
 bash "$source_clear_runner" ||
-  fail "source-rootfs transient cleanup removed or retained the wrong fetched-tier link"
+  fail "source-rootfs transient cleanup did not reject a changed fetched-tier link"
 
 grep -Fq 'disabled_pkgs="$disabled_pkgs shell"' "$browser_fetch_function" ||
   fail "source-rootfs browser fetching must skip direct canonical shell resolution"
-grep -Fq 'for path in "$local_output" "$fetched_output" "$browser_copy"; do' \
-  "$source_deactivate_function" &&
-  grep -Fq 'hash_path="$(readlink "$path")"' "$source_deactivate_function" &&
-  grep -Fq \
-    '[ "$(readlink "$path")" = "$REPO_ROOT/local-libs/shell/build/shell.vfs.zst" ]' \
-    "$source_deactivate_function" &&
-  grep -Fq 'rm -- "$path"' "$source_deactivate_function" &&
-  grep -Fq 'rm -- "$SOURCE_ROOTFS_SHELL_MARKER"' \
-    "$source_deactivate_function" ||
-  fail "ordinary browser prep must remove only marker-bound bridge mirrors"
-grep -Fq 'trap cleanup_source_rootfs_shell_work_root EXIT' \
-  "$source_stage_function" &&
-  grep -Fq "trap 'exit 130' INT" "$source_stage_function" &&
-  grep -Fq "trap 'exit 143' TERM" "$source_stage_function" ||
-  fail "source-rootfs staging must clean up without swallowing cancellation signals"
+! grep -Fq 'SOURCE_ROOTFS_SHELL_MARKER' "$RUN_SH" &&
+  ! grep -Fq 'deactivate_source_rootfs_shell_if_present' "$RUN_SH" ||
+  fail "the internal Pages lane must not create an ordinary cross-invocation activation protocol"
+grep -Fq 'trap source_rootfs_shell_exit_cleanup EXIT' \
+  "$source_initialize_function" &&
+  grep -Fq "trap 'exit 130' INT" "$source_initialize_function" &&
+  grep -Fq "trap 'exit 143' TERM" "$source_initialize_function" ||
+  fail "source-rootfs initialization must clean runtime state without swallowing cancellation signals"
+grep -Fq 'local original_status=$?' "$source_exit_cleanup_function" &&
+  grep -Fq 'trap - EXIT INT TERM' "$source_exit_cleanup_function" &&
+  grep -Fq 'exit "$original_status"' "$source_exit_cleanup_function" ||
+  fail "source-rootfs EXIT cleanup must preserve the triggering failure status"
+
+interruption_harness="$TMP_ROOT/source-rootfs-interruption.sh"
+{
+  printf 'set -euo pipefail\n'
+  printf 'REPO_ROOT="$1"\n'
+  printf 'phase="$2"\n'
+  printf 'termination="${3:-term}"\n'
+  printf 'mkdir -p "$REPO_ROOT/apps/browser-demos/public"\n'
+  printf 'SOURCE_ROOTFS_SHELL_RUNNER_TEMP="$REPO_ROOT/runner"\n'
+  printf 'SOURCE_ROOTFS_SHELL_WORK_PREFIX="$REPO_ROOT/runner/kandelo-source-rootfs-shell."\n'
+  printf 'SOURCE_ROOTFS_SHELL_WORK_ROOT="${SOURCE_ROOTFS_SHELL_WORK_PREFIX}123.1.$$"\n'
+  printf 'SOURCE_ROOTFS_SHELL_STAGE_BINARIES="$SOURCE_ROOTFS_SHELL_WORK_ROOT/binaries"\n'
+  printf 'SOURCE_ROOTFS_SHELL_CANDIDATE="$SOURCE_ROOTFS_SHELL_WORK_ROOT/shell.vfs.zst"\n'
+  printf 'SOURCE_ROOTFS_SHELL_OVERRIDE_PATH=""\n'
+  printf 'SOURCE_ROOTFS_SHELL_OVERRIDE_TARGET=""\n'
+  printf 'SOURCE_ROOTFS_SHELL_OVERRIDE_SHELL_DIR_CREATED=0\n'
+  printf 'SOURCE_ROOTFS_SHELL_OVERRIDE_LOCAL_LIBS_CREATED=0\n'
+  printf 'SOURCE_ROOTFS_SHELL_FETCHED_MIRROR=""\n'
+  printf 'SOURCE_ROOTFS_SHELL_TRANSIENT_FETCHED_TARGET=""\n'
+  printf 'SOURCE_ROOTFS_SHELL_PUBLIC_TEMP=""\n'
+  printf 'SOURCE_ROOTFS_SHELL_PREFLIGHT_VALIDATED=1\n'
+  printf 'err() { printf "%%s\\n" "$*" >&2; }\n'
+  cat "$source_clear_fetched_function"
+  cat "$source_release_function"
+  cat "$source_cleanup_function"
+  cat "$source_exit_cleanup_function"
+  printf 'trap source_rootfs_shell_exit_cleanup EXIT\n'
+  printf "trap 'exit 130' INT\n"
+  printf "trap 'exit 143' TERM\n"
+  printf 'mkdir -p "$SOURCE_ROOTFS_SHELL_STAGE_BINARIES"\n'
+  printf 'if [ "$phase" -ge 2 ]; then\n'
+  printf '  printf candidate >"$SOURCE_ROOTFS_SHELL_CANDIDATE"\n'
+  printf 'fi\n'
+  printf 'if [ "$phase" -ge 3 ]; then\n'
+  printf '  mkdir -p "$REPO_ROOT/local-binaries/generation"\n'
+  printf '  printf canonical >"$REPO_ROOT/local-binaries/generation/shell.vfs.zst"\n'
+  printf 'fi\n'
+  printf 'if [ "$phase" -ge 4 ]; then\n'
+  printf '  SOURCE_ROOTFS_SHELL_OVERRIDE_PATH="$REPO_ROOT/local-libs/shell/build"\n'
+  printf '  SOURCE_ROOTFS_SHELL_OVERRIDE_TARGET="$REPO_ROOT/local-binaries/generation"\n'
+  printf '  SOURCE_ROOTFS_SHELL_OVERRIDE_LOCAL_LIBS_CREATED=1\n'
+  printf '  SOURCE_ROOTFS_SHELL_OVERRIDE_SHELL_DIR_CREATED=1\n'
+  printf '  SOURCE_ROOTFS_SHELL_FETCHED_MIRROR="$REPO_ROOT/binaries/programs/wasm32/shell.vfs.zst"\n'
+  printf '  SOURCE_ROOTFS_SHELL_TRANSIENT_FETCHED_TARGET="$SOURCE_ROOTFS_SHELL_OVERRIDE_PATH/shell.vfs.zst"\n'
+  printf '  mkdir -p "$(dirname "$SOURCE_ROOTFS_SHELL_OVERRIDE_PATH")"\n'
+  printf '  ln -s "$SOURCE_ROOTFS_SHELL_OVERRIDE_TARGET" "$SOURCE_ROOTFS_SHELL_OVERRIDE_PATH"\n'
+  printf 'fi\n'
+  printf 'if [ "$phase" -eq 5 ]; then\n'
+  printf '  SOURCE_ROOTFS_SHELL_PUBLIC_TEMP="$REPO_ROOT/apps/browser-demos/public/.shell.vfs.zst.source-rootfs-test"\n'
+  printf '  printf temporary >"$SOURCE_ROOTFS_SHELL_PUBLIC_TEMP"\n'
+  printf 'fi\n'
+  printf 'if [ "$phase" -ge 6 ]; then\n'
+  printf '  printf published >"$REPO_ROOT/apps/browser-demos/public/shell.vfs.zst"\n'
+  printf 'fi\n'
+  printf 'if [ "$phase" -ge 7 ]; then\n'
+  printf '  mkdir -p "$(dirname "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR")"\n'
+  printf '  ln -s "$SOURCE_ROOTFS_SHELL_TRANSIENT_FETCHED_TARGET" "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR"\n'
+  printf 'fi\n'
+  printf 'if [ "$termination" = fail ]; then\n'
+  printf '  exit 37\n'
+  printf 'fi\n'
+  printf 'kill -TERM "$BASHPID"\n'
+  printf 'touch "$REPO_ROOT/deployment-continued"\n'
+} >"$interruption_harness"
+chmod +x "$interruption_harness"
+
+# Phase boundaries: isolated workspace, staged candidate, canonical install,
+# resolver override, public temporary copy, atomic public rename, and final
+# fetch/build verification with a transient fetched-tier link.
+for interruption_phase in 1 2 3 4 5 6 7; do
+  interruption_root="$TMP_ROOT/interruption-$interruption_phase"
+  mkdir -p "$interruption_root/runner"
+  set +e
+  bash "$interruption_harness" "$interruption_root" "$interruption_phase"
+  interruption_status=$?
+  set -e
+  [ "$interruption_status" -eq 143 ] ||
+    fail "source-rootfs interruption phase $interruption_phase did not preserve TERM status"
+  [ ! -e "$interruption_root/deployment-continued" ] ||
+    fail "source-rootfs interruption phase $interruption_phase advanced to deployment"
+  [ ! -e "$interruption_root/local-libs" ] &&
+    [ ! -L "$interruption_root/local-libs" ] ||
+    fail "source-rootfs interruption phase $interruption_phase retained a runtime override"
+  [ -z "$(find "$interruption_root/runner" -mindepth 1 -maxdepth 1 -print -quit)" ] ||
+    fail "source-rootfs interruption phase $interruption_phase retained its staging directory"
+  [ ! -e "$interruption_root/apps/browser-demos/public/.shell.vfs.zst.source-rootfs-test" ] ||
+    fail "source-rootfs interruption phase $interruption_phase retained its public temporary file"
+  [ ! -L "$interruption_root/binaries/programs/wasm32/shell.vfs.zst" ] ||
+    fail "source-rootfs interruption phase $interruption_phase retained its transient fetched link"
+  if [ "$interruption_phase" -ge 3 ]; then
+    [ -f "$interruption_root/local-binaries/generation/shell.vfs.zst" ] ||
+      fail "interruption cleanup must not reinterpret canonical package state"
+  fi
+  if [ "$interruption_phase" -ge 6 ]; then
+    [ -f "$interruption_root/apps/browser-demos/public/shell.vfs.zst" ] ||
+      fail "interruption cleanup must not reinterpret an atomically published Pages artifact"
+  fi
+done
+
+failure_root="$TMP_ROOT/interruption-nonzero"
+mkdir -p "$failure_root/runner"
+set +e
+bash "$interruption_harness" "$failure_root" 4 fail
+failure_status=$?
+set -e
+[ "$failure_status" -eq 37 ] ||
+  fail "source-rootfs EXIT cleanup replaced the original failure status"
+[ ! -e "$failure_root/deployment-continued" ] &&
+  [ ! -e "$failure_root/local-libs" ] &&
+  [ -f "$failure_root/local-binaries/generation/shell.vfs.zst" ] ||
+  fail "source-rootfs nonzero failure cleanup crossed its ownership boundary"
 
 source_branch_line="$(grep -nF 'if [ "$SOURCE_ROOTFS_SHELL" -eq 1 ]; then' \
   "$shell_build_function" | head -n 1 | cut -d: -f1)"
-source_verify_line="$(grep -nF 'verify_source_rootfs_shell_browser_closure' \
+source_verify_line="$(grep -nF 'verify_source_rootfs_shell_runtime_browser_closure' \
   "$shell_build_function" | head -n 1 | cut -d: -f1)"
 source_return_line="$(awk -v start="$source_verify_line" \
   'NR > start && /^        return$/ { print NR; exit }' "$shell_build_function")"
 canonical_resolve_line="$(grep -nF 'resolve_args+=(resolve shell)' \
   "$shell_build_function" | cut -d: -f1)"
-canonical_deactivate_line="$(grep -nF 'deactivate_source_rootfs_shell_if_present' \
-  "$shell_build_function" | cut -d: -f1)"
 [ "$source_branch_line" -lt "$source_verify_line" ] &&
   [ "$source_verify_line" -lt "$source_return_line" ] &&
-  [ "$source_return_line" -lt "$canonical_deactivate_line" ] &&
-  [ "$canonical_deactivate_line" -lt "$canonical_resolve_line" ] &&
   [ "$source_return_line" -lt "$canonical_resolve_line" ] ||
   fail "source and canonical shell activations must remain mutually exclusive"
 
 source_install_line="$(grep -nF 'install_source_rootfs_shell_vfs' \
   "$prepare_browser_function" | cut -d: -f1)"
-source_deactivate_line="$(grep -nF 'deactivate_source_rootfs_shell_if_present' \
-  "$prepare_browser_function" | cut -d: -f1)"
 browser_fetch_line="$(grep -nF 'fetch_browser_binaries' \
   "$prepare_browser_function" | cut -d: -f1)"
 browser_build_line="$(grep -nF '    build_browser' \
   "$prepare_browser_function" | cut -d: -f1)"
-final_source_clear_line="$(grep -nF 'clear_source_rootfs_shell_transient_fetched_mirror' \
+final_source_runtime_verify_line="$(grep -nF 'verify_source_rootfs_shell_runtime_browser_closure' \
+  "$prepare_browser_function" | tail -n 1 | cut -d: -f1)"
+final_source_release_line="$(grep -nF 'release_source_rootfs_shell_runtime_override' \
   "$prepare_browser_function" | tail -n 1 | cut -d: -f1)"
 final_source_verify_line="$(grep -nF 'verify_source_rootfs_shell_browser_closure' \
   "$prepare_browser_function" | tail -n 1 | cut -d: -f1)"
 [ "$source_install_line" -lt "$browser_fetch_line" ] &&
-  [ "$source_deactivate_line" -lt "$browser_fetch_line" ] &&
   [ "$browser_fetch_line" -lt "$browser_build_line" ] &&
-  [ "$browser_build_line" -lt "$final_source_clear_line" ] &&
-  [ "$final_source_clear_line" -lt "$final_source_verify_line" ] &&
+  [ "$browser_build_line" -lt "$final_source_runtime_verify_line" ] &&
+  [ "$final_source_runtime_verify_line" -lt "$final_source_release_line" ] &&
+  [ "$final_source_release_line" -lt "$final_source_verify_line" ] &&
   [ "$browser_build_line" -lt "$final_source_verify_line" ] ||
-  fail "browser prep must install the bridge before fetching and verify it after all builds"
+  fail "browser prep must verify, release runtime activation, and reverify before succeeding"
 grep -Fq 'need_shell_vfs_build_tools' "$RUN_SH" &&
   fail "run.sh must not duplicate prerequisites owned by the shell recipe"
 grep -Fq 'if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then' \
@@ -1206,8 +1533,6 @@ shell_clean_case="$TMP_ROOT/clean-shell-vfs-case.sh"
 sed -n '/^        shell-vfs)/,/;;/p' "$clean_target_function" >"$shell_clean_case"
 grep -Fq 'pkg_remove_local_output shell shell.vfs.zst wasm32' "$shell_clean_case" ||
   fail "clean shell-vfs must remove the resolver-owned local output"
-grep -Fq 'deactivate_source_rootfs_shell_if_present' "$shell_clean_case" ||
-  fail "clean shell-vfs must clear a marked bridge before discarding its ownership marker"
 grep -Fq '"$REPO_ROOT/binaries/' "$shell_clean_case" &&
   fail "clean shell-vfs must preserve immutable fetched package artifacts"
 

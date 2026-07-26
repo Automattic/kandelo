@@ -76,6 +76,26 @@ expect_mutation_rejected \
   's/cancel-in-progress: true/cancel-in-progress: false/'
 
 expect_mutation_rejected \
+  "self-hosted Pages runner" \
+  "must use the reviewed GitHub-hosted Ubuntu runner" \
+  's/runs-on: ubuntu-latest/runs-on: self-hosted/'
+
+expect_mutation_rejected \
+  "decoy hosted runner with self-hosted deploy job" \
+  "must use the reviewed GitHub-hosted Ubuntu runner" \
+  's/jobs:\n  deploy:\n    runs-on: ubuntu-latest/jobs:\n  decoy:\n    runs-on: ubuntu-latest\n  deploy:\n    runs-on: self-hosted/'
+
+expect_mutation_rejected \
+  "failure-tolerant browser preparation" \
+  "must remain failure-intolerant" \
+  's/(      - name: Prepare browser demo assets\n)/$1        continue-on-error: true\n/'
+
+expect_mutation_rejected \
+  "failure override after browser preparation" \
+  "pre-deployment Pages work must remain success-gated" \
+  's/(      - name: Build browser demos for GitHub Pages\n)/$1        if: always()\n/'
+
+expect_mutation_rejected \
   "missing docs-only trigger" \
   "does not watch docs-site/**" \
   's/^      - "docs-site\/\*\*"\n//m'
@@ -124,6 +144,26 @@ expect_mutation_rejected \
   "canonical shell preparation fallback" \
   "must select the source-rootfs recipe with exact event provenance" \
   's/prepare-browser --source-rootfs-shell --allow-stale/prepare-browser --allow-stale/'
+
+expect_mutation_rejected \
+  "missing source-shell isolation attestation" \
+  "must select the source-rootfs recipe with exact event provenance" \
+  's/^            "WASM_POSIX_SOURCE_ROOTFS_SHELL_ISOLATION=pages-exact-main-v1" \\\n//m'
+
+expect_mutation_rejected \
+  "missing hosted-runner attestation" \
+  "must select the source-rootfs recipe with exact event provenance" \
+  's/^            "WASM_POSIX_SOURCE_ROOTFS_SHELL_RUNNER_ENVIRONMENT=\$\{\{ runner\.environment \}\}" \\\n//m'
+
+expect_mutation_rejected \
+  "swallowed source-shell preparation failure" \
+  "must select the source-rootfs recipe with exact event provenance" \
+  's#(\./run\.sh prepare-browser --source-rootfs-shell --allow-stale)#$1 || true#'
+
+expect_mutation_rejected \
+  "work after source-shell preparation command" \
+  "must be the final failure-propagating command" \
+  's#(\./run\.sh prepare-browser --source-rootfs-shell --allow-stale\n)#$1          echo continued\n#'
 
 expect_mutation_rejected \
   "source-shell repository not bound to event repository" \

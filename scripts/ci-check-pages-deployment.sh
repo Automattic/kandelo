@@ -35,6 +35,17 @@ step_line() {
     cut -d: -f1 || true
 }
 
+job_block() {
+  local workflow="$1"
+  local job="$2"
+  awk -v job="$job" '
+    $0 == "  " job ":" { inside = 1 }
+    inside && $0 ~ /^  [A-Za-z0-9_.-]+:$/ &&
+      $0 != "  " job ":" { exit }
+    inside { print }
+  ' "$workflow"
+}
+
 # Any workflow that names gh-pages can potentially become another writer.
 # Keep the scan intentionally conservative so a second action or shell-based
 # publisher cannot silently bypass the single-writer contract.
@@ -64,6 +75,17 @@ if grep -Fq '  cancel-in-progress: false' "$PAGES_WORKFLOW"; then
 fi
 grep -Fxq '  actions: read' "$PAGES_WORKFLOW" ||
   fail "the Pages publisher needs read access to verify workflow run order"
+deploy_job_block="$(job_block "$PAGES_WORKFLOW" "deploy")"
+deploy_runner_count="$(
+  awk '/^    runs-on:/ { count += 1 } END { print count + 0 }' \
+    <<<"$deploy_job_block"
+)"
+[ "$deploy_runner_count" -eq 1 ] &&
+  grep -Fxq '    runs-on: ubuntu-latest' <<<"$deploy_job_block" ||
+  fail "the Pages publisher must use the reviewed GitHub-hosted Ubuntu runner"
+if grep -Eq '^[[:space:]]+continue-on-error:' "$PAGES_WORKFLOW"; then
+  fail "Pages preparation and publication must remain failure-intolerant"
+fi
 
 checkout_block="$(step_block "$PAGES_WORKFLOW" "Check out the source commit")"
 grep -Eq 'uses: actions/checkout@[0-9a-f]{40}' <<<"$checkout_block" ||
@@ -169,14 +191,26 @@ grep -Fq 'bash scripts/dev-shell.sh env \' <<<"$prepare_browser_block" &&
     <<<"$prepare_browser_block" ||
   fail "browser preparation must retain the exact-main cache root inside dev-shell"
 grep -Fq \
+  '"WASM_POSIX_SOURCE_ROOTFS_SHELL_ISOLATION=pages-exact-main-v1" \' \
+  <<<"$prepare_browser_block" &&
+  grep -Fq \
+  '"WASM_POSIX_SOURCE_ROOTFS_SHELL_RUNNER_ENVIRONMENT=${{ runner.environment }}" \' \
+  <<<"$prepare_browser_block" &&
+  grep -Fq \
   '"WASM_POSIX_SOURCE_ROOTFS_SHELL_REPOSITORY=https://github.com/$GITHUB_REPOSITORY" \' \
   <<<"$prepare_browser_block" &&
   grep -Fq '"WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT=$GITHUB_SHA" \' \
     <<<"$prepare_browser_block" &&
-  grep -Fq \
-    './run.sh prepare-browser --source-rootfs-shell --allow-stale' \
+  grep -Fxq \
+    '            ./run.sh prepare-browser --source-rootfs-shell --allow-stale' \
     <<<"$prepare_browser_block" ||
   fail "browser preparation must select the source-rootfs recipe with exact event provenance"
+prepare_browser_last="$(
+  awk 'NF { line = $0 } END { print line }' <<<"$prepare_browser_block"
+)"
+[ "$prepare_browser_last" = \
+    '            ./run.sh prepare-browser --source-rootfs-shell --allow-stale' ] ||
+  fail "source-rootfs preparation must be the final failure-propagating command in its step"
 
 sealed_boot_block="$(
   step_block "$PAGES_WORKFLOW" "Boot the sealed Pages shell product in Chromium"
@@ -215,8 +249,15 @@ grep -Fq 'run: bash scripts/check-pages-run-freshness.sh' <<<"$freshness_block" 
   fail "deployment authority must come from the tested newest-run checker"
 
 deploy_block="$(step_block "$PAGES_WORKFLOW" "Deploy to gh-pages")"
-grep -Fq "if: steps.publish_freshness.outputs.publish == 'true'" <<<"$deploy_block" ||
+grep -Fxq "        if: steps.publish_freshness.outputs.publish == 'true'" \
+  <<<"$deploy_block" ||
   fail "deployment must be conditional on the main-branch freshness decision"
+if_count="$(
+  awk '/^[[:space:]]+if:/ { count += 1 } END { print count + 0 }' \
+    "$PAGES_WORKFLOW"
+)"
+[ "$if_count" -eq 1 ] ||
+  fail "all pre-deployment Pages work must remain success-gated"
 grep -Fq 'publish_dir: apps/browser-demos/dist' <<<"$deploy_block" ||
   fail "the sole publisher must publish the assembled complete tree"
 grep -Fq 'force_orphan: true' <<<"$deploy_block" ||

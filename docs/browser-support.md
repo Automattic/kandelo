@@ -722,21 +722,36 @@ commit, Formula closure, bottle identities, and lazy-artifact lock fail closed.
 Required pull-request and default-branch CI also need to validate the exact
 checkout before its final bottles exist. That provisional lane explicitly
 stages the separate, non-published
-`homebrew/source-rootfs-shell-package` recipe. Pages selects this lane with
-`./run.sh prepare-browser --source-rootfs-shell` and supplies the exact
-event repository and commit through
+`homebrew/source-rootfs-shell-package` recipe. This is an internal Pages lane,
+not a supported developer build mode. The workflow selects it with
+`./run.sh prepare-browser --source-rootfs-shell`, supplies the exact event
+repository and commit through
 `WASM_POSIX_SOURCE_ROOTFS_SHELL_REPOSITORY` and
-`WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT`. The command inspects that identity in
-the staged archive before installing its exact output under the canonical
-browser resolver path and stable `/shell.vfs.zst` public URL; ordinary
-`prepare-browser` removes the hash-bound bridge activation first and resolves
-the bottle-backed `shell` package. While the explicit mode is running, a
-temporary `local-libs` resolver override points transitive browser image
-recipes at the pinned installed generation, preventing those dependency walks
-from executing the canonical shell recipe. Resolver-created `binaries/` links
-to that temporary override are removed before the override is released; source
-activation persists only in the valid `local-binaries` generation and stable
-public copy.
+`WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT`, and attests
+`WASM_POSIX_SOURCE_ROOTFS_SHELL_ISOLATION=pages-exact-main-v1`. The command
+also verifies the actual GitHub Actions workflow, job, main-branch checkout,
+repository, commit, workspace, run identity, and the workflow's
+`${{ runner.environment }}` attestation before mutation. It accepts only the
+reviewed GitHub-hosted Linux job. That job requires the workflow-created exact
+empty current-ABI file index, a nonexistent sibling cache path under
+`RUNNER_TEMP`, and an otherwise unmaterialized
+`local-binaries`/`binaries`/`local-libs` workspace.
+
+The bridge closure is first staged and inspected entirely under the disposable
+runner's temporary directory. Only then is the exact artifact installed
+through canonical package ownership. A temporary `local-libs` resolver
+override feeds that pinned generation to transitive image recipes without
+invoking the canonical shell recipe. The stable `/shell.vfs.zst` copy is
+verified in a same-directory temporary file and published by atomic rename.
+After the final browser closure check, the transient resolver link and override
+are removed and the remaining canonical and public bytes are rechecked.
+Failure or cancellation stops the job before its later build, browser seal,
+freshness, and deployment steps; any partial canonical state remains only on
+that disposable failed runner. The workflow contract rejects
+`continue-on-error` and failure-status overrides on those steps. An
+untrappable `SIGKILL` or runner loss can skip link/temp cleanup, but cannot
+publish that runner's partial tree. Ordinary `prepare-browser` never
+interprets or cleans up this internal lane.
 Its complete direct dependency contract is declared once in
 `homebrew/source-rootfs-shell-dependencies.json`; the workflow uses an empty
 binary index and a fresh cache so every buildable dependency is produced from

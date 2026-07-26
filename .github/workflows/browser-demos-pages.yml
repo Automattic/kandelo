@@ -168,6 +168,8 @@ jobs:
           # must never fall back to the canonical bottle-backed shell recipe.
           bash scripts/dev-shell.sh env \
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
+            "WASM_POSIX_SOURCE_ROOTFS_SHELL_ISOLATION=pages-exact-main-v1" \
+            "WASM_POSIX_SOURCE_ROOTFS_SHELL_RUNNER_ENVIRONMENT=${{ runner.environment }}" \
             "WASM_POSIX_SOURCE_ROOTFS_SHELL_REPOSITORY=https://github.com/$GITHUB_REPOSITORY" \
             "WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT=$GITHUB_SHA" \
             ./run.sh prepare-browser --source-rootfs-shell --allow-stale

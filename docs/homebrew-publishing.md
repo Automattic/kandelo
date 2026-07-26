@@ -2073,17 +2073,36 @@ regular-file-and-symlink manifest proves they did not replace any exact-source
 shell closure bytes. The sealed Chromium
 proof executes eager Bash, rootfs-owned lazy `grep`, extended lazy `less`, and
 integrity-bound Vim and NetHack lazy archives. The Pages publisher builds the
-current sysroot and invokes
-`./run.sh prepare-browser --source-rootfs-shell` with the exact event
-repository and SHA. That mode stages and inspects only the distinct bridge
-recipe, installs those bytes through canonical package ownership, and keeps
-both the resolver path and stable `/shell.vfs.zst` copy byte-identical through
-the remaining browser build. A temporary supported `local-libs` override feeds
-that pinned generation to transitive image recipes without invoking the
-canonical shell recipe. Any transient fetched-tier link to that override is
-removed before the override itself. The installed bridge carries a hash-bound
-activation marker; the next ordinary `prepare-browser` removes only matching
-bridge bytes before returning to the bottle-backed path.
+current sysroot and invokes the internal
+`./run.sh prepare-browser --source-rootfs-shell` lane with the exact event
+repository and SHA, `pages-exact-main-v1` isolation attestation, exact empty
+current-ABI file index, fresh cache, and unmaterialized resolver workspace.
+This is workflow plumbing, not a supported direct developer mode.
+
+The lane stages and inspects only the distinct bridge recipe before beginning
+canonical installation. Before any mutation it verifies the exact GitHub
+Actions workflow/job, main checkout, repository, commit, workspace, run
+identity, the `${{ runner.environment }}` value `github-hosted`, Linux host,
+file index, cache path, and absent materialization paths. Staging uses only
+transaction-unique storage under `RUNNER_TEMP`. The public copy uses a verified
+same-directory temporary file and atomic rename. A temporary supported
+`local-libs` override feeds the pinned generation to transitive image recipes
+without invoking the canonical shell recipe. After final closure verification,
+the lane removes that override and any exact transient fetched link, rechecks
+the published canonical/public bytes, and releases its temporary staging
+directory.
+
+This is deliberately not a durable local activation protocol. If preparation
+fails or is cancelled, normal GitHub Actions step ordering prevents the build,
+Chromium seal, freshness check, and deployment from running, and the failed
+GitHub-hosted runner is discarded. The workflow checker rejects self-hosted
+runners, `continue-on-error`, command suffixes that swallow preparation
+failure, and later failure-status overrides. Cleanup therefore owns only
+transaction-unique temporary paths and exact runtime links; it does not
+recursively roll back or reinterpret canonical package state. `SIGKILL` or
+runner loss can prevent cleanup, but cannot let later deployment steps consume
+that partial runner. Ordinary `prepare-browser` remains the independent
+bottle-backed path.
 Pages then assembles the actual product tree and boots that sealed `/kandelo/`
 tree before deployment. Flip the gate back to `bottles` only in the strict
 exact-main bottle cutover.
