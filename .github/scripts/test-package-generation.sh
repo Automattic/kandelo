@@ -549,6 +549,54 @@ publish_job="$(awk '
   /^  publish:/ {inside=1}
   inside
 ' "$promotion_workflow")"
+validator_preparer="$SCRIPT_DIR/prepare-current-authority-validator.sh"
+assert_authority_validator_job() {
+  local job="$1" state_name="$2" label="$3"
+  if [ "$(grep -Fc "prepare-current-authority-validator.sh" <<<"$job")" -ne 1 ]; then
+    echo "$label does not prepare exactly one current-authority validator" >&2
+    exit 1
+  fi
+  grep -Fq -- \
+    "--state-dir \"\$RUNNER_TEMP/$state_name\"" <<<"$job"
+  grep -Fq \
+    'authority_xtask="$(cat "$validator_state/xtask-path")"' <<<"$job"
+  grep -Fq \
+    'authority_cargo_home="$(cat "$validator_state/cargo-home-path")"' \
+    <<<"$job"
+  grep -Fq 'CARGO_HOME="$authority_cargo_home"' <<<"$job"
+  if grep -Eq 'cargo (fetch|build)|working-directory: producer' <<<"$job"; then
+    echo "$label bypasses centralized current-authority validator preparation" >&2
+    exit 1
+  fi
+}
+fetch_line="$(
+  grep -nF 'cargo fetch --locked --manifest-path "$AUTHORITY_MANIFEST"' \
+    "$validator_preparer" | cut -d: -f1
+)"
+build_line="$(
+  grep -nF 'cargo build --locked --release -p xtask' \
+    "$validator_preparer" | cut -d: -f1
+)"
+if [ -z "$fetch_line" ] || [ -z "$build_line" ] ||
+   [ "$fetch_line" -ge "$build_line" ]; then
+  echo "authority validator preparation does not fetch the complete lock before building" >&2
+  exit 1
+fi
+grep -Fq 'AUTHORITY_MANIFEST="$AUTHORITY_ROOT/Cargo.toml"' \
+  "$validator_preparer"
+grep -Fq 'cd "$AUTHORITY_ROOT"' "$validator_preparer"
+grep -Fq 'export CARGO_HOME="$CARGO_HOME_DIR"' "$validator_preparer"
+if grep -Eq \
+    'PRODUCER_ROOT|PACKAGE_SOURCE_ROOT|--producer-root|--package-source-root' \
+    "$validator_preparer"; then
+  echo "authority validator preparation accepts an inert-source execution root" >&2
+  exit 1
+fi
+bash "$SCRIPT_DIR/test-prepare-current-authority-validator.sh"
+assert_authority_validator_job \
+  "$prepare_job" promotion-prepare-authority-validator "promotion prepare"
+assert_authority_validator_job \
+  "$publish_job" promotion-publish-authority-validator "promotion publish"
 grep -Fq "github.ref == 'refs/heads/main'" \
   <<<"$prepare_job"
 grep -Fq "contents: read" <<<"$prepare_job"
@@ -1481,30 +1529,12 @@ if grep -Fq "contents: write" <<<"$preserve_prepare_job"; then
 fi
 grep -Fq "prepare-preserved-pr-package-generation.sh" \
   <<<"$preserve_prepare_job"
-grep -Fq 'cargo_home="$RUNNER_TEMP/prepare-authority-cargo-home"' \
-  <<<"$preserve_prepare_job"
-grep -Fq 'export CARGO_HOME="$cargo_home"' <<<"$preserve_prepare_job"
-grep -Fq 'cargo fetch --locked --manifest-path Cargo.toml' \
-  <<<"$preserve_prepare_job"
-grep -Fq 'CARGO_HOME="$authority_cargo_home"' <<<"$preserve_prepare_job"
-fetch_line="$(
-  grep -nF 'cargo fetch --locked --manifest-path Cargo.toml' \
-    "$preservation_workflow" | cut -d: -f1
-)"
-build_line="$(
-  grep -nF 'cargo build --release -p xtask' \
-    "$preservation_workflow" | head -1 | cut -d: -f1
-)"
-if [ -z "$fetch_line" ] || [ -z "$build_line" ] ||
-   [ "$fetch_line" -ge "$build_line" ]; then
-  echo "preservation does not warm the isolated authority lock before building the validator" >&2
-  exit 1
-fi
-if grep -F 'cargo fetch' "$preservation_workflow" |
-   grep -Fq 'package-source'; then
-  echo "preservation fetch consults the unmerged producer checkout" >&2
-  exit 1
-fi
+assert_authority_validator_job \
+  "$preserve_prepare_job" preservation-prepare-authority-validator \
+  "preservation prepare"
+assert_authority_validator_job \
+  "$preserve_publish_job" preservation-publish-authority-validator \
+  "preservation publish"
 if grep -Fq "working-directory: package-source" <<<"$preserve_prepare_job" ||
    grep -Fq "package-source-target" <<<"$preserve_prepare_job" ||
    grep -Fq "source-xtask" <<<"$preserve_prepare_job"; then

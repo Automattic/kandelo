@@ -365,13 +365,21 @@ Unlike ordinary durable promotion, this narrowly scoped preservation workflow
 never executes tooling from the unmerged producer. It treats that checkout's
 registry, ABI declaration, and `program-packages.json` as inert data and uses
 only current default-branch authority to derive identities, parse archives,
-seal evidence, and publish. Before inspecting producer declarations, the
-workflow runs `cargo fetch --locked` against the trusted current-authority
-workspace and lockfile into a new, isolated Cargo home. That makes every
-current-authority checksum-bound registry package available even when building
-`xtask` alone did not need it, while lock drift or a checksum mismatch fails
-before producer inspection. The prefetch never reads the producer manifest,
-lockfile, Cargo configuration, wrappers, or credentials.
+seal evidence, and publish.
+
+Preservation preparation, preservation publication, promotion preparation, and
+promotion publication each use the same current-authority validator
+preparation helper in their independent jobs. The helper creates a new private
+Cargo home, runs `cargo fetch --locked` against the absolute trusted-authority
+`Cargo.toml` and lockfile before building `xtask`, and records that exact Cargo
+home beside the validator. The trust phase then passes the recorded home to
+every producer-tree revalidation. This makes every current-authority
+checksum-bound registry package available to the later offline metadata scan
+even when building `xtask` alone did not need it; lock drift or a checksum
+mismatch fails before producer inspection. Fetch and build both run from the
+current-authority root. They never read the producer manifest, lockfile, Cargo
+configuration, wrappers, or credentials, and producer metadata remains an
+offline, token-free current-authority operation.
 
 Cache-key derivation then treats the producer's Cargo manifests and lockfile as
 declarative data: current-authority `xtask` invokes the current Cargo binary
