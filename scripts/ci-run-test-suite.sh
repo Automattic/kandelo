@@ -18,20 +18,39 @@ host_target() {
     rustc -vV | awk '/^host/ {print $2}'
 }
 
-# Prepared CI workspaces transport fetched programs as relative links into a
-# repo-local copy of the exact content-addressed cache generations. Activate
-# their shared cache/checker identity before any suite can read `binaries/`.
-# Direct post-suite consumers use the same helper so the binding cannot be
-# lost merely because GitHub starts a new workflow step.
-source "$REPO_ROOT/scripts/activate-ci-test-workspace.sh"
-activate_ci_test_workspace
-
 suite="${1:-}"
 if [ -z "$suite" ]; then
     echo "usage: $0 <cargo-kernel|fork-instrument|vitest|browser|libc|posix|sortix> [group]" >&2
     exit 2
 fi
 group="${2:-${TEST_GROUP:-all}}"
+
+# Prepared CI workspaces transport fetched programs as relative links into a
+# repo-local copy of the exact content-addressed cache generations. Point both
+# the Rust and TypeScript resolvers at that identity before any suite can read
+# `binaries/`; otherwise the copied cache would look like an unrelated tier.
+portable_cache="$REPO_ROOT/.ci-test-binary-cache"
+if [ -d "$portable_cache/programs" ]; then
+    export WASM_POSIX_BINARY_CACHE_ROOT="$portable_cache"
+fi
+
+# WHY: every conformance case starts a fresh Node resolver under a short
+# timeout. Prepare one exact worktree-local checker before parallel cases
+# begin; each process still executes the source-freshness check, but none
+# starts a competing Cargo build or waits on Cargo's target-directory lock.
+case "$suite" in
+    vitest|browser|libc|posix|sortix)
+        prepared_xtask="$REPO_ROOT/target/$(host_target)/release/xtask"
+        if [ ! -d "$portable_cache/programs" ]; then
+            cargo build --release -p xtask --target "$(host_target)" --quiet
+        fi
+        if [ ! -f "$prepared_xtask" ] || [ ! -x "$prepared_xtask" ]; then
+            echo "ci-run-test-suite: missing executable prepared package checker: $prepared_xtask" >&2
+            exit 1
+        fi
+        export WASM_POSIX_XTASK_BIN="$prepared_xtask"
+        ;;
+esac
 
 invalid_group() {
     echo "unknown $suite test group: $group" >&2
@@ -1030,6 +1049,7 @@ case "$suite" in
                     test/coi.spec.ts \
                     test/package-deferred-tree-browser.spec.ts \
                     test/vfs-import-seal-boundary.spec.ts \
+                    test/wasm-gc-reference-transport.spec.ts \
                     test/wasm-trap-signal.spec.ts \
                     --project=chromium --project=firefox --project=webkit
         )
