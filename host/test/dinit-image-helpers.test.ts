@@ -1,30 +1,101 @@
-import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { zipSync, type Zippable } from "fflate";
 import { findRepoRoot } from "../src/binary-resolver";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import {
   addDinitBaseSystemFiles,
   addDinitInit,
 } from "../../images/vfs/scripts/dinit-image-helpers";
-import { ensureDirRecursive, writeVfsBinary } from "../src/vfs/image-helpers";
+import {
+  ensureDirRecursive,
+  writeVfsBinary,
+  writeVfsFile,
+} from "../src/vfs/image-helpers";
+import {
+  derivePackageDeferredZipTree,
+  registerPackageDeferredZipTree,
+  type PackageDeferredZipTreeSpec,
+} from "../src/vfs/package-deferred-tree";
+import { loadShellBaseFileSystemFromImage } from "../../images/vfs/scripts/shell-vfs-build";
 
 const O_RDONLY = 0;
+const encoder = new TextEncoder();
 
-function readGuestFile(fs: MemoryFileSystem, path: string): string {
+// WHY: this suite owns the helper's fallback choice, while binary-resolver
+// tests own artifact-policy and provenance validation. Substitute only the
+// two already-accepted paths so this test does not duplicate that boundary.
+const dinitResolverFixture = vi.hoisted(() => ({
+  artifacts: new Map<string, string>(),
+}));
+
+vi.mock("../src/binary-resolver", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../src/binary-resolver")>();
+  return {
+    ...actual,
+    tryResolveBinary: (path: string) =>
+      dinitResolverFixture.artifacts.get(path) ?? null,
+  };
+});
+
+function readGuestBytes(fs: MemoryFileSystem, path: string): Uint8Array {
   const size = fs.stat(path).size;
   const fd = fs.open(path, O_RDONLY, 0);
   try {
     const bytes = new Uint8Array(size);
     const count = fs.read(fd, bytes, null, bytes.byteLength);
-    return new TextDecoder().decode(bytes.subarray(0, count));
+    return bytes.subarray(0, count);
   } finally {
     fs.close(fd);
   }
 }
 
+function readGuestFile(fs: MemoryFileSystem, path: string): string {
+  return new TextDecoder().decode(readGuestBytes(fs, path));
+}
+
 function createFs(): MemoryFileSystem {
   return MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+}
+
+function deferredDinitTree(
+  mountPrefix: string,
+  id: string,
+): ReturnType<typeof derivePackageDeferredZipTree> {
+  const archive = zipSync({
+    dinitctl: [
+      encoder.encode("deferred dinitctl"),
+      { os: 3, attrs: (0o100755 << 16) >>> 0 },
+    ],
+  } satisfies Zippable);
+  const spec = {
+    schema: 1,
+    kind: "kandelo-package-deferred-zip-tree",
+    id,
+    content_role: "runtime-tree",
+    package: {
+      name: "dinit-fixture",
+      output: "dinit-fixture.zip",
+    },
+    archive: {
+      url: "dinit-fixture.zip",
+      mode_policy: "portable-posix-v1",
+    },
+    mount_prefix: mountPrefix,
+    owner: {
+      uid: 0,
+      gid: 0,
+    },
+    activation: {
+      mode: "first-use",
+      capabilities: ["service-supervisor:dinit"],
+      roots: [`${mountPrefix}/dinitctl`],
+    },
+  } as const satisfies PackageDeferredZipTreeSpec;
+  return derivePackageDeferredZipTree(spec, archive);
 }
 
 describe("dinit-derived image system databases", () => {
@@ -86,6 +157,100 @@ describe("dinit-derived image binary ownership", () => {
 
     expect(() => addDinitInit(fs, [])).toThrow(
       "/sbin/dinit is lazy, but Dinit must be resident before service boot",
+    );
+  });
+
+  it("installs the legacy resolver pair only when both shell paths are absent", () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-dinit-resolver-"));
+    const expectedDinit = encoder.encode("legacy dinit");
+    const expectedDinitctl = encoder.encode("legacy dinitctl");
+    const dinit = join(root, "dinit.wasm");
+    const dinitctl = join(root, "dinitctl.wasm");
+    writeFileSync(dinit, expectedDinit);
+    writeFileSync(dinitctl, expectedDinitctl);
+    dinitResolverFixture.artifacts.set("programs/dinit/dinit.wasm", dinit);
+    dinitResolverFixture.artifacts.set(
+      "programs/dinit/dinitctl.wasm",
+      dinitctl,
+    );
+
+    try {
+      const fs = createFs();
+      addDinitInit(fs, []);
+
+      expect(readGuestBytes(fs, "/sbin/dinit")).toEqual(expectedDinit);
+      expect(readGuestBytes(fs, "/sbin/dinitctl")).toEqual(expectedDinitctl);
+    } finally {
+      dinitResolverFixture.artifacts.clear();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects any non-executable member of a complete pair", () => {
+    const fs = createFs();
+    ensureDirRecursive(fs, "/sbin");
+    writeVfsBinary(fs, "/sbin/dinit", encoder.encode("resident dinit"));
+    writeVfsFile(fs, "/sbin/dinitctl", "not executable", 0o644);
+
+    expect(() => addDinitInit(fs, [])).toThrow(
+      "/sbin/dinitctl exists in the shell base but is not a regular executable",
+    );
+  });
+
+  it("rejects a typed deferred Dinit tree", () => {
+    const fs = createFs();
+    registerPackageDeferredZipTree(
+      fs,
+      deferredDinitTree("/sbin", "test/deferred-dinit"),
+    );
+    writeVfsBinary(fs, "/sbin/dinit", encoder.encode("resident dinit"));
+
+    expect(() => addDinitInit(fs, [])).toThrow(
+      "/sbin/dinitctl is deferred, but Dinit must be resident in a service image",
+    );
+  });
+
+  it("follows aliases and rejects a symlink to a lazy Dinit target", () => {
+    const fs = createFs();
+    ensureDirRecursive(fs, "/opt/dinit/bin");
+    ensureDirRecursive(fs, "/sbin");
+    writeVfsBinary(fs, "/sbin/dinit", encoder.encode("resident dinit"));
+    fs.registerLazyFile(
+      "/opt/dinit/bin/dinitctl",
+      "https://example.test/dinitctl",
+      100,
+    );
+    fs.symlink("/opt/dinit/bin/dinitctl", "/sbin/dinitctl");
+
+    expect(() => addDinitInit(fs, [])).toThrow(
+      "/sbin/dinitctl is lazy, but Dinit must be resident before service boot",
+    );
+  });
+
+  it("preserves resident Dinit through canonical shell-derived composition", async () => {
+    const shell = createFs();
+    ensureDirRecursive(shell, "/sbin");
+    writeVfsBinary(shell, "/sbin/dinit", encoder.encode("bottled dinit"));
+    writeVfsBinary(shell, "/sbin/dinitctl", encoder.encode("bottled dinitctl"));
+    const shellImage = await shell.saveImage();
+    const shellCapacity =
+      MemoryFileSystem.readImageCapacity(shellImage).maxByteLength;
+    const derived = await loadShellBaseFileSystemFromImage(
+      shellImage,
+      shellCapacity,
+    );
+
+    addDinitInit(derived, [
+      {
+        name: "service",
+        type: "internal",
+      },
+    ]);
+
+    expect(readGuestFile(derived, "/sbin/dinit")).toBe("bottled dinit");
+    expect(readGuestFile(derived, "/sbin/dinitctl")).toBe("bottled dinitctl");
+    expect(readGuestFile(derived, "/etc/dinit.d/service")).toContain(
+      "type = internal",
     );
   });
 });
