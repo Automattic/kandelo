@@ -1,3 +1,10 @@
+import type {
+  ForkHostImportWorkerInit,
+} from "./fork-host-import-runtime";
+import type {
+  ForkExternrefImportWake,
+} from "./fork-externref-import-mailbox";
+
 // --- Host → Worker messages ---
 
 export type HostToWorkerMessage =
@@ -22,6 +29,20 @@ export interface CentralizedWorkerInitMessage {
   memory: WebAssembly.Memory;
   /** Channel offset within the shared Memory for this thread's syscall channel */
   channelOffset: number;
+  /**
+   * Exact process-image generation issued by the kernel-side externref owner.
+   * Workers use this scalar only when routing token-bearing host imports; the
+   * broker capability and real JavaScript values never cross the Worker edge.
+   * Optional only for direct non-fork harnesses; an instrumented artifact must
+   * reject launch unless this and `forkHostImports` are both present.
+   */
+  externrefGenerationId?: number;
+  /**
+   * One fixed owner-import mailbox for this Worker. Side modules reuse it.
+   * Optional only for direct non-fork test harnesses that do not create a
+   * durable process owner; production Node/browser launch paths always set it.
+   */
+  forkHostImports?: ForkHostImportWorkerInit;
   /** Optional env vars to set up in the program */
   env?: string[];
   /** Optional argv */
@@ -32,6 +53,12 @@ export interface CentralizedWorkerInitMessage {
   isForkChild?: boolean;
   /** Address of the fork save-buffer in memory (used for fork child rewind) */
   forkBufAddr?: number;
+  /**
+   * Two-phase launch gate for a fork child. The child announces that all
+   * reconstruction and activation frames reached the inherited fork import,
+   * then waits here until the kernel host commits the launch.
+   */
+  forkReplayGate?: SharedArrayBuffer;
   /**
    * Entry-point override for fork children created by a non-main thread.
    *
@@ -67,6 +94,13 @@ export interface CentralizedThreadInitMessage {
    * archive head relative to this live shared-memory anchor before fork. */
   processChannelOffset: number;
   channelOffset: number;
+  /**
+   * Same process-image externref generation as the process's main Worker.
+   * Optional only for direct non-fork harnesses.
+   */
+  externrefGenerationId?: number;
+  /** Distinct pthread mailbox; side modules in this pthread reuse it. */
+  forkHostImports?: ForkHostImportWorkerInit;
   fnPtr: number;
   argPtr: number;
   stackPtr: number;
@@ -90,16 +124,23 @@ export interface WorkerTerminateMessage {
 
 export type WorkerToHostMessage =
   | WorkerReadyMessage
+  | ForkReplayReadyMessage
   | WorkerExitMessage
   | ThreadExitMessage
   | WorkerErrorMessage
   | ExecRequestMessage
   | ExecCompleteMessage
   | AlarmSetMessage
-  | VmInterruptTimerMessage;
+  | VmInterruptTimerMessage
+  | ForkHostImportWakeMessage;
 
 export interface WorkerReadyMessage {
   type: "ready";
+  pid: number;
+}
+
+export interface ForkReplayReadyMessage {
+  type: "fork_replay_ready";
   pid: number;
 }
 
@@ -144,6 +185,12 @@ export interface VmInterruptTimerMessage {
   timedOutPtr: number;
   vmInterruptPtr: number;
   seconds: number;
+}
+
+export interface ForkHostImportWakeMessage {
+  type: "fork_host_import";
+  /** Contains scalar identity/sequence fields only; the SAB moved at init. */
+  wake: ForkExternrefImportWake;
 }
 
 export interface ExecReplyMessage {
