@@ -24,13 +24,33 @@ for the current design, ABI, save-buffer layout, and operating limits.
 wasm-fork-instrument <input.wasm> -o <output.wasm> [--entry kernel.kernel_fork]
 ```
 
+Artifact publication guards use the same wasmparser-backed binary decoder
+instead of depending on a text disassembler understanding every proposal used
+by the transformed module:
+
+```sh
+wasm-fork-instrument --contract-inventory <input.wasm>
+wasm-fork-instrument --fork-capability-hex <input.wasm>
+wasm-fork-instrument --linked-frame-descriptor-hex <input.wasm>
+```
+
+The inventory is one stable tab-separated row covering fork imports, control
+exports, metadata counts, memory width, and ABI signature mismatches. The two
+metadata modes require exactly one matching custom section and fail on missing
+or duplicate sections.
+
 ## Status
 
-PR #307 (`fierce-wire`) replaces the old Binaryen Asyncify fork path in the
-build scripts. The tool instruments direct + indirect fork-path callers,
-spills scalar and supported ref-typed locals, survives modern `try_table`
-catch-handler rewind, and preserves module validity. Remaining unsupported
-patterns are documented in `docs/fork-instrumentation.md`.
+The tool instruments direct, indirect, reference-call, tail-call, exception,
+and cross-module fork paths. ABI 43 stores scalars in linked activation frames
+and reconstructs reference locals/carryovers, typed GC graphs, complete
+exceptions, mutable reference globals, tables, and dynamic-link activations
+from versioned process-owned recipes in copied linear memory. It emits no
+module-static reference stash. `Catch`, `CatchRef`, `CatchAll`, and
+`CatchAllRef` replay through fresh-instance exceptions. Engine proposal
+availability, stale ABI artifacts, and userspace stack-switching primitives
+are documented as platform boundaries in
+`docs/fork-instrumentation.md`.
 
 ## Build
 

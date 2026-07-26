@@ -454,6 +454,12 @@ fi
 exit 2
 EOF
 
+cat > "$FIXTURE/bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CARGO_CAPTURE"
+exit 0
+EOF
+
 cat > "$FIXTURE/run.sh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$RUN_CAPTURE"
@@ -494,8 +500,25 @@ fi
 EOF
     chmod +x "$FIXTURE/scripts/$runner"
 done
+
+prepared_xtask="$FIXTURE/target/fixture-host/release/xtask"
+mkdir -p "$(dirname "$prepared_xtask")"
+cat > "$prepared_xtask" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "build-deps" ] && [ "${2:-}" = "cache-root" ] &&
+   [ "$#" -eq 2 ]; then
+    case "${WASM_POSIX_BINARY_CACHE_ROOT:-}" in
+        /*) printf '%s\n' "$WASM_POSIX_BINARY_CACHE_ROOT" ;;
+        *) printf '%s\n' "$PWD/${WASM_POSIX_BINARY_CACHE_ROOT:-.cache/kandelo}" ;;
+    esac
+    exit 0
+fi
+exit 2
+EOF
+
 chmod +x \
     "$FIXTURE/bin/bun" \
+    "$FIXTURE/bin/cargo" \
     "$FIXTURE/bin/npm" \
     "$FIXTURE/bin/npx" \
     "$FIXTURE/bin/rustc" \
@@ -503,7 +526,8 @@ chmod +x \
     "$FIXTURE/run.sh" \
     "$FIXTURE/scripts/ci-check-browser-assets.sh" \
     "$FIXTURE/scripts/resolve-binary.sh" \
-    "$FIXTURE/scripts/materialize-ci-publication-blockers.sh"
+    "$FIXTURE/scripts/materialize-ci-publication-blockers.sh" \
+    "$prepared_xtask"
 
 git -C "$FIXTURE" init -q
 git -C "$FIXTURE" config user.name "Kandelo CI fixture"
@@ -613,6 +637,9 @@ then
     echo "production-build contract accepted a shell-only selector" >&2
     exit 1
 fi
+
+CARGO_CAPTURE="$TMP_DIR/cargo-build.args"
+export CARGO_CAPTURE
 
 run_group() {
     local suite="$1"
@@ -1127,6 +1154,20 @@ grep -Fq \
     "prepared browser workspace lacks Homebrew mirror state" \
     "$TMP_DIR/browser-missing-mirror-state.out"
 
+if ! awk '
+    $0 != "build --release -p xtask --target fixture-host --quiet" {
+        exit 1
+    }
+' "$CARGO_CAPTURE"; then
+    echo "ci-run-test-suite.sh used an unexpected package-checker build command:" >&2
+    cat "$CARGO_CAPTURE" >&2
+    exit 1
+fi
+[ -s "$CARGO_CAPTURE" ] || {
+    echo "ci-run-test-suite.sh did not prepare the source-workspace package checker" >&2
+    exit 1
+}
+
 for workflow in \
     "$REPO_ROOT/.github/workflows/staging-build.yml" \
     "$REPO_ROOT/.github/workflows/prepare-merge.yml"; do
@@ -1343,24 +1384,7 @@ chmod +x "$prepared_xtask"
 mkdir -p "$FIXTURE/.ci-test-binary-cache/programs"
 cache_capture="$TMP_DIR/portable-cache-root"
 xtask_capture="$TMP_DIR/portable-xtask"
-direct_cache_capture="$TMP_DIR/direct-portable-cache-root"
-direct_xtask_capture="$TMP_DIR/direct-portable-xtask"
-PATH="$FIXTURE/bin:$PATH" \
-    WASM_POSIX_BINARY_CACHE_ROOT="$TMP_DIR/wrong-direct-cache" \
-    WASM_POSIX_XTASK_BIN="$TMP_DIR/wrong-direct-xtask" \
-    bash "$FIXTURE/scripts/activate-ci-test-workspace.sh" \
-        bash -c '
-          printf "%s\n" "$WASM_POSIX_BINARY_CACHE_ROOT" > "$1"
-          printf "%s\n" "$WASM_POSIX_XTASK_BIN" > "$2"
-        ' bash "$direct_cache_capture" "$direct_xtask_capture"
-grep -Fxq "$FIXTURE/.ci-test-binary-cache" "$direct_cache_capture" || {
-    echo "direct prepared-workspace consumer did not select the transported program cache" >&2
-    exit 1
-}
-grep -Fxq "$prepared_xtask" "$direct_xtask_capture" || {
-    echo "direct prepared-workspace consumer did not select the transported package checker" >&2
-    exit 1
-}
+: > "$CARGO_CAPTURE"
 PATH="$FIXTURE/bin:$PATH" \
     TEST_CAPTURE="$TMP_DIR/portable-cache-suite.args" \
     CACHE_CAPTURE="$cache_capture" \
@@ -1374,6 +1398,10 @@ grep -Fxq "$FIXTURE/.ci-test-binary-cache" "$cache_capture" || {
 }
 grep -Fxq "$prepared_xtask" "$xtask_capture" || {
     echo "ci-run-test-suite.sh did not select the transported package checker" >&2
+    exit 1
+}
+[ ! -s "$CARGO_CAPTURE" ] || {
+    echo "ci-run-test-suite.sh rebuilt a transported package checker" >&2
     exit 1
 }
 missing_xtask_capture="$TMP_DIR/missing-xtask-suite.args"

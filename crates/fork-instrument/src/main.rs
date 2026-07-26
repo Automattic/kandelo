@@ -20,7 +20,8 @@ use std::path::{Path, PathBuf};
 use fork_instrument::{
     Options, analyze,
     contract_inventory::{
-        fork_capability_section_hex, fork_contract_inventory, linked_frame_descriptor_section_hex,
+        artifact_identity, fork_capability_section_hex, fork_contract_inventory,
+        linked_frame_descriptor_section_hex, reserved_env_imports,
     },
     instrument,
 };
@@ -56,8 +57,31 @@ struct Cli {
 
     /// Print the fork-artifact structural inventory as one TSV row.
     /// This mode performs no instrumentation and emits no output file.
-    #[arg(long, conflicts_with_all = ["discover_only", "output"])]
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "discover_only",
+            "artifact_identity",
+            "reserved_env_imports",
+            "output"
+        ]
+    )]
     contract_inventory: bool,
+
+    /// Print relocatable, memory, and strict ABI-export identity as one TSV row.
+    /// This mode performs no instrumentation and emits no output file.
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "discover_only",
+            "contract_inventory",
+            "fork_capability_hex",
+            "linked_frame_descriptor_hex",
+            "reserved_env_imports",
+            "output"
+        ]
+    )]
+    artifact_identity: bool,
 
     /// Print the unique fork-capability custom section as lowercase hex.
     #[arg(
@@ -65,7 +89,9 @@ struct Cli {
         conflicts_with_all = [
             "discover_only",
             "contract_inventory",
+            "artifact_identity",
             "linked_frame_descriptor_hex",
+            "reserved_env_imports",
             "output"
         ]
     )]
@@ -77,11 +103,27 @@ struct Cli {
         conflicts_with_all = [
             "discover_only",
             "contract_inventory",
+            "artifact_identity",
             "fork_capability_hex",
+            "reserved_env_imports",
             "output"
         ]
     )]
     linked_frame_descriptor_hex: bool,
+
+    /// Print reserved env imports as `<kind>\t<module>.<name>` rows.
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "discover_only",
+            "contract_inventory",
+            "artifact_identity",
+            "fork_capability_hex",
+            "linked_frame_descriptor_hex",
+            "output"
+        ]
+    )]
+    reserved_env_imports: bool,
 }
 
 fn main() -> Result<()> {
@@ -96,6 +138,12 @@ fn main() -> Result<()> {
         println!("{inventory}");
         return Ok(());
     }
+    if cli.artifact_identity {
+        let identity = artifact_identity(&input)
+            .with_context(|| format!("inspecting artifact identity: {}", cli.input.display()))?;
+        println!("{identity}");
+        return Ok(());
+    }
     if cli.fork_capability_hex {
         let hex = fork_capability_section_hex(&input)
             .with_context(|| format!("reading fork capability: {}", cli.input.display()))?;
@@ -106,6 +154,14 @@ fn main() -> Result<()> {
         let hex = linked_frame_descriptor_section_hex(&input)
             .with_context(|| format!("reading linked-frame descriptor: {}", cli.input.display()))?;
         println!("{hex}");
+        return Ok(());
+    }
+    if cli.reserved_env_imports {
+        let imports = reserved_env_imports(&input)
+            .with_context(|| format!("inventorying reserved imports: {}", cli.input.display()))?;
+        for import in imports {
+            println!("{}\t{}", import.kind, import.identity);
+        }
         return Ok(());
     }
 
