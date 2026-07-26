@@ -17,6 +17,8 @@ REPOSITORY_CANARY_PATH = File.join(
 ROOTFS_PUBLICATION_SELECTION_PATH = File.join(
   REPO_ROOT, "scripts/homebrew-rootfs-publication-selection.sh"
 )
+ROOTFS_PUBLICATION_SELECTION_SHA256 =
+  "a9fb36b12758a4efd77edd265685d3d830b7efaf8565c76d3edcd476b93ff855"
 TAP_CALLER_ROOT = File.join(REPO_ROOT, "homebrew/homebrew-tap-core/.github/workflows")
 CHECKOUT_ACTION = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
 NIX_ACTION = "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25"
@@ -819,7 +821,7 @@ def check_repository_canary(workflow)
         "repository namespace canary credentials escape the upload step")
 end
 
-def check_rootfs_publication_selection(source)
+def check_rootfs_publication_selection_semantics(source)
   allowlist_declarations = source.lines.grep(
     /\Areadonly ROOTFS_WASM32_ALLOWED_FORMULAE=/
   )
@@ -848,9 +850,28 @@ def check_rootfs_publication_selection(source)
   end
 end
 
+def check_rootfs_publication_selection(source)
+  actual_sha256 = Digest::SHA256.hexdigest(source)
+  check(
+    actual_sha256 == ROOTFS_PUBLICATION_SELECTION_SHA256,
+    "rootfs publication selection complete bytes changed: expected " \
+      "#{ROOTFS_PUBLICATION_SELECTION_SHA256}, got #{actual_sha256}"
+  )
+  check_rootfs_publication_selection_semantics(source)
+end
+
 def check_publisher(workflow)
+  check(
+    File.file?(ROOTFS_PUBLICATION_SELECTION_PATH) &&
+      !File.symlink?(ROOTFS_PUBLICATION_SELECTION_PATH),
+    "rootfs publication selection must be a regular non-symlink file"
+  )
+  check(
+    (File.stat(ROOTFS_PUBLICATION_SELECTION_PATH).mode & 0o111).positive?,
+    "rootfs publication selection is not executable"
+  )
   check_rootfs_publication_selection(
-    File.read(ROOTFS_PUBLICATION_SELECTION_PATH)
+    File.binread(ROOTFS_PUBLICATION_SELECTION_PATH)
   )
   top_keys = workflow.keys.map { |key| key == true ? "on" : key.to_s }.sort
   check(top_keys == %w[jobs name on],
@@ -5582,21 +5603,36 @@ def self_test(publisher, maintenance, repository_canary)
     ), fingerprint_source)
   end
 
-  rootfs_selection_source = File.read(ROOTFS_PUBLICATION_SELECTION_PATH)
+  rootfs_selection_source = File.binread(ROOTFS_PUBLICATION_SELECTION_PATH)
   expect_rejection("rootfs selection omits Dinit") do
-    check_rootfs_publication_selection(rootfs_selection_source.sub(
+    check_rootfs_publication_selection_semantics(rootfs_selection_source.sub(
       "(bash dinit m4)", "(bash m4)"
     ))
   end
   expect_rejection("rootfs selection admits an unreviewed Formula") do
-    check_rootfs_publication_selection(rootfs_selection_source.sub(
+    check_rootfs_publication_selection_semantics(rootfs_selection_source.sub(
       "(bash dinit m4)", "(bash dinit m4 ruby)"
     ))
   end
   expect_rejection("rootfs selection bypasses VFS exclusion") do
-    check_rootfs_publication_selection(rootfs_selection_source.sub(
+    check_rootfs_publication_selection_semantics(rootfs_selection_source.sub(
       '[ "$REQUIRE_VFS_ACCEPTANCE" = "false" ]',
       "true"
+    ))
+  end
+  # WHY: both mutations retain all semantic fragments above. They prove the
+  # complete-byte binding rejects fail-open control-flow changes which a
+  # fragment inventory cannot recognize.
+  expect_rejection("rootfs selection exits before validation") do
+    check_rootfs_publication_selection(rootfs_selection_source.sub(
+      'normalized_formulae="$(normalize_selection "$FORMULAE")"',
+      "exit 0\n\nnormalized_formulae=\"$(normalize_selection \"$FORMULAE\")\""
+    ))
+  end
+  expect_rejection("rootfs selection allows every Formula by default") do
+    check_rootfs_publication_selection(rootfs_selection_source.sub(
+      "  allowed=false",
+      "  allowed=true"
     ))
   end
 
