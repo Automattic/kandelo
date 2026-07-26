@@ -84,11 +84,10 @@ pub mod host_abi;
 ///     and fork exports return kernel-allocated identities; instrumented
 ///     modules declare the continuation format and import reserve, commit, and
 ///     replay hooks.
-/// 43: fork artifacts prove activation-state safety explicitly. Tagged
-///     CatchRef replay reconstructs an instance-local exception from
-///     frame-owned tag identity and scalar payloads; non-transferable
-///     reference, mutable-global, and mutable-table state is rejected before
-///     launch.
+/// 43: fork artifacts prove activation-state safety explicitly. Activation
+///     references, complete exceptions, mutable reference globals, and mutable
+///     tables are serialized as versioned process-owned recipes and rebuilt
+///     with fresh instance-local identities before continuation replay.
 pub const ABI_VERSION: u32 = 43;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.

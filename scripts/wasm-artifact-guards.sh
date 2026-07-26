@@ -31,17 +31,44 @@ wasm_require_no_legacy_asyncify() {
 # this boundary, an up-to-date glue object linked against a stale sysroot can
 # turn a private libc helper into an env import; the generic host stub then
 # lets the program instantiate and traps only when the helper is called.
+_wasm_reserved_env_import_inventory() {
+    local path="${1:-}"
+    wasm_is_binary "$path" || return 2
+
+    local inventory_tool
+    inventory_tool="$(_wasm_fork_contract_inventory_tool)" || return 127
+    "$inventory_tool" --reserved-env-imports "$path" 2>/dev/null || return 2
+}
+
 wasm_require_approved_reserved_env_imports() {
     local path="${1:-}"
     wasm_is_binary "$path" || return 0
-    if ! command -v wasm-objdump >/dev/null 2>&1; then
-        echo "ERROR: cannot inspect reserved Wasm imports without wasm-objdump: $path" >&2
-        return 1
-    fi
 
-    local rejected
-    if ! rejected="$(
-        _wasm_stream_awk '
+    local inventory inventory_status=0 rejected
+    inventory="$(_wasm_reserved_env_import_inventory "$path")" || inventory_status=$?
+    if [ "$inventory_status" -eq 0 ]; then
+        if [ -z "$inventory" ]; then
+            rejected=""
+        elif ! rejected="$(
+            awk -F '\t' '
+                NF != 2 || ($1 != "func" && $1 != "table" &&
+                            $1 != "memory" && $1 != "global" && $1 != "tag") {
+                    exit 2
+                }
+                $1 == "func" && $2 == "env.__wasm_posix_vm_interrupt_after" { next }
+                { print $2 }
+            ' <<<"$inventory"
+        )"; then
+            echo "ERROR: cannot inspect reserved Wasm imports: $path" >&2
+            return 1
+        fi
+    elif [ "$inventory_status" -eq 127 ]; then
+        if ! command -v wasm-objdump >/dev/null 2>&1; then
+            echo "ERROR: cannot inspect reserved Wasm imports without a structural decoder: $path" >&2
+            return 1
+        fi
+        if ! rejected="$(
+            _wasm_stream_awk '
             / <- env\.__wasm_posix_/ {
                 identity = $0
                 sub(/^.* <- /, "", identity)
@@ -50,8 +77,12 @@ wasm_require_approved_reserved_env_imports() {
                     $0 ~ /^ - func\[/) next
                 print identity
             }
-        ' wasm-objdump -x "$path"
-    )"; then
+            ' wasm-objdump -x "$path"
+        )"; then
+            echo "ERROR: cannot inspect reserved Wasm imports: $path" >&2
+            return 1
+        fi
+    else
         echo "ERROR: cannot inspect reserved Wasm imports: $path" >&2
         return 1
     fi
@@ -347,12 +378,100 @@ wasm_extract_abi_version_with_binaryen() {
     printf '%s\n' "$abi"
 }
 
+# Validate and print the stable structural-identity record. Return 127 only
+# when the Rust decoder is unavailable so callers can distinguish a truthful
+# source-only fallback from a decoder failure that must remain fail-closed.
+_wasm_structural_artifact_identity() {
+    local path="${1:-}"
+    local identity identity_status=0
+    local relocatable memory_count memory64_count abi_state abi_version
+    local imports_fork has_fork_exports
+    local imports_side_fork dylink_count dylink_first env_memory_count
+    local unsupported_side_import_count
+    local -a identity_fields
+
+    identity="$(wasm_artifact_identity "$path")" || identity_status=$?
+    [ "$identity_status" -eq 0 ] || return "$identity_status"
+    IFS=$'\t' read -r -a identity_fields <<< "$identity"
+    case "${#identity_fields[@]}" in
+        7)
+            relocatable="${identity_fields[0]}"
+            memory_count="${identity_fields[1]}"
+            memory64_count="${identity_fields[2]}"
+            abi_state="${identity_fields[3]}"
+            abi_version="${identity_fields[4]}"
+            imports_fork="${identity_fields[5]}"
+            has_fork_exports="${identity_fields[6]}"
+            ;;
+        12)
+            relocatable="${identity_fields[0]}"
+            memory_count="${identity_fields[1]}"
+            memory64_count="${identity_fields[2]}"
+            abi_state="${identity_fields[3]}"
+            abi_version="${identity_fields[4]}"
+            imports_fork="${identity_fields[5]}"
+            imports_side_fork="${identity_fields[6]}"
+            has_fork_exports="${identity_fields[7]}"
+            dylink_count="${identity_fields[8]}"
+            dylink_first="${identity_fields[9]}"
+            env_memory_count="${identity_fields[10]}"
+            unsupported_side_import_count="${identity_fields[11]}"
+            [[ "$imports_side_fork" =~ ^[0-9]+$ ]] &&
+                [[ "$dylink_count" =~ ^[0-9]+$ ]] &&
+                [[ "$dylink_first" =~ ^[01]$ ]] &&
+                [[ "$env_memory_count" =~ ^[0-9]+$ ]] &&
+                [[ "$unsupported_side_import_count" =~ ^[0-9]+$ ]] || return 2
+            ;;
+        *) return 2 ;;
+    esac
+
+    [[ "$relocatable" =~ ^[01]$ ]] &&
+        [[ "$memory_count" =~ ^[0-9]+$ ]] &&
+        [[ "$memory64_count" =~ ^[0-9]+$ ]] &&
+        [[ "$imports_fork" =~ ^[0-9]+$ ]] &&
+        [[ "$has_fork_exports" =~ ^[01]$ ]] || return 2
+    case "$abi_state" in
+        present) [[ "$abi_version" =~ ^[0-9]+$ ]] || return 2 ;;
+        missing|invalid) [ "$abi_version" = - ] || return 2 ;;
+        *) return 2 ;;
+    esac
+    [ "$imports_fork" = 0 ] || imports_fork=1
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$relocatable" "$memory_count" "$memory64_count" "$abi_state" \
+        "$abi_version" "$imports_fork" "$has_fork_exports"
+}
+
 # Print a constant ABI export and return 0. Return 1 only when a valid Wasm
 # module genuinely has no optional ABI export; all inspection or semantic
 # failures return a status greater than 1 so resolver predicates fail closed.
 wasm_extract_abi_version() {
     local path="${1:-}"
     wasm_is_binary "$path" || return 2
+
+    local identity identity_status=0
+    local relocatable memory_count memory64_count abi_state abi_version
+    local imports_fork has_fork_exports
+    identity="$(_wasm_structural_artifact_identity "$path")" || identity_status=$?
+    if [ "$identity_status" -eq 0 ]; then
+        IFS=$'\t' read -r relocatable memory_count memory64_count abi_state abi_version \
+            imports_fork has_fork_exports <<< "$identity"
+        case "$abi_state" in
+            present)
+                printf '%s\n' "$abi_version"
+                return 0
+                ;;
+            missing) return 1 ;;
+            invalid) return 3 ;;
+            *) return 2 ;;
+        esac
+    elif [ "$identity_status" -ne 127 ]; then
+        return "$identity_status"
+    fi
+
+    # WHY: source-only callers may not have the Rust decoder yet. Preserve the
+    # bounded WABT/Binaryen compatibility path, but never fall back after an
+    # installed structural decoder reports malformed or undecodable bytes.
     command -v wasm-objdump >/dev/null 2>&1 || return 2
     # The export name and the function's optional debug name are separate Wasm
     # concepts. SDK binaries export the internal function
@@ -677,6 +796,20 @@ wasm_has_stale_abi() {
 wasm_imports_kernel_fork() {
     local path="${1:-}"
     wasm_is_binary "$path" || return 1
+
+    local identity identity_status=0
+    local relocatable memory_count memory64_count abi_state abi_version
+    local imports_fork has_fork_exports
+    identity="$(_wasm_structural_artifact_identity "$path")" || identity_status=$?
+    if [ "$identity_status" -eq 0 ]; then
+        IFS=$'\t' read -r relocatable memory_count memory64_count abi_state abi_version \
+            imports_fork has_fork_exports <<< "$identity"
+        [ "$imports_fork" = 1 ]
+        return
+    elif [ "$identity_status" -ne 127 ]; then
+        return "$identity_status"
+    fi
+
     if command -v wasm-objdump >/dev/null 2>&1; then
         _wasm_stream_awk '
             /<- kernel\.kernel_fork/ { found = 1 }
@@ -774,21 +907,80 @@ wasm_validate_side_module_imports() {
     ' wasm-objdump -x "$path"
 }
 
+# Resolve the in-tree instrumenter without building it as a side effect of an
+# artifact policy check. Release/package jobs install this binary alongside the
+# guard; source-only environments can still use the WABT fallback below.
+_wasm_fork_contract_inventory_tool() {
+    local configured="${WASM_POSIX_FORK_INSTRUMENT:-}"
+    if [ -n "$configured" ]; then
+        if [ -x "$configured" ]; then
+            printf '%s\n' "$configured"
+            return 0
+        fi
+        if [[ "$configured" != */* ]] && command -v "$configured" >/dev/null 2>&1; then
+            command -v "$configured"
+            return 0
+        fi
+        # An explicit tool selection is an ownership boundary. Do not silently
+        # substitute a different binary when that exact path is unavailable.
+        return 1
+    fi
+
+    local repo_root repo_tool
+    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)" || return 1
+    repo_tool="$repo_root/tools/bin/wasm-fork-instrument"
+    if [ -x "$repo_tool" ]; then
+        printf '%s\n' "$repo_tool"
+        return 0
+    fi
+    command -v wasm-fork-instrument 2>/dev/null
+}
+
+wasm_artifact_identity() {
+    local path="${1:-}"
+    wasm_is_binary "$path" || return 2
+
+    local inventory_tool
+    inventory_tool="$(_wasm_fork_contract_inventory_tool)" || return 127
+    "$inventory_tool" --artifact-identity "$path" 2>/dev/null || return 2
+}
+
+_wasm_fork_contract_inventory_decoder_available() {
+    _wasm_fork_contract_inventory_tool >/dev/null ||
+        command -v wasm-objdump >/dev/null 2>&1
+}
+
 # Inspect the complete fork-instrumentation contract with one structural
-# decoder pass. Large programs such as Ruby produce tens of megabytes of
-# `wasm-objdump -x` output; decoding that output once also keeps a transient
-# decoder failure from being misreported as one arbitrarily missing export.
+# decoder pass. The wasmparser-backed tool emits only the stable TSV record, so
+# large programs do not materialize tens of megabytes of `wasm-objdump -x`
+# text. Keep the WABT parser as a truthful compatibility fallback when the
+# instrumenter binary is not installed.
 #
 # Output fields are, in order:
 #   relocatable, imports a main or side-module fork entry,
 #   frame reserve/commit/next imports,
 #   linked-frame descriptor and capability counts, abort begin/end,
 #   rewind begin/end, state,
-#   unwind begin/end exports, module-memory count, memory64 count, and
-#   signature mismatches against the module memory's pointer type.
+#   unwind begin/end exports, module-memory count, memory64 count,
+#   signature mismatches against the module memory's pointer type, and the
+#   count of reentrant legacy env.__wasm_dlopen imports, and native start
+#   sections retained by the final artifact.
 _wasm_fork_contract_inventory() {
     local path="${1:-}"
     wasm_is_binary "$path" || return 1
+
+    local inventory_tool inventory_status=0
+    if inventory_tool="$(_wasm_fork_contract_inventory_tool)"; then
+        "$inventory_tool" --contract-inventory "$path" 2>/dev/null ||
+            inventory_status=$?
+        if [ "$inventory_status" -eq 1 ]; then
+            # Preserve the tri-state contract: status 1 means "predicate did
+            # not match", while a decoder failure must fail artifact policy.
+            return 2
+        fi
+        return "$inventory_status"
+    fi
+
     command -v wasm-objdump >/dev/null 2>&1 || return 2
 
     _wasm_stream_awk '
@@ -818,6 +1010,7 @@ _wasm_fork_contract_inventory() {
             function_signatures[function_index($0)] = function_types[signature_index($0)]
         }
         /^ - func\[.* <- (kernel\.kernel_fork|env\.fork)$/ { imports_fork = 1 }
+        /^ - func\[.* <- env\.__wasm_dlopen$/ { legacy_dlopen++ }
         /^ - func\[.* <- env\.__wpk_fork_frame_reserve$/ {
             frame_reserve++
             frame_reserve_signatures[frame_reserve] = function_signatures[function_index($0)]
@@ -832,6 +1025,7 @@ _wasm_fork_contract_inventory() {
         }
         /^ - name: "kandelo\.wpk_fork\.linked_frames"$/ { linked_descriptor++ }
         /^ - name: "kandelo\.wpk_fork\.capabilities"$/ { fork_capability++ }
+        /^Start:$/ { native_start++ }
         /^ - memory\[[0-9]+\] pages:/ {
             memory_count++
             if ($0 ~ / i64( |$)/) memory64_count++
@@ -890,14 +1084,15 @@ _wasm_fork_contract_inventory() {
             for (i = 1; i <= unwind_end; i++)
                 if (unwind_end_signatures[i] != nil_to_nil) signature_mismatch++
 
-            printf "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
+            printf "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
                 relocatable + 0, imports_fork + 0,
                 frame_reserve + 0, frame_commit + 0, frame_next + 0,
                 linked_descriptor + 0, fork_capability + 0,
                 abort_begin + 0, abort_end + 0,
                 rewind_begin + 0, rewind_end + 0, state + 0,
                 unwind_begin + 0, unwind_end + 0,
-                memory_count + 0, memory64_count + 0, signature_mismatch + 0
+                memory_count + 0, memory64_count + 0, signature_mismatch + 0,
+                legacy_dlopen + 0, native_start + 0
         }
     ' wasm-objdump -x "$path"
 }
@@ -905,6 +1100,13 @@ _wasm_fork_contract_inventory() {
 _wasm_fork_capability_hex() {
     local path="${1:-}"
     wasm_is_binary "$path" || return 2
+
+    local inventory_tool
+    if inventory_tool="$(_wasm_fork_contract_inventory_tool)"; then
+        "$inventory_tool" --fork-capability-hex "$path" 2>/dev/null
+        return
+    fi
+
     command -v wasm-objdump >/dev/null 2>&1 || return 2
 
     _wasm_stream_awk '
@@ -949,6 +1151,13 @@ wasm_has_activation_state_safe_capability() {
 _wasm_linked_frame_descriptor_hex() {
     local path="${1:-}"
     wasm_is_binary "$path" || return 2
+
+    local inventory_tool
+    if inventory_tool="$(_wasm_fork_contract_inventory_tool)"; then
+        "$inventory_tool" --linked-frame-descriptor-hex "$path" 2>/dev/null
+        return
+    fi
+
     command -v wasm-objdump >/dev/null 2>&1 || return 2
 
     # `wasm-objdump -x` reports a custom section's name but not its payload.
@@ -1082,12 +1291,12 @@ wasm_has_complete_fork_instrumentation() {
     local inventory inventory_status=0
     local relocatable imports_fork frame_reserve frame_commit frame_next linked_descriptor fork_capability
     local abort_begin abort_end rewind_begin rewind_end state unwind_begin unwind_end
-    local memory_count memory64_count signature_mismatch extra
+    local memory_count memory64_count signature_mismatch legacy_dlopen native_start extra
     inventory="$(_wasm_fork_contract_inventory "$path")" || inventory_status=$?
     [ "$inventory_status" -eq 0 ] || return "$inventory_status"
     IFS=$'\t' read -r relocatable imports_fork frame_reserve frame_commit frame_next \
         linked_descriptor fork_capability abort_begin abort_end rewind_begin rewind_end state \
-        unwind_begin unwind_end memory_count memory64_count signature_mismatch extra <<< "$inventory"
+        unwind_begin unwind_end memory_count memory64_count signature_mismatch legacy_dlopen native_start extra <<< "$inventory"
     [ -z "$extra" ] || return 2
     [ "$frame_reserve$frame_commit$frame_next" = 111 ] || return 1
     [ "$linked_descriptor" = 1 ] || return 1
@@ -1095,7 +1304,8 @@ wasm_has_complete_fork_instrumentation() {
     wasm_has_activation_state_safe_capability "$path" || return $?
     [ "$abort_begin$abort_end$rewind_begin$rewind_end$state$unwind_begin$unwind_end" = 1111111 ] ||
         return 1
-    [ "$memory_count" = 1 ] && [ "$signature_mismatch" = 0 ] || return 1
+    [ "$memory_count" = 1 ] && [ "$signature_mismatch" = 0 ] &&
+        [ "$legacy_dlopen" = 0 ] && [ "$native_start" = 0 ] || return 1
     local descriptor_pointer_width
     descriptor_pointer_width="$(wasm_linked_frame_descriptor_pointer_width "$path")" || return $?
     [ "$descriptor_pointer_width" = 8 ] && [ "$memory64_count" = 1 ] && return 0
@@ -1139,7 +1349,7 @@ wasm_has_any_wpk_fork_export() {
     local inventory inventory_status=0
     local relocatable imports_fork frame_reserve frame_commit frame_next linked_descriptor fork_capability
     local abort_begin abort_end rewind_begin rewind_end state unwind_begin unwind_end
-    local memory_count memory64_count signature_mismatch extra
+    local memory_count memory64_count signature_mismatch legacy_dlopen native_start extra
     inventory="$(_wasm_fork_contract_inventory "$path")" || inventory_status=$?
     case "$inventory_status" in
         0) ;;
@@ -1148,7 +1358,7 @@ wasm_has_any_wpk_fork_export() {
     esac
     IFS=$'\t' read -r relocatable imports_fork frame_reserve frame_commit frame_next \
         linked_descriptor fork_capability abort_begin abort_end rewind_begin rewind_end state \
-        unwind_begin unwind_end memory_count memory64_count signature_mismatch extra <<< "$inventory"
+        unwind_begin unwind_end memory_count memory64_count signature_mismatch legacy_dlopen native_start extra <<< "$inventory"
     [ -z "$extra" ] || return 0
     [ "$abort_begin$abort_end$rewind_begin$rewind_end$state$unwind_begin$unwind_end" != 0000000 ]
 }
@@ -1158,7 +1368,7 @@ wasm_has_any_fork_instrumentation() {
     local inventory inventory_status=0
     local relocatable imports_fork frame_reserve frame_commit frame_next linked_descriptor fork_capability
     local abort_begin abort_end rewind_begin rewind_end state unwind_begin unwind_end
-    local memory_count memory64_count signature_mismatch extra
+    local memory_count memory64_count signature_mismatch legacy_dlopen native_start extra
     inventory="$(_wasm_fork_contract_inventory "$path")" || inventory_status=$?
     case "$inventory_status" in
         0) ;;
@@ -1167,7 +1377,7 @@ wasm_has_any_fork_instrumentation() {
     esac
     IFS=$'\t' read -r relocatable imports_fork frame_reserve frame_commit frame_next \
         linked_descriptor fork_capability abort_begin abort_end rewind_begin rewind_end state \
-        unwind_begin unwind_end memory_count memory64_count signature_mismatch extra <<< "$inventory"
+        unwind_begin unwind_end memory_count memory64_count signature_mismatch legacy_dlopen native_start extra <<< "$inventory"
     [ -z "$extra" ] || return 0
     [ "$frame_reserve$frame_commit$frame_next" != 000 ] ||
         [ "$linked_descriptor" != 0 ] ||
@@ -1180,10 +1390,10 @@ wasm_has_missing_fork_instrumentation() {
     local inventory inventory_status=0
     local relocatable imports_fork frame_reserve frame_commit frame_next linked_descriptor fork_capability
     local abort_begin abort_end rewind_begin rewind_end state unwind_begin unwind_end
-    local memory_count memory64_count signature_mismatch extra
+    local memory_count memory64_count signature_mismatch legacy_dlopen native_start extra
     wasm_is_binary "$path" || return 1
 
-    if ! command -v wasm-objdump >/dev/null 2>&1; then
+    if ! _wasm_fork_contract_inventory_decoder_available; then
         case "$path" in
             *.o) return 1 ;;
             *) return 0 ;;
@@ -1194,7 +1404,7 @@ wasm_has_missing_fork_instrumentation() {
     [ "$inventory_status" -eq 0 ] || return 0 # Decoder failure: unsafe.
     IFS=$'\t' read -r relocatable imports_fork frame_reserve frame_commit frame_next \
         linked_descriptor fork_capability abort_begin abort_end rewind_begin rewind_end state \
-        unwind_begin unwind_end memory_count memory64_count signature_mismatch extra <<< "$inventory"
+        unwind_begin unwind_end memory_count memory64_count signature_mismatch legacy_dlopen native_start extra <<< "$inventory"
     [ -z "$extra" ] || return 0
     [ "$relocatable" = 1 ] && return 1
 
@@ -1210,7 +1420,8 @@ wasm_has_missing_fork_instrumentation() {
     local descriptor_pointer_width
     descriptor_pointer_width="$(wasm_linked_frame_descriptor_pointer_width "$path")" || return 0
     [ "$exports" = 1111111 ] || return 0
-    [ "$memory_count" = 1 ] && [ "$signature_mismatch" = 0 ] || return 0
+    [ "$memory_count" = 1 ] && [ "$signature_mismatch" = 0 ] &&
+        [ "$legacy_dlopen" = 0 ] && [ "$native_start" = 0 ] || return 0
     if [ "$descriptor_pointer_width" = 8 ]; then
         [ "$memory64_count" = 1 ] || return 0
     else
@@ -1230,31 +1441,31 @@ wasm_require_fork_instrumentation_if_needed() {
     local path="${1:-}"
     wasm_is_binary "$path" || return 0
 
-    if ! command -v wasm-objdump >/dev/null 2>&1; then
+    if ! _wasm_fork_contract_inventory_decoder_available; then
         case "$path" in
             *.o) return 0 ;;
         esac
         echo "ERROR: unable to inspect fork instrumentation: $path" >&2
-        echo "       wasm-objdump is required for structural export validation." >&2
+        echo "       wasm-fork-instrument or wasm-objdump is required for structural validation." >&2
         return 1
     fi
 
     local inventory inventory_status=0
     local relocatable imports_fork frame_reserve frame_commit frame_next linked_descriptor fork_capability
     local abort_begin abort_end rewind_begin rewind_end state unwind_begin unwind_end
-    local memory_count memory64_count signature_mismatch extra
+    local memory_count memory64_count signature_mismatch legacy_dlopen native_start extra
     inventory="$(_wasm_fork_contract_inventory "$path")" || inventory_status=$?
     if [ "$inventory_status" -ne 0 ]; then
         echo "ERROR: unable to inspect fork instrumentation: $path" >&2
-        echo "       wasm-objdump failed with status $inventory_status." >&2
+        echo "       structural decoder failed with status $inventory_status." >&2
         return 1
     fi
     IFS=$'\t' read -r relocatable imports_fork frame_reserve frame_commit frame_next \
         linked_descriptor fork_capability abort_begin abort_end rewind_begin rewind_end state \
-        unwind_begin unwind_end memory_count memory64_count signature_mismatch extra <<< "$inventory"
+        unwind_begin unwind_end memory_count memory64_count signature_mismatch legacy_dlopen native_start extra <<< "$inventory"
     if [ -n "$extra" ]; then
         echo "ERROR: unable to inspect fork instrumentation: $path" >&2
-        echo "       wasm-objdump returned an invalid fork-contract inventory." >&2
+        echo "       structural decoder returned an invalid fork-contract inventory." >&2
         return 1
     fi
     [ "$relocatable" = 1 ] && return 0
@@ -1335,11 +1546,18 @@ wasm_require_fork_instrumentation_if_needed() {
     local signature_error=""
     [ "$signature_mismatch" = 0 ] ||
         signature_error="$signature_mismatch ABI 43 fork import/export signatures do not match module memory"
+    local legacy_loader_error=""
+    [ "$legacy_dlopen" = 0 ] ||
+        legacy_loader_error="retains reentrant env.__wasm_dlopen instead of the staged loader lowering"
+    local native_start_error=""
+    [ "$native_start" = 0 ] ||
+        native_start_error="retains a native Wasm start section instead of deferring initialization to wpk_fork_module_bootstrap"
 
     if [ ${#missing[@]} -eq 0 ] && [ ${#duplicates[@]} -eq 0 ] &&
         [ -z "$descriptor_error" ] && [ -z "$capability_error" ] &&
         [ -z "$memory_error" ] &&
-        [ -z "$signature_error" ]; then
+        [ -z "$signature_error" ] && [ -z "$legacy_loader_error" ] &&
+        [ -z "$native_start_error" ]; then
         return 0
     fi
 
@@ -1350,6 +1568,8 @@ wasm_require_fork_instrumentation_if_needed() {
     [ -z "$capability_error" ] || printf '       capability: %s\n' "$capability_error" >&2
     [ -z "$memory_error" ] || printf '       memory: %s\n' "$memory_error" >&2
     [ -z "$signature_error" ] || printf '       signatures: %s\n' "$signature_error" >&2
+    [ -z "$legacy_loader_error" ] || printf '       loader: %s\n' "$legacy_loader_error" >&2
+    [ -z "$native_start_error" ] || printf '       start: %s\n' "$native_start_error" >&2
     echo "       Fork-capable binaries must be processed with scripts/run-wasm-fork-instrument.sh from the current ABI." >&2
     return 1
 }
@@ -1360,7 +1580,7 @@ wasm_require_no_fork_instrumentation() {
     local inventory inventory_status=0
     local relocatable imports_fork frame_reserve frame_commit frame_next linked_descriptor fork_capability
     local abort_begin abort_end rewind_begin rewind_end state unwind_begin unwind_end
-    local memory_count memory64_count signature_mismatch extra
+    local memory_count memory64_count signature_mismatch legacy_dlopen native_start extra
     inventory="$(_wasm_fork_contract_inventory "$path")" || inventory_status=$?
     if [ "$inventory_status" -ne 0 ]; then
         echo "ERROR: unable to inspect fork instrumentation policy: $path" >&2
@@ -1368,7 +1588,7 @@ wasm_require_no_fork_instrumentation() {
     fi
     IFS=$'\t' read -r relocatable imports_fork frame_reserve frame_commit frame_next \
         linked_descriptor fork_capability abort_begin abort_end rewind_begin rewind_end state \
-        unwind_begin unwind_end memory_count memory64_count signature_mismatch extra <<< "$inventory"
+        unwind_begin unwind_end memory_count memory64_count signature_mismatch legacy_dlopen native_start extra <<< "$inventory"
     if [ -n "$extra" ]; then
         echo "ERROR: unable to inspect fork instrumentation policy: $path" >&2
         return 1

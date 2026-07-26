@@ -13,8 +13,9 @@ use arbitrary::{Arbitrary, Unstructured};
 
 /// Which supported tagged catch shape the generated try_table uses.
 ///
-/// CatchAll and CatchAllRef have no deterministic tag reconstruction recipe
-/// and have precise rejection tests outside this successful-output fuzzer.
+/// This compact generator focuses on tagged Catch and CatchRef shapes.
+/// Deterministic tests separately cover CatchAll and CatchAllRef through the
+/// complete-exception reconstruction recipe.
 #[derive(Debug, Clone, Copy, arbitrary::Arbitrary)]
 enum ClauseVariant {
     /// (catch_ref $exn $handler) — handler receives exnref; try_table result is exnref.

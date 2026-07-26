@@ -98,7 +98,7 @@ describe("ForkFunctionCatalog", () => {
     expect((reconstructed as () => number)()).toBe(29);
   });
 
-  it("rejects values that have no deterministic module recipe", () => {
+  it("rejects an unregistered foreign-instance function instead of encoding the wrong module", () => {
     const module = catalogModule();
     const first = new WebAssembly.Instance(module);
     const second = new WebAssembly.Instance(module);
