@@ -123,7 +123,8 @@ formula_file_for() {
 
 formula_list="$(mktemp)"
 arch_list="$(mktemp)"
-trap 'rm -f "$formula_list" "$arch_list"' EXIT
+formula_identity_list="$(mktemp)"
+trap 'rm -f "$formula_list" "$arch_list" "$formula_identity_list"' EXIT
 
 if [ "$FORMULAE" = "all" ]; then
   find "$TAP_ROOT/Formula" -maxdepth 1 -type f -name '*.rb' -print |
@@ -144,7 +145,24 @@ while IFS= read -r formula; do
     echo "homebrew-plan-matrix.sh: Formula/$formula.rb does not exist in tap root" >&2
     exit 2
   fi
+  if [ -L "$(formula_file_for "$formula")" ]; then
+    echo "homebrew-plan-matrix.sh: Formula/$formula.rb must not be a symlink" >&2
+    exit 2
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    formula_sha256="$(sha256sum "$(formula_file_for "$formula")" | awk '{print $1}')"
+  else
+    formula_sha256="$(shasum -a 256 "$(formula_file_for "$formula")" | awk '{print $1}')"
+  fi
+  [[ "$formula_sha256" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "homebrew-plan-matrix.sh: could not hash Formula/$formula.rb" >&2
+    exit 2
+  }
+  printf '%s\t%s\n' "$formula" "$formula_sha256" >>"$formula_identity_list"
 done <"$formula_list"
+formula_identities_json="$(jq -Rn '
+  [inputs | split("\t") | {key: .[0], value: .[1]}] | from_entries
+' <"$formula_identity_list")"
 
 while IFS= read -r arch; do
   if ! valid_arch "$arch"; then
@@ -181,6 +199,7 @@ fi
 jq -c \
   --argjson metadata "$metadata_json" \
   --argjson expected "$expected_json" \
+  --argjson formula_identities "$formula_identities_json" \
   --argjson force "$force_json" \
   --arg expected_abi "$EXPECTED_ABI" \
   --arg expected_bottle_root_url "$EXPECTED_BOTTLE_ROOT_URL" \
@@ -214,6 +233,11 @@ jq -c \
             # run while this selected bottle still came from an older source.
             .built_from.kandelo_repository == $expected_kandelo_repository and
             .built_from.kandelo_commit == $expected_kandelo_commit and
+            # A tap recipe manifest SHA-256 is a Formula literal. Requiring the
+            # exact current Formula digest therefore makes every closed recipe
+            # input part of reuse identity without rebuilding unrelated Formulae
+            # merely because another file changed in the same tap commit.
+            .built_from.formula_sha256 == $formula_identities[$formula] and
             (.sha256 | type) == "string" and
             .url == ($expected_bottle_root_url + "/" + $formula +
               "/blobs/sha256:" + .sha256)

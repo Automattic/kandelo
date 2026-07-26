@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, Metadata};
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
@@ -13,6 +14,9 @@ const MAX_SCRIPT_ENV_KEYS: usize = 64;
 const MAX_SCRIPT_ENV_KEY_BYTES: usize = 4_096;
 const MAX_MANIFEST_BYTES: usize = 65_536;
 const MAX_BUILD_SCRIPT_BYTES: usize = 1_048_576;
+const MAX_TAP_RECIPE_FILES: usize = 512;
+const MAX_TAP_RECIPE_FILE_BYTES: u64 = 16_777_216;
+const MAX_TAP_RECIPE_BYTES: u64 = 67_108_864;
 const ZERO_SHA256: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 const KANDELO_REPOSITORY_URLS: [&str; 1] = ["https://github.com/Automattic/kandelo"];
 
@@ -27,6 +31,8 @@ struct BridgePlan {
     support_sha256: PresentNullable<String>,
     support_runtime_sha256: PresentNullable<String>,
     tier2_bridge: PresentNullable<BridgeDeclaration>,
+    #[serde(default)]
+    tap_recipe: Option<TapRecipeDeclaration>,
 }
 
 #[derive(Debug)]
@@ -54,6 +60,35 @@ struct BridgeDeclaration {
     version: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TapRecipeDeclaration {
+    declared_dependencies: Vec<String>,
+    manifest_sha256: String,
+    script_env_keys: Vec<String>,
+    source_sha256: String,
+    source_url: String,
+    version: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TapRecipeManifest {
+    schema: u32,
+    dependencies: Vec<String>,
+    entrypoint: String,
+    files: Vec<TapRecipeFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TapRecipeFile {
+    bytes: u64,
+    mode: String,
+    path: String,
+    sha256: String,
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize)]
 struct BridgeAttestation {
     schema: u32,
@@ -65,6 +100,8 @@ struct BridgeAttestation {
     support_sha256: Option<String>,
     support_runtime_sha256: Option<String>,
     tier2_bridge: Option<AttestedBridge>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tap_recipe: Option<AttestedTapRecipe>,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -81,9 +118,27 @@ struct AttestedBridge {
     source_mode: String,
 }
 
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct AttestedTapRecipe {
+    dependencies: Vec<String>,
+    entrypoint: String,
+    file_count: usize,
+    manifest_sha256: String,
+    script_env_keys: Vec<String>,
+    source_sha256: String,
+    source_url: String,
+    total_bytes: u64,
+    version: String,
+}
+
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let parsed = Args::parse(args)?;
-    let attestation = validate(&parsed.repo_root, parsed.arch, &parsed.bridge_plan)?;
+    let attestation = validate(
+        &parsed.repo_root,
+        parsed.tap_root.as_deref(),
+        parsed.arch,
+        &parsed.bridge_plan,
+    )?;
     println!(
         "{}",
         serde_json::to_string(&attestation)
@@ -95,6 +150,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 #[derive(Debug)]
 struct Args {
     repo_root: PathBuf,
+    tap_root: Option<PathBuf>,
     arch: TargetArch,
     bridge_plan: PathBuf,
 }
@@ -102,6 +158,7 @@ struct Args {
 impl Args {
     fn parse(args: Vec<String>) -> Result<Self, String> {
         let mut repo_root = None;
+        let mut tap_root = None;
         let mut arch = None;
         let mut bridge_plan = None;
         let mut index = 0;
@@ -112,6 +169,7 @@ impl Args {
                 .ok_or_else(|| format!("{flag} requires a value"))?;
             match flag.as_str() {
                 "--repo-root" => set_once(&mut repo_root, PathBuf::from(value), flag)?,
+                "--tap-root" => set_once(&mut tap_root, PathBuf::from(value), flag)?,
                 "--arch" => {
                     let parsed = match value.as_str() {
                         "wasm32" => TargetArch::Wasm32,
@@ -129,6 +187,7 @@ impl Args {
         }
         Ok(Self {
             repo_root: repo_root.ok_or_else(|| "--repo-root is required".to_string())?,
+            tap_root,
             arch: arch.ok_or_else(|| "--arch is required".to_string())?,
             bridge_plan: bridge_plan.ok_or_else(|| "--bridge-plan is required".to_string())?,
         })
@@ -145,6 +204,7 @@ fn set_once<T>(slot: &mut Option<T>, value: T, flag: &str) -> Result<(), String>
 
 fn validate(
     repo_root: &Path,
+    tap_root: Option<&Path>,
     arch: TargetArch,
     bridge_plan_path: &Path,
 ) -> Result<BridgeAttestation, String> {
@@ -160,7 +220,7 @@ fn validate(
     let object = plan_value
         .as_object()
         .ok_or_else(|| "Tier-2 bridge plan must be one JSON object".to_string())?;
-    for field in [
+    let common_fields = [
         "schema",
         "tap",
         "formula",
@@ -169,15 +229,53 @@ fn validate(
         "support_sha256",
         "support_runtime_sha256",
         "tier2_bridge",
-    ] {
+    ];
+    for field in common_fields {
         if !object.contains_key(field) {
             return Err(format!("Tier-2 bridge plan is missing field {field:?}"));
         }
     }
-    if object.len() != 8 {
-        return Err("Tier-2 bridge plan has unexpected fields".to_string());
+    match plan.schema {
+        2 if object.len() == 8 && !object.contains_key("tap_recipe") => {}
+        3 if object.len() == 9 && object.contains_key("tap_recipe") => {}
+        2 | 3 => return Err("Tier-2 bridge plan has unexpected fields".to_string()),
+        _ => {}
     }
     validate_plan_identity(&plan)?;
+    if let Some(recipe) = plan.tap_recipe.as_ref() {
+        if plan.tier2_bridge.0.is_some() {
+            return Err("tap recipe and registry bridge cannot both be active".to_string());
+        }
+        let support_sha256 = plan
+            .support_sha256
+            .0
+            .as_deref()
+            .ok_or_else(|| "tap recipe plan is missing its support SHA-256".to_string())?
+            .to_string();
+        validate_sha256(&support_sha256, "support SHA-256")?;
+        let support_runtime_sha256 = plan
+            .support_runtime_sha256
+            .0
+            .as_deref()
+            .ok_or_else(|| "tap recipe plan is missing its support runtime SHA-256".to_string())?
+            .to_string();
+        validate_sha256(&support_runtime_sha256, "support runtime SHA-256")?;
+        let tap_root = tap_root
+            .ok_or_else(|| "--tap-root is required for an active tap recipe".to_string())?;
+        let attested_recipe = validate_tap_recipe(tap_root, &plan, recipe)?;
+        return Ok(BridgeAttestation {
+            schema: 3,
+            arch: arch.as_str().to_string(),
+            tap: plan.tap,
+            formula: plan.formula,
+            full_name: plan.full_name,
+            formula_sha256: plan.formula_sha256,
+            support_sha256: Some(support_sha256),
+            support_runtime_sha256: Some(support_runtime_sha256),
+            tier2_bridge: None,
+            tap_recipe: Some(attested_recipe),
+        });
+    }
     let Some(bridge) = plan.tier2_bridge.0 else {
         return Ok(BridgeAttestation {
             schema: 2,
@@ -189,6 +287,7 @@ fn validate(
             support_sha256: plan.support_sha256.0,
             support_runtime_sha256: plan.support_runtime_sha256.0,
             tier2_bridge: None,
+            tap_recipe: None,
         });
     };
     validate_bridge_declaration(&bridge)?;
@@ -198,11 +297,10 @@ fn validate(
         .as_deref()
         .ok_or_else(|| "Tier-2 bridge plan is missing its support SHA-256".to_string())?;
     validate_sha256(support_sha256, "support SHA-256")?;
-    let support_runtime_sha256 = plan
-        .support_runtime_sha256
-        .0
-        .as_deref()
-        .ok_or_else(|| "Tier-2 bridge plan is missing its support runtime SHA-256".to_string())?;
+    let support_runtime_sha256 =
+        plan.support_runtime_sha256.0.as_deref().ok_or_else(|| {
+            "Tier-2 bridge plan is missing its support runtime SHA-256".to_string()
+        })?;
     validate_sha256(support_runtime_sha256, "support runtime SHA-256")?;
 
     let repo_root = exact_real_directory(repo_root, "repository root")?;
@@ -322,6 +420,7 @@ fn validate(
             source_sha256: bridge.source_sha256,
             source_mode: source_mode.to_string(),
         }),
+        tap_recipe: None,
     })
 }
 
@@ -329,12 +428,407 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+fn validate_tap_recipe(
+    tap_root: &Path,
+    plan: &BridgePlan,
+    recipe: &TapRecipeDeclaration,
+) -> Result<AttestedTapRecipe, String> {
+    validate_tap_recipe_declaration(recipe, &plan.formula)?;
+    let tap_root = exact_real_directory(tap_root, "tap root")?;
+    let kandelo = exact_real_directory(&tap_root.join("Kandelo"), "tap Kandelo directory")?;
+    if kandelo.parent() != Some(tap_root.as_path()) {
+        return Err("tap Kandelo directory is not a direct tap-root child".to_string());
+    }
+    require_mode(
+        &fs::symlink_metadata(&kandelo)
+            .map_err(|e| format!("inspect tap Kandelo directory {}: {e}", kandelo.display()))?,
+        0o755,
+        &kandelo,
+        "tap Kandelo directory",
+    )?;
+    let recipes = exact_child_directory(&kandelo, "recipes", "tap recipe directory")?;
+    require_mode(
+        &fs::symlink_metadata(&recipes)
+            .map_err(|e| format!("inspect tap recipe directory {}: {e}", recipes.display()))?,
+        0o755,
+        &recipes,
+        "tap recipe directory",
+    )?;
+    let recipe_root = exact_child_directory(&recipes, &plan.formula, "Formula recipe root")?;
+    require_mode(
+        &fs::symlink_metadata(&recipe_root)
+            .map_err(|e| format!("inspect Formula recipe root {}: {e}", recipe_root.display()))?,
+        0o755,
+        &recipe_root,
+        "Formula recipe root",
+    )?;
+    let manifest_path = recipe_root.join("recipe.json");
+    exact_child_file(&recipe_root, "recipe.json", "Formula recipe manifest")?;
+    require_mode(
+        &secure_file_metadata(&manifest_path, "Formula recipe manifest")?,
+        0o644,
+        &manifest_path,
+        "Formula recipe manifest",
+    )?;
+    let manifest_text = read_bounded_utf8(
+        &manifest_path,
+        MAX_MANIFEST_BYTES,
+        "Formula recipe manifest",
+    )?;
+    let manifest_sha256 = sha256_hex(manifest_text.as_bytes());
+    if manifest_sha256 != recipe.manifest_sha256 {
+        return Err(format!(
+            "Formula recipe manifest SHA-256 differs from the Formula declaration: {}",
+            manifest_path.display()
+        ));
+    }
+    let manifest: TapRecipeManifest = serde_json::from_str(&manifest_text)
+        .map_err(|e| format!("Formula recipe manifest JSON: {e}"))?;
+    if manifest.schema != 1 {
+        return Err(format!(
+            "unsupported Formula recipe manifest schema {}",
+            manifest.schema
+        ));
+    }
+    validate_relative_recipe_path(&manifest.entrypoint, "Formula recipe entrypoint")?;
+    if !manifest.entrypoint.ends_with(".sh") {
+        return Err("Formula recipe entrypoint must be a .sh file".to_string());
+    }
+    if manifest.files.is_empty() || manifest.files.len() > MAX_TAP_RECIPE_FILES {
+        return Err(format!(
+            "Formula recipe manifest must list 1 to {MAX_TAP_RECIPE_FILES} files"
+        ));
+    }
+    if manifest
+        .files
+        .windows(2)
+        .any(|window| window[0].path >= window[1].path)
+    {
+        return Err("Formula recipe files must be sorted by unique path".to_string());
+    }
+    if manifest
+        .dependencies
+        .windows(2)
+        .any(|window| window[0] >= window[1])
+    {
+        return Err("Formula recipe dependencies must be sorted and unique".to_string());
+    }
+    for dependency in &manifest.dependencies {
+        validate_formula_full_name(dependency, "Formula recipe dependency")?;
+    }
+    if manifest.dependencies != recipe.declared_dependencies {
+        return Err(
+            "Formula recipe dependencies differ from the Formula's declared target dependencies"
+                .to_string(),
+        );
+    }
+    let dependency_env_keys = manifest
+        .dependencies
+        .iter()
+        .map(|dependency| dependency_env_key(dependency))
+        .collect::<BTreeSet<_>>();
+    if let Some(conflict) = recipe
+        .script_env_keys
+        .iter()
+        .find(|key| dependency_env_keys.contains(key.as_str()))
+    {
+        return Err(format!(
+            "Formula recipe script_env_keys overrides dependency prefix {conflict:?}"
+        ));
+    }
+
+    let mut expected_files = BTreeMap::new();
+    let mut expected_directories = BTreeSet::from([PathBuf::new()]);
+    let mut total_bytes = 0_u64;
+    for file in &manifest.files {
+        validate_relative_recipe_path(&file.path, "Formula recipe file")?;
+        validate_sha256(&file.sha256, "Formula recipe file SHA-256")?;
+        let mode = validate_recipe_mode(&file.mode)?;
+        if file.bytes > MAX_TAP_RECIPE_FILE_BYTES {
+            return Err(format!(
+                "Formula recipe file exceeds {MAX_TAP_RECIPE_FILE_BYTES} bytes: {:?}",
+                file.path
+            ));
+        }
+        total_bytes = total_bytes
+            .checked_add(file.bytes)
+            .ok_or_else(|| "Formula recipe byte count overflow".to_string())?;
+        if total_bytes > MAX_TAP_RECIPE_BYTES {
+            return Err(format!(
+                "Formula recipe exceeds {MAX_TAP_RECIPE_BYTES} total bytes"
+            ));
+        }
+        let relative = PathBuf::from(&file.path);
+        let mut parent = relative.parent();
+        while let Some(directory) = parent {
+            expected_directories.insert(directory.to_path_buf());
+            parent = directory.parent();
+        }
+        expected_files.insert(relative, (file.bytes, file.sha256.as_str(), mode));
+    }
+    if !expected_files.contains_key(Path::new(&manifest.entrypoint)) {
+        return Err("Formula recipe entrypoint is not listed in files".to_string());
+    }
+
+    let mut actual_files = BTreeSet::new();
+    let mut actual_directories = BTreeSet::from([PathBuf::new()]);
+    inspect_recipe_tree(
+        &recipe_root,
+        &recipe_root,
+        &mut actual_files,
+        &mut actual_directories,
+    )?;
+    actual_files.remove(Path::new("recipe.json"));
+    if actual_files != expected_files.keys().cloned().collect() {
+        let missing = expected_files
+            .keys()
+            .filter(|path| !actual_files.contains(*path))
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>();
+        let unexpected = actual_files
+            .iter()
+            .filter(|path| !expected_files.contains_key(*path))
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>();
+        return Err(format!(
+            "Formula recipe tree differs from its manifest (missing={missing:?}, unexpected={unexpected:?})"
+        ));
+    }
+    if actual_directories != expected_directories {
+        return Err("Formula recipe tree contains an undeclared or empty directory".to_string());
+    }
+    for (relative, (expected_bytes, expected_sha256, expected_mode)) in &expected_files {
+        let path = recipe_root.join(relative);
+        require_mode(
+            &secure_file_metadata(&path, "Formula recipe file")?,
+            *expected_mode,
+            &path,
+            "Formula recipe file",
+        )?;
+        let bytes = read_bounded_bytes(
+            &path,
+            MAX_TAP_RECIPE_FILE_BYTES as usize,
+            "Formula recipe file",
+            true,
+        )?;
+        if bytes.len() as u64 != *expected_bytes {
+            return Err(format!(
+                "Formula recipe file byte count differs from its manifest: {}",
+                path.display()
+            ));
+        }
+        if sha256_hex(&bytes) != *expected_sha256 {
+            return Err(format!(
+                "Formula recipe file SHA-256 differs from its manifest: {}",
+                path.display()
+            ));
+        }
+    }
+
+    Ok(AttestedTapRecipe {
+        dependencies: manifest.dependencies,
+        entrypoint: manifest.entrypoint,
+        file_count: manifest.files.len(),
+        manifest_sha256,
+        script_env_keys: recipe.script_env_keys.clone(),
+        source_sha256: recipe.source_sha256.clone(),
+        source_url: recipe.source_url.clone(),
+        total_bytes,
+        version: recipe.version.clone(),
+    })
+}
+
+fn validate_recipe_mode(value: &str) -> Result<u32, String> {
+    match value {
+        "0644" => Ok(0o644),
+        "0755" => Ok(0o755),
+        _ => Err(format!(
+            "Formula recipe file mode must be \"0644\" or \"0755\", got {value:?}"
+        )),
+    }
+}
+
+fn validate_tap_recipe_declaration(
+    recipe: &TapRecipeDeclaration,
+    formula: &str,
+) -> Result<(), String> {
+    validate_sha256(&recipe.manifest_sha256, "Formula recipe manifest SHA-256")?;
+    validate_script_env_keys(formula, &recipe.script_env_keys)?;
+    validate_source_url(&recipe.source_url)?;
+    validate_sha256(&recipe.source_sha256, "Formula source SHA-256")?;
+    if recipe.version.is_empty()
+        || recipe.version.len() > 255
+        || !recipe.version.is_ascii()
+        || !recipe
+            .version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._+,-".contains(&byte))
+        || !recipe.version.as_bytes()[0].is_ascii_alphanumeric()
+    {
+        return Err(format!("invalid tap recipe version {:?}", recipe.version));
+    }
+    if recipe
+        .declared_dependencies
+        .windows(2)
+        .any(|window| window[0] >= window[1])
+    {
+        return Err("declared target dependencies must be sorted and unique".to_string());
+    }
+    for dependency in &recipe.declared_dependencies {
+        validate_formula_full_name(dependency, "declared target dependency")?;
+    }
+    Ok(())
+}
+
+fn validate_formula_full_name(value: &str, label: &str) -> Result<(), String> {
+    let (tap, formula) = value
+        .rsplit_once('/')
+        .ok_or_else(|| format!("{label} must be a fully qualified Formula name"))?;
+    validate_tap_name(tap)?;
+    validate_component(formula, label, false)
+}
+
+fn dependency_env_key(full_name: &str) -> String {
+    let name = full_name
+        .rsplit_once('/')
+        .map_or(full_name, |(_, name)| name);
+    let normalized = name
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() {
+                byte.to_ascii_uppercase() as char
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    format!("WASM_POSIX_DEP_{normalized}_DIR")
+}
+
+fn validate_relative_recipe_path(value: &str, label: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 1024
+        || !value.is_ascii()
+        || value.starts_with('/')
+        || value.ends_with('/')
+        || value.contains('\\')
+    {
+        return Err(format!(
+            "{label} is not a canonical relative path: {value:?}"
+        ));
+    }
+    let path = Path::new(value);
+    if path
+        .components()
+        .any(|component| !matches!(component, Component::Normal(part) if !part.is_empty()))
+    {
+        return Err(format!(
+            "{label} is not a canonical relative path: {value:?}"
+        ));
+    }
+    for component in path.components() {
+        let Component::Normal(component) = component else {
+            unreachable!()
+        };
+        let component = component
+            .to_str()
+            .ok_or_else(|| format!("{label} is not UTF-8: {value:?}"))?;
+        validate_component(component, label, true)?;
+    }
+    Ok(())
+}
+
+fn inspect_recipe_tree(
+    recipe_root: &Path,
+    directory: &Path,
+    files: &mut BTreeSet<PathBuf>,
+    directories: &mut BTreeSet<PathBuf>,
+) -> Result<(), String> {
+    let directory_metadata = fs::symlink_metadata(directory).map_err(|e| {
+        format!(
+            "inspect Formula recipe directory {}: {e}",
+            directory.display()
+        )
+    })?;
+    require_mode(
+        &directory_metadata,
+        0o755,
+        directory,
+        "Formula recipe directory",
+    )?;
+    let mut entries = fs::read_dir(directory)
+        .map_err(|e| format!("read Formula recipe directory {}: {e}", directory.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("read Formula recipe directory {}: {e}", directory.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let relative = path
+            .strip_prefix(recipe_root)
+            .map_err(|_| "Formula recipe path escaped its root".to_string())?
+            .to_path_buf();
+        let relative_text = relative
+            .to_str()
+            .ok_or_else(|| format!("Formula recipe path is not UTF-8: {}", path.display()))?;
+        validate_relative_recipe_path(relative_text, "Formula recipe tree entry")?;
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|e| format!("inspect Formula recipe entry {}: {e}", path.display()))?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "Formula recipe tree must not contain symlinks: {}",
+                path.display()
+            ));
+        }
+        if metadata.is_dir() {
+            directories.insert(relative);
+            inspect_recipe_tree(recipe_root, &path, files, directories)?;
+        } else if metadata.is_file() {
+            reject_hard_link(&metadata, &path, "Formula recipe file")?;
+            files.insert(relative);
+            if files.len() > MAX_TAP_RECIPE_FILES + 1 {
+                return Err(format!(
+                    "Formula recipe tree exceeds {} files",
+                    MAX_TAP_RECIPE_FILES
+                ));
+            }
+        } else {
+            return Err(format!(
+                "Formula recipe tree contains a non-file node: {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn require_mode(
+    metadata: &Metadata,
+    expected: u32,
+    path: &Path,
+    label: &str,
+) -> Result<(), String> {
+    let actual = metadata.mode() & 0o777;
+    if actual != expected {
+        return Err(format!(
+            "{label} must have mode {expected:04o}, got {actual:04o}: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 fn validate_plan_identity(plan: &BridgePlan) -> Result<(), String> {
-    if plan.schema != 2 {
+    if ![2, 3].contains(&plan.schema) {
         return Err(format!(
             "unsupported Tier-2 bridge plan schema {}",
             plan.schema
         ));
+    }
+    if plan.schema == 2 && plan.tap_recipe.is_some() {
+        return Err("Tier-2 bridge plan schema 2 cannot declare a tap recipe".to_string());
+    }
+    if plan.schema == 3 && plan.tap_recipe.is_none() {
+        return Err("Tier-2 bridge plan schema 3 requires a tap recipe".to_string());
     }
     validate_tap_name(&plan.tap)?;
     validate_component(&plan.formula, "Formula name", false)?;
@@ -427,6 +921,7 @@ fn is_reserved_script_env_key(key: &str) -> bool {
         key,
         "WASM_POSIX_DEP_NAME"
             | "WASM_POSIX_DEP_OUT_DIR"
+            | "WASM_POSIX_DEP_RECIPE_DIR"
             | "WASM_POSIX_DEP_SOURCE_DIR"
             | "WASM_POSIX_DEP_SOURCE_SHA256"
             | "WASM_POSIX_DEP_SOURCE_URL"
@@ -605,6 +1100,16 @@ fn reject_hard_link(metadata: &Metadata, path: &Path, label: &str) -> Result<(),
 }
 
 fn read_bounded_utf8(path: &Path, max_bytes: usize, label: &str) -> Result<String, String> {
+    let bytes = read_bounded_bytes(path, max_bytes, label, false)?;
+    String::from_utf8(bytes).map_err(|_| format!("{label} is not UTF-8: {}", path.display()))
+}
+
+fn read_bounded_bytes(
+    path: &Path,
+    max_bytes: usize,
+    label: &str,
+    allow_empty: bool,
+) -> Result<Vec<u8>, String> {
     let before = secure_file_metadata(path, label)?;
     reject_hard_link(&before, path, label)?;
     let mut file = File::open(path).map_err(|e| format!("open {label} {}: {e}", path.display()))?;
@@ -624,9 +1129,10 @@ fn read_bounded_utf8(path: &Path, max_bytes: usize, label: &str) -> Result<Strin
         .take(max_bytes as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| format!("read {label} {}: {e}", path.display()))?;
-    if bytes.is_empty() || bytes.len() > max_bytes {
+    if (!allow_empty && bytes.is_empty()) || bytes.len() > max_bytes {
+        let minimum = usize::from(!allow_empty);
         return Err(format!(
-            "{label} must contain 1 to {max_bytes} bytes: {}",
+            "{label} must contain {minimum} to {max_bytes} bytes: {}",
             path.display()
         ));
     }
@@ -643,7 +1149,7 @@ fn read_bounded_utf8(path: &Path, max_bytes: usize, label: &str) -> Result<Strin
             path.display()
         ));
     }
-    String::from_utf8(bytes).map_err(|_| format!("{label} is not UTF-8: {}", path.display()))
+    Ok(bytes)
 }
 
 fn require_same_file(
@@ -655,6 +1161,12 @@ fn require_same_file(
     if expected.dev() != actual.dev()
         || expected.ino() != actual.ino()
         || expected.len() != actual.len()
+        || expected.mtime() != actual.mtime()
+        || expected.mtime_nsec() != actual.mtime_nsec()
+        || expected.ctime() != actual.ctime()
+        || expected.ctime_nsec() != actual.ctime_nsec()
+        || expected.mode() != actual.mode()
+        || expected.nlink() != actual.nlink()
     {
         return Err(format!(
             "{label} changed while it was read: {}",
@@ -668,7 +1180,7 @@ fn require_same_file(
 mod tests {
     use super::*;
     use std::io::Write;
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{PermissionsExt, symlink};
 
     struct Fixture {
         _temp: tempfile::TempDir,
@@ -701,7 +1213,7 @@ mod tests {
         }
 
         fn validate(&self, arch: TargetArch) -> Result<BridgeAttestation, String> {
-            validate(self.root(), arch, &self.plan)
+            validate(self.root(), None, arch, &self.plan)
         }
     }
 
@@ -723,6 +1235,58 @@ mod tests {
             }
         })
         .to_string()
+    }
+
+    fn write_tap_recipe(fixture: &Fixture) -> PathBuf {
+        let recipe_root = fixture.root.join("Kandelo/recipes/bridge");
+        fs::create_dir_all(recipe_root.join("patches")).unwrap();
+        fs::write(
+            recipe_root.join("build.sh"),
+            "#!/usr/bin/env bash\nset -euo pipefail\n",
+        )
+        .unwrap();
+        fs::write(recipe_root.join("patches/fix.patch"), b"fixture patch\n").unwrap();
+        let manifest = serde_json::json!({
+            "schema": 1,
+            "dependencies": ["kandelo-dev/tap-core/zlib"],
+            "entrypoint": "build.sh",
+            "files": [
+                {
+                    "bytes": 38,
+                    "mode": "0644",
+                    "path": "build.sh",
+                    "sha256": sha256_hex(b"#!/usr/bin/env bash\nset -euo pipefail\n")
+                },
+                {
+                    "bytes": 14,
+                    "mode": "0644",
+                    "path": "patches/fix.patch",
+                    "sha256": sha256_hex(b"fixture patch\n")
+                }
+            ]
+        });
+        let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+        fs::write(recipe_root.join("recipe.json"), &manifest_bytes).unwrap();
+        let plan = serde_json::json!({
+            "schema": 3,
+            "tap": "kandelo-dev/tap-core",
+            "formula": "bridge",
+            "full_name": "kandelo-dev/tap-core/bridge",
+            "formula_sha256": "a".repeat(64),
+            "support_sha256": "b".repeat(64),
+            "support_runtime_sha256": "d".repeat(64),
+            "tier2_bridge": null,
+            "tap_recipe": {
+                "declared_dependencies": ["kandelo-dev/tap-core/zlib"],
+                "manifest_sha256": sha256_hex(&manifest_bytes),
+                "script_env_keys": ["BRIDGE_FEATURE"],
+                "source_sha256": "c".repeat(64),
+                "source_url": "https://example.test/bridge-1.2.3.tar.gz",
+                "version": "1.2.3"
+            }
+        });
+        fs::write(&fixture.plan, serde_json::to_vec(&plan).unwrap()).unwrap();
+        recipe_root
     }
 
     fn package_toml(in_repository: bool) -> String {
@@ -833,9 +1397,165 @@ index_url = "https://example.test/index.toml"
     }
 
     #[test]
+    fn validates_a_closed_formula_owned_tap_recipe() {
+        let fixture = Fixture::new();
+        write_tap_recipe(&fixture);
+        let attestation = validate(
+            fixture.root(),
+            Some(fixture.root()),
+            TargetArch::Wasm32,
+            &fixture.plan,
+        )
+        .unwrap();
+        let recipe = attestation.tap_recipe.unwrap();
+        assert_eq!(attestation.schema, 3);
+        assert_eq!(attestation.tier2_bridge, None);
+        assert_eq!(recipe.entrypoint, "build.sh");
+        assert_eq!(recipe.file_count, 2);
+        assert_eq!(recipe.total_bytes, 52);
+        assert_eq!(
+            recipe.dependencies,
+            ["kandelo-dev/tap-core/zlib".to_string()]
+        );
+        assert_eq!(recipe.script_env_keys, ["BRIDGE_FEATURE".to_string()]);
+    }
+
+    #[test]
+    fn tap_recipe_requires_the_exact_closed_manifest_tree() {
+        for mutation in [
+            "changed-file",
+            "unlisted-file",
+            "missing-file",
+            "empty-directory",
+            "mode",
+            "symlink",
+            "hard-link",
+        ] {
+            let fixture = Fixture::new();
+            let recipe_root = write_tap_recipe(&fixture);
+            match mutation {
+                "changed-file" => {
+                    fs::write(recipe_root.join("patches/fix.patch"), b"changed patch\n").unwrap()
+                }
+                "unlisted-file" => fs::write(recipe_root.join("extra"), b"extra").unwrap(),
+                "missing-file" => fs::remove_file(recipe_root.join("patches/fix.patch")).unwrap(),
+                "empty-directory" => fs::create_dir(recipe_root.join("empty")).unwrap(),
+                "mode" => fs::set_permissions(
+                    recipe_root.join("build.sh"),
+                    fs::Permissions::from_mode(0o755),
+                )
+                .unwrap(),
+                "symlink" => {
+                    symlink("build.sh", recipe_root.join("alias")).unwrap();
+                }
+                "hard-link" => {
+                    fs::hard_link(recipe_root.join("build.sh"), recipe_root.join("alias")).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let error = validate(
+                fixture.root(),
+                Some(fixture.root()),
+                TargetArch::Wasm32,
+                &fixture.plan,
+            )
+            .unwrap_err();
+            assert!(
+                error.contains("differs")
+                    || error.contains("undeclared or empty")
+                    || error.contains("mode")
+                    || error.contains("symlink")
+                    || error.contains("hard-link"),
+                "{mutation}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn tap_recipe_rejects_manifest_traversal_and_undeclared_dependencies() {
+        for (mutation, expected) in [
+            ("traversal", "canonical relative path"),
+            (
+                "dependency",
+                "differ from the Formula's declared target dependencies",
+            ),
+            ("dependency-env", "overrides dependency prefix"),
+            ("manifest-digest", "manifest SHA-256 differs"),
+            ("mode", "file mode must be"),
+        ] {
+            let fixture = Fixture::new();
+            let recipe_root = write_tap_recipe(&fixture);
+            let manifest_path = recipe_root.join("recipe.json");
+            let mut manifest: serde_json::Value =
+                serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+            let mut plan: serde_json::Value =
+                serde_json::from_slice(&fs::read(&fixture.plan).unwrap()).unwrap();
+            match mutation {
+                "traversal" => {
+                    manifest["files"][0]["path"] = serde_json::json!("../build.sh");
+                    let bytes = serde_json::to_vec(&manifest).unwrap();
+                    fs::write(&manifest_path, &bytes).unwrap();
+                    plan["tap_recipe"]["manifest_sha256"] = serde_json::json!(sha256_hex(&bytes));
+                }
+                "dependency" => {
+                    manifest["dependencies"] = serde_json::json!(["kandelo-dev/tap-core/ncurses"]);
+                    let bytes = serde_json::to_vec(&manifest).unwrap();
+                    fs::write(&manifest_path, &bytes).unwrap();
+                    plan["tap_recipe"]["manifest_sha256"] = serde_json::json!(sha256_hex(&bytes));
+                }
+                "dependency-env" => {
+                    plan["tap_recipe"]["script_env_keys"] =
+                        serde_json::json!(["WASM_POSIX_DEP_ZLIB_DIR"]);
+                }
+                "manifest-digest" => {
+                    plan["tap_recipe"]["manifest_sha256"] = serde_json::json!("e".repeat(64));
+                }
+                "mode" => {
+                    manifest["files"][0]["mode"] = serde_json::json!("0777");
+                    let bytes = serde_json::to_vec(&manifest).unwrap();
+                    fs::write(&manifest_path, &bytes).unwrap();
+                    plan["tap_recipe"]["manifest_sha256"] = serde_json::json!(sha256_hex(&bytes));
+                }
+                _ => unreachable!(),
+            }
+            fs::write(&fixture.plan, serde_json::to_vec(&plan).unwrap()).unwrap();
+            let error = validate(
+                fixture.root(),
+                Some(fixture.root()),
+                TargetArch::Wasm32,
+                &fixture.plan,
+            )
+            .unwrap_err();
+            assert!(error.contains(expected), "{mutation}: {error}");
+        }
+    }
+
+    #[test]
+    fn tap_recipe_requires_its_exact_tap_root_and_excludes_registry_authority() {
+        let fixture = Fixture::new();
+        write_tap_recipe(&fixture);
+        let error = validate(fixture.root(), None, TargetArch::Wasm32, &fixture.plan).unwrap_err();
+        assert!(error.contains("--tap-root is required"), "{error}");
+
+        let mut plan: serde_json::Value =
+            serde_json::from_slice(&fs::read(&fixture.plan).unwrap()).unwrap();
+        let bridge_document: serde_json::Value = serde_json::from_str(&bridge_plan()).unwrap();
+        plan["tier2_bridge"] = bridge_document["tier2_bridge"].clone();
+        fs::write(&fixture.plan, serde_json::to_vec(&plan).unwrap()).unwrap();
+        let error = validate(
+            fixture.root(),
+            Some(fixture.root()),
+            TargetArch::Wasm32,
+            &fixture.plan,
+        )
+        .unwrap_err();
+        assert!(error.contains("cannot both be active"), "{error}");
+    }
+
+    #[test]
     fn bridge_plan_rejects_previous_and_unknown_schemas() {
         let fixture = Fixture::new();
-        for schema in [1, 3] {
+        for schema in [1, 4] {
             let mut plan: serde_json::Value = serde_json::from_str(&bridge_plan()).unwrap();
             plan["schema"] = schema.into();
             fs::write(&fixture.plan, serde_json::to_vec(&plan).unwrap()).unwrap();
@@ -1038,7 +1758,10 @@ index_url = "https://example.test/index.toml"
                 serde_json::json!(["WASM_POSIX_INSTALL_LOCAL_MIRROR"]),
                 "reserved variable",
             ),
-            (serde_json::json!(["PYTHON_CONFIGURE"]), "approved namespace"),
+            (
+                serde_json::json!(["PYTHON_CONFIGURE"]),
+                "approved namespace",
+            ),
             (serde_json::json!(["PATH"]), "approved namespace"),
         ] {
             let fixture = Fixture::new();

@@ -554,19 +554,24 @@ provenance check.
 
 ### Homebrew bottles and package cache keys
 
-Homebrew bottles are not Kandelo release archives. A formula may build a
-Kandelo package by calling the same SDK and `packages/registry/<name>/build-*.sh`
-script that a source build uses, but the resulting bottle is selected by
-Homebrew's formula version, formula `revision`, bottle `rebuild`, bottle tag,
-and `bottle do` block.
+Homebrew bottles are not Kandelo release archives. A Formula may build through
+idiomatic Formula steps, a closed Formula-owned
+`Kandelo/recipes/<formula>/` input tree, or the transitional
+`packages/registry/<name>/build-*.sh` bridge. The resulting bottle is selected
+by Homebrew's Formula version, Formula `revision`, bottle `rebuild`, bottle
+tag, and `bottle do` block.
 
 Kandelo records `cache_key_sha` in Homebrew sidecar metadata so VFS tooling can
 reject stale bottle bytes. For a Homebrew bottle this key is the verified
-bottle archive SHA-256, independent of whether the formula still has a legacy
-package-registry entry. When package output bytes change, move the appropriate
-Homebrew formula revision or bottle rebuild so Homebrew fetches new bytes. Bump
-`build.toml` `revision` only when a legacy Kandelo package archive cache key
-should change. Do not bump it for formula-only docs, tap metadata, or
+bottle archive SHA-256, independent of whether the Formula still has a legacy
+package-registry entry. Sidecar provenance and matrix reuse also require the
+exact current Formula SHA-256. A tap-recipe manifest digest is a literal in
+that Formula, so its complete checksummed input tree participates in reuse
+identity without making an unrelated Formula rebuild merely because the tap
+commit changed. When package output bytes change, move the appropriate
+Homebrew Formula revision or bottle rebuild so Homebrew fetches new bytes.
+Bump `build.toml` `revision` only when a legacy Kandelo package archive cache
+key should change. Do not bump it for Formula-only docs, tap metadata, or
 browser-gallery wording.
 
 Bottle-backed lazy VFS composition keeps the same archive as its transport
@@ -800,6 +805,7 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_DEP_SOURCE_SHA256`       | Expected sha256 of the downloaded tarball. Scripts **must** verify after download — the resolver does not fetch.                                                                                                                                                                                                                                 |
 | `WASM_POSIX_DEP_TARGET_ARCH`         | Requested package architecture (`wasm32` or `wasm64`). A package that supports only one must reject the other before invoking its toolchain.                                                                                                                                                                                                     |
 | `WASM_POSIX_DEP_WORK_DIR`            | Caller-owned, single-writer scratch root disjoint from `OUT_DIR`. The resolver creates a fresh private directory for every source build and removes it on success or failure. The sealed Homebrew Formula bridge provides the equivalent boundary from Homebrew's buildpath. Direct ad-hoc script invocation may retain a package-local default. |
+| `WASM_POSIX_DEP_RECIPE_DIR`          | Formula-owned, read-only closed recipe input root for a tap-native Homebrew build. It is absent from registry package builds. Every member is attested by path, size, mode, and SHA-256; scripts must not mutate it.                                                                                                                            |
 | `WASM_POSIX_DEP_SOURCE_DIR`          | Optional caller-verified, already-extracted source root. When present it takes precedence over downloading `SOURCE_URL`; the URL and SHA remain provenance/cache identity.                                                                                                                                                                       |
 | `WASM_POSIX_DEP_<UPPER>_DIR`         | For each _direct_ dep, the resolved path to that dep's build output. `<UPPER>` is the dep name upper-cased, with `-` → `_` (e.g. `zlib-ng` → `ZLIB_NG`). Transitive deps are not surfaced — scripts that need them should declare them in `depends_on`.                                                                                          |
 | `WASM_POSIX_BUILD_GIT_<NAME>_DIR`    | Read-only detached checkout for a `build.toml` `[[git_inputs]]` declaration. `<NAME>` is the injective uppercase form of the validated lowercase name.                                                                                                                                                                                           |
