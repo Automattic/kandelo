@@ -9,7 +9,10 @@ use core::mem::size_of;
 
 use crate::abi::extended_syscalls as extra_syscalls;
 use crate::process_layout;
-use crate::{SCHED_AFFINITY_MASK_SIZE, Syscall, WASM_RUSAGE_WIRE_SIZE, WasmTimespec};
+use crate::{
+    SCHED_AFFINITY_MASK_SIZE, Syscall, WASM_RUSAGE_WIRE_SIZE, WasmTimespec,
+    kernel_scratch_wire,
+};
 
 /// Private channel argument used to carry the calling process's pointer width.
 ///
@@ -44,10 +47,7 @@ pub enum SyscallArgSize {
     /// Fixed native structure size selected from the calling process's data
     /// model.  Encountering this form also makes the host write the process
     /// pointer width to [`PROCESS_POINTER_WIDTH_ARG_INDEX`].
-    ProcessLayout {
-        wasm32_size: u32,
-        wasm64_size: u32,
-    },
+    ProcessLayout { wasm32_size: u32, wasm64_size: u32 },
 }
 
 /// One pointer argument descriptor for host-side marshalling.
@@ -57,8 +57,12 @@ pub struct SyscallArgDesc {
     pub direction: SyscallArgDirection,
     pub size: SyscallArgSize,
     /// Whether a null pointer is a valid request to omit this argument.
+    ///
+    /// Exactly one of `nullable` and `required` must be true. A zero-length
+    /// [`SyscallArgSize::Arg`] still lends no caller bytes and is canonicalized
+    /// to an empty kernel-owned region regardless of its raw pointer bits.
     pub nullable: bool,
-    /// Whether a non-C-string pointer must be non-null.
+    /// Whether a positive-sized pointer must be non-null.
     pub required: bool,
 }
 
@@ -123,15 +127,6 @@ macro_rules! process_layout {
 }
 
 macro_rules! desc {
-    ($arg_index:expr, $direction:ident, $size:expr) => {
-        SyscallArgDesc {
-            arg_index: $arg_index,
-            direction: SyscallArgDirection::$direction,
-            size: $size,
-            nullable: false,
-            required: false,
-        }
-    };
     ($arg_index:expr, $direction:ident, $size:expr, nullable) => {
         SyscallArgDesc {
             arg_index: $arg_index,
@@ -170,178 +165,276 @@ const RLIMIT_SIZE: u32 = 16;
 /// The values are sorted by syscall number for deterministic codegen and
 /// snapshot output.
 pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
-    entry!(Syscall::Open as u32, [desc!(0, In, cstring!())]),
-    entry!(Syscall::Read as u32, [desc!(1, Out, arg!(2))]),
-    entry!(Syscall::Write as u32, [desc!(1, In, arg!(2))]),
+    entry!(Syscall::Open as u32, [desc!(0, In, cstring!(), required)]),
+    entry!(Syscall::Read as u32, [desc!(1, Out, arg!(2), required)]),
+    entry!(Syscall::Write as u32, [desc!(1, In, arg!(2), required)]),
     entry!(
         Syscall::Fstat as u32,
-        [desc!(
-            1,
-            Out,
-            fixed!(process_layout::stat::SIZE),
-            required
-        )]
+        [desc!(1, Out, fixed!(process_layout::stat::SIZE), required)]
     ),
-    entry!(Syscall::Pipe as u32, [desc!(0, Out, fixed!(8))]),
+    entry!(Syscall::Pipe as u32, [desc!(0, Out, fixed!(8), required)]),
     entry!(
         Syscall::Stat as u32,
         [
-            desc!(0, In, cstring!()),
-            desc!(
-                1,
-                Out,
-                fixed!(process_layout::stat::SIZE),
-                required
-            ),
+            desc!(0, In, cstring!(), required),
+            desc!(1, Out, fixed!(process_layout::stat::SIZE), required),
         ]
     ),
     entry!(
         Syscall::Lstat as u32,
         [
-            desc!(0, In, cstring!()),
-            desc!(
-                1,
-                Out,
-                fixed!(process_layout::stat::SIZE),
-                required
-            ),
+            desc!(0, In, cstring!(), required),
+            desc!(1, Out, fixed!(process_layout::stat::SIZE), required),
         ]
     ),
-    entry!(Syscall::Mkdir as u32, [desc!(0, In, cstring!())]),
-    entry!(Syscall::Rmdir as u32, [desc!(0, In, cstring!())]),
-    entry!(Syscall::Unlink as u32, [desc!(0, In, cstring!())]),
+    entry!(Syscall::Mkdir as u32, [desc!(0, In, cstring!(), required)]),
+    entry!(Syscall::Rmdir as u32, [desc!(0, In, cstring!(), required)]),
+    entry!(Syscall::Unlink as u32, [desc!(0, In, cstring!(), required)]),
     entry!(
         Syscall::Rename as u32,
-        [desc!(0, In, cstring!()), desc!(1, In, cstring!()),]
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, In, cstring!(), required),
+        ]
     ),
     entry!(
         Syscall::Link as u32,
-        [desc!(0, In, cstring!()), desc!(1, In, cstring!()),]
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, In, cstring!(), required),
+        ]
     ),
     entry!(
         Syscall::Symlink as u32,
-        [desc!(0, In, cstring!()), desc!(1, In, cstring!()),]
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, In, cstring!(), required),
+        ]
     ),
     entry!(
         Syscall::Readlink as u32,
-        [desc!(0, In, cstring!()), desc!(1, Out, arg!(2)),]
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, Out, arg!(2), required),
+        ]
     ),
-    entry!(Syscall::Chmod as u32, [desc!(0, In, cstring!())]),
-    entry!(Syscall::Chown as u32, [desc!(0, In, cstring!())]),
-    entry!(Syscall::Access as u32, [desc!(0, In, cstring!())]),
-    entry!(Syscall::Getcwd as u32, [desc!(0, Out, arg!(1))]),
-    entry!(Syscall::Chdir as u32, [desc!(0, In, cstring!())]),
-    entry!(Syscall::Opendir as u32, [desc!(0, In, cstring!())]),
+    entry!(Syscall::Chmod as u32, [desc!(0, In, cstring!(), required)]),
+    entry!(Syscall::Chown as u32, [desc!(0, In, cstring!(), required)]),
+    entry!(Syscall::Access as u32, [desc!(0, In, cstring!(), required)]),
+    entry!(Syscall::Getcwd as u32, [desc!(0, Out, arg!(1), required)]),
+    entry!(Syscall::Chdir as u32, [desc!(0, In, cstring!(), required)]),
+    entry!(Syscall::Opendir as u32, [desc!(0, In, cstring!(), required)]),
     entry!(
         Syscall::Readdir as u32,
-        [desc!(1, Out, fixed!(16)), desc!(2, Out, arg!(3)),]
+        [
+            desc!(1, Out, fixed!(16), required),
+            desc!(2, Out, arg!(3), required),
+        ]
     ),
     entry!(
         Syscall::Sigaction as u32,
-        [desc!(1, In, fixed!(16)), desc!(2, Out, fixed!(16)),]
+        [
+            desc!(1, In, fixed!(16), nullable),
+            desc!(2, Out, fixed!(16), nullable),
+        ]
     ),
     entry!(
         Syscall::Sigprocmask as u32,
-        [desc!(1, In, fixed!(8)), desc!(2, Out, fixed!(8)),]
+        [
+            desc!(
+                1,
+                In,
+                fixed!(kernel_scratch_wire::SIGNAL_MASK_BYTES),
+                nullable
+            ),
+            desc!(
+                2,
+                Out,
+                fixed!(kernel_scratch_wire::SIGNAL_MASK_BYTES),
+                nullable
+            ),
+        ]
     ),
     entry!(
         Syscall::ClockGettime as u32,
-        [desc!(1, Out, fixed!(WASM_TIMESPEC_SIZE))]
+        [desc!(1, Out, fixed!(WASM_TIMESPEC_SIZE), required)]
     ),
     entry!(
         Syscall::Nanosleep as u32,
-        [desc!(0, In, fixed!(WASM_TIMESPEC_SIZE))]
+        [desc!(0, In, fixed!(WASM_TIMESPEC_SIZE), required)]
     ),
     entry!(
         Syscall::GetEnv as u32,
-        [desc!(0, In, cstring!()), desc!(1, Out, arg!(2)),]
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, Out, arg!(2), required),
+        ]
     ),
     entry!(
         Syscall::SetEnv as u32,
-        [desc!(0, In, cstring!()), desc!(1, In, cstring!()),]
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, In, cstring!(), required),
+        ]
     ),
-    entry!(Syscall::UnsetEnv as u32, [desc!(0, In, cstring!())]),
-    entry!(Syscall::Bind as u32, [desc!(1, In, arg!(2))]),
+    entry!(
+        Syscall::UnsetEnv as u32,
+        [desc!(0, In, cstring!(), required)]
+    ),
+    entry!(
+        Syscall::Bind as u32,
+        [desc!(1, In, arg!(2), required)]
+    ),
     entry!(
         Syscall::Accept as u32,
-        [desc!(1, Out, deref!(2)), desc!(2, InOut, fixed!(4)),]
+        [
+            // Linux permits omitting the peer address only as a nullable
+            // address/length pair. A non-null address still requires the
+            // length pointer because it defines the staged output capacity.
+            desc!(1, Out, deref!(2), nullable),
+            desc!(2, InOut, fixed!(4), nullable),
+        ]
     ),
-    entry!(Syscall::Connect as u32, [desc!(1, In, arg!(2))]),
-    entry!(Syscall::Send as u32, [desc!(1, In, arg!(2))]),
-    entry!(Syscall::Recv as u32, [desc!(1, Out, arg!(2))]),
+    entry!(
+        Syscall::Connect as u32,
+        [desc!(1, In, arg!(2), required)]
+    ),
+    entry!(Syscall::Send as u32, [desc!(1, In, arg!(2), required)]),
+    entry!(Syscall::Recv as u32, [desc!(1, Out, arg!(2), required)]),
     entry!(
         Syscall::Getsockopt as u32,
-        [desc!(3, Out, deref!(4)), desc!(4, InOut, fixed!(4)),]
+        [
+            desc!(3, Out, deref!(4), required),
+            desc!(4, InOut, fixed!(4), required),
+        ]
     ),
-    entry!(Syscall::Setsockopt as u32, [desc!(3, In, arg!(4))]),
-    entry!(Syscall::Poll as u32, [desc!(0, InOut, arg!(1, mul 8))]),
-    entry!(Syscall::Socketpair as u32, [desc!(3, Out, fixed!(8))]),
+    entry!(
+        Syscall::Setsockopt as u32,
+        [desc!(3, In, arg!(4), required)]
+    ),
+    entry!(
+        Syscall::Poll as u32,
+        [desc!(0, InOut, arg!(1, mul 8), required)]
+    ),
+    entry!(
+        Syscall::Socketpair as u32,
+        [desc!(3, Out, fixed!(8), required)]
+    ),
     entry!(
         Syscall::Sendto as u32,
-        [desc!(1, In, arg!(2)), desc!(4, In, arg!(5)),]
+        [
+            desc!(1, In, arg!(2), required),
+            desc!(4, In, arg!(5), required),
+        ]
     ),
     entry!(
         Syscall::Recvfrom as u32,
         [
-            desc!(1, Out, arg!(2)),
-            desc!(4, Out, deref!(5)),
-            desc!(5, InOut, fixed!(4)),
+            desc!(1, Out, arg!(2), required),
+            // As with accept(2), the source address and its length are an
+            // optional pair, while a supplied address requires its length.
+            desc!(4, Out, deref!(5), nullable),
+            desc!(5, InOut, fixed!(4), nullable),
         ]
     ),
-    entry!(Syscall::Pread as u32, [desc!(1, Out, arg!(2))]),
-    entry!(Syscall::Pwrite as u32, [desc!(1, In, arg!(2))]),
-    entry!(Syscall::Openat as u32, [desc!(1, In, cstring!())]),
+    entry!(Syscall::Pread as u32, [desc!(1, Out, arg!(2), required)]),
+    entry!(Syscall::Pwrite as u32, [desc!(1, In, arg!(2), required)]),
+    entry!(
+        Syscall::Openat as u32,
+        [desc!(1, In, cstring!(), required)]
+    ),
     entry!(
         Syscall::Tcgetattr as u32,
-        [desc!(1, Out, fixed!(crate::ioctl_contract::TERMIOS_SIZE), required)]
+        [desc!(
+            1,
+            Out,
+            fixed!(crate::ioctl_contract::TERMIOS_SIZE),
+            required
+        )]
     ),
     entry!(
         Syscall::Tcsetattr as u32,
-        [desc!(2, In, fixed!(crate::ioctl_contract::TERMIOS_SIZE), required)]
+        [desc!(
+            2,
+            In,
+            fixed!(crate::ioctl_contract::TERMIOS_SIZE),
+            required
+        )]
     ),
-    entry!(Syscall::Uname as u32, [desc!(0, Out, fixed!(390))]),
-    entry!(Syscall::Pipe2 as u32, [desc!(0, Out, fixed!(8))]),
+    entry!(
+        Syscall::Uname as u32,
+        [desc!(0, Out, fixed!(390), required)]
+    ),
+    entry!(
+        Syscall::Pipe2 as u32,
+        [desc!(0, Out, fixed!(8), required)]
+    ),
     entry!(
         Syscall::Getrlimit as u32,
-        [desc!(1, Out, fixed!(RLIMIT_SIZE))]
+        [desc!(1, Out, fixed!(RLIMIT_SIZE), required)]
     ),
     entry!(
         Syscall::Setrlimit as u32,
-        [desc!(1, In, fixed!(RLIMIT_SIZE))]
+        [desc!(1, In, fixed!(RLIMIT_SIZE), required)]
     ),
-    entry!(Syscall::Truncate as u32, [desc!(0, In, cstring!())]),
+    entry!(
+        Syscall::Truncate as u32,
+        [desc!(0, In, cstring!(), required)]
+    ),
     entry!(
         Syscall::Fstatat as u32,
         [
-            desc!(1, In, cstring!()),
-            desc!(
-                2,
-                Out,
-                fixed!(process_layout::stat::SIZE),
-                required
-            ),
+            desc!(1, In, cstring!(), required),
+            desc!(2, Out, fixed!(process_layout::stat::SIZE), required),
         ]
     ),
-    entry!(Syscall::Unlinkat as u32, [desc!(1, In, cstring!())]),
-    entry!(Syscall::Mkdirat as u32, [desc!(1, In, cstring!())]),
+    entry!(
+        Syscall::Unlinkat as u32,
+        [desc!(1, In, cstring!(), required)]
+    ),
+    entry!(
+        Syscall::Mkdirat as u32,
+        [desc!(1, In, cstring!(), required)]
+    ),
     entry!(
         Syscall::Renameat as u32,
-        [desc!(1, In, cstring!()), desc!(3, In, cstring!()),]
+        [
+            desc!(1, In, cstring!(), required),
+            desc!(3, In, cstring!(), required),
+        ]
     ),
-    entry!(Syscall::Faccessat as u32, [desc!(1, In, cstring!())]),
-    entry!(Syscall::Fchmodat as u32, [desc!(1, In, cstring!())]),
-    entry!(Syscall::Fchownat as u32, [desc!(1, In, cstring!())]),
+    entry!(
+        Syscall::Faccessat as u32,
+        [desc!(1, In, cstring!(), required)]
+    ),
+    entry!(
+        Syscall::Fchmodat as u32,
+        [desc!(1, In, cstring!(), required)]
+    ),
+    entry!(
+        Syscall::Fchownat as u32,
+        [desc!(1, In, cstring!(), required)]
+    ),
     entry!(
         Syscall::Linkat as u32,
-        [desc!(1, In, cstring!()), desc!(3, In, cstring!()),]
+        [
+            desc!(1, In, cstring!(), required),
+            desc!(3, In, cstring!(), required),
+        ]
     ),
     entry!(
         Syscall::Symlinkat as u32,
-        [desc!(0, In, cstring!()), desc!(2, In, cstring!()),]
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(2, In, cstring!(), required),
+        ]
     ),
     entry!(
         Syscall::Readlinkat as u32,
-        [desc!(1, In, cstring!()), desc!(2, Out, arg!(3)),]
+        [
+            desc!(1, In, cstring!(), required),
+            desc!(2, Out, arg!(3), required),
+        ]
     ),
     entry!(
         Syscall::Getrusage as u32,
@@ -349,13 +442,24 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     ),
     entry!(
         Syscall::Realpath as u32,
-        [desc!(0, In, cstring!()), desc!(1, Out, arg!(2)),]
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, Out, arg!(2), required),
+        ]
     ),
-    entry!(Syscall::Sigsuspend as u32, [desc!(0, In, fixed!(8))]),
+    entry!(
+        Syscall::Sigsuspend as u32,
+        [desc!(
+            0,
+            In,
+            fixed!(kernel_scratch_wire::SIGNAL_MASK_BYTES),
+            required
+        )]
+    ),
     entry!(
         Syscall::Pathconf as u32,
         [
-            desc!(0, In, cstring!()),
+            desc!(0, In, cstring!(), required),
             desc!(2, Out, fixed!(8), required),
         ]
     ),
@@ -365,34 +469,52 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     ),
     entry!(
         Syscall::Getsockname as u32,
-        [desc!(1, Out, deref!(2)), desc!(2, InOut, fixed!(4)),]
+        [
+            desc!(1, Out, deref!(2), required),
+            desc!(2, InOut, fixed!(4), required),
+        ]
     ),
     entry!(
         Syscall::Getpeername as u32,
-        [desc!(1, Out, deref!(2)), desc!(2, InOut, fixed!(4)),]
+        [
+            desc!(1, Out, deref!(2), required),
+            desc!(2, InOut, fixed!(4), required),
+        ]
     ),
-    entry!(extra_syscalls::SYS_LLSEEK, [desc!(3, Out, fixed!(8))]),
-    entry!(extra_syscalls::SYS_GETRANDOM, [desc!(0, Out, arg!(1))]),
-    entry!(Syscall::Getdents64 as u32, [desc!(1, Out, arg!(2))]),
+    entry!(
+        extra_syscalls::SYS_LLSEEK,
+        [desc!(3, Out, fixed!(8), required)]
+    ),
+    entry!(
+        extra_syscalls::SYS_GETRANDOM,
+        [desc!(0, Out, arg!(1), required)]
+    ),
+    entry!(
+        Syscall::Getdents64 as u32,
+        [desc!(1, Out, arg!(2), required)]
+    ),
     entry!(
         Syscall::ClockGetres as u32,
-        [desc!(1, Out, fixed!(WASM_TIMESPEC_SIZE))]
+        // POSIX and Linux permit querying clock validity without storing its
+        // resolution.
+        [desc!(1, Out, fixed!(WASM_TIMESPEC_SIZE), nullable)]
     ),
     entry!(
         Syscall::ClockNanosleep as u32,
-        [desc!(2, In, fixed!(WASM_TIMESPEC_SIZE))]
+        [desc!(2, In, fixed!(WASM_TIMESPEC_SIZE), required)]
     ),
     entry!(
         Syscall::Utimensat as u32,
         [
             desc!(1, In, cstring!(), nullable),
-            desc!(2, In, fixed!(WASM_TIMESPEC_SIZE * 2)),
+            // A null times pointer requests setting both timestamps to now.
+            desc!(2, In, fixed!(WASM_TIMESPEC_SIZE * 2), nullable),
         ]
     ),
     entry!(
         Syscall::Statfs as u32,
         [
-            desc!(0, In, cstring!()),
+            desc!(0, In, cstring!(), required),
             desc!(
                 2,
                 Out,
@@ -419,17 +541,19 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     entry!(
         Syscall::Getresuid as u32,
         [
-            desc!(0, Out, fixed!(4)),
-            desc!(1, Out, fixed!(4)),
-            desc!(2, Out, fixed!(4)),
+            // Linux writes each result with put_user; unlike getcpu(2), none
+            // of these three destinations is optional.
+            desc!(0, Out, fixed!(4), required),
+            desc!(1, Out, fixed!(4), required),
+            desc!(2, Out, fixed!(4), required),
         ]
     ),
     entry!(
         Syscall::Getresgid as u32,
         [
-            desc!(0, Out, fixed!(4)),
-            desc!(1, Out, fixed!(4)),
-            desc!(2, Out, fixed!(4)),
+            desc!(0, Out, fixed!(4), required),
+            desc!(1, Out, fixed!(4), required),
+            desc!(2, Out, fixed!(4), required),
         ]
     ),
     entry!(
@@ -439,18 +563,18 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     entry!(
         Syscall::Wait4 as u32,
         [
-            desc!(1, Out, fixed!(4)),
-            desc!(3, Out, fixed!(WASM_RUSAGE_WIRE_SIZE)),
+            desc!(1, Out, fixed!(4), nullable),
+            desc!(3, Out, fixed!(WASM_RUSAGE_WIRE_SIZE), nullable),
         ]
     ),
     entry!(
         Syscall::Getaddrinfo as u32,
         [
-            desc!(0, In, cstring!()),
+            desc!(0, In, cstring!(), required),
             // WHY: musl's lookup_name.c supplies exactly one four-byte IPv4
             // result. A larger copy-out contract overwrites caller-owned bytes
             // even though the kernel produces only this meaningful address.
-            desc!(1, Out, fixed!(4)),
+            desc!(1, Out, fixed!(4), required),
         ]
     ),
     entry!(
@@ -467,14 +591,32 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     ),
     entry!(
         extra_syscalls::SYS_RT_SIGPENDING,
-        [desc!(0, Out, fixed!(8))]
+        [desc!(
+            0,
+            Out,
+            fixed!(kernel_scratch_wire::SIGNAL_MASK_BYTES),
+            required
+        )]
     ),
     entry!(
         extra_syscalls::SYS_RT_SIGTIMEDWAIT,
         [
-            desc!(0, In, fixed!(8)),
-            desc!(1, Out, fixed!(128)),
-            desc!(2, In, fixed!(WASM_TIMESPEC_SIZE)),
+            desc!(
+                0,
+                In,
+                fixed!(kernel_scratch_wire::SIGNAL_MASK_BYTES),
+                required
+            ),
+            desc!(
+                1,
+                Out,
+                process_layout!(
+                    process_layout::rt_sigqueueinfo::WASM32_SIZE,
+                    process_layout::rt_sigqueueinfo::WASM64_SIZE
+                ),
+                nullable
+            ),
+            desc!(2, In, fixed!(WASM_TIMESPEC_SIZE), nullable),
         ]
     ),
     entry!(
@@ -486,7 +628,8 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
                 process_layout!(
                     process_layout::sigaltstack::WASM32_SIZE,
                     process_layout::sigaltstack::WASM64_SIZE
-                )
+                ),
+                nullable
             ),
             desc!(
                 1,
@@ -494,15 +637,15 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
                 process_layout!(
                     process_layout::sigaltstack::WASM32_SIZE,
                     process_layout::sigaltstack::WASM64_SIZE
-                )
+                ),
+                nullable
             ),
         ]
     ),
     entry!(
         crate::abi::host_intercepted::SYS_EXECVE,
-        [desc!(0, In, cstring!())]
+        [desc!(0, In, cstring!(), required)]
     ),
-    entry!(extra_syscalls::SYS_PRCTL, [desc!(1, InOut, fixed!(16))]),
     entry!(
         extra_syscalls::SYS_GETITIMER,
         [desc!(
@@ -533,7 +676,8 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
                 process_layout!(
                     process_layout::itimerval::WASM32_SIZE,
                     process_layout::itimerval::WASM64_SIZE
-                )
+                ),
+                nullable
             ),
         ]
     ),
@@ -566,7 +710,7 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     ),
     entry!(
         extra_syscalls::SYS_SCHED_RR_GET_INTERVAL,
-        [desc!(1, Out, fixed!(WASM_TIMESPEC_SIZE))]
+        [desc!(1, Out, fixed!(WASM_TIMESPEC_SIZE), required)]
     ),
     entry!(
         extra_syscalls::SYS_SCHED_GETAFFINITY,
@@ -585,20 +729,36 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     ),
     entry!(
         extra_syscalls::SYS_SIGNALFD4,
-        [desc!(1, In, fixed!(8), required)]
+        [desc!(
+            1,
+            In,
+            fixed!(kernel_scratch_wire::SIGNAL_MASK_BYTES),
+            required
+        )]
     ),
     entry!(
         extra_syscalls::SYS_PRLIMIT64,
-        [desc!(2, In, fixed!(16)), desc!(3, Out, fixed!(16)),]
+        [
+            // prlimit64 is a query, a mutation, or both; each record is
+            // independently optional.
+            desc!(2, In, fixed!(16), nullable),
+            desc!(3, Out, fixed!(16), nullable),
+        ]
     ),
-    entry!(extra_syscalls::SYS_PPOLL, [desc!(0, InOut, arg!(1, mul 8))]),
+    entry!(
+        extra_syscalls::SYS_PPOLL,
+        [desc!(0, InOut, arg!(1, mul 8), required)]
+    ),
     entry!(
         extra_syscalls::SYS_MEMFD_CREATE,
         [desc!(0, In, cstring!(), required)]
     ),
     entry!(
         extra_syscalls::SYS_STATX,
-        [desc!(1, In, cstring!()), desc!(4, Out, fixed!(256)),]
+        [
+            desc!(1, In, cstring!(), required),
+            desc!(4, Out, fixed!(256), required),
+        ]
     ),
     entry!(
         extra_syscalls::SYS_SYSINFO,
@@ -612,12 +772,26 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
             required
         )]
     ),
-    entry!(extra_syscalls::SYS_MKNOD, [desc!(0, In, cstring!())]),
-    entry!(extra_syscalls::SYS_MKNODAT, [desc!(1, In, cstring!())]),
+    entry!(
+        extra_syscalls::SYS_MKNOD,
+        [desc!(0, In, cstring!(), required)]
+    ),
+    entry!(
+        extra_syscalls::SYS_MKNODAT,
+        [desc!(1, In, cstring!(), required)]
+    ),
     entry!(
         extra_syscalls::SYS_WAITID,
         [
-            desc!(2, Out, fixed!(128), required),
+            desc!(
+                2,
+                Out,
+                process_layout!(
+                    process_layout::rt_sigqueueinfo::WASM32_SIZE,
+                    process_layout::rt_sigqueueinfo::WASM64_SIZE
+                ),
+                required
+            ),
             desc!(4, Out, fixed!(WASM_RUSAGE_WIRE_SIZE), nullable),
         ]
     ),
@@ -639,10 +813,16 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         extra_syscalls::SYS_SENDFILE,
         [desc!(2, InOut, fixed!(8), nullable)]
     ),
-    entry!(extra_syscalls::SYS_LCHOWN, [desc!(0, In, cstring!())]),
+    entry!(
+        extra_syscalls::SYS_LCHOWN,
+        [desc!(0, In, cstring!(), required)]
+    ),
     entry!(
         extra_syscalls::SYS_RENAMEAT2,
-        [desc!(1, In, cstring!()), desc!(3, In, cstring!()),]
+        [
+            desc!(1, In, cstring!(), required),
+            desc!(3, In, cstring!(), required),
+        ]
     ),
     entry!(
         extra_syscalls::SYS_GETCPU,
@@ -653,44 +833,65 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     ),
     entry!(
         extra_syscalls::SYS_TIMER_CREATE,
-        [desc!(1, In, fixed!(16)), desc!(2, Out, fixed!(4)),]
+        [
+            // A null sigevent requests the standard SIGALRM notification.
+            desc!(
+                1,
+                In,
+                process_layout!(
+                    process_layout::sigevent::WASM32_SIZE,
+                    process_layout::sigevent::WASM64_SIZE
+                ),
+                nullable
+            ),
+            desc!(2, Out, fixed!(4), required),
+        ]
     ),
     entry!(
         extra_syscalls::SYS_TIMER_SETTIME,
-        [desc!(2, In, fixed!(32)), desc!(3, Out, fixed!(32)),]
+        [
+            desc!(2, In, fixed!(32), required),
+            desc!(3, Out, fixed!(32), nullable),
+        ]
     ),
     entry!(
         extra_syscalls::SYS_TIMER_GETTIME,
-        [desc!(1, Out, fixed!(32))]
+        [desc!(1, Out, fixed!(32), required)]
     ),
     entry!(
         extra_syscalls::SYS_MQ_OPEN,
         [
-            desc!(0, In, cstring!()),
+            desc!(0, In, cstring!(), required),
             desc!(
                 3,
                 In,
                 process_layout!(
                     process_layout::mq_attr::WASM32_SIZE,
                     process_layout::mq_attr::WASM64_SIZE
-                )
+                ),
+                nullable
             ),
         ]
     ),
-    entry!(extra_syscalls::SYS_MQ_UNLINK, [desc!(0, In, cstring!())]),
+    entry!(
+        extra_syscalls::SYS_MQ_UNLINK,
+        [desc!(0, In, cstring!(), required)]
+    ),
     entry!(
         extra_syscalls::SYS_MQ_TIMEDSEND,
         [
-            desc!(1, In, arg!(2)),
-            desc!(4, In, fixed!(WASM_TIMESPEC_SIZE)),
+            desc!(1, In, arg!(2), required),
+            // mq_send(3) reaches this syscall with a null timeout.
+            desc!(4, In, fixed!(WASM_TIMESPEC_SIZE), nullable),
         ]
     ),
     entry!(
         extra_syscalls::SYS_MQ_TIMEDRECEIVE,
         [
-            desc!(1, Out, arg!(2)),
-            desc!(3, Out, fixed!(4)),
-            desc!(4, In, fixed!(WASM_TIMESPEC_SIZE)),
+            desc!(1, Out, arg!(2), required),
+            desc!(3, Out, fixed!(4), nullable),
+            // mq_receive(3) reaches this syscall with a null timeout.
+            desc!(4, In, fixed!(WASM_TIMESPEC_SIZE), nullable),
         ]
     ),
     entry!(
@@ -698,10 +899,11 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(
             1,
             In,
-            process_layout!(
-                process_layout::sigevent::WASM32_SIZE,
-                process_layout::sigevent::WASM64_SIZE
-            )
+                process_layout!(
+                    process_layout::sigevent::WASM32_SIZE,
+                    process_layout::sigevent::WASM64_SIZE
+                ),
+                nullable
         )]
     ),
     entry!(
@@ -713,7 +915,8 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
                 process_layout!(
                     process_layout::mq_attr::WASM32_SIZE,
                     process_layout::mq_attr::WASM64_SIZE
-                )
+                ),
+                nullable
             ),
             desc!(
                 2,
@@ -721,26 +924,47 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
                 process_layout!(
                     process_layout::mq_attr::WASM32_SIZE,
                     process_layout::mq_attr::WASM64_SIZE
-                )
+                ),
+                nullable
             ),
         ]
     ),
-    entry!(extra_syscalls::SYS_SEMOP, [desc!(1, In, arg!(2, mul 6))]),
+    entry!(
+        extra_syscalls::SYS_SEMOP,
+        [desc!(1, In, arg!(2, mul 6), required)]
+    ),
     entry!(
         extra_syscalls::SYS_SIGNALFD,
-        [desc!(1, In, fixed!(8), required)]
+        [desc!(
+            1,
+            In,
+            fixed!(kernel_scratch_wire::SIGNAL_MASK_BYTES),
+            required
+        )]
     ),
-    entry!(extra_syscalls::SYS_FACCESSAT2, [desc!(1, In, cstring!())]),
-    entry!(extra_syscalls::SYS_FCHMODAT2, [desc!(1, In, cstring!())]),
+    entry!(
+        extra_syscalls::SYS_FACCESSAT2,
+        [desc!(1, In, cstring!(), required)]
+    ),
+    entry!(
+        extra_syscalls::SYS_FCHMODAT2,
+        [desc!(1, In, cstring!(), required)]
+    ),
     entry!(
         extra_syscalls::SYS_ACCEPT4,
-        [desc!(1, Out, deref!(2)), desc!(2, InOut, fixed!(4)),]
+        [
+            desc!(1, Out, deref!(2), nullable),
+            desc!(2, InOut, fixed!(4), nullable),
+        ]
     ),
 ];
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use super::*;
+    use self::std::vec::Vec;
 
     #[test]
     fn syscall_arg_descriptors_are_sorted_and_unique() {
@@ -754,6 +978,108 @@ mod tests {
             }
             prev = Some(entry.syscall_number);
         }
+    }
+
+    #[test]
+    fn pointer_nullability_is_explicit_and_exhaustive() {
+        let mut actual_nullable = Vec::new();
+        for entry in SYSCALL_ARG_DESCRIPTORS {
+            for arg in entry.args {
+                assert_ne!(
+                    arg.nullable, arg.required,
+                    "syscall {} arg {} must be explicitly nullable or required",
+                    entry.syscall_number, arg.arg_index
+                );
+                match arg.size {
+                    SyscallArgSize::Arg { multiplier, .. } => assert_ne!(
+                        multiplier, 0,
+                        "syscall {} arg {} has a zero size multiplier",
+                        entry.syscall_number, arg.arg_index
+                    ),
+                    SyscallArgSize::Fixed { size } => assert_ne!(
+                        size, 0,
+                        "syscall {} arg {} has an empty fixed record",
+                        entry.syscall_number, arg.arg_index
+                    ),
+                    SyscallArgSize::ProcessLayout {
+                        wasm32_size,
+                        wasm64_size,
+                    } => {
+                        assert_ne!(
+                            wasm32_size, 0,
+                            "syscall {} arg {} has an empty wasm32 record",
+                            entry.syscall_number, arg.arg_index
+                        );
+                        assert_ne!(
+                            wasm64_size, 0,
+                            "syscall {} arg {} has an empty wasm64 record",
+                            entry.syscall_number, arg.arg_index
+                        );
+                    }
+                    SyscallArgSize::CString | SyscallArgSize::Deref { .. } => {}
+                }
+                if arg.nullable {
+                    actual_nullable.push((entry.syscall_number, arg.arg_index));
+                }
+            }
+        }
+
+        let mut expected_nullable = std::vec![
+            (Syscall::Sigaction as u32, 1),
+            (Syscall::Sigaction as u32, 2),
+            (Syscall::Sigprocmask as u32, 1),
+            (Syscall::Sigprocmask as u32, 2),
+            (Syscall::Accept as u32, 1),
+            (Syscall::Accept as u32, 2),
+            (Syscall::Recvfrom as u32, 4),
+            (Syscall::Recvfrom as u32, 5),
+            (Syscall::ClockGetres as u32, 1),
+            (Syscall::Utimensat as u32, 1),
+            (Syscall::Utimensat as u32, 2),
+            (Syscall::Wait4 as u32, 1),
+            (Syscall::Wait4 as u32, 3),
+            (extra_syscalls::SYS_RT_SIGTIMEDWAIT, 1),
+            (extra_syscalls::SYS_RT_SIGTIMEDWAIT, 2),
+            (extra_syscalls::SYS_SIGALTSTACK, 0),
+            (extra_syscalls::SYS_SIGALTSTACK, 1),
+            (extra_syscalls::SYS_SETITIMER, 2),
+            (extra_syscalls::SYS_TIMERFD_SETTIME, 3),
+            (extra_syscalls::SYS_PRLIMIT64, 2),
+            (extra_syscalls::SYS_PRLIMIT64, 3),
+            (extra_syscalls::SYS_WAITID, 4),
+            (extra_syscalls::SYS_COPY_FILE_RANGE, 1),
+            (extra_syscalls::SYS_COPY_FILE_RANGE, 3),
+            (extra_syscalls::SYS_SPLICE, 1),
+            (extra_syscalls::SYS_SPLICE, 3),
+            (extra_syscalls::SYS_SENDFILE, 2),
+            (extra_syscalls::SYS_GETCPU, 0),
+            (extra_syscalls::SYS_GETCPU, 1),
+            (extra_syscalls::SYS_TIMER_CREATE, 1),
+            (extra_syscalls::SYS_TIMER_SETTIME, 3),
+            (extra_syscalls::SYS_MQ_OPEN, 3),
+            (extra_syscalls::SYS_MQ_TIMEDSEND, 4),
+            (extra_syscalls::SYS_MQ_TIMEDRECEIVE, 3),
+            (extra_syscalls::SYS_MQ_TIMEDRECEIVE, 4),
+            (extra_syscalls::SYS_MQ_NOTIFY, 1),
+            (extra_syscalls::SYS_MQ_GETSETATTR, 1),
+            (extra_syscalls::SYS_MQ_GETSETATTR, 2),
+            (extra_syscalls::SYS_ACCEPT4, 1),
+            (extra_syscalls::SYS_ACCEPT4, 2),
+        ];
+        actual_nullable.sort_unstable();
+        expected_nullable.sort_unstable();
+        assert_eq!(
+            actual_nullable, expected_nullable,
+            "review syscall semantics before changing the explicit nullable set"
+        );
+    }
+
+    #[test]
+    fn option_sensitive_prctl_stays_out_of_generic_pointer_metadata() {
+        assert!(
+            maybe_find(extra_syscalls::SYS_PRCTL).is_none(),
+            "PR_SET_NAME/PR_GET_NAME use a pointer in arg 1, but other prctl options use a scalar"
+        );
     }
 
     #[test]
@@ -817,10 +1143,26 @@ mod tests {
             }
         );
 
+        let sigtimedwait = find(extra_syscalls::SYS_RT_SIGTIMEDWAIT).args;
+        assert_eq!(
+            sigtimedwait[1].size,
+            SyscallArgSize::ProcessLayout {
+                wasm32_size: process_layout::rt_sigqueueinfo::WASM32_SIZE,
+                wasm64_size: process_layout::rt_sigqueueinfo::WASM64_SIZE,
+            }
+        );
+        assert!(sigtimedwait[1].nullable);
+
         let waitid = find(extra_syscalls::SYS_WAITID).args;
         assert_eq!(waitid[0].arg_index, 2);
         assert_eq!(waitid[0].direction, SyscallArgDirection::Out);
-        assert_eq!(waitid[0].size, SyscallArgSize::Fixed { size: 128 });
+        assert_eq!(
+            waitid[0].size,
+            SyscallArgSize::ProcessLayout {
+                wasm32_size: process_layout::rt_sigqueueinfo::WASM32_SIZE,
+                wasm64_size: process_layout::rt_sigqueueinfo::WASM64_SIZE,
+            }
+        );
         assert!(waitid[0].required);
         assert_eq!(waitid[1].arg_index, 4);
         assert_eq!(waitid[1].direction, SyscallArgDirection::Out);
@@ -841,8 +1183,7 @@ mod tests {
             "musl gives SYS_getaddrinfo exactly one four-byte IPv4 result"
         );
 
-        let sched_getaffinity =
-            find(extra_syscalls::SYS_SCHED_GETAFFINITY).args[0];
+        let sched_getaffinity = find(extra_syscalls::SYS_SCHED_GETAFFINITY).args[0];
         assert_eq!(sched_getaffinity.arg_index, 2);
         assert_eq!(sched_getaffinity.direction, SyscallArgDirection::Out);
         assert_eq!(
@@ -853,37 +1194,23 @@ mod tests {
         );
         assert!(sched_getaffinity.required);
 
-        let timerfd_settime =
-            find(extra_syscalls::SYS_TIMERFD_SETTIME).args;
+        let timerfd_settime = find(extra_syscalls::SYS_TIMERFD_SETTIME).args;
         assert_eq!(timerfd_settime[0].arg_index, 2);
         assert_eq!(timerfd_settime[0].direction, SyscallArgDirection::In);
-        assert_eq!(
-            timerfd_settime[0].size,
-            SyscallArgSize::Fixed { size: 32 }
-        );
+        assert_eq!(timerfd_settime[0].size, SyscallArgSize::Fixed { size: 32 });
         assert!(timerfd_settime[0].required);
         assert_eq!(timerfd_settime[1].arg_index, 3);
         assert_eq!(timerfd_settime[1].direction, SyscallArgDirection::Out);
-        assert_eq!(
-            timerfd_settime[1].size,
-            SyscallArgSize::Fixed { size: 32 }
-        );
+        assert_eq!(timerfd_settime[1].size, SyscallArgSize::Fixed { size: 32 });
         assert!(timerfd_settime[1].nullable);
 
-        let timerfd_gettime =
-            find(extra_syscalls::SYS_TIMERFD_GETTIME).args[0];
+        let timerfd_gettime = find(extra_syscalls::SYS_TIMERFD_GETTIME).args[0];
         assert_eq!(timerfd_gettime.arg_index, 1);
         assert_eq!(timerfd_gettime.direction, SyscallArgDirection::Out);
-        assert_eq!(
-            timerfd_gettime.size,
-            SyscallArgSize::Fixed { size: 32 }
-        );
+        assert_eq!(timerfd_gettime.size, SyscallArgSize::Fixed { size: 32 });
         assert!(timerfd_gettime.required);
 
-        for syscall in [
-            extra_syscalls::SYS_SIGNALFD4,
-            extra_syscalls::SYS_SIGNALFD,
-        ] {
+        for syscall in [extra_syscalls::SYS_SIGNALFD4, extra_syscalls::SYS_SIGNALFD] {
             let mask = find(syscall).args[0];
             assert_eq!(mask.arg_index, 1);
             assert_eq!(mask.direction, SyscallArgDirection::In);
@@ -913,14 +1240,8 @@ mod tests {
 
         let sendfile_offset = find(extra_syscalls::SYS_SENDFILE).args[0];
         assert_eq!(sendfile_offset.arg_index, 2);
-        assert_eq!(
-            sendfile_offset.direction,
-            SyscallArgDirection::InOut
-        );
-        assert_eq!(
-            sendfile_offset.size,
-            SyscallArgSize::Fixed { size: 8 }
-        );
+        assert_eq!(sendfile_offset.direction, SyscallArgDirection::InOut);
+        assert_eq!(sendfile_offset.size, SyscallArgSize::Fixed { size: 8 });
         assert!(sendfile_offset.nullable);
 
         let renameat2 = find(extra_syscalls::SYS_RENAMEAT2).args;
@@ -1005,10 +1326,8 @@ mod tests {
             process_layout::statfs::WASM32_SIZE,
             process_layout::statfs::WASM64_SIZE,
         );
-        for (arg_index, direction) in [
-            (0, SyscallArgDirection::In),
-            (1, SyscallArgDirection::Out),
-        ] {
+        for (arg_index, direction) in [(0, SyscallArgDirection::In), (1, SyscallArgDirection::Out)]
+        {
             assert_layout(
                 extra_syscalls::SYS_SIGALTSTACK,
                 arg_index,
@@ -1024,10 +1343,8 @@ mod tests {
             process_layout::itimerval::WASM32_SIZE,
             process_layout::itimerval::WASM64_SIZE,
         );
-        for (arg_index, direction) in [
-            (1, SyscallArgDirection::In),
-            (2, SyscallArgDirection::Out),
-        ] {
+        for (arg_index, direction) in [(1, SyscallArgDirection::In), (2, SyscallArgDirection::Out)]
+        {
             assert_layout(
                 extra_syscalls::SYS_SETITIMER,
                 arg_index,
@@ -1066,16 +1383,22 @@ mod tests {
             process_layout::mq_attr::WASM64_SIZE,
         );
         assert_layout(
+            extra_syscalls::SYS_TIMER_CREATE,
+            1,
+            SyscallArgDirection::In,
+            process_layout::sigevent::WASM32_SIZE,
+            process_layout::sigevent::WASM64_SIZE,
+        );
+        assert!(find(extra_syscalls::SYS_TIMER_CREATE).args[0].nullable);
+        assert_layout(
             extra_syscalls::SYS_MQ_NOTIFY,
             1,
             SyscallArgDirection::In,
             process_layout::sigevent::WASM32_SIZE,
             process_layout::sigevent::WASM64_SIZE,
         );
-        for (arg_index, direction) in [
-            (1, SyscallArgDirection::In),
-            (2, SyscallArgDirection::Out),
-        ] {
+        for (arg_index, direction) in [(1, SyscallArgDirection::In), (2, SyscallArgDirection::Out)]
+        {
             assert_layout(
                 extra_syscalls::SYS_MQ_GETSETATTR,
                 arg_index,

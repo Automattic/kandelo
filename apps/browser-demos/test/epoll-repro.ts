@@ -5,6 +5,13 @@
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "../../../host/src/kernel-worker.ts";
 import { resolveBinary } from "../../../host/src/binary-resolver.ts";
 import {
+  CH_ARGS,
+  CH_ARG_SIZE,
+  CH_DATA,
+  CH_ERRNO,
+  CH_RETURN,
+  CH_SYSCALL,
+  CH_TOTAL_SIZE,
   STRUCT_SIZE_WASM_EPOLL_EVENT,
   WASM_EPOLL_EVENT_DATA_OFFSET,
 } from "../../../host/src/generated/abi.ts";
@@ -12,13 +19,6 @@ import type { KernelScratchRegion } from "../../../host/src/kernel-scratch.ts";
 import { VirtualPlatformIO, MemoryFileSystem, DeviceFileSystem } from "../../../host/src/vfs/index.ts";
 import { readFileSync } from "fs";
 
-const CH_SYSCALL = 4;
-const CH_ARGS = 8;
-const CH_ARG_SIZE = 8;  // each arg is i64 (8 bytes)
-const CH_RETURN = 56;
-const CH_ERRNO = 64;
-const CH_DATA = 72;
-const CH_TOTAL_SIZE = 72 + 65536;
 const MAX_PAGES = 16384;
 const PAGE_SIZE = 65536;
 
@@ -26,6 +26,18 @@ interface KernelWorkerInternals {
   scratchRegion: KernelScratchRegion;
   kernelInstance: WebAssembly.Instance;
   kernelMemory: WebAssembly.Memory;
+}
+
+interface ScratchPointerArgument {
+  readonly offset: number;
+  readonly length: number;
+}
+
+type ChannelArgument = bigint | ScratchPointerArgument;
+
+interface EpollEventPreparation {
+  readonly events: number;
+  readonly data: bigint;
 }
 
 async function main() {
@@ -66,122 +78,128 @@ async function main() {
   const getSP = ki.exports.kernel_get_stack_pointer as () => number;
   console.log(`SP initial: ${getSP()}`);
 
-  // WHY: this diagnostic directly drives the kernel channel, so it must hold
-  // the same exclusive capacity-bearing lease as production channel dispatch.
-  scratchRegion.withLease((scratch) => {
-    const kernelView = scratch.dataView(0, CH_TOTAL_SIZE);
-    const handleChannel = ki.exports.kernel_handle_channel as (
-      off: number | bigint,
-      pid: number,
-    ) => number;
-    const setCurrentTid = ki.exports.kernel_set_current_tid as (
-      pid: number,
-      tid: number,
-    ) => number;
-    const handleBoundChannel = (): number => {
-      const bindResult = setCurrentTid(pid, pid);
-      if (bindResult !== 0) {
-        throw new Error(
-          `kernel_set_current_tid(${pid}, ${pid}) failed: ${bindResult}`,
+  const setCurrentTid = ki.exports.kernel_set_current_tid as (
+    pid: number,
+    tid: number,
+  ) => number;
+  const bindCurrentTid = (): void => {
+    const bindResult = setCurrentTid(pid, pid);
+    if (bindResult !== 0) {
+      throw new Error(
+        `kernel_set_current_tid(${pid}, ${pid}) failed: ${bindResult}`,
+      );
+    }
+  };
+  const issueChannel = (
+    syscall: number,
+    args: readonly ChannelArgument[],
+    event?: EpollEventPreparation,
+  ) =>
+    scratchRegion.withLease((scratch) => {
+      // WHY: preparation is inert data rather than a callback receiving the
+      // lease. No promise or helper can retain scratch authority after this
+      // synchronous callback returns.
+      const kernelView = scratch.dataView(0, CH_TOTAL_SIZE);
+      if (event !== undefined) {
+        kernelView.setUint32(CH_DATA, event.events, true);
+        kernelView.setUint32(CH_DATA + 4, 0, true);
+        kernelView.setBigUint64(
+          CH_DATA + WASM_EPOLL_EVENT_DATA_OFFSET,
+          event.data,
+          true,
         );
       }
-      return handleChannel(
-        kw.toKernelPtr(scratch.address(0, CH_TOTAL_SIZE)),
+      kernelView.setUint32(CH_SYSCALL, syscall, true);
+      for (let index = 0; index < 6; index++) {
+        const argument = args[index] ?? 0n;
+        if (typeof argument === "object") {
+          // Keep the kernel pointer opaque and encode it losslessly into the
+          // channel's fixed u64 syscall slot.
+          scratch.writeAddress(
+            CH_ARGS + index * CH_ARG_SIZE,
+            argument.offset,
+            argument.length,
+            "u64-le",
+          );
+        } else {
+          kernelView.setBigInt64(
+            CH_ARGS + index * CH_ARG_SIZE,
+            argument,
+            true,
+          );
+        }
+      }
+      bindCurrentTid();
+      scratch.invokeKernelExport("kernel_handle_channel", [
+        scratch.exportPointer(0, CH_TOTAL_SIZE),
+        CH_TOTAL_SIZE,
         pid,
-      );
-    };
+      ]);
+      return {
+        result: kernelView.getBigInt64(CH_RETURN, true),
+        errno: kernelView.getUint32(CH_ERRNO, true),
+        data0: kernelView.getInt32(CH_DATA, true),
+        data1: kernelView.getInt32(CH_DATA + 4, true),
+      };
+    });
 
-    // 1. epoll_create1(0)
-    kernelView.setUint32(CH_SYSCALL, 239, true);
-    kernelView.setBigInt64(CH_ARGS, 0n, true);
-    for (let i = 1; i < 6; i++) {
-      kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
-    }
-    handleBoundChannel();
-    const epfd = Number(kernelView.getBigInt64(CH_RETURN, true));
-    console.log(`epoll_create1(0) = ${epfd}, SP=${getSP()}`);
+  // 1. epoll_create1(0)
+  const epfd = issueChannel(239, [0n]).result;
+  console.log(`epoll_create1(0) = ${epfd}, SP=${getSP()}`);
 
-    // 2. pipe2()
-    kernelView.setUint32(CH_SYSCALL, 165, true);
-    kernelView.setBigInt64(
-      CH_ARGS,
-      BigInt(scratch.address(CH_DATA, 8)),
-      true,
-    );
-    kernelView.setBigInt64(CH_ARGS + CH_ARG_SIZE, 0n, true);
-    for (let i = 2; i < 6; i++) {
-      kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
-    }
-    handleBoundChannel();
-    const pipeRet = Number(kernelView.getBigInt64(CH_RETURN, true));
-    const pipeR = kernelView.getInt32(CH_DATA, true);
-    const pipeW = kernelView.getInt32(CH_DATA + 4, true);
+  // 2. pipe2()
+  const pipe = issueChannel(165, [
+    { offset: CH_DATA, length: 8 },
+    0n,
+  ]);
+  console.log(
+    `pipe2() = ${pipe.result}, fds=[${pipe.data0}, ${pipe.data1}], SP=${getSP()}`,
+  );
+
+  // 3. epoll_ctl(epfd, EPOLL_CTL_ADD=1, pipe.data0, event)
+  const ctlResult = issueChannel(
+    240,
+    [
+      epfd,
+      1n,
+      BigInt(pipe.data0),
+      {
+        offset: CH_DATA,
+        length: STRUCT_SIZE_WASM_EPOLL_EVENT,
+      },
+    ],
+    {
+      events: 1, // EPOLLIN
+      data: BigInt(pipe.data0),
+    },
+  ).result;
+  console.log(`epoll_ctl = ${ctlResult}, SP=${getSP()}`);
+
+  // 4. timeout=0 for an immediate result, then use PHP-FPM's 1s timeout.
+  for (const timeout of [0, 1000]) {
     console.log(
-      `pipe2() = ${pipeRet}, fds=[${pipeR}, ${pipeW}], SP=${getSP()}`,
+      `\nCalling epoll_pwait(timeout=${timeout})... SP before=${getSP()}`,
     );
-
-    // 3. epoll_ctl(epfd, EPOLL_CTL_ADD=1, pipeR, event)
-    kernelView.setUint32(CH_DATA, 1, true); // EPOLLIN
-    kernelView.setUint32(CH_DATA + 4, 0, true); // native alignment padding
-    kernelView.setBigUint64(
-      CH_DATA + WASM_EPOLL_EVENT_DATA_OFFSET,
-      BigInt(pipeR),
-      true,
-    );
-    kernelView.setUint32(CH_SYSCALL, 240, true);
-    kernelView.setBigInt64(CH_ARGS, BigInt(epfd), true);
-    kernelView.setBigInt64(CH_ARGS + CH_ARG_SIZE, 1n, true);
-    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(pipeR), true);
-    kernelView.setBigInt64(
-      CH_ARGS + 3 * CH_ARG_SIZE,
-      BigInt(scratch.address(CH_DATA, STRUCT_SIZE_WASM_EPOLL_EVENT)),
-      true,
-    );
-    for (let i = 4; i < 6; i++) {
-      kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
-    }
-    handleBoundChannel();
-    console.log(
-      `epoll_ctl = ${Number(kernelView.getBigInt64(CH_RETURN, true))}, SP=${getSP()}`,
-    );
-
-    const issueEpollPwait = (timeout: number): void => {
-      kernelView.setUint32(CH_SYSCALL, 241, true);
-      kernelView.setBigInt64(CH_ARGS, BigInt(epfd), true);
-      kernelView.setBigInt64(
-        CH_ARGS + CH_ARG_SIZE,
-        BigInt(scratch.address(CH_DATA, STRUCT_SIZE_WASM_EPOLL_EVENT)),
-        true,
-      );
-      kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, 1n, true);
-      kernelView.setBigInt64(
-        CH_ARGS + 3 * CH_ARG_SIZE,
+    try {
+      const result = issueChannel(241, [
+        epfd,
+        {
+          offset: CH_DATA,
+          length: STRUCT_SIZE_WASM_EPOLL_EVENT,
+        },
+        1n,
         BigInt(timeout),
-        true,
-      );
-      kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
-      kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 8n, true);
-
+        0n,
+        8n,
+      ]);
       console.log(
-        `\nCalling epoll_pwait(timeout=${timeout})... SP before=${getSP()}`,
+        `epoll_pwait(${timeout}) = ${result.result}, errno=${result.errno}, SP=${getSP()}`,
       );
-      try {
-        handleBoundChannel();
-        const ret = Number(kernelView.getBigInt64(CH_RETURN, true));
-        const err = kernelView.getUint32(CH_ERRNO, true);
-        console.log(
-          `epoll_pwait(${timeout}) = ${ret}, errno=${err}, SP=${getSP()}`,
-        );
-      } catch (error) {
-        console.error(`CRASHED: ${error}`);
-        console.log(`SP after crash: ${getSP()}, memPages=${km.grow(0)}`);
-      }
-    };
-
-    // 4. timeout=0 for an immediate result, then use PHP-FPM's 1s timeout.
-    issueEpollPwait(0);
-    issueEpollPwait(1000);
-  });
+    } catch (error) {
+      console.error(`CRASHED: ${error}`);
+      console.log(`SP after crash: ${getSP()}, memPages=${km.grow(0)}`);
+    }
+  }
 }
 
 main().catch(console.error);

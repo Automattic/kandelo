@@ -34,6 +34,7 @@ import {
   WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
 } from "../src/generated/abi";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
+import type { KernelScratchLease } from "../src/kernel-scratch";
 
 const MAX_PAGES = 1024; // 64 MiB: enough to prove initial < maximum.
 const WASM32_CONTINUATION_HEADER_SIZE =
@@ -152,24 +153,27 @@ function issueDirectKernelOpen(
 ): { value: number; errno: number } {
   const region = (worker as any).scratchRegion;
   const encoded = new TextEncoder().encode(`${path}\0`);
-  const handleChannel = (worker as any).kernelInstance.exports
-    .kernel_handle_channel as (offset: number, pid: number) => number;
   const setCurrentTid = (worker as any).kernelInstance.exports
     .kernel_set_current_tid as (pid: number, tid: number) => number;
   expect(setCurrentTid(pid, pid)).toBe(0);
-  return region.withLease((lease: any) => {
-    const pathPointer = lease.address(CH_DATA, encoded.byteLength);
+  return region.withLease((lease: KernelScratchLease) => {
     lease.copyFrom(encoded, CH_DATA);
     const channel = lease.dataView(0, CH_TOTAL_SIZE);
     channel.setUint32(CH_SYSCALL, ABI_SYSCALLS.Open, true);
     for (let index = 0; index < 6; index++) {
       channel.setBigInt64(CH_ARGS + index * CH_ARG_SIZE, 0n, true);
     }
-    channel.setBigInt64(CH_ARGS, BigInt(pathPointer), true);
-    handleChannel(
-      worker.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)) as number,
-      pid,
+    lease.writeAddress(
+      CH_ARGS,
+      CH_DATA,
+      encoded.byteLength,
+      "u32-to-u64-le",
     );
+    lease.invokeKernelExport("kernel_handle_channel", [
+      lease.exportPointer(0, CH_TOTAL_SIZE),
+      CH_TOTAL_SIZE,
+      pid,
+    ]);
     const result = lease.dataView(0, CH_TOTAL_SIZE);
     return {
       value: Number(result.getBigInt64(CH_RETURN, true)),

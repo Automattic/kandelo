@@ -14,8 +14,19 @@ import {
   KERNEL_WAIT_RESULT_SI_CODE_OFFSET,
   KERNEL_WAIT_RESULT_SI_STATUS_OFFSET,
   KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET,
+  PROCESS_SIGINFO_CODE_OFFSET,
+  PROCESS_SIGINFO_SIGNO_OFFSET,
+  PROCESS_SIGINFO_WASM32_PID_OFFSET,
+  PROCESS_SIGINFO_WASM32_SIZE,
+  PROCESS_SIGINFO_WASM32_UID_OFFSET,
+  PROCESS_SIGINFO_WASM32_VALUE_OFFSET,
+  PROCESS_SIGINFO_WASM64_PID_OFFSET,
+  PROCESS_SIGINFO_WASM64_SIZE,
+  PROCESS_SIGINFO_WASM64_UID_OFFSET,
+  PROCESS_SIGINFO_WASM64_VALUE_OFFSET,
   PROCESS_STATE_RUNNING,
   PROCESS_STATE_STOPPED,
+  STRUCT_SIZE_KERNEL_WAIT_RESULT,
   STRUCT_SIZE_WASM_RUSAGE_WIRE,
   WAIT_CLD_EXITED,
   WAIT_CLD_STOPPED,
@@ -77,7 +88,15 @@ describe("Rust-owned process wait lifecycle", () => {
     const channel = registerMainChannel(worker, createChannel(7, processMemory));
     worker.handleWaitpid(channel, [-1, statusPtr, 0, rusagePtr]);
 
-    expect(waitChildPoll).toHaveBeenCalledWith(7, 7, -1, WAIT_EVENT_EXITED, 0, 128);
+    expect(waitChildPoll).toHaveBeenCalledWith(
+      7,
+      7,
+      -1,
+      WAIT_EVENT_EXITED,
+      0,
+      128,
+      STRUCT_SIZE_KERNEL_WAIT_RESULT,
+    );
     expect(reapExitedChild).not.toHaveBeenCalled();
     expect(new DataView(processMemory.buffer).getInt32(statusPtr, true)).toBe(waitStatus);
     expect(new Uint8Array(
@@ -210,6 +229,7 @@ describe("Rust-owned process wait lifecycle", () => {
       WAIT_EVENT_EXITED,
       0,
       BigInt(128),
+      STRUCT_SIZE_KERNEL_WAIT_RESULT,
     );
     expect(worker.waitingForChild).toEqual([]);
     expect(worker.completeWaitpid).toHaveBeenCalledWith(
@@ -278,13 +298,29 @@ describe("Rust-owned process wait lifecycle", () => {
       WAIT_EVENT_STOPPED,
       WAIT_WNOWAIT,
       128,
+      STRUCT_SIZE_KERNEL_WAIT_RESULT,
     );
     const siginfo = new DataView(processMemory.buffer);
-    expect(siginfo.getInt32(siginfoPtr, true)).toBe(SIGCHLD);
-    expect(siginfo.getInt32(siginfoPtr + 8, true)).toBe(WAIT_CLD_STOPPED);
-    expect(siginfo.getInt32(siginfoPtr + 12, true)).toBe(44);
-    expect(siginfo.getUint32(siginfoPtr + 16, true)).toBe(4242);
-    expect(siginfo.getInt32(siginfoPtr + 20, true)).toBe(19);
+    expect(siginfo.getInt32(
+      siginfoPtr + PROCESS_SIGINFO_SIGNO_OFFSET,
+      true,
+    )).toBe(SIGCHLD);
+    expect(siginfo.getInt32(
+      siginfoPtr + PROCESS_SIGINFO_CODE_OFFSET,
+      true,
+    )).toBe(WAIT_CLD_STOPPED);
+    expect(siginfo.getInt32(
+      siginfoPtr + PROCESS_SIGINFO_WASM32_PID_OFFSET,
+      true,
+    )).toBe(44);
+    expect(siginfo.getUint32(
+      siginfoPtr + PROCESS_SIGINFO_WASM32_UID_OFFSET,
+      true,
+    )).toBe(4242);
+    expect(siginfo.getInt32(
+      siginfoPtr + PROCESS_SIGINFO_WASM32_VALUE_OFFSET,
+      true,
+    )).toBe(19);
     expect(new Uint8Array(
       processMemory.buffer,
       rusagePtr,
@@ -333,23 +369,53 @@ describe("Rust-owned process wait lifecycle", () => {
     }]]);
     worker.completeWaitid = vi.fn();
     const args = [1, 44, siginfoPtr, WAIT_WEXITED, 0];
+    new Uint8Array(
+      processMemory.buffer,
+      siginfoPtr,
+      PROCESS_SIGINFO_WASM64_SIZE,
+    ).fill(0xa5);
 
     worker.handleWaitid(channel, args);
 
     const siginfo = new DataView(processMemory.buffer);
-    expect(siginfo.getInt32(siginfoPtr, true)).toBe(SIGCHLD);
-    expect(siginfo.getInt32(siginfoPtr + 8, true)).toBe(WAIT_CLD_EXITED);
-    expect(siginfo.getUint32(siginfoPtr + 12, true)).toBe(0);
-    expect(siginfo.getInt32(siginfoPtr + 16, true)).toBe(44);
-    expect(siginfo.getUint32(siginfoPtr + 20, true)).toBe(5150);
-    expect(siginfo.getInt32(siginfoPtr + 24, true)).toBe(9);
+    expect(siginfo.getInt32(
+      siginfoPtr + PROCESS_SIGINFO_SIGNO_OFFSET,
+      true,
+    )).toBe(SIGCHLD);
+    expect(siginfo.getInt32(
+      siginfoPtr + PROCESS_SIGINFO_CODE_OFFSET,
+      true,
+    )).toBe(WAIT_CLD_EXITED);
+    expect(siginfo.getUint32(
+      siginfoPtr + PROCESS_SIGINFO_CODE_OFFSET + Int32Array.BYTES_PER_ELEMENT,
+      true,
+    )).toBe(0);
+    expect(siginfo.getInt32(
+      siginfoPtr + PROCESS_SIGINFO_WASM64_PID_OFFSET,
+      true,
+    )).toBe(44);
+    expect(siginfo.getUint32(
+      siginfoPtr + PROCESS_SIGINFO_WASM64_UID_OFFSET,
+      true,
+    )).toBe(5150);
+    expect(siginfo.getInt32(
+      siginfoPtr + PROCESS_SIGINFO_WASM64_VALUE_OFFSET,
+      true,
+    )).toBe(9);
+    expect(siginfo.getUint8(
+      siginfoPtr + PROCESS_SIGINFO_WASM64_SIZE - 1,
+    )).toBe(0);
   });
 
   it("waitid WNOHANG zeros all siginfo bytes and leaves rusage untouched", () => {
     const processMemory = createSharedMemory();
     const siginfoPtr = 512;
     const rusagePtr = 1024;
-    new Uint8Array(processMemory.buffer, siginfoPtr, 128).fill(0xa5);
+    new Uint8Array(
+      processMemory.buffer,
+      siginfoPtr,
+      PROCESS_SIGINFO_WASM32_SIZE,
+    ).fill(0xa5);
     new Uint8Array(
       processMemory.buffer,
       rusagePtr,
@@ -363,8 +429,11 @@ describe("Rust-owned process wait lifecycle", () => {
     const channel = registerMainChannel(worker, createChannel(7, processMemory));
     worker.handleWaitid(channel, args);
 
-    expect(new Uint8Array(processMemory.buffer, siginfoPtr, 128))
-      .toEqual(new Uint8Array(128));
+    expect(new Uint8Array(
+      processMemory.buffer,
+      siginfoPtr,
+      PROCESS_SIGINFO_WASM32_SIZE,
+    )).toEqual(new Uint8Array(PROCESS_SIGINFO_WASM32_SIZE));
     expect(new Uint8Array(
       processMemory.buffer,
       rusagePtr,
@@ -599,6 +668,7 @@ describe("Rust-owned process wait lifecycle", () => {
       WAIT_EVENT_EXITED,
       WAIT_WNOWAIT,
       128,
+      STRUCT_SIZE_KERNEL_WAIT_RESULT,
     );
   });
 
@@ -752,11 +822,33 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.completeWaitid).toHaveBeenCalledTimes(2);
     expect(waitChildPoll.mock.calls.filter((call: unknown[]) => call[2] === 42))
       .toEqual([
-        [7, 7, 42, WAIT_EVENT_EXITED, WAIT_WNOWAIT, 128],
-        [7, 8, 42, WAIT_EVENT_EXITED, WAIT_WNOWAIT, 128],
+        [
+          7,
+          7,
+          42,
+          WAIT_EVENT_EXITED,
+          WAIT_WNOWAIT,
+          128,
+          STRUCT_SIZE_KERNEL_WAIT_RESULT,
+        ],
+        [
+          7,
+          8,
+          42,
+          WAIT_EVENT_EXITED,
+          WAIT_WNOWAIT,
+          128,
+          STRUCT_SIZE_KERNEL_WAIT_RESULT,
+        ],
       ]);
-    expect(new DataView(processMemory.buffer).getInt32(1024 + 12, true)).toBe(42);
-    expect(new DataView(processMemory.buffer).getInt32(1280 + 12, true)).toBe(42);
+    expect(new DataView(processMemory.buffer).getInt32(
+      1024 + PROCESS_SIGINFO_WASM32_PID_OFFSET,
+      true,
+    )).toBe(42);
+    expect(new DataView(processMemory.buffer).getInt32(
+      1280 + PROCESS_SIGINFO_WASM32_PID_OFFSET,
+      true,
+    )).toBe(42);
   });
 
   it("interrupts the exact host-deferred wait thread with its caught signal", () => {

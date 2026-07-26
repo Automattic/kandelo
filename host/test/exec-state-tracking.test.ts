@@ -680,27 +680,30 @@ describe("exec host-state transition", () => {
     ]);
   });
 
-  it("feature-detects metadata replacement and retains legacy small argv", () => {
+  it.each([
+    "kernel_clear_process_metadata",
+    "kernel_push_process_metadata_entry",
+  ])("fails loudly when required metadata export %s is absent", (missing) => {
     const kernelMemory = new WebAssembly.Memory({ initial: 2 });
-    const setArgv = vi.fn((_pid: number, ptr: number, len: number) => {
-      expect(new TextDecoder().decode(
-        new Uint8Array(kernelMemory.buffer, ptr, len),
-      )).toBe("program\0arg");
-      return 0;
-    });
+    const clear = vi.fn(() => 0);
+    const push = vi.fn(() => 0);
+    const exports: Record<string, unknown> = {
+      kernel_clear_process_metadata: clear,
+      kernel_push_process_metadata_entry: push,
+    };
+    delete exports[missing];
     const worker = createWorker({
       kernelMemory,
       toKernelPtr: (value: number) => value,
-      kernelInstance: {
-        exports: { kernel_set_process_argv: setArgv },
-      },
+      kernelInstance: { exports },
     });
+    const scratchBefore = new Uint8Array(kernelMemory.buffer).slice();
 
-    expect(worker.supportsExecMetadataReplacement()).toBe(false);
-    worker.replaceProcessMetadata(7, 0, ["program", "arg"]);
-    expect(setArgv).toHaveBeenCalled();
-    expect(() => worker.replaceProcessMetadata(7, 1, []))
-      .toThrow(/missing bounded process metadata exports/);
+    expect(() => worker.replaceProcessMetadata(7, 0, ["program", "arg"]))
+      .toThrow(/required bounded process metadata exports/);
+    expect(clear).not.toHaveBeenCalled();
+    expect(push).not.toHaveBeenCalled();
+    expect(new Uint8Array(kernelMemory.buffer)).toEqual(scratchBefore);
   });
 
   it("flushes file-backed mappings before commit and forgets them afterward", () => {

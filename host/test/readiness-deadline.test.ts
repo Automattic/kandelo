@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ABI_SYSCALLS, CH_SIG_BASE } from "../src/generated/abi";
+import {
+  ABI_SYSCALLS,
+  CH_SIG_BASE,
+  KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES,
+} from "../src/generated/abi";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
@@ -121,6 +125,7 @@ describe("host-emulated epoll signal delivery", () => {
       harness.channel.pid,
       harness.channel.pid,
       harness.scratchPointer + CH_SIG_BASE,
+      KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES,
     );
     expect(
       new DataView(harness.processMemory.buffer).getUint32(CH_SIG_BASE, true),
@@ -159,7 +164,12 @@ function createEpollSignalHarness(
     channelOffset: 0,
     memory: processMemory,
   };
-  const dequeueSignal = vi.fn((_pid: number, _tid: number, outPtr: number) => {
+  const dequeueSignal = vi.fn((
+    _pid: number,
+    _tid: number,
+    outPtr: number,
+    _outCapacity: number,
+  ) => {
     if (handlerSignal > 0) {
       new DataView(kernelMemory.buffer).setUint32(outPtr, handlerSignal, true);
     }

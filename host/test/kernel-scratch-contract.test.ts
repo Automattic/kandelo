@@ -6,6 +6,8 @@ import {
   POSIX_ARG_MAX_BYTES,
   POSIX_IOV_MAX,
   POSIX_PATH_MAX_BYTES,
+  SELECT_FD_SET_BYTES,
+  SELECT_FD_SETSIZE,
   SPAWN_ATTR_RESETIDS,
   SPAWN_ATTR_SETPGROUP,
   SPAWN_ATTR_SETSCHEDPARAM,
@@ -45,7 +47,7 @@ import {
 import {
   auditWasmMemoryWrites,
   formatAuditFailures,
-  repositoryTypeScriptSourceFiles,
+  repositoryRuntimeSourceFiles,
   type AuditAllowance,
   type OwnershipSeed,
 } from "./support/wasm-memory-write-audit";
@@ -60,6 +62,10 @@ const publicLimitsHeader = readFileSync(
   new URL("../../libc/musl-overlay/include/limits.h", import.meta.url),
   "utf8",
 );
+const muslSelectHeader = readFileSync(
+  new URL("../../libc/musl/include/sys/select.h", import.meta.url),
+  "utf8",
+);
 const spawnContractHeader = readFileSync(
   new URL(
     "../../libc/musl-overlay/src/process/wasm32posix/spawn_contract.h",
@@ -69,6 +75,21 @@ const spawnContractHeader = readFileSync(
 );
 const buildMuslSource = readFileSync(
   new URL("../../scripts/build-musl.sh", import.meta.url),
+  "utf8",
+);
+const muslSpawnSource = readFileSync(
+  new URL(
+    "../../libc/musl-overlay/src/process/wasm32posix/posix_spawn.c",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const kernelSpawnSource = readFileSync(
+  new URL("../../crates/kernel/src/spawn.rs", import.meta.url),
+  "utf8",
+);
+const hostKernelWorkerSource = readFileSync(
+  new URL("../src/kernel-worker.ts", import.meta.url),
   "utf8",
 );
 
@@ -81,6 +102,13 @@ const ownershipSeeds: OwnershipSeed[] = [
     owner: "kernel",
     form: "memory",
     why: "This private field is the kernel WebAssembly linear memory.",
+  },
+  {
+    declaration: "host/src/kernel.ts::WasmPosixKernel.instance",
+    target: "value",
+    owner: "kernel",
+    form: "instance",
+    why: "This private field is the instantiated kernel module whose exported memory aliases the kernel linear memory.",
   },
   {
     declaration: "host/src/kernel.ts::WasmPosixKernel.createKernelMemory",
@@ -96,6 +124,46 @@ const ownershipSeeds: OwnershipSeed[] = [
     owner: "kernel",
     form: "memory",
     why: "This worker field aliases only the dedicated kernel memory.",
+  },
+  {
+    declaration:
+      "host/src/kernel-worker.ts::CentralizedKernelWorker.kernelInstance",
+    target: "value",
+    owner: "kernel",
+    form: "instance",
+    why: "This private field is the exact instantiated kernel module used by worker-side scratch consumers.",
+  },
+  {
+    declaration:
+      "apps/browser-demos/test/epoll-repro.ts::KernelWorkerInternals.kernelInstance",
+    target: "value",
+    owner: "kernel",
+    form: "instance",
+    why: "This diagnostic-only interface is the reviewed structural view of CentralizedKernelWorker's exact private kernel instance.",
+  },
+  {
+    declaration:
+      "apps/browser-demos/test/epoll-repro.ts::KernelWorkerInternals.scratchRegion",
+    target: "value",
+    owner: "kernel",
+    form: "scratch-region",
+    why: "This diagnostic-only interface is the reviewed structural view of CentralizedKernelWorker's allocator-created main scratch region.",
+  },
+  {
+    declaration:
+      "apps/browser-demos/test/fixtures/opfs-advisory-lock-client-worker.ts::KernelWorkerInternals.kernelInstance",
+    target: "value",
+    owner: "kernel",
+    form: "instance",
+    why: "This browser fixture's structural field is populated only by its reviewed cast of the live CentralizedKernelWorker instance.",
+  },
+  {
+    declaration:
+      "apps/browser-demos/test/fixtures/opfs-advisory-lock-client-worker.ts::KernelWorkerInternals.scratchRegion",
+    target: "value",
+    owner: "kernel",
+    form: "scratch-region",
+    why: "This browser fixture's structural field is populated only by its reviewed cast of the allocator-created main scratch region.",
   },
   {
     declaration: "host/src/browser-kernel-worker-entry.ts::kernelMemory",
@@ -249,128 +317,27 @@ const ownershipSeeds: OwnershipSeed[] = [
 const auditAllowances: AuditAllowance[] = [
   {
     key:
-      "host/src/kernel-scratch.ts::KernelScratchDataView.constructor::kernel-buffer-store::private readonly activeMemoryBuffer: () => ArrayBufferLike",
+      "host/src/kernel-scratch.ts::intrinsicWasmMemoryBuffer::kernel-memory-escape::intrinsicApply( intrinsicMemoryBuffer, memory, [], )",
     disposition: "scratch-core",
-    why: "This private callback exposes the current backing buffer only after checking that the scratch lease is still active.",
+    why: "This is the single captured intrinsic access to a genuine WebAssembly.Memory buffer; every caller immediately applies an allocation-capacity or exact fixed-range proof.",
   },
   {
     key:
-      "host/src/kernel-scratch.ts::KernelScratchDataView.constructor::kernel-buffer-store::private readonly refreshView: () => { buffer: ArrayBufferLike; view: DataView; }",
+      "host/src/kernel-scratch.ts::OwnedKernelScratchRegion.constructor::kernel-memory-store::this.#memory = memory",
     disposition: "scratch-core",
-    why: "This private refresh callback repeats owned-range and current-memory checks before replacing the cached buffer.",
+    why: "The unforgeable region constructor stores the factory-validated kernel memory in a true private slot so every lease can recheck current bounds.",
   },
   {
     key:
-      "host/src/kernel-scratch.ts::KernelScratchDataView.constructor::kernel-view-store::private readonly refreshView: () => { buffer: ArrayBufferLike; view: DataView; }",
+      "host/src/kernel-scratch.ts::snapshotKernelScratchExports::kernel-pointer-export-bypass::intrinsicObjectGetOwnPropertyDescriptor( value, \"length\", )",
     disposition: "scratch-core",
-    why: "This private refresh callback returns only the native view paired with its freshly revalidated backing buffer.",
+    why: "The scratch core passes the selected raw Wasm export only to a captured descriptor intrinsic so it can validate exact arity before privately snapshotting the callable.",
   },
   {
     key:
-      "host/src/kernel-scratch.ts::KernelScratchDataView.constructor::kernel-buffer-store::this.cachedBuffer = initial.buffer",
+      "host/src/kernel-scratch.ts::ActiveKernelScratchLease.invokeKernelExport::kernel-pointer-export-bypass::intrinsicApply( kernelExport.call, undefined, convertedArgs, )",
     disposition: "scratch-core",
-    why: "The constructor caches the buffer returned by the checked refresh callback solely to detect later memory replacement.",
-  },
-  {
-    key:
-      "host/src/kernel-scratch.ts::KernelScratchDataView.constructor::kernel-view-store::this.cachedView = initial.view",
-    disposition: "scratch-core",
-    why: "The native view remains private behind currentView, which checks lease validity before every operation.",
-  },
-  {
-    key:
-      "host/src/kernel-scratch.ts::KernelScratchDataView.currentView::kernel-buffer-store::this.cachedBuffer = refreshed.buffer",
-    disposition: "scratch-core",
-    why: "A changed Wasm buffer is cached only after refreshView repeats the allocation and current-memory proof.",
-  },
-  {
-    key:
-      "host/src/kernel-scratch.ts::KernelScratchDataView.currentView::kernel-view-store::this.cachedView = refreshed.view",
-    disposition: "scratch-core",
-    why: "A replacement native view is cached only alongside the freshly checked replacement buffer.",
-  },
-  {
-    key:
-      "host/src/kernel-scratch.ts::KernelScratchDataView.currentView::kernel-view-return::return this.cachedView;",
-    disposition: "scratch-core",
-    why: "This private return follows the active-lease and buffer-identity checks and is consumed synchronously by one wrapper method.",
-  },
-  ...[
-    [
-      "setBigInt64",
-      "this.currentView().setBigInt64(byteOffset, value, littleEndian)",
-    ],
-    [
-      "setBigUint64",
-      "this.currentView().setBigUint64(byteOffset, value, littleEndian)",
-    ],
-    [
-      "setFloat32",
-      "this.currentView().setFloat32(byteOffset, value, littleEndian)",
-    ],
-    [
-      "setFloat64",
-      "this.currentView().setFloat64(byteOffset, value, littleEndian)",
-    ],
-    [
-      "setInt16",
-      "this.currentView().setInt16(byteOffset, value, littleEndian)",
-    ],
-    [
-      "setInt32",
-      "this.currentView().setInt32(byteOffset, value, littleEndian)",
-    ],
-    ["setInt8", "this.currentView().setInt8(byteOffset, value)"],
-    [
-      "setUint16",
-      "this.currentView().setUint16(byteOffset, value, littleEndian)",
-    ],
-    [
-      "setUint32",
-      "this.currentView().setUint32(byteOffset, value, littleEndian)",
-    ],
-    ["setUint8", "this.currentView().setUint8(byteOffset, value)"],
-  ].map(([method, call]) => ({
-    key:
-      `host/src/kernel-scratch.ts::KernelScratchDataView.${method}::kernel-write::${call}`,
-    disposition: "scratch-core" as const,
-    why: "currentView checks lease validity and refreshes the capacity-checked native view before this scalar write.",
-  })),
-  {
-    key:
-      "host/src/kernel-scratch.ts::KernelScratchLease.constructor::kernel-buffer-store::private readonly currentMemoryBuffer: () => ArrayBufferLike",
-    disposition: "scratch-core",
-    why: "This private callback is usable only while the lease token is active and reacquires the current Wasm buffer.",
-  },
-  {
-    key:
-      "host/src/kernel-scratch.ts::KernelScratchLease.dataView::kernel-buffer-return::return this.currentMemoryBuffer();",
-    disposition: "scratch-core",
-    why: "The active-memory callback checks lease validity immediately before returning the current buffer to the guarded wrapper.",
-  },
-  {
-    key:
-      "host/src/kernel-scratch.ts::KernelScratchLease.dataView.refreshView::kernel-buffer-return::buffer",
-    disposition: "scratch-core",
-    why: "The returned buffer is paired with a view created only after ownedRange proves allocation capacity and memory bounds.",
-  },
-  {
-    key:
-      "host/src/kernel-scratch.ts::KernelScratchLease.dataView.refreshView::kernel-view-return::new DataView( buffer, range.pointer, range.length, )",
-    disposition: "scratch-core",
-    why: "This private native view covers exactly the freshly checked owned range and remains behind a revocable wrapper.",
-  },
-  {
-    key:
-      "host/src/kernel-scratch.ts::KernelScratchRegion.constructor::kernel-memory-store::private readonly memory: WebAssembly.Memory",
-    disposition: "scratch-core",
-    why: "The region privately retains its allocator's kernel memory so every lease can recheck the current buffer bounds.",
-  },
-  {
-    key:
-      "host/src/kernel-scratch.ts::KernelScratchRegion.withLease::kernel-buffer-return::return this.memory.buffer;",
-    disposition: "scratch-core",
-    why: "This callback returns the current buffer only after validating the active lease token and never escapes the private lease.",
+    why: "This is the sole approved raw invocation after the lease has replaced every pointer argument with a checked owned-range token and matched each adjacent capacity.",
   },
   {
     key:
@@ -416,51 +383,39 @@ const auditAllowances: AuditAllowance[] = [
   },
   {
     key:
-      "host/src/kernel-scratch.ts::KernelScratchLease.copyFrom::kernel-view::new Uint8Array(this.currentMemoryBuffer())",
-    disposition: "scratch-core",
-    why: "The lease reacquires the current buffer only after ownedRange proves allocation capacity and current-memory bounds.",
-  },
-  {
-    key:
-      "host/src/kernel-scratch.ts::KernelScratchLease.copyFrom::kernel-write::new Uint8Array(this.currentMemoryBuffer()).set( exactSource, destination.pointer, )",
-    disposition: "scratch-core",
-    why: "copyFrom independently checks the source slice and allocator-owned destination range before this synchronous write.",
-  },
-  {
-    key:
-      "host/src/kernel-scratch.ts::KernelScratchLease.copyOut::kernel-view::new Uint8Array( this.currentMemoryBuffer(), source.pointer, source.length, )",
-    disposition: "scratch-core",
-    why: "copyOut constructs only the owned range and immediately detaches it with slice before the lease ends.",
-  },
-  {
-    key:
-      "host/src/kernel-scratch.ts::KernelScratchLease.copyTo::kernel-view::new Uint8Array( this.currentMemoryBuffer(), source.pointer, source.length, )",
-    disposition: "scratch-core",
-    why: "copyTo constructs only the capacity-checked owned source range for one synchronous copy.",
-  },
-  {
-    key:
-      "host/src/kernel-scratch.ts::KernelScratchLease.dataView.refreshView::kernel-view::new DataView( buffer, range.pointer, range.length, )",
-    disposition: "scratch-core",
-    why: "The revocable DataView refresh repeats ownedRange after every possible memory-buffer replacement.",
-  },
-  {
-    key:
-      "host/src/kernel-scratch.ts::KernelScratchLease.fill::kernel-view::new Uint8Array(this.currentMemoryBuffer())",
-    disposition: "scratch-core",
-    why: "fill reacquires the current memory only after proving its exact allocator-owned destination range.",
-  },
-  {
-    key:
-      "host/src/kernel-scratch.ts::KernelScratchLease.fill::kernel-write::new Uint8Array(this.currentMemoryBuffer()).fill( value, destination.pointer, destination.end, )",
-    disposition: "scratch-core",
-    why: "The fill start and end come from ownedRange, which proves both allocation capacity and current-memory bounds.",
-  },
-  {
-    key:
-      "host/src/kernel-scratch.ts::KernelScratchRegion.allocate::scratch-allocator-call::allocator(capacity)",
+      "host/src/kernel-scratch.ts::OwnedKernelScratchRegion.allocate::scratch-allocator-call::allocator(capacity)",
     disposition: "scratch-core",
     why: "This is the sole allocator invocation; the returned pointer remains private and is validated with its requested capacity.",
+  },
+  {
+    key:
+      "host/src/kernel-worker.ts::CentralizedKernelWorker.init::scratch-region-factory-call::allocateKernelScratchRegion( this.kernelMemory, allocScratch, SCRATCH_SIZE, this.kernel.getKernelPtrWidth(), \"kernel syscall scratch\", this.kernelInstance, )",
+    disposition: "scratch-core",
+    why: "The main channel region binds its memory, allocator, and reviewed fixed capacity to the exact instantiated kernel module.",
+  },
+  {
+    key:
+      "host/src/kernel-worker.ts::CentralizedKernelWorker.init::scratch-region-factory-call::allocateKernelScratchRegion( this.kernelMemory, allocScratch, 65536, this.kernel.getKernelPtrWidth(), \"kernel TCP scratch\", this.kernelInstance, )",
+    disposition: "scratch-core",
+    why: "The TCP region binds its memory, allocator, and reviewed fixed capacity to the exact instantiated kernel module.",
+  },
+  {
+    key:
+      "host/src/kernel-worker.ts::CentralizedKernelWorker.beginLargeSpawnScratch::scratch-region-factory-call::reserveKernelScratchRegion( this.kernelMemory!, () => ({ pointer: pointer(rawToken), capacity: capacity(rawToken), }), blobLen, this.kernel.getKernelPtrWidth(), \"kernel reserved spawn scratch\", )",
+    disposition: "scratch-core",
+    why: "The spawn region binds the pointer and capacity returned by one active Rust-owned transactional reservation.",
+  },
+  {
+    key:
+      "host/src/kernel.ts::WasmPosixKernel.requireApiScratch::scratch-region-factory-call::allocateKernelScratchRegion( this.memory, allocator, WasmPosixKernel.API_SCRATCH_SIZE, this.kernelPtrWidth, \"kernel public API scratch\", this.instance!, )",
+    disposition: "scratch-core",
+    why: "The public API region binds its memory, allocator, and reviewed fixed capacity to this exact kernel instance.",
+  },
+  {
+    key:
+      "host/src/kernel.ts::WasmPosixKernel.ensureAudioScratch::scratch-region-factory-call::allocateKernelScratchRegion( this.memory, alloc, WasmPosixKernel.AUDIO_SCRATCH_SIZE, this.kernelPtrWidth, \"kernel audio scratch\", this.instance!, )",
+    disposition: "scratch-core",
+    why: "The audio region binds its memory, allocator, and reviewed fixed capacity to this exact kernel instance.",
   },
   {
     key:
@@ -516,20 +471,50 @@ const auditAllowances: AuditAllowance[] = [
     disposition: "rust-lent",
     why: "writeKernelBytes proves pointer, explicit capacity, current-memory bounds, and producer length before this write.",
   },
+  {
+    key:
+      "host/src/host-adapter-manifest.ts::readKernelHostAdapterManifest::kernel-pointer-export-bypass::ptrFn()",
+    disposition: "kernel-read",
+    why: "This exact dynamically selected manifest export returns a scalar offset and accepts no pointer argument.",
+  },
+  {
+    key:
+      "host/src/host-adapter-manifest.ts::readKernelHostAdapterManifest::kernel-pointer-export-bypass::lenFn()",
+    disposition: "kernel-read",
+    why: "This exact dynamically selected manifest export returns a scalar length and accepts no pointer argument.",
+  },
+  {
+    key:
+      "host/src/kernel-worker.ts::CentralizedKernelWorker.init::kernel-pointer-export-bypass::abiVersionFn()",
+    disposition: "kernel-control",
+    why: "This exact generated-name export takes no arguments and returns only the kernel ABI version scalar.",
+  },
+  {
+    key:
+      "host/src/kernel-worker.ts::CentralizedKernelWorker.handleIpcControl::kernel-pointer-export-bypass::structureBytes(pointerWidth)",
+    disposition: "kernel-control",
+    why: "This exact two-name IPC metadata branch passes only pointer width and returns a structure-size scalar.",
+  },
+  {
+    key:
+      "host/src/kernel.ts::WasmPosixKernel.ioctl::kernel-pointer-export-bypass::fn( fd, request, this.toKernelPtr(scalarArgument), bufLen, 4, )",
+    disposition: "kernel-control",
+    why: "This exact non-pointer ioctl branch passes a scalar command argument with zero buffer length; pointer ioctl requests use the scratch lease branch above.",
+  },
 ];
 
 describe("kernel scratch static contract", () => {
   it("admits only reviewed kernel-memory views, writes, and allocator calls", () => {
     const result = auditWasmMemoryWrites({
       rootDir: repoRoot,
-      sourceFiles: repositoryTypeScriptSourceFiles(repoRoot),
+      sourceFiles: repositoryRuntimeSourceFiles(repoRoot),
       ownershipSeeds,
       allowances: auditAllowances,
     });
     expect(formatAuditFailures(result)).toEqual([]);
-  // This intentionally builds one TypeScript program for every repository
-  // runtime source; keep CI headroom above the focused local 11–14 second run.
-  }, 30_000);
+    // This intentionally builds one TypeScript program for every repository
+    // runtime source; keep CI headroom above the focused local 25–35 second run.
+  }, 60_000);
 
   it("keeps generated platform and spawn contracts wired into musl", () => {
     expect(platformLimitsHeader).toContain(
@@ -554,6 +539,10 @@ describe("kernel scratch static contract", () => {
     expect(publicLimitsHeader).toContain(
       "#define IOV_MAX KANDELO_POSIX_IOV_MAX",
     );
+    expect(muslSelectHeader).toContain(
+      `#define FD_SETSIZE ${SELECT_FD_SETSIZE}`,
+    );
+    expect(SELECT_FD_SET_BYTES).toBe(SELECT_FD_SETSIZE / 8);
 
     expect(spawnContractHeader).toContain(
       "#include <bits/kandelo_limits.h>",
@@ -654,5 +643,66 @@ describe("kernel scratch static contract", () => {
       'cp "$OVERLAY_DIR/include/bits/kandelo_limits.h" \\\n'
         + '    "$MUSL_DIR/include/bits/kandelo_limits.h"',
     );
+  });
+
+  it("keeps every requested spawn consumer on authoritative symbols", () => {
+    expect(muslSpawnSource).toContain('#include "spawn_contract.h"');
+    for (
+      const name of [
+        "WASM_POSIX_ARG_MAX_BYTES",
+        "WASM_POSIX_PATH_MAX_BYTES",
+        "WASM_POSIX_SPAWN_STRING_OFFSET_BYTES",
+        "WASM_POSIX_SPAWN_HEADER_BYTES",
+        "WASM_POSIX_SPAWN_ACTION_RECORD_BYTES",
+        "WASM_POSIX_SPAWN_MAX_ARGV_COUNT",
+        "WASM_POSIX_SPAWN_MAX_ENVP_COUNT",
+        "WASM_POSIX_SPAWN_MAX_ACTION_COUNT",
+        "WASM_POSIX_SPAWN_WIRE_MAX_BYTES",
+      ]
+    ) {
+      expect(muslSpawnSource).toMatch(new RegExp(`\\b${name}\\b`));
+    }
+    // WHY: accepting a locally redefined copy would let the generated header
+    // stay fresh while the compiled C consumer silently follows another value.
+    expect(muslSpawnSource).not.toMatch(
+      /^\s*#\s*define\s+WASM_POSIX_(?:ARG_MAX|PATH_MAX|SPAWN_)/m,
+    );
+
+    expect(kernelSpawnSource).toContain(
+      "use wasm_posix_shared::{Errno, spawn_contract};",
+    );
+    for (
+      const name of [
+        "WIRE_HEADER_BYTES",
+        "WIRE_ACTION_RECORD_BYTES",
+        "MAX_ARGV_COUNT",
+        "MAX_ENVP_COUNT",
+        "MAX_ACTION_COUNT",
+        "POSIX_ARG_MAX_BYTES",
+        "POSIX_PATH_MAX_BYTES",
+        "WIRE_MAX_BYTES",
+      ]
+    ) {
+      expect(kernelSpawnSource).toMatch(
+        new RegExp(`\\bspawn_contract::${name}\\b`),
+      );
+    }
+
+    for (
+      const name of [
+        "POSIX_ARG_MAX_BYTES",
+        "POSIX_PATH_MAX_BYTES",
+        "SPAWN_MAX_ARGV_COUNT",
+        "SPAWN_MAX_ENVP_COUNT",
+        "SPAWN_MAX_ACTION_COUNT",
+        "SPAWN_WIRE_HEADER_BYTES",
+        "SPAWN_WIRE_ACTION_RECORD_BYTES",
+        "SPAWN_WIRE_MAX_BYTES",
+      ]
+    ) {
+      expect(hostKernelWorkerSource).toMatch(
+        new RegExp(`\\b${name}\\b`),
+      );
+    }
   });
 });

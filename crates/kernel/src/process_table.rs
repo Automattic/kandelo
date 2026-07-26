@@ -422,7 +422,7 @@ impl ProcessTable {
         if pid == SYNTHETIC_INIT_PID {
             return None;
         }
-        let proc = self.processes.remove(&pid)?;
+        let mut proc = self.processes.remove(&pid)?;
         let _ = unsafe { crate::pipe::global_pipe_table().cancel_fifo_opens_for_process(pid) };
         let mut host_closes: Vec<i64> = Vec::new();
         let mut host_dir_closes: Vec<i64> = Vec::new();
@@ -602,6 +602,17 @@ impl ProcessTable {
             }
         }
 
+        // WHY: AF_UNIX datagrams can own retained SCM_RIGHTS descriptors.
+        // `proc` remains live until this function returns, but the deferred
+        // release queue is drained below. Drop every queued datagram now so
+        // crash/forced-removal cleanup observes those releases in this same
+        // transaction rather than leaving them for an unrelated later syscall.
+        for sock_idx in 0..proc.sockets.len() {
+            if let Some(sock) = proc.sockets.get_mut(sock_idx) {
+                sock.dgram_queue.clear();
+            }
+        }
+
         // Clean up mqueue notifications for this process
         let mq_table = unsafe { crate::mqueue::global_mqueue_table() };
         mq_table.cleanup_process(pid);
@@ -631,10 +642,8 @@ impl ProcessTable {
                 host_closes.push(handle);
             }
             if released.final_ofd_reference {
-                deferred_lock_state_changed |= self
-                    .advisory_locks
-                    .remove_ofd(released.ofd_id)
-                    .changed;
+                deferred_lock_state_changed |=
+                    self.advisory_locks.remove_ofd(released.ofd_id).changed;
             }
         }
 
@@ -887,8 +896,11 @@ impl ProcessTable {
         &self.advisory_locks
     }
 
-    #[cfg(test)]
-    pub fn advisory_locks_mut(&mut self) -> &mut AdvisoryLockManager {
+    /// Borrow the machine lock manager for resource cleanup that has no live
+    /// process owner, such as a direct host-pipe operation dropping queued
+    /// SCM_RIGHTS. This is crate-private so callers cannot bypass the
+    /// process-and-lock paired access used by ordinary syscalls.
+    pub(crate) fn advisory_locks_mut(&mut self) -> &mut AdvisoryLockManager {
         &mut self.advisory_locks
     }
 
@@ -1146,12 +1158,7 @@ impl ProcessTable {
             match action {
                 FileAction::Close { fd } => {
                     // POSIX: close errors are silently ignored for spawn.
-                    let _ = crate::syscalls::sys_close_with_locks(
-                        child,
-                        advisory_locks,
-                        host,
-                        *fd,
-                    );
+                    let _ = crate::syscalls::sys_close_with_locks(child, advisory_locks, host, *fd);
                 }
                 FileAction::Dup2 { srcfd, fd } => {
                     if srcfd == fd {
@@ -1225,8 +1232,7 @@ impl ProcessTable {
         for fd in cloexec_fds {
             // POSIX: close errors here are silently ignored — same policy
             // as the FileAction::Close handler above.
-            let _ =
-                crate::syscalls::sys_close_with_locks(child, advisory_locks, host, fd);
+            let _ = crate::syscalls::sys_close_with_locks(child, advisory_locks, host, fd);
         }
 
         Ok(())
@@ -1293,9 +1299,7 @@ impl ProcessTable {
     /// Keeping lifecycle filtering here prevents kernel subsystems from
     /// treating the immutable synthetic init record or retained exited records
     /// as runnable processes while scanning machine-wide state.
-    pub(crate) fn live_processes_descending(
-        &self,
-    ) -> impl Iterator<Item = (u32, &Process)> {
+    pub(crate) fn live_processes_descending(&self) -> impl Iterator<Item = (u32, &Process)> {
         self.processes.iter().rev().filter_map(|(&pid, process)| {
             if pid == SYNTHETIC_INIT_PID
                 || matches!(process.state, ProcessState::Exited | ProcessState::Limbo)
@@ -1372,20 +1376,14 @@ impl ProcessTable {
         event_mask: u32,
         flags: u32,
     ) -> Result<Option<(u32, ChildWaitEvent)>, Errno> {
-        use wasm_posix_shared::wait::{
-            EVENT_CONTINUED, EVENT_EXITED, EVENT_STOPPED, WNOWAIT,
-        };
+        use wasm_posix_shared::wait::{EVENT_CONTINUED, EVENT_EXITED, EVENT_STOPPED, WNOWAIT};
 
         let valid_events = EVENT_EXITED | EVENT_STOPPED | EVENT_CONTINUED;
         if event_mask == 0 || event_mask & !valid_events != 0 || flags & !WNOWAIT != 0 {
             return Err(Errno::EINVAL);
         }
 
-        let parent_pgid = self
-            .processes
-            .get(&parent_pid)
-            .ok_or(Errno::ESRCH)?
-            .pgid;
+        let parent_pgid = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?.pgid;
         let mut saw_matching_child = false;
 
         for (&child_pid, child) in &mut self.processes {
@@ -1463,11 +1461,14 @@ mod wait_tests {
         let tid = table
             .create_thread(parent_pid, parent_pid, 0x1000, 0, 0)
             .unwrap();
-        let fork_pid = table.fork_process_for_caller(parent_pid, parent_pid).unwrap();
+        let fork_pid = table
+            .fork_process_for_caller(parent_pid, parent_pid)
+            .unwrap();
         let mut host = NoopHost;
         let spawn_pid = table
             .spawn_child_for_caller(
-                parent_pid, parent_pid,
+                parent_pid,
+                parent_pid,
                 &[b"/bin/child".as_slice()],
                 &[],
                 &[],
@@ -1799,9 +1800,10 @@ mod tests {
         let read_ofd = child
             .ofd_table
             .create(FileType::Pipe, O_RDONLY, -1, b"pipe-read".to_vec());
-        let write_ofd = child
-            .ofd_table
-            .create(FileType::Pipe, O_WRONLY, -1, b"pipe-write".to_vec());
+        let write_ofd =
+            child
+                .ofd_table
+                .create(FileType::Pipe, O_WRONLY, -1, b"pipe-write".to_vec());
         let read_fd = child
             .fd_table
             .alloc_at_min(OpenFileDescRef(read_ofd), 0, 2048)
@@ -1901,10 +1903,7 @@ mod tests {
                 d_type: 8,
                 name: b"pending".to_vec(),
             });
-            parent
-                .fd_table
-                .alloc(OpenFileDescRef(ofd_idx), 0)
-                .unwrap()
+            parent.fd_table.alloc(OpenFileDescRef(ofd_idx), 0).unwrap()
         };
 
         let mut host = NoopHost;
@@ -1920,7 +1919,12 @@ mod tests {
             )
             .unwrap();
 
-        let child_entry = table.get(child_pid).unwrap().fd_table.get(inherited_fd).unwrap();
+        let child_entry = table
+            .get(child_pid)
+            .unwrap()
+            .fd_table
+            .get(inherited_fd)
+            .unwrap();
         let child_ofd = table
             .get(child_pid)
             .unwrap()
@@ -1946,7 +1950,10 @@ mod tests {
             .get(parent_entry.ofd_ref.0)
             .unwrap();
         assert_eq!(parent_ofd.dir_host_handle, ITERATOR_HANDLE);
-        assert_eq!(parent_ofd.dir_pending_entry.as_ref().unwrap().name, b"pending");
+        assert_eq!(
+            parent_ofd.dir_pending_entry.as_ref().unwrap().name,
+            b"pending"
+        );
 
         // Crash/rollback-style child cleanup must not close the iterator that
         // remains owned by the parent. Parent cleanup releases it exactly once.
@@ -1992,10 +1999,7 @@ mod tests {
                 d_type: 8,
                 name: b"next".to_vec(),
             });
-            parent
-                .fd_table
-                .alloc(OpenFileDescRef(ofd_idx), 0)
-                .unwrap()
+            parent.fd_table.alloc(OpenFileDescRef(ofd_idx), 0).unwrap()
         };
 
         let child_pid = table
@@ -2034,7 +2038,7 @@ mod tests {
 
     #[test]
     fn process_exit_closes_tcp_pipes_orderly() {
-        use crate::pipe::{global_pipe_table, PipeBuffer, DEFAULT_PIPE_CAPACITY};
+        use crate::pipe::{DEFAULT_PIPE_CAPACITY, PipeBuffer, global_pipe_table};
         use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
 
         let pipe_table = unsafe { global_pipe_table() };
@@ -2164,7 +2168,10 @@ mod tests {
         assert_eq!(table.create_process().unwrap(), PARENT);
         let sock_idx = install_bound_udp4_socket(&mut table, PARENT, PORT);
 
-        assert_eq!(table.fork_process_for_caller(PARENT, PARENT).unwrap(), CHILD);
+        assert_eq!(
+            table.fork_process_for_caller(PARENT, PARENT).unwrap(),
+            CHILD
+        );
         assert_udp_owner(PORT, PARENT, sock_idx, true);
         assert_udp_owner(PORT, CHILD, sock_idx, true);
 
@@ -2207,7 +2214,8 @@ mod tests {
 
         let child_pid = table
             .spawn_child_for_caller(
-                PARENT, PARENT,
+                PARENT,
+                PARENT,
                 &[b"/bin/child".as_slice()],
                 &[],
                 &[],

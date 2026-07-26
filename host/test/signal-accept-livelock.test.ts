@@ -26,6 +26,7 @@ import {
   CH_ERRNO,
   CH_RETURN,
   CH_SYSCALL,
+  KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES,
 } from "../src/generated/abi";
 
 const SIGCHLD = 17;
@@ -206,7 +207,12 @@ describe("signal delivery to a process blocked in accept()", () => {
     worker.completeSleepWithSignalCheck(channel, 1, [], 0, 0);
 
     expect(setCurrentTid).not.toHaveBeenCalled();
-    expect(dequeueSignal).toHaveBeenCalledWith(pid, tid, expect.any(Number));
+    expect(dequeueSignal).toHaveBeenCalledWith(
+      pid,
+      tid,
+      expect.any(Number),
+      KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES,
+    );
   });
 
   it("does not rebind an ordinary synchronous signal dequeue", () => {
@@ -222,7 +228,12 @@ describe("signal delivery to a process blocked in accept()", () => {
     worker.dequeueSignalForDelivery(channel);
 
     expect(setCurrentTid).not.toHaveBeenCalled();
-    expect(dequeueSignal).toHaveBeenCalledWith(pid, pid, expect.any(Number));
+    expect(dequeueSignal).toHaveBeenCalledWith(
+      pid,
+      pid,
+      expect.any(Number),
+      KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES,
+    );
   });
 
   it("fails closed when Rust rejects an exact signal dequeue task", () => {

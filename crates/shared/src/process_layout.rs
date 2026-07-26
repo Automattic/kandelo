@@ -19,6 +19,73 @@ pub const fn select(pointer_width: u32, wasm32: u32, wasm64: u32) -> Option<u32>
     }
 }
 
+/// Caller-native musl `struct iovec`.
+///
+/// This is deliberately distinct from the kernel-scratch [`KernelIovecWire`]
+/// record. A single wasm32 kernel can serve wasm32 and wasm64 callers, so the
+/// host must decode the caller-native table before constructing the fixed
+/// kernel wire.
+///
+/// [`KernelIovecWire`]: crate::KernelIovecWire
+pub mod iovec {
+    pub const WASM32_SIZE: u32 = 8;
+    pub const WASM32_BASE_OFFSET: u32 = 0;
+    pub const WASM32_LEN_OFFSET: u32 = 4;
+
+    pub const WASM64_SIZE: u32 = 16;
+    pub const WASM64_BASE_OFFSET: u32 = 0;
+    pub const WASM64_LEN_OFFSET: u32 = 8;
+}
+
+/// Caller-native musl `struct msghdr`.
+///
+/// musl keeps `msg_iovlen` and `msg_controllen` 32-bit on wasm64 and places
+/// explicit little-endian padding after each field. These offsets therefore
+/// cannot be derived from pointer width alone at a TypeScript call site.
+pub mod msghdr {
+    pub const WASM32_SIZE: u32 = 28;
+    pub const WASM32_NAME_OFFSET: u32 = 0;
+    pub const WASM32_NAMELEN_OFFSET: u32 = 4;
+    pub const WASM32_IOV_OFFSET: u32 = 8;
+    pub const WASM32_IOVLEN_OFFSET: u32 = 12;
+    pub const WASM32_CONTROL_OFFSET: u32 = 16;
+    pub const WASM32_CONTROLLEN_OFFSET: u32 = 20;
+    pub const WASM32_FLAGS_OFFSET: u32 = 24;
+
+    pub const WASM64_SIZE: u32 = 56;
+    pub const WASM64_NAME_OFFSET: u32 = 0;
+    pub const WASM64_NAMELEN_OFFSET: u32 = 8;
+    pub const WASM64_IOV_OFFSET: u32 = 16;
+    pub const WASM64_IOVLEN_OFFSET: u32 = 24;
+    pub const WASM64_CONTROL_OFFSET: u32 = 32;
+    pub const WASM64_CONTROLLEN_OFFSET: u32 = 40;
+    pub const WASM64_FLAGS_OFFSET: u32 = 48;
+}
+
+/// Caller-native musl `struct cmsghdr` and CMSG record alignment.
+///
+/// The wasm64 header has a four-byte pad after `cmsg_len`, and successive
+/// records are aligned to eight bytes. Kernel scratch instead uses the fixed
+/// [`KernelCmsghdrWire`] layout, so host translation must use these generated
+/// values in both directions.
+///
+/// [`KernelCmsghdrWire`]: crate::KernelCmsghdrWire
+pub mod cmsghdr {
+    pub const WASM32_SIZE: u32 = 12;
+    pub const WASM32_ALIGN: u32 = 4;
+    pub const WASM32_LEN_OFFSET: u32 = 0;
+    pub const WASM32_LEVEL_OFFSET: u32 = 4;
+    pub const WASM32_TYPE_OFFSET: u32 = 8;
+    pub const WASM32_DATA_OFFSET: u32 = 12;
+
+    pub const WASM64_SIZE: u32 = 16;
+    pub const WASM64_ALIGN: u32 = 8;
+    pub const WASM64_LEN_OFFSET: u32 = 0;
+    pub const WASM64_LEVEL_OFFSET: u32 = 8;
+    pub const WASM64_TYPE_OFFSET: u32 = 12;
+    pub const WASM64_DATA_OFFSET: u32 = 16;
+}
+
 /// `stack_t` / `struct sigaltstack`.
 pub mod sigaltstack {
     pub const WASM32_SIZE: u32 = 12;
@@ -62,16 +129,18 @@ pub mod mq_attr {
     pub const WASM64_CURMSGS_OFFSET: u32 = 24;
 }
 
-/// Native `struct sigevent` used by `mq_notify`.
+/// Native `struct sigevent` used by `mq_notify` and `timer_create`.
 pub mod sigevent {
     pub const WASM32_SIZE: u32 = 64;
     pub const WASM32_VALUE_OFFSET: u32 = 0;
+    pub const WASM32_VALUE_SIZE: u32 = 4;
     pub const WASM32_SIGNO_OFFSET: u32 = 4;
     pub const WASM32_NOTIFY_OFFSET: u32 = 8;
     pub const WASM32_PAYLOAD_OFFSET: u32 = 12;
 
     pub const WASM64_SIZE: u32 = 64;
     pub const WASM64_VALUE_OFFSET: u32 = 0;
+    pub const WASM64_VALUE_SIZE: u32 = 8;
     pub const WASM64_SIGNO_OFFSET: u32 = 8;
     pub const WASM64_NOTIFY_OFFSET: u32 = 12;
     pub const WASM64_PAYLOAD_OFFSET: u32 = 16;
@@ -141,22 +210,28 @@ pub mod sysinfo {
     pub const WASM64_RESERVED_OFFSET: u32 = 108;
 }
 
-/// Native `siginfo_t` passed to `rt_sigqueueinfo`.
+/// Caller-native `siginfo_t` used by signal queue, wait, and delivery paths.
 ///
 /// Both targets reserve 128 bytes, but LP64 alignment moves the common
-/// pid/uid/value fields. The kernel currently consumes `sival_int`; the full
-/// record size is still part of the copy contract so no caller bytes outside
-/// `siginfo_t` enter kernel scratch.
+/// pid/uid/value-or-status fields. The full record size is part of every copy
+/// contract so no caller bytes outside `siginfo_t` enter kernel scratch and no
+/// host write can replace bytes beyond the caller-owned object.
 pub mod rt_sigqueueinfo {
+    pub const SIGNO_OFFSET: u32 = 0;
+    pub const ERRNO_OFFSET: u32 = 4;
+    pub const CODE_OFFSET: u32 = 8;
+
     pub const WASM32_SIZE: u32 = 128;
     pub const WASM32_PID_OFFSET: u32 = 12;
     pub const WASM32_UID_OFFSET: u32 = 16;
     pub const WASM32_VALUE_OFFSET: u32 = 20;
+    pub const WASM32_VALUE_SIZE: u32 = 4;
 
     pub const WASM64_SIZE: u32 = 128;
     pub const WASM64_PID_OFFSET: u32 = 16;
     pub const WASM64_UID_OFFSET: u32 = 20;
     pub const WASM64_VALUE_OFFSET: u32 = 24;
+    pub const WASM64_VALUE_SIZE: u32 = 8;
 }
 
 /// Native musl `struct kstat` used by stat/fstat/lstat/fstatat syscalls.

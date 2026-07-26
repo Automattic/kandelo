@@ -30,10 +30,35 @@ const fixturesDir = join(__dirname, "fixtures");
 /** Program fixtures resolved through the normal local-binaries contract. */
 const RESOLVED_PROGRAM_FIXTURES = [
   {
+    arch: "wasm32",
     src: join(repoRoot, "programs/scm-rights-pipe-lifetime.c"),
     out: join(
       repoRoot,
       "local-binaries/programs/wasm32/scm-rights-pipe-lifetime.wasm",
+    ),
+  },
+  {
+    arch: "wasm64",
+    src: join(repoRoot, "programs/scm-rights-pipe-lifetime.c"),
+    out: join(
+      repoRoot,
+      "local-binaries/programs/wasm64/scm-rights-pipe-lifetime.wasm",
+    ),
+  },
+  {
+    arch: "wasm32",
+    src: join(repoRoot, "programs/scm-rights-semantics.c"),
+    out: join(
+      repoRoot,
+      "local-binaries/programs/wasm32/scm-rights-semantics.wasm",
+    ),
+  },
+  {
+    arch: "wasm64",
+    src: join(repoRoot, "programs/scm-rights-semantics.c"),
+    out: join(
+      repoRoot,
+      "local-binaries/programs/wasm64/scm-rights-semantics.wasm",
     ),
   },
 ];
@@ -53,6 +78,7 @@ const TEST_PROGRAMS = [
   "getdents_boundary_test.c",
   "terminal_attributes_api_test.c",
   "rlimit_fsize_test.c",
+  "kernel_scratch_browser_test.c",
   "socket_timeout_options_test.c",
   "unix_listener_exec_test.c",
   "putenv_test.c",
@@ -150,17 +176,21 @@ function fixtureBuildContract(
 export async function setup() {
   const wasm32Contract = fixtureBuildContract("wasm32", false);
   const wasm32ForkContract = fixtureBuildContract("wasm32", true);
+  const wasm64Contract = fixtureBuildContract("wasm64", false);
 
-  for (const { src, out } of RESOLVED_PROGRAM_FIXTURES) {
-    if (!programFixtureNeedsRebuild(src, out, wasm32Contract)) continue;
+  for (const { arch, src, out } of RESOLVED_PROGRAM_FIXTURES) {
+    const contract = arch === "wasm64" ? wasm64Contract : wasm32Contract;
+    if (!programFixtureNeedsRebuild(src, out, contract)) continue;
 
     mkdirSync(dirname(out), { recursive: true });
-    console.log(`[global-setup] Compiling ${src.slice(repoRoot.length + 1)}...`);
-    execFileSync("wasm32posix-cc", [src, "-o", out], {
+    console.log(
+      `[global-setup] Compiling ${src.slice(repoRoot.length + 1)} (${arch})...`,
+    );
+    execFileSync(`${arch}posix-cc`, [src, "-o", out], {
       cwd: repoRoot,
       stdio: "pipe",
     });
-    stampProgramFixture(src, out, wasm32Contract);
+    stampProgramFixture(src, out, contract);
   }
 
   for (const cFile of TEST_PROGRAMS) {

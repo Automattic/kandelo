@@ -64,6 +64,24 @@ describe("host adapter manifest validation", () => {
     ).toThrow(/kernel_alloc_scratch/);
   });
 
+  it.each([
+    "kernel_clear_process_metadata",
+    "kernel_push_process_metadata_entry",
+    "kernel_set_cwd",
+  ])("rejects a kernel missing required scratch transfer export %s", (name) => {
+    const memory = createMemory();
+    writeManifest(memory);
+    const instance = createInstance({ [name]: undefined });
+
+    expect(() =>
+      validateKernelHostAdapterManifest(
+        instance,
+        memory,
+        HOST_ADAPTER_REQUIRED_WORKER_FEATURES,
+      ),
+    ).toThrow(name);
+  });
+
   it("rejects unsupported worker feature bits", () => {
     const memory = createMemory();
     writeManifest(memory);

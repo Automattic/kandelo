@@ -27,10 +27,18 @@ import { GlMuxer } from "./webgl/muxer";
 import { drainSubmitQueue } from "./webgl/submit-drain";
 import {
   IOCTL_REQUESTS,
+  KERNEL_SCRATCH_FD_PAIR_BYTES,
+  KERNEL_SCRATCH_SOCKLEN_BYTES,
+  SELECT_FD_SET_BYTES,
+  SELECT_FD_SETSIZE,
   STRUCT_SIZE_WASM_DIRENT,
+  STRUCT_SIZE_WASM_POLL_FD,
   STRUCT_SIZE_WASM_STAT,
   STRUCT_SIZE_WASM_STATFS,
   STRUCT_SIZE_WPK_DRM_MODE_MODEINFO,
+  WASM_POLL_FD_EVENTS_OFFSET,
+  WASM_POLL_FD_FD_OFFSET,
+  WASM_POLL_FD_REVENTS_OFFSET,
 } from "./generated/abi";
 import { detectPtrWidth } from "./constants";
 import {
@@ -390,6 +398,20 @@ export class WasmPosixKernel {
   private instance: WebAssembly.Instance | null = null;
   private memory: WebAssembly.Memory | null = null;
   private kernelPtrWidth: 4 | 8 = 4;
+  /**
+   * One wrapper owns exactly one kernel Wasm generation.
+   *
+   * WHY: allocator-owned scratch regions retain the instance, Memory, pointer,
+   * and capacity that created them. Replacing only `instance`/`memory` would
+   * leave those regions authorized against the old generation. Rejecting a
+   * second initialization before it mutates any state keeps that lifetime
+   * invariant structural instead of relying on every cached region being
+   * remembered during a future reinitialization.
+   */
+  private initializationState:
+    | "uninitialized"
+    | "initializing"
+    | "initialized" = "uninitialized";
   private sharedPipes = new Map<number, { pipe: SharedPipeBuffer; end: "read" | "write" }>();
   private signalWakeSab: SharedArrayBuffer | null = null;
   private programFuncTable: WebAssembly.Table | null = null;
@@ -415,7 +437,10 @@ export class WasmPosixKernel {
     { mappingRefs: number; descriptorClosePending: boolean }
   >();
   /** Active synchronous host_fstat capture used by mmap preflight. */
-  private fstatHandleCapture: { handle: number | null } | null = null;
+  private fstatHandleCapture: {
+    token: object;
+    handle: number | null;
+  } | null = null;
   isThreadWorker = false;
   /**
    * Live `/dev/fb0` mappings the kernel has reported via
@@ -524,24 +549,33 @@ export class WasmPosixKernel {
   }
 
   /**
-   * Capture the concrete host handle used by one synchronous kernel fstat.
-   * This lets MAP_SHARED retain the open-file capability itself instead of
-   * reopening a remembered pathname that may already have been unlinked.
+   * Begin capturing the concrete host handle used by one synchronous fstat.
+   *
+   * WHY: the worker must invoke the kernel export directly inside its active
+   * scratch lease; accepting an opaque callback here would let a primitive
+   * scratch address cross a boundary that cannot revoke it. The token makes
+   * the begin/finish pair exact while a `finally` at the caller preserves the
+   * synchronous capture lifetime.
    */
-  withFstatHandleCapture<T>(operation: () => T): {
-    result: T;
-    handle: number | null;
-  } {
+  beginFstatHandleCapture(): object {
     if (this.fstatHandleCapture) {
       throw new Error("nested host fstat handle capture");
     }
-    const capture = { handle: null as number | null };
-    this.fstatHandleCapture = capture;
-    try {
-      return { result: operation(), handle: capture.handle };
-    } finally {
-      this.fstatHandleCapture = null;
+    const token = {};
+    this.fstatHandleCapture = { token, handle: null };
+    return token;
+  }
+
+  /**
+   * Finish the exact synchronous fstat capture started by the matching token.
+   */
+  finishFstatHandleCapture(token: object): number | null {
+    const capture = this.fstatHandleCapture;
+    if (!capture || capture.token !== token) {
+      throw new Error("mismatched host fstat handle capture");
     }
+    this.fstatHandleCapture = null;
+    return capture.handle;
   }
 
   /** Retain one mapping-owned reference to an existing host file handle. */
@@ -581,8 +615,8 @@ export class WasmPosixKernel {
     }
   }
 
-  private createKernelMemory(): WebAssembly.Memory {
-    if (this.kernelPtrWidth === 8) {
+  private createKernelMemory(pointerWidth: 4 | 8): WebAssembly.Memory {
+    if (pointerWidth === 8) {
       return new WebAssembly.Memory({
         initial: 24n,
         maximum: 16384n,
@@ -647,6 +681,7 @@ export class WasmPosixKernel {
       WasmPosixKernel.API_SCRATCH_SIZE,
       this.kernelPtrWidth,
       "kernel public API scratch",
+      this.instance!,
     );
     return this.apiScratchRegion;
   }
@@ -666,6 +701,7 @@ export class WasmPosixKernel {
         WasmPosixKernel.AUDIO_SCRATCH_SIZE,
         this.kernelPtrWidth,
         "kernel audio scratch",
+        this.instance!,
       );
       return true;
     } catch {
@@ -685,20 +721,21 @@ export class WasmPosixKernel {
    */
   drainAudio(out: Uint8Array): number {
     const exports = this.instance?.exports as Record<string, unknown> | undefined;
-    const drain = exports?.kernel_drain_audio as
-      | ((ptr: KernelPointer, len: number) => number)
-      | undefined;
-    if (!drain || !this.memory || !this.ensureAudioScratch()) return 0;
+    if (
+      typeof exports?.kernel_drain_audio !== "function"
+      || !this.memory
+      || !this.ensureAudioScratch()
+    ) return 0;
     // Cap the request at our scratch size. Typical drain rates
     // (~22 ms of stereo S16 @ 44.1 kHz = ~7.7 KiB per call) are well
     // under the cap; callers needing more invoke drainAudio in a loop.
     const region = this.audioScratchRegion!;
     const want = Math.min(out.byteLength, region.capacity);
     return region.withLease((scratch) => {
-      const n = drain(
-        this.toKernelPtr(scratch.address(0, want)),
+      const n = scratch.invokeKernelExport("kernel_drain_audio", [
+        scratch.exportPointer(0, want),
         want,
-      );
+      ]);
       if (!Number.isSafeInteger(n) || n < 0 || n > want) return 0;
       if (n > 0) scratch.copyTo(out, 0, 0, n);
       return n;
@@ -757,36 +794,84 @@ export class WasmPosixKernel {
   }
 
   /**
-   * Load and instantiate the kernel Wasm module.
+   * Load and instantiate the kernel Wasm module exactly once.
    *
    * @param wasmBytes - The compiled kernel Wasm binary
    */
   async init(wasmBytes: BufferSource): Promise<void> {
-    // WHY: view subclasses can spoof public span getters. Pointer-width
-    // parsing and engine compilation must consume one identical immutable
-    // snapshot or imports can normalize every pointer for the wrong Wasm ABI.
-    const wasmSnapshot = bufferSourceToArrayBuffer(wasmBytes);
-    this.kernelPtrWidth = detectPtrWidth(wasmSnapshot);
-    const memory = this.createKernelMemory();
-    this.memory = memory;
-    const importObject = this.buildImportObject(memory);
-    const module = await WebAssembly.compile(wasmSnapshot);
-    this.instance = await WebAssembly.instantiate(module, importObject);
+    this.beginInitialization();
+    try {
+      const { module, pointerWidth } =
+        await this.compileKernelModule(wasmBytes);
+      this.kernelPtrWidth = pointerWidth;
+      const memory = this.createKernelMemory(pointerWidth);
+      this.memory = memory;
+      const importObject = this.buildImportObject(memory);
+      this.instance = await WebAssembly.instantiate(module, importObject);
+      this.initializationState = "initialized";
+    } catch (error) {
+      this.abortInitialization(error);
+    }
   }
 
   /**
    * Like init(), but uses an existing shared WebAssembly.Memory instead of
    * creating a new one. Used by thread workers that share the parent's memory.
+   *
+   * A WasmPosixKernel owns one kernel generation, so this and init() are
+   * mutually exclusive one-shot entry points.
    */
-  async initWithMemory(wasmBytes: BufferSource, memory: WebAssembly.Memory): Promise<void> {
-    // Keep the width parser and compiler on the same detached byte identity;
-    // this also prevents the caller from replacing bytes between both steps.
+  async initWithMemory(
+    wasmBytes: BufferSource,
+    memory: WebAssembly.Memory,
+  ): Promise<void> {
+    this.beginInitialization();
+    try {
+      const { module, pointerWidth } =
+        await this.compileKernelModule(wasmBytes);
+      this.kernelPtrWidth = pointerWidth;
+      this.memory = memory;
+      const importObject = this.buildImportObject(memory);
+      this.instance = await WebAssembly.instantiate(module, importObject);
+      this.initializationState = "initialized";
+    } catch (error) {
+      this.abortInitialization(error);
+    }
+  }
+
+  private beginInitialization(): void {
+    if (this.initializationState === "initializing") {
+      throw new Error("kernel initialization is already in progress");
+    }
+    if (this.initializationState === "initialized") {
+      throw new Error(
+        "kernel is already initialized; create a new WasmPosixKernel " +
+          "for a different kernel generation",
+      );
+    }
+    this.initializationState = "initializing";
+  }
+
+  private async compileKernelModule(
+    wasmBytes: BufferSource,
+  ): Promise<{ module: WebAssembly.Module; pointerWidth: 4 | 8 }> {
+    // WHY: view subclasses can spoof public span getters. Pointer-width
+    // parsing and engine compilation must consume one identical immutable
+    // snapshot or imports can normalize every pointer for the wrong Wasm ABI.
     const wasmSnapshot = bufferSourceToArrayBuffer(wasmBytes);
-    this.kernelPtrWidth = detectPtrWidth(wasmSnapshot);
-    this.memory = memory;
-    const importObject = this.buildImportObject(memory);
+    const pointerWidth = detectPtrWidth(wasmSnapshot);
     const module = await WebAssembly.compile(wasmSnapshot);
-    this.instance = await WebAssembly.instantiate(module, importObject);
+    return { module, pointerWidth };
+  }
+
+  private abortInitialization(error: unknown): never {
+    // A failed first attempt has created no usable kernel generation. Clear
+    // the partially published import state so callers may retry cleanly.
+    this.instance = null;
+    this.memory = null;
+    this.kernelPtrWidth = 4;
+    this.initializationState = "uninitialized";
+    throw error;
   }
 
   private buildImportObject(memory: WebAssembly.Memory): WebAssembly.Imports {
@@ -2544,22 +2629,16 @@ export class WasmPosixKernel {
    * Returns [fd0, fd1].
    */
   socketpair(domain: number, type: number, protocol: number): [number, number] {
-    const fn = this.instance!.exports.kernel_socketpair as (
-      domain: number,
-      type: number,
-      protocol: number,
-      svPtr: KernelPointer,
-    ) => number;
     return this.requireApiScratch().withLease((scratch) => {
-      const pointer = scratch.address(0, 8);
-      const result = fn(
+      const result = scratch.invokeKernelExport("kernel_socketpair", [
         domain,
         type,
         protocol,
-        this.toKernelPtr(pointer),
-      );
+        scratch.exportPointer(0, KERNEL_SCRATCH_FD_PAIR_BYTES),
+        KERNEL_SCRATCH_FD_PAIR_BYTES,
+      ]);
       if (result < 0) throw new Error(`socketpair failed: errno ${-result}`);
-      const output = scratch.dataView(0, 8);
+      const output = scratch.dataView(0, KERNEL_SCRATCH_FD_PAIR_BYTES);
       return [output.getInt32(0, true), output.getInt32(4, true)];
     });
   }
@@ -2580,21 +2659,15 @@ export class WasmPosixKernel {
    * Send data on a connected socket. Returns bytes sent.
    */
   send(fd: number, data: Uint8Array, flags: number = 0): number {
-    const fn = this.instance!.exports.kernel_send as (
-      fd: number,
-      bufPtr: KernelPointer,
-      bufLen: number,
-      flags: number,
-    ) => number;
     const exactData = intrinsicUint8ArrayView(data, "socket send input");
     return this.requireApiScratch().withLease((scratch) => {
       scratch.copyFrom(exactData);
-      const result = fn(
+      const result = scratch.invokeKernelExport("kernel_send", [
         fd,
-        this.toKernelPtr(scratch.address(0, exactData.byteLength)),
+        scratch.exportPointer(0, exactData.byteLength),
         exactData.byteLength,
         flags,
-      );
+      ]);
       if (result < 0) throw new Error(`send failed: errno ${-result}`);
       if (!Number.isSafeInteger(result) || result > exactData.byteLength) {
         throw new Error(`send returned invalid byte count ${result}`);
@@ -2607,18 +2680,16 @@ export class WasmPosixKernel {
    * Receive data from a connected socket. Returns the received data.
    */
   recv(fd: number, maxLen: number, flags: number = 0): Uint8Array {
-    const fn = this.instance!.exports.kernel_recv as (
-      fd: number,
-      bufPtr: KernelPointer,
-      bufLen: number,
-      flags: number,
-    ) => number;
     if (!Number.isSafeInteger(maxLen) || maxLen < 0) {
       throw new Error("recv length must be a non-negative safe integer");
     }
     return this.requireApiScratch().withLease((scratch) => {
-      const pointer = scratch.address(0, maxLen);
-      const result = fn(fd, this.toKernelPtr(pointer), maxLen, flags);
+      const result = scratch.invokeKernelExport("kernel_recv", [
+        fd,
+        scratch.exportPointer(0, maxLen),
+        maxLen,
+        flags,
+      ]);
       if (result < 0) throw new Error(`recv failed: errno ${-result}`);
       if (!Number.isSafeInteger(result) || result > maxLen) {
         throw new Error(`recv returned invalid byte count ${result}`);
@@ -2635,32 +2706,56 @@ export class WasmPosixKernel {
     fds: Array<{ fd: number; events: number }>,
     timeout: number,
   ): Array<{ fd: number; events: number; revents: number }> {
-    const fn = this.instance!.exports.kernel_poll as (
-      fdsPtr: KernelPointer,
-      nfds: number,
-      timeout: number,
-    ) => number;
     const nfds = fds.length;
-    if (!Number.isSafeInteger(nfds) || nfds > 1024) {
-      throw new Error("poll descriptor count exceeds public API limit 1024");
+    if (!Number.isSafeInteger(nfds) || nfds < 0) {
+      throw new Error("poll descriptor count must be a non-negative safe integer");
     }
-    return this.requireApiScratch().withLease((scratch) => {
-      const byteLength = nfds * 8;
-      const pointer = scratch.address(0, byteLength);
+    const scratchRegion = this.requireApiScratch();
+    const descriptorCapacity = Math.floor(
+      scratchRegion.capacity / STRUCT_SIZE_WASM_POLL_FD,
+    );
+    if (nfds > descriptorCapacity) {
+      throw new Error(
+        `poll descriptor count ${nfds} exceeds owned scratch capacity ` +
+          String(descriptorCapacity),
+      );
+    }
+    return scratchRegion.withLease((scratch) => {
+      const byteLength = nfds * STRUCT_SIZE_WASM_POLL_FD;
       const view = scratch.dataView(0, byteLength);
       for (let index = 0; index < nfds; index++) {
-        const offset = index * 8;
-        view.setInt32(offset, fds[index].fd, true);
-        view.setInt16(offset + 4, fds[index].events, true);
-        view.setInt16(offset + 6, 0, true);
+        const offset = index * STRUCT_SIZE_WASM_POLL_FD;
+        view.setInt32(
+          offset + WASM_POLL_FD_FD_OFFSET,
+          fds[index].fd,
+          true,
+        );
+        view.setInt16(
+          offset + WASM_POLL_FD_EVENTS_OFFSET,
+          fds[index].events,
+          true,
+        );
+        view.setInt16(offset + WASM_POLL_FD_REVENTS_OFFSET, 0, true);
       }
-      const result = fn(this.toKernelPtr(pointer), nfds, timeout);
+      const result = scratch.invokeKernelExport("kernel_poll", [
+        scratch.exportPointer(0, byteLength),
+        byteLength,
+        nfds,
+        timeout,
+      ]);
       if (result < 0) throw new Error(`poll failed: errno ${-result}`);
+      if (!Number.isSafeInteger(result) || result > nfds) {
+        throw new Error(`poll returned invalid ready count ${result}`);
+      }
       const resultView = scratch.dataView(0, byteLength);
       return fds.map((entry, index) => ({
         fd: entry.fd,
         events: entry.events,
-        revents: resultView.getInt16(index * 8 + 6, true),
+        revents: resultView.getInt16(
+          index * STRUCT_SIZE_WASM_POLL_FD
+            + WASM_POLL_FD_REVENTS_OFFSET,
+          true,
+        ),
       }));
     });
   }
@@ -2669,17 +2764,39 @@ export class WasmPosixKernel {
    * Get a socket option value.
    */
   getsockopt(fd: number, level: number, optname: number): number {
-    const fn = this.instance!.exports.kernel_getsockopt as (
-      fd: number,
-      level: number,
-      optname: number,
-      optvalPtr: KernelPointer,
-    ) => number;
     return this.requireApiScratch().withLease((scratch) => {
-      const pointer = scratch.address(0, 4);
-      const result = fn(fd, level, optname, this.toKernelPtr(pointer));
+      const output = scratch.dataView(
+        0,
+        KERNEL_SCRATCH_SOCKLEN_BYTES * 2,
+      );
+      output.setUint32(
+        KERNEL_SCRATCH_SOCKLEN_BYTES,
+        KERNEL_SCRATCH_SOCKLEN_BYTES,
+        true,
+      );
+      const result = scratch.invokeKernelExport("kernel_getsockopt", [
+        fd,
+        level,
+        optname,
+        scratch.exportPointer(0, KERNEL_SCRATCH_SOCKLEN_BYTES),
+        KERNEL_SCRATCH_SOCKLEN_BYTES,
+        scratch.exportPointer(
+          KERNEL_SCRATCH_SOCKLEN_BYTES,
+          KERNEL_SCRATCH_SOCKLEN_BYTES,
+        ),
+        KERNEL_SCRATCH_SOCKLEN_BYTES,
+      ]);
       if (result < 0) throw new Error(`getsockopt failed: errno ${-result}`);
-      return scratch.dataView(0, 4).getUint32(0, true);
+      const returnedLength = output.getUint32(
+        KERNEL_SCRATCH_SOCKLEN_BYTES,
+        true,
+      );
+      if (returnedLength !== KERNEL_SCRATCH_SOCKLEN_BYTES) {
+        throw new Error(
+          `getsockopt returned invalid scalar option length ${returnedLength}`,
+        );
+      }
+      return output.getUint32(0, true);
     });
   }
 
@@ -2703,14 +2820,12 @@ export class WasmPosixKernel {
    * Get terminal attributes in musl's exact 60-byte struct termios layout.
    */
   tcgetattr(fd: number): Uint8Array {
-    const fn = this.instance!.exports.kernel_tcgetattr as (
-      fd: number,
-      bufPtr: KernelPointer,
-      bufLen: number,
-    ) => number;
     return this.requireApiScratch().withLease((scratch) => {
-      const pointer = scratch.address(0, 60);
-      const result = fn(fd, this.toKernelPtr(pointer), 60);
+      const result = scratch.invokeKernelExport("kernel_tcgetattr", [
+        fd,
+        scratch.exportPointer(0, 60),
+        60,
+      ]);
       if (result < 0) throw new Error(`tcgetattr failed: errno ${-result}`);
       return scratch.copyOut(0, 60);
     });
@@ -2721,24 +2836,18 @@ export class WasmPosixKernel {
    * action: 0=TCSANOW, 1=TCSADRAIN, 2=TCSAFLUSH
    */
   tcsetattr(fd: number, action: number, attrs: Uint8Array): void {
-    const fn = this.instance!.exports.kernel_tcsetattr as (
-      fd: number,
-      action: number,
-      bufPtr: KernelPointer,
-      bufLen: number,
-    ) => number;
     const exactAttrs = intrinsicUint8ArrayView(
       attrs,
       "terminal attributes input",
     );
     this.requireApiScratch().withLease((scratch) => {
       scratch.copyFrom(exactAttrs);
-      const result = fn(
+      const result = scratch.invokeKernelExport("kernel_tcsetattr", [
         fd,
         action,
-        this.toKernelPtr(scratch.address(0, exactAttrs.byteLength)),
+        scratch.exportPointer(0, exactAttrs.byteLength),
         exactAttrs.byteLength,
-      );
+      ]);
       if (result < 0) throw new Error(`tcsetattr failed: errno ${-result}`);
     });
   }
@@ -2770,7 +2879,7 @@ export class WasmPosixKernel {
     const expectedSize = wasm32Size ?? 0;
     return this.requireApiScratch().withLease((scratch) => {
       let bufLen = 0;
-      let argument: KernelPointer = 0;
+      let scalarArgument = 0;
       if (contract?.argKind === "pointer") {
         if (typeof arg === "number") {
           throw new Error("pointer ioctl requires a byte buffer");
@@ -2786,21 +2895,28 @@ export class WasmPosixKernel {
         }
         if (arg) scratch.copyFrom(arg, 0, 0, bufLen);
         else scratch.fill(0, 0, bufLen);
-        argument = this.toKernelPtr(scratch.address(0, bufLen));
       } else if (contract?.argKind === "scalar-i32") {
         if (!Number.isInteger(arg) || (arg as number) < -0x8000_0000 ||
             (arg as number) > 0xffff_ffff) {
           throw new Error("scalar ioctl argument must fit in 32 bits");
         }
-        argument = (arg as number) >>> 0;
+        scalarArgument = (arg as number) >>> 0;
       }
-      const result = fn(
-        fd,
-        request,
-        argument,
-        bufLen,
-        4,
-      );
+      const result = contract?.argKind === "pointer"
+        ? scratch.invokeKernelExport("kernel_ioctl", [
+          fd,
+          request,
+          scratch.exportPointer(0, bufLen),
+          bufLen,
+          4,
+        ])
+        : fn(
+          fd,
+          request,
+          this.toKernelPtr(scalarArgument),
+          bufLen,
+          4,
+        );
       if (result < 0) throw new Error(`ioctl failed: errno ${-result}`);
       return bufLen === 0 ? new Uint8Array(0) : scratch.copyOut(0, bufLen);
     });
@@ -2834,13 +2950,11 @@ export class WasmPosixKernel {
    * Get system identification. Returns object with sysname, nodename, release, version, machine.
    */
   uname(): { sysname: string; nodename: string; release: string; version: string; machine: string } {
-    const fn = this.instance!.exports.kernel_uname as (
-      bufPtr: KernelPointer,
-      bufLen: number,
-    ) => number;
     return this.requireApiScratch().withLease((scratch) => {
-      const pointer = scratch.address(0, 325);
-      const result = fn(this.toKernelPtr(pointer), 325);
+      const result = scratch.invokeKernelExport("kernel_uname", [
+        scratch.exportPointer(0, 325),
+        325,
+      ]);
       if (result < 0) throw new Error(`uname failed: errno ${-result}`);
       const bytes = scratch.copyOut(0, 325);
       const decoder = new TextDecoder();
@@ -2884,14 +2998,14 @@ export class WasmPosixKernel {
    * Create pipe with flags (O_NONBLOCK, O_CLOEXEC). Returns [readFd, writeFd].
    */
   pipe2(flags: number): [number, number] {
-    const fn = this.instance!.exports.kernel_pipe2 as (
-      flags: number, fdPtr: KernelPointer
-    ) => number;
     return this.requireApiScratch().withLease((scratch) => {
-      const pointer = scratch.address(0, 8);
-      const result = fn(flags, this.toKernelPtr(pointer));
+      const result = scratch.invokeKernelExport("kernel_pipe2", [
+        flags,
+        scratch.exportPointer(0, KERNEL_SCRATCH_FD_PAIR_BYTES),
+        KERNEL_SCRATCH_FD_PAIR_BYTES,
+      ]);
       if (result < 0) throw new Error(`pipe2 failed: errno ${-result}`);
-      const output = scratch.dataView(0, 8);
+      const output = scratch.dataView(0, KERNEL_SCRATCH_FD_PAIR_BYTES);
       return [output.getInt32(0, true), output.getInt32(4, true)];
     });
   }
@@ -2924,26 +3038,17 @@ export class WasmPosixKernel {
    * Truncate a file by path to specified length.
    */
   truncate(path: string, length: number): void {
-    const fn = this.instance!.exports.kernel_truncate as (
-      pathPtr: KernelPointer,
-      pathLen: number,
-      lengthLo: number,
-      lengthHi: number,
-    ) => number;
     if (!Number.isSafeInteger(length) || length < 0) {
       throw new Error("truncate length must be a non-negative safe integer");
     }
     const encodedPath = new TextEncoder().encode(path);
-    const lo = length & 0xFFFFFFFF;
-    const hi = Math.floor(length / 0x100000000);
     this.requireApiScratch().withLease((scratch) => {
       scratch.copyFrom(encodedPath);
-      const result = fn(
-        this.toKernelPtr(scratch.address(0, encodedPath.byteLength)),
+      const result = scratch.invokeKernelExport("kernel_truncate", [
+        scratch.exportPointer(0, encodedPath.byteLength),
         encodedPath.byteLength,
-        lo,
-        hi,
-      );
+        BigInt(length),
+      ]);
       if (result < 0) throw new Error(`truncate failed: errno ${-result}`);
     });
   }
@@ -3058,12 +3163,12 @@ export class WasmPosixKernel {
    * Get resource usage. Returns 144-byte rusage struct.
    */
   getrusage(who: number): Uint8Array {
-    const fn = this.instance!.exports.kernel_getrusage as (
-      who: number, bufPtr: KernelPointer, bufLen: number
-    ) => number;
     return this.requireApiScratch().withLease((scratch) => {
-      const pointer = scratch.address(0, 144);
-      const result = fn(who, this.toKernelPtr(pointer), 144);
+      const result = scratch.invokeKernelExport("kernel_getrusage", [
+        who,
+        scratch.exportPointer(0, 144),
+        144,
+      ]);
       if (result < 0) throw new Error(`getrusage failed: errno ${-result}`);
       return scratch.copyOut(0, 144);
     });
@@ -3079,15 +3184,14 @@ export class WasmPosixKernel {
     writefds: number[] | null,
     exceptfds: number[] | null,
   ): { readReady: number[]; writeReady: number[]; exceptReady: number[] } {
-    const fn = this.instance!.exports.kernel_select as (
-      nfds: number,
-      readPtr: KernelPointer,
-      writePtr: KernelPointer,
-      exceptPtr: KernelPointer,
-      timeout: number,
-    ) => number;
-    if (!Number.isSafeInteger(nfds) || nfds < 0 || nfds > 1024) {
-      throw new Error("select nfds must be between 0 and 1024");
+    if (
+      !Number.isSafeInteger(nfds) ||
+      nfds < 0 ||
+      nfds > SELECT_FD_SETSIZE
+    ) {
+      throw new Error(
+        `select nfds must be between 0 and ${SELECT_FD_SETSIZE}`,
+      );
     }
     const validateSet = (set: number[] | null): void => {
       for (const fd of set ?? []) {
@@ -3101,55 +3205,102 @@ export class WasmPosixKernel {
     validateSet(exceptfds);
 
     return this.requireApiScratch().withLease((scratch) => {
-      scratch.fill(0, 0, 384);
+      const totalSetBytes = 3 * SELECT_FD_SET_BYTES;
+      scratch.fill(0, 0, totalSetBytes);
       const readOffset = 0;
-      const writeOffset = 128;
-      const exceptOffset = 256;
-      const readPointer = readfds
-        ? scratch.address(readOffset, 128)
-        : 0;
-      const writePointer = writefds
-        ? scratch.address(writeOffset, 128)
-        : 0;
-      const exceptPointer = exceptfds
-        ? scratch.address(exceptOffset, 128)
-        : 0;
-      const setBits = (offset: number, fds: number[] | null): void => {
-        if (!fds) return;
-        const bytes = scratch.dataView(offset, 128);
-        for (const fd of fds) {
+      const writeOffset = SELECT_FD_SET_BYTES;
+      const exceptOffset = 2 * SELECT_FD_SET_BYTES;
+      // WHY: keep every lease operation visibly inside withLease. A local
+      // helper that closes over scratch could be retained during a refactor and
+      // resume after another select has replaced the shared allocation bytes.
+      if (readfds) {
+        const bytes = scratch.dataView(readOffset, SELECT_FD_SET_BYTES);
+        for (const fd of readfds) {
           const byteOffset = Math.floor(fd / 8);
           bytes.setUint8(
             byteOffset,
             bytes.getUint8(byteOffset) | (1 << (fd % 8)),
           );
         }
-      };
-      setBits(readOffset, readfds);
-      setBits(writeOffset, writefds);
-      setBits(exceptOffset, exceptfds);
-      const result = fn(
+      }
+      if (writefds) {
+        const bytes = scratch.dataView(writeOffset, SELECT_FD_SET_BYTES);
+        for (const fd of writefds) {
+          const byteOffset = Math.floor(fd / 8);
+          bytes.setUint8(
+            byteOffset,
+            bytes.getUint8(byteOffset) | (1 << (fd % 8)),
+          );
+        }
+      }
+      if (exceptfds) {
+        const bytes = scratch.dataView(exceptOffset, SELECT_FD_SET_BYTES);
+        for (const fd of exceptfds) {
+          const byteOffset = Math.floor(fd / 8);
+          bytes.setUint8(
+            byteOffset,
+            bytes.getUint8(byteOffset) | (1 << (fd % 8)),
+          );
+        }
+      }
+      const nullPointer = this.toKernelPtr(0);
+      // WHY: each nullable pointer is immediately followed by the exact extent
+      // Rust may access. This keeps capacity proof coupled to the pointer across
+      // the host/kernel boundary and avoids eight subtly different call shapes.
+      const result = scratch.invokeKernelExport("kernel_select", [
         nfds,
-        this.toKernelPtr(readPointer),
-        this.toKernelPtr(writePointer),
-        this.toKernelPtr(exceptPointer),
+        readfds
+          ? scratch.exportPointer(readOffset, SELECT_FD_SET_BYTES)
+          : nullPointer,
+        readfds ? SELECT_FD_SET_BYTES : 0,
+        writefds
+          ? scratch.exportPointer(writeOffset, SELECT_FD_SET_BYTES)
+          : nullPointer,
+        writefds ? SELECT_FD_SET_BYTES : 0,
+        exceptfds
+          ? scratch.exportPointer(exceptOffset, SELECT_FD_SET_BYTES)
+          : nullPointer,
+        exceptfds ? SELECT_FD_SET_BYTES : 0,
         0,
-      );
+      ]);
       if (result < 0) throw new Error(`select failed: errno ${-result}`);
-      const extractReady = (
-        offset: number,
-        fds: number[] | null,
-      ): number[] => {
-        if (!fds) return [];
-        const bytes = scratch.dataView(offset, 128);
-        return fds.filter((fd) =>
-          ((bytes.getUint8(Math.floor(fd / 8)) >> (fd % 8)) & 1) !== 0
-        );
-      };
+      const readReady: number[] = [];
+      if (readfds) {
+        const bytes = scratch.dataView(readOffset, SELECT_FD_SET_BYTES);
+        for (const fd of readfds) {
+          if (
+            ((bytes.getUint8(Math.floor(fd / 8)) >> (fd % 8)) & 1) !== 0
+          ) {
+            readReady.push(fd);
+          }
+        }
+      }
+      const writeReady: number[] = [];
+      if (writefds) {
+        const bytes = scratch.dataView(writeOffset, SELECT_FD_SET_BYTES);
+        for (const fd of writefds) {
+          if (
+            ((bytes.getUint8(Math.floor(fd / 8)) >> (fd % 8)) & 1) !== 0
+          ) {
+            writeReady.push(fd);
+          }
+        }
+      }
+      const exceptReady: number[] = [];
+      if (exceptfds) {
+        const bytes = scratch.dataView(exceptOffset, SELECT_FD_SET_BYTES);
+        for (const fd of exceptfds) {
+          if (
+            ((bytes.getUint8(Math.floor(fd / 8)) >> (fd % 8)) & 1) !== 0
+          ) {
+            exceptReady.push(fd);
+          }
+        }
+      }
       return {
-        readReady: extractReady(readOffset, readfds),
-        writeReady: extractReady(writeOffset, writefds),
-        exceptReady: extractReady(exceptOffset, exceptfds),
+        readReady,
+        writeReady,
+        exceptReady,
       };
     });
   }

@@ -464,8 +464,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
       onExec: async (execPid, path, argv, envp, callerTid) => {
         const wasmPath = options.execPrograms?.get(path);
         if (!wasmPath) return -2;
-        if (!kernelWorker.supportsExecMetadataReplacement()) return -38;
-
         const newProgramBytes = loadProgramWasm(wasmPath);
         const newPtrWidth = detectPtrWidth(newProgramBytes);
         const sourcePtrWidth = processPtrWidths.get(execPid) ?? newPtrWidth;

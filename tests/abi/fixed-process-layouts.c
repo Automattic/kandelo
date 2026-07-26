@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 
+#include <bits/kandelo_process_layouts.h>
 #include <sched.h>
 #include <signal.h>
 #include <stddef.h>
@@ -8,7 +9,6 @@
 #define ASSERT_OFFSET(type, field, expected) \
 	_Static_assert(offsetof(type, field) == (expected), #type "." #field)
 
-_Static_assert(sizeof(siginfo_t) == 128, "siginfo_t size");
 _Static_assert(sizeof(struct stat) == 112, "struct stat size");
 ASSERT_OFFSET(struct stat, st_dev, 0);
 ASSERT_OFFSET(struct stat, st_ino, 8);
@@ -35,17 +35,29 @@ ASSERT_OFFSET(struct sched_param, sched_ss_low_priority, 40);
 
 #include "../../libc/musl-overlay/arch/wasm32posix/kstat.h"
 
-ASSERT_OFFSET(siginfo_t, si_pid, 12);
-ASSERT_OFFSET(siginfo_t, si_uid, 16);
-ASSERT_OFFSET(siginfo_t, si_value, 20);
+_Static_assert(sizeof(siginfo_t) == KANDELO_PROCESS_SIGINFO_WASM32_SIZE,
+	       "generated wasm32 siginfo_t size");
+_Static_assert(sizeof(union sigval) ==
+	       KANDELO_PROCESS_SIGINFO_WASM32_VALUE_SIZE,
+	       "generated wasm32 siginfo sigval width");
+ASSERT_OFFSET(siginfo_t, si_pid, KANDELO_PROCESS_SIGINFO_WASM32_PID_OFFSET);
+ASSERT_OFFSET(siginfo_t, si_uid, KANDELO_PROCESS_SIGINFO_WASM32_UID_OFFSET);
+ASSERT_OFFSET(siginfo_t, si_value,
+	      KANDELO_PROCESS_SIGINFO_WASM32_VALUE_OFFSET);
 
 #elif __SIZEOF_POINTER__ == 8
 
 #include "../../libc/musl-overlay/arch/wasm64posix/kstat.h"
 
-ASSERT_OFFSET(siginfo_t, si_pid, 16);
-ASSERT_OFFSET(siginfo_t, si_uid, 20);
-ASSERT_OFFSET(siginfo_t, si_value, 24);
+_Static_assert(sizeof(siginfo_t) == KANDELO_PROCESS_SIGINFO_WASM64_SIZE,
+	       "generated wasm64 siginfo_t size");
+_Static_assert(sizeof(union sigval) ==
+	       KANDELO_PROCESS_SIGINFO_WASM64_VALUE_SIZE,
+	       "generated wasm64 siginfo sigval width");
+ASSERT_OFFSET(siginfo_t, si_pid, KANDELO_PROCESS_SIGINFO_WASM64_PID_OFFSET);
+ASSERT_OFFSET(siginfo_t, si_uid, KANDELO_PROCESS_SIGINFO_WASM64_UID_OFFSET);
+ASSERT_OFFSET(siginfo_t, si_value,
+	      KANDELO_PROCESS_SIGINFO_WASM64_VALUE_OFFSET);
 
 #else
 #error "Kandelo supports only four- and eight-byte process pointers"

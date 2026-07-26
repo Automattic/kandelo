@@ -36,35 +36,80 @@
         "offset": 64,
         "size": 4,
         "type": "i32"
+      },
+      {
+        "name": "reserved",
+        "offset": 68,
+        "size": 4,
+        "type": "[u8; 4]"
       }
     ],
     "size": 72
   },
   "channel_signal_area": {
-    "base": 65560,
+    "area_size": 56,
+    "base": 65552,
+    "delivery_size": 56,
+    "reserved_tail_size": 0,
     "slots": [
       {
         "meaning": "u32, signal number (0=none)",
         "name": "SIG_SIGNUM",
-        "offset": 65560,
+        "offset": 65552,
         "size": 4
       },
       {
         "meaning": "u32, handler table index",
         "name": "SIG_HANDLER",
-        "offset": 65564,
+        "offset": 65556,
         "size": 4
       },
       {
         "meaning": "u32, sa_flags",
         "name": "SIG_FLAGS",
-        "offset": 65568,
+        "offset": 65560,
         "size": 4
+      },
+      {
+        "meaning": "raw u64 sigval bits (wasm32 uses low 32 bits)",
+        "name": "SIG_SI_VALUE",
+        "offset": 65564,
+        "size": 8
       },
       {
         "meaning": "u64 (LE), saved blocked mask",
         "name": "SIG_OLD_MASK",
-        "offset": 65576,
+        "offset": 65572,
+        "size": 8
+      },
+      {
+        "meaning": "i32, siginfo si_code",
+        "name": "SIG_SI_CODE",
+        "offset": 65580,
+        "size": 4
+      },
+      {
+        "meaning": "i32, pid or SI_TIMER timer ID",
+        "name": "SIGINFO_WORD_1",
+        "offset": 65584,
+        "size": 4
+      },
+      {
+        "meaning": "raw u32 uid bits or i32 SI_TIMER overrun",
+        "name": "SIGINFO_WORD_2",
+        "offset": 65588,
+        "size": 4
+      },
+      {
+        "meaning": "u64, caller-native alternate stack pointer or zero",
+        "name": "SIG_ALT_SP",
+        "offset": 65592,
+        "size": 8
+      },
+      {
+        "meaning": "u64, caller-native alternate stack size",
+        "name": "SIG_ALT_SIZE",
+        "offset": 65600,
         "size": 8
       }
     ]
@@ -186,15 +231,14 @@
     "optional_kernel_exports": [
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
-      "kernel_set_cwd",
       "kernel_set_max_addr",
-      "kernel_set_mmap_base",
-      "kernel_set_process_argv"
+      "kernel_set_mmap_base"
     ],
     "optional_kernel_features": 0,
     "required_kernel_exports": [
       "__abi_version",
       "kernel_alloc_scratch",
+      "kernel_clear_process_metadata",
       "kernel_create_process",
       "kernel_create_process_with_stdio",
       "kernel_dequeue_signal",
@@ -217,11 +261,13 @@
       "kernel_pipe_has_readers",
       "kernel_posix_timer_fire",
       "kernel_prepare_write_operation",
+      "kernel_push_process_metadata_entry",
       "kernel_reap_exited_child",
       "kernel_remove_process",
       "kernel_semctl_array_bytes",
       "kernel_semid_ds_bytes",
       "kernel_set_current_tid",
+      "kernel_set_cwd",
       "kernel_shmid_ds_bytes",
       "kernel_spawn_process",
       "kernel_spawn_reserved_process",
@@ -826,7 +872,7 @@
     {
       "kind": "func",
       "name": "kernel_dequeue_signal",
-      "signature": "(i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1241,7 +1287,7 @@
     {
       "kind": "func",
       "name": "kernel_getsockopt",
-      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1261,7 +1307,7 @@
     {
       "kind": "func",
       "name": "kernel_handle_channel",
-      "signature": "(i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1441,7 +1487,7 @@
     {
       "kind": "func",
       "name": "kernel_mq_drain_notification",
-      "signature": "(i32) -> (i32)"
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1506,7 +1552,7 @@
     {
       "kind": "func",
       "name": "kernel_pipe2",
-      "signature": "(i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1546,7 +1592,7 @@
     {
       "kind": "func",
       "name": "kernel_poll",
-      "signature": "(i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1746,7 +1792,7 @@
     {
       "kind": "func",
       "name": "kernel_select",
-      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1951,7 +1997,7 @@
     {
       "kind": "func",
       "name": "kernel_socketpair",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2056,7 +2102,7 @@
     {
       "kind": "func",
       "name": "kernel_timer_create",
-      "signature": "(i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -2156,7 +2202,7 @@
     {
       "kind": "func",
       "name": "kernel_wait_child_poll",
-      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2528,6 +2574,81 @@
         }
       ],
       "size": 32
+    },
+    "KernelCmsghdrWire": {
+      "fields": [
+        {
+          "name": "cmsg_len",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "cmsg_level",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "cmsg_type",
+          "offset": 8,
+          "span": 4
+        }
+      ],
+      "size": 12
+    },
+    "KernelIovecWire": {
+      "fields": [
+        {
+          "name": "base",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "len",
+          "offset": 4,
+          "span": 4
+        }
+      ],
+      "size": 8
+    },
+    "KernelMsghdrWire": {
+      "fields": [
+        {
+          "name": "name",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "name_len",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "iov",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "iov_len",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "control",
+          "offset": 16,
+          "span": 4
+        },
+        {
+          "name": "control_len",
+          "offset": 20,
+          "span": 4
+        },
+        {
+          "name": "flags",
+          "offset": 24,
+          "span": 4
+        }
+      ],
+      "size": 28
     },
     "KernelWaitResult": {
       "fields": [
@@ -3641,6 +3762,13 @@
     "TIMESTAMP_RESOLUTION": 23,
     "VDISABLE": 8
   },
+  "platform_limits": {
+    "arg_max_bytes": 4194304,
+    "fd_set_bytes": 128,
+    "fd_setsize": 1024,
+    "iov_max": 1024,
+    "path_max_bytes": 4096
+  },
   "process_expected_globals": [
     "__channel_base",
     "__tls_base"
@@ -3708,6 +3836,108 @@
       "pages_per_slot": 4
     },
     "wasm_page_size": 65536
+  },
+  "process_native_layouts": {
+    "cmsghdr": {
+      "wasm32": {
+        "align": 4,
+        "data_offset": 12,
+        "len_offset": 0,
+        "level_offset": 4,
+        "size": 12,
+        "type_offset": 8
+      },
+      "wasm64": {
+        "align": 8,
+        "data_offset": 16,
+        "len_offset": 0,
+        "level_offset": 8,
+        "size": 16,
+        "type_offset": 12
+      }
+    },
+    "iovec": {
+      "wasm32": {
+        "base_offset": 0,
+        "len_offset": 4,
+        "size": 8
+      },
+      "wasm64": {
+        "base_offset": 0,
+        "len_offset": 8,
+        "size": 16
+      }
+    },
+    "kernel_message_wire": {
+      "flattened_iovec_count": 1
+    },
+    "msghdr": {
+      "wasm32": {
+        "control_offset": 16,
+        "controllen_offset": 20,
+        "flags_offset": 24,
+        "iov_offset": 8,
+        "iovlen_offset": 12,
+        "name_offset": 0,
+        "namelen_offset": 4,
+        "size": 28
+      },
+      "wasm64": {
+        "control_offset": 32,
+        "controllen_offset": 40,
+        "flags_offset": 48,
+        "iov_offset": 16,
+        "iovlen_offset": 24,
+        "name_offset": 0,
+        "namelen_offset": 8,
+        "size": 56
+      }
+    },
+    "scm_rights": {
+      "fd_bytes": 4,
+      "level": 1,
+      "type": 1
+    },
+    "sigevent": {
+      "wasm32": {
+        "notify_offset": 8,
+        "payload_offset": 12,
+        "signo_offset": 4,
+        "size": 64,
+        "value_offset": 0,
+        "value_size": 4
+      },
+      "wasm64": {
+        "notify_offset": 12,
+        "payload_offset": 16,
+        "signo_offset": 8,
+        "size": 64,
+        "value_offset": 0,
+        "value_size": 8
+      }
+    },
+    "siginfo": {
+      "code_offset": 8,
+      "errno_offset": 4,
+      "signo_offset": 0,
+      "wasm32": {
+        "pid_offset": 12,
+        "size": 128,
+        "uid_offset": 16,
+        "value_offset": 20,
+        "value_size": 4
+      },
+      "wasm64": {
+        "pid_offset": 16,
+        "size": 128,
+        "uid_offset": 20,
+        "value_offset": 24,
+        "value_size": 8
+      }
+    },
+    "socket_message_flags": {
+      "trunc": 32
+    }
   },
   "program_artifact": {
     "fork_instrumentation": {
@@ -3833,11 +4063,68 @@
       ]
     }
   },
+  "spawn_contract": {
+    "action_record": {
+      "bytes": 28,
+      "offsets": {
+        "fd": 4,
+        "mode": 24,
+        "newfd": 8,
+        "oflag": 20,
+        "op": 0,
+        "path_len": 16,
+        "path_off": 12
+      }
+    },
+    "attribute_bits": {
+      "resetids": 1,
+      "setpgroup": 2,
+      "setschedparam": 16,
+      "setscheduler": 32,
+      "setsid": 128,
+      "setsigdef": 4,
+      "setsigmask": 8,
+      "usevfork": 64
+    },
+    "count_caps": {
+      "actions": 1024,
+      "argv": 4096,
+      "envp": 4096
+    },
+    "header": {
+      "bytes": 40,
+      "offsets": {
+        "action_count": 8,
+        "argc": 0,
+        "attr_flags": 12,
+        "envc": 4,
+        "pad": 20,
+        "pgrp": 16,
+        "sigdef": 24,
+        "sigmask": 32
+      }
+    },
+    "opcodes": {
+      "chdir": 3,
+      "close": 1,
+      "dup2": 2,
+      "fchdir": 4,
+      "open": 0
+    },
+    "platform_aliases": {
+      "arg_max_bytes": 4194304,
+      "path_max_bytes": 4096
+    },
+    "string_offset_bytes": 4,
+    "syscall_number": 500,
+    "wire_max_bytes": 8417320
+  },
   "syscall_arg_descriptors": {
     "1": [
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -3847,6 +4134,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -3854,6 +4142,7 @@
       {
         "argIndex": 3,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -3863,6 +4152,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -3870,6 +4160,7 @@
       {
         "argIndex": 2,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -3879,6 +4170,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -3886,6 +4178,7 @@
       {
         "argIndex": 2,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 3,
           "type": "arg"
@@ -3907,6 +4200,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -3914,6 +4208,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -3924,6 +4219,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -3942,6 +4238,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "size": 8,
           "type": "fixed"
@@ -3952,6 +4249,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -3981,6 +4279,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "deref"
@@ -3989,6 +4288,7 @@
       {
         "argIndex": 2,
         "direction": "inout",
+        "required": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -3999,6 +4299,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "deref"
@@ -4007,6 +4308,7 @@
       {
         "argIndex": 2,
         "direction": "inout",
+        "required": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -4017,6 +4319,7 @@
       {
         "argIndex": 3,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 8,
           "type": "fixed"
@@ -4027,6 +4330,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4045,6 +4349,7 @@
       {
         "argIndex": 0,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 1,
           "type": "arg"
@@ -4055,6 +4360,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -4065,6 +4371,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "nullable": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4075,6 +4382,7 @@
       {
         "argIndex": 2,
         "direction": "in",
+        "required": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4093,6 +4401,7 @@
       {
         "argIndex": 2,
         "direction": "in",
+        "nullable": true,
         "size": {
           "size": 32,
           "type": "fixed"
@@ -4103,6 +4412,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4122,6 +4432,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4143,6 +4454,7 @@
       {
         "argIndex": 0,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -4151,6 +4463,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -4159,6 +4472,7 @@
       {
         "argIndex": 2,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -4169,6 +4483,7 @@
       {
         "argIndex": 0,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -4177,6 +4492,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -4185,6 +4501,7 @@
       {
         "argIndex": 2,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -4207,6 +4524,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "nullable": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -4215,6 +4533,7 @@
       {
         "argIndex": 3,
         "direction": "out",
+        "nullable": true,
         "size": {
           "size": 144,
           "type": "fixed"
@@ -4225,6 +4544,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4234,6 +4554,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4241,6 +4562,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -4251,6 +4573,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4260,6 +4583,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4267,6 +4591,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4276,6 +4601,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4283,6 +4609,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4292,6 +4619,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4299,6 +4627,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4308,6 +4637,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4315,6 +4645,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -4325,6 +4656,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4346,6 +4678,7 @@
       {
         "argIndex": 0,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 8,
           "type": "fixed"
@@ -4356,6 +4689,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "size": 8,
           "type": "fixed"
@@ -4364,14 +4698,17 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "nullable": true,
         "size": {
-          "size": 128,
-          "type": "fixed"
+          "type": "process-layout",
+          "wasm32Size": 128,
+          "wasm64Size": 128
         }
       },
       {
         "argIndex": 2,
         "direction": "in",
+        "nullable": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4382,6 +4719,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "nullable": true,
         "size": {
           "type": "process-layout",
           "wasm32Size": 12,
@@ -4391,6 +4729,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "nullable": true,
         "size": {
           "type": "process-layout",
           "wasm32Size": 12,
@@ -4402,6 +4741,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4411,6 +4751,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4420,18 +4761,9 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
-        }
-      }
-    ],
-    "223": [
-      {
-        "argIndex": 1,
-        "direction": "inout",
-        "size": {
-          "size": 16,
-          "type": "fixed"
         }
       }
     ],
@@ -4461,6 +4793,7 @@
       {
         "argIndex": 2,
         "direction": "out",
+        "nullable": true,
         "size": {
           "type": "process-layout",
           "wasm32Size": 16,
@@ -4472,6 +4805,7 @@
       {
         "argIndex": 0,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 1,
           "type": "arg"
@@ -4515,6 +4849,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4536,6 +4871,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4587,6 +4923,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4596,6 +4933,7 @@
       {
         "argIndex": 2,
         "direction": "in",
+        "nullable": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4604,6 +4942,7 @@
       {
         "argIndex": 3,
         "direction": "out",
+        "nullable": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4614,6 +4953,7 @@
       {
         "argIndex": 0,
         "direction": "inout",
+        "required": true,
         "size": {
           "argIndex": 1,
           "multiplier": 8,
@@ -4635,6 +4975,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4643,6 +4984,7 @@
       {
         "argIndex": 2,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 3,
           "type": "arg"
@@ -4653,6 +4995,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4660,6 +5003,7 @@
       {
         "argIndex": 4,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 256,
           "type": "fixed"
@@ -4682,6 +5026,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4691,6 +5036,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4702,8 +5048,9 @@
         "direction": "out",
         "required": true,
         "size": {
-          "size": 128,
-          "type": "fixed"
+          "type": "process-layout",
+          "wasm32Size": 128,
+          "wasm64Size": 128
         }
       },
       {
@@ -4771,6 +5118,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4780,6 +5128,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -4790,6 +5139,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4797,6 +5147,7 @@
       {
         "argIndex": 3,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4826,14 +5177,17 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "nullable": true,
         "size": {
-          "size": 16,
-          "type": "fixed"
+          "type": "process-layout",
+          "wasm32Size": 64,
+          "wasm64Size": 64
         }
       },
       {
         "argIndex": 2,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -4844,6 +5198,7 @@
       {
         "argIndex": 2,
         "direction": "in",
+        "required": true,
         "size": {
           "size": 32,
           "type": "fixed"
@@ -4852,6 +5207,7 @@
       {
         "argIndex": 3,
         "direction": "out",
+        "nullable": true,
         "size": {
           "size": 32,
           "type": "fixed"
@@ -4862,6 +5218,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 32,
           "type": "fixed"
@@ -4872,6 +5229,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4879,6 +5237,7 @@
       {
         "argIndex": 3,
         "direction": "in",
+        "nullable": true,
         "size": {
           "type": "process-layout",
           "wasm32Size": 32,
@@ -4890,6 +5249,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -4899,6 +5259,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -4907,6 +5268,7 @@
       {
         "argIndex": 4,
         "direction": "in",
+        "nullable": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4917,6 +5279,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -4925,6 +5288,7 @@
       {
         "argIndex": 3,
         "direction": "out",
+        "nullable": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -4933,6 +5297,7 @@
       {
         "argIndex": 4,
         "direction": "in",
+        "nullable": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4943,6 +5308,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "nullable": true,
         "size": {
           "type": "process-layout",
           "wasm32Size": 64,
@@ -4954,6 +5320,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "nullable": true,
         "size": {
           "type": "process-layout",
           "wasm32Size": 32,
@@ -4963,6 +5330,7 @@
       {
         "argIndex": 2,
         "direction": "out",
+        "nullable": true,
         "size": {
           "type": "process-layout",
           "wasm32Size": 32,
@@ -4974,6 +5342,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "argIndex": 2,
           "multiplier": 6,
@@ -4985,6 +5354,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "nullable": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4993,6 +5363,7 @@
       {
         "argIndex": 2,
         "direction": "out",
+        "nullable": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -5003,6 +5374,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "nullable": true,
         "size": {
           "size": 8,
           "type": "fixed"
@@ -5011,6 +5383,7 @@
       {
         "argIndex": 2,
         "direction": "out",
+        "nullable": true,
         "size": {
           "size": 8,
           "type": "fixed"
@@ -5032,6 +5405,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -5041,6 +5415,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -5050,6 +5425,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "nullable": true,
         "size": {
           "argIndex": 2,
           "type": "deref"
@@ -5058,6 +5434,7 @@
       {
         "argIndex": 2,
         "direction": "inout",
+        "nullable": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -5068,6 +5445,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -5078,6 +5456,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -5088,6 +5467,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -5098,6 +5478,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -5105,6 +5486,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -5115,6 +5497,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -5122,6 +5505,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -5131,6 +5515,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -5140,6 +5525,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -5150,6 +5536,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "nullable": true,
         "size": {
           "argIndex": 2,
           "type": "deref"
@@ -5158,6 +5545,7 @@
       {
         "argIndex": 2,
         "direction": "inout",
+        "nullable": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -5168,6 +5556,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -5178,6 +5567,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -5188,6 +5578,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -5198,6 +5589,7 @@
       {
         "argIndex": 3,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 4,
           "type": "deref"
@@ -5206,6 +5598,7 @@
       {
         "argIndex": 4,
         "direction": "inout",
+        "required": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -5216,6 +5609,7 @@
       {
         "argIndex": 3,
         "direction": "in",
+        "required": true,
         "size": {
           "argIndex": 4,
           "type": "arg"
@@ -5237,6 +5631,7 @@
       {
         "argIndex": 0,
         "direction": "inout",
+        "required": true,
         "size": {
           "argIndex": 1,
           "multiplier": 8,
@@ -5248,6 +5643,7 @@
       {
         "argIndex": 3,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 8,
           "type": "fixed"
@@ -5258,6 +5654,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -5266,6 +5663,7 @@
       {
         "argIndex": 4,
         "direction": "in",
+        "required": true,
         "size": {
           "argIndex": 5,
           "type": "arg"
@@ -5276,6 +5674,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -5284,6 +5683,7 @@
       {
         "argIndex": 4,
         "direction": "out",
+        "nullable": true,
         "size": {
           "argIndex": 5,
           "type": "deref"
@@ -5292,6 +5692,7 @@
       {
         "argIndex": 5,
         "direction": "inout",
+        "nullable": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -5302,6 +5703,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -5312,6 +5714,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -5322,6 +5725,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -5353,6 +5757,7 @@
       {
         "argIndex": 0,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 390,
           "type": "fixed"
@@ -5363,6 +5768,7 @@
       {
         "argIndex": 0,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 8,
           "type": "fixed"
@@ -5373,6 +5779,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -5383,6 +5790,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -5393,6 +5801,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -5402,6 +5811,7 @@
       {
         "argIndex": 0,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 8,
           "type": "fixed"
@@ -5412,6 +5822,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -5430,6 +5841,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -5439,6 +5851,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -5448,6 +5861,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -5455,6 +5869,7 @@
       {
         "argIndex": 3,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -5464,6 +5879,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -5473,6 +5889,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }
@@ -5482,6 +5899,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "type": "cstring"
         }

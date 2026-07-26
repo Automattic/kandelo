@@ -8,7 +8,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use spin::Mutex;
-use wasm_posix_shared::{spawn_contract, Errno};
+use wasm_posix_shared::{Errno, spawn_contract};
 
 /// Kernel-owned reusable transport for SYS_SPAWN blobs larger than the normal
 /// syscall-channel scratch region.
@@ -93,11 +93,7 @@ impl SpawnScratchBuffer {
         Ok(())
     }
 
-    fn parse_reserved(
-        &mut self,
-        token: i64,
-        length: usize,
-    ) -> Result<ParsedBlob, Errno> {
+    fn parse_reserved(&mut self, token: i64, length: usize) -> Result<ParsedBlob, Errno> {
         if token <= 0 || self.reservation != Some(token) {
             return Err(Errno::EINVAL);
         }
@@ -131,17 +127,11 @@ impl GlobalSpawnScratch {
     }
 
     fn pointer(&self, token: i64) -> Result<usize, Errno> {
-        self.inner
-            .try_lock()
-            .ok_or(Errno::EBUSY)?
-            .pointer(token)
+        self.inner.try_lock().ok_or(Errno::EBUSY)?.pointer(token)
     }
 
     fn capacity(&self, token: i64) -> Result<usize, Errno> {
-        self.inner
-            .try_lock()
-            .ok_or(Errno::EBUSY)?
-            .capacity(token)
+        self.inner.try_lock().ok_or(Errno::EBUSY)?.capacity(token)
     }
 
     fn retained_capacity(&self) -> Result<usize, Errno> {
@@ -204,10 +194,7 @@ pub fn cancel_spawn_scratch(token: i64) -> Result<(), Errno> {
 /// The returned representation owns all argv, environment, and action bytes,
 /// so the scratch mutex is released before callers enter the process table or
 /// invoke any host import.
-pub fn parse_reserved_spawn_blob(
-    token: i64,
-    length: usize,
-) -> Result<ParsedBlob, Errno> {
+pub fn parse_reserved_spawn_blob(token: i64, length: usize) -> Result<ParsedBlob, Errno> {
     SPAWN_SCRATCH.parse_reserved(token, length)
 }
 
@@ -219,8 +206,8 @@ pub fn parse_reserved_spawn_blob(
 /// cannot be mistaken for implemented POSIX behavior.
 pub mod attr_flags {
     pub use wasm_posix_shared::spawn_contract::{
-        ATTR_SETPGROUP as SETPGROUP, ATTR_SETSID as SETSID,
-        ATTR_SETSIGDEF as SETSIGDEF, ATTR_SETSIGMASK as SETSIGMASK,
+        ATTR_SETPGROUP as SETPGROUP, ATTR_SETSID as SETSID, ATTR_SETSIGDEF as SETSIGDEF,
+        ATTR_SETSIGMASK as SETSIGMASK,
     };
 }
 
@@ -300,9 +287,8 @@ pub enum FileAction {
 /// File-action `op` codes shared with `libc/glue/posix_spawn.c`.
 pub mod fdop {
     pub use wasm_posix_shared::spawn_contract::{
-        WIRE_OP_CHDIR as CHDIR, WIRE_OP_CLOSE as CLOSE,
-        WIRE_OP_DUP2 as DUP2, WIRE_OP_FCHDIR as FCHDIR,
-        WIRE_OP_OPEN as OPEN,
+        WIRE_OP_CHDIR as CHDIR, WIRE_OP_CLOSE as CLOSE, WIRE_OP_DUP2 as DUP2,
+        WIRE_OP_FCHDIR as FCHDIR, WIRE_OP_OPEN as OPEN,
     };
 }
 
@@ -334,28 +320,26 @@ fn read_u64(bytes: &[u8], off: usize) -> Result<u64, Errno> {
     Ok(u64::from_le_bytes(buf))
 }
 
-/// Resolve a `(off, len)` pair against the strings region — both must be
-/// in-bounds and `len` must include exactly one trailing NUL or no NUL at
-/// all (the parser strips trailing NUL).
-fn read_string(strings: &[u8], off: u32, len: u32) -> Result<Vec<u8>, Errno> {
+/// Resolve an action-path `(off, len)` pair against the strings region.
+///
+/// `len` is musl's `strlen(path) + 1`, so the referenced range must contain
+/// exactly one terminal NUL. WHY: accepting an absent or interior terminator
+/// gives the producer and parser different path boundaries for the same wire
+/// record.
+fn read_action_path(strings: &[u8], off: u32, len: u32) -> Result<Vec<u8>, Errno> {
     let off = off as usize;
     let len = len as usize;
     let raw = strings
         .get(off..off.checked_add(len).ok_or(Errno::EINVAL)?)
         .ok_or(Errno::EINVAL)?;
-    // Permit either a trailing NUL or no NUL.
-    let trimmed = if raw.last() == Some(&0u8) {
-        &raw[..raw.len() - 1]
-    } else {
-        raw
-    };
-    if trimmed.len() >= spawn_contract::POSIX_PATH_MAX_BYTES {
-        return Err(Errno::ENAMETOOLONG);
-    }
-    if trimmed.contains(&0) {
+    let (&terminator, path) = raw.split_last().ok_or(Errno::EINVAL)?;
+    if terminator != 0 || path.contains(&0) {
         return Err(Errno::EINVAL);
     }
-    Ok(trimmed.to_vec())
+    if path.len() >= spawn_contract::POSIX_PATH_MAX_BYTES {
+        return Err(Errno::ENAMETOOLONG);
+    }
+    Ok(path.to_vec())
 }
 
 /// Parse a SYS_SPAWN blob. Bails with `Errno::EINVAL` on any malformed
@@ -369,10 +353,8 @@ pub fn parse_blob(bytes: &[u8]) -> Result<ParsedBlob, Errno> {
     }
     let argc = read_u32(bytes, spawn_contract::WIRE_HEADER_ARGC_OFFSET)? as usize;
     let envc = read_u32(bytes, spawn_contract::WIRE_HEADER_ENVC_OFFSET)? as usize;
-    let n_actions =
-        read_u32(bytes, spawn_contract::WIRE_HEADER_ACTION_COUNT_OFFSET)? as usize;
-    let attr_flags =
-        read_u32(bytes, spawn_contract::WIRE_HEADER_ATTR_FLAGS_OFFSET)?;
+    let n_actions = read_u32(bytes, spawn_contract::WIRE_HEADER_ACTION_COUNT_OFFSET)? as usize;
+    let attr_flags = read_u32(bytes, spawn_contract::WIRE_HEADER_ATTR_FLAGS_OFFSET)?;
     let pgrp = read_i32(bytes, spawn_contract::WIRE_HEADER_PGRP_OFFSET)?;
     // WIRE_HEADER_PAD_OFFSET names the reserved u32; readers intentionally
     // ignore its value until a later ABI gives that field semantics.
@@ -449,10 +431,8 @@ pub fn parse_blob(bytes: &[u8]) -> Result<ParsedBlob, Errno> {
     // before ARG_MAX is checked. Since every scan contributes to this budget,
     // adversarial work and eventual allocations are both bounded by ARG_MAX.
     let mut represented_bytes = pointer_bytes;
-    let argv_ranges =
-        measure_strings_by_offset(&argv_offsets, strings, &mut represented_bytes)?;
-    let envp_ranges =
-        measure_strings_by_offset(&envp_offsets, strings, &mut represented_bytes)?;
+    let argv_ranges = measure_strings_by_offset(&argv_offsets, strings, &mut represented_bytes)?;
+    let envp_ranges = measure_strings_by_offset(&envp_offsets, strings, &mut represented_bytes)?;
     let argv = decode_measured_strings(&argv_ranges, strings);
     let envp = decode_measured_strings(&envp_ranges, strings);
 
@@ -460,14 +440,8 @@ pub fn parse_blob(bytes: &[u8]) -> Result<ParsedBlob, Errno> {
     let mut file_actions: Vec<FileAction> = Vec::with_capacity(n_actions);
     for i in 0..n_actions {
         let base = i * spawn_contract::WIRE_ACTION_RECORD_BYTES;
-        let op = read_u32(
-            actions_bytes,
-            base + spawn_contract::WIRE_ACTION_OP_OFFSET,
-        )?;
-        let fd = read_i32(
-            actions_bytes,
-            base + spawn_contract::WIRE_ACTION_FD_OFFSET,
-        )?;
+        let op = read_u32(actions_bytes, base + spawn_contract::WIRE_ACTION_OP_OFFSET)?;
+        let fd = read_i32(actions_bytes, base + spawn_contract::WIRE_ACTION_FD_OFFSET)?;
         let newfd = read_i32(
             actions_bytes,
             base + spawn_contract::WIRE_ACTION_NEWFD_OFFSET,
@@ -491,7 +465,7 @@ pub fn parse_blob(bytes: &[u8]) -> Result<ParsedBlob, Errno> {
         let action = match op {
             x if x == fdop::OPEN => FileAction::Open {
                 fd,
-                path: read_string(strings, path_off, path_len)?,
+                path: read_action_path(strings, path_off, path_len)?,
                 oflag,
                 mode,
             },
@@ -501,7 +475,7 @@ pub fn parse_blob(bytes: &[u8]) -> Result<ParsedBlob, Errno> {
                 fd: newfd,
             },
             x if x == fdop::CHDIR => FileAction::Chdir {
-                path: read_string(strings, path_off, path_len)?,
+                path: read_action_path(strings, path_off, path_len)?,
             },
             x if x == fdop::FCHDIR => FileAction::Fchdir { fd },
             _ => return Err(Errno::EINVAL),
@@ -535,7 +509,7 @@ fn measure_strings_by_offset(
             return Err(Errno::EINVAL);
         }
         let tail = &strings[off..];
-        let length = tail.iter().position(|&b| b == 0).unwrap_or(tail.len());
+        let length = tail.iter().position(|&b| b == 0).ok_or(Errno::EINVAL)?;
         *represented_bytes = represented_bytes
             .checked_add(length)
             .and_then(|total| total.checked_add(1))
@@ -548,10 +522,7 @@ fn measure_strings_by_offset(
     Ok(ranges)
 }
 
-fn decode_measured_strings(
-    ranges: &[(usize, usize)],
-    strings: &[u8],
-) -> Vec<Vec<u8>> {
+fn decode_measured_strings(ranges: &[(usize, usize)], strings: &[u8]) -> Vec<Vec<u8>> {
     ranges
         .iter()
         .map(|&(start, end)| strings[start..end].to_vec())
@@ -584,7 +555,7 @@ mod parser_tests {
 
     #[test]
     fn scratch_cancel_waits_for_contention_then_definitively_releases_token() {
-        use std::sync::{mpsc, Arc};
+        use std::sync::{Arc, mpsc};
         use std::time::Duration;
 
         let scratch = Arc::new(GlobalSpawnScratch::new());
@@ -626,7 +597,7 @@ mod parser_tests {
 
     #[test]
     fn scratch_commit_waits_for_contention_then_definitively_consumes_token() {
-        use std::sync::{mpsc, Arc};
+        use std::sync::{Arc, mpsc};
         use std::time::Duration;
 
         let scratch = Arc::new(GlobalSpawnScratch::new());
@@ -698,10 +669,7 @@ mod parser_tests {
         assert_eq!(token, 1);
         assert_eq!(scratch.reservation, Some(token));
         assert_eq!(scratch.next_token, Some(2));
-        assert!(
-            scratch.retained_capacity()
-                >= spawn_contract::WIRE_HEADER_BYTES,
-        );
+        assert!(scratch.retained_capacity() >= spawn_contract::WIRE_HEADER_BYTES,);
         scratch.cancel(token).expect("cancel successful retry");
     }
 
@@ -711,19 +679,13 @@ mod parser_tests {
         let blob = build_basic_blob();
         let token = scratch.begin(blob.len()).expect("begin exact");
         let pointer = scratch.pointer(token).expect("reservation pointer");
-        let capacity = scratch
-            .capacity(token)
-            .expect("reservation capacity");
+        let capacity = scratch.capacity(token).expect("reservation capacity");
         assert_ne!(pointer, 0);
         assert!(capacity >= blob.len());
 
         let mut padded = blob;
         padded.resize(capacity, 0);
-        scratch
-            .inner
-            .try_lock()
-            .expect("write reservation")
-            .bytes[..capacity]
+        scratch.inner.try_lock().expect("write reservation").bytes[..capacity]
             .copy_from_slice(&padded);
         let parsed = scratch
             .parse_reserved(token, capacity)
@@ -747,29 +709,21 @@ mod parser_tests {
         let scratch = GlobalSpawnScratch::new();
         let first_token = scratch.begin(84 * 1024).expect("first begin");
         let first_pointer = scratch.pointer(first_token).expect("first pointer");
-        let first_capacity = scratch
-            .capacity(first_token)
-            .expect("first capacity");
+        let first_capacity = scratch.capacity(first_token).expect("first capacity");
         assert_ne!(first_pointer, 0);
         assert!(first_capacity >= 84 * 1024);
         scratch.cancel(first_token).expect("cancel first");
 
         let reused_token = scratch.begin(80 * 1024).expect("reuse begin");
-        let reused_pointer = scratch
-            .pointer(reused_token)
-            .expect("reused pointer");
-        let reused_capacity = scratch
-            .capacity(reused_token)
-            .expect("reused capacity");
+        let reused_pointer = scratch.pointer(reused_token).expect("reused pointer");
+        let reused_capacity = scratch.capacity(reused_token).expect("reused capacity");
         assert_eq!(reused_pointer, first_pointer);
         assert_eq!(reused_capacity, first_capacity);
         scratch.cancel(reused_token).expect("cancel reuse");
 
         let grown_token = scratch.begin(first_capacity + 1).expect("grow begin");
         let grown_pointer = scratch.pointer(grown_token).expect("grown pointer");
-        let grown_capacity = scratch
-            .capacity(grown_token)
-            .expect("grown capacity");
+        let grown_capacity = scratch.capacity(grown_token).expect("grown capacity");
         assert_ne!(grown_pointer, 0);
         assert!(grown_capacity > first_capacity);
         scratch.cancel(grown_token).expect("cancel grown");
@@ -795,10 +749,7 @@ mod parser_tests {
         ));
         assert_eq!(scratch.pointer(first), Err(Errno::EINVAL));
         assert_eq!(scratch.capacity(first), Err(Errno::EINVAL));
-        assert_ne!(
-            scratch.pointer(second).expect("current pointer"),
-            0,
-        );
+        assert_ne!(scratch.pointer(second).expect("current pointer"), 0,);
         assert_eq!(
             scratch.capacity(second).expect("current capacity"),
             scratch.retained_capacity().expect("retained capacity"),
@@ -917,6 +868,19 @@ mod parser_tests {
     }
 
     #[test]
+    fn parse_blob_rejects_unterminated_argv_and_environment_strings() {
+        for (argc, envc) in [(1, 0), (0, 1)] {
+            let mut blob = header(argc, envc, 0);
+            blob.extend_from_slice(&0u32.to_le_bytes());
+            blob.extend_from_slice(b"unterminated");
+            assert!(
+                matches!(parse_blob(&blob), Err(Errno::EINVAL)),
+                "argc={argc}, envc={envc}",
+            );
+        }
+    }
+
+    #[test]
     fn parse_blob_rejects_action_path_out_of_bounds() {
         // n_actions=1, FDOP_CHDIR with path_off=999 (out of range).
         let mut blob: Vec<u8> = Vec::new();
@@ -952,10 +916,7 @@ mod parser_tests {
         blob.extend_from_slice(&0u64.to_le_bytes()); // sigdef
         blob.extend_from_slice(&0u64.to_le_bytes()); // sigmask
         blob.extend_from_slice(&99u32.to_le_bytes()); // op = 99 (unknown)
-        blob.extend_from_slice(&[
-            0u8;
-            spawn_contract::WIRE_ACTION_RECORD_BYTES - 4
-        ]);
+        blob.extend_from_slice(&[0u8; spawn_contract::WIRE_ACTION_RECORD_BYTES - 4]);
         assert!(matches!(parse_blob(&blob), Err(Errno::EINVAL)));
     }
 
@@ -966,10 +927,7 @@ mod parser_tests {
         blob.extend_from_slice(&u32::MAX.to_le_bytes());
         blob.extend_from_slice(&0u32.to_le_bytes());
         blob.extend_from_slice(&0u32.to_le_bytes());
-        blob.extend_from_slice(&[
-            0u8;
-            spawn_contract::WIRE_HEADER_BYTES - 12
-        ]);
+        blob.extend_from_slice(&[0u8; spawn_contract::WIRE_HEADER_BYTES - 12]);
         assert!(matches!(parse_blob(&blob), Err(Errno::EINVAL)));
     }
 
@@ -982,6 +940,19 @@ mod parser_tests {
         blob
     }
 
+    fn action_path_blob(op: u32, path_len: u32, strings: &[u8]) -> Vec<u8> {
+        let mut blob = header(0, 0, 1);
+        blob.extend_from_slice(&op.to_le_bytes());
+        blob.extend_from_slice(&0i32.to_le_bytes()); // fd
+        blob.extend_from_slice(&0i32.to_le_bytes()); // newfd
+        blob.extend_from_slice(&0u32.to_le_bytes()); // path_off
+        blob.extend_from_slice(&path_len.to_le_bytes());
+        blob.extend_from_slice(&0i32.to_le_bytes()); // oflag
+        blob.extend_from_slice(&0u32.to_le_bytes()); // mode
+        blob.extend_from_slice(strings);
+        blob
+    }
+
     fn exact_count_blob(argc: usize, envc: usize, n_actions: usize) -> Vec<u8> {
         let mut blob = header(argc as u32, envc as u32, n_actions as u32);
         blob.resize(
@@ -991,8 +962,8 @@ mod parser_tests {
         );
         for _ in 0..n_actions {
             let mut record = [0u8; spawn_contract::WIRE_ACTION_RECORD_BYTES];
-            record[spawn_contract::WIRE_ACTION_OP_OFFSET
-                ..spawn_contract::WIRE_ACTION_OP_OFFSET + 4]
+            record
+                [spawn_contract::WIRE_ACTION_OP_OFFSET..spawn_contract::WIRE_ACTION_OP_OFFSET + 4]
                 .copy_from_slice(&fdop::CLOSE.to_le_bytes());
             blob.extend_from_slice(&record);
         }
@@ -1007,32 +978,17 @@ mod parser_tests {
 
     #[test]
     fn parse_blob_accepts_each_exact_count_cap() {
-        let argv = parse_blob(&exact_count_blob(
-            spawn_contract::MAX_ARGV_COUNT,
-            0,
-            0,
-        ))
-        .expect("exact argv cap");
+        let argv = parse_blob(&exact_count_blob(spawn_contract::MAX_ARGV_COUNT, 0, 0))
+            .expect("exact argv cap");
         assert_eq!(argv.argv.len(), spawn_contract::MAX_ARGV_COUNT);
 
-        let envp = parse_blob(&exact_count_blob(
-            0,
-            spawn_contract::MAX_ENVP_COUNT,
-            0,
-        ))
-        .expect("exact envp cap");
+        let envp = parse_blob(&exact_count_blob(0, spawn_contract::MAX_ENVP_COUNT, 0))
+            .expect("exact envp cap");
         assert_eq!(envp.envp.len(), spawn_contract::MAX_ENVP_COUNT);
 
-        let actions = parse_blob(&exact_count_blob(
-            0,
-            0,
-            spawn_contract::MAX_ACTION_COUNT,
-        ))
-        .expect("exact action cap");
-        assert_eq!(
-            actions.file_actions.len(),
-            spawn_contract::MAX_ACTION_COUNT,
-        );
+        let actions = parse_blob(&exact_count_blob(0, 0, spawn_contract::MAX_ACTION_COUNT))
+            .expect("exact action cap");
+        assert_eq!(actions.file_actions.len(), spawn_contract::MAX_ACTION_COUNT,);
     }
 
     #[test]
@@ -1127,17 +1083,30 @@ mod parser_tests {
     }
 
     #[test]
-    fn parse_blob_rejects_an_interior_nul_in_an_action_path() {
-        let mut blob = header(0, 0, 1);
-        blob.extend_from_slice(&fdop::CHDIR.to_le_bytes());
-        blob.extend_from_slice(&0i32.to_le_bytes());
-        blob.extend_from_slice(&0i32.to_le_bytes());
-        blob.extend_from_slice(&0u32.to_le_bytes());
-        blob.extend_from_slice(&4u32.to_le_bytes());
-        blob.extend_from_slice(&0i32.to_le_bytes());
-        blob.extend_from_slice(&0u32.to_le_bytes());
-        blob.extend_from_slice(b"a\0b\0");
-        assert!(matches!(parse_blob(&blob), Err(Errno::EINVAL)));
+    fn parse_blob_action_paths_require_exactly_one_terminal_nul() {
+        for op in [fdop::OPEN, fdop::CHDIR] {
+            let parsed =
+                parse_blob(&action_path_blob(op, 9, b"relative\0")).expect("one terminal NUL");
+            let path = match &parsed.file_actions[0] {
+                FileAction::Open { path, .. } | FileAction::Chdir { path } => path,
+                _ => panic!("expected path-bearing action"),
+            };
+            assert_eq!(path, b"relative");
+
+            for (case, path_len, strings) in [
+                ("zero length", 0, &b"\0"[..]),
+                ("missing terminator", 3, &b"abc\0"[..]),
+                ("interior NUL", 4, &b"a\0b\0"[..]),
+            ] {
+                assert!(
+                    matches!(
+                        parse_blob(&action_path_blob(op, path_len, strings)),
+                        Err(Errno::EINVAL)
+                    ),
+                    "{case} must be rejected for action op {op}",
+                );
+            }
+        }
     }
 
     #[test]

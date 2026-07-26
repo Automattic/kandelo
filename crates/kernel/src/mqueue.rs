@@ -7,7 +7,7 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
-use wasm_posix_shared::Errno;
+use wasm_posix_shared::{signal::NSIG, Errno};
 
 // Access mode flags
 const O_RDONLY: u32 = 0;
@@ -56,11 +56,13 @@ struct MqDescriptor {
     nonblock: bool,
 }
 
-/// Notification registration (pid + signal number).
+/// One-shot signal notification registration.
 #[derive(Clone, Copy, Debug)]
 pub struct MqNotification {
     pub pid: u32,
     pub signo: u32,
+    /// Raw registering process `union sigval` bits.
+    pub value_bits: u64,
 }
 
 /// Queue attributes returned to userspace.
@@ -310,6 +312,7 @@ impl MqueueTable {
         pid: u32,
         sigev_notify: Option<u32>, // None = unregister (sev ptr was NULL)
         signo: u32,
+        value_bits: u64,
     ) -> Result<(), Errno> {
         let desc = self.descriptors.get(&mqd).ok_or(Errno::EBADF)?;
         let queue = self.queues.get_mut(&desc.queue_name).ok_or(Errno::EBADF)?;
@@ -325,14 +328,25 @@ impl MqueueTable {
                     return Err(Errno::EBUSY);
                 }
                 // Register sentinel (blocks others, no actual signal)
-                queue.notification = Some(MqNotification { pid, signo: 0 });
+                queue.notification = Some(MqNotification {
+                    pid,
+                    signo: 0,
+                    value_bits,
+                });
                 Ok(())
             }
             Some(SIGEV_SIGNAL) => {
+                if signo == 0 || signo >= NSIG {
+                    return Err(Errno::EINVAL);
+                }
                 if queue.notification.is_some() {
                     return Err(Errno::EBUSY);
                 }
-                queue.notification = Some(MqNotification { pid, signo });
+                queue.notification = Some(MqNotification {
+                    pid,
+                    signo,
+                    value_bits,
+                });
                 Ok(())
             }
             Some(_) => Err(Errno::EINVAL),
@@ -522,30 +536,61 @@ mod tests {
             .unwrap();
 
         // Register notification
-        t.mq_notify(mqd, 42, Some(SIGEV_SIGNAL), 10).unwrap();
+        t.mq_notify(
+            mqd,
+            42,
+            Some(SIGEV_SIGNAL),
+            10,
+            0x0123_4567_89ab_cdef,
+        )
+        .unwrap();
 
         // Second registration should EBUSY
         assert_eq!(
-            t.mq_notify(mqd, 43, Some(SIGEV_SIGNAL), 11),
+            t.mq_notify(mqd, 43, Some(SIGEV_SIGNAL), 11, 0),
             Err(Errno::EBUSY)
         );
-        assert_eq!(t.mq_notify(mqd, 43, Some(SIGEV_NONE), 0), Err(Errno::EBUSY));
+        assert_eq!(
+            t.mq_notify(mqd, 43, Some(SIGEV_NONE), 0, 0),
+            Err(Errno::EBUSY)
+        );
 
         // Send to empty queue should fire notification
         let result = t.mq_send(mqd, b"hello", 1).unwrap();
         let notif = result.notification.unwrap();
         assert_eq!(notif.pid, 42);
         assert_eq!(notif.signo, 10);
+        assert_eq!(notif.value_bits, 0x0123_4567_89ab_cdef);
 
         // Auto-unregistered: second send should NOT fire
         let result = t.mq_send(mqd, b"world", 1).unwrap();
         assert!(result.notification.is_none());
 
         // Unregister with NULL sev
-        t.mq_notify(mqd, 42, Some(SIGEV_SIGNAL), 10).unwrap();
-        t.mq_notify(mqd, 42, None, 0).unwrap();
+        t.mq_notify(mqd, 42, Some(SIGEV_SIGNAL), 10, 0).unwrap();
+        t.mq_notify(mqd, 42, None, 0, 0).unwrap();
         // Now registration should work again
-        t.mq_notify(mqd, 42, Some(SIGEV_SIGNAL), 10).unwrap();
+        t.mq_notify(mqd, 42, Some(SIGEV_SIGNAL), 10, 0).unwrap();
+    }
+
+    #[test]
+    fn test_signal_notification_rejects_invalid_signums_without_registering() {
+        let mut t = MqueueTable::new();
+        let mqd = t
+            .mq_open("/invalid-notify", O_CREAT | O_RDWR, 0o644, 10, 64, true)
+            .unwrap();
+
+        for signo in [0, NSIG, u32::MAX] {
+            assert_eq!(
+                t.mq_notify(mqd, 42, Some(SIGEV_SIGNAL), signo, 0),
+                Err(Errno::EINVAL)
+            );
+        }
+
+        // WHY: a rejected registration must not occupy the queue's one-shot
+        // notification slot; a later valid registration must still succeed.
+        t.mq_notify(mqd, 42, Some(SIGEV_SIGNAL), NSIG - 1, 0)
+            .unwrap();
     }
 
     #[test]
@@ -580,13 +625,13 @@ mod tests {
             .mq_open("/cleanup", O_CREAT | O_RDWR, 0o644, 10, 64, true)
             .unwrap();
 
-        t.mq_notify(mqd, 100, Some(SIGEV_SIGNAL), 10).unwrap();
+        t.mq_notify(mqd, 100, Some(SIGEV_SIGNAL), 10, 0).unwrap();
 
         // Cleanup pid 100 should remove notification
         t.cleanup_process(100);
 
         // Now registration should succeed
-        t.mq_notify(mqd, 200, Some(SIGEV_SIGNAL), 11).unwrap();
+        t.mq_notify(mqd, 200, Some(SIGEV_SIGNAL), 11, 0).unwrap();
     }
 
     #[test]
@@ -621,7 +666,8 @@ mod tests {
         );
         assert_eq!(t.mq_receive(MQD_BASE + 999, 64).unwrap_err(), Errno::EBADF);
         assert_eq!(
-            t.mq_notify(MQD_BASE + 999, 1, Some(0), 1).unwrap_err(),
+            t.mq_notify(MQD_BASE + 999, 1, Some(0), 1, 0)
+                .unwrap_err(),
             Errno::EBADF
         );
         assert_eq!(

@@ -23,6 +23,7 @@ import {
   SPAWN_WIRE_STRING_OFFSET_BYTES,
 } from "../src/generated/abi";
 import { allocateKernelScratchRegion } from "../src/kernel-scratch";
+import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
 const E2BIG = 7;
 const EBUSY = 16;
@@ -673,7 +674,12 @@ describe("SYS_SPAWN blob transport", () => {
   });
 
   it("cancels a reservation when the host copy fails before commit", () => {
-    const blob = new Uint8Array(CH_TOTAL_SIZE + 1);
+    const blobLength = CH_TOTAL_SIZE + 1;
+    // Deliberately pass a structurally compatible but non-genuine producer.
+    // The public path always supplies a Uint8Array; this fault seam proves a
+    // post-reservation intrinsic copy failure still releases the Rust token
+    // without replacing a global prototype method that production captures.
+    const blob = { byteLength: blobLength } as Uint8Array;
     const completeChannel = vi.fn();
     const cancelSpawnScratch = vi.fn(() => 0);
     const kernelReservedSpawn = vi.fn();
@@ -685,33 +691,25 @@ describe("SYS_SPAWN blob transport", () => {
         exports: {
           kernel_spawn_scratch_begin: vi.fn(() => 17n),
           kernel_spawn_scratch_pointer: vi.fn(() => 4096),
-          kernel_spawn_scratch_capacity: vi.fn(() => blob.byteLength),
+          kernel_spawn_scratch_capacity: vi.fn(() => blobLength),
           kernel_spawn_scratch_cancel: cancelSpawnScratch,
           kernel_spawn_reserved_process: kernelReservedSpawn,
         },
       },
     });
     const channel = createChannel(7, sharedMemoryFor(65_536));
-    const args = [0, 0, 0, blob.byteLength, 0, 0];
-    const set = vi.spyOn(Uint8Array.prototype, "set")
-      .mockImplementationOnce(() => {
-        throw new Error("copy failed");
-      });
-    try {
-      worker.handleSpawnAfterResolve(
-        channel,
-        args,
-        7,
-        7,
-        0,
-        blob,
-        blob.byteLength,
-        resolvedProgram(),
-        [],
-      );
-    } finally {
-      set.mockRestore();
-    }
+    const args = [0, 0, 0, blobLength, 0, 0];
+    worker.handleSpawnAfterResolve(
+      channel,
+      args,
+      7,
+      7,
+      0,
+      blob,
+      blobLength,
+      resolvedProgram(),
+      [],
+    );
 
     expect(kernelReservedSpawn).not.toHaveBeenCalled();
     expect(cancelSpawnScratch).toHaveBeenCalledOnce();
@@ -1099,6 +1097,32 @@ describe("SYS_SPAWN blob transport", () => {
   });
 
   it.each([
+    { name: "argv", argv: ["child"], envp: [], pointerWidth: 4 },
+    { name: "argv", argv: ["child"], envp: [], pointerWidth: 8 },
+    { name: "environment", argv: [], envp: ["A=value"], pointerWidth: 4 },
+    { name: "environment", argv: [], envp: ["A=value"], pointerWidth: 8 },
+  ] as const)(
+    "rejects an unterminated $name string with $pointerWidth-byte pointers before resolution",
+    ({ argv, envp, pointerWidth }) => {
+      const blob = buildSpawnBlob(argv, envp);
+      blob[blob.byteLength - 1] = 0x61;
+      const harness = createSpawnPreflightHarness(blob, pointerWidth);
+
+      harness.worker.handleSpawn(harness.channel, harness.args);
+
+      expect(harness.onResolveSpawn).not.toHaveBeenCalled();
+      expect(harness.completeChannel).toHaveBeenCalledWith(
+        harness.channel,
+        HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN,
+        harness.args,
+        undefined,
+        -1,
+        EINVAL,
+      );
+    },
+  );
+
+  it.each([
     {
       name: "argv",
       blob: () => buildCountBoundarySpawnBlob(
@@ -1331,12 +1355,21 @@ function createWorker(overrides: Record<string, unknown>): any {
     scratchPointer! > 0 &&
     !worker.scratchRegion
   ) {
+    const scratchTestInstance = createKernelScratchTestInstance(
+      4,
+      worker.kernelMemory,
+      () => worker.kernelInstance?.exports ?? {},
+      () => scratchPointer!,
+    );
+    worker.scratchTestInstance = scratchTestInstance;
     worker.scratchRegion = allocateKernelScratchRegion(
       worker.kernelMemory,
-      () => scratchPointer!,
+      scratchTestInstance.exports.kernel_alloc_scratch as
+        (size: number) => number,
       CH_TOTAL_SIZE,
       4,
       "test kernel syscall scratch",
+      scratchTestInstance,
     );
   }
   return worker;

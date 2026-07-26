@@ -394,6 +394,8 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         "$REPO_ROOT/programs/"hello64.c \
         "$REPO_ROOT/programs/"ifhwaddr.c \
         "$REPO_ROOT/programs/"posix-timer-thread.c \
+        "$REPO_ROOT/programs/"scm-rights-pipe-lifetime.c \
+        "$REPO_ROOT/programs/"scm-rights-semantics.c \
         "$REPO_ROOT/programs/"sched-getaffinity.c; do
         [ -f "$src" ] || continue
         local_name=$(basename "$src" .c)

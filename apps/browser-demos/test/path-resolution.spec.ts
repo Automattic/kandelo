@@ -19,7 +19,7 @@ test("browser resolves pathname components and rejects an invalid initial cwd", 
   );
   expect(baseURL).toBeTruthy();
 
-  await page.goto(new URL("/pages/test-runner/", baseURL).href);
+  await page.goto(new URL("/pages/test-runner/?minimal=1", baseURL).href);
   await page.waitForFunction(() => (window as any).__testRunnerReady === true);
 
   const programUrl = new URL(`/@fs/${programPath}`, baseURL).href;

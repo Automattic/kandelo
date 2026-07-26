@@ -125,7 +125,9 @@ describe("kernel WebAssembly input snapshots", () => {
       .rejects.toBe(compileFailure);
 
     expect(getterReads).toBe(0);
-    expect(instance.getKernelPtrWidth()).toBe(8);
+    // A failed first initialization is retryable and publishes no partial
+    // kernel generation, including its candidate pointer width.
+    expect(instance.getKernelPtrWidth()).toBe(4);
     expectBytes(compiledSource, actual);
   });
 });

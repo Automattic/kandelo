@@ -1,8 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { STRUCT_SIZE_WPK_DRM_MODE_MODEINFO } from "../src/generated/abi";
+import {
+  IOCTL_REQUESTS,
+  SELECT_FD_SET_BYTES,
+  SELECT_FD_SETSIZE,
+  STRUCT_SIZE_WASM_POLL_FD,
+  STRUCT_SIZE_WPK_DRM_MODE_MODEINFO,
+} from "../src/generated/abi";
 import { WasmPosixKernel } from "../src/kernel";
 import { QOP_GET_ERROR } from "../src/webgl/ops";
+import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
 function hostileBytes(length: number, reportedLength = 1): Uint8Array {
   class HostileBytes extends Uint8Array {}
@@ -17,7 +24,10 @@ function hostileBytes(length: number, reportedLength = 1): Uint8Array {
   return bytes;
 }
 
-function kernelHarness(exports: Record<string, unknown>): {
+function kernelHarness(
+  exports: Record<string, unknown>,
+  pointerWidth: 4 | 8 = 4,
+): {
   kernel: WasmPosixKernel & Record<string, any>;
   memory: WebAssembly.Memory;
 } {
@@ -26,8 +36,19 @@ function kernelHarness(exports: Record<string, unknown>): {
     Object.create(WasmPosixKernel.prototype),
     {
       memory,
-      instance: { exports },
-      kernelPtrWidth: 4,
+      instance: createKernelScratchTestInstance(
+        pointerWidth,
+        memory,
+        () => exports,
+        (capacity) => {
+          const allocator = exports.kernel_alloc_scratch;
+          if (typeof allocator !== "function") {
+            throw new Error("missing test implementation for kernel_alloc_scratch");
+          }
+          return Reflect.apply(allocator, undefined, [capacity]) as number | bigint;
+        },
+      ),
+      kernelPtrWidth: pointerWidth,
       apiScratchRegion: null,
       callbacks: {},
       sharedPipes: new Map(),
@@ -51,7 +72,12 @@ function fullKernelHarness(
   ) as WasmPosixKernel & Record<string, any>;
   Object.assign(kernel, {
     memory,
-    instance: { exports: {} },
+    instance: createKernelScratchTestInstance(
+      4,
+      memory,
+      () => ({}),
+      () => 4096,
+    ),
     kernelPtrWidth: 4,
     apiScratchRegion: null,
   });
@@ -191,6 +217,220 @@ describe("WasmPosixKernel public API scratch ownership", () => {
       .toEqual(new Uint8Array(16).fill(0xa5));
   });
 
+  it("derives poll admission from exact owned capacity, not IOV_MAX", () => {
+    const scratchPointer = 4096;
+    const scratchCapacity = 65_536;
+    const exactCount = scratchCapacity / STRUCT_SIZE_WASM_POLL_FD;
+    let memory!: WebAssembly.Memory;
+    const poll = vi.fn((
+      pointer: number,
+      capacity: number,
+      count: number,
+      timeout: number,
+    ) => {
+      expect(pointer).toBe(scratchPointer);
+      expect(capacity).toBe(scratchCapacity);
+      expect(count).toBe(exactCount);
+      expect(count).toBeGreaterThan(1024);
+      expect(timeout).toBe(17);
+      const view = new DataView(
+        memory.buffer,
+        pointer,
+        count * STRUCT_SIZE_WASM_POLL_FD,
+      );
+      expect(view.getInt32(0, true)).toBe(0);
+      expect(
+        view.getInt32(
+          (count - 1) * STRUCT_SIZE_WASM_POLL_FD,
+          true,
+        ),
+      ).toBe(count - 1);
+      view.setInt16(6, 1, true);
+      view.setInt16(
+        (count - 1) * STRUCT_SIZE_WASM_POLL_FD + 6,
+        4,
+        true,
+      );
+      return 2;
+    });
+    const harness = kernelHarness({
+      kernel_alloc_scratch: () => scratchPointer,
+      kernel_poll: poll,
+    });
+    memory = harness.memory;
+    const exact = Array.from(
+      { length: exactCount },
+      (_, fd) => ({ fd, events: 1 }),
+    );
+
+    const ready = harness.kernel.poll(exact, 17);
+    expect(ready).toHaveLength(exactCount);
+    expect(ready[0]?.revents).toBe(1);
+    expect(ready.at(-1)?.revents).toBe(4);
+    expect(() =>
+      harness.kernel.poll(
+        Array.from(
+          { length: exactCount + 1 },
+          (_, fd) => ({ fd, events: 1 }),
+        ),
+        17,
+      )
+    ).toThrow(/owned scratch capacity 8192/i);
+    expect(poll).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an impossible poll producer count", () => {
+    const poll = vi.fn(() => 2);
+    const { kernel } = kernelHarness({
+      kernel_alloc_scratch: () => 4096,
+      kernel_poll: poll,
+    });
+
+    expect(() =>
+      kernel.poll([{ fd: 7, events: 1 }], 0)
+    ).toThrow(/invalid ready count 2/i);
+  });
+
+  it("uses the generated fd_set contract for public select", () => {
+    const scratchPointer = 4096;
+    let memory!: WebAssembly.Memory;
+    const select = vi.fn((
+      count: number,
+      readPointer: number,
+      readCapacity: number,
+      writePointer: number,
+      writeCapacity: number,
+      exceptPointer: number,
+      exceptCapacity: number,
+      timeout: number,
+    ) => {
+      expect(count).toBe(SELECT_FD_SETSIZE);
+      expect(timeout).toBe(0);
+      expect(readPointer).toBe(scratchPointer);
+      expect(readCapacity).toBe(SELECT_FD_SET_BYTES);
+      expect(writePointer).toBe(scratchPointer + SELECT_FD_SET_BYTES);
+      expect(writeCapacity).toBe(SELECT_FD_SET_BYTES);
+      expect(exceptPointer).toBe(
+        scratchPointer + 2 * SELECT_FD_SET_BYTES,
+      );
+      expect(exceptCapacity).toBe(SELECT_FD_SET_BYTES);
+      new Uint8Array(memory.buffer).fill(
+        0,
+        readPointer,
+        exceptPointer + SELECT_FD_SET_BYTES,
+      );
+      return 0;
+    });
+    const harness = kernelHarness({
+      kernel_alloc_scratch: () => scratchPointer,
+      kernel_select: select,
+    });
+    memory = harness.memory;
+
+    expect(harness.kernel.select(
+      SELECT_FD_SETSIZE,
+      [SELECT_FD_SETSIZE - 1],
+      [0],
+      [1],
+    )).toEqual({
+      readReady: [],
+      writeReady: [],
+      exceptReady: [],
+    });
+    expect(() =>
+      harness.kernel.select(SELECT_FD_SETSIZE + 1, [], [], [])
+    ).toThrow(new RegExp(String(SELECT_FD_SETSIZE)));
+    expect(select).toHaveBeenCalledOnce();
+  });
+
+  it.each(Array.from({ length: 8 }, (_, mask) => mask))(
+    "passes wasm64 public select presence mask %i without pointer coercion",
+    (mask) => {
+      const scratchPointer = 4096;
+      const select = vi.fn((
+        count: number,
+        readPointer: bigint,
+        readCapacity: number,
+        writePointer: bigint,
+        writeCapacity: number,
+        exceptPointer: bigint,
+        exceptCapacity: number,
+        timeout: number,
+      ) => {
+        expect(count).toBe(0);
+        expect(timeout).toBe(0);
+        expect([
+          readCapacity,
+          writeCapacity,
+          exceptCapacity,
+        ]).toEqual([
+          (mask & 1) !== 0 ? SELECT_FD_SET_BYTES : 0,
+          (mask & 2) !== 0 ? SELECT_FD_SET_BYTES : 0,
+          (mask & 4) !== 0 ? SELECT_FD_SET_BYTES : 0,
+        ]);
+        expect([readPointer, writePointer, exceptPointer]).toEqual([
+          (mask & 1) !== 0 ? BigInt(scratchPointer) : 0n,
+          (mask & 2) !== 0
+            ? BigInt(scratchPointer + SELECT_FD_SET_BYTES)
+            : 0n,
+          (mask & 4) !== 0
+            ? BigInt(scratchPointer + 2 * SELECT_FD_SET_BYTES)
+            : 0n,
+        ]);
+        return 0;
+      });
+      const { kernel } = kernelHarness({
+        kernel_alloc_scratch: () => BigInt(scratchPointer),
+        kernel_select: select,
+      }, 8);
+
+      expect(kernel.select(
+        0,
+        (mask & 1) !== 0 ? [] : null,
+        (mask & 2) !== 0 ? [] : null,
+        (mask & 4) !== 0 ? [] : null,
+      )).toEqual({
+        readReady: [],
+        writeReady: [],
+        exceptReady: [],
+      });
+      expect(select).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("converts public wasm64 scalar and no-argument ioctl values", () => {
+    const scratchPointer = 4096;
+    const scalarRequest = 0x540b;
+    const noArgumentRequest = 0x41;
+    expect(IOCTL_REQUESTS[scalarRequest]?.argKind).toBe("scalar-i32");
+    expect(IOCTL_REQUESTS[noArgumentRequest]?.argKind).toBe("none");
+    const ioctl = vi.fn(() => 0);
+    const { kernel } = kernelHarness({
+      kernel_alloc_scratch: () => BigInt(scratchPointer),
+      kernel_ioctl: ioctl,
+    }, 8);
+
+    expect(kernel.ioctl(7, scalarRequest, -1)).toEqual(new Uint8Array(0));
+    expect(kernel.ioctl(8, noArgumentRequest)).toEqual(new Uint8Array(0));
+
+    expect(ioctl).toHaveBeenNthCalledWith(
+      1,
+      7,
+      scalarRequest,
+      0xffff_ffffn,
+      0,
+      4,
+    );
+    expect(ioctl).toHaveBeenNthCalledWith(
+      2,
+      8,
+      noArgumentRequest,
+      0n,
+      0,
+      4,
+    );
+  });
+
   it("does not drain audio through an allocator range it does not own", () => {
     const drain = vi.fn(() => 1);
     const { kernel } = kernelHarness({
@@ -240,15 +480,13 @@ describe("WasmPosixKernel public API scratch ownership", () => {
     const truncate = vi.fn((
       pointer: number,
       length: number,
-      lengthLo: number,
-      lengthHi: number,
+      truncateLength: bigint,
     ) => {
       expect(pointer).toBe(scratchPointer);
       expect(new TextDecoder().decode(
         new Uint8Array(memory.buffer, pointer, length),
       )).toBe("/tmp/example");
-      expect(lengthLo).toBe(7);
-      expect(lengthHi).toBe(0);
+      expect(truncateLength).toBe(7n);
       return 0;
     });
     const harness = kernelHarness({

@@ -36,6 +36,7 @@ import {
   CH_ERRNO,
   CH_RETURN,
   CH_SYSCALL,
+  FCNTL_FLOCK_BYTES,
 } from "../src/generated/abi";
 
 const O_RDWR = 2;
@@ -59,6 +60,18 @@ interface ProcessMemory {
 interface SyscallResult {
   value: number;
   errno: number;
+}
+
+interface ScratchArgument {
+  readonly scratchOffset: number;
+  readonly length: number;
+}
+
+function scratchArgument(
+  scratchOffset: number,
+  length: number,
+): ScratchArgument {
+  return { scratchOffset, length };
 }
 
 function loadKernelWasm(): ArrayBuffer {
@@ -108,10 +121,10 @@ function issuePrepared(
   worker: CentralizedKernelWorker,
   pid: number,
   syscall: number,
-  prepareArgs: (lease: KernelScratchLease) => Array<number | bigint>,
+  prepareArgs: (
+    lease: KernelScratchLease,
+  ) => Array<number | bigint | ScratchArgument>,
 ): SyscallResult {
-  const handleChannel = (worker as any).kernelInstance.exports
-    .kernel_handle_channel as (offset: number | bigint, pid: number) => number;
   const setCurrentTid = (worker as any).kernelInstance.exports
     .kernel_set_current_tid as (pid: number, tid: number) => number;
   expect(setCurrentTid(pid, pid)).toBe(0);
@@ -123,16 +136,30 @@ function issuePrepared(
       channel.setUint32(CH_ERRNO, 0, true);
       channel.setBigInt64(CH_RETURN, 0n, true);
       for (let index = 0; index < 6; index++) {
+        const argument = args[index] ?? 0;
+        if (typeof argument === "object") {
+          channel.setBigInt64(CH_ARGS + index * CH_ARG_SIZE, 0n, true);
+          lease.writeAddress(
+            CH_ARGS + index * CH_ARG_SIZE,
+            argument.scratchOffset,
+            argument.length,
+            (worker as any).kernel.getKernelPtrWidth() === 8
+              ? "u64-le"
+              : "u32-to-u64-le",
+          );
+          continue;
+        }
         channel.setBigInt64(
           CH_ARGS + index * CH_ARG_SIZE,
-          BigInt(args[index] ?? 0),
+          BigInt(argument),
           true,
         );
       }
-      handleChannel(
-        worker.toKernelPtr(lease.address(0, CH_TOTAL_SIZE)),
+      lease.invokeKernelExport("kernel_handle_channel", [
+        lease.exportPointer(0, CH_TOTAL_SIZE),
+        CH_TOTAL_SIZE,
         pid,
-      );
+      ]);
       const result = lease.dataView(0, CH_TOTAL_SIZE);
       return {
         value: Number(result.getBigInt64(CH_RETURN, true)),
@@ -155,7 +182,7 @@ function openFile(
     (lease) => {
       lease.copyFrom(encoded, CH_DATA);
       return [
-        lease.address(CH_DATA, encoded.byteLength),
+        scratchArgument(CH_DATA, encoded.byteLength),
         O_RDWR,
         0,
       ];
@@ -191,14 +218,14 @@ function lock(
     pid,
     ABI_SYSCALLS.Fcntl,
     (lease) => {
-      lease.fill(0, CH_DATA, 32);
-      const flock = lease.dataView(CH_DATA, 32);
+      lease.fill(0, CH_DATA, FCNTL_FLOCK_BYTES);
+      const flock = lease.dataView(CH_DATA, FCNTL_FLOCK_BYTES);
       flock.setInt16(0, type, true);
       flock.setInt16(2, 0, true); // SEEK_SET
       flock.setBigInt64(8, start, true);
       flock.setBigInt64(16, len, true);
       // l_pid remains zero, as required for F_OFD_* commands.
-      return [fd, command, lease.address(CH_DATA, 32)];
+      return [fd, command, scratchArgument(CH_DATA, FCNTL_FLOCK_BYTES)];
     },
   );
 }
