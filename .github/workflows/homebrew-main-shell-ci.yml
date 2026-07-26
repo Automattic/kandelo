@@ -551,14 +551,20 @@ jobs:
             # shell closure that Vite resolves from local-binaries first.
             sha256sum --check \
               "${{ steps.source_alias.outputs.local_manifest }}"
-            current_links="$RUNNER_TEMP/source-local-binaries-current.symlinks"
-            find local-binaries -type l -print0 |
-              sort -z |
-              while IFS= read -r -d '' path; do
-                printf '%s\0%s\0' "$path" "$(readlink "$path")"
-              done >"$current_links"
-            cmp "${{ steps.source_alias.outputs.link_manifest }}" \
-              "$current_links"
+            # WHY: resolving unrelated browser roots is expected to add new
+            # mirrors. It must not remove or retarget any link that belonged to
+            # the exact source-shell closure selected above.
+            verified_links=0
+            while IFS= read -r -d '' path; do
+              if ! IFS= read -r -d '' expected_target; then
+                echo "::error::selected shell link manifest has an incomplete record"
+                exit 1
+              fi
+              [ -L "$path" ]
+              [ "$(readlink "$path")" = "$expected_target" ]
+              verified_links=$((verified_links + 1))
+            done <"${{ steps.source_alias.outputs.link_manifest }}"
+            [ "$verified_links" -gt 0 ]
           fi
 
       - name: Install the candidate's exact shell bytes

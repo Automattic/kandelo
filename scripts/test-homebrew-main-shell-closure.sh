@@ -33,6 +33,7 @@ RUN_SH="$REPO_ROOT/run.sh"
 LOCAL_SHELL_INSTALLER="$REPO_ROOT/scripts/install-local-shell-artifact.sh"
 LOCAL_SHELL_OVERRIDE="$REPO_ROOT/scripts/activate-local-shell-build-override.sh"
 CI_BLOCKER_MATERIALIZER="$REPO_ROOT/scripts/materialize-ci-publication-blockers.sh"
+BUILD_PROGRAMS="$REPO_ROOT/scripts/build-programs.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
@@ -294,6 +295,14 @@ grep -Fq -- '--force-source-build \' "$CI_BLOCKER_MATERIALIZER" ||
 grep -Fq 'exact_override_is_active' "$LOCAL_SHELL_OVERRIDE" &&
   [ "$(grep -Fc 'scripts/activate-local-shell-build-override.sh' "$WORKFLOW")" -eq 2 ] ||
   fail "source shell override must be idempotently verified before and after derived VFS resolution"
+grep -Fq 'PACKAGE_OWNED_PROGRAM_MIRRORS=' "$BUILD_PROGRAMS" &&
+  grep -Fq 'packages/registry/program-packages.json' "$BUILD_PROGRAMS" &&
+  grep -Fq 'package_owns_direct_program_path "$arch" "${name}.wasm"' \
+    "$BUILD_PROGRAMS" &&
+  grep -Fq 'package-owned resolver mirror is already occupied' \
+    "$BUILD_PROGRAMS" &&
+  grep -Fq 'package resolver owns $arch/${name}.wasm' "$BUILD_PROGRAMS" ||
+  fail "direct test-program builds must leave package-owned resolver mirrors unoccupied"
 
 materializer_install_line="$(grep -nF 'scripts/install-local-shell-artifact.sh' \
   "$CI_BLOCKER_MATERIALIZER" | cut -d: -f1)"
@@ -682,6 +691,19 @@ grep -Fq 'scripts/fetch-binaries.sh "${fetch_args[@]}"' "$WORKFLOW" ||
 browser_fetch_block="$(sed -n \
   "/- name: Resolve current direct browser bundling inputs/,/- name: Install the candidate's exact shell bytes/p" \
   "$WORKFLOW")"
+grep -Fq 'while IFS= read -r -d '"'"''"'"' path &&' \
+  <<<"$browser_fetch_block" &&
+  fail "browser link verifier must not silently accept an odd manifest record"
+grep -Fq 'while IFS= read -r -d '"'"''"'"' path; do' \
+  <<<"$browser_fetch_block" &&
+  grep -Fq 'selected shell link manifest has an incomplete record' \
+    <<<"$browser_fetch_block" &&
+  grep -Fq '[ "$(readlink "$path")" = "$expected_target" ]' \
+    <<<"$browser_fetch_block" &&
+  grep -Fq '[ "$verified_links" -gt 0 ]' <<<"$browser_fetch_block" &&
+  ! grep -Fq 'cmp "${{ steps.source_alias.outputs.link_manifest }}"' \
+    <<<"$browser_fetch_block" ||
+  fail "browser resolution must preserve selected shell links while allowing new mirrors"
 grep -Fq 'fetch_args=()' <<<"$browser_fetch_block" ||
   fail "browser support inputs must use the normal current-recipe resolver path"
 grep -Fq 'bash scripts/dev-shell.sh env \' <<<"$browser_fetch_block" &&
