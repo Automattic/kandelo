@@ -144,8 +144,8 @@
     "kandelo-sdk": {
       "manifestSha256": "c081879f1becd855917cff96f17429bcf2b9fd61bf95211eca9ff8fb625bb2eb",
       "cacheKeys": {
-        "wasm32": "1399176a67ff3bc764f69616ed57fbe08402255f26a5d92ca8f632d2c71f03c8",
-        "wasm64": "622c253ecff6ff5609ee36b8d6471fc03014d1d47fbddf5cb67c50a55bd96692"
+        "wasm32": "9155d0096540fe344081c67d4c55ada548e7b92e7f2f600dd9ed2fdaff507dd9",
+        "wasm64": "ed9757aff627347b79099fe9cc0eb64b8a1de40ad9582a5926b4fa24aa2c86bf"
       }
     },
     "kernel": {
@@ -242,15 +242,15 @@
     "mariadb-test": {
       "manifestSha256": "d4ccce161d659a5a87c80fa1117054bbccea870e0d4a46bd8a070d3930ad0e3f",
       "cacheKeys": {
-        "wasm32": "52cf2d4ed7370ba3facc46b5d27a9a1ecebb3e455a2eb20dfd04401d46fca4a2",
-        "wasm64": "38611810936ed76568a1af0318c90c1d97744c684e70d758b7ffff371141ff6a"
+        "wasm32": "e86311db7340c615971b232dda00679dedfe8b558298d539e91df1c4d82ea17f",
+        "wasm64": "7533485d49855e49a412a7f0ea8a67c811a04e38361e4d9da5804b2e3840bb5d"
       }
     },
     "mariadb-vfs": {
       "manifestSha256": "26e74ac84d89b2a839ed72783437061a23022ef2f88ad0f52b6aacd0442ee1cf",
       "cacheKeys": {
-        "wasm32": "e974fc974c85df493a4e3a8228324b3c579d54a8d051d49a2b9f2510810c0f7d",
-        "wasm64": "efefefa4c75b9df2daca66014a11caba4e228ed9b1efa7eaf08da7a95a5f72d1"
+        "wasm32": "30eb94abff0671d5091e3ff716f6264ccfbd820ff8d93104d215d112c5378e4b",
+        "wasm64": "64e1f49e3c00a5eeac57fce559c395861661a45c9e2c39f93f128268863623ed"
       }
     },
     "modeset": {
@@ -396,8 +396,8 @@
     "redis-vfs": {
       "manifestSha256": "234c45c40f94e2a89f98295313b82cb9fce15a412ac829d9e87394e0dc731813",
       "cacheKeys": {
-        "wasm32": "eb6cb56463a8babfb39a2700a6d83525fc9115d6274149b18ad2ab05961fc32d",
-        "wasm64": "91860af1f40b48457f1f46cbc9b595a585033ac486eac6d1593143b6881c6db3"
+        "wasm32": "a9f528553f7536c64c169fd2b67257bf5d614b719cffb3fce4b5c150d10f9ba4",
+        "wasm64": "8f7a0d6abdbc8f0461c7731a1dfeb271778da42c5fd634b51db677ff10fc4710"
       }
     },
     "rootfs": {
@@ -1066,7 +1066,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "1399176a67ff3bc764f69616ed57fbe08402255f26a5d92ca8f632d2c71f03c8"
+        "wasm32": "9155d0096540fe344081c67d4c55ada548e7b92e7f2f600dd9ed2fdaff507dd9"
       },
       "dependencyClosures": {
         "wasm32": [
@@ -1337,7 +1337,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "52cf2d4ed7370ba3facc46b5d27a9a1ecebb3e455a2eb20dfd04401d46fca4a2"
+        "wasm32": "e86311db7340c615971b232dda00679dedfe8b558298d539e91df1c4d82ea17f"
       },
       "dependencyClosures": {
         "wasm32": [
@@ -1390,8 +1390,8 @@
         "wasm64"
       ],
       "cacheKeys": {
-        "wasm32": "e974fc974c85df493a4e3a8228324b3c579d54a8d051d49a2b9f2510810c0f7d",
-        "wasm64": "efefefa4c75b9df2daca66014a11caba4e228ed9b1efa7eaf08da7a95a5f72d1"
+        "wasm32": "30eb94abff0671d5091e3ff716f6264ccfbd820ff8d93104d215d112c5378e4b",
+        "wasm64": "64e1f49e3c00a5eeac57fce559c395861661a45c9e2c39f93f128268863623ed"
       },
       "dependencyClosures": {
         "wasm32": [
@@ -2470,7 +2470,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "eb6cb56463a8babfb39a2700a6d83525fc9115d6274149b18ad2ab05961fc32d"
+        "wasm32": "a9f528553f7536c64c169fd2b67257bf5d614b719cffb3fce4b5c150d10f9ba4"
       },
       "dependencyClosures": {
         "wasm32": [
