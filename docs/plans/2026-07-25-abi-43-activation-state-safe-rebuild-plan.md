@@ -68,6 +68,27 @@ candidate index must have top-level ABI 43, contain only `-abi43-` archive
 identities, and pass archive/artifact guards before it can be considered for
 canonical activation.
 
+### Current isolated staging evidence
+
+Exact-head run `30193794024` is prepublication evidence, not a complete
+candidate. All 14 library generations and 56 of 62 attempted program
+generations built successfully. The six attempted failures are `shell` plus
+its five direct consumers (`lamp`, `nginx-php-vfs`, `nginx-vfs`, `node-vfs`,
+and `wordpress`); every one failed closed because the available Homebrew VFS
+metadata declares ABI 41 while the candidate requires ABI 43. This proves one
+coordinated missing-input boundary rather than six independent transform
+failures.
+
+Seven further ABI-bound program generations were not attempted by the
+inherited staging workflow: the expensive-package exclusion covers
+`erlang-vfs`, `perl`, `perl-vfs`, `python-vfs`, `redis`, and `texlive`, while
+`sqlite-cli` has no staging build block. The isolated `pr-1096-staging` index
+therefore contains 70 successful entries and six failed entries, not all 83
+required generations. It must not be promoted, used as a complete test-gate
+input, or described as a publication candidate. The successful independent
+rootfs job built all 336 declared paths into a 16,787,687-byte ABI 43 image,
+which is useful closure evidence but does not fill the missing generations.
+
 ## Rootfs and derived image scope
 
 The exact current wasm32 rootfs closure is 15 package generations:
