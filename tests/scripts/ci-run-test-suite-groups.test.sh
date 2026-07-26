@@ -45,6 +45,12 @@ fi
 exit 2
 EOF
 
+cat > "$FIXTURE/bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CARGO_CAPTURE"
+exit 0
+EOF
+
 cat > "$FIXTURE/run.sh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$RUN_CAPTURE"
@@ -74,13 +80,34 @@ fi
 EOF
     chmod +x "$FIXTURE/scripts/$runner"
 done
+
+prepared_xtask="$FIXTURE/target/fixture-host/release/xtask"
+mkdir -p "$(dirname "$prepared_xtask")"
+cat > "$prepared_xtask" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "build-deps" ] && [ "${2:-}" = "cache-root" ] &&
+   [ "$#" -eq 2 ]; then
+    case "${WASM_POSIX_BINARY_CACHE_ROOT:-}" in
+        /*) printf '%s\n' "$WASM_POSIX_BINARY_CACHE_ROOT" ;;
+        *) printf '%s\n' "$PWD/${WASM_POSIX_BINARY_CACHE_ROOT:-.cache/kandelo}" ;;
+    esac
+    exit 0
+fi
+exit 2
+EOF
+
 chmod +x \
+    "$FIXTURE/bin/cargo" \
     "$FIXTURE/bin/npm" \
     "$FIXTURE/bin/npx" \
     "$FIXTURE/bin/rustc" \
     "$FIXTURE/bin/uname" \
     "$FIXTURE/run.sh" \
-    "$FIXTURE/scripts/ci-check-browser-assets.sh"
+    "$FIXTURE/scripts/ci-check-browser-assets.sh" \
+    "$prepared_xtask"
+
+CARGO_CAPTURE="$TMP_DIR/cargo-build.args"
+export CARGO_CAPTURE
 
 run_group() {
     local suite="$1"
@@ -124,6 +151,20 @@ grep -Fxq -- \
     "--already-materialized --fetch-only prepare-browser" \
     "$browser_capture"
 
+if ! awk '
+    $0 != "build --release -p xtask --target fixture-host --quiet" {
+        exit 1
+    }
+' "$CARGO_CAPTURE"; then
+    echo "ci-run-test-suite.sh used an unexpected package-checker build command:" >&2
+    cat "$CARGO_CAPTURE" >&2
+    exit 1
+fi
+[ -s "$CARGO_CAPTURE" ] || {
+    echo "ci-run-test-suite.sh did not prepare the source-workspace package checker" >&2
+    exit 1
+}
+
 for workflow in \
     "$REPO_ROOT/.github/workflows/staging-build.yml" \
     "$REPO_ROOT/.github/workflows/prepare-merge.yml"; do
@@ -155,25 +196,10 @@ for workflow in \
     fi
 done
 
-prepared_xtask="$FIXTURE/target/fixture-host/release/xtask"
-mkdir -p "$(dirname "$prepared_xtask")"
-cat > "$prepared_xtask" <<'EOF'
-#!/usr/bin/env bash
-if [ "${1:-}" = "build-deps" ] && [ "${2:-}" = "cache-root" ] &&
-   [ "$#" -eq 2 ]; then
-    case "${WASM_POSIX_BINARY_CACHE_ROOT:-}" in
-        /*) printf '%s\n' "$WASM_POSIX_BINARY_CACHE_ROOT" ;;
-        *) printf '%s\n' "$PWD/${WASM_POSIX_BINARY_CACHE_ROOT:-.cache/kandelo}" ;;
-    esac
-    exit 0
-fi
-exit 2
-EOF
-chmod +x "$prepared_xtask"
-
 mkdir -p "$FIXTURE/.ci-test-binary-cache/programs"
 cache_capture="$TMP_DIR/portable-cache-root"
 xtask_capture="$TMP_DIR/portable-xtask"
+: > "$CARGO_CAPTURE"
 PATH="$FIXTURE/bin:$PATH" \
     TEST_CAPTURE="$TMP_DIR/portable-cache-suite.args" \
     CACHE_CAPTURE="$cache_capture" \
@@ -187,6 +213,10 @@ grep -Fxq "$FIXTURE/.ci-test-binary-cache" "$cache_capture" || {
 }
 grep -Fxq "$prepared_xtask" "$xtask_capture" || {
     echo "ci-run-test-suite.sh did not select the transported package checker" >&2
+    exit 1
+}
+[ ! -s "$CARGO_CAPTURE" ] || {
+    echo "ci-run-test-suite.sh rebuilt a transported package checker" >&2
     exit 1
 }
 missing_xtask_capture="$TMP_DIR/missing-xtask-suite.args"
