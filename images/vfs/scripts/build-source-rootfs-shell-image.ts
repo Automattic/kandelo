@@ -471,6 +471,9 @@ export async function buildSourceRootfsShellImage(
   }
   const sourceCapacity = MemoryFileSystem.readImageCapacity(rootfs);
   const fs = MemoryFileSystem.fromImagePreservingCapacity(rootfs);
+  // WHY: this builder exports and preserves lazy state from an imported image;
+  // authenticate atomic seals before the source image gains that authority.
+  await fs.verifyImportedLazyAtomicGroupSeals();
   const shell = loadShellConfig(inputs.shellConfigPath);
   const demo = loadDemoConfig(inputs.demoConfigPath);
 
@@ -548,6 +551,9 @@ export async function buildSourceRootfsShellImage(
     throw new Error("composed shell changed the rootfs capacity contract");
   }
   const outputFs = MemoryFileSystem.fromImagePreservingCapacity(image);
+  // WHY: post-save assertions are a separate import boundary and must verify
+  // the exact serialized seals rather than inherit trust from the source fs.
+  await outputFs.verifyImportedLazyAtomicGroupSeals();
   requireMaterializedBashIdentity(outputFs, sourceBash, bash);
   requireExpectedLazyState(
     composedLazyState,

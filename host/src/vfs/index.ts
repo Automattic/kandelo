@@ -24,6 +24,7 @@ export type {
   LazyDownloadKind,
   LazyDownloadListener,
   LazyDownloadStatus,
+  LazyAtomicGroupMembership,
   LazyFileEntry,
   LazyFetcherOptions,
   LazyTreeActivation,

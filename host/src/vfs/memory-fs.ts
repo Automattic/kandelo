@@ -8,6 +8,7 @@ import {
   O_EXCL,
   O_TRUNC,
   SharedFS,
+  type ConditionalNamespaceIdentity,
   type NamespaceEntryIdentity,
   type SharedFsIdentityState,
   type StatResult as SfsStatResult,
@@ -81,11 +82,61 @@ interface LazyPreparation {
   error?: unknown;
 }
 
+interface PreparedLazyArchiveReplacement {
+  ino: number;
+  generation: number;
+  dataSequence: number;
+  paths: Set<string>;
+  content: Uint8Array;
+}
+
 interface LazyBacking {
   token: object;
   path: string;
   /** Metadata-only trees have no pending inode, so prepare the group itself. */
   directGroup?: LazyArchiveGroup;
+  /** All members commit together; no member may become concrete alone. */
+  atomicGroup?: LazyAtomicGroup;
+}
+
+interface LazyAtomicGroup {
+  id: string;
+  token: object;
+  groups: Map<string, LazyArchiveGroup>;
+  expectedCount?: number;
+  cohortSha256?: string;
+  /** One cryptographic proof shared by inspection and first-use activation. */
+  sealValidationFlight?: Promise<void>;
+  committed: boolean;
+}
+
+interface LazyAtomicSnapshotEntry extends LazyArchiveFileEntry {
+  vfsPath: string;
+}
+
+interface LazyAtomicSnapshotSource {
+  id: string;
+  member: string;
+  descriptorBytes: Uint8Array;
+  content: LazyTreeContent;
+  inventory: LazyTreeRegistrationEntry[];
+  activation: LazyTreeActivation;
+  url: string;
+  mountPrefix: string;
+  integrity: LazyArchiveIntegrity;
+  entries: LazyAtomicSnapshotEntry[];
+}
+
+interface SealedLazyAtomicSnapshot extends LazyAtomicSnapshotSource {
+  descriptorSha256: string;
+  expectedCount: number;
+  cohortSha256: string;
+}
+
+interface SealedLazyAtomicState {
+  snapshot: SealedLazyAtomicSnapshot;
+  /** Local seals are proven while created; imported seal claims start false. */
+  verified: boolean;
 }
 
 /** Per-file metadata for a file inside a lazy archive. */
@@ -181,6 +232,26 @@ export interface LazyTreeActivation {
   mode: "boot-prefetch" | "first-use";
   capabilities: string[];
   roots: string[];
+  /**
+   * Optional fail-closed activation transaction shared by several trees.
+   * Every member is fetched and validated before one namespace commit.
+   */
+  atomicGroup?: LazyAtomicGroupMembership;
+}
+
+/**
+ * One member of a fail-closed multi-tree activation cohort.
+ *
+ * Producers first register `{ id, member }`, then seal the cohort. Sealing
+ * binds every member's transport-independent tree descriptor into one digest
+ * and adds the remaining fields before the tree may activate or serialize.
+ */
+export interface LazyAtomicGroupMembership {
+  id: string;
+  member: string;
+  descriptorSha256?: string;
+  expectedCount?: number;
+  cohortSha256?: string;
 }
 
 /**
@@ -207,7 +278,8 @@ export interface SerializedLazyArchiveEntry {
   kind:
     | "kandelo-legacy-zip-v1"
     | "kandelo-deferred-tree-v1"
-    | "kandelo-deferred-tree-v2";
+    | "kandelo-deferred-tree-v2"
+    | "kandelo-deferred-tree-v3";
   content?: LazyTreeContent;
   inventory?: LazyTreeRegistrationEntry[];
   activation?: LazyTreeActivation;
@@ -315,6 +387,7 @@ const MAX_LAZY_ARCHIVE_BYTES = VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes;
 const MAX_LAZY_EXPANDED_BYTES = VFS_DEFERRED_TREE_LIMITS.maxExpandedBytes;
 const MAX_LAZY_PAYLOAD_BYTES = VFS_DEFERRED_TREE_LIMITS.maxPayloadBytes;
 const MAX_BOOT_DEFERRED_TREE_CONCURRENCY = 2;
+const MAX_ATOMIC_DEFERRED_TREE_CONCURRENCY = 4;
 const MAX_LAZY_TREE_ENTRIES = VFS_DEFERRED_TREE_LIMITS.maxEntries;
 const MAX_LAZY_TREE_GROUPS = VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxGroups;
 const MAX_LAZY_TREE_PATH_BYTES = VFS_DEFERRED_TREE_LIMITS.maxPathBytes;
@@ -325,6 +398,8 @@ const MAX_LAZY_TREE_CAPABILITIES =
   VFS_DEFERRED_TREE_LIMITS.maxActivationCapabilities;
 const MAX_LAZY_TREE_ACTIVATION_ROOTS =
   VFS_DEFERRED_TREE_LIMITS.maxActivationRoots;
+const MAX_LAZY_TREE_ATOMIC_GROUP_BYTES =
+  VFS_DEFERRED_TREE_LIMITS.maxActivationCapabilityBytes;
 const MAX_LAZY_TREE_OWNER_ID = 0xffff_fffe;
 const MAX_LAZY_TRANSPORT_ATTEMPTS = 3;
 const LAZY_TRANSPORT_RETRY_BASE_MS = 250;
@@ -333,6 +408,7 @@ const SHA256_RE = /^[0-9a-f]{64}$/;
 const SERIALIZED_LEGACY_ARCHIVE_KIND = "kandelo-legacy-zip-v1";
 const SERIALIZED_DEFERRED_TREE_V1_KIND = "kandelo-deferred-tree-v1";
 const SERIALIZED_DEFERRED_TREE_V2_KIND = "kandelo-deferred-tree-v2";
+const SERIALIZED_DEFERRED_TREE_V3_KIND = "kandelo-deferred-tree-v3";
 
 const TRANSIENT_NETWORK_ERROR_CODES = new Set([
   "ECONNABORTED",
@@ -1026,6 +1102,91 @@ function validateSerializedDeferredTreeCollection(
   validateDeferredTreeUsage(summarizeSerializedDeferredTreeCollection(serialized));
 }
 
+function validateSerializedLazyAtomicCohorts(
+  serialized: readonly SerializedLazyArchiveEntry[],
+): void {
+  const cohorts = new Map<string, {
+    expectedCount: number;
+    cohortSha256: string;
+    members: Set<string>;
+    descriptors: Set<string>;
+  }>();
+  for (const tree of serialized) {
+    const membership = tree.activation?.atomicGroup;
+    if (membership === undefined) continue;
+    if (!isSealedLazyAtomicMembership(membership)) {
+      throw new Error(
+        `Serialized lazy atomic activation group ${membership.id} is unsealed`,
+      );
+    }
+    let cohort = cohorts.get(membership.id);
+    if (cohort === undefined) {
+      cohort = {
+        expectedCount: membership.expectedCount,
+        cohortSha256: membership.cohortSha256,
+        members: new Set(),
+        descriptors: new Set(),
+      };
+      cohorts.set(membership.id, cohort);
+    } else if (
+      cohort.expectedCount !== membership.expectedCount ||
+      cohort.cohortSha256 !== membership.cohortSha256
+    ) {
+      throw new Error(
+        `Serialized lazy atomic activation group ${membership.id} has inconsistent seals`,
+      );
+    }
+    if (
+      cohort.members.has(membership.member) ||
+      cohort.descriptors.has(membership.descriptorSha256)
+    ) {
+      throw new Error(
+        `Serialized lazy atomic activation group ${membership.id} duplicates a member`,
+      );
+    }
+    cohort.members.add(membership.member);
+    cohort.descriptors.add(membership.descriptorSha256);
+  }
+  for (const [id, cohort] of cohorts) {
+    if (cohort.members.size !== cohort.expectedCount) {
+      throw new Error(
+        `Serialized lazy atomic activation group ${id} has ` +
+          `${cohort.members.size} of ${cohort.expectedCount} members`,
+      );
+    }
+  }
+}
+
+/**
+ * Revalidate producer-owned records after reconciling them with SharedFS.
+ *
+ * WHY: another mounted worker can replace or unlink a registered stub without
+ * updating this instance's JavaScript metadata. Reconciliation intentionally
+ * drops those stale identities. A sealed cohort must then fail closed instead
+ * of exporting a syntactically valid but incomplete image that cannot restore.
+ */
+function validateCompleteSerializedLazyArchiveCollection(
+  serialized: readonly SerializedLazyArchiveEntry[],
+): void {
+  for (const [index, tree] of serialized.entries()) {
+    if (
+      tree.kind === SERIALIZED_DEFERRED_TREE_V1_KIND ||
+      tree.kind === SERIALIZED_DEFERRED_TREE_V2_KIND ||
+      tree.kind === SERIALIZED_DEFERRED_TREE_V3_KIND
+    ) {
+      validateSerializedGenericTree(tree, tree.kind);
+    } else if (tree.kind === SERIALIZED_LEGACY_ARCHIVE_KIND) {
+      validateSerializedLegacyArchive(tree, false);
+    } else {
+      throw new Error(
+        `Serialized lazy archive group ${index} has an unsupported kind`,
+      );
+    }
+  }
+  validateSerializedDeferredTreeCollection(serialized);
+  validateSerializedLazyAtomicCohorts(serialized);
+}
+
 function validateLazyTreeSourceInventory(
   value: unknown,
   decoder: unknown,
@@ -1181,6 +1342,86 @@ interface ValidatedLazyTreeDefinition {
   canonicalByGroup: Map<string, LazyTreeRegistrationEntry>;
 }
 
+function validateLazyAtomicGroupMembership(
+  value: unknown,
+): LazyAtomicGroupMembership {
+  const initial = typeof value === "object" && value !== null &&
+      !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+  const hasSeal = initial !== null &&
+    (
+      Object.hasOwn(initial, "descriptorSha256") ||
+      Object.hasOwn(initial, "expectedCount") ||
+      Object.hasOwn(initial, "cohortSha256")
+    );
+  const record = exactLazyTreeRecord(
+    value,
+    hasSeal
+      ? [
+          "id",
+          "member",
+          "descriptorSha256",
+          "expectedCount",
+          "cohortSha256",
+        ]
+      : ["id", "member"],
+    "Lazy tree atomic activation membership",
+  );
+  const id = requireLazyTreeString(
+    record.id,
+    "Lazy tree atomic activation group",
+    MAX_LAZY_TREE_ATOMIC_GROUP_BYTES,
+  );
+  const member = requireLazyTreeString(
+    record.member,
+    "Lazy tree atomic activation member",
+    MAX_LAZY_TREE_ATOMIC_GROUP_BYTES,
+  );
+  if (
+    !/^[a-z0-9][a-z0-9:._-]*$/.test(id) ||
+    !/^[a-z0-9][a-z0-9:+._/-]*$/.test(member) ||
+    member.includes("//") ||
+    member.endsWith("/")
+  ) {
+    throw new Error("Lazy tree atomic activation membership is invalid");
+  }
+  if (!hasSeal) return { id, member };
+  const descriptorSha256 = requireLazyTreeString(
+    record.descriptorSha256,
+    "Lazy tree atomic member descriptor digest",
+    64,
+  );
+  const cohortSha256 = requireLazyTreeString(
+    record.cohortSha256,
+    "Lazy tree atomic cohort digest",
+    64,
+  );
+  if (!SHA256_RE.test(descriptorSha256) || !SHA256_RE.test(cohortSha256)) {
+    throw new Error("Lazy tree atomic activation digest is invalid");
+  }
+  return {
+    id,
+    member,
+    descriptorSha256,
+    expectedCount: requireLazyTreeInteger(
+      record.expectedCount,
+      "Lazy tree atomic activation expected member count",
+      1,
+      MAX_LAZY_TREE_GROUPS,
+    ),
+    cohortSha256,
+  };
+}
+
+function isSealedLazyAtomicMembership(
+  membership: LazyAtomicGroupMembership,
+): membership is Required<LazyAtomicGroupMembership> {
+  return membership.descriptorSha256 !== undefined &&
+    membership.expectedCount !== undefined &&
+    membership.cohortSha256 !== undefined;
+}
+
 function validateLazyTreeRegistrationOwner(
   value: unknown,
 ): LazyTreeRegistrationOwner {
@@ -1214,9 +1455,20 @@ function validateLazyTreeDefinition(
 ): ValidatedLazyTreeDefinition {
   const content = validateLazyTreeContent(contentValue, minimumTransports);
   const mountPrefix = normalizeLazyArchiveMountPrefix(mountPrefixValue);
+  const activationFields = [
+    "mode",
+    "capabilities",
+    "roots",
+    ...(typeof activationValue === "object" &&
+        activationValue !== null &&
+        !Array.isArray(activationValue) &&
+        Object.hasOwn(activationValue, "atomicGroup")
+      ? ["atomicGroup"]
+      : []),
+  ];
   const activationRecord = exactLazyTreeRecord(
     activationValue,
-    ["mode", "capabilities", "roots"],
+    activationFields,
     "Lazy tree activation",
   );
   if (
@@ -1260,10 +1512,22 @@ function validateLazyTreeDefinition(
   ) {
     throw new Error("Lazy tree activation contains duplicates");
   }
+  const atomicGroup = activationRecord.atomicGroup === undefined
+    ? undefined
+    : validateLazyAtomicGroupMembership(activationRecord.atomicGroup);
+  if (
+    atomicGroup !== undefined &&
+    activationRecord.mode !== "first-use"
+  ) {
+    throw new Error(
+      "Lazy tree atomic activation group requires a valid first-use identity",
+    );
+  }
   const activation: LazyTreeActivation = {
     mode: activationRecord.mode,
     capabilities,
     roots,
+    ...(atomicGroup === undefined ? {} : { atomicGroup }),
   };
 
   const rawEntries = requireLazyTreeArray(
@@ -1762,7 +2026,8 @@ function validateSerializedGenericTree(
   value: unknown,
   expectedKind:
     | typeof SERIALIZED_DEFERRED_TREE_V1_KIND
-    | typeof SERIALIZED_DEFERRED_TREE_V2_KIND,
+    | typeof SERIALIZED_DEFERRED_TREE_V2_KIND
+    | typeof SERIALIZED_DEFERRED_TREE_V3_KIND,
 ): SerializedLazyArchiveEntry {
   const record = exactLazyTreeRecord(value, [
     "kind",
@@ -1785,13 +2050,29 @@ function validateSerializedGenericTree(
     record.activation,
   );
   if (
-    (expectedKind === SERIALIZED_DEFERRED_TREE_V1_KIND) !==
-      (definition.content.source === undefined)
+    expectedKind !== SERIALIZED_DEFERRED_TREE_V3_KIND &&
+    (
+      (expectedKind === SERIALIZED_DEFERRED_TREE_V1_KIND) !==
+        (definition.content.source === undefined)
+    )
   ) {
     throw new Error(
       expectedKind === SERIALIZED_DEFERRED_TREE_V1_KIND
         ? "Serialized deferred-tree-v1 cannot contain original-bottle source metadata"
         : "Serialized deferred-tree-v2 requires original-bottle source metadata",
+    );
+  }
+  const atomicMembership = definition.activation.atomicGroup;
+  if (
+    expectedKind === SERIALIZED_DEFERRED_TREE_V3_KIND
+      ? atomicMembership === undefined ||
+        !isSealedLazyAtomicMembership(atomicMembership)
+      : atomicMembership !== undefined
+  ) {
+    throw new Error(
+      expectedKind === SERIALIZED_DEFERRED_TREE_V3_KIND
+        ? "Serialized deferred-tree-v3 requires a sealed atomic activation"
+        : "Atomic activation requires serialized deferred-tree-v3",
     );
   }
   const url = requireLazyTreeString(
@@ -1946,6 +2227,18 @@ function validateSerializedGenericTree(
         : { target: inventoryEntry.target }),
     };
   });
+  for (const inventoryEntry of definition.entries) {
+    if (
+      definition.activation.atomicGroup !== undefined &&
+      (inventoryEntry.type === "file" ||
+        inventoryEntry.type === "hardlink") &&
+      !pendingPaths.has(inventoryEntry.vfsPath)
+    ) {
+      throw new Error(
+        `Serialized lazy tree omits pending path ${inventoryEntry.vfsPath}`,
+      );
+    }
+  }
   return {
     kind: expectedKind,
     content: definition.content,
@@ -1957,6 +2250,19 @@ function validateSerializedGenericTree(
     materialized: false,
     entries: pending,
   };
+}
+
+async function sha256Hex(data: Uint8Array, label: string): Promise<string> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) {
+    throw new Error(`${label} SHA-256 verification is unavailable`);
+  }
+  const copy = new Uint8Array(data.byteLength);
+  copy.set(data);
+  const digest = new Uint8Array(await subtle.digest("SHA-256", copy));
+  return Array.from(digest, (byte) =>
+    byte.toString(16).padStart(2, "0")
+  ).join("");
 }
 
 async function assertLazyIntegrity(
@@ -1971,21 +2277,425 @@ async function assertLazyIntegrity(
         `expected ${expected.bytes}`,
     );
   }
-  const subtle = globalThis.crypto?.subtle;
-  if (!subtle) {
-    throw new Error(`Lazy ${kind} integrity verification is unavailable`);
-  }
-  const copy = new Uint8Array(data.byteLength);
-  copy.set(data);
-  const digest = new Uint8Array(await subtle.digest("SHA-256", copy));
-  const actual = Array.from(digest, (byte) =>
-    byte.toString(16).padStart(2, "0")
-  ).join("");
+  const actual = await sha256Hex(data, `Lazy ${kind}`);
   if (actual !== expected.sha256) {
     throw new Error(
       `Lazy ${kind} SHA-256 ${actual} does not match expected ${expected.sha256}`,
     );
   }
+}
+
+function lazyAtomicDescriptorIdentityBytesFromValues(
+  content: LazyTreeContent,
+  inventory: readonly LazyTreeRegistrationEntry[],
+  mountPrefix: string,
+  activation: LazyTreeActivation,
+): Uint8Array {
+  const membership = activation.atomicGroup;
+  if (membership === undefined) {
+    throw new Error("Lazy atomic member is missing its typed tree descriptor");
+  }
+  // WHY: V3 deliberately excludes transport locations from descriptor
+  // identity because image composition rewrites mirrors after sealing. The
+  // digest still binds the exact byte hash/size, decoder bounds, complete
+  // source-to-namespace projection, and producer-assigned member identity.
+  const descriptor = {
+    schema: 1,
+    content: {
+      decoder: content.decoder,
+      mediaType: content.mediaType,
+      sha256: content.sha256,
+      bytes: content.bytes,
+      expandedBytes: content.expandedBytes,
+      sourceEntryCount: content.sourceEntryCount,
+      ...(content.modePolicy === undefined
+        ? {}
+        : { modePolicy: content.modePolicy }),
+      ...(content.source === undefined ? {} : { source: content.source }),
+    },
+    mountPrefix,
+    inventory: [...inventory].sort((left, right) =>
+      left.vfsPath < right.vfsPath ? -1 : left.vfsPath > right.vfsPath ? 1 : 0
+    ),
+    activation: {
+      mode: activation.mode,
+      capabilities: activation.capabilities,
+      roots: activation.roots,
+      atomicGroup: {
+        id: membership.id,
+        member: membership.member,
+      },
+    },
+  };
+  return new TextEncoder().encode(JSON.stringify(descriptor));
+}
+
+function lazyAtomicCohortIdentityBytes(
+  id: string,
+  members: readonly { member: string; descriptorSha256: string }[],
+): Uint8Array {
+  const canonicalMembers = members.map(({ member, descriptorSha256 }) => ({
+    member,
+    descriptorSha256,
+  }));
+  return new TextEncoder().encode(JSON.stringify({
+    schema: 1,
+    id,
+    members: canonicalMembers.sort((left, right) =>
+      left.member < right.member ? -1 : left.member > right.member ? 1 : 0
+    ),
+  }));
+}
+
+function equalLazyAtomicDescriptorBytes(
+  left: Uint8Array,
+  right: Uint8Array,
+): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  for (let index = 0; index < left.byteLength; index++) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+function immutableLazyTreeContent(
+  content: LazyTreeContent,
+  transportsValue: readonly string[] = content.transports,
+): LazyTreeContent {
+  const transports = [...transportsValue];
+  Object.freeze(transports);
+  const source = content.source === undefined
+    ? undefined
+    : {
+      schema: 1 as const,
+      kind: "homebrew-bottle-tar-gzip-v1" as const,
+      entries: content.source.entries.map((entry) =>
+        Object.freeze({ ...entry })
+      ),
+    };
+  if (source !== undefined) {
+    Object.freeze(source.entries);
+    Object.freeze(source);
+  }
+  return Object.freeze({
+    decoder: content.decoder,
+    mediaType: content.mediaType,
+    sha256: content.sha256,
+    bytes: content.bytes,
+    expandedBytes: content.expandedBytes,
+    sourceEntryCount: content.sourceEntryCount,
+    transports,
+    ...(content.modePolicy === undefined
+      ? {}
+      : { modePolicy: content.modePolicy }),
+    ...(source === undefined ? {} : { source }),
+  });
+}
+
+function cloneLazyTreeContent(content: LazyTreeContent): LazyTreeContent {
+  return {
+    decoder: content.decoder,
+    mediaType: content.mediaType,
+    sha256: content.sha256,
+    bytes: content.bytes,
+    expandedBytes: content.expandedBytes,
+    sourceEntryCount: content.sourceEntryCount,
+    transports: [...content.transports],
+    ...(content.modePolicy === undefined
+      ? {}
+      : { modePolicy: content.modePolicy }),
+    ...(content.source === undefined
+      ? {}
+      : {
+        source: {
+          schema: 1,
+          kind: "homebrew-bottle-tar-gzip-v1",
+          entries: content.source.entries.map((entry) => ({ ...entry })),
+        },
+      }),
+  };
+}
+
+function immutableLazyTreeInventory(
+  inventory: readonly LazyTreeRegistrationEntry[],
+): LazyTreeRegistrationEntry[] {
+  const copy = inventory.map((entry) => Object.freeze({ ...entry }));
+  Object.freeze(copy);
+  return copy;
+}
+
+function immutableLazyTreeActivation(
+  activation: LazyTreeActivation,
+  id: string,
+  member: string,
+): LazyTreeActivation {
+  const capabilities = [...activation.capabilities];
+  const roots = [...activation.roots];
+  Object.freeze(capabilities);
+  Object.freeze(roots);
+  return Object.freeze({
+    mode: activation.mode,
+    capabilities,
+    roots,
+    atomicGroup: Object.freeze({ id, member }),
+  });
+}
+
+function sealedLazyTreeActivation(
+  snapshot: SealedLazyAtomicSnapshot,
+): LazyTreeActivation {
+  return {
+    mode: snapshot.activation.mode,
+    capabilities: [...snapshot.activation.capabilities],
+    roots: [...snapshot.activation.roots],
+    atomicGroup: {
+      id: snapshot.id,
+      member: snapshot.member,
+      descriptorSha256: snapshot.descriptorSha256,
+      expectedCount: snapshot.expectedCount,
+      cohortSha256: snapshot.cohortSha256,
+    },
+  };
+}
+
+function equalLazyAtomicEntry(
+  left: LazyArchiveFileEntry,
+  right: LazyArchiveFileEntry,
+): boolean {
+  return left.ino === right.ino &&
+    left.generation === right.generation &&
+    left.dataSequence === right.dataSequence &&
+    left.size === right.size &&
+    left.isSymlink === right.isSymlink &&
+    left.deleted === right.deleted &&
+    left.materialized === right.materialized &&
+    left.archivePath === right.archivePath &&
+    left.sourcePath === right.sourcePath &&
+    left.type === right.type &&
+    left.inodeGroup === right.inodeGroup &&
+    left.target === right.target;
+}
+
+function captureLazyAtomicSnapshotSource(
+  group: LazyArchiveGroup,
+  id: string,
+  member: string,
+): LazyAtomicSnapshotSource {
+  const contentValue = group.content;
+  const inventoryValue = group.inventory;
+  const activationValue = group.activation;
+  const integrityValue = group.integrity;
+  const entriesValue = group.entries;
+  const urlValue = group.url;
+  const mountPrefixValue = group.mountPrefix;
+  const materializedValue = group.materialized;
+  const membership = activationValue?.atomicGroup;
+  if (
+    contentValue === undefined ||
+    inventoryValue === undefined ||
+    activationValue === undefined ||
+    membership === undefined ||
+    activationValue.mode !== "first-use" ||
+    membership.id !== id ||
+    membership.member !== member ||
+    materializedValue
+  ) {
+    throw new Error(
+      `Lazy atomic activation member ${member} changed before snapshot`,
+    );
+  }
+  if (
+    integrityValue?.sha256 !== contentValue.sha256 ||
+    integrityValue?.bytes !== contentValue.bytes ||
+    urlValue !== (contentValue.transports[0] ?? "")
+  ) {
+    throw new Error(
+      `Lazy atomic activation member ${member} has inconsistent integrity`,
+    );
+  }
+
+  const content = immutableLazyTreeContent(contentValue);
+  const inventory = immutableLazyTreeInventory(inventoryValue);
+  const activation = immutableLazyTreeActivation(
+    activationValue,
+    id,
+    member,
+  );
+  const canonicalSourceByGroup = new Map<string, string>();
+  for (const entry of inventory) {
+    if (entry.type === "file") {
+      canonicalSourceByGroup.set(entry.inodeGroup!, entry.sourcePath);
+    }
+  }
+  const runtimeInventory = inventory.filter((entry) =>
+    entry.type !== "directory"
+  );
+  if (entriesValue.size !== runtimeInventory.length) {
+    throw new Error(
+      `Lazy atomic activation member ${member} has inconsistent runtime entries`,
+    );
+  }
+  const entries = runtimeInventory.map((inventoryEntry) => {
+    const actual = entriesValue.get(inventoryEntry.vfsPath);
+    const isSymlink = inventoryEntry.type === "symlink";
+    const archivePath = isSymlink
+      ? inventoryEntry.sourcePath
+      : canonicalSourceByGroup.get(inventoryEntry.inodeGroup!);
+    const hasExpectedSemanticMapping = actual !== undefined && (
+      (
+        actual.sourcePath === inventoryEntry.sourcePath &&
+        actual.type === inventoryEntry.type &&
+        actual.target === inventoryEntry.target
+      ) ||
+      (
+        // SharedFS reconciliation represents every hard-link name with the
+        // canonical regular-file record for its inode. That is the same byte
+        // mapping; retain the descriptor's per-path hard-link semantics in
+        // the private snapshot instead of letting this process-local form
+        // redefine them.
+        inventoryEntry.type === "hardlink" &&
+        actual.sourcePath === archivePath &&
+        actual.type === "file" &&
+        actual.target === undefined
+      )
+    );
+    const mismatches = actual === undefined
+      ? ["missing"]
+      : [
+        archivePath === undefined ? "archivePath source" : undefined,
+        actual.generation === undefined ? "generation" : undefined,
+        actual.dataSequence === undefined ? "dataSequence" : undefined,
+        actual.size !== inventoryEntry.size ? "size" : undefined,
+        actual.isSymlink !== isSymlink ? "symlink kind" : undefined,
+        actual.deleted ? "deletion state" : undefined,
+        actual.materialized !== isSymlink ? "materialization state" : undefined,
+        actual.archivePath !== archivePath ? "archivePath" : undefined,
+        !hasExpectedSemanticMapping ? "descriptor mapping" : undefined,
+        actual.inodeGroup !== inventoryEntry.inodeGroup ? "inode group" : undefined,
+      ].filter((value): value is string => value !== undefined);
+    if (mismatches.length > 0) {
+      throw new Error(
+        `Lazy atomic activation member ${member} has inconsistent mapping at ` +
+          `${inventoryEntry.vfsPath}: ${mismatches.join(", ")}`,
+      );
+    }
+    // The mismatch guard above establishes that this entry is present.
+    const captured = actual!;
+    return Object.freeze({
+      vfsPath: inventoryEntry.vfsPath,
+      ino: captured.ino,
+      generation: captured.generation,
+      dataSequence: captured.dataSequence,
+      size: captured.size,
+      isSymlink: captured.isSymlink,
+      deleted: false,
+      materialized: captured.materialized,
+      archivePath,
+      sourcePath: inventoryEntry.sourcePath,
+      type: inventoryEntry.type,
+      ...(inventoryEntry.inodeGroup === undefined
+        ? {}
+        : { inodeGroup: inventoryEntry.inodeGroup }),
+      ...(inventoryEntry.target === undefined
+        ? {}
+        : { target: inventoryEntry.target }),
+    }) as LazyAtomicSnapshotEntry;
+  });
+  Object.freeze(entries);
+  const integrity = Object.freeze({
+    sha256: content.sha256,
+    bytes: content.bytes,
+  });
+  const descriptorBytes = lazyAtomicDescriptorIdentityBytesFromValues(
+    content,
+    inventory,
+    mountPrefixValue,
+    activation,
+  );
+  return Object.freeze({
+    id,
+    member,
+    descriptorBytes,
+    content,
+    inventory,
+    activation,
+    url: content.transports[0] ?? "",
+    mountPrefix: mountPrefixValue,
+    integrity,
+    entries,
+  });
+}
+
+function sealLazyAtomicSnapshot(
+  source: LazyAtomicSnapshotSource,
+  descriptorSha256: string,
+  expectedCount: number,
+  cohortSha256: string,
+): SealedLazyAtomicSnapshot {
+  return Object.freeze({
+    ...source,
+    descriptorSha256,
+    expectedCount,
+    cohortSha256,
+  });
+}
+
+function equalLazyAtomicSnapshotSources(
+  left: LazyAtomicSnapshotSource,
+  right: LazyAtomicSnapshotSource,
+): boolean {
+  if (
+    left.id !== right.id ||
+    left.member !== right.member ||
+    left.url !== right.url ||
+    left.mountPrefix !== right.mountPrefix ||
+    left.integrity.sha256 !== right.integrity.sha256 ||
+    left.integrity.bytes !== right.integrity.bytes ||
+    left.content.transports.length !== right.content.transports.length ||
+    left.content.transports.some(
+      (transport, index) => transport !== right.content.transports[index],
+    ) ||
+    !equalLazyAtomicDescriptorBytes(
+      left.descriptorBytes,
+      right.descriptorBytes,
+    ) ||
+    left.entries.length !== right.entries.length
+  ) {
+    return false;
+  }
+  return left.entries.every((entry, index) => {
+    const candidate = right.entries[index];
+    return candidate !== undefined &&
+      entry.vfsPath === candidate.vfsPath &&
+      equalLazyAtomicEntry(entry, candidate);
+  });
+}
+
+function rewriteSealedLazyAtomicSnapshotTransports(
+  snapshot: SealedLazyAtomicSnapshot,
+  transform: (url: string) => string,
+): SealedLazyAtomicSnapshot {
+  const content = immutableLazyTreeContent(
+    snapshot.content,
+    snapshot.content.transports.map(transform),
+  );
+  return Object.freeze({
+    ...snapshot,
+    content,
+    url: content.transports[0] ?? "",
+  });
+}
+
+function conditionalFileReplacement(
+  replacement: PreparedLazyArchiveReplacement,
+) {
+  return {
+    paths: Array.from(replacement.paths),
+    expectedIno: replacement.ino,
+    expectedGeneration: replacement.generation,
+    expectedDataSequence: replacement.dataSequence,
+    data: replacement.content,
+  };
 }
 
 export class MemoryFileSystem implements FileSystemBackend {
@@ -2013,6 +2723,22 @@ export class MemoryFileSystem implements FileSystemBackend {
   >();
   /** Fast lookup keyed by inode slot + generation. */
   private lazyArchiveInodes = new Map<string, LazyArchiveGroup>();
+  /** Activation transactions reconstructed from typed tree metadata. */
+  private lazyAtomicGroups = new Map<string, LazyAtomicGroup>();
+  private lazyAtomicGroupByTree = new WeakMap<LazyArchiveGroup, LazyAtomicGroup>();
+  /**
+   * Canonical activation state captured at the seal/import boundary.
+   *
+   * WHY: registerLazyTree() returns its group for existing callers, so nested
+   * arrays remain reachable even after sealing. Retaining an internal copy
+   * makes every later export/save/activation prove that public mutable state
+   * still describes the exact member whose digest was sealed; authorized
+   * mirror rewrites replace only the private transport portion.
+   */
+  private sealedLazyAtomicStates = new WeakMap<
+    LazyArchiveGroup,
+    SealedLazyAtomicState
+  >();
   private lazyDownloadListeners = new Set<LazyDownloadListener>();
   /** One in-flight fetch/commit per lazy file or archive group. */
   private lazyPreparations = new Map<object, LazyPreparation>();
@@ -2069,6 +2795,35 @@ export class MemoryFileSystem implements FileSystemBackend {
 
     this.lazyArchiveInodes.clear();
     for (const group of this.lazyArchiveGroups) {
+      const atomicGroup = this.lazyAtomicGroupByTree.get(group);
+      const atomicState = this.sealedLazyAtomicStates.get(group);
+      if (atomicState !== undefined) {
+        if (!atomicGroup?.committed) {
+          // WHY: peer reconciliation may update private inode lookup, but it
+          // must never rewrite the sealed namespace/mapping from public state.
+          // Exact SharedFS namespace checks below decide whether it is usable.
+          for (const entry of atomicState.snapshot.entries) {
+            if (
+              entry.isSymlink ||
+              entry.materialized ||
+              entry.generation === undefined
+            ) continue;
+            const key = MemoryFileSystem.inodeKey(
+              entry.ino,
+              entry.generation,
+            );
+            const identity = identities.get(key);
+            if (
+              identity !== undefined &&
+              identity.dataSequence === entry.dataSequence &&
+              identity.paths.length > 0
+            ) {
+              this.lazyArchiveInodes.set(key, group);
+            }
+          }
+        }
+        continue;
+      }
       const unverifiedGenericTree =
         group.content !== undefined &&
         group.inventory !== undefined &&
@@ -2085,7 +2840,17 @@ export class MemoryFileSystem implements FileSystemBackend {
         if (!pendingByIdentity.has(key)) pendingByIdentity.set(key, entry);
       }
 
-      const reconciled = new Map<string, LazyArchiveFileEntry>();
+      // Structural symlinks are materialized when the descriptor is
+      // registered, so they do not participate in pending-inode lookup.
+      // Keep their exact registered identity for sealed-cohort namespace
+      // guards. Keep local deletion tombstones as well: once every alias in
+      // an inode group is intentionally removed, that is the only distinction
+      // between a supported metadata-only tree and an unobserved peer unlink.
+      const reconciled = new Map<string, LazyArchiveFileEntry>(
+        Array.from(group.entries.entries()).filter(([, entry]) =>
+          entry.deleted || (entry.isSymlink && !entry.deleted)
+        ),
+      );
       for (const [key, entry] of pendingByIdentity) {
         const identity = identities.get(key);
         if (!identity || identity.dataSequence !== (entry.dataSequence ?? 0))
@@ -2105,7 +2870,154 @@ export class MemoryFileSystem implements FileSystemBackend {
         }
       }
       group.entries = reconciled;
-      group.materialized = reconciled.size === 0 && !unverifiedGenericTree;
+      group.materialized =
+        !Array.from(reconciled.values()).some((entry) =>
+          !entry.isSymlink && !entry.materialized
+        ) &&
+        !unverifiedGenericTree &&
+        (atomicGroup === undefined || atomicGroup.committed);
+    }
+  }
+
+  /**
+   * Validate every pending generic-tree namespace member against the exact
+   * SharedFS state captured for export, rebase, or image serialization.
+   *
+   * WHY: producer metadata lives in this JavaScript instance, while another
+   * worker can mutate the shared namespace without updating it. Record-only
+   * validation cannot see a peer chmod, a removed structural symlink, or an
+   * undeclared hard-link alias. Using the same lock-captured state as the
+   * filesystem snapshot prevents a later live repair from blessing bytes that
+   * were already inconsistent when copied.
+   */
+  private validatePendingLazyTreeNamespaceState(
+    identities: Map<string, SharedFsIdentityState>,
+  ): void {
+    const identityByPath = new Map<string, SharedFsIdentityState>();
+    for (const identity of identities.values()) {
+      for (const path of identity.paths) {
+        if (identityByPath.has(path)) {
+          throw new Error(
+            `SharedFS namespace identity is ambiguous at ${path}`,
+          );
+        }
+        identityByPath.set(path, identity);
+      }
+    }
+
+    for (const group of this.lazyArchiveGroups) {
+      const atomicGroup = this.lazyAtomicGroupByTree.get(group);
+      const atomicState = this.sealedLazyAtomicStates.get(group);
+      const snapshot = atomicState?.snapshot;
+      if (
+        atomicGroup?.committed ||
+        (snapshot === undefined && group.materialized) ||
+        (snapshot === undefined &&
+          (group.content === undefined || group.inventory === undefined))
+      ) {
+        continue;
+      }
+      const inventory = snapshot?.inventory ?? group.inventory!;
+      const registeredEntries = snapshot === undefined
+        ? group.entries
+        : new Map(
+          snapshot.entries.map((entry) => [entry.vfsPath, entry]),
+        );
+      const aliasesByInodeGroup = new Map<string, number>();
+      const pathsByInodeGroup = new Map<string, string[]>();
+      const locallyDeletedInodeGroups = new Set<string>();
+      for (const entry of registeredEntries.values()) {
+        if (entry.deleted && entry.inodeGroup !== undefined) {
+          locallyDeletedInodeGroups.add(entry.inodeGroup);
+        }
+      }
+      for (const entry of inventory) {
+        if (entry.type !== "file" && entry.type !== "hardlink") continue;
+        aliasesByInodeGroup.set(
+          entry.inodeGroup!,
+          (aliasesByInodeGroup.get(entry.inodeGroup!) ?? 0) + 1,
+        );
+        const paths = pathsByInodeGroup.get(entry.inodeGroup!) ?? [];
+        paths.push(entry.vfsPath);
+        pathsByInodeGroup.set(entry.inodeGroup!, paths);
+      }
+      const intentionallyRemovedInodeGroups = new Set(
+        [...locallyDeletedInodeGroups].filter((inodeGroup) =>
+          pathsByInodeGroup.get(inodeGroup)?.every(
+            (path) => !identityByPath.has(path),
+          )
+        ),
+      );
+
+      for (const inventoryEntry of inventory) {
+        const identity = identityByPath.get(inventoryEntry.vfsPath);
+        if (identity === undefined) {
+          const intentionallyRemovedInodeGroup =
+            inventoryEntry.inodeGroup !== undefined &&
+            intentionallyRemovedInodeGroups.has(inventoryEntry.inodeGroup);
+          if (intentionallyRemovedInodeGroup) continue;
+          throw new Error(
+            `Lazy tree namespace entry ${inventoryEntry.vfsPath} ` +
+              "is missing from the captured filesystem state",
+          );
+        }
+        const expectedType = inventoryEntry.type === "directory"
+          ? S_IFDIR
+          : inventoryEntry.type === "symlink"
+            ? S_IFLNK
+            : S_IFREG;
+        if (
+          (identity.mode & S_IFMT) !== expectedType ||
+          (identity.mode & 0o7777) !== inventoryEntry.mode
+        ) {
+          throw new Error(
+            `Lazy tree namespace entry ${inventoryEntry.vfsPath} ` +
+              "disagrees with its captured type or mode",
+          );
+        }
+
+        if (inventoryEntry.type === "directory") continue;
+        const registered = registeredEntries.get(inventoryEntry.vfsPath);
+        if (
+          registered === undefined ||
+          registered.ino !== identity.ino ||
+          registered.generation !== identity.generation ||
+          registered.dataSequence !== identity.dataSequence
+        ) {
+          throw new Error(
+            `Lazy tree namespace entry ${inventoryEntry.vfsPath} ` +
+              "changed identity before serialization",
+          );
+        }
+
+        if (inventoryEntry.type === "symlink") {
+          const targetBytes =
+            new TextEncoder().encode(inventoryEntry.target!).byteLength;
+          if (
+            identity.linkCount !== 1 ||
+            identity.size !== inventoryEntry.size ||
+            identity.size !== targetBytes ||
+            identity.symlinkTarget !== inventoryEntry.target
+          ) {
+            throw new Error(
+              `Lazy tree symlink ${inventoryEntry.vfsPath} ` +
+                "disagrees with its captured inventory",
+            );
+          }
+          continue;
+        }
+
+        if (
+          identity.size !== 0 ||
+          identity.linkCount !==
+            aliasesByInodeGroup.get(inventoryEntry.inodeGroup!)!
+        ) {
+          throw new Error(
+            `Lazy tree stub ${inventoryEntry.vfsPath} ` +
+              "has changed data or undeclared aliases",
+          );
+        }
+      }
     }
   }
 
@@ -2119,11 +3031,25 @@ export class MemoryFileSystem implements FileSystemBackend {
     return entry;
   }
 
+  private lazyArchiveEntriesForRead(
+    group: LazyArchiveGroup,
+  ): LazyAtomicSnapshotEntry[] {
+    const atomicGroup = this.lazyAtomicGroupByTree.get(group);
+    const atomicState = this.sealedLazyAtomicStates.get(group);
+    if (atomicState !== undefined && !atomicGroup?.committed) {
+      return atomicState.snapshot.entries;
+    }
+    return Array.from(group.entries, ([vfsPath, entry]) => ({
+      vfsPath,
+      ...entry,
+    }));
+  }
+
   private lazyArchiveForStat(st: SfsStatResult) {
     const key = MemoryFileSystem.inodeKey(st.ino, st.generation);
     const group = this.lazyArchiveInodes.get(key);
     if (!group) return undefined;
-    const entries = Array.from(group.entries.values()).filter(
+    const entries = this.lazyArchiveEntriesForRead(group).filter(
       (entry) =>
         entry.ino === st.ino &&
         entry.generation === st.generation &&
@@ -2134,7 +3060,10 @@ export class MemoryFileSystem implements FileSystemBackend {
       return group;
     }
     this.lazyArchiveInodes.delete(key);
-    for (const entry of entries) entry.materialized = true;
+    const atomicState = this.sealedLazyAtomicStates.get(group);
+    if (atomicState === undefined) {
+      for (const entry of entries) entry.materialized = true;
+    }
     return undefined;
   }
 
@@ -2148,42 +3077,58 @@ export class MemoryFileSystem implements FileSystemBackend {
     if (file) return { token: file, path: file.path };
     const archive = this.lazyArchiveInodes.get(key);
     if (!archive) return null;
-    const path = Array.from(archive.entries.entries()).find(([, entry]) =>
+    const path = this.lazyArchiveEntriesForRead(archive).find((entry) =>
       entry.ino === st.ino &&
       entry.generation === st.generation &&
       !entry.deleted &&
       !entry.materialized
-    )?.[0];
-    return path === undefined ? null : { token: archive, path };
+    )?.vfsPath;
+    if (path === undefined) return null;
+    const atomicGroup = this.lazyAtomicGroupByTree.get(archive);
+    return atomicGroup === undefined
+      ? { token: archive, path }
+      : { token: atomicGroup.token, path, atomicGroup };
   }
 
   private lazyBackingForPath(path: string): LazyBacking | null {
     // A directory/symlink-only tree has no empty regular inode to carry its
     // deferred identity. Preserve first-use semantics through the declared
     // activation roots instead of silently treating the tree as concrete.
-    const metadataOnlyGroup = this.lazyArchiveGroups.find((group) =>
-      !group.materialized &&
-      group.content !== undefined &&
-      group.inventory !== undefined &&
-      group.activation !== undefined &&
-      Array.from(group.entries.values()).every(
-        (entry) => entry.deleted || entry.materialized || entry.isSymlink,
-      ) &&
-      group.activation.roots.some((root) =>
-        root === "/" || path === root || path.startsWith(`${root}/`)
-      )
-    );
+    const metadataOnlyGroup = this.lazyArchiveGroups.find((group) => {
+      const atomicGroup = this.lazyAtomicGroupByTree.get(group);
+      const snapshot = this.sealedLazyAtomicStates.get(group)?.snapshot;
+      const pending = snapshot === undefined
+        ? !group.materialized
+        : !atomicGroup?.committed;
+      const content = snapshot?.content ?? group.content;
+      const inventory = snapshot?.inventory ?? group.inventory;
+      const activation = snapshot?.activation ?? group.activation;
+      const entries = snapshot?.entries ??
+        Array.from(group.entries.values());
+      return pending &&
+        content !== undefined &&
+        inventory !== undefined &&
+        activation !== undefined &&
+        entries.every(
+          (entry) => entry.deleted || entry.materialized || entry.isSymlink,
+        ) &&
+        activation.roots.some((root) =>
+          root === "/" || path === root || path.startsWith(`${root}/`)
+        );
+    });
     if (metadataOnlyGroup) {
+      const atomicGroup = this.lazyAtomicGroupByTree.get(metadataOnlyGroup);
       return {
-        token: metadataOnlyGroup,
+        token: atomicGroup?.token ?? metadataOnlyGroup,
         path,
         directGroup: metadataOnlyGroup,
+        ...(atomicGroup === undefined ? {} : { atomicGroup }),
       };
     }
     try {
       const st = this.fs.stat(path);
       const backing = this.lazyBackingForStat(st);
-      return backing ? { token: backing.token, path } : null;
+      return backing ? { ...backing, path } : null;
     } catch {
       return null;
     }
@@ -2195,7 +3140,9 @@ export class MemoryFileSystem implements FileSystemBackend {
       status: "pending",
       promise: Promise.resolve(false),
     } as LazyPreparation;
-    const materialization = backing.directGroup
+    const materialization = backing.atomicGroup
+      ? this.ensureAtomicLazyGroupMaterialized(backing.atomicGroup).then(() => true)
+      : backing.directGroup
       ? this.ensureArchiveMaterialized(backing.directGroup).then(() => true)
       : this.materializePath(path);
     preparation.promise = materialization.then(
@@ -2218,6 +3165,208 @@ export class MemoryFileSystem implements FileSystemBackend {
     void preparation.promise.catch(() => {});
     this.lazyPreparations.set(token, preparation);
     return preparation;
+  }
+
+  private registerLazyAtomicGroupMembership(
+    group: LazyArchiveGroup,
+    importedSealVerified = false,
+  ): void {
+    const membership = group.activation?.atomicGroup;
+    if (membership === undefined) return;
+    const { id, member } = membership;
+    if (
+      group.content === undefined ||
+      group.inventory === undefined ||
+      group.activation?.mode !== "first-use"
+    ) {
+      throw new Error(
+        `Lazy atomic activation group ${id} accepts only typed first-use trees`,
+      );
+    }
+    let atomicGroup = this.lazyAtomicGroups.get(id);
+    if (atomicGroup === undefined) {
+      atomicGroup = {
+        id,
+        token: Object.freeze({ id }),
+        groups: new Map(),
+        committed: false,
+      };
+      this.lazyAtomicGroups.set(id, atomicGroup);
+    } else if (atomicGroup.committed) {
+      throw new Error(
+        `Lazy atomic activation group ${id} is already materialized`,
+      );
+    }
+    if (atomicGroup.groups.has(member)) {
+      throw new Error(
+        `Lazy atomic activation group ${id} duplicates member ${member}`,
+      );
+    }
+    if (isSealedLazyAtomicMembership(membership)) {
+      if (
+        atomicGroup.expectedCount !== undefined &&
+        (
+          atomicGroup.expectedCount !== membership.expectedCount ||
+          atomicGroup.cohortSha256 !== membership.cohortSha256
+        )
+      ) {
+        throw new Error(
+          `Lazy atomic activation group ${id} has inconsistent seals`,
+        );
+      }
+      atomicGroup.expectedCount = membership.expectedCount;
+      atomicGroup.cohortSha256 = membership.cohortSha256;
+      const source = captureLazyAtomicSnapshotSource(group, id, member);
+      this.sealedLazyAtomicStates.set(group, {
+        snapshot: sealLazyAtomicSnapshot(
+          source,
+          membership.descriptorSha256,
+          membership.expectedCount,
+          membership.cohortSha256,
+        ),
+        verified: importedSealVerified,
+      });
+    } else if (atomicGroup.expectedCount !== undefined) {
+      throw new Error(
+        `Lazy atomic activation group ${id} mixes sealed and unsealed members`,
+      );
+    }
+    atomicGroup.groups.set(member, group);
+    this.lazyAtomicGroupByTree.set(group, atomicGroup);
+  }
+
+  /**
+   * Finalize one exact multi-tree activation cohort.
+   *
+   * The caller supplies the producer-known member names so forgetting a tree
+   * cannot silently redefine the transaction. The resulting per-member and
+   * cohort digests are retained in every serialized tree record.
+   */
+  async sealLazyAtomicGroup(
+    id: string,
+    expectedMembersValue: readonly string[],
+  ): Promise<void> {
+    const expectedMembers = expectedMembersValue.map((member) =>
+      validateLazyAtomicGroupMembership({ id, member }).member
+    ).sort();
+    if (
+      expectedMembers.length === 0 ||
+      new Set(expectedMembers).size !== expectedMembers.length
+    ) {
+      throw new Error(
+        `Lazy atomic activation group ${id} expected members are invalid`,
+      );
+    }
+    const atomicGroup = this.lazyAtomicGroups.get(id);
+    if (atomicGroup === undefined || atomicGroup.committed) {
+      throw new Error(
+        `Lazy atomic activation group ${id} is not pending`,
+      );
+    }
+    const actualMembers = [...atomicGroup.groups.keys()].sort();
+    if (JSON.stringify(actualMembers) !== JSON.stringify(expectedMembers)) {
+      throw new Error(
+        `Lazy atomic activation group ${id} members differ from its seal`,
+      );
+    }
+    if (atomicGroup.expectedCount !== undefined) {
+      if (
+        atomicGroup.expectedCount !== expectedMembers.length ||
+        atomicGroup.cohortSha256 === undefined
+      ) {
+        throw new Error(
+          `Lazy atomic activation group ${id} has an invalid existing seal`,
+        );
+      }
+      await this.ensureLazyAtomicGroupSealValidated(
+        atomicGroup,
+        expectedMembers.map((member) => atomicGroup.groups.get(member)!),
+        true,
+      );
+      return;
+    }
+
+    const sources = expectedMembers.map((member) =>
+      captureLazyAtomicSnapshotSource(
+        atomicGroup.groups.get(member)!,
+        id,
+        member,
+      )
+    );
+    const descriptors: Array<{
+      member: string;
+      descriptorSha256: string;
+      source: LazyAtomicSnapshotSource;
+    }> = [];
+    // Hash sequentially so a large descriptor set never creates one encoded
+    // copy per tree at the same time merely to establish the cohort identity.
+    for (const source of sources) {
+      descriptors.push({
+        member: source.member,
+        descriptorSha256: await sha256Hex(
+          source.descriptorBytes,
+          `Lazy atomic member ${source.member}`,
+        ),
+        source,
+      });
+    }
+    const cohortSha256 = await sha256Hex(
+      lazyAtomicCohortIdentityBytes(id, descriptors),
+      `Lazy atomic activation group ${id}`,
+    );
+    for (const descriptor of descriptors) {
+      const group = atomicGroup.groups.get(descriptor.member)!;
+      const current = captureLazyAtomicSnapshotSource(
+        group,
+        id,
+        descriptor.member,
+      );
+      if (!equalLazyAtomicSnapshotSources(descriptor.source, current)) {
+        throw new Error(
+          `Lazy atomic activation member ${descriptor.member} changed while sealing`,
+        );
+      }
+    }
+    for (const descriptor of descriptors) {
+      const group = atomicGroup.groups.get(descriptor.member)!;
+      group.activation!.atomicGroup = {
+        id,
+        member: descriptor.member,
+        descriptorSha256: descriptor.descriptorSha256,
+        expectedCount: descriptors.length,
+        cohortSha256,
+      };
+      this.sealedLazyAtomicStates.set(group, {
+        snapshot: sealLazyAtomicSnapshot(
+          descriptor.source,
+          descriptor.descriptorSha256,
+          descriptors.length,
+          cohortSha256,
+        ),
+        verified: true,
+      });
+    }
+    atomicGroup.expectedCount = descriptors.length;
+    atomicGroup.cohortSha256 = cohortSha256;
+  }
+
+  /**
+   * Cryptographically authenticate every pending sealed atomic cohort.
+   *
+   * Image restore validates the closed v3 structure synchronously, but its
+   * SHA-256 claims remain untrusted until an asynchronous host digest pass.
+   * Await this before a caller needs synchronous metadata inspection or
+   * filesystem rebasing. This check does not fetch or materialize deferred
+   * trees, snapshot the filesystem, export metadata, or rebase storage.
+   *
+   * Locally sealed cohorts are already authenticated; explicitly verifying
+   * them again is safe and idempotent.
+   */
+  async verifyImportedLazyAtomicGroupSeals(): Promise<void> {
+    // WHY: synchronous export and rebase cannot invoke browser SubtleCrypto.
+    // Keep their fail-closed guard while giving image consumers a cheap,
+    // explicit trust boundary that does not serialize the whole VFS.
+    await this.validatePendingLazyAtomicGroupSeals(true);
   }
 
   private guardSynchronousLazyAccess(path: string): void {
@@ -2360,7 +3509,8 @@ export class MemoryFileSystem implements FileSystemBackend {
     const { bytes: sourceBytes, identities } = this.fs.snapshotState();
     this.reconcileLazyIdentityState(identities);
     const lazyEntries = this.serializeLazyEntries();
-    const lazyArchiveEntries = this.serializeLazyArchiveEntries();
+    const lazyArchiveEntries =
+      this.serializeValidatedLazyArchiveEntries(identities);
     const sourceSab = new SharedArrayBufferCtor(sourceBytes.byteLength);
     new Uint8Array(sourceSab).set(sourceBytes);
     const source = new MemoryFileSystem(
@@ -2368,7 +3518,12 @@ export class MemoryFileSystem implements FileSystemBackend {
       this.imageMetadata,
     );
     source.importLazyEntries(lazyEntries);
-    source.importLazyArchiveEntries(lazyArchiveEntries);
+    source.importLazyArchiveEntriesInternal(
+      lazyArchiveEntries,
+      false,
+      true,
+      true,
+    );
 
     const initialByteLength = Math.min(
       maxByteLength,
@@ -2410,7 +3565,7 @@ export class MemoryFileSystem implements FileSystemBackend {
         };
       }),
     );
-    target.importLazyArchiveEntries(
+    target.importLazyArchiveEntriesInternal(
       lazyArchiveEntries.map((group) => ({
         ...group,
         entries: group.entries.map((entry) => {
@@ -2424,6 +3579,9 @@ export class MemoryFileSystem implements FileSystemBackend {
           };
         }),
       })),
+      false,
+      true,
+      true,
     );
 
     return target;
@@ -2875,6 +4033,26 @@ export class MemoryFileSystem implements FileSystemBackend {
     const owner = ownerValue === undefined
       ? undefined
       : validateLazyTreeRegistrationOwner(ownerValue);
+    const existingAtomicGroup = activation.atomicGroup === undefined
+      ? undefined
+      : this.lazyAtomicGroups.get(activation.atomicGroup.id);
+    if (
+      existingAtomicGroup?.committed ||
+      (
+        existingAtomicGroup !== undefined &&
+        (
+          existingAtomicGroup.expectedCount !== undefined ||
+          existingAtomicGroup.groups.has(activation.atomicGroup!.member)
+        )
+      )
+    ) {
+      // WHY: registration mutates the namespace. Rejecting a late cohort
+      // member after creating its stubs would itself expose a partial tree.
+      throw new Error(
+        `Lazy atomic activation group ${activation.atomicGroup?.id} ` +
+          "cannot accept this member",
+      );
+    }
 
     const group: LazyTreeGroup = {
       content,
@@ -3004,6 +4182,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       );
     }
     this.lazyArchiveGroups.push(group);
+    this.registerLazyAtomicGroupMembership(group);
     return group;
   }
 
@@ -3152,13 +4331,14 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   /** Import lazy archive groups from another instance. Assumes stubs already exist. */
   importLazyArchiveEntries(serialized: SerializedLazyArchiveEntry[]): void {
-    this.importLazyArchiveEntriesInternal(serialized, false, true);
+    this.importLazyArchiveEntriesInternal(serialized, false, true, false);
   }
 
   private importLazyArchiveEntriesInternal(
     serializedValue: unknown,
     trustedLegacySnapshot: boolean,
     requireDiscriminator: boolean,
+    importedSealVerified = false,
   ): void {
     const serialized = requireLazyTreeArray(
       serializedValue,
@@ -3172,7 +4352,8 @@ export class MemoryFileSystem implements FileSystemBackend {
       const kind = (value as Record<string, unknown>).kind;
       if (
         kind === SERIALIZED_DEFERRED_TREE_V1_KIND ||
-        kind === SERIALIZED_DEFERRED_TREE_V2_KIND
+        kind === SERIALIZED_DEFERRED_TREE_V2_KIND ||
+        kind === SERIALIZED_DEFERRED_TREE_V3_KIND
       ) {
         return validateSerializedGenericTree(value, kind);
       }
@@ -3189,10 +4370,13 @@ export class MemoryFileSystem implements FileSystemBackend {
       }
       return validateSerializedLegacyArchive(value, true);
     });
-    validateSerializedDeferredTreeCollection([
-      ...this.serializeLazyArchiveEntries(),
+    const currentIdentities = this.fs.identityState();
+    this.reconcileLazyIdentityState(currentIdentities);
+    const combinedSerialized = [
+      ...this.serializeValidatedLazyArchiveEntries(currentIdentities),
       ...serialized,
-    ]);
+    ];
+    validateCompleteSerializedLazyArchiveCollection(combinedSerialized);
     const plannedGroups: LazyArchiveGroup[] = [];
     const plannedInodes = new Map<string, LazyArchiveGroup>();
     for (const s of serialized) {
@@ -3211,6 +4395,7 @@ export class MemoryFileSystem implements FileSystemBackend {
         : null;
       const identityByGroup = new Map<string, string>();
       const groupByIdentity = new Map<string, string>();
+      const regularStatByPath = new Map<string, SfsStatResult>();
       for (const e of s.entries) {
         let st: SfsStatResult | null = null;
         const materialized =
@@ -3267,6 +4452,7 @@ export class MemoryFileSystem implements FileSystemBackend {
             continue;
           }
           if (genericTree) {
+            regularStatByPath.set(e.vfsPath, st);
             const inventoryAtPath = inventoryByPath!.get(e.vfsPath);
             const inventoryEntry =
               inventoryByIdentity!.get(lazyTreeInventoryIdentityKey(e)) ??
@@ -3315,6 +4501,82 @@ export class MemoryFileSystem implements FileSystemBackend {
           target: e.target,
         });
       }
+      if (genericTree) {
+        const declaredAliasesByGroup = new Map<string, number>();
+        for (const inventoryEntry of s.inventory!) {
+          if (
+            inventoryEntry.type === "file" ||
+            inventoryEntry.type === "hardlink"
+          ) {
+            declaredAliasesByGroup.set(
+              inventoryEntry.inodeGroup!,
+              (declaredAliasesByGroup.get(inventoryEntry.inodeGroup!) ?? 0) + 1,
+            );
+            continue;
+          }
+          let st: SfsStatResult;
+          try {
+            st = this.fs.lstat(inventoryEntry.vfsPath);
+          } catch {
+            throw new Error(
+              `Serialized lazy tree namespace entry ${inventoryEntry.vfsPath} ` +
+                "is missing from the filesystem",
+            );
+          }
+          const expectedType = inventoryEntry.type === "directory"
+            ? S_IFDIR
+            : S_IFLNK;
+          if (
+            (st.mode & S_IFMT) !== expectedType ||
+            (st.mode & 0o7777) !== inventoryEntry.mode ||
+            (
+              inventoryEntry.type === "symlink" &&
+              (
+                st.size !== new TextEncoder().encode(inventoryEntry.target!).byteLength ||
+                this.fs.readlink(inventoryEntry.vfsPath) !== inventoryEntry.target
+              )
+            )
+          ) {
+            throw new Error(
+              `Serialized lazy tree namespace entry ${inventoryEntry.vfsPath} ` +
+                "disagrees with its inventory",
+            );
+          }
+          if (inventoryEntry.type === "symlink") {
+            entries.set(inventoryEntry.vfsPath, {
+              ino: st.ino,
+              generation: st.generation,
+              dataSequence: st.dataSequence,
+              size: inventoryEntry.size,
+              isSymlink: true,
+              deleted: false,
+              materialized: true,
+              archivePath: inventoryEntry.sourcePath,
+              sourcePath: inventoryEntry.sourcePath,
+              type: "symlink",
+              target: inventoryEntry.target,
+            });
+          }
+        }
+        if (s.activation?.atomicGroup !== undefined) {
+          for (const inventoryEntry of s.inventory!) {
+            if (
+              inventoryEntry.type !== "file" &&
+              inventoryEntry.type !== "hardlink"
+            ) continue;
+            const st = regularStatByPath.get(inventoryEntry.vfsPath)!;
+            if (
+              st.linkCount !==
+                declaredAliasesByGroup.get(inventoryEntry.inodeGroup!)!
+            ) {
+              throw new Error(
+                `Serialized lazy atomic tree inode group ` +
+                  `${inventoryEntry.inodeGroup} has undeclared aliases`,
+              );
+            }
+          }
+        }
+      }
       const content = s.content === undefined
         ? undefined
         : validateLazyTreeContent(s.content);
@@ -3337,6 +4599,9 @@ export class MemoryFileSystem implements FileSystemBackend {
             mode: s.activation.mode,
             capabilities: [...s.activation.capabilities],
             roots: [...s.activation.roots],
+            ...(s.activation.atomicGroup === undefined
+              ? {}
+              : { atomicGroup: { ...s.activation.atomicGroup } }),
           }
           : undefined,
         entries,
@@ -3366,7 +4631,21 @@ export class MemoryFileSystem implements FileSystemBackend {
         }
       }
     }
+    for (const group of plannedGroups) {
+      const membership = group.activation?.atomicGroup;
+      if (
+        membership !== undefined &&
+        this.lazyAtomicGroups.get(membership.id)?.committed
+      ) {
+        throw new Error(
+          `Lazy atomic activation group ${membership.id} is already materialized`,
+        );
+      }
+    }
     this.lazyArchiveGroups.push(...plannedGroups);
+    for (const group of plannedGroups) {
+      this.registerLazyAtomicGroupMembership(group, importedSealVerified);
+    }
     for (const [key, group] of plannedInodes) {
       this.lazyArchiveInodes.set(key, group);
     }
@@ -3379,6 +4658,23 @@ export class MemoryFileSystem implements FileSystemBackend {
    */
   rewriteLazyArchiveUrls(transform: (url: string) => string): void {
     for (const group of this.lazyArchiveGroups) {
+      const atomicGroup = this.lazyAtomicGroupByTree.get(group);
+      const atomicState = this.sealedLazyAtomicStates.get(group);
+      if (atomicState !== undefined && !atomicGroup?.committed) {
+        this.assertLazyAtomicSnapshotMatchesPublic(group);
+        const snapshot = rewriteSealedLazyAtomicSnapshotTransports(
+          atomicState.snapshot,
+          transform,
+        );
+        // WHY: URL rewriting is the one authorized post-seal deployment
+        // mutation. Replace both private and public values from the private
+        // snapshot so arbitrary public edits never become transport authority.
+        group.content = cloneLazyTreeContent(snapshot.content);
+        group.url = snapshot.url;
+        group.integrity = { ...snapshot.integrity };
+        atomicState.snapshot = snapshot;
+        continue;
+      }
       if (group.content) {
         group.content = {
           ...group.content,
@@ -3394,6 +4690,31 @@ export class MemoryFileSystem implements FileSystemBackend {
   private serializeLazyArchiveEntries(): SerializedLazyArchiveEntry[] {
     const serialized: SerializedLazyArchiveEntry[] = [];
     for (const group of this.lazyArchiveGroups) {
+      const atomicGroup = this.lazyAtomicGroupByTree.get(group);
+      const atomicState = this.sealedLazyAtomicStates.get(group);
+      if (atomicState !== undefined) {
+        if (atomicGroup?.committed) continue;
+        const snapshot = atomicState.snapshot;
+        if (snapshot.content.transports.length === 0) {
+          throw new Error(
+            "Direct-materialization tree must be materialized before serialization",
+          );
+        }
+        serialized.push({
+          kind: SERIALIZED_DEFERRED_TREE_V3_KIND,
+          content: cloneLazyTreeContent(snapshot.content),
+          inventory: snapshot.inventory.map((entry) => ({ ...entry })),
+          activation: sealedLazyTreeActivation(snapshot),
+          url: snapshot.url,
+          mountPrefix: snapshot.mountPrefix,
+          integrity: { ...snapshot.integrity },
+          materialized: false,
+          entries: snapshot.entries
+            .filter((entry) => !entry.deleted && !entry.materialized)
+            .map(({ vfsPath, ...entry }) => ({ vfsPath, ...entry })),
+        });
+        continue;
+      }
       const entries = Array.from(group.entries, ([vfsPath, entry]) => ({
         vfsPath,
         ino: entry.ino,
@@ -3420,11 +4741,23 @@ export class MemoryFileSystem implements FileSystemBackend {
           "Direct-materialization tree must be materialized before serialization",
         );
       }
+      const atomicMembership = group.activation?.atomicGroup;
+      if (
+        atomicMembership !== undefined &&
+        !isSealedLazyAtomicMembership(atomicMembership)
+      ) {
+        throw new Error(
+          `Lazy atomic activation group ${atomicMembership.id} must be sealed ` +
+            "before serialization",
+        );
+      }
       serialized.push(genericTree
         ? {
-          kind: group.content!.source === undefined
-            ? SERIALIZED_DEFERRED_TREE_V1_KIND
-            : SERIALIZED_DEFERRED_TREE_V2_KIND,
+          kind: atomicMembership !== undefined
+            ? SERIALIZED_DEFERRED_TREE_V3_KIND
+            : group.content!.source === undefined
+              ? SERIALIZED_DEFERRED_TREE_V1_KIND
+              : SERIALIZED_DEFERRED_TREE_V2_KIND,
           content: group.content,
           inventory: group.inventory,
           activation: group.activation,
@@ -3446,17 +4779,29 @@ export class MemoryFileSystem implements FileSystemBackend {
     return serialized;
   }
 
+  private serializeValidatedLazyArchiveEntries(
+    identities: Map<string, SharedFsIdentityState>,
+  ): SerializedLazyArchiveEntry[] {
+    this.assertPendingLazyAtomicSnapshotsReadyForSerialization();
+    const serialized = this.serializeLazyArchiveEntries();
+    validateCompleteSerializedLazyArchiveCollection(serialized);
+    this.validatePendingLazyTreeNamespaceState(identities);
+    return serialized;
+  }
+
   /** Export all pending lazy archive groups for transfer to another instance. */
   exportLazyArchiveEntries(): SerializedLazyArchiveEntry[] {
-    this.reconcileLazyIdentityState(this.fs.identityState());
-    return this.serializeLazyArchiveEntries();
+    const identities = this.fs.identityState();
+    this.reconcileLazyIdentityState(identities);
+    return this.serializeValidatedLazyArchiveEntries(identities);
   }
 
   /** Return aggregate resources that a saved image would retain lazily. */
   pendingDeferredTreeUsage(): VfsDeferredTreeUsage {
-    this.reconcileLazyIdentityState(this.fs.identityState());
+    const identities = this.fs.identityState();
+    this.reconcileLazyIdentityState(identities);
     return summarizeSerializedDeferredTreeCollection(
-      this.serializeLazyArchiveEntries(),
+      this.serializeValidatedLazyArchiveEntries(identities),
     );
   }
 
@@ -3478,14 +4823,17 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   private assertCanRegisterPendingLazyArchiveGroup(): void {
     this.reconcileLazyIdentityState(this.fs.identityState());
-    const pendingGroups = this.lazyArchiveGroups.filter((group) =>
-      !group.materialized && (
+    const pendingGroups = this.lazyArchiveGroups.filter((group) => {
+      const atomicGroup = this.lazyAtomicGroupByTree.get(group);
+      const snapshot = this.sealedLazyAtomicStates.get(group)?.snapshot;
+      if (snapshot !== undefined) return !atomicGroup?.committed;
+      return !group.materialized && (
         group.content !== undefined && group.inventory !== undefined ||
         Array.from(group.entries.values()).some((entry) =>
           !entry.deleted && !entry.materialized
         )
-      )
-    ).length;
+      );
+    }).length;
     if (pendingGroups >= VFS_DEFERRED_TREE_COLLECTION_LIMITS.maxGroups) {
       throw new Error(
         `Cannot register another lazy archive group: ` +
@@ -3569,6 +4917,13 @@ export class MemoryFileSystem implements FileSystemBackend {
         "Deferred-tree handle was not issued by this filesystem",
       );
     }
+    const atomicGroup = this.lazyAtomicGroupByTree.get(group);
+    if (atomicGroup !== undefined) {
+      throw new Error(
+        `Deferred tree belongs to atomic activation group ${atomicGroup.id}; ` +
+          "materialize the complete group instead",
+      );
+    }
     if (group.materialized) return false;
     const existing = this.lazyPreparations.get(group);
     if (existing !== undefined) return existing.promise;
@@ -3608,19 +4963,26 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   private async prepareLazyTreeGroup(group: LazyTreeGroup): Promise<boolean> {
-    if (group.materialized) return false;
+    const atomicGroup = this.lazyAtomicGroupByTree.get(group);
+    if (atomicGroup?.committed || (atomicGroup === undefined && group.materialized)) {
+      return false;
+    }
+    const snapshot = this.sealedLazyAtomicStates.get(group)?.snapshot;
     const backing: LazyBacking = {
-      token: group,
-      path: group.activation?.roots[0] ?? group.mountPrefix,
+      token: atomicGroup?.token ?? group,
+      path: snapshot?.activation.roots[0] ??
+        group.activation?.roots[0] ??
+        group.mountPrefix,
       directGroup: group,
+      ...(atomicGroup === undefined ? {} : { atomicGroup }),
     };
-    const preparation = this.lazyPreparations.get(group) ??
+    const preparation = this.lazyPreparations.get(backing.token) ??
       this.startLazyPreparation(backing);
     try {
       return await preparation.promise;
     } finally {
-      if (this.lazyPreparations.get(group) === preparation) {
-        this.lazyPreparations.delete(group);
+      if (this.lazyPreparations.get(backing.token) === preparation) {
+        this.lazyPreparations.delete(backing.token);
       }
     }
   }
@@ -3690,9 +5052,10 @@ export class MemoryFileSystem implements FileSystemBackend {
   private async decodeAndValidateLazyTree(
     group: LazyTreeGroup,
     data: Uint8Array,
+    atomicSnapshot?: SealedLazyAtomicSnapshot,
   ): Promise<Map<string, Uint8Array>> {
-    const content = group.content;
-    const inventory = group.inventory;
+    const content = atomicSnapshot?.content ?? group.content;
+    const inventory = atomicSnapshot?.inventory ?? group.inventory;
     if (!content || !inventory) {
       throw new Error("Lazy tree is missing its decoder or complete inventory");
     }
@@ -3979,21 +5342,63 @@ export class MemoryFileSystem implements FileSystemBackend {
     group: LazyArchiveGroup,
     requested?: { path: string; ino: number; generation: number },
   ): Promise<void> {
+    const atomicGroup = this.lazyAtomicGroupByTree.get(group);
+    if (atomicGroup !== undefined) {
+      if (atomicGroup.committed) return;
+      const snapshot = this.sealedLazyAtomicStates.get(group)?.snapshot;
+      const preparation = this.lazyPreparations.get(atomicGroup.token) ??
+        this.startLazyPreparation({
+          token: atomicGroup.token,
+          path: snapshot?.activation.roots[0] ??
+            group.activation?.roots[0] ??
+            group.mountPrefix,
+          atomicGroup,
+        });
+      try {
+        await preparation.promise;
+      } finally {
+        if (this.lazyPreparations.get(atomicGroup.token) === preparation) {
+          this.lazyPreparations.delete(atomicGroup.token);
+        }
+      }
+      return;
+    }
     if (group.materialized) return;
-    const genericTree = group.content !== undefined && group.inventory !== undefined;
     const transport = this.lazyTransport;
+    const archiveData = await this.fetchLazyArchiveData(group, transport);
+    throwIfLazyTransportAborted(transport.signal);
+    await this.materializeArchiveBytes(
+      group,
+      archiveData,
+      requested,
+      transport.signal,
+    );
+  }
 
-    const transports = genericTree ? group.content!.transports : [group.url];
+  private async fetchLazyArchiveData(
+    group: LazyArchiveGroup,
+    transport: LazyTransport,
+    atomicSnapshot?: SealedLazyAtomicSnapshot,
+  ): Promise<Uint8Array> {
+    const content = atomicSnapshot?.content ?? group.content;
+    const inventory = atomicSnapshot?.inventory ?? group.inventory;
+    const genericTree = content !== undefined && inventory !== undefined;
+    const mountPrefix = atomicSnapshot?.mountPrefix ?? group.mountPrefix;
+    const integrity = atomicSnapshot?.integrity ?? group.integrity;
+
+    const transports = genericTree
+      ? content!.transports
+      : [atomicSnapshot?.url ?? group.url];
     const failures: string[] = [];
     let archiveData: Uint8Array | null = null;
     for (const [index, url] of transports.entries()) {
       try {
         archiveData = await this.fetchLazyBytes({
-          id: `archive:${group.mountPrefix}:${group.content?.sha256 ?? url}:${index}`,
+          id: `archive:${mountPrefix}:${content?.sha256 ?? url}:${index}`,
           kind: genericTree ? "tree" : "archive",
           url,
-          mountPrefix: group.mountPrefix,
-          integrity: group.integrity,
+          mountPrefix,
+          integrity,
         }, transport);
         break;
       } catch (error) {
@@ -4012,14 +5417,7 @@ export class MemoryFileSystem implements FileSystemBackend {
           `transports failed: ${failures.join("; ")}`,
       );
     }
-
-    throwIfLazyTransportAborted(transport.signal);
-    await this.materializeArchiveBytes(
-      group,
-      archiveData,
-      requested,
-      transport.signal,
-    );
+    return archiveData;
   }
 
   private async materializeArchiveBytes(
@@ -4030,9 +5428,68 @@ export class MemoryFileSystem implements FileSystemBackend {
   ): Promise<void> {
     throwIfLazyTransportAborted(signal);
     if (group.materialized) return;
-    const genericTree = group.content !== undefined && group.inventory !== undefined;
+    const extractedByIdentity = await this.prepareLazyArchiveContents(
+      group,
+      archiveData,
+      signal,
+    );
+    const requestedKey = requested
+      ? MemoryFileSystem.inodeKey(requested.ino, requested.generation)
+      : null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const pending = this.collectLazyArchiveReplacements(
+        group,
+        extractedByIdentity,
+        requested,
+      );
+
+      if (pending.size > 0) {
+        throwIfLazyTransportAborted(signal);
+        const committed = this.fs.replaceManyIfIdentities(
+          Array.from(pending.values(), conditionalFileReplacement),
+        );
+        if (!committed) {
+          this.reconcileLazyIdentityState(this.fs.identityState());
+          if (requestedKey && !this.lazyArchiveInodes.has(requestedKey)) return;
+          continue;
+        }
+      }
+
+      // Metadata-only groups have no regular replacement above, so retain the
+      // same last cancellation boundary before publishing materialized state.
+      throwIfLazyTransportAborted(signal);
+      this.publishLazyArchiveReplacements(group, pending);
+      if (group.materialized) return;
+      this.reconcileLazyIdentityState(this.fs.identityState());
+      if (requestedKey && !this.lazyArchiveInodes.has(requestedKey)) return;
+    }
+
+    if (requestedKey && this.lazyArchiveInodes.has(requestedKey)) {
+      throw new Error(
+        `Lazy archive member kept changing names while materializing: ${requested?.path}`,
+      );
+    }
+  }
+
+  private async prepareLazyArchiveContents(
+    group: LazyArchiveGroup,
+    archiveData: Uint8Array,
+    signal?: AbortSignal,
+    atomicSnapshot?: SealedLazyAtomicSnapshot,
+  ): Promise<Map<string, {
+    archivePath: string;
+    content: Uint8Array;
+  }>> {
+    throwIfLazyTransportAborted(signal);
+    const content = atomicSnapshot?.content ?? group.content;
+    const inventory = atomicSnapshot?.inventory ?? group.inventory;
+    const genericTree = content !== undefined && inventory !== undefined;
     const decodedTreeFiles = genericTree
-      ? await this.decodeAndValidateLazyTree(group, archiveData)
+      ? await this.decodeAndValidateLazyTree(
+        group,
+        archiveData,
+        atomicSnapshot,
+      )
       : null;
     throwIfLazyTransportAborted(signal);
     const { parseZipCentralDirectory, extractZipEntry } = await import("./zip");
@@ -4046,12 +5503,17 @@ export class MemoryFileSystem implements FileSystemBackend {
       zipLookup.set(ze.fileName, ze);
     }
 
-    const normalizedPrefix = group.mountPrefix.replace(/\/+$/, "");
+    const mountPrefix = atomicSnapshot?.mountPrefix ?? group.mountPrefix;
+    const normalizedPrefix = mountPrefix.replace(/\/+$/, "");
     const extractedByIdentity = new Map<string, {
       archivePath: string;
       content: Uint8Array;
     }>();
-    for (const [vfsPath, archiveEntry] of group.entries) {
+    const runtimeEntries: Array<[string, LazyArchiveFileEntry]> =
+      atomicSnapshot === undefined
+        ? Array.from(group.entries)
+        : atomicSnapshot.entries.map((entry) => [entry.vfsPath, entry]);
+    for (const [vfsPath, archiveEntry] of runtimeEntries) {
       if (archiveEntry.deleted || archiveEntry.materialized) continue;
       const zipFileName =
         archiveEntry.archivePath ??
@@ -4097,96 +5559,592 @@ export class MemoryFileSystem implements FileSystemBackend {
         extractedByIdentity.set(key, { archivePath: zipFileName, content });
       }
     }
-    const requestedKey = requested
-      ? MemoryFileSystem.inodeKey(requested.ino, requested.generation)
-      : null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const pending = new Map<string, {
-        ino: number;
-        generation: number;
-        dataSequence: number;
-        paths: Set<string>;
-        content: Uint8Array;
-      }>();
-      for (const [vfsPath, archiveEntry] of group.entries) {
-        if (
-          archiveEntry.deleted ||
-          archiveEntry.materialized ||
-          archiveEntry.generation === undefined
-        ) continue;
-        const key = MemoryFileSystem.inodeKey(
-          archiveEntry.ino,
-          archiveEntry.generation,
-        );
-        if (this.lazyArchiveInodes.get(key) !== group) continue;
-        const extracted = extractedByIdentity.get(key);
-        if (!extracted) {
-          throw new Error(`Lazy archive has no extracted content for inode ${key}`);
-        }
-        let replacement = pending.get(key);
-        if (!replacement) {
-          replacement = {
-            ino: archiveEntry.ino,
-            generation: archiveEntry.generation,
-            dataSequence: archiveEntry.dataSequence ?? 0,
-            paths: new Set(),
-            content: extracted.content,
-          };
-          pending.set(key, replacement);
-        }
-        replacement.paths.add(vfsPath);
-        if (
-          requested &&
-          requested.ino === archiveEntry.ino &&
-          requested.generation === archiveEntry.generation
-        ) {
-          replacement.paths.add(requested.path);
-        }
-      }
+    return extractedByIdentity;
+  }
 
-      if (pending.size > 0) {
-        throwIfLazyTransportAborted(signal);
-        const committed = this.fs.replaceManyIfIdentities(
-          Array.from(pending.values(), (replacement) => ({
-            paths: Array.from(replacement.paths),
-            expectedIno: replacement.ino,
-            expectedGeneration: replacement.generation,
-            expectedDataSequence: replacement.dataSequence,
-            data: replacement.content,
-          })),
-        );
-        if (!committed) {
-          this.reconcileLazyIdentityState(this.fs.identityState());
-          if (requestedKey && !this.lazyArchiveInodes.has(requestedKey)) return;
-          continue;
-        }
-      }
-
-      // Metadata-only groups have no regular replacement above, so retain the
-      // same last cancellation boundary before publishing materialized state.
-      throwIfLazyTransportAborted(signal);
-      for (const [key, replacement] of pending) {
-        this.lazyArchiveInodes.delete(key);
-        for (const alias of group.entries.values()) {
-          if (
-            alias.ino === replacement.ino &&
-            alias.generation === replacement.generation
-          ) alias.materialized = true;
-        }
-      }
-
-      group.materialized = Array.from(group.entries.values()).every(
-        (entry) => entry.deleted || entry.materialized,
+  private collectLazyArchiveReplacements(
+    group: LazyArchiveGroup,
+    extractedByIdentity: ReadonlyMap<string, {
+      archivePath: string;
+      content: Uint8Array;
+    }>,
+    requested?: { path: string; ino: number; generation: number },
+    atomicSnapshot?: SealedLazyAtomicSnapshot,
+  ): Map<string, PreparedLazyArchiveReplacement> {
+    const pending = new Map<string, PreparedLazyArchiveReplacement>();
+    const runtimeEntries: Array<[string, LazyArchiveFileEntry]> =
+      atomicSnapshot === undefined
+        ? Array.from(group.entries)
+        : atomicSnapshot.entries.map((entry) => [entry.vfsPath, entry]);
+    for (const [vfsPath, archiveEntry] of runtimeEntries) {
+      if (
+        archiveEntry.deleted ||
+        archiveEntry.materialized ||
+        archiveEntry.generation === undefined
+      ) continue;
+      const key = MemoryFileSystem.inodeKey(
+        archiveEntry.ino,
+        archiveEntry.generation,
       );
-      if (group.materialized) return;
-      this.reconcileLazyIdentityState(this.fs.identityState());
-      if (requestedKey && !this.lazyArchiveInodes.has(requestedKey)) return;
+      if (this.lazyArchiveInodes.get(key) !== group) continue;
+      const extracted = extractedByIdentity.get(key);
+      if (!extracted) {
+        throw new Error(`Lazy archive has no extracted content for inode ${key}`);
+      }
+      let replacement = pending.get(key);
+      if (!replacement) {
+        replacement = {
+          ino: archiveEntry.ino,
+          generation: archiveEntry.generation,
+          dataSequence: archiveEntry.dataSequence ?? 0,
+          paths: new Set(),
+          content: extracted.content,
+        };
+        pending.set(key, replacement);
+      }
+      replacement.paths.add(vfsPath);
+      if (
+        requested &&
+        requested.ino === archiveEntry.ino &&
+        requested.generation === archiveEntry.generation
+      ) {
+        replacement.paths.add(requested.path);
+      }
+    }
+    return pending;
+  }
+
+  private publishLazyArchiveReplacements(
+    group: LazyArchiveGroup,
+    pending: ReadonlyMap<string, PreparedLazyArchiveReplacement>,
+  ): void {
+    for (const [key, replacement] of pending) {
+      this.lazyArchiveInodes.delete(key);
+      for (const alias of group.entries.values()) {
+        if (
+          alias.ino === replacement.ino &&
+          alias.generation === replacement.generation
+        ) alias.materialized = true;
+      }
+    }
+    group.materialized = Array.from(group.entries.values()).every(
+      (entry) => entry.deleted || entry.materialized,
+    );
+  }
+
+  private collectAtomicTreeNamespace(
+    group: LazyArchiveGroup,
+    snapshot: SealedLazyAtomicSnapshot,
+  ): {
+    guards: ConditionalNamespaceIdentity[];
+    pendingIdentities: number;
+  } {
+    const pendingIdentities = new Set<string>();
+    const identityByInodeGroup = new Map<string, string>();
+    const declaredAliasCount = new Map<string, number>();
+    const entriesByPath = new Map(
+      snapshot.entries.map((entry) => [entry.vfsPath, entry]),
+    );
+    for (const entry of snapshot.inventory) {
+      if (entry.type === "file" || entry.type === "hardlink") {
+        declaredAliasCount.set(
+          entry.inodeGroup!,
+          (declaredAliasCount.get(entry.inodeGroup!) ?? 0) + 1,
+        );
+      }
+    }
+    const guards: ConditionalNamespaceIdentity[] = [];
+    for (const inventoryEntry of snapshot.inventory) {
+      let st: SfsStatResult;
+      try {
+        st = this.fs.lstat(inventoryEntry.vfsPath);
+      } catch {
+        throw new Error(
+          `Lazy atomic tree changed at ${inventoryEntry.vfsPath}`,
+        );
+      }
+      const expectedType = inventoryEntry.type === "directory"
+        ? S_IFDIR
+        : inventoryEntry.type === "symlink"
+          ? S_IFLNK
+          : S_IFREG;
+      if (
+        (st.mode & S_IFMT) !== expectedType ||
+        (st.mode & 0o7777) !== inventoryEntry.mode
+      ) {
+        throw new Error(
+          `Lazy atomic tree changed at ${inventoryEntry.vfsPath}`,
+        );
+      }
+      if (inventoryEntry.type === "symlink") {
+        const entry = entriesByPath.get(inventoryEntry.vfsPath);
+        if (
+          entry === undefined ||
+          !entry.isSymlink ||
+          entry.deleted ||
+          entry.ino !== st.ino ||
+          entry.generation !== st.generation ||
+          entry.dataSequence !== st.dataSequence ||
+          this.fs.readlink(inventoryEntry.vfsPath) !== inventoryEntry.target
+        ) {
+          throw new Error(
+            `Lazy atomic tree changed at ${inventoryEntry.vfsPath}`,
+          );
+        }
+      } else if (
+        inventoryEntry.type === "file" ||
+        inventoryEntry.type === "hardlink"
+      ) {
+        const entry = entriesByPath.get(inventoryEntry.vfsPath);
+        if (
+          entry === undefined ||
+          entry.deleted ||
+          entry.materialized ||
+          entry.isSymlink ||
+          entry.generation === undefined ||
+          entry.inodeGroup !== inventoryEntry.inodeGroup ||
+          entry.ino !== st.ino ||
+          entry.generation !== st.generation ||
+          entry.dataSequence !== st.dataSequence ||
+          st.size !== 0 ||
+          st.linkCount !== declaredAliasCount.get(inventoryEntry.inodeGroup!)!
+        ) {
+          throw new Error(
+            `Lazy atomic tree changed at ${inventoryEntry.vfsPath}`,
+          );
+        }
+        const key = MemoryFileSystem.inodeKey(entry.ino, entry.generation);
+        if (this.lazyArchiveInodes.get(key) !== group) {
+          throw new Error(
+            `Lazy atomic tree lost deferred ownership of ${inventoryEntry.vfsPath}`,
+          );
+        }
+        const priorIdentity = identityByInodeGroup.get(
+          inventoryEntry.inodeGroup!,
+        );
+        if (priorIdentity !== undefined && priorIdentity !== key) {
+          throw new Error(
+            `Lazy atomic tree split hard links at ${inventoryEntry.vfsPath}`,
+          );
+        }
+        identityByInodeGroup.set(inventoryEntry.inodeGroup!, key);
+        pendingIdentities.add(key);
+      }
+      guards.push({
+        path: inventoryEntry.vfsPath,
+        expectedIno: st.ino,
+        expectedGeneration: st.generation,
+        expectedDataSequence: st.dataSequence,
+        expectedMode: st.mode,
+        expectedLinkCount: st.linkCount,
+        expectedSize: st.size,
+        expectedUid: st.uid,
+        expectedGid: st.gid,
+      });
+    }
+    return { guards, pendingIdentities: pendingIdentities.size };
+  }
+
+  private assertLazyAtomicSnapshotMatchesPublic(
+    group: LazyArchiveGroup,
+  ): SealedLazyAtomicState {
+    const state = this.sealedLazyAtomicStates.get(group);
+    const sealed = state?.snapshot;
+    const membership = group.activation?.atomicGroup;
+    const member = sealed?.member ?? membership?.member ?? "unknown";
+    let current: LazyAtomicSnapshotSource | undefined;
+    if (sealed !== undefined) {
+      try {
+        current = captureLazyAtomicSnapshotSource(
+          group,
+          sealed.id,
+          sealed.member,
+        );
+      } catch {
+        current = undefined;
+      }
+    }
+    if (
+      state === undefined ||
+      sealed === undefined ||
+      membership === undefined ||
+      !isSealedLazyAtomicMembership(membership) ||
+      membership.id !== sealed.id ||
+      membership.member !== sealed.member ||
+      membership.descriptorSha256 !== sealed.descriptorSha256 ||
+      membership.expectedCount !== sealed.expectedCount ||
+      membership.cohortSha256 !== sealed.cohortSha256 ||
+      current === undefined ||
+      !equalLazyAtomicSnapshotSources(sealed, current)
+    ) {
+      throw new Error(
+        `Lazy atomic activation member ${member} changed after sealing`,
+      );
+    }
+    return state;
+  }
+
+  private assertPendingLazyAtomicSnapshotsReadyForSerialization(): void {
+    for (const group of this.lazyArchiveGroups) {
+      if (!this.sealedLazyAtomicStates.has(group)) continue;
+      const atomicGroup = this.lazyAtomicGroupByTree.get(group);
+      if (atomicGroup?.committed) continue;
+      const state = this.assertLazyAtomicSnapshotMatchesPublic(group);
+      if (!state.verified) {
+        throw new Error(
+          `Lazy atomic activation group ${state.snapshot.id} has not been ` +
+            "cryptographically verified after import",
+        );
+      }
+    }
+  }
+
+  private async validatePendingLazyAtomicGroupSeals(
+    requireLiveNamespace: boolean,
+  ): Promise<void> {
+    for (const atomicGroup of this.lazyAtomicGroups.values()) {
+      if (
+        atomicGroup.committed ||
+        atomicGroup.expectedCount === undefined ||
+        atomicGroup.cohortSha256 === undefined
+      ) {
+        continue;
+      }
+      const groups = [...atomicGroup.groups.entries()]
+        .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+        .map(([, group]) => group);
+      await this.ensureLazyAtomicGroupSealValidated(
+        atomicGroup,
+        groups,
+        requireLiveNamespace,
+      );
+    }
+  }
+
+  /**
+   * Join or establish the one cryptographic proof for a pending cohort.
+   *
+   * A waiter may resume after activation committed and updated the public
+   * compatibility objects. That is successful only because `committed` is set
+   * after the exact identity-guarded SharedFS transaction. Otherwise every
+   * waiter must linearize against the still-pending public snapshot.
+   */
+  private async ensureLazyAtomicGroupSealValidated(
+    atomicGroup: LazyAtomicGroup,
+    groups: readonly LazyArchiveGroup[],
+    requireLiveNamespace: boolean,
+  ): Promise<void> {
+    if (this.assertLazyAtomicGroupSealValidatedAtLinearization(
+      atomicGroup,
+      groups,
+      requireLiveNamespace,
+    )) {
+      return;
     }
 
-    if (requestedKey && this.lazyArchiveInodes.has(requestedKey)) {
-      throw new Error(
-        `Lazy archive member kept changing names while materializing: ${requested?.path}`,
+    let flight = atomicGroup.sealValidationFlight;
+    if (flight === undefined) {
+      flight = this.validateLazyAtomicGroupSealOnce(atomicGroup, groups);
+      atomicGroup.sealValidationFlight = flight;
+      // WHY: transport-free seal hashing is shared per group, but a failed
+      // public-state check may become valid again after the caller restores
+      // an allowed compatibility view. Clear only the settled flight so one
+      // later retry can establish a fresh proof without overlapping this one.
+      void flight.then(
+        () => {
+          if (atomicGroup.sealValidationFlight === flight) {
+            atomicGroup.sealValidationFlight = undefined;
+          }
+        },
+        () => {
+          if (atomicGroup.sealValidationFlight === flight) {
+            atomicGroup.sealValidationFlight = undefined;
+          }
+        },
       );
+    }
+
+    await flight;
+    if (!this.assertLazyAtomicGroupSealValidatedAtLinearization(
+      atomicGroup,
+      groups,
+      requireLiveNamespace,
+    )) {
+      throw new Error(
+        `Lazy atomic activation group ${atomicGroup.id} seal verification ` +
+          "did not authenticate every member",
+      );
+    }
+  }
+
+  /**
+   * Return true only at a safe seal-validation linearization point.
+   *
+   * No await occurs here. A JavaScript activation can therefore either commit
+   * before this check or after it, while SharedFS peer mutations are still
+   * detected by the public-snapshot and later namespace guards.
+   */
+  private assertLazyAtomicGroupSealValidatedAtLinearization(
+    atomicGroup: LazyAtomicGroup,
+    groups: readonly LazyArchiveGroup[],
+    requireLiveNamespace: boolean,
+  ): boolean {
+    if (atomicGroup.committed) return true;
+    if (
+      atomicGroup.expectedCount === undefined ||
+      atomicGroup.cohortSha256 === undefined ||
+      groups.length !== atomicGroup.expectedCount
+    ) {
+      throw new Error(
+        `Lazy atomic activation group ${atomicGroup.id} is not completely sealed`,
+      );
+    }
+    let everyMemberVerified = true;
+    const states: SealedLazyAtomicState[] = [];
+    for (const group of groups) {
+      const state = this.assertLazyAtomicSnapshotMatchesPublic(group);
+      const sealed = state.snapshot;
+      if (
+        sealed.id !== atomicGroup.id ||
+        sealed.expectedCount !== atomicGroup.expectedCount ||
+        sealed.cohortSha256 !== atomicGroup.cohortSha256 ||
+        atomicGroup.groups.get(sealed.member) !== group
+      ) {
+        throw new Error(
+          `Lazy atomic activation group ${atomicGroup.id} has an inconsistent member`,
+        );
+      }
+      everyMemberVerified &&= state.verified;
+      states.push(state);
+    }
+    if (everyMemberVerified && requireLiveNamespace) {
+      // WHY: a peer can unlink or replace SharedFS names without touching this
+      // instance's compatibility objects. Verification must not report a
+      // reusable pending seal unless its complete live namespace still matches
+      // the private snapshot at the same synchronous linearization point.
+      for (let index = 0; index < groups.length; index++) {
+        this.collectAtomicTreeNamespace(groups[index]!, states[index]!.snapshot);
+      }
+    }
+    return everyMemberVerified;
+  }
+
+  /** Perform one transport-free cryptographic proof for a complete cohort. */
+  private async validateLazyAtomicGroupSealOnce(
+    atomicGroup: LazyAtomicGroup,
+    groups: readonly LazyArchiveGroup[],
+  ): Promise<void> {
+    const descriptors: Array<{
+      member: string;
+      descriptorSha256: string;
+    }> = [];
+    const states: SealedLazyAtomicState[] = [];
+    for (const group of groups) {
+      const state = this.assertLazyAtomicSnapshotMatchesPublic(group);
+      const sealed = state.snapshot;
+      if (
+        sealed.id !== atomicGroup.id ||
+        sealed.expectedCount !== atomicGroup.expectedCount ||
+        sealed.cohortSha256 !== atomicGroup.cohortSha256 ||
+        atomicGroup.groups.get(sealed.member) !== group
+      ) {
+        throw new Error(
+          `Lazy atomic activation group ${atomicGroup.id} has an inconsistent member`,
+        );
+      }
+      const actualDescriptorSha256 = await sha256Hex(
+        sealed.descriptorBytes,
+        `Lazy atomic member ${sealed.member}`,
+      );
+      if (actualDescriptorSha256 !== sealed.descriptorSha256) {
+        throw new Error(
+          `Lazy atomic activation member ${sealed.member} changed after sealing`,
+        );
+      }
+      descriptors.push({
+        member: sealed.member,
+        descriptorSha256: actualDescriptorSha256,
+      });
+      states.push(state);
+    }
+    const actualCohortSha256 = await sha256Hex(
+      lazyAtomicCohortIdentityBytes(atomicGroup.id, descriptors),
+      `Lazy atomic activation group ${atomicGroup.id}`,
+    );
+    if (actualCohortSha256 !== atomicGroup.cohortSha256) {
+      throw new Error(
+        `Lazy atomic activation group ${atomicGroup.id} differs from its seal`,
+      );
+    }
+    // WHY: hashing yields to host code. Persistent public mutation is rejected,
+    // while all security-sensitive work above used only the private snapshots.
+    for (const group of groups) {
+      this.assertLazyAtomicSnapshotMatchesPublic(group);
+    }
+    for (const state of states) state.verified = true;
+  }
+
+  private async ensureAtomicLazyGroupMaterialized(
+    atomicGroup: LazyAtomicGroup,
+  ): Promise<void> {
+    if (atomicGroup.committed) return;
+    const groups = [...atomicGroup.groups.entries()]
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([, group]) => group);
+    if (groups.length === 0) {
+      throw new Error(
+        `Lazy atomic activation group ${atomicGroup.id} has no trees`,
+      );
+    }
+
+    await this.ensureLazyAtomicGroupSealValidated(atomicGroup, groups, true);
+    if (atomicGroup.committed) return;
+    const snapshots = groups.map((group) =>
+      this.sealedLazyAtomicStates.get(group)!.snapshot
+    );
+    const namespace = groups.map((group, index) => ({
+      group,
+      ...this.collectAtomicTreeNamespace(group, snapshots[index]),
+    }));
+    const transport = this.lazyTransport;
+    // WHY: dependent deferred trees are one transaction. Bound concurrent
+    // archive buffers, stop scheduling after the first error, and await every
+    // in-flight worker so a retry cannot overlap abandoned I/O or decoding.
+    const prepared = new Array<{
+      group: LazyArchiveGroup;
+      snapshot: SealedLazyAtomicSnapshot;
+      contents: Map<string, { archivePath: string; content: Uint8Array }>;
+    } | undefined>(groups.length);
+    let cursor = 0;
+    let failed = false;
+    let firstError: unknown;
+    const workers = Array.from({
+      length: Math.min(MAX_ATOMIC_DEFERRED_TREE_CONCURRENCY, groups.length),
+    }, async () => {
+      while (!failed) {
+        const index = cursor++;
+        if (index >= groups.length) return;
+        const group = groups[index];
+        const snapshot = snapshots[index];
+        try {
+          const bytes = await this.fetchLazyArchiveData(
+            group,
+            transport,
+            snapshot,
+          );
+          throwIfLazyTransportAborted(transport.signal);
+          prepared[index] = {
+            group,
+            snapshot,
+            contents: await this.prepareLazyArchiveContents(
+              group,
+              bytes,
+              transport.signal,
+              snapshot,
+            ),
+          };
+        } catch (error) {
+          if (!failed) {
+            failed = true;
+            firstError = error;
+          }
+        }
+      }
+    });
+    await Promise.all(workers);
+    if (failed) {
+      prepared.fill(undefined);
+      throw firstError;
+    }
+    throwIfLazyTransportAborted(transport.signal);
+    // Persistent public edits are observable API misuse and fail closed.
+    // Transient mutate/use/restore attempts are harmless because every awaited
+    // operation above consumed only the captured immutable snapshots.
+    for (const group of groups) {
+      this.assertLazyAtomicSnapshotMatchesPublic(group);
+    }
+
+    const conditionalReplacements: ReturnType<
+      typeof conditionalFileReplacement
+    >[] = [];
+    const requiredNamespace: ConditionalNamespaceIdentity[] = [];
+    const publication: Array<{
+      group: LazyArchiveGroup;
+      snapshot: SealedLazyAtomicSnapshot;
+      inodeKeys: string[];
+    }> = [];
+    for (let index = 0; index < prepared.length; index++) {
+      const complete = prepared[index]!;
+      const pending = this.collectLazyArchiveReplacements(
+        complete.group,
+        complete.contents,
+        undefined,
+        complete.snapshot,
+      );
+      const expected = namespace[index];
+      if (pending.size !== expected.pendingIdentities) {
+        throw new Error(
+          `Lazy atomic activation group ${atomicGroup.id} changed before commit`,
+        );
+      }
+      const inodeKeys: string[] = [];
+      for (const [key, replacement] of pending) {
+        inodeKeys.push(key);
+        conditionalReplacements.push(conditionalFileReplacement(replacement));
+      }
+      for (const entry of complete.snapshot.entries) {
+        if (
+          entry.deleted ||
+          entry.materialized ||
+          entry.generation === undefined
+        ) continue;
+        const key = MemoryFileSystem.inodeKey(entry.ino, entry.generation);
+        if (!pending.has(key)) {
+          throw new Error(
+            `Lazy atomic activation group ${atomicGroup.id} has an incomplete publication`,
+          );
+        }
+      }
+      publication.push({
+        group: complete.group,
+        snapshot: complete.snapshot,
+        inodeKeys,
+      });
+      for (const guard of expected.guards) requiredNamespace.push(guard);
+    }
+
+    // WHY: SharedFS holds the namespace and every target inode lock across
+    // this call. One capacity/identity failure rolls every file back, while
+    // every declared directory, symlink, and hard-link name is also guarded.
+    if (
+      !this.fs.replaceManyIfIdentities(
+        conditionalReplacements,
+        requiredNamespace,
+      )
+    ) {
+      throw new Error(
+        `Lazy atomic activation group ${atomicGroup.id} changed before commit`,
+      );
+    }
+
+    // Everything that can validate, allocate, iterate the namespace, or throw
+    // was completed above. Publish authoritative private state before touching
+    // caller-reachable compatibility objects, which are best-effort only.
+    for (const state of publication) {
+      for (const key of state.inodeKeys) this.lazyArchiveInodes.delete(key);
+    }
+    atomicGroup.committed = true;
+    for (const state of publication) {
+      try {
+        for (const entry of state.snapshot.entries) {
+          if (entry.isSymlink || entry.generation === undefined) continue;
+          const publicEntry = state.group.entries.get(entry.vfsPath);
+          if (publicEntry !== undefined) publicEntry.materialized = true;
+        }
+        state.group.materialized = true;
+      } catch {
+        // Public compatibility state cannot roll back an already atomic commit.
+      }
     }
   }
 
@@ -4196,9 +6154,15 @@ export class MemoryFileSystem implements FileSystemBackend {
     // filesystem is not a stable source for a self-contained image.
     for (let attempt = 0; attempt < 3; attempt++) {
       this.reconcileLazyIdentityState(this.fs.identityState());
-      const genericGroups = this.lazyArchiveGroups.filter((group) =>
-        !group.materialized && group.content !== undefined && group.inventory !== undefined
-      );
+      const genericGroups = this.lazyArchiveGroups.filter((group) => {
+        const atomicGroup = this.lazyAtomicGroupByTree.get(group);
+        const snapshot = this.sealedLazyAtomicStates.get(group)?.snapshot;
+        return snapshot === undefined
+          ? !group.materialized &&
+            group.content !== undefined &&
+            group.inventory !== undefined
+          : !atomicGroup?.committed;
+      });
       if (
         this.lazyFiles.size === 0 &&
         this.lazyArchiveInodes.size === 0 &&
@@ -4220,9 +6184,15 @@ export class MemoryFileSystem implements FileSystemBackend {
     }
 
     this.reconcileLazyIdentityState(this.fs.identityState());
-    const pendingGenericTree = this.lazyArchiveGroups.some((group) =>
-      !group.materialized && group.content !== undefined && group.inventory !== undefined
-    );
+    const pendingGenericTree = this.lazyArchiveGroups.some((group) => {
+      const atomicGroup = this.lazyAtomicGroupByTree.get(group);
+      const snapshot = this.sealedLazyAtomicStates.get(group)?.snapshot;
+      return snapshot === undefined
+        ? !group.materialized &&
+          group.content !== undefined &&
+          group.inventory !== undefined
+        : !atomicGroup?.committed;
+    });
     if (
       this.lazyFiles.size !== 0 ||
       this.lazyArchiveInodes.size !== 0 ||
@@ -4246,6 +6216,14 @@ export class MemoryFileSystem implements FileSystemBackend {
     if (options?.materializeAll) {
       await this.materializeAllLazyEntries();
     }
+    // Validate imported seal digests before entering the synchronous snapshot
+    // section. No await is permitted after SharedFS bytes are captured: a lazy
+    // activation could otherwise commit while metadata still described the
+    // earlier filesystem image.
+    // WHY: the identity snapshot and serialization immediately below perform
+    // save's live-namespace check and retain their path-specific diagnostics.
+    // This await needs only the shared cryptographic proof before that point.
+    await this.validatePendingLazyAtomicGroupSeals(false);
 
     const { bytes: sabBytes, identities } = this.fs.snapshotState({
       normalizeTimestampsMs: options?.normalizeTimestampsMs,
@@ -4262,8 +6240,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       );
     }
 
-    const archiveEntries = this.serializeLazyArchiveEntries();
-    validateSerializedDeferredTreeCollection(archiveEntries);
+    const archiveEntries = this.serializeValidatedLazyArchiveEntries(identities);
     const hasArchives = archiveEntries.length > 0;
     const archiveJson = hasArchives
       ? new TextEncoder().encode(JSON.stringify(archiveEntries))
@@ -4547,7 +6524,7 @@ export class MemoryFileSystem implements FileSystemBackend {
 
     const group = this.lazyArchiveForStat(s);
     if (group) {
-      for (const archiveEntry of group.entries.values()) {
+      for (const archiveEntry of this.lazyArchiveEntriesForRead(group)) {
         if (
           archiveEntry.ino === s.ino &&
           archiveEntry.generation === s.generation &&

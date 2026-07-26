@@ -221,7 +221,7 @@ async function main() {
   const OPCACHE_SO = resolveBinary("programs/php/opcache.so");
 
   console.log("Loading shell base image...");
-  const fs = loadShellBaseFileSystem(NGINX_PHP_IMAGE_MAX_BYTES);
+  const fs = await loadShellBaseFileSystem(NGINX_PHP_IMAGE_MAX_BYTES);
   fs.chmod("/tmp", 0o777);
   ensureDirRecursive(fs, "/usr/sbin");
   ensureDirRecursive(fs, "/run");

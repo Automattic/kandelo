@@ -116,6 +116,11 @@ export interface RegisterHomebrewDeferredTreeCollectionOptions {
   mountPrefix?: string;
   /** Producer-verified closed trees with concrete immutable transport URLs. */
   trees: readonly HomebrewDeferredTreeDescriptor[];
+  /**
+   * Bind every tree to one fail-closed first-use transaction. The producer's
+   * per-keg roots remain valid entrypoints; the shared group controls commit.
+   */
+  atomicActivationGroup?: string;
 }
 
 export interface RegisteredHomebrewDeferredTree {
@@ -145,6 +150,9 @@ export async function composeHomebrewRuntimeLayers(
       maxByteLength: options.maxByteLength,
     });
   try {
+    // WHY: imported atomic groups must earn authority before layer fetches or
+    // registrations can expose a filesystem derived from forged seal metadata.
+    await fs.verifyImportedLazyAtomicGroupSeals();
     if (options.archiveFetch !== undefined) fs.setLazyFetcher(options.archiveFetch);
     const layers = options.layers.length === 0
       ? []
@@ -177,6 +185,17 @@ export function registerHomebrewDeferredTreeCollection(
     throw new Error(`Homebrew deferred-tree collection id ${options.id} is invalid`);
   }
   const mountPrefix = options.mountPrefix ?? "/";
+  if (
+    options.atomicActivationGroup !== undefined &&
+    (
+      !isHomebrewRuntimeLayerId(options.atomicActivationGroup) ||
+      options.trees.some((tree) => tree.activation.mode !== "first-use")
+    )
+  ) {
+    throw new Error(
+      "Homebrew deferred-tree atomic activation requires a valid first-use group",
+    );
+  }
   const collection: HomebrewDeferredTreeCollectionPlan = {
     id: options.id,
     schema: options.schema,
@@ -199,6 +218,7 @@ export function registerHomebrewDeferredTreeCollection(
       options.fs,
       tree,
       planned.mountPrefix,
+      options.atomicActivationGroup,
     ),
   }));
 }
@@ -1342,12 +1362,13 @@ function registerPlannedDeferredTreeWithHandle(
   fs: MemoryFileSystem,
   tree: PlannedTree,
   mountPrefix: string,
+  atomicActivationGroup?: string,
 ): DeferredTreeMaterializationHandle {
   return fs.registerLazyTreeWithMaterializationHandle(
     plannedDeferredTreeContent(tree),
     tree.entries,
     mountPrefix,
-    plannedDeferredTreeActivation(tree),
+    plannedDeferredTreeActivation(tree, atomicActivationGroup),
   );
 }
 
@@ -1376,11 +1397,22 @@ function plannedDeferredTreeContent(tree: PlannedTree) {
   };
 }
 
-function plannedDeferredTreeActivation(tree: PlannedTree) {
+function plannedDeferredTreeActivation(
+  tree: PlannedTree,
+  atomicActivationGroup?: string,
+) {
   return {
     mode: tree.descriptor.activation.mode,
     capabilities: [...tree.descriptor.activation.capabilities],
     roots: [...tree.descriptor.activation.roots],
+    ...(atomicActivationGroup === undefined
+      ? {}
+      : {
+          atomicGroup: {
+            id: atomicActivationGroup,
+            member: tree.descriptor.id,
+          },
+        }),
   };
 }
 

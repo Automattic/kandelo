@@ -420,7 +420,7 @@ async function main() {
   }
 
   console.log("Loading shell base image...");
-  const fs = loadShellBaseFileSystem(LAMP_IMAGE_MAX_BYTES);
+  const fs = await loadShellBaseFileSystem(LAMP_IMAGE_MAX_BYTES);
   prepareMariadbWritableDirectories(fs);
 
   console.log("Writing nginx + php-fpm + msmtpd binaries...");

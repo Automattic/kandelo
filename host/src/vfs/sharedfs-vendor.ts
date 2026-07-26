@@ -172,6 +172,13 @@ export interface SharedFsIdentityState {
   ino: number;
   generation: number;
   dataSequence: number;
+  mode: number;
+  linkCount: number;
+  size: number;
+  uid: number;
+  gid: number;
+  /** Present only for symlinks; captured under the same namespace lock. */
+  symlinkTarget?: string;
   paths: string[];
 }
 
@@ -206,6 +213,22 @@ export interface ConditionalFileReplacement {
   expectedGeneration: number;
   expectedDataSequence: number;
   data: Uint8Array;
+}
+
+/**
+ * Exact namespace state that must still exist when a multi-tree transaction
+ * commits. Paths are resolved without following the final symlink.
+ */
+export interface ConditionalNamespaceIdentity {
+  path: string;
+  expectedIno: number;
+  expectedGeneration: number;
+  expectedDataSequence: number;
+  expectedMode: number;
+  expectedLinkCount: number;
+  expectedSize: number;
+  expectedUid: number;
+  expectedGid: number;
 }
 
 interface DirIndexEntry {
@@ -563,6 +586,20 @@ export class SharedFS {
 
   private collectIdentityStateUnlocked(): Map<string, SharedFsIdentityState> {
     const identities = new Map<string, SharedFsIdentityState>();
+    const rootOff = this.inodeOffset(ROOT_INO);
+    const rootGeneration = this.r64(rootOff + INO_GENERATION);
+    identities.set(`${ROOT_INO}:${rootGeneration}`, {
+      ino: ROOT_INO,
+      generation: rootGeneration,
+      dataSequence:
+        Atomics.load(this.i32, (rootOff + INO_DATA_SEQUENCE) >> 2) >>> 0,
+      mode: this.r32(rootOff + INO_MODE),
+      linkCount: this.r32(rootOff + INO_LINK_COUNT),
+      size: this.r64(rootOff + INO_SIZE),
+      uid: this.r32(rootOff + INO_UID),
+      gid: this.r32(rootOff + INO_GID),
+      paths: ["/"],
+    });
     const directories: Array<{ ino: number; path: string }> = [
       { ino: ROOT_INO, path: "/" },
     ];
@@ -614,6 +651,7 @@ export class SharedFS {
               const key = `${entIno}:${generation}`;
               let identity = identities.get(key);
               if (!identity) {
+                const mode = this.r32(childOff + INO_MODE);
                 identity = {
                   ino: entIno,
                   generation,
@@ -622,6 +660,14 @@ export class SharedFS {
                       this.i32,
                       (childOff + INO_DATA_SEQUENCE) >> 2,
                     ) >>> 0,
+                  mode,
+                  linkCount: this.r32(childOff + INO_LINK_COUNT),
+                  size: this.r64(childOff + INO_SIZE),
+                  uid: this.r32(childOff + INO_UID),
+                  gid: this.r32(childOff + INO_GID),
+                  ...((mode & S_IFMT) === S_IFLNK
+                    ? { symlinkTarget: this.readSymlinkInodeUnlocked(entIno) }
+                    : {}),
                   paths: [],
                 };
                 identities.set(key, identity);
@@ -2396,16 +2442,44 @@ export class SharedFS {
    * its original empty state and restores its exact mutation timestamps and
    * data sequence before any target lock is released.
    *
+   * `requiredNamespace` strengthens this for a multi-tree transaction: every
+   * declared name (including each hard-link alias, directory, and symlink)
+   * must retain its complete captured identity while the namespace lock is
+   * held. Ordinary single-archive callers may omit it and retain their
+   * rename-tolerant "first surviving alias" behavior.
+   *
    * Returns false without mutation when any target stopped naming the exact
    * registered stub while an asynchronous archive fetch was in flight.
    */
   replaceManyIfIdentities(
     replacements: readonly ConditionalFileReplacement[],
+    requiredNamespace: readonly ConditionalNamespaceIdentity[] = [],
   ): boolean {
-    if (replacements.length === 0) return true;
+    if (replacements.length === 0 && requiredNamespace.length === 0) return true;
     return this.withNamespaceLock(() => {
       const resolved: Array<ConditionalFileReplacement & { ino: number }> = [];
       const seenInodes = new Set<number>();
+
+      const namespaceMatches = (
+        identity: ConditionalNamespaceIdentity,
+      ): boolean => {
+        const ino = this.pathResolve(identity.path, false);
+        if (ino < 0 || ino !== identity.expectedIno) return false;
+        const off = this.inodeOffset(ino);
+        return (
+          this.r64(off + INO_GENERATION) === identity.expectedGeneration &&
+          this.r32(off + INO_DATA_SEQUENCE) ===
+            identity.expectedDataSequence &&
+          this.r32(off + INO_MODE) === identity.expectedMode &&
+          this.r32(off + INO_LINK_COUNT) === identity.expectedLinkCount &&
+          this.r64(off + INO_SIZE) === identity.expectedSize &&
+          this.r32(off + INO_UID) === identity.expectedUid &&
+          this.r32(off + INO_GID) === identity.expectedGid
+        );
+      };
+      for (const identity of requiredNamespace) {
+        if (!namespaceMatches(identity)) return false;
+      }
 
       for (const replacement of replacements) {
         this.validateFileSize(replacement.data.byteLength);
@@ -2453,6 +2527,12 @@ export class SharedFS {
             (this.r32(off + INO_MODE) & S_IFMT) !== S_IFREG ||
             this.r64(off + INO_SIZE) !== 0
           ) return false;
+        }
+        // Namespace operations cannot race while the outer lock is held, but
+        // regular-file descriptor writes can. Recheck every guarded regular
+        // inode after acquiring all replacement locks and before first write.
+        for (const identity of requiredNamespace) {
+          if (!namespaceMatches(identity)) return false;
         }
 
         const originals = resolved.map((replacement) => {
@@ -3315,7 +3395,10 @@ export class SharedFS {
   private readlinkUnlocked(path: string): string {
     const ino = this.pathResolve(path, false);
     if (ino < 0) throw new SFSError(ino);
+    return this.readSymlinkInodeUnlocked(ino);
+  }
 
+  private readSymlinkInodeUnlocked(ino: number): string {
     const inoOff = this.inodeOffset(ino);
     const mode = this.r32(inoOff + INO_MODE);
     if ((mode & S_IFMT) !== S_IFLNK) throw new SFSError(EINVAL);

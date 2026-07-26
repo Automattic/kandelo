@@ -332,6 +332,9 @@ async function main() {
       new Uint8Array(readFileSync(ROOTFS_VFS)),
       { maxByteLength: FS_MAX_BYTES },
     );
+    // WHY: a rebase copies imported lazy metadata, so authenticate atomic seals
+    // before this test-image builder can grant them a larger filesystem.
+    await fs.verifyImportedLazyAtomicGroupSeals();
     const baseStats = fs.statfs("/");
     const baseMaxBytes = baseStats.blocks * baseStats.bsize;
     if (baseMaxBytes < FS_MAX_BYTES) {

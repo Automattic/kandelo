@@ -3,6 +3,8 @@ import { gzipSync, zipSync, type Zippable } from "fflate";
 import { describe, expect, it, vi } from "vitest";
 import {
   MemoryFileSystem,
+  type LazyArchiveFileEntry,
+  type LazyTreeGroup,
   type LazyTreeActivation,
   type LazyTreeRegistrationEntry,
 } from "../src/vfs/memory-fs";
@@ -12,6 +14,7 @@ import {
 } from "../src/vfs/deferred-tree-limits";
 
 const BLOCK = 512;
+const O_WRONLY_CREAT = 0x0041;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -216,6 +219,1268 @@ describe("format-neutral deferred trees", () => {
     const afterAlias = fs.lstat("/runtime/tool-hardlink");
     expect(afterAlias.ino).toBe(afterTarget.ino);
     expect(afterTarget.nlink).toBe(2);
+  });
+
+  it("commits an atomic activation group only after every tree validates", async () => {
+    const bootstrap = tarTreeFixture("first-use", "bootstrap");
+    const runtime = tarTreeFixture("first-use", "runtime");
+    const fs = createFs();
+    let repairRuntime = false;
+    const fetcher = vi.fn(async (url: string) => {
+      if (url.endsWith("/bootstrap.tar.gz")) {
+        return new Response(bootstrap.payload);
+      }
+      return new Response(
+        repairRuntime ? runtime.payload : bootstrap.payload,
+      );
+    });
+    fs.setLazyFetcher(fetcher);
+    await registerAtomicTrees(
+      fs,
+      "homebrew:runtime",
+      [bootstrap, runtime],
+    );
+
+    await expect(fs.preparePath("/bootstrap/tool")).rejects.toThrow(
+      /All 1 lazy tree transports failed/,
+    );
+    // The first member was fetched and decoded successfully, but the failing
+    // peer keeps both exact namespaces deferred and therefore retryable.
+    expect(fs.isPathDeferred("/bootstrap/tool")).toBe(true);
+    expect(fs.isPathDeferred("/runtime/tool")).toBe(true);
+
+    repairRuntime = true;
+    await expect(fs.preparePath("/runtime/tool")).resolves.toBe(true);
+    expect(readText(fs, "/bootstrap/tool")).toBe("payload");
+    expect(readText(fs, "/runtime/tool")).toBe("payload");
+    expect(fs.isPathDeferred("/bootstrap/tool")).toBe(false);
+    expect(fs.isPathDeferred("/runtime/tool")).toBe(false);
+  });
+
+  it("rejects a mutated member instead of publishing a partial atomic tree", async () => {
+    const bootstrap = tarTreeFixture("first-use", "bootstrap-mutated");
+    const runtime = tarTreeFixture("first-use", "runtime-mutated");
+    const payloads = new Map([
+      [bootstrap.content.transports[0], bootstrap.payload],
+      [runtime.content.transports[0], runtime.payload],
+    ]);
+    const fs = createFs();
+    fs.setLazyFetcher(async (url) => new Response(payloads.get(url)!));
+    await registerAtomicTrees(
+      fs,
+      "homebrew:runtime-mutated",
+      [bootstrap, runtime],
+    );
+    fs.unlink("/runtime-mutated/tool");
+
+    await expect(
+      fs.preparePath("/bootstrap-mutated/tool"),
+    ).rejects.toThrow(/Lazy atomic tree changed at/);
+    expect(fs.isPathDeferred("/bootstrap-mutated/tool")).toBe(true);
+    expect(fs.isPathDeferred("/runtime-mutated/tool-hardlink")).toBe(true);
+  });
+
+  it("deduplicates concurrent entrypoints into one atomic activation", async () => {
+    const bootstrap = tarTreeFixture("first-use", "bootstrap-concurrent");
+    const runtime = tarTreeFixture("first-use", "runtime-concurrent");
+    const payloads = new Map([
+      [bootstrap.content.transports[0], bootstrap.payload],
+      [runtime.content.transports[0], runtime.payload],
+    ]);
+    const fs = createFs();
+    const fetcher = vi.fn(async (url: string) => {
+      await Promise.resolve();
+      return new Response(payloads.get(url)!);
+    });
+    fs.setLazyFetcher(fetcher);
+    await registerAtomicTrees(
+      fs,
+      "homebrew:runtime-concurrent",
+      [bootstrap, runtime],
+    );
+
+    await expect(Promise.all([
+      fs.preparePath("/bootstrap-concurrent/tool"),
+      fs.preparePath("/runtime-concurrent/tool-hardlink"),
+    ])).resolves.toEqual([true, true]);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(readText(fs, "/bootstrap-concurrent/tool")).toBe("payload");
+    expect(readText(fs, "/runtime-concurrent/tool-hardlink")).toBe("payload");
+  });
+
+  it("round-trips atomic activation ownership through a VFS image", async () => {
+    const bootstrap = tarTreeFixture("first-use", "bootstrap-roundtrip");
+    const runtime = tarTreeFixture("first-use", "runtime-roundtrip");
+    const source = createFs();
+    await registerAtomicTrees(
+      source,
+      "homebrew:runtime-roundtrip",
+      [bootstrap, runtime],
+    );
+    const image = await source.saveImage();
+    const restored = MemoryFileSystem.fromImage(image);
+    expect(() => restored.exportLazyArchiveEntries()).toThrow(
+      /not been cryptographically verified after import/,
+    );
+    expect(() => restored.rebaseToNewFileSystem(8 * 1024 * 1024)).toThrow(
+      /not been cryptographically verified after import/,
+    );
+    await restored.sealLazyAtomicGroup(
+      "homebrew:runtime-roundtrip",
+      [
+        bootstrap.activation.capabilities[0]!,
+        runtime.activation.capabilities[0]!,
+      ],
+    );
+    expect(
+      restored.rebaseToNewFileSystem(8 * 1024 * 1024)
+        .exportLazyArchiveEntries(),
+    ).toHaveLength(2);
+    const serialized = restored.exportLazyArchiveEntries();
+    expect(serialized).toHaveLength(2);
+    expect(serialized.every(
+      (entry) =>
+        entry.kind === "kandelo-deferred-tree-v3" &&
+        entry.activation?.atomicGroup?.id === "homebrew:runtime-roundtrip" &&
+        entry.activation.atomicGroup.expectedCount === 2,
+    )).toBe(true);
+    const payloads = new Map([
+      [bootstrap.content.transports[0], bootstrap.payload],
+      [runtime.content.transports[0], runtime.payload],
+    ]);
+    restored.setLazyFetcher(async (url) => new Response(payloads.get(url)!));
+
+    await expect(
+      restored.preparePath("/bootstrap-roundtrip/tool"),
+    ).resolves.toBe(true);
+    expect(restored.isPathDeferred("/runtime-roundtrip/tool")).toBe(false);
+    expect(readText(restored, "/runtime-roundtrip/tool")).toBe("payload");
+  });
+
+  it("keeps structural guards usable after saving and exporting a live cohort", async () => {
+    const regular = tarTreeFixture("first-use", "atomic-live-save");
+    const symlink = symlinkTreeFixture();
+    const fs = createFs();
+    fs.registerLazyTree(
+      regular.content,
+      regular.inventory,
+      "/",
+      {
+        ...regular.activation,
+        atomicGroup: { id: "atomic:live-save", member: "regular" },
+      },
+    );
+    fs.registerLazyTree(
+      symlink.content,
+      symlink.inventory,
+      "/",
+      {
+        mode: "first-use",
+        capabilities: ["test:live-save-symlink"],
+        roots: ["/metadata"],
+        atomicGroup: { id: "atomic:live-save", member: "symlink" },
+      },
+    );
+    await fs.sealLazyAtomicGroup("atomic:live-save", ["regular", "symlink"]);
+    await expect(fs.saveImage()).resolves.toBeInstanceOf(Uint8Array);
+    expect(fs.exportLazyArchiveEntries()).toHaveLength(2);
+    const payloads = new Map([
+      [regular.content.transports[0], regular.payload],
+      [symlink.content.transports[0], symlink.payload],
+    ]);
+    fs.setLazyFetcher(async (url) => new Response(payloads.get(url)!));
+
+    await expect(fs.preparePath("/atomic-live-save/tool")).resolves.toBe(true);
+    expect(readText(fs, "/atomic-live-save/tool")).toBe("payload");
+    expect(fs.readlink("/metadata/runtime-link")).toBe("/runtime/target");
+  });
+
+  it("rewrites post-seal mirrors without changing byte identity", async () => {
+    const first = tarTreeFixture("first-use", "atomic-rewrite-a");
+    const second = tarTreeFixture("first-use", "atomic-rewrite-b");
+    const fs = createFs();
+    await registerAtomicTrees(fs, "atomic:rewrite", [first, second]);
+    const sealed = fs.exportLazyArchiveEntries();
+    const sealedMemberships = sealed.map((entry) =>
+      entry.activation!.atomicGroup
+    );
+
+    fs.rewriteLazyArchiveUrls((url) =>
+      url.replace("https://example.invalid/", "https://cdn.invalid/")
+    );
+    const rewritten = fs.exportLazyArchiveEntries();
+    expect(rewritten.map((entry) => entry.activation!.atomicGroup))
+      .toEqual(sealedMemberships);
+    expect(rewritten.every((entry) =>
+      entry.content!.transports[0]!.startsWith("https://cdn.invalid/")
+    )).toBe(true);
+    await expect(fs.saveImage()).resolves.toBeInstanceOf(Uint8Array);
+
+    const payloads = new Map([
+      ["https://cdn.invalid/atomic-rewrite-a.tar.gz", first.payload],
+      ["https://cdn.invalid/atomic-rewrite-b.tar.gz", second.payload],
+    ]);
+    fs.setLazyFetcher(async (url) => new Response(payloads.get(url)!));
+    await expect(fs.preparePath("/atomic-rewrite-a/tool")).resolves.toBe(true);
+    expect(readText(fs, "/atomic-rewrite-a/tool")).toBe("payload");
+    expect(readText(fs, "/atomic-rewrite-b/tool")).toBe("payload");
+  });
+
+  it("rejects an atomic image that omits a cohort record or pending alias", async () => {
+    const first = tarTreeFixture("first-use", "atomic-seal-a");
+    const second = tarTreeFixture("first-use", "atomic-seal-b");
+    const fs = createFs();
+    await registerAtomicTrees(fs, "atomic:sealed", [first, second]);
+    const image = await fs.saveImage();
+    const serialized = fs.exportLazyArchiveEntries();
+
+    expect(() =>
+      MemoryFileSystem.fromImage(
+        replaceLazyArchiveMetadata(image, [serialized[0]!]),
+      )
+    ).toThrow(/has 1 of 2 members/);
+
+    const missingAlias = structuredClone(serialized);
+    missingAlias[1]!.entries = missingAlias[1]!.entries.filter(
+      (entry) => !entry.vfsPath.endsWith("/tool-hardlink"),
+    );
+    expect(() =>
+      MemoryFileSystem.fromImage(
+        replaceLazyArchiveMetadata(image, missingAlias),
+      )
+    ).toThrow(/omits pending path .*tool-hardlink/);
+  });
+
+  it("rejects export and save after a peer writes an atomic stub", async () => {
+    const first = tarTreeFixture("first-use", "atomic-export-write-a");
+    const second = tarTreeFixture("first-use", "atomic-export-write-b");
+    const owner = createFs();
+    await registerAtomicTrees(owner, "atomic:export-write", [first, second]);
+    const peer = MemoryFileSystem.fromExisting(owner.sharedBuffer);
+    const fd = peer.open(
+      "/atomic-export-write-b/tool",
+      O_WRONLY_CREAT,
+      0o755,
+    );
+    peer.write(fd, encoder.encode("peer"), null, 4);
+    peer.close(fd);
+
+    expect(() => owner.exportLazyArchiveEntries()).toThrow(
+      /changed identity before serialization|omits pending path .*atomic-export-write-b/,
+    );
+    let returnedImage: Uint8Array | undefined;
+    await expect(
+      owner.saveImage().then((image) => {
+        returnedImage = image;
+        return image;
+      }),
+    ).rejects.toThrow(
+      /changed identity before serialization|omits pending path .*atomic-export-write-b/,
+    );
+    expect(returnedImage).toBeUndefined();
+  });
+
+  it("rejects export and save after a peer unlinks an atomic alias", async () => {
+    const first = tarTreeFixture("first-use", "atomic-export-unlink-a");
+    const second = tarTreeFixture("first-use", "atomic-export-unlink-b");
+    const owner = createFs();
+    await registerAtomicTrees(owner, "atomic:export-unlink", [first, second]);
+    const peer = MemoryFileSystem.fromExisting(owner.sharedBuffer);
+    peer.unlink("/atomic-export-unlink-b/tool-hardlink");
+
+    expect(() => owner.exportLazyArchiveEntries()).toThrow(
+      /changed data or undeclared aliases|omits pending path .*tool-hardlink/,
+    );
+    let returnedImage: Uint8Array | undefined;
+    await expect(
+      owner.saveImage().then((image) => {
+        returnedImage = image;
+        return image;
+      }),
+    ).rejects.toThrow(
+      /changed data or undeclared aliases|omits pending path .*tool-hardlink/,
+    );
+    expect(returnedImage).toBeUndefined();
+  });
+
+  it("distinguishes local deletion tombstones from peer removal of every alias", async () => {
+    const first = tarTreeFixture("first-use", "atomic-export-remove-a");
+    const second = tarTreeFixture("first-use", "atomic-export-remove-b");
+    const owner = createFs();
+    await registerAtomicTrees(owner, "atomic:export-remove", [first, second]);
+    const peer = MemoryFileSystem.fromExisting(owner.sharedBuffer);
+    peer.unlink("/atomic-export-remove-b/tool-hardlink");
+    peer.unlink("/atomic-export-remove-b/tool");
+
+    expect(() => owner.exportLazyArchiveEntries()).toThrow(
+      /omits pending path .*atomic-export-remove-b|missing from the captured filesystem state/,
+    );
+    await expect(owner.saveImage()).rejects.toThrow(
+      /omits pending path .*atomic-export-remove-b|missing from the captured filesystem state/,
+    );
+  });
+
+  it("rejects export and save after a peer removes a structural symlink", async () => {
+    const regular = tarTreeFixture("first-use", "atomic-export-symlink");
+    const symlink = symlinkTreeFixture();
+    const owner = createFs();
+    owner.registerLazyTree(
+      regular.content,
+      regular.inventory,
+      "/",
+      {
+        ...regular.activation,
+        atomicGroup: {
+          id: "atomic:export-symlink",
+          member: "regular",
+        },
+      },
+    );
+    owner.registerLazyTree(
+      symlink.content,
+      symlink.inventory,
+      "/",
+      {
+        mode: "first-use",
+        capabilities: ["test:export-symlink"],
+        roots: ["/metadata"],
+        atomicGroup: {
+          id: "atomic:export-symlink",
+          member: "symlink",
+        },
+      },
+    );
+    await owner.sealLazyAtomicGroup(
+      "atomic:export-symlink",
+      ["regular", "symlink"],
+    );
+    const peer = MemoryFileSystem.fromExisting(owner.sharedBuffer);
+    peer.unlink("/metadata/runtime-link");
+
+    expect(() => owner.exportLazyArchiveEntries()).toThrow(
+      /namespace entry .*runtime-link.*missing from the captured filesystem state/,
+    );
+    let returnedImage: Uint8Array | undefined;
+    await expect(
+      owner.saveImage().then((image) => {
+        returnedImage = image;
+        return image;
+      }),
+    ).rejects.toThrow(
+      /namespace entry .*runtime-link.*missing from the captured filesystem state/,
+    );
+    expect(returnedImage).toBeUndefined();
+  });
+
+  it.each([
+    ["directory", "/atomic-export-mode-b"],
+    ["regular stub", "/atomic-export-mode-b/tool"],
+  ])(
+    "rejects export and save after a peer changes an atomic %s mode",
+    async (_kind, path) => {
+      const first = tarTreeFixture("first-use", "atomic-export-mode-a");
+      const second = tarTreeFixture("first-use", "atomic-export-mode-b");
+      const owner = createFs();
+      await registerAtomicTrees(owner, "atomic:export-mode", [first, second]);
+      const peer = MemoryFileSystem.fromExisting(owner.sharedBuffer);
+      peer.chmod(path, 0o700);
+
+      expect(() => owner.exportLazyArchiveEntries()).toThrow(
+        /namespace entry .*disagrees with its captured type or mode/,
+      );
+      let returnedImage: Uint8Array | undefined;
+      await expect(
+        owner.saveImage().then((image) => {
+          returnedImage = image;
+          return image;
+        }),
+      ).rejects.toThrow(
+        /namespace entry .*disagrees with its captured type or mode/,
+      );
+      expect(returnedImage).toBeUndefined();
+    },
+  );
+
+  it("rejects export and save after a peer adds an undeclared atomic alias", async () => {
+    const first = tarTreeFixture("first-use", "atomic-export-alias-a");
+    const second = tarTreeFixture("first-use", "atomic-export-alias-b");
+    const owner = createFs();
+    await registerAtomicTrees(owner, "atomic:export-alias", [first, second]);
+    const peer = MemoryFileSystem.fromExisting(owner.sharedBuffer);
+    peer.link("/atomic-export-alias-b/tool", "/undeclared-tool-alias");
+
+    expect(() => owner.exportLazyArchiveEntries()).toThrow(
+      /inventory|undeclared aliases/,
+    );
+    let returnedImage: Uint8Array | undefined;
+    await expect(
+      owner.saveImage().then((image) => {
+        returnedImage = image;
+        return image;
+      }),
+    ).rejects.toThrow(/inventory|undeclared aliases/);
+    expect(returnedImage).toBeUndefined();
+  });
+
+  it("requires an explicit exact seal and binds each member descriptor", async () => {
+    const first = tarTreeFixture("first-use", "atomic-bind-a");
+    const second = tarTreeFixture("first-use", "atomic-bind-b");
+    const fs = createFs();
+    const groups = [first, second].map((fixture) =>
+      fs.registerLazyTree(
+        fixture.content,
+        fixture.inventory,
+        "/",
+        {
+          ...fixture.activation,
+          atomicGroup: {
+            id: "atomic:binding",
+            member: fixture.activation.capabilities[0]!,
+          },
+        },
+      )
+    );
+    await expect(fs.saveImage()).rejects.toThrow(/must be sealed/);
+    await expect(
+      fs.sealLazyAtomicGroup("atomic:binding", [
+        first.activation.capabilities[0]!,
+      ]),
+    ).rejects.toThrow(/members differ from its seal/);
+    await fs.sealLazyAtomicGroup("atomic:binding", [
+      first.activation.capabilities[0]!,
+      second.activation.capabilities[0]!,
+    ]);
+    groups[1]!.inventory![0]!.mode = 0o700;
+    const fetcher = vi.fn(async () => new Response(first.payload));
+    fs.setLazyFetcher(fetcher);
+
+    await expect(
+      fs.preparePath("/atomic-bind-a/tool"),
+    ).rejects.toThrow(/changed after sealing/);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(fs.isPathDeferred("/atomic-bind-a/tool")).toBe(true);
+    expect(fs.isPathDeferred("/atomic-bind-b/tool")).toBe(true);
+  });
+
+  it.each([
+    [
+      "capability array",
+      (group: LazyTreeGroup) => {
+        group.activation!.capabilities[0] = "test:mutated-capability";
+      },
+    ],
+    [
+      "activation root array",
+      (group: LazyTreeGroup) => {
+        group.activation!.roots[0] = "/atomic-seal-mutation/tool-hardlink";
+      },
+    ],
+    [
+      "nested atomic membership",
+      (group: LazyTreeGroup) => {
+        group.activation!.atomicGroup!.member = "mutated-member";
+      },
+    ],
+    [
+      "nested atomic seal digest",
+      (group: LazyTreeGroup) => {
+        group.activation!.atomicGroup!.cohortSha256 = "f".repeat(64);
+      },
+    ],
+  ] as const)(
+    "rejects export and save after post-seal mutation of the %s",
+    async (_label, mutate) => {
+      const fixture = tarTreeFixture(
+        "first-use",
+        "atomic-seal-mutation",
+      );
+      const fs = createFs();
+      const group = fs.registerLazyTree(
+        fixture.content,
+        fixture.inventory,
+        "/",
+        {
+          ...fixture.activation,
+          atomicGroup: {
+            id: "atomic:seal-mutation",
+            member: "runtime",
+          },
+        },
+      );
+      await fs.sealLazyAtomicGroup("atomic:seal-mutation", ["runtime"]);
+      mutate(group);
+
+      expect(() => fs.exportLazyArchiveEntries()).toThrow(
+        /activation member runtime changed after sealing/,
+      );
+      await expect(fs.saveImage()).rejects.toThrow(
+        /activation member runtime changed after sealing/,
+      );
+    },
+  );
+
+  it("cryptographically revalidates an imported cohort before saving it", async () => {
+    const fixture = tarTreeFixture("first-use", "atomic-imported-seal");
+    const source = createFs();
+    await registerAtomicTrees(source, "atomic:imported-seal", [fixture]);
+    const image = await source.saveImage();
+    const tampered = structuredClone(source.exportLazyArchiveEntries());
+    tampered[0]!.activation!.capabilities[0] = "test:tampered-after-publication";
+    const restored = MemoryFileSystem.fromImage(
+      replaceLazyArchiveMetadata(image, tampered),
+    );
+
+    expect(() => restored.exportLazyArchiveEntries()).toThrow(
+      /not been cryptographically verified after import/,
+    );
+    expect(() => restored.rebaseToNewFileSystem(8 * 1024 * 1024)).toThrow(
+      /not been cryptographically verified after import/,
+    );
+    await expect(restored.saveImage()).rejects.toThrow(
+      /activation member .* changed after sealing/,
+    );
+  });
+
+  it("explicitly verifies imported v3 seals without filesystem or fetch side effects", async () => {
+    const first = tarTreeFixture("first-use", "atomic-explicit-first");
+    const second = tarTreeFixture("first-use", "atomic-explicit-second");
+    const source = createFs();
+    await registerAtomicTrees(
+      source,
+      "atomic:explicit-import",
+      [first, second],
+    );
+    const restored = MemoryFileSystem.fromImage(await source.saveImage());
+    const fetcher = vi.fn(async () => new Response(first.payload));
+    restored.setLazyFetcher(fetcher);
+
+    expectImportedAtomicInspectionBlocked(restored);
+    expect(restored.isPathDeferred("/atomic-explicit-first/tool")).toBe(true);
+    expect(restored.isPathDeferred("/atomic-explicit-second/tool")).toBe(true);
+    const sharedBytesBefore = createHash("sha256")
+      .update(new Uint8Array(restored.sharedBuffer))
+      .digest("hex");
+    const saveSpy = vi.spyOn(restored, "saveImage");
+    const exportSpy = vi.spyOn(restored, "exportLazyArchiveEntries");
+    const rebaseSpy = vi.spyOn(restored, "rebaseToNewFileSystem");
+
+    await restored.verifyImportedLazyAtomicGroupSeals();
+
+    expect(saveSpy).not.toHaveBeenCalled();
+    expect(exportSpy).not.toHaveBeenCalled();
+    expect(rebaseSpy).not.toHaveBeenCalled();
+    saveSpy.mockRestore();
+    exportSpy.mockRestore();
+    rebaseSpy.mockRestore();
+    expect(
+      createHash("sha256")
+        .update(new Uint8Array(restored.sharedBuffer))
+        .digest("hex"),
+    ).toBe(sharedBytesBefore);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(restored.isPathDeferred("/atomic-explicit-first/tool")).toBe(true);
+    expect(restored.isPathDeferred("/atomic-explicit-second/tool")).toBe(true);
+    expect(restored.exportLazyArchiveEntries()).toHaveLength(2);
+    expect(restored.pendingDeferredTreeUsage().groups).toBe(2);
+
+    const rebased = restored.rebaseToNewFileSystem(8 * 1024 * 1024);
+    expect(rebased.exportLazyArchiveEntries()).toHaveLength(2);
+    expect(rebased.isPathDeferred("/atomic-explicit-first/tool")).toBe(true);
+    expect(rebased.isPathDeferred("/atomic-explicit-second/tool")).toBe(true);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("rejects forged imported member and cohort hashes and keeps inspection blocked", async () => {
+    const fixture = tarTreeFixture("first-use", "atomic-forged-seal");
+    const source = createFs();
+    await registerAtomicTrees(source, "atomic:forged-seal", [fixture]);
+    const image = await source.saveImage();
+    const serialized = source.exportLazyArchiveEntries();
+    const forgeries = [
+      {
+        label: "member",
+        expected: /activation member .* changed after sealing/,
+        mutate(entries: typeof serialized): void {
+          entries[0]!.activation!.atomicGroup!.descriptorSha256 = "f".repeat(64);
+        },
+      },
+      {
+        label: "cohort",
+        expected: /activation group .* differs from its seal/,
+        mutate(entries: typeof serialized): void {
+          entries[0]!.activation!.atomicGroup!.cohortSha256 = "f".repeat(64);
+        },
+      },
+    ];
+
+    for (const forgery of forgeries) {
+      const forged = structuredClone(serialized);
+      forgery.mutate(forged);
+      const restored = MemoryFileSystem.fromImage(
+        replaceLazyArchiveMetadata(image, forged),
+      );
+      const fetcher = vi.fn(async () => new Response(fixture.payload));
+      restored.setLazyFetcher(fetcher);
+
+      expectImportedAtomicInspectionBlocked(restored);
+      await expect(
+        restored.verifyImportedLazyAtomicGroupSeals(),
+        forgery.label,
+      ).rejects.toThrow(forgery.expected);
+      expectImportedAtomicInspectionBlocked(restored);
+      await expect(
+        restored.verifyImportedLazyAtomicGroupSeals(),
+        `${forgery.label} retry`,
+      ).rejects.toThrow(forgery.expected);
+      expect(restored.isPathDeferred("/atomic-forged-seal/tool")).toBe(true);
+      expect(fetcher).not.toHaveBeenCalled();
+    }
+  });
+
+  it("keeps explicit seal verification idempotent for a locally sealed cohort", async () => {
+    const fixture = tarTreeFixture("first-use", "atomic-local-seal");
+    const fs = createFs();
+    await registerAtomicTrees(fs, "atomic:local-seal", [fixture]);
+    const sealed = fs.exportLazyArchiveEntries();
+    const fetcher = vi.fn(async () => new Response(fixture.payload));
+    fs.setLazyFetcher(fetcher);
+
+    await fs.verifyImportedLazyAtomicGroupSeals();
+    await fs.verifyImportedLazyAtomicGroupSeals();
+
+    expect(fs.exportLazyArchiveEntries()).toEqual(sealed);
+    expect(fs.pendingDeferredTreeUsage().groups).toBe(1);
+    expect(
+      fs.rebaseToNewFileSystem(8 * 1024 * 1024)
+        .exportLazyArchiveEntries(),
+    ).toEqual(sealed);
+    expect(fs.isPathDeferred("/atomic-local-seal/tool")).toBe(true);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("lets explicit verification establish the seal proof that activation joins", async () => {
+    const fixture = await importedAtomicPair("atomic:verify-wins", "verify-wins");
+    const digestGate = gatedSha256Digests();
+    const fetchGate = deferredGate();
+    const fetcher = vi.fn(async (url: string) => {
+      await fetchGate.promise;
+      return new Response(fixture.payloads.get(url)!);
+    });
+    fixture.fs.setLazyFetcher(fetcher);
+    try {
+      const verification =
+        fixture.fs.verifyImportedLazyAtomicGroupSeals();
+      await vi.waitFor(() => expect(digestGate.spy).toHaveBeenCalledTimes(1));
+      const activation = fixture.fs.preparePath(fixture.paths.first);
+      void activation.catch(() => {});
+      await Promise.resolve();
+      expect(digestGate.spy).toHaveBeenCalledTimes(1);
+
+      digestGate.release();
+      await expect(verification).resolves.toBeUndefined();
+      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+      expect(digestGate.spy).toHaveBeenCalledTimes(3);
+      expect(fixture.fs.isPathDeferred(fixture.paths.first)).toBe(true);
+      expect(fixture.fs.isPathDeferred(fixture.paths.second)).toBe(true);
+
+      fetchGate.resolve();
+      await expect(activation).resolves.toBe(true);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(digestGate.spy).toHaveBeenCalledTimes(5);
+      expect(fixture.fs.isPathDeferred(fixture.paths.first)).toBe(false);
+      expect(fixture.fs.isPathDeferred(fixture.paths.second)).toBe(false);
+    } finally {
+      digestGate.release();
+      fetchGate.resolve();
+      digestGate.spy.mockRestore();
+    }
+  });
+
+  it("lets verification join activation's one seal proof before transport completes", async () => {
+    const fixture = await importedAtomicPair(
+      "atomic:activation-wins",
+      "activation-wins",
+    );
+    const digestGate = gatedSha256Digests();
+    const fetchGate = deferredGate();
+    const fetcher = vi.fn(async (url: string) => {
+      await fetchGate.promise;
+      return new Response(fixture.payloads.get(url)!);
+    });
+    fixture.fs.setLazyFetcher(fetcher);
+    try {
+      const activation = fixture.fs.preparePath(fixture.paths.first);
+      void activation.catch(() => {});
+      await vi.waitFor(() => expect(digestGate.spy).toHaveBeenCalledTimes(1));
+      const verification =
+        fixture.fs.verifyImportedLazyAtomicGroupSeals();
+      await Promise.resolve();
+      expect(digestGate.spy).toHaveBeenCalledTimes(1);
+
+      digestGate.release();
+      await expect(verification).resolves.toBeUndefined();
+      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+      expect(digestGate.spy).toHaveBeenCalledTimes(3);
+      expect(fixture.fs.exportLazyArchiveEntries()).toHaveLength(2);
+
+      fetchGate.resolve();
+      await expect(activation).resolves.toBe(true);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(digestGate.spy).toHaveBeenCalledTimes(5);
+    } finally {
+      digestGate.release();
+      fetchGate.resolve();
+      digestGate.spy.mockRestore();
+    }
+  });
+
+  it("rejects joined verification and activation after persistent mutation or unlink", async () => {
+    for (const fault of ["unlink", "mutation"] as const) {
+      const fixture = await importedAtomicPair(
+        `atomic:joined-${fault}`,
+        `joined-${fault}`,
+      );
+      const digestGate = gatedSha256Digests();
+      const fetcher = vi.fn(async (url: string) =>
+        new Response(fixture.payloads.get(url)!));
+      fixture.fs.setLazyFetcher(fetcher);
+      try {
+        const verification =
+          fixture.fs.verifyImportedLazyAtomicGroupSeals();
+        void verification.catch(() => {});
+        await vi.waitFor(() => expect(digestGate.spy).toHaveBeenCalledTimes(1));
+        const activation = fixture.fs.preparePath(fixture.paths.first);
+        void activation.catch(() => {});
+        await Promise.resolve();
+        expect(digestGate.spy).toHaveBeenCalledTimes(1);
+
+        if (fault === "mutation") {
+          importedAtomicGroups(fixture.fs)[0]!.activation!.capabilities[0] =
+            "test:persistent-mutation";
+        } else {
+          fixture.fs.unlink(`${fixture.roots.first}/tool-hardlink`);
+        }
+        digestGate.release();
+
+        await expect(verification).rejects.toThrow(/changed/);
+        await expect(activation).rejects.toThrow(/changed/);
+        expect(digestGate.spy).toHaveBeenCalledTimes(3);
+        expect(fetcher).not.toHaveBeenCalled();
+        expect(() => fixture.fs.exportLazyArchiveEntries()).toThrow();
+      } finally {
+        digestGate.release();
+        digestGate.spy.mockRestore();
+      }
+    }
+  });
+
+  it("keeps a verified seal reusable after transport failure leaves activation retryable", async () => {
+    const fixture = await importedAtomicPair(
+      "atomic:verified-fetch-failure",
+      "verified-fetch-failure",
+    );
+    const digestGate = gatedSha256Digests();
+    let failFetch = true;
+    const fetcher = vi.fn(async (url: string) =>
+      failFetch
+        ? new Response("unavailable", { status: 404 })
+        : new Response(fixture.payloads.get(url)!));
+    fixture.fs.setLazyFetcher(fetcher);
+    try {
+      const activation = fixture.fs.preparePath(fixture.paths.first);
+      void activation.catch(() => {});
+      await vi.waitFor(() => expect(digestGate.spy).toHaveBeenCalledTimes(1));
+      const verification =
+        fixture.fs.verifyImportedLazyAtomicGroupSeals();
+      digestGate.release();
+
+      await expect(verification).resolves.toBeUndefined();
+      await expect(activation).rejects.toThrow(
+        /All 1 lazy tree transports failed/,
+      );
+      expect(digestGate.spy).toHaveBeenCalledTimes(3);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(fixture.fs.exportLazyArchiveEntries()).toHaveLength(2);
+      expect(fixture.fs.pendingDeferredTreeUsage().groups).toBe(2);
+      expect(fixture.fs.isPathDeferred(fixture.paths.first)).toBe(true);
+      expect(fixture.fs.isPathDeferred(fixture.paths.second)).toBe(true);
+
+      failFetch = false;
+      await expect(
+        fixture.fs.preparePath(fixture.paths.second),
+      ).resolves.toBe(true);
+      expect(fetcher).toHaveBeenCalledTimes(4);
+      // Three seal digests were shared by both initial callers. The retry only
+      // hashes the two successfully fetched payloads.
+      expect(digestGate.spy).toHaveBeenCalledTimes(5);
+      expect(fixture.fs.isPathDeferred(fixture.paths.first)).toBe(false);
+      expect(fixture.fs.isPathDeferred(fixture.paths.second)).toBe(false);
+    } finally {
+      digestGate.release();
+      digestGate.spy.mockRestore();
+    }
+  });
+
+  it("keeps sealed integrity authoritative through a fetch-time substitution", async () => {
+    const trusted = zipTreeFixture(
+      "atomic-integrity",
+      [["tool", "payload"]],
+    );
+    const substituted = zipTreeFixture(
+      "atomic-integrity",
+      [["tool", "eviload"]],
+    );
+    expect(substituted.payload.byteLength).toBe(trusted.payload.byteLength);
+    const fs = createFs();
+    const group = fs.registerLazyTree(
+      trusted.content,
+      trusted.inventory,
+      "/",
+      {
+        ...trusted.activation,
+        atomicGroup: { id: "atomic:integrity", member: "runtime" },
+      },
+    );
+    await fs.sealLazyAtomicGroup("atomic:integrity", ["runtime"]);
+
+    let substituteIntegrity = false;
+    const trustedIntegrity = group.integrity!;
+    group.integrity = {
+      get sha256() {
+        if (!substituteIntegrity) return trustedIntegrity.sha256;
+        // A vulnerable fetch reads this caller-reachable replacement and then
+        // observes the restored trusted digest on later public-state checks.
+        substituteIntegrity = false;
+        return substituted.content.sha256;
+      },
+      get bytes() {
+        return trustedIntegrity.bytes;
+      },
+    };
+    fs.setLazyFetcher(async () => {
+      substituteIntegrity = true;
+      return new Response(substituted.payload);
+    });
+
+    await expect(fs.preparePath("/atomic-integrity/tool")).rejects.toThrow(
+      /SHA-256 .* does not match expected/,
+    );
+    substituteIntegrity = false;
+    expect(fs.isPathDeferred("/atomic-integrity/tool")).toBe(true);
+    expect(MemoryFileSystem.fromExisting(fs.sharedBuffer)
+      .lstat("/atomic-integrity/tool").size).toBe(0);
+  });
+
+  it("ignores a mutate-use-restore mapping substitution during decode", async () => {
+    const fixture = zipTreeFixture(
+      "atomic-mapping",
+      [
+        ["trusted", "good"],
+        ["substitute", "malicious"],
+      ],
+    );
+    const fs = createFs();
+    const group = fs.registerLazyTree(
+      fixture.content,
+      fixture.inventory,
+      "/",
+      {
+        ...fixture.activation,
+        atomicGroup: { id: "atomic:mapping", member: "runtime" },
+      },
+    );
+    await fs.sealLazyAtomicGroup("atomic:mapping", ["runtime"]);
+
+    const trustedPath = "/atomic-mapping/trusted";
+    const substitutePath = "/atomic-mapping/substitute";
+    const canonicalEntries = group.entries;
+    let armed = false;
+    class TransientMappingEntries
+      extends Map<string, LazyArchiveFileEntry> {
+      override *[Symbol.iterator](): MapIterator<
+        [string, LazyArchiveFileEntry]
+      > {
+        const trusted = super.get(trustedPath)!;
+        const substitute = super.get(substitutePath)!;
+        const savedArchivePath = trusted.archivePath;
+        const savedSize = trusted.size;
+        if (armed) {
+          armed = false;
+          trusted.archivePath = substitute.archivePath;
+          trusted.size = substitute.size;
+        }
+        try {
+          yield* super[Symbol.iterator]();
+        } finally {
+          trusted.archivePath = savedArchivePath;
+          trusted.size = savedSize;
+        }
+      }
+    }
+    group.entries = new TransientMappingEntries(canonicalEntries);
+    fs.setLazyFetcher(async () => {
+      // The public map mutates only when decode/preflight iterates it, then
+      // restores itself before the post-await seal check.
+      armed = true;
+      return new Response(fixture.payload);
+    });
+
+    await expect(fs.preparePath(trustedPath)).resolves.toBe(true);
+    expect(readText(fs, trustedPath)).toBe("good");
+    expect(readText(fs, substitutePath)).toBe("malicious");
+  });
+
+  it("does not let public materialized flags omit a sealed pending member", async () => {
+    const fixture = tarTreeFixture("first-use", "atomic-public-state");
+    const fs = createFs();
+    const group = fs.registerLazyTree(
+      fixture.content,
+      fixture.inventory,
+      "/",
+      {
+        ...fixture.activation,
+        atomicGroup: { id: "atomic:public-state", member: "runtime" },
+      },
+    );
+    await fs.sealLazyAtomicGroup("atomic:public-state", ["runtime"]);
+    for (const entry of group.entries.values()) entry.materialized = true;
+    group.materialized = true;
+
+    expect(() => fs.exportLazyArchiveEntries()).toThrow(
+      /changed after sealing/,
+    );
+    await expect(fs.saveImage()).rejects.toThrow(/changed after sealing/);
+  });
+
+  it("rejects a hardlink alias removed by a peer while fetching the cohort", async () => {
+    const first = tarTreeFixture("first-use", "atomic-peer-a");
+    const second = tarTreeFixture("first-use", "atomic-peer-b");
+    const payloads = new Map([
+      [first.content.transports[0], first.payload],
+      [second.content.transports[0], second.payload],
+    ]);
+    const fs = createFs();
+    await registerAtomicTrees(fs, "atomic:peer-alias", [first, second]);
+    let releaseFetch!: () => void;
+    const fetchGate = new Promise<void>((resolve) => {
+      releaseFetch = resolve;
+    });
+    let started = 0;
+    fs.setLazyFetcher(async (url) => {
+      started += 1;
+      await fetchGate;
+      return new Response(payloads.get(url)!);
+    });
+    const activation = fs.preparePath("/atomic-peer-a/tool");
+    await vi.waitFor(() => expect(started).toBe(2));
+    const peer = MemoryFileSystem.fromExisting(fs.sharedBuffer);
+    peer.unlink("/atomic-peer-b/tool-hardlink");
+    releaseFetch();
+
+    await expect(activation).rejects.toThrow(/changed before commit/);
+    expect(fs.isPathDeferred("/atomic-peer-a/tool")).toBe(true);
+    expect(fs.isPathDeferred("/atomic-peer-b/tool")).toBe(true);
+    expect(() => peer.lstat("/atomic-peer-b/tool-hardlink")).toThrow();
+    expect(peer.lstat("/atomic-peer-a/tool").size).toBe(0);
+    expect(peer.lstat("/atomic-peer-b/tool").size).toBe(0);
+  });
+
+  it("rejects a required symlink removed by a peer", async () => {
+    const regular = tarTreeFixture("first-use", "atomic-symlink-regular");
+    const symlink = symlinkTreeFixture();
+    const fs = createFs();
+    fs.registerLazyTree(
+      regular.content,
+      regular.inventory,
+      "/",
+      {
+        ...regular.activation,
+        atomicGroup: {
+          id: "atomic:symlink",
+          member: "regular",
+        },
+      },
+    );
+    fs.registerLazyTree(
+      symlink.content,
+      symlink.inventory,
+      "/",
+      {
+        mode: "first-use",
+        capabilities: ["test:symlink"],
+        roots: ["/metadata"],
+        atomicGroup: {
+          id: "atomic:symlink",
+          member: "symlink",
+        },
+      },
+    );
+    await fs.sealLazyAtomicGroup("atomic:symlink", ["regular", "symlink"]);
+    const peer = MemoryFileSystem.fromExisting(fs.sharedBuffer);
+    let releaseFetch!: () => void;
+    const fetchGate = new Promise<void>((resolve) => {
+      releaseFetch = resolve;
+    });
+    let started = 0;
+    fs.setLazyFetcher(async (url) => {
+      started += 1;
+      await fetchGate;
+      return new Response(
+        url === regular.content.transports[0]
+          ? regular.payload
+          : symlink.payload,
+      );
+    });
+    const activation = fs.preparePath("/atomic-symlink-regular/tool");
+    await vi.waitFor(() => expect(started).toBe(2));
+    peer.unlink("/metadata/runtime-link");
+    releaseFetch();
+
+    await expect(activation).rejects.toThrow(/changed before commit/);
+    expect(fs.isPathDeferred("/atomic-symlink-regular/tool")).toBe(true);
+    expect(peer.lstat("/atomic-symlink-regular/tool").size).toBe(0);
+  });
+
+  it("rejects a declared directory changed by a peer while fetching", async () => {
+    const first = tarTreeFixture("first-use", "atomic-dir-a");
+    const second = tarTreeFixture("first-use", "atomic-dir-b");
+    const payloads = new Map([
+      [first.content.transports[0], first.payload],
+      [second.content.transports[0], second.payload],
+    ]);
+    const fs = createFs();
+    await registerAtomicTrees(fs, "atomic:directory", [first, second]);
+    let releaseFetch!: () => void;
+    const fetchGate = new Promise<void>((resolve) => {
+      releaseFetch = resolve;
+    });
+    let started = 0;
+    fs.setLazyFetcher(async (url) => {
+      started += 1;
+      await fetchGate;
+      return new Response(payloads.get(url)!);
+    });
+    const activation = fs.preparePath("/atomic-dir-a/tool");
+    await vi.waitFor(() => expect(started).toBe(2));
+    const peer = MemoryFileSystem.fromExisting(fs.sharedBuffer);
+    peer.chmod("/atomic-dir-b", 0o700);
+    releaseFetch();
+
+    await expect(activation).rejects.toThrow(/changed before commit/);
+    expect(peer.lstat("/atomic-dir-a/tool").size).toBe(0);
+    expect(peer.lstat("/atomic-dir-b/tool").size).toBe(0);
+    expect(fs.isPathDeferred("/atomic-dir-a/tool")).toBe(true);
+    expect(fs.isPathDeferred("/atomic-dir-b/tool")).toBe(true);
+  });
+
+  it("drains a failed cohort preflight before allowing its retry", async () => {
+    const failed = tarTreeFixture("first-use", "atomic-drain-failed");
+    const slow = tarTreeFixture("first-use", "atomic-drain-slow");
+    const fs = createFs();
+    await registerAtomicTrees(fs, "atomic:drain", [failed, slow]);
+    let repaired = false;
+    let releaseSlow!: () => void;
+    let activeSlow = 0;
+    let maxActiveSlow = 0;
+    let slowFetches = 0;
+    let slowGate = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    fs.setLazyFetcher(async (url) => {
+      if (url === failed.content.transports[0]) {
+        return new Response(repaired ? failed.payload : new Uint8Array([0]));
+      }
+      slowFetches += 1;
+      activeSlow += 1;
+      maxActiveSlow = Math.max(maxActiveSlow, activeSlow);
+      await slowGate;
+      activeSlow -= 1;
+      return new Response(slow.payload);
+    });
+
+    let rejected = false;
+    const first = fs.preparePath("/atomic-drain-failed/tool").catch((error) => {
+      rejected = true;
+      throw error;
+    });
+    await vi.waitFor(() => expect(slowFetches).toBe(1));
+    await Promise.resolve();
+    expect(rejected).toBe(false);
+    releaseSlow();
+    await expect(first).rejects.toThrow(/All 1 lazy tree transports failed/);
+    expect(activeSlow).toBe(0);
+
+    repaired = true;
+    slowGate = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    const retry = fs.preparePath("/atomic-drain-slow/tool");
+    await vi.waitFor(() => expect(slowFetches).toBe(2));
+    expect(activeSlow).toBe(1);
+    releaseSlow();
+    await expect(retry).resolves.toBe(true);
+    expect(maxActiveSlow).toBe(1);
+  });
+
+  it("rolls every member back after a later atomic write reaches ENOSPC", async () => {
+    const dataA = "a".repeat(16 * 1024);
+    const dataB = "b".repeat(16 * 1024);
+    const first = tarTreeFixture("first-use", "atomic-space-a", dataA);
+    const second = tarTreeFixture("first-use", "atomic-space-b", dataB);
+    const fs = MemoryFileSystem.create(
+      new SharedArrayBuffer(512 * 1024),
+    );
+    await registerAtomicTrees(fs, "atomic:space", [first, second]);
+    const reserve = fs.open("/reserve", O_WRONLY_CREAT, 0o600);
+    expect(fs.write(
+      reserve,
+      new Uint8Array(24 * 1024),
+      null,
+      24 * 1024,
+    )).toBe(24 * 1024);
+    fs.close(reserve);
+    const filler = fs.open("/filler", O_WRONLY_CREAT, 0o600);
+    const chunk = new Uint8Array(64 * 1024).fill(0xa5);
+    while (fs.write(filler, chunk, null, chunk.byteLength) > 0) {
+      // Consume every remaining block after retaining a known six-block reserve.
+    }
+    fs.close(filler);
+    fs.unlink("/reserve");
+    const peer = MemoryFileSystem.fromExisting(fs.sharedBuffer);
+    const beforeA = peer.lstat("/atomic-space-a/tool");
+    const beforeB = peer.lstat("/atomic-space-b/tool");
+    const payloads = new Map([
+      [first.content.transports[0], first.payload],
+      [second.content.transports[0], second.payload],
+    ]);
+    fs.setLazyFetcher(async (url) => new Response(payloads.get(url)!));
+
+    await expect(
+      fs.preparePath("/atomic-space-a/tool"),
+    ).rejects.toThrow(/No space left/);
+    expect(peer.lstat("/atomic-space-a/tool")).toEqual(beforeA);
+    expect(peer.lstat("/atomic-space-b/tool")).toEqual(beforeB);
+    expect(fs.isPathDeferred("/atomic-space-a/tool")).toBe(true);
+    expect(fs.isPathDeferred("/atomic-space-b/tool")).toBe(true);
+
+    // SharedFS may retain benign allocator/SAB growth, but releasing ordinary
+    // filler capacity must make the exact unchanged cohort retryable.
+    fs.unlink("/filler");
+    await expect(
+      fs.preparePath("/atomic-space-b/tool"),
+    ).resolves.toBe(true);
+    expect(readText(fs, "/atomic-space-a/tool")).toBe(dataA);
+    expect(readText(fs, "/atomic-space-b/tool")).toBe(dataB);
+  });
+
+  it("bounds a representative 21-tree cohort to four concurrent preflights", async () => {
+    const fixtures = Array.from({ length: 21 }, (_, index) =>
+      tarTreeFixture("first-use", `atomic-bounded-${index}`)
+    );
+    const payloads = new Map(
+      fixtures.map((fixture) => [
+        fixture.content.transports[0],
+        fixture.payload,
+      ]),
+    );
+    const fs = MemoryFileSystem.create(
+      new SharedArrayBuffer(16 * 1024 * 1024),
+    );
+    await registerAtomicTrees(fs, "atomic:bounded", fixtures);
+    let active = 0;
+    let maximumActive = 0;
+    let fetches = 0;
+    fs.setLazyFetcher(async (url) => {
+      fetches += 1;
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      active -= 1;
+      return new Response(payloads.get(url)!);
+    });
+
+    await expect(
+      fs.preparePath("/atomic-bounded-0/tool"),
+    ).resolves.toBe(true);
+    expect(fetches).toBe(21);
+    expect(maximumActive).toBe(4);
+    expect(active).toBe(0);
+    expect(fixtures.every((fixture) =>
+      !fs.isPathDeferred(fixture.activation.roots[0]!)
+    )).toBe(true);
+  });
+
+  it("rejects boot-prefetch trees and partial direct writes in an atomic group", async () => {
+    const fixture = tarTreeFixture("first-use", "atomic-invalid");
+    const fs = createFs();
+    expect(() =>
+      fs.registerLazyTree(
+        fixture.content,
+        fixture.inventory,
+        "/",
+        {
+          ...fixture.activation,
+          mode: "boot-prefetch",
+          atomicGroup: {
+            id: "homebrew:invalid",
+            member: "invalid",
+          },
+        },
+      )
+    ).toThrow(/requires a valid first-use identity/);
+
+    const first = tarTreeFixture("first-use", "atomic-direct-a");
+    const second = tarTreeFixture("first-use", "atomic-direct-b");
+    const singleton = createFs();
+    const singletonHandle = singleton.registerLazyTreeWithMaterializationHandle(
+      { ...first.content, transports: [] },
+      first.inventory,
+      "/",
+      {
+        ...first.activation,
+        atomicGroup: {
+          id: "homebrew:direct-singleton",
+          member: "direct-a",
+        },
+      },
+    );
+    await expect(
+      singleton.materializeRegisteredDeferredTree(
+        singletonHandle,
+        first.payload,
+      ),
+    ).rejects.toThrow(/materialize the complete group/);
+
+    const direct = createFs();
+    const firstHandle = direct.registerLazyTreeWithMaterializationHandle(
+      { ...first.content, transports: [] },
+      first.inventory,
+      "/",
+      {
+        ...first.activation,
+        atomicGroup: {
+          id: "homebrew:direct",
+          member: "direct-a",
+        },
+      },
+    );
+    direct.registerLazyTreeWithMaterializationHandle(
+      { ...second.content, transports: [] },
+      second.inventory,
+      "/",
+      {
+        ...second.activation,
+        atomicGroup: {
+          id: "homebrew:direct",
+          member: "direct-b",
+        },
+      },
+    );
+    await expect(
+      direct.materializeRegisteredDeferredTree(firstHandle, first.payload),
+    ).rejects.toThrow(/materialize the complete group/);
+    expect(direct.isPathDeferred("/atomic-direct-a/tool")).toBe(true);
+    expect(direct.isPathDeferred("/atomic-direct-b/tool")).toBe(true);
   });
 
   it("binds direct materialization authority to one registered tree and filesystem", async () => {
@@ -1485,13 +2750,60 @@ function replaceLazyArchiveMetadata(
   return replaced;
 }
 
+function zipTreeFixture(
+  root: string,
+  files: readonly (readonly [name: string, data: string])[],
+) {
+  const zippable: Zippable = {};
+  const inventory: LazyTreeRegistrationEntry[] = [];
+  let expandedBytes = 0;
+  for (const [name, data] of files) {
+    const sourcePath = `${root}/${name}`;
+    const bytes = encoder.encode(data);
+    expandedBytes += bytes.byteLength;
+    zippable[sourcePath] = [bytes, {
+      level: 0,
+      os: 3,
+      attrs: (((0o100000 | 0o755) << 16) >>> 0),
+    }];
+    inventory.push({
+      vfsPath: `/${sourcePath}`,
+      sourcePath,
+      type: "file",
+      mode: 0o755,
+      size: bytes.byteLength,
+      inodeGroup: `${root}:${name}`,
+    });
+  }
+  const payload = zipSync(zippable, { level: 0 });
+  return {
+    payload,
+    inventory,
+    content: {
+      decoder: "zip-v1" as const,
+      mediaType: "application/zip" as const,
+      sha256: createHash("sha256").update(payload).digest("hex"),
+      bytes: payload.byteLength,
+      expandedBytes,
+      sourceEntryCount: files.length,
+      transports: [`https://example.invalid/${root}.zip`],
+    },
+    activation: {
+      mode: "first-use" as const,
+      capabilities: [`test:${root}`],
+      roots: [`/${root}`],
+    } satisfies LazyTreeActivation,
+  };
+}
+
 function tarTreeFixture(
   mode: LazyTreeActivation["mode"],
   root = "runtime",
+  data = "payload",
 ) {
   const specs: TarSpec[] = [
     { path: root, type: "directory", mode: 0o755 },
-    { path: `${root}/tool`, mode: 0o755, data: "payload" },
+    { path: `${root}/tool`, mode: 0o755, data },
     {
       path: `${root}/tool-hardlink`,
       type: "hardlink",
@@ -1514,7 +2826,7 @@ function tarTreeFixture(
       sourcePath: `${root}/tool`,
       type: "file",
       mode: 0o755,
-      size: 7,
+      size: encoder.encode(data).byteLength,
       inodeGroup: `${root}:tool`,
     },
     {
@@ -1522,7 +2834,7 @@ function tarTreeFixture(
       sourcePath: `${root}/tool-hardlink`,
       type: "hardlink",
       mode: 0o755,
-      size: 7,
+      size: encoder.encode(data).byteLength,
       target: `/${root}/tool`,
       inodeGroup: `${root}:tool`,
     },
@@ -1635,6 +2947,92 @@ function symlinkTreeFixture() {
 
 function createFs(): MemoryFileSystem {
   return MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+}
+
+function expectImportedAtomicInspectionBlocked(fs: MemoryFileSystem): void {
+  const failure = /not been cryptographically verified after import/;
+  expect(() => fs.exportLazyArchiveEntries()).toThrow(failure);
+  expect(() => fs.pendingDeferredTreeUsage()).toThrow(failure);
+  expect(() => fs.rebaseToNewFileSystem(8 * 1024 * 1024)).toThrow(failure);
+}
+
+async function importedAtomicPair(id: string, root: string): Promise<{
+  fs: MemoryFileSystem;
+  payloads: Map<string, Uint8Array>;
+  roots: { first: string; second: string };
+  paths: { first: string; second: string };
+}> {
+  const first = tarTreeFixture("first-use", `${root}-first`);
+  const second = tarTreeFixture("first-use", `${root}-second`);
+  const source = createFs();
+  await registerAtomicTrees(source, id, [first, second]);
+  return {
+    fs: MemoryFileSystem.fromImage(await source.saveImage()),
+    payloads: new Map([
+      [first.content.transports[0]!, first.payload],
+      [second.content.transports[0]!, second.payload],
+    ]),
+    roots: {
+      first: first.activation.roots[0]!,
+      second: second.activation.roots[0]!,
+    },
+    paths: {
+      first: `${first.activation.roots[0]!}/tool`,
+      second: `${second.activation.roots[0]!}/tool`,
+    },
+  };
+}
+
+function importedAtomicGroups(fs: MemoryFileSystem): LazyTreeGroup[] {
+  return (fs as unknown as { lazyArchiveGroups: LazyTreeGroup[] })
+    .lazyArchiveGroups;
+}
+
+function gatedSha256Digests() {
+  const digest = crypto.subtle.digest.bind(crypto.subtle);
+  const gate = deferredGate();
+  const spy = vi.spyOn(crypto.subtle, "digest").mockImplementation(
+    async (algorithm, input) => {
+      await gate.promise;
+      return digest(algorithm, input);
+    },
+  );
+  return {
+    spy,
+    release: gate.resolve,
+  };
+}
+
+function deferredGate(): {
+  promise: Promise<void>;
+  resolve(): void;
+} {
+  let resolve!: () => void;
+  const promise = new Promise<void>((fulfill) => {
+    resolve = fulfill;
+  });
+  return { promise, resolve };
+}
+
+async function registerAtomicTrees(
+  fs: MemoryFileSystem,
+  id: string,
+  fixtures: readonly ReturnType<typeof tarTreeFixture>[],
+): Promise<void> {
+  const members = fixtures.map((fixture) => fixture.activation.capabilities[0]!);
+  for (let index = 0; index < fixtures.length; index++) {
+    const fixture = fixtures[index];
+    fs.registerLazyTree(
+      fixture.content,
+      fixture.inventory,
+      "/",
+      {
+        ...fixture.activation,
+        atomicGroup: { id, member: members[index] },
+      },
+    );
+  }
+  await fs.sealLazyAtomicGroup(id, members);
 }
 
 function readText(fs: MemoryFileSystem, path: string): string {

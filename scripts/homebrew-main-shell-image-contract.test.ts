@@ -3,7 +3,10 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { resolve } from "node:path";
-import { assertMainShellImageContract } from "./homebrew-main-shell-image-contract";
+import {
+  assertMainShellGuestCatalogIdentity,
+  assertMainShellImageContract,
+} from "./homebrew-main-shell-image-contract";
 
 const lock = JSON.parse(
   readFileSync(resolve("homebrew/main-shell-migration-lock.json"), "utf8"),
@@ -206,6 +209,31 @@ test("accepts the exact reviewed root and Formula identities", () => {
   assert.doesNotThrow(() => assertMainShellImageContract(fixture()));
 });
 
+test("shares the authoritative guest catalog parser with narrow consumers", () => {
+  const guestManifest = fixture().guestManifest as Record<string, any>;
+  const expected = {
+    tapRepository: lock.tap_repository,
+    tapName: lock.tap_name,
+    tapCommit: lock.catalog.tap_commit,
+  };
+  assert.doesNotThrow(() =>
+    assertMainShellGuestCatalogIdentity(guestManifest, expected)
+  );
+
+  for (const [key, replacement, message] of [
+    ["tap_repository", "someone/else", "tap_repository"],
+    ["tap_name", "someone/else", "tap_name"],
+    ["checkout_commit", "0".repeat(40), "checkout_commit"],
+  ] as const) {
+    const changed = structuredClone(guestManifest);
+    changed.catalog[key] = replacement;
+    assert.throws(
+      () => assertMainShellGuestCatalogIdentity(changed, expected),
+      new RegExp(message),
+    );
+  }
+});
+
 for (const [name, mutate, expected] of [
   [
     "rejects a substituted requested root",
@@ -250,8 +278,12 @@ for (const [name, mutate, expected] of [
   [
     "rejects a stale locked root version",
     (value: any) => {
-      value.guestManifest.packages[0].version = "wrong";
-      value.imageMetadata.homebrew.packages[0].version = "wrong";
+      value.guestManifest.packages.find(
+        (entry: any) => entry.name === "bash",
+      ).version = "wrong";
+      value.imageMetadata.homebrew.packages.find(
+        (entry: any) => entry.name === "bash",
+      ).version = "wrong";
     },
     "locked version",
   ],
@@ -276,19 +308,37 @@ for (const [name, mutate, expected] of [
     "demoConfig sha256",
   ],
   [
-    "rejects runtime-state metadata that differs from the lock",
-    (value: any) => { value.guestManifest.runtime_state[0].mode = 0o777; },
-    "guest runtime_state\\[0\\] mode",
+    "rejects guest runtime state outside the empty base lock",
+    (value: any) => {
+      value.guestManifest.runtime_state.push({
+        path: "/tmp/unreviewed",
+        kind: "directory",
+      });
+    },
+    "runtime-state copies do not have the reviewed declaration count",
   ],
   [
-    "rejects decoded runtime-state permissions that differ from the lock",
-    (value: any) => { value.runtimeState[0].mode = 0o777; },
-    "decoded mode",
+    "rejects image runtime-state metadata outside the empty base lock",
+    (value: any) => {
+      value.imageMetadata.homebrew.runtimeState.push({
+        path: "/tmp/unreviewed",
+        kind: "directory",
+      });
+    },
+    "runtime-state copies do not have the reviewed declaration count",
   ],
   [
-    "rejects decoded runtime-state contents that differ from the lock",
-    (value: any) => { value.runtimeState[0].contents[0] ^= 1; },
-    "decoded contents differ",
+    "rejects decoded runtime state outside the empty base lock",
+    (value: any) => {
+      value.runtimeState.push({
+        path: "/tmp/unreviewed",
+        kind: "directory",
+        mode: 0o755,
+        uid: 0,
+        gid: 0,
+      });
+    },
+    "runtime-state copies do not have the reviewed declaration count",
   ],
 ] as const) {
   test(name, () => {

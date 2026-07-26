@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   loadShellBaseFileSystemFromImage,
   populateShellEnvironment,
@@ -20,6 +20,10 @@ import type { ZipEntry } from "../src/vfs/zip";
 import {
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
 } from "../../web-libs/kandelo-session/src/vfs-capacity";
+import {
+  addSealedLazyAtomicTestTree,
+  forgeLazyAtomicSeal,
+} from "./lazy-atomic-seal-fixture";
 
 const MiB = 1024 * 1024;
 const O_RDONLY = 0x0000;
@@ -62,6 +66,7 @@ function lazyArchiveEntry(): ZipEntry {
 async function sourceImage(
   byteLength: number,
   maxByteLength: number,
+  sealedAtomicTree = false,
 ): Promise<Uint8Array> {
   const buffer = new SharedArrayBuffer(byteLength, { maxByteLength });
   const fs = MemoryFileSystem.create(buffer, maxByteLength);
@@ -77,6 +82,13 @@ async function sourceImage(
     [lazyArchiveEntry()],
     "/",
   );
+  if (sealedAtomicTree) {
+    await addSealedLazyAtomicTestTree(fs, {
+      groupId: "test:shell-base",
+      member: "shell-runtime",
+      root: "/sealed-shell-base",
+    });
+  }
   return fs.saveImage({
     metadata: { version: 1, createdBy: "shell-vfs-build.test" },
   });
@@ -94,7 +106,11 @@ function expectContentsPreserved(fs: MemoryFileSystem): void {
     },
   ]);
   expect(fs.stat("/usr/share/demo/archive.txt").size).toBe(4096);
-  expect(fs.exportLazyArchiveEntries()).toMatchObject([
+  expect(
+    fs.exportLazyArchiveEntries().filter(
+      (entry) => entry.url === "https://example.invalid/demo.zip",
+    ),
+  ).toMatchObject([
     {
       url: "https://example.invalid/demo.zip",
       mountPrefix: "/",
@@ -163,14 +179,14 @@ describe("shell VFS base composition", () => {
   });
 
   it("rebases a serialized source larger than the downstream capacity", async () => {
-    const image = await sourceImage(16 * MiB, 32 * MiB);
+    const image = await sourceImage(16 * MiB, 32 * MiB, true);
     const compressed = new Uint8Array(zstdCompressSync(image));
 
     expect(() =>
       MemoryFileSystem.fromImage(compressed, { maxByteLength: 8 * MiB }),
     ).toThrow(RangeError);
 
-    const rebased = loadShellBaseFileSystemFromImage(compressed, 8 * MiB);
+    const rebased = await loadShellBaseFileSystemFromImage(compressed, 8 * MiB);
 
     expect(rebased.sharedBuffer.byteLength).toBe(8 * MiB);
     expect(rebased.sharedBuffer.maxByteLength).toBe(8 * MiB);
@@ -180,9 +196,9 @@ describe("shell VFS base composition", () => {
   });
 
   it("rebases upward to the downstream image's exact capacity", async () => {
-    const image = await sourceImage(4 * MiB, 8 * MiB);
+    const image = await sourceImage(4 * MiB, 8 * MiB, true);
 
-    const rebased = loadShellBaseFileSystemFromImage(image, 32 * MiB);
+    const rebased = await loadShellBaseFileSystemFromImage(image, 32 * MiB);
 
     expect(rebased.sharedBuffer.maxByteLength).toBe(32 * MiB);
     const stats = rebased.statfs("/");
@@ -191,14 +207,37 @@ describe("shell VFS base composition", () => {
   });
 
   it("preserves the source filesystem when capacities already match", async () => {
-    const image = await sourceImage(4 * MiB, 8 * MiB);
+    const image = await sourceImage(4 * MiB, 8 * MiB, true);
 
-    const restored = loadShellBaseFileSystemFromImage(image, 8 * MiB);
+    const restored = await loadShellBaseFileSystemFromImage(image, 8 * MiB);
 
     expect(restored.sharedBuffer.byteLength).toBe(4 * MiB);
     expect(restored.sharedBuffer.maxByteLength).toBe(8 * MiB);
     expectContentsPreserved(restored);
   });
+
+  it.each([
+    ["member", /activation member .* changed after sealing/],
+    ["cohort", /activation group .* differs from its seal/],
+  ] as const)(
+    "rejects a forged imported %s seal before capacity rebasing",
+    async (forgery, expected) => {
+      const valid = await sourceImage(4 * MiB, 8 * MiB, true);
+      const forged = forgeLazyAtomicSeal(valid, forgery);
+      const rebase = vi.spyOn(
+        MemoryFileSystem.prototype,
+        "rebaseToNewFileSystem",
+      );
+      try {
+        await expect(
+          loadShellBaseFileSystemFromImage(forged, 32 * MiB),
+        ).rejects.toThrow(expected);
+        expect(rebase).not.toHaveBeenCalled();
+      } finally {
+        rebase.mockRestore();
+      }
+    },
+  );
 
   it("rejects an image that drifts from the standard product capacity", async () => {
     const largerProfile = 1024 * MiB;

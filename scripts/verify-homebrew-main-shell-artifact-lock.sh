@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOCK=""
 EXPECTED_SOURCE_DATE_EPOCH=""
 ARTIFACT=""
@@ -12,8 +13,9 @@ Usage: scripts/verify-homebrew-main-shell-artifact-lock.sh \
   --expected-source-date-epoch <seconds> \
   [--artifact <shell.vfs.zst>]
 
-Validate the exact lazy-shell artifact contract. When --artifact is present,
-also require its compressed SHA-256 and byte count to match the lock.
+Validate the exact lazy-shell artifact contract. A schema-2 pending lock binds
+the reviewed composition inputs but refuses every artifact until publication
+seals its compressed SHA-256 and byte count.
 EOF
 }
 
@@ -61,18 +63,58 @@ done
 
 jq -e --argjson source_date_epoch "$EXPECTED_SOURCE_DATE_EPOCH" '
   type == "object" and
-  (keys | sort) == ["image", "kind", "schema", "source_date_epoch"] and
-  .schema == 1 and
+  (keys | sort) == ["image", "inputs", "kind", "schema", "source_date_epoch", "state"] and
+  .schema == 2 and
   .kind == "kandelo-homebrew-lazy-shell-artifact-lock" and
   .source_date_epoch == $source_date_epoch and
-  (.image | type == "object") and
-  (.image | keys | sort) == ["bytes", "sha256"] and
-  (.image.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
-  (.image.bytes | type == "number" and . > 0 and floor == .)
+  (.inputs | type == "object") and
+  (.inputs | keys | sort) == [
+    "brewfile_sha256",
+    "demo_config_sha256",
+    "materialization_policy_sha256",
+    "migration_lock_sha256",
+    "runtime_support_sha256"
+  ] and
+  ([.inputs[] | type == "string" and test("^[0-9a-f]{64}$")] | all) and
+  (
+    (.state == "pending" and .image == null) or
+    (
+      .state == "sealed" and
+      (.image | type == "object") and
+      (.image | keys | sort) == ["bytes", "sha256"] and
+      (.image.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+      (.image.bytes | type == "number" and . > 0 and floor == .)
+    )
+  )
 ' "$LOCK" >/dev/null || {
   echo "verify-homebrew-main-shell-artifact-lock: lock is invalid or uses a different timestamp epoch" >&2
   exit 2
 }
+
+# WHY: a pending output digest is safe only when it retires the old image while
+# still binding every reviewed input that will determine the replacement.
+for binding in \
+  "brewfile_sha256:homebrew/main-shell.Brewfile" \
+  "demo_config_sha256:homebrew/main-shell-demo.json" \
+  "materialization_policy_sha256:homebrew/main-shell-materialization-policy.json" \
+  "migration_lock_sha256:homebrew/main-shell-migration-lock.json" \
+  "runtime_support_sha256:homebrew/main-shell-homebrew-runtime-support.json"
+do
+  key="${binding%%:*}"
+  relative_path="${binding#*:}"
+  input="$REPO_ROOT/$relative_path"
+  if [ ! -f "$input" ] || [ -L "$input" ]; then
+    echo "verify-homebrew-main-shell-artifact-lock: bound input is not a regular file: $relative_path" >&2
+    exit 2
+  fi
+  expected="$(jq -er --arg key "$key" '.inputs[$key]' "$LOCK")"
+  actual="$(sha256sum "$input")"
+  actual="${actual%% *}"
+  if [ "$actual" != "$expected" ]; then
+    echo "verify-homebrew-main-shell-artifact-lock: bound input digest changed: $relative_path" >&2
+    exit 1
+  fi
+done
 
 if [ -z "$ARTIFACT" ]; then
   exit 0
@@ -80,6 +122,11 @@ fi
 if [ ! -f "$ARTIFACT" ] || [ -L "$ARTIFACT" ]; then
   echo "verify-homebrew-main-shell-artifact-lock: --artifact must be a regular non-symlink file" >&2
   exit 2
+fi
+
+if [ "$(jq -er '.state' "$LOCK")" != "sealed" ]; then
+  echo "verify-homebrew-main-shell-artifact-lock: reviewed artifact identity is still pending" >&2
+  exit 1
 fi
 
 EXPECTED_SHA="$(jq -er '.image.sha256' "$LOCK")"

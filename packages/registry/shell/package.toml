@@ -2,38 +2,18 @@ kind = "program"
 name = "shell"
 version = "0.1.0"
 kernel_abi = 7
-# Temporary ABI-activation bridge: compose the complete current browser shell
-# from the resolver-built rootfs, eager demo binaries, extended lazy utilities,
-# and package-owned Vim/NetHack archive trees. The final bottle shell replaces
-# this dependency graph only after every bottle can be rebuilt from the exact
-# default-branch main checkout.
-depends_on = [
-  "rootfs@0.1.0",
-  "bash@5.2.37",
-  "fbdoom@0.1.0",
-  "modeset@0.1.0",
-  "less@668",
-  "tar@1.35",
-  "curl@8.11.1",
-  "netcat@0.7.1",
-  "wget@1.25.0",
-  "git@2.47.1",
-  "gzip@1.13",
-  "bzip2@1.0.8",
-  "xz@5.6.2",
-  "zstd@1.5.6",
-  "zip@3.0",
-  "unzip@6.0",
-  "lsof@0.1.0",
-  "nano@8.0",
-  "vim-browser-bundle@9.1.0900",
-  "nethack-browser-bundle@3.6.7",
-]
+# The canonical base shell is the reviewed six-Formula closure: Bash and its
+# dependencies are embedded, while Dash, Bzip2, and first-party M4 stay lazy.
+# It deliberately has no legacy rootfs/program dependencies. Homebrew source
+# remains a separate lazy package, and its larger runtime-support Formula layer
+# is declared separately so merely booting this base cannot download it.
+depends_on = ["homebrew-bootstrap@6.0.3-4-g4ead861"]
 
-# Composite VFS image for the browser shell demo. The rootfs dependency owns
-# the source-built program closure and lazy file identities. This package
-# eagerly installs Bash because every shell boot needs it, then adds
-# image-owned shell/demo metadata and current demo executables.
+# Composite VFS image for the browser shell demo: a platform-only base plus the
+# exact reviewed base bottle closure and shell configuration. A demo variant
+# may materialize the independently declared Homebrew runtime-support layer,
+# but this base image never does. The image is wrapped (not double-compressed)
+# in the package-system archive at archive-stage time.
 [source]
 url = "https://github.com/Automattic/kandelo"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
@@ -50,7 +30,49 @@ name = "shell"
 wasm = "shell.vfs.zst"
 
 [[host_tools]]
+name = "git"
+version_constraint = ">=2.30"
+probe = { args = ["--version"], version_regex = "git version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "jq"
+version_constraint = ">=1.6"
+probe = { args = ["--version"], version_regex = "jq-(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
 name = "node"
 version_constraint = ">=20.0"
 probe = { args = ["--version"], version_regex = "v(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "npm"
+version_constraint = ">=10.0"
+probe = { args = ["--version"], version_regex = "(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "ruby"
+version_constraint = ">=3.0"
+probe = { args = ["--version"], version_regex = "ruby (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "sha256sum"
+version_constraint = ">=8.0"
+probe = { args = ["--version"], version_regex = "coreutils\\) (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "tar"
+version_constraint = ">=1.30"
+probe = { args = ["--version"], version_regex = "(?:bsdtar|tar).*?(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "wc"
+version_constraint = ">=8.0"
+probe = { args = ["--version"], version_regex = "coreutils\\) (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }

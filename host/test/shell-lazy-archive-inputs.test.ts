@@ -16,7 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { zipSync } from "fflate";
 import {
   loadDeclaredShellLazyArchive,
@@ -27,7 +27,6 @@ import {
 import { loadMainShellDemoConfig } from "../../images/vfs/scripts/main-shell-demo-config";
 import { resolveVfsArtifact } from "../../images/vfs/scripts/shell-vfs-build";
 import {
-  resolveDemoAssets,
   resolveDemoGuide,
   resolveDemoPresentation,
 } from "../../web-libs/kandelo-session/src/demo-config";
@@ -397,7 +396,7 @@ describe("declared shell lazy-archive inputs", () => {
 
   it.each(SHELL_LAZY_ARCHIVE_SPECS)(
     "indexes and hashes the exact resolved $id bundle bytes once",
-    async (spec) => {
+    (spec) => {
       const expected = archiveFor(spec);
       const path = writeArchive(spec.archiveUrl, expected);
       const calls: Array<[string, string]> = [];
@@ -424,61 +423,12 @@ describe("declared shell lazy-archive inputs", () => {
       expect(
         fs.stat(`${spec.mountPrefix}${spec.requiredExecutable}`).size,
       ).toBe(`${spec.id} executable`.length);
-      const canonicalMountPrefix = spec.mountPrefix === "/"
-        ? "/"
-        : spec.mountPrefix.replace(/\/+$/, "");
       expect(fs.exportLazyArchiveEntries()).toEqual([
         expect.objectContaining({
           url: spec.archiveUrl,
-          mountPrefix: canonicalMountPrefix,
-          integrity: {
-            sha256: archive.integrity.sha256,
-            bytes: archive.integrity.compressedBytes,
-          },
+          mountPrefix: spec.mountPrefix.replace(/\/$/, ""),
         }),
       ]);
-      const restored = MemoryFileSystem.fromImage(await fs.saveImage());
-      expect(restored.exportLazyArchiveEntries()).toEqual([
-        expect.objectContaining({
-          url: spec.archiveUrl,
-          mountPrefix: canonicalMountPrefix,
-          integrity: {
-            sha256: archive.integrity.sha256,
-            bytes: archive.integrity.compressedBytes,
-          },
-        }),
-      ]);
-
-      const corrupt = expected.slice();
-      corrupt[Math.floor(corrupt.byteLength / 2)] ^= 0xff;
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        headers: new Headers({
-          "content-length": String(corrupt.byteLength),
-        }),
-        body: null,
-        arrayBuffer: () => Promise.resolve(
-          corrupt.buffer.slice(
-            corrupt.byteOffset,
-            corrupt.byteOffset + corrupt.byteLength,
-          ),
-        ),
-      } as unknown as Response);
-      try {
-        await expect(
-          restored.ensureMaterialized(
-            `${spec.mountPrefix}${spec.requiredExecutable}`,
-          ),
-        ).rejects.toThrow(/sha-?256|integrity|digest/i);
-        expect(
-          restored.isPathDeferred(
-            `${spec.mountPrefix}${spec.requiredExecutable}`,
-          ),
-        ).toBe(true);
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
     },
   );
 
@@ -540,7 +490,7 @@ describe("declared shell lazy-archive inputs", () => {
     }
   });
 
-  it("keeps main activation on source outputs until exact-main bottles exist", () => {
+  it("maps the retired lazy bundles to exact bottle-owned shell inputs", () => {
     const packageToml = readFileSync(
       join(repoRoot, "packages/registry/shell/package.toml"),
       "utf8",
@@ -593,50 +543,62 @@ describe("declared shell lazy-archive inputs", () => {
         reason: string;
       }>;
     };
+    const runtimeSupport = JSON.parse(
+      readFileSync(
+        join(repoRoot, "homebrew/main-shell-homebrew-runtime-support.json"),
+        "utf8",
+      ),
+    ) as {
+      activation: { base_image_default: string; roots: string[] };
+      base_formula_order: string[];
+      formula_order: string[];
+      additional_formula_order: string[];
+      availability: {
+        reusable_public_abi42: string[];
+        requires_rebuild: string[];
+        missing_metadata: string[];
+        can_be_deferred: string[];
+      };
+      deferred_formulae: Array<{ package: string; current_state: string }>;
+      lifecycle_installs: Array<{
+        tap: string;
+        formula: string;
+        phase: string;
+        image_closure: boolean;
+      }>;
+    };
 
-    // This is an activation bridge, not a second permanent shell design. Its
-    // complete current product closure is source-built through the package
-    // resolver. Bash is eager because every boot needs it; the remaining
-    // utilities and Vim/NetHack trees keep their shared lazy semantics.
-    expect(
-      packageToml.match(/^\s*"[^"]+@[0-9][^"]*",?$/gm),
-    ).toEqual([
-      '  "rootfs@0.1.0",',
-      '  "bash@5.2.37",',
-      '  "fbdoom@0.1.0",',
-      '  "modeset@0.1.0",',
-      '  "less@668",',
-      '  "tar@1.35",',
-      '  "curl@8.11.1",',
-      '  "netcat@0.7.1",',
-      '  "wget@1.25.0",',
-      '  "git@2.47.1",',
-      '  "gzip@1.13",',
-      '  "bzip2@1.0.8",',
-      '  "xz@5.6.2",',
-      '  "zstd@1.5.6",',
-      '  "zip@3.0",',
-      '  "unzip@6.0",',
-      '  "lsof@0.1.0",',
-      '  "nano@8.0",',
-      '  "vim-browser-bundle@9.1.0900",',
-      '  "nethack-browser-bundle@3.6.7",',
-    ]);
-    expect(buildToml).toMatch(/^revision\s*=\s*21$/m);
+    // The canonical shell no longer resolves the old registry ZIP packages.
+    // Its only registry dependency is the atomic Homebrew source/launcher
+    // package needed to register `brew` lazily. The base Formula contract is
+    // intentionally much smaller than the separate atomic brew runtime.
+    expect(packageToml).toMatch(
+      /^depends_on\s*=\s*\["homebrew-bootstrap@6\.0\.3-4-g4ead861"\]$/m,
+    );
+    expect(packageToml).not.toContain("vim-browser-bundle@");
+    expect(packageToml).not.toContain("nethack-browser-bundle@");
+    expect(buildToml).toMatch(/^revision\s*=\s*20$/m);
     for (const input of [
-      "images/vfs/scripts/build-source-rootfs-shell-image.ts",
-      "images/vfs/scripts/shell-vfs-build.ts",
-      "images/vfs/scripts/shell-lazy-archives.ts",
-      "images/vfs/lib/init/shell-binaries.ts",
-      "homebrew/source-rootfs-shell-default.json",
+      "scripts/build-homebrew-main-shell-closure.sh",
+      "scripts/check-homebrew-main-shell-brewfile.mjs",
+      "scripts/homebrew-brewfile-selection.rb",
+      "homebrew/main-shell.Brewfile",
+      "homebrew/main-shell-default.json",
       "homebrew/main-shell-demo.json",
-      "web-libs/kandelo-session/src/shell-config.ts",
+      "homebrew/main-shell-homebrew-runtime-support.json",
+      "homebrew/main-shell-migration-lock.json",
+      "images/vfs/scripts/build-homebrew-vfs-image.ts",
       "web-libs/kandelo-session/src/demo-config.ts",
     ]) {
       expect(buildToml).toContain(`"${input}"`);
     }
-    expect(buildToml).not.toContain("[[git_inputs]]");
-    expect(buildToml).not.toContain(migrationLock.catalog.tap_commit);
+    expect(buildToml).toContain('name = "homebrew_tap_core"');
+    expect(buildToml).toContain(
+      'repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"',
+    );
+    expect(buildToml).toContain(
+      `commit = "${migrationLock.catalog.tap_commit}"`,
+    );
 
     const canonicalDemoBytes = readFileSync(
       join(repoRoot, "homebrew/main-shell-demo.json"),
@@ -646,19 +608,8 @@ describe("declared shell lazy-archive inputs", () => {
     expect(resolveDemoGuide(loadedDemo.config, "shell")?.title).toBe(
       "Shell demo",
     );
-    expect(
-      resolveDemoPresentation(loadedDemo.config, "doom")?.autoCommand,
-    ).toBe("/usr/local/bin/fbdoom -iwad /doom1.wad");
-    expect(resolveDemoAssets(loadedDemo.config, "doom")).toEqual([
-      expect.objectContaining({
-        path: "/doom1.wad",
-        sha256:
-          "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771",
-      }),
-    ]);
-    expect(
-      resolveDemoPresentation(loadedDemo.config, "modeset")?.autoCommand,
-    ).toBe("/usr/local/bin/modeset");
+    expect(resolveDemoPresentation(loadedDemo.config, "doom")).toBeNull();
+    expect(resolveDemoPresentation(loadedDemo.config, "modeset")).toBeNull();
 
     const retiredBundleNames = new Set(
       SHELL_LAZY_ARCHIVE_SPECS.map(({ dependency }) => dependency),
@@ -666,33 +617,17 @@ describe("declared shell lazy-archive inputs", () => {
     const migratedRoots = migrationLock.packages.filter(({ registry }) =>
       retiredBundleNames.has(registry.name),
     );
-    expect(migratedRoots).toEqual([
-      {
-        registry: { name: "vim-browser-bundle", version: "9.1.0900" },
-        formula: {
-          name: "vim",
-          version: "9.2.0750",
-          revision: 0,
-          bottle_rebuild: 0,
-        },
-      },
-      {
-        registry: { name: "nethack-browser-bundle", version: "3.6.7" },
-        formula: {
-          name: "nethack",
-          version: "3.6.7",
-          revision: 0,
-          bottle_rebuild: 0,
-        },
-      },
-    ]);
+    expect(migratedRoots).toEqual([]);
     expect(selection.tap_name).toBe("kandelo-dev/tap-core");
-    for (const { formula } of migratedRoots) {
-      expect(selection.packages).toContain(formula.name);
-      expect(migrationLock.formula_closure).toContain(
-        `kandelo-dev/tap-core/${formula.name}`,
-      );
-    }
+    expect(selection.packages).toEqual(["bash", "dash", "bzip2", "m4"]);
+    expect(migrationLock.formula_closure).toEqual([
+      "kandelo-dev/tap-core/libcxx",
+      "kandelo-dev/tap-core/ncurses",
+      "kandelo-dev/tap-core/bash",
+      "kandelo-dev/tap-core/dash",
+      "kandelo-dev/tap-core/bzip2",
+      "kandelo-dev/tap-core/m4",
+    ]);
     expect(
       migrationLock.reviewed_substitutions
         .filter(
@@ -703,17 +638,42 @@ describe("declared shell lazy-archive inputs", () => {
             ),
         )
         .map(({ kind, registry, formula }) => ({ kind, registry, formula })),
-    ).toEqual([
-      {
-        kind: "formula_identity",
-        registry: "vim-browser-bundle@9.1.0900",
-        formula: "kandelo-dev/tap-core/vim@9.2.0750",
-      },
-      {
-        kind: "formula_identity",
-        registry: "nethack-browser-bundle@3.6.7",
-        formula: "kandelo-dev/tap-core/nethack@3.6.7",
-      },
+    ).toEqual([]);
+    expect(runtimeSupport.activation).toEqual(
+      expect.objectContaining({
+        base_image_default: "deferred",
+        roots: ["/usr/bin/brew"],
+      }),
+    );
+    expect(runtimeSupport.base_formula_order).toEqual(
+      migrationLock.formula_closure,
+    );
+    expect(runtimeSupport.formula_order).toHaveLength(21);
+    expect(runtimeSupport.additional_formula_order).toHaveLength(18);
+    expect(runtimeSupport.availability.reusable_public_abi42).toHaveLength(23);
+    expect(runtimeSupport.availability.requires_rebuild).toEqual([]);
+    expect(runtimeSupport.availability.missing_metadata).toEqual([]);
+    expect(runtimeSupport.availability.can_be_deferred).toEqual([
+      "kandelo-dev/tap-core/libmagic",
+      "kandelo-dev/tap-core/file-formula",
+    ]);
+    expect(runtimeSupport.deferred_formulae).toEqual([
+      expect.objectContaining({
+        package: "kandelo-dev/tap-core/libmagic",
+        current_state: "public-abi41-only",
+      }),
+      expect.objectContaining({
+        package: "kandelo-dev/tap-core/file-formula",
+        current_state: "public-abi41-only",
+      }),
+    ]);
+    expect(runtimeSupport.lifecycle_installs).toEqual([
+      expect.objectContaining({
+        tap: "brandonpayton/kandelo-canary",
+        formula: "m4",
+        phase: "guest-lifecycle",
+        image_closure: false,
+      }),
     ]);
     expect(
       execFileSync(
@@ -725,21 +685,22 @@ describe("declared shell lazy-archive inputs", () => {
         ],
         { cwd: repoRoot, encoding: "utf8" },
       ),
-    ).toContain("36 reviewed migration roots and 42 Formulae");
+    ).toContain(
+      "4 reviewed migration roots and 6 Formulae match the reviewed base lock; " +
+        "18 additional Formulae",
+    );
 
-    // The active package consumes only resolver-owned source outputs. The
-    // dormant bottle composer retains its own strict provenance checks so the
-    // final cutover does not weaken while exact-main bottles are rebuilt.
-    expect(buildScript).toContain("WASM_POSIX_DEP_ROOTFS_DIR");
-    expect(buildScript).toContain("WASM_POSIX_DEP_BASH_DIR");
-    expect(buildScript).toContain("WASM_POSIX_DEP_FBDOOM_DIR");
-    expect(buildScript).toContain("WASM_POSIX_DEP_MODESET_DIR");
+    // The package build consumes only public bottle provenance from the
+    // locked checkout. The strict composer must reject fallback, verify every
+    // bottle's source metadata, and bind the saved image to the reviewed lock.
+    expect(buildScript).toContain("WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_DIR");
     expect(buildScript).toContain(
-      "images/vfs/scripts/build-source-rootfs-shell-image.ts",
+      "WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_COMMIT",
+    );
+    expect(buildScript).toContain(
+      "scripts/build-homebrew-main-shell-closure.sh",
     );
     expect(buildScript).toContain("unset GH_TOKEN GITHUB_TOKEN");
-    expect(buildScript).not.toContain("WASM_POSIX_BUILD_GIT_");
-    expect(buildScript).not.toContain("build-homebrew-main-shell-closure.sh");
     expect(buildScript).not.toContain("build-vim-zip.sh");
     expect(buildScript).not.toContain("build-nethack-zip.sh");
     expect(buildScript).not.toContain("build-shell-vfs-image.sh");

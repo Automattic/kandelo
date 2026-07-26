@@ -63,6 +63,7 @@ const TEST_PROGRAMS = [
   "spawn-smoke.c",
   "spawn-coverage.c",
   "spawn-pause.c",
+  "block-forever.c",
   "mount_probe_test.c",
   "getpwent_smoke.c",
   "initial-credentials-test.c",

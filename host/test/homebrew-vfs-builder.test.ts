@@ -71,6 +71,10 @@ import {
   VFS_DEFERRED_TREE_LIMITS,
 } from "../src/vfs/deferred-tree-limits";
 import { ensureDirRecursive, writeVfsFile } from "../src/vfs/image-helpers";
+import {
+  addSealedLazyAtomicTestTree,
+  forgeLazyAtomicSeal,
+} from "./lazy-atomic-seal-fixture";
 
 const PREFIX = "/home/linuxbrew/.linuxbrew";
 const CELLAR = `${PREFIX}/Cellar`;
@@ -1271,6 +1275,84 @@ function makeLazyLayerPlanFederated(plan: HomebrewVfsPlan): void {
 }
 
 describe("Homebrew runtime layer consumer", () => {
+  it("authenticates sealed base trees before registering runtime layers", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const base = MemoryFileSystem.fromImage(fixture.baseImageBytes);
+    await addSealedLazyAtomicTestTree(base, {
+      groupId: "test:runtime-base",
+      member: "base-runtime",
+      root: "/sealed-runtime-base",
+    });
+    const baseUsage = base.pendingDeferredTreeUsage();
+    const sealedBaseImage = await base.saveImage();
+    const descriptor = withBaseImage(fixture.descriptor, sealedBaseImage);
+    const runtime = runtimeLayerReference("runtime", descriptor);
+    const descriptorFetch = vi.fn(async () => new Response(runtime.bytes));
+
+    const composed = await composeHomebrewRuntimeLayers({
+      baseImageBytes: sealedBaseImage,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [runtime.reference],
+      fetch: descriptorFetch,
+    });
+
+    expect(descriptorFetch).toHaveBeenCalledOnce();
+    expect(composed.fs.exportLazyArchiveEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "kandelo-deferred-tree-v3",
+          mountPrefix: "/sealed-runtime-base",
+          materialized: false,
+        }),
+      ]),
+    );
+    expect(composed.fs.pendingDeferredTreeUsage().groups).toBe(
+      baseUsage.groups + descriptor.deferred_trees.length,
+    );
+  });
+
+  it.each([
+    ["member", /activation member .* changed after sealing/],
+    ["cohort", /activation group .* differs from its seal/],
+  ] as const)(
+    "rejects a forged imported %s seal before fetch, registration, or publication",
+    async (forgery, expected) => {
+      const fixture = await runtimeLayerConsumerFixture();
+      const base = MemoryFileSystem.fromImage(fixture.baseImageBytes);
+      await addSealedLazyAtomicTestTree(base, {
+        groupId: "test:forged-runtime-base",
+        member: "base-runtime",
+        root: "/forged-runtime-base",
+      });
+      const validImage = await base.saveImage();
+      const forgedImage = forgeLazyAtomicSeal(validImage, forgery);
+      const descriptor = withBaseImage(fixture.descriptor, forgedImage);
+      const runtime = runtimeLayerReference("runtime", descriptor);
+      const descriptorFetch = vi.fn(async () => new Response(runtime.bytes));
+      const archiveFetch = vi.fn(async () => new Response(fixture.archive));
+      const register = vi.spyOn(MemoryFileSystem.prototype, "registerLazyTree");
+      const discarded = vi.fn();
+      try {
+        await expect(composeHomebrewRuntimeLayers({
+          baseImageBytes: forgedImage,
+          arch: "wasm32",
+          kernelAbi: ABI_VERSION,
+          layers: [runtime.reference],
+          fetch: descriptorFetch,
+          archiveFetch,
+          onStagedFileSystemDiscarded: discarded,
+        })).rejects.toThrow(expected);
+        expect(descriptorFetch).not.toHaveBeenCalled();
+        expect(archiveFetch).not.toHaveBeenCalled();
+        expect(register).not.toHaveBeenCalled();
+        expect(discarded).toHaveBeenCalledOnce();
+      } finally {
+        register.mockRestore();
+      }
+    },
+  );
+
   it("rejects a semantic mutation that retains the old closed bundle identity", async () => {
     const fixture = await runtimeLayerConsumerFixture();
     fixture.descriptor.base_vfs.package_source.package.revision += 1;

@@ -330,7 +330,7 @@ function buildServices(): DinitService[] {
 
 async function main() {
   console.log("Loading shell base image...");
-  const fs = loadShellBaseFileSystem(WORDPRESS_IMAGE_MAX_BYTES);
+  const fs = await loadShellBaseFileSystem(WORDPRESS_IMAGE_MAX_BYTES);
 
   console.log("Populating WordPress service configs...");
   populateNginxConfig(fs);

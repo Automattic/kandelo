@@ -57,6 +57,12 @@ Service Worker ──MessagePort──> Kernel Worker       │
   `writeFileToVfs`, and `unlinkFileFromVfs`). The owning worker performs those
   mutations through the mounted VFS; the main thread never receives the live
   VFS `SharedArrayBuffer`.
+  A quiescent machine can return durable root-image bytes through
+  `BrowserKernel.exportRootfsImage()`. The worker rejects export while a guest
+  process or teardown is live, serializes it against the same staging and lazy
+  materialization RPCs, and transfers only the `/` image backend. Scratch,
+  device, and shared-memory mounts are boot-local and are recreated when those
+  bytes start another machine.
 - **Legacy shared VFS** (`memfs:` constructor option + `kernel.spawn()`): main thread holds a `MemoryFileSystem` and shares the SAB with the kernel worker. Used by demos that fetch transient binaries at runtime (test runners, REPLs that load arbitrary user code, benchmark suites). The main thread transfers each program's bytes, but the Rust `ProcessTable` allocates the PID and the worker returns it. Top-level creation, guest fork/spawn, and thread clone all draw from that one authoritative task-ID sequence; no browser or host-side allocator exists.
 - **Exec reads from filesystem**: Like a real OS, `exec()` reads binaries from the kernel-side `MemoryFileSystem`. Programs are baked into the VFS image at build time (or written by the page in the legacy path before spawning). Symlinks are used for multicall binaries (e.g., coreutils).
 - **dinit for service supervision**: Multi-process demos (nginx, redis, mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and per-service files under `/etc/dinit.d/` into the VFS image via `addDinitInit()` (`images/vfs/scripts/dinit-image-helpers.ts`). dinit is the first user process, not PID 1. It reaps its directly supervised children and handles `depends-on` ordering and bootstrap-then-daemon chains. Synthetic PID 1 has no wait loop, so Kandelo does not yet reap children reparented to it. Page code waits for service-ready via `onListenTcp` (port-bind) callbacks, then starts driving the demo over kernel-loopback TCP or the HTTP bridge.
@@ -479,7 +485,7 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Python (legacy opt-in) | `python-vfs.vfs.zst` | `bash packages/registry/python-vfs/build-python-vfs.sh` | ABI-bound CPython interpreter, complete stdlib, license, aliases, and demo metadata |
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
-| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the exact reviewed 42-Formula public Homebrew bottle closure, compatibility links, profile, and image-owned Homebrew Bash |
+| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the reviewed six-Formula shell: embedded `libcxx`/Ncurses/Bash and lazy Dash/Bzip2/first-party M4. `/usr/bin/brew` names a separate lazy source and atomic runtime-support layer. |
 | Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | npm 10.9.2 dist + writable `/work` |
 | WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
@@ -562,6 +568,36 @@ including across VFS image save/restore. A metadata-only tree remains deferred
 through serialization and is still verified at first-use or boot-prefetch even
 though it has no regular stub to replace. Descriptors with no package-layer
 mounts retain the ordinary shell behavior and fetch no runtime-layer bytes.
+
+Dependent first-use trees may be sealed as one atomic cohort. The producer
+names the exact expected members; VFS metadata binds every member's
+transport-independent descriptor digest plus the cohort count and digest under
+the closed `kandelo-deferred-tree-v3` kind. Restore rejects an omitted tree or
+regular alias. The host captures each sealed member in a private immutable
+activation snapshot; mutable public group objects can make an operation fail
+but cannot replace the integrity, archive member, size, source, inventory, or
+namespace mapping consumed after an await. Imported seals must pass browser or
+Node SHA-256 verification during save, activation, explicit resealing, or
+`verifyImportedLazyAtomicGroupSeals()` before synchronous export,
+pending-resource inspection, or rebase can reproduce them. A browser-side image
+consumer that needs to inspect or extend a restored image must await that
+explicit verifier first: it hashes only the private seal descriptors and does
+not fetch or materialize bottle data, snapshot the VFS, export metadata, or
+rebase storage. Deployment URL rewriting is the intentional exception for
+transport location only: the exact digest, size, decoder bounds, and mapping
+stay sealed. Concurrent browser inspection and first use share one
+per-cohort seal-validation flight. Transport and decode begin only after that
+proof, so a download failure can reject activation without discarding a
+successfully authenticated imported seal.
+
+First use fetches/decodes at most four cohort members concurrently, stops
+scheduling after one failure, and waits for all in-flight work before retry
+becomes possible. The final SharedFS transaction guards all declared
+directories, symlinks, regular names, and hard-link aliases, and capacity
+rollback leaves every stub, sequence, and timestamp retryable. Thus a browser
+or Node guest never observes a successfully activated prefix missing a required
+metadata entry or dependency tree.
+
 Across all selected layers, at most 512 layer-owned packages may be added. The
 base image's already-pending deferred groups and the newly selected bottle
 trees share one 512-group serialization budget. Pending generic deferred trees

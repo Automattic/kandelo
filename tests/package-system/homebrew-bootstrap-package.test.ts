@@ -49,7 +49,7 @@ afterEach(() => {
 });
 
 describe("homebrew-bootstrap package contract", () => {
-  it("pins one exact portable recipe, output, license boundary, and sealed Git input", () => {
+  it("pins one exact portable recipe, output closure, license boundary, and sealed Git input", () => {
     const manifest = readFileSync(join(packageDir, "package.toml"), "utf8");
     const build = readFileSync(join(packageDir, "build.toml"), "utf8");
     const lock = loadHomebrewBootstrapSourceLock(lockPath);
@@ -61,6 +61,7 @@ describe("homebrew-bootstrap package contract", () => {
     expect(manifest).toContain(`sha256 = "${lock.source.archive_sha256}"`);
     expect(manifest).toContain(`spdx = "${lock.license.expression}"`);
     expect(manifest).toContain('name = "homebrew-bootstrap"\nwasm = "homebrew-bootstrap.zip"');
+    expect(manifest).toContain('name = "homebrew-brew"\nwasm = "homebrew-brew.env"');
     expect(manifest).toContain('fork_instrumentation = "disabled"');
 
     expect(build).toContain('name = "homebrew_brew"');
@@ -102,13 +103,22 @@ describe("homebrew-bootstrap package contract", () => {
     expect(projection.packages["homebrew-bootstrap"]).toMatchObject({
       arches: ["wasm32"],
       dependencyClosures: { wasm32: [] },
-      members: [{
-        kind: "output",
-        sourceArtifact: "homebrew-bootstrap.zip",
-        mirrorPath: "homebrew-bootstrap.zip",
-        outputName: "homebrew-bootstrap",
-        forkInstrumentation: "disabled",
-      }],
+      members: [
+        {
+          kind: "output",
+          sourceArtifact: "homebrew-bootstrap.zip",
+          mirrorPath: "homebrew-bootstrap/homebrew-bootstrap.zip",
+          outputName: "homebrew-bootstrap",
+          forkInstrumentation: "disabled",
+        },
+        {
+          kind: "output",
+          sourceArtifact: "homebrew-brew.env",
+          mirrorPath: "homebrew-bootstrap/homebrew-brew.env",
+          outputName: "homebrew-brew",
+          forkInstrumentation: "disabled",
+        },
+      ],
     });
   });
 

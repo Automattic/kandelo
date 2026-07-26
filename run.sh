@@ -358,7 +358,13 @@ has_msmtpd()        { pkg_has_output msmtpd msmtpd.wasm || [ -f "$REPO_ROOT/pack
 has_cpython()       { pkg_has_output cpython python.wasm || [ -f "$REPO_ROOT/packages/registry/cpython/bin/python.wasm" ]; }
 has_python_vfs()    { pkg_has_output python-vfs python-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/python.vfs.zst" ]; }
 has_perl_vfs()      { pkg_has_output perl-vfs perl-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/perl.vfs.zst" ]; }
-has_shell_vfs()     { pkg_has_output shell shell.vfs.zst; }
+has_shell_vfs()     {
+    pkg_has_output shell shell.vfs.zst &&
+    # The VFS keeps this dependency lazy, but the browser must still be able
+    # to serve its exact package bytes when the guest first invokes brew.
+    pkg_has_output homebrew-bootstrap homebrew-bootstrap.zip &&
+    pkg_has_output homebrew-bootstrap homebrew-brew.env
+}
 has_node()          { pkg_has_output node node.wasm; }
 has_spidermonkey_node() { pkg_has_output spidermonkey-node node.wasm || [ -f "$REPO_ROOT/packages/registry/spidermonkey-node/bin/node.wasm" ]; }
 has_node_vfs()      { pkg_has_output node-vfs node-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/node-vfs.vfs.zst" ]; }
@@ -987,6 +993,14 @@ build_shell_vfs() {
     (cd "$REPO_ROOT" && "$xtask" "${resolve_args[@]}" >/dev/null)
     if ! pkg_has_output shell shell.vfs.zst; then
         err "Package resolver did not materialize the declared shell.vfs.zst output"
+        return 1
+    fi
+    if ! pkg_has_output homebrew-bootstrap homebrew-bootstrap.zip; then
+        err "Package resolver did not materialize shell's Homebrew source dependency"
+        return 1
+    fi
+    if ! pkg_has_output homebrew-bootstrap homebrew-brew.env; then
+        err "Package resolver did not materialize shell's Homebrew launcher policy"
         return 1
     fi
     info "Bottle-built Shell VFS image resolved"

@@ -812,6 +812,29 @@ identity-guarded batch replacement, so failure leaves all pending regular
 inodes unchanged. Hard-link aliases use one SharedFS inode and retain that
 identity when the lazy metadata is transferred or saved in an image.
 
+Several first-use trees can opt into one fail-closed activation cohort. Each
+tree registers a producer-stable member name, and the producer must explicitly
+seal the exact expected member set before the cohort can activate or serialize.
+Sealing hashes each member's transport-independent content, mount, activation,
+and complete guest/source inventory, then hashes the canonical member set.
+Every serialized member carries its descriptor digest, expected cohort count,
+and cohort digest, so omitting one tree record or one regular alias makes image
+restore fail rather than turning an unbacked zero-byte stub into a concrete
+file. Deployment URLs are deliberately outside this identity because an image
+may rewrite byte-identical mirrors.
+
+Activation snapshots every declared directory, symlink, regular name, and
+hard-link alias before I/O. At most four cohort archives fetch/decode at once;
+after the first failure no new work starts, and all already-running workers are
+awaited before the attempt rejects, so an immediate retry cannot overlap
+abandoned downloads or retain duplicate decoded trees. One SharedFS commit
+revalidates the complete namespace while holding its namespace and target-inode
+locks. Capacity failure restores every touched stub's empty data, sequence, and
+timestamps; directory, symlink, ownership, mode, or alias races reject the
+whole cohort. All allocating and potentially throwing publication bookkeeping
+is prepared before that commit; afterward one bounded linear pass only retires
+the proven lazy identities.
+
 For each declared transport, materialization permits three total GET attempts:
 only HTTP 408, 429, and 5xx responses or recognized fetch/body network
 interruptions repeat the same URL. The two retry waits default to 250 and 500
@@ -829,12 +852,41 @@ live registration, cross-worker import, image restore, and filesystem rebase.
 Content, activation, mount prefix, inventory, and pending inode metadata reject
 unknown fields, unsafe or oversized strings, count/size disagreement, and
 missing, cyclic, or cross-inode hard-link targets before a group is installed.
-Serialized groups carry an explicit `kandelo-deferred-tree-v1` or
-`kandelo-legacy-zip-v1` kind, and newly saved images declare that every group is
-typed. A deferred tree therefore cannot enter the less expressive legacy ZIP
-path by dropping its inventory or activation fields. Untyped legacy ZIP groups
-remain a restore-only migration path for historical images that predate the
-typed-image flag; restoration normalizes them to the explicit legacy kind.
+Serialized groups carry an explicit `kandelo-deferred-tree-v1` (derived ZIP),
+`kandelo-deferred-tree-v2` (original bottle), or
+`kandelo-legacy-zip-v1` kind. A sealed multi-tree cohort uses
+`kandelo-deferred-tree-v3`, regardless of decoder, because its atomic membership
+is an additional closed wire contract; v1/v2 records cannot quietly acquire
+those fields. Sealing or importing v3 retains a private immutable snapshot of
+the byte identity, decoder bounds, source truth, complete inventory, runtime
+inode mapping, integrity, and activation policy. Fetch, decode, preflight,
+commit, export, save, and rebase consume that snapshot; the caller-reachable
+group remains a compatibility view that may invalidate an operation but cannot
+redirect it. Mirror locations remain outside the descriptor digest so image
+composition may rewrite them, but that explicit rewrite replaces the private
+transport snapshot without changing the sealed byte hash or mapping.
+
+An imported seal claim is structurally valid but untrusted until an asynchronous
+SHA-256 pass during save, activation, explicit resealing, or
+`verifyImportedLazyAtomicGroupSeals()` verifies every member and the cohort
+digest. Synchronous export, pending-resource inspection, and rebase reject a
+pending imported cohort before that proof. Image consumers that need those
+synchronous operations can await the explicit verifier without fetching or
+materializing a tree, snapshotting the filesystem, exporting metadata, or
+rebasing storage. Repeated verification is safe; a rejected digest leaves the
+cohort untrusted and therefore blocked. This strengthens the existing v3
+behavior without changing its serialized fields or digest schema. Concurrent
+explicit verification, image save, resealing, and first-use activation join one
+per-cohort seal-validation flight instead of hashing the same descriptors
+independently. Seal verification remains separate from transport and decode:
+once the seal proof linearizes successfully, a later download failure can leave
+inspection authenticated while activation stays deferred and retryable.
+
+Newly saved images declare that every group is typed. A deferred tree therefore
+cannot enter the less expressive legacy ZIP path by dropping its inventory or
+activation fields. Untyped legacy ZIP groups remain a restore-only migration
+path for historical images that predate the typed-image flag; restoration
+normalizes them to the explicit legacy kind.
 Cross-worker imports stage and identity-check the complete batch before
 publishing any group, so rejection of a later group cannot leave earlier lazy
 metadata active.
@@ -908,6 +960,20 @@ under the same namespace transaction as the filesystem bytes, including names
 changed by another worker. `materializeAll: true` resolves both standalone and
 archive-backed entries and fails instead of emitting an image that still
 depends on a deferred URL.
+
+Kernel-owned machines expose that same durable boundary through
+`NodeKernelHost.exportRootfsImage()` and
+`BrowserKernel.exportRootfsImage()`. Export is available only after a
+VFS-backed kernel has initialized and every guest process and worker teardown
+has completed. The owning worker closes a snapshot gate before its first
+asynchronous wait, drains host-side mutations that started earlier, and rejects
+later spawns, lazy registration, materializing reads, writes, unlinks, and
+concurrent exports until serialization settles. The returned image contains
+only the `/` image backend; boot-scoped scratch, device, and shared-memory
+mounts are recreated on the next boot. Lazy descriptors and image metadata
+remain part of the root image, so a deferred package that was never opened
+stays deferred after export and restore. Callers must await the export before
+destroying the host.
 
 **Restore from an image:**
 

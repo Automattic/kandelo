@@ -8,10 +8,12 @@ import {
   validateKandeloDemoConfig,
 } from "../web-libs/kandelo-session/src/demo-config";
 import {
-  DOOM_COMMAND,
-  DOOM_WAD_SHA256,
-  DOOM_WAD_URL,
-} from "../web-libs/kandelo-session/src/demo-guides";
+  assertMainShellGuestCatalogIdentity,
+} from "./homebrew-main-shell-catalog-contract";
+export {
+  assertMainShellGuestCatalogIdentity,
+  type MainShellCatalogIdentity,
+} from "./homebrew-main-shell-catalog-contract";
 
 const EXPECTED_ARCH = "wasm32";
 const EXPECTED_SHELL_PATH = "/home/linuxbrew/.linuxbrew/bin/bash";
@@ -93,11 +95,11 @@ export function assertMainShellImageContract(input: MainShellImageContractInput)
     requestedPackagesSha256,
     "guest Homebrew requested_packages_sha256",
   );
-  assertCatalog(requiredRecord(guest.catalog, "guest Homebrew catalog"), {
+  assertMainShellGuestCatalogIdentity(guest, {
     tapRepository,
     tapName,
     tapCommit,
-  }, "guest Homebrew catalog", "snake");
+  });
   assertLockBinding(
     requiredRecord(guest.migration_lock, "guest Homebrew migration_lock"),
     input,
@@ -225,24 +227,13 @@ function assertDemoConfig(
     "shell demo presentation",
   );
   expectEqual(resolveDemoGuide(config, "shell")?.title, "Shell demo", "shell demo guide");
-  const doomPresentation = resolveDemoPresentation(config, "doom");
-  expectEqual(doomPresentation?.autoCommand, DOOM_COMMAND, "Doom demo autoCommand");
-  const doomAssets = resolveDemoAssets(config, "doom");
-  if (doomAssets.length !== 1) fail("Doom demo must declare exactly one asset");
-  expectEqual(doomAssets[0].path, "/doom1.wad", "Doom demo asset path");
-  expectEqual(doomAssets[0].url, DOOM_WAD_URL, "Doom demo asset URL");
-  expectEqual(doomAssets[0].sha256, DOOM_WAD_SHA256, "Doom demo asset sha256");
-  const modesetPresentation = resolveDemoPresentation(config, "modeset");
-  expectEqual(
-    modesetPresentation?.autoCommand,
-    "/usr/local/bin/modeset",
-    "modeset demo autoCommand",
-  );
-  expectEqual(
-    modesetPresentation?.runningPrimary.join(","),
-    "kms,terminal,syslog",
-    "modeset demo presentation",
-  );
+  if (
+    resolveDemoPresentation(config, "doom") !== null ||
+    resolveDemoPresentation(config, "modeset") !== null ||
+    resolveDemoAssets(config, "doom").length !== 0
+  ) {
+    fail("base shell demo must not promise optional Doom or modeset packages");
+  }
 }
 
 function assertRuntimeState(

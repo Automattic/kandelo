@@ -79,10 +79,12 @@ export function resolveVfsArtifact(relPath: string, depName?: string): string {
   return resolveBinary(relPath);
 }
 
-export function loadShellBaseFileSystem(maxByteLength: number): MemoryFileSystem {
+export async function loadShellBaseFileSystem(
+  maxByteLength: number,
+): Promise<MemoryFileSystem> {
   const shellImagePath = resolveVfsArtifact("programs/shell.vfs.zst", "shell");
   const shellImage = new Uint8Array(readFileSync(shellImagePath));
-  return loadShellBaseFileSystemFromImage(shellImage, maxByteLength);
+  return await loadShellBaseFileSystemFromImage(shellImage, maxByteLength);
 }
 
 /**
@@ -140,11 +142,14 @@ export function saveShellDerivedVfsImage(
  * build-time transformation explicit without weakening runtime profile
  * validation for the canonical image itself.
  */
-export function loadShellBaseFileSystemFromImage(
+export async function loadShellBaseFileSystemFromImage(
   shellImage: Uint8Array,
   maxByteLength: number,
-): MemoryFileSystem {
+): Promise<MemoryFileSystem> {
   const fs = MemoryFileSystem.fromImagePreservingCapacity(shellImage);
+  // WHY: rebasing copies lazy metadata into a new authority boundary, so
+  // authenticate imported atomic seals before deciding whether to copy it.
+  await fs.verifyImportedLazyAtomicGroupSeals();
   const stats = fs.statfs("/");
   const effectiveMaxByteLength = stats.blocks * stats.bsize;
   if (effectiveMaxByteLength === maxByteLength) return fs;

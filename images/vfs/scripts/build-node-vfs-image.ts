@@ -63,7 +63,7 @@ async function main() {
   }
 
   console.log("Loading shell base image...");
-  const fs = loadShellBaseFileSystem(NODE_IMAGE_MAX_BYTES);
+  const fs = await loadShellBaseFileSystem(NODE_IMAGE_MAX_BYTES);
   populateNodeLazyBinary(fs);
 
   // Node/npm workspace additions.
