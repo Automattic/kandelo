@@ -100,8 +100,8 @@ int main(void) {
         release_fillers(filler_count);
         return 1;
     }
-    if (filler_count == 0) {
-        printf("FAIL: no filler mapping was available\n");
+    if (filler_count < 2) {
+        printf("FAIL: fewer than two filler mappings were available\n");
         return 1;
     }
 
@@ -161,15 +161,21 @@ int main(void) {
         return 1;
     }
 
-    // WHY: one free page lets beginUnwind allocate its root chunk. The deep
-    // call chain then needs another chunk, so failure occurs after frames have
-    // been committed and exercises ABORT_UNWINDING rather than the simpler
-    // root-allocation error path.
-    filler_count--;
-    if (munmap(filler_mappings[filler_count], WASM_PAGE_BYTES) != 0) {
-        printf("FAIL: could not make one continuation page available errno=%d\n", errno);
-        release_fillers(filler_count);
-        return 1;
+    // WHY: ABI 43 owns process/module/reference metadata separately from the
+    // linked stack. Two free pages let capture allocate the metadata arena and
+    // the continuation root. The deep call chain then needs a third page, so
+    // failure occurs after frames have committed and exercises
+    // ABORT_UNWINDING rather than the simpler root-allocation error path.
+    for (int i = 0; i < 2; i++) {
+        filler_count--;
+        if (munmap(filler_mappings[filler_count], WASM_PAGE_BYTES) != 0) {
+            printf(
+                "FAIL: could not make fork transaction page available errno=%d\n",
+                errno
+            );
+            release_fillers(filler_count);
+            return 1;
+        }
     }
 
     errno = 0;
@@ -201,25 +207,34 @@ int main(void) {
     }
     printf("NO_PHANTOM_CHILD: ok\n");
 
-    // The abort replay must unmap its partial chain. Prove that the one free
-    // page is reusable before relying on it for the recovery fork.
-    void *probe = mmap(
-        NULL,
-        WASM_PAGE_BYTES,
-        PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANONYMOUS,
-        -1,
-        0
-    );
-    if (probe == MAP_FAILED) {
-        printf("FAIL: continuation allocation leaked errno=%d\n", errno);
-        release_fillers(filler_count);
-        return 1;
+    // Abort replay must unmap both transaction roots and the partial linked
+    // chain. Hold two probe mappings concurrently to prove both pages are
+    // reusable before relying on them for the recovery fork.
+    void *probes[2] = {MAP_FAILED, MAP_FAILED};
+    for (int i = 0; i < 2; i++) {
+        probes[i] = mmap(
+            NULL,
+            WASM_PAGE_BYTES,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+            -1,
+            0
+        );
+        if (probes[i] == MAP_FAILED) {
+            printf("FAIL: fork transaction allocation leaked errno=%d\n", errno);
+            for (int j = 0; j < i; j++) {
+                munmap(probes[j], WASM_PAGE_BYTES);
+            }
+            release_fillers(filler_count);
+            return 1;
+        }
     }
-    if (munmap(probe, WASM_PAGE_BYTES) != 0) {
-        printf("FAIL: probe cleanup errno=%d\n", errno);
-        release_fillers(filler_count);
-        return 1;
+    for (int i = 0; i < 2; i++) {
+        if (munmap(probes[i], WASM_PAGE_BYTES) != 0) {
+            printf("FAIL: probe cleanup errno=%d\n", errno);
+            release_fillers(filler_count);
+            return 1;
+        }
     }
     printf("CONTINUATION_PAGE_REUSED: ok\n");
 
