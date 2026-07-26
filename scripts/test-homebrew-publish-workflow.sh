@@ -790,6 +790,7 @@ assert_matrix_skips_unchanged_cache_key() {
   local tap="$TMPDIR/matrix-skip-tap"
   local expected="$TMPDIR/expected-cache-keys.json"
   local kandelo_commit="0123456789abcdef0123456789abcdef01234567"
+  local formula_sha formula_backup
   make_tap "$tap"
   cat >"$tap/Kandelo/metadata.json" <<'EOF'
 {
@@ -826,6 +827,11 @@ assert_matrix_skips_unchanged_cache_key() {
   ]
 }
 EOF
+  formula_sha="$(shasum -a 256 "$tap/Formula/hello.rb" | awk '{print $1}')"
+  jq --arg formula_sha "$formula_sha" '
+    .packages[0].bottles[].built_from.formula_sha256 = $formula_sha
+  ' "$tap/Kandelo/metadata.json" >"$tap/Kandelo/metadata.json.tmp"
+  mv "$tap/Kandelo/metadata.json.tmp" "$tap/Kandelo/metadata.json"
   cat >"$expected" <<'EOF'
 {
   "hello": {
@@ -851,6 +857,16 @@ EOF
     length == 1 and
     .[0] == {"formula":"hello","arch":"wasm64"}
   ' >/dev/null || fail "expected unchanged wasm32 entry to be skipped: $matrix"
+
+  formula_backup="$TMPDIR/matrix-hello.rb"
+  cp "$tap/Formula/hello.rb" "$formula_backup"
+  printf '\n# recipe identity changed\n' >>"$tap/Formula/hello.rb"
+  matrix="$(bash "$REPO_ROOT/scripts/homebrew-plan-matrix.sh" \
+    --tap-root "$tap" --formulae hello --arches wasm32 \
+    "${expected_args[@]}")"
+  [ "$matrix" = '[{"formula":"hello","arch":"wasm32"}]' ] ||
+    fail "stale Formula/recipe provenance was reused: $matrix"
+  mv "$formula_backup" "$tap/Formula/hello.rb"
 
   jq '.packages[0].bottles[0].built_from.kandelo_commit =
     "ffffffffffffffffffffffffffffffffffffffff"' \
@@ -882,10 +898,11 @@ EOF
   [ "$matrix" = '[{"formula":"hello","arch":"wasm32"}]' ] ||
     fail "bottle without source provenance was reused: $matrix"
 
-  jq --arg commit "$kandelo_commit" '
+  jq --arg commit "$kandelo_commit" --arg formula_sha "$formula_sha" '
     .packages[0].bottles[0].built_from = {
       kandelo_repository: "Automattic/kandelo",
-      kandelo_commit: $commit
+      kandelo_commit: $commit,
+      formula_sha256: $formula_sha
     } |
     .packages[0].bottles[0].url =
       "https://ghcr.io/v2/kandelo-dev/tap-core/hello/blobs/sha256:" +

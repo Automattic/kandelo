@@ -1681,6 +1681,30 @@ homebrew_patched_launcher_seed_bundler_groups() {
 # Move all Formula-evaluating Brew calls behind a fixed wrapper that switches
 # to a dedicated user inside a transient systemd service. KillMode=control-group
 # makes double-forked or session-detached descendants part of the call lifecycle.
+homebrew_patched_launcher_tier2_schema() {
+  if [ "$#" -ne 1 ]; then
+    echo "homebrew_patched_launcher_tier2_schema: expected ATTESTATION" >&2
+    return 2
+  fi
+  local -a lines
+  mapfile -t lines <"$1" || {
+    echo "homebrew-patched-launcher: could not read the protected Tier-2 attestation" >&2
+    return 2
+  }
+  if [ "${#lines[@]}" -ne 1 ]; then
+    echo "homebrew-patched-launcher: protected Tier-2 attestation must use one JSON line" >&2
+    return 2
+  fi
+  case "${lines[0]}" in
+    *'"schema":2,'*) printf '2\n' ;;
+    *'"schema":3,'*) printf '3\n' ;;
+    *)
+      echo "homebrew-patched-launcher: protected Tier-2 attestation has an unsupported schema" >&2
+      return 2
+      ;;
+  esac
+}
+
 homebrew_patched_launcher_isolate() {
   if [ "$#" -lt 6 ]; then
     echo "homebrew_patched_launcher_isolate: expected BUILD_USER WORK_DIR KANDELO_ROOT TAP_ROOT OUTPUT_ROOT SYSROOT_BUILD_ROOT [ADDITIONAL_PROTECTED_ROOT ...]" >&2
@@ -1700,9 +1724,11 @@ homebrew_patched_launcher_isolate() {
   local primary_tap_root primary_tap_owner_root taps_root
   local xtask_bin xtask_relative xtask_alias xtask_mode xtask_links
   local xtask_uid xtask_state xtask_sha256 xtask_state_after xtask_sha256_after
-  local xtask_alias_state xtask_alias_sha256
+  local xtask_alias_state xtask_alias_sha256 tap_recipe_isolation tier2_schema
+  local tap_recipe_path tap_recipe_relative
   local -a preserved_variables native_preserved_variables mutable_roots
   local -a xtask_path_parts
+  local -a tap_recipe_inaccessible_paths
   local -a additional_protected_roots=("$@")
 
   if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
@@ -2062,6 +2088,16 @@ homebrew_patched_launcher_isolate() {
   "$sudo_bin" /usr/bin/install -d -o root -g "$build_group" -m 1775 \
     "$HOMEBREW_PATCHED_PREFIX/Cellar" "$HOMEBREW_PATCHED_PREFIX/opt"
   homebrew_patched_launcher_seal_control_files "$build_user" || return
+  tap_recipe_isolation=0
+  if [ -n "$HOMEBREW_PATCHED_TIER2_ATTESTATION" ]; then
+    homebrew_patched_launcher_verify_tier2_attestation || return
+    tier2_schema="$(
+      homebrew_patched_launcher_tier2_schema "$HOMEBREW_PATCHED_TIER2_ATTESTATION"
+    )" || return
+    if [ "$tier2_schema" = "3" ]; then
+      tap_recipe_isolation=1
+    fi
+  fi
   "$sudo_bin" install -d -o root -g root -m 0755 \
     "$HOMEBREW_PATCHED_PREFIX/etc/homebrew" "$XDG_CONFIG_HOME/homebrew"
   for config_root in "$HOMEBREW_PATCHED_PREFIX/etc/homebrew" "$XDG_CONFIG_HOME"; do
@@ -2164,6 +2200,17 @@ homebrew_patched_launcher_isolate() {
     "$source_alias_dir/sysroot"
   HOMEBREW_PATCHED_SOURCE_ALIAS_DIR="$source_alias_dir"
   xtask_alias="$source_alias_dir/kandelo/$xtask_relative"
+  tap_recipe_inaccessible_paths=("$xtask_alias")
+  for tap_recipe_relative in \
+    packages/registry local-binaries .ci-test-binary-cache \
+    scripts/install-local-binary.sh; do
+    tap_recipe_path="$kandelo_root/$tap_recipe_relative"
+    if [ -e "$tap_recipe_path" ] || [ -L "$tap_recipe_path" ]; then
+      tap_recipe_inaccessible_paths+=(
+        "$source_alias_dir/kandelo/$tap_recipe_relative"
+      )
+    fi
+  done
   protected_brew="$HOMEBREW_PATCHED_PROTECTED_DIR/brew"
   "$sudo_bin" ln -s "$HOMEBREW_PATCHED_OVERLAY/bin/brew" "$protected_brew"
 
@@ -2341,6 +2388,15 @@ homebrew_patched_launcher_isolate() {
     for protected_root in "${additional_protected_roots[@]}"; do
       printf ' %q' "--property=InaccessiblePaths=$protected_root"
     done
+    if [ "$tap_recipe_isolation" = "1" ]; then
+      # WHY: a tap-owned recipe receives the SDK, sysroot, and instrumenter as
+      # platform tooling, but never the old package-registry resolver surface.
+      # Masking these paths in the service makes an accidental absolute-path
+      # fallback fail even after Formula code reconstructs the source alias.
+      for tap_recipe_path in "${tap_recipe_inaccessible_paths[@]}"; do
+        printf ' %q' "--property=InaccessiblePaths=$tap_recipe_path"
+      done
+    fi
     if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
       printf ' %q' \
         "--property=BindReadOnlyPaths=$HOMEBREW_PATCHED_NATIVE_PREFIX" \
@@ -2362,12 +2418,14 @@ homebrew_patched_launcher_isolate() {
     # re-exec but rebuilds the ordinary environment. Give tap support a
     # protected alias it can freeze, while direct resolver callers still get
     # the conventional WASM_POSIX_XTASK_BIN name.
-    printf ' %q %q %q %q %q %q' "HOMEBREW_KANDELO_ROOT=$source_alias_dir/kandelo" \
+    printf ' %q %q %q %q' "HOMEBREW_KANDELO_ROOT=$source_alias_dir/kandelo" \
       "KANDELO_HOMEBREW_KANDELO_ROOT=$source_alias_dir/kandelo" \
       "HOMEBREW_KANDELO_SYSROOT=$source_alias_dir/sysroot" \
-      "WASM_POSIX_SYSROOT=$source_alias_dir/sysroot" \
-      "HOMEBREW_KANDELO_XTASK_BIN=$xtask_alias" \
-      "WASM_POSIX_XTASK_BIN=$xtask_alias"
+      "WASM_POSIX_SYSROOT=$source_alias_dir/sysroot"
+    if [ "$tap_recipe_isolation" != "1" ]; then
+      printf ' %q %q' "HOMEBREW_KANDELO_XTASK_BIN=$xtask_alias" \
+        "WASM_POSIX_XTASK_BIN=$xtask_alias"
+    fi
     printf ' "${bottle_tag_env[@]}" "$command_path" "$@"\n'
   } >"$wrapper_source"
   "$sudo_bin" install -o root -g root -m 0555 "$wrapper_source" "$wrapper_path"

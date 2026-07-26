@@ -34,10 +34,13 @@ ALLOWED_PUBLIC_INSTANCE_METHODS = Set[
 ].freeze
 FORBIDDEN_PRIVATE_INSTANCE_METHODS = Set[
   "dependencies", "initialize", "initialize_clone", "initialize_copy", "initialize_dup",
-  "kandelo_build_package", "name", "recursive_dependencies", "requirements", "version",
+  "kandelo_build_package", "kandelo_build_tap_recipe", "name", "recursive_dependencies",
+  "requirements", "version",
 ].freeze
 TIER2_BRIDGE_METHOD = "kandelo_build_package"
 TIER2_BRIDGE_MARKER = "KANDELO_REGISTRY_BRIDGE"
+TAP_RECIPE_METHOD = "kandelo_build_tap_recipe"
+TAP_RECIPE_MARKER = "KANDELO_TAP_RECIPE"
 TIER2_RUNTIME_INITIALIZER_METHOD = "kandelo_load_tier2_runtime!"
 TIER2_RUNTIME_CONSTANT = "KANDELO_TIER2_RUNTIME"
 FORMULA_SUPPORT_API_VERSION_CONSTANT = "KANDELO_FORMULA_SUPPORT_API_VERSION"
@@ -48,6 +51,7 @@ TIER2_BRIDGE_SOURCE_SHA256 = /\A[0-9a-f]{64}\z/
 TIER2_RESERVED_ENV = Set[
   "WASM_POSIX_DEP_NAME",
   "WASM_POSIX_DEP_OUT_DIR",
+  "WASM_POSIX_DEP_RECIPE_DIR",
   "WASM_POSIX_DEP_SOURCE_DIR",
   "WASM_POSIX_DEP_SOURCE_SHA256",
   "WASM_POSIX_DEP_SOURCE_URL",
@@ -550,6 +554,47 @@ tier2_bridge_arguments = lambda do |node, lines|
 
   {
     "package" => package,
+    "script_env_keys" => keys,
+  }
+end
+
+tap_recipe_arguments = lambda do |node, lines|
+  next nil unless node.is_a?(Array) && node.first == :bare_assoc_hash &&
+                  node[1].is_a?(Array)
+
+  associations = node[1]
+  labels = associations.map do |association|
+    break nil unless association.is_a?(Array) && association.first == :assoc_new &&
+                     association.dig(1, 0) == :@label
+
+    association.dig(1, 1)
+  end
+  next nil unless labels == ["manifest_sha256:", "script_env:"]
+
+  manifest_sha256 = canonical_literal_value.call(associations.first[2], lines)
+  next nil unless manifest_sha256&.match?(TIER2_BRIDGE_SOURCE_SHA256)
+
+  value = associations.last[2]
+  next nil unless value.is_a?(Array) && value.first == :hash
+  list = value[1]
+  keys = if list.nil?
+    []
+  else
+    next nil unless list.is_a?(Array) && list.first == :assoclist_from_args &&
+                    list[1].is_a?(Array)
+
+    parsed = list[1].map do |entry|
+      break nil unless entry.is_a?(Array) && entry.first == :assoc_new
+      key = canonical_literal_value.call(entry[1], lines)
+      break nil unless key&.match?(/\A[A-Z][A-Z0-9_]{0,254}\z/)
+      key
+    end
+    next nil if parsed.nil?
+    parsed
+  end
+
+  {
+    "manifest_sha256" => manifest_sha256,
     "script_env_keys" => keys,
   }
 end
@@ -1367,7 +1412,11 @@ parse_formula = lambda do |full_name|
   bridge_identifier_positions = Ripper.lex(source).each_with_object([]) do |(position, type, token, _state), positions|
     positions << position if type == :on_ident && token == TIER2_BRIDGE_METHOD
   end
+  recipe_identifier_positions = Ripper.lex(source).each_with_object([]) do |(position, type, token, _state), positions|
+    positions << position if type == :on_ident && token == TAP_RECIPE_METHOD
+  end
   bridge_calls = []
+  recipe_calls = []
   install_method = class_body.find do |statement|
     statement.is_a?(Array) && statement.first == :def && statement.dig(1, 1) == "install"
   end
@@ -1442,6 +1491,68 @@ parse_formula = lambda do |full_name|
       node.each { |child| find_bridge_calls.call(child, ancestors + [node]) }
     end
     find_bridge_calls.call(install_method, [])
+
+    find_recipe_calls = nil
+    find_recipe_calls = lambda do |node, ancestors|
+      next unless node.is_a?(Array)
+
+      if node.first == :method_add_arg && node.dig(1, 0) == :fcall &&
+         node.dig(1, 1, 0) == :@ident && node.dig(1, 1, 1) == TAP_RECIPE_METHOD
+        assignment = ancestors.last
+        direct_assignment = assignment.is_a?(Array) && assignment.first == :assign &&
+                            assignment[2].equal?(node) &&
+                            install_statements.any? { |statement| statement.equal?(assignment) }
+        abort "#{TAP_RECIPE_METHOD} must be the direct right-hand side of an install assignment: #{path}" unless direct_assignment
+
+        left = assignment[1]
+        variable = left[1] if left.is_a?(Array) && left.first == :var_field
+        unless variable.is_a?(Array) && variable.first == :@ident
+          abort "#{TAP_RECIPE_METHOD} result must bind one local variable: #{path}"
+        end
+
+        arg_paren = node[2]
+        argument_list = arg_paren[1] if arg_paren.is_a?(Array) && arg_paren.first == :arg_paren
+        arguments = if argument_list.is_a?(Array) &&
+                       argument_list.first == :args_add_block &&
+                       argument_list[2] == false
+          argument_list[1]
+        elsif argument_list.is_a?(Array) && argument_list.length == 1 &&
+              argument_list.dig(0, 0) == :bare_assoc_hash
+          argument_list
+        end
+        unless arguments.is_a?(Array) && arguments.length == 1
+          abort "#{TAP_RECIPE_METHOD} must use one canonical keyword hash: #{path}"
+        end
+
+        recipe_arguments = tap_recipe_arguments.call(arguments.first, lines)
+        keys = recipe_arguments&.fetch("script_env_keys", nil)
+        if keys.nil? || keys.uniq.length != keys.length
+          abort "#{TAP_RECIPE_METHOD} must use a literal manifest SHA-256 followed by one " \
+                "literal script_env hash with unique literal keys: #{path}"
+        end
+        if keys.length > 64 || keys.sum(&:bytesize) > 4096
+          abort "#{TAP_RECIPE_METHOD} script_env exceeds the static key limit: #{path}"
+        end
+        reserved = keys.to_set & TIER2_RESERVED_ENV
+        unless reserved.empty?
+          abort "#{TAP_RECIPE_METHOD} script_env overrides reserved variables #{reserved.to_a.sort.inspect}: #{path}"
+        end
+        package_prefix = "#{name.upcase.gsub(/[^A-Z0-9]/, "_")}_"
+        invalid_namespace = keys.reject do |key|
+          key.start_with?("WASM_POSIX_DEP_") || key.start_with?(package_prefix)
+        end
+        unless invalid_namespace.empty?
+          abort "#{TAP_RECIPE_METHOD} script_env uses keys outside the approved namespace #{invalid_namespace.sort.inspect}: #{path}"
+        end
+        recipe_calls << {
+          "manifest_sha256" => recipe_arguments.fetch("manifest_sha256"),
+          "script_env_keys" => keys.sort,
+          "position" => node.dig(1, 1, 2),
+        }
+      end
+      node.each { |child| find_recipe_calls.call(child, ancestors + [node]) }
+    end
+    find_recipe_calls.call(install_method, [])
   end
 
   accepted_bridge_positions = bridge_calls.map { |call| call.fetch("position") }.sort
@@ -1449,6 +1560,14 @@ parse_formula = lambda do |full_name|
     abort "every #{TIER2_BRIDGE_METHOD} reference must be one canonical direct install call: #{path}"
   end
   abort "Formula has multiple #{TIER2_BRIDGE_METHOD} calls: #{path}" if bridge_calls.length > 1
+  accepted_recipe_positions = recipe_calls.map { |call| call.fetch("position") }.sort
+  unless recipe_identifier_positions.sort == accepted_recipe_positions
+    abort "every #{TAP_RECIPE_METHOD} reference must be one canonical direct install call: #{path}"
+  end
+  abort "Formula has multiple #{TAP_RECIPE_METHOD} calls: #{path}" if recipe_calls.length > 1
+  if bridge_calls.any? && recipe_calls.any?
+    abort "Formula cannot use both #{TIER2_BRIDGE_METHOD} and #{TAP_RECIPE_METHOD}: #{path}"
+  end
 
   bridge_markers = class_body.select do |statement|
     left = statement[1] if statement.is_a?(Array) && statement.first == :assign
@@ -1467,6 +1586,28 @@ parse_formula = lambda do |full_name|
   end
   if bridge_calls.empty? != bridge_markers.empty?
     abort "Formula Tier-2 registry bridge marker and canonical helper call must appear together: #{path}"
+  end
+
+  recipe_markers = class_body.select do |statement|
+    left = statement[1] if statement.is_a?(Array) && statement.first == :assign
+    constant = left[1] if left.is_a?(Array) && left.first == :var_field
+    constant.is_a?(Array) && constant.first == :@const &&
+      constant[1] == TAP_RECIPE_MARKER
+  end
+  valid_recipe_marker = recipe_markers.length == 1 &&
+                        recipe_markers.first.dig(2, 0) == :var_ref &&
+                        recipe_markers.first.dig(2, 1, 0) == :@kw &&
+                        recipe_markers.first.dig(2, 1, 1) == "true" &&
+                        lines.fetch(recipe_markers.first.dig(1, 1, 2, 0) - 1, nil) ==
+                          "  #{TAP_RECIPE_MARKER} = true\n"
+  if recipe_markers.any? && !valid_recipe_marker
+    abort "Formula tap recipe marker must be one canonical true constant: #{path}"
+  end
+  if recipe_calls.empty? != recipe_markers.empty?
+    abort "Formula tap recipe marker and canonical helper call must appear together: #{path}"
+  end
+  if bridge_markers.any? && recipe_markers.any?
+    abort "Formula cannot declare both registry bridge and tap recipe markers: #{path}"
   end
 
   tier2_bridge = nil
@@ -1509,6 +1650,47 @@ parse_formula = lambda do |full_name|
     tier2_bridge = {
       "package" => bridge_calls.first.fetch("package") || name,
       "script_env_keys" => bridge_calls.first.fetch("script_env_keys"),
+      "source_sha256" => sha256_value,
+      "source_url" => url_value,
+      "version" => version_value,
+    }
+  end
+
+  tap_recipe = nil
+  unless recipe_calls.empty?
+    unless private_instance_methods.empty?
+      abort "tap-recipe Formula may not define private helper methods #{private_instance_methods.to_a.sort.inspect}: #{path}"
+    end
+    unless included_support && support_methods_by_tap.fetch(formula_tap_name).include?(TAP_RECIPE_METHOD)
+      abort "Formula tap recipe requires the canonical Kandelo Formula support helper: #{path}"
+    end
+    direct_literal = lambda do |command|
+      candidates = class_body.select do |statement|
+        statement.is_a?(Array) && statement.first == :command &&
+          call_name.call(statement) == command
+      end
+      next nil unless candidates.length == 1
+
+      arguments = canonical_command_arguments.call(candidates.first, command)
+      next nil unless arguments&.length == 1
+
+      canonical_literal_value.call(arguments.first, lines)
+    end
+    version_value = direct_literal.call("version")
+    url_value = direct_literal.call("url")
+    sha256_value = direct_literal.call("sha256")
+    unless version_value&.match?(TIER2_BRIDGE_VERSION)
+      abort "tap-recipe Formula must declare one canonical literal class version: #{path}"
+    end
+    unless url_value&.match?(%r{\Ahttps://[A-Za-z0-9][A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]{0,2039}\z})
+      abort "tap-recipe Formula must declare one canonical literal class source URL: #{path}"
+    end
+    unless sha256_value&.match?(TIER2_BRIDGE_SOURCE_SHA256)
+      abort "tap-recipe Formula must declare one canonical literal class source SHA-256: #{path}"
+    end
+    tap_recipe = {
+      "manifest_sha256" => recipe_calls.first.fetch("manifest_sha256"),
+      "script_env_keys" => recipe_calls.first.fetch("script_env_keys"),
       "source_sha256" => sha256_value,
       "source_url" => url_value,
       "version" => version_value,
@@ -1633,11 +1815,21 @@ parse_formula = lambda do |full_name|
       "tags" => declaration.fetch("tags"),
     }
   end
+  unless tap_recipe.nil?
+    tap_recipe["declared_dependencies"] = declarations.filter_map do |declaration|
+      next unless declaration.fetch("requirement_class").nil?
+      next unless [Set.new, Set[:recommended]].include?(declaration.fetch("tags"))
+
+      dependency = declaration.fetch("name")
+      dependency if dependency.include?("/")
+    end.sort
+  end
   formula_tier2_bridges[full_name] = {
     "formula_sha256" => Digest::SHA256.hexdigest(source),
     "support_sha256" => included_support ? support_sha256_by_tap.fetch(formula_tap_name) : nil,
     "support_runtime_sha256" => included_support ?
       support_runtime_sha256_by_tap.fetch(formula_tap_name) : nil,
+    "tap_recipe" => tap_recipe,
     "tier2_bridge" => tier2_bridge,
   }
   dependencies
@@ -1725,8 +1917,9 @@ if declarations_only
   })
 elsif tier2_bridge_only
   record = formula_tier2_bridges.fetch(target_full_name)
-  document = JSON.generate({
-    "schema" => 2,
+  tap_recipe = record.fetch("tap_recipe")
+  plan = {
+    "schema" => tap_recipe.nil? ? 2 : 3,
     "tap" => tap_name,
     "formula" => target,
     "full_name" => target_full_name,
@@ -1734,7 +1927,9 @@ elsif tier2_bridge_only
     "support_sha256" => record.fetch("support_sha256"),
     "support_runtime_sha256" => record.fetch("support_runtime_sha256"),
     "tier2_bridge" => record.fetch("tier2_bridge"),
-  })
+  }
+  plan["tap_recipe"] = tap_recipe unless tap_recipe.nil?
+  document = JSON.generate(plan)
   if document.bytesize > MAX_TIER2_CONTROL_BYTES
     abort "Tier-2 bridge plan exceeds #{MAX_TIER2_CONTROL_BYTES} bytes"
   end

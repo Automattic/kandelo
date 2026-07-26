@@ -780,17 +780,20 @@ hardcoding it.
 
 ## Homebrew Formula Authoring
 
-Homebrew formulae are a second publication surface for already-ported Kandelo
-software. Keep the portable package recipe and build script in
-`packages/registry/<name>/`; put Homebrew-specific formula state in the
-`kandelo-dev/homebrew-tap-core` tap. The main repository's
+Homebrew formulae are Kandelo's primary distribution surface for conventional
+third-party software. Keep the Formula and, when a script is needed, its closed
+recipe input tree in `kandelo-dev/homebrew-tap-core`. The main repository's
 `homebrew/homebrew-tap-core/` directory is a template and fixture for that tap
-shape.
+shape. A duplicate `packages/registry/<name>/` recipe is not required after
+the Formula has a tap-native build.
 
-Formulae should use normal Homebrew DSL and call the normal Kandelo build path:
+Formulae should use normal Homebrew DSL and the normal Kandelo platform path:
 
-- build through the worktree-local SDK, usually by invoking the package's
-  existing `packages/registry/<name>/build-*.sh` script;
+- build through the worktree-local SDK; use idiomatic Formula steps when
+  practical or `kandelo_build_tap_recipe` with a closed
+  `Kandelo/recipes/<formula>/recipe.json` tree;
+- treat `kandelo_build_package` and direct
+  `packages/registry/<name>/build-*.sh` use as transitional migration debt;
 - keep shared sysroot availability facts in `sdk/config.site`; use explicit
   package `ac_cv_*` values only for package-specific runtime or semantic probes
   that cross-compilation cannot execute;
@@ -800,6 +803,16 @@ Formulae should use normal Homebrew DSL and call the normal Kandelo build path:
   Wasm with `examples/run-example.ts`, not by executing it as a host binary;
 - leave VFS link plans, browser compatibility, provenance, and validation
   evidence to generated `Kandelo/` sidecars.
+
+A tap-native recipe receives Homebrew's checksum-verified source,
+Homebrew-poured direct dependency kegs, and separate source/work/output roots.
+It receives the Kandelo SDK, sysroot, and fork instrumenter, but no package
+registry, resolver checker, transported binary cache, local-binary mirror, or
+`install-local-binary.sh`. Its manifest SHA-256 is a literal in the Formula,
+and every recipe file's path, size, mode, and SHA-256 is checked before and
+after execution. See
+[Formula-owned tap recipes](homebrew-publishing.md#formula-owned-tap-recipes)
+for the exact manifest and helper contract.
 
 Formula Ruby should use `HOMEBREW_KANDELO_*` environment variables for values
 that must pass through Homebrew's environment handling:
