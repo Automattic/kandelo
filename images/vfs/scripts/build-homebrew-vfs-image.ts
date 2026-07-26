@@ -47,6 +47,11 @@ import {
   type HomebrewVfsPlan,
 } from "../../../host/src/homebrew-vfs-planner";
 import {
+  assertHomebrewRuntimeSupportPlan,
+  parseHomebrewRuntimeSupportContract,
+  type HomebrewRuntimeSupportContract,
+} from "../../../host/src/homebrew-runtime-support";
+import {
   MemoryFileSystem,
   type VfsImageMetadata,
 } from "../../../host/src/vfs/memory-fs";
@@ -111,6 +116,7 @@ interface CliOptions {
   packageTreeSpec?: string;
   packageTreeArchive?: string;
   homebrewBootstrapEnv?: string;
+  homebrewRuntimeSupport?: string;
   materializePackageTree: boolean;
 }
 
@@ -123,12 +129,18 @@ interface CliOptions {
 export interface HomebrewVfsImageMaterializationOptions extends HomebrewVfsBuildOptions {
   fs: MemoryFileSystem;
   collectionFs: MemoryFileSystem;
+  runtimeSupportCollectionFs?: MemoryFileSystem;
+  runtimeSupport?: {
+    contract: HomebrewRuntimeSupportContract;
+    plan: HomebrewVfsPlan;
+  };
   policy: unknown;
   mirrorRepository: string;
 }
 
 export interface HomebrewVfsImageMaterializedBuild {
   result: HomebrewVfsBuildResult;
+  runtimeSupportAtomicMembers?: readonly string[];
   assert(fs: MemoryFileSystem): void;
   writeBottleMirrorBundle(outputDirectory: string): unknown;
 }
@@ -323,6 +335,40 @@ export async function runHomebrewVfsImageBuilder(
           },
         );
 
+  let runtimeSupport:
+    | {
+        contract: HomebrewRuntimeSupportContract;
+        plan: HomebrewVfsPlan;
+      }
+    | undefined;
+  if (options.homebrewRuntimeSupport !== undefined) {
+    if (materialize === undefined || dependencyMetadata.length !== 0) {
+      throw new Error(
+        "Homebrew runtime support requires the materialized single-tap image builder",
+      );
+    }
+    const contract = parseHomebrewRuntimeSupportContract(
+      readJsonFile(options.homebrewRuntimeSupport),
+    );
+    if (contract.catalog.tapCommit !== options.catalogCommit) {
+      throw new Error(
+        "Homebrew runtime-support checkout differs from --catalog-commit",
+      );
+    }
+    const supportPlan = await planHomebrewVfs(metadata, {
+      packages: contract.formulaRoots.map((identity) => identity.split("/").at(-1)!),
+      arch: options.arch,
+      runtime: options.runtime,
+      expectedCacheKeys: options.expectedCacheKeys,
+      allowFallback: options.allowFallback,
+      expectedTapName: contract.catalog.tapName,
+      loadLinkManifest: (relPath: string) =>
+        readJsonFile(join(options.tapRoot, relPath)),
+    });
+    assertHomebrewRuntimeSupportPlan(contract, plan, supportPlan);
+    runtimeSupport = { contract, plan: supportPlan };
+  }
+
   const { fs, baseImage, maxByteLength } = await createFs(
     options.baseImage,
     options.maxBytes,
@@ -387,11 +433,17 @@ export async function runHomebrewVfsImageBuilder(
       ...commonBuildOptions,
       fs,
       collectionFs,
+      ...(runtimeSupport === undefined
+        ? {}
+        : {
+            runtimeSupport,
+            runtimeSupportCollectionFs:
+              (await createFs(undefined, maxByteLength, plan.kandeloAbi)).fs,
+          }),
       policy: readJsonFile(options.materializationPolicy),
       mirrorRepository: options.bottleMirrorRepository!,
     });
     result = materializedBuild.result;
-    materializedBuild.assert(fs);
   }
   let packageTree:
     | {
@@ -423,8 +475,10 @@ export async function runHomebrewVfsImageBuilder(
       await materializePackageDeferredZipTree(fs, registered, archiveBytes);
     }
     const state = options.materializePackageTree ? "materialized" : "deferred";
-    assertPackageDeferredZipTreeState(fs, derived, state);
     packageTree = { derived, state };
+    if (runtimeSupport === undefined) {
+      assertPackageDeferredZipTreeState(fs, derived, state);
+    }
     if (homebrewBootstrapEnv !== undefined) {
       homebrewBootstrapConsumerState = installHomebrewBootstrapConsumerState(
         fs,
@@ -433,6 +487,32 @@ export async function runHomebrewVfsImageBuilder(
       );
     }
   }
+  if (runtimeSupport !== undefined) {
+    if (
+      packageTree === undefined ||
+      materializedBuild?.runtimeSupportAtomicMembers === undefined
+    ) {
+      throw new Error(
+        "Homebrew runtime support requires its package bootstrap cohort member",
+      );
+    }
+    await fs.sealLazyAtomicGroup(
+      runtimeSupport.contract.activation.atomicGroup,
+      [
+        ...materializedBuild.runtimeSupportAtomicMembers,
+        packageTree.derived.descriptor.id,
+      ],
+    );
+    // WHY: package-tree state validation serializes the lazy registry. A
+    // runtime-support member is intentionally incomplete until the bootstrap
+    // member joins and seals the cohort, so validate only after that boundary.
+    assertPackageDeferredZipTreeState(
+      fs,
+      packageTree.derived,
+      packageTree.state,
+    );
+  }
+  materializedBuild?.assert(fs);
   if (shellConfig) {
     assertShellExecutable(fs, shellConfig.config.path);
     if (
@@ -920,6 +1000,12 @@ function parseArgs(args: string[]): CliOptions {
         }
         options.homebrewBootstrapEnv = requireValue(args, ++i, arg);
         break;
+      case "--homebrew-runtime-support":
+        if (options.homebrewRuntimeSupport !== undefined) {
+          usage("--homebrew-runtime-support may be provided only once");
+        }
+        options.homebrewRuntimeSupport = requireValue(args, ++i, arg);
+        break;
       case "--materialize-package-tree":
         if (options.materializePackageTree) {
           usage("--materialize-package-tree may be provided only once");
@@ -994,6 +1080,23 @@ function parseArgs(args: string[]): CliOptions {
   ) {
     usage(
       `materialization policy does not exist: ${options.materializationPolicy}`,
+    );
+  }
+  if (
+    options.homebrewRuntimeSupport !== undefined &&
+    (
+      options.materializationPolicy === undefined ||
+      options.catalogCommit === undefined ||
+      options.packageTreeSpec === undefined ||
+      options.homebrewBootstrapEnv === undefined ||
+      options.materializePackageTree ||
+      !existsSync(options.homebrewRuntimeSupport)
+    )
+  ) {
+    usage(
+      "--homebrew-runtime-support requires an existing contract, " +
+        "--catalog-commit, a deferred package bootstrap with its environment, " +
+        "and materialized shell composition",
     );
   }
   if (
@@ -1197,6 +1300,11 @@ export function readHomebrewBootstrapEnvironment(
   const expected = [
     "HOMEBREW_NO_ANALYTICS=1",
     "HOMEBREW_NO_AUTO_UPDATE=1",
+    // WHY: these must remain a pair. NO_INSTALL_FROM_API alone makes
+    // Homebrew clone homebrew/core; its companion records that the no-API
+    // state was selected automatically and keeps explicit taps authoritative.
+    "HOMEBREW_NO_INSTALL_FROM_API=1",
+    "HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1",
     "HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY=1",
     `HOMEBREW_KANDELO_BOTTLE_TAG=${arch}_kandelo`,
     "",
@@ -1993,7 +2101,8 @@ function usage(message?: string, code = 2): never {
   [--migration-lock <lock.json>] \\
   [--materialization-policy <policy.json> \\
    --bottle-mirror-repository <owner/repository> \\
-   --bottle-mirror-out <new-directory>] \\
+   --bottle-mirror-out <new-directory> \\
+   [--homebrew-runtime-support <runtime-support.json>]] \\
   [--package-tree-spec <tree.json> \\
    --package-tree-archive <package-output.zip> \\
    [--homebrew-bootstrap-env <homebrew-brew.env>] \\

@@ -7,6 +7,8 @@ import {
   HOMEBREW_GUEST_LIFECYCLE_PHASE_TWO_MARKER,
 } from "./homebrew_guest_lifecycle_contract";
 import {
+  formatHomebrewGuestLifecycleFailureContext,
+  HOMEBREW_GUEST_LIFECYCLE_ENV,
   type HomebrewGuestLifecycleMachine,
   runHomebrewGuestLifecycle,
   runHomebrewGuestLifecycleProcess,
@@ -15,8 +17,83 @@ import type {
   HomebrewGuestLifecycleRuntimeInputs,
 } from "./homebrew_guest_lifecycle_runtime_inputs";
 
+test("keeps Homebrew's no-API mode flags paired in every guest process", () => {
+  const primary = "HOMEBREW_NO_INSTALL_FROM_API=1";
+  const companion = "HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1";
+  const primaryIndex = HOMEBREW_GUEST_LIFECYCLE_ENV.indexOf(primary);
+  assert.notEqual(primaryIndex, -1);
+  assert.equal(
+    HOMEBREW_GUEST_LIFECYCLE_ENV[primaryIndex + 1],
+    companion,
+  );
+  assert.equal(
+    HOMEBREW_GUEST_LIFECYCLE_ENV.filter((entry) => entry === primary).length,
+    1,
+  );
+  assert.equal(
+    HOMEBREW_GUEST_LIFECYCLE_ENV.filter((entry) => entry === companion).length,
+    1,
+  );
+});
+
+test("bounds deadline diagnostics while retaining the latest process output", () => {
+  const context = formatHomebrewGuestLifecycleFailureContext({
+    stdout: `old-stdout-${"s".repeat(12_000)}-latest-stdout`,
+    stderr: `old-stderr-${"e".repeat(16_000)}-latest-stderr`,
+    diagnostics: [
+      "old-diagnostic",
+      ...Array.from(
+        { length: 30 },
+        (_, index) => `${index}-${"d".repeat(300)}`,
+      ),
+      "latest-diagnostic",
+    ],
+  });
+  assert.ok(context.length < 15_000, `failure context was ${context.length} chars`);
+  assert.ok(!context.includes("old-stdout"));
+  assert.ok(!context.includes("old-stderr"));
+  assert.ok(!context.includes("old-diagnostic"));
+  assert.match(context, /latest-stdout/);
+  assert.match(context, /latest-stderr/);
+  assert.match(context, /latest-diagnostic/);
+});
+
+test("reports bounded live machine output when the total deadline wins", async () => {
+  await assert.rejects(
+    () =>
+      runHomebrewGuestLifecycle({
+        runtime: {
+          imageBytes: new Uint8Array([1]),
+          shellPath: "/bin/bash",
+          shellArgv0: "bash",
+          lazyUrlBase: "https://example.test/",
+          bootstrapTransportUrl: "https://example.test/bootstrap.zip",
+          bootstrapBytes: 1,
+        },
+        revisions: {
+          coreRevision: "1".repeat(40),
+          canaryRevision: "2".repeat(40),
+        },
+        deadlineMs: Date.now() + 20,
+        createMachine: () => ({
+          lazyDownloads: [],
+          diagnostics: [],
+          failureContext: () =>
+            "stdout tail=\"git clone homebrew/core\"; stderr tail=\"index-pack\"",
+          start: async () => {},
+          readFile: async () => shellConfigBytes(),
+          runShellScript: () => new Promise<void>(() => {}),
+          exportRootfsImage: async () => new Uint8Array(),
+          destroy: async () => {},
+        }),
+      }),
+    /image-owned shell preflight exceeded.*git clone homebrew\/core.*index-pack/,
+  );
+});
+
 test("runs one shared lifecycle contract across export and reboot", async () => {
   const bootstrapUrl = "https://example.test/homebrew-bootstrap.zip";
+  const runtimeSupportUrl = "https://example.test/ruby-tree.bin";
   const exportedImage = new Uint8Array([9, 8, 7]);
   const scripts: Array<{ phase: string; marker: string; script: string }> = [];
   const phaseImages: Array<{
@@ -32,6 +109,7 @@ test("runs one shared lifecycle contract across export and reboot", async () => 
     lazyUrlBase: "https://example.test/",
     bootstrapTransportUrl: bootstrapUrl,
     bootstrapBytes: 7,
+    runtimeSupportTrees: [{ url: runtimeSupportUrl, bytes: 11 }],
   };
 
   const result = await runHomebrewGuestLifecycle({
@@ -76,6 +154,8 @@ test("runs one shared lifecycle contract across export and reboot", async () => 
             events.push(
               event(bootstrapUrl, "started", 0),
               event(bootstrapUrl, "complete", 7),
+              event(runtimeSupportUrl, "started", 0),
+              event(runtimeSupportUrl, "complete", 11),
             );
           }
         },
@@ -85,7 +165,10 @@ test("runs one shared lifecycle contract across export and reboot", async () => 
     },
   });
 
-  assert.deepEqual([...result.phaseOneCompletedUrls], [bootstrapUrl]);
+  assert.deepEqual(
+    [...result.phaseOneCompletedUrls],
+    [bootstrapUrl, runtimeSupportUrl],
+  );
   assert.equal(result.exportedImageBytes, 3);
   assert.equal(result.exportedImageSha256, "a".repeat(64));
   assert.deepEqual(phaseImages, [

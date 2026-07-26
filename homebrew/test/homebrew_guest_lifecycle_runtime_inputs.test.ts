@@ -50,8 +50,9 @@ test("binds verified bootstrap bytes and bottle payloads to one exact image", as
     owner: { uid: 1000, gid: 1000 },
     activation: {
       mode: "first-use",
-      capabilities: ["homebrew:bootstrap"],
+      capabilities: ["homebrew:bootstrap", "homebrew:runtime"],
       roots: ["/home/linuxbrew/.linuxbrew/bin/brew"],
+      atomic_group: "homebrew-runtime-support",
     },
   } as const;
   const bootstrapTree = derivePackageDeferredZipTree(
@@ -133,13 +134,14 @@ test("binds verified bootstrap bytes and bottle payloads to one exact image", as
       capabilities: ["homebrew-bottle:bottle-test"],
       roots: ["/bottle/tool"],
       atomicGroup: {
-        id: "test:lifecycle-runtime-inputs",
+        id: "homebrew-runtime-support",
         member: "bottle-test",
       },
     },
     { uid: 1000, gid: 1000 },
   );
-  await fs.sealLazyAtomicGroup("test:lifecycle-runtime-inputs", [
+  await fs.sealLazyAtomicGroup("homebrew-runtime-support", [
+    bootstrapTree.descriptor.id,
     "bottle-test",
   ]);
 
@@ -176,6 +178,10 @@ test("binds verified bootstrap bytes and bottle payloads to one exact image", as
     "https://closed.kandelo.invalid/lifecycle/homebrew-bootstrap.zip",
   );
   assert.equal(runtime.bootstrapBytes, bootstrapArchive.byteLength);
+  assert.deepEqual(runtime.runtimeSupportTrees, [{
+    url: mirror.assets[0]!.url,
+    bytes: bottleBytes.byteLength,
+  }]);
   assert.equal(runtime.lazyAssets?.length, 2);
   assert.equal(
     runtime.lazyAssets?.[1]?.sha256,
@@ -185,7 +191,9 @@ test("binds verified bootstrap bytes and bottle payloads to one exact image", as
 
   for (const [forgery, expected] of [
     ["member", /activation member .* changed after sealing/],
-    ["cohort", /activation group .* differs from its seal/],
+    // WHY: collection import now rejects a cohort whose members carry
+    // different seals before the later per-seal verification can run.
+    ["cohort", /activation group .* (?:differs from its seal|has inconsistent seals)/],
   ] as const) {
     let callbacks = 0;
     await assert.rejects(

@@ -139,6 +139,13 @@ export function derivePackageDeferredZipTree(
       mode: spec.activation.mode,
       capabilities: [...spec.activation.capabilities],
       roots: [...spec.activation.roots],
+      ...(spec.activation.atomicGroup === undefined
+        ? {}
+        : {
+            atomicGroup: {
+              ...spec.activation.atomicGroup,
+            },
+          }),
     },
     inventory: entries.map((entry) => ({
       vfs_path: entry.vfsPath,
@@ -214,11 +221,28 @@ export function assertPackageDeferredZipTreeState(
       );
     }
     const tree = matching[0]!;
+    const actualActivation = tree.activation === undefined
+      ? undefined
+      : {
+          ...tree.activation,
+          ...(tree.activation.atomicGroup === undefined
+            ? {}
+            : {
+                // WHY: sealing adds cohort-wide integrity fields after the
+                // producer descriptor is derived. Membership is the stable
+                // package contract; export validation proves the added seal.
+                atomicGroup: {
+                  id: tree.activation.atomicGroup.id,
+                  member: tree.activation.atomicGroup.member,
+                },
+              }),
+        };
     if (
       tree.mountPrefix !== derived.descriptor.mount_prefix ||
       JSON.stringify(tree.content) !== JSON.stringify(derived.content) ||
       JSON.stringify(tree.inventory) !== JSON.stringify(derived.entries) ||
-      JSON.stringify(tree.activation) !== JSON.stringify(derived.descriptor.activation)
+      JSON.stringify(actualActivation) !==
+        JSON.stringify(derived.descriptor.activation)
     ) {
       throw new Error(
         `package deferred ZIP tree ${derived.descriptor.id} changed descriptor`,

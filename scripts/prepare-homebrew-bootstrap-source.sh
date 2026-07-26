@@ -332,9 +332,14 @@ TZ=UTC git_store archive --format=zip --mtime="@$UPSTREAM_COMMIT_TIME" \
 ARCHIVE_SHA256="$(sha256_file "$ARCHIVE_TMP")"
 
 BOTTLE_TAG="${ARCH}_kandelo"
+# WHY: formulae.brew.sh has no internal package API for Kandelo's effective
+# platform. Homebrew's own paired no-API mode also prevents a fallback clone
+# of the complete homebrew/core repository when users use explicit taps.
 cat >"$ENV_TMP" <<EOF
 HOMEBREW_NO_ANALYTICS=1
 HOMEBREW_NO_AUTO_UPDATE=1
+HOMEBREW_NO_INSTALL_FROM_API=1
+HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1
 HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY=1
 HOMEBREW_KANDELO_BOTTLE_TAG=$BOTTLE_TAG
 EOF

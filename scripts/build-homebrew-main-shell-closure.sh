@@ -16,6 +16,7 @@ SHELL_CONFIG="$REPO_ROOT/homebrew/main-shell-default.json"
 DEMO_CONFIG="$REPO_ROOT/homebrew/main-shell-demo.json"
 MIGRATION_LOCK="$REPO_ROOT/homebrew/main-shell-migration-lock.json"
 MATERIALIZATION_POLICY="$REPO_ROOT/homebrew/main-shell-materialization-policy.json"
+RUNTIME_SUPPORT="$REPO_ROOT/homebrew/main-shell-homebrew-runtime-support.json"
 LAZY_ARTIFACT_LOCK="$REPO_ROOT/homebrew/main-shell-lazy-artifact-lock.json"
 LAZY_ARTIFACT_CHECKER="$REPO_ROOT/scripts/verify-homebrew-main-shell-artifact-lock.sh"
 BOTTLE_MIRROR_REPOSITORY="kandelo-dev/homebrew-tap-core"
@@ -197,6 +198,11 @@ if [ "$LAZY_SHELL" = true ] &&
   echo "build-homebrew-main-shell-closure: materialization policy must be a regular non-symlink file" >&2
   exit 2
 fi
+if [ "$LAZY_SHELL" = true ] &&
+   { [ ! -f "$RUNTIME_SUPPORT" ] || [ -L "$RUNTIME_SUPPORT" ]; }; then
+  echo "build-homebrew-main-shell-closure: runtime-support contract must be a regular non-symlink file" >&2
+  exit 2
+fi
 if [ ! -f "$DEMO_CONFIG" ] || [ -L "$DEMO_CONFIG" ]; then
   echo "build-homebrew-main-shell-closure: demo config must be a regular non-symlink file" >&2
   exit 2
@@ -275,7 +281,8 @@ DEMO_CONFIG_SHA="${DEMO_CONFIG_SHA%% *}"
 DEMO_CONFIG_BYTES="$(wc -c <"$DEMO_CONFIG" | tr -d '[:space:]')"
 
 node "$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs" \
-  "$BREWFILE" "$MIGRATION_LOCK" "$TAP_ROOT/Kandelo/metadata.json"
+  "$BREWFILE" "$MIGRATION_LOCK" "$TAP_ROOT/Kandelo/metadata.json" \
+  "$RUNTIME_SUPPORT"
 
 for required in \
   "$REPO_ROOT/node_modules/.bin/tsx" \
@@ -311,6 +318,7 @@ EXPECTED_CLOSURE_COUNT="$(jq -er '.formula_closure | length' "$MIGRATION_LOCK")"
 EXPECTED_EMBEDDED_COUNT=0
 EXPECTED_DEFERRED_COUNT=0
 EXPECTED_MIRROR_FILE_COUNT=0
+EXPECTED_RUNTIME_SUPPORT_COUNT=0
 if [ "$LAZY_SHELL" = true ]; then
   EXPECTED_EMBEDDED_COUNT="$(jq -er '.embedded_package_order | length' \
     "$MATERIALIZATION_POLICY")"
@@ -319,7 +327,9 @@ if [ "$LAZY_SHELL" = true ]; then
     exit 1
   fi
   EXPECTED_DEFERRED_COUNT="$((EXPECTED_CLOSURE_COUNT - EXPECTED_EMBEDDED_COUNT))"
-  EXPECTED_MIRROR_FILE_COUNT="$((EXPECTED_DEFERRED_COUNT + 1))"
+  EXPECTED_RUNTIME_SUPPORT_COUNT="$(jq -er '.additional_formula_order | length' \
+    "$RUNTIME_SUPPORT")"
+  EXPECTED_MIRROR_FILE_COUNT="$((EXPECTED_DEFERRED_COUNT + EXPECTED_RUNTIME_SUPPORT_COUNT + 1))"
 fi
 
 # Deliberately omit images/rootfs/PACKAGES.toml's generated manifest fragment.
@@ -365,6 +375,7 @@ if [ "$LAZY_SHELL" = true ]; then
     --materialization-policy "$MATERIALIZATION_POLICY"
     --bottle-mirror-repository "$BOTTLE_MIRROR_REPOSITORY"
     --bottle-mirror-out "$BOTTLE_MIRROR_OUT"
+    --homebrew-runtime-support "$RUNTIME_SUPPORT"
   )
   MATERIALIZATION_JSON="$(jq -c . "$MATERIALIZATION_POLICY")"
 fi
@@ -405,6 +416,7 @@ jq -e \
   --slurpfile selection "$SELECTION" \
   --slurpfile tap "$TAP_ROOT/Kandelo/metadata.json" \
   --slurpfile lock "$MIGRATION_LOCK" \
+  --slurpfile runtime_support "$RUNTIME_SUPPORT" \
   --argjson materialization "$MATERIALIZATION_JSON" \
   --argjson package_tree_spec "$PACKAGE_TREE_JSON" \
   --arg package_tree_archive_sha "$PACKAGE_TREE_ARCHIVE_SHA" \
@@ -424,6 +436,7 @@ jq -e \
   --argjson expected_closure_count "$EXPECTED_CLOSURE_COUNT" \
   --argjson expected_embedded_count "$EXPECTED_EMBEDDED_COUNT" \
   --argjson expected_deferred_count "$EXPECTED_DEFERRED_COUNT" \
+  --argjson expected_runtime_support_count "$EXPECTED_RUNTIME_SUPPORT_COUNT" \
   --argjson max_bytes "$MAX_BYTES" '
   (.bottle_mirror.tag) as $mirror_tag |
   .schema == 1 and
@@ -453,6 +466,15 @@ jq -e \
       $materialization.embedded_package_order) and
     (.materialization.embedded_tree_count == $expected_embedded_count) and
     (.materialization.deferred_tree_count == $expected_deferred_count) and
+    (.materialization.runtime_support == {
+      id: "homebrew-runtime-support",
+      activation_root: "/usr/bin/brew",
+      activation_capability: "homebrew:runtime",
+      package_order: $runtime_support[0].additional_formula_order,
+      tree_count: $expected_runtime_support_count,
+      deferred_relocation_formulae:
+        [$runtime_support[0].deferred_formulae[].package]
+    }) and
     ((.materialization.embedded_package_order +
       .materialization.deferred_package_order | sort) ==
       ($lock[0].formula_closure | sort)) and
@@ -460,16 +482,19 @@ jq -e \
       ($lock[0].formula_closure -
         $materialization.embedded_package_order | sort)) and
     (.materialization.bottle_mirror.repository == $mirror_repository) and
-    (.materialization.bottle_mirror.asset_count == $expected_deferred_count) and
+    (.materialization.bottle_mirror.asset_count ==
+      ($expected_deferred_count + $expected_runtime_support_count)) and
     (.bottle_mirror.repository == $mirror_repository) and
     (.bottle_mirror.tag == .materialization.bottle_mirror.tag) and
     (.bottle_mirror.collection_sha256 ==
       .materialization.bottle_mirror.collection_sha256) and
     (.bottle_mirror.plan.asset ==
       "kandelo-homebrew-bottle-mirror-plan.json") and
-    (.bottle_mirror.assets | length == $expected_deferred_count) and
+    (.bottle_mirror.assets | length ==
+      ($expected_deferred_count + $expected_runtime_support_count)) and
     (([.bottle_mirror.assets[].package] | sort) ==
-      (.materialization.deferred_package_order | sort)) and
+      ((.materialization.deferred_package_order +
+        .materialization.runtime_support.package_order) | sort)) and
     ([.bottle_mirror.assets[] |
       (.id | startswith("bottle-")) and
       (.asset | test("^kandelo-homebrew-bottle-.*-layer\\.bin$")) and
@@ -543,7 +568,7 @@ jq -e \
     (.skipped_packages == [.owners[] | select(. != $selected)]) and
     (.path == ("/home/linuxbrew/.linuxbrew/" + .target))
   ] | all) and
-  (([.runtime_state[] | {
+  (([(.runtime_state // [])[] | {
       requires_package,
       path,
       kind,
@@ -561,7 +586,7 @@ jq -e \
       gid,
       reason
     }])) and
-  ([.runtime_state[] |
+  ([(.runtime_state // [])[] |
     if .kind == "directory" then
       (has("content_sha256") | not) and (has("content_bytes") | not)
     else
@@ -594,7 +619,14 @@ jq -e \
       $tree.descriptor.bytes > 0 and
       $tree.mount_prefix == $package_tree_spec.mount_prefix and
       $tree.owner == $package_tree_spec.owner and
-      $tree.activation == $package_tree_spec.activation and
+      $tree.activation.mode == $package_tree_spec.activation.mode and
+      $tree.activation.capabilities ==
+        $package_tree_spec.activation.capabilities and
+      $tree.activation.roots == $package_tree_spec.activation.roots and
+      $tree.activation.atomicGroup == {
+        id: $package_tree_spec.activation.atomic_group,
+        member: $package_tree_spec.id
+      } and
       $tree.state == (if $materialize_package_tree
         then "materialized"
         else "deferred"
@@ -650,7 +682,7 @@ if [ "$LAZY_SHELL" = true ]; then
   if [ "$MIRROR_ENTRY_COUNT" != "$EXPECTED_MIRROR_FILE_COUNT" ] ||
      [ "$MIRROR_FILE_COUNT" != "$EXPECTED_MIRROR_FILE_COUNT" ]; then
     echo "build-homebrew-main-shell-closure: mirror output must contain exactly " \
-      "$EXPECTED_DEFERRED_COUNT bottles and one plan" >&2
+      "$((EXPECTED_DEFERRED_COUNT + EXPECTED_RUNTIME_SUPPORT_COUNT)) bottles and one plan" >&2
     exit 1
   fi
 fi

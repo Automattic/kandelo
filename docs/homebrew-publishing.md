@@ -1635,6 +1635,13 @@ symlink to `/home/linuxbrew/.linuxbrew/bin/brew`, with no Kandelo launcher or
 install fallback. The patch recognizes that exact alias/repository pair so
 Homebrew does not derive the forbidden `/usr` prefix from `$0`. The same source
 preparer emits `wasm64_kandelo` when a future bootstrap builder selects wasm64.
+The system environment also selects Homebrew's paired no-API mode:
+`HOMEBREW_NO_INSTALL_FROM_API=1` keeps explicit tap Formulae authoritative, and
+`HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1` matches
+`Homebrew.with_no_api_env` so Homebrew does not clone the complete
+`homebrew/core` repository for unavailable core metadata. Kandelo has no
+`formulae.brew.sh` internal-package endpoint for its effective platform; normal
+first- and third-party use therefore names and pins Git taps instead.
 
 The default 768 MiB VFS capacity leaves writable space for real guest Homebrew
 operations; use `--sab-size` and `--max-size` when a specific integration test

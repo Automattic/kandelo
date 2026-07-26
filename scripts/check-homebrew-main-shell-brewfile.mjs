@@ -143,7 +143,7 @@ assertExactSequence(
   (value) => value,
 );
 validateReviewedSubstitutions(lock);
-validateCompatibilityPolicy(lock);
+validateCompatibilityPolicy(lock, runtimeSupport);
 if (metadataPath !== undefined) {
   validateTapMetadata(lock, runtimeSupport, metadataPath);
 }
@@ -361,7 +361,7 @@ function readReviewedFormulaIdentity(value, label) {
   return value;
 }
 
-function validateCompatibilityPolicy(lock) {
+function validateCompatibilityPolicy(lock, runtimeSupport) {
   const compatibility = lock.compatibility;
   if (
     !isRecord(compatibility) ||
@@ -376,6 +376,13 @@ function validateCompatibilityPolicy(lock) {
   }
 
   const lockedPackages = new Set(lock.formula_closure);
+  // WHY: the deferred support trees and the embedded base eventually share
+  // one Homebrew prefix, so their link collisions and public command aliases
+  // need one policy even though support Formulae are absent from the base.
+  const consumerNamespacePackages = new Set([
+    ...lockedPackages,
+    ...runtimeSupport.additionalFormulaOrder,
+  ]);
   const conflictTargets = new Set();
   for (const [index, entry] of compatibility.link_conflict_owners.entries()) {
     if (
@@ -383,7 +390,7 @@ function validateCompatibilityPolicy(lock) {
       typeof entry.target !== "string" ||
       !/^bin\/[a-z0-9][a-z0-9._+-]*$/.test(entry.target) ||
       typeof entry.package !== "string" ||
-      !lockedPackages.has(entry.package) ||
+      !consumerNamespacePackages.has(entry.package) ||
       typeof entry.reason !== "string" ||
       entry.reason.trim().length === 0
     ) {
@@ -404,7 +411,7 @@ function validateCompatibilityPolicy(lock) {
     if (
       !isRecord(entry) ||
       typeof entry.package !== "string" ||
-      !lockedPackages.has(entry.package) ||
+      !consumerNamespacePackages.has(entry.package) ||
       (entry.source_kind !== "link" && entry.source_kind !== "keg") ||
       typeof entry.source !== "string" ||
       !/^[a-z0-9][a-z0-9._+-]*(?:\/[a-z0-9][a-z0-9._+-]*)*$/.test(
@@ -801,6 +808,10 @@ function readRuntimeSupport(path, lock) {
   if (
     !isRecord(lifecycleInstall) ||
     lifecycleInstall.tap !== "brandonpayton/kandelo-canary" ||
+    lifecycleInstall.repository !==
+      "brandonpayton/homebrew-kandelo-canary" ||
+    typeof lifecycleInstall.revision !== "string" ||
+    !/^[0-9a-f]{40}$/.test(lifecycleInstall.revision) ||
     lifecycleInstall.formula !== "m4" ||
     lifecycleInstall.phase !== "guest-lifecycle" ||
     lifecycleInstall.image_closure !== false ||

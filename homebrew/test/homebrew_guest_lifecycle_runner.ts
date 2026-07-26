@@ -31,6 +31,7 @@ export const HOMEBREW_GUEST_LIFECYCLE_ENV = [
   "HOMEBREW_NO_AUTO_UPDATE=1",
   "HOMEBREW_NO_ENV_HINTS=1",
   "HOMEBREW_NO_INSTALL_FROM_API=1",
+  "HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1",
   "GIT_TERMINAL_PROMPT=0",
 ] as const;
 
@@ -39,6 +40,8 @@ export type HomebrewGuestLifecyclePhase = "phase-one" | "phase-two";
 export interface HomebrewGuestLifecycleMachine {
   readonly lazyDownloads: readonly LazyDownloadEvent[];
   readonly diagnostics: readonly string[];
+  /** Bounded live output for deadline failures that race the machine adapter. */
+  readonly failureContext?: () => string;
   start(): Promise<void>;
   readFile(path: string): Promise<Uint8Array | null>;
   runShellScript(options: {
@@ -66,6 +69,7 @@ export async function runHomebrewGuestLifecycleProcess(options: {
   timeoutMs: number;
   spawn: () => Promise<{ pid: number; exit: Promise<number> }>;
   terminate: (pid: number, exitCode: number) => Promise<void>;
+  failureContext?: () => string;
 }): Promise<number> {
   let pid: number | undefined;
   let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -78,7 +82,8 @@ export async function runHomebrewGuestLifecycleProcess(options: {
       () =>
         reject(
           new Error(
-            `${options.label} timed out after ${options.timeoutMs}ms`,
+            `${options.label} timed out after ${options.timeoutMs}ms` +
+              timeoutFailureContext(options.failureContext),
           ),
         ),
       options.timeoutMs,
@@ -96,6 +101,22 @@ export async function runHomebrewGuestLifecycleProcess(options: {
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
   }
+}
+
+/**
+ * Keep enough live process output to identify a stalled command without
+ * copying multi-megabyte package logs into CI annotations or thrown errors.
+ */
+export function formatHomebrewGuestLifecycleFailureContext(options: {
+  stdout: string;
+  stderr: string;
+  diagnostics: readonly string[];
+}): string {
+  return `stdout tail=${boundedSerializedTail(options.stdout, 4 * 1024)}; ` +
+    `stderr tail=${boundedSerializedTail(options.stderr, 8 * 1024)}; ` +
+    `diagnostics tail=${
+      boundedSerializedTail(options.diagnostics.slice(-20), 2 * 1024)
+    }`;
 }
 
 export async function runHomebrewGuestLifecycle(options: {
@@ -161,6 +182,14 @@ export async function runHomebrewGuestLifecycle(options: {
       options.runtime.bootstrapBytes,
       "phase-one Homebrew bootstrap",
     );
+    for (const tree of options.runtime.runtimeSupportTrees ?? []) {
+      assertSingleCompletedLazyDownload(
+        phaseOneMachine.lazyDownloads,
+        tree.url,
+        tree.bytes,
+        "phase-one atomic Homebrew runtime support",
+      );
+    }
     phaseOneLazyDownloads = [...phaseOneMachine.lazyDownloads];
     phaseOneCompletedUrls = completedLazyDownloadUrls(
       phaseOneLazyDownloads,
@@ -344,8 +373,11 @@ async function runScriptBeforeDeadline(
   >,
 ): Promise<void> {
   const timeoutMs = remainingMilliseconds(deadlineMs);
-  await beforeDeadline(deadlineMs, options.label, () =>
-    machine.runShellScript({ ...options, timeoutMs })
+  await beforeDeadline(
+    deadlineMs,
+    options.label,
+    () => machine.runShellScript({ ...options, timeoutMs }),
+    machine.failureContext,
   );
 }
 
@@ -373,6 +405,7 @@ async function beforeDeadline<T>(
   deadlineMs: number,
   label: string,
   operation: () => Promise<T>,
+  failureContext?: () => string,
 ): Promise<T> {
   const timeoutMs = remainingMilliseconds(deadlineMs);
   let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -383,7 +416,8 @@ async function beforeDeadline<T>(
         timeout = setTimeout(() => {
           reject(
             new Error(
-              `${label} exceeded the Homebrew guest lifecycle total deadline`,
+              `${label} exceeded the Homebrew guest lifecycle total deadline` +
+                timeoutFailureContext(failureContext),
             ),
           );
         }, timeoutMs);
@@ -392,6 +426,29 @@ async function beforeDeadline<T>(
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
   }
+}
+
+function timeoutFailureContext(
+  failureContext: (() => string) | undefined,
+): string {
+  if (failureContext === undefined) return "";
+  try {
+    const context = failureContext();
+    return context === "" ? "" : `; ${context}`;
+  } catch (error) {
+    return `; failure context unavailable: ${String(error)}`;
+  }
+}
+
+function boundedSerializedTail(
+  value: unknown,
+  maximumCharacters: number,
+): string {
+  const serialized = JSON.stringify(value);
+  if (serialized.length <= maximumCharacters) return serialized;
+  // WHY: retain the tail because package managers and Git emit the currently
+  // active operation there. The prefix is useful less often and can be huge.
+  return `…${serialized.slice(-(maximumCharacters - 1))}`;
 }
 
 function assertUsableDeadline(deadlineMs: number): void {

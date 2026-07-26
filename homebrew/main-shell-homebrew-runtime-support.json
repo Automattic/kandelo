@@ -196,6 +196,8 @@
   "lifecycle_installs": [
     {
       "tap": "brandonpayton/kandelo-canary",
+      "repository": "brandonpayton/homebrew-kandelo-canary",
+      "revision": "d8bdda662f6d80cf3dcdbe8451edb12bb33bbafc",
       "formula": "m4",
       "phase": "guest-lifecycle",
       "image_closure": false,

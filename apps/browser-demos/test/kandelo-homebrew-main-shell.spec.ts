@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
+import { parseHomebrewRuntimeSupportContract } from "../../../host/src/homebrew-runtime-support";
 
 const strict = process.env.KANDELO_HOMEBREW_MAIN_SHELL_STRICT === "1";
 const expectedImageSha256 = process.env.KANDELO_HOMEBREW_MAIN_SHELL_SHA256;
@@ -11,6 +13,17 @@ const closedMirrorRoot =
   process.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT;
 const transportMode = process.env.KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE;
 const mirrorPlanUrl = process.env.KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL;
+const runtimeSupport = parseHomebrewRuntimeSupportContract(
+  JSON.parse(
+    readFileSync(
+      new URL(
+        "../../../homebrew/main-shell-homebrew-runtime-support.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ),
+);
 
 interface MirrorAsset {
   package: string;
@@ -59,6 +72,7 @@ const BASE_EXPECTED_PACKAGES = [
   "kandelo-dev/tap-core/bzip2",
   "kandelo-dev/tap-core/m4",
 ] as const;
+const RUNTIME_SUPPORT_EXPECTED_PACKAGES = runtimeSupport.additionalFormulaOrder;
 
 function isHomebrewBootstrapUrl(url: string): boolean {
   const path = url.split(/[?#]/, 1)[0] ?? url;
@@ -194,8 +208,9 @@ async function waitForLazyPackageRows(
   priorSources: ReadonlySet<string | null>,
   expectedPackages: readonly string[],
   mirrorPlan: { assets: MirrorAsset[] },
+  timeoutMs = 30_000,
 ): Promise<LazyDownloadRow[]> {
-  const deadline = Date.now() + 30_000;
+  const deadline = Date.now() + timeoutMs;
   const settleWindowMs = 1_000;
   let rows: LazyDownloadRow[] = [];
   let stableCompleteFingerprint: string | undefined;
@@ -233,6 +248,24 @@ async function waitForLazyPackageRows(
       observedPackages: packageNamesForRows(added, mirrorPlan),
       rows: added,
     })}`,
+  );
+}
+
+async function waitForHomebrewBootstrapRow(
+  page: Page,
+): Promise<{ rows: LazyDownloadRow[]; bootstrap: LazyDownloadRow }> {
+  const deadline = Date.now() + 180_000;
+  let rows: LazyDownloadRow[] = [];
+  while (Date.now() < deadline) {
+    rows = await readLazyDownloadRows(page);
+    const matches = rows.filter(isHomebrewBootstrapRow);
+    if (matches.length === 1 && matches[0]?.status === "complete") {
+      return { rows, bootstrap: matches[0] };
+    }
+    await page.waitForTimeout(100);
+  }
+  throw new Error(
+    `timed out waiting for one completed Homebrew source tree: ${JSON.stringify(rows)}`,
   );
 }
 
@@ -427,7 +460,9 @@ async function bootExactShellPage(page: Page): Promise<ExactShellPage> {
     return response.json() as Promise<{ assets: MirrorAsset[] }>;
   }, config.mirrorPlanUrl);
   expect(mirrorPlan.assets.length).toBeGreaterThan(0);
-  expect(mirrorPlan.assets).toHaveLength(3);
+  expect(mirrorPlan.assets).toHaveLength(
+    BASE_EXPECTED_PACKAGES.length + RUNTIME_SUPPORT_EXPECTED_PACKAGES.length,
+  );
   if (config.transportMode === "closed") {
     expect(closedPayloadResponses).toHaveLength(mirrorPlan.assets.length);
     expect(closedPayloadResponses.every(({ status }) => status === 200)).toBe(
@@ -470,6 +505,34 @@ async function assertBootstrapStillDeferred(
   }
 }
 
+async function assertBootstrapMaterialized(
+  shell: ExactShellPage,
+  row: LazyDownloadRow,
+): Promise<void> {
+  await expect
+    .poll(() => shell.bootstrapPayloadRequests.length, {
+      timeout: 180_000,
+    })
+    .toBe(1);
+  expect(shell.bootstrapPayloadResponses).toHaveLength(1);
+  expect(await Promise.all(shell.bootstrapPayloadResponses)).toEqual([
+    expect.objectContaining({
+      status: 200,
+      sha256: shell.config.bootstrapSha256,
+      bytes: Number(shell.config.bootstrapBytes),
+    }),
+  ]);
+  expect(row).toEqual(
+    expect.objectContaining({
+      kind: "tree",
+      status: "complete",
+      loadedBytes: shell.config.bootstrapBytes,
+      totalBytes: shell.config.bootstrapBytes,
+    }),
+  );
+  expect(Number(row.eventCount)).toBeGreaterThanOrEqual(3);
+}
+
 function assertBottleLedger(
   rows: readonly LazyDownloadRow[],
   mirrorPlan: { assets: MirrorAsset[] },
@@ -492,7 +555,7 @@ function assertBottleLedger(
   }
 }
 
-test("a fresh exact shell keeps brew deferred and fetches only each lazy base tree", async ({
+test("a fresh exact shell activates brew support atomically after independent base commands", async ({
   page,
 }) => {
   test.skip(
@@ -534,7 +597,13 @@ test("a fresh exact shell keeps brew deferred and fetches only each lazy base tr
   await runTerminalCommand(
     page,
     bashCommand(
-      "printf mostly-lazy-shell | bzip2 -c >/dev/null; " +
+      // Exercise the ordinary file workflow. The lazy-layer assertion belongs
+      // to bzip2 itself and should not depend on terminal-device semantics.
+      "printf 'mostly-lazy-shell\\n' > /tmp/kandelo-bzip2-smoke; " +
+        "bzip2 -f /tmp/kandelo-bzip2-smoke; " +
+        "bzip2 -d -f /tmp/kandelo-bzip2-smoke.bz2; " +
+        "IFS= read -r bzip2_result < /tmp/kandelo-bzip2-smoke; " +
+        'test "$bzip2_result" = mostly-lazy-shell; ' +
         "printf 'HOMEBREW_BZIP2_OK\\n'",
     ),
     "HOMEBREW_BZIP2_OK",
@@ -579,7 +648,8 @@ test("a fresh exact shell keeps brew deferred and fetches only each lazy base tr
     page,
     bashCommand(
       "/bin/sh -c 'printf repeat-dash >/dev/null'; " +
-        "printf repeat-bzip2 | bzip2 -c >/dev/null; " +
+        "printf repeat-bzip2 > /tmp/kandelo-repeat-bzip2; " +
+        "bzip2 -f /tmp/kandelo-repeat-bzip2; " +
         "printf repeat-m4 | m4 >/dev/null; " +
         "printf 'HOMEBREW_BASE_REUSE_OK\\n'",
     ),
@@ -590,10 +660,62 @@ test("a fresh exact shell keeps brew deferred and fetches only each lazy base tr
     lazyRows.filter(({ source }) => !repeatPriorSources.has(source)),
   ).toEqual([]);
 
-  expect(packageNamesForRows(lazyRows, shell.mirrorPlan)).toEqual(
-    [...BASE_EXPECTED_PACKAGES].sort(),
+  const brewPriorSources = new Set(lazyRows.map(({ source }) => source));
+  // WHY: `brew ruby` is a developer command and may query Homebrew's developer
+  // package API. A temporary ordinary command observes the post-brew.env
+  // process environment while the lifecycle test separately proves installs.
+  await runTerminalCommand(
+    page,
+    bashCommand(`
+set -eu
+test ! -e /usr/bin/file
+test "$(/usr/bin/brew --prefix)" = /home/linuxbrew/.linuxbrew
+probe=/home/linuxbrew/.linuxbrew/Library/Homebrew/cmd/kandelo-env-probe.sh
+cat > "$probe" <<'KANDELO_BREW_ENV_PROBE'
+homebrew-kandelo-env-probe() {
+  printf '%s\n' "$HOMEBREW_KANDELO_BOTTLE_TAG"
+}
+KANDELO_BREW_ENV_PROBE
+test "$(/usr/bin/brew kandelo-env-probe)" = wasm32_kandelo
+rm -f "$probe"
+printf 'HOMEBREW_ATOMIC_RUNTIME_OK\n'
+`.trim()),
+    "HOMEBREW_ATOMIC_RUNTIME_OK",
+    300_000,
   );
-  await assertBootstrapStillDeferred(shell, lazyRows);
+  lazyRows = await waitForLazyPackageRows(
+    page,
+    brewPriorSources,
+    RUNTIME_SUPPORT_EXPECTED_PACKAGES,
+    shell.mirrorPlan,
+    180_000,
+  );
+  const brewResult = await waitForHomebrewBootstrapRow(page);
+  lazyRows = brewResult.rows;
+  expect(
+    packageNamesForRows(
+      lazyRows.filter(({ source }) => !brewPriorSources.has(source)),
+      shell.mirrorPlan,
+    ),
+  ).toEqual([...RUNTIME_SUPPORT_EXPECTED_PACKAGES].sort());
+  await assertBootstrapMaterialized(shell, brewResult.bootstrap);
+
+  const repeatBrewPriorSources = new Set(lazyRows.map(({ source }) => source));
+  await runTerminalCommand(
+    page,
+    'test "$(/usr/bin/brew --prefix)" = /home/linuxbrew/.linuxbrew && ' +
+      "printf 'HOMEBREW_RUNTIME_REUSE_OK\\n'",
+    "HOMEBREW_RUNTIME_REUSE_OK",
+    240_000,
+  );
+  lazyRows = await readLazyDownloadRows(page);
+  expect(
+    lazyRows.filter(({ source }) => !repeatBrewPriorSources.has(source)),
+  ).toEqual([]);
+  expect(packageNamesForRows(lazyRows, shell.mirrorPlan)).toEqual(
+    [...BASE_EXPECTED_PACKAGES, ...RUNTIME_SUPPORT_EXPECTED_PACKAGES].sort(),
+  );
+  expect(lazyRows.filter(isHomebrewBootstrapRow)).toHaveLength(1);
   assertBottleLedger(lazyRows, shell.mirrorPlan);
   expect(shell.legacyArtifactDownloads).toEqual([]);
 });

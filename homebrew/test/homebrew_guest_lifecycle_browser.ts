@@ -5,11 +5,13 @@ import {
   type LazyDownloadEvent,
 } from "../../host/src/vfs/memory-fs";
 import {
+  createClosedFixtureSourceUrl,
   loadHomebrewGuestLifecycleBrowserFixture,
   projectHomebrewGuestLifecycleBrowserFixture,
   type HomebrewGuestLifecycleBrowserFixture,
 } from "./homebrew_guest_lifecycle_browser_fixture";
 import {
+  formatHomebrewGuestLifecycleFailureContext,
   HOMEBREW_GUEST_LIFECYCLE_ENV,
   type HomebrewGuestLifecycleMachine,
   runHomebrewGuestLifecycle,
@@ -51,6 +53,8 @@ export async function runHomebrewGuestLifecycleInBrowser(options: {
   fixture: unknown;
   kernelWasm: ArrayBuffer;
   corsProxyUrl: string;
+  /** Same-origin directory containing the exact closed-transport fixtures. */
+  closedAssetRootUrl?: string;
   fetchImpl?: FetchLike;
   afterMachineDestroy?: () => Promise<void>;
 }): Promise<HomebrewGuestLifecycleBrowserResult> {
@@ -70,7 +74,15 @@ export async function runHomebrewGuestLifecycleInBrowser(options: {
       {
         fetchImpl: options.fetchImpl,
         sourceUrl: (canonicalUrl) =>
-          createCorsProxySourceUrl(options.corsProxyUrl, canonicalUrl),
+          fixture.transportMode === "closed"
+            ? createClosedFixtureSourceUrl(
+                options.closedAssetRootUrl,
+                canonicalUrl,
+              )
+            : createCorsProxySourceUrl(
+                options.corsProxyUrl,
+                canonicalUrl,
+              ),
         signal: deadlineController.signal,
       },
     );
@@ -186,7 +198,15 @@ function createBrowserLifecycleMachine(options: {
     onStderr: (bytes) => capture(bytes, "stderr"),
     onHostDiagnostic: (diagnostic) => {
       if (diagnostics.length < MAX_CAPTURED_DIAGNOSTICS) {
-        diagnostics.push(diagnostic.message);
+        // Keep browser and Node failure evidence equivalent: function indices
+        // become actionable only when they remain associated with a PID.
+        diagnostics.push(
+          `pid=${diagnostic.pid} source=${diagnostic.source}` +
+            (diagnostic.status === undefined
+              ? ""
+              : ` status=${diagnostic.status}`) +
+            `: ${diagnostic.message}`,
+        );
       }
     },
     onLazyDownload: (event) => lazyDownloads.push(event),
@@ -195,6 +215,12 @@ function createBrowserLifecycleMachine(options: {
   return {
     lazyDownloads,
     diagnostics,
+    failureContext: () =>
+      formatHomebrewGuestLifecycleFailureContext({
+        stdout,
+        stderr,
+        diagnostics,
+      }),
     start: async () => {
       const init = {
         kernelWasm: options.kernelWasm,
@@ -229,6 +255,12 @@ function createBrowserLifecycleMachine(options: {
       const exitCode = await runHomebrewGuestLifecycleProcess({
         label: scriptOptions.label,
         timeoutMs: scriptOptions.timeoutMs,
+        failureContext: () =>
+          formatHomebrewGuestLifecycleFailureContext({
+            stdout: stdout.slice(stdoutStart),
+            stderr: stderr.slice(stderrStart),
+            diagnostics: diagnostics.slice(diagnosticStart),
+          }),
         spawn: () =>
           kernel.spawnFromVfs(
             scriptOptions.shellPath,
@@ -248,17 +280,22 @@ function createBrowserLifecycleMachine(options: {
       const scriptStderr = stderr.slice(stderrStart);
       if (exitCode !== 0) {
         throw new Error(
-          `${scriptOptions.label} exited ${exitCode}; stdout=` +
-            `${JSON.stringify(scriptStdout)}; stderr=` +
-            `${JSON.stringify(scriptStderr)}; diagnostics=` +
-            `${JSON.stringify(diagnostics)}`,
+          `${scriptOptions.label} exited ${exitCode}; ` +
+            formatHomebrewGuestLifecycleFailureContext({
+              stdout: scriptStdout,
+              stderr: scriptStderr,
+              diagnostics: diagnostics.slice(diagnosticStart),
+            }),
         );
       }
       if (!scriptStdout.split(/\r?\n/).includes(scriptOptions.marker)) {
         throw new Error(
-          `${scriptOptions.label} marker is missing; stdout=` +
-            `${JSON.stringify(scriptStdout)}; stderr=` +
-            `${JSON.stringify(scriptStderr)}`,
+          `${scriptOptions.label} marker is missing; ` +
+            formatHomebrewGuestLifecycleFailureContext({
+              stdout: scriptStdout,
+              stderr: scriptStderr,
+              diagnostics: diagnostics.slice(diagnosticStart),
+            }),
         );
       }
       assertNoUnexpectedHostDiagnostics(

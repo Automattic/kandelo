@@ -60,6 +60,8 @@ import {
   type HomebrewTapMetadata,
   type HomebrewVfsPlan,
 } from "../src/homebrew-vfs-planner";
+import type { HomebrewRuntimeSupportContract } from
+  "../src/homebrew-runtime-support";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import {
   derivePackageDeferredZipTree,
@@ -3965,6 +3967,327 @@ describe("Homebrew VFS builder", () => {
         return bytesByPackage.get(pkg.name)!;
       },
     })).rejects.toThrow(/refusing to replace existing Homebrew bottle mirror plan/);
+  });
+
+  it("binds bootstrap and the runtime-support delta to one atomic activation", async () => {
+    const fixture = await lazyLayerFixture();
+    const template = fixture.plan.packages.find(
+      (pkg) => pkg.name === "runtime",
+    )!;
+    const supportVersion = "4.0";
+    const supportKeg = `${CELLAR}/brew-support/${supportVersion}`;
+    const supportBytes = bottleTar([
+      {
+        path: `brew-support/${supportVersion}/bin/brew-support`,
+        data: "#!/bin/sh\necho support\n",
+        mode: 0o755,
+      },
+      {
+        path: `brew-support/${supportVersion}/.brew/brew-support.rb`,
+        data: "class BrewSupport < Formula\nend\n",
+      },
+      {
+        path: `brew-support/${supportVersion}/INSTALL_RECEIPT.json`,
+        data: "{}\n",
+      },
+    ]);
+    const supportPackage = {
+      ...structuredClone(template),
+      name: "brew-support",
+      fullName: "kandelo-dev/tap-core/brew-support",
+      version: supportVersion,
+      url: "file:///tmp/brew-support.bottle.tar.gz",
+      sha256: sha256(supportBytes),
+      bytes: supportBytes.byteLength,
+      cacheKeySha: sha256(utf8("brew-support-cache-key")),
+      keg: supportKeg,
+      payloadRoot: `brew-support/${supportVersion}`,
+      linkManifestPath:
+        "Kandelo/link/brew-support-4.0-rebuild0-wasm32.json",
+      linkManifest: {
+        ...structuredClone(template.linkManifest),
+        package: "brew-support",
+        version: supportVersion,
+        keg: supportKeg,
+        bottle: {
+          ...structuredClone(template.linkManifest.bottle),
+          url: "file:///tmp/brew-support.bottle.tar.gz",
+          sha256: sha256(supportBytes),
+          bytes: supportBytes.byteLength,
+          cache_key_sha: sha256(utf8("brew-support-cache-key")),
+          payload_root: `brew-support/${supportVersion}`,
+        },
+        links: [{
+          type: "symlink" as const,
+          source: `Cellar/brew-support/${supportVersion}/bin/brew-support`,
+          target: "bin/brew-support",
+        }],
+        receipts: [
+          `Cellar/brew-support/${supportVersion}/.brew/brew-support.rb`,
+          `Cellar/brew-support/${supportVersion}/INSTALL_RECEIPT.json`,
+        ],
+      },
+    };
+    const fallbackVersion = "1.0";
+    const fallbackKeg = `${CELLAR}/brew-support-fallback/${fallbackVersion}`;
+    const fallbackBytes = bottleTar([
+      {
+        path:
+          `brew-support-fallback/${fallbackVersion}/bin/brew-support-fallback`,
+        data: "#!/bin/sh\necho fallback\n",
+        mode: 0o755,
+      },
+      {
+        path:
+          `brew-support-fallback/${fallbackVersion}/.brew/brew-support-fallback.rb`,
+        data: "class BrewSupportFallback < Formula\nend\n",
+      },
+      {
+        path:
+          `brew-support-fallback/${fallbackVersion}/INSTALL_RECEIPT.json`,
+        data: "{}\n",
+      },
+    ]);
+    const fallbackPackage = {
+      ...structuredClone(supportPackage),
+      name: "brew-support-fallback",
+      fullName: "kandelo-dev/tap-core/brew-support-fallback",
+      version: fallbackVersion,
+      url: "file:///tmp/brew-support-fallback.bottle.tar.gz",
+      sha256: sha256(fallbackBytes),
+      bytes: fallbackBytes.byteLength,
+      cacheKeySha: sha256(utf8("brew-support-fallback-cache-key")),
+      keg: fallbackKeg,
+      payloadRoot: `brew-support-fallback/${fallbackVersion}`,
+      linkManifestPath:
+        "Kandelo/link/brew-support-fallback-1.0-rebuild0-wasm32.json",
+      linkManifest: {
+        ...structuredClone(supportPackage.linkManifest),
+        package: "brew-support-fallback",
+        version: fallbackVersion,
+        keg: fallbackKeg,
+        bottle: {
+          ...structuredClone(supportPackage.linkManifest.bottle),
+          url: "file:///tmp/brew-support-fallback.bottle.tar.gz",
+          sha256: sha256(fallbackBytes),
+          bytes: fallbackBytes.byteLength,
+          cache_key_sha: sha256(utf8("brew-support-fallback-cache-key")),
+          payload_root: `brew-support-fallback/${fallbackVersion}`,
+        },
+        links: [{
+          type: "symlink" as const,
+          source:
+            `Cellar/brew-support-fallback/${fallbackVersion}/bin/brew-support-fallback`,
+          target: "bin/brew-support",
+        }],
+        receipts: [
+          `Cellar/brew-support-fallback/${fallbackVersion}/.brew/brew-support-fallback.rb`,
+          `Cellar/brew-support-fallback/${fallbackVersion}/INSTALL_RECEIPT.json`,
+        ],
+      },
+    };
+    const basePlan: HomebrewVfsPlan = {
+      ...fixture.plan,
+      requestedPackages: ["hello", "runtime"],
+    };
+    const supportPlan: HomebrewVfsPlan = {
+      ...basePlan,
+      requestedPackages: [
+        "hello",
+        "runtime",
+        "brew-support",
+        "brew-support-fallback",
+      ],
+      packages: [
+        ...fixture.plan.packages,
+        supportPackage,
+        fallbackPackage,
+      ],
+    };
+    const contract: HomebrewRuntimeSupportContract = {
+      id: "homebrew-runtime-support",
+      catalog: {
+        tapRepository: fixture.plan.tapRepository,
+        tapName: fixture.plan.tapName,
+        tapCommit: fixture.plan.tapCommit,
+      },
+      formulaRoots: [supportPackage.fullName],
+      formulaOrder: supportPlan.packages.map((pkg) => pkg.fullName),
+      baseFormulaOrder: fixture.plan.packages.map((pkg) => pkg.fullName),
+      additionalFormulaOrder: [
+        supportPackage.fullName,
+        fallbackPackage.fullName,
+      ],
+      activation: {
+        capability: "homebrew:runtime",
+        root: "/usr/bin/brew",
+        atomicGroup: "homebrew-runtime-support",
+      },
+      deferredRelocationFormulae: [
+        "kandelo-dev/tap-core/libmagic",
+        "kandelo-dev/tap-core/file-formula",
+      ],
+      lifecycleInstall: {
+        tap: "brandonpayton/kandelo-canary",
+        repository: "brandonpayton/homebrew-kandelo-canary",
+        revision: "4".repeat(40),
+        formula: "m4",
+      },
+    };
+    const fs = MemoryFileSystem.create(
+      new SharedArrayBuffer(32 * 1024 * 1024),
+    );
+    ensureDirRecursive(fs, "/home");
+    const result = await buildHomebrewMaterializedVfs(basePlan, {
+      fs,
+      collectionFs: MemoryFileSystem.create(
+        new SharedArrayBuffer(32 * 1024 * 1024),
+      ),
+      runtimeSupportCollectionFs: MemoryFileSystem.create(
+        new SharedArrayBuffer(32 * 1024 * 1024),
+      ),
+      runtimeSupport: { contract, plan: supportPlan },
+      policy: {
+        schema: 1,
+        kind: "kandelo-homebrew-vfs-materialization-policy",
+        embedded_roots: ["kandelo-dev/tap-core/hello"],
+        embedded_package_order: ["kandelo-dev/tap-core/hello"],
+      },
+      mirrorRepository: "kandelo-dev/homebrew-tap-core",
+      compatibilityPolicy: {
+        mirror_link_manifest_bin: { targets: ["/usr/bin", "/bin"] },
+        link_conflict_owners: [{
+          target: "bin/brew-support",
+          package: supportPackage.fullName,
+          reason: "The dedicated runtime-support Formula owns the command.",
+        }],
+        aliases: [{
+          package: supportPackage.fullName,
+          source_kind: "link",
+          source: "bin/brew-support",
+          targets: ["/usr/bin/brew-support-command"],
+        }],
+      },
+      loadBottleBytes(pkg) {
+        if (pkg.name === "hello") return fixture.baseBytes;
+        if (pkg.name === "runtime") return fixture.runtimeBytes;
+        if (pkg.name === "brew-support") return supportBytes;
+        if (pkg.name === "brew-support-fallback") return fallbackBytes;
+        throw new Error(`unexpected fixture package ${pkg.fullName}`);
+      },
+    });
+
+    const bootstrapArchive = zipSync({
+      "bin/": [new Uint8Array(), {
+        os: 3,
+        attrs: ((0o040755 << 16) >>> 0),
+      }],
+      "bin/brew": [utf8("#!/bin/sh\n"), {
+        os: 3,
+        attrs: ((0o100755 << 16) >>> 0),
+      }],
+    } satisfies Zippable);
+    const bootstrap = derivePackageDeferredZipTree({
+      schema: 1,
+      kind: "kandelo-package-deferred-zip-tree",
+      id: "shell/homebrew-bootstrap",
+      content_role: "source-tree",
+      package: { name: "shell", output: "homebrew-bootstrap.zip" },
+      archive: {
+        url: "homebrew-bootstrap.zip",
+        mode_policy: "portable-posix-v1",
+      },
+      mount_prefix: "/opt/homebrew",
+      owner: { uid: 0, gid: 0 },
+      activation: {
+        mode: "first-use",
+        capabilities: ["homebrew:bootstrap", "homebrew:runtime"],
+        roots: ["/opt/homebrew/bin/brew"],
+        atomic_group: "homebrew-runtime-support",
+      },
+    }, bootstrapArchive);
+    registerPackageDeferredZipTree(fs, bootstrap);
+    await fs.sealLazyAtomicGroup("homebrew-runtime-support", [
+      ...result.evidence.runtimeSupport!.treeIds,
+      bootstrap.descriptor.id,
+    ]);
+    assertHomebrewVfsMaterialization(fs, result.evidence);
+
+    const supportAsset = result.mirrorPlan.assets.find(
+      (asset) => asset.package === supportPackage.fullName,
+    )!;
+    const fallbackAsset = result.mirrorPlan.assets.find(
+      (asset) => asset.package === fallbackPackage.fullName,
+    )!;
+    const runtimeAsset = result.mirrorPlan.assets.find(
+      (asset) => asset.package === "kandelo-dev/tap-core/runtime",
+    )!;
+    const fetcher = vi.fn(async (url: string) => {
+      if (url === supportAsset.url) return new Response(supportBytes);
+      if (url === fallbackAsset.url) return new Response(fallbackBytes);
+      if (url.endsWith("homebrew-bootstrap.zip")) {
+        return new Response(bootstrapArchive);
+      }
+      if (url === runtimeAsset.url) return new Response(fixture.runtimeBytes);
+      throw new Error(
+        `unexpected lazy URL ${url}; expected ${supportAsset.url}`,
+      );
+    });
+    fs.setLazyFetcher(fetcher);
+
+    await expect(
+      fs.preparePath("/usr/bin/brew-support-command"),
+    ).resolves.toBe(true);
+    expect(readVfsFile(fs, "/usr/bin/brew-support-command")).toContain(
+      "support",
+    );
+    expect(readVfsFile(fs, "/opt/homebrew/bin/brew")).toContain("#!/bin/sh");
+    expect(readVfsFile(fs, `${supportKeg}/bin/brew-support`)).toContain(
+      "support",
+    );
+    expect(readVfsFile(
+      fs,
+      `${fallbackKeg}/bin/brew-support-fallback`,
+    )).toContain("fallback");
+    expect(fs.readlink(`${PREFIX}/bin/brew-support`)).toBe(
+      `${supportKeg}/bin/brew-support`,
+    );
+    expect(fs.isPathDeferred(`${template.keg}/bin/runtime`)).toBe(true);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(result.report.link_conflicts).toEqual([{
+      path: `${PREFIX}/bin/brew-support`,
+      target: "bin/brew-support",
+      owners: [
+        supportPackage.fullName,
+        fallbackPackage.fullName,
+      ],
+      selected_package: supportPackage.fullName,
+      skipped_packages: [fallbackPackage.fullName],
+      reason: "The dedicated runtime-support Formula owns the command.",
+      resolution: "migration-lock",
+    }]);
+    expect(result.report.compatibility_links).toContainEqual({
+      path: "/usr/bin/brew-support",
+      target: `${PREFIX}/bin/brew-support`,
+      package: supportPackage.fullName,
+      source: "bin/brew-support",
+      ownership: "bottle-link-manifest",
+    });
+    expect(result.report.compatibility_links).toContainEqual({
+      path: "/usr/bin/brew-support-command",
+      target: `${PREFIX}/bin/brew-support`,
+      package: supportPackage.fullName,
+      source: "bin/brew-support",
+      ownership: "bottle-link-manifest",
+    });
+    expect(result.report.materialization?.runtime_support).toMatchObject({
+      id: "homebrew-runtime-support",
+      package_order: [
+        supportPackage.fullName,
+        fallbackPackage.fullName,
+      ],
+      tree_count: 2,
+    });
   });
 
   it("preserves exact eligible external bottle URLs and rejects fragments", async () => {

@@ -23,6 +23,7 @@ import {
   assertNoUnexpectedHostDiagnostics,
 } from "./homebrew_guest_lifecycle_runtime_contract";
 import {
+  formatHomebrewGuestLifecycleFailureContext,
   HOMEBREW_GUEST_LIFECYCLE_ENV,
   type HomebrewGuestLifecycleMachine,
   runHomebrewGuestLifecycle,
@@ -209,7 +210,16 @@ function createCapturedHost(
     onStderr: (_pid, bytes) => capture(bytes, "stderr"),
     onHostDiagnostic: (diagnostic) => {
       if (output.diagnostics.length < MAX_CAPTURED_DIAGNOSTICS) {
-        output.diagnostics.push(diagnostic.message);
+        // WHY: a Wasm trap names only module-local function indices. Preserve
+        // the host-owned PID and source so the failing process can be matched
+        // to its exact executable instead of misdiagnosed as a kernel trap.
+        output.diagnostics.push(
+          `pid=${diagnostic.pid} source=${diagnostic.source}` +
+            (diagnostic.status === undefined
+              ? ""
+              : ` status=${diagnostic.status}`) +
+            `: ${diagnostic.message}`,
+        );
       }
     },
     onLazyDownload: (event) => lazyDownloads.push(event),
@@ -232,6 +242,8 @@ function createNodeLifecycleMachine(
   return {
     lazyDownloads: captured.lazyDownloads,
     diagnostics: captured.output.diagnostics,
+    failureContext: () =>
+      formatHomebrewGuestLifecycleFailureContext(captured.output),
     start: () => captured.host.init(),
     readFile: (path) => captured.host.readFileFromVfs(path),
     runShellScript: (scriptOptions) =>
@@ -256,6 +268,13 @@ async function runGuestScript(options: {
   const exitCode = await runHomebrewGuestLifecycleProcess({
     label: options.label,
     timeoutMs: options.timeoutMs,
+    failureContext: () =>
+      formatHomebrewGuestLifecycleFailureContext({
+        stdout: options.captured.output.stdout.slice(stdoutStart),
+        stderr: options.captured.output.stderr.slice(stderrStart),
+        diagnostics:
+          options.captured.output.diagnostics.slice(diagnosticStart),
+      }),
     spawn: () =>
       options.captured.host.spawnFromVfs(
         options.shellPath,
@@ -275,15 +294,24 @@ async function runGuestScript(options: {
   const stderr = options.captured.output.stderr.slice(stderrStart);
   if (exitCode !== 0) {
     throw new Error(
-      `${options.label} exited ${exitCode}; stdout=${JSON.stringify(stdout)}; ` +
-        `stderr=${JSON.stringify(stderr)}; diagnostics=` +
-        `${JSON.stringify(options.captured.output.diagnostics)}`,
+      `${options.label} exited ${exitCode}; ` +
+        formatHomebrewGuestLifecycleFailureContext({
+          stdout,
+          stderr,
+          diagnostics:
+            options.captured.output.diagnostics.slice(diagnosticStart),
+        }),
     );
   }
   if (!stdout.split(/\r?\n/).includes(options.marker)) {
     throw new Error(
-      `${options.label} marker is missing; stdout=${JSON.stringify(stdout)}; ` +
-        `stderr=${JSON.stringify(stderr)}`,
+      `${options.label} marker is missing; ` +
+        formatHomebrewGuestLifecycleFailureContext({
+          stdout,
+          stderr,
+          diagnostics:
+            options.captured.output.diagnostics.slice(diagnosticStart),
+        }),
     );
   }
   assertNoUnexpectedHostDiagnostics(

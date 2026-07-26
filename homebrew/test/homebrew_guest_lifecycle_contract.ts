@@ -52,6 +52,15 @@ export function createHomebrewGuestLifecyclePhaseOneScript(
 set -euo pipefail
 fail() { printf 'homebrew-guest-lifecycle: %s\n' "$*" >&2; exit 1; }
 progress() { printf 'homebrew-guest-lifecycle: %s\n' "$*"; }
+assert_precomposed_bottle() {
+  /usr/bin/ruby -rjson -e '
+    receipt = JSON.parse(File.binread(File.join(ARGV.fetch(0), "INSTALL_RECEIPT.json")))
+    abort "precomposed package was not built as a bottle" unless
+      receipt.fetch("built_as_bottle") == true
+    abort "precomposed package falsely claims a Homebrew pour" unless
+      receipt.fetch("poured_from_bottle") == false
+  ' "$1"
+}
 assert_poured() {
   /usr/bin/ruby -rjson -e '
     receipt = JSON.parse(File.binread(File.join(ARGV.fetch(0), "INSTALL_RECEIPT.json")))
@@ -94,7 +103,11 @@ assert_m4_execution() {
 export HOMEBREW_NO_ANALYTICS=1
 export HOMEBREW_NO_AUTO_UPDATE=1
 export HOMEBREW_NO_ENV_HINTS=1
+# WHY: Kandelo has no upstream internal package API. Use the same paired flags
+# as Homebrew.with_no_api_env so fully qualified taps resolve from Git without
+# making no-API mode clone the complete homebrew/core repository.
 export HOMEBREW_NO_INSTALL_FROM_API=1
+export HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1
 export GIT_TERMINAL_PROMPT=0
 
 repository="$(/usr/bin/brew --repository)"
@@ -113,7 +126,9 @@ assert_clean_tap "$core_tap" ${CORE_ORIGIN} ${revisions.coreRevision}
 # existing receipt through stock Homebrew so the following command proves a
 # genuine install rather than accepting Homebrew's "already installed" path.
 composed_bzip2_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/bzip2)"
-assert_poured "$composed_bzip2_prefix"
+# WHY: the VFS composer placed exact bottle bytes directly; it did not execute
+# Homebrew's pour operation. Preserve that distinction in the receipt contract.
+assert_precomposed_bottle "$composed_bzip2_prefix"
 /usr/bin/brew uninstall --ignore-dependencies ${CORE_TAP}/bzip2
 [ ! -e "$composed_bzip2_prefix" ] ||
   fail "direct-composed Bzip2 prefix remains after transition uninstall"
@@ -144,18 +159,18 @@ assert_clean_tap "$canary_tap" ${CANARY_ORIGIN} ${revisions.canaryRevision}
 # stock uninstall to create one truthful target before the independent tap
 # pours its own bottle; do not rewrite either Formula to avoid the collision.
 composed_m4_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/m4)"
-assert_poured "$composed_m4_prefix"
+assert_precomposed_bottle "$composed_m4_prefix"
 /usr/bin/brew uninstall --ignore-dependencies ${CORE_TAP}/m4
 [ ! -e "$composed_m4_prefix" ] ||
   fail "direct-composed M4 prefix remains after transition uninstall"
 
 dash_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/dash)"
-assert_poured "$dash_prefix"
+assert_precomposed_bottle "$dash_prefix"
 progress "installing independent M4 with its first-party Dash dependency"
 /usr/bin/brew install --no-ask --force-bottle ${CANARY_TAP}/m4
 m4_prefix="$(/usr/bin/brew --prefix ${CANARY_TAP}/m4)"
 assert_poured "$m4_prefix"
-assert_poured "$dash_prefix"
+assert_precomposed_bottle "$dash_prefix"
 /usr/bin/ruby -rjson -e '
   receipt = JSON.parse(File.binread(File.join(ARGV.fetch(0), "INSTALL_RECEIPT.json")))
   dependencies = receipt.fetch("runtime_dependencies")
@@ -198,6 +213,15 @@ export function createHomebrewGuestLifecyclePhaseTwoScript(
 set -euo pipefail
 fail() { printf 'homebrew-guest-lifecycle-reboot: %s\n' "$*" >&2; exit 1; }
 progress() { printf 'homebrew-guest-lifecycle-reboot: %s\n' "$*"; }
+assert_precomposed_bottle() {
+  /usr/bin/ruby -rjson -e '
+    receipt = JSON.parse(File.binread(File.join(ARGV.fetch(0), "INSTALL_RECEIPT.json")))
+    abort "precomposed package was not built as a bottle" unless
+      receipt.fetch("built_as_bottle") == true
+    abort "precomposed package falsely claims a Homebrew pour" unless
+      receipt.fetch("poured_from_bottle") == false
+  ' "$1"
+}
 assert_poured() {
   /usr/bin/ruby -rjson -e '
     receipt = JSON.parse(File.binread(File.join(ARGV.fetch(0), "INSTALL_RECEIPT.json")))
@@ -274,7 +298,10 @@ snapshot_package_identity() {
 export HOMEBREW_NO_ANALYTICS=1
 export HOMEBREW_NO_AUTO_UPDATE=1
 export HOMEBREW_NO_ENV_HINTS=1
+# WHY: preserve Homebrew's paired no-API mode after reboot. The internal
+# companion flag keeps core metadata unavailable instead of cloning core.
 export HOMEBREW_NO_INSTALL_FROM_API=1
+export HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1
 export GIT_TERMINAL_PROMPT=0
 
 repository="$(/usr/bin/brew --repository)"
@@ -299,7 +326,9 @@ m4_prefix="$(/usr/bin/brew --prefix ${CANARY_TAP}/m4)"
 dash_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/dash)"
 assert_poured "$bzip2_prefix"
 assert_poured "$m4_prefix"
-assert_poured "$dash_prefix"
+# Dash remains the base image's direct-composed dependency; the lifecycle did
+# not uninstall or repour it merely because the independently tapped M4 uses it.
+assert_precomposed_bottle "$dash_prefix"
 
 progress "executing persisted bottles after rootfs reboot"
 assert_bzip2_roundtrip "$bzip2_prefix"

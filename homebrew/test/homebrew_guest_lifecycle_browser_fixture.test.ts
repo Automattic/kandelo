@@ -16,9 +16,36 @@ import {
 import { homebrewRuntimeLayerPayloadAsset } from
   "../../host/src/homebrew-runtime-layer-limits";
 import {
+  createClosedFixtureSourceUrl,
   loadHomebrewGuestLifecycleBrowserFixture,
   projectHomebrewGuestLifecycleBrowserFixture,
 } from "./homebrew_guest_lifecycle_browser_fixture";
+
+test("maps closed canonical identities to one same-origin fixture directory", () => {
+  assert.equal(
+    createClosedFixtureSourceUrl(
+      "https://browser.test/homebrew-main-shell-bottles",
+      "https://github.com/example/project/releases/download/tag/payload.bin",
+    ),
+    "https://browser.test/homebrew-main-shell-bottles/payload.bin",
+  );
+  assert.throws(
+    () =>
+      createClosedFixtureSourceUrl(
+        undefined,
+        "https://example.test/payload.bin",
+      ),
+    /requires a same-origin asset root/,
+  );
+  assert.throws(
+    () =>
+      createClosedFixtureSourceUrl(
+        "https://browser.test/assets/",
+        "https://example.test/escaped%2Fpayload.bin",
+      ),
+    /asset name is invalid/,
+  );
+});
 
 test("requires an explicit live-network opt-in before accepting URLs", () => {
   const fixture = createFixture();

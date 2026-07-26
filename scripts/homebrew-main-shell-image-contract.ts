@@ -7,9 +7,7 @@ import {
   resolveDemoPresentation,
   validateKandeloDemoConfig,
 } from "../web-libs/kandelo-session/src/demo-config";
-import {
-  assertMainShellGuestCatalogIdentity,
-} from "./homebrew-main-shell-catalog-contract";
+import { assertMainShellGuestCatalogIdentity } from "./homebrew-main-shell-catalog-contract";
 export {
   assertMainShellGuestCatalogIdentity,
   type MainShellCatalogIdentity,
@@ -47,12 +45,22 @@ export interface MainShellRuntimeStateEntry {
  * payload after package-archive extraction: a cache hit cannot substitute an
  * older shell image while a pre-archive composition report remains green.
  */
-export function assertMainShellImageContract(input: MainShellImageContractInput): void {
+export function assertMainShellImageContract(
+  input: MainShellImageContractInput,
+): void {
   const lock = requiredRecord(input.migrationLock, "migration lock");
-  const tapRepository = requiredString(lock, "tap_repository", "migration lock");
+  const tapRepository = requiredString(
+    lock,
+    "tap_repository",
+    "migration lock",
+  );
   const tapName = requiredString(lock, "tap_name", "migration lock");
   const catalog = requiredRecord(lock.catalog, "migration lock catalog");
-  const tapCommit = requiredString(catalog, "tap_commit", "migration lock catalog");
+  const tapCommit = requiredString(
+    catalog,
+    "tap_commit",
+    "migration lock catalog",
+  );
   const consumer = requiredRecord(lock.consumer, "migration lock consumer");
   const maxVfsBytes = requiredPositiveInteger(
     consumer,
@@ -60,11 +68,21 @@ export function assertMainShellImageContract(input: MainShellImageContractInput)
     "migration lock consumer",
   );
 
-  const lockedPackages = requiredRecordArray(lock.packages, "migration lock packages");
+  const lockedPackages = requiredRecordArray(
+    lock.packages,
+    "migration lock packages",
+  );
   if (lockedPackages.length === 0) fail("migration lock has no package roots");
   const requestedPackages = lockedPackages.map((entry, index) => {
-    const formula = requiredRecord(entry.formula, `migration lock package ${index} formula`);
-    return requiredString(formula, "name", `migration lock package ${index} formula`);
+    const formula = requiredRecord(
+      entry.formula,
+      `migration lock package ${index} formula`,
+    );
+    return requiredString(
+      formula,
+      "name",
+      `migration lock package ${index} formula`,
+    );
   });
   assertUnique(requestedPackages, "migration lock roots");
   const requestedPackagesSha256 = createHash("sha256")
@@ -75,12 +93,16 @@ export function assertMainShellImageContract(input: MainShellImageContractInput)
     lock.formula_closure,
     "migration lock formula_closure",
   );
-  if (formulaClosure.length === 0) fail("migration lock has no Formula closure");
+  if (formulaClosure.length === 0)
+    fail("migration lock has no Formula closure");
   assertUnique(formulaClosure, "migration lock formula_closure");
 
   const guest = requiredRecord(input.guestManifest, "guest Homebrew manifest");
   expectEqual(guest.schema, 1, "guest Homebrew manifest schema");
-  const guestSelection = requiredRecord(guest.selection, "guest Homebrew selection");
+  const guestSelection = requiredRecord(
+    guest.selection,
+    "guest Homebrew selection",
+  );
   expectEqual(guestSelection.kind, "brewfile", "guest Homebrew selection kind");
   expectExactStrings(
     requiredStringArray(
@@ -105,10 +127,20 @@ export function assertMainShellImageContract(input: MainShellImageContractInput)
     input,
     "guest Homebrew migration_lock",
   );
-  const guestMetadata = requiredRecord(guest.metadata, "guest Homebrew metadata");
-  expectEqual(guestMetadata.tap_repository, tapRepository, "guest metadata tap_repository");
+  const guestMetadata = requiredRecord(
+    guest.metadata,
+    "guest Homebrew metadata",
+  );
+  expectEqual(
+    guestMetadata.tap_repository,
+    tapRepository,
+    "guest metadata tap_repository",
+  );
   expectEqual(guestMetadata.tap_name, tapName, "guest metadata tap_name");
-  const guestPackages = requiredRecordArray(guest.packages, "guest Homebrew packages");
+  const guestPackages = requiredRecordArray(
+    guest.packages,
+    "guest Homebrew packages",
+  );
   assertPackageClosure(
     guestPackages,
     formulaClosure,
@@ -117,29 +149,58 @@ export function assertMainShellImageContract(input: MainShellImageContractInput)
     "snake",
   );
 
-  const imageMetadata = requiredRecord(input.imageMetadata, "VFS image metadata");
-  const imageCapacityMetadata = requiredRecord(imageMetadata.capacity, "VFS capacity metadata");
+  const imageMetadata = requiredRecord(
+    input.imageMetadata,
+    "VFS image metadata",
+  );
+  const imageCapacityMetadata = requiredRecord(
+    imageMetadata.capacity,
+    "VFS capacity metadata",
+  );
   expectEqual(
     imageCapacityMetadata.maxByteLength,
     maxVfsBytes,
     "VFS metadata capacity.maxByteLength",
   );
-  const homebrew = requiredRecord(imageMetadata.homebrew, "VFS Homebrew metadata");
-  expectEqual(homebrew.tapRepository, tapRepository, "VFS metadata tapRepository");
-  expectEqual(homebrew.tapName, tapName, "VFS metadata tapName");
-  expectEqual(homebrew.tapCommit, guestMetadata.tap_commit, "VFS metadata tapCommit");
-  expectEqual(homebrew.releaseTag, guestMetadata.release_tag, "VFS metadata releaseTag");
-  assertCatalog(requiredRecord(homebrew.catalog, "VFS metadata catalog"), {
+  const homebrew = requiredRecord(
+    imageMetadata.homebrew,
+    "VFS Homebrew metadata",
+  );
+  expectEqual(
+    homebrew.tapRepository,
     tapRepository,
-    tapName,
-    tapCommit,
-  }, "VFS metadata catalog", "camel");
+    "VFS metadata tapRepository",
+  );
+  expectEqual(homebrew.tapName, tapName, "VFS metadata tapName");
+  expectEqual(
+    homebrew.tapCommit,
+    guestMetadata.tap_commit,
+    "VFS metadata tapCommit",
+  );
+  expectEqual(
+    homebrew.releaseTag,
+    guestMetadata.release_tag,
+    "VFS metadata releaseTag",
+  );
+  assertCatalog(
+    requiredRecord(homebrew.catalog, "VFS metadata catalog"),
+    {
+      tapRepository,
+      tapName,
+      tapCommit,
+    },
+    "VFS metadata catalog",
+    "camel",
+  );
   assertLockBinding(
     requiredRecord(homebrew.migrationLock, "VFS metadata migrationLock"),
     input,
     "VFS metadata migrationLock",
   );
-  const imageSelection = requiredRecord(homebrew.selection, "VFS metadata selection");
+  const imageSelection = requiredRecord(
+    homebrew.selection,
+    "VFS metadata selection",
+  );
   expectEqual(imageSelection.kind, "brewfile", "VFS metadata selection kind");
   expectEqual(
     imageSelection.requestedPackageCount,
@@ -152,7 +213,10 @@ export function assertMainShellImageContract(input: MainShellImageContractInput)
     "VFS metadata requestedPackagesSha256",
   );
   assertBrewfileBinding(guestSelection, imageSelection);
-  const imagePackages = requiredRecordArray(homebrew.packages, "VFS metadata packages");
+  const imagePackages = requiredRecordArray(
+    homebrew.packages,
+    "VFS metadata packages",
+  );
   assertPackageClosure(
     imagePackages,
     formulaClosure,
@@ -165,9 +229,15 @@ export function assertMainShellImageContract(input: MainShellImageContractInput)
 
   const capacity = requiredRecord(input.imageCapacity, "decoded VFS capacity");
   expectEqual(capacity.maxByteLength, maxVfsBytes, "decoded VFS maxByteLength");
-  const byteLength = requiredPositiveInteger(capacity, "byteLength", "decoded VFS capacity");
+  const byteLength = requiredPositiveInteger(
+    capacity,
+    "byteLength",
+    "decoded VFS capacity",
+  );
   if (byteLength > maxVfsBytes) {
-    fail(`decoded VFS byteLength ${byteLength} exceeds locked capacity ${maxVfsBytes}`);
+    fail(
+      `decoded VFS byteLength ${byteLength} exceeds locked capacity ${maxVfsBytes}`,
+    );
   }
 
   const shell = requiredRecord(input.shellConfig, "guest shell config");
@@ -178,8 +248,15 @@ export function assertMainShellImageContract(input: MainShellImageContractInput)
     EXPECTED_SHELL_ARGV,
     "guest shell config argv",
   );
-  const metadataShell = requiredRecord(homebrew.defaultShell, "VFS metadata defaultShell");
-  expectEqual(metadataShell.path, EXPECTED_SHELL_PATH, "VFS metadata defaultShell path");
+  const metadataShell = requiredRecord(
+    homebrew.defaultShell,
+    "VFS metadata defaultShell",
+  );
+  expectEqual(
+    metadataShell.path,
+    EXPECTED_SHELL_PATH,
+    "VFS metadata defaultShell path",
+  );
   expectExactStrings(
     requiredStringArray(metadataShell.argv, "VFS metadata defaultShell argv"),
     EXPECTED_SHELL_ARGV,
@@ -199,9 +276,18 @@ function assertDemoConfig(
     input.expectedDemoConfigSource,
     "guest demo config bytes",
   );
-  const sha256 = createHash("sha256").update(input.demoConfigSource).digest("hex");
-  const binding = requiredRecord(homebrew.demoConfig, "VFS metadata demoConfig");
-  expectEqual(binding.path, KANDELO_DEMO_CONFIG_PATH, "VFS metadata demoConfig path");
+  const sha256 = createHash("sha256")
+    .update(input.demoConfigSource)
+    .digest("hex");
+  const binding = requiredRecord(
+    homebrew.demoConfig,
+    "VFS metadata demoConfig",
+  );
+  expectEqual(
+    binding.path,
+    KANDELO_DEMO_CONFIG_PATH,
+    "VFS metadata demoConfig path",
+  );
   expectEqual(binding.sha256, sha256, "VFS metadata demoConfig sha256");
   expectEqual(
     binding.bytes,
@@ -226,7 +312,11 @@ function assertDemoConfig(
     "terminal,syslog",
     "shell demo presentation",
   );
-  expectEqual(resolveDemoGuide(config, "shell")?.title, "Shell demo", "shell demo guide");
+  expectEqual(
+    resolveDemoGuide(config, "shell")?.title,
+    "Shell demo",
+    "shell demo guide",
+  );
   if (
     resolveDemoPresentation(config, "doom") !== null ||
     resolveDemoPresentation(config, "modeset") !== null ||
@@ -243,13 +333,22 @@ function assertRuntimeState(
   homebrew: Record<string, unknown>,
   formulaClosure: string[],
 ): void {
-  const compatibility = requiredRecord(lock.compatibility, "migration lock compatibility");
+  const compatibility = requiredRecord(
+    lock.compatibility,
+    "migration lock compatibility",
+  );
   const declarations = requiredRecordArray(
     compatibility.runtime_state,
     "migration lock runtime_state",
   );
-  const guestState = requiredRecordArray(guest.runtime_state, "guest runtime_state");
-  const metadataState = requiredRecordArray(
+  // The image writer omits zero-cardinality report sections from its canonical
+  // JSON. Treat absence as the empty set here, while still rejecting any
+  // non-array representation and enforcing the lock's exact declaration count.
+  const guestState = optionalRecordArray(
+    guest.runtime_state,
+    "guest runtime_state",
+  );
+  const metadataState = optionalRecordArray(
     homebrew.runtimeState,
     "VFS metadata runtimeState",
   );
@@ -260,14 +359,20 @@ function assertRuntimeState(
   ) {
     fail("runtime-state copies do not have the reviewed declaration count");
   }
-  const actualByPath = new Map(input.runtimeState.map((entry) => [entry.path, entry]));
+  const actualByPath = new Map(
+    input.runtimeState.map((entry) => [entry.path, entry]),
+  );
   if (actualByPath.size !== input.runtimeState.length) {
     fail("decoded runtime state contains a duplicate path");
   }
 
   declarations.forEach((declaration, index) => {
     const label = `migration lock runtime_state[${index}]`;
-    const requiresPackage = requiredString(declaration, "requires_package", label);
+    const requiresPackage = requiredString(
+      declaration,
+      "requires_package",
+      label,
+    );
     if (!formulaClosure.includes(requiresPackage)) {
       fail(`${label} requires_package is outside the reviewed Formula closure`);
     }
@@ -293,7 +398,11 @@ function assertRuntimeState(
       gid,
       reason,
     })) {
-      expectEqual(guestEntry[key], expected, `guest runtime_state[${index}] ${key}`);
+      expectEqual(
+        guestEntry[key],
+        expected,
+        `guest runtime_state[${index}] ${key}`,
+      );
     }
     for (const [key, expected] of Object.entries({
       requiresPackage,
@@ -304,7 +413,11 @@ function assertRuntimeState(
       gid,
       reason,
     })) {
-      expectEqual(metadataEntry[key], expected, `VFS metadata runtimeState[${index}] ${key}`);
+      expectEqual(
+        metadataEntry[key],
+        expected,
+        `VFS metadata runtimeState[${index}] ${key}`,
+      );
     }
     expectEqual(actual.kind, kind, `${path} decoded kind`);
     expectEqual(actual.mode, mode, `${path} decoded mode`);
@@ -312,22 +425,41 @@ function assertRuntimeState(
     expectEqual(actual.gid, gid, `${path} decoded gid`);
 
     if (kind === "directory") {
-      if (actual.contents !== undefined) fail(`${path} directory unexpectedly has contents`);
-      if (guestEntry.content_sha256 !== undefined || guestEntry.content_bytes !== undefined) {
-        fail(`guest runtime state directory ${path} has file-content provenance`);
+      if (actual.contents !== undefined)
+        fail(`${path} directory unexpectedly has contents`);
+      if (
+        guestEntry.content_sha256 !== undefined ||
+        guestEntry.content_bytes !== undefined
+      ) {
+        fail(
+          `guest runtime state directory ${path} has file-content provenance`,
+        );
       }
-      if (metadataEntry.contentSha256 !== undefined || metadataEntry.contentBytes !== undefined) {
+      if (
+        metadataEntry.contentSha256 !== undefined ||
+        metadataEntry.contentBytes !== undefined
+      ) {
         fail(`VFS runtime state directory ${path} has file-content provenance`);
       }
       return;
     }
 
-    const expectedContents = kind === "text_file"
-      ? new TextEncoder().encode(requiredString(declaration, "contents", label))
-      : new Uint8Array();
-    if (actual.contents === undefined) fail(`${path} decoded file contents are missing`);
-    expectExactBytes(actual.contents, expectedContents, `${path} decoded contents`);
-    const contentSha256 = createHash("sha256").update(expectedContents).digest("hex");
+    const expectedContents =
+      kind === "text_file"
+        ? new TextEncoder().encode(
+            requiredString(declaration, "contents", label),
+          )
+        : new Uint8Array();
+    if (actual.contents === undefined)
+      fail(`${path} decoded file contents are missing`);
+    expectExactBytes(
+      actual.contents,
+      expectedContents,
+      `${path} decoded contents`,
+    );
+    const contentSha256 = createHash("sha256")
+      .update(expectedContents)
+      .digest("hex");
     expectEqual(
       guestEntry.content_sha256,
       contentSha256,
@@ -355,9 +487,19 @@ function assertBrewfileBinding(
   guestSelection: Record<string, unknown>,
   imageSelection: Record<string, unknown>,
 ): void {
-  const guest = requiredRecord(guestSelection.brewfile, "guest Homebrew Brewfile binding");
-  const image = requiredRecord(imageSelection.brewfile, "VFS metadata Brewfile binding");
-  expectEqual(guest.parser, "kandelo-static-brewfile-v1", "guest Brewfile parser");
+  const guest = requiredRecord(
+    guestSelection.brewfile,
+    "guest Homebrew Brewfile binding",
+  );
+  const image = requiredRecord(
+    imageSelection.brewfile,
+    "VFS metadata Brewfile binding",
+  );
+  expectEqual(
+    guest.parser,
+    "kandelo-static-brewfile-v1",
+    "guest Brewfile parser",
+  );
   requireLowerHex(guest, "sha256", 64, "guest Brewfile binding");
   requiredPositiveInteger(guest, "bytes", "guest Brewfile binding");
   for (const key of ["parser", "sha256", "bytes"] as const) {
@@ -393,8 +535,14 @@ function assertPackageCopiesAgree(
       expectEqual(image[imageKey], guest[guestKey], `${fullName} ${imageKey}`);
     }
 
-    const guestBuiltFrom = requiredRecord(guest.built_from, `${fullName} built_from`);
-    const imageBuiltFrom = requiredRecord(image.builtFrom, `${fullName} builtFrom`);
+    const guestBuiltFrom = requiredRecord(
+      guest.built_from,
+      `${fullName} built_from`,
+    );
+    const imageBuiltFrom = requiredRecord(
+      image.builtFrom,
+      `${fullName} builtFrom`,
+    );
     for (const [guestKey, imageKey] of [
       ["tap_repository", "tapRepository"],
       ["tap_commit", "tapCommit"],
@@ -402,11 +550,25 @@ function assertPackageCopiesAgree(
       ["kandelo_commit", "kandeloCommit"],
       ["formula_sha256", "formulaSha256"],
     ] as const) {
-      expectEqual(imageBuiltFrom[imageKey], guestBuiltFrom[guestKey], `${fullName} builtFrom.${imageKey}`);
+      expectEqual(
+        imageBuiltFrom[imageKey],
+        guestBuiltFrom[guestKey],
+        `${fullName} builtFrom.${imageKey}`,
+      );
     }
     requireLowerHex(guestBuiltFrom, "tap_commit", 40, `${fullName} built_from`);
-    requireLowerHex(guestBuiltFrom, "kandelo_commit", 40, `${fullName} built_from`);
-    requireLowerHex(guestBuiltFrom, "formula_sha256", 64, `${fullName} built_from`);
+    requireLowerHex(
+      guestBuiltFrom,
+      "kandelo_commit",
+      40,
+      `${fullName} built_from`,
+    );
+    requireLowerHex(
+      guestBuiltFrom,
+      "formula_sha256",
+      64,
+      `${fullName} built_from`,
+    );
   });
 }
 
@@ -422,9 +584,20 @@ function assertLockedRootVersions(
     ]),
   );
   lockedPackages.forEach((entry, index) => {
-    const formula = requiredRecord(entry.formula, `migration lock package ${index} formula`);
-    const name = requiredString(formula, "name", `migration lock package ${index} formula`);
-    const version = requiredString(formula, "version", `migration lock package ${index} formula`);
+    const formula = requiredRecord(
+      entry.formula,
+      `migration lock package ${index} formula`,
+    );
+    const name = requiredString(
+      formula,
+      "name",
+      `migration lock package ${index} formula`,
+    );
+    const version = requiredString(
+      formula,
+      "version",
+      `migration lock package ${index} formula`,
+    );
     const revision = requiredNonNegativeInteger(
       formula,
       "revision",
@@ -457,7 +630,11 @@ function assertCatalog(
   const repositoryKey = style === "snake" ? "tap_repository" : "tapRepository";
   const nameKey = style === "snake" ? "tap_name" : "tapName";
   const commitKey = style === "snake" ? "checkout_commit" : "checkoutCommit";
-  expectEqual(actual[repositoryKey], expected.tapRepository, `${label} ${repositoryKey}`);
+  expectEqual(
+    actual[repositoryKey],
+    expected.tapRepository,
+    `${label} ${repositoryKey}`,
+  );
   expectEqual(actual[nameKey], expected.tapName, `${label} ${nameKey}`);
   expectEqual(actual[commitKey], expected.tapCommit, `${label} ${commitKey}`);
 }
@@ -478,13 +655,15 @@ function assertPackageClosure(
   tapName: string,
   style: "snake" | "camel",
 ): void {
-  const label = style === "snake" ? "guest Homebrew packages" : "VFS metadata packages";
+  const label =
+    style === "snake" ? "guest Homebrew packages" : "VFS metadata packages";
   const fullNameKey = style === "snake" ? "full_name" : "fullName";
-  const tapRepositoryKey = style === "snake" ? "tap_repository" : "tapRepository";
+  const tapRepositoryKey =
+    style === "snake" ? "tap_repository" : "tapRepository";
   const tapNameKey = style === "snake" ? "tap_name" : "tapName";
   const sourceStatusKey = style === "snake" ? "source_status" : "sourceStatus";
   const fullNames = packages.map((entry, index) =>
-    requiredString(entry, fullNameKey, `${label}[${index}]`)
+    requiredString(entry, fullNameKey, `${label}[${index}]`),
   );
   assertUnique(fullNames, label);
   expectExactStrings(
@@ -494,11 +673,24 @@ function assertPackageClosure(
   );
   packages.forEach((entry, index) => {
     const entryLabel = `${label}[${index}]`;
-    expectEqual(entry[tapRepositoryKey], tapRepository, `${entryLabel} ${tapRepositoryKey}`);
+    expectEqual(
+      entry[tapRepositoryKey],
+      tapRepository,
+      `${entryLabel} ${tapRepositoryKey}`,
+    );
     expectEqual(entry[tapNameKey], tapName, `${entryLabel} ${tapNameKey}`);
     expectEqual(entry.arch, EXPECTED_ARCH, `${entryLabel} arch`);
-    expectEqual(entry[sourceStatusKey], "success", `${entryLabel} ${sourceStatusKey}`);
-    requireLowerHex(entry, style === "snake" ? "tap_commit" : "tapCommit", 40, entryLabel);
+    expectEqual(
+      entry[sourceStatusKey],
+      "success",
+      `${entryLabel} ${sourceStatusKey}`,
+    );
+    requireLowerHex(
+      entry,
+      style === "snake" ? "tap_commit" : "tapCommit",
+      40,
+      entryLabel,
+    );
     requiredString(entry, "version", entryLabel);
     requireLowerHex(
       entry,
@@ -507,13 +699,19 @@ function assertPackageClosure(
       entryLabel,
     );
     if (style === "snake") {
-      expectEqual(entry.metadata_status, "success", `${entryLabel} metadata_status`);
+      expectEqual(
+        entry.metadata_status,
+        "success",
+        `${entryLabel} metadata_status`,
+      );
       const url = requiredString(entry, "url", entryLabel);
       const sha256 = requireLowerHex(entry, "sha256", 64, entryLabel);
       const packageName = requiredString(entry, "name", entryLabel);
       const expectedUrl = `https://ghcr.io/v2/${tapRepository}/${packageName}/blobs/sha256:${sha256}`;
       if (url !== expectedUrl) {
-        fail(`${entryLabel} url is ${JSON.stringify(url)}, expected ${expectedUrl}`);
+        fail(
+          `${entryLabel} url is ${JSON.stringify(url)}, expected ${expectedUrl}`,
+        );
       }
       requiredPositiveInteger(entry, "bytes", entryLabel);
     }
@@ -545,19 +743,38 @@ function requireLowerHex(
   return value;
 }
 
-function requiredRecord(value: unknown, label: string): Record<string, unknown> {
+function requiredRecord(
+  value: unknown,
+  label: string,
+): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     fail(`${label} must be an object`);
   }
   return value as Record<string, unknown>;
 }
 
-function requiredRecordArray(value: unknown, label: string): Record<string, unknown>[] {
+function requiredRecordArray(
+  value: unknown,
+  label: string,
+): Record<string, unknown>[] {
   if (!Array.isArray(value)) fail(`${label} must be an array`);
-  return value.map((entry, index) => requiredRecord(entry, `${label}[${index}]`));
+  return value.map((entry, index) =>
+    requiredRecord(entry, `${label}[${index}]`),
+  );
 }
 
-function requiredString(record: Record<string, unknown>, key: string, label: string): string {
+function optionalRecordArray(
+  value: unknown,
+  label: string,
+): Record<string, unknown>[] {
+  return value === undefined ? [] : requiredRecordArray(value, label);
+}
+
+function requiredString(
+  record: Record<string, unknown>,
+  key: string,
+  label: string,
+): string {
   const value = record[key];
   if (typeof value !== "string" || value.length === 0) {
     fail(`${label} ${key} must be a non-empty string`);
@@ -566,7 +783,10 @@ function requiredString(record: Record<string, unknown>, key: string, label: str
 }
 
 function requiredStringArray(value: unknown, label: string): string[] {
-  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+  if (
+    !Array.isArray(value) ||
+    value.some((entry) => typeof entry !== "string")
+  ) {
     fail(`${label} must be an array of strings`);
   }
   return value as string[];
@@ -586,12 +806,21 @@ function requiredPositiveInteger(
 
 function expectEqual(actual: unknown, expected: unknown, label: string): void {
   if (actual !== expected) {
-    fail(`${label} is ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`);
+    fail(
+      `${label} is ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`,
+    );
   }
 }
 
-function expectExactStrings(actual: string[], expected: string[], label: string): void {
-  if (actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) {
+function expectExactStrings(
+  actual: string[],
+  expected: string[],
+  label: string,
+): void {
+  if (
+    actual.length !== expected.length ||
+    actual.some((value, index) => value !== expected[index])
+  ) {
     fail(
       `${label} differs from the reviewed lock: ` +
         `actual=${JSON.stringify(actual)} expected=${JSON.stringify(expected)}`,
@@ -599,7 +828,11 @@ function expectExactStrings(actual: string[], expected: string[], label: string)
   }
 }
 
-function expectExactBytes(actual: Uint8Array, expected: Uint8Array, label: string): void {
+function expectExactBytes(
+  actual: Uint8Array,
+  expected: Uint8Array,
+  label: string,
+): void {
   if (
     actual.byteLength !== expected.byteLength ||
     actual.some((value, index) => value !== expected[index])
@@ -612,7 +845,8 @@ function expectExactBytes(actual: Uint8Array, expected: Uint8Array, label: strin
 }
 
 function assertUnique(values: string[], label: string): void {
-  if (new Set(values).size !== values.length) fail(`${label} contains a duplicate identity`);
+  if (new Set(values).size !== values.length)
+    fail(`${label} contains a duplicate identity`);
 }
 
 function fail(message: string): never {

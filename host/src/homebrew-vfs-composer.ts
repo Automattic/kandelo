@@ -28,6 +28,10 @@ import type {
   HomebrewVfsPackagePlan,
   HomebrewVfsPlan,
 } from "./homebrew-vfs-planner";
+import {
+  projectHomebrewRuntimeSupportDelta,
+  type HomebrewRuntimeSupportContract,
+} from "./homebrew-runtime-support";
 import { MemoryFileSystem } from "./vfs/memory-fs";
 import { writeVfsBinary } from "./vfs/image-helpers";
 import {
@@ -77,6 +81,12 @@ export interface BuildHomebrewMaterializedVfsOptions {
   fs: MemoryFileSystem;
   /** Fresh scratch filesystem used to compute the complete global pour once. */
   collectionFs: MemoryFileSystem;
+  /** Separate scratch namespace for the optional brew runtime-support delta. */
+  runtimeSupportCollectionFs?: MemoryFileSystem;
+  runtimeSupport?: {
+    contract: HomebrewRuntimeSupportContract;
+    plan: HomebrewVfsPlan;
+  };
   policy: unknown;
   /** Public repository that will carry exact mirrors for deferred bottles. */
   mirrorRepository: string;
@@ -120,6 +130,14 @@ export interface HomebrewVfsMaterializationEvidence {
     bytes: number;
   };
   embeddedEntries: MaterializedEntryEvidence[];
+  runtimeSupport?: {
+    id: "homebrew-runtime-support";
+    activationRoot: "/usr/bin/brew";
+    packageOrder: string[];
+    treeIds: string[];
+    treeCount: number;
+    deferredRelocationFormulae: string[];
+  };
 }
 
 export interface HomebrewMaterializedVfsBuildResult {
@@ -165,26 +183,22 @@ export async function buildHomebrewMaterializedVfs(
     deferredBindings.map((binding) => binding.package),
   );
 
-  const mirrorPlan = createHomebrewBottleMirrorPlan(
+  // The base trees must exist before the support delta is poured so its
+  // collision analysis sees the exact embedded/deferred shell namespace.
+  // These provisional URLs are rewritten to the final combined release
+  // before serialization and never leave this private build transaction.
+  const provisionalMirrorPlan = createHomebrewBottleMirrorPlan(
     options.mirrorRepository,
     deferredBindings,
   );
-  const mirrorPayloads = createHomebrewBottleMirrorPayloads(deferredBindings);
-  const mirrorPlanBytes = encodeHomebrewBottleMirrorPlan(mirrorPlan);
-  const mirrorPlanAsset: HomebrewBottleMirrorPlanAsset = {
-    asset: MIRROR_PLAN_ASSET,
-    sha256: digest(mirrorPlanBytes),
-    bytes: mirrorPlanBytes,
-  };
-  assertHomebrewBottleMirrorBundle(mirrorPlan, mirrorPayloads, mirrorPlanAsset);
-  const mirrorByPackage = new Map(
-    mirrorPlan.assets.map((asset) => [asset.package, asset]),
+  const provisionalMirrorByPackage = new Map(
+    provisionalMirrorPlan.assets.map((asset) => [asset.package, asset]),
   );
   const embeddedSet = new Set(selection.embeddedPackages.map((pkg) => pkg.fullName));
   const closedTrees = bindings.map((binding) => closeCollectionTree(
     binding,
     embeddedSet.has(binding.package),
-    mirrorByPackage.get(binding.package),
+    provisionalMirrorByPackage.get(binding.package),
   ));
   createHomebrewPrefixAncestors(options.fs, plan);
   const registered = registerHomebrewDeferredTreeCollection({
@@ -208,8 +222,6 @@ export async function buildHomebrewMaterializedVfs(
     }
   }
 
-  writeHomebrewBottleMirrorPlan(options.fs, mirrorPlanAsset);
-
   const consumer = applyHomebrewVfsConsumerState(plan, {
     fs: options.fs,
     compatibilityPolicy: options.compatibilityPolicy,
@@ -221,10 +233,164 @@ export async function buildHomebrewMaterializedVfs(
   ) {
     throw new Error("Homebrew consumer conflict ownership differs from the global collection");
   }
+
+  let runtimeSupportBindings: BoundCollectionTree[] = [];
+  let runtimeSupportPlan: HomebrewVfsPlan | undefined;
+  let runtimeSupportCollectionConflicts:
+    HomebrewVfsBuildReport["link_conflicts"] = [];
+  const runtimeSupport = options.runtimeSupport;
+  if (runtimeSupport !== undefined) {
+    if (
+      options.runtimeSupportCollectionFs === undefined ||
+      options.runtimeSupportCollectionFs === options.fs ||
+      options.runtimeSupportCollectionFs === options.collectionFs
+    ) {
+      throw new Error(
+        "Homebrew runtime support requires its own collection filesystem",
+      );
+    }
+    const deltaPlan = projectHomebrewRuntimeSupportDelta(
+      runtimeSupport.contract,
+      runtimeSupport.plan,
+    );
+    runtimeSupportPlan = deltaPlan;
+    const supportCollection = await buildHomebrewOriginalBottleCollection(
+      deltaPlan,
+      {
+        fs: options.runtimeSupportCollectionFs,
+        baseFs: options.fs,
+        loadBottleBytes: options.loadBottleBytes,
+        compatibilityPolicy: options.compatibilityPolicy,
+        catalogCheckout: options.catalogCheckout,
+        createdBy: options.createdBy ?? "host/src/homebrew-vfs-composer.ts",
+      },
+    );
+    runtimeSupportCollectionConflicts =
+      supportCollection.report.link_conflicts ?? [];
+    const boundSupport = bindCollection(
+      deltaPlan,
+      supportCollection.deferredTrees,
+      supportCollection.payloads,
+    );
+    const supportByPackage = new Map(
+      boundSupport.map((binding) => [binding.package, binding]),
+    );
+    // WHY: tree IDs are content-derived and collection output sorts by those
+    // IDs. Rebind to the reviewed topological Formula order so evidence and
+    // activation never acquire an accidental hash-order contract.
+    runtimeSupportBindings =
+      runtimeSupport.contract.additionalFormulaOrder.map((packageName) => {
+        const binding = supportByPackage.get(packageName);
+        if (binding === undefined) {
+          throw new Error(
+            `Homebrew runtime-support collection omits ${packageName}`,
+          );
+        }
+        return binding;
+      });
+    if (
+      JSON.stringify(runtimeSupportBindings.map((binding) => binding.package)) !==
+        JSON.stringify(runtimeSupport.contract.additionalFormulaOrder)
+    ) {
+      throw new Error(
+        "Homebrew runtime-support tree collection differs from its exact contract delta",
+      );
+    }
+  } else if (options.runtimeSupportCollectionFs !== undefined) {
+    throw new Error(
+      "Homebrew runtime-support collection filesystem has no contract",
+    );
+  }
+
+  const allDeferredBindings = [
+    ...deferredBindings,
+    ...runtimeSupportBindings,
+  ];
+  const mirrorPlan = createHomebrewBottleMirrorPlan(
+    options.mirrorRepository,
+    allDeferredBindings,
+  );
+  const mirrorPayloads = createHomebrewBottleMirrorPayloads(
+    allDeferredBindings,
+  );
+  const mirrorPlanBytes = encodeHomebrewBottleMirrorPlan(mirrorPlan);
+  const mirrorPlanAsset: HomebrewBottleMirrorPlanAsset = {
+    asset: MIRROR_PLAN_ASSET,
+    sha256: digest(mirrorPlanBytes),
+    bytes: mirrorPlanBytes,
+  };
+  let runtimeSupportConsumer:
+    ReturnType<typeof applyHomebrewVfsConsumerState> | undefined;
+  assertHomebrewBottleMirrorBundle(mirrorPlan, mirrorPayloads, mirrorPlanAsset);
+  const mirrorByPackage = new Map(
+    mirrorPlan.assets.map((asset) => [asset.package, asset]),
+  );
+  if (runtimeSupport !== undefined) {
+    const finalUrlByProvisional = new Map(
+      deferredBindings.map((binding) => [
+        provisionalMirrorByPackage.get(binding.package)!.url,
+        mirrorByPackage.get(binding.package)!.url,
+      ]),
+    );
+    options.fs.rewriteLazyArchiveUrls(
+      (url) => finalUrlByProvisional.get(url) ?? url,
+    );
+    const supportTrees = runtimeSupportBindings.map((binding) =>
+      closeCollectionTree(
+        binding,
+        false,
+        mirrorByPackage.get(binding.package),
+      )
+    );
+    registerHomebrewDeferredTreeCollection({
+      fs: options.fs,
+      id: runtimeSupport.contract.id,
+      schema: 5,
+      trees: supportTrees,
+      atomicActivationGroup:
+        runtimeSupport.contract.activation.atomicGroup,
+    });
+    // WHY: /usr/bin and /bin are image-owned entry points. Keeping these tiny
+    // symlinks eager preserves the normal command namespace while their
+    // Homebrew-prefix targets still activate the sealed lazy support cohort.
+    runtimeSupportConsumer = applyHomebrewVfsConsumerState(
+      runtimeSupportPlan!,
+      {
+        fs: options.fs,
+        compatibilityPolicy: options.compatibilityPolicy,
+        writeProfile: false,
+      },
+    );
+    if (
+      JSON.stringify(runtimeSupportConsumer.linkConflicts) !==
+        JSON.stringify(runtimeSupportCollectionConflicts)
+    ) {
+      throw new Error(
+        "Homebrew runtime-support consumer conflict ownership differs from its collection",
+      );
+    }
+  }
+  writeHomebrewBottleMirrorPlan(options.fs, mirrorPlanAsset);
+
+  const compatibilityLinks =
+    consumer.compatibilityLinks === undefined &&
+      runtimeSupportConsumer?.compatibilityLinks === undefined
+      ? undefined
+      : [
+          ...(consumer.compatibilityLinks ?? []),
+          ...(runtimeSupportConsumer?.compatibilityLinks ?? []),
+        ];
+  const linkConflicts = [
+    ...consumer.linkConflicts,
+    ...(runtimeSupportConsumer?.linkConflicts ?? []),
+  ];
   const report: HomebrewVfsBuildReport = {
     ...collection.report,
-    ...(consumer.compatibilityLinks === undefined ? {} : {
-      compatibility_links: consumer.compatibilityLinks,
+    ...(compatibilityLinks === undefined ? {} : {
+      compatibility_links: compatibilityLinks,
+    }),
+    ...(linkConflicts.length === 0 ? {} : {
+      link_conflicts: linkConflicts,
     }),
     ...(consumer.runtimeState.length === 0 ? {} : {
       runtime_state: consumer.runtimeState,
@@ -235,6 +401,24 @@ export async function buildHomebrewMaterializedVfs(
       deferred_package_order: selection.deferredPackages.map((pkg) => pkg.fullName),
       embedded_tree_count: selection.embeddedPackages.length,
       deferred_tree_count: selection.deferredPackages.length,
+      ...(runtimeSupport === undefined
+        ? {}
+        : {
+            runtime_support: {
+              id: runtimeSupport.contract.id,
+              activation_root: runtimeSupport.contract.activation.root,
+              activation_capability:
+                runtimeSupport.contract.activation.capability,
+              package_order: [
+                ...runtimeSupport.contract.additionalFormulaOrder,
+              ],
+              tree_count:
+                runtimeSupport.contract.additionalFormulaOrder.length,
+              deferred_relocation_formulae: [
+                ...runtimeSupport.contract.deferredRelocationFormulae,
+              ],
+            },
+          }),
       bottle_mirror: {
         repository: mirrorPlan.repository,
         tag: mirrorPlan.tag,
@@ -259,8 +443,15 @@ export async function buildHomebrewMaterializedVfs(
     options.collectionFs,
     mirrorPlanAsset,
     mirrorPlan,
+    allDeferredBindings,
+    runtimeSupport?.contract,
   );
-  assertHomebrewVfsMaterialization(options.fs, evidence);
+  // Runtime-support trees are intentionally incomplete until the image
+  // builder adds the separately packaged Homebrew bootstrap tree and seals
+  // their shared cohort. Export/assert only after that final member exists.
+  if (runtimeSupport === undefined) {
+    assertHomebrewVfsMaterialization(options.fs, evidence);
+  }
   return {
     fs: options.fs,
     report,
@@ -365,12 +556,21 @@ export function assertHomebrewVfsMaterialization(
       url,
       sha256: entry.content!.sha256,
       bytes: entry.content!.bytes,
+      atomicGroup: entry.activation?.atomicGroup?.id,
     }];
   }).sort((left, right) =>
     compareText(left.treeId, right.treeId) || compareText(left.url, right.url)
   );
   const expectedDeferred = evidence.deferred.map((tree) =>
-    ({ treeId: tree.treeId, url: tree.url, sha256: tree.sha256, bytes: tree.bytes })
+    ({
+      treeId: tree.treeId,
+      url: tree.url,
+      sha256: tree.sha256,
+      bytes: tree.bytes,
+      atomicGroup: evidence.runtimeSupport?.packageOrder.includes(tree.package)
+        ? evidence.runtimeSupport.id
+        : undefined,
+    })
   ).sort((left, right) =>
     compareText(left.treeId, right.treeId) || compareText(left.url, right.url)
   );
@@ -379,6 +579,22 @@ export function assertHomebrewVfsMaterialization(
   ) {
     throw new Error(
       "Homebrew pending deferred trees differ from the selected package partition",
+    );
+  }
+  if (
+    evidence.runtimeSupport !== undefined &&
+    (
+      evidence.runtimeSupport.treeCount !==
+        evidence.runtimeSupport.packageOrder.length ||
+      evidence.runtimeSupport.treeIds.length !==
+        evidence.runtimeSupport.packageOrder.length ||
+      evidence.runtimeSupport.deferredRelocationFormulae.some((pkg) =>
+        evidence.runtimeSupport!.packageOrder.includes(pkg)
+      )
+    )
+  ) {
+    throw new Error(
+      "Homebrew runtime-support evidence crosses its deferred relocation boundary",
     );
   }
   for (const entry of evidence.embeddedEntries) {
@@ -668,6 +884,8 @@ function createMaterializationEvidence(
   collectionFs: MemoryFileSystem,
   mirrorPlanAsset: HomebrewBottleMirrorPlanAsset,
   mirrorPlan: HomebrewBottleMirrorPlan,
+  deferredBindings: readonly BoundCollectionTree[],
+  runtimeSupport?: HomebrewRuntimeSupportContract,
 ): HomebrewVfsMaterializationEvidence {
   const mirrorByPackage = new Map(
     mirrorPlan.assets.map((asset) => [asset.package, asset]),
@@ -682,6 +900,9 @@ function createMaterializationEvidence(
     };
   };
   const embeddedSet = new Set(selection.embeddedPackages.map((pkg) => pkg.fullName));
+  const runtimeSupportPackages = new Set(
+    runtimeSupport?.additionalFormulaOrder ?? [],
+  );
   const embeddedEntries = bindings
     .filter((binding) => embeddedSet.has(binding.package))
     .flatMap((binding) => binding.tree.inventory.entries)
@@ -697,11 +918,18 @@ function createMaterializationEvidence(
     }));
   return {
     embedded: selection.embeddedPackages.map(toIdentity),
-    deferred: selection.deferredPackages.map((pkg) => {
-      const identity = toIdentity(pkg);
-      const mirror = mirrorByPackage.get(pkg.fullName);
+    deferred: deferredBindings.map((binding) => {
+      const identity = {
+        package: binding.package,
+        treeId: binding.tree.id,
+        sha256: binding.tree.content.sha256,
+        bytes: binding.tree.content.bytes,
+      };
+      const mirror = mirrorByPackage.get(binding.package);
       if (mirror === undefined) {
-        throw new Error(`Homebrew materialization evidence omits mirror for ${pkg.fullName}`);
+        throw new Error(
+          `Homebrew materialization evidence omits mirror for ${binding.package}`,
+        );
       }
       return { ...identity, url: mirror.url };
     }),
@@ -711,6 +939,22 @@ function createMaterializationEvidence(
       bytes: mirrorPlanAsset.bytes.byteLength,
     },
     embeddedEntries,
+    ...(runtimeSupport === undefined
+      ? {}
+      : {
+          runtimeSupport: {
+            id: runtimeSupport.id,
+            activationRoot: runtimeSupport.activation.root,
+            packageOrder: [...runtimeSupport.additionalFormulaOrder],
+            treeIds: deferredBindings
+              .filter((binding) => runtimeSupportPackages.has(binding.package))
+              .map((binding) => binding.tree.id),
+            treeCount: runtimeSupport.additionalFormulaOrder.length,
+            deferredRelocationFormulae: [
+              ...runtimeSupport.deferredRelocationFormulae,
+            ],
+          },
+        }),
   };
 }
 

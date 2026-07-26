@@ -58,6 +58,60 @@ export interface LoadedHomebrewGuestLifecycleBrowserFixture {
   closedBottleAssets?: readonly ClosedLazyAsset[];
 }
 
+/**
+ * Preserve canonical remote identities in the fixture while reading exact
+ * closed-CI bytes from the static test server.
+ */
+export function createClosedFixtureSourceUrl(
+  rootValue: string | undefined,
+  canonicalUrl: string,
+): string {
+  if (rootValue === undefined || rootValue.trim() === "") {
+    throw new Error(
+      "closed Homebrew browser lifecycle requires a same-origin asset root",
+    );
+  }
+  const root = new URL(rootValue, globalThis.location?.href);
+  if (
+    (root.protocol !== "http:" && root.protocol !== "https:") ||
+    root.username !== "" ||
+    root.password !== "" ||
+    root.search !== "" ||
+    root.hash !== "" ||
+    (
+      globalThis.location !== undefined &&
+      root.origin !== globalThis.location.origin
+    )
+  ) {
+    throw new Error(
+      "closed Homebrew browser lifecycle asset root is invalid",
+    );
+  }
+  const canonical = new URL(canonicalUrl);
+  const encodedName = canonical.pathname.split("/").at(-1) ?? "";
+  let name: string;
+  try {
+    name = decodeURIComponent(encodedName);
+  } catch (error) {
+    throw new Error("closed Homebrew fixture asset name is invalid", {
+      cause: error,
+    });
+  }
+  if (
+    name.length === 0 ||
+    name === "." ||
+    name === ".." ||
+    name.includes("/") ||
+    !/^[A-Za-z0-9][A-Za-z0-9+._-]*$/.test(name)
+  ) {
+    throw new Error("closed Homebrew fixture asset name is invalid");
+  }
+  const directory = root.pathname.endsWith("/")
+    ? root
+    : new URL(`${root.pathname}/`, root);
+  return new URL(encodeURIComponent(name), directory).href;
+}
+
 type FetchLike = (
   input: string | URL,
   init?: RequestInit,

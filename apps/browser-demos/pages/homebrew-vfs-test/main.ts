@@ -28,6 +28,10 @@ const corsProxyUrl = new URL(
   `${import.meta.env.BASE_URL}__kandelo_cors_proxy?url=`,
   window.location.href,
 ).href;
+const closedLifecycleAssetRoot = (
+  import.meta.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT as
+    string | undefined
+)?.trim();
 
 interface HomebrewVfsAcceptanceRequest {
   vfsUrl: string;
@@ -289,6 +293,9 @@ async function init(): Promise<void> {
       fixture,
       kernelWasm: kernelBytes,
       corsProxyUrl,
+      ...(closedLifecycleAssetRoot === undefined
+        ? {}
+        : { closedAssetRootUrl: closedLifecycleAssetRoot }),
       afterMachineDestroy: settleWebKitReclaim,
     });
 

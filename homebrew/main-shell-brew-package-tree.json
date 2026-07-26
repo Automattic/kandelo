@@ -18,7 +18,8 @@
   },
   "activation": {
     "mode": "first-use",
-    "capabilities": ["homebrew:bootstrap"],
-    "roots": ["/home/linuxbrew/.linuxbrew/bin/brew"]
+    "capabilities": ["homebrew:bootstrap", "homebrew:runtime"],
+    "roots": ["/home/linuxbrew/.linuxbrew/bin/brew"],
+    "atomic_group": "homebrew-runtime-support"
   }
 }

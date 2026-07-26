@@ -24,9 +24,10 @@ function fixture(): Parameters<typeof assertMainShellImageContract>[0] {
   const snakePackages = closure.map((fullName) => {
     const name = fullName.split("/").at(-1)!;
     const locked = lockedByName.get(name) as any;
-    const version = locked === undefined
-      ? "1.0"
-      : `${locked.version}${locked.revision === 0 ? "" : `_${locked.revision}`}`;
+    const version =
+      locked === undefined
+        ? "1.0"
+        : `${locked.version}${locked.revision === 0 ? "" : `_${locked.revision}`}`;
     const rebuild = locked?.bottle_rebuild ?? 0;
     const sha256 = "2".repeat(64);
     return {
@@ -87,11 +88,12 @@ function fixture(): Parameters<typeof assertMainShellImageContract>[0] {
     bytes: 123,
   };
   const runtimeState = lock.compatibility.runtime_state.map((entry: any) => {
-    const contents = entry.kind === "text_file"
-      ? new TextEncoder().encode(entry.contents)
-      : entry.kind === "empty_file"
-      ? new Uint8Array()
-      : undefined;
+    const contents =
+      entry.kind === "text_file"
+        ? new TextEncoder().encode(entry.contents)
+        : entry.kind === "empty_file"
+          ? new Uint8Array()
+          : undefined;
     return {
       path: entry.path,
       kind: entry.kind,
@@ -101,26 +103,33 @@ function fixture(): Parameters<typeof assertMainShellImageContract>[0] {
       ...(contents === undefined ? {} : { contents }),
     };
   });
-  const guestRuntimeState = lock.compatibility.runtime_state.map((entry: any) => {
-    const contents = entry.kind === "text_file"
-      ? new TextEncoder().encode(entry.contents)
-      : entry.kind === "empty_file"
-      ? new Uint8Array()
-      : undefined;
-    return {
-      requires_package: entry.requires_package,
-      path: entry.path,
-      kind: entry.kind,
-      mode: entry.mode,
-      uid: entry.uid,
-      gid: entry.gid,
-      reason: entry.reason,
-      ...(contents === undefined ? {} : {
-        content_sha256: createHash("sha256").update(contents).digest("hex"),
-        content_bytes: contents.byteLength,
-      }),
-    };
-  });
+  const guestRuntimeState = lock.compatibility.runtime_state.map(
+    (entry: any) => {
+      const contents =
+        entry.kind === "text_file"
+          ? new TextEncoder().encode(entry.contents)
+          : entry.kind === "empty_file"
+            ? new Uint8Array()
+            : undefined;
+      return {
+        requires_package: entry.requires_package,
+        path: entry.path,
+        kind: entry.kind,
+        mode: entry.mode,
+        uid: entry.uid,
+        gid: entry.gid,
+        reason: entry.reason,
+        ...(contents === undefined
+          ? {}
+          : {
+              content_sha256: createHash("sha256")
+                .update(contents)
+                .digest("hex"),
+              content_bytes: contents.byteLength,
+            }),
+      };
+    },
+  );
   const metadataRuntimeState = guestRuntimeState.map((entry: any) => ({
     requiresPackage: entry.requires_package,
     path: entry.path,
@@ -129,12 +138,16 @@ function fixture(): Parameters<typeof assertMainShellImageContract>[0] {
     uid: entry.uid,
     gid: entry.gid,
     reason: entry.reason,
-    ...(entry.content_sha256 === undefined ? {} : {
-      contentSha256: entry.content_sha256,
-      contentBytes: entry.content_bytes,
-    }),
+    ...(entry.content_sha256 === undefined
+      ? {}
+      : {
+          contentSha256: entry.content_sha256,
+          contentBytes: entry.content_bytes,
+        }),
   }));
-  const demoSha256 = createHash("sha256").update(demoConfigSource).digest("hex");
+  const demoSha256 = createHash("sha256")
+    .update(demoConfigSource)
+    .digest("hex");
   return {
     migrationLock: structuredClone(lock),
     migrationLockSha256: lockSha,
@@ -209,6 +222,26 @@ test("accepts the exact reviewed root and Formula identities", () => {
   assert.doesNotThrow(() => assertMainShellImageContract(fixture()));
 });
 
+test("accepts omitted zero-cardinality runtime-state report sections", () => {
+  const value = fixture() as any;
+  assert.equal(value.migrationLock.compatibility.runtime_state.length, 0);
+  delete value.guestManifest.runtime_state;
+  delete value.imageMetadata.homebrew.runtimeState;
+
+  assert.doesNotThrow(() => assertMainShellImageContract(value));
+});
+
+test("rejects a non-array optional runtime-state report section", () => {
+  const value = fixture() as any;
+  delete value.guestManifest.runtime_state;
+  value.imageMetadata.homebrew.runtimeState = null;
+
+  assert.throws(
+    () => assertMainShellImageContract(value),
+    /VFS metadata runtimeState must be an array/,
+  );
+});
+
 test("shares the authoritative guest catalog parser with narrow consumers", () => {
   const guestManifest = fixture().guestManifest as Record<string, any>;
   const expected = {
@@ -217,7 +250,7 @@ test("shares the authoritative guest catalog parser with narrow consumers", () =
     tapCommit: lock.catalog.tap_commit,
   };
   assert.doesNotThrow(() =>
-    assertMainShellGuestCatalogIdentity(guestManifest, expected)
+    assertMainShellGuestCatalogIdentity(guestManifest, expected),
   );
 
   for (const [key, replacement, message] of [
@@ -237,42 +270,59 @@ test("shares the authoritative guest catalog parser with narrow consumers", () =
 for (const [name, mutate, expected] of [
   [
     "rejects a substituted requested root",
-    (value: any) => { value.guestManifest.selection.requested_packages[0] = "replacement"; },
+    (value: any) => {
+      value.guestManifest.selection.requested_packages[0] = "replacement";
+    },
     "requested_packages differs",
   ],
   [
     "rejects a missing closure Formula",
-    (value: any) => { value.guestManifest.packages.pop(); },
+    (value: any) => {
+      value.guestManifest.packages.pop();
+    },
     "exact closure differs",
   ],
   [
     "rejects a duplicate closure Formula",
-    (value: any) => { value.guestManifest.packages[1].full_name = value.guestManifest.packages[0].full_name; },
+    (value: any) => {
+      value.guestManifest.packages[1].full_name =
+        value.guestManifest.packages[0].full_name;
+    },
     "contains a duplicate identity",
   ],
   [
     "rejects a failed bottle source",
-    (value: any) => { value.guestManifest.packages[0].source_status = "failed"; },
+    (value: any) => {
+      value.guestManifest.packages[0].source_status = "failed";
+    },
     "source_status",
   ],
   [
     "rejects a package outside canonical GHCR",
-    (value: any) => { value.guestManifest.packages[0].url = "https://example.invalid/bottle"; },
+    (value: any) => {
+      value.guestManifest.packages[0].url = "https://example.invalid/bottle";
+    },
     "url is",
   ],
   [
     "rejects the wrong immutable catalog checkout",
-    (value: any) => { value.guestManifest.catalog.checkout_commit = "0".repeat(40); },
+    (value: any) => {
+      value.guestManifest.catalog.checkout_commit = "0".repeat(40);
+    },
     "checkout_commit",
   ],
   [
     "rejects a stale migration-lock binding",
-    (value: any) => { value.imageMetadata.homebrew.migrationLock.sha256 = "0".repeat(64); },
+    (value: any) => {
+      value.imageMetadata.homebrew.migrationLock.sha256 = "0".repeat(64);
+    },
     "migrationLock sha256",
   ],
   [
     "rejects package provenance that differs between guest and image metadata",
-    (value: any) => { value.imageMetadata.homebrew.packages[0].tapCommit = "0".repeat(40); },
+    (value: any) => {
+      value.imageMetadata.homebrew.packages[0].tapCommit = "0".repeat(40);
+    },
     "tapCommit",
   ],
   [
@@ -289,22 +339,30 @@ for (const [name, mutate, expected] of [
   ],
   [
     "rejects a different VFS capacity",
-    (value: any) => { value.imageCapacity.maxByteLength /= 2; },
+    (value: any) => {
+      value.imageCapacity.maxByteLength /= 2;
+    },
     "decoded VFS maxByteLength",
   ],
   [
     "rejects a non-Homebrew default shell",
-    (value: any) => { value.shellConfig.path = "/bin/sh"; },
+    (value: any) => {
+      value.shellConfig.path = "/bin/sh";
+    },
     "guest shell config path",
   ],
   [
     "rejects demo config bytes that differ from the canonical contract",
-    (value: any) => { value.demoConfigSource[0] ^= 1; },
+    (value: any) => {
+      value.demoConfigSource[0] ^= 1;
+    },
     "guest demo config bytes differ",
   ],
   [
     "rejects stale demo config metadata",
-    (value: any) => { value.imageMetadata.homebrew.demoConfig.sha256 = "0".repeat(64); },
+    (value: any) => {
+      value.imageMetadata.homebrew.demoConfig.sha256 = "0".repeat(64);
+    },
     "demoConfig sha256",
   ],
   [
@@ -344,6 +402,9 @@ for (const [name, mutate, expected] of [
   test(name, () => {
     const value = fixture();
     mutate(value);
-    assert.throws(() => assertMainShellImageContract(value), new RegExp(expected));
+    assert.throws(
+      () => assertMainShellImageContract(value),
+      new RegExp(expected),
+    );
   });
 }

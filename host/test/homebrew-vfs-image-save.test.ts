@@ -25,6 +25,8 @@ const encoder = new TextEncoder();
 const bootstrapEnvironment = encoder.encode(
   "HOMEBREW_NO_ANALYTICS=1\n" +
     "HOMEBREW_NO_AUTO_UPDATE=1\n" +
+    "HOMEBREW_NO_INSTALL_FROM_API=1\n" +
+    "HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1\n" +
     "HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY=1\n" +
     "HOMEBREW_KANDELO_BOTTLE_TAG=wasm32_kandelo\n",
 );
@@ -153,6 +155,8 @@ describe("Homebrew VFS image publication boundary", () => {
         new TextEncoder().encode(
           "HOMEBREW_NO_ANALYTICS=1\n" +
             "HOMEBREW_NO_AUTO_UPDATE=1\n" +
+            "HOMEBREW_NO_INSTALL_FROM_API=1\n" +
+            "HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1\n" +
             "HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY=1\n" +
             "HOMEBREW_KANDELO_BOTTLE_TAG=wasm64_kandelo\n",
         ),

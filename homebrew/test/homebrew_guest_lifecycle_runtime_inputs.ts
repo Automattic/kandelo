@@ -36,6 +36,8 @@ export interface HomebrewGuestLifecycleRuntimeInputs {
   lazyAssets?: readonly ClosedLazyAsset[];
   bootstrapTransportUrl: string;
   bootstrapBytes: number;
+  /** Bottle trees committed by the same first-use transaction as bootstrap. */
+  runtimeSupportTrees?: readonly { url: string; bytes: number }[];
 }
 
 export interface DeriveHomebrewGuestLifecycleRuntimeInputs {
@@ -153,6 +155,37 @@ export async function deriveHomebrewGuestLifecycleRuntimeInputs(
     pendingTrees.bottles,
     embeddedPlan,
   );
+  const bootstrapAtomicGroup =
+    pendingTrees.bootstrap[0]!.activation?.atomicGroup;
+  const runtimeSupportTrees = bootstrapAtomicGroup === undefined
+    ? []
+    : pendingTrees.bottles.filter(
+      (tree) =>
+        tree.activation?.atomicGroup?.id === bootstrapAtomicGroup.id,
+    );
+  if (
+    bootstrapAtomicGroup !== undefined &&
+    (
+      bootstrapAtomicGroup.descriptorSha256 === undefined ||
+      bootstrapAtomicGroup.expectedCount !== runtimeSupportTrees.length + 1 ||
+      bootstrapAtomicGroup.cohortSha256 === undefined ||
+      runtimeSupportTrees.length === 0 ||
+      runtimeSupportTrees.some(
+        (tree) =>
+          tree.activation?.mode !== "first-use" ||
+          tree.activation?.atomicGroup?.expectedCount !==
+            bootstrapAtomicGroup.expectedCount ||
+          tree.activation?.atomicGroup?.cohortSha256 !==
+            bootstrapAtomicGroup.cohortSha256 ||
+          tree.content === undefined ||
+          tree.content.transports.length === 0,
+      )
+    )
+  ) {
+    throw new Error(
+      "Homebrew lifecycle image has an incomplete atomic runtime-support group",
+    );
+  }
 
   const bootstrapTransportUrl = new URL(
     bootstrapSpec.archive.url,
@@ -190,6 +223,10 @@ export async function deriveHomebrewGuestLifecycleRuntimeInputs(
     ...(lazyAssets === undefined ? {} : { lazyAssets }),
     bootstrapTransportUrl,
     bootstrapBytes: input.bootstrapArchiveBytes.byteLength,
+    runtimeSupportTrees: runtimeSupportTrees.map((tree) => ({
+      url: tree.content!.transports[0]!,
+      bytes: tree.content!.bytes,
+    })),
   };
 }
 
@@ -207,23 +244,33 @@ function assertBootstrapTreeBinding(
     0,
   );
   // WHY: v3 seal hashes authenticate the serialized activation but are not
-  // authored by the package-tree spec. Compare the recipe-owned id/member after
-  // the imported seal has been verified at the function's trust boundary.
-  const activationContract = tree.activation?.atomicGroup === undefined
-    ? tree.activation
+  // authored by the package-tree recipe. Compare only the recipe-owned
+  // id/member after imported seals have been verified at this trust boundary.
+  const atomicMembership = tree.activation?.atomicGroup;
+  const normalizedTreeActivation = tree.activation === undefined
+    ? undefined
     : {
         ...tree.activation,
-        atomicGroup: {
-          id: tree.activation.atomicGroup.id,
-          member: tree.activation.atomicGroup.member,
-        },
+        ...(atomicMembership === undefined
+          ? {}
+          : {
+              atomicGroup: {
+                id: atomicMembership.id,
+                member: atomicMembership.member,
+              },
+            }),
       };
+  const expectsAtomicTree = spec.activation.atomicGroup !== undefined;
   if (
     spec.content_role !== "source-tree" ||
     (
-      tree.kind !== "kandelo-deferred-tree-v1" &&
-      tree.kind !== "kandelo-deferred-tree-v2" &&
-      tree.kind !== "kandelo-deferred-tree-v3"
+      expectsAtomicTree
+        ? tree.kind !== "kandelo-deferred-tree-v3" ||
+          atomicMembership?.descriptorSha256 === undefined ||
+          atomicMembership.expectedCount === undefined ||
+          atomicMembership.cohortSha256 === undefined
+        : tree.kind !== "kandelo-deferred-tree-v1" &&
+          tree.kind !== "kandelo-deferred-tree-v2"
     ) ||
     tree.materialized ||
     content === undefined ||
@@ -241,7 +288,8 @@ function assertBootstrapTreeBinding(
     content.transports[0] !== spec.archive.url ||
     content.modePolicy !== spec.archive.mode_policy ||
     content.source !== undefined ||
-    JSON.stringify(activationContract) !== JSON.stringify(spec.activation)
+    JSON.stringify(normalizedTreeActivation) !==
+      JSON.stringify(spec.activation)
   ) {
     throw new Error(
       `Homebrew bootstrap deferred tree ${spec.id} changed descriptor: ` +

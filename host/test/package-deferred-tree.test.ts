@@ -94,6 +94,32 @@ describe("package deferred ZIP trees", () => {
     expect(decoder.decode(first.descriptorBytes).endsWith("\n")).toBe(true);
   });
 
+  it("preserves producer-assigned atomic membership through registration", async () => {
+    const archive = packageArchive();
+    const spec = structuredClone(SPEC) as unknown as Record<string, any>;
+    spec.activation.atomic_group = "homebrew-runtime-support";
+    const derived = derivePackageDeferredZipTree(spec, archive);
+    expect(derived.descriptor.activation.atomicGroup).toEqual({
+      id: "homebrew-runtime-support",
+      member: SPEC.id,
+    });
+    const fs = packageFs();
+    registerPackageDeferredZipTree(fs, derived);
+    await fs.sealLazyAtomicGroup("homebrew-runtime-support", [SPEC.id]);
+
+    expect(fs.exportLazyArchiveEntries()[0]).toMatchObject({
+      kind: "kandelo-deferred-tree-v3",
+      activation: {
+        atomicGroup: {
+          id: "homebrew-runtime-support",
+          member: SPEC.id,
+          expectedCount: 1,
+        },
+      },
+    });
+    assertPackageDeferredZipTreeState(fs, derived, "deferred");
+  });
+
   it("fetches one whole group on first use and never refetches it", async () => {
     const archive = packageArchive();
     const derived = derivePackageDeferredZipTree(SPEC, archive);

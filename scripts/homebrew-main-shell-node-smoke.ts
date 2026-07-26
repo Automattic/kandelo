@@ -36,6 +36,7 @@ import {
   assertVfsImageFitsProfile,
   declaredVfsMaxByteLength,
 } from "../web-libs/kandelo-session/src/vfs-capacity";
+import { parseHomebrewRuntimeSupportContract } from "../host/src/homebrew-runtime-support";
 
 const {
   imagePath,
@@ -44,15 +45,31 @@ const {
   homebrewBootstrapArchivePath,
   homebrewBootstrapEnvPath,
   homebrewBootstrapState,
+  homebrewRuntimeSupportPath,
   demoConfigPath,
   transportMode,
   bottleMirrorPlanPath,
 } = parseArgs(process.argv.slice(2));
+if (homebrewBootstrapState !== "deferred") {
+  throw new Error(
+    "the atomic Homebrew runtime proof requires a deferred bootstrap tree",
+  );
+}
+const runtimeSupport = parseHomebrewRuntimeSupportContract(
+  parseJson(
+    readRegularFile(
+      homebrewRuntimeSupportPath,
+      "Homebrew runtime-support contract",
+    ),
+    homebrewRuntimeSupportPath,
+  ),
+);
 const BASE_EXPECTED_FETCHED_PACKAGES = [
   "kandelo-dev/tap-core/dash",
   "kandelo-dev/tap-core/bzip2",
   "kandelo-dev/tap-core/m4",
 ] as const;
+const RUNTIME_SUPPORT_EXPECTED_PACKAGES = runtimeSupport.additionalFormulaOrder;
 const imageBytes = new Uint8Array(readFileSync(imagePath));
 const homebrewBootstrapArchiveBytes = readRegularFile(
   homebrewBootstrapArchivePath,
@@ -142,6 +159,10 @@ const pendingTrees = allPendingTrees.filter((tree) =>
 const pendingBootstrapTrees = allPendingTrees.filter((tree) =>
   tree.activation?.capabilities.includes("homebrew:bootstrap"),
 );
+const pendingRuntimeSupportTrees = pendingTrees.filter(
+  (tree) =>
+    tree.activation?.atomicGroup?.id === runtimeSupport.activation.atomicGroup,
+);
 const unknownPendingTrees = allPendingTrees.filter(
   (tree) =>
     !pendingTrees.includes(tree) && !pendingBootstrapTrees.includes(tree),
@@ -158,6 +179,26 @@ if (
   throw new Error(
     `main-shell image has ${pendingBootstrapTrees.length} pending Homebrew source trees; ` +
       `expected ${homebrewBootstrapState === "deferred" ? 1 : 0}`,
+  );
+}
+if (
+  pendingRuntimeSupportTrees.length !==
+  runtimeSupport.additionalFormulaOrder.length
+) {
+  throw new Error(
+    `main-shell image has ${pendingRuntimeSupportTrees.length} atomic runtime-support ` +
+      `trees; expected ${runtimeSupport.additionalFormulaOrder.length}`,
+  );
+}
+if (
+  pendingBootstrapTrees.some(
+    (tree) =>
+      tree.activation?.atomicGroup?.id !==
+      runtimeSupport.activation.atomicGroup,
+  )
+) {
+  throw new Error(
+    "Homebrew bootstrap and bottle support trees do not share one atomic group",
   );
 }
 if (fs.isPathDeferred(shellConfig.path)) {
@@ -180,6 +221,18 @@ if (pendingTrees.length !== mirrorPlan.assets.length) {
   );
 }
 assertPendingTreeHomebrewBottleMirrorBinding(pendingTrees, mirrorPlan);
+const runtimeSupportPackages = packagesForUrls(
+  pendingRuntimeSupportTrees.map((tree) => tree.content!.transports[0]!),
+  mirrorPlan,
+);
+if (
+  JSON.stringify(runtimeSupportPackages) !==
+  JSON.stringify([...RUNTIME_SUPPORT_EXPECTED_PACKAGES].sort())
+) {
+  throw new Error(
+    "main-shell atomic runtime-support trees differ from the reviewed contract",
+  );
+}
 const homebrewBootstrapLazyBase =
   transportMode === "closed"
     ? "https://closed.kandelo.invalid/main-shell/"
@@ -296,7 +349,13 @@ set -eu
   const bzip2EventStart = lazyDownloads.length;
   const bzip2Command = `
 set -eu
-printf 'mostly-lazy-shell\\n' | bzip2 -c >/dev/null
+# Exercise bzip2's normal file workflow so the proof validates both compression
+# and decompression without sending binary output through the machine's PTY.
+printf 'mostly-lazy-shell\\n' > /tmp/kandelo-bzip2-smoke
+bzip2 -f /tmp/kandelo-bzip2-smoke
+bzip2 -d -f /tmp/kandelo-bzip2-smoke.bz2
+IFS= read -r bzip2_result < /tmp/kandelo-bzip2-smoke
+test "$bzip2_result" = mostly-lazy-shell
 printf 'homebrew-bzip2-ok\\n'
 `.trim();
   await spawnWithTimeout(
@@ -353,7 +412,8 @@ printf 'homebrew-m4-ok\\n'
       shellConfig.argv[0],
       "-c",
       "/bin/sh -c 'printf repeat-dash >/dev/null'; " +
-        "printf repeat-bzip2 | bzip2 -c >/dev/null; " +
+        "printf repeat-bzip2 > /tmp/kandelo-repeat-bzip2; " +
+        "bzip2 -f /tmp/kandelo-repeat-bzip2; " +
         "printf 'repeat-m4\\n' | m4 >/dev/null",
     ],
     "repeated lazy base command phase",
@@ -364,24 +424,111 @@ printf 'homebrew-m4-ok\\n'
     "repeated lazy base command use",
   );
 
-  // WHY: activating /usr/bin/brew must eventually fetch the bootstrap and the
-  // complete runtime-support layer atomically. This base-image proof stops
-  // before that capability so it cannot accidentally bless a partial brew
-  // runtime assembled from whatever utilities happen to be in the shell.
   assertNoTransportForUrl(
     lazyDownloads,
     homebrewBootstrapTransportUrl,
     "base shell proof",
   );
+
+  const brewEventStart = lazyDownloads.length;
+  const brewStdoutStart = stdout.length;
+  const brewStderrStart = stderr.length;
+  const brewCommand = `
+set -eu
+brew_smoke_fail() {
+  printf 'homebrew runtime smoke: %s\\n' "$1" >&2
+  exit 1
+}
+test ! -e /usr/bin/file ||
+  brew_smoke_fail '/usr/bin/file must remain outside the admitted runtime'
+test -x /usr/bin/brew ||
+  brew_smoke_fail '/usr/bin/brew is not executable after atomic activation'
+brew_version="$(/usr/bin/brew --version 2>&1)" ||
+  brew_smoke_fail 'brew --version failed'
+case "$brew_version" in
+  "Homebrew "*) ;;
+  *) brew_smoke_fail "unexpected brew version: $brew_version" ;;
+esac
+test "$(/usr/bin/brew --prefix 2>&1)" = /home/linuxbrew/.linuxbrew ||
+  brew_smoke_fail 'brew --prefix differs from the guest prefix'
+test "$(/usr/bin/brew --repository 2>&1)" = /home/linuxbrew/.linuxbrew ||
+  brew_smoke_fail 'brew --repository differs from the guest repository'
+test "$(/usr/bin/brew --cellar 2>&1)" = /home/linuxbrew/.linuxbrew/Cellar ||
+  brew_smoke_fail 'brew --cellar differs from the guest Cellar'
+test "$(/usr/bin/brew --cache 2>&1)" = /home/user/.cache/Homebrew ||
+  brew_smoke_fail 'brew --cache differs from the guest cache'
+# WHY: \`brew ruby\` is a developer command and may query Homebrew's developer
+# package API. A temporary stock Bash command observes the same post-brew.env
+# process environment without turning this offline smoke into a network test;
+# the lifecycle test separately proves that installs use this bottle tag.
+probe=/home/linuxbrew/.linuxbrew/Library/Homebrew/cmd/kandelo-env-probe.sh
+cat > "$probe" <<'KANDELO_BREW_ENV_PROBE'
+homebrew-kandelo-env-probe() {
+  printf '%s\n' "$HOMEBREW_KANDELO_BOTTLE_TAG"
+}
+KANDELO_BREW_ENV_PROBE
+brew_tag="$(
+/usr/bin/brew kandelo-env-probe 2>&1
+)" || brew_smoke_fail "brew environment probe failed: $brew_tag"
+rm -f "$probe"
+test "$brew_tag" = wasm32_kandelo ||
+  brew_smoke_fail "brew returned the wrong Kandelo bottle tag: $brew_tag"
+printf 'homebrew-atomic-runtime-ok\n'
+`.trim();
+  await spawnWithTimeout(
+    host,
+    shellBytes,
+    [shellConfig.argv[0], "-c", brewCommand],
+    "atomic Homebrew runtime phase",
+    () => ({
+      stdout: stdout.slice(brewStdoutStart),
+      stderr: stderr.slice(brewStderrStart),
+    }),
+  );
+  const brewStdout = stdout.slice(brewStdoutStart);
+  const brewStderr = stderr.slice(brewStderrStart);
+  if (brewStdout !== "homebrew-atomic-runtime-ok\n" || brewStderr !== "") {
+    throw new Error(
+      `atomic Homebrew runtime returned unexpected output; ` +
+        `stdout=${JSON.stringify(brewStdout)} stderr=${JSON.stringify(brewStderr)}`,
+    );
+  }
+  const brewEvents = lazyDownloads.slice(brewEventStart);
+  assertHomebrewBootstrapTransport(
+    brewEvents,
+    homebrewBootstrapTree,
+    homebrewBootstrapTransportUrl,
+  );
   assertFetchedPackageSet(
-    lazyDownloads,
+    withoutTransportUrl(brewEvents, homebrewBootstrapTransportUrl),
     pendingTrees,
     mirrorPlan,
-    BASE_EXPECTED_FETCHED_PACKAGES,
-    "complete lazy base command surface",
+    RUNTIME_SUPPORT_EXPECTED_PACKAGES,
+    "atomic Homebrew runtime first use",
+  );
+
+  const repeatBrewEventStart = lazyDownloads.length;
+  await spawnWithTimeout(
+    host,
+    shellBytes,
+    [shellConfig.argv[0], "-c", "/usr/bin/brew --prefix >/dev/null"],
+    "repeated Homebrew runtime phase",
+    () => ({ stdout, stderr }),
+  );
+  assertNoLazyTransport(
+    lazyDownloads.slice(repeatBrewEventStart),
+    "repeated Homebrew runtime use",
+  );
+
+  assertFetchedPackageSet(
+    withoutTransportUrl(lazyDownloads, homebrewBootstrapTransportUrl),
+    pendingTrees,
+    mirrorPlan,
+    [...BASE_EXPECTED_FETCHED_PACKAGES, ...RUNTIME_SUPPORT_EXPECTED_PACKAGES],
+    "complete lazy shell and Homebrew runtime surface",
   );
   const transportEvidence = assertBottleTransportEvents(
-    lazyDownloads,
+    withoutTransportUrl(lazyDownloads, homebrewBootstrapTransportUrl),
     pendingTrees,
     mirrorPlan,
   );
@@ -390,7 +537,7 @@ printf 'homebrew-m4-ok\\n'
     `Homebrew main-shell Node smoke: exact ${counts.roots}-root/` +
       `${counts.formulae}-Formula archive, image-owned ` +
       "offline Bash, retained lazy /bin/sh, lazy bzip2 and m4, metadata, and " +
-      "deferred Homebrew activation passed " +
+      "one atomic Homebrew runtime activation passed " +
       `(${transportEvidence.bottles} bottles, ` +
       `${transportEvidence.bytes} bytes).`,
   );
@@ -556,6 +703,48 @@ function assertNoTransportForUrl(
   }
 }
 
+function withoutTransportUrl(
+  events: readonly LazyDownloadEvent[],
+  url: string,
+): LazyDownloadEvent[] {
+  return events.filter((event) => event.url !== url);
+}
+
+function assertHomebrewBootstrapTransport(
+  events: readonly LazyDownloadEvent[],
+  tree: DerivedPackageDeferredZipTree,
+  url: string,
+): void {
+  const matching = events.filter((event) => event.url === url);
+  const ids = new Set(matching.map((event) => event.id));
+  const started = matching.filter((event) => event.status === "started");
+  const completed = matching.filter((event) => event.status === "complete");
+  const errors = matching.filter((event) => event.status === "error");
+  const expectedBytes = tree.descriptor.archive.bytes;
+  if (
+    ids.size !== 1 ||
+    started.length !== 1 ||
+    completed.length !== 1 ||
+    errors.length !== 0 ||
+    matching[0]?.status !== "started" ||
+    matching.at(-1)?.status !== "complete" ||
+    started[0]?.loadedBytes !== 0 ||
+    completed[0]?.loadedBytes !== expectedBytes ||
+    matching.some(
+      (event) =>
+        event.kind !== "tree" ||
+        event.mountPrefix !== tree.descriptor.mount_prefix ||
+        event.totalBytes !== expectedBytes ||
+        event.loadedBytes < 0 ||
+        event.loadedBytes > expectedBytes,
+    )
+  ) {
+    throw new Error(
+      "first brew use did not fetch the exact bootstrap tree once",
+    );
+  }
+}
+
 function assertSingleBottleTransport(
   events: readonly LazyDownloadEvent[],
   tree: SerializedLazyArchiveEntry,
@@ -586,7 +775,10 @@ function assertBottleTransportEvents(
     "Homebrew main-shell command surface",
   );
   const fetchedPackages = packagesForUrls(evidence.urls, plan);
-  const expectedPackages = [...BASE_EXPECTED_FETCHED_PACKAGES].sort();
+  const expectedPackages = [
+    ...BASE_EXPECTED_FETCHED_PACKAGES,
+    ...RUNTIME_SUPPORT_EXPECTED_PACKAGES,
+  ].sort();
   if (JSON.stringify(fetchedPackages) !== JSON.stringify(expectedPackages)) {
     throw new Error(
       `main-shell smoke fetched ${JSON.stringify(fetchedPackages)}, expected ` +
@@ -596,7 +788,7 @@ function assertBottleTransportEvents(
   if (evidence.bottles !== pendingTrees.length) {
     throw new Error(
       `main-shell smoke fetched ${evidence.bottles} trees, expected all ` +
-        `${pendingTrees.length} reviewed lazy base trees`,
+        `${pendingTrees.length} reviewed lazy bottle trees`,
     );
   }
   return { bottles: evidence.bottles, bytes: evidence.bytes };
@@ -883,6 +1075,7 @@ function parseArgs(args: string[]): {
   homebrewBootstrapArchivePath: string;
   homebrewBootstrapEnvPath: string;
   homebrewBootstrapState: "deferred" | "materialized";
+  homebrewRuntimeSupportPath: string;
   demoConfigPath: string;
   transportMode: "closed" | "public";
   bottleMirrorPlanPath?: string;
@@ -895,6 +1088,7 @@ function parseArgs(args: string[]): {
     "--homebrew-bootstrap-archive",
     "--homebrew-bootstrap-env",
     "--homebrew-bootstrap-state",
+    "--homebrew-runtime-support",
     "--demo-config",
     "--transport-mode",
     "--bottle-mirror-plan",
@@ -918,6 +1112,7 @@ function parseArgs(args: string[]): {
   const homebrewBootstrapArchive = values.get("--homebrew-bootstrap-archive");
   const homebrewBootstrapEnv = values.get("--homebrew-bootstrap-env");
   const homebrewBootstrapState = values.get("--homebrew-bootstrap-state");
+  const homebrewRuntimeSupport = values.get("--homebrew-runtime-support");
   const demoConfig = values.get("--demo-config");
   const mode = values.get("--transport-mode");
   const plan = values.get("--bottle-mirror-plan");
@@ -927,6 +1122,7 @@ function parseArgs(args: string[]): {
     !homebrewBootstrapSpec ||
     !homebrewBootstrapArchive ||
     !homebrewBootstrapEnv ||
+    !homebrewRuntimeSupport ||
     !demoConfig ||
     (homebrewBootstrapState !== "deferred" &&
       homebrewBootstrapState !== "materialized") ||
@@ -943,6 +1139,7 @@ function parseArgs(args: string[]): {
     homebrewBootstrapArchivePath: resolve(homebrewBootstrapArchive),
     homebrewBootstrapEnvPath: resolve(homebrewBootstrapEnv),
     homebrewBootstrapState,
+    homebrewRuntimeSupportPath: resolve(homebrewRuntimeSupport),
     demoConfigPath: resolve(demoConfig),
     transportMode: mode,
     ...(plan === undefined ? {} : { bottleMirrorPlanPath: resolve(plan) }),
@@ -957,6 +1154,7 @@ function smokeUsage(): never {
       "--homebrew-bootstrap-archive <homebrew-bootstrap.zip> " +
       "--homebrew-bootstrap-env <homebrew-brew.env> " +
       "--homebrew-bootstrap-state <deferred|materialized> " +
+      "--homebrew-runtime-support <runtime-support.json> " +
       "--demo-config <main-shell-demo.json> --transport-mode <closed|public> " +
       "[--bottle-mirror-plan <kandelo-homebrew-bottle-mirror-plan.json>] " +
       "(the plan is required only in closed mode)",

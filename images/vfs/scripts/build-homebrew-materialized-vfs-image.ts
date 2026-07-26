@@ -33,6 +33,13 @@ const materializeHomebrewVfs: HomebrewVfsImageMaterializer = async (
   const result = await buildHomebrewMaterializedVfs(plan, options);
   return {
     result,
+    ...(result.evidence.runtimeSupport === undefined
+      ? {}
+      : {
+          runtimeSupportAtomicMembers: [
+            ...result.evidence.runtimeSupport.treeIds,
+          ],
+        }),
     assert(fs) {
       assertHomebrewVfsMaterialization(fs, result.evidence);
     },

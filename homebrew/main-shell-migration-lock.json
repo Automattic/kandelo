@@ -67,7 +67,23 @@
     "mirror_link_manifest_bin": {
       "targets": ["/usr/bin", "/bin"]
     },
-    "link_conflict_owners": [],
+    "link_conflict_owners": [
+      {
+        "target": "bin/ed",
+        "package": "kandelo-dev/tap-core/ed",
+        "reason": "Use the dedicated ed Formula instead of the compatibility copy bundled by posix-utils-lite."
+      },
+      {
+        "target": "bin/ex",
+        "package": "kandelo-dev/tap-core/vim",
+        "reason": "Use Vim's dedicated ex command instead of the compatibility copy bundled by posix-utils-lite."
+      },
+      {
+        "target": "bin/more",
+        "package": "kandelo-dev/tap-core/less",
+        "reason": "Use less's dedicated more command instead of the compatibility copy bundled by posix-utils-lite."
+      }
+    ],
     "aliases": [
       {
         "package": "kandelo-dev/tap-core/dash",
@@ -85,6 +101,12 @@
           "/usr/bin/bzcat",
           "/bin/bzcat"
         ]
+      },
+      {
+        "package": "kandelo-dev/tap-core/gawk",
+        "source_kind": "link",
+        "source": "bin/gawk",
+        "targets": ["/usr/bin/awk", "/bin/awk"]
       }
     ],
     "runtime_state": []

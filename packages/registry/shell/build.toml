@@ -39,6 +39,7 @@ inputs = [
   "host/src/homebrew-runtime-layer-consumer.ts",
   "host/src/homebrew-runtime-layer-limits.ts",
   "host/src/homebrew-runtime-layer-policy.ts",
+  "host/src/homebrew-runtime-support.ts",
   "host/src/homebrew-vfs-builder.ts",
   "host/src/homebrew-vfs-composer.ts",
   "host/src/homebrew-vfs-fetch.ts",

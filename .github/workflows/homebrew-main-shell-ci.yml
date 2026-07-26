@@ -43,6 +43,7 @@ on:
       - "scripts/browser-binary-package-roots.mjs"
       - "scripts/check-homebrew-main-shell-brewfile.mjs"
       - "scripts/create-homebrew-bottle-mirror-publish-manifest.ts"
+      - "scripts/create-homebrew-guest-lifecycle-fixture*.ts"
       - "scripts/dev-shell.sh"
       - "scripts/fetch-binaries.sh"
       - "scripts/homebrew-brewfile-selection.rb"
@@ -109,6 +110,7 @@ on:
       - "scripts/browser-binary-package-roots.mjs"
       - "scripts/check-homebrew-main-shell-brewfile.mjs"
       - "scripts/create-homebrew-bottle-mirror-publish-manifest.ts"
+      - "scripts/create-homebrew-guest-lifecycle-fixture*.ts"
       - "scripts/dev-shell.sh"
       - "scripts/fetch-binaries.sh"
       - "scripts/homebrew-brewfile-selection.rb"
@@ -165,6 +167,7 @@ jobs:
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
       TRANSPORT_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.transport_mode || 'closed' }}
+      KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "1"
       # WHY: rehearsal bottles are not main-produced artifacts. Keep required
       # PR/main browser gates on the source-rootfs bridge until every final
       # bottle has been rebuilt by a job whose checkout is exact main.
@@ -237,6 +240,26 @@ jobs:
             cd apps/browser-demos
             npx playwright install chromium --with-deps
           )
+
+      - name: Validate the stock guest lifecycle contracts
+        run: |
+          set -euo pipefail
+          npx tsx --test \
+            apps/browser-demos/playwright-server-policy.test.ts \
+            homebrew/test/homebrew_guest_lifecycle_browser_fixture.test.ts \
+            homebrew/test/homebrew_guest_lifecycle_contract.test.ts \
+            homebrew/test/homebrew_guest_lifecycle_runner.test.ts \
+            homebrew/test/homebrew_guest_lifecycle_runtime_contract.test.ts \
+            homebrew/test/homebrew_guest_lifecycle_runtime_inputs.test.ts \
+            scripts/create-homebrew-guest-lifecycle-fixture.test.ts \
+            scripts/homebrew-main-shell-image-contract.test.ts \
+            scripts/homebrew-closed-lazy-assets.test.ts
+          npx esbuild homebrew/test/homebrew_guest_lifecycle_node.ts \
+            --bundle \
+            --platform=node \
+            --format=esm \
+            --packages=external \
+            --outfile="$RUNNER_TEMP/homebrew_guest_lifecycle_node.mjs"
 
       - name: Select one verified package generation
         env:
@@ -467,6 +490,20 @@ jobs:
           git -C "$tap_root" checkout --detach FETCH_HEAD
           test "$(git -C "$tap_root" rev-parse HEAD)" = "$tap_sha"
           test -z "$(git -C "$tap_root" status --porcelain=v1 --untracked-files=all)"
+          # WHY: `/usr/bin/brew` becomes usable only when its independently
+          # reviewed source tree and every bottle in its atomic support cohort
+          # are admitted at this exact tap revision.
+          node scripts/check-homebrew-main-shell-brewfile.mjs \
+            homebrew/main-shell.Brewfile \
+            homebrew/main-shell-migration-lock.json \
+            "$tap_root/Kandelo/metadata.json" \
+            homebrew/main-shell-homebrew-runtime-support.json
+          bootstrap=$(bash scripts/resolve-binary.sh \
+            programs/homebrew-bootstrap/homebrew-bootstrap.zip)
+          bootstrap_env=$(bash scripts/resolve-binary.sh \
+            programs/homebrew-bootstrap/homebrew-brew.env)
+          test -f "$bootstrap"
+          test -f "$bootstrap_env"
           env -u GH_TOKEN -u GITHUB_TOKEN \
             -u HOMEBREW_GITHUB_API_TOKEN \
             -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
@@ -476,6 +513,9 @@ jobs:
                 --lazy-shell \
                 --tap-root "$tap_root" \
                 --expected-tap-sha "$tap_sha" \
+                --package-tree-spec homebrew/main-shell-brew-package-tree.json \
+                --package-tree-archive "$bootstrap" \
+                --homebrew-bootstrap-env "$bootstrap_env" \
                 --work-dir "$candidate_root"
           test -f "$candidate_root/main-shell.vfs.zst"
           test -f "$candidate_root/main-shell-report.json"
@@ -483,9 +523,13 @@ jobs:
             "$candidate_root/main-shell-report.json")
           test "$(find "$candidate_root/bottle-mirror" -maxdepth 1 -type f | wc -l)" \
             -eq "$expected_mirror_files"
+          test "$(jq -er '.package_deferred_trees[0].state' \
+            "$candidate_root/main-shell-report.json")" = deferred
           {
             echo "image=$candidate_root/main-shell.vfs.zst"
             echo "report=$candidate_root/main-shell-report.json"
+            echo "bootstrap=$bootstrap"
+            echo "bootstrap_env=$bootstrap_env"
             echo "tap_sha=$tap_sha"
           } >> "$GITHUB_OUTPUT"
 
@@ -540,6 +584,8 @@ jobs:
         id: image
         env:
           CANDIDATE_PATH: ${{ steps.source_candidate.outputs.image || steps.bottle_candidate.outputs.image }}
+          CANDIDATE_BOOTSTRAP_PATH: ${{ steps.bottle_candidate.outputs.bootstrap }}
+          CANDIDATE_BOOTSTRAP_ENV_PATH: ${{ steps.bottle_candidate.outputs.bootstrap_env }}
         run: |
           set -euo pipefail
           browser_copy=apps/browser-demos/public/shell.vfs.zst
@@ -564,6 +610,22 @@ jobs:
           [[ "$image_sha" =~ ^[0-9a-f]{64}$ ]]
           echo "sha256=$image_sha" >> "$GITHUB_OUTPUT"
           echo "path=$CANDIDATE_PATH" >> "$GITHUB_OUTPUT"
+          if [ "$SHELL_ACTIVATION_MODE" = bottles ]; then
+            test -f "$CANDIDATE_BOOTSTRAP_PATH"
+            test -f "$CANDIDATE_BOOTSTRAP_ENV_PATH"
+            resolved_bootstrap=$(bash scripts/resolve-binary.sh \
+              programs/homebrew-bootstrap/homebrew-bootstrap.zip)
+            resolved_bootstrap_env=$(bash scripts/resolve-binary.sh \
+              programs/homebrew-bootstrap/homebrew-brew.env)
+            cmp "$CANDIDATE_BOOTSTRAP_PATH" "$resolved_bootstrap"
+            cmp "$CANDIDATE_BOOTSTRAP_ENV_PATH" "$resolved_bootstrap_env"
+            bootstrap_sha=$(sha256sum "$CANDIDATE_BOOTSTRAP_PATH" | awk '{print $1}')
+            bootstrap_bytes=$(wc -c <"$CANDIDATE_BOOTSTRAP_PATH" | tr -d '[:space:]')
+            [[ "$bootstrap_sha" =~ ^[0-9a-f]{64}$ ]]
+            [[ "$bootstrap_bytes" =~ ^[1-9][0-9]*$ ]]
+            echo "bootstrap_sha256=$bootstrap_sha" >> "$GITHUB_OUTPUT"
+            echo "bootstrap_bytes=$bootstrap_bytes" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Recover the exact bottle mirror from anonymous source packages
         if: env.SHELL_ACTIVATION_MODE == 'bottles'
@@ -623,6 +685,64 @@ jobs:
           fi
           echo "plan=$mirror_dir/kandelo-homebrew-bottle-mirror-plan.json" >> "$GITHUB_OUTPUT"
 
+      - name: Bind exact first- and third-party lifecycle inputs
+        if: env.SHELL_ACTIVATION_MODE == 'bottles'
+        id: lifecycle
+        run: |
+          set -euo pipefail
+          support=homebrew/main-shell-homebrew-runtime-support.json
+          core_revision=$(jq -er '.catalog.tap_commit' "$support")
+          canary_revision=$(jq -er '.lifecycle_installs[0].revision' "$support")
+          [[ "$core_revision" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$canary_revision" =~ ^[0-9a-f]{40}$ ]]
+          [ "$core_revision" = "${{ steps.bottle_candidate.outputs.tap_sha }}" ]
+          fixture="$RUNNER_TEMP/homebrew-guest-lifecycle-browser-fixture.json"
+
+          if [ "$TRANSPORT_MODE" = closed ]; then
+            fixed_url_root="https://closed.kandelo.invalid/homebrew-main-shell/${GITHUB_SHA}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/"
+            bash scripts/dev-shell.sh npx tsx \
+              scripts/create-homebrew-guest-lifecycle-fixture.ts \
+                --image "${{ steps.bottle_candidate.outputs.image }}" \
+                --homebrew-bootstrap-spec homebrew/main-shell-brew-package-tree.json \
+                --homebrew-bootstrap-archive "${{ steps.bottle_candidate.outputs.bootstrap }}" \
+                --homebrew-bootstrap-env "${{ steps.bottle_candidate.outputs.bootstrap_env }}" \
+                --bottle-mirror "$RUNNER_TEMP/homebrew-main-shell-bottles" \
+                --fixed-asset-url-root "$fixed_url_root" \
+                --core-revision "$core_revision" \
+                --canary-revision "$canary_revision" \
+                --timeout-ms 900000 \
+                --out "$fixture"
+            test -f "$fixture"
+
+            browser_root=apps/browser-demos/public/homebrew-main-shell-bottles
+            install_browser_fixture_asset() {
+              local source="$1"
+              local destination
+              destination="$browser_root/$(basename "$source")"
+              test ! -e "$destination"
+              cp "$source" "$destination"
+              cmp "$source" "$destination"
+            }
+            # WHY: keep canonical HTTPS identities in the fixture while closed
+            # CI serves the already-verified candidate bytes from one origin.
+            # Guest Homebrew still uses its real TCP path for both live taps.
+            install_browser_fixture_asset "${{ steps.bottle_candidate.outputs.image }}"
+            install_browser_fixture_asset homebrew/main-shell-brew-package-tree.json
+            install_browser_fixture_asset "${{ steps.bottle_candidate.outputs.bootstrap }}"
+            install_browser_fixture_asset "${{ steps.bottle_candidate.outputs.bootstrap_env }}"
+          elif [ "$TRANSPORT_MODE" = public ]; then
+            test ! -e "$fixture"
+          else
+            echo "unsupported transport mode: $TRANSPORT_MODE" >&2
+            exit 1
+          fi
+
+          {
+            echo "core_revision=$core_revision"
+            echo "canary_revision=$canary_revision"
+            echo "fixture=$fixture"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build the sealed browser product tree
         working-directory: apps/browser-demos
         run: |
@@ -657,6 +777,11 @@ jobs:
               node_smoke_args=(
                 --image "${{ steps.image.outputs.path }}"
                 --migration-lock homebrew/main-shell-migration-lock.json
+                --homebrew-bootstrap-spec homebrew/main-shell-brew-package-tree.json
+                --homebrew-bootstrap-archive "${{ steps.bottle_candidate.outputs.bootstrap }}"
+                --homebrew-bootstrap-env "${{ steps.bottle_candidate.outputs.bootstrap_env }}"
+                --homebrew-bootstrap-state deferred
+                --homebrew-runtime-support homebrew/main-shell-homebrew-runtime-support.json
                 --demo-config homebrew/main-shell-demo.json
                 --transport-mode "$TRANSPORT_MODE"
               )
@@ -683,13 +808,48 @@ jobs:
               ;;
           esac
 
+      - name: Install first-party Bzip2 and third-party M4 with stock Homebrew in Node
+        if: env.SHELL_ACTIVATION_MODE == 'bottles'
+        run: |
+          set -euo pipefail
+          lifecycle_args=(
+            --image "${{ steps.bottle_candidate.outputs.image }}"
+            --homebrew-bootstrap-spec homebrew/main-shell-brew-package-tree.json
+            --homebrew-bootstrap-archive "${{ steps.bottle_candidate.outputs.bootstrap }}"
+            --homebrew-bootstrap-env "${{ steps.bottle_candidate.outputs.bootstrap_env }}"
+            --transport-mode "$TRANSPORT_MODE"
+            --core-revision "${{ steps.lifecycle.outputs.core_revision }}"
+            --canary-revision "${{ steps.lifecycle.outputs.canary_revision }}"
+            --timeout-ms 900000
+          )
+          case "$TRANSPORT_MODE" in
+            closed)
+              lifecycle_args+=(
+                --bottle-mirror-plan "${{ steps.mirror.outputs.plan }}"
+              )
+              ;;
+            public)
+              ;;
+            *)
+              echo "unsupported transport mode: $TRANSPORT_MODE" >&2
+              exit 1
+              ;;
+          esac
+          bash scripts/dev-shell.sh npx tsx \
+            homebrew/test/homebrew_guest_lifecycle_node.ts \
+            "${lifecycle_args[@]}"
+
       - name: Boot the current main-shell path in Chromium
         env:
           KANDELO_MAIN_SHELL_SHA256: ${{ steps.image.outputs.sha256 }}
+          KANDELO_HOMEBREW_MAIN_SHELL_SHA256: ${{ steps.image.outputs.sha256 }}
+          KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256: ${{ steps.image.outputs.bootstrap_sha256 }}
+          KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES: ${{ steps.image.outputs.bootstrap_bytes }}
           KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE: ${{ env.TRANSPORT_MODE }}
           KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL: /homebrew-main-shell-bottles/kandelo-homebrew-bottle-mirror-plan.json
         run: |
           set -euo pipefail
+          lifecycle_report="$RUNNER_TEMP/homebrew-guest-lifecycle-playwright.json"
           shell_report="$RUNNER_TEMP/homebrew-main-shell-playwright.json"
           modeset_report="$RUNNER_TEMP/homebrew-main-shell-modeset-playwright.json"
           playwright_env=(
@@ -705,8 +865,10 @@ jobs:
             bottles)
               shell_spec=test/kandelo-homebrew-main-shell.spec.ts
               playwright_env+=(
-                "KANDELO_HOMEBREW_MAIN_SHELL_STRICT=1"
-                "KANDELO_HOMEBREW_MAIN_SHELL_SHA256=$KANDELO_MAIN_SHELL_SHA256"
+                "KANDELO_HOMEBREW_MAIN_SHELL_STRICT=$KANDELO_HOMEBREW_MAIN_SHELL_STRICT"
+                "KANDELO_HOMEBREW_MAIN_SHELL_SHA256=$KANDELO_HOMEBREW_MAIN_SHELL_SHA256"
+                "KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256=$KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256"
+                "KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES=$KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES"
                 "KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE=$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE"
                 "KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL=$KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL"
               )
@@ -726,8 +888,35 @@ jobs:
           esac
           (
             cd apps/browser-demos
+            if [ "$SHELL_ACTIVATION_MODE" = bottles ]; then
+              # This offline browser contract must reject before any external
+              # fixture fetch. The separately gated live test runs only when
+              # an exact immutable fixture is explicitly supplied.
+              bash ../../scripts/dev-shell.sh env \
+                "KANDELO_BROWSER_DEMO_INPUTS=homebrew-vfs-test" \
+                "${playwright_env[@]}" \
+                npx playwright test test/homebrew-guest-lifecycle.spec.ts \
+                --project=chromium \
+                --grep "rejects a guest lifecycle fixture"
+              if [ "$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" = closed ]; then
+                # Run this rebooting network lifecycle in its own browser. It
+                # installs exact core Bzip2 and independent-canary M4 through
+                # stock brew after the declared runtime transaction activates.
+                bash ../../scripts/dev-shell.sh env \
+                  "PLAYWRIGHT_JSON_OUTPUT_FILE=$lifecycle_report" \
+                  "KANDELO_BROWSER_DEMO_INPUTS=homebrew-vfs-test" \
+                  "KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE=1" \
+                  "KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_FIXTURE_PATH=${{ steps.lifecycle.outputs.fixture }}" \
+                  "${playwright_env[@]}" \
+                  npx playwright test test/homebrew-guest-lifecycle.spec.ts \
+                  --project=chromium \
+                  --grep "survives a Chromium rootfs reboot" \
+                  --reporter=json
+              fi
+            fi
             bash ../../scripts/dev-shell.sh env \
               "PLAYWRIGHT_JSON_OUTPUT_FILE=$shell_report" \
+              "KANDELO_BROWSER_DEMO_INPUTS=main" \
               "${playwright_env[@]}" \
               npx playwright test "$shell_spec" \
               --project=chromium --reporter=json
@@ -747,6 +936,13 @@ jobs:
               .stats.flaky == 0 and .stats.skipped == 0
             ' "$report" >/dev/null
           done
+          if [ "$SHELL_ACTIVATION_MODE" = bottles ] &&
+             [ "$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" = closed ]; then
+            jq -e '
+              .stats.expected == 1 and .stats.unexpected == 0 and
+              .stats.flaky == 0 and .stats.skipped == 0
+            ' "$lifecycle_report" >/dev/null
+          fi
 
       - name: Upload exact closure evidence
         if: always()
@@ -758,9 +954,13 @@ jobs:
             ${{ steps.source_candidate.outputs.report }}
             ${{ steps.source_candidate.outputs.manifest }}
             ${{ steps.bottle_candidate.outputs.report }}
+            ${{ steps.bottle_candidate.outputs.bootstrap }}
+            ${{ steps.bottle_candidate.outputs.bootstrap_env }}
             ${{ runner.temp }}/homebrew-main-shell-bottles
             ${{ runner.temp }}/homebrew-main-shell-bottle-recovery.json
             ${{ runner.temp }}/homebrew-main-shell-bottle-publish.json
+            ${{ runner.temp }}/homebrew-guest-lifecycle-browser-fixture.json
+            ${{ runner.temp }}/homebrew-guest-lifecycle-playwright.json
             ${{ runner.temp }}/homebrew-main-shell-playwright.json
             ${{ runner.temp }}/homebrew-main-shell-modeset-playwright.json
             apps/browser-demos/test-results
