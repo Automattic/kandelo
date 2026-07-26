@@ -12,6 +12,7 @@ export default defineConfig({
       "test/homebrew-vfs-builder.test.ts",
       "test/homebrew-vfs-image-save.test.ts",
       "test/derived-vfs-symlink.test.ts",
+      "test/dinit-image-helpers.test.ts",
     ],
     pool: "forks",
     maxWorkers: 2,

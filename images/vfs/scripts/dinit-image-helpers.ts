@@ -20,7 +20,16 @@ import {
   writeVfsFile,
   ensureDirRecursive,
 } from "../../../host/src/vfs/image-helpers";
-import { tryResolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
+import {
+  tryResolveBinary,
+  findRepoRoot,
+} from "../../../host/src/binary-resolver";
+import {
+  ENOENT,
+  SFSError,
+  S_IFMT,
+  S_IFREG,
+} from "../../../host/src/vfs/sharedfs-vendor";
 
 const REPO_ROOT = findRepoRoot();
 
@@ -32,18 +41,71 @@ const REPO_ROOT = findRepoRoot();
  * but falls back to the source-tree path that build-dinit.sh produces.
  */
 function resolveDinitBinaries(): { dinit: string; dinitctl: string } {
-  const dinit = tryResolveBinary("programs/dinit/dinit.wasm")
-    ?? join(REPO_ROOT, "packages", "registry", "dinit", "bin", "dinit.wasm");
-  const dinitctl = tryResolveBinary("programs/dinit/dinitctl.wasm")
-    ?? join(REPO_ROOT, "packages", "registry", "dinit", "bin", "dinitctl.wasm");
+  const dinit =
+    tryResolveBinary("programs/dinit/dinit.wasm") ??
+    join(REPO_ROOT, "packages", "registry", "dinit", "bin", "dinit.wasm");
+  const dinitctl =
+    tryResolveBinary("programs/dinit/dinitctl.wasm") ??
+    join(REPO_ROOT, "packages", "registry", "dinit", "bin", "dinitctl.wasm");
   if (!existsSync(dinit) || !existsSync(dinitctl)) {
     throw new Error(
       "dinit binaries not found. Run 'bash run.sh build dinit' or place\n" +
-      "  pre-built dinit.wasm and dinitctl.wasm under\n" +
-      `  ${join(REPO_ROOT, "local-binaries/programs/wasm32/dinit/")}`,
+        "  pre-built dinit.wasm and dinitctl.wasm under\n" +
+        `  ${join(REPO_ROOT, "local-binaries/programs/wasm32/dinit/")}`,
     );
   }
   return { dinit, dinitctl };
+}
+
+const DINIT_GUEST_BINARIES = ["/sbin/dinit", "/sbin/dinitctl"] as const;
+
+function residentDinitBinaryState(
+  fs: MemoryFileSystem,
+  path: (typeof DINIT_GUEST_BINARIES)[number],
+): "missing" | "resident" {
+  if (fs.getLazyEntry(path) !== null) {
+    throw new Error(
+      `${path} is lazy, but Dinit must be resident before service boot`,
+    );
+  }
+  if (fs.isPathDeferred(path)) {
+    throw new Error(
+      `${path} is deferred, but Dinit must be resident in a service image`,
+    );
+  }
+  let stat;
+  try {
+    stat = fs.stat(path);
+  } catch (error) {
+    if (error instanceof SFSError && error.code === ENOENT) return "missing";
+    throw error;
+  }
+  if ((stat.mode & S_IFMT) !== S_IFREG || (stat.mode & 0o111) === 0) {
+    throw new Error(
+      `${path} exists in the shell base but is not a regular executable`,
+    );
+  }
+  return "resident";
+}
+
+function installLegacyDinitBinariesUnlessInherited(fs: MemoryFileSystem): void {
+  const states = DINIT_GUEST_BINARIES.map((path) =>
+    residentDinitBinaryState(fs, path),
+  );
+  if (states.every((state) => state === "resident")) return;
+  if (!states.every((state) => state === "missing")) {
+    throw new Error(
+      "the shell base contains an incomplete resident Dinit binary set",
+    );
+  }
+
+  // WHY: service images are layered on the canonical shell. Once that shell
+  // owns an admitted bottled Dinit, resolving registry bytes again would
+  // replace its provenance and duplicate always-resident bytes. Keep the
+  // source/registry fallback only while the old shell contains neither file.
+  const { dinit, dinitctl } = resolveDinitBinaries();
+  writeVfsBinary(fs, "/sbin/dinit", new Uint8Array(readFileSync(dinit)));
+  writeVfsBinary(fs, "/sbin/dinitctl", new Uint8Array(readFileSync(dinitctl)));
 }
 
 /**
@@ -97,11 +159,13 @@ function renderService(svc: DinitService): string {
   // turn restart=false into a restart loop.
   if (svc.restart) {
     lines.push("restart = true");
-    if (svc.restartDelay !== undefined) lines.push(`restart-delay = ${svc.restartDelay}`);
+    if (svc.restartDelay !== undefined)
+      lines.push(`restart-delay = ${svc.restartDelay}`);
   } else {
     lines.push("restart = false");
   }
-  if (svc.startTimeout !== undefined) lines.push(`start-timeout = ${svc.startTimeout}`);
+  if (svc.startTimeout !== undefined)
+    lines.push(`start-timeout = ${svc.startTimeout}`);
   if (svc.logfile !== undefined) {
     lines.push(`logfile = ${svc.logfile}`);
   }
@@ -142,11 +206,7 @@ const ETC_GROUP = [
   "",
 ].join("\n");
 
-const ETC_HOSTS = [
-  "127.0.0.1\tlocalhost",
-  "::1\tlocalhost",
-  "",
-].join("\n");
+const ETC_HOSTS = ["127.0.0.1\tlocalhost", "::1\tlocalhost", ""].join("\n");
 
 const ETC_SERVICES = readFileSync(
   join(REPO_ROOT, "images", "rootfs", "etc", "services"),
@@ -211,7 +271,10 @@ export function addPathReadinessService(
   const label = options.label ?? options.name;
 
   ensureDirRecursive(fs, dirname(scriptPath));
-  writeVfsFile(fs, scriptPath, `#!/bin/sh
+  writeVfsFile(
+    fs,
+    scriptPath,
+    `#!/bin/sh
 set -u
 
 path=${shellSingleQuote(options.path)}
@@ -228,7 +291,9 @@ done
 
 echo "$label readiness timed out waiting for $path" >&2
 exit 1
-`, 0o755);
+`,
+    0o755,
+  );
 
   return {
     name: options.name,
@@ -270,9 +335,7 @@ export function addDinitInit(
 ): void {
   // Binaries
   ensureDirRecursive(fs, "/sbin");
-  const { dinit, dinitctl } = resolveDinitBinaries();
-  writeVfsBinary(fs, "/sbin/dinit", new Uint8Array(readFileSync(dinit)));
-  writeVfsBinary(fs, "/sbin/dinitctl", new Uint8Array(readFileSync(dinitctl)));
+  installLegacyDinitBinariesUnlessInherited(fs);
 
   // Basic rootfs files. Most Unix daemons expect these to exist at
   // startup; missing them is the usual cause of "started but exits 1
