@@ -4465,12 +4465,17 @@ mod tests {
             fork["module_state"]["descriptor"]["section"],
             json!("kandelo.wpk_fork.module_state")
         );
+        let record_kinds = fork["module_state"]["arena"]["record"]["kinds"]
+            .as_array()
+            .unwrap();
+        assert_eq!(record_kinds.len(), 13);
         assert_eq!(
-            fork["module_state"]["arena"]["record"]["kinds"]
-                .as_array()
-                .unwrap()
-                .len(),
-            11
+            record_kinds[11],
+            json!({"name": "reference_recipe_segment", "number": 12})
+        );
+        assert_eq!(
+            record_kinds[12],
+            json!({"name": "replay_event_segment", "number": 13})
         );
         assert_eq!(
             fork["module_state"]["record_payloads"]["mutable_global"]["header_size"],
@@ -4509,7 +4514,7 @@ mod tests {
         );
 
         let imports = fork["required_imports"].as_array().unwrap();
-        assert_eq!(imports.len(), 44);
+        assert_eq!(imports.len(), 47);
         assert_eq!(
             imports[0],
             json!({
@@ -4551,9 +4556,19 @@ mod tests {
                 && entry["params"] == json!(["i32", "i32", "i32", "i32", "i64", "i64", "i32"])
                 && entry["results"] == json!(["i32"])
         }));
+        assert!(imports.iter().any(|entry| {
+            entry["name"] == json!("__wpk_fork_ref_gc_provenance_ref")
+                && entry["params"] == json!(["i32", "i32", "i32"])
+                && entry["results"] == json!([])
+        }));
+        assert!(imports.iter().any(|entry| {
+            entry["name"] == json!("__wpk_fork_ref_gc_provenance_end")
+                && entry["params"] == json!(["i32"])
+                && entry["results"] == json!([])
+        }));
 
         let exports = fork["required_exports"].as_array().unwrap();
-        assert_eq!(exports.len(), 25);
+        assert_eq!(exports.len(), 28);
         assert!(exports.iter().any(|entry| {
             entry["name"] == json!("__wpk_fork_exception_materialize")
                 && entry["params"] == json!(["i32"])
@@ -4563,6 +4578,21 @@ mod tests {
             entry["name"] == json!("__wpk_fork_ref_decode_exnref")
                 && entry["params"] == json!(["i32"])
                 && entry["results"] == json!(["exnref"])
+        }));
+        assert!(exports.iter().any(|entry| {
+            entry["name"] == json!("__wpk_fork_ref_gc_probe")
+                && entry["params"] == json!(["i32"])
+                && entry["results"] == json!(["i64"])
+        }));
+        assert!(exports.iter().any(|entry| {
+            entry["name"] == json!("__wpk_fork_ref_gc_publish_externref")
+                && entry["params"] == json!(["i32", "externref"])
+                && entry["results"] == json!([])
+        }));
+        assert!(exports.iter().any(|entry| {
+            entry["name"] == json!("__wpk_fork_static_root_harvest")
+                && entry["params"] == json!([])
+                && entry["results"] == json!([])
         }));
         assert!(exports.iter().any(|entry| {
             entry["name"] == json!("wpk_fork_abort_begin")
