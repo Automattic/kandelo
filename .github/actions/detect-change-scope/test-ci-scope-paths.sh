@@ -233,6 +233,13 @@ for blocker_materialization_script in \
     "$blocker_materialization_script" \
     "$blocker_materialization_script"
 done
+for browser_memory64_fixture_input in \
+  scripts/browser-memory64-example-fixtures.sh \
+  scripts/browser-memory64-example-fixtures.txt; do
+  assert_matches binary_materialization_changed_files \
+    "$browser_memory64_fixture_input" \
+    "$browser_memory64_fixture_input"
+done
 assert_matches binary_materialization_changed_files \
   "scripts/stage-portable-resolver-binaries.sh" \
   "scripts/stage-portable-resolver-binaries.sh"
@@ -538,6 +545,15 @@ assert_matches kernel_runtime_changed_files \
 assert_matches kernel_runtime_changed_files \
   "scripts/ci-run-test-suite.sh" \
   "scripts/ci-run-test-suite.sh"
+for browser_memory64_fixture_input in \
+  scripts/browser-memory64-example-fixtures.sh \
+  scripts/browser-memory64-example-fixtures.txt \
+  scripts/check-browser-memory64-example-fixtures.ts \
+  scripts/ci-check-browser-assets.sh; do
+  assert_matches kernel_runtime_changed_files \
+    "$browser_memory64_fixture_input" \
+    "$browser_memory64_fixture_input"
+done
 assert_not_matches kernel_runtime_changed_files \
   "tools/xtask/src/remote_fetch.rs" \
   "tools/xtask/src/remote_fetch.rs"
