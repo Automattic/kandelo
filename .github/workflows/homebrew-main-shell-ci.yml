@@ -222,14 +222,27 @@ jobs:
             $installs[0].phase == "guest-lifecycle" and
             $installs[0].image_closure == false
           ' homebrew/main-shell-homebrew-runtime-support.json >/dev/null
-          # WHY: M, TF, and C are operator-supplied cutover authority. Require
-          # all three, compare TF and C with every reviewed local product lock,
-          # then perform the anonymous live-main read. Metadata corroborates
-          # operator intent; it never substitutes for a mandatory input.
-          main_record=$(env -u GH_TOKEN -u GITHUB_TOKEN git ls-remote \
-            "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main)
-          [ "$(wc -l <<<"$main_record" | tr -d '[:space:]')" -eq 1 ]
-          [ "${main_record%%[[:space:]]*}" = "$KANDELO_M" ]
+          # WHY: a reviewed historical commit can remain fetchable forever.
+          # Require each operator-supplied identity to be its anonymous public
+          # main head before a detached fetch mistakes reachability for live
+          # cutover authority. Local locks remain independent corroboration.
+          require_exact_live_main() {
+            local repository="$1"
+            local expected="$2"
+            local record
+            record=$(env -u GH_TOKEN -u GITHUB_TOKEN git ls-remote \
+              "$repository" refs/heads/main)
+            [ -n "$record" ]
+            [ "$(printf '%s\n' "$record" | wc -l | tr -d '[:space:]')" -eq 1 ]
+            [ "${record#*[[:space:]]}" = refs/heads/main ]
+            [ "${record%%[[:space:]]*}" = "$expected" ]
+          }
+          require_exact_live_main \
+            "https://github.com/${GITHUB_REPOSITORY}.git" "$KANDELO_M"
+          require_exact_live_main \
+            "https://github.com/Kandelo-dev/homebrew-tap-core.git" "$CORE_TAP_TF"
+          require_exact_live_main \
+            "https://github.com/brandonpayton/homebrew-kandelo-canary.git" "$CANARY_C"
           {
             echo "m=$KANDELO_M"
             echo "tf=$CORE_TAP_TF"

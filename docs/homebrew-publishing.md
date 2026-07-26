@@ -627,13 +627,25 @@ The product workflow's live lane is a manual, closed-transport cutover proof.
 It requires three exact lowercase 40-character inputs: Kandelo's live
 default-branch commit `M`, the final first-party tap commit `TF`, and the
 independent canary tap commit `C`. The workflow requires its checkout and a
-fresh anonymous read of `refs/heads/main` to equal `M`, requires the image
-catalog, migration lock, and exact candidate checkout to equal `TF`, and
-requires operator input `C` to equal the separately reviewed
-independent-canary product lock. All checked-in TF/C agreement is validated
-before the anonymous live-main read or any candidate construction.
+fresh anonymous read of Kandelo `refs/heads/main` to equal `M`. It separately
+requires an anonymous read of the first-party tap `refs/heads/main`, the image
+catalog, migration lock, and exact candidate checkout all to equal `TF`.
+Operator input `C` must equal both the separately reviewed independent-canary
+product lock and an anonymous read of the canary tap `refs/heads/main`. All
+checked-in TF/C agreement is validated before any of the three anonymous
+live-head reads or any candidate construction.
+
 The product lock is agreement evidence; it does not replace the operator's
 mandatory `C` input.
+
+The checked-in `e747f724efc63c81af453eeada3b7f1453726058` first-party tap
+value is provisional activation evidence while the shell recipe remains
+`UNPUBLISHED` and the lazy artifact lock remains pending. Even its current
+live-main equality is necessary authority, not sufficient release evidence, and
+does not make that value the final `TF`. Until final bottles are rebuilt from
+the resulting exact Kandelo `main` and every TF-bearing lock is updated to the
+resulting live tap head, the manual closed lane is expected to fail at its
+subsequent candidate or bottle cutover gates.
 
 Pull-request, push, and public/manual runs remain on the exact source-rootfs
 acceptance path. Only a manual closed dispatch selects the bottled product
@@ -2043,9 +2055,12 @@ same activation boundary. While `SHELL_ACTIVATION_MODE` is `source-rootfs`, it
 uses an empty index and fresh cache to force-source-build every buildable node
 in the exact current shell closure. It installs that exact output and boots it
 in both Node and Chromium; the old tap lock remains only in a dormant `bottles`
-branch. Unrelated browser-gallery roots can still use the separately verified
-package generation, but a before/after regular-file-and-symlink manifest proves
-they did not replace any exact-source shell closure bytes. The sealed Chromium
+branch. That provisional lock is not the final `TF`: the dormant branch also
+requires an anonymous live tap-main match and therefore cannot turn a reachable
+historical commit into cutover evidence. Unrelated browser-gallery roots can
+still use the separately verified package generation, but a before/after
+regular-file-and-symlink manifest proves they did not replace any exact-source
+shell closure bytes. The sealed Chromium
 proof executes eager Bash, rootfs-owned lazy `grep`, extended lazy `less`, and
 integrity-bound Vim and NetHack lazy archives. The Pages publisher builds the
 current sysroot and exact source closure, assembles the actual product tree,
