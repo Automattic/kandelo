@@ -280,7 +280,7 @@ Offset  Size   Field
 8       48     arguments (6 × i64)
 56      8      return_value (i64)
 64      4      errno_value (i32)
-68      4      reserved/padding
+68      4      request_flags (i32)
 72      65536  data_buffer (for path strings, read/write buffers, etc.)
 ```
 
@@ -291,6 +291,15 @@ public variadic `syscall()` entry point still reads 32-bit `long` arguments,
 because that is the C calling convention its callers use. The non-variadic
 `__syscallN` and cancellation-point `__syscall_cp` paths widen values to 64
 bits before calling the glue layer so offsets and lengths are not truncated.
+
+Bit 0 of `request_flags`,
+`REQUEST_FLAG_DEFER_SIGNAL_DELIVERY`, identifies a completion consumed by
+process-worker JavaScript instead of libc's post-syscall signal trampoline.
+The kernel leaves caught signals pending on those completions. Fork, clone,
+continuation allocation/cleanup, and staged-loader VFS/memory requests set the
+bit and clear it before returning control to guest code. Libc then uses an
+ordinary side-effect-free `getpid` syscall as the signal-delivery checkpoint
+after the owning import returns. Ordinary guest syscalls clear the flags word.
 
 ### Status Values
 
@@ -323,6 +332,13 @@ Process Worker                          Kernel Worker (host)
 14. Read return_value + errno
 15. Return to caller
 ```
+
+Steps 10–15 normally include caught-signal publication and libc handler
+dispatch. A request marked `REQUEST_FLAG_DEFER_SIGNAL_DELIVERY` deliberately
+omits that publication because JavaScript owns its completion and has no
+signal-handler trampoline. The next explicit guest checkpoint performs the
+same delivery only after the host import has returned; this avoids both signal
+loss and a reentrant host-to-Wasm callback.
 
 ### Blocking Syscalls and Retry
 
@@ -422,13 +438,19 @@ embedded ABI version, linked-frame contract, control exports, and ABI 43
 apply the same policy.
 
 1. User calls `fork()` → musl → `__syscall(SYS_clone, ...)` → glue
-2. The host's `kernel_fork` override maps a root continuation chunk and calls `wpk_fork_unwind_begin(root + chunk_header_size)`. The tool-injected export sets state to UNWINDING and snapshots every mutable scalar global (including `__tls_base` and `__stack_pointer`) into the root's fixed prefix.
+2. The host's `kernel_fork` override begins one process continuation
+   transaction. It captures activation catalogs and module state, maps each
+   participating activation's root continuation chunk, and calls
+   `wpk_fork_unwind_begin(root + chunk_header_size)`. The tool-injected export
+   sets state to UNWINDING and snapshots every mutable scalar global (including
+   `__tls_base` and `__stack_pointer`) into that activation's fixed prefix.
 3. The return-to-caller chain unwinds. After each fork-path call returns in the
    unwinding state, the caller asks the host to reserve a complete node before
    its first frame write; its postamble commits the node only after all
-   activation-owned scalar state has been saved. The host maps additional
-   page-rounded chunks when necessary. No accepted frame names a
-   module-instance reference-table slot.
+   activation-owned scalar state has been saved. Live references are interned
+   into one process recipe graph and the frame stores only its reference-vector
+   ordinal. The host maps additional page-rounded chunks when necessary. No
+   accepted frame names a module-instance reference-table slot.
 4. Once `_start` returns (top-of-stack), the host sends SYS_FORK through the channel.
 5. Kernel's `kernel_fork_process(parent_pid, caller_tid)` validates the caller,
    allocates the child PID from the global task-ID sequence, and copies process
@@ -440,7 +462,16 @@ apply the same policy.
    inherited with the process state. The worker creates a fresh Wasm instance:
    mutable globals, tables, exception references, and Store-owned references
    are not copied and are not evidence that replay state survived.
-7. Child worker attaches to the copied root and calls `wpk_fork_rewind_begin(buf)` — the tool's export restores all saved globals. The host then calls `setupChannelBase(...)` (which reads the now-correct `__tls_base`) and invokes `_start`.
+7. The child validates the copied KFRV/KFMS arena, instantiates every required
+   main/side activation, materializes static roots, typed GC objects, opaque
+   owner tokens, and complete exceptions, then restores reference globals,
+   table contents/length, and segment lifetime. Only after those owners are
+   ready does it call `wpk_fork_rewind_begin(buf)` to restore scalar globals.
+   Typed object allocation also installs the child's own weak constructor
+   provenance, so a later nested fork encodes child-local objects rather than
+   depending on identities retained from the original parent.
+   The host then calls `setupChannelBase(...)` (which reads the now-correct
+   `__tls_base`) and invokes the selected main or pthread resume root.
 8. Each instrumented function's preamble requests and validates the next committed frame, then re-enters the call site where the parent was interrupted. Eventually it reaches the `kernel_fork` call site in the leaf function, which returns 0. Libc then refreshes the copied pthread TID from the kernel through `set_tid_address` before returning to user code.
 9. `wpk_fork_rewind_end` resets state; parent and child independently unmap their continuation chunks; fork returns 0 in child and the child PID in the parent.
 
@@ -453,21 +484,23 @@ errno. A negative `SYS_FORK` result after step 4 instead uses the complete
 parent rewind. These resource failures create no child and leave the parent in
 `NORMAL`, able to continue or retry `fork()`.
 
-ABI 43 accepts statically tagged `Catch` and `CatchRef` handlers with scalar tag
-payloads. Their exact arm and operands are activation-owned bytes; rewind
-rethrows the tag so the original `CatchRef` clause creates a fresh
-instance-local exnref. Fork-reachable reference locals, `CatchAllRef`, reference
-payloads and carryovers, mutable reference globals, and arbitrary guest table
-mutation are rejected during instrumentation. Current LLVM C++ output that
-uses cleanup exnref locals or `CatchAllRef` therefore remains an explicit
-unsupported artifact boundary rather than appearing to work through
-parent-instance scratch. See
-[fork-instrumentation.md](fork-instrumentation.md) for the exact accepted and
-rejected shapes.
+ABI 43 reconstructs reference locals/parameters/carryovers, concrete and
+abstract GC objects, mutable reference globals, and complete exception state.
+Statically tagged scalar `Catch`/`CatchRef` arms keep their exact selector and
+maximum live operand tuple in activation-owned bytes; rewind rethrows the tag
+so the original clause creates a fresh instance-local exnref.
+Reference/vector payloads, `CatchAll`/`CatchAllRef`, JSTag ingress, and modern
+C++ cleanup exnrefs use the complete-exception recipe and likewise re-enter the
+original Wasm handler without parent-instance scratch. See
+[fork-instrumentation.md](fork-instrumentation.md) for the ownership formats
+and cleanup ordering.
 
-A fork reached directly inside an instrumented dlopened side module uses two
-ordered state machines and two linked continuations: side then main during unwind, main
-then side during rewind. Versioned fork-instrument capability metadata lets
+A fork reached inside instrumented dlopened side modules uses one process-wide
+event journal plus one linked continuation per active module. Unwind records
+the exact leaf-to-root activation/function order; fresh-child replay consumes
+the reverse order. This supports nested main-to-side-to-side stacks without
+assuming that the main activation is present at the leaf. Versioned
+fork-instrument capability metadata lets
 marker-present artifacts prove their role, and ABI 43 additionally requires
 `FORK_CAP_ACTIVATION_STATE_SAFE` before launch. ABI 16 defines the historical
 five-export fallback, while ABI 18 and later require role claims and reject
@@ -475,9 +508,9 @@ stale call-graph artifacts. The ABI 36 epoch combines that contract with
 side-module replay state and concurrent pthread-fork arbitration. Dlopen replay
 records both the parent's memory base and exact table base, including null gaps
 left by failed loads, then re-instantiates each side module's static element
-initialization at that exact base in the child. This host-owned, versioned replay
-path is the explicit reconstruction owner for supported dlopen table state;
-guest `table.set`/`fill`/`copy`/`init`/`grow` effects are not accepted.
+initialization at that exact base in the child. The process table journal then
+applies later loader and guest `table.set`/`fill`/`copy`/`init`/`grow` effects
+through typed recipes after every referenced activation catalog is present.
 TLS-bearing side modules additionally record their live,
 positive `__tls_base`. A child restores the pointer-width-correct mutable
 global without calling `__wasm_init_tls`, because copied memory already holds
@@ -486,21 +519,66 @@ and application `thread_local` values. C++ exceptions and longjmp use one
 canonical pointer-width tag identity across the main image and all side
 modules; a main-exported tag wins over the host-created fallback.
 
+ABI 43 libc drives dynamic initialization as a non-reentrant transaction.
+`__wasm_dlopen_prepare` validates and owns a private transaction without
+entering guest code. Each `__wasm_dlopen_next` advances host-only compilation
+and instantiation of the `DT_NEEDED` closure as needed. Instrumentation has
+removed the native start section and converted active segments plus the
+original start function into an explicit bootstrap, so
+`new WebAssembly.Instance(...)` cannot run that guest path inside `next`.
+The call publishes one canonical initializer table entry and returns; libc
+then calls that entry as ordinary Wasm before requesting the next stage. A
+constructor that calls `fork()` thus has a normal instrumentable Wasm call
+chain rather than a suspended host import beneath it. Before reachability
+analysis, the instrumenter turns the
+historical two-, four-, and five-argument private `__wasm_dlopen` function
+imports into in-place local adapters that prepare the transaction and
+tail-call an ordinary Wasm driver for their initializers. This retains all
+aliases of the old function without retaining the reentrant host boundary.
+The two-argument form retains its original
+`dlopen:<buffer-address>:<byte-length>` identity. ABI 43 artifact and launch
+validation require both the legacy import and the completed artifact's native
+start section to be absent. Valid source modules may contain a start section;
+instrumentation transfers it to `wpk_fork_module_bootstrap` before admission.
+The lower-level `DynamicLinker.dlopenSync()` driver remains available to
+standalone embedders, but it is not a process import.
+
+The kernel cannot replace the process-local half of this protocol. It can own
+path authorization, loader scheduling, and replay policy, but the kernel
+Worker cannot inject Store-local functions, exception tags, or GC identities
+into the process Worker's tables. Core Wasm cannot instantiate arbitrary
+runtime module bytes itself, and those JavaScript references are not
+structured-clonable between Workers. A kernel syscall would therefore need a
+request/yield/resume protocol that still delegates instantiation and catalog
+registration to the process Worker; it would relocate, rather than remove, the
+boundary. In particular, using the generic syscall import instead of a named
+loader import would not itself change reentrancy. The contract is that every
+process-local host operation returns before guest initialization begins.
+
+The process worker can issue VFS and mapping requests while a staged loader
+import is active, but those JavaScript-owned channel completions cannot invoke
+libc's signal trampoline. They set
+`REQUEST_FLAG_DEFER_SIGNAL_DELIVERY`, leaving any caught signal in the kernel,
+and libc performs an ordinary checkpoint after every `prepare`/`next` return
+and after `dlclose`. Constructors still begin only after both the import and
+checkpoint return, so signal delivery and dynamic initialization add no
+host-to-Wasm reentrancy.
+
 The dlopen replay list and its atomic pthread-fork lock live in a transient,
 host-private control record. The same host build writes and reads that record
 during one process lifetime; guest code and persisted artifacts never
 interpret it. Changing that record's size is therefore not a guest ABI change,
 while the public ABI snapshot/classifier remains authoritative.
 
-Pthread workers have separate Wasm instances, tables, and exception tags, none
-of which can be structured-cloned from the process worker. `dlopen()` from a
-pthread therefore fails normally with `dlerror()`. If the process has loaded a
-side module, `fork()` from a pthread returns `ENOTSUP`; an atomic process lock
-excludes a racing main-worker dlopen across the pthread's archive check,
-unwind, memory copy, and parent rewind. The supported
-direct-main-to-side boundary and the remaining opaque cross-side callback
-limitation are specified in
-[fork-instrumentation.md](fork-instrumentation.md#fork-from-a-dlopened-side-module).
+Pthread workers have separate Wasm instances, tables, and exception tags, so
+no JavaScript reference is structured-cloned from the process worker. Each
+pthread owns a local dynamic-linker replica. Under the process archive lock it
+compares a shared generation, instantiates missing side modules at their exact
+bases, registers fresh function/exception catalogs, and applies the typed table
+journal. The same mechanism supports `dlopen`/`dlsym` from a pthread and fork
+from a pthread after dynamic loading; the fork child reconstructs only the
+calling thread but receives the process module/table recipe state. The
+generation fast path avoids reparsing or reinstantiating unchanged state.
 
 Fork and non-forking spawn still copy each process's fd and OFD metadata. The
 objects whose mutable state must remain identical across those copies use
@@ -1176,6 +1254,14 @@ Signals are delivered at syscall boundaries. When a process has a pending signal
 5. If the signal interrupted a blocking syscall, EINTR is returned
 
 Features: RT signal queuing with `si_value`, cross-process `kill`/`killpg`, `sigaltstack` with shadow stack swap, `sigsuspend`, `sigtimedwait`, `setitimer`/`alarm` via host timers.
+
+The exception is a channel request whose completion is owned by
+process-worker JavaScript. Its ABI 43 request flag tells the kernel not to
+dequeue a caught signal into a record that JavaScript cannot consume. The
+signal remains pending until libc makes the explicit ordinary-channel
+checkpoint after `fork`, `clone`, or a staged-loader import. Handler invocation
+and `rt_sigreturn` therefore still occur on the guest side after the host
+import has returned.
 
 Exact-thread delivery never degrades into process-wide delivery. `tkill` and
 `tgkill` resolve their target against retained live task records in the calling
