@@ -17,6 +17,19 @@ fail() {
   fail "complete Pages publisher does not exist: $PAGES_WORKFLOW"
 grep -Fxq 'name: Deploy GitHub Pages' "$PAGES_WORKFLOW" ||
   fail "the single complete publisher must have an accurate workflow name"
+trigger_block="$(
+  awk '
+    /^on:$/ { inside = 1 }
+    inside && /^concurrency:$/ { exit }
+    inside { print }
+  ' "$PAGES_WORKFLOW"
+)"
+grep -Fxq '  push:' <<<"$trigger_block" &&
+  grep -Fxq '    branches: [main]' <<<"$trigger_block" ||
+  fail "the complete Pages publisher must run for every main push"
+if grep -Eq '^[[:space:]]+(paths|paths-ignore):' <<<"$trigger_block"; then
+  fail "the source-building Pages publisher must not filter main pushes by path"
+fi
 
 step_block() {
   local workflow="$1"
@@ -101,37 +114,6 @@ checkout_count="$(
 )"
 [ "$checkout_count" -eq 1 ] ||
   fail "all Pages outputs must be built from one checkout"
-
-for required_path in \
-  '.github/workflows/browser-demos-pages.yml' \
-  'docs-site/**' \
-  'host/src/**' \
-  'host/typedoc.json' \
-  'host/package.json' \
-  'host/package-lock.json' \
-  'host/tsconfig.json' \
-  'host/tsconfig.docs.json' \
-  'host/tsup.config.ts' \
-  'package.json' \
-  'package-lock.json' \
-  'packages/registry/**' \
-  'homebrew/main-shell-demo.json' \
-  'homebrew/source-rootfs-shell-package/**' \
-  'homebrew/source-rootfs-shell-default.json' \
-  'homebrew/source-rootfs-shell-dependencies.json' \
-  'scripts/browser-binary-package-roots.mjs' \
-  'scripts/generate-rootfs-package-manifest.mjs' \
-  'scripts/source-rootfs-shell-dependency-contract.mjs' \
-  'scripts/package-build-roots.sh' \
-  'scripts/check-pages-publish-size.mjs' \
-  'scripts/check-pages-run-freshness.sh' \
-  'scripts/ci-check-pages-deployment.sh' \
-  'scripts/test-pages-deployment-contract.sh' \
-  'scripts/test-pages-publish-size.sh' \
-  'scripts/test-pages-run-freshness.sh'; do
-  grep -Fq -- "- \"$required_path\"" "$PAGES_WORKFLOW" ||
-    fail "the complete Pages publisher does not watch $required_path"
-done
 
 projection_line="$(step_line "Verify browser package projection is current")"
 sysroot_line="$(step_line "Build current wasm32 sysroot for source-built browser packages")"

@@ -752,6 +752,16 @@ that disposable failed runner. The workflow contract rejects
 untrappable `SIGKILL` or runner loss can skip link/temp cleanup, but cannot
 publish that runner's partial tree. Ordinary `prepare-browser` never
 interprets or cleans up this internal lane.
+
+While this temporary source lane is active, every push to `main` starts the
+Pages workflow. The source-shell closure includes transitive package recipes,
+shared build scripts, package actions, SDK/sysroot inputs, and fork
+instrumentation; a hand-maintained path filter could otherwise leave the
+published product on an older closure when a newly shared input changes. The
+temporary Homebrew main-shell gate likewise runs for every pull request and
+`main` push so the exact Node/Chromium validation cannot be skipped by the
+same kind of allowlist drift.
+
 Its complete direct dependency contract is declared once in
 `homebrew/source-rootfs-shell-dependencies.json`; the workflow uses an empty
 binary index and a fresh cache so every buildable dependency is produced from

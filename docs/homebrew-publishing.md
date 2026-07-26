@@ -2103,6 +2103,15 @@ recursively roll back or reinterpret canonical package state. `SIGKILL` or
 runner loss can prevent cleanup, but cannot let later deployment steps consume
 that partial runner. Ordinary `prepare-browser` remains the independent
 bottle-backed path.
+
+Until the source bridge is retired, Pages intentionally runs for every `main`
+push without a path filter. Its transitive package closure and shared tool
+inputs can grow; filtering by a maintained list would allow a new build input
+to change without superseding the deployed product. The temporary Homebrew
+main-shell workflow also runs for every pull request and `main` push so its
+exact Node/Chromium source-product gate cannot be bypassed by the same
+allowlist drift.
+
 Pages then assembles the actual product tree and boots that sealed `/kandelo/`
 tree before deployment. Flip the gate back to `bottles` only in the strict
 exact-main bottle cutover.

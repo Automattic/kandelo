@@ -96,29 +96,19 @@ expect_mutation_rejected \
   's/(      - name: Build browser demos for GitHub Pages\n)/$1        if: always()\n/'
 
 expect_mutation_rejected \
-  "missing docs-only trigger" \
-  "does not watch docs-site/**" \
-  's/^      - "docs-site\/\*\*"\n//m'
+  "partial main-push path allowlist" \
+  "must not filter main pushes by path" \
+  's/(    branches: \[main\]\n)/$1    paths:\n      - "packages\/registry\/**"\n/'
 
 expect_mutation_rejected \
-  "missing browser package scanner trigger" \
-  "does not watch scripts/browser-binary-package-roots.mjs" \
-  's/^      - "scripts\/browser-binary-package-roots\.mjs"\n//m'
+  "main-push path exclusion" \
+  "must not filter main pushes by path" \
+  's/(    branches: \[main\]\n)/$1    paths-ignore:\n      - "scripts\/**"\n/'
 
 expect_mutation_rejected \
-  "missing package-registry trigger" \
-  "does not watch packages/registry/**" \
-  's/^      - "packages\/registry\/\*\*"\n//m'
-
-expect_mutation_rejected \
-  "missing source-shell config trigger" \
-  "does not watch homebrew/source-rootfs-shell-default.json" \
-  's/^      - "homebrew\/source-rootfs-shell-default\.json"\n//m'
-
-expect_mutation_rejected \
-  "missing source-shell recipe trigger" \
-  "does not watch homebrew/source-rootfs-shell-package/**" \
-  's/^      - "homebrew\/source-rootfs-shell-package\/\*\*"\n//m'
+  "non-main Pages push branch" \
+  "must run for every main push" \
+  's/branches: \[main\]/branches: [release]/'
 
 expect_mutation_rejected \
   "bypassed package projection check" \

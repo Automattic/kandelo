@@ -58,67 +58,21 @@ command -v node >/dev/null 2>&1 || fail "node is required"
 SOURCE_ROOT_COUNT="$(jq -er '.packages | length' "$SOURCE_LOCK")"
 SOURCE_CLOSURE_COUNT="$(jq -er '.formula_closure | length' "$SOURCE_LOCK")"
 
-pull_paths="$(awk '
-  /^  pull_request:$/ { active = 1; next }
-  /^  push:$/ { active = 0 }
-  active && /^      - "/ { line = $0; sub(/^      - "/, "", line); sub(/"$/, "", line); print line }
-' "$WORKFLOW")"
-push_paths="$(awk '
-  /^  push:$/ { active = 1; next }
-  /^  workflow_dispatch:$/ { active = 0 }
-  active && /^      - "/ { line = $0; sub(/^      - "/, "", line); sub(/"$/, "", line); print line }
-' "$WORKFLOW")"
-[ "$pull_paths" = "$push_paths" ] ||
-  fail "Homebrew main-shell pull_request and push path filters must stay aligned"
-
-for required_path in \
-  ".github/actions/fetch-submodules/**" \
-  ".github/actions/setup-nix/**" \
-  ".gitmodules" \
-  "MANIFEST" \
-  "apps/browser-demos/**" \
-  "crates/shared/**" \
-  "homebrew/main-shell*" \
-  "homebrew/test/**" \
-  "host/src/**" \
-  "host/test/**" \
-  "images/rootfs/**" \
-  "images/vfs/scripts/build-homebrew-materialized-vfs-image.ts" \
-  "images/vfs/scripts/build-shell-vfs-image.ts" \
-  "images/vfs/scripts/main-shell-demo-config.ts" \
-  "images/vfs/scripts/vfs-image-helpers.ts" \
-  "libc/**" \
-  "packages/registry/**" \
-  "sdk/**" \
-  "scripts/build-musl.sh" \
-  "scripts/dev-shell.sh" \
-  "scripts/browser-binary-package-roots.mjs" \
-  "scripts/create-homebrew-bottle-mirror-publish-manifest.ts" \
-  "scripts/create-homebrew-guest-lifecycle-fixture*.ts" \
-  "scripts/fetch-binaries.sh" \
-  "scripts/homebrew-brewfile-selection.rb" \
-  "scripts/homebrew-language-runtime-contract.ts" \
-  "scripts/homebrew-main-shell-image-contract*.ts" \
-  "scripts/install-local-binary.sh" \
-  "scripts/install-overlay-headers.sh" \
-  "scripts/resolve-binary.sh" \
-  "scripts/resolve-binary.ts" \
-  "scripts/resolve-binary.bundle.mjs" \
-  "scripts/resolve-binary.bundle.LICENSES.txt" \
-  "scripts/build-resolve-binary-bundle.sh" \
-  "scripts/test-resolve-binary-bundle.sh" \
-  "scripts/recover-homebrew-bottle-mirror.ts" \
-  "scripts/run-wasm-fork-instrument.sh" \
-  "scripts/verify-homebrew-main-shell-artifact-lock.sh" \
-  "tests/package-system/browser-binary-dependencies.test.ts" \
-  "tests/package-system/homebrew-bottle-mirror-recovery.test.ts" \
-  "tools/mkrootfs/**" \
-  "tools/xtask/**" \
-  "web-libs/kandelo-session/**"
-do
-  grep -Fxq "$required_path" <<<"$pull_paths" ||
-    fail "Homebrew main-shell workflow does not watch authoritative input $required_path"
-done
+main_shell_trigger_block="$(
+  awk '
+    /^on:$/ { inside = 1 }
+    inside && /^concurrency:$/ { exit }
+    inside { print }
+  ' "$WORKFLOW"
+)"
+grep -Fxq '  pull_request:' <<<"$main_shell_trigger_block" &&
+  grep -Fxq '  push:' <<<"$main_shell_trigger_block" &&
+  grep -Fxq '    branches: [main]' <<<"$main_shell_trigger_block" ||
+  fail "Homebrew main-shell CI must validate pull requests and every main push"
+if grep -Eq '^[[:space:]]+(paths|paths-ignore):' \
+  <<<"$main_shell_trigger_block"; then
+  fail "temporary source-rootfs CI must not filter pull requests or main pushes by path"
+fi
 
 setup_node_line="$(grep -n 'uses: actions/setup-node@' "$WORKFLOW" | cut -d: -f1 | head -1)"
 checker_line="$(grep -n 'node scripts/check-homebrew-main-shell-brewfile.mjs' "$WORKFLOW" | cut -d: -f1 | head -1)"
@@ -1208,6 +1162,8 @@ source_override_runner="$source_override_probe/run.sh"
   printf '[ -L "$REPO_ROOT/local-binaries/programs/wasm32/shell.vfs.zst" ]\n'
   printf '[ "$(readlink "$SOURCE_ROOTFS_SHELL_OVERRIDE_PATH")" = %q ]\n' \
     "$source_override_generation"
+  printf '[ "$SOURCE_ROOTFS_SHELL_TRANSIENT_FETCHED_TARGET" = %q ]\n' \
+    "$source_override_generation/shell.vfs.zst"
 } >"$source_override_runner"
 bash "$source_override_runner" ||
   fail "source-rootfs resolver override rejected a valid scalar mirror generation"
@@ -1295,16 +1251,21 @@ mkdir -p "$source_clear_probe/binaries/programs/wasm32" \
   "$source_clear_probe/local-libs/shell/build" "$source_clear_probe/unrelated"
 source_clear_mirror="$source_clear_probe/binaries/programs/wasm32/shell.vfs.zst"
 source_clear_transient="$source_clear_probe/local-libs/shell/build/shell.vfs.zst"
+source_clear_canonical="$source_clear_probe/local-binaries/generation/shell.vfs.zst"
 source_clear_unrelated="$source_clear_probe/unrelated/shell.vfs.zst"
 printf 'source\n' >"$source_clear_transient"
+mkdir -p "$(dirname "$source_clear_canonical")"
+printf 'source\n' >"$source_clear_canonical"
 printf 'bottle\n' >"$source_clear_unrelated"
-ln -s "$source_clear_transient" "$source_clear_mirror"
+# Match the resolver's ScalarMirrorPlan: it resolves the local-libs override
+# and records the immutable generation path as the fetched-tier link target.
+ln -s "$source_clear_canonical" "$source_clear_mirror"
 source_clear_runner="$source_clear_probe/run.sh"
 {
   printf 'set -euo pipefail\n'
   printf 'SOURCE_ROOTFS_SHELL_FETCHED_MIRROR=%q\n' "$source_clear_mirror"
   printf 'SOURCE_ROOTFS_SHELL_TRANSIENT_FETCHED_TARGET=%q\n' \
-    "$source_clear_transient"
+    "$source_clear_canonical"
   printf 'SOURCE_CLEAR_UNRELATED=%q\n' "$source_clear_unrelated"
   printf 'err() { printf "%%s\\n" "$*" >&2; }\n'
   sed -n '/^clear_source_rootfs_shell_transient_fetched_mirror()/,/^}/p' \

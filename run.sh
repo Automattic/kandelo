@@ -1462,7 +1462,10 @@ activate_source_rootfs_shell_resolver_override() {
     local output_rel
     output_rel="$(pkg_output_rel shell shell.vfs.zst wasm32)" || return 1
     local fetched_mirror="$REPO_ROOT/binaries/programs/wasm32/$output_rel"
-    local transient_fetched_target="$override_path/shell.vfs.zst"
+    # WHY: the resolver canonicalizes a local-libs scalar target before it
+    # creates the fetched-tier mirror. Cleanup must bind the resulting
+    # immutable generation path, not the lexical override path.
+    local transient_fetched_target="$override_target/shell.vfs.zst"
     if [ -e "$override_path" ] || [ -L "$override_path" ]; then
         err "Source-rootfs mode cannot replace an existing local-libs/shell/build override"
         return 1
