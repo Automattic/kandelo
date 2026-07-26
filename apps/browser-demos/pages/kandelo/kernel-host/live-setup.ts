@@ -583,7 +583,10 @@ export async function createLiveHost(
   let serviceWorkerReady: Promise<ServiceWorker> | null = null;
   const localGalleryItems = liveGalleryItems();
 
-  const initialDescriptor = await descriptorForBootQuery(opts.vfsUrl, opts.demo);
+  const initialDescriptor = await descriptorForBootQuery(
+    opts.vfsUrl,
+    opts.demo,
+  );
   const host = new LiveKernelHost({
     status: "booting",
     descriptor: initialDescriptor,
@@ -1260,10 +1263,6 @@ async function bootProfile(
       onStagedFileSystemDiscarded: trackTransientImageBuffer,
     });
     buildFs = composed.fs;
-    assertCurrent();
-    tick(
-      "runtime layer files registered; archives remain lazy until first use",
-    );
   } else {
     buildFs = MemoryFileSystem.fromImage(fetchedVfsImageBytes, {
       maxByteLength: profile.maxVfsByteLength,
@@ -1273,12 +1272,22 @@ async function bootProfile(
   // later fetch, staging, supersession, and serialization failure; finalizing
   // the image is intentionally an idempotent second registration.
   trackTransientImageBuffer(buildFs.sharedBuffer);
+  // WHY: register cleanup before rejecting a composition superseded while its
+  // asynchronous layer loads were in flight. Otherwise its completed buffer
+  // becomes unreachable without entering the WebKit reclamation ledger.
+  assertCurrent();
+  if (runtimeLayers.length > 0) {
+    tick(
+      "runtime layer files registered; archives remain lazy until first use",
+    );
+  }
   // WHY: establish cleanup ownership first, then reject forged imported seals
   // before URL rewriting or asset registration can trust their lazy metadata.
-  await verifyImportedSealsForCurrentBoot(
-    buildFs,
-    assertCurrent,
-  );
+  await verifyImportedSealsForCurrentBoot(buildFs);
+  // WHY: this check must live in the same continuation as the effects below.
+  // Moving it into an async helper creates a microtask gap where a newer boot
+  // can take ownership before this boot resumes mutating its staged image.
+  assertCurrent();
   const shellConfig = readImageShellConfig(buildFs);
   if (
     profile.id === "nginx-php" ||
@@ -1305,6 +1314,7 @@ async function bootProfile(
     const bytes = await fetch(profile.init.programUrl)
       .then(failOn(profile.init.argv[0]))
       .then((r) => r.arrayBuffer());
+    assertCurrent();
     ensureDirRecursive(buildFs, dirname(profile.init.argv[0]));
     writeVfsBinary(buildFs, profile.init.argv[0], new Uint8Array(bytes), 0o755);
   }
@@ -1347,13 +1357,14 @@ async function bootProfile(
     : [];
   const assets =
     imageAssets.length > 0 ? imageAssets : builtinDemoAssets(profile.id);
-  await stageConfiguredAssets(buildFs, assets, tick);
+  await stageConfiguredAssets(buildFs, assets, tick, assertCurrent);
   assertCurrent();
 
   const closedLazyAssets = await loadProfileClosedLazyAssets(
     buildFs,
     profile,
     tick,
+    assertCurrent,
   );
   assertCurrent();
 
@@ -1502,6 +1513,10 @@ async function bootProfile(
           stdin: new Uint8Array(),
         },
       );
+      // WHY: spawning crosses the worker boundary. A newer boot may own the
+      // host by the time the acknowledgement returns, so do not attach its
+      // poller or exit handlers to this superseded activation.
+      assertCurrent();
       stopDinitStartingPoller = startDinitStartingPoller({
         kernel,
         hasDinitctl,
@@ -1545,12 +1560,14 @@ async function bootProfile(
         ],
         "fbtest.wasm",
       );
+      assertCurrent();
       void spawnLazy(
         kernel,
         "/usr/local/bin/fbtest",
         fbtestWasmUrl,
         ["fbtest"],
         tick,
+        assertCurrent,
       );
     } else if (presentation?.autoCommand) {
       tick("starting configured command from the default shell...");
@@ -1943,12 +1960,14 @@ async function spawnLazy(
   url: string,
   argv: string[],
   tick: (msg: string) => void,
+  assertCurrent: () => void,
 ): Promise<void> {
   try {
     tick(`fetching ${argv[0]}...`);
     const bytes = await fetch(url)
       .then(failOn(argv[0]))
       .then((r) => r.arrayBuffer());
+    assertCurrent();
     tick(`spawning ${argv[0]}...`);
     await kernel.spawn(bytes, argv, {
       env: SHELL_ENV,
@@ -1956,6 +1975,7 @@ async function spawnLazy(
       uid: DEMO_UID,
       gid: DEMO_GID,
     });
+    assertCurrent();
     tick(`${argv[0]} exited`);
   } catch (err) {
     tick(
@@ -1968,15 +1988,18 @@ async function stageConfiguredAssets(
   fs: MemoryFileSystem,
   assets: DemoAssetConfig[],
   tick: (msg: string) => void,
+  assertCurrent: () => void,
 ): Promise<void> {
   for (const asset of assets) {
     tick(`staging ${asset.path}...`);
     const buffer: ArrayBuffer = await fetch(demoAssetFetchUrl(asset))
       .then(failOn(asset.path))
       .then((r) => r.arrayBuffer());
+    assertCurrent();
     const bytes = new Uint8Array(buffer);
     if (asset.sha256) {
       const digest = await sha256Hex(buffer);
+      assertCurrent();
       if (digest !== asset.sha256) {
         throw new Error(
           `${asset.path} sha256 mismatch: expected ${asset.sha256}, got ${digest}`,
@@ -2187,7 +2210,7 @@ function envRecord(env: string[]): Record<string, string> {
 
 function descriptorFor(id: string): BootDescriptor {
   const software = SOFTWARE_PROFILES.get(id);
-  const normalized = software ? "shell" : normalizeDemoId(id) ?? "shell";
+  const normalized = software ? "shell" : (normalizeDemoId(id) ?? "shell");
   const spec = LIVE_DEMO_SPECS[normalized];
   const item = software
     ? liveGalleryItems().find((p) => p.id === "shell")!
@@ -2296,15 +2319,15 @@ async function liveDemoIdForVfsImageUrl(
   );
   if (!image) return null;
 
-  const fragmentDemo = normalizeDemoId(new URL(vfsUrl, location.href).hash.slice(1));
+  const fragmentDemo = normalizeDemoId(
+    new URL(vfsUrl, location.href).hash.slice(1),
+  );
   const requestedDemo = normalizeDemoId(demo) ?? fragmentDemo;
   if (!requestedDemo) return DEFAULT_DEMO_FOR_VFS_IMAGE[image];
 
   // WHY: a demo selects launch behavior, while the matched image owns the VFS
   // bytes and capacity. Never apply a launch profile to a different image.
-  return LIVE_DEMO_SPECS[requestedDemo].image === image
-    ? requestedDemo
-    : null;
+  return LIVE_DEMO_SPECS[requestedDemo].image === image ? requestedDemo : null;
 }
 
 async function resolveLiveVfsSourceUrl(source: LiveVfsSource): Promise<string> {
@@ -2771,6 +2794,7 @@ async function loadProfileClosedLazyAssets(
   fs: MemoryFileSystem,
   profile: LiveProfile,
   tick: (message: string) => void,
+  assertCurrent: () => void,
 ) {
   const bundleRoot = (
     import.meta.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT as
@@ -2790,7 +2814,9 @@ async function loadProfileClosedLazyAssets(
     embeddedPlanBytes,
     bundleRoot,
   });
+  assertCurrent();
   const packageAssets = await loadHomebrewBootstrapClosedAssets(fs);
+  assertCurrent();
   tick(
     `verified ${bundle.assets.length} exact deferred bottle payloads and ` +
       `${packageAssets.length} package source tree`,

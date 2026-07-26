@@ -1,9 +1,9 @@
-export async function verifyImportedSealsForCurrentBoot(
-  fs: { verifyImportedLazyAtomicGroupSeals(): Promise<void> },
-  assertCurrent: () => void,
-): Promise<void> {
-  await fs.verifyImportedLazyAtomicGroupSeals();
-  // WHY: asynchronous trust checks may outlive the boot that started them.
-  // Re-establish ownership before its continuation can perform side effects.
-  assertCurrent();
+export function verifyImportedSealsForCurrentBoot(fs: {
+  verifyImportedLazyAtomicGroupSeals(): Promise<void>;
+}): Promise<void> {
+  // WHY: return the filesystem's exact promise rather than awaiting it here.
+  // The owning boot must recheck ownership immediately after its await; an
+  // async wrapper would add a microtask in which a newer boot could supersede
+  // this one after the helper's check but before the caller's side effects.
+  return fs.verifyImportedLazyAtomicGroupSeals();
 }
