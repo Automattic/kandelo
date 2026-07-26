@@ -563,7 +563,12 @@ assert_authority_validator_job() {
   grep -Fq \
     'authority_cargo_home="$(cat "$validator_state/cargo-home-path")"' \
     <<<"$job"
-  grep -Fq 'CARGO_HOME="$authority_cargo_home"' <<<"$job"
+  grep -Fq 'env CARGO_HOME="$authority_cargo_home" \' <<<"$job"
+  if ! grep -F -B1 'env CARGO_HOME="$authority_cargo_home" \' <<<"$job" |
+       grep -Fq 'bash scripts/dev-shell.sh \'; then
+    echo "$label does not consume validator state through the declared dev shell" >&2
+    exit 1
+  fi
   if grep -Eq 'cargo (fetch|build)|working-directory: producer' <<<"$job"; then
     echo "$label bypasses centralized current-authority validator preparation" >&2
     exit 1
