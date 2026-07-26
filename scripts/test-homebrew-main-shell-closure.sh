@@ -30,6 +30,9 @@ LAZY_ARCHIVE_RESOLVER="$REPO_ROOT/apps/browser-demos/lib/init/lazy-archives.ts"
 SHELL_TOOL_PREPARER="$REPO_ROOT/packages/registry/shell/prepare-build-tools.sh"
 SHELL_TOOL_PREPARER_TEST="$REPO_ROOT/packages/registry/shell/test-prepare-build-tools.sh"
 RUN_SH="$REPO_ROOT/run.sh"
+LOCAL_SHELL_INSTALLER="$REPO_ROOT/scripts/install-local-shell-artifact.sh"
+LOCAL_SHELL_OVERRIDE="$REPO_ROOT/scripts/activate-local-shell-build-override.sh"
+CI_BLOCKER_MATERIALIZER="$REPO_ROOT/scripts/materialize-ci-publication-blockers.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
@@ -227,39 +230,109 @@ grep -Fq 'package_deferred_trees[0].state' <<<"$candidate_build_workflow_block" 
 candidate_install_workflow_block="$(sed -n \
   "/- name: Install the candidate's exact shell bytes/,/- name: Recover the exact bottle mirror/p" \
   "$WORKFLOW")"
-grep -Fq 'WASM_POSIX_LOCAL_INSTALL_SOURCE="$1"' \
+grep -Fq 'scripts/install-local-shell-artifact.sh \' \
   <<<"$candidate_install_workflow_block" ||
+  fail "candidate proof must use the shared package installer"
+grep -Fq '"$CANDIDATE_PATH" "$install_session"' \
+  <<<"$candidate_install_workflow_block" ||
+  fail "candidate and session must be passed to the shared installer as isolated arguments"
+grep -Fq 'WASM_POSIX_LOCAL_INSTALL_SOURCE="$source_image"' \
+  "$LOCAL_SHELL_INSTALLER" ||
   fail "candidate proof must give the exact candidate to the package installer"
-grep -Fq 'WASM_POSIX_LOCAL_INSTALL_SESSION="$2"' \
-  <<<"$candidate_install_workflow_block" ||
+grep -Fq 'WASM_POSIX_LOCAL_INSTALL_SESSION="$install_session"' \
+  "$LOCAL_SHELL_INSTALLER" ||
   fail "candidate proof must give the package installer an explicit session"
-grep -Fq 'bash "$CANDIDATE_PATH" "$install_session"' \
-  <<<"$candidate_install_workflow_block" ||
-  fail "candidate and session must be passed into the installer shell as isolated arguments"
 grep -Fq '${GITHUB_RUN_ID}' <<<"$candidate_install_workflow_block" &&
   grep -Fq '${GITHUB_RUN_ATTEMPT}' <<<"$candidate_install_workflow_block" &&
   grep -Fq '${GITHUB_JOB}' <<<"$candidate_install_workflow_block" ||
   fail "candidate package-install session must be unique to one workflow job attempt"
-grep -Fq 'build-deps --arch wasm32 --binaries-dir local-binaries \' \
-  <<<"$candidate_install_workflow_block" ||
+grep -Fq 'build-deps \' "$LOCAL_SHELL_INSTALLER" &&
+  grep -Fq -- '--arch wasm32 \' "$LOCAL_SHELL_INSTALLER" &&
+  grep -Fq -- '--binaries-dir "$REPO_ROOT/local-binaries" \' \
+    "$LOCAL_SHELL_INSTALLER" ||
   fail "candidate proof must publish through the wasm32 local package installer"
 grep -Fq 'install-local-artifact shell shell.vfs.zst' \
-  <<<"$candidate_install_workflow_block" ||
+  "$LOCAL_SHELL_INSTALLER" ||
   fail "candidate proof must install shell.vfs.zst as a declared shell artifact"
-grep -Fq 'resolved=$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)' \
-  <<<"$candidate_install_workflow_block" ||
+grep -Fq 'resolved="$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)"' \
+  "$LOCAL_SHELL_INSTALLER" ||
   fail "candidate proof must resolve the canonical installed shell artifact"
-grep -Fq 'cmp "$CANDIDATE_PATH" "$resolved"' \
-  <<<"$candidate_install_workflow_block" ||
+grep -Fq 'cmp "$source_image" "$resolved"' \
+  "$LOCAL_SHELL_INSTALLER" ||
   fail "candidate proof must compare the canonical installed artifact with the candidate"
 grep -Fq 'cp "$CANDIDATE_PATH" "$browser_copy"' \
   <<<"$candidate_install_workflow_block" ||
   fail "candidate proof must retain a separate browser-public copy"
-[ "$(grep -Fc 'local-binaries' <<<"$candidate_install_workflow_block")" -eq 1 ] ||
-  fail "candidate proof must access local-binaries only through the package installer"
 grep -Eq '(^|[[:space:]])(cp|mv|install|ln)[[:space:]].*(local-binaries|\$installed)' \
   <<<"$candidate_install_workflow_block" &&
   fail "candidate proof must not write or copy directly into local-binaries"
+source_alias_line="$(grep -nF -- '- name: Select the source shell for dependent browser VFS builds' \
+  "$WORKFLOW" | cut -d: -f1)"
+browser_resolve_line="$(grep -nF -- '- name: Resolve current direct browser bundling inputs' \
+  "$WORKFLOW" | cut -d: -f1)"
+[ -n "$source_alias_line" ] && [ -n "$browser_resolve_line" ] &&
+  [ "$source_alias_line" -lt "$browser_resolve_line" ] ||
+  fail "source shell selection must precede every derived browser VFS resolution"
+source_alias_workflow_block="$(sed -n \
+  '/- name: Select the source shell for dependent browser VFS builds/,/- name: Resolve current direct browser bundling inputs/p' \
+  "$WORKFLOW")"
+grep -Fq 'scripts/install-local-shell-artifact.sh \' \
+  <<<"$source_alias_workflow_block" &&
+  grep -Fq 'scripts/activate-local-shell-build-override.sh "$CANDIDATE_PATH"' \
+    <<<"$source_alias_workflow_block" &&
+  grep -Fq '${{ steps.source_alias.outputs.local_manifest }}' "$WORKFLOW" &&
+  grep -Fq '${{ steps.source_alias.outputs.link_manifest }}' "$WORKFLOW" ||
+  fail "source shell selection must pin and monitor the exact local dependency override"
+grep -Fq 'local_libs="$REPO_ROOT/local-libs"' "$LOCAL_SHELL_OVERRIDE" &&
+  grep -Fq 'override_path="$shell_dir/build"' "$LOCAL_SHELL_OVERRIDE" &&
+  grep -Fq 'ln -s "$override_target" "$override_path"' "$LOCAL_SHELL_OVERRIDE" &&
+  grep -Fq 'cmp -s "$source_image" "$override_path/shell.vfs.zst"' \
+    "$LOCAL_SHELL_OVERRIDE" ||
+  fail "source shell dependency override must use and verify build-deps' supported local-libs tier"
+grep -Fq -- '--force-source-build \' "$CI_BLOCKER_MATERIALIZER" ||
+  fail "publication blockers must rebuild their exact PR recipes rather than accept cached canonical bytes"
+grep -Fq 'exact_override_is_active' "$LOCAL_SHELL_OVERRIDE" &&
+  [ "$(grep -Fc 'scripts/activate-local-shell-build-override.sh' "$WORKFLOW")" -eq 2 ] ||
+  fail "source shell override must be idempotently verified before and after derived VFS resolution"
+
+materializer_install_line="$(grep -nF 'scripts/install-local-shell-artifact.sh' \
+  "$CI_BLOCKER_MATERIALIZER" | cut -d: -f1)"
+materializer_override_line="$(grep -nF 'scripts/activate-local-shell-build-override.sh' \
+  "$CI_BLOCKER_MATERIALIZER" | cut -d: -f1)"
+materializer_resolve_line="$(grep -nF 'for package in "${blocked_packages[@]}"; do' \
+  "$CI_BLOCKER_MATERIALIZER" | cut -d: -f1)"
+[ "$materializer_install_line" -lt "$materializer_override_line" ] &&
+  [ "$materializer_override_line" -lt "$materializer_resolve_line" ] &&
+  grep -Fq '[ "$package" != "shell" ] || continue' \
+    "$CI_BLOCKER_MATERIALIZER" ||
+  fail "CI blocker materialization must activate the bridge before resolving shell dependents"
+
+override_probe="$TMP_ROOT/local-shell-override"
+override_generation="$override_probe/generation"
+override_candidate="$override_probe/candidate.vfs.zst"
+mkdir -p "$override_probe/scripts" "$override_generation"
+cp "$LOCAL_SHELL_OVERRIDE" "$override_probe/scripts/"
+printf 'exact shell bytes\n' >"$override_candidate"
+cp "$override_candidate" "$override_generation/shell.vfs.zst"
+cat >"$override_probe/scripts/resolve-binary.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' '$override_generation/shell.vfs.zst'
+EOF
+chmod +x "$override_probe/scripts/resolve-binary.sh"
+bash "$override_probe/scripts/activate-local-shell-build-override.sh" \
+  "$override_candidate"
+[ -L "$override_probe/local-libs/shell/build" ] &&
+  [ "$(readlink "$override_probe/local-libs/shell/build")" = \
+      "$override_generation" ] ||
+  fail "local shell override did not select the exact installed generation"
+# An exact repeat is required because CI verifies the same ownership boundary
+# after resolving every reverse-dependent browser package.
+bash "$override_probe/scripts/activate-local-shell-build-override.sh" \
+  "$override_candidate"
+mkdir "$override_probe/local-libs/unowned"
+expect_failure "refusing to replace existing local-libs" \
+  bash "$override_probe/scripts/activate-local-shell-build-override.sh" \
+    "$override_candidate"
 node_smoke_workflow_block="$(sed -n \
   '/- name: Boot the exact installed bytes in Node/,/- name: Exercise the live first- and third-party lifecycle in Node/p' \
   "$WORKFLOW")"

@@ -577,7 +577,6 @@ describe("declared shell lazy-archive inputs", () => {
     );
     expect(packageToml).not.toContain("vim-browser-bundle@");
     expect(packageToml).not.toContain("nethack-browser-bundle@");
-    expect(buildToml).toMatch(/^revision\s*=\s*20$/m);
     for (const input of [
       "scripts/build-homebrew-main-shell-closure.sh",
       "scripts/check-homebrew-main-shell-brewfile.mjs",

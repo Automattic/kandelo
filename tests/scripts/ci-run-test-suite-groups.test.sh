@@ -61,6 +61,11 @@ cat > "$FIXTURE/scripts/ci-check-browser-assets.sh" <<'EOF'
 exit 0
 EOF
 
+cat > "$FIXTURE/scripts/materialize-ci-publication-blockers.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'materialized\n' > "$BLOCKER_CAPTURE"
+EOF
+
 for runner in run-libc-tests.sh run-sortix-tests.sh; do
     cat > "$FIXTURE/scripts/$runner" <<'EOF'
 #!/usr/bin/env bash
@@ -80,7 +85,8 @@ chmod +x \
     "$FIXTURE/bin/rustc" \
     "$FIXTURE/bin/uname" \
     "$FIXTURE/run.sh" \
-    "$FIXTURE/scripts/ci-check-browser-assets.sh"
+    "$FIXTURE/scripts/ci-check-browser-assets.sh" \
+    "$FIXTURE/scripts/materialize-ci-publication-blockers.sh"
 
 run_group() {
     local suite="$1"
@@ -117,9 +123,12 @@ fi
 grep -Fq "unknown libc test group: invalid" "$TMP_DIR/invalid.out"
 
 browser_capture="$TMP_DIR/browser-run.args"
+blocker_capture="$TMP_DIR/browser-blockers"
 PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
+    BLOCKER_CAPTURE="$blocker_capture" \
     PREPARE_BROWSER_ASSETS=true \
     bash "$FIXTURE/scripts/ci-run-test-suite.sh" browser
+grep -Fxq materialized "$blocker_capture"
 grep -Fxq -- \
     "--already-materialized --fetch-only prepare-browser" \
     "$browser_capture"
@@ -383,11 +392,21 @@ fi
 mv "$TMP_DIR/programs-with-package-mirrors" "$FIXTURE/binaries/programs"
 
 pack_archive="$TMP_DIR/workspace.tar.zst"
+publication_blockers="$TMP_DIR/publication-blockers.json"
+printf '%s\n' \
+    '{"abi_version":42,"entries":[{"package":"shell","blocker_chain":["shell"]}]}' \
+    > "$publication_blockers"
 PATH="$FIXTURE/bin:$PATH" \
     WASM_POSIX_BINARY_CACHE_ROOT="$source_cache" \
-    bash "$FIXTURE/scripts/pack-ci-test-workspace.sh" "$pack_archive"
+    bash "$FIXTURE/scripts/pack-ci-test-workspace.sh" \
+        --publication-blockers "$publication_blockers" \
+        "$pack_archive"
 pack_capture="$TMP_DIR/pack.list"
 tar --zstd -tf "$pack_archive" > "$pack_capture"
+grep -Fxq ".ci-test-publication-blockers.json" "$pack_capture" || {
+    echo "pack-ci-test-workspace.sh: omitted publication blocker report" >&2
+    exit 1
+}
 for prepared in "${prepared_files[@]}"; do
     grep -Fxq "$prepared" "$pack_capture" || {
         echo "pack-ci-test-workspace.sh: omitted prepared artifact $prepared" >&2
@@ -397,6 +416,9 @@ done
 pack_extract="$TMP_DIR/pack-extract"
 mkdir -p "$pack_extract"
 tar --zstd -xf "$pack_archive" -C "$pack_extract"
+cmp \
+    "$publication_blockers" \
+    "$pack_extract/.ci-test-publication-blockers.json"
 if [ ! -x "$pack_extract/target/fixture-host/release/xtask" ]; then
     echo "pack-ci-test-workspace.sh: package resolver lost its executable mode" >&2
     exit 1
@@ -495,6 +517,7 @@ mkdir -p \
 cp \
     "$FIXTURE/scripts/ci-run-test-suite.sh" \
     "$FIXTURE/scripts/ci-check-browser-assets.sh" \
+    "$FIXTURE/scripts/materialize-ci-publication-blockers.sh" \
     "$pack_extract/scripts/"
 cp "$FIXTURE/run.sh" "$pack_extract/run.sh"
 browser_cache_capture="$TMP_DIR/relocated-browser-cache"
@@ -503,6 +526,7 @@ PATH="$FIXTURE/bin:$PATH" \
     RUN_CAPTURE="$TMP_DIR/relocated-browser-run.args" \
     RUN_CACHE_CAPTURE="$browser_cache_capture" \
     RUN_XTASK_CAPTURE="$browser_xtask_capture" \
+    BLOCKER_CAPTURE="$TMP_DIR/relocated-browser-blockers" \
     PREPARE_BROWSER_ASSETS=true \
     WASM_POSIX_BINARY_CACHE_ROOT="$TMP_DIR/wrong-relocated-cache" \
     WASM_POSIX_XTASK_BIN="$TMP_DIR/wrong-relocated-xtask" \
@@ -522,6 +546,7 @@ grep -Fxq \
 grep -Fxq -- \
     "--already-materialized --fetch-only prepare-browser" \
     "$TMP_DIR/relocated-browser-run.args"
+grep -Fxq materialized "$TMP_DIR/relocated-browser-blockers"
 
 for workflow in \
     "$REPO_ROOT/.github/workflows/staging-build.yml" \
@@ -535,6 +560,50 @@ for workflow in \
         echo "$(basename "$workflow"): prepared workspace bypasses the shared suite runner" >&2
         exit 1
     }
+done
+
+for workflow in \
+    "$REPO_ROOT/.github/workflows/staging-build.yml" \
+    "$REPO_ROOT/.github/workflows/prepare-merge.yml"; do
+    grep -Fq -- '--blocked-output "$BLOCKED"' "$workflow" || {
+        echo "$(basename "$workflow"): expected ledger omits the publication blocker report" >&2
+        exit 1
+    }
+    grep -Fq -- '--publication-blockers "$RUNNER_TEMP/' "$workflow" || {
+        echo "$(basename "$workflow"): prepared workspace omits the publication blocker report" >&2
+        exit 1
+    }
+done
+
+valid_blockers="$TMP_DIR/valid-publication-blockers.json"
+printf '%s\n' \
+    '{"abi_version":42,"entries":[{"package":"lamp","blocker_chain":["lamp","shell"]},{"package":"shell","blocker_chain":["shell"]}]}' \
+    > "$valid_blockers"
+bash "$REPO_ROOT/scripts/validate-publication-blocker-report.sh" \
+    "$valid_blockers" 42
+
+for invalid in wrong-abi duplicate unsafe-chain extra-key; do
+    case "$invalid" in
+        wrong-abi)
+            body='{"abi_version":41,"entries":[]}'
+            ;;
+        duplicate)
+            body='{"abi_version":42,"entries":[{"package":"shell","blocker_chain":["shell"]},{"package":"shell","blocker_chain":["shell"]}]}'
+            ;;
+        unsafe-chain)
+            body='{"abi_version":42,"entries":[{"package":"shell","blocker_chain":["shell","../escape"]}]}'
+            ;;
+        extra-key)
+            body='{"abi_version":42,"entries":[],"permit_stale":true}'
+            ;;
+    esac
+    invalid_report="$TMP_DIR/$invalid-publication-blockers.json"
+    printf '%s\n' "$body" > "$invalid_report"
+    if bash "$REPO_ROOT/scripts/validate-publication-blocker-report.sh" \
+        "$invalid_report" 42 >/dev/null 2>&1; then
+        echo "publication blocker validator accepted $invalid" >&2
+        exit 1
+    fi
 done
 
 echo "ci-run-test-suite: conformance group mappings passed"

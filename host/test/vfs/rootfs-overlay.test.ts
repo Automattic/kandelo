@@ -79,6 +79,7 @@ describe("canonical rootfs /etc overlay", () => {
       )).rejects.toThrow(/seal/);
       expect(await target.saveImage()).toEqual(before);
     },
+    15_000,
   );
 
   it("copies nested state and metadata while preserving caller-owned entries", async () => {

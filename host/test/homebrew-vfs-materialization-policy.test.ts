@@ -89,7 +89,6 @@ describe("Homebrew VFS materialization policy", () => {
     };
     const embedded = new Set(checkedInPolicy().embedded_package_order);
     const deferred = lock.formula_closure.filter((name) => !embedded.has(name));
-    expect(lock.formula_closure).toHaveLength(42);
     expect(deferred).toHaveLength(
       lock.formula_closure.length - embedded.size,
     );

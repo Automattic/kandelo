@@ -1098,6 +1098,15 @@ index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-ab
   cache identity, so changing it to `"ready"` re-enables publication of the
   already-reviewed recipe rather than forcing a synthetic rebuild. Unknown
   states fail parsing.
+- Prepared CI workspaces carry the typed publication-blocker report alongside
+  the authenticated binary cache. Browser validation source-builds each
+  reported root with `--force-source-build` into an ephemeral local generation,
+  while dependencies may reuse the prepared cache. A pending canonical shell
+  is represented by the separately identified source-rootfs shell bridge, then
+  pinned through the resolver's `local-libs/shell/build` dependency tier before
+  reverse-dependent VFS images are built. This path exists only to test the
+  exact pull-request recipes: it does not upload, index, admit, or otherwise
+  turn pending bytes into release state.
 - Each optional `[[git_inputs]]` tuple is an immutable external build input.
   The resolver hashes its exact identity, fetches it anonymously at a detached
   HEAD, exposes a sealed read-only checkout to the build, and records the same

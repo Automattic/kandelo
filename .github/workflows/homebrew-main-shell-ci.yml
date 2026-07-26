@@ -483,6 +483,32 @@ jobs:
             echo "tap_sha=$tap_sha"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Select the source shell for dependent browser VFS builds
+        if: env.SHELL_ACTIVATION_MODE == 'source-rootfs'
+        id: source_alias
+        env:
+          CANDIDATE_PATH: ${{ steps.source_candidate.outputs.image }}
+        run: |
+          set -euo pipefail
+          bash scripts/dev-shell.sh bash \
+            scripts/install-local-shell-artifact.sh \
+              "$CANDIDATE_PATH" \
+              "homebrew-source-shell-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
+          bash scripts/activate-local-shell-build-override.sh "$CANDIDATE_PATH"
+          source_assets="$RUNNER_TEMP/source-local-binaries-with-shell.sha256"
+          source_links="$RUNNER_TEMP/source-local-binaries-with-shell.symlinks"
+          find local-binaries \( -type f -o -type l \) -print0 |
+            sort -z |
+            xargs -0 sha256sum >"$source_assets"
+          find local-binaries -type l -print0 |
+            sort -z |
+            while IFS= read -r -d '' path; do
+              printf '%s\0%s\0' "$path" "$(readlink "$path")"
+            done >"$source_links"
+          test -s "$source_assets"
+          echo "local_manifest=$source_assets" >> "$GITHUB_OUTPUT"
+          echo "link_manifest=$source_links" >> "$GITHUB_OUTPUT"
+
       - name: Resolve current direct browser bundling inputs
         run: |
           set -euo pipefail
@@ -515,18 +541,23 @@ jobs:
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
             bash scripts/fetch-binaries.sh "${fetch_args[@]}"
           if [ "$SHELL_ACTIVATION_MODE" = source-rootfs ]; then
+            # Re-run the idempotent verifier after all derived packages. This
+            # proves no source fallback replaced the bridge override while
+            # resolving the reverse-dependent browser VFS images.
+            bash scripts/activate-local-shell-build-override.sh \
+              "${{ steps.source_candidate.outputs.image }}"
             # WHY: unrelated browser roots may use the verified staging or
             # canonical index, but they must never replace the exact-source
             # shell closure that Vite resolves from local-binaries first.
             sha256sum --check \
-              "${{ steps.source_candidate.outputs.local_manifest }}"
+              "${{ steps.source_alias.outputs.local_manifest }}"
             current_links="$RUNNER_TEMP/source-local-binaries-current.symlinks"
             find local-binaries -type l -print0 |
               sort -z |
               while IFS= read -r -d '' path; do
                 printf '%s\0%s\0' "$path" "$(readlink "$path")"
               done >"$current_links"
-            cmp "${{ steps.source_candidate.outputs.link_manifest }}" \
+            cmp "${{ steps.source_alias.outputs.link_manifest }}" \
               "$current_links"
           fi
 
@@ -542,15 +573,9 @@ jobs:
           install_session="homebrew-main-shell-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
           test -f "$CANDIDATE_PATH"
           mkdir -p "$(dirname "$browser_copy")"
-          bash scripts/dev-shell.sh bash -c '
-            set -euo pipefail
-            host_target="$(rustc -vV | sed -n "s/^host: //p")"
-            WASM_POSIX_LOCAL_INSTALL_SOURCE="$1" \
-            WASM_POSIX_LOCAL_INSTALL_SESSION="$2" \
-              cargo run -p xtask --target "$host_target" --quiet -- \
-                build-deps --arch wasm32 --binaries-dir local-binaries \
-                install-local-artifact shell shell.vfs.zst
-          ' bash "$CANDIDATE_PATH" "$install_session"
+          bash scripts/dev-shell.sh bash \
+            scripts/install-local-shell-artifact.sh \
+              "$CANDIDATE_PATH" "$install_session"
           resolved=$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)
           test -f "$resolved"
           cmp "$CANDIDATE_PATH" "$resolved"

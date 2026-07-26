@@ -120,6 +120,15 @@ assert_matches binary_materialization_changed_files \
 assert_matches binary_materialization_changed_files \
   "scripts/pack-ci-test-workspace.sh" \
   "scripts/pack-ci-test-workspace.sh"
+for blocker_materialization_script in \
+  scripts/activate-local-shell-build-override.sh \
+  scripts/install-local-shell-artifact.sh \
+  scripts/materialize-ci-publication-blockers.sh \
+  scripts/validate-publication-blocker-report.sh; do
+  assert_matches binary_materialization_changed_files \
+    "$blocker_materialization_script" \
+    "$blocker_materialization_script"
+done
 assert_matches binary_materialization_changed_files \
   "scripts/stage-portable-resolver-binaries.sh" \
   "scripts/stage-portable-resolver-binaries.sh"
@@ -369,6 +378,15 @@ assert_matches ci_control_changed_files \
 assert_matches ci_control_changed_files \
   ".github/workflows/prepare-merge.yml" \
   ".github/workflows/prepare-merge.yml"
+for blocker_materialization_script in \
+  scripts/activate-local-shell-build-override.sh \
+  scripts/install-local-shell-artifact.sh \
+  scripts/materialize-ci-publication-blockers.sh \
+  scripts/validate-publication-blocker-report.sh; do
+  assert_matches ci_control_changed_files \
+    "$blocker_materialization_script" \
+    "$blocker_materialization_script"
+done
 assert_matches ci_control_changed_files \
   ".github/workflows/activate-merge-candidate.yml" \
   ".github/workflows/activate-merge-candidate.yml"

@@ -1521,8 +1521,10 @@ jobs:
           set -euo pipefail
           ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
           EXPECTED="$RUNNER_TEMP/prepare-expected.json"
+          BLOCKED="$RUNNER_TEMP/prepare-publication-blockers.json"
           bash scripts/dev-shell.sh env \
             EXPECTED="$EXPECTED" \
+            BLOCKED="$BLOCKED" \
             PACKAGE_STAGING_EXCLUSIONS="$PACKAGE_STAGING_EXCLUSIONS" \
             ABI="$ABI" \
             bash -c '
@@ -1533,7 +1535,8 @@ jobs:
                   --registry packages/registry \
                   --expected-abi "$ABI" \
                   --exclude "$PACKAGE_STAGING_EXCLUSIONS" \
-                  --output "$EXPECTED"
+                  --output "$EXPECTED" \
+                  --blocked-output "$BLOCKED"
             '
           if [ "$PACKAGE_STAGING_REQUIRED" = "true" ]; then
             index_dir="$RUNNER_TEMP/tested-candidate-index"
@@ -1597,6 +1600,7 @@ jobs:
       - name: Pack prepared test workspace
         run: |
           bash scripts/dev-shell.sh bash scripts/pack-ci-test-workspace.sh \
+            --publication-blockers "$RUNNER_TEMP/prepare-publication-blockers.json" \
             "$RUNNER_TEMP/test-workspace.tar.zst"
 
       - name: Upload prepared test workspace

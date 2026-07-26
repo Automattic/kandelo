@@ -822,8 +822,10 @@ jobs:
           set -euo pipefail
           ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
           EXPECTED="$RUNNER_TEMP/staging-expected.json"
+          BLOCKED="$RUNNER_TEMP/staging-publication-blockers.json"
           bash scripts/dev-shell.sh env \
             EXPECTED="$EXPECTED" \
+            BLOCKED="$BLOCKED" \
             PACKAGE_STAGING_EXCLUSIONS="$PACKAGE_STAGING_EXCLUSIONS" \
             ABI="$ABI" \
             bash -c '
@@ -834,7 +836,8 @@ jobs:
                 --registry packages/registry \
                 --expected-abi "$ABI" \
                 --exclude "$PACKAGE_STAGING_EXCLUSIONS" \
-                --output "$EXPECTED"
+                --output "$EXPECTED" \
+                --blocked-output "$BLOCKED"
             '
           if [ "$PACKAGE_REUSE_STAGING" != "false" ]; then
             SNAPSHOT="$RUNNER_TEMP/current-staging-snapshot"
@@ -933,6 +936,7 @@ jobs:
         if: env.SKIP_STAGING_TESTS != 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/pack-ci-test-workspace.sh \
+            --publication-blockers "$RUNNER_TEMP/staging-publication-blockers.json" \
             "$RUNNER_TEMP/test-workspace.tar.zst"
 
       - name: Upload prepared test workspace
@@ -951,7 +955,9 @@ jobs:
       !cancelled() &&
       needs.test-gate-prepare.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    # Browser validation may locally materialize publication-pending packages
+    # before running the same bounded Playwright suites as a ready release.
+    timeout-minutes: 120
     permissions:
       actions: read
       contents: read

@@ -5,10 +5,36 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 PORTABLE_CACHE_REL=".ci-test-binary-cache"
+PUBLICATION_BLOCKERS_REL=".ci-test-publication-blockers.json"
 
-out="${1:-}"
+publication_blockers=""
+out=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --publication-blockers)
+            [ "$#" -ge 2 ] || {
+                echo "pack-ci-test-workspace: --publication-blockers requires a path" >&2
+                exit 2
+            }
+            publication_blockers="$2"
+            shift 2
+            ;;
+        -*)
+            echo "pack-ci-test-workspace: unknown option: $1" >&2
+            exit 2
+            ;;
+        *)
+            [ -z "$out" ] || {
+                echo "pack-ci-test-workspace: multiple output archives provided" >&2
+                exit 2
+            }
+            out="$1"
+            shift
+            ;;
+    esac
+done
 if [ -z "$out" ]; then
-    echo "usage: $0 <out.tar.zst>" >&2
+    echo "usage: $0 [--publication-blockers <report.json>] <out.tar.zst>" >&2
     exit 2
 fi
 
@@ -179,6 +205,14 @@ if [ -e local-binaries ] || [ -L local-binaries ]; then
     fi
 fi
 
+if [ -n "$publication_blockers" ]; then
+    if [ ! -f "$publication_blockers" ] || [ -L "$publication_blockers" ]; then
+        echo "pack-ci-test-workspace: publication blocker report must be a regular non-symlink file: $publication_blockers" >&2
+        exit 1
+    fi
+    cp -p -- "$publication_blockers" "$stage/$PUBLICATION_BLOCKERS_REL"
+fi
+
 mkdir -p "$(dirname "$out")"
 tar_args=(--zstd -cf "$out")
 if [ -d "$stage/binaries" ]; then
@@ -189,6 +223,9 @@ if [ -d "$stage/$PORTABLE_CACHE_REL" ]; then
 fi
 if [ -d "$stage/local-binaries" ]; then
     tar_args+=(-C "$stage" local-binaries)
+fi
+if [ -f "$stage/$PUBLICATION_BLOCKERS_REL" ]; then
+    tar_args+=(-C "$stage" "$PUBLICATION_BLOCKERS_REL")
 fi
 tar_args+=(-C "$REPO_ROOT" "${items[@]}")
 tar "${tar_args[@]}"

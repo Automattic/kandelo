@@ -98,6 +98,11 @@ case "$suite" in
         install_node_deps
         if [ "${PREPARE_BROWSER_ASSETS:-false}" = "true" ] || \
             [ "${PREPARE_BROWSER_ASSETS:-0}" = "1" ]; then
+            # Publication-pending packages are deliberately absent from the
+            # prepared release ledger. Materialize their exact PR recipes as
+            # local test generations before the ordinary fetch-only browser
+            # pass proves that every browser dependency is now resolvable.
+            bash scripts/materialize-ci-publication-blockers.sh
             ./run.sh --already-materialized --fetch-only prepare-browser
         fi
         bash scripts/ci-check-browser-assets.sh
