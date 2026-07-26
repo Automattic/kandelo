@@ -2481,6 +2481,20 @@ guest_path = '/usr/share/runtime.dat'
     cleanupDirs.add(sourceCache);
 
     const actualRepo = findRepoRoot();
+    const memory64FixtureManifest =
+      "scripts/browser-memory64-example-fixtures.txt";
+    const memory64FixtureReader =
+      "scripts/browser-memory64-example-fixtures.sh";
+    const memory64ExampleSources = readFileSync(
+      join(actualRepo, memory64FixtureManifest),
+      "utf8",
+    )
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line !== "" && !line.startsWith("#"));
+    const memory64ExampleOutputs = memory64ExampleSources.map(
+      (source) => `${source.slice(0, -2)}.wasm64.wasm`,
+    );
     const packer = join(sourceRepo, "scripts", "pack-ci-test-workspace.sh");
     mkdirSync(dirname(packer), { recursive: true });
     copyFileSync(
@@ -2498,6 +2512,18 @@ guest_path = '/usr/share/runtime.dat'
       portableStager,
     );
     chmodSync(portableStager, 0o755);
+    for (const contractFile of [
+      memory64FixtureManifest,
+      memory64FixtureReader,
+    ]) {
+      const target = join(sourceRepo, contractFile);
+      copyFileSync(join(actualRepo, contractFile), target);
+    }
+    for (const relPath of memory64ExampleSources) {
+      const path = join(sourceRepo, relPath);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, relPath);
+    }
 
     const fakeBin = join(sourceRepo, "fixture-bin");
     mkdirSync(fakeBin, { recursive: true });
@@ -2551,8 +2577,7 @@ exit 2
       "examples/gencat.wasm",
       "examples/pthread_channel_reuse_test.wasm",
       "examples/wait_lifecycle_test.wasm",
-      "examples/wait_lifecycle_test.wasm64.wasm",
-      "examples/terminal_attributes_api_test.wasm64.wasm",
+      ...memory64ExampleOutputs,
       "benchmarks/wasm/pipe-throughput.wasm",
       "benchmarks/wasm/file-throughput.wasm",
       "benchmarks/wasm/syscall-latency.wasm",
@@ -2635,6 +2660,9 @@ exit 2
       ["--zstd", "-xf", archive, "-C", relocatedRepo],
       { stdio: "pipe" },
     );
+    for (const relPath of memory64ExampleOutputs) {
+      expect(readFileSync(join(relocatedRepo, relPath), "utf8")).toBe(relPath);
+    }
 
     process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = relocatedRepo;
     process.env.WASM_POSIX_BINARY_CACHE_ROOT = ".ci-test-binary-cache";

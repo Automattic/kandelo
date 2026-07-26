@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runFetchedWasmProgram } from "./run-fetched-wasm-program";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const programs = [
@@ -123,20 +124,12 @@ for (const program of programs) {
 
       const programUrl = new URL(`/@fs/${program.path}`, baseURL).href;
       const result = await page.evaluate(
-        async ({ programUrl, argv0 }) => {
-          const response = await fetch(programUrl);
-          if (!response.ok) {
-            throw new Error(
-              `program fetch failed: ${response.status} ${response.url}`,
-            );
-          }
-          return (window as any).__runTest(
-            await response.arrayBuffer(),
-            [argv0],
-            30_000,
-          );
+        runFetchedWasmProgram,
+        {
+          programUrl,
+          argv: [program.argv0],
+          timeoutMs: 30_000,
         },
-        { programUrl, argv0: program.argv0 },
       );
 
       expect(result.exitCode, result.stderr).toBe(0);
