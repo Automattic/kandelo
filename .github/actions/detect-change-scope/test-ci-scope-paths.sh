@@ -231,6 +231,16 @@ assert_matches package_publish_flow_changed_files \
 assert_matches package_publish_flow_changed_files \
   ".github/scripts/prepare-durable-package-generation.sh" \
   ".github/scripts/prepare-durable-package-generation.sh"
+for authority_validator_script in \
+  .github/scripts/prepare-current-authority-validator.sh \
+  .github/scripts/test-prepare-current-authority-validator.sh; do
+  assert_not_matches package_archive_changed_files \
+    "$authority_validator_script" \
+    "$authority_validator_script"
+  assert_matches package_publish_flow_changed_files \
+    "$authority_validator_script" \
+    "$authority_validator_script"
+done
 assert_matches package_publish_flow_changed_files \
   ".github/scripts/prepare-preserved-pr-package-generation.sh" \
   ".github/scripts/prepare-preserved-pr-package-generation.sh"
@@ -413,6 +423,13 @@ assert_matches ci_control_changed_files \
 assert_matches ci_control_changed_files \
   ".github/scripts/prepare-durable-package-generation.sh" \
   ".github/scripts/prepare-durable-package-generation.sh"
+for authority_validator_script in \
+  .github/scripts/prepare-current-authority-validator.sh \
+  .github/scripts/test-prepare-current-authority-validator.sh; do
+  assert_matches ci_control_changed_files \
+    "$authority_validator_script" \
+    "$authority_validator_script"
+done
 assert_matches ci_control_changed_files \
   ".github/scripts/prepare-preserved-pr-package-generation.sh" \
   ".github/scripts/prepare-preserved-pr-package-generation.sh"
