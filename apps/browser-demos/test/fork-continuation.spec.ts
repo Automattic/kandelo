@@ -1,9 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBinary } from "../../../host/src/binary-resolver";
+import {
+  RAW_GC_REFERENCE_STATE_FRESH_WORKER_HEX,
+} from "../../../host/test/fixtures/gc-reference-state-fresh-worker-bytes";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const browserKernelModulePath = resolve(
@@ -17,6 +20,10 @@ const memoryFsModulePath = resolve(
 const catchRefFixtureSource = resolve(
   __dirname,
   "../../../host/test/fixtures/catch-ref-fresh-worker.wat",
+);
+const referenceCatchPayloadFixtureSource = resolve(
+  __dirname,
+  "../../../host/test/fixtures/reference-catch-payload-fresh-worker.wat",
 );
 const forkInstrumenterPath = resolve(
   __dirname,
@@ -132,7 +139,7 @@ test("Chromium grows and replays a continuation beyond ABI 41's fixed reserve", 
     "p_10_deep_linked_continuation",
   );
 
-  expect(result.exitCode).toBe(0);
+  expect(result.exitCode, JSON.stringify(result, null, 2)).toBe(0);
   expect(result.stdout).toContain("PRE_DEEP_FORK");
   expect(result.stdout).toContain("DEEP_CHILD: ok");
   expect(result.stdout).toContain("DEEP_PARENT: child=");
@@ -209,6 +216,92 @@ test("Chromium reconstructs CatchRef state in a fresh child worker", async ({
       baseURL!,
       programPath,
       "catch-ref-fresh-worker",
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.diagnostics).toEqual([]);
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+test("Chromium reconstructs reference-bearing catches in fresh child workers", async ({
+  page,
+  baseURL,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "the aggregate browser gate uses Chromium");
+  test.setTimeout(180_000);
+  expect(baseURL).toBeTruthy();
+
+  const workDir = mkdtempSync(
+    resolve(__dirname, ".reference-catch-payload-fresh-worker-"),
+  );
+  try {
+    const rawPath = resolve(
+      workDir,
+      "reference-catch-payload-fresh-worker.raw.wasm",
+    );
+    const programPath = resolve(
+      workDir,
+      "reference-catch-payload-fresh-worker.wasm",
+    );
+    execFileSync("wat2wasm", [
+      "--enable-exceptions",
+      "--enable-threads",
+      referenceCatchPayloadFixtureSource,
+      "-o",
+      rawPath,
+    ]);
+    execFileSync(forkInstrumenterPath, [rawPath, "-o", programPath]);
+
+    // One fresh child calls the reconstructed non-null funcref; a second
+    // verifies the nullable externref path. Either child exits nonzero if its
+    // caught exception recipe depended on the parent's module instance.
+    const result = await runBrowserFixture(
+      page,
+      baseURL!,
+      programPath,
+      "reference-catch-payload-fresh-worker",
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.diagnostics).toEqual([]);
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+test("Chromium reconstructs aliased Wasm GC state in a fresh child worker", async ({
+  page,
+  baseURL,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "the aggregate browser gate uses Chromium");
+  test.setTimeout(180_000);
+  expect(baseURL).toBeTruthy();
+
+  const workDir = mkdtempSync(
+    resolve(__dirname, ".gc-reference-state-fresh-worker-"),
+  );
+  try {
+    const rawPath = resolve(workDir, "gc-reference-state.raw.wasm");
+    const programPath = resolve(workDir, "gc-reference-state.wasm");
+    writeFileSync(
+      rawPath,
+      Buffer.from(RAW_GC_REFERENCE_STATE_FRESH_WORKER_HEX, "hex"),
+    );
+    execFileSync(forkInstrumenterPath, [rawPath, "-o", programPath]);
+
+    // The child verifies one cyclic identity through a live parameter,
+    // operand-stack carryover, mutable reference global, and mutated typed
+    // table. Any fresh-instance alias break exits 91; its waiting parent then
+    // exits 92.
+    const result = await runBrowserFixture(
+      page,
+      baseURL!,
+      programPath,
+      "gc-reference-state-fresh-worker",
     );
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");

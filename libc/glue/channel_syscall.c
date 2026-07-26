@@ -12,7 +12,7 @@
  *   8       48B   arguments (6 x i64)
  *   56      8B    return value (i64)
  *   64      4B    errno (i32)
- *   68      4B    reserved/pad
+ *   68      4B    request flags
  *   72      64KB  data transfer buffer
  *
  * Each thread has its own channel region within the process's shared
@@ -85,6 +85,7 @@ int *__errno_location(void);
 #define CH_ARG_SIZE 8
 #define CH_RETURN   56
 #define CH_ERRNO    64
+#define CH_REQUEST_FLAGS 68
 #define CH_DATA     72
 #define CH_DATA_SIZE 65536
 
@@ -160,6 +161,7 @@ uintptr_t __get_channel_base_addr(void) {
 
 /* SYS_EXIT needs special handling */
 #define SYS_EXIT 34
+#define SYS_GETPID 28
 
 /* SYS_FORK/VFORK — kernel_fork import is the fork-continuation boundary.
  * wasm-fork-instrument rewrites the call graph around kernel.kernel_fork, enabling
@@ -182,6 +184,31 @@ int32_t kernel_fork(void);
 __attribute__((import_module("kernel"), import_name("kernel_exit")))
 _Noreturn void kernel_exit(int32_t status);
 
+static long __do_syscall(long n, long long a1, long long a2, long long a3,
+                         long long a4, long long a5, long long a6);
+
+/*
+ * Complete one ordinary guest-owned channel request after a host import that
+ * performed channel work in JavaScript. Those host-owned completions leave
+ * caught signals kernel-pending because they cannot invoke this file's signal
+ * trampoline. GETPID is side-effect-free and gives the pending signal an exact
+ * libc-owned completion without introducing a host-to-Wasm callback.
+ */
+/*
+ * The fork instrumenter uses this stable local entry when it lowers the
+ * historical monolithic __wasm_dlopen import to ABI 43's staged protocol.
+ * Exporting it lets the generated adapter hand deferred signal delivery back
+ * to libc after each host-owned loader request, without a host-to-Wasm
+ * callback or a second signal implementation in the instrumenter.
+ */
+__attribute__((used))
+__attribute__((retain))
+__attribute__((export_name("__wasm_posix_signal_checkpoint")))
+void __wasm_posix_signal_checkpoint(void)
+{
+    (void)__do_syscall(SYS_GETPID, 0, 0, 0, 0, 0, 0);
+}
+
 /* Direct fork/vfork/_Fork — call kernel_fork without going through the
  * general syscall dispatcher.  This ensures fork instrumentation only covers
  * fork callers, not every function that makes any syscall. */
@@ -203,12 +230,21 @@ __attribute__((noinline))
 int _Fork(void)
 {
     long ret = (long)kernel_fork();
+    if (ret == 0) {
+        __wasm_posix_after_fork_child();
+    } else {
+        /*
+         * WHY: fork transaction allocation and cleanup are consumed by the
+         * process Worker rather than this libc trampoline, so the host leaves
+         * caught signals kernel-pending. Re-enter through one ordinary channel
+         * completion before returning to user code; this invokes any handler
+         * without a reentrant host-to-Wasm call.
+         */
+        __wasm_posix_signal_checkpoint();
+    }
     if (ret < 0) {
         *__errno_location() = (int)(-ret);
         return -1;
-    }
-    if (ret == 0) {
-        __wasm_posix_after_fork_child();
     }
     return (int)ret;
 }
@@ -232,9 +268,6 @@ int vfork(void)
 /* Signal delivery — invoked after each syscall if a signal is pending */
 /* ------------------------------------------------------------------ */
 
-/* Forward declaration */
-static long __do_syscall(long n, long long a1, long long a2, long long a3,
-                         long long a4, long long a5, long long a6);
 extern long __syscall_cp_check(long r);
 extern int __syscall_cp_cancel_pending_disabled(void);
 
@@ -458,6 +491,7 @@ restart_wait_syscall:
     *(int64_t *)(uintptr_t)(base + CH_ARGS + 3 * CH_ARG_SIZE) = (int64_t)a4;
     *(int64_t *)(uintptr_t)(base + CH_ARGS + 4 * CH_ARG_SIZE) = (int64_t)a5;
     *(int64_t *)(uintptr_t)(base + CH_ARGS + 5 * CH_ARG_SIZE) = (int64_t)a6;
+    *(uint32_t *)(uintptr_t)(base + CH_REQUEST_FLAGS) = 0;
 
     /* Set status to PENDING and wake the kernel worker.
      * Use inline asm to read __channel_base directly from the wasm global,

@@ -57,7 +57,6 @@ import { DeferredWorkerHandle } from "./deferred-worker-handle";
 import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
-import { readForkContinuationAnchor } from "./fork-continuation";
 import {
   describeWasmArtifactPolicyFailures,
   detectPtrWidth,
@@ -86,6 +85,16 @@ import {
 import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
 import { reapHostOwnedExitedProcess } from "./host-owned-process-reap";
 import { uninitializedKernelPipeResult } from "./kernel-pipe-transport";
+import {
+  ForkReplayGateCoordinator,
+  observeForkReplayWorker,
+} from "./fork-replay-gate";
+import { ForkExternrefProcessOwner } from "./fork-externref-process-owner";
+import type { ForkExternrefGeneration } from "./fork-reference-broker";
+import {
+  ForkHostImportOwnerRuntime,
+  type ForkHostImportOwnerWorker,
+} from "./fork-host-import-runtime";
 import {
   acquireForkMemoryClone,
   computeProcessMemoryLayout,
@@ -192,10 +201,17 @@ interface ProcessInfo extends ProcessGenerationOwnership {
   ptrWidth: 4 | 8;
   layout: ProcessMemoryLayout;
   threadAllocator: ThreadPageAllocator;
+  /** Exact broker authority for this PID's current Wasm image. */
+  externrefGeneration: ForkExternrefGeneration;
   /** Non-_start continuation root inherited from a pthread fork until exec. */
   forkReplayContext?: ForkReplayContext;
 }
 const processes = new Map<number, ProcessInfo>();
+const externrefProcessOwner = new ForkExternrefProcessOwner();
+const forkHostImportOwnerRuntime =
+  new ForkHostImportOwnerRuntime(externrefProcessOwner);
+const forkHostImportsByWorker =
+  new WeakMap<object, ForkHostImportOwnerWorker>();
 const processTeardowns = new Map<ProcessInfo["worker"], Promise<void>>();
 const vmInterruptTimers = new VmInterruptTimerManager<ProcessInfo>((pid) =>
   processes.get(pid),
@@ -281,6 +297,8 @@ function installProcessWorkerListeners(
       void finalizeProcessWorker(pid, worker, message.status ?? 0);
     } else if (message.type === "vm_interrupt_timer" && message.pid === pid) {
       handleVmInterruptTimer(message, pid, process);
+    } else if (message.type === "fork_host_import") {
+      dispatchForkHostImport(worker, message);
     }
   });
   installCrashSafetyNet(worker, pid);
@@ -306,7 +324,31 @@ async function terminateTrackedWorker(
   worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
 ): Promise<void> {
   intentionallyTerminated.add(worker as object);
+  forkHostImportsByWorker.get(worker as object)?.close();
   await worker.terminate().catch(() => {});
+}
+
+function bindForkHostImports(
+  worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
+  owner: ForkHostImportOwnerWorker,
+): void {
+  forkHostImportsByWorker.set(worker as object, owner);
+}
+
+function dispatchForkHostImport(
+  worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
+  message: Extract<WorkerToHostMessage, { type: "fork_host_import" }>,
+): void {
+  const owner = forkHostImportsByWorker.get(worker as object);
+  if (!owner || !owner.dispatch(message.wake)) {
+    reportHostDiagnostic({
+      pid: message.wake.pid,
+      source: "fork host-import protocol",
+      message:
+        `[kernel-worker] ignored stale or unbound fork host-import wake `
+        + `pid=${message.wake.pid} sender=${message.wake.senderId}`,
+    }, "warn");
+  }
 }
 
 async function terminateThreadWorkers(
@@ -1009,6 +1051,8 @@ async function handleSpawn(msg: SpawnMessage) {
   let workerCreationAttempted = false;
   let createdWorker: ProcessInfo["worker"] | undefined;
   let createdGeneration: ProcessInfo | undefined;
+  let createdExternrefGeneration: ForkExternrefGeneration | undefined;
+  let createdForkHostImports: ForkHostImportOwnerWorker | undefined;
   try {
     releaseMutation = rootfsSnapshotGate.beginMutation("spawn a process");
     const hasProgramBytes = msg.programBytes !== undefined;
@@ -1087,6 +1131,24 @@ async function handleSpawn(msg: SpawnMessage) {
       }
     }
 
+    const externrefGeneration = externrefProcessOwner.startGeneration(pid);
+    createdExternrefGeneration = externrefGeneration;
+    let worker: ReturnType<NodeWorkerAdapter["createWorker"]>;
+    const forkHostImports = forkHostImportOwnerRuntime.createWorker({
+      pid,
+      generationId: externrefGeneration.id,
+      authorizeSender: () => {
+        const current = processes.get(pid);
+        if (
+          !current
+          || current.worker !== worker
+          || current.externrefGeneration !== externrefGeneration
+        ) {
+          throw new Error(`stale fork host-import sender for pid=${pid}`);
+        }
+      },
+    });
+    createdForkHostImports = forkHostImports;
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
       pid,
@@ -1094,6 +1156,8 @@ async function handleSpawn(msg: SpawnMessage) {
       programModule,
       memory,
       channelOffset,
+      externrefGenerationId: externrefGeneration.id,
+      forkHostImports: forkHostImports.init,
       env: msg.env,
       argv: msg.argv,
       ptrWidth,
@@ -1103,8 +1167,9 @@ async function handleSpawn(msg: SpawnMessage) {
     // A constructor may expose Memory to a partially created Worker before it
     // throws, so any failure from this point uses forced retirement.
     workerCreationAttempted = true;
-    const worker = workerAdapter.createWorker(initData);
+    worker = workerAdapter.createWorker(initData);
     createdWorker = worker;
+    bindForkHostImports(worker, forkHostImports);
     createdGeneration = {
       memory,
       memoryLease,
@@ -1117,15 +1182,22 @@ async function handleSpawn(msg: SpawnMessage) {
       ptrWidth,
       layout,
       threadAllocator,
+      externrefGeneration,
     };
     processes.set(pid, createdGeneration);
 
     installProcessWorkerListeners(worker, pid);
     createdMemoryLease = undefined;
     createdPid = undefined;
+    createdExternrefGeneration = undefined;
+    createdForkHostImports = undefined;
 
     respond(msg.requestId, pid);
   } catch (e) {
+    createdForkHostImports?.close();
+    if (createdExternrefGeneration) {
+      externrefProcessOwner.releaseGeneration(createdExternrefGeneration);
+    }
     if (createdPid !== undefined) {
       if (createdWorker) await terminateTrackedWorker(createdWorker);
       const lease = createdGeneration?.memoryLease ?? createdMemoryLease;
@@ -1201,6 +1273,11 @@ async function handleFork(
   let workerStartAttempted = false;
   let lifecycleTeardownStarted = false;
   let childGeneration: ProcessInfo | undefined;
+  let childExternrefGeneration: ForkExternrefGeneration | undefined;
+  let childForkHostImports: ForkHostImportOwnerWorker | undefined;
+  const forkReplay = new ForkReplayGateCoordinator(
+    `fork child pid=${childPid}`,
+  );
   try {
     // The committed child already owns its exact syscall-time snapshot.
     // Delay only Worker launch while a short retirement burst drains.
@@ -1238,7 +1315,33 @@ async function handleFork(
           ? { ...parentInfo.forkReplayContext, forkBufAddr: activeForkBufAddr }
           : undefined;
     const forkBufAddr = activeForkBufAddr;
-
+    const externrefGrant =
+      externrefProcessOwner.forkGenerationFromContinuation(
+        parentInfo.externrefGeneration,
+        childPid,
+        parentMemory,
+        ptrWidth,
+        forkBufAddr,
+      );
+    childExternrefGeneration = externrefGrant.generation;
+    let launchedWorker: DeferredWorkerHandle;
+    const forkHostImports = forkHostImportOwnerRuntime.createWorker({
+      pid: childPid,
+      generationId: externrefGrant.generation.id,
+      authorizeSender: () => {
+        const current = processes.get(childPid);
+        if (
+          !current
+          || current.worker !== launchedWorker
+          || current.externrefGeneration !== externrefGrant.generation
+        ) {
+          throw new Error(
+            `stale fork host-import sender for child pid=${childPid}`,
+          );
+        }
+      },
+    });
+    childForkHostImports = forkHostImports;
     const childInitData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
       pid: childPid,
@@ -1246,8 +1349,11 @@ async function handleFork(
       programModule: parentInfo.programModule,
       memory: childMemory,
       channelOffset: childChannelOffset,
+      externrefGenerationId: externrefGrant.generation.id,
+      forkHostImports: forkHostImports.init,
       isForkChild: true,
       forkBufAddr,
+      forkReplayGate: forkReplay.gate,
       forkChildThreadFnPtr: forkReplayContext?.fnPtr,
       forkChildThreadArgPtr: forkReplayContext?.argPtr,
       ptrWidth,
@@ -1258,6 +1364,8 @@ async function handleFork(
       workerAdapter.createWorker(childInitData),
     );
     const worker = childWorker;
+    launchedWorker = worker;
+    bindForkHostImports(worker, forkHostImports);
     childGeneration = {
       memory: childMemory,
       memoryLease: childMemoryLease,
@@ -1275,9 +1383,16 @@ async function handleFork(
         childPid,
       ),
       forkReplayContext,
+      externrefGeneration: externrefGrant.generation,
     };
     processes.set(childPid, childGeneration);
 
+    observeForkReplayWorker(
+      forkReplay,
+      launchedWorker,
+      childPid,
+      () => processes.get(childPid)?.worker === launchedWorker,
+    );
     installProcessWorkerListeners(worker, childPid);
     const startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
       childPid,
@@ -1287,7 +1402,13 @@ async function handleFork(
         worker.start();
       },
       () => {
-        void worker.terminate();
+        forkReplay.cancel(
+          new Error(
+            `Fork child ${childPid} launch was cancelled before replay readiness`,
+          ),
+        );
+        forkHostImports.close();
+        void launchedWorker.terminate();
       },
     );
     if (startDisposition === "stale") {
@@ -1296,7 +1417,11 @@ async function handleFork(
       );
     }
     if (startDisposition === "dead") {
-      await worker.terminate();
+      forkReplay.cancel(
+        new Error(`Fork child ${childPid} exited before Worker launch`),
+      );
+      forkHostImports.close();
+      await terminateTrackedWorker(worker);
       processes.get(childPid)?.workerQuiescence.settle();
       const signal = kernelWorker.finalizePendingChildTermination(childPid);
       lifecycleTeardownStarted = true;
@@ -1307,9 +1432,27 @@ async function handleFork(
       );
       return [];
     }
+    await forkReplay.waitUntilReady();
+    if (processes.get(childPid)?.worker !== launchedWorker) {
+      throw new Error(
+        `Fork child ${childPid} changed generation before replay commit`,
+      );
+    }
+    if (!kernelWorker.shouldLaunchPendingChild(childPid)) {
+      throw new Error(`Fork child ${childPid} exited before replay commit`);
+    }
+    // WHY: only this commit wakes the child inside the inherited fork import.
+    // Resolve onFork afterward so the parent cannot observe a child whose
+    // continuation has not proved it reached the copied activation.
+    forkReplay.commit();
   } catch (error) {
     if (lifecycleTeardownStarted) throw error;
+    forkReplay.cancel(error);
+    childForkHostImports?.close();
     if (childWorker) await terminateTrackedWorker(childWorker);
+    if (childExternrefGeneration) {
+      externrefProcessOwner.releaseGeneration(childExternrefGeneration);
+    }
     const generation = childGeneration ?? {
       memory: childMemory,
       memoryLease: childMemoryLease,
@@ -1393,8 +1536,9 @@ async function handleExec(
     prepared.memoryLease.release();
     return addressSpaceResult;
   }
-  let replacementWorker:
-    ReturnType<NodeWorkerAdapter["createWorker"]> | undefined;
+  let replacementWorker: ReturnType<NodeWorkerAdapter["createWorker"]> | undefined;
+  let replacementExternrefGeneration: ForkExternrefGeneration | undefined;
+  let replacementForkHostImports: ForkHostImportOwnerWorker | undefined;
   try {
     const setupResult = kernelWorker.kernelExecSetup(pid, callerTid);
     if (setupResult < 0) {
@@ -1425,6 +1569,9 @@ async function handleExec(
     if (!kernelWorker.prepareProcessForExec(pid, initiatingInfo.memory)) {
       throw new Error(`Exec pid ${pid} changed generation during commit`);
     }
+    replacementExternrefGeneration = externrefProcessOwner.replaceGeneration(
+      initiatingInfo.externrefGeneration,
+    );
 
     const finalizeResult = kernelWorker.finalizeAddressSpaceForExec(pid);
     if (finalizeResult < 0) {
@@ -1459,6 +1606,10 @@ async function handleExec(
     if (handoffExitSignal > 0) {
       prepared.memoryLease.release();
       preparedLeaseConsumed = true;
+      externrefProcessOwner.releaseGeneration(
+        replacementExternrefGeneration,
+      );
+      replacementExternrefGeneration = undefined;
       await awaitFinalizedProcessTeardown(
         pid,
         signalExitStatus(handoffExitSignal),
@@ -1474,6 +1625,21 @@ async function handleExec(
       threadAllocator: newThreadAllocator,
     } = prepared;
     const newChannelOffset = newLayout.channelOffset;
+    replacementForkHostImports = forkHostImportOwnerRuntime.createWorker({
+      pid,
+      generationId: replacementExternrefGeneration.id,
+      authorizeSender: () => {
+        const current = processes.get(pid);
+        if (
+          !replacementWorker
+          || !current
+          || current.worker !== replacementWorker
+          || current.externrefGeneration !== replacementExternrefGeneration
+        ) {
+          throw new Error(`stale fork host-import sender for exec pid=${pid}`);
+        }
+      },
+    });
 
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
@@ -1482,6 +1648,8 @@ async function handleExec(
       programModule,
       memory: newMemory,
       channelOffset: newChannelOffset,
+      externrefGenerationId: replacementExternrefGeneration.id,
+      forkHostImports: replacementForkHostImports.init,
       argv: launchArgv,
       env: envp,
       ptrWidth: newPtrWidth,
@@ -1504,6 +1672,7 @@ async function handleExec(
       env: envp,
     });
     replacementRegistered = true;
+    bindForkHostImports(replacementWorker, replacementForkHostImports);
 
     // Clear thread module cache — new program binary is different
     threadModuleCache.delete(pid);
@@ -1520,6 +1689,7 @@ async function handleExec(
       ptrWidth: newPtrWidth,
       layout: newLayout,
       threadAllocator: newThreadAllocator,
+      externrefGeneration: replacementExternrefGeneration,
     });
     preparedTransferred = true;
 
@@ -1534,10 +1704,9 @@ async function handleExec(
     const startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
       pid,
       newMemory,
+      () => { (replacementWorker as DeferredWorkerHandle).start(); },
       () => {
-        (replacementWorker as DeferredWorkerHandle).start();
-      },
-      () => {
+        replacementForkHostImports?.close();
         void replacementWorker?.terminate();
       },
     );
@@ -1547,7 +1716,8 @@ async function handleExec(
       );
     }
     if (startDisposition === "dead") {
-      await replacementWorker.terminate();
+      replacementForkHostImports.close();
+      await terminateTrackedWorker(replacementWorker);
       kernelWorker.finishProcessExecHandoff(pid);
       const signal = kernelWorker.finalizeExecHandoffTermination(pid);
       await awaitFinalizedProcessTeardown(
@@ -1560,6 +1730,11 @@ async function handleExec(
     kernelWorker.finishProcessExecHandoff(pid);
     return 0;
   } catch (err) {
+    replacementForkHostImports?.close();
+    if (replacementExternrefGeneration) {
+      externrefProcessOwner.releaseGeneration(replacementExternrefGeneration);
+      replacementExternrefGeneration = undefined;
+    }
     // A kernel trap can leave the commit point uncertain. We cannot safely
     // return to the caller, so invalidate the old generation before yielding
     // and report a truthful signal death.
@@ -1709,6 +1884,8 @@ async function handlePosixSpawn(
   let workerStartAttempted = false;
   let lifecycleTeardownStarted = false;
   let childGeneration: ProcessInfo | undefined;
+  let externrefGeneration: ForkExternrefGeneration | undefined;
+  let forkHostImports: ForkHostImportOwnerWorker | undefined;
   try {
     // The kernel already created the child Process via kernel_spawn_process.
     kernelWorker.registerProcess(childPid, memory, [channelOffset], {
@@ -1719,6 +1896,26 @@ async function handlePosixSpawn(
     });
     registered = true;
 
+    externrefGeneration = externrefProcessOwner.startGeneration(childPid);
+    const processExternrefGeneration = externrefGeneration;
+    const processForkHostImports = forkHostImportOwnerRuntime.createWorker({
+      pid: childPid,
+      generationId: processExternrefGeneration.id,
+      authorizeSender: () => {
+        const current = processes.get(childPid);
+        if (
+          !newWorker
+          || !current
+          || current.worker !== newWorker
+          || current.externrefGeneration !== processExternrefGeneration
+        ) {
+          throw new Error(
+            `stale fork host-import sender for spawn pid=${childPid}`,
+          );
+        }
+      },
+    });
+    forkHostImports = processForkHostImports;
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
       pid: childPid,
@@ -1726,6 +1923,8 @@ async function handlePosixSpawn(
       programModule,
       memory,
       channelOffset,
+      externrefGenerationId: processExternrefGeneration.id,
+      forkHostImports: processForkHostImports.init,
       argv,
       env: envp,
       ptrWidth,
@@ -1736,6 +1935,7 @@ async function handlePosixSpawn(
       workerAdapter.createWorker(initData),
     );
     const worker = newWorker;
+    bindForkHostImports(worker, processForkHostImports);
     childGeneration = {
       memory,
       memoryLease,
@@ -1748,6 +1948,7 @@ async function handlePosixSpawn(
       ptrWidth,
       layout,
       threadAllocator,
+      externrefGeneration: processExternrefGeneration,
     };
     processes.set(childPid, childGeneration);
 
@@ -1760,6 +1961,7 @@ async function handlePosixSpawn(
         worker.start();
       },
       () => {
+        processForkHostImports.close();
         void worker.terminate();
       },
     );
@@ -1769,7 +1971,8 @@ async function handlePosixSpawn(
       );
     }
     if (startDisposition === "dead") {
-      await worker.terminate();
+      processForkHostImports.close();
+      await terminateTrackedWorker(worker);
       processes.get(childPid)?.workerQuiescence.settle();
       const signal = kernelWorker.finalizePendingChildTermination(childPid);
       lifecycleTeardownStarted = true;
@@ -1783,6 +1986,10 @@ async function handlePosixSpawn(
   } catch (error) {
     if (lifecycleTeardownStarted) throw error;
     if (newWorker) await terminateTrackedWorker(newWorker);
+    forkHostImports?.close();
+    if (externrefGeneration) {
+      externrefProcessOwner.releaseGeneration(externrefGeneration);
+    }
     const generation = childGeneration ?? { memory, memoryLease };
     const detachResult = await detachExactProcessGeneration({
       pid: childPid,
@@ -1864,6 +2071,25 @@ async function handleClone(attachment: ThreadChannelAttachment): Promise<void> {
     throw err;
   }
 
+  let threadWorker: DeferredWorkerHandle;
+  let threadEntry: ThreadWorkerInfo;
+  const forkHostImports = forkHostImportOwnerRuntime.createWorker({
+    pid,
+    generationId: processInfo.externrefGeneration.id,
+    authorizeSender: () => {
+      const entries = threadWorkers.get(pid);
+      if (
+        !belongsToCurrentProcessImage()
+        || !threadEntry
+        || threadEntry.worker !== threadWorker
+        || !entries?.includes(threadEntry)
+      ) {
+        throw new Error(
+          `stale fork host-import sender for pid=${pid} tid=${tid}`,
+        );
+      }
+    },
+  });
   const threadInitData: CentralizedThreadInitMessage = {
     type: "centralized_thread_init",
     pid,
@@ -1873,6 +2099,8 @@ async function handleClone(attachment: ThreadChannelAttachment): Promise<void> {
     memory,
     processChannelOffset: processInfo.channelOffset,
     channelOffset: alloc.channelOffset,
+    externrefGenerationId: processInfo.externrefGeneration.id,
+    forkHostImports: forkHostImports.init,
     fnPtr,
     argPtr,
     stackPtr,
@@ -1884,11 +2112,12 @@ async function handleClone(attachment: ThreadChannelAttachment): Promise<void> {
     kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
   };
 
-  const threadWorker = new DeferredWorkerHandle(() =>
-    workerAdapter.createWorker(threadInitData),
+  threadWorker = new DeferredWorkerHandle(
+    () => workerAdapter.createWorker(threadInitData),
   );
+  bindForkHostImports(threadWorker, forkHostImports);
   if (!threadWorkers.has(pid)) threadWorkers.set(pid, []);
-  const threadEntry: ThreadWorkerInfo = {
+  threadEntry = {
     worker: threadWorker,
     channelOffset: alloc.channelOffset,
     tid,
@@ -1981,6 +2210,8 @@ async function handleClone(attachment: ThreadChannelAttachment): Promise<void> {
       if (isCurrentThreadGeneration() && m.pid === pid) {
         handleVmInterruptTimer(m, pid, processInfo);
       }
+    } else if (m.type === "fork_host_import") {
+      dispatchForkHostImport(threadWorker, m);
     }
   });
   threadWorker.on("error", (err: Error) =>
@@ -1994,10 +2225,9 @@ async function handleClone(attachment: ThreadChannelAttachment): Promise<void> {
     startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
       pid,
       memory,
+      () => { threadWorker.start(); },
       () => {
-        threadWorker.start();
-      },
-      () => {
+        forkHostImports.close();
         void threadWorker.terminate();
       },
       () => {
@@ -2099,6 +2329,8 @@ async function finishProcessExit(
       return;
     }
 
+    externrefProcessOwner.releaseGeneration(info.externrefGeneration);
+
     // A superseded old image must not reap the persistent PID that now belongs
     // to its exec successor.
     if (!detachResult.mayReapPid) return;
@@ -2142,6 +2374,7 @@ async function handleTerminate(msg: TerminateProcessMessage) {
   if (threads) {
     for (const t of threads) {
       intentionallyTerminated.add(t.worker as object);
+      forkHostImportsByWorker.get(t.worker as object)?.close();
       await t.worker.terminate().catch(() => {});
       try {
         kernelWorker.notifyThreadExit(pid, t.tid);
@@ -2154,6 +2387,9 @@ async function handleTerminate(msg: TerminateProcessMessage) {
   // Terminate main process worker
   if (info?.worker) {
     await terminateTrackedWorker(info.worker);
+  }
+  if (info) {
+    externrefProcessOwner.releaseGeneration(info.externrefGeneration);
   }
 
   if (info) {
@@ -2252,6 +2488,7 @@ async function performDestroy() {
         terminateThreadWorkers(pid),
       ]);
       await terminateTrackedWorker(info.worker);
+      externrefProcessOwner.releaseGeneration(info.externrefGeneration);
       const detachResult = await detachExactProcessGeneration({
         pid,
         generation: info,
@@ -2297,6 +2534,7 @@ async function performDestroy() {
   for (const threads of threadWorkers.values()) {
     for (const t of threads) {
       intentionallyTerminated.add(t.worker as object);
+      forkHostImportsByWorker.get(t.worker as object)?.close();
       t.worker.terminate().catch(() => {});
     }
   }
