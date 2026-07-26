@@ -305,27 +305,28 @@ ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
   "$TAP_ROOT" "$TAP_NAME" "$FORMULA" --tier2-bridge-json \
   >"$TIER2_BRIDGE_PLAN"
 "$XTASK_BIN" homebrew-tier2-preflight \
-  --repo-root "$KANDELO_ROOT" --arch "$ARCH" \
+  --repo-root "$KANDELO_ROOT" --tap-root "$TAP_ROOT" --arch "$ARCH" \
   --bridge-plan "$TIER2_BRIDGE_PLAN" >"$TIER2_ATTESTATION"
 if ! jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
   --arg arch "$ARCH" '
-    keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tier2_bridge"] and
-    .schema == 2 and .tap == $tap and .formula == $formula and .arch == $arch and
+    def sha256: type == "string" and test("^[0-9a-f]{64}$");
+    (.schema == 2 or .schema == 3) and
+    .tap == $tap and .formula == $formula and .arch == $arch and
     .full_name == ($tap + "/" + $formula) and
-    (.formula_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
-    (.support_sha256 == null or
-      (.support_sha256 | type == "string" and test("^[0-9a-f]{64}$"))) and
-    (.support_runtime_sha256 == null or
-      (.support_runtime_sha256 | type == "string" and test("^[0-9a-f]{64}$"))) and
+    (.formula_sha256 | sha256) and
+    (.support_sha256 == null or (.support_sha256 | sha256)) and
+    (.support_runtime_sha256 == null or (.support_runtime_sha256 | sha256)) and
     ((.support_sha256 == null) == (.support_runtime_sha256 == null)) and
-    (.tier2_bridge == null or .support_sha256 != null) and
-    if .tier2_bridge == null then true else
+    if .schema == 2 then
+      keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tier2_bridge"] and
+      (.tier2_bridge == null or .support_sha256 != null) and
+      if .tier2_bridge == null then true else
       (.tier2_bridge | keys == ["build_toml_sha256", "package", "package_toml_sha256", "script", "script_env_keys", "script_sha256", "source_mode", "source_sha256", "source_url", "version"]) and
       (.tier2_bridge.package | type == "string" and test("^[a-z0-9][a-z0-9._-]{0,254}$")) and
       (.tier2_bridge.script | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")) and
       ([.tier2_bridge.package_toml_sha256, .tier2_bridge.build_toml_sha256,
         .tier2_bridge.script_sha256, .tier2_bridge.source_sha256] |
-        all(.[]; type == "string" and test("^[0-9a-f]{64}$"))) and
+        all(.[]; sha256)) and
       (.tier2_bridge.script_env_keys | type == "array" and
         . == (sort | unique) and length <= 64 and
         (map(length) | add // 0) <= 4096) and
@@ -333,6 +334,25 @@ if ! jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
         .tier2_bridge.source_mode == "in-repository-source") and
       (.tier2_bridge.source_url | type == "string" and startswith("https://")) and
       (.tier2_bridge.version | type == "string" and length > 0)
+      end
+    else
+      keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tap_recipe", "tier2_bridge"] and
+      .tier2_bridge == null and .support_sha256 != null and
+      (.tap_recipe | keys == ["dependencies", "entrypoint", "file_count", "manifest_sha256", "script_env_keys", "source_sha256", "source_url", "total_bytes", "version"]) and
+      (.tap_recipe.dependencies | type == "array" and . == (sort | unique) and
+        length <= 128 and all(.[]; type == "string" and
+          test("^[a-z0-9._-]+/[a-z0-9._-]+/[a-z0-9][a-z0-9._-]{0,254}$"))) and
+      (.tap_recipe.entrypoint | type == "string" and
+        test("^[A-Za-z0-9][A-Za-z0-9._/-]{0,1023}[.]sh$")) and
+      (.tap_recipe.file_count | type == "number" and . >= 1 and . <= 512 and floor == .) and
+      (.tap_recipe.total_bytes | type == "number" and . >= 0 and . <= 67108864 and floor == .) and
+      (.tap_recipe.manifest_sha256 | sha256) and
+      (.tap_recipe.source_sha256 | sha256) and
+      (.tap_recipe.script_env_keys | type == "array" and
+        . == (sort | unique) and length <= 64 and
+        (map(length) | add // 0) <= 4096) and
+      (.tap_recipe.source_url | type == "string" and startswith("https://")) and
+      (.tap_recipe.version | type == "string" and length > 0)
     end
   ' "$TIER2_ATTESTATION" >/dev/null; then
   echo "homebrew-bottle-build.sh: Tier-2 bridge attestation has an invalid schema" >&2
@@ -460,7 +480,7 @@ cmp -s "$TIER2_BRIDGE_PLAN" "$TIER2_EXECUTION_PLAN" || {
   exit 1
 }
 "$XTASK_BIN" homebrew-tier2-preflight \
-  --repo-root "$KANDELO_ROOT" --arch "$ARCH" \
+  --repo-root "$KANDELO_ROOT" --tap-root "$TAPPED_TAP_ROOT" --arch "$ARCH" \
   --bridge-plan "$TIER2_EXECUTION_PLAN" >"$TIER2_EXECUTION_ATTESTATION"
 cmp -s "$TIER2_ATTESTATION" "$TIER2_EXECUTION_ATTESTATION" || {
   echo "homebrew-bottle-build.sh: Formula/support/registry execution inputs changed before isolation" >&2

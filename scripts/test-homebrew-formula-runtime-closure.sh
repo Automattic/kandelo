@@ -440,6 +440,10 @@ module KandeloFormulaSupport
   def kandelo_build_package(package: nil, script_env: {})
     [package, script_env]
   end
+
+  def kandelo_build_tap_recipe(manifest_sha256:, script_env: {})
+    [manifest_sha256, script_env]
+  end
 end
 end
 RUBY
@@ -637,6 +641,37 @@ File.binwrite(path, source)
 RUBY
 }
 
+write_valid_tap_recipe_formula() {
+  cat >"$TAP_ROOT/Formula/recipe.rb" <<'RUBY'
+require (Tap.fetch("kandelo-dev", "tap-core").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
+class Recipe < Formula
+  include KandeloFormulaSupport
+
+  KANDELO_TAP_RECIPE = true
+
+  desc "Tap-owned recipe fixture"
+  homepage "https://example.test/recipe"
+  url "https://example.test/recipe-1.2.3.tar.gz"
+  version "1.2.3"
+  sha256 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  license "MIT"
+
+  depends_on "kandelo-dev/tap-core/required"
+
+  def install
+    out_dir = kandelo_build_tap_recipe(
+      manifest_sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      script_env: {
+        "RECIPE_FEATURE" => "enabled",
+      },
+    )
+    share.install out_dir/"result.txt"
+  end
+end
+RUBY
+}
+
 write_bridge_formula_with_env_shape() {
   local shape="$1"
   write_valid_bridge_formula
@@ -679,6 +714,20 @@ expect_bridge_failure() {
   }
 }
 
+expect_tap_recipe_failure() {
+  local label="$1" expected="$2"
+  if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core recipe \
+    --tier2-bridge-json >"$TMP_ROOT/$label.out" 2>"$TMP_ROOT/$label.err"; then
+    echo "test-homebrew-formula-runtime-closure.sh: accepted invalid tap recipe: $label" >&2
+    exit 1
+  fi
+  grep -F "$expected" "$TMP_ROOT/$label.err" >/dev/null || {
+    cat "$TMP_ROOT/$label.err" >&2
+    echo "test-homebrew-formula-runtime-closure.sh: wrong tap-recipe rejection: $label" >&2
+    exit 1
+  }
+}
+
 expect_support_runtime_failure() {
   local label="$1" expected="$2"
   if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core support-only \
@@ -715,10 +764,67 @@ jq -e '
   }
 ' <<<"$bridge_plan" >/dev/null
 [ "$(jq -r '.support_runtime_sha256' <<<"$bridge_plan")" = \
-  "4c0156a88618f0f30f388884ffc08a67c6ea16b0fe64c7e325adfc9b14f40994" ]
+  "bb71e60b67c0041a8e6ec68269680fb144c8fbaa4fd6a31360e016cf11ab4337" ]
 [ "$bridge_plan" = "$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge --tier2-bridge-json)" ]
 rm "$TAP_ROOT/Kandelo/formula_support/a-runtime.txt" \
   "$TAP_ROOT/Kandelo/formula_support/z-runtime.txt"
+
+write_valid_tap_recipe_formula
+tap_recipe_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core recipe --tier2-bridge-json)"
+jq -e '
+  keys == ["formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tap_recipe", "tier2_bridge"] and
+  .schema == 3 and
+  .tap == "kandelo-dev/tap-core" and
+  .formula == "recipe" and
+  .full_name == "kandelo-dev/tap-core/recipe" and
+  (.formula_sha256 | test("^[0-9a-f]{64}$")) and
+  (.support_sha256 | test("^[0-9a-f]{64}$")) and
+  (.support_runtime_sha256 | test("^[0-9a-f]{64}$")) and
+  .tier2_bridge == null and
+  .tap_recipe == {
+    declared_dependencies: ["kandelo-dev/tap-core/required"],
+    manifest_sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    script_env_keys: ["RECIPE_FEATURE"],
+    source_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    source_url: "https://example.test/recipe-1.2.3.tar.gz",
+    version: "1.2.3"
+  }
+' <<<"$tap_recipe_plan" >/dev/null
+[ "$tap_recipe_plan" = \
+  "$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core recipe --tier2-bridge-json)" ]
+
+write_valid_tap_recipe_formula
+sed -i.bak '/  KANDELO_TAP_RECIPE = true/d' "$TAP_ROOT/Formula/recipe.rb"
+rm "$TAP_ROOT/Formula/recipe.rb.bak"
+expect_tap_recipe_failure missing-recipe-marker \
+  "Formula tap recipe marker and canonical helper call must appear together"
+
+write_valid_tap_recipe_formula
+sed -i.bak \
+  's/manifest_sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"/manifest_sha256: ENV.fetch("RECIPE_SHA256")/' \
+  "$TAP_ROOT/Formula/recipe.rb"
+rm "$TAP_ROOT/Formula/recipe.rb.bak"
+expect_tap_recipe_failure dynamic-recipe-manifest \
+  "must use a literal manifest SHA-256 followed by one literal script_env hash"
+
+write_valid_tap_recipe_formula
+sed -i.bak 's/"RECIPE_FEATURE"/"WASM_POSIX_DEP_RECIPE_DIR"/' \
+  "$TAP_ROOT/Formula/recipe.rb"
+rm "$TAP_ROOT/Formula/recipe.rb.bak"
+expect_tap_recipe_failure reserved-recipe-environment \
+  'script_env overrides reserved variables ["WASM_POSIX_DEP_RECIPE_DIR"]'
+
+write_valid_tap_recipe_formula
+sed -i.bak '/  KANDELO_TAP_RECIPE = true/a\
+  KANDELO_REGISTRY_BRIDGE = true' "$TAP_ROOT/Formula/recipe.rb"
+rm "$TAP_ROOT/Formula/recipe.rb.bak"
+sed -i.bak '/  def install/a\
+    bridge_dir = kandelo_build_package(\
+      script_env: {},\
+    )' "$TAP_ROOT/Formula/recipe.rb"
+rm "$TAP_ROOT/Formula/recipe.rb.bak"
+expect_tap_recipe_failure two-build-authorities \
+  "Formula cannot use both kandelo_build_package and kandelo_build_tap_recipe"
 
 write_mapped_bridge_formula
 mapped_bridge_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge --tier2-bridge-json)"

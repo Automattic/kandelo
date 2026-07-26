@@ -688,6 +688,23 @@ active_tier2_attestation_json='{"arch":"wasm32","formula":"hello","formula_sha25
 printf '%s\n' "$active_tier2_attestation_json" \
   >"$local_tier2_attestation"
 chmod 0600 "$local_tier2_attestation"
+[ "$(homebrew_patched_launcher_tier2_schema "$local_tier2_attestation")" = "2" ] ||
+  fail "Tier-2 schema reader did not identify a registry bridge"
+tap_recipe_attestation="$TMPDIR/tap-recipe-attestation.json"
+printf '%s\n' \
+  '{"schema":3,"arch":"wasm32","tap_recipe":{"entrypoint":"build.sh"},"tier2_bridge":null}' \
+  >"$tap_recipe_attestation"
+[ "$(homebrew_patched_launcher_tier2_schema "$tap_recipe_attestation")" = "3" ] ||
+  fail "Tier-2 schema reader did not identify a tap recipe"
+printf '%s\n%s\n' '{"schema":3,"tap_recipe":{}}' '{"unexpected":true}' \
+  >"$tap_recipe_attestation"
+if homebrew_patched_launcher_tier2_schema "$tap_recipe_attestation" >/dev/null 2>&1; then
+  fail "Tier-2 schema reader accepted a multiline control document"
+fi
+printf '%s\n' '{"schema":1}' >"$tap_recipe_attestation"
+if homebrew_patched_launcher_tier2_schema "$tap_recipe_attestation" >/dev/null 2>&1; then
+  fail "Tier-2 schema reader accepted a retired control schema"
+fi
 
 expect_tier2_staging_rejection() {
   local source="$1" label="$2"

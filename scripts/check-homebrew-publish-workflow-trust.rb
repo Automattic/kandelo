@@ -1266,6 +1266,12 @@ def check_publisher(workflow)
           ".built_from.kandelo_commit == $expected_kandelo_commit"
         ) &&
         planner_source.include?(
+          ".built_from.formula_sha256 == $formula_identities[$formula]"
+        ) &&
+        planner_source.include?(
+          'if [ -L "$(formula_file_for "$formula")" ]'
+        ) &&
+        planner_source.include?(
           "--expected-kandelo-repository must be Automattic/kandelo"
         ) &&
         planner_source.include?(
@@ -2371,15 +2377,37 @@ def check_publisher(workflow)
     'Kandelo Formula support API or runtime-tree bytes differ across the immutable tap closure',
     'KANDELO_NATIVE_FORMULA',
     'KANDELO_NATIVE_SENTINEL',
+    'TAP_RECIPE_METHOD = "kandelo_build_tap_recipe"',
+    'TAP_RECIPE_MARKER = "KANDELO_TAP_RECIPE"',
+    'tap recipe marker and canonical helper call must appear together',
+    '"manifest_sha256" => recipe_calls.first.fetch("manifest_sha256")',
+    'tap_recipe["declared_dependencies"] = declarations.filter_map',
     '"native_requirements" => native_requirements.sort_by { |entry| entry.fetch("class") }',
   ].each do |fragment|
     check(formula_closure.include?(fragment),
           "static Formula closure lacks immutable tap identity binding: #{fragment}")
   end
   tier2_plan_output = formula_closure[/elsif tier2_bridge_only(.*?)elsif bottle_identity_only/m, 1]
-  check(tier2_plan_output&.include?('"schema" => 2') &&
+  check(tier2_plan_output&.include?('"schema" => tap_recipe.nil? ? 2 : 3') &&
+        tier2_plan_output&.include?('plan["tap_recipe"] = tap_recipe unless tap_recipe.nil?') &&
         !tier2_plan_output&.include?('"schema" => 1'),
-        "static Formula closure does not emit the exact Tier-2 schema-2 plan")
+        "static Formula closure does not emit the exact bridge/recipe plan schema")
+  tier2_preflight = File.read(
+    File.join(REPO_ROOT, "tools/xtask/src/homebrew_tier2_preflight.rs")
+  )
+  [
+    '"--tap-root is required for an active tap recipe"',
+    '"Formula recipe dependencies differ from the Formula\'s declared target dependencies"',
+    '"Formula recipe tree differs from its manifest',
+    '"Formula recipe tree must not contain symlinks',
+    'fn validate_recipe_mode(value: &str) -> Result<u32, String>',
+    '"0644" => Ok(0o644)',
+    '"0755" => Ok(0o755)',
+    'require_same_file(&before, &opened_after, path, label)?',
+  ].each do |fragment|
+    check(tier2_preflight.include?(fragment),
+          "tap-recipe preflight trust boundary lacks #{fragment}")
+  end
   host_dependency_plan_output = formula_closure[/elsif host_dependencies_only(.*?)elsif direct_only/m, 1]
   check(host_dependency_plan_output&.include?('"schema" => 4') &&
         host_dependency_plan_output&.include?('"native_requirements" => native_requirements'),
@@ -2430,7 +2458,11 @@ def check_publisher(workflow)
     'bash "$KANDELO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh"',
     'jq -r \'.build_and_test[]\' "$HOST_DEPENDENCY_PLAN" >"$HOST_DEPENDENCY_LIST"',
     'TIER2_ATTESTATION="$CONTROL_DIR/tier2-attestation.json"',
-    '.schema == 2 and .tap == $tap and .formula == $formula and .arch == $arch',
+    '(.schema == 2 or .schema == 3)',
+    'keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tap_recipe", "tier2_bridge"]',
+    '.tier2_bridge == null and .support_sha256 != null',
+    '--repo-root "$KANDELO_ROOT" --tap-root "$TAP_ROOT" --arch "$ARCH"',
+    '--repo-root "$KANDELO_ROOT" --tap-root "$TAPPED_TAP_ROOT" --arch "$ARCH"',
     'DEPENDENCY_TAP_ROOTS=()',
     'export HOMEBREW_KANDELO_PRIMARY_TAP_ROOT="$TAPPED_TAP_ROOT"',
     '"$BREW_BIN" tap "$dependency_tap" "$dependency_root"',
@@ -3191,6 +3223,13 @@ def check_publisher(workflow)
     '[ "${HOMEBREW_KANDELO_XTASK_BIN:-}" != "$expected_xtask" ]',
     'HOMEBREW_KANDELO_XTASK_BIN=$xtask_alias',
     'WASM_POSIX_XTASK_BIN=$xtask_alias',
+    'homebrew_patched_launcher_tier2_schema()',
+    'tap_recipe_isolation=1',
+    'if [ "$tap_recipe_isolation" != "1" ]',
+    'packages/registry local-binaries .ci-test-binary-cache',
+    'scripts/install-local-binary.sh',
+    'tap_recipe_inaccessible_paths=("$xtask_alias")',
+    '"--property=InaccessiblePaths=$tap_recipe_path"',
     "--property=KillMode=control-group", "--property=SendSIGKILL=yes",
     "--property=NoNewPrivileges=yes", "--expand-environment=no",
     '"--property=BindReadOnlyPaths=$kandelo_root:$source_alias_dir/kandelo"',
@@ -3519,6 +3558,10 @@ def check_publisher(workflow)
     "HOMEBREW_KANDELO_XTASK_BIN=caller-poison",
     "WASM_POSIX_XTASK_BIN=caller-poison",
     "build-deps program-index-context-check",
+    "Tier-2 schema reader did not identify a registry bridge",
+    "Tier-2 schema reader did not identify a tap recipe",
+    "Tier-2 schema reader accepted a multiline control document",
+    "Tier-2 schema reader accepted a retired control schema",
     '--source-repo-root "$2"',
     "assert_real_relocated_xtask_uses_source_alias",
     '"--property=BindReadOnlyPaths=$REPO_ROOT:$source_alias"',

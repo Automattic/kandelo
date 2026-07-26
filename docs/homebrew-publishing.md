@@ -224,8 +224,12 @@ support first. A missing root, changed module or runtime helper, different
 support API version, or Formula/support drift fails before Formula installation.
 
 Adding the runtime-tree digest changed the exact Tier-2 control-document shape.
-Tier-2 bridge plans and attestations therefore use schema 2; schema 1 is
-rejected rather than interpreted as if it carried the newer runtime contract.
+Registry-bridge and inert Formula plans therefore use schema 2. Formula-owned
+tap recipes use schema 3 so the publisher and runtime can distinguish them
+without inferring authority from optional fields. Schema 3 carries exactly one
+`tap_recipe` and a null `tier2_bridge`; schema 2 never carries `tap_recipe`.
+Schema 1 is rejected rather than interpreted as if it carried either newer
+runtime contract.
 
 The protected publisher plan repeats every target tap as a sorted immutable
 identity record containing its normalized tap name, conventional repository,
@@ -412,9 +416,10 @@ belong in generated `Kandelo/` sidecars.
 
 For formulae that build Kandelo Wasm artifacts:
 
-1. Build through Kandelo's normal SDK and package scripts. Source
-   `sdk/activate.sh` or call an existing `packages/registry/<name>/build-*.sh`
-   path through the trusted workflow environment.
+1. Build through Kandelo's normal SDK. Prefer idiomatic Formula steps for small
+   ports and a Formula-owned tap recipe for build logic that needs a script.
+   Calling an existing `packages/registry/<name>/build-*.sh` is the
+   transitional registry bridge, not the destination architecture.
 2. Install only the produced Wasm artifacts into the Homebrew keg.
 3. Preserve Homebrew's prefix and cellar model:
    `/home/linuxbrew/.linuxbrew` and
@@ -424,6 +429,113 @@ For formulae that build Kandelo Wasm artifacts:
 5. Update Homebrew `revision` or bottle `rebuild` when bottle bytes should move
    for Homebrew bottle selection. Update Kandelo `build.toml` `revision` only
    when the underlying Kandelo package output bytes legitimately change.
+
+### Formula-owned tap recipes
+
+A non-idiomatic source build can keep its reviewed build logic in the tap
+without retaining a Kandelo registry recipe. The fixed layout is:
+
+```text
+Formula/<formula>.rb
+Kandelo/recipes/<formula>/recipe.json
+Kandelo/recipes/<formula>/build.sh
+Kandelo/recipes/<formula>/<other declared inputs>
+```
+
+`recipe.json` is the complete input manifest:
+
+```json
+{
+  "schema": 1,
+  "dependencies": ["kandelo-dev/tap-core/zlib"],
+  "entrypoint": "build.sh",
+  "files": [
+    {
+      "bytes": 367,
+      "mode": "0644",
+      "path": "build.sh",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  ]
+}
+```
+
+Paths are sorted, unique, canonical ASCII relative paths. Every file below the
+recipe root except `recipe.json` must appear once; undeclared files, missing or
+empty directories, special nodes, symlinks, hard links, traversal, changed
+bytes, changed sizes, and changed modes fail closed. Files use only `0644` or
+`0755`; directories and the recipe root use `0755`; `recipe.json` uses `0644`.
+The manifest is limited to 512 files, 16 MiB per file, and 64 MiB in total.
+
+The Formula binds that complete tree with one literal manifest digest:
+
+```ruby
+class Example < Formula
+  include KandeloFormulaSupport
+
+  KANDELO_TAP_RECIPE = true
+
+  url "https://example.test/example-1.0.tar.gz"
+  version "1.0"
+  sha256 "..."
+
+  depends_on "kandelo-dev/tap-core/zlib"
+
+  def install
+    out_dir = kandelo_build_tap_recipe(
+      manifest_sha256: "...",
+      script_env: {
+        "EXAMPLE_FEATURE" => "enabled",
+      },
+    )
+    prefix.install out_dir.children
+  end
+end
+```
+
+The call must be the direct right-hand side of one local assignment in
+`install`; the marker, literal manifest SHA-256, literal environment keys,
+source URL/version/SHA-256, and target dependency declarations are parsed
+without evaluating Formula Ruby. The manifest dependency list must exactly
+equal the Formula's selected direct target dependency list. Environment keys
+are bounded, Formula-namespaced, and may not replace helper-owned source,
+recipe, dependency, work, or output values.
+
+Before Formula evaluation, the Rust preflight independently reads the exact
+tap root, validates every manifest entry and filesystem node, and emits a
+schema-3 attestation. Homebrew supplies and verifies the upstream source; the
+helper moves that staged source below `WASM_POSIX_DEP_SOURCE_DIR`. It derives
+each `WASM_POSIX_DEP_<NAME>_DIR` from the exact poured Homebrew keg and exposes
+separate caller-owned `WASM_POSIX_DEP_WORK_DIR` and
+`WASM_POSIX_DEP_OUT_DIR` roots. `WASM_POSIX_DEP_RECIPE_DIR` is read-only.
+
+Tap recipes retain the Kandelo SDK, sysroot, and fork instrumenter as platform
+tooling, but they do not receive registry authority. The isolated publisher
+omits the checker environment and makes the old `packages/registry`,
+`local-binaries`, transported binary cache, release `xtask`, and
+`scripts/install-local-binary.sh` paths inaccessible. A copied registry script
+that still calls `build-deps` or `install_local_binary` therefore fails rather
+than silently falling back to the old package system.
+
+The helper revalidates the complete recipe tree immediately before and after
+the script, rejects direct writes to the Formula staging prefix, and validates
+the returned output tree. Output directories and ordinary files must stay
+inside the dedicated output root; hard-linked files, special nodes, absolute
+symlinks, and relative symlinks that escape that root are rejected. The
+Formula then installs only that returned tree into its keg.
+
+The manifest SHA-256 is a Formula literal, so the Formula SHA-256 transitively
+binds the full recipe closure. Bottle sidecars already record the exact Formula
+SHA-256 and tap commit. Matrix reuse additionally requires the current Formula
+SHA-256, so changing one recipe rebuilds its Formula without invalidating
+unrelated Formulae in the same tap commit.
+
+Use a tap recipe only after its build script has been converted to consume
+Homebrew-verified source and exact Homebrew dependency prefixes. Do not copy a
+registry resolver call into `Kandelo/recipes/` and treat the new location as a
+migration.
+
+### Transitional registry bridge
 
 The transitional Tier-2 bridge keeps the Homebrew Formula identity and the
 Kandelo registry package identity separate. When they have the same name, use
