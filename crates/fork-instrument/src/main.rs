@@ -20,7 +20,8 @@ use std::path::{Path, PathBuf};
 use fork_instrument::{
     Options, analyze,
     contract_inventory::{
-        fork_capability_section_hex, fork_contract_inventory, linked_frame_descriptor_section_hex,
+        artifact_identity, fork_capability_section_hex, fork_contract_inventory,
+        linked_frame_descriptor_section_hex,
     },
     instrument,
 };
@@ -56,8 +57,25 @@ struct Cli {
 
     /// Print the fork-artifact structural inventory as one TSV row.
     /// This mode performs no instrumentation and emits no output file.
-    #[arg(long, conflicts_with_all = ["discover_only", "output"])]
+    #[arg(
+        long,
+        conflicts_with_all = ["discover_only", "artifact_identity", "output"]
+    )]
     contract_inventory: bool,
+
+    /// Print relocatable, memory, and strict ABI-export identity as one TSV row.
+    /// This mode performs no instrumentation and emits no output file.
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "discover_only",
+            "contract_inventory",
+            "fork_capability_hex",
+            "linked_frame_descriptor_hex",
+            "output"
+        ]
+    )]
+    artifact_identity: bool,
 
     /// Print the unique fork-capability custom section as lowercase hex.
     #[arg(
@@ -65,6 +83,7 @@ struct Cli {
         conflicts_with_all = [
             "discover_only",
             "contract_inventory",
+            "artifact_identity",
             "linked_frame_descriptor_hex",
             "output"
         ]
@@ -77,6 +96,7 @@ struct Cli {
         conflicts_with_all = [
             "discover_only",
             "contract_inventory",
+            "artifact_identity",
             "fork_capability_hex",
             "output"
         ]
@@ -94,6 +114,12 @@ fn main() -> Result<()> {
         let inventory = fork_contract_inventory(&input)
             .with_context(|| format!("inventorying {}", cli.input.display()))?;
         println!("{inventory}");
+        return Ok(());
+    }
+    if cli.artifact_identity {
+        let identity = artifact_identity(&input)
+            .with_context(|| format!("inspecting artifact identity: {}", cli.input.display()))?;
+        println!("{identity}");
         return Ok(());
     }
     if cli.fork_capability_hex {

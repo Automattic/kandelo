@@ -678,6 +678,15 @@ _wasm_fork_contract_inventory_tool() {
     command -v wasm-fork-instrument 2>/dev/null
 }
 
+wasm_artifact_identity() {
+    local path="${1:-}"
+    wasm_is_binary "$path" || return 2
+
+    local inventory_tool
+    inventory_tool="$(_wasm_fork_contract_inventory_tool)" || return 127
+    "$inventory_tool" --artifact-identity "$path" 2>/dev/null || return 2
+}
+
 _wasm_fork_contract_inventory_decoder_available() {
     _wasm_fork_contract_inventory_tool >/dev/null ||
         command -v wasm-objdump >/dev/null 2>&1

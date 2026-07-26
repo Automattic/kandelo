@@ -1,21 +1,22 @@
 //! Structural inventory for the fork-artifact publication guards.
 //!
-//! This deliberately inspects only the sections that define the artifact
-//! contract. In particular, code bodies are not decoded: large package
-//! executables should not need a text disassembly just to verify their imports,
-//! exports, memories, and metadata.
+//! The fork-contract inventory inspects only sections. Artifact identity also
+//! verifies the exact constant ABI thunk, but decodes only that function and
+//! its optional delegate: large package executables should not need a full text
+//! disassembly or full-module instruction decode for publication checks.
 
 use anyhow::{Context, Result, bail};
 use std::fmt::{self, Write};
 use wasm_posix_shared::abi::{
-    WPK_FORK_CAPABILITIES_SECTION, WPK_FORK_EXPORT_ABORT_BEGIN, WPK_FORK_EXPORT_ABORT_END,
-    WPK_FORK_EXPORT_REWIND_BEGIN, WPK_FORK_EXPORT_REWIND_END, WPK_FORK_EXPORT_STATE,
-    WPK_FORK_EXPORT_UNWIND_BEGIN, WPK_FORK_EXPORT_UNWIND_END, WPK_FORK_FRAME_IMPORT_COMMIT,
-    WPK_FORK_FRAME_IMPORT_MODULE, WPK_FORK_FRAME_IMPORT_NEXT, WPK_FORK_FRAME_IMPORT_RESERVE,
-    WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
+    ABI_KERNEL_EXPORT, WPK_FORK_CAPABILITIES_SECTION, WPK_FORK_EXPORT_ABORT_BEGIN,
+    WPK_FORK_EXPORT_ABORT_END, WPK_FORK_EXPORT_REWIND_BEGIN, WPK_FORK_EXPORT_REWIND_END,
+    WPK_FORK_EXPORT_STATE, WPK_FORK_EXPORT_UNWIND_BEGIN, WPK_FORK_EXPORT_UNWIND_END,
+    WPK_FORK_FRAME_IMPORT_COMMIT, WPK_FORK_FRAME_IMPORT_MODULE, WPK_FORK_FRAME_IMPORT_NEXT,
+    WPK_FORK_FRAME_IMPORT_RESERVE, WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
 };
 use wasmparser::{
-    CompositeInnerType, Encoding, ExternalKind, FuncType, Parser, Payload, TypeRef, ValType,
+    CompositeInnerType, Encoding, ExternalKind, FuncType, FunctionBody, Operator, Parser, Payload,
+    TypeRef, ValType,
 };
 
 /// The exact tab-separated inventory consumed by `wasm-artifact-guards.sh`.
@@ -66,6 +67,45 @@ impl fmt::Display for ForkContractInventory {
             self.signature_mismatch,
             self.legacy_dlopen,
             self.native_start,
+        )
+    }
+}
+
+/// Strict status of the optional `__abi_version` artifact export.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactAbiVersion {
+    Missing,
+    Invalid,
+    Present(u32),
+}
+
+/// Structural identity needed by executable publication guards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArtifactIdentity {
+    pub relocatable: usize,
+    pub memory_count: usize,
+    pub memory64_count: usize,
+    pub abi_version: ArtifactAbiVersion,
+    pub imports_kernel_fork: usize,
+    pub has_fork_exports: usize,
+}
+
+impl fmt::Display for ArtifactIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (status, version) = match self.abi_version {
+            ArtifactAbiVersion::Missing => ("missing", "-".to_string()),
+            ArtifactAbiVersion::Invalid => ("invalid", "-".to_string()),
+            ArtifactAbiVersion::Present(version) => ("present", version.to_string()),
+        };
+        write!(
+            f,
+            "{}\t{}\t{}\t{status}\t{}\t{}\t{}",
+            self.relocatable,
+            self.memory_count,
+            self.memory64_count,
+            version,
+            self.imports_kernel_fork,
+            self.has_fork_exports,
         )
     }
 }
@@ -233,6 +273,289 @@ pub fn fork_contract_inventory(bytes: &[u8]) -> Result<ForkContractInventory> {
     }
 
     Ok(inventory)
+}
+
+/// Inspect the object kind, memory width, and strict constant ABI export in
+/// one wasmparser-backed CLI request.
+///
+/// WHY: ABI 43's generated reference/exception helpers use proposal features
+/// that older WABT releases cannot disassemble. Publication must not confuse a
+/// text-decoder limitation with an unsafe artifact, and it must not weaken the
+/// exact constant-return ABI contract to work around that limitation.
+pub fn artifact_identity(bytes: &[u8]) -> Result<ArtifactIdentity> {
+    let contract = fork_contract_inventory(bytes)?;
+    let has_fork_exports = usize::from(
+        contract.abort_begin
+            + contract.abort_end
+            + contract.rewind_begin
+            + contract.rewind_end
+            + contract.state
+            + contract.unwind_begin
+            + contract.unwind_end
+            != 0,
+    );
+    Ok(ArtifactIdentity {
+        relocatable: contract.relocatable,
+        memory_count: contract.memory_count,
+        memory64_count: contract.memory64_count,
+        abi_version: artifact_abi_version(bytes)?,
+        imports_kernel_fork: contract.imports_kernel_fork,
+        has_fork_exports,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AbiOperator {
+    I32Const(i32),
+    Call(u32),
+    Return,
+    End,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AbiBody {
+    operators: [Option<AbiOperator>; 3],
+    operator_count: usize,
+    exact: bool,
+}
+
+impl AbiBody {
+    fn pure_constant(self) -> Option<u32> {
+        let value = match (self.exact, self.operator_count, self.operators) {
+            (
+                true,
+                2,
+                [Some(AbiOperator::I32Const(value)), Some(AbiOperator::End), None],
+            )
+            | (
+                true,
+                3,
+                [
+                    Some(AbiOperator::I32Const(value)),
+                    Some(AbiOperator::Return),
+                    Some(AbiOperator::End),
+                ],
+            ) => value,
+            _ => return None,
+        };
+        u32::try_from(value).ok()
+    }
+}
+
+fn parse_abi_body(body: FunctionBody<'_>) -> Result<AbiBody> {
+    for local in body
+        .get_locals_reader()
+        .context("reading ABI candidate locals")?
+    {
+        local.context("reading ABI candidate local")?;
+    }
+
+    let mut operators = [None; 3];
+    let mut operator_count = 0usize;
+    let mut exact = true;
+    let mut reader = body
+        .get_operators_reader()
+        .context("reading ABI candidate operators")?;
+    while !reader.eof() {
+        let operator = match reader
+            .read()
+            .context("decoding ABI candidate operator")?
+        {
+            Operator::I32Const { value } => Some(AbiOperator::I32Const(value)),
+            Operator::Call { function_index } => Some(AbiOperator::Call(function_index)),
+            Operator::Return => Some(AbiOperator::Return),
+            Operator::End => Some(AbiOperator::End),
+            _ => None,
+        };
+        if operator_count < operators.len() {
+            operators[operator_count] = operator;
+        } else {
+            exact = false;
+        }
+        exact &= operator.is_some();
+        operator_count += 1;
+    }
+    Ok(AbiBody {
+        operators,
+        operator_count,
+        exact,
+    })
+}
+
+fn function_signature<'a>(
+    types: &'a [Option<FuncType>],
+    function_type_indices: &[u32],
+    function_index: u32,
+) -> Option<&'a FuncType> {
+    function_type_indices
+        .get(function_index as usize)
+        .and_then(|type_index| types.get(*type_index as usize))
+        .and_then(Option::as_ref)
+}
+
+fn signature_is(signature: Option<&FuncType>, params: &[ValType], results: &[ValType]) -> bool {
+    signature.is_some_and(|signature| {
+        signature.params() == params && signature.results() == results
+    })
+}
+
+fn body_for(
+    bytes: &[u8],
+    imported_function_count: usize,
+    function_index: u32,
+) -> Result<Option<AbiBody>> {
+    let Some(local_index) = (function_index as usize).checked_sub(imported_function_count) else {
+        return Ok(None);
+    };
+    let mut current_local_index = 0usize;
+    for payload in Parser::new(0).parse_all(bytes) {
+        if let Payload::CodeSectionEntry(body) =
+            payload.context("parsing wasm structure for ABI candidate")?
+        {
+            if current_local_index == local_index {
+                return parse_abi_body(body).map(Some);
+            }
+            current_local_index += 1;
+        }
+    }
+    Ok(None)
+}
+
+fn artifact_abi_version(bytes: &[u8]) -> Result<ArtifactAbiVersion> {
+    let mut types: Vec<Option<FuncType>> = Vec::new();
+    let mut function_type_indices = Vec::new();
+    let mut imported_function_count = 0usize;
+    let mut code_body_count = None;
+    let mut abi_export_count = 0usize;
+    let mut abi_function = None;
+
+    for payload in Parser::new(0).parse_all(bytes) {
+        match payload.context("parsing wasm structure for artifact identity")? {
+            Payload::Version { encoding, .. } => {
+                if encoding != Encoding::Module {
+                    bail!("artifact identity requires a core wasm module");
+                }
+            }
+            Payload::TypeSection(groups) => {
+                for group in groups {
+                    let group = group.context("parsing artifact type section")?;
+                    types.extend(group.into_types().map(
+                        |subtype| match subtype.composite_type.inner {
+                            CompositeInnerType::Func(function) => Some(function),
+                            CompositeInnerType::Array(_)
+                            | CompositeInnerType::Struct(_)
+                            | CompositeInnerType::Cont(_) => None,
+                        },
+                    ));
+                }
+            }
+            Payload::ImportSection(imports) => {
+                for import in imports.into_imports() {
+                    let import = import.context("parsing artifact import section")?;
+                    if let TypeRef::Func(type_index) | TypeRef::FuncExact(type_index) = import.ty {
+                        function_type_indices.push(type_index);
+                        imported_function_count += 1;
+                    }
+                }
+            }
+            Payload::FunctionSection(functions) => {
+                for type_index in functions {
+                    function_type_indices
+                        .push(type_index.context("parsing artifact function section")?);
+                }
+            }
+            Payload::ExportSection(exports) => {
+                for export in exports {
+                    let export = export.context("parsing artifact export section")?;
+                    if export.name != ABI_KERNEL_EXPORT {
+                        continue;
+                    }
+                    abi_export_count += 1;
+                    if export.kind == ExternalKind::Func {
+                        abi_function = Some(export.index);
+                    }
+                }
+            }
+            Payload::CodeSectionStart { count, .. } => {
+                if code_body_count.replace(count as usize).is_some() {
+                    return Ok(ArtifactAbiVersion::Invalid);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if abi_export_count == 0 {
+        return Ok(ArtifactAbiVersion::Missing);
+    }
+    if abi_export_count != 1 {
+        return Ok(ArtifactAbiVersion::Invalid);
+    }
+    let Some(target) = abi_function else {
+        return Ok(ArtifactAbiVersion::Invalid);
+    };
+    if code_body_count.unwrap_or(0) + imported_function_count != function_type_indices.len()
+        || !signature_is(
+            function_signature(&types, &function_type_indices, target),
+            &[],
+            &[ValType::I32],
+        )
+    {
+        return Ok(ArtifactAbiVersion::Invalid);
+    }
+
+    // WHY: publication checks run over very large package executables. The
+    // export and signatures are known before the code section, so decode only
+    // the ABI thunk rather than every unrelated compiler-generated body.
+    let Some(target_body) = body_for(bytes, imported_function_count, target)? else {
+        return Ok(ArtifactAbiVersion::Invalid);
+    };
+    if let Some(version) = target_body.pure_constant() {
+        return Ok(ArtifactAbiVersion::Present(version));
+    }
+
+    match (
+        target_body.exact,
+        target_body.operator_count,
+        target_body.operators,
+    ) {
+        (
+            true,
+            3,
+            [
+                Some(AbiOperator::Call(leading)),
+                Some(AbiOperator::I32Const(version)),
+                Some(AbiOperator::End),
+            ],
+        ) if signature_is(
+            function_signature(&types, &function_type_indices, leading),
+            &[],
+            &[],
+        ) => Ok(u32::try_from(version)
+            .map(ArtifactAbiVersion::Present)
+            .unwrap_or(ArtifactAbiVersion::Invalid)),
+        (
+            true,
+            3,
+            [
+                Some(AbiOperator::Call(leading)),
+                Some(AbiOperator::Call(delegate)),
+                Some(AbiOperator::End),
+            ],
+        ) if signature_is(
+            function_signature(&types, &function_type_indices, leading),
+            &[],
+            &[],
+        ) && signature_is(
+            function_signature(&types, &function_type_indices, delegate),
+            &[],
+            &[ValType::I32],
+        ) => Ok(body_for(bytes, imported_function_count, delegate)?
+            .and_then(AbiBody::pure_constant)
+            .map(ArtifactAbiVersion::Present)
+            .unwrap_or(ArtifactAbiVersion::Invalid)),
+        _ => Ok(ArtifactAbiVersion::Invalid),
+    }
 }
 
 /// Return the raw custom-section payload used by `wasm-objdump -s -j`,

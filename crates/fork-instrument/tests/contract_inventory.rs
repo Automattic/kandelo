@@ -1,6 +1,6 @@
 use fork_instrument::contract_inventory::{
-    ForkContractInventory, fork_capability_section_hex, fork_contract_inventory,
-    linked_frame_descriptor_section_hex,
+    ArtifactAbiVersion, ForkContractInventory, artifact_identity, fork_capability_section_hex,
+    fork_contract_inventory, linked_frame_descriptor_section_hex,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -105,6 +105,63 @@ fn counts_duplicate_contract_sections_and_function_exports() {
 }
 
 #[test]
+fn artifact_identity_reads_abi_thunks_without_decoding_modern_helpers_as_text() {
+    let bytes = wat::parse_str(
+        r#"
+        (module
+          (type $cell (struct (field (mut i32))))
+          (memory i64 1)
+          (func $modern_helper (result (ref null $cell))
+            ref.null $cell)
+          (func $ctors)
+          (func $abi_actual (result i32)
+            i32.const 43)
+          (func (export "__abi_version") (result i32)
+            call $ctors
+            call $abi_actual))
+        "#,
+    )
+    .expect("compile artifact identity WAT");
+    let identity = artifact_identity(&bytes).expect("inspect artifact identity");
+
+    assert_eq!(identity.relocatable, 0);
+    assert_eq!(identity.memory_count, 1);
+    assert_eq!(identity.memory64_count, 1);
+    assert_eq!(identity.abi_version, ArtifactAbiVersion::Present(43));
+    assert_eq!(identity.imports_kernel_fork, 0);
+    assert_eq!(identity.has_fork_exports, 0);
+    assert_eq!(identity.to_string(), "0\t1\t1\tpresent\t43\t0\t0");
+}
+
+#[test]
+fn artifact_identity_distinguishes_missing_and_invalid_abi_exports() {
+    let missing = wat::parse_str(r#"(module (memory 1))"#).expect("compile missing ABI WAT");
+    assert_eq!(
+        artifact_identity(&missing)
+            .expect("inspect missing ABI")
+            .abi_version,
+        ArtifactAbiVersion::Missing,
+    );
+
+    let dynamic = wat::parse_str(
+        r#"
+        (module
+          (memory 1)
+          (global $version i32 (i32.const 43))
+          (func (export "__abi_version") (result i32)
+            global.get $version))
+        "#,
+    )
+    .expect("compile dynamic ABI WAT");
+    assert_eq!(
+        artifact_identity(&dynamic)
+            .expect("inspect invalid ABI")
+            .abi_version,
+        ArtifactAbiVersion::Invalid,
+    );
+}
+
+#[test]
 fn cli_contract_inventory_emits_only_the_stable_tsv_row() {
     let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
     let path: PathBuf = std::env::temp_dir().join(format!(
@@ -147,6 +204,21 @@ fn cli_contract_inventory_emits_only_the_stable_tsv_row() {
     assert_eq!(
         String::from_utf8(capability.stdout).expect("UTF-8 capability"),
         "1d6b616e64656c6f2e77706b5f666f726b2e6361706162696c69746965730104\n"
+    );
+
+    let identity = Command::new(env!("CARGO_BIN_EXE_wasm-fork-instrument"))
+        .arg("--artifact-identity")
+        .arg(&path)
+        .output()
+        .expect("run artifact identity CLI");
+    assert!(
+        identity.status.success(),
+        "artifact identity CLI failed: {}",
+        String::from_utf8_lossy(&identity.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(identity.stdout).expect("UTF-8 artifact identity"),
+        "0\t1\t0\tmissing\t-\t1\t1\n"
     );
 
     let descriptor = Command::new(env!("CARGO_BIN_EXE_wasm-fork-instrument"))
