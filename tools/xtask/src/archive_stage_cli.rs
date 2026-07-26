@@ -16,7 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::archive_stage::{self, StageOptions};
-use crate::build_deps::{self, default_cache_root, parse_target_arch, Registry, ResolveOpts};
+use crate::build_deps::{self, Registry, ResolveOpts, default_cache_root, parse_target_arch};
 use crate::pkg_manifest::{BuildToml, DepsManifest, ManifestKind, TargetArch};
 use crate::repo_root;
 use crate::util::hex;
@@ -784,9 +784,11 @@ built_by = "test"
         let suffix = ".tar.zst";
         let short = &name[prefix.len()..name.len() - suffix.len()];
         assert_eq!(short.len(), 8, "short_sha slot must be 8 chars: {short:?}");
-        assert!(short
-            .chars()
-            .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+        assert!(
+            short
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase())
+        );
 
         let index_path = dir.join("index.toml");
         crate::build_index::run(vec![

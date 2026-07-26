@@ -250,6 +250,500 @@ fn render_ts_module() -> String {
     }
     out.push_str("] as const;\n");
     out.push_str(&format!(
+        "export const WPK_FORK_MODULE_STATE_FORMAT_SECTION = {:?} as const;\n",
+        shared::abi::WPK_FORK_MODULE_STATE_FORMAT_SECTION
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_MODULE_STATE_FORMAT_VERSION = {} as const;\n",
+        shared::abi::WPK_FORK_MODULE_STATE_FORMAT_VERSION
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_MODULE_STATE_FORMAT_MAGIC = {:?} as const;\n",
+        shared::abi::WPK_FORK_MODULE_STATE_FORMAT_MAGIC
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_MODULE_STATE_DESCRIPTOR_SIZE = {} as const;\n",
+        shared::abi::WPK_FORK_MODULE_STATE_DESCRIPTOR_SIZE
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_MODULE_STATE_RECORD_ALIGNMENT = {} as const;\n",
+        shared::abi::WPK_FORK_MODULE_STATE_RECORD_ALIGNMENT
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_MODULE_STATE_FLAG_ROOT_PREFIX_POINTER = {} as const;\n",
+        shared::abi::WPK_FORK_MODULE_STATE_FLAG_ROOT_PREFIX_POINTER
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_MODULE_STATE_FLAG_EXPLICIT_OWNERS = {} as const;\n",
+        shared::abi::WPK_FORK_MODULE_STATE_FLAG_EXPLICIT_OWNERS
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_MODULE_STATE_FLAG_SPARSE_TABLES = {} as const;\n",
+        shared::abi::WPK_FORK_MODULE_STATE_FLAG_SPARSE_TABLES
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_MODULE_STATE_REQUIRED_FLAGS = {} as const;\n",
+        shared::abi::WPK_FORK_MODULE_STATE_REQUIRED_FLAGS
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_MODULE_STATE_KNOWN_FLAGS = {} as const;\n",
+        shared::abi::WPK_FORK_MODULE_STATE_KNOWN_FLAGS
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_MODULE_STATE_ARENA_VERSION = {} as const;\n",
+        shared::abi::WPK_FORK_MODULE_STATE_ARENA_VERSION
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_MODULE_STATE_RECORD_VERSION = {} as const;\n",
+        shared::abi::WPK_FORK_MODULE_STATE_RECORD_VERSION
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_MODULE_STATE_ROOT_POINTER_WORD_OFFSET = {} as const;\n",
+        shared::abi::WPK_FORK_MODULE_STATE_ROOT_POINTER_WORD_OFFSET
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_MODULE_STATE_CHUNK_MAGIC = {:?} as const;\n",
+        shared::abi::WPK_FORK_MODULE_STATE_CHUNK_MAGIC
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_MODULE_STATE_CHUNK_FLAG_ROOT = {} as const;\n",
+        shared::abi::WPK_FORK_MODULE_STATE_CHUNK_FLAG_ROOT
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_MODULE_STATE_CHUNK_FLAG_SEALED = {} as const;\n",
+        shared::abi::WPK_FORK_MODULE_STATE_CHUNK_FLAG_SEALED
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_MODULE_STATE_CHUNK_KNOWN_FLAGS = {} as const;\n",
+        shared::abi::WPK_FORK_MODULE_STATE_CHUNK_KNOWN_FLAGS
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_MODULE_STATE_RECORD_MAGIC = {:?} as const;\n",
+        shared::abi::WPK_FORK_MODULE_STATE_RECORD_MAGIC
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_MODULE_STATE_RECORD_HEADER_SIZE = {} as const;\n",
+        shared::abi::WPK_FORK_MODULE_STATE_RECORD_HEADER_SIZE
+    ));
+    for (name, value) in [
+        (
+            "MODULE",
+            shared::abi::WPK_FORK_MODULE_STATE_RECORD_KIND_MODULE,
+        ),
+        (
+            "REFERENCE_RECIPE",
+            shared::abi::WPK_FORK_MODULE_STATE_RECORD_KIND_REFERENCE_RECIPE,
+        ),
+        (
+            "MUTABLE_GLOBAL",
+            shared::abi::WPK_FORK_MODULE_STATE_RECORD_KIND_MUTABLE_GLOBAL,
+        ),
+        (
+            "TABLE",
+            shared::abi::WPK_FORK_MODULE_STATE_RECORD_KIND_TABLE,
+        ),
+        (
+            "TABLE_PAGE",
+            shared::abi::WPK_FORK_MODULE_STATE_RECORD_KIND_TABLE_PAGE,
+        ),
+        (
+            "ELEMENT_SEGMENTS",
+            shared::abi::WPK_FORK_MODULE_STATE_RECORD_KIND_ELEMENT_SEGMENTS,
+        ),
+        (
+            "DATA_SEGMENTS",
+            shared::abi::WPK_FORK_MODULE_STATE_RECORD_KIND_DATA_SEGMENTS,
+        ),
+        (
+            "REPLAY_EVENTS",
+            shared::abi::WPK_FORK_MODULE_STATE_RECORD_KIND_REPLAY_EVENTS,
+        ),
+        (
+            "IMPORTED_GLOBAL_BINDINGS",
+            shared::abi::WPK_FORK_MODULE_STATE_RECORD_KIND_IMPORTED_GLOBAL_BINDINGS,
+        ),
+        (
+            "ACTIVATION_CONTINUATIONS",
+            shared::abi::WPK_FORK_MODULE_STATE_RECORD_KIND_ACTIVATION_CONTINUATIONS,
+        ),
+        (
+            "IMPORTED_TABLE_BINDINGS",
+            shared::abi::WPK_FORK_MODULE_STATE_RECORD_KIND_IMPORTED_TABLE_BINDINGS,
+        ),
+        (
+            "REFERENCE_RECIPE_SEGMENT",
+            shared::abi::WPK_FORK_MODULE_STATE_RECORD_KIND_REFERENCE_RECIPE_SEGMENT,
+        ),
+        (
+            "REPLAY_EVENT_SEGMENT",
+            shared::abi::WPK_FORK_MODULE_STATE_RECORD_KIND_REPLAY_EVENT_SEGMENT,
+        ),
+    ] {
+        out.push_str(&format!(
+            "export const WPK_FORK_MODULE_STATE_RECORD_KIND_{name} = {value} as const;\n"
+        ));
+    }
+    out.push_str("export const WPK_FORK_MODULE_STATE_RECORD_KINDS = [\n");
+    for kind in shared::abi::WPK_FORK_MODULE_STATE_RECORD_KINDS {
+        out.push_str(&format!(
+            "  {{ number: {}, name: {:?} }},\n",
+            kind.number, kind.name
+        ));
+    }
+    out.push_str("] as const;\n");
+    out.push_str("export const WPK_FORK_MODULE_STATE_POINTER_WIDTHS = [\n");
+    for pointer_width in shared::abi::WPK_FORK_MODULE_STATE_POINTER_WIDTHS {
+        out.push_str(&format!(
+            "  {{ bytes: {}, chunkHeaderSize: {} }},\n",
+            pointer_width,
+            shared::abi::wpk_fork_module_state_chunk_header_size(*pointer_width)
+                .expect("supported pointer width must have a module-state chunk header"),
+        ));
+    }
+    out.push_str("] as const;\n");
+    out.push_str(&format!(
+        "export const WPK_FORK_MODULE_STATE_REPLAY_EVENTS_MAGIC = {:?} as const;\n",
+        shared::abi::WPK_FORK_MODULE_STATE_REPLAY_EVENTS_MAGIC,
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_REFERENCE_TRANSACTION_MAGIC = {:?} as const;\n",
+        shared::abi::WPK_FORK_REFERENCE_TRANSACTION_MAGIC,
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_REFERENCE_SEGMENT_MAGIC = {:?} as const;\n",
+        shared::abi::WPK_FORK_REFERENCE_SEGMENT_MAGIC,
+    ));
+    for (name, value) in [
+        (
+            "TRANSACTION_OWNER",
+            shared::abi::WPK_FORK_REFERENCE_TRANSACTION_OWNER,
+        ),
+        (
+            "TRANSACTION_VERSION",
+            u32::from(shared::abi::WPK_FORK_REFERENCE_TRANSACTION_VERSION),
+        ),
+        (
+            "TRANSACTION_MANIFEST_SIZE",
+            u32::from(shared::abi::WPK_FORK_REFERENCE_TRANSACTION_MANIFEST_SIZE),
+        ),
+        (
+            "TRANSACTION_FLAG_SEALED",
+            shared::abi::WPK_FORK_REFERENCE_TRANSACTION_FLAG_SEALED,
+        ),
+        (
+            "TRANSACTION_KNOWN_FLAGS",
+            shared::abi::WPK_FORK_REFERENCE_TRANSACTION_KNOWN_FLAGS,
+        ),
+        (
+            "SEGMENT_HEADER_SIZE",
+            u32::from(shared::abi::WPK_FORK_REFERENCE_SEGMENT_HEADER_SIZE),
+        ),
+        (
+            "SEGMENT_KNOWN_FLAGS",
+            u32::from(shared::abi::WPK_FORK_REFERENCE_SEGMENT_KNOWN_FLAGS),
+        ),
+        (
+            "NODE_RECORD_SIZE",
+            u32::from(shared::abi::WPK_FORK_REFERENCE_NODE_RECORD_SIZE),
+        ),
+        (
+            "VECTOR_INDEX_SIZE",
+            u32::from(shared::abi::WPK_FORK_REFERENCE_VECTOR_INDEX_SIZE),
+        ),
+        (
+            "SECTION_NODES",
+            u32::from(shared::abi::WPK_FORK_REFERENCE_SECTION_NODES),
+        ),
+        (
+            "SECTION_EDGES",
+            u32::from(shared::abi::WPK_FORK_REFERENCE_SECTION_EDGES),
+        ),
+        (
+            "SECTION_SCALARS",
+            u32::from(shared::abi::WPK_FORK_REFERENCE_SECTION_SCALARS),
+        ),
+        (
+            "SECTION_VECTOR_INDEX",
+            u32::from(shared::abi::WPK_FORK_REFERENCE_SECTION_VECTOR_INDEX),
+        ),
+        (
+            "SECTION_VECTOR_ENTRIES",
+            u32::from(shared::abi::WPK_FORK_REFERENCE_SECTION_VECTOR_ENTRIES),
+        ),
+    ] {
+        out.push_str(&format!(
+            "export const WPK_FORK_REFERENCE_{name} = {value} as const;\n"
+        ));
+    }
+    for (name, value) in [
+        (
+            "MODULE_TEMPLATE_ID_SIZE",
+            u32::from(shared::abi::WPK_FORK_MODULE_STATE_MODULE_TEMPLATE_ID_SIZE),
+        ),
+        (
+            "MODULE_RECORD_PAYLOAD_SIZE",
+            u32::from(shared::abi::WPK_FORK_MODULE_STATE_MODULE_RECORD_PAYLOAD_SIZE),
+        ),
+        (
+            "MODULE_RECORD_KNOWN_FLAGS",
+            shared::abi::WPK_FORK_MODULE_STATE_MODULE_RECORD_KNOWN_FLAGS,
+        ),
+        (
+            "GLOBAL_HEADER_SIZE",
+            u32::from(shared::abi::WPK_FORK_MODULE_STATE_GLOBAL_HEADER_SIZE),
+        ),
+        (
+            "TABLE_BASELINE_FINGERPRINT_SIZE",
+            u32::from(shared::abi::WPK_FORK_MODULE_STATE_TABLE_BASELINE_FINGERPRINT_SIZE),
+        ),
+        (
+            "TABLE_DESCRIPTOR_PAYLOAD_SIZE",
+            u32::from(shared::abi::WPK_FORK_MODULE_STATE_TABLE_DESCRIPTOR_PAYLOAD_SIZE),
+        ),
+        (
+            "TABLE_FLAG_SPARSE_OVERRIDES",
+            shared::abi::WPK_FORK_MODULE_STATE_TABLE_FLAG_SPARSE_OVERRIDES,
+        ),
+        (
+            "TABLE_KNOWN_FLAGS",
+            shared::abi::WPK_FORK_MODULE_STATE_TABLE_KNOWN_FLAGS,
+        ),
+        (
+            "TABLE_PAGE_HEADER_SIZE",
+            u32::from(shared::abi::WPK_FORK_MODULE_STATE_TABLE_PAGE_HEADER_SIZE),
+        ),
+        (
+            "TABLE_RUN_HEADER_SIZE",
+            u32::from(shared::abi::WPK_FORK_MODULE_STATE_TABLE_RUN_HEADER_SIZE),
+        ),
+        (
+            "ELEMENT_SEGMENT_HEADER_SIZE",
+            u32::from(shared::abi::WPK_FORK_MODULE_STATE_ELEMENT_SEGMENT_HEADER_SIZE),
+        ),
+        (
+            "DATA_SEGMENT_HEADER_SIZE",
+            u32::from(shared::abi::WPK_FORK_MODULE_STATE_DATA_SEGMENT_HEADER_SIZE),
+        ),
+        (
+            "REPLAY_EVENTS_OWNER",
+            shared::abi::WPK_FORK_MODULE_STATE_REPLAY_EVENTS_OWNER,
+        ),
+        (
+            "REPLAY_EVENTS_VERSION",
+            u32::from(shared::abi::WPK_FORK_MODULE_STATE_REPLAY_EVENTS_VERSION),
+        ),
+        (
+            "REPLAY_EVENTS_HEADER_SIZE",
+            u32::from(shared::abi::WPK_FORK_MODULE_STATE_REPLAY_EVENTS_HEADER_SIZE),
+        ),
+        (
+            "REPLAY_EVENT_SIZE",
+            u32::from(shared::abi::WPK_FORK_MODULE_STATE_REPLAY_EVENT_SIZE),
+        ),
+        (
+            "REPLAY_EVENTS_KNOWN_FLAGS",
+            u32::from(shared::abi::WPK_FORK_MODULE_STATE_REPLAY_EVENTS_KNOWN_FLAGS),
+        ),
+        (
+            "REPLAY_EVENT_SEGMENT_VERSION",
+            u32::from(shared::abi::WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_VERSION),
+        ),
+        (
+            "REPLAY_EVENT_SEGMENT_HEADER_SIZE",
+            u32::from(shared::abi::WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_HEADER_SIZE),
+        ),
+        (
+            "REPLAY_EVENT_SEGMENT_CAPACITY",
+            shared::abi::WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_CAPACITY,
+        ),
+        (
+            "REPLAY_EVENT_SEGMENT_KNOWN_FLAGS",
+            u32::from(shared::abi::WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_KNOWN_FLAGS),
+        ),
+        (
+            "MIN_TABLE_PAGE_SHIFT",
+            u32::from(shared::abi::WPK_FORK_MODULE_STATE_MIN_TABLE_PAGE_SHIFT),
+        ),
+        (
+            "MAX_TABLE_PAGE_SHIFT",
+            u32::from(shared::abi::WPK_FORK_MODULE_STATE_MAX_TABLE_PAGE_SHIFT),
+        ),
+        (
+            "TABLE_PAGE_SHIFT",
+            u32::from(shared::abi::WPK_FORK_MODULE_STATE_TABLE_PAGE_SHIFT),
+        ),
+    ] {
+        out.push_str(&format!(
+            "export const WPK_FORK_MODULE_STATE_{name} = {value} as const;\n"
+        ));
+    }
+    out.push_str(&format!(
+        "export const WPK_FORK_IMPORTED_GLOBAL_BINDINGS_MAGIC = {:?} as const;\n",
+        shared::abi::WPK_FORK_IMPORTED_GLOBAL_BINDINGS_MAGIC,
+    ));
+    for (name, value) in [
+        (
+            "OWNER",
+            shared::abi::WPK_FORK_IMPORTED_GLOBAL_BINDINGS_OWNER,
+        ),
+        (
+            "VERSION",
+            u32::from(shared::abi::WPK_FORK_IMPORTED_GLOBAL_BINDINGS_VERSION),
+        ),
+        (
+            "HEADER_SIZE",
+            u32::from(shared::abi::WPK_FORK_IMPORTED_GLOBAL_BINDINGS_HEADER_SIZE),
+        ),
+        (
+            "ENTRY_SIZE",
+            u32::from(shared::abi::WPK_FORK_IMPORTED_GLOBAL_BINDINGS_ENTRY_SIZE),
+        ),
+        (
+            "KNOWN_FLAGS",
+            u32::from(shared::abi::WPK_FORK_IMPORTED_GLOBAL_BINDINGS_KNOWN_FLAGS),
+        ),
+    ] {
+        out.push_str(&format!(
+            "export const WPK_FORK_IMPORTED_GLOBAL_BINDINGS_{name} = {value} as const;\n"
+        ));
+    }
+    for (name, value) in [
+        (
+            "RAW_NUMBER",
+            shared::abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER,
+        ),
+        (
+            "RAW_BIGINT",
+            shared::abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_BIGINT,
+        ),
+        (
+            "RAW_REFERENCE",
+            shared::abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE,
+        ),
+        (
+            "ACTIVATION_GLOBAL",
+            shared::abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_ACTIVATION_GLOBAL,
+        ),
+        (
+            "BASE_IMPORT",
+            shared::abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_BASE_IMPORT,
+        ),
+    ] {
+        out.push_str(&format!(
+            "export const WPK_FORK_IMPORTED_GLOBAL_BINDING_{name} = {value} as const;\n"
+        ));
+    }
+    out.push_str(&format!(
+        "export const WPK_FORK_GLOBAL_CATALOG_EXPORT_PREFIX = {:?} as const;\n",
+        shared::abi::WPK_FORK_GLOBAL_CATALOG_EXPORT_PREFIX,
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_ACTIVATION_CONTINUATIONS_MAGIC = {:?} as const;\n",
+        shared::abi::WPK_FORK_ACTIVATION_CONTINUATIONS_MAGIC,
+    ));
+    for (name, value) in [
+        (
+            "OWNER",
+            u32::from(shared::abi::WPK_FORK_ACTIVATION_CONTINUATIONS_OWNER),
+        ),
+        (
+            "VERSION",
+            u32::from(shared::abi::WPK_FORK_ACTIVATION_CONTINUATIONS_VERSION),
+        ),
+        (
+            "HEADER_SIZE",
+            u32::from(shared::abi::WPK_FORK_ACTIVATION_CONTINUATIONS_HEADER_SIZE),
+        ),
+        (
+            "ENTRY_SIZE",
+            u32::from(shared::abi::WPK_FORK_ACTIVATION_CONTINUATION_ENTRY_SIZE),
+        ),
+        (
+            "KNOWN_FLAGS",
+            u32::from(shared::abi::WPK_FORK_ACTIVATION_CONTINUATIONS_KNOWN_FLAGS),
+        ),
+        (
+            "ENTRY_KNOWN_FLAGS",
+            shared::abi::WPK_FORK_ACTIVATION_CONTINUATION_ENTRY_KNOWN_FLAGS,
+        ),
+    ] {
+        out.push_str(&format!(
+            "export const WPK_FORK_ACTIVATION_CONTINUATIONS_{name} = {value} as const;\n"
+        ));
+    }
+    out.push_str(&format!(
+        "export const WPK_FORK_IMPORTED_TABLE_BINDINGS_MAGIC = {:?} as const;\n",
+        shared::abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_MAGIC,
+    ));
+    for (name, value) in [
+        ("OWNER", shared::abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_OWNER),
+        (
+            "VERSION",
+            u32::from(shared::abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_VERSION),
+        ),
+        (
+            "HEADER_SIZE",
+            u32::from(shared::abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_HEADER_SIZE),
+        ),
+        (
+            "ENTRY_SIZE",
+            u32::from(shared::abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_ENTRY_SIZE),
+        ),
+        (
+            "KNOWN_FLAGS",
+            u32::from(shared::abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_KNOWN_FLAGS),
+        ),
+    ] {
+        out.push_str(&format!(
+            "export const WPK_FORK_IMPORTED_TABLE_BINDINGS_{name} = {value} as const;\n"
+        ));
+    }
+    for (name, value) in [
+        (
+            "ACTIVATION_TABLE",
+            shared::abi::WPK_FORK_IMPORTED_TABLE_BINDING_ACTIVATION_TABLE,
+        ),
+        (
+            "BASE_IMPORT",
+            shared::abi::WPK_FORK_IMPORTED_TABLE_BINDING_BASE_IMPORT,
+        ),
+    ] {
+        out.push_str(&format!(
+            "export const WPK_FORK_IMPORTED_TABLE_BINDING_{name} = {value} as const;\n"
+        ));
+    }
+    out.push_str(&format!(
+        "export const WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX = {:?} as const;\n",
+        shared::abi::WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX,
+    ));
+    for (name, value) in [
+        ("I32", shared::abi::WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32),
+        ("I64", shared::abi::WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I64),
+        ("F32", shared::abi::WPK_FORK_MODULE_STATE_GLOBAL_TYPE_F32),
+        ("F64", shared::abi::WPK_FORK_MODULE_STATE_GLOBAL_TYPE_F64),
+        ("V128", shared::abi::WPK_FORK_MODULE_STATE_GLOBAL_TYPE_V128),
+        (
+            "FUNCREF",
+            shared::abi::WPK_FORK_MODULE_STATE_GLOBAL_TYPE_FUNCREF,
+        ),
+        (
+            "EXTERNREF",
+            shared::abi::WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXTERNREF,
+        ),
+        (
+            "EXNREF",
+            shared::abi::WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXNREF,
+        ),
+        (
+            "ANYREF",
+            shared::abi::WPK_FORK_MODULE_STATE_GLOBAL_TYPE_ANYREF,
+        ),
+    ] {
+        out.push_str(&format!(
+            "export const WPK_FORK_MODULE_STATE_GLOBAL_TYPE_{name} = {value} as const;\n"
+        ));
+    }
+    out.push_str(&format!(
         "export const WPK_FORK_CAPABILITIES_SECTION = {:?} as const;\n",
         shared::abi::WPK_FORK_CAPABILITIES_SECTION
     ));
@@ -277,6 +771,475 @@ fn render_ts_module() -> String {
         "export const WPK_FORK_CAP_REQUIRED_FLAGS = {} as const;\n",
         shared::abi::WPK_FORK_CAP_REQUIRED_FLAGS
     ));
+    out.push_str(&format!(
+        "export const WPK_FORK_EXCEPTION_CODEC_SECTION = {:?} as const;\n",
+        shared::abi::WPK_FORK_EXCEPTION_CODEC_SECTION
+    ));
+    for (name, value) in [
+        (
+            "VERSION",
+            u32::from(shared::abi::WPK_FORK_EXCEPTION_CODEC_VERSION),
+        ),
+        (
+            "HEADER_SIZE",
+            u32::from(shared::abi::WPK_FORK_EXCEPTION_CODEC_HEADER_SIZE),
+        ),
+        (
+            "TAG_RECORD_SIZE",
+            u32::from(shared::abi::WPK_FORK_EXCEPTION_CODEC_TAG_RECORD_SIZE),
+        ),
+    ] {
+        out.push_str(&format!(
+            "export const WPK_FORK_EXCEPTION_CODEC_{name} = {value} as const;\n"
+        ));
+    }
+    out.push_str(&format!(
+        "export const WPK_FORK_GC_CODEC_SECTION = {:?} as const;\n",
+        shared::abi::WPK_FORK_GC_CODEC_SECTION
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_GC_CODEC_MAGIC = {:?} as const;\n",
+        shared::abi::WPK_FORK_GC_CODEC_MAGIC,
+    ));
+    for (name, value) in [
+        ("VERSION", u32::from(shared::abi::WPK_FORK_GC_CODEC_VERSION)),
+        (
+            "HEADER_SIZE",
+            u32::from(shared::abi::WPK_FORK_GC_CODEC_HEADER_SIZE),
+        ),
+        (
+            "LAYOUT_RECORD_SIZE",
+            u32::from(shared::abi::WPK_FORK_GC_CODEC_LAYOUT_RECORD_SIZE),
+        ),
+        (
+            "FIELD_RECORD_SIZE",
+            u32::from(shared::abi::WPK_FORK_GC_CODEC_FIELD_RECORD_SIZE),
+        ),
+    ] {
+        out.push_str(&format!(
+            "export const WPK_FORK_GC_CODEC_{name} = {value} as const;\n"
+        ));
+    }
+    for (name, value) in [
+        (
+            "WPK_FORK_UNWIND_TAG_IMPORT_MODULE",
+            shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_MODULE,
+        ),
+        (
+            "WPK_FORK_UNWIND_TAG_IMPORT_NAME",
+            shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME,
+        ),
+        (
+            "WPK_FORK_UNWIND_TRANSPORT_SECTION",
+            shared::abi::WPK_FORK_UNWIND_TRANSPORT_SECTION,
+        ),
+        (
+            "WPK_FORK_STATIC_ROOT_CATALOG_EXPORT",
+            shared::abi::WPK_FORK_STATIC_ROOT_CATALOG_EXPORT,
+        ),
+        (
+            "WPK_FORK_STATIC_ROOT_CATALOG_SECTION",
+            shared::abi::WPK_FORK_STATIC_ROOT_CATALOG_SECTION,
+        ),
+        (
+            "WPK_FORK_STATIC_ROOT_HARVEST_EXPORT",
+            shared::abi::WPK_FORK_STATIC_ROOT_HARVEST_EXPORT,
+        ),
+    ] {
+        out.push_str(&format!("export const {name} = {value:?} as const;\n"));
+    }
+    for (name, value) in [
+        (
+            "WPK_FORK_UNWIND_TRANSPORT_VERSION",
+            u32::from(shared::abi::WPK_FORK_UNWIND_TRANSPORT_VERSION),
+        ),
+        (
+            "WPK_FORK_UNWIND_TRANSPORT_PAYLOAD_ARITY",
+            u32::from(shared::abi::WPK_FORK_UNWIND_TRANSPORT_PAYLOAD_ARITY),
+        ),
+        (
+            "WPK_FORK_STATIC_ROOT_CATALOG_VERSION",
+            u32::from(shared::abi::WPK_FORK_STATIC_ROOT_CATALOG_VERSION),
+        ),
+        (
+            "WPK_FORK_STATIC_ROOT_CATALOG_HEADER_SIZE",
+            u32::from(shared::abi::WPK_FORK_STATIC_ROOT_CATALOG_HEADER_SIZE),
+        ),
+    ] {
+        out.push_str(&format!("export const {name} = {value} as const;\n"));
+    }
+    out.push_str(&format!(
+        "export const WPK_FORK_STATIC_ROOT_CATALOG_MAGIC = {:?} as const;\n",
+        shared::abi::WPK_FORK_STATIC_ROOT_CATALOG_MAGIC,
+    ));
+    for (name, value) in [
+        (
+            "WPK_FORK_IMPORTED_GLOBALS_SECTION",
+            shared::abi::WPK_FORK_IMPORTED_GLOBALS_SECTION,
+        ),
+        (
+            "WPK_FORK_FRAME_IMPORT_COMMIT",
+            shared::abi::WPK_FORK_FRAME_IMPORT_COMMIT,
+        ),
+        (
+            "WPK_FORK_FRAME_IMPORT_NEXT",
+            shared::abi::WPK_FORK_FRAME_IMPORT_NEXT,
+        ),
+        (
+            "WPK_FORK_FRAME_IMPORT_PEEK",
+            shared::abi::WPK_FORK_FRAME_IMPORT_PEEK,
+        ),
+        (
+            "WPK_FORK_FRAME_IMPORT_RESERVE",
+            shared::abi::WPK_FORK_FRAME_IMPORT_RESERVE,
+        ),
+        (
+            "WPK_FORK_RESUME_IMPORT_PEEK",
+            shared::abi::WPK_FORK_RESUME_IMPORT_PEEK,
+        ),
+        (
+            "WPK_FORK_RESUME_IMPORT_TABLE",
+            shared::abi::WPK_FORK_RESUME_IMPORT_TABLE,
+        ),
+    ] {
+        out.push_str(&format!("export const {name} = {value:?} as const;\n"));
+    }
+    out.push_str(&format!(
+        "export const WPK_FORK_IMPORTED_GLOBALS_MAGIC = {:?} as const;\n",
+        shared::abi::WPK_FORK_IMPORTED_GLOBALS_MAGIC,
+    ));
+    for (name, value) in [
+        (
+            "VERSION",
+            u32::from(shared::abi::WPK_FORK_IMPORTED_GLOBALS_VERSION),
+        ),
+        (
+            "HEADER_SIZE",
+            u32::from(shared::abi::WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE),
+        ),
+        (
+            "RECORD_HEADER_SIZE",
+            u32::from(shared::abi::WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE),
+        ),
+        (
+            "FLAG_MUTABLE",
+            u32::from(shared::abi::WPK_FORK_IMPORTED_GLOBAL_FLAG_MUTABLE),
+        ),
+        (
+            "FLAG_SHARED",
+            u32::from(shared::abi::WPK_FORK_IMPORTED_GLOBAL_FLAG_SHARED),
+        ),
+        (
+            "KNOWN_FLAGS",
+            u32::from(shared::abi::WPK_FORK_IMPORTED_GLOBAL_KNOWN_FLAGS),
+        ),
+    ] {
+        out.push_str(&format!(
+            "export const WPK_FORK_IMPORTED_GLOBALS_{name} = {value} as const;\n"
+        ));
+    }
+    out.push_str(&format!(
+        "export const WPK_FORK_IMPORTED_TABLES_SECTION = {:?} as const;\n",
+        shared::abi::WPK_FORK_IMPORTED_TABLES_SECTION,
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_IMPORTED_TABLES_MAGIC = {:?} as const;\n",
+        shared::abi::WPK_FORK_IMPORTED_TABLES_MAGIC,
+    ));
+    for (name, value) in [
+        (
+            "VERSION",
+            u32::from(shared::abi::WPK_FORK_IMPORTED_TABLES_VERSION),
+        ),
+        (
+            "HEADER_SIZE",
+            u32::from(shared::abi::WPK_FORK_IMPORTED_TABLES_HEADER_SIZE),
+        ),
+        (
+            "RECORD_HEADER_SIZE",
+            u32::from(shared::abi::WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE),
+        ),
+        (
+            "FLAG_TABLE64",
+            u32::from(shared::abi::WPK_FORK_IMPORTED_TABLE_FLAG_TABLE64),
+        ),
+        (
+            "KNOWN_FLAGS",
+            u32::from(shared::abi::WPK_FORK_IMPORTED_TABLE_KNOWN_FLAGS),
+        ),
+    ] {
+        out.push_str(&format!(
+            "export const WPK_FORK_IMPORTED_TABLES_{name} = {value} as const;\n"
+        ));
+    }
+    for (name, value) in [
+        (
+            "WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE",
+            shared::abi::WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE,
+        ),
+        (
+            "WPK_FORK_EXCEPTION_IMPORT_ACTIVATION",
+            shared::abi::WPK_FORK_EXCEPTION_IMPORT_ACTIVATION,
+        ),
+        (
+            "WPK_FORK_EXCEPTION_IMPORT_BROKER_ENCODE",
+            shared::abi::WPK_FORK_EXCEPTION_IMPORT_BROKER_ENCODE,
+        ),
+        (
+            "WPK_FORK_EXCEPTION_IMPORT_BROKER_THROW_RECIPE",
+            shared::abi::WPK_FORK_EXCEPTION_IMPORT_BROKER_THROW_RECIPE,
+        ),
+        (
+            "WPK_FORK_EXCEPTION_IMPORT_CACHE_INDEX",
+            shared::abi::WPK_FORK_EXCEPTION_IMPORT_CACHE_INDEX,
+        ),
+        (
+            "WPK_FORK_EXCEPTION_IMPORT_CLAIM",
+            shared::abi::WPK_FORK_EXCEPTION_IMPORT_CLAIM,
+        ),
+        (
+            "WPK_FORK_EXCEPTION_IMPORT_DEFINE",
+            shared::abi::WPK_FORK_EXCEPTION_IMPORT_DEFINE,
+        ),
+        (
+            "WPK_FORK_EXCEPTION_IMPORT_INGRESS_THROW",
+            shared::abi::WPK_FORK_EXCEPTION_IMPORT_INGRESS_THROW,
+        ),
+        (
+            "WPK_FORK_EXCEPTION_IMPORT_LOAD",
+            shared::abi::WPK_FORK_EXCEPTION_IMPORT_LOAD,
+        ),
+        (
+            "WPK_FORK_EXCEPTION_IMPORT_LOOKUP",
+            shared::abi::WPK_FORK_EXCEPTION_IMPORT_LOOKUP,
+        ),
+        (
+            "WPK_FORK_EXCEPTION_IMPORT_ROUTE",
+            shared::abi::WPK_FORK_EXCEPTION_IMPORT_ROUTE,
+        ),
+        (
+            "WPK_FORK_EXCEPTION_EXPORT_ABORT",
+            shared::abi::WPK_FORK_EXCEPTION_EXPORT_ABORT,
+        ),
+        (
+            "WPK_FORK_EXCEPTION_EXPORT_CLEAR",
+            shared::abi::WPK_FORK_EXCEPTION_EXPORT_CLEAR,
+        ),
+        (
+            "WPK_FORK_EXCEPTION_EXPORT_DECODE",
+            shared::abi::WPK_FORK_EXCEPTION_EXPORT_DECODE,
+        ),
+        (
+            "WPK_FORK_EXCEPTION_EXPORT_ENCODE",
+            shared::abi::WPK_FORK_EXCEPTION_EXPORT_ENCODE,
+        ),
+        (
+            "WPK_FORK_EXCEPTION_EXPORT_ENCODE_INGRESS",
+            shared::abi::WPK_FORK_EXCEPTION_EXPORT_ENCODE_INGRESS,
+        ),
+        (
+            "WPK_FORK_EXCEPTION_EXPORT_MATERIALIZE",
+            shared::abi::WPK_FORK_EXCEPTION_EXPORT_MATERIALIZE,
+        ),
+        (
+            "WPK_FORK_EXCEPTION_EXPORT_THROW_RECIPE",
+            shared::abi::WPK_FORK_EXCEPTION_EXPORT_THROW_RECIPE,
+        ),
+        (
+            "WPK_FORK_EXCEPTION_EXPORT_THROW_SLOT",
+            shared::abi::WPK_FORK_EXCEPTION_EXPORT_THROW_SLOT,
+        ),
+        (
+            "WPK_FORK_MODULE_STATE_IMPORT_RECORD_COMMIT",
+            shared::abi::WPK_FORK_MODULE_STATE_IMPORT_RECORD_COMMIT,
+        ),
+        (
+            "WPK_FORK_MODULE_STATE_IMPORT_RECORD_FIND",
+            shared::abi::WPK_FORK_MODULE_STATE_IMPORT_RECORD_FIND,
+        ),
+        (
+            "WPK_FORK_MODULE_STATE_IMPORT_RECORD_RESERVE",
+            shared::abi::WPK_FORK_MODULE_STATE_IMPORT_RECORD_RESERVE,
+        ),
+        (
+            "WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_COUNT",
+            shared::abi::WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_COUNT,
+        ),
+        (
+            "WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_MARK",
+            shared::abi::WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_MARK,
+        ),
+        (
+            "WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_PAGE",
+            shared::abi::WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_PAGE,
+        ),
+        (
+            "WPK_FORK_MODULE_STATE_IMPORT_TABLE_STATE_OWNED",
+            shared::abi::WPK_FORK_MODULE_STATE_IMPORT_TABLE_STATE_OWNED,
+        ),
+        (
+            "WPK_FORK_EXPORT_MODULE_BOOTSTRAP",
+            shared::abi::WPK_FORK_EXPORT_MODULE_BOOTSTRAP,
+        ),
+        (
+            "WPK_FORK_EXPORT_MODULE_STATE_FINISH_RESTORE",
+            shared::abi::WPK_FORK_EXPORT_MODULE_STATE_FINISH_RESTORE,
+        ),
+        (
+            "WPK_FORK_EXPORT_MODULE_STATE_RESTORE",
+            shared::abi::WPK_FORK_EXPORT_MODULE_STATE_RESTORE,
+        ),
+        (
+            "WPK_FORK_EXPORT_MODULE_STATE_SAVE",
+            shared::abi::WPK_FORK_EXPORT_MODULE_STATE_SAVE,
+        ),
+        (
+            "WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP",
+            shared::abi::WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP,
+        ),
+        (
+            "WPK_FORK_EXPORT_RESUME_START",
+            shared::abi::WPK_FORK_EXPORT_RESUME_START,
+        ),
+        (
+            "WPK_FORK_EXPORT_RESUME_THREAD",
+            shared::abi::WPK_FORK_EXPORT_RESUME_THREAD,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_DECODE_ANYREF",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_DECODE_ANYREF,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_DECODE_EXNREF",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_DECODE_EXNREF,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_DECODE_EXTERNREF",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_DECODE_EXTERNREF,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_DECODE_FUNCREF",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_DECODE_FUNCREF,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_ENCODE_ANYREF",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_ENCODE_ANYREF,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_ENCODE_EXNREF",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_ENCODE_EXNREF,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_ENCODE_EXTERNREF",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_ENCODE_EXTERNREF,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_ENCODE_FUNCREF",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_ENCODE_FUNCREF,
+        ),
+        (
+            "WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE",
+            shared::abi::WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_GC_BROKER_ENCODE",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_BROKER_ENCODE,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_GC_CAPTURE_LAYOUT",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_CAPTURE_LAYOUT,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_GC_CLAIM",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_CLAIM,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_GC_DEFINE",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_DEFINE,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_GC_I31",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_I31,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_GC_LOAD",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_LOAD,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_GC_LOOKUP",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_LOOKUP,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_GC_PAYLOAD_LEN",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_PAYLOAD_LEN,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_BEGIN",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_BEGIN,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_END",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_END,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_REF",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_REF,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_GC_ROUTE",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_ROUTE,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT,
+        ),
+        (
+            "WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE",
+            shared::abi::WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE,
+        ),
+        (
+            "WPK_FORK_REFERENCE_EXPORT_GC_ENCODE_SLOT",
+            shared::abi::WPK_FORK_REFERENCE_EXPORT_GC_ENCODE_SLOT,
+        ),
+        (
+            "WPK_FORK_REFERENCE_EXPORT_GC_FILL",
+            shared::abi::WPK_FORK_REFERENCE_EXPORT_GC_FILL,
+        ),
+        (
+            "WPK_FORK_REFERENCE_EXPORT_GC_PUBLISH_EXTERNREF",
+            shared::abi::WPK_FORK_REFERENCE_EXPORT_GC_PUBLISH_EXTERNREF,
+        ),
+        (
+            "WPK_FORK_REFERENCE_EXPORT_GC_PROBE",
+            shared::abi::WPK_FORK_REFERENCE_EXPORT_GC_PROBE,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_SCRATCH_RELEASE",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_SCRATCH_RELEASE,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_SCRATCH_RESERVE",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_SCRATCH_RESERVE,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_VECTOR_APPEND",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_VECTOR_APPEND,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_VECTOR_BEGIN",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_VECTOR_BEGIN,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_VECTOR_FINISH",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_VECTOR_FINISH,
+        ),
+        (
+            "WPK_FORK_REFERENCE_IMPORT_VECTOR_GET",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_VECTOR_GET,
+        ),
+    ] {
+        out.push_str(&format!("export const {name} = {value:?} as const;\n"));
+    }
     out.push_str("export const WPK_FORK_REQUIRED_IMPORTS = [\n");
     for requirement in shared::abi::WPK_FORK_REQUIRED_IMPORTS {
         out.push_str(&format!(
@@ -285,6 +1248,21 @@ fn render_ts_module() -> String {
             requirement.name,
             render_ts_program_artifact_types(requirement.params),
             render_ts_program_artifact_types(requirement.results),
+        ));
+    }
+    out.push_str("] as const;\n");
+    out.push_str("export const WPK_FORK_REQUIRED_TABLE_IMPORTS = [\n");
+    for requirement in shared::abi::WPK_FORK_REQUIRED_TABLE_IMPORTS {
+        out.push_str(&format!(
+            "  {{ module: {:?}, name: {:?}, table64: {}, element: {:?}, minimum: {}, maximum: {} }},\n",
+            requirement.module,
+            requirement.name,
+            requirement.table64,
+            program_artifact_type_name(requirement.element),
+            requirement.minimum,
+            requirement
+                .maximum
+                .map_or_else(|| "null".to_owned(), |maximum| maximum.to_string()),
         ));
     }
     out.push_str("] as const;\n");
@@ -406,6 +1384,14 @@ fn render_ts_module() -> String {
     out.push_str(&format!(
         "export const CH_ERRNO = {} as const;\n",
         channel::ERRNO_OFFSET
+    ));
+    out.push_str(&format!(
+        "export const CH_REQUEST_FLAGS = {} as const;\n",
+        channel::REQUEST_FLAGS_OFFSET
+    ));
+    out.push_str(&format!(
+        "export const CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY = {} as const;\n",
+        channel::REQUEST_FLAG_DEFER_SIGNAL_DELIVERY
     ));
     out.push_str(&format!(
         "export const CH_DATA = {} as const;\n",
@@ -700,17 +1686,25 @@ fn render_ts_module() -> String {
 }
 
 fn render_ts_program_artifact_types(values: &[shared::abi::ProgramArtifactValueType]) -> String {
-    use shared::abi::ProgramArtifactValueType;
-
     let values = values
         .iter()
-        .map(|value| match value {
-            ProgramArtifactValueType::Pointer => "\"ptr\"",
-            ProgramArtifactValueType::I32 => "\"i32\"",
-        })
+        .map(|value| format!("{:?}", program_artifact_type_name(*value)))
         .collect::<Vec<_>>()
         .join(", ");
     format!("[{values}]")
+}
+
+fn program_artifact_type_name(value: shared::abi::ProgramArtifactValueType) -> &'static str {
+    use shared::abi::ProgramArtifactValueType;
+    match value {
+        ProgramArtifactValueType::Pointer => "ptr",
+        ProgramArtifactValueType::I32 => "i32",
+        ProgramArtifactValueType::I64 => "i64",
+        ProgramArtifactValueType::FuncRef => "funcref",
+        ProgramArtifactValueType::ExternRef => "externref",
+        ProgramArtifactValueType::ExnRef => "exnref",
+        ProgramArtifactValueType::AnyRef => "anyref",
+    }
 }
 
 fn ts_syscall_arg_desc(desc: &shared::host_abi::SyscallArgDesc) -> String {
@@ -884,6 +1878,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     root.insert("abi_version".into(), json!(shared::ABI_VERSION));
 
     root.insert("channel_header".into(), channel_header());
+    root.insert("channel_request_flags".into(), channel_request_flags());
     root.insert("channel_signal_area".into(), channel_signal_area());
     root.insert("channel_buffers".into(), channel_buffers());
 
@@ -926,6 +1921,7 @@ fn channel_header() -> Value {
         ("args", ARGS_OFFSET, ARGS_COUNT * ARG_SIZE, "[i64; 6]"),
         ("ret", RETURN_OFFSET, 8, "i64"),
         ("errno", ERRNO_OFFSET, 4, "i32"),
+        ("request_flags", REQUEST_FLAGS_OFFSET, 4, "u32"),
     ];
 
     let mut covered: usize = 0;
@@ -955,6 +1951,19 @@ fn channel_header() -> Value {
     m.insert("size".into(), json!(HEADER_SIZE));
     m.insert("fields".into(), Value::Array(fields_json));
     Value::Object(m.into_iter().collect())
+}
+
+fn channel_request_flags() -> Value {
+    let mut flag: JsonMap = BTreeMap::new();
+    flag.insert(
+        "name".into(),
+        json!("defer_signal_delivery"),
+    );
+    flag.insert(
+        "bit".into(),
+        json!(shared::channel::REQUEST_FLAG_DEFER_SIGNAL_DELIVERY),
+    );
+    Value::Array(vec![Value::Object(flag.into_iter().collect())])
 }
 
 fn channel_buffers() -> Value {
@@ -1117,17 +2126,16 @@ fn channel_signal_area() -> Value {
 fn marshalled_structs() -> Value {
     use shared::dri::{
         WpkDrmBindForeignTexture, WpkDrmEventVblank, WpkDrmGemClose, WpkDrmGetCap,
-        WpkDrmGpuBoCreate, WpkDrmModeCardRes, WpkDrmModeCreateDumb,
-        WpkDrmModeCrtcPageFlip, WpkDrmModeDestroyDumb, WpkDrmModeFbCmd2,
-        WpkDrmModeGetConnector, WpkDrmModeGetCrtc, WpkDrmModeGetEncoder,
-        WpkDrmModeMapDumb, WpkDrmModeModeinfo, WpkDrmPrimeHandle, WpkDrmVersion,
-        WpkDrmWaitVblankReply, WpkDrmWaitVblankRequest,
+        WpkDrmGpuBoCreate, WpkDrmModeCardRes, WpkDrmModeCreateDumb, WpkDrmModeCrtcPageFlip,
+        WpkDrmModeDestroyDumb, WpkDrmModeFbCmd2, WpkDrmModeGetConnector, WpkDrmModeGetCrtc,
+        WpkDrmModeGetEncoder, WpkDrmModeMapDumb, WpkDrmModeModeinfo, WpkDrmPrimeHandle,
+        WpkDrmVersion, WpkDrmWaitVblankReply, WpkDrmWaitVblankRequest,
     };
     use shared::fbdev::{FbBitfield, FbFixScreenInfo, FbVarScreenInfo};
     use shared::gl::{GlContextAttrs, GlQueryInfo, GlSubmitInfo, GlSurfaceAttrs};
     use shared::{
-        KernelWaitResult, WasmDirent, WasmFlock, WasmPollFd, WasmRusageWire, WasmStat,
-        WasmStatfs, WasmTimespec,
+        KernelWaitResult, WasmDirent, WasmFlock, WasmPollFd, WasmRusageWire, WasmStat, WasmStatfs,
+        WasmTimespec,
     };
 
     let mut structs: JsonMap = BTreeMap::new();
@@ -1358,11 +2366,7 @@ fn marshalled_structs() -> Value {
     );
     structs.insert(
         "WpkDrmPrimeHandle".into(),
-        struct_layout!(WpkDrmPrimeHandle {
-            handle,
-            flags,
-            fd
-        }),
+        struct_layout!(WpkDrmPrimeHandle { handle, flags, fd }),
     );
     structs.insert(
         "WpkDrmGetCap".into(),
@@ -1563,10 +2567,7 @@ fn wait_contract() -> Value {
     for (name, value) in [
         ("WAIT_EVENT_EXITED", json!(shared::wait::EVENT_EXITED)),
         ("WAIT_EVENT_STOPPED", json!(shared::wait::EVENT_STOPPED)),
-        (
-            "WAIT_EVENT_CONTINUED",
-            json!(shared::wait::EVENT_CONTINUED),
-        ),
+        ("WAIT_EVENT_CONTINUED", json!(shared::wait::EVENT_CONTINUED)),
         ("WAIT_WNOHANG", json!(shared::wait::WNOHANG)),
         ("WAIT_WUNTRACED", json!(shared::wait::WUNTRACED)),
         ("WAIT_WSTOPPED", json!(shared::wait::WSTOPPED)),
@@ -1576,10 +2577,7 @@ fn wait_contract() -> Value {
         ("WAIT_CLD_EXITED", json!(shared::wait::CLD_EXITED)),
         ("WAIT_CLD_KILLED", json!(shared::wait::CLD_KILLED)),
         ("WAIT_CLD_STOPPED", json!(shared::wait::CLD_STOPPED)),
-        (
-            "WAIT_CLD_CONTINUED",
-            json!(shared::wait::CLD_CONTINUED),
-        ),
+        ("WAIT_CLD_CONTINUED", json!(shared::wait::CLD_CONTINUED)),
         (
             "PROCESS_STATE_RUNNING",
             json!(shared::wait::PROCESS_STATE_RUNNING),
@@ -1903,7 +2901,14 @@ fn custom_sections() -> Value {
     let mut sections = vec![
         shared::abi::ABI_CUSTOM_SECTION,
         shared::abi::WPK_FORK_CAPABILITIES_SECTION,
+        shared::abi::WPK_FORK_EXCEPTION_CODEC_SECTION,
+        shared::abi::WPK_FORK_GC_CODEC_SECTION,
         shared::abi::WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
+        shared::abi::WPK_FORK_IMPORTED_GLOBALS_SECTION,
+        shared::abi::WPK_FORK_IMPORTED_TABLES_SECTION,
+        shared::abi::WPK_FORK_MODULE_STATE_FORMAT_SECTION,
+        shared::abi::WPK_FORK_STATIC_ROOT_CATALOG_SECTION,
+        shared::abi::WPK_FORK_UNWIND_TRANSPORT_SECTION,
     ];
     sections.sort();
     Value::Array(sections.into_iter().map(Value::from).collect())
@@ -1917,15 +2922,94 @@ fn process_expected_globals() -> Value {
 
 fn program_artifact() -> Value {
     use shared::abi::{
-        ProgramArtifactValueType, WPK_FORK_CAP_ACTIVATION_STATE_SAFE, WPK_FORK_CAP_DYLINK_MAIN,
-        WPK_FORK_CAP_KNOWN_MASK, WPK_FORK_CAP_REQUIRED_FLAGS, WPK_FORK_CAP_SIDE_ENTRY,
-        WPK_FORK_CAPABILITIES_SECTION, WPK_FORK_CAPABILITIES_VERSION,
+        ProgramArtifactValueType, WPK_FORK_ACTIVATION_CONTINUATION_ENTRY_KNOWN_FLAGS,
+        WPK_FORK_ACTIVATION_CONTINUATION_ENTRY_SIZE, WPK_FORK_ACTIVATION_CONTINUATIONS_HEADER_SIZE,
+        WPK_FORK_ACTIVATION_CONTINUATIONS_KNOWN_FLAGS, WPK_FORK_ACTIVATION_CONTINUATIONS_MAGIC,
+        WPK_FORK_ACTIVATION_CONTINUATIONS_OWNER, WPK_FORK_ACTIVATION_CONTINUATIONS_VERSION,
+        WPK_FORK_CAP_ACTIVATION_STATE_SAFE, WPK_FORK_CAP_DYLINK_MAIN, WPK_FORK_CAP_KNOWN_MASK,
+        WPK_FORK_CAP_REQUIRED_FLAGS, WPK_FORK_CAP_SIDE_ENTRY, WPK_FORK_CAPABILITIES_SECTION,
+        WPK_FORK_CAPABILITIES_VERSION, WPK_FORK_EXCEPTION_CODEC_HEADER_SIZE,
+        WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE, WPK_FORK_EXCEPTION_CODEC_SECTION,
+        WPK_FORK_EXCEPTION_CODEC_TAG_RECORD_SIZE, WPK_FORK_EXCEPTION_CODEC_VERSION,
+        WPK_FORK_EXCEPTION_IMPORT_ACTIVATION, WPK_FORK_GC_CODEC_FIELD_RECORD_SIZE,
+        WPK_FORK_GC_CODEC_HEADER_SIZE, WPK_FORK_GC_CODEC_LAYOUT_RECORD_SIZE,
+        WPK_FORK_GC_CODEC_MAGIC, WPK_FORK_GC_CODEC_SECTION, WPK_FORK_GC_CODEC_VERSION,
+        WPK_FORK_IMPORTED_GLOBAL_BINDING_ACTIVATION_GLOBAL,
+        WPK_FORK_IMPORTED_GLOBAL_BINDING_BASE_IMPORT, WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_BIGINT,
+        WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER,
+        WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE,
+        WPK_FORK_IMPORTED_GLOBAL_BINDINGS_ENTRY_SIZE,
+        WPK_FORK_IMPORTED_GLOBAL_BINDINGS_HEADER_SIZE,
+        WPK_FORK_IMPORTED_GLOBAL_BINDINGS_KNOWN_FLAGS, WPK_FORK_IMPORTED_GLOBAL_BINDINGS_MAGIC,
+        WPK_FORK_IMPORTED_GLOBAL_BINDINGS_OWNER, WPK_FORK_IMPORTED_GLOBAL_BINDINGS_VERSION,
+        WPK_FORK_IMPORTED_GLOBAL_FLAG_MUTABLE, WPK_FORK_IMPORTED_GLOBAL_FLAG_SHARED,
+        WPK_FORK_IMPORTED_GLOBAL_KNOWN_FLAGS, WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE,
+        WPK_FORK_IMPORTED_GLOBALS_MAGIC, WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE,
+        WPK_FORK_IMPORTED_GLOBALS_SECTION, WPK_FORK_IMPORTED_GLOBALS_VERSION,
+        WPK_FORK_IMPORTED_TABLE_BINDING_ACTIVATION_TABLE,
+        WPK_FORK_IMPORTED_TABLE_BINDING_BASE_IMPORT, WPK_FORK_IMPORTED_TABLE_BINDINGS_ENTRY_SIZE,
+        WPK_FORK_IMPORTED_TABLE_BINDINGS_HEADER_SIZE, WPK_FORK_IMPORTED_TABLE_BINDINGS_KNOWN_FLAGS,
+        WPK_FORK_IMPORTED_TABLE_BINDINGS_MAGIC, WPK_FORK_IMPORTED_TABLE_BINDINGS_OWNER,
+        WPK_FORK_IMPORTED_TABLE_BINDINGS_VERSION, WPK_FORK_IMPORTED_TABLE_FLAG_TABLE64,
+        WPK_FORK_IMPORTED_TABLE_KNOWN_FLAGS, WPK_FORK_IMPORTED_TABLES_HEADER_SIZE,
+        WPK_FORK_IMPORTED_TABLES_MAGIC, WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE,
+        WPK_FORK_IMPORTED_TABLES_SECTION, WPK_FORK_IMPORTED_TABLES_VERSION,
         WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE, WPK_FORK_LINKED_FRAME_FLAG_ABORT_UNWINDING,
         WPK_FORK_LINKED_FRAME_FLAG_TRANSACTIONAL_NODES, WPK_FORK_LINKED_FRAME_FORMAT_MAGIC,
         WPK_FORK_LINKED_FRAME_FORMAT_SECTION, WPK_FORK_LINKED_FRAME_FORMAT_VERSION,
         WPK_FORK_LINKED_FRAME_POINTER_WIDTHS, WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT,
-        WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS, WPK_FORK_REQUIRED_EXPORTS, WPK_FORK_REQUIRED_IMPORTS,
-        wpk_fork_linked_chunk_header_size, wpk_fork_linked_node_header_size,
+        WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS, WPK_FORK_MODULE_STATE_ARENA_VERSION,
+        WPK_FORK_MODULE_STATE_CHUNK_FLAG_ROOT, WPK_FORK_MODULE_STATE_CHUNK_FLAG_SEALED,
+        WPK_FORK_MODULE_STATE_CHUNK_KNOWN_FLAGS, WPK_FORK_MODULE_STATE_CHUNK_MAGIC,
+        WPK_FORK_MODULE_STATE_DATA_SEGMENT_HEADER_SIZE, WPK_FORK_MODULE_STATE_DESCRIPTOR_SIZE,
+        WPK_FORK_MODULE_STATE_ELEMENT_SEGMENT_HEADER_SIZE,
+        WPK_FORK_MODULE_STATE_FLAG_EXPLICIT_OWNERS, WPK_FORK_MODULE_STATE_FLAG_ROOT_PREFIX_POINTER,
+        WPK_FORK_MODULE_STATE_FLAG_SPARSE_TABLES, WPK_FORK_MODULE_STATE_FORMAT_MAGIC,
+        WPK_FORK_MODULE_STATE_FORMAT_SECTION, WPK_FORK_MODULE_STATE_FORMAT_VERSION,
+        WPK_FORK_MODULE_STATE_GLOBAL_HEADER_SIZE, WPK_FORK_MODULE_STATE_GLOBAL_TYPE_ANYREF,
+        WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXNREF, WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXTERNREF,
+        WPK_FORK_MODULE_STATE_GLOBAL_TYPE_F32, WPK_FORK_MODULE_STATE_GLOBAL_TYPE_F64,
+        WPK_FORK_MODULE_STATE_GLOBAL_TYPE_FUNCREF, WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32,
+        WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I64, WPK_FORK_MODULE_STATE_GLOBAL_TYPE_V128,
+        WPK_FORK_MODULE_STATE_KNOWN_FLAGS, WPK_FORK_MODULE_STATE_MAX_TABLE_PAGE_SHIFT,
+        WPK_FORK_MODULE_STATE_MIN_TABLE_PAGE_SHIFT,
+        WPK_FORK_MODULE_STATE_MODULE_RECORD_KNOWN_FLAGS,
+        WPK_FORK_MODULE_STATE_MODULE_RECORD_PAYLOAD_SIZE,
+        WPK_FORK_MODULE_STATE_MODULE_TEMPLATE_ID_SIZE, WPK_FORK_MODULE_STATE_POINTER_WIDTHS,
+        WPK_FORK_MODULE_STATE_RECORD_ALIGNMENT, WPK_FORK_MODULE_STATE_RECORD_HEADER_SIZE,
+        WPK_FORK_MODULE_STATE_RECORD_KINDS, WPK_FORK_MODULE_STATE_RECORD_MAGIC,
+        WPK_FORK_MODULE_STATE_RECORD_VERSION, WPK_FORK_MODULE_STATE_REPLAY_EVENT_SIZE,
+        WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_CAPACITY,
+        WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_HEADER_SIZE,
+        WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_KNOWN_FLAGS,
+        WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_VERSION,
+        WPK_FORK_MODULE_STATE_REPLAY_EVENTS_HEADER_SIZE,
+        WPK_FORK_MODULE_STATE_REPLAY_EVENTS_KNOWN_FLAGS, WPK_FORK_MODULE_STATE_REPLAY_EVENTS_MAGIC,
+        WPK_FORK_MODULE_STATE_REPLAY_EVENTS_OWNER,
+        WPK_FORK_MODULE_STATE_REPLAY_EVENTS_VERSION, WPK_FORK_MODULE_STATE_REQUIRED_FLAGS,
+        WPK_FORK_MODULE_STATE_ROOT_POINTER_WORD_OFFSET,
+        WPK_FORK_MODULE_STATE_TABLE_BASELINE_FINGERPRINT_SIZE,
+        WPK_FORK_MODULE_STATE_TABLE_DESCRIPTOR_PAYLOAD_SIZE,
+        WPK_FORK_MODULE_STATE_TABLE_FLAG_SPARSE_OVERRIDES, WPK_FORK_MODULE_STATE_TABLE_KNOWN_FLAGS,
+        WPK_FORK_MODULE_STATE_TABLE_PAGE_HEADER_SIZE, WPK_FORK_MODULE_STATE_TABLE_PAGE_SHIFT,
+        WPK_FORK_MODULE_STATE_TABLE_RUN_HEADER_SIZE, WPK_FORK_REFERENCE_NODE_RECORD_SIZE,
+        WPK_FORK_REFERENCE_SECTION_EDGES, WPK_FORK_REFERENCE_SECTION_NODES,
+        WPK_FORK_REFERENCE_SECTION_SCALARS, WPK_FORK_REFERENCE_SECTION_VECTOR_ENTRIES,
+        WPK_FORK_REFERENCE_SECTION_VECTOR_INDEX, WPK_FORK_REFERENCE_SEGMENT_HEADER_SIZE,
+        WPK_FORK_REFERENCE_SEGMENT_KNOWN_FLAGS, WPK_FORK_REFERENCE_SEGMENT_MAGIC,
+        WPK_FORK_REFERENCE_TRANSACTION_FLAG_SEALED,
+        WPK_FORK_REFERENCE_TRANSACTION_KNOWN_FLAGS,
+        WPK_FORK_REFERENCE_TRANSACTION_MAGIC, WPK_FORK_REFERENCE_TRANSACTION_MANIFEST_SIZE,
+        WPK_FORK_REFERENCE_TRANSACTION_OWNER, WPK_FORK_REFERENCE_TRANSACTION_VERSION,
+        WPK_FORK_REFERENCE_VECTOR_INDEX_SIZE, WPK_FORK_REQUIRED_EXPORTS,
+        WPK_FORK_REQUIRED_IMPORTS, WPK_FORK_REQUIRED_TABLE_IMPORTS,
+        WPK_FORK_STATIC_ROOT_CATALOG_EXPORT, WPK_FORK_STATIC_ROOT_CATALOG_HEADER_SIZE,
+        WPK_FORK_STATIC_ROOT_CATALOG_MAGIC, WPK_FORK_STATIC_ROOT_CATALOG_SECTION,
+        WPK_FORK_STATIC_ROOT_CATALOG_VERSION, WPK_FORK_STATIC_ROOT_HARVEST_EXPORT,
+        WPK_FORK_UNWIND_TAG_IMPORT_MODULE, WPK_FORK_UNWIND_TAG_IMPORT_NAME,
+        WPK_FORK_UNWIND_TRANSPORT_PAYLOAD_ARITY, WPK_FORK_UNWIND_TRANSPORT_SECTION,
+        WPK_FORK_UNWIND_TRANSPORT_VERSION, wpk_fork_linked_chunk_header_size,
+        wpk_fork_linked_node_header_size, wpk_fork_module_state_chunk_header_size,
     };
 
     let value_types = |values: &[ProgramArtifactValueType]| {
@@ -1936,13 +3020,18 @@ fn program_artifact() -> Value {
                     Value::from(match value {
                         ProgramArtifactValueType::Pointer => "ptr",
                         ProgramArtifactValueType::I32 => "i32",
+                        ProgramArtifactValueType::I64 => "i64",
+                        ProgramArtifactValueType::FuncRef => "funcref",
+                        ProgramArtifactValueType::ExternRef => "externref",
+                        ProgramArtifactValueType::ExnRef => "exnref",
+                        ProgramArtifactValueType::AnyRef => "anyref",
                     })
                 })
                 .collect(),
         )
     };
 
-    let imports = WPK_FORK_REQUIRED_IMPORTS
+    let mut imports: Vec<Value> = WPK_FORK_REQUIRED_IMPORTS
         .iter()
         .map(|requirement| {
             let mut item: JsonMap = BTreeMap::new();
@@ -1954,6 +3043,26 @@ fn program_artifact() -> Value {
             Value::Object(item.into_iter().collect())
         })
         .collect();
+    imports.extend(WPK_FORK_REQUIRED_TABLE_IMPORTS.iter().map(|requirement| {
+        let mut item: JsonMap = BTreeMap::new();
+        item.insert("kind".into(), json!("table"));
+        item.insert("module".into(), json!(requirement.module));
+        item.insert("name".into(), json!(requirement.name));
+        item.insert("table64".into(), json!(requirement.table64));
+        item.insert(
+            "element".into(),
+            Value::from(match requirement.element {
+                ProgramArtifactValueType::FuncRef => "funcref",
+                ProgramArtifactValueType::ExternRef => "externref",
+                ProgramArtifactValueType::ExnRef => "exnref",
+                ProgramArtifactValueType::AnyRef => "anyref",
+                other => panic!("table element requirement is not a reference: {other:?}"),
+            }),
+        );
+        item.insert("minimum".into(), json!(requirement.minimum));
+        item.insert("maximum".into(), json!(requirement.maximum));
+        Value::Object(item.into_iter().collect())
+    }));
 
     let exports = WPK_FORK_REQUIRED_EXPORTS
         .iter()
@@ -2030,6 +3139,694 @@ fn program_artifact() -> Value {
         json!(WPK_FORK_LINKED_FRAME_FORMAT_VERSION),
     );
 
+    let module_state_pointer_widths = WPK_FORK_MODULE_STATE_POINTER_WIDTHS
+        .iter()
+        .map(|pointer_width| {
+            let mut item: JsonMap = BTreeMap::new();
+            item.insert("bytes".into(), json!(pointer_width));
+            item.insert(
+                "chunk_header_size".into(),
+                json!(
+                    wpk_fork_module_state_chunk_header_size(*pointer_width)
+                        .expect("supported pointer width must have a module-state chunk header")
+                ),
+            );
+            Value::Object(item.into_iter().collect())
+        })
+        .collect();
+    let module_state_record_kinds = WPK_FORK_MODULE_STATE_RECORD_KINDS
+        .iter()
+        .map(|kind| {
+            let mut item: JsonMap = BTreeMap::new();
+            item.insert("name".into(), json!(kind.name));
+            item.insert("number".into(), json!(kind.number));
+            Value::Object(item.into_iter().collect())
+        })
+        .collect();
+
+    let mut module_state_descriptor: JsonMap = BTreeMap::new();
+    module_state_descriptor.insert(
+        "alignment".into(),
+        json!(WPK_FORK_MODULE_STATE_RECORD_ALIGNMENT),
+    );
+    module_state_descriptor.insert(
+        "descriptor_size".into(),
+        json!(WPK_FORK_MODULE_STATE_DESCRIPTOR_SIZE),
+    );
+    module_state_descriptor.insert(
+        "flags".into(),
+        json!([
+            {
+                "bit": WPK_FORK_MODULE_STATE_FLAG_ROOT_PREFIX_POINTER,
+                "name": "root_prefix_pointer"
+            },
+            {
+                "bit": WPK_FORK_MODULE_STATE_FLAG_EXPLICIT_OWNERS,
+                "name": "explicit_owners"
+            },
+            {
+                "bit": WPK_FORK_MODULE_STATE_FLAG_SPARSE_TABLES,
+                "name": "sparse_tables"
+            }
+        ]),
+    );
+    module_state_descriptor.insert(
+        "known_flags".into(),
+        json!(WPK_FORK_MODULE_STATE_KNOWN_FLAGS),
+    );
+    module_state_descriptor.insert(
+        "magic_bytes".into(),
+        json!(WPK_FORK_MODULE_STATE_FORMAT_MAGIC),
+    );
+    module_state_descriptor.insert(
+        "required_flags".into(),
+        json!(WPK_FORK_MODULE_STATE_REQUIRED_FLAGS),
+    );
+    module_state_descriptor.insert(
+        "root_pointer_word_offset".into(),
+        json!(WPK_FORK_MODULE_STATE_ROOT_POINTER_WORD_OFFSET),
+    );
+    module_state_descriptor.insert(
+        "section".into(),
+        json!(WPK_FORK_MODULE_STATE_FORMAT_SECTION),
+    );
+    module_state_descriptor.insert(
+        "version".into(),
+        json!(WPK_FORK_MODULE_STATE_FORMAT_VERSION),
+    );
+
+    let mut module_state_record: JsonMap = BTreeMap::new();
+    module_state_record.insert(
+        "alignment".into(),
+        json!(WPK_FORK_MODULE_STATE_RECORD_ALIGNMENT),
+    );
+    module_state_record.insert(
+        "header_size".into(),
+        json!(WPK_FORK_MODULE_STATE_RECORD_HEADER_SIZE),
+    );
+    module_state_record.insert("kinds".into(), Value::Array(module_state_record_kinds));
+    module_state_record.insert(
+        "magic_bytes".into(),
+        json!(WPK_FORK_MODULE_STATE_RECORD_MAGIC),
+    );
+    module_state_record.insert(
+        "version".into(),
+        json!(WPK_FORK_MODULE_STATE_RECORD_VERSION),
+    );
+
+    let mut module_state_arena: JsonMap = BTreeMap::new();
+    module_state_arena.insert(
+        "chunk_flags".into(),
+        json!([
+            {"bit": WPK_FORK_MODULE_STATE_CHUNK_FLAG_ROOT, "name": "root"},
+            {"bit": WPK_FORK_MODULE_STATE_CHUNK_FLAG_SEALED, "name": "sealed"}
+        ]),
+    );
+    module_state_arena.insert(
+        "chunk_magic_bytes".into(),
+        json!(WPK_FORK_MODULE_STATE_CHUNK_MAGIC),
+    );
+    module_state_arena.insert(
+        "known_chunk_flags".into(),
+        json!(WPK_FORK_MODULE_STATE_CHUNK_KNOWN_FLAGS),
+    );
+    module_state_arena.insert(
+        "pointer_widths".into(),
+        Value::Array(module_state_pointer_widths),
+    );
+    module_state_arena.insert(
+        "record".into(),
+        Value::Object(module_state_record.into_iter().collect()),
+    );
+    module_state_arena.insert("version".into(), json!(WPK_FORK_MODULE_STATE_ARENA_VERSION));
+
+    let mut module_payload: JsonMap = BTreeMap::new();
+    module_payload.insert(
+        "known_flags".into(),
+        json!(WPK_FORK_MODULE_STATE_MODULE_RECORD_KNOWN_FLAGS),
+    );
+    module_payload.insert(
+        "payload_size".into(),
+        json!(WPK_FORK_MODULE_STATE_MODULE_RECORD_PAYLOAD_SIZE),
+    );
+    module_payload.insert(
+        "template_id_size".into(),
+        json!(WPK_FORK_MODULE_STATE_MODULE_TEMPLATE_ID_SIZE),
+    );
+
+    let mut mutable_global_payload: JsonMap = BTreeMap::new();
+    mutable_global_payload.insert(
+        "header_size".into(),
+        json!(WPK_FORK_MODULE_STATE_GLOBAL_HEADER_SIZE),
+    );
+    mutable_global_payload.insert(
+        "value_types".into(),
+        json!([
+            {"number": WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32, "name": "i32", "bytes": 4},
+            {"number": WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I64, "name": "i64", "bytes": 8},
+            {"number": WPK_FORK_MODULE_STATE_GLOBAL_TYPE_F32, "name": "f32", "bytes": 4},
+            {"number": WPK_FORK_MODULE_STATE_GLOBAL_TYPE_F64, "name": "f64", "bytes": 8},
+            {"number": WPK_FORK_MODULE_STATE_GLOBAL_TYPE_V128, "name": "v128", "bytes": 16},
+            {"number": WPK_FORK_MODULE_STATE_GLOBAL_TYPE_FUNCREF, "name": "funcref_recipe", "bytes": 4},
+            {"number": WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXTERNREF, "name": "externref_recipe", "bytes": 4},
+            {"number": WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXNREF, "name": "exnref_recipe", "bytes": 4},
+            {"number": WPK_FORK_MODULE_STATE_GLOBAL_TYPE_ANYREF, "name": "anyref_recipe", "bytes": 4}
+        ]),
+    );
+
+    let mut table_payload: JsonMap = BTreeMap::new();
+    table_payload.insert(
+        "baseline_fingerprint_size".into(),
+        json!(WPK_FORK_MODULE_STATE_TABLE_BASELINE_FINGERPRINT_SIZE),
+    );
+    table_payload.insert(
+        "descriptor_payload_size".into(),
+        json!(WPK_FORK_MODULE_STATE_TABLE_DESCRIPTOR_PAYLOAD_SIZE),
+    );
+    table_payload.insert(
+        "flags".into(),
+        json!([
+            {
+                "bit": WPK_FORK_MODULE_STATE_TABLE_FLAG_SPARSE_OVERRIDES,
+                "name": "sparse_overrides"
+            }
+        ]),
+    );
+    table_payload.insert(
+        "known_flags".into(),
+        json!(WPK_FORK_MODULE_STATE_TABLE_KNOWN_FLAGS),
+    );
+    table_payload.insert(
+        "max_page_shift".into(),
+        json!(WPK_FORK_MODULE_STATE_MAX_TABLE_PAGE_SHIFT),
+    );
+    table_payload.insert(
+        "min_page_shift".into(),
+        json!(WPK_FORK_MODULE_STATE_MIN_TABLE_PAGE_SHIFT),
+    );
+    table_payload.insert(
+        "page_shift".into(),
+        json!(WPK_FORK_MODULE_STATE_TABLE_PAGE_SHIFT),
+    );
+    table_payload.insert(
+        "page_header_size".into(),
+        json!(WPK_FORK_MODULE_STATE_TABLE_PAGE_HEADER_SIZE),
+    );
+    table_payload.insert(
+        "run_header_size".into(),
+        json!(WPK_FORK_MODULE_STATE_TABLE_RUN_HEADER_SIZE),
+    );
+
+    let mut element_segments_payload: JsonMap = BTreeMap::new();
+    element_segments_payload.insert(
+        "header_size".into(),
+        json!(WPK_FORK_MODULE_STATE_ELEMENT_SEGMENT_HEADER_SIZE),
+    );
+
+    let mut data_segments_payload: JsonMap = BTreeMap::new();
+    data_segments_payload.insert(
+        "header_size".into(),
+        json!(WPK_FORK_MODULE_STATE_DATA_SEGMENT_HEADER_SIZE),
+    );
+
+    let mut replay_events_payload: JsonMap = BTreeMap::new();
+    replay_events_payload.insert(
+        "entry_size".into(),
+        json!(WPK_FORK_MODULE_STATE_REPLAY_EVENT_SIZE),
+    );
+    replay_events_payload.insert(
+        "magic".into(),
+        json!(WPK_FORK_MODULE_STATE_REPLAY_EVENTS_MAGIC),
+    );
+    replay_events_payload.insert(
+        "header_size".into(),
+        json!(WPK_FORK_MODULE_STATE_REPLAY_EVENTS_HEADER_SIZE),
+    );
+    replay_events_payload.insert(
+        "known_flags".into(),
+        json!(WPK_FORK_MODULE_STATE_REPLAY_EVENTS_KNOWN_FLAGS),
+    );
+    replay_events_payload.insert(
+        "owner".into(),
+        json!(WPK_FORK_MODULE_STATE_REPLAY_EVENTS_OWNER),
+    );
+    replay_events_payload.insert(
+        "version".into(),
+        json!(WPK_FORK_MODULE_STATE_REPLAY_EVENTS_VERSION),
+    );
+    replay_events_payload.insert(
+        "segment_capacity".into(),
+        json!(WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_CAPACITY),
+    );
+    replay_events_payload.insert(
+        "segment_header_size".into(),
+        json!(WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_HEADER_SIZE),
+    );
+    replay_events_payload.insert(
+        "segment_known_flags".into(),
+        json!(WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_KNOWN_FLAGS),
+    );
+    replay_events_payload.insert(
+        "segment_version".into(),
+        json!(WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_VERSION),
+    );
+
+    let mut reference_transaction_payload: JsonMap = BTreeMap::new();
+    reference_transaction_payload.insert(
+        "known_flags".into(),
+        json!(WPK_FORK_REFERENCE_TRANSACTION_KNOWN_FLAGS),
+    );
+    reference_transaction_payload.insert(
+        "magic".into(),
+        json!(WPK_FORK_REFERENCE_TRANSACTION_MAGIC),
+    );
+    reference_transaction_payload.insert(
+        "manifest_size".into(),
+        json!(WPK_FORK_REFERENCE_TRANSACTION_MANIFEST_SIZE),
+    );
+    reference_transaction_payload.insert(
+        "node_record_size".into(),
+        json!(WPK_FORK_REFERENCE_NODE_RECORD_SIZE),
+    );
+    reference_transaction_payload.insert(
+        "owner".into(),
+        json!(WPK_FORK_REFERENCE_TRANSACTION_OWNER),
+    );
+    reference_transaction_payload.insert(
+        "sealed_flag".into(),
+        json!(WPK_FORK_REFERENCE_TRANSACTION_FLAG_SEALED),
+    );
+    reference_transaction_payload.insert(
+        "sections".into(),
+        json!([
+            {"number": WPK_FORK_REFERENCE_SECTION_NODES, "name": "nodes"},
+            {"number": WPK_FORK_REFERENCE_SECTION_EDGES, "name": "edges"},
+            {"number": WPK_FORK_REFERENCE_SECTION_SCALARS, "name": "scalars"},
+            {"number": WPK_FORK_REFERENCE_SECTION_VECTOR_INDEX, "name": "vector_index"},
+            {"number": WPK_FORK_REFERENCE_SECTION_VECTOR_ENTRIES, "name": "vector_entries"}
+        ]),
+    );
+    reference_transaction_payload.insert(
+        "segment_header_size".into(),
+        json!(WPK_FORK_REFERENCE_SEGMENT_HEADER_SIZE),
+    );
+    reference_transaction_payload.insert(
+        "segment_known_flags".into(),
+        json!(WPK_FORK_REFERENCE_SEGMENT_KNOWN_FLAGS),
+    );
+    reference_transaction_payload.insert(
+        "segment_magic".into(),
+        json!(WPK_FORK_REFERENCE_SEGMENT_MAGIC),
+    );
+    reference_transaction_payload.insert(
+        "vector_index_size".into(),
+        json!(WPK_FORK_REFERENCE_VECTOR_INDEX_SIZE),
+    );
+    reference_transaction_payload.insert(
+        "version".into(),
+        json!(WPK_FORK_REFERENCE_TRANSACTION_VERSION),
+    );
+
+    let mut imported_global_bindings_payload: JsonMap = BTreeMap::new();
+    imported_global_bindings_payload.insert(
+        "binding_kinds".into(),
+        json!([
+            {"number": WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER, "name": "raw_number"},
+            {"number": WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_BIGINT, "name": "raw_bigint"},
+            {"number": WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE, "name": "raw_reference"},
+            {"number": WPK_FORK_IMPORTED_GLOBAL_BINDING_ACTIVATION_GLOBAL, "name": "activation_global"},
+            {"number": WPK_FORK_IMPORTED_GLOBAL_BINDING_BASE_IMPORT, "name": "base_import"}
+        ]),
+    );
+    imported_global_bindings_payload.insert(
+        "entry_fields".into(),
+        json!([
+            {"name": "consumer_activation", "offset": 0, "size": 4},
+            {"name": "consumer_owner", "offset": 4, "size": 4},
+            {"name": "source_activation", "offset": 8, "size": 4},
+            {"name": "source_owner", "offset": 12, "size": 4},
+            {"name": "reserved", "offset": 16, "size": 4},
+            {"name": "recipe_id", "offset": 20, "size": 4},
+            {"name": "raw_bits", "offset": 24, "size": 8},
+            {"name": "binding_kind", "offset": 32, "size": 1},
+            {"name": "import_flags", "offset": 33, "size": 1},
+            {"name": "value_type", "offset": 34, "size": 1},
+            {"name": "reserved", "offset": 35, "size": 5}
+        ]),
+    );
+    imported_global_bindings_payload.insert(
+        "entry_size".into(),
+        json!(WPK_FORK_IMPORTED_GLOBAL_BINDINGS_ENTRY_SIZE),
+    );
+    imported_global_bindings_payload.insert(
+        "header_size".into(),
+        json!(WPK_FORK_IMPORTED_GLOBAL_BINDINGS_HEADER_SIZE),
+    );
+    imported_global_bindings_payload.insert(
+        "known_flags".into(),
+        json!(WPK_FORK_IMPORTED_GLOBAL_BINDINGS_KNOWN_FLAGS),
+    );
+    imported_global_bindings_payload.insert(
+        "magic_bytes".into(),
+        json!(WPK_FORK_IMPORTED_GLOBAL_BINDINGS_MAGIC),
+    );
+    imported_global_bindings_payload.insert(
+        "owner".into(),
+        json!(WPK_FORK_IMPORTED_GLOBAL_BINDINGS_OWNER),
+    );
+    imported_global_bindings_payload.insert(
+        "version".into(),
+        json!(WPK_FORK_IMPORTED_GLOBAL_BINDINGS_VERSION),
+    );
+
+    let mut activation_continuations_payload: JsonMap = BTreeMap::new();
+    activation_continuations_payload.insert(
+        "entry_fields".into(),
+        json!([
+            {"name": "activation_id", "offset": 0, "size": 4},
+            {"name": "flags", "offset": 4, "size": 4},
+            {"name": "root", "offset": 8, "size": 8}
+        ]),
+    );
+    activation_continuations_payload.insert(
+        "entry_known_flags".into(),
+        json!(WPK_FORK_ACTIVATION_CONTINUATION_ENTRY_KNOWN_FLAGS),
+    );
+    activation_continuations_payload.insert(
+        "entry_size".into(),
+        json!(WPK_FORK_ACTIVATION_CONTINUATION_ENTRY_SIZE),
+    );
+    activation_continuations_payload.insert(
+        "header_size".into(),
+        json!(WPK_FORK_ACTIVATION_CONTINUATIONS_HEADER_SIZE),
+    );
+    activation_continuations_payload.insert(
+        "known_flags".into(),
+        json!(WPK_FORK_ACTIVATION_CONTINUATIONS_KNOWN_FLAGS),
+    );
+    activation_continuations_payload.insert(
+        "magic_bytes".into(),
+        json!(WPK_FORK_ACTIVATION_CONTINUATIONS_MAGIC),
+    );
+    activation_continuations_payload.insert(
+        "owner".into(),
+        json!(WPK_FORK_ACTIVATION_CONTINUATIONS_OWNER),
+    );
+    activation_continuations_payload.insert(
+        "version".into(),
+        json!(WPK_FORK_ACTIVATION_CONTINUATIONS_VERSION),
+    );
+
+    let mut imported_table_bindings_payload: JsonMap = BTreeMap::new();
+    imported_table_bindings_payload.insert(
+        "binding_kinds".into(),
+        json!([
+            {
+                "number": WPK_FORK_IMPORTED_TABLE_BINDING_ACTIVATION_TABLE,
+                "name": "activation_table"
+            },
+            {
+                "number": WPK_FORK_IMPORTED_TABLE_BINDING_BASE_IMPORT,
+                "name": "base_import"
+            }
+        ]),
+    );
+    imported_table_bindings_payload.insert(
+        "entry_fields".into(),
+        json!([
+            {"name": "consumer_activation", "offset": 0, "size": 4},
+            {"name": "consumer_owner", "offset": 4, "size": 4},
+            {"name": "source_activation", "offset": 8, "size": 4},
+            {"name": "source_owner", "offset": 12, "size": 4},
+            {"name": "reserved", "offset": 16, "size": 4},
+            {"name": "binding_kind", "offset": 20, "size": 1},
+            {"name": "reserved", "offset": 21, "size": 3}
+        ]),
+    );
+    imported_table_bindings_payload.insert(
+        "entry_size".into(),
+        json!(WPK_FORK_IMPORTED_TABLE_BINDINGS_ENTRY_SIZE),
+    );
+    imported_table_bindings_payload.insert(
+        "header_size".into(),
+        json!(WPK_FORK_IMPORTED_TABLE_BINDINGS_HEADER_SIZE),
+    );
+    imported_table_bindings_payload.insert(
+        "known_flags".into(),
+        json!(WPK_FORK_IMPORTED_TABLE_BINDINGS_KNOWN_FLAGS),
+    );
+    imported_table_bindings_payload.insert(
+        "magic_bytes".into(),
+        json!(WPK_FORK_IMPORTED_TABLE_BINDINGS_MAGIC),
+    );
+    imported_table_bindings_payload.insert(
+        "owner".into(),
+        json!(WPK_FORK_IMPORTED_TABLE_BINDINGS_OWNER),
+    );
+    imported_table_bindings_payload.insert(
+        "version".into(),
+        json!(WPK_FORK_IMPORTED_TABLE_BINDINGS_VERSION),
+    );
+
+    let mut module_state_payloads: JsonMap = BTreeMap::new();
+    module_state_payloads.insert(
+        "activation_continuations".into(),
+        Value::Object(activation_continuations_payload.into_iter().collect()),
+    );
+    module_state_payloads.insert(
+        "data_segments".into(),
+        Value::Object(data_segments_payload.into_iter().collect()),
+    );
+    module_state_payloads.insert(
+        "element_segments".into(),
+        Value::Object(element_segments_payload.into_iter().collect()),
+    );
+    module_state_payloads.insert(
+        "imported_global_bindings".into(),
+        Value::Object(imported_global_bindings_payload.into_iter().collect()),
+    );
+    module_state_payloads.insert(
+        "imported_table_bindings".into(),
+        Value::Object(imported_table_bindings_payload.into_iter().collect()),
+    );
+    module_state_payloads.insert(
+        "module".into(),
+        Value::Object(module_payload.into_iter().collect()),
+    );
+    module_state_payloads.insert(
+        "mutable_global".into(),
+        Value::Object(mutable_global_payload.into_iter().collect()),
+    );
+    module_state_payloads.insert(
+        "replay_events".into(),
+        Value::Object(replay_events_payload.into_iter().collect()),
+    );
+    module_state_payloads.insert(
+        "reference_transaction".into(),
+        Value::Object(reference_transaction_payload.into_iter().collect()),
+    );
+    module_state_payloads.insert(
+        "table".into(),
+        Value::Object(table_payload.into_iter().collect()),
+    );
+
+    let mut module_state: JsonMap = BTreeMap::new();
+    module_state.insert(
+        "arena".into(),
+        Value::Object(module_state_arena.into_iter().collect()),
+    );
+    module_state.insert(
+        "descriptor".into(),
+        Value::Object(module_state_descriptor.into_iter().collect()),
+    );
+    module_state.insert(
+        "record_payloads".into(),
+        Value::Object(module_state_payloads.into_iter().collect()),
+    );
+
+    let mut imported_globals: JsonMap = BTreeMap::new();
+    imported_globals.insert(
+        "header_size".into(),
+        json!(WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE),
+    );
+    imported_globals.insert(
+        "known_flags".into(),
+        json!(WPK_FORK_IMPORTED_GLOBAL_KNOWN_FLAGS),
+    );
+    imported_globals.insert("magic_bytes".into(), json!(WPK_FORK_IMPORTED_GLOBALS_MAGIC));
+    imported_globals.insert(
+        "mutable_flag".into(),
+        json!(WPK_FORK_IMPORTED_GLOBAL_FLAG_MUTABLE),
+    );
+    imported_globals.insert(
+        "shared_flag".into(),
+        json!(WPK_FORK_IMPORTED_GLOBAL_FLAG_SHARED),
+    );
+    imported_globals.insert(
+        "record_header_size".into(),
+        json!(WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE),
+    );
+    imported_globals.insert(
+        "record_fields".into(),
+        json!([
+            {"name": "record_size", "offset": 0, "size": 4},
+            {"name": "owner", "offset": 4, "size": 4},
+            {"name": "value_type", "offset": 8, "size": 1},
+            {"name": "flags", "offset": 9, "size": 1},
+            {"name": "reserved", "offset": 10, "size": 2},
+            {"name": "module_name_length", "offset": 12, "size": 4},
+            {"name": "field_name_length", "offset": 16, "size": 4},
+            {"name": "import_ordinal", "offset": 20, "size": 4}
+        ]),
+    );
+    imported_globals.insert("section".into(), json!(WPK_FORK_IMPORTED_GLOBALS_SECTION));
+    imported_globals.insert("version".into(), json!(WPK_FORK_IMPORTED_GLOBALS_VERSION));
+
+    let mut imported_tables: JsonMap = BTreeMap::new();
+    imported_tables.insert(
+        "header_size".into(),
+        json!(WPK_FORK_IMPORTED_TABLES_HEADER_SIZE),
+    );
+    imported_tables.insert(
+        "known_flags".into(),
+        json!(WPK_FORK_IMPORTED_TABLE_KNOWN_FLAGS),
+    );
+    imported_tables.insert("magic_bytes".into(), json!(WPK_FORK_IMPORTED_TABLES_MAGIC));
+    imported_tables.insert(
+        "record_header_size".into(),
+        json!(WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE),
+    );
+    imported_tables.insert(
+        "record_fields".into(),
+        json!([
+            {"name": "record_size", "offset": 0, "size": 4},
+            {"name": "owner", "offset": 4, "size": 4},
+            {"name": "element_type", "offset": 8, "size": 1},
+            {"name": "flags", "offset": 9, "size": 1},
+            {"name": "reserved", "offset": 10, "size": 2},
+            {"name": "module_name_length", "offset": 12, "size": 4},
+            {"name": "field_name_length", "offset": 16, "size": 4},
+            {"name": "import_ordinal", "offset": 20, "size": 4}
+        ]),
+    );
+    imported_tables.insert("section".into(), json!(WPK_FORK_IMPORTED_TABLES_SECTION));
+    imported_tables.insert(
+        "table64_flag".into(),
+        json!(WPK_FORK_IMPORTED_TABLE_FLAG_TABLE64),
+    );
+    imported_tables.insert("version".into(), json!(WPK_FORK_IMPORTED_TABLES_VERSION));
+
+    let mut exception_codec: JsonMap = BTreeMap::new();
+    exception_codec.insert(
+        "activation_import".into(),
+        json!({
+            "module": WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE,
+            "name": WPK_FORK_EXCEPTION_IMPORT_ACTIVATION,
+            "type": "i32",
+            "mutable": false
+        }),
+    );
+    exception_codec.insert(
+        "header_size".into(),
+        json!(WPK_FORK_EXCEPTION_CODEC_HEADER_SIZE),
+    );
+    exception_codec.insert("section".into(), json!(WPK_FORK_EXCEPTION_CODEC_SECTION));
+    exception_codec.insert(
+        "tag_record_size".into(),
+        json!(WPK_FORK_EXCEPTION_CODEC_TAG_RECORD_SIZE),
+    );
+    exception_codec.insert("version".into(), json!(WPK_FORK_EXCEPTION_CODEC_VERSION));
+
+    let mut gc_codec: JsonMap = BTreeMap::new();
+    gc_codec.insert(
+        "field_record".into(),
+        json!({
+            "size": WPK_FORK_GC_CODEC_FIELD_RECORD_SIZE,
+            "fields": [
+                {"name": "storage", "offset": 0, "size": 1},
+                {"name": "flags", "offset": 1, "size": 1},
+                {"name": "reserved", "offset": 2, "size": 2},
+                {"name": "scalar_offset_or_none", "offset": 4, "size": 4},
+                {"name": "reference_ordinal_or_none", "offset": 8, "size": 4}
+            ]
+        }),
+    );
+    gc_codec.insert("header_size".into(), json!(WPK_FORK_GC_CODEC_HEADER_SIZE));
+    gc_codec.insert(
+        "layout_record".into(),
+        json!({
+            "size": WPK_FORK_GC_CODEC_LAYOUT_RECORD_SIZE,
+            "fields": [
+                {"name": "layout_id", "offset": 0, "size": 4},
+                {"name": "type_ordinal", "offset": 4, "size": 4},
+                {"name": "kind", "offset": 8, "size": 1},
+                {"name": "constructor", "offset": 9, "size": 1},
+                {"name": "flags", "offset": 10, "size": 2},
+                {"name": "snapshot_scalar_len_or_stride", "offset": 12, "size": 4},
+                {"name": "field_start", "offset": 16, "size": 4},
+                {"name": "field_count", "offset": 20, "size": 4},
+                {"name": "super_type_ordinal_or_none", "offset": 24, "size": 4},
+                {"name": "base_layout_id", "offset": 28, "size": 4},
+                {"name": "auxiliary", "offset": 32, "size": 4},
+                {"name": "provenance_scalar_len", "offset": 36, "size": 4},
+                {"name": "provenance_ref_count", "offset": 40, "size": 4}
+            ]
+        }),
+    );
+    gc_codec.insert("magic_bytes".into(), json!(WPK_FORK_GC_CODEC_MAGIC));
+    gc_codec.insert("section".into(), json!(WPK_FORK_GC_CODEC_SECTION));
+    gc_codec.insert(
+        "transit_table".into(),
+        json!({
+            "module": shared::abi::WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            "name": shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT,
+            "table64": false,
+            "element": "anyref",
+            "minimum": 1,
+            "maximum": null
+        }),
+    );
+    gc_codec.insert("version".into(), json!(WPK_FORK_GC_CODEC_VERSION));
+
+    let mut unwind_transport: JsonMap = BTreeMap::new();
+    unwind_transport.insert(
+        "import".into(),
+        json!({
+            "module": WPK_FORK_UNWIND_TAG_IMPORT_MODULE,
+            "name": WPK_FORK_UNWIND_TAG_IMPORT_NAME,
+            "kind": "tag"
+        }),
+    );
+    unwind_transport.insert(
+        "payload_arity".into(),
+        json!(WPK_FORK_UNWIND_TRANSPORT_PAYLOAD_ARITY),
+    );
+    unwind_transport.insert("section".into(), json!(WPK_FORK_UNWIND_TRANSPORT_SECTION));
+    unwind_transport.insert("version".into(), json!(WPK_FORK_UNWIND_TRANSPORT_VERSION));
+
+    let mut static_root_catalog: JsonMap = BTreeMap::new();
+    static_root_catalog.insert("export".into(), json!(WPK_FORK_STATIC_ROOT_CATALOG_EXPORT));
+    static_root_catalog.insert(
+        "harvest_export".into(),
+        json!(WPK_FORK_STATIC_ROOT_HARVEST_EXPORT),
+    );
+    static_root_catalog.insert(
+        "header_size".into(),
+        json!(WPK_FORK_STATIC_ROOT_CATALOG_HEADER_SIZE),
+    );
+    static_root_catalog.insert(
+        "magic_bytes".into(),
+        json!(WPK_FORK_STATIC_ROOT_CATALOG_MAGIC),
+    );
+    static_root_catalog.insert(
+        "section".into(),
+        json!(WPK_FORK_STATIC_ROOT_CATALOG_SECTION),
+    );
+    static_root_catalog.insert(
+        "version".into(),
+        json!(WPK_FORK_STATIC_ROOT_CATALOG_VERSION),
+    );
+
     let mut capabilities: JsonMap = BTreeMap::new();
     capabilities.insert("section".into(), json!(WPK_FORK_CAPABILITIES_SECTION));
     capabilities.insert("version".into(), json!(WPK_FORK_CAPABILITIES_VERSION));
@@ -2053,8 +3850,36 @@ fn program_artifact() -> Value {
         Value::Object(capabilities.into_iter().collect()),
     );
     fork.insert(
+        "exception_codec".into(),
+        Value::Object(exception_codec.into_iter().collect()),
+    );
+    fork.insert(
+        "gc_codec".into(),
+        Value::Object(gc_codec.into_iter().collect()),
+    );
+    fork.insert(
+        "static_root_catalog".into(),
+        Value::Object(static_root_catalog.into_iter().collect()),
+    );
+    fork.insert(
+        "unwind_transport".into(),
+        Value::Object(unwind_transport.into_iter().collect()),
+    );
+    fork.insert(
         "linked_frame_descriptor".into(),
         Value::Object(descriptor.into_iter().collect()),
+    );
+    fork.insert(
+        "imported_globals".into(),
+        Value::Object(imported_globals.into_iter().collect()),
+    );
+    fork.insert(
+        "imported_tables".into(),
+        Value::Object(imported_tables.into_iter().collect()),
+    );
+    fork.insert(
+        "module_state".into(),
+        Value::Object(module_state.into_iter().collect()),
     );
     fork.insert("required_exports".into(), Value::Array(exports));
     fork.insert("required_imports".into(), Value::Array(imports));
@@ -2612,15 +4437,79 @@ mod tests {
             })
         );
         assert_eq!(
+            fork["exception_codec"],
+            json!({
+                "activation_import": {
+                    "module": "env",
+                    "name": "__wpk_fork_module_activation",
+                    "type": "i32",
+                    "mutable": false
+                },
+                "header_size": 8,
+                "section": "kandelo.wpk_fork.exception_codec",
+                "tag_record_size": 16,
+                "version": 1
+            })
+        );
+        assert_eq!(fork["imported_globals"]["record_header_size"], json!(24));
+        assert_eq!(fork["imported_globals"]["known_flags"], json!(3));
+        assert_eq!(fork["imported_globals"]["shared_flag"], json!(2));
+        assert_eq!(
             descriptor["pointer_widths"],
             json!([
                 {"bytes": 4, "chunk_header_size": 32, "node_header_size": 24},
                 {"bytes": 8, "chunk_header_size": 56, "node_header_size": 32}
             ])
         );
+        assert_eq!(
+            fork["module_state"]["descriptor"]["section"],
+            json!("kandelo.wpk_fork.module_state")
+        );
+        assert_eq!(
+            fork["module_state"]["arena"]["record"]["kinds"]
+                .as_array()
+                .unwrap()
+                .len(),
+            11
+        );
+        assert_eq!(
+            fork["module_state"]["record_payloads"]["mutable_global"]["header_size"],
+            json!(8)
+        );
+        assert_eq!(
+            fork["module_state"]["record_payloads"]["replay_events"]["owner"],
+            json!(1)
+        );
+        assert_eq!(
+            fork["module_state"]["record_payloads"]["imported_global_bindings"]["entry_size"],
+            json!(40)
+        );
+        assert_eq!(
+            fork["module_state"]["record_payloads"]["imported_global_bindings"]["binding_kinds"]
+                .as_array()
+                .unwrap()
+                .len(),
+            5
+        );
+        assert_eq!(
+            fork["module_state"]["record_payloads"]["activation_continuations"]["entry_size"],
+            json!(16)
+        );
+        assert_eq!(
+            fork["module_state"]["record_payloads"]["imported_table_bindings"]["entry_size"],
+            json!(24)
+        );
+        assert_eq!(fork["imported_tables"]["record_header_size"], json!(24));
+        assert_eq!(fork["gc_codec"]["magic_bytes"], json!([75, 70, 71, 67]));
+        assert_eq!(fork["gc_codec"]["layout_record"]["size"], json!(44));
+        assert_eq!(fork["gc_codec"]["field_record"]["size"], json!(12));
+        assert_eq!(
+            fork["gc_codec"]["transit_table"]["element"],
+            json!("anyref")
+        );
 
         let imports = fork["required_imports"].as_array().unwrap();
-        assert_eq!(imports.len(), 3);
+        assert_eq!(imports.len(), 44);
         assert_eq!(
             imports[0],
             json!({
@@ -2631,9 +4520,50 @@ mod tests {
                 "results": []
             })
         );
+        assert!(imports.iter().any(|entry| {
+            entry["name"] == json!("__wpk_fork_module_state_record_reserve")
+                && entry["params"] == json!(["i32", "i32", "i32", "ptr"])
+                && entry["results"] == json!(["ptr"])
+        }));
+        assert!(!imports.iter().any(|entry| {
+            entry["name"] == json!("__wpk_fork_ref_encode_anyref")
+                || entry["name"] == json!("__wpk_fork_ref_decode_anyref")
+        }));
+        assert!(imports.iter().any(|entry| {
+            entry["name"] == json!("__wpk_fork_ref_exn_define")
+                && entry["params"]
+                    == json!(["i32", "i32", "i32", "i32", "ptr", "i32", "ptr", "i32"])
+                && entry["results"] == json!([])
+        }));
+        assert!(imports.iter().any(|entry| {
+            entry["name"] == json!("__wpk_fork_ref_gc_define")
+                && entry["params"]
+                    == json!(["i32", "i32", "i32", "i32", "i32", "ptr", "i32", "i32"])
+                && entry["results"] == json!([])
+        }));
+        assert!(imports.iter().any(|entry| {
+            entry["kind"] == json!("table")
+                && entry["name"] == json!("__wpk_fork_ref_gc_transit")
+                && entry["element"] == json!("anyref")
+        }));
+        assert!(imports.iter().any(|entry| {
+            entry["name"] == json!("__wpk_fork_ref_gc_provenance_begin")
+                && entry["params"] == json!(["i32", "i32", "i32", "i32", "i64", "i64", "i32"])
+                && entry["results"] == json!(["i32"])
+        }));
 
         let exports = fork["required_exports"].as_array().unwrap();
-        assert_eq!(exports.len(), 7);
+        assert_eq!(exports.len(), 25);
+        assert!(exports.iter().any(|entry| {
+            entry["name"] == json!("__wpk_fork_exception_materialize")
+                && entry["params"] == json!(["i32"])
+                && entry["results"] == json!([])
+        }));
+        assert!(exports.iter().any(|entry| {
+            entry["name"] == json!("__wpk_fork_ref_decode_exnref")
+                && entry["params"] == json!(["i32"])
+                && entry["results"] == json!(["exnref"])
+        }));
         assert!(exports.iter().any(|entry| {
             entry["name"] == json!("wpk_fork_abort_begin")
                 && entry["params"] == json!(["ptr"])
@@ -2644,19 +4574,45 @@ mod tests {
                 && entry["params"] == json!([])
                 && entry["results"] == json!(["i32"])
         }));
+        assert!(exports.iter().any(|entry| {
+            entry["name"] == json!("wpk_fork_module_state_finish_restore")
+                && entry["params"] == json!(["i32"])
+                && entry["results"] == json!([])
+        }));
+        assert!(exports.iter().any(|entry| {
+            entry["name"] == json!("wpk_fork_module_state_restore")
+                && entry["params"] == json!(["i32"])
+                && entry["results"] == json!([])
+        }));
 
         assert_eq!(
             custom_sections(),
             json!([
                 "kandelo.wpk_fork.capabilities",
+                "kandelo.wpk_fork.exception_codec",
+                "kandelo.wpk_fork.gc_codec",
+                "kandelo.wpk_fork.imported_globals",
+                "kandelo.wpk_fork.imported_tables",
                 "kandelo.wpk_fork.linked_frames",
+                "kandelo.wpk_fork.module_state",
+                "kandelo.wpk_fork.static_root_catalog",
+                "kandelo.wpk_fork.unwind_transport",
                 "wasm-posix-abi"
             ])
         );
         let rendered = render_ts_module();
         for expected in [
             "export const WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE = 24 as const;",
+            "export const WPK_FORK_MODULE_STATE_FORMAT_SECTION = \"kandelo.wpk_fork.module_state\" as const;",
+            "export const WPK_FORK_MODULE_STATE_RECORD_KIND_TABLE_PAGE = 5 as const;",
+            "export const WPK_FORK_MODULE_STATE_TABLE_DESCRIPTOR_PAYLOAD_SIZE = 56 as const;",
+            "export const WPK_FORK_EXPORT_MODULE_STATE_FINISH_RESTORE = \"wpk_fork_module_state_finish_restore\" as const;",
             "export const WPK_FORK_CAP_ACTIVATION_STATE_SAFE = 4 as const;",
+            "export const WPK_FORK_EXCEPTION_CODEC_SECTION = \"kandelo.wpk_fork.exception_codec\" as const;",
+            "export const WPK_FORK_GC_CODEC_SECTION = \"kandelo.wpk_fork.gc_codec\" as const;",
+            "export const WPK_FORK_GC_CODEC_LAYOUT_RECORD_SIZE = 44 as const;",
+            "export const WPK_FORK_FRAME_IMPORT_COMMIT = \"__wpk_fork_frame_commit\" as const;",
+            "export const WPK_FORK_EXPORT_RESUME_START = \"wpk_fork_resume_start\" as const;",
             "name: \"__wpk_fork_frame_reserve\", params: [\"ptr\"], results: [\"ptr\"]",
             "name: \"wpk_fork_abort_end\", params: [], results: []",
         ] {
@@ -2852,8 +4808,7 @@ mod tests {
     fn adding_optional_host_adapter_export_is_compatible() {
         let old = base_snapshot();
         let mut new = old.clone();
-        new["host_adapter"]["optional_kernel_exports"] =
-            json!(["kernel_get_process_exit_signal",]);
+        new["host_adapter"]["optional_kernel_exports"] = json!(["kernel_get_process_exit_signal",]);
 
         let report = classify_compat_change(&old, &new).unwrap();
         assert!(report.breaking.is_empty(), "{report:?}");

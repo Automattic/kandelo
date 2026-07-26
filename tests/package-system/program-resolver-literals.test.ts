@@ -1,8 +1,4 @@
-import {
-  existsSync,
-  readFileSync,
-  readdirSync,
-} from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, extname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -172,10 +168,7 @@ function sourceFilesUnder(relPath: string): string[] {
     if (entry.isSymbolicLink()) return [];
     const child = join(relPath, entry.name);
     if (entry.isDirectory()) {
-      if (
-        excludedDirectories.has(entry.name)
-        || child === "docs/plans"
-      ) {
+      if (excludedDirectories.has(entry.name) || child === "docs/plans") {
         return [];
       }
       return sourceFilesUnder(child);
@@ -195,15 +188,30 @@ function auditedSourceFiles(): string[] {
 function staleLiteralFailures(
   candidates: ReadonlyMap<string, StalePathOwner[]>,
 ): string[] {
+  if (candidates.size === 0) return [];
+  const pattern = new RegExp(
+    [...candidates.keys()]
+      .sort((left, right) => right.length - left.length)
+      .map((path) => path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join("|"),
+    "g",
+  );
   const failures: string[] = [];
   for (const relPath of auditedSourceFiles()) {
     const bytes = readFileSync(join(repoRoot, relPath));
     if (bytes.includes(0)) continue;
     const lines = bytes.toString("utf8").split("\n");
-    for (const [stalePath, owners] of candidates) {
-      lines.forEach((line, index) => {
-        if (!line.includes(stalePath)) return;
-        const replacements = [...new Set(owners.map((owner) => owner.replacement))]
+    lines.forEach((line, index) => {
+      // WHY: the projection contains hundreds of possible stale paths. One
+      // combined literal pattern keeps this audit linear in source size
+      // instead of rescanning every source line once per package output.
+      const stalePaths = new Set(line.match(pattern) ?? []);
+      for (const stalePath of stalePaths) {
+        const owners = candidates.get(stalePath);
+        if (!owners) continue;
+        const replacements = [
+          ...new Set(owners.map((owner) => owner.replacement)),
+        ]
           .sort()
           .map((replacement) => JSON.stringify(replacement))
           .join(" or ");
@@ -212,11 +220,11 @@ function staleLiteralFailures(
           .map((packageName) => JSON.stringify(packageName))
           .join(", ");
         failures.push(
-          `${relPath}:${index + 1}: ${JSON.stringify(stalePath)} is a stale flat `
-          + `resolver path owned by package ${packages}; use ${replacements}`,
+          `${relPath}:${index + 1}: ${JSON.stringify(stalePath)} is a stale flat ` +
+            `resolver path owned by package ${packages}; use ${replacements}`,
         );
-      });
-    }
+      }
+    });
   }
   return failures;
 }

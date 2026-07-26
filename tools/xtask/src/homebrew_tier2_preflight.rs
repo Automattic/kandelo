@@ -198,11 +198,10 @@ fn validate(
         .as_deref()
         .ok_or_else(|| "Tier-2 bridge plan is missing its support SHA-256".to_string())?;
     validate_sha256(support_sha256, "support SHA-256")?;
-    let support_runtime_sha256 = plan
-        .support_runtime_sha256
-        .0
-        .as_deref()
-        .ok_or_else(|| "Tier-2 bridge plan is missing its support runtime SHA-256".to_string())?;
+    let support_runtime_sha256 =
+        plan.support_runtime_sha256.0.as_deref().ok_or_else(|| {
+            "Tier-2 bridge plan is missing its support runtime SHA-256".to_string()
+        })?;
     validate_sha256(support_runtime_sha256, "support runtime SHA-256")?;
 
     let repo_root = exact_real_directory(repo_root, "repository root")?;
@@ -1038,7 +1037,10 @@ index_url = "https://example.test/index.toml"
                 serde_json::json!(["WASM_POSIX_INSTALL_LOCAL_MIRROR"]),
                 "reserved variable",
             ),
-            (serde_json::json!(["PYTHON_CONFIGURE"]), "approved namespace"),
+            (
+                serde_json::json!(["PYTHON_CONFIGURE"]),
+                "approved namespace",
+            ),
             (serde_json::json!(["PATH"]), "approved namespace"),
         ] {
             let fixture = Fixture::new();

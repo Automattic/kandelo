@@ -347,12 +347,7 @@ impl Validator<'_> {
         }
     }
 
-    fn validate_formula_file(
-        &mut self,
-        package_name: &str,
-        package: &Value,
-        metadata: &Value,
-    ) {
+    fn validate_formula_file(&mut self, package_name: &str, package: &Value, metadata: &Value) {
         let Some(formula_path_rel) = string_at(package, "/formula_path") else {
             return;
         };
@@ -666,14 +661,8 @@ impl Validator<'_> {
                 "/repositories/kandelo_repository",
                 "/built_from/kandelo_repository",
             ),
-            (
-                "/repositories/kandelo_commit",
-                "/built_from/kandelo_commit",
-            ),
-            (
-                "/repositories/tap_repository",
-                "/built_from/tap_repository",
-            ),
+            ("/repositories/kandelo_commit", "/built_from/kandelo_commit"),
+            ("/repositories/tap_repository", "/built_from/tap_repository"),
             ("/repositories/tap_commit", "/built_from/tap_commit"),
             ("/formula/sha256", "/built_from/formula_sha256"),
         ] {
@@ -1472,12 +1461,7 @@ mod tests {
         );
 
         let report = fixture.validate();
-        assert!(
-            report
-                .errors
-                .join("\n")
-                .contains("Formula bottle tags")
-        );
+        assert!(report.errors.join("\n").contains("Formula bottle tags"));
     }
 
     #[test]
@@ -1632,9 +1616,7 @@ mod tests {
         let source_without_class_end = source.strip_suffix("end\n").unwrap();
         write_text(
             &path,
-            &format!(
-                "{source_without_class_end}  bottle {{ system \"false\" }}\nend\n"
-            ),
+            &format!("{source_without_class_end}  bottle {{ system \"false\" }}\nend\n"),
         );
 
         let report = fixture.validate();

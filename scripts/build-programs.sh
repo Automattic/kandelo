@@ -142,28 +142,6 @@ build_program() {
     rm -f "$raw_wasm"
 }
 
-cpp_requires_activation_state_rejection() {
-    case "$1" in
-        c_01_fork_in_try_no_throw|\
-        c_02_fork_in_catch|\
-        c_03_fork_in_multi_arm_catch|\
-        c_04_fork_in_catch_external_throw|\
-        c_05_fork_modern_eh_single|\
-        c_06_fork_modern_eh_multi_ref|\
-        c_07_fork_modern_eh_multi_plain|\
-        c_10_fork_in_try_and_catch|\
-        c_11_post_catch_fork|\
-        k_06_fork_from_dtor|\
-        s_08_external_throw_fork_in_catch|\
-        sjlj_noexcept_boundary)
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
 # Build a C++ program via the SDK's wasm32posix-c++ wrapper. The SDK
 # injects the toolchain's standard compile + link flags, the channel
 # syscall glue, the C++ runtime stubs (cxxrt.c), and the sysroot path.
@@ -178,14 +156,6 @@ build_cpp_program() {
     local wasm="$out_dir/${name}.wasm"
     local raw_wasm="$out_dir/${name}.raw.wasm"
     local next_wasm="$out_dir/${name}.next.wasm"
-    local rejection_expected=false
-
-    if cpp_requires_activation_state_rejection "$name"; then
-        rejection_expected=true
-        mkdir -p "$TEST_FIXTURE_DIR/wasm32/unsupported-abi43"
-        raw_wasm="$TEST_FIXTURE_DIR/wasm32/unsupported-abi43/${name}.raw.wasm"
-        next_wasm="$TEST_FIXTURE_DIR/wasm32/unsupported-abi43/${name}.unexpected.wasm"
-    fi
 
     echo "  Compiling $name (C++)..."
     rm -f "$wasm" "$raw_wasm" "$next_wasm"
@@ -201,14 +171,10 @@ build_cpp_program() {
         -lc++ -lc++abi \
         -o "$raw_wasm"
 
-    # Preserve a launchable no-fork control for issue #918. The fork-bearing
-    # compiler output is retained under unsupported-abi43 and must fail the
-    # instrumenter rather than enter the resolver's programs tree.
+    # Preserve a raw no-fork control for issue #918 independently of the
+    # normally instrumented fork-bearing program.
     if [ "$name" = "sjlj_noexcept_boundary" ]; then
         mkdir -p "$TEST_FIXTURE_DIR/wasm32"
-        # Keep the unrelated SjLj/noexcept control launchable under ABI 43 by
-        # omitting its dormant fork anchor. The fork-bearing compiler output is
-        # retained separately above as explicit unsupported-artifact evidence.
         wasm32posix-c++ \
             -O2 \
             -fwasm-exceptions \
@@ -216,25 +182,6 @@ build_cpp_program() {
             "$src" \
             -lc++ -lc++abi \
             -o "$TEST_FIXTURE_DIR/wasm32/${name}.raw.wasm"
-    fi
-
-    if [ "$rejection_expected" = true ]; then
-        local diagnostic="$raw_wasm.instrument-error.txt"
-        rm -f "$diagnostic"
-        if "$FORK_INSTRUMENT" "$raw_wasm" -o "$next_wasm" 2>"$diagnostic"; then
-            echo "Error: $name unexpectedly became activation-state safe; update its ABI 43 coverage before publishing it." >&2
-            rm -f "$next_wasm"
-            exit 1
-        fi
-        if ! grep -Eq \
-            'reference local/parameter|uses CatchAll|uses CatchAllRef|reference-typed catch payload' \
-            "$diagnostic"; then
-            echo "Error: $name failed instrumentation for an unexpected reason:" >&2
-            cat "$diagnostic" >&2
-            exit 1
-        fi
-        echo "  Expected ABI 43 rejection: $name (see $diagnostic)"
-        return 0
     fi
 
     # Publish the resolver-visible path only after instrumentation and its
