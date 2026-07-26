@@ -13,12 +13,17 @@ import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { detectPtrWidth, extractHeapBase } from "../src/constants";
 import { tryResolveBinary } from "../src/binary-resolver";
 import { readForkContinuationAnchor } from "../src/fork-continuation";
+import {
+  ForkReplayGateCoordinator,
+  observeForkReplayWorker,
+} from "../src/fork-replay-gate";
 import { GlMuxer } from "../src/webgl/muxer";
 import type { GlBinding } from "../src/webgl/registry";
 import type {
   CentralizedWorkerInitMessage,
   WorkerToHostMessage,
 } from "../src/worker-protocol";
+import { TestProcessReferenceOwners } from "./process-reference-owner-helper";
 
 const programBinary = tryResolveBinary("programs/cube_pyramid.wasm") ?? "";
 const kernelBinary = tryResolveBinary("kernel.wasm") ?? "";
@@ -41,7 +46,10 @@ function createProcessMemory(pages: number): WebAssembly.Memory {
 
 /** Proxy WebGL2 context: every call lands in `log`; `create*` returns
  *  a fresh object so the bridge's per-name maps stay distinct. */
-function makeFakeGl(): { log: Array<[string, unknown[]]>; gl: WebGL2RenderingContext } {
+function makeFakeGl(): {
+  log: Array<[string, unknown[]]>;
+  gl: WebGL2RenderingContext;
+} {
   const log: Array<[string, unknown[]]> = [];
   const handler: ProxyHandler<object> = {
     get(_t, prop) {
@@ -54,7 +62,10 @@ function makeFakeGl(): { log: Array<[string, unknown[]]>; gl: WebGL2RenderingCon
       };
     },
   };
-  return { log, gl: new Proxy({}, handler) as unknown as WebGL2RenderingContext };
+  return {
+    log,
+    gl: new Proxy({}, handler) as unknown as WebGL2RenderingContext,
+  };
 }
 
 function makeFakeCanvas(gl: WebGL2RenderingContext) {
@@ -86,7 +97,11 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
 
       const io = new NodePlatformIO();
       const workerAdapter = new NodeWorkerAdapter();
-      const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
+      const referenceOwners = new TestProcessReferenceOwners();
+      const workers = new Map<
+        number,
+        ReturnType<NodeWorkerAdapter["createWorker"]>
+      >();
 
       let parentPid = 0;
       let stdout = "";
@@ -116,11 +131,20 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
             new Uint8Array(childMemory.buffer).set(parentBuf);
 
             const childChannelOffset = (MAX_PAGES - 2) * 65536;
-            new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
+            new Uint8Array(
+              childMemory.buffer,
+              childChannelOffset,
+              CH_TOTAL_SIZE,
+            ).fill(0);
 
-            kernel.registerProcess(childPid, childMemory, [childChannelOffset], {
-              ptrWidth,
-            });
+            kernel.registerProcess(
+              childPid,
+              childMemory,
+              [childChannelOffset],
+              {
+                ptrWidth,
+              },
+            );
             kernel.inheritProcessSharedMappings(parentForkPid, childPid);
 
             // Same canvas → same WebGL2 context → same muxer instance
@@ -132,6 +156,16 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
               childChannelOffset - FORK_SAVE_BUFFER_SIZE,
               ptrWidth,
             );
+            const childReferenceInit = referenceOwners.fork(
+              parentForkPid,
+              childPid,
+              parentMemory,
+              ptrWidth,
+              forkBufAddr,
+            );
+            const forkReplay = new ForkReplayGateCoordinator(
+              `DRI cube fork child pid=${childPid}`,
+            );
 
             const childInit: CentralizedWorkerInitMessage = {
               type: "centralized_init",
@@ -141,25 +175,60 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
               channelOffset: childChannelOffset,
               isForkChild: true,
               forkBufAddr,
+              forkReplayGate: forkReplay.gate,
               ptrWidth,
+              ...childReferenceInit,
             };
 
             const childWorker = workerAdapter.createWorker(childInit);
+            referenceOwners.attach(childPid, childWorker);
             workers.set(childPid, childWorker);
             childWorker.on("error", () => {
+              referenceOwners.release(childPid);
               kernel.unregisterProcess(childPid);
               workers.delete(childPid);
             });
             childWorker.on("message", (m: unknown) => {
               const msg = m as WorkerToHostMessage;
               if (msg.type !== "error") return;
+              referenceOwners.release(childPid);
               kernel.unregisterProcess(childPid);
               workers.delete(childPid);
             });
+            observeForkReplayWorker(
+              forkReplay,
+              childWorker,
+              childPid,
+              () => workers.get(childPid) === childWorker,
+            );
 
-            return [childChannelOffset];
+            try {
+              await forkReplay.waitUntilReady();
+              if (workers.get(childPid) !== childWorker) {
+                throw new Error(
+                  `fork child ${childPid} changed generation before commit`,
+                );
+              }
+              if (!kernel.shouldLaunchPendingChild(childPid)) {
+                throw new Error(
+                  `fork child ${childPid} exited before replay commit`,
+                );
+              }
+              forkReplay.commit();
+              return [childChannelOffset];
+            } catch (error) {
+              forkReplay.cancel(error);
+              if (workers.get(childPid) === childWorker) {
+                workers.delete(childPid);
+                referenceOwners.release(childPid);
+                kernel.unregisterProcess(childPid);
+              }
+              childWorker.terminate().catch(() => {});
+              throw error;
+            }
           },
           onExit: (exitPid, exitStatus) => {
+            referenceOwners.release(exitPid);
             const w = workers.get(exitPid);
             if (w) {
               w.terminate().catch(() => {});
@@ -195,6 +264,7 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
       kernel.registerProcess(parentPid, memory, [channelOffset], { ptrWidth });
       const heapBase = extractHeapBase(programBytes);
       if (heapBase !== null) kernel.setBrkBase(parentPid, heapBase);
+      const parentReferenceInit = referenceOwners.start(parentPid);
 
       // Attach before the worker starts so eglInitialize → host_gl_bind
       // sees the canvas.
@@ -209,14 +279,20 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
         argv: ["cube_pyramid", "200"],
         env: [],
         ptrWidth,
+        ...parentReferenceInit,
       };
 
       const mainWorker = workerAdapter.createWorker(initData);
+      referenceOwners.attach(parentPid, mainWorker);
       workers.set(parentPid, mainWorker);
 
       const timer = setTimeout(() => {
         for (const [, w] of workers) w.terminate().catch(() => {});
-        rejectExit(new Error(`cube_pyramid timed out. stdout=${stdout} stderr=${stderr}`));
+        rejectExit(
+          new Error(
+            `cube_pyramid timed out. stdout=${stdout} stderr=${stderr}`,
+          ),
+        );
       }, 30_000);
       mainWorker.on("error", (err: Error) => {
         clearTimeout(timer);
@@ -235,17 +311,26 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
         exitCode = await exitPromise;
       } finally {
         clearTimeout(timer);
+        for (const [, worker] of workers) {
+          await worker.terminate().catch(() => {});
+        }
+        referenceOwners.close();
       }
 
       expect(exitCode, `stdout=${stdout}\nstderr=${stderr}`).toBe(0);
-      expect(stdout).toMatch(/cube_pyramid: parent pid=\d+ rc=0, child pid=\d+ rc=0/);
+      expect(stdout).toMatch(
+        /cube_pyramid: parent pid=\d+ rc=0, child pid=\d+ rc=0/,
+      );
 
       const switchedKeys = new Set<string>();
       for (const call of switchSpy.mock.calls) {
         const b = call[0] as Pick<GlBinding, "pid" | "contextId">;
         switchedKeys.add(`${b.pid}/${b.contextId ?? "-"}`);
       }
-      expect(switchedKeys.size, `switched keys = ${[...switchedKeys].join(",")}`).toBeGreaterThanOrEqual(2);
+      expect(
+        switchedKeys.size,
+        `switched keys = ${[...switchedKeys].join(",")}`,
+      ).toBeGreaterThanOrEqual(2);
     }, 60_000);
   },
 );

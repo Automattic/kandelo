@@ -16,6 +16,8 @@ import {
   CH_DATA_SIZE,
   CH_ERRNO,
   CH_HEADER_SIZE,
+  CH_REQUEST_FLAGS,
+  CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY,
   CH_RETURN,
   CH_SIG_BASE,
   CH_SIG_FLAGS,
@@ -61,6 +63,13 @@ import {
   STRUCT_SIZE_WASM_STATFS,
   STRUCT_SIZE_WASM_TIMESPEC,
   SYSCALL_ARGS,
+  WPK_FORK_CAPABILITIES_SECTION,
+  WPK_FORK_CAPABILITIES_VERSION,
+  WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+  WPK_FORK_CAP_DYLINK_MAIN,
+  WPK_FORK_CAP_KNOWN_MASK,
+  WPK_FORK_CAP_REQUIRED_FLAGS,
+  WPK_FORK_CAP_SIDE_ENTRY,
   WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE,
   WPK_FORK_LINKED_FRAME_FORMAT_MAGIC,
   WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
@@ -68,8 +77,53 @@ import {
   WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
   WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT,
   WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
+  WPK_FORK_MODULE_STATE_ARENA_VERSION,
+  WPK_FORK_MODULE_STATE_CHUNK_FLAG_ROOT,
+  WPK_FORK_MODULE_STATE_CHUNK_FLAG_SEALED,
+  WPK_FORK_MODULE_STATE_CHUNK_KNOWN_FLAGS,
+  WPK_FORK_MODULE_STATE_CHUNK_MAGIC,
+  WPK_FORK_MODULE_STATE_DESCRIPTOR_SIZE,
+  WPK_FORK_MODULE_STATE_ELEMENT_SEGMENT_HEADER_SIZE,
+  WPK_FORK_MODULE_STATE_FLAG_EXPLICIT_OWNERS,
+  WPK_FORK_MODULE_STATE_FLAG_ROOT_PREFIX_POINTER,
+  WPK_FORK_MODULE_STATE_FLAG_SPARSE_TABLES,
+  WPK_FORK_MODULE_STATE_FORMAT_MAGIC,
+  WPK_FORK_MODULE_STATE_FORMAT_SECTION,
+  WPK_FORK_MODULE_STATE_FORMAT_VERSION,
+  WPK_FORK_MODULE_STATE_KNOWN_FLAGS,
+  WPK_FORK_MODULE_STATE_MAX_TABLE_PAGE_SHIFT,
+  WPK_FORK_MODULE_STATE_MIN_TABLE_PAGE_SHIFT,
+  WPK_FORK_MODULE_STATE_TABLE_PAGE_SHIFT,
+  WPK_FORK_MODULE_STATE_MODULE_RECORD_KNOWN_FLAGS,
+  WPK_FORK_MODULE_STATE_MODULE_RECORD_PAYLOAD_SIZE,
+  WPK_FORK_MODULE_STATE_MODULE_TEMPLATE_ID_SIZE,
+  WPK_FORK_MODULE_STATE_POINTER_WIDTHS,
+  WPK_FORK_MODULE_STATE_RECORD_ALIGNMENT,
+  WPK_FORK_MODULE_STATE_RECORD_HEADER_SIZE,
+  WPK_FORK_MODULE_STATE_RECORD_KINDS,
+  WPK_FORK_MODULE_STATE_RECORD_MAGIC,
+  WPK_FORK_MODULE_STATE_RECORD_VERSION,
+  WPK_FORK_MODULE_STATE_REQUIRED_FLAGS,
+  WPK_FORK_MODULE_STATE_ROOT_POINTER_WORD_OFFSET,
+  WPK_FORK_MODULE_STATE_TABLE_BASELINE_FINGERPRINT_SIZE,
+  WPK_FORK_MODULE_STATE_TABLE_DESCRIPTOR_PAYLOAD_SIZE,
+  WPK_FORK_MODULE_STATE_TABLE_FLAG_SPARSE_OVERRIDES,
+  WPK_FORK_MODULE_STATE_TABLE_KNOWN_FLAGS,
+  WPK_FORK_MODULE_STATE_TABLE_PAGE_HEADER_SIZE,
+  WPK_FORK_MODULE_STATE_TABLE_RUN_HEADER_SIZE,
   WPK_FORK_REQUIRED_EXPORTS,
   WPK_FORK_REQUIRED_IMPORTS,
+  WPK_FORK_REQUIRED_TABLE_IMPORTS,
+  WPK_FORK_STATIC_ROOT_CATALOG_EXPORT,
+  WPK_FORK_STATIC_ROOT_CATALOG_HEADER_SIZE,
+  WPK_FORK_STATIC_ROOT_CATALOG_MAGIC,
+  WPK_FORK_STATIC_ROOT_CATALOG_SECTION,
+  WPK_FORK_STATIC_ROOT_CATALOG_VERSION,
+  WPK_FORK_UNWIND_TAG_IMPORT_MODULE,
+  WPK_FORK_UNWIND_TAG_IMPORT_NAME,
+  WPK_FORK_UNWIND_TRANSPORT_PAYLOAD_ARITY,
+  WPK_FORK_UNWIND_TRANSPORT_SECTION,
+  WPK_FORK_UNWIND_TRANSPORT_VERSION,
 } from "../src/generated/abi";
 
 const snapshot = JSON.parse(
@@ -93,6 +147,14 @@ function statusNumber(name: string): number {
   return status.number;
 }
 
+function requestFlag(name: string): number {
+  const flag = snapshot.channel_request_flags.find(
+    (entry: { name: string }) => entry.name === name,
+  );
+  if (!flag) throw new Error(`missing channel_request_flags entry ${name}`);
+  return flag.bit;
+}
+
 function signalOffset(name: string): number {
   const slot = snapshot.channel_signal_area.slots.find((s: { name: string }) => s.name === name);
   if (!slot) throw new Error(`missing channel_signal_area slot ${name}`);
@@ -112,13 +174,42 @@ function hostAdapterManifestField(name: string): { offset: number; size: number 
 describe("generated host ABI bindings", () => {
   it("match the complete fork-artifact contract", () => {
     const fork = snapshot.program_artifact.fork_instrumentation;
+    const capabilities = fork.capabilities;
     const descriptor = fork.linked_frame_descriptor;
+    const staticRoots = fork.static_root_catalog;
+    const unwind = fork.unwind_transport;
+    expect(WPK_FORK_CAPABILITIES_SECTION).toBe(capabilities.section);
+    expect(WPK_FORK_CAPABILITIES_VERSION).toBe(capabilities.version);
+    expect(WPK_FORK_CAP_KNOWN_MASK).toBe(capabilities.known_mask);
+    expect(WPK_FORK_CAP_REQUIRED_FLAGS).toBe(capabilities.required_flags);
+    expect([
+      { bit: WPK_FORK_CAP_SIDE_ENTRY, name: "side_entry" },
+      { bit: WPK_FORK_CAP_DYLINK_MAIN, name: "dylink_main" },
+      {
+        bit: WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+        name: "activation_state_safe",
+      },
+    ]).toEqual(capabilities.flags);
     expect(WPK_FORK_LINKED_FRAME_FORMAT_SECTION).toBe(descriptor.section);
     expect(WPK_FORK_LINKED_FRAME_FORMAT_VERSION).toBe(descriptor.version);
     expect(WPK_FORK_LINKED_FRAME_FORMAT_MAGIC).toEqual(descriptor.magic_bytes);
     expect(WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE).toBe(descriptor.descriptor_size);
     expect(WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT).toBe(descriptor.alignment);
     expect(WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS).toBe(descriptor.required_flags);
+    expect(WPK_FORK_STATIC_ROOT_CATALOG_EXPORT).toBe(staticRoots.export);
+    expect(WPK_FORK_STATIC_ROOT_CATALOG_HEADER_SIZE).toBe(
+      staticRoots.header_size,
+    );
+    expect(WPK_FORK_STATIC_ROOT_CATALOG_MAGIC).toEqual(staticRoots.magic_bytes);
+    expect(WPK_FORK_STATIC_ROOT_CATALOG_SECTION).toBe(staticRoots.section);
+    expect(WPK_FORK_STATIC_ROOT_CATALOG_VERSION).toBe(staticRoots.version);
+    expect(WPK_FORK_UNWIND_TAG_IMPORT_MODULE).toBe(unwind.import.module);
+    expect(WPK_FORK_UNWIND_TAG_IMPORT_NAME).toBe(unwind.import.name);
+    expect(WPK_FORK_UNWIND_TRANSPORT_PAYLOAD_ARITY).toBe(
+      unwind.payload_arity,
+    );
+    expect(WPK_FORK_UNWIND_TRANSPORT_SECTION).toBe(unwind.section);
+    expect(WPK_FORK_UNWIND_TRANSPORT_VERSION).toBe(unwind.version);
     expect(WPK_FORK_LINKED_FRAME_POINTER_WIDTHS).toEqual(
       descriptor.pointer_widths.map(
         (format: {
@@ -132,10 +223,128 @@ describe("generated host ABI bindings", () => {
         }),
       ),
     );
-    expect(WPK_FORK_REQUIRED_IMPORTS).toEqual(
-      fork.required_imports.map(({ kind: _kind, ...requirement }: { kind: string }) =>
-        requirement
+
+    const moduleState = fork.module_state;
+    const moduleStateDescriptor = moduleState.descriptor;
+    expect(WPK_FORK_MODULE_STATE_FORMAT_SECTION).toBe(moduleStateDescriptor.section);
+    expect(WPK_FORK_MODULE_STATE_FORMAT_VERSION).toBe(moduleStateDescriptor.version);
+    expect(WPK_FORK_MODULE_STATE_FORMAT_MAGIC).toEqual(moduleStateDescriptor.magic_bytes);
+    expect(WPK_FORK_MODULE_STATE_DESCRIPTOR_SIZE).toBe(
+      moduleStateDescriptor.descriptor_size,
+    );
+    expect(WPK_FORK_MODULE_STATE_RECORD_ALIGNMENT).toBe(
+      moduleStateDescriptor.alignment,
+    );
+    expect(WPK_FORK_MODULE_STATE_KNOWN_FLAGS).toBe(moduleStateDescriptor.known_flags);
+    expect(WPK_FORK_MODULE_STATE_REQUIRED_FLAGS).toBe(
+      moduleStateDescriptor.required_flags,
+    );
+    expect(WPK_FORK_MODULE_STATE_ROOT_POINTER_WORD_OFFSET).toBe(
+      moduleStateDescriptor.root_pointer_word_offset,
+    );
+    expect([
+      {
+        bit: WPK_FORK_MODULE_STATE_FLAG_ROOT_PREFIX_POINTER,
+        name: "root_prefix_pointer",
+      },
+      {
+        bit: WPK_FORK_MODULE_STATE_FLAG_EXPLICIT_OWNERS,
+        name: "explicit_owners",
+      },
+      {
+        bit: WPK_FORK_MODULE_STATE_FLAG_SPARSE_TABLES,
+        name: "sparse_tables",
+      },
+    ]).toEqual(moduleStateDescriptor.flags);
+
+    const moduleStateArena = moduleState.arena;
+    expect(WPK_FORK_MODULE_STATE_ARENA_VERSION).toBe(moduleStateArena.version);
+    expect(WPK_FORK_MODULE_STATE_CHUNK_MAGIC).toEqual(
+      moduleStateArena.chunk_magic_bytes,
+    );
+    expect(WPK_FORK_MODULE_STATE_CHUNK_KNOWN_FLAGS).toBe(
+      moduleStateArena.known_chunk_flags,
+    );
+    expect([
+      { bit: WPK_FORK_MODULE_STATE_CHUNK_FLAG_ROOT, name: "root" },
+      { bit: WPK_FORK_MODULE_STATE_CHUNK_FLAG_SEALED, name: "sealed" },
+    ]).toEqual(moduleStateArena.chunk_flags);
+    expect(WPK_FORK_MODULE_STATE_POINTER_WIDTHS).toEqual(
+      moduleStateArena.pointer_widths.map(
+        (format: { bytes: number; chunk_header_size: number }) => ({
+          bytes: format.bytes,
+          chunkHeaderSize: format.chunk_header_size,
+        }),
       ),
+    );
+    expect(WPK_FORK_MODULE_STATE_RECORD_VERSION).toBe(
+      moduleStateArena.record.version,
+    );
+    expect(WPK_FORK_MODULE_STATE_RECORD_MAGIC).toEqual(
+      moduleStateArena.record.magic_bytes,
+    );
+    expect(WPK_FORK_MODULE_STATE_RECORD_HEADER_SIZE).toBe(
+      moduleStateArena.record.header_size,
+    );
+    expect(WPK_FORK_MODULE_STATE_RECORD_ALIGNMENT).toBe(
+      moduleStateArena.record.alignment,
+    );
+    expect(WPK_FORK_MODULE_STATE_RECORD_KINDS).toEqual(
+      moduleStateArena.record.kinds,
+    );
+
+    const modulePayload = moduleState.record_payloads.module;
+    expect(WPK_FORK_MODULE_STATE_MODULE_TEMPLATE_ID_SIZE).toBe(
+      modulePayload.template_id_size,
+    );
+    expect(WPK_FORK_MODULE_STATE_MODULE_RECORD_PAYLOAD_SIZE).toBe(
+      modulePayload.payload_size,
+    );
+    expect(WPK_FORK_MODULE_STATE_MODULE_RECORD_KNOWN_FLAGS).toBe(
+      modulePayload.known_flags,
+    );
+    const tablePayload = moduleState.record_payloads.table;
+    expect(WPK_FORK_MODULE_STATE_TABLE_BASELINE_FINGERPRINT_SIZE).toBe(
+      tablePayload.baseline_fingerprint_size,
+    );
+    expect(WPK_FORK_MODULE_STATE_TABLE_DESCRIPTOR_PAYLOAD_SIZE).toBe(
+      tablePayload.descriptor_payload_size,
+    );
+    expect(WPK_FORK_MODULE_STATE_TABLE_KNOWN_FLAGS).toBe(tablePayload.known_flags);
+    expect([
+      {
+        bit: WPK_FORK_MODULE_STATE_TABLE_FLAG_SPARSE_OVERRIDES,
+        name: "sparse_overrides",
+      },
+    ]).toEqual(tablePayload.flags);
+    expect(WPK_FORK_MODULE_STATE_TABLE_PAGE_HEADER_SIZE).toBe(
+      tablePayload.page_header_size,
+    );
+    expect(WPK_FORK_MODULE_STATE_TABLE_RUN_HEADER_SIZE).toBe(
+      tablePayload.run_header_size,
+    );
+    expect(WPK_FORK_MODULE_STATE_MIN_TABLE_PAGE_SHIFT).toBe(
+      tablePayload.min_page_shift,
+    );
+    expect(WPK_FORK_MODULE_STATE_MAX_TABLE_PAGE_SHIFT).toBe(
+      tablePayload.max_page_shift,
+    );
+    expect(WPK_FORK_MODULE_STATE_TABLE_PAGE_SHIFT).toBe(
+      tablePayload.page_shift,
+    );
+    expect(WPK_FORK_MODULE_STATE_ELEMENT_SEGMENT_HEADER_SIZE).toBe(
+      moduleState.record_payloads.element_segments.header_size,
+    );
+
+    expect(WPK_FORK_REQUIRED_IMPORTS).toEqual(
+      fork.required_imports
+        .filter(({ kind }: { kind: string }) => kind === "func")
+        .map(({ kind: _kind, ...requirement }: { kind: string }) => requirement),
+    );
+    expect(WPK_FORK_REQUIRED_TABLE_IMPORTS).toEqual(
+      fork.required_imports
+        .filter(({ kind }: { kind: string }) => kind === "table")
+        .map(({ kind: _kind, ...requirement }: { kind: string }) => requirement),
     );
     expect(WPK_FORK_REQUIRED_EXPORTS).toEqual(
       fork.required_exports.map(({ kind: _kind, ...requirement }: { kind: string }) =>
@@ -150,6 +359,7 @@ describe("generated host ABI bindings", () => {
   it("match the ABI version and channel layout snapshot", () => {
     expect(ABI_VERSION).toBe(snapshot.abi_version);
     expect(snapshot.custom_sections).toContain(ABI_CUSTOM_SECTION);
+    expect(snapshot.custom_sections).toContain(WPK_FORK_MODULE_STATE_FORMAT_SECTION);
     expect(snapshot.kernel_exports.some((e: { name: string }) => e.name === ABI_KERNEL_EXPORT)).toBe(true);
 
     expect(CH_STATUS).toBe(fieldOffset("status"));
@@ -157,6 +367,10 @@ describe("generated host ABI bindings", () => {
     expect(CH_ARGS).toBe(fieldOffset("args"));
     expect(CH_RETURN).toBe(fieldOffset("ret"));
     expect(CH_ERRNO).toBe(fieldOffset("errno"));
+    expect(CH_REQUEST_FLAGS).toBe(fieldOffset("request_flags"));
+    expect(CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY).toBe(
+      requestFlag("defer_signal_delivery"),
+    );
 
     expect(CH_ARG_SIZE).toBe(8);
     expect(CH_ARGS_COUNT).toBe(6);

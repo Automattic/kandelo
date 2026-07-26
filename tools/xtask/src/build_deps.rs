@@ -1281,15 +1281,7 @@ pub fn compute_sha(
     memo: &mut BTreeMap<String, [u8; 32]>,
     chain: &mut Vec<String>,
 ) -> Result<[u8; 32], String> {
-    compute_sha_with_global_toolchain_inputs(
-        target,
-        registry,
-        arch,
-        abi_version,
-        memo,
-        chain,
-        None,
-    )
+    compute_sha_with_global_toolchain_inputs(target, registry, arch, abi_version, memo, chain, None)
 }
 
 fn compute_sha_with_global_toolchain_inputs(
@@ -1354,12 +1346,10 @@ fn compute_sha_with_global_toolchain_inputs(
 
     let build_inputs = build_input_digests(target, registry)?;
     let global_toolchain_inputs = match target.kind {
-        ManifestKind::Library | ManifestKind::Program => {
-            match global_toolchain_inputs_override {
-                Some(inputs) => inputs.to_vec(),
-                None => global_package_toolchain_digests()?,
-            }
-        }
+        ManifestKind::Library | ManifestKind::Program => match global_toolchain_inputs_override {
+            Some(inputs) => inputs.to_vec(),
+            None => global_package_toolchain_digests()?,
+        },
         ManifestKind::Source => Vec::new(),
     };
     let fork_instrument_tool_inputs = if package_uses_fork_instrument_tool(target) {
@@ -1551,8 +1541,7 @@ const FORK_INSTRUMENT_TOOL_INPUTS: &[&str] = &[
     "scripts/run-wasm-fork-instrument.sh",
 ];
 
-type RootDigestCache =
-    OnceLock<Mutex<BTreeMap<PathBuf, Result<Vec<BuildInputDigest>, String>>>>;
+type RootDigestCache = OnceLock<Mutex<BTreeMap<PathBuf, Result<Vec<BuildInputDigest>, String>>>>;
 
 static GLOBAL_PACKAGE_TOOLCHAIN_DIGESTS: RootDigestCache = OnceLock::new();
 static FORK_INSTRUMENT_TOOL_DIGESTS: RootDigestCache = OnceLock::new();
@@ -1627,14 +1616,17 @@ struct CargoLockPackage {
     checksum: Option<String>,
 }
 
+const FORK_INSTRUMENT_CARGO_METADATA_ARGS: &[&str] =
+    &["metadata", "--format-version=1", "--locked"];
+
 fn fork_instrument_cargo_dependency_digest(root: &Path) -> Result<[u8; 32], String> {
-    let host_target = host_target_triple()?;
+    // WHY: program cache paths have no build-host dimension. Filtering this
+    // graph through the current macOS or Linux host made one source tree
+    // compute different identities. Cargo's unfiltered graph is the stable
+    // union, so any dependency that can build the instrumenter invalidates the
+    // shared generation without making the key host-specific.
     let output = Command::new("cargo")
-        .arg("metadata")
-        .arg("--format-version=1")
-        .arg("--locked")
-        .arg("--filter-platform")
-        .arg(&host_target)
+        .args(FORK_INSTRUMENT_CARGO_METADATA_ARGS)
         .current_dir(root)
         .output()
         .map_err(|e| format!("run cargo metadata for fork-instrument cache key: {e}"))?;
@@ -1652,25 +1644,6 @@ fn fork_instrument_cargo_dependency_digest(root: &Path) -> Result<[u8; 32], Stri
     let lock: CargoLock = toml::from_str(&lock_text)
         .map_err(|e| format!("parse Cargo.lock for fork-instrument cache key: {e}"))?;
     fork_instrument_cargo_dependency_digest_from_metadata(root, &metadata, &lock)
-}
-
-fn host_target_triple() -> Result<String, String> {
-    let output = Command::new("rustc")
-        .arg("-vV")
-        .output()
-        .map_err(|e| format!("run rustc -vV: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "rustc -vV failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .lines()
-        .find_map(|line| line.strip_prefix("host: ").map(str::to_owned))
-        .filter(|host| !host.is_empty())
-        .ok_or_else(|| "rustc -vV did not report host target".to_string())
 }
 
 fn fork_instrument_cargo_dependency_digest_from_metadata(
@@ -1747,7 +1720,7 @@ fn fork_instrument_cargo_dependency_digest_from_metadata(
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut h = Sha256::new();
-    h.update(b"fork-instrument-cargo-build-deps-v1\n");
+    h.update(b"fork-instrument-cargo-build-deps-v2-host-union\n");
     for (stable_id, features, deps, checksum) in entries {
         h.update(b"package\0");
         h.update(stable_id.as_bytes());
@@ -2011,11 +1984,9 @@ fn resolve_build_input_path_from_repo(
     if let Ok(registry_relative) = Path::new(input).strip_prefix("packages/registry") {
         let (package_name, package_relative) =
             split_registry_build_input(registry_relative, input)?;
-        if let Some(selected) = selected_registry_package_dir(
-            registry,
-            main_repo_root,
-            package_name,
-        ) {
+        if let Some(selected) =
+            selected_registry_package_dir(registry, main_repo_root, package_name)
+        {
             return require_selected_registry_build_input(
                 target,
                 input,
@@ -2108,9 +2079,7 @@ fn split_registry_build_input<'a>(
         }
     };
     let package_name = package_component.to_str().ok_or_else(|| {
-        format!(
-            "canonical registry build input has a non-UTF-8 package name: {authored_input:?}",
-        )
+        format!("canonical registry build input has a non-UTF-8 package name: {authored_input:?}",)
     })?;
     Ok((package_name, components.as_path()))
 }
@@ -4323,7 +4292,9 @@ struct WasmArtifactFacts {
     function_imports: BTreeMap<(String, String), Vec<wasmparser::FuncType>>,
     function_exports: BTreeMap<String, Vec<wasmparser::FuncType>>,
     memory_pointer_widths: Vec<u8>,
+    fork_capabilities: Vec<Vec<u8>>,
     linked_frame_descriptors: Vec<Vec<u8>>,
+    native_start_count: usize,
     is_relocatable_object: bool,
 }
 
@@ -4454,6 +4425,9 @@ fn wasm_artifact_facts(bytes: &[u8]) -> Result<WasmArtifactFacts, String> {
                     }
                 }
             }
+            Payload::StartSection { .. } => {
+                facts.native_start_count += 1;
+            }
             Payload::CustomSection(c) => {
                 let name = c.name();
                 if name == "linking" || name.starts_with("reloc.") {
@@ -4461,6 +4435,8 @@ fn wasm_artifact_facts(bytes: &[u8]) -> Result<WasmArtifactFacts, String> {
                 }
                 if name == wasm_posix_shared::abi::WPK_FORK_LINKED_FRAME_FORMAT_SECTION {
                     facts.linked_frame_descriptors.push(c.data().to_vec());
+                } else if name == wasm_posix_shared::abi::WPK_FORK_CAPABILITIES_SECTION {
+                    facts.fork_capabilities.push(c.data().to_vec());
                 }
             }
             _ => {}
@@ -4567,6 +4543,52 @@ fn validate_linked_frame_descriptor(
     Ok(LinkedFrameDescriptorFacts { pointer_width })
 }
 
+fn validate_fork_capabilities(sections: &[Vec<u8>]) -> Result<(), String> {
+    use wasm_posix_shared::abi;
+
+    let [capability] = sections else {
+        return Err(match sections.len() {
+            0 => format!(
+                "is missing required {} capability",
+                abi::WPK_FORK_CAPABILITIES_SECTION
+            ),
+            count => format!(
+                "has {count} {} sections, expected exactly one",
+                abi::WPK_FORK_CAPABILITIES_SECTION
+            ),
+        });
+    };
+    if capability.len() != 2 {
+        return Err(format!(
+            "{} has {} bytes, expected 2",
+            abi::WPK_FORK_CAPABILITIES_SECTION,
+            capability.len()
+        ));
+    }
+    if capability[0] != abi::WPK_FORK_CAPABILITIES_VERSION {
+        return Err(format!(
+            "{} version {} is unsupported",
+            abi::WPK_FORK_CAPABILITIES_SECTION,
+            capability[0]
+        ));
+    }
+    let flags = capability[1];
+    if flags & !abi::WPK_FORK_CAP_KNOWN_MASK != 0 {
+        return Err(format!(
+            "{} has unknown flags 0x{flags:02x}",
+            abi::WPK_FORK_CAPABILITIES_SECTION
+        ));
+    }
+    if flags & abi::WPK_FORK_CAP_REQUIRED_FLAGS != abi::WPK_FORK_CAP_REQUIRED_FLAGS {
+        return Err(format!(
+            "{} flags 0x{flags:02x} omit required activation-state safety flags 0x{:02x}",
+            abi::WPK_FORK_CAPABILITIES_SECTION,
+            abi::WPK_FORK_CAP_REQUIRED_FLAGS
+        ));
+    }
+    Ok(())
+}
+
 fn program_artifact_signature_matches(
     actual: &wasmparser::FuncType,
     params: &[wasm_posix_shared::abi::ProgramArtifactValueType],
@@ -4583,6 +4605,11 @@ fn program_artifact_signature_matches(
             _ => false,
         },
         ProgramArtifactValueType::I32 => *actual == ValType::I32,
+        ProgramArtifactValueType::I64 => *actual == ValType::I64,
+        ProgramArtifactValueType::FuncRef => *actual == ValType::FUNCREF,
+        ProgramArtifactValueType::ExternRef => *actual == ValType::EXTERNREF,
+        ProgramArtifactValueType::ExnRef => *actual == ValType::EXNREF,
+        ProgramArtifactValueType::AnyRef => *actual == ValType::Ref(wasmparser::RefType::ANYREF),
     };
 
     actual.params().len() == params.len()
@@ -4610,6 +4637,11 @@ fn program_artifact_signature_text(
         ProgramArtifactValueType::Pointer if pointer_width == 8 => "i64",
         ProgramArtifactValueType::Pointer => "i32",
         ProgramArtifactValueType::I32 => "i32",
+        ProgramArtifactValueType::I64 => "i64",
+        ProgramArtifactValueType::FuncRef => "funcref",
+        ProgramArtifactValueType::ExternRef => "externref",
+        ProgramArtifactValueType::ExnRef => "exnref",
+        ProgramArtifactValueType::AnyRef => "anyref",
     };
     let params = params.iter().map(value_name).collect::<Vec<_>>().join(",");
     let results = results.iter().map(value_name).collect::<Vec<_>>().join(",");
@@ -4680,13 +4712,16 @@ fn wasm_artifact_policy_failures_for(
         })
         .count();
     let descriptor_count = facts.linked_frame_descriptors.len();
-    let has_fork_artifact_surface =
-        present_fork_exports > 0 || present_fork_imports > 0 || descriptor_count > 0;
+    let capability_count = facts.fork_capabilities.len();
+    let has_fork_artifact_surface = present_fork_exports > 0
+        || present_fork_imports > 0
+        || descriptor_count > 0
+        || capability_count > 0;
 
     if fork_instrumentation == ForkInstrumentationPolicy::Disabled {
         if has_fork_artifact_surface {
             failures.push(
-                "has ABI 42 wasm-fork-instrument metadata, imports, or exports but this output disables fork instrumentation".to_string(),
+                "has ABI 43 wasm-fork-instrument metadata, imports, or exports but this output disables fork instrumentation".to_string(),
             );
         }
         return failures;
@@ -4697,6 +4732,29 @@ fn wasm_artifact_policy_failures_for(
     }
 
     let contract_failure_start = failures.len();
+    if facts.native_start_count != 0 {
+        // WHY: staged dlopen instantiates modules inside a host import. ABI 43
+        // moves the source start function behind an explicit bootstrap so
+        // instantiation itself cannot reenter guest Wasm.
+        failures.push(format!(
+            "retains {} native Wasm start section{} instead of deferring initialization to wpk_fork_module_bootstrap",
+            facts.native_start_count,
+            if facts.native_start_count == 1 { "" } else { "s" },
+        ));
+    }
+    if facts
+        .function_imports
+        .contains_key(&("env".to_string(), "__wasm_dlopen".to_string()))
+    {
+        // ABI 43's instrumenter rewrites this monolithic callback into local
+        // prepare/next/commit control flow. Seeing the import beside the safety
+        // claim therefore proves that publication received stale or forged
+        // instrumentation metadata.
+        failures.push(
+            "retains reentrant env.__wasm_dlopen instead of the ABI 43 staged loader lowering"
+                .to_string(),
+        );
+    }
     let missing_exports = fork_exports
         .iter()
         .filter(|requirement| !facts.function_exports.contains_key(requirement.name))
@@ -4704,7 +4762,7 @@ fn wasm_artifact_policy_failures_for(
         .collect::<Vec<_>>();
     if !missing_exports.is_empty() {
         failures.push(format!(
-            "has incomplete ABI 42 wasm-fork-instrument exports; missing {}",
+            "has incomplete ABI 43 wasm-fork-instrument exports; missing {}",
             missing_exports.join(", ")
         ));
     }
@@ -4715,10 +4773,14 @@ fn wasm_artifact_policy_failures_for(
             .is_some_and(|signatures| signatures.len() != 1)
         {
             failures.push(format!(
-                "has duplicate ABI 42 wasm-fork-instrument export {}",
+                "has duplicate ABI 43 wasm-fork-instrument export {}",
                 requirement.name
             ));
         }
+    }
+
+    if let Err(error) = validate_fork_capabilities(&facts.fork_capabilities) {
+        failures.push(error);
     }
 
     let descriptor = match facts.linked_frame_descriptors.as_slice() {
@@ -4765,7 +4827,7 @@ fn wasm_artifact_policy_failures_for(
             .join(", ");
         if !missing_imports.is_empty() {
             failures.push(format!(
-                "has incomplete ABI 42 linked-frame imports; missing {missing_imports}"
+                "has incomplete ABI 43 linked-frame imports; missing {missing_imports}"
             ));
         }
         for requirement in fork_imports {
@@ -4776,7 +4838,7 @@ fn wasm_artifact_policy_failures_for(
                 .is_some_and(|signatures| signatures.len() != 1)
             {
                 failures.push(format!(
-                    "has duplicate ABI 42 linked-frame import {}.{}",
+                    "has duplicate ABI 43 linked-frame import {}.{}",
                     requirement.module, requirement.name
                 ));
             }
@@ -4793,12 +4855,12 @@ fn wasm_artifact_policy_failures_for(
                     "a"
                 };
                 failures.push(format!(
-                    "ABI 42 linked-frame descriptor declares {article} {}-byte pointer but the module memory uses {}-byte addresses",
+                    "ABI 43 linked-frame descriptor declares {article} {}-byte pointer but the module memory uses {}-byte addresses",
                     descriptor.pointer_width, pointer_width
                 ));
             }
             pointer_widths => failures.push(format!(
-                "ABI 42 fork instrumentation requires exactly one module memory, found {}",
+                "ABI 43 fork instrumentation requires exactly one module memory, found {}",
                 pointer_widths.len()
             )),
         }
@@ -4818,7 +4880,7 @@ fn wasm_artifact_policy_failures_for(
                 descriptor.pointer_width,
             ) {
                 failures.push(format!(
-                    "ABI 42 wasm-fork-instrument export {} has the wrong signature; expected {}",
+                    "ABI 43 wasm-fork-instrument export {} has the wrong signature; expected {}",
                     requirement.name,
                     program_artifact_signature_text(
                         requirement.params,
@@ -4842,7 +4904,7 @@ fn wasm_artifact_policy_failures_for(
                     descriptor.pointer_width,
                 ) {
                     failures.push(format!(
-                        "ABI 42 linked-frame import {}.{} has the wrong signature; expected {}",
+                        "ABI 43 linked-frame import {}.{} has the wrong signature; expected {}",
                         requirement.module,
                         requirement.name,
                         program_artifact_signature_text(
@@ -4858,7 +4920,7 @@ fn wasm_artifact_policy_failures_for(
 
     if facts.imports_kernel_fork && failures.len() != contract_failure_start {
         failures.push(
-            "imports kernel.kernel_fork without the complete ABI 42 wasm-fork-instrument contract"
+            "imports kernel.kernel_fork without the complete ABI 43 wasm-fork-instrument contract"
                 .to_string(),
         );
     }
@@ -7417,9 +7479,10 @@ impl LocalFileTransaction {
         if self.published
             || self.yielded_to_other_writer
             || !self.old_moved
-            || self.backup_snapshot.as_ref().is_none_or(|snapshot| {
-                validate_local_mirror_entry(&self.backup, snapshot).is_err()
-            })
+            || self
+                .backup_snapshot
+                .as_ref()
+                .is_none_or(|snapshot| validate_local_mirror_entry(&self.backup, snapshot).is_err())
         {
             return;
         }
@@ -8968,13 +9031,7 @@ index_url = "https://example.test/releases/download/binaries-abi-v{{abi}}/index.
         .unwrap();
     }
 
-    fn write_build_with_input(
-        dir: &Path,
-        name: &str,
-        revision: u32,
-        input: &str,
-        contents: &str,
-    ) {
+    fn write_build_with_input(dir: &Path, name: &str, revision: u32, input: &str, contents: &str) {
         let input_path = dir.join(name).join(input);
         fs::write(&input_path, contents).unwrap();
         fs::write(
@@ -9893,23 +9950,67 @@ wasm = "second.wasm"
         ty
     }
 
-    fn wasm_fork_artifact(
-        descriptor_pointer_width: u8,
+    fn wasm_contract_value_type(
+        value: wasm_posix_shared::abi::ProgramArtifactValueType,
+        pointer_width: u8,
+    ) -> u8 {
+        use wasm_posix_shared::abi::ProgramArtifactValueType;
+
+        match value {
+            ProgramArtifactValueType::Pointer if pointer_width == 4 => 0x7f,
+            ProgramArtifactValueType::Pointer if pointer_width == 8 => 0x7e,
+            ProgramArtifactValueType::Pointer => {
+                panic!("unsupported fixture pointer width {pointer_width}")
+            }
+            ProgramArtifactValueType::I32 => 0x7f,
+            ProgramArtifactValueType::I64 => 0x7e,
+            ProgramArtifactValueType::FuncRef => 0x70,
+            ProgramArtifactValueType::ExternRef => 0x6f,
+            ProgramArtifactValueType::ExnRef => 0x69,
+            ProgramArtifactValueType::AnyRef => 0x6e,
+        }
+    }
+
+    fn wasm_contract_function_type(
+        params: &[wasm_posix_shared::abi::ProgramArtifactValueType],
+        results: &[wasm_posix_shared::abi::ProgramArtifactValueType],
+        pointer_width: u8,
+    ) -> Vec<u8> {
+        let params = params
+            .iter()
+            .copied()
+            .map(|value| wasm_contract_value_type(value, pointer_width))
+            .collect::<Vec<_>>();
+        let results = results
+            .iter()
+            .copied()
+            .map(|value| wasm_contract_value_type(value, pointer_width))
+            .collect::<Vec<_>>();
+        wasm_function_type(&params, &results)
+    }
+
+    fn wasm_fork_artifact_with_capabilities(
+        _descriptor_pointer_width: u8,
         signature_pointer_width: u8,
         memory_pointer_width: u8,
         include_kernel_fork: bool,
-        frame_imports: &[&str],
+        fork_imports: &[&str],
         fork_exports: &[&str],
         descriptors: &[Vec<u8>],
+        capabilities: &[Vec<u8>],
+        include_legacy_dlopen: bool,
+        include_native_start: bool,
     ) -> Vec<u8> {
         use wasm_posix_shared::abi;
+        use wasm_posix_shared::abi::ProgramArtifactValueType::{I32, Pointer};
 
-        let pointer_type = match signature_pointer_width {
-            4 => 0x7f, // i32
-            8 => 0x7e, // i64
-            other => panic!("unsupported fixture pointer width {other}"),
-        };
         let mut bytes = b"\0asm\x01\0\0\0".to_vec();
+        for capability in capabilities {
+            bytes.extend(wasm_custom_section(
+                abi::WPK_FORK_CAPABILITIES_SECTION,
+                capability,
+            ));
+        }
         for descriptor in descriptors {
             bytes.extend(wasm_custom_section(
                 abi::WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
@@ -9917,30 +10018,67 @@ wasm = "second.wasm"
             ));
         }
 
-        let types = [
-            wasm_function_type(&[], &[0x7f]),
-            wasm_function_type(&[pointer_type], &[pointer_type]),
-            wasm_function_type(&[pointer_type], &[]),
-            wasm_function_type(&[], &[]),
+        // Derive this raw-Wasm fixture from the same declarations enforced by
+        // publication policy. ABI 43 deliberately has a larger private
+        // surface than the original three linked-frame hooks, and a
+        // hand-maintained type-index switch silently went stale as reference
+        // ownership was added.
+        let mut types = vec![
+            wasm_contract_function_type(&[], &[I32], signature_pointer_width),
+            wasm_contract_function_type(&[], &[], signature_pointer_width),
         ];
+        let kernel_fork_type = 0u32;
+        let empty_function_type = 1u32;
+
+        let mut imports = Vec::new();
+        if include_kernel_fork {
+            imports.push(("kernel", "kernel_fork", kernel_fork_type));
+        }
+        if include_legacy_dlopen {
+            let type_index = types.len() as u32;
+            types.push(wasm_contract_function_type(
+                &[Pointer, I32, Pointer, I32, I32],
+                &[I32],
+                signature_pointer_width,
+            ));
+            imports.push(("env", "__wasm_dlopen", type_index));
+        }
+        for name in fork_imports {
+            let requirement = abi::WPK_FORK_REQUIRED_IMPORTS
+                .iter()
+                .find(|requirement| requirement.name == *name)
+                .unwrap_or_else(|| panic!("unknown ABI 43 fork import fixture {name}"));
+            let type_index = types.len() as u32;
+            types.push(wasm_contract_function_type(
+                requirement.params,
+                requirement.results,
+                signature_pointer_width,
+            ));
+            imports.push((requirement.module, requirement.name, type_index));
+        }
+
+        // Keep a local function for every required export even in a
+        // missing-export fixture. Removing an export must not renumber the
+        // remaining functions or turn a policy test into malformed Wasm.
+        let mut local_functions = Vec::new();
+        for requirement in abi::WPK_FORK_REQUIRED_EXPORTS {
+            let type_index = types.len() as u32;
+            types.push(wasm_contract_function_type(
+                requirement.params,
+                requirement.results,
+                signature_pointer_width,
+            ));
+            local_functions.push((requirement.name, type_index, requirement.results));
+        }
+        local_functions.push(("__abi_version", kernel_fork_type, &[I32]));
+        local_functions.push(("_start", empty_function_type, &[]));
+
         let mut type_section = uleb(types.len() as u32);
         for ty in types {
             type_section.extend(ty);
         }
         bytes.extend(wasm_section(1, type_section));
 
-        let mut imports = Vec::new();
-        if include_kernel_fork {
-            imports.push(("kernel", "kernel_fork", 0u32));
-        }
-        for name in frame_imports {
-            let type_index = match *name {
-                abi::WPK_FORK_FRAME_IMPORT_COMMIT => 2,
-                abi::WPK_FORK_FRAME_IMPORT_NEXT | abi::WPK_FORK_FRAME_IMPORT_RESERVE => 1,
-                other => panic!("unknown linked-frame import fixture {other}"),
-            };
-            imports.push((abi::WPK_FORK_FRAME_IMPORT_MODULE, *name, type_index));
-        }
         if !imports.is_empty() {
             let mut import_section = uleb(imports.len() as u32);
             for (module, name, type_index) in &imports {
@@ -9952,14 +10090,9 @@ wasm = "second.wasm"
             bytes.extend(wasm_section(2, import_section));
         }
 
-        // Seven control functions plus __abi_version and _start. Keeping every
-        // local function present lets negative fixtures remove one export
-        // without changing function indices or accidentally testing malformed
-        // Wasm instead of the publication contract.
-        let function_types = [2u32, 3, 2, 3, 0, 2, 3, 0, 3];
-        let mut function_section = uleb(function_types.len() as u32);
-        for type_index in function_types {
-            function_section.extend(uleb(type_index));
+        let mut function_section = uleb(local_functions.len() as u32);
+        for (_, type_index, _) in &local_functions {
+            function_section.extend(uleb(*type_index));
         }
         bytes.extend(wasm_section(3, function_section));
 
@@ -9970,43 +10103,70 @@ wasm = "second.wasm"
         };
         bytes.extend(wasm_section(5, vec![0x01, memory_flags, 0x01]));
 
-        let local_exports = [
-            (abi::WPK_FORK_EXPORT_ABORT_BEGIN, 0u32),
-            (abi::WPK_FORK_EXPORT_ABORT_END, 1),
-            (abi::WPK_FORK_EXPORT_REWIND_BEGIN, 2),
-            (abi::WPK_FORK_EXPORT_REWIND_END, 3),
-            (abi::WPK_FORK_EXPORT_STATE, 4),
-            (abi::WPK_FORK_EXPORT_UNWIND_BEGIN, 5),
-            (abi::WPK_FORK_EXPORT_UNWIND_END, 6),
-            ("__abi_version", 7),
-            ("_start", 8),
-        ];
-        let exported = local_exports
+        let exported = local_functions
             .iter()
-            .filter(|(name, _)| {
+            .enumerate()
+            .filter(|(_, (name, _, _))| {
                 *name == "__abi_version" || *name == "_start" || fork_exports.contains(name)
             })
             .collect::<Vec<_>>();
         let mut export_section = uleb(exported.len() as u32);
-        for (name, local_index) in exported {
+        for (local_index, (name, _, _)) in exported {
             export_section.extend(wasm_name(name));
             export_section.push(0x00); // function export
-            export_section.extend(uleb(imports.len() as u32 + *local_index));
+            export_section.extend(uleb(imports.len() as u32 + local_index as u32));
         }
         bytes.extend(wasm_section(7, export_section));
 
-        let mut code_section = uleb(function_types.len() as u32);
-        for type_index in function_types {
-            let body = if type_index == 0 {
-                vec![0x00, 0x41, descriptor_pointer_width, 0x0b]
-            } else {
-                vec![0x00, 0x0b]
-            };
+        if include_native_start {
+            let start_index = imports.len() as u32 + local_functions.len() as u32 - 1;
+            bytes.extend(wasm_section(8, uleb(start_index)));
+        }
+
+        let mut code_section = uleb(local_functions.len() as u32);
+        for (_, _, results) in local_functions {
+            let mut body = vec![0x00]; // no local declarations
+            for result in results {
+                match wasm_contract_value_type(*result, signature_pointer_width) {
+                    0x7f => body.extend([0x41, 0x00]), // i32.const 0
+                    0x7e => body.extend([0x42, 0x00]), // i64.const 0
+                    heap_type => body.extend([0xd0, heap_type]), // ref.null
+                }
+            }
+            body.push(0x0b);
             code_section.extend(uleb(body.len() as u32));
             code_section.extend(body);
         }
         bytes.extend(wasm_section(10, code_section));
         bytes
+    }
+
+    fn wasm_fork_artifact(
+        descriptor_pointer_width: u8,
+        signature_pointer_width: u8,
+        memory_pointer_width: u8,
+        include_kernel_fork: bool,
+        frame_imports: &[&str],
+        fork_exports: &[&str],
+        descriptors: &[Vec<u8>],
+    ) -> Vec<u8> {
+        use wasm_posix_shared::abi;
+
+        wasm_fork_artifact_with_capabilities(
+            descriptor_pointer_width,
+            signature_pointer_width,
+            memory_pointer_width,
+            include_kernel_fork,
+            frame_imports,
+            fork_exports,
+            descriptors,
+            &[vec![
+                abi::WPK_FORK_CAPABILITIES_VERSION,
+                abi::WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+            ]],
+            false,
+            false,
+        )
     }
 
     fn complete_wasm_fork_artifact(pointer_width: u8) -> Vec<u8> {
@@ -10662,6 +10822,19 @@ index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
     }
 
     #[test]
+    fn fork_instrument_dependency_metadata_is_not_build_host_filtered() {
+        assert_eq!(
+            FORK_INSTRUMENT_CARGO_METADATA_ARGS,
+            ["metadata", "--format-version=1", "--locked"],
+            "shared package cache keys must hash Cargo's cross-host dependency union"
+        );
+        assert!(
+            !FORK_INSTRUMENT_CARGO_METADATA_ARGS.contains(&"--filter-platform"),
+            "a host-filtered dependency graph gives macOS and Linux different package identities"
+        );
+    }
+
+    #[test]
     fn fork_instrument_cargo_dependency_digest_ignores_unrelated_lockfile_entries() {
         let root = tempdir("fork-cargo-closure");
         let fork_manifest = root.join("crates/fork-instrument/Cargo.toml");
@@ -10981,7 +11154,8 @@ index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.to
         .unwrap_err();
         assert!(
             missing_selected_input.contains("first-hit registry package")
-                && missing_selected_input.contains("lower-priority package roots were not consulted"),
+                && missing_selected_input
+                    .contains("lower-priority package roots were not consulted"),
             "a selected external package must not be completed with a lower package's file: {missing_selected_input}",
         );
 
@@ -16199,7 +16373,7 @@ wasm = "bad.wasm"
     }
 
     #[test]
-    fn program_artifact_policy_accepts_complete_abi42_fork_contracts() {
+    fn program_artifact_policy_accepts_complete_abi43_fork_contracts() {
         for pointer_width in [4, 8] {
             let bytes = complete_wasm_fork_artifact(pointer_width);
             let failures = wasm_artifact_policy_failures_for(
@@ -16232,7 +16406,7 @@ wasm = "bad.wasm"
     }
 
     #[test]
-    fn program_artifact_policy_rejects_each_missing_abi42_fork_import() {
+    fn program_artifact_policy_rejects_each_missing_abi43_fork_import() {
         let all_imports = wasm_posix_shared::abi::WPK_FORK_REQUIRED_IMPORTS
             .iter()
             .map(|requirement| requirement.name)
@@ -16266,7 +16440,7 @@ wasm = "bad.wasm"
     }
 
     #[test]
-    fn program_artifact_policy_rejects_each_missing_abi42_fork_export() {
+    fn program_artifact_policy_rejects_each_missing_abi43_fork_export() {
         let all_imports = wasm_posix_shared::abi::WPK_FORK_REQUIRED_IMPORTS
             .iter()
             .map(|requirement| requirement.name)
@@ -16381,6 +16555,146 @@ wasm = "bad.wasm"
                 "descriptor case {expected:?} was not reported: {failures:?}"
             );
         }
+    }
+
+    #[test]
+    fn program_artifact_policy_rejects_every_unsafe_activation_capability_shape() {
+        use wasm_posix_shared::abi;
+
+        let imports = abi::WPK_FORK_REQUIRED_IMPORTS
+            .iter()
+            .map(|requirement| requirement.name)
+            .collect::<Vec<_>>();
+        let exports = abi::WPK_FORK_REQUIRED_EXPORTS
+            .iter()
+            .map(|requirement| requirement.name)
+            .collect::<Vec<_>>();
+        let safe = vec![
+            abi::WPK_FORK_CAPABILITIES_VERSION,
+            abi::WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+        ];
+        let cases: Vec<(&str, Vec<Vec<u8>>)> = vec![
+            ("missing required", vec![]),
+            ("expected exactly one", vec![safe.clone(), safe]),
+            (
+                "bytes, expected 2",
+                vec![vec![abi::WPK_FORK_CAPABILITIES_VERSION]],
+            ),
+            (
+                "version",
+                vec![vec![
+                    abi::WPK_FORK_CAPABILITIES_VERSION + 1,
+                    abi::WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+                ]],
+            ),
+            (
+                "unknown flags",
+                vec![vec![
+                    abi::WPK_FORK_CAPABILITIES_VERSION,
+                    abi::WPK_FORK_CAP_KNOWN_MASK | 0x80,
+                ]],
+            ),
+            (
+                "omit required activation-state safety",
+                vec![vec![abi::WPK_FORK_CAPABILITIES_VERSION, 0]],
+            ),
+        ];
+
+        for (expected, capabilities) in cases {
+            let bytes = wasm_fork_artifact_with_capabilities(
+                4,
+                4,
+                4,
+                true,
+                &imports,
+                &exports,
+                &[linked_frame_descriptor(4)],
+                &capabilities,
+                false,
+                false,
+            );
+            let failures = wasm_artifact_policy_failures(&bytes, ForkInstrumentationPolicy::Auto);
+            assert!(
+                failures.iter().any(|failure| failure.contains(expected)),
+                "capability case {expected:?} was not reported: {failures:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn program_artifact_policy_rejects_reentrant_legacy_loader_claims() {
+        use wasm_posix_shared::abi;
+
+        let imports = abi::WPK_FORK_REQUIRED_IMPORTS
+            .iter()
+            .map(|requirement| requirement.name)
+            .collect::<Vec<_>>();
+        let exports = abi::WPK_FORK_REQUIRED_EXPORTS
+            .iter()
+            .map(|requirement| requirement.name)
+            .collect::<Vec<_>>();
+        let bytes = wasm_fork_artifact_with_capabilities(
+            4,
+            4,
+            4,
+            true,
+            &imports,
+            &exports,
+            &[linked_frame_descriptor(4)],
+            &[vec![
+                abi::WPK_FORK_CAPABILITIES_VERSION,
+                abi::WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+            ]],
+            true,
+            false,
+        );
+        let failures =
+            wasm_artifact_policy_failures(&bytes, ForkInstrumentationPolicy::Auto);
+        assert!(
+            failures.iter().any(|failure| {
+                failure.contains("reentrant env.__wasm_dlopen")
+                    && failure.contains("staged loader lowering")
+            }),
+            "got: {failures:?}",
+        );
+    }
+
+    #[test]
+    fn program_artifact_policy_rejects_native_start_claims() {
+        use wasm_posix_shared::abi;
+
+        let imports = abi::WPK_FORK_REQUIRED_IMPORTS
+            .iter()
+            .map(|requirement| requirement.name)
+            .collect::<Vec<_>>();
+        let exports = abi::WPK_FORK_REQUIRED_EXPORTS
+            .iter()
+            .map(|requirement| requirement.name)
+            .collect::<Vec<_>>();
+        let bytes = wasm_fork_artifact_with_capabilities(
+            4,
+            4,
+            4,
+            true,
+            &imports,
+            &exports,
+            &[linked_frame_descriptor(4)],
+            &[vec![
+                abi::WPK_FORK_CAPABILITIES_VERSION,
+                abi::WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+            ]],
+            false,
+            true,
+        );
+        let failures =
+            wasm_artifact_policy_failures(&bytes, ForkInstrumentationPolicy::Auto);
+        assert!(
+            failures.iter().any(|failure| {
+                failure.contains("native Wasm start section")
+                    && failure.contains("wpk_fork_module_bootstrap")
+            }),
+            "got: {failures:?}",
+        );
     }
 
     #[test]
@@ -17639,16 +17953,20 @@ libs = ["lib/libF3b.a"]
 
     #[test]
     fn extract_source_repo_root_flag_rejects_missing_or_duplicate_values() {
-        assert!(extract_source_repo_root_flag(vec!["--source-repo-root".into()])
+        assert!(
+            extract_source_repo_root_flag(vec!["--source-repo-root".into()])
+                .unwrap_err()
+                .contains("requires a path")
+        );
+        assert!(
+            extract_source_repo_root_flag(vec![
+                "--source-repo-root=/a".into(),
+                "--source-repo-root".into(),
+                "/b".into(),
+            ])
             .unwrap_err()
-            .contains("requires a path"));
-        assert!(extract_source_repo_root_flag(vec![
-            "--source-repo-root=/a".into(),
-            "--source-repo-root".into(),
-            "/b".into(),
-        ])
-        .unwrap_err()
-        .contains("more than once"));
+            .contains("more than once")
+        );
     }
 
     #[test]
@@ -17709,19 +18027,14 @@ libs = ["lib/libF3b.a"]
         fs::write(first.join("identity.txt"), "first source projection").unwrap();
         fs::write(second.join("identity.txt"), "second source projection").unwrap();
         let cache: RootDigestCache = OnceLock::new();
-        let compute = |root: &Path| {
-            global_package_build_input_digests_for(root, &["identity.txt"])
-        };
+        let compute = |root: &Path| global_package_build_input_digests_for(root, &["identity.txt"]);
 
-        let first_digest =
-            root_scoped_build_input_digests(&cache, &first, compute).unwrap();
-        let second_digest =
-            root_scoped_build_input_digests(&cache, &second, compute).unwrap();
+        let first_digest = root_scoped_build_input_digests(&cache, &first, compute).unwrap();
+        let second_digest = root_scoped_build_input_digests(&cache, &second, compute).unwrap();
         assert_ne!(first_digest[0].digest, second_digest[0].digest);
 
         fs::write(first.join("identity.txt"), "changed after memoization").unwrap();
-        let first_cached =
-            root_scoped_build_input_digests(&cache, &first, compute).unwrap();
+        let first_cached = root_scoped_build_input_digests(&cache, &first, compute).unwrap();
         assert_eq!(first_cached[0].digest, first_digest[0].digest);
     }
 

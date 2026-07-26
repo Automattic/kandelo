@@ -103,6 +103,8 @@ build_program() {
     local name
     name=$(basename "$src" .c)
     local wasm="$out_dir/${name}.wasm"
+    local raw_wasm="$out_dir/${name}.raw.wasm"
+    local next_wasm="$out_dir/${name}.next.wasm"
 
     # Auto-append GL stubs when the source pulls in EGL/GLES headers.
     # Static linking won't pick symbols out of libEGL.a / libGLESv2.a
@@ -118,6 +120,9 @@ build_program() {
     fi
 
     echo "  Compiling $name..."
+    # WHY: a failed compile or instrumentation pass must not leave a raw or
+    # stale-ABI module at the resolver-visible final path.
+    rm -f "$wasm" "$raw_wasm" "$next_wasm"
     # Bash 3.2 (macOS system bash) under `set -u` treats expansion of
     # an empty array as unbound; the `${arr[@]+...}` guard suppresses
     # that when extra_libs is empty.
@@ -125,15 +130,16 @@ build_program() {
         "${LINK_PRE_LIBS[@]}" \
         ${extra_libs[@]+"${extra_libs[@]}"} \
         "${LINK_POST_LIBS[@]}" \
-        -o "$wasm"
+        -o "$raw_wasm"
 
     # Apply fork instrumentation if the program uses fork. The tool is a
     # no-op for modules without `kernel.kernel_fork`, so it's safe to run
     # unconditionally on every program. Programs without fork stay
     # byte-identical except for a small ABI metadata section the tool
     # always emits (see runtime::inject_runtime).
-    "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr"
-    mv "$wasm.instr" "$wasm"
+    "$FORK_INSTRUMENT" "$raw_wasm" -o "$next_wasm"
+    mv "$next_wasm" "$wasm"
+    rm -f "$raw_wasm"
 }
 
 # Build a C++ program via the SDK's wasm32posix-c++ wrapper. The SDK
@@ -148,8 +154,11 @@ build_cpp_program() {
     local name
     name=$(basename "$src" .cpp)
     local wasm="$out_dir/${name}.wasm"
+    local raw_wasm="$out_dir/${name}.raw.wasm"
+    local next_wasm="$out_dir/${name}.next.wasm"
 
     echo "  Compiling $name (C++)..."
+    rm -f "$wasm" "$raw_wasm" "$next_wasm"
     # -fwasm-exceptions is required for clang to lower C++ try/catch
     # to wasm-EH `try`/`catch` instructions. Without it clang emits
     # `__cxa_throw; unreachable` and DCEs the catch handlers, so the
@@ -160,24 +169,26 @@ build_cpp_program() {
         -fwasm-exceptions \
         "$src" \
         -lc++ -lc++abi \
-        -o "$wasm"
+        -o "$raw_wasm"
 
-    # Preserve a real pre-instrumentation control for issue #918. The source
-    # contains an unreachable-at-test-time fork branch solely so the normal
-    # output is transformed below. A raw module with kernel_fork but without
-    # wpk_fork_* exports is test evidence, not a distributable program, so it
-    # lives outside the resolver's programs tree.
+    # Preserve a raw no-fork control for issue #918 independently of the
+    # normally instrumented fork-bearing program.
     if [ "$name" = "sjlj_noexcept_boundary" ]; then
         mkdir -p "$TEST_FIXTURE_DIR/wasm32"
-        cp "$wasm" "$TEST_FIXTURE_DIR/wasm32/${name}.raw.wasm"
+        wasm32posix-c++ \
+            -O2 \
+            -fwasm-exceptions \
+            -DKANDELO_SJLJ_NO_FORK_ANCHOR \
+            "$src" \
+            -lc++ -lc++abi \
+            -o "$TEST_FIXTURE_DIR/wasm32/${name}.raw.wasm"
     fi
 
-    # Phase 7: fork support comes from wasm-fork-instrument. The tool is
-    # a no-op for modules without `kernel.kernel_fork`, so it's safe to
-    # run unconditionally — programs without fork stay byte-identical
-    # except for the ABI metadata section.
-    "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr"
-    mv "$wasm.instr" "$wasm"
+    # Publish the resolver-visible path only after instrumentation and its
+    # complete ABI 43 artifact contract succeed.
+    "$FORK_INSTRUMENT" "$raw_wasm" -o "$next_wasm"
+    mv "$next_wasm" "$wasm"
+    rm -f "$raw_wasm"
 }
 
 ensure_libcxx_in_sysroot() {

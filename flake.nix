@@ -200,6 +200,13 @@
             export LLVM_BIN=${llvmTree}/bin
             export LLVM_PREFIX=${llvmTree}
             export LLVM_VERSION=${llvmVersion}
+            # mkShell's generic AR=ar/RANLIB=ranlib names fall through to
+            # /usr/bin on Darwin because LLVM exposes llvm-* names. Apple ar
+            # exits 255 when cc-rs sets ZERO_AR_DATE=1 for reproducible native
+            # Rust archives, so bind these variables to the declared LLVM
+            # tools instead of ambient host binaries.
+            export AR="$LLVM_BIN/llvm-ar"
+            export RANLIB="$LLVM_BIN/llvm-ranlib"
             export WASM_POSIX_LLVM_LIBCXX_SOURCE=${llvmPkg.libcxx.src}
             export WASM_POSIX_LLVM_LIBUNWIND_SOURCE=${llvmPkg.libunwind.src}
             # CA bundle for HTTPS — pure-shell strips the user's

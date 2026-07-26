@@ -15,11 +15,14 @@ use fork_instrument::linked_frames::{
     FrameFormatDescriptor, LINKED_FRAME_FORMAT_SECTION, PointerWidth,
 };
 use fork_instrument::runtime::names;
-use fork_instrument::{
-    FORK_CAP_DYLINK_MAIN, FORK_CAP_SIDE_ENTRY, FORK_CAPABILITIES_SECTION,
-    FORK_CAPABILITIES_VERSION, Options, instrument,
+use fork_instrument::{Options, UNWIND_TRANSPORT_SECTION, UNWIND_TRANSPORT_VERSION, instrument};
+use walrus::{ExportItem, ImportKind, Module, ValType};
+use wasm_posix_shared::abi::{
+    WPK_FORK_CAP_ACTIVATION_STATE_SAFE, WPK_FORK_CAP_DYLINK_MAIN, WPK_FORK_CAP_SIDE_ENTRY,
+    WPK_FORK_CAPABILITIES_SECTION, WPK_FORK_CAPABILITIES_VERSION,
+    WPK_FORK_IMPORTED_GLOBALS_SECTION, WPK_FORK_MODULE_STATE_FORMAT_SECTION,
+    WPK_FORK_REQUIRED_EXPORTS, WPK_FORK_REQUIRED_IMPORTS, WPK_FORK_REQUIRED_TABLE_IMPORTS,
 };
-use walrus::{ExportItem, Module, ValType};
 use wasmparser::{Parser, Payload};
 
 fn instrument_wat(wat_src: &str) -> Vec<u8> {
@@ -37,7 +40,7 @@ fn fork_capabilities(bytes: &[u8]) -> Vec<Vec<u8>> {
     Parser::new(0)
         .parse_all(bytes)
         .filter_map(|payload| match payload.expect("parse payload") {
-            Payload::CustomSection(section) if section.name() == FORK_CAPABILITIES_SECTION => {
+            Payload::CustomSection(section) if section.name() == WPK_FORK_CAPABILITIES_SECTION => {
                 Some(section.data().to_vec())
             }
             _ => None,
@@ -76,6 +79,60 @@ fn instrumented_module_validates() {
 }
 
 #[test]
+fn preinstrumented_artifact_cannot_be_restamped_as_activation_safe() {
+    let once = instrument_wat(EMPTY_MODULE_WITH_FORK);
+    let error = instrument(&once, &Options::default())
+        .expect_err("an existing fork transform must not be restamped");
+    let message = error.to_string();
+    assert!(
+        message.contains("input already contains wasm-fork-instrument"),
+        "{message}"
+    );
+    assert!(message.contains("raw linker output"), "{message}");
+}
+
+#[test]
+fn source_module_cannot_spoof_private_global_catalog_exports() {
+    let bytes = wat::parse_str(
+        r#"
+        (module
+          (global $value (mut i32) (i32.const 0))
+          (export "__wpk_fork_global_1" (global $value))
+          (memory 1))
+        "#,
+    )
+    .expect("wat parse");
+    let error = instrument(&bytes, &Options::default())
+        .expect_err("a source export must not collide with the private global catalog");
+    let message = error.to_string();
+    assert!(
+        message.contains("input already contains wasm-fork-instrument"),
+        "{message}"
+    );
+    assert!(message.contains("raw linker output"), "{message}");
+}
+
+#[test]
+fn source_module_cannot_spoof_private_table_catalog_exports() {
+    let bytes = wat::parse_str(
+        r#"
+        (module
+          (table $value 1 funcref)
+          (export "__wpk_fork_table_1" (table $value))
+          (memory 1))
+        "#,
+    )
+    .expect("wat parse");
+    let error = instrument(&bytes, &Options::default())
+        .expect_err("a source export must not collide with the private table catalog");
+    assert!(
+        error
+            .to_string()
+            .contains("input already contains wasm-fork-instrument")
+    );
+}
+
+#[test]
 fn linked_runtime_imports_transaction_hooks_and_emits_exact_prefix_metadata() {
     let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK);
     let module = Module::from_buffer(&bytes).unwrap();
@@ -105,6 +162,91 @@ fn linked_runtime_imports_transaction_hooks_and_emits_exact_prefix_metadata() {
     assert_eq!(
         descriptors,
         vec![FrameFormatDescriptor::current(PointerWidth::Wasm32, 24)],
+    );
+}
+
+#[test]
+fn linked_runtime_imports_exact_private_unwind_tag_and_metadata() {
+    let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let imports: Vec<_> = module
+        .imports
+        .iter()
+        .filter(|import| {
+            import.module == names::IMPORT_UNWIND_TAG_MODULE
+                && import.name == names::IMPORT_UNWIND_TAG
+        })
+        .collect();
+    assert_eq!(imports.len(), 1, "private transport must have one owner");
+    let tag = match imports[0].kind {
+        ImportKind::Tag(tag) => tag,
+        ref other => panic!("private unwind transport must be a tag, got {other:?}"),
+    };
+    let tag_ty = module.types.get(module.tags.get(tag).ty());
+    assert!(
+        tag_ty.params().is_empty(),
+        "unwind tag payload must be empty"
+    );
+    assert!(tag_ty.results().is_empty(), "tag type cannot return values");
+
+    let metadata: Vec<_> = Parser::new(0)
+        .parse_all(&bytes)
+        .filter_map(|payload| match payload.expect("parse payload") {
+            Payload::CustomSection(section) if section.name() == UNWIND_TRANSPORT_SECTION => {
+                Some(section.data().to_vec())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        metadata,
+        vec![vec![UNWIND_TRANSPORT_VERSION, 0]],
+        "host must be able to reject a lookalike tag with a different contract",
+    );
+}
+
+#[test]
+fn state_only_side_activation_carries_exact_private_unwind_metadata() {
+    let bytes = instrument_wat("(module (memory 1))");
+    let metadata: Vec<_> = Parser::new(0)
+        .parse_all(&bytes)
+        .filter_map(|payload| match payload.expect("parse payload") {
+            Payload::CustomSection(section) if section.name() == UNWIND_TRANSPORT_SECTION => {
+                Some(section.data().to_vec())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        metadata,
+        vec![vec![UNWIND_TRANSPORT_VERSION, 0]],
+        "uniform ABI 43 state helpers require the same exact-tag descriptor",
+    );
+}
+
+#[test]
+fn raw_module_cannot_preclaim_reserved_unwind_transport() {
+    let bytes = wat::parse_str(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (import "env" "__wpk_fork_unwind" (tag $unwind))
+          (memory 1)
+          (func (export "run") (result i32)
+            call $fork))
+        "#,
+    )
+    .expect("wat parse");
+    let message = instrument(&bytes, &Options::default())
+        .expect_err("reserved private tag collision must fail before rewrite")
+        .to_string();
+    assert!(
+        message.contains("reserved private fork runtime hook"),
+        "{message}"
+    );
+    assert!(
+        message.contains("instrumenter must own unwind transport"),
+        "{message}"
     );
 }
 
@@ -179,22 +321,83 @@ fn memory64_plain_catches_do_not_expand_fixed_prefix_metadata() {
 }
 
 #[test]
-fn module_without_fork_seed_does_not_import_linked_storage_hooks() {
+fn module_without_fork_seed_has_the_uniform_linked_replay_contract() {
     let bytes = instrument_wat("(module (memory 1) (func (export \"run\")))");
     let module = Module::from_buffer(&bytes).unwrap();
-    for name in [
-        names::IMPORT_FRAME_RESERVE,
-        names::IMPORT_FRAME_COMMIT,
-        names::IMPORT_FRAME_NEXT,
-    ] {
+    for requirement in WPK_FORK_REQUIRED_IMPORTS {
         assert!(
-            !module
-                .imports
-                .iter()
-                .any(|import| import.module == "env" && import.name == name),
-            "inert module unexpectedly imports linked continuation hook {name}",
+            module.imports.iter().any(|import| {
+                import.module == requirement.module
+                    && import.name == requirement.name
+                    && matches!(import.kind, ImportKind::Function(_))
+            }),
+            "no-seed module is missing linked function import {}.{}",
+            requirement.module,
+            requirement.name,
         );
     }
+    for requirement in WPK_FORK_REQUIRED_TABLE_IMPORTS {
+        assert!(
+            module.imports.iter().any(|import| {
+                import.module == requirement.module
+                    && import.name == requirement.name
+                    && matches!(import.kind, ImportKind::Table(_))
+            }),
+            "no-seed module is missing linked table import {}.{}",
+            requirement.module,
+            requirement.name,
+        );
+    }
+    for requirement in WPK_FORK_REQUIRED_EXPORTS {
+        assert!(
+            module
+                .exports
+                .iter()
+                .any(|export| export.name == requirement.name),
+            "no-seed module is missing linked export {}",
+            requirement.name,
+        );
+    }
+    for section_name in [
+        WPK_FORK_CAPABILITIES_SECTION,
+        LINKED_FRAME_FORMAT_SECTION,
+        WPK_FORK_MODULE_STATE_FORMAT_SECTION,
+        WPK_FORK_IMPORTED_GLOBALS_SECTION,
+    ] {
+        assert_eq!(
+            module
+                .customs
+                .iter()
+                .filter(|(_, section)| section.name() == section_name)
+                .count(),
+            1,
+            "no-seed module must carry exactly one {section_name} descriptor",
+        );
+    }
+}
+
+#[test]
+fn reference_vector_finish_import_returns_a_canonical_ordinal() {
+    let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let finish = module
+        .imports
+        .iter()
+        .find_map(|import| {
+            (import.module == wasm_posix_shared::abi::WPK_FORK_FRAME_IMPORT_MODULE
+                && import.name == names::IMPORT_REFERENCE_VECTOR_FINISH)
+                .then(|| match import.kind {
+                    ImportKind::Function(function) => Some(function),
+                    _ => None,
+                })
+                .flatten()
+        })
+        .expect("reference-vector finish import");
+    assert_eq!(
+        func_signature(&module, finish),
+        (vec![ValType::I32], vec![ValType::I32]),
+        "finish consumes a transient builder handle and returns its canonical wire ordinal",
+    );
 }
 
 #[test]
@@ -213,7 +416,10 @@ fn marks_dlopen_main_indirect_boundary_separately() {
     let output = instrument_wat(wat);
     assert_eq!(
         fork_capabilities(&output),
-        vec![vec![FORK_CAPABILITIES_VERSION, FORK_CAP_DYLINK_MAIN]],
+        vec![vec![
+            WPK_FORK_CAPABILITIES_VERSION,
+            WPK_FORK_CAP_DYLINK_MAIN | WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+        ]],
     );
 }
 
@@ -237,7 +443,35 @@ fn marks_env_fork_side_entry_separately() {
     .expect("instrument side");
     assert_eq!(
         fork_capabilities(&output),
-        vec![vec![FORK_CAPABILITIES_VERSION, FORK_CAP_SIDE_ENTRY]],
+        vec![vec![
+            WPK_FORK_CAPABILITIES_VERSION,
+            WPK_FORK_CAP_SIDE_ENTRY | WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+        ]],
+    );
+}
+
+#[test]
+fn dylink_module_without_env_fork_claims_complete_side_boundaries() {
+    let input = wat::parse_str(
+        r#"
+        (module
+          (@custom "dylink.0" (before first) "side")
+          (import "env" "side_b" (func $side_b (result i32)))
+          (memory 1)
+          (func (export "side_a") (result i32) call $side_b))
+        "#,
+    )
+    .expect("wat parse");
+    let output = instrument(&input, &Options::default()).expect("instrument side boundaries");
+    validate(&output);
+    assert_eq!(
+        fork_capabilities(&output),
+        vec![vec![
+            WPK_FORK_CAPABILITIES_VERSION,
+            WPK_FORK_CAP_SIDE_ENTRY | WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+        ]],
+        "SIDE_ENTRY means every cross-module activation boundary is covered, \
+         even when fork itself is downstream in another module",
     );
 }
 
@@ -246,7 +480,10 @@ fn generic_runtime_exports_do_not_claim_side_or_dylink_coverage() {
     let output = instrument_wat(EMPTY_MODULE_WITH_FORK);
     assert_eq!(
         fork_capabilities(&output),
-        vec![vec![FORK_CAPABILITIES_VERSION, 0]],
+        vec![vec![
+            WPK_FORK_CAPABILITIES_VERSION,
+            WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+        ]],
     );
 }
 
@@ -496,8 +733,10 @@ fn wasm64_saved_globals_use_16_byte_header() {
 }
 
 #[test]
-fn ref_typed_mutable_globals_are_skipped_in_4e() {
-    // Phase 4e handles scalar globals only; ref-typed ones await 4f.
+fn linked_runtime_prefix_defers_reference_globals_to_kfms() {
+    // The fixed continuation prefix owns scalar control globals. KFMS owns
+    // reference-global recipes because it can reconstruct them in a fresh
+    // module instance without putting references in linear memory.
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -509,7 +748,7 @@ fn ref_typed_mutable_globals_are_skipped_in_4e() {
     let mut module = Module::from_buffer(&bytes).unwrap();
     let runtime = inject_runtime(&mut module);
 
-    // Only the i32 scalar should have been picked up.
+    // Only the scalar is part of the fixed runtime prefix.
     assert_eq!(runtime.saved_globals.len(), 1);
     assert_eq!(runtime.saved_globals[0].ty, walrus::ValType::I32);
 }

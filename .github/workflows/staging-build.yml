@@ -852,6 +852,10 @@ jobs:
       - name: Test binary materialization flow
         if: env.BINARY_MATERIALIZATION_CHANGED == 'true'
         run: |
+          # WHY: artifact-guard integration tests query the ABI 43 binary
+          # contract inventory. This source-only job does not download the
+          # package-toolchain artifact, so prepare its host tool explicitly.
+          bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh
           bash scripts/dev-shell.sh npx --prefix host vitest run --root . tests/package-system
 
   test-suite-early:

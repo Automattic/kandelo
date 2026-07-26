@@ -658,9 +658,12 @@ parsed `DepsManifest` at load time) and defaults to 1 when
 
 Program packages that use fork instrumentation also hash the
 fork-instrument host tool inputs (`crates/fork-instrument`, the
-workspace Cargo lockfile, and the wrapper/build scripts). Programs
-that declare `fork_instrumentation = "disabled"` do not hash that
-tooling.
+target-unfiltered non-dev Cargo dependency closure selected from the
+workspace lockfile, and the wrapper/build scripts). The dependency closure is
+the union across build-host target predicates: package cache paths do not have
+a build-host dimension, so filtering through the current macOS or Linux host
+would give identical source trees different identities. Programs that declare
+`fork_instrumentation = "disabled"` do not hash that tooling.
 
 The global toolchain/sysroot fingerprint covers the reproducible build
 environment and sysroot recipe: the Nix flake, Rust toolchain file,

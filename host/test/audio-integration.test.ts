@@ -25,7 +25,11 @@ import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { detectPtrWidth } from "../src/constants";
-import type { CentralizedWorkerInitMessage } from "../src/worker-protocol";
+import type {
+  CentralizedWorkerInitMessage,
+  WorkerToHostMessage,
+} from "../src/worker-protocol";
+import { TestProcessReferenceOwners } from "./process-reference-owner-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -57,22 +61,34 @@ describe.skipIf(!existsSync(audiotestBinary))("audio integration", () => {
 
     const io = new NodePlatformIO();
     const workerAdapter = new NodeWorkerAdapter();
-    const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
+    const referenceOwners = new TestProcessReferenceOwners();
+    const workers = new Map<
+      number,
+      ReturnType<NodeWorkerAdapter["createWorker"]>
+    >();
 
     let pid = 0;
 
     let stdout = "";
     let resolveExit: (status: number) => void;
-    const exitPromise = new Promise<number>((resolve) => {
+    let rejectExit: (reason: Error) => void;
+    const exitPromise = new Promise<number>((resolve, reject) => {
       resolveExit = resolve;
+      rejectExit = reject;
     });
 
     const kernel = new CentralizedKernelWorker(
-      { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true, enableSyscallLog: false },
+      {
+        maxWorkers: 4,
+        dataBufferSize: 65536,
+        useSharedMemory: true,
+        enableSyscallLog: false,
+      },
       io,
       {
         onExit: (exitPid, exitStatus) => {
           if (exitPid === pid) {
+            referenceOwners.release(exitPid);
             kernel.unregisterProcess(exitPid);
             const w = workers.get(exitPid);
             if (w) {
@@ -104,6 +120,7 @@ describe.skipIf(!existsSync(audiotestBinary))("audio integration", () => {
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
     kernel.registerProcess(pid, memory, [channelOffset], { ptrWidth });
+    const referenceInit = referenceOwners.start(pid);
 
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
@@ -114,16 +131,34 @@ describe.skipIf(!existsSync(audiotestBinary))("audio integration", () => {
       argv: ["audiotest"],
       env: [],
       ptrWidth,
+      ...referenceInit,
     };
 
     const mainWorker = workerAdapter.createWorker(initData);
+    referenceOwners.attach(pid, mainWorker);
+    mainWorker.on("error", rejectExit);
+    mainWorker.on("message", (raw: unknown) => {
+      const message = raw as WorkerToHostMessage;
+      if (message.type === "error" && message.pid === pid) {
+        rejectExit(new Error(message.message));
+      }
+    });
     workers.set(pid, mainWorker);
 
     try {
       const exitCode = await Promise.race([
         exitPromise,
         new Promise<number>((_, reject) =>
-          setTimeout(() => reject(new Error("audiotest didn't exit in 10s")), 10_000),
+          setTimeout(
+            () =>
+              reject(
+                new Error(
+                  "audiotest didn't exit in 10s" +
+                    (stderr ? `: ${stderr}` : ""),
+                ),
+              ),
+            10_000,
+          ),
         ),
       ]);
       expect(exitCode).toBe(0);
@@ -169,6 +204,7 @@ describe.skipIf(!existsSync(audiotestBinary))("audio integration", () => {
       expect(kernel.drainAudio(after)).toBe(0);
     } finally {
       for (const [, w] of workers) await w.terminate().catch(() => {});
+      referenceOwners.close();
       void exitPromise.catch(() => {});
     }
   }, 30_000);

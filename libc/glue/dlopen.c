@@ -7,12 +7,14 @@
  *
  * Flow:
  *   1. dlopen() reads the .so file via normal open/read/close syscalls
- *   2. Calls __wasm_dlopen() host import with the bytes in memory
- *   3. Host compiles the Wasm side module, instantiates it into the
- *      process's memory/table space, returns a handle
- *   4. dlsym() calls __wasm_dlsym() host import to look up symbols
- *   5. For functions: returns the table index (== C function pointer)
- *   6. For data: returns the relocated memory address
+ *   2. Calls __wasm_dlopen_prepare() with the bytes in memory
+ *   3. Host returns a private transaction token without entering guest code
+ *   4. Each next step performs host-only compilation/instantiation as needed,
+ *      then libc calls the returned initialization entry through the process
+ *      table until the host atomically returns the public handle
+ *   5. dlsym() calls __wasm_dlsym() host import to look up symbols
+ *   6. For functions: returns the table index (== C function pointer)
+ *   7. For data: returns the relocated memory address
  */
 
 #include <stddef.h>
@@ -21,13 +23,17 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 /* Host imports — implemented in worker-main.ts */
-extern int __wasm_dlopen(const void *bytes, int len,
-                         const char *name, int name_len);
+extern int __wasm_dlopen_main(void);
+extern int __wasm_dlopen_prepare(const void *bytes, int len,
+                                 const char *name, int name_len, int flags);
+extern int __wasm_dlopen_next(int transaction, int *handle);
 extern int __wasm_dlsym(int handle, const char *name, int name_len);
 extern int __wasm_dlclose(int handle);
 extern int __wasm_dlerror(char *buf, int buf_max);
+extern void __wasm_posix_signal_checkpoint(void);
 
 /* RTLD flags (match musl dlfcn.h) */
 #ifndef RTLD_LAZY
@@ -50,12 +56,10 @@ static void set_dl_error(const char *msg) {
 }
 
 void *dlopen(const char *path, int flags) {
-    (void)flags;
-
     if (!path) {
         /* An empty host request returns an opaque handle for the main
          * program's global symbol scope. */
-        int handle = __wasm_dlopen(NULL, 0, NULL, 0);
+        int handle = __wasm_dlopen_main();
         if (handle <= 0) {
             int elen = __wasm_dlerror(dl_error_buf, (int)sizeof(dl_error_buf) - 1);
             if (elen > 0) {
@@ -113,11 +117,19 @@ void *dlopen(const char *path, int flags) {
         return NULL;
     }
 
-    /* Call host to compile + instantiate the Wasm side module */
-    int handle = __wasm_dlopen(buf, (int)st.st_size, path, (int)strlen(path));
+    /*
+     * The host owns module compilation and instance construction, but it must
+     * not call back into Wasm while this import frame is active. Each returned
+     * table entry has the canonical void(void) shape, so bootstrap,
+     * relocations, constructors, and any fork continuation beneath them remain
+     * an ordinary Wasm-to-Wasm call chain.
+     */
+    int transaction = __wasm_dlopen_prepare(
+        buf, (int)st.st_size, path, (int)strlen(path), flags);
+    __wasm_posix_signal_checkpoint();
     free(buf);
 
-    if (handle <= 0) {
+    if (transaction <= 0) {
         /* Get detailed error from host */
         int elen = __wasm_dlerror(dl_error_buf, (int)sizeof(dl_error_buf) - 1);
         if (elen > 0) {
@@ -125,6 +137,42 @@ void *dlopen(const char *path, int flags) {
             dl_error_set = 1;
         } else {
             set_dl_error("wasm instantiation failed");
+        }
+        return NULL;
+    }
+
+    int handle = 0;
+    for (;;) {
+        int entry = __wasm_dlopen_next(transaction, &handle);
+        /*
+         * WHY: the host may have used mmap or VFS channel requests while
+         * advancing this transaction. Their completions are JavaScript-owned,
+         * so deliver any caught signal only now, after the import returned and
+         * before entering a guest initializer.
+         */
+        __wasm_posix_signal_checkpoint();
+        if (entry < 0) {
+            int elen = __wasm_dlerror(
+                dl_error_buf, (int)sizeof(dl_error_buf) - 1);
+            if (elen > 0) {
+                dl_error_buf[elen] = '\0';
+                dl_error_set = 1;
+            } else {
+                set_dl_error("wasm initialization failed");
+            }
+            return NULL;
+        }
+        if (entry == 0) break;
+        ((void (*)(void))(uintptr_t)(unsigned int)entry)();
+    }
+
+    if (handle <= 0) {
+        int elen = __wasm_dlerror(dl_error_buf, (int)sizeof(dl_error_buf) - 1);
+        if (elen > 0) {
+            dl_error_buf[elen] = '\0';
+            dl_error_set = 1;
+        } else {
+            set_dl_error("wasm loader commit failed");
         }
         return NULL;
     }
@@ -163,6 +211,7 @@ int dlclose(void *handle) {
     if (!handle) return 0;
     int h = (int)(long)handle;
     int ret = __wasm_dlclose(h);
+    __wasm_posix_signal_checkpoint();
     if (ret != 0) {
         set_dl_error("dlclose failed");
     } else {

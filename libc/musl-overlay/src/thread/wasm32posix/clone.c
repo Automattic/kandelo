@@ -17,6 +17,7 @@ extern int32_t kernel_clone(uint32_t fn_ptr, uint32_t stack_ptr,
                             uint32_t flags, uint32_t arg,
                             uint32_t ptid_ptr, uint32_t tls_ptr,
                             uint32_t ctid_ptr);
+extern void __wasm_posix_signal_checkpoint(void);
 
 int __clone(int (*fn)(void *), void *stack, int flags, void *arg, ...)
 {
@@ -35,7 +36,7 @@ int __clone(int (*fn)(void *), void *stack, int flags, void *arg, ...)
      */
     uintptr_t stack_ptr = (uintptr_t)stack & ~(uintptr_t)15;
 
-    return kernel_clone(
+    int result = kernel_clone(
         (uint32_t)(uintptr_t)fn,
         (uint32_t)stack_ptr,
         (uint32_t)flags,
@@ -44,4 +45,11 @@ int __clone(int (*fn)(void *), void *stack, int flags, void *arg, ...)
         (uint32_t)(uintptr_t)tls,
         (uint32_t)(uintptr_t)ctid
     );
+    /*
+     * kernel_clone's channel completion is consumed by process-worker
+     * JavaScript. Run caught handlers only after that import has returned,
+     * through the same libc-owned checkpoint used by fork and staged dlopen.
+     */
+    __wasm_posix_signal_checkpoint();
+    return result;
 }
