@@ -26,8 +26,11 @@ Do not start a publishable rebuild until all of the following are true:
 2. `ABI_VERSION` is 43, `abi/snapshot.json` and generated TypeScript constants
    are regenerated, and both ABI checks pass.
 3. The source-controlled program-package projection is regenerated after the
-   final instrumenter/tool digest. A stale projection must fail the limited
-   rootfs-scope derivation instead of selecting an incomplete rebuild.
+   final instrumenter/tool digest. That digest must use the target-unfiltered
+   non-dev Cargo dependency union; a current-host-filtered graph gives macOS
+   and Linux different keys in a cache namespace that has no host dimension.
+   A stale projection must fail the limited rootfs-scope derivation instead of
+   selecting an incomplete rebuild.
 4. Fresh-instance Node and browser tests, pthread fork, side-module/dlopen
    replay, artifact guards, and the selected POSIX/package gates are green.
 5. Brandon has explicitly approved the exact final head for kernel/fork

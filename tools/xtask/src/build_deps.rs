@@ -1616,14 +1616,17 @@ struct CargoLockPackage {
     checksum: Option<String>,
 }
 
+const FORK_INSTRUMENT_CARGO_METADATA_ARGS: &[&str] =
+    &["metadata", "--format-version=1", "--locked"];
+
 fn fork_instrument_cargo_dependency_digest(root: &Path) -> Result<[u8; 32], String> {
-    let host_target = host_target_triple()?;
+    // WHY: program cache paths have no build-host dimension. Filtering this
+    // graph through the current macOS or Linux host made one source tree
+    // compute different identities. Cargo's unfiltered graph is the stable
+    // union, so any dependency that can build the instrumenter invalidates the
+    // shared generation without making the key host-specific.
     let output = Command::new("cargo")
-        .arg("metadata")
-        .arg("--format-version=1")
-        .arg("--locked")
-        .arg("--filter-platform")
-        .arg(&host_target)
+        .args(FORK_INSTRUMENT_CARGO_METADATA_ARGS)
         .current_dir(root)
         .output()
         .map_err(|e| format!("run cargo metadata for fork-instrument cache key: {e}"))?;
@@ -1641,25 +1644,6 @@ fn fork_instrument_cargo_dependency_digest(root: &Path) -> Result<[u8; 32], Stri
     let lock: CargoLock = toml::from_str(&lock_text)
         .map_err(|e| format!("parse Cargo.lock for fork-instrument cache key: {e}"))?;
     fork_instrument_cargo_dependency_digest_from_metadata(root, &metadata, &lock)
-}
-
-fn host_target_triple() -> Result<String, String> {
-    let output = Command::new("rustc")
-        .arg("-vV")
-        .output()
-        .map_err(|e| format!("run rustc -vV: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "rustc -vV failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .lines()
-        .find_map(|line| line.strip_prefix("host: ").map(str::to_owned))
-        .filter(|host| !host.is_empty())
-        .ok_or_else(|| "rustc -vV did not report host target".to_string())
 }
 
 fn fork_instrument_cargo_dependency_digest_from_metadata(
@@ -1736,7 +1720,7 @@ fn fork_instrument_cargo_dependency_digest_from_metadata(
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut h = Sha256::new();
-    h.update(b"fork-instrument-cargo-build-deps-v1\n");
+    h.update(b"fork-instrument-cargo-build-deps-v2-host-union\n");
     for (stable_id, features, deps, checksum) in entries {
         h.update(b"package\0");
         h.update(stable_id.as_bytes());
@@ -10834,6 +10818,19 @@ index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
         assert!(
             !FORK_INSTRUMENT_TOOL_INPUTS.contains(&"Cargo.lock"),
             "raw Cargo.lock changes are too broad for program package cache keys"
+        );
+    }
+
+    #[test]
+    fn fork_instrument_dependency_metadata_is_not_build_host_filtered() {
+        assert_eq!(
+            FORK_INSTRUMENT_CARGO_METADATA_ARGS,
+            ["metadata", "--format-version=1", "--locked"],
+            "shared package cache keys must hash Cargo's cross-host dependency union"
+        );
+        assert!(
+            !FORK_INSTRUMENT_CARGO_METADATA_ARGS.contains(&"--filter-platform"),
+            "a host-filtered dependency graph gives macOS and Linux different package identities"
         );
     }
 
