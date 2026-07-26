@@ -51,9 +51,13 @@ env:
       while true; do
         if git fetch "$@"; then
           return 0
+        else
+          # WHY: capture the fetch status inside the conditional. After `fi`,
+          # Bash reports the status of the `if` compound command, which is zero
+          # when its false condition ran no branch.
+          rc=$?
         fi
 
-        rc=$?
         if [ "$attempt" -ge "$max_attempts" ]; then
           return "$rc"
         fi
@@ -303,6 +307,7 @@ jobs:
             local delay=2
             local stdout_file
             local stderr_file
+            local rc
 
             stdout_file="$(mktemp)"
             stderr_file="$(mktemp)"
@@ -315,9 +320,13 @@ jobs:
                 cat "$stdout_file"
                 rm -f "$stdout_file" "$stderr_file"
                 return 0
+              else
+                # WHY: capture the command status inside the conditional.
+                # Reading $? after `fi` would see the successful status of the
+                # `if` compound command and falsely turn exhaustion into success.
+                rc=$?
               fi
 
-              local rc=$?
               if [ "$attempt" -ge "$max_attempts" ]; then
                 cat "$stderr_file" >&2
                 if [ -s "$stdout_file" ]; then
@@ -395,6 +404,7 @@ jobs:
             local delay=2
             local stdout_file
             local stderr_file
+            local rc
 
             stdout_file="$(mktemp)"
             stderr_file="$(mktemp)"
@@ -407,9 +417,13 @@ jobs:
                 cat "$stdout_file"
                 rm -f "$stdout_file" "$stderr_file"
                 return 0
+              else
+                # WHY: capture the command status inside the conditional.
+                # Reading $? after `fi` would see the successful status of the
+                # `if` compound command and falsely turn exhaustion into success.
+                rc=$?
               fi
 
-              local rc=$?
               if [ "$attempt" -ge "$max_attempts" ]; then
                 cat "$stderr_file" >&2
                 if [ -s "$stdout_file" ]; then
@@ -513,6 +527,7 @@ jobs:
             local delay=2
             local stdout_file
             local stderr_file
+            local rc
 
             stdout_file="$(mktemp)"
             stderr_file="$(mktemp)"
@@ -525,9 +540,13 @@ jobs:
                 cat "$stdout_file"
                 rm -f "$stdout_file" "$stderr_file"
                 return 0
+              else
+                # WHY: capture the command status inside the conditional.
+                # Reading $? after `fi` would see the successful status of the
+                # `if` compound command and falsely turn exhaustion into success.
+                rc=$?
               fi
 
-              local rc=$?
               if [ "$attempt" -ge "$max_attempts" ]; then
                 cat "$stderr_file" >&2
                 if [ -s "$stdout_file" ]; then

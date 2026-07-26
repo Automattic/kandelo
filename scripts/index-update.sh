@@ -131,6 +131,7 @@ gh_retry() {
   local delay=2
   local stdout_file
   local stderr_file
+  local rc
 
   stdout_file="$(mktemp)"
   stderr_file="$(mktemp)"
@@ -143,9 +144,13 @@ gh_retry() {
       cat "$stdout_file"
       rm -f "$stdout_file" "$stderr_file"
       return 0
+    else
+      # WHY: capture the command status inside the conditional. Reading $?
+      # after `fi` would see the successful status of the `if` compound
+      # command and falsely turn an exhausted publication retry into success.
+      rc=$?
     fi
 
-    local rc=$?
     if [ "$attempt" -ge "$max_attempts" ]; then
       cat "$stderr_file" >&2
       if [ -s "$stdout_file" ]; then
