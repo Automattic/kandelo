@@ -5,6 +5,12 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 bash "$REPO_ROOT/.github/actions/detect-change-scope/test-ci-scope-paths.sh"
+# Keep the package-publish gate directly wired to the bounded migration lane;
+# the larger publisher suite owns its complete positive and negative matrix.
+bash "$REPO_ROOT/scripts/homebrew-rootfs-publication-selection.sh" \
+  --formulae dinit \
+  --arches wasm32 \
+  --require-vfs-acceptance false
 HOST_TARGET=$(rustc -vV | awk '/^host:/ {print $2}')
 cargo test -p xtask --target "$HOST_TARGET" staging_reuse --no-fail-fast
 cargo test -p xtask --target "$HOST_TARGET" package_matrix --no-fail-fast

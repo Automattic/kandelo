@@ -94,6 +94,14 @@ or maintenance rebuild rejects either missing tag. A dry run may omit either
 tag because it cannot write, but any supplied tag still has to be an exact
 architecture-bound content tag.
 
+The preserved schema-1 `rootfs-wasm32` generation is a narrower migration
+bridge. Its executable selection policy admits only the normalized set
+`bash`, `dinit`, and `m4`, only for `wasm32`, and rejects dependency-bearing
+VFS acceptance. The reusable publisher invokes that policy before planning
+Formula work. Adding another Formula therefore requires a reviewed policy
+change and package-generation evidence; a caller cannot broaden the older
+generation through workflow input.
+
 The publisher requires each generation's embedded package source to equal its
 admitted exact-main SHA and materializes it before package resolution. Formula
 build/test helpers use the verified local wasm32 generation because those

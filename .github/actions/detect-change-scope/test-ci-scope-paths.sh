@@ -307,6 +307,12 @@ assert_matches package_publish_flow_changed_files \
 assert_matches package_publish_flow_changed_files \
   "scripts/release-index-state.sh" \
   "scripts/release-index-state.sh"
+assert_not_matches package_archive_changed_files \
+  "scripts/homebrew-rootfs-publication-selection.sh" \
+  "scripts/homebrew-rootfs-publication-selection.sh"
+assert_matches package_publish_flow_changed_files \
+  "scripts/homebrew-rootfs-publication-selection.sh" \
+  "scripts/homebrew-rootfs-publication-selection.sh"
 assert_matches package_publish_flow_changed_files \
   "tests/scripts/release-index-state.sh" \
   "tests/scripts/release-index-state.sh"
