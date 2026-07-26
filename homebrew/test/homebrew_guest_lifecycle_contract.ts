@@ -12,6 +12,9 @@ const CORE_ORIGIN =
 const CANARY_TAP = "brandonpayton/kandelo-canary";
 const CANARY_ORIGIN =
   "https://github.com/brandonpayton/homebrew-kandelo-canary.git";
+const CORE_BZIP2 = `${CORE_TAP}/bzip2`;
+const CORE_DASH = `${CORE_TAP}/dash`;
+const CANARY_M4 = `${CANARY_TAP}/m4`;
 const EXACT_GIT_REVISION = /^[0-9a-f]{40}$/;
 
 export interface HomebrewGuestLifecycleRevisions {
@@ -67,6 +70,38 @@ assert_poured() {
     abort "bottle was not poured" unless receipt.fetch("poured_from_bottle") == true
   ' "$1"
 }
+assert_runtime_dependency() {
+  /usr/bin/ruby -rjson -e '
+    receipt = JSON.parse(File.binread(File.join(ARGV.fetch(0), "INSTALL_RECEIPT.json")))
+    dependencies = receipt.fetch("runtime_dependencies")
+    abort "receipt does not bind expected runtime dependency" unless
+      dependencies.any? { |dependency| dependency["full_name"] == ARGV.fetch(1) }
+  ' "$1" "$2"
+}
+snapshot_trust() {
+  /usr/bin/brew trust --json=v1 >"$1"
+}
+assert_formula_trust() {
+  /usr/bin/ruby -rjson -e '
+    document = JSON.parse(File.binread(ARGV.fetch(0)))
+    tap = ARGV.fetch(1)
+    formula = ARGV.fetch(2)
+    expected = ARGV.fetch(3) == "present"
+    taps = document.fetch("taps")
+    formulae = document.fetch("formulae")
+    abort "trust JSON has invalid tap or Formula entries" unless
+      taps.is_a?(Array) && formulae.is_a?(Array)
+    abort "lifecycle granted whole-tap trust" if taps.include?(tap)
+    present = formulae.include?(formula)
+    abort "Formula trust state differs from lifecycle phase" unless present == expected
+  ' "$1" "$2" "$3" "$4"
+}
+assert_untrusted_tap_discovery() {
+  tap="$1"
+  output="$2"
+  /usr/bin/grep -Fqx "  $tap" "$output" ||
+    fail "stock Homebrew did not report the installed tap as untrusted"
+}
 assert_clean_tap() {
   tap_root="$1"
   expected_origin="$2"
@@ -108,6 +143,7 @@ export HOMEBREW_NO_ENV_HINTS=1
 # making no-API mode clone the complete homebrew/core repository.
 export HOMEBREW_NO_INSTALL_FROM_API=1
 export HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1
+export HOMEBREW_REQUIRE_TAP_TRUST=1
 export GIT_TERMINAL_PROMPT=0
 
 repository="$(/usr/bin/brew --repository)"
@@ -121,6 +157,17 @@ core_tap="$(/usr/bin/brew --repository ${CORE_TAP})"
 /usr/bin/git -C "$core_tap" checkout --detach ${revisions.coreRevision}
 assert_clean_tap "$core_tap" ${CORE_ORIGIN} ${revisions.coreRevision}
 [ ! -e "$core_repository" ] || fail "first-party tap created homebrew/core"
+
+# WHY: cloning a tap must not grant authority to all of its current and future
+# Formulae. Prove stock Homebrew discovers the tap as untrusted before any
+# fully qualified package operation creates narrower item trust.
+core_untrusted=/tmp/kandelo-homebrew-core.untrusted
+core_trust_before=/tmp/kandelo-homebrew-core.trust-before.json
+/usr/bin/brew untrust --tap >"$core_untrusted"
+assert_untrusted_tap_discovery ${CORE_TAP} "$core_untrusted"
+snapshot_trust "$core_trust_before"
+assert_formula_trust "$core_trust_before" ${CORE_TAP} ${CORE_BZIP2} absent
+assert_formula_trust "$core_trust_before" ${CORE_TAP} ${CORE_DASH} absent
 
 # WHY: the base shell is already composed from this bottle closure. Remove the
 # existing receipt through stock Homebrew so the following command proves a
@@ -146,6 +193,11 @@ reinstalled_bzip2_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/bzip2)"
   fail "Bzip2 reinstall changed its versioned prefix"
 assert_poured "$reinstalled_bzip2_prefix"
 assert_bzip2_roundtrip "$reinstalled_bzip2_prefix"
+core_trust_after=/tmp/kandelo-homebrew-core.trust-after.json
+snapshot_trust "$core_trust_after"
+assert_formula_trust "$core_trust_after" ${CORE_TAP} ${CORE_BZIP2} present
+/usr/bin/brew untrust --tap >"$core_untrusted"
+assert_untrusted_tap_discovery ${CORE_TAP} "$core_untrusted"
 
 progress "tapping the exact independent third-party repository"
 /usr/bin/brew tap ${CANARY_TAP} ${CANARY_ORIGIN}
@@ -154,6 +206,16 @@ canary_tap="$(/usr/bin/brew --repository ${CANARY_TAP})"
 /usr/bin/git -C "$canary_tap" checkout --detach ${revisions.canaryRevision}
 assert_clean_tap "$canary_tap" ${CANARY_ORIGIN} ${revisions.canaryRevision}
 [ ! -e "$core_repository" ] || fail "third-party tap created homebrew/core"
+
+# WHY: keep third-party authority at Formula granularity. The fully qualified
+# M4 install below may create item trust, but tapping alone must remain
+# discoverable as untrusted and must not create either tap or Formula trust.
+canary_untrusted=/tmp/kandelo-homebrew-canary.untrusted
+canary_trust_before=/tmp/kandelo-homebrew-canary.trust-before.json
+/usr/bin/brew untrust --tap >"$canary_untrusted"
+assert_untrusted_tap_discovery ${CANARY_TAP} "$canary_untrusted"
+snapshot_trust "$canary_trust_before"
+assert_formula_trust "$canary_trust_before" ${CANARY_TAP} ${CANARY_M4} absent
 
 # WHY: core M4 and canary M4 have the same conventional Cellar identity. Use
 # stock uninstall to create one truthful target before the independent tap
@@ -166,19 +228,40 @@ assert_precomposed_bottle "$composed_m4_prefix"
 
 dash_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/dash)"
 assert_precomposed_bottle "$dash_prefix"
+# WHY: the fully qualified canary argument grants authority only to M4.
+# Homebrew independently evaluates its fully qualified Dash dependency, so
+# grant that one already-pinned first-party Formula without trusting the tap.
+/usr/bin/brew trust --formula ${CORE_DASH}
+core_dependency_trust=/tmp/kandelo-homebrew-core.dependency-trust.json
+snapshot_trust "$core_dependency_trust"
+assert_formula_trust "$core_dependency_trust" ${CORE_TAP} ${CORE_BZIP2} present
+assert_formula_trust "$core_dependency_trust" ${CORE_TAP} ${CORE_DASH} present
+/usr/bin/brew untrust --tap >"$core_untrusted"
+assert_untrusted_tap_discovery ${CORE_TAP} "$core_untrusted"
 progress "installing independent M4 with its first-party Dash dependency"
 /usr/bin/brew install --no-ask --force-bottle ${CANARY_TAP}/m4
 m4_prefix="$(/usr/bin/brew --prefix ${CANARY_TAP}/m4)"
 assert_poured "$m4_prefix"
 assert_precomposed_bottle "$dash_prefix"
-/usr/bin/ruby -rjson -e '
-  receipt = JSON.parse(File.binread(File.join(ARGV.fetch(0), "INSTALL_RECEIPT.json")))
-  dependencies = receipt.fetch("runtime_dependencies")
-  abort "M4 receipt does not bind first-party Dash" unless
-    dependencies.any? { |dependency| dependency["full_name"] == ARGV.fetch(1) }
-' "$m4_prefix" ${CORE_TAP}/dash
+assert_runtime_dependency "$m4_prefix" ${CORE_TAP}/dash
 "$m4_prefix/bin/m4" --version >/dev/null
 assert_m4_execution "$m4_prefix" cross-tap-ok
+
+progress "reinstalling independent M4 with the same first-party dependency"
+/usr/bin/brew reinstall --force-bottle ${CANARY_TAP}/m4
+reinstalled_m4_prefix="$(/usr/bin/brew --prefix ${CANARY_TAP}/m4)"
+[ "$reinstalled_m4_prefix" = "$m4_prefix" ] ||
+  fail "M4 reinstall changed its versioned prefix"
+assert_poured "$reinstalled_m4_prefix"
+assert_precomposed_bottle "$dash_prefix"
+assert_runtime_dependency "$reinstalled_m4_prefix" ${CORE_TAP}/dash
+assert_m4_execution "$reinstalled_m4_prefix" cross-tap-reinstall-ok
+
+canary_trust_after=/tmp/kandelo-homebrew-canary.trust-after.json
+snapshot_trust "$canary_trust_after"
+assert_formula_trust "$canary_trust_after" ${CANARY_TAP} ${CANARY_M4} present
+/usr/bin/brew untrust --tap >"$canary_untrusted"
+assert_untrusted_tap_discovery ${CANARY_TAP} "$canary_untrusted"
 
 state="$repository/var/homebrew/kandelo-guest-lifecycle-state"
 {
@@ -189,6 +272,10 @@ state="$repository/var/homebrew/kandelo-guest-lifecycle-state"
 assert_clean_tap "$core_tap" ${CORE_ORIGIN} ${revisions.coreRevision}
 assert_clean_tap "$canary_tap" ${CANARY_ORIGIN} ${revisions.canaryRevision}
 [ ! -e "$core_repository" ] || fail "lifecycle install created homebrew/core"
+/usr/bin/rm -f \
+  "$core_untrusted" "$core_trust_before" "$core_trust_after" \
+  "$core_dependency_trust" \
+  "$canary_untrusted" "$canary_trust_before" "$canary_trust_after"
 progress "phase one is durable and ready for rootfs export"
 /usr/bin/printf '%s\n' ${HOMEBREW_GUEST_LIFECYCLE_PHASE_ONE_MARKER}
 `.trim();
@@ -227,6 +314,37 @@ assert_poured() {
     receipt = JSON.parse(File.binread(File.join(ARGV.fetch(0), "INSTALL_RECEIPT.json")))
     abort "bottle was not poured" unless receipt.fetch("poured_from_bottle") == true
   ' "$1"
+}
+snapshot_trust() {
+  /usr/bin/brew trust --json=v1 >"$1"
+}
+assert_formula_trust() {
+  /usr/bin/ruby -rjson -e '
+    document = JSON.parse(File.binread(ARGV.fetch(0)))
+    tap = ARGV.fetch(1)
+    formula = ARGV.fetch(2)
+    expected = ARGV.fetch(3) == "present"
+    taps = document.fetch("taps")
+    formulae = document.fetch("formulae")
+    abort "trust JSON has invalid tap or Formula entries" unless
+      taps.is_a?(Array) && formulae.is_a?(Array)
+    abort "lifecycle granted whole-tap trust" if taps.include?(tap)
+    present = formulae.include?(formula)
+    abort "Formula trust state differs from lifecycle phase" unless present == expected
+  ' "$1" "$2" "$3" "$4"
+}
+assert_no_tap_trust() {
+  /usr/bin/ruby -rjson -e '
+    document = JSON.parse(File.binread(ARGV.fetch(0)))
+    tap = ARGV.fetch(1)
+    prefix = "#{tap}/"
+    abort "whole-tap trust remains after lifecycle cleanup" if
+      document.fetch("taps").include?(tap)
+    %w[formulae casks commands].each do |key|
+      abort "#{key} trust remains after lifecycle cleanup" if
+        document.fetch(key).any? { |entry| entry.start_with?(prefix) }
+    end
+  ' "$1" "$2"
 }
 assert_clean_tap() {
   tap_root="$1"
@@ -302,6 +420,7 @@ export HOMEBREW_NO_ENV_HINTS=1
 # companion flag keeps core metadata unavailable instead of cloning core.
 export HOMEBREW_NO_INSTALL_FROM_API=1
 export HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1
+export HOMEBREW_REQUIRE_TAP_TRUST=1
 export GIT_TERMINAL_PROMPT=0
 
 repository="$(/usr/bin/brew --repository)"
@@ -320,6 +439,15 @@ core_tap="$(/usr/bin/brew --repository ${CORE_TAP})"
 canary_tap="$(/usr/bin/brew --repository ${CANARY_TAP})"
 assert_clean_tap "$core_tap" ${CORE_ORIGIN} ${revisions.coreRevision}
 assert_clean_tap "$canary_tap" ${CANARY_ORIGIN} ${revisions.canaryRevision}
+
+# WHY: no Formula-evaluating operation has run in this boot yet. Observing the
+# narrow entries now proves the exported rootfs carried trust state across the
+# real reboot instead of the second phase silently recreating it.
+reboot_trust=/tmp/kandelo-homebrew-reboot.trust.json
+snapshot_trust "$reboot_trust"
+assert_formula_trust "$reboot_trust" ${CORE_TAP} ${CORE_BZIP2} present
+assert_formula_trust "$reboot_trust" ${CORE_TAP} ${CORE_DASH} present
+assert_formula_trust "$reboot_trust" ${CANARY_TAP} ${CANARY_M4} present
 
 bzip2_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/bzip2)"
 m4_prefix="$(/usr/bin/brew --prefix ${CANARY_TAP}/m4)"
@@ -346,7 +474,7 @@ before_bzip2=/tmp/kandelo-homebrew-bzip2.before.json
 after_bzip2=/tmp/kandelo-homebrew-bzip2.after.json
 before_m4=/tmp/kandelo-homebrew-m4.before.json
 after_m4=/tmp/kandelo-homebrew-m4.after.json
-/usr/bin/brew outdated --json=v2 >"$outdated"
+/usr/bin/brew outdated --json=v2 ${CORE_BZIP2} ${CANARY_M4} >"$outdated"
 /usr/bin/ruby -rjson -e '
   document = JSON.parse(File.binread(ARGV.fetch(0)))
   abort "brew outdated omitted formulae" unless document["formulae"].is_a?(Array)
@@ -354,7 +482,7 @@ after_m4=/tmp/kandelo-homebrew-m4.after.json
   forbidden = ARGV.drop(1)
   abort "newly installed pinned Formula is unexpectedly outdated" unless
     (selected & forbidden).empty?
-' "$outdated" bzip2 m4
+' "$outdated" ${CORE_BZIP2} ${CANARY_M4}
 snapshot_package_identity ${CORE_TAP}/bzip2 "$before_bzip2"
 snapshot_package_identity ${CANARY_TAP}/m4 "$before_m4"
 /usr/bin/brew upgrade --force-bottle ${CORE_TAP}/bzip2 ${CANARY_TAP}/m4
@@ -381,7 +509,13 @@ progress "uninstalling lifecycle bottles and untapping both repositories"
 /usr/bin/brew uninstall ${CORE_TAP}/bzip2
 [ ! -e "$bzip2_prefix" ] || fail "Bzip2 prefix remains after uninstall"
 
+# WHY: pinned stock Homebrew removes a tap checkout without deleting its
+# formula-level trust entries. Revoke that narrow authority through the stock
+# command while the tap still exists, then prove the untap leaves no stale
+# authority that could apply if the same name is tapped again.
+/usr/bin/brew untrust ${CANARY_TAP}
 /usr/bin/brew untap ${CANARY_TAP}
+/usr/bin/brew untrust ${CORE_TAP}
 # WHY: the base shell has receipts for the rest of the direct-composed core
 # closure. Force removes only this temporary tap checkout; it does not remove
 # those packages or alter their receipts.
@@ -393,7 +527,12 @@ progress "uninstalling lifecycle bottles and untapping both repositories"
 [ ! -e "$repository/Library/Taps/homebrew/homebrew-core" ] ||
   fail "lifecycle created homebrew/core"
 
-/usr/bin/rm -f "$state"
+cleanup_trust=/tmp/kandelo-homebrew-cleanup.trust.json
+snapshot_trust "$cleanup_trust"
+assert_no_tap_trust "$cleanup_trust" ${CANARY_TAP}
+assert_no_tap_trust "$cleanup_trust" ${CORE_TAP}
+
+/usr/bin/rm -f "$state" "$reboot_trust" "$cleanup_trust"
 /usr/bin/printf '%s\n' ${HOMEBREW_GUEST_LIFECYCLE_PHASE_TWO_MARKER}
 `.trim();
 }

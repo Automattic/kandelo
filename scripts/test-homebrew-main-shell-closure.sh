@@ -13,6 +13,8 @@ WORKFLOW="$REPO_ROOT/.github/workflows/homebrew-main-shell-ci.yml"
 IMAGE_CONTRACT="$REPO_ROOT/scripts/homebrew-main-shell-image-contract.ts"
 IMAGE_CONTRACT_TEST="$REPO_ROOT/scripts/homebrew-main-shell-image-contract.test.ts"
 NODE_SMOKE="$REPO_ROOT/scripts/homebrew-main-shell-node-smoke.ts"
+GUEST_LIFECYCLE_NODE="$REPO_ROOT/homebrew/test/homebrew_guest_lifecycle_node.ts"
+GUEST_LIFECYCLE_FIXTURE="$REPO_ROOT/scripts/create-homebrew-guest-lifecycle-fixture.ts"
 BROWSER_SMOKE="$REPO_ROOT/apps/browser-demos/test/kandelo-homebrew-main-shell.spec.ts"
 EAGER_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts"
 MATERIALIZED_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-materialized-vfs-image.ts"
@@ -77,6 +79,7 @@ for required_path in \
   "apps/browser-demos/**" \
   "crates/shared/**" \
   "homebrew/main-shell*" \
+  "homebrew/test/**" \
   "host/src/**" \
   "host/test/**" \
   "images/rootfs/**" \
@@ -91,6 +94,7 @@ for required_path in \
   "scripts/dev-shell.sh" \
   "scripts/browser-binary-package-roots.mjs" \
   "scripts/create-homebrew-bottle-mirror-publish-manifest.ts" \
+  "scripts/create-homebrew-guest-lifecycle-fixture*.ts" \
   "scripts/fetch-binaries.sh" \
   "scripts/homebrew-brewfile-selection.rb" \
   "scripts/homebrew-language-runtime-contract.ts" \
@@ -303,7 +307,7 @@ grep -Eq '(^|[[:space:]])(cp|mv|install|ln)[[:space:]].*(local-binaries|\$instal
   <<<"$candidate_install_workflow_block" &&
   fail "candidate proof must not write or copy directly into local-binaries"
 node_smoke_workflow_block="$(sed -n \
-  '/- name: Boot the exact installed bytes in Node/,/- name: Install first-party Bzip2/p' \
+  '/- name: Boot the exact installed bytes in Node/,/- name: Exercise the live first- and third-party lifecycle in Node/p' \
   "$WORKFLOW")"
 grep -Fq -- '--image "${{ steps.image.outputs.path }}"' \
   <<<"$node_smoke_workflow_block" ||
@@ -349,13 +353,137 @@ grep -Fq '(mode === "closed" && !plan)' "$NODE_SMOKE" ||
   fail "Node smoke must require a local mirror plan in closed mode"
 grep -Fq '(mode === "public" && plan !== undefined)' "$NODE_SMOKE" ||
   fail "Node smoke must reject a local mirror plan in public mode"
+
+for input_contract in \
+  "Exact live Kandelo default-branch commit M" \
+  "Exact live first-party tap commit TF" \
+  "Exact live independent-canary tap commit C"
+do
+  grep -Fq "$input_contract" "$WORKFLOW" ||
+    fail "manual live lifecycle is missing input contract: $input_contract"
+done
+jq -e '
+  .lifecycle_installs[0].revision |
+  type == "string" and test("^[0-9a-f]{40}$")
+' "$RUNTIME_SUPPORT" >/dev/null ||
+  fail "runtime support must bind one exact reviewed canary product revision"
+grep -Fq \
+  "SHELL_ACTIVATION_MODE: \${{ github.event_name == 'workflow_dispatch' && inputs.transport_mode == 'closed' && 'bottles' || 'source-rootfs' }}" \
+  "$WORKFLOW" ||
+  fail "only the manual closed lifecycle may select the bottled product lane"
+
+live_input_block="$(sed -n \
+  '/- name: Bind exact live lifecycle revisions/,/- name: Fetch musl submodule/p' \
+  "$WORKFLOW")"
+for exact_binding in \
+  "github.event_name == 'workflow_dispatch' && inputs.transport_mode == 'closed'" \
+  '[ "$SHELL_ACTIVATION_MODE" = bottles ]' \
+  '[[ "$revision" =~ ^[0-9a-f]{40}$ ]]' \
+  '[ "$GITHUB_REF" = refs/heads/main ]' \
+  '[ "$(git rev-parse HEAD)" = "$KANDELO_M" ]' \
+  'env -u GH_TOKEN -u GITHUB_TOKEN git ls-remote' \
+  '"https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main' \
+  'homebrew/main-shell-homebrew-runtime-support.json' \
+  'homebrew/main-shell-migration-lock.json' \
+  'jq -e --arg canary "$CANARY_C"' \
+  '$installs[0].revision == $canary' \
+  'echo "m=$KANDELO_M"' \
+  'echo "tf=$CORE_TAP_TF"' \
+  'echo "c=$CANARY_C"'
+do
+  grep -Fq "$exact_binding" <<<"$live_input_block" ||
+    fail "manual live lifecycle does not bind exact M/TF/C input: $exact_binding"
+done
+grep -Fq 'Metadata corroborates' \
+  <<<"$live_input_block" ||
+  fail "the M/TF/C input boundary needs its maintenance rationale inline"
+local_lock_line="$(grep -nF \
+  'homebrew/main-shell-migration-lock.json' <<<"$live_input_block" |
+  head -n1 | cut -d: -f1)"
+live_main_read_line="$(grep -nF \
+  'env -u GH_TOKEN -u GITHUB_TOKEN git ls-remote' <<<"$live_input_block" |
+  head -n1 | cut -d: -f1)"
+[ -n "$local_lock_line" ] && [ -n "$live_main_read_line" ] &&
+  [ "$local_lock_line" -lt "$live_main_read_line" ] ||
+  fail "all local TF/C locks must reject drift before the live main read"
+live_input_line="$(grep -nF -- '- name: Bind exact live lifecycle revisions' \
+  "$WORKFLOW" | cut -d: -f1)"
+bottle_candidate_line="$(grep -nF -- '- name: Build the exact lazy shell from public bottles' \
+  "$WORKFLOW" | cut -d: -f1)"
+[ -n "$live_input_line" ] && [ -n "$bottle_candidate_line" ] &&
+  [ "$live_input_line" -lt "$bottle_candidate_line" ] ||
+  fail "live M/TF/C validation must precede bottled candidate and lifecycle work"
+
+live_fixture_block="$(sed -n \
+  '/- name: Create the exact closed Chromium lifecycle fixture/,/- name: Build the sealed browser product tree/p' \
+  "$WORKFLOW")"
+for fixture_binding in \
+  "if: github.event_name == 'workflow_dispatch' && inputs.transport_mode == 'closed'" \
+  'scripts/create-homebrew-guest-lifecycle-fixture.ts' \
+  'env -u GH_TOKEN -u GITHUB_TOKEN git ls-remote' \
+  '.activation.atomic_group == $runtime_id' \
+  '.materialization.runtime_support.package_order ==' \
+  '$support[0].additional_formula_order' \
+  '.materialization.runtime_support.tree_count ==' \
+  '.materialization.runtime_support.deferred_relocation_formulae ==' \
+  '$support[0].deferred_formulae[].package' \
+  '.materialization.deferred_package_order +' \
+  '[.bottle_mirror.assets[].package]' \
+  '--image "${{ steps.bottle_candidate.outputs.image }}"' \
+  '--homebrew-bootstrap-spec homebrew/main-shell-brew-package-tree.json' \
+  '--homebrew-bootstrap-archive "${{ steps.bottle_candidate.outputs.bootstrap }}"' \
+  '--homebrew-bootstrap-env "${{ steps.bottle_candidate.outputs.bootstrap_env }}"' \
+  '--bottle-mirror "$RUNNER_TEMP/homebrew-main-shell-bottles"' \
+  '--core-revision "${{ steps.live-inputs.outputs.tf }}"' \
+  '--canary-revision "${{ steps.live-inputs.outputs.c }}"' \
+  'install_browser_fixture_asset "${{ steps.bottle_candidate.outputs.image }}"' \
+  'install_browser_fixture_asset homebrew/main-shell-brew-package-tree.json' \
+  'install_browser_fixture_asset "${{ steps.bottle_candidate.outputs.bootstrap }}"' \
+  'install_browser_fixture_asset "${{ steps.bottle_candidate.outputs.bootstrap_env }}"'
+do
+  grep -Fq -- "$fixture_binding" <<<"$live_fixture_block" ||
+    fail "Chromium fixture does not bind the Node lifecycle input: $fixture_binding"
+done
+grep -Fq 'same already-verified candidate bytes' <<<"$live_fixture_block" ||
+  fail "closed Chromium fixture routing needs its cross-host rationale inline"
+grep -Fq 'six-Formula base is not a brew runtime' <<<"$live_fixture_block" ||
+  fail "live lifecycle atomic runtime precondition needs its rationale inline"
+
+live_node_block="$(sed -n \
+  '/- name: Exercise the live first- and third-party lifecycle in Node/,/- name: Boot the current main-shell path in Chromium/p' \
+  "$WORKFLOW")"
+grep -Fq \
+  "if: github.event_name == 'workflow_dispatch' && inputs.transport_mode == 'closed'" \
+  <<<"$live_node_block" ||
+  fail "the Node live lifecycle must remain manual and closed-transport only"
+for node_binding in \
+  'homebrew/test/homebrew_guest_lifecycle_node.ts' \
+  '--image "${{ steps.bottle_candidate.outputs.image }}"' \
+  '--homebrew-bootstrap-spec homebrew/main-shell-brew-package-tree.json' \
+  '--homebrew-bootstrap-archive "${{ steps.bottle_candidate.outputs.bootstrap }}"' \
+  '--homebrew-bootstrap-env "${{ steps.bottle_candidate.outputs.bootstrap_env }}"' \
+  '--transport-mode closed' \
+  '--bottle-mirror-plan "${{ steps.mirror.outputs.plan }}"' \
+  '--core-revision "${{ steps.live-inputs.outputs.tf }}"' \
+  '--canary-revision "${{ steps.live-inputs.outputs.c }}"'
+do
+  grep -Fq -- "$node_binding" <<<"$live_node_block" ||
+    fail "product workflow does not invoke the exact Node lifecycle input: $node_binding"
+done
+grep -Fq 'await main();' "$GUEST_LIFECYCLE_NODE" ||
+  fail "the product workflow target is not the executable Node lifecycle runner"
+grep -Fq 'writeNewJson(out, validated)' "$GUEST_LIFECYCLE_FIXTURE" ||
+  fail "Chromium fixture generator must write only the validated exact fixture"
+
 grep -Fq '${{ steps.image.outputs.path }}' "$WORKFLOW" ||
   fail "main-shell evidence must retain the exact candidate image"
 grep -Fq '${{ steps.bottle_candidate.outputs.report }}' "$WORKFLOW" ||
   fail "main-shell evidence must retain the candidate composition report"
 for evidence in \
   '${{ steps.bottle_candidate.outputs.bootstrap }}' \
-  '${{ steps.bottle_candidate.outputs.bootstrap_env }}'
+  '${{ steps.bottle_candidate.outputs.bootstrap_env }}' \
+  '${{ runner.temp }}/homebrew-guest-lifecycle-browser-fixture.json' \
+  '${{ runner.temp }}/homebrew-guest-lifecycle-playwright.json'
 do
   grep -Fq "$evidence" "$WORKFLOW" ||
     fail "main-shell evidence must retain $evidence"
@@ -363,7 +491,7 @@ done
 grep -Fq 'apps/browser-demos/test-results' "$WORKFLOW" ||
   fail "main-shell evidence must retain browser failure traces"
 browser_smoke_workflow_block="$(sed -n \
-  '/- name: Boot the current main-shell path in Chromium/,/- name: Upload acceptance evidence/p' \
+  '/- name: Boot the current main-shell path in Chromium/,/- name: Upload exact closure evidence/p' \
   "$WORKFLOW")"
 grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT"' \
   <<<"$browser_smoke_workflow_block" ||
@@ -400,9 +528,30 @@ guest_lifecycle_browser_invocation="$(
 )"
 grep -Fq 'bash ../../scripts/dev-shell.sh env \' \
   <<<"$guest_lifecycle_browser_invocation" &&
+  grep -Fq '"KANDELO_BROWSER_DEMO_INPUTS=homebrew-vfs-test"' \
+    <<<"$guest_lifecycle_browser_invocation" &&
   grep -Fq -- '--grep "rejects a guest lifecycle fixture"' \
     <<<"$guest_lifecycle_browser_invocation" ||
   fail "offline guest-lifecycle rejection must run in its own browser process"
+live_guest_lifecycle_browser_invocation="$(sed -n \
+  '/# Run the rebooting live lifecycle/,/--reporter=json/p' \
+  "$WORKFLOW")"
+for live_browser_binding in \
+  '"PLAYWRIGHT_JSON_OUTPUT_FILE=$lifecycle_report"' \
+  '"KANDELO_BROWSER_DEMO_INPUTS=homebrew-vfs-test"' \
+  '"KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE=1"' \
+  '"KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_FIXTURE_PATH=${{ steps.live-fixture.outputs.fixture }}"' \
+  'npx playwright test test/homebrew-guest-lifecycle.spec.ts' \
+  '--grep "survives a Chromium rootfs reboot"' \
+  '--reporter=json'
+do
+  grep -Fq -- "$live_browser_binding" \
+    <<<"$live_guest_lifecycle_browser_invocation" ||
+    fail "live Chromium lifecycle invocation is missing: $live_browser_binding"
+done
+grep -Fq 'same exact image/bootstrap/mirror as Node' \
+  <<<"$live_guest_lifecycle_browser_invocation" ||
+  fail "live Chromium lifecycle needs its Node-parity rationale inline"
 shell_browser_invocation="$(
   browser_invocation_for '"$shell_spec"'
 )"
@@ -422,6 +571,8 @@ grep -Fq 'shell_spec=test/kandelo-homebrew-main-shell.spec.ts' "$WORKFLOW" &&
   fail "shell and lifecycle acceptance must each require one pristine browser proof"
 grep -Fq 'for report in "$shell_report" "$modeset_report"; do' "$WORKFLOW" ||
   fail "shell and MODESET acceptance must validate their exact one-test reports"
+grep -Fq "' \"\$lifecycle_report\" >/dev/null" "$WORKFLOW" ||
+  fail "live lifecycle acceptance must validate its exact one-test report"
 grep -Fq 'page.goto("/?demo=modeset"' "$BROWSER_SMOKE" &&
   fail "Homebrew shell acceptance must not start a second VFS in its browser process"
 grep -Fq -- '--project=chromium --reporter=json >"$report"' "$WORKFLOW" &&

@@ -573,10 +573,23 @@ a supported user-facing contract.
 
 The Node.js and Chromium lifecycle runners use the same generated guest
 scripts and host-neutral phase runner. They tap exact first- and third-party
-revisions, install and reinstall bottles, export and reboot the rootfs, execute
-the persisted packages, prove the pinned upgrade is a no-op, then uninstall and
-untap. A browser fixture only supplies host transport identities; it cannot
-replace or weaken those guest assertions.
+revisions, prove each tap remains discoverable as untrusted, and retain only
+the Formula-level trust that stock Homebrew creates for fully qualified
+operations or grants through `brew trust --formula`. The six-Formula image
+base is direct-composed rather than poured: its Bzip2, first-party M4, and Dash
+receipts must remain `built_as_bottle: true` and
+`poured_from_bottle: false`. The lifecycle explicitly trusts the already-pinned
+first-party Dash dependency without trusting its tap, then installs and
+reinstalls first-party Bzip2 and independent canary M4 through stock Homebrew.
+Both M4 receipts must bind Dash while Dash retains its truthful precomposed
+receipt.
+
+After exporting and rebooting the rootfs, both hosts recheck that narrow trust
+before any Formula-evaluating operation can recreate it. They execute the
+persisted packages, prove the pinned upgrade is a no-op, uninstall, revoke the
+selected item trust, untap, and verify no selected-tap authority remains. A
+browser fixture only supplies host transport identities; it cannot replace or
+weaken those guest assertions.
 
 The live Playwright proof is disabled unless
 `KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE=1` and
@@ -609,6 +622,37 @@ Closed payload requests begin only after that plan authorizes their complete
 URL, digest, size, and asset-name set. The verified payloads are then handed to
 the worker as an exhaustive transport: an undeclared request fails instead of
 falling back to ambient network.
+
+The product workflow's live lane is a manual, closed-transport cutover proof.
+It requires three exact lowercase 40-character inputs: Kandelo's live
+default-branch commit `M`, the final first-party tap commit `TF`, and the
+independent canary tap commit `C`. The workflow requires its checkout and a
+fresh anonymous read of `refs/heads/main` to equal `M`, requires the image
+catalog, migration lock, and exact candidate checkout to equal `TF`, and
+requires operator input `C` to equal the separately reviewed
+independent-canary product lock. All checked-in TF/C agreement is validated
+before the anonymous live-main read or any candidate construction.
+The product lock is agreement evidence; it does not replace the operator's
+mandatory `C` input.
+
+Pull-request, push, and public/manual runs remain on the exact source-rootfs
+acceptance path. Only a manual closed dispatch selects the bottled product
+lane. Before either host creates live lifecycle evidence, that lane requires
+the candidate's bootstrap recipe and composition report to bind the exact
+atomic runtime-support cohort; the six-Formula base alone is not accepted as a
+`brew` runtime. It then invokes the Node lifecycle runner and creates the
+Chromium fixture from the same candidate image, bootstrap
+spec/archive/environment, and recovered bottle mirror.
+
+Dispatch the live lane only after recording the three observed live commits:
+
+```bash
+gh workflow run homebrew-main-shell-ci.yml --ref main \
+  -f transport_mode=closed \
+  -f kandelo_main_revision=<M> \
+  -f core_tap_final_revision=<TF> \
+  -f canary_tap_revision=<C>
+```
 
 Before the Chromium reboot, the runner records the exported image's size and
 digest, then transfers its whole `ArrayBuffer` to the VFS-owning worker and

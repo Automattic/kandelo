@@ -20,6 +20,7 @@ import type {
 test("keeps Homebrew's no-API mode flags paired in every guest process", () => {
   const primary = "HOMEBREW_NO_INSTALL_FROM_API=1";
   const companion = "HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1";
+  const requireTrust = "HOMEBREW_REQUIRE_TAP_TRUST=1";
   const primaryIndex = HOMEBREW_GUEST_LIFECYCLE_ENV.indexOf(primary);
   assert.notEqual(primaryIndex, -1);
   assert.equal(
@@ -32,6 +33,12 @@ test("keeps Homebrew's no-API mode flags paired in every guest process", () => {
   );
   assert.equal(
     HOMEBREW_GUEST_LIFECYCLE_ENV.filter((entry) => entry === companion).length,
+    1,
+  );
+  assert.equal(HOMEBREW_GUEST_LIFECYCLE_ENV[primaryIndex + 2], requireTrust);
+  assert.equal(
+    HOMEBREW_GUEST_LIFECYCLE_ENV.filter((entry) => entry === requireTrust)
+      .length,
     1,
   );
 });

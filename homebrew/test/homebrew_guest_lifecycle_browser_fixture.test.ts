@@ -22,29 +22,53 @@ import {
 } from "./homebrew_guest_lifecycle_browser_fixture";
 
 test("maps closed canonical identities to one same-origin fixture directory", () => {
-  assert.equal(
-    createClosedFixtureSourceUrl(
-      "https://browser.test/homebrew-main-shell-bottles",
-      "https://github.com/example/project/releases/download/tag/payload.bin",
-    ),
-    "https://browser.test/homebrew-main-shell-bottles/payload.bin",
+  const originalLocation = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "location",
   );
-  assert.throws(
-    () =>
+  Object.defineProperty(globalThis, "location", {
+    configurable: true,
+    value: new URL("https://browser.test/pages/homebrew-vfs-test/"),
+  });
+  try {
+    assert.equal(
       createClosedFixtureSourceUrl(
-        undefined,
-        "https://example.test/payload.bin",
+        "/homebrew-main-shell-bottles",
+        "https://github.com/example/project/releases/download/tag/payload.bin",
       ),
-    /requires a same-origin asset root/,
-  );
-  assert.throws(
-    () =>
-      createClosedFixtureSourceUrl(
-        "https://browser.test/assets/",
-        "https://example.test/escaped%2Fpayload.bin",
-      ),
-    /asset name is invalid/,
-  );
+      "https://browser.test/homebrew-main-shell-bottles/payload.bin",
+    );
+    assert.throws(
+      () =>
+        createClosedFixtureSourceUrl(
+          "https://other.test/assets/",
+          "https://example.test/payload.bin",
+        ),
+      /asset root is invalid/,
+    );
+    assert.throws(
+      () =>
+        createClosedFixtureSourceUrl(
+          undefined,
+          "https://example.test/payload.bin",
+        ),
+      /requires a same-origin asset root/,
+    );
+    assert.throws(
+      () =>
+        createClosedFixtureSourceUrl(
+          "https://browser.test/assets/",
+          "https://example.test/escaped%2Fpayload.bin",
+        ),
+      /asset name is invalid/,
+    );
+  } finally {
+    if (originalLocation === undefined) {
+      Reflect.deleteProperty(globalThis, "location");
+    } else {
+      Object.defineProperty(globalThis, "location", originalLocation);
+    }
+  }
 });
 
 test("requires an explicit live-network opt-in before accepting URLs", () => {
