@@ -25,7 +25,11 @@ import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { detectPtrWidth } from "../src/constants";
-import type { CentralizedWorkerInitMessage } from "../src/worker-protocol";
+import type {
+  CentralizedWorkerInitMessage,
+  WorkerToHostMessage,
+} from "../src/worker-protocol";
+import { TestProcessReferenceOwners } from "./process-reference-owner-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -69,26 +73,40 @@ describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
 
     const io = new NodePlatformIO();
     const workerAdapter = new NodeWorkerAdapter();
-    const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
+    const referenceOwners = new TestProcessReferenceOwners();
+    const workers = new Map<
+      number,
+      ReturnType<NodeWorkerAdapter["createWorker"]>
+    >();
 
     let pid = 0;
 
     let stdout = "";
     let resolveReady: () => void;
-    const readyPromise = new Promise<void>((resolve) => {
+    let rejectReady: (reason: Error) => void;
+    const readyPromise = new Promise<void>((resolve, reject) => {
       resolveReady = resolve;
+      rejectReady = reject;
     });
     let resolveExit: (status: number) => void;
-    const exitPromise = new Promise<number>((resolve) => {
+    let rejectExit: (reason: Error) => void;
+    const exitPromise = new Promise<number>((resolve, reject) => {
       resolveExit = resolve;
+      rejectExit = reject;
     });
 
     const kernel = new CentralizedKernelWorker(
-      { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true, enableSyscallLog: false },
+      {
+        maxWorkers: 4,
+        dataBufferSize: 65536,
+        useSharedMemory: true,
+        enableSyscallLog: false,
+      },
       io,
       {
         onExit: (exitPid, exitStatus) => {
           if (exitPid === pid) {
+            referenceOwners.release(exitPid);
             kernel.unregisterProcess(exitPid);
             const w = workers.get(exitPid);
             if (w) {
@@ -122,6 +140,7 @@ describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
     kernel.registerProcess(pid, memory, [channelOffset], { ptrWidth });
+    const referenceInit = referenceOwners.start(pid);
 
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
@@ -132,16 +151,32 @@ describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
       argv: ["mousetest", "3"],
       env: [],
       ptrWidth,
+      ...referenceInit,
     };
 
     const mainWorker = workerAdapter.createWorker(initData);
+    referenceOwners.attach(pid, mainWorker);
+    const rejectWorker = (error: Error): void => {
+      rejectReady(error);
+      rejectExit(error);
+    };
+    mainWorker.on("error", rejectWorker);
+    mainWorker.on("message", (raw: unknown) => {
+      const message = raw as WorkerToHostMessage;
+      if (message.type === "error" && message.pid === pid) {
+        rejectWorker(new Error(message.message));
+      }
+    });
     workers.set(pid, mainWorker);
 
     try {
       await Promise.race([
         readyPromise,
         new Promise<void>((_, reject) =>
-          setTimeout(() => reject(new Error("mousetest didn't print 'ready' in 10s")), 10_000),
+          setTimeout(
+            () => reject(new Error("mousetest didn't print 'ready' in 10s")),
+            10_000,
+          ),
         ),
       ]);
 
@@ -161,7 +196,11 @@ describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
       const exitCode = await Promise.race([
         exitPromise,
         new Promise<number>((_, reject) =>
-          setTimeout(() => reject(new Error("mousetest didn't exit after 3 packets in 10s")), 10_000),
+          setTimeout(
+            () =>
+              reject(new Error("mousetest didn't exit after 3 packets in 10s")),
+            10_000,
+          ),
         ),
       ]);
       expect(exitCode).toBe(0);
@@ -173,11 +212,15 @@ describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
       expect(lines.slice(1)).toHaveLength(3);
       for (let i = 0; i < 3; i++) {
         const ev = events[i];
-        const b0 = expectedByte0(ev.dx, ev.dy, ev.buttons).toString(16).padStart(2, "0");
+        const b0 = expectedByte0(ev.dx, ev.dy, ev.buttons)
+          .toString(16)
+          .padStart(2, "0");
         expect(lines[1 + i]).toBe(`pkt ${b0} ${ev.dx} ${ev.dy}`);
       }
     } finally {
       for (const [, w] of workers) await w.terminate().catch(() => {});
+      referenceOwners.close();
+      void readyPromise.catch(() => {});
       void exitPromise.catch(() => {});
     }
   }, 30_000);
