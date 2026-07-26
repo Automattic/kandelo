@@ -6,12 +6,13 @@ details described below
 **Original branch:** `non-forking-posix_spawn-syscall-implementation`
 **Original proposed ABI bump:** 7 → 8
 
-> **Historical contract notice (2026-07-25):** This document preserves the
-> original proposal, including the superseded syscall number 141 and ABI 7 → 8
-> rollout below. The implemented syscall is the host-intercepted
-> `SYS_SPAWN = 500`; the current #1094-based rehearsal assigns the
-> capacity-bound transport to ABI 43. That epoch is provisional until #1097
-> merges and this work is retargeted to its actual integrated result.
+> **Historical contract notice (updated 2026-07-26):** This document preserves
+> the original proposal, including the superseded syscall number 141 and ABI
+> 7 → 8 rollout below. The implemented syscall is the host-intercepted
+> `SYS_SPAWN = 500`. PR #1097 merged as
+> `c7d039794a43788acfa0b0aea30a700c257f57cb` with ABI 42; the capacity-bound
+> transport was retargeted to that exact merge result and intentionally
+> advances the incompatible contract to ABI 43.
 > Do not copy numeric contracts from this historical body. The authoritative
 > current values live in `crates/shared/src/lib.rs::spawn_contract` and are
 > generated for Rust, TypeScript, and C consumers. The validation commands
