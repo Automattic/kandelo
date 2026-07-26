@@ -2,6 +2,10 @@ name: Homebrew main shell
 
 on:
   pull_request:
+    # WHY: marking a draft ready gives maintainers a non-destructive way to
+    # rerun this long exact-product gate after a base-side CI correction.
+    # Closing and reopening a package PR would delete its staging release.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - ".github/actions/setup-nix/**"
       - ".github/actions/fetch-submodules/**"
@@ -144,7 +148,10 @@ jobs:
   exact-public-bottle-closure:
     name: exact lazy shell (Node + Chromium)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # WHY: this exact gate may need to source-build the complete current shell
+    # closure on a fresh runner before its Node and Chromium checks can begin.
+    # A normal exact-source build can exceed the former 90-minute budget.
+    timeout-minutes: 180
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
       TRANSPORT_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.transport_mode || 'closed' }}
