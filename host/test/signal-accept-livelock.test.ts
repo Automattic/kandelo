@@ -23,7 +23,10 @@ import {
   CH_ARGS,
   CH_ARG_SIZE,
   CH_ERRNO,
+  CH_REQUEST_FLAGS,
+  CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY,
   CH_RETURN,
+  CH_SIG_SIGNUM,
   CH_SYSCALL,
 } from "../src/generated/abi";
 
@@ -218,6 +221,38 @@ describe("signal delivery to a process blocked in accept()", () => {
 
     expect(setCurrentTid).not.toHaveBeenCalled();
     expect(dequeueSignal).toHaveBeenCalledWith(pid, pid, expect.any(Number));
+  });
+
+  it("hands a deferred signal from a JavaScript completion to the next guest checkpoint", () => {
+    const worker = createWorkerHarness();
+    const pid = 48;
+    const channel = createChannel(pid, 0);
+    worker.channelTids.set(`${pid}:${channel.channelOffset}`, pid);
+    const channelView = new DataView(channel.memory.buffer);
+    channelView.setUint32(
+      CH_REQUEST_FLAGS,
+      CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY,
+      true,
+    );
+    channelView.setUint32(CH_SIG_SIGNUM, 0, true);
+    const dequeueSignal = vi.fn(() => 10);
+    worker.kernelInstance.exports.kernel_dequeue_signal = dequeueSignal;
+
+    expect(worker.dequeueSignalForDelivery(channel)).toBe(0);
+    expect(dequeueSignal).not.toHaveBeenCalled();
+    expect(channelView.getUint32(CH_SIG_SIGNUM, true)).toBe(0);
+
+    // Model libc's ordinary post-import checkpoint. Only that guest-owned
+    // completion may consume the signal into the trampoline's channel record.
+    channelView.setUint32(CH_REQUEST_FLAGS, 0, true);
+    new DataView(worker.kernelMemory.buffer).setUint32(
+      worker.scratchOffset + CH_SIG_SIGNUM,
+      10,
+      true,
+    );
+    expect(worker.dequeueSignalForDelivery(channel)).toBe(10);
+    expect(dequeueSignal).toHaveBeenCalledOnce();
+    expect(channelView.getUint32(CH_SIG_SIGNUM, true)).toBe(10);
   });
 
   it("fails closed when Rust rejects an exact signal dequeue task", () => {

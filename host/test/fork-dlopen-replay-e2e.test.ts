@@ -89,16 +89,21 @@ function buildSharedLib(source: string, name: string): string {
   const objPath = join(BUILD_DIR, `${name}.o`);
   const soPath = join(BUILD_DIR, `${name}.so`);
 
-  writeFileSync(srcPath, source);
+  writeFileSync(srcPath, `${source}
+    #include "abi_constants.h"
+    __attribute__((export_name("__abi_version")))
+    unsigned __abi_version(void) { return WASM_POSIX_ABI_VERSION; }
+  `);
 
   execSync(
-    `${CLANG} --target=wasm32-unknown-unknown -fPIC -O2 -matomics -mbulk-memory -c ${srcPath} -o ${objPath}`,
+    `${CLANG} --target=wasm32-unknown-unknown -fPIC -O2 -matomics -mbulk-memory -I${GLUE_DIR} -c ${srcPath} -o ${objPath}`,
     { stdio: "pipe" },
   );
   execSync(
     `${WASM_LD} --experimental-pic --shared --shared-memory --export-all --allow-undefined -o ${soPath} ${objPath}`,
     { stdio: "pipe" },
   );
+  execSync(`${FORK_INSTRUMENT} ${soPath} -o ${soPath}`, { stdio: "pipe" });
 
   return soPath;
 }
@@ -109,7 +114,11 @@ function buildCppSharedLib(source: string, name: string): string {
   const srcPath = join(BUILD_DIR, `${name}.cpp`);
   const objPath = join(BUILD_DIR, `${name}.o`);
   const soPath = join(BUILD_DIR, `${name}.so`);
-  writeFileSync(srcPath, source);
+  writeFileSync(srcPath, `${source}
+    #include "abi_constants.h"
+    extern "C" __attribute__((export_name("__abi_version")))
+    unsigned __abi_version(void) { return WASM_POSIX_ABI_VERSION; }
+  `);
   execFileSync(CLANGXX, [
     "--target=wasm32-unknown-unknown",
     `--sysroot=${SYSROOT}`,
@@ -119,6 +128,7 @@ function buildCppSharedLib(source: string, name: string): string {
     "-fwasm-exceptions",
     "-matomics",
     "-mbulk-memory",
+    `-I${GLUE_DIR}`,
     `-I${join(libcxxPrefix, "include", "c++", "v1")}`,
     "-c",
     srcPath,
@@ -137,6 +147,12 @@ function buildCppSharedLib(source: string, name: string): string {
     objPath,
     join(libcxxPrefix, "lib", "libc++-pic.a"),
     join(libcxxPrefix, "lib", "libc++abi-pic.a"),
+  ], { stdio: "pipe" });
+  execFileSync("bash", [
+    FORK_INSTRUMENT,
+    soPath,
+    "-o",
+    soPath,
   ], { stdio: "pipe" });
   return soPath;
 }
@@ -270,38 +286,60 @@ describe.skipIf(!hasSysroot || !hasKernel)("fork after dlopen end-to-end", () =>
     });
 
     expect(result.stderr).not.toContain("table index is out of bounds");
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, JSON.stringify(result)).toBe(0);
     expect(result.stdout).toContain("ok");
   });
 
-  it("fails pthread dlopen and fork after process dlopen without creating a child", { timeout: 30_000 }, async () => {
+  it("replays pthread-hosted dlopen table state into a fresh fork child", { timeout: 30_000 }, async () => {
     const soPath = buildSharedLib(
-      `int pthread_boundary_fixture(void) { return 1; }`,
-      "libpthreadboundary",
+      `
+      typedef int (*step_fn)(int);
+      static int increment(int value) { return value + 1; }
+      static step_fn relocated_step = increment;
+      int pthread_replay_value(int value) { return relocated_step(value); }
+      `,
+      "libpthreadreplay",
     );
     const wasmPath = buildMainProgram(`
       #include <dlfcn.h>
-      #include <errno.h>
       #include <pthread.h>
       #include <stdio.h>
-      #include <string.h>
       #include <unistd.h>
+      #include <sys/wait.h>
 
       static const char *side_path;
       static int thread_result;
+      typedef int (*replay_fn)(int);
 
       static void *run_thread(void *unused) {
         (void)unused;
-        void *nested = dlopen(side_path, RTLD_NOW);
-        const char *error = dlerror();
-        if (nested != NULL || error == NULL || strstr(error, "pthread workers") == NULL) {
+        void *side = dlopen(side_path, RTLD_NOW);
+        if (!side) {
+          fprintf(stderr, "pthread dlopen: %s\\n", dlerror());
           thread_result = 1;
           return NULL;
         }
-        errno = 0;
-        pid_t child = fork();
-        if (child != -1 || errno != ENOTSUP) {
+        replay_fn replay = (replay_fn)dlsym(side, "pthread_replay_value");
+        if (!replay || replay(40) != 41) {
           thread_result = 2;
+          return NULL;
+        }
+
+        pid_t child = fork();
+        if (child == 0) {
+          _exit(replay(41) == 42 ? 0 : 3);
+        }
+        if (child < 0) {
+          thread_result = 4;
+          return NULL;
+        }
+        int status = 0;
+        if (
+          waitpid(child, &status, 0) != child
+          || !WIFEXITED(status)
+          || WEXITSTATUS(status) != 0
+        ) {
+          thread_result = 5;
           return NULL;
         }
         thread_result = 0;
@@ -310,20 +348,18 @@ describe.skipIf(!hasSysroot || !hasKernel)("fork after dlopen end-to-end", () =>
 
       int main(int argc, char **argv) {
         side_path = argv[1];
-        void *side = dlopen(side_path, RTLD_NOW);
-        if (!side) { fprintf(stderr, "main dlopen: %s\\n", dlerror()); return 2; }
         pthread_t thread;
         if (pthread_create(&thread, NULL, run_thread, NULL) != 0) return 3;
         if (pthread_join(thread, NULL) != 0) return 4;
         if (thread_result != 0) return 10 + thread_result;
-        puts("pthread dylink boundary ok");
+        puts("pthread dlopen fork replay ok");
         return 0;
       }
-    `, "test-pthread-dylink-boundary");
+    `, "test-pthread-dlopen-fork-replay");
 
     const result = await runCentralizedProgram({
       programPath: wasmPath,
-      argv: ["pthread-dylink-boundary", soPath],
+      argv: ["pthread-dlopen-fork-replay", soPath],
       timeout: 30_000,
       io: io(),
       captureForkCount: true,
@@ -331,8 +367,140 @@ describe.skipIf(!hasSysroot || !hasKernel)("fork after dlopen end-to-end", () =>
 
     expect(result.stderr).toBe("");
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("pthread dylink boundary ok");
-    expect(result.forkCount).toBe(0n);
+    expect(result.stdout).toContain("pthread dlopen fork replay ok");
+    expect(result.forkCount).toBe(1n);
+  });
+
+  it("blocks a foreign pthread until the staged loader owner commits", { timeout: 30_000 }, async () => {
+    const slowPath = buildSharedLib(
+      `
+      extern void loader_ctor_enter(void);
+      extern void loader_ctor_wait(void);
+      __attribute__((constructor))
+      static void slow_constructor(void) {
+        loader_ctor_enter();
+        loader_ctor_wait();
+      }
+      int slow_value(void) { return 17; }
+      `,
+      "libpthread-loader-owner",
+    );
+    const fastPath = buildSharedLib(
+      `int fast_value(void) { return 29; }`,
+      "libpthread-loader-waiter",
+    );
+    const wasmPath = buildMainProgram(`
+      #include <dlfcn.h>
+      #include <pthread.h>
+      #include <stdatomic.h>
+      #include <stdint.h>
+      #include <stdio.h>
+      #include <unistd.h>
+
+      static const char *slow_path;
+      static const char *fast_path;
+      static _Atomic int owner_ready;
+      static _Atomic int waiter_ready;
+      static _Atomic int start_owner;
+      static _Atomic int constructor_entered;
+      static _Atomic int release_constructor;
+      static _Atomic int waiter_entered;
+      static _Atomic int waiter_done;
+      static _Atomic int constructor_timeout;
+      static int owner_result;
+      static int waiter_result;
+
+      static int wait_for(_Atomic int *value) {
+        for (int attempt = 0; attempt < 5000; attempt++) {
+          if (atomic_load_explicit(value, memory_order_acquire)) return 1;
+          usleep(1000);
+        }
+        return atomic_load_explicit(value, memory_order_acquire) != 0;
+      }
+
+      void loader_ctor_enter(void) {
+        atomic_store_explicit(&constructor_entered, 1, memory_order_release);
+      }
+
+      void loader_ctor_wait(void) {
+        if (!wait_for(&release_constructor)) {
+          atomic_store_explicit(&constructor_timeout, 1, memory_order_release);
+        }
+      }
+
+      static void *run_owner(void *unused) {
+        (void)unused;
+        atomic_store_explicit(&owner_ready, 1, memory_order_release);
+        if (!wait_for(&start_owner)) {
+          owner_result = 2;
+          return NULL;
+        }
+        void *handle = dlopen(slow_path, RTLD_NOW | RTLD_GLOBAL);
+        if (!handle) fprintf(stderr, "owner dlopen: %s\\n", dlerror());
+        owner_result = handle ? 0 : 1;
+        return NULL;
+      }
+
+      static void *run_waiter(void *unused) {
+        (void)unused;
+        atomic_store_explicit(&waiter_ready, 1, memory_order_release);
+        if (!wait_for(&constructor_entered)) {
+          waiter_result = 2;
+          return NULL;
+        }
+        atomic_store_explicit(&waiter_entered, 1, memory_order_release);
+        void *handle = dlopen(fast_path, RTLD_NOW | RTLD_LOCAL);
+        if (!handle) fprintf(stderr, "waiter dlopen: %s\\n", dlerror());
+        waiter_result = handle ? 0 : 1;
+        atomic_store_explicit(&waiter_done, 1, memory_order_release);
+        return NULL;
+      }
+
+      int main(int argc, char **argv) {
+        slow_path = argv[1];
+        fast_path = argv[2];
+        pthread_t owner;
+        pthread_t waiter;
+        if (pthread_create(&owner, NULL, run_owner, NULL) != 0) return 2;
+        if (pthread_create(&waiter, NULL, run_waiter, NULL) != 0) return 3;
+        if (!wait_for(&owner_ready)) return 11;
+        if (!wait_for(&waiter_ready)) return 12;
+        atomic_store_explicit(&start_owner, 1, memory_order_release);
+        if (!wait_for(&constructor_entered)) return 8;
+        if (!wait_for(&waiter_entered)) return 9;
+        usleep(10000);
+        int waiter_completed_early =
+          atomic_load_explicit(&waiter_done, memory_order_acquire);
+        atomic_store_explicit(
+          &release_constructor,
+          1,
+          memory_order_release
+        );
+        if (pthread_join(owner, NULL) != 0) return 5;
+        if (pthread_join(waiter, NULL) != 0) return 6;
+        if (atomic_load_explicit(&constructor_timeout, memory_order_acquire)) {
+          return 10;
+        }
+        if (waiter_completed_early) return waiter_result == 0 ? 4 : 14;
+        if (owner_result != 0 || waiter_result != 0) return 7;
+        puts("pthread loader lease ok");
+        return 0;
+      }
+    `, "test-pthread-loader-owner", [
+      "loader_ctor_enter",
+      "loader_ctor_wait",
+    ]);
+
+    const result = await runCentralizedProgram({
+      programPath: wasmPath,
+      argv: ["pthread-loader-owner", slowPath, fastPath],
+      timeout: 30_000,
+      io: io(),
+    });
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode, JSON.stringify(result)).toBe(0);
+    expect(result.stdout).toContain("pthread loader lease ok");
   });
 
   it.skipIf(!hasCppPrerequisites)(

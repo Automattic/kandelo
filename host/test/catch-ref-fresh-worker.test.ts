@@ -11,6 +11,10 @@ const fixtureSource = resolve(
   testDir,
   "fixtures/catch-ref-fresh-worker.wat",
 );
+const referencePayloadFixtureSource = resolve(
+  testDir,
+  "fixtures/reference-catch-payload-fresh-worker.wat",
+);
 const instrumenter = resolve(
   testDir,
   "../../tools/bin/wasm-fork-instrument",
@@ -19,6 +23,7 @@ const instrumenter = resolve(
 describe("CatchRef fresh process worker replay", () => {
   let workDir = "";
   let programPath = "";
+  let referencePayloadProgramPath = "";
 
   beforeAll(() => {
     workDir = mkdtempSync(join(tmpdir(), "kandelo-catch-ref-worker-"));
@@ -32,6 +37,27 @@ describe("CatchRef fresh process worker replay", () => {
       rawPath,
     ]);
     execFileSync(instrumenter, [rawPath, "-o", programPath]);
+
+    const referencePayloadRawPath = join(
+      workDir,
+      "reference-catch-payload-fresh-worker.raw.wasm",
+    );
+    referencePayloadProgramPath = join(
+      workDir,
+      "reference-catch-payload-fresh-worker.wasm",
+    );
+    execFileSync("wat2wasm", [
+      "--enable-exceptions",
+      "--enable-threads",
+      referencePayloadFixtureSource,
+      "-o",
+      referencePayloadRawPath,
+    ]);
+    execFileSync(instrumenter, [
+      referencePayloadRawPath,
+      "-o",
+      referencePayloadProgramPath,
+    ]);
   });
 
   afterAll(() => {
@@ -45,6 +71,24 @@ describe("CatchRef fresh process worker replay", () => {
     const result = await runCentralizedProgram({
       programPath,
       argv: ["catch-ref-fresh-worker"],
+      timeout: 30_000,
+      useDefaultRootfs: false,
+    });
+
+    expect(
+      result.exitCode,
+      `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    ).toBe(0);
+    expect(result.stderr).toBe("");
+  });
+
+  it("reconstructs reference-bearing catches in fresh Node child workers", async () => {
+    // The first child calls a non-null funcref reconstructed from the child's
+    // static function catalog. The second verifies a nullable externref
+    // payload; both values originated in a caught exception recipe.
+    const result = await runCentralizedProgram({
+      programPath: referencePayloadProgramPath,
+      argv: ["reference-catch-payload-fresh-worker"],
       timeout: 30_000,
       useDefaultRootfs: false,
     });

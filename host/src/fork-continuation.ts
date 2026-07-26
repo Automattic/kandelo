@@ -228,6 +228,16 @@ interface ContinuationChunk {
   used: number;
 }
 
+interface ValidatedReplayNode {
+  node: number;
+  payload: number;
+  previous: number;
+  nextReplay: {
+    chunkIndex: number;
+    expectedEnd: number;
+  };
+}
+
 /**
  * Host-side owner and validator for one module instance's linked fork frames.
  * Allocations are ordinary anonymous process mappings, so kernel brk/mmap
@@ -241,8 +251,10 @@ export class LinkedForkContinuation {
   private replayExpectedEnd = 0;
   private pending: PendingNode | null = null;
   private chunks: ContinuationChunk[] = [];
-  private committedFrames = 0;
-  private committedBytes = 0;
+  // Diagnostics must not become the first precision ceiling in a wasm64
+  // continuation. The linked list is allocator-bounded, not Number-bounded.
+  private committedFrames = 0n;
+  private committedBytes = 0n;
   private abortFailure: AbortFailure | null = null;
 
   constructor(
@@ -262,8 +274,8 @@ export class LinkedForkContinuation {
       this.format.alignment,
     );
     const capacity = alignUp(Math.max(initialUsed, WASM_PAGE_SIZE), WASM_PAGE_SIZE);
-    this.committedFrames = 0;
-    this.committedBytes = 0;
+    this.committedFrames = 0n;
+    this.committedBytes = 0n;
     this.abortFailure = null;
     let root: number;
     try {
@@ -438,12 +450,35 @@ export class LinkedForkContinuation {
     this.writePtr(this.root + 8 + 5 * this.format.ptrWidth, pending.node);
     const payloadSize = this.readPtr(pending.node + 8 + this.format.ptrWidth);
     this.committedFrames++;
-    this.committedBytes += payloadSize;
+    this.committedBytes += BigInt(payloadSize);
     this.pending = null;
+  }
+
+  /**
+   * Validate and expose the next frame without advancing the replay cursor.
+   *
+   * Tail-call replay selects an activation-specific resume thunk from the
+   * common frame header before entering the original function. That function's
+   * ordinary preamble remains the sole consumer through `nextFrame`.
+   */
+  peekFrame(expectedSize: number | bigint): number | bigint {
+    const expected = this.fromGuestPtr(expectedSize);
+    const validated = this.validateNextFrame(expected);
+    return this.asGuestPtr(validated.payload);
   }
 
   nextFrame(expectedSize: number | bigint): number | bigint {
     const expected = this.fromGuestPtr(expectedSize);
+    const validated = this.validateNextFrame(expected);
+    const { node, payload, previous, nextReplay } = validated;
+    this.replayNode = previous;
+    this.replayChunkIndex = nextReplay.chunkIndex;
+    this.replayExpectedEnd = nextReplay.expectedEnd;
+    this.view().setUint16(node + 6, NODE_CONSUMED, true);
+    return this.asGuestPtr(payload);
+  }
+
+  private validateNextFrame(expected: number): ValidatedReplayNode {
     const node = this.replayNode;
     if (this.root === 0 || node === 0) {
       throw new Error(`${this.label}: linked continuation replay exhausted early`);
@@ -473,11 +508,12 @@ export class LinkedForkContinuation {
     }
     const previous = this.readPtr(node + 8);
     const nextReplay = this.previousReplayPosition(previous, node);
-    this.replayNode = previous;
-    this.replayChunkIndex = nextReplay.chunkIndex;
-    this.replayExpectedEnd = nextReplay.expectedEnd;
-    view.setUint16(node + 6, NODE_CONSUMED, true);
-    return this.asGuestPtr(node + this.format.nodeHeaderSize);
+    return {
+      node,
+      payload: node + this.format.nodeHeaderSize,
+      previous,
+      nextReplay,
+    };
   }
 
   finishUnwind(): void {
