@@ -23,6 +23,7 @@ wat2wasm --debug-names "$work/abi.wat" -o "$work/abi.wasm"
 
 real_objdump="$(command -v wasm-objdump)"
 mkdir "$work/bin"
+missing_structural_tool="$work/bin/missing-wasm-fork-instrument"
 cat >"$work/bin/wasm-objdump" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = "-d" ] && [ "${2:-}" = "${FAIL_WASM_OBJDUMP_PATH:-}" ]; then
@@ -43,8 +44,9 @@ assert_extracts_abi() {
         exit 1
     }
     actual="$(
-        PATH="$work/bin:$PATH" REAL_WASM_OBJDUMP="$real_objdump" FAIL_WASM_OBJDUMP_PATH="$path" \
-            wasm_extract_abi_version "$path"
+        WASM_POSIX_FORK_INSTRUMENT="$missing_structural_tool" \
+            PATH="$work/bin:$PATH" REAL_WASM_OBJDUMP="$real_objdump" \
+            FAIL_WASM_OBJDUMP_PATH="$path" wasm_extract_abi_version "$path"
     )"
     [ "$actual" = 18 ] || {
         echo "ERROR: Binaryen ABI extraction returned $actual for $description" >&2
@@ -60,7 +62,9 @@ assert_rejects_abi() {
         echo "ERROR: primary ABI extraction accepted $description" >&2
         exit 1
     fi
-    if PATH="$work/bin:$PATH" REAL_WASM_OBJDUMP="$real_objdump" FAIL_WASM_OBJDUMP_PATH="$path" \
+    if WASM_POSIX_FORK_INSTRUMENT="$missing_structural_tool" \
+        PATH="$work/bin:$PATH" REAL_WASM_OBJDUMP="$real_objdump" \
+        FAIL_WASM_OBJDUMP_PATH="$path" \
         wasm_extract_abi_version "$path" >/dev/null 2>&1; then
         echo "ERROR: Binaryen ABI extraction accepted $description" >&2
         exit 1
@@ -83,17 +87,105 @@ assert_classifies_unsafe_abi() {
     fi
 
     extract_status=0
-    PATH="$work/bin:$PATH" REAL_WASM_OBJDUMP="$real_objdump" FAIL_WASM_OBJDUMP_PATH="$path" \
+    WASM_POSIX_FORK_INSTRUMENT="$missing_structural_tool" \
+        PATH="$work/bin:$PATH" REAL_WASM_OBJDUMP="$real_objdump" \
+        FAIL_WASM_OBJDUMP_PATH="$path" \
         wasm_extract_abi_version "$path" >/dev/null 2>&1 || extract_status=$?
     [ "$extract_status" -gt 1 ] || {
         echo "ERROR: fallback ABI extraction classified $description as absent (status $extract_status)" >&2
         exit 1
     }
-    if ! PATH="$work/bin:$PATH" REAL_WASM_OBJDUMP="$real_objdump" FAIL_WASM_OBJDUMP_PATH="$path" \
-        wasm_has_stale_abi "$path" 18; then
+    if ! WASM_POSIX_FORK_INSTRUMENT="$missing_structural_tool" \
+        PATH="$work/bin:$PATH" REAL_WASM_OBJDUMP="$real_objdump" \
+        FAIL_WASM_OBJDUMP_PATH="$path" wasm_has_stale_abi "$path" 18; then
         echo "ERROR: stale-ABI predicate accepted $description after the primary decoder failed" >&2
         exit 1
     fi
+}
+
+mkdir "$work/no-objdump-bin"
+cat >"$work/no-objdump-bin/wasm-objdump" <<'SH'
+#!/usr/bin/env bash
+exit 99
+SH
+chmod +x "$work/no-objdump-bin/wasm-objdump"
+
+cat >"$work/bin/structural-identity-tool" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+    --artifact-identity)
+        [ "$#" -eq 2 ] || exit 64
+        if [ -n "${MOCK_IDENTITY_RECORD:-}" ]; then
+            printf '%s\n' "$MOCK_IDENTITY_RECORD"
+            exit 0
+        fi
+        state="${MOCK_ABI_STATE:-present}"
+        case "$state" in
+            present) version="${MOCK_ABI_VERSION:-18}" ;;
+            missing|invalid) version=- ;;
+            *) exit 65 ;;
+        esac
+        printf '0\t1\t0\t%s\t%s\t%s\t0\n' \
+            "$state" "$version" "${MOCK_IMPORTS_FORK:-1}"
+        ;;
+    --reserved-env-imports)
+        [ "$#" -eq 2 ] || exit 64
+        [ "${MOCK_RESERVED_IMPORT_STATUS:-0}" -eq 0 ] || \
+            exit "$MOCK_RESERVED_IMPORT_STATUS"
+        [ -z "${MOCK_RESERVED_IMPORTS:-}" ] || \
+            printf '%s\n' "$MOCK_RESERVED_IMPORTS"
+        ;;
+    *) exit 64 ;;
+esac
+SH
+chmod +x "$work/bin/structural-identity-tool"
+
+# The structural identity decoder owns these predicates when installed. A
+# deliberately unusable WABT binary proves neither helper silently falls back
+# to full-module text decoding for a large ABI 43 artifact.
+structural_path="$work/bin/structural-identity-tool"
+actual="$(
+    WASM_POSIX_FORK_INSTRUMENT="$structural_path" \
+        PATH="$work/no-objdump-bin:$PATH" wasm_extract_abi_version "$work/abi.wasm"
+)"
+[ "$actual" = 18 ] || {
+    echo "ERROR: structural ABI extraction returned $actual" >&2
+    exit 1
+}
+if ! WASM_POSIX_FORK_INSTRUMENT="$structural_path" \
+    PATH="$work/no-objdump-bin:$PATH" wasm_imports_kernel_fork "$work/abi.wasm"; then
+    echo "ERROR: structural identity lost the kernel_fork import" >&2
+    exit 1
+fi
+if WASM_POSIX_FORK_INSTRUMENT="$structural_path" MOCK_IMPORTS_FORK=0 \
+    PATH="$work/no-objdump-bin:$PATH" wasm_imports_kernel_fork "$work/abi.wasm"; then
+    echo "ERROR: structural identity invented a kernel_fork import" >&2
+    exit 1
+fi
+
+structural_status=0
+WASM_POSIX_FORK_INSTRUMENT="$structural_path" MOCK_ABI_STATE=missing \
+    PATH="$work/no-objdump-bin:$PATH" \
+    wasm_extract_abi_version "$work/abi.wasm" >/dev/null 2>&1 || structural_status=$?
+[ "$structural_status" -eq 1 ] || {
+    echo "ERROR: structural identity returned $structural_status for a missing ABI export" >&2
+    exit 1
+}
+structural_status=0
+WASM_POSIX_FORK_INSTRUMENT="$structural_path" MOCK_ABI_STATE=invalid \
+    PATH="$work/no-objdump-bin:$PATH" \
+    wasm_extract_abi_version "$work/abi.wasm" >/dev/null 2>&1 || structural_status=$?
+[ "$structural_status" -gt 1 ] || {
+    echo "ERROR: structural identity returned $structural_status for an invalid ABI export" >&2
+    exit 1
+}
+structural_status=0
+WASM_POSIX_FORK_INSTRUMENT="$structural_path" MOCK_IDENTITY_RECORD=malformed \
+    PATH="$work/no-objdump-bin:$PATH" \
+    wasm_extract_abi_version "$work/abi.wasm" >/dev/null 2>&1 || structural_status=$?
+[ "$structural_status" -eq 2 ] || {
+    echo "ERROR: malformed structural identity returned $structural_status instead of 2" >&2
+    exit 1
 }
 
 assert_extracts_abi "$work/abi.wasm" "an implicit return"
@@ -271,7 +363,8 @@ WAT
 wat2wasm "$work/unapproved-reserved-import.wat" \
     -o "$work/unapproved-reserved-import.wasm"
 reserved_import_error="$work/unapproved-reserved-import.error"
-if wasm_require_approved_reserved_env_imports \
+if WASM_POSIX_FORK_INSTRUMENT="$missing_structural_tool" \
+    wasm_require_approved_reserved_env_imports \
     "$work/unapproved-reserved-import.wasm" 2>"$reserved_import_error"; then
     echo "ERROR: unapproved reserved env import was accepted" >&2
     exit 1
@@ -292,7 +385,8 @@ cat >"$work/approved-reserved-import.wat" <<'WAT'
 WAT
 wat2wasm "$work/approved-reserved-import.wat" \
     -o "$work/approved-reserved-import.wasm"
-wasm_require_approved_reserved_env_imports \
+WASM_POSIX_FORK_INSTRUMENT="$missing_structural_tool" \
+    wasm_require_approved_reserved_env_imports \
     "$work/approved-reserved-import.wasm"
 
 cat >"$work/nonreserved-import.wat" <<'WAT'
@@ -301,7 +395,41 @@ cat >"$work/nonreserved-import.wat" <<'WAT'
   (func (export "_start")))
 WAT
 wat2wasm "$work/nonreserved-import.wat" -o "$work/nonreserved-import.wasm"
-wasm_require_approved_reserved_env_imports "$work/nonreserved-import.wasm"
+WASM_POSIX_FORK_INSTRUMENT="$missing_structural_tool" \
+    wasm_require_approved_reserved_env_imports "$work/nonreserved-import.wasm"
+
+# Modern ABI 43 modules use the wasmparser-backed structural decoder. An
+# unusable WABT fallback proves this check does not reinterpret a decoder
+# limitation as either approval or rejection.
+if ! WASM_POSIX_FORK_INSTRUMENT="$structural_path" \
+    MOCK_RESERVED_IMPORTS=$'func\tenv.__wasm_posix_vm_interrupt_after' \
+    PATH="$work/no-objdump-bin:$PATH" \
+    wasm_require_approved_reserved_env_imports "$work/approved-reserved-import.wasm"; then
+    echo "ERROR: structural reserved-import guard rejected its approved host API" >&2
+    exit 1
+fi
+structural_reserved_error="$work/structural-reserved-import.error"
+if WASM_POSIX_FORK_INSTRUMENT="$structural_path" \
+    MOCK_RESERVED_IMPORTS=$'func\tenv.__wasm_posix_after_fork_child' \
+    PATH="$work/no-objdump-bin:$PATH" \
+    wasm_require_approved_reserved_env_imports \
+        "$work/unapproved-reserved-import.wasm" 2>"$structural_reserved_error"; then
+    echo "ERROR: structural reserved-import guard accepted a private libc helper" >&2
+    exit 1
+fi
+grep -Fqx '       env.__wasm_posix_after_fork_child' \
+    "$structural_reserved_error" || {
+    echo "ERROR: structural reserved-import rejection lost its exact identity" >&2
+    cat "$structural_reserved_error" >&2
+    exit 1
+}
+if WASM_POSIX_FORK_INSTRUMENT="$structural_path" \
+    MOCK_RESERVED_IMPORT_STATUS=1 PATH="$work/no-objdump-bin:$PATH" \
+    wasm_require_approved_reserved_env_imports \
+        "$work/unapproved-reserved-import.wasm" >/dev/null 2>&1; then
+    echo "ERROR: reserved-import guard fell back after a structural decoder failure" >&2
+    exit 1
+fi
 
 # The bottle inspector limits each validator child to 16 MiB of regular-file
 # output. Large programs such as Ruby legitimately produce more structural
@@ -364,6 +492,11 @@ limit = 16 * 1024 * 1024
 environment = os.environ.copy()
 environment["PATH"] = f"{inflated_bin}:{environment['PATH']}"
 environment["REAL_WASM_OBJDUMP"] = real_objdump
+# Exercise the bounded source-only decoder under the file-size limit instead
+# of letting the installed structural decoder make this fallback test vacuous.
+environment["WASM_POSIX_FORK_INSTRUMENT"] = os.path.join(
+    os.path.dirname(inflated_bin), "missing-wasm-fork-instrument"
+)
 
 
 def set_file_limit() -> None:
@@ -458,6 +591,70 @@ if wasm_has_missing_fork_instrumentation "$work/complete-fork.wasm"; then
     exit 1
 fi
 wasm_require_fork_instrumentation_if_needed "$work/complete-fork.wasm"
+
+awk '
+    { print }
+    /\(import "kernel" "kernel_fork"/ {
+        print "  (import \"env\" \"__wasm_dlopen\""
+        print "    (func (param i32 i32 i32 i32 i32) (result i32)))"
+    }
+' "$work/complete-fork.wat" >"$work/legacy-loader-fork.wat"
+wat2wasm --enable-annotations \
+    "$work/legacy-loader-fork.wat" -o "$work/legacy-loader-fork.wasm"
+if wasm_has_complete_fork_instrumentation "$work/legacy-loader-fork.wasm"; then
+    echo "ERROR: complete-fork predicate accepted the reentrant legacy loader import" >&2
+    exit 1
+fi
+if ! wasm_has_missing_fork_instrumentation "$work/legacy-loader-fork.wasm"; then
+    echo "ERROR: missing-fork predicate accepted the reentrant legacy loader import" >&2
+    exit 1
+fi
+if wasm_require_fork_instrumentation_if_needed \
+    "$work/legacy-loader-fork.wasm" 2>"$work/legacy-loader-fork.error"; then
+    echo "ERROR: fork guard accepted the reentrant legacy loader import" >&2
+    exit 1
+fi
+grep -F '       loader: retains reentrant env.__wasm_dlopen' \
+    "$work/legacy-loader-fork.error" >/dev/null || {
+    echo "ERROR: fork guard did not identify the legacy loader failure" >&2
+    cat "$work/legacy-loader-fork.error" >&2
+    exit 1
+}
+
+awk '
+    /\(func \(export "_start"/ {
+        sub(/\(func /, "(func $native_start ")
+    }
+    {
+        line[NR] = $0
+    }
+    END {
+        if (sub(/\)\)$/, ")", line[NR]) != 1) exit 2
+        for (row = 1; row <= NR; row++) print line[row]
+        print "  (start $native_start))"
+    }
+' "$work/complete-fork.wat" >"$work/native-start-fork.wat"
+wat2wasm --enable-annotations \
+    "$work/native-start-fork.wat" -o "$work/native-start-fork.wasm"
+if wasm_has_complete_fork_instrumentation "$work/native-start-fork.wasm"; then
+    echo "ERROR: complete-fork predicate accepted a retained native start section" >&2
+    exit 1
+fi
+if ! wasm_has_missing_fork_instrumentation "$work/native-start-fork.wasm"; then
+    echo "ERROR: missing-fork predicate accepted a retained native start section" >&2
+    exit 1
+fi
+if wasm_require_fork_instrumentation_if_needed \
+    "$work/native-start-fork.wasm" 2>"$work/native-start-fork.error"; then
+    echo "ERROR: fork guard accepted a retained native start section" >&2
+    exit 1
+fi
+grep -F '       start: retains a native Wasm start section' \
+    "$work/native-start-fork.error" >/dev/null || {
+    echo "ERROR: fork guard did not identify the native start failure" >&2
+    cat "$work/native-start-fork.error" >&2
+    exit 1
+}
 
 assert_rejects_fork_capability() {
     local wat_path="$1"
@@ -715,22 +912,86 @@ mkdir "$work/counting-bin"
 cat >"$work/counting-bin/wasm-objdump" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "${1:-}" >> "$WASM_OBJDUMP_COUNT_FILE"
+if [ "${FAIL_WASM_OBJDUMP_DETAILS:-0}" = 1 ] && [ "${1:-}" = "-x" ]; then
+    exit 1
+fi
 exec "$REAL_WASM_OBJDUMP" "$@"
 SH
 chmod +x "$work/counting-bin/wasm-objdump"
+
+real_inventory_tool="$REPO_ROOT/tools/bin/wasm-fork-instrument"
+[ -x "$real_inventory_tool" ] || {
+    echo "ERROR: shell guard test requires the built wasm-fork-instrument tool" >&2
+    exit 1
+}
+cat >"$work/counting-bin/wasm-fork-instrument" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$WASM_FORK_INVENTORY_COUNT_FILE"
+exec "$REAL_WASM_FORK_INSTRUMENT" "$@"
+SH
+chmod +x "$work/counting-bin/wasm-fork-instrument"
+
 count_file="$work/wasm-objdump.count"
+inventory_count_file="$work/wasm-fork-instrument.count"
+: >"$count_file"
+: >"$inventory_count_file"
+(
+    export PATH="$work/counting-bin:$PATH"
+    export REAL_WASM_OBJDUMP="$real_objdump"
+    export WASM_OBJDUMP_COUNT_FILE="$count_file"
+    export REAL_WASM_FORK_INSTRUMENT="$real_inventory_tool"
+    export WASM_FORK_INVENTORY_COUNT_FILE="$inventory_count_file"
+    export WASM_POSIX_FORK_INSTRUMENT="$work/counting-bin/wasm-fork-instrument"
+    export FAIL_WASM_OBJDUMP_DETAILS=1
+    wasm_require_fork_instrumentation_if_needed "$work/complete-fork.wasm"
+)
+[ "$(grep -c '^-x$' "$count_file" || true)" = 0 ] &&
+    [ "$(grep -c '^-s$' "$count_file" || true)" = 0 ] &&
+    [ "$(wc -l <"$count_file" | tr -d ' ')" = 0 ] &&
+    [ "$(grep -c -- '--contract-inventory' "$inventory_count_file")" = 1 ] &&
+    [ "$(grep -c -- '--fork-capability-hex' "$inventory_count_file")" = 1 ] &&
+    [ "$(grep -c -- '--linked-frame-descriptor-hex' "$inventory_count_file")" = 1 ] &&
+    [ "$(wc -l <"$inventory_count_file" | tr -d ' ')" = 3 ] || {
+    echo "ERROR: fork validation did not use three binary contract passes" >&2
+    cat "$count_file" >&2
+    cat "$inventory_count_file" >&2
+    exit 1
+}
+
+# The standalone guard remains usable before the Rust tool is installed. Its
+# WABT compatibility path must still perform one structural pass and must not
+# mistake an absent configured tool for successful validation.
 : >"$count_file"
 (
     export PATH="$work/counting-bin:$PATH"
     export REAL_WASM_OBJDUMP="$real_objdump"
     export WASM_OBJDUMP_COUNT_FILE="$count_file"
+    export WASM_POSIX_FORK_INSTRUMENT="$work/not-installed/wasm-fork-instrument"
     wasm_require_fork_instrumentation_if_needed "$work/complete-fork.wasm"
 )
 [ "$(grep -c '^-x$' "$count_file")" = 1 ] &&
     [ "$(grep -c '^-s$' "$count_file")" = 2 ] &&
     [ "$(wc -l <"$count_file" | tr -d ' ')" = 3 ] || {
-    echo "ERROR: fork validation did not use one structure and two metadata passes" >&2
+    echo "ERROR: fork validation did not preserve the truthful WABT fallback" >&2
     cat "$count_file" >&2
+    exit 1
+}
+
+if (
+    export PATH="$work/counting-bin:$PATH"
+    export REAL_WASM_OBJDUMP="$real_objdump"
+    export WASM_OBJDUMP_COUNT_FILE="$count_file"
+    export WASM_POSIX_FORK_INSTRUMENT="$work/not-installed/wasm-fork-instrument"
+    wasm_require_fork_instrumentation_if_needed \
+        "$work/native-start-fork.wasm" 2>"$work/native-start-fallback.error"
+); then
+    echo "ERROR: WABT fork guard accepted a retained native start section" >&2
+    exit 1
+fi
+grep -F '       start: retains a native Wasm start section' \
+    "$work/native-start-fallback.error" >/dev/null || {
+    echo "ERROR: WABT fork guard did not identify the native start failure" >&2
+    cat "$work/native-start-fallback.error" >&2
     exit 1
 }
 
@@ -742,7 +1003,9 @@ SH
 chmod +x "$work/failing-bin/wasm-objdump"
 
 decoder_path="$work/failing-bin:$PATH"
-if ! PATH="$decoder_path" wasm_has_stale_abi "$work/abi.wasm" 18; then
+missing_inventory_tool="$work/not-installed/wasm-fork-instrument"
+if ! WASM_POSIX_FORK_INSTRUMENT="$missing_structural_tool" \
+    PATH="$decoder_path" wasm_has_stale_abi "$work/abi.wasm" 18; then
     echo "ERROR: stale-ABI predicate accepted an artifact after decoder failure" >&2
     exit 1
 fi
@@ -754,15 +1017,20 @@ if PATH="$decoder_path" wasm_require_exports "$work/abi.wasm" __abi_version >/de
     echo "ERROR: required-export guard accepted an artifact after decoder failure" >&2
     exit 1
 fi
-if ! PATH="$decoder_path" wasm_has_missing_fork_instrumentation "$work/abi.wasm"; then
+if ! WASM_POSIX_FORK_INSTRUMENT="$missing_inventory_tool" \
+    PATH="$decoder_path" wasm_has_missing_fork_instrumentation "$work/abi.wasm"; then
     echo "ERROR: fork predicate accepted an artifact after decoder failure" >&2
     exit 1
 fi
-if PATH="$decoder_path" wasm_require_fork_instrumentation_if_needed "$work/abi.wasm" >/dev/null 2>&1; then
+if WASM_POSIX_FORK_INSTRUMENT="$missing_inventory_tool" \
+    PATH="$decoder_path" \
+    wasm_require_fork_instrumentation_if_needed "$work/abi.wasm" >/dev/null 2>&1; then
     echo "ERROR: fork guard accepted an artifact after decoder failure" >&2
     exit 1
 fi
-if PATH="$decoder_path" wasm_require_no_fork_instrumentation "$work/abi.wasm" >/dev/null 2>&1; then
+if WASM_POSIX_FORK_INSTRUMENT="$missing_inventory_tool" \
+    PATH="$decoder_path" \
+    wasm_require_no_fork_instrumentation "$work/abi.wasm" >/dev/null 2>&1; then
     echo "ERROR: disabled-fork guard accepted an artifact after decoder failure" >&2
     exit 1
 fi
@@ -781,11 +1049,14 @@ if ! wasm_has_missing_fork_instrumentation "$work/fake-fork-exports.wasm"; then
     echo "ERROR: fork guard accepted data-segment strings as instrumentation exports" >&2
     exit 1
 fi
-if ! PATH=/usr/bin:/bin wasm_has_missing_fork_instrumentation "$work/fake-fork-exports.wasm"; then
+if ! WASM_POSIX_FORK_INSTRUMENT="$missing_inventory_tool" \
+    PATH=/usr/bin:/bin \
+    wasm_has_missing_fork_instrumentation "$work/fake-fork-exports.wasm"; then
     echo "ERROR: decoder-free fork predicate accepted raw export-name strings" >&2
     exit 1
 fi
-if PATH=/usr/bin:/bin wasm_require_fork_instrumentation_if_needed \
+if WASM_POSIX_FORK_INSTRUMENT="$missing_inventory_tool" \
+    PATH=/usr/bin:/bin wasm_require_fork_instrumentation_if_needed \
     "$work/fake-fork-exports.wasm" >/dev/null 2>&1; then
     echo "ERROR: decoder-free fork guard accepted raw export-name strings" >&2
     exit 1
