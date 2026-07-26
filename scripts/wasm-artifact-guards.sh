@@ -307,12 +307,67 @@ wasm_extract_abi_version_with_binaryen() {
     printf '%s\n' "$abi"
 }
 
+# Validate and print the stable structural-identity record. Return 127 only
+# when the Rust decoder is unavailable so callers can distinguish a truthful
+# source-only fallback from a decoder failure that must remain fail-closed.
+_wasm_structural_artifact_identity() {
+    local path="${1:-}"
+    local identity identity_status=0
+    local relocatable memory_count memory64_count abi_state abi_version
+    local imports_fork has_fork_exports extra
+
+    identity="$(wasm_artifact_identity "$path")" || identity_status=$?
+    [ "$identity_status" -eq 0 ] || return "$identity_status"
+    IFS=$'\t' read -r relocatable memory_count memory64_count abi_state abi_version \
+        imports_fork has_fork_exports extra <<< "$identity"
+
+    [[ "$relocatable" =~ ^[01]$ ]] &&
+        [[ "$memory_count" =~ ^[0-9]+$ ]] &&
+        [[ "$memory64_count" =~ ^[0-9]+$ ]] &&
+        [[ "$imports_fork" =~ ^[01]$ ]] &&
+        [[ "$has_fork_exports" =~ ^[01]$ ]] &&
+        [ -z "$extra" ] || return 2
+    case "$abi_state" in
+        present) [[ "$abi_version" =~ ^[0-9]+$ ]] || return 2 ;;
+        missing|invalid) [ "$abi_version" = - ] || return 2 ;;
+        *) return 2 ;;
+    esac
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$relocatable" "$memory_count" "$memory64_count" "$abi_state" \
+        "$abi_version" "$imports_fork" "$has_fork_exports"
+}
+
 # Print a constant ABI export and return 0. Return 1 only when a valid Wasm
 # module genuinely has no optional ABI export; all inspection or semantic
 # failures return a status greater than 1 so resolver predicates fail closed.
 wasm_extract_abi_version() {
     local path="${1:-}"
     wasm_is_binary "$path" || return 2
+
+    local identity identity_status=0
+    local relocatable memory_count memory64_count abi_state abi_version
+    local imports_fork has_fork_exports
+    identity="$(_wasm_structural_artifact_identity "$path")" || identity_status=$?
+    if [ "$identity_status" -eq 0 ]; then
+        IFS=$'\t' read -r relocatable memory_count memory64_count abi_state abi_version \
+            imports_fork has_fork_exports <<< "$identity"
+        case "$abi_state" in
+            present)
+                printf '%s\n' "$abi_version"
+                return 0
+                ;;
+            missing) return 1 ;;
+            invalid) return 3 ;;
+            *) return 2 ;;
+        esac
+    elif [ "$identity_status" -ne 127 ]; then
+        return "$identity_status"
+    fi
+
+    # WHY: source-only callers may not have the Rust decoder yet. Preserve the
+    # bounded WABT/Binaryen compatibility path, but never fall back after an
+    # installed structural decoder reports malformed or undecodable bytes.
     command -v wasm-objdump >/dev/null 2>&1 || return 2
     # The export name and the function's optional debug name are separate Wasm
     # concepts. SDK binaries export the internal function
@@ -637,6 +692,20 @@ wasm_has_stale_abi() {
 wasm_imports_kernel_fork() {
     local path="${1:-}"
     wasm_is_binary "$path" || return 1
+
+    local identity identity_status=0
+    local relocatable memory_count memory64_count abi_state abi_version
+    local imports_fork has_fork_exports
+    identity="$(_wasm_structural_artifact_identity "$path")" || identity_status=$?
+    if [ "$identity_status" -eq 0 ]; then
+        IFS=$'\t' read -r relocatable memory_count memory64_count abi_state abi_version \
+            imports_fork has_fork_exports <<< "$identity"
+        [ "$imports_fork" = 1 ]
+        return
+    elif [ "$identity_status" -ne 127 ]; then
+        return "$identity_status"
+    fi
+
     if command -v wasm-objdump >/dev/null 2>&1; then
         _wasm_stream_awk '
             /<- kernel\.kernel_fork/ { found = 1 }

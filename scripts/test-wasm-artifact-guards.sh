@@ -23,6 +23,7 @@ wat2wasm --debug-names "$work/abi.wat" -o "$work/abi.wasm"
 
 real_objdump="$(command -v wasm-objdump)"
 mkdir "$work/bin"
+missing_structural_tool="$work/bin/missing-wasm-fork-instrument"
 cat >"$work/bin/wasm-objdump" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = "-d" ] && [ "${2:-}" = "${FAIL_WASM_OBJDUMP_PATH:-}" ]; then
@@ -43,8 +44,9 @@ assert_extracts_abi() {
         exit 1
     }
     actual="$(
-        PATH="$work/bin:$PATH" REAL_WASM_OBJDUMP="$real_objdump" FAIL_WASM_OBJDUMP_PATH="$path" \
-            wasm_extract_abi_version "$path"
+        WASM_POSIX_FORK_INSTRUMENT="$missing_structural_tool" \
+            PATH="$work/bin:$PATH" REAL_WASM_OBJDUMP="$real_objdump" \
+            FAIL_WASM_OBJDUMP_PATH="$path" wasm_extract_abi_version "$path"
     )"
     [ "$actual" = 18 ] || {
         echo "ERROR: Binaryen ABI extraction returned $actual for $description" >&2
@@ -60,7 +62,9 @@ assert_rejects_abi() {
         echo "ERROR: primary ABI extraction accepted $description" >&2
         exit 1
     fi
-    if PATH="$work/bin:$PATH" REAL_WASM_OBJDUMP="$real_objdump" FAIL_WASM_OBJDUMP_PATH="$path" \
+    if WASM_POSIX_FORK_INSTRUMENT="$missing_structural_tool" \
+        PATH="$work/bin:$PATH" REAL_WASM_OBJDUMP="$real_objdump" \
+        FAIL_WASM_OBJDUMP_PATH="$path" \
         wasm_extract_abi_version "$path" >/dev/null 2>&1; then
         echo "ERROR: Binaryen ABI extraction accepted $description" >&2
         exit 1
@@ -83,17 +87,95 @@ assert_classifies_unsafe_abi() {
     fi
 
     extract_status=0
-    PATH="$work/bin:$PATH" REAL_WASM_OBJDUMP="$real_objdump" FAIL_WASM_OBJDUMP_PATH="$path" \
+    WASM_POSIX_FORK_INSTRUMENT="$missing_structural_tool" \
+        PATH="$work/bin:$PATH" REAL_WASM_OBJDUMP="$real_objdump" \
+        FAIL_WASM_OBJDUMP_PATH="$path" \
         wasm_extract_abi_version "$path" >/dev/null 2>&1 || extract_status=$?
     [ "$extract_status" -gt 1 ] || {
         echo "ERROR: fallback ABI extraction classified $description as absent (status $extract_status)" >&2
         exit 1
     }
-    if ! PATH="$work/bin:$PATH" REAL_WASM_OBJDUMP="$real_objdump" FAIL_WASM_OBJDUMP_PATH="$path" \
-        wasm_has_stale_abi "$path" 18; then
+    if ! WASM_POSIX_FORK_INSTRUMENT="$missing_structural_tool" \
+        PATH="$work/bin:$PATH" REAL_WASM_OBJDUMP="$real_objdump" \
+        FAIL_WASM_OBJDUMP_PATH="$path" wasm_has_stale_abi "$path" 18; then
         echo "ERROR: stale-ABI predicate accepted $description after the primary decoder failed" >&2
         exit 1
     fi
+}
+
+mkdir "$work/no-objdump-bin"
+cat >"$work/no-objdump-bin/wasm-objdump" <<'SH'
+#!/usr/bin/env bash
+exit 99
+SH
+chmod +x "$work/no-objdump-bin/wasm-objdump"
+
+cat >"$work/bin/structural-identity-tool" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" != "--artifact-identity" ] || [ "$#" -ne 2 ]; then
+    exit 64
+fi
+if [ -n "${MOCK_IDENTITY_RECORD:-}" ]; then
+    printf '%s\n' "$MOCK_IDENTITY_RECORD"
+    exit 0
+fi
+state="${MOCK_ABI_STATE:-present}"
+case "$state" in
+    present) version="${MOCK_ABI_VERSION:-18}" ;;
+    missing|invalid) version=- ;;
+    *) exit 65 ;;
+esac
+printf '0\t1\t0\t%s\t%s\t%s\t0\n' \
+    "$state" "$version" "${MOCK_IMPORTS_FORK:-1}"
+SH
+chmod +x "$work/bin/structural-identity-tool"
+
+# The structural identity decoder owns these predicates when installed. A
+# deliberately unusable WABT binary proves neither helper silently falls back
+# to full-module text decoding for a large ABI 43 artifact.
+structural_path="$work/bin/structural-identity-tool"
+actual="$(
+    WASM_POSIX_FORK_INSTRUMENT="$structural_path" \
+        PATH="$work/no-objdump-bin:$PATH" wasm_extract_abi_version "$work/abi.wasm"
+)"
+[ "$actual" = 18 ] || {
+    echo "ERROR: structural ABI extraction returned $actual" >&2
+    exit 1
+}
+if ! WASM_POSIX_FORK_INSTRUMENT="$structural_path" \
+    PATH="$work/no-objdump-bin:$PATH" wasm_imports_kernel_fork "$work/abi.wasm"; then
+    echo "ERROR: structural identity lost the kernel_fork import" >&2
+    exit 1
+fi
+if WASM_POSIX_FORK_INSTRUMENT="$structural_path" MOCK_IMPORTS_FORK=0 \
+    PATH="$work/no-objdump-bin:$PATH" wasm_imports_kernel_fork "$work/abi.wasm"; then
+    echo "ERROR: structural identity invented a kernel_fork import" >&2
+    exit 1
+fi
+
+structural_status=0
+WASM_POSIX_FORK_INSTRUMENT="$structural_path" MOCK_ABI_STATE=missing \
+    PATH="$work/no-objdump-bin:$PATH" \
+    wasm_extract_abi_version "$work/abi.wasm" >/dev/null 2>&1 || structural_status=$?
+[ "$structural_status" -eq 1 ] || {
+    echo "ERROR: structural identity returned $structural_status for a missing ABI export" >&2
+    exit 1
+}
+structural_status=0
+WASM_POSIX_FORK_INSTRUMENT="$structural_path" MOCK_ABI_STATE=invalid \
+    PATH="$work/no-objdump-bin:$PATH" \
+    wasm_extract_abi_version "$work/abi.wasm" >/dev/null 2>&1 || structural_status=$?
+[ "$structural_status" -gt 1 ] || {
+    echo "ERROR: structural identity returned $structural_status for an invalid ABI export" >&2
+    exit 1
+}
+structural_status=0
+WASM_POSIX_FORK_INSTRUMENT="$structural_path" MOCK_IDENTITY_RECORD=malformed \
+    PATH="$work/no-objdump-bin:$PATH" \
+    wasm_extract_abi_version "$work/abi.wasm" >/dev/null 2>&1 || structural_status=$?
+[ "$structural_status" -eq 2 ] || {
+    echo "ERROR: malformed structural identity returned $structural_status instead of 2" >&2
+    exit 1
 }
 
 assert_extracts_abi "$work/abi.wasm" "an implicit return"
@@ -324,6 +406,11 @@ limit = 16 * 1024 * 1024
 environment = os.environ.copy()
 environment["PATH"] = f"{inflated_bin}:{environment['PATH']}"
 environment["REAL_WASM_OBJDUMP"] = real_objdump
+# Exercise the bounded source-only decoder under the file-size limit instead
+# of letting the installed structural decoder make this fallback test vacuous.
+environment["WASM_POSIX_FORK_INSTRUMENT"] = os.path.join(
+    os.path.dirname(inflated_bin), "missing-wasm-fork-instrument"
+)
 
 
 def set_file_limit() -> None:
@@ -831,7 +918,8 @@ chmod +x "$work/failing-bin/wasm-objdump"
 
 decoder_path="$work/failing-bin:$PATH"
 missing_inventory_tool="$work/not-installed/wasm-fork-instrument"
-if ! PATH="$decoder_path" wasm_has_stale_abi "$work/abi.wasm" 18; then
+if ! WASM_POSIX_FORK_INSTRUMENT="$missing_structural_tool" \
+    PATH="$decoder_path" wasm_has_stale_abi "$work/abi.wasm" 18; then
     echo "ERROR: stale-ABI predicate accepted an artifact after decoder failure" >&2
     exit 1
 fi
