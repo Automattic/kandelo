@@ -258,9 +258,12 @@ every materialized byte. One
 strict current Rust `staging-reuse validate-generation` command validates the
 exact index package/arch set, strict TOML/JSON, snapshot, sorted asset
 inventory, digests, archive manifests, immutable Git inputs, and embedded
-producer commit. Preparation, publication, and materialization all use that
-validator. Existing v1 manifests remain materializable; new preparation emits
-v2.
+producer commit. The producer snapshot's source tag is bound separately before
+the validator substitutes only the new content-addressed destination tag and
+requires full snapshot equality. This permits intentional re-homing without
+treating the source locator or any archive identity as interchangeable.
+Preparation, publication, and materialization all use that validator. Existing
+v1 manifests remain materializable; new preparation emits v2.
 
 The writer binds every dispatch input to `generation.json`, independently
 rederives the architecture-scoped source projection and expected ledger from

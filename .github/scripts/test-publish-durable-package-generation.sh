@@ -260,6 +260,7 @@ bundle=""
 package_source_sha=""
 producer_sha=""
 source_repository=""
+source_release_tag=""
 source_root=""
 root_set=""
 roots_file=""
@@ -280,6 +281,7 @@ while [ "$#" -gt 0 ]; do
     --root-package) shift 2 ;;
     --roots-file) roots_file="$2"; shift 2 ;;
     --source-root) source_root="$2"; shift 2 ;;
+    --source-release-tag) source_release_tag="$2"; shift 2 ;;
     --expected-abi|--arch|--index|--assets|--release-tag|--release-base-url|--scope)
       shift 2
       ;;
@@ -290,6 +292,7 @@ case "$action" in
   "staging-reuse validate-generation")
     [ "$(jq -r .abi_version "$expected")" = 42 ]
     [ "$(jq -r .complete_current "$snapshot")" = true ]
+    [ "$source_release_tag" = "$(jq -r .release_tag "$snapshot")" ]
     [ "${producer_sha:-$package_source_sha}" = \
       "${TEST_ARCHIVE_SOURCE_SHA:-${TEST_SOURCE_SHA:?}}" ]
     [ -f "$bundle/rootfs-1-rev1-abi42-wasm32-aaaaaaaa.tar.zst" ]

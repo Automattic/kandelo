@@ -1806,6 +1806,7 @@ def check_publisher(workflow)
     "generation validation differs from the required exact main commit",
     'archive_source_args=(--package-source-sha "$package_producer_sha")',
     'run_without_credentials "$AUTHORITY_XTASK" staging-reuse validate-generation',
+    '--source-release-tag "$source_release_tag"',
     '[ "$(git -C "$CONSUMER_ROOT" rev-parse HEAD)" != "$CONSUMER_SHA" ]',
     'printf \'file://%s/resolver/index.toml\\n\' "$OUTPUT_DIR"',
   ].each do |fragment|

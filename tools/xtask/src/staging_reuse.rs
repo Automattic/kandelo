@@ -5,6 +5,8 @@
 //! uploaded release asset whose size and GitHub-computed digest are usable.
 //! Current package metadata is checked separately so a structurally complete
 //! prior run can be combined only with an exact-current canonical complement.
+//! `validate-generation --source-release-tag` binds an independently verified
+//! release locator; archive manifests remain the authority for producer provenance.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -180,7 +182,8 @@ struct SourcePackage {
 pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     let Some((action, rest)) = args.split_first() else {
         return Err(
-            "usage: xtask staging-reuse <expected|scan-source|scan-source-admitted|validate|validate-archives|validate-generation|compose> [args]"
+            "usage: xtask staging-reuse <expected|scan-source|scan-source-admitted|validate|validate-archives|validate-generation|compose> [args]\n\
+             validate-generation requires --source-release-tag <tag>, an independently verified locator rather than archive producer provenance"
                 .into(),
         );
     };
@@ -1130,6 +1133,7 @@ fn run_validate_generation(args: &[String]) -> Result<(), String> {
         "--bundle-dir",
         "--release-tag",
         "--release-base-url",
+        "--source-release-tag",
         "--package-source-sha",
     ])?;
     let expected: ExpectedLedger = read_json(flags.required_path("--expected-ledger")?)?;
@@ -1146,10 +1150,17 @@ fn run_validate_generation(args: &[String]) -> Result<(), String> {
     validate_release_tag(release_tag)?;
     let release_base_url = flags.required("--release-base-url")?;
     validate_release_base_url(release_base_url, release_tag)?;
+    let source_release_tag = flags.required("--source-release-tag")?;
+    validate_release_tag(source_release_tag)?;
     let package_source_sha = flags.required("--package-source-sha")?;
     validate_git_sha(package_source_sha, "package source SHA")?;
     let bundle_dir = flags.required_path("--bundle-dir")?;
     require_nonsymlink_dir(bundle_dir, "durable generation bundle")?;
+    if declared_snapshot.release_tag != source_release_tag {
+        return Err(
+            "durable generation snapshot differs from its declared source release tag".into(),
+        );
+    }
 
     validate_exact_generation_index(&index, &expected)?;
     let computed_snapshot = validate_release(
@@ -1160,7 +1171,13 @@ fn run_validate_generation(args: &[String]) -> Result<(), String> {
         release_base_url,
         ValidationMode::Current,
     )?;
-    if !declared_snapshot.complete_current || computed_snapshot != declared_snapshot {
+    // WHY: source_release_tag above independently binds the producer locator.
+    // This clone changes only that locator to model the content-addressed
+    // release that re-homes the same files, after which full equality keeps
+    // every payload-bearing field fail-closed.
+    let mut rehomed_declared_snapshot = declared_snapshot.clone();
+    rehomed_declared_snapshot.release_tag = release_tag.to_owned();
+    if computed_snapshot != rehomed_declared_snapshot {
         return Err(
             "durable generation snapshot differs from its exact current index and assets".into(),
         );
@@ -3003,6 +3020,161 @@ index_url = "https://example.test/binaries-abi-v{{abi}}/index.toml"
         )
     }
 
+    struct GenerationValidationFixture {
+        root: PathBuf,
+        bundle: PathBuf,
+        expected_path: PathBuf,
+        snapshot_path: PathBuf,
+        assets_path: PathBuf,
+        archive_path: PathBuf,
+        index_path: PathBuf,
+        source_release_tag: String,
+        destination_tag: String,
+        snapshot: ValidatedSnapshot,
+        index: IndexToml,
+    }
+
+    impl GenerationValidationFixture {
+        fn args(&self) -> Vec<String> {
+            vec![
+                "--expected-ledger".into(),
+                self.expected_path.display().to_string(),
+                "--snapshot".into(),
+                self.snapshot_path.display().to_string(),
+                "--index".into(),
+                self.index_path.display().to_string(),
+                "--assets".into(),
+                self.assets_path.display().to_string(),
+                "--bundle-dir".into(),
+                self.bundle.display().to_string(),
+                "--release-tag".into(),
+                self.destination_tag.clone(),
+                "--release-base-url".into(),
+                format!(
+                    "https://github.com/Automattic/kandelo/releases/download/{}/",
+                    self.destination_tag
+                ),
+                "--source-release-tag".into(),
+                self.source_release_tag.clone(),
+                "--package-source-sha".into(),
+                SOURCE_COMMIT.into(),
+            ]
+        }
+
+        fn write_snapshot(&self) {
+            fs::write(
+                &self.snapshot_path,
+                serde_json::to_vec(&self.snapshot).unwrap(),
+            )
+            .unwrap();
+        }
+
+        fn write_index(&self) {
+            fs::write(&self.index_path, self.index.write()).unwrap();
+        }
+    }
+
+    impl Drop for GenerationValidationFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn generation_validation_fixture(label: &str) -> GenerationValidationFixture {
+        let root = archive_tempdir(&format!("generation-rehome-{label}"));
+        let bundle = root.join("bundle");
+        fs::create_dir(&bundle).unwrap();
+
+        let archive_name = "zlib-1.3.1-rev2-abi39-wasm32-aaaaaaaa.tar.zst";
+        let archive_path = bundle.join(archive_name);
+        write_test_archive(
+            &archive_path,
+            "manifest.toml",
+            archived_manifest_at_main(&[], SOURCE_COMMIT).as_bytes(),
+            false,
+        );
+        let archive_sha256 = sha256_file(&archive_path).unwrap();
+        let destination_tag = format!(
+            "package-generation-zlib-wasm32-abi-v{ABI}-sha256-{}",
+            "d".repeat(64)
+        );
+        let mut index = index();
+        let binary = index.packages[0]
+            .binary
+            .get_mut(&TargetArch::Wasm32)
+            .unwrap();
+        binary.archive_url = Some(format!(
+            "https://github.com/Automattic/kandelo/releases/download/{destination_tag}/{archive_name}"
+        ));
+        binary.archive_sha256 = Some(archive_sha256.clone());
+
+        let index_path = bundle.join("index.toml");
+        fs::write(&index_path, index.write()).unwrap();
+        let generation_path = bundle.join("generation.json");
+        fs::write(&generation_path, b"{\"test\":\"generation seal\"}\n").unwrap();
+
+        let source_release_tag = format!(
+            "preserved-package-generation-zlib-wasm32-abi-v{ABI}-source-{}-sha256-{}",
+            SOURCE_COMMIT,
+            "e".repeat(64)
+        );
+        let snapshot = ValidatedSnapshot {
+            abi_version: ABI,
+            release_tag: source_release_tag.clone(),
+            complete_current: true,
+            entries: vec![ValidatedEntry {
+                package: "zlib".into(),
+                kind: ExpectedKind::Library,
+                arch: TargetArch::Wasm32,
+                version: "1.3.1".into(),
+                revision: 2,
+                cache_key_sha: SHA.into(),
+                current: true,
+                asset: archive_name.into(),
+                archive_sha256,
+                size: fs::metadata(&archive_path).unwrap().len(),
+            }],
+        };
+
+        let expected_path = root.join("expected.json");
+        fs::write(&expected_path, serde_json::to_vec(&expected()).unwrap()).unwrap();
+        let snapshot_path = root.join("snapshot.json");
+        fs::write(&snapshot_path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+        let assets_path = root.join("assets.json");
+        let mut asset_paths = vec![
+            archive_path.clone(),
+            generation_path,
+            index_path.clone(),
+        ];
+        asset_paths.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+        let assets = asset_paths
+            .iter()
+            .map(|path| {
+                serde_json::json!({
+                    "name": path.file_name().unwrap().to_string_lossy(),
+                    "state": "uploaded",
+                    "size": fs::metadata(path).unwrap().len(),
+                    "digest": format!("sha256:{}", sha256_file(path).unwrap()),
+                })
+            })
+            .collect::<Vec<_>>();
+        fs::write(&assets_path, serde_json::to_vec(&assets).unwrap()).unwrap();
+
+        GenerationValidationFixture {
+            root,
+            bundle,
+            expected_path,
+            snapshot_path,
+            assets_path,
+            archive_path,
+            index_path,
+            source_release_tag,
+            destination_tag,
+            snapshot,
+            index,
+        }
+    }
+
     #[test]
     fn staging_reuse_treats_git_input_identity_changes_as_stale() {
         let registry_path = std::env::temp_dir()
@@ -3115,6 +3287,40 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
         let snapshot = validate(&expected(), &index(), &assets(), ValidationMode::Current).unwrap();
         assert!(snapshot.complete_current);
         assert!(snapshot.entries[0].current);
+    }
+
+    #[test]
+    fn generation_validation_rehomes_only_exact_snapshot_content() {
+        let fixture = generation_validation_fixture("valid");
+        assert_ne!(fixture.snapshot.release_tag, fixture.destination_tag);
+        run_validate_generation(&fixture.args()).unwrap();
+
+        let mut changed_snapshot = generation_validation_fixture("snapshot");
+        changed_snapshot.snapshot.entries[0].size += 1;
+        changed_snapshot.write_snapshot();
+        let error = run_validate_generation(&changed_snapshot.args()).unwrap_err();
+        assert!(error.contains("snapshot differs"), "{error}");
+
+        let mut changed_source_tag = generation_validation_fixture("source-tag");
+        changed_source_tag.snapshot.release_tag = "another-producer-release".into();
+        changed_source_tag.write_snapshot();
+        let error = run_validate_generation(&changed_source_tag.args()).unwrap_err();
+        assert!(error.contains("source release tag"), "{error}");
+
+        let mut changed_index = generation_validation_fixture("index");
+        changed_index.index.packages[0]
+            .binary
+            .get_mut(&TargetArch::Wasm32)
+            .unwrap()
+            .archive_sha256 = Some("c".repeat(64));
+        changed_index.write_index();
+        let error = run_validate_generation(&changed_index.args()).unwrap_err();
+        assert!(error.contains("digest") && error.contains("index"), "{error}");
+
+        let changed_archive = generation_validation_fixture("archive");
+        fs::write(&changed_archive.archive_path, b"tampered archive bytes").unwrap();
+        let error = run_validate_generation(&changed_archive.args()).unwrap_err();
+        assert!(error.contains("bytes differ"), "{error}");
     }
 
     #[test]
