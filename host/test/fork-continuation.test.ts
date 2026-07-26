@@ -210,7 +210,10 @@ describe("LinkedForkContinuation", () => {
       "child",
     );
     child.attachForReplay(moduleBuffer);
+    const peekOuter = Number(child.peekFrame(24));
+    expect(Number(child.peekFrame(24))).toBe(peekOuter);
     const replayOuter = Number(child.nextFrame(24));
+    expect(replayOuter).toBe(peekOuter);
     const replayInner = Number(child.nextFrame(16));
     expect(new Uint8Array(childMemory.buffer, replayOuter, 24)).toEqual(
       new Uint8Array(24).fill(0x22),

@@ -493,6 +493,31 @@ static int test_getrusage_pointer_validation(void)
     return expect_zero_rusage(&usage);
 }
 
+struct delayed_stop_ctx {
+    int fd;
+    atomic_int armed;
+    int error;
+};
+
+static void *release_delayed_stop(void *opaque)
+{
+    struct delayed_stop_ctx *ctx = opaque;
+    while (!atomic_load_explicit(&ctx->armed, memory_order_acquire))
+        usleep(1000);
+
+    /*
+     * The main thread sets armed immediately before entering waitpid.
+     * Leave enough time for it to publish the blocking wait to the kernel;
+     * otherwise a fast fresh child can stop and deliver SIGCHLD before the
+     * wait begins, in which case POSIX correctly permits that later wait to
+     * remain blocked.
+     */
+    usleep(50000);
+    if (write(ctx->fd, "s", 1) != 1)
+        ctx->error = errno != 0 ? errno : EIO;
+    return NULL;
+}
+
 static int test_nonmatching_sigchld_interrupts_wait(void)
 {
     struct sigaction action;
@@ -504,16 +529,76 @@ static int test_nonmatching_sigchld_interrupts_wait(void)
     sigchld_count = 0;
 
     int gate[2];
-    pid_t pid = spawn_stopping_child(gate, 27);
+    if (pipe(gate) != 0)
+        return fail("interrupt test pipe");
+    pid_t pid = fork();
     if (pid < 0)
-        return -1;
+        return fail("interrupt test fork");
+    if (pid == 0) {
+        close(gate[1]);
+        char byte = 0;
+        if (read(gate[0], &byte, 1) != 1)
+            _exit(121);
+        if (raise(SIGSTOP) != 0)
+            _exit(120);
+        if (read(gate[0], &byte, 1) != 1)
+            _exit(121);
+        close(gate[0]);
+        _exit(27);
+    }
+    close(gate[0]);
+
+    /*
+     * SIGCHLD is process-directed. Block it while creating the helper so the
+     * helper inherits the blocked mask, then restore the main thread's mask.
+     * The child's stop notification therefore has exactly one eligible
+     * recipient: the thread blocked in waitpid below.
+     */
+    sigset_t block;
+    sigset_t previous;
+    sigemptyset(&block);
+    sigaddset(&block, SIGCHLD);
+    int error = pthread_sigmask(SIG_BLOCK, &block, &previous);
+    if (error != 0) {
+        errno = error;
+        return fail("interrupt test block SIGCHLD");
+    }
+    struct delayed_stop_ctx stop = {
+        .fd = gate[1],
+        .armed = ATOMIC_VAR_INIT(0),
+        .error = 0,
+    };
+    pthread_t releaser;
+    error = pthread_create(&releaser, NULL, release_delayed_stop, &stop);
+    if (error != 0) {
+        pthread_sigmask(SIG_SETMASK, &previous, NULL);
+        errno = error;
+        return fail("interrupt test pthread_create");
+    }
+    error = pthread_sigmask(SIG_SETMASK, &previous, NULL);
+    if (error != 0) {
+        errno = error;
+        return fail("interrupt test restore SIGCHLD mask");
+    }
 
     int status = 0;
     errno = 0;
-    if (waitpid(pid, &status, 0) != -1 || errno != EINTR || sigchld_count != 1) {
+    atomic_store_explicit(&stop.armed, 1, memory_order_release);
+    pid_t got = waitpid(pid, &status, 0);
+    int wait_errno = errno;
+    error = pthread_join(releaser, NULL);
+    if (error != 0) {
+        errno = error;
+        return fail("interrupt test pthread_join");
+    }
+    if (stop.error != 0) {
+        errno = stop.error;
+        return fail("interrupt test release stop");
+    }
+    if (got != -1 || wait_errno != EINTR || sigchld_count != 1) {
         fprintf(stderr,
             "nonmatching stop SIGCHLD did not interrupt wait: errno=%d count=%d\n",
-            errno, (int)sigchld_count);
+            wait_errno, (int)sigchld_count);
         return -1;
     }
 

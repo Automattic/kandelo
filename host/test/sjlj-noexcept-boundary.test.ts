@@ -13,11 +13,9 @@ const rawWasm64Fixture = join(
   repoRoot,
   "local-binaries/test-fixtures/wasm64/sjlj_noexcept_boundary.raw.wasm",
 );
-const unsupportedForkFixture = join(
-  repoRoot,
-  "local-binaries/test-fixtures/wasm32/unsupported-abi43/sjlj_noexcept_boundary.raw.wasm",
+const instrumentedForkFixture = resolveBinary(
+  "programs/sjlj_noexcept_boundary.wasm",
 );
-const unsupportedForkDiagnostic = `${unsupportedForkFixture}.instrument-error.txt`;
 const sigchldFixture = resolveBinary("programs/sigchld_sjlj.wasm");
 const TERMINATED_BY_SIGABRT = 128 + 6;
 
@@ -30,16 +28,31 @@ describe("LLVM Wasm SjLj across a noexcept boundary", () => {
     expect(exportNames(rawModule)).not.toContain("wpk_fork_state");
   });
 
-  it("keeps the fork-bearing compiler output outside the ABI 43 resolver", () => {
-    expect(readFileSync(unsupportedForkFixture).byteLength).toBeGreaterThan(0);
-    expect(readFileSync(unsupportedForkDiagnostic, "utf8")).toMatch(
-      /reference local\/parameter|uses CatchAll|uses CatchAllRef/,
+  it("admits the fork-bearing compiler output through ABI 43 instrumentation", () => {
+    const module = new WebAssembly.Module(
+      readFileSync(instrumentedForkFixture),
     );
+    const exportNames = WebAssembly.Module.exports(module)
+      .map(({ name }) => name);
+
+    expect(exportNames).toContain("wpk_fork_state");
+  });
+
+  it("forks through the instrumented compiler-EH artifact", async () => {
+    const result = await runCentralizedProgram({
+      programPath: instrumentedForkFixture,
+      argv: ["sjlj_noexcept_boundary", "--fork-instrumentation-anchor"],
+      timeout: 10_000,
+      useDefaultRootfs: false,
+    });
+
+    expect(result.exitCode).toBe(0);
   });
 
   it.each([
     ["raw wasm32", rawWasm32Fixture],
     ["raw wasm64", rawWasm64Fixture],
+    ["instrumented wasm32", instrumentedForkFixture],
   ])("documents the pinned LLVM failure in the %s control", async (_, path) => {
     const result = await runCentralizedProgram({
       programPath: path,
@@ -54,9 +67,12 @@ describe("LLVM Wasm SjLj across a noexcept boundary", () => {
     expect(result.stdout).not.toContain("LANDING: siglongjmp resumed");
   });
 
-  it("resumes the same SjLj tag when it does not cross noexcept", async () => {
+  it.each([
+    ["raw wasm32", rawWasm32Fixture],
+    ["instrumented wasm32", instrumentedForkFixture],
+  ])("resumes the same SjLj tag in the %s permissive boundary", async (_, path) => {
     const result = await runCentralizedProgram({
-      programPath: rawWasm32Fixture,
+      programPath: path,
       argv: ["sjlj_noexcept_boundary", "--permissive"],
       timeout: 10_000,
       useDefaultRootfs: false,

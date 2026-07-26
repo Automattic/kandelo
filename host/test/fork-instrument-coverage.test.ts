@@ -2,35 +2,31 @@
  * fork_instrument_coverage — comprehensive regression matrix for
  * `wasm-fork-instrument`.
  *
- * Source of truth: docs/plans/2026-05-13-fork-instrument-megaPR-eliminate-guard-dispatch-and-modern-EH-plan.md
+ * The test IDs originated in:
+ * docs/plans/2026-05-13-fork-instrument-megaPR-eliminate-guard-dispatch-and-modern-EH-plan.md
  *
- * Six categories, 41 test IDs:
+ * Six categories, 51 test IDs:
  *   D-* (10)  dispatch coverage — switch-dispatch and the runtime
  *             trampoline that replaces guard-dispatch.
  *   C-* (11)  catch-handler resume — B1/A2/A3/A4 patterns. (C-01..C-10
  *             from the matrix plus C-11 post-catch fork.)
  *   S-* (8)   side-effects-during-rewind — atomic ops, table.*,
  *             non-nullable funcref, throw-from-outside.
- *   K-* (4)   callback-registration fork roots — sigaction, signal,
- *             pthread_cleanup_push, qsort comparator.
+ *   K-* (7)   callback-registration and asynchronous fork roots.
  *   P-* (11)  process / threading patterns — main thread, blocked
  *             cond, held mutex, popen, posix_spawn, deep and failed
  *             continuation allocation.
- *   F-* (4)   accepted-limit failure modes — ucontext, wasm-GC refs.
+ *   F-* (4)   explicit ucontext boundaries and Wasm-GC ownership.
  *
- * Pre-refactor expected behaviour is encoded with vitest modifiers:
- *   - it()       — should pass today AND after the architectural
- *                  pivot. Regression gate against the refactor
- *                  accidentally breaking working features.
- *   - it.fails() — expected to fail today; should pass after the
- *                  named commit lands. When CI flags it as
- *                  unexpectedly passing, flip to it().
- *   - it.todo()  — fixture not yet written (e.g. needs WAT). Marked
- *                  for tracking; no assertion runs.
+ * Modifiers describe the current ownership of each proof:
+ *   - it()       — this file executes the process-runtime gate.
+ *   - it.fails() — an explicit platform boundary is expected to fail
+ *                  truthfully; an unexpected pass requires review.
+ *   - it.skip()  — another named suite owns the executable proof because
+ *                  the shape has no C/C++ source fixture.
  *
- * The whole file must stay green until the architectural pivot ships
- * (commits 2-N of the mega-PR). Each pivot commit should flip the
- * relevant tests from it.fails() to it().
+ * Supported compiler/reference shapes must not be hidden behind a skip whose
+ * label still claims that ABI 43 rejects them.
  */
 import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
@@ -190,50 +186,46 @@ describe("fork_instrument_coverage / D-* dispatch", () => {
 // ---------------------------------------------------------------------------
 
 describe("fork_instrument_coverage / C-* catch-handler resume", () => {
-  // LLVM 21 currently adds exnref locals and/or untagged cleanup catches to
-  // these C++ functions. ABI 43 rejects those raw modules during
-  // instrumentation; the supported tagged Catch/CatchRef surface is exercised
-  // in catch-ref-fresh-worker.test.ts and plain-catch-payload-lifetime.test.ts.
-  it.skip("C-01 compiler EH output requires transferable cleanup state", async () => {
+  // LLVM 21 emits exnref locals and untagged cleanup catches for these C++
+  // functions. ABI 43 gives both forms deterministic exception recipes, so
+  // keep the compiler output in the real process-runtime gate.
+  it("C-01 fork in compiler EH try body", async () => {
     await runFixture("programs/c_01_fork_in_try_no_throw.wasm", {
       contains: ["IN_TRY", "PRE_FORK", "CHILD: ok", "PASS: C-01"],
     });
   });
 
-  // C-02..C-07 retain their source fixtures as compiler-policy probes. The
-  // build requires a precise instrumentation rejection and keeps the raw
-  // modules only under test-fixtures/unsupported-abi43.
-  it.skip("C-02 compiler EH output requires transferable cleanup state", async () => {
+  it("C-02 fork in compiler EH catch", async () => {
     await runFixture("programs/c_02_fork_in_catch.wasm", {
       contains: ["THROWING", "CAUGHT: 7", "PRE_FORK", "CHILD: ok", "PASS: C-02"],
     });
   });
 
-  it.skip("C-03 compiler EH output requires transferable cleanup state", async () => {
+  it("C-03 fork in a distinct multi-arm catch target", async () => {
     await runFixture("programs/c_03_fork_in_multi_arm_catch.wasm", {
       contains: ["THROWING", "CAUGHT_STR: x", "PRE_FORK", "CHILD: ok", "PASS: C-03"],
     });
   });
 
-  it.skip("C-04 compiler EH output requires transferable cleanup state", async () => {
+  it("C-04 fork after an external throw reaches a catch", async () => {
     await runFixture("programs/c_04_fork_in_catch_external_throw.wasm", {
       contains: ["CALLING_HELPER", "IN_HELPER", "CAUGHT: 99", "PRE_FORK", "CHILD: ok", "PASS: C-04"],
     });
   });
 
-  it.skip("C-05 compiler EH output requires transferable cleanup state", async () => {
+  it("C-05 fork in a single modern-EH catch", async () => {
     await runFixture("programs/c_05_fork_modern_eh_single.wasm", {
       contains: ["THROWING", "CAUGHT: 1", "PRE_FORK", "CHILD: ok", "PASS: C-05"],
     });
   });
 
-  it.skip("C-06 compiler EH output requires transferable cleanup state", async () => {
+  it("C-06 fork in a reference-form multi-arm catch", async () => {
     await runFixture("programs/c_06_fork_modern_eh_multi_ref.wasm", {
       contains: ["THROWING", "CAUGHT_DOUBLE: 3.14", "PRE_FORK", "CHILD: ok", "PASS: C-06"],
     });
   });
 
-  it.skip("C-07 compiler EH output requires transferable cleanup state", async () => {
+  it("C-07 fork in a plain-form multi-arm catch", async () => {
     await runFixture("programs/c_07_fork_modern_eh_multi_plain.wasm", {
       contains: ["THROWING", "CAUGHT_LONG: 1234567", "PRE_FORK", "CHILD: ok", "PASS: C-07"],
     });
@@ -241,14 +233,12 @@ describe("fork_instrument_coverage / C-* catch-handler resume", () => {
 
   // C-08, C-09 — funcref/externref catch operands. There is no C-source
   // surface, so `crates/fork-instrument/tests/coverage_wat.rs` verifies the
-  // ABI 43 boundary directly: a reference payload in the fork closure is
-  // rejected during instrumentation instead of being placed in
-  // module-instance scratch state.
-  it.skip("C-08 plain catch arm with funcref operand [tested via crates/fork-instrument/tests/coverage_wat.rs]", () => {});
-  it.skip("C-09 plain catch arm with externref operand [tested via crates/fork-instrument/tests/coverage_wat.rs]", () => {});
+  // ABI 43 boundary directly: reference payloads become complete exception
+  // recipes and never enter module-instance scratch state.
+  it.skip("C-08 funcref catch operand [coverage_wat.rs + catch-ref-fresh-worker.test.ts]", () => {});
+  it.skip("C-09 externref catch operand [coverage_wat.rs + catch-ref-fresh-worker.test.ts]", () => {});
 
-  // C-10/C-11 are part of the same compiler-output rejection boundary.
-  it.skip("C-10 compiler EH output requires transferable cleanup state", async () => {
+  it("C-10 forks in both a try body and its catch", async () => {
     await runFixture("programs/c_10_fork_in_try_and_catch.wasm", {
       contains: [
         "IN_TRY", "PRE_FORK_TRY", "CHILD_TRY: ok",
@@ -258,7 +248,7 @@ describe("fork_instrument_coverage / C-* catch-handler resume", () => {
     });
   });
 
-  it.skip("C-11 compiler EH output requires transferable cleanup state", async () => {
+  it("C-11 forks after a compiler catch has completed", async () => {
     await runFixture("programs/c_11_post_catch_fork.wasm", {
       contains: ["CAUGHT: 42", "PRE_FORK", "CHILD: ok", "PASS: C-11"],
     });
@@ -304,8 +294,9 @@ describe("fork_instrument_coverage / S-* side effects during rewind", () => {
   it.skip("S-06 table.grow before fork [tested via crates/fork-instrument/tests/coverage_wat.rs]", () => {});
   it.skip("S-07 non-nullable funcref direct-call result before fork [tested via crates/fork-instrument/tests/coverage_wat.rs]", () => {});
 
-  // S-08's current LLVM output retains an exnref local across the fork path.
-  it.skip("S-08 compiler EH output requires transferable cleanup state", async () => {
+  // LLVM retains an exnref local across this external-throw path. Its
+  // activation-owned recipe must survive the child instance boundary.
+  it("S-08 external throw with live compiler exnref state", async () => {
     await runFixture("programs/s_08_external_throw_fork_in_catch.wasm", {
       contains: ["ENTER_OUTER", "ENTER_INNER", "THROWING", "CAUGHT: 73", "PRE_FORK", "CHILD: ok", "PASS: S-08"],
     });
@@ -360,9 +351,9 @@ describe("fork_instrument_coverage / K-* callback fork roots", () => {
     });
   });
 
-  // K-06 lowers destructor cleanup to an untagged CatchAll. ABI 43 rejects it
-  // until that cleanup state has a deterministic child reconstruction recipe.
-  it.skip("K-06 compiler CatchAll cleanup is not reconstructible", async () => {
+  // K-06 lowers destructor cleanup to an untagged CatchAll. ABI 43 captures
+  // the complete exception recipe rather than relying on the parent instance.
+  it("K-06 fork from destructor through compiler CatchAll cleanup", async () => {
     await runFixture("programs/k_06_fork_from_dtor.wasm", {
       contains: ["IN_SCOPE", "IN_DTOR", "PRE_FORK", "CHILD: ok", "PARENT: child=", "PASS: K-06"],
     });
@@ -494,10 +485,10 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
 });
 
 // ---------------------------------------------------------------------------
-// F-* accepted-limit failure modes
+// F-* explicit boundaries and Wasm-GC ownership
 // ---------------------------------------------------------------------------
 
-describe("fork_instrument_coverage / F-* accepted limits", () => {
+describe("fork_instrument_coverage / F-* boundaries and Wasm-GC", () => {
   // F-01: getcontext(). Empirically: musl's wasm sysroot exposes
   // the symbol via an `env.getcontext` import that the kernel
   // doesn't implement — the program traps at first call with
@@ -520,11 +511,9 @@ describe("fork_instrument_coverage / F-* accepted limits", () => {
     });
   });
 
-  // F-03, F-04 — wasm-GC anyref / struct.new. No C-source surface
-  // (LLVM-emitted C doesn't produce these); covered by cargo-level
-  // tests in `crates/fork-instrument/tests/coverage_wat.rs` which
-  // verify fork-instrument rejects the accepted-limit shapes with a
-  // clear diagnostic rather than silently accepting them.
-  it.skip("F-03 wasm-GC anyref accepted limit [tested via crates/fork-instrument/tests/coverage_wat.rs]", () => {});
-  it.skip("F-04 wasm-GC struct.new accepted limit [tested via crates/fork-instrument/tests/coverage_wat.rs]", () => {});
+  // F-03, F-04 — wasm-GC anyref / struct.new have no C-source surface.
+  // `coverage_wat.rs` verifies that both are accepted, encoded into
+  // activation-owned recipes, and emitted as independently valid Wasm.
+  it.skip("F-03 wasm-GC anyref [coverage_wat.rs + gc-reference-state-fresh-worker.test.ts]", () => {});
+  it.skip("F-04 wasm-GC struct.new [coverage_wat.rs + gc-reference-state-fresh-worker.test.ts]", () => {});
 });

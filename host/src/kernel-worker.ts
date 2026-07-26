@@ -43,6 +43,8 @@ import {
   CH_DATA,
   CH_DATA_SIZE,
   CH_ERRNO,
+  CH_REQUEST_FLAGS,
+  CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY,
   CH_RETURN,
   CH_SIG_BASE,
   CH_SIG_FLAGS,
@@ -5001,6 +5003,21 @@ export class CentralizedKernelWorker {
    * handler signal number, or zero when no caught handler was dequeued.
    */
   private dequeueSignalForDelivery(channel: ChannelInfo): number {
+    const requestFlags = new DataView(
+      channel.memory.buffer,
+      channel.channelOffset,
+    ).getUint32(CH_REQUEST_FLAGS, true);
+    if (
+      (requestFlags & CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY) !== 0
+    ) {
+      // WHY: process-worker JavaScript consumes this completion outside
+      // libc's post-syscall signal trampoline. Dequeuing here would consume
+      // the kernel signal and block it for a handler that this completion can
+      // never invoke. Leave it pending for the explicit guest checkpoint after
+      // the owning fork, clone, or staged-loader transition.
+      return 0;
+    }
+
     const preparedSignals = this.resumePreparedSignals;
     if (preparedSignals?.has(channel)) {
       const existingSignal = new DataView(
