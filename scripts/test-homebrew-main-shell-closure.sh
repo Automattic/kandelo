@@ -877,6 +877,284 @@ shell_build_function="$TMP_ROOT/build-shell-vfs-function.sh"
 sed -n '/^build_shell_vfs()/,/^}/p' "$RUN_SH" >"$shell_build_function"
 grep -Fq 'resolve_args+=(resolve shell)' "$shell_build_function" ||
   fail "run.sh must resolve the shell package through the package system"
+source_stage_function="$TMP_ROOT/stage-source-rootfs-shell-function.sh"
+source_install_function="$TMP_ROOT/install-source-rootfs-shell-function.sh"
+source_verify_function="$TMP_ROOT/verify-source-rootfs-shell-function.sh"
+source_closure_function="$TMP_ROOT/verify-source-rootfs-shell-browser-closure-function.sh"
+source_override_function="$TMP_ROOT/activate-source-rootfs-shell-resolver-override-function.sh"
+source_cleanup_function="$TMP_ROOT/cleanup-source-rootfs-shell-work-root-function.sh"
+source_deactivate_function="$TMP_ROOT/deactivate-source-rootfs-shell-function.sh"
+source_clear_fetched_function="$TMP_ROOT/clear-source-rootfs-shell-transient-fetched-mirror-function.sh"
+browser_fetch_function="$TMP_ROOT/fetch-browser-binaries-function.sh"
+prepare_browser_function="$TMP_ROOT/prepare-browser-function.sh"
+sed -n '/^stage_source_rootfs_shell_vfs()/,/^}/p' "$RUN_SH" \
+  >"$source_stage_function"
+sed -n '/^install_source_rootfs_shell_vfs()/,/^}/p' "$RUN_SH" \
+  >"$source_install_function"
+sed -n '/^verify_source_rootfs_shell_vfs()/,/^}/p' "$RUN_SH" \
+  >"$source_verify_function"
+sed -n '/^verify_source_rootfs_shell_browser_closure()/,/^}/p' "$RUN_SH" \
+  >"$source_closure_function"
+sed -n '/^activate_source_rootfs_shell_resolver_override()/,/^}/p' "$RUN_SH" \
+  >"$source_override_function"
+sed -n '/^cleanup_source_rootfs_shell_work_root()/,/^}/p' "$RUN_SH" \
+  >"$source_cleanup_function"
+sed -n '/^deactivate_source_rootfs_shell_if_present()/,/^}/p' "$RUN_SH" \
+  >"$source_deactivate_function"
+sed -n '/^clear_source_rootfs_shell_transient_fetched_mirror()/,/^}/p' "$RUN_SH" \
+  >"$source_clear_fetched_function"
+sed -n '/^fetch_browser_binaries()/,/^}/p' "$RUN_SH" \
+  >"$browser_fetch_function"
+sed -n '/^cmd_prepare_browser()/,/^}/p' "$RUN_SH" \
+  >"$prepare_browser_function"
+grep -Fq -- '--source-rootfs-shell)' "$RUN_SH" &&
+  grep -Fq \
+    'export WASM_POSIX_SOURCE_ROOTFS_SHELL=$SOURCE_ROOTFS_SHELL' "$RUN_SH" ||
+  fail "run.sh must expose one explicit source-rootfs browser preparation mode"
+grep -Fq -- \
+  '--source-rootfs-shell is supported only by prepare-browser and browser.' \
+  "$RUN_SH" ||
+  fail "source-rootfs selection must not change unrelated run.sh commands"
+grep -Fq -- \
+  '--package "$REPO_ROOT/homebrew/source-rootfs-shell-package"' \
+  "$source_stage_function" &&
+  grep -Fq -- '--force-source-closure' "$source_stage_function" ||
+  fail "source-rootfs mode must force-stage the distinct bridge recipe"
+grep -Fq '[ "${package_names[0]}" = "source-rootfs-shell" ]' \
+  "$source_stage_function" &&
+  grep -Fq '[ "${repositories[0]}" = "$source_repository" ]' \
+    "$source_stage_function" &&
+  grep -Fq '[ "${commits[0]}" = "$source_commit" ]' \
+    "$source_stage_function" &&
+  grep -Fq 'grep -Fq "UNPUBLISHED" "$manifest"' \
+    "$source_stage_function" ||
+  fail "source-rootfs mode must inspect exact staged recipe and source provenance"
+grep -Fq 'archive-extract-member \' "$source_stage_function" &&
+  grep -Fq -- '--member manifest.toml \' "$source_stage_function" &&
+  grep -Fq -- '--member artifacts/shell.vfs.zst \' \
+    "$source_stage_function" ||
+  fail "source-rootfs mode must use the bounded extractor for manifest and artifact"
+grep -Fq 'WASM_POSIX_LOCAL_INSTALL_SOURCE="$SOURCE_ROOTFS_SHELL_CANDIDATE"' \
+  "$source_install_function" &&
+  grep -Fq 'install-local-artifact shell shell.vfs.zst' \
+    "$source_install_function" &&
+  grep -Fq 'write_source_rootfs_shell_marker' "$source_install_function" &&
+  grep -Fq 'cp "$SOURCE_ROOTFS_SHELL_CANDIDATE" "$browser_copy"' \
+    "$source_install_function" ||
+  fail "source-rootfs mode must install exact bridge bytes through canonical package ownership"
+grep -Fq 'activate_source_rootfs_shell_resolver_override' \
+  "$source_install_function" &&
+  grep -Fq 'local shell_dir="$local_libs/shell"' "$source_override_function" &&
+  grep -Fq 'local override_path="$shell_dir/build"' \
+    "$source_override_function" &&
+  grep -Fq \
+    'resolved="$("$REPO_ROOT/scripts/resolve-binary.sh" programs/shell.vfs.zst)"' \
+    "$source_override_function" &&
+  grep -Fq '[ -L "$resolved" ]' "$source_override_function" &&
+  grep -Fq 'override_target="$(dirname "$resolved")"' \
+    "$source_override_function" &&
+  grep -Fq 'ln -s "$override_target" "$override_path"' \
+    "$source_override_function" ||
+  fail "source-rootfs mode must block transitive canonical shell builds through the supported resolver override"
+
+source_override_probe="$TMP_ROOT/source-override-probe"
+source_override_generation="$source_override_probe/local-binaries/.kandelo-local-generations/wasm32/shell/exact/session"
+source_override_mirror="$source_override_probe/local-binaries/programs/wasm32/shell.vfs.zst"
+source_override_candidate="$source_override_probe/candidate.vfs.zst"
+mkdir -p "$source_override_probe/scripts" "$source_override_generation" \
+  "$(dirname "$source_override_mirror")"
+printf 'exact-source-shell\n' \
+  >"$source_override_generation/shell.vfs.zst"
+printf 'exact-source-shell\n' >"$source_override_candidate"
+ln -s "$source_override_generation/shell.vfs.zst" "$source_override_mirror"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" %q\n' \
+  "$source_override_generation/shell.vfs.zst" \
+  >"$source_override_probe/scripts/resolve-binary.sh"
+chmod +x "$source_override_probe/scripts/resolve-binary.sh"
+source_override_runner="$source_override_probe/run.sh"
+{
+  printf 'set -euo pipefail\n'
+  printf 'REPO_ROOT=%q\n' "$source_override_probe"
+  printf 'SOURCE_ROOTFS_SHELL_CANDIDATE=%q\n' "$source_override_candidate"
+  printf 'SOURCE_ROOTFS_SHELL_OVERRIDE_PATH=""\n'
+  printf 'SOURCE_ROOTFS_SHELL_OVERRIDE_TARGET=""\n'
+  printf 'SOURCE_ROOTFS_SHELL_OVERRIDE_SHELL_DIR_CREATED=0\n'
+  printf 'SOURCE_ROOTFS_SHELL_OVERRIDE_LOCAL_LIBS_CREATED=0\n'
+  printf 'err() { printf "%%s\\n" "$*" >&2; }\n'
+  printf 'pkg_output_rel() { printf "shell.vfs.zst\\n"; }\n'
+  sed -n '/^activate_source_rootfs_shell_resolver_override()/,/^}/p' "$RUN_SH"
+  printf 'activate_source_rootfs_shell_resolver_override\n'
+  printf '[ -L "$REPO_ROOT/local-binaries/programs/wasm32/shell.vfs.zst" ]\n'
+  printf '[ "$(readlink "$SOURCE_ROOTFS_SHELL_OVERRIDE_PATH")" = %q ]\n' \
+    "$source_override_generation"
+} >"$source_override_runner"
+bash "$source_override_runner" ||
+  fail "source-rootfs resolver override rejected a valid scalar mirror generation"
+
+source_reject_probe="$TMP_ROOT/source-rejected-override-probe"
+source_reject_generation="$source_reject_probe/local-binaries/.kandelo-local-generations/wasm32/shell/exact/session"
+source_reject_override="$source_reject_probe/local-libs/shell/build"
+source_reject_fetched="$source_reject_probe/binaries/programs/wasm32/shell.vfs.zst"
+source_reject_candidate="$source_reject_probe/candidate.vfs.zst"
+mkdir -p "$source_reject_probe/scripts" "$source_reject_generation" \
+  "$(dirname "$source_reject_override")" "$(dirname "$source_reject_fetched")"
+printf 'exact-source-shell\n' \
+  >"$source_reject_generation/shell.vfs.zst"
+printf 'exact-source-shell\n' >"$source_reject_candidate"
+ln -s "$source_reject_generation" "$source_reject_override"
+ln -s "$source_reject_override/shell.vfs.zst" "$source_reject_fetched"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" %q\n' \
+  "$source_reject_generation/shell.vfs.zst" \
+  >"$source_reject_probe/scripts/resolve-binary.sh"
+chmod +x "$source_reject_probe/scripts/resolve-binary.sh"
+source_reject_runner="$source_reject_probe/run.sh"
+{
+  printf 'set -euo pipefail\n'
+  printf 'REPO_ROOT=%q\n' "$source_reject_probe"
+  printf 'SOURCE_ROOTFS_SHELL_CANDIDATE=%q\n' "$source_reject_candidate"
+  printf 'SOURCE_ROOTFS_SHELL_WORK_ROOT=""\n'
+  printf 'SOURCE_ROOTFS_SHELL_WORK_PREFIX=""\n'
+  printf 'SOURCE_ROOTFS_SHELL_OVERRIDE_PATH=""\n'
+  printf 'SOURCE_ROOTFS_SHELL_OVERRIDE_TARGET=""\n'
+  printf 'SOURCE_ROOTFS_SHELL_OVERRIDE_SHELL_DIR_CREATED=0\n'
+  printf 'SOURCE_ROOTFS_SHELL_OVERRIDE_LOCAL_LIBS_CREATED=0\n'
+  printf 'SOURCE_ROOTFS_SHELL_FETCHED_MIRROR=""\n'
+  printf 'SOURCE_ROOTFS_SHELL_TRANSIENT_FETCHED_TARGET=""\n'
+  printf 'err() { printf "%%s\\n" "$*" >&2; }\n'
+  printf 'pkg_output_rel() { printf "shell.vfs.zst\\n"; }\n'
+  sed -n '/^activate_source_rootfs_shell_resolver_override()/,/^}/p' "$RUN_SH"
+  sed -n '/^cleanup_source_rootfs_shell_work_root()/,/^}/p' "$RUN_SH"
+  printf 'if activate_source_rootfs_shell_resolver_override; then exit 1; fi\n'
+  printf 'cleanup_source_rootfs_shell_work_root\n'
+  printf '[ -L %q ] && [ "$(readlink %q)" = %q ]\n' \
+    "$source_reject_override" "$source_reject_override" \
+    "$source_reject_generation"
+  printf '[ -L %q ] && [ "$(readlink %q)" = %q ]\n' \
+    "$source_reject_fetched" "$source_reject_fetched" \
+    "$source_reject_override/shell.vfs.zst"
+} >"$source_reject_runner"
+bash "$source_reject_runner" ||
+  fail "rejected source-rootfs activation claimed a preexisting override or fetched link"
+
+override_create_line="$(grep -nF 'ln -s "$override_target" "$override_path"' \
+  "$source_override_function" | cut -d: -f1)"
+override_ownership_line="$(grep -nF \
+  'SOURCE_ROOTFS_SHELL_OVERRIDE_PATH="$override_path"' \
+  "$source_override_function" | cut -d: -f1)"
+fetched_ownership_line="$(grep -nF \
+  'SOURCE_ROOTFS_SHELL_FETCHED_MIRROR="$fetched_mirror"' \
+  "$source_override_function" | cut -d: -f1)"
+[ "$override_create_line" -lt "$override_ownership_line" ] &&
+  [ "$override_create_line" -lt "$fetched_ownership_line" ] ||
+  fail "source-rootfs cleanup ownership must begin only after creating its override"
+
+grep -Fq 'local install_session="source-rootfs-shell-' \
+  "$source_install_function" &&
+  grep -Fq '${work_suffix}-${BASHPID:-$$}' "$source_install_function" ||
+  fail "source-rootfs reactivation must use a fresh portable local-install session"
+grep -Fq 'cmp "$SOURCE_ROOTFS_SHELL_CANDIDATE" "$resolved"' \
+  "$source_verify_function" &&
+  grep -Fq 'cmp "$SOURCE_ROOTFS_SHELL_CANDIDATE" "$browser_copy"' \
+    "$source_verify_function" ||
+  fail "source-rootfs mode must compare both canonical browser paths with its staged bytes"
+grep -Fq 'pkg_has_output homebrew-bootstrap homebrew-bootstrap.zip' \
+  "$source_closure_function" &&
+  grep -Fq 'pkg_has_output homebrew-bootstrap homebrew-brew.env' \
+    "$source_closure_function" ||
+  fail "source-rootfs browser prep must retain all statically imported Homebrew assets"
+grep -Fq \
+  '[ "$(readlink "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR")" = "$SOURCE_ROOTFS_SHELL_TRANSIENT_FETCHED_TARGET" ]' \
+  "$source_clear_fetched_function" &&
+  grep -Fq 'rm -- "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR"' \
+    "$source_clear_fetched_function" &&
+  ! grep -Fq -- '--binaries-dir "$REPO_ROOT/binaries"' \
+    "$source_install_function" "$source_override_function" \
+    "$source_clear_fetched_function" ||
+  fail "source-rootfs mode must remove its transient fetched-tier link rather than install an invalid local generation there"
+
+source_clear_probe="$TMP_ROOT/source-clear-fetched-probe"
+mkdir -p "$source_clear_probe/binaries/programs/wasm32" \
+  "$source_clear_probe/local-libs/shell/build" "$source_clear_probe/unrelated"
+source_clear_mirror="$source_clear_probe/binaries/programs/wasm32/shell.vfs.zst"
+source_clear_transient="$source_clear_probe/local-libs/shell/build/shell.vfs.zst"
+source_clear_unrelated="$source_clear_probe/unrelated/shell.vfs.zst"
+printf 'source\n' >"$source_clear_transient"
+printf 'bottle\n' >"$source_clear_unrelated"
+ln -s "$source_clear_transient" "$source_clear_mirror"
+source_clear_runner="$source_clear_probe/run.sh"
+{
+  printf 'set -euo pipefail\n'
+  printf 'SOURCE_ROOTFS_SHELL_FETCHED_MIRROR=%q\n' "$source_clear_mirror"
+  printf 'SOURCE_ROOTFS_SHELL_TRANSIENT_FETCHED_TARGET=%q\n' \
+    "$source_clear_transient"
+  printf 'SOURCE_CLEAR_UNRELATED=%q\n' "$source_clear_unrelated"
+  sed -n '/^clear_source_rootfs_shell_transient_fetched_mirror()/,/^}/p' \
+    "$RUN_SH"
+  printf 'clear_source_rootfs_shell_transient_fetched_mirror\n'
+  printf '[ ! -e "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR" ] && '
+  printf '[ ! -L "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR" ]\n'
+  printf 'ln -s "$SOURCE_CLEAR_UNRELATED" "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR"\n'
+  printf 'clear_source_rootfs_shell_transient_fetched_mirror\n'
+  printf '[ -L "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR" ] && '
+  printf '[ "$(readlink "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR")" = "$SOURCE_CLEAR_UNRELATED" ]\n'
+} >"$source_clear_runner"
+bash "$source_clear_runner" ||
+  fail "source-rootfs transient cleanup removed or retained the wrong fetched-tier link"
+
+grep -Fq 'disabled_pkgs="$disabled_pkgs shell"' "$browser_fetch_function" ||
+  fail "source-rootfs browser fetching must skip direct canonical shell resolution"
+grep -Fq 'for path in "$local_output" "$fetched_output" "$browser_copy"; do' \
+  "$source_deactivate_function" &&
+  grep -Fq 'hash_path="$(readlink "$path")"' "$source_deactivate_function" &&
+  grep -Fq \
+    '[ "$(readlink "$path")" = "$REPO_ROOT/local-libs/shell/build/shell.vfs.zst" ]' \
+    "$source_deactivate_function" &&
+  grep -Fq 'rm -- "$path"' "$source_deactivate_function" &&
+  grep -Fq 'rm -- "$SOURCE_ROOTFS_SHELL_MARKER"' \
+    "$source_deactivate_function" ||
+  fail "ordinary browser prep must remove only marker-bound bridge mirrors"
+grep -Fq 'trap cleanup_source_rootfs_shell_work_root EXIT' \
+  "$source_stage_function" &&
+  grep -Fq "trap 'exit 130' INT" "$source_stage_function" &&
+  grep -Fq "trap 'exit 143' TERM" "$source_stage_function" ||
+  fail "source-rootfs staging must clean up without swallowing cancellation signals"
+
+source_branch_line="$(grep -nF 'if [ "$SOURCE_ROOTFS_SHELL" -eq 1 ]; then' \
+  "$shell_build_function" | head -n 1 | cut -d: -f1)"
+source_verify_line="$(grep -nF 'verify_source_rootfs_shell_browser_closure' \
+  "$shell_build_function" | head -n 1 | cut -d: -f1)"
+source_return_line="$(awk -v start="$source_verify_line" \
+  'NR > start && /^        return$/ { print NR; exit }' "$shell_build_function")"
+canonical_resolve_line="$(grep -nF 'resolve_args+=(resolve shell)' \
+  "$shell_build_function" | cut -d: -f1)"
+canonical_deactivate_line="$(grep -nF 'deactivate_source_rootfs_shell_if_present' \
+  "$shell_build_function" | cut -d: -f1)"
+[ "$source_branch_line" -lt "$source_verify_line" ] &&
+  [ "$source_verify_line" -lt "$source_return_line" ] &&
+  [ "$source_return_line" -lt "$canonical_deactivate_line" ] &&
+  [ "$canonical_deactivate_line" -lt "$canonical_resolve_line" ] &&
+  [ "$source_return_line" -lt "$canonical_resolve_line" ] ||
+  fail "source and canonical shell activations must remain mutually exclusive"
+
+source_install_line="$(grep -nF 'install_source_rootfs_shell_vfs' \
+  "$prepare_browser_function" | cut -d: -f1)"
+source_deactivate_line="$(grep -nF 'deactivate_source_rootfs_shell_if_present' \
+  "$prepare_browser_function" | cut -d: -f1)"
+browser_fetch_line="$(grep -nF 'fetch_browser_binaries' \
+  "$prepare_browser_function" | cut -d: -f1)"
+browser_build_line="$(grep -nF '    build_browser' \
+  "$prepare_browser_function" | cut -d: -f1)"
+final_source_clear_line="$(grep -nF 'clear_source_rootfs_shell_transient_fetched_mirror' \
+  "$prepare_browser_function" | tail -n 1 | cut -d: -f1)"
+final_source_verify_line="$(grep -nF 'verify_source_rootfs_shell_browser_closure' \
+  "$prepare_browser_function" | tail -n 1 | cut -d: -f1)"
+[ "$source_install_line" -lt "$browser_fetch_line" ] &&
+  [ "$source_deactivate_line" -lt "$browser_fetch_line" ] &&
+  [ "$browser_fetch_line" -lt "$browser_build_line" ] &&
+  [ "$browser_build_line" -lt "$final_source_clear_line" ] &&
+  [ "$final_source_clear_line" -lt "$final_source_verify_line" ] &&
+  [ "$browser_build_line" -lt "$final_source_verify_line" ] ||
+  fail "browser prep must install the bridge before fetching and verify it after all builds"
 grep -Fq 'need_shell_vfs_build_tools' "$RUN_SH" &&
   fail "run.sh must not duplicate prerequisites owned by the shell recipe"
 grep -Fq 'if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then' \
@@ -928,6 +1206,8 @@ shell_clean_case="$TMP_ROOT/clean-shell-vfs-case.sh"
 sed -n '/^        shell-vfs)/,/;;/p' "$clean_target_function" >"$shell_clean_case"
 grep -Fq 'pkg_remove_local_output shell shell.vfs.zst wasm32' "$shell_clean_case" ||
   fail "clean shell-vfs must remove the resolver-owned local output"
+grep -Fq 'deactivate_source_rootfs_shell_if_present' "$shell_clean_case" ||
+  fail "clean shell-vfs must clear a marked bridge before discarding its ownership marker"
 grep -Fq '"$REPO_ROOT/binaries/' "$shell_clean_case" &&
   fail "clean shell-vfs must preserve immutable fetched package artifacts"
 

@@ -722,8 +722,22 @@ commit, Formula closure, bottle identities, and lazy-artifact lock fail closed.
 Required pull-request and default-branch CI also need to validate the exact
 checkout before its final bottles exist. That provisional lane explicitly
 stages the separate, non-published
-`homebrew/source-rootfs-shell-package` recipe. Its complete direct dependency
-contract is declared once in
+`homebrew/source-rootfs-shell-package` recipe. Pages selects this lane with
+`./run.sh prepare-browser --source-rootfs-shell` and supplies the exact
+event repository and commit through
+`WASM_POSIX_SOURCE_ROOTFS_SHELL_REPOSITORY` and
+`WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT`. The command inspects that identity in
+the staged archive before installing its exact output under the canonical
+browser resolver path and stable `/shell.vfs.zst` public URL; ordinary
+`prepare-browser` removes the hash-bound bridge activation first and resolves
+the bottle-backed `shell` package. While the explicit mode is running, a
+temporary `local-libs` resolver override points transitive browser image
+recipes at the pinned installed generation, preventing those dependency walks
+from executing the canonical shell recipe. Resolver-created `binaries/` links
+to that temporary override are removed before the override is released; source
+activation persists only in the valid `local-binaries` generation and stable
+public copy.
+Its complete direct dependency contract is declared once in
 `homebrew/source-rootfs-shell-dependencies.json`; the workflow uses an empty
 binary index and a fresh cache so every buildable dependency is produced from
 its checksum-pinned source. The composer consumes only resolver-owned outputs

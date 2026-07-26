@@ -94,6 +94,7 @@ for required_path in \
   'package-lock.json' \
   'packages/registry/**' \
   'homebrew/main-shell-demo.json' \
+  'homebrew/source-rootfs-shell-package/**' \
   'homebrew/source-rootfs-shell-default.json' \
   'homebrew/source-rootfs-shell-dependencies.json' \
   'scripts/browser-binary-package-roots.mjs' \
@@ -167,6 +168,15 @@ grep -Fq 'bash scripts/dev-shell.sh env \' <<<"$prepare_browser_block" &&
   grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
     <<<"$prepare_browser_block" ||
   fail "browser preparation must retain the exact-main cache root inside dev-shell"
+grep -Fq \
+  '"WASM_POSIX_SOURCE_ROOTFS_SHELL_REPOSITORY=https://github.com/$GITHUB_REPOSITORY" \' \
+  <<<"$prepare_browser_block" &&
+  grep -Fq '"WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT=$GITHUB_SHA" \' \
+    <<<"$prepare_browser_block" &&
+  grep -Fq \
+    './run.sh prepare-browser --source-rootfs-shell --allow-stale' \
+    <<<"$prepare_browser_block" ||
+  fail "browser preparation must select the source-rootfs recipe with exact event provenance"
 
 sealed_boot_block="$(
   step_block "$PAGES_WORKFLOW" "Boot the sealed Pages shell product in Chromium"

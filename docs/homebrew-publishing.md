@@ -2073,9 +2073,20 @@ regular-file-and-symlink manifest proves they did not replace any exact-source
 shell closure bytes. The sealed Chromium
 proof executes eager Bash, rootfs-owned lazy `grep`, extended lazy `less`, and
 integrity-bound Vim and NetHack lazy archives. The Pages publisher builds the
-current sysroot and exact source closure, assembles the actual product tree,
-and boots that sealed `/kandelo/` tree before deployment. Flip the gate back to
-`bottles` only in the strict exact-main bottle cutover.
+current sysroot and invokes
+`./run.sh prepare-browser --source-rootfs-shell` with the exact event
+repository and SHA. That mode stages and inspects only the distinct bridge
+recipe, installs those bytes through canonical package ownership, and keeps
+both the resolver path and stable `/shell.vfs.zst` copy byte-identical through
+the remaining browser build. A temporary supported `local-libs` override feeds
+that pinned generation to transitive image recipes without invoking the
+canonical shell recipe. Any transient fetched-tier link to that override is
+removed before the override itself. The installed bridge carries a hash-bound
+activation marker; the next ordinary `prepare-browser` removes only matching
+bridge bytes before returning to the bottle-backed path.
+Pages then assembles the actual product tree and boots that sealed `/kandelo/`
+tree before deployment. Flip the gate back to `bottles` only in the strict
+exact-main bottle cutover.
 
 ### Strict Main-Shell Bottle Closure
 

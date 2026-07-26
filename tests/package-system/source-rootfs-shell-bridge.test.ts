@@ -40,11 +40,20 @@ import {
 import {
   shouldReuseExistingPlaywrightServer,
 } from "../../apps/browser-demos/playwright-server-policy";
+import {
+  readSourceRootfsShellDependencyContract,
+  validateSourceRootfsShellPackageManifest,
+} from "../../scripts/source-rootfs-shell-dependency-contract.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..");
 const bridgePackageRoot = join(
   repoRoot,
   "homebrew/source-rootfs-shell-package",
+);
+const bridgePackageManifest = join(bridgePackageRoot, "package.toml");
+const bridgeDependencyContract = join(
+  repoRoot,
+  "homebrew/source-rootfs-shell-dependencies.json",
 );
 const roots: string[] = [];
 const MiB = 1024 * 1024;
@@ -232,7 +241,7 @@ describe("source-rootfs shell bridge", () => {
 
   it("declares a closed source-package build graph with no bottle or network input", () => {
     const manifest = readFileSync(
-      join(bridgePackageRoot, "package.toml"),
+      bridgePackageManifest,
       "utf8",
     );
     const buildToml = readFileSync(
@@ -248,28 +257,17 @@ describe("source-rootfs shell bridge", () => {
       "utf8",
     );
 
-    expect(manifest.match(/^\s*"[^"]+@[0-9][^"]*",?$/gm)).toEqual([
-      '  "rootfs@0.1.0",',
-      '  "bash@5.2.37",',
-      '  "fbdoom@0.1.0",',
-      '  "modeset@0.1.0",',
-      '  "less@668",',
-      '  "tar@1.35",',
-      '  "curl@8.11.1",',
-      '  "netcat@0.7.1",',
-      '  "wget@1.25.0",',
-      '  "git@2.47.1",',
-      '  "gzip@1.13",',
-      '  "bzip2@1.0.8",',
-      '  "xz@5.6.2",',
-      '  "zstd@1.5.6",',
-      '  "zip@3.0",',
-      '  "unzip@6.0",',
-      '  "lsof@0.1.0",',
-      '  "nano@8.0",',
-      '  "vim-browser-bundle@9.1.0900",',
-      '  "nethack-browser-bundle@3.6.7",',
-    ]);
+    const contract = readSourceRootfsShellDependencyContract(
+      bridgeDependencyContract,
+    );
+    expect(
+      validateSourceRootfsShellPackageManifest(
+        contract,
+        bridgePackageManifest,
+      ),
+    ).toEqual(
+      contract.dependencies.map(({ name, version }) => ({ name, version })),
+    );
     expect(manifest.match(/^name = "[^"]+"$/gm)).toEqual([
       'name = "source-rootfs-shell"',
       'name = "shell"',
@@ -310,6 +308,51 @@ describe("source-rootfs shell bridge", () => {
     expect(composer).not.toContain("binary-resolver");
     expect(composer).not.toMatch(/\bfetch\s*\(/);
     expect(composer).not.toMatch(/https?:\/\//);
+  });
+
+  it("fails closed when the bridge manifest drifts from its JSON dependency authority", () => {
+    const root = tempRoot();
+    const source = readFileSync(bridgePackageManifest, "utf8");
+    const contract = readSourceRootfsShellDependencyContract(
+      bridgeDependencyContract,
+    );
+    const cases = [
+      {
+        label: "missing",
+        source: source.replace('  "nano@8.0",\n', ""),
+        error: "missing: nano",
+      },
+      {
+        label: "duplicate",
+        source: source.replace(
+          '  "nano@8.0",\n',
+          '  "nano@8.0",\n  "nano@8.0",\n',
+        ),
+        error: "dependency names must be unique",
+      },
+      {
+        label: "version-drift",
+        source: source.replace('"nano@8.0"', '"nano@8.1"'),
+        error: "version drift: nano: expected 8.0, got 8.1",
+      },
+      {
+        label: "extra",
+        source: source.replace(
+          '  "nano@8.0",\n',
+          '  "nano@8.0",\n  "unexpected@1.0.0",\n',
+        ),
+        error: "extra: unexpected",
+      },
+    ];
+
+    for (const fixture of cases) {
+      const manifest = join(root, `${fixture.label}.toml`);
+      writeFileSync(manifest, fixture.source);
+      expect(
+        () => validateSourceRootfsShellPackageManifest(contract, manifest),
+        fixture.label,
+      ).toThrow(fixture.error);
+    }
   });
 
   it("preserves ABI, capacity, and lazy identities while adding exact image-owned files", async () => {
@@ -495,6 +538,8 @@ for name in GH_TOKEN GITHUB_TOKEN NODE_OPTIONS NODE_PATH HTTP_PROXY HTTPS_PROXY;
 done
 if [[ "\${1:-}" == */scripts/source-rootfs-shell-dependency-contract.mjs ]]; then
   [ "\${2:-}" = --print-resolver-owned ]
+  [ "\${3:-}" = ${JSON.stringify(bridgeDependencyContract)} ]
+  [ "\${4:-}" = ${JSON.stringify(bridgePackageManifest)} ]
   printf '%s\\n' ${
     SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES
       .map((dependency) => `'${dependency}'`)

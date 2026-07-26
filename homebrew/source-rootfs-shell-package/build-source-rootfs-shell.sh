@@ -18,6 +18,7 @@ TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-}"
 DECLARED_TOOL_PATH="${KANDELO_DEV_SHELL_TOOL_PATH:-}"
 DEPENDENCY_CONTRACT="$REPO_ROOT/homebrew/source-rootfs-shell-dependencies.json"
 DEPENDENCY_CONTRACT_READER="$REPO_ROOT/scripts/source-rootfs-shell-dependency-contract.mjs"
+PACKAGE_MANIFEST="$SCRIPT_DIR/package.toml"
 
 fail() {
     echo "build-source-rootfs-shell: $*" >&2
@@ -73,12 +74,13 @@ unset GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
 require_regular_file "source-rootfs dependency contract" "$DEPENDENCY_CONTRACT"
 require_regular_file \
     "source-rootfs dependency contract reader" "$DEPENDENCY_CONTRACT_READER"
+require_regular_file "source-rootfs package manifest" "$PACKAGE_MANIFEST"
 NODE_BIN="$(PATH="$DECLARED_TOOL_PATH" type -P node || true)"
 [ -n "$NODE_BIN" ] ||
     fail "node is not available from KANDELO_DEV_SHELL_TOOL_PATH"
 dependency_lines="$(
     PATH="$DECLARED_TOOL_PATH" "$NODE_BIN" "$DEPENDENCY_CONTRACT_READER" \
-        --print-resolver-owned "$DEPENDENCY_CONTRACT"
+        --print-resolver-owned "$DEPENDENCY_CONTRACT" "$PACKAGE_MANIFEST"
 )" || fail "could not read the source-rootfs dependency contract"
 EXTENDED_DEPENDENCIES=()
 while IFS= read -r dependency; do

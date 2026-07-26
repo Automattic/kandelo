@@ -96,6 +96,11 @@ expect_mutation_rejected \
   's/^      - "homebrew\/source-rootfs-shell-default\.json"\n//m'
 
 expect_mutation_rejected \
+  "missing source-shell recipe trigger" \
+  "does not watch homebrew/source-rootfs-shell-package/**" \
+  's/^      - "homebrew\/source-rootfs-shell-package\/\*\*"\n//m'
+
+expect_mutation_rejected \
   "bypassed package projection check" \
   "must verify the generated package projection" \
   's/build-deps program-index-check/build-deps parse/'
@@ -114,6 +119,21 @@ expect_mutation_rejected \
   "cache root lost inside dev-shell" \
   "browser preparation must retain the exact-main cache root inside dev-shell" \
   's/^            "WASM_POSIX_BINARY_CACHE_ROOT=\$WASM_POSIX_BINARY_CACHE_ROOT" \\\n//m'
+
+expect_mutation_rejected \
+  "canonical shell preparation fallback" \
+  "must select the source-rootfs recipe with exact event provenance" \
+  's/prepare-browser --source-rootfs-shell --allow-stale/prepare-browser --allow-stale/'
+
+expect_mutation_rejected \
+  "source-shell repository not bound to event repository" \
+  "must select the source-rootfs recipe with exact event provenance" \
+  's#https://github\.com/\$GITHUB_REPOSITORY#https://github.com/stale/repository#'
+
+expect_mutation_rejected \
+  "source-shell commit not bound to event SHA" \
+  "must select the source-rootfs recipe with exact event provenance" \
+  's/WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT=\$GITHUB_SHA/WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT=0000000000000000000000000000000000000000/'
 
 expect_mutation_rejected \
   "sealed preview without Pages base" \
