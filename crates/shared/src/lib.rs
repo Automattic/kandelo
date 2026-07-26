@@ -852,7 +852,7 @@ pub mod mode {
 ///   8       48B   arguments (6 × i64)
 ///   56      8B    return value (i64)
 ///   64      4B    errno (i32)
-///   68      4B    reserved/pad
+///   68      4B    request flags
 ///   72      64KB  data transfer buffer
 pub mod channel {
     /// Byte offset of the status field (i32, atomic).
@@ -869,6 +869,13 @@ pub mod channel {
     pub const RETURN_OFFSET: usize = 56;
     /// Byte offset of the errno field (i32).
     pub const ERRNO_OFFSET: usize = 64;
+    /// Byte offset of host/process request flags (u32).
+    pub const REQUEST_FLAGS_OFFSET: usize = 68;
+    /// The request completion is consumed by process-worker JavaScript, not
+    /// the libc channel trampoline. Caught signals must remain kernel-pending
+    /// until an explicit guest checkpoint can invoke the handler after the
+    /// owning host transition returns.
+    pub const REQUEST_FLAG_DEFER_SIGNAL_DELIVERY: u32 = 1 << 0;
     /// Byte offset of the data buffer region.
     pub const DATA_OFFSET: usize = 72;
     /// Size of the data buffer.
@@ -1237,8 +1244,7 @@ pub mod process_memory {
 
     /// Size of one fork save buffer in bytes. The control prefix and buffer
     /// together occupy exactly one dedicated 64 KiB scratch page.
-    pub const FORK_SAVE_BUFFER_SIZE: u32 =
-        WASM_PAGE_SIZE - FORK_SAVE_CONTROL_PREFIX_SIZE;
+    pub const FORK_SAVE_BUFFER_SIZE: u32 = WASM_PAGE_SIZE - FORK_SAVE_CONTROL_PREFIX_SIZE;
 
     /// Main-thread fork-save/scratch page, relative to `controlBasePage`.
     pub const MAIN_FORK_SAVE_PAGE: u32 = 0;
@@ -1291,6 +1297,11 @@ pub mod abi {
     pub enum ProgramArtifactValueType {
         Pointer,
         I32,
+        I64,
+        FuncRef,
+        ExternRef,
+        ExnRef,
+        AnyRef,
     }
 
     /// One required function import in an instrumented program artifact.
@@ -1300,6 +1311,17 @@ pub mod abi {
         pub name: &'static str,
         pub params: &'static [ProgramArtifactValueType],
         pub results: &'static [ProgramArtifactValueType],
+    }
+
+    /// One required private table import in an instrumented program artifact.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ProgramArtifactTableImport {
+        pub module: &'static str,
+        pub name: &'static str,
+        pub table64: bool,
+        pub element: ProgramArtifactValueType,
+        pub minimum: u64,
+        pub maximum: Option<u64>,
     }
 
     /// One required function export in an instrumented program artifact.
@@ -1329,11 +1351,267 @@ pub mod abi {
         WPK_FORK_LINKED_FRAME_FLAG_TRANSACTIONAL_NODES | WPK_FORK_LINKED_FRAME_FLAG_ABORT_UNWINDING;
     pub const WPK_FORK_LINKED_FRAME_POINTER_WIDTHS: &[u8] = &[4, 8];
 
+    /// ABI 43+ activation-owned module-state recipe format.
+    ///
+    /// WHY this is shared ABI rather than host-private metadata: an
+    /// instrumented activation writes the arena before the host copies linear
+    /// memory, and a fresh child instance validates and consumes it. Every
+    /// literal below therefore crosses the instrumenter/guest/host boundary.
+    pub const WPK_FORK_MODULE_STATE_FORMAT_SECTION: &str = "kandelo.wpk_fork.module_state";
+    pub const WPK_FORK_MODULE_STATE_FORMAT_MAGIC: [u8; 4] = *b"KFMD";
+    pub const WPK_FORK_MODULE_STATE_FORMAT_VERSION: u16 = 1;
+    pub const WPK_FORK_MODULE_STATE_DESCRIPTOR_SIZE: u16 = 24;
+    pub const WPK_FORK_MODULE_STATE_RECORD_ALIGNMENT: u8 = 8;
+    pub const WPK_FORK_MODULE_STATE_FLAG_ROOT_PREFIX_POINTER: u16 = 1 << 0;
+    pub const WPK_FORK_MODULE_STATE_FLAG_EXPLICIT_OWNERS: u16 = 1 << 1;
+    pub const WPK_FORK_MODULE_STATE_FLAG_SPARSE_TABLES: u16 = 1 << 2;
+    pub const WPK_FORK_MODULE_STATE_REQUIRED_FLAGS: u16 =
+        WPK_FORK_MODULE_STATE_FLAG_ROOT_PREFIX_POINTER
+            | WPK_FORK_MODULE_STATE_FLAG_EXPLICIT_OWNERS
+            | WPK_FORK_MODULE_STATE_FLAG_SPARSE_TABLES;
+    pub const WPK_FORK_MODULE_STATE_KNOWN_FLAGS: u16 = WPK_FORK_MODULE_STATE_REQUIRED_FLAGS;
+    pub const WPK_FORK_MODULE_STATE_ARENA_VERSION: u16 = 1;
+    pub const WPK_FORK_MODULE_STATE_RECORD_VERSION: u16 = 1;
+    pub const WPK_FORK_MODULE_STATE_ROOT_POINTER_WORD_OFFSET: u32 = 1;
+    pub const WPK_FORK_MODULE_STATE_POINTER_WIDTHS: &[u8] = &[4, 8];
+
+    pub const WPK_FORK_MODULE_STATE_CHUNK_MAGIC: [u8; 4] = *b"KFMC";
+    pub const WPK_FORK_MODULE_STATE_CHUNK_FLAG_ROOT: u16 = 1 << 0;
+    pub const WPK_FORK_MODULE_STATE_CHUNK_FLAG_SEALED: u16 = 1 << 1;
+    pub const WPK_FORK_MODULE_STATE_CHUNK_KNOWN_FLAGS: u16 =
+        WPK_FORK_MODULE_STATE_CHUNK_FLAG_ROOT | WPK_FORK_MODULE_STATE_CHUNK_FLAG_SEALED;
+
+    pub const WPK_FORK_MODULE_STATE_RECORD_MAGIC: [u8; 4] = *b"KFMR";
+    pub const WPK_FORK_MODULE_STATE_RECORD_HEADER_SIZE: u16 = 24;
+    pub const WPK_FORK_MODULE_STATE_RECORD_KIND_MODULE: u16 = 1;
+    pub const WPK_FORK_MODULE_STATE_RECORD_KIND_REFERENCE_RECIPE: u16 = 2;
+    pub const WPK_FORK_MODULE_STATE_RECORD_KIND_MUTABLE_GLOBAL: u16 = 3;
+    pub const WPK_FORK_MODULE_STATE_RECORD_KIND_TABLE: u16 = 4;
+    pub const WPK_FORK_MODULE_STATE_RECORD_KIND_TABLE_PAGE: u16 = 5;
+    pub const WPK_FORK_MODULE_STATE_RECORD_KIND_ELEMENT_SEGMENTS: u16 = 6;
+    pub const WPK_FORK_MODULE_STATE_RECORD_KIND_DATA_SEGMENTS: u16 = 7;
+    pub const WPK_FORK_MODULE_STATE_RECORD_KIND_REPLAY_EVENTS: u16 = 8;
+    pub const WPK_FORK_MODULE_STATE_RECORD_KIND_IMPORTED_GLOBAL_BINDINGS: u16 = 9;
+    pub const WPK_FORK_MODULE_STATE_RECORD_KIND_ACTIVATION_CONTINUATIONS: u16 = 10;
+    pub const WPK_FORK_MODULE_STATE_RECORD_KIND_IMPORTED_TABLE_BINDINGS: u16 = 11;
+    pub const WPK_FORK_MODULE_STATE_RECORD_KIND_REFERENCE_RECIPE_SEGMENT: u16 = 12;
+    pub const WPK_FORK_MODULE_STATE_RECORD_KIND_REPLAY_EVENT_SEGMENT: u16 = 13;
+
+    /// One recognized module-state arena record kind.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ForkModuleStateRecordKind {
+        pub number: u16,
+        pub name: &'static str,
+    }
+
+    pub const WPK_FORK_MODULE_STATE_RECORD_KINDS: &[ForkModuleStateRecordKind] = &[
+        ForkModuleStateRecordKind {
+            number: WPK_FORK_MODULE_STATE_RECORD_KIND_MODULE,
+            name: "module",
+        },
+        ForkModuleStateRecordKind {
+            number: WPK_FORK_MODULE_STATE_RECORD_KIND_REFERENCE_RECIPE,
+            name: "reference_recipe",
+        },
+        ForkModuleStateRecordKind {
+            number: WPK_FORK_MODULE_STATE_RECORD_KIND_MUTABLE_GLOBAL,
+            name: "mutable_global",
+        },
+        ForkModuleStateRecordKind {
+            number: WPK_FORK_MODULE_STATE_RECORD_KIND_TABLE,
+            name: "table",
+        },
+        ForkModuleStateRecordKind {
+            number: WPK_FORK_MODULE_STATE_RECORD_KIND_TABLE_PAGE,
+            name: "table_page",
+        },
+        ForkModuleStateRecordKind {
+            number: WPK_FORK_MODULE_STATE_RECORD_KIND_ELEMENT_SEGMENTS,
+            name: "element_segments",
+        },
+        ForkModuleStateRecordKind {
+            number: WPK_FORK_MODULE_STATE_RECORD_KIND_DATA_SEGMENTS,
+            name: "data_segments",
+        },
+        ForkModuleStateRecordKind {
+            number: WPK_FORK_MODULE_STATE_RECORD_KIND_REPLAY_EVENTS,
+            name: "replay_events",
+        },
+        ForkModuleStateRecordKind {
+            number: WPK_FORK_MODULE_STATE_RECORD_KIND_IMPORTED_GLOBAL_BINDINGS,
+            name: "imported_global_bindings",
+        },
+        ForkModuleStateRecordKind {
+            number: WPK_FORK_MODULE_STATE_RECORD_KIND_ACTIVATION_CONTINUATIONS,
+            name: "activation_continuations",
+        },
+        ForkModuleStateRecordKind {
+            number: WPK_FORK_MODULE_STATE_RECORD_KIND_IMPORTED_TABLE_BINDINGS,
+            name: "imported_table_bindings",
+        },
+        ForkModuleStateRecordKind {
+            number: WPK_FORK_MODULE_STATE_RECORD_KIND_REFERENCE_RECIPE_SEGMENT,
+            name: "reference_recipe_segment",
+        },
+        ForkModuleStateRecordKind {
+            number: WPK_FORK_MODULE_STATE_RECORD_KIND_REPLAY_EVENT_SEGMENT,
+            name: "replay_event_segment",
+        },
+    ];
+
+    pub const WPK_FORK_MODULE_STATE_MODULE_TEMPLATE_ID_SIZE: u16 = 32;
+    pub const WPK_FORK_MODULE_STATE_MODULE_RECORD_PAYLOAD_SIZE: u16 =
+        WPK_FORK_MODULE_STATE_MODULE_TEMPLATE_ID_SIZE + 8;
+    pub const WPK_FORK_MODULE_STATE_MODULE_RECORD_KNOWN_FLAGS: u32 = 0;
+    pub const WPK_FORK_MODULE_STATE_GLOBAL_HEADER_SIZE: u16 = 8;
+    pub const WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32: u8 = 1;
+    pub const WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I64: u8 = 2;
+    pub const WPK_FORK_MODULE_STATE_GLOBAL_TYPE_F32: u8 = 3;
+    pub const WPK_FORK_MODULE_STATE_GLOBAL_TYPE_F64: u8 = 4;
+    pub const WPK_FORK_MODULE_STATE_GLOBAL_TYPE_V128: u8 = 5;
+    pub const WPK_FORK_MODULE_STATE_GLOBAL_TYPE_FUNCREF: u8 = 6;
+    pub const WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXTERNREF: u8 = 7;
+    pub const WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXNREF: u8 = 8;
+    pub const WPK_FORK_MODULE_STATE_GLOBAL_TYPE_ANYREF: u8 = 9;
+    pub const WPK_FORK_MODULE_STATE_TABLE_BASELINE_FINGERPRINT_SIZE: u16 = 32;
+    pub const WPK_FORK_MODULE_STATE_TABLE_DESCRIPTOR_PAYLOAD_SIZE: u16 =
+        WPK_FORK_MODULE_STATE_TABLE_BASELINE_FINGERPRINT_SIZE + 24;
+    pub const WPK_FORK_MODULE_STATE_TABLE_FLAG_SPARSE_OVERRIDES: u32 = 1 << 0;
+    pub const WPK_FORK_MODULE_STATE_TABLE_KNOWN_FLAGS: u32 =
+        WPK_FORK_MODULE_STATE_TABLE_FLAG_SPARSE_OVERRIDES;
+    pub const WPK_FORK_MODULE_STATE_TABLE_PAGE_HEADER_SIZE: u16 = 16;
+    pub const WPK_FORK_MODULE_STATE_TABLE_RUN_HEADER_SIZE: u16 = 8;
+    pub const WPK_FORK_MODULE_STATE_ELEMENT_SEGMENT_HEADER_SIZE: u16 = 8;
+    pub const WPK_FORK_MODULE_STATE_DATA_SEGMENT_HEADER_SIZE: u16 = 8;
+    pub const WPK_FORK_MODULE_STATE_REPLAY_EVENTS_OWNER: u32 = 1;
+    pub const WPK_FORK_MODULE_STATE_REPLAY_EVENTS_MAGIC: [u8; 4] = *b"KFRE";
+    pub const WPK_FORK_MODULE_STATE_REPLAY_EVENTS_VERSION: u16 = 2;
+    pub const WPK_FORK_MODULE_STATE_REPLAY_EVENTS_HEADER_SIZE: u16 = 40;
+    pub const WPK_FORK_MODULE_STATE_REPLAY_EVENT_SIZE: u16 = 8;
+    pub const WPK_FORK_MODULE_STATE_REPLAY_EVENTS_KNOWN_FLAGS: u16 = 0;
+    pub const WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_VERSION: u16 = 1;
+    pub const WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_HEADER_SIZE: u16 = 24;
+    pub const WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_CAPACITY: u32 = 4080;
+    pub const WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_KNOWN_FLAGS: u16 = 0;
+    pub const WPK_FORK_REFERENCE_TRANSACTION_OWNER: u32 = 1;
+    pub const WPK_FORK_REFERENCE_TRANSACTION_MAGIC: [u8; 4] = *b"KFRV";
+    pub const WPK_FORK_REFERENCE_TRANSACTION_VERSION: u16 = 2;
+    pub const WPK_FORK_REFERENCE_TRANSACTION_MANIFEST_SIZE: u16 = 96;
+    pub const WPK_FORK_REFERENCE_TRANSACTION_FLAG_SEALED: u32 = 1 << 0;
+    pub const WPK_FORK_REFERENCE_TRANSACTION_KNOWN_FLAGS: u32 =
+        WPK_FORK_REFERENCE_TRANSACTION_FLAG_SEALED;
+    pub const WPK_FORK_REFERENCE_SEGMENT_MAGIC: [u8; 4] = *b"KFRS";
+    pub const WPK_FORK_REFERENCE_SEGMENT_HEADER_SIZE: u16 = 40;
+    pub const WPK_FORK_REFERENCE_SEGMENT_KNOWN_FLAGS: u16 = 0;
+    pub const WPK_FORK_REFERENCE_NODE_RECORD_SIZE: u16 = 48;
+    pub const WPK_FORK_REFERENCE_VECTOR_INDEX_SIZE: u16 = 16;
+    pub const WPK_FORK_REFERENCE_SECTION_NODES: u16 = 1;
+    pub const WPK_FORK_REFERENCE_SECTION_EDGES: u16 = 2;
+    pub const WPK_FORK_REFERENCE_SECTION_SCALARS: u16 = 3;
+    pub const WPK_FORK_REFERENCE_SECTION_VECTOR_INDEX: u16 = 4;
+    pub const WPK_FORK_REFERENCE_SECTION_VECTOR_ENTRIES: u16 = 5;
+    pub const WPK_FORK_IMPORTED_GLOBAL_BINDINGS_OWNER: u32 = 2;
+    pub const WPK_FORK_IMPORTED_GLOBAL_BINDINGS_MAGIC: [u8; 4] = *b"KFBG";
+    pub const WPK_FORK_IMPORTED_GLOBAL_BINDINGS_VERSION: u16 = 1;
+    pub const WPK_FORK_IMPORTED_GLOBAL_BINDINGS_HEADER_SIZE: u16 = 24;
+    pub const WPK_FORK_IMPORTED_GLOBAL_BINDINGS_ENTRY_SIZE: u16 = 40;
+    pub const WPK_FORK_IMPORTED_GLOBAL_BINDINGS_KNOWN_FLAGS: u16 = 0;
+    pub const WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER: u8 = 1;
+    pub const WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_BIGINT: u8 = 2;
+    pub const WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE: u8 = 3;
+    pub const WPK_FORK_IMPORTED_GLOBAL_BINDING_ACTIVATION_GLOBAL: u8 = 4;
+    pub const WPK_FORK_IMPORTED_GLOBAL_BINDING_BASE_IMPORT: u8 = 5;
+    pub const WPK_FORK_GLOBAL_CATALOG_EXPORT_PREFIX: &str = "__wpk_fork_global_";
+    pub const WPK_FORK_ACTIVATION_CONTINUATIONS_OWNER: u32 = 3;
+    pub const WPK_FORK_ACTIVATION_CONTINUATIONS_MAGIC: [u8; 4] = *b"KFAC";
+    pub const WPK_FORK_ACTIVATION_CONTINUATIONS_VERSION: u16 = 1;
+    pub const WPK_FORK_ACTIVATION_CONTINUATIONS_HEADER_SIZE: u16 = 24;
+    pub const WPK_FORK_ACTIVATION_CONTINUATION_ENTRY_SIZE: u16 = 16;
+    pub const WPK_FORK_ACTIVATION_CONTINUATIONS_KNOWN_FLAGS: u16 = 0;
+    pub const WPK_FORK_ACTIVATION_CONTINUATION_ENTRY_KNOWN_FLAGS: u32 = 0;
+    pub const WPK_FORK_IMPORTED_TABLE_BINDINGS_OWNER: u32 = 4;
+    pub const WPK_FORK_IMPORTED_TABLE_BINDINGS_MAGIC: [u8; 4] = *b"KFBT";
+    pub const WPK_FORK_IMPORTED_TABLE_BINDINGS_VERSION: u16 = 1;
+    pub const WPK_FORK_IMPORTED_TABLE_BINDINGS_HEADER_SIZE: u16 = 24;
+    pub const WPK_FORK_IMPORTED_TABLE_BINDINGS_ENTRY_SIZE: u16 = 24;
+    pub const WPK_FORK_IMPORTED_TABLE_BINDINGS_KNOWN_FLAGS: u16 = 0;
+    pub const WPK_FORK_IMPORTED_TABLE_BINDING_ACTIVATION_TABLE: u8 = 1;
+    pub const WPK_FORK_IMPORTED_TABLE_BINDING_BASE_IMPORT: u8 = 2;
+    pub const WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX: &str = "__wpk_fork_table_";
+    pub const WPK_FORK_MODULE_STATE_MIN_TABLE_PAGE_SHIFT: u8 = 4;
+    pub const WPK_FORK_MODULE_STATE_MAX_TABLE_PAGE_SHIFT: u8 = 20;
+    /// Exact sparse-page geometry emitted by the ABI 43 instrumenter.
+    pub const WPK_FORK_MODULE_STATE_TABLE_PAGE_SHIFT: u8 = 10;
+
+    /// ABI 43 imported-global ownership metadata. A fresh child consumes this
+    /// before module instantiation, which is earlier than KFMS restore and is
+    /// therefore the only phase that can preserve immutable exports and
+    /// constant initializers that observe imported globals.
+    pub const WPK_FORK_IMPORTED_GLOBALS_SECTION: &str = "kandelo.wpk_fork.imported_globals";
+    pub const WPK_FORK_IMPORTED_GLOBALS_MAGIC: [u8; 4] = *b"KFIG";
+    pub const WPK_FORK_IMPORTED_GLOBALS_VERSION: u16 = 1;
+    pub const WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE: u16 = 16;
+    pub const WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE: u16 = 24;
+    pub const WPK_FORK_IMPORTED_GLOBAL_FLAG_MUTABLE: u8 = 1 << 0;
+    pub const WPK_FORK_IMPORTED_GLOBAL_FLAG_SHARED: u8 = 1 << 1;
+    pub const WPK_FORK_IMPORTED_GLOBAL_KNOWN_FLAGS: u8 =
+        WPK_FORK_IMPORTED_GLOBAL_FLAG_MUTABLE | WPK_FORK_IMPORTED_GLOBAL_FLAG_SHARED;
+    pub const WPK_FORK_IMPORTED_TABLES_SECTION: &str = "kandelo.wpk_fork.imported_tables";
+    pub const WPK_FORK_IMPORTED_TABLES_MAGIC: [u8; 4] = *b"KFIT";
+    pub const WPK_FORK_IMPORTED_TABLES_VERSION: u16 = 1;
+    pub const WPK_FORK_IMPORTED_TABLES_HEADER_SIZE: u16 = 16;
+    pub const WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE: u16 = 24;
+    pub const WPK_FORK_IMPORTED_TABLE_FLAG_TABLE64: u8 = 1 << 0;
+    pub const WPK_FORK_IMPORTED_TABLE_KNOWN_FLAGS: u8 = WPK_FORK_IMPORTED_TABLE_FLAG_TABLE64;
+
+    /// ABI 43 structural Wasm GC reconstruction catalog.
+    ///
+    /// GC object identities cannot cross Store or worker boundaries. The
+    /// catalog lets the fresh child allocate the same typed object graph and
+    /// then fill its scalar and reference fields without retaining parent
+    /// instance references.
+    pub const WPK_FORK_GC_CODEC_SECTION: &str = "kandelo.wpk_fork.gc_codec";
+    pub const WPK_FORK_GC_CODEC_MAGIC: [u8; 4] = *b"KFGC";
+    pub const WPK_FORK_GC_CODEC_VERSION: u16 = 1;
+    pub const WPK_FORK_GC_CODEC_HEADER_SIZE: u16 = 16;
+    pub const WPK_FORK_GC_CODEC_LAYOUT_RECORD_SIZE: u16 = 44;
+    pub const WPK_FORK_GC_CODEC_FIELD_RECORD_SIZE: u16 = 12;
+
+    /// ABI 43 exact-tag exception reconstruction catalog.
+    ///
+    /// A tag is instance-local, so copied `exnref` values cannot be replayed
+    /// by importing a JavaScript-side reference. The instrumented activation
+    /// publishes deterministic tag ordinals and payload layouts instead. The
+    /// fresh child reconstructs each exception using its own corresponding tag.
+    pub const WPK_FORK_EXCEPTION_CODEC_SECTION: &str = "kandelo.wpk_fork.exception_codec";
+    pub const WPK_FORK_EXCEPTION_CODEC_VERSION: u8 = 1;
+    pub const WPK_FORK_EXCEPTION_CODEC_HEADER_SIZE: u16 = 8;
+    pub const WPK_FORK_EXCEPTION_CODEC_TAG_RECORD_SIZE: u16 = 16;
+
+    /// Private zero-payload tag used to unwind instrumented Wasm without
+    /// manufacturing values for arbitrary function result types.
+    pub const WPK_FORK_UNWIND_TAG_IMPORT_MODULE: &str = "env";
+    pub const WPK_FORK_UNWIND_TAG_IMPORT_NAME: &str = "__wpk_fork_unwind";
+    pub const WPK_FORK_UNWIND_TRANSPORT_SECTION: &str = "kandelo.wpk_fork.unwind_transport";
+    pub const WPK_FORK_UNWIND_TRANSPORT_VERSION: u8 = 1;
+    pub const WPK_FORK_UNWIND_TRANSPORT_PAYLOAD_ARITY: u8 = 0;
+
+    /// Fixed instance-local identities recreated by static initializers.
+    pub const WPK_FORK_STATIC_ROOT_CATALOG_EXPORT: &str = "__wpk_fork_static_root_catalog";
+    pub const WPK_FORK_STATIC_ROOT_CATALOG_SECTION: &str = "kandelo.wpk_fork.static_root_catalog";
+    pub const WPK_FORK_STATIC_ROOT_CATALOG_MAGIC: [u8; 4] = *b"KFSR";
+    pub const WPK_FORK_STATIC_ROOT_CATALOG_VERSION: u16 = 1;
+    pub const WPK_FORK_STATIC_ROOT_CATALOG_HEADER_SIZE: u16 = 12;
+    pub const WPK_FORK_STATIC_ROOT_HARVEST_EXPORT: &str = "__wpk_fork_static_root_harvest";
+
     /// Versioned instrumentation claims required by ABI 43.
     ///
-    /// Role flags say which call graph was transformed. The activation-state
-    /// bit is stronger: it proves the artifact was instrumented only after
-    /// rejecting state that cannot be reconstructed in a fresh Wasm instance.
+    /// Role flags say which call graph was transformed. In ABI 43,
+    /// `SIDE_ENTRY` means complete side-module boundary coverage: callers of
+    /// every function import and unresolved function-reference dispatch are
+    /// resumable even if fork occurs in a different module. The
+    /// activation-state bit proves all replay state has a fresh-instance
+    /// reconstruction owner.
     pub const WPK_FORK_CAPABILITIES_SECTION: &str = "kandelo.wpk_fork.capabilities";
     pub const WPK_FORK_CAPABILITIES_VERSION: u8 = 1;
     pub const WPK_FORK_CAP_SIDE_ENTRY: u8 = 1 << 0;
@@ -1347,16 +1625,117 @@ pub mod abi {
     pub const WPK_FORK_FRAME_IMPORT_RESERVE: &str = "__wpk_fork_frame_reserve";
     pub const WPK_FORK_FRAME_IMPORT_COMMIT: &str = "__wpk_fork_frame_commit";
     pub const WPK_FORK_FRAME_IMPORT_NEXT: &str = "__wpk_fork_frame_next";
+    pub const WPK_FORK_FRAME_IMPORT_PEEK: &str = "__wpk_fork_frame_peek";
+    pub const WPK_FORK_RESUME_IMPORT_PEEK: &str = "__wpk_fork_resume_peek";
+    pub const WPK_FORK_RESUME_IMPORT_TABLE: &str = "__wpk_fork_resume_table";
+
+    pub const WPK_FORK_MODULE_STATE_IMPORT_MODULE: &str = "env";
+    pub const WPK_FORK_MODULE_STATE_IMPORT_RECORD_COMMIT: &str =
+        "__wpk_fork_module_state_record_commit";
+    pub const WPK_FORK_MODULE_STATE_IMPORT_RECORD_FIND: &str =
+        "__wpk_fork_module_state_record_find";
+    pub const WPK_FORK_MODULE_STATE_IMPORT_RECORD_RESERVE: &str =
+        "__wpk_fork_module_state_record_reserve";
+    pub const WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_COUNT: &str =
+        "__wpk_fork_module_state_table_dirty_count";
+    pub const WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_MARK: &str =
+        "__wpk_fork_module_state_table_dirty_mark";
+    pub const WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_PAGE: &str =
+        "__wpk_fork_module_state_table_dirty_page";
+    pub const WPK_FORK_MODULE_STATE_IMPORT_TABLE_STATE_OWNED: &str =
+        "__wpk_fork_module_state_table_state_owned";
+    pub const WPK_FORK_MODULE_STATE_IMPORT_TABLE_MUTATION_BEGIN: &str =
+        "__wpk_fork_module_state_table_mutation_begin";
+    pub const WPK_FORK_MODULE_STATE_IMPORT_TABLE_MUTATION_COMMIT: &str =
+        "__wpk_fork_module_state_table_mutation_commit";
+    pub const WPK_FORK_MODULE_STATE_IMPORT_TABLE_MUTATION_ABORT: &str =
+        "__wpk_fork_module_state_table_mutation_abort";
+    pub const WPK_FORK_MODULE_STATE_IMPORT_TABLE_RECONCILE: &str =
+        "__wpk_fork_module_state_table_reconcile";
+    pub const WPK_FORK_MODULE_STATE_IMPORT_TABLE_GENERATION_ADDR: &str =
+        "__wpk_fork_module_state_table_generation_addr";
+
+    pub const WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE: &str = "env";
+    pub const WPK_FORK_EXCEPTION_IMPORT_ACTIVATION: &str = "__wpk_fork_module_activation";
+    pub const WPK_FORK_EXCEPTION_IMPORT_BROKER_ENCODE: &str = "__wpk_fork_ref_exn_broker_encode";
+    pub const WPK_FORK_EXCEPTION_IMPORT_BROKER_THROW_RECIPE: &str =
+        "__wpk_fork_ref_exn_broker_throw_recipe";
+    pub const WPK_FORK_EXCEPTION_IMPORT_CACHE_INDEX: &str = "__wpk_fork_ref_exn_cache_index";
+    pub const WPK_FORK_EXCEPTION_IMPORT_CLAIM: &str = "__wpk_fork_ref_exn_claim";
+    pub const WPK_FORK_EXCEPTION_IMPORT_DEFINE: &str = "__wpk_fork_ref_exn_define";
+    pub const WPK_FORK_EXCEPTION_IMPORT_INGRESS_THROW: &str = "__wpk_fork_ref_exn_ingress_throw";
+    pub const WPK_FORK_EXCEPTION_IMPORT_LOAD: &str = "__wpk_fork_ref_exn_load";
+    pub const WPK_FORK_EXCEPTION_IMPORT_LOOKUP: &str = "__wpk_fork_ref_exn_lookup";
+    pub const WPK_FORK_EXCEPTION_IMPORT_ROUTE: &str = "__wpk_fork_ref_exn_route";
+
+    pub const WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE: &str = "env";
+    pub const WPK_FORK_REFERENCE_IMPORT_DECODE_ANYREF: &str = "__wpk_fork_ref_decode_anyref";
+    pub const WPK_FORK_REFERENCE_IMPORT_DECODE_EXNREF: &str = "__wpk_fork_ref_decode_exnref";
+    pub const WPK_FORK_REFERENCE_IMPORT_DECODE_EXTERNREF: &str = "__wpk_fork_ref_decode_externref";
+    pub const WPK_FORK_REFERENCE_IMPORT_DECODE_FUNCREF: &str = "__wpk_fork_ref_decode_funcref";
+    pub const WPK_FORK_REFERENCE_IMPORT_ENCODE_ANYREF: &str = "__wpk_fork_ref_encode_anyref";
+    pub const WPK_FORK_REFERENCE_IMPORT_ENCODE_EXNREF: &str = "__wpk_fork_ref_encode_exnref";
+    pub const WPK_FORK_REFERENCE_IMPORT_ENCODE_EXTERNREF: &str = "__wpk_fork_ref_encode_externref";
+    pub const WPK_FORK_REFERENCE_IMPORT_ENCODE_FUNCREF: &str = "__wpk_fork_ref_encode_funcref";
+    pub const WPK_FORK_REFERENCE_IMPORT_GC_BROKER_ENCODE: &str = "__wpk_fork_ref_gc_broker_encode";
+    pub const WPK_FORK_REFERENCE_IMPORT_GC_CAPTURE_LAYOUT: &str =
+        "__wpk_fork_ref_gc_capture_layout";
+    pub const WPK_FORK_REFERENCE_IMPORT_GC_CLAIM: &str = "__wpk_fork_ref_gc_claim";
+    pub const WPK_FORK_REFERENCE_IMPORT_GC_DEFINE: &str = "__wpk_fork_ref_gc_define";
+    pub const WPK_FORK_REFERENCE_IMPORT_GC_I31: &str = "__wpk_fork_ref_gc_i31";
+    pub const WPK_FORK_REFERENCE_IMPORT_GC_LOAD: &str = "__wpk_fork_ref_gc_load";
+    pub const WPK_FORK_REFERENCE_IMPORT_GC_LOOKUP: &str = "__wpk_fork_ref_gc_lookup";
+    pub const WPK_FORK_REFERENCE_IMPORT_GC_PAYLOAD_LEN: &str = "__wpk_fork_ref_gc_payload_len";
+    pub const WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_BEGIN: &str =
+        "__wpk_fork_ref_gc_provenance_begin";
+    pub const WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_END: &str =
+        "__wpk_fork_ref_gc_provenance_end";
+    pub const WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_REF: &str =
+        "__wpk_fork_ref_gc_provenance_ref";
+    pub const WPK_FORK_REFERENCE_IMPORT_GC_ROUTE: &str = "__wpk_fork_ref_gc_route";
+    pub const WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT: &str = "__wpk_fork_ref_gc_transit";
+    pub const WPK_FORK_REFERENCE_IMPORT_SCRATCH_RELEASE: &str = "__wpk_fork_ref_scratch_release";
+    pub const WPK_FORK_REFERENCE_IMPORT_SCRATCH_RESERVE: &str = "__wpk_fork_ref_scratch_reserve";
+    pub const WPK_FORK_REFERENCE_IMPORT_VECTOR_APPEND: &str = "__wpk_fork_ref_vector_append";
+    pub const WPK_FORK_REFERENCE_IMPORT_VECTOR_BEGIN: &str = "__wpk_fork_ref_vector_begin";
+    pub const WPK_FORK_REFERENCE_IMPORT_VECTOR_FINISH: &str = "__wpk_fork_ref_vector_finish";
+    pub const WPK_FORK_REFERENCE_IMPORT_VECTOR_GET: &str = "__wpk_fork_ref_vector_get";
+
+    pub const WPK_FORK_EXCEPTION_EXPORT_DECODE: &str = "__wpk_fork_ref_decode_exnref";
+    pub const WPK_FORK_EXCEPTION_EXPORT_ENCODE: &str = "__wpk_fork_ref_encode_exnref";
+    pub const WPK_FORK_EXCEPTION_EXPORT_ABORT: &str = "__wpk_fork_ref_exn_abort";
+    pub const WPK_FORK_EXCEPTION_EXPORT_CLEAR: &str = "__wpk_fork_ref_exn_clear";
+    pub const WPK_FORK_EXCEPTION_EXPORT_ENCODE_INGRESS: &str = "__wpk_fork_ref_exn_encode_ingress";
+    pub const WPK_FORK_EXCEPTION_EXPORT_MATERIALIZE: &str = "__wpk_fork_exception_materialize";
+    pub const WPK_FORK_EXCEPTION_EXPORT_THROW_RECIPE: &str = "__wpk_fork_ref_exn_throw_recipe";
+    pub const WPK_FORK_EXCEPTION_EXPORT_THROW_SLOT: &str = "__wpk_fork_ref_exn_throw_slot";
+    pub const WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE: &str = "__wpk_fork_ref_gc_allocate";
+    pub const WPK_FORK_REFERENCE_EXPORT_GC_ENCODE_SLOT: &str = "__wpk_fork_ref_gc_encode_slot";
+    pub const WPK_FORK_REFERENCE_EXPORT_GC_FILL: &str = "__wpk_fork_ref_gc_fill";
+    pub const WPK_FORK_REFERENCE_EXPORT_GC_PUBLISH_EXTERNREF: &str =
+        "__wpk_fork_ref_gc_publish_externref";
+    pub const WPK_FORK_REFERENCE_EXPORT_GC_PROBE: &str = "__wpk_fork_ref_gc_probe";
 
     pub const WPK_FORK_EXPORT_ABORT_BEGIN: &str = "wpk_fork_abort_begin";
     pub const WPK_FORK_EXPORT_ABORT_END: &str = "wpk_fork_abort_end";
+    pub const WPK_FORK_EXPORT_MODULE_BOOTSTRAP: &str = "wpk_fork_module_bootstrap";
+    pub const WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP: &str = "wpk_fork_module_thread_bootstrap";
+    pub const WPK_FORK_EXPORT_MODULE_STATE_FINISH_RESTORE: &str =
+        "wpk_fork_module_state_finish_restore";
+    pub const WPK_FORK_EXPORT_MODULE_STATE_RESTORE: &str = "wpk_fork_module_state_restore";
+    pub const WPK_FORK_EXPORT_MODULE_STATE_SAVE: &str = "wpk_fork_module_state_save";
+    pub const WPK_FORK_EXPORT_MODULE_TABLE_STATE_SAVE: &str = "wpk_fork_module_table_state_save";
+    pub const WPK_FORK_EXPORT_MODULE_TABLE_STATE_RESTORE: &str =
+        "wpk_fork_module_table_state_restore";
+    pub const WPK_FORK_EXPORT_RESUME_START: &str = "wpk_fork_resume_start";
+    pub const WPK_FORK_EXPORT_RESUME_THREAD: &str = "wpk_fork_resume_thread";
     pub const WPK_FORK_EXPORT_REWIND_BEGIN: &str = "wpk_fork_rewind_begin";
     pub const WPK_FORK_EXPORT_REWIND_END: &str = "wpk_fork_rewind_end";
     pub const WPK_FORK_EXPORT_STATE: &str = "wpk_fork_state";
     pub const WPK_FORK_EXPORT_UNWIND_BEGIN: &str = "wpk_fork_unwind_begin";
     pub const WPK_FORK_EXPORT_UNWIND_END: &str = "wpk_fork_unwind_end";
 
-    use ProgramArtifactValueType::{I32, Pointer};
+    use ProgramArtifactValueType::{AnyRef, ExnRef, ExternRef, FuncRef, I32, I64, Pointer};
 
     pub const WPK_FORK_REQUIRED_IMPORTS: &[ProgramArtifactImport] = &[
         ProgramArtifactImport {
@@ -1373,13 +1752,354 @@ pub mod abi {
         },
         ProgramArtifactImport {
             module: WPK_FORK_FRAME_IMPORT_MODULE,
+            name: WPK_FORK_FRAME_IMPORT_PEEK,
+            params: &[Pointer],
+            results: &[Pointer],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_FRAME_IMPORT_MODULE,
             name: WPK_FORK_FRAME_IMPORT_RESERVE,
             params: &[Pointer],
             results: &[Pointer],
         },
+        ProgramArtifactImport {
+            module: WPK_FORK_MODULE_STATE_IMPORT_MODULE,
+            name: WPK_FORK_MODULE_STATE_IMPORT_RECORD_COMMIT,
+            params: &[Pointer],
+            results: &[],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_MODULE_STATE_IMPORT_MODULE,
+            name: WPK_FORK_MODULE_STATE_IMPORT_RECORD_FIND,
+            params: &[I32, I32, I32, I32],
+            results: &[Pointer],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_MODULE_STATE_IMPORT_MODULE,
+            name: WPK_FORK_MODULE_STATE_IMPORT_RECORD_RESERVE,
+            params: &[I32, I32, I32, Pointer],
+            results: &[Pointer],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_MODULE_STATE_IMPORT_MODULE,
+            name: WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_COUNT,
+            params: &[I32],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_MODULE_STATE_IMPORT_MODULE,
+            name: WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_MARK,
+            params: &[I32, I64, I64],
+            results: &[],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_MODULE_STATE_IMPORT_MODULE,
+            name: WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_PAGE,
+            params: &[I32, I32],
+            results: &[I64],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_MODULE_STATE_IMPORT_MODULE,
+            name: WPK_FORK_MODULE_STATE_IMPORT_TABLE_MUTATION_ABORT,
+            params: &[],
+            results: &[],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_MODULE_STATE_IMPORT_MODULE,
+            name: WPK_FORK_MODULE_STATE_IMPORT_TABLE_MUTATION_BEGIN,
+            params: &[],
+            results: &[I64],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_MODULE_STATE_IMPORT_MODULE,
+            name: WPK_FORK_MODULE_STATE_IMPORT_TABLE_MUTATION_COMMIT,
+            params: &[I32, I64, I64],
+            results: &[],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_MODULE_STATE_IMPORT_MODULE,
+            name: WPK_FORK_MODULE_STATE_IMPORT_TABLE_RECONCILE,
+            params: &[],
+            results: &[I64],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_MODULE_STATE_IMPORT_MODULE,
+            name: WPK_FORK_MODULE_STATE_IMPORT_TABLE_STATE_OWNED,
+            params: &[I32],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_DECODE_FUNCREF,
+            params: &[I32],
+            results: &[FuncRef],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_ENCODE_FUNCREF,
+            params: &[FuncRef],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_EXCEPTION_IMPORT_BROKER_ENCODE,
+            params: &[I32],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_EXCEPTION_IMPORT_BROKER_THROW_RECIPE,
+            params: &[I32],
+            results: &[],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_EXCEPTION_IMPORT_CACHE_INDEX,
+            params: &[I32],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_EXCEPTION_IMPORT_CLAIM,
+            params: &[I32],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_EXCEPTION_IMPORT_DEFINE,
+            params: &[I32, I32, I32, I32, Pointer, I32, Pointer, I32],
+            results: &[],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_EXCEPTION_IMPORT_INGRESS_THROW,
+            params: &[I32],
+            results: &[],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_EXCEPTION_IMPORT_LOAD,
+            params: &[I32, I32, I32, I32, Pointer, I32, Pointer, I32],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_EXCEPTION_IMPORT_LOOKUP,
+            params: &[I32],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_EXCEPTION_IMPORT_ROUTE,
+            params: &[I32, I32],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_GC_BROKER_ENCODE,
+            params: &[I32],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_GC_CAPTURE_LAYOUT,
+            params: &[I32, I32, I32],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_GC_CLAIM,
+            params: &[I32],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_GC_DEFINE,
+            params: &[I32, I32, I32, I32, I32, Pointer, I32, I32],
+            results: &[],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_GC_I31,
+            params: &[I32],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_GC_LOAD,
+            params: &[I32, I32, I32, I32, I32, Pointer, I32],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_GC_LOOKUP,
+            params: &[I32],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_GC_PAYLOAD_LEN,
+            params: &[I32, I32, I32],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_BEGIN,
+            params: &[I32, I32, I32, I32, I64, I64, I32],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_END,
+            params: &[I32],
+            results: &[],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_REF,
+            params: &[I32, I32, I32],
+            results: &[],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_GC_ROUTE,
+            params: &[I32, I32],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_SCRATCH_RELEASE,
+            params: &[Pointer, Pointer],
+            results: &[],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_SCRATCH_RESERVE,
+            params: &[Pointer],
+            results: &[Pointer],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_VECTOR_APPEND,
+            params: &[I32, I32],
+            results: &[],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_VECTOR_BEGIN,
+            params: &[I32],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_VECTOR_FINISH,
+            params: &[I32],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_VECTOR_GET,
+            params: &[I32, I32],
+            results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_FRAME_IMPORT_MODULE,
+            name: WPK_FORK_RESUME_IMPORT_PEEK,
+            params: &[I32],
+            results: &[I32],
+        },
+    ];
+
+    pub const WPK_FORK_REQUIRED_TABLE_IMPORTS: &[ProgramArtifactTableImport] = &[
+        ProgramArtifactTableImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT,
+            table64: false,
+            element: AnyRef,
+            minimum: 1,
+            maximum: None,
+        },
+        ProgramArtifactTableImport {
+            module: WPK_FORK_FRAME_IMPORT_MODULE,
+            name: WPK_FORK_RESUME_IMPORT_TABLE,
+            table64: false,
+            element: FuncRef,
+            minimum: 1,
+            maximum: None,
+        },
     ];
 
     pub const WPK_FORK_REQUIRED_EXPORTS: &[ProgramArtifactExport] = &[
+        ProgramArtifactExport {
+            name: WPK_FORK_EXCEPTION_EXPORT_MATERIALIZE,
+            params: &[I32],
+            results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXCEPTION_EXPORT_DECODE,
+            params: &[I32],
+            results: &[ExnRef],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXCEPTION_EXPORT_ENCODE,
+            params: &[ExnRef],
+            results: &[I32],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXCEPTION_EXPORT_ABORT,
+            params: &[],
+            results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXCEPTION_EXPORT_CLEAR,
+            params: &[],
+            results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXCEPTION_EXPORT_ENCODE_INGRESS,
+            params: &[I32],
+            results: &[I32],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXCEPTION_EXPORT_THROW_RECIPE,
+            params: &[I32],
+            results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXCEPTION_EXPORT_THROW_SLOT,
+            params: &[I32],
+            results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE,
+            params: &[I32],
+            results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_REFERENCE_EXPORT_GC_ENCODE_SLOT,
+            params: &[I32],
+            results: &[I32],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_REFERENCE_EXPORT_GC_FILL,
+            params: &[I32],
+            results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_REFERENCE_EXPORT_GC_PROBE,
+            params: &[I32],
+            results: &[I64],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_REFERENCE_EXPORT_GC_PUBLISH_EXTERNREF,
+            params: &[I32, ExternRef],
+            results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_STATIC_ROOT_HARVEST_EXPORT,
+            params: &[],
+            results: &[],
+        },
         ProgramArtifactExport {
             name: WPK_FORK_EXPORT_ABORT_BEGIN,
             params: &[Pointer],
@@ -1387,6 +2107,41 @@ pub mod abi {
         },
         ProgramArtifactExport {
             name: WPK_FORK_EXPORT_ABORT_END,
+            params: &[],
+            results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXPORT_MODULE_BOOTSTRAP,
+            params: &[],
+            results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXPORT_MODULE_STATE_FINISH_RESTORE,
+            params: &[I32],
+            results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXPORT_MODULE_STATE_RESTORE,
+            params: &[I32],
+            results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXPORT_MODULE_STATE_SAVE,
+            params: &[I32],
+            results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXPORT_MODULE_TABLE_STATE_RESTORE,
+            params: &[I32],
+            results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXPORT_MODULE_TABLE_STATE_SAVE,
+            params: &[I32],
+            results: &[],
+        },
+        ProgramArtifactExport {
+            name: WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP,
             params: &[],
             results: &[],
         },
@@ -1432,6 +2187,16 @@ pub mod abi {
         match pointer_width {
             4 => Some(24),
             8 => Some(32),
+            _ => None,
+        }
+    }
+
+    /// Return the version-1 module-state chunk header size for one pointer
+    /// width, including the required eight-byte alignment.
+    pub const fn wpk_fork_module_state_chunk_header_size(pointer_width: u8) -> Option<u32> {
+        match pointer_width {
+            4 => Some(40),
+            8 => Some(56),
             _ => None,
         }
     }
@@ -2022,10 +2787,49 @@ pub mod abi {
             HOST_ADAPTER_MANIFEST_VERSION, HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS,
             HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS, HOST_ADAPTER_REQUIRED_WORKER_FEATURES,
             HOST_ADAPTER_VERSION, HOST_ADAPTER_WORKER_FEATURES,
+            WPK_FORK_ACTIVATION_CONTINUATION_ENTRY_SIZE,
+            WPK_FORK_ACTIVATION_CONTINUATIONS_HEADER_SIZE, WPK_FORK_ACTIVATION_CONTINUATIONS_MAGIC,
+            WPK_FORK_ACTIVATION_CONTINUATIONS_OWNER, WPK_FORK_EXCEPTION_CODEC_HEADER_SIZE,
+            WPK_FORK_EXCEPTION_CODEC_SECTION, WPK_FORK_EXCEPTION_CODEC_TAG_RECORD_SIZE,
+            WPK_FORK_EXCEPTION_CODEC_VERSION, WPK_FORK_EXCEPTION_IMPORT_ACTIVATION,
+            WPK_FORK_GC_CODEC_FIELD_RECORD_SIZE, WPK_FORK_GC_CODEC_HEADER_SIZE,
+            WPK_FORK_GC_CODEC_LAYOUT_RECORD_SIZE, WPK_FORK_GC_CODEC_MAGIC,
+            WPK_FORK_IMPORTED_GLOBAL_BINDINGS_ENTRY_SIZE,
+            WPK_FORK_IMPORTED_GLOBAL_BINDINGS_HEADER_SIZE, WPK_FORK_IMPORTED_GLOBAL_BINDINGS_MAGIC,
+            WPK_FORK_IMPORTED_GLOBAL_BINDINGS_OWNER, WPK_FORK_IMPORTED_GLOBAL_FLAG_MUTABLE,
+            WPK_FORK_IMPORTED_GLOBAL_FLAG_SHARED, WPK_FORK_IMPORTED_GLOBAL_KNOWN_FLAGS,
+            WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE, WPK_FORK_IMPORTED_GLOBALS_MAGIC,
+            WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE,
+            WPK_FORK_IMPORTED_TABLE_BINDINGS_ENTRY_SIZE,
+            WPK_FORK_IMPORTED_TABLE_BINDINGS_HEADER_SIZE, WPK_FORK_IMPORTED_TABLE_BINDINGS_MAGIC,
+            WPK_FORK_IMPORTED_TABLE_BINDINGS_OWNER, WPK_FORK_IMPORTED_TABLES_HEADER_SIZE,
+            WPK_FORK_IMPORTED_TABLES_MAGIC, WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE,
             WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE, WPK_FORK_LINKED_FRAME_FORMAT_MAGIC,
             WPK_FORK_LINKED_FRAME_POINTER_WIDTHS, WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
-            WPK_FORK_REQUIRED_EXPORTS, WPK_FORK_REQUIRED_IMPORTS, extended_syscalls::SYSCALLS,
-            wpk_fork_linked_chunk_header_size, wpk_fork_linked_node_header_size,
+            WPK_FORK_MODULE_STATE_ARENA_VERSION, WPK_FORK_MODULE_STATE_CHUNK_KNOWN_FLAGS,
+            WPK_FORK_MODULE_STATE_CHUNK_MAGIC, WPK_FORK_MODULE_STATE_DATA_SEGMENT_HEADER_SIZE,
+            WPK_FORK_MODULE_STATE_DESCRIPTOR_SIZE,
+            WPK_FORK_MODULE_STATE_ELEMENT_SEGMENT_HEADER_SIZE, WPK_FORK_MODULE_STATE_FORMAT_MAGIC,
+            WPK_FORK_MODULE_STATE_KNOWN_FLAGS, WPK_FORK_MODULE_STATE_MAX_TABLE_PAGE_SHIFT,
+            WPK_FORK_MODULE_STATE_MIN_TABLE_PAGE_SHIFT,
+            WPK_FORK_MODULE_STATE_MODULE_RECORD_PAYLOAD_SIZE,
+            WPK_FORK_MODULE_STATE_MODULE_TEMPLATE_ID_SIZE, WPK_FORK_MODULE_STATE_POINTER_WIDTHS,
+            WPK_FORK_MODULE_STATE_RECORD_HEADER_SIZE, WPK_FORK_MODULE_STATE_RECORD_KINDS,
+            WPK_FORK_MODULE_STATE_RECORD_MAGIC, WPK_FORK_MODULE_STATE_RECORD_VERSION,
+            WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_CAPACITY,
+            WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_HEADER_SIZE,
+            WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_VERSION,
+            WPK_FORK_MODULE_STATE_REPLAY_EVENT_SIZE,
+            WPK_FORK_MODULE_STATE_REPLAY_EVENTS_HEADER_SIZE,
+            WPK_FORK_MODULE_STATE_REPLAY_EVENTS_MAGIC, WPK_FORK_MODULE_STATE_REPLAY_EVENTS_OWNER,
+            WPK_FORK_MODULE_STATE_REPLAY_EVENTS_VERSION, WPK_FORK_MODULE_STATE_REQUIRED_FLAGS,
+            WPK_FORK_MODULE_STATE_ROOT_POINTER_WORD_OFFSET,
+            WPK_FORK_MODULE_STATE_TABLE_BASELINE_FINGERPRINT_SIZE,
+            WPK_FORK_MODULE_STATE_TABLE_DESCRIPTOR_PAYLOAD_SIZE,
+            WPK_FORK_MODULE_STATE_TABLE_PAGE_SHIFT, WPK_FORK_REQUIRED_EXPORTS,
+            WPK_FORK_REQUIRED_IMPORTS, WPK_FORK_REQUIRED_TABLE_IMPORTS,
+            extended_syscalls::SYSCALLS, wpk_fork_linked_chunk_header_size,
+            wpk_fork_linked_node_header_size, wpk_fork_module_state_chunk_header_size,
         };
         use crate::Syscall;
 
@@ -2128,26 +2932,126 @@ pub mod abi {
             assert_eq!(wpk_fork_linked_chunk_header_size(16), None);
             assert_eq!(wpk_fork_linked_node_header_size(16), None);
 
-            assert_eq!(WPK_FORK_REQUIRED_IMPORTS.len(), 3);
+            assert_eq!(WPK_FORK_REQUIRED_IMPORTS.len(), 45);
             let mut previous_import = ("", "");
             for requirement in WPK_FORK_REQUIRED_IMPORTS {
                 let current = (requirement.module, requirement.name);
                 assert!(
                     previous_import < current,
-                    "fork imports must be sorted and unique"
+                    "fork imports must be sorted and unique: \
+                     previous={previous_import:?}, current={current:?}"
                 );
                 previous_import = current;
             }
 
-            assert_eq!(WPK_FORK_REQUIRED_EXPORTS.len(), 7);
+            assert_eq!(WPK_FORK_REQUIRED_TABLE_IMPORTS.len(), 2);
+            let mut previous_table_import = ("", "");
+            for requirement in WPK_FORK_REQUIRED_TABLE_IMPORTS {
+                let current = (requirement.module, requirement.name);
+                assert!(
+                    previous_table_import < current,
+                    "fork table imports must be sorted and unique"
+                );
+                previous_table_import = current;
+            }
+            assert_eq!(WPK_FORK_REQUIRED_EXPORTS.len(), 28);
             let mut previous_export = "";
             for requirement in WPK_FORK_REQUIRED_EXPORTS {
                 assert!(
                     previous_export < requirement.name,
-                    "fork exports must be sorted and unique"
+                    "fork exports must be sorted and unique: \
+                     previous={previous_export:?}, current={:?}",
+                    requirement.name,
                 );
                 previous_export = requirement.name;
             }
+        }
+
+        #[test]
+        fn module_state_recipe_contract_is_complete_and_sorted() {
+            assert_eq!(WPK_FORK_MODULE_STATE_FORMAT_MAGIC, *b"KFMD");
+            assert_eq!(WPK_FORK_MODULE_STATE_DESCRIPTOR_SIZE, 24);
+            assert_eq!(WPK_FORK_MODULE_STATE_REQUIRED_FLAGS, 0b111);
+            assert_eq!(
+                WPK_FORK_MODULE_STATE_KNOWN_FLAGS,
+                WPK_FORK_MODULE_STATE_REQUIRED_FLAGS
+            );
+            assert_eq!(WPK_FORK_MODULE_STATE_ARENA_VERSION, 1);
+            assert_eq!(WPK_FORK_MODULE_STATE_RECORD_VERSION, 1);
+            assert_eq!(WPK_FORK_MODULE_STATE_ROOT_POINTER_WORD_OFFSET, 1);
+            assert_eq!(WPK_FORK_MODULE_STATE_CHUNK_MAGIC, *b"KFMC");
+            assert_eq!(WPK_FORK_MODULE_STATE_CHUNK_KNOWN_FLAGS, 0b11);
+            assert_eq!(WPK_FORK_MODULE_STATE_RECORD_MAGIC, *b"KFMR");
+            assert_eq!(WPK_FORK_MODULE_STATE_RECORD_HEADER_SIZE, 24);
+            assert_eq!(WPK_FORK_MODULE_STATE_POINTER_WIDTHS, &[4, 8]);
+            assert_eq!(wpk_fork_module_state_chunk_header_size(4), Some(40));
+            assert_eq!(wpk_fork_module_state_chunk_header_size(8), Some(56));
+            assert_eq!(wpk_fork_module_state_chunk_header_size(16), None);
+
+            let mut previous_number = 0;
+            for kind in WPK_FORK_MODULE_STATE_RECORD_KINDS {
+                assert!(
+                    previous_number < kind.number,
+                    "module-state record kinds must be sorted and unique"
+                );
+                assert!(!kind.name.is_empty());
+                previous_number = kind.number;
+            }
+            assert_eq!(WPK_FORK_MODULE_STATE_RECORD_KINDS.len(), 13);
+
+            assert_eq!(WPK_FORK_MODULE_STATE_MODULE_TEMPLATE_ID_SIZE, 32);
+            assert_eq!(WPK_FORK_MODULE_STATE_MODULE_RECORD_PAYLOAD_SIZE, 40);
+            assert_eq!(WPK_FORK_MODULE_STATE_TABLE_BASELINE_FINGERPRINT_SIZE, 32);
+            assert_eq!(WPK_FORK_MODULE_STATE_TABLE_DESCRIPTOR_PAYLOAD_SIZE, 56);
+            assert_eq!(WPK_FORK_MODULE_STATE_ELEMENT_SEGMENT_HEADER_SIZE, 8);
+            assert_eq!(WPK_FORK_MODULE_STATE_DATA_SEGMENT_HEADER_SIZE, 8);
+            assert_eq!(WPK_FORK_MODULE_STATE_REPLAY_EVENTS_OWNER, 1);
+            assert_eq!(WPK_FORK_MODULE_STATE_REPLAY_EVENTS_MAGIC, *b"KFRE");
+            assert_eq!(WPK_FORK_MODULE_STATE_REPLAY_EVENTS_VERSION, 2);
+            assert_eq!(WPK_FORK_MODULE_STATE_REPLAY_EVENTS_HEADER_SIZE, 40);
+            assert_eq!(WPK_FORK_MODULE_STATE_REPLAY_EVENT_SIZE, 8);
+            assert_eq!(WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_VERSION, 1);
+            assert_eq!(WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_HEADER_SIZE, 24);
+            assert_eq!(WPK_FORK_MODULE_STATE_REPLAY_EVENT_SEGMENT_CAPACITY, 4080);
+            assert_eq!(WPK_FORK_IMPORTED_GLOBAL_BINDINGS_MAGIC, *b"KFBG");
+            assert_eq!(WPK_FORK_IMPORTED_GLOBAL_BINDINGS_OWNER, 2);
+            assert_eq!(WPK_FORK_IMPORTED_GLOBAL_BINDINGS_HEADER_SIZE, 24);
+            assert_eq!(WPK_FORK_IMPORTED_GLOBAL_BINDINGS_ENTRY_SIZE, 40);
+            assert_eq!(WPK_FORK_ACTIVATION_CONTINUATIONS_MAGIC, *b"KFAC");
+            assert_eq!(WPK_FORK_ACTIVATION_CONTINUATIONS_OWNER, 3);
+            assert_eq!(WPK_FORK_ACTIVATION_CONTINUATIONS_HEADER_SIZE, 24);
+            assert_eq!(WPK_FORK_ACTIVATION_CONTINUATION_ENTRY_SIZE, 16);
+            assert_eq!(WPK_FORK_IMPORTED_TABLE_BINDINGS_MAGIC, *b"KFBT");
+            assert_eq!(WPK_FORK_IMPORTED_TABLE_BINDINGS_OWNER, 4);
+            assert_eq!(WPK_FORK_IMPORTED_TABLE_BINDINGS_HEADER_SIZE, 24);
+            assert_eq!(WPK_FORK_IMPORTED_TABLE_BINDINGS_ENTRY_SIZE, 24);
+            assert_eq!(WPK_FORK_IMPORTED_GLOBALS_MAGIC, *b"KFIG");
+            assert_eq!(WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE, 16);
+            assert_eq!(WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE, 24);
+            assert_eq!(WPK_FORK_IMPORTED_GLOBAL_KNOWN_FLAGS, 0b11);
+            assert_eq!(WPK_FORK_IMPORTED_GLOBAL_FLAG_MUTABLE, 0b01);
+            assert_eq!(WPK_FORK_IMPORTED_GLOBAL_FLAG_SHARED, 0b10);
+            assert_eq!(WPK_FORK_IMPORTED_TABLES_MAGIC, *b"KFIT");
+            assert_eq!(WPK_FORK_IMPORTED_TABLES_HEADER_SIZE, 16);
+            assert_eq!(WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE, 24);
+            assert_eq!(WPK_FORK_GC_CODEC_MAGIC, *b"KFGC");
+            assert_eq!(WPK_FORK_GC_CODEC_HEADER_SIZE, 16);
+            assert_eq!(WPK_FORK_GC_CODEC_LAYOUT_RECORD_SIZE, 44);
+            assert_eq!(WPK_FORK_GC_CODEC_FIELD_RECORD_SIZE, 12);
+            assert_eq!(
+                WPK_FORK_EXCEPTION_CODEC_SECTION,
+                "kandelo.wpk_fork.exception_codec"
+            );
+            assert_eq!(WPK_FORK_EXCEPTION_CODEC_VERSION, 1);
+            assert_eq!(WPK_FORK_EXCEPTION_CODEC_HEADER_SIZE, 8);
+            assert_eq!(WPK_FORK_EXCEPTION_CODEC_TAG_RECORD_SIZE, 16);
+            assert_eq!(
+                WPK_FORK_EXCEPTION_IMPORT_ACTIVATION,
+                "__wpk_fork_module_activation"
+            );
+            assert_eq!(WPK_FORK_MODULE_STATE_MIN_TABLE_PAGE_SHIFT, 4);
+            assert_eq!(WPK_FORK_MODULE_STATE_MAX_TABLE_PAGE_SHIFT, 20);
+            assert_eq!(WPK_FORK_MODULE_STATE_TABLE_PAGE_SHIFT, 10);
         }
 
         fn assert_sorted_unique(items: &[&str]) {
@@ -2318,7 +3222,6 @@ pub mod oss {
     pub const AFMT_S16_LE: u32 = 0x10;
 }
 
-
 /// GLES / EGL ABI: ioctl numbers, opcode tables, and marshalled argument
 /// structs for `/dev/dri/renderD128`.
 ///
@@ -2350,16 +3253,16 @@ pub mod gl {
     // built against an older op-table can't talk to a newer kernel (and vice
     // versa) without the divergence being caught at first contact rather than
     // surfacing later as a silent decode error. See A6's GLIO_INIT handler.
-    pub const GLIO_INIT:            u32 = 0x40;
-    pub const GLIO_TERMINATE:       u32 = 0x41;
-    pub const GLIO_CREATE_CONTEXT:  u32 = 0x42;
+    pub const GLIO_INIT: u32 = 0x40;
+    pub const GLIO_TERMINATE: u32 = 0x41;
+    pub const GLIO_CREATE_CONTEXT: u32 = 0x42;
     pub const GLIO_DESTROY_CONTEXT: u32 = 0x43;
-    pub const GLIO_CREATE_SURFACE:  u32 = 0x44;
+    pub const GLIO_CREATE_SURFACE: u32 = 0x44;
     pub const GLIO_DESTROY_SURFACE: u32 = 0x45;
-    pub const GLIO_MAKE_CURRENT:    u32 = 0x46;
-    pub const GLIO_SUBMIT:          u32 = 0x47;
-    pub const GLIO_PRESENT:         u32 = 0x48;
-    pub const GLIO_QUERY:           u32 = 0x49;
+    pub const GLIO_MAKE_CURRENT: u32 = 0x46;
+    pub const GLIO_SUBMIT: u32 = 0x47;
+    pub const GLIO_PRESENT: u32 = 0x48;
+    pub const GLIO_QUERY: u32 = 0x49;
 
     // --- surface kind tags -------------------------------------------------
 
@@ -2387,88 +3290,88 @@ pub mod gl {
     // endian. Payload formats are documented inline next to the libGLESv2
     // stub call sites in glue/libglesv2_stub.c (Phase C).
 
-    pub const OP_CLEAR:                       u16 = 0x0001;
-    pub const OP_CLEAR_COLOR:                 u16 = 0x0002;
-    pub const OP_VIEWPORT:                    u16 = 0x0003;
-    pub const OP_SCISSOR:                     u16 = 0x0004;
-    pub const OP_ENABLE:                      u16 = 0x0005;
-    pub const OP_DISABLE:                     u16 = 0x0006;
-    pub const OP_BLEND_FUNC:                  u16 = 0x0007;
-    pub const OP_DEPTH_FUNC:                  u16 = 0x0008;
-    pub const OP_CULL_FACE:                   u16 = 0x0009;
-    pub const OP_FRONT_FACE:                  u16 = 0x000A;
-    pub const OP_LINE_WIDTH:                  u16 = 0x000B;
-    pub const OP_PIXEL_STOREI:                u16 = 0x000C;
+    pub const OP_CLEAR: u16 = 0x0001;
+    pub const OP_CLEAR_COLOR: u16 = 0x0002;
+    pub const OP_VIEWPORT: u16 = 0x0003;
+    pub const OP_SCISSOR: u16 = 0x0004;
+    pub const OP_ENABLE: u16 = 0x0005;
+    pub const OP_DISABLE: u16 = 0x0006;
+    pub const OP_BLEND_FUNC: u16 = 0x0007;
+    pub const OP_DEPTH_FUNC: u16 = 0x0008;
+    pub const OP_CULL_FACE: u16 = 0x0009;
+    pub const OP_FRONT_FACE: u16 = 0x000A;
+    pub const OP_LINE_WIDTH: u16 = 0x000B;
+    pub const OP_PIXEL_STOREI: u16 = 0x000C;
 
-    pub const OP_GEN_BUFFERS:                 u16 = 0x0100;
-    pub const OP_DELETE_BUFFERS:              u16 = 0x0101;
-    pub const OP_BIND_BUFFER:                 u16 = 0x0102;
-    pub const OP_BUFFER_DATA:                 u16 = 0x0103;
-    pub const OP_BUFFER_SUB_DATA:             u16 = 0x0104;
+    pub const OP_GEN_BUFFERS: u16 = 0x0100;
+    pub const OP_DELETE_BUFFERS: u16 = 0x0101;
+    pub const OP_BIND_BUFFER: u16 = 0x0102;
+    pub const OP_BUFFER_DATA: u16 = 0x0103;
+    pub const OP_BUFFER_SUB_DATA: u16 = 0x0104;
 
-    pub const OP_GEN_TEXTURES:                u16 = 0x0200;
-    pub const OP_DELETE_TEXTURES:             u16 = 0x0201;
-    pub const OP_BIND_TEXTURE:                u16 = 0x0202;
-    pub const OP_TEX_IMAGE_2D:                u16 = 0x0203;
-    pub const OP_TEX_SUB_IMAGE_2D:            u16 = 0x0204;
-    pub const OP_TEX_PARAMETERI:              u16 = 0x0205;
-    pub const OP_ACTIVE_TEXTURE:              u16 = 0x0206;
-    pub const OP_GENERATE_MIPMAP:             u16 = 0x0207;
+    pub const OP_GEN_TEXTURES: u16 = 0x0200;
+    pub const OP_DELETE_TEXTURES: u16 = 0x0201;
+    pub const OP_BIND_TEXTURE: u16 = 0x0202;
+    pub const OP_TEX_IMAGE_2D: u16 = 0x0203;
+    pub const OP_TEX_SUB_IMAGE_2D: u16 = 0x0204;
+    pub const OP_TEX_PARAMETERI: u16 = 0x0205;
+    pub const OP_ACTIVE_TEXTURE: u16 = 0x0206;
+    pub const OP_GENERATE_MIPMAP: u16 = 0x0207;
 
-    pub const OP_CREATE_SHADER:               u16 = 0x0300;
-    pub const OP_SHADER_SOURCE:               u16 = 0x0301;
-    pub const OP_COMPILE_SHADER:              u16 = 0x0302;
-    pub const OP_DELETE_SHADER:               u16 = 0x0303;
-    pub const OP_CREATE_PROGRAM:              u16 = 0x0304;
-    pub const OP_ATTACH_SHADER:               u16 = 0x0305;
-    pub const OP_LINK_PROGRAM:                u16 = 0x0306;
-    pub const OP_USE_PROGRAM:                 u16 = 0x0307;
-    pub const OP_BIND_ATTRIB_LOCATION:        u16 = 0x0308;
-    pub const OP_DELETE_PROGRAM:              u16 = 0x0309;
+    pub const OP_CREATE_SHADER: u16 = 0x0300;
+    pub const OP_SHADER_SOURCE: u16 = 0x0301;
+    pub const OP_COMPILE_SHADER: u16 = 0x0302;
+    pub const OP_DELETE_SHADER: u16 = 0x0303;
+    pub const OP_CREATE_PROGRAM: u16 = 0x0304;
+    pub const OP_ATTACH_SHADER: u16 = 0x0305;
+    pub const OP_LINK_PROGRAM: u16 = 0x0306;
+    pub const OP_USE_PROGRAM: u16 = 0x0307;
+    pub const OP_BIND_ATTRIB_LOCATION: u16 = 0x0308;
+    pub const OP_DELETE_PROGRAM: u16 = 0x0309;
 
-    pub const OP_UNIFORM1I:                   u16 = 0x0400;
-    pub const OP_UNIFORM1F:                   u16 = 0x0401;
-    pub const OP_UNIFORM2F:                   u16 = 0x0402;
-    pub const OP_UNIFORM3F:                   u16 = 0x0403;
-    pub const OP_UNIFORM4F:                   u16 = 0x0404;
-    pub const OP_UNIFORM_MATRIX4FV:           u16 = 0x0405;
+    pub const OP_UNIFORM1I: u16 = 0x0400;
+    pub const OP_UNIFORM1F: u16 = 0x0401;
+    pub const OP_UNIFORM2F: u16 = 0x0402;
+    pub const OP_UNIFORM3F: u16 = 0x0403;
+    pub const OP_UNIFORM4F: u16 = 0x0404;
+    pub const OP_UNIFORM_MATRIX4FV: u16 = 0x0405;
     /// `glUniform4fv(location, count, value)` — vector form. es2gears uses
     /// this for the directional light position. `OP_UNIFORM4F` (scalar) is a
     /// different signature; both are needed.
-    pub const OP_UNIFORM4FV:                  u16 = 0x0406;
+    pub const OP_UNIFORM4FV: u16 = 0x0406;
 
-    pub const OP_ENABLE_VERTEX_ATTRIB_ARRAY:  u16 = 0x0500;
+    pub const OP_ENABLE_VERTEX_ATTRIB_ARRAY: u16 = 0x0500;
     pub const OP_DISABLE_VERTEX_ATTRIB_ARRAY: u16 = 0x0501;
-    pub const OP_VERTEX_ATTRIB_POINTER:       u16 = 0x0502;
-    pub const OP_DRAW_ARRAYS:                 u16 = 0x0503;
-    pub const OP_DRAW_ELEMENTS:               u16 = 0x0504;
+    pub const OP_VERTEX_ATTRIB_POINTER: u16 = 0x0502;
+    pub const OP_DRAW_ARRAYS: u16 = 0x0503;
+    pub const OP_DRAW_ELEMENTS: u16 = 0x0504;
 
-    pub const OP_GEN_VERTEX_ARRAYS:           u16 = 0x0600;
-    pub const OP_DELETE_VERTEX_ARRAYS:        u16 = 0x0601;
-    pub const OP_BIND_VERTEX_ARRAY:           u16 = 0x0602;
+    pub const OP_GEN_VERTEX_ARRAYS: u16 = 0x0600;
+    pub const OP_DELETE_VERTEX_ARRAYS: u16 = 0x0601;
+    pub const OP_BIND_VERTEX_ARRAY: u16 = 0x0602;
 
-    pub const OP_GEN_FRAMEBUFFERS:            u16 = 0x0700;
-    pub const OP_BIND_FRAMEBUFFER:            u16 = 0x0701;
-    pub const OP_FRAMEBUFFER_TEXTURE_2D:      u16 = 0x0702;
-    pub const OP_GEN_RENDERBUFFERS:           u16 = 0x0703;
-    pub const OP_BIND_RENDERBUFFER:           u16 = 0x0704;
-    pub const OP_RENDERBUFFER_STORAGE:        u16 = 0x0705;
-    pub const OP_FRAMEBUFFER_RENDERBUFFER:    u16 = 0x0706;
+    pub const OP_GEN_FRAMEBUFFERS: u16 = 0x0700;
+    pub const OP_BIND_FRAMEBUFFER: u16 = 0x0701;
+    pub const OP_FRAMEBUFFER_TEXTURE_2D: u16 = 0x0702;
+    pub const OP_GEN_RENDERBUFFERS: u16 = 0x0703;
+    pub const OP_BIND_RENDERBUFFER: u16 = 0x0704;
+    pub const OP_RENDERBUFFER_STORAGE: u16 = 0x0705;
+    pub const OP_FRAMEBUFFER_RENDERBUFFER: u16 = 0x0706;
 
     // --- sync query op tags (used in GlQueryInfo.op) -----------------------
 
-    pub const QOP_GET_ERROR:             u32 = 0x01;
-    pub const QOP_GET_STRING:            u32 = 0x02;
-    pub const QOP_GET_INTEGERV:          u32 = 0x03;
-    pub const QOP_GET_FLOATV:            u32 = 0x04;
-    pub const QOP_GET_UNIFORM_LOC:       u32 = 0x05;
-    pub const QOP_GET_ATTRIB_LOC:        u32 = 0x06;
-    pub const QOP_GET_SHADERIV:          u32 = 0x07;
-    pub const QOP_GET_SHADER_INFO_LOG:   u32 = 0x08;
-    pub const QOP_GET_PROGRAMIV:         u32 = 0x09;
-    pub const QOP_GET_PROGRAM_INFO_LOG:  u32 = 0x0A;
-    pub const QOP_READ_PIXELS:           u32 = 0x0B;
-    pub const QOP_CHECK_FB_STATUS:       u32 = 0x0C;
+    pub const QOP_GET_ERROR: u32 = 0x01;
+    pub const QOP_GET_STRING: u32 = 0x02;
+    pub const QOP_GET_INTEGERV: u32 = 0x03;
+    pub const QOP_GET_FLOATV: u32 = 0x04;
+    pub const QOP_GET_UNIFORM_LOC: u32 = 0x05;
+    pub const QOP_GET_ATTRIB_LOC: u32 = 0x06;
+    pub const QOP_GET_SHADERIV: u32 = 0x07;
+    pub const QOP_GET_SHADER_INFO_LOG: u32 = 0x08;
+    pub const QOP_GET_PROGRAMIV: u32 = 0x09;
+    pub const QOP_GET_PROGRAM_INFO_LOG: u32 = 0x0A;
+    pub const QOP_READ_PIXELS: u32 = 0x0B;
+    pub const QOP_CHECK_FB_STATUS: u32 = 0x0C;
 
     // --- marshalled ioctl argument structs ---------------------------------
 
@@ -2602,14 +3505,14 @@ pub mod dri {
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct WpkDrmModeCreateDumb {
-        pub height: u32,  // 0   in
-        pub width: u32,   // 4   in
-        pub bpp: u32,     // 8   in    bits-per-pixel (32 for ARGB8888)
-        pub flags: u32,   // 12  in    must be 0
-        pub handle: u32,  // 16  out   process-local bo handle
-        pub pitch: u32,   // 20  out   stride in bytes
-        pub size: u64,    // 24  out   total bytes (pitch * height)
-                          // total: 32
+        pub height: u32, // 0   in
+        pub width: u32,  // 4   in
+        pub bpp: u32,    // 8   in    bits-per-pixel (32 for ARGB8888)
+        pub flags: u32,  // 12  in    must be 0
+        pub handle: u32, // 16  out   process-local bo handle
+        pub pitch: u32,  // 20  out   stride in bytes
+        pub size: u64,   // 24  out   total bytes (pitch * height)
+                         // total: 32
     }
 
     /// Linux `struct drm_mode_map_dumb` (16 bytes).
@@ -2671,16 +3574,16 @@ pub mod dri {
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct WpkDrmVersion {
-        pub version_major: i32,       // 0
-        pub version_minor: i32,       // 4
-        pub version_patchlevel: i32,  // 8
-        pub name_len: u32,            // 12   in/out
-        pub name_ptr: u32,            // 16   wasm32 user pointer
-        pub date_len: u32,            // 20   in/out
-        pub date_ptr: u32,            // 24   wasm32 user pointer
-        pub desc_len: u32,            // 28   in/out
-        pub desc_ptr: u32,            // 32   wasm32 user pointer
-                                      // total: 36
+        pub version_major: i32,      // 0
+        pub version_minor: i32,      // 4
+        pub version_patchlevel: i32, // 8
+        pub name_len: u32,           // 12   in/out
+        pub name_ptr: u32,           // 16   wasm32 user pointer
+        pub date_len: u32,           // 20   in/out
+        pub date_ptr: u32,           // 24   wasm32 user pointer
+        pub desc_len: u32,           // 28   in/out
+        pub desc_ptr: u32,           // 32   wasm32 user pointer
+                                     // total: 36
     }
 
     // --- WPK extensions ('d' magic, nrs 0xE0+ — unused by Linux 6.x) ----
@@ -2714,11 +3617,11 @@ pub mod dri {
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct WpkDrmGpuBoCreate {
-        pub width: u32,   // 0   in
-        pub height: u32,  // 4   in
-        pub format: u32,  // 8   in    DRM_FORMAT_* (ARGB8888 etc.)
-        pub usage: u32,   // 12  in    GBM_BO_USE_* bitmask
-                          // total: 16
+        pub width: u32,  // 0   in
+        pub height: u32, // 4   in
+        pub format: u32, // 8   in    DRM_FORMAT_* (ARGB8888 etc.)
+        pub usage: u32,  // 12  in    GBM_BO_USE_* bitmask
+                         // total: 16
     }
 
     /// `BIND_FOREIGN_TEXTURE` argument. 16 bytes on wasm32 (4 × u32). After
@@ -2732,11 +3635,11 @@ pub mod dri {
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct WpkDrmBindForeignTexture {
-        pub bo_handle: u32,     // 0   in    caller's local GEM handle
-        pub gl_target: u32,     // 4   in    GL_TEXTURE_2D etc.
-        pub ctx_id: u32,        // 8   in    caller's GL ctx_id
+        pub bo_handle: u32, // 0   in    caller's local GEM handle
+        pub gl_target: u32, // 4   in    GL_TEXTURE_2D etc.
+        pub ctx_id: u32,    // 8   in    caller's GL ctx_id
         pub gl_texture_id: u32, // 12  out   the WebGLTexture id assigned
-                                //          (also writable as a sampler binding)
+                            //          (also writable as a sampler binding)
     }
 
     // --- KMS ioctls ('d' magic, Linux UAPI) -------------------------------
@@ -2790,92 +3693,92 @@ pub mod dri {
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct WpkDrmModeCardRes {
-        pub fb_id_ptr: u64,         // 0   in
-        pub crtc_id_ptr: u64,       // 8   in
-        pub connector_id_ptr: u64,  // 16  in
-        pub encoder_id_ptr: u64,    // 24  in
-        pub count_fbs: u32,         // 32  in/out
-        pub count_crtcs: u32,       // 36  in/out
-        pub count_connectors: u32,  // 40  in/out
-        pub count_encoders: u32,    // 44  in/out
-        pub min_width: u32,         // 48  out
-        pub max_width: u32,         // 52  out
-        pub min_height: u32,        // 56  out
-        pub max_height: u32,        // 60  out
-                                    // total: 64
+        pub fb_id_ptr: u64,        // 0   in
+        pub crtc_id_ptr: u64,      // 8   in
+        pub connector_id_ptr: u64, // 16  in
+        pub encoder_id_ptr: u64,   // 24  in
+        pub count_fbs: u32,        // 32  in/out
+        pub count_crtcs: u32,      // 36  in/out
+        pub count_connectors: u32, // 40  in/out
+        pub count_encoders: u32,   // 44  in/out
+        pub min_width: u32,        // 48  out
+        pub max_width: u32,        // 52  out
+        pub min_height: u32,       // 56  out
+        pub max_height: u32,       // 60  out
+                                   // total: 64
     }
 
     /// `struct drm_mode_modeinfo`. 68 bytes.
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct WpkDrmModeModeinfo {
-        pub clock: u32,         // 0
-        pub hdisplay: u16,      // 4
-        pub hsync_start: u16,   // 6
-        pub hsync_end: u16,     // 8
-        pub htotal: u16,        // 10
-        pub hskew: u16,         // 12
-        pub vdisplay: u16,      // 14
-        pub vsync_start: u16,   // 16
-        pub vsync_end: u16,     // 18
-        pub vtotal: u16,        // 20
-        pub vscan: u16,         // 22
-        pub vrefresh: u32,      // 24
-        pub flags: u32,         // 28
-        pub mode_type: u32,     // 32
-        pub name: [u8; 32],     // 36..68
-                                // total: 68
+        pub clock: u32,       // 0
+        pub hdisplay: u16,    // 4
+        pub hsync_start: u16, // 6
+        pub hsync_end: u16,   // 8
+        pub htotal: u16,      // 10
+        pub hskew: u16,       // 12
+        pub vdisplay: u16,    // 14
+        pub vsync_start: u16, // 16
+        pub vsync_end: u16,   // 18
+        pub vtotal: u16,      // 20
+        pub vscan: u16,       // 22
+        pub vrefresh: u32,    // 24
+        pub flags: u32,       // 28
+        pub mode_type: u32,   // 32
+        pub name: [u8; 32],   // 36..68
+                              // total: 68
     }
 
     /// `struct drm_mode_crtc`. 104 bytes (embedded modeinfo at offset 36).
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct WpkDrmModeGetCrtc {
-        pub set_connectors_ptr: u64,   // 0    in   (SETCRTC only)
-        pub count_connectors: u32,     // 8    in   (SETCRTC only)
-        pub crtc_id: u32,              // 12   in/out
-        pub fb_id: u32,                // 16   in/out
-        pub x: u32,                    // 20   in/out
-        pub y: u32,                    // 24   in/out
-        pub gamma_size: u32,           // 28   out
-        pub mode_valid: u32,           // 32   in/out
-        pub mode: WpkDrmModeModeinfo,  // 36..104
-                                       // total: 104
+        pub set_connectors_ptr: u64, // 0    in   (SETCRTC only)
+        pub count_connectors: u32,   // 8    in   (SETCRTC only)
+        pub crtc_id: u32,            // 12   in/out
+        pub fb_id: u32,              // 16   in/out
+        pub x: u32,                  // 20   in/out
+        pub y: u32,                  // 24   in/out
+        pub gamma_size: u32,         // 28   out
+        pub mode_valid: u32,         // 32   in/out
+        pub mode: WpkDrmModeModeinfo, // 36..104
+                                     // total: 104
     }
 
     /// `struct drm_mode_get_connector`. 80 bytes.
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct WpkDrmModeGetConnector {
-        pub encoders_ptr: u64,         // 0    in
-        pub modes_ptr: u64,            // 8    in
-        pub props_ptr: u64,            // 16   in
-        pub prop_values_ptr: u64,      // 24   in
-        pub count_modes: u32,          // 32   in/out
-        pub count_props: u32,          // 36   in/out
-        pub count_encoders: u32,       // 40   in/out
-        pub encoder_id: u32,           // 44   out
-        pub connector_id: u32,         // 48   in/out
-        pub connector_type: u32,       // 52   out
-        pub connector_type_id: u32,    // 56   out
-        pub connection: u32,           // 60   out
-        pub mm_width: u32,             // 64   out
-        pub mm_height: u32,            // 68   out
-        pub subpixel: u32,             // 72   out
-        pub pad: u32,                  // 76
-                                       // total: 80
+        pub encoders_ptr: u64,      // 0    in
+        pub modes_ptr: u64,         // 8    in
+        pub props_ptr: u64,         // 16   in
+        pub prop_values_ptr: u64,   // 24   in
+        pub count_modes: u32,       // 32   in/out
+        pub count_props: u32,       // 36   in/out
+        pub count_encoders: u32,    // 40   in/out
+        pub encoder_id: u32,        // 44   out
+        pub connector_id: u32,      // 48   in/out
+        pub connector_type: u32,    // 52   out
+        pub connector_type_id: u32, // 56   out
+        pub connection: u32,        // 60   out
+        pub mm_width: u32,          // 64   out
+        pub mm_height: u32,         // 68   out
+        pub subpixel: u32,          // 72   out
+        pub pad: u32,               // 76
+                                    // total: 80
     }
 
     /// `struct drm_mode_get_encoder`. 20 bytes.
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct WpkDrmModeGetEncoder {
-        pub encoder_id: u32,        // 0    in/out
-        pub encoder_type: u32,      // 4    out
-        pub crtc_id: u32,           // 8    out
-        pub possible_crtcs: u32,    // 12   out
-        pub possible_clones: u32,   // 16   out
-                                    // total: 20
+        pub encoder_id: u32,     // 0    in/out
+        pub encoder_type: u32,   // 4    out
+        pub crtc_id: u32,        // 8    out
+        pub possible_crtcs: u32, // 12   out
+        pub possible_clones: u32, // 16   out
+                                 // total: 20
     }
 
     /// `struct drm_mode_fb_cmd2`. 104 bytes — `[u64; 4] modifier` aligns
@@ -2883,28 +3786,28 @@ pub mod dri {
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct WpkDrmModeFbCmd2 {
-        pub fb_id: u32,             // 0    out
-        pub width: u32,             // 4    in
-        pub height: u32,            // 8    in
-        pub pixel_format: u32,      // 12   in
-        pub flags: u32,             // 16   in
-        pub handles: [u32; 4],      // 20   in
-        pub pitches: [u32; 4],      // 36   in
-        pub offsets: [u32; 4],      // 52   in
-        pub modifier: [u64; 4],     // 72..104   in
-                                    // total: 104
+        pub fb_id: u32,        // 0    out
+        pub width: u32,        // 4    in
+        pub height: u32,       // 8    in
+        pub pixel_format: u32, // 12   in
+        pub flags: u32,        // 16   in
+        pub handles: [u32; 4], // 20   in
+        pub pitches: [u32; 4], // 36   in
+        pub offsets: [u32; 4], // 52   in
+        pub modifier: [u64; 4], // 72..104   in
+                               // total: 104
     }
 
     /// `struct drm_mode_crtc_page_flip`. 24 bytes.
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct WpkDrmModeCrtcPageFlip {
-        pub crtc_id: u32,    // 0    in
-        pub fb_id: u32,      // 4    in
-        pub flags: u32,      // 8    in
-        pub reserved: u32,   // 12
-        pub user_data: u64,  // 16   in
-                             // total: 24
+        pub crtc_id: u32,  // 0    in
+        pub fb_id: u32,    // 4    in
+        pub flags: u32,    // 8    in
+        pub reserved: u32, // 12
+        pub user_data: u64, // 16   in
+                           // total: 24
     }
 
     /// `struct drm_event_vblank`. 32 bytes — `drm_event` header (8) +
@@ -2914,35 +3817,35 @@ pub mod dri {
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct WpkDrmEventVblank {
-        pub ev_type: u32,    // 0
-        pub length: u32,     // 4
-        pub user_data: u64,  // 8
-        pub tv_sec: u32,     // 16
-        pub tv_usec: u32,    // 20
-        pub sequence: u32,   // 24
-        pub crtc_id: u32,    // 28
-                             // total: 32
+        pub ev_type: u32,   // 0
+        pub length: u32,    // 4
+        pub user_data: u64, // 8
+        pub tv_sec: u32,    // 16
+        pub tv_usec: u32,   // 20
+        pub sequence: u32,  // 24
+        pub crtc_id: u32,   // 28
+                            // total: 32
     }
 
     /// `struct drm_wait_vblank_request`. Union member (input). 16 bytes.
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct WpkDrmWaitVblankRequest {
-        pub req_type: u32,  // 0
-        pub sequence: u32,  // 4
-        pub signal: u64,    // 8
-                            // total: 16
+        pub req_type: u32, // 0
+        pub sequence: u32, // 4
+        pub signal: u64,   // 8
+                           // total: 16
     }
 
     /// `struct drm_wait_vblank_reply`. Union member (output). 16 bytes.
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct WpkDrmWaitVblankReply {
-        pub rep_type: u32,  // 0
-        pub sequence: u32,  // 4
-        pub tv_sec: u32,    // 8
-        pub tv_usec: u32,   // 12
-                            // total: 16
+        pub rep_type: u32, // 0
+        pub sequence: u32, // 4
+        pub tv_sec: u32,   // 8
+        pub tv_usec: u32,  // 12
+                           // total: 16
     }
 }
 
@@ -2973,22 +3876,68 @@ mod dri_tests {
     #[test]
     fn ioctl_numbers_match_linux_uapi() {
         let iowr = IOC_READ | IOC_WRITE;
-        assert_eq!(DRM_IOCTL_VERSION,
-            ioc(iowr, 'd' as u32, 0x00, size_of::<WpkDrmVersion>() as u32));
-        assert_eq!(DRM_IOCTL_GET_CAP,
-            ioc(iowr, 'd' as u32, 0x0c, size_of::<WpkDrmGetCap>() as u32));
-        assert_eq!(DRM_IOCTL_GEM_CLOSE,
-            ioc(IOC_WRITE, 'd' as u32, 0x09, size_of::<WpkDrmGemClose>() as u32));
-        assert_eq!(DRM_IOCTL_PRIME_HANDLE_TO_FD,
-            ioc(iowr, 'd' as u32, 0x2d, size_of::<WpkDrmPrimeHandle>() as u32));
-        assert_eq!(DRM_IOCTL_PRIME_FD_TO_HANDLE,
-            ioc(iowr, 'd' as u32, 0x2e, size_of::<WpkDrmPrimeHandle>() as u32));
-        assert_eq!(DRM_IOCTL_MODE_CREATE_DUMB,
-            ioc(iowr, 'd' as u32, 0xb2, size_of::<WpkDrmModeCreateDumb>() as u32));
-        assert_eq!(DRM_IOCTL_MODE_MAP_DUMB,
-            ioc(iowr, 'd' as u32, 0xb3, size_of::<WpkDrmModeMapDumb>() as u32));
-        assert_eq!(DRM_IOCTL_MODE_DESTROY_DUMB,
-            ioc(iowr, 'd' as u32, 0xb4, size_of::<WpkDrmModeDestroyDumb>() as u32));
+        assert_eq!(
+            DRM_IOCTL_VERSION,
+            ioc(iowr, 'd' as u32, 0x00, size_of::<WpkDrmVersion>() as u32)
+        );
+        assert_eq!(
+            DRM_IOCTL_GET_CAP,
+            ioc(iowr, 'd' as u32, 0x0c, size_of::<WpkDrmGetCap>() as u32)
+        );
+        assert_eq!(
+            DRM_IOCTL_GEM_CLOSE,
+            ioc(
+                IOC_WRITE,
+                'd' as u32,
+                0x09,
+                size_of::<WpkDrmGemClose>() as u32
+            )
+        );
+        assert_eq!(
+            DRM_IOCTL_PRIME_HANDLE_TO_FD,
+            ioc(
+                iowr,
+                'd' as u32,
+                0x2d,
+                size_of::<WpkDrmPrimeHandle>() as u32
+            )
+        );
+        assert_eq!(
+            DRM_IOCTL_PRIME_FD_TO_HANDLE,
+            ioc(
+                iowr,
+                'd' as u32,
+                0x2e,
+                size_of::<WpkDrmPrimeHandle>() as u32
+            )
+        );
+        assert_eq!(
+            DRM_IOCTL_MODE_CREATE_DUMB,
+            ioc(
+                iowr,
+                'd' as u32,
+                0xb2,
+                size_of::<WpkDrmModeCreateDumb>() as u32
+            )
+        );
+        assert_eq!(
+            DRM_IOCTL_MODE_MAP_DUMB,
+            ioc(
+                iowr,
+                'd' as u32,
+                0xb3,
+                size_of::<WpkDrmModeMapDumb>() as u32
+            )
+        );
+        assert_eq!(
+            DRM_IOCTL_MODE_DESTROY_DUMB,
+            ioc(
+                iowr,
+                'd' as u32,
+                0xb4,
+                size_of::<WpkDrmModeDestroyDumb>() as u32
+            )
+        );
     }
 
     #[test]
@@ -3000,10 +3949,24 @@ mod dri_tests {
     #[test]
     fn wpk_extension_ioctl_numbers() {
         let iowr = IOC_READ | IOC_WRITE;
-        assert_eq!(DRM_IOCTL_WPK_CREATE_GPU_BO,
-            ioc(iowr, 'd' as u32, 0xE0, size_of::<WpkDrmGpuBoCreate>() as u32));
-        assert_eq!(DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE,
-            ioc(iowr, 'd' as u32, 0xE1, size_of::<WpkDrmBindForeignTexture>() as u32));
+        assert_eq!(
+            DRM_IOCTL_WPK_CREATE_GPU_BO,
+            ioc(
+                iowr,
+                'd' as u32,
+                0xE0,
+                size_of::<WpkDrmGpuBoCreate>() as u32
+            )
+        );
+        assert_eq!(
+            DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE,
+            ioc(
+                iowr,
+                'd' as u32,
+                0xE1,
+                size_of::<WpkDrmBindForeignTexture>() as u32
+            )
+        );
     }
 
     #[test]
@@ -3033,28 +3996,76 @@ mod dri_tests {
     #[test]
     fn kms_ioctl_numbers_match_linux_uapi() {
         let iowr = IOC_READ | IOC_WRITE;
-        assert_eq!(DRM_IOCTL_SET_MASTER,
-            ioc(0, 'd' as u32, 0x1e, 0));
-        assert_eq!(DRM_IOCTL_DROP_MASTER,
-            ioc(0, 'd' as u32, 0x1f, 0));
-        assert_eq!(DRM_IOCTL_WAIT_VBLANK,
-            ioc(iowr, 'd' as u32, 0x3a, size_of::<WpkDrmWaitVblankRequest>() as u32));
-        assert_eq!(DRM_IOCTL_MODE_GETRESOURCES,
-            ioc(iowr, 'd' as u32, 0xa0, size_of::<WpkDrmModeCardRes>() as u32));
-        assert_eq!(DRM_IOCTL_MODE_GETCRTC,
-            ioc(iowr, 'd' as u32, 0xa1, size_of::<WpkDrmModeGetCrtc>() as u32));
-        assert_eq!(DRM_IOCTL_MODE_SETCRTC,
-            ioc(iowr, 'd' as u32, 0xa2, size_of::<WpkDrmModeGetCrtc>() as u32));
-        assert_eq!(DRM_IOCTL_MODE_GETENCODER,
-            ioc(iowr, 'd' as u32, 0xa6, size_of::<WpkDrmModeGetEncoder>() as u32));
-        assert_eq!(DRM_IOCTL_MODE_GETCONNECTOR,
-            ioc(iowr, 'd' as u32, 0xa7, size_of::<WpkDrmModeGetConnector>() as u32));
-        assert_eq!(DRM_IOCTL_MODE_RMFB,
-            ioc(iowr, 'd' as u32, 0xaf, 4));
-        assert_eq!(DRM_IOCTL_MODE_PAGE_FLIP,
-            ioc(iowr, 'd' as u32, 0xb0, size_of::<WpkDrmModeCrtcPageFlip>() as u32));
-        assert_eq!(DRM_IOCTL_MODE_ADDFB2,
-            ioc(iowr, 'd' as u32, 0xb8, size_of::<WpkDrmModeFbCmd2>() as u32));
+        assert_eq!(DRM_IOCTL_SET_MASTER, ioc(0, 'd' as u32, 0x1e, 0));
+        assert_eq!(DRM_IOCTL_DROP_MASTER, ioc(0, 'd' as u32, 0x1f, 0));
+        assert_eq!(
+            DRM_IOCTL_WAIT_VBLANK,
+            ioc(
+                iowr,
+                'd' as u32,
+                0x3a,
+                size_of::<WpkDrmWaitVblankRequest>() as u32
+            )
+        );
+        assert_eq!(
+            DRM_IOCTL_MODE_GETRESOURCES,
+            ioc(
+                iowr,
+                'd' as u32,
+                0xa0,
+                size_of::<WpkDrmModeCardRes>() as u32
+            )
+        );
+        assert_eq!(
+            DRM_IOCTL_MODE_GETCRTC,
+            ioc(
+                iowr,
+                'd' as u32,
+                0xa1,
+                size_of::<WpkDrmModeGetCrtc>() as u32
+            )
+        );
+        assert_eq!(
+            DRM_IOCTL_MODE_SETCRTC,
+            ioc(
+                iowr,
+                'd' as u32,
+                0xa2,
+                size_of::<WpkDrmModeGetCrtc>() as u32
+            )
+        );
+        assert_eq!(
+            DRM_IOCTL_MODE_GETENCODER,
+            ioc(
+                iowr,
+                'd' as u32,
+                0xa6,
+                size_of::<WpkDrmModeGetEncoder>() as u32
+            )
+        );
+        assert_eq!(
+            DRM_IOCTL_MODE_GETCONNECTOR,
+            ioc(
+                iowr,
+                'd' as u32,
+                0xa7,
+                size_of::<WpkDrmModeGetConnector>() as u32
+            )
+        );
+        assert_eq!(DRM_IOCTL_MODE_RMFB, ioc(iowr, 'd' as u32, 0xaf, 4));
+        assert_eq!(
+            DRM_IOCTL_MODE_PAGE_FLIP,
+            ioc(
+                iowr,
+                'd' as u32,
+                0xb0,
+                size_of::<WpkDrmModeCrtcPageFlip>() as u32
+            )
+        );
+        assert_eq!(
+            DRM_IOCTL_MODE_ADDFB2,
+            ioc(iowr, 'd' as u32, 0xb8, size_of::<WpkDrmModeFbCmd2>() as u32)
+        );
     }
 
     #[test]
@@ -3073,10 +4084,10 @@ mod gl_tests {
 
     #[test]
     fn struct_sizes_match_abi() {
-        assert_eq!(size_of::<GlSubmitInfo>(),    8);
+        assert_eq!(size_of::<GlSubmitInfo>(), 8);
         assert_eq!(size_of::<GlContextAttrs>(), 16);
         assert_eq!(size_of::<GlSurfaceAttrs>(), 32);
-        assert_eq!(size_of::<GlQueryInfo>(),    24);
+        assert_eq!(size_of::<GlQueryInfo>(), 24);
     }
 
     #[test]
@@ -3087,27 +4098,62 @@ mod gl_tests {
     #[test]
     fn opcodes_are_unique() {
         let ops: &[u16] = &[
-            OP_CLEAR, OP_CLEAR_COLOR, OP_VIEWPORT, OP_SCISSOR,
-            OP_ENABLE, OP_DISABLE, OP_BLEND_FUNC, OP_DEPTH_FUNC,
-            OP_CULL_FACE, OP_FRONT_FACE, OP_LINE_WIDTH, OP_PIXEL_STOREI,
-            OP_GEN_BUFFERS, OP_DELETE_BUFFERS, OP_BIND_BUFFER,
-            OP_BUFFER_DATA, OP_BUFFER_SUB_DATA,
-            OP_GEN_TEXTURES, OP_DELETE_TEXTURES, OP_BIND_TEXTURE,
-            OP_TEX_IMAGE_2D, OP_TEX_SUB_IMAGE_2D, OP_TEX_PARAMETERI,
-            OP_ACTIVE_TEXTURE, OP_GENERATE_MIPMAP,
-            OP_CREATE_SHADER, OP_SHADER_SOURCE, OP_COMPILE_SHADER,
-            OP_DELETE_SHADER, OP_CREATE_PROGRAM, OP_ATTACH_SHADER,
-            OP_LINK_PROGRAM, OP_USE_PROGRAM, OP_BIND_ATTRIB_LOCATION,
+            OP_CLEAR,
+            OP_CLEAR_COLOR,
+            OP_VIEWPORT,
+            OP_SCISSOR,
+            OP_ENABLE,
+            OP_DISABLE,
+            OP_BLEND_FUNC,
+            OP_DEPTH_FUNC,
+            OP_CULL_FACE,
+            OP_FRONT_FACE,
+            OP_LINE_WIDTH,
+            OP_PIXEL_STOREI,
+            OP_GEN_BUFFERS,
+            OP_DELETE_BUFFERS,
+            OP_BIND_BUFFER,
+            OP_BUFFER_DATA,
+            OP_BUFFER_SUB_DATA,
+            OP_GEN_TEXTURES,
+            OP_DELETE_TEXTURES,
+            OP_BIND_TEXTURE,
+            OP_TEX_IMAGE_2D,
+            OP_TEX_SUB_IMAGE_2D,
+            OP_TEX_PARAMETERI,
+            OP_ACTIVE_TEXTURE,
+            OP_GENERATE_MIPMAP,
+            OP_CREATE_SHADER,
+            OP_SHADER_SOURCE,
+            OP_COMPILE_SHADER,
+            OP_DELETE_SHADER,
+            OP_CREATE_PROGRAM,
+            OP_ATTACH_SHADER,
+            OP_LINK_PROGRAM,
+            OP_USE_PROGRAM,
+            OP_BIND_ATTRIB_LOCATION,
             OP_DELETE_PROGRAM,
-            OP_UNIFORM1I, OP_UNIFORM1F, OP_UNIFORM2F, OP_UNIFORM3F,
-            OP_UNIFORM4F, OP_UNIFORM_MATRIX4FV, OP_UNIFORM4FV,
-            OP_ENABLE_VERTEX_ATTRIB_ARRAY, OP_DISABLE_VERTEX_ATTRIB_ARRAY,
-            OP_VERTEX_ATTRIB_POINTER, OP_DRAW_ARRAYS, OP_DRAW_ELEMENTS,
-            OP_GEN_VERTEX_ARRAYS, OP_DELETE_VERTEX_ARRAYS,
+            OP_UNIFORM1I,
+            OP_UNIFORM1F,
+            OP_UNIFORM2F,
+            OP_UNIFORM3F,
+            OP_UNIFORM4F,
+            OP_UNIFORM_MATRIX4FV,
+            OP_UNIFORM4FV,
+            OP_ENABLE_VERTEX_ATTRIB_ARRAY,
+            OP_DISABLE_VERTEX_ATTRIB_ARRAY,
+            OP_VERTEX_ATTRIB_POINTER,
+            OP_DRAW_ARRAYS,
+            OP_DRAW_ELEMENTS,
+            OP_GEN_VERTEX_ARRAYS,
+            OP_DELETE_VERTEX_ARRAYS,
             OP_BIND_VERTEX_ARRAY,
-            OP_GEN_FRAMEBUFFERS, OP_BIND_FRAMEBUFFER,
-            OP_FRAMEBUFFER_TEXTURE_2D, OP_GEN_RENDERBUFFERS,
-            OP_BIND_RENDERBUFFER, OP_RENDERBUFFER_STORAGE,
+            OP_GEN_FRAMEBUFFERS,
+            OP_BIND_FRAMEBUFFER,
+            OP_FRAMEBUFFER_TEXTURE_2D,
+            OP_GEN_RENDERBUFFERS,
+            OP_BIND_RENDERBUFFER,
+            OP_RENDERBUFFER_STORAGE,
             OP_FRAMEBUFFER_RENDERBUFFER,
         ];
         for (i, &a) in ops.iter().enumerate() {
@@ -3120,10 +4166,18 @@ mod gl_tests {
     #[test]
     fn query_opcodes_are_unique() {
         let qops: &[u32] = &[
-            QOP_GET_ERROR, QOP_GET_STRING, QOP_GET_INTEGERV,
-            QOP_GET_FLOATV, QOP_GET_UNIFORM_LOC, QOP_GET_ATTRIB_LOC,
-            QOP_GET_SHADERIV, QOP_GET_SHADER_INFO_LOG, QOP_GET_PROGRAMIV,
-            QOP_GET_PROGRAM_INFO_LOG, QOP_READ_PIXELS, QOP_CHECK_FB_STATUS,
+            QOP_GET_ERROR,
+            QOP_GET_STRING,
+            QOP_GET_INTEGERV,
+            QOP_GET_FLOATV,
+            QOP_GET_UNIFORM_LOC,
+            QOP_GET_ATTRIB_LOC,
+            QOP_GET_SHADERIV,
+            QOP_GET_SHADER_INFO_LOG,
+            QOP_GET_PROGRAMIV,
+            QOP_GET_PROGRAM_INFO_LOG,
+            QOP_READ_PIXELS,
+            QOP_CHECK_FB_STATUS,
         ];
         for (i, &a) in qops.iter().enumerate() {
             for &b in &qops[i + 1..] {
