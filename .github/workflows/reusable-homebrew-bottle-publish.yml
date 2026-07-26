@@ -454,28 +454,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$PACKAGE_GENERATION_KIND" = "rootfs-wasm32" ]; then
-            # WHY: the schema-1 rootfs generation is a bounded first-wave
-            # bridge, not a substitute for the complete browser generations.
-            # Keep it confined to the Bash/M4 wasm32 proof and keep the legacy
-            # shell/VFS acceptance graph out of that publication run.
-            normalized_arches="$(
-              printf '%s\n' "$ARCHES" | tr ',[:space:]' '\n' |
-                sed '/^$/d' | sort -u | paste -sd, -
-            )"
-            normalized_formulae="$(
-              printf '%s\n' "$FORMULAE" | tr ',[:space:]' '\n' |
-                sed '/^$/d' | sort -u | paste -sd, -
-            )"
-            [ "$normalized_arches" = "wasm32" ] || {
-              echo "::error::the rootfs-wasm32 publication lane supports only wasm32"; exit 2;
-            }
-            case "$normalized_formulae" in
-              bash|m4|bash,m4) ;;
-              *) echo "::error::the rootfs-wasm32 publication lane is limited to Bash and M4"; exit 2 ;;
-            esac
-            [ "$REQUIRE_VFS_ACCEPTANCE" = "false" ] || {
-              echo "::error::the rootfs-wasm32 publication lane cannot materialize the legacy VFS acceptance image"; exit 2;
-            }
+            bash kandelo/scripts/homebrew-rootfs-publication-selection.sh \
+              --formulae "$FORMULAE" \
+              --arches "$ARCHES" \
+              --require-vfs-acceptance "$REQUIRE_VFS_ACCEPTANCE"
           fi
           expected_args=()
           if [ -n "$EXPECTED_CACHE_KEYS_JSON" ]; then

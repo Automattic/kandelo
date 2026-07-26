@@ -14,6 +14,9 @@ MAINTENANCE_PATH = File.join(REPO_ROOT, ".github/workflows/reusable-homebrew-bot
 REPOSITORY_CANARY_PATH = File.join(
   REPO_ROOT, ".github/workflows/reusable-homebrew-repository-namespace-canary.yml"
 )
+ROOTFS_PUBLICATION_SELECTION_PATH = File.join(
+  REPO_ROOT, "scripts/homebrew-rootfs-publication-selection.sh"
+)
 TAP_CALLER_ROOT = File.join(REPO_ROOT, "homebrew/homebrew-tap-core/.github/workflows")
 CHECKOUT_ACTION = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
 NIX_ACTION = "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25"
@@ -21,7 +24,7 @@ MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
-PUBLISHER_PLAN_DIGEST = "5e6e251b42e49953b67e61232e9679036954c4bbd487068ea46d831b24a3669b"
+PUBLISHER_PLAN_DIGEST = "ad1578ab82804fbfcd56c4d68a6858199a8c6f056b8e013d3fa4d5d4dcddf376"
 PUBLISHER_BUILD_DIGEST = "5ae1f09b7cd82e2efc0a7788ec0ab39b0b5ca4edc87fd7750c0caed30a11cf34"
 PUBLISHER_UPLOAD_DIGEST = "a44f8b7b2eb1d4b9436496cc9a099b80fb70be52143820e77fb7196e807d302f"
 PUBLISHER_INDEX_DIGEST = "7b05a7e4b076628ab999f9edb2e39a6641c4bb9a2563afcf19be15a119566bbe"
@@ -816,7 +819,39 @@ def check_repository_canary(workflow)
         "repository namespace canary credentials escape the upload step")
 end
 
+def check_rootfs_publication_selection(source)
+  allowlist_declarations = source.lines.grep(
+    /\Areadonly ROOTFS_WASM32_ALLOWED_FORMULAE=/
+  )
+  check(
+    allowlist_declarations == [
+      "readonly ROOTFS_WASM32_ALLOWED_FORMULAE=(bash dinit m4)\n",
+    ],
+    "rootfs publication selection allowed Formula set changed"
+  )
+
+  [
+    'normalized_formulae="$(normalize_selection "$FORMULAE")"',
+    'normalized_arches="$(normalize_selection "$ARCHES")"',
+    '[ -n "$normalized_formulae" ]',
+    '[ "$normalized_arches" = "wasm32" ]',
+    '[ "$REQUIRE_VFS_ACCEPTANCE" = "false" ]',
+    'IFS=, read -r -a selected_formulae <<<"$normalized_formulae"',
+    'for formula in "${selected_formulae[@]}"; do',
+    'for allowed_formula in "${ROOTFS_WASM32_ALLOWED_FORMULAE[@]}"; do',
+    '[ "$formula" = "$allowed_formula" ]',
+    '[ "$allowed" = "true" ]',
+    "does not admit Formula:",
+  ].each do |fragment|
+    check(source.include?(fragment),
+          "rootfs publication selection lacks #{fragment}")
+  end
+end
+
 def check_publisher(workflow)
+  check_rootfs_publication_selection(
+    File.read(ROOTFS_PUBLICATION_SELECTION_PATH)
+  )
   top_keys = workflow.keys.map { |key| key == true ? "on" : key.to_s }.sort
   check(top_keys == %w[jobs name on],
         "publisher has unexpected top-level configuration")
@@ -1168,14 +1203,18 @@ def check_publisher(workflow)
     '--tap-root "$GITHUB_WORKSPACE/tap"', '--formulae "$FORMULAE"',
     '--arches "$ARCHES"', '"${expected_args[@]}"',
     '[ "$PACKAGE_GENERATION_KIND" = "rootfs-wasm32" ]',
-    '[ "$normalized_arches" = "wasm32" ]',
-    'bash|m4|bash,m4)',
-    'rootfs-wasm32 publication lane is limited to Bash and M4',
-    '[ "$REQUIRE_VFS_ACCEPTANCE" = "false" ]',
+    'bash kandelo/scripts/homebrew-rootfs-publication-selection.sh',
+    '--require-vfs-acceptance "$REQUIRE_VFS_ACCEPTANCE"',
   ].each do |fragment|
     check(matrix_plan_run.include?(fragment),
           "publisher matrix planner lacks #{fragment}")
   end
+  check(
+    matrix_plan_run.scan(
+      "kandelo/scripts/homebrew-rootfs-publication-selection.sh"
+    ).length == 1,
+    "publisher matrix planner must invoke the rootfs selection policy exactly once"
+  )
   check(matrix_plan_run.scan("--expected-bottle-root-url").length == 1,
         "publisher matrix planner root argument changed")
   check(matrix_plan_run.scan("--expected-kandelo-repository").length == 1 &&
@@ -5543,6 +5582,24 @@ def self_test(publisher, maintenance, repository_canary)
     ), fingerprint_source)
   end
 
+  rootfs_selection_source = File.read(ROOTFS_PUBLICATION_SELECTION_PATH)
+  expect_rejection("rootfs selection omits Dinit") do
+    check_rootfs_publication_selection(rootfs_selection_source.sub(
+      "(bash dinit m4)", "(bash m4)"
+    ))
+  end
+  expect_rejection("rootfs selection admits an unreviewed Formula") do
+    check_rootfs_publication_selection(rootfs_selection_source.sub(
+      "(bash dinit m4)", "(bash dinit m4 ruby)"
+    ))
+  end
+  expect_rejection("rootfs selection bypasses VFS exclusion") do
+    check_rootfs_publication_selection(rootfs_selection_source.sub(
+      '[ "$REQUIRE_VFS_ACCEPTANCE" = "false" ]',
+      "true"
+    ))
+  end
+
   publisher_mutations = {
     "top-level environment injection" => lambda { |w| w["env"] = { "BASH_ENV" => "/tmp/backdoor" } },
     "workflow write permission" => lambda { |w| w["permissions"] = "write-all" },
@@ -5714,6 +5771,13 @@ def self_test(publisher, maintenance, repository_canary)
       step["run"] = step.fetch("run").sub(
         'expected_args+=(--expected-bottle-root-url "$EXPECTED_BOTTLE_ROOT_URL")',
         "true"
+      )
+    },
+    "rootfs publication selection bypass" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Plan formula matrix")
+      step["run"] = step.fetch("run").sub(
+        "bash kandelo/scripts/homebrew-rootfs-publication-selection.sh",
+        "true #"
       )
     },
     "uploader dependency bypass" => lambda { |w|
