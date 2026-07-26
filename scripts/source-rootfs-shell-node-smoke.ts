@@ -56,6 +56,8 @@ if (metadata?.kernelAbi !== ABI_VERSION) {
 }
 
 const fs = MemoryFileSystem.fromImagePreservingCapacity(imageBytes);
+// WHY: the acceptance assertions below trust deferred-tree metadata.
+await fs.verifyImportedLazyAtomicGroupSeals();
 const shellConfigBytes = readVfsFile(fs, KANDELO_SHELL_CONFIG_PATH);
 expectExactBytes(
   shellConfigBytes,

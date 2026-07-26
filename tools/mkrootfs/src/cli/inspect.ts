@@ -214,6 +214,8 @@ export async function runInspect(args: string[]): Promise<number> {
   let mfs: MemoryFileSystem;
   try {
     mfs = MemoryFileSystem.fromImage(bytes);
+    // WHY: stdout must never expose namespace claims from an unauthenticated image.
+    await mfs.verifyImportedLazyAtomicGroupSeals();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     process.stderr.write(`mkrootfs inspect: not a valid VFS image (${parsed.image}): ${msg}\n`);

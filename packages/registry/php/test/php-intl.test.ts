@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { addSealedLazyAtomicTestTree } from "../../../../host/test/lazy-atomic-seal-fixture";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -76,11 +77,32 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+describe("PHP intl VFS restore boundary", () => {
+  it("authenticates an imported v3 rootfs before rebasing", async () => {
+    const source = MemoryFileSystem.create(
+      new SharedArrayBuffer(8 * 1024 * 1024),
+    );
+    await addSealedLazyAtomicTestTree(source, {
+      groupId: "test:php-intl-rootfs",
+      member: "rootfs",
+      root: "/php-intl-rootfs",
+    });
+    const restored = MemoryFileSystem.fromImage(await source.saveImage());
+    await restored.verifyImportedLazyAtomicGroupSeals();
+    expect(
+      restored.rebaseToNewFileSystem(16 * 1024 * 1024)
+        .exportLazyArchiveEntries(),
+    ).toHaveLength(1);
+  });
+});
+
 describe.skipIf(!READY)("PHP intl as a runtime-loadable side module", () => {
   beforeAll(async () => {
-    const fs = MemoryFileSystem
-      .fromImage(new Uint8Array(readFileSync(rootfsPath)))
-      .rebaseToNewFileSystem(PHP_INTL_VFS_MAX_BYTES);
+    const restored = MemoryFileSystem.fromImage(
+      new Uint8Array(readFileSync(rootfsPath)),
+    );
+    await restored.verifyImportedLazyAtomicGroupSeals();
+    const fs = restored.rebaseToNewFileSystem(PHP_INTL_VFS_MAX_BYTES);
     ensureDirRecursive(fs, dirname(INTL_GUEST_PATH));
     ensureDirRecursive(fs, dirname(icuRuntime!.guestPath));
     writeVfsBinary(

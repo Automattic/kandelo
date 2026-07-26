@@ -95,6 +95,7 @@ import {
   titleFromVfsImageUrl,
   vfsImageUrlFromDescriptor,
 } from "../url-state";
+import { verifyImportedSealsForCurrentBoot } from "./boot-current-boundary";
 import {
   resolveOptionalDemoVfsUrl,
   type OptionalDemoVfsImage,
@@ -1274,7 +1275,10 @@ async function bootProfile(
   trackTransientImageBuffer(buildFs.sharedBuffer);
   // WHY: establish cleanup ownership first, then reject forged imported seals
   // before URL rewriting or asset registration can trust their lazy metadata.
-  await buildFs.verifyImportedLazyAtomicGroupSeals();
+  await verifyImportedSealsForCurrentBoot(
+    buildFs,
+    assertCurrent,
+  );
   const shellConfig = readImageShellConfig(buildFs);
   if (
     profile.id === "nginx-php" ||

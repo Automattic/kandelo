@@ -175,6 +175,14 @@ export interface HomebrewOriginalBottleCollectionBuildResult {
   report: HomebrewVfsBuildReport;
 }
 
+async function authenticateHomebrewCompositionBase(
+  fs: MemoryFileSystem,
+): Promise<void> {
+  // WHY: all decisions below may fetch bottles or publish derived filesystem
+  // state. Imported v3 metadata must become trusted before any such side effect.
+  await fs.verifyImportedLazyAtomicGroupSeals();
+}
+
 /**
  * Convert an exact selected package collection into independent original-
  * bottle deferred trees. This deliberately has no release, base-receipt,
@@ -187,6 +195,7 @@ export async function buildHomebrewOriginalBottleCollection(
   if (options.fs === options.baseFs) {
     throw new Error("Homebrew original bottles require separate base and layer filesystems");
   }
+  await authenticateHomebrewCompositionBase(options.baseFs);
   commonArch(plan);
   const tapLock = planTapLock(plan);
   validatePackageTapOwnership(plan.packages, tapLock);
@@ -319,6 +328,7 @@ export async function buildHomebrewLazyLayer(
   plan: HomebrewVfsPlan,
   options: BuildHomebrewLazyLayerOptions,
 ): Promise<HomebrewLazyLayerBuildResult> {
+  await authenticateHomebrewCompositionBase(options.baseVfs.fs);
   const arch = commonArch(plan);
   const basePackageSource = parseHomebrewLazyLayerBasePackageSource(
     options.baseVfs.source,

@@ -259,6 +259,8 @@ export async function runAdd(args: string[]): Promise<number> {
   let mfs: MemoryFileSystem;
   try {
     mfs = MemoryFileSystem.fromImage(imageBytes);
+    // WHY: authenticate before source reads, namespace mutation, or image writes.
+    await mfs.verifyImportedLazyAtomicGroupSeals();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     process.stderr.write(

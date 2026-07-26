@@ -835,6 +835,7 @@ async function lazyLayerFixture(options: {
   });
   return {
     baseFs,
+    baseSource,
     plan,
     build,
     baseBytes,
@@ -3477,6 +3478,108 @@ describe("Homebrew VFS builder", () => {
       collection.deferredTrees.map((tree) => tree.id),
     );
   });
+
+  it.each(["member", "cohort"] as const)(
+    "rejects a forged imported %s seal before generic collection bottle loading or writes",
+    async (forgery) => {
+      const fixture = await lazyLayerFixture({ includeLayerDependency: true });
+      await addSealedLazyAtomicTestTree(fixture.baseFs, {
+        groupId: "test:generic-collection-base",
+        member: "base",
+        root: "/generic-collection-base",
+      });
+      const forgedBase = MemoryFileSystem.fromImage(
+        forgeLazyAtomicSeal(await fixture.baseFs.saveImage(), forgery),
+      );
+      const layerFs = MemoryFileSystem.create(
+        new SharedArrayBuffer(16 * 1024 * 1024),
+      );
+      const loadBottleBytes = vi.fn(async () => fixture.runtimeBytes);
+
+      await expect(buildHomebrewOriginalBottleCollection(
+        {
+          ...fixture.plan,
+          packages: fixture.plan.packages.filter(
+            (pkg) => pkg.name === "runtime",
+          ),
+        },
+        { fs: layerFs, baseFs: forgedBase, loadBottleBytes },
+      )).rejects.toThrow(/sealing|seal/);
+      expect(loadBottleBytes).not.toHaveBeenCalled();
+      expect(layerFs.exportLazyArchiveEntries()).toEqual([]);
+    },
+  );
+
+  it("accepts a valid imported v3 base before generic collection loading", async () => {
+    const fixture = await lazyLayerFixture();
+    await addSealedLazyAtomicTestTree(fixture.baseFs, {
+      groupId: "test:valid-generic-base",
+      member: "base",
+      root: "/valid-generic-base",
+    });
+    const importedBase = MemoryFileSystem.fromImage(
+      await fixture.baseFs.saveImage(),
+    );
+    const loadBottleBytes = vi.fn(async () => fixture.runtimeBytes);
+
+    const collection = await buildHomebrewOriginalBottleCollection(
+      {
+        ...fixture.plan,
+        packages: fixture.plan.packages.filter((pkg) => pkg.name === "runtime"),
+      },
+      {
+        fs: MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024)),
+        baseFs: importedBase,
+        loadBottleBytes,
+      },
+    );
+    expect(loadBottleBytes).toHaveBeenCalledOnce();
+    expect(collection.deferredTrees).toHaveLength(1);
+  });
+
+  it.each(["member", "cohort"] as const)(
+    "rejects a forged imported %s seal before generic lazy-layer bottle loading or writes",
+    async (forgery) => {
+      const fixture = await lazyLayerFixture();
+      await addSealedLazyAtomicTestTree(fixture.baseFs, {
+        groupId: "test:generic-layer-base",
+        member: "base",
+        root: "/generic-layer-base",
+      });
+      const forgedBase = MemoryFileSystem.fromImage(
+        forgeLazyAtomicSeal(await fixture.baseFs.saveImage(), forgery),
+      );
+      const layerFs = MemoryFileSystem.create(
+        new SharedArrayBuffer(16 * 1024 * 1024),
+      );
+      const loadBottleBytes = vi.fn(async () => fixture.runtimeBytes);
+
+      await expect(buildHomebrewLazyLayer(fixture.plan, {
+        fs: layerFs,
+        baseVfs: {
+          fs: forgedBase,
+          image: fixture.baseSource.output,
+          source: fixture.baseSource,
+        },
+        acceptanceVfs: { sha256: "e".repeat(64), bytes: 1 },
+        runtimeLayer: {
+          id: "runtime",
+          policy: {
+            schema: 1,
+            kind: "kandelo-homebrew-runtime-layer-policy",
+            base_package: "shell",
+            layers: [{
+              id: "runtime",
+              root_package: `${fixture.plan.tapName}/runtime`,
+            }],
+          },
+        },
+        loadBottleBytes,
+      })).rejects.toThrow(/sealing|seal/);
+      expect(loadBottleBytes).not.toHaveBeenCalled();
+      expect(layerFs.exportLazyArchiveEntries()).toEqual([]);
+    },
+  );
 
   it("composes global ownership before embedding a checked closure and deferring the rest", async () => {
     const fixture = await lazyLayerFixture({ includeLayerDependency: true });

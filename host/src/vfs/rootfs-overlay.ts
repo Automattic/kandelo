@@ -162,10 +162,12 @@ function copyMissingRootfsPath(
  * missing canonical directories, regular files, and symlinks retain their
  * source ownership and modes.
  */
-export function overlayEtcFromRootfs(
+export async function overlayEtcFromRootfs(
   target: MemoryFileSystem,
   rootfsImage: Uint8Array,
-): void {
+): Promise<void> {
   const source = MemoryFileSystem.fromImage(rootfsImage);
+  // WHY: reject forged imported metadata before copying even one source entry.
+  await source.verifyImportedLazyAtomicGroupSeals();
   copyMissingRootfsPath(source, target, "/etc");
 }

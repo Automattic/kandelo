@@ -15,6 +15,7 @@ import {
   populateShellEnvironment,
   saveShellDerivedVfsImage,
 } from "../../images/vfs/scripts/shell-vfs-build";
+import { restoreTrustedShellRootfs } from "../../images/vfs/scripts/shell-rootfs-restore";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import type { ZipEntry } from "../src/vfs/zip";
 import {
@@ -120,6 +121,33 @@ function expectContentsPreserved(fs: MemoryFileSystem): void {
 }
 
 describe("shell VFS base composition", () => {
+  it.each(["member", "cohort"] as const)(
+    "rejects a forged imported %s seal before shell build side effects",
+    async (forgery) => {
+      const source = MemoryFileSystem.create(new SharedArrayBuffer(8 * MiB));
+      await addSealedLazyAtomicTestTree(source, {
+        groupId: "test:shell-rootfs",
+        member: "rootfs",
+        root: "/shell-rootfs",
+      });
+      const resolveArtifact = vi.fn();
+      const register = vi.fn();
+      const save = vi.fn();
+
+      const image = forgeLazyAtomicSeal(await source.saveImage(), forgery);
+      const build = async () => {
+        await restoreTrustedShellRootfs(image, 8 * MiB);
+        resolveArtifact();
+        register();
+        save();
+      };
+      await expect(build()).rejects.toThrow(/seal/);
+      expect(resolveArtifact).not.toHaveBeenCalled();
+      expect(register).not.toHaveBeenCalled();
+      expect(save).not.toHaveBeenCalled();
+    },
+  );
+
   it("never replaces a missing strict dependency with ambient magic data", () => {
     const root = mkdtempSync(join(tmpdir(), "kandelo-strict-shell-resolver-"));
     const genericArtifact = join(root, "program.wasm");

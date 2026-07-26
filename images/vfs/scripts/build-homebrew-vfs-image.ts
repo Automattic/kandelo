@@ -630,7 +630,7 @@ export async function runHomebrewVfsImageBuilder(
   }
 
   if (options.lazyLayerOut && options.lazyLayerDescriptor) {
-    const lazyBase = loadLazyLayerBaseVfs(
+    const lazyBase = await loadLazyLayerBaseVfs(
       options.lazyLayerBaseImage!,
       options.lazyLayerBasePackageSource!,
       plan.kandeloAbi,
@@ -1543,16 +1543,16 @@ async function createFs(
   };
 }
 
-function loadLazyLayerBaseVfs(
+async function loadLazyLayerBaseVfs(
   path: string,
   packageSourcePath: string,
   expectedAbi: number,
   expectedArch: HomebrewBottleArch,
-): {
+): Promise<{
   fs: MemoryFileSystem;
   image: { sha256: string; bytes: number };
   source: ReturnType<typeof parseHomebrewLazyLayerBasePackageSource>;
-} {
+}> {
   const image = new Uint8Array(readFileSync(path));
   const source = parseHomebrewLazyLayerBasePackageSource(
     readJsonFile(packageSourcePath),
@@ -1573,6 +1573,9 @@ function loadLazyLayerBaseVfs(
     );
   }
   const fs = MemoryFileSystem.fromImagePreservingCapacity(image);
+  // WHY: metadata and collision checks below influence bottle fetches and
+  // output publication, so an imported v3 base must be trusted first.
+  await fs.verifyImportedLazyAtomicGroupSeals();
   const metadata = fs.getImageMetadata();
   if (metadata?.kernelAbi !== expectedAbi) {
     throw new Error(

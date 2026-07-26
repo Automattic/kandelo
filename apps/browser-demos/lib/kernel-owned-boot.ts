@@ -106,7 +106,7 @@ export function createEmptyBuildFs(maxByteLength = 64 * 1024 * 1024): MemoryFile
  */
 export async function createBuildFsWithEtc(maxByteLength = 64 * 1024 * 1024): Promise<MemoryFileSystem> {
   const buildFs = createEmptyBuildFs(maxByteLength);
-  overlayEtcFromRootfs(buildFs, await fetchRootfsBytes());
+  await overlayEtcFromRootfs(buildFs, await fetchRootfsBytes());
   return buildFs;
 }
 
