@@ -51,6 +51,45 @@ rustc -vV | awk '/^host/ {print $2}'
 `scripts/ci-run-test-suite.sh` does not currently expose an `abi` suite; run
 `bash scripts/check-abi-version.sh` separately for ABI-adjacent changes.
 
+## Preparing host vitest fixtures
+
+The host vitest gate (`cd host && npx vitest run`) needs two build artifacts
+that its own `globalSetup` does not produce:
+
+- `host/wasm/rootfs.vfs` — mounted by the getpwent and node-host-mounts tests.
+- `local-binaries/programs/wasm64/hello64.wasm` — loaded by the wasm64 tests.
+
+Tests that cannot find these fixtures `skipIf(...)` themselves, so a run can
+report green while silently skipping rootfs and wasm64 coverage. In a fresh
+(e.g. Homebrew package) worktree, prepare them deterministically inside the
+dev shell with:
+
+```bash
+bash scripts/dev-shell.sh bash scripts/prepare-vitest-fixtures.sh
+```
+
+This bootstrap:
+
+- preflights the required tools and fails with an explicit MISSING-TOOL
+  message — kept distinct from a release-cache miss — when the SDK
+  cross-toolchain is absent. The usual cause is running outside
+  `scripts/dev-shell.sh`, where `wasm32posix-cc`/`wasm-opt` are not on PATH
+  and even the Rust host linker is unavailable (the old failure surfaced as a
+  wall of `tool 'clang' not found` linker errors);
+- classifies each rootfs input package as a release-cache HIT (a published
+  archive was fetched and validated) or MISS (a source build is required
+  because the archive is absent or its `cache_key_sha` drifted from the
+  current recipe), so forced source builds are named and expected rather than
+  an ambiguous silent fallback;
+- builds the wasm32/wasm64 sysroots, the kernel, the wasm64 `hello64`
+  fixture, and `host/wasm/rootfs.vfs`, skipping any that already exist;
+- writes passed/failed/skipped outcome lists under
+  `test-runs/vitest-fixtures/outcome-lists/` (override with `--result-dir`).
+
+Use `--classify-only` for a fast "is my environment ready, and what will
+source-build?" pre-check that runs the preflight and release-cache
+classification without building any fixtures.
+
 The table names primary evidence, not a universal checklist. Choose the suites
 that support the claim you will make, broaden coverage when a change crosses
 contract boundaries, and report anything relevant that was not run.
