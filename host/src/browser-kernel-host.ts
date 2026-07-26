@@ -22,8 +22,6 @@ import type {
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 
 export type { HttpRequest, HttpResponse };
-import kernelWasmUrl from "@kernel-wasm?url";
-import rootfsVfsUrl from "@rootfs-vfs?url";
 import workerEntryUrl from "./worker-entry-browser.ts?worker&url";
 import kernelWorkerEntryUrl from "./browser-kernel-worker-entry.ts?worker&url";
 import { DEFAULT_MAX_PAGES } from "./constants";
@@ -147,6 +145,21 @@ export interface BrowserKernelOwnedImageInitOptions {
   closedLazyAssets?: readonly ClosedLazyAsset[];
 }
 
+async function fetchDefaultBrowserKernelArtifact(
+  kind: "kernelWasm" | "rootfsVfs",
+): Promise<ArrayBuffer> {
+  // WHY: explicit-byte consumers, including trust-boundary tests and embedded
+  // hosts, must not require the demo build's default kernel/rootfs artifacts.
+  // Keep their Vite URL imports behind the branch that actually requests a
+  // default while preserving the normal product-build path.
+  const { browserKernelDefaultArtifactUrls } = await import(
+    "./browser-kernel-default-artifacts"
+  );
+  return fetch(browserKernelDefaultArtifactUrls[kind]).then((response) =>
+    response.arrayBuffer()
+  );
+}
+
 export class BrowserKernel {
   private kernelWorkerHandle!: Worker;
   private workerStarted = false;
@@ -248,10 +261,9 @@ export class BrowserKernel {
     const [wasmBytes, vfsImage] = await Promise.all([
       options.kernelWasm
         ? Promise.resolve(options.kernelWasm)
-        : fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
+        : fetchDefaultBrowserKernelArtifact("kernelWasm"),
       options.vfsImage === "default"
-        ? fetch(rootfsVfsUrl)
-            .then((r) => r.arrayBuffer())
+        ? fetchDefaultBrowserKernelArtifact("rootfsVfs")
             .then((b) => new Uint8Array(b))
         : Promise.resolve(options.vfsImage),
     ]);
@@ -282,7 +294,7 @@ export class BrowserKernel {
     }
     const wasmBytes = options.kernelWasm
       ? options.kernelWasm
-      : await fetch(kernelWasmUrl).then((response) => response.arrayBuffer());
+      : await fetchDefaultBrowserKernelArtifact("kernelWasm");
     await this.bootWorker({
       kernelWasmBytes: wasmBytes,
       vfsImage: new Uint8Array(options.vfsImage),

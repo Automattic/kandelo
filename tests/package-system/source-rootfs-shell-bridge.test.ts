@@ -42,6 +42,10 @@ import {
 } from "../../apps/browser-demos/playwright-server-policy";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..");
+const bridgePackageRoot = join(
+  repoRoot,
+  "homebrew/source-rootfs-shell-package",
+);
 const roots: string[] = [];
 const MiB = 1024 * 1024;
 const ROOTFS_LAZY_IDS = new Set([
@@ -228,15 +232,15 @@ describe("source-rootfs shell bridge", () => {
 
   it("declares a closed source-package build graph with no bottle or network input", () => {
     const manifest = readFileSync(
-      join(repoRoot, "packages/registry/shell/package.toml"),
+      join(bridgePackageRoot, "package.toml"),
       "utf8",
     );
     const buildToml = readFileSync(
-      join(repoRoot, "packages/registry/shell/build.toml"),
+      join(bridgePackageRoot, "build.toml"),
       "utf8",
     );
     const wrapper = readFileSync(
-      join(repoRoot, "packages/registry/shell/build-shell.sh"),
+      join(bridgePackageRoot, "build-source-rootfs-shell.sh"),
       "utf8",
     );
     const composer = readFileSync(
@@ -267,12 +271,12 @@ describe("source-rootfs shell bridge", () => {
       '  "nethack-browser-bundle@3.6.7",',
     ]);
     expect(manifest.match(/^name = "[^"]+"$/gm)).toEqual([
-      'name = "shell"',
+      'name = "source-rootfs-shell"',
       'name = "shell"',
       'name = "node"',
     ]);
     expect(buildToml).toMatch(/^commit\s*=\s*"UNPUBLISHED"$/m);
-    expect(buildToml).toMatch(/^revision\s*=\s*21$/m);
+    expect(buildToml).toMatch(/^revision\s*=\s*1$/m);
     expect(buildToml).not.toContain("[[git_inputs]]");
     for (const input of [
       "homebrew/source-rootfs-shell-default.json",
@@ -522,7 +526,7 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
     );
     execFileSync(
       "/bin/bash",
-      [join(repoRoot, "packages/registry/shell/build-shell.sh")],
+      [join(bridgePackageRoot, "build-source-rootfs-shell.sh")],
       {
         cwd: repoRoot,
         env: {

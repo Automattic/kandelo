@@ -1,0 +1,39 @@
+script_path = "homebrew/source-rootfs-shell-package/build-source-rootfs-shell.sh"
+inputs = [
+  "homebrew/source-rootfs-shell-package/build-source-rootfs-shell.sh",
+  "homebrew/source-rootfs-shell-default.json",
+  "homebrew/source-rootfs-shell-dependencies.json",
+  "homebrew/main-shell-demo.json",
+  "scripts/source-rootfs-shell-dependency-contract.mjs",
+  "images/vfs/scripts/build-source-rootfs-shell-image.ts",
+  "images/vfs/scripts/shell-vfs-build.ts",
+  "images/vfs/scripts/shell-lazy-archives.ts",
+  "images/vfs/lib/init/shell-binaries.ts",
+  "images/vfs/scripts/vfs-image-helpers.ts",
+  "package.json",
+  "package-lock.json",
+  "host/src/constants.ts",
+  "host/src/binary-resolver.ts",
+  "host/src/generated/abi.ts",
+  "host/src/homebrew-bottle-relocation.ts",
+  "host/src/pathconf.ts",
+  "host/src/statfs.ts",
+  "host/src/types.ts",
+  "host/src/vfs/deferred-tree-limits.ts",
+  "host/src/vfs/hardlink-graph.ts",
+  "host/src/vfs/image-helpers.ts",
+  "host/src/vfs/memory-fs.ts",
+  "host/src/vfs/sharedfs-vendor.ts",
+  "host/src/vfs/tar.ts",
+  "host/src/vfs/types.ts",
+  "host/src/vfs/zip.ts",
+  "web-libs/kandelo-session/src/shell-config.ts",
+  "web-libs/kandelo-session/src/demo-config.ts",
+  "web-libs/kandelo-session/src/vfs-capacity.ts",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

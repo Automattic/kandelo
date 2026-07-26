@@ -2011,19 +2011,26 @@ JSON in each image builder.
 
 ### Temporary Exact-Main Source Bridge
 
-During the ABI 42 activation window, the published `shell` package must not
-consume bottles built from a pull-request checkout and then call them
-main-built merely because that checkout later became an ancestor of `main`.
-Reachability is useful review evidence, but it is not producer provenance.
+During the ABI 42 activation window, required CI must not consume bottles built
+from a pull-request checkout and then call them main-built merely because that
+checkout later became an ancestor of `main`. Reachability is useful review
+evidence, but it is not producer provenance.
 
-The current shell revision therefore has one declarative direct dependency
-contract in `homebrew/source-rootfs-shell-dependencies.json`; the package
-manifest, wrapper, composer, and CI checker consume or validate that same
-contract rather than maintaining parallel package lists. Its build script
-consumes only resolver-owned dependency directories. The package resolver may
-download each dependency's checksum-pinned upstream source through the normal
-verified-source path, but the image composer has no tap, OCI, bottle-registry,
-binary-mirror, or ambient network fallback.
+The canonical `packages/registry/shell` recipe is already the strict,
+bottle-backed product package. The provisional source lane instead stages the
+distinct `homebrew/source-rootfs-shell-package` recipe. It lives outside the
+published registry so it cannot silently replace the product package, and its
+package name is `source-rootfs-shell` so archive inspection can prove which
+recipe ran.
+
+That bridge has one declarative direct dependency contract in
+`homebrew/source-rootfs-shell-dependencies.json`; its package manifest,
+wrapper, composer, and CI checker consume or validate that same contract
+rather than maintaining parallel package lists. Its build script consumes only
+resolver-owned dependency directories. The package resolver may download each
+dependency's checksum-pinned upstream source through the normal verified-source
+path, but the image composer has no tap, OCI, bottle-registry, binary-mirror,
+or ambient network fallback.
 
 The composer eagerly replaces the complete `/bin/bash` and `/usr/bin/bash`
 lazy hardlink identity with the exact resolved Bash bytes because every shell
@@ -2044,18 +2051,21 @@ JSON direct-dependency contract determine the exact closure without another
 documentation-maintained list. This closure rule does not imply that every
 unrelated registry recipe has already been migrated.
 
-This is activation scaffolding, not the Homebrew endpoint. After the producer
+This is activation scaffolding, not the Homebrew endpoint. After producer
 changes are on the default branch, rebuild every final bottle from a job whose
-actual Kandelo checkout is that exact default-branch `main` SHA, publish those
-new identities, and switch `shell` back to the strict bottle closure below.
-The pull-request/rehearsal bottles remain test evidence only.
+actual Kandelo checkout is that exact default-branch `main` SHA and publish
+those new identities. The pull-request/rehearsal bottles remain test evidence
+only. The canonical shell stays on the strict bottle closure throughout; only
+the provisional CI lane uses the source bridge.
 
 The required `.github/workflows/homebrew-main-shell-ci.yml` gate follows the
 same activation boundary. While `SHELL_ACTIVATION_MODE` is `source-rootfs`, it
-uses an empty index and fresh cache to force-source-build every buildable node
-in the exact current shell closure. It installs that exact output and boots it
-in both Node and Chromium; the old tap lock remains only in a dormant `bottles`
-branch. That provisional lock is not the final `TF`: the dormant branch also
+explicitly stages `homebrew/source-rootfs-shell-package`, uses an empty index
+and fresh cache, and force-source-builds every buildable node in the exact
+current shell closure. It inspects the resulting archive for the distinct
+`source-rootfs-shell` identity, installs that exact output, and boots it in
+both Node and Chromium. This provisional lane does not relax or skip the
+canonical shell's lazy-artifact lock. The separate `bottles` branch also
 requires an anonymous live tap-main match and therefore cannot turn a reachable
 historical commit into cutover evidence. Unrelated browser-gallery roots can
 still use the separately verified package generation, but a before/after
@@ -2120,14 +2130,14 @@ scripts/dev-shell.sh bash scripts/build-homebrew-main-shell-closure.sh \
   --work-dir /path/to/new-exclusive-work-dir
 ```
 
-The strict composer remains directly testable with the exact tap checkout
-pinned in the migration lock, and the dedicated candidate workflow retains its
-post-build Node and Chromium gates. It is not the active shell package recipe
-during the source bridge above. When exact-main bottles are available, the
-package cutover must restore the tap commit to `build.toml`, run every
-composition scratch file and downloaded bottle in a resolver-owned workspace,
-publish only the declared `shell.vfs.zst`, and retain the post-archive
-exact-byte runtime gates. There is no legacy ambient registry-composition
+The strict composer is the active canonical shell package recipe and remains
+directly testable with the exact tap checkout pinned in the migration lock.
+The dedicated candidate workflow retains its post-build Node and Chromium
+gates. The source bridge above is a separate non-published validation package;
+it does not mutate the canonical recipe or its tap binding. Composition scratch
+files and downloaded bottles stay in a resolver-owned workspace, only the
+declared `shell.vfs.zst` is published, and the post-archive exact-byte runtime
+gates remain required. There is no legacy ambient registry-composition
 fallback.
 
 The wider browser application also imports registry packages outside the

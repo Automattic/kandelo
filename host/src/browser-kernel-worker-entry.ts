@@ -34,10 +34,7 @@ import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-a
 import { resolveLazyUrl } from "./vfs/lazy-url";
 import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
-import {
-  DEFAULT_MOUNT_SPEC,
-  resolveForBrowser,
-} from "./vfs/default-mounts";
+import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
 import { patchWasmForThread } from "./worker-main";
@@ -612,7 +609,8 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // Create VFS — prefer pre-built image bytes (kernel-owned FS); fall back
   // to the legacy shared-SAB path so the existing demos keep working.
   //
-  // vfsImage path (Task 4.4): apply DEFAULT_MOUNT_SPEC via resolveForBrowser,
+  // vfsImage path (Task 4.4): apply DEFAULT_MOUNT_SPEC through the shared
+  // browser-worker VFS-init boundary,
   // giving 8 mounts — / from the image, plus scratch memfs at /tmp, /var/tmp,
   // /var/log, /var/run, /home/user, /root, /srv. Layer /dev/shm and /dev on
   // top: those are browser-platform internals (POSIX semaphore SAB,
@@ -627,7 +625,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // apply DEFAULT_MOUNT_SPEC (/ from the image + scratch mounts for /tmp,
   // /var/*, /home/user, /root, /srv). /etc is part of the image, baked in by
   // the demo (see apps/browser-demos/lib/kernel-owned-boot.ts).
-  const specMounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, msg.vfsImage);
+  const specMounts = await restoreBrowserKernelInitMounts(msg.vfsImage);
   const rootMount = specMounts.find((m) => m.mountPoint === "/");
   if (!rootMount) throw new Error("DEFAULT_MOUNT_SPEC missing / mount");
   memfs = rootMount.backend as MemoryFileSystem;

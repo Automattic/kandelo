@@ -7,11 +7,11 @@ import {
 } from "../../../host/test/lazy-atomic-seal-fixture";
 
 /**
- * Exercise the real BrowserKernel worker boundary without requiring a built
- * kernel artifact. A forged rootfs must fail before the intentionally invalid
- * kernel bytes are compiled.
+ * Exercise the real BrowserKernel → worker init path with explicit bytes.
+ * BrowserKernel loads its default artifacts only when a caller requests them,
+ * so this boundary proof does not depend on unrelated demo binaries.
  */
-export async function rejectForgedImageBeforeBrowserReady(
+export async function rejectForgedImageAtBrowserWorkerInit(
   forgery: LazyAtomicSealForgery,
 ): Promise<{ error: string; workerStartedAfterRejection: boolean }> {
   const fs = MemoryFileSystem.create(new SharedArrayBuffer(2 * 1024 * 1024));
@@ -22,17 +22,15 @@ export async function rejectForgedImageBeforeBrowserReady(
   });
   const image = forgeLazyAtomicSeal(await fs.saveImage(), forgery);
   const kernel = new BrowserKernel({ kernelOwnedFs: true });
-  let error = "";
   try {
     await kernel.initFromImage({
       kernelWasm: new ArrayBuffer(0),
       vfsImage: image,
     });
-    throw new Error("forged VFS image unexpectedly reached browser ready");
+    throw new Error("forged VFS image unexpectedly passed browser worker init");
   } catch (cause) {
-    error = cause instanceof Error ? cause.message : String(cause);
     return {
-      error,
+      error: cause instanceof Error ? cause.message : String(cause),
       workerStartedAfterRejection: (
         kernel as unknown as { workerStarted: boolean }
       ).workerStarted,

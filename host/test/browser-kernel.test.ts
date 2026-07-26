@@ -16,6 +16,17 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
 import type { HttpResponse } from "../src/networking";
 
+const defaultArtifactModuleState = vi.hoisted(() => ({ loads: 0 }));
+vi.mock("../src/browser-kernel-default-artifacts", () => {
+  defaultArtifactModuleState.loads += 1;
+  return {
+    browserKernelDefaultArtifactUrls: {
+      kernelWasm: "stub://default-kernel",
+      rootfsVfs: "stub://default-rootfs",
+    },
+  };
+});
+
 // ---------------------------------------------------------------------------
 // Mock Worker
 // ---------------------------------------------------------------------------
@@ -111,6 +122,80 @@ describe("BrowserKernel", () => {
     // worker until boot()/initFromImage().
     new BrowserKernel({ kernelOwnedFs: true });
     expect(MockWorker.instances).toHaveLength(0);
+  });
+
+  it("does not load or fetch default artifacts when both byte arrays are explicit", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const kernelWasm = new Uint8Array([1, 2, 3]).buffer;
+    const vfsImage = new Uint8Array([4, 5, 6]);
+    const initPromise = kernel.initFromImage({ kernelWasm, vfsImage });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    const init = worker.lastMessage("init");
+    expect(defaultArtifactModuleState.loads).toBe(0);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(new Uint8Array(init.kernelWasmBytes)).toEqual(
+      new Uint8Array(kernelWasm),
+    );
+    expect(init.vfsImage).toBe(vfsImage);
+
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
+  });
+
+  it("fetches the bundled kernel only when kernel bytes are omitted", async () => {
+    const defaultKernel = new Uint8Array([7, 8, 9]);
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      expect(url).toBe("stub://default-kernel");
+      return {
+        arrayBuffer: async () => defaultKernel.buffer.slice(0),
+      };
+    }));
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const vfsImage = new Uint8Array([10, 11]);
+    const initPromise = kernel.initFromImage({ vfsImage });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    const init = worker.lastMessage("init");
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(new Uint8Array(init.kernelWasmBytes)).toEqual(defaultKernel);
+    expect(init.vfsImage).toBe(vfsImage);
+
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
+  });
+
+  it("fetches the bundled rootfs only for the default VFS sentinel", async () => {
+    const defaultRootfs = new Uint8Array([12, 13, 14]);
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      expect(url).toBe("stub://default-rootfs");
+      return {
+        arrayBuffer: async () => defaultRootfs.buffer.slice(0),
+      };
+    }));
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const kernelWasm = new Uint8Array([15, 16]).buffer;
+    const initPromise = kernel.initFromImage({
+      kernelWasm,
+      vfsImage: "default",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    const init = worker.lastMessage("init");
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(new Uint8Array(init.kernelWasmBytes)).toEqual(
+      new Uint8Array(kernelWasm),
+    );
+    expect(init.vfsImage).toEqual(defaultRootfs);
+
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
   });
 
   it("snapshots and transfers an exhaustive lazy-asset binding to the worker", async () => {

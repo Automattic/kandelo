@@ -23,6 +23,7 @@ on:
       - "homebrew/test/**"
       - "homebrew/source-rootfs-shell-default.json"
       - "homebrew/source-rootfs-shell-dependencies.json"
+      - "homebrew/source-rootfs-shell-package/**"
       - "host/package-lock.json"
       - "host/package.json"
       - "host/src/**"
@@ -91,6 +92,7 @@ on:
       - "homebrew/test/**"
       - "homebrew/source-rootfs-shell-default.json"
       - "homebrew/source-rootfs-shell-dependencies.json"
+      - "homebrew/source-rootfs-shell-package/**"
       - "host/package-lock.json"
       - "host/package.json"
       - "host/src/**"
@@ -469,8 +471,11 @@ jobs:
             # WHY: no pull-request, rehearsal, or old-main artifact may satisfy
             # any buildable node in this activation closure. Immutable source
             # archives remain reusable only after their declared hash verifies.
+            # The bridge is a distinct non-published package so selecting this
+            # lane can never execute the canonical bottle-backed shell recipe.
             "$xtask" archive-stage \
-              --package packages/registry/shell \
+              --package homebrew/source-rootfs-shell-package \
+              --registry packages/registry \
               --arch wasm32 \
               --binaries-dir local-binaries \
               --out "$archive_root" \
@@ -492,9 +497,13 @@ jobs:
             archive_commit=$(sed -nE \
               "s/^commit[[:space:]]*=[[:space:]]*\"([0-9a-f]{40})\"$/\1/p" \
               "$manifest")
+            archive_package=$(sed -nE \
+              "s/^name[[:space:]]*=[[:space:]]*\"([^\"]+)\"$/\1/p" \
+              "$manifest" | head -n 1)
             # WHY: CLI intent is not provenance evidence. Fail on the staged
             # bytes if a legacy build.toml repository or UNPUBLISHED marker
             # survived archive-stage instead of the exact event checkout.
+            [ "$archive_package" = source-rootfs-shell ]
             [ "$archive_repository" = \
               "https://github.com/${GITHUB_REPOSITORY}" ]
             [ "$archive_commit" = "$GITHUB_SHA" ]
