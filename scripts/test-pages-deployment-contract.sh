@@ -106,9 +106,24 @@ expect_mutation_rejected \
   's/bash scripts\/dev-shell\.sh bash scripts\/build-musl\.sh/echo skipped-source-sysroot/'
 
 expect_mutation_rejected \
+  "missing exact-main cache root" \
+  "must establish one exact-main package-cache root" \
+  's/^          echo "WASM_POSIX_BINARY_CACHE_ROOT=\$source_cache" >> "\$GITHUB_ENV"\n//m'
+
+expect_mutation_rejected \
+  "cache root lost inside dev-shell" \
+  "browser preparation must retain the exact-main cache root inside dev-shell" \
+  's/^            "WASM_POSIX_BINARY_CACHE_ROOT=\$WASM_POSIX_BINARY_CACHE_ROOT" \\\n//m'
+
+expect_mutation_rejected \
   "sealed preview without Pages base" \
   "sealed Pages preview must boot with the same /kandelo/ base" \
   's/(      - name: Boot the sealed Pages shell product in Chromium\n        working-directory: apps\/browser-demos\n        env:\n)          VITE_BASE: \/kandelo\/\n/$1/'
+
+expect_mutation_rejected \
+  "sealed preview loses package cache root" \
+  "sealed Pages preview must boot with the same /kandelo/ base" \
+  's/(      - name: Boot the sealed Pages shell product in Chromium[\s\S]*?)^              "WASM_POSIX_BINARY_CACHE_ROOT=\$WASM_POSIX_BINARY_CACHE_ROOT" \\\n/$1/m'
 
 expect_mutation_rejected \
   "checkout of a different ref" \

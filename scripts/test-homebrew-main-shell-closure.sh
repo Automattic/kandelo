@@ -146,11 +146,17 @@ grep -Fq 'selected_url="$canonical_url"' <<<"$generation_block" ||
 grep -Fq 'echo "WASM_POSIX_BINARY_INDEX_URL=$selected_url" >> "$GITHUB_ENV"' \
   <<<"$generation_block" ||
   fail "main-shell CI must pass the selected generation through the resolver contract"
+grep -Fq 'binary_cache="$RUNNER_TEMP/homebrew-main-shell-exact-cache"' \
+  <<<"$generation_block" &&
+  grep -Fq 'echo "WASM_POSIX_BINARY_CACHE_ROOT=$binary_cache" >> "$GITHUB_ENV"' \
+    <<<"$generation_block" ||
+  fail "every activation mode must establish one package-cache trust root"
 grep -Fq 'echo "SOURCE_SHELL_BINARY_INDEX_URL=file://${empty_index}" >> "$GITHUB_ENV"' \
   <<<"$generation_block" &&
+  grep -Fq 'source_cache="$binary_cache"' <<<"$generation_block" &&
   grep -Fq 'echo "SOURCE_SHELL_BINARY_CACHE_ROOT=$source_cache" >> "$GITHUB_ENV"' \
     <<<"$generation_block" ||
-  fail "source activation must publish a closure-local empty index and fresh cache"
+  fail "source activation must publish one closure-local empty index and cache root"
 grep -Fq 'exit 0' <<<"$generation_block" &&
   fail "source activation must still select a normal generation for unrelated browser roots"
 grep -Fq 'GH_TOKEN:' <<<"$(sed -n \
@@ -395,12 +401,16 @@ grep -Fq 'apps/browser-demos/test-results' "$WORKFLOW" ||
 grep -Fq '${{ runner.temp }}/homebrew-main-shell-modeset-playwright.json' \
   "$WORKFLOW" ||
   fail "main-shell evidence must retain the isolated MODESET report"
-[ "$(grep -Fc 'bash ../../scripts/dev-shell.sh env \' "$WORKFLOW")" -eq 2 ] ||
+[ "$(grep -Fc 'bash ../../scripts/dev-shell.sh env \' \
+  <<<"$browser_smoke_workflow_block")" -eq 2 ] ||
   fail "shell and MODESET proofs must run in separate isolated browser processes"
 grep -Fq '"PLAYWRIGHT_JSON_OUTPUT_FILE=$shell_report"' "$WORKFLOW" ||
   fail "shell acceptance must have Playwright write JSON directly to its report file"
 grep -Fq '"PLAYWRIGHT_JSON_OUTPUT_FILE=$modeset_report"' "$WORKFLOW" ||
   fail "MODESET acceptance must have Playwright write JSON directly to its report file"
+grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT"' \
+  <<<"$browser_smoke_workflow_block" ||
+  fail "sealed Chromium previews must retain the approved cache root inside dev-shell"
 grep -Fq 'shell_spec=test/kandelo-source-rootfs-shell.spec.ts' "$WORKFLOW" &&
   grep -Fq 'shell_spec=test/kandelo-homebrew-main-shell.spec.ts' "$WORKFLOW" &&
   grep -Fq 'npx playwright test "$shell_spec" \' "$WORKFLOW" ||
@@ -434,6 +444,10 @@ browser_fetch_block="$(sed -n \
   "$WORKFLOW")"
 grep -Fq 'fetch_args=()' <<<"$browser_fetch_block" ||
   fail "browser support inputs must use the normal current-recipe resolver path"
+grep -Fq 'bash scripts/dev-shell.sh env \' <<<"$browser_fetch_block" &&
+  grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
+    <<<"$browser_fetch_block" ||
+  fail "browser package fetch must retain the approved cache root inside dev-shell"
 grep -Fq 'fetch_args=(--fetch-only)' <<<"$browser_fetch_block" &&
   fail "browser support inputs must source-build when the current recipe is newer than the public archive"
 grep -Fq 'WASM_POSIX_FETCH_SKIP_PKGS:' "$WORKFLOW" &&
@@ -463,6 +477,14 @@ grep -Fq 'sha256sum --check \' <<<"$browser_fetch_block" &&
   grep -Fq 'cmp "${{ steps.source_candidate.outputs.link_manifest }}" \' \
     <<<"$browser_fetch_block" ||
   fail "unrelated browser resolution must not replace exact-source shell closure bytes"
+
+browser_build_block="$(sed -n \
+  '/- name: Build the sealed browser product tree/,/- name: Boot the exact installed bytes in Node/p' \
+  "$WORKFLOW")"
+grep -Fq 'bash ../../scripts/dev-shell.sh env \' <<<"$browser_build_block" &&
+  grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
+    <<<"$browser_build_block" ||
+  fail "sealed Vite build must retain the approved cache root inside dev-shell"
 
 for package_workflow in \
   "$STAGING_WORKFLOW" \

@@ -153,12 +153,30 @@ grep -Fq 'bash scripts/dev-shell.sh bash scripts/build-musl.sh' <<<"$sysroot_blo
   grep -Fq 'test -f sysroot/lib/libc.a' <<<"$sysroot_block" ||
   fail "the Pages publisher must build and verify the current source-fallback sysroot"
 
+isolation_block="$(
+  step_block "$PAGES_WORKFLOW" "Isolate the exact-main source package closure"
+)"
+grep -Fq 'echo "WASM_POSIX_BINARY_CACHE_ROOT=$source_cache" >> "$GITHUB_ENV"' \
+  <<<"$isolation_block" ||
+  fail "the Pages publisher must establish one exact-main package-cache root"
+
+prepare_browser_block="$(
+  step_block "$PAGES_WORKFLOW" "Prepare browser demo assets"
+)"
+grep -Fq 'bash scripts/dev-shell.sh env \' <<<"$prepare_browser_block" &&
+  grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
+    <<<"$prepare_browser_block" ||
+  fail "browser preparation must retain the exact-main cache root inside dev-shell"
+
 sealed_boot_block="$(
   step_block "$PAGES_WORKFLOW" "Boot the sealed Pages shell product in Chromium"
 )"
 grep -Fq 'VITE_BASE: /kandelo/' <<<"$sealed_boot_block" &&
   grep -Fq 'KANDELO_PLAYWRIGHT_SERVE_DIST: "1"' <<<"$sealed_boot_block" &&
   grep -Fq 'KANDELO_TEST_BASE_URL: http://127.0.0.1:5401/kandelo/' \
+    <<<"$sealed_boot_block" &&
+  grep -Fq 'bash ../../scripts/dev-shell.sh env \' <<<"$sealed_boot_block" &&
+  grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
     <<<"$sealed_boot_block" ||
   fail "the sealed Pages preview must boot with the same /kandelo/ base as the published build"
 

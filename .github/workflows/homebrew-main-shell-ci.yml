@@ -239,11 +239,15 @@ jobs:
           abi=$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
             crates/shared/src/lib.rs)
           [[ "$abi" =~ ^[0-9]+$ ]]
+          binary_cache="$RUNNER_TEMP/homebrew-main-shell-exact-cache"
+          test ! -e "$binary_cache"
+          # WHY: every activation mode needs one cache/trust root across the
+          # package producer, fetcher, Vite build, and sealed preview.
+          echo "WASM_POSIX_BINARY_CACHE_ROOT=$binary_cache" >> "$GITHUB_ENV"
           if [ "$SHELL_ACTIVATION_MODE" = source-rootfs ]; then
             empty_index="$RUNNER_TEMP/source-rootfs-empty-index.toml"
-            source_cache="$RUNNER_TEMP/source-rootfs-exact-cache"
+            source_cache="$binary_cache"
             test ! -e "$empty_index"
-            test ! -e "$source_cache"
             cat >"$empty_index" <<EOF
           abi_version = $abi
           generated_at = "1970-01-01T00:00:00Z"
@@ -506,7 +510,9 @@ jobs:
           for package in "${browser_input_packages[@]}"; do
             fetch_args+=(--package "$package")
           done
-          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh "${fetch_args[@]}"
+          bash scripts/dev-shell.sh env \
+            "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
+            bash scripts/fetch-binaries.sh "${fetch_args[@]}"
           if [ "$SHELL_ACTIVATION_MODE" = source-rootfs ]; then
             # WHY: unrelated browser roots may use the verified staging or
             # canonical index, but they must never replace the exact-source
@@ -621,7 +627,10 @@ jobs:
               "VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT=/homebrew-main-shell-bottles"
             )
           fi
-          bash ../../scripts/dev-shell.sh env "${build_env[@]}" npm run build
+          bash ../../scripts/dev-shell.sh env \
+            "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
+            "${build_env[@]}" \
+            npm run build
           test -f dist/index.html
           test -f dist/shell.vfs.zst
 
@@ -679,6 +688,7 @@ jobs:
           playwright_env=(
             "KANDELO_MAIN_SHELL_SHA256=$KANDELO_MAIN_SHELL_SHA256"
             "KANDELO_PLAYWRIGHT_SERVE_DIST=1"
+            "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT"
           )
           case "$SHELL_ACTIVATION_MODE" in
             source-rootfs)

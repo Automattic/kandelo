@@ -160,7 +160,12 @@ jobs:
           echo "WASM_POSIX_BINARY_CACHE_ROOT=$source_cache" >> "$GITHUB_ENV"
 
       - name: Prepare browser demo assets
-        run: bash scripts/dev-shell.sh ./run.sh prepare-browser --allow-stale
+        run: |
+          # WHY: dev-shell deliberately starts from a clean environment. Pass
+          # the one approved package-cache root through to its resolver.
+          bash scripts/dev-shell.sh env \
+            "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
+            ./run.sh prepare-browser --allow-stale
 
       - name: Build browser demos for GitHub Pages
         working-directory: apps/browser-demos
@@ -202,7 +207,9 @@ jobs:
           shell_sha=$(sha256sum dist/shell.vfs.zst | awk '{print $1}')
           [[ "$shell_sha" =~ ^[0-9a-f]{64}$ ]]
           KANDELO_MAIN_SHELL_SHA256="$shell_sha" \
-            bash ../../scripts/dev-shell.sh npx playwright test \
+            bash ../../scripts/dev-shell.sh env \
+              "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
+              npx playwright test \
               test/kandelo-source-rootfs-shell.spec.ts \
               --project=chromium
 
