@@ -31,6 +31,10 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
+BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/browser-memory64-example-fixtures.sh"
 
 # Activate the worktree-local SDK toolchain (no global npm link required).
 # Build scripts also source this directly; sourcing here makes the tools
@@ -342,12 +346,20 @@ has_sysroot64() { [ -f "$REPO_ROOT/sysroot64/lib/libc.a" ]; }
 has_sdk()       { command -v wasm32posix-cc &>/dev/null; }
 has_host()      { [ -d "$REPO_ROOT/host/dist" ]; }
 has_rootfs()    { [ -f "$REPO_ROOT/host/wasm/rootfs.vfs" ]; }
+has_browser_memory64_example_fixtures() {
+    local output
+    local outputs
+    outputs="$(browser_memory64_fixture_outputs)" || return 1
+    while IFS= read -r output; do
+        [ -f "$REPO_ROOT/$output" ] || return 1
+    done <<< "$outputs"
+}
 has_programs() {
     has_resolvable programs/fork-exec.wasm &&
     has_resolvable programs/fbtest.wasm &&
     [ -f "$REPO_ROOT/examples/pthread_channel_reuse_test.wasm" ] &&
     [ -f "$REPO_ROOT/examples/wait_lifecycle_test.wasm" ] &&
-    [ -f "$REPO_ROOT/examples/wait_lifecycle_test.wasm64.wasm" ] &&
+    has_browser_memory64_example_fixtures &&
     [ -f "$REPO_ROOT/benchmarks/wasm/pipe-throughput.wasm" ] &&
     [ -f "$REPO_ROOT/benchmarks/wasm/file-throughput.wasm" ] &&
     [ -f "$REPO_ROOT/benchmarks/wasm/syscall-latency.wasm" ] &&

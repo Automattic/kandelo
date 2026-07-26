@@ -60,6 +60,7 @@ package_publish_flow_changed_files() {
 binary_materialization_changed_files() {
   grep -E \
     -e '^tools/xtask/src/(index_toml|remote_fetch|util)\.rs$' \
+    -e '^scripts/browser-memory64-example-fixtures\.(sh|txt)$' \
     -e '^scripts/(activate-local-shell-build-override|fetch-binaries|install-local-binary|install-local-shell-artifact|materialize-ci-publication-blockers|materialize-pr-overlays|materialize-resolver-binaries|pack-ci-test-workspace|resolve-binary|stage-portable-resolver-binaries|test-wasm-artifact-guards|validate-publication-blocker-report|wasm-artifact-guards)\.sh$' \
     -e '^scripts/(build-resolve-binary-bundle|test-resolve-binary-bundle)\.sh$' \
     -e '^scripts/resolve-binary\.(ts|bundle\.mjs|bundle\.LICENSES\.txt)$' \
@@ -73,7 +74,9 @@ kernel_runtime_changed_files() {
   grep -E \
     -e '^(crates|libc|tests/libc|tests/posix|tests/sortix|host|programs|abi)/' \
     -e '^(Cargo\.(lock|toml)|flake\.(nix|lock)|rust-toolchain\.toml|\.gitmodules)$' \
-    -e '^scripts/(build-musl|build-libcxx|build-programs|check-abi-version|check-libcxx-toolchain-version|ci-run-test-suite|dev-shell|run-libc-tests|run-posix-tests|run-sortix-tests)\.sh$' \
+    -e '^scripts/browser-memory64-example-fixtures\.(sh|txt)$' \
+    -e '^scripts/check-browser-memory64-example-fixtures\.ts$' \
+    -e '^scripts/(build-musl|build-libcxx|build-programs|check-abi-version|check-libcxx-toolchain-version|ci-check-browser-assets|ci-run-test-suite|dev-shell|run-libc-tests|run-posix-tests|run-sortix-tests)\.sh$' \
     -e '^examples/run-example\.ts$' \
     || true
 }

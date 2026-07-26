@@ -10,6 +10,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/libc/glue"
+BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
+BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/browser-memory64-example-fixtures.sh"
 # Per-arch output dirs match the layout the resolver's
 # `place_binaries_symlinks` writes:
 # binaries/programs/<arch>/ and local-binaries/programs/<arch>/.
@@ -409,28 +413,20 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
             -o "$OUT_DIR_64/${local_name}.wasm"
     done
 
-    # Keep the memory64 wait-lifecycle browser fixture on the same owned build
-    # path as its wasm32 counterpart. The owning Vitest builds this fixture on
-    # demand, but browser-only and packed CI workspaces must not depend on a
-    # prior test runner having left a generated artifact behind. This fixture
-    # deliberately uses posix_spawn rather than fork because fork rewind
-    # instrumentation is currently a wasm32 artifact contract.
-    wait_lifecycle_src="$REPO_ROOT/examples/wait_lifecycle_test.c"
-    if [ -f "$wait_lifecycle_src" ]; then
-        echo "  Compiling wait_lifecycle_test (wasm64)..."
-        "$CC" "${CFLAGS64[@]}" "$wait_lifecycle_src" "${LINK_FLAGS64[@]}" \
-            -o "$REPO_ROOT/examples/wait_lifecycle_test.wasm64.wasm"
-    fi
-
-    # Terminal-attribute marshalling is pointer-width sensitive in the host,
-    # so browser-only and packed CI workspaces need the same memory64 guest
-    # fixture that the owning Vitest can build on demand.
-    terminal_attributes_src="$REPO_ROOT/examples/terminal_attributes_api_test.c"
-    if [ -f "$terminal_attributes_src" ]; then
-        echo "  Compiling terminal_attributes_api_test (wasm64)..."
-        "$CC" "${CFLAGS64[@]}" "$terminal_attributes_src" "${LINK_FLAGS64[@]}" \
-            -o "$REPO_ROOT/examples/terminal_attributes_api_test.wasm64.wasm"
-    fi
+    # WHY: owning Vitests can build these on demand, but browser-only and
+    # packed CI workspaces cannot depend on a prior test runner leaving ambient
+    # artifacts behind. Every browser-owned example comes from the one
+    # contract-checked manifest. Their memory64 execution paths do not require
+    # fork rewind instrumentation; the wait fixture selects posix_spawn because
+    # that instrumentation is currently a wasm32 artifact contract.
+    memory64_example_sources="$(browser_memory64_fixture_sources)"
+    while IFS= read -r source_rel; do
+        source_path="$REPO_ROOT/$source_rel"
+        output_path="$REPO_ROOT/${source_rel%.c}.wasm64.wasm"
+        echo "  Compiling $(basename "$source_rel" .c) (wasm64)..."
+        "$CC" "${CFLAGS64[@]}" "$source_path" "${LINK_FLAGS64[@]}" \
+            -o "$output_path"
+    done <<< "$memory64_example_sources"
 
     # Fork continuation instrumentation is currently a wasm32 artifact
     # contract. Still cover the compiler's architecture-independent SjLj /
