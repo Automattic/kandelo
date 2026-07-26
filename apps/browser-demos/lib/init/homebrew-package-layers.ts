@@ -3,7 +3,10 @@ import {
   type ComposedHomebrewRuntimeLayers,
   type HomebrewRuntimeLayerReference,
 } from "../../../../host/src/homebrew-runtime-layer-consumer";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import {
+  restoreVerifiedVfsImage,
+  restoreVerifiedVfsImagePreservingCapacity,
+} from "../../../../host/src/vfs/load-image";
 import {
   validateBootDescriptor,
 } from "../../../../web-libs/kandelo-session/src/boot-descriptor";
@@ -72,8 +75,8 @@ export async function composeBootDescriptorVfs(
   const references = homebrewRuntimeLayerReferences(options.descriptor);
   if (references.length === 0) {
     const fs = options.maxByteLength === undefined
-      ? MemoryFileSystem.fromImagePreservingCapacity(options.baseImageBytes)
-      : MemoryFileSystem.fromImage(options.baseImageBytes, {
+      ? await restoreVerifiedVfsImagePreservingCapacity(options.baseImageBytes)
+      : await restoreVerifiedVfsImage(options.baseImageBytes, {
         maxByteLength: options.maxByteLength,
       });
     return { fs, layers: [], references };

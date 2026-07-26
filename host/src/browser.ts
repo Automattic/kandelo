@@ -37,6 +37,11 @@ export type {
 } from "./worker-protocol";
 export { VirtualPlatformIO } from "./vfs/vfs";
 export { MemoryFileSystem } from "./vfs/memory-fs";
+export {
+  loadVfsImage,
+  restoreVerifiedVfsImage,
+  restoreVerifiedVfsImagePreservingCapacity,
+} from "./vfs/load-image";
 export type {
   LazyDownloadEvent,
   LazyDownloadKind,
@@ -52,6 +57,7 @@ export type {
   LazyTreeRegistrationEntry,
   SerializedLazyTree,
   VfsImageCapacity,
+  VfsImageRestoreOptions,
 } from "./vfs/memory-fs";
 export {
   encodeHomebrewBottleMirrorCollectionIdentity,

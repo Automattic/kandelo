@@ -348,78 +348,86 @@ export class BrowserKernel {
       }
     };
 
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const cleanup = () => {
-        this.kernelWorkerHandle.removeEventListener("message", readyHandler);
-        this.kernelWorkerHandle.removeEventListener("error", errorHandler);
-        this.kernelWorkerHandle.removeEventListener("messageerror", messageErrorHandler);
-      };
-      const settleResolve = () => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        resolve();
-      };
-      const settleReject = (err: Error) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(err);
-      };
-      const readyHandler = (e: MessageEvent) => {
-        if (e.data?.type === "ready") {
-          settleResolve();
-        } else if (e.data?.type === "init_error") {
-          settleReject(new Error(`Kernel worker init failed: ${e.data.error}`));
-        }
-      };
-      const errorHandler = (e: ErrorEvent) => {
-        settleReject(new Error(`Kernel worker error during init: ${e.message}`));
-      };
-      const messageErrorHandler = () => {
-        settleReject(new Error("Kernel worker failed to deserialize an init message"));
-      };
-      this.kernelWorkerHandle.addEventListener("message", readyHandler);
-      this.kernelWorkerHandle.addEventListener("error", errorHandler);
-      this.kernelWorkerHandle.addEventListener("messageerror", messageErrorHandler);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const cleanup = () => {
+          this.kernelWorkerHandle.removeEventListener("message", readyHandler);
+          this.kernelWorkerHandle.removeEventListener("error", errorHandler);
+          this.kernelWorkerHandle.removeEventListener("messageerror", messageErrorHandler);
+        };
+        const settleResolve = () => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve();
+        };
+        const settleReject = (err: Error) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(err);
+        };
+        const readyHandler = (e: MessageEvent) => {
+          if (e.data?.type === "ready") {
+            settleResolve();
+          } else if (e.data?.type === "init_error") {
+            settleReject(new Error(`Kernel worker init failed: ${e.data.error}`));
+          }
+        };
+        const errorHandler = (e: ErrorEvent) => {
+          settleReject(new Error(`Kernel worker error during init: ${e.message}`));
+        };
+        const messageErrorHandler = () => {
+          settleReject(new Error("Kernel worker failed to deserialize an init message"));
+        };
+        this.kernelWorkerHandle.addEventListener("message", readyHandler);
+        this.kernelWorkerHandle.addEventListener("error", errorHandler);
+        this.kernelWorkerHandle.addEventListener("messageerror", messageErrorHandler);
 
-      // Slice so the caller's ArrayBuffer isn't detached (allows restart)
-      const transferBuf = opts.kernelWasmBytes.slice(0);
-      const initMsg: MainToKernelMessage = {
-        type: "init",
-        kernelWasmBytes: transferBuf,
-        vfsImage: opts.vfsImage,
-        lazyUrlBase: opts.lazyUrlBase,
-        closedLazyAssets,
-        shmSab: this.shmSab,
-        workerEntryUrl,
-        config: {
-          maxWorkers: this.options.maxWorkers,
-          maxMemoryPages: this.maxPages,
-          defaultThreadSlots: this.options.defaultThreadSlots,
-          env: this.options.env,
-          enableSyscallLog: this.options.enableSyscallLog,
-          syscallLogPtrWidth: this.options.syscallLogPtrWidth,
-          dnsAliases: this.options.dnsAliases,
-          corsProxyUrl: this.options.corsProxyUrl,
-        },
-      };
-      const transfer: Transferable[] = [transferBuf];
-      if (opts.takeVfsImageOwnership) {
-        // WHY: this API is used at durable reboot boundaries where the main
-        // thread has already hashed the image and will not reuse it. Transfer
-        // prevents a second 512 MiB structured-clone allocation while the
-        // worker restores its own kernel-owned filesystem.
-        transfer.push(opts.vfsImage.buffer as ArrayBuffer);
-      }
-      for (const asset of closedLazyAssets ?? []) {
-        // snapshotClosedLazyAssets always allocates one ordinary ArrayBuffer
-        // per binding, so transferring it cannot detach caller-owned bytes.
-        transfer.push(asset.bytes.buffer as ArrayBuffer);
-      }
-      this.kernelWorkerHandle.postMessage(initMsg, transfer);
-    });
+        // Slice so the caller's ArrayBuffer isn't detached (allows restart)
+        const transferBuf = opts.kernelWasmBytes.slice(0);
+        const initMsg: MainToKernelMessage = {
+          type: "init",
+          kernelWasmBytes: transferBuf,
+          vfsImage: opts.vfsImage,
+          lazyUrlBase: opts.lazyUrlBase,
+          closedLazyAssets,
+          shmSab: this.shmSab,
+          workerEntryUrl,
+          config: {
+            maxWorkers: this.options.maxWorkers,
+            maxMemoryPages: this.maxPages,
+            defaultThreadSlots: this.options.defaultThreadSlots,
+            env: this.options.env,
+            enableSyscallLog: this.options.enableSyscallLog,
+            syscallLogPtrWidth: this.options.syscallLogPtrWidth,
+            dnsAliases: this.options.dnsAliases,
+            corsProxyUrl: this.options.corsProxyUrl,
+          },
+        };
+        const transfer: Transferable[] = [transferBuf];
+        if (opts.takeVfsImageOwnership) {
+          // WHY: this API is used at durable reboot boundaries where the main
+          // thread has already hashed the image and will not reuse it. Transfer
+          // prevents a second 512 MiB structured-clone allocation while the
+          // worker restores its own kernel-owned filesystem.
+          transfer.push(opts.vfsImage.buffer as ArrayBuffer);
+        }
+        for (const asset of closedLazyAssets ?? []) {
+          // snapshotClosedLazyAssets always allocates one ordinary ArrayBuffer
+          // per binding, so transferring it cannot detach caller-owned bytes.
+          transfer.push(asset.bytes.buffer as ArrayBuffer);
+        }
+        this.kernelWorkerHandle.postMessage(initMsg, transfer);
+      });
+    } catch (error) {
+      // WHY: an init_error leaves no usable kernel, but the browser worker
+      // remains alive unless the host explicitly releases it. Mirror Node:
+      // failed initialization owns and tears down its half-created worker.
+      await this.destroy();
+      throw error;
+    }
     this.initialized = true;
   }
 

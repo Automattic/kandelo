@@ -117,8 +117,10 @@ case "$suite" in
                     --project=chromium
             run_timed 10m "Run cross-browser contract smoke suite" \
                 npx playwright test \
+                    test/boot-current-boundary.spec.ts \
                     test/coi.spec.ts \
                     test/package-deferred-tree-browser.spec.ts \
+                    test/vfs-import-seal-boundary.spec.ts \
                     test/wasm-trap-signal.spec.ts \
                     --project=chromium --project=firefox --project=webkit
         )

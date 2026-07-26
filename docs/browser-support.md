@@ -303,7 +303,14 @@ Browser demos use pre-built **VFS images** — binary snapshots of a `MemoryFile
 ### How it works
 
 1. **Build time**: A TypeScript build script creates a `MemoryFileSystem`, writes files/dirs/symlinks into it, and calls `saveImage()` to produce a zstd-compressed `.vfs.zst` file. Empty regions of the SharedFS allocator compress to nearly nothing, so a 32 MB filesystem with a few MB of real content typically ships as a 1–3 MB download. If the image should grow or report a larger `df` capacity at runtime, build it with `MemoryFileSystem.create(sab, permittedMaxBytes)` so the filesystem metadata is sized for that capacity.
-2. **Runtime**: The demo page fetches the `.vfs.zst` file, calls `MemoryFileSystem.fromImage(imageBytes, { maxByteLength })` (which auto-detects zstd magic and decompresses transparently), and passes the resulting filesystem to `BrowserKernel({ memfs })`. `maxByteLength` makes the restored `SharedArrayBuffer` growable; it does not raise the filesystem maximum beyond the image's superblock limit.
+2. **Runtime**: The demo page fetches the `.vfs.zst` file and awaits
+   `restoreVerifiedVfsImage(imageBytes, { maxByteLength })`. The helper
+   auto-detects zstd magic, restores the filesystem, and authenticates every
+   imported atomic lazy-tree seal before returning. Only then may the consumer
+   inspect, mutate, rewrite, or pass the filesystem to `BrowserKernel({
+   memfs })`. `maxByteLength` makes the restored `SharedArrayBuffer` growable;
+   it does not raise the filesystem maximum beyond the image's superblock
+   limit.
 
 The canonical Homebrew shell has a 512 MiB filesystem ceiling. Products that
 copy that shell and add their own application tree use a separate 768 MiB
@@ -337,12 +344,14 @@ consuming a `vfs` override.
 
 ```typescript
 // Typical demo pattern
+import { restoreVerifiedVfsImage } from "@host/vfs/load-image";
+
 const [kernelBuf, vfsImageBuf] = await Promise.all([
   fetch(kernelUrl).then(r => r.arrayBuffer()),
   fetch(vfsImageUrl).then(r => r.arrayBuffer()),
 ]);
 
-const memfs = MemoryFileSystem.fromImage(
+const memfs = await restoreVerifiedVfsImage(
   new Uint8Array(vfsImageBuf),
   { maxByteLength: 512 * 1024 * 1024 },
 );
@@ -735,7 +744,9 @@ candidate is not selected again until exact-main bottles exist.
 1. Create `images/vfs/scripts/build-<name>-vfs-image.ts` — import helpers from `vfs-image-helpers.ts`
 2. Create `images/vfs/scripts/build-<name>-vfs-image.sh` — shell wrapper that runs the TypeScript script
 3. If the image is consumed by Kandelo, write `/etc/kandelo/demo.json` via `writeKandeloDemoConfig()`
-4. If the image is consumed by the Kandelo UI, expose it through a gallery manifest, preset, or direct `vfs` URL so the UI can fetch the `.vfs.zst` image and use `MemoryFileSystem.fromImage()` (which auto-decompresses)
+4. If the image is consumed by the Kandelo UI, expose it through a gallery
+   manifest, preset, or direct `vfs` URL so the UI can fetch the `.vfs.zst`
+   image and await `restoreVerifiedVfsImage()` before inspecting or booting it
 5. Add a build target in `run.sh`
 
 The shared helpers in `vfs-image-helpers.ts` provide:

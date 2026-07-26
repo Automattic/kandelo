@@ -554,7 +554,7 @@ async function resolveExecutableForLaunch(
  * else. The session dir is created once per boot and torn down by
  * `cleanupSessionDir` on `destroy`.
  */
-function buildVirtualPlatformIO(
+async function buildVirtualPlatformIO(
   rootfsImage: ArrayBuffer,
   extraMounts?: Array<{
     mountPoint: string;
@@ -565,14 +565,23 @@ function buildVirtualPlatformIO(
   }>,
   rootfsLazyUrlBase?: InitMessage["rootfsLazyUrlBase"],
   rootfsLazyAssets?: InitMessage["rootfsLazyAssets"],
-): VirtualPlatformIO {
+): Promise<VirtualPlatformIO> {
   const bootSessionDir = mkdtempSync(join(tmpdir(), "wasm-posix-session-"));
   sessionDir = bootSessionDir;
-  const specMounts = resolveForNode(
-    DEFAULT_MOUNT_SPEC,
-    new Uint8Array(rootfsImage),
-    bootSessionDir,
-  );
+  let specMounts: MountConfig[];
+  try {
+    specMounts = await resolveForNode(
+      DEFAULT_MOUNT_SPEC,
+      new Uint8Array(rootfsImage),
+      bootSessionDir,
+    );
+  } catch (error) {
+    // WHY: imported-seal rejection occurs before scratch setup, but the Node
+    // worker already owns its per-boot session directory. Release that
+    // ownership before surfacing the failed initialization.
+    cleanupSessionDir();
+    throw error;
+  }
   const shmSab = new SharedArrayBuffer(16 * 1024 * 1024);
   const shmfs = MemoryFileSystem.create(shmSab);
   shmfs.chmod("/", 0o1777);
@@ -642,7 +651,7 @@ async function handleInit(msg: InitMessage) {
   workerAdapter = new NodeWorkerAdapter();
 
   const io: PlatformIO = msg.rootfsImage
-    ? buildVirtualPlatformIO(
+    ? await buildVirtualPlatformIO(
       msg.rootfsImage,
       msg.extraMounts,
       msg.rootfsLazyUrlBase,
@@ -1741,7 +1750,14 @@ async function handleReadVfsFile(
 port.on("message", (msg: MainToKernelMessage) => {
   switch (msg.type) {
     case "init":
-      handleInit(msg);
+      void handleInit(msg).catch((error) => {
+        cleanupSessionDir();
+        initReady = false;
+        post({
+          type: "init_error",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
       break;
     case "spawn":
       void handleSpawn(msg);

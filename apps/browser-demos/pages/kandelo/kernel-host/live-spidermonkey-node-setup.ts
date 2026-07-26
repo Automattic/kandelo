@@ -11,6 +11,7 @@ import {
 import { stageSpiderMonkeyNpmRuntime } from "../../../../../images/vfs/lib/init/spidermonkey-npm-runtime";
 import { ABI_VERSION } from "../../../../../host/src/generated/abi";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
+import { restoreVerifiedVfsImage } from "../../../../../host/src/vfs/load-image";
 import {
   finalizeKernelOwnedImage,
   settleWebKitReclaim,
@@ -340,7 +341,9 @@ async function boot(
       declaredVfsMaxByteLength(nodeVfsMetadata),
       "node-vfs.vfs.zst",
     );
-    const buildFs = MemoryFileSystem.fromImage(nodeVfsImage, {
+    // WHY: URL rewriting and runtime staging mutate the restored image.
+    // Authenticate imported lazy-tree ownership before either can run.
+    const buildFs = await restoreVerifiedVfsImage(nodeVfsImage, {
       maxByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
     });
     rewriteShellLazyFileUrls(buildFs);

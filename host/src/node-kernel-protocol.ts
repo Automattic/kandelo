@@ -249,6 +249,12 @@ export interface ReadyMessage {
   type: "ready";
 }
 
+/** Initialization failed before the worker could publish a usable kernel. */
+export interface InitErrorMessage {
+  type: "init_error";
+  error: string;
+}
+
 export interface ResponseMessage {
   type: "response";
   requestId: number;
@@ -304,6 +310,7 @@ export type ProcEventMessage =
 
 export type KernelToMainMessage =
   | ReadyMessage
+  | InitErrorMessage
   | ResponseMessage
   | ExitMessage
   | StdoutMessage

@@ -88,6 +88,18 @@ function withUmask<T>(mask: number, fn: () => T): T {
   }
 }
 
+async function withUmaskAsync<T>(
+  mask: number,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const previous = process.umask(mask);
+  try {
+    return await fn();
+  } finally {
+    process.umask(previous);
+  }
+}
+
 const backendFactories: Array<[string, () => BackendCase]> = [
   [
     "HostFileSystem scratch backend",
@@ -484,7 +496,9 @@ describe("VirtualPlatformIO on Node host mounts", () => {
   it("applies every default Node scratch mount mode virtually", async () => {
     const sessionDir = makeTempRoot("wasm-posix-default-node-vfs-only-");
     const image = await buildEmptyImage();
-    const mounts = withUmask(0, () => resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir));
+    const mounts = await withUmaskAsync(0, () =>
+      resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir)
+    );
 
     for (const spec of DEFAULT_MOUNT_SPEC) {
       if (spec.source !== "scratch" || spec.mode === undefined) continue;

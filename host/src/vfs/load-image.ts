@@ -12,11 +12,38 @@
  * zstd magic — callers do not need to pre-decompress.
  */
 
-import { MemoryFileSystem, type VfsImageOptions } from "./memory-fs";
+import {
+  MemoryFileSystem,
+  type VfsImageRestoreOptions,
+} from "./memory-fs";
+
+/**
+ * Restore an image and authenticate every imported atomic lazy-tree seal
+ * before returning a filesystem that callers can inspect or mutate.
+ */
+export async function restoreVerifiedVfsImage(
+  image: Uint8Array,
+  options?: VfsImageRestoreOptions,
+): Promise<MemoryFileSystem> {
+  const fs = MemoryFileSystem.fromImage(image, options);
+  await fs.verifyImportedLazyAtomicGroupSeals();
+  return fs;
+}
+
+/**
+ * Capacity-preserving peer of {@link restoreVerifiedVfsImage}.
+ */
+export async function restoreVerifiedVfsImagePreservingCapacity(
+  image: Uint8Array,
+): Promise<MemoryFileSystem> {
+  const fs = MemoryFileSystem.fromImagePreservingCapacity(image);
+  await fs.verifyImportedLazyAtomicGroupSeals();
+  return fs;
+}
 
 export async function loadVfsImage(
   url: string,
-  options?: VfsImageOptions & { maxByteLength?: number },
+  options?: VfsImageRestoreOptions,
 ): Promise<MemoryFileSystem> {
   const response = await fetch(url);
   if (!response.ok) {
@@ -25,5 +52,8 @@ export async function loadVfsImage(
     );
   }
   const buf = new Uint8Array(await response.arrayBuffer());
-  return MemoryFileSystem.fromImage(buf, options);
+  // WHY: a URL is an imported trust boundary. Do not hand callers a
+  // filesystem whose sealed lazy metadata can be inspected or mutated before
+  // its cryptographic cohort claims have been authenticated.
+  return restoreVerifiedVfsImage(buf, options);
 }

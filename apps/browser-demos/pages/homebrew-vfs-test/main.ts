@@ -2,6 +2,10 @@ import { BrowserKernel } from "@host/browser-kernel-host";
 import { ABI_VERSION } from "@host/generated/abi";
 import { MemoryFileSystem } from "@host/vfs/memory-fs";
 import {
+  restoreVerifiedVfsImage,
+  restoreVerifiedVfsImagePreservingCapacity,
+} from "@host/vfs/load-image";
+import {
   finalizeKernelOwnedImage,
   settleWebKitReclaim,
   trackTransientImageBuffer,
@@ -171,8 +175,11 @@ function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
   }
 }
 
-function extractExecutable(image: Uint8Array, path: string): Uint8Array {
-  const fs = MemoryFileSystem.fromImagePreservingCapacity(image);
+async function extractExecutable(
+  image: Uint8Array,
+  path: string,
+): Promise<Uint8Array> {
+  const fs = await restoreVerifiedVfsImagePreservingCapacity(image);
   try {
     return readVfsFile(fs, path);
   } finally {
@@ -300,7 +307,7 @@ async function init(): Promise<void> {
       ABI_VERSION,
       "Homebrew Brewfile VFS image",
     );
-    const executableBytes = extractExecutable(
+    const executableBytes = await extractExecutable(
       new Uint8Array(imageBytes),
       request.executable,
     );
@@ -603,7 +610,7 @@ async function init(): Promise<void> {
       );
     }
     const firstExportBuffer = firstExport.buffer;
-    let parsed: MemoryFileSystem | null = MemoryFileSystem.fromImage(
+    let parsed: MemoryFileSystem | null = await restoreVerifiedVfsImage(
       firstExport,
     );
     const lazyEntries = parsed.exportLazyEntries().map((entry) => ({

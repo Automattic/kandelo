@@ -837,6 +837,91 @@ describe("format-neutral deferred trees", () => {
     }
   });
 
+  it("publishes archive registrations only after their imported seals verify", async () => {
+    const fixture = tarTreeFixture("first-use", "atomic-registration");
+    const source = createFs();
+    await registerAtomicTrees(source, "atomic:registration", [fixture]);
+    const image = await source.saveImage();
+    const serialized = source.exportLazyArchiveEntries();
+    const bareImage = replaceLazyArchiveMetadata(image, []);
+
+    const accepted = MemoryFileSystem.fromImage(bareImage);
+    await accepted.importVerifiedLazyArchiveEntries(
+      structuredClone(serialized),
+    );
+    expect(accepted.exportLazyArchiveEntries()).toEqual(serialized);
+
+    for (const field of ["descriptorSha256", "cohortSha256"] as const) {
+      const forged = structuredClone(serialized);
+      forged[0]!.activation!.atomicGroup![field] = "f".repeat(64);
+      const rejected = MemoryFileSystem.fromImage(bareImage);
+
+      await expect(
+        rejected.importVerifiedLazyArchiveEntries(forged),
+      ).rejects.toThrow(
+        field === "descriptorSha256"
+          ? /activation member .* changed after sealing/
+          : /activation group .* differs from its seal/,
+      );
+      // WHY: a failed async trust check must not leave its metadata visible in
+      // the live filesystem even though the registration request failed.
+      expect(rejected.exportLazyArchiveEntries()).toEqual([]);
+    }
+  });
+
+  it("requires the async verified importer for sealed registrations", async () => {
+    const fixture = tarTreeFixture("first-use", "atomic-safe-import-api");
+    const source = createFs();
+    await registerAtomicTrees(source, "atomic:safe-import-api", [fixture]);
+    const serialized = source.exportLazyArchiveEntries();
+    const peer = MemoryFileSystem.fromExisting(source.sharedBuffer);
+
+    expect(() =>
+      peer.importLazyArchiveEntries(structuredClone(serialized))
+    ).toThrow(/require importVerifiedLazyArchiveEntries/);
+    expect(peer.exportLazyArchiveEntries()).toEqual([]);
+
+    await expect(
+      peer.importVerifiedLazyArchiveEntries(structuredClone(serialized)),
+    ).resolves.toBeUndefined();
+    expect(peer.exportLazyArchiveEntries()).toEqual(serialized);
+  });
+
+  it("snapshots caller-owned registrations before async seal verification", async () => {
+    const fixture = tarTreeFixture("first-use", "atomic-import-snapshot");
+    const source = createFs();
+    await registerAtomicTrees(source, "atomic:import-snapshot", [fixture]);
+    const image = await source.saveImage();
+    const serialized = source.exportLazyArchiveEntries();
+    const target = MemoryFileSystem.fromImage(
+      replaceLazyArchiveMetadata(image, []),
+    );
+    const callerOwned = structuredClone(serialized);
+    const digestGate = gatedSha256Digests();
+    try {
+      const importing = target.importVerifiedLazyArchiveEntries(callerOwned);
+      void importing.catch(() => {});
+      await vi.waitFor(() => expect(digestGate.spy).toHaveBeenCalledTimes(1));
+
+      // WHY: the caller still owns this object while SHA-256 is awaiting.
+      // Publishing this replacement would authenticate one value and install
+      // another after the trust boundary completes.
+      callerOwned[0]!.activation!.capabilities[0] =
+        "test:caller-owned-mutation";
+      expect(callerOwned).not.toEqual(serialized);
+
+      digestGate.release();
+      await expect(importing).resolves.toBeUndefined();
+      expect(target.exportLazyArchiveEntries()).toEqual(serialized);
+      expect(
+        target.exportLazyArchiveEntries()[0]!.activation!.capabilities,
+      ).not.toContain("test:caller-owned-mutation");
+    } finally {
+      digestGate.release();
+      digestGate.spy.mockRestore();
+    }
+  });
+
   it("keeps explicit seal verification idempotent for a locally sealed cohort", async () => {
     const fixture = tarTreeFixture("first-use", "atomic-local-seal");
     const fs = createFs();

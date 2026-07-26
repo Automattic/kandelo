@@ -116,7 +116,8 @@ let rootfsBytesPromise: Promise<Uint8Array> | null = null;
  * Fetch the canonical rootfs image bytes (cached). Demos that previously
  * started from an empty FS and relied on the legacy `kernel.init()` overlay of
  * `/etc/{passwd,group,hosts,services}` from rootfs.vfs should seed their
- * build-time FS from these bytes instead (`MemoryFileSystem.fromImage`).
+ * build-time FS through `overlayEtcFromRootfs`, which authenticates imported
+ * atomic seals before reading the source image.
  */
 export function fetchRootfsBytes(): Promise<Uint8Array> {
   if (!rootfsBytesPromise) {

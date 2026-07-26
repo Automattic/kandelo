@@ -27,9 +27,9 @@ export interface InitMessage {
   kernelWasmBytes: ArrayBuffer;
   /**
    * Pre-built VFS image bytes from MemoryFileSystem.saveImage(). The worker
-   * constructs and OWNS its own memfs via MemoryFileSystem.fromImage() — no
-   * VFS SAB is shared with the main thread. Demos that need `/etc/{passwd,
-   * group,hosts,services}` bake it into the image (see
+   * restores and authenticates an owned memfs through the verified image-mount
+   * resolver — no VFS SAB is shared with the main thread. Demos that need
+   * `/etc/{passwd,group,hosts,services}` bake it into the image (see
    * apps/browser-demos/lib/kernel-owned-boot.ts::overlayEtcFromRootfs).
    */
   vfsImage: Uint8Array;

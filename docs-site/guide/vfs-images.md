@@ -11,7 +11,11 @@ Kandelo accepts:
 - `.vfs` - uncompressed image bytes;
 - `.vfs.zst` - zstd-compressed image bytes.
 
-`MemoryFileSystem.fromImage()` auto-detects zstd-compressed images.
+`restoreVerifiedVfsImage()` auto-detects zstd-compressed images and
+authenticates imported atomic lazy-tree seals before returning a filesystem.
+Use the low-level synchronous `MemoryFileSystem.fromImage()` parser only for
+private format work that does not inspect, mutate, or boot imported state
+before separately completing that verification.
 
 ## When To Use A VFS Image
 

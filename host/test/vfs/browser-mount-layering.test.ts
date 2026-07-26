@@ -51,15 +51,15 @@ async function buildFixtureImage(): Promise<Uint8Array> {
 }
 
 /** Mirrors the construction in kernel-worker-entry.ts handleInit. */
-function buildBrowserMounts(image: Uint8Array): {
+async function buildBrowserMounts(image: Uint8Array): Promise<{
   mounts: MountConfig[];
   io: VirtualPlatformIO;
   rootfs: MemoryFileSystem;
-} {
+}> {
   const shmSab = new SharedArrayBuffer(64 * 1024);
   const shmfs = MemoryFileSystem.create(shmSab);
   const devfs = new DeviceFileSystem();
-  const specMounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
+  const specMounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
     scratchSabBytes: TINY_SCRATCH,
   });
   const rootMount = specMounts.find((m) => m.mountPoint === "/");
@@ -83,8 +83,8 @@ describe("browser host mount layering", () => {
     image = await buildFixtureImage();
   });
 
-  it("produces 10 mounts: 8 from spec + /dev/shm + /dev", () => {
-    const { mounts } = buildBrowserMounts(image);
+  it("produces 10 mounts: 8 from spec + /dev/shm + /dev", async () => {
+    const { mounts } = await buildBrowserMounts(image);
     expect(mounts).toHaveLength(DEFAULT_MOUNT_SPEC.length + 2);
     const points = mounts.map((m) => m.mountPoint).sort();
     expect(points).toEqual(
@@ -103,16 +103,16 @@ describe("browser host mount layering", () => {
     );
   });
 
-  it("/dev/shm wins over /dev via longest-prefix match", () => {
-    const { io } = buildBrowserMounts(image);
+  it("/dev/shm wins over /dev via longest-prefix match", async () => {
+    const { io } = await buildBrowserMounts(image);
     const shm = io.resolve("/dev/shm/sem.x");
     expect(shm.relativePath).toBe("/sem.x");
     const dev = io.resolve("/dev/null");
     expect(dev.relativePath).toBe("/null");
   });
 
-  it("rootfs files reach the image backend through the router", () => {
-    const { io, rootfs } = buildBrowserMounts(image);
+  it("rootfs files reach the image backend through the router", async () => {
+    const { io, rootfs } = await buildBrowserMounts(image);
     const fd = io.open("/etc/services", O_RDONLY, 0);
     const buf = new Uint8Array(64);
     const n = io.read(fd, buf, null, buf.length);
@@ -126,8 +126,8 @@ describe("browser host mount layering", () => {
     expect(new TextDecoder().decode(direct.subarray(0, m))).toContain("80/tcp");
   });
 
-  it("scratch /tmp roundtrips a write that does not appear under /", () => {
-    const { io } = buildBrowserMounts(image);
+  it("scratch /tmp roundtrips a write that does not appear under /", async () => {
+    const { io } = await buildBrowserMounts(image);
     const data = new TextEncoder().encode("ephemeral");
     const fd = io.open("/tmp/note", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
     io.write(fd, data, null, data.length);
@@ -141,12 +141,12 @@ describe("browser host mount layering", () => {
 
     // The image-backed / mount must not see /tmp/note.
     expect(() => io.stat("/tmp/note")).not.toThrow();
-    const { rootfs } = buildBrowserMounts(image);
+    const { rootfs } = await buildBrowserMounts(image);
     expect(() => rootfs.stat("/tmp/note")).toThrow();
   });
 
-  it("/home/user and /root resolve to distinct scratch backends", () => {
-    const { io } = buildBrowserMounts(image);
+  it("/home/user and /root resolve to distinct scratch backends", async () => {
+    const { io } = await buildBrowserMounts(image);
     const data = new TextEncoder().encode("h");
     const fdH = io.open("/home/user/x", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
     io.write(fdH, data, null, data.length);

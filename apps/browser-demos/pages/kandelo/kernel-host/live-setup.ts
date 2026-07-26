@@ -666,11 +666,14 @@ export async function createLiveHost(
     const seq = ++bootSeq;
     const previousKernel = currentKernel;
     currentKernel = null;
+    // WHY: detach while this activation still owns the previous generation.
+    // If we await teardown first, a newer boot can attach its kernel and this
+    // superseded activation would detach that newer generation on resume.
+    h.detachKernel();
     if (previousKernel) {
       await previousKernel.destroy().catch(() => {});
       await settleAfterBootResourcesReleased();
     }
-    h.detachKernel();
     const bootStartedAt = performance.now();
 
     try {

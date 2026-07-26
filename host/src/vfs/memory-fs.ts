@@ -338,6 +338,15 @@ export interface VfsImageOptions {
   normalizeTimestampsMs?: number;
 }
 
+/** Options for restoring a VFS image into a live filesystem. */
+export interface VfsImageRestoreOptions {
+  /**
+   * Permit the restored SharedArrayBuffer to grow up to this byte length,
+   * without raising the filesystem ceiling encoded in the image superblock.
+   */
+  maxByteLength?: number;
+}
+
 /** Versioned, image-level declarations carried outside the guest file tree. */
 export interface VfsImageMetadata {
   version: 1;
@@ -3522,7 +3531,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       lazyArchiveEntries,
       false,
       true,
-      true,
+      "verified",
     );
 
     const initialByteLength = Math.min(
@@ -3581,7 +3590,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       })),
       false,
       true,
-      true,
+      "verified",
     );
 
     return target;
@@ -4331,14 +4340,44 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   /** Import lazy archive groups from another instance. Assumes stubs already exist. */
   importLazyArchiveEntries(serialized: SerializedLazyArchiveEntry[]): void {
-    this.importLazyArchiveEntriesInternal(serialized, false, true, false);
+    this.importLazyArchiveEntriesInternal(serialized, false, true, "reject");
+  }
+
+  /**
+   * Authenticate sealed archive metadata before publishing it into this live
+   * filesystem. The caller must keep the underlying namespace quiescent while
+   * this asynchronous trust check runs.
+   */
+  async importVerifiedLazyArchiveEntries(
+    serialized: SerializedLazyArchiveEntry[],
+  ): Promise<void> {
+    // Keep one exact value across the asynchronous hash boundary. The caller
+    // retains its input array and must not be able to swap in different claims
+    // after verification but before live publication.
+    const snapshot = structuredClone(serialized);
+    const current = this.exportLazyArchiveEntries();
+    const verifier = MemoryFileSystem.fromExisting(this.sharedBuffer);
+    // WHY: import into an isolated metadata view first. Verification is async;
+    // mutating this instance before it completes would leave forged groups
+    // visible even though the registration request reports failure.
+    verifier.importLazyArchiveEntriesInternal(
+      [...current, ...snapshot],
+      false,
+      true,
+      "pending",
+    );
+    await verifier.verifyImportedLazyAtomicGroupSeals();
+
+    // Re-run structural and live-namespace checks against the current state,
+    // then record that this exact serialized collection passed authentication.
+    this.importLazyArchiveEntriesInternal(snapshot, false, true, "verified");
   }
 
   private importLazyArchiveEntriesInternal(
     serializedValue: unknown,
     trustedLegacySnapshot: boolean,
     requireDiscriminator: boolean,
-    importedSealVerified = false,
+    sealedImportTrust: "reject" | "pending" | "verified",
   ): void {
     const serialized = requireLazyTreeArray(
       serializedValue,
@@ -4642,9 +4681,28 @@ export class MemoryFileSystem implements FileSystemBackend {
         );
       }
     }
+    if (
+      sealedImportTrust === "reject" &&
+      plannedGroups.some((group) => {
+        const membership = group.activation?.atomicGroup;
+        return membership !== undefined &&
+          isSealedLazyAtomicMembership(membership);
+      })
+    ) {
+      // WHY: this synchronous API cannot authenticate SHA-256 claims. Letting
+      // it publish sealed v3 metadata would make the unsafe path look trusted
+      // merely because the caller chose the older import method.
+      throw new Error(
+        "Sealed lazy archive registrations require " +
+          "importVerifiedLazyArchiveEntries()",
+      );
+    }
     this.lazyArchiveGroups.push(...plannedGroups);
     for (const group of plannedGroups) {
-      this.registerLazyAtomicGroupMembership(group, importedSealVerified);
+      this.registerLazyAtomicGroupMembership(
+        group,
+        sealedImportTrust === "verified",
+      );
     }
     for (const [key, group] of plannedInodes) {
       this.lazyArchiveInodes.set(key, group);
@@ -6377,8 +6435,13 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   /**
    * Restore an image with the growth ceiling recorded in its SharedFS
-   * superblock. Use fromImage() when a caller intentionally supplies a
-   * different runtime ceiling.
+   * superblock. This is the low-level synchronous parser; imported v3 atomic
+   * seals remain unverified. Before inspecting, mutating, or booting imported
+   * state, use `restoreVerifiedVfsImagePreservingCapacity()` or explicitly
+   * await `verifyImportedLazyAtomicGroupSeals()`.
+   *
+   * Use fromImage() when a caller intentionally supplies a different runtime
+   * ceiling.
    */
   static fromImagePreservingCapacity(image: Uint8Array): MemoryFileSystem {
     const parsed = parseImageHeader(image);
@@ -6397,13 +6460,19 @@ export class MemoryFileSystem implements FileSystemBackend {
    * Restore a MemoryFileSystem from a previously saved VFS image.
    * Allocates a new SharedArrayBuffer and populates it from the image.
    *
+   * This low-level synchronous parser cannot authenticate imported v3 atomic
+   * seals. Normal imported-image consumers should await
+   * `restoreVerifiedVfsImage()` instead; private format code must explicitly
+   * await `verifyImportedLazyAtomicGroupSeals()` before it inspects, mutates,
+   * or boots the restored filesystem.
+   *
    * When `maxByteLength` is specified, creates a growable SharedArrayBuffer
    * so the filesystem can expand beyond the image's original size, up to the
    * maximum already recorded in the image superblock.
    */
   static fromImage(
     image: Uint8Array,
-    options?: { maxByteLength?: number },
+    options?: VfsImageRestoreOptions,
   ): MemoryFileSystem {
     const parsed = parseImageHeader(image);
     return MemoryFileSystem.restoreParsedImage(parsed, options);
@@ -6411,7 +6480,7 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   private static restoreParsedImage(
     parsed: ParsedImageHeader,
-    options?: { maxByteLength?: number },
+    options?: VfsImageRestoreOptions,
   ): MemoryFileSystem {
     const image = parsed.image;
     const view = parsed.view;
@@ -6492,6 +6561,7 @@ export class MemoryFileSystem implements FileSystemBackend {
           entries,
           true,
           Boolean(flags & VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES),
+          "pending",
         );
       }
     }

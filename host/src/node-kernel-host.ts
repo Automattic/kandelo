@@ -206,57 +206,70 @@ export class NodeKernelHost {
       }
     });
 
-    // Send init and wait for ready
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const cleanup = () => {
-        this.worker.removeListener("message", readyHandler);
-        this.worker.removeListener("error", errorHandler);
-        this.worker.removeListener("exit", exitHandler);
-      };
-      const settle = (fn: () => void) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        fn();
-      };
-      const readyHandler = (msg: KernelToMainMessage) => {
-        if (msg.type === "ready") {
-          settle(resolve);
-        }
-      };
-      const errorHandler = (err: Error) => {
-        settle(() => reject(err));
-      };
-      const exitHandler = (code: number) => {
-        settle(() => reject(new Error(`kernel worker exited before ready (code ${code})`)));
-      };
-      this.worker.on("message", readyHandler);
-      this.worker.once("error", errorHandler);
-      this.worker.once("exit", exitHandler);
+    // Send init and wait for ready. A typed init_error is required here
+    // because an async handler rejection does not reliably terminate a worker.
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const cleanup = () => {
+          this.worker.removeListener("message", readyHandler);
+          this.worker.removeListener("error", errorHandler);
+          this.worker.removeListener("exit", exitHandler);
+        };
+        const settle = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          fn();
+        };
+        const readyHandler = (msg: KernelToMainMessage) => {
+          if (msg.type === "ready") {
+            settle(resolve);
+          } else if (msg.type === "init_error") {
+            settle(() =>
+              reject(new Error(`Kernel worker init failed: ${msg.error}`))
+            );
+          }
+        };
+        const errorHandler = (err: Error) => {
+          settle(() => reject(err));
+        };
+        const exitHandler = (code: number) => {
+          settle(() => reject(new Error(`kernel worker exited before ready (code ${code})`)));
+        };
+        this.worker.on("message", readyHandler);
+        this.worker.once("error", errorHandler);
+        this.worker.once("exit", exitHandler);
 
-      const initMsg: MainToKernelMessage = {
-        type: "init",
-        kernelWasmBytes: wasmBytes,
-        config: {
-          maxWorkers: this.options.maxWorkers ?? 4,
-          maxPages: this.options.maxPages,
-          defaultThreadSlots: this.options.defaultThreadSlots,
-          dataBufferSize: this.options.dataBufferSize ?? 65536,
-          useSharedMemory: true,
-        },
-        execPrograms: this.options.execPrograms,
-        rootfsImage: rootfsImage ?? undefined,
-        rootfsLazyUrlBase: this.options.rootfsLazyUrlBase,
-        rootfsLazyAssets,
-        extraMounts: this.options.extraMounts,
-        enableTcpNetwork: this.options.enableTcpNetwork,
-      };
-      const transfer = (rootfsLazyAssets ?? []).map(
-        (asset) => asset.bytes.buffer as ArrayBuffer,
-      );
-      this.worker.postMessage(initMsg, transfer);
-    });
+        const initMsg: MainToKernelMessage = {
+          type: "init",
+          kernelWasmBytes: wasmBytes,
+          config: {
+            maxWorkers: this.options.maxWorkers ?? 4,
+            maxPages: this.options.maxPages,
+            defaultThreadSlots: this.options.defaultThreadSlots,
+            dataBufferSize: this.options.dataBufferSize ?? 65536,
+            useSharedMemory: true,
+          },
+          execPrograms: this.options.execPrograms,
+          rootfsImage: rootfsImage ?? undefined,
+          rootfsLazyUrlBase: this.options.rootfsLazyUrlBase,
+          rootfsLazyAssets,
+          extraMounts: this.options.extraMounts,
+          enableTcpNetwork: this.options.enableTcpNetwork,
+        };
+        const transfer = (rootfsLazyAssets ?? []).map(
+          (asset) => asset.bytes.buffer as ArrayBuffer,
+        );
+        this.worker.postMessage(initMsg, transfer);
+      });
+    } catch (error) {
+      // WHY: a worker that rejected initialization owns no usable kernel and
+      // must not remain alive as a half-initialized hidden resource.
+      await this.worker.terminate().catch(() => {});
+      this.workerStarted = false;
+      throw error;
+    }
     this.initialized = true;
   }
 
@@ -642,8 +655,10 @@ export class NodeKernelHost {
   private handleWorkerMessage(msg: KernelToMainMessage): void {
     switch (msg.type) {
       case "ready":
+      case "init_error":
         // The temporary init listener resolves readiness. The permanent
-        // listener also receives the message, so account for it explicitly.
+        // listener also receives init terminal messages, so account for them
+        // explicitly rather than relying on implicit fall-through.
         break;
       case "response": {
         const pending = this.pendingRequests.get(msg.requestId);

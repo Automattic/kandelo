@@ -93,6 +93,7 @@ type LazyRegistrationMessage = Extract<
 let initReady = false;
 let initFailure: string | null = null;
 const pendingLazyRegistrationMessages: LazyRegistrationMessage[] = [];
+let lazyRegistrationTail: Promise<void> = Promise.resolve();
 const rootfsSnapshotGate = new RootfsSnapshotGate();
 
 // Process tracking
@@ -393,11 +394,11 @@ function reportWorkerProtocolError(message: string): void {
   });
 }
 
-function applyLazyRegistration(msg: LazyRegistrationMessage): void {
+async function applyLazyRegistration(msg: LazyRegistrationMessage): Promise<void> {
   if (msg.type === "register_lazy_files") {
     memfs.importLazyEntries(msg.entries);
   } else {
-    memfs.importLazyArchiveEntries(msg.entries);
+    await memfs.importVerifiedLazyArchiveEntries(msg.entries);
   }
   respondIfRequested(msg, true);
 }
@@ -409,14 +410,50 @@ function failPendingLazyRegistrations(error: string): void {
   }
 }
 
-function flushPendingLazyRegistrations(): void {
-  const pending = pendingLazyRegistrationMessages.splice(0);
-  for (const msg of pending) {
-    applyLazyRegistration(msg);
+function scheduleLazyRegistration(
+  msg: LazyRegistrationMessage,
+): Promise<void> {
+  // WHY: worker message handlers may overlap after an await. Serialize trust
+  // checks so two registrations cannot both authenticate against an obsolete
+  // view and then publish in a different order.
+  const scheduled = lazyRegistrationTail.then(async () => {
+    const releaseMutation = rootfsSnapshotGate.beginMutation(
+      "register lazy rootfs entries",
+    );
+    try {
+      await applyLazyRegistration(msg);
+    } finally {
+      releaseMutation();
+    }
+  });
+  lazyRegistrationTail = scheduled.catch(() => {});
+  return scheduled;
+}
+
+function reportLazyRegistrationFailure(
+  msg: LazyRegistrationMessage,
+  err: unknown,
+): void {
+  const error = formatError(err);
+  respondErrorIfRequested(msg, error);
+  reportWorkerProtocolError(`${msg.type} failed: ${error}`);
+}
+
+async function flushPendingLazyRegistrations(): Promise<void> {
+  // Keep init closed while draining. Messages delivered while a digest yields
+  // join this queue and must be authenticated before the worker reports ready.
+  while (pendingLazyRegistrationMessages.length !== 0) {
+    const msg = pendingLazyRegistrationMessages.shift()!;
+    try {
+      await scheduleLazyRegistration(msg);
+    } catch (err) {
+      reportLazyRegistrationFailure(msg, err);
+      throw err;
+    }
   }
 }
 
-function handleLazyRegistration(msg: LazyRegistrationMessage): void {
+async function handleLazyRegistration(msg: LazyRegistrationMessage): Promise<void> {
   if (initFailure) {
     respondErrorIfRequested(msg, initFailure);
     reportWorkerProtocolError(
@@ -428,18 +465,10 @@ function handleLazyRegistration(msg: LazyRegistrationMessage): void {
     pendingLazyRegistrationMessages.push(msg);
     return;
   }
-  let releaseMutation: (() => void) | undefined;
   try {
-    releaseMutation = rootfsSnapshotGate.beginMutation(
-      "register lazy rootfs entries",
-    );
-    applyLazyRegistration(msg);
+    await scheduleLazyRegistration(msg);
   } catch (err) {
-    const error = formatError(err);
-    respondErrorIfRequested(msg, error);
-    reportWorkerProtocolError(`${msg.type} failed: ${error}`);
-  } finally {
-    releaseMutation?.();
+    reportLazyRegistrationFailure(msg, err);
   }
 }
 
@@ -598,7 +627,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // apply DEFAULT_MOUNT_SPEC (/ from the image + scratch mounts for /tmp,
   // /var/*, /home/user, /root, /srv). /etc is part of the image, baked in by
   // the demo (see apps/browser-demos/lib/kernel-owned-boot.ts).
-  const specMounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, msg.vfsImage);
+  const specMounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, msg.vfsImage);
   const rootMount = specMounts.find((m) => m.mountPoint === "/");
   if (!rootMount) throw new Error("DEFAULT_MOUNT_SPEC missing / mount");
   memfs = rootMount.backend as MemoryFileSystem;
@@ -780,8 +809,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     resetBridgePendingRequests();
   }
 
+  await flushPendingLazyRegistrations();
+  // No await separates the final queue check from opening init, so a message
+  // cannot slip past both the pending queue and the serialized live path.
   initReady = true;
-  flushPendingLazyRegistrations();
 
   post({ type: "ready" });
 }
@@ -2293,8 +2324,8 @@ sw.onmessage = (e: MessageEvent) => {
     case "pick_listener_target": handlePickListenerTarget(msg); break;
     case "http_request": handleHttpRequestMessage(msg); break;
     case "destroy": void handleDestroy(msg); break;
-    case "register_lazy_files": handleLazyRegistration(msg); break;
-    case "register_lazy_archives": handleLazyRegistration(msg); break;
+    case "register_lazy_files": void handleLazyRegistration(msg); break;
+    case "register_lazy_archives": void handleLazyRegistration(msg); break;
     case "get_fork_count": {
       // Round-trip access to the kernel's per-process fork counter for
       // tests asserting SYS_SPAWN didn't fall back to fork. Mirrors the
