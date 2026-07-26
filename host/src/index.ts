@@ -2,7 +2,12 @@ export { WasmPosixKernel } from "./kernel";
 export type { KernelCallbacks } from "./kernel";
 export { CentralizedKernelWorker } from "./kernel-worker";
 export type {
-  CentralizedKernelCallbacks, ProcessSnapshot, SyscallTraceEvent,
+  CentralizedKernelCallbacks,
+  ForkContinuationContext,
+  ForkLaunchRequest,
+  ProcessSnapshot,
+  SyscallTraceEvent,
+  ThreadChannelAttachment,
 } from "./kernel-worker";
 export { SYSCALL_NAMES } from "./kernel-worker";
 export { SyscallChannel, ChannelStatus } from "./channel";
@@ -31,7 +36,6 @@ export type {
   WorkerReadyMessage,
   WorkerExitMessage,
   WorkerErrorMessage,
-  DeliverSignalMessage,
   ExecRequestMessage,
   ExecReplyMessage,
   ExecCompleteMessage,
@@ -74,6 +78,20 @@ export type {
   HomebrewVfsPlanOptions,
   HomebrewVfsTapIdentity,
 } from "./homebrew-vfs-planner";
+export {
+  HOMEBREW_VFS_FORMULA_LAYER_KIND,
+  HOMEBREW_VFS_FORMULA_MANIFEST_RELATIVE_PATH,
+  HOMEBREW_VFS_FORMULA_PAYLOAD_RELATIVE_PATH,
+  parseHomebrewVfsFormulaLayerManifest,
+  preflightHomebrewVfsFormulaLayers,
+  projectHomebrewVfsFormulaLayer,
+} from "./homebrew-vfs-formula-layer";
+export type {
+  HomebrewVfsFormulaLayerComposition,
+  HomebrewVfsFormulaLayerEntry,
+  HomebrewVfsFormulaLayerManifest,
+  HomebrewVfsFormulaLayerProjection,
+} from "./homebrew-vfs-formula-layer";
 export {
   HOMEBREW_RUNTIME_LAYER_POLICY_KIND,
   parseHomebrewRuntimeLayerPolicy,

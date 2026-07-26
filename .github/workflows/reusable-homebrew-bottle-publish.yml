@@ -8,7 +8,7 @@ on:
         default: Automattic/kandelo
       kandelo-ref:
         type: string
-        default: main
+        required: true
       tap-repository:
         type: string
         default: kandelo-dev/homebrew-tap-core
@@ -31,6 +31,12 @@ on:
         type: string
         default: ""
       expected-cache-keys:
+        type: string
+        default: ""
+      package-generation-wasm32:
+        type: string
+        default: ""
+      package-generation-wasm64:
         type: string
         default: ""
       force:
@@ -56,6 +62,8 @@ jobs:
       bottle-root-prefix: ${{ steps.release.outputs.bottle-root-prefix }}
       kandelo-sha: ${{ steps.source-commits.outputs.kandelo-sha }}
       tap-sha: ${{ steps.source-commits.outputs.tap-sha }}
+      package-generation-wasm32: ${{ steps.trust.outputs.package-generation-wasm32 }}
+      package-generation-wasm64: ${{ steps.trust.outputs.package-generation-wasm64 }}
       core-dependency-tap-sha: ${{ steps.dependency-taps.outputs.core-tap-sha }}
       vfs-acceptance-formula: ${{ steps.vfs-acceptance.outputs.formula }}
     steps:
@@ -70,6 +78,8 @@ jobs:
           DRY_RUN: ${{ inputs.dry-run }}
           KANDELO_REPOSITORY: ${{ inputs.kandelo-repository }}
           KANDELO_REF: ${{ inputs.kandelo-ref }}
+          PACKAGE_GENERATION_WASM32: ${{ inputs.package-generation-wasm32 }}
+          PACKAGE_GENERATION_WASM64: ${{ inputs.package-generation-wasm64 }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
           TAP_REF: ${{ inputs.tap-ref }}
@@ -94,6 +104,54 @@ jobs:
 
             echo "::error::dry-run $label ref must be a branch name or exact lowercase 40-character commit SHA" >&2
             return 2
+          }
+
+          normalize_write_kandelo_ref() {
+            local ref="$1"
+
+            if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+              printf '%s\n' "$ref"
+              return 0
+            fi
+
+            echo "::error::write publication requires an exact lowercase 40-character Kandelo commit SHA" >&2
+            return 2
+          }
+
+          normalize_write_tap_ref() {
+            local ref="$1"
+
+            if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+              # WHY: repository_dispatch can be admitted while main is at one
+              # commit but instantiated after another publication advances it.
+              # The dispatch payload therefore owns the immutable source
+              # selection; the workflow execution SHA is not a substitute.
+              printf '%s\n' "$ref"
+              return 0
+            fi
+
+            echo "::error::write publication requires an exact reviewed lowercase 40-character tap commit SHA" >&2
+            return 2
+          }
+
+          normalize_package_generation() {
+            local arch="$1"
+            local tag="$2"
+            local pattern
+            case "$arch" in
+              wasm32)
+                pattern='^package-generation-browser-inputs-wasm32-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}$'
+                ;;
+              wasm64)
+                pattern='^package-generation-browser-inputs-wasm64-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}$'
+                ;;
+              *) echo "::error::unsupported package-generation architecture" >&2; return 2 ;;
+            esac
+            [[ "$tag" =~ $pattern ]] || {
+              echo "::error::package-generation-$arch must be an exact browser-inputs content tag" >&2
+              return 2
+            }
+            printf '%s\n' "$tag"
           }
 
           normalized_caller_repository="$(printf '%s' "$CALLER_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
@@ -128,25 +186,70 @@ jobs:
             }
             validated_kandelo_ref="$(normalize_dry_run_source_ref "Kandelo" "$KANDELO_REF")"
             validated_tap_ref="$(normalize_dry_run_source_ref "tap" "$TAP_REF")"
+            validated_generation_wasm32=""
+            validated_generation_wasm64=""
+            if [ -n "$PACKAGE_GENERATION_WASM32" ]; then
+              validated_generation_wasm32="$(
+                normalize_package_generation wasm32 "$PACKAGE_GENERATION_WASM32"
+              )"
+            fi
+            if [ -n "$PACKAGE_GENERATION_WASM64" ]; then
+              validated_generation_wasm64="$(
+                normalize_package_generation wasm64 "$PACKAGE_GENERATION_WASM64"
+              )"
+            fi
           else
             case "$CALLER_WORKFLOW_REF" in
               "$CALLER_REPOSITORY/.github/workflows/publish-bottles.yml@refs/heads/main"|\
               "$CALLER_REPOSITORY/.github/workflows/maintain-bottles.yml@refs/heads/main") ;;
               *) echo "::error::publication requires a reviewed tap write workflow"; exit 2 ;;
             esac
-            [ "$KANDELO_REF" = "main" ] || {
-              echo "::error::write publication requires Kandelo main"; exit 2;
-            }
-            [ "$TAP_REF" = "main" ] || {
-              echo "::error::write publication requires tap main"; exit 2;
-            }
-            validated_kandelo_ref="refs/heads/main"
-            validated_tap_ref="refs/heads/main"
+            validated_kandelo_ref="$(normalize_write_kandelo_ref "$KANDELO_REF")"
+            validated_tap_ref="$(normalize_write_tap_ref "$TAP_REF")"
+            # WHY: canonical jobs must not reconstruct a resolver from the
+            # mutable binaries-abi-vN release. The two content tags bind the
+            # exact architecture-specific inputs admitted for this main SHA.
+            validated_generation_wasm32="$(
+              normalize_package_generation wasm32 "$PACKAGE_GENERATION_WASM32"
+            )"
+            validated_generation_wasm64="$(
+              normalize_package_generation wasm64 "$PACKAGE_GENERATION_WASM64"
+            )"
           fi
           {
             echo "kandelo-ref=$validated_kandelo_ref"
             echo "tap-ref=$validated_tap_ref"
+            echo "package-generation-wasm32=$validated_generation_wasm32"
+            echo "package-generation-wasm64=$validated_generation_wasm64"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Admit exact Kandelo main source
+        if: ${{ !inputs.dry-run }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KANDELO_REPOSITORY: ${{ inputs.kandelo-repository }}
+          KANDELO_SHA: ${{ steps.trust.outputs.kandelo-ref }}
+        run: |
+          set -euo pipefail
+          if ! current_main_sha="$(
+            gh api "/repos/$KANDELO_REPOSITORY/git/ref/heads/main" \
+              --jq .object.sha
+          )"; then
+            echo "::error::could not read the current Kandelo refs/heads/main commit"
+            exit 1
+          fi
+          [[ "$current_main_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::Kandelo refs/heads/main returned a noncanonical commit identity"
+            exit 1
+          }
+          # WHY: a reachable commit or equal tree can still be PR-only or
+          # stale. Canonical bottles must be built from the commit that main
+          # names at admission, so compare identity rather than ancestry.
+          [ "$KANDELO_SHA" = "$current_main_sha" ] || {
+            echo "::error::write publication requires the current Kandelo refs/heads/main commit"
+            exit 1
+          }
 
       - name: Checkout Kandelo workflow source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -168,6 +271,9 @@ jobs:
       - name: Resolve source commits
         id: source-commits
         shell: bash
+        env:
+          DRY_RUN: ${{ inputs.dry-run }}
+          REQUESTED_KANDELO_SHA: ${{ inputs.kandelo-ref }}
         run: |
           set -euo pipefail
           kandelo_sha="$(git -C kandelo rev-parse HEAD)"
@@ -178,10 +284,42 @@ jobs:
           [[ "$tap_sha" =~ ^[0-9a-f]{40}$ ]] || {
             echo "::error::tap checkout did not resolve to a commit SHA"; exit 2;
           }
+          if [ "$DRY_RUN" = "false" ] &&
+             [ "$kandelo_sha" != "$REQUESTED_KANDELO_SHA" ]; then
+            echo "::error::Kandelo checkout differs from the exact admitted main commit"
+            exit 2
+          fi
           {
             echo "kandelo-sha=$kandelo_sha"
             echo "tap-sha=$tap_sha"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Bind write tap source to protected main history
+        if: ${{ !inputs.dry-run }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAP_SHA: ${{ inputs.tap-ref }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ steps.source-commits.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          [ "$TAP_SHA" = "$REQUESTED_TAP_SHA" ] || {
+            echo "::error::tap checkout differs from the exact requested source commit"; exit 2;
+          }
+          if ! compare_status="$(gh api \
+              "/repos/$TAP_REPOSITORY/compare/$TAP_SHA...main" \
+              --jq .status)"; then
+            echo "::error::could not prove that the requested tap commit belongs to protected main"
+            exit 1
+          fi
+          case "$compare_status" in
+            ahead|identical) ;;
+            # WHY: an older requested source is safe only while it remains an
+            # ancestor of protected main. Descendant, detached, and
+            # force-pushed sources have not passed that branch's review path.
+            *) echo "::error::requested tap commit must remain on protected main history"; exit 1 ;;
+          esac
 
       - name: Validate committed dependency tap lock
         id: dependency-taps
@@ -278,6 +416,8 @@ jobs:
           EXPECTED_ABI: ${{ steps.release.outputs.abi }}
           EXPECTED_BOTTLE_ROOT_URL: ${{ steps.release.outputs.bottle-root-prefix }}
           EXPECTED_CACHE_KEYS_JSON: ${{ inputs.expected-cache-keys }}
+          EXPECTED_KANDELO_COMMIT: ${{ steps.source-commits.outputs.kandelo-sha }}
+          EXPECTED_KANDELO_REPOSITORY: ${{ inputs.kandelo-repository }}
           FORCE_REBUILD: ${{ inputs.force }}
           FORMULAE: ${{ inputs.formulae }}
         run: |
@@ -290,6 +430,8 @@ jobs:
             expected_args+=(--expected-cache-keys "$expected_file")
             expected_args+=(--expected-abi "$EXPECTED_ABI")
             expected_args+=(--expected-bottle-root-url "$EXPECTED_BOTTLE_ROOT_URL")
+            expected_args+=(--expected-kandelo-repository "$EXPECTED_KANDELO_REPOSITORY")
+            expected_args+=(--expected-kandelo-commit "$EXPECTED_KANDELO_COMMIT")
           fi
           if [ "$FORCE_REBUILD" = "true" ]; then
             expected_args+=(--force)
@@ -613,6 +755,44 @@ jobs:
           cd kandelo
           bash scripts/dev-shell.sh true
 
+      - name: Materialize exact-main Formula runtime packages
+        if: ${{ !inputs.dry-run }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          PACKAGE_GENERATION_WASM32: ${{ needs.plan.outputs.package-generation-wasm32 }}
+        run: |
+          set -euo pipefail
+          cd kandelo
+          host="$(bash scripts/dev-shell.sh rustc -vV | sed -n 's/^host: //p')"
+          [ -n "$host" ] || {
+            echo "::error::unable to resolve the Rust host target"; exit 2;
+          }
+          bash scripts/dev-shell.sh cargo build --release -p xtask \
+            --target "$host" --quiet
+          generation_root="$RUNNER_TEMP/homebrew-package-generation-wasm32"
+          # WHY: Formula build/test helpers execute as universal wasm32
+          # programs even for a wasm64 bottle. Browser verification below
+          # separately combines both admitted architecture generations.
+          bash .github/scripts/materialize-exact-package-generations.sh \
+            --wasm32-tag "$PACKAGE_GENERATION_WASM32" \
+            --consumer-root "$PWD" \
+            --consumer-sha "$KANDELO_SHA" \
+            --authority-xtask "$PWD/target/$host/release/xtask" \
+            --repository Automattic/kandelo \
+            --output-dir "$generation_root"
+          resolver_index="$generation_root/resolver/index.toml"
+          expected_index_url="file://$resolver_index"
+          index_url="$(cat "$generation_root/index-url.txt")"
+          [ -f "$resolver_index" ] && [ ! -L "$resolver_index" ] &&
+            [ "$(realpath -- "$resolver_index")" = "$resolver_index" ] &&
+            [ "$index_url" = "$expected_index_url" ] || {
+            echo "::error::exact package generation did not produce its expected local resolver"
+            exit 2
+          }
+          echo "WASM_POSIX_BINARY_INDEX_URL=$index_url" >> "$GITHUB_ENV"
+
       - name: Build Kandelo sysroot
         shell: bash
         env:
@@ -662,6 +842,7 @@ jobs:
           bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh
 
       - name: Materialize Formula test platform runtime
+        id: formula-runtime
         shell: bash
         run: |
           set -euo pipefail
@@ -673,12 +854,39 @@ jobs:
               echo "unable to resolve the Rust host target" >&2
               exit 2
             }
+            cargo build --release -p xtask --target "$host" --quiet
+            xtask="$PWD/target/$host/release/xtask"
+            [ -f "$xtask" ] && [ ! -L "$xtask" ] && [ -x "$xtask" ] &&
+              [ "$(realpath -- "$xtask")" = "$xtask" ] || {
+              echo "prepared Formula test xtask is not an exact executable" >&2
+              exit 2
+            }
+            # Formula tests need the source-projection checker, not Cargo or
+            # Nix authority. Cargo may hard-link this executable on Linux, so
+            # detach exact bytes before the launcher exposes one read-only
+            # source-alias path to the Formula user.
+            sealed_xtask="$(
+              bash scripts/seal-homebrew-formula-checker.sh \
+                --root "$PWD" \
+                --checker "$xtask"
+            )"
+            [ "$sealed_xtask" = "$xtask" ] || {
+              echo "Formula test checker seal selected another executable" >&2
+              exit 2
+            }
+            printf "xtask-bin=%s\n" "$xtask" >>"$GITHUB_OUTPUT"
             for package in dash coreutils grep sed rootfs; do
-              cargo run --release -p xtask --target "$host" --quiet -- \
+              "$xtask" \
                 build-deps --arch wasm32 \
                 --binaries-dir "$PWD/binaries" --fetch-only resolve "$package"
             done
-            bash scripts/materialize-resolver-binaries.sh "$PWD/binaries"
+            cache_root="$("$xtask" build-deps cache-root)"
+            case "$cache_root" in
+              /*) ;;
+              *) echo "Formula runtime cache root is not absolute" >&2; exit 2 ;;
+            esac
+            bash scripts/materialize-resolver-binaries.sh \
+              "$PWD/binaries" "$cache_root"
           '
 
       - name: Install JavaScript dependencies for formula tests
@@ -824,6 +1032,7 @@ jobs:
           KANDELO_HOMEBREW_BOTTLE_ROOT_URL: ${{ needs.plan.outputs.bottle-root-prefix }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
+          WASM_POSIX_XTASK_BIN: ${{ steps.formula-runtime.outputs.xtask-bin }}
         run: |
           set -euo pipefail
           for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
@@ -866,6 +1075,7 @@ jobs:
           workflow_commands_stopped=1
           printf '::stop-commands::%s\n' "$workflow_command_token"
           bash scripts/dev-shell.sh env \
+            WASM_POSIX_XTASK_BIN="$WASM_POSIX_XTASK_BIN" \
             KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
             bash scripts/homebrew-bottle-build.sh \
             --tap-root "$GITHUB_WORKSPACE/tap" \
@@ -1322,6 +1532,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
+          KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
         run: |
@@ -1333,11 +1544,15 @@ jobs:
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             --formula "$KANDELO_HOMEBREW_FORMULA"
+            --exact-kandelo-main-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             --auth-mode github-token
             --require-pat false
             --destination-mode repository
             --out-json "$RUNNER_TEMP/homebrew-upload-receipt/receipt.json"
           )
+          bash .github/scripts/require-exact-kandelo-main.sh \
+            --repository Automattic/kandelo \
+            --source-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"
           bash scripts/dev-shell.sh bash scripts/homebrew-ghcr-upload.sh "${upload_args[@]}"
 
       - name: Revalidate upload receipt as data
@@ -1649,17 +1864,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
+          KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
         run: |
           set -euo pipefail
           cd kandelo
+          bash .github/scripts/require-exact-kandelo-main.sh \
+            --repository Automattic/kandelo \
+            --source-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"
           bash scripts/dev-shell.sh bash scripts/homebrew-ghcr-upload.sh \
             --layout "$RUNNER_TEMP/homebrew-complete-index/layout" \
             --layout-receipt "$RUNNER_TEMP/homebrew-complete-index/layout-receipt.json" \
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
             --formula "$KANDELO_HOMEBREW_FORMULA" \
+            --exact-kandelo-main-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT" \
             --auth-mode github-token \
             --require-pat false \
             --destination-mode repository \
@@ -1846,6 +2066,43 @@ jobs:
         run: |
           cd kandelo
           bash scripts/dev-shell.sh true
+
+      - name: Materialize exact-main browser runtime packages
+        if: ${{ !inputs.dry-run }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          PACKAGE_GENERATION_WASM32: ${{ needs.plan.outputs.package-generation-wasm32 }}
+          PACKAGE_GENERATION_WASM64: ${{ needs.plan.outputs.package-generation-wasm64 }}
+        run: |
+          set -euo pipefail
+          cd kandelo
+          host="$(bash scripts/dev-shell.sh rustc -vV | sed -n 's/^host: //p')"
+          [ -n "$host" ] || {
+            echo "::error::unable to resolve the Rust host target"; exit 2;
+          }
+          bash scripts/dev-shell.sh cargo build --release -p xtask \
+            --target "$host" --quiet
+          generation_root="$RUNNER_TEMP/homebrew-package-generations"
+          bash .github/scripts/materialize-exact-package-generations.sh \
+            --wasm32-tag "$PACKAGE_GENERATION_WASM32" \
+            --wasm64-tag "$PACKAGE_GENERATION_WASM64" \
+            --consumer-root "$PWD" \
+            --consumer-sha "$KANDELO_SHA" \
+            --authority-xtask "$PWD/target/$host/release/xtask" \
+            --repository Automattic/kandelo \
+            --output-dir "$generation_root"
+          resolver_index="$generation_root/resolver/index.toml"
+          expected_index_url="file://$resolver_index"
+          index_url="$(cat "$generation_root/index-url.txt")"
+          [ -f "$resolver_index" ] && [ ! -L "$resolver_index" ] &&
+            [ "$(realpath -- "$resolver_index")" = "$resolver_index" ] &&
+            [ "$index_url" = "$expected_index_url" ] || {
+            echo "::error::exact package generations did not produce their expected local resolver"
+            exit 2
+          }
+          echo "WASM_POSIX_BINARY_INDEX_URL=$index_url" >> "$GITHUB_ENV"
 
       - name: Download strict build handoff
         id: build-handoff
@@ -2147,6 +2404,7 @@ jobs:
           bash scripts/dev-shell.sh ./run.sh --fetch-only prepare-browser
 
       - name: Materialize Formula verification platform runtime
+        id: formula-verification-runtime
         shell: bash
         run: |
           set -euo pipefail
@@ -2158,12 +2416,41 @@ jobs:
               echo "unable to resolve the Rust host target" >&2
               exit 2
             }
+            cargo build --release -p xtask --target "$host" --quiet
+            xtask="$PWD/target/$host/release/xtask"
+            [ -f "$xtask" ] && [ ! -L "$xtask" ] && [ -x "$xtask" ] &&
+              [ "$(realpath -- "$xtask")" = "$xtask" ] || {
+              echo "prepared Formula verification xtask is not an exact executable" >&2
+              exit 2
+            }
+            # Verification has the same Cargo hardlink boundary as the build.
+            # Use the shared byte-for-byte seal so both isolated Formula paths
+            # receive the same single-link authority.
+            sealed_xtask="$(
+              bash scripts/seal-homebrew-formula-checker.sh \
+                --root "$PWD" \
+                --checker "$xtask"
+            )"
+            [ "$sealed_xtask" = "$xtask" ] || {
+              echo "Formula verification checker seal selected another executable" >&2
+              exit 2
+            }
+            printf "xtask-bin=%s\n" "$xtask" >>"$GITHUB_OUTPUT"
             for package in dash coreutils grep sed rootfs; do
-              cargo run --release -p xtask --target "$host" --quiet -- \
+              "$xtask" \
                 build-deps --arch wasm32 \
                 --binaries-dir "$PWD/binaries" --fetch-only resolve "$package"
             done
-            bash scripts/materialize-resolver-binaries.sh "$PWD/binaries"
+            cache_root="$("$xtask" build-deps cache-root)"
+            case "$cache_root" in
+              /*) ;;
+              *) echo "Formula verification cache root is not absolute" >&2; exit 2 ;;
+            esac
+            # WHY: prepare-browser also resolves packages into binaries/.
+            # Materialize after that last writer so the read-only Formula
+            # identity receives one coherent portable generation snapshot.
+            bash scripts/materialize-resolver-binaries.sh \
+              "$PWD/binaries" "$cache_root"
           '
 
       - name: Compose only reconstructed bottle metadata into the fresh tap
@@ -2376,6 +2663,7 @@ jobs:
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
+          WASM_POSIX_XTASK_BIN: ${{ steps.formula-verification-runtime.outputs.xtask-bin }}
         run: |
           set -euo pipefail
           for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
@@ -2411,6 +2699,7 @@ jobs:
           workflow_commands_stopped=1
           printf '::stop-commands::%s\n' "$workflow_command_token"
           bash scripts/dev-shell.sh env \
+            WASM_POSIX_XTASK_BIN="$WASM_POSIX_XTASK_BIN" \
             KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
             bash scripts/homebrew-verify-poured-bottle.sh \
             --tap-root "$RUNNER_TEMP/homebrew-merged-tap" \
@@ -3484,6 +3773,7 @@ jobs:
               --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
               --status success
               --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
+              --exact-kandelo-main-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"
               --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
             )
             while IFS= read -r -d '' formula &&
@@ -3491,6 +3781,9 @@ jobs:
                   IFS= read -r -d '' handoff; do
               publish_args+=(--publication "$formula" "$arch" "$handoff")
             done <"$handoff_paths"
+            bash .github/scripts/require-exact-kandelo-main.sh \
+              --repository Automattic/kandelo \
+              --source-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             bash scripts/dev-shell.sh env \
               KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
               bash scripts/homebrew-publish-sidecars.sh "${publish_args[@]}"
@@ -3561,11 +3854,15 @@ jobs:
               --status failed
               --error "$error_text"
               --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
+              --exact-kandelo-main-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"
               --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
             )
             if [ -n "$error_detail_file" ]; then
               report_args+=(--error-detail-file "$error_detail_file")
             fi
+            bash .github/scripts/require-exact-kandelo-main.sh \
+              --repository Automattic/kandelo \
+              --source-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             bash scripts/dev-shell.sh env \
               bash scripts/homebrew-publish-sidecars.sh "${report_args[@]}"
           done < <(jq -er '.[] | [.formula, .arch] | @tsv' \
@@ -3703,6 +4000,9 @@ jobs:
             dependency_tap_args+=(--dependency-tap-root \
               "kandelo-dev/tap-core=$GITHUB_WORKSPACE/dependency-taps/core")
           fi
+          bash kandelo/.github/scripts/require-exact-kandelo-main.sh \
+            --repository Automattic/kandelo \
+            --source-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"
           bash kandelo/scripts/homebrew-publish-vfs-release.sh \
             --handoff "$RUNNER_TEMP/homebrew-vfs-release-handoff" \
             --tap-root "$GITHUB_WORKSPACE/tap-base" \

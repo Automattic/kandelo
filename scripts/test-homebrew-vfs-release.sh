@@ -1520,8 +1520,19 @@ def by_id(state, release_id):
     )
 
 args = sys.argv[1:]
-if args[:2] == ["api", "--include"]:
-    endpoint = args[2]
+if args == [
+    "api", "/repos/Automattic/kandelo/git/ref/heads/main",
+    "--jq", ".object.sha",
+]:
+    print(os.environ.get(
+        "FAKE_KANDELO_MAIN_SHA",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ))
+elif args[:2] == ["api", "--include"]:
+    if "Cache-Control: no-cache" not in args:
+        print("authoritative GET did not bypass cached state", file=sys.stderr)
+        sys.exit(2)
+    endpoint = next(value for value in args[2:] if value.startswith("/"))
     state = load()
     if "/releases/tags/" in endpoint:
         tag = endpoint.split("/releases/tags/", 1)[1]

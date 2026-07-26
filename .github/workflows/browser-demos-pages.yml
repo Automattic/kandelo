@@ -33,10 +33,15 @@ on:
       - "rust-toolchain.toml"
       - "images/rootfs/**"
       - "images/vfs/**"
+      - "homebrew/main-shell-demo.json"
+      - "homebrew/source-rootfs-shell-default.json"
+      - "homebrew/source-rootfs-shell-dependencies.json"
       - "run.sh"
       - "scripts/build-musl.sh"
       - "scripts/build-programs.sh"
       - "scripts/build-rootfs.sh"
+      - "scripts/generate-rootfs-package-manifest.mjs"
+      - "scripts/source-rootfs-shell-dependency-contract.mjs"
       - "scripts/browser-binary-package-roots.mjs"
       - "scripts/check-pages-publish-size.mjs"
       - "scripts/check-pages-run-freshness.sh"
@@ -48,6 +53,7 @@ on:
       - "scripts/fetch-binaries.sh"
       - "scripts/install-overlay-headers.sh"
       - "scripts/install-local-binary.sh"
+      - "scripts/package-build-roots.sh"
       - "scripts/resolve-binary.sh"
       - "scripts/resolve-binary.ts"
       - "scripts/resolve-binary.bundle.mjs"
@@ -78,6 +84,8 @@ jobs:
     steps:
       - name: Check out the source commit
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - name: Fetch musl submodule
         uses: ./.github/actions/fetch-submodules
         with:
@@ -101,7 +109,9 @@ jobs:
 
       - name: Install browser demo dependencies
         working-directory: apps/browser-demos
-        run: npm ci --no-audit --no-fund
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install chromium --with-deps
 
       - name: Typecheck host package
         working-directory: host
@@ -119,8 +129,43 @@ jobs:
               packages/registry packages/registry/program-packages.json
           '
 
+      - name: Build current wasm32 sysroot for source-built browser packages
+        run: |
+          set -euo pipefail
+          # WHY: the temporary shell activation recipe is deliberately newer
+          # than every canonical package archive. Pages must be able to follow
+          # the normal source fallback instead of deploying an old-ABI shell.
+          bash scripts/dev-shell.sh bash scripts/build-musl.sh
+          test -f sysroot/lib/libc.a
+
+      - name: Isolate the exact-main source package closure
+        run: |
+          set -euo pipefail
+          abi=$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
+            crates/shared/src/lib.rs)
+          [[ "$abi" =~ ^[0-9]+$ ]]
+          empty_index="$RUNNER_TEMP/pages-source-empty-index.toml"
+          source_cache="$RUNNER_TEMP/pages-source-exact-cache"
+          test ! -e "$empty_index"
+          test ! -e "$source_cache"
+          cat >"$empty_index" <<EOF
+          abi_version = $abi
+          generated_at = "1970-01-01T00:00:00Z"
+          generator = "exact-main Pages source closure"
+          EOF
+          # WHY: Pages is the first consumer after main lands. It must not turn
+          # a pre-main rehearsal package into deployed product bytes merely
+          # because that package happens to have the right numeric ABI.
+          echo "WASM_POSIX_BINARY_INDEX_URL=file://${empty_index}" >> "$GITHUB_ENV"
+          echo "WASM_POSIX_BINARY_CACHE_ROOT=$source_cache" >> "$GITHUB_ENV"
+
       - name: Prepare browser demo assets
-        run: bash scripts/dev-shell.sh ./run.sh prepare-browser --allow-stale
+        run: |
+          # WHY: dev-shell deliberately starts from a clean environment. Pass
+          # the one approved package-cache root through to its resolver.
+          bash scripts/dev-shell.sh env \
+            "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
+            ./run.sh prepare-browser --allow-stale
 
       - name: Build browser demos for GitHub Pages
         working-directory: apps/browser-demos
@@ -149,6 +194,24 @@ jobs:
         run: |
           cp -R docs-site/.vitepress/dist apps/browser-demos/dist/guide
           cp -R host/docs apps/browser-demos/dist/api
+
+      - name: Boot the sealed Pages shell product in Chromium
+        working-directory: apps/browser-demos
+        env:
+          VITE_BASE: /kandelo/
+          KANDELO_SOURCE_ROOTFS_SHELL_STRICT: "1"
+          KANDELO_PLAYWRIGHT_SERVE_DIST: "1"
+          KANDELO_TEST_BASE_URL: http://127.0.0.1:5401/kandelo/
+        run: |
+          set -euo pipefail
+          shell_sha=$(sha256sum dist/shell.vfs.zst | awk '{print $1}')
+          [[ "$shell_sha" =~ ^[0-9a-f]{64}$ ]]
+          KANDELO_MAIN_SHELL_SHA256="$shell_sha" \
+            bash ../../scripts/dev-shell.sh env \
+              "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
+              npx playwright test \
+              test/kandelo-source-rootfs-shell.spec.ts \
+              --project=chromium
 
       - name: Enforce the GitHub Pages published-site size limit
         run: node scripts/check-pages-publish-size.mjs apps/browser-demos/dist 1000000000

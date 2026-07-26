@@ -10,17 +10,22 @@ export {
 export type { VfsDeferredTreeUsage } from "./deferred-tree-limits";
 export {
   createClosedLazyAssetFetcher,
+  loadClosedLazyAssetSources,
   MAX_CLOSED_LAZY_ASSETS,
   MAX_CLOSED_LAZY_ASSET_BYTES,
   snapshotClosedLazyAssets,
 } from "./closed-lazy-assets";
-export type { ClosedLazyAsset } from "./closed-lazy-assets";
+export type {
+  ClosedLazyAsset,
+  ClosedLazyAssetSource,
+} from "./closed-lazy-assets";
 export type {
   LazyDownloadEvent,
   LazyDownloadKind,
   LazyDownloadListener,
   LazyDownloadStatus,
   LazyFileEntry,
+  LazyFetcherOptions,
   LazyTreeActivation,
   LazyTreeContent,
   LazyTreeDecoder,

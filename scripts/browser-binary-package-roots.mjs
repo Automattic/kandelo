@@ -468,7 +468,7 @@ export function packageOutputOwners(
             );
           }
         }
-        owners.set(rel, { packageName, hasBuildToml });
+        owners.set(rel, { packageName, arch, hasBuildToml });
       }
     }
   }
@@ -498,6 +498,34 @@ export function fetchableRegistryPackageNames(
   return names;
 }
 
+export function fetchableRegistryPackageRoots(
+  repoRoot = defaultRepoRoot,
+  { registryPath } = {},
+) {
+  const roots = [];
+  const selectedPackages = selectedRegistryPackages(repoRoot, registryPath);
+  for (const [packageName, selected] of selectedPackages) {
+    if (
+      selected.projection !== null
+      && existsSync(join(selected.packageDir, "build.toml"))
+    ) {
+      validateSelectedProgramDependencyContext(
+        packageName,
+        selected,
+        selectedPackages,
+      );
+      for (const arch of selected.projection.arches) {
+        roots.push({ package: packageName, arch });
+      }
+    }
+  }
+  return roots.sort(
+    (left, right) =>
+      left.package.localeCompare(right.package)
+      || left.arch.localeCompare(right.arch),
+  );
+}
+
 export function inspectBrowserBinaryDependencies(
   repoRoot = defaultRepoRoot,
   { registryPath } = {},
@@ -507,6 +535,7 @@ export function inspectBrowserBinaryDependencies(
   const missingOwners = [];
   const unfetchableOwners = [];
   const packageNames = new Set();
+  const packageRoots = new Map();
 
   for (const rel of imports) {
     if (localOnlyBrowserImports.has(rel)) continue;
@@ -518,6 +547,8 @@ export function inspectBrowserBinaryDependencies(
       unfetchableOwners.push(`${rel} (${owner.packageName})`);
     } else {
       packageNames.add(owner.packageName);
+      const root = { package: owner.packageName, arch: owner.arch };
+      packageRoots.set(`${root.package}\t${root.arch}`, root);
     }
   }
 
@@ -526,17 +557,26 @@ export function inspectBrowserBinaryDependencies(
     missingOwners,
     unfetchableOwners,
     packageNames: [...packageNames].sort(),
+    packageRoots: [...packageRoots.values()].sort(
+      (left, right) =>
+        left.package.localeCompare(right.package)
+        || left.arch.localeCompare(right.arch),
+    ),
   };
 }
 
 export function browserBinaryPackageRoots(
   repoRoot = defaultRepoRoot,
   {
+    arch,
     includePackages = [],
     excludePackages = [],
     registryPath,
   } = {},
 ) {
+  if (arch !== "wasm32" && arch !== "wasm64") {
+    throw new Error(`browser package roots require wasm32 or wasm64, got ${arch}`);
+  }
   const audit = inspectBrowserBinaryDependencies(repoRoot, { registryPath });
   if (audit.missingOwners.length > 0) {
     throw new Error(
@@ -550,14 +590,25 @@ export function browserBinaryPackageRoots(
     );
   }
 
-  const fetchable = fetchableRegistryPackageNames(repoRoot, { registryPath });
+  const fetchableRoots = fetchableRegistryPackageRoots(repoRoot, {
+    registryPath,
+  });
+  const fetchable = new Set(fetchableRoots.map((root) => root.package));
+  const fetchableForArch = new Set(
+    fetchableRoots
+      .filter((root) => root.arch === arch)
+      .map((root) => root.package),
+  );
   const includes = new Set(includePackages);
   const excludes = new Set(excludePackages);
   for (const packageName of [...includes, ...excludes]) {
     if (!/^[a-z0-9][a-z0-9+._-]*$/.test(packageName)) {
       throw new Error(`invalid registry package name: ${packageName}`);
     }
-    if (!fetchable.has(packageName)) {
+    if (
+      (includes.has(packageName) && !fetchableForArch.has(packageName))
+      || (excludes.has(packageName) && !fetchable.has(packageName))
+    ) {
       throw new Error(`browser package selection is not fetchable: ${packageName}`);
     }
   }
@@ -567,13 +618,25 @@ export function browserBinaryPackageRoots(
     }
   }
 
-  const roots = new Set([...audit.packageNames, ...includes]);
+  // WHY: schema-2 generations are architecture-specific. Selecting owners
+  // from every browser import without retaining this boundary can turn a
+  // wasm64 import into the wasm32 bottle for the same package.
+  const roots = new Set(
+    audit.packageRoots
+      .filter((root) => root.arch === arch)
+      .map((root) => root.package),
+  );
+  for (const packageName of includes) roots.add(packageName);
   for (const packageName of excludes) roots.delete(packageName);
   return [...roots].sort();
 }
 
 function parseCliArgs(argv) {
-  const options = { includePackages: [], excludePackages: [] };
+  const options = {
+    arch: undefined,
+    includePackages: [],
+    excludePackages: [],
+  };
   let repoRoot = defaultRepoRoot;
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
@@ -581,7 +644,8 @@ function parseCliArgs(argv) {
     if (
       flag !== "--include-package" &&
       flag !== "--exclude-package" &&
-      flag !== "--repo-root"
+      flag !== "--arch" &&
+      flag !== "--source-root"
     ) {
       throw new Error(`unknown argument: ${flag}`);
     }
@@ -591,7 +655,13 @@ function parseCliArgs(argv) {
     index += 1;
     if (flag === "--include-package") options.includePackages.push(value);
     if (flag === "--exclude-package") options.excludePackages.push(value);
-    if (flag === "--repo-root") repoRoot = resolve(value);
+    if (flag === "--arch") {
+      if (options.arch !== undefined) {
+        throw new Error("--arch may be provided only once");
+      }
+      options.arch = value;
+    }
+    if (flag === "--source-root") repoRoot = resolve(value);
   }
   return { repoRoot, options };
 }

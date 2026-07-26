@@ -406,7 +406,6 @@ async function main() {
         exclude: (childRel) => shouldExclude(phpSrc, rel ? `${rel}/${childRel}` : childRel),
         preserveMode: true,
         preserveSymlinks: true,
-        failOnError: true,
       });
     }
     if (supportDirs.length > 0) {

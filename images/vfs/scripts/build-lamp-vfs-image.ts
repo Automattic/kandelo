@@ -1,7 +1,7 @@
 /**
  * Build a fully-bootable VFS image for the WordPress + MariaDB (LAMP)
- * browser demo. The image starts from shell.vfs.zst, then dinit (PID 1)
- * brings up the full stack:
+ * browser demo. The image starts from shell.vfs.zst, then dinit, the first
+ * user process, brings up the full stack:
  *
  *   mariadb           (process)  — starts from a build-time-initialized /data
  *   wp-config-init    (internal) — dependency marker. The browser host writes
@@ -21,7 +21,6 @@ import {
   writeVfsFile,
   writeVfsBinary,
   ensureDirRecursive,
-  walkAndWrite,
 } from "./vfs-image-helpers";
 import {
   addDinitInit,
@@ -54,6 +53,10 @@ import {
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
 } from "../../../web-libs/kandelo-session/src/vfs-capacity";
 import { preinstallWordPressMariaDb } from "./wordpress-preinstall";
+import {
+  copyWordPressCoreSource,
+  resolveWordPressCoreSource,
+} from "./wordpress-source-layout";
 import { prepareMariadbWritableDirectories } from "./mariadb-image-helpers";
 
 const REPO_ROOT = findRepoRoot();
@@ -63,11 +66,7 @@ const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
 // the system_tables SQL files are shipped only in the upstream MariaDB
 // source tarball, so we extract them on demand the same way
 // build-mariadb-vfs-image.ts does.
-const WP_DIR = ensureSourceExtract(
-  "wordpress",
-  REPO_ROOT,
-  join(REPO_ROOT, "packages", "registry", "wordpress", "wordpress"),
-);
+const WP_DIR = resolveWordPressCoreSource(REPO_ROOT);
 const MARIADB_LEGACY_INSTALL = join(REPO_ROOT, "packages", "registry", "mariadb", "mariadb-install");
 const MARIADB_SOURCE = ensureSourceExtract("mariadb", REPO_ROOT);
 const MARIADB_PATH = resolveBinary("programs/mariadb/mariadbd.wasm");
@@ -286,9 +285,9 @@ const MARIADB_BOOTSTRAP_SCRIPT = `# mariadbd --bootstrap doesn't exit at stdin E
 # Background it, watch for the canonical "bootstrap done" marker (the
 # \`wordpress\` database directory created by the LAST statement in
 # bootstrap.sql), then kill mariadbd. Falls back to a 60s safety cap
-# if the marker never lands. **No \`wait\`** — dinit (PID 1) reaps
-# orphans and races with dash's wait builtin, which then blocks.
-# Letting dinit reap is fine.
+# if the marker never lands. The shell remains the direct parent and waits
+# after terminating mariadbd; the kernel's synthetic PID 1 has no reaper
+# worker, while dinit is a separate ordinary user process.
 #
 # Polling the marker shaves ~30-50s off boot vs the previous fixed
 # 60s sleep — that sleep was the dominant boot-time cost, since the
@@ -322,6 +321,7 @@ done
 kill -TERM $PID 2>/dev/null
 sleep 1
 kill -KILL $PID 2>/dev/null
+wait $PID 2>/dev/null || true
 exit 0
 `;
 
@@ -454,9 +454,7 @@ async function main() {
   );
 
   console.log("Writing WordPress core files...");
-  const excludeDb = (rel: string) =>
-    rel.endsWith(".db") || rel === "wp-config.php" || rel.includes("wp-content/db.php");
-  const wpCount = walkAndWrite(fs, WP_DIR, "/var/www/html", { exclude: excludeDb });
+  const wpCount = copyWordPressCoreSource(fs, WP_DIR);
   patchWordPressPersistentMysqli(fs);
   console.log(`  WordPress core: ${wpCount} files`);
 

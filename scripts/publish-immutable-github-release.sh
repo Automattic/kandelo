@@ -6,6 +6,7 @@ MANIFEST=""
 ASSET_ROOT=""
 LOCK_ROOT=""
 RECEIPT=""
+EXACT_KANDELO_MAIN_SHA=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -13,6 +14,7 @@ while [ "$#" -gt 0 ]; do
     --asset-root) ASSET_ROOT="$2"; shift 2 ;;
     --lock-root) LOCK_ROOT="$2"; shift 2 ;;
     --receipt) RECEIPT="$2"; shift 2 ;;
+    --exact-kandelo-main-sha) EXACT_KANDELO_MAIN_SHA="$2"; shift 2 ;;
     *) echo "publish-immutable-github-release: unknown flag $1" >&2; exit 2 ;;
   esac
 done
@@ -23,6 +25,10 @@ for required in MANIFEST ASSET_ROOT LOCK_ROOT RECEIPT; do
     exit 2
   fi
 done
+if ! [[ "$EXACT_KANDELO_MAIN_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "publish-immutable-github-release: --exact-kandelo-main-sha is required and must be an exact lowercase 40-character SHA" >&2
+  exit 2
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -84,6 +90,16 @@ BODY="$(jq -er '.body' "$NORMALIZED_MANIFEST")"
 
 # shellcheck source=.github/scripts/github-api-get.sh
 . "$REPO_ROOT/.github/scripts/github-api-get.sh"
+
+require_exact_main_authority() {
+  # WHY: release discovery, asset verification, and retry reconciliation can
+  # take minutes. Every individual GitHub write must therefore obtain fresh
+  # authority instead of inheriting a check performed before that work.
+  GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}" \
+    bash "$REPO_ROOT/.github/scripts/require-exact-kandelo-main.sh" \
+      --repository Automattic/kandelo \
+      --source-sha "$EXACT_KANDELO_MAIN_SHA" >/dev/null
+}
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -218,6 +234,7 @@ create_or_discover_release() {
   local attempt=1 create_json="$TMP_ROOT/create.json" rc release_id
   while [ "$attempt" -le 4 ]; do
     : >"$create_json"
+    require_exact_main_authority
     if gh api --method POST "/repos/${REPOSITORY}/releases" \
       -f "tag_name=$TAG" -f "target_commitish=$TARGET_COMMIT" \
       -f "name=$TITLE" -f "body=$BODY" -f make_latest=false \
@@ -366,6 +383,7 @@ ensure_asset() {
     fi
 
     upload_rc=0
+    require_exact_main_authority
     gh release upload "$TAG" --repo "$REPOSITORY" "$STAGED_ASSETS/$name" || upload_rc=$?
     if [ "$upload_rc" -ne 0 ]; then
       echo "publish-immutable-github-release: upload response for $name was ambiguous; reconciling" >&2
@@ -419,6 +437,7 @@ ensure_direct_tag() {
 
   while [ "$attempt" -le 4 ]; do
     create_rc=0
+    require_exact_main_authority
     gh api --method POST "/repos/${REPOSITORY}/git/refs" \
       -f "ref=refs/tags/${TAG}" -f "sha=${TARGET_COMMIT}" >/dev/null || create_rc=$?
     if [ "$create_rc" -ne 0 ]; then
@@ -450,6 +469,7 @@ publish_and_reconcile() {
       return 0
     fi
     patch_rc=0
+    require_exact_main_authority
     gh api --method PATCH "/repos/${REPOSITORY}/releases/${release_id}" \
       -f make_latest=false -F draft=false -F prerelease=false >/dev/null || patch_rc=$?
     if [ "$patch_rc" -ne 0 ]; then

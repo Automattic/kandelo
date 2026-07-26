@@ -17,7 +17,6 @@ import { detectPtrWidth, extractHeapBase, PAGES_PER_THREAD, WASM_PAGE_SIZE } fro
 import {
   computeProcessMemoryLayout,
   createProcessMemory,
-  FORK_SAVE_BUFFER_SIZE,
   type ProcessMemoryLayout,
 } from "../src/process-memory";
 import { NodeKernelHost } from "../src/node-kernel-host";
@@ -69,6 +68,7 @@ function createFreshProcessMemory(
   programBytes: ArrayBuffer,
   ptrWidth: 4 | 8,
   reserveSlotStartPage?: () => number,
+  maximumPages: number = MAX_PAGES,
 ): {
   memory: WebAssembly.Memory;
   layout: ProcessMemoryLayout;
@@ -76,7 +76,7 @@ function createFreshProcessMemory(
 } {
   const heapBase = extractHeapBase(programBytes);
   const layout = computeProcessMemoryLayout({
-    maxPages: MAX_PAGES,
+    maxPages: maximumPages,
     ptrWidth,
     programBytes,
     heapBase,
@@ -116,6 +116,8 @@ export interface RunProgramOptions {
   argv?: string[];
   /** Timeout in ms (default: 30000) */
   timeout?: number;
+  /** Process memory ceiling for bounded allocation-failure tests. */
+  maxPages?: number;
   /** Custom PlatformIO (defaults to NodePlatformIO).
    *  When provided, forces main-thread mode (PlatformIO can't be serialized). */
   io?: PlatformIO;
@@ -220,6 +222,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
   // does not engage NodeKernelHost at all).
   const host = new NodeKernelHost({
     maxWorkers: 4,
+    maxPages: options.maxPages,
     execPrograms,
     rootfsImage: options.rootfsImage
       ?? (options.useDefaultRootfs === false ? undefined : "default"),
@@ -330,13 +333,18 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   const forkReplayContexts = new Map<number, ForkReplayContext>();
   let mainThreadForkCount: bigint | undefined;
 
-  const pid = 100;
+  let pid = 0;
 
   const kernelWorker = new CentralizedKernelWorker(
     { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true, enableSyscallLog: !!process.env.KERNEL_SYSCALL_LOG },
     io,
     {
-      onFork: async (parentPid, childPid, parentMemory, threadFork) => {
+      onFork: async ({
+        parentPid,
+        childPid,
+        parentMemory,
+        continuation,
+      }) => {
         const parentBuf = new Uint8Array(parentMemory.buffer);
         const parentPages = Math.ceil(parentBuf.byteLength / 65536);
         const childLayout = processLayouts.get(parentPid);
@@ -353,29 +361,31 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
 
         kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
-          skipKernelCreate: true,
           ptrWidth: parentPtrWidth,
           maxAddr: childLayout.maxAddr,
           mmapBase: childLayout.mmapBase,
         });
         kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
 
-        const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
-        const forkReplayContext: ForkReplayContext | undefined = threadFork
+        const activeForkBufAddr = continuation.forkBufAddr;
+        const parentForkReplayContext = forkReplayContexts.get(parentPid);
+        const forkReplayContext: ForkReplayContext | undefined =
+          continuation.kind === "thread"
           ? {
-              fnPtr: threadFork.fnPtr,
-              argPtr: threadFork.argPtr,
-              forkBufAddr: threadFork.forkBufAddr,
+              fnPtr: continuation.fnPtr,
+              argPtr: continuation.argPtr,
+              forkBufAddr: activeForkBufAddr,
             }
-          : forkReplayContexts.get(parentPid);
-        const forkBufAddr = forkReplayContext?.forkBufAddr ?? childChannelOffset - FORK_BUF_SIZE;
+          : parentForkReplayContext
+            ? { ...parentForkReplayContext, forkBufAddr: activeForkBufAddr }
+            : undefined;
+        const forkBufAddr = activeForkBufAddr;
 
         const parentProgram = processProgramBytes.get(parentPid) ?? programBytes;
 
         const childInitData: CentralizedWorkerInitMessage = {
           type: "centralized_init",
           pid: childPid,
-          ppid: parentPid,
           programBytes: parentProgram,
           memory: childMemory,
           channelOffset: childChannelOffset,
@@ -451,6 +461,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
             execPid,
             PAGES_PER_THREAD * WASM_PAGE_SIZE,
           ) / WASM_PAGE_SIZE,
+          options.maxPages,
         );
         const newChannelOffset = newLayout.channelOffset;
 
@@ -477,7 +488,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           if (kernelWorker.finalizeExecHandoffTermination(execPid) > 0) return 0;
 
           kernelWorker.registerProcess(execPid, newMemory, [newChannelOffset], {
-            skipKernelCreate: true,
+            preserveProcessState: true,
             ptrWidth: newPtrWidth,
             metadataPtrWidth: sourcePtrWidth,
             brkBase: newLayout.brkBase,
@@ -495,7 +506,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           const initData: CentralizedWorkerInitMessage = {
             type: "centralized_init",
             pid: execPid,
-            ppid: 0,
             programBytes: newProgramBytes,
             memory: newMemory,
             channelOffset: newChannelOffset,
@@ -534,7 +544,17 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           return 0;
         }
       },
-      onClone: async (clonePid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
+      onClone: async (attachment) => {
+        const {
+          pid: clonePid,
+          tid,
+          fnPtr,
+          argPtr,
+          stackPtr,
+          tlsPtr,
+          ctidPtr,
+          memory,
+        } = attachment;
         const threadAllocator = threadAllocators.get(clonePid);
         if (!threadAllocator) throw new Error(`Unknown thread allocator for pid ${clonePid}`);
         const clonePtrWidth = processPtrWidths.get(clonePid) ?? ptrWidth;
@@ -544,7 +564,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         }
         const alloc = threadAllocator.allocate(memory);
         try {
-          kernelWorker.addChannel(clonePid, alloc.channelOffset, tid, fnPtr, argPtr, memory);
+          kernelWorker.attachThreadChannel(attachment, alloc.channelOffset);
         } catch (err) {
           threadAllocator.free(alloc.basePage);
           throw err;
@@ -582,7 +602,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           threadAllocator.free(alloc.basePage);
         });
 
-        return tid;
       },
       onExit: (exitPid, exitStatus) => {
         if (exitPid === pid) {
@@ -629,6 +648,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   });
 
   await kernelWorker.init(kernelWasmBytes);
+  pid = kernelWorker.createProcess(CAPTURED_STDIO);
 
   const {
     memory,
@@ -641,6 +661,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
       pid,
       PAGES_PER_THREAD * WASM_PAGE_SIZE,
     ) / WASM_PAGE_SIZE,
+    options.maxPages,
   );
   const channelOffset = layout.channelOffset;
 
@@ -649,7 +670,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     brkBase: layout.brkBase,
     mmapBase: layout.mmapBase,
     maxAddr: layout.maxAddr,
-    stdio: CAPTURED_STDIO,
   });
   processProgramBytes.set(pid, programBytes);
   processLayouts.set(pid, layout);
@@ -665,7 +685,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   const initData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
     pid,
-    ppid: 0,
     programBytes,
     memory,
     channelOffset,

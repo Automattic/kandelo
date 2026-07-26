@@ -1,18 +1,18 @@
 name: Promote durable package generation
 
-# Promote one exact PR-staging package closure into a content-addressed public
-# prerelease that survives ordinary `pr-*-staging` cleanup. The read-only job
-# executes the historical package-source xtask. The writer executes only
-# current default-branch authority and independently revalidates the bundle.
+# Snapshot one exact, coherently activated main package selection into a
+# content-addressed public prerelease. Both jobs execute only the exact current
+# main authority; the second checkout is inert source data at the same SHA.
 on:
   workflow_dispatch:
     inputs:
       source-tag:
-        description: 'Exact temporary source release, for example pr-1079-staging'
+        description: 'Activated canonical package release, for example binaries-abi-v42'
         required: true
+        default: binaries-abi-v42
         type: string
       package-source-sha:
-        description: 'Full 40-character commit that produced every source archive'
+        description: 'Full 40-character activated default-branch commit'
         required: true
         type: string
       expected-abi:
@@ -20,27 +20,38 @@ on:
         required: true
         default: '42'
         type: string
+      selection-kind:
+        description: 'Promote one root package or the authoritative browser input root set'
+        required: true
+        default: root-package
+        type: choice
+        options:
+          - root-package
+          - browser-inputs
       root-package:
-        description: 'Program package whose exact dependency closure is promoted'
+        description: 'Program root to promote; leave rootfs when selection-kind is browser-inputs'
         required: true
         default: rootfs
         type: string
       arch:
-        description: 'Target architecture for the selected closure'
+        description: 'Target architecture; browser inputs derive the imported roots for this architecture'
         required: true
         default: wasm32
-        type: string
+        type: choice
+        options:
+          - wasm32
+          - wasm64
 
 permissions:
   contents: read
 
 concurrency:
-  group: durable-package-generation-${{ inputs.package-source-sha }}-${{ inputs.root-package }}-${{ inputs.arch }}
+  group: durable-package-generation-${{ inputs.package-source-sha }}-${{ inputs.selection-kind }}-${{ inputs.root-package }}-${{ inputs.arch }}
   cancel-in-progress: false
 
 jobs:
   prepare:
-    if: github.ref_name == github.event.repository.default_branch
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
@@ -54,7 +65,7 @@ jobs:
           persist-credentials: false
           path: authority
 
-      - name: Checkout exact package source without credentials
+      - name: Checkout exact activated main source as inert data
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ inputs.package-source-sha }}
@@ -65,18 +76,27 @@ jobs:
       - name: Set up declared build tools
         uses: ./authority/.github/actions/setup-nix
 
-      - name: Build the exact source identity tool
-        working-directory: package-source
+      - name: Install current browser-root parser dependencies
+        if: inputs.selection-kind == 'browser-inputs'
+        working-directory: authority
+        run: |
+          # Source data never supplies executable authority. Use only the
+          # exact current main parser and lockfile.
+          bash scripts/dev-shell.sh \
+            npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Build the current source-data validator
+        working-directory: authority
         run: |
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
             host_target="$(rustc -vV | awk "/^host/ {print \$2}")"
             cargo build --release -p xtask \
               --target "$host_target" \
-              --target-dir "$RUNNER_TEMP/package-source-target"
+              --target-dir "$RUNNER_TEMP/authority-target"
             printf "%s\n" \
-              "$RUNNER_TEMP/package-source-target/$host_target/release/xtask" \
-              > "$RUNNER_TEMP/source-xtask-path"
+              "$RUNNER_TEMP/authority-target/$host_target/release/xtask" \
+              > "$RUNNER_TEMP/authority-xtask-path"
           '
 
       - name: Validate and prepare the content-addressed generation
@@ -87,21 +107,38 @@ jobs:
           PACKAGE_SOURCE_SHA: ${{ inputs.package-source-sha }}
           SOURCE_TAG: ${{ inputs.source-tag }}
           EXPECTED_ABI: ${{ inputs.expected-abi }}
+          SELECTION_KIND: ${{ inputs.selection-kind }}
           ROOT_PACKAGE: ${{ inputs.root-package }}
           TARGET_ARCH: ${{ inputs.arch }}
+          AUTHORITY_SHA: ${{ github.sha }}
+          DEFAULT_REF: main
         run: |
           set -euo pipefail
-          source_xtask="$(cat "$RUNNER_TEMP/source-xtask-path")"
-          bash .github/scripts/prepare-durable-package-generation.sh \
+          authority_xtask="$(cat "$RUNNER_TEMP/authority-xtask-path")"
+          selection_args=(--root-package "$ROOT_PACKAGE")
+          if [ "$SELECTION_KIND" = browser-inputs ]; then
+            [ "$ROOT_PACKAGE" = rootfs ] || {
+              echo "root-package must retain its rootfs default for browser-inputs" >&2
+              exit 2
+            }
+            selection_args=(--browser-inputs)
+          elif [ "$SELECTION_KIND" != root-package ]; then
+            echo "unsupported package selection kind: $SELECTION_KIND" >&2
+            exit 2
+          fi
+          bash scripts/dev-shell.sh \
+            bash .github/scripts/prepare-durable-package-generation.sh \
             --source-tag "$SOURCE_TAG" \
             --package-source-root "$GITHUB_WORKSPACE/package-source" \
             --package-source-sha "$PACKAGE_SOURCE_SHA" \
+            --authority-sha "$AUTHORITY_SHA" \
+            --default-ref "$DEFAULT_REF" \
             --expected-abi "$EXPECTED_ABI" \
-            --root-package "$ROOT_PACKAGE" \
             --arch "$TARGET_ARCH" \
             --repository "$GITHUB_REPOSITORY" \
             --output-dir "$RUNNER_TEMP/package-generation" \
-            --source-xtask "$source_xtask"
+            --authority-xtask "$authority_xtask" \
+            "${selection_args[@]}"
           echo "Prepared $(jq -r .tag "$RUNNER_TEMP/package-generation/generation.json")"
 
       - name: Transfer the inert generation bundle
@@ -130,6 +167,14 @@ jobs:
       - name: Set up declared build tools
         uses: ./.github/actions/setup-nix
 
+      - name: Install current browser-root parser dependencies
+        if: inputs.selection-kind == 'browser-inputs'
+        run: |
+          # The writer independently derives roots from exact main; it does not
+          # trust the roots embedded in the transferred preparation artifact.
+          bash scripts/dev-shell.sh \
+            npm ci --ignore-scripts --no-audit --no-fund
+
       - name: Build current authority validator
         run: |
           bash scripts/dev-shell.sh bash -c '
@@ -153,6 +198,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          SOURCE_TAG: ${{ inputs.source-tag }}
+          PACKAGE_SOURCE_SHA: ${{ inputs.package-source-sha }}
+          EXPECTED_ABI: ${{ inputs.expected-abi }}
+          SELECTION_KIND: ${{ inputs.selection-kind }}
+          ROOT_PACKAGE: ${{ inputs.root-package }}
+          TARGET_ARCH: ${{ inputs.arch }}
+          AUTHORITY_SHA: ${{ github.sha }}
+          DEFAULT_REF: main
         run: |
           set -euo pipefail
           authority_xtask="$(cat "$RUNNER_TEMP/authority-xtask-path")"
@@ -160,14 +213,23 @@ jobs:
             --bundle "$RUNNER_TEMP/package-generation" \
             --authority-xtask "$authority_xtask" \
             --lock-root "$GITHUB_WORKSPACE" \
-            --receipt "$RUNNER_TEMP/package-generation-receipt.json"
+            --receipt "$RUNNER_TEMP/package-generation-receipt.json" \
+            --source-tag "$SOURCE_TAG" \
+            --package-source-sha "$PACKAGE_SOURCE_SHA" \
+            --expected-abi "$EXPECTED_ABI" \
+            --selection-kind "$SELECTION_KIND" \
+            --root-package "$ROOT_PACKAGE" \
+            --arch "$TARGET_ARCH" \
+            --authority-sha "$AUTHORITY_SHA" \
+            --default-ref "$DEFAULT_REF"
           tag="$(jq -r .tag "$RUNNER_TEMP/package-generation/generation.json")"
           {
             echo "## Durable package generation"
             echo
             echo "- Tag: \`$tag\`"
             echo "- Package source: \`${{ inputs.package-source-sha }}\`"
-            echo "- Source staging release: \`${{ inputs.source-tag }}\`"
+            echo "- Activated package release: \`${{ inputs.source-tag }}\`"
+            echo "- Activated main source: \`${{ inputs.package-source-sha }}\`"
           } >>"$GITHUB_STEP_SUMMARY"
 
       - name: Retain the exact publication receipt

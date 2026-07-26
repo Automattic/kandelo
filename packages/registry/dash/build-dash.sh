@@ -4,13 +4,30 @@ set -euo pipefail
 # Build dash 0.5.12 for wasm32-posix-kernel.
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# Output: packages/registry/dash/dash-src/src/dash (wasm32 binary)
+# Output: packages/registry/dash/bin/dash.wasm for a direct build, or the
+# resolver-owned WASM_POSIX_DEP_OUT_DIR.
 
-DASH_VERSION="${DASH_VERSION:-0.5.12}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/dash-src"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/dash-src"
+BIN_DIR="$WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
+DASH_VERSION="${WASM_POSIX_DEP_VERSION:-${DASH_VERSION:-0.5.12}}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-http://gondor.apana.org.au/~herbert/dash/files/dash-${DASH_VERSION}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-6a474ac46e8b0b32916c4c60df694c82058d3297d8b385b74508030ca4a8f28a}"
+VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
+SOURCE_MARKER="$SRC_DIR/.kandelo-dash-source"
+
+# A resolver/Formula caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -26,16 +43,18 @@ fi
 export WASM_POSIX_SYSROOT="$SYSROOT"
 export WASM_POSIX_GLUE_DIR="$REPO_ROOT/libc/glue"
 
-# --- Download dash source ---
+# --- Stage verified dash source ---
+expected_source_marker="$(printf '%s\n%s\n%s' \
+    "$DASH_VERSION" "$SOURCE_URL" "$SOURCE_SHA256")"
+if [ -d "$SRC_DIR" ] && \
+   [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_source_marker" ]; then
+    rm -rf "$SRC_DIR" "$BIN_DIR"
+fi
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading dash $DASH_VERSION..."
-    TARBALL="dash-${DASH_VERSION}.tar.gz"
-    URL="http://gondor.apana.org.au/~herbert/dash/files/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
+    echo "==> Staging verified dash $DASH_VERSION source..."
+    kandelo_package_stage_verified_source dash "$SRC_DIR" \
+        "$VERIFIED_SOURCE_DIR" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
+    printf '%s\n' "$expected_source_marker" >"$SOURCE_MARKER"
 fi
 
 cd "$SRC_DIR"
@@ -153,30 +172,19 @@ if [ ! -f "$DASH_BIN" ]; then
     exit 1
 fi
 
-# --- Fork instrumentation ---
-# Command substitution ($(...)), pipes, and subshells all use fork().
-# wasm-fork-instrument makes the fork child resume from the fork point.
-# Auto-discovers fork paths via call-graph analysis — no onlylist needed.
-# Must run last — it hardcodes mutable-global offsets and any later pass
-# reordering globals would corrupt the fork buffer.
-FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
-echo "==> Applying fork instrumentation..."
-"$FORK_INSTRUMENT" "$DASH_BIN" -o "$DASH_BIN.instr"
-mv "$DASH_BIN.instr" "$DASH_BIN"
-
 echo "==> dash built successfully!"
 
 # Copy to bin/ with .wasm extension (consistent with coreutils/grep/sed, needed for Vite)
-mkdir -p "$SCRIPT_DIR/bin"
-cp "$DASH_BIN" "$SCRIPT_DIR/bin/dash.wasm"
+mkdir -p "$BIN_DIR"
+cp "$DASH_BIN" "$BIN_DIR/dash.wasm"
 
 # Install the declared dash artifact into local-binaries/ so the resolver picks
 # it up as an override. Guest images create `/bin/sh` as a VFS-level shell link;
 # there is no separate resolver `sh.wasm` package artifact.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary dash "$SCRIPT_DIR/bin/dash.wasm"
+install_local_binary dash "$BIN_DIR/dash.wasm"
 
-ls -lh "$SCRIPT_DIR/bin/dash.wasm"
+ls -lh "$BIN_DIR/dash.wasm"
 echo ""
 echo "Run with:"
 echo "  npx tsx packages/registry/shell/demo/serve.ts"

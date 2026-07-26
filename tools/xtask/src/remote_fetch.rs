@@ -54,6 +54,7 @@ use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
+use crate::package_archive_limits::MAX_PACKAGE_ARCHIVE_DECOMPRESSED_BYTES;
 use crate::pkg_manifest::{
     Binary, DepsManifest, GitBuildInput, TargetArch, current_git_inputs, validate_cache_provenance,
     write_cache_provenance,
@@ -74,15 +75,6 @@ const DOWNLOAD_BUFFER_BYTES: usize = 64 * 1024;
 const DOWNLOAD_PROGRESS_INTERVAL: Duration = Duration::from_secs(5);
 const DOWNLOAD_PROGRESS_BYTES: u64 = 8 * 1024 * 1024;
 const HTTP_ARCHIVE_DOWNLOAD_DEADLINE: Duration = Duration::from_secs(60 * 60);
-
-/// Maximum number of decompressed bytes we will pipe out of the zstd
-/// decoder into `tar`. A malicious archive ("zip bomb") could otherwise
-/// extract many GB to disk. 1 GB is well above any real published
-/// artifact and bounds disk use.
-///
-/// On overflow, `tar::Archive::unpack` sees a truncated stream and
-/// surfaces it as `FetchError::ExtractFailed`.
-const MAX_DECOMPRESSED_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// HTTP archive fetch retry budget. GitHub Release asset downloads can
 /// intermittently return 5xx from the CDN; retrying the bounded fetch is
@@ -1256,7 +1248,8 @@ pub(crate) fn verify_sha(bytes: &[u8], expected_hex: &str) -> Result<(), FetchEr
 
 /// Decompress `bytes` (`.tar.zst`) into `dest`.
 ///
-/// Decompressed output is capped at `MAX_DECOMPRESSED_BYTES` to
+/// Decompressed output is capped at
+/// `MAX_PACKAGE_ARCHIVE_DECOMPRESSED_BYTES` to
 /// defend against zip-bomb-style archives that decompress to many
 /// times the on-wire size. On overflow the stream truncates mid-tar
 /// and the unpack call returns `FetchError::ExtractFailed`.
@@ -1274,7 +1267,7 @@ fn extract_tar_zst_file(path: &Path, dest: &Path) -> Result<(), FetchError> {
 fn extract_tar_zst_reader<R: Read>(reader: R, dest: &Path) -> Result<(), FetchError> {
     let decoder = zstd::stream::read::Decoder::new(reader)
         .map_err(|e| FetchError::DecompressFailed(format!("{e}")))?;
-    let bounded = std::io::Read::take(decoder, MAX_DECOMPRESSED_BYTES);
+    let bounded = std::io::Read::take(decoder, MAX_PACKAGE_ARCHIVE_DECOMPRESSED_BYTES);
     let mut tar = tar::Archive::new(bounded);
     tar.unpack(dest)
         .map_err(|e| FetchError::ExtractFailed(format!("{e}")))?;

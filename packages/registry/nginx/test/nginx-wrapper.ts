@@ -20,7 +20,6 @@ import { resolve, dirname } from "path";
 import { createConnection } from "net";
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
-import { FORK_SAVE_BUFFER_SIZE } from "../../../../host/src/process-memory";
 import { NodeWorkerAdapter } from "../../../../host/src/worker-adapter";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 import type { CentralizedWorkerInitMessage, WorkerToHostMessage } from "../../../../host/src/worker-protocol";
@@ -173,12 +172,25 @@ async function runNginx(opts: ReturnType<typeof parseArgs>) {
 
   const io = new NodePlatformIO();
   const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
+  let masterPid = 0;
 
   const kernelWorker = new CentralizedKernelWorker(
     { maxWorkers: 8, dataBufferSize: 65536, useSharedMemory: true },
     io,
     {
-      onFork: async (parentPid, childPid, parentMemory) => {
+      onFork: async ({
+        childPid,
+        parentMemory,
+        continuation,
+      }) => {
+        // WHY: this upstream-test adapter launches every child through _start
+        // and does not retain pthread entry roots. Reject that unsupported
+        // shape instead of starting a child that cannot reach its fork site.
+        if (continuation.kind !== "main") {
+          throw new Error(
+            "nginx test wrapper does not support fork from a pthread-created thread",
+          );
+        }
         const parentBuf = new Uint8Array(parentMemory.buffer);
         const parentPages = Math.ceil(parentBuf.byteLength / 65536);
         const childMemory = new WebAssembly.Memory({
@@ -194,18 +206,16 @@ async function runNginx(opts: ReturnType<typeof parseArgs>) {
         const childChannelOffset = (MAX_PAGES - 2) * 65536;
         new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
 
-        kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true });
+        kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset]);
 
-        const forkBufAddr = childChannelOffset - FORK_SAVE_BUFFER_SIZE;
         const childInitData: CentralizedWorkerInitMessage = {
           type: "centralized_init",
           pid: childPid,
-          ppid: parentPid,
           programBytes: nginxBytes,
           memory: childMemory,
           channelOffset: childChannelOffset,
           isForkChild: true,
-          forkBufAddr,
+          forkBufAddr: continuation.forkBufAddr,
         };
 
         const childWorker = workerAdapter.createWorker(childInitData);
@@ -221,7 +231,7 @@ async function runNginx(opts: ReturnType<typeof parseArgs>) {
       onExec: async () => -38, // ENOSYS
 
       onExit: (pid, exitStatus) => {
-        if (pid === 1) {
+        if (pid === masterPid) {
           kernelWorker.unregisterProcess(pid);
         } else {
           kernelWorker.deactivateProcess(pid);
@@ -243,10 +253,10 @@ async function runNginx(opts: ReturnType<typeof parseArgs>) {
   memory.grow(MAX_PAGES - 17);
   new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-  const pid = 1;
-  kernelWorker.registerProcess(pid, memory, [channelOffset], { stdio: CAPTURED_STDIO });
+  const pid = kernelWorker.createProcess(CAPTURED_STDIO);
+  masterPid = pid;
+  kernelWorker.registerProcess(pid, memory, [channelOffset]);
   kernelWorker.setCwd(pid, opts.prefix || process.cwd());
-  kernelWorker.setNextChildPid(2);
 
   // Build nginx argv
   const argv = ["nginx", "-p", (opts.prefix || process.cwd()) + "/", "-c", opts.config];
@@ -260,7 +270,6 @@ async function runNginx(opts: ReturnType<typeof parseArgs>) {
   const initData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
     pid,
-    ppid: 0,
     programBytes: nginxBytes,
     memory,
     channelOffset,

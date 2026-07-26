@@ -1,5 +1,5 @@
 {
-  "abi_version": 41,
+  "abi_version": 42,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -88,6 +88,7 @@
     }
   ],
   "custom_sections": [
+    "kandelo.wpk_fork.linked_frames",
     "wasm-posix-abi"
   ],
   "export_deny": {
@@ -113,7 +114,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 41,
+      "abi_version": 42,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -196,6 +197,10 @@
       "kernel_alloc_scratch",
       "kernel_create_process",
       "kernel_create_process_with_stdio",
+      "kernel_dequeue_signal",
+      "kernel_exec_prepare",
+      "kernel_exec_setup_for_thread",
+      "kernel_fork_process",
       "kernel_get_parent_pid",
       "kernel_get_process_exit_signal",
       "kernel_get_process_state",
@@ -203,12 +208,20 @@
       "kernel_has_sa_nocldstop",
       "kernel_host_adapter_manifest_len",
       "kernel_host_adapter_manifest_ptr",
+      "kernel_ipc_shmat_for_process",
+      "kernel_ipc_shmat_for_task",
+      "kernel_ipc_shmdt_for_process",
+      "kernel_ipc_shmdt_for_task",
       "kernel_mark_process_signaled",
       "kernel_pipe_has_readers",
       "kernel_posix_timer_fire",
       "kernel_prepare_write_operation",
       "kernel_reap_exited_child",
       "kernel_remove_process",
+      "kernel_set_current_tid",
+      "kernel_spawn_process",
+      "kernel_thread_exit",
+      "kernel_validate_task",
       "kernel_wait_child_poll"
     ],
     "required_worker_features": 7,
@@ -389,22 +402,17 @@
     {
       "kind": "func",
       "name": "kernel_create_process",
-      "signature": "(i32) -> (i32)"
+      "signature": "() -> (i32)"
     },
     {
       "kind": "func",
       "name": "kernel_create_process_with_stdio",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_deliver_signal",
-      "signature": "(i32) -> (i32)"
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
       "name": "kernel_dequeue_signal",
-      "signature": "(i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -470,11 +478,6 @@
       "kind": "func",
       "name": "kernel_exec_prepare",
       "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_exec_setup",
-      "signature": "(i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -563,11 +566,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_fork",
-      "signature": "() -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_fork_process",
       "signature": "(i32,i32) -> (i32)"
     },
@@ -615,11 +613,6 @@
       "kind": "func",
       "name": "kernel_get_cwd",
       "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_get_exec_state",
-      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -878,21 +871,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_init",
-      "signature": "(i32) -> ()"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_init_from_exec",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_init_from_fork",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_inject_connection",
       "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
@@ -928,8 +906,28 @@
     },
     {
       "kind": "func",
+      "name": "kernel_ipc_shmat_for_process",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_ipc_shmat_for_task",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_ipc_shmdt",
       "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_ipc_shmdt_for_process",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_ipc_shmdt_for_task",
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1164,7 +1162,7 @@
     {
       "kind": "func",
       "name": "kernel_prepare_write_operation",
-      "signature": "(i32,i32,i64,i32,i32) -> (i64)"
+      "signature": "(i32,i32,i32,i64,i32,i32) -> (i64)"
     },
     {
       "kind": "func",
@@ -1303,11 +1301,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_reset_signal_mask",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_rewinddir",
       "signature": "(i32) -> (i32)"
     },
@@ -1368,18 +1361,8 @@
     },
     {
       "kind": "func",
-      "name": "kernel_set_child_pid",
-      "signature": "(i32) -> ()"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_set_current_pid",
-      "signature": "(i32) -> ()"
-    },
-    {
-      "kind": "func",
       "name": "kernel_set_current_tid",
-      "signature": "(i32) -> ()"
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1539,7 +1522,7 @@
     {
       "kind": "func",
       "name": "kernel_spawn_process",
-      "signature": "(i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1693,6 +1676,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_validate_task",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_vblank",
       "signature": "() -> (i32)"
     },
@@ -1704,7 +1692,7 @@
     {
       "kind": "func",
       "name": "kernel_wait_child_poll",
-      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -3226,6 +3214,130 @@
       "pages_per_slot": 4
     },
     "wasm_page_size": 65536
+  },
+  "program_artifact": {
+    "fork_instrumentation": {
+      "linked_frame_descriptor": {
+        "alignment": 8,
+        "descriptor_size": 24,
+        "flags": [
+          {
+            "bit": 2,
+            "name": "abort_unwinding"
+          },
+          {
+            "bit": 1,
+            "name": "transactional_nodes"
+          }
+        ],
+        "magic_bytes": [
+          75,
+          76,
+          67,
+          70
+        ],
+        "pointer_widths": [
+          {
+            "bytes": 4,
+            "chunk_header_size": 32,
+            "node_header_size": 24
+          },
+          {
+            "bytes": 8,
+            "chunk_header_size": 56,
+            "node_header_size": 32
+          }
+        ],
+        "required_flags": 3,
+        "section": "kandelo.wpk_fork.linked_frames",
+        "version": 1
+      },
+      "required_exports": [
+        {
+          "kind": "func",
+          "name": "wpk_fork_abort_begin",
+          "params": [
+            "ptr"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "name": "wpk_fork_abort_end",
+          "params": [],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "name": "wpk_fork_rewind_begin",
+          "params": [
+            "ptr"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "name": "wpk_fork_rewind_end",
+          "params": [],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "name": "wpk_fork_state",
+          "params": [],
+          "results": [
+            "i32"
+          ]
+        },
+        {
+          "kind": "func",
+          "name": "wpk_fork_unwind_begin",
+          "params": [
+            "ptr"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "name": "wpk_fork_unwind_end",
+          "params": [],
+          "results": []
+        }
+      ],
+      "required_imports": [
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_frame_commit",
+          "params": [
+            "ptr"
+          ],
+          "results": []
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_frame_next",
+          "params": [
+            "ptr"
+          ],
+          "results": [
+            "ptr"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
+          "name": "__wpk_fork_frame_reserve",
+          "params": [
+            "ptr"
+          ],
+          "results": [
+            "ptr"
+          ]
+        }
+      ]
+    }
   },
   "syscall_arg_descriptors": {
     "1": [

@@ -10,7 +10,7 @@
 //! - Environment (variable): env var strings
 //! - CWD (variable): current working directory bytes
 //! - Rlimits (256 bytes): 16 pairs of u64
-//! - Terminal (56 bytes): flags, control chars, window size
+//! - Terminal: flags, control chars, window size, session and foreground pgrp
 //! - Program break (4 bytes): current brk value
 //! - Memory layout metadata (20 bytes): initial brk, max addr, brk limit,
 //!   mmap base, reserved prefix
@@ -21,7 +21,9 @@ extern crate alloc;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use wasm_posix_shared::Errno;
-use wasm_posix_shared::fd_flags::{FD_CLOEXEC, FD_CLOFORK};
+#[cfg(test)]
+use wasm_posix_shared::fd_flags::FD_CLOEXEC;
+use wasm_posix_shared::fd_flags::FD_CLOFORK;
 
 use crate::fd::{FdEntry, FdTable, OpenFileDescRef};
 use crate::lock::{FileId, KernelFileKind, OfdId};
@@ -33,10 +35,12 @@ use crate::socket::SocketTable;
 use crate::terminal::{NCCS, TerminalState, WinSize};
 
 const FORK_MAGIC: u32 = 0x464F524B; // "FORK"
+#[cfg(test)]
 const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
-// v12 gives every serialized OFD a machine-wide identity and carries its
-// optional stable file-object identity across fork and legacy exec.
-const FORK_VERSION: u32 = 12;
+// v13 preserves the terminal's authoritative foreground process group across
+// fork and the test-only serialized exec format instead of reconstructing it
+// as synthetic PID 1.
+const FORK_VERSION: u32 = 13;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -51,7 +55,9 @@ const MAX_SOCKET_STRING_LEN: usize = 256;
 const MAX_IPV4_MULTICAST_MEMBERSHIPS: usize = 4096;
 const MAX_IPV4_MULTICAST_SOURCES: usize = 4096;
 const MAX_DIRECTED_SIGNAL_QUEUE: u32 = 65536;
+#[cfg(test)]
 const INITIAL_EXEC_STATE_BUFFER_LEN: usize = 64 * 1024;
+#[cfg(test)]
 const MAX_EXEC_STATE_BUFFER_LEN: usize = 4 * 1024 * 1024;
 
 // ── Writer helper ───────────────────────────────────────────────────────────
@@ -291,7 +297,8 @@ fn read_directed_signal_state(r: &mut Reader<'_>) -> Result<PerThreadSignalState
     Ok(state)
 }
 
-fn discard_legacy_exec_timer_notifications(state: &mut PerThreadSignalState) {
+#[cfg(test)]
+fn discard_serialized_exec_timer_notifications(state: &mut PerThreadSignalState) {
     let timer_signums: Vec<u32> = state
         .rt_queue
         .iter()
@@ -482,7 +489,7 @@ fn u32_to_file_type(v: u32) -> Result<FileType, Errno> {
 // ── Advisory-lock identity encoding ───────────────────────────────────────
 
 // Keep the optional FileId representation compact and explicit. These tags
-// are part of FORK_VERSION 12 and must not be reinterpreted in place.
+// were introduced in FORK_VERSION 12 and must not be reinterpreted in place.
 const FILE_ID_NONE: u8 = 0;
 const FILE_ID_HOST: u8 = 1;
 const FILE_ID_KERNEL_MEMFD: u8 = 2;
@@ -888,6 +895,7 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     w.write_u32(proc.terminal.c_ispeed)?;
     w.write_u32(proc.terminal.c_ospeed)?;
     w.write_i32(proc.terminal.session_id)?;
+    w.write_i32(proc.terminal.foreground_pgid)?;
 
     // ── Program break ──
     w.write_u32(proc.memory.get_brk() as u32)?;
@@ -1055,16 +1063,18 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
 
 // ── Deserialize ─────────────────────────────────────────────────────────────
 
-/// Deserialize process state from a fork buffer, creating a new child process.
+/// Deserialize process state from a fork buffer into an already-allocated
+/// child process.
 ///
 /// The child process gets:
-/// - `pid = child_pid`
+/// - The preallocated child PID remains unchanged
 /// - `state = ProcessState::Running`
 /// - `exit_status = 0`
 /// - Empty lock table, pipes, dir_streams, memory (per POSIX)
 /// - Sockets are cloned from parent (POSIX: child inherits open fds including sockets)
 /// - `signals.pending = 0` (via `SignalState::from_parts`)
-pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Errno> {
+fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Errno> {
+    let child_pid = child.pid;
     let mut r = Reader::new(buf);
 
     // ── Header ──
@@ -1237,6 +1247,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
     let c_ispeed = r.read_u32().unwrap_or(0o0000017); // B38400
     let c_ospeed = r.read_u32().unwrap_or(0o0000017);
     let session_id = r.read_i32().unwrap_or(0);
+    let foreground_pgid = r.read_i32()?;
 
     let terminal = TerminalState {
         c_iflag,
@@ -1253,7 +1264,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             ws_xpixel,
             ws_ypixel,
         },
-        foreground_pgid: 1,
+        foreground_pgid,
         session_id,
         line_buffer: Vec::new(),
         cooked_buffer: Vec::new(),
@@ -1480,73 +1491,76 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         }
     }
 
-    Ok(Process {
-        pid: child_pid,
-        ppid,
-        uid,
-        gid,
-        euid,
-        egid,
-        pgid,
-        sid,
-        // POSIX: fork children inherit sid but are NEVER session leaders.
-        // The leader flag is explicit (not derived from sid==pid) so that a
-        // child whose new pid happens to equal the inherited sid is still
-        // correctly treated as a non-leader.
-        is_session_leader: false,
-        state: ProcessState::Running,
-        exit_status: 0,
-        exit_signal: 0,
-        // A fork child has no parent-observable status change of its own.
-        wait_event: None,
-        fd_table,
-        ofd_table,
-        pipes: Vec::new(),
-        sockets,
-        cwd,
-        dir_streams: Vec::new(),
-        signals,
-        main_thread_signals: PerThreadSignalState::new(),
-        memory,
-        terminal,
-        environ,
-        argv,
-        umask,
-        nice,
-        rlimits,
-        alarm_deadline_ns: 0,
-        alarm_interval_ns: 0,
-        thread_name: [0u8; 16],
-        fork_child: true,
-        sigsuspend_saved_mask: None,
-        fork_exec_path,
-        fork_exec_argv,
-        fork_fd_actions,
-        next_ephemeral_port: 49152,
-        threads: Vec::new(), // POSIX: child has single thread
-        next_tid: 0,
-        epolls: Vec::new(),
-        posix_timers: Vec::new(),
-        alt_stack_sp: 0,
-        alt_stack_flags: 2, // SS_DISABLE
-        alt_stack_size: 0,
-        alt_stack_depth: 0,
-        fork_pipe_replay: Vec::new(),
-        has_exec: false,
-        // Fork children do NOT inherit the framebuffer binding. The
-        // /dev/fb0 device is single-owner (FB0_OWNER); a forked child
-        // gets a private mmap copy in its own Memory but is not
-        // registered as a host display target. fbDOOM doesn't fork
-        // mid-game; documented limitation in the design doc.
-        fb_binding: None,
-        // DRI bo bindings are per-process host state (the host points
-        // each bo's SAB slice at the binding's wasm `addr`). After
-        // fork, the child's memory is freshly cloned and the host
-        // has not been told where to mirror anything; the child must
-        // re-mmap to re-establish bindings, mirroring `fb_binding`.
-        dri_bindings: Vec::new(),
-        fork_count: 0,
-    })
+    child.ppid = ppid;
+    child.uid = uid;
+    child.gid = gid;
+    child.euid = euid;
+    child.egid = egid;
+    child.pgid = pgid;
+    child.sid = sid;
+    // POSIX: fork children inherit sid but are NEVER session leaders. The
+    // leader flag is explicit (not derived from sid==pid).
+    child.is_session_leader = false;
+    child.state = ProcessState::Running;
+    child.exit_status = 0;
+    child.exit_signal = 0;
+    child.wait_event = None;
+    child.fd_table = fd_table;
+    child.ofd_table = ofd_table;
+    child.pipes.clear();
+    child.sockets = sockets;
+    child.cwd = cwd;
+    child.dir_streams.clear();
+    child.signals = signals;
+    child.main_thread_signals = PerThreadSignalState::new();
+    child.memory = memory;
+    child.terminal = terminal;
+    child.environ = environ;
+    child.argv = argv;
+    child.umask = umask;
+    child.nice = nice;
+    child.rlimits = rlimits;
+    child.alarm_deadline_ns = 0;
+    child.alarm_interval_ns = 0;
+    child.thread_name = [0u8; 16];
+    child.fork_child = true;
+    child.sigsuspend_saved_mask = None;
+    child.fork_exec_path = fork_exec_path;
+    child.fork_exec_argv = fork_exec_argv;
+    child.fork_fd_actions = fork_fd_actions;
+    child.exec_prepared_tid = None;
+    child.next_ephemeral_port = 49152;
+    child.clear_threads(); // POSIX: child has one task, the process leader.
+    child.epolls.clear();
+    child.posix_timers.clear();
+    child.alt_stack_sp = 0;
+    child.alt_stack_flags = 2; // SS_DISABLE
+    child.alt_stack_size = 0;
+    child.alt_stack_depth = 0;
+    child.fork_pipe_replay.clear();
+    child.has_exec = false;
+    // Fork children do not inherit host framebuffer or DRI bindings.
+    child.fb_binding = None;
+    child.dri_bindings.clear();
+    child.fork_count = 0;
+    Ok(())
+}
+
+/// Restore fork state without allowing the deserializer to choose an identity.
+/// The child must already have consumed a `ProcessTable` allocation token.
+pub(crate) fn deserialize_allocated_fork_state(
+    buf: &[u8],
+    child: &mut Process,
+) -> Result<(), Errno> {
+    deserialize_fork_state_into(buf, child)
+}
+
+/// Test-only fixture wrapper that permits a caller-selected child PID.
+#[cfg(test)]
+pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Errno> {
+    let mut child = Process::new_empty_for_test(child_pid);
+    deserialize_fork_state_into(buf, &mut child)?;
+    Ok(child)
 }
 
 // ── Exec Serialize ──────────────────────────────────────────────────────────
@@ -1560,6 +1574,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
 /// - Pending signals: preserved (fork clears to 0)
 /// - FD table: FDs with FD_CLOEXEC are excluded
 /// - OFD table: only OFDs still referenced by remaining FDs after CLOEXEC filtering
+#[cfg(test)]
 pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Errno> {
     let mut w = Writer::new(buf);
 
@@ -1690,6 +1705,7 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     w.write_u32(proc.terminal.c_ispeed)?;
     w.write_u32(proc.terminal.c_ospeed)?;
     w.write_i32(proc.terminal.session_id)?;
+    w.write_i32(proc.terminal.foreground_pgid)?;
 
     // ── Program break ──
     w.write_u32(proc.memory.get_brk() as u32)?;
@@ -1705,6 +1721,7 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
 /// limit. Growth is bounded so a malformed or unexpectedly large process
 /// descriptor fails truthfully with ENOMEM instead of exhausting kernel Wasm
 /// memory.
+#[cfg(test)]
 pub fn serialize_exec_state_with_growing_buffer(proc: &Process) -> Result<Vec<u8>, Errno> {
     let mut len = INITIAL_EXEC_STATE_BUFFER_LEN;
 
@@ -1731,6 +1748,7 @@ pub fn serialize_exec_state_with_growing_buffer(proc: &Process) -> Result<Vec<u8
 /// - Checks EXEC_MAGIC instead of FORK_MAGIC
 /// - Reads pending signals (u64) after handler entries
 /// - Uses `SignalState::from_parts_with_pending` to preserve pending signals
+#[cfg(test)]
 pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     let mut r = Reader::new(buf);
 
@@ -1775,9 +1793,9 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     let pending = r.read_u64()?;
     let signals = SignalState::from_parts_with_pending(handlers, blocked, pending);
     let mut main_thread_signals = read_directed_signal_state(&mut r)?;
-    // POSIX timer objects do not survive exec. The legacy serialized exec path
-    // must not retain directed notifications that refer to discarded timers.
-    discard_legacy_exec_timer_notifications(&mut main_thread_signals);
+    // POSIX timer objects do not survive exec. The serialized test format must
+    // not retain directed notifications that refer to discarded timers.
+    discard_serialized_exec_timer_notifications(&mut main_thread_signals);
 
     // ── FD table ──
     let max_fds = r.read_u32()? as usize;
@@ -1900,6 +1918,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     let c_ispeed = r.read_u32().unwrap_or(0o0000017); // B38400
     let c_ospeed = r.read_u32().unwrap_or(0o0000017);
     let session_id = r.read_i32().unwrap_or(0);
+    let foreground_pgid = r.read_i32()?;
 
     let terminal = TerminalState {
         c_iflag,
@@ -1916,7 +1935,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             ws_xpixel,
             ws_ypixel,
         },
-        foreground_pgid: 1,
+        foreground_pgid,
         session_id,
         line_buffer: Vec::new(),
         cooked_buffer: Vec::new(),
@@ -1933,68 +1952,57 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     let _program_break = r.read_u32()?;
     let memory = MemoryManager::new();
 
-    Ok(Process {
-        pid,
-        ppid,
-        uid,
-        gid,
-        euid,
-        egid,
-        pgid,
-        sid,
-        is_session_leader,
-        state: ProcessState::Running,
-        exit_status: 0,
-        exit_signal: 0,
-        // ProcessTable preserves the old process's record after legacy exec.
-        wait_event: None,
-        fd_table,
-        ofd_table,
-        pipes: Vec::new(),
-        sockets: SocketTable::new(),
-        cwd,
-        dir_streams: Vec::new(),
-        signals,
-        main_thread_signals,
-        memory,
-        terminal,
-        environ,
-        argv,
-        umask,
-        nice,
-        rlimits,
-        alarm_deadline_ns: 0,
-        alarm_interval_ns: 0,
-        thread_name: [0u8; 16],
-        fork_child: false,
-        sigsuspend_saved_mask: None,
-        fork_exec_path: None,
-        fork_exec_argv: None,
-        fork_fd_actions: Vec::new(),
-        next_ephemeral_port: 49152,
-        threads: Vec::new(), // exec resets to single thread
-        next_tid: 0,
-        epolls: Vec::new(),
-        posix_timers: Vec::new(),
-        alt_stack_sp: 0,
-        alt_stack_flags: 2, // SS_DISABLE
-        alt_stack_size: 0,
-        alt_stack_depth: 0,
-        fork_pipe_replay: Vec::new(),
-        has_exec: false,
-        // exec wipes any prior framebuffer binding — the new program
-        // must open and mmap /dev/fb0 itself.
-        fb_binding: None,
-        // exec replaces the address space, so every DRI bo binding
-        // is gone — the new image must re-mmap.
-        dri_bindings: Vec::new(),
-        // The fork counter exists as a kernel-side regression guardrail.
-        // Resetting on exec keeps semantics simple: the next spawn-from-this-pid
-        // test starts from a clean slate. The plan's regression check inspects
-        // the *parent* process's counter, not the post-exec child, so this
-        // reset is safe.
-        fork_count: 0,
-    })
+    let mut process = Process::new_empty_for_test(pid);
+    process.ppid = ppid;
+    process.uid = uid;
+    process.gid = gid;
+    process.euid = euid;
+    process.egid = egid;
+    process.pgid = pgid;
+    process.sid = sid;
+    process.is_session_leader = is_session_leader;
+    process.state = ProcessState::Running;
+    process.exit_status = 0;
+    process.exit_signal = 0;
+    process.wait_event = None;
+    process.fd_table = fd_table;
+    process.ofd_table = ofd_table;
+    process.pipes.clear();
+    process.sockets = SocketTable::new();
+    process.cwd = cwd;
+    process.dir_streams.clear();
+    process.signals = signals;
+    process.main_thread_signals = main_thread_signals;
+    process.memory = memory;
+    process.terminal = terminal;
+    process.environ = environ;
+    process.argv = argv;
+    process.umask = umask;
+    process.nice = nice;
+    process.rlimits = rlimits;
+    process.alarm_deadline_ns = 0;
+    process.alarm_interval_ns = 0;
+    process.thread_name = [0u8; 16];
+    process.fork_child = false;
+    process.sigsuspend_saved_mask = None;
+    process.fork_exec_path = None;
+    process.fork_exec_argv = None;
+    process.fork_fd_actions.clear();
+    process.exec_prepared_tid = None;
+    process.next_ephemeral_port = 49152;
+    process.clear_threads(); // exec resets to the process leader only.
+    process.epolls.clear();
+    process.posix_timers.clear();
+    process.alt_stack_sp = 0;
+    process.alt_stack_flags = 2; // SS_DISABLE
+    process.alt_stack_size = 0;
+    process.alt_stack_depth = 0;
+    process.fork_pipe_replay.clear();
+    process.has_exec = false;
+    process.fb_binding = None;
+    process.dri_bindings.clear();
+    process.fork_count = 0;
+    Ok(process)
 }
 
 #[cfg(test)]
@@ -2005,7 +2013,8 @@ mod tests {
 
     #[test]
     fn test_roundtrip_default_process() {
-        let proc = Process::new(1);
+        let mut proc = Process::new(1);
+        proc.terminal.foreground_pgid = 313;
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_fork_state(&proc, &mut buf).unwrap();
         assert!(written > 12);
@@ -2022,6 +2031,7 @@ mod tests {
         assert_eq!(child.cwd, proc.cwd);
         assert_eq!(child.signals.pending, 0);
         assert_eq!(child.main_thread_signals.pending, 0);
+        assert_eq!(child.terminal.foreground_pgid, 313);
     }
 
     #[test]
@@ -2264,7 +2274,8 @@ mod tests {
 
     #[test]
     fn test_exec_roundtrip_default_process() {
-        let proc = Process::new(1);
+        let mut proc = Process::new(1);
+        proc.terminal.foreground_pgid = 919;
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_exec_state(&proc, &mut buf).unwrap();
         assert!(written > 12);
@@ -2275,6 +2286,7 @@ mod tests {
         assert_eq!(restored.ppid, 0); // default ppid
         assert_eq!(restored.signals.pending, 0);
         assert_eq!(restored.main_thread_signals.pending, 0);
+        assert_eq!(restored.terminal.foreground_pgid, 919);
     }
 
     #[test]
@@ -2790,8 +2802,8 @@ mod tests {
         use crate::process::ThreadInfo;
         let mut proc = Process::new(1);
         // Parent has 2 threads
-        let t1 = proc.alloc_tid();
-        let t2 = proc.alloc_tid();
+        let t1 = 2;
+        let t2 = 3;
         proc.add_thread(ThreadInfo::new(t1, 0, 0x1000, 0));
         proc.add_thread(ThreadInfo::new(t2, 0, 0x2000, 0));
         assert_eq!(proc.threads.len(), 2);
@@ -2802,14 +2814,13 @@ mod tests {
 
         // POSIX: child has a single thread (the calling thread)
         assert_eq!(child.threads.len(), 0);
-        assert_eq!(child.next_tid, 0);
     }
 
     #[test]
     fn test_exec_resets_threads() {
         use crate::process::ThreadInfo;
         let mut proc = Process::new(1);
-        let t1 = proc.alloc_tid();
+        let t1 = 2;
         proc.add_thread(ThreadInfo::new(t1, 0, 0x1000, 0));
 
         let mut buf = vec![0u8; 64 * 1024];
@@ -2817,7 +2828,6 @@ mod tests {
         let child = deserialize_exec_state(&buf[..written], 1).unwrap();
 
         assert_eq!(child.threads.len(), 0);
-        assert_eq!(child.next_tid, 0);
     }
 
     #[test]

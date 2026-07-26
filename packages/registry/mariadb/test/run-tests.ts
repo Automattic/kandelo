@@ -18,7 +18,6 @@ import { resolve, dirname } from "path";
 import { createConnection, createServer, type Socket } from "net";
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
-import { FORK_SAVE_BUFFER_SIZE } from "../../../../host/src/process-memory";
 import { NodeWorkerAdapter } from "../../../../host/src/worker-adapter";
 import { patchWasmForThread } from "../../../../host/src/worker-main";
 import { resolveBinary, tryResolveBinary } from "../../../../host/src/binary-resolver";
@@ -115,8 +114,6 @@ function patchIncludeFiles(testDir: string) {
 let serverStderr = "";
 let tmpTestDir = "/tmp";
 const clientExitResolvers = new Map<number, (status: number) => void>();
-let _nextPid = 10;
-function nextPid(): number { return _nextPid++; }
 
 // Server mid-test restart state
 let autoRestartOnServerExit = false;
@@ -196,13 +193,26 @@ async function main() {
 
     let resolveServerExit: ((status: number) => void) | null = null;
     let serverPort = 0;
+    let serverPid = 0;
 
     // Create kernel worker once (persistent for entire session)
     const kernelWorker = new CentralizedKernelWorker(
         { maxWorkers: 16, dataBufferSize: 65536, useSharedMemory: true },
         io,
         {
-            onFork: async (parentPid, childPid, parentMemory) => {
+            onFork: async ({
+                childPid,
+                parentMemory,
+                continuation,
+            }) => {
+                // WHY: this package harness launches every child through
+                // _start and does not retain pthread entry roots. Reject that
+                // unsupported shape instead of creating an invalid child.
+                if (continuation.kind !== "main") {
+                    throw new Error(
+                        "MariaDB test harness does not support fork from a pthread-created thread",
+                    );
+                }
                 const parentBuf = new Uint8Array(parentMemory.buffer);
                 const parentPages = Math.ceil(parentBuf.byteLength / 65536);
                 const childMemory = new WebAssembly.Memory({
@@ -216,15 +226,15 @@ async function main() {
                 const childChannelOffset = (MAX_PAGES - 2) * 65536;
                 new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
 
-                kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true });
+                kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset]);
 
-                const forkBufAddr = childChannelOffset - FORK_SAVE_BUFFER_SIZE;
                 const childInitData: CentralizedWorkerInitMessage = {
                     type: "centralized_init",
-                    pid: childPid, ppid: parentPid,
+                    pid: childPid,
                     programBytes: mysqldBytes, memory: childMemory,
                     channelOffset: childChannelOffset,
-                    isForkChild: true, forkBufAddr,
+                    isForkChild: true,
+                    forkBufAddr: continuation.forkBufAddr,
                 };
                 const childWorker = workerAdapter.createWorker(childInitData);
                 workers.set(childPid, childWorker);
@@ -235,9 +245,17 @@ async function main() {
                 return [childChannelOffset];
             },
 
-            onClone: async (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
+            onClone: async (attachment) => {
+                const {
+                    pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory,
+                } = attachment;
                 const alloc = threadAllocator.allocate(memory);
-                kernelWorker.addChannel(pid, alloc.channelOffset, tid);
+                try {
+                    kernelWorker.attachThreadChannel(attachment, alloc.channelOffset);
+                } catch (error) {
+                    threadAllocator.free(alloc.basePage);
+                    throw error;
+                }
 
                 const threadInitData: CentralizedThreadInitMessage = {
                     type: "centralized_thread_init",
@@ -277,13 +295,12 @@ async function main() {
                         currentTestWorker = null;
                     }
                 });
-                return tid;
             },
 
             onExec: async () => -38, // ENOSYS
 
             onExit: (exitPid, exitStatus) => {
-                if (exitPid === 1) {
+                if (exitPid === serverPid) {
                     kernelWorker.unregisterProcess(exitPid);
                     workers.delete(exitPid);
                     if (autoRestartOnServerExit) {
@@ -366,7 +383,7 @@ async function main() {
         } catch {}
 
         // Start server on same port with optional extra args
-        startServer(kw, wa, ws, serverBytes, dDir, port, extraArgs);
+        serverPid = startServer(kw, wa, ws, serverBytes, dDir, port, extraArgs);
 
         // Wait for TCP readiness
         for (let i = 0; i < 120; i++) {
@@ -421,7 +438,9 @@ async function main() {
         console.error(`Starting MariaDB on port ${serverPort}...`);
         resolveServerExit = null;
 
-        startServer(kernelWorker, workerAdapter, workers, mysqldBytes, dataDir, serverPort);
+        serverPid = startServer(
+            kernelWorker, workerAdapter, workers, mysqldBytes, dataDir, serverPort,
+        );
 
         // Wait for TCP readiness
         for (let i = 0; i < 120; i++) {
@@ -723,10 +742,9 @@ async function runBootstrap(
     memory.grow(MAX_PAGES - 17);
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-    const pid = 1;
-    kernelWorker.registerProcess(pid, memory, [channelOffset], { stdio: CAPTURED_STDIO });
+    const pid = kernelWorker.createProcess(CAPTURED_STDIO);
+    kernelWorker.registerProcess(pid, memory, [channelOffset]);
     kernelWorker.setCwd(pid, dataDir);
-    kernelWorker.setNextChildPid(2);
 
     const shareDir = resolve(installDir, "share/mysql");
     const systemTables = readFileSync(resolve(shareDir, "mysql_system_tables.sql"), "utf-8");
@@ -746,7 +764,7 @@ async function runBootstrap(
     const exitPromise = new Promise<number>((r) => { resolveExit = r; });
 
     const initData: CentralizedWorkerInitMessage = {
-        type: "centralized_init", pid, ppid: 0,
+        type: "centralized_init", pid,
         programBytes: mysqldBytes, memory, channelOffset,
         env: ["HOME=/tmp", "PATH=/usr/bin", "TMPDIR=/tmp"], argv,
     };
@@ -794,16 +812,15 @@ function startServer(
     dataDir: string,
     port: number,
     extraArgs: string[] = [],
-) {
+): number {
     const memory = new WebAssembly.Memory({ initial: 17, maximum: MAX_PAGES, shared: true });
     const channelOffset = (MAX_PAGES - 2) * 65536;
     memory.grow(MAX_PAGES - 17);
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-    const pid = 1;
-    kernelWorker.registerProcess(pid, memory, [channelOffset], { stdio: CAPTURED_STDIO });
+    const pid = kernelWorker.createProcess(CAPTURED_STDIO);
+    kernelWorker.registerProcess(pid, memory, [channelOffset]);
     kernelWorker.setCwd(pid, dataDir);
-    kernelWorker.setNextChildPid(2);
 
     const argv = [
         "mariadbd", "--no-defaults",
@@ -820,7 +837,7 @@ function startServer(
     ];
 
     const initData: CentralizedWorkerInitMessage = {
-        type: "centralized_init", pid, ppid: 0,
+        type: "centralized_init", pid,
         programBytes: mysqldBytes, memory, channelOffset,
         env: ["HOME=/tmp", "PATH=/usr/bin", "TMPDIR=/tmp"], argv,
     };
@@ -828,6 +845,7 @@ function startServer(
     const worker = workerAdapter.createWorker(initData);
     workers.set(pid, worker);
     worker.on("error", () => {});
+    return pid;
 }
 
 /** Run a single mysqltest against the running server. */
@@ -842,7 +860,6 @@ async function runMysqlTest(
     port: number,
     timeout: number,
 ): Promise<TestResult> {
-    const pid = nextPid();
     const start = Date.now();
 
     // mysqltest needs much less memory than mariadbd — use 2048 pages (128MB) max
@@ -852,7 +869,8 @@ async function runMysqlTest(
     memory.grow(CLIENT_MAX_PAGES - 17);
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-    kernelWorker.registerProcess(pid, memory, [channelOffset], { stdio: CAPTURED_STDIO });
+    const pid = kernelWorker.createProcess(CAPTURED_STDIO);
+    kernelWorker.registerProcess(pid, memory, [channelOffset]);
     kernelWorker.setCwd(pid, mysqlTestDir);
 
     // Setup/reset operations use "mysql" database; real tests use "test"
@@ -893,7 +911,7 @@ async function runMysqlTest(
     clientExitResolvers.set(pid, resolveExit!);
 
     const initData: CentralizedWorkerInitMessage = {
-        type: "centralized_init", pid, ppid: 0,
+        type: "centralized_init", pid,
         programBytes: mysqlTestBytes, memory, channelOffset,
         env: [
             "HOME=/tmp", "PATH=/usr/bin", "TMPDIR=/tmp",

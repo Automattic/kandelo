@@ -32,7 +32,7 @@ interface CopybackHarnessWorker {
 }
 
 function makeCopybackHarness() {
-  const pid = 1;
+  const pid = 100;
   const kernelMemory = new WebAssembly.Memory({ initial: 2 });
   const processMemory = new WebAssembly.Memory({
     initial: 2,

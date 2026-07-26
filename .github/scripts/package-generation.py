@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -22,16 +23,25 @@ ARCH = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 ASSET = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.tar\.zst$")
 SUPPORTING_ASSET = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 STAGING_TAG = re.compile(r"^pr-[1-9][0-9]*-staging$")
+CANONICAL_BINARY_TAG = re.compile(r"^binaries-abi-v[1-9][0-9]*$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 IDENTITY_FORMAT = "kandelo-package-generation-identity-v1"
 MANIFEST_FORMAT = "kandelo-package-generation-v1"
 PRESERVED_IDENTITY_FORMAT = "kandelo-preserved-pr-package-generation-identity-v1"
 PRESERVED_MANIFEST_FORMAT = "kandelo-preserved-pr-package-generation-v1"
 SOURCE_CAPTURE_FORMAT = "kandelo-preserved-pr-source-capture-v1"
-PROJECTION_SCHEMA = 1
+SINGLE_ROOT_PROJECTION_SCHEMA = 1
+ROOT_SET_PROJECTION_SCHEMA = 2
+BROWSER_INPUTS_ROOT_SET = "browser-inputs"
+SOURCE_IDENTITY_ALGORITHM = "kandelo-program-packages-v2-manifest-closure-v1"
+PROGRAM_ARCHIVE_DISPOSITION = "program-archive"
+LIBRARY_ARCHIVE_DISPOSITION = "library-archive"
+SOURCE_ONLY_DISPOSITION = "source-only"
+MAIN_SOURCE_EVIDENCE_FORMAT = "kandelo-main-package-activation-v1"
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_INDEX_BYTES = 16 * 1024 * 1024
 MAX_ARCHIVES = 256
+MAX_ROOTS_BYTES = 64 * 1024
 MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_TOTAL_ARCHIVE_BYTES = 16 * 1024 * 1024 * 1024
 MAX_SUPPORTING_ASSETS = 8
@@ -133,17 +143,126 @@ def text_matching(value: Any, pattern: re.Pattern[str], context: str) -> str:
     return value
 
 
-def validate_projection(value: Any) -> dict[str, Any]:
-    projection = exact_keys(
+def mapping_field(value: Any, key: str, context: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or not isinstance(value.get(key), dict):
+        fail(f"{context} must contain object field {key!r}")
+    return value[key]
+
+
+def validate_main_source_evidence(value: Any) -> dict[str, Any]:
+    evidence = exact_keys(
         value,
-        {"schema", "root_package", "arch", "entries"},
-        "package projection",
+        {
+            "format",
+            "repository",
+            "tag",
+            "release_id",
+            "tag_sha",
+            "default_ref",
+            "package_source_sha",
+            "tree_sha",
+        },
+        "main package activation evidence",
     )
-    if projection["schema"] != PROJECTION_SCHEMA:
-        fail("package projection schema is unsupported")
-    root = text_matching(projection["root_package"], PACKAGE, "projection root")
-    arch = text_matching(projection["arch"], ARCH, "projection arch")
-    entries = projection["entries"]
+    if evidence["format"] != MAIN_SOURCE_EVIDENCE_FORMAT:
+        fail("main package activation evidence format is unsupported")
+    if evidence["default_ref"] != "main":
+        fail("main package activation evidence must name refs/heads/main")
+    return {
+        "format": MAIN_SOURCE_EVIDENCE_FORMAT,
+        "repository": text_matching(
+            evidence["repository"], REPOSITORY, "main activation repository"
+        ),
+        "tag": text_matching(
+            evidence["tag"], CANONICAL_BINARY_TAG, "canonical binary tag"
+        ),
+        "release_id": integer(
+            evidence["release_id"], "canonical binary release id", minimum=1
+        ),
+        "tag_sha": text_matching(
+            evidence["tag_sha"], HEX_40, "canonical binary tag SHA"
+        ),
+        "default_ref": "main",
+        "package_source_sha": text_matching(
+            evidence["package_source_sha"], HEX_40, "main package source SHA"
+        ),
+        "tree_sha": text_matching(
+            evidence["tree_sha"], HEX_40, "main package source tree SHA"
+        ),
+    }
+
+
+def derive_main_source_evidence(
+    *,
+    repository: str,
+    source_tag: str,
+    default_ref: str,
+    package_source_sha: str,
+    release: Any,
+    tag_ref: Any,
+    default_ref_value: Any,
+    source_commit: Any,
+) -> dict[str, Any]:
+    text_matching(repository, REPOSITORY, "repository")
+    text_matching(source_tag, CANONICAL_BINARY_TAG, "canonical binary tag")
+    if default_ref != "main":
+        fail("durable generation source ref must be refs/heads/main")
+    text_matching(package_source_sha, HEX_40, "main package source SHA")
+    if (
+        not isinstance(release, dict)
+        or release.get("tag_name") != source_tag
+        or release.get("draft") is not False
+        or release.get("prerelease") is not False
+    ):
+        fail("canonical binary release identity is malformed")
+    release_id = integer(
+        release.get("id"), "canonical binary release id", minimum=1
+    )
+    tag_object = mapping_field(tag_ref, "object", "canonical binary tag")
+    tag_sha = text_matching(
+        tag_object.get("sha"), HEX_40, "canonical binary tag SHA"
+    )
+    if (
+        not isinstance(tag_ref, dict)
+        or tag_ref.get("ref") != f"refs/tags/{source_tag}"
+        or tag_object.get("type") != "commit"
+    ):
+        fail("canonical binary tag is not a direct commit reference")
+    default_object = mapping_field(
+        default_ref_value, "object", "default branch reference"
+    )
+    if (
+        not isinstance(default_ref_value, dict)
+        or default_ref_value.get("ref") != f"refs/heads/{default_ref}"
+        or default_object.get("type") != "commit"
+        or default_object.get("sha") != package_source_sha
+    ):
+        fail("default branch does not point at the package source SHA")
+    source_tree = mapping_field(source_commit, "tree", "main package source commit")
+    if (
+        not isinstance(source_commit, dict)
+        or source_commit.get("sha") != package_source_sha
+    ):
+        fail("main package source commit metadata differs from the default ref")
+    tree_sha = text_matching(
+        source_tree.get("sha"), HEX_40, "main package source tree SHA"
+    )
+    return validate_main_source_evidence(
+        {
+            "format": MAIN_SOURCE_EVIDENCE_FORMAT,
+            "repository": repository,
+            "tag": source_tag,
+            "release_id": release_id,
+            "tag_sha": tag_sha,
+            "default_ref": default_ref,
+            "package_source_sha": package_source_sha,
+            "tree_sha": tree_sha,
+        }
+    )
+
+
+def validate_projection_entries(value: Any, arch: str) -> list[dict[str, str]]:
+    entries = value
     if (
         not isinstance(entries, list)
         or len(entries) < 1
@@ -180,17 +299,174 @@ def validate_projection(value: Any) -> dict[str, Any]:
     identities = [(entry["package"], entry["arch"]) for entry in normalized]
     if len(identities) != len(set(identities)):
         fail("projection contains duplicate package identities")
-    if (root, arch) not in set(identities):
-        fail("projection does not contain its root package")
+    return normalized
+
+
+def validate_projection(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        fail("package projection must be an object")
+    schema = value.get("schema")
+    if isinstance(schema, bool) or not isinstance(schema, int):
+        fail("package projection schema must be an integer")
+    if schema == SINGLE_ROOT_PROJECTION_SCHEMA:
+        projection = exact_keys(
+            value,
+            {"schema", "root_package", "arch", "entries"},
+            "package projection",
+        )
+        root = text_matching(projection["root_package"], PACKAGE, "projection root")
+        arch = text_matching(projection["arch"], ARCH, "projection arch")
+        normalized = validate_projection_entries(projection["entries"], arch)
+        identities = {(entry["package"], entry["arch"]) for entry in normalized}
+        if (root, arch) not in identities:
+            fail("projection does not contain its root package")
+        # WHY: schema 1 is retained verbatim so already published rootfs
+        # generations keep the same canonical bytes, identity, and tag.
+        return {
+            "schema": SINGLE_ROOT_PROJECTION_SCHEMA,
+            "root_package": root,
+            "arch": arch,
+            "entries": normalized,
+        }
+    if schema != ROOT_SET_PROJECTION_SCHEMA:
+        fail("package projection schema is unsupported")
+    projection = exact_keys(
+        value,
+        {
+            "schema",
+            "identity_algorithm",
+            "root_set",
+            "roots",
+            "arch",
+            "closure",
+        },
+        "package projection",
+    )
+    if projection["identity_algorithm"] != SOURCE_IDENTITY_ALGORITHM:
+        fail("package projection source identity algorithm is unsupported")
+    if projection["root_set"] != BROWSER_INPUTS_ROOT_SET:
+        fail("package projection root set is unsupported")
+    roots = projection["roots"]
+    if not isinstance(roots, list) or len(roots) < 1 or len(roots) > MAX_ARCHIVES:
+        fail(f"package projection must contain 1..{MAX_ARCHIVES} roots")
+    normalized_roots = [
+        text_matching(root, PACKAGE, f"projection root {index}")
+        for index, root in enumerate(roots)
+    ]
+    if len(normalized_roots) != len(set(normalized_roots)):
+        fail("package projection contains duplicate roots")
+    if normalized_roots != sorted(normalized_roots):
+        fail("package projection roots must be sorted")
+    arch = text_matching(projection["arch"], ARCH, "projection arch")
+    raw_closure = projection["closure"]
+    if (
+        not isinstance(raw_closure, list)
+        or len(raw_closure) < 1
+        or len(raw_closure) > MAX_ARCHIVES
+    ):
+        fail(f"package projection must contain 1..{MAX_ARCHIVES} closure identities")
+    normalized_closure: list[dict[str, str]] = []
+    for index, raw in enumerate(raw_closure):
+        entry = exact_keys(
+            raw,
+            {
+                "package",
+                "arch",
+                "kind",
+                "disposition",
+                "manifest_sha256",
+                "cache_key_sha",
+            },
+            f"projection closure identity {index}",
+        )
+        package = text_matching(entry["package"], PACKAGE, "closure package")
+        entry_arch = text_matching(entry["arch"], ARCH, "closure arch")
+        if entry_arch != arch:
+            fail("projection closure identities must use the selected architecture")
+        kind = entry["kind"]
+        disposition = entry["disposition"]
+        expected_disposition = {
+            "program": PROGRAM_ARCHIVE_DISPOSITION,
+            "library": LIBRARY_ARCHIVE_DISPOSITION,
+            "source": SOURCE_ONLY_DISPOSITION,
+        }.get(kind)
+        if disposition != expected_disposition:
+            fail("projection closure kind and disposition disagree")
+        normalized_closure.append(
+            {
+                "package": package,
+                "arch": entry_arch,
+                "kind": kind,
+                "disposition": disposition,
+                "manifest_sha256": text_matching(
+                    entry["manifest_sha256"], HEX_64, "closure manifest digest"
+                ),
+                "cache_key_sha": text_matching(
+                    entry["cache_key_sha"], HEX_64, "closure cache key"
+                ),
+            }
+        )
+    if normalized_closure != sorted(
+        normalized_closure, key=lambda item: (item["package"], item["arch"])
+    ):
+        fail("projection closure identities must be sorted")
+    identities = [
+        (entry["package"], entry["arch"]) for entry in normalized_closure
+    ]
+    if len(identities) != len(set(identities)):
+        fail("projection contains duplicate closure identities")
+    closure_by_identity = {
+        (entry["package"], entry["arch"]): entry for entry in normalized_closure
+    }
+    missing_roots = []
+    for root in normalized_roots:
+        entry = closure_by_identity.get((root, arch))
+        if (
+            entry is None
+            or entry["kind"] != "program"
+            or entry["disposition"] != PROGRAM_ARCHIVE_DISPOSITION
+        ):
+            missing_roots.append(root)
+    if missing_roots:
+        fail(f"projection does not contain its roots: {missing_roots}")
     return {
-        "schema": PROJECTION_SCHEMA,
-        "root_package": root,
+        "schema": ROOT_SET_PROJECTION_SCHEMA,
+        "identity_algorithm": SOURCE_IDENTITY_ALGORITHM,
+        "root_set": BROWSER_INPUTS_ROOT_SET,
+        "roots": normalized_roots,
         "arch": arch,
-        "entries": normalized,
+        "closure": normalized_closure,
     }
 
 
-def select_projection(program_packages: Any, root: str, arch: str) -> dict[str, Any]:
+def validate_preserved_projection(value: Any) -> dict[str, Any]:
+    projection = validate_projection(value)
+    # WHY: preserved evidence is intentionally limited to one audited root
+    # closure. A schema-2 root set has no single root_package and must fail as a
+    # contract violation, not later through an incidental dictionary lookup.
+    if projection["schema"] != SINGLE_ROOT_PROJECTION_SCHEMA:
+        fail("preserved PR package generations require a schema-1 projection")
+    return projection
+
+
+def projection_entries(projection: dict[str, Any]) -> list[dict[str, str]]:
+    if projection["schema"] == SINGLE_ROOT_PROJECTION_SCHEMA:
+        return projection["entries"]
+    return [
+        {
+            "package": entry["package"],
+            "arch": entry["arch"],
+            "manifest_sha256": entry["manifest_sha256"],
+            "cache_key_sha": entry["cache_key_sha"],
+        }
+        for entry in projection["closure"]
+        if entry["disposition"] != SOURCE_ONLY_DISPOSITION
+    ]
+
+
+def program_package_entries(
+    program_packages: Any, root: str, arch: str
+) -> list[dict[str, str]]:
     text_matching(root, PACKAGE, "root package")
     text_matching(arch, ARCH, "architecture")
     if not isinstance(program_packages, dict):
@@ -242,11 +518,159 @@ def select_projection(program_packages: Any, root: str, arch: str) -> dict[str, 
             "cache_key_sha": root_cache,
         }
     )
+    identities = [(entry["package"], entry["arch"]) for entry in entries]
+    if len(identities) != len(set(identities)):
+        fail(f"program package {root} contains a duplicate dependency identity")
+    return entries
+
+
+def select_projection(program_packages: Any, root: str, arch: str) -> dict[str, Any]:
+    entries = program_package_entries(program_packages, root, arch)
     projection = {
-        "schema": PROJECTION_SCHEMA,
+        "schema": SINGLE_ROOT_PROJECTION_SCHEMA,
         "root_package": root,
         "arch": arch,
         "entries": sorted(entries, key=lambda item: (item["package"], item["arch"])),
+    }
+    return validate_projection(projection)
+
+
+def read_roots(path: Path) -> list[str]:
+    regular_file(path, "root set")
+    if path.stat().st_size > MAX_ROOTS_BYTES:
+        fail(f"root set exceeds the {MAX_ROOTS_BYTES}-byte input limit")
+    try:
+        raw = path.read_bytes()
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeError) as error:
+        fail(f"cannot read root set from {path}: {error}")
+    roots = text.splitlines()
+    canonical = "".join(f"{root}\n" for root in roots).encode("utf-8")
+    if raw != canonical:
+        fail("root set must be canonical newline-delimited UTF-8")
+    if len(roots) < 1 or len(roots) > MAX_ARCHIVES:
+        fail(f"root set must contain 1..{MAX_ARCHIVES} roots")
+    normalized = [
+        text_matching(root, PACKAGE, f"root set entry {index}")
+        for index, root in enumerate(roots)
+    ]
+    if len(normalized) != len(set(normalized)):
+        fail("root set contains duplicate roots")
+    if normalized != sorted(normalized):
+        fail("root set roots must be sorted")
+    return normalized
+
+
+def select_root_set_projection(
+    program_packages: Any,
+    full_expected: Any,
+    registry_root: Path,
+    root_set: str,
+    roots: list[str],
+    arch: str,
+) -> dict[str, Any]:
+    if root_set != BROWSER_INPUTS_ROOT_SET:
+        fail("package projection root set is unsupported")
+    entries_by_identity: dict[tuple[str, str], dict[str, str]] = {}
+    for root in roots:
+        for entry in program_package_entries(program_packages, root, arch):
+            identity = (entry["package"], entry["arch"])
+            previous = entries_by_identity.get(identity)
+            if previous is not None and previous != entry:
+                # WHY: shared dependencies are safe to deduplicate only when
+                # every selected root names the exact same manifest/cache pair.
+                fail(
+                    "selected roots disagree on package identity for "
+                    f"{entry['package']} {entry['arch']}"
+                )
+            entries_by_identity[identity] = entry
+    identities = program_packages.get("identities")
+    if not isinstance(identities, dict):
+        fail("program-packages.json lacks authoritative package identities")
+    if not isinstance(full_expected, dict) or not isinstance(
+        full_expected.get("entries"), list
+    ):
+        fail("expected ledger entries must be an array")
+    expected_by_identity: dict[tuple[str, str], dict[str, Any]] = {}
+    selected_identities = set(entries_by_identity)
+    for raw in full_expected["entries"]:
+        if not isinstance(raw, dict):
+            fail("expected ledger entries must be objects")
+        identity = (raw.get("package"), raw.get("arch"))
+        if identity not in selected_identities:
+            continue
+        if identity in expected_by_identity:
+            fail("expected ledger contains a duplicate selected package")
+        expected_by_identity[identity] = raw
+
+    closure: list[dict[str, str]] = []
+    for identity, entry in sorted(entries_by_identity.items()):
+        package, entry_arch = identity
+        contextual = identities.get(package)
+        if not isinstance(contextual, dict):
+            fail(f"program-packages.json lacks contextual identity for {package}")
+        contextual_cache_keys = contextual.get("cacheKeys")
+        if (
+            contextual.get("manifestSha256") != entry["manifest_sha256"]
+            or not isinstance(contextual_cache_keys, dict)
+            or contextual_cache_keys.get(entry_arch) != entry["cache_key_sha"]
+        ):
+            fail(
+                "program-packages.json contextual identity differs for "
+                f"{package} {entry_arch}"
+            )
+        manifest_path = registry_root / package / "package.toml"
+        regular_file(manifest_path, "selected package manifest")
+        if manifest_path.stat().st_size > MAX_MANIFEST_BYTES:
+            fail(f"selected package manifest exceeds the input limit: {manifest_path}")
+        if sha256_file(manifest_path) != entry["manifest_sha256"]:
+            fail(f"selected package manifest digest differs for {package}")
+        try:
+            manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
+            fail(f"cannot read package metadata for {package}: {error}")
+        if manifest.get("name") != package:
+            fail(f"selected package metadata names another package: {package}")
+        kind = manifest.get("kind")
+        expected_entry = expected_by_identity.get(identity)
+        if kind == "source":
+            if expected_entry is not None:
+                fail(f"source-only package unexpectedly has an archive: {package}")
+            disposition = SOURCE_ONLY_DISPOSITION
+        elif kind == "program":
+            if expected_entry is None or expected_entry.get("kind") != kind:
+                fail(
+                    "materializable program is missing from the expected ledger: "
+                    f"{package}"
+                )
+            disposition = PROGRAM_ARCHIVE_DISPOSITION
+        elif kind == "library":
+            if expected_entry is None or expected_entry.get("kind") != kind:
+                fail(
+                    "materializable library is missing from the expected ledger: "
+                    f"{package}"
+                )
+            disposition = LIBRARY_ARCHIVE_DISPOSITION
+        else:
+            fail(f"selected package has unsupported kind: {package}")
+        closure.append(
+            {
+                **entry,
+                "kind": kind,
+                "disposition": disposition,
+            }
+        )
+    projection = {
+        "schema": ROOT_SET_PROJECTION_SCHEMA,
+        "identity_algorithm": SOURCE_IDENTITY_ALGORITHM,
+        "root_set": root_set,
+        "roots": roots,
+        "arch": arch,
+        # WHY: source-only dependency identities still affect program cache
+        # provenance, but they cannot be invented as release assets. One typed
+        # closure keeps them content-bound while making the archive subset
+        # explicit and mechanically derivable.
+        "closure": closure,
     }
     return validate_projection(projection)
 
@@ -263,7 +687,7 @@ def select_expected(
         fail("expected ledger entries must be an array")
     wanted = {
         (entry["package"], entry["arch"]): entry["cache_key_sha"]
-        for entry in projection["entries"]
+        for entry in projection_entries(projection)
     }
     selected: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -291,12 +715,35 @@ def select_expected(
 def selection_from_files(
     program_packages_path: Path,
     full_expected_path: Path,
-    root: str,
     arch: str,
     abi_version: int,
+    *,
+    root: str | None = None,
+    root_set: str | None = None,
+    roots_path: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    projection = select_projection(read_json(program_packages_path), root, arch)
-    expected = select_expected(read_json(full_expected_path), projection, abi_version)
+    if (root is None) == (root_set is None):
+        fail("exactly one root package or root set must be selected")
+    program_packages = read_json(program_packages_path)
+    full_expected = read_json(full_expected_path)
+    if root is not None:
+        if roots_path is not None:
+            fail("a single-root selection must not provide a roots file")
+        projection = select_projection(program_packages, root, arch)
+    else:
+        if roots_path is None:
+            fail("a root-set selection requires a roots file")
+        if root_set is None:
+            fail("a root-set selection requires a root-set name")
+        projection = select_root_set_projection(
+            program_packages,
+            full_expected,
+            program_packages_path.parent,
+            root_set,
+            read_roots(roots_path),
+            arch,
+        )
+    expected = select_expected(full_expected, projection, abi_version)
     return projection, expected
 
 
@@ -320,7 +767,7 @@ def validate_snapshot(
         fail("validated staging snapshot entries must be an array")
     wanted = {
         (entry["package"], entry["arch"]): entry["cache_key_sha"]
-        for entry in projection["entries"]
+        for entry in projection_entries(projection)
     }
     expected_keys = {
         (entry.get("package"), entry.get("arch"), entry.get("cache_key_sha"))
@@ -753,6 +1200,16 @@ def validate_source_capture(
     return capture
 
 
+def projection_label(projection: dict[str, Any]) -> str:
+    if projection["schema"] == SINGLE_ROOT_PROJECTION_SCHEMA:
+        return projection["root_package"]
+    return projection["root_set"]
+
+
+def source_activation_tag(identity: dict[str, Any]) -> str:
+    return identity["source_activation"]["evidence"]["tag"]
+
+
 def generation_tag(identity: dict[str, Any], digest: str) -> str:
     projection = identity["projection"]
     if identity["format"] == PRESERVED_IDENTITY_FORMAT:
@@ -762,7 +1219,7 @@ def generation_tag(identity: dict[str, Any], digest: str) -> str:
             f"-source-{identity['package_source_sha']}-sha256-{digest}"
         )
     return (
-        f"package-generation-{projection['root_package']}-{projection['arch']}"
+        f"package-generation-{projection_label(projection)}-{projection['arch']}"
         f"-abi-v{identity['abi_version']}-sha256-{digest}"
     )
 
@@ -800,13 +1257,18 @@ def release_fields(identity: dict[str, Any], tag: str) -> dict[str, Any]:
             "prerelease": True,
         }
     title = (
-        f"Package generation: {projection['root_package']} {projection['arch']}, "
+        f"Package generation: {projection_label(projection)} {projection['arch']}, "
         f"ABI {identity['abi_version']}"
+    )
+    source_line = (
+        "Activated main source: "
+        f"`{identity['source_activation']['evidence']['package_source_sha']}`\n"
     )
     body = (
         "Durable Kandelo package generation.\n\n"
         f"Package source: `{identity['package_source_sha']}`\n"
-        f"Source staging release: `{identity['source_staging']['tag']}`\n"
+        f"Activated package release: `{source_activation_tag(identity)}`\n"
+        f"{source_line}"
         f"Content identity: `{tag.rsplit('-sha256-', 1)[1]}`\n\n"
         "Consumers must validate `generation.json` and every asset; this "
         "prerelease is append-only by contract."
@@ -820,37 +1282,49 @@ def release_fields(identity: dict[str, Any], tag: str) -> dict[str, Any]:
 
 
 def validate_identity(value: Any) -> dict[str, Any]:
-    identity = exact_keys(
-        value,
-        {
-            "format",
-            "repository",
-            "package_source_sha",
-            "abi_version",
-            "projection",
-            "expected_ledger",
-            "validated_snapshot",
-            "source_staging",
-            "localized_index",
-            "archives",
-        },
-        "generation identity",
-    )
+    if not isinstance(value, dict) or not isinstance(value.get("projection"), dict):
+        fail("generation identity must contain a package projection")
+    identity_keys = {
+        "format",
+        "repository",
+        "package_source_sha",
+        "abi_version",
+        "projection",
+        "expected_ledger",
+        "validated_snapshot",
+        "source_activation",
+        "localized_index",
+        "archives",
+    }
+    identity_keys.add("authority_sha")
+    identity = exact_keys(value, identity_keys, "generation identity")
     if identity["format"] != IDENTITY_FORMAT:
         fail("generation identity format is unsupported")
     text_matching(identity["repository"], REPOSITORY, "generation repository")
     text_matching(identity["package_source_sha"], HEX_40, "package source SHA")
     abi_version = integer(identity["abi_version"], "generation ABI", minimum=1)
     projection = validate_projection(identity["projection"])
+    authority_sha = text_matching(
+        identity["authority_sha"], HEX_40, "workflow authority SHA"
+    )
+    if authority_sha != identity["package_source_sha"]:
+        fail("workflow authority SHA differs from the activated main source")
     expected = select_expected(identity["expected_ledger"], projection, abi_version)
     if expected != identity["expected_ledger"]:
         fail("generation expected ledger is not canonical")
     source = exact_keys(
-        identity["source_staging"],
-        {"tag", "index_sha256", "index_bytes"},
-        "source staging identity",
+        identity["source_activation"],
+        {"evidence", "index_sha256", "index_bytes"},
+        "source package release identity",
     )
-    text_matching(source["tag"], STAGING_TAG, "source staging tag")
+    evidence = validate_main_source_evidence(source["evidence"])
+    if (
+        evidence != source["evidence"]
+        or evidence["repository"] != identity["repository"]
+        or evidence["package_source_sha"] != identity["package_source_sha"]
+    ):
+        fail("main activation evidence differs from the generation source")
+    source_tag = evidence["tag"]
     text_matching(source["index_sha256"], HEX_64, "source index digest")
     integer(
         source["index_bytes"],
@@ -858,6 +1332,8 @@ def validate_identity(value: Any) -> dict[str, Any]:
         minimum=1,
         maximum=MAX_INDEX_BYTES,
     )
+    if source_tag != f"binaries-abi-v{abi_version}":
+        fail("source package release tag differs from the generation ABI")
     localized = exact_keys(
         identity["localized_index"],
         {"sha256", "bytes"},
@@ -874,7 +1350,7 @@ def validate_identity(value: Any) -> dict[str, Any]:
         identity["validated_snapshot"],
         projection,
         expected,
-        source["tag"],
+        source_tag,
         abi_version,
     )
     if identity["archives"] != derived_archives:
@@ -914,7 +1390,7 @@ def validate_preserved_identity(value: Any) -> dict[str, Any]:
     if identity["admission"] != "none":
         fail("preserved PR package generations must not claim package admission")
     abi_version = integer(identity["abi_version"], "preserved ABI", minimum=1)
-    projection = validate_projection(identity["projection"])
+    projection = validate_preserved_projection(identity["projection"])
     expected = select_expected(identity["expected_ledger"], projection, abi_version)
     if expected != identity["expected_ledger"]:
         fail("preserved expected ledger is not canonical")
@@ -1009,13 +1485,31 @@ def validate_manifest(value: Any) -> tuple[dict[str, Any], dict[str, Any], str]:
     return manifest, identity, expected_tag
 
 
+def command_main_source_evidence(args: argparse.Namespace) -> None:
+    evidence = derive_main_source_evidence(
+        repository=args.repository,
+        source_tag=args.source_tag,
+        default_ref=args.default_ref,
+        package_source_sha=args.package_source_sha,
+        release=read_json(args.release, max_bytes=MAX_MANIFEST_BYTES),
+        tag_ref=read_json(args.tag_ref, max_bytes=MAX_MANIFEST_BYTES),
+        default_ref_value=read_json(
+            args.default_ref_value, max_bytes=MAX_MANIFEST_BYTES
+        ),
+        source_commit=read_json(args.source_commit, max_bytes=MAX_MANIFEST_BYTES),
+    )
+    write_json(args.output, evidence)
+
+
 def command_select(args: argparse.Namespace) -> None:
     projection, expected = selection_from_files(
         args.program_packages,
         args.full_expected_ledger,
-        args.root_package,
         args.arch,
         args.expected_abi,
+        root=args.root_package,
+        root_set=args.root_set,
+        roots_path=args.roots_file,
     )
     write_json(args.projection_out, projection)
     write_json(args.expected_out, expected)
@@ -1023,7 +1517,7 @@ def command_select(args: argparse.Namespace) -> None:
 
 def command_select_source_assets(args: argparse.Namespace) -> None:
     source_tag = text_matching(args.source_tag, STAGING_TAG, "source staging tag")
-    projection = validate_projection(read_json(args.projection))
+    projection = validate_preserved_projection(read_json(args.projection))
     expected_raw = read_json(args.expected_ledger)
     abi_version = integer(expected_raw.get("abi_version"), "expected ABI", minimum=1)
     expected = select_expected(expected_raw, projection, abi_version)
@@ -1146,7 +1640,7 @@ def command_capture_source(args: argparse.Namespace) -> None:
         args.package_source_sha, HEX_40, "package source SHA"
     )
     source_tag = text_matching(args.source_tag, STAGING_TAG, "source staging tag")
-    projection = validate_projection(read_json(args.projection))
+    projection = validate_preserved_projection(read_json(args.projection))
     expected_raw = read_json(args.expected_ledger)
     abi_version = integer(expected_raw.get("abi_version"), "expected ABI", minimum=1)
     expected = select_expected(expected_raw, projection, abi_version)
@@ -1350,10 +1844,21 @@ def command_prepare(args: argparse.Namespace) -> None:
     package_source_sha = text_matching(
         args.package_source_sha, HEX_40, "package source SHA"
     )
-    source_tag = text_matching(args.source_tag, STAGING_TAG, "source staging tag")
+    source_tag = text_matching(
+        args.source_tag, CANONICAL_BINARY_TAG, "canonical binary tag"
+    )
     if args.output_dir.exists() or args.output_dir.is_symlink():
         fail(f"output already exists: {args.output_dir}")
     projection = validate_projection(read_json(args.projection))
+    if args.source_evidence is None:
+        fail("a durable generation requires main activation evidence")
+    source_evidence = validate_main_source_evidence(read_json(args.source_evidence))
+    if (
+        source_evidence["repository"] != repository
+        or source_evidence["tag"] != source_tag
+        or source_evidence["package_source_sha"] != package_source_sha
+    ):
+        fail("main activation evidence does not bind the generation inputs")
     expected_raw = read_json(args.expected_ledger)
     abi_version = integer(expected_raw.get("abi_version"), "expected ABI", minimum=1)
     expected = select_expected(expected_raw, projection, abi_version)
@@ -1366,10 +1871,10 @@ def command_prepare(args: argparse.Namespace) -> None:
         source_tag,
         abi_version,
     )
-    regular_file(args.source_index, "source staging index")
+    regular_file(args.source_index, "activated source index")
     regular_file(args.localized_index, "localized minimal index")
     if args.source_index.stat().st_size > MAX_INDEX_BYTES:
-        fail("source staging index exceeds the public-input size limit")
+        fail("activated source index exceeds the public-input size limit")
     localized_bytes = args.localized_index.read_bytes()
     archive_names = [record["name"] for record in archives]
     # Validate the local URL shape before deriving an identity from these bytes.
@@ -1382,6 +1887,11 @@ def command_prepare(args: argparse.Namespace) -> None:
             or sha256_file(archive) != record["sha256"]
         ):
             fail(f"validated archive bytes changed: {record['name']}")
+    source_activation = {
+        "evidence": source_evidence,
+        "index_sha256": sha256_file(args.source_index),
+        "index_bytes": args.source_index.stat().st_size,
+    }
     identity = {
         "format": IDENTITY_FORMAT,
         "repository": repository,
@@ -1390,17 +1900,16 @@ def command_prepare(args: argparse.Namespace) -> None:
         "projection": projection,
         "expected_ledger": expected,
         "validated_snapshot": snapshot,
-        "source_staging": {
-            "tag": source_tag,
-            "index_sha256": sha256_file(args.source_index),
-            "index_bytes": args.source_index.stat().st_size,
-        },
+        "source_activation": source_activation,
         "localized_index": {
             "sha256": sha256_bytes(localized_bytes),
             "bytes": len(localized_bytes),
         },
         "archives": archives,
     }
+    identity["authority_sha"] = text_matching(
+        args.authority_sha, HEX_40, "workflow authority SHA"
+    )
     validate_identity(identity)
     identity_digest = sha256_bytes(canonical_bytes(identity))
     tag = generation_tag(identity, identity_digest)
@@ -1451,7 +1960,7 @@ def command_prepare_preserved(args: argparse.Namespace) -> None:
     )
     if args.output_dir.exists() or args.output_dir.is_symlink():
         fail(f"output already exists: {args.output_dir}")
-    projection = validate_projection(read_json(args.projection))
+    projection = validate_preserved_projection(read_json(args.projection))
     expected_raw = read_json(args.expected_ledger)
     abi_version = integer(expected_raw.get("abi_version"), "expected ABI", minimum=1)
     expected = select_expected(expected_raw, projection, abi_version)
@@ -1647,13 +2156,13 @@ def command_compare_consumer(args: argparse.Namespace) -> None:
             "admitted for consumer materialization"
         )
     projection = identity["projection"]
-    selected_projection, selected_expected = selection_from_files(
-        args.program_packages,
-        args.full_expected_ledger,
-        projection["root_package"],
-        projection["arch"],
-        identity["abi_version"],
+    selected_projection = validate_projection(read_json(args.consumer_projection))
+    selected_expected_raw = read_json(args.consumer_expected_ledger)
+    selected_expected = select_expected(
+        selected_expected_raw, selected_projection, identity["abi_version"]
     )
+    if selected_expected != selected_expected_raw:
+        fail("consumer expected ledger is not canonical")
     if selected_projection != projection:
         fail("consumer package projection differs from the generation source")
     if selected_expected != identity["expected_ledger"]:
@@ -1685,12 +2194,31 @@ def parser() -> argparse.ArgumentParser:
     select = subcommands.add_parser("select")
     select.add_argument("--program-packages", type=Path, required=True)
     select.add_argument("--full-expected-ledger", type=Path, required=True)
-    select.add_argument("--root-package", required=True)
+    selector = select.add_mutually_exclusive_group(required=True)
+    selector.add_argument("--root-package")
+    selector.add_argument("--root-set")
+    select.add_argument("--roots-file", type=Path)
     select.add_argument("--arch", required=True)
     select.add_argument("--expected-abi", type=int, required=True)
     select.add_argument("--projection-out", type=Path, required=True)
     select.add_argument("--expected-out", type=Path, required=True)
     select.set_defaults(action=command_select)
+
+    main_source_evidence = subcommands.add_parser("main-source-evidence")
+    main_source_evidence.add_argument("--repository", required=True)
+    main_source_evidence.add_argument("--source-tag", required=True)
+    main_source_evidence.add_argument("--default-ref", required=True)
+    main_source_evidence.add_argument("--package-source-sha", required=True)
+    main_source_evidence.add_argument("--release", type=Path, required=True)
+    main_source_evidence.add_argument("--tag-ref", type=Path, required=True)
+    main_source_evidence.add_argument(
+        "--default-ref-value", type=Path, required=True
+    )
+    main_source_evidence.add_argument(
+        "--source-commit", type=Path, required=True
+    )
+    main_source_evidence.add_argument("--output", type=Path, required=True)
+    main_source_evidence.set_defaults(action=command_main_source_evidence)
 
     select_assets = subcommands.add_parser("select-source-assets")
     select_assets.add_argument("--source-tag", required=True)
@@ -1725,7 +2253,9 @@ def parser() -> argparse.ArgumentParser:
     prepare.add_argument("--repository", required=True)
     prepare.add_argument("--package-source-sha", required=True)
     prepare.add_argument("--source-tag", required=True)
+    prepare.add_argument("--authority-sha")
     prepare.add_argument("--source-index", type=Path, required=True)
+    prepare.add_argument("--source-evidence", type=Path)
     prepare.add_argument("--projection", type=Path, required=True)
     prepare.add_argument("--expected-ledger", type=Path, required=True)
     prepare.add_argument("--snapshot", type=Path, required=True)
@@ -1758,8 +2288,8 @@ def parser() -> argparse.ArgumentParser:
 
     compare = subcommands.add_parser("compare-consumer")
     compare.add_argument("--generation-manifest", type=Path, required=True)
-    compare.add_argument("--program-packages", type=Path, required=True)
-    compare.add_argument("--full-expected-ledger", type=Path, required=True)
+    compare.add_argument("--consumer-projection", type=Path, required=True)
+    compare.add_argument("--consumer-expected-ledger", type=Path, required=True)
     compare.set_defaults(action=command_compare_consumer)
 
     compare_capture = subcommands.add_parser("compare-source-capture")

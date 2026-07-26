@@ -13,9 +13,10 @@
  *
  * End-to-end behavior was measured against the Homebrew dispatcher, its
  * /usr/bin/brew alias launcher, the GTK/GLib desktop path, and the exact
- * candidate bootstrap's Bash child. ABI 41's 60 KiB reserve must fit every
- * measured continuation while retaining truthful detection for larger ones.
- * These tests pin the arithmetic that the fork paths use.
+ * candidate bootstrap's Bash child. Those measurements preserve the ABI 41
+ * regression boundary; ABI 42 no longer treats 60 KiB as continuation
+ * capacity. These tests keep the retired contiguous-buffer detector truthful
+ * without implying that current linked continuations have the old ceiling.
  */
 import { describe, it, expect } from "vitest";
 import type { SideModuleForkState } from "../src/dylink";
@@ -24,6 +25,7 @@ import {
   forkSaveBufferOverrun,
 } from "../src/worker-main";
 import { FORK_SAVE_BUFFER_SIZE } from "../src/process-memory";
+import type { LinkedForkContinuation } from "../src/fork-continuation";
 
 const FORK_BUF_ADDR = 65536; // arbitrary page-aligned buffer base for the test
 const SIDE_FORK_BUF_ADDR = 32768; // separate from the process-main test buffer
@@ -42,6 +44,7 @@ function writeCurrentPos(
 function createSideForkState(
   name: string,
   forkBufAddr: number,
+  finishUnwind: () => void = () => {},
 ): { state: SideModuleForkState; runtimeState: () => number } {
   let value = 1; // UNWINDING
   const instance = {
@@ -57,7 +60,7 @@ function createSideForkState(
       name,
       instance,
       forkBufAddr,
-      forkBufSize: FORK_SAVE_BUFFER_SIZE,
+      continuation: { finishUnwind } as unknown as LinkedForkContinuation,
     },
     runtimeState: () => value,
   };
@@ -129,37 +132,31 @@ describe("forkSaveBufferOverrun", () => {
     ).toBe(1);
   });
 
-  it("accepts an independently allocated side-module save that fits", () => {
+  it("finalizes the side-module linked continuation", () => {
     const memory = new WebAssembly.Memory({ initial: 3 });
-    const side = createSideForkState("libintl.so", SIDE_FORK_BUF_ADDR);
-    writeCurrentPos(
-      memory,
+    let finalized = false;
+    const side = createSideForkState(
+      "libintl.so",
       SIDE_FORK_BUF_ADDR,
-      SIDE_FORK_BUF_ADDR + FORK_SAVE_BUFFER_SIZE,
-      4,
+      () => { finalized = true; },
     );
 
     expect(() => finalizeSideModuleForkUnwind(memory, side.state, 4))
       .not.toThrow();
+    expect(finalized).toBe(true);
     expect(side.runtimeState()).toBe(0);
   });
 
-  it("rejects an overflowing side-module save before fork dispatch", () => {
+  it("propagates linked continuation validation before fork dispatch", () => {
     const memory = new WebAssembly.Memory({ initial: 3 });
-    const side = createSideForkState("libintl.so", SIDE_FORK_BUF_ADDR);
-    const overrun = 73;
-    writeCurrentPos(
-      memory,
+    const side = createSideForkState(
+      "libintl.so",
       SIDE_FORK_BUF_ADDR,
-      SIDE_FORK_BUF_ADDR + FORK_SAVE_BUFFER_SIZE + overrun,
-      4,
+      () => { throw new Error("uncommitted linked frame"); },
     );
 
-    expect(() => finalizeSideModuleForkUnwind(memory, side.state, 4)).toThrow(
-      `libintl.so: side-module fork() continuation save buffer overflow — ` +
-        `the call stack at fork() needed ${FORK_SAVE_BUFFER_SIZE + overrun} ` +
-        `bytes but only ${FORK_SAVE_BUFFER_SIZE}`,
-    );
+    expect(() => finalizeSideModuleForkUnwind(memory, side.state, 4))
+      .toThrow("uncommitted linked frame");
     expect(side.runtimeState()).toBe(0);
   });
 });

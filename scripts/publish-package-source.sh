@@ -69,8 +69,12 @@ cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
 
 ABI="$(grep -oE 'ABI_VERSION: u32 = [0-9]+' crates/shared/src/lib.rs | awk '{print $4}')"
 TARGET_TAG="${TARGET_TAG:-binaries-abi-v${ABI}}"
-BUILD_TIMESTAMP="$(git -C "$PACKAGE_SOURCE_ROOT" log -1 --format=%aI HEAD 2>/dev/null || date -u +%FT%TZ)"
-BUILD_COMMIT="$(git -C "$PACKAGE_SOURCE_ROOT" rev-parse HEAD 2>/dev/null || echo local)"
+BUILD_TIMESTAMP="$(git -C "$PACKAGE_SOURCE_ROOT" log -1 --format=%aI HEAD)"
+BUILD_COMMIT="$(git -C "$PACKAGE_SOURCE_ROOT" rev-parse HEAD)"
+if ! [[ "$BUILD_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "publish-package-source: package source must be an exact Git commit" >&2
+  exit 2
+fi
 BUILD_HOST="${REPOSITORY}@${BUILD_COMMIT}"
 
 export GITHUB_REPOSITORY="$REPOSITORY"
@@ -125,6 +129,8 @@ build_publish_one() {
       --out "$out_dir" \
       --build-timestamp "$BUILD_TIMESTAMP" \
       --build-host "$BUILD_HOST" \
+      --source-repository "https://github.com/${REPOSITORY}" \
+      --source-commit "$BUILD_COMMIT" \
       --expected-cache-key-sha "$sha"
   then
     bash "$KANDELO_ROOT/scripts/index-update.sh" \

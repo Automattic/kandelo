@@ -74,71 +74,152 @@ artifacts appears in the main repository's `binaries-abi-v<N>` `index.toml`
 ledger. See [docs/homebrew-publishing.md](homebrew-publishing.md) for formula
 authoring, the immutable VFS descriptor contract, and operations.
 
+Package archives admitted to a Homebrew/durable-package generation and the
+resulting bottles are produced only after their source changes land. Their
+recorded Kandelo source repository and SHA must be
+`https://github.com/Automattic/kandelo` and the live
+`Automattic/kandelo` `refs/heads/main` commit when the producer admits the
+build and immediately before each publication mutation. Pull-request staging
+and dry-run artifacts are noncanonical Homebrew validation evidence; ancestry,
+tree equality, tags, and special merge methods cannot promote them into
+production bottle inputs.
+
+The general `binaries-abi-v<N>` resolver release has a separate responsibility:
+post-merge activation may copy an exact tested-tree candidate into that mutable
+ledger so ordinary consumers retain the package gate's tested bytes. Such an
+archive is canonical resolver state but is explicitly ineligible for a
+Homebrew/durable-package generation. `force-rebuild.yml`, dispatched from the
+live `main` workflow SHA, source-builds the selected closure, stamps each
+archive's embedded `[build]` provenance with that exact SHA, and rechecks live
+main before each archive and index mutation. During that exact-main rebuild,
+the canonical index transaction engine carries the admitted SHA through
+recovery and publication and rechecks it immediately before every release-asset
+upload, rename/label update, and delete; an advance of `main` therefore stops
+the transaction before its next mutation. Durable generation validates those
+embedded fields and rejects activated PR/synthetic-merge bytes. The producer
+partitions the complete selected dependency graph into explicit topological
+levels. Packages within one level build concurrently; every edge to a later
+level must consume the earlier level's same-run exact-main archive, with no
+fallback to an older canonical index entry or prior local cache entry. Each
+archive build resolves through an empty job-local cache. Its sysroot/libcxx
+toolchain cache is keyed by the exact main SHA and source-builds libcxx before
+that cache can be created.
+
 ### Durable package generations for cross-workflow publication
 
-A Homebrew publication may need an exact Kandelo package closure after the
-source PR has closed. It must not use `pr-<N>-staging` as that long-lived
-resolver: the staging release is intentionally temporary. Ordinarily,
-`staging-cleanup.yml` deletes it after the PR closes. A merged PR carrying the
-maintainer-applied `retain-package-staging` label is the narrow exception: both
-close-event cleanup and the scheduled sweep retain its staging release so
-post-merge validation can copy one fully validated closure into a public
-content-addressed prerelease. The label also retains a same-repository producer
-branch, keeping the exact source commit explicitly fetchable while validation
-runs. Closed-unmerged PRs are never retained by that label, and GitHub API
-uncertainty retains evidence rather than deleting it. The manual
-`promote-package-generation.yml` workflow performs the copy. Its tags have
-this form:
+A Homebrew publication may need an exact Kandelo package selection after the
+source change has landed. A PR's `pr-<N>-staging` release is never that
+durable input: staging is temporary, pre-main, and deleted after the PR closes.
+Only after coherent package activation is complete on `refs/heads/main` may
+the manual `promote-package-generation.yml` workflow snapshot selected
+canonical package bytes into an append-only prerelease. Its tags have this
+form:
 
 ```
-package-generation-<root>-<arch>-abi-v<N>-sha256-<full-identity-sha256>
+package-generation-<selection>-<arch>-abi-v<N>-sha256-<full-identity-sha256>
 ```
 
-`generation.json` binds the package-source commit, ABI, selected
-`program-packages.json` projection, exact expected ledger, validated source
-snapshot, source staging index identity, minimal localized index identity, and
-every archive name, byte count, and SHA-256. The full 64-character identity
-digest determines the tag. The published `index.toml` may name only the exact
-archives under that tag. It contains no fallback fields and no URL back to the
-source staging release.
+`generation.json` binds the exact freshly queried main commit and tree,
+`binaries-abi-v<N>` release/tag identity, ABI, selected package projection,
+fresh expected ledger, validated source snapshot, minimal index, and every
+archive name, byte count, and SHA-256. Every selected archive's embedded
+`[build].repo_url` must name `https://github.com/Automattic/kandelo` and
+`[build].commit` must equal that same main SHA. An ancestor, PR head, tested
+merge, tag target, or same-tree commit cannot substitute for it. The full
+64-character identity digest determines the generation tag. The generated
+`index.toml` names only assets under that tag and has no fallback or mutable
+source-release URL.
 
-Three Git commits remain separate:
+There are two projection schemas:
 
-1. **Workflow authority** is the default-branch commit whose reviewed scripts
-   validate and publish the generation.
-2. **Package source** is the exact commit whose package projection, recipes,
-   cache keys, and archives own the generation. The durable lightweight tag
-   directly targets this commit.
-3. **Package consumer** may be a different commit, but it is accepted only
-   when its newly computed selected projection and expected ledger are exactly
-   equal to the package source's values.
+- schema 1 selects one `root_package` and its exact dependency closure;
+- schema 2 names the reserved `browser-inputs` root set, records every sorted
+  root for one explicit architecture, and deterministically unions their typed
+  dependency closures. Publish separate schema-2 generations for `wasm32` and
+  `wasm64`; neither may stand in for the other.
 
-A workflow-only descendant therefore cannot claim compatibility after package
-drift. Conversely, an unrelated source change does not force duplicate
-generation bytes when the selected closure is unchanged.
+Every closure identity records package, architecture, kind, disposition,
+manifest digest, and fresh contextual cache key. Program and library entries
+require archives. Source-only entries remain content-bound without acquiring a
+fictional archive.
 
-The preparation job has read-only repository permission, disables persisted
-checkout credentials, and is the only job that executes the historical
-package-source `xtask`. The release writer executes only current default-branch
-authority. It revalidates canonical bounded metadata, archive bytes, and every
-embedded archive manifest before using its write credential.
+The current main authority derives browser roots by running its own
+`scripts/browser-binary-package-roots.mjs` against the source tree as inert
+data, filtering owners to the selected architecture. `shell` is excluded;
+the non-`@binaries` `rootfs` alias is included only in the `wasm32`
+generation. Its current Rust reader
+parses source `package.toml`, `build.toml`, and
+`program-packages.json` bytes and freshly recomputes dependency closures and
+cache identities. No source, consumer, PR, or historical checkout supplies an
+executable, npm package, Cargo invocation, dev shell, or script. Unsupported
+source-data formats fail closed.
 
-The main repository cannot rely on repository-wide GitHub Release
-immutability: its canonical `binaries-abi-v<N>` releases are intentionally
-updated. Durable package generations are append-only at the application
-contract instead. The writer uploads `generation.json` last as the seal, can
-resume an exact partial draft, and never changes a public generation. Every
-writer retry and consumer rechecks the exact release metadata, direct tag,
-asset inventory, digests, authenticated bytes where credentials exist, and
-anonymous bytes. An administrator can still mutate a GitHub release, but the
-next use fails closed rather than trusting that mutation.
+Both the root list and the deduplicated
+`(package, arch, kind, disposition, manifest, cache-key)` union must match.
+Duplicate or reordered roots, a missing or extra root, substituted dependency,
+changed kind/disposition, stale cache identity, expected-ledger drift, or an
+archive-inventory difference fails closed.
 
-Promotion does not change cleanup for durable tags. Tags outside the exact
-`pr-<N>-staging` pattern are not cleanup inputs. After every required
-generation has been promoted and verified, remove `retain-package-staging`
-from the source PR and manually dispatch `staging-cleanup.yml`; leaving the
-label in place deliberately retains both the temporary release and its exact
-same-repository producer branch.
+Root and closure counts are derived evidence, not acceptance constants. A
+durable generation may not consume a PR release, PR head, tested merge,
+ancestor, tag target, same-tree commit, or staging cache identity. It
+recomputes everything from the exact activated main commit and rejects a
+wrong-architecture omission even when the same package name exists for both
+architectures.
+
+The authority relationships are:
+
+1. Workflow authority and package source are the same exact clean SHA freshly
+   read from `refs/heads/main`.
+2. Canonical activation is the live `binaries-abi-v<N>` release inventory at
+   that moment; each selected archive embeds the exact main SHA.
+3. A later consumer may have another SHA only when current authority freshly
+   derives a byte-identical projection and expected ledger from that checkout.
+
+Preparation has read-only repository permission and no persisted credentials.
+It records and later rechecks the main ref, canonical release/tag/assets,
+source commit, local HEAD/tree/clean state, and every materialized byte. One
+strict current Rust `staging-reuse validate-generation` command validates the
+exact index package/arch set, strict TOML/JSON, snapshot, sorted asset
+inventory, digests, archive manifests, immutable Git inputs, and embedded main
+commit. Preparation, publication, and materialization all use that validator.
+
+The writer binds every dispatch input to `generation.json`, independently
+rederives the architecture-scoped source projection and expected ledger from
+its own exact-main checkout, reacquires its state lock, requeries live main and
+canonical package assets, and repeats local rehashing and semantic validation
+immediately before uploading `generation.json` as the application seal and
+before publishing the release. The materializer anonymously downloads every
+asset, requeries release/tag/asset metadata, reruns the same semantic
+validator, recomputes the consumer projection, and rechecks both clean
+checkouts immediately before exposing a local resolver index.
+
+Projection-compatible consumers may deliberately use a generation produced by
+another exact-main commit. Canonical Homebrew production is stricter:
+`.github/scripts/materialize-exact-package-generations.sh` requires each
+generation's `package_source_sha` to equal the admitted producer checkout
+exactly. It materializes the independent wasm32 and wasm64 `browser-inputs`
+generations, composes only their verified local indexes, and exposes one
+`file://` resolver index beside the exact downloaded archives. It never uses
+the mutable `binaries-abi-v<N>` index as a base or fallback.
+
+The protected Homebrew publish and maintenance callers must carry both exact
+content tags. The reusable publisher validates their architecture in its first
+trust step, admits the current exact Kandelo `main` SHA, and then materializes
+the wasm32 generation before Formula build/test package resolution. Its browser
+verifier materializes and combines both architectures before any browser
+package resolution. The workflow accepts a resolver activation only when the
+reported URL exactly names the regular, non-symlink local index it just
+materialized. Dry runs may omit generation tags because they cannot mutate
+canonical state; supplied dry-run tags are still validated.
+
+Repository-wide GitHub Release immutability cannot be assumed because
+`binaries-abi-v<N>` is intentionally updated. Durable generation releases are
+therefore append-only by application contract. A retry may resume an exact
+partial draft, but never changes a public generation. Any metadata, asset,
+digest, direct-tag, or anonymous-readback mutation fails closed. Ordinary
+`pr-<N>-staging` cleanup remains unchanged because durable tags are outside
+that namespace.
 
 #### Preserving a pre-merge closure without admitting it
 
@@ -148,6 +229,14 @@ its direct tag represents a package generation that may be materialized by an
 exact compatible consumer. Use `preserve-pr-package-generation.yml` instead.
 The preservation workflow currently accepts only the exact `rootfs`/`wasm32`
 projection (15 archives for ABI 42).
+
+Apply `retain-package-staging` before merging when this capture cannot finish
+before the PR closes. For a merged same-repository PR, that label temporarily
+retains both the staging release and producer branch; it does not admit either
+as main. Closed-unmerged PRs are never retained by the label. Remove it and
+dispatch `staging-cleanup.yml` after the preserved generation is sealed and
+verified. Retaining or restoring pre-main staging is exclusively an evidence
+preservation operation; it is not recovery for an admitted durable generation.
 
 The source staging run does not need to finish unrelated matrix jobs. The
 selected rootfs job must be complete and successful, all 15 selected workflow
@@ -246,44 +335,52 @@ preserved snapshot never upgrades itself into one.
 
 #### Promotion and recovery
 
-Dispatch only the workflow on the repository's default branch:
+Dispatch only from the exact current `main` commit after canonical package
+activation has completed. `package-source-sha` must equal both the workflow
+authority SHA and the freshly queried `refs/heads/main`; `source-tag` must
+be the matching canonical ABI release:
 
 ```bash
-gh workflow run promote-package-generation.yml \
-  --repo Automattic/kandelo \
-  --ref main \
-  -f source-tag=pr-1079-staging \
-  -f package-source-sha=437fde2524ea6ad9c44933f8abbf995a46841009 \
-  -f expected-abi=42 \
-  -f root-package=rootfs \
-  -f arch=wasm32
+main_sha="$(gh api repos/Automattic/kandelo/git/ref/heads/main --jq .object.sha)"
+for arch in wasm32 wasm64; do
+  gh workflow run promote-package-generation.yml \
+    --repo Automattic/kandelo \
+    --ref main \
+    -f source-tag=binaries-abi-v42 \
+    -f package-source-sha="$main_sha" \
+    -f expected-abi=42 \
+    -f selection-kind=browser-inputs \
+    -f root-package=rootfs \
+    -f arch="$arch"
+done
 ```
 
-The exact validated 16-asset source generation above produces 15 selected
-archives plus `index.toml` and the new seal, under:
+Use `selection-kind=root-package` for one named root closure. The
+`root-package=rootfs` default remains present for a `browser-inputs`
+dispatch but is not its selection authority. The scanner adds the rootfs alias
+only to the wasm32 root set. The current checkout installs
+only its own pinned root npm dependencies with lifecycle scripts disabled;
+historical or source checkout dependencies are never installed.
 
-```
-package-generation-rootfs-wasm32-abi-v42-sha256-cc8a6460221f68b077a640c39d8e63de32d3847e90e1bdac4065f060e4fb35dc
-```
+Do not replace derivation with a count gate and do not dispatch from a PR
+release. A selection becomes eligible only when its freshly derived identities
+and archives stamped with the canonical repository and exact main commit exist
+after exact-main activation.
 
-The workflow summary prints that derived full tag. For this recovery,
-`437fde2524ea6ad9c44933f8abbf995a46841009` is both the package source and the
-initial compatible consumer. Later workflow descendants are not assumed
-compatible; the materializer computes and compares their package identities.
-
-If a runner stops while the release is still a draft, repeat the identical
-dispatch. The writer accepts only an exact subset of the declared assets,
-verifies every existing byte, uploads missing non-seal assets, uploads
+If a runner stops while the generation release is a draft, repeat the
+identical dispatch from the same exact-main package-source commit. The writer
+accepts only an exact verified subset, uploads missing non-seal assets, uploads
 `generation.json` last, and publishes. It never deletes or overwrites a draft
-asset. An unknown or changed asset requires investigation or a new
-content-derived tag.
+asset. If `main`, canonical package assets, local authority state, or any
+input changes, create a new generation from the new exact-main state instead.
 
 If a public generation fails validation, do not repair it in place. Preserve
-the evidence and publish changed content under its naturally different tag.
-Apply `retain-package-staging` before merging whenever promotion must happen
-after merge. If source staging cleanup nevertheless wins the race before a
-generation is sealed, restore or rebuild the exact source staging generation
-first; never substitute another commit's similarly named archives.
+the evidence and publish a new exact-main generation under its naturally
+different content-derived tag. Pre-main staging retention and restoration
+apply only to the evidence-preservation workflow described above. Admitted
+recovery either resumes the same exact draft from the same exact-main inputs or
+publishes a new generation from a newly validated exact-main state; it never
+substitutes another commit's similarly named archives.
 
 These content-addressed releases share one manifest-driven immutable-release
 publisher. Before using a credential it stages and verifies the manifest's
@@ -291,10 +388,10 @@ bounded duplicate-free JSON, safe unique basenames, exact sizes, and SHA-256
 digests. Under a tag-specific
 state lock it can resume an exact partial draft, but rejects unknown, duplicate,
 or changed assets. It verifies every complete draft asset through the
-authenticated API and establishes an exact lightweight tag at the planned tap
-commit before publishing. It then requires GitHub release immutability and
-exact anonymous readback before
-atomically emitting a machine-readable receipt. Release and asset discovery are
+authenticated API and establishes an exact lightweight tag at the generation's
+declared package-source commit before publishing. It performs exact anonymous
+readback before atomically emitting a machine-readable receipt and does not
+rely on repository-wide release immutability. Release and asset discovery are
 paginated, so the same protocol covers the production shell mirror's 35 bottle
 objects and canonical plan rather than relying on the small embedded asset list
 in a release response.
@@ -305,6 +402,12 @@ execute installed shell scripts on Kandelo. These unqualified host-resolver
 paths intentionally remain wasm32 when the bottle matrix target is wasm64.
 Generic Homebrew runtime verification fetches only that base command set and
 the declared rootfs needed to exercise a Formula or dependency-bearing VFS.
+Before the isolated Formula identity runs, the publisher uses the same
+portable-cache staging contract as prepared conformance workspaces: complete
+canonical package generations are copied under `.ci-test-binary-cache/`, and
+the `binaries/` mirrors remain relative symlinks into those generations. The
+read-only source alias and an explicit resolver cache root therefore retain
+package identity without exposing the workflow user's ambient cache.
 The file-formula gallery smoke separately prepares Kandelo's supported interactive
 browser graph. These base tools, kernel, host-runtime, and VFS artifacts are
 platform prerequisites. The
@@ -343,7 +446,11 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
   Per-entry steps:
   1. Download the toolchain artifact.
   2. Run `xtask archive-stage` to produce the per-entry `.tar.zst`
-     (pinned commit-bound `--build-timestamp` + `--build-host`).
+     (pinned commit-bound `--build-timestamp` + `--build-host`, plus
+     structured exact `--source-repository` + `--source-commit` provenance).
+     The shared archive action first requires a clean workflow-root checkout
+     whose repository identity and exact `HEAD` equal those source fields, so
+     a caller cannot stamp an archive with a commit it did not build.
   3. Invoke `scripts/index-update.sh --target-tag <tag> --package
      <name> --version <v> --revision <r> --arch <a> --status success
      --archive-path <staged> --archive-name <n> --cache-key-sha <s>`.
@@ -395,8 +502,8 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
 same build shape against an isolated merge-candidate prerelease. It does not
 write `binaries-abi-v<N>/index.toml` before merge. See "Merge candidates and
 canonical activation" below.
-`force-rebuild.yml` is the manual escape hatch (`workflow_dispatch`)
-for republishing selected packages.
+`force-rebuild.yml` is the maintainer-dispatched exact-main producer for
+republishing selected root closures.
 
 ## Merge candidates and canonical activation
 
@@ -454,7 +561,7 @@ posts `merge-gate=success` and leaves the merge to a maintainer; Actions never
 enables auto-merge. PRs labeled `batched-changes` must be rebase-merged. A PR
 labeled `preserve-head-commit` must be merged with a merge commit whose ordered
 parents are the prepared base and the exact PR head. That bounded mode keeps an
-exact reviewed or publication-pinned head SHA reachable from `main`; repository
+exact reviewed head SHA reachable from `main`; repository
 merge commits may remain disabled outside its merge window. The two
 history-method labels are mutually exclusive. Other PRs must be squash-merged.
 The exact merge method is part of `candidate.json` and a different method fails
@@ -463,17 +570,6 @@ lookalike merge commit cannot substitute another head. This is repository
 process policy, not tamper-proof two-person authorization: same-repository
 writers are trusted to change the workflow and helper code through the normal
 review process.
-
-Occasionally immutable artifacts have already been published from an exact
-commit on a stale pull-request lineage. Preserve that provenance without
-replaying the stale product tree: join the current `main` commit to the exact
-published head with a merge commit whose tree is identical to `main`, then put
-only the documentation for that exceptional history operation on top. The
-published commit remains an ancestor for provenance checks, while a separate
-ordinary pull request owns the current consumer configuration and product
-cutover. Use this ancestry-only join only after verifying the public artifacts'
-source commit and digests; it is not a substitute for rebuilding unpublished
-or unverified artifacts from the commit that actually lands.
 
 The write-authorized merge gate executes candidate lifecycle helpers from the
 exact prepared base commit, not from the pull request head. The pull request is
@@ -995,8 +1091,9 @@ copy.
 
 ## Reproducibility
 
-`xtask archive-stage` requires `--build-timestamp <ISO>` and
-`--build-host <s>`. Both are pinned to commit-bound values in CI
+`xtask archive-stage` requires `--build-timestamp <ISO>`,
+`--build-host <s>`, `--source-repository <canonical-GitHub-URL>`, and
+`--source-commit <40-hex>`. All are pinned to commit-bound values in CI
 (commit author date for timestamp, `<repo>@<sha>` for host) so
 re-running the same SHA at any wall-clock time produces
 byte-identical archives. This is load-bearing: test-gate re-installs
@@ -1007,7 +1104,25 @@ Ordinary `archive-stage` calls may reuse a valid resolver cache entry or
 indexed archive. A producer that must prove execution of the selected source
 recipe passes `--force-source-build`. The option is deliberately narrow: it
 bypasses cache and index reuse for `--package` only, while dependencies retain
-normal resolver behavior.
+normal resolver behavior. The exact-main workflow does not broaden this flag;
+instead it selects the root's complete buildable closure, schedules that graph
+in dependency levels, and overlays each same-run dependency archive before
+source-building its dependent.
+
+`force-rebuild.yml` is the canonical exact-main producer, not a historical-ref
+escape hatch. It must be dispatched from `refs/heads/main`; its optional legacy
+`ref` input may only repeat the exact lowercase workflow SHA. The gate requires
+that SHA to equal live GitHub `refs/heads/main`, every job checks out the exact
+SHA, and each package target uses `--force-source-build`. If main advances
+before an archive or index write, the write fails closed and the rebuild must
+be redispatched at the newer main SHA. `scripts/index-update.sh` also enforces
+this at the writer boundary: a case-insensitive `Automattic/kandelo`
+`binaries-abi-v<N>` target is rejected unless the caller supplies the exact
+main SHA. External package-source repositories may continue to own their own
+canonical-shaped release tags without claiming Kandelo's publication authority.
+A missing or failed same-run dependency also fails closed rather than consulting
+an older cache-equivalent archive. The fixed workflow level bound is checked
+during preflight, while all packages within a level retain bounded parallelism.
 
 The `[compatibility]` block injected into each archive's
 `manifest.toml` is also a pure function of the build inputs (no

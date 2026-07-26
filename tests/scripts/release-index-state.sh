@@ -67,6 +67,20 @@ case "$command_name" in
       esac
     done
     printf '%s %s\n' "$method" "$endpoint" >> "$GH_STATE/api.log"
+    if [ "$endpoint" = "/repos/Automattic/kandelo/git/ref/heads/main" ]; then
+      count=0
+      [ ! -f "$GH_STATE/main-check-count" ] ||
+        count=$(cat "$GH_STATE/main-check-count")
+      count=$((count + 1))
+      printf '%s\n' "$count" > "$GH_STATE/main-check-count"
+      sha=$(cat "$GH_STATE/main-sha")
+      if [ -f "$GH_STATE/main-flip-after" ] &&
+         [ "$count" -gt "$(cat "$GH_STATE/main-flip-after")" ]; then
+        sha=$(cat "$GH_STATE/main-next-sha")
+      fi
+      printf '%s\n' "$sha"
+      exit 0
+    fi
     if [[ "$endpoint" == */releases/tags/* ]]; then
       if [ ! -f "$GH_STATE/release.json" ]; then
         if [ "$include" = true ]; then printf 'HTTP/2.0 404 Not Found\n\n{}\n'; fi
@@ -182,6 +196,18 @@ publish_state() {
     --index-path "$index" --expected-head "$expected"
 }
 
+publish_canonical_state() {
+  local store="$1" index="$2" expected="$3" source_sha="$4"
+  GH_STATE="$store" GITHUB_REPOSITORY=Automattic/kandelo GH_TOKEN=test-token \
+    INDEX_STATE_RETRY_DELAY_SECONDS=0 PATH="$BIN:$PATH" \
+    bash "$SCRIPT" publish \
+      --target-tag binaries-abi-v39 \
+      --expected-abi 39 \
+      --index-path "$index" \
+      --expected-head "$expected" \
+      --canonical-source-sha "$source_sha"
+}
+
 assert_quiescent() {
   local store="$1" expected_sha="$2" names
   names=$(jq -r .name "$store"/meta/*.json | LC_ALL=C sort)
@@ -294,6 +320,43 @@ cp -R "$TMP_ROOT/baseline" "$STORE"
 printf 'PATCH\n' > "$STORE/apply-error"
 publish_state "$STORE" "$NEW" "$OLD_SHA"
 assert_quiescent "$STORE" "$NEW_SHA"
+
+# A source commit can stop being main while a journal transaction is in
+# progress. The first upload may already exist, but no subsequent release
+# mutation may proceed under the stale authority.
+STORE="$TMP_ROOT/main-advanced"
+cp -R "$TMP_ROOT/baseline" "$STORE"
+: > "$STORE/api.log"
+CANONICAL_SHA=0123456789abcdef0123456789abcdef01234567
+ADVANCED_SHA=89abcdef0123456789abcdef0123456789abcdef
+printf '%s\n' "$CANONICAL_SHA" > "$STORE/main-sha"
+printf '%s\n' "$ADVANCED_SHA" > "$STORE/main-next-sha"
+printf '1\n' > "$STORE/main-flip-after"
+if publish_canonical_state "$STORE" "$NEW" "$OLD_SHA" "$CANONICAL_SHA" \
+    >"$TMP_ROOT/main-advanced.out" 2>"$TMP_ROOT/main-advanced.err"
+then
+  echo "publication continued after main advanced" >&2
+  exit 1
+fi
+grep -Fq 'source SHA must equal the current refs/heads/main commit' \
+  "$TMP_ROOT/main-advanced.err"
+[ "$(cat "$STORE/main-check-count")" = 2 ]
+names=$(jq -r .name "$STORE"/meta/*.json | LC_ALL=C sort)
+printf '%s\n' "$names" |
+  grep -Fxq "kandelo-index-generation-v1-${NEW_SHA}.toml"
+if printf '%s\n' "$names" |
+    grep -Eq '^kandelo-index-(pending|transaction|retired)-v1-'; then
+  echo "stale authority created a later transaction asset" >&2
+  exit 1
+fi
+if grep -Eq '^(PATCH|DELETE) ' "$STORE/api.log"; then
+  echo "stale authority changed existing canonical release state" >&2
+  exit 1
+fi
+marker=$(grep -l 'kandelo-index-state-v1.json' "$STORE"/meta/*.json)
+[ "$(jq -r .label "$marker")" = "index-head-v1:sha256:${OLD_SHA}" ]
+live=$(grep -l '"name": "index.toml"\|"name":"index.toml"' "$STORE"/meta/*.json)
+cmp "$OLD" "$STORE/content/$(jq -r .id "$live")"
 
 # Existing live releases migrate without touching the live asset. A death
 # after generation staging resumes the migration on the next read.

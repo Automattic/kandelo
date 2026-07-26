@@ -2,7 +2,14 @@
 export { WasmPosixKernel } from "./kernel";
 export type { KernelCallbacks } from "./kernel";
 export { CentralizedKernelWorker } from "./kernel-worker";
-export type { CentralizedKernelCallbacks, ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
+export type {
+  CentralizedKernelCallbacks,
+  ForkContinuationContext,
+  ForkLaunchRequest,
+  ProcessSnapshot,
+  SyscallTraceEvent,
+  ThreadChannelAttachment,
+} from "./kernel-worker";
 export { SYSCALL_NAMES } from "./kernel-worker";
 export { SyscallChannel, ChannelStatus } from "./channel";
 export { SharedPipeBuffer } from "./shared-pipe-buffer";
@@ -24,7 +31,6 @@ export type { HostDiagnostic } from "./host-diagnostic";
 export type {
   HostToWorkerMessage, WorkerToHostMessage,
   WorkerReadyMessage, WorkerExitMessage, WorkerErrorMessage,
-  DeliverSignalMessage,
   ExecRequestMessage, ExecReplyMessage,
   ExecCompleteMessage, AlarmSetMessage,
   CentralizedWorkerInitMessage,
@@ -37,6 +43,7 @@ export type {
   LazyDownloadListener,
   LazyDownloadStatus,
   LazyFileEntry,
+  LazyFetcherOptions,
   LazyTreeActivation,
   LazyTreeContent,
   LazyTreeDecoder,

@@ -20,7 +20,11 @@ github_api_get_json() {
   while true; do
     : > "$response"
     : > "$errors"
-    if gh api --include "$endpoint" > "$response" 2> "$errors"; then
+    # WHY: publication frequently reads a ref or release immediately after a
+    # successful write. GitHub may otherwise serve its cached pre-write 404,
+    # turning a completed write into an apparent failure.
+    if gh api --include -H 'Cache-Control: no-cache' "$endpoint" \
+        > "$response" 2> "$errors"; then
       status=$(sed -nE '1s#^HTTP/[0-9.]+ ([0-9]{3}).*#\1#p' "$response")
       if [ "$status" != 200 ]; then
         echo "$context: successful GET $endpoint returned malformed HTTP status ${status:-unset}" >&2

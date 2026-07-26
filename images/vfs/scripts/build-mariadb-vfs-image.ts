@@ -1,6 +1,6 @@
 /**
  * Build a fully-bootable VFS image for the MariaDB browser demo.
- * dinit (PID 1) brings up the selected engine's service tree:
+ * dinit, the first user process, brings up the selected engine's service tree:
  *
  *   <engine>-bootstrap (scripted, oneshot) → <engine>-mariadb (process)
  *

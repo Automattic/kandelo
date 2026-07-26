@@ -121,6 +121,12 @@ assert_matches binary_materialization_changed_files \
   "scripts/pack-ci-test-workspace.sh" \
   "scripts/pack-ci-test-workspace.sh"
 assert_matches binary_materialization_changed_files \
+  "scripts/stage-portable-resolver-binaries.sh" \
+  "scripts/stage-portable-resolver-binaries.sh"
+assert_matches binary_materialization_changed_files \
+  "scripts/materialize-resolver-binaries.sh" \
+  "scripts/materialize-resolver-binaries.sh"
+assert_matches binary_materialization_changed_files \
   "scripts/wasm-artifact-guards.sh" \
   "scripts/wasm-artifact-guards.sh"
 assert_matches binary_materialization_changed_files \
@@ -184,6 +190,15 @@ assert_matches package_publish_flow_changed_files \
   ".github/scripts/require-exact-head-approval.sh" \
   ".github/scripts/require-exact-head-approval.sh"
 assert_matches package_publish_flow_changed_files \
+  ".github/scripts/require-exact-kandelo-main.sh" \
+  ".github/scripts/require-exact-kandelo-main.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-require-exact-kandelo-main.sh" \
+  ".github/scripts/test-require-exact-kandelo-main.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-exact-main-package-publication.sh" \
+  ".github/scripts/test-exact-main-package-publication.sh"
+assert_matches package_publish_flow_changed_files \
   ".github/scripts/latest-merge-gate-status.sh" \
   ".github/scripts/latest-merge-gate-status.sh"
 assert_matches package_publish_flow_changed_files \
@@ -223,6 +238,18 @@ assert_matches package_publish_flow_changed_files \
   ".github/scripts/verify-preserved-package-source.sh" \
   ".github/scripts/verify-preserved-package-source.sh"
 assert_matches package_publish_flow_changed_files \
+  ".github/scripts/classify-pr-staging.sh" \
+  ".github/scripts/classify-pr-staging.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-classify-pr-staging.sh" \
+  ".github/scripts/test-classify-pr-staging.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/materialize-exact-package-generations.sh" \
+  ".github/scripts/materialize-exact-package-generations.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-materialize-exact-package-generations.sh" \
+  ".github/scripts/test-materialize-exact-package-generations.sh"
+assert_matches package_publish_flow_changed_files \
   ".github/scripts/materialize-durable-package-generation.sh" \
   ".github/scripts/materialize-durable-package-generation.sh"
 assert_matches package_publish_flow_changed_files \
@@ -243,6 +270,12 @@ assert_matches package_publish_flow_changed_files \
 assert_matches package_publish_flow_changed_files \
   "tools/xtask/src/staging_reuse.rs" \
   "tools/xtask/src/staging_reuse.rs"
+assert_matches package_publish_flow_changed_files \
+  "tools/xtask/src/build_deps.rs" \
+  "tools/xtask/src/build_deps.rs"
+assert_matches package_publish_flow_changed_files \
+  "tools/xtask/src/pkg_manifest.rs" \
+  "tools/xtask/src/pkg_manifest.rs"
 assert_matches package_publish_flow_changed_files \
   ".github/scripts/recover-canonical-indexes.sh" \
   ".github/scripts/recover-canonical-indexes.sh"
@@ -279,6 +312,12 @@ assert_matches package_publish_flow_changed_files \
 assert_matches package_publish_flow_changed_files \
   ".github/workflows/force-rebuild.yml" \
   ".github/workflows/force-rebuild.yml"
+assert_matches package_publish_flow_changed_files \
+  ".github/actions/exact-main-package-rebuild/action.yml" \
+  ".github/actions/exact-main-package-rebuild/action.yml"
+assert_matches package_publish_flow_changed_files \
+  "tools/xtask/src/package_matrix.rs" \
+  "tools/xtask/src/package_matrix.rs"
 assert_matches package_publish_flow_changed_files \
   ".github/workflows/reusable-package-source-publish.yml" \
   ".github/workflows/reusable-package-source-publish.yml"
@@ -333,6 +372,21 @@ assert_matches ci_control_changed_files \
   ".github/scripts/require-exact-head-approval.sh" \
   ".github/scripts/require-exact-head-approval.sh"
 assert_matches ci_control_changed_files \
+  ".github/actions/exact-main-package-rebuild/action.yml" \
+  ".github/actions/exact-main-package-rebuild/action.yml"
+assert_matches ci_control_changed_files \
+  "tools/xtask/src/package_matrix.rs" \
+  "tools/xtask/src/package_matrix.rs"
+assert_matches ci_control_changed_files \
+  ".github/scripts/require-exact-kandelo-main.sh" \
+  ".github/scripts/require-exact-kandelo-main.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/test-require-exact-kandelo-main.sh" \
+  ".github/scripts/test-require-exact-kandelo-main.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/test-exact-main-package-publication.sh" \
+  ".github/scripts/test-exact-main-package-publication.sh"
+assert_matches ci_control_changed_files \
   ".github/scripts/latest-merge-gate-status.sh" \
   ".github/scripts/latest-merge-gate-status.sh"
 assert_matches ci_control_changed_files \
@@ -365,6 +419,18 @@ assert_matches ci_control_changed_files \
 assert_matches ci_control_changed_files \
   ".github/scripts/verify-preserved-package-source.sh" \
   ".github/scripts/verify-preserved-package-source.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/classify-pr-staging.sh" \
+  ".github/scripts/classify-pr-staging.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/test-classify-pr-staging.sh" \
+  ".github/scripts/test-classify-pr-staging.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/materialize-exact-package-generations.sh" \
+  ".github/scripts/materialize-exact-package-generations.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/test-materialize-exact-package-generations.sh" \
+  ".github/scripts/test-materialize-exact-package-generations.sh"
 assert_matches ci_control_changed_files \
   ".github/scripts/materialize-durable-package-generation.sh" \
   ".github/scripts/materialize-durable-package-generation.sh"

@@ -6,6 +6,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
@@ -222,6 +223,26 @@ describe("browser binary dependencies", () => {
     }
   });
 
+  it("does not derive commit-bound browser imports through source symlinks", () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-browser-symlink-"));
+    try {
+      const browserRoot = join(fixtureRoot, "apps", "browser-demos");
+      const ambientSource = join(fixtureRoot, "ambient.ts");
+      mkdirSync(browserRoot, { recursive: true });
+      writeFileSync(
+        ambientSource,
+        'import binary from "@binaries/programs/wasm32/ambient.wasm?url";\nvoid binary;\n',
+      );
+      symlinkSync(ambientSource, join(browserRoot, "linked.ts"));
+
+      expect(() => browserBinariesImports(fixtureRoot)).toThrow(
+        /browser source tree contains a symlink/,
+      );
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   it("uses repo-anchored external registries with first-hit browser ownership", () => {
     const fixtureRoot = mkdtempSync(
       join(tmpdir(), "kandelo-browser-external-registry-"),
@@ -365,6 +386,7 @@ wasm = "${version}.wasm"
       ]);
       expect(() =>
         browserBinaryPackageRoots(fixtureRoot, {
+          arch: "wasm32",
           registryPath: "external:main",
         })
       ).toThrow(/browser @binaries imports without registry owners/);
@@ -1030,6 +1052,7 @@ guest_path = "/usr/share/data"
   it("derives the exact package roots needed to bundle the browser app", () => {
     const audit = inspectBrowserBinaryDependencies(repoRoot);
     const roots = browserBinaryPackageRoots(repoRoot, {
+      arch: "wasm32",
       // The exact bottle-built archive is installed after registry fetching.
       excludePackages: ["shell"],
       // @rootfs-vfs is a Vite alias rather than an @binaries import.
@@ -1040,9 +1063,106 @@ guest_path = "/usr/share/data"
     expect(roots).toContain("rootfs");
     expect(roots).not.toContain("shell");
     expect(roots).toEqual(
-      [...new Set([...audit.packageNames, "rootfs"])]
+      [...new Set([
+        ...audit.packageRoots
+          .filter((root) => root.arch === "wasm32")
+          .map((root) => root.package),
+        "rootfs",
+      ])]
         .filter((name) => name !== "shell")
         .sort(),
     );
+  });
+
+  it("keeps wasm32 and wasm64 browser roots in separate package generations", () => {
+    const audit = inspectBrowserBinaryDependencies(repoRoot);
+    const wasm32Roots = browserBinaryPackageRoots(repoRoot, {
+      arch: "wasm32",
+      excludePackages: ["shell"],
+      includePackages: ["rootfs"],
+    });
+    const wasm64Roots = browserBinaryPackageRoots(repoRoot, {
+      arch: "wasm64",
+      excludePackages: ["shell"],
+    });
+
+    expect(wasm32Roots).toContain("rootfs");
+    expect(wasm64Roots).not.toContain("rootfs");
+    expect(wasm64Roots).toEqual(
+      [...new Set(
+        audit.packageRoots
+          .filter((root) => root.arch === "wasm64")
+          .map((root) => root.package),
+      )].sort(),
+    );
+    expect(wasm64Roots).toContain("mariadb");
+    expect(wasm64Roots).toContain("mariadb-vfs");
+  });
+
+  it("does not let a wasm64 import select the same package's wasm32 bottle", () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-browser-arch-root-"));
+    try {
+      const browserRoot = join(fixtureRoot, "apps", "browser-demos");
+      const registry = join(fixtureRoot, "packages", "registry");
+      const packageDir = join(registry, "dual-arch");
+      const manifest = [
+        'kind = "program"',
+        'name = "dual-arch"',
+        'version = "1"',
+        'arches = ["wasm32", "wasm64"]',
+        "",
+      ].join("\n");
+      const manifestSha256 = createHash("sha256").update(manifest).digest("hex");
+      mkdirSync(browserRoot, { recursive: true });
+      mkdirSync(packageDir, { recursive: true });
+      writeFileSync(
+        join(browserRoot, "entry.ts"),
+        'import binary from "@binaries/programs/wasm64/dual.wasm?url";\nvoid binary;\n',
+      );
+      writeFileSync(join(packageDir, "package.toml"), manifest);
+      writeFileSync(join(packageDir, "build.toml"), "revision = 1\n");
+      writeFileSync(
+        join(registry, "program-packages.json"),
+        `${JSON.stringify({
+          format: "kandelo-program-packages-v2",
+          identities: {
+            "dual-arch": {
+              manifestSha256,
+              cacheKeys: {
+                wasm32: "1".repeat(64),
+                wasm64: "2".repeat(64),
+              },
+            },
+          },
+          packages: {
+            "dual-arch": {
+              manifestSha256,
+              arches: ["wasm32", "wasm64"],
+              cacheKeys: {
+                wasm32: "1".repeat(64),
+                wasm64: "2".repeat(64),
+              },
+              dependencyClosures: { wasm32: [], wasm64: [] },
+              members: [{
+                kind: "output",
+                sourceArtifact: "dual.wasm",
+                mirrorPath: "dual.wasm",
+                outputName: "dual",
+                forkInstrumentation: "auto",
+              }],
+            },
+          },
+        }, null, 2)}\n`,
+      );
+
+      expect(browserBinaryPackageRoots(fixtureRoot, {
+        arch: "wasm32",
+      })).toEqual([]);
+      expect(browserBinaryPackageRoots(fixtureRoot, {
+        arch: "wasm64",
+      })).toEqual(["dual-arch"]);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 });

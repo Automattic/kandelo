@@ -57,6 +57,14 @@ if ! command -v yacc &>/dev/null && ! command -v bison &>/dev/null; then
     exit 1
 fi
 
+# Upstream's host-side fix-libmath_h script uses ed after fbc emits the
+# generated table. Keep that real upstream generation path and require the
+# repository-declared tool instead of silently borrowing one from the host.
+if ! command -v python3 &>/dev/null; then
+    echo "ERROR: python3 not found. Run through scripts/dev-shell.sh." >&2
+    exit 1
+fi
+
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
 expected_source_marker="$(printf '%s\n%s\n%s' "$BC_VERSION" "$SOURCE_URL" "$SOURCE_SHA256")"
@@ -81,6 +89,11 @@ if [ ! -f "$LIBMATH_HEADER" ]; then
     if [ ! -f Makefile ]; then
         ./configure --with-readline=no 2>&1 | tail -10
     fi
+    # Upstream uses an unversioned host ed to rewrite fbc's generated table.
+    # Install the equivalent tracked helper so the build uses the Python
+    # version declared by flake.nix and cannot drift with ambient host tools.
+    cp "$SCRIPT_DIR/fix-libmath-h.py" "$HOST_BUILD_DIR/bc/fix-libmath_h"
+    chmod 0755 "$HOST_BUILD_DIR/bc/fix-libmath_h"
     make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tail -10
     cp "$HOST_BUILD_DIR/bc/libmath.h" "$LIBMATH_HEADER"
     echo "==> libmath.h generated"

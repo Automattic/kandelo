@@ -13,7 +13,6 @@ import { createConnection, createServer } from "node:net";
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
 import { resolveBinary, tryResolveBinary } from "../../../../host/src/binary-resolver";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
-import { FORK_SAVE_BUFFER_SIZE } from "../../../../host/src/process-memory";
 import { NodeWorkerAdapter } from "../../../../host/src/worker-adapter";
 import type {
   CentralizedWorkerInitMessage,
@@ -106,12 +105,41 @@ describe.skipIf(!nginxWasmPath)(
       const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
       let resolveExit: (status: number) => void;
       const exitPromise = new Promise<number>((r) => (resolveExit = r));
+      let masterPid = 0;
+      let workerFailure: Error | null = null;
+
+      const recordWorkerFailure = (
+        pid: number,
+        reason: unknown,
+      ): void => {
+        // WHY: a process worker reports initialization/replay failures through
+        // both the Worker error event and its structured message channel.
+        // Recording either path makes the test expose the platform failure
+        // instead of waiting for an HTTP timeout after every worker has died.
+        workerFailure ??= new Error(
+          `nginx worker ${pid} failed: ${
+            reason instanceof Error ? reason.message : String(reason)
+          }`,
+        );
+      };
 
       const kw = new CentralizedKernelWorker(
         { maxWorkers: 8, dataBufferSize: 65536, useSharedMemory: true },
         io,
         {
-          onFork: async (parentPid, childPid, parentMemory) => {
+          onFork: async ({
+            childPid,
+            parentMemory,
+            continuation,
+          }) => {
+            // WHY: this package harness launches every child through _start
+            // and does not retain pthread entry roots. Reject that unsupported
+            // shape instead of starting a child that cannot reach its fork site.
+            if (continuation.kind !== "main") {
+              throw new Error(
+                "nginx package harness does not support fork from a pthread-created thread",
+              );
+            }
             const parentBuf = new Uint8Array(parentMemory.buffer);
             const parentPages = Math.ceil(parentBuf.byteLength / 65536);
             const childMemory = new WebAssembly.Memory({
@@ -127,32 +155,37 @@ describe.skipIf(!nginxWasmPath)(
             const childChannelOffset = (MAX_PAGES - 2) * 65536;
             new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
 
-            kw.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true });
+            kw.registerProcess(childPid, childMemory, [childChannelOffset]);
 
-            const forkBufAddr = childChannelOffset - FORK_SAVE_BUFFER_SIZE;
             const childInitData: CentralizedWorkerInitMessage = {
               type: "centralized_init",
               pid: childPid,
-              ppid: parentPid,
               programBytes,
               memory: childMemory,
               channelOffset: childChannelOffset,
               isForkChild: true,
-              forkBufAddr,
+              forkBufAddr: continuation.forkBufAddr,
             };
 
             const childWorker = workerAdapter.createWorker(childInitData);
             workers.set(childPid, childWorker);
-            childWorker.on("error", () => {
+            childWorker.on("error", (error) => {
+              recordWorkerFailure(childPid, error);
               kw.unregisterProcess(childPid);
               workers.delete(childPid);
+            });
+            childWorker.on("message", (message: unknown) => {
+              const event = message as WorkerToHostMessage;
+              if (event.type === "error") {
+                recordWorkerFailure(childPid, event.message);
+              }
             });
 
             return [childChannelOffset];
           },
           onExec: async () => -38,
           onExit: (pid, status) => {
-            if (pid === 100) {
+            if (pid === masterPid) {
               kw.unregisterProcess(pid);
               resolveExit!(status);
             } else {
@@ -175,18 +208,13 @@ describe.skipIf(!nginxWasmPath)(
       memory.grow(MAX_PAGES - 17);
       new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-      // The kernel reserves PID 1 for a virtual init process (used by
-      // `kill(1, ...)` / EPERM semantics), so the test runs nginx at
-      // PID 100 with workers spawned at 101+. The actual PID nginx
-      // sees doesn't matter to its operation.
-      kw.registerProcess(100, memory, [channelOffset], { stdio: CAPTURED_STDIO });
-      kw.setCwd(100, nginxPrefix);
-      kw.setNextChildPid(101);
+      masterPid = kw.createProcess(CAPTURED_STDIO);
+      kw.registerProcess(masterPid, memory, [channelOffset]);
+      kw.setCwd(masterPid, nginxPrefix);
 
       const initData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
-        pid: 100,
-        ppid: 0,
+        pid: masterPid,
         programBytes,
         memory,
         channelOffset,
@@ -195,13 +223,22 @@ describe.skipIf(!nginxWasmPath)(
       };
 
       const masterWorker = workerAdapter.createWorker(initData);
-      workers.set(100, masterWorker);
-      masterWorker.on("error", () => {});
+      workers.set(masterPid, masterWorker);
+      masterWorker.on("error", (error) => {
+        recordWorkerFailure(masterPid, error);
+      });
+      masterWorker.on("message", (message: unknown) => {
+        const event = message as WorkerToHostMessage;
+        if (event.type === "error") {
+          recordWorkerFailure(masterPid, event.message);
+        }
+      });
 
       // Wait for the TCP listener to be ready (poll until port accepts)
       let ready = false;
       for (let i = 0; i < 80; i++) {
         await new Promise((r) => setTimeout(r, 250));
+        if (workerFailure) throw workerFailure;
         try {
           await httpGet(testPort, "/", 3000);
           ready = true;
@@ -212,6 +249,7 @@ describe.skipIf(!nginxWasmPath)(
       }
 
       try {
+        if (workerFailure) throw workerFailure;
         expect(ready).toBe(true);
 
         // Actual test: request the static page

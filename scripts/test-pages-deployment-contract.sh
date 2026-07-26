@@ -91,14 +91,49 @@ expect_mutation_rejected \
   's/^      - "packages\/registry\/\*\*"\n//m'
 
 expect_mutation_rejected \
+  "missing source-shell config trigger" \
+  "does not watch homebrew/source-rootfs-shell-default.json" \
+  's/^      - "homebrew\/source-rootfs-shell-default\.json"\n//m'
+
+expect_mutation_rejected \
   "bypassed package projection check" \
   "must verify the generated package projection" \
   's/build-deps program-index-check/build-deps parse/'
 
 expect_mutation_rejected \
+  "bypassed source-fallback sysroot build" \
+  "must build and verify the current source-fallback sysroot" \
+  's/bash scripts\/dev-shell\.sh bash scripts\/build-musl\.sh/echo skipped-source-sysroot/'
+
+expect_mutation_rejected \
+  "missing exact-main cache root" \
+  "must establish one exact-main package-cache root" \
+  's/^          echo "WASM_POSIX_BINARY_CACHE_ROOT=\$source_cache" >> "\$GITHUB_ENV"\n//m'
+
+expect_mutation_rejected \
+  "cache root lost inside dev-shell" \
+  "browser preparation must retain the exact-main cache root inside dev-shell" \
+  's/^            "WASM_POSIX_BINARY_CACHE_ROOT=\$WASM_POSIX_BINARY_CACHE_ROOT" \\\n//m'
+
+expect_mutation_rejected \
+  "sealed preview without Pages base" \
+  "sealed Pages preview must boot with the same /kandelo/ base" \
+  's/(      - name: Boot the sealed Pages shell product in Chromium\n        working-directory: apps\/browser-demos\n        env:\n)          VITE_BASE: \/kandelo\/\n/$1/'
+
+expect_mutation_rejected \
+  "sealed preview loses package cache root" \
+  "sealed Pages preview must boot with the same /kandelo/ base" \
+  's/(      - name: Boot the sealed Pages shell product in Chromium[\s\S]*?)^              "WASM_POSIX_BINARY_CACHE_ROOT=\$WASM_POSIX_BINARY_CACHE_ROOT" \\\n/$1/m'
+
+expect_mutation_rejected \
   "checkout of a different ref" \
   "checkout must use the workflow event source SHA" \
   's/(        uses: actions\/checkout@[^\n]+\n)/$1        with:\n          ref: main\n/'
+
+expect_mutation_rejected \
+  "checkout with persisted write credentials" \
+  "source-building Pages checkout must not persist write credentials" \
+  's/^          persist-credentials: false\n//m'
 
 expect_mutation_rejected \
   "second source checkout" \

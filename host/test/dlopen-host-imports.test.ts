@@ -99,6 +99,25 @@ describe("dlopen host import pointer widths", () => {
     expect(dlopen(pointer(0), 0, pointer(0), 0)).toBe(1);
   });
 
+  it("requires the BigInt representation supplied by memory64 imports", () => {
+    const { pointer, dlopen } = createImports(8);
+
+    expect(() => dlopen(0, 1, pointer(0), 0))
+      .toThrow("__wasm_dlopen bytes: expected an exact memory64 pointer");
+    expect(dlopen(pointer(0), 0, pointer(0), 0)).toBe(1);
+  });
+
+  it("unsigned-normalizes a signed memory32 high-bit pointer", () => {
+    const { pointer, dlopen } = createImports(4);
+
+    expect(() => dlopen(-1, 1, pointer(0), 0))
+      .toThrow(
+        "__wasm_dlopen bytes: memory range [4294967295, 4294967296) " +
+          "exceeds 65536 bytes",
+      );
+    expect(dlopen(pointer(0), 0, pointer(0), 0)).toBe(1);
+  });
+
   it("rejects a memory32 range that crosses the end of linear memory", () => {
     const { memory, pointer, dlopen } = createImports(4);
 

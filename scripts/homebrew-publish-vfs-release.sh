@@ -204,6 +204,7 @@ publish_bundle() {
       --manifest "$release_manifest" \
       --asset-root "$HANDOFF" \
       --lock-root "$TAP_ROOT" \
+      --exact-kandelo-main-sha "$KANDELO_COMMIT" \
       --receipt "$receipt"
 }
 

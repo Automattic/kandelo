@@ -254,8 +254,8 @@ describe("BrowserKernel", () => {
     const spawn = worker.lastMessage("spawn");
 
     // The main thread cannot know that a guest fork has reserved pid 101 but
-    // has not yet finished registering its process worker. Only the kernel
-    // worker's authoritative PID allocator can assign the following pid safely.
+    // has not yet finished registering its process worker. Only the Rust
+    // kernel's authoritative task-ID allocator can assign the next ID safely.
     expect(spawn).not.toHaveProperty("pid");
     worker.simulateMessage({
       type: "response",
@@ -385,12 +385,12 @@ describe("BrowserKernel", () => {
     await bootPromise;
 
     processEvents.length = 0;
-    worker.simulateMessage({ type: "proc_event", kind: "spawn", pid: 2, ppid: 100 });
-    worker.simulateMessage({ type: "proc_event", kind: "exec", pid: 2 });
+    worker.simulateMessage({ type: "proc_event", kind: "spawn", pid: 101, ppid: 100 });
+    worker.simulateMessage({ type: "proc_event", kind: "exec", pid: 101 });
 
     expect(processEvents).toEqual([
-      { kind: "spawn", pid: 2, ppid: 100 },
-      { kind: "exec", pid: 2 },
+      { kind: "spawn", pid: 101, ppid: 100 },
+      { kind: "exec", pid: 101 },
     ]);
   });
 

@@ -1,5 +1,14 @@
 #!/usr/bin/env node
-import { lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  constants,
+  copyFileSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -13,6 +22,9 @@ function usage() {
     "  --packages <path>  package mapping TOML (default: images/rootfs/PACKAGES.toml)",
     "  --binaries-dir <path>",
     "                     resolve outputs only from this artifact tree",
+    "  --stage-resolver-binaries <path>",
+    "                     copy exact direct-dependency outputs into this new",
+    "                     artifact tree, then resolve outputs only from it",
     "  --out <path>       generated mkrootfs manifest fragment (required)",
     "  --help             print this message",
     "",
@@ -22,6 +34,7 @@ function usage() {
 function parseArgs(argv) {
   let packages = "images/rootfs/PACKAGES.toml";
   let binariesDir;
+  let stageResolverBinaries;
   let out;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -41,10 +54,22 @@ function parseArgs(argv) {
       if (!binariesDir) throw new Error("--binaries-dir requires a value");
       continue;
     }
+    if (arg === "--stage-resolver-binaries") {
+      stageResolverBinaries = argv[++i];
+      if (!stageResolverBinaries) {
+        throw new Error("--stage-resolver-binaries requires a value");
+      }
+      continue;
+    }
     throw new Error(`unknown argument: ${arg}`);
   }
   if (!out) throw new Error("--out is required");
-  return { packages, binariesDir, out };
+  if (binariesDir && stageResolverBinaries) {
+    throw new Error(
+      "--binaries-dir and --stage-resolver-binaries are mutually exclusive",
+    );
+  }
+  return { packages, binariesDir, stageResolverBinaries, out };
 }
 
 function stripComment(line) {
@@ -193,6 +218,107 @@ function resolveWithin(root, binaryRel) {
   return candidate;
 }
 
+function portableArtifactPath(value, context) {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.startsWith("/") ||
+    value.includes("\\") ||
+    /[\u0000-\u001f\u007f]/.test(value) ||
+    value.split("/").some((segment) => segment === "" || segment === "." || segment === "..") ||
+    value.normalize("NFC") !== value
+  ) {
+    throw new Error(
+      `${context} must be a canonical NFC relative POSIX path without control characters`,
+    );
+  }
+  return value;
+}
+
+function dependencyEnvKey(packageName) {
+  return `WASM_POSIX_DEP_${packageName.toUpperCase().replaceAll("-", "_")}_DIR`;
+}
+
+function requireFreshDirectory(path, context) {
+  try {
+    lstatSync(path);
+  } catch (e) {
+    if (e?.code === "ENOENT") {
+      mkdirSync(path, { recursive: true });
+      return;
+    }
+    throw e;
+  }
+  throw new Error(`${context} already exists; refusing to reuse staged artifacts: ${path}`);
+}
+
+function requireResolverDependencyRoot(packageName) {
+  const envName = dependencyEnvKey(packageName);
+  const configured = process.env[envName];
+  if (!configured) {
+    throw new Error(
+      `package ${packageName}: ${envName} is required when staging resolver binaries`,
+    );
+  }
+  if (!isAbsolute(configured) || resolve(configured) !== configured) {
+    throw new Error(`package ${packageName}: ${envName} must be a normalized absolute path`);
+  }
+  const linkStat = lstatSync(configured);
+  if (!linkStat.isDirectory() || linkStat.isSymbolicLink()) {
+    throw new Error(
+      `package ${packageName}: ${envName} must name a real directory, not a link`,
+    );
+  }
+  return configured;
+}
+
+function stageResolverOutputs(config, stageDir) {
+  const stageRoot = resolve(repoRoot, stageDir);
+  requireFreshDirectory(stageRoot, "resolver binary staging directory");
+
+  const packageNames = new Set();
+  const stagedPaths = new Set();
+  for (const pkg of config.packages) {
+    const packageName = requireString(pkg, "name", "package");
+    if (packageNames.has(packageName)) {
+      throw new Error(`duplicate rootfs package: ${packageName}`);
+    }
+    packageNames.add(packageName);
+    if (!Array.isArray(pkg.outputs) || pkg.outputs.length === 0) {
+      throw new Error(`package ${packageName}: at least one output is required`);
+    }
+
+    const dependencyRoot = requireResolverDependencyRoot(packageName);
+    const realDependencyRoot = realpathSync(dependencyRoot);
+    for (const output of pkg.outputs) {
+      const binaryRel = requireBinaryPath(output, `package ${packageName} output`);
+      const sourceArtifact = portableArtifactPath(
+        output.source_artifact ?? binaryRel.split("/").at(-1),
+        `package ${packageName} output ${binaryRel}: source_artifact`,
+      );
+      const sourcePath = resolveWithin(dependencyRoot, sourceArtifact);
+      const sourceStat = lstatSync(sourcePath);
+      if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) {
+        throw new Error(
+          `package ${packageName}: resolver artifact must be a regular file, not a link: ` +
+            `${sourceArtifact}`,
+        );
+      }
+      const realSourcePath = realpathSync(sourcePath);
+      resolveWithin(realDependencyRoot, relative(realDependencyRoot, realSourcePath));
+
+      if (stagedPaths.has(binaryRel)) {
+        throw new Error(`duplicate staged rootfs binary path: ${binaryRel}`);
+      }
+      stagedPaths.add(binaryRel);
+      const destination = resolveWithin(stageRoot, binaryRel);
+      mkdirSync(dirname(destination), { recursive: true });
+      copyFileSync(sourcePath, destination, constants.COPYFILE_EXCL);
+    }
+  }
+  return stageRoot;
+}
+
 function resolveBinary(binaryRel, binariesDir) {
   if (binariesDir) {
     const selectedRoot = resolve(repoRoot, binariesDir);
@@ -316,7 +442,10 @@ try {
   const packagesPath = resolve(repoRoot, args.packages);
   const outPath = resolve(repoRoot, args.out);
   const config = parsePackagesToml(readFileSync(packagesPath, "utf8"));
-  const { manifest, installed } = generateManifest(config, args.binariesDir);
+  const binariesDir = args.stageResolverBinaries
+    ? stageResolverOutputs(config, args.stageResolverBinaries)
+    : args.binariesDir;
+  const { manifest, installed } = generateManifest(config, binariesDir);
 
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, manifest);

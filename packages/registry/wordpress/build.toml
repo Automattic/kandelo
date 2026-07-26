@@ -1,7 +1,6 @@
 script_path = "packages/registry/wordpress/build-wordpress.sh"
 inputs = [
   "packages/registry/wordpress/build-wordpress.sh",
-  "packages/registry/wordpress/setup.sh",
   "packages/registry/wordpress/package.toml",
   "images/vfs/scripts/build-wp-vfs-image.sh",
   "images/vfs/scripts/build-wp-vfs-image.ts",
@@ -17,6 +16,7 @@ inputs = [
   "images/vfs/scripts/vfs-image-helpers.ts",
   "images/vfs/lib/init/shell-binaries.ts",
   "images/vfs/scripts/wordpress-preinstall.ts",
+  "images/vfs/scripts/wordpress-source-layout.ts",
   "apps/browser-demos/lib/init/wordpress-runtime-config.ts",
   "host/src",
   "web-libs/kandelo-session/src/demo-config.ts",

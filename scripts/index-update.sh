@@ -34,6 +34,10 @@
 # For --status failed, omit --archive-path/--archive-name/--cache-key-sha
 # and pass --error "<text>" instead.
 #
+# Canonical exact-main rebuilds also pass --canonical-source-sha. The helper
+# then rechecks live GitHub main immediately before every archive mutation and
+# before committing the index transaction.
+#
 # To repair only release-level index metadata such as abi_version:
 #   bash scripts/index-update.sh --target-tag pr-595-staging --repair-only
 set -euo pipefail
@@ -52,6 +56,7 @@ ARCHIVE_NAME=""
 CACHE_KEY_SHA=""
 ERROR=""
 REPAIR_ONLY=0
+CANONICAL_SOURCE_SHA=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -65,6 +70,7 @@ while [[ $# -gt 0 ]]; do
     --archive-name)  ARCHIVE_NAME="$2"; shift 2 ;;
     --cache-key-sha) CACHE_KEY_SHA="$2"; shift 2 ;;
     --error)         ERROR="$2"; shift 2 ;;
+    --canonical-source-sha) CANONICAL_SOURCE_SHA="$2"; shift 2 ;;
     --repair-only)   REPAIR_ONLY=1; shift ;;
     *)
       echo "index-update.sh: unknown flag $1" >&2
@@ -72,6 +78,15 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+require_canonical_source_authority() {
+  [ -n "$CANONICAL_SOURCE_SHA" ] || return 0
+  GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}" \
+    bash .github/scripts/require-exact-kandelo-main.sh \
+      --repository Automattic/kandelo \
+      --source-sha "$CANONICAL_SOURCE_SHA" \
+      >/dev/null
+}
 
 require() {
   local name="$1" value="$2"
@@ -126,6 +141,11 @@ archive_name_abi() {
 }
 
 gh_retry() {
+  local require_authority=0
+  if [ "${1:-}" = "--canonical-mutation" ]; then
+    require_authority=1
+    shift
+  fi
   local attempt=1
   local max_attempts=4
   local delay=2
@@ -140,6 +160,11 @@ gh_retry() {
     : >"$stdout_file"
     : >"$stderr_file"
 
+    if [ "$require_authority" = 1 ] &&
+       ! require_canonical_source_authority; then
+      rm -f "$stdout_file" "$stderr_file"
+      return 86
+    fi
     if "$@" >"$stdout_file" 2>"$stderr_file"; then
       cat "$stdout_file"
       rm -f "$stdout_file" "$stderr_file"
@@ -296,7 +321,13 @@ Binaries for ABI v${ABI}")
       ;;
   esac
 
-  if ! gh_retry gh release create "${release_args[@]}"; then
+  local create_rc=0
+  gh_retry --canonical-mutation gh release create "${release_args[@]}" ||
+    create_rc=$?
+  if [ "$create_rc" -ne 0 ]; then
+    # WHY: authority failure is definitive, not an ambiguous GitHub write that
+    # a read-after-write reconciliation can turn into success.
+    [ "$create_rc" -ne 86 ] || return 1
     # Another writer may have created the release after our miss. Treat
     # that race as success only if the release is now visible.
     gh_retry gh release view "$TARGET_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
@@ -340,7 +371,7 @@ upload_archive_asset() {
     fi
 
     echo "index-update.sh: archive asset $ARCHIVE_NAME exists but does not match staged bytes; replacing it." >&2
-    gh_retry gh api \
+    gh_retry --canonical-mutation gh api \
       -X DELETE \
       "/repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
       >/dev/null
@@ -350,6 +381,7 @@ upload_archive_asset() {
   local max_attempts=4
   local delay=2
   while true; do
+    require_canonical_source_authority || return 1
     if gh release upload "$TARGET_TAG" \
          --repo "$GITHUB_REPOSITORY" \
          "$ARCHIVE_PATH"
@@ -362,7 +394,7 @@ upload_archive_asset() {
       if [ -n "$info" ]; then
         local retry_asset_id
         read -r retry_asset_id _ _ <<< "$info"
-        gh_retry gh api \
+        gh_retry --canonical-mutation gh api \
           -X DELETE \
           "/repos/${GITHUB_REPOSITORY}/releases/assets/${retry_asset_id}" \
           >/dev/null
@@ -430,6 +462,24 @@ EXPECTED_ABI="$(expected_abi_for_target_tag)"
 RELEASE_INDEX_STATE_SCRIPT="${RELEASE_INDEX_STATE_SCRIPT:-scripts/release-index-state.sh}"
 IS_CANONICAL=0
 case "$TARGET_TAG" in binaries-abi-v*) IS_CANONICAL=1 ;; esac
+NORMALIZED_REPOSITORY="$(printf '%s' "${GITHUB_REPOSITORY:-}" | tr '[:upper:]' '[:lower:]')"
+# WHY: `binaries-abi-v<N>` in Automattic/kandelo is the mutable canonical
+# package ledger. Making its authority flag optional would let a new caller
+# silently bypass the exact-main checks that force-rebuild relies on.
+if [ "$IS_CANONICAL" = 1 ] &&
+   [ "$NORMALIZED_REPOSITORY" = "automattic/kandelo" ] &&
+   [ -z "$CANONICAL_SOURCE_SHA" ]; then
+  echo "index-update.sh: Automattic/kandelo canonical publication requires --canonical-source-sha" >&2
+  exit 2
+fi
+if [ -n "$CANONICAL_SOURCE_SHA" ]; then
+  if [ "$IS_CANONICAL" != 1 ] ||
+     [ "$NORMALIZED_REPOSITORY" != "automattic/kandelo" ] ||
+     ! [[ "$CANONICAL_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "index-update.sh: --canonical-source-sha requires an Automattic/kandelo binaries-abi-v<N> target and an exact lowercase 40-character SHA" >&2
+    exit 2
+  fi
+fi
 if [ -n "$ARCHIVE_NAME" ]; then
   ARCHIVE_ABI="$(archive_name_abi "$ARCHIVE_NAME")"
   if [ -n "$ARCHIVE_ABI" ] && [ "$ARCHIVE_ABI" != "$EXPECTED_ABI" ]; then
@@ -448,6 +498,7 @@ bash "$STATE_LOCK_SCRIPT" acquire "$TARGET_TAG"
 trap 'bash "$STATE_LOCK_SCRIPT" release || true' EXIT
 
 # 2. Ensure the release exists.
+require_canonical_source_authority
 ensure_release_exists
 
 # A ready marker seals the exact candidate index exercised by the test gate.
@@ -468,11 +519,16 @@ INDEX_PATH="$INDEX_DIR/index.toml"
 INDEX_HEAD_FILE="$INDEX_DIR/head"
 
 if [ "$IS_CANONICAL" = 1 ]; then
+  index_state_authority_args=()
+  if [ -n "$CANONICAL_SOURCE_SHA" ]; then
+    index_state_authority_args+=(--canonical-source-sha "$CANONICAL_SOURCE_SHA")
+  fi
   bash "$RELEASE_INDEX_STATE_SCRIPT" read \
     --target-tag "$TARGET_TAG" \
     --expected-abi "$EXPECTED_ABI" \
     --output "$INDEX_PATH" \
-    --head-file "$INDEX_HEAD_FILE"
+    --head-file "$INDEX_HEAD_FILE" \
+    "${index_state_authority_args[@]}"
 else
   index_info="$(release_asset_info 'index.toml')"
   if [ -n "$index_info" ]; then
@@ -517,11 +573,13 @@ if [ "$STATUS" = "success" ]; then
   upload_archive_asset
 fi
 if [ "$IS_CANONICAL" = 1 ]; then
+  require_canonical_source_authority
   bash "$RELEASE_INDEX_STATE_SCRIPT" publish \
     --target-tag "$TARGET_TAG" \
     --expected-abi "$EXPECTED_ABI" \
     --index-path "$INDEX_PATH" \
-    --expected-head "$(cat "$INDEX_HEAD_FILE")"
+    --expected-head "$(cat "$INDEX_HEAD_FILE")" \
+    "${index_state_authority_args[@]}"
 else
   gh_retry gh release upload "$TARGET_TAG" \
     --repo "$GITHUB_REPOSITORY" \

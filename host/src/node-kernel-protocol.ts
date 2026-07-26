@@ -41,6 +41,8 @@ export interface InitMessage {
    * (custom-io / legacy path).
    */
   rootfsImage?: ArrayBuffer;
+  /** Base used to resolve relative lazy URLs embedded in rootfsImage. */
+  rootfsLazyUrlBase?: string;
   /** Exhaustive exact-byte lazy transport for this rootfs; no network fallback. */
   rootfsLazyAssets?: ClosedLazyAsset[];
   extraMounts?: Array<{

@@ -36,6 +36,125 @@ fail() {
   exit 1
 }
 
+assert_real_relocated_xtask_uses_source_alias() {
+  if [ "$#" -ne 1 ]; then
+    fail "real relocated xtask regression expects one isolated build user"
+  fi
+  local build_user="$1"
+  local build_group host_target release_xtask regression_root protected_root
+  local protected_xtask source_alias runner_source runner unit
+  build_group="$(id -gn "$build_user")"
+  host_target="$(rustc -vV | sed -n 's/^host: //p')"
+  release_xtask="$REPO_ROOT/target/$host_target/release/xtask"
+  [ -n "$host_target" ] && [ -f "$release_xtask" ] && \
+    [ ! -L "$release_xtask" ] && [ -x "$release_xtask" ] ||
+    fail "real relocated xtask regression requires the prebuilt host release checker"
+
+  regression_root="$ISOLATION_ROOT/real-relocated-xtask"
+  case "$regression_root/" in
+    "$ISOLATION_ROOT/"*) ;;
+    *) fail "real relocated xtask regression escaped its isolated root" ;;
+  esac
+  protected_root="$regression_root/protected"
+  protected_xtask="$protected_root/xtask"
+  source_alias="$regression_root/source/kandelo"
+  runner_source="$ISOLATION_ROOT/verify-relocated-xtask-$$-${RANDOM}.source"
+  runner="$protected_root/verify-relocated-xtask"
+  /usr/bin/sudo -n -- /usr/bin/install -d -o root -g root -m 0555 \
+    "$protected_root" "${source_alias%/*}" "$source_alias"
+  /usr/bin/sudo -n -- /usr/bin/install -o root -g root -m 0555 -- \
+    "$release_xtask" "$protected_xtask"
+  /usr/bin/sudo -n -- /usr/bin/cmp -s -- "$release_xtask" "$protected_xtask" ||
+    fail "real relocated xtask regression did not stage the exact release bytes"
+
+  cat >"$runner_source" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+original_root="$1"
+source_alias="$2"
+checker="$3"
+host_target="$4"
+expected_registry="$source_alias/packages/registry"
+
+# The negative control must reproduce the publisher failure: the checker was
+# compiled in original_root, but that checkout is deliberately inaccessible.
+if [ -r "$original_root" ] || [ -w "$original_root" ] || \
+   [ -x "$original_root" ] || ls "$original_root" >/dev/null 2>&1; then
+  echo "real relocated xtask regression can still access the compile checkout" >&2
+  exit 1
+fi
+[ -r "$source_alias/Cargo.toml" ] &&
+  [ -r "$expected_registry/program-packages.json" ] ||
+  { echo "real relocated xtask regression cannot read the source alias" >&2; exit 1; }
+[ "$checker" = "$source_alias/target/$host_target/release/xtask" ]
+[ -f "$checker" ] && [ ! -L "$checker" ] && [ -r "$checker" ] &&
+  [ -x "$checker" ] && [ ! -w "$checker" ]
+[ "$(/usr/bin/realpath -- "$checker")" = "$checker" ]
+[ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$checker")" = "0:0:555:1" ]
+for read_only_path in "$source_alias" "$checker"; do
+  mount_options="$(
+    /usr/bin/findmnt --noheadings --output VFS-OPTIONS --target "$read_only_path"
+  )"
+  case ",${mount_options// /}," in
+    *,ro,*) ;;
+    *)
+      echo "real relocated xtask regression found a writable bind: $read_only_path" >&2
+      exit 1
+      ;;
+  esac
+done
+
+export WASM_POSIX_DEPS_REGISTRY="$expected_registry"
+if negative_output="$(
+    "$checker" build-deps program-index-context-check 2>&1
+  )"; then
+  echo "relocated checker unexpectedly used its inaccessible compile checkout" >&2
+  exit 1
+fi
+# WHY: The package closure can gain an earlier required source input over time.
+# Match the inaccessible compile root rather than coupling this regression to
+# whichever input the resolver happens to validate first.
+case "$negative_output" in
+  *"build input \""*"\" not found"*"$original_root/"*) ;;
+  *)
+    echo "relocated checker negative control failed for the wrong reason:" >&2
+    echo "$negative_output" >&2
+    exit 1
+    ;;
+esac
+
+"$checker" build-deps program-index-context-check \
+  --source-repo-root "$source_alias"
+EOF
+  chmod 0555 "$runner_source"
+  /usr/bin/sudo -n -- /usr/bin/install -o root -g root -m 0555 -- \
+    "$runner_source" "$runner"
+  rm -f "$runner_source"
+
+  unit="kandelo-real-relocated-xtask-$$-${RANDOM}.service"
+  /usr/bin/sudo -n -- /usr/bin/systemd-run \
+    --quiet --wait --collect --pipe \
+    --unit="$unit" \
+    --uid="$build_user" --gid="$build_group" \
+    --property=KillMode=control-group \
+    --property=SendSIGKILL=yes \
+    --property=TimeoutStopSec=10s \
+    --property=NoNewPrivileges=yes \
+    "--property=BindReadOnlyPaths=$REPO_ROOT:$source_alias" \
+    "--property=BindReadOnlyPaths=$protected_xtask:$source_alias/target/$host_target/release/xtask" \
+    "--property=InaccessiblePaths=$REPO_ROOT" \
+    --service-type=exec \
+    --expand-environment=no \
+    --working-directory="$source_alias" \
+    -- /usr/bin/env -i \
+      "HOME=/home/$build_user" "USER=$build_user" "LOGNAME=$build_user" \
+      "PATH=$PATH" \
+      "$runner" "$REPO_ROOT" "$source_alias" \
+      "$source_alias/target/$host_target/release/xtask" "$host_target"
+
+  /usr/bin/sudo -n -- rm -rf -- "$regression_root"
+}
+
 prefix="$TMPDIR/prefix"
 patch_file="$TMPDIR/marker.patch"
 publisher_patch_file="$TMPDIR/publisher-marker.patch"
@@ -154,7 +273,7 @@ case "${1:-}" in
       HOMEBREW_KANDELO_ABI HOMEBREW_KANDELO_ARCH HOMEBREW_KANDELO_LLVM_BIN \
       HOMEBREW_KANDELO_GNU_TAR HOMEBREW_KANDELO_NODE HOMEBREW_KANDELO_NODE_RECEIPT_PATH \
       HOMEBREW_KANDELO_PRIMARY_TAP_ROOT HOMEBREW_KANDELO_ROOT \
-      HOMEBREW_KANDELO_SYSROOT LLVM_BIN \
+      HOMEBREW_KANDELO_SYSROOT HOMEBREW_KANDELO_XTASK_BIN LLVM_BIN \
       PLAYWRIGHT_BROWSERS_PATH WASM_POSIX_LLVM_DIR WASM_POSIX_SYSROOT; do
       [ -z "${!target_only+x}" ] || exit 1
     done
@@ -404,15 +523,30 @@ case "${1:-}" in
     printf 'mutation\n' >>"${XDG_CONFIG_HOME:?}/homebrew/trust.json"
     ;;
   assert-source-aliases)
-    [ "$#" -eq 9 ]
+    [ "$#" -eq 11 ]
     [ "${HOMEBREW_KANDELO_ROOT:-}" = "$2" ]
     [ "${KANDELO_HOMEBREW_KANDELO_ROOT:-}" = "$2" ]
     [ "${HOMEBREW_KANDELO_SYSROOT:-}" = "$4" ]
     [ "${WASM_POSIX_SYSROOT:-}" = "$4" ]
+    [ "${HOMEBREW_KANDELO_XTASK_BIN:-}" = "$5" ]
+    [ "${WASM_POSIX_XTASK_BIN:-}" = "$5" ]
+    [ -f "$5" ] && [ ! -L "$5" ] && [ -r "$5" ] && [ -x "$5" ] && [ ! -w "$5" ]
+    [ "$(/usr/bin/realpath -- "$5")" = "$5" ]
+    [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$5")" = "0:0:555:1" ]
+    actual_xtask_sha256="$(/usr/bin/sha256sum "$5")"
+    actual_xtask_sha256="${actual_xtask_sha256%% *}"
+    [ "$actual_xtask_sha256" = "$6" ]
+    [ "$("$5" build-deps program-index-context-check \
+      --source-repo-root "$2")" = "checked source projection" ]
     [ -r "$2/source-marker" ]
     [ -r "$3/tap-marker" ]
     [ "$(cat "$4/lib/libc.a")" = "reviewed sysroot" ]
-    for hidden_root in "$5" "$6" "$7" "$8" "$9"; do
+    if printf 'changed\n' >>"$5" 2>/dev/null; then exit 1; fi
+    if chmod u+w "$5" 2>/dev/null; then exit 1; fi
+    if rm -f "$5" 2>/dev/null; then exit 1; fi
+    if mv "$5" "$5-replaced" 2>/dev/null; then exit 1; fi
+    if ln -snf /tmp/changed "$5" 2>/dev/null; then exit 1; fi
+    for hidden_root in "$7" "$8" "$9" "${10}" "${11}"; do
       if [ -r "$hidden_root" ] || [ -w "$hidden_root" ] || [ -x "$hidden_root" ]; then
         exit 1
       fi
@@ -1192,6 +1326,8 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   isolated_sysroot_private_parent="$ISOLATION_ROOT/private-sysroot-owner"
   isolated_sysroot_owner="$isolated_sysroot_private_parent/sysroot-build"
   isolated_sysroot="$isolated_sysroot_owner/sysroot"
+  isolated_xtask_dir="$isolated_kandelo/target/x86_64-unknown-linux-gnu/release"
+  isolated_xtask="$isolated_xtask_dir/xtask"
   isolated_dependency_plan="$isolated_output/host-dependencies.json"
   isolated_tier2_attestation="$isolated_output/tier2-attestation.json"
   isolated_home="/home/$ISOLATION_BUILD_USER"
@@ -1205,7 +1341,8 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
     "$isolated_cache" "$isolated_temp" "$isolated_kandelo" "$isolated_tap" \
     "$isolated_dependency_tap" "$isolated_output" "$isolated_native_base" \
     "$external_cellar" "$external_opt" \
-    "$isolated_private_bottle_dir" "$isolated_shared_temp" "$isolated_sysroot/lib"
+    "$isolated_private_bottle_dir" "$isolated_shared_temp" "$isolated_sysroot/lib" \
+    "$isolated_xtask_dir"
   chmod 0711 "$isolated_native_base"
   chmod 0700 "$isolated_private_bottle_dir"
   chmod 0700 "$isolated_sysroot_private_parent"
@@ -1219,10 +1356,22 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   printf 'reviewed tap\n' >"$isolated_tap/tap-marker"
   printf 'reviewed dependency tap\n' >"$isolated_dependency_tap/tap-marker"
   printf 'reviewed sysroot\n' >"$isolated_sysroot/lib/libc.a"
+  cat >"$isolated_xtask" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$#" -eq 4 ]
+[ "$1" = "build-deps" ]
+[ "$2" = "program-index-context-check" ]
+[ "$3" = "--source-repo-root" ]
+[ "$4" = "${HOMEBREW_KANDELO_ROOT:?}" ]
+[ -r "$4/source-marker" ]
+printf 'checked source projection\n'
+EOF
+  chmod 0555 "$isolated_xtask"
   printf 'target work\n' >"$isolated_work/target-work-marker"
   printf 'external target untouched\n' >"$external_cellar/sentinel"
   printf 'external target untouched\n' >"$external_opt/sentinel"
-  dependency_plan_json='{"build":["cmake"],"build_and_test":["cmake","ninja"],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","runtime_and_test":["ninja"],"schema":3,"tap":"kandelo-dev/tap-core","target_taps":[{"tap_commit":"1111111111111111111111111111111111111111","tap_name":"kandelo-dev/tap-core","tap_repository":"kandelo-dev/homebrew-tap-core"}]}'
+  dependency_plan_json='{"build":["cmake"],"build_and_test":["cmake","ninja"],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","native_requirements":[],"runtime_and_test":["ninja"],"schema":4,"tap":"kandelo-dev/tap-core","target_taps":[{"tap_commit":"1111111111111111111111111111111111111111","tap_name":"kandelo-dev/tap-core","tap_repository":"kandelo-dev/homebrew-tap-core"}]}'
   printf '%s\n' "$dependency_plan_json" >"$isolated_dependency_plan"
   chmod 0600 "$isolated_dependency_plan"
   tier2_attestation_json="$active_tier2_attestation_json"
@@ -1230,9 +1379,10 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   chmod 0600 "$isolated_tier2_attestation"
   mkdir "$isolated_kandelo/runner-control"
   chmod 0700 "$isolated_kandelo/runner-control"
-  # Keep the parent traversable so only systemd's InaccessiblePaths protects
-  # these roots. A mode-000 mountpoint can still exist and stat successfully.
-  chmod 0755 "$isolated_source_parent"
+  # Model GitHub's workflow-private home: the Formula identity cannot traverse
+  # the original checkout. The launcher must expose only its root-created,
+  # read-only bind aliases inside the isolated service.
+  chmod 0700 "$isolated_source_parent"
   cp "$prefix/bin/brew" "$isolated_repo/bin/brew"
   chmod +x "$isolated_repo/bin/brew"
   printf 'unpatched\n' >"$isolated_repo/marker.txt"
@@ -1246,6 +1396,7 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
 
   /usr/bin/sudo -n -- /usr/sbin/useradd --system --user-group --create-home \
     --home-dir "$isolated_home" --shell /usr/sbin/nologin "$ISOLATION_BUILD_USER"
+  assert_real_relocated_xtask_uses_source_alias "$ISOLATION_BUILD_USER"
   /usr/bin/sudo -n -- chown -R \
     "$ISOLATION_BUILD_USER:$(id -gn "$ISOLATION_BUILD_USER")" \
     "$external_cellar" "$external_opt"
@@ -1256,6 +1407,10 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   if /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
     /usr/bin/test -x "$isolated_sysroot_owner"; then
     fail "sysroot fixture does not model a workflow-private owner path"
+  fi
+  if /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+    /usr/bin/test -r "$isolated_xtask"; then
+    fail "program-index checker fixture does not model a workflow-private checkout"
   fi
   export HOMEBREW_CACHE="$isolated_cache"
   export HOMEBREW_TEMP="$isolated_temp"
@@ -1318,6 +1473,7 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   done
   printf 'native boundary marker\n' >"$isolated_native_prefix/boundary-marker"
   export KANDELO_HOMEBREW_ARCH=wasm64
+  export WASM_POSIX_XTASK_BIN="$isolated_xtask"
   if homebrew_patched_launcher_isolate \
       "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap" \
       "$isolated_output" "$isolated_sysroot_owner" >/dev/null 2>&1; then
@@ -1330,6 +1486,101 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
     fail "Formula isolation accepted an invalid target architecture"
   fi
   export KANDELO_HOMEBREW_ARCH=wasm32
+
+  assert_xtask_rejected() {
+    local candidate="$1" expected_error="$2" label="$3"
+    local error_file="$ISOLATION_ROOT/rejected-xtask.err"
+    local saved_xtask="$WASM_POSIX_XTASK_BIN"
+    if [ -n "$candidate" ]; then
+      export WASM_POSIX_XTASK_BIN="$candidate"
+    else
+      unset WASM_POSIX_XTASK_BIN
+    fi
+    if homebrew_patched_launcher_isolate \
+        "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap" \
+        "$isolated_output" "$isolated_sysroot_owner" > /dev/null 2>"$error_file"; then
+      fail "Formula isolation accepted $label"
+    fi
+    grep -F "$expected_error" "$error_file" >/dev/null ||
+      fail "Formula isolation did not explain rejected $label"
+    export WASM_POSIX_XTASK_BIN="$saved_xtask"
+  }
+
+  assert_xtask_rejected "" \
+    "prepared program-index checker must be one exact regular executable" \
+    "a missing program-index checker"
+
+  isolated_xtask_link="$isolated_xtask_dir/xtask-link"
+  ln -s xtask "$isolated_xtask_link"
+  assert_xtask_rejected "$isolated_xtask_link" \
+    "prepared program-index checker must be one exact regular executable" \
+    "a symlinked program-index checker"
+  rm "$isolated_xtask_link"
+
+  outside_xtask="$isolated_output/xtask"
+  cp "$isolated_xtask" "$outside_xtask"
+  assert_xtask_rejected "$outside_xtask" \
+    "prepared program-index checker is outside the exact Kandelo root" \
+    "a program-index checker outside Kandelo"
+  rm "$outside_xtask"
+
+  misplaced_xtask="$isolated_kandelo/xtask"
+  cp "$isolated_xtask" "$misplaced_xtask"
+  assert_xtask_rejected "$misplaced_xtask" \
+    "program-index checker is not the prepared release xtask" \
+    "a non-release program-index checker"
+  rm "$misplaced_xtask"
+
+  inaccessible_xtask="$isolated_kandelo/target/inaccessible/release/xtask"
+  mkdir -p "${inaccessible_xtask%/*}"
+  cp "$isolated_xtask" "$inaccessible_xtask"
+  chmod 0700 "$inaccessible_xtask"
+  assert_xtask_rejected "$inaccessible_xtask" \
+    "prepared program-index checker has an unsafe mode" \
+    "an inaccessible program-index checker"
+  rm -rf "$isolated_kandelo/target/inaccessible"
+
+  writable_xtask="$isolated_kandelo/target/writable/release/xtask"
+  mkdir -p "${writable_xtask%/*}"
+  cp "$isolated_xtask" "$writable_xtask"
+  chmod 0777 "$writable_xtask"
+  assert_xtask_rejected "$writable_xtask" \
+    "prepared program-index checker has an unsafe mode" \
+    "a build-user-writable program-index checker"
+  rm -rf "$isolated_kandelo/target/writable"
+
+  hardlinked_xtask="$isolated_kandelo/target/hardlinked/release/xtask"
+  mkdir -p "${hardlinked_xtask%/*}"
+  cp "$isolated_xtask" "$hardlinked_xtask"
+  ln "$hardlinked_xtask" "$hardlinked_xtask.alternate"
+  assert_xtask_rejected "$hardlinked_xtask" \
+    "prepared program-index checker is not single-linked" \
+    "a hard-linked program-index checker"
+  rm -rf "$isolated_kandelo/target/hardlinked"
+
+  owned_xtask="$isolated_kandelo/target/owned/release/xtask"
+  mkdir -p "${owned_xtask%/*}"
+  cp "$isolated_xtask" "$owned_xtask"
+  /usr/bin/sudo -n -- chown "$ISOLATION_BUILD_USER" "$owned_xtask"
+  assert_xtask_rejected "$owned_xtask" \
+    "prepared program-index checker is owned by the Formula user" \
+    "a Formula-user-owned program-index checker"
+  rm -rf "$isolated_kandelo/target/owned"
+
+  replaceable_xtask="$isolated_kandelo/target/replaceable/release/xtask"
+  mkdir -p "${replaceable_xtask%/*}"
+  cp "$isolated_xtask" "$replaceable_xtask"
+  /usr/bin/sudo -n -- chown "$ISOLATION_BUILD_USER" "${replaceable_xtask%/*}"
+  # This negative case must expose the deliberately replaceable inner
+  # directory. The positive production-shaped case below restores the private
+  # runner-home boundary before exercising the read-only source alias.
+  chmod 0711 "$isolated_source_parent"
+  assert_xtask_rejected "$replaceable_xtask" \
+    "build user can replace protected source" \
+    "a build-user-replaceable program-index checker"
+  chmod 0700 "$isolated_source_parent"
+  /usr/bin/sudo -n -- chown "$(id -u):$(id -g)" "${replaceable_xtask%/*}"
+  rm -rf "$isolated_kandelo/target/replaceable"
 
   assert_primary_tap_rejected() {
     local candidate="$1" expected_error="$2" label="$3"
@@ -1404,6 +1655,13 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   homebrew_patched_launcher_isolate \
     "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap" \
     "$isolated_output" "$isolated_sysroot_owner" "$isolated_dependency_tap"
+  protected_dir="$HOMEBREW_PATCHED_PROTECTED_DIR"
+  source_alias_dir="$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR"
+  protected_xtask="$HOMEBREW_PATCHED_PROTECTED_DIR/xtask"
+  [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a:%h' "$protected_xtask")" = \
+      "0:0:555:1" ] &&
+    /usr/bin/sudo -n -- /usr/bin/cmp -s -- "$isolated_xtask" "$protected_xtask" ||
+    fail "isolated launcher did not stage one exact root-owned checker inode"
   /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
     test -x "$isolated_native_base" ||
     fail "build identity cannot traverse the workflow-owned native parent"
@@ -1477,10 +1735,16 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   if "$HOMEBREW_PATCHED_BREW_BIN" trust >/dev/null 2>&1; then
     fail "explicit trust mutation succeeded against the sealed store"
   fi
+  isolated_xtask_sha256="$(/usr/bin/sha256sum "$isolated_xtask")"
+  isolated_xtask_sha256="${isolated_xtask_sha256%% *}"
+  HOMEBREW_KANDELO_XTASK_BIN=caller-poison \
+  WASM_POSIX_XTASK_BIN=caller-poison \
   "$HOMEBREW_PATCHED_BREW_BIN" assert-source-aliases \
     "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/kandelo" \
     "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/tap" \
     "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/sysroot" \
+    "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/kandelo/target/x86_64-unknown-linux-gnu/release/xtask" \
+    "$isolated_xtask_sha256" \
     "$isolated_kandelo" "$isolated_tap" "$isolated_output" "$isolated_sysroot_owner" \
     "$isolated_dependency_tap"
   HOMEBREW_KANDELO_PRIMARY_TAP_ROOT=caller-poison \
@@ -1610,6 +1874,47 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   [ -z "$($HOMEBREW_PATCHED_BREW_BIN list --formula cmake)" ] ||
     fail "isolated target Homebrew rejected the native Formula proxy keg"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-no-new-privileges
+  cp "$isolated_xtask" "$isolated_xtask.backup"
+  # WHY: production checkers are sealed 0555. Only the private fixture owner
+  # may unseal this copy, and every launcher invocation must see it resealed.
+  chmod 0755 "$isolated_xtask"
+  printf 'stale replacement\n' >>"$isolated_xtask"
+  chmod 0555 "$isolated_xtask"
+  if "$HOMEBREW_PATCHED_BREW_BIN" assert-no-new-privileges \
+      >/dev/null 2>"$ISOLATION_ROOT/stale-xtask.err"; then
+    fail "isolated launcher accepted changed program-index checker bytes"
+  fi
+  grep -F "prepared program-index checker changed after isolation" \
+    "$ISOLATION_ROOT/stale-xtask.err" >/dev/null ||
+    fail "isolated launcher did not explain stale program-index checker bytes"
+  chmod 0755 "$isolated_xtask"
+  cp "$isolated_xtask.backup" "$isolated_xtask"
+  chmod 0555 "$isolated_xtask"
+  rm "$isolated_xtask.backup"
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-no-new-privileges
+  /usr/bin/sudo -n -- chmod 0755 "$protected_xtask"
+  printf 'stale root copy\n' |
+    /usr/bin/sudo -n -- tee -a "$protected_xtask" >/dev/null
+  /usr/bin/sudo -n -- chmod 0555 "$protected_xtask"
+  if "$HOMEBREW_PATCHED_BREW_BIN" assert-no-new-privileges \
+      >/dev/null 2>"$ISOLATION_ROOT/stale-protected-xtask.err"; then
+    fail "isolated launcher accepted changed root-owned checker bytes"
+  fi
+  grep -F "root-owned program-index checker changed after isolation" \
+    "$ISOLATION_ROOT/stale-protected-xtask.err" >/dev/null ||
+    fail "isolated launcher did not explain changed root-owned checker bytes"
+  if homebrew_patched_launcher_verify_isolation \
+      >/dev/null 2>"$ISOLATION_ROOT/stale-protected-xtask-verify.err"; then
+    fail "isolation verification accepted changed root-owned checker bytes"
+  fi
+  grep -F "root-owned program-index checker changed after isolation" \
+    "$ISOLATION_ROOT/stale-protected-xtask-verify.err" >/dev/null ||
+    fail "isolation verification did not explain changed root-owned checker bytes"
+  /usr/bin/sudo -n -- chmod 0755 "$protected_xtask"
+  /usr/bin/sudo -n -- cp "$isolated_xtask" "$protected_xtask"
+  /usr/bin/sudo -n -- chmod 0555 "$protected_xtask"
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-no-new-privileges
+  homebrew_patched_launcher_verify_isolation
   "$HOMEBREW_PATCHED_BREW_BIN" spawn-daemon "$daemon_marker" "$daemon_started"
   [ -e "$daemon_started" ] || fail "detached Formula process never started"
   sleep 3
@@ -1620,6 +1925,27 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   pgrep_status="$?"
   set -e
   [ "$pgrep_status" -eq 1 ] || fail "Formula process check did not prove an empty UID"
+  /usr/bin/sudo -n -- mv -- "$protected_xtask" "$protected_xtask.original"
+  /usr/bin/sudo -n -- /usr/bin/install -o root -g root -m 0555 -- \
+    "$isolated_xtask" "$protected_xtask"
+  if "$HOMEBREW_PATCHED_BREW_BIN" assert-no-new-privileges \
+      >/dev/null 2>"$ISOLATION_ROOT/replaced-protected-xtask.err"; then
+    fail "isolated launcher accepted a replaced root-owned checker inode"
+  fi
+  grep -F "root-owned program-index checker changed after isolation" \
+    "$ISOLATION_ROOT/replaced-protected-xtask.err" >/dev/null ||
+    fail "isolated launcher did not explain the replaced root-owned checker inode"
+  if homebrew_patched_launcher_verify_isolation \
+      >/dev/null 2>"$ISOLATION_ROOT/replaced-protected-xtask-verify.err"; then
+    fail "isolation verification accepted a replaced root-owned checker inode"
+  fi
+  grep -F "root-owned program-index checker changed after isolation" \
+    "$ISOLATION_ROOT/replaced-protected-xtask-verify.err" >/dev/null ||
+    fail "isolation verification did not explain the replaced root-owned checker inode"
+  /usr/bin/sudo -n -- rm -f -- "$protected_xtask"
+  /usr/bin/sudo -n -- mv -- "$protected_xtask.original" "$protected_xtask"
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-no-new-privileges
+  homebrew_patched_launcher_verify_isolation
   homebrew_patched_launcher_teardown "$ISOLATION_BUILD_USER"
   /usr/bin/sudo -n -- chmod 0755 "$target_proxy_rack"
   if homebrew_patched_launcher_verify_isolation >/dev/null 2>&1; then
@@ -1648,6 +1974,13 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
     fail "isolated cleanup left the publisher dependency plan"
   [ ! -e "$isolated_prefix/.kandelo-publisher-tier2-attestation.json" ] ||
     fail "isolated cleanup left the publisher Tier-2 attestation"
+  [ ! -e "$protected_dir" ] && [ ! -e "$source_alias_dir" ] && \
+    [ -z "$HOMEBREW_PATCHED_PROTECTED_DIR" ] && \
+    [ -z "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR" ] && \
+    [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK" ] && \
+    [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK_STATE" ] && \
+    [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK_SHA256" ] ||
+    fail "isolated cleanup left the protected checker or source aliases"
   [ ! -e "$protected_bottle" ] && [ ! -e "$protected_bottle_dir" ] && \
     [ -z "$(find "$isolated_shared_temp" -mindepth 1 -print -quit)" ] && \
     [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP" ] && \

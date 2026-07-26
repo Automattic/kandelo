@@ -144,7 +144,7 @@ describe("VmInterruptTimerManager", () => {
     expect(flag(newProcess, 31)).toBe(1);
   });
 
-  it("drops a queued callback when the PID generation changes", () => {
+  it("drops a queued callback when the execution generation changes", () => {
     const oldProcess = generation();
     const replacement = generation();
     current.set(45, oldProcess);

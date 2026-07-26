@@ -1,6 +1,6 @@
 //! Tests for Phase 4a: runtime injection.
 //!
-//! After instrumentation, every module must expose the five control
+//! After instrumentation, every module must expose the seven control
 //! exports with the documented ABI. We verify this by:
 //!
 //! - Re-parsing the instrumented module with walrus.
@@ -11,6 +11,9 @@
 //! - Independently validating via wasmparser that the emitted module
 //!   is well-formed.
 
+use fork_instrument::linked_frames::{
+    FrameFormatDescriptor, LINKED_FRAME_FORMAT_SECTION, PointerWidth,
+};
 use fork_instrument::runtime::names;
 use fork_instrument::{
     FORK_CAP_DYLINK_MAIN, FORK_CAP_SIDE_ENTRY, FORK_CAPABILITIES_SECTION,
@@ -25,9 +28,8 @@ fn instrument_wat(wat_src: &str) -> Vec<u8> {
 }
 
 fn validate(bytes: &[u8]) {
-    let mut validator = wasmparser::Validator::new_with_features(
-        wasmparser::WasmFeatures::default(),
-    );
+    let mut validator =
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::default());
     validator.validate_all(bytes).expect("valid wasm");
 }
 
@@ -71,6 +73,128 @@ const EMPTY_MODULE_WITH_FORK: &str = r#"
 fn instrumented_module_validates() {
     let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK);
     validate(&bytes);
+}
+
+#[test]
+fn linked_runtime_imports_transaction_hooks_and_emits_exact_prefix_metadata() {
+    let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK);
+    let module = Module::from_buffer(&bytes).unwrap();
+    for name in [
+        names::IMPORT_FRAME_RESERVE,
+        names::IMPORT_FRAME_COMMIT,
+        names::IMPORT_FRAME_NEXT,
+    ] {
+        assert!(
+            module
+                .imports
+                .iter()
+                .any(|import| import.module == "env" && import.name == name),
+            "missing linked continuation import {name}",
+        );
+    }
+
+    let descriptors: Vec<_> = Parser::new(0)
+        .parse_all(&bytes)
+        .filter_map(|payload| match payload.expect("parse payload") {
+            Payload::CustomSection(section) if section.name() == LINKED_FRAME_FORMAT_SECTION => {
+                Some(FrameFormatDescriptor::decode(section.data()).unwrap())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        descriptors,
+        vec![FrameFormatDescriptor::current(PointerWidth::Wasm32, 24)],
+    );
+}
+
+#[test]
+fn plain_catches_do_not_expand_fixed_prefix_metadata() {
+    let bytes = instrument_wat(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $payload (param i32))
+          (memory 1)
+          (func (export "run") (param $value i32) (result i32)
+            (block $handler (result i32)
+              (try_table (catch $payload $handler)
+                local.get $value
+                throw $payload
+                unreachable)
+              unreachable)
+            drop
+            call $fork))
+        "#,
+    );
+    let descriptors: Vec<_> = Parser::new(0)
+        .parse_all(&bytes)
+        .filter_map(|payload| match payload.expect("parse payload") {
+            Payload::CustomSection(section) if section.name() == LINKED_FRAME_FORMAT_SECTION => {
+                Some(FrameFormatDescriptor::decode(section.data()).unwrap())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        descriptors,
+        vec![FrameFormatDescriptor::current(PointerWidth::Wasm32, 24)],
+        "plain-catch activation state belongs in function frames, not the module prefix",
+    );
+}
+
+#[test]
+fn memory64_plain_catches_do_not_expand_fixed_prefix_metadata() {
+    let bytes = instrument_wat(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $payload (param i32))
+          (memory i64 1)
+          (func (export "run") (param $value i32) (result i32)
+            (block $handler (result i32)
+              (try_table (catch $payload $handler)
+                local.get $value
+                throw $payload
+                unreachable)
+              unreachable)
+            drop
+            call $fork))
+        "#,
+    );
+    let descriptors: Vec<_> = Parser::new(0)
+        .parse_all(&bytes)
+        .filter_map(|payload| match payload.expect("parse payload") {
+            Payload::CustomSection(section) if section.name() == LINKED_FRAME_FORMAT_SECTION => {
+                Some(FrameFormatDescriptor::decode(section.data()).unwrap())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        descriptors,
+        vec![FrameFormatDescriptor::current(PointerWidth::Wasm64, 32)],
+        "memory64 plain-catch state belongs in function frames",
+    );
+}
+
+#[test]
+fn module_without_fork_seed_does_not_import_linked_storage_hooks() {
+    let bytes = instrument_wat("(module (memory 1) (func (export \"run\")))");
+    let module = Module::from_buffer(&bytes).unwrap();
+    for name in [
+        names::IMPORT_FRAME_RESERVE,
+        names::IMPORT_FRAME_COMMIT,
+        names::IMPORT_FRAME_NEXT,
+    ] {
+        assert!(
+            !module
+                .imports
+                .iter()
+                .any(|import| import.module == "env" && import.name == name),
+            "inert module unexpectedly imports linked continuation hook {name}",
+        );
+    }
 }
 
 #[test]
@@ -206,6 +330,16 @@ fn exports_rewind_begin_taking_ptr() {
 }
 
 #[test]
+fn exports_abort_begin_taking_ptr_and_abort_end_taking_no_args() {
+    let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let begin = export_function_id(&module, names::EXPORT_ABORT_BEGIN);
+    let end = export_function_id(&module, names::EXPORT_ABORT_END);
+    assert_eq!(func_signature(&module, begin), (vec![ValType::I32], vec![]));
+    assert_eq!(func_signature(&module, end), (vec![], vec![]));
+}
+
+#[test]
 fn exports_state_returning_i32() {
     let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK);
     let module = Module::from_buffer(&bytes).unwrap();
@@ -216,7 +350,7 @@ fn exports_state_returning_i32() {
 }
 
 #[test]
-fn all_five_control_exports_present() {
+fn all_seven_control_exports_present() {
     let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK);
     let module = Module::from_buffer(&bytes).unwrap();
 
@@ -225,6 +359,8 @@ fn all_five_control_exports_present() {
         names::EXPORT_UNWIND_END,
         names::EXPORT_REWIND_BEGIN,
         names::EXPORT_REWIND_END,
+        names::EXPORT_ABORT_BEGIN,
+        names::EXPORT_ABORT_END,
         names::EXPORT_STATE,
     ] {
         assert!(
@@ -243,10 +379,7 @@ use walrus::ir::Instr;
 
 /// Helper: count `Store` / `Load` instructions in the body of the
 /// named export by re-parsing the instrumented module.
-fn export_body_instr_counts(
-    module: &Module,
-    export: &str,
-) -> (usize, usize) {
+fn export_body_instr_counts(module: &Module, export: &str) -> (usize, usize) {
     let id = match module
         .exports
         .iter()
@@ -292,8 +425,7 @@ fn unwind_begin_stores_one_per_saved_global() {
     // state+buf globals are added *after* the scan so they are also
     // excluded. Plus Phase 7 Task 1 adds one store for `current_pos` at
     // buf+0. Expected: 1 (current_pos) + 2 (saved globals) = 3 stores.
-    let (stores, loads) =
-        export_body_instr_counts(&module, names::EXPORT_UNWIND_BEGIN);
+    let (stores, loads) = export_body_instr_counts(&module, names::EXPORT_UNWIND_BEGIN);
     assert_eq!(
         stores, 3,
         "unwind_begin should store current_pos + one per saved global",
@@ -306,8 +438,7 @@ fn rewind_begin_loads_one_per_saved_global() {
     let bytes = instrument_wat(MODULE_WITH_EXTRA_GLOBAL);
     let module = Module::from_buffer(&bytes).unwrap();
 
-    let (stores, loads) =
-        export_body_instr_counts(&module, names::EXPORT_REWIND_BEGIN);
+    let (stores, loads) = export_body_instr_counts(&module, names::EXPORT_REWIND_BEGIN);
     assert_eq!(loads, 2, "rewind_begin should load each saved global");
     assert_eq!(stores, 0, "rewind_begin never writes the save buffer");
 }
@@ -318,7 +449,7 @@ fn saved_globals_metadata_reports_declared_order() {
     // metadata — the high-level `instrument` fn hides it.
     let bytes = wat::parse_str(MODULE_WITH_EXTRA_GLOBAL).unwrap();
     let mut module = Module::from_buffer(&bytes).unwrap();
-    let runtime = inject_runtime(&mut module, 0);
+    let runtime = inject_runtime(&mut module);
 
     // Exactly two saved globals, in declaration order: user_stack, then user_tls.
     assert_eq!(runtime.saved_globals.len(), 2);
@@ -334,7 +465,7 @@ fn saved_globals_metadata_reports_declared_order() {
 fn module_with_no_extra_globals_has_empty_saved_globals() {
     let bytes = wat::parse_str(EMPTY_MODULE_WITH_FORK).unwrap();
     let mut module = Module::from_buffer(&bytes).unwrap();
-    let runtime = inject_runtime(&mut module, 0);
+    let runtime = inject_runtime(&mut module);
 
     assert!(
         runtime.saved_globals.is_empty(),
@@ -355,7 +486,7 @@ fn wasm64_saved_globals_use_16_byte_header() {
     "#;
     let bytes = wat::parse_str(wat).unwrap();
     let mut module = Module::from_buffer(&bytes).unwrap();
-    let runtime = inject_runtime(&mut module, 0);
+    let runtime = inject_runtime(&mut module);
 
     // wasm64 → header 2 * 8 = 16 bytes.
     assert_eq!(runtime.saved_globals.len(), 1);
@@ -376,7 +507,7 @@ fn ref_typed_mutable_globals_are_skipped_in_4e() {
     "#;
     let bytes = wat::parse_str(wat).unwrap();
     let mut module = Module::from_buffer(&bytes).unwrap();
-    let runtime = inject_runtime(&mut module, 0);
+    let runtime = inject_runtime(&mut module);
 
     // Only the i32 scalar should have been picked up.
     assert_eq!(runtime.saved_globals.len(), 1);
@@ -455,10 +586,9 @@ fn unwind_begin_writes_absolute_frames_start_wasm32() {
     let offset_instr = &instrs[store_idx - 2];
     match offset_instr {
         Instr::Const(c) => match c.value {
-            walrus::ir::Value::I32(v) => assert_eq!(
-                v, 8,
-                "wasm32 empty-globals frames_start_offset is 2*4 = 8",
-            ),
+            walrus::ir::Value::I32(v) => {
+                assert_eq!(v, 8, "wasm32 empty-globals frames_start_offset is 2*4 = 8",)
+            }
             other => panic!("expected I32 const, got {other:?}"),
         },
         other => panic!("expected frame offset const before add, got {other:?}"),
@@ -544,73 +674,73 @@ fn unwind_begin_writes_absolute_frames_start_wasm64() {
 }
 
 // ======================================================================
-// Stage 1 (B1) Task 1.3 — plain-catch scratch reservation in save buffer
+// Runtime buffer ownership
 // ======================================================================
 
-#[test]
-fn b1_scratch_size_is_zero_for_module_without_plain_catch() {
-    // A fork-using module with no try_table at all: B1 plan computes
-    // `total_bytes = 0`, the runtime reserves no scratch space, and
-    // `frames_start_offset` is byte-identical to pre-B1.
-    let wat = r#"
-        (module
-          (import "kernel" "kernel_fork" (func $fork (result i32)))
-          (func $caller (export "caller") (result i32)
-            call $fork)
-          (memory 1))
-    "#;
-    let bytes = wat::parse_str(wat).unwrap();
+fn assert_end_functions_clear_buffer_before_normal(wat_src: &str, ptr_ty: ValType) {
+    let bytes = wat::parse_str(wat_src).unwrap();
     let mut module = Module::from_buffer(&bytes).unwrap();
-    let runtime = inject_runtime(&mut module, 0);
-    assert_eq!(runtime.b1_scratch_size, 0);
-    assert_eq!(
-        runtime.b1_scratch_base, runtime.frames_start_offset,
-        "with zero scratch, base and frames_start coincide",
-    );
+    let runtime = inject_runtime(&mut module);
+
+    for (name, id) in [
+        (names::EXPORT_UNWIND_END, runtime.unwind_end),
+        (names::EXPORT_REWIND_END, runtime.rewind_end),
+        (names::EXPORT_ABORT_END, runtime.abort_end),
+    ] {
+        let local = match &module.funcs.get(id).kind {
+            walrus::FunctionKind::Local(local) => local,
+            _ => panic!("{name} is not local"),
+        };
+        let instrs: Vec<_> = local
+            .block(local.entry_block())
+            .instrs
+            .iter()
+            .map(|(instr, _)| instr)
+            .collect();
+        assert_eq!(instrs.len(), 4, "{name} must contain two exact stores");
+        assert!(
+            matches!(
+                (ptr_ty, instrs[0]),
+                (
+                    ValType::I32,
+                    Instr::Const(walrus::ir::Const {
+                        value: walrus::ir::Value::I32(0),
+                    })
+                ) | (
+                    ValType::I64,
+                    Instr::Const(walrus::ir::Const {
+                        value: walrus::ir::Value::I64(0),
+                    })
+                )
+            ),
+            "{name} must first materialize the pointer-width zero",
+        );
+        assert!(
+            matches!(instrs[1], Instr::GlobalSet(set) if set.global == runtime.buf_global),
+            "{name} must clear _wpk_fork_buf before publishing NORMAL",
+        );
+        assert!(
+            matches!(
+                instrs[2],
+                Instr::Const(walrus::ir::Const {
+                    value: walrus::ir::Value::I32(0),
+                })
+            ),
+            "{name} must materialize STATE_NORMAL",
+        );
+        assert!(
+            matches!(instrs[3], Instr::GlobalSet(set) if set.global == runtime.state_global),
+            "{name} must publish STATE_NORMAL last",
+        );
+    }
 }
 
 #[test]
-fn b1_scratch_size_shifts_frames_start_offset() {
-    // Two identical modules instrumented with different scratch sizes.
-    // The non-zero one must shift `frames_start_offset` by exactly
-    // (aligned) scratch size; `b1_scratch_base` must NOT shift —
-    // it tracks the post-saved-globals cursor only.
-    let wat = r#"
-        (module
-          (memory 1))
-    "#;
-    let bytes = wat::parse_str(wat).unwrap();
-    let mut module_a = Module::from_buffer(&bytes).unwrap();
-    let runtime_a = inject_runtime(&mut module_a, 0);
-
-    let mut module_b = Module::from_buffer(&bytes).unwrap();
-    let runtime_b = inject_runtime(&mut module_b, 16);
-
-    assert_eq!(runtime_b.b1_scratch_size, 16);
-    assert_eq!(
-        runtime_b.b1_scratch_base, runtime_a.b1_scratch_base,
-        "b1_scratch_base sits at end of saved-globals area regardless of scratch size",
-    );
-    assert_eq!(
-        runtime_b.frames_start_offset,
-        runtime_a.frames_start_offset + 16,
-        "frames_start_offset shifts by exactly the (aligned) scratch size",
-    );
+fn wasm32_end_functions_release_buffer_before_normal() {
+    assert_end_functions_clear_buffer_before_normal("(module (memory 1))", ValType::I32);
 }
 
 #[test]
-fn b1_scratch_size_rounded_up_to_8_alignment() {
-    // 5 bytes requested → rounded up to 8. The frame data must
-    // start 8-aligned regardless of payload size so its first
-    // i64 store lands on an aligned address.
-    let wat = r#"(module (memory 1))"#;
-    let bytes = wat::parse_str(wat).unwrap();
-    let mut module = Module::from_buffer(&bytes).unwrap();
-    let runtime = inject_runtime(&mut module, 5);
-    assert_eq!(runtime.b1_scratch_size, 8, "5 rounds up to 8");
-    assert_eq!(
-        runtime.frames_start_offset - runtime.b1_scratch_base,
-        8,
-        "frames_start sits exactly aligned-size bytes after scratch base",
-    );
+fn wasm64_end_functions_release_buffer_before_normal() {
+    assert_end_functions_clear_buffer_before_normal("(module (memory i64 1))", ValType::I64);
 }

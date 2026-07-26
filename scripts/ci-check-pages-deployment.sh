@@ -68,6 +68,8 @@ grep -Fxq '  actions: read' "$PAGES_WORKFLOW" ||
 checkout_block="$(step_block "$PAGES_WORKFLOW" "Check out the source commit")"
 grep -Eq 'uses: actions/checkout@[0-9a-f]{40}' <<<"$checkout_block" ||
   fail "the complete publisher must check out one pinned source commit"
+grep -Fq 'persist-credentials: false' <<<"$checkout_block" ||
+  fail "the source-building Pages checkout must not persist write credentials"
 if grep -Eq '^[[:space:]]+ref:' <<<"$checkout_block"; then
   fail "the Pages checkout must use the workflow event source SHA"
 fi
@@ -91,7 +93,13 @@ for required_path in \
   'package.json' \
   'package-lock.json' \
   'packages/registry/**' \
+  'homebrew/main-shell-demo.json' \
+  'homebrew/source-rootfs-shell-default.json' \
+  'homebrew/source-rootfs-shell-dependencies.json' \
   'scripts/browser-binary-package-roots.mjs' \
+  'scripts/generate-rootfs-package-manifest.mjs' \
+  'scripts/source-rootfs-shell-dependency-contract.mjs' \
+  'scripts/package-build-roots.sh' \
   'scripts/check-pages-publish-size.mjs' \
   'scripts/check-pages-run-freshness.sh' \
   'scripts/ci-check-pages-deployment.sh' \
@@ -103,22 +111,29 @@ for required_path in \
 done
 
 projection_line="$(step_line "Verify browser package projection is current")"
+sysroot_line="$(step_line "Build current wasm32 sysroot for source-built browser packages")"
 prepare_browser_line="$(step_line "Prepare browser demo assets")"
 guide_build_line="$(step_line "Build user guide for the complete Pages tree")"
 api_build_line="$(step_line "Build API docs for the complete Pages tree")"
 assembly_line="$(step_line "Add documentation to the complete Pages tree")"
+sealed_boot_line="$(step_line "Boot the sealed Pages shell product in Chromium")"
 size_line="$(step_line "Enforce the GitHub Pages published-site size limit")"
 freshness_line="$(step_line "Confirm this is the newest Pages run")"
 deploy_line="$(step_line "Deploy to gh-pages")"
 
-[ -n "$projection_line" ] && [ -n "$prepare_browser_line" ] &&
+[ -n "$projection_line" ] && [ -n "$sysroot_line" ] &&
+  [ -n "$prepare_browser_line" ] &&
   [ "$projection_line" -lt "$prepare_browser_line" ] &&
+  [ "$projection_line" -lt "$sysroot_line" ] &&
+  [ "$sysroot_line" -lt "$prepare_browser_line" ] &&
   [ -n "$guide_build_line" ] && [ -n "$api_build_line" ] &&
-  [ -n "$assembly_line" ] && [ -n "$size_line" ] &&
+  [ -n "$assembly_line" ] && [ -n "$sealed_boot_line" ] &&
+  [ -n "$size_line" ] &&
   [ -n "$freshness_line" ] && [ -n "$deploy_line" ] &&
   [ "$guide_build_line" -lt "$assembly_line" ] &&
   [ "$api_build_line" -lt "$assembly_line" ] &&
-  [ "$assembly_line" -lt "$size_line" ] &&
+  [ "$assembly_line" -lt "$sealed_boot_line" ] &&
+  [ "$sealed_boot_line" -lt "$size_line" ] &&
   [ "$size_line" -lt "$freshness_line" ] &&
   [ "$freshness_line" -lt "$deploy_line" ] ||
   fail "one job must assemble and size-check the complete tree before its freshness check and deployment"
@@ -130,6 +145,40 @@ grep -Fq 'build-deps program-index-check' <<<"$projection_block" &&
   grep -Fq 'packages/registry packages/registry/program-packages.json' \
     <<<"$projection_block" ||
   fail "the Pages publisher must verify the generated package projection before preparing assets"
+
+sysroot_block="$(
+  step_block "$PAGES_WORKFLOW" "Build current wasm32 sysroot for source-built browser packages"
+)"
+grep -Fq 'bash scripts/dev-shell.sh bash scripts/build-musl.sh' <<<"$sysroot_block" &&
+  grep -Fq 'test -f sysroot/lib/libc.a' <<<"$sysroot_block" ||
+  fail "the Pages publisher must build and verify the current source-fallback sysroot"
+
+isolation_block="$(
+  step_block "$PAGES_WORKFLOW" "Isolate the exact-main source package closure"
+)"
+grep -Fq 'echo "WASM_POSIX_BINARY_CACHE_ROOT=$source_cache" >> "$GITHUB_ENV"' \
+  <<<"$isolation_block" ||
+  fail "the Pages publisher must establish one exact-main package-cache root"
+
+prepare_browser_block="$(
+  step_block "$PAGES_WORKFLOW" "Prepare browser demo assets"
+)"
+grep -Fq 'bash scripts/dev-shell.sh env \' <<<"$prepare_browser_block" &&
+  grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
+    <<<"$prepare_browser_block" ||
+  fail "browser preparation must retain the exact-main cache root inside dev-shell"
+
+sealed_boot_block="$(
+  step_block "$PAGES_WORKFLOW" "Boot the sealed Pages shell product in Chromium"
+)"
+grep -Fq 'VITE_BASE: /kandelo/' <<<"$sealed_boot_block" &&
+  grep -Fq 'KANDELO_PLAYWRIGHT_SERVE_DIST: "1"' <<<"$sealed_boot_block" &&
+  grep -Fq 'KANDELO_TEST_BASE_URL: http://127.0.0.1:5401/kandelo/' \
+    <<<"$sealed_boot_block" &&
+  grep -Fq 'bash ../../scripts/dev-shell.sh env \' <<<"$sealed_boot_block" &&
+  grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
+    <<<"$sealed_boot_block" ||
+  fail "the sealed Pages preview must boot with the same /kandelo/ base as the published build"
 
 between_freshness_and_deploy="$(
   sed -n "${freshness_line},${deploy_line}p" "$PAGES_WORKFLOW" |

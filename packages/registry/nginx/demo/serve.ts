@@ -2,7 +2,7 @@
  * serve.ts — Run nginx.wasm serving static files on the kernel.
  *
  * Starts nginx with master_process on and 2 worker processes.
- * The master (pid 1) forks 2 workers that handle connections.
+ * The kernel-assigned master forks 2 workers that handle connections.
  *
  * Uses NodeKernelHost which runs the kernel in a dedicated worker_thread
  * for optimal syscall throughput. TCP bridging is automatic.
@@ -58,7 +58,7 @@ async function main() {
     await host.init();
 
     console.log(`Starting nginx multi-worker (prefix=${prefix})...`);
-    console.log("  master (pid 1) + 2 worker processes");
+    console.log("  master + 2 worker processes (kernel-assigned PIDs)");
     console.log("Listening on http://localhost:8080/");
     console.log("Press Ctrl+C to stop.");
 

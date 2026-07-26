@@ -17,9 +17,10 @@ import {
   TERMINAL_STDIO,
 } from "./kernel-worker";
 import type {
-  ForkFromThreadContext,
+  ForkContinuationContext,
   ResolvedSpawnProgram,
   SpawnProgramResolution,
+  ThreadChannelAttachment,
 } from "./kernel-worker";
 import type { KernelPointer } from "./kernel";
 import { BrowserWorkerAdapter } from "./worker-adapter-browser";
@@ -30,6 +31,7 @@ import {
 } from "./vfs/vfs";
 import { MemoryFileSystem } from "./vfs/memory-fs";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
+import { resolveLazyUrl } from "./vfs/lazy-url";
 import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
 import {
@@ -63,7 +65,6 @@ import {
   computeProcessMemoryLayout,
   createProcessMemory,
   DEFAULT_PROCESS_THREAD_SLOTS,
-  FORK_SAVE_BUFFER_SIZE,
   type ProcessMemoryLayout,
 } from "./process-memory";
 import type {
@@ -73,8 +74,6 @@ import type {
 } from "./browser-kernel-protocol";
 
 const PAGE_SIZE = 65536;
-const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
-
 // State
 let kernelWorker: CentralizedKernelWorker;
 let workerAdapter: BrowserWorkerAdapter;
@@ -557,11 +556,6 @@ function createFreshProcessMemory(
   };
 }
 
-function resolveLazyUrl(base: string, url: string): string {
-  if (/^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("/")) return url;
-  return base.replace(/\/?$/, "/") + url;
-}
-
 // ── Init ──
 
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
@@ -652,11 +646,11 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     },
     io,
     {
-      onFork: (parentPid, childPid, parentMemory, threadFork) => {
+      onFork: ({ parentPid, childPid, parentMemory, continuation }) => {
         // Tell the main thread a kernel-side fork happened so Inspector
         // panes can refresh their process table without polling.
         post({ type: "proc_event", kind: "spawn", pid: childPid, ppid: parentPid });
-        return handleFork(parentPid, childPid, parentMemory, threadFork);
+        return handleFork(parentPid, childPid, parentMemory, continuation);
       },
       onExec: async (pid, path, argv, envp, callerTid) => {
         const previousWorker = processes.get(pid)?.worker;
@@ -678,8 +672,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       },
       onResolveSpawn: handlePosixSpawnResolve,
       onSpawn: handlePosixSpawn,
-      onClone: (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) =>
-        handleClone(pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory),
+      onClone: handleClone,
       onThreadExit: (pid, _tid, channelOffset) => handleThreadExit(pid, channelOffset),
       onExit: (pid, exitStatus) => handleExit(pid, exitStatus),
     },
@@ -781,7 +774,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
 // ── Spawn ──
 
 async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>) {
-  let registeredPid: number | undefined;
+  let createdPid: number | undefined;
   try {
     await waitForProcessTeardowns();
 
@@ -806,7 +799,10 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       return;
     }
 
-    const pid = kernelWorker.allocateTopLevelSpawnPid();
+    const pid = kernelWorker.createProcess(
+      msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
+    );
+    createdPid = pid;
     const path = msg.programPath ?? msg.argv[0];
     const pages = msg.maxPages ?? maxPages;
     const ptrWidth = detectPtrWidth(programBytes);
@@ -829,9 +825,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       brkBase: layout.brkBase,
       mmapBase: layout.mmapBase,
       maxAddr: layout.maxAddr,
-      stdio: msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
     });
-    registeredPid = pid;
 
     kernelWorker.setCredentials(pid, { uid: msg.uid, gid: msg.gid });
     if (msg.cwd) {
@@ -858,7 +852,6 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
       pid,
-      ppid: 0,
       programBytes,
       memory,
       channelOffset,
@@ -882,12 +875,13 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     });
 
     installProcessWorkerListeners(worker, pid);
-    registeredPid = undefined;
+    createdPid = undefined;
 
     respond(msg.requestId, pid);
   } catch (e) {
-    if (registeredPid !== undefined) {
-      kernelWorker.unregisterProcess(registeredPid);
+    if (createdPid !== undefined) {
+      kernelWorker.unregisterProcess(createdPid);
+      kernelWorker.removeProcessFromKernelTable(createdPid);
     }
     respondError(msg.requestId, String(e));
   }
@@ -1014,7 +1008,7 @@ async function handleFork(
   parentPid: number,
   childPid: number,
   parentMemory: WebAssembly.Memory,
-  threadFork?: ForkFromThreadContext,
+  continuation: ForkContinuationContext,
 ): Promise<number[]> {
   const parentInfo = processes.get(parentPid);
   if (!parentInfo || parentInfo.memory !== parentMemory) {
@@ -1046,25 +1040,27 @@ async function handleFork(
   new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
 
   kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
-    skipKernelCreate: true,
     ptrWidth,
     maxAddr: childLayout.maxAddr,
     mmapBase: childLayout.mmapBase,
   });
   kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
 
-  const forkReplayContext: ForkReplayContext | undefined = threadFork
+  const activeForkBufAddr = continuation.forkBufAddr;
+  const forkReplayContext: ForkReplayContext | undefined =
+    continuation.kind === "thread"
     ? {
-        fnPtr: threadFork.fnPtr,
-        argPtr: threadFork.argPtr,
-        forkBufAddr: threadFork.forkBufAddr,
+        fnPtr: continuation.fnPtr,
+        argPtr: continuation.argPtr,
+        forkBufAddr: activeForkBufAddr,
       }
-    : parentInfo.forkReplayContext;
-  const forkBufAddr = forkReplayContext?.forkBufAddr ?? childChannelOffset - FORK_BUF_SIZE;
+    : parentInfo.forkReplayContext
+      ? { ...parentInfo.forkReplayContext, forkBufAddr: activeForkBufAddr }
+      : undefined;
+  const forkBufAddr = activeForkBufAddr;
   const childInitData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
     pid: childPid,
-    ppid: parentPid,
     programBytes: parentInfo.programBytes,
     programModule: parentInfo.programModule,
     memory: childMemory,
@@ -1154,9 +1150,9 @@ async function handleExec(
     return -12; // ENOMEM
   }
 
-  // Resolution/compilation yielded to the event loop. The numeric pid may
-  // now name a replacement generation; a stale continuation must not commit
-  // exec state against it.
+  // Resolution/compilation yielded to the event loop. Another exec may have
+  // replaced the host execution generation for this persistent PID; a stale
+  // continuation must not commit exec state against it.
   if (processes.get(pid) !== initiatingInfo
       || kernelWorker.isExecHandoffActive(pid)
       || !kernelWorker.isProcessExecutionActive(pid)) return -3; // ESRCH
@@ -1207,7 +1203,6 @@ async function handleExec(
     const execInitData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
       pid,
-      ppid: 0,
       programBytes: bytes,
       programModule,
       memory: newMemory,
@@ -1219,7 +1214,7 @@ async function handleExec(
     };
 
     kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
-      skipKernelCreate: true,
+      preserveProcessState: true,
       ptrWidth,
       metadataPtrWidth: initiatingInfo.ptrWidth,
       brkBase: newLayout.brkBase,
@@ -1309,8 +1304,7 @@ async function handleExec(
  * The kernel has already constructed the child Process descriptor under
  * `childPid` with attrs and file actions applied. This callback receives the
  * preflight's compiled program, allocates a fresh Memory for the child, and
- * registers it with the kernel
- * (`skipKernelCreate: true` — kernel did its half), and spawns a Worker.
+ * attaches it to the Process the kernel already created, and spawns a Worker.
  *
  * Distinct from handleExec (which replaces the calling worker) and
  * handleFork (which clones the parent's Memory): this always creates a
@@ -1368,7 +1362,6 @@ async function handlePosixSpawn(
 
   // Kernel already created the child via kernel_spawn_process.
   kernelWorker.registerProcess(childPid, newMemory, [newChannelOffset], {
-    skipKernelCreate: true,
     ptrWidth,
     brkBase: newLayout.brkBase,
     mmapBase: newLayout.mmapBase,
@@ -1378,7 +1371,6 @@ async function handlePosixSpawn(
   const initData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
     pid: childPid,
-    ppid: parentPid,
     programBytes,
     programModule,
     memory: newMemory,
@@ -1432,15 +1424,10 @@ async function handlePosixSpawn(
 }
 
 async function handleClone(
-  pid: number,
-  tid: number,
-  fnPtr: number,
-  argPtr: number,
-  stackPtr: number,
-  tlsPtr: number,
-  ctidPtr: number,
-  memory: WebAssembly.Memory,
-): Promise<number> {
+  attachment: ThreadChannelAttachment,
+): Promise<void> {
+  const { pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory } =
+    attachment;
   const processInfo = processes.get(pid);
   if (!processInfo) throw new Error(`Unknown pid ${pid} for clone`);
   threadedProcessPids.add(pid);
@@ -1460,7 +1447,7 @@ async function handleClone(
 
   // Compilation yields. A sibling pthread may have committed exec while this
   // clone continuation was suspended; never attach the old program/Memory to
-  // the replacement process that now owns the same numeric pid.
+  // the replacement exec image for the same process identity.
   if (!isCurrentProcessGeneration(
     processes,
     pid,
@@ -1489,7 +1476,7 @@ async function handleClone(
   // thread back through its entry point. Mirrors handleClone in
   // host/src/node-kernel-worker-entry.ts.
   try {
-    kernelWorker.addChannel(pid, alloc.channelOffset, tid, fnPtr, argPtr, memory);
+    kernelWorker.attachThreadChannel(attachment, alloc.channelOffset);
   } catch (err) {
     processInfo.threadAllocator.free(alloc.basePage);
     throw err;
@@ -1627,7 +1614,6 @@ async function handleClone(
     throw new Error(`Process ${pid} changed generation before thread Worker launch`);
   }
 
-  return tid;
 }
 
 function handleThreadExit(pid: number, channelOffset: number): boolean {

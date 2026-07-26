@@ -16,7 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { zipSync } from "fflate";
 import {
   loadDeclaredShellLazyArchive,
@@ -54,8 +54,12 @@ function archiveFor(
   files: Record<string, Uint8Array> = {},
 ): Uint8Array {
   return zipSync({
-    [spec.requiredExecutable]: new TextEncoder().encode(`${spec.id} executable`),
-    [`share/${spec.id}/runtime.dat`]: new TextEncoder().encode(`${spec.id} runtime`),
+    [spec.requiredExecutable]: new TextEncoder().encode(
+      `${spec.id} executable`,
+    ),
+    [`share/${spec.id}/runtime.dat`]: new TextEncoder().encode(
+      `${spec.id} runtime`,
+    ),
     ...files,
   });
 }
@@ -279,7 +283,11 @@ describe("declared shell lazy-archive inputs", () => {
       "share/runtime/π data.txt",
     ]);
     expect(
-      entries.map((entry) => [entry.fileName, entry.creatorOS, entry.mode & 0o777]),
+      entries.map((entry) => [
+        entry.fileName,
+        entry.creatorOS,
+        entry.mode & 0o777,
+      ]),
     ).toEqual([
       ["bin/", 3, 0o755],
       ["bin/vi", 3, 0o777],
@@ -304,13 +312,11 @@ describe("declared shell lazy-archive inputs", () => {
 
     const vi = entries.find((entry) => entry.fileName === "bin/vi");
     expect(vi?.isSymlink).toBe(true);
-    expect(
-      new TextDecoder().decode(extractZipEntry(first, vi!)),
-    ).toBe("vim");
+    expect(new TextDecoder().decode(extractZipEntry(first, vi!))).toBe("vim");
     const vimEntry = entries.find((entry) => entry.fileName === "bin/vim");
-    expect(
-      new TextDecoder().decode(extractZipEntry(first, vimEntry!)),
-    ).toBe("fixture executable\n");
+    expect(new TextDecoder().decode(extractZipEntry(first, vimEntry!))).toBe(
+      "fixture executable\n",
+    );
     const dictionary = entries.find(
       (entry) => entry.fileName === "share/runtime/dictionary.txt",
     );
@@ -391,7 +397,7 @@ describe("declared shell lazy-archive inputs", () => {
 
   it.each(SHELL_LAZY_ARCHIVE_SPECS)(
     "indexes and hashes the exact resolved $id bundle bytes once",
-    (spec) => {
+    async (spec) => {
       const expected = archiveFor(spec);
       const path = writeArchive(spec.archiveUrl, expected);
       const calls: Array<[string, string]> = [];
@@ -399,7 +405,9 @@ describe("declared shell lazy-archive inputs", () => {
         calls.push([resolverPath, dependency]);
         return path;
       };
-      const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+      const fs = MemoryFileSystem.create(
+        new SharedArrayBuffer(4 * 1024 * 1024),
+      );
 
       const archive = registerDeclaredShellLazyArchive(fs, spec, resolve);
 
@@ -413,15 +421,64 @@ describe("declared shell lazy-archive inputs", () => {
         spec.requiredExecutable,
       );
       expect(archive.symlinkTargets).toEqual(new Map());
-      expect(fs.stat(`${spec.mountPrefix}${spec.requiredExecutable}`).size).toBe(
-        `${spec.id} executable`.length,
-      );
+      expect(
+        fs.stat(`${spec.mountPrefix}${spec.requiredExecutable}`).size,
+      ).toBe(`${spec.id} executable`.length);
+      const canonicalMountPrefix = spec.mountPrefix === "/"
+        ? "/"
+        : spec.mountPrefix.replace(/\/+$/, "");
       expect(fs.exportLazyArchiveEntries()).toEqual([
         expect.objectContaining({
           url: spec.archiveUrl,
-          mountPrefix: spec.mountPrefix,
+          mountPrefix: canonicalMountPrefix,
+          integrity: {
+            sha256: archive.integrity.sha256,
+            bytes: archive.integrity.compressedBytes,
+          },
         }),
       ]);
+      const restored = MemoryFileSystem.fromImage(await fs.saveImage());
+      expect(restored.exportLazyArchiveEntries()).toEqual([
+        expect.objectContaining({
+          url: spec.archiveUrl,
+          mountPrefix: canonicalMountPrefix,
+          integrity: {
+            sha256: archive.integrity.sha256,
+            bytes: archive.integrity.compressedBytes,
+          },
+        }),
+      ]);
+
+      const corrupt = expected.slice();
+      corrupt[Math.floor(corrupt.byteLength / 2)] ^= 0xff;
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers({
+          "content-length": String(corrupt.byteLength),
+        }),
+        body: null,
+        arrayBuffer: () => Promise.resolve(
+          corrupt.buffer.slice(
+            corrupt.byteOffset,
+            corrupt.byteOffset + corrupt.byteLength,
+          ),
+        ),
+      } as unknown as Response);
+      try {
+        await expect(
+          restored.ensureMaterialized(
+            `${spec.mountPrefix}${spec.requiredExecutable}`,
+          ),
+        ).rejects.toThrow(/sha-?256|integrity|digest/i);
+        expect(
+          restored.isPathDeferred(
+            `${spec.mountPrefix}${spec.requiredExecutable}`,
+          ),
+        ).toBe(true);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     },
   );
 
@@ -455,7 +512,10 @@ describe("declared shell lazy-archive inputs", () => {
 
   it("reports a corrupt declared output as an invalid lazy ZIP", () => {
     const spec = SHELL_LAZY_ARCHIVE_SPECS[0];
-    const corruptPath = writeArchive(spec.archiveUrl, new Uint8Array([1, 2, 3]));
+    const corruptPath = writeArchive(
+      spec.archiveUrl,
+      new Uint8Array([1, 2, 3]),
+    );
 
     expect(() => loadDeclaredShellLazyArchive(spec, () => corruptPath)).toThrow(
       /vim-browser-bundle output .* is not a valid lazy ZIP: Zip EOCD record not found/,
@@ -469,13 +529,10 @@ describe("declared shell lazy-archive inputs", () => {
     process.env[key] = dependencyDir;
     try {
       expect(() =>
-        resolveVfsArtifact(
-          "programs/wasm32/vim.zip",
-          "vim-browser-bundle",
-        ),
+        resolveVfsArtifact("programs/wasm32/vim.zip", "vim-browser-bundle"),
       ).toThrow(
         `direct dependency vim-browser-bundle is available at ${dependencyDir}, ` +
-        "but vim.zip was not found",
+          "but vim.zip was not found",
       );
     } finally {
       if (prior === undefined) delete process.env[key];
@@ -483,7 +540,7 @@ describe("declared shell lazy-archive inputs", () => {
     }
   });
 
-  it("maps the retired lazy bundles to exact bottle-owned shell inputs", () => {
+  it("keeps main activation on source outputs until exact-main bottles exist", () => {
     const packageToml = readFileSync(
       join(repoRoot, "packages/registry/shell/package.toml"),
       "utf8",
@@ -537,48 +594,71 @@ describe("declared shell lazy-archive inputs", () => {
       }>;
     };
 
-    // The canonical shell no longer resolves the old registry ZIP packages.
-    // Its reviewed lock maps those historical identities to direct Formula
-    // roots, and the exact immutable tap is part of the package cache key.
-    expect(packageToml).toMatch(/^depends_on\s*=\s*\[\]$/m);
-    expect(packageToml).not.toContain("vim-browser-bundle@");
-    expect(packageToml).not.toContain("nethack-browser-bundle@");
-    expect(buildToml).toMatch(/^revision\s*=\s*18$/m);
+    // This is an activation bridge, not a second permanent shell design. Its
+    // complete current product closure is source-built through the package
+    // resolver. Bash is eager because every boot needs it; the remaining
+    // utilities and Vim/NetHack trees keep their shared lazy semantics.
+    expect(
+      packageToml.match(/^\s*"[^"]+@[0-9][^"]*",?$/gm),
+    ).toEqual([
+      '  "rootfs@0.1.0",',
+      '  "bash@5.2.37",',
+      '  "fbdoom@0.1.0",',
+      '  "modeset@0.1.0",',
+      '  "less@668",',
+      '  "tar@1.35",',
+      '  "curl@8.11.1",',
+      '  "netcat@0.7.1",',
+      '  "wget@1.25.0",',
+      '  "git@2.47.1",',
+      '  "gzip@1.13",',
+      '  "bzip2@1.0.8",',
+      '  "xz@5.6.2",',
+      '  "zstd@1.5.6",',
+      '  "zip@3.0",',
+      '  "unzip@6.0",',
+      '  "lsof@0.1.0",',
+      '  "nano@8.0",',
+      '  "vim-browser-bundle@9.1.0900",',
+      '  "nethack-browser-bundle@3.6.7",',
+    ]);
+    expect(buildToml).toMatch(/^revision\s*=\s*21$/m);
     for (const input of [
-      "scripts/build-homebrew-main-shell-closure.sh",
-      "scripts/check-homebrew-main-shell-brewfile.mjs",
-      "scripts/homebrew-brewfile-selection.rb",
-      "homebrew/main-shell.Brewfile",
-      "homebrew/main-shell-default.json",
+      "images/vfs/scripts/build-source-rootfs-shell-image.ts",
+      "images/vfs/scripts/shell-vfs-build.ts",
+      "images/vfs/scripts/shell-lazy-archives.ts",
+      "images/vfs/lib/init/shell-binaries.ts",
+      "homebrew/source-rootfs-shell-default.json",
       "homebrew/main-shell-demo.json",
-      "homebrew/main-shell-migration-lock.json",
-      "images/vfs/scripts/build-homebrew-vfs-image.ts",
+      "web-libs/kandelo-session/src/shell-config.ts",
       "web-libs/kandelo-session/src/demo-config.ts",
     ]) {
       expect(buildToml).toContain(`"${input}"`);
     }
-    expect(buildToml).toContain('name = "homebrew_tap_core"');
-    expect(buildToml).toContain(
-      'repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"',
-    );
-    expect(buildToml).toContain(`commit = "${migrationLock.catalog.tap_commit}"`);
+    expect(buildToml).not.toContain("[[git_inputs]]");
+    expect(buildToml).not.toContain(migrationLock.catalog.tap_commit);
 
     const canonicalDemoBytes = readFileSync(
       join(repoRoot, "homebrew/main-shell-demo.json"),
     );
     const loadedDemo = loadMainShellDemoConfig(repoRoot);
     expect(Buffer.from(loadedDemo.source)).toEqual(canonicalDemoBytes);
-    expect(resolveDemoGuide(loadedDemo.config, "shell")?.title).toBe("Shell demo");
-    expect(resolveDemoPresentation(loadedDemo.config, "doom")?.autoCommand)
-      .toBe("/usr/local/bin/fbdoom -iwad /doom1.wad");
+    expect(resolveDemoGuide(loadedDemo.config, "shell")?.title).toBe(
+      "Shell demo",
+    );
+    expect(
+      resolveDemoPresentation(loadedDemo.config, "doom")?.autoCommand,
+    ).toBe("/usr/local/bin/fbdoom -iwad /doom1.wad");
     expect(resolveDemoAssets(loadedDemo.config, "doom")).toEqual([
       expect.objectContaining({
         path: "/doom1.wad",
-        sha256: "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771",
+        sha256:
+          "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771",
       }),
     ]);
-    expect(resolveDemoPresentation(loadedDemo.config, "modeset")?.autoCommand)
-      .toBe("/usr/local/bin/modeset");
+    expect(
+      resolveDemoPresentation(loadedDemo.config, "modeset")?.autoCommand,
+    ).toBe("/usr/local/bin/modeset");
 
     const retiredBundleNames = new Set(
       SHELL_LAZY_ARCHIVE_SPECS.map(({ dependency }) => dependency),
@@ -618,7 +698,9 @@ describe("declared shell lazy-archive inputs", () => {
         .filter(
           ({ kind, registry }) =>
             kind === "formula_identity" &&
-            retiredBundleNames.has(registry.slice(0, registry.lastIndexOf("@"))),
+            retiredBundleNames.has(
+              registry.slice(0, registry.lastIndexOf("@")),
+            ),
         )
         .map(({ kind, registry, formula }) => ({ kind, registry, formula })),
     ).toEqual([
@@ -645,28 +727,28 @@ describe("declared shell lazy-archive inputs", () => {
       ),
     ).toContain("36 reviewed migration roots and 42 Formulae");
 
-    // The package build consumes only public bottle provenance from the
-    // locked checkout. The strict composer must reject fallback, verify every
-    // bottle's source metadata, and bind the saved image to the reviewed lock.
+    // The active package consumes only resolver-owned source outputs. The
+    // dormant bottle composer retains its own strict provenance checks so the
+    // final cutover does not weaken while exact-main bottles are rebuilt.
+    expect(buildScript).toContain("WASM_POSIX_DEP_ROOTFS_DIR");
+    expect(buildScript).toContain("WASM_POSIX_DEP_BASH_DIR");
+    expect(buildScript).toContain("WASM_POSIX_DEP_FBDOOM_DIR");
+    expect(buildScript).toContain("WASM_POSIX_DEP_MODESET_DIR");
     expect(buildScript).toContain(
-      "WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_DIR",
-    );
-    expect(buildScript).toContain(
-      "WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_COMMIT",
-    );
-    expect(buildScript).toContain(
-      'scripts/build-homebrew-main-shell-closure.sh',
+      "images/vfs/scripts/build-source-rootfs-shell-image.ts",
     );
     expect(buildScript).toContain("unset GH_TOKEN GITHUB_TOKEN");
+    expect(buildScript).not.toContain("WASM_POSIX_BUILD_GIT_");
+    expect(buildScript).not.toContain("build-homebrew-main-shell-closure.sh");
     expect(buildScript).not.toContain("build-vim-zip.sh");
     expect(buildScript).not.toContain("build-nethack-zip.sh");
     expect(buildScript).not.toContain("build-shell-vfs-image.sh");
     expect(composer).toContain("--no-fallback");
     expect(composer).toContain(
-      '([.packages[].full_name] | sort) == ($lock[0].formula_closure | sort)',
+      "([.packages[].full_name] | sort) == ($lock[0].formula_closure | sort)",
     );
     expect(composer).toContain(
-      '.catalog.checkout_commit == $lock[0].catalog.tap_commit',
+      ".catalog.checkout_commit == $lock[0].catalog.tap_commit",
     );
     expect(composer).toContain(
       '(.built_from.formula_sha256 | test("^[0-9a-f]{64}$"))',
@@ -722,6 +804,21 @@ describe("declared shell lazy-archive inputs", () => {
     );
     expect(nethackZipBuildScript).toContain(
       'bash "$SCRIPT_DIR/create-deterministic-zip.sh" "$STAGING" "$OUTPUT_FILE"',
+    );
+    // The generated ZIP belongs to the bundle package. Assigning it to the
+    // underlying executable package makes manifest-driven installation reject
+    // the ZIP because vim and nethack declare only their .wasm outputs.
+    expect(vimZipBuildScript).toContain(
+      'install_local_binary vim-browser-bundle "$OUTPUT_FILE" vim.zip',
+    );
+    expect(vimZipBuildScript).not.toMatch(
+      /install_local_binary\s+vim\s+"\$OUTPUT_FILE"/,
+    );
+    expect(nethackZipBuildScript).toContain(
+      'install_local_binary nethack-browser-bundle "$OUTPUT_FILE" nethack.zip',
+    );
+    expect(nethackZipBuildScript).not.toMatch(
+      /install_local_binary\s+nethack\s+"\$OUTPUT_FILE"/,
     );
   });
 });

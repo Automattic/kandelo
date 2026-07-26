@@ -232,8 +232,14 @@ grep -Fq 'actual_sha256' "$ARCHIVE_DOWNLOAD_SCRIPT" || \
 # permissions contract.
 expected_lock_callers=$(cat <<'EOF'
 activate-merge-candidate.yml:activate
-force-rebuild.yml:lib-matrix-build
-force-rebuild.yml:matrix-build
+force-rebuild.yml:matrix-build-level-0
+force-rebuild.yml:matrix-build-level-1
+force-rebuild.yml:matrix-build-level-2
+force-rebuild.yml:matrix-build-level-3
+force-rebuild.yml:matrix-build-level-4
+force-rebuild.yml:matrix-build-level-5
+force-rebuild.yml:matrix-build-level-6
+force-rebuild.yml:matrix-build-level-7
 prepare-merge.yml:lib-matrix-build
 prepare-merge.yml:matrix-build
 prepare-merge.yml:merge-gate-post
@@ -268,6 +274,7 @@ actual_lock_callers=$(
       sub(/^[[:space:]]*/, "", line)
       if (line ~ /^#/) next
       if (line ~ /reusable-homebrew-bottle-publish\.yml/ ||
+          line ~ /exact-main-package-rebuild/ ||
           (line ~ /bash[[:space:]]/ &&
            line ~ /(state-lock|index-update|compose-initial-index|publish-package-source|homebrew-publish-sidecars|fetch-canonical-index|init-merge-candidate|mark-merge-candidate-ready|recover-canonical-indexes|cleanup-merge-candidates|activate-merge-candidate|clone-rejected-merge-candidate)\.sh/)) {
         print workflow ":" job

@@ -165,6 +165,10 @@ export function registerDeclaredShellLazyArchive(
     archive.entries,
     spec.mountPrefix,
     archive.symlinkTargets,
+    {
+      sha256: archive.integrity.sha256,
+      bytes: archive.integrity.compressedBytes,
+    },
   );
   return archive;
 }

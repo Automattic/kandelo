@@ -1,0 +1,21 @@
+script_path = "packages/registry/homebrew-bootstrap/build-homebrew-bootstrap.sh"
+inputs = [
+  "packages/registry/homebrew-bootstrap/build-homebrew-bootstrap.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/prepare-homebrew-bootstrap-source.sh",
+  "scripts/verify-homebrew-bootstrap-source-lock.mjs",
+  "homebrew/homebrew-bootstrap-source-lock.json",
+  "homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch",
+  "homebrew/patches/README.md",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+
+[[git_inputs]]
+name = "homebrew_brew"
+repository = "https://github.com/Homebrew/brew.git"
+commit = "4ead8619231cb15cbe15e8e8188081e347d6f7cd"
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

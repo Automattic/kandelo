@@ -47,6 +47,13 @@ called by the tap repository after its formulae exist. The normal tap caller is
 The protected dispatch events are `publish-kandelo-bottles`,
 `dry-run-kandelo-bottles`, and `maintain-kandelo-bottles`; publish and dry-run
 requests must include nonempty Formula and architecture selections.
+Every bottle publication or rebuild request also supplies lowercase 40-character
+`kandelo_sha` and `tap_sha` values. `kandelo_sha` must equal the live
+`Automattic/kandelo` `refs/heads/main` commit at admission and immediately
+before each canonical publication mutation; pull-request, tag, ancestor, and
+equal-tree commits are not substitutes. `tap_sha` selects the exact reviewed
+tap source and must remain on protected tap-main history. Dry-run artifacts are
+validation evidence only and cannot be promoted into canonical publication.
 
 The publisher keeps GitHub repository identity separate from canonical
 Homebrew tap identity. Every repository uses the conventional

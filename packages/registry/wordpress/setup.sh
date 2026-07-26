@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 #
-# Download WordPress + SQLite Database Integration plugin.
+# Prepare the local unpacked WordPress demo.
 # Idempotent — skips downloads if files already exist.
+#
+# Product package builds deliberately do not invoke this script. Their VFS
+# builders resolve SHA-pinned archives through source-extract-helper instead.
+# This local workflow creates a checkout-specific absolute plugin symlink that
+# must not become a portable product-image input.
 #
 set -euo pipefail
 

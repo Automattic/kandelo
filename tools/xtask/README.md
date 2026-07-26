@@ -8,6 +8,9 @@ Repo-local build/release utilities. Subcommands:
   (see [`docs/dependency-management.md`](../docs/dependency-management.md)).
 - `archive-stage` — produce one package's `.tar.zst` archive
   (single `(package, arch)` slice; no registry walk).
+- `archive-extract-member` — stream one exact regular member from a package
+  `.tar.zst` archive into a new file, publishing it only after the complete
+  archive has validated.
 - `build-index` — emit `index.toml` provenance manifest from
   a directory of staged `.tar.zst` archives.
 - `compute-cache-key-sha` — print one package's cache-key sha to stdout.

@@ -5,6 +5,7 @@ require "digest"
 require "json"
 require "open3"
 require "tempfile"
+require "tmpdir"
 require "yaml"
 
 REPO_ROOT = File.expand_path("..", __dir__)
@@ -20,16 +21,22 @@ MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
-PUBLISHER_PLAN_DIGEST = "81fa4e83b42c41a598bfb500f697444a5068d9cb068efc87da3f916d0f70d415"
-PUBLISHER_BUILD_DIGEST = "85cda2db521caa63926b18931e189652f88948f93fe281c2893a6d26cb1cc282"
-PUBLISHER_UPLOAD_DIGEST = "1a9f39031587a5944bce022031d6f84d70f476159d4798bbcb51a4fa8377da9e"
-PUBLISHER_INDEX_DIGEST = "c0eaec6f01ac64e8744b8c98e35b304aa2adafc4ce7ad96416eac85c593fdf87"
-PUBLISHER_VERIFY_DIGEST = "5ae8fd198a019dfb100d2645d0d9362f0998a92713f4f5f1a9376e17dd320539"
-PUBLISHER_FINALIZE_DIGEST = "b101bc67a1ba796d7986c9cb0e9d0270300e519d2cb6ba60e3ae7fc9b4c6fc2e"
-PUBLISHER_VFS_RELEASE_DIGEST = "34171400552baefd1efee3e05a294308ea3ba783f191f899d1affa5135a4d4da"
-MAINTENANCE_VALIDATE_DIGEST = "95802741a715c418fdcda9a75aa4f03a6a9248ac6ef91a24e6de173a9b6b015e"
-MAINTENANCE_ROLLBACK_DIGEST = "0e7304f39b1b656fc59c3ddce48178684eab155ffd993f6e93e0b008e2ecf552"
+PUBLISHER_PLAN_DIGEST = "81e27dd489457e6418fe1318aacf622d147240ef0e2f971ee3b6b7221af277db"
+PUBLISHER_BUILD_DIGEST = "2846d699f03bca813097949d848fb93696e59052e537f107a56ffb4fccdb04c7"
+PUBLISHER_UPLOAD_DIGEST = "a44f8b7b2eb1d4b9436496cc9a099b80fb70be52143820e77fb7196e807d302f"
+PUBLISHER_INDEX_DIGEST = "7b05a7e4b076628ab999f9edb2e39a6641c4bb9a2563afcf19be15a119566bbe"
+PUBLISHER_VERIFY_DIGEST = "a621279fe7414c974042c3852e3bf0fef6d133cb8b0b7ccbae4da7047e2888e6"
+PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a0335816a0886b"
+PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
+MAINTENANCE_VALIDATE_DIGEST = "30ebccd5d44e004e37f168e81284d7ceb18accfa067c05248c1cc19398a7515f"
+MAINTENANCE_ROLLBACK_DIGEST = "f82d9f351202c3a20824e4525eb88ce7f75879740014d3232e69f3d585ed5781"
 REPOSITORY_CANARY_STEPS_DIGEST = "9cf30d889bd1bf6d0ab5b5f99e35f552d40f78f9b7dcb5fd40a07041b4c0f453"
+SELF_TEST_TAP_SHA = "e" * 40
+SELF_TEST_KANDELO_MAIN_SHA = "a351fc9b18da032c09160c95f1da672374ade700"
+SELF_TEST_PACKAGE_GENERATION_WASM32 =
+  "package-generation-browser-inputs-wasm32-abi-v42-sha256-#{"c" * 64}"
+SELF_TEST_PACKAGE_GENERATION_WASM64 =
+  "package-generation-browser-inputs-wasm64-abi-v42-sha256-#{"d" * 64}"
 
 def check(condition, message)
   raise message unless condition
@@ -110,6 +117,8 @@ def caller_validation_result(source, overrides = {})
     "DRY_RUN" => "true",
     "KANDELO_REPOSITORY" => "Automattic/kandelo",
     "KANDELO_REF" => "main",
+    "PACKAGE_GENERATION_WASM32" => "",
+    "PACKAGE_GENERATION_WASM64" => "",
     "TAP_NAME" => "kandelo-dev/tap-core",
     "TAP_REPOSITORY" => "kandelo-dev/homebrew-tap-core",
     "TAP_REF" => "main",
@@ -138,7 +147,9 @@ def maintenance_validation_result(source, overrides = {})
     "CALLER_REPOSITORY" => "kandelo-dev/homebrew-tap-core",
     "CALLER_WORKFLOW_REF" =>
       "kandelo-dev/homebrew-tap-core/.github/workflows/maintain-bottles.yml@refs/heads/main",
+    "KANDELO_REF" => SELF_TEST_KANDELO_MAIN_SHA,
     "MODE" => "rebuild",
+    "TAP_REF" => SELF_TEST_TAP_SHA,
   }.merge(overrides)
   stdout, stderr, status = Open3.capture3(
     env, "bash", "--noprofile", "--norc", "-c", source
@@ -146,17 +157,101 @@ def maintenance_validation_result(source, overrides = {})
   { "status" => status.exitstatus, "stdout" => stdout, "stderr" => stderr }
 end
 
+def kandelo_main_admission_result(source, overrides = {})
+  env = {
+    "KANDELO_REPOSITORY" => "Automattic/kandelo",
+    "KANDELO_SHA" => SELF_TEST_KANDELO_MAIN_SHA,
+    "TEST_GH_FAILURE" => "false",
+    "TEST_MAIN_SHA" => SELF_TEST_KANDELO_MAIN_SHA,
+  }.merge(overrides)
+  Dir.mktmpdir("kandelo-homebrew-main-admission") do |directory|
+    gh = File.join(directory, "gh")
+    File.write(gh, <<~BASH)
+      #!/usr/bin/env bash
+      set -euo pipefail
+      [ "${TEST_GH_FAILURE:?}" = "false" ] || exit 92
+      [ "$#" -eq 4 ] &&
+        [ "$1" = api ] &&
+        [ "$2" = "/repos/Automattic/kandelo/git/ref/heads/main" ] &&
+        [ "$3" = --jq ] &&
+        [ "$4" = .object.sha ] || exit 91
+      printf '%s\\n' "${TEST_MAIN_SHA:?}"
+    BASH
+    File.chmod(0o755, gh)
+    env["PATH"] = "#{directory}:#{ENV.fetch('PATH')}"
+    stdout, stderr, status = Open3.capture3(
+      env, "bash", "--noprofile", "--norc", "-c", source
+    )
+    {
+      "status" => status.exitstatus,
+      "stdout" => stdout,
+      "stderr" => stderr,
+    }
+  end
+end
+
+def tap_source_binding_result(source, overrides = {})
+  env = {
+    "REQUESTED_TAP_SHA" => SELF_TEST_TAP_SHA,
+    "TAP_REPOSITORY" => "kandelo-dev/homebrew-tap-core",
+    "TAP_SHA" => SELF_TEST_TAP_SHA,
+    "TEST_COMPARE_STATUS" => "identical",
+    "TEST_GH_FAILURE" => "false",
+  }.merge(overrides)
+  Dir.mktmpdir("kandelo-homebrew-caller-binding") do |directory|
+    gh = File.join(directory, "gh")
+    File.write(gh, <<~BASH)
+      #!/usr/bin/env bash
+      set -euo pipefail
+      [ "${TEST_GH_FAILURE:?}" = "false" ] || exit 92
+      [ "$#" -eq 4 ] &&
+        [ "$1" = api ] &&
+        [ "$2" = "/repos/kandelo-dev/homebrew-tap-core/compare/#{SELF_TEST_TAP_SHA}...main" ] &&
+        [ "$3" = --jq ] &&
+        [ "$4" = .status ] || exit 91
+      printf '%s\\n' "${TEST_COMPARE_STATUS:?}"
+    BASH
+    File.chmod(0o755, gh)
+    env["PATH"] = "#{directory}:#{ENV.fetch('PATH')}"
+    stdout, stderr, status = Open3.capture3(
+      env, "bash", "--noprofile", "--norc", "-c", source
+    )
+    {
+      "status" => status.exitstatus,
+      "stdout" => stdout,
+      "stderr" => stderr,
+    }
+  end
+end
+
+def expected_caller_outputs(kandelo_ref, tap_ref, wasm32: "", wasm64: "")
+  "kandelo-ref=#{kandelo_ref}\n" \
+    "tap-ref=#{tap_ref}\n" \
+    "package-generation-wasm32=#{wasm32}\n" \
+    "package-generation-wasm64=#{wasm64}\n"
+end
+
 def check_caller_validation_behavior(workflow)
   plan_steps = job_steps(workflow_jobs(workflow).fetch("plan"), "publisher plan")
   source = named_step(plan_steps, "Validate caller trust boundary").fetch("run")
+  write_caller = {
+    "CALLER_WORKFLOW_REF" =>
+      "kandelo-dev/homebrew-tap-core/.github/workflows/publish-bottles.yml@refs/heads/main",
+    "DRY_RUN" => "false",
+    "KANDELO_REF" => SELF_TEST_KANDELO_MAIN_SHA,
+    "PACKAGE_GENERATION_WASM32" => SELF_TEST_PACKAGE_GENERATION_WASM32,
+    "PACKAGE_GENERATION_WASM64" => SELF_TEST_PACKAGE_GENERATION_WASM64,
+    "TAP_REF" => SELF_TEST_TAP_SHA,
+  }.freeze
 
   branch = caller_validation_result(source, {
     "KANDELO_REF" => "review/homebrew_source-1.2",
     "TAP_REF" => "formula/pilot_1.2",
   })
-  check(branch["status"] == 0 && branch["outputs"] ==
-        "kandelo-ref=refs/heads/review/homebrew_source-1.2\n" \
-        "tap-ref=refs/heads/formula/pilot_1.2\n",
+  check(branch["status"] == 0 && branch["outputs"] == expected_caller_outputs(
+          "refs/heads/review/homebrew_source-1.2",
+          "refs/heads/formula/pilot_1.2"
+        ),
         "publisher dry-run does not normalize reviewed branch names")
 
   kandelo_sha = "a" * 40
@@ -166,7 +261,7 @@ def check_caller_validation_behavior(workflow)
     "TAP_REF" => tap_sha,
   })
   check(exact["status"] == 0 && exact["outputs"] ==
-        "kandelo-ref=#{kandelo_sha}\ntap-ref=#{tap_sha}\n",
+        expected_caller_outputs(kandelo_sha, tap_sha),
         "publisher dry-run does not accept exact source commits")
 
   data_only = caller_validation_result(source, {
@@ -184,7 +279,7 @@ def check_caller_validation_behavior(workflow)
     "TAP_REPOSITORY" => "KANDELO-DEV/HOMEBREW-TAP-CORE",
   })
   check(mixed_case["status"] == 0 && mixed_case["outputs"] ==
-        "kandelo-ref=refs/heads/main\ntap-ref=refs/heads/main\n",
+        expected_caller_outputs("refs/heads/main", "refs/heads/main"),
         "publisher does not compare GitHub repository identities case-insensitively")
 
   case_variant_workflow = caller_validation_result(source, {
@@ -196,24 +291,87 @@ def check_caller_validation_behavior(workflow)
           "dry-run publication requires the reviewed tap dry-run workflow"
         ), "publisher accepts a case-variant workflow path")
 
-  write = caller_validation_result(source, {
-    "CALLER_WORKFLOW_REF" =>
-      "kandelo-dev/homebrew-tap-core/.github/workflows/publish-bottles.yml@refs/heads/main",
-    "DRY_RUN" => "false",
-  })
-  check(write["status"] == 0 && write["outputs"] ==
-        "kandelo-ref=refs/heads/main\ntap-ref=refs/heads/main\n",
-        "publisher write path does not remain fixed to main")
-
-  write_sha = caller_validation_result(source, {
-    "CALLER_WORKFLOW_REF" =>
-      "kandelo-dev/homebrew-tap-core/.github/workflows/publish-bottles.yml@refs/heads/main",
-    "DRY_RUN" => "false",
+  write_sha = caller_validation_result(source, write_caller.merge({
     "KANDELO_REF" => kandelo_sha,
+  }))
+  check(write_sha["status"] == 0 && write_sha["outputs"] ==
+        expected_caller_outputs(
+          kandelo_sha,
+          SELF_TEST_TAP_SHA,
+          wasm32: SELF_TEST_PACKAGE_GENERATION_WASM32,
+          wasm64: SELF_TEST_PACKAGE_GENERATION_WASM64
+        ),
+        "publisher write path does not accept an exact reviewed Kandelo commit")
+
+  dry_generations = caller_validation_result(source, {
+    "PACKAGE_GENERATION_WASM32" => SELF_TEST_PACKAGE_GENERATION_WASM32,
+    "PACKAGE_GENERATION_WASM64" => SELF_TEST_PACKAGE_GENERATION_WASM64,
   })
-  check(write_sha["status"] == 2 &&
-        write_sha["stdout"].include?("write publication requires Kandelo main"),
-        "publisher write path accepts a non-main Kandelo ref")
+  check(dry_generations["status"] == 0 &&
+        dry_generations["outputs"] == expected_caller_outputs(
+          "refs/heads/main",
+          "refs/heads/main",
+          wasm32: SELF_TEST_PACKAGE_GENERATION_WASM32,
+          wasm64: SELF_TEST_PACKAGE_GENERATION_WASM64
+        ),
+        "publisher dry-run does not preserve optional exact generation tags")
+
+  {
+    "wasm32 tag bound to wasm64" => {
+      "PACKAGE_GENERATION_WASM32" => SELF_TEST_PACKAGE_GENERATION_WASM64,
+    },
+    "wasm64 tag bound to wasm32" => {
+      "PACKAGE_GENERATION_WASM64" => SELF_TEST_PACKAGE_GENERATION_WASM32,
+    },
+    "mutable wasm32 generation name" => {
+      "PACKAGE_GENERATION_WASM32" => "package-generation-browser-inputs-wasm32-latest",
+    },
+    "uppercase wasm64 digest" => {
+      "PACKAGE_GENERATION_WASM64" => SELF_TEST_PACKAGE_GENERATION_WASM64.upcase,
+    },
+  }.each do |label, override|
+    rejected = caller_validation_result(source, override)
+    arch = override.key?("PACKAGE_GENERATION_WASM32") ? "wasm32" : "wasm64"
+    check(rejected["status"] == 2 && rejected["stderr"].include?(
+            "package-generation-#{arch} must be an exact browser-inputs content tag"
+          ), "publisher dry-run accepts #{label}")
+  end
+
+  [
+    ["missing wasm32 generation", "PACKAGE_GENERATION_WASM32"],
+    ["missing wasm64 generation", "PACKAGE_GENERATION_WASM64"],
+  ].each do |label, missing|
+    rejected = caller_validation_result(source, write_caller.merge(missing => ""))
+    check(rejected["status"] == 2 && rejected["stderr"].include?(
+            "#{missing.downcase.tr('_', '-')} must be an exact browser-inputs content tag"
+          ), "publisher write path accepts #{label}")
+  end
+
+  write_branch = caller_validation_result(source, write_caller.merge({
+    "KANDELO_REF" => "review/homebrew",
+  }))
+  check(write_branch["status"] == 2 &&
+        write_branch["stderr"].include?(
+          "write publication requires an exact lowercase 40-character Kandelo commit SHA"
+        ),
+        "publisher write path accepts a mutable non-main Kandelo ref")
+
+  {
+    "fully qualified main" => "refs/heads/main",
+    "mutable main" => "main",
+    "uppercase commit" => "A" * 40,
+    "short commit" => "a" * 39,
+    "long commit" => "a" * 41,
+  }.each do |label, ref|
+    rejected = caller_validation_result(source, write_caller.merge({
+      "KANDELO_REF" => ref,
+    }))
+    check(rejected["status"] == 2 &&
+          rejected["stderr"].include?(
+            "write publication requires an exact lowercase 40-character Kandelo commit SHA"
+          ),
+          "publisher write path accepts #{label}")
+  end
 
   {
     "fully qualified ref" => "refs/heads/review/homebrew",
@@ -226,6 +384,107 @@ def check_caller_validation_behavior(workflow)
           rejected["stderr"].include?("dry-run Kandelo ref must be a branch name or exact"),
           "publisher dry-run accepts #{label}")
   end
+
+  alternate_tap_sha = "f" * 40
+  alternate = caller_validation_result(
+    source, write_caller.merge("TAP_REF" => alternate_tap_sha)
+  )
+  check(alternate["status"] == 0 && alternate["outputs"].include?(
+          "tap-ref=#{alternate_tap_sha}\n"
+        ), "publisher binds write source to workflow execution head instead of the request")
+
+  {
+    "missing commit" => "",
+    "mutable main" => "main",
+    "fully qualified main" => "refs/heads/main",
+    "uppercase commit" => "E" * 40,
+    "short commit" => "e" * 39,
+    "long commit" => "e" * 41,
+    "option-like ref" => "-#{'e' * 40}",
+  }.each do |label, tap_ref|
+    rejected = caller_validation_result(
+      source, write_caller.merge("TAP_REF" => tap_ref)
+    )
+    check(rejected["status"] == 2 &&
+          rejected["stderr"].include?(
+            "write publication requires an exact reviewed lowercase 40-character tap commit SHA"
+          ), "publisher write path accepts #{label} as its tap source")
+  end
+end
+
+def check_kandelo_main_admission_behavior(workflow)
+  plan_steps = job_steps(workflow_jobs(workflow).fetch("plan"), "publisher plan")
+  source = named_step(plan_steps, "Admit exact Kandelo main source").fetch("run")
+
+  accepted = kandelo_main_admission_result(source)
+  check(accepted["status"] == 0,
+        "publisher rejects the exact current Kandelo main commit")
+
+  {
+    "ancestor" => "1" * 40,
+    "descendant" => "2" * 40,
+    "equal-tree commit" => "3" * 40,
+    "tag target" => "4" * 40,
+    "pull-request head" => "5" * 40,
+    "activation rehearsal" => "461d3f1450025bb2cd5392900abfd248eee5e028",
+  }.each do |label, sha|
+    rejected = kandelo_main_admission_result(source, "KANDELO_SHA" => sha)
+    check(rejected["status"] == 1 && rejected["stdout"].include?(
+            "write publication requires the current Kandelo refs/heads/main commit"
+          ), "publisher admits #{label} instead of exact current main")
+  end
+
+  {
+    "mutable response" => "main",
+    "uppercase response" => SELF_TEST_KANDELO_MAIN_SHA.upcase,
+    "short response" => SELF_TEST_KANDELO_MAIN_SHA[0...-1],
+  }.each do |label, sha|
+    rejected = kandelo_main_admission_result(source, "TEST_MAIN_SHA" => sha)
+    check(rejected["status"] == 1 && rejected["stdout"].include?(
+            "refs/heads/main returned a noncanonical commit identity"
+          ), "publisher accepts #{label} as the current main identity")
+  end
+
+  unavailable = kandelo_main_admission_result(
+    source, "TEST_GH_FAILURE" => "true"
+  )
+  check(unavailable["status"] == 1 && unavailable["stdout"].include?(
+          "could not read the current Kandelo refs/heads/main commit"
+        ), "publisher admits a source when the main ref is unavailable")
+end
+
+def check_tap_source_binding_behavior(workflow)
+  plan_steps = job_steps(workflow_jobs(workflow).fetch("plan"), "publisher plan")
+  source = named_step(
+    plan_steps, "Bind write tap source to protected main history"
+  ).fetch("run")
+
+  %w[identical ahead].each do |compare_status|
+    accepted = tap_source_binding_result(
+      source, "TEST_COMPARE_STATUS" => compare_status
+    )
+    check(accepted["status"] == 0,
+          "publisher rejects protected-main source status #{compare_status}")
+  end
+
+  %w[behind diverged unexpected].each do |compare_status|
+    rejected = tap_source_binding_result(
+      source, "TEST_COMPARE_STATUS" => compare_status
+    )
+    check(rejected["status"] == 1 && rejected["stdout"].include?(
+            "requested tap commit must remain on protected main history"
+          ), "publisher accepts protected-main source status #{compare_status}")
+  end
+
+  mismatch = tap_source_binding_result(source, "TAP_SHA" => "f" * 40)
+  check(mismatch["status"] == 2 && mismatch["stdout"].include?(
+          "tap checkout differs from the exact requested source commit"
+        ), "publisher accepts a tap checkout different from the request")
+
+  unavailable = tap_source_binding_result(source, "TEST_GH_FAILURE" => "true")
+  check(unavailable["status"] == 1 && unavailable["stdout"].include?(
+          "could not prove that the requested tap commit belongs to protected main"
+        ), "publisher accepts a tap source when protected-main ancestry is unavailable")
 end
 
 def check_architecture_aware_sysroot_step(step, label)
@@ -277,6 +536,21 @@ def check_forbidden_root_args(run, label, expected)
     stripped if stripped.start_with?("--forbidden-root ")
   end
   check(actual == expected, "#{label} forbidden-root trust mapping changed")
+end
+
+def check_exact_main_recheck(run, mutation, label, helper:)
+  helper_index = run.index("bash #{helper} \\")
+  repository_index = run.index("--repository Automattic/kandelo", helper_index || 0)
+  source_index = run.index(
+    '--source-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"',
+    repository_index || 0
+  )
+  mutation_index = run.index(mutation, source_index || 0)
+  check(helper_index && repository_index && source_index && mutation_index &&
+        helper_index < repository_index && repository_index < source_index &&
+        source_index < mutation_index &&
+        run.scan("require-exact-kandelo-main.sh").length == 1,
+        "#{label} does not recheck exact current main immediately before mutation")
 end
 
 def exact_permissions?(actual, expected)
@@ -333,26 +607,36 @@ def check_tap_caller(path, expected_name:, event_type:, job_name:, reusable:, in
 end
 
 def check_tap_callers
-  publish_inputs = {
+  common_publish_inputs = {
     "kandelo-repository" => "Automattic/kandelo",
-    "kandelo-ref" => "main",
+    "kandelo-ref" => "${{ github.event.client_payload.kandelo_sha }}",
     "tap-repository" => "kandelo-dev/homebrew-tap-core",
     "tap-name" => "kandelo-dev/tap-core",
-    "tap-ref" => "main",
+    "tap-ref" => "${{ github.event.client_payload.tap_sha }}",
     "formulae" => "${{ github.event.client_payload.formulae }}",
     "arches" => "${{ github.event.client_payload.arches || 'wasm32' }}",
     "release-tag" => "${{ github.event.client_payload.release_tag || '' }}",
     "expected-cache-keys" => "${{ github.event.client_payload.expected_cache_keys || '' }}",
+    "package-generation-wasm32" =>
+      "${{ github.event.client_payload.package_generation_wasm32 }}",
+    "package-generation-wasm64" =>
+      "${{ github.event.client_payload.package_generation_wasm64 }}",
     "force" => "${{ github.event.client_payload.force || false }}",
     "dry-run" => false,
   }
+  write_publish_inputs = common_publish_inputs.merge({
+    # Required VFS acceptance needs bottles published by this invocation.
+    # Keep the caller-selected gate out of the non-writing dry-run contract.
+    "require-vfs-acceptance" =>
+      "${{ github.event.client_payload.require_vfs_acceptance || false }}",
+  })
   check_tap_caller(
     File.join(TAP_CALLER_ROOT, "publish-bottles.yml"),
     expected_name: "Publish Kandelo bottles",
     event_type: "publish-kandelo-bottles",
     job_name: "publish",
     reusable: "Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-publish.yml@main",
-    inputs: publish_inputs,
+    inputs: write_publish_inputs,
   )
 
   check_tap_caller(
@@ -361,12 +645,16 @@ def check_tap_callers
     event_type: "dry-run-kandelo-bottles",
     job_name: "dry-run",
     reusable: "Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-publish.yml@main",
-    inputs: publish_inputs.merge({
+    inputs: common_publish_inputs.merge({
       "kandelo-repository" => "${{ github.event.client_payload.kandelo_repository || 'Automattic/kandelo' }}",
       "kandelo-ref" => "${{ github.event.client_payload.kandelo_ref || 'main' }}",
       "tap-repository" => "${{ github.event.client_payload.tap_repository || 'kandelo-dev/homebrew-tap-core' }}",
       "tap-name" => "${{ github.event.client_payload.tap_name || 'kandelo-dev/tap-core' }}",
       "tap-ref" => "${{ github.event.client_payload.tap_ref || 'main' }}",
+      "package-generation-wasm32" =>
+        "${{ github.event.client_payload.package_generation_wasm32 || '' }}",
+      "package-generation-wasm64" =>
+        "${{ github.event.client_payload.package_generation_wasm64 || '' }}",
       "dry-run" => true,
     }),
   )
@@ -379,10 +667,16 @@ def check_tap_callers
     reusable: "Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-maintenance.yml@main",
     inputs: {
       "mode" => "${{ github.event.client_payload.mode || 'rebuild' }}",
+      "kandelo-ref" => "${{ github.event.client_payload.kandelo_sha }}",
+      "tap-ref" => "${{ github.event.client_payload.tap_sha }}",
       "formulae" => "${{ github.event.client_payload.formulae }}",
       "arches" => "${{ github.event.client_payload.arches || 'wasm32' }}",
       "release-tag" => "${{ github.event.client_payload.release_tag || '' }}",
       "expected-cache-keys" => "${{ github.event.client_payload.expected_cache_keys || '' }}",
+      "package-generation-wasm32" =>
+        "${{ github.event.client_payload.package_generation_wasm32 }}",
+      "package-generation-wasm64" =>
+        "${{ github.event.client_payload.package_generation_wasm64 }}",
       "force" => "${{ github.event.client_payload.force || false }}",
       "rollback-reason" => "${{ github.event.client_payload.rollback_reason || '' }}",
       "rollback-ref" => "${{ github.event.client_payload.rollback_ref || '' }}",
@@ -508,7 +802,7 @@ def check_publisher(workflow)
         "publisher workflow_call contract changed")
   check(workflow_call["inputs"] == {
     "kandelo-repository" => { "type" => "string", "default" => "Automattic/kandelo" },
-    "kandelo-ref" => { "type" => "string", "default" => "main" },
+    "kandelo-ref" => { "type" => "string", "required" => true },
     "tap-repository" => { "type" => "string", "default" => "kandelo-dev/homebrew-tap-core" },
     "tap-name" => { "type" => "string", "default" => "kandelo-dev/tap-core" },
     "tap-ref" => { "type" => "string", "default" => "main" },
@@ -517,6 +811,8 @@ def check_publisher(workflow)
     "release-tag" => { "type" => "string", "default" => "" },
     "bottle-root-url" => { "type" => "string", "default" => "" },
     "expected-cache-keys" => { "type" => "string", "default" => "" },
+    "package-generation-wasm32" => { "type" => "string", "default" => "" },
+    "package-generation-wasm64" => { "type" => "string", "default" => "" },
     "force" => { "type" => "boolean", "default" => false },
     "dry-run" => { "type" => "boolean", "default" => false },
     "require-vfs-acceptance" => { "type" => "boolean", "default" => false },
@@ -643,6 +939,8 @@ def check_publisher(workflow)
           "DRY_RUN" => "${{ inputs.dry-run }}",
           "KANDELO_REPOSITORY" => "${{ inputs.kandelo-repository }}",
           "KANDELO_REF" => "${{ inputs.kandelo-ref }}",
+          "PACKAGE_GENERATION_WASM32" => "${{ inputs.package-generation-wasm32 }}",
+          "PACKAGE_GENERATION_WASM64" => "${{ inputs.package-generation-wasm64 }}",
           "TAP_NAME" => "${{ inputs.tap-name }}",
           "TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
           "TAP_REF" => "${{ inputs.tap-ref }}",
@@ -660,11 +958,9 @@ def check_publisher(workflow)
     '"$CALLER_REPOSITORY/.github/workflows/publish-bottles.yml@refs/heads/main"',
     '"$CALLER_REPOSITORY/.github/workflows/maintain-bottles.yml@refs/heads/main"',
     '[ "$KANDELO_REPOSITORY" = "Automattic/kandelo" ]',
-    '[ "$KANDELO_REF" = "main" ]',
     '[[ "$normalized_tap_repository" =~ ^[a-z0-9_.-]+/homebrew-[a-z0-9_.-]+$ ]]',
     'tap_short_name="${normalized_tap_repository#*/homebrew-}"',
     '[ "$normalized_tap_name" = "${tap_owner}/${tap_short_name}" ]',
-    '[ "$TAP_REF" = "main" ]',
     '[ -z "$BOTTLE_ROOT_URL" ]',
     'normalize_dry_run_source_ref()',
     '[[ "$ref" =~ ^[0-9a-f]{40}$ ]]',
@@ -672,10 +968,23 @@ def check_publisher(workflow)
     '[[ "$ref" != refs/* ]]',
     '[[ "$ref" != -* ]]',
     'git check-ref-format "refs/heads/$ref"',
+    'normalize_write_kandelo_ref()',
+    'write publication requires an exact lowercase 40-character Kandelo commit SHA',
+    'normalize_write_tap_ref()',
+    'write publication requires an exact reviewed lowercase 40-character tap commit SHA',
+    'normalize_package_generation()',
+    'package-generation-browser-inputs-wasm32-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}',
+    'package-generation-browser-inputs-wasm64-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}',
+    'normalize_package_generation wasm32 "$PACKAGE_GENERATION_WASM32"',
+    'normalize_package_generation wasm64 "$PACKAGE_GENERATION_WASM64"',
     'validated_kandelo_ref="$(normalize_dry_run_source_ref "Kandelo" "$KANDELO_REF")"',
     'validated_tap_ref="$(normalize_dry_run_source_ref "tap" "$TAP_REF")"',
+    'validated_kandelo_ref="$(normalize_write_kandelo_ref "$KANDELO_REF")"',
+    'validated_tap_ref="$(normalize_write_tap_ref "$TAP_REF")"',
     'echo "kandelo-ref=$validated_kandelo_ref"',
     'echo "tap-ref=$validated_tap_ref"',
+    'echo "package-generation-wasm32=$validated_generation_wasm32"',
+    'echo "package-generation-wasm64=$validated_generation_wasm64"',
   ].each do |predicate|
     check(validation_run.include?(predicate), "publisher caller validation lacks #{predicate}")
   end
@@ -690,15 +999,55 @@ def check_publisher(workflow)
   dry_kandelo_ref_index = validation_run.index(
     'validated_kandelo_ref="$(normalize_dry_run_source_ref "Kandelo" "$KANDELO_REF")"'
   )
-  write_kandelo_ref_index = validation_run.index('[ "$KANDELO_REF" = "main" ]')
-  write_tap_ref_index = validation_run.index('[ "$TAP_REF" = "main" ]')
+  write_kandelo_ref_index = validation_run.index(
+    'validated_kandelo_ref="$(normalize_write_kandelo_ref "$KANDELO_REF")"'
+  )
+  write_tap_ref_index = validation_run.index(
+    'validated_tap_ref="$(normalize_write_tap_ref "$TAP_REF")"'
+  )
+  write_generation_wasm32_index = validation_run.index(
+    'validated_generation_wasm32="$(',
+    write_tap_ref_index
+  )
+  write_generation_wasm64_index = validation_run.index(
+    'validated_generation_wasm64="$(',
+    write_generation_wasm32_index
+  )
   check(dry_index && caller_index && kandelo_index && tap_name_index &&
         caller_index < dry_index && kandelo_index < dry_index && tap_name_index < dry_index,
         "publisher dry-run can bypass caller authority validation")
   check(dry_kandelo_ref_index && write_kandelo_ref_index && write_tap_ref_index &&
         dry_index < dry_kandelo_ref_index && dry_kandelo_ref_index < write_kandelo_ref_index &&
         dry_kandelo_ref_index < write_tap_ref_index,
-        "publisher does not separate selectable dry-run refs from write-only main refs")
+        "publisher does not separate selectable dry-run refs from reviewed write refs")
+  check(write_generation_wasm32_index && write_generation_wasm64_index &&
+        write_tap_ref_index < write_generation_wasm32_index &&
+        write_generation_wasm32_index < write_generation_wasm64_index,
+        "publisher does not require both exact package generations on its write path")
+
+  main_admission = named_step(plan_steps, "Admit exact Kandelo main source")
+  check(main_admission.keys.sort == %w[env if name run shell] &&
+        main_admission["if"] == "${{ !inputs.dry-run }}" &&
+        main_admission["shell"] == "bash" &&
+        main_admission["env"] == {
+          "GH_TOKEN" => "${{ github.token }}",
+          "KANDELO_REPOSITORY" => "${{ inputs.kandelo-repository }}",
+          "KANDELO_SHA" => "${{ steps.trust.outputs.kandelo-ref }}",
+        }, "publisher exact-main admission mapping changed")
+  [
+    '"/repos/$KANDELO_REPOSITORY/git/ref/heads/main"',
+    "--jq .object.sha",
+    '[[ "$current_main_sha" =~ ^[0-9a-f]{40}$ ]]',
+    '[ "$KANDELO_SHA" = "$current_main_sha" ]',
+    "write publication requires the current Kandelo refs/heads/main commit",
+  ].each do |fragment|
+    check(main_admission.fetch("run").include?(fragment),
+          "publisher exact-main admission lacks #{fragment}")
+  end
+  kandelo_checkout = named_step(plan_steps, "Checkout Kandelo workflow source")
+  check(plan_steps.index(validation) < plan_steps.index(main_admission) &&
+        plan_steps.index(main_admission) < plan_steps.index(kandelo_checkout),
+        "publisher checks out Kandelo before exact-main admission")
 
   vfs_selection = named_step(
     plan_steps, "Validate dependency-bearing VFS acceptance selection"
@@ -766,6 +1115,9 @@ def check_publisher(workflow)
           "EXPECTED_BOTTLE_ROOT_URL" =>
             "${{ steps.release.outputs.bottle-root-prefix }}",
           "EXPECTED_CACHE_KEYS_JSON" => "${{ inputs.expected-cache-keys }}",
+          "EXPECTED_KANDELO_COMMIT" =>
+            "${{ steps.source-commits.outputs.kandelo-sha }}",
+          "EXPECTED_KANDELO_REPOSITORY" => "${{ inputs.kandelo-repository }}",
           "FORCE_REBUILD" => "${{ inputs.force }}",
           "FORMULAE" => "${{ inputs.formulae }}",
         }, "publisher matrix planner mapping changed")
@@ -774,6 +1126,8 @@ def check_publisher(workflow)
     'expected_args+=(--expected-cache-keys "$expected_file")',
     'expected_args+=(--expected-abi "$EXPECTED_ABI")',
     'expected_args+=(--expected-bottle-root-url "$EXPECTED_BOTTLE_ROOT_URL")',
+    'expected_args+=(--expected-kandelo-repository "$EXPECTED_KANDELO_REPOSITORY")',
+    'expected_args+=(--expected-kandelo-commit "$EXPECTED_KANDELO_COMMIT")',
     '--tap-root "$GITHUB_WORKSPACE/tap"', '--formulae "$FORMULAE"',
     '--arches "$ARCHES"', '"${expected_args[@]}"',
   ].each do |fragment|
@@ -782,6 +1136,9 @@ def check_publisher(workflow)
   end
   check(matrix_plan_run.scan("--expected-bottle-root-url").length == 1,
         "publisher matrix planner root argument changed")
+  check(matrix_plan_run.scan("--expected-kandelo-repository").length == 1 &&
+        matrix_plan_run.scan("--expected-kandelo-commit").length == 1,
+        "publisher matrix planner exact-main provenance arguments changed")
 
   release_step = named_step(plan_steps, "Resolve release and bottle root")
   check(release_step.fetch("env") == {
@@ -799,8 +1156,20 @@ def check_publisher(workflow)
         ), "publisher does not bind release tag and bottle root to resolved identities")
   planner_source = File.read(File.join(REPO_ROOT, "scripts/homebrew-plan-matrix.sh"))
   check(planner_source.include?("formula selection must not be empty") &&
-        planner_source.include?("architecture selection must not be empty"),
-        "publisher planner permits a green empty dispatch")
+        planner_source.include?("architecture selection must not be empty") &&
+        planner_source.include?(
+          ".built_from.kandelo_repository == $expected_kandelo_repository"
+        ) &&
+        planner_source.include?(
+          ".built_from.kandelo_commit == $expected_kandelo_commit"
+        ) &&
+        planner_source.include?(
+          "--expected-kandelo-repository must be Automattic/kandelo"
+        ) &&
+        planner_source.include?(
+          "--expected-kandelo-commit is required with cache keys"
+        ),
+        "publisher planner selection or exact-main reuse boundary changed")
   dependency_taps_source = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-dependency-taps.py")
   )
@@ -855,9 +1224,58 @@ def check_publisher(workflow)
     "bottle-root-prefix" => "${{ steps.release.outputs.bottle-root-prefix }}",
     "kandelo-sha" => "${{ steps.source-commits.outputs.kandelo-sha }}",
     "tap-sha" => "${{ steps.source-commits.outputs.tap-sha }}",
+    "package-generation-wasm32" => "${{ steps.trust.outputs.package-generation-wasm32 }}",
+    "package-generation-wasm64" => "${{ steps.trust.outputs.package-generation-wasm64 }}",
     "core-dependency-tap-sha" => "${{ steps.dependency-taps.outputs.core-tap-sha }}",
     "vfs-acceptance-formula" => "${{ steps.vfs-acceptance.outputs.formula }}",
   }, "publisher plan outputs changed")
+  source_commits = named_step(plan_steps, "Resolve source commits")
+  check(source_commits.keys.sort == %w[env id name run shell] &&
+        source_commits["id"] == "source-commits" &&
+        source_commits["shell"] == "bash" &&
+        source_commits["env"] == {
+          "DRY_RUN" => "${{ inputs.dry-run }}",
+          "REQUESTED_KANDELO_SHA" => "${{ inputs.kandelo-ref }}",
+        }, "publisher source-commit resolution mapping changed")
+  [
+    '[ "$DRY_RUN" = "false" ]',
+    '[ "$kandelo_sha" != "$REQUESTED_KANDELO_SHA" ]',
+    "Kandelo checkout differs from the exact admitted main commit",
+  ].each do |fragment|
+    check(source_commits.fetch("run").include?(fragment),
+          "publisher source checkout binding lacks #{fragment}")
+  end
+  tap_source_binding = named_step(
+    plan_steps, "Bind write tap source to protected main history"
+  )
+  check(tap_source_binding.keys.sort == %w[env if name run shell] &&
+        tap_source_binding["if"] == "${{ !inputs.dry-run }}" &&
+        tap_source_binding["shell"] == "bash" &&
+        tap_source_binding["env"] == {
+          "GH_TOKEN" => "${{ github.token }}",
+          "REQUESTED_TAP_SHA" => "${{ inputs.tap-ref }}",
+          "TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
+          "TAP_SHA" => "${{ steps.source-commits.outputs.tap-sha }}",
+        }, "publisher protected-main tap source binding changed")
+  [
+    '[ "$TAP_SHA" = "$REQUESTED_TAP_SHA" ]',
+    'tap checkout differs from the exact requested source commit',
+    '"/repos/$TAP_REPOSITORY/compare/$TAP_SHA...main"',
+    'if ! compare_status="$(gh api',
+    "could not prove that the requested tap commit belongs to protected main",
+    "ahead|identical) ;;",
+    "requested tap commit must remain on protected main history",
+  ].each do |fragment|
+    check(tap_source_binding.fetch("run").include?(fragment),
+          "publisher protected-main tap source binding lacks #{fragment}")
+  end
+  release = named_step(plan_steps, "Resolve release and bottle root")
+  matrix = named_step(plan_steps, "Plan formula matrix")
+  check(plan_steps.index(kandelo_checkout) < plan_steps.index(source_commits) &&
+        plan_steps.index(source_commits) < plan_steps.index(tap_source_binding) &&
+        plan_steps.index(tap_source_binding) < plan_steps.index(release) &&
+        plan_steps.index(release) < plan_steps.index(matrix),
+        "publisher resolves immutable sources outside the planning boundary")
 
   expected_uses = [
     *Array.new(23, CHECKOUT_ACTION),
@@ -1174,13 +1592,141 @@ def check_publisher(workflow)
     "kandelo"
   )
 
+  build_generation = named_step(
+    build_steps, "Materialize exact-main Formula runtime packages"
+  )
+  verify_generations = named_step(
+    verify_steps, "Materialize exact-main browser runtime packages"
+  )
+  check(build_generation.keys.sort == %w[env if name run shell] &&
+        build_generation["if"] == "${{ !inputs.dry-run }}" &&
+        build_generation["shell"] == "bash" &&
+        build_generation["env"] == {
+          "GH_TOKEN" => "${{ github.token }}",
+          "KANDELO_SHA" => "${{ needs.plan.outputs.kandelo-sha }}",
+          "PACKAGE_GENERATION_WASM32" =>
+            "${{ needs.plan.outputs.package-generation-wasm32 }}",
+        }, "publisher exact Formula generation mapping changed")
+  check(verify_generations.keys.sort == %w[env if name run shell] &&
+        verify_generations["if"] == "${{ !inputs.dry-run }}" &&
+        verify_generations["shell"] == "bash" &&
+        verify_generations["env"] == {
+          "GH_TOKEN" => "${{ github.token }}",
+          "KANDELO_SHA" => "${{ needs.plan.outputs.kandelo-sha }}",
+          "PACKAGE_GENERATION_WASM32" =>
+            "${{ needs.plan.outputs.package-generation-wasm32 }}",
+          "PACKAGE_GENERATION_WASM64" =>
+            "${{ needs.plan.outputs.package-generation-wasm64 }}",
+        }, "publisher exact browser generations mapping changed")
+
+  common_generation_fragments = [
+    "bash scripts/dev-shell.sh cargo build --release -p xtask",
+    "bash .github/scripts/materialize-exact-package-generations.sh",
+    '--consumer-root "$PWD"',
+    '--consumer-sha "$KANDELO_SHA"',
+    '--authority-xtask "$PWD/target/$host/release/xtask"',
+    "--repository Automattic/kandelo",
+    'resolver_index="$generation_root/resolver/index.toml"',
+    'expected_index_url="file://$resolver_index"',
+    'index_url="$(cat "$generation_root/index-url.txt")"',
+    '[ -f "$resolver_index" ] && [ ! -L "$resolver_index" ]',
+    '[ "$(realpath -- "$resolver_index")" = "$resolver_index" ]',
+    '[ "$index_url" = "$expected_index_url" ]',
+    'echo "WASM_POSIX_BINARY_INDEX_URL=$index_url" >> "$GITHUB_ENV"',
+  ]
+  build_generation_run = build_generation.fetch("run")
+  verify_generations_run = verify_generations.fetch("run")
+  common_generation_fragments.each do |fragment|
+    check(build_generation_run.include?(fragment),
+          "publisher Formula generation activation lacks #{fragment}")
+    check(verify_generations_run.include?(fragment),
+          "publisher browser generation activation lacks #{fragment}")
+  end
+  check(build_generation_run.include?(
+          '--wasm32-tag "$PACKAGE_GENERATION_WASM32"'
+        ) &&
+        !build_generation_run.include?("--wasm64-tag") &&
+        build_generation_run.include?(
+          "Formula build/test helpers execute as universal wasm32"
+        ), "publisher Formula build does not use only its exact wasm32 runtime generation")
+  check(verify_generations_run.include?(
+          '--wasm32-tag "$PACKAGE_GENERATION_WASM32"'
+        ) &&
+        verify_generations_run.include?(
+          '--wasm64-tag "$PACKAGE_GENERATION_WASM64"'
+        ), "publisher browser verification does not combine both exact generations")
+
+  build_warm = named_step(build_steps, "Warm Kandelo dev shell")
+  verify_warm = named_step(verify_steps, "Warm Kandelo dev shell")
+  build_sysroot = named_step(build_steps, "Build Kandelo sysroot")
+  verify_handoff = named_step(verify_steps, "Download strict build handoff")
+  check(build_steps.index(build_generation) == build_steps.index(build_warm) + 1 &&
+        build_steps.index(build_generation) < build_steps.index(build_sysroot),
+        "publisher can resolve Formula runtime packages before exact generation activation")
+  check(verify_steps.index(verify_generations) == verify_steps.index(verify_warm) + 1 &&
+        verify_steps.index(verify_generations) < verify_steps.index(verify_handoff),
+        "publisher can verify browser packages before exact generation activation")
+  check(publisher_source.scan(
+          /echo "WASM_POSIX_BINARY_INDEX_URL=\$index_url" >> "\$GITHUB_ENV"/
+        ).length == 2 &&
+        !build_generation_run.include?("binaries-abi-v") &&
+        !verify_generations_run.include?("binaries-abi-v"),
+        "publisher permits a mutable or non-local package resolver activation")
+  exact_materializer_source = File.read(
+    File.join(REPO_ROOT, ".github/scripts/materialize-exact-package-generations.sh")
+  )
+  durable_materializer_source = File.read(
+    File.join(REPO_ROOT, ".github/scripts/materialize-durable-package-generation.sh")
+  )
+  [
+    '--required-package-source-sha "$CONSUMER_SHA"',
+    '--base-index "$TMP_ROOT/wasm32/resolver/index.toml"',
+    '--overlay-index "$TMP_ROOT/wasm64/resolver/index.toml"',
+    'link_generation_archives "$TMP_ROOT/wasm32/resolver"',
+    'link_generation_archives "$TMP_ROOT/wasm64/resolver"',
+    'printf \'file://%s/resolver/index.toml\\n\' "$OUTPUT_DIR"',
+  ].each do |fragment|
+    check(exact_materializer_source.include?(fragment),
+          "exact package-generation materializer lacks #{fragment}")
+  end
+  [
+    '[ "$package_source_sha" != "$REQUIRED_PACKAGE_SOURCE_SHA" ]',
+    "generation package source differs from the required exact main commit",
+    'run_without_credentials "$AUTHORITY_XTASK" staging-reuse validate-generation',
+    '[ "$(git -C "$CONSUMER_ROOT" rev-parse HEAD)" != "$CONSUMER_SHA" ]',
+    'printf \'file://%s/resolver/index.toml\\n\' "$OUTPUT_DIR"',
+  ].each do |fragment|
+    check(durable_materializer_source.include?(fragment),
+          "durable package-generation materializer lacks #{fragment}")
+  end
+
   credential_names = %w[
     GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN HOMEBREW_GITHUB_PACKAGES_TOKEN
     HOMEBREW_DOCKER_REGISTRY_TOKEN
   ]
-  [build_steps, verify_steps].each do |steps|
-    exposed = steps.flat_map { |step| step.fetch("env", {}).keys & credential_names }
-    check(exposed.empty?, "unprivileged publisher phase exposes a credential environment")
+  plan_credential_steps = plan_steps.select do |step|
+    !(step.fetch("env", {}).keys & credential_names).empty?
+  end
+  check(plan_credential_steps.map { |step| step["name"] } == [
+    "Admit exact Kandelo main source",
+    "Bind write tap source to protected main history",
+  ] && plan_credential_steps.all? do |step|
+    step.fetch("env").slice(*credential_names) == {
+      "GH_TOKEN" => "${{ github.token }}",
+    }
+  end, "publisher plan credential escapes source validation")
+  {
+    build_steps => build_generation,
+    verify_steps => verify_generations,
+  }.each do |steps, generation_step|
+    credential_steps = steps.select do |step|
+      !(step.fetch("env", {}).keys & credential_names).empty?
+    end
+    check(credential_steps == [generation_step] &&
+          generation_step.fetch("env").slice(*credential_names) == {
+            "GH_TOKEN" => "${{ github.token }}",
+          },
+          "publisher read credential escapes exact public-generation metadata fetch")
     check(steps.select { |step| step["uses"] == CHECKOUT_ACTION }.all? do |step|
       step.dig("with", "persist-credentials") == false
     end, "unprivileged publisher phase persists checkout credentials")
@@ -1193,6 +1739,8 @@ def check_publisher(workflow)
         uploader_credential_steps.first["env"] == {
           "GH_TOKEN" => "${{ github.token }}",
           "KANDELO_HOMEBREW_FORMULA" => "${{ matrix.formula }}",
+          "KANDELO_HOMEBREW_KANDELO_COMMIT" =>
+            "${{ needs.plan.outputs.kandelo-sha }}",
           "KANDELO_HOMEBREW_TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
           "KANDELO_HOMEBREW_TAP_NAME" => "${{ inputs.tap-name }}",
         },
@@ -1205,6 +1753,8 @@ def check_publisher(workflow)
         index_credential_steps.first["env"] == {
           "GH_TOKEN" => "${{ github.token }}",
           "KANDELO_HOMEBREW_FORMULA" => "${{ matrix.formula }}",
+          "KANDELO_HOMEBREW_KANDELO_COMMIT" =>
+            "${{ needs.plan.outputs.kandelo-sha }}",
           "KANDELO_HOMEBREW_TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
           "KANDELO_HOMEBREW_TAP_NAME" => "${{ inputs.tap-name }}",
         },
@@ -1230,6 +1780,78 @@ def check_publisher(workflow)
   check(vfs_release_checkout_steps.all? do |step|
     step.dig("with", "persist-credentials") == false
   end, "publisher VFS release persists checkout credentials")
+
+  exact_main_helper_path = File.join(
+    REPO_ROOT, ".github/scripts/require-exact-kandelo-main.sh"
+  )
+  exact_main_helper = File.read(exact_main_helper_path)
+  check((File.stat(exact_main_helper_path).mode & 0o111).positive?,
+        "exact-main publication helper is not executable")
+  [
+    '[ "$REPOSITORY" != "Automattic/kandelo" ]',
+    '[[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]',
+    '[ -z "${GH_TOKEN:-}" ]',
+    '"/repos/$REPOSITORY/git/ref/heads/main"',
+    "--jq .object.sha",
+    '[[ "$main_sha" =~ ^[0-9a-f]{40}$ ]]',
+    '[ "$SOURCE_SHA" != "$main_sha" ]',
+    "source SHA must equal the current refs/heads/main commit",
+  ].each do |fragment|
+    check(exact_main_helper.include?(fragment),
+          "exact-main publication helper lacks #{fragment}")
+  end
+  check(%w[merge-base rev-list compare/ refs/tags/ refs/pull/].none? do |fragment|
+    exact_main_helper.include?(fragment)
+  end, "exact-main publication helper accepts graph or alternate-ref substitutes")
+  upload_write = named_step(
+    upload_steps, "Upload validated bottle in isolated ORAS auth state"
+  )
+  check_exact_main_recheck(
+    upload_write.fetch("run"),
+    "bash scripts/dev-shell.sh bash scripts/homebrew-ghcr-upload.sh",
+    "publisher bottle upload",
+    helper: ".github/scripts/require-exact-kandelo-main.sh"
+  )
+  index_write = named_step(
+    index_steps,
+    "Publish the complete Homebrew version index in isolated ORAS auth state"
+  )
+  check_exact_main_recheck(
+    index_write.fetch("run"),
+    "bash scripts/dev-shell.sh bash scripts/homebrew-ghcr-upload.sh",
+    "publisher version-index upload",
+    helper: ".github/scripts/require-exact-kandelo-main.sh"
+  )
+  finalizer_write = named_step(
+    finalize_steps, "Atomically compose and publish all sidecars under one tap state lock"
+  )
+  check_exact_main_recheck(
+    finalizer_write.fetch("run"),
+    "bash scripts/dev-shell.sh env",
+    "publisher tap finalization",
+    helper: ".github/scripts/require-exact-kandelo-main.sh"
+  )
+  failure_write = named_step(
+    finalize_steps, "Record failed attempt without replacing last-green metadata"
+  )
+  check(failure_write.fetch("run").include?(
+          '--exact-kandelo-main-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"'
+        ), "publisher failure report drops exact-main authority before the tap writer")
+  check_exact_main_recheck(
+    failure_write.fetch("run"),
+    "bash scripts/dev-shell.sh env",
+    "publisher failed-attempt report",
+    helper: ".github/scripts/require-exact-kandelo-main.sh"
+  )
+  vfs_write = named_step(
+    vfs_release_steps, "Publish and anonymously read back the immutable VFS release"
+  )
+  check_exact_main_recheck(
+    vfs_write.fetch("run"),
+    "bash kandelo/scripts/homebrew-publish-vfs-release.sh",
+    "publisher immutable VFS release",
+    helper: "kandelo/.github/scripts/require-exact-kandelo-main.sh"
+  )
 
   build_handoff_name =
     "homebrew-build-handoff-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}"
@@ -1375,8 +1997,60 @@ def check_publisher(workflow)
     "if-no-files-found" => "error", "retention-days" => 14,
   }, "publisher VFS release receipt artifact contract changed")
 
-  build_run = named_step(build_steps,
-                         "Build and test Homebrew bottle without publisher credentials").fetch("run")
+  build_formula_step = named_step(
+    build_steps, "Build and test Homebrew bottle without publisher credentials"
+  )
+  build_run = build_formula_step.fetch("run")
+  check(build_formula_step.fetch("env").fetch("WASM_POSIX_XTASK_BIN") ==
+          "${{ steps.formula-runtime.outputs.xtask-bin }}",
+        "publisher does not scope the prepared checker to Formula execution")
+  xtask_environment_steps = build_steps.select do |step|
+    step.fetch("env", {}).key?("WASM_POSIX_XTASK_BIN")
+  end
+  check(xtask_environment_steps == [build_formula_step],
+        "publisher exposes the prepared checker outside Formula execution")
+  verify_formula_step = named_step(
+    verify_steps, "Force-pour and test the exact selected bottle without credentials"
+  )
+  check(verify_formula_step.fetch("env").fetch("WASM_POSIX_XTASK_BIN") ==
+          "${{ steps.formula-verification-runtime.outputs.xtask-bin }}",
+        "publisher does not scope the prepared checker to Formula verification")
+  verify_xtask_environment_steps = verify_steps.select do |step|
+    step.fetch("env", {}).key?("WASM_POSIX_XTASK_BIN")
+  end
+  check(verify_xtask_environment_steps == [verify_formula_step],
+        "publisher exposes the prepared verifier checker outside Formula execution")
+  all_xtask_environment_steps = jobs.values.flat_map do |job|
+    job.fetch("steps", [])
+  end.select do |step|
+    step.fetch("env", {}).key?("WASM_POSIX_XTASK_BIN")
+  end
+  check(all_xtask_environment_steps == [build_formula_step, verify_formula_step],
+        "publisher checker authority is not scoped to the two Formula execution steps")
+  build_dev_shell_index = build_run.index("bash scripts/dev-shell.sh env")
+  build_checker_forward_index = build_run.index(
+    'WASM_POSIX_XTASK_BIN="$WASM_POSIX_XTASK_BIN"'
+  )
+  build_script_index = build_run.index(
+    "bash scripts/homebrew-bottle-build.sh", build_checker_forward_index || 0
+  )
+  check(build_dev_shell_index && build_checker_forward_index && build_script_index &&
+        build_dev_shell_index < build_checker_forward_index &&
+        build_checker_forward_index < build_script_index,
+        "publisher does not pass the scoped checker through the Formula build command")
+  verify_run = verify_formula_step.fetch("run")
+  verify_dev_shell_index = verify_run.index("bash scripts/dev-shell.sh env")
+  verify_checker_forward_index = verify_run.index(
+    'WASM_POSIX_XTASK_BIN="$WASM_POSIX_XTASK_BIN"'
+  )
+  verify_script_index = verify_run.index(
+    "bash scripts/homebrew-verify-poured-bottle.sh",
+    verify_checker_forward_index || 0
+  )
+  check(verify_dev_shell_index && verify_checker_forward_index && verify_script_index &&
+        verify_dev_shell_index < verify_checker_forward_index &&
+        verify_checker_forward_index < verify_script_index,
+        "publisher does not pass the scoped checker through the Formula verifier command")
   check(build_run.include?("unprivileged bottle build received $secret_name") &&
         build_run.include?("scripts/homebrew-bottle-build.sh") &&
         build_run.include?('readlink -f "$HOMEBREW_BREW_FILE"') &&
@@ -1472,6 +2146,27 @@ def check_publisher(workflow)
   check(flake.scan("pkgs.gnutar".b).length == 1,
         "dev shell does not declare exactly one GNU tar publisher input")
   bottle_builder = File.read(File.join(REPO_ROOT, "scripts/homebrew-bottle-build.sh"))
+  host_dependency_validator = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-validate-host-dependency-plan.sh")
+  )
+  [
+    'keys == ["build", "build_and_test", "formula", "full_name", "native_requirements", "runtime_and_test", "schema", "tap", "target_taps"]',
+    '.schema == 4',
+    '(.build | type == "array" and length <= 128)',
+    '(.build_and_test | type == "array" and length <= 128)',
+    '(.runtime_and_test | type == "array" and length <= 128)',
+    'keys == ["class", "formula", "sentinel", "tags"]',
+    '--slurpfile resolved "$RESOLVED_TAPS"',
+    'map({tap_name, tap_repository, tap_commit}) | sort_by(.tap_name)',
+    '(.native_requirements == (.native_requirements | sort_by(.class)))',
+    '((.native_requirements | map(.class)) == (.native_requirements | map(.class) | unique))',
+    '(.tags == ["build"] or .tags == ["build", "test"])',
+    '($plan.build | index($native.formula) != null)',
+    '($plan.runtime_and_test | index($native.formula) == null)',
+  ].each do |fragment|
+    check(host_dependency_validator.include?(fragment),
+          "host dependency plan validator lacks #{fragment}")
+  end
   formula_support_inputs = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-formula-support-inputs.sh")
   )
@@ -1511,6 +2206,9 @@ def check_publisher(workflow)
     'JSON.generate(support_runtime_files)',
     'support_copies.values.uniq.length > 1',
     'Kandelo Formula support API or runtime-tree bytes differ across the immutable tap closure',
+    'KANDELO_NATIVE_FORMULA',
+    'KANDELO_NATIVE_SENTINEL',
+    '"native_requirements" => native_requirements.sort_by { |entry| entry.fetch("class") }',
   ].each do |fragment|
     check(formula_closure.include?(fragment),
           "static Formula closure lacks immutable tap identity binding: #{fragment}")
@@ -1519,6 +2217,10 @@ def check_publisher(workflow)
   check(tier2_plan_output&.include?('"schema" => 2') &&
         !tier2_plan_output&.include?('"schema" => 1'),
         "static Formula closure does not emit the exact Tier-2 schema-2 plan")
+  host_dependency_plan_output = formula_closure[/elsif host_dependencies_only(.*?)elsif direct_only/m, 1]
+  check(host_dependency_plan_output&.include?('"schema" => 4') &&
+        host_dependency_plan_output&.include?('"native_requirements" => native_requirements'),
+        "static Formula closure does not emit the sealed schema-4 native Requirement plan")
   check(!formula_closure.include?("legacy_requires") &&
         formula_closure.include?(
           "if runtime_initializer_index.nil? || runtime_assignment_index != runtime_initializer_index + 1"
@@ -1562,13 +2264,10 @@ def check_publisher(workflow)
     'KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG"',
     'run_brew_logged run_brew_for_kandelo_bottles "$BREW_BIN" install',
     "--include-build --include-test",
+    'bash "$KANDELO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh"',
     'jq -r \'.build_and_test[]\' "$HOST_DEPENDENCY_PLAN" >"$HOST_DEPENDENCY_LIST"',
-    'keys == ["build", "build_and_test", "formula", "full_name", "runtime_and_test", "schema", "tap", "target_taps"]',
-    '.schema == 3',
     'TIER2_ATTESTATION="$CONTROL_DIR/tier2-attestation.json"',
     '.schema == 2 and .tap == $tap and .formula == $formula and .arch == $arch',
-    '--slurpfile resolved "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"',
-    'map({tap_name, tap_repository, tap_commit}) | sort_by(.tap_name)',
     'DEPENDENCY_TAP_ROOTS=()',
     'export HOMEBREW_KANDELO_PRIMARY_TAP_ROOT="$TAPPED_TAP_ROOT"',
     '"$BREW_BIN" tap "$dependency_tap" "$dependency_root"',
@@ -1662,6 +2361,29 @@ def check_publisher(workflow)
     check(bottle_verifier.include?(fragment),
           "reviewed bottle verifier protected sysroot contract lacks #{fragment}")
   end
+  verifier_checker_derivation_index = bottle_verifier.index(
+    'XTASK_BIN="$KANDELO_ROOT/target/$HOST_TARGET/release/xtask"'
+  )
+  verifier_checker_match_index = bottle_verifier.index(
+    '[ "${WASM_POSIX_XTASK_BIN:-}" != "$XTASK_BIN" ]',
+    verifier_checker_derivation_index || 0
+  )
+  verifier_checker_export_index = bottle_verifier.index(
+    "export WASM_POSIX_XTASK_BIN", verifier_checker_match_index || 0
+  )
+  verifier_checker_isolate_index = bottle_verifier.index(
+    'homebrew_patched_launcher_isolate "$BUILD_USER"',
+    verifier_checker_export_index || 0
+  )
+  check(verifier_checker_derivation_index && verifier_checker_match_index &&
+        verifier_checker_export_index && verifier_checker_isolate_index &&
+        verifier_checker_derivation_index < verifier_checker_match_index &&
+        verifier_checker_match_index < verifier_checker_export_index &&
+        verifier_checker_export_index < verifier_checker_isolate_index &&
+        bottle_verifier.include?(
+          "scoped program-index checker differs from the exact host xtask"
+        ),
+        "reviewed bottle verifier does not bind the scoped checker to its host target")
   [
     'PROVENANCE_TAP_ROOT="$(jq -er --arg tap "$TAP_NAME"',
     'select(.tap_name == $tap)',
@@ -1749,8 +2471,7 @@ def check_publisher(workflow)
       'EXPECTED_PLAN_TAP="$TAP_NAME"',
       '"$TAP_ROOT" "$TAP_NAME" "$FORMULA" --host-dependencies-json',
       'immutable resolved tap map is required',
-      '--slurpfile resolved "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"',
-      'map({tap_name, tap_repository, tap_commit}) | sort_by(.tap_name)',
+      'bash "$KANDELO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh"',
       '"homebrew/core/$dependency"',
       "run_native_brew_logged install --as-dependency --formula",
       'homebrew_patched_launcher_run_native info --json=v2',
@@ -2032,7 +2753,19 @@ def check_publisher(workflow)
     "plan = KandeloPublisher.dependency_plan(formula)",
     "@deps = publisher_build_dependencies if args.build_bottle?",
     "dependency.build? && !dependency.implicit?",
+    "def self.evaluated_native_requirements(formula, plan = dependency_plan(formula))",
+    'NATIVE_FORMULA_CONSTANT = :KANDELO_NATIVE_FORMULA',
+    'NATIVE_SENTINEL_CONSTANT = :KANDELO_NATIVE_SENTINEL',
+    'Dependency.new(requirement.fetch("formula"), [:build])',
+    'actual == expected',
+    'plan["schema"] == 4',
+    "MAX_DEPENDENCIES = 128",
+    "value.length <= MAX_DEPENDENCIES",
     "direct_native_build_dependencies.sort_by(&:name)",
+    "def self.activate_native_test_requirements!(formula, env)",
+    "Kandelo publisher native test Requirement sentinel is unavailable",
+    "diff --git a/Library/Homebrew/test.rb b/Library/Homebrew/test.rb",
+    "KandeloPublisher.activate_native_test_requirements!(formula, ENV)",
     "diff --git a/Library/Homebrew/extend/os/linux/formula.rb b/Library/Homebrew/extend/os/linux/formula.rb",
     "return if KandeloPublisher.selected_tap_formula?(self)",
     "diff --git a/Library/Homebrew/extend/os/linux/sandbox.rb b/Library/Homebrew/extend/os/linux/sandbox.rb",
@@ -2069,9 +2802,47 @@ def check_publisher(workflow)
     "protected publisher plan changed native Homebrew global dependencies",
     "mutable target tap revision suppressed Linux global dependencies",
     "mismatched target tap repository suppressed Linux global dependencies",
+    "publisher native Requirement inputs did not populate the build-only Superenv dependency path",
+    "publisher accepted a missing evaluated native Requirement",
+    "publisher accepted a forged evaluated native Requirement class",
+    "publisher accepted altered evaluated native Requirement metadata",
+    "publisher accepted ambiguous schema-3 native dependency data",
+    "publisher accepted oversized host dependency arrays",
+    "publisher test environment did not execute the sealed Requirement sentinel by name",
+    "ordinary Homebrew test environment changed without a protected publisher plan",
   ].each do |fragment|
     check(publisher_patch_test.include?(fragment),
           "publisher overlay regression test lacks #{fragment}")
+  end
+  publisher_real_lifecycle_test = File.read(
+    File.join(REPO_ROOT, "scripts/test-homebrew-publisher-real-lifecycle.sh")
+  )
+  [
+    'BREW_COMMIT="34c40c18ffa2029b611b61c73273e32c003d0842"',
+    'EXPECTED_BUILD_BLOB="be833176c02f78cd5b3502aac968b5a733cb7af8"',
+    'worktree add --detach "$BREW_ROOT" "$BREW_COMMIT"',
+    '0001-add-kandelo-wasm-bottle-tags.patch',
+    '0002-support-isolated-publisher.patch',
+    'HOMEBREW_KANDELO_HERMETIC_LIFECYCLE_TEST',
+    'PATH="$PATH"',
+    'install-bundler-gems --groups=formula_test',
+    '(deny network*)',
+    '/usr/bin/unshare --user --map-current-user --net',
+    '/usr/bin/sudo -n /usr/bin/unshare --net',
+    'the network-isolation boundary allowed a reachable socket',
+    'the real publisher lifecycle changed the sealed Bundler vendor tree',
+    'depends_on KandeloFormulaSupport::WabtRequirement => [:build, :test]',
+    'KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$RESOLVED_TAPS"',
+    'homebrew-formula-runtime-closure.rb',
+    'homebrew-validate-host-dependency-plan.sh',
+    'install --build-bottle',
+    '--ignore-dependencies kandelo-dev/tap-core/fixture',
+    'test kandelo-dev/tap-core/fixture',
+    'the real Build/Superenv lifecycle did not execute the native Requirement tool',
+    'the real Formula test lifecycle did not execute the sealed native Requirement tool',
+  ].each do |fragment|
+    check(publisher_real_lifecycle_test.include?(fragment),
+          "real pinned Homebrew lifecycle test lacks #{fragment}")
   end
   check(!platform_patch.include?("dir == HOMEBREW_REPOSITORY"),
         "guest Homebrew platform patch skips repository writability")
@@ -2106,6 +2877,7 @@ def check_publisher(workflow)
     'HOST_DEPENDENCY_PLAN="$CONTROL_DIR/host-dependencies.json"',
     'NATIVE_INSTALL_LOG="$CONTROL_DIR/native-install.log"',
     'DEPENDENCY_POUR_LIST="$CONTROL_DIR/pour-dependencies.txt"',
+    'bash "$KANDELO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh"',
     "--include-test",
     'validate_dependency_list "$DEPENDENCY_LIST"',
     '"$SAME_TAP_TEST_DEPENDENCY_LIST" "test dependency list"',
@@ -2222,9 +2994,44 @@ def check_publisher(workflow)
     'target Formula can modify the selected primary tap',
     'HOMEBREW_KANDELO_SYSROOT:-}',
     'WASM_POSIX_SYSROOT:-}',
+    'xtask_bin="${WASM_POSIX_XTASK_BIN:-}"',
+    'Kandelo root must be one exact canonical checkout',
+    'prepared program-index checker must be one exact regular executable',
+    'prepared program-index checker is outside the exact Kandelo root',
+    'program-index checker is not the prepared release xtask',
+    '[ "$xtask_mode" != "555" ]',
+    'prepared program-index checker has an unsafe mode',
+    'prepared program-index checker is not single-linked',
+    'prepared program-index checker is owned by the Formula user',
+    'prepared program-index checker is writable by the Formula user',
+    'homebrew_assert_tree_not_replaceable_by_user "$build_user" "$xtask_bin"',
+    "xtask_state=\"$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' \"$xtask_bin\")\"",
+    'xtask_sha256="$(/usr/bin/sha256sum "$xtask_bin")"',
+    'expected_xtask=%q',
+    'expected_xtask_state=%q',
+    'expected_xtask_sha256=%q',
+    'protected program-index checker changed or is inaccessible',
+    'could not inspect protected checker mount',
+    'protected checker mount is writable',
+    'prepared program-index checker changed after isolation',
+    'protected_xtask="$HOMEBREW_PATCHED_PROTECTED_DIR/xtask"',
+    'install -o root -g root -m 0555 --',
+    'could not stage the root-owned program-index checker',
+    'HOMEBREW_PATCHED_PROTECTED_XTASK="$protected_xtask"',
+    '[ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK_STATE" ]',
+    'homebrew_patched_launcher_verify_protected_xtask',
+    'protected checker changed; preserving launcher state for inspection',
+    'protected launcher state could not be removed; preserving cleanup state for retry',
+    'source aliases could not be removed; preserving cleanup state for retry',
+    'protected_xtask_state=%q',
+    'root-owned program-index checker changed after isolation',
+    '[ "${HOMEBREW_KANDELO_XTASK_BIN:-}" != "$expected_xtask" ]',
+    'HOMEBREW_KANDELO_XTASK_BIN=$xtask_alias',
+    'WASM_POSIX_XTASK_BIN=$xtask_alias',
     "--property=KillMode=control-group", "--property=SendSIGKILL=yes",
     "--property=NoNewPrivileges=yes", "--expand-environment=no",
     '"--property=BindReadOnlyPaths=$kandelo_root:$source_alias_dir/kandelo"',
+    '"--property=BindReadOnlyPaths=$protected_xtask:$xtask_alias"',
     '"--property=BindReadOnlyPaths=$tap_root:$source_alias_dir/tap"',
     '"--property=BindReadOnlyPaths=$sysroot:$source_alias_dir/sysroot"',
     '"--property=BindReadOnlyPaths=$taps_root"',
@@ -2333,7 +3140,8 @@ def check_publisher(workflow)
     'native Formula bridge rollback failed; preserving launcher state for retry',
     'Formula process teardown failed; preserving launcher state for retry',
     'return "$teardown_status"',
-    'for protected_bin in chmod chown cmp cp id install ln ls mktemp readlink rm stat test; do',
+    'for protected_bin in chmod chown cmp cp id install ln ls mktemp readlink rm \\',
+    'sha256sum stat test; do',
     '"$sudo_bin" /usr/bin/install -d -o root -g "$build_group" -m 1775',
     '"$(/usr/bin/stat -c \'%u:%g:%a\' "$target_state_root")" = "0:$build_gid:1775"',
     'target_opt_target="../Cellar/$formula/$native_version"',
@@ -2393,6 +3201,10 @@ def check_publisher(workflow)
     check(launcher.include?(fragment),
           "protected Formula input staging lacks #{fragment}")
   end
+  check(!launcher.include?(
+          '/usr/bin/test -r "$xtask_bin" -a -x "$xtask_bin"'
+        ),
+        "reviewed launcher requires Formula access to the hidden original checker")
   staged_cleanup_owner_index = launcher.index("homebrew_patched_launcher_cleanup()")
   staged_cleanup_teardown_index = launcher.index(
     'homebrew_patched_launcher_teardown "$HOMEBREW_PATCHED_BUILD_USER"',
@@ -2498,9 +3310,16 @@ def check_publisher(workflow)
   target_environment = launcher[/\n  preserved_variables=\((.*?)\n  \)/m, 1]
   check(target_environment&.include?("HOMEBREW_KANDELO_GNU_TAR"),
         "isolated target Homebrew drops the validated GNU tar path")
+  check(target_environment &&
+        !target_environment.match?(
+          /(?:HOMEBREW_KANDELO_XTASK_BIN|WASM_POSIX_XTASK_BIN)/
+        ),
+        "isolated target Homebrew preserves a caller-selected checker path")
   native_environment = launcher[/native_preserved_variables=\((.*?)\n  \)/m, 1]
   check(native_environment &&
-        !native_environment.match?(/KANDELO|HOMEBREW_CACHE|HOMEBREW_TEMP|XDG_CONFIG_HOME|LLVM|GNU_TAR/),
+        !native_environment.match?(
+          /KANDELO|HOMEBREW_CACHE|HOMEBREW_TEMP|XDG_CONFIG_HOME|LLVM|GNU_TAR|XTASK/
+        ),
         "isolated native Homebrew inherits target-only state or Kandelo controls")
   gnu_tar_executable_index = launcher.index(
     '"$HOMEBREW_KANDELO_GNU_TAR" "Nix GNU tar" || return'
@@ -2515,6 +3334,39 @@ def check_publisher(workflow)
   launcher_test = File.read(
     File.join(REPO_ROOT, "scripts/test-homebrew-patched-launcher.sh")
   )
+  [
+    "a missing program-index checker",
+    "a symlinked program-index checker",
+    "a program-index checker outside Kandelo",
+    "a non-release program-index checker",
+    "an inaccessible program-index checker",
+    "a build-user-writable program-index checker",
+    "a hard-linked program-index checker",
+    "a Formula-user-owned program-index checker",
+    "a build-user-replaceable program-index checker",
+    "program-index checker fixture does not model a workflow-private checkout",
+    "isolated launcher did not stage one exact root-owned checker inode",
+    "isolated launcher accepted changed program-index checker bytes",
+    "isolated launcher accepted changed root-owned checker bytes",
+    "isolation verification accepted changed root-owned checker bytes",
+    "isolated launcher accepted a replaced root-owned checker inode",
+    "isolation verification accepted a replaced root-owned checker inode",
+    "isolated cleanup left the protected checker or source aliases",
+    %q([ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$5")" = "0:0:555:1" ]),
+    "HOMEBREW_KANDELO_XTASK_BIN=caller-poison",
+    "WASM_POSIX_XTASK_BIN=caller-poison",
+    "build-deps program-index-context-check",
+    '--source-repo-root "$2"',
+    "assert_real_relocated_xtask_uses_source_alias",
+    '"--property=BindReadOnlyPaths=$REPO_ROOT:$source_alias"',
+    '"--property=InaccessiblePaths=$REPO_ROOT"',
+    '--source-repo-root "$source_alias"',
+    "Match the inaccessible compile root rather than coupling this regression",
+    %q{*"build input \""*"\" not found"*"$original_root/"*)},
+  ].each do |fragment|
+    check(launcher_test.include?(fragment),
+          "launcher checker regression lacks #{fragment}")
+  end
   check(launcher_test.include?("assert-protected-gnu-tar") &&
         launcher_test.include?('[ ! -w "$2" ] && [ ! -w "${2%/*}" ]'),
         "launcher regression does not exercise GNU tar as the dedicated Formula identity")
@@ -2548,36 +3400,179 @@ def check_publisher(workflow)
     check(launcher.include?(fragment),
           "native bridge cleanup retry contract lacks #{fragment}")
   end
+  checker_derivation_index = bottle_builder.index(
+    'XTASK_BIN="$KANDELO_ROOT/target/$HOST_TARGET/release/xtask"'
+  )
+  checker_match_index = bottle_builder.index(
+    '[ "${WASM_POSIX_XTASK_BIN:-}" != "$XTASK_BIN" ]',
+    checker_derivation_index || 0
+  )
+  checker_export_index = bottle_builder.index(
+    "export WASM_POSIX_XTASK_BIN", checker_match_index || 0
+  )
+  checker_isolate_index = bottle_builder.index(
+    'homebrew_patched_launcher_isolate "$BUILD_USER"',
+    checker_export_index || 0
+  )
+  check(checker_derivation_index && checker_match_index &&
+        checker_export_index && checker_isolate_index &&
+        checker_derivation_index < checker_match_index &&
+        checker_match_index < checker_export_index &&
+        checker_export_index < checker_isolate_index &&
+        bottle_builder.include?(
+          "scoped program-index checker differs from the exact host xtask"
+        ),
+        "reviewed bottle builder does not bind the scoped checker to its host target")
+  publisher_test = File.read(
+    File.join(REPO_ROOT, "scripts/test-homebrew-publish-workflow.sh")
+  )
+  check(publisher_test.include?(
+          "another safe target-triple checker"
+        ) && publisher_test.include?(
+          "mismatched checker authority"
+        ) && publisher_test.include?(
+          "isolated bottle verifier accepted another safe target-triple checker"
+        ) && publisher_test.include?(
+          "isolated bottle verifier did not explain the mismatched checker authority"
+        ),
+        "publisher regressions do not reject a second safe checker identity")
   teardown_index = bottle_builder.index('homebrew_patched_launcher_teardown "$BUILD_USER"')
   artifact_index = bottle_builder.index("mapfile -t bottle_jsons")
   check(teardown_index && artifact_index && teardown_index < artifact_index,
         "reviewed bottle builder reads artifacts before Formula process teardown")
   runtime_step = named_step(build_steps, "Materialize Formula test platform runtime")
-  check(runtime_step.keys.sort == %w[name run shell] && runtime_step["shell"] == "bash",
+  check(runtime_step.keys.sort == %w[id name run shell] &&
+        runtime_step["id"] == "formula-runtime" &&
+        runtime_step["shell"] == "bash",
         "publisher Formula test runtime mapping changed")
   runtime_run = runtime_step.fetch("run")
   [
     "bash scripts/dev-shell.sh bash -c", 'host="$(rustc -vV | sed -n "s/^host: //p")"',
-    "for package in dash coreutils grep sed rootfs", 'cargo run --release -p xtask --target "$host" --quiet --',
+    'cargo build --release -p xtask --target "$host" --quiet',
+    'xtask="$PWD/target/$host/release/xtask"',
+    '[ -f "$xtask" ] && [ ! -L "$xtask" ] && [ -x "$xtask" ]',
+    '[ "$(realpath -- "$xtask")" = "$xtask" ]',
+    'bash scripts/seal-homebrew-formula-checker.sh',
+    '--root "$PWD"', '--checker "$xtask"',
+    '[ "$sealed_xtask" = "$xtask" ]',
+    'printf "xtask-bin=%s\\n" "$xtask" >>"$GITHUB_OUTPUT"',
+    "for package in dash coreutils grep sed rootfs", '"$xtask"',
     "build-deps --arch wasm32", '--binaries-dir "$PWD/binaries"', '--fetch-only resolve "$package"',
-    'bash scripts/materialize-resolver-binaries.sh "$PWD/binaries"',
+    'cache_root="$("$xtask" build-deps cache-root)"',
+    'case "$cache_root" in',
+    'bash scripts/materialize-resolver-binaries.sh',
+    '"$PWD/binaries" "$cache_root"',
   ].each do |fragment|
     check(runtime_run.include?(fragment), "publisher Formula test runtime lacks #{fragment}")
   end
+  check(!runtime_run.include?("cargo run") && !runtime_run.include?("GITHUB_ENV"),
+        "publisher Formula test checker is rebuilt or leaked job-wide")
+  dev_shell = File.read(File.join(REPO_ROOT, "scripts/dev-shell.sh"))
+  check(!dev_shell.include?("WASM_POSIX_XTASK_BIN"),
+        "dev shell makes the Formula checker a global package-toolchain input")
+  check(publisher_test.include?(
+          "assert_exact_source_program_projection_is_fresh"
+        ) && publisher_test.include?(
+          'WASM_POSIX_DEPS_REGISTRY="$REPO_ROOT/packages/registry"'
+        ) && publisher_test.include?(
+          "Formula checker handoff made the exact-source program projection stale"
+        ),
+        "publisher regression does not protect exact-source program cache keys")
+  checker_sealer = File.read(
+    File.join(REPO_ROOT, "scripts/seal-homebrew-formula-checker.sh")
+  )
+  [
+    'set -euo pipefail',
+    '[ "$(realpath -- "$ROOT" 2>/dev/null || true)" != "$ROOT" ]',
+    '[ "$(realpath -- "$CHECKER" 2>/dev/null || true)" != "$CHECKER" ]',
+    '"$ROOT"/target/*/release/xtask',
+    '[ $((8#$source_mode & 06022)) -ne 0 ]',
+    'sealed="$CHECKER.formula-seal"',
+    '[ -e "$sealed" ] || [ -L "$sealed" ]',
+    "Cargo hard-links target/<host>/release/xtask",
+    'install -m 0555 -- "$CHECKER" "$sealed"',
+    '[ "$sealed_mode" != "555" ] || [ "$sealed_links" != "1" ]',
+    '[ "$sealed_sha256" != "$source_sha256" ]',
+    'mv -f -- "$sealed" "$CHECKER"',
+    '[ "$final_mode" != "555" ] || [ "$final_links" != "1" ]',
+    '[ "$final_sha256" != "$source_sha256" ]',
+  ].each do |fragment|
+    check(checker_sealer.include?(fragment),
+          "Formula checker sealer lacks #{fragment}")
+  end
+  checker_sealer_test = File.read(
+    File.join(REPO_ROOT, "scripts/test-seal-homebrew-formula-checker.sh")
+  )
+  check(
+    publisher_test.include?(
+      'bash "$REPO_ROOT/scripts/test-seal-homebrew-formula-checker.sh"'
+    ) &&
+      checker_sealer_test.include?("fixture does not model Cargo's Linux hardlink") &&
+      checker_sealer_test.include?("sealed checker still aliases Cargo's deps artifact") &&
+      checker_sealer_test.include?("Cargo's alternate path can mutate the sealed checker") &&
+      checker_sealer_test.include?("sealer accepted a writable source checker") &&
+      checker_sealer_test.include?("sealer overwrote an occupied seal destination"),
+    "publisher regressions do not prove Cargo hardlink detachment"
+  )
   materializer = File.read(File.join(REPO_ROOT, "scripts/materialize-resolver-binaries.sh"))
   [
-    'cp -aLx -- "$source_dir" "$staged"',
-    '! \\( -type d -o -type f \\)',
-    'find "$source_dir" -xdev -type d -exec chmod 0555 {} +',
-    'find "$source_dir" -xdev -type f -exec chmod 0444 {} +',
+    'PORTABLE_CACHE_REL=".ci-test-binary-cache"',
+    'bash "$script_root/stage-portable-resolver-binaries.sh"',
+    '"$source_dir" "$cache_root" "$stage_root"',
+    'Formula runtime contains no portable program cache',
+    'mv "$staged_cache" "$portable_cache"',
     'original_move_started=1',
     'mv "$source_dir" "$backup"',
-    'mv "$staged" "$source_dir"',
+    'mv "$staged_binaries" "$source_dir"',
+    'find "$source_dir" "$portable_cache" -xdev -type d -exec chmod 0555 {} +',
+    'find "$source_dir" "$portable_cache" -xdev -type f -exec chmod 0444 {} +',
+    'rm -rf -- "$portable_cache"',
+    "rolling back after that point could restore an incomplete original tree",
+    'original_move_started=0',
+    'could not remove the original resolver tree; preserving $transaction',
+    "trap - EXIT",
     'rollback failed; preserving $transaction',
   ].each do |fragment|
     check(materializer.include?(fragment),
           "publisher Formula runtime materialization lacks #{fragment}")
   end
+  commit_marker = materializer.index(
+    "rolling back after that point could restore an incomplete original tree"
+  )
+  backup_delete = materializer.index('rm -rf -- "$backup"')
+  check(
+    !commit_marker.nil? && !backup_delete.nil? && commit_marker < backup_delete &&
+      materializer[commit_marker...backup_delete].include?("original_move_started=0") &&
+      materializer[backup_delete..].include?("trap - EXIT"),
+    "publisher Formula runtime may restore a partially deleted original tree"
+  )
+  portable_stager = File.read(
+    File.join(REPO_ROOT, "scripts/stage-portable-resolver-binaries.sh")
+  )
+  [
+    'PORTABLE_CACHE_REL=".ci-test-binary-cache"',
+    'fetched program mirrors must remain generation symlinks',
+    'program resolver link targets a noncanonical cache',
+    'cp -a -- "$source_generation" "$staged_cache/programs/$generation"',
+    '"$(relative_cache_link "$mirror_relative" "$cache_relative")"',
+    'portable resolver closure contains an absolute, dangling, or escaping link',
+    'staged bytes differ from resolver output',
+  ].each do |fragment|
+    check(portable_stager.include?(fragment),
+          "portable resolver generation staging lacks #{fragment}")
+  end
+  workspace_packer = File.read(
+    File.join(REPO_ROOT, "scripts/pack-ci-test-workspace.sh")
+  )
+  check(
+    workspace_packer.include?(
+      'bash scripts/stage-portable-resolver-binaries.sh'
+    ) &&
+      workspace_packer.include?(
+        '"$REPO_ROOT/binaries" "$source_cache_root" "$stage"'
+      ),
+    "prepared CI workspace and Formula runtime do not share generation staging"
+  )
   check_architecture_aware_sysroot_step(
     named_step(build_steps, "Build Kandelo sysroot"), "publisher build"
   )
@@ -2799,6 +3794,9 @@ def check_publisher(workflow)
         upload_validate.fetch("run").include?('--tap-name "$KANDELO_HOMEBREW_TAP_NAME"') &&
         upload_attempt.fetch("run").include?("scripts/homebrew-ghcr-upload.sh") &&
         upload_attempt.fetch("run").include?('--tap-name "$KANDELO_HOMEBREW_TAP_NAME"') &&
+        upload_attempt.fetch("run").include?(
+          '--exact-kandelo-main-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"'
+        ) &&
         upload_attempt.fetch("run").include?("--auth-mode github-token") &&
         upload_attempt.fetch("run").include?("--require-pat false") &&
         upload_attempt.fetch("run").include?("--destination-mode repository") &&
@@ -2810,6 +3808,9 @@ def check_publisher(workflow)
     'REQUIRE_PAT="false"',
     'DESTINATION_MODE="repository"',
     'repository) REMOTE="ghcr.io/${NORMALIZED_TAP_REPOSITORY}/${FORMULA}" ;;',
+    '--exact-kandelo-main-sha is required before a GHCR mutation',
+    'bash "$SCRIPT_ROOT/../.github/scripts/require-exact-kandelo-main.sh"',
+    '--source-sha "$EXACT_KANDELO_MAIN_SHA"',
   ].each do |fragment|
     check(ghcr_uploader_source.include?(fragment),
           "publisher GHCR transport lacks #{fragment}")
@@ -3130,6 +4131,7 @@ def check_publisher(workflow)
     "--auth-mode github-token",
     "--require-pat false",
     "--destination-mode repository",
+    '--exact-kandelo-main-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"',
     '--out-json "$RUNNER_TEMP/homebrew-complete-index/transport-receipt.json"',
   ].each do |fragment|
     check(index_publish_run.include?(fragment),
@@ -3280,21 +4282,69 @@ def check_publisher(workflow)
         "publisher file-formula verification bypasses the supported browser package selection")
   verifier_runtime_step = named_step(verify_steps,
                                      "Materialize Formula verification platform runtime")
-  check(verifier_runtime_step.keys.sort == %w[name run shell] &&
+  browser_demo_index = verify_steps.index(browser_demo_step)
+  verifier_runtime_index = verify_steps.index(verifier_runtime_step)
+  isolated_verifier_index = verify_steps.index(
+    named_step(
+      verify_steps, "Force-pour and test the exact selected bottle without credentials"
+    )
+  )
+  check(
+    !browser_demo_index.nil? && !verifier_runtime_index.nil? &&
+      !isolated_verifier_index.nil? &&
+      verifier_runtime_index == browser_demo_index + 1 &&
+      verifier_runtime_index < isolated_verifier_index,
+    "publisher must materialize the portable Formula cache immediately after " \
+    "the final browser graph writer and before isolated verification"
+  )
+  # No later verifier step may resolve another package into binaries/: that
+  # would replace the mirrors after their canonical generations were copied.
+  post_materialization_steps =
+    verify_steps[(verifier_runtime_index + 1)...isolated_verifier_index]
+  post_materialization_writers = post_materialization_steps.filter_map do |step|
+    run = step.fetch("run", "").to_s
+    next unless [
+      "--binaries-dir", "prepare-browser", "fetch-binaries",
+      "materialize-resolver-binaries", "resolve-binary",
+    ].any? { |fragment| run.include?(fragment) }
+
+    step.fetch("name", "<unnamed>")
+  end
+  check(
+    post_materialization_writers.empty?,
+    "publisher rewrites binaries after portable Formula cache materialization: " \
+    "#{post_materialization_writers.join(', ')}"
+  )
+  check(verifier_runtime_step.keys.sort == %w[id name run shell] &&
+        verifier_runtime_step["id"] == "formula-verification-runtime" &&
         verifier_runtime_step["shell"] == "bash",
         "publisher Formula verification runtime mapping changed")
   verifier_runtime_run = verifier_runtime_step.fetch("run")
   [
     "bash scripts/dev-shell.sh bash -c", 'host="$(rustc -vV | sed -n "s/^host: //p")"',
+    'cargo build --release -p xtask --target "$host" --quiet',
+    'xtask="$PWD/target/$host/release/xtask"',
+    '[ -f "$xtask" ] && [ ! -L "$xtask" ] && [ -x "$xtask" ]',
+    '[ "$(realpath -- "$xtask")" = "$xtask" ]',
+    'bash scripts/seal-homebrew-formula-checker.sh',
+    '--root "$PWD"', '--checker "$xtask"',
+    '[ "$sealed_xtask" = "$xtask" ]',
+    'printf "xtask-bin=%s\\n" "$xtask" >>"$GITHUB_OUTPUT"',
     "for package in dash coreutils grep sed rootfs",
-    'cargo run --release -p xtask --target "$host" --quiet --',
+    '"$xtask"',
     "build-deps --arch wasm32", '--binaries-dir "$PWD/binaries"',
     '--fetch-only resolve "$package"',
-    'bash scripts/materialize-resolver-binaries.sh "$PWD/binaries"',
+    'cache_root="$("$xtask" build-deps cache-root)"',
+    'case "$cache_root" in',
+    'bash scripts/materialize-resolver-binaries.sh',
+    '"$PWD/binaries" "$cache_root"',
   ].each do |fragment|
     check(verifier_runtime_run.include?(fragment),
           "publisher Formula verification runtime lacks #{fragment}")
   end
+  check(!verifier_runtime_run.include?("cargo run") &&
+        !verifier_runtime_run.include?("GITHUB_ENV"),
+        "publisher Formula verification checker is rebuilt or leaked job-wide")
   sidecar_run = named_step(verify_steps,
                            "Generate sidecars from the selected bottle").fetch("run")
   check(sidecar_run.include?('KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$RUNTIME_BOTTLE"') &&
@@ -3740,6 +4790,7 @@ def check_publisher(workflow)
     'legacy_acceptance_expected=', 'accepted_existing_asset_sets:',
     'publish-immutable-github-release.sh', '--manifest "$release_manifest"',
     '--asset-root "$HANDOFF"', '--lock-root "$TAP_ROOT"',
+    '--exact-kandelo-main-sha "$KANDELO_COMMIT"',
     '--receipt "$receipt"',
     'visibility: "public-anonymous-readback"',
     'acceptance_release:', 'release_tag: $runtime_tag',
@@ -3778,11 +4829,24 @@ def check_publisher(workflow)
     'gh api --method POST "/repos/${REPOSITORY}/git/refs"',
     'ensure_direct_tag',
     'publish response was ambiguous; reconciling',
+    '--exact-kandelo-main-sha) EXACT_KANDELO_MAIN_SHA=',
+    'require_exact_main_authority()',
+    'bash "$REPO_ROOT/.github/scripts/require-exact-kandelo-main.sh"',
+    '--source-sha "$EXACT_KANDELO_MAIN_SHA"',
     'anonymous digest readback failed', '.object.type == "commit"',
     'visibility: "public-anonymous-readback"',
   ].each do |fragment|
     check(immutable_publisher_source.include?(fragment),
           "immutable GitHub release publisher lacks #{fragment}")
+  end
+  [
+    /require_exact_main_authority\n\s+if gh api --method POST "\/repos\/\$\{REPOSITORY\}\/releases"/,
+    /require_exact_main_authority\n\s+gh release upload "\$TAG"/,
+    /require_exact_main_authority\n\s+gh api --method POST "\/repos\/\$\{REPOSITORY\}\/git\/refs"/,
+    /require_exact_main_authority\n\s+gh api --method PATCH "\/repos\/\$\{REPOSITORY\}\/releases\/\$\{release_id\}"/,
+  ].each do |pattern|
+    check(immutable_publisher_source.match?(pattern),
+          "immutable GitHub release mutation is not immediately preceded by exact-main authority")
   end
   immutable_manifest_validator_source = File.read(
     File.join(REPO_ROOT, "scripts/validate-immutable-github-release-manifest.py")
@@ -3838,6 +4902,8 @@ def check_publisher(workflow)
     "failed anonymous readback", "anonymous recovery mutated",
     "FAKE_CREATE_RESPONSE_LOST", "FAKE_UPLOAD_RESPONSE_LOST",
     "FAKE_TAG_RESPONSE_LOST", "FAKE_PUBLISH_RESPONSE_LOST",
+    "publisher made a release public after Kandelo main advanced",
+    "advanced Kandelo main reached the public release PATCH",
   ].each do |fragment|
     check(immutable_publisher_test_source.include?(fragment),
           "immutable release publisher tests lack #{fragment}")
@@ -3932,6 +4998,9 @@ def check_publisher(workflow)
   publish_run = publish_step.fetch("run")
   check(publish_run.include?("scripts/homebrew-publish-sidecars.sh") &&
         publish_run.include?('publish_args+=(--publication "$formula" "$arch" "$handoff")') &&
+        publish_run.include?(
+          '--exact-kandelo-main-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"'
+        ) &&
         publish_run.include?('[ -f "$handoff_paths" ] && [ ! -L "$handoff_paths" ]') &&
         publish_run.include?('done <"$handoff_paths"') &&
         publish_run.include?(') 2>"$error_file"') &&
@@ -3968,6 +5037,15 @@ def check_publisher(workflow)
   ].each do |fragment|
     check(finalizer_source.include?(fragment),
           "publisher failure report lacks bounded exact finalizer detail: #{fragment}")
+  end
+  [
+    '--exact-kandelo-main-sha) EXACT_KANDELO_MAIN_SHA=',
+    '--exact-kandelo-main-sha is required before a tap push',
+    'bash "$KANDELO_ROOT/.github/scripts/require-exact-kandelo-main.sh"',
+    '--source-sha "$EXACT_KANDELO_MAIN_SHA"',
+  ].each do |fragment|
+    check(finalizer_source.include?(fragment),
+          "publisher tap push lacks final exact-main guard: #{fragment}")
   end
   [
     'SOURCE_TAP_ROOT="$COMPOSE_PARENT/source-tap"',
@@ -4048,6 +5126,8 @@ def check_publisher(workflow)
     'under-lock publisher accepted concurrent dependency-edge drift',
     'Formula differs from the planned tap outside canonical bottle metadata',
     'bash "$REPO_ROOT/scripts/test-install-local-binary-sealed.sh"',
+    'bash "$REPO_ROOT/scripts/test-homebrew-publisher-real-lifecycle.sh"',
+    'bash "$REPO_ROOT/scripts/test-homebrew-validate-host-dependency-plan.sh"',
     'assert_atomic_publication_batch_closes_formula_metadata_wave',
     'KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$(make_primary_resolved_tap_map "$tap_root")"',
     'export KANDELO_HOMEBREW_RESOLVED_TAPS_FILE',
@@ -4109,7 +5189,10 @@ def check_publisher(workflow)
         "publisher failure report does not use a clean checkout and bounded stage diagnostics")
 
   check(!values_for_key(workflow, "run").join("\n").include?("GITHUB_SHA"),
-        "publisher uses caller-context SHA as source provenance")
+        "publisher reads an ambient workflow execution SHA")
+  check(!JSON.generate(plan).include?("${{ github.sha }}") &&
+        values_for_key(plan, "REQUESTED_TAP_SHA") == ["${{ inputs.tap-ref }}"],
+        "publisher substitutes workflow execution head for the requested tap source")
   check(contract_digest(plan_steps) == PUBLISHER_PLAN_DIGEST,
         "publisher plan step contract changed")
   check(contract_digest(build_steps) == PUBLISHER_BUILD_DIGEST,
@@ -4144,10 +5227,14 @@ def check_maintenance(workflow)
   check(workflow_call.keys == ["inputs"], "maintenance workflow_call contract changed")
   check(workflow_call["inputs"] == {
     "mode" => { "type" => "string", "default" => "rebuild" },
+    "kandelo-ref" => { "type" => "string", "default" => "" },
+    "tap-ref" => { "type" => "string", "default" => "" },
     "formulae" => { "type" => "string", "required" => true },
     "arches" => { "type" => "string", "default" => "wasm32" },
     "release-tag" => { "type" => "string", "default" => "" },
     "expected-cache-keys" => { "type" => "string", "default" => "" },
+    "package-generation-wasm32" => { "type" => "string", "default" => "" },
+    "package-generation-wasm64" => { "type" => "string", "default" => "" },
     "force" => { "type" => "boolean", "default" => false },
     "rollback-reason" => { "type" => "string", "default" => "" },
     "rollback-ref" => { "type" => "string", "default" => "" },
@@ -4175,7 +5262,9 @@ def check_maintenance(workflow)
     "CALLER_REF" => "${{ github.ref }}",
     "CALLER_REPOSITORY" => "${{ github.repository }}",
     "CALLER_WORKFLOW_REF" => "${{ github.workflow_ref }}",
+    "KANDELO_REF" => "${{ inputs.kandelo-ref }}",
     "MODE" => "${{ inputs.mode }}",
+    "TAP_REF" => "${{ inputs.tap-ref }}",
   }, "maintenance caller validation mapping changed")
   validate_run = validate_step.fetch("run")
   [
@@ -4184,7 +5273,12 @@ def check_maintenance(workflow)
     '[ "$CALLER_REF" = "refs/heads/main" ]',
     '[ "$CALLER_EVENT_NAME" = "repository_dispatch" ]',
     "maintain-bottles.yml@refs/heads/main",
-    "rebuild|rollback",
+    "rebuild)",
+    '[[ "$KANDELO_REF" =~ ^[0-9a-f]{40}$ ]]',
+    "maintenance rebuild requires an exact lowercase 40-character Kandelo commit SHA",
+    "rollback)",
+    '[[ "$TAP_REF" =~ ^[0-9a-f]{40}$ ]]',
+    "maintenance rebuild requires an exact reviewed lowercase 40-character tap commit SHA",
   ].each do |fragment|
     check(validate_run.include?(fragment), "maintenance validation lacks #{fragment}")
   end
@@ -4207,6 +5301,40 @@ def check_maintenance(workflow)
           "maintenance requires the reviewed tap maintenance workflow"
         ), "maintenance accepts a case-variant workflow path")
 
+  {
+    "missing commit" => "",
+    "mutable main" => "main",
+    "uppercase commit" => "E" * 40,
+    "short commit" => "e" * 39,
+    "long commit" => "e" * 41,
+    "fully qualified commit" => "refs/heads/main",
+  }.each do |label, tap_ref|
+    rejected = maintenance_validation_result(validate_run, "TAP_REF" => tap_ref)
+    check(rejected["status"] == 2 && rejected["stdout"].include?(
+            "maintenance rebuild requires an exact reviewed lowercase 40-character tap commit SHA"
+          ), "maintenance accepts #{label} as its tap source")
+  end
+  {
+    "missing commit" => "",
+    "mutable main" => "main",
+    "uppercase commit" => "A" * 40,
+    "short commit" => "a" * 39,
+    "long commit" => "a" * 41,
+    "fully qualified main" => "refs/heads/main",
+  }.each do |label, kandelo_ref|
+    rejected = maintenance_validation_result(
+      validate_run, "KANDELO_REF" => kandelo_ref
+    )
+    check(rejected["status"] == 2 && rejected["stdout"].include?(
+            "maintenance rebuild requires an exact lowercase 40-character Kandelo commit SHA"
+          ), "maintenance accepts #{label} as its Kandelo source")
+  end
+  rollback_validation = maintenance_validation_result(
+    validate_run, "MODE" => "rollback", "TAP_REF" => ""
+  )
+  check(rollback_validation["status"] == 0,
+        "maintenance rollback unnecessarily requires a rebuild source commit")
+
   expected_rebuild_permissions = { "contents" => "write", "packages" => "write", "actions" => "read" }
   check(rebuild.keys.sort == %w[if needs permissions uses with] &&
         rebuild["needs"] == ["validate"] &&
@@ -4216,14 +5344,16 @@ def check_maintenance(workflow)
         "maintenance rebuild execution contract changed")
   check(rebuild["with"] == {
     "kandelo-repository" => "Automattic/kandelo",
-    "kandelo-ref" => "main",
+    "kandelo-ref" => "${{ inputs.kandelo-ref }}",
     "tap-repository" => "kandelo-dev/homebrew-tap-core",
     "tap-name" => "kandelo-dev/tap-core",
-    "tap-ref" => "main",
+    "tap-ref" => "${{ inputs.tap-ref }}",
     "formulae" => "${{ inputs.formulae }}",
     "arches" => "${{ inputs.arches }}",
     "release-tag" => "${{ inputs.release-tag }}",
     "expected-cache-keys" => "${{ inputs.expected-cache-keys }}",
+    "package-generation-wasm32" => "${{ inputs.package-generation-wasm32 }}",
+    "package-generation-wasm64" => "${{ inputs.package-generation-wasm64 }}",
     "force" => "${{ inputs.force }}",
     "dry-run" => false,
   }, "maintenance rebuild input wiring changed")
@@ -4276,6 +5406,9 @@ def check_maintenance(workflow)
     'case "$KANDELO_HOMEBREW_ARCH" in',
     "wasm32|wasm64) ;;",
     '[[ "$KANDELO_HOMEBREW_RELEASE_TAG" =~ ^bottles-abi-v[1-9][0-9]*$ ]]',
+    'kandelo_commit="$(git -C "$GITHUB_WORKSPACE/kandelo" rev-parse HEAD)"',
+    '--kandelo-commit "$kandelo_commit"',
+    '--exact-kandelo-main-sha "$kandelo_commit"',
   ].each do |fragment|
     check(record_run.include?(fragment), "maintenance rollback lacks #{fragment}")
   end
@@ -4414,6 +5547,65 @@ def self_test(publisher, maintenance, repository_canary)
       step = mutate_named_step(w, "plan", "Validate caller trust boundary")
       step.fetch("env")["CALLER_EVENT_NAME"] = "push"
     },
+    "write Kandelo source exact-ref validation bypass" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Validate caller trust boundary")
+      step["run"] = step.fetch("run").sub(
+        'validated_kandelo_ref="$(normalize_write_kandelo_ref "$KANDELO_REF")"',
+        'validated_kandelo_ref="$KANDELO_REF"'
+      )
+    },
+    "write wasm32 package generation omitted" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Validate caller trust boundary")
+      step.fetch("env")["PACKAGE_GENERATION_WASM32"] = ""
+    },
+    "write package generation architecture check bypass" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Validate caller trust boundary")
+      step["run"] = step.fetch("run").sub(
+        "normalize_package_generation wasm64 \"$PACKAGE_GENERATION_WASM64\"",
+        "printf '%s\\n' \"$PACKAGE_GENERATION_WASM64\""
+      )
+    },
+    "exact-main admission uses a commit lookup instead of protected main" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Admit exact Kandelo main source")
+      step["run"] = step.fetch("run").sub(
+        '"/repos/$KANDELO_REPOSITORY/git/ref/heads/main"',
+        '"/repos/$KANDELO_REPOSITORY/commits/$KANDELO_SHA"'
+      )
+    },
+    "exact-main identity comparison bypass" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Admit exact Kandelo main source")
+      step["run"] = step.fetch("run").sub(
+        '[ "$KANDELO_SHA" = "$current_main_sha" ]', "true"
+      )
+    },
+    "Kandelo checkout differs from admitted main" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Resolve source commits")
+      step["run"] = step.fetch("run").sub(
+        '[ "$kandelo_sha" != "$REQUESTED_KANDELO_SHA" ]', "false"
+      )
+    },
+    "write tap source exact-ref validation bypass" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Validate caller trust boundary")
+      step["run"] = step.fetch("run").sub(
+        'validated_tap_ref="$(normalize_write_tap_ref "$TAP_REF")"',
+        'validated_tap_ref="$TAP_REF"'
+      )
+    },
+    "write tap source selected from workflow execution head" => lambda { |w|
+      step = mutate_named_step(
+        w, "plan", "Bind write tap source to protected main history"
+      )
+      step.fetch("env")["REQUESTED_TAP_SHA"] = "${{ github.sha }}"
+    },
+    "protected-main tap ancestry bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "plan", "Bind write tap source to protected main history"
+      )
+      step["run"] = step.fetch("run").sub(
+        '"/repos/$TAP_REPOSITORY/compare/$TAP_SHA...main"',
+        '"/repos/$TAP_REPOSITORY/commits/$TAP_SHA"'
+      )
+    },
     "required VFS acceptance selection accepted as absent during planning" => lambda { |w|
       step = mutate_named_step(
         w, "plan", "Validate dependency-bearing VFS acceptance selection"
@@ -4486,6 +5678,38 @@ def self_test(publisher, maintenance, repository_canary)
     },
     "build authority escalation" => lambda { |w|
       w.fetch("jobs").fetch("build-and-test").fetch("permissions")["packages"] = "write"
+    },
+    "Formula generation activation skipped" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test", "Materialize exact-main Formula runtime packages"
+      )
+      step["if"] = "${{ false }}"
+    },
+    "Formula generation local resolver check bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test", "Materialize exact-main Formula runtime packages"
+      )
+      step["run"] = step.fetch("run").sub(
+        '[ "$index_url" = "$expected_index_url" ]', "true"
+      )
+    },
+    "browser generation omits wasm64" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Materialize exact-main browser runtime packages"
+      )
+      step["run"] = step.fetch("run").sub(
+        '--wasm64-tag "$PACKAGE_GENERATION_WASM64" \\',
+        ""
+      )
+    },
+    "browser generation activates mutable resolver" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Materialize exact-main browser runtime packages"
+      )
+      step["run"] = step.fetch("run").sub(
+        'echo "WASM_POSIX_BINARY_INDEX_URL=$index_url" >> "$GITHUB_ENV"',
+        'echo "WASM_POSIX_BINARY_INDEX_URL=https://example.invalid/index.toml" >> "$GITHUB_ENV"'
+      )
     },
     "uploader authority escalation" => lambda { |w|
       w.fetch("jobs").fetch("upload-bottle").fetch("permissions")["contents"] = "write"
@@ -4609,11 +5833,110 @@ def self_test(publisher, maintenance, repository_canary)
                                "Materialize Formula test platform runtime")
       step["run"] = step.fetch("run").sub("--fetch-only resolve", "resolve")
     },
+    "Formula test checker build bypass" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test",
+                               "Materialize Formula test platform runtime")
+      step["run"] = step.fetch("run").sub(
+        'cargo build --release -p xtask --target "$host" --quiet', "true"
+      )
+    },
+    "Formula test checker validation bypass" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test",
+                               "Materialize Formula test platform runtime")
+      step["run"] = step.fetch("run").sub('[ ! -L "$xtask" ]', "true")
+    },
+    "Formula test checker single-link seal bypass" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test",
+                               "Materialize Formula test platform runtime")
+      step["run"] = step.fetch("run").sub(
+        "bash scripts/seal-homebrew-formula-checker.sh",
+        'printf "%s\\n" "$xtask"'
+      )
+    },
+    "Formula test checker leaks job-wide" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test",
+                               "Materialize Formula test platform runtime")
+      step["run"] = step.fetch("run").sub("GITHUB_OUTPUT", "GITHUB_ENV")
+    },
+    "Formula test checker output substitution" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test",
+        "Build and test Homebrew bottle without publisher credentials"
+      )
+      step.fetch("env")["WASM_POSIX_XTASK_BIN"] = "/tmp/unreviewed-xtask"
+    },
+    "Formula test checker command forwarding bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test",
+        "Build and test Homebrew bottle without publisher credentials"
+      )
+      step["run"] = step.fetch("run").sub(
+        'WASM_POSIX_XTASK_BIN="$WASM_POSIX_XTASK_BIN"',
+        "WASM_POSIX_XTASK_BIN="
+      )
+    },
+    "Formula verification checker build bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Materialize Formula verification platform runtime"
+      )
+      step["run"] = step.fetch("run").sub(
+        'cargo build --release -p xtask --target "$host" --quiet', "true"
+      )
+    },
+    "Formula verification checker validation bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Materialize Formula verification platform runtime"
+      )
+      step["run"] = step.fetch("run").sub('[ ! -L "$xtask" ]', "true")
+    },
+    "Formula verification checker single-link seal bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Materialize Formula verification platform runtime"
+      )
+      step["run"] = step.fetch("run").sub(
+        "bash scripts/seal-homebrew-formula-checker.sh",
+        'printf "%s\\n" "$xtask"'
+      )
+    },
+    "Formula verification checker leaks job-wide" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Materialize Formula verification platform runtime"
+      )
+      step["run"] = step.fetch("run").sub("GITHUB_OUTPUT", "GITHUB_ENV")
+    },
+    "Formula verification checker output substitution" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle",
+        "Force-pour and test the exact selected bottle without credentials"
+      )
+      step.fetch("env")["WASM_POSIX_XTASK_BIN"] = "/tmp/unreviewed-xtask"
+    },
+    "Formula verification checker command forwarding bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle",
+        "Force-pour and test the exact selected bottle without credentials"
+      )
+      step["run"] = step.fetch("run").sub(
+        'WASM_POSIX_XTASK_BIN="$WASM_POSIX_XTASK_BIN"',
+        "WASM_POSIX_XTASK_BIN="
+      )
+    },
+    "Formula verification cache materialized before final browser package fetch" => lambda { |w|
+      steps = w.fetch("jobs").fetch("verify-bottle").fetch("steps")
+      browser_index = steps.index do |step|
+        step["name"] == "Prepare the supported interactive browser demo graph"
+      end
+      browser_step = steps.delete_at(browser_index)
+      runtime_index = steps.index do |step|
+        step["name"] == "Materialize Formula verification platform runtime"
+      end
+      steps.insert(runtime_index + 1, browser_step)
+    },
     "Formula test runtime cache-link materialization bypass" => lambda { |w|
       step = mutate_named_step(w, "build-and-test",
                                "Materialize Formula test platform runtime")
       step["run"] = step.fetch("run").sub(
-        'bash scripts/materialize-resolver-binaries.sh "$PWD/binaries"', "true"
+        '"$PWD/binaries" "$cache_root"', '"$PWD/binaries" "$PWD"'
       )
     },
     "fork-instrument host tool build bypass" => lambda { |w|
@@ -4816,6 +6139,10 @@ def self_test(publisher, maintenance, repository_canary)
       step = mutate_named_step(w, "upload-bottle", "Upload validated bottle in isolated ORAS auth state")
       step["run"] = step.fetch("run").sub("scripts/homebrew-ghcr-upload.sh", "oras push")
     },
+    "bottle upload exact-main recheck bypass" => lambda { |w|
+      step = mutate_named_step(w, "upload-bottle", "Upload validated bottle in isolated ORAS auth state")
+      step["run"] = step.fetch("run").sub("require-exact-kandelo-main.sh", "true")
+    },
     "credentialed uploader diagnostics" => lambda { |w|
       w.fetch("jobs").fetch("upload-bottle").fetch("steps") << {
         "name" => "Upload diagnostics", "uses" => UPLOAD_ACTION,
@@ -4872,6 +6199,13 @@ def self_test(publisher, maintenance, repository_canary)
         "Publish the complete Homebrew version index in isolated ORAS auth state"
       )
       step["run"] = step.fetch("run").sub("scripts/homebrew-ghcr-upload.sh", "oras push")
+    },
+    "version-index exact-main recheck bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "publish-bottle-index",
+        "Publish the complete Homebrew version index in isolated ORAS auth state"
+      )
+      step["run"] = step.fetch("run").sub("require-exact-kandelo-main.sh", "true")
     },
     "missing anonymous readback" => lambda { |w|
       step = mutate_named_step(w, "verify-bottle",
@@ -5083,6 +6417,24 @@ def self_test(publisher, maintenance, repository_canary)
                                "Record failed attempt without replacing last-green metadata")
       step["run"] = step.fetch("run").sub("tap-report", "tap-publish")
     },
+    "tap finalization exact-main recheck bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "finalize-tap", "Atomically compose and publish all sidecars under one tap state lock"
+      )
+      step["run"] = step.fetch("run").sub("require-exact-kandelo-main.sh", "true")
+    },
+    "failed-attempt exact-main recheck bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "finalize-tap", "Record failed attempt without replacing last-green metadata"
+      )
+      step["run"] = step.fetch("run").sub("require-exact-kandelo-main.sh", "true")
+    },
+    "VFS release exact-main recheck bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "publish-vfs-release", "Publish and anonymously read back the immutable VFS release"
+      )
+      step["run"] = step.fetch("run").sub("require-exact-kandelo-main.sh", "true")
+    },
     "raw failure stderr" => lambda { |w|
       step = mutate_named_step(w, "finalize-tap",
                                "Record failed attempt without replacing last-green metadata")
@@ -5118,8 +6470,26 @@ def self_test(publisher, maintenance, repository_canary)
       step = mutate_named_step(w, "validate", "Validate maintenance mode")
       step["run"] = "exit 0\n#{step.fetch('run')}"
     },
+    "maintenance exact tap source validation bypass" => lambda { |w|
+      step = mutate_named_step(w, "validate", "Validate maintenance mode")
+      step["run"] = step.fetch("run").sub(
+        '[[ "$TAP_REF" =~ ^[0-9a-f]{40}$ ]]', "true"
+      )
+    },
+    "maintenance exact Kandelo source validation bypass" => lambda { |w|
+      step = mutate_named_step(w, "validate", "Validate maintenance mode")
+      step["run"] = step.fetch("run").sub(
+        '[[ "$KANDELO_REF" =~ ^[0-9a-f]{40}$ ]]', "true"
+      )
+    },
     "maintenance rebuild validation bypass" => lambda { |w|
       w.fetch("jobs").fetch("rebuild").delete("needs")
+    },
+    "maintenance rebuild uses mutable tap source" => lambda { |w|
+      w.fetch("jobs").fetch("rebuild").fetch("with")["tap-ref"] = "main"
+    },
+    "maintenance rebuild uses mutable Kandelo source" => lambda { |w|
+      w.fetch("jobs").fetch("rebuild").fetch("with")["kandelo-ref"] = "main"
     },
     "maintenance repair mode" => lambda { |w|
       w.fetch("jobs").fetch("rebuild")["if"] =
@@ -5148,6 +6518,8 @@ begin
   self_test(publisher, maintenance, repository_canary)
   check_publisher(publisher)
   check_caller_validation_behavior(publisher)
+  check_kandelo_main_admission_behavior(publisher)
+  check_tap_source_binding_behavior(publisher)
   check_maintenance(maintenance)
   check_repository_canary(repository_canary)
   check_tap_callers
