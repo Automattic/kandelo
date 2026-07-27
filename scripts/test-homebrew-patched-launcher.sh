@@ -924,7 +924,7 @@ unsafe_tier2_empty="$TMPDIR/unsafe-tier2-empty.json"
 chmod 0600 "$unsafe_tier2_empty"
 expect_tier2_staging_rejection "$unsafe_tier2_empty" "empty"
 unsafe_tier2_oversize="$TMPDIR/unsafe-tier2-oversize.json"
-dd if=/dev/zero of="$unsafe_tier2_oversize" bs=16385 count=1 2>/dev/null
+dd if=/dev/zero of="$unsafe_tier2_oversize" bs=65537 count=1 2>/dev/null
 chmod 0600 "$unsafe_tier2_oversize"
 expect_tier2_staging_rejection "$unsafe_tier2_oversize" "oversized"
 if [ "$(id -u)" -ne 0 ] && [ -x /usr/bin/sudo ] &&
@@ -1706,7 +1706,7 @@ EOF
   dependency_plan_json='{"build":["cmake"],"build_and_test":["cmake","ninja"],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","native_requirements":[],"runtime_and_test":["ninja"],"schema":4,"tap":"kandelo-dev/tap-core","target_taps":[{"tap_commit":"1111111111111111111111111111111111111111","tap_name":"kandelo-dev/tap-core","tap_repository":"kandelo-dev/homebrew-tap-core"}]}'
   printf '%s\n' "$dependency_plan_json" >"$isolated_dependency_plan"
   chmod 0600 "$isolated_dependency_plan"
-  tier2_attestation_json='{"arch":"wasm32","formula":"hello","formula_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","full_name":"kandelo-dev/tap-core/hello","schema":3,"support_runtime_sha256":"1111111111111111111111111111111111111111111111111111111111111111","support_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tap":"kandelo-dev/tap-core","tap_recipe":{"dependencies":[],"entrypoint":"build.sh","file_count":1,"manifest_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","script_env_keys":[],"source_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","source_url":"https://example.test/hello-1.0.tar.gz","total_bytes":1,"version":"1.0"},"tier2_bridge":null}'
+  tier2_attestation_json='{"arch":"wasm32","formula":"hello","formula_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","full_name":"kandelo-dev/tap-core/hello","schema":3,"support_runtime_sha256":"1111111111111111111111111111111111111111111111111111111111111111","support_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tap":"kandelo-dev/tap-core","tap_recipe":{"dependencies":[],"entrypoint":"build.sh","file_count":1,"manifest_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","resources":[],"script_env_keys":[],"source_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","source_url":"https://example.test/hello-1.0.tar.gz","total_bytes":1,"version":"1.0"},"tier2_bridge":null}'
   printf '%s\n' "$tier2_attestation_json" >"$isolated_tier2_attestation"
   chmod 0600 "$isolated_tier2_attestation"
   mkdir "$isolated_kandelo/runner-control"
@@ -1866,6 +1866,13 @@ if /usr/bin/systemd-run --quiet --wait --pipe -- \
   exit 93
 fi
 [ "$(/usr/bin/cat "$WASM_POSIX_DEP_SOURCE_DIR/input.txt")" = "reviewed source" ]
+[ "$(/usr/bin/cat "$WASM_POSIX_DEP_RESOURCE_FIXTURE_DATA_DIR/payload.txt")" = \
+    "reviewed resource" ]
+if printf 'mutation\n' >>"$WASM_POSIX_DEP_RESOURCE_FIXTURE_DATA_DIR/payload.txt" \
+    2>/dev/null; then
+  echo "tap recipe changed a projected Formula resource" >&2
+  exit 95
+fi
 [ -r "$WASM_POSIX_DEP_RECIPE_DIR/recipe.json" ]
 [ -r "$WASM_POSIX_GLUE_DIR/abi_constants.h" ]
 [ -r "$WASM_POSIX_SYSROOT/lib/libc.a" ]
@@ -1914,6 +1921,11 @@ EOF
           entrypoint: "build.sh",
           file_count: $file_count,
           manifest_sha256: $manifest_sha256,
+          resources: [{
+            name: "fixture-data",
+            source_sha256: ("e" * 64),
+            source_url: "https://example.test/fixture-data-1.0.tar.gz"
+          }],
           script_env_keys: [],
           source_sha256: ("d" * 64),
           source_url: "https://example.test/hello-1.0.tar.gz",
@@ -2418,6 +2430,7 @@ EOF
 
   recipe_build_root="$isolated_temp/tap-recipe-canary"
   recipe_source_root="$recipe_build_root/kandelo-package-source"
+  recipe_resource_root="$recipe_build_root/kandelo-package-resources/fixture-data"
   recipe_work_root="$recipe_build_root/kandelo-package-work"
   recipe_output_root="$recipe_build_root/kandelo-package-out"
   recipe_request="$recipe_build_root/.kandelo-tap-recipe-request.json"
@@ -2427,10 +2440,14 @@ EOF
   # workflow user retaining accidental write access to Formula-owned state.
   /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
     /usr/bin/mkdir -p \
-      "$recipe_source_root" "$recipe_work_root" "$recipe_output_root"
+      "$recipe_source_root" "$recipe_resource_root" \
+      "$recipe_work_root" "$recipe_output_root"
   printf 'reviewed source\n' |
     /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
       /usr/bin/tee "$recipe_source_root/input.txt" >/dev/null
+  printf 'reviewed resource\n' |
+    /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+      /usr/bin/tee "$recipe_resource_root/payload.txt" >/dev/null
   recipe_config_json="$(
     /usr/bin/sudo -n -- /usr/bin/cat "$HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG"
   )"
@@ -2472,6 +2489,7 @@ EOF
       --arg platform_root "$(jq -r '.platform_alias_root' <<<"$recipe_config_json")" \
       --arg recipe_root "$(jq -r '.recipe_alias_root' <<<"$recipe_config_json")" \
       --arg recipe_user "$(jq -r '.recipe_user' <<<"$recipe_config_json")" \
+      --arg resource_root "$recipe_resource_root" \
       --arg source_root "$recipe_source_root" \
       --arg source_sha256 "$(jq -r '.source_sha256' <<<"$recipe_config_json")" \
       --arg source_url "$(jq -r '.source_url' <<<"$recipe_config_json")" \
@@ -2492,6 +2510,7 @@ EOF
           WASM_POSIX_DEP_NAME: "hello",
           WASM_POSIX_DEP_OUT_DIR: $output_root,
           WASM_POSIX_DEP_RECIPE_DIR: $recipe_root,
+          WASM_POSIX_DEP_RESOURCE_FIXTURE_DATA_DIR: "/kandelo/resources/fixture-data",
           WASM_POSIX_DEP_SOURCE_DIR: $source_root,
           WASM_POSIX_DEP_SOURCE_SHA256: $source_sha256,
           WASM_POSIX_DEP_SOURCE_URL: $source_url,
@@ -2515,6 +2534,9 @@ EOF
         output_root: $output_root,
         platform_root: $platform_root,
         recipe_root: $recipe_root,
+        resources: {
+          "fixture-data": $resource_root
+        },
         schema: 1,
         source_root: $source_root,
         sysroot: $sysroot,

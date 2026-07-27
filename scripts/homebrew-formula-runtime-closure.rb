@@ -14,9 +14,10 @@ end
 
 MAX_FORMULA_BYTES = 1_048_576
 MAX_DEPENDENCIES = 128
-MAX_TIER2_CONTROL_BYTES = 16_384
+MAX_TIER2_CONTROL_BYTES = 65_536
 MAX_SUPPORT_RUNTIME_FILES = 128
 MAX_SUPPORT_RUNTIME_BYTES = 16_777_216
+MAX_TAP_RECIPE_RESOURCES = 32
 FORMULA_NAME = /\A[a-z0-9][a-z0-9._-]*\z/
 HOST_FORMULA_NAME = /\A[a-z0-9][a-z0-9@+_.-]*\z/
 TAP_NAME = /\A[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\z/
@@ -389,7 +390,8 @@ validate_resource = lambda do |statement, lines, path|
   position = call_position.call(statement)
   line_number = position[0] if position.is_a?(Array)
   line = lines.fetch(line_number - 1) if line_number.is_a?(Integer)
-  unless line&.match?(/\A  resource "[A-Za-z0-9][A-Za-z0-9._+-]*" do\n\z/)
+  name_match = line&.match(/\A  resource "([A-Za-z0-9][A-Za-z0-9._+-]{0,127})" do\n\z/)
+  if name_match.nil?
     abort "Formula resource block must use a canonical literal name: #{path}"
   end
   command = statement[1]
@@ -398,6 +400,36 @@ validate_resource = lambda do |statement, lines, path|
     abort "Formula resource block name must be static: #{path}"
   end
   validate_static_block.call(statement, path, "resource", Set["mirror", "sha256", "url", "version"])
+
+  # Keep ordinary Formula resources permissive enough for static constants,
+  # but return an exact identity only when the resource uses canonical literal
+  # URL and checksum lines. Schema-3 recipes require that stronger form below.
+  end_index = (line_number...lines.length).find { |index| lines[index] == "  end\n" }
+  abort "Formula resource block is unterminated: #{path}" if end_index.nil?
+  source_url = nil
+  source_sha256 = nil
+  literal_identity = true
+  lines[line_number...end_index].each do |resource_line|
+    case resource_line
+    when /\A    url "(https:\/\/[A-Za-z0-9][A-Za-z0-9._~:\/?#\[\]@!$&'()*+,;=%-]{0,1015})"\n\z/
+      abort "Formula resource repeats url: #{path}" unless source_url.nil?
+      source_url = Regexp.last_match(1)
+    when /\A    sha256 "([0-9a-f]{64})"\n\z/
+      abort "Formula resource repeats sha256: #{path}" unless source_sha256.nil?
+      source_sha256 = Regexp.last_match(1)
+    when /\A    (?:mirror|version) /
+      # Mirrors and version remain part of the attested Formula bytes. They do
+      # not change the content identity selected by the required URL/checksum.
+    else
+      literal_identity = false
+    end
+  end
+  resource = { "name" => name_match[1] }
+  if literal_identity && !source_url.nil? && !source_sha256.nil?
+    resource["source_sha256"] = source_sha256
+    resource["source_url"] = source_url
+  end
+  resource
 end
 
 canonical_support_child = lambda do |node|
@@ -569,10 +601,33 @@ tap_recipe_arguments = lambda do |node, lines|
 
     association.dig(1, 1)
   end
-  next nil unless labels == ["manifest_sha256:", "script_env:"]
+  next nil unless [
+    ["manifest_sha256:", "script_env:"],
+    ["manifest_sha256:", "resources:", "script_env:"],
+  ].include?(labels)
 
   manifest_sha256 = canonical_literal_value.call(associations.first[2], lines)
   next nil unless manifest_sha256&.match?(TIER2_BRIDGE_SOURCE_SHA256)
+
+  resource_names = []
+  if labels.length == 3
+    resource_value = associations.fetch(1)[2]
+    next nil unless resource_value.is_a?(Array) && resource_value.first == :array
+
+    elements = resource_value[1]
+    resource_names = if elements.nil?
+      []
+    else
+      next nil unless elements.is_a?(Array)
+      parsed = elements.map do |element|
+        value = canonical_literal_value.call(element, lines)
+        break nil unless value&.match?(/\A[a-z0-9][a-z0-9._+-]{0,127}\z/)
+        value
+      end
+      next nil if parsed.nil?
+      parsed
+    end
+  end
 
   value = associations.last[2]
   next nil unless value.is_a?(Array) && value.first == :hash
@@ -595,6 +650,7 @@ tap_recipe_arguments = lambda do |node, lines|
 
   {
     "manifest_sha256" => manifest_sha256,
+    "resource_names" => resource_names,
     "script_env_keys" => keys,
   }
 end
@@ -1331,6 +1387,7 @@ parse_formula = lambda do |full_name|
   private_visibility = false
   included_support = false
   bottle = nil
+  formula_resources = []
   class_body.each do |statement|
     abort "Formula class contains a malformed statement: #{path}" unless statement.is_a?(Array)
     case statement.first
@@ -1366,7 +1423,7 @@ parse_formula = lambda do |full_name|
       elsif method == "on_macos"
         validate_static_block.call(statement, path, "on_macos", Set["keg_only"])
       elsif method == "resource"
-        validate_resource.call(statement, lines, path)
+        formula_resources << validate_resource.call(statement, lines, path)
       end
     when :def
       method_token = statement[1]
@@ -1527,8 +1584,9 @@ parse_formula = lambda do |full_name|
         recipe_arguments = tap_recipe_arguments.call(arguments.first, lines)
         keys = recipe_arguments&.fetch("script_env_keys", nil)
         if keys.nil? || keys.uniq.length != keys.length
-          abort "#{TAP_RECIPE_METHOD} must use a literal manifest SHA-256 followed by one " \
-                "literal script_env hash with unique literal keys: #{path}"
+          abort "#{TAP_RECIPE_METHOD} must use a literal manifest SHA-256, an optional " \
+                "literal resource-name array, and one script_env hash with unique literal " \
+                "keys: #{path}"
         end
         if keys.length > 64 || keys.sum(&:bytesize) > 4096
           abort "#{TAP_RECIPE_METHOD} script_env exceeds the static key limit: #{path}"
@@ -1546,6 +1604,7 @@ parse_formula = lambda do |full_name|
         end
         recipe_calls << {
           "manifest_sha256" => recipe_arguments.fetch("manifest_sha256"),
+          "resource_names" => recipe_arguments.fetch("resource_names"),
           "script_env_keys" => keys.sort,
           "position" => node.dig(1, 1, 2),
         }
@@ -1688,8 +1747,43 @@ parse_formula = lambda do |full_name|
     unless sha256_value&.match?(TIER2_BRIDGE_SOURCE_SHA256)
       abort "tap-recipe Formula must declare one canonical literal class source SHA-256: #{path}"
     end
+    selected_resource_names = recipe_calls.first.fetch("resource_names")
+    unless selected_resource_names == selected_resource_names.sort.uniq &&
+           selected_resource_names.length <= MAX_TAP_RECIPE_RESOURCES
+      abort "tap-recipe Formula resource selection must be sorted and unique: #{path}"
+    end
+    resource_names = formula_resources.map { |resource| resource.fetch("name") }
+    if resource_names.uniq.length != resource_names.length
+      abort "tap-recipe Formula repeats a resource name: #{path}"
+    end
+    available_resources = formula_resources.filter_map do |resource|
+      next unless resource.key?("source_sha256") && resource.key?("source_url")
+
+      [resource.fetch("name"), resource]
+    end.to_h
+    missing_resources = selected_resource_names - available_resources.keys
+    unless missing_resources.empty?
+      abort "tap-recipe Formula selects resources without canonical literal URL and SHA-256 " \
+            "declarations #{missing_resources.inspect}: #{path}"
+    end
+    selected_resources = selected_resource_names.map do |resource_name|
+      available_resources.fetch(resource_name)
+    end
+    resource_env_keys = selected_resource_names.map do |resource_name|
+      "WASM_POSIX_DEP_RESOURCE_#{resource_name.upcase.gsub(/[^A-Z0-9]/, "_")}_DIR"
+    end
+    unless resource_env_keys == resource_env_keys.uniq
+      abort "tap-recipe Formula resource names collide in their environment keys: #{path}"
+    end
+    reserved_resource_keys =
+      recipe_calls.first.fetch("script_env_keys") & resource_env_keys
+    unless reserved_resource_keys.empty?
+      abort "#{TAP_RECIPE_METHOD} script_env overrides resource variables " \
+            "#{reserved_resource_keys.sort.inspect}: #{path}"
+    end
     tap_recipe = {
       "manifest_sha256" => recipe_calls.first.fetch("manifest_sha256"),
+      "resources" => selected_resources,
       "script_env_keys" => recipe_calls.first.fetch("script_env_keys"),
       "source_sha256" => sha256_value,
       "source_url" => url_value,
@@ -1816,13 +1910,27 @@ parse_formula = lambda do |full_name|
     }
   end
   unless tap_recipe.nil?
-    tap_recipe["declared_dependencies"] = declarations.filter_map do |declaration|
+    declared_dependencies = declarations.filter_map do |declaration|
       next unless declaration.fetch("requirement_class").nil?
       next unless [Set.new, Set[:recommended]].include?(declaration.fetch("tags"))
 
       dependency = declaration.fetch("name")
       dependency if dependency.include?("/")
     end.sort
+    tap_recipe["declared_dependencies"] = declared_dependencies
+    dependency_env_keys = declared_dependencies.map do |dependency|
+      short_name = dependency.rpartition("/").last
+      "WASM_POSIX_DEP_#{short_name.upcase.gsub(/[^A-Z0-9]/, "_")}_DIR"
+    end
+    resource_env_keys = tap_recipe.fetch("resources").map do |resource|
+      resource_name = resource.fetch("name")
+      "WASM_POSIX_DEP_RESOURCE_#{resource_name.upcase.gsub(/[^A-Z0-9]/, "_")}_DIR"
+    end
+    dependency_resource_collisions = dependency_env_keys & resource_env_keys
+    unless dependency_resource_collisions.empty?
+      abort "tap-recipe Formula dependencies collide with resource variables " \
+            "#{dependency_resource_collisions.sort.inspect}: #{path}"
+    end
   end
   formula_tier2_bridges[full_name] = {
     "formula_sha256" => Digest::SHA256.hexdigest(source),

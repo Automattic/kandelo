@@ -35,9 +35,14 @@ MAX_MESSAGE_BYTES = 8_192
 MAX_RECIPE_MANIFEST_BYTES = 65_536
 MAX_RECIPE_FILES = 512
 MAX_DEPENDENCY_KEGS = 512
+MAX_RESOURCES = 32
 MAX_RECIPE_FILE_BYTES = 16_777_216
 MAX_RECIPE_BYTES = 67_108_864
 MAX_RECIPE_LOG_BYTES = 33_554_432
+MAX_RESOURCE_ENTRIES = 65_536
+MAX_RESOURCE_FILE_BYTES = 268_435_456
+MAX_RESOURCE_BYTES = 1_073_741_824
+MAX_RESOURCE_PATH_BYTES = 4_096
 # Linux reserves one trailing NUL in sockaddr_un.sun_path, leaving 107 bytes
 # for a pathname. The protected build identity intentionally retains all 64
 # digest characters, so the control socket uses the shortest meaningful name.
@@ -74,6 +79,7 @@ CONFIG_KEYS = {
     "recipe_host_root",
     "recipe_uid",
     "recipe_user",
+    "resources",
     "script_env_keys",
     "sealed_root",
     "slice",
@@ -97,6 +103,7 @@ REQUEST_KEYS = {
     "output_root",
     "platform_root",
     "recipe_root",
+    "resources",
     "schema",
     "source_root",
     "sysroot",
@@ -115,6 +122,11 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 UNIT_RE = re.compile(r"^kandelo-homebrew-build-[0-9]+$")
 SLICE_RE = re.compile(r"^kandelo-homebrew-build-[0-9]+[.]slice$")
 VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+,-]{0,254}$")
+RESOURCE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._+-]{0,127}$")
+ResourceStagingIdentity = tuple[
+    tuple[int, ...],
+    dict[str, tuple[int, ...]],
+]
 SAFE_FIXED_ENV_KEYS = {
     "ACLOCAL_PATH",
     "AR",
@@ -769,6 +781,37 @@ def validate_config(path: Path) -> dict[str, Any]:
         fail("recipe runner config repeats a native Formula role")
     if not all(ENV_KEY_RE.fullmatch(item) for item in config["script_env_keys"]):
         fail("recipe runner config has an invalid script environment key")
+    resources = config["resources"]
+    if type(resources) is not list or len(resources) > MAX_RESOURCES:
+        fail("recipe runner config has invalid resources")
+    resource_names: list[str] = []
+    for resource in resources:
+        if (
+            type(resource) is not dict
+            or set(resource) != {"name", "source_sha256", "source_url"}
+            or type(resource["name"]) is not str
+            or not RESOURCE_NAME_RE.fullmatch(resource["name"])
+            or type(resource["source_sha256"]) is not str
+            or not SHA256_RE.fullmatch(resource["source_sha256"])
+            or type(resource["source_url"]) is not str
+            or not resource["source_url"].startswith("https://")
+            or not safe_text(resource["source_url"])
+            or len(resource["source_url"].encode("utf-8")) > 1_024
+        ):
+            fail("recipe runner config has an invalid resource identity")
+        resource_names.append(resource["name"])
+    if resource_names != sorted(resource_names):
+        fail("recipe runner config resources are not canonical")
+    resource_keys = [resource_env_key(name) for name in resource_names]
+    if (
+        len(resource_names) != len(set(resource_names))
+        or len(resource_keys) != len(set(resource_keys))
+        or set(resource_keys) & set(config["script_env_keys"])
+    ):
+        fail("recipe runner config has colliding resource identities")
+    reject_dependency_resource_env_collisions(
+        config["dependencies"], resource_names
+    )
     if type(config["slice"]) is not str or not SLICE_RE.fullmatch(config["slice"]):
         fail("recipe runner config has an invalid systemd slice")
     if not isinstance(config["unit_prefix"], str) or not UNIT_RE.fullmatch(
@@ -890,6 +933,108 @@ def canonical_requested_path(value: Any, *, label: str) -> Path:
 def dependency_env_key(full_name: str) -> str:
     short = full_name.rpartition("/")[2]
     return "WASM_POSIX_DEP_" + re.sub(r"[^A-Z0-9]", "_", short.upper()) + "_DIR"
+
+
+def resource_env_key(name: str) -> str:
+    return (
+        "WASM_POSIX_DEP_RESOURCE_"
+        + re.sub(r"[^A-Z0-9]", "_", name.upper())
+        + "_DIR"
+    )
+
+
+def resource_guest_root(name: str) -> Path:
+    return Path("/kandelo/resources") / name
+
+
+def reject_dependency_resource_env_collisions(
+    dependencies: list[str],
+    resource_names: list[str],
+) -> None:
+    dependency_keys = {dependency_env_key(name) for name in dependencies}
+    resource_keys = {resource_env_key(name) for name in resource_names}
+    collisions = sorted(dependency_keys & resource_keys)
+    if collisions:
+        fail(
+            "tap recipe dependency and resource paths collide: "
+            f"{collisions!r}"
+        )
+
+
+def validate_requested_resources(
+    request: dict[str, Any],
+    config: dict[str, Any],
+    build_root: Path,
+) -> dict[str, Path]:
+    supplied = request["resources"]
+    expected_names = [resource["name"] for resource in config["resources"]]
+    if (
+        type(supplied) is not dict
+        or not all(
+            type(name) is str and type(path) is str
+            for name, path in supplied.items()
+        )
+        or sorted(supplied) != expected_names
+    ):
+        fail("tap recipe request has the wrong resources")
+
+    resource_root = build_root / "kandelo-package-resources"
+    if not expected_names:
+        if resource_root.exists() or resource_root.is_symlink():
+            fail("resource staging root exists without an attested resource")
+        return {}
+
+    canonical_real_directory(
+        resource_root,
+        label="Formula resource staging root",
+        owner_uid=config["build_uid"],
+    )
+    actual_names = sorted(entry.name for entry in resource_root.iterdir())
+    if actual_names != expected_names:
+        fail("Formula resource staging root has missing or extra resources")
+
+    selected: dict[str, Path] = {}
+    for name in expected_names:
+        expected = resource_root / name
+        supplied_path = canonical_requested_path(
+            supplied[name], label=f"Formula resource {name}"
+        )
+        if supplied_path != expected:
+            fail(f"Formula resource {name} left the reserved staging layout")
+        canonical_real_directory(
+            expected,
+            label=f"Formula resource {name}",
+            owner_uid=config["build_uid"],
+        )
+        selected[name] = expected
+    return selected
+
+
+def capture_resource_staging_identity(
+    build_root: Path,
+    resources: dict[str, Path],
+) -> ResourceStagingIdentity | None:
+    if not resources:
+        return None
+    resource_root = build_root / "kandelo-package-resources"
+    try:
+        root_identity = file_identity(resource_root.lstat())
+        child_identities = {
+            name: file_identity(path.lstat())
+            for name, path in sorted(resources.items())
+        }
+    except OSError as error:
+        fail(f"Formula resource staging identity is unavailable: {error}")
+    return root_identity, child_identities
+
+
+def require_resource_staging_identity(
+    build_root: Path,
+    resources: dict[str, Path],
+    expected: ResourceStagingIdentity | None,
+) -> None:
+    if capture_resource_staging_identity(build_root, resources) != expected:
+        fail("Formula resource staging identity changed")
 
 
 def versioned_keg_roots(cellar: Path, formulae: list[str], label: str) -> dict[str, Path]:
@@ -1046,10 +1191,15 @@ def validate_environment(
         fail("recipe environment exceeds its total byte limit")
 
     dependency_keys = set(dependencies)
+    resource_keys = {
+        resource_env_key(resource["name"])
+        for resource in config["resources"]
+    }
     allowed = (
         SAFE_FIXED_ENV_KEYS
         | HELPER_ENV_KEYS
         | dependency_keys
+        | resource_keys
         | set(config["script_env_keys"])
     )
     unexpected = sorted(set(environment) - allowed)
@@ -1074,7 +1224,7 @@ def validate_environment(
         "WASM_POSIX_INSTALL_LOCAL_MIRROR",
         "WASM_POSIX_LLVM_DIR",
         "WASM_POSIX_SYSROOT",
-    } | dependency_keys | set(config["script_env_keys"])
+    } | dependency_keys | resource_keys | set(config["script_env_keys"])
     missing = sorted(required - set(environment))
     if missing:
         fail(f"recipe environment omits required keys: {missing!r}")
@@ -1101,6 +1251,9 @@ def validate_environment(
     }
     for key, value in dependencies.items():
         expected[key] = str(value)
+    for resource in config["resources"]:
+        name = resource["name"]
+        expected[resource_env_key(name)] = str(resource_guest_root(name))
     for key, value in expected.items():
         if environment.get(key) != value:
             fail(f"recipe environment has the wrong protected value: {key}")
@@ -1148,6 +1301,8 @@ def validate_request(
     dict[str, Any],
     bytes,
     dict[str, Path],
+    dict[str, Path],
+    ResourceStagingIdentity | None,
     list[Path],
     list[Path],
     list[tuple[Path, Path]],
@@ -1233,6 +1388,10 @@ def validate_request(
     for key in ("work_root", "output_root"):
         if any(request[key].iterdir()):
             fail(f"{key} must be empty before recipe execution")
+    resources = validate_requested_resources(request, config, build_root)
+    resource_staging_identity = capture_resource_staging_identity(
+        build_root, resources
+    )
 
     expected_dependency_names = config["dependencies"]
     expected_dependency_keys = {
@@ -1330,6 +1489,8 @@ def validate_request(
         request,
         data,
         dependencies,
+        resources,
+        resource_staging_identity,
         native_roots,
         requirement_roots,
         dependency_binds,
@@ -1691,7 +1852,13 @@ def stage_recipe(
         os.close(source_fd)
 
 
-def copy_input_tree(source: Path, destination: Path, limits: dict[str, int]) -> None:
+def copy_input_tree(
+    source: Path,
+    destination: Path,
+    limits: dict[str, int],
+    *,
+    expected_root_identity: tuple[int, ...] | None = None,
+) -> tuple[int, int]:
     destination.mkdir(mode=0o700)
     entries = 0
     total_bytes = 0
@@ -1705,9 +1872,23 @@ def copy_input_tree(source: Path, destination: Path, limits: dict[str, int]) -> 
     source_fd = os.open(source, directory_flags)
     destination_fd = os.open(destination, directory_flags)
     root_stat = os.fstat(source_fd)
-    pending: list[tuple[int, int, str]] = [(source_fd, destination_fd, "")]
+    if (
+        expected_root_identity is not None
+        and file_identity(root_stat) != expected_root_identity
+    ):
+        os.close(source_fd)
+        os.close(destination_fd)
+        fail("source root identity changed before copy")
+    pending: list[tuple[int, int, str, os.stat_result]] = [
+        (source_fd, destination_fd, "", root_stat)
+    ]
     while pending:
-        current_source_fd, current_destination_fd, relative_dir = pending.pop()
+        (
+            current_source_fd,
+            current_destination_fd,
+            relative_dir,
+            expected_directory,
+        ) = pending.pop()
         try:
             try:
                 names = os.listdir(current_source_fd)
@@ -1737,7 +1918,12 @@ def copy_input_tree(source: Path, destination: Path, limits: dict[str, int]) -> 
                     )
                     os.fchown(child_destination_fd, 0, 0)
                     pending.append(
-                        (child_source_fd, child_destination_fd, relative)
+                        (
+                            child_source_fd,
+                            child_destination_fd,
+                            relative,
+                            before,
+                        )
                     )
                 elif stat.S_ISREG(before.st_mode):
                     if (
@@ -1823,6 +2009,10 @@ def copy_input_tree(source: Path, destination: Path, limits: dict[str, int]) -> 
             os.fchown(current_destination_fd, 0, 0)
             os.fchmod(current_destination_fd, 0o555)
             os.fsync(current_destination_fd)
+            if file_identity(os.fstat(current_source_fd)) != file_identity(
+                expected_directory
+            ):
+                fail(f"source directory changed while copied: {relative_dir or '.'}")
         finally:
             os.close(current_source_fd)
             os.close(current_destination_fd)
@@ -1831,9 +2021,21 @@ def copy_input_tree(source: Path, destination: Path, limits: dict[str, int]) -> 
             # descriptors into the long-lived root supervisor.
             if sys.exc_info()[0] is not None:
                 while pending:
-                    pending_source_fd, pending_destination_fd, _ = pending.pop()
+                    (
+                        pending_source_fd,
+                        pending_destination_fd,
+                        _,
+                        _,
+                    ) = pending.pop()
                     os.close(pending_source_fd)
                     os.close(pending_destination_fd)
+    try:
+        final_source = source.lstat()
+    except OSError as error:
+        fail(f"source root disappeared after copy: {error}")
+    if file_identity(final_source) != file_identity(root_stat):
+        fail("source root changed while copied")
+    return entries, total_bytes
 
 
 def seal_output_tree(
@@ -2168,6 +2370,8 @@ def run_recipe(
     request: dict[str, Any],
     config: dict[str, Any],
     dependencies: dict[str, Path],
+    resources: dict[str, Path],
+    resource_staging_identity: ResourceStagingIdentity | None,
     native_roots: list[Path],
     requirement_roots: list[Path],
     dependency_binds: list[tuple[Path, Path]],
@@ -2178,11 +2382,55 @@ def run_recipe(
         fail("recipe execution root already exists")
     execution_root.mkdir(mode=0o700)
     source_root = execution_root / "source"
+    resource_root = execution_root / "resources"
     work_root = execution_root / "work"
     output_root = execution_root / "output"
     service_root = execution_root / "root"
     try:
         copy_input_tree(request["source_root"], source_root, request["limits"])
+        resource_binds: list[tuple[Path, Path]] = []
+        if resources:
+            build_root = request["source_root"].parent
+            require_resource_staging_identity(
+                build_root, resources, resource_staging_identity
+            )
+            resource_root.mkdir(mode=0o700)
+            copied_entries = 0
+            copied_bytes = 0
+            for name, source in sorted(resources.items()):
+                remaining_limits = {
+                    "max_entries": MAX_RESOURCE_ENTRIES - copied_entries,
+                    "max_file_bytes": MAX_RESOURCE_FILE_BYTES,
+                    "max_bytes": MAX_RESOURCE_BYTES - copied_bytes,
+                    "max_path_bytes": MAX_RESOURCE_PATH_BYTES,
+                }
+                if (
+                    remaining_limits["max_entries"] < 0
+                    or remaining_limits["max_bytes"] < 0
+                ):
+                    fail("Formula resources exceed their aggregate limits")
+                entries, total = copy_input_tree(
+                    source,
+                    resource_root / name,
+                    remaining_limits,
+                    expected_root_identity=resource_staging_identity[1][name],
+                )
+                copied_entries += entries
+                copied_bytes += total
+                resource_binds.append(
+                    (resource_root / name, resource_guest_root(name))
+                )
+            os.chown(resource_root, 0, 0)
+            os.chmod(resource_root, 0o555)
+            # Recheck the Formula-owned staging root after every resource has
+            # been copied so late additions, removals, or root replacement do
+            # not silently escape the attested resource set.
+            validate_requested_resources(
+                request, config, request["source_root"].parent
+            )
+            require_resource_staging_identity(
+                build_root, resources, resource_staging_identity
+            )
         work_root.mkdir(mode=0o700)
         output_root.mkdir(mode=0o755)
         os.chmod(output_root, 0o755)
@@ -2202,6 +2450,7 @@ def run_recipe(
             (config["passwd_file"], Path("/etc/passwd")),
             (config["group_file"], Path("/etc/group")),
             *dependency_binds,
+            *resource_binds,
         ]
         readwrite_binds = [
             (work_root, request["work_root"]),
@@ -2384,6 +2633,8 @@ def process_request(
             request,
             request_bytes,
             dependencies,
+            resources,
+            resource_staging_identity,
             native_roots,
             requirement_roots,
             dependency_binds,
@@ -2393,6 +2644,8 @@ def process_request(
             request,
             config,
             dependencies,
+            resources,
+            resource_staging_identity,
             native_roots,
             requirement_roots,
             dependency_binds,

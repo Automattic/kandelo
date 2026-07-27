@@ -338,7 +338,7 @@ if ! jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
     else
       keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tap_recipe", "tier2_bridge"] and
       .tier2_bridge == null and .support_sha256 != null and
-      (.tap_recipe | keys == ["dependencies", "entrypoint", "file_count", "manifest_sha256", "script_env_keys", "source_sha256", "source_url", "total_bytes", "version"]) and
+      (.tap_recipe | keys == ["dependencies", "entrypoint", "file_count", "manifest_sha256", "resources", "script_env_keys", "source_sha256", "source_url", "total_bytes", "version"]) and
       (.tap_recipe.dependencies | type == "array" and . == (sort | unique) and
         length <= 128 and all(.[]; type == "string" and
           test("^[a-z0-9._-]+/[a-z0-9._-]+/[a-z0-9][a-z0-9._-]{0,254}$"))) and
@@ -348,9 +348,29 @@ if ! jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
       (.tap_recipe.total_bytes | type == "number" and . >= 0 and . <= 67108864 and floor == .) and
       (.tap_recipe.manifest_sha256 | sha256) and
       (.tap_recipe.source_sha256 | sha256) and
+      (.tap_recipe.resources | type == "array" and
+        . == (sort_by(.name) | unique_by(.name)) and
+        length <= 32 and all(.[];
+          keys == ["name", "source_sha256", "source_url"] and
+          (.name | type == "string" and test("^[a-z0-9][a-z0-9._+-]{0,127}$")) and
+          (.source_sha256 | sha256) and
+          (.source_url | type == "string" and length >= 9 and length <= 1024 and
+            startswith("https://")))) and
       (.tap_recipe.script_env_keys | type == "array" and
         . == (sort | unique) and length <= 64 and
         (map(length) | add // 0) <= 4096) and
+      ((.tap_recipe.dependencies |
+          map(split("/")[-1] | ascii_upcase | gsub("[^A-Z0-9]"; "_") |
+            "WASM_POSIX_DEP_" + . + "_DIR")) as $dependency_keys |
+        (.tap_recipe.resources |
+          map(.name | ascii_upcase | gsub("[^A-Z0-9]"; "_") |
+            "WASM_POSIX_DEP_RESOURCE_" + . + "_DIR")) as $resource_keys |
+        .tap_recipe.script_env_keys as $script_env_keys |
+        (($resource_keys | length) == ($resource_keys | unique | length)) and
+        ([$dependency_keys[] |
+          select(. as $key | $resource_keys | index($key))] | length == 0) and
+        ([$resource_keys[] |
+          select(. as $key | $script_env_keys | index($key))] | length == 0)) and
       (.tap_recipe.source_url | type == "string" and startswith("https://")) and
       (.tap_recipe.version | type == "string" and length > 0)
     end

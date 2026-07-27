@@ -482,11 +482,17 @@ class Example < Formula
   version "1.0"
   sha256 "..."
 
+  resource "fixture-data" do
+    url "https://example.test/fixture-data-1.0.tar.gz"
+    sha256 "..."
+  end
+
   depends_on "kandelo-dev/tap-core/zlib"
 
   def install
     out_dir = kandelo_build_tap_recipe(
       manifest_sha256: "...",
+      resources: ["fixture-data"],
       script_env: {
         "EXAMPLE_FEATURE" => "enabled",
       },
@@ -497,12 +503,15 @@ end
 ```
 
 The call must be the direct right-hand side of one local assignment in
-`install`; the marker, literal manifest SHA-256, literal environment keys,
-source URL/version/SHA-256, and target dependency declarations are parsed
-without evaluating Formula Ruby. The manifest dependency list must exactly
+`install`; the marker, literal manifest SHA-256, sorted literal resource-name
+array, literal environment keys, source URL/version/SHA-256, and target
+dependency declarations are parsed without evaluating Formula Ruby. Every
+selected resource must have one canonical literal `resource` block with an
+HTTPS URL and SHA-256. Resources declared only for `test do` remain unselected
+and are not exposed to the build. The manifest dependency list must exactly
 equal the Formula's selected direct target dependency list. Environment keys
 are bounded, Formula-namespaced, and may not replace helper-owned source,
-recipe, dependency, work, or output values.
+recipe, dependency, resource, work, or output values.
 
 Before Formula evaluation, the Rust preflight independently reads the exact
 tap root, validates every manifest entry and filesystem node, and emits a
@@ -511,6 +520,34 @@ helper moves that staged source below `WASM_POSIX_DEP_SOURCE_DIR`. It derives
 each `WASM_POSIX_DEP_<NAME>_DIR` from the exact poured Homebrew keg and exposes
 separate caller-owned `WASM_POSIX_DEP_WORK_DIR` and
 `WASM_POSIX_DEP_OUT_DIR` roots. `WASM_POSIX_DEP_RECIPE_DIR` is read-only.
+
+Selected Homebrew resources use the same closed authority path. The publisher
+binds each resource's literal URL and SHA-256 into the schema-3 attestation.
+The Formula helper verifies that identity against Homebrew's selected resource,
+stages it only below the fixed
+`kandelo-package-resources/<resource-name>` layout, and sends no
+Formula-selected absolute path to the privileged runner. The runner requires
+the exact attested set, rejects missing or extra children, snapshots each tree
+while checking directory and file identity, and mounts the copy read-only at
+`/kandelo/resources/<resource-name>`. The recipe receives that path through
+`WASM_POSIX_DEP_RESOURCE_<NORMALIZED_NAME>_DIR`.
+
+A recipe may select at most 32 resources. Resource names are at most 128 ASCII
+characters, URLs are at most 1 KiB, and the combined staged trees are limited
+to 65,536 entries and 1 GiB, with a 256 MiB per-file and 4 KiB path limit.
+Contained relative symlinks are preserved; a symlink that escapes its resource
+tree, source replacement, concurrent mutation, or name-to-environment
+collision fails publication. These projections exist only during the bottle
+build and do not change Node or browser runtime semantics.
+
+The attestation records content provenance, not licensing policy. The Formula's
+`license` declaration must still accurately describe the distributed payload.
+When resource code or data is incorporated into that payload, its license must
+be represented and required license or notice files must be installed as the
+upstream terms require. A build-only resource that contributes no distributed
+bytes still needs reviewable provenance and compliant build use. Do not use a
+resource projection to hide generated or vendored inputs whose origin and
+license are not reviewable.
 
 Tap recipes retain the Kandelo SDK, sysroot, and fork instrumenter as platform
 tooling, but they do not receive registry authority. The isolated publisher
@@ -540,14 +577,14 @@ Formula then installs only that returned tree into its keg.
 The Formula process does not run the recipe directly. It sends one bounded,
 canonical request to a root-owned supervisor that authenticates the Formula
 user through Unix-socket peer credentials. The supervisor copies verified
-source into a fresh immutable tree and starts the recipe as a third,
-recipe-only user. That transient service uses `RootDirectory=` with an empty
-root-owned skeleton: only the copied source, closed recipe, projected Kandelo
-tooling, sysroot, complete sealed dependency closure, exact immutable Nix
-runtime closure, ordinary system runtime directories, and private work/output
-roots are mounted into it. The Nix closure is queried before service entry and
-projected as individual content-addressed store roots; the whole Nix store is
-not exposed.
+source and selected resources into fresh immutable trees and starts the recipe
+as a third, recipe-only user. That transient service uses `RootDirectory=` with
+an empty root-owned skeleton: only the copied source, closed recipe, projected
+Kandelo tooling, selected resource snapshots, sysroot, complete sealed dependency
+closure, exact immutable Nix runtime closure, ordinary system runtime
+directories, and private work/output roots are mounted into it. The Nix
+closure is queried before service entry and projected as individual
+content-addressed store roots; the whole Nix store is not exposed.
 
 The supervisor implementation is admitted only from the exact root-owned,
 manifest-sealed Kandelo tooling projection. The launcher records that source's

@@ -454,6 +454,7 @@ homebrew_patched_launcher_prepare_recipe_runner() {
         recipe_host_root: $recipe_host_root,
         recipe_uid: $recipe_uid,
         recipe_user: $recipe_user,
+        resources: $a.tap_recipe.resources,
         script_env_keys: $a.tap_recipe.script_env_keys,
         sealed_root: $sealed_root,
         slice: $slice,
@@ -941,7 +942,7 @@ homebrew_patched_launcher_stage_tier2_attestation() {
     return 2
   fi
   homebrew_patched_launcher_stage_control_file tier2_attestation "$1" \
-    .kandelo-publisher-tier2-attestation.json 16384 "Tier-2 attestation" || return
+    .kandelo-publisher-tier2-attestation.json 65536 "Tier-2 attestation" || return
   HOMEBREW_PATCHED_TIER2_ATTESTATION="${HOMEBREW_PATCHED_CONTROL_FILE_PATH[tier2_attestation]}"
   HOMEBREW_PATCHED_TIER2_ATTESTATION_SHA256="${HOMEBREW_PATCHED_CONTROL_FILE_SHA256[tier2_attestation]}"
   HOMEBREW_PATCHED_TIER2_ATTESTATION_STATE="${HOMEBREW_PATCHED_CONTROL_FILE_STATE[tier2_attestation]}"
