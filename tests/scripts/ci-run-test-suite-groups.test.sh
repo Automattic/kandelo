@@ -14,6 +14,7 @@ mkdir -p \
     "$FIXTURE/examples" \
     "$FIXTURE/benchmarks/wasm" \
     "$FIXTURE/apps/browser-demos" \
+    "$FIXTURE/apps/browser-demos/public" \
     "$FIXTURE/bin"
 cp \
     "$REPO_ROOT/scripts/ci-run-test-suite.sh" \
@@ -28,6 +29,30 @@ EOF
 
 cat > "$FIXTURE/bin/npx" <<'EOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = "tsx" ] &&
+    [ "${2:-}" = "scripts/recover-homebrew-bottle-mirror.ts" ]; then
+    printf '%s\n' "$*" > "$RECOVERY_CAPTURE"
+    shift 2
+    out=""
+    report=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --image) shift 2 ;;
+            --out) out="$2"; shift 2 ;;
+            --report) report="$2"; shift 2 ;;
+            *) exit 2 ;;
+        esac
+    done
+    mkdir -p "$out"
+    printf '{}\n' > "$out/kandelo-homebrew-bottle-mirror-plan.json"
+    printf '{}\n' > "$report"
+    exit 0
+fi
+if [ "${1:-}" = "playwright" ] && [ "${2:-}" = "test" ] &&
+    [ -n "${CLOSED_ROOT_CAPTURE:-}" ]; then
+    printf '%s\n' "${VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT:-}" \
+        >> "$CLOSED_ROOT_CAPTURE"
+fi
 exit 0
 EOF
 
@@ -61,6 +86,12 @@ cat > "$FIXTURE/scripts/ci-check-browser-assets.sh" <<'EOF'
 exit 0
 EOF
 
+cat > "$FIXTURE/scripts/resolve-binary.sh" <<'EOF'
+#!/usr/bin/env bash
+[ "$#" -eq 1 ] && [ "$1" = "programs/shell.vfs.zst" ] || exit 2
+printf '%s\n' "$FIXTURE_SHELL_IMAGE"
+EOF
+
 cat > "$FIXTURE/scripts/materialize-ci-publication-blockers.sh" <<'EOF'
 #!/usr/bin/env bash
 printf 'materialized\n' > "$BLOCKER_CAPTURE"
@@ -86,6 +117,7 @@ chmod +x \
     "$FIXTURE/bin/uname" \
     "$FIXTURE/run.sh" \
     "$FIXTURE/scripts/ci-check-browser-assets.sh" \
+    "$FIXTURE/scripts/resolve-binary.sh" \
     "$FIXTURE/scripts/materialize-ci-publication-blockers.sh"
 
 run_group() {
@@ -124,14 +156,53 @@ grep -Fq "unknown libc test group: invalid" "$TMP_DIR/invalid.out"
 
 browser_capture="$TMP_DIR/browser-run.args"
 blocker_capture="$TMP_DIR/browser-blockers"
+recovery_capture="$TMP_DIR/browser-recovery.args"
+closed_root_capture="$TMP_DIR/browser-closed-root"
+fixture_shell_image="$TMP_DIR/shell.vfs.zst"
+runner_temp="$TMP_DIR/runner"
+printf 'shell image\n' > "$fixture_shell_image"
+mkdir "$runner_temp"
+cat > "$FIXTURE/.ci-test-publication-blockers.json" <<'EOF'
+{"entries":[{"package":"shell"}]}
+EOF
 PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
     BLOCKER_CAPTURE="$blocker_capture" \
+    RECOVERY_CAPTURE="$recovery_capture" \
+    CLOSED_ROOT_CAPTURE="$closed_root_capture" \
+    FIXTURE_SHELL_IMAGE="$fixture_shell_image" \
+    RUNNER_TEMP="$runner_temp" \
     PREPARE_BROWSER_ASSETS=true \
     bash "$FIXTURE/scripts/ci-run-test-suite.sh" browser
 grep -Fxq materialized "$blocker_capture"
 grep -Fxq -- \
     "--already-materialized --fetch-only prepare-browser" \
     "$browser_capture"
+grep -Fq -- \
+    "tsx scripts/recover-homebrew-bottle-mirror.ts --image $fixture_shell_image --out $FIXTURE/apps/browser-demos/public/homebrew-main-shell-bottles --report " \
+    "$recovery_capture"
+grep -Eq -- \
+    "--report $runner_temp/kandelo-ci-homebrew-browser\\.[^/]+/recovery\\.json$" \
+    "$recovery_capture"
+[ "$(grep -Fxc /homebrew-main-shell-bottles "$closed_root_capture")" -eq 2 ] || {
+    echo "browser Playwright invocations did not inherit the closed mirror root" >&2
+    exit 1
+}
+[ ! -e "$FIXTURE/apps/browser-demos/public/homebrew-main-shell-bottles" ] || {
+    echo "browser suite left its pre-merge Homebrew mirror behind" >&2
+    exit 1
+}
+printf '{\n' > "$FIXTURE/.ci-test-publication-blockers.json"
+if PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
+    BLOCKER_CAPTURE="$blocker_capture" \
+    PREPARE_BROWSER_ASSETS=true \
+    bash "$FIXTURE/scripts/ci-run-test-suite.sh" browser \
+        > "$TMP_DIR/browser-invalid-blockers.out" 2>&1; then
+    echo "browser suite accepted a malformed publication blocker report" >&2
+    exit 1
+fi
+grep -Fq \
+    "ci-run-test-suite: invalid publication blocker report" \
+    "$TMP_DIR/browser-invalid-blockers.out"
 
 for workflow in \
     "$REPO_ROOT/.github/workflows/staging-build.yml" \
@@ -788,16 +859,25 @@ mkdir -p \
 cp \
     "$FIXTURE/scripts/ci-run-test-suite.sh" \
     "$FIXTURE/scripts/ci-check-browser-assets.sh" \
+    "$FIXTURE/scripts/resolve-binary.sh" \
     "$FIXTURE/scripts/materialize-ci-publication-blockers.sh" \
     "$pack_extract/scripts/"
 cp "$FIXTURE/run.sh" "$pack_extract/run.sh"
 browser_cache_capture="$TMP_DIR/relocated-browser-cache"
 browser_xtask_capture="$TMP_DIR/relocated-browser-xtask"
+relocated_recovery_capture="$TMP_DIR/relocated-browser-recovery.args"
+relocated_closed_root_capture="$TMP_DIR/relocated-browser-closed-root"
+relocated_runner_temp="$TMP_DIR/relocated-runner"
+mkdir "$relocated_runner_temp"
 PATH="$FIXTURE/bin:$PATH" \
     RUN_CAPTURE="$TMP_DIR/relocated-browser-run.args" \
     RUN_CACHE_CAPTURE="$browser_cache_capture" \
     RUN_XTASK_CAPTURE="$browser_xtask_capture" \
     BLOCKER_CAPTURE="$TMP_DIR/relocated-browser-blockers" \
+    RECOVERY_CAPTURE="$relocated_recovery_capture" \
+    CLOSED_ROOT_CAPTURE="$relocated_closed_root_capture" \
+    FIXTURE_SHELL_IMAGE="$fixture_shell_image" \
+    RUNNER_TEMP="$relocated_runner_temp" \
     PREPARE_BROWSER_ASSETS=true \
     WASM_POSIX_BINARY_CACHE_ROOT="$TMP_DIR/wrong-relocated-cache" \
     WASM_POSIX_XTASK_BIN="$TMP_DIR/wrong-relocated-xtask" \
@@ -818,6 +898,14 @@ grep -Fxq -- \
     "--already-materialized --fetch-only prepare-browser" \
     "$TMP_DIR/relocated-browser-run.args"
 grep -Fxq materialized "$TMP_DIR/relocated-browser-blockers"
+[ "$(grep -Fxc /homebrew-main-shell-bottles "$relocated_closed_root_capture")" -eq 2 ] || {
+    echo "relocated browser Playwright invocations did not inherit the closed mirror root" >&2
+    exit 1
+}
+[ ! -e "$pack_extract/apps/browser-demos/public/homebrew-main-shell-bottles" ] || {
+    echo "relocated browser suite left its pre-merge Homebrew mirror behind" >&2
+    exit 1
+}
 
 for workflow in \
     "$REPO_ROOT/.github/workflows/homebrew-main-shell-ci.yml" \
