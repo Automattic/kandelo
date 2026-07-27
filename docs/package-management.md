@@ -605,17 +605,17 @@ archive contracts and therefore declare `fork_instrumentation = "disabled"`.
 The bootstrap archive is not a bundled Homebrew runtime. It contains neither
 Ruby nor Git, curl, extraction tools, or their data/dependencies. The base
 shell therefore registers `/usr/bin/brew` as a lazy activation reference
-without claiming it can execute from the six-Formula shell alone.
+without claiming the bootstrap source can execute by itself.
 `homebrew/main-shell-homebrew-runtime-support.json` owns the separate atomic
-runtime-support closure. Its active seven-root closure contains 21 Formulae,
-18 beyond the six-Formula base. Its availability partition also records the
-two optional legacy-ABI Formulae (`libmagic` and `file-formula`) that are not
-needed for the fixed-prefix lifecycle and cannot enter activation until public
-ABI-42 identities are admitted. The base keeps the active layer deferred; an
-opt-in demo may materialize the same layer. A guest lifecycle is valid only
-when every declared tree has an exact admitted ABI/digest/size identity, all
-support bytes come from that declaration, and the independent-tap Formula is
-installed live rather than smuggled into the image.
+runtime-support closure. Its active seven-root closure contains 21 Formulae;
+the complete shell bottle closure already supplies 20 of them, so only Ruby is
+an additional atomic lazy tree. All 25 audited support candidates, including
+`libmagic` and `file-formula`, have admitted public ABI-42 identities and none
+remain deferred. The base keeps the active layer deferred; an opt-in demo may
+materialize the same layer. A guest lifecycle is valid only when every
+declared tree has an exact admitted ABI/digest/size identity, all support bytes
+come from that declaration, and the independent-tap Formula is installed live
+rather than smuggled into the image.
 
 `homebrew/homebrew-bootstrap-source-lock.json` is the reviewed source/output
 identity. It binds the upstream archive URL and SHA-256, sealed
