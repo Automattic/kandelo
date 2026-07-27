@@ -393,6 +393,15 @@ beneath the producer checkout, and `fork-instrument` must resolve from its exact
 expected manifest; no producer binary, build script, test, or repository helper
 is run.
 
+The reusable Homebrew bottle publisher has the same cache-completeness
+boundary when it activates an exact package generation. Its build and
+verification jobs run one shared helper through the declared dev shell. The
+helper fetches the authority workspace's exact locked host dependency
+projection before building `xtask`, then the generation materializer may read
+inert-source Cargo metadata offline. This covers every checksum-bound host
+crate admitted by `Cargo.lock`, including dependencies not used by `xtask`
+itself, without adding package-specific prefetch exceptions.
+
 The shared publisher uploads archives, the fresh index, and
 `rootfs-job.log` before uploading `generation.json` as the application seal.
 The rootfs log is bounded to 16 MiB and its run must be a `pull_request`.

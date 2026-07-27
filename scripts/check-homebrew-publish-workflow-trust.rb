@@ -27,10 +27,10 @@ UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "ad1578ab82804fbfcd56c4d68a6858199a8c6f056b8e013d3fa4d5d4dcddf376"
-PUBLISHER_BUILD_DIGEST = "5ae1f09b7cd82e2efc0a7788ec0ab39b0b5ca4edc87fd7750c0caed30a11cf34"
+PUBLISHER_BUILD_DIGEST = "3692f043543156b0516b36289cac3f82fe8c924912884f2ffbb31ed3021c8128"
 PUBLISHER_UPLOAD_DIGEST = "a44f8b7b2eb1d4b9436496cc9a099b80fb70be52143820e77fb7196e807d302f"
 PUBLISHER_INDEX_DIGEST = "7b05a7e4b076628ab999f9edb2e39a6641c4bb9a2563afcf19be15a119566bbe"
-PUBLISHER_VERIFY_DIGEST = "325e261ba0aeb205b16c81d4d22bfbeba697391e9c2a5ed66e24b2238f8b905f"
+PUBLISHER_VERIFY_DIGEST = "a2f6a9fef1407869248c56182c3573923a767171362027ba94ea0b9380181250"
 PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a0335816a0886b"
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
 MAINTENANCE_VALIDATE_DIGEST = "30ebccd5d44e004e37f168e81284d7ceb18accfa067c05248c1cc19398a7515f"
@@ -1727,7 +1727,9 @@ def check_publisher(workflow)
         }, "publisher exact browser generations mapping changed")
 
   common_generation_fragments = [
-    "bash scripts/dev-shell.sh cargo build --release -p xtask",
+    "bash scripts/dev-shell.sh bash",
+    ".github/scripts/prepare-homebrew-package-materializer.sh",
+    '--host-target "$host"',
     "bash .github/scripts/materialize-exact-package-generations.sh",
     '--selection-kind "$PACKAGE_GENERATION_KIND"',
     '--consumer-root "$PWD"',
@@ -1749,6 +1751,53 @@ def check_publisher(workflow)
           "publisher Formula generation activation lacks #{fragment}")
     check(verify_generations_run.include?(fragment),
           "publisher browser generation activation lacks #{fragment}")
+  end
+  materializer_preparer = File.read(
+    File.join(
+      REPO_ROOT,
+      ".github/scripts/prepare-homebrew-package-materializer.sh"
+    )
+  )
+  [
+    'AUTHORITY_MANIFEST="$AUTHORITY_ROOT/Cargo.toml"',
+    'AUTHORITY_LOCK="$AUTHORITY_ROOT/Cargo.lock"',
+    '^[A-Za-z0-9_]+(-[A-Za-z0-9_]+){2,3}$',
+    "cargo fetch --locked",
+    '--manifest-path "$AUTHORITY_MANIFEST"',
+    '--target "$HOST_TARGET"',
+    "cargo build --locked --release -p xtask",
+    '--target-dir "$TARGET_DIR"',
+  ].each do |fragment|
+    check(materializer_preparer.include?(fragment),
+          "publisher package-materializer preparation lacks #{fragment}")
+  end
+  fetch_index = materializer_preparer.index("cargo fetch --locked")
+  build_index = materializer_preparer.index(
+    "cargo build --locked --release -p xtask"
+  )
+  check(fetch_index && build_index && fetch_index < build_index &&
+        materializer_preparer.include?(
+          "the later inert-source `cargo metadata --offline` scan"
+        ),
+        "publisher package materializer does not fetch the complete host lock before build")
+  {
+    "Formula build" => build_generation_run,
+    "browser verification" => verify_generations_run,
+  }.each do |label, source|
+    prepare_index = source.index(
+      ".github/scripts/prepare-homebrew-package-materializer.sh"
+    )
+    activate_index = source.index(
+      "bash .github/scripts/materialize-exact-package-generations.sh"
+    )
+    check(
+      source.scan(
+        ".github/scripts/prepare-homebrew-package-materializer.sh"
+      ).length == 1 &&
+      prepare_index && activate_index && prepare_index < activate_index,
+      "publisher #{label} does not complete locked host preparation before " \
+      "offline generation materialization"
+    )
   end
   check(build_generation_run.include?(
           '--wasm32-tag "$PACKAGE_GENERATION_WASM32"'
@@ -5849,6 +5898,15 @@ def self_test(publisher, maintenance, repository_canary)
         '[ "$index_url" = "$expected_index_url" ]', "true"
       )
     },
+    "Formula generation locked host preparation bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test", "Materialize exact-main Formula runtime packages"
+      )
+      step["run"] = step.fetch("run").sub(
+        ".github/scripts/prepare-homebrew-package-materializer.sh",
+        "true"
+      )
+    },
     "complete generation omits wasm64" => lambda { |w|
       step = mutate_named_step(
         w, "verify-bottle", "Materialize exact-main verification runtime packages"
@@ -5865,6 +5923,15 @@ def self_test(publisher, maintenance, repository_canary)
       step["run"] = step.fetch("run").sub(
         'echo "WASM_POSIX_BINARY_INDEX_URL=$index_url" >> "$GITHUB_ENV"',
         'echo "WASM_POSIX_BINARY_INDEX_URL=https://example.invalid/index.toml" >> "$GITHUB_ENV"'
+      )
+    },
+    "verification generation locked host preparation bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Materialize exact-main verification runtime packages"
+      )
+      step["run"] = step.fetch("run").sub(
+        ".github/scripts/prepare-homebrew-package-materializer.sh",
+        "true"
       )
     },
     "uploader authority escalation" => lambda { |w|
