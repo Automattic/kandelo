@@ -114,6 +114,14 @@ assert_not_matches package_archive_changed_files \
 assert_matches binary_materialization_changed_files \
   "tools/xtask/src/remote_fetch.rs" \
   "tools/xtask/src/remote_fetch.rs"
+for package_index_contract in \
+  tools/xtask/src/index_candidate.rs \
+  tools/xtask/src/index_toml.rs \
+  tools/xtask/src/package_archive_name.rs; do
+  assert_matches binary_materialization_changed_files \
+    "$package_index_contract" \
+    "$package_index_contract"
+done
 assert_matches binary_materialization_changed_files \
   "scripts/fetch-binaries.sh" \
   "scripts/fetch-binaries.sh"
@@ -122,7 +130,9 @@ assert_matches binary_materialization_changed_files \
   "scripts/pack-ci-test-workspace.sh"
 for blocker_materialization_script in \
   scripts/activate-local-shell-build-override.sh \
+  scripts/ci-homebrew-browser-mirror-state.sh \
   scripts/install-local-shell-artifact.sh \
+  scripts/materialize-ci-canonical-package-index.sh \
   scripts/materialize-ci-publication-blockers.sh \
   scripts/validate-publication-blocker-report.sh; do
   assert_matches binary_materialization_changed_files \
@@ -384,9 +394,19 @@ assert_matches ci_control_changed_files \
 assert_matches ci_control_changed_files \
   ".github/workflows/prepare-merge.yml" \
   ".github/workflows/prepare-merge.yml"
+for package_index_contract in \
+  tools/xtask/src/index_candidate.rs \
+  tools/xtask/src/index_toml.rs \
+  tools/xtask/src/package_archive_name.rs; do
+  assert_matches ci_control_changed_files \
+    "$package_index_contract" \
+    "$package_index_contract"
+done
 for blocker_materialization_script in \
   scripts/activate-local-shell-build-override.sh \
+  scripts/ci-homebrew-browser-mirror-state.sh \
   scripts/install-local-shell-artifact.sh \
+  scripts/materialize-ci-canonical-package-index.sh \
   scripts/materialize-ci-publication-blockers.sh \
   scripts/validate-publication-blocker-report.sh; do
   assert_matches ci_control_changed_files \
