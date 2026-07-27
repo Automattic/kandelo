@@ -1140,8 +1140,12 @@ jobs:
           trap restore_workflow_commands_on_exit EXIT
           workflow_commands_stopped=1
           printf '::stop-commands::%s\n' "$workflow_command_token"
+          # WHY: recipe identity is per-run authority, not a package build
+          # input. Pass it here so dev-shell bytes and package cache keys
+          # stay stable.
           bash scripts/dev-shell.sh env \
             WASM_POSIX_XTASK_BIN="$WASM_POSIX_XTASK_BIN" \
+            KANDELO_HOMEBREW_RECIPE_USER="$KANDELO_HOMEBREW_RECIPE_USER" \
             KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
             bash scripts/homebrew-bottle-build.sh \
             --tap-root "$GITHUB_WORKSPACE/tap" \
@@ -2800,8 +2804,12 @@ jobs:
           trap restore_workflow_commands_on_exit EXIT
           workflow_commands_stopped=1
           printf '::stop-commands::%s\n' "$workflow_command_token"
+          # WHY: recipe identity is per-run authority, not a package build
+          # input. Pass it here so dev-shell bytes and package cache keys
+          # stay stable.
           bash scripts/dev-shell.sh env \
             WASM_POSIX_XTASK_BIN="$WASM_POSIX_XTASK_BIN" \
+            KANDELO_HOMEBREW_RECIPE_USER="$KANDELO_HOMEBREW_RECIPE_USER" \
             KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
             bash scripts/homebrew-verify-poured-bottle.sh \
             --tap-root "$RUNNER_TEMP/homebrew-merged-tap" \
