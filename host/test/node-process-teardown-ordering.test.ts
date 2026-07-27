@@ -25,13 +25,16 @@ describe("Node process Worker teardown ordering", () => {
     );
     const inFlightGuard = finalize.indexOf("processTeardowns.has(worker)");
     const crashNotification = finalize.indexOf("kernelWorker.notifyHostProcessCrashed");
-    const deactivation = finalize.indexOf("kernelWorker.deactivateProcess");
+    const sharedTeardown = finalize.indexOf(
+      "await finishProcessExit(pid, exitStatus, worker)",
+    );
 
     expect(inFlightGuard).toBeGreaterThanOrEqual(0);
     expect(finalize).toMatch(
       /if \(processTeardowns\.has\(worker\)\) \{\s*reportProcessExit\(pid, exitStatus\);\s*return;\s*\}/s,
     );
     expect(inFlightGuard).toBeLessThan(crashNotification);
-    expect(inFlightGuard).toBeLessThan(deactivation);
+    expect(inFlightGuard).toBeLessThan(sharedTeardown);
+    expect(crashNotification).toBeLessThan(sharedTeardown);
   });
 });

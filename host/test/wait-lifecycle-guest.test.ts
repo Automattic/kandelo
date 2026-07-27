@@ -40,6 +40,6 @@ describe("POSIX child wait lifecycle", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("WAIT_LIFECYCLE_PASS");
     expect(result.stderr).toBe("");
-    expect(result.forkCount).toBe(0n);
+    expect(result.forkCountSamples).toEqual([0n]);
   });
 });

@@ -66,6 +66,7 @@ import {
 } from "./thread-worker-disposition";
 import { VmInterruptTimerManager } from "./vm-interrupt-timer";
 import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
+import { reapHostOwnedExitedProcess } from "./host-owned-process-reap";
 import {
   computeProcessMemoryLayout,
   createProcessMemory,
@@ -240,16 +241,15 @@ const pendingExecResolves = new Map<number, (bytes: ArrayBuffer | null) => void>
 // --- Helpers ---
 
 /**
- * Tear down kernel and host state for an exiting process worker.
+ * Turn an unexpected process-Worker failure into an authoritative signal
+ * death, then use the same generation-aware teardown as an ordinary exit.
  *
  * Called from BOTH the `{type:"exit"}` and `{type:"error"}` message
  * handlers below: previously only `exit` ran the cleanup, so a
  * worker that died via `{type:"error"}` (uncaught wasm trap,
  * instantiation failure) left `kernelWorker` with the process still
  * registered. Any concurrent `waitpid` in the parent then hung
- * forever because the kernel never saw the child go zombie. The
- * stderr forwarding alone, without `deactivateProcess`, is not
- * enough.
+ * forever because the kernel never saw the child go zombie.
  *
  * Idempotent: guarded by `cur && cur.worker === worker` so a later
  * `worker.on("exit")` from `installCrashSafetyNet` is a no-op.
@@ -274,9 +274,7 @@ async function finalizeProcessWorker(
     reportProcessExit(pid, exitStatus);
     return;
   }
-  vmInterruptTimers.clear(pid);
-
-  // Synthesize a signal-style reap *before* `deactivateProcess` in
+  // Synthesize a signal-style death before shared teardown in
   // case the worker died without sending SYS_EXIT_GROUP (uncaught
   // wasm trap, instantiation failure → `{type:"error"}` path).
   // Without this, a concurrent waitpid in the parent blocks until
@@ -284,17 +282,11 @@ async function finalizeProcessWorker(
   // Idempotent via `hostReaped`: when the kernel already processed
   // a clean SYS_EXIT_GROUP for this pid, this is a no-op.
   try { kernelWorker.notifyHostProcessCrashed(pid, crashSignum); } catch { /* best-effort */ }
-  try { kernelWorker.deactivateProcess(pid); } catch { /* best-effort */ }
-  processes.delete(pid);
-  threadModuleCache.delete(pid);
-  ptyByPid.delete(pid);
 
-  // Report while this worker is still known to be the current generation.
-  // Its asynchronous termination must not report an exit for an exec
-  // replacement that has since installed a new generation under the same pid.
-  reportProcessExit(pid, exitStatus);
-  await terminateThreadWorkers(pid);
-  await terminateTrackedWorker(worker);
+  // WHY: ordinary exits and crashes must share one teardown funnel. Keeping a
+  // second cleanup sequence here previously let their Worker/channel ordering
+  // drift and made it possible to reap Rust state before all Workers stopped.
+  await finishProcessExit(pid, exitStatus, worker);
 }
 
 function processWorkerErrorDisposition(reason: string | undefined): {
@@ -1533,11 +1525,38 @@ async function finishProcessExit(
 
     // Deactivate process (zombie until reaped or destroy) after worker
     // termination so no further guest syscalls can arrive on its channel.
-    kernelWorker.deactivateProcess(pid);
+    let deactivated = false;
+    try {
+      kernelWorker.deactivateProcess(pid);
+      deactivated = true;
+    } catch (error) {
+      reportHostDiagnostic({
+        pid,
+        status: exitStatus,
+        source: "process channel teardown",
+        message:
+          `[node-kernel-worker] failed to deactivate completed pid ${pid}: ` +
+          (error instanceof Error ? error.message : String(error)),
+      });
+    }
 
     processes.delete(pid);
     threadModuleCache.delete(pid);
     ptyByPid.delete(pid);
+    if (!deactivated) return;
+
+    try {
+      reapHostOwnedExitedProcess(kernelWorker.getKernelInstance(), pid);
+    } catch (error) {
+      reportHostDiagnostic({
+        pid,
+        status: exitStatus,
+        source: "host-owned process reap",
+        message:
+          `[node-kernel-worker] failed to reap completed host-owned pid ${pid}: ` +
+          (error instanceof Error ? error.message : String(error)),
+      });
+    }
   })();
   processTeardowns.set(expectedWorker, teardown);
 
