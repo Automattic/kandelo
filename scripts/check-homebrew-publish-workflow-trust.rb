@@ -27,10 +27,10 @@ UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "ad1578ab82804fbfcd56c4d68a6858199a8c6f056b8e013d3fa4d5d4dcddf376"
-PUBLISHER_BUILD_DIGEST = "3692f043543156b0516b36289cac3f82fe8c924912884f2ffbb31ed3021c8128"
+PUBLISHER_BUILD_DIGEST = "f16029b5fe8583ce170813d0c2117c66d364952df39585e4bdea92b8a65c0974"
 PUBLISHER_UPLOAD_DIGEST = "a44f8b7b2eb1d4b9436496cc9a099b80fb70be52143820e77fb7196e807d302f"
 PUBLISHER_INDEX_DIGEST = "7b05a7e4b076628ab999f9edb2e39a6641c4bb9a2563afcf19be15a119566bbe"
-PUBLISHER_VERIFY_DIGEST = "a2f6a9fef1407869248c56182c3573923a767171362027ba94ea0b9380181250"
+PUBLISHER_VERIFY_DIGEST = "40d4ef5bb21e73d39896216c72697dc3bbca2fddb5dd948ffe2fdb6e946c6c3b"
 PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a0335816a0886b"
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
 MAINTENANCE_VALIDATE_DIGEST = "30ebccd5d44e004e37f168e81284d7ceb18accfa067c05248c1cc19398a7515f"
@@ -2269,6 +2269,9 @@ def check_publisher(workflow)
     '8#$sudo_mode & 0022',
     'pkill_target="$(readlink -f -- "$pkill_bin"',
     '"$sudo_bin" -n -- "$useradd_bin" --system --user-group --create-home',
+    '"$sudo_bin" -n -- "$useradd_bin" --system --user-group --no-create-home',
+    '"$sudo_bin" -n -- "$userdel_bin" -r "$build_user"',
+    "could not roll back partial Homebrew identity creation",
     'echo "created=true" >> "$GITHUB_OUTPUT"',
     '[ "$(id -u "$build_user")" != "$(id -u)" ]',
     '"$sudo_bin" -n -u "$build_user" -- "$sudo_bin" -n true',
@@ -2289,9 +2292,15 @@ def check_publisher(workflow)
     check(identity_run.include?(fragment),
           "publisher Formula execution identity lacks #{fragment}")
   end
+  recipe_identity_create =
+    '"$sudo_bin" -n -- "$useradd_bin" --system --user-group --no-create-home'
+  check(identity_run.index(recipe_identity_create) <
+        identity_run.index('echo "created=true" >> "$GITHUB_OUTPUT"'),
+        "publisher marks a partial Formula identity transaction as created")
   dev_shell = File.read(File.join(REPO_ROOT, "scripts/dev-shell.sh"))
   check(%w[
-    KANDELO_HOMEBREW_BUILD_USER KANDELO_HOMEBREW_SHARED_TEMP
+    KANDELO_HOMEBREW_BUILD_USER KANDELO_HOMEBREW_RECIPE_USER
+    KANDELO_HOMEBREW_SHARED_TEMP
     KANDELO_HOMEBREW_SUDO_BIN KANDELO_HOMEBREW_SYSTEMD_RUN_BIN
     KANDELO_HOMEBREW_SYSTEMCTL_BIN KANDELO_HOMEBREW_GETENT_BIN
     KANDELO_HOMEBREW_PGREP_BIN
@@ -2315,6 +2324,70 @@ def check_publisher(workflow)
   check(flake.scan("pkgs.gnutar".b).length == 1,
         "dev shell does not declare exactly one GNU tar publisher input")
   bottle_builder = File.read(File.join(REPO_ROOT, "scripts/homebrew-bottle-build.sh"))
+  [
+    "if jq -e '.schema == 3'",
+    "scripts/build-fork-instrument-tool.sh",
+    "scripts/build-local-root-spill-tool.sh",
+    "required closed-recipe platform tool is unavailable",
+  ].each do |fragment|
+    check(bottle_builder.include?(fragment),
+          "closed tap recipe platform-tool staging lacks #{fragment}")
+  end
+  recipe_runner = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-tap-recipe-runner.py")
+  )
+  [
+    "--stage-recipe",
+    "selected-recipe",
+    "tap recipe manifest differs from the publisher attestation",
+    "dir_fd=",
+    "os.O_NOFOLLOW",
+    "os.O_NONBLOCK",
+    "host_tool_projection(config)",
+    "for root in nix_store_requisites(config)",
+    '"--requisites"',
+    "NIX_STORE_ROOT_RE",
+    "prepare_service_root(service_root, readonly_binds, readwrite_binds)",
+    '".." in PurePosixPath(rendered).parts',
+    "RootDirectory={service_root}",
+    "MountAPIVFS=yes",
+    "TemporaryFileSystem=/etc:ro",
+    "ProtectHome=tmpfs",
+    "RestrictAddressFamilies=AF_UNIX",
+    "SupplementaryGroups=",
+    "tap recipe exceeded its diagnostic output limit",
+    "teardown_recipe_unit(unit, config)",
+    "validate_sealed_dependency_tree(root, label)",
+    "recipe output file has unsafe links, mode, or size",
+  ].each do |fragment|
+    check(recipe_runner.include?(fragment),
+          "tap recipe runner lacks closed-boundary contract #{fragment}")
+  end
+  check(!recipe_runner.include?("PrivateTmp=yes"),
+        "tap recipe runner masks publisher bind targets with PrivateTmp")
+  check(!recipe_runner.include?("BindReadOnlyPaths=/:"),
+        "tap recipe runner exposes the host root inside its service root")
+  check(!recipe_runner.include?('label="Nix runtime store"'),
+        "tap recipe runner exposes the whole Nix store instead of exact closures")
+  launcher_test = File.read(
+    File.join(REPO_ROOT, "scripts/test-homebrew-patched-launcher.sh")
+  )
+  check(
+    launcher_test.include?(
+      'python3 "$REPO_ROOT/scripts/test-homebrew-tap-recipe-runner.py"'
+    ),
+    "publisher validation does not run the focused recipe-runner contract tests"
+  )
+  [
+    "tap recipe can read an unrelated host file",
+    "tap recipe escaped its root through host procfs",
+    "/run/systemd/private",
+    "tap recipe started a host transient service",
+    "tap recipe canary did not return its declared output",
+  ].each do |fragment|
+    check(launcher_test.include?(fragment),
+          "publisher validation lacks malicious recipe canary #{fragment}")
+  end
   host_dependency_validator = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-validate-host-dependency-plan.sh")
   )
@@ -2475,6 +2548,7 @@ def check_publisher(workflow)
     '"$BUILD_TEST_DEPENDENCY_LIST" "build/test dependency list"',
     'validate_dependency_list "$DEPENDENCY_POUR_LIST"',
     'done <"$DEPENDENCY_POUR_LIST"',
+    'homebrew_patched_launcher_seal_target_dependencies',
     '"$BREW_BIN" list --formula "$dependency" >/dev/null',
     'target Homebrew rejected the native Formula proxy keg',
     '--expected-dependencies "$DEPENDENCY_LIST"',
@@ -2520,11 +2594,14 @@ def check_publisher(workflow)
   dependency_pour_index = bottle_builder.index(
     'run_brew_logged run_brew_for_kandelo_bottles "$BREW_BIN" install'
   )
+  target_dependency_seal_index = bottle_builder.index(
+    "homebrew_patched_launcher_seal_target_dependencies"
+  )
   target_build_index = bottle_builder.index("  brew_install_build_bottle")
   check(host_plan_index && native_install_index && native_info_index &&
         native_missing_index && runtime_dependency_index && build_test_dependency_index &&
         native_seal_index && native_bridge_index && native_proxy_index &&
-        dependency_pour_index &&
+        dependency_pour_index && target_dependency_seal_index &&
         target_build_index &&
         host_plan_index < native_install_index &&
         native_install_index < native_info_index &&
@@ -2535,7 +2612,8 @@ def check_publisher(workflow)
         native_seal_index < native_bridge_index &&
         native_bridge_index < native_proxy_index &&
         native_proxy_index < dependency_pour_index &&
-        dependency_pour_index < target_build_index,
+        dependency_pour_index < target_dependency_seal_index &&
+        target_dependency_seal_index < target_build_index,
         "reviewed bottle builder mixes native and target dependency phases")
   check(!bottle_builder.include?("--only-dependencies"),
         "reviewed bottle builder lets target Homebrew resolve dependencies recursively")
@@ -3226,13 +3304,26 @@ def check_publisher(workflow)
     'homebrew_patched_launcher_tier2_schema()',
     'tap_recipe_isolation=1',
     'if [ "$tap_recipe_isolation" != "1" ]',
+    'expected_tap_recipe_isolation=%q',
+    'if [ "$expected_tap_recipe_isolation" = 1 ]; then',
+    '[ -n "${WASM_POSIX_XTASK_BIN+x}" ]',
+    '[ -n "${HOMEBREW_KANDELO_XTASK_BIN+x}" ]',
+    'tap recipe retained program-index checker authority',
     'packages/registry local-binaries .ci-test-binary-cache',
     'scripts/install-local-binary.sh',
-    'tap_recipe_inaccessible_paths=("$xtask_alias")',
+    'tap_recipe_inaccessible_paths=("-$xtask_alias" "$protected_xtask")',
+    'homebrew_patched_launcher_prepare_platform_projection',
+    'tools/bin/wasm-fork-instrument',
+    'tools/bin/wasm-local-root-spill',
+    'closed platform projection exposes undeclared authority',
+    'homebrew_patched_launcher_verify_platform_projection',
+    'homebrew_patched_launcher_seal_target_dependencies',
+    '"$jq_bin" -cSjn',
+    '"$sudo_bin" -n -- /usr/bin/tee "$config" >/dev/null',
     '"--property=InaccessiblePaths=$tap_recipe_path"',
     "--property=KillMode=control-group", "--property=SendSIGKILL=yes",
     "--property=NoNewPrivileges=yes", "--expand-environment=no",
-    '"--property=BindReadOnlyPaths=$kandelo_root:$source_alias_dir/kandelo"',
+    '"--property=BindReadOnlyPaths=$platform_source_root:$source_alias_dir/kandelo"',
     '"--property=BindReadOnlyPaths=$protected_xtask:$xtask_alias"',
     '"--property=BindReadOnlyPaths=$tap_root:$source_alias_dir/tap"',
     '"--property=BindReadOnlyPaths=$sysroot:$source_alias_dir/sysroot"',
@@ -3251,6 +3342,8 @@ def check_publisher(workflow)
     'KANDELO_HOMEBREW_KANDELO_ROOT=$source_alias_dir/kandelo',
     'HOMEBREW_KANDELO_SYSROOT=$source_alias_dir/sysroot',
     'WASM_POSIX_SYSROOT=$source_alias_dir/sysroot',
+    'HOMEBREW_KANDELO_FORK_INSTRUMENT=$source_alias_dir/kandelo/tools/bin/wasm-fork-instrument',
+    'HOMEBREW_KANDELO_LOCAL_ROOT_SPILL=$source_alias_dir/kandelo/tools/bin/wasm-local-root-spill',
     'printf \' "${bottle_tag_env[@]}" "$command_path" "$@"\\n\'',
     "__kandelo_verify_source_aliases", "/usr/bin/findmnt",
     '"$sudo_bin" install -o root -g root -m 0555 "$wrapper_source" "$wrapper_path"',
@@ -3302,7 +3395,7 @@ def check_publisher(workflow)
     "homebrew_patched_launcher_uid_has_processes", "homebrew_patched_launcher_teardown",
     '"$HOMEBREW_PATCHED_SUDO_BIN" -n -- "$HOMEBREW_PATCHED_PGREP_BIN"',
     '-KILL -u "$HOMEBREW_PATCHED_BUILD_UID"',
-    "could not inspect Formula build identity processes",
+    "could not inspect isolated build processes",
     "Formula build identity still owns live processes",
     "homebrew_patched_launcher_native_prefix_path",
     "native prefix base leaves no room for an exact Linuxbrew relocation path",
@@ -3343,7 +3436,7 @@ def check_publisher(workflow)
     'Formula process teardown failed; preserving launcher state for retry',
     'return "$teardown_status"',
     'for protected_bin in chmod chown cmp cp id install ln ls mktemp readlink rm \\',
-    'sha256sum stat test; do',
+    'od python3 sha256sum stat test tr; do',
     '"$sudo_bin" /usr/bin/install -d -o root -g "$build_group" -m 1775',
     '"$(/usr/bin/stat -c \'%u:%g:%a\' "$target_state_root")" = "0:$build_gid:1775"',
     'target_opt_target="../Cellar/$formula/$native_version"',
@@ -3864,6 +3957,19 @@ def check_publisher(workflow)
   verifier_identity_step = named_step(
     verify_steps, "Create isolated bottle verification identity"
   )
+  verifier_identity_run = verifier_identity_step.fetch("run")
+  [
+    'userdel_bin="/usr/sbin/userdel"',
+    '"$sudo_bin" -n -- "$useradd_bin" --system --user-group --no-create-home',
+    '"$sudo_bin" -n -- "$userdel_bin" -r "$build_user"',
+    "could not roll back partial verifier identity creation",
+  ].each do |fragment|
+    check(verifier_identity_run.include?(fragment),
+          "publisher verifier identity transaction lacks #{fragment}")
+  end
+  check(verifier_identity_run.index(recipe_identity_create) <
+        verifier_identity_run.index('echo "created=true" >> "$GITHUB_OUTPUT"'),
+        "publisher marks a partial verifier identity transaction as created")
   force_pour_step = named_step(
     verify_steps, "Force-pour and test the exact selected bottle without credentials"
   )
@@ -3893,11 +3999,14 @@ def check_publisher(workflow)
         "publisher Formula execution identity retirement mapping changed")
   retire_identity_run = retire_identity_step.fetch("run")
   [
-    '"$sudo_bin" -n -- "$pgrep_bin" -u "$build_uid"',
+    '"$sudo_bin" -n -- "$pgrep_bin" -u "$uid"',
     '"$sudo_bin" -n -- "$pkill_bin" -KILL -u "$build_uid"',
+    '"$sudo_bin" -n -- "$pkill_bin" -KILL -u "$recipe_uid"',
+    '"$sudo_bin" -n -- "$userdel_bin" "$recipe_user"',
     '"$sudo_bin" -n -- "$userdel_bin" -r "$build_user"',
-    "could not inspect Formula build identity processes",
-    "Formula build identity still exists after retirement",
+    "could not inspect isolated Homebrew processes",
+    "isolated Homebrew identities still own live processes",
+    "Homebrew identity still exists after retirement",
   ].each do |fragment|
     check(retire_identity_run.include?(fragment),
           "publisher Formula execution identity retirement lacks #{fragment}")

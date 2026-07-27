@@ -358,6 +358,28 @@ if ! jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
   echo "homebrew-bottle-build.sh: Tier-2 bridge attestation has an invalid schema" >&2
   exit 2
 fi
+if jq -e '.schema == 3' "$TIER2_ATTESTATION" >/dev/null; then
+  # WHY: closed tap recipes receive executable platform tools, never the Cargo
+  # workspace that could rebuild resolver/checker code. Build both helpers
+  # while the trusted workflow still owns the exact Kandelo checkout.
+  for tool in wasm-fork-instrument wasm-local-root-spill; do
+    tool_path="$KANDELO_ROOT/tools/bin/$tool"
+    if [ ! -f "$tool_path" ] || [ -L "$tool_path" ] || [ ! -x "$tool_path" ]; then
+      case "$tool" in
+        wasm-fork-instrument)
+          bash "$KANDELO_ROOT/scripts/build-fork-instrument-tool.sh"
+          ;;
+        wasm-local-root-spill)
+          bash "$KANDELO_ROOT/scripts/build-local-root-spill-tool.sh"
+          ;;
+      esac
+    fi
+    [ -f "$tool_path" ] && [ ! -L "$tool_path" ] && [ -x "$tool_path" ] || {
+      echo "homebrew-bottle-build.sh: required closed-recipe platform tool is unavailable: $tool" >&2
+      exit 2
+    }
+  done
+fi
 ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
   "$TAP_ROOT" "$TAP_NAME" "$FORMULA" --bottle-identity-json \
   >"$TARGET_BOTTLE_IDENTITY"
@@ -631,6 +653,15 @@ while IFS= read -r dependency; do
     --ignore-dependencies \
     --formula "$dependency"
 done <"$DEPENDENCY_POUR_LIST"
+
+# WHY: dependency bottles are installed after the isolation boundary is
+# prepared. Seal the complete poured dependency set now, before selected
+# Formula Ruby can invoke its tap recipe, so the recipe supervisor never
+# accepts build-user-owned or writable dependency kegs.
+if [ -n "$BUILD_USER" ]; then
+  homebrew_patched_launcher_seal_target_dependencies \
+    "$BUILD_USER" "$HOMEBREW_PATCHED_SUDO_BIN"
+fi
 
 brew_install_build_bottle() {
   local attempt status log

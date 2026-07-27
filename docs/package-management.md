@@ -574,6 +574,16 @@ Bump `build.toml` `revision` only when a legacy Kandelo package archive cache
 key should change. Do not bump it for Formula-only docs, tap metadata, or
 browser-gallery wording.
 
+A closed tap recipe runs as a separate unprivileged identity inside a
+root-owned, empty service root. The publisher mounts only its attested recipe,
+verified source, projected SDK/tooling, sysroot, sealed Homebrew dependency
+closure, the exact content-addressed Nix closures of its host tools, ordinary
+system runtime directories, and private work/output roots. It does not expose
+the whole Nix store. Unrelated host paths and service-manager sockets are
+absent. The outer Formula identity can
+submit one authenticated request but cannot choose additional mounts, change
+the root-owned runner configuration, or receive an unsealed output tree.
+
 Bottle-backed lazy VFS composition keeps the same archive as its transport
 unit. The descriptor exposes bounded metadata for `stat` and `readdir`, but the
 first content access downloads and verifies the complete Formula bottle and
