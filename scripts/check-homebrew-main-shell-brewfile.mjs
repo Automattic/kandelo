@@ -13,20 +13,6 @@ const formulaIdentityPattern = /^kandelo-dev\/tap-core\/[a-z0-9][a-z0-9._-]*$/;
 const provenanceDigestFlag = "--print-runtime-bottle-provenance-sha256";
 const provenanceDigestDomain =
   "kandelo-homebrew-runtime-bottle-provenance-v1\u0000";
-const baseRoots = [
-  { name: "bash", version: "5.2.37" },
-  { name: "dash", version: "0.5.12" },
-  { name: "bzip2", version: "1.0.8" },
-  { name: "m4", version: "1.4.19" },
-];
-const baseFormulaOrder = [
-  `${tapName}/libcxx`,
-  `${tapName}/ncurses`,
-  `${tapName}/bash`,
-  `${tapName}/dash`,
-  `${tapName}/bzip2`,
-  `${tapName}/m4`,
-];
 const runtimeSupportRootOrder = [
   `${tapName}/ruby`,
   `${tapName}/git`,
@@ -83,11 +69,10 @@ const availableRuntimeSupportFormulaOrder = [
   `${tapName}/gzip`,
   `${tapName}/tar`,
   `${tapName}/posix-utils-lite`,
-];
-const deferredRuntimeSupportFormulaOrder = [
   `${tapName}/libmagic`,
   `${tapName}/file-formula`,
 ];
+const deferredRuntimeSupportFormulaOrder = [];
 
 if (process.argv[2] === provenanceDigestFlag) {
   if (process.argv.length !== 5) {
@@ -144,18 +129,6 @@ assertUnique(
 assertUnique(expectedFormulae, "migration lock Formulae");
 assertUnique(actualFormulae, "main-shell Brewfile");
 assertExactSequence(
-  lockedRegistryPackages,
-  baseRoots,
-  "main-shell migration lock does not select the reviewed four base roots",
-  ({ name, version }) => `${name}@${version}`,
-);
-assertExactSequence(
-  lock.formula_closure,
-  baseFormulaOrder,
-  "main-shell migration lock does not contain the reviewed six-Formula base closure",
-  (value) => value,
-);
-assertExactSequence(
   actualFormulae,
   expectedFormulae,
   "main-shell Brewfile does not match the migration lock",
@@ -169,7 +142,7 @@ if (metadataPath !== undefined) {
 
 console.log(
   `Homebrew main-shell contract: ${actualFormulae.length} reviewed migration roots and ` +
-    `${lock.formula_closure.length} Formulae match the reviewed base lock; ` +
+    `${lock.formula_closure.length} Formulae match the complete shell lock; ` +
     `${runtimeSupport.additionalFormulaOrder.length} additional Formulae are ` +
     `declared only by the atomic Homebrew runtime-support layer, and ` +
     `${runtimeSupport.deferredFormulae.length} optional Formulae remain deferred at catalog ` +
@@ -384,11 +357,14 @@ function validateCompatibilityPolicy(lock, runtimeSupport) {
   const compatibility = lock.compatibility;
   if (
     !isRecord(compatibility) ||
+    Object.keys(compatibility).sort().join("\0") !==
+      "aliases\0link_conflict_owners\0mirror_link_manifest_bin\0public_commands\0runtime_state" ||
     !isRecord(compatibility.mirror_link_manifest_bin) ||
     JSON.stringify(compatibility.mirror_link_manifest_bin.targets) !==
       JSON.stringify(["/usr/bin", "/bin"]) ||
     !Array.isArray(compatibility.link_conflict_owners) ||
     !Array.isArray(compatibility.aliases) ||
+    !isRecord(compatibility.public_commands) ||
     !Array.isArray(compatibility.runtime_state)
   ) {
     throw new Error("main-shell migration compatibility policy is invalid");
@@ -457,6 +433,8 @@ function validateCompatibilityPolicy(lock, runtimeSupport) {
     }
   }
 
+  validatePublicCommands(compatibility.public_commands, lockedPackages);
+
   const runtimePaths = new Map();
   for (const [index, entry] of compatibility.runtime_state.entries()) {
     const expectedKeys = [
@@ -517,6 +495,79 @@ function validateCompatibilityPolicy(lock, runtimeSupport) {
       }
       ancestor = ancestor.slice(0, ancestor.lastIndexOf("/")) || "/";
     }
+  }
+}
+
+function validatePublicCommands(value, lockedPackages) {
+  if (
+    Object.keys(value).sort().join("\0") !==
+      "mirrored_names\0supporting_paths\0usr_bin_only\0usr_local_bin_only" ||
+    !Array.isArray(value.mirrored_names) ||
+    !Array.isArray(value.usr_bin_only) ||
+    !Array.isArray(value.usr_local_bin_only) ||
+    !Array.isArray(value.supporting_paths)
+  ) {
+    throw new Error("main-shell public command contract is invalid");
+  }
+  const readNames = (entries, label) => {
+    const names = entries.map((entry, index) => {
+      if (
+        typeof entry !== "string" ||
+        (entry !== "[" && !/^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(entry))
+      ) {
+        throw new Error(`${label}[${index}] is not a command name`);
+      }
+      return entry;
+    });
+    assertUnique(names, label);
+    assertExactSequence(
+      names,
+      [...names].sort(),
+      `${label} must be sorted`,
+      (entry) => entry,
+    );
+    return names;
+  };
+  const mirroredNames = readNames(
+    value.mirrored_names,
+    "public_commands.mirrored_names",
+  );
+  const usrBinOnly = readNames(
+    value.usr_bin_only,
+    "public_commands.usr_bin_only",
+  );
+  const usrLocalBinOnly = readNames(
+    value.usr_local_bin_only,
+    "public_commands.usr_local_bin_only",
+  );
+  if (mirroredNames.length === 0) {
+    throw new Error("main-shell public command contract cannot be empty");
+  }
+  assertUnique(
+    [...mirroredNames, ...usrBinOnly, ...usrLocalBinOnly],
+    "public command names across path cohorts",
+  );
+
+  const supportingPaths = new Set();
+  for (const [index, entry] of value.supporting_paths.entries()) {
+    const label = `public_commands.supporting_paths[${index}]`;
+    if (
+      !isRecord(entry) ||
+      Object.keys(entry).sort().join("\0") !== "kind\0package\0path\0reason" ||
+      typeof entry.package !== "string" ||
+      !lockedPackages.has(entry.package) ||
+      typeof entry.path !== "string" ||
+      !/^\/(?:[A-Za-z0-9._+-]+\/)*[A-Za-z0-9._+-]+$/.test(entry.path) ||
+      (entry.kind !== "file" && entry.kind !== "directory") ||
+      typeof entry.reason !== "string" ||
+      entry.reason.trim().length === 0
+    ) {
+      throw new Error(`${label} is invalid`);
+    }
+    if (supportingPaths.has(entry.path)) {
+      throw new Error(`supporting path is duplicated: ${entry.path}`);
+    }
+    supportingPaths.add(entry.path);
   }
 }
 
