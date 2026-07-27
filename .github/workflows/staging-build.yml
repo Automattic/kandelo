@@ -903,6 +903,28 @@ jobs:
           bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh \
             --fetch-only \
             --expected-ledger "$EXPECTED"
+          CANONICAL_INDEX="$RUNNER_TEMP/canonical-browser-shell-index/index.toml"
+          bash scripts/dev-shell.sh \
+            bash scripts/materialize-ci-canonical-package-index.sh \
+              "$PACKAGE_BASELINE_TAG" "$ABI" "$CANONICAL_INDEX"
+          SHELL_IMAGE="$(
+            bash scripts/resolve-binary.sh programs/shell.vfs.zst \
+              2>/dev/null || true
+          )"
+          [ -n "$SHELL_IMAGE" ] || SHELL_IMAGE="-"
+          # WHY: a staged archive is no longer a publication blocker once it
+          # reaches the PR release, but its final immutable bottle URLs still
+          # do not exist. Compare its exact package identity with the
+          # canonical index instead of inferring publication from presence in
+          # staging.
+          bash scripts/dev-shell.sh \
+            bash scripts/ci-homebrew-browser-mirror-state.sh create \
+            "$EXPECTED" \
+            "$BLOCKED" \
+            "$CANONICAL_INDEX" \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_BASELINE_TAG}/index.toml" \
+            "$SHELL_IMAGE" \
+            "$RUNNER_TEMP/homebrew-browser-mirror-state.json"
 
       - name: Skip staging test suites
         if: env.SKIP_STAGING_TESTS == 'true'
@@ -944,6 +966,7 @@ jobs:
         run: |
           bash scripts/dev-shell.sh bash scripts/pack-ci-test-workspace.sh \
             --publication-blockers "$RUNNER_TEMP/staging-publication-blockers.json" \
+            --homebrew-browser-mirror-state "$RUNNER_TEMP/homebrew-browser-mirror-state.json" \
             "$RUNNER_TEMP/test-workspace.tar.zst"
 
       - name: Upload prepared test workspace

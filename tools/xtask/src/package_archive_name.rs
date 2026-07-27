@@ -12,14 +12,32 @@ pub(crate) fn render(
     abi: u32,
     cache_key_sha: &str,
 ) -> String {
+    render_identity(
+        &manifest.name,
+        &manifest.version,
+        manifest.revision,
+        arch,
+        abi,
+        cache_key_sha,
+    )
+}
+
+pub(crate) fn render_identity(
+    name: &str,
+    version: &str,
+    revision: u32,
+    arch: TargetArch,
+    abi: u32,
+    cache_key_sha: &str,
+) -> String {
     let short = cache_key_sha
         .get(..8)
         .expect("package archive cache key must be validated before rendering");
     format!(
         "{}-{}-rev{}-abi{}-{}-{}.tar.zst",
-        manifest.name,
-        manifest.version,
-        manifest.revision,
+        name,
+        version,
+        revision,
         abi,
         arch.as_str(),
         short,
