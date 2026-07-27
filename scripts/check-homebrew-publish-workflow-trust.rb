@@ -3330,6 +3330,7 @@ def check_publisher(workflow)
     'scripts/install-local-binary.sh',
     'tap_recipe_inaccessible_paths=("-$xtask_alias" "$protected_xtask")',
     'homebrew_patched_launcher_prepare_platform_projection',
+    'scripts/homebrew-tap-recipe-runner.py',
     'tools/bin/wasm-fork-instrument',
     'tools/bin/wasm-local-root-spill',
     'closed platform projection exposes undeclared authority',
@@ -3517,6 +3518,58 @@ def check_publisher(workflow)
           "homebrew_assert_protected_host_versioned_executable \\\n" \
           '    "$build_user" /usr/bin/python3 /usr/bin/python3 python3 python3'
         ), "isolated Brew launcher does not route Python through its protected selector")
+  recipe_runner_source_contract = launcher[
+    /homebrew_patched_launcher_admit_recipe_runner_source\(\) \{\n(.*?)\n\}\n\nhomebrew_patched_launcher_prepare_recipe_runner\(\)/m,
+    1
+  ]
+  check(recipe_runner_source_contract,
+        "isolated Brew launcher lost privileged recipe-runner source admission")
+  [
+    'local source="$platform_root/scripts/homebrew-tap-recipe-runner.py"',
+    '[ "$platform_root" != "$HOMEBREW_PATCHED_PLATFORM_ROOT" ]',
+    'homebrew_patched_launcher_verify_platform_projection',
+    '[ ! -f "$source" ]',
+    '[ -L "$source" ]',
+    '/usr/bin/stat -c \'%u:%g:%a:%h\' "$source"',
+    '"0:0:444:1"',
+    'source_sha="$(/usr/bin/sha256sum "$source" 2>/dev/null || true)"',
+    '[[ "$source_sha" =~ ^[0-9a-f]{64}$ ]]',
+  ].each do |fragment|
+    check(recipe_runner_source_contract.include?(fragment),
+          "privileged recipe-runner source admission lacks #{fragment}")
+  end
+  recipe_runner_prepare_contract = launcher[
+    /homebrew_patched_launcher_prepare_recipe_runner\(\) \{\n(.*?)\n\}\n\nhomebrew_patched_launcher_prepare_platform_projection\(\)/m,
+    1
+  ]
+  check(recipe_runner_prepare_contract,
+        "isolated Brew launcher lost privileged recipe-runner staging")
+  [
+    'homebrew_patched_launcher_admit_recipe_runner_source "$platform_host_root"',
+    "runner_source_state=",
+    "runner_source_sha=",
+    '[ ! -e "$runner" ]',
+    '[ ! -L "$runner" ]',
+    '"$runner_source" "$runner"',
+    "runner_source_state_after=",
+    "runner_source_sha_after=",
+    '[ "$runner_source_state_after" != "$runner_source_state" ]',
+    '[ "$runner_source_sha_after" != "$runner_source_sha" ]',
+    '[ "$runner_sha" != "$runner_source_sha" ]',
+    %q([ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$runner")" != "0:0:555:1" ]),
+    '! /usr/bin/cmp -s -- "$runner_source" "$runner"',
+    'trusted tap recipe runner changed while it was staged',
+    '[ "$runner_sha_after" != "$runner_sha" ]',
+  ].each do |fragment|
+    check(recipe_runner_prepare_contract.include?(fragment),
+          "privileged recipe-runner staging lacks #{fragment}")
+  end
+  check(!recipe_runner_prepare_contract.include?("kandelo_root"),
+        "privileged recipe-runner staging still accepts a second checkout authority")
+  check(launcher.include?(
+          '"$build_user" "$build_group" "$recipe_user" "$primary_tap_root" \\' \
+          "\n      \"$platform_source_root\" \\\n"
+        ), "privileged recipe runner is not sourced from the sealed platform projection")
   check(!launcher.include?('homebrew_assert_tree_not_writable_by_user "$build_user" "$sysroot"'),
         "isolated Brew launcher requires pre-bind access to the protected sysroot owner path")
   check(launcher.scan("homebrew_patched_launcher_emit_sysroot_access_audit").length == 2,
@@ -3736,6 +3789,14 @@ def check_publisher(workflow)
     "distribution-provided protected Python selector was rejected",
     "version selector escaped its protected system directory",
     "version selector accepted a build-user-replaceable tool",
+    "sealed platform projection did not admit the exact recipe runner",
+    "recipe runner admission accepted the mutable checkout projection source",
+    "recipe runner admission accepted a non-root-owned source",
+    "recipe runner admission accepted changed source bytes",
+    "recipe runner admission accepted a symlinked source substitution",
+    "recipe runner admission accepted an unavailable projected source",
+    "recipe runner fixture does not model a workflow-private checkout",
+    "isolated launcher did not stage the admitted root-owned recipe runner",
   ].each do |fragment|
     check(launcher_test.include?(fragment),
           "launcher checker regression lacks #{fragment}")

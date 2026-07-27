@@ -1520,6 +1520,11 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
     printf 'platform fixture: %s\n' "$platform_file" \
       >"$platform_fixture/$platform_file"
   done
+  # The privileged runner must be the real reviewed program. A placeholder
+  # would prove only that projection paths exist, not that schema-3 staging
+  # executes the exact bytes admitted from Kandelo.
+  cp "$REPO_ROOT/scripts/homebrew-tap-recipe-runner.py" \
+    "$platform_fixture/scripts/homebrew-tap-recipe-runner.py"
   chmod 0755 \
     "$platform_fixture/sdk/activate.sh" \
     "$platform_fixture/sdk/bin/wasm32posix-cc" \
@@ -1533,6 +1538,61 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   printf 'must stay hidden\n' >"$platform_fixture/packages/registry/package.toml"
   homebrew_patched_launcher_prepare_platform_projection \
     "$platform_fixture" "$platform_projection" /usr/bin/sudo
+  homebrew_patched_launcher_verify_platform_projection
+  projected_recipe_runner="$platform_projection/scripts/homebrew-tap-recipe-runner.py"
+  admitted_recipe_runner="$(
+    homebrew_patched_launcher_admit_recipe_runner_source "$platform_projection"
+  )"
+  [ "$admitted_recipe_runner" = "$projected_recipe_runner" ] &&
+    [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$projected_recipe_runner")" = \
+      "0:0:444:1" ] &&
+    /usr/bin/cmp -s \
+      "$REPO_ROOT/scripts/homebrew-tap-recipe-runner.py" \
+      "$projected_recipe_runner" ||
+    fail "sealed platform projection did not admit the exact recipe runner"
+  if homebrew_patched_launcher_admit_recipe_runner_source \
+      "$platform_fixture" >/dev/null 2>&1; then
+    fail "recipe runner admission accepted the mutable checkout projection source"
+  fi
+  /usr/bin/sudo -n -- /usr/bin/chown \
+    "$(id -u):$(id -g)" "$projected_recipe_runner"
+  if homebrew_patched_launcher_admit_recipe_runner_source \
+      "$platform_projection" >/dev/null 2>&1; then
+    fail "recipe runner admission accepted a non-root-owned source"
+  fi
+  /usr/bin/sudo -n -- /usr/bin/chown root:root "$projected_recipe_runner"
+  homebrew_patched_launcher_verify_platform_projection
+  /usr/bin/sudo -n -- /usr/bin/install -o root -g root -m 0444 -- \
+    /usr/bin/true "$projected_recipe_runner"
+  if homebrew_patched_launcher_admit_recipe_runner_source \
+      "$platform_projection" >/dev/null 2>&1; then
+    fail "recipe runner admission accepted changed source bytes"
+  fi
+  /usr/bin/sudo -n -- /usr/bin/install -o root -g root -m 0444 -- \
+    "$REPO_ROOT/scripts/homebrew-tap-recipe-runner.py" \
+    "$projected_recipe_runner"
+  homebrew_patched_launcher_verify_platform_projection
+  /usr/bin/sudo -n -- /usr/bin/rm -f "$projected_recipe_runner"
+  /usr/bin/sudo -n -- /usr/bin/ln -s \
+    "$REPO_ROOT/scripts/homebrew-tap-recipe-runner.py" \
+    "$projected_recipe_runner"
+  if homebrew_patched_launcher_admit_recipe_runner_source \
+      "$platform_projection" >/dev/null 2>&1; then
+    fail "recipe runner admission accepted a symlinked source substitution"
+  fi
+  /usr/bin/sudo -n -- /usr/bin/rm -f "$projected_recipe_runner"
+  /usr/bin/sudo -n -- /usr/bin/install -o root -g root -m 0444 -- \
+    "$REPO_ROOT/scripts/homebrew-tap-recipe-runner.py" \
+    "$projected_recipe_runner"
+  homebrew_patched_launcher_verify_platform_projection
+  /usr/bin/sudo -n -- /usr/bin/mv \
+    "$projected_recipe_runner" "$projected_recipe_runner.unavailable"
+  if homebrew_patched_launcher_admit_recipe_runner_source \
+      "$platform_projection" >/dev/null 2>&1; then
+    fail "recipe runner admission accepted an unavailable projected source"
+  fi
+  /usr/bin/sudo -n -- /usr/bin/mv \
+    "$projected_recipe_runner.unavailable" "$projected_recipe_runner"
   homebrew_patched_launcher_verify_platform_projection
   [ ! -e "$platform_projection/.git" ] &&
     [ ! -e "$platform_projection/packages" ] &&
@@ -1731,6 +1791,11 @@ EOF
   if /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
     /usr/bin/test -r "$isolated_xtask"; then
     fail "program-index checker fixture does not model a workflow-private checkout"
+  fi
+  if /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+    /usr/bin/test -r \
+      "$isolated_kandelo/scripts/homebrew-tap-recipe-runner.py"; then
+    fail "recipe runner fixture does not model a workflow-private checkout"
   fi
   export HOMEBREW_CACHE="$isolated_cache"
   export HOMEBREW_TEMP="$isolated_temp"
@@ -2084,6 +2149,12 @@ EOF
       "0:0:555:1" ] &&
     /usr/bin/sudo -n -- /usr/bin/cmp -s -- "$isolated_xtask" "$protected_xtask" ||
     fail "isolated launcher did not stage one exact root-owned checker inode"
+  [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a:%h' \
+      "$HOMEBREW_PATCHED_RECIPE_RUNNER")" = "0:0:555:1" ] &&
+    /usr/bin/sudo -n -- /usr/bin/cmp -s -- \
+      "$protected_platform_root/scripts/homebrew-tap-recipe-runner.py" \
+      "$HOMEBREW_PATCHED_RECIPE_RUNNER" ||
+    fail "isolated launcher did not stage the admitted root-owned recipe runner"
   /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
     test -x "$isolated_native_base" ||
     fail "build identity cannot traverse the workflow-owned native parent"

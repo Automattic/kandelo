@@ -251,17 +251,50 @@ homebrew_patched_launcher_verify_recipe_runner() {
   fi
 }
 
-homebrew_patched_launcher_prepare_recipe_runner() {
-  if [ "$#" -ne 16 ]; then
-    echo "homebrew_patched_launcher_prepare_recipe_runner: expected BUILD-USER BUILD-GROUP RECIPE-USER KANDELO-ROOT PRIMARY-TAP PLATFORM-HOST PLATFORM-ALIAS SYSROOT-HOST SYSROOT-ALIAS ALLOWED-REQUEST-ROOT SYSTEMD-SLICE UNIT-PREFIX SUDO SYSTEMD-RUN JQ NODE" >&2
+homebrew_patched_launcher_admit_recipe_runner_source() {
+  if [ "$#" -ne 1 ]; then
+    echo "homebrew_patched_launcher_admit_recipe_runner_source: expected PLATFORM-ROOT" >&2
     return 2
   fi
-  local build_user="$1" build_group="$2" recipe_user="$3" kandelo_root="$4"
-  local primary_tap_root="$5" platform_host_root="$6" platform_alias_root="$7"
-  local sysroot_host_root="$8" sysroot_alias_root="$9" allowed_request_root="${10}"
-  local systemd_slice="${11}" unit_prefix="${12}" sudo_bin="${13}"
-  local systemd_run_bin="${14}" jq_bin="${15}" node_bin="${16}"
-  local runner_source="$kandelo_root/scripts/homebrew-tap-recipe-runner.py"
+  local platform_root="$1"
+  local source="$platform_root/scripts/homebrew-tap-recipe-runner.py"
+  local source_sha
+  # WHY: this Python program runs as root before any tap recipe is admitted.
+  # Select it only from the exact root-owned platform projection whose complete
+  # manifest was sealed by the launcher; a checkout path supplied separately
+  # would reintroduce mutable workflow state as privileged code authority.
+  if [ -z "$HOMEBREW_PATCHED_PLATFORM_ROOT" ] || \
+     [ "$platform_root" != "$HOMEBREW_PATCHED_PLATFORM_ROOT" ]; then
+    echo "homebrew-patched-launcher: tap recipe runner source is outside the sealed platform projection" >&2
+    return 2
+  fi
+  homebrew_patched_launcher_verify_platform_projection || return
+  if [ ! -f "$source" ] || [ -L "$source" ] || \
+     [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$source" \
+       2>/dev/null || true)" != "0:0:444:1" ]; then
+    echo "homebrew-patched-launcher: trusted tap recipe runner source is not sealed" >&2
+    return 2
+  fi
+  source_sha="$(/usr/bin/sha256sum "$source" 2>/dev/null || true)"
+  source_sha="${source_sha%% *}"
+  if ! [[ "$source_sha" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "homebrew-patched-launcher: trusted tap recipe runner source cannot be authenticated" >&2
+    return 2
+  fi
+  printf '%s\n' "$source"
+}
+
+homebrew_patched_launcher_prepare_recipe_runner() {
+  if [ "$#" -ne 15 ]; then
+    echo "homebrew_patched_launcher_prepare_recipe_runner: expected BUILD-USER BUILD-GROUP RECIPE-USER PRIMARY-TAP PLATFORM-HOST PLATFORM-ALIAS SYSROOT-HOST SYSROOT-ALIAS ALLOWED-REQUEST-ROOT SYSTEMD-SLICE UNIT-PREFIX SUDO SYSTEMD-RUN JQ NODE" >&2
+    return 2
+  fi
+  local build_user="$1" build_group="$2" recipe_user="$3" primary_tap_root="$4"
+  local platform_host_root="$5" platform_alias_root="$6"
+  local sysroot_host_root="$7" sysroot_alias_root="$8" allowed_request_root="$9"
+  local systemd_slice="${10}" unit_prefix="${11}" sudo_bin="${12}"
+  local systemd_run_bin="${13}" jq_bin="${14}" node_bin="${15}"
+  local runner_source
   local runner="$HOMEBREW_PATCHED_PROTECTED_DIR/homebrew-tap-recipe-runner"
   local config="$HOMEBREW_PATCHED_PROTECTED_DIR/runner-config.json"
   local passwd_file="$HOMEBREW_PATCHED_PROTECTED_DIR/recipe-passwd"
@@ -272,12 +305,18 @@ homebrew_patched_launcher_prepare_recipe_runner() {
   local socket_path="$HOMEBREW_PATCHED_PROTECTED_DIR/s"
   local formula manifest_sha256 recipe_host_root recipe_alias_root recipe_entrypoint
   local build_uid build_gid recipe_uid recipe_gid llvm_bin supervisor_unit
-  local runner_sha runner_state attempt socket_state
+  local runner_source_sha runner_source_sha_after
+  local runner_source_state runner_source_state_after
+  local runner_sha runner_sha_after runner_state attempt socket_state
 
-  [ -f "$runner_source" ] && [ ! -L "$runner_source" ] || {
-    echo "homebrew-patched-launcher: trusted tap recipe runner source is unavailable" >&2
-    return 2
-  }
+  runner_source="$(
+    homebrew_patched_launcher_admit_recipe_runner_source "$platform_host_root"
+  )" || return
+  runner_source_state="$(
+    /usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' "$runner_source"
+  )" || return
+  runner_source_sha="$(/usr/bin/sha256sum "$runner_source")" || return
+  runner_source_sha="${runner_source_sha%% *}"
   build_uid="$(/usr/bin/id -u "$build_user")" || return
   build_gid="$(/usr/bin/id -g "$build_user")" || return
   recipe_uid="$(/usr/bin/id -u "$recipe_user")" || return
@@ -314,8 +353,29 @@ homebrew_patched_launcher_prepare_recipe_runner() {
     return 2
   }
 
+  [ ! -e "$runner" ] && [ ! -L "$runner" ] || {
+    echo "homebrew-patched-launcher: protected tap recipe runner destination is occupied" >&2
+    return 2
+  }
   "$sudo_bin" /usr/bin/install -o root -g root -m 0555 -- \
     "$runner_source" "$runner" || return
+  runner_source_state_after="$(
+    /usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' "$runner_source"
+  )" || return
+  runner_source_sha_after="$(/usr/bin/sha256sum "$runner_source")" || return
+  runner_source_sha_after="${runner_source_sha_after%% *}"
+  runner_state="$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' "$runner")" ||
+    return
+  runner_sha="$(/usr/bin/sha256sum "$runner")" || return
+  runner_sha="${runner_sha%% *}"
+  if [ "$runner_source_state_after" != "$runner_source_state" ] || \
+     [ "$runner_source_sha_after" != "$runner_source_sha" ] || \
+     [ "$runner_sha" != "$runner_source_sha" ] || \
+     [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$runner")" != "0:0:555:1" ] || \
+     ! /usr/bin/cmp -s -- "$runner_source" "$runner"; then
+    echo "homebrew-patched-launcher: trusted tap recipe runner changed while it was staged" >&2
+    return 2
+  fi
   # WHY: Formula validation must see the same path it normally uses, but the
   # privileged runner must not trust or expose the mutable tap checkout. Copy
   # only the manifest-closed selected recipe, then bind that projection over
@@ -409,14 +469,13 @@ homebrew_patched_launcher_prepare_recipe_runner() {
     "$sudo_bin" -n -- /usr/bin/tee "$config" >/dev/null || return
   "$sudo_bin" /usr/bin/chown root:root "$config" || return
   "$sudo_bin" /usr/bin/chmod 0400 "$config" || return
-  runner_sha="$(/usr/bin/sha256sum "$runner")" || return
-  runner_sha="${runner_sha%% *}"
-  runner_state="$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' "$runner")" ||
-    return
-  [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$runner")" = "0:0:555:1" ] || {
+  runner_sha_after="$(/usr/bin/sha256sum "$runner")" || return
+  runner_sha_after="${runner_sha_after%% *}"
+  if [ "$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' "$runner")" != \
+       "$runner_state" ] || [ "$runner_sha_after" != "$runner_sha" ]; then
     echo "homebrew-patched-launcher: protected tap recipe runner is not sealed" >&2
     return 2
-  }
+  fi
 
   HOMEBREW_PATCHED_RECIPE_RUNNER="$runner"
   HOMEBREW_PATCHED_RECIPE_RUNNER_STATE="$runner_state"
@@ -496,6 +555,7 @@ homebrew_patched_launcher_prepare_platform_projection() {
     scripts/run-wasm-fork-instrument.sh
     scripts/run-wasm-local-root-spill.sh
     scripts/wasm-artifact-guards.sh
+    scripts/homebrew-tap-recipe-runner.py
     tools/bin/wasm-fork-instrument
     tools/bin/wasm-local-root-spill
     crates/shared/src/lib.rs
@@ -3226,8 +3286,8 @@ homebrew_patched_launcher_isolate() {
   fi
   if [ "$tap_recipe_isolation" = "1" ]; then
     homebrew_patched_launcher_prepare_recipe_runner \
-      "$build_user" "$build_group" "$recipe_user" "$kandelo_root" \
-      "$primary_tap_root" "$platform_source_root" \
+      "$build_user" "$build_group" "$recipe_user" "$primary_tap_root" \
+      "$platform_source_root" \
       "$source_alias_dir/kandelo" "$sysroot" "$source_alias_dir/sysroot" \
       "$HOMEBREW_TEMP" "$systemd_slice" "$unit_prefix" "$sudo_bin" \
       "$systemd_run_bin" "$jq_bin" "$node_bin" || return
