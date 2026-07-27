@@ -75,6 +75,68 @@ run_timed() {
     return "$status"
 }
 
+CI_HOMEBREW_BROWSER_MIRROR=""
+CI_HOMEBREW_BROWSER_REPORT_ROOT=""
+
+cleanup_ci_homebrew_browser_mirror() {
+    local status="$?"
+    trap - EXIT
+    if [ -n "$CI_HOMEBREW_BROWSER_MIRROR" ]; then
+        rm -rf -- "$CI_HOMEBREW_BROWSER_MIRROR"
+    fi
+    if [ -n "$CI_HOMEBREW_BROWSER_REPORT_ROOT" ]; then
+        rm -rf -- "$CI_HOMEBREW_BROWSER_REPORT_ROOT"
+    fi
+    exit "$status"
+}
+
+prepare_ci_homebrew_browser_mirror() {
+    local blockers="$REPO_ROOT/.ci-test-publication-blockers.json"
+    local mirror="$REPO_ROOT/apps/browser-demos/public/homebrew-main-shell-bottles"
+    local has_shell
+    local image
+    local report
+
+    [ -f "$blockers" ] || return 0
+    has_shell="$(jq -r 'any(.entries[]; .package == "shell")' "$blockers")" || {
+        echo "ci-run-test-suite: invalid publication blocker report: $blockers" >&2
+        return 1
+    }
+    [ "$has_shell" = "true" ] || return 0
+    if [ -e "$mirror" ] || [ -L "$mirror" ]; then
+        echo "ci-run-test-suite: closed Homebrew browser mirror already exists: $mirror" >&2
+        return 1
+    fi
+
+    image="$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)"
+    [ -f "$image" ] && [ ! -L "$image" ] || {
+        echo "ci-run-test-suite: staged shell image is not one regular file: $image" >&2
+        return 1
+    }
+    CI_HOMEBREW_BROWSER_REPORT_ROOT="$(
+        mktemp -d "${RUNNER_TEMP:-/tmp}/kandelo-ci-homebrew-browser.XXXXXX"
+    )"
+    report="$CI_HOMEBREW_BROWSER_REPORT_ROOT/recovery.json"
+    CI_HOMEBREW_BROWSER_MIRROR="$mirror"
+    trap cleanup_ci_homebrew_browser_mirror EXIT
+
+    # WHY: the candidate shell names its final immutable release URLs, but that
+    # release cannot exist until the exact Kandelo commit reaches main. Recover
+    # the same digest-bound layers anonymously from their public source
+    # packages for pre-merge browser validation instead of publishing early or
+    # weakening the candidate image's production transport identity.
+    npx tsx scripts/recover-homebrew-bottle-mirror.ts \
+        --image "$image" \
+        --out "$mirror" \
+        --report "$report"
+    [ -f "$mirror/kandelo-homebrew-bottle-mirror-plan.json" ] &&
+        [ -f "$report" ] || {
+        echo "ci-run-test-suite: closed Homebrew browser mirror is incomplete" >&2
+        return 1
+    }
+    export VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT=/homebrew-main-shell-bottles
+}
+
 case "$suite" in
     cargo-kernel)
         HOST_TARGET="$(host_target)"
@@ -104,6 +166,7 @@ case "$suite" in
             # pass proves that every browser dependency is now resolvable.
             bash scripts/materialize-ci-publication-blockers.sh
             ./run.sh --already-materialized --fetch-only prepare-browser
+            prepare_ci_homebrew_browser_mirror
         fi
         bash scripts/ci-check-browser-assets.sh
         (
