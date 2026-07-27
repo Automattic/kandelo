@@ -1521,8 +1521,9 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    repository's scoped `github.token` to an isolated ORAS transport. This
    includes bounded tar
    structure, link safety, receipt identity, local-build-root absence across all
-   regular members, and every Wasm member's ABI, memory width, object kind, and
-   fork instrumentation. The credentialed step cannot evaluate
+   regular members, and every Wasm member's role-appropriate ABI/import
+   contract, memory width, object kind, and fork instrumentation. The
+   credentialed step cannot evaluate
    Formula Ruby or construct OCI metadata. GHCR returns the same anonymous
    authorization failure for a missing package namespace and an existing private
    reference. At that boundary, write mode uses the isolated credentials to fetch
@@ -1647,12 +1648,18 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    archive inspector independently derives the keg file inventory, executable
    links, target receipt dependencies, archived Formula digest, and
    fork-instrumentation state from the selected bottle bytes. Every regular
-   member beginning with Wasm magic is treated as a Kandelo process module,
-   independent of filename, mode, or wrapper layout. It must carry the exact
-   release ABI, one memory matching the bottle architecture, no relocatable
-   object marker, and complete fork exports when needed. A future bottle that
-   ships plugin or browser Wasm as data needs an explicit typed payload contract;
-   modes and paths are not trusted exemptions. The static
+   member beginning with Wasm magic is decoded independent of its filename or
+   mode. A module with exactly one leading `dylink.0` section is a dynamic-link
+   side module: it must import the one architecture-matching process memory,
+   use only the namespaces supplied by Kandelo's dynamic linker, avoid direct
+   process-only kernel imports, and carry complete side-module fork
+   instrumentation when needed. Every other Wasm member is a process
+   executable and must carry the exact release ABI in addition to the common
+   memory, object-kind, and fork checks. Homebrew `bin/` and `sbin/` links
+   declare process entrypoints, so they may not resolve to a side module.
+   Neither a `.so` suffix nor a non-executable mode exempts an ordinary Wasm
+   member from process validation. A future bottle that ships plugin or browser
+   Wasm as inert data still needs an explicit typed payload contract. The static
    Formula declaration parser then cross-checks dependency categories and
    directness against the validated build provenance and receipt. The verifier
    generates the selected package's candidate sidecars, then validates the

@@ -689,13 +689,99 @@ wasm_imports_kernel_fork() {
     grep -a -q 'kernel_fork' "$path" 2>/dev/null
 }
 
+# Return 0 only for the `env.fork` import used by a dynamically linked Wasm
+# side module. Main process modules use `kernel.kernel_fork` instead.
+wasm_imports_side_module_fork() {
+    local path="${1:-}"
+    wasm_is_binary "$path" || return 1
+    if command -v wasm-objdump >/dev/null 2>&1; then
+        _wasm_stream_awk '
+            /<- env\.fork$/ { found = 1 }
+            END { exit(found ? 0 : 1) }
+        ' wasm-objdump -x "$path"
+        return
+    fi
+    # Import names are plain UTF-8 in the binary, but without a structural
+    # decoder this fallback cannot distinguish an unrelated string. Treat a
+    # match as present so callers fail safely; absence remains a negative.
+    grep -a -q 'fork' "$path" 2>/dev/null
+}
+
+# Print `executable` or `side-module` for a structurally decoded Wasm module.
+# A valid Kandelo side module carries exactly one `dylink.0` custom section as
+# its first section, matching the runtime loader contract in host/src/dylink.ts.
+# Return a status greater than 1 for a decoder failure or a misplaced/duplicate
+# marker so callers cannot reinterpret malformed side-module input as a process
+# executable.
+wasm_artifact_role() {
+    local path="${1:-}"
+    wasm_is_binary "$path" || return 2
+    command -v wasm-objdump >/dev/null 2>&1 || return 2
+
+    _wasm_stream_awk '
+        /^Sections:$/ {
+            in_sections = 1
+            next
+        }
+        in_sections && / start=0x[0-9a-fA-F]+ end=0x[0-9a-fA-F]+ / {
+            sections++
+            if ($0 ~ /^ *Custom .* "dylink\.0"$/) {
+                dylink_sections++
+                if (sections == 1) dylink_first = 1
+            }
+        }
+        END {
+            if (sections == 0) exit 3
+            if (dylink_sections == 0) {
+                print "executable"
+                exit
+            }
+            if (dylink_sections != 1 || dylink_first != 1) exit 3
+            print "side-module"
+        }
+    ' wasm-objdump -h "$path"
+}
+
+# Validate the import shape that the Kandelo dynamic linker can instantiate.
+# Side modules share the process memory and may import only from the namespaces
+# that host/src/dylink.ts supplies. Print the detected memory architecture.
+wasm_validate_side_module_imports() {
+    local path="${1:-}"
+    wasm_is_binary "$path" || return 2
+    command -v wasm-objdump >/dev/null 2>&1 || return 2
+
+    _wasm_stream_awk '
+        /^ - memory\[[0-9]+\] pages:/ {
+            memories++
+            if ($0 ~ / i64( |$)/) memory64++
+            if ($0 ~ / <- env\.memory$/) env_memories++
+        }
+        / <- / {
+            identity = $0
+            sub(/^.* <- /, "", identity)
+            if (identity !~ /^env\./ &&
+                identity !~ /^GOT\.mem\./ &&
+                identity !~ /^GOT\.func\./) {
+                unsupported[identity] = 1
+            }
+        }
+        END {
+            if (memories != 1 || env_memories != 1) exit 3
+            for (identity in unsupported) exit 4
+            if (memory64 == 1) print "wasm64"
+            else print "wasm32"
+        }
+    ' wasm-objdump -x "$path"
+}
+
 # Inspect the complete fork-instrumentation contract with one structural
 # decoder pass. Large programs such as Ruby produce tens of megabytes of
 # `wasm-objdump -x` output; decoding that output once also keeps a transient
 # decoder failure from being misreported as one arbitrarily missing export.
 #
 # Output fields are, in order:
-#   relocatable, imports kernel.kernel_fork, frame reserve/commit/next imports,
+#   relocatable, imports a main or side-module fork entry,
+#   frame reserve/commit/next imports,
 #   linked-frame descriptor count, abort begin/end, rewind begin/end, state,
 #   unwind begin/end exports, module-memory count, memory64 count, and
 #   signature mismatches against the module memory's pointer type.
@@ -730,7 +816,7 @@ _wasm_fork_contract_inventory() {
         /^ - func\[.* sig=[0-9]+/ {
             function_signatures[function_index($0)] = function_types[signature_index($0)]
         }
-        /^ - func\[.* <- kernel\.kernel_fork$/ { imports_fork = 1 }
+        /^ - func\[.* <- (kernel\.kernel_fork|env\.fork)$/ { imports_fork = 1 }
         /^ - func\[.* <- env\.__wpk_fork_frame_reserve$/ {
             frame_reserve++
             frame_reserve_signatures[frame_reserve] = function_signatures[function_index($0)]

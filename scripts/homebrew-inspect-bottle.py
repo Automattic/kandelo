@@ -499,7 +499,7 @@ class BottleInspector:
             (MAX_WASM_VALIDATOR_OUTPUT_BYTES, MAX_WASM_VALIDATOR_OUTPUT_BYTES),
         )
 
-    def _validate_wasm(self, wasm_path: str, label: str) -> str:
+    def _validate_wasm(self, wasm_path: str, label: str, declared_role: str) -> str:
         with (
             tempfile.NamedTemporaryFile() as stdout_file,
             tempfile.NamedTemporaryFile() as stderr_file,
@@ -512,6 +512,7 @@ class BottleInspector:
                         wasm_path,
                         str(self.expected_abi),
                         self.expected_arch,
+                        declared_role,
                     ],
                     stdin=subprocess.DEVNULL,
                     stdout=stdout_file,
@@ -552,13 +553,13 @@ class BottleInspector:
                 fail(f"Wasm inspection output is not UTF-8 for {label!r}")
             stderr = stderr_file.read(2048).decode("utf-8", errors="replace")
             if return_code != 0:
-                fail(f"cannot inspect bottle executable {label!r}: {stderr}")
+                fail(f"cannot inspect bottle Wasm artifact {label!r}: {stderr}")
         result = stdout.strip()
         if result not in {"required", "not-required"}:
             fail(f"Wasm inspection returned an invalid result for {label!r}")
         return result
 
-    def _inspect_wasm(self, entry: ArchiveEntry) -> str:
+    def _inspect_wasm(self, entry: ArchiveEntry, declared_role: str) -> str:
         if entry.size > MAX_WASM_BYTES:
             fail(f"bottle Wasm module {entry.path!r} exceeds {MAX_WASM_BYTES} bytes")
         with self._extract_regular(entry) as source, tempfile.NamedTemporaryFile(
@@ -574,7 +575,7 @@ class BottleInspector:
                     break
                 wasm_file.write(chunk)
             wasm_file.flush()
-            return self._validate_wasm(wasm_file.name, entry.path)
+            return self._validate_wasm(wasm_file.name, entry.path, declared_role)
 
     def _result(self) -> dict[str, object]:
         formula_rel = f".brew/{self.formula}.rb"
@@ -593,7 +594,7 @@ class BottleInspector:
             if path.startswith(f"{self.payload_root}/")
             and entry.kind in {"regular", "symlink", "hardlink"}
         )
-        path_exec_files, _resolved_execs = self._path_executables(all_files)
+        path_exec_files, resolved_execs = self._path_executables(all_files)
         wasm_entries = {
             entry.path: entry
             for entry in self.entries.values()
@@ -601,7 +602,15 @@ class BottleInspector:
         }
         fork_instrumentation = "not-required"
         for entry in sorted(wasm_entries.values(), key=lambda value: value.path):
-            result = self._inspect_wasm(entry)
+            # WHY: Homebrew exposes executable entrypoints through bin/sbin
+            # links, while Wasm side modules advertise their distinct loading
+            # contract structurally through a leading dylink.0 section. Pass
+            # the PATH role into the validator so a mislabeled side module can
+            # never evade the process ABI contract.
+            declared_role = (
+                "path-executable" if entry.path in resolved_execs else "payload"
+            )
+            result = self._inspect_wasm(entry, declared_role)
             if result == "required":
                 fork_instrumentation = "required"
 
@@ -640,7 +649,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--wasm-validator",
-        default=str(pathlib.Path(__file__).with_name("homebrew-validate-wasm-executable.sh")),
+        default=str(pathlib.Path(__file__).with_name("homebrew-validate-wasm-artifact.sh")),
     )
     parser.add_argument(
         "--wasm-timeout-seconds",
