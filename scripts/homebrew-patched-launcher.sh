@@ -648,7 +648,11 @@ homebrew_patched_launcher_seal_target_dependencies() {
   homebrew_assert_tree_symlinks_contained "$cellar" "target Cellar" || return
   "$sudo_bin" -n -- /usr/bin/find "$cellar" -xdev -mindepth 1 \
     -exec /usr/bin/chown -h root:root {} + || return
-  "$sudo_bin" -n -- /usr/bin/find "$cellar" -xdev -type d \
+  # WHY: dependency kegs are immutable inputs, but Cellar itself is the
+  # root-owned sticky insertion point where the Formula identity creates its
+  # own new rack. Sealing depth zero would protect dependencies by disabling
+  # every subsequent target install.
+  "$sudo_bin" -n -- /usr/bin/find "$cellar" -xdev -mindepth 1 -type d \
     -exec /usr/bin/chmod 0555 {} + || return
   "$sudo_bin" -n -- /usr/bin/find "$cellar" -xdev -type f -perm /111 \
     -exec /usr/bin/chmod 0555 {} + || return
@@ -2391,20 +2395,21 @@ homebrew_patched_launcher_emit_xtask_access_audit() {
   printf 'expected_findmnt=%q\n' "$findmnt_bin"
   printf 'if [ "$expected_tap_recipe_isolation" = 1 ]; then\n'
   # WHY: schema 3 deliberately removes resolver authority. Its startup audit
-  # must prove both checker paths are absent, not apply the schema-2
-  # requirement that would make every closed tap recipe fail before Formula
-  # evaluation. Checking the root-staged path matters because the protected
-  # directory itself remains traversable for the Brew and audit launchers.
+  # must prove that neither checker path is usable, not require that both names
+  # fail `test -e`: systemd implements InaccessiblePaths= for a file by mounting
+  # a mode-000 placeholder at that name. Checking the root-staged path matters
+  # because the protected directory itself remains traversable for the Brew and
+  # audit launchers.
   printf '  if [ -n "${WASM_POSIX_XTASK_BIN+x}" ] || '
-  printf '[ -n "${HOMEBREW_KANDELO_XTASK_BIN+x}" ] || '
-  printf '[ -e "$expected_xtask" ] || [ -L "$expected_xtask" ] || '
-  printf '[ -r "$expected_xtask" ] || [ -x "$expected_xtask" ] || '
-  printf '[ -w "$expected_xtask" ] || '
-  printf '[ -e "$expected_protected_xtask" ] || [ -L "$expected_protected_xtask" ] || '
-  printf '[ -r "$expected_protected_xtask" ] || [ -x "$expected_protected_xtask" ] || '
-  printf '[ -w "$expected_protected_xtask" ]; then\n'
+  printf '[ -n "${HOMEBREW_KANDELO_XTASK_BIN+x}" ]; then\n'
   printf '    echo "homebrew-patched-launcher: tap recipe retained program-index checker authority" >&2\n'
   printf '    exit 2\n  fi\n'
+  printf '  for forbidden_xtask in "$expected_xtask" "$expected_protected_xtask"; do\n'
+  printf '    if [ -L "$forbidden_xtask" ] || [ -r "$forbidden_xtask" ] || '
+  printf '[ -w "$forbidden_xtask" ] || [ -x "$forbidden_xtask" ]; then\n'
+  printf '      echo "homebrew-patched-launcher: tap recipe retained usable program-index checker authority: $forbidden_xtask" >&2\n'
+  printf '      exit 2\n    fi\n'
+  printf '  done\n'
   printf 'else\n'
   printf '  actual_xtask_sha256="$(/usr/bin/sha256sum "$expected_xtask" 2>/dev/null || true)"\n'
   printf '  actual_xtask_sha256="${actual_xtask_sha256%%%% *}"\n'
@@ -2435,7 +2440,7 @@ homebrew_patched_launcher_isolate() {
   local build_user="$1" work_dir="$2" kandelo_root="$3" tap_root="$4" output_root="$5"
   local sysroot_build_root="$6" sysroot
   shift 6
-  local build_group build_home protected_brew protected_audit protected_xtask
+  local build_group build_home protected_audit protected_xtask
   local wrapper_source wrapper_path audit_source native_runner_source native_runner_path
   local mutable_root protected_root target_state_root native_reported_prefix native_reported_repo
   local physical_repo physical_prefix
@@ -2797,6 +2802,15 @@ homebrew_patched_launcher_isolate() {
       }
     fi
   done
+  if [ ! -d "$HOMEBREW_PATCHED_PREFIX/bin" ] || \
+     [ -L "$HOMEBREW_PATCHED_PREFIX/bin" ] || \
+     [ ! -L "$HOMEBREW_PATCHED_LAUNCHER" ] || \
+     [ "${HOMEBREW_PATCHED_LAUNCHER%/*}" != "$HOMEBREW_PATCHED_PREFIX/bin" ] || \
+     [ "$(/usr/bin/readlink "$HOMEBREW_PATCHED_LAUNCHER")" != \
+       "$HOMEBREW_PATCHED_OVERLAY/bin/brew" ]; then
+    echo "homebrew-patched-launcher: target Brew launcher changed before isolation" >&2
+    return 2
+  fi
   chmod 1777 "$work_dir"
   "$sudo_bin" chown -R "$build_user:$build_group" \
     "$HOMEBREW_PATCHED_PREFIX" "$HOMEBREW_CACHE" "$HOMEBREW_TEMP"
@@ -2813,10 +2827,23 @@ homebrew_patched_launcher_isolate() {
     "$sudo_bin" /usr/bin/install -d -o "$build_user" -g "$build_group" -m 0755 \
       "$HOMEBREW_PATCHED_NATIVE_CONFIG/homebrew"
   fi
-  "$sudo_bin" chown "root:$build_group" "$HOMEBREW_PATCHED_PREFIX"
-  "$sudo_bin" chmod 1775 "$HOMEBREW_PATCHED_PREFIX"
+  # WHY: Homebrew derives its target prefix from the path used to invoke
+  # bin/brew. Keep that canonical path, but make both its parent and the exact
+  # symlink sticky/root-owned before the less-trusted Formula identity starts.
+  # The build user can still add normal keg links below bin, but cannot replace
+  # the launcher whose $0 selects the target prefix.
   "$sudo_bin" /usr/bin/install -d -o root -g "$build_group" -m 1775 \
+    "$HOMEBREW_PATCHED_PREFIX" "$HOMEBREW_PATCHED_PREFIX/bin" \
     "$HOMEBREW_PATCHED_PREFIX/Cellar" "$HOMEBREW_PATCHED_PREFIX/opt"
+  "$sudo_bin" /usr/bin/chown -h root:root "$HOMEBREW_PATCHED_LAUNCHER"
+  [ "$(/usr/bin/stat -c '%u:%g' "$HOMEBREW_PATCHED_LAUNCHER")" = "0:0" ] && \
+    [ "$(/usr/bin/stat -c '%u:%g:%a' "$HOMEBREW_PATCHED_PREFIX/bin")" = \
+      "0:$build_gid:1775" ] && \
+    [ "$(/usr/bin/readlink "$HOMEBREW_PATCHED_LAUNCHER")" = \
+      "$HOMEBREW_PATCHED_OVERLAY/bin/brew" ] || {
+      echo "homebrew-patched-launcher: could not protect the canonical target Brew launcher" >&2
+      return 2
+    }
   homebrew_patched_launcher_seal_target_dependencies \
     "$build_user" "$sudo_bin" || return
   homebrew_patched_launcher_seal_control_files "$build_user" || return
@@ -2991,18 +3018,29 @@ homebrew_patched_launcher_isolate() {
     scripts/install-local-binary.sh; do
     tap_recipe_path="$kandelo_root/$tap_recipe_relative"
     if [ -e "$tap_recipe_path" ] || [ -L "$tap_recipe_path" ]; then
+      # WHY: schema 3 deliberately excludes these legacy resolver paths from
+      # the closed platform projection. systemd treats an absent, unprefixed
+      # InaccessiblePaths= target as a namespace setup error; `-` keeps the
+      # mask effective if a path appears while allowing the intended absence.
       tap_recipe_inaccessible_paths+=(
-        "$source_alias_dir/kandelo/$tap_recipe_relative"
+        "-$source_alias_dir/kandelo/$tap_recipe_relative"
       )
     fi
   done
-  protected_brew="$HOMEBREW_PATCHED_PROTECTED_DIR/brew"
-  "$sudo_bin" ln -s "$HOMEBREW_PATCHED_OVERLAY/bin/brew" "$protected_brew"
-
   audit_source="$work_dir/audit-source-aliases"
   protected_audit="$HOMEBREW_PATCHED_PROTECTED_DIR/audit-source-aliases"
   {
     printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+    # WHY: explicit audit branches already explain expected rejections, but an
+    # unforeseen `set -e` failure otherwise becomes only a transient unit exit
+    # code. Keep the unexpected command and line observable without allowing
+    # the audit to continue after a failed invariant.
+    printf 'source_audit_failed() {\n'
+    printf '  local status="$1" line="$2" command="$3"\n'
+    printf '  trap - ERR\n'
+    printf '  printf '\''homebrew-patched-launcher: protected source audit failed at line %%s (status %%s): %%s\\n'\'' "$line" "$status" "$command" >&2\n'
+    printf '  exit "$status"\n}\n'
+    printf 'trap '\''source_audit_failed "$?" "$LINENO" "$BASH_COMMAND"'\'' ERR\n'
     printf 'expected_kandelo=%q\n' "$source_alias_dir/kandelo"
     printf 'expected_tap=%q\n' "$source_alias_dir/tap"
     printf 'expected_sysroot=%q\n' "$source_alias_dir/sysroot"
@@ -3146,14 +3184,18 @@ homebrew_patched_launcher_isolate() {
       printf 'if [ -n "${%s+x}" ]; then bottle_tag_env+=("%s=${%s}"); fi\n' \
         "$variable" "$variable" "$variable"
     done
-    printf 'command_path=%q\n' "$protected_brew"
+    printf 'command_path=%q\n' "$HOMEBREW_PATCHED_LAUNCHER"
+    printf 'source_audit=0\n'
     printf 'if [ "${1:-}" = __kandelo_verify_source_aliases ]; then\n'
     printf '  [ "$#" -eq 1 ] || { echo "homebrew-patched-launcher: source audit accepts no arguments" >&2; exit 2; }\n'
     printf '  command_path=%q\n' "$protected_audit"
+    printf '  source_audit=1\n'
     printf '  shift\nfi\n'
     printf 'working_directory=%q\n' "$work_dir"
     printf 'unit=%q-$$-${RANDOM}.service\n' "$unit_prefix"
-    printf 'exec %q -n -- %q --quiet --wait --collect --pipe' \
+    printf 'collect_args=(--collect)\n'
+    printf 'if [ "$source_audit" = 1 ]; then collect_args=(); fi\n'
+    printf 'systemd_command=(%q -n -- %q --quiet --wait "${collect_args[@]}" --pipe' \
       "$sudo_bin" "$systemd_run_bin"
     printf ' --unit="$unit"'
     printf ' %q' "--slice=$systemd_slice" \
@@ -3225,7 +3267,24 @@ homebrew_patched_launcher_isolate() {
         "HOMEBREW_KANDELO_TAP_RECIPE_RUNNER=$HOMEBREW_PATCHED_RECIPE_RUNNER" \
         "HOMEBREW_KANDELO_TAP_RECIPE_SEALED_ROOT=$HOMEBREW_PATCHED_RECIPE_SEALED_ROOT"
     fi
-    printf ' "${bottle_tag_env[@]}" "$command_path" "$@"\n'
+    printf ' "${bottle_tag_env[@]}" "$command_path" "$@")\n'
+    printf 'if [ "$source_audit" != 1 ]; then exec "${systemd_command[@]}"; fi\n'
+    # WHY: --collect erases a failed transient unit before its namespace error
+    # can be inspected. The startup audit carries no credentials, so preserve
+    # only that unit long enough to print bounded systemctl status, then reset
+    # it immediately. Formula commands retain the ordinary collect-and-exec
+    # path and cannot use diagnostics to continue after a failed boundary.
+    printf 'set +e\n'
+    printf '"${systemd_command[@]}"\n'
+    printf 'source_audit_status="$?"\n'
+    printf 'set -e\n'
+    printf 'if [ "$source_audit_status" -ne 0 ]; then\n'
+    printf '  %q -n -- %q status "$unit" --no-pager --lines=20 >&2 || true\n' \
+      "$sudo_bin" "$systemctl_bin"
+    printf 'fi\n'
+    printf '%q -n -- %q reset-failed "$unit" >/dev/null 2>&1 || true\n' \
+      "$sudo_bin" "$systemctl_bin"
+    printf 'exit "$source_audit_status"\n'
   } >"$wrapper_source"
   "$sudo_bin" install -o root -g root -m 0555 "$wrapper_source" "$wrapper_path"
   rm -f "$wrapper_source"
@@ -3314,10 +3373,6 @@ homebrew_patched_launcher_isolate() {
   HOMEBREW_PATCHED_SYSTEMD_SLICE="$systemd_slice"
   HOMEBREW_PATCHED_TEARDOWN_COMPLETE=0
 
-  # The old launcher lives in the writable prefix bin directory. Retire it so
-  # all subsequent parent-process calls use the root-owned sticky entry.
-  "$sudo_bin" rm -f "$HOMEBREW_PATCHED_LAUNCHER"
-  HOMEBREW_PATCHED_LAUNCHER="$protected_brew"
   HOMEBREW_PATCHED_BREW_BIN="$wrapper_path"
   "$HOMEBREW_PATCHED_BREW_BIN" __kandelo_verify_source_aliases || {
     echo "homebrew-patched-launcher: isolated source aliases failed verification" >&2
