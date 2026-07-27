@@ -386,8 +386,17 @@ and never accepts a caller-selected numeric identity. Validation does not
 install dispatch authority. Immediately before each mailbox call, the host
 calls `kernel_set_current_tid(pid, tid)`;
 `kernel_handle_channel` consumes and clears that exact pair on every returning
-path, while the non-returning `_exit` path clears it before trapping. Transport
-misrouting or earlier validation therefore cannot authorize a later dispatch.
+path, including the kernel-side exit transaction. Returning is required here
+because a trapped WebAssembly export skips the compiler's shadow-stack
+epilogue; repeatedly trapping the reusable kernel would permanently consume
+stack. The process worker's separate `kernel_exit` import traps after the
+mailbox completes, so guest `_exit` remains non-returning without leaking the
+kernel's stack. Transport misrouting or earlier validation therefore cannot
+authorize a later dispatch.
+During the ABI 42 transition, the host also accepts the deliberate post-commit
+exit trap from an older ABI 42 kernel, then applies the same authoritative
+`Exited` state check. The compatibility path does not treat a trap alone as
+successful exit.
 Signal dequeue, child-wait polling, write-limit preparation, and guest SysV
 shared-memory attachment also carry the exact live caller TID explicitly;
 lifecycle cleanup uses separately named process-level SysV exports.
@@ -403,9 +412,10 @@ A task-binding rejection while the Process is live is a fatal host/kernel
 protocol failure: the host marks the process crashed and terminates its Workers
 without returning a synthetic guest error. Rust must accept that signal-death
 transition before the host records the process as reaped or wakes its parent;
-a missing or rejected transition remains a loud protocol failure. A trap from
-the non-returning kernel exit path is also insufficient by itself: the host
-verifies the Process is actually `Exited` before publishing a clean exit.
+a missing or rejected transition remains a loud protocol failure. Neither a
+normal return nor a legacy compatibility trap from the kernel exit transaction
+is sufficient by itself: the host verifies the Process is actually `Exited`
+before publishing a clean exit.
 During process exit, Node and browser may briefly retain exact channel objects
 until Worker termination completes.
 Once Rust has made that Process Exited, those channels can finish only musl's

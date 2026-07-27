@@ -10461,8 +10461,11 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // Run the kernel's exit path so it closes all FDs (including pipe
-    // write ends). kernel_exit calls sys_exit then traps — catch the trap.
+    // Run the kernel's exit transaction so it closes all FDs (including pipe
+    // write ends). This reusable kernel Wasm must return normally: trapping
+    // would skip its shadow-stack epilogue and permanently consume stack on
+    // every short-lived child. The disposable guest Wasm still traps after
+    // this channel handshake, which preserves _exit's non-returning contract.
     {
       const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
       kernelView.setUint32(CH_SYSCALL, syscallNr, true);
@@ -10474,15 +10477,18 @@ export class CentralizedKernelWorker {
       try {
         handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
       } catch {
-        // Expected: kernel_exit traps with unreachable after closing FDs
+        // ABI 42 kernels published before the reusable-stack fix deliberately
+        // trap after committing exit. Keep accepting that paired-kernel shape
+        // during the ABI 42 transition; the authoritative state check below
+        // still rejects a trap that did not actually make the Process Exited.
       } finally {
         this.currentHandlePid = 0;
       }
     }
 
-    // `kernel_exit` is a non-returning export, but a trap by itself does not
-    // prove that Rust committed the exit transition. Do not turn an arbitrary
-    // kernel trap into a successful guest exit or a host-authored zombie.
+    // Neither a normal return nor a legacy compatibility trap proves that
+    // Rust committed the exit transition. Do not turn an incomplete
+    // transaction into a successful guest exit or a host-authored zombie.
     const getProcessState = this.kernelInstance!.exports
       .kernel_get_process_state as ((pid: number) => number) | undefined;
     let processState: number;
