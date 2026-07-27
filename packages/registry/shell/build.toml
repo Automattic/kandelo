@@ -65,16 +65,16 @@ inputs = [
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
 revision    = 22
-# The canonical bottle recipe is intentionally present for validation, but its
-# final tap commit and reviewed VFS digest do not exist until the exact-main
-# bottle cutover. Generic archive publication must remain fail closed until
-# that authority is sealed, then this flips to "ready".
-publication_state = "pending"
+# WHY: ready admits only the normal exact-main archive-staging path after final
+# tap authority and every deterministic input are bound. `UNPUBLISHED` remains
+# for staging to substitute exact landed Mpre; the artifact lock independently
+# rejects all bytes until reviewers seal its measured digest and size.
+publication_state = "ready"
 
 [[git_inputs]]
 name = "homebrew_tap_core"
 repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"
-commit = "e747f724efc63c81af453eeada3b7f1453726058"
+commit = "9820ef5643dc50f5876e53a1bbf6a309fc62f9a7"
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

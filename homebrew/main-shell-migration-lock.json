@@ -3,7 +3,7 @@
   "tap_repository": "kandelo-dev/homebrew-tap-core",
   "tap_name": "kandelo-dev/tap-core",
   "catalog": {
-    "tap_commit": "e747f724efc63c81af453eeada3b7f1453726058"
+    "tap_commit": "9820ef5643dc50f5876e53a1bbf6a309fc62f9a7"
   },
   "consumer": {
     "profile": "main-shell",
@@ -16,7 +16,7 @@
         "name": "bash",
         "version": "5.2.37",
         "revision": 2,
-        "bottle_rebuild": 4
+        "bottle_rebuild": 5
       }
     },
     {
