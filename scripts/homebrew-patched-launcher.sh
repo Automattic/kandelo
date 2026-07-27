@@ -1292,6 +1292,41 @@ homebrew_assert_protected_host_executable() {
   fi
 }
 
+homebrew_assert_protected_host_versioned_executable() {
+  if [ "$#" -ne 5 ]; then
+    echo "homebrew_assert_protected_host_versioned_executable: expected USER PATH EXPECTED LABEL SELECTOR_NAME" >&2
+    return 2
+  fi
+  local user="$1" path="$2" expected="$3" label="$4" selector_name="$5"
+  local expected_parent resolved resolved_parent resolved_basename
+  if [ "$path" != "$expected" ] || [ "${expected##*/}" != "$selector_name" ] || \
+     ! [[ "$selector_name" =~ ^[A-Za-z0-9_+-]+$ ]]; then
+    echo "homebrew-patched-launcher: $label must be the protected $expected" >&2
+    return 2
+  fi
+  if [ ! -L "$path" ]; then
+    homebrew_assert_protected_host_executable \
+      "$user" "$path" "$expected" "$label"
+    return
+  fi
+
+  resolved="$(/usr/bin/readlink -f -- "$path" 2>/dev/null || true)"
+  expected_parent="${expected%/*}"
+  resolved_parent="${resolved%/*}"
+  resolved_basename="${resolved##*/}"
+  # WHY: distributions may expose a stable interpreter name through a
+  # root-owned version selector. Keep that useful indirection without granting
+  # an admitted host tool permission to redirect outside its protected system
+  # directory or to an arbitrary helper with different behavior.
+  if [ "$resolved_parent" != "$expected_parent" ] || \
+     ! [[ "$resolved_basename" =~ ^${selector_name}\.[0-9]+$ ]]; then
+    echo "homebrew-patched-launcher: $label version selector is not protected" >&2
+    return 2
+  fi
+  homebrew_assert_protected_host_executable \
+    "$user" "$path" "$expected" "$label" "$resolved"
+}
+
 homebrew_patched_launcher_remove_native_bridges() {
   local formula target_cellar target_opt native_rack native_opt native_opt_target
   local native_version target_rack target_keg target_opt_link expected_opt_target
@@ -2442,10 +2477,12 @@ homebrew_patched_launcher_isolate() {
   homebrew_assert_protected_host_executable \
     "$build_user" /usr/bin/bash /usr/bin/bash bash
   for protected_bin in chmod chown cmp cp id install ln ls mktemp readlink rm \
-    od python3 sha256sum stat test tr; do
+    od sha256sum stat test tr; do
     homebrew_assert_protected_host_executable \
       "$build_user" "/usr/bin/$protected_bin" "/usr/bin/$protected_bin" "$protected_bin"
   done
+  homebrew_assert_protected_host_versioned_executable \
+    "$build_user" /usr/bin/python3 /usr/bin/python3 python3 python3
   if [ -z "${HOMEBREW_GIT_PATH:-}" ]; then
     echo "homebrew-patched-launcher: protected host Git was not selected before isolation" >&2
     return 2
