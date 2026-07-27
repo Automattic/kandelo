@@ -1580,6 +1580,26 @@ jobs:
           bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh \
             --fetch-only \
             --expected-ledger "$EXPECTED"
+          CANONICAL_INDEX="$RUNNER_TEMP/canonical-browser-shell-index/index.toml"
+          bash scripts/dev-shell.sh \
+            bash scripts/materialize-ci-canonical-package-index.sh \
+              "binaries-abi-v${ABI}" "$ABI" "$CANONICAL_INDEX"
+          SHELL_IMAGE="$(
+            bash scripts/resolve-binary.sh programs/shell.vfs.zst \
+              2>/dev/null || true
+          )"
+          [ -n "$SHELL_IMAGE" ] || SHELL_IMAGE="-"
+          # WHY: candidate packages may already be complete in the PR release,
+          # which makes the publication-blocker report empty even though their
+          # final immutable bottle URLs cannot exist before merge.
+          bash scripts/dev-shell.sh \
+            bash scripts/ci-homebrew-browser-mirror-state.sh create \
+            "$EXPECTED" \
+            "$BLOCKED" \
+            "$CANONICAL_INDEX" \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml" \
+            "$SHELL_IMAGE" \
+            "$RUNNER_TEMP/homebrew-browser-mirror-state.json"
 
       - name: Build kernel + test programs + rootfs
         # Browser downloads and suite-specific Node dependencies are installed
@@ -1608,6 +1628,7 @@ jobs:
         run: |
           bash scripts/dev-shell.sh bash scripts/pack-ci-test-workspace.sh \
             --publication-blockers "$RUNNER_TEMP/prepare-publication-blockers.json" \
+            --homebrew-browser-mirror-state "$RUNNER_TEMP/homebrew-browser-mirror-state.json" \
             "$RUNNER_TEMP/test-workspace.tar.zst"
 
       - name: Upload prepared test workspace

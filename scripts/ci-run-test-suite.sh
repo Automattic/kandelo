@@ -91,28 +91,31 @@ cleanup_ci_homebrew_browser_mirror() {
 }
 
 prepare_ci_homebrew_browser_mirror() {
-    local blockers="$REPO_ROOT/.ci-test-publication-blockers.json"
+    local state="$REPO_ROOT/.ci-homebrew-browser-mirror-state.json"
     local mirror="$REPO_ROOT/apps/browser-demos/public/homebrew-main-shell-bottles"
-    local has_shell
+    local mirror_required
     local image
     local report
+    local publication_blockers="$REPO_ROOT/.ci-test-publication-blockers.json"
 
-    [ -f "$blockers" ] || return 0
-    has_shell="$(jq -r 'any(.entries[]; .package == "shell")' "$blockers")" || {
-        echo "ci-run-test-suite: invalid publication blocker report: $blockers" >&2
+    if [ ! -f "$state" ]; then
+        echo "ci-run-test-suite: prepared browser workspace lacks Homebrew mirror state: $state" >&2
         return 1
-    }
-    [ "$has_shell" = "true" ] || return 0
+    fi
+    if [ ! -f "$publication_blockers" ]; then
+        echo "ci-run-test-suite: prepared browser workspace lacks its publication blocker report: $publication_blockers" >&2
+        return 1
+    fi
+    image="$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)"
+    bash scripts/ci-homebrew-browser-mirror-state.sh \
+        validate consumer "$state" "$publication_blockers" "$image"
+    mirror_required="$(jq -r '.mirror_required' "$state")"
+    [ "$mirror_required" = "true" ] || return 0
     if [ -e "$mirror" ] || [ -L "$mirror" ]; then
         echo "ci-run-test-suite: closed Homebrew browser mirror already exists: $mirror" >&2
         return 1
     fi
 
-    image="$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)"
-    [ -f "$image" ] && [ ! -L "$image" ] || {
-        echo "ci-run-test-suite: staged shell image is not one regular file: $image" >&2
-        return 1
-    }
     CI_HOMEBREW_BROWSER_REPORT_ROOT="$(
         mktemp -d "${RUNNER_TEMP:-/tmp}/kandelo-ci-homebrew-browser.XXXXXX"
     )"
@@ -120,11 +123,12 @@ prepare_ci_homebrew_browser_mirror() {
     CI_HOMEBREW_BROWSER_MIRROR="$mirror"
     trap cleanup_ci_homebrew_browser_mirror EXIT
 
-    # WHY: the candidate shell names its final immutable release URLs, but that
-    # release cannot exist until the exact Kandelo commit reaches main. Recover
-    # the same digest-bound layers anonymously from their public source
-    # packages for pre-merge browser validation instead of publishing early or
-    # weakening the candidate image's production transport identity.
+    # WHY: an expected-ledger identity absent from the immutable canonical
+    # package index names final bottle URLs that cannot exist until this exact
+    # Kandelo commit reaches main. Recover the same digest-bound layers
+    # anonymously from their public source packages for pre-merge browser
+    # validation instead of publishing early or weakening the candidate
+    # image's production transport identity.
     npx tsx scripts/recover-homebrew-bottle-mirror.ts \
         --image "$image" \
         --out "$mirror" \

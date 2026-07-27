@@ -7,13 +7,20 @@
 //! and current canonical ledger. It rejects conflicting package drift and
 //! writes one complete next canonical ledger plus the assets that must exist
 //! before that ledger becomes visible.
+//!
+//! `current-entry` is the read-only publication query. It prints `true` only
+//! for one complete success entry whose package identity, cache identity,
+//! archive name, digests, and owning canonical ABI release all agree. A valid
+//! missing or stale identity prints `false`; malformed canonical state fails.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde::Serialize;
 
-use crate::index_toml::{IndexToml, PackageEntry};
+use crate::index_toml::{EntryStatus, IndexToml, PackageEntry};
+use crate::package_archive_name;
+use crate::pkg_manifest::TargetArch;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct AssetPlanEntry {
@@ -32,16 +39,67 @@ enum AssetSource {
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let (action, rest) = args
         .split_first()
-        .ok_or("usage: xtask index-candidate <seed|activate> [args]")?;
+        .ok_or("usage: xtask index-candidate <seed|activate|current-entry> [args]")?;
     let flags = parse_flags(rest)?;
 
     match action.as_str() {
         "seed" => run_seed(&flags),
         "activate" => run_activate(&flags),
+        "current-entry" => run_current_entry(&flags),
         other => Err(format!(
-            "index-candidate action must be seed or activate, got {other:?}"
+            "index-candidate action must be seed, activate, or current-entry, got {other:?}"
         )),
     }
+}
+
+fn run_current_entry(flags: &BTreeMap<String, String>) -> Result<(), String> {
+    reject_unknown(
+        flags,
+        &[
+            "--canonical-index",
+            "--canonical-index-url",
+            "--expected-abi",
+            "--package",
+            "--version",
+            "--revision",
+            "--arch",
+            "--cache-key-sha",
+        ],
+    )?;
+    let canonical = read_index(path_flag(flags, "--canonical-index")?)?;
+    let canonical_url = required(flags, "--canonical-index-url")?;
+    let expected_abi = abi_flag(flags)?;
+    let package = required(flags, "--package")?;
+    let version = required(flags, "--version")?;
+    let revision = required(flags, "--revision")?
+        .parse::<u32>()
+        .map_err(|e| format!("--revision must be an integer: {e}"))?;
+    if revision == 0 {
+        return Err("--revision must be at least 1".to_string());
+    }
+    let arch = match required(flags, "--arch")? {
+        "wasm32" => TargetArch::Wasm32,
+        "wasm64" => TargetArch::Wasm64,
+        value => return Err(format!("--arch must be wasm32 or wasm64, got {value:?}")),
+    };
+    let cache_key_sha = required(flags, "--cache-key-sha")?;
+    validate_sha256(cache_key_sha, package, arch.as_str(), "cache_key_sha")?;
+
+    let current = has_exact_current_entry(
+        &canonical,
+        canonical_url,
+        expected_abi,
+        package,
+        version,
+        revision,
+        arch,
+        cache_key_sha,
+    )?;
+    // stdout is intentionally one shell-friendly boolean. Missing or stale
+    // identity prints `false`; malformed canonical state returns an error
+    // before anything is printed.
+    println!("{current}");
+    Ok(())
 }
 
 fn run_seed(flags: &BTreeMap<String, String>) -> Result<(), String> {
@@ -159,6 +217,108 @@ fn seed_index(
     seeded.generator = generator.to_string();
     validate_index(&seeded, "seeded candidate", expected_abi)?;
     Ok(seeded)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn has_exact_current_entry(
+    canonical: &IndexToml,
+    canonical_index_url: &str,
+    expected_abi: u32,
+    package: &str,
+    version: &str,
+    revision: u32,
+    arch: TargetArch,
+    cache_key_sha: &str,
+) -> Result<bool, String> {
+    validate_index(canonical, "canonical", expected_abi)?;
+    validate_sha256(
+        cache_key_sha,
+        package,
+        arch.as_str(),
+        "expected cache_key_sha",
+    )?;
+    let release_base = canonical_release_base(canonical_index_url, expected_abi)?;
+    let query_archive_name = package_archive_name::render_identity(
+        package,
+        version,
+        revision,
+        arch,
+        expected_abi,
+        cache_key_sha,
+    );
+    if asset_name_under(
+        &format!("{release_base}{query_archive_name}"),
+        &release_base,
+    )
+    .as_deref()
+        != Some(query_archive_name.as_str())
+    {
+        return Err(format!(
+            "package/version identity does not render one portable release asset: \
+             {package:?}@{version:?}"
+        ));
+    }
+
+    let packages = package_map(canonical, "canonical")?;
+    let Some(package_entry) = packages.get(&(package.to_string(), version.to_string())) else {
+        return Ok(false);
+    };
+    if package_entry.revision != revision {
+        return Ok(false);
+    }
+    let Some(entry) = package_entry.binary.get(&arch) else {
+        return Ok(false);
+    };
+    if entry.status != EntryStatus::Success {
+        return Ok(false);
+    }
+
+    let Some(archive_sha256) = entry.archive_sha256.as_deref() else {
+        return Err(format!(
+            "canonical {package}@{version} {} success entry has no archive_sha256",
+            arch.as_str()
+        ));
+    };
+    validate_sha256(archive_sha256, package, arch.as_str(), "archive_sha256")?;
+    let Some(entry_cache_key_sha) = entry.cache_key_sha.as_deref() else {
+        return Err(format!(
+            "canonical {package}@{version} {} success entry has no cache_key_sha",
+            arch.as_str()
+        ));
+    };
+    validate_sha256(entry_cache_key_sha, package, arch.as_str(), "cache_key_sha")?;
+
+    // WHY: `status = "success"` alone does not prove that an archive can be
+    // fetched. A current canonical entry must name the one asset implied by
+    // its complete package identity under the exact ABI release that owns
+    // this index; outside-release, stale-name, and partial entries all remain
+    // unpublished for pre-merge mirror purposes.
+    let archive_name = package_archive_name::render_identity(
+        package,
+        version,
+        revision,
+        arch,
+        expected_abi,
+        entry_cache_key_sha,
+    );
+    let expected_absolute_url = format!("{release_base}{archive_name}");
+    match entry.archive_url.as_deref() {
+        Some(value) if value == archive_name || value == expected_absolute_url => {}
+        Some(value) => {
+            return Err(format!(
+                "canonical {package}@{version} {} success entry archive_url {value:?} \
+                 does not identify {expected_absolute_url}",
+                arch.as_str()
+            ));
+        }
+        None => {
+            return Err(format!(
+                "canonical {package}@{version} {} success entry has no archive_url",
+                arch.as_str()
+            ));
+        }
+    }
+    Ok(entry_cache_key_sha == cache_key_sha)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -683,6 +843,37 @@ fn url_parent(index_url: &str) -> Result<String, String> {
     Ok(index_url[..=slash].to_string())
 }
 
+fn canonical_release_base(index_url: &str, expected_abi: u32) -> Result<String, String> {
+    let path = index_url
+        .strip_prefix("https://github.com/")
+        .ok_or_else(|| {
+            format!("canonical index URL must use the GitHub HTTPS release contract: {index_url:?}")
+        })?;
+    let components: Vec<_> = path.split('/').collect();
+    let expected_tag = format!("binaries-abi-v{expected_abi}");
+    if components.len() != 6
+        || components[2] != "releases"
+        || components[3] != "download"
+        || components[4] != expected_tag
+        || components[5] != "index.toml"
+        || !components[..2].iter().all(|component| {
+            !component.is_empty()
+                && component
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        })
+    {
+        return Err(format!(
+            "canonical index URL must identify one repository's \
+             binaries-abi-v{expected_abi}/index.toml release: {index_url:?}"
+        ));
+    }
+    Ok(format!(
+        "https://github.com/{}/{}/releases/download/{expected_tag}/",
+        components[0], components[1]
+    ))
+}
+
 fn is_absolute_url(value: &str) -> bool {
     value.starts_with("https://") || value.starts_with("http://") || value.starts_with("file://")
 }
@@ -788,6 +979,219 @@ mod tests {
             )
         );
         assert_eq!(seeded.generated_at, "candidate-time");
+    }
+
+    fn exact_current_shell(canonical: &IndexToml) -> Result<bool, String> {
+        has_exact_current_entry(
+            canonical,
+            CANONICAL_URL,
+            ABI,
+            "shell",
+            "1.0",
+            1,
+            TargetArch::Wasm32,
+            &sha('a'),
+        )
+    }
+
+    fn wasm32_entry_mut(index: &mut IndexToml) -> &mut BinaryEntry {
+        index.packages[0]
+            .binary
+            .get_mut(&TargetArch::Wasm32)
+            .unwrap()
+    }
+
+    #[test]
+    fn current_entry_requires_complete_canonical_transport_identity() {
+        let archive_name = "shell-1.0-rev1-abi39-wasm32-aaaaaaaa.tar.zst";
+        let canonical = index(vec![package("shell", archive_name, 'a')]);
+        assert!(exact_current_shell(&canonical).unwrap());
+
+        let mut absolute = canonical.clone();
+        wasm32_entry_mut(&mut absolute).archive_url = Some(format!(
+            "{}{archive_name}",
+            url_parent(CANONICAL_URL).unwrap()
+        ));
+        assert!(exact_current_shell(&absolute).unwrap());
+
+        let mut malformed_cases = Vec::new();
+
+        let mut incomplete = canonical.clone();
+        wasm32_entry_mut(&mut incomplete).archive_url = None;
+        malformed_cases.push(("missing archive_url", incomplete));
+
+        let mut incomplete = canonical.clone();
+        wasm32_entry_mut(&mut incomplete).archive_sha256 = None;
+        malformed_cases.push(("missing archive_sha256", incomplete));
+
+        let mut invalid = canonical.clone();
+        wasm32_entry_mut(&mut invalid).archive_sha256 = Some("A".repeat(64));
+        malformed_cases.push(("uppercase archive_sha256", invalid));
+
+        let mut invalid = canonical.clone();
+        wasm32_entry_mut(&mut invalid).archive_sha256 = Some("a".repeat(63));
+        malformed_cases.push(("short archive_sha256", invalid));
+
+        let mut incomplete = canonical.clone();
+        wasm32_entry_mut(&mut incomplete).cache_key_sha = None;
+        malformed_cases.push(("missing cache_key_sha", incomplete));
+
+        let mut invalid = canonical.clone();
+        wasm32_entry_mut(&mut invalid).cache_key_sha = Some("A".repeat(64));
+        malformed_cases.push(("uppercase cache_key_sha", invalid));
+
+        let mut invalid = canonical.clone();
+        wasm32_entry_mut(&mut invalid).cache_key_sha = Some("a".repeat(63));
+        malformed_cases.push(("short cache_key_sha", invalid));
+
+        let mut outside_release = canonical.clone();
+        wasm32_entry_mut(&mut outside_release).archive_url =
+            Some(format!("https://mirror.invalid/{archive_name}"));
+        malformed_cases.push(("outside-release archive_url", outside_release));
+
+        let mut wrong_release = canonical.clone();
+        wasm32_entry_mut(&mut wrong_release).archive_url = Some(format!(
+            "https://github.com/Automattic/kandelo/releases/download/other/{archive_name}"
+        ));
+        malformed_cases.push(("wrong-release archive_url", wrong_release));
+
+        let mut wrong_name = canonical.clone();
+        wasm32_entry_mut(&mut wrong_name).archive_url =
+            Some("shell-1.0-rev1-abi39-wasm32-bbbbbbbb.tar.zst".into());
+        malformed_cases.push(("archive name/cache mismatch", wrong_name));
+
+        for (label, candidate) in malformed_cases {
+            assert!(
+                exact_current_shell(&candidate).is_err(),
+                "{label} was accepted as valid canonical state"
+            );
+        }
+
+        let mut failed = canonical.clone();
+        wasm32_entry_mut(&mut failed).status = EntryStatus::Failed;
+        assert!(
+            !exact_current_shell(&failed).unwrap(),
+            "a valid non-success entry was treated as current"
+        );
+    }
+
+    #[test]
+    fn current_entry_matches_every_expected_package_identity_field() {
+        let canonical = index(vec![package(
+            "shell",
+            "shell-1.0-rev1-abi39-wasm32-aaaaaaaa.tar.zst",
+            'a',
+        )]);
+
+        assert!(
+            !has_exact_current_entry(
+                &canonical,
+                CANONICAL_URL,
+                ABI,
+                "shell",
+                "2.0",
+                1,
+                TargetArch::Wasm32,
+                &sha('a'),
+            )
+            .unwrap(),
+            "version mismatch was treated as current"
+        );
+        assert!(
+            !has_exact_current_entry(
+                &canonical,
+                CANONICAL_URL,
+                ABI,
+                "shell",
+                "1.0",
+                2,
+                TargetArch::Wasm32,
+                &sha('a'),
+            )
+            .unwrap(),
+            "revision mismatch was treated as current"
+        );
+        assert!(
+            !has_exact_current_entry(
+                &canonical,
+                CANONICAL_URL,
+                ABI,
+                "shell",
+                "1.0",
+                1,
+                TargetArch::Wasm64,
+                &sha('a'),
+            )
+            .unwrap(),
+            "architecture mismatch was treated as current"
+        );
+        assert!(
+            !has_exact_current_entry(
+                &canonical,
+                CANONICAL_URL,
+                ABI,
+                "shell",
+                "1.0",
+                1,
+                TargetArch::Wasm32,
+                &sha('b'),
+            )
+            .unwrap(),
+            "cache identity mismatch was treated as current"
+        );
+    }
+
+    #[test]
+    fn current_entry_rejects_invalid_query_and_release_contracts() {
+        let canonical = index(vec![package(
+            "shell",
+            "shell-1.0-rev1-abi39-wasm32-aaaaaaaa.tar.zst",
+            'a',
+        )]);
+
+        let mut duplicate = canonical.clone();
+        duplicate.packages.push(duplicate.packages[0].clone());
+        let err = exact_current_shell(&duplicate).unwrap_err();
+        assert!(err.contains("duplicate package"), "got: {err}");
+
+        let err = has_exact_current_entry(
+            &canonical,
+            "https://github.com/Automattic/kandelo/releases/download/other/index.toml",
+            ABI,
+            "shell",
+            "1.0",
+            1,
+            TargetArch::Wasm32,
+            &sha('a'),
+        )
+        .unwrap_err();
+        assert!(err.contains("binaries-abi-v39"), "got: {err}");
+
+        let err = has_exact_current_entry(
+            &canonical,
+            CANONICAL_URL,
+            ABI,
+            "shell",
+            "1.0",
+            1,
+            TargetArch::Wasm32,
+            &"A".repeat(64),
+        )
+        .unwrap_err();
+        assert!(err.contains("invalid sha256"), "got: {err}");
+
+        let err = has_exact_current_entry(
+            &canonical,
+            CANONICAL_URL,
+            ABI + 1,
+            "shell",
+            "1.0",
+            1,
+            TargetArch::Wasm32,
+            &sha('a'),
+        )
+        .unwrap_err();
+        assert!(err.contains("does not match expected ABI"), "got: {err}");
     }
 
     #[test]
