@@ -2393,6 +2393,18 @@ def check_publisher(workflow)
     check(launcher_test.include?(fragment),
           "publisher validation lacks malicious recipe canary #{fragment}")
   end
+  [
+    'ISOLATION_RECIPE_USER="kandelo-homebrew-recipe"',
+    "--no-create-home",
+    'export KANDELO_HOMEBREW_RECIPE_USER="$ISOLATION_RECIPE_USER"',
+    'HOMEBREW_KANDELO_NODE="$(command -v node)"',
+    "platform projection left an unsealed ancestor",
+    "platform projection verification accepted a hard-linked file",
+    "populated sealed-output root lost its portable directory seal",
+  ].each do |fragment|
+    check(launcher_test.include?(fragment),
+          "live recipe canary fixture lacks #{fragment}")
+  end
   host_dependency_validator = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-validate-host-dependency-plan.sh")
   )
