@@ -2155,16 +2155,37 @@ prefix, so neither tree is required by the fixed-prefix first-/third-party
 lifecycle. Bzip2 is already in the base, while Xz is no longer pulled by the
 active roots.
 
-The audit binds the exact metadata digest, ABI, release, and producer commits.
-For every declared activation tree the checker requires one successful wasm32
-ABI-42 bottle with an exact size, digest, canonical public GHCR URL, and
-source-provenance identity. A missing or stale identity fails closed before
-composition; an optional Formula cannot leak into activation merely because a
-legacy sidecar exists. The base image keeps this layer deferred; a derived
-main-demo image may pre-materialize the same declared bytes. It may not
-maintain a second recipe or partial runtime. The independent canary M4 is
-intentionally absent from both trusted image closures and is installed only by
-the live guest lifecycle.
+The audit binds the exact aggregate metadata digest, ABI, release, and catalog
+publication commits separately from the immutable bottles' producer commits.
+`runtime_bottle_provenance_sha256` hashes an ordered projection of all 23
+admitted Formula identities. Each projection entry contains the Formula's full
+name, version, revision, rebuild, selected architecture, bottle tag, ABI, URL,
+digest, size, cache identity, and complete `built_from` record. This permits an
+incremental catalog to reuse unchanged bottles without falsely rewriting their
+historical Kandelo commit, while still making the exact mixed-producer cohort a
+reviewed value. The v1 hash input is the UTF-8 domain
+`kandelo-homebrew-runtime-bottle-provenance-v1` plus one NUL byte, followed by
+the compact JSON array in declared cohort order. Compute the candidate digest
+with:
+
+```bash
+node scripts/check-homebrew-main-shell-brewfile.mjs \
+  --print-runtime-bottle-provenance-sha256 \
+  /path/to/tap/Kandelo/metadata.json \
+  homebrew/main-shell-homebrew-runtime-support.json
+```
+
+For every admitted tree the checker requires one successful wasm32 ABI-42
+bottle with an exact size, digest, canonical public GHCR URL, and complete
+source-provenance identity. An unknown or duplicate cohort member, duplicate
+architecture identity, or projection drift fails closed before composition.
+The aggregate metadata commits and digest remain independently exact, so the
+projection cannot excuse catalog-authority drift. An optional Formula cannot
+leak into activation merely because a legacy sidecar exists. The base image
+keeps this layer deferred; a derived main-demo image may pre-materialize the
+same declared bytes. It may not maintain a second recipe or partial runtime.
+The independent canary M4 is intentionally absent from both trusted image
+closures and is installed only by the live guest lifecycle.
 
 CI materialization uses the exact public tap checkout pinned in the migration
 lock. An explicit SHA is optional, but when supplied it must match the lock:
