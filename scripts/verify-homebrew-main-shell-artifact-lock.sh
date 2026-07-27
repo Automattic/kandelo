@@ -69,6 +69,7 @@ jq -e --argjson source_date_epoch "$EXPECTED_SOURCE_DATE_EPOCH" '
   .source_date_epoch == $source_date_epoch and
   (.inputs | type == "object") and
   (.inputs | keys | sort) == [
+    "bootstrap_source_lock_sha256",
     "bootstrap_tree_spec_sha256",
     "brewfile_sha256",
     "demo_config_sha256",
@@ -95,6 +96,7 @@ jq -e --argjson source_date_epoch "$EXPECTED_SOURCE_DATE_EPOCH" '
 # WHY: a pending output digest is safe only when it retires the old image while
 # still binding every reviewed input that will determine the replacement.
 for binding in \
+  "bootstrap_source_lock_sha256:homebrew/homebrew-bootstrap-source-lock.json" \
   "bootstrap_tree_spec_sha256:homebrew/main-shell-brew-package-tree.json" \
   "brewfile_sha256:homebrew/main-shell.Brewfile" \
   "demo_config_sha256:homebrew/main-shell-demo.json" \

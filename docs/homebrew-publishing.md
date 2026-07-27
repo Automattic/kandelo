@@ -2768,11 +2768,14 @@ or cache dependencies merely because they share the planner and serializer.
 `homebrew/main-shell-lazy-artifact-lock.json` makes the canonical lazy shell's
 outer image identity reviewable rather than merely reporting whatever one
 runner produced. Schema 2 has an explicit `pending` state that binds the exact
-Brewfile, migration lock, materialization policy, demo configuration, and
-runtime-support declaration while refusing every output artifact. Publication
-may change it to `sealed` only after recording the new compressed SHA-256 and
-byte count. The strict composer pins `SOURCE_DATE_EPOCH` to Unix epoch zero and
-will not publish while the reviewed identity remains pending.
+Brewfile, Homebrew bootstrap source lock and tree recipe, migration lock,
+materialization policy, demo configuration, and runtime-support declaration
+while refusing every output artifact. The composer also verifies that the
+supplied bootstrap ZIP has the exact digest and byte count authorized by that
+source lock before it derives the deferred-tree descriptor. Publication may
+change the artifact lock to `sealed` only after recording the new compressed
+SHA-256 and byte count. The strict composer pins `SOURCE_DATE_EPOCH` to Unix
+epoch zero and will not publish while the reviewed identity remains pending.
 
 `homebrew/runtime-layer-policy.json` is the reviewed planning contract for
 runtime derivation. It names the canonical `shell` package-output receipt as
