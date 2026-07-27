@@ -614,7 +614,12 @@ uses that exact artifact with `fetch-binaries.sh --fetch-only
 other package test gates. It does not walk raw registry directories or
 source-build a stale unrelated package. Runs that execute tests also require
 the `rootfs` publication closure during preflight; `skip_tests=true` retains
-the producer-only admission boundary.
+the producer-only admission boundary. Its final test matrix retains the
+existing Cargo kernel, fork-instrument, Vitest, libc-test, POSIX, and Sortix
+coverage. libc-test is divided into functional+regression and math jobs, while
+Sortix is divided into include, basic, and remaining-runtime jobs. These are
+the same natural partitions used by staging-build and prepare-merge; their
+matrix result is still aggregated by the single `test-gate` job.
 
 ## Merge candidates and canonical activation
 

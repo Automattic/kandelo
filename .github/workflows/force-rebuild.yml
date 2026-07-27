@@ -799,7 +799,7 @@ jobs:
           if-no-files-found: error
 
   test-suite:
-    name: test-suite (${{ matrix.suite }})
+    name: test-suite (${{ matrix.label }})
     needs: [gate, test-gate-prepare]
     if: |
       !cancelled() &&
@@ -810,34 +810,69 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
+      # WHY: libc's two groups and Sortix's three groups are exact partitions
+      # of their former `all` invocations. Keeping them as separate matrix
+      # cells removes serial work from the final gate's critical path while
+      # `test-gate` still aggregates every cell through this matrix job.
       matrix:
         include:
           - suite: cargo-kernel
+            label: cargo-kernel
+            group: all
             needs_submodules: false
             needs_toolchain: false
             needs_workspace: false
           - suite: fork-instrument
+            label: fork-instrument
+            group: all
             needs_submodules: false
             needs_toolchain: false
             needs_workspace: false
           - suite: vitest
+            label: vitest
+            group: all
             needs_submodules: false
             needs_toolchain: true
             needs_workspace: true
           - suite: libc
+            label: libc (functional + regression)
+            group: functional-regression
+            needs_submodules: true
+            needs_toolchain: true
+            needs_workspace: true
+          - suite: libc
+            label: libc (math)
+            group: math
             needs_submodules: true
             needs_toolchain: true
             needs_workspace: true
           - suite: posix
+            label: posix
+            group: all
             needs_submodules: false
             needs_toolchain: true
             needs_workspace: true
           - suite: sortix
+            label: sortix (include)
+            group: include
+            needs_submodules: true
+            needs_toolchain: true
+            needs_workspace: true
+          - suite: sortix
+            label: sortix (basic)
+            group: basic
+            needs_submodules: true
+            needs_toolchain: true
+            needs_workspace: true
+          - suite: sortix
+            label: sortix (runtime)
+            group: runtime
             needs_submodules: true
             needs_toolchain: true
             needs_workspace: true
     env:
       SUITE: ${{ matrix.suite }}
+      TEST_GROUP: ${{ matrix.group }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -876,9 +911,11 @@ jobs:
         run: |
           tar --zstd -xf "$RUNNER_TEMP/test-workspace/test-workspace.tar.zst"
 
-      - name: Run ${{ matrix.suite }} suite
+      - name: Run ${{ matrix.label }} suite
+        # Pass the group positionally across dev-shell.sh's
+        # `--ignore-environment` boundary so no shard silently defaults to all.
         run: |
-          bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
+          bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE" "$TEST_GROUP"
 
   test-gate:
     needs: [test-gate-prepare, test-suite]
