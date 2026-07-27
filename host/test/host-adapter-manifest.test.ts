@@ -158,8 +158,13 @@ describe("host adapter manifest validation", () => {
   });
 
   it.each([
-    "kernel_clear_process_metadata",
-    "kernel_push_process_metadata_entry",
+    "kernel_get_cwd",
+    "kernel_get_dirfd_path",
+    "kernel_get_fd_path",
+    "kernel_process_metadata_begin",
+    "kernel_process_metadata_cancel",
+    "kernel_process_metadata_commit",
+    "kernel_process_metadata_stage",
     "kernel_set_cwd",
   ])("rejects a kernel missing required scratch transfer export %s", (name) => {
     const memory = createMemory();

@@ -40,10 +40,6 @@ function signatures(
       parameters: [i32],
       result: i32,
     },
-    kernel_clear_process_metadata: {
-      parameters: [i32, i32],
-      result: i32,
-    },
     kernel_clear_fork_child: {
       parameters: [i32],
       result: i32,
@@ -98,6 +94,10 @@ function signatures(
     },
     kernel_get_cwd: {
       parameters: [i32, pointer, i32],
+      result: i32,
+    },
+    kernel_get_dirfd_path: {
+      parameters: [i32, i32, pointer, i32],
       result: i32,
     },
     kernel_get_fork_count: {
@@ -279,6 +279,22 @@ function signatures(
       parameters: [pointer, i32, i32, i32],
       result: i32,
     },
+    kernel_process_metadata_begin: {
+      parameters: [i32],
+      result: i32,
+    },
+    kernel_process_metadata_cancel: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_process_metadata_commit: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_process_metadata_stage: {
+      parameters: [i32, i32, i32, pointer, i32],
+      result: i32,
+    },
     kernel_pty_create: {
       parameters: [i32],
       result: i32,
@@ -293,10 +309,6 @@ function signatures(
     },
     kernel_pty_master_write: {
       parameters: [i32, pointer, i32],
-      result: i32,
-    },
-    kernel_push_process_metadata_entry: {
-      parameters: [i32, i32, pointer, i32],
       result: i32,
     },
     kernel_read_proc_maps: {

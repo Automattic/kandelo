@@ -49,6 +49,9 @@ import {
   STRUCT_SIZE_WASM_STAT,
   STRUCT_SIZE_WASM_STATFS,
   STRUCT_SIZE_WPK_DRM_MODE_MODEINFO,
+  WASM_DIRENT_INO_OFFSET,
+  WASM_DIRENT_NAME_LENGTH_OFFSET,
+  WASM_DIRENT_TYPE_OFFSET,
   WASM_POLL_FD_EVENTS_OFFSET,
   WASM_POLL_FD_FD_OFFSET,
   WASM_POLL_FD_REVENTS_OFFSET,
@@ -3449,14 +3452,27 @@ export class WasmPosixKernel {
         dirEntry = next;
       }
 
-      // Write WasmDirent: d_ino(u64) + d_type(u32) + d_namlen(u32)
+      // Write the generated WasmDirent layout. Rust owns these offsets so a
+      // future layout change cannot silently desynchronize host copy-back.
       const encoded = new TextEncoder().encode(dirEntry.name);
-      const n = Math.min(encoded.length, nameDestination.capacity);
+      if (encoded.length > nameDestination.capacity) {
+        // WHY: this legacy iterator consumes one complete entry per success.
+        // Truncating the name would both publish a false result and lose the
+        // entry. Leave it pending so an exact-capacity retry sees the same
+        // bytes, and mutate neither caller-visible destination on failure.
+        return NEG_ERRNO_BY_NAME.ERANGE;
+      }
+      const n = encoded.length;
       const dirent = new IntrinsicUint8Array(WASM_DIRENT_SIZE);
       const view = new IntrinsicDataView(typedArrayBuffer(dirent));
-      dataViewSetBigUint64(view, 0, BigInt(dirEntry.ino), true);
-      dataViewSetUint32(view, 8, dirEntry.type, true);
-      dataViewSetUint32(view, 12, n, true);
+      dataViewSetBigUint64(
+        view,
+        WASM_DIRENT_INO_OFFSET,
+        BigInt(dirEntry.ino),
+        true,
+      );
+      dataViewSetUint32(view, WASM_DIRENT_TYPE_OFFSET, dirEntry.type, true);
+      dataViewSetUint32(view, WASM_DIRENT_NAME_LENGTH_OFFSET, n, true);
       this.#writeKernelBytes(
         direntDestination,
         dirent,

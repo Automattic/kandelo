@@ -12,6 +12,19 @@ import {
   allocateKernelScratchRegion,
   KernelScratchError,
 } from "../src/kernel-scratch";
+import {
+  PROCESS_SNAPSHOT_CMDLINE_LEN_OFFSET,
+  PROCESS_SNAPSHOT_COMM_LEN_OFFSET,
+  PROCESS_SNAPSHOT_COUNT_OFFSET,
+  PROCESS_SNAPSHOT_GID_OFFSET,
+  PROCESS_SNAPSHOT_HEADER_BYTES,
+  PROCESS_SNAPSHOT_PID_OFFSET,
+  PROCESS_SNAPSHOT_PPID_OFFSET,
+  PROCESS_SNAPSHOT_RECORDS_OFFSET,
+  PROCESS_SNAPSHOT_STATE_OFFSET,
+  PROCESS_SNAPSHOT_UID_OFFSET,
+  PROCESS_SNAPSHOT_VSIZE_OFFSET,
+} from "../src/generated/abi";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
 const SCRATCH_OFFSET = 4096;
@@ -79,18 +92,36 @@ function processSnapshotBytes(): Uint8Array {
   const encoder = new TextEncoder();
   const comm = encoder.encode("demo");
   const cmdline = encoder.encode("demo\0--safe\0");
-  const bytes = new Uint8Array(4 + 36 + comm.length + cmdline.length);
+  const bytes = new Uint8Array(
+    PROCESS_SNAPSHOT_RECORDS_OFFSET
+      + PROCESS_SNAPSHOT_HEADER_BYTES
+      + comm.length
+      + cmdline.length,
+  );
   const view = new DataView(bytes.buffer);
-  let offset = 0;
-  view.setUint32(offset, 1, true); offset += 4;
-  view.setUint32(offset, 41, true); offset += 4;
-  view.setUint32(offset, 1, true); offset += 4;
-  view.setUint32(offset, 501, true); offset += 4;
-  view.setUint32(offset, 20, true); offset += 4;
-  view.setBigUint64(offset, 8192n, true); offset += 8;
-  view.setUint32(offset, "R".charCodeAt(0), true); offset += 4;
-  view.setUint32(offset, comm.length, true); offset += 4;
-  view.setUint32(offset, cmdline.length, true); offset += 4;
+  view.setUint32(PROCESS_SNAPSHOT_COUNT_OFFSET, 1, true);
+  const header = PROCESS_SNAPSHOT_RECORDS_OFFSET;
+  view.setUint32(header + PROCESS_SNAPSHOT_PID_OFFSET, 41, true);
+  view.setUint32(header + PROCESS_SNAPSHOT_PPID_OFFSET, 1, true);
+  view.setUint32(header + PROCESS_SNAPSHOT_UID_OFFSET, 501, true);
+  view.setUint32(header + PROCESS_SNAPSHOT_GID_OFFSET, 20, true);
+  view.setBigUint64(header + PROCESS_SNAPSHOT_VSIZE_OFFSET, 8192n, true);
+  view.setUint32(
+    header + PROCESS_SNAPSHOT_STATE_OFFSET,
+    "R".charCodeAt(0),
+    true,
+  );
+  view.setUint32(
+    header + PROCESS_SNAPSHOT_COMM_LEN_OFFSET,
+    comm.length,
+    true,
+  );
+  view.setUint32(
+    header + PROCESS_SNAPSHOT_CMDLINE_LEN_OFFSET,
+    cmdline.length,
+    true,
+  );
+  let offset = header + PROCESS_SNAPSHOT_HEADER_BYTES;
   bytes.set(comm, offset); offset += comm.length;
   bytes.set(cmdline, offset);
   return bytes;
@@ -222,6 +253,73 @@ describe("CentralizedKernelWorker public kernel-entry roots", () => {
     }
   });
 
+  it.each([
+    ["wasm32", 4],
+    ["wasm64", 8],
+  ] as const)(
+    "fails closed on malformed %s process snapshot records",
+    (_pointerKind, pointerWidth) => {
+      const valid = processSnapshotBytes();
+      const truncatedSecond = new Uint8Array(
+        valid.byteLength + PROCESS_SNAPSHOT_HEADER_BYTES - 1,
+      );
+      truncatedSecond.set(valid);
+      new DataView(truncatedSecond.buffer).setUint32(
+        PROCESS_SNAPSHOT_COUNT_OFFSET,
+        2,
+        true,
+      );
+
+      const oversizedCmdline = valid.slice();
+      const view = new DataView(oversizedCmdline.buffer);
+      view.setUint32(
+        PROCESS_SNAPSHOT_RECORDS_OFFSET
+          + PROCESS_SNAPSHOT_CMDLINE_LEN_OFFSET,
+        view.getUint32(
+          PROCESS_SNAPSHOT_RECORDS_OFFSET
+            + PROCESS_SNAPSHOT_CMDLINE_LEN_OFFSET,
+          true,
+        ) + 1,
+        true,
+      );
+
+      const invalidState = valid.slice();
+      new DataView(invalidState.buffer).setUint32(
+        PROCESS_SNAPSHOT_RECORDS_OFFSET + PROCESS_SNAPSHOT_STATE_OFFSET,
+        "X".charCodeAt(0),
+        true,
+      );
+      const invalidWideState = valid.slice();
+      new DataView(invalidWideState.buffer).setUint32(
+        PROCESS_SNAPSHOT_RECORDS_OFFSET + PROCESS_SNAPSHOT_STATE_OFFSET,
+        0x1_0000,
+        true,
+      );
+
+      for (const malformed of [
+        valid.slice(0, PROCESS_SNAPSHOT_RECORDS_OFFSET - 1),
+        truncatedSecond,
+        oversizedCmdline,
+        invalidState,
+        invalidWideState,
+      ]) {
+        const harness = makeRootHarness(pointerWidth);
+        harness.implementations.kernel_enum_procs = (
+          pointer: number | bigint,
+          capacity: number,
+        ) => {
+          expect(malformed.byteLength).toBeLessThanOrEqual(capacity);
+          harness.kernelBytes.set(malformed, Number(pointer));
+          return malformed.byteLength;
+        };
+
+        expect(() => harness.worker.enumProcs()).toThrow(
+          /malformed kernel process snapshot/,
+        );
+      }
+    },
+  );
+
   it("keeps ordinary PTY/cwd/credential errnos process-local", () => {
     const harness = makeRootHarness(4);
 
@@ -295,11 +393,32 @@ describe("CentralizedKernelWorker public kernel-entry roots", () => {
     },
   ])(
     "accepts exact capacity and rejects capacity+1 for $name",
-    ({ request, install, invoke }) => {
+    ({ name, request, install, invoke }) => {
       const exact = makeRootHarness(4);
       install(exact, (pointer, capacity) => {
         expect(capacity).toBe(request);
         exact.kernelBytes.fill(0, Number(pointer), Number(pointer) + capacity);
+        if (name === "process enumeration") {
+          const view = new DataView(exact.kernelBytes.buffer);
+          const base = Number(pointer);
+          view.setUint32(base + PROCESS_SNAPSHOT_COUNT_OFFSET, 1, true);
+          view.setUint32(
+            base
+              + PROCESS_SNAPSHOT_RECORDS_OFFSET
+              + PROCESS_SNAPSHOT_STATE_OFFSET,
+            "R".charCodeAt(0),
+            true,
+          );
+          view.setUint32(
+            base
+              + PROCESS_SNAPSHOT_RECORDS_OFFSET
+              + PROCESS_SNAPSHOT_COMM_LEN_OFFSET,
+            capacity
+              - PROCESS_SNAPSHOT_RECORDS_OFFSET
+              - PROCESS_SNAPSHOT_HEADER_BYTES,
+            true,
+          );
+        }
         return capacity;
       });
       expect(() => invoke(exact)).not.toThrow();

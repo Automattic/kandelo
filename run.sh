@@ -205,7 +205,6 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_alloc_scratch
     kernel_blocking_retry_release
     kernel_blocking_retry_token
-    kernel_clear_process_metadata
     kernel_commit_process_exit
     kernel_create_process
     kernel_create_process_with_stdio
@@ -213,6 +212,9 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_exec_prepare
     kernel_exec_setup_for_thread
     kernel_fork_process
+    kernel_get_cwd
+    kernel_get_dirfd_path
+    kernel_get_fd_path
     kernel_get_parent_pid
     kernel_get_process_exit_signal
     kernel_get_process_state
@@ -232,7 +234,10 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_pick_signal_target_tid
     kernel_pipe_has_readers
     kernel_posix_timer_fire
-    kernel_push_process_metadata_entry
+    kernel_process_metadata_begin
+    kernel_process_metadata_cancel
+    kernel_process_metadata_commit
+    kernel_process_metadata_stage
     kernel_reap_exited_child
     kernel_remove_process
     kernel_semctl_array_bytes

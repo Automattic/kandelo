@@ -6,6 +6,8 @@ import {
   POSIX_ARG_MAX_BYTES,
   POSIX_IOV_MAX,
   POSIX_PATH_MAX_BYTES,
+  PROCESS_STARTUP_MAX_ARGV_COUNT,
+  PROCESS_STARTUP_MAX_ENVP_COUNT,
   SELECT_FD_SET_BYTES,
   SELECT_FD_SETSIZE,
   SPAWN_ATTR_RESETIDS,
@@ -615,7 +617,13 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#removeFromKernelProcessTableWithinKernelEntry::kernel-export-direct-use::removeProcess(pid)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#replaceProcessMetadataWithinKernelEntry::kernel-export-direct-use::clear(pid, kind)",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#replaceProcessMetadataWithinKernelEntry::kernel-export-direct-use::begin(pid)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#replaceProcessMetadataWithinKernelEntry::kernel-export-direct-use::cancel(pid, token)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#replaceProcessMetadataWithinKernelEntry::kernel-export-direct-use::commit(pid, token)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#reserveHostRegionAtWithinKernelEntry::kernel-export-direct-use::reserveHostRegionAtFn( pid, this.toKernelPtr(request.pointer), this.toKernelPtr(request.length), )",
@@ -1603,6 +1611,14 @@ describe("kernel scratch static contract", () => {
     expect(platformLimitsHeader).toContain(
       `#define KANDELO_POSIX_IOV_MAX ${POSIX_IOV_MAX}u`,
     );
+    expect(platformLimitsHeader).toContain(
+      `#define KANDELO_PROCESS_STARTUP_MAX_ARGV_COUNT ` +
+        `${PROCESS_STARTUP_MAX_ARGV_COUNT}u`,
+    );
+    expect(platformLimitsHeader).toContain(
+      `#define KANDELO_PROCESS_STARTUP_MAX_ENVP_COUNT ` +
+        `${PROCESS_STARTUP_MAX_ENVP_COUNT}u`,
+    );
 
     expect(publicLimitsHeader).toContain("#include <bits/kandelo_limits.h>");
     expect(publicLimitsHeader).toContain(
@@ -1691,6 +1707,8 @@ describe("kernel scratch static contract", () => {
     expect(spawnContractHeader).toContain(
       `#define WASM_POSIX_SPAWN_MAX_ENVP_COUNT ${SPAWN_MAX_ENVP_COUNT}u`,
     );
+    expect(SPAWN_MAX_ARGV_COUNT).toBe(PROCESS_STARTUP_MAX_ARGV_COUNT);
+    expect(SPAWN_MAX_ENVP_COUNT).toBe(PROCESS_STARTUP_MAX_ENVP_COUNT);
     expect(spawnContractHeader).toContain(
       `#define WASM_POSIX_SPAWN_MAX_ACTION_COUNT ${SPAWN_MAX_ACTION_COUNT}u`,
     );

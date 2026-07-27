@@ -63,6 +63,20 @@ import {
   PROCESS_MEMORY_THREAD_SLOTS_NONE,
   PROCESS_MEMORY_THREAD_SLOTS_USE_HOST_DEFAULT,
   PROCESS_MEMORY_WASM_PAGE_SIZE,
+  PROCESS_METADATA_KIND_ARGV,
+  PROCESS_METADATA_KIND_ENVIRONMENT,
+  PROCESS_SNAPSHOT_CMDLINE_LEN_OFFSET,
+  PROCESS_SNAPSHOT_COMM_LEN_OFFSET,
+  PROCESS_SNAPSHOT_COUNT_BYTES,
+  PROCESS_SNAPSHOT_COUNT_OFFSET,
+  PROCESS_SNAPSHOT_GID_OFFSET,
+  PROCESS_SNAPSHOT_HEADER_BYTES,
+  PROCESS_SNAPSHOT_PID_OFFSET,
+  PROCESS_SNAPSHOT_PPID_OFFSET,
+  PROCESS_SNAPSHOT_RECORDS_OFFSET,
+  PROCESS_SNAPSHOT_STATE_OFFSET,
+  PROCESS_SNAPSHOT_UID_OFFSET,
+  PROCESS_SNAPSHOT_VSIZE_OFFSET,
   PROCESS_SIGINFO_CODE_OFFSET,
   PROCESS_SIGINFO_ERRNO_OFFSET,
   PROCESS_SIGINFO_SIGNO_OFFSET,
@@ -82,6 +96,9 @@ import {
   STRUCT_SIZE_WASM_STATFS,
   STRUCT_SIZE_WASM_TIMESPEC,
   SYSCALL_ARGS,
+  WASM_DIRENT_INO_OFFSET,
+  WASM_DIRENT_NAME_LENGTH_OFFSET,
+  WASM_DIRENT_TYPE_OFFSET,
   WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE,
   WPK_FORK_LINKED_FRAME_FORMAT_MAGIC,
   WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
@@ -105,6 +122,26 @@ interface NamedNumber {
 function fieldOffset(name: string): number {
   const field = snapshot.channel_header.fields.find((f: { name: string }) => f.name === name);
   if (!field) throw new Error(`missing channel_header field ${name}`);
+  return field.offset;
+}
+
+function structFieldOffset(structName: string, fieldName: string): number {
+  const field = snapshot.marshalled_structs[structName].fields.find(
+    (candidate: { name: string }) => candidate.name === fieldName,
+  );
+  if (!field) {
+    throw new Error(`missing ${structName} field ${fieldName}`);
+  }
+  return field.offset;
+}
+
+function processSnapshotFieldOffset(fieldName: string): number {
+  const field = snapshot.process_snapshot_wire.header.fields.find(
+    (candidate: { name: string }) => candidate.name === fieldName,
+  );
+  if (!field) {
+    throw new Error(`missing process snapshot field ${fieldName}`);
+  }
   return field.offset;
 }
 
@@ -187,6 +224,40 @@ describe("generated host ABI bindings", () => {
     expect(CH_TOTAL_SIZE).toBe(snapshot.channel_buffers.min_channel_size);
   });
 
+  it("match the packed process-snapshot wire contract", () => {
+    expect(PROCESS_SNAPSHOT_COUNT_OFFSET)
+      .toBe(snapshot.process_snapshot_wire.count_offset);
+    expect(PROCESS_SNAPSHOT_COUNT_BYTES)
+      .toBe(snapshot.process_snapshot_wire.count_size);
+    expect(PROCESS_SNAPSHOT_RECORDS_OFFSET)
+      .toBe(snapshot.process_snapshot_wire.records_offset);
+    expect(PROCESS_SNAPSHOT_HEADER_BYTES)
+      .toBe(snapshot.process_snapshot_wire.header.size);
+    expect(PROCESS_SNAPSHOT_PID_OFFSET)
+      .toBe(processSnapshotFieldOffset("pid"));
+    expect(PROCESS_SNAPSHOT_PPID_OFFSET)
+      .toBe(processSnapshotFieldOffset("ppid"));
+    expect(PROCESS_SNAPSHOT_UID_OFFSET)
+      .toBe(processSnapshotFieldOffset("uid"));
+    expect(PROCESS_SNAPSHOT_GID_OFFSET)
+      .toBe(processSnapshotFieldOffset("gid"));
+    expect(PROCESS_SNAPSHOT_VSIZE_OFFSET)
+      .toBe(processSnapshotFieldOffset("vsize"));
+    expect(PROCESS_SNAPSHOT_STATE_OFFSET)
+      .toBe(processSnapshotFieldOffset("state"));
+    expect(PROCESS_SNAPSHOT_COMM_LEN_OFFSET)
+      .toBe(processSnapshotFieldOffset("comm_len"));
+    expect(PROCESS_SNAPSHOT_CMDLINE_LEN_OFFSET)
+      .toBe(processSnapshotFieldOffset("cmdline_len"));
+  });
+
+  it("match the atomic process-metadata transaction contract", () => {
+    expect(PROCESS_METADATA_KIND_ARGV)
+      .toBe(snapshot.process_metadata_contract.kind_argv);
+    expect(PROCESS_METADATA_KIND_ENVIRONMENT)
+      .toBe(snapshot.process_metadata_contract.kind_environment);
+  });
+
   it("match status and signal delivery metadata", () => {
     expect(CHANNEL_STATUS.Idle).toBe(statusNumber("Idle"));
     expect(CHANNEL_STATUS.Pending).toBe(statusNumber("Pending"));
@@ -227,6 +298,11 @@ describe("generated host ABI bindings", () => {
 
     expect(STRUCT_SIZE_WASM_STAT).toBe(snapshot.marshalled_structs.WasmStat.size);
     expect(STRUCT_SIZE_WASM_DIRENT).toBe(snapshot.marshalled_structs.WasmDirent.size);
+    expect(WASM_DIRENT_INO_OFFSET).toBe(structFieldOffset("WasmDirent", "d_ino"));
+    expect(WASM_DIRENT_TYPE_OFFSET).toBe(structFieldOffset("WasmDirent", "d_type"));
+    expect(WASM_DIRENT_NAME_LENGTH_OFFSET).toBe(
+      structFieldOffset("WasmDirent", "d_namlen"),
+    );
     expect(STRUCT_SIZE_WASM_TIMESPEC).toBe(snapshot.marshalled_structs.WasmTimespec.size);
     expect(STRUCT_SIZE_WASM_POLL_FD).toBe(snapshot.marshalled_structs.WasmPollFd.size);
     expect(STRUCT_SIZE_WASM_STATFS).toBe(snapshot.marshalled_structs.WasmStatfs.size);

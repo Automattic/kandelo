@@ -32,6 +32,19 @@ export const WPK_FORK_REQUIRED_EXPORTS = [
 
 export const SCHED_AFFINITY_MASK_SIZE = 4 as const;
 
+export const PROCESS_SNAPSHOT_COUNT_OFFSET = 0 as const;
+export const PROCESS_SNAPSHOT_COUNT_BYTES = 4 as const;
+export const PROCESS_SNAPSHOT_RECORDS_OFFSET = 4 as const;
+export const PROCESS_SNAPSHOT_HEADER_BYTES = 36 as const;
+export const PROCESS_SNAPSHOT_PID_OFFSET = 0 as const;
+export const PROCESS_SNAPSHOT_PPID_OFFSET = 4 as const;
+export const PROCESS_SNAPSHOT_UID_OFFSET = 8 as const;
+export const PROCESS_SNAPSHOT_GID_OFFSET = 12 as const;
+export const PROCESS_SNAPSHOT_VSIZE_OFFSET = 16 as const;
+export const PROCESS_SNAPSHOT_STATE_OFFSET = 24 as const;
+export const PROCESS_SNAPSHOT_COMM_LEN_OFFSET = 28 as const;
+export const PROCESS_SNAPSHOT_CMDLINE_LEN_OFFSET = 32 as const;
+
 export const KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES = 56 as const;
 export const KERNEL_SCRATCH_FD_PAIR_BYTES = 8 as const;
 export const KERNEL_SCRATCH_MQUEUE_NOTIFICATION_BYTES = 8 as const;
@@ -52,6 +65,10 @@ export const POSIX_ARG_MAX_BYTES = 4194304 as const;
 export const POSIX_PATH_MAX_BYTES = 4096 as const;
 export const POSIX_NAME_MAX_BYTES = 256 as const;
 export const PROCESS_METADATA_ENTRY_MAX_BYTES = 65536 as const;
+export const PROCESS_STARTUP_MAX_ARGV_COUNT = 4096 as const;
+export const PROCESS_STARTUP_MAX_ENVP_COUNT = 4096 as const;
+export const PROCESS_METADATA_KIND_ARGV = 0 as const;
+export const PROCESS_METADATA_KIND_ENVIRONMENT = 1 as const;
 export const POSIX_NGROUPS_MAX = 32 as const;
 export const SYSV_MSG_MAX_BYTES = 8192 as const;
 export const MAX_REPORTABLE_TRANSFER_BYTES = 2147483647 as const;
@@ -93,6 +110,14 @@ export const PROCESS_CMSGHDR_WASM64_LEN_OFFSET = 0 as const;
 export const PROCESS_CMSGHDR_WASM64_LEVEL_OFFSET = 8 as const;
 export const PROCESS_CMSGHDR_WASM64_TYPE_OFFSET = 12 as const;
 export const PROCESS_CMSGHDR_WASM64_DATA_OFFSET = 16 as const;
+export const PROCESS_GROUP_REQ_WASM32_SIZE = 132 as const;
+export const PROCESS_GROUP_REQ_WASM32_GROUP_OFFSET = 4 as const;
+export const PROCESS_GROUP_SOURCE_REQ_WASM32_SIZE = 260 as const;
+export const PROCESS_GROUP_SOURCE_REQ_WASM32_SOURCE_OFFSET = 132 as const;
+export const PROCESS_GROUP_REQ_WASM64_SIZE = 136 as const;
+export const PROCESS_GROUP_REQ_WASM64_GROUP_OFFSET = 8 as const;
+export const PROCESS_GROUP_SOURCE_REQ_WASM64_SIZE = 264 as const;
+export const PROCESS_GROUP_SOURCE_REQ_WASM64_SOURCE_OFFSET = 136 as const;
 export const PROCESS_SIGINFO_SIGNO_OFFSET = 0 as const;
 export const PROCESS_SIGINFO_ERRNO_OFFSET = 4 as const;
 export const PROCESS_SIGINFO_CODE_OFFSET = 8 as const;
@@ -165,7 +190,6 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_alloc_scratch",
   "kernel_blocking_retry_release",
   "kernel_blocking_retry_token",
-  "kernel_clear_process_metadata",
   "kernel_commit_process_exit",
   "kernel_create_process",
   "kernel_create_process_with_stdio",
@@ -173,6 +197,9 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_exec_prepare",
   "kernel_exec_setup_for_thread",
   "kernel_fork_process",
+  "kernel_get_cwd",
+  "kernel_get_dirfd_path",
+  "kernel_get_fd_path",
   "kernel_get_parent_pid",
   "kernel_get_process_exit_signal",
   "kernel_get_process_state",
@@ -192,7 +219,10 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_pick_signal_target_tid",
   "kernel_pipe_has_readers",
   "kernel_posix_timer_fire",
-  "kernel_push_process_metadata_entry",
+  "kernel_process_metadata_begin",
+  "kernel_process_metadata_cancel",
+  "kernel_process_metadata_commit",
+  "kernel_process_metadata_stage",
   "kernel_reap_exited_child",
   "kernel_remove_process",
   "kernel_semctl_array_bytes",
@@ -325,6 +355,9 @@ export const WAKE_PROCESS_CONTINUED = 32 as const;
 
 export const STRUCT_SIZE_WASM_STAT = 88 as const;
 export const STRUCT_SIZE_WASM_DIRENT = 16 as const;
+export const WASM_DIRENT_INO_OFFSET = 0 as const;
+export const WASM_DIRENT_TYPE_OFFSET = 8 as const;
+export const WASM_DIRENT_NAME_LENGTH_OFFSET = 12 as const;
 export const STRUCT_SIZE_WASM_TIMESPEC = 16 as const;
 export const STRUCT_SIZE_WASM_POLL_FD = 8 as const;
 export const WASM_POLL_FD_FD_OFFSET = 0 as const;
@@ -964,12 +997,16 @@ export type SyscallArgSizeSpec =
   | { type: "fixed"; size: number }
   | { type: "process-layout"; wasm32Size: number; wasm64Size: number };
 
+export type SyscallArgCopyOutLengthSpec =
+  { type: "u32-field"; argIndex: number; offset: number };
+
 export const PROCESS_POINTER_WIDTH_ARG_INDEX = 5 as const;
 
 export interface SyscallArgDesc {
   argIndex: number;
   direction: SyscallArgDirection;
   size: SyscallArgSizeSpec;
+  copyOutLength?: SyscallArgCopyOutLengthSpec;
   nullable?: boolean;
   required?: boolean;
 }
@@ -1123,7 +1160,7 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   ],
   26: [
     { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 }, required: true },
-    { argIndex: 2, direction: "out", size: { type: "arg", argIndex: 3 }, required: true },
+    { argIndex: 2, direction: "out", size: { type: "arg", argIndex: 3 }, required: true, copyOutLength: { type: "u32-field", argIndex: 1, offset: 12 } },
   ],
   36: [
     { argIndex: 1, direction: "in", size: { type: "fixed", size: 16 }, nullable: true },

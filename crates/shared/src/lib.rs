@@ -131,6 +131,16 @@ pub mod platform_limits {
     /// This is not POSIX ARG_MAX; complete argv+env representation remains
     /// governed independently by ARG_MAX_BYTES.
     pub const PROCESS_METADATA_ENTRY_MAX_BYTES: usize = 65_536;
+    /// Maximum argv entries admitted through process creation and reconstructed
+    /// by the guest startup code.
+    ///
+    /// This is a defensive representation bound, not an additional POSIX
+    /// `ARG_MAX` promise. The complete pointer-plus-string representation must
+    /// still fit `ARG_MAX_BYTES`.
+    pub const PROCESS_STARTUP_MAX_ARGV_COUNT: usize = 4096;
+    /// Maximum environment entries admitted through process creation and
+    /// reconstructed by the guest startup code.
+    pub const PROCESS_STARTUP_MAX_ENVP_COUNT: usize = 4096;
     pub const NGROUPS_MAX: usize = 32;
     pub const SYSV_MSG_MAX_BYTES: usize = 8192;
     /// Largest successful byte count representable by the signed-i32 channel
@@ -140,6 +150,39 @@ pub mod platform_limits {
     /// u32 byte-length wire used by tokenized scratch reservations.
     pub const MAX_TRANSFER_ALLOCATION_BYTES: usize = u32::MAX as usize;
     pub const IOV_MAX: usize = 1024;
+}
+
+/// Host/kernel selectors for one atomic argv/environment replacement.
+///
+/// These values cross the Wasm export boundary. Keep TypeScript consumers on
+/// the generated constants rather than repeating kind literals in the host.
+pub mod process_metadata_contract {
+    pub const KIND_ARGV: u32 = 0;
+    pub const KIND_ENVIRONMENT: u32 = 1;
+}
+
+/// Packed host/kernel wire layout for one process-table snapshot record.
+///
+/// This record is not a native Rust or C structure: the `u64` field is
+/// deliberately packed at byte 16, so a native `repr(C)` structure would add
+/// tail padding and report 40 bytes instead of the 36 bytes actually written.
+/// Keep every producer and consumer on these generated offsets.
+pub mod process_snapshot_wire {
+    use core::mem::size_of;
+
+    pub const COUNT_OFFSET: usize = 0;
+    pub const COUNT_BYTES: usize = size_of::<u32>();
+    pub const RECORDS_OFFSET: usize = COUNT_OFFSET + COUNT_BYTES;
+
+    pub const PID_OFFSET: usize = 0;
+    pub const PPID_OFFSET: usize = PID_OFFSET + size_of::<u32>();
+    pub const UID_OFFSET: usize = PPID_OFFSET + size_of::<u32>();
+    pub const GID_OFFSET: usize = UID_OFFSET + size_of::<u32>();
+    pub const VSIZE_OFFSET: usize = GID_OFFSET + size_of::<u32>();
+    pub const STATE_OFFSET: usize = VSIZE_OFFSET + size_of::<u64>();
+    pub const COMM_LEN_OFFSET: usize = STATE_OFFSET + size_of::<u32>();
+    pub const CMDLINE_LEN_OFFSET: usize = COMM_LEN_OFFSET + size_of::<u32>();
+    pub const HEADER_BYTES: usize = CMDLINE_LEN_OFFSET + size_of::<u32>();
 }
 
 /// Cross-layer layout values and defensive limits for the non-forking spawn
@@ -195,8 +238,8 @@ pub mod spawn_contract {
     pub const ATTR_SETSCHEDULER: u32 = 0x20;
     pub const ATTR_USEVFORK: u32 = 0x40;
     pub const ATTR_SETSID: u32 = 0x80;
-    pub const MAX_ARGV_COUNT: usize = 4096;
-    pub const MAX_ENVP_COUNT: usize = 4096;
+    pub const MAX_ARGV_COUNT: usize = platform_limits::PROCESS_STARTUP_MAX_ARGV_COUNT;
+    pub const MAX_ENVP_COUNT: usize = platform_limits::PROCESS_STARTUP_MAX_ENVP_COUNT;
     pub const MAX_ACTION_COUNT: usize = 1024;
 
     /// Complete transport ceiling: POSIX argv/environment budget plus the
@@ -2048,7 +2091,6 @@ pub mod abi {
         "kernel_alloc_scratch",
         "kernel_blocking_retry_release",
         "kernel_blocking_retry_token",
-        "kernel_clear_process_metadata",
         "kernel_commit_process_exit",
         "kernel_create_process",
         "kernel_create_process_with_stdio",
@@ -2056,6 +2098,9 @@ pub mod abi {
         "kernel_exec_prepare",
         "kernel_exec_setup_for_thread",
         "kernel_fork_process",
+        "kernel_get_cwd",
+        "kernel_get_dirfd_path",
+        "kernel_get_fd_path",
         "kernel_get_parent_pid",
         "kernel_get_process_exit_signal",
         "kernel_get_process_state",
@@ -2075,7 +2120,10 @@ pub mod abi {
         "kernel_pick_signal_target_tid",
         "kernel_pipe_has_readers",
         "kernel_posix_timer_fire",
-        "kernel_push_process_metadata_entry",
+        "kernel_process_metadata_begin",
+        "kernel_process_metadata_cancel",
+        "kernel_process_metadata_commit",
+        "kernel_process_metadata_stage",
         "kernel_reap_exited_child",
         "kernel_remove_process",
         "kernel_semctl_array_bytes",

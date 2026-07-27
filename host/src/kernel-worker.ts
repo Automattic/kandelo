@@ -138,6 +138,22 @@ import {
   MAX_REPORTABLE_TRANSFER_BYTES,
   MAX_TRANSFER_ALLOCATION_BYTES,
   PROCESS_METADATA_ENTRY_MAX_BYTES,
+  PROCESS_METADATA_KIND_ARGV,
+  PROCESS_METADATA_KIND_ENVIRONMENT,
+  PROCESS_STARTUP_MAX_ARGV_COUNT,
+  PROCESS_STARTUP_MAX_ENVP_COUNT,
+  PROCESS_SNAPSHOT_CMDLINE_LEN_OFFSET,
+  PROCESS_SNAPSHOT_COMM_LEN_OFFSET,
+  PROCESS_SNAPSHOT_COUNT_BYTES,
+  PROCESS_SNAPSHOT_COUNT_OFFSET,
+  PROCESS_SNAPSHOT_GID_OFFSET,
+  PROCESS_SNAPSHOT_HEADER_BYTES,
+  PROCESS_SNAPSHOT_PID_OFFSET,
+  PROCESS_SNAPSHOT_PPID_OFFSET,
+  PROCESS_SNAPSHOT_RECORDS_OFFSET,
+  PROCESS_SNAPSHOT_STATE_OFFSET,
+  PROCESS_SNAPSHOT_UID_OFFSET,
+  PROCESS_SNAPSHOT_VSIZE_OFFSET,
   PROCESS_CMSGHDR_WASM32_ALIGN,
   PROCESS_CMSGHDR_WASM32_DATA_OFFSET,
   PROCESS_CMSGHDR_WASM32_LEN_OFFSET,
@@ -364,6 +380,7 @@ const EMSGSIZE = 90;
 const EOVERFLOW = 75;
 const ENODEV = 19;
 const ENOMEM = 12;
+const ERANGE = 34;
 const ENAMETOOLONG = 36;
 const ENOENT = 2;
 const ENOSYS = 38;
@@ -546,12 +563,6 @@ function boundedChannelArgumentSize(
   syscallNr: number,
   argIndex: number,
 ): number | undefined {
-  if (syscallNr === ABI_SYSCALLS.Getcwd && argIndex === 0) {
-    return POSIX_PATH_MAX_BYTES;
-  }
-  if (syscallNr === ABI_SYSCALLS.Realpath && argIndex === 1) {
-    return POSIX_PATH_MAX_BYTES;
-  }
   if (syscallNr === ABI_SYSCALLS.Readdir && argIndex === 2) {
     return POSIX_NAME_MAX_BYTES;
   }
@@ -638,6 +649,19 @@ function dereferencedChannelOutputMaximum(
     return KERNEL_SCRATCH_SOCKET_OPTION_MAX_BYTES;
   }
   return undefined;
+}
+
+function isInputChannelByteCountResult(
+  syscallNr: number,
+  argIndex: number,
+): boolean {
+  return argIndex === 1
+    && (
+      syscallNr === ABI_SYSCALLS.Write
+      || syscallNr === ABI_SYSCALLS.Pwrite
+      || syscallNr === ABI_SYSCALLS.Send
+      || syscallNr === ABI_SYSCALLS.Sendto
+    );
 }
 
 function applyNullableDereferencePairPresence(
@@ -769,9 +793,6 @@ function isValidMemoryRange(
  * each list's terminating null pointer. This matches the advertised 4 MiB
  * _SC_ARG_MAX boundary without imposing a separate argument-count ceiling.
  */
-const PROCESS_METADATA_ARGV = 0;
-const PROCESS_METADATA_ENVIRONMENT = 1;
-
 /**
  * Largest complete SYS_SPAWN wire blob accepted by the host.
  *
@@ -1283,8 +1304,8 @@ export interface SyscallTraceEvent {
 
 /**
  * A snapshot of one process from the kernel's table. Mirrors the binary
- * record kernel_enum_procs writes — see crates/kernel/src/wasm_api.rs
- * (kernel_enum_procs) for the authoritative wire format.
+ * record kernel_enum_procs writes. The generated PROCESS_SNAPSHOT_* values
+ * come from crates/shared/src/lib.rs::process_snapshot_wire.
  */
 export interface ProcessSnapshot {
   pid: number;
@@ -1305,30 +1326,104 @@ export interface ProcessSnapshot {
 }
 
 function parseProcSnapshots(mem: Uint8Array): ProcessSnapshot[] {
-  if (mem.byteLength < 4) return [];
+  const malformed = (reason: string): never => {
+    throw new KernelScratchError(
+      `malformed kernel process snapshot: ${reason}`,
+      EIO,
+    );
+  };
+  if (mem.byteLength < PROCESS_SNAPSHOT_RECORDS_OFFSET) {
+    malformed("missing count prefix");
+  }
   const dv = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
-  const count = dv.getUint32(0, true);
-  let off = 4;
+  const count = dv.getUint32(PROCESS_SNAPSHOT_COUNT_OFFSET, true);
+  if (
+    PROCESS_SNAPSHOT_COUNT_OFFSET + PROCESS_SNAPSHOT_COUNT_BYTES
+      !== PROCESS_SNAPSHOT_RECORDS_OFFSET
+    || count * PROCESS_SNAPSHOT_HEADER_BYTES
+      > mem.byteLength - PROCESS_SNAPSHOT_RECORDS_OFFSET
+  ) {
+    malformed("record count exceeds the returned byte range");
+  }
+  let off = PROCESS_SNAPSHOT_RECORDS_OFFSET;
   const out: ProcessSnapshot[] = [];
   const dec = new TextDecoder("utf-8", { fatal: false });
   for (let i = 0; i < count; i++) {
-    if (off + 36 > mem.byteLength) break;
-    const pid = dv.getUint32(off, true); off += 4;
-    const ppid = dv.getUint32(off, true); off += 4;
-    const uid = dv.getUint32(off, true); off += 4;
-    const gid = dv.getUint32(off, true); off += 4;
-    const vsizeBytes = Number(dv.getBigUint64(off, true)); off += 8;
-    const state = String.fromCharCode(dv.getUint32(off, true)) as ProcessSnapshot["state"]; off += 4;
-    const commLen = dv.getUint32(off, true); off += 4;
-    const cmdLen = dv.getUint32(off, true); off += 4;
-    if (off + commLen + cmdLen > mem.byteLength) break;
+    if (PROCESS_SNAPSHOT_HEADER_BYTES > mem.byteLength - off) {
+      malformed(`record ${i} has a truncated header`);
+    }
+    const headerOffset = off;
+    const pid = dv.getUint32(
+      headerOffset + PROCESS_SNAPSHOT_PID_OFFSET,
+      true,
+    );
+    const ppid = dv.getUint32(
+      headerOffset + PROCESS_SNAPSHOT_PPID_OFFSET,
+      true,
+    );
+    const uid = dv.getUint32(
+      headerOffset + PROCESS_SNAPSHOT_UID_OFFSET,
+      true,
+    );
+    const gid = dv.getUint32(
+      headerOffset + PROCESS_SNAPSHOT_GID_OFFSET,
+      true,
+    );
+    const vsize = dv.getBigUint64(
+      headerOffset + PROCESS_SNAPSHOT_VSIZE_OFFSET,
+      true,
+    );
+    if (vsize > BigInt(Number.MAX_SAFE_INTEGER)) {
+      malformed(`record ${i} has an unrepresentable virtual size`);
+    }
+    const vsizeBytes = Number(vsize);
+    const stateCode = dv.getUint32(
+      headerOffset + PROCESS_SNAPSHOT_STATE_OFFSET,
+      true,
+    );
+    const state = ((): ProcessSnapshot["state"] => {
+      switch (stateCode) {
+        case 0x52:
+          return "R";
+        case 0x5a:
+          return "Z";
+        case 0x53:
+          return "S";
+        case 0x44:
+          return "D";
+        case 0x54:
+          return "T";
+        case 0x49:
+          return "I";
+        default:
+          return malformed(`record ${i} has an invalid process state`);
+      }
+    })();
+    const commLen = dv.getUint32(
+      headerOffset + PROCESS_SNAPSHOT_COMM_LEN_OFFSET,
+      true,
+    );
+    const cmdLen = dv.getUint32(
+      headerOffset + PROCESS_SNAPSHOT_CMDLINE_LEN_OFFSET,
+      true,
+    );
+    off += PROCESS_SNAPSHOT_HEADER_BYTES;
+    if (commLen > mem.byteLength - off) {
+      malformed(`record ${i} has a truncated command name`);
+    }
     const comm = dec.decode(mem.subarray(off, off + commLen));
     off += commLen;
+    if (cmdLen > mem.byteLength - off) {
+      malformed(`record ${i} has a truncated command line`);
+    }
     const cmdRaw = mem.subarray(off, off + cmdLen);
     off += cmdLen;
     // /proc/<pid>/cmdline is null-separated; convert to space-separated.
     const cmdline = dec.decode(cmdRaw).replace(/\0/g, " ").trimEnd();
     out.push({ pid, ppid, uid, gid, vsizeBytes, state, comm, cmdline: cmdline || `[${comm}]` });
+  }
+  if (off !== mem.byteLength) {
+    malformed("trailing bytes follow the declared records");
   }
   return out;
 }
@@ -2434,6 +2529,11 @@ interface CentralizedKernelWorkerTestAuthority {
   probeWaitableChildCapacityForTest(
     options: WaitableChildCapacityProbeTestOptions,
   ): KernelCapacityProbeResult;
+  readKernelOwnedPathForTest(
+    registrationWitness: ChannelInfo,
+    fd: number | null,
+    directoryOnly?: boolean,
+  ): SharedMmapHostResult<Uint8Array>;
   inspectThreadTransportStateForLifecycleTest(
     pid: number,
   ): ThreadTransportStateTestResult;
@@ -4143,6 +4243,54 @@ export class CentralizedKernelWorker {
         }
         return outcome.value;
       },
+      readKernelOwnedPathForTest: (
+        registrationWitness,
+        fd,
+        directoryOnly = false,
+      ): SharedMmapHostResult<Uint8Array> => {
+        const outcome: {
+          inputError?: TypeError;
+          value?: SharedMmapHostResult<Uint8Array>;
+        } = {};
+        this.#runImmediateKernelEntry(
+          "kernel-owned path transfer test",
+          (entry) => {
+            const registration = this.processes.get(
+              registrationWitness.pid,
+            );
+            if (
+              registration === undefined
+              || registration.memory !== registrationWitness.memory
+              || !registration.channels.includes(registrationWitness)
+              || (
+                fd !== null
+                && (
+                  !Number.isSafeInteger(fd)
+                  || fd < -0x8000_0000
+                  || fd > 0x7fff_ffff
+                )
+              )
+            ) {
+              outcome.inputError = new TypeError(
+                "kernel-owned path test identity is invalid",
+              );
+              return undefined;
+            }
+            outcome.value = this.#readKernelOwnedPath(
+              registration.pid,
+              fd,
+              entry,
+              directoryOnly,
+            );
+            return undefined;
+          },
+        );
+        if (outcome.inputError !== undefined) throw outcome.inputError;
+        if (outcome.value === undefined) {
+          throw new Error("kernel-owned path transfer returned no result");
+        }
+        return outcome.value;
+      },
       inspectThreadTransportStateForLifecycleTest: (pid) => {
         const outcome: {
           inputError?: TypeError;
@@ -4880,6 +5028,186 @@ export class CentralizedKernelWorker {
     return result;
   }
 
+  /**
+   * Read one complete kernel-owned canonical path through capacity-carrying
+   * scratch. Canonical CWD/OFD paths may exceed PATH_MAX after resolving a
+   * short relative name against an already-deep directory.
+   */
+  #readKernelOwnedPath(
+    pid: number,
+    fd: number | null,
+    entry: KernelWorkerEntryContext,
+    directoryOnly = false,
+  ): SharedMmapHostResult<Uint8Array> {
+    if (fd === null && directoryOnly) {
+      return { kind: "error", errno: EINVAL };
+    }
+    const exportName = fd === null
+      ? "kernel_get_cwd"
+      : directoryOnly
+        ? "kernel_get_dirfd_path"
+        : "kernel_get_fd_path";
+    if (typeof entry.instance.exports[exportName] !== "function") {
+      return { kind: "error", errno: ENOSYS };
+    }
+    const errnoForResult = (result: number): number => {
+      if (!Number.isSafeInteger(result) || result >= 0) return EIO;
+      const errno = -result;
+      return errno > 0 && errno <= MAX_KERNEL_TASK_ID ? errno : EIO;
+    };
+
+    const mainRegion = this.#requireMainScratchRegion();
+    let initial: { result: number; bytes: Uint8Array };
+    try {
+      initial = mainRegion.withLease((lease) => {
+        const pointer = lease.exportPointer(0, mainRegion.capacity);
+        const result = this.#invokeEntryScratchExport(
+          entry,
+          lease,
+          exportName,
+          fd === null
+            ? [pid, pointer, mainRegion.capacity]
+            : [pid, fd, pointer, mainRegion.capacity],
+        );
+        if (!Number.isSafeInteger(result)) {
+          throw new KernelScratchError(
+            `${exportName} returned a non-integer byte count`,
+            EIO,
+          );
+        }
+        return {
+          result,
+          bytes: result > 0 && result <= mainRegion.capacity
+            ? lease.copyOut(0, result)
+            : new Uint8Array(0),
+        };
+      });
+    } catch (error) {
+      this.#rethrowKernelEntryFatal(error);
+      return { kind: "error", errno: EIO };
+    }
+    if (initial.result >= 0) {
+      if (initial.result > mainRegion.capacity) {
+        return { kind: "error", errno: EIO };
+      }
+      return { kind: "ok", value: initial.bytes };
+    }
+    if (initial.result !== -ERANGE) {
+      return { kind: "error", errno: errnoForResult(initial.result) };
+    }
+
+    let required: number;
+    try {
+      // WHY: the attempt, size query, reservation, and exact retry all remain
+      // inside this one synchronous kernel entry. Neither getter calls a host
+      // import, so process path state cannot change between these observations.
+      required = mainRegion.withLease((lease) => {
+        const pointer = lease.exportPointer(0, 0);
+        return this.#invokeEntryScratchExport(
+          entry,
+          lease,
+          exportName,
+          fd === null ? [pid, pointer, 0] : [pid, fd, pointer, 0],
+        );
+      });
+    } catch (error) {
+      this.#rethrowKernelEntryFatal(error);
+      return { kind: "error", errno: EIO };
+    }
+    if (
+      !Number.isSafeInteger(required)
+      || required <= mainRegion.capacity
+      || required > MAX_REPORTABLE_TRANSFER_BYTES
+    ) {
+      return {
+        kind: "error",
+        errno: required > MAX_REPORTABLE_TRANSFER_BYTES ? EOVERFLOW : EIO,
+      };
+    }
+    if (this.#largeTransferScratchInUse) {
+      throw new KernelReentrantEntryError(
+        `${exportName} transfer reservation`,
+      );
+    }
+    this.#largeTransferScratchInUse = true;
+
+    let reservation: ReservedTransferScratch | null = null;
+    let output: Uint8Array | null = null;
+    let errno = EIO;
+    let fatalError: KernelTransferExecuteTrapError | null = null;
+    try {
+      const begun = this.#beginLargeTransferScratch(required, entry);
+      reservation = begun.reservation;
+      errno = begun.errno;
+      if (reservation?.region) {
+        output = reservation.region.withLease((lease) => {
+          // WHY: the Rust-owned Vec remains in its exclusive Reserved state,
+          // so its allocation cannot move or be dropped. This synchronous
+          // getter receives only this lease's exact pointer/capacity pair;
+          // detach every byte before revocation and token cancellation.
+          const pointer = lease.exportPointer(0, required);
+          const result = this.#invokeEntryScratchExport(
+            entry,
+            lease,
+            exportName,
+            fd === null
+              ? [pid, pointer, required]
+              : [pid, fd, pointer, required],
+          );
+          if (result !== required) {
+            errno = result < 0 ? errnoForResult(result) : EIO;
+            return null;
+          }
+          return lease.copyOut(0, required);
+        });
+        if (output !== null) errno = 0;
+      }
+    } catch (error) {
+      if (
+        isKernelExportFailure(error)
+        || error instanceof KernelTransferExecuteTrapError
+        || this.#kernelFatalError !== null
+      ) {
+        fatalError = error instanceof KernelTransferExecuteTrapError
+          ? error
+          : new KernelTransferExecuteTrapError(
+            `${exportName} transfer reservation trapped`,
+            error,
+          );
+      } else {
+        errno = error instanceof KernelScratchError ? error.errno : EIO;
+      }
+    } finally {
+      if (reservation?.region) {
+        try {
+          reservation.region.revoke();
+        } catch (error) {
+          fatalError ??= new KernelTransferExecuteTrapError(
+            `${exportName} transfer lease could not be revoked`,
+            error,
+          );
+        }
+      }
+      if (reservation && fatalError === null) {
+        try {
+          this.#cancelLargeTransferScratch(reservation.token, entry);
+        } catch (error) {
+          this.#rethrowKernelEntryFatal(error);
+          fatalError = new KernelTransferExecuteTrapError(
+            `${exportName} transfer reservation could not be cancelled`,
+            error,
+          );
+        }
+      }
+      if (fatalError === null) this.#largeTransferScratchInUse = false;
+    }
+
+    if (fatalError !== null) throw fatalError;
+    return output === null
+      ? { kind: "error", errno }
+      : { kind: "ok", value: output };
+  }
+
   private checkedProcessRange(
     channel: ChannelInfo,
     pointer: number | bigint,
@@ -5422,13 +5750,85 @@ export class CentralizedKernelWorker {
         let outputContractViolation = false;
         for (const planned of plan.plannedChannelScratchArgs) {
           const { desc } = planned;
+          if (
+            desc.direction === "in"
+            && retVal >= 0
+            && isInputChannelByteCountResult(
+              plan.syscallNr,
+              desc.argIndex,
+            )
+            && retVal > planned.size
+          ) {
+            // WHY: a successful byte-count producer cannot have consumed more
+            // caller bytes than this exact detached input subregion contained.
+            // Treat an over-report as a protocol failure just like an output
+            // producer exceeding its owned destination.
+            outputContractViolation = true;
+            break;
+          }
           if (desc.direction !== "out" && desc.direction !== "inout") {
             continue;
           }
           if (desc.direction === "out" && retVal < 0) continue;
 
           let copySize = planned.size;
-          if (desc.direction === "out" && desc.size.type === "arg") {
+          const copyOutLength = desc.copyOutLength;
+          if (
+            desc.direction === "out"
+            && copyOutLength?.type === "u32-field"
+          ) {
+            const lengthSource = plan.plannedChannelScratchArgs.find(
+              (candidate) =>
+                candidate.desc.argIndex === copyOutLength.argIndex,
+            );
+            const lengthEnd =
+              copyOutLength.offset + Uint32Array.BYTES_PER_ELEMENT;
+            if (
+              lengthSource === undefined
+              || !Number.isSafeInteger(lengthEnd)
+              || lengthEnd > lengthSource.size
+            ) {
+              throw new KernelScratchError(
+                "generated output-length field is outside its staged argument",
+                EIO,
+              );
+            }
+            const actualLength = lease
+              .dataView(
+                lengthSource.scratchOffset + copyOutLength.offset,
+                Uint32Array.BYTES_PER_ELEMENT,
+              )
+              .getUint32(0, true);
+            // WHY: a non-byte-count syscall may identify its complete output
+            // through another generated record, but that producer field never
+            // grants authority beyond this argument's owned capacity.
+            if (actualLength > planned.size) {
+              outputContractViolation = true;
+              break;
+            }
+            copySize = actualLength;
+          } else if (
+            desc.direction === "out"
+            && desc.size.type === "arg"
+          ) {
+            const permitsTruncatedDatagramLength =
+              (
+                plan.syscallNr === SYS_RECV
+                || plan.syscallNr === SYS_RECVFROM
+              )
+              && desc.argIndex === 1
+              && (
+                Number(plan.adjustedArgs[3] ?? 0)
+                & SOCKET_MSG_TRUNC
+              ) !== 0;
+            // WHY: except for POSIX MSG_TRUNC datagram semantics, a successful
+            // byte count is also the producer's claimed write extent. Silently
+            // clamping an over-report would publish success for bytes that
+            // never fit the owned allocation.
+            if (retVal > planned.size && !permitsTruncatedDatagramLength) {
+              outputContractViolation = true;
+              break;
+            }
             copySize = Math.min(retVal, copySize);
           } else if (
             desc.direction === "out"
@@ -6198,6 +6598,12 @@ export class CentralizedKernelWorker {
     if (pid === 1) {
       throw new Error("Cannot register the kernel-reserved init process");
     }
+    if (memory === this.#kernelMemory) {
+      // WHY: process memory and kernel scratch have different owners and
+      // lifetimes. Reject the identity at admission so no channel path can
+      // accidentally turn a process-memory write into a kernel-memory write.
+      throw new Error("Process Memory must not alias kernel Memory");
+    }
     // WHY: exports can synchronously call host imports. Snapshot every
     // caller-owned value before the first export so a reentrant callback
     // cannot replace argv/env or layout fields halfway through registration.
@@ -6207,6 +6613,13 @@ export class CentralizedKernelWorker {
     const env = options?.env === undefined
       ? undefined
       : [...options.env];
+    if ((argv === undefined) !== (env === undefined)) {
+      // WHY: Rust publishes argv and environment as one pair. Preserving an
+      // omitted old vector would make the host's ARG_MAX proof incomplete.
+      throw new Error(
+        "Process registration must replace argv and environment together",
+      );
+    }
     const ptrWidth = options?.ptrWidth ?? 4;
     const metadataPtrWidth = options?.metadataPtrWidth ?? ptrWidth;
     const preserveProcessState = options?.preserveProcessState === true;
@@ -6281,6 +6694,21 @@ export class CentralizedKernelWorker {
           return undefined;
         }
 
+        if (argv !== undefined && env !== undefined) {
+          registrationPreconditionError =
+            this.#replaceProcessMetadataWithinKernelEntry(
+              pid,
+              argv,
+              env,
+              entry,
+            );
+          if (registrationPreconditionError !== null) return undefined;
+        }
+
+        // WHY: metadata allocation errors are recoverable and return without
+        // publishing a host registration. Complete that transaction before
+        // mutating any layout field so a failed attempt leaves the whole
+        // kernel Process unchanged and can be retried safely.
         if (
           brkBase !== undefined
           && !this.#setBrkBaseWithinKernelEntry(pid, brkBase, entry)
@@ -6288,30 +6716,6 @@ export class CentralizedKernelWorker {
           throw new Error(
             "Kernel export kernel_set_brk_base is required for compact process memory layout",
           );
-        }
-
-        // Set process argv in kernel for /proc/<pid>/cmdline.
-        if (argv !== undefined) {
-          registrationPreconditionError =
-            this.#replaceProcessMetadataWithinKernelEntry(
-              pid,
-              PROCESS_METADATA_ARGV,
-              argv,
-              entry,
-            );
-          if (registrationPreconditionError !== null) return undefined;
-        }
-
-        // Exec must synchronize an explicitly empty replacement environment.
-        if (env !== undefined) {
-          registrationPreconditionError =
-            this.#replaceProcessMetadataWithinKernelEntry(
-              pid,
-              PROCESS_METADATA_ENVIRONMENT,
-              env,
-              entry,
-            );
-          if (registrationPreconditionError !== null) return undefined;
         }
 
         // New layouts supply an explicit ceiling. Legacy layouts retain the
@@ -6384,10 +6788,17 @@ export class CentralizedKernelWorker {
     env: readonly string[],
     ptrWidth: 4 | 8 = 4,
   ): number {
+    if (
+      argv.length > PROCESS_STARTUP_MAX_ARGV_COUNT
+      || env.length > PROCESS_STARTUP_MAX_ENVP_COUNT
+    ) {
+      return -E2BIG;
+    }
     const encoder = new TextEncoder();
     // Account for the null pointer terminating each vector even when it is
-    // explicitly empty. Pointer accounting both matches ARG_MAX semantics and
-    // bounds the number of zero-length entries without an arbitrary count cap.
+    // explicitly empty. The independently checked generated count ceilings
+    // are the startup representation contract; pointer/string bytes remain a
+    // separate ARG_MAX contract.
     let totalBytes = 2 * ptrWidth;
     for (const value of [...argv, ...env]) {
       const encodedLength = encoder.encode(value).byteLength;
@@ -6400,103 +6811,146 @@ export class CentralizedKernelWorker {
     return 0;
   }
 
-  /** Replace argv or environ using bounded, entry-at-a-time scratch copies. */
-  private replaceProcessMetadata(
-    pid: number,
-    kind: number,
-    values: readonly string[],
-  ): void {
-    const stableValues = [...values];
-    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
-    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
-      throw new KernelReentrantEntryError(
-        `process metadata replacement pid=${pid}`,
-      );
-    }
-    let preconditionError: Error | null = null;
-    const deferred = this.#runOrDeferKernelEntry(
-      `process metadata replacement pid=${pid}`,
-      (entry) => {
-        preconditionError = this.#replaceProcessMetadataWithinKernelEntry(
-          pid,
-          kind,
-          stableValues,
-          entry,
-        );
-        return undefined;
-      },
-    );
-    if (preconditionError !== null) throw preconditionError;
-    if (deferred) {
-      throw new KernelReentrantEntryError(
-        `process metadata replacement pid=${pid}`,
-      );
-    }
-  }
-
   #replaceProcessMetadataWithinKernelEntry(
     pid: number,
-    kind: number,
-    values: readonly string[],
+    argv: readonly string[],
+    environment: readonly string[],
     entry: KernelWorkerEntryContext,
   ): Error | null {
-    const clear = this.#kernelInstanceForEntry(entry).exports.kernel_clear_process_metadata as
-      ((pid: number, kind: number) => number) | undefined;
-    const push = this.#kernelInstanceForEntry(entry).exports
-      .kernel_push_process_metadata_entry as
+    const exports = this.#kernelInstanceForEntry(entry).exports;
+    const begin = exports.kernel_process_metadata_begin as
+      ((pid: number) => number) | undefined;
+    const stage = exports.kernel_process_metadata_stage as
       | ((
           pid: number,
+          token: number,
           kind: number,
           dataPtr: KernelPointer,
           dataLen: number,
         ) => number)
       | undefined;
-    if (typeof clear !== "function" || typeof push !== "function") {
-      // WHY: current-ABI admission requires both bounded entry-at-a-time
-      // exports. Falling back to the historical aggregate argv setter would
-      // silently lose environment replacement and revive a pointer-only
-      // transport after the capacity-safe contract was negotiated.
+    const commit = exports.kernel_process_metadata_commit as
+      ((pid: number, token: number) => number) | undefined;
+    const cancel = exports.kernel_process_metadata_cancel as
+      ((pid: number, token: number) => number) | undefined;
+    if (
+      typeof begin !== "function"
+      || typeof stage !== "function"
+      || typeof commit !== "function"
+      || typeof cancel !== "function"
+    ) {
+      // WHY: an aggregate setter or clear-then-push fallback either revives a
+      // bare variable pointer or exposes a prefix after a later allocation
+      // failure. ABI 43 admits only the token-bound build-then-swap protocol.
       return new Error(
-        "Kernel missing required bounded process metadata exports",
+        "Kernel missing required atomic process metadata exports",
       );
     }
 
-    const clearResult = clear(pid, kind);
-    if (clearResult < 0) {
+    const token = begin(pid);
+    if (Number.isInteger(token) && token < 0) {
+      return new Error(
+        `Failed to begin process metadata replacement for pid ${pid}: errno ${-token}`,
+      );
+    }
+    if (!Number.isInteger(token) || token === 0) {
       throw new Error(
-        `Failed to clear process metadata for pid ${pid}: errno ${-clearResult}`,
+        `Process metadata begin returned invalid token ${String(token)} for pid ${pid}`,
       );
     }
 
     const encoder = new TextEncoder();
-    for (const value of values) {
-      const encoded = encoder.encode(value);
-      if (encoded.byteLength > PROCESS_METADATA_ENTRY_MAX_BYTES) {
-        throw new Error(
-          `Process metadata entry exceeds bounded scratch transport: errno ${E2BIG}`,
-        );
+    let committed = false;
+    let cancelAllowed = true;
+    let operationError: Error | null = null;
+    try {
+      const vectors = [
+        [PROCESS_METADATA_KIND_ARGV, argv],
+        [PROCESS_METADATA_KIND_ENVIRONMENT, environment],
+      ] as const;
+      for (const [kind, values] of vectors) {
+        for (const value of values) {
+          const encoded = encoder.encode(value);
+          if (encoded.byteLength > PROCESS_METADATA_ENTRY_MAX_BYTES) {
+            operationError = new Error(
+              `Process metadata entry exceeds bounded scratch transport: errno ${E2BIG}`,
+            );
+            break;
+          }
+          // A Rust stage can grow memory. A fresh lease rechecks the
+          // replacement buffer and owns the bytes through the complete
+          // synchronous copy into the transaction.
+          const stageResult = this.#requireMainScratchRegion().withLease((scratch) => {
+            scratch.copyFrom(encoded);
+            return this.#invokeEntryScratchExport(
+              entry,
+              scratch,
+              "kernel_process_metadata_stage",
+              [
+                pid,
+                token,
+                kind,
+                scratch.exportPointer(0, encoded.byteLength),
+                encoded.byteLength,
+              ],
+            );
+          });
+          if (stageResult < 0) {
+            operationError = new Error(
+              `Failed to stage process metadata for pid ${pid}: errno ${-stageResult}`,
+            );
+            break;
+          }
+          if (stageResult !== 0) {
+            throw new Error(
+              `Process metadata stage returned invalid result ${stageResult} for pid ${pid}`,
+            );
+          }
+        }
+        if (operationError !== null) break;
       }
-      // A Rust push can grow memory. A fresh lease rechecks the replacement
-      // buffer and owns the bytes through the complete synchronous parse.
-      const pushResult = this.#requireMainScratchRegion().withLease((scratch) => {
-        scratch.copyFrom(encoded);
-        return this.#invokeEntryScratchExport(
-          entry,
-          scratch,
-          "kernel_push_process_metadata_entry",
-          [
-            pid,
-            kind,
-            scratch.exportPointer(0, encoded.byteLength),
-            encoded.byteLength,
-          ],
-        );
-      });
-      if (pushResult < 0) {
-        throw new Error(`Failed to append process metadata for pid ${pid}: errno ${-pushResult}`);
+
+      if (operationError === null) {
+        const commitResult = commit(pid, token);
+        if (commitResult < 0) {
+          operationError = new Error(
+            `Failed to commit process metadata for pid ${pid}: errno ${-commitResult}`,
+          );
+        } else if (commitResult !== 0) {
+          throw new Error(
+            `Process metadata commit returned invalid result ${commitResult} for pid ${pid}`,
+          );
+        } else {
+          committed = true;
+        }
+      }
+    } catch (error) {
+      if (isKernelExportFailure(error)) {
+        // A trap leaves the Rust transition uncertain. The entry gate poisons
+        // this entire generation; entering another export to cancel would
+        // pretend the trapped instance were still reusable.
+        cancelAllowed = false;
+      }
+      throw error;
+    } finally {
+      if (!committed && cancelAllowed) {
+        // WHY: Rust keeps the old pair live until commit. Always release the
+        // staged allocation on every ordinary error so a later replacement
+        // cannot overlap or inherit bytes from this failed operation.
+        const cancelResult = cancel(pid, token);
+        if (cancelResult < 0) {
+          throw new Error(
+            `Failed to cancel process metadata for pid ${pid}: errno ${-cancelResult}`,
+          );
+        }
+        if (cancelResult !== 0) {
+          throw new Error(
+            `Process metadata cancel returned invalid result ${cancelResult} for pid ${pid}`,
+          );
+        }
       }
     }
-    return null;
+    return operationError;
   }
 
   /**
@@ -10452,6 +10906,13 @@ export class CentralizedKernelWorker {
         adjustedArgs,
       );
     }
+    if (syscallNr === ABI_SYSCALLS.Setsockopt) {
+      // WHY: optlen is only the caller's supplied byte extent. It cannot
+      // identify whether embedded sockaddr_storage fields use wasm32 or
+      // wasm64 alignment, so carry the independently known process model in
+      // setsockopt's otherwise-unused private sixth channel slot.
+      adjustedArgs[PROCESS_POINTER_WIDTH_ARG_INDEX] = pointerWidth;
+    }
     if (syscallNr === SYS_PRCTL) {
       const option = Number(BigInt.asUintN(32, rawArgs[0]!));
       adjustedArgs[0] = option;
@@ -10742,6 +11203,32 @@ export class CentralizedKernelWorker {
             // Rust slices require non-null pointers even at length zero.
             adjustedArgs[desc.argIndex] = 0;
             plannedZeroLengthScratchArgMask |= 1 << desc.argIndex;
+            if (
+              (
+                desc.direction === "in"
+                && isInputChannelByteCountResult(
+                  syscallNr,
+                  desc.argIndex,
+                )
+              )
+              || (
+                desc.direction === "out"
+              )
+            ) {
+              // WHY: zero caller capacity does not erase a byte-count
+              // producer contract, including one whose byte count comes from
+              // another staged output record (for example readdir d_namlen).
+              // Retain the empty owned region in the plan so a kernel that
+              // claims a positive transfer is rejected unless the syscall
+              // explicitly permits a complete truncated datagram length.
+              plannedChannelScratchArgs.push({
+                desc,
+                processPointer: 0,
+                scratchOffset: CH_DATA + dataOffset,
+                size: 0,
+                inputBytes: null,
+              });
+            }
             continue;
           }
         }
@@ -10925,6 +11412,23 @@ export class CentralizedKernelWorker {
           // a non-null allocator-owned empty address for Rust slice validity.
           adjustedArgs[desc.argIndex] = 0;
           plannedZeroLengthScratchArgMask |= 1 << desc.argIndex;
+          if (
+            desc.size.type === "deref"
+            && (desc.direction === "out" || desc.direction === "inout")
+          ) {
+            // WHY: zero caller capacity still leaves a value-result producer
+            // contract: the paired socklen_t may report the complete result,
+            // but never more than the generated platform maximum. Retain the
+            // zero-capacity region in the plan so post-dispatch validation
+            // cannot be skipped merely because there are no bytes to copy.
+            plannedChannelScratchArgs.push({
+              desc,
+              processPointer: ptr,
+              scratchOffset: CH_DATA + dataOffset,
+              size: 0,
+              inputBytes: null,
+            });
+          }
           continue;
         }
 
@@ -20416,7 +20920,26 @@ export class CentralizedKernelWorker {
     }
     const rawPath = path;
     if (path && !path.startsWith("/")) {
-      path = this.resolveExecPathAgainstCwd(parentPid, path, entry);
+      const resolvedPath = this.resolveExecPathAgainstCwd(
+        parentPid,
+        path,
+        entry,
+      );
+      if (resolvedPath.kind === "error") {
+        this.completeChannel(
+          channel,
+          SYS_SPAWN,
+          origArgs,
+          undefined,
+          -1,
+          resolvedPath.errno,
+          [],
+          undefined,
+          entry,
+        );
+        return;
+      }
+      path = resolvedPath.value;
     }
 
     // .slice copies into a regular ArrayBuffer (TextDecoder rejects SAB views).
@@ -21141,15 +21664,15 @@ export class CentralizedKernelWorker {
 
   /**
    * Read a null-terminated exec argv/envp pointer array without truncation.
-   * Each entry may occupy one process-metadata transfer. That implementation
-   * ceiling is separate from the advertised aggregate ARG_MAX budget, which
-   * includes pointer entries and bounds the scan without an unrelated
-   * argument-count limit.
+   * Each entry may occupy one process-metadata transfer. The generated count
+   * ceiling is the maximum the startup representation can hold; it remains
+   * separate from the aggregate ARG_MAX byte budget, which includes pointers.
    */
   private readStringArrayFromProcess(
     mem: Uint8Array,
     arrayPtr: number,
     ptrWidth: 4 | 8 = 4,
+    maxCount: number = PROCESS_STARTUP_MAX_ARGV_COUNT,
   ): { values: string[] } | { errno: number } {
     if (arrayPtr === 0) return { values: [] };
     const values: string[] = [];
@@ -21173,6 +21696,7 @@ export class CentralizedKernelWorker {
         strPtr = view.getUint32(pointerOffset, true);
       }
       if (strPtr === 0) return { values };
+      if (values.length >= maxCount) return { errno: E2BIG };
       if (strPtr < 0 || strPtr >= mem.byteLength) return { errno: EFAULT };
 
       const scanLength = Math.min(
@@ -21261,8 +21785,18 @@ export class CentralizedKernelWorker {
       return;
     }
     let path = pathResult.value;
-    const argvResult = this.readStringArrayFromProcess(processMem, origArgs[1], pw);
-    const envResult = this.readStringArrayFromProcess(processMem, origArgs[2], pw);
+    const argvResult = this.readStringArrayFromProcess(
+      processMem,
+      origArgs[1],
+      pw,
+      PROCESS_STARTUP_MAX_ARGV_COUNT,
+    );
+    const envResult = this.readStringArrayFromProcess(
+      processMem,
+      origArgs[2],
+      pw,
+      PROCESS_STARTUP_MAX_ENVP_COUNT,
+    );
     if ("errno" in argvResult) {
       this.completeChannel(
         channel,
@@ -21293,11 +21827,45 @@ export class CentralizedKernelWorker {
     }
     const argv = argvResult.values;
     const envp = envResult.values;
+    const metadataResult = this.validateExecMetadata(argv, envp, pw);
+    if (metadataResult < 0) {
+      this.completeChannel(
+        channel,
+        SYS_EXECVE,
+        origArgs,
+        undefined,
+        -1,
+        -metadataResult,
+        [],
+        undefined,
+        entry,
+      );
+      return;
+    }
 
     // Resolve relative exec paths against process CWD (not initial KERNEL_CWD).
     // Critical for posix_spawn with chdir file actions where child CWD != parent CWD.
     if (path && !path.startsWith("/")) {
-      path = this.resolveExecPathAgainstCwd(channel.pid, path, entry);
+      const resolvedPath = this.resolveExecPathAgainstCwd(
+        channel.pid,
+        path,
+        entry,
+      );
+      if (resolvedPath.kind === "error") {
+        this.completeChannel(
+          channel,
+          SYS_EXECVE,
+          origArgs,
+          undefined,
+          -1,
+          resolvedPath.errno,
+          [],
+          undefined,
+          entry,
+        );
+        return;
+      }
+      path = resolvedPath.value;
     }
 
     if (!this.callbacks.onExec) {
@@ -21392,47 +21960,20 @@ export class CentralizedKernelWorker {
 
   /**
    * Resolve a relative exec path against the process's kernel CWD.
-   * Returns absolute path if CWD can be queried, otherwise returns path unchanged.
+   * Query failures stay visible: using the unresolved token could execute a
+   * different host program than the process's authoritative CWD names.
    */
   private resolveExecPathAgainstCwd(
     pid: number,
     path: string,
     entry: KernelWorkerEntryContext,
-  ): string {
-    const getCwd = this.#kernelInstanceForEntry(entry).exports.kernel_get_cwd as
-      ((pid: number, bufPtr: KernelPointer, bufLen: number) => number) | undefined;
-    if (!getCwd) return path;
-    let output: { result: number; bytes: Uint8Array };
-    try {
-      output = this.#requireMainScratchRegion().withLease((lease) => {
-        const result = this.#invokeEntryScratchExport(
-          entry,
-          lease,
-          "kernel_get_cwd",
-          [
-            pid,
-            lease.exportPointer(0, POSIX_PATH_MAX_BYTES),
-            POSIX_PATH_MAX_BYTES,
-          ],
-        );
-        const byteLength = this.#checkedScratchProducerByteLength(
-          result,
-          POSIX_PATH_MAX_BYTES,
-          "kernel_get_cwd",
-        );
-        return {
-          result,
-          bytes: byteLength === 0
-            ? new Uint8Array(0)
-            : lease.copyOut(0, byteLength),
-        };
-      });
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      return path;
+  ): SharedMmapHostResult<string> {
+    const output = this.#readKernelOwnedPath(pid, null, entry);
+    if (output.kind === "error") return output;
+    if (output.value.byteLength === 0) {
+      return { kind: "error", errno: ENOENT };
     }
-    if (output.result <= 0) return path;
-    const cwd = new TextDecoder().decode(output.bytes);
+    const cwd = new TextDecoder().decode(output.value);
     const joined = cwd.endsWith("/") ? cwd + path : cwd + "/" + path;
     // Normalize . and .. components (e.g. /data/spawn/./prog → /data/spawn/prog)
     const parts = joined.split("/");
@@ -21442,7 +21983,7 @@ export class CentralizedKernelWorker {
       if (part === ".." && normalized.length > 0) { normalized.pop(); continue; }
       normalized.push(part);
     }
-    return "/" + normalized.join("/");
+    return { kind: "ok", value: "/" + normalized.join("/") };
   }
 
   /**
@@ -21479,8 +22020,18 @@ export class CentralizedKernelWorker {
       return;
     }
     const pathStr = pathResult.value;
-    const argvResult = this.readStringArrayFromProcess(processMem, origArgs[2], pw);
-    const envResult = this.readStringArrayFromProcess(processMem, origArgs[3], pw);
+    const argvResult = this.readStringArrayFromProcess(
+      processMem,
+      origArgs[2],
+      pw,
+      PROCESS_STARTUP_MAX_ARGV_COUNT,
+    );
+    const envResult = this.readStringArrayFromProcess(
+      processMem,
+      origArgs[3],
+      pw,
+      PROCESS_STARTUP_MAX_ENVP_COUNT,
+    );
     if ("errno" in argvResult) {
       this.completeChannel(
         channel,
@@ -21511,125 +22062,68 @@ export class CentralizedKernelWorker {
     }
     const argv = argvResult.values;
     const envp = envResult.values;
+    const metadataResult = this.validateExecMetadata(argv, envp, pw);
+    if (metadataResult < 0) {
+      this.completeChannel(
+        channel,
+        SYS_EXECVEAT,
+        origArgs,
+        undefined,
+        -1,
+        -metadataResult,
+        [],
+        undefined,
+        entry,
+      );
+      return;
+    }
 
     let execPath: string;
 
     if ((flags & AT_EMPTY_PATH) !== 0 && pathStr === "") {
-      // fexecve path: resolve fd to file path via kernel
-      const getFdPath = this.#kernelInstanceForEntry(entry).exports.kernel_get_fd_path as
-        ((pid: number, fd: number, bufPtr: KernelPointer, bufLen: number) => number) | undefined;
-      if (!getFdPath) {
+      const output = this.#readKernelOwnedPath(channel.pid, dirfd, entry);
+      if (output.kind === "error" || output.value.byteLength === 0) {
         this.completeChannel(
           channel,
           SYS_EXECVEAT,
           origArgs,
           undefined,
           -1,
-          38,
-          [],
-          undefined,
-          entry,
-        ); // ENOSYS
-        return;
-      }
-      let output: { result: number; bytes: Uint8Array };
-      try {
-        output = this.#requireMainScratchRegion().withLease((lease) => {
-          const result = this.#invokeEntryScratchExport(
-            entry,
-            lease,
-            "kernel_get_fd_path",
-            [
-              channel.pid,
-              dirfd,
-              lease.exportPointer(0, POSIX_PATH_MAX_BYTES),
-              POSIX_PATH_MAX_BYTES,
-            ],
-          );
-          const byteLength = this.#checkedScratchProducerByteLength(
-            result,
-            POSIX_PATH_MAX_BYTES,
-            "kernel_get_fd_path",
-          );
-          return {
-            result,
-            bytes: byteLength === 0
-              ? new Uint8Array(0)
-              : lease.copyOut(0, byteLength),
-            };
-        });
-      } catch (error) {
-        this.#rethrowKernelEntryFatal(error);
-        this.#rejectScratchTransfer(channel, error, entry);
-        return;
-      }
-      if (output.result <= 0) {
-        const errno = output.result < 0
-          ? (-output.result) >>> 0
-          : 2; // ENOENT
-        this.completeChannel(
-          channel,
-          SYS_EXECVEAT,
-          origArgs,
-          undefined,
-          -1,
-          errno,
+          output.kind === "error" ? output.errno : ENOENT,
           [],
           undefined,
           entry,
         );
         return;
       }
-      execPath = new TextDecoder().decode(output.bytes);
+      execPath = new TextDecoder().decode(output.value);
     } else if (pathStr.startsWith("/")) {
       execPath = pathStr;
     } else {
-      // Relative path — let kernel resolve against dirfd/CWD.
-      // For simplicity, resolve against process CWD here.
-      // The kernel's sys_execveat already resolves this, but since we intercept
-      // host-side, we need to do it ourselves.
-      const getCwd = this.#kernelInstanceForEntry(entry).exports.kernel_get_cwd as
-        ((pid: number, bufPtr: KernelPointer, bufLen: number) => number) | undefined;
-      if (getCwd) {
-        let output: { result: number; bytes: Uint8Array };
-        try {
-          output = this.#requireMainScratchRegion().withLease((lease) => {
-            const result = this.#invokeEntryScratchExport(
-              entry,
-              lease,
-              "kernel_get_cwd",
-              [
-                channel.pid,
-                lease.exportPointer(0, POSIX_PATH_MAX_BYTES),
-                POSIX_PATH_MAX_BYTES,
-              ],
-            );
-            const byteLength = this.#checkedScratchProducerByteLength(
-              result,
-              POSIX_PATH_MAX_BYTES,
-              "kernel_get_cwd",
-            );
-            return {
-              result,
-              bytes: byteLength === 0
-                ? new Uint8Array(0)
-                : lease.copyOut(0, byteLength),
-              };
-          });
-        } catch (error) {
-          this.#rethrowKernelEntryFatal(error);
-          this.#rejectScratchTransfer(channel, error, entry);
-          return;
-        }
-        if (output.result > 0) {
-          const cwd = new TextDecoder().decode(output.bytes);
-          execPath = cwd.endsWith("/") ? cwd + pathStr : cwd + "/" + pathStr;
-        } else {
-          execPath = pathStr;
-        }
-      } else {
-        execPath = pathStr;
+      // The host intercepts execveat before Rust resolves it. Preserve the
+      // syscall's dirfd semantics instead of silently substituting CWD.
+      const output = this.#readKernelOwnedPath(
+        channel.pid,
+        dirfd === AT_FDCWD ? null : dirfd,
+        entry,
+        dirfd !== AT_FDCWD,
+      );
+      if (output.kind === "error" || output.value.byteLength === 0) {
+        this.completeChannel(
+          channel,
+          SYS_EXECVEAT,
+          origArgs,
+          undefined,
+          -1,
+          output.kind === "error" ? output.errno : ENOENT,
+          [],
+          undefined,
+          entry,
+        );
+        return;
       }
+      const base = new TextDecoder().decode(output.value);
+      execPath = this.normalizeSharedMmapPath(`${base}/${pathStr}`);
     }
 
     if (!this.callbacks.onExec) {
@@ -24708,46 +25202,20 @@ export class CentralizedKernelWorker {
     const testHook =
       this.#scratchBoundaryTestHooks?.getFdPathForSharedMapping;
     if (testHook) return testHook(channel, fd);
-    const getFdPath = this.#kernelInstanceForEntry(entry).exports.kernel_get_fd_path as
-      ((pid: number, fd: number, bufPtr: KernelPointer, bufLen: number) => number) | undefined;
-    if (!getFdPath) return { kind: "error", errno: ENOSYS };
-    let output: { result: number; bytes: Uint8Array };
-    try {
-      const capacity = Math.min(POSIX_PATH_MAX_BYTES, CH_DATA_SIZE);
-      output = this.#requireMainScratchRegion().withLease((lease) => {
-        const result = this.#invokeEntryScratchExport(
-          entry,
-          lease,
-          "kernel_get_fd_path",
-          [
-            channel.pid,
-            fd,
-            lease.exportPointer(0, capacity),
-            capacity,
-          ],
-        );
-        const byteLength = this.#checkedScratchProducerByteLength(
-          result,
-          capacity,
-          "kernel_get_fd_path",
-        );
-        return {
-          result,
-          bytes: byteLength === 0
-            ? new Uint8Array(0)
-            : lease.copyOut(0, byteLength),
-        };
-      });
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      return { kind: "error", errno: EIO };
+    if (entry === undefined) return { kind: "error", errno: EIO };
+    const output = this.#readKernelOwnedPath(
+      channel.pid,
+      fd,
+      entry,
+      true,
+    );
+    if (output.kind === "error") return output;
+    if (output.value.byteLength === 0) {
+      return { kind: "error", errno: ENOENT };
     }
-    const len = output.result;
-    if (len < 0) return { kind: "error", errno: -len };
-    if (len === 0) return { kind: "error", errno: ENOENT };
     return {
       kind: "ok",
-      value: new TextDecoder().decode(output.bytes),
+      value: new TextDecoder().decode(output.value),
     };
   }
 
@@ -25456,37 +25924,13 @@ export class CentralizedKernelWorker {
         if (baseResult.kind === "error") return baseResult;
         base = baseResult.value;
       } else {
-        const getCwd = this.#kernelInstanceForEntry(entry).exports.kernel_get_cwd as
-          ((pid: number, bufPtr: KernelPointer, bufLen: number) => number) | undefined;
-        if (!getCwd) return { kind: "error", errno: ENOSYS };
-        const capacity = Math.min(POSIX_PATH_MAX_BYTES, CH_DATA_SIZE);
-        const output = this.#requireMainScratchRegion().withLease((lease) => {
-          const result = this.#invokeEntryScratchExport(
-            entry,
-            lease,
-            "kernel_get_cwd",
-            [
-              channel.pid,
-              lease.exportPointer(0, capacity),
-              capacity,
-            ],
-          );
-          const byteLength = this.#checkedScratchProducerByteLength(
-            result,
-            capacity,
-            "kernel_get_cwd",
-          );
-          return {
-            result,
-            bytes: byteLength === 0
-              ? new Uint8Array(0)
-              : lease.copyOut(0, byteLength),
-          };
-        });
-        const cwdLen = output.result;
-        if (cwdLen < 0) return { kind: "error", errno: -cwdLen };
-        if (cwdLen === 0) return { kind: "error", errno: ENOENT };
-        base = new TextDecoder().decode(output.bytes);
+        if (entry === undefined) return { kind: "error", errno: EIO };
+        const output = this.#readKernelOwnedPath(channel.pid, null, entry);
+        if (output.kind === "error") return output;
+        if (output.value.byteLength === 0) {
+          return { kind: "error", errno: ENOENT };
+        }
+        base = new TextDecoder().decode(output.value);
       }
       return {
         kind: "ok",

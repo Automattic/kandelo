@@ -44,9 +44,12 @@ import {
   KERNEL_MSGHDR_WIRE_NAME_OFFSET,
   KERNEL_MSGHDR_WIRE_NAMELEN_OFFSET,
   KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
+  KERNEL_SCRATCH_SOCKET_OPTION_MAX_BYTES,
   POSIX_IOV_MAX,
+  POSIX_NAME_MAX_BYTES,
   POSIX_NGROUPS_MAX,
   POSIX_PATH_MAX_BYTES,
+  PROCESS_METADATA_ENTRY_MAX_BYTES,
   PROCESS_CMSGHDR_WASM32_ALIGN,
   PROCESS_CMSGHDR_WASM32_DATA_OFFSET,
   PROCESS_CMSGHDR_WASM32_LEN_OFFSET,
@@ -78,9 +81,11 @@ import {
   SOCKET_SOL_SOCKET,
   STRUCT_SIZE_KERNEL_IOVEC_WIRE,
   STRUCT_SIZE_KERNEL_MSGHDR_WIRE,
+  STRUCT_SIZE_WASM_DIRENT,
   STRUCT_SIZE_WASM_EPOLL_EVENT,
   STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER,
   SYSCALL_ARGS,
+  WASM_DIRENT_NAME_LENGTH_OFFSET,
   WASM_EPOLL_EVENT_DATA_OFFSET,
   WASM_EPOLL_EVENT_EVENTS_OFFSET,
   WASM_EPOLL_EVENT_PAD_OFFSET,
@@ -90,7 +95,9 @@ const EFAULT = 14;
 const EIO = 5;
 const ENOMEM = 12;
 const EINVAL = 22;
+const ENOTDIR = 20;
 const EOVERFLOW = 75;
+const ERANGE = 34;
 const EAGAIN = 11;
 const EMSGSIZE = 90;
 const IPC_NOWAIT = 0x800;
@@ -563,6 +570,46 @@ function invokeNetworkIoctlHandler(
   dispatchScratchBoundarySyscall(harness);
 }
 
+function installCompletePathProducer(
+  harness: ScratchHarness,
+  path: Uint8Array,
+  fd: number | null,
+  directoryOnly = false,
+): ReturnType<typeof vi.fn> {
+  const copy = (
+    pointer: number | bigint,
+    capacity: number,
+  ): number => {
+    if (capacity === 0) return path.byteLength;
+    if (capacity < path.byteLength) return -ERANGE;
+    harness.kernelBytes.set(path, Number(pointer));
+    return path.byteLength;
+  };
+  const producer = fd === null
+    ? vi.fn((
+      _pid: number,
+      pointer: number | bigint,
+      capacity: number,
+    ) => copy(pointer, capacity))
+    : vi.fn((
+      _pid: number,
+      actualFd: number,
+      pointer: number | bigint,
+      capacity: number,
+    ) => {
+      expect(actualFd).toBe(fd);
+      return copy(pointer, capacity);
+    });
+  harness.kernelExports[
+    fd === null
+      ? "kernel_get_cwd"
+      : directoryOnly
+        ? "kernel_get_dirfd_path"
+        : "kernel_get_fd_path"
+  ] = producer;
+  return producer;
+}
+
 function writeNativeIovec(
   processBytes: Uint8Array,
   pointerWidth: 4 | 8,
@@ -889,6 +936,218 @@ function expectScratchTailUntouched(harness: ScratchHarness): void {
   );
   expect(tail.every((byte) => byte === 0xa5)).toBe(true);
 }
+
+describe("complete kernel-owned path transfers", () => {
+  it.each([
+    [4, null],
+    [8, null],
+    [4, 17],
+    [8, 17],
+  ] as const)(
+    "copies the exact main allocation capacity for wasm%s fd=%s",
+    (pointerWidth, fd) => {
+      const harness = makeScratchHarness(pointerWidth);
+      const path = new Uint8Array(CH_TOTAL_SIZE).fill(0x61);
+      path[0] = 0x2f;
+      const producer = installCompletePathProducer(harness, path, fd);
+      const begin = vi.spyOn(
+        harness.kernelExports,
+        "kernel_transfer_scratch_begin",
+      );
+
+      const result = harness.worker.testAuthority.readKernelOwnedPathForTest(
+        harness.channel,
+        fd,
+      );
+
+      expect(result).toEqual({ kind: "ok", value: path });
+      expect(producer).toHaveBeenCalledOnce();
+      expect(producer.mock.calls[0]?.at(-1)).toBe(CH_TOTAL_SIZE);
+      expect(begin).not.toHaveBeenCalled();
+      expect(
+        harness.kernelBytes.slice(harness.scratchOffset, harness.scratchEnd),
+      ).toEqual(path);
+      expect(
+        harness.kernelBytes.slice(harness.scratchEnd, harness.scratchEnd + 32),
+      ).toEqual(new Uint8Array(32).fill(0xa5));
+    },
+  );
+
+  it.each([
+    [4, null],
+    [8, null],
+    [4, 23],
+    [8, 23],
+  ] as const)(
+    "queries and reserves main capacity plus one for wasm%s fd=%s",
+    (pointerWidth, fd) => {
+      const harness = makeScratchHarness(pointerWidth);
+      const path = new Uint8Array(CH_TOTAL_SIZE + 1).fill(0x62);
+      path[0] = 0x2f;
+      const producer = installCompletePathProducer(harness, path, fd);
+      const begin = vi.spyOn(
+        harness.kernelExports,
+        "kernel_transfer_scratch_begin",
+      );
+      const cancel = vi.spyOn(
+        harness.kernelExports,
+        "kernel_transfer_scratch_cancel",
+      );
+      harness.kernelBytes[harness.transferOffset + path.byteLength] = 0x5a;
+
+      const result = harness.worker.testAuthority.readKernelOwnedPathForTest(
+        harness.channel,
+        fd,
+      );
+
+      expect(result).toEqual({ kind: "ok", value: path });
+      expect(
+        producer.mock.calls.map((call) => call.at(-1)),
+      ).toEqual([CH_TOTAL_SIZE, 0, CH_TOTAL_SIZE + 1]);
+      expect(begin).toHaveBeenCalledWith(
+        pointerWidth === 8 ? BigInt(path.byteLength) : path.byteLength,
+      );
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(
+        harness.kernelBytes.slice(
+          harness.transferOffset,
+          harness.transferOffset + path.byteLength,
+        ),
+      ).toEqual(path);
+      expect(
+        harness.kernelBytes[harness.transferOffset + path.byteLength],
+      ).toBe(0x5a);
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "propagates allocation failure without publishing a partial wasm%s path",
+    (pointerWidth) => {
+      const harness = makeScratchHarness(pointerWidth);
+      const path = new Uint8Array(CH_TOTAL_SIZE + 1).fill(0x63);
+      path[0] = 0x2f;
+      installCompletePathProducer(harness, path, null);
+      harness.kernelExports.kernel_transfer_scratch_begin = vi.fn(
+        () => BigInt(-ENOMEM),
+      );
+      const beforeMain = harness.kernelBytes.slice(
+        harness.scratchOffset,
+        harness.scratchEnd,
+      );
+
+      expect(
+        harness.worker.testAuthority.readKernelOwnedPathForTest(
+          harness.channel,
+          null,
+        ),
+      ).toEqual({ kind: "error", errno: ENOMEM });
+      expect(
+        harness.kernelBytes.slice(harness.scratchOffset, harness.scratchEnd),
+      ).toEqual(beforeMain);
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "cancels an invalid wasm%s allocator range and fails closed",
+    (pointerWidth) => {
+      const harness = makeScratchHarness(pointerWidth);
+      const path = new Uint8Array(CH_TOTAL_SIZE + 1).fill(0x64);
+      path[0] = 0x2f;
+      installCompletePathProducer(harness, path, null);
+      const token = 91n;
+      harness.kernelExports.kernel_transfer_scratch_begin = vi.fn(
+        () => token,
+      );
+      harness.kernelExports.kernel_transfer_scratch_pointer = vi.fn(
+        () => pointerWidth === 8
+          ? BigInt(harness.kernelMemory.buffer.byteLength - path.byteLength + 1)
+          : harness.kernelMemory.buffer.byteLength - path.byteLength + 1,
+      );
+      harness.kernelExports.kernel_transfer_scratch_capacity = vi.fn(
+        () => pointerWidth === 8
+          ? BigInt(path.byteLength)
+          : path.byteLength,
+      );
+      const cancel = vi.fn(() => 0);
+      harness.kernelExports.kernel_transfer_scratch_cancel = cancel;
+
+      expect(
+        harness.worker.testAuthority.readKernelOwnedPathForTest(
+          harness.channel,
+          null,
+        ),
+      ).toEqual({ kind: "error", errno: EIO });
+      expect(cancel).toHaveBeenCalledWith(token);
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "rejects a mismatched exact retry and permits the next wasm%s transfer",
+    (pointerWidth) => {
+      const harness = makeScratchHarness(pointerWidth);
+      let path = new Uint8Array(CH_TOTAL_SIZE + 1).fill(0x65);
+      path[0] = 0x2f;
+      const producer = installCompletePathProducer(harness, path, null);
+      producer.mockImplementationOnce((
+        _pid: number,
+        _pointer: number | bigint,
+        _capacity: number,
+      ) => -ERANGE);
+      producer.mockImplementationOnce((
+        _pid: number,
+        _pointer: number | bigint,
+        _capacity: number,
+      ) => path.byteLength);
+      producer.mockImplementationOnce((
+        _pid: number,
+        _pointer: number | bigint,
+        _capacity: number,
+      ) => path.byteLength - 1);
+
+      expect(
+        harness.worker.testAuthority.readKernelOwnedPathForTest(
+          harness.channel,
+          null,
+        ),
+      ).toEqual({ kind: "error", errno: EIO });
+
+      path = new TextEncoder().encode("/next");
+      installCompletePathProducer(harness, path, null);
+      expect(
+        harness.worker.testAuthority.readKernelOwnedPathForTest(
+          harness.channel,
+          null,
+        ),
+      ).toEqual({ kind: "ok", value: path });
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "uses the directory-only wasm%s producer for a relative dirfd base",
+    (pointerWidth) => {
+      const harness = makeScratchHarness(pointerWidth);
+      const fd = 23;
+      const ordinary = installCompletePathProducer(
+        harness,
+        new TextEncoder().encode("/regular"),
+        fd,
+      );
+      const directory = vi.fn(() => -ENOTDIR);
+      harness.kernelExports.kernel_get_dirfd_path = directory;
+
+      expect(
+        harness.worker.testAuthority.readKernelOwnedPathForTest(
+          harness.channel,
+          fd,
+          true,
+        ),
+      ).toEqual({ kind: "error", errno: ENOTDIR });
+      expect(directory).toHaveBeenCalledOnce();
+      expect(ordinary).not.toHaveBeenCalled();
+      expectScratchTailUntouched(harness);
+    },
+  );
+});
 
 describe("kernel scratch transfer capacity regressions", () => {
   it("binds allocator authority to the same shared kernel memory", () => {
@@ -1579,26 +1838,12 @@ describe("kernel scratch transfer capacity regressions", () => {
     },
   );
 
-  it("clamps a u64-wide complete-result capacity before Number conversion", () => {
+  it("rejects a u64-wide output capacity that cannot be converted losslessly", () => {
     const harness = makeScratchHarness(8);
     prepareGenericSyscallHarness(harness, 8);
     const destination = 4096;
     const callerCapacity = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
-    harness.handleChannel.mockImplementation((offset: number | bigint) => {
-      const channelView = new DataView(
-        harness.kernelBytes.buffer,
-        Number(offset),
-      );
-      const stagedPointer = Number(channelView.getBigInt64(CH_ARGS, true));
-      expect(stagedPointer).toBe(harness.scratchOffset + CH_DATA);
-      expect(channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true)).toBe(
-        BigInt(POSIX_PATH_MAX_BYTES),
-      );
-      harness.kernelBytes.set(new TextEncoder().encode("/\0"), stagedPointer);
-      channelView.setBigInt64(CH_RETURN, 2n, true);
-      channelView.setUint32(CH_ERRNO, 0, true);
-      return 0;
-    });
+    harness.processBytes.fill(0x7d, destination, destination + 16);
     writeChannelSyscall(harness, ABI_SYSCALLS.Getcwd, [
       BigInt(destination),
       callerCapacity,
@@ -1606,10 +1851,233 @@ describe("kernel scratch transfer capacity regressions", () => {
 
     dispatchScratchBoundarySyscall(harness);
 
-    expect(harness.handleChannel).toHaveBeenCalledOnce();
-    expect(harness.completeChannel.mock.calls[0]?.slice(4, 6)).toEqual([2, 0]);
+    expect(harness.handleChannel).not.toHaveBeenCalled();
+    expect(harness.completeChannel).not.toHaveBeenCalled();
+    expect(harness.completeChannelRaw).toHaveBeenCalledWith(
+      harness.channel,
+      -1,
+      EINVAL,
+    );
+    expect(harness.processBytes.slice(destination, destination + 16)).toEqual(
+      new Uint8Array(16).fill(0x7d),
+    );
     expectScratchTailUntouched(harness);
   });
+
+  it.each([
+    ["getcwd", ABI_SYSCALLS.Getcwd, 0],
+    ["realpath", ABI_SYSCALLS.Realpath, 1],
+  ] as const)(
+    "preserves a complete %s result beyond PATH_MAX when the caller owns a widened buffer",
+    (_name, syscallNr, outputArgIndex) => {
+      for (const pointerWidth of [4, 8] as const) {
+        const harness = makeScratchHarness(pointerWidth);
+        prepareGenericSyscallHarness(harness, pointerWidth);
+        const pathPointer = 1024;
+        const destination = 8192;
+        const callerCapacity = CH_DATA_SIZE + 1;
+        const result = new Uint8Array(POSIX_PATH_MAX_BYTES + 1).fill(0x72);
+        if (syscallNr === ABI_SYSCALLS.Getcwd) {
+          result[0] = 0x2f;
+          result[result.length - 1] = 0;
+        } else {
+          harness.processBytes.set(new Uint8Array([0x2e, 0]), pathPointer);
+          result[0] = 0x2f;
+        }
+        harness.handleChannel.mockImplementation((offset: number | bigint) => {
+          expect(Number(offset)).toBe(harness.transferOffset);
+          const channelView = new DataView(
+            harness.kernelBytes.buffer,
+            Number(offset),
+          );
+          const stagedPointer = Number(
+            channelView.getBigInt64(
+              CH_ARGS + outputArgIndex * CH_ARG_SIZE,
+              true,
+            ),
+          );
+          const capacityArgIndex =
+            syscallNr === ABI_SYSCALLS.Getcwd ? 1 : 2;
+          expect(
+            channelView.getBigInt64(
+              CH_ARGS + capacityArgIndex * CH_ARG_SIZE,
+              true,
+            ),
+          ).toBe(BigInt(callerCapacity));
+          harness.kernelBytes.set(result, stagedPointer);
+          channelView.setBigInt64(CH_RETURN, BigInt(result.length), true);
+          channelView.setUint32(CH_ERRNO, 0, true);
+          return 0;
+        });
+        writeChannelSyscall(
+          harness,
+          syscallNr,
+          syscallNr === ABI_SYSCALLS.Getcwd
+            ? [BigInt(destination), BigInt(callerCapacity)]
+            : [
+                BigInt(pathPointer),
+                BigInt(destination),
+                BigInt(callerCapacity),
+              ],
+        );
+
+        dispatchScratchBoundarySyscall(harness);
+
+        expect(harness.handleChannel).toHaveBeenCalledOnce();
+        const writes = harness.completeChannel.mock.calls[0]?.[6] as Array<{
+          ptr: number;
+          bytes: Uint8Array;
+        }>;
+        expect(writes).toEqual([{ ptr: destination, bytes: result }]);
+        expectScratchTailUntouched(harness);
+      }
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "copies a complete wasm%s legacy readdir name from a channel-capacity-plus-one caller",
+    (pointerWidth) => {
+      const harness = makeScratchHarness(pointerWidth);
+      prepareGenericSyscallHarness(harness, pointerWidth);
+      const direntPointer = 4096;
+      const namePointer = 8192;
+      const name = new Uint8Array(POSIX_NAME_MAX_BYTES - 1).fill(0x6e);
+      harness.handleChannel.mockImplementation((offset: number | bigint) => {
+        const channelView = new DataView(
+          harness.kernelBytes.buffer,
+          Number(offset),
+        );
+        const stagedDirentPointer = Number(
+          channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
+        );
+        const stagedNamePointer = Number(
+          channelView.getBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, true),
+        );
+        expect(channelView.getBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, true))
+          .toBe(BigInt(POSIX_NAME_MAX_BYTES));
+        new DataView(harness.kernelBytes.buffer).setUint32(
+          stagedDirentPointer + WASM_DIRENT_NAME_LENGTH_OFFSET,
+          name.byteLength,
+          true,
+        );
+        harness.kernelBytes.set(name, stagedNamePointer);
+        channelView.setBigInt64(CH_RETURN, 1n, true);
+        channelView.setUint32(CH_ERRNO, 0, true);
+        return 0;
+      });
+      writeChannelSyscall(harness, ABI_SYSCALLS.Readdir, [
+        7n,
+        BigInt(direntPointer),
+        BigInt(namePointer),
+        BigInt(CH_DATA_SIZE + 1),
+      ]);
+
+      dispatchScratchBoundarySyscall(harness);
+
+      expect(harness.handleChannel).toHaveBeenCalledOnce();
+      const writes = harness.completeChannel.mock.calls[0]?.[6] as Array<{
+        ptr: number;
+        bytes: Uint8Array;
+      }>;
+      expect(writes).toHaveLength(2);
+      expect(writes[0]?.ptr).toBe(direntPointer);
+      expect(writes[0]?.bytes).toHaveLength(STRUCT_SIZE_WASM_DIRENT);
+      expect(writes[1]).toEqual({ ptr: namePointer, bytes: name });
+      expectScratchTailUntouched(harness);
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "rejects a wasm%s readdir name length beyond its owned capacity atomically",
+    (pointerWidth) => {
+      const harness = makeScratchHarness(pointerWidth);
+      prepareGenericSyscallHarness(harness, pointerWidth);
+      const direntPointer = 4096;
+      const namePointer = 8192;
+      harness.handleChannel.mockImplementation((offset: number | bigint) => {
+        const channelView = new DataView(
+          harness.kernelBytes.buffer,
+          Number(offset),
+        );
+        const stagedDirentPointer = Number(
+          channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
+        );
+        new DataView(harness.kernelBytes.buffer).setUint32(
+          stagedDirentPointer + WASM_DIRENT_NAME_LENGTH_OFFSET,
+          POSIX_NAME_MAX_BYTES + 1,
+          true,
+        );
+        channelView.setBigInt64(CH_RETURN, 1n, true);
+        channelView.setUint32(CH_ERRNO, 0, true);
+        return 0;
+      });
+      writeChannelSyscall(harness, ABI_SYSCALLS.Readdir, [
+        7n,
+        BigInt(direntPointer),
+        BigInt(namePointer),
+        BigInt(CH_DATA_SIZE + 1),
+      ]);
+
+      dispatchScratchBoundarySyscall(harness);
+
+      expect(harness.handleChannel).toHaveBeenCalledOnce();
+      expect(harness.completeChannel.mock.calls[0]?.slice(4, 6)).toEqual([
+        -1,
+        EIO,
+      ]);
+      expectScratchTailUntouched(harness);
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "rejects a wasm%s readdir name over-report against zero caller capacity atomically",
+    (pointerWidth) => {
+      const harness = makeScratchHarness(pointerWidth);
+      prepareGenericSyscallHarness(harness, pointerWidth);
+      const direntPointer = 4096;
+      const beforeDirent = new Uint8Array(STRUCT_SIZE_WASM_DIRENT).fill(0x5a);
+      harness.processBytes.set(beforeDirent, direntPointer);
+      harness.handleChannel.mockImplementation((offset: number | bigint) => {
+        const channelView = new DataView(
+          harness.kernelBytes.buffer,
+          Number(offset),
+        );
+        const stagedDirentPointer = Number(
+          channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
+        );
+        new DataView(harness.kernelBytes.buffer).setUint32(
+          stagedDirentPointer + WASM_DIRENT_NAME_LENGTH_OFFSET,
+          1,
+          true,
+        );
+        channelView.setBigInt64(CH_RETURN, 1n, true);
+        channelView.setUint32(CH_ERRNO, 0, true);
+        return 0;
+      });
+      writeChannelSyscall(harness, ABI_SYSCALLS.Readdir, [
+        7n,
+        BigInt(direntPointer),
+        pointerWidth === 8 ? -1n : 0xffff_ffffn,
+        0n,
+      ]);
+
+      dispatchScratchBoundarySyscall(harness);
+
+      expect(harness.handleChannel).toHaveBeenCalledOnce();
+      expect(harness.completeChannel.mock.calls[0]?.slice(4, 6)).toEqual([
+        -1,
+        EIO,
+      ]);
+      expect(harness.completeChannel.mock.calls[0]?.[6] ?? []).toEqual([]);
+      expect(
+        harness.processBytes.slice(
+          direntPointer,
+          direntPointer + STRUCT_SIZE_WASM_DIRENT,
+        ),
+      ).toEqual(beforeDirent);
+      expectScratchTailUntouched(harness);
+    },
+  );
 
   it.each([
     ["wasm32", 4],
@@ -4908,6 +5376,1127 @@ describe("kernel scratch transfer capacity regressions", () => {
     expectScratchTailUntouched(harness);
   });
 
+  it.each([4, 8] as const)(
+    "rejects wasm%s generic byte-output over-reports without publishing partial bytes",
+    (pointerWidth) => {
+      const capacity = 31;
+      const destination = 8192;
+      const callerCanary = 0x6d;
+      for (const testCase of [
+        {
+          name: "read",
+          syscall: ABI_SYSCALLS.Read,
+          args: [7n, BigInt(destination), BigInt(capacity)],
+          pointerArgIndex: 1,
+        },
+        {
+          name: "getrandom",
+          syscall: ABI_SYSCALLS.Getrandom,
+          args: [BigInt(destination), BigInt(capacity), 0n],
+          pointerArgIndex: 0,
+        },
+        {
+          name: "getdents64",
+          syscall: ABI_SYSCALLS.Getdents64,
+          args: [7n, BigInt(destination), BigInt(capacity)],
+          pointerArgIndex: 1,
+        },
+      ] as const) {
+        const harness = makeScratchHarness(pointerWidth);
+        prepareGenericSyscallHarness(harness, pointerWidth);
+        harness.processBytes.fill(
+          callerCanary,
+          destination,
+          destination + capacity + 1,
+        );
+        harness.handleChannel.mockImplementation(
+          (offset: number | bigint) => {
+            const channelView = new DataView(
+              harness.kernelBytes.buffer,
+              Number(offset),
+            );
+            const stagedPointer = Number(
+              channelView.getBigInt64(
+                CH_ARGS + testCase.pointerArgIndex * CH_ARG_SIZE,
+                true,
+              ),
+            );
+            harness.kernelBytes.fill(
+              0x3c,
+              stagedPointer,
+              stagedPointer + capacity,
+            );
+            channelView.setBigInt64(CH_RETURN, BigInt(capacity + 1), true);
+            channelView.setUint32(CH_ERRNO, 0, true);
+            return 0;
+          },
+        );
+        writeChannelSyscall(
+          harness,
+          testCase.syscall,
+          [...testCase.args],
+        );
+
+        dispatchScratchBoundarySyscall(harness);
+
+        expect(
+          harness.completeChannel,
+          testCase.name,
+        ).toHaveBeenCalledOnce();
+        const completion = harness.completeChannel.mock.calls[0]!;
+        expect(completion[4], testCase.name).toBe(-1);
+        expect(completion[5], testCase.name).toBe(EIO);
+        // The test adapter drops an empty detached-output slot on errors. A
+        // prefix-clamping implementation would leave a non-empty write here.
+        expect(completion[6], testCase.name).toBeUndefined();
+        expect(
+          harness.processBytes.slice(
+            destination,
+            destination + capacity + 1,
+          ),
+          testCase.name,
+        ).toEqual(new Uint8Array(capacity + 1).fill(callerCanary));
+        expectScratchTailUntouched(harness);
+      }
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "uses capacity-carrying scratch for wasm%s readlink outputs at the remaining mailbox capacity and capacity plus one",
+    (pointerWidth) => {
+      const pathPointer = 256;
+      const destination = 65_536;
+      const path = Uint8Array.of(0x78, 0);
+      // The two-byte path occupies one aligned eight-byte subregion before
+      // the output. These are therefore the exact largest ordinary output and
+      // its first widened successor, not merely the raw CH_DATA_SIZE values.
+      const exactOutputCapacity = CH_DATA_SIZE - 8;
+      const target = Uint8Array.from(
+        { length: exactOutputCapacity + 1 },
+        (_, index) => (index * 37 + 11) % 251,
+      );
+
+      for (const testCase of [
+        {
+          name: "readlink",
+          syscall: ABI_SYSCALLS.Readlink,
+          pathArgIndex: 0,
+          outputArgIndex: 1,
+          args: (capacity: number) => [
+            BigInt(pathPointer),
+            BigInt(destination),
+            BigInt(capacity),
+          ],
+        },
+        {
+          name: "readlinkat",
+          syscall: ABI_SYSCALLS.Readlinkat,
+          pathArgIndex: 1,
+          outputArgIndex: 2,
+          args: (capacity: number) => [
+            9n,
+            BigInt(pathPointer),
+            BigInt(destination),
+            BigInt(capacity),
+          ],
+        },
+      ] as const) {
+        for (
+          const capacity of [
+            exactOutputCapacity,
+            exactOutputCapacity + 1,
+          ]
+        ) {
+          const harness = makeScratchHarness(pointerWidth);
+          prepareGenericSyscallHarness(harness, pointerWidth);
+          harness.processBytes.set(path, pathPointer);
+          // The exact-capacity call returns the complete widened target. The
+          // one-byte-short call models readlink's caller-controlled prefix
+          // truncation at the last fixed-mailbox capacity.
+          const payload = target.slice(0, capacity);
+          const begin = vi.spyOn(
+            harness.kernelExports,
+            "kernel_transfer_scratch_begin",
+          );
+          harness.handleChannel.mockImplementation(
+            (offset: number | bigint) => {
+              const channelBase = Number(offset);
+              const reserved = capacity > exactOutputCapacity;
+              expect(channelBase, testCase.name).toBe(
+                reserved ? harness.transferOffset : harness.scratchOffset,
+              );
+              const channelView = new DataView(
+                harness.kernelBytes.buffer,
+                channelBase,
+              );
+              expect(channelView.getUint32(CH_SYSCALL, true)).toBe(
+                testCase.syscall,
+              );
+              const stagedPath = Number(
+                channelView.getBigInt64(
+                  CH_ARGS + testCase.pathArgIndex * CH_ARG_SIZE,
+                  true,
+                ),
+              );
+              const stagedOutput = Number(
+                channelView.getBigInt64(
+                  CH_ARGS + testCase.outputArgIndex * CH_ARG_SIZE,
+                  true,
+                ),
+              );
+              expect(
+                harness.kernelBytes.slice(
+                  stagedPath,
+                  stagedPath + path.byteLength,
+                ),
+                testCase.name,
+              ).toEqual(path);
+              expect(stagedOutput, testCase.name).toBe(
+                channelBase + CH_DATA + 8,
+              );
+              harness.kernelBytes.set(payload, stagedOutput);
+              channelView.setBigInt64(CH_RETURN, BigInt(capacity), true);
+              channelView.setUint32(CH_ERRNO, 0, true);
+              return 0;
+            },
+          );
+          writeChannelSyscall(
+            harness,
+            testCase.syscall,
+            testCase.args(capacity),
+          );
+
+          dispatchScratchBoundarySyscall(harness);
+
+          expect(begin, testCase.name).toHaveBeenCalledTimes(
+            capacity === exactOutputCapacity ? 0 : 1,
+          );
+          expect(
+            harness.completeChannel.mock.calls[0]?.slice(4, 6),
+            testCase.name,
+          ).toEqual([capacity, 0]);
+          expect(
+            harness.completeChannel.mock.calls[0]?.[6],
+            testCase.name,
+          ).toEqual([{ ptr: destination, bytes: payload }]);
+          expectScratchTailUntouched(harness);
+        }
+      }
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "preserves the complete wasm%s maximum environment value and one-short ERANGE atomically",
+    (pointerWidth) => {
+      const namePointer = 256;
+      const destination = 65_536;
+      const name = Uint8Array.of(0x58, 0);
+      // An admitted `X=<value>` entry may consume the complete metadata-entry
+      // ceiling. The returned value excludes `X=`.
+      const value = new Uint8Array(
+        PROCESS_METADATA_ENTRY_MAX_BYTES - 2,
+      ).fill(0x76);
+      const callerCanary = 0x6d;
+
+      for (const capacity of [value.byteLength, value.byteLength - 1]) {
+        const harness = makeScratchHarness(pointerWidth);
+        prepareGenericSyscallHarness(harness, pointerWidth);
+        harness.processBytes.set(name, namePointer);
+        harness.processBytes.fill(
+          callerCanary,
+          destination,
+          destination + value.byteLength + 1,
+        );
+        const plannedCapacity = alignUp(
+          CH_DATA + 8 + capacity,
+          8,
+        );
+        const transferTail = harness.transferOffset + plannedCapacity;
+        harness.kernelBytes.fill(0xc7, transferTail, transferTail + 16);
+        const begin = vi.spyOn(
+          harness.kernelExports,
+          "kernel_transfer_scratch_begin",
+        );
+        harness.completeChannel.mockImplementation(
+          (
+            _channel: TestChannel,
+            _syscall: number,
+            _origArgs: number[],
+            _descs: unknown,
+            _retVal: number,
+            _errno: number,
+            writes: Array<{ ptr: number; bytes: Uint8Array }> = [],
+          ) => {
+            for (const write of writes) {
+              harness.processBytes.set(write.bytes, write.ptr);
+            }
+          },
+        );
+        harness.handleChannel.mockImplementation(
+          (offset: number | bigint) => {
+            const channelBase = Number(offset);
+            expect(channelBase).toBe(harness.transferOffset);
+            const channelView = new DataView(
+              harness.kernelBytes.buffer,
+              channelBase,
+            );
+            const stagedName = Number(
+              channelView.getBigInt64(CH_ARGS, true),
+            );
+            const stagedOutput = Number(
+              channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
+            );
+            expect(
+              harness.kernelBytes.slice(
+                stagedName,
+                stagedName + name.byteLength,
+              ),
+            ).toEqual(name);
+            expect(stagedOutput).toBe(channelBase + CH_DATA + 8);
+            expect(
+              Number(
+                channelView.getBigInt64(
+                  CH_ARGS + 2 * CH_ARG_SIZE,
+                  true,
+                ),
+              ),
+            ).toBe(capacity);
+            if (capacity === value.byteLength) {
+              harness.kernelBytes.set(value, stagedOutput);
+              channelView.setBigInt64(
+                CH_RETURN,
+                BigInt(value.byteLength),
+                true,
+              );
+              channelView.setUint32(CH_ERRNO, 0, true);
+            } else {
+              // Even hostile scratch bytes must not become an observable
+              // prefix when the complete value does not fit.
+              harness.kernelBytes.fill(
+                0x3c,
+                stagedOutput,
+                stagedOutput + capacity,
+              );
+              channelView.setBigInt64(CH_RETURN, -1n, true);
+              channelView.setUint32(CH_ERRNO, ERANGE, true);
+            }
+            return 0;
+          },
+        );
+        writeChannelSyscall(harness, ABI_SYSCALLS.GetEnv, [
+          BigInt(namePointer),
+          BigInt(destination),
+          BigInt(capacity),
+        ]);
+
+        dispatchScratchBoundarySyscall(harness);
+
+        expect(begin).toHaveBeenCalledOnce();
+        expect(Number(begin.mock.calls[0]?.[0])).toBe(plannedCapacity);
+        expect(
+          harness.completeChannel.mock.calls[0]?.slice(4, 6),
+        ).toEqual(
+          capacity === value.byteLength
+            ? [value.byteLength, 0]
+            : [-1, ERANGE],
+        );
+        if (capacity === value.byteLength) {
+          expect(
+            harness.processBytes.slice(
+              destination,
+              destination + value.byteLength,
+            ),
+          ).toEqual(value);
+          expect(
+            harness.processBytes[destination + value.byteLength],
+          ).toBe(callerCanary);
+        } else {
+          expect(
+            harness.processBytes.slice(
+              destination,
+              destination + value.byteLength + 1,
+            ),
+          ).toEqual(
+            new Uint8Array(value.byteLength + 1).fill(callerCanary),
+          );
+        }
+        expect(
+          harness.kernelBytes.slice(transferTail, transferTail + 16),
+        ).toEqual(new Uint8Array(16).fill(0xc7));
+        expectScratchTailUntouched(harness);
+      }
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "caps only short-safe wasm%s outputs at channel capacity and capacity plus one",
+    (pointerWidth) => {
+      const destination = 65_536;
+      const randomBytes = Uint8Array.from(
+        { length: CH_DATA_SIZE },
+        (_, index) => (index * 43 + 17) % 251,
+      );
+      const direntRecordBytes = 24;
+      const direntBytes = new Uint8Array(
+        Math.floor(CH_DATA_SIZE / direntRecordBytes)
+          * direntRecordBytes,
+      );
+      const direntView = new DataView(direntBytes.buffer);
+      for (
+        let offset = 0, record = 0;
+        offset < direntBytes.byteLength;
+        offset += direntRecordBytes, record++
+      ) {
+        direntView.setBigUint64(offset, BigInt(record + 1), true);
+        direntView.setBigInt64(offset + 8, BigInt(record + 1), true);
+        direntView.setUint16(offset + 16, direntRecordBytes, true);
+        direntView.setUint8(offset + 18, 8);
+        direntView.setUint8(offset + 19, 0x61 + (record % 26));
+        direntView.setUint8(offset + 20, 0);
+      }
+
+      for (const testCase of [
+        {
+          name: "getrandom",
+          syscall: ABI_SYSCALLS.Getrandom,
+          pointerArgIndex: 0,
+          countArgIndex: 1,
+          payload: randomBytes,
+          args: (capacity: number) => [
+            BigInt(destination),
+            BigInt(capacity),
+            0n,
+          ],
+        },
+        {
+          name: "getdents64",
+          syscall: ABI_SYSCALLS.Getdents64,
+          pointerArgIndex: 1,
+          countArgIndex: 2,
+          payload: direntBytes,
+          args: (capacity: number) => [
+            7n,
+            BigInt(destination),
+            BigInt(capacity),
+          ],
+        },
+      ] as const) {
+        for (
+          const callerCapacity of [
+            CH_DATA_SIZE,
+            CH_DATA_SIZE + 1,
+          ]
+        ) {
+          const harness = makeScratchHarness(pointerWidth);
+          prepareGenericSyscallHarness(harness, pointerWidth);
+          const callerCanary = 0x6d;
+          harness.processBytes.fill(
+            callerCanary,
+            destination,
+            destination + callerCapacity + 1,
+          );
+          const begin = vi.spyOn(
+            harness.kernelExports,
+            "kernel_transfer_scratch_begin",
+          );
+          harness.completeChannel.mockImplementation(
+            (
+              _channel: TestChannel,
+              _syscall: number,
+              _origArgs: number[],
+              _descs: unknown,
+              _retVal: number,
+              _errno: number,
+              writes: Array<{ ptr: number; bytes: Uint8Array }> = [],
+            ) => {
+              for (const write of writes) {
+                harness.processBytes.set(write.bytes, write.ptr);
+              }
+            },
+          );
+          harness.handleChannel.mockImplementation(
+            (offset: number | bigint) => {
+              const channelBase = Number(offset);
+              expect(channelBase, testCase.name).toBe(
+                harness.scratchOffset,
+              );
+              const channelView = new DataView(
+                harness.kernelBytes.buffer,
+                channelBase,
+              );
+              expect(
+                Number(
+                  channelView.getBigInt64(
+                    CH_ARGS + testCase.countArgIndex * CH_ARG_SIZE,
+                    true,
+                  ),
+                ),
+                testCase.name,
+              ).toBe(CH_DATA_SIZE);
+              const stagedOutput = Number(
+                channelView.getBigInt64(
+                  CH_ARGS + testCase.pointerArgIndex * CH_ARG_SIZE,
+                  true,
+                ),
+              );
+              expect(stagedOutput, testCase.name).toBe(
+                channelBase + CH_DATA,
+              );
+              harness.kernelBytes.set(testCase.payload, stagedOutput);
+              channelView.setBigInt64(
+                CH_RETURN,
+                BigInt(testCase.payload.byteLength),
+                true,
+              );
+              channelView.setUint32(CH_ERRNO, 0, true);
+              return 0;
+            },
+          );
+          writeChannelSyscall(
+            harness,
+            testCase.syscall,
+            testCase.args(callerCapacity),
+          );
+
+          dispatchScratchBoundarySyscall(harness);
+
+          expect(begin, testCase.name).not.toHaveBeenCalled();
+          expect(
+            harness.completeChannel.mock.calls[0]?.slice(4, 6),
+            testCase.name,
+          ).toEqual([testCase.payload.byteLength, 0]);
+          expect(
+            harness.processBytes.slice(
+              destination,
+              destination + testCase.payload.byteLength,
+            ),
+            testCase.name,
+          ).toEqual(testCase.payload);
+          expect(
+            harness.processBytes.slice(
+              destination + testCase.payload.byteLength,
+              destination + callerCapacity + 1,
+            ),
+            testCase.name,
+          ).toEqual(
+            new Uint8Array(
+              callerCapacity + 1 - testCase.payload.byteLength,
+            ).fill(callerCanary),
+          );
+          expectScratchTailUntouched(harness);
+        }
+      }
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "preserves wasm%s MSG_TRUNC scalar receive semantics within owned capacity",
+    (pointerWidth) => {
+      const capacity = 4;
+      const reportedLength = 13;
+      const destination = 8192;
+      const expected = new TextEncoder().encode("recv");
+      for (const testCase of [
+        {
+          name: "recv",
+          syscall: ABI_SYSCALLS.Recv,
+          args: [
+            7n,
+            BigInt(destination),
+            BigInt(capacity),
+            BigInt(SOCKET_MSG_TRUNC),
+          ],
+        },
+        {
+          name: "recvfrom",
+          syscall: ABI_SYSCALLS.Recvfrom,
+          args: [
+            7n,
+            BigInt(destination),
+            BigInt(capacity),
+            BigInt(SOCKET_MSG_TRUNC),
+            0n,
+            0n,
+          ],
+        },
+      ] as const) {
+        const harness = makeScratchHarness(pointerWidth);
+        prepareGenericSyscallHarness(harness, pointerWidth);
+        harness.handleChannel.mockImplementation(
+          (offset: number | bigint) => {
+            const channelView = new DataView(
+              harness.kernelBytes.buffer,
+              Number(offset),
+            );
+            const stagedPointer = Number(
+              channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
+            );
+            harness.kernelBytes.set(expected, stagedPointer);
+            channelView.setBigInt64(
+              CH_RETURN,
+              BigInt(reportedLength),
+              true,
+            );
+            channelView.setUint32(CH_ERRNO, 0, true);
+            return 0;
+          },
+        );
+        writeChannelSyscall(
+          harness,
+          testCase.syscall,
+          [...testCase.args],
+        );
+
+        dispatchScratchBoundarySyscall(harness);
+
+        expect(
+          harness.completeChannel,
+          testCase.name,
+        ).toHaveBeenCalledOnce();
+        const completion = harness.completeChannel.mock.calls[0]!;
+        expect(completion[4], testCase.name).toBe(reportedLength);
+        expect(completion[5], testCase.name).toBe(0);
+        expect(completion[6], testCase.name).toEqual([
+          {
+            ptr: destination,
+            bytes: expected,
+          },
+        ]);
+        expectScratchTailUntouched(harness);
+      }
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "uses capacity-carrying scratch for wasm%s scalar socket data at channel capacity and capacity plus one",
+    (pointerWidth) => {
+      for (const testCase of [
+        {
+          name: "send",
+          syscall: ABI_SYSCALLS.Send,
+          input: true,
+          args: [7n, 0n, 0n, 0n],
+        },
+        {
+          name: "recv",
+          syscall: ABI_SYSCALLS.Recv,
+          input: false,
+          args: [7n, 0n, 0n, 0n],
+        },
+        {
+          name: "sendto",
+          syscall: ABI_SYSCALLS.Sendto,
+          input: true,
+          args: [7n, 0n, 0n, 0n, 0n, 0n],
+        },
+        {
+          name: "recvfrom",
+          syscall: ABI_SYSCALLS.Recvfrom,
+          input: false,
+          args: [7n, 0n, 0n, 0n, 0n, 0n],
+        },
+      ] as const) {
+        for (const length of [CH_DATA_SIZE, CH_DATA_SIZE + 1]) {
+          const harness = makeScratchHarness(pointerWidth);
+          prepareGenericSyscallHarness(harness, pointerWidth);
+          const processPointer = harness.processBytes.byteLength - length;
+          const payload = Uint8Array.from(
+            { length },
+            (_, index) => (index * 31 + 7) % 251,
+          );
+          if (testCase.input) {
+            harness.processBytes.set(payload, processPointer);
+          } else {
+            harness.processBytes.fill(
+              0x6d,
+              processPointer,
+              processPointer + length,
+            );
+          }
+          const begin = vi.spyOn(
+            harness.kernelExports,
+            "kernel_transfer_scratch_begin",
+          );
+          harness.handleChannel.mockImplementation(
+            (offset: number | bigint) => {
+              expect(Number(offset), testCase.name).toBe(
+                length === CH_DATA_SIZE
+                  ? harness.scratchOffset
+                  : harness.transferOffset,
+              );
+              const channelView = new DataView(
+                harness.kernelBytes.buffer,
+                Number(offset),
+              );
+              const stagedPointer = Number(
+                channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
+              );
+              if (testCase.input) {
+                expect(
+                  harness.kernelBytes.slice(
+                    stagedPointer,
+                    stagedPointer + length,
+                  ),
+                  testCase.name,
+                ).toEqual(payload);
+              } else {
+                harness.kernelBytes.set(payload, stagedPointer);
+              }
+              channelView.setBigInt64(CH_RETURN, BigInt(length), true);
+              channelView.setUint32(CH_ERRNO, 0, true);
+              return 0;
+            },
+          );
+          const args = [...testCase.args];
+          args[1] = BigInt(processPointer);
+          args[2] = BigInt(length);
+          writeChannelSyscall(harness, testCase.syscall, args);
+
+          dispatchScratchBoundarySyscall(harness);
+
+          expect(
+            harness.handleChannel,
+            testCase.name,
+          ).toHaveBeenCalledOnce();
+          expect(begin, testCase.name).toHaveBeenCalledTimes(
+            length === CH_DATA_SIZE ? 0 : 1,
+          );
+          expect(
+            harness.completeChannel.mock.calls[0]?.slice(4, 6),
+            testCase.name,
+          ).toEqual([length, 0]);
+          if (!testCase.input) {
+            const writes = harness.completeChannel.mock.calls[0]?.[6] as
+              Array<{ ptr: number; bytes: Uint8Array }>;
+            expect(writes, testCase.name).toEqual([
+              { ptr: processPointer, bytes: payload },
+            ]);
+          }
+          expectScratchTailUntouched(harness);
+        }
+      }
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "maps null zero-length wasm%s scalar socket data to owned empty scratch",
+    (pointerWidth) => {
+      for (const testCase of [
+        ["send", ABI_SYSCALLS.Send],
+        ["recv", ABI_SYSCALLS.Recv],
+        ["sendto", ABI_SYSCALLS.Sendto],
+        ["recvfrom", ABI_SYSCALLS.Recvfrom],
+      ] as const) {
+        const harness = makeScratchHarness(pointerWidth);
+        prepareGenericSyscallHarness(harness, pointerWidth);
+        harness.handleChannel.mockImplementation(
+          (offset: number | bigint) => {
+            const channelView = new DataView(
+              harness.kernelBytes.buffer,
+              Number(offset),
+            );
+            expect(
+              channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
+              testCase[0],
+            ).toBe(BigInt(harness.scratchOffset + CH_DATA));
+            channelView.setBigInt64(CH_RETURN, 0n, true);
+            channelView.setUint32(CH_ERRNO, 0, true);
+            return 0;
+          },
+        );
+        writeChannelSyscall(harness, testCase[1], [
+          7n,
+          0n,
+          0n,
+          0n,
+          0n,
+          0n,
+        ]);
+
+        dispatchScratchBoundarySyscall(harness);
+
+        expect(harness.handleChannel, testCase[0]).toHaveBeenCalledOnce();
+        expect(
+          harness.completeChannel.mock.calls[0]?.slice(4, 6),
+          testCase[0],
+        ).toEqual([0, 0]);
+        expectScratchTailUntouched(harness);
+      }
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "validates wasm%s zero-capacity scalar byte-count results",
+    (pointerWidth) => {
+      for (const testCase of [
+        ["write", ABI_SYSCALLS.Write, [7n, 0n, 0n]],
+        ["pwrite", ABI_SYSCALLS.Pwrite, [7n, 0n, 0n, 0n]],
+        ["send", ABI_SYSCALLS.Send, [7n, 0n, 0n, 0n]],
+        ["recv", ABI_SYSCALLS.Recv, [7n, 0n, 0n, 0n]],
+        ["sendto", ABI_SYSCALLS.Sendto, [7n, 0n, 0n, 0n, 0n, 0n]],
+        ["recvfrom", ABI_SYSCALLS.Recvfrom, [7n, 0n, 0n, 0n, 0n, 0n]],
+      ] as const) {
+        const harness = makeScratchHarness(pointerWidth);
+        prepareGenericSyscallHarness(harness, pointerWidth);
+        harness.handleChannel.mockImplementation(
+          (offset: number | bigint) => {
+            const channelView = new DataView(
+              harness.kernelBytes.buffer,
+              Number(offset),
+            );
+            channelView.setBigInt64(CH_RETURN, 1n, true);
+            channelView.setUint32(CH_ERRNO, 0, true);
+            return 0;
+          },
+        );
+        writeChannelSyscall(harness, testCase[1], [...testCase[2]]);
+
+        dispatchScratchBoundarySyscall(harness);
+
+        expect(harness.handleChannel, testCase[0]).toHaveBeenCalledOnce();
+        const completion = harness.completeChannel.mock.calls[0]!;
+        expect(completion[4], testCase[0]).toBe(-1);
+        expect(completion[5], testCase[0]).toBe(EIO);
+        expect(completion[6], testCase[0]).toBeUndefined();
+        expectScratchTailUntouched(harness);
+      }
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "permits wasm%s zero-capacity MSG_TRUNC receive lengths without copying",
+    (pointerWidth) => {
+      const completeDatagramLength = 73;
+      for (const testCase of [
+        ["recv", ABI_SYSCALLS.Recv, [7n, 0n, 0n, BigInt(SOCKET_MSG_TRUNC)]],
+        [
+          "recvfrom",
+          ABI_SYSCALLS.Recvfrom,
+          [7n, 0n, 0n, BigInt(SOCKET_MSG_TRUNC), 0n, 0n],
+        ],
+      ] as const) {
+        const harness = makeScratchHarness(pointerWidth);
+        prepareGenericSyscallHarness(harness, pointerWidth);
+        harness.handleChannel.mockImplementation(
+          (offset: number | bigint) => {
+            const channelView = new DataView(
+              harness.kernelBytes.buffer,
+              Number(offset),
+            );
+            channelView.setBigInt64(
+              CH_RETURN,
+              BigInt(completeDatagramLength),
+              true,
+            );
+            channelView.setUint32(CH_ERRNO, 0, true);
+            return 0;
+          },
+        );
+        writeChannelSyscall(harness, testCase[1], [...testCase[2]]);
+
+        dispatchScratchBoundarySyscall(harness);
+
+        expect(harness.handleChannel, testCase[0]).toHaveBeenCalledOnce();
+        const completion = harness.completeChannel.mock.calls[0]!;
+        expect(completion[4], testCase[0]).toBe(completeDatagramLength);
+        expect(completion[5], testCase[0]).toBe(0);
+        expect(completion[6], testCase[0]).toEqual([]);
+        expectScratchTailUntouched(harness);
+      }
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "rejects invalid positive-length wasm%s scalar socket data ranges before dispatch",
+    (pointerWidth) => {
+      const length = 16;
+      for (const testCase of [
+        ["send", ABI_SYSCALLS.Send],
+        ["recv", ABI_SYSCALLS.Recv],
+        ["sendto", ABI_SYSCALLS.Sendto],
+        ["recvfrom", ABI_SYSCALLS.Recvfrom],
+      ] as const) {
+        for (const pointerKind of [
+          "null",
+          "one-byte-short",
+          "negative",
+          "unsafe-high",
+        ] as const) {
+          const harness = makeScratchHarness(pointerWidth);
+          prepareGenericSyscallHarness(harness, pointerWidth);
+          const rawPointer = pointerKind === "null"
+            ? 0n
+            : pointerKind === "one-byte-short"
+              ? BigInt(harness.processBytes.byteLength - length + 1)
+              : pointerKind === "negative"
+                ? -1n
+                : 1n << 60n;
+          writeChannelSyscall(harness, testCase[1], [
+            7n,
+            rawPointer,
+            BigInt(length),
+            0n,
+            0n,
+            0n,
+          ]);
+
+          dispatchScratchBoundarySyscall(harness);
+
+          expect(harness.handleChannel, testCase[0]).not.toHaveBeenCalled();
+          const completedErrnos = [
+            ...harness.completeChannel.mock.calls.map((call) => call[5]),
+            ...harness.completeChannelRaw.mock.calls.map((call) => call[2]),
+          ];
+          expect(completedErrnos, testCase[0]).toEqual([EFAULT]);
+          expectScratchTailUntouched(harness);
+        }
+      }
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "rejects wasm%s generic byte-input over-reports as producer failures",
+    (pointerWidth) => {
+      const capacity = 31;
+      const source = 8192;
+      for (const testCase of [
+        ["write", ABI_SYSCALLS.Write, [7n, 0n, 0n]],
+        ["pwrite", ABI_SYSCALLS.Pwrite, [7n, 0n, 0n, 0n]],
+        ["send", ABI_SYSCALLS.Send, [7n, 0n, 0n, 0n]],
+        ["sendto", ABI_SYSCALLS.Sendto, [7n, 0n, 0n, 0n, 0n, 0n]],
+      ] as const) {
+        const harness = makeScratchHarness(pointerWidth);
+        prepareGenericSyscallHarness(harness, pointerWidth);
+        harness.processBytes.fill(0x4d, source, source + capacity);
+        harness.handleChannel.mockImplementation(
+          (offset: number | bigint) => {
+            const channelView = new DataView(
+              harness.kernelBytes.buffer,
+              Number(offset),
+            );
+            channelView.setBigInt64(CH_RETURN, BigInt(capacity + 1), true);
+            channelView.setUint32(CH_ERRNO, 0, true);
+            return 0;
+          },
+        );
+        const args = [...testCase[2]];
+        args[1] = BigInt(source);
+        args[2] = BigInt(capacity);
+        writeChannelSyscall(harness, testCase[1], args);
+
+        dispatchScratchBoundarySyscall(harness);
+
+        expect(harness.completeChannel, testCase[0]).toHaveBeenCalledOnce();
+        const completion = harness.completeChannel.mock.calls[0]!;
+        expect(completion[4], testCase[0]).toBe(-1);
+        expect(completion[5], testCase[0]).toBe(EIO);
+        expect(completion[6], testCase[0]).toBeUndefined();
+        expectScratchTailUntouched(harness);
+      }
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "rejects wasm%s scalar socket receive over-reports without partial data or address publication",
+    (pointerWidth) => {
+      const capacity = 31;
+      const destination = 8192;
+      const addressCapacity = 16;
+      const address = 12_288;
+      const lengthPointer = 16_384;
+      for (const testCase of [
+        ["recv", ABI_SYSCALLS.Recv, false],
+        ["recvfrom", ABI_SYSCALLS.Recvfrom, true],
+      ] as const) {
+        const harness = makeScratchHarness(pointerWidth);
+        prepareGenericSyscallHarness(harness, pointerWidth);
+        harness.processBytes.fill(
+          0x6d,
+          destination,
+          destination + capacity,
+        );
+        harness.processBytes.fill(
+          0x7e,
+          address,
+          address + addressCapacity,
+        );
+        new DataView(harness.processBytes.buffer).setUint32(
+          lengthPointer,
+          addressCapacity,
+          true,
+        );
+        harness.completeChannel.mockImplementation(
+          (
+            _channel: TestChannel,
+            _syscall: number,
+            _origArgs: number[],
+            _descs: unknown,
+            _retVal: number,
+            _errno: number,
+            writes: Array<{ ptr: number; bytes: Uint8Array }> = [],
+          ) => {
+            for (const write of writes) {
+              harness.processBytes.set(write.bytes, write.ptr);
+            }
+          },
+        );
+        harness.handleChannel.mockImplementation(
+          (offset: number | bigint) => {
+            const channelView = new DataView(
+              harness.kernelBytes.buffer,
+              Number(offset),
+            );
+            const stagedData = Number(
+              channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
+            );
+            harness.kernelBytes.fill(
+              0x3c,
+              stagedData,
+              stagedData + capacity,
+            );
+            if (testCase[2]) {
+              const stagedAddress = Number(
+                channelView.getBigInt64(
+                  CH_ARGS + 4 * CH_ARG_SIZE,
+                  true,
+                ),
+              );
+              const stagedLength = Number(
+                channelView.getBigInt64(
+                  CH_ARGS + 5 * CH_ARG_SIZE,
+                  true,
+                ),
+              );
+              harness.kernelBytes.fill(
+                0x2a,
+                stagedAddress,
+                stagedAddress + addressCapacity,
+              );
+              new DataView(harness.kernelBytes.buffer).setUint32(
+                stagedLength,
+                addressCapacity,
+                true,
+              );
+            }
+            channelView.setBigInt64(CH_RETURN, BigInt(capacity + 1), true);
+            channelView.setUint32(CH_ERRNO, 0, true);
+            return 0;
+          },
+        );
+        writeChannelSyscall(
+          harness,
+          testCase[1],
+          testCase[2]
+            ? [
+                7n,
+                BigInt(destination),
+                BigInt(capacity),
+                0n,
+                BigInt(address),
+                BigInt(lengthPointer),
+              ]
+            : [7n, BigInt(destination), BigInt(capacity), 0n],
+        );
+
+        dispatchScratchBoundarySyscall(harness);
+
+        const completion = harness.completeChannel.mock.calls[0]!;
+        expect(completion[4], testCase[0]).toBe(-1);
+        expect(completion[5], testCase[0]).toBe(EIO);
+        expect(completion[6], testCase[0]).toBeUndefined();
+        expect(
+          harness.processBytes.slice(
+            destination,
+            destination + capacity,
+          ),
+          testCase[0],
+        ).toEqual(new Uint8Array(capacity).fill(0x6d));
+        expect(
+          harness.processBytes.slice(
+            address,
+            address + addressCapacity,
+          ),
+          testCase[0],
+        ).toEqual(new Uint8Array(addressCapacity).fill(0x7e));
+        expect(
+          new DataView(harness.processBytes.buffer).getUint32(
+            lengthPointer,
+            true,
+          ),
+          testCase[0],
+        ).toBe(addressCapacity);
+        expectScratchTailUntouched(harness);
+      }
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "carries wasm%s setsockopt layout width independently of bounded optlen",
+    (pointerWidth) => {
+      const optionPointer = 8192;
+      const maximum = 264;
+      for (const optionLength of [maximum, maximum + 1]) {
+        const harness = makeScratchHarness(pointerWidth);
+        prepareGenericSyscallHarness(harness, pointerWidth);
+        const option = Uint8Array.from(
+          { length: optionLength },
+          (_, index) => (index * 17 + 5) & 0xff,
+        );
+        harness.processBytes.set(option, optionPointer);
+        harness.handleChannel.mockImplementation(
+          (offset: number | bigint) => {
+            const channelView = new DataView(
+              harness.kernelBytes.buffer,
+              Number(offset),
+            );
+            const stagedPointer = Number(
+              channelView.getBigInt64(
+                CH_ARGS + 3 * CH_ARG_SIZE,
+                true,
+              ),
+            );
+            expect(
+              channelView.getBigInt64(
+                CH_ARGS + 5 * CH_ARG_SIZE,
+                true,
+              ),
+            ).toBe(BigInt(pointerWidth));
+            expect(
+              harness.kernelBytes.slice(
+                stagedPointer,
+                stagedPointer + optionLength,
+              ),
+            ).toEqual(option);
+            channelView.setBigInt64(CH_RETURN, 0n, true);
+            channelView.setUint32(CH_ERRNO, 0, true);
+            return 0;
+          },
+        );
+        writeChannelSyscall(harness, ABI_SYSCALLS.Setsockopt, [
+          7n,
+          0n,
+          0n,
+          BigInt(optionPointer),
+          BigInt(optionLength),
+          99n,
+        ]);
+
+        dispatchScratchBoundarySyscall(harness);
+
+        const accepted = optionLength === maximum;
+        expect(harness.handleChannel).toHaveBeenCalledTimes(accepted ? 1 : 0);
+        if (!accepted) {
+          expect(harness.completeChannelRaw).toHaveBeenCalledWith(
+            harness.channel,
+            -1,
+            EINVAL,
+          );
+        }
+        expectScratchTailUntouched(harness);
+      }
+    },
+  );
+
   it.each([
     ["bind", ABI_SYSCALLS.Bind, 1, [7n, 0n, 0n]],
     ["connect", ABI_SYSCALLS.Connect, 1, [7n, 0n, 0n]],
@@ -4980,6 +6569,14 @@ describe("kernel scratch transfer capacity regressions", () => {
   it.each([
     ["accept", ABI_SYSCALLS.Accept, 1, [7n, 0n, 0n]],
     ["accept4", ABI_SYSCALLS.Accept4, 1, [7n, 0n, 0n, 0n]],
+    ["getsockname", ABI_SYSCALLS.Getsockname, 1, [7n, 0n, 0n]],
+    ["getpeername", ABI_SYSCALLS.Getpeername, 1, [7n, 0n, 0n]],
+    [
+      "getsockopt",
+      ABI_SYSCALLS.Getsockopt,
+      3,
+      [7n, 1n, 2n, 0n, 0n],
+    ],
     [
       "recvfrom",
       ABI_SYSCALLS.Recvfrom,
@@ -5012,6 +6609,210 @@ describe("kernel scratch transfer capacity regressions", () => {
           EFAULT,
         );
         expectScratchTailUntouched(harness);
+      }
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "rejects invalid active wasm%s scalar socket value-result ranges before dispatch",
+    (pointerWidth) => {
+      for (const testCase of [
+        {
+          name: "accept",
+          syscall: ABI_SYSCALLS.Accept,
+          addressArgIndex: 1,
+          lengthArgIndex: 2,
+          maximum: KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
+          nullable: true,
+          args: [7n, 0n, 0n],
+        },
+        {
+          name: "accept4",
+          syscall: ABI_SYSCALLS.Accept4,
+          addressArgIndex: 1,
+          lengthArgIndex: 2,
+          maximum: KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
+          nullable: true,
+          args: [7n, 0n, 0n, 0n],
+        },
+        {
+          name: "getsockname",
+          syscall: ABI_SYSCALLS.Getsockname,
+          addressArgIndex: 1,
+          lengthArgIndex: 2,
+          maximum: KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
+          nullable: false,
+          args: [7n, 0n, 0n],
+        },
+        {
+          name: "getpeername",
+          syscall: ABI_SYSCALLS.Getpeername,
+          addressArgIndex: 1,
+          lengthArgIndex: 2,
+          maximum: KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
+          nullable: false,
+          args: [7n, 0n, 0n],
+        },
+        {
+          name: "getsockopt",
+          syscall: ABI_SYSCALLS.Getsockopt,
+          addressArgIndex: 3,
+          lengthArgIndex: 4,
+          maximum: KERNEL_SCRATCH_SOCKET_OPTION_MAX_BYTES,
+          nullable: false,
+          args: [7n, 1n, 2n, 0n, 0n],
+        },
+        {
+          name: "recvfrom",
+          syscall: ABI_SYSCALLS.Recvfrom,
+          addressArgIndex: 4,
+          lengthArgIndex: 5,
+          maximum: KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
+          nullable: true,
+          args: [7n, 0n, 0n, 0n, 0n, 0n],
+        },
+      ] as const) {
+        for (const pointerKind of [
+          "null",
+          "one-byte-short",
+          "negative",
+          "unsafe-high",
+        ] as const) {
+          if (testCase.nullable && pointerKind === "null") continue;
+          const harness = makeScratchHarness(pointerWidth);
+          prepareGenericSyscallHarness(harness, pointerWidth);
+          const lengthPointer = 4096;
+          new DataView(harness.processBytes.buffer).setUint32(
+            lengthPointer,
+            testCase.maximum,
+            true,
+          );
+          harness.processBytes.fill(
+            0x6d,
+            harness.processBytes.byteLength - testCase.maximum,
+            harness.processBytes.byteLength,
+          );
+          const invalidAddress = pointerKind === "null"
+            ? 0n
+            : pointerKind === "one-byte-short"
+              ? BigInt(
+                  harness.processBytes.byteLength - testCase.maximum + 1,
+                )
+              : pointerKind === "negative"
+                ? -1n
+                : 1n << 60n;
+          const args = [...testCase.args];
+          args[testCase.addressArgIndex] = invalidAddress;
+          args[testCase.lengthArgIndex] = BigInt(lengthPointer);
+          writeChannelSyscall(harness, testCase.syscall, args);
+
+          dispatchScratchBoundarySyscall(harness);
+
+          expect(
+            harness.handleChannel,
+            `${testCase.name}/${pointerKind}`,
+          ).not.toHaveBeenCalled();
+          const completedErrnos = [
+            ...harness.completeChannel.mock.calls.map((call) => call[5]),
+            ...harness.completeChannelRaw.mock.calls.map((call) => call[2]),
+          ];
+          expect(
+            completedErrnos,
+            `${testCase.name}/${pointerKind}`,
+          ).toEqual([EFAULT]);
+          expect(
+            new DataView(harness.processBytes.buffer).getUint32(
+              lengthPointer,
+              true,
+            ),
+          ).toBe(testCase.maximum);
+          expectScratchTailUntouched(harness);
+        }
+      }
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "rejects invalid active wasm%s scalar socket length-result ranges before dispatch",
+    (pointerWidth) => {
+      for (const testCase of [
+        [
+          "accept",
+          ABI_SYSCALLS.Accept,
+          1,
+          2,
+          [7n, 0n, 0n],
+        ],
+        [
+          "accept4",
+          ABI_SYSCALLS.Accept4,
+          1,
+          2,
+          [7n, 0n, 0n, 0n],
+        ],
+        [
+          "getsockname",
+          ABI_SYSCALLS.Getsockname,
+          1,
+          2,
+          [7n, 0n, 0n],
+        ],
+        [
+          "getpeername",
+          ABI_SYSCALLS.Getpeername,
+          1,
+          2,
+          [7n, 0n, 0n],
+        ],
+        [
+          "getsockopt",
+          ABI_SYSCALLS.Getsockopt,
+          3,
+          4,
+          [7n, 1n, 2n, 0n, 0n],
+        ],
+        [
+          "recvfrom",
+          ABI_SYSCALLS.Recvfrom,
+          4,
+          5,
+          [7n, 0n, 0n, 0n, 0n, 0n],
+        ],
+      ] as const) {
+        for (const pointerKind of [
+          "one-byte-short",
+          "negative",
+          "unsafe-high",
+        ] as const) {
+          const harness = makeScratchHarness(pointerWidth);
+          prepareGenericSyscallHarness(harness, pointerWidth);
+          const addressPointer = 8192;
+          const invalidLengthPointer = pointerKind === "one-byte-short"
+            ? BigInt(harness.processBytes.byteLength - 3)
+            : pointerKind === "negative"
+              ? -1n
+              : 1n << 60n;
+          const args = [...testCase[4]];
+          args[testCase[2]] = BigInt(addressPointer);
+          args[testCase[3]] = invalidLengthPointer;
+          writeChannelSyscall(harness, testCase[1], args);
+
+          dispatchScratchBoundarySyscall(harness);
+
+          expect(
+            harness.handleChannel,
+            `${testCase[0]}/${pointerKind}`,
+          ).not.toHaveBeenCalled();
+          const completedErrnos = [
+            ...harness.completeChannel.mock.calls.map((call) => call[5]),
+            ...harness.completeChannelRaw.mock.calls.map((call) => call[2]),
+          ];
+          expect(
+            completedErrnos,
+            `${testCase[0]}/${pointerKind}`,
+          ).toEqual([EFAULT]);
+          expectScratchTailUntouched(harness);
+        }
       }
     },
   );
@@ -5108,116 +6909,203 @@ describe("kernel scratch transfer capacity regressions", () => {
   );
 
   it.each([4, 8] as const)(
-    "accepts a wasm%s generic socket result at sockaddr_storage and rejects capacity plus one",
+    "bounds every wasm%s scalar socket value-result output at zero, exact capacity, and capacity plus one",
     (pointerWidth) => {
-      for (const reportedLength of [
-        KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
-        KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES + 1,
-      ]) {
-        const harness = makeScratchHarness(pointerWidth);
-        prepareGenericSyscallHarness(harness, pointerWidth);
-        const addressPointer =
-          harness.processBytes.byteLength -
-          KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES;
-        const lengthPointer = 4096;
-        const callerCanary = 0x6d;
-        const expected = Uint8Array.from(
-          { length: KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES },
-          (_, index) => (index * 29 + 3) % 251,
-        );
-        harness.processBytes.fill(
-          callerCanary,
-          addressPointer,
-          harness.processBytes.byteLength,
-        );
-        new DataView(harness.processBytes.buffer).setUint32(
-          lengthPointer,
-          0xffff_ffff,
-          true,
-        );
-        harness.completeChannel.mockImplementation(
-          (
-            _channel: TestChannel,
-            _syscallNr: number,
-            _origArgs: number[],
-            _argDescs: unknown,
-            _retVal: number,
-            _errVal: number,
-            writes: Array<{ ptr: number; bytes: Uint8Array }> = [],
-          ) => {
-            for (const write of writes) {
-              harness.processBytes.set(write.bytes, write.ptr);
-            }
-          },
-        );
-        harness.handleChannel.mockImplementation((offset: number | bigint) => {
-          const channelView = new DataView(
-            harness.kernelBytes.buffer,
-            Number(offset),
-          );
-          const stagedAddressPointer = Number(
-            channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
-          );
-          const stagedLengthPointer = Number(
-            channelView.getBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, true),
-          );
-          const kernelView = new DataView(harness.kernelBytes.buffer);
-          expect(kernelView.getUint32(stagedLengthPointer, true)).toBe(
-            KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
-          );
-          harness.kernelBytes.set(expected, stagedAddressPointer);
-          kernelView.setUint32(stagedLengthPointer, reportedLength, true);
-          channelView.setBigInt64(CH_RETURN, 0n, true);
-          channelView.setUint32(CH_ERRNO, 0, true);
-          return 0;
-        });
-        writeChannelSyscall(harness, ABI_SYSCALLS.Getsockname, [
-          7n,
-          BigInt(addressPointer),
-          BigInt(lengthPointer),
-        ]);
-
-        dispatchScratchBoundarySyscall(harness);
-
-        if (reportedLength === KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES) {
-          expect(harness.completeChannel).toHaveBeenCalledOnce();
-          expect(
-            harness.processBytes.slice(
-              addressPointer,
-              harness.processBytes.byteLength,
-            ),
-          ).toEqual(expected);
-          expect(
-            new DataView(harness.processBytes.buffer).getUint32(
-              lengthPointer,
-              true,
-            ),
-          ).toBe(reportedLength);
-        } else {
-          expect(harness.completeChannel).toHaveBeenCalledOnce();
-          const completion = harness.completeChannel.mock.calls[0]!;
-          expect(completion[4]).toBe(-1);
-          expect(completion[5]).toBe(EIO);
-          expect(completion[6]).toBeUndefined();
-          expect(harness.completeChannelRaw).not.toHaveBeenCalled();
-          expect(
-            harness.processBytes.slice(
-              addressPointer,
-              harness.processBytes.byteLength,
-            ),
-          ).toEqual(
-            new Uint8Array(KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES).fill(
+      for (const testCase of [
+        {
+          name: "accept",
+          syscall: ABI_SYSCALLS.Accept,
+          addressArgIndex: 1,
+          lengthArgIndex: 2,
+          maximum: KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
+          args: [7n, 0n, 0n],
+          returnValue: 17,
+        },
+        {
+          name: "accept4",
+          syscall: ABI_SYSCALLS.Accept4,
+          addressArgIndex: 1,
+          lengthArgIndex: 2,
+          maximum: KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
+          args: [7n, 0n, 0n, 0n],
+          returnValue: 17,
+        },
+        {
+          name: "getsockname",
+          syscall: ABI_SYSCALLS.Getsockname,
+          addressArgIndex: 1,
+          lengthArgIndex: 2,
+          maximum: KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
+          args: [7n, 0n, 0n],
+          returnValue: 0,
+        },
+        {
+          name: "getpeername",
+          syscall: ABI_SYSCALLS.Getpeername,
+          addressArgIndex: 1,
+          lengthArgIndex: 2,
+          maximum: KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
+          args: [7n, 0n, 0n],
+          returnValue: 0,
+        },
+        {
+          name: "getsockopt",
+          syscall: ABI_SYSCALLS.Getsockopt,
+          addressArgIndex: 3,
+          lengthArgIndex: 4,
+          maximum: KERNEL_SCRATCH_SOCKET_OPTION_MAX_BYTES,
+          args: [7n, 1n, 2n, 0n, 0n],
+          returnValue: 0,
+        },
+        {
+          name: "recvfrom",
+          syscall: ABI_SYSCALLS.Recvfrom,
+          addressArgIndex: 4,
+          lengthArgIndex: 5,
+          maximum: KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
+          args: [7n, 0n, 0n, 0n, 0n, 0n],
+          returnValue: 0,
+        },
+      ] as const) {
+        for (const callerCapacity of [
+          0,
+          testCase.maximum,
+          testCase.maximum + 1,
+        ]) {
+          for (const reportedLength of [
+            testCase.maximum,
+            testCase.maximum + 1,
+          ]) {
+            const harness = makeScratchHarness(pointerWidth);
+            prepareGenericSyscallHarness(harness, pointerWidth);
+            const stagedCapacity = Math.min(
+              callerCapacity,
+              testCase.maximum,
+            );
+            const addressPointer =
+              harness.processBytes.byteLength - stagedCapacity;
+            const lengthPointer = 4096;
+            const callerCanary = 0x6d;
+            const expected = Uint8Array.from(
+              { length: stagedCapacity },
+              (_, index) => (index * 29 + 3) % 251,
+            );
+            harness.processBytes.fill(
               callerCanary,
-            ),
-          );
-          expect(
-            new DataView(harness.processBytes.buffer).getUint32(
+              addressPointer,
+              harness.processBytes.byteLength,
+            );
+            new DataView(harness.processBytes.buffer).setUint32(
               lengthPointer,
+              callerCapacity,
               true,
-            ),
-          ).toBe(0xffff_ffff);
+            );
+            harness.completeChannel.mockImplementation(
+              (
+                _channel: TestChannel,
+                _syscallNr: number,
+                _origArgs: number[],
+                _argDescs: unknown,
+                _retVal: number,
+                _errVal: number,
+                writes: Array<{ ptr: number; bytes: Uint8Array }> = [],
+              ) => {
+                for (const write of writes) {
+                  harness.processBytes.set(write.bytes, write.ptr);
+                }
+              },
+            );
+            harness.handleChannel.mockImplementation(
+              (offset: number | bigint) => {
+                const channelView = new DataView(
+                  harness.kernelBytes.buffer,
+                  Number(offset),
+                );
+                const stagedAddressPointer = Number(
+                  channelView.getBigInt64(
+                    CH_ARGS + testCase.addressArgIndex * CH_ARG_SIZE,
+                    true,
+                  ),
+                );
+                const stagedLengthPointer = Number(
+                  channelView.getBigInt64(
+                    CH_ARGS + testCase.lengthArgIndex * CH_ARG_SIZE,
+                    true,
+                  ),
+                );
+                const kernelView = new DataView(harness.kernelBytes.buffer);
+                expect(
+                  kernelView.getUint32(stagedLengthPointer, true),
+                  testCase.name,
+                ).toBe(stagedCapacity);
+                if (stagedCapacity > 0) {
+                  harness.kernelBytes.set(expected, stagedAddressPointer);
+                }
+                kernelView.setUint32(
+                  stagedLengthPointer,
+                  reportedLength,
+                  true,
+                );
+                channelView.setBigInt64(
+                  CH_RETURN,
+                  BigInt(testCase.returnValue),
+                  true,
+                );
+                channelView.setUint32(CH_ERRNO, 0, true);
+                return 0;
+              },
+            );
+            const args = [...testCase.args];
+            args[testCase.addressArgIndex] = BigInt(addressPointer);
+            args[testCase.lengthArgIndex] = BigInt(lengthPointer);
+            writeChannelSyscall(harness, testCase.syscall, args);
+
+            dispatchScratchBoundarySyscall(harness);
+
+            expect(
+              harness.completeChannel,
+              testCase.name,
+            ).toHaveBeenCalledOnce();
+            if (reportedLength === testCase.maximum) {
+              expect(
+                harness.processBytes.slice(
+                  addressPointer,
+                  harness.processBytes.byteLength,
+                ),
+                testCase.name,
+              ).toEqual(expected);
+              expect(
+                new DataView(harness.processBytes.buffer).getUint32(
+                  lengthPointer,
+                  true,
+                ),
+                testCase.name,
+              ).toBe(reportedLength);
+            } else {
+              const completion = harness.completeChannel.mock.calls[0]!;
+              expect(completion[4], testCase.name).toBe(-1);
+              expect(completion[5], testCase.name).toBe(EIO);
+              expect(completion[6], testCase.name).toBeUndefined();
+              expect(
+                harness.processBytes.slice(
+                  addressPointer,
+                  harness.processBytes.byteLength,
+                ),
+                testCase.name,
+              ).toEqual(
+                new Uint8Array(stagedCapacity).fill(callerCanary),
+              );
+              expect(
+                new DataView(harness.processBytes.buffer).getUint32(
+                  lengthPointer,
+                  true,
+                ),
+                testCase.name,
+              ).toBe(callerCapacity);
+            }
+            expectScratchTailUntouched(harness);
+          }
         }
-        expectScratchTailUntouched(harness);
       }
     },
   );
