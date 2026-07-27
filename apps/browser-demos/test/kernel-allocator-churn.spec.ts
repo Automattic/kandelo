@@ -1,16 +1,14 @@
 import { expect, test } from "@playwright/test";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveBinary } from "../../../host/src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const programPath = resolve(
   __dirname,
   "../../../examples/kernel_allocator_churn_test.wasm",
 );
-const kernelWasmPath = resolve(
-  __dirname,
-  "../../../target/wasm32-unknown-unknown/release/kandelo_kernel.wasm",
-);
+const kernelWasmPath = resolveBinary("kernel.wasm");
 const reusableKernelWorkerPath = resolve(
   __dirname,
   "fixtures/reusable-kernel-export-stack-worker.ts",

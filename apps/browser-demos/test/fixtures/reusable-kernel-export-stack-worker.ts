@@ -55,6 +55,24 @@ async function runProbe({
       `kernel fetch failed: ${response.status} ${response.url}`,
     );
   }
+  const kernelBytes = new Uint8Array(await response.arrayBuffer());
+  if (
+    kernelBytes.length < 4
+    || kernelBytes[0] !== 0x00
+    || kernelBytes[1] !== 0x61
+    || kernelBytes[2] !== 0x73
+    || kernelBytes[3] !== 0x6d
+  ) {
+    // WHY: Vite and reverse proxies can return an HTML fallback with status
+    // 200 for a missing asset. Diagnose that provenance failure explicitly
+    // instead of reporting a misleading WebAssembly compiler error.
+    throw new Error(
+      "kernel fetch returned non-Wasm bytes: " +
+        `${response.status} ` +
+        `${response.headers.get("content-type") ?? "unknown content type"} ` +
+        response.url,
+    );
+  }
 
   const rootfs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
   const kernel = new WasmPosixKernel(
@@ -68,7 +86,7 @@ async function runProbe({
       new BrowserTimeProvider(),
     ),
   );
-  await kernel.init(await response.arrayBuffer());
+  await kernel.init(kernelBytes);
 
   const internals = kernel as unknown as {
     instance: WebAssembly.Instance | null;
