@@ -534,14 +534,23 @@ tooling, sysroot, complete sealed dependency closure, exact immutable Nix
 runtime closure, ordinary system runtime directories, and private work/output
 roots are mounted into it. The Nix closure is queried before service entry and
 projected as individual content-addressed store roots; the whole Nix store is
-not exposed. The host `/`, workflow
-checkout, credentials, and host service-manager sockets are absent rather than
-merely read-only. `/etc` and `/tmp` are private service filesystems. The
-supervisor tears down the complete control group, proves the recipe UID owns no
-process, validates the output without following unsafe nodes, and returns only
-a root-owned sealed output tree. The Linux isolation test executes a malicious
-recipe that probes an unrelated host sentinel and tries to start another
-systemd unit; both paths must fail while declared inputs and output still work.
+not exposed.
+
+The supervisor implementation is admitted only from the exact root-owned,
+manifest-sealed Kandelo tooling projection. The launcher records that source's
+state and digest, copies it into a separate root-owned executable inode,
+compares the source and destination before the first privileged execution, and
+rechecks the executable afterward. An independent checkout path is not a
+second source of privileged runner code.
+
+The host `/`, workflow checkout, credentials, and host service-manager sockets
+are absent rather than merely read-only. `/etc` and `/tmp` are private service
+filesystems. The supervisor tears down the complete control group, proves the
+recipe UID owns no process, validates the output without following unsafe
+nodes, and returns only a root-owned sealed output tree. The Linux isolation
+test executes a malicious recipe that probes an unrelated host sentinel and
+tries to start another systemd unit; both paths must fail while declared inputs
+and output still work.
 
 The service bounds execution time, process count, descriptors, private
 `/tmp`, and captured diagnostics. Its host-backed private work and output
