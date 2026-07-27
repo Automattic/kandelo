@@ -786,9 +786,10 @@ The Node.js and Chromium lifecycle runners use the same generated guest
 scripts and host-neutral phase runner. They tap exact first- and third-party
 revisions, prove each tap remains discoverable as untrusted, and retain only
 the Formula-level trust that stock Homebrew creates for fully qualified
-operations or grants through `brew trust --formula`. The six-Formula image
-base is direct-composed rather than poured: its Bzip2, first-party M4, and Dash
-receipts must remain `built_as_bottle: true` and
+operations or grants through `brew trust --formula`. The reviewed shell image
+is composed directly from bottle projections rather than poured by in-guest
+Homebrew: its Bzip2, first-party M4, and Dash receipts must remain
+`built_as_bottle: true` and
 `poured_from_bottle: false`. The lifecycle explicitly trusts the already-pinned
 first-party Dash dependency without trusting its tap, then installs and
 reinstalls first-party Bzip2 and independent canary M4 through stock Homebrew.
@@ -915,14 +916,14 @@ publication. Exact-live-main equality remains necessary authority, not
 sufficient release evidence: the exact-Mpre rebuild and closed first- and
 third-party lifecycle proof are still required.
 
-Pull-request, push, and public/manual runs remain on the exact source-rootfs
-acceptance path. Only a manual closed dispatch selects the bottled product
-lane. Before either host creates live lifecycle evidence, that lane requires
-the candidate's bootstrap recipe and composition report to bind the exact
-atomic runtime-support cohort; the six-Formula base alone is not accepted as a
-`brew` runtime. It then invokes the Node lifecycle runner and creates the
-Chromium fixture from the same candidate image, bootstrap
-spec/archive/environment, and recovered bottle mirror.
+Pull-request, push, and manual runs all select the bottled product lane. The
+source-rootfs bridge remains separate internal comparison plumbing and cannot
+satisfy this cutover gate. Before either host creates live lifecycle evidence,
+the candidate's bootstrap recipe and composition report must bind the exact
+atomic runtime-support cohort; the shell bottle closure alone is not accepted
+as a `brew` runtime. A manual closed dispatch additionally invokes the Node
+lifecycle runner and creates the Chromium fixture from the same candidate
+image, bootstrap spec/archive/environment, and recovered bottle mirror.
 
 Dispatch the live lane only after recording the three observed live commits:
 
@@ -2406,47 +2407,47 @@ exact Node/Chromium source-product gate cannot be bypassed by the same
 allowlist drift.
 
 Pages then assembles the actual product tree and boots that sealed `/kandelo/`
-tree before deployment. Flip the gate back to `bottles` only in the strict
-exact-main bottle cutover.
+tree before deployment. The strict exact-main gate must remain on `bottles`;
+the source-rootfs bridge cannot stand in for the product artifact.
 
 ### Strict Main-Shell Bottle Closure
 
 `homebrew/main-shell.Brewfile` is the reviewed direct-root contract for the
-small base shell. Its four roots are Bash, Dash, Bzip2, and first-party M4.
-`homebrew/main-shell-migration-lock.json` maps every exact registry
-`name@version` to its Formula identity, version, revision, and bottle rebuild;
-it also records every reviewed identity or version substitution. Its
-`formula_closure` is the separately reviewed distribution contract: `libcxx`,
-Ncurses, and Bash are dependency-first and embedded, while Dash, Bzip2, and
-first-party M4 remain three independent lazy bottle trees. The checker derives
-this exact six-Formula base closure again from the pinned tap metadata. The
-composer and CI keep that base as the selection and materialization policy,
-while the package inventory records the ordered union of those six Formulae
-and the 18 additional runtime-support Formulae. This makes every mirrored
-bottle visible to recovery without pretending that all 24 Formulae are part of
-the always-needed base; root inclusion alone is not sufficient evidence.
+complete current shell surface. Its 32 roots resolve to an exact 38-Formula
+dependency-first closure. `homebrew/main-shell-migration-lock.json` maps every
+registry `name@version` to its Formula identity, version, revision, and bottle
+rebuild and records every reviewed identity or version substitution. `libcxx`,
+Ncurses, and Bash are embedded because every shell boot needs them. The other
+35 Formula trees remain independent lazy bottle projections, including
+programs with supporting data such as Vim, NetHack, and `file`/libmagic.
 
-The base does not claim that those six Formulae can run Homebrew.
+The same lock owns the observable compatibility surface rather than relying on
+whatever links happen to appear in a bottle. It declares the exact `/bin`,
+`/usr/bin`, and `/usr/local/bin` command names, compatibility aliases,
+supporting data paths, and image-owned state such as Git defaults and NetHack's
+writable playground. The post-archive Node smoke follows every command path,
+requires an executable regular file, verifies supporting data and ownership,
+and compares all state bytes and metadata. This makes a missing lazy reference
+or stale compatibility link fail before browser acceptance.
+
+The shell closure does not by itself claim that `/usr/bin/brew` can run.
 `homebrew/main-shell-homebrew-runtime-support.json` declares a second,
 first-use atomic layer. It binds the lazy `homebrew-bootstrap` source and
 launcher outputs to seven reviewed runtime roots—Ruby, Git, curl, Findutils,
 Gawk, Tar, and `posix-utils-lite`—and to their exact 21-Formula
-dependency-first closure derived from tap metadata. Three dependencies already
-belong to the base, so activation adds 18 bottle trees.
+dependency-first closure derived from tap metadata. The complete shell already
+supplies 20 of those Formulae, so activation adds only Ruby as an atomic lazy
+bottle tree.
 
-The availability audit covers the original 25-Formula support candidate. At final
-catalog `9820ef5643dc50f5876e53a1bbf6a309fc62f9a7`, 23 Formulae have admitted
-public wasm32 ABI-42 identities. `libmagic` and `file-formula` have only
-public ABI-41 identities and remain explicitly deferred. Pinned Homebrew
-`34c40c18ffa2029b611b61c73273e32c003d0842` skips text-file classification
-when `file` is unavailable, and Kandelo bottles already use their final
-prefix, so neither tree is required by the fixed-prefix first-/third-party
-lifecycle. Bzip2 is already in the base, while Xz is no longer pulled by the
-active roots.
+The availability audit covers all 25 Formulae considered during the runtime
+rollout. Every one now has an admitted public wasm32 ABI-42 identity, including
+`libmagic` and `file-formula`; none remains deferred. Bzip2 and Xz are ordinary
+members of the complete shell closure even when a narrower `brew` lifecycle
+does not touch them.
 
 The audit binds the exact aggregate metadata digest, ABI, release, and catalog
 publication commits separately from the immutable bottles' producer commits.
-`runtime_bottle_provenance_sha256` hashes an ordered projection of all 23
+`runtime_bottle_provenance_sha256` hashes an ordered projection of all 25
 admitted Formula identities. Each projection entry contains the Formula's full
 name, version, revision, rebuild, selected architecture, bottle tag, ABI, URL,
 digest, size, cache identity, and complete `built_from` record. This permits an
@@ -2496,12 +2497,11 @@ declared `shell.vfs.zst` is published, and the post-archive exact-byte runtime
 gates remain required. There is no legacy ambient registry-composition
 fallback.
 
-The wider browser application also imports registry packages outside the
-six-Formula base closure. The workflow derives that supporting set from
-browser imports and resolves it with normal package semantics. During the
-bridge, the authoritative source-shell dependency contract names every direct
-input; after bottle cutover those inputs return to ordinary supporting
-packages rather than hidden composer prerequisites.
+The wider browser application also imports service and profile artifacts that
+are not part of the shell closure. The workflow derives that supporting set
+from browser imports and resolves it with normal package semantics. Those
+artifacts remain explicit profile inputs rather than hidden shell-composer
+prerequisites.
 
 For local use, `./run.sh build shell-vfs` takes the ordinary resolver path and
 materializes the declared output under `local-binaries`. It may reuse a valid
@@ -2602,11 +2602,13 @@ booted and exercised the closure in both Node and Chromium. Prefer
 from exact-byte browser acceptance.
 
 The base Node and Chromium gates boot the same emitted bytes, reach the
-embedded Bash without a download, and fetch Dash, Bzip2, and first-party M4
-only on first use. A separate lifecycle gate must activate the complete
-runtime-support layer before invoking stock `brew`; it then installs
-first-party Bzip2 and independent-tap M4 from declared public bytes. A
-six-Formula boot test is not evidence for the Homebrew lifecycle.
+embedded Bash without a download, and fetch selected Formula trees only on
+first use. The exact public namespace, supporting data, NetHack state, and
+Doom/modeset launch profiles are part of that shell acceptance contract. A
+separate lifecycle gate must activate the complete runtime-support layer
+before invoking stock `brew`; it then installs first-party Bzip2 and
+independent-tap M4 from declared public bytes. Booting the bottle-composed shell
+alone is not evidence for the Homebrew lifecycle.
 
 Repeatable `--package <name>` remains available for lower-level tooling and
 focused tests. It preserves the provided root order and uses the same planner,
@@ -2972,9 +2974,10 @@ The canonical shell builds its multi-root closure through the
 bottle-collection primitive. The bounded collection producer derives
 independently lazy, byte-identical bottle trees for a complete reviewed package
 closure. The accelerated base-shell policy embeds `libcxx`, `ncurses`, and
-Bash and retains Dash, Bzip2, and first-party M4 as independently deferred
-trees. The broader language and utility catalog remains available for optional
-layers; it is not silently serialized into the base.
+Bash and retains the other 35 members of the complete current-shell Formula
+closure as independently deferred trees. Additional language runtimes remain
+available for optional layers; they are not silently serialized into the
+base.
 
 The lazy build keeps materialization code behind its own entrypoint.
 `build-homebrew-vfs-image.ts` owns the shared eager planning, metadata, and
