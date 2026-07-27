@@ -3453,7 +3453,7 @@ def check_publisher(workflow)
     'Formula process teardown failed; preserving launcher state for retry',
     'return "$teardown_status"',
     'for protected_bin in chmod chown cmp cp id install ln ls mktemp readlink rm \\',
-    'od python3 sha256sum stat test tr; do',
+    'od sha256sum stat test tr; do',
     '"$sudo_bin" /usr/bin/install -d -o root -g "$build_group" -m 1775',
     '"$(/usr/bin/stat -c \'%u:%g:%a\' "$target_state_root")" = "0:$build_gid:1775"',
     'target_opt_target="../Cellar/$formula/$native_version"',
@@ -3467,6 +3467,56 @@ def check_publisher(workflow)
   ].each do |fragment|
     check(launcher.include?(fragment), "isolated Brew launcher lacks #{fragment}")
   end
+  protected_executable_contract = launcher[
+    /homebrew_assert_protected_host_executable\(\) \{\n(.*?)\n\}\n\nhomebrew_assert_protected_host_versioned_executable\(\)/m,
+    1
+  ]
+  check(protected_executable_contract,
+        "isolated Brew launcher lost its protected host executable contract")
+  [
+    %q([ "$(/usr/bin/stat -c '%u' "$path" 2>/dev/null || true)" != "0" ]),
+    %q([ "$(/usr/bin/stat -c '%u' "$parent" 2>/dev/null || true)" != "0" ]),
+    %q([ $((8#$parent_mode & 0022)) -ne 0 ]),
+    %q("$HOMEBREW_PATCHED_SUDO_BIN" -H -u "$user" -- /usr/bin/test -w "$parent"),
+    %q([ "$(/usr/bin/stat -Lc '%u' "$resolved" 2>/dev/null || true)" != "0" ]),
+    %q([ $((8#$mode & 0022)) -ne 0 ]),
+    %q("$HOMEBREW_PATCHED_SUDO_BIN" -H -u "$user" -- /usr/bin/test -w "$path"),
+  ].each do |fragment|
+    check(protected_executable_contract.include?(fragment),
+          "protected host executable contract lacks #{fragment}")
+  end
+  versioned_executable_contract = launcher[
+    /homebrew_assert_protected_host_versioned_executable\(\) \{\n(.*?)\n\}\n\nhomebrew_patched_launcher_remove_native_bridges\(\)/m,
+    1
+  ]
+  check(versioned_executable_contract,
+        "isolated Brew launcher lost its protected version-selector contract")
+  [
+    '[ "$path" != "$expected" ]',
+    '[ "${expected##*/}" != "$selector_name" ]',
+    '! [[ "$selector_name" =~ ^[A-Za-z0-9_+-]+$ ]]',
+    '[ ! -L "$path" ]',
+    'resolved="$(/usr/bin/readlink -f -- "$path" 2>/dev/null || true)"',
+    'expected_parent="${expected%/*}"',
+    'resolved_parent="${resolved%/*}"',
+    'resolved_basename="${resolved##*/}"',
+    '[ "$resolved_parent" != "$expected_parent" ]',
+    '! [[ "$resolved_basename" =~ ^${selector_name}\.[0-9]+$ ]]',
+    'homebrew_assert_protected_host_executable',
+    '"$user" "$path" "$expected" "$label" "$resolved"',
+  ].each do |fragment|
+    check(versioned_executable_contract.include?(fragment),
+          "protected version-selector contract lacks #{fragment}")
+  end
+  strict_host_tool_loop = launcher[
+    /for protected_bin in chmod chown cmp cp id install ln ls mktemp readlink rm \\\n    od sha256sum stat test tr; do.*?\n  done/m
+  ]
+  check(strict_host_tool_loop && !strict_host_tool_loop.include?("python3"),
+        "Python remains routed through the regular-only protected host tool loop")
+  check(launcher.include?(
+          "homebrew_assert_protected_host_versioned_executable \\\n" \
+          '    "$build_user" /usr/bin/python3 /usr/bin/python3 python3 python3'
+        ), "isolated Brew launcher does not route Python through its protected selector")
   check(!launcher.include?('homebrew_assert_tree_not_writable_by_user "$build_user" "$sysroot"'),
         "isolated Brew launcher requires pre-bind access to the protected sysroot owner path")
   check(launcher.scan("homebrew_patched_launcher_emit_sysroot_access_audit").length == 2,
@@ -3679,6 +3729,13 @@ def check_publisher(workflow)
     '--source-repo-root "$source_alias"',
     "Match the inaccessible compile root rather than coupling this regression",
     %q{*"build input \""*"\" not found"*"$original_root/"*)},
+    'protected_selector_root="$ISOLATION_ROOT/protected-version-selector"',
+    'escaped_selector_target_root="$ISOLATION_ROOT/escaped-version-target"',
+    'replaceable_selector_root="$ISOLATION_ROOT/replaceable-version-selector"',
+    "protected root-owned version selector was rejected",
+    "distribution-provided protected Python selector was rejected",
+    "version selector escaped its protected system directory",
+    "version selector accepted a build-user-replaceable tool",
   ].each do |fragment|
     check(launcher_test.include?(fragment),
           "launcher checker regression lacks #{fragment}")
