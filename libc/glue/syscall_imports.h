@@ -433,6 +433,8 @@ int32_t kernel_clone(uint32_t fn_ptr, uint32_t stack_ptr, uint32_t flags,
 /* ------------------------------------------------------------------ */
 
 KERNEL_IMPORT(kernel_exit)
+/* The `_Noreturn` contract keeps the guest call site non-returning; only the
+ * disposable guest Worker may trap, never the reusable kernel transaction. */
 _Noreturn void kernel_exit(int32_t status);
 
 KERNEL_IMPORT(kernel_execve)
