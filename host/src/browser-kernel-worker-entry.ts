@@ -52,6 +52,7 @@ import {
 } from "./thread-worker-disposition";
 import { VmInterruptTimerManager } from "./vm-interrupt-timer";
 import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
+import { reapHostOwnedExitedProcess } from "./host-owned-process-reap";
 import type {
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
@@ -1730,11 +1731,38 @@ async function finishProcessExit(
     // always deactivate after worker termination; the main thread tracks
     // exit promises, and no further guest syscalls can arrive on this
     // channel once the worker is gone.
-    kernelWorker.deactivateProcess(pid);
+    let deactivated = false;
+    try {
+      kernelWorker.deactivateProcess(pid);
+      deactivated = true;
+    } catch (error) {
+      reportHostDiagnostic({
+        pid,
+        status: exitStatus,
+        source: "process channel teardown",
+        message:
+          `[browser-kernel-worker] failed to deactivate completed pid ${pid}: ` +
+          formatError(error),
+      });
+    }
 
     processes.delete(pid);
     threadModuleCache.delete(pid);
     ptyByPid.delete(pid);
+    if (!deactivated) return;
+
+    try {
+      reapHostOwnedExitedProcess(kernelInstance, pid);
+    } catch (error) {
+      reportHostDiagnostic({
+        pid,
+        status: exitStatus,
+        source: "host-owned process reap",
+        message:
+          `[browser-kernel-worker] failed to reap completed host-owned pid ${pid}: ` +
+          formatError(error),
+      });
+    }
   })();
   processTeardowns.set(expectedWorker, teardown);
 

@@ -666,7 +666,8 @@ export class BrowserKernel {
   /**
    * Read `/proc/[pid]/maps` for a foreign process. Returns the raw Linux-
    * style text, `""` if the process has no mappings, or `null` if the pid
-   * has exited. Mirrors `NodeKernelHost.readProcMaps`.
+   * has been reaped and is no longer a process. Mirrors
+   * `NodeKernelHost.readProcMaps`.
    */
   async readProcMaps(pid: number): Promise<string | null> {
     const requestId = this.nextRequestId++;
