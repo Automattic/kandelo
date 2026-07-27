@@ -5,7 +5,7 @@
   "catalog": {
     "tap_repository": "kandelo-dev/homebrew-tap-core",
     "tap_name": "kandelo-dev/tap-core",
-    "tap_commit": "e747f724efc63c81af453eeada3b7f1453726058"
+    "tap_commit": "9820ef5643dc50f5876e53a1bbf6a309fc62f9a7"
   },
   "base_formula_order": [
     "kandelo-dev/tap-core/libcxx",
@@ -139,10 +139,10 @@
   ],
   "availability": {
     "audited_catalog": {
-      "checkout_commit": "e747f724efc63c81af453eeada3b7f1453726058",
-      "metadata_sha256": "80c08da0680c874b8f8de1936ca7ae0c10a4ed19ed56b24aeead9af2bc8ec1b1",
-      "metadata_tap_commit": "fae9503735927f5f63e227b0b5b487ffea7ab0fc",
-      "kandelo_commit": "d3805721b887a19382ef1c96b576fc27badc0951",
+      "checkout_commit": "9820ef5643dc50f5876e53a1bbf6a309fc62f9a7",
+      "metadata_sha256": "bf9014ebcc9aff269d403c418b6e083d06b76d59d90c87f456a4584abe857134",
+      "metadata_tap_commit": "93b3e778f3404a754a8da1cecd931eac9415ca64",
+      "kandelo_commit": "88d26f4c627a363e01e567574916aff4e00828ee",
       "runtime_bottle_provenance_sha256": "6524beb7511575c912f8d5b36909dcd0c35ed6f6dbc78eb342921a0c5262ceb0",
       "kandelo_abi": 42,
       "release_tag": "bottles-abi-v42",

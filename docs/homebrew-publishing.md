@@ -905,14 +905,15 @@ protected caller commit rather than substituted into its own bytes. This
 public-mirror lane is independent of the existing Bash bottle caller and its
 frozen workflow digest.
 
-The checked-in `e747f724efc63c81af453eeada3b7f1453726058` first-party tap
-value is provisional activation evidence while the shell recipe remains
-`UNPUBLISHED` and the lazy artifact lock remains pending. Even its current
-live-main equality is necessary authority, not sufficient release evidence, and
-does not make that value the final `TF`. Until final bottles are rebuilt from
-the resulting exact Kandelo `main` and every TF-bearing lock is updated to the
-resulting live tap head, the manual closed lane is expected to fail at its
-subsequent candidate or bottle cutover gates.
+The checked-in `9820ef5643dc50f5876e53a1bbf6a309fc62f9a7` first-party tap value is the final shell
+catalog authority. The shell recipe remains `UNPUBLISHED` so archive staging
+can substitute the exact landed Kandelo commit, while
+`publication_state = "ready"` admits that normal exact-main path. The lazy
+artifact lock independently rejects every output while its identity is pending;
+final review must seal the deterministic compressed digest and size before
+publication. Exact-live-main equality remains necessary authority, not
+sufficient release evidence: the exact-Mpre rebuild and closed first- and
+third-party lifecycle proof are still required.
 
 Pull-request, push, and public/manual runs remain on the exact source-rootfs
 acceptance path. Only a manual closed dispatch selects the bottled product
@@ -2422,8 +2423,8 @@ Gawk, Tar, and `posix-utils-lite`—and to their exact 21-Formula
 dependency-first closure derived from tap metadata. Three dependencies already
 belong to the base, so activation adds 18 bottle trees.
 
-The availability audit covers the original 25-Formula support candidate. At
-catalog `e747f724efc63c81af453eeada3b7f1453726058`, 23 Formulae have admitted
+The availability audit covers the original 25-Formula support candidate. At final
+catalog `9820ef5643dc50f5876e53a1bbf6a309fc62f9a7`, 23 Formulae have admitted
 public wasm32 ABI-42 identities. `libmagic` and `file-formula` have only
 public ABI-41 identities and remain explicitly deferred. Pinned Homebrew
 `34c40c18ffa2029b611b61c73273e32c003d0842` skips text-file classification
