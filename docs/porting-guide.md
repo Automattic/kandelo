@@ -805,12 +805,15 @@ Formulae should use normal Homebrew DSL and the normal Kandelo platform path:
   evidence to generated `Kandelo/` sidecars.
 
 A tap-native recipe receives Homebrew's checksum-verified source,
-Homebrew-poured direct dependency kegs, and separate source/work/output roots.
-It receives the Kandelo SDK, sysroot, and fork instrumenter, but no package
-registry, resolver checker, transported binary cache, local-binary mirror, or
-`install-local-binary.sh`. Its manifest SHA-256 is a literal in the Formula,
-and every recipe file's path, size, mode, and SHA-256 is checked before and
-after execution. See
+Homebrew-poured direct dependency kegs, explicitly selected and attested
+Formula resources, and separate source/work/output roots. A selected resource
+is a read-only snapshot at `/kandelo/resources/<name>` and is named by
+`WASM_POSIX_DEP_RESOURCE_<NORMALIZED_NAME>_DIR`; the helper never accepts a
+Formula-selected host path. It receives the Kandelo SDK, sysroot, and fork
+instrumenter, but no package registry, resolver checker, transported binary
+cache, local-binary mirror, or `install-local-binary.sh`. Its manifest SHA-256
+is a literal in the Formula, and every recipe file's path, size, mode, and
+SHA-256 is checked before and after execution. See
 [Formula-owned tap recipes](homebrew-publishing.md#formula-owned-tap-recipes)
 for the exact manifest and helper contract.
 

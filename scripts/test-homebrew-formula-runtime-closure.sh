@@ -441,8 +441,8 @@ module KandeloFormulaSupport
     [package, script_env]
   end
 
-  def kandelo_build_tap_recipe(manifest_sha256:, script_env: {})
-    [manifest_sha256, script_env]
+  def kandelo_build_tap_recipe(manifest_sha256:, resources: [], script_env: {})
+    [manifest_sha256, resources, script_env]
   end
 end
 end
@@ -659,9 +659,20 @@ class Recipe < Formula
 
   depends_on "kandelo-dev/tap-core/required"
 
+  resource "fixture-data" do
+    url "https://example.test/fixture-data.tar.gz"
+    sha256 "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  end
+
+  resource "test-data" do
+    url "https://example.test/test-data.tar.gz"
+    sha256 "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  end
+
   def install
     out_dir = kandelo_build_tap_recipe(
       manifest_sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      resources:       ["fixture-data"],
       script_env: {
         "RECIPE_FEATURE" => "enabled",
       },
@@ -764,7 +775,7 @@ jq -e '
   }
 ' <<<"$bridge_plan" >/dev/null
 [ "$(jq -r '.support_runtime_sha256' <<<"$bridge_plan")" = \
-  "bb71e60b67c0041a8e6ec68269680fb144c8fbaa4fd6a31360e016cf11ab4337" ]
+  "911f807effbf89ae142a3f4b42a04265929da83e03fdcee46bfe460b4a1c1794" ]
 [ "$bridge_plan" = "$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge --tier2-bridge-json)" ]
 rm "$TAP_ROOT/Kandelo/formula_support/a-runtime.txt" \
   "$TAP_ROOT/Kandelo/formula_support/z-runtime.txt"
@@ -784,6 +795,11 @@ jq -e '
   .tap_recipe == {
     declared_dependencies: ["kandelo-dev/tap-core/required"],
     manifest_sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    resources: [{
+      name: "fixture-data",
+      source_sha256: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      source_url: "https://example.test/fixture-data.tar.gz"
+    }],
     script_env_keys: ["RECIPE_FEATURE"],
     source_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     source_url: "https://example.test/recipe-1.2.3.tar.gz",
@@ -805,7 +821,52 @@ sed -i.bak \
   "$TAP_ROOT/Formula/recipe.rb"
 rm "$TAP_ROOT/Formula/recipe.rb.bak"
 expect_tap_recipe_failure dynamic-recipe-manifest \
-  "must use a literal manifest SHA-256 followed by one literal script_env hash"
+  "must use a literal manifest SHA-256, an optional literal resource-name array"
+
+write_valid_tap_recipe_formula
+sed -i.bak 's/resources:       \["fixture-data"\]/resources:       ["missing-data"]/' \
+  "$TAP_ROOT/Formula/recipe.rb"
+rm "$TAP_ROOT/Formula/recipe.rb.bak"
+expect_tap_recipe_failure undeclared-recipe-resource \
+  "selects resources without canonical literal URL and SHA-256 declarations"
+
+write_valid_tap_recipe_formula
+sed -i.bak \
+  's#url "https://example.test/fixture-data.tar.gz"#url FIXTURE_DATA_URL#' \
+  "$TAP_ROOT/Formula/recipe.rb"
+rm "$TAP_ROOT/Formula/recipe.rb.bak"
+expect_tap_recipe_failure dynamic-recipe-resource \
+  "selects resources without canonical literal URL and SHA-256 declarations"
+
+write_valid_tap_recipe_formula
+sed -i.bak \
+  's#url "https://example.test/fixture-data.tar.gz"#url FIXTURE_DATA_URL#' \
+  "$TAP_ROOT/Formula/recipe.rb"
+rm "$TAP_ROOT/Formula/recipe.rb.bak"
+sed -i.bak '/  resource "test-data" do/i\
+  resource "fixture-data" do\
+    url "https://example.test/fixture-data.tar.gz"\
+    sha256 "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"\
+  end\
+' "$TAP_ROOT/Formula/recipe.rb"
+rm "$TAP_ROOT/Formula/recipe.rb.bak"
+expect_tap_recipe_failure duplicate-recipe-resource \
+  "tap-recipe Formula repeats a resource name"
+
+write_valid_tap_recipe_formula
+sed -i.bak 's/"RECIPE_FEATURE"/"WASM_POSIX_DEP_RESOURCE_FIXTURE_DATA_DIR"/' \
+  "$TAP_ROOT/Formula/recipe.rb"
+rm "$TAP_ROOT/Formula/recipe.rb.bak"
+expect_tap_recipe_failure reserved-resource-environment \
+  'script_env overrides resource variables ["WASM_POSIX_DEP_RESOURCE_FIXTURE_DATA_DIR"]'
+
+write_valid_tap_recipe_formula
+sed -i.bak \
+  's#depends_on "kandelo-dev/tap-core/required"#depends_on "kandelo-dev/tap-core/resource-fixture-data"#' \
+  "$TAP_ROOT/Formula/recipe.rb"
+rm "$TAP_ROOT/Formula/recipe.rb.bak"
+expect_tap_recipe_failure dependency-resource-environment-collision \
+  'dependencies collide with resource variables ["WASM_POSIX_DEP_RESOURCE_FIXTURE_DATA_DIR"]'
 
 write_valid_tap_recipe_formula
 sed -i.bak 's/"RECIPE_FEATURE"/"WASM_POSIX_DEP_RECIPE_DIR"/' \

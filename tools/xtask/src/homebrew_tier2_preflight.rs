@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 
 use crate::pkg_manifest::{BuildToml, DepsManifest, TargetArch};
 
-const MAX_BRIDGE_PLAN_BYTES: usize = 16_384;
+const MAX_BRIDGE_PLAN_BYTES: usize = 65_536;
 const MAX_SCRIPT_ENV_KEYS: usize = 64;
 const MAX_SCRIPT_ENV_KEY_BYTES: usize = 4_096;
 const MAX_MANIFEST_BYTES: usize = 65_536;
@@ -17,6 +17,9 @@ const MAX_BUILD_SCRIPT_BYTES: usize = 1_048_576;
 const MAX_TAP_RECIPE_FILES: usize = 512;
 const MAX_TAP_RECIPE_FILE_BYTES: u64 = 16_777_216;
 const MAX_TAP_RECIPE_BYTES: u64 = 67_108_864;
+const MAX_TAP_RECIPE_RESOURCES: usize = 32;
+const MAX_TAP_RECIPE_RESOURCE_NAME_BYTES: usize = 128;
+const MAX_TAP_RECIPE_RESOURCE_URL_BYTES: usize = 1_024;
 const ZERO_SHA256: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 const KANDELO_REPOSITORY_URLS: [&str; 1] = ["https://github.com/Automattic/kandelo"];
 
@@ -65,10 +68,19 @@ struct BridgeDeclaration {
 struct TapRecipeDeclaration {
     declared_dependencies: Vec<String>,
     manifest_sha256: String,
+    resources: Vec<TapRecipeResource>,
     script_env_keys: Vec<String>,
     source_sha256: String,
     source_url: String,
     version: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TapRecipeResource {
+    name: String,
+    source_sha256: String,
+    source_url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,6 +136,7 @@ struct AttestedTapRecipe {
     entrypoint: String,
     file_count: usize,
     manifest_sha256: String,
+    resources: Vec<TapRecipeResource>,
     script_env_keys: Vec<String>,
     source_sha256: String,
     source_url: String,
@@ -630,6 +643,7 @@ fn validate_tap_recipe(
         entrypoint: manifest.entrypoint,
         file_count: manifest.files.len(),
         manifest_sha256,
+        resources: recipe.resources.clone(),
         script_env_keys: recipe.script_env_keys.clone(),
         source_sha256: recipe.source_sha256.clone(),
         source_url: recipe.source_url.clone(),
@@ -654,6 +668,39 @@ fn validate_tap_recipe_declaration(
 ) -> Result<(), String> {
     validate_sha256(&recipe.manifest_sha256, "Formula recipe manifest SHA-256")?;
     validate_script_env_keys(formula, &recipe.script_env_keys)?;
+    if recipe.resources.len() > MAX_TAP_RECIPE_RESOURCES {
+        return Err(format!(
+            "tap recipe selects more than {MAX_TAP_RECIPE_RESOURCES} resources"
+        ));
+    }
+    if recipe
+        .resources
+        .windows(2)
+        .any(|window| window[0].name >= window[1].name)
+    {
+        return Err("tap recipe resources must be sorted by unique name".to_string());
+    }
+    let mut resource_env_keys = BTreeSet::new();
+    for resource in &recipe.resources {
+        validate_tap_recipe_resource_name(&resource.name)?;
+        validate_https_url(
+            &resource.source_url,
+            MAX_TAP_RECIPE_RESOURCE_URL_BYTES,
+            "Formula resource URL",
+        )?;
+        validate_sha256(&resource.source_sha256, "Formula resource SHA-256")?;
+        let key = resource_env_key(&resource.name);
+        if !resource_env_keys.insert(key.clone()) {
+            return Err(format!(
+                "tap recipe resource names collide in environment key {key:?}"
+            ));
+        }
+        if recipe.script_env_keys.binary_search(&key).is_ok() {
+            return Err(format!(
+                "Formula recipe script_env_keys overrides resource path {key:?}"
+            ));
+        }
+    }
     validate_source_url(&recipe.source_url)?;
     validate_sha256(&recipe.source_sha256, "Formula source SHA-256")?;
     if recipe.version.is_empty()
@@ -676,6 +723,19 @@ fn validate_tap_recipe_declaration(
     }
     for dependency in &recipe.declared_dependencies {
         validate_formula_full_name(dependency, "declared target dependency")?;
+    }
+    let dependency_env_keys = recipe
+        .declared_dependencies
+        .iter()
+        .map(|dependency| dependency_env_key(dependency))
+        .collect::<BTreeSet<_>>();
+    if let Some(conflict) = resource_env_keys
+        .iter()
+        .find(|key| dependency_env_keys.contains(key.as_str()))
+    {
+        return Err(format!(
+            "Formula recipe dependency and resource paths collide at {conflict:?}"
+        ));
     }
     Ok(())
 }
@@ -703,6 +763,38 @@ fn dependency_env_key(full_name: &str) -> String {
         })
         .collect::<String>();
     format!("WASM_POSIX_DEP_{normalized}_DIR")
+}
+
+fn resource_env_key(name: &str) -> String {
+    let normalized = name
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() {
+                byte.to_ascii_uppercase() as char
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    format!("WASM_POSIX_DEP_RESOURCE_{normalized}_DIR")
+}
+
+fn validate_tap_recipe_resource_name(value: &str) -> Result<(), String> {
+    let valid_first = value
+        .as_bytes()
+        .first()
+        .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit());
+    let valid_rest = value.bytes().all(|byte| {
+        byte.is_ascii_lowercase()
+            || byte.is_ascii_digit()
+            || matches!(byte, b'.' | b'_' | b'+' | b'-')
+    });
+    if value.len() > MAX_TAP_RECIPE_RESOURCE_NAME_BYTES || !valid_first || !valid_rest {
+        return Err(format!(
+            "Formula resource name must be one bounded lowercase ASCII name, got {value:?}"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_relative_recipe_path(value: &str, label: &str) -> Result<(), String> {
@@ -988,10 +1080,14 @@ fn validate_component(value: &str, label: &str, allow_uppercase: bool) -> Result
 }
 
 fn validate_source_url(value: &str) -> Result<(), String> {
+    validate_https_url(value, 2_048, "Formula source URL")
+}
+
+fn validate_https_url(value: &str, max_bytes: usize, label: &str) -> Result<(), String> {
     let host_first = value
         .strip_prefix("https://")
         .and_then(|suffix| suffix.as_bytes().first());
-    if value.len() > 2_048
+    if value.len() > max_bytes
         || !host_first.is_some_and(u8::is_ascii_alphanumeric)
         || !value.is_ascii()
         || value.bytes().any(|byte| {
@@ -1000,9 +1096,7 @@ fn validate_source_url(value: &str) -> Result<(), String> {
                 || matches!(byte, b'\\' | b'"' | b'`')
         })
     {
-        return Err(format!(
-            "invalid canonical HTTPS Formula source URL {value:?}"
-        ));
+        return Err(format!("invalid canonical HTTPS {label} {value:?}"));
     }
     Ok(())
 }
@@ -1279,6 +1373,11 @@ mod tests {
             "tap_recipe": {
                 "declared_dependencies": ["kandelo-dev/tap-core/zlib"],
                 "manifest_sha256": sha256_hex(&manifest_bytes),
+                "resources": [{
+                    "name": "fixture-data",
+                    "source_sha256": "e".repeat(64),
+                    "source_url": "https://example.test/fixture-data.tar.gz"
+                }],
                 "script_env_keys": ["BRIDGE_FEATURE"],
                 "source_sha256": "c".repeat(64),
                 "source_url": "https://example.test/bridge-1.2.3.tar.gz",
@@ -1417,7 +1516,155 @@ index_url = "https://example.test/index.toml"
             recipe.dependencies,
             ["kandelo-dev/tap-core/zlib".to_string()]
         );
+        assert_eq!(
+            recipe.resources,
+            [TapRecipeResource {
+                name: "fixture-data".to_string(),
+                source_sha256: "e".repeat(64),
+                source_url: "https://example.test/fixture-data.tar.gz".to_string(),
+            }]
+        );
         assert_eq!(recipe.script_env_keys, ["BRIDGE_FEATURE".to_string()]);
+    }
+
+    #[test]
+    fn tap_recipe_resources_are_bounded_canonical_and_collision_free() {
+        for (mutation, expected) in [
+            ("unsorted", "sorted by unique name"),
+            ("environment-collision", "collide in environment key"),
+            (
+                "dependency-resource-collision",
+                "dependency and resource paths collide",
+            ),
+            ("environment-override", "overrides resource path"),
+            ("invalid-name", "bounded lowercase ASCII name"),
+            ("invalid-sha256", "64 lowercase hexadecimal"),
+            (
+                "oversized-url",
+                "invalid canonical HTTPS Formula resource URL",
+            ),
+            ("too-many", "more than 32 resources"),
+            ("unknown-field", "unknown field"),
+        ] {
+            let fixture = Fixture::new();
+            write_tap_recipe(&fixture);
+            let mut plan: serde_json::Value =
+                serde_json::from_slice(&fs::read(&fixture.plan).unwrap()).unwrap();
+            match mutation {
+                "unsorted" => {
+                    plan["tap_recipe"]["resources"] = serde_json::json!([
+                        {
+                            "name": "z-data",
+                            "source_sha256": "e".repeat(64),
+                            "source_url": "https://example.test/z.tar.gz"
+                        },
+                        {
+                            "name": "a-data",
+                            "source_sha256": "e".repeat(64),
+                            "source_url": "https://example.test/a.tar.gz"
+                        }
+                    ]);
+                }
+                "environment-collision" => {
+                    plan["tap_recipe"]["resources"] = serde_json::json!([
+                        {
+                            "name": "fixture-data",
+                            "source_sha256": "e".repeat(64),
+                            "source_url": "https://example.test/a.tar.gz"
+                        },
+                        {
+                            "name": "fixture_data",
+                            "source_sha256": "e".repeat(64),
+                            "source_url": "https://example.test/b.tar.gz"
+                        }
+                    ]);
+                }
+                "dependency-resource-collision" => {
+                    plan["tap_recipe"]["declared_dependencies"] =
+                        serde_json::json!(["kandelo-dev/tap-core/resource-fixture-data"]);
+                }
+                "environment-override" => {
+                    plan["tap_recipe"]["script_env_keys"] =
+                        serde_json::json!(["WASM_POSIX_DEP_RESOURCE_FIXTURE_DATA_DIR"]);
+                }
+                "invalid-name" => {
+                    plan["tap_recipe"]["resources"][0]["name"] = serde_json::json!("Fixture");
+                }
+                "invalid-sha256" => {
+                    plan["tap_recipe"]["resources"][0]["source_sha256"] = serde_json::json!("f");
+                }
+                "oversized-url" => {
+                    plan["tap_recipe"]["resources"][0]["source_url"] =
+                        serde_json::json!(format!("https://example.test/{}", "a".repeat(1_005)));
+                }
+                "too-many" => {
+                    plan["tap_recipe"]["resources"] = serde_json::Value::Array(
+                        (0..=MAX_TAP_RECIPE_RESOURCES)
+                            .map(|index| {
+                                serde_json::json!({
+                                    "name": format!("resource-{index:02}"),
+                                    "source_sha256": "e".repeat(64),
+                                    "source_url": format!("https://example.test/{index}.tar.gz")
+                                })
+                            })
+                            .collect(),
+                    );
+                }
+                "unknown-field" => {
+                    plan["tap_recipe"]["resources"][0]["path"] =
+                        serde_json::json!("/caller/selected");
+                }
+                _ => unreachable!(),
+            }
+            fs::write(&fixture.plan, serde_json::to_vec(&plan).unwrap()).unwrap();
+            let error = validate(
+                fixture.root(),
+                Some(fixture.root()),
+                TargetArch::Wasm32,
+                &fixture.plan,
+            )
+            .unwrap_err();
+            assert!(error.contains(expected), "{mutation}: {error}");
+        }
+    }
+
+    #[test]
+    fn tap_recipe_accepts_a_bounded_resource_plan_above_the_legacy_size_limit() {
+        let fixture = Fixture::new();
+        write_tap_recipe(&fixture);
+        let mut plan: serde_json::Value =
+            serde_json::from_slice(&fs::read(&fixture.plan).unwrap()).unwrap();
+        plan["tap_recipe"]["resources"] = serde_json::Value::Array(
+            (0..MAX_TAP_RECIPE_RESOURCES)
+                .map(|index| {
+                    serde_json::json!({
+                        "name": format!("resource-{index:02}"),
+                        "source_sha256": "e".repeat(64),
+                        "source_url": format!(
+                            "https://example.test/{index}/{}",
+                            "a".repeat(600)
+                        )
+                    })
+                })
+                .collect(),
+        );
+        let plan_bytes = serde_json::to_vec(&plan).unwrap();
+        assert!(plan_bytes.len() > 16_384);
+        assert!(plan_bytes.len() <= MAX_BRIDGE_PLAN_BYTES);
+        fs::write(&fixture.plan, plan_bytes).unwrap();
+
+        let attestation = validate(
+            fixture.root(),
+            Some(fixture.root()),
+            TargetArch::Wasm32,
+            &fixture.plan,
+        )
+        .unwrap();
+
+        assert_eq!(
+            attestation.tap_recipe.unwrap().resources.len(),
+            MAX_TAP_RECIPE_RESOURCES
+        );
     }
 
     #[test]
@@ -2045,7 +2292,7 @@ index_url = "https://example.test/index.toml"
             fixture
                 .validate(TargetArch::Wasm32)
                 .unwrap_err()
-                .contains("1 to 16384 bytes")
+                .contains("1 to 65536 bytes")
         );
 
         fs::write(&fixture.plan, [0xff]).unwrap();
