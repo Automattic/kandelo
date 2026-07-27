@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FORCE_REBUILD="$REPO_ROOT/.github/workflows/force-rebuild.yml"
 EXACT_REBUILD_ACTION="$REPO_ROOT/.github/actions/exact-main-package-rebuild/action.yml"
+DEV_SHELL="$REPO_ROOT/scripts/dev-shell.sh"
 INDEX_UPDATE="$REPO_ROOT/scripts/index-update.sh"
 INDEX_STATE="$REPO_ROOT/scripts/release-index-state.sh"
 ARCHIVE_ACTION="$REPO_ROOT/.github/actions/package-archive-build/action.yml"
@@ -101,6 +102,74 @@ do
   grep -Fq -- "$publication_guard" <<<"$publication_recheck_block" ||
     fail "exact-main rebuild lacks publication recheck: $publication_guard"
 done
+
+# WHY: recipe identity is run-scoped publication authority, not ambient
+# developer state. Keep the dev shell clean and require this one action to
+# make the complete handoff visible at its command boundary.
+grep -Fq 'bash scripts/dev-shell.sh env \' <<<"$publication_recheck_block" ||
+  fail "publication admission does not cross the clean dev-shell boundary explicitly"
+for admission_variable in ABI PACKAGE ARCH CACHE_KEY_SHA VERSION REVISION; do
+  grep -Fq "$admission_variable=\"\$$admission_variable\" \\" \
+    <<<"$publication_recheck_block" ||
+    fail "publication admission does not explicitly forward $admission_variable"
+  if grep -Eq -- "--keep[[:space:]]+$admission_variable([[:space:]\\\\]|$)" \
+      "$DEV_SHELL"; then
+    fail "$admission_variable must not become ambient dev-shell state"
+  fi
+done
+if grep -Eq '^[[:space:]]*export[[:space:]].*(ABI|PACKAGE|ARCH|CACHE_KEY_SHA|VERSION|REVISION)' \
+    <<<"$publication_recheck_block"; then
+  fail "publication admission still relies on exported ambient recipe identity"
+fi
+
+nix_bin="$(command -v nix || true)"
+if [ -z "$nix_bin" ]; then
+  for candidate in /nix/var/nix/profiles/default/bin/nix "$HOME/.nix-profile/bin/nix"; do
+    if [ -x "$candidate" ]; then
+      nix_bin="$candidate"
+      break
+    fi
+  done
+fi
+[ -n "$nix_bin" ] ||
+  fail "cannot exercise the exact-main dev-shell boundary without Nix"
+
+ABI=ambient-abi \
+PACKAGE=ambient-package \
+ARCH=ambient-arch \
+CACHE_KEY_SHA=ambient-cache-key \
+VERSION=ambient-version \
+REVISION=999 \
+PATH="$(dirname "$nix_bin"):$PATH" \
+  bash "$DEV_SHELL" bash -c '
+    set -euo pipefail
+    for name in ABI PACKAGE ARCH CACHE_KEY_SHA VERSION REVISION; do
+      [ -z "${!name+x}" ] || {
+        echo "$name crossed the dev-shell boundary as ambient state" >&2
+        exit 1
+      }
+    done
+  ' ||
+  fail "dev shell did not discard ambient publication admission state"
+
+PATH="$(dirname "$nix_bin"):$PATH" bash "$DEV_SHELL" env \
+  ABI=42 \
+  PACKAGE=fixture-package \
+  ARCH=wasm32 \
+  CACHE_KEY_SHA=fixture-cache-key \
+  VERSION=1.2.3 \
+  REVISION=7 \
+  bash -c '
+    set -euo pipefail
+    [ "$ABI" = 42 ]
+    [ "$PACKAGE" = fixture-package ]
+    [ "$ARCH" = wasm32 ]
+    [ "$CACHE_KEY_SHA" = fixture-cache-key ]
+    [ "$VERSION" = 1.2.3 ]
+    [ "$REVISION" = 7 ]
+  ' ||
+  fail "explicit publication admission state did not cross the dev-shell boundary intact"
+
 grep -Fq "if: failure() && steps.provenance.outcome == 'success' && steps.publication.outputs.admitted == 'true' && steps.build.outcome == 'failure'" \
   "$EXACT_REBUILD_ACTION" ||
   fail "non-build or unadmitted failure can still become a failed canonical index entry"
