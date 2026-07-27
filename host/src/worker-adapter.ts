@@ -332,9 +332,12 @@ class NodeWorkerHandle implements WorkerHandle {
 
   postMessage(message: unknown, transfer?: Transferable[]): void {
     if (transfer) {
+      // WHY: WorkerHandle exposes the browser transfer vocabulary so shared
+      // callers use one host-neutral contract. Narrow it only at the Node
+      // adapter boundary, where worker_threads validates the actual values.
       this.worker.postMessage(
         message,
-        transfer as import("node:worker_threads").TransferListItem[],
+        transfer as import("node:worker_threads").Transferable[],
       );
     } else {
       this.worker.postMessage(message);
