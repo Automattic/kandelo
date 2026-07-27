@@ -953,6 +953,7 @@ jobs:
         run: |
           set -euo pipefail
           build_user="kandelo-homebrew-build"
+          recipe_user="kandelo-homebrew-recipe"
           build_home="/home/$build_user"
           sudo_bin="/usr/bin/sudo"
           systemd_run_bin="/usr/bin/systemd-run"
@@ -1013,17 +1014,36 @@ jobs:
           "$systemd_run_bin" --help | grep -F -- '--expand-environment=' >/dev/null || {
             echo "::error::runner systemd cannot preserve exact Brew arguments"; exit 2;
           }
-          if id "$build_user" >/dev/null 2>&1; then
-            echo "::error::reserved Formula build user already exists"; exit 2
-          fi
+          for reserved_user in "$build_user" "$recipe_user"; do
+            if id "$reserved_user" >/dev/null 2>&1; then
+              echo "::error::reserved Homebrew identity already exists: $reserved_user"; exit 2
+            fi
+          done
           "$sudo_bin" -n -- "$useradd_bin" --system --user-group --create-home \
             --home-dir "$build_home" --shell /usr/sbin/nologin "$build_user"
+          if ! "$sudo_bin" -n -- "$useradd_bin" --system --user-group --no-create-home \
+            --home-dir /nonexistent --shell /usr/sbin/nologin "$recipe_user"; then
+            # WHY: the downstream retirement step cannot run until both
+            # identities exist. Roll back the first half of this transaction
+            # here so a failed recipe-user creation cannot leak a build user.
+            "$sudo_bin" -n -- "$userdel_bin" -r "$build_user" || {
+              echo "::error::could not roll back partial Homebrew identity creation"
+            }
+            exit 1
+          fi
           echo "created=true" >> "$GITHUB_OUTPUT"
           [ "$(id -u "$build_user")" != "$(id -u)" ] || {
             echo "::error::Formula build identity is not isolated"; exit 2;
           }
+          [ "$(id -u "$recipe_user")" != "$(id -u)" ] && \
+            [ "$(id -u "$recipe_user")" != "$(id -u "$build_user")" ] || {
+            echo "::error::tap recipe identity is not isolated"; exit 2;
+          }
           if "$sudo_bin" -n -u "$build_user" -- "$sudo_bin" -n true >/dev/null 2>&1; then
             echo "::error::Formula build identity unexpectedly has sudo access"; exit 2
+          fi
+          if "$sudo_bin" -n -u "$recipe_user" -- "$sudo_bin" -n true >/dev/null 2>&1; then
+            echo "::error::tap recipe identity unexpectedly has sudo access"; exit 2
           fi
           shared_temp="$(mktemp -d /tmp/kandelo-homebrew.XXXXXX)"
           "$sudo_bin" chown root:root "$shared_temp"
@@ -1031,6 +1051,7 @@ jobs:
           mkdir "$shared_temp/cache" "$shared_temp/tmp"
           {
             echo "KANDELO_HOMEBREW_BUILD_USER=$build_user"
+            echo "KANDELO_HOMEBREW_RECIPE_USER=$recipe_user"
             echo "KANDELO_HOMEBREW_SHARED_TEMP=$shared_temp"
             echo "KANDELO_HOMEBREW_SUDO_BIN=$sudo_bin"
             echo "KANDELO_HOMEBREW_SYSTEMD_RUN_BIN=$systemd_run_bin"
@@ -1139,7 +1160,9 @@ jobs:
         run: |
           set -euo pipefail
           build_user="kandelo-homebrew-build"
+          recipe_user="kandelo-homebrew-recipe"
           build_uid="$(id -u "$build_user")"
+          recipe_uid="$(id -u "$recipe_user")"
           sudo_bin="/usr/bin/sudo"
           systemctl_bin="/usr/bin/systemctl"
           pgrep_bin="/usr/bin/pgrep"
@@ -1148,19 +1171,24 @@ jobs:
           slice="kandelo-homebrew-build-${build_uid}.slice"
 
           uid_has_processes() {
-            local status
-            if "$sudo_bin" -n -- "$pgrep_bin" -u "$build_uid" >/dev/null 2>&1; then
-              return 0
-            else
-              status="$?"
-            fi
-            [ "$status" -eq 1 ] && return 1
-            echo "::error::could not inspect Formula build identity processes"
-            return 2
+            local status uid
+            for uid in "$build_uid" "$recipe_uid"; do
+              if "$sudo_bin" -n -- "$pgrep_bin" -u "$uid" >/dev/null 2>&1; then
+                return 0
+              else
+                status="$?"
+              fi
+              [ "$status" -eq 1 ] || {
+                echo "::error::could not inspect isolated Homebrew processes"
+                return 2
+              }
+            done
+            return 1
           }
 
           "$sudo_bin" -n -- "$systemctl_bin" stop "$slice" >/dev/null 2>&1 || true
           "$sudo_bin" -n -- "$pkill_bin" -TERM -u "$build_uid" >/dev/null 2>&1 || true
+          "$sudo_bin" -n -- "$pkill_bin" -TERM -u "$recipe_uid" >/dev/null 2>&1 || true
           for ((attempt = 0; attempt < 50; attempt++)); do
             if uid_has_processes; then
               sleep 0.1
@@ -1173,23 +1201,27 @@ jobs:
           done
           if uid_has_processes; then
             "$sudo_bin" -n -- "$pkill_bin" -KILL -u "$build_uid" >/dev/null 2>&1 || true
+            "$sudo_bin" -n -- "$pkill_bin" -KILL -u "$recipe_uid" >/dev/null 2>&1 || true
             sleep 1
           else
             status="$?"
             [ "$status" -eq 1 ] || exit "$status"
           fi
           if uid_has_processes; then
-            echo "::error::Formula build identity still owns live processes"
+            echo "::error::isolated Homebrew identities still own live processes"
             exit 1
           else
             status="$?"
             [ "$status" -eq 1 ] || exit "$status"
           fi
+          "$sudo_bin" -n -- "$userdel_bin" "$recipe_user"
           "$sudo_bin" -n -- "$userdel_bin" -r "$build_user"
-          if id "$build_user" >/dev/null 2>&1; then
-            echo "::error::Formula build identity still exists after retirement"
-            exit 1
-          fi
+          for retired_user in "$recipe_user" "$build_user"; do
+            if id "$retired_user" >/dev/null 2>&1; then
+              echo "::error::Homebrew identity still exists after retirement: $retired_user"
+              exit 1
+            fi
+          done
 
       - name: Checkout exact post-build Kandelo validator source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -2587,6 +2619,7 @@ jobs:
         run: |
           set -euo pipefail
           build_user="kandelo-homebrew-verify"
+          recipe_user="kandelo-homebrew-recipe"
           build_home="/home/$build_user"
           sudo_bin="/usr/bin/sudo"
           systemd_run_bin="/usr/bin/systemd-run"
@@ -2596,6 +2629,7 @@ jobs:
           pgrep_bin="/usr/bin/pgrep"
           pkill_bin="/usr/bin/pkill"
           useradd_bin="/usr/sbin/useradd"
+          userdel_bin="/usr/sbin/userdel"
           sudo_mode="$(stat -c '%a' "$sudo_bin" 2>/dev/null || true)"
           if [ ! -f "$sudo_bin" ] || [ -L "$sudo_bin" ] || [ ! -x "$sudo_bin" ] || \
              [ "$(stat -c '%u' "$sudo_bin" 2>/dev/null || true)" != "0" ] || \
@@ -2604,7 +2638,7 @@ jobs:
             echo "::error::runner sudo boundary is unavailable"; exit 2
           fi
           for protected_bin in "$systemd_run_bin" "$systemctl_bin" "$getent_bin" "$findmnt_bin" "$pgrep_bin" \
-            "$useradd_bin"; do
+            "$useradd_bin" "$userdel_bin"; do
             protected_mode="$(stat -c '%a' "$protected_bin" 2>/dev/null || true)"
             if [ ! -f "$protected_bin" ] || [ -L "$protected_bin" ] || \
                [ ! -x "$protected_bin" ] || \
@@ -2646,17 +2680,36 @@ jobs:
           "$systemd_run_bin" --help | grep -F -- '--expand-environment=' >/dev/null || {
             echo "::error::runner systemd cannot preserve exact Brew arguments"; exit 2;
           }
-          if id "$build_user" >/dev/null 2>&1; then
-            echo "::error::reserved bottle verifier user already exists"; exit 2
-          fi
+          for reserved_user in "$build_user" "$recipe_user"; do
+            if id "$reserved_user" >/dev/null 2>&1; then
+              echo "::error::reserved Homebrew verifier identity already exists: $reserved_user"; exit 2
+            fi
+          done
           "$sudo_bin" -n -- "$useradd_bin" --system --user-group --create-home \
             --home-dir "$build_home" --shell /usr/sbin/nologin "$build_user"
+          if ! "$sudo_bin" -n -- "$useradd_bin" --system --user-group --no-create-home \
+            --home-dir /nonexistent --shell /usr/sbin/nologin "$recipe_user"; then
+            # WHY: the downstream retirement step cannot run until both
+            # identities exist. Roll back the first half of this transaction
+            # here so a failed recipe-user creation cannot leak a verifier.
+            "$sudo_bin" -n -- "$userdel_bin" -r "$build_user" || {
+              echo "::error::could not roll back partial verifier identity creation"
+            }
+            exit 1
+          fi
           echo "created=true" >> "$GITHUB_OUTPUT"
           [ "$(id -u "$build_user")" != "$(id -u)" ] || {
             echo "::error::bottle verifier identity is not isolated"; exit 2;
           }
+          [ "$(id -u "$recipe_user")" != "$(id -u)" ] && \
+            [ "$(id -u "$recipe_user")" != "$(id -u "$build_user")" ] || {
+            echo "::error::tap recipe identity is not isolated"; exit 2;
+          }
           if "$sudo_bin" -n -u "$build_user" -- "$sudo_bin" -n true >/dev/null 2>&1; then
             echo "::error::bottle verifier identity unexpectedly has sudo access"; exit 2
+          fi
+          if "$sudo_bin" -n -u "$recipe_user" -- "$sudo_bin" -n true >/dev/null 2>&1; then
+            echo "::error::tap recipe identity unexpectedly has sudo access"; exit 2
           fi
           shared_temp="$(mktemp -d /tmp/kandelo-homebrew-verify.XXXXXX)"
           "$sudo_bin" chown root:root "$shared_temp"
@@ -2664,6 +2717,7 @@ jobs:
           mkdir "$shared_temp/cache" "$shared_temp/tmp"
           {
             echo "KANDELO_HOMEBREW_BUILD_USER=$build_user"
+            echo "KANDELO_HOMEBREW_RECIPE_USER=$recipe_user"
             echo "KANDELO_HOMEBREW_SHARED_TEMP=$shared_temp"
             echo "KANDELO_HOMEBREW_SUDO_BIN=$sudo_bin"
             echo "KANDELO_HOMEBREW_SYSTEMD_RUN_BIN=$systemd_run_bin"
@@ -2776,7 +2830,9 @@ jobs:
         run: |
           set -euo pipefail
           build_user="kandelo-homebrew-verify"
+          recipe_user="kandelo-homebrew-recipe"
           build_uid="$(id -u "$build_user")"
+          recipe_uid="$(id -u "$recipe_user")"
           sudo_bin="/usr/bin/sudo"
           systemctl_bin="/usr/bin/systemctl"
           pgrep_bin="/usr/bin/pgrep"
@@ -2784,18 +2840,23 @@ jobs:
           userdel_bin="/usr/sbin/userdel"
           slice="kandelo-homebrew-build-${build_uid}.slice"
           uid_has_processes() {
-            local status
-            if "$sudo_bin" -n -- "$pgrep_bin" -u "$build_uid" >/dev/null 2>&1; then
-              return 0
-            else
-              status="$?"
-            fi
-            [ "$status" -eq 1 ] && return 1
-            echo "::error::could not inspect bottle verifier processes"
-            return 2
+            local status uid
+            for uid in "$build_uid" "$recipe_uid"; do
+              if "$sudo_bin" -n -- "$pgrep_bin" -u "$uid" >/dev/null 2>&1; then
+                return 0
+              else
+                status="$?"
+              fi
+              [ "$status" -eq 1 ] || {
+                echo "::error::could not inspect isolated verifier processes"
+                return 2
+              }
+            done
+            return 1
           }
           "$sudo_bin" -n -- "$systemctl_bin" stop "$slice" >/dev/null 2>&1 || true
           "$sudo_bin" -n -- "$pkill_bin" -TERM -u "$build_uid" >/dev/null 2>&1 || true
+          "$sudo_bin" -n -- "$pkill_bin" -TERM -u "$recipe_uid" >/dev/null 2>&1 || true
           for ((attempt = 0; attempt < 50; attempt++)); do
             if uid_has_processes; then sleep 0.1; continue; else status="$?"; fi
             [ "$status" -eq 1 ] && break
@@ -2803,19 +2864,23 @@ jobs:
           done
           if uid_has_processes; then
             "$sudo_bin" -n -- "$pkill_bin" -KILL -u "$build_uid" >/dev/null 2>&1 || true
+            "$sudo_bin" -n -- "$pkill_bin" -KILL -u "$recipe_uid" >/dev/null 2>&1 || true
             sleep 1
           else
             status="$?"; [ "$status" -eq 1 ] || exit "$status"
           fi
           if uid_has_processes; then
-            echo "::error::bottle verifier identity still owns live processes"; exit 1
+            echo "::error::isolated verifier identities still own live processes"; exit 1
           else
             status="$?"; [ "$status" -eq 1 ] || exit "$status"
           fi
+          "$sudo_bin" -n -- "$userdel_bin" "$recipe_user"
           "$sudo_bin" -n -- "$userdel_bin" -r "$build_user"
-          if id "$build_user" >/dev/null 2>&1; then
-            echo "::error::bottle verifier identity still exists after retirement"; exit 1
-          fi
+          for retired_user in "$recipe_user" "$build_user"; do
+            if id "$retired_user" >/dev/null 2>&1; then
+              echo "::error::verifier identity still exists after retirement: $retired_user"; exit 1
+            fi
+          done
 
       - name: Checkout exact post-verification Kandelo generator source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
