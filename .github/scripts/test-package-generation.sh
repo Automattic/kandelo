@@ -540,11 +540,33 @@ if [[ "$tag" == pr-*-staging ]]; then
   exit 1
 fi
 promotion_workflow="$SCRIPT_DIR/../workflows/promote-package-generation.yml"
+validation_method_input="$(awk '
+  /^      validation-method:/ {inside=1}
+  /^      expected-abi:/ {inside=0}
+  inside
+' "$promotion_workflow")"
+validation_method_options="$(awk '$1 == "-" {print $2}' \
+  <<<"$validation_method_input")"
+if [ "$validation_method_options" != identical-git-tree-v1 ]; then
+  echo "promotion workflow exposes a retired compatibility method" >&2
+  exit 1
+fi
 prepare_job="$(awk '
   /^  prepare:/ {inside=1}
   /^  publish:/ {inside=0}
   inside
 ' "$promotion_workflow")"
+validation_method_guard="$(awk '
+  /- name: Reject unsupported generation validation methods/ {inside=1}
+  /- name: Checkout immutable package producer as inert data/ {inside=0}
+  inside
+' <<<"$prepare_job")"
+grep -Fq 'VALIDATION_METHOD: ${{ inputs.validation-method }}' \
+  <<<"$validation_method_guard"
+grep -Fq 'if [ "$VALIDATION_METHOD" != identical-git-tree-v1 ]; then' \
+  <<<"$validation_method_guard"
+grep -Fq 'unsupported generation validation method' \
+  <<<"$validation_method_guard"
 publish_job="$(awk '
   /^  publish:/ {inside=1}
   inside
@@ -803,10 +825,16 @@ fi
 cache_producer_sha="748c2609954d2809bbcbbcb642fa7d257fc0dbc6"
 cache_producer_tree="$(printf '6%.0s' {1..40})"
 cache_main_tree="$(printf '7%.0s' {1..40})"
-main_build_deps_blob="$(git -C "$SCRIPT_DIR/../.." \
+# Historical fixtures keep the retired reader and its exact reviewed transition
+# covered without making current source eligible for a new bridge promotion.
+historical_main_build_deps_blob="d8a095c60ed3bb90831afc11ec586c21abd886ee"
+current_main_build_deps_blob="$(git -C "$SCRIPT_DIR/../.." \
   hash-object tools/xtask/src/build_deps.rs)"
-main_staging_reuse_blob="$(git -C "$SCRIPT_DIR/../.." \
-  hash-object tools/xtask/src/staging_reuse.rs)"
+if [ "$current_main_build_deps_blob" = "$historical_main_build_deps_blob" ]; then
+  echo "retired cache-projection validator transition became current again" >&2
+  exit 1
+fi
+main_staging_reuse_blob="0edc5fe7bc1f6b919816050cdc82a5e549da054b"
 mkdir "$TMP_ROOT/cache-evidence"
 jq -nS \
   --arg a "$hex_a" \
@@ -902,7 +930,7 @@ jq -nS \
   }' >"$TMP_ROOT/cache-evidence/producer-tree.json"
 jq -nS \
   --arg tree "$cache_main_tree" \
-  --arg build_deps "$main_build_deps_blob" \
+  --arg build_deps "$historical_main_build_deps_blob" \
   --arg staging_reuse "$main_staging_reuse_blob" '{
     sha:$tree,truncated:false,tree:[
       {
@@ -990,6 +1018,19 @@ cache_unreviewed[26]="$TMP_ROOT/cache-evidence/unreviewed-validator-tree.json"
 if "${cache_unreviewed[@]}" \
     --output "$TMP_ROOT/cache-evidence/rejected-validator.json"; then
   echo "cache projection accepted unreviewed validator bytes" >&2
+  exit 1
+fi
+jq --arg current "$current_main_build_deps_blob" '
+    (.tree[] | select(
+      .path == "tools/xtask/src/build_deps.rs"
+    ).sha) = $current
+  ' "$TMP_ROOT/cache-evidence/main-tree.json" \
+  >"$TMP_ROOT/cache-evidence/current-validator-tree.json"
+cache_current_validator=("${cache_evidence_command[@]}")
+cache_current_validator[26]="$TMP_ROOT/cache-evidence/current-validator-tree.json"
+if "${cache_current_validator[@]}" \
+    --output "$TMP_ROOT/cache-evidence/rejected-current-validator.json"; then
+  echo "retired cache projection accepted the current validator bytes" >&2
   exit 1
 fi
 

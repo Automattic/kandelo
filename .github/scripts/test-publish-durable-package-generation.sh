@@ -1534,10 +1534,11 @@ jq -nS \
       uses_fork_instrument:false
     }]
   }' >"$TMP_ROOT/cache-components.json"
-main_build_deps_blob="$(git -C "$SCRIPT_DIR/../.." \
-  hash-object tools/xtask/src/build_deps.rs)"
-main_staging_reuse_blob="$(git -C "$SCRIPT_DIR/../.." \
-  hash-object tools/xtask/src/staging_reuse.rs)"
+# Keep coverage for reading and validating the historical one-shot evidence.
+# New publication is disabled in the workflow and the production pin remains
+# on these reviewed bytes rather than following current source.
+main_build_deps_blob="d8a095c60ed3bb90831afc11ec586c21abd886ee"
+main_staging_reuse_blob="0edc5fe7bc1f6b919816050cdc82a5e549da054b"
 jq -nS --arg tree "$preserved_tree_sha" '{
   sha:$tree,truncated:false,tree:[
     {

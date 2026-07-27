@@ -1055,13 +1055,12 @@ ordinary Kandelo merge process first. The normal path then rebuilds final
 package archives and canonical bottles from exact resulting `main`. When an
 already-built immutable producer `S` has the complete Git tree of current main
 `M`, a v2 durable generation may preserve those archive bytes and their
-truthful `S` provenance. The one-shot #1097 migration may also use the bounded
-cache-projection method after exact same-run closure evidence is recorded. The
-main-owned validator binds both trees, ABI snapshot, producer release,
-projection/ledger and selected build-input component evidence, and assets
-before bottle production. That bridge is limited to the byte-identical
-schema-1 `rootfs`/`wasm32` selection; the broader browser selection changed
-package cache identities and requires a generation actually built for `M`.
+truthful `S` provenance under complete-tree validation. The retired #1097
+cache-projection experiment also recorded both trees, the ABI snapshot,
+producer release, projection/ledger, selected build-input component evidence,
+and assets. Later declared rootfs inputs invalidated even its narrow selection,
+so the production workflow no longer exposes that method. Build a fresh
+generation from exact `M`.
 Merely making `S` reachable, preserving its SHA with a special merge, or
 joining it to history is still insufficient.
 
@@ -1070,12 +1069,13 @@ live main SHA. That workflow source-builds each selected target and embeds
 `[build].repo_url = "https://github.com/Automattic/kandelo"` plus
 `[build].commit = "<exact-main-sha>"` in its archive manifest. The durable
 generation revalidates both fields for every selected archive. Under v2, the
-same validation instead requires the archive commit to equal immutable
-producer `S` and the content-bound receipt to prove either complete
-`S^{tree} == M^{tree}` or the hard-bound #1097 cache-projection contract.
+same validation requires the archive commit to equal immutable producer `S`
+and the content-bound receipt to prove complete `S^{tree} == M^{tree}`.
+Historical readers retain support for the non-admitted #1097 evidence, but it
+cannot produce a supported bottle input.
 An archive that entered the mutable resolver ledger through ordinary
-merge-candidate activation without either proof remains useful to general
-consumers but is not a bottle input.
+merge-candidate activation without that complete-tree proof remains useful to
+general consumers but is not a bottle input.
 The rebuild expands selected roots to their transitive buildable dependencies
 and executes explicit topological levels. Members of a level remain parallel;
 each later member consumes only the prior levels' same-run producer

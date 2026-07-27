@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       source-tag:
-        description: 'Exact published source tag; cache-projection admission requires the preservation dispatch result'
+        description: 'Exact published source tag containing the producer archives'
         required: true
         default: binaries-abi-v42
         type: string
@@ -20,13 +20,12 @@ on:
         required: true
         type: string
       validation-method:
-        description: 'How producer source is proven compatible with validated current main'
+        description: 'How producer source is proven identical to validated current main'
         required: true
         default: identical-git-tree-v1
         type: choice
         options:
           - identical-git-tree-v1
-          - identical-package-cache-projection-v1
       expected-abi:
         description: 'Kernel ABI carried by the package generation'
         required: true
@@ -76,6 +75,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           path: authority
+
+      - name: Reject unsupported generation validation methods
+        env:
+          VALIDATION_METHOD: ${{ inputs.validation-method }}
+        run: |
+          set -euo pipefail
+          # workflow_dispatch choices are a UI affordance, not an API
+          # allowlist. Enforce the production contract before reading producer
+          # data so a hand-crafted dispatch cannot revive a retired method.
+          if [ "$VALIDATION_METHOD" != identical-git-tree-v1 ]; then
+            echo "unsupported generation validation method: $VALIDATION_METHOD" >&2
+            exit 2
+          fi
 
       - name: Checkout immutable package producer as inert data
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

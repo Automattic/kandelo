@@ -84,9 +84,9 @@ The versioned `kandelo-package-generation-v2` compatibility path can instead
 preserve archives from one immutable producer commit `S` when trusted current
 main `M` independently binds the source release's direct tag anchor `R` and
 requires every selected archive to identify that same `S`.
-`identical-git-tree-v1` proves complete `S^{tree} == M^{tree}`. The narrower
-`identical-package-cache-projection-v1` migration bridge allows distinct trees
-only when current-main code derives byte-identical selected projections,
+`identical-git-tree-v1` proves complete `S^{tree} == M^{tree}`. The retired
+`identical-package-cache-projection-v1` migration bridge described distinct
+trees only when current-main code derived byte-identical selected projections,
 expected ledgers, and canonical selected build-input component closures from
 both trees. The component closure explicitly binds manifests, parsed recipes,
 declared and Git inputs, direct dependency cache identities, global toolchain
@@ -97,15 +97,17 @@ without acquiring a materializable component or archive.
 Complete, non-truncated tree IDs remain in the evidence for audit, and the two
 authority validators use exact pinned old/new blob IDs. Unrelated host/runtime
 leaves do not affect the selected package closure; any selected component
-change fails. The method is hard-bound to #1097 producer
+change fails. The historical method was hard-bound to #1097 producer
 `748c2609954d2809bbcbbcb642fa7d257fc0dbc6` and the
-`pr-1097-staging` source capture. Admission does not consume that mutable tag
-directly. Current main first publishes an evidence-only, content-addressed
-`preserved-package-generation-...` release, then admission uses that exact
-preservation tag. The audited H-to-M equality holds for schema-1
+`pr-1097-staging` source capture. The preservation workflow may still freeze
+that historical source as content-addressed `admission = "none"` audit
+evidence. No current path promotes or materializes that preservation tag. The
+original H-to-M equality held for schema-1
 `rootfs`/`wasm32` only; `lamp`, `nginx-php-vfs`, and `wordpress` changed cache
-identities in the broader browser selection, so this bridge must not admit
-that root set.
+identities in the broader browser selection. Later declared rootfs input
+changes invalidated the narrow selection too. The promotion workflow therefore
+no longer exposes this method; its readers and fail-closed validation remain
+only for historical evidence.
 
 That bounded method is not ancestry, payload byte equivalence, or a claim that
 a hypothetical rebuild at `M` would be identical. The archives retain truthful
@@ -150,12 +152,12 @@ Their tags have this form:
 package-generation-<selection>-<arch>-abi-v<N>-sha256-<full-identity-sha256>
 ```
 
-The #1097 cache-projection bridge has a separate preservation step before
-promotion. `preserve-pr-package-generation.yml` reads the mutable PR release
-and its exact workflow run without release-write permission. Current-main code
-derives the selected projection and expected ledger from the producer checkout
-as inert data, validates every archive twice—once from the PR release and once
-from the same workflow run—and publishes this evidence-only shape:
+The retired #1097 cache-projection design had a separate preservation step.
+`preserve-pr-package-generation.yml` may read a temporary release and its exact
+workflow run without release-write permission. Current-main code derives the
+selected projection and expected ledger from the producer checkout as inert
+data, validates every archive twice—once from the release and once from the
+same workflow run—and publishes this evidence-only shape:
 
 ```
 preserved-package-generation-<selection>-<arch>-abi-v<N>-source-<S>-sha256-<full-identity-sha256>
@@ -172,13 +174,8 @@ publishing the release. Once public, an exact retry only verifies the immutable
 release and does not require the temporary PR source to remain available.
 
 Preservation is not package admission. Ordinary materializers reject a
-`preserved-package-generation-...` tag. The later promotion must receive that
-actual tag returned by the preservation dispatch, anonymously reconstruct and
-validate its complete bundle, and embed the complete preserved manifest plus
-release asset inventory in v2 producer evidence. Current authority then
-rederives the producer and current-main projection, ledger, and selected
-build-input component closure. Only the resulting
-`package-generation-...` release is consumable.
+`preserved-package-generation-...` tag, and no supported production path
+promotes one.
 
 `generation.json` independently binds the source release's direct tag anchor
 `R`, immutable archive producer `S`, freshly queried main `M`, the complete
@@ -187,9 +184,10 @@ fresh expected ledger, validated producer snapshot, minimal index, and every
 archive name, byte count, and SHA-256. Every selected archive's embedded
 `[build].repo_url` must name
 `https://github.com/Automattic/kandelo` and `[build].commit` must equal `S`.
-The validation method is either complete-tree
-`identical-git-tree-v1` or the bounded, fail-closed
-`identical-package-cache-projection-v1` migration method described above.
+New promotion uses complete-tree `identical-git-tree-v1`. Historical
+generation readers still understand the bounded, fail-closed
+`identical-package-cache-projection-v1` evidence described above, but the
+workflow does not offer that method for new publication.
 The source release tag remains a rechecked locator, not archive-provenance
 evidence; its tree may differ. The new public generation release and direct
 tag both target `M`. The full 64-character identity digest determines the
@@ -227,13 +225,13 @@ changed kind/disposition, stale cache identity, expected-ledger drift, or an
 archive-inventory difference fails closed.
 
 Root and closure counts are derived evidence, not acceptance constants. A v1
-generation consumes only its canonical release at exact main. A v2 generation
-may consume a canonical release or the narrowly preserved #1097 producer, but
-only when every selected archive names one coherent producer `S` under one of
-the content-bound versioned compatibility proofs. It recomputes everything
-using trusted current-main code at `M` and rejects mixed producer commits or a
-wrong-architecture omission even when the same package name exists for both
-architectures.
+generation consumes only its canonical release at exact main. New v2
+generations consume a canonical release under complete-tree validation.
+Historical readers may inspect the narrowly preserved #1097 producer, but it
+is non-admitted evidence and cannot become a supported generation. Validation
+recomputes everything using trusted current-main code at `M` and rejects mixed
+producer commits or a wrong-architecture omission even when the same package
+name exists for both architectures.
 
 The authority relationships are:
 
@@ -244,8 +242,8 @@ The authority relationships are:
 3. Every selected archive embeds the same immutable producer `S`; mixed or
    stale archive producers are rejected.
 4. `validated_against_main` binds `M`, `M^{tree}`, ABI version, ABI snapshot
-   digest, and the selected versioned method. Exact-tree validation requires
-   `S^{tree} == M^{tree}`; bounded cache-projection validation instead binds
+   digest, and the selected versioned method. New publication requires
+   `S^{tree} == M^{tree}`. Historical cache-projection evidence also binds
    equal projection/ledger digests, the byte-identical canonical selected
    build-input closure, and exact pinned validator transitions.
 5. A later consumer may have another SHA only when current authority freshly
@@ -416,34 +414,21 @@ SHA to remain main. The publisher supports exact resumable drafts and performs
 authenticated plus anonymous readback. The contract does not call the GitHub
 release immutable; it detects later mutation on validation.
 
-Dispatch only reviewed authority from the default branch:
-
-```bash
-gh workflow run preserve-pr-package-generation.yml \
-  --repo Automattic/kandelo \
-  --ref main \
-  -f source-tag=pr-1097-staging \
-  -f source-run-id=30161296461 \
-  -f package-source-sha=748c2609954d2809bbcbbcb642fa7d257fc0dbc6 \
-  -f expected-abi=42 \
-  -f root-package=rootfs \
-  -f arch=wasm32
-```
-
-After the producer lands on `main`, a later admission step must independently
-prove compatibility and publish or activate a normal durable generation. The
-preserved snapshot never upgrades itself into one.
+`preserve-pr-package-generation.yml` remains an audit-evidence writer, not an
+admission workflow. A preserved snapshot never upgrades itself into a
+generation. Rebuild the selected closure from exact current main before
+promotion.
 
 #### Promotion and recovery
 
 Dispatch only from exact current `main` commit `M` after the selected source
 release is complete. `validated-main-sha` must equal both workflow authority
 and freshly queried `refs/heads/main`. `producer-sha` names the one `S`
-embedded by every selected archive. Select `identical-git-tree-v1` when the
-complete trees match; use `identical-package-cache-projection-v1` only for its
-audited bounded migration case. `source-tag` names independently rechecked
-release anchor `R`; the normal exact-main path uses the matching canonical ABI
-release with `S == M`:
+embedded by every selected archive. Select `identical-git-tree-v1`; the
+complete trees must match. The retired cache-projection method is not a
+dispatch option. `source-tag` names independently rechecked release anchor
+`R`; the normal exact-main path uses the matching canonical ABI release with
+`S == M`:
 
 ```bash
 main_sha="$(gh api repos/Automattic/kandelo/git/ref/heads/main --jq .object.sha)"
@@ -462,32 +447,10 @@ for arch in wasm32 wasm64; do
 done
 ```
 
-For the one-shot #1097 bridge, run the preservation command above first and
-copy the exact `preserved-package-generation-...` tag from that run's job
-summary. After that release is green:
-
-```bash
-main_sha="$(gh api repos/Automattic/kandelo/git/ref/heads/main --jq .object.sha)"
-producer_sha=748c2609954d2809bbcbbcb642fa7d257fc0dbc6
-preserved_tag=<exact-tag-from-preservation-summary>
-gh workflow run promote-package-generation.yml \
-  --repo Automattic/kandelo \
-  --ref main \
-  -f source-tag="$preserved_tag" \
-  -f producer-sha="$producer_sha" \
-  -f validated-main-sha="$main_sha" \
-  -f validation-method=identical-package-cache-projection-v1 \
-  -f expected-abi=42 \
-  -f selection-kind=root-package \
-  -f root-package=rootfs \
-  -f arch=wasm32
-```
-
-Use the complete preservation tag, never `pr-1097-staging`, for admission.
-The cache-projection method cannot admit another producer, source capture,
-selection, architecture, or guessed preservation tag. Promotion never deletes
-that preservation source or treats successful admission as staging-cleanup
-authority.
+Do not dispatch the one-shot #1097 bridge. Its preserved release remains
+non-admitted audit material, and ordinary consumers continue to reject it.
+Build the root closure from exact current main, publish it under the canonical
+ABI release, and promote it with `identical-git-tree-v1`.
 
 Use `selection-kind=root-package` for one named root closure. The
 `root-package=rootfs` default remains present for a `browser-inputs`

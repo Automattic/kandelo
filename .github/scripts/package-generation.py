@@ -96,10 +96,10 @@ MAX_GITHUB_METADATA_BYTES = 32 * 1024 * 1024
 # exact H→M transition prevents a later validator rewrite from reinterpreting
 # the one-shot #1097 evidence.
 #
-# These validated-main blob IDs are provisional until this replay's exact tree
-# is merged and read back from `main`. They already name the candidate bytes,
-# so the final check should confirm them rather than substitute a commit-based
-# approximation; any subsequent edit to either file requires new pins.
+# Keep the reviewed historical transition immutable even after retiring its
+# production dispatch path. In particular, do not rotate these pins to current
+# source: a mismatch is the deliberate second fail-closed boundary that keeps
+# the superseded #1097 bridge from becoming active again by accident.
 PACKAGE_CACHE_PROJECTION_PINNED_TRANSITIONS = {
     "tools/xtask/src/build_deps.rs": {
         "producer": "9c8930dd137fcb836756657c43288e76e55fce36",

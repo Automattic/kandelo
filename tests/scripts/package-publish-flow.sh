@@ -5,7 +5,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 bash "$REPO_ROOT/.github/actions/detect-change-scope/test-ci-scope-paths.sh"
-# Keep the package-publish gate directly wired to the bounded migration lane;
+# Keep the package-publish gate directly wired to rootfs/durable publication;
 # the larger publisher suite owns its complete positive and negative matrix.
 bash "$REPO_ROOT/scripts/homebrew-rootfs-publication-selection.sh" \
   --formulae dinit \
