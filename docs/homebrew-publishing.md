@@ -339,6 +339,9 @@ root-owned launcher under the selected Homebrew prefix loads that worktree
 while preserving the selected Kandelo prefix and Cellar. Native host tools use
 a separate ephemeral Homebrew prefix, as described in
 [Native And Target Dependency Realms](#native-and-target-dependency-realms).
+The prefix `bin` directory is root-owned and sticky during isolated execution:
+the Formula identity may add ordinary keg links there, but it cannot replace
+the root-owned launcher whose invocation path selects the target prefix.
 Formulae execute as a dedicated unprivileged OS identity in one transient
 systemd service per Brew invocation.
 `KillMode=control-group` binds double-forked and session-detached descendants to
@@ -516,6 +519,16 @@ omits the checker environment and makes the old `packages/registry`,
 `scripts/install-local-binary.sh` paths inaccessible. A copied registry script
 that still calls `build-deps` or `install_local_binary` therefore fails rather
 than silently falling back to the old package system.
+
+Those legacy paths are intentionally absent from a schema-3 platform
+projection. Their `InaccessiblePaths=` entries therefore use systemd's
+optional `-` prefix: an absent path remains an accepted closed-root state, and
+a path that unexpectedly appears remains masked. The protected startup audit
+still verifies that none of those paths grants recipe authority. Unlike normal
+Formula commands, the audit retains a failed transient unit just long enough
+to print a bounded `systemctl status` diagnostic before resetting it; namespace
+setup errors are therefore observable without permitting the command to
+continue or leaving failed service state behind.
 
 The helper revalidates the complete recipe tree immediately before and after
 the script, rejects direct writes to the Formula staging prefix, and validates
@@ -899,6 +912,9 @@ while the verifier combines it with `--force-bottle`. Homebrew therefore uses
 the already provisioned target bottles and exact native proxy kegs instead of
 resolving both package realms into one Cellar. The verifier still runs the
 Formula's `test do` block after pouring the target bottle.
+Dependency racks and kegs are sealed read-only, while the root-owned sticky
+`Cellar` and `opt` insertion directories remain writable to the Formula group;
+sealing a dependency cannot disable installation of the selected Formula.
 
 ### Retained-receipt bottle repeatability
 

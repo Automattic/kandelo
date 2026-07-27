@@ -407,6 +407,10 @@ case "${1:-}" in
     [ "$#" -eq 2 ]
     rm -f "$prefix/$2"
     ;;
+  remove-native-version)
+    [ "$#" -eq 3 ]
+    rm -rf "$prefix/Cellar/$2/$3"
+    ;;
   create-native-relative-link)
     [ "$#" -eq 4 ]
     ln -s "$3" "$prefix/Cellar/$2/1.0/bin/$4"
@@ -781,7 +785,9 @@ recipe_verifier_source="$(
 grep -Fq 'expected_protected_xtask=%q' <<<"$xtask_audit_source" &&
   grep -Fq '[ -n "${WASM_POSIX_XTASK_BIN+x}" ]' <<<"$xtask_audit_source" &&
   grep -Fq '[ -n "${HOMEBREW_KANDELO_XTASK_BIN+x}" ]' <<<"$xtask_audit_source" &&
-  grep -Fq '[ -e "$expected_protected_xtask" ]' <<<"$xtask_audit_source" &&
+  grep -Fq 'for forbidden_xtask in "$expected_xtask" "$expected_protected_xtask"' \
+    <<<"$xtask_audit_source" &&
+  grep -Fq '[ -r "$forbidden_xtask" ]' <<<"$xtask_audit_source" &&
   grep -Fq 'tap_recipe_inaccessible_paths=("-$xtask_alias" "$protected_xtask")' \
     <<<"$isolate_source" &&
   grep -Fq 'tools/bin/wasm-fork-instrument' <<<"$projection_source" &&
@@ -2149,12 +2155,49 @@ EOF
       "0:0:555:1" ] &&
     /usr/bin/sudo -n -- /usr/bin/cmp -s -- "$isolated_xtask" "$protected_xtask" ||
     fail "isolated launcher did not stage one exact root-owned checker inode"
+  [ "${HOMEBREW_PATCHED_LAUNCHER%/*}" = "$isolated_prefix/bin" ] &&
+    [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g' \
+      "$HOMEBREW_PATCHED_LAUNCHER")" = "0:0" ] &&
+    [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a' \
+      "$isolated_prefix/bin")" = \
+      "0:$(id -g "$ISOLATION_BUILD_USER"):1775" ] ||
+    fail "isolated launcher did not protect the canonical target Brew path"
+  if /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+      /usr/bin/rm -f "$HOMEBREW_PATCHED_LAUNCHER" >/dev/null 2>&1; then
+    fail "build identity can replace the canonical target Brew launcher"
+  fi
+  [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a' \
+    "$isolated_prefix/Cellar")" = \
+    "0:$(id -g "$ISOLATION_BUILD_USER"):1775" ] &&
+    [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a' \
+      "$isolated_prefix/opt")" = \
+      "0:$(id -g "$ISOLATION_BUILD_USER"):1775" ] ||
+    fail "dependency sealing disabled the target Formula insertion roots"
   [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a:%h' \
       "$HOMEBREW_PATCHED_RECIPE_RUNNER")" = "0:0:555:1" ] &&
     /usr/bin/sudo -n -- /usr/bin/cmp -s -- \
       "$protected_platform_root/scripts/homebrew-tap-recipe-runner.py" \
       "$HOMEBREW_PATCHED_RECIPE_RUNNER" ||
     fail "isolated launcher did not stage the admitted root-owned recipe runner"
+  missing_namespace_error="$ISOLATION_ROOT/missing-namespace.err"
+  mv "$isolated_output" "$isolated_output.missing"
+  set +e
+  "$HOMEBREW_PATCHED_BREW_BIN" __kandelo_verify_source_aliases \
+    >"$missing_namespace_error" 2>&1
+  missing_namespace_status="$?"
+  set -e
+  mv "$isolated_output.missing" "$isolated_output"
+  [ "$missing_namespace_status" -ne 0 ] ||
+    fail "protected source audit ignored a missing required namespace path"
+  grep -F "Failed to set up mount namespacing" \
+    "$missing_namespace_error" >/dev/null &&
+    grep -F "$isolated_output" "$missing_namespace_error" >/dev/null &&
+    grep -F "status=226/NAMESPACE" "$missing_namespace_error" >/dev/null ||
+    fail "protected source audit hid its systemd namespace diagnostic"
+  # WHY: diagnostics must not turn a rejected namespace into reusable partial
+  # state. Restoring the required root must be sufficient for the next exact
+  # audit to succeed, proving the failed transient unit was retired.
+  "$HOMEBREW_PATCHED_BREW_BIN" __kandelo_verify_source_aliases
   /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
     test -x "$isolated_native_base" ||
     fail "build identity cannot traverse the workflow-owned native parent"
@@ -2305,6 +2348,11 @@ EOF
   homebrew_patched_launcher_run_native remove-native-entry unsafe-fifo
   homebrew_patched_launcher_run_native install-native-fixture cmake
   homebrew_patched_launcher_run_native install-native-fixture ninja
+  # The portable bridge test above covers exclusion of an unselected keg. The
+  # supervisor protocol deliberately receives one exact version for each
+  # declared native tool, matching a fresh publisher prefix.
+  homebrew_patched_launcher_run_native remove-native-version cmake 0.9
+  homebrew_patched_launcher_run_native remove-native-version ninja 0.9
   homebrew_patched_launcher_run_native create-native-relative-link \
     cmake cmake-cross-final cmake-cross
   homebrew_patched_launcher_run_native create-native-relative-link \
@@ -2374,19 +2422,32 @@ EOF
   recipe_output_root="$recipe_build_root/kandelo-package-out"
   recipe_request="$recipe_build_root/.kandelo-tap-recipe-request.json"
   recipe_response="$recipe_build_root/.kandelo-tap-recipe-response.json"
-  mkdir -p "$recipe_source_root" "$recipe_work_root" "$recipe_output_root"
-  printf 'reviewed source\n' >"$recipe_source_root/input.txt"
+  # WHY: isolation transfers HOMEBREW_TEMP to the Formula identity. Construct
+  # the canary request through that same identity rather than relying on the
+  # workflow user retaining accidental write access to Formula-owned state.
+  /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+    /usr/bin/mkdir -p \
+      "$recipe_source_root" "$recipe_work_root" "$recipe_output_root"
+  printf 'reviewed source\n' |
+    /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+      /usr/bin/tee "$recipe_source_root/input.txt" >/dev/null
   recipe_config_json="$(
     /usr/bin/sudo -n -- /usr/bin/cat "$HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG"
   )"
   mapfile -t recipe_native_formulae < <(
     jq -r '.native_formulae[]' <<<"$recipe_config_json"
   )
+  recipe_native_cellar="$(jq -r '.native_cellar' <<<"$recipe_config_json")"
   recipe_native_roots=()
   for native_formula in "${recipe_native_formulae[@]}"; do
+    # The workflow-side harness reads the root-owned supervisor contract to
+    # construct this direct protocol canary. Formula code discovers these kegs
+    # inside the isolated Brew service; the workflow user intentionally cannot
+    # enumerate the protected native-prefix parent on the host.
     mapfile -t native_versions < <(
-      find "$isolated_native_prefix/Cellar/$native_formula" \
-        -mindepth 1 -maxdepth 1 -type d -print
+      /usr/bin/sudo -n -- \
+        /usr/bin/find "$recipe_native_cellar/$native_formula" \
+          -mindepth 1 -maxdepth 1 -type d -print
     )
     [ "${#native_versions[@]}" -eq 1 ] ||
       fail "recipe canary lacks one exact native keg for $native_formula"
@@ -2462,11 +2523,11 @@ EOF
       }
     '
   )"
-  printf '%s' "$recipe_request_json" >"$recipe_request"
-  chmod 0400 "$recipe_request"
-  /usr/bin/sudo -n -- /usr/bin/chown -R \
-    "$ISOLATION_BUILD_USER:$(id -gn "$ISOLATION_BUILD_USER")" \
-    "$recipe_build_root"
+  printf '%s' "$recipe_request_json" |
+    /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+      /usr/bin/tee "$recipe_request" >/dev/null
+  /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+    /usr/bin/chmod 0400 "$recipe_request"
   /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
     /usr/bin/env -i "$HOMEBREW_PATCHED_RECIPE_RUNNER" \
       --request "$recipe_request" --response "$recipe_response"
