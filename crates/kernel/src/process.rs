@@ -2,7 +2,10 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use core::ops::Deref;
-use wasm_posix_shared::{Errno, KernelRusage, WasmStat, WasmStatfs};
+use wasm_posix_shared::{
+    platform_limits, process_metadata_contract, Errno, KernelRusage, WasmStat,
+    WasmStatfs,
+};
 
 use crate::fd::FdTable;
 use crate::memory::MemoryManager;
@@ -746,6 +749,11 @@ pub struct Process {
     pub terminal: TerminalState,
     pub environ: Vec<Vec<u8>>,
     pub argv: Vec<Vec<u8>>,
+    /// In-progress host replacement, invisible until one token-bound commit
+    /// swaps the complete argv/environment pair.
+    metadata_replacement: Option<ProcessMetadataReplacement>,
+    /// Positive transaction tokens are never reused for this Process.
+    next_metadata_replacement_token: u32,
     pub umask: u32,
     /// Scheduling priority nice value (-20 to 19, default 0).
     pub nice: i32,
@@ -870,8 +878,72 @@ impl StdioConfig {
     }
 }
 
-pub(crate) const PROCESS_METADATA_ARGV: u32 = 0;
-pub(crate) const PROCESS_METADATA_ENVIRONMENT: u32 = 1;
+struct ProcessMetadataReplacement {
+    token: u32,
+    argv: Vec<Vec<u8>>,
+    environment: Vec<Vec<u8>>,
+    failed: bool,
+}
+
+impl ProcessMetadataReplacement {
+    fn entries_mut(
+        &mut self,
+        kind: u32,
+    ) -> Result<(&mut Vec<Vec<u8>>, usize), Errno> {
+        match kind {
+            process_metadata_contract::KIND_ARGV => Ok((
+                &mut self.argv,
+                platform_limits::PROCESS_STARTUP_MAX_ARGV_COUNT,
+            )),
+            process_metadata_contract::KIND_ENVIRONMENT => Ok((
+                &mut self.environment,
+                platform_limits::PROCESS_STARTUP_MAX_ENVP_COUNT,
+            )),
+            _ => Err(Errno::EINVAL),
+        }
+    }
+
+    fn stage_entry_with<F>(
+        &mut self,
+        kind: u32,
+        entry: &[u8],
+        allocate: F,
+    ) -> Result<(), Errno>
+    where
+        F: FnOnce(&[u8]) -> Result<Vec<u8>, Errno>,
+    {
+        if self.failed {
+            return Err(Errno::EINVAL);
+        }
+
+        let result = (|| {
+            if entry.len() > platform_limits::PROCESS_METADATA_ENTRY_MAX_BYTES {
+                return Err(Errno::E2BIG);
+            }
+            let (entries, maximum_entries) = self.entries_mut(kind)?;
+            if entries.len() >= maximum_entries {
+                return Err(Errno::E2BIG);
+            }
+
+            // Allocate the entry and the vector slot before publishing either
+            // one into the transaction. A failure therefore leaves the
+            // already-staged prefix intact for cancellation and cannot touch
+            // the live process metadata.
+            let owned = allocate(entry)?;
+            entries.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+            entries.push(owned);
+            Ok(())
+        })();
+
+        // WHY: after any matching stage fails, committing the successfully
+        // staged prefix would recreate the partial-replacement bug even if a
+        // future host forgot its cancel path.
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+}
 
 impl Process {
     /// Create a process for an identity allocated by `ProcessTable`.
@@ -980,6 +1052,8 @@ impl Process {
             terminal,
             environ: Vec::new(),
             argv: Vec::new(),
+            metadata_replacement: None,
+            next_metadata_replacement_token: 1,
             umask: 0o022,
             nice: 0,
             rlimits,
@@ -1744,29 +1818,87 @@ impl Process {
         out
     }
 
-    fn metadata_vector_mut(&mut self, kind: u32) -> Result<&mut Vec<Vec<u8>>, Errno> {
-        match kind {
-            PROCESS_METADATA_ARGV => Ok(&mut self.argv),
-            PROCESS_METADATA_ENVIRONMENT => Ok(&mut self.environ),
-            _ => Err(Errno::EINVAL),
+    pub(crate) fn begin_metadata_replacement(&mut self) -> Result<u32, Errno> {
+        if self.metadata_replacement.is_some() {
+            return Err(Errno::EBUSY);
         }
+
+        let token = self.next_metadata_replacement_token;
+        if token == 0 || token > i32::MAX as u32 {
+            return Err(Errno::EOVERFLOW);
+        }
+        self.next_metadata_replacement_token = token + 1;
+        self.metadata_replacement = Some(ProcessMetadataReplacement {
+            token,
+            argv: Vec::new(),
+            environment: Vec::new(),
+            failed: false,
+        });
+        Ok(token)
     }
 
-    pub(crate) fn clear_metadata(&mut self, kind: u32) -> Result<(), Errno> {
-        self.metadata_vector_mut(kind)?.clear();
+    fn stage_metadata_entry_with<F>(
+        &mut self,
+        token: u32,
+        kind: u32,
+        entry: &[u8],
+        allocate: F,
+    ) -> Result<(), Errno>
+    where
+        F: FnOnce(&[u8]) -> Result<Vec<u8>, Errno>,
+    {
+        let transaction = self
+            .metadata_replacement
+            .as_mut()
+            .filter(|transaction| transaction.token == token)
+            .ok_or(Errno::EINVAL)?;
+        transaction.stage_entry_with(kind, entry, allocate)
+    }
+
+    pub(crate) fn stage_metadata_entry(
+        &mut self,
+        token: u32,
+        kind: u32,
+        entry: &[u8],
+    ) -> Result<(), Errno> {
+        self.stage_metadata_entry_with(token, kind, entry, |source| {
+            let mut owned = Vec::new();
+            owned
+                .try_reserve_exact(source.len())
+                .map_err(|_| Errno::ENOMEM)?;
+            owned.extend_from_slice(source);
+            Ok(owned)
+        })
+    }
+
+    pub(crate) fn commit_metadata_replacement(&mut self, token: u32) -> Result<(), Errno> {
+        let transaction = self
+            .metadata_replacement
+            .as_ref()
+            .filter(|transaction| transaction.token == token)
+            .ok_or(Errno::EINVAL)?;
+        if transaction.failed {
+            return Err(Errno::EINVAL);
+        }
+
+        let transaction = self
+            .metadata_replacement
+            .take()
+            .expect("validated metadata transaction disappeared");
+        // WHY: both new vectors are fully Rust-owned before either live field
+        // changes. No host import or fallible allocation occurs between these
+        // assignments, so one export makes the pair visible atomically.
+        self.argv = transaction.argv;
+        self.environ = transaction.environment;
         Ok(())
     }
 
-    pub(crate) fn push_metadata_entry(&mut self, kind: u32, entry: &[u8]) -> Result<(), Errno> {
-        let mut owned = Vec::new();
-        owned
-            .try_reserve_exact(entry.len())
-            .map_err(|_| Errno::ENOMEM)?;
-        owned.extend_from_slice(entry);
-
-        let entries = self.metadata_vector_mut(kind)?;
-        entries.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
-        entries.push(owned);
+    pub(crate) fn cancel_metadata_replacement(&mut self, token: u32) -> Result<(), Errno> {
+        self.metadata_replacement
+            .as_ref()
+            .filter(|transaction| transaction.token == token)
+            .ok_or(Errno::EINVAL)?;
+        self.metadata_replacement = None;
         Ok(())
     }
 }
@@ -2073,27 +2205,151 @@ mod tests {
     }
 
     #[test]
-    fn metadata_entry_transport_preserves_empty_values_and_empty_environment() {
+    fn metadata_replacement_commits_both_vectors_and_preserves_empty_values() {
         let mut proc = Process::new(77);
         proc.argv = vec![b"old".to_vec()];
         proc.environ = vec![b"OLD=value".to_vec()];
 
-        proc.clear_metadata(PROCESS_METADATA_ARGV).unwrap();
-        proc.push_metadata_entry(PROCESS_METADATA_ARGV, b"new")
-            .unwrap();
-        proc.push_metadata_entry(PROCESS_METADATA_ARGV, b"")
-            .unwrap();
-        proc.clear_metadata(PROCESS_METADATA_ENVIRONMENT).unwrap();
+        let token = proc.begin_metadata_replacement().unwrap();
+        proc.stage_metadata_entry(
+            token,
+            process_metadata_contract::KIND_ARGV,
+            b"new",
+        )
+        .unwrap();
+        proc.stage_metadata_entry(
+            token,
+            process_metadata_contract::KIND_ARGV,
+            b"",
+        )
+        .unwrap();
+        proc.commit_metadata_replacement(token).unwrap();
 
         assert_eq!(proc.argv, vec![b"new".to_vec(), Vec::new()]);
         assert!(proc.environ.is_empty());
     }
 
     #[test]
-    fn metadata_entry_transport_rejects_unknown_vector_kind() {
+    fn metadata_replacement_later_environment_allocation_failure_rolls_back_pair() {
         let mut proc = Process::new(78);
-        assert_eq!(proc.clear_metadata(99), Err(Errno::EINVAL));
-        assert_eq!(proc.push_metadata_entry(99, b"value"), Err(Errno::EINVAL));
+        proc.argv = vec![b"old-program".to_vec(), b"old-argument".to_vec()];
+        proc.environ = vec![b"OLD=value".to_vec()];
+
+        let token = proc.begin_metadata_replacement().unwrap();
+        proc.stage_metadata_entry(
+            token,
+            process_metadata_contract::KIND_ARGV,
+            b"new-program",
+        )
+        .unwrap();
+        proc.stage_metadata_entry(
+            token,
+            process_metadata_contract::KIND_ENVIRONMENT,
+            b"NEW=first",
+        )
+        .unwrap();
+        assert_eq!(
+            proc.stage_metadata_entry_with(
+                token,
+                process_metadata_contract::KIND_ENVIRONMENT,
+                b"NEW=second",
+                |_| Err(Errno::ENOMEM),
+            ),
+            Err(Errno::ENOMEM),
+        );
+
+        // A failed transaction is not committable even if a host omits its
+        // required cancel path.
+        assert_eq!(
+            proc.commit_metadata_replacement(token),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(
+            proc.argv,
+            vec![b"old-program".to_vec(), b"old-argument".to_vec()]
+        );
+        assert_eq!(proc.environ, vec![b"OLD=value".to_vec()]);
+        proc.cancel_metadata_replacement(token).unwrap();
+        assert_eq!(
+            proc.argv,
+            vec![b"old-program".to_vec(), b"old-argument".to_vec()]
+        );
+        assert_eq!(proc.environ, vec![b"OLD=value".to_vec()]);
+    }
+
+    #[test]
+    fn metadata_replacement_rejects_overlap_stale_tokens_and_unknown_kinds() {
+        let mut proc = Process::new(79);
+        proc.argv = vec![b"old".to_vec()];
+        proc.environ = vec![b"OLD=value".to_vec()];
+
+        let first = proc.begin_metadata_replacement().unwrap();
+        assert_eq!(
+            proc.begin_metadata_replacement(),
+            Err(Errno::EBUSY),
+        );
+        assert_eq!(
+            proc.stage_metadata_entry(
+                first + 1,
+                process_metadata_contract::KIND_ARGV,
+                b"stale",
+            ),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(
+            proc.cancel_metadata_replacement(first + 1),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(
+            proc.stage_metadata_entry(
+                first,
+                99,
+                b"unknown-kind",
+            ),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(
+            proc.commit_metadata_replacement(first),
+            Err(Errno::EINVAL),
+        );
+        proc.cancel_metadata_replacement(first).unwrap();
+        assert_eq!(proc.argv, vec![b"old".to_vec()]);
+        assert_eq!(proc.environ, vec![b"OLD=value".to_vec()]);
+
+        let second = proc.begin_metadata_replacement().unwrap();
+        assert!(second > first);
+        proc.stage_metadata_entry(
+            second,
+            process_metadata_contract::KIND_ARGV,
+            b"second",
+        )
+        .unwrap();
+        proc.stage_metadata_entry(
+            second,
+            process_metadata_contract::KIND_ENVIRONMENT,
+            b"SECOND=value",
+        )
+        .unwrap();
+        proc.commit_metadata_replacement(second).unwrap();
+        assert_eq!(proc.argv, vec![b"second".to_vec()]);
+        assert_eq!(proc.environ, vec![b"SECOND=value".to_vec()]);
+
+        let third = proc.begin_metadata_replacement().unwrap();
+        proc.stage_metadata_entry(
+            third,
+            process_metadata_contract::KIND_ARGV,
+            b"argv-only",
+        )
+        .unwrap();
+        proc.stage_metadata_entry(
+            third,
+            process_metadata_contract::KIND_ENVIRONMENT,
+            b"THIRD=value",
+        )
+        .unwrap();
+        proc.commit_metadata_replacement(third).unwrap();
+        assert_eq!(proc.argv, vec![b"argv-only".to_vec()]);
+        assert_eq!(proc.environ, vec![b"THIRD=value".to_vec()]);
     }
 
     #[test]
@@ -2848,9 +3104,9 @@ mod tests {
     }
 
     #[test]
-    fn spawn_child_action_failure_drops_partial_child() {
-        // Dup2 from a closed source fd must fail with EBADF and leave the
-        // parent's process table unchanged.
+    fn spawn_child_late_action_failure_drops_partial_child() {
+        // A successful first action followed by Dup2 from a closed source fd
+        // must fail with EBADF and leave the parent's process table unchanged.
         use crate::process_table::ProcessTable;
         use crate::spawn::{FileAction, SpawnAttrs};
         use wasm_posix_shared::Errno;
@@ -2859,6 +3115,7 @@ mod tests {
         let parent_pid = table.create_process().unwrap();
         let pids_before: Vec<u32> = table.all_pids();
         let parent_fork_count_before = table.get(parent_pid).unwrap().fork_count();
+        assert!(table.get(parent_pid).unwrap().fd_table.get(0).is_ok());
 
         let mut host = test_host::NoopHost;
         let err = table
@@ -2867,7 +3124,10 @@ mod tests {
                 parent_pid,
                 &[b"a".as_slice()],
                 &[],
-                &[FileAction::Dup2 { srcfd: 999, fd: 1 }],
+                &[
+                    FileAction::Close { fd: 0 },
+                    FileAction::Dup2 { srcfd: 999, fd: 1 },
+                ],
                 &SpawnAttrs::empty(),
                 &mut host,
             )
@@ -2877,6 +3137,10 @@ mod tests {
         // No new pid leaked.
         let pids_after: Vec<u32> = table.all_pids();
         assert_eq!(pids_before, pids_after, "no partial child must remain");
+        assert!(
+            table.get(parent_pid).unwrap().fd_table.get(0).is_ok(),
+            "the successful child-only action must not affect the parent"
+        );
         // fork_count still 0.
         assert_eq!(
             table.get(parent_pid).unwrap().fork_count(),

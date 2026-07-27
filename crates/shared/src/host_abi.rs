@@ -5,7 +5,7 @@
 //! calling `kernel_handle_channel`. The host still owns the memory copies and
 //! platform scheduling; Rust owns the ABI-sensitive syscall argument shapes.
 
-use core::mem::size_of;
+use core::mem::{offset_of, size_of};
 
 use crate::abi::extended_syscalls as extra_syscalls;
 use crate::process_layout;
@@ -51,6 +51,19 @@ pub enum SyscallArgSize {
     ProcessLayout { wasm32_size: u32, wasm64_size: u32 },
 }
 
+/// An exceptional source for the number of output bytes copied back to the
+/// caller.
+///
+/// Most `Out` arguments either publish their declared fixed capacity, the
+/// syscall return value for `Arg`-sized byte buffers, or a dereferenced length.
+/// Protocols whose return value has a different unit must declare the actual
+/// byte count explicitly rather than relying on the host's default convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyscallArgCopyOutLength {
+    /// Read a little-endian `u32` field from another staged argument.
+    U32Field { arg_index: u8, offset: u32 },
+}
+
 /// One pointer argument descriptor for host-side marshalling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyscallArgDesc {
@@ -65,6 +78,19 @@ pub struct SyscallArgDesc {
     pub nullable: bool,
     /// Whether a positive-sized pointer must be non-null.
     pub required: bool,
+    /// Overrides the ordinary copy-back length convention when the syscall
+    /// return value is not a byte count.
+    pub copy_out_length: Option<SyscallArgCopyOutLength>,
+}
+
+impl SyscallArgDesc {
+    const fn with_copy_out_u32_field(mut self, arg_index: u8, offset: u32) -> Self {
+        self.copy_out_length = Some(SyscallArgCopyOutLength::U32Field {
+            arg_index,
+            offset,
+        });
+        self
+    }
 }
 
 /// All pointer argument descriptors for one syscall number.
@@ -150,6 +176,7 @@ macro_rules! desc {
             size: $size,
             nullable: true,
             required: false,
+            copy_out_length: None,
         }
     };
     ($arg_index:expr, $direction:ident, $size:expr, required) => {
@@ -159,6 +186,7 @@ macro_rules! desc {
             size: $size,
             nullable: false,
             required: true,
+            copy_out_length: None,
         }
     };
 }
@@ -247,7 +275,10 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         Syscall::Readdir as u32,
         [
             desc!(1, Out, fixed!(16), required),
-            desc!(2, Out, arg!(3), required),
+            desc!(2, Out, arg!(3), required).with_copy_out_u32_field(
+                1,
+                offset_of!(crate::WasmDirent, d_namlen) as u32,
+            ),
         ]
     ),
     entry!(
@@ -1597,6 +1628,58 @@ mod tests {
                 }
             );
             assert!(param.required);
+        }
+    }
+
+    #[test]
+    fn exceptional_copy_out_lengths_are_bounded_by_staged_records() {
+        let readdir = find(Syscall::Readdir as u32);
+        let name = readdir
+            .args
+            .iter()
+            .find(|arg| arg.arg_index == 2)
+            .expect("missing readdir name output");
+        assert_eq!(
+            name.copy_out_length,
+            Some(SyscallArgCopyOutLength::U32Field {
+                arg_index: 1,
+                offset: offset_of!(crate::WasmDirent, d_namlen) as u32,
+            })
+        );
+
+        for entry in SYSCALL_ARG_DESCRIPTORS {
+            for desc in entry.args {
+                let Some(SyscallArgCopyOutLength::U32Field { arg_index, offset }) =
+                    desc.copy_out_length
+                else {
+                    continue;
+                };
+                assert_eq!(
+                    desc.direction,
+                    SyscallArgDirection::Out,
+                    "syscall {} arg {} copy-out override must describe output",
+                    entry.syscall_number,
+                    desc.arg_index,
+                );
+                assert!(
+                    matches!(desc.size, SyscallArgSize::Arg { .. }),
+                    "syscall {} arg {} copy-out override needs an explicit caller capacity",
+                    entry.syscall_number,
+                    desc.arg_index,
+                );
+                let source = entry
+                    .args
+                    .iter()
+                    .find(|candidate| candidate.arg_index == arg_index)
+                    .expect("copy-out length source must be staged");
+                let SyscallArgSize::Fixed { size } = source.size else {
+                    panic!("copy-out u32 source must have a fixed staged size");
+                };
+                assert!(
+                    offset.checked_add(size_of::<u32>() as u32).is_some_and(|end| end <= size),
+                    "copy-out u32 field must fit its staged source",
+                );
+            }
         }
     }
 

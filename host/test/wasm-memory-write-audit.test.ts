@@ -5321,6 +5321,13 @@ describe("WebAssembly memory write audit", () => {
       writeFileSync(path.join(runtime, "ignored.spec.mjs"), "export {};\n");
       mkdirSync(path.join(root, "dist"), { recursive: true });
       writeFileSync(path.join(root, "dist", "ignored.js"), "export {};\n");
+      mkdirSync(path.join(root, "nested-checkout", ".git"), {
+        recursive: true,
+      });
+      writeFileSync(
+        path.join(root, "nested-checkout", "ignored.ts"),
+        "export {};\n",
+      );
 
       expect(
         repositoryRuntimeSourceFiles(root).map((file) =>

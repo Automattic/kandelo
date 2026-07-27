@@ -31,6 +31,22 @@ const reservationSettlementAllowances = [
       + "finally revokes the lease and skips cancellation because Rust "
       + "settlement is unknown before throwing one fatal wrapper.",
   },
+  {
+    owner:
+      "CentralizedKernelWorker.#readKernelOwnedPath",
+    why:
+      "The large canonical-path catch records a branded reservation or copy "
+      + "trap, then its finally revokes the lease and skips cancellation "
+      + "because Rust settlement is unknown before throwing one fatal wrapper.",
+  },
+  {
+    owner:
+      "CentralizedKernelWorker.#replaceProcessMetadataWithinKernelEntry",
+    why:
+      "The metadata transaction catch records a branded stage or commit trap "
+      + "before finally decides whether cancellation is still safe. A trapped "
+      + "Rust instance must be poisoned without entering its cancel export.",
+  },
 ] satisfies KernelExportFailureCatchAllowance[];
 
 describe("kernel export-failure catch audit", () => {

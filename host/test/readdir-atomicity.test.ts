@@ -26,6 +26,31 @@ function createKernelBridge(entries: Array<{ name: string; type: number; ino: nu
 }
 
 describe("host readdir retry atomicity", () => {
+  it("keeps a NAME_MAX entry pending when the caller is one byte short", () => {
+    const name = "n".repeat(255);
+    const { io, kernel, memory } = createKernelBridge([
+      { name, type: 8, ino: 42 },
+    ]);
+    const hostReaddir = kernel.testAuthority.hostReaddir;
+    const bytes = new Uint8Array(memory.buffer);
+    bytes.fill(0x6d, 16, 32);
+    bytes.fill(0x7e, 128, 128 + name.length);
+
+    expect(hostReaddir(7n, 16, 128, name.length - 1)).toBe(-34); // ERANGE
+    expect(io.readdir).toHaveBeenCalledTimes(1);
+    expect(bytes.slice(16, 32)).toEqual(new Uint8Array(16).fill(0x6d));
+    expect(bytes.slice(128, 128 + name.length)).toEqual(
+      new Uint8Array(name.length).fill(0x7e),
+    );
+
+    expect(hostReaddir(7n, 16, 128, name.length)).toBe(1);
+    expect(io.readdir).toHaveBeenCalledTimes(1);
+    const view = new DataView(memory.buffer);
+    expect(view.getUint32(28, true)).toBe(name.length);
+    expect(new TextDecoder().decode(bytes.slice(128, 128 + name.length)))
+      .toBe(name);
+  });
+
   it("replays an entry when Wasm output marshalling fails after the backend read", () => {
     let failFirstNameRead = true;
     const entry = {

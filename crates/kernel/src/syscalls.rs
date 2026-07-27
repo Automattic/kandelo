@@ -7259,6 +7259,12 @@ pub fn sys_readdir(
     let host_handle = stream.host_handle;
     let synth_state = stream.synth_dot_state;
     let stream_path = stream.path.clone();
+    let dirent_size = core::mem::size_of::<WasmDirent>();
+    if dirent_buf.len() < dirent_size {
+        // WHY: consuming either a synthetic or host entry before proving the
+        // fixed result fits would make an ERANGE retry silently skip it.
+        return Err(Errno::ERANGE);
+    }
 
     // Synthesize "." and ".." entries before host entries
     if synth_state < 2 {
@@ -7267,21 +7273,21 @@ pub fn sys_readdir(
         } else {
             (b".." as &[u8], 2usize)
         };
+        if name_buf.len() < name_len {
+            // Keep the synthetic cursor unchanged until both outputs can be
+            // replaced as one complete entry.
+            return Err(Errno::ERANGE);
+        }
         let dirent = WasmDirent {
             d_ino: 1,
             d_type: 4, // DT_DIR
             d_namlen: name_len as u32,
         };
-        let dirent_size = core::mem::size_of::<WasmDirent>();
-        if dirent_buf.len() >= dirent_size {
-            let dirent_bytes = unsafe {
-                core::slice::from_raw_parts(&dirent as *const WasmDirent as *const u8, dirent_size)
-            };
-            dirent_buf[..dirent_size].copy_from_slice(dirent_bytes);
-        }
-        if name_len <= name_buf.len() {
-            name_buf[..name_len].copy_from_slice(name);
-        }
+        let dirent_bytes = unsafe {
+            core::slice::from_raw_parts(&dirent as *const WasmDirent as *const u8, dirent_size)
+        };
+        dirent_buf[..dirent_size].copy_from_slice(dirent_bytes);
+        name_buf[..name_len].copy_from_slice(name);
         if let Some(stream) = proc.dir_streams.get_mut(idx).and_then(|s| s.as_mut()) {
             stream.synth_dot_state += 1;
             stream.position += 1;
@@ -7291,6 +7297,12 @@ pub fn sys_readdir(
 
     match host.host_readdir(host_handle, name_buf)? {
         Some((d_ino, host_d_type, name_len)) => {
+            if name_len > name_buf.len() {
+                // HostIO must return ERANGE without consuming an entry when
+                // its complete name does not fit. A larger reported length is
+                // therefore a broken host contract, not a safe partial result.
+                return Err(Errno::EIO);
+            }
             // Skip host "." and ".." entries (we already synthesized them)
             if name_len == 1 && name_buf[0] == b'.' {
                 // Recurse to get the next entry
@@ -7300,7 +7312,7 @@ pub fn sys_readdir(
                 return sys_readdir(proc, host, dir_handle, dirent_buf, name_buf);
             }
 
-            // Write WasmDirent to dirent_buf if it fits
+            // Both output capacities are proven before exposing this entry.
             let entry_path = directory_entry_path(&stream_path, &name_buf[..name_len]);
             let d_type = if unsafe { crate::fifo::global_fifo_table() }
                 .lookup(&entry_path)
@@ -7315,16 +7327,13 @@ pub fn sys_readdir(
                 d_type,
                 d_namlen: name_len as u32,
             };
-            let dirent_size = core::mem::size_of::<WasmDirent>();
-            if dirent_buf.len() >= dirent_size {
-                let dirent_bytes = unsafe {
-                    core::slice::from_raw_parts(
-                        &dirent as *const WasmDirent as *const u8,
-                        dirent_size,
-                    )
-                };
-                dirent_buf[..dirent_size].copy_from_slice(dirent_bytes);
-            }
+            let dirent_bytes = unsafe {
+                core::slice::from_raw_parts(
+                    &dirent as *const WasmDirent as *const u8,
+                    dirent_size,
+                )
+            };
+            dirent_buf[..dirent_size].copy_from_slice(dirent_bytes);
             // Increment position
             if let Some(stream) = proc.dir_streams.get_mut(idx).and_then(|s| s.as_mut()) {
                 stream.position += 1;
@@ -9339,6 +9348,12 @@ pub(crate) fn checked_sockaddr_un_path(addr: &[u8]) -> Result<&[u8], Errno> {
     {
         return Err(Errno::EINVAL);
     }
+    // WHY: the path bytes are meaningful only after the independently supplied
+    // address family selects sockaddr_un. Validate that discriminator before
+    // any caller can resolve a VFS path or mutate socket/registry state.
+    if sockaddr_family(addr)? as u32 != wasm_posix_shared::socket::AF_UNIX {
+        return Err(Errno::EAFNOSUPPORT);
+    }
     Ok(&addr[path_offset..])
 }
 
@@ -9544,52 +9559,139 @@ pub(crate) fn ipv4_multicast_interface_from_index(ifindex: u32) -> Result<[u8; 4
     }
 }
 
-/// Resolve musl's wasm32/wasm64 `group_req` and `group_source_req`
-/// sockaddr_storage offsets from the option buffer's canonical size (or,
-/// for oversized buffers, from unambiguous embedded AF_INET families).
+/// Resolve musl's wasm32/wasm64 `group_req` and `group_source_req` layout
+/// from the authoritative calling-process data model.
+///
+/// WHY: `optlen` is a caller capacity and padding is ordinary caller data.
+/// Neither can identify the ABI. One kernel instance serves both wasm32 and
+/// wasm64 processes, so the host carries their width independently.
 pub(crate) fn multicast_group_request_offsets(
     buf: &[u8],
     with_source: bool,
+    pointer_width: u32,
 ) -> Result<(usize, Option<usize>), Errno> {
-    use wasm_posix_shared::socket::AF_INET;
-
-    const GROUP_REQ_WASM32_SIZE: usize = 132;
-    const GROUP_REQ_WASM64_SIZE: usize = 136;
-    const GROUP_SOURCE_REQ_WASM32_SIZE: usize = 260;
-    const GROUP_SOURCE_REQ_WASM64_SIZE: usize = 264;
-
-    let (size32, size64, source32, source64) = if with_source {
-        (
-            GROUP_SOURCE_REQ_WASM32_SIZE,
-            GROUP_SOURCE_REQ_WASM64_SIZE,
-            Some(132),
-            Some(136),
-        )
-    } else {
-        (GROUP_REQ_WASM32_SIZE, GROUP_REQ_WASM64_SIZE, None, None)
+    use wasm_posix_shared::process_layout::{
+        multicast_group_request as layout, WASM32_POINTER_WIDTH, WASM64_POINTER_WIDTH,
     };
-    if buf.len() < size32 {
+
+    let (required, group, source) = match (pointer_width, with_source) {
+        (WASM32_POINTER_WIDTH, false) => (
+            layout::WASM32_GROUP_REQ_SIZE,
+            layout::WASM32_GROUP_OFFSET,
+            None,
+        ),
+        (WASM32_POINTER_WIDTH, true) => (
+            layout::WASM32_GROUP_SOURCE_REQ_SIZE,
+            layout::WASM32_GROUP_OFFSET,
+            Some(layout::WASM32_SOURCE_OFFSET),
+        ),
+        (WASM64_POINTER_WIDTH, false) => (
+            layout::WASM64_GROUP_REQ_SIZE,
+            layout::WASM64_GROUP_OFFSET,
+            None,
+        ),
+        (WASM64_POINTER_WIDTH, true) => (
+            layout::WASM64_GROUP_SOURCE_REQ_SIZE,
+            layout::WASM64_GROUP_OFFSET,
+            Some(layout::WASM64_SOURCE_OFFSET),
+        ),
+        _ => return Err(Errno::EINVAL),
+    };
+    if buf.len() < required as usize {
+        Err(Errno::EINVAL)
+    } else {
+        Ok((group as usize, source.map(|offset| offset as usize)))
+    }
+}
+
+pub(crate) fn parse_ipv4_multicast_request(
+    buf: &[u8],
+    optname: u32,
+    pointer_width: u32,
+) -> Result<([u8; 4], [u8; 4], Option<[u8; 4]>), Errno> {
+    use wasm_posix_shared::socket::*;
+
+    if !matches!(
+        pointer_width,
+        wasm_posix_shared::process_layout::WASM32_POINTER_WIDTH
+            | wasm_posix_shared::process_layout::WASM64_POINTER_WIDTH
+    ) {
         return Err(Errno::EINVAL);
     }
-    if buf.len() < size64 {
-        return Ok((4, source32));
-    }
-    if buf.len() == size64 {
-        return Ok((8, source64));
-    }
 
-    let family_is_inet = |offset: usize| {
-        buf.get(offset..offset + 2)
-            .map(|family| u16::from_le_bytes([family[0], family[1]]) as u32 == AF_INET)
-            .unwrap_or(false)
+    let parse_sockaddr_in_at = |offset: usize| -> Result<[u8; 4], Errno> {
+        if buf.len() < offset + 8 {
+            return Err(Errno::EINVAL);
+        }
+        let family = u16::from_le_bytes([buf[offset], buf[offset + 1]]);
+        if family as u32 != AF_INET {
+            return Err(Errno::EAFNOSUPPORT);
+        }
+        Ok([
+            buf[offset + 4],
+            buf[offset + 5],
+            buf[offset + 6],
+            buf[offset + 7],
+        ])
     };
-    let wasm32 = family_is_inet(4) && source32.map(|o| family_is_inet(o)).unwrap_or(true);
-    let wasm64 = family_is_inet(8) && source64.map(|o| family_is_inet(o)).unwrap_or(true);
-    match (wasm32, wasm64) {
-        (true, false) => Ok((4, source32)),
-        (false, true) => Ok((8, source64)),
-        (true, true) => Err(Errno::EINVAL),
-        (false, false) => Ok((8, source64)),
+    let parse_ifindex_at = |offset: usize| -> Result<[u8; 4], Errno> {
+        if buf.len() < offset + 4 {
+            return Err(Errno::EINVAL);
+        }
+        let ifindex = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap());
+        ipv4_multicast_interface_from_index(ifindex)
+    };
+
+    match optname {
+        IP_ADD_MEMBERSHIP | IP_DROP_MEMBERSHIP => {
+            if buf.len() < 8 {
+                Err(Errno::EINVAL)
+            } else {
+                Ok((
+                    [buf[0], buf[1], buf[2], buf[3]],
+                    [buf[4], buf[5], buf[6], buf[7]],
+                    None,
+                ))
+            }
+        }
+        IP_BLOCK_SOURCE
+        | IP_UNBLOCK_SOURCE
+        | IP_ADD_SOURCE_MEMBERSHIP
+        | IP_DROP_SOURCE_MEMBERSHIP => {
+            if buf.len() < 12 {
+                Err(Errno::EINVAL)
+            } else {
+                Ok((
+                    [buf[0], buf[1], buf[2], buf[3]],
+                    [buf[4], buf[5], buf[6], buf[7]],
+                    Some([buf[8], buf[9], buf[10], buf[11]]),
+                ))
+            }
+        }
+        MCAST_JOIN_GROUP | MCAST_LEAVE_GROUP => {
+            let (group_offset, _) =
+                multicast_group_request_offsets(buf, false, pointer_width)?;
+            Ok((
+                parse_sockaddr_in_at(group_offset)?,
+                parse_ifindex_at(0)?,
+                None,
+            ))
+        }
+        MCAST_BLOCK_SOURCE
+        | MCAST_UNBLOCK_SOURCE
+        | MCAST_JOIN_SOURCE_GROUP
+        | MCAST_LEAVE_SOURCE_GROUP => {
+            let (group_offset, source_offset) =
+                multicast_group_request_offsets(buf, true, pointer_width)?;
+            Ok((
+                parse_sockaddr_in_at(group_offset)?,
+                parse_ifindex_at(0)?,
+                Some(parse_sockaddr_in_at(
+                    source_offset.expect("source request has source offset"),
+                )?),
+            ))
+        }
+        _ => Err(Errno::ENOPROTOOPT),
     }
 }
 
@@ -11349,18 +11451,10 @@ pub fn sys_bind(
 
     match sock.domain {
         SocketDomain::Inet => {
-            // sockaddr_in: family(2) + port(2 BE) + addr(4) = 8 bytes min
-            if addr.len() < 8 {
-                return Err(Errno::EINVAL);
-            }
-            let (ip, port) = if sock.sock_type == SocketType::Dgram {
-                parse_sockaddr_in(addr)?
-            } else {
-                (
-                    [addr[4], addr[5], addr[6], addr[7]],
-                    u16::from_be_bytes([addr[2], addr[3]]),
-                )
-            };
+            // Validate the family and complete minimum layout before either
+            // stream or datagram binding can allocate a port or register
+            // socket state.
+            let (ip, port) = parse_sockaddr_in(addr)?;
 
             if sock.sock_type == SocketType::Dgram {
                 return udp_bind_socket(proc, host, sock_idx, ip, port);
@@ -11981,12 +12075,10 @@ pub fn sys_connect(
                 return Ok(());
             }
 
-            // Parse sockaddr_in: family(2) + port(2 big-endian) + addr(4)
-            if addr.len() < 8 {
-                return Err(Errno::EINVAL);
-            }
-            let port = u16::from_be_bytes([addr[2], addr[3]]);
-            let ip = [addr[4], addr[5], addr[6], addr[7]];
+            // Validate the family and complete minimum layout before a local
+            // connection allocates pipes or an external connection reaches
+            // HostIO and changes the socket to Connecting.
+            let (ip, port) = parse_sockaddr_in(addr)?;
             if !bind_device_allows_ipv4(sock, ip, false) {
                 return Err(Errno::ENETUNREACH);
             }
@@ -16706,6 +16798,7 @@ mod tests {
         dir_entry_names: Option<Vec<Vec<u8>>>,
         dir_opendir_error: Option<Errno>,
         dir_readdir_error: Option<(usize, Errno)>,
+        dir_readdir_reported_len: Option<usize>,
         sigsuspend_signal: u32,
         sigsuspend_error: bool,
         clock_time: (i64, i64),
@@ -16793,6 +16886,7 @@ mod tests {
                 dir_entry_names: None,
                 dir_opendir_error: None,
                 dir_readdir_error: None,
+                dir_readdir_reported_len: None,
                 sigsuspend_signal: 0,
                 sigsuspend_error: false,
                 clock_time: (1234567890, 123456789),
@@ -17309,9 +17403,6 @@ mod tests {
                 }
             }
             if idx < self.dir_entry_count {
-                self.dir_entry_index = idx + 1;
-                self.dir_entry_indices.insert(handle, idx + 1);
-                self.dir_entry_returned = true;
                 // Generate distinct entries based on index
                 let default_names: [&[u8]; 5] =
                     [b"test.txt", b"foo.txt", b"bar.txt", b"baz.txt", b"qux.txt"];
@@ -17321,9 +17412,20 @@ mod tests {
                     .and_then(|names| names.get(idx))
                     .map(Vec::as_slice)
                     .unwrap_or_else(|| default_names.get(idx).copied().unwrap_or(b"test.txt"));
-                let n = name_buf.len().min(name.len());
-                name_buf[..n].copy_from_slice(&name[..n]);
-                Ok(Some(((42 + idx as u64), 8, n))) // d_ino varies, d_type=DT_REG=8
+                if name_buf.len() < name.len() {
+                    // Match HostIO's retry contract: an ERANGE result neither
+                    // mutates the destination nor consumes this host entry.
+                    return Err(Errno::ERANGE);
+                }
+                self.dir_entry_index = idx + 1;
+                self.dir_entry_indices.insert(handle, idx + 1);
+                self.dir_entry_returned = true;
+                name_buf[..name.len()].copy_from_slice(name);
+                Ok(Some((
+                    (42 + idx as u64),
+                    8,
+                    self.dir_readdir_reported_len.unwrap_or(name.len()),
+                ))) // d_ino varies, d_type=DT_REG=8
             } else {
                 Ok(None) // end of directory
             }
@@ -20137,6 +20239,63 @@ mod tests {
     }
 
     #[test]
+    fn test_readlink_variants_preserve_large_caller_capacity_and_truncation_boundary() {
+        let target_len = wasm_posix_shared::channel::DATA_SIZE + 1;
+        let target: Vec<u8> = (0..target_len)
+            .map(|index| b'a' + (index % 26) as u8)
+            .collect();
+
+        for use_readlinkat in [false, true] {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            host.set_symlink(b"/tmp/link", &target);
+
+            let invoke = |proc: &mut Process,
+                          host: &mut MockHostIO,
+                          buf: &mut [u8]|
+             -> Result<usize, Errno> {
+                if use_readlinkat {
+                    sys_readlinkat(
+                        proc,
+                        host,
+                        wasm_posix_shared::flags::AT_FDCWD,
+                        b"/tmp/link",
+                        buf,
+                    )
+                } else {
+                    sys_readlink(proc, host, b"/tmp/link", buf)
+                }
+            };
+
+            // POSIX readlink truncation is controlled by the caller's real
+            // capacity. A transport-sized intermediate must not impose a
+            // shorter operation when the caller provided the complete extent.
+            let mut one_short = vec![0xa5; target_len];
+            let n = invoke(&mut proc, &mut host, &mut one_short[..target_len - 1]).unwrap();
+            assert_eq!(n, target_len - 1);
+            assert_eq!(&one_short[..n], &target[..n]);
+            assert_eq!(one_short[n], 0xa5);
+
+            let mut exact = vec![0xa5; target_len + 1];
+            let n = invoke(&mut proc, &mut host, &mut exact[..target_len]).unwrap();
+            assert_eq!(n, target_len);
+            assert_eq!(&exact[..n], target.as_slice());
+            assert_eq!(exact[n], 0xa5);
+
+            let mut one_extra = vec![0xa5; target_len + 2];
+            let n = invoke(
+                &mut proc,
+                &mut host,
+                &mut one_extra[..target_len + 1],
+            )
+            .unwrap();
+            assert_eq!(n, target_len);
+            assert_eq!(&one_extra[..n], target.as_slice());
+            assert!(one_extra[n..].iter().all(|&byte| byte == 0xa5));
+        }
+    }
+
+    #[test]
     fn test_rename_delegates_to_host() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -20432,6 +20591,65 @@ mod tests {
     }
 
     #[test]
+    fn test_getcwd_path_max_boundary_is_complete_and_atomic() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let accepted = namespace_boundary_path(254, true);
+        assert_eq!(accepted.len(), NAMESPACE_PATH_MAX - 1);
+        sys_chdir(&mut proc, &mut host, &accepted).unwrap();
+
+        let mut one_short = vec![0xa5; NAMESPACE_PATH_MAX - 1];
+        assert_eq!(
+            sys_getcwd(&proc, &mut host, &mut one_short),
+            Err(Errno::ERANGE)
+        );
+        assert!(one_short.iter().all(|&byte| byte == 0xa5));
+
+        let mut exact = vec![0xa5; NAMESPACE_PATH_MAX];
+        let n = sys_getcwd(&proc, &mut host, &mut exact).unwrap();
+        assert_eq!(n, NAMESPACE_PATH_MAX);
+        assert_eq!(&exact[..accepted.len()], accepted.as_slice());
+        assert_eq!(exact[accepted.len()], 0);
+
+        let mut one_extra = vec![0xa5; NAMESPACE_PATH_MAX + 1];
+        let n = sys_getcwd(&proc, &mut host, &mut one_extra).unwrap();
+        assert_eq!(n, NAMESPACE_PATH_MAX);
+        assert_eq!(&one_extra[..accepted.len()], accepted.as_slice());
+        assert_eq!(one_extra[accepted.len()], 0);
+        assert_eq!(one_extra[n], 0xa5);
+
+        let rejected = namespace_boundary_path(255, true);
+        assert_eq!(rejected.len(), NAMESPACE_PATH_MAX);
+        assert_eq!(
+            sys_chdir(&mut proc, &mut host, &rejected),
+            Err(Errno::ENAMETOOLONG)
+        );
+        assert_eq!(proc.cwd, accepted);
+
+        // PATH_MAX bounds the pathname supplied by the caller, not a
+        // canonical path formed from a valid short relative pathname and an
+        // already-deep CWD. getcwd must return that complete internal state.
+        sys_chdir(&mut proc, &mut host, b"childdir").unwrap();
+        let mut deep_cwd = accepted;
+        deep_cwd.extend_from_slice(b"/childdir");
+        assert_eq!(proc.cwd, deep_cwd);
+        assert!(deep_cwd.len() > NAMESPACE_PATH_MAX);
+
+        let mut deep_one_short = vec![0xa5; deep_cwd.len()];
+        assert_eq!(
+            sys_getcwd(&proc, &mut host, &mut deep_one_short),
+            Err(Errno::ERANGE)
+        );
+        assert!(deep_one_short.iter().all(|&byte| byte == 0xa5));
+
+        let mut deep_exact = vec![0xa5; deep_cwd.len() + 1];
+        let n = sys_getcwd(&proc, &mut host, &mut deep_exact).unwrap();
+        assert_eq!(n, deep_cwd.len() + 1);
+        assert_eq!(&deep_exact[..deep_cwd.len()], deep_cwd.as_slice());
+        assert_eq!(deep_exact[deep_cwd.len()], 0);
+    }
+
+    #[test]
     fn test_opendir_closedir_cycle() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -20487,6 +20705,207 @@ mod tests {
         assert_eq!(result, 0);
 
         sys_closedir(&mut proc, &mut host, dh).unwrap();
+    }
+
+    #[test]
+    fn test_readdir_synthetic_entry_retries_after_short_dirent_or_name_buffer() {
+        let dirent_size = core::mem::size_of::<WasmDirent>();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let dh = sys_opendir(&mut proc, &mut host, b"/tmp").unwrap();
+        let mut short_dirent = vec![0xa5; dirent_size - 1];
+        let mut name_buf = [0xa5; 2];
+
+        assert_eq!(
+            sys_readdir(
+                &mut proc,
+                &mut host,
+                dh,
+                &mut short_dirent,
+                &mut name_buf,
+            ),
+            Err(Errno::ERANGE),
+        );
+        assert!(short_dirent.iter().all(|byte| *byte == 0xa5));
+        assert!(name_buf.iter().all(|byte| *byte == 0xa5));
+        assert_eq!(sys_telldir(&proc, dh), Ok(0));
+
+        let mut dirent_buf = vec![0xa5; dirent_size];
+        assert_eq!(
+            sys_readdir(
+                &mut proc,
+                &mut host,
+                dh,
+                &mut dirent_buf,
+                &mut name_buf,
+            ),
+            Ok(1),
+        );
+        assert_eq!(&name_buf[..1], b".");
+        assert_eq!(sys_telldir(&proc, dh), Ok(1));
+
+        dirent_buf.fill(0xa5);
+        name_buf.fill(0xa5);
+        assert_eq!(
+            sys_readdir(
+                &mut proc,
+                &mut host,
+                dh,
+                &mut dirent_buf,
+                &mut name_buf[..1],
+            ),
+            Err(Errno::ERANGE),
+        );
+        assert!(dirent_buf.iter().all(|byte| *byte == 0xa5));
+        assert!(name_buf.iter().all(|byte| *byte == 0xa5));
+        assert_eq!(sys_telldir(&proc, dh), Ok(1));
+
+        assert_eq!(
+            sys_readdir(
+                &mut proc,
+                &mut host,
+                dh,
+                &mut dirent_buf,
+                &mut name_buf,
+            ),
+            Ok(1),
+        );
+        assert_eq!(&name_buf[..2], b"..");
+        assert_eq!(sys_telldir(&proc, dh), Ok(2));
+    }
+
+    #[test]
+    fn test_readdir_host_entry_retries_after_short_dirent_or_name_buffer() {
+        let dirent_size = core::mem::size_of::<WasmDirent>();
+        let maximum_name = vec![b'n'; wasm_posix_shared::platform_limits::NAME_MAX_BYTES - 1];
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.dir_entry_count = 2;
+        host.dir_entry_names = Some(vec![b"first".to_vec(), maximum_name.clone()]);
+        let dh = sys_opendir(&mut proc, &mut host, b"/tmp").unwrap();
+        let host_handle = proc.dir_streams[dh as usize].as_ref().unwrap().host_handle;
+        let mut dirent_buf = vec![0u8; dirent_size];
+        let mut name_buf = vec![0u8; maximum_name.len()];
+
+        for expected in [b".".as_slice(), b"..".as_slice()] {
+            assert_eq!(
+                sys_readdir(
+                    &mut proc,
+                    &mut host,
+                    dh,
+                    &mut dirent_buf,
+                    &mut name_buf,
+                ),
+                Ok(1),
+            );
+            assert_eq!(&name_buf[..expected.len()], expected);
+        }
+        assert_eq!(sys_telldir(&proc, dh), Ok(2));
+        assert_eq!(host.dir_entry_indices.get(&host_handle), Some(&0));
+
+        let mut short_dirent = vec![0xa5; dirent_size - 1];
+        name_buf.fill(0xa5);
+        assert_eq!(
+            sys_readdir(
+                &mut proc,
+                &mut host,
+                dh,
+                &mut short_dirent,
+                &mut name_buf,
+            ),
+            Err(Errno::ERANGE),
+        );
+        assert!(short_dirent.iter().all(|byte| *byte == 0xa5));
+        assert!(name_buf.iter().all(|byte| *byte == 0xa5));
+        assert_eq!(sys_telldir(&proc, dh), Ok(2));
+        assert_eq!(host.dir_entry_indices.get(&host_handle), Some(&0));
+
+        dirent_buf.fill(0xa5);
+        assert_eq!(
+            sys_readdir(
+                &mut proc,
+                &mut host,
+                dh,
+                &mut dirent_buf,
+                &mut name_buf,
+            ),
+            Ok(1),
+        );
+        assert_eq!(&name_buf[..5], b"first");
+        assert_eq!(sys_telldir(&proc, dh), Ok(3));
+        assert_eq!(host.dir_entry_indices.get(&host_handle), Some(&1));
+
+        dirent_buf.fill(0xa5);
+        name_buf.fill(0xa5);
+        let short_name_len = maximum_name.len() - 1;
+        assert_eq!(
+            sys_readdir(
+                &mut proc,
+                &mut host,
+                dh,
+                &mut dirent_buf,
+                &mut name_buf[..short_name_len],
+            ),
+            Err(Errno::ERANGE),
+        );
+        assert!(dirent_buf.iter().all(|byte| *byte == 0xa5));
+        assert!(name_buf.iter().all(|byte| *byte == 0xa5));
+        assert_eq!(sys_telldir(&proc, dh), Ok(3));
+        assert_eq!(host.dir_entry_indices.get(&host_handle), Some(&1));
+
+        assert_eq!(
+            sys_readdir(
+                &mut proc,
+                &mut host,
+                dh,
+                &mut dirent_buf,
+                &mut name_buf,
+            ),
+            Ok(1),
+        );
+        assert_eq!(name_buf, maximum_name);
+        assert_eq!(sys_telldir(&proc, dh), Ok(4));
+        assert_eq!(host.dir_entry_indices.get(&host_handle), Some(&2));
+    }
+
+    #[test]
+    fn test_readdir_rejects_impossible_host_reported_name_length() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.dir_entry_names = Some(vec![b"x".to_vec()]);
+        let dh = sys_opendir(&mut proc, &mut host, b"/tmp").unwrap();
+        let mut dirent_buf = [0u8; core::mem::size_of::<WasmDirent>()];
+        let mut name_buf = [0u8; 4];
+
+        for _ in 0..2 {
+            assert_eq!(
+                sys_readdir(
+                    &mut proc,
+                    &mut host,
+                    dh,
+                    &mut dirent_buf,
+                    &mut name_buf,
+                ),
+                Ok(1),
+            );
+        }
+
+        dirent_buf.fill(0xa5);
+        name_buf.fill(0xa5);
+        host.dir_readdir_reported_len = Some(name_buf.len() + 1);
+        assert_eq!(
+            sys_readdir(
+                &mut proc,
+                &mut host,
+                dh,
+                &mut dirent_buf,
+                &mut name_buf,
+            ),
+            Err(Errno::EIO),
+        );
+        assert!(dirent_buf.iter().all(|byte| *byte == 0xa5));
+        assert_eq!(sys_telldir(&proc, dh), Ok(2));
     }
 
     #[test]
@@ -24225,6 +24644,43 @@ mod tests {
     }
 
     #[test]
+    fn test_getenv_maximum_entry_capacity_is_complete_and_atomic() {
+        let mut proc = Process::new(1);
+        let entry_limit =
+            wasm_posix_shared::platform_limits::PROCESS_METADATA_ENTRY_MAX_BYTES;
+        let value = vec![b'v'; entry_limit - b"X=".len()];
+        sys_setenv(&mut proc, b"X", &value, true).unwrap();
+
+        let mut one_short = vec![0xa5; value.len() - 1];
+        assert_eq!(
+            sys_getenv(&proc, b"X", &mut one_short),
+            Err(Errno::ERANGE)
+        );
+        assert!(one_short.iter().all(|&byte| byte == 0xa5));
+
+        let mut exact = vec![0xa5; value.len()];
+        let n = sys_getenv(&proc, b"X", &mut exact).unwrap();
+        assert_eq!(n, value.len());
+        assert_eq!(exact, value);
+
+        let mut one_extra = vec![0xa5; value.len() + 1];
+        let n = sys_getenv(&proc, b"X", &mut one_extra).unwrap();
+        assert_eq!(n, value.len());
+        assert_eq!(&one_extra[..n], value.as_slice());
+        assert_eq!(one_extra[n], 0xa5);
+
+        let oversized = vec![b'w'; value.len() + 1];
+        assert_eq!(
+            sys_setenv(&mut proc, b"X", &oversized, true),
+            Err(Errno::E2BIG)
+        );
+        let mut retained = vec![0u8; value.len()];
+        let n = sys_getenv(&proc, b"X", &mut retained).unwrap();
+        assert_eq!(n, value.len());
+        assert_eq!(retained, value);
+    }
+
+    #[test]
     fn test_setenv_no_overwrite() {
         let mut proc = Process::new(1);
         sys_setenv(&mut proc, b"HOME", b"/home/user", true).unwrap();
@@ -25616,6 +26072,44 @@ mod tests {
     }
 
     #[test]
+    fn test_bind_inet_stream_validates_sockaddr_before_state_mutation() {
+        use crate::socket::SocketState;
+        use wasm_posix_shared::socket::*;
+
+        let mut proc = Process::new(9070);
+        let mut host = MockHostIO::new();
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let sock_idx = test_socket_idx(&proc, fd);
+        let initial_ephemeral_port = proc.next_ephemeral_port;
+        let mut address = [0u8; 16];
+        address[0] = AF_UNIX as u8;
+        address[4..8].copy_from_slice(&[127, 0, 0, 1]);
+
+        assert_eq!(
+            sys_bind(&mut proc, &mut host, fd, &address).unwrap_err(),
+            Errno::EAFNOSUPPORT,
+        );
+        assert_eq!(
+            sys_bind(&mut proc, &mut host, fd, &address[..7]).unwrap_err(),
+            Errno::EINVAL,
+        );
+        let socket = proc.sockets.get(sock_idx).unwrap();
+        assert_eq!(socket.state, SocketState::Unbound);
+        assert_eq!(socket.bind_addr, [0; 4]);
+        assert_eq!(socket.bind_port, 0);
+        assert_eq!(proc.next_ephemeral_port, initial_ephemeral_port);
+
+        address[0] = AF_INET as u8;
+        address[2..4].copy_from_slice(&41_731u16.to_be_bytes());
+        sys_bind(&mut proc, &mut host, fd, &address).unwrap();
+        assert_eq!(
+            proc.sockets.get(sock_idx).unwrap().state,
+            SocketState::Bound,
+            "the matching-family control must still bind normally",
+        );
+    }
+
+    #[test]
     fn test_bind_enotsock() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -25653,6 +26147,65 @@ mod tests {
 
         // Clean up
         unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+    }
+
+    #[test]
+    fn test_bind_unix_validates_family_before_vfs_or_registry_mutation() {
+        use crate::socket::SocketState;
+        use wasm_posix_shared::socket::*;
+
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9071);
+        let mut host = MockHostIO::new();
+        let path = b"/tmp/family_bind_9071.sock";
+        let resolved = crate::path::resolve_path(path, &proc.cwd);
+        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+        registry.unregister(&resolved);
+        let fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        let sock_idx = test_socket_idx(&proc, fd);
+        let mut address = [
+            0u8;
+            wasm_posix_shared::kernel_scratch_wire::SOCKADDR_UNIX_BYTES as usize
+        ];
+        address[0] = AF_INET as u8;
+        address[2..2 + path.len()].copy_from_slice(path);
+        let address_len = 2 + path.len() + 1;
+
+        assert_eq!(
+            sys_bind(
+                &mut proc,
+                &mut host,
+                fd,
+                &address[..address_len],
+            )
+            .unwrap_err(),
+            Errno::EAFNOSUPPORT,
+        );
+        assert_eq!(
+            proc.sockets.get(sock_idx).unwrap().state,
+            SocketState::Unbound,
+        );
+        assert!(registry.lookup(&resolved).is_none());
+        assert!(
+            !host.handle_paths.values().any(|opened| opened == &resolved),
+            "wrong-family sockaddr bytes must not create a VFS entry",
+        );
+
+        address[0] = AF_UNIX as u8;
+        sys_bind(
+            &mut proc,
+            &mut host,
+            fd,
+            &address[..address_len],
+        )
+        .unwrap();
+        assert_eq!(
+            proc.sockets.get(sock_idx).unwrap().state,
+            SocketState::Bound,
+            "the matching-family control must still bind normally",
+        );
+        assert!(registry.lookup(&resolved).is_some());
+        registry.unregister(&resolved);
     }
 
     #[test]
@@ -25716,8 +26269,68 @@ mod tests {
         let mut host = MockHostIO::new();
         use wasm_posix_shared::socket::*;
         let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
-        let result = sys_connect(&mut proc, &mut host, fd, &[0u8; 16]);
+        let mut address = [0u8; 16];
+        address[0] = AF_INET as u8;
+        let result = sys_connect(&mut proc, &mut host, fd, &address);
         assert_eq!(result, Err(Errno::ECONNREFUSED));
+    }
+
+    #[test]
+    fn test_connect_inet_stream_validates_sockaddr_before_host_or_state_mutation() {
+        use crate::socket::SocketState;
+        use wasm_posix_shared::socket::*;
+
+        let mut proc = Process::new(9072);
+        let mut host = MockHostIO::new();
+        host.net_connect_result = Ok(());
+        host.net_connect_status_result = Err(Errno::EAGAIN);
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let sock_idx = test_socket_idx(&proc, fd);
+        let initial_ephemeral_port = proc.next_ephemeral_port;
+        let mut address = [
+            AF_UNIX as u8,
+            0,
+            0,
+            80,
+            203,
+            0,
+            113,
+            7,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ];
+
+        assert_eq!(
+            sys_connect(&mut proc, &mut host, fd, &address).unwrap_err(),
+            Errno::EAFNOSUPPORT,
+        );
+        assert_eq!(
+            sys_connect(&mut proc, &mut host, fd, &address[..7]).unwrap_err(),
+            Errno::EINVAL,
+        );
+        let socket = proc.sockets.get(sock_idx).unwrap();
+        assert_eq!(socket.state, SocketState::Unbound);
+        assert_eq!(socket.host_net_handle, None);
+        assert_eq!(proc.next_ephemeral_port, initial_ephemeral_port);
+        assert!(host.net_connect_calls.is_empty());
+
+        address[0] = AF_INET as u8;
+        assert_eq!(
+            sys_connect(&mut proc, &mut host, fd, &address).unwrap_err(),
+            Errno::EINPROGRESS,
+            "the matching-family control must reach HostIO normally",
+        );
+        assert_eq!(host.net_connect_calls.len(), 1);
+        assert_eq!(
+            proc.sockets.get(sock_idx).unwrap().state,
+            SocketState::Connecting,
+        );
     }
 
     #[test]
@@ -30031,6 +30644,59 @@ mod tests {
     }
 
     #[test]
+    fn test_realpath_path_max_boundary_is_complete_and_atomic() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let path = namespace_boundary_path(254, false);
+        assert_eq!(path.len(), NAMESPACE_PATH_MAX - 1);
+
+        let mut one_short = vec![0xa5; path.len() - 1];
+        assert_eq!(
+            sys_realpath(&mut proc, &mut host, &path, &mut one_short),
+            Err(Errno::ERANGE)
+        );
+        assert!(one_short.iter().all(|&byte| byte == 0xa5));
+
+        let mut exact = vec![0xa5; path.len()];
+        let n = sys_realpath(&mut proc, &mut host, &path, &mut exact).unwrap();
+        assert_eq!(n, path.len());
+        assert_eq!(exact, path);
+
+        let mut one_extra = vec![0xa5; path.len() + 1];
+        let n = sys_realpath(&mut proc, &mut host, &path, &mut one_extra).unwrap();
+        assert_eq!(n, path.len());
+        assert_eq!(&one_extra[..n], path.as_slice());
+        assert_eq!(one_extra[n], 0xa5);
+
+        let mut channel_plus_one = vec![0xa5; wasm_posix_shared::channel::DATA_SIZE + 1];
+        let n = sys_realpath(&mut proc, &mut host, &path, &mut channel_plus_one).unwrap();
+        assert_eq!(n, path.len());
+        assert_eq!(&channel_plus_one[..n], path.as_slice());
+        assert!(channel_plus_one[n..].iter().all(|&byte| byte == 0xa5));
+
+        // The input limit is independent of canonical-output length: a short
+        // relative path from a valid deep CWD may resolve beyond PATH_MAX.
+        let deep_cwd = namespace_boundary_path(254, true);
+        assert_eq!(deep_cwd.len(), NAMESPACE_PATH_MAX - 1);
+        sys_chdir(&mut proc, &mut host, &deep_cwd).unwrap();
+        let mut deep_result = deep_cwd;
+        deep_result.extend_from_slice(b"/child");
+        assert!(deep_result.len() > NAMESPACE_PATH_MAX);
+
+        let mut deep_one_short = vec![0xa5; deep_result.len() - 1];
+        assert_eq!(
+            sys_realpath(&mut proc, &mut host, b"child", &mut deep_one_short),
+            Err(Errno::ERANGE)
+        );
+        assert!(deep_one_short.iter().all(|&byte| byte == 0xa5));
+
+        let mut deep_exact = vec![0xa5; deep_result.len()];
+        let n = sys_realpath(&mut proc, &mut host, b"child", &mut deep_exact).unwrap();
+        assert_eq!(n, deep_result.len());
+        assert_eq!(deep_exact, deep_result);
+    }
+
+    #[test]
     fn test_fork_child_fields_default_to_false() {
         let proc = Process::new(1);
         assert!(!proc.fork_child);
@@ -30761,6 +31427,71 @@ mod tests {
         let addrlen = 2 + path.len() + 1;
         let err = sys_connect(&mut proc, &mut host, fd, &addr[..addrlen]).unwrap_err();
         assert_eq!(err, Errno::ECONNREFUSED);
+    }
+
+    #[test]
+    fn test_unix_stream_connect_validates_family_before_resolution_or_state_mutation() {
+        use crate::socket::SocketState;
+        use wasm_posix_shared::socket::*;
+
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9073);
+        let mut host = MockHostIO::new();
+        let path = b"/tmp/family_connect_9073.sock";
+        let resolved = crate::path::resolve_path(path, &proc.cwd);
+        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+        registry.unregister(&resolved);
+        let mut address = [
+            0u8;
+            wasm_posix_shared::kernel_scratch_wire::SOCKADDR_UNIX_BYTES as usize
+        ];
+        address[0] = AF_UNIX as u8;
+        address[2..2 + path.len()].copy_from_slice(path);
+        let address_len = 2 + path.len() + 1;
+        let server = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        sys_bind(
+            &mut proc,
+            &mut host,
+            server,
+            &address[..address_len],
+        )
+        .unwrap();
+        sys_listen(&mut proc, &mut host, server, 1).unwrap();
+        let client = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        let client_idx = test_socket_idx(&proc, client);
+        let resolved_paths_before = host.lstat_paths.len();
+
+        address[0] = AF_INET as u8;
+        assert_eq!(
+            sys_connect(
+                &mut proc,
+                &mut host,
+                client,
+                &address[..address_len],
+            )
+            .unwrap_err(),
+            Errno::EAFNOSUPPORT,
+        );
+        assert_eq!(
+            proc.sockets.get(client_idx).unwrap().state,
+            SocketState::Unbound,
+        );
+        assert_eq!(host.lstat_paths.len(), resolved_paths_before);
+
+        address[0] = AF_UNIX as u8;
+        sys_connect(
+            &mut proc,
+            &mut host,
+            client,
+            &address[..address_len],
+        )
+        .unwrap();
+        assert_eq!(
+            proc.sockets.get(client_idx).unwrap().state,
+            SocketState::Connected,
+            "the matching-family control must still connect normally",
+        );
+        registry.unregister(&resolved);
     }
 
     #[test]
@@ -32396,6 +33127,104 @@ mod tests {
     }
 
     #[test]
+    fn test_sendto_validates_sockaddr_before_datagram_state_mutation() {
+        use crate::socket::SocketState;
+        use wasm_posix_shared::socket::*;
+
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9074);
+        let mut host = MockHostIO::new();
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let sock_idx = test_socket_idx(&proc, fd);
+        let initial_ephemeral_port = proc.next_ephemeral_port;
+        let mut destination = [0u8; 16];
+        destination[0] = AF_UNIX as u8;
+        destination[3] = 9;
+        destination[4..8].copy_from_slice(&[127, 0, 0, 1]);
+
+        assert_eq!(
+            sys_sendto(
+                &mut proc,
+                &mut host,
+                fd,
+                b"x",
+                0,
+                &destination,
+            )
+            .unwrap_err(),
+            Errno::EAFNOSUPPORT,
+        );
+        assert_eq!(
+            sys_sendto(
+                &mut proc,
+                &mut host,
+                fd,
+                b"x",
+                0,
+                &destination[..7],
+            )
+            .unwrap_err(),
+            Errno::EINVAL,
+        );
+        let socket = proc.sockets.get(sock_idx).unwrap();
+        assert_eq!(socket.state, SocketState::Unbound);
+        assert_eq!(socket.bind_port, 0);
+        assert_eq!(proc.next_ephemeral_port, initial_ephemeral_port);
+        assert!(host.net_connect_calls.is_empty());
+
+        destination[0] = AF_INET as u8;
+        let matching_family =
+            sys_sendto(&mut proc, &mut host, fd, b"x", 0, &destination);
+        assert!(
+            !matches!(
+                matching_family,
+                Err(Errno::EAFNOSUPPORT | Errno::EINVAL)
+            ),
+            "the matching-family control must pass address parsing",
+        );
+
+        let unix_fd =
+            sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        let unix_idx = test_socket_idx(&proc, unix_fd);
+        let wrong_unix_family = [
+            AF_INET as u8,
+            0,
+            0,
+            b'x',
+        ];
+        assert_eq!(
+            sys_sendto(
+                &mut proc,
+                &mut host,
+                unix_fd,
+                b"x",
+                0,
+                &wrong_unix_family,
+            )
+            .unwrap_err(),
+            Errno::EAFNOSUPPORT,
+        );
+        assert_eq!(
+            proc.sockets.get(unix_idx).unwrap().state,
+            SocketState::Unbound,
+        );
+        let matching_unix_family = [AF_UNIX as u8, 0, 0, b'x'];
+        assert_eq!(
+            sys_sendto(
+                &mut proc,
+                &mut host,
+                unix_fd,
+                b"x",
+                0,
+                &matching_unix_family,
+            )
+            .unwrap_err(),
+            Errno::ECONNREFUSED,
+            "the matching AF_UNIX control must pass family validation",
+        );
+    }
+
+    #[test]
     fn test_socket_buffer_requests_do_not_fabricate_applied_capacity() {
         let mut proc = Process::new(9061);
         let mut host = MockHostIO::new();
@@ -32824,39 +33653,228 @@ mod tests {
 
     #[test]
     fn test_multicast_group_request_offsets_cover_wasm32_and_wasm64() {
+        use wasm_posix_shared::process_layout::{
+            multicast_group_request as layout, WASM32_POINTER_WIDTH, WASM64_POINTER_WIDTH,
+        };
+
         assert_eq!(
-            multicast_group_request_offsets(&[0u8; 132], false).unwrap(),
+            multicast_group_request_offsets(
+                &[0u8; layout::WASM32_GROUP_REQ_SIZE as usize],
+                false,
+                WASM32_POINTER_WIDTH,
+            )
+            .unwrap(),
             (4, None)
         );
         assert_eq!(
-            multicast_group_request_offsets(&[0u8; 136], false).unwrap(),
+            multicast_group_request_offsets(
+                &[0u8; layout::WASM64_GROUP_REQ_SIZE as usize],
+                false,
+                WASM64_POINTER_WIDTH,
+            )
+            .unwrap(),
             (8, None)
         );
         assert_eq!(
-            multicast_group_request_offsets(&[0u8; 260], true).unwrap(),
+            multicast_group_request_offsets(
+                &[0u8; layout::WASM32_GROUP_SOURCE_REQ_SIZE as usize],
+                true,
+                WASM32_POINTER_WIDTH,
+            )
+            .unwrap(),
             (4, Some(132))
         );
         assert_eq!(
-            multicast_group_request_offsets(&[0u8; 264], true).unwrap(),
+            multicast_group_request_offsets(
+                &[0u8; layout::WASM64_GROUP_SOURCE_REQ_SIZE as usize],
+                true,
+                WASM64_POINTER_WIDTH,
+            )
+            .unwrap(),
             (8, Some(136))
         );
         assert_eq!(
-            multicast_group_request_offsets(&[0u8; 131], false).unwrap_err(),
+            multicast_group_request_offsets(
+                &[0u8; layout::WASM32_GROUP_REQ_SIZE as usize - 1],
+                false,
+                WASM32_POINTER_WIDTH,
+            )
+            .unwrap_err(),
+            Errno::EINVAL
+        );
+        assert_eq!(
+            multicast_group_request_offsets(
+                &[0u8; layout::WASM64_GROUP_SOURCE_REQ_SIZE as usize - 1],
+                true,
+                WASM64_POINTER_WIDTH,
+            )
+            .unwrap_err(),
             Errno::EINVAL
         );
 
-        let mut oversized32 = [0u8; 140];
-        oversized32[4] = wasm_posix_shared::socket::AF_INET as u8;
+        // Alternate-offset family-looking padding can never steer the model.
+        let mut oversized = [0u8; 264];
+        oversized[4] = wasm_posix_shared::socket::AF_INET as u8;
+        oversized[8] = wasm_posix_shared::socket::AF_INET as u8;
         assert_eq!(
-            multicast_group_request_offsets(&oversized32, false).unwrap(),
+            multicast_group_request_offsets(&oversized, false, WASM32_POINTER_WIDTH).unwrap(),
             (4, None)
         );
-        let mut ambiguous = oversized32;
-        ambiguous[8] = wasm_posix_shared::socket::AF_INET as u8;
         assert_eq!(
-            multicast_group_request_offsets(&ambiguous, false).unwrap_err(),
+            multicast_group_request_offsets(&oversized, false, WASM64_POINTER_WIDTH).unwrap(),
+            (8, None)
+        );
+        assert_eq!(
+            multicast_group_request_offsets(&oversized, false, 16).unwrap_err(),
             Errno::EINVAL
         );
+    }
+
+    #[test]
+    fn test_parse_ipv4_multicast_request_covers_every_structured_option_and_model() {
+        use wasm_posix_shared::process_layout::{
+            multicast_group_request as layout, WASM32_POINTER_WIDTH, WASM64_POINTER_WIDTH,
+        };
+        use wasm_posix_shared::socket::*;
+
+        const GROUP: [u8; 4] = [239, 1, 2, 3];
+        const INTERFACE: [u8; 4] = [127, 0, 0, 1];
+        const SOURCE: [u8; 4] = [10, 20, 30, 40];
+
+        let write_sockaddr = |buf: &mut [u8], offset: usize, address: [u8; 4]| {
+            buf[offset..offset + 2].copy_from_slice(&(AF_INET as u16).to_le_bytes());
+            buf[offset + 4..offset + 8].copy_from_slice(&address);
+        };
+
+        for pointer_width in [WASM32_POINTER_WIDTH, WASM64_POINTER_WIDTH] {
+            for optname in [IP_ADD_MEMBERSHIP, IP_DROP_MEMBERSHIP] {
+                let mut exact = [0u8; 8];
+                exact[0..4].copy_from_slice(&GROUP);
+                exact[4..8].copy_from_slice(&INTERFACE);
+                assert_eq!(
+                    parse_ipv4_multicast_request(&exact, optname, pointer_width).unwrap(),
+                    (GROUP, INTERFACE, None)
+                );
+                assert_eq!(
+                    parse_ipv4_multicast_request(&exact[..7], optname, pointer_width).unwrap_err(),
+                    Errno::EINVAL
+                );
+            }
+
+            for optname in [
+                IP_BLOCK_SOURCE,
+                IP_UNBLOCK_SOURCE,
+                IP_ADD_SOURCE_MEMBERSHIP,
+                IP_DROP_SOURCE_MEMBERSHIP,
+            ] {
+                let mut exact = [0u8; 12];
+                exact[0..4].copy_from_slice(&GROUP);
+                exact[4..8].copy_from_slice(&INTERFACE);
+                exact[8..12].copy_from_slice(&SOURCE);
+                assert_eq!(
+                    parse_ipv4_multicast_request(&exact, optname, pointer_width).unwrap(),
+                    (GROUP, INTERFACE, Some(SOURCE))
+                );
+                assert_eq!(
+                    parse_ipv4_multicast_request(&exact[..11], optname, pointer_width).unwrap_err(),
+                    Errno::EINVAL
+                );
+            }
+
+            let (group_size, group_offset, source_size, source_offset) =
+                if pointer_width == WASM32_POINTER_WIDTH {
+                    (
+                        layout::WASM32_GROUP_REQ_SIZE as usize,
+                        layout::WASM32_GROUP_OFFSET as usize,
+                        layout::WASM32_GROUP_SOURCE_REQ_SIZE as usize,
+                        layout::WASM32_SOURCE_OFFSET as usize,
+                    )
+                } else {
+                    (
+                        layout::WASM64_GROUP_REQ_SIZE as usize,
+                        layout::WASM64_GROUP_OFFSET as usize,
+                        layout::WASM64_GROUP_SOURCE_REQ_SIZE as usize,
+                        layout::WASM64_SOURCE_OFFSET as usize,
+                    )
+                };
+
+            for optname in [MCAST_JOIN_GROUP, MCAST_LEAVE_GROUP] {
+                let mut oversized = vec![0u8; group_size + 8];
+                oversized[0..4].copy_from_slice(&1u32.to_le_bytes());
+                write_sockaddr(&mut oversized, group_offset, GROUP);
+                assert_eq!(
+                    parse_ipv4_multicast_request(
+                        &oversized[..group_size],
+                        optname,
+                        pointer_width,
+                    )
+                    .unwrap(),
+                    (GROUP, INTERFACE, None)
+                );
+                assert_eq!(
+                    parse_ipv4_multicast_request(&oversized, optname, pointer_width).unwrap(),
+                    (GROUP, INTERFACE, None)
+                );
+                assert_eq!(
+                    parse_ipv4_multicast_request(
+                        &oversized[..group_size - 1],
+                        optname,
+                        pointer_width,
+                    )
+                    .unwrap_err(),
+                    Errno::EINVAL
+                );
+            }
+
+            for optname in [
+                MCAST_BLOCK_SOURCE,
+                MCAST_UNBLOCK_SOURCE,
+                MCAST_JOIN_SOURCE_GROUP,
+                MCAST_LEAVE_SOURCE_GROUP,
+            ] {
+                let mut oversized = vec![0u8; source_size + 8];
+                oversized[0..4].copy_from_slice(&1u32.to_le_bytes());
+                write_sockaddr(&mut oversized, group_offset, GROUP);
+                write_sockaddr(&mut oversized, source_offset, SOURCE);
+                assert_eq!(
+                    parse_ipv4_multicast_request(
+                        &oversized[..source_size],
+                        optname,
+                        pointer_width,
+                    )
+                    .unwrap(),
+                    (GROUP, INTERFACE, Some(SOURCE))
+                );
+                assert_eq!(
+                    parse_ipv4_multicast_request(&oversized, optname, pointer_width).unwrap(),
+                    (GROUP, INTERFACE, Some(SOURCE))
+                );
+                assert_eq!(
+                    parse_ipv4_multicast_request(
+                        &oversized[..source_size - 1],
+                        optname,
+                        pointer_width,
+                    )
+                    .unwrap_err(),
+                    Errno::EINVAL
+                );
+            }
+
+            let invalid_size = if pointer_width == WASM32_POINTER_WIDTH {
+                layout::WASM32_GROUP_REQ_SIZE
+            } else {
+                layout::WASM64_GROUP_REQ_SIZE
+            } as usize;
+            assert_eq!(
+                parse_ipv4_multicast_request(
+                    &vec![0u8; invalid_size],
+                    MCAST_JOIN_GROUP,
+                    pointer_width,
+                )
+                .unwrap_err(),
+                Errno::EAFNOSUPPORT
+            );
+        }
     }
 
     #[test]

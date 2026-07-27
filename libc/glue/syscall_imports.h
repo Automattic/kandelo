@@ -726,7 +726,7 @@ KERNEL_IMPORT(kernel_get_argc)
 uint32_t kernel_get_argc(void);
 
 KERNEL_IMPORT(kernel_argv_read)
-uint32_t kernel_argv_read(uint32_t index, uint8_t *buf_ptr, uint32_t buf_max);
+int32_t kernel_argv_read(uint32_t index, uint8_t *buf_ptr, uint32_t buf_max);
 
 /* ------------------------------------------------------------------ */
 /* SysV IPC                                                            */

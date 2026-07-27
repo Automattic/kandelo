@@ -117,10 +117,12 @@ const typedArrayByteLength = intrinsicObjectGetOwnPropertyDescriptor(
  * borrowed bytes before returning. `kernel_handle_channel` scopes its raw
  * mailbox view to decoding/publishing and clears the active task binding;
  * `kernel_spawn_process` parses the complete blob into owned Rust values
- * before it enters process-table or host work. The transfer execute export
- * names no raw pointer, but its token authorizes Rust to borrow the allocation
- * represented by this exact lease. Adding a name requires the same lifetime
- * review and a pointer-position update below.
+ * before it enters process-table or host work; and
+ * `kernel_process_metadata_stage` copies one complete entry into a token-owned
+ * Rust vector before returning. The transfer execute export names no raw
+ * pointer, but its token authorizes Rust to borrow the allocation represented
+ * by this exact lease. Adding a name requires the same lifetime review and a
+ * pointer-position update below.
  */
 /** @internal Exported only for the Rust/host semantic-role drift contract. */
 export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
@@ -129,6 +131,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_drain_wakeup_events",
   "kernel_enum_procs",
   "kernel_get_cwd",
+  "kernel_get_dirfd_path",
   "kernel_get_fd_path",
   "kernel_getrusage",
   "kernel_getsockopt",
@@ -142,9 +145,9 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_pipe_read",
   "kernel_pipe_write",
   "kernel_poll",
+  "kernel_process_metadata_stage",
   "kernel_pty_master_read",
   "kernel_pty_master_write",
-  "kernel_push_process_metadata_entry",
   "kernel_read_proc_maps",
   "kernel_recv",
   "kernel_select",
@@ -231,16 +234,17 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_tcgetattr":
       return REQUIRED_POINTER_1;
     case "kernel_dequeue_signal":
+    case "kernel_get_dirfd_path":
     case "kernel_get_fd_path":
     case "kernel_ioctl":
     case "kernel_ipc_shm_read_chunk":
     case "kernel_ipc_shm_write_chunk":
     case "kernel_pipe_read":
     case "kernel_pipe_write":
-    case "kernel_push_process_metadata_entry":
     case "kernel_spawn_process":
     case "kernel_tcsetattr":
       return REQUIRED_POINTER_2;
+    case "kernel_process_metadata_stage":
     case "kernel_setsockopt":
     case "kernel_socketpair":
       return REQUIRED_POINTER_3;
@@ -287,6 +291,7 @@ function isKernelScratchExportName(
     case "kernel_drain_wakeup_events":
     case "kernel_enum_procs":
     case "kernel_get_cwd":
+    case "kernel_get_dirfd_path":
     case "kernel_get_fd_path":
     case "kernel_getrusage":
     case "kernel_getsockopt":
@@ -300,9 +305,9 @@ function isKernelScratchExportName(
     case "kernel_pipe_read":
     case "kernel_pipe_write":
     case "kernel_poll":
+    case "kernel_process_metadata_stage":
     case "kernel_pty_master_read":
     case "kernel_pty_master_write":
-    case "kernel_push_process_metadata_entry":
     case "kernel_read_proc_maps":
     case "kernel_recv":
     case "kernel_select":
