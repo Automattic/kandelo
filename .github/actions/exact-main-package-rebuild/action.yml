@@ -187,8 +187,16 @@ runs:
         EXACT_MAIN_PACKAGE_CACHE_ROOT="$(
           mktemp -d "$RUNNER_TEMP/exact-main-package-cache.XXXXXX"
         )"
-        export EXACT_MAIN_PACKAGE_CACHE_ROOT
+        # WHY: dev-shell.sh drops ambient variables by design. Carry this
+        # job-local path as a command argument so an empty value cannot turn
+        # the isolated cache into a relative directory inside the checkout.
         bash scripts/dev-shell.sh bash -c '
+          set -euo pipefail
+          exact_main_package_cache_root="$1"
+          [[ "$exact_main_package_cache_root" = /* ]] || {
+            echo "::error::exact-main package cache root must be absolute"
+            exit 2
+          }
           HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
           cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
             archive-stage \
@@ -199,11 +207,11 @@ runs:
               --build-host "${{ steps.provenance.outputs.build-host }}" \
               --source-repository "https://github.com/${{ github.repository }}" \
               --source-commit "${{ inputs.source-sha }}" \
-              --cache-root "$EXACT_MAIN_PACKAGE_CACHE_ROOT" \
+              --cache-root "$exact_main_package_cache_root" \
               --binaries-dir "$(pwd)/binaries" \
               --expected-cache-key-sha "${{ inputs.cache-key-sha }}" \
               --force-source-build
-        '
+        ' exact-main-package-rebuild "$EXACT_MAIN_PACKAGE_CACHE_ROOT"
         archive_path="$(find "$RUNNER_TEMP/staged" -name '*.tar.zst' -print -quit)"
         [ -n "$archive_path" ] || {
           echo "::error::archive-stage produced no package archive"

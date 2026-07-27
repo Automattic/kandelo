@@ -71,7 +71,7 @@ archive_count="$(grep -c '^[[:space:]]*archive-stage \\' "$EXACT_REBUILD_ACTION"
 for required_arg in \
   '--source-repository "https://github.com/${{ github.repository }}"' \
   '--source-commit "${{ inputs.source-sha }}"' \
-  '--cache-root "$EXACT_MAIN_PACKAGE_CACHE_ROOT"' \
+  '--cache-root "$exact_main_package_cache_root"' \
   '--force-source-build'
 do
   count="$(grep -Fc -- "$required_arg" "$EXACT_REBUILD_ACTION")"
@@ -81,6 +81,30 @@ done
 grep -Fq 'mktemp -d "$RUNNER_TEMP/exact-main-package-cache.XXXXXX"' \
   "$EXACT_REBUILD_ACTION" ||
   fail "exact-main archive builds may reuse an older cache-equivalent dependency"
+
+build_block="$(
+  awk '
+    /- name: Build exact-main package archive/ { inside = 1 }
+    inside && /- name: Upload same-run package artifact/ { exit }
+    inside { print }
+  ' "$EXACT_REBUILD_ACTION"
+)"
+for cache_root_handoff in \
+  'exact_main_package_cache_root="$1"' \
+  '[[ "$exact_main_package_cache_root" = /* ]]' \
+  "' exact-main-package-rebuild \"\$EXACT_MAIN_PACKAGE_CACHE_ROOT\""
+do
+  grep -Fq "$cache_root_handoff" <<<"$build_block" ||
+    fail "exact-main cache root does not cross the dev-shell boundary as one absolute argument: $cache_root_handoff"
+done
+if grep -Eq '^[[:space:]]*export[[:space:]]+EXACT_MAIN_PACKAGE_CACHE_ROOT' \
+    <<<"$build_block"; then
+  fail "exact-main cache root still relies on ambient exported state"
+fi
+if grep -Eq -- '--keep[[:space:]]+EXACT_MAIN_PACKAGE_CACHE_ROOT([[:space:]\\]|$)' \
+    "$DEV_SHELL"; then
+  fail "exact-main cache root must not become ambient dev-shell state"
+fi
 
 publication_recheck_block="$(
   awk '
@@ -140,10 +164,14 @@ ARCH=ambient-arch \
 CACHE_KEY_SHA=ambient-cache-key \
 VERSION=ambient-version \
 REVISION=999 \
+EXACT_MAIN_PACKAGE_CACHE_ROOT=ambient-cache-root \
 PATH="$(dirname "$nix_bin"):$PATH" \
   bash "$DEV_SHELL" bash -c '
     set -euo pipefail
-    for name in ABI PACKAGE ARCH CACHE_KEY_SHA VERSION REVISION; do
+    for name in \
+      ABI PACKAGE ARCH CACHE_KEY_SHA VERSION REVISION \
+      EXACT_MAIN_PACKAGE_CACHE_ROOT
+    do
       [ -z "${!name+x}" ] || {
         echo "$name crossed the dev-shell boundary as ambient state" >&2
         exit 1
@@ -169,6 +197,14 @@ PATH="$(dirname "$nix_bin"):$PATH" bash "$DEV_SHELL" env \
     [ "$REVISION" = 7 ]
   ' ||
   fail "explicit publication admission state did not cross the dev-shell boundary intact"
+
+PATH="$(dirname "$nix_bin"):$PATH" bash "$DEV_SHELL" bash -c '
+  set -euo pipefail
+  [ "$1" = /tmp/kandelo-exact-main-package-cache-fixture ]
+  [[ "$1" = /* ]]
+  [ -z "${EXACT_MAIN_PACKAGE_CACHE_ROOT+x}" ]
+' exact-main-package-rebuild /tmp/kandelo-exact-main-package-cache-fixture ||
+  fail "exact-main cache root did not cross the dev-shell boundary only as an absolute argument"
 
 grep -Fq "if: failure() && steps.provenance.outcome == 'success' && steps.publication.outputs.admitted == 'true' && steps.build.outcome == 'failure'" \
   "$EXACT_REBUILD_ACTION" ||
