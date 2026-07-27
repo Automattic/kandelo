@@ -14,6 +14,7 @@ import {
   KERNEL_WAIT_RESULT_SI_CODE_OFFSET,
   KERNEL_WAIT_RESULT_SI_STATUS_OFFSET,
   KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET,
+  PROCESS_STATE_EXITED,
   PROCESS_STATE_RUNNING,
   PROCESS_STATE_STOPPED,
   STRUCT_SIZE_WASM_RUSAGE_WIRE,
@@ -1635,16 +1636,80 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(kernelHandle).not.toHaveBeenCalled();
   });
 
-  it("does not publish a clean exit when the trapped kernel leaves the process live", () => {
+  it("accepts a normally returned kernel exit only after observing Exited state", () => {
+    const pid = 42;
+    const memory = createSharedMemory();
+    const channel = createChannel(pid, memory);
+    const kernelHandle = vi.fn();
+    const onExit = vi.fn();
+    const worker = createWorkerHarness({
+      kernel_get_process_exit_signal: vi.fn(() => 0),
+      kernel_handle_channel: kernelHandle,
+      kernel_get_process_state: vi.fn(() => PROCESS_STATE_EXITED),
+    });
+    worker.processes = new Map([[pid, { channels: [channel], memory }]]);
+    worker.hostReaped = new Set();
+    worker.callbacks = { onExit };
+    worker.releaseAllSharedMemoryForProcess = vi.fn();
+    worker.discardStoppedChannelStateForProcess = vi.fn();
+    worker.drainAndProcessWakeupEvents = vi.fn();
+    worker.notifyParentOfExitedProcess = vi.fn();
+    worker.completeProcessExitHandshake = vi.fn();
+    worker.scheduleWakeBlockedRetries = vi.fn();
+
+    worker.handleExit(channel, ABI_SYSCALLS.ExitGroup, [7]);
+
+    expect(kernelHandle).toHaveBeenCalledOnce();
+    expect(worker.hostReaped.has(pid)).toBe(true);
+    expect(worker.notifyParentOfExitedProcess).toHaveBeenCalledWith(pid);
+    expect(worker.completeProcessExitHandshake).toHaveBeenCalledWith(
+      channel,
+      ABI_SYSCALLS.ExitGroup,
+    );
+    expect(onExit).toHaveBeenCalledWith(pid, 7);
+  });
+
+  it("propagates an unexpected kernel exit trap without reporting success", () => {
+    const pid = 42;
+    const memory = createSharedMemory();
+    const channel = createChannel(pid, memory);
+    const trap = new WebAssembly.RuntimeError("unreachable");
+    const onExit = vi.fn();
+    const worker = createWorkerHarness({
+      kernel_get_process_exit_signal: vi.fn(() => 0),
+      kernel_handle_channel: vi.fn(() => {
+        throw trap;
+      }),
+      kernel_get_process_state: vi.fn(() => PROCESS_STATE_EXITED),
+    });
+    worker.processes = new Map([[pid, { channels: [channel], memory }]]);
+    worker.hostReaped = new Set();
+    worker.callbacks = { onExit };
+    worker.releaseAllSharedMemoryForProcess = vi.fn();
+    worker.discardStoppedChannelStateForProcess = vi.fn();
+    worker.drainAndProcessWakeupEvents = vi.fn();
+    worker.notifyParentOfExitedProcess = vi.fn();
+    worker.completeProcessExitHandshake = vi.fn();
+    worker.scheduleWakeBlockedRetries = vi.fn();
+
+    expect(() =>
+      worker.handleExit(channel, ABI_SYSCALLS.ExitGroup, [7])
+    ).toThrow(trap);
+
+    expect(worker.hostReaped.has(pid)).toBe(false);
+    expect(worker.notifyParentOfExitedProcess).not.toHaveBeenCalled();
+    expect(worker.completeProcessExitHandshake).not.toHaveBeenCalled();
+    expect(onExit).not.toHaveBeenCalled();
+  });
+
+  it("rejects a normally returned kernel exit that leaves the process live", () => {
     const pid = 42;
     const memory = createSharedMemory();
     const channel = createChannel(pid, memory);
     const markProcessSignaled = vi.fn(() => 0);
     const onExit = vi.fn();
     const worker = createWorkerHarness({
-      kernel_handle_channel: vi.fn(() => {
-        throw new WebAssembly.RuntimeError("unreachable");
-      }),
+      kernel_handle_channel: vi.fn(),
       kernel_get_process_state: vi.fn(() => PROCESS_STATE_RUNNING),
       kernel_mark_process_signaled: markProcessSignaled,
     });

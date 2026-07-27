@@ -2702,9 +2702,11 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         // Process control
         34 => {
             kernel_exit(a1);
+            0
         } // SYS_EXIT (thread exit)
         387 => {
             kernel_exit(a1);
+            0
         } // SYS_EXIT_GROUP (process exit)
         35 => kernel_kill(a1, a2 as u32), // SYS_KILL
         38 => kernel_raise(a1 as u32),    // SYS_RAISE
@@ -7187,32 +7189,29 @@ pub extern "C" fn kernel_mprotect(addr: usize, len: usize, prot: u32) -> i32 {
 
 /// Exit the process. Closes all fds and dir streams, sets state to Exited.
 /// For thread workers, just sets exit_status without destroying shared state.
+///
+/// This kernel-side transaction returns so a reusable kernel Wasm instance can
+/// run its compiler-generated shadow-stack epilogue. The guest's separate
+/// `kernel_exit` import remains non-returning and traps only after the channel
+/// handshake completes.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_exit(status: i32) -> ! {
+pub extern "C" fn kernel_exit(status: i32) {
     {
         let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
         if unsafe { host_is_thread_worker() } != 0 {
             // Thread exit: don't destroy shared process state (FDs, pipes, etc.).
-            // Just set exit status and return — the glue will trap via unreachable.
+            // Just set exit status and return — the guest import traps after
+            // the host completes its exit-channel handshake.
             proc.exit_status = status & 0xff;
             proc.exit_signal = 0;
-            // Drop GKL guard before trapping
         } else {
             let mut host = WasmHostIO;
             syscalls::sys_exit_with_locks(proc, advisory_locks, &mut host, status);
         }
     } // _gkl dropped here — GKL released
-    // `kernel_handle_channel` normally consumes its one-shot task binding on
-    // return. `_exit` deliberately traps instead, so consume it here before
-    // control leaves the kernel and no exited task remains ambient authority.
+    // Preserve direct-export safety as well as the normal dispatcher contract.
+    // `kernel_handle_channel` clears the same binding again after this returns.
     unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
-    // Halt execution — musl's _exit loops forever if we just return.
-    #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-    unsafe {
-        core::hint::unreachable_unchecked();
-    }
-    #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-    unreachable!("kernel_exit should not return");
 }
 
 /// Get the exit status of the current process (set by kernel_exit).
@@ -9384,9 +9383,12 @@ pub extern "C" fn kernel_realpath(
 // execve
 // ---------------------------------------------------------------------------
 
-/// Execute a new program. On success, traps (never returns) because the
-/// process image is being replaced asynchronously by the host. On failure,
-/// returns negative errno.
+/// Execute a new program. Returns 0 once the kernel and host have accepted the
+/// replacement, or negative errno on failure.
+///
+/// The reusable kernel Wasm must return through its shadow-stack epilogue even
+/// though POSIX `execve` does not return to the old guest image. The host owns
+/// stopping that guest Worker after this transaction succeeds.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_execve(path_ptr: *const u8, path_len: u32) -> i32 {
     let result = {
@@ -9405,26 +9407,17 @@ pub extern "C" fn kernel_execve(path_ptr: *const u8, path_len: u32) -> i32 {
 
     match result {
         Ok(()) => {
-            // Exec succeeded — the host is asynchronously replacing this process
-            // image. Trap to stop the current wasm execution immediately.
-            // GKL must be released before trapping so subsequent centralized
-            // kernel calls during the host's exec transition do not deadlock.
+            // Preserve the one-shot binding contract for direct export users;
+            // kernel_handle_channel clears the same binding again on return.
             unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
-            #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-            unsafe {
-                core::hint::unreachable_unchecked();
-            }
-            #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-            {
-                0
-            }
+            0
         }
         Err(e) => -(e as i32),
     }
 }
 
 /// Execute a new program via file descriptor (fexecve / execveat).
-/// Same trap-on-success semantics as kernel_execve.
+/// Same return contract as kernel_execve.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_execveat(
     dirfd: i32,
@@ -9448,14 +9441,7 @@ pub extern "C" fn kernel_execveat(
     match result {
         Ok(()) => {
             unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
-            #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-            unsafe {
-                core::hint::unreachable_unchecked();
-            }
-            #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-            {
-                0
-            }
+            0
         }
         Err(e) => -(e as i32),
     }

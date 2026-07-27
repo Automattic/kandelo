@@ -193,9 +193,18 @@ not accept a numeric TID, and rejects proof replay, duplicate offsets, duplicate
 TID ownership, and attempts to substitute a different valid sibling task. A
 successful `kernel_set_current_tid` binding authorizes exactly one
 `kernel_handle_channel` call and is cleared after every return. Because
-`_exit` intentionally traps instead of returning through the dispatcher, it
-clears the binding before trapping. Missing, rejected, stale, or exited task
-bindings fail closed with `ESRCH`; no PID-only ambient selector remains.
+the reusable kernel's exit transaction returns through the dispatcher, its
+normal epilogue restores the kernel shadow stack and clears that binding. The
+separate guest `kernel_exit` import traps only after the host completes the
+exit-channel handshake, preserving `_exit`'s non-returning program contract
+without trapping the reusable kernel instance. Missing, rejected, stale, or
+exited task bindings fail closed with `ESRCH`; no PID-only ambient selector
+remains.
+
+The centralized host intercepts guest `execve` and `execveat` before generic
+dispatch. Their legacy/direct reusable-kernel exports likewise return after
+host acceptance; host Worker replacement, rather than a kernel trap, prevents
+the old guest image from resuming.
 
 All host-initiated guest mutations that previously depended on such a selector
 now carry their authority explicitly. `kernel_dequeue_signal(pid, tid,
