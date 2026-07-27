@@ -2011,13 +2011,24 @@ jq --slurpfile support "$RUNTIME_SUPPORT" '
           tap_repository: "kandelo-dev/homebrew-tap-core",
           tap_commit: $audit.metadata_tap_commit,
           kandelo_repository: "Automattic/kandelo",
-          kandelo_commit: $audit.kandelo_commit,
+          # Model the real incremental catalog: unchanged immutable bottles can
+          # truthfully predate the aggregate metadata publication.
+          kandelo_commit: (
+            if $formula.name == "gawk"
+            then ("c" * 40)
+            else $audit.kandelo_commit
+            end
+          ),
           formula_sha256: ("b" * 64)
         }
       }]
     }]
   }
 ' "$SOURCE_LOCK" >"$metadata"
+
+baseline_provenance_sha="$(node "$CHECKER" \
+  --print-runtime-bottle-provenance-sha256 \
+  "$metadata" "$RUNTIME_SUPPORT")"
 
 checker_with_metadata() {
   local lock_path="$1"
@@ -2027,15 +2038,87 @@ checker_with_metadata() {
   metadata_sha="$(sha256sum "$metadata_path")"
   metadata_sha="${metadata_sha%% *}"
   jq --arg metadata_sha "$metadata_sha" \
-    '.availability.audited_catalog.metadata_sha256 = $metadata_sha' \
+    --arg provenance_sha "$baseline_provenance_sha" '
+      .availability.audited_catalog.metadata_sha256 = $metadata_sha |
+      .availability.audited_catalog.runtime_bottle_provenance_sha256 =
+        $provenance_sha
+    ' \
     "$RUNTIME_SUPPORT" >"$support_path"
   node "$CHECKER" "$BREWFILE" "$lock_path" "$metadata_path" "$support_path"
 }
 
+jq -e '
+  .kandelo_commit !=
+    (.packages[] | select(.name == "gawk") |
+      .bottles[] | select(.arch == "wasm32") |
+      .built_from.kandelo_commit)
+' "$metadata" >/dev/null ||
+  fail "synthetic runtime catalog does not exercise mixed bottle producers"
 metadata_output="$(checker_with_metadata "$SOURCE_LOCK" "$metadata")"
 grep -Fq "$SOURCE_ROOT_COUNT reviewed migration roots and $SOURCE_CLOSURE_COUNT Formulae" \
   <<<"$metadata_output" ||
   fail "main-shell checker did not validate the exact synthetic tap closure"
+
+provenance_drift="$TMP_ROOT/runtime-provenance-drift.json"
+jq '
+  (.packages[] | select(.name == "gawk") |
+    .bottles[] | select(.arch == "wasm32") |
+    .built_from.kandelo_commit) = ("d" * 40)
+' "$metadata" >"$provenance_drift"
+provenance_drift_metadata_sha="$(sha256sum "$provenance_drift")"
+provenance_drift_metadata_sha="${provenance_drift_metadata_sha%% *}"
+provenance_drift_support="$TMP_ROOT/runtime-provenance-drift-support.json"
+jq --arg metadata_sha "$provenance_drift_metadata_sha" \
+  --arg provenance_sha "$baseline_provenance_sha" '
+    .availability.audited_catalog.metadata_sha256 = $metadata_sha |
+    .availability.audited_catalog.runtime_bottle_provenance_sha256 =
+      $provenance_sha
+  ' "$RUNTIME_SUPPORT" >"$provenance_drift_support"
+expect_failure "runtime-support bottle provenance digest differs from the reviewed cohort" \
+  node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" \
+    "$provenance_drift" "$provenance_drift_support"
+
+aggregate_drift="$TMP_ROOT/runtime-aggregate-authority-drift.json"
+jq '.kandelo_commit = ("e" * 40)' "$metadata" >"$aggregate_drift"
+aggregate_drift_metadata_sha="$(sha256sum "$aggregate_drift")"
+aggregate_drift_metadata_sha="${aggregate_drift_metadata_sha%% *}"
+aggregate_drift_support="$TMP_ROOT/runtime-aggregate-authority-drift-support.json"
+jq --arg metadata_sha "$aggregate_drift_metadata_sha" \
+  --arg provenance_sha "$baseline_provenance_sha" '
+    .availability.audited_catalog.metadata_sha256 = $metadata_sha |
+    .availability.audited_catalog.runtime_bottle_provenance_sha256 =
+      $provenance_sha
+  ' "$RUNTIME_SUPPORT" >"$aggregate_drift_support"
+expect_failure "tap metadata differs from the exact audited ABI-42 catalog" \
+  node "$CHECKER" "$BREWFILE" "$SOURCE_LOCK" \
+    "$aggregate_drift" "$aggregate_drift_support"
+
+unknown_provenance_support="$TMP_ROOT/runtime-unknown-provenance-support.json"
+jq '
+  .availability.reusable_public_abi42[0] =
+    "kandelo-dev/tap-core/unknown"
+' "$RUNTIME_SUPPORT" >"$unknown_provenance_support"
+expect_failure "Formula unknown has no admitted package metadata" \
+  node "$CHECKER" --print-runtime-bottle-provenance-sha256 \
+    "$metadata" "$unknown_provenance_support"
+
+duplicate_provenance_support="$TMP_ROOT/runtime-duplicate-provenance-support.json"
+jq '
+  .availability.reusable_public_abi42 +=
+    [.availability.reusable_public_abi42[0]]
+' "$RUNTIME_SUPPORT" >"$duplicate_provenance_support"
+expect_failure "runtime-support provenance cohort contains duplicate" \
+  node "$CHECKER" --print-runtime-bottle-provenance-sha256 \
+    "$metadata" "$duplicate_provenance_support"
+
+duplicate_runtime_bottle="$TMP_ROOT/duplicate-runtime-bottle.json"
+jq '
+  (.packages[] | select(.name == "gawk") | .bottles) +=
+    [(.packages[] | select(.name == "gawk") | .bottles[0])]
+' "$metadata" >"$duplicate_runtime_bottle"
+expect_failure "Formula gawk has 2 wasm32 bottle identities, expected one" \
+  node "$CHECKER" --print-runtime-bottle-provenance-sha256 \
+    "$duplicate_runtime_bottle" "$RUNTIME_SUPPORT"
 
 jq 'del(.formula_closure)' "$SOURCE_LOCK" >"$lock"
 expect_failure "packages/formula_closure/substitutions must be arrays" \

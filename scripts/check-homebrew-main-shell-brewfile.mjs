@@ -6,21 +6,13 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const brewfile = resolve(
-  process.argv[2] ?? `${repoRoot}/homebrew/main-shell.Brewfile`,
-);
-const lockPath = resolve(
-  process.argv[3] ?? `${repoRoot}/homebrew/main-shell-migration-lock.json`,
-);
-const metadataPath = process.argv[4] ? resolve(process.argv[4]) : undefined;
-const runtimeSupportPath = resolve(
-  process.argv[5] ??
-    `${repoRoot}/homebrew/main-shell-homebrew-runtime-support.json`,
-);
 const tapRepository = "kandelo-dev/homebrew-tap-core";
 const tapName = "kandelo-dev/tap-core";
 const gitShaPattern = /^[0-9a-f]{40}$/;
 const formulaIdentityPattern = /^kandelo-dev\/tap-core\/[a-z0-9][a-z0-9._-]*$/;
+const provenanceDigestFlag = "--print-runtime-bottle-provenance-sha256";
+const provenanceDigestDomain =
+  "kandelo-homebrew-runtime-bottle-provenance-v1\u0000";
 const baseRoots = [
   { name: "bash", version: "5.2.37" },
   { name: "dash", version: "0.5.12" },
@@ -97,6 +89,33 @@ const deferredRuntimeSupportFormulaOrder = [
   `${tapName}/file-formula`,
 ];
 
+if (process.argv[2] === provenanceDigestFlag) {
+  if (process.argv.length !== 5) {
+    throw new Error(
+      `usage: check-homebrew-main-shell-brewfile.mjs ${provenanceDigestFlag} ` +
+        "<metadata.json> <runtime-support.json>",
+    );
+  }
+  console.log(
+    computeRuntimeBottleProvenanceFromFiles(
+      resolve(process.argv[3]),
+      resolve(process.argv[4]),
+    ),
+  );
+  process.exit(0);
+}
+
+const brewfile = resolve(
+  process.argv[2] ?? `${repoRoot}/homebrew/main-shell.Brewfile`,
+);
+const lockPath = resolve(
+  process.argv[3] ?? `${repoRoot}/homebrew/main-shell-migration-lock.json`,
+);
+const metadataPath = process.argv[4] ? resolve(process.argv[4]) : undefined;
+const runtimeSupportPath = resolve(
+  process.argv[5] ??
+    `${repoRoot}/homebrew/main-shell-homebrew-runtime-support.json`,
+);
 const lock = readMigrationLock(lockPath);
 const runtimeSupport = readRuntimeSupport(runtimeSupportPath, lock);
 const shellDependencies = readDependencies(
@@ -579,14 +598,21 @@ function validateTapMetadata(lock, runtimeSupport, path) {
     "tap metadata dependency closure does not match the Homebrew runtime-support layer",
     (value) => value,
   );
-  for (const identity of runtimeSupport.formulaOrder) {
-    const name = identity.slice(`${tapName}/`.length);
-    const pkg = byName.get(name);
-    // WHY: a named Formula is not an activatable lazy tree until the admitted
-    // catalog supplies exact successful ABI, digest, size, and canonical
-    // public-registry identity. Failing here prevents a partial brew runtime
-    // from being assembled from stale or merely source-level metadata.
-    assertAdmittedRuntimeSupportBottle(pkg, name, auditedCatalog);
+  const actualRuntimeBottleProvenanceSha256 =
+    computeRuntimeBottleProvenanceSha256(
+      byName,
+      runtimeSupport.availability.reusablePublicAbi42,
+      auditedCatalog,
+    );
+  if (
+    actualRuntimeBottleProvenanceSha256 !==
+    auditedCatalog.runtime_bottle_provenance_sha256
+  ) {
+    throw new Error(
+      "Homebrew runtime-support bottle provenance digest differs from the " +
+        `reviewed cohort: expected ${auditedCatalog.runtime_bottle_provenance_sha256}, ` +
+        `actual ${actualRuntimeBottleProvenanceSha256}`,
+    );
   }
 }
 
@@ -808,8 +834,7 @@ function readRuntimeSupport(path, lock) {
   if (
     !isRecord(lifecycleInstall) ||
     lifecycleInstall.tap !== "brandonpayton/kandelo-canary" ||
-    lifecycleInstall.repository !==
-      "brandonpayton/homebrew-kandelo-canary" ||
+    lifecycleInstall.repository !== "brandonpayton/homebrew-kandelo-canary" ||
     typeof lifecycleInstall.revision !== "string" ||
     !/^[0-9a-f]{40}$/.test(lifecycleInstall.revision) ||
     lifecycleInstall.formula !== "m4" ||
@@ -860,12 +885,14 @@ function readRuntimeSupportAvailability(
   const auditedCatalog = value.audited_catalog;
   if (
     Object.keys(auditedCatalog).sort().join("\0") !==
-      "checkout_commit\0kandelo_abi\0kandelo_commit\0metadata_sha256\0metadata_tap_commit\0release_tag\0required_arch" ||
+      "checkout_commit\0kandelo_abi\0kandelo_commit\0metadata_sha256\0metadata_tap_commit\0release_tag\0required_arch\0runtime_bottle_provenance_sha256" ||
     auditedCatalog.checkout_commit !== lock.catalog.tap_commit ||
     !gitShaPattern.test(auditedCatalog.metadata_tap_commit) ||
     !gitShaPattern.test(auditedCatalog.kandelo_commit) ||
     typeof auditedCatalog.metadata_sha256 !== "string" ||
     !/^[0-9a-f]{64}$/.test(auditedCatalog.metadata_sha256) ||
+    typeof auditedCatalog.runtime_bottle_provenance_sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/.test(auditedCatalog.runtime_bottle_provenance_sha256) ||
     auditedCatalog.kandelo_abi !== 42 ||
     auditedCatalog.release_tag !== "bottles-abi-v42" ||
     auditedCatalog.required_arch !== "wasm32"
@@ -942,7 +969,7 @@ function readRuntimeSupportAvailability(
   return { auditedCatalog, reusablePublicAbi42 };
 }
 
-function assertAdmittedRuntimeSupportBottle(pkg, name, catalog) {
+function readAdmittedRuntimeSupportBottle(pkg, name, catalog) {
   if (!isRecord(pkg) || !Array.isArray(pkg.bottles)) {
     throw new Error(
       `Homebrew runtime-support Formula ${name} has no admitted package metadata`,
@@ -973,9 +1000,12 @@ function assertAdmittedRuntimeSupportBottle(pkg, name, catalog) {
     !Array.isArray(bottle.runtime_support) ||
     !bottle.runtime_support.includes("node") ||
     builtFrom === undefined ||
+    Object.keys(builtFrom).sort().join("\0") !==
+      "formula_sha256\0kandelo_commit\0kandelo_repository\0tap_commit\0tap_repository" ||
     builtFrom.tap_repository !== tapRepository ||
     builtFrom.kandelo_repository !== "Automattic/kandelo" ||
-    builtFrom.kandelo_commit !== catalog.kandelo_commit ||
+    typeof builtFrom.kandelo_commit !== "string" ||
+    !gitShaPattern.test(builtFrom.kandelo_commit) ||
     typeof builtFrom.tap_commit !== "string" ||
     !gitShaPattern.test(builtFrom.tap_commit) ||
     typeof builtFrom.formula_sha256 !== "string" ||
@@ -986,6 +1016,95 @@ function assertAdmittedRuntimeSupportBottle(pkg, name, catalog) {
         `${catalog.required_arch} ABI-${catalog.kandelo_abi} bottle identity`,
     );
   }
+  return bottle;
+}
+
+function computeRuntimeBottleProvenanceSha256(
+  byName,
+  formulaIdentities,
+  catalog,
+) {
+  if (!Array.isArray(formulaIdentities)) {
+    throw new Error(
+      "Homebrew runtime-support provenance cohort must be an array",
+    );
+  }
+  const identities = formulaIdentities.map((identity, index) =>
+    readFormulaIdentity(identity, `runtime provenance cohort[${index}]`),
+  );
+  assertUnique(identities, "Homebrew runtime-support provenance cohort");
+
+  const projection = identities.map((identity) => {
+    const name = identity.slice(`${tapName}/`.length);
+    const pkg = byName.get(name);
+    // WHY: aggregate metadata describes the latest catalog publication, while
+    // an unchanged immutable bottle truthfully retains the commit that built
+    // it. Hash the exact ordered bottle/provenance projection so reviewers can
+    // admit a mixed-producer catalog without rewriting historical provenance.
+    const bottle = readAdmittedRuntimeSupportBottle(pkg, name, catalog);
+    return {
+      full_name: pkg.full_name,
+      version: pkg.version,
+      formula_revision: pkg.formula_revision,
+      bottle_rebuild: pkg.bottle_rebuild,
+      bottle: {
+        arch: bottle.arch,
+        bottle_tag: bottle.bottle_tag,
+        kandelo_abi: bottle.kandelo_abi,
+        url: bottle.url,
+        sha256: bottle.sha256,
+        bytes: bottle.bytes,
+        cache_key_sha: bottle.cache_key_sha,
+        built_from: {
+          tap_repository: bottle.built_from.tap_repository,
+          tap_commit: bottle.built_from.tap_commit,
+          kandelo_repository: bottle.built_from.kandelo_repository,
+          kandelo_commit: bottle.built_from.kandelo_commit,
+          formula_sha256: bottle.built_from.formula_sha256,
+        },
+      },
+    };
+  });
+  return createHash("sha256")
+    .update(provenanceDigestDomain)
+    .update(JSON.stringify(projection))
+    .digest("hex");
+}
+
+function computeRuntimeBottleProvenanceFromFiles(metadataPath, supportPath) {
+  const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+  const support = JSON.parse(readFileSync(supportPath, "utf8"));
+  const catalog = support?.availability?.audited_catalog;
+  const formulaIdentities = support?.availability?.reusable_public_abi42;
+  if (
+    !isRecord(metadata) ||
+    metadata.schema !== 1 ||
+    metadata.tap_repository !== tapRepository ||
+    metadata.tap_name !== tapName ||
+    !Array.isArray(metadata.packages) ||
+    !isRecord(catalog) ||
+    catalog.kandelo_abi !== 42 ||
+    catalog.required_arch !== "wasm32" ||
+    metadata.kandelo_abi !== catalog.kandelo_abi ||
+    metadata.release_tag !== catalog.release_tag
+  ) {
+    throw new Error(
+      "runtime bottle provenance inputs lack canonical metadata, cohort, ABI, or architecture",
+    );
+  }
+  const byName = new Map();
+  for (const [index, value] of metadata.packages.entries()) {
+    const pkg = readTapMetadataPackage(value, `metadata.packages[${index}]`);
+    if (byName.has(pkg.name)) {
+      throw new Error(`tap metadata contains duplicate Formula ${pkg.name}`);
+    }
+    byName.set(pkg.name, pkg);
+  }
+  return computeRuntimeBottleProvenanceSha256(
+    byName,
+    formulaIdentities,
+    catalog,
+  );
 }
 
 function readTapMetadataPackage(value, label) {
