@@ -9,7 +9,7 @@
     "demo_config_sha256": "1ef5f56b4a4425fc19d38da260a5742aa6be53655b8c16489d9427bf96b2d1e2",
     "materialization_policy_sha256": "fb170c25f71e6e7fdd3470901b3ab3a42e7765648d55f62fad38230e30461fe0",
     "migration_lock_sha256": "21fb9c3800089b6fdc7e4e8a81ae7faabedbc8abc6db734f6ed11619f5c79141",
-    "runtime_support_sha256": "7997ddcf7e59d8961bd605cc290df8b364e6493e9ffa205b9bcc0e7a81d65a9d"
+    "runtime_support_sha256": "54e45f0b7b97b0401393688c3c616b12fcaa7d0a86b68c4d9c5153a5132544f8"
   },
   "image": null
 }

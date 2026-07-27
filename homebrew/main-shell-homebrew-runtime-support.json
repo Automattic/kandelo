@@ -143,6 +143,7 @@
       "metadata_sha256": "80c08da0680c874b8f8de1936ca7ae0c10a4ed19ed56b24aeead9af2bc8ec1b1",
       "metadata_tap_commit": "fae9503735927f5f63e227b0b5b487ffea7ab0fc",
       "kandelo_commit": "d3805721b887a19382ef1c96b576fc27badc0951",
+      "runtime_bottle_provenance_sha256": "6524beb7511575c912f8d5b36909dcd0c35ed6f6dbc78eb342921a0c5262ceb0",
       "kandelo_abi": 42,
       "release_tag": "bottles-abi-v42",
       "required_arch": "wasm32"
