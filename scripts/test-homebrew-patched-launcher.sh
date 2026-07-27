@@ -1672,6 +1672,50 @@ EOF
   /usr/bin/sudo -n -- /usr/sbin/useradd --system --user-group --no-create-home \
     --home-dir /nonexistent --shell /usr/sbin/nologin "$ISOLATION_RECIPE_USER"
   export KANDELO_HOMEBREW_RECIPE_USER="$ISOLATION_RECIPE_USER"
+  protected_selector_root="$ISOLATION_ROOT/protected-version-selector"
+  escaped_selector_root="$ISOLATION_ROOT/escaped-version-selector"
+  escaped_selector_target_root="$ISOLATION_ROOT/escaped-version-target"
+  replaceable_selector_root="$ISOLATION_ROOT/replaceable-version-selector"
+  /usr/bin/sudo -n -- /usr/bin/install -d -o root -g root -m 0555 \
+    "$protected_selector_root" "$escaped_selector_root" \
+    "$escaped_selector_target_root"
+  /usr/bin/sudo -n -- /usr/bin/install -d \
+    -o "$ISOLATION_BUILD_USER" -g "$(id -gn "$ISOLATION_BUILD_USER")" -m 0755 \
+    "$replaceable_selector_root"
+  /usr/bin/sudo -n -- /usr/bin/install -o root -g root -m 0555 \
+    /usr/bin/true "$protected_selector_root/python3.42"
+  /usr/bin/sudo -n -- /usr/bin/install -o root -g root -m 0555 \
+    /usr/bin/true "$escaped_selector_target_root/python3.42"
+  /usr/bin/sudo -n -- /usr/bin/install \
+    -o "$ISOLATION_BUILD_USER" -g "$(id -gn "$ISOLATION_BUILD_USER")" -m 0755 \
+    /usr/bin/true "$replaceable_selector_root/python3.42"
+  /usr/bin/sudo -n -- /usr/bin/ln -s python3.42 \
+    "$protected_selector_root/python3"
+  /usr/bin/sudo -n -- /usr/bin/ln -s \
+    "$escaped_selector_target_root/python3.42" "$escaped_selector_root/python3"
+  /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- /usr/bin/ln -s python3.42 \
+    "$replaceable_selector_root/python3"
+  HOMEBREW_PATCHED_SUDO_BIN=/usr/bin/sudo
+  homebrew_assert_protected_host_versioned_executable \
+    "$ISOLATION_BUILD_USER" "$protected_selector_root/python3" \
+    "$protected_selector_root/python3" "protected test Python" python3 ||
+    fail "protected root-owned version selector was rejected"
+  homebrew_assert_protected_host_versioned_executable \
+    "$ISOLATION_BUILD_USER" /usr/bin/python3 /usr/bin/python3 python3 python3 ||
+    fail "distribution-provided protected Python selector was rejected"
+  if homebrew_assert_protected_host_versioned_executable \
+      "$ISOLATION_BUILD_USER" "$escaped_selector_root/python3" \
+      "$escaped_selector_root/python3" "escaped test Python" python3 \
+      >/dev/null 2>&1; then
+    fail "version selector escaped its protected system directory"
+  fi
+  if homebrew_assert_protected_host_versioned_executable \
+      "$ISOLATION_BUILD_USER" "$replaceable_selector_root/python3" \
+      "$replaceable_selector_root/python3" "replaceable test Python" python3 \
+      >/dev/null 2>&1; then
+    fail "version selector accepted a build-user-replaceable tool"
+  fi
+  HOMEBREW_PATCHED_SUDO_BIN=""
   assert_real_relocated_xtask_uses_source_alias "$ISOLATION_BUILD_USER"
   /usr/bin/sudo -n -- chown -R \
     "$ISOLATION_BUILD_USER:$(id -gn "$ISOLATION_BUILD_USER")" \
