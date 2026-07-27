@@ -1,11 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import { DeferredWorkerHandle } from "../src/deferred-worker-handle";
-import { CentralizedKernelWorker } from "../src/kernel-worker";
+import {
+  type CentralizedKernelCallbacks,
+  createCentralizedKernelWorkerTestDouble,
+} from "../src/kernel-worker";
+import { KernelReentrantEntryError } from "../src/kernel-entry-gate";
 import { MockWorkerAdapter } from "../src/worker-adapter";
 import {
   ABI_SYSCALLS,
+  CHANNEL_STATUS_COMPLETE,
   CH_ARGS,
   CH_ARG_SIZE,
+  CH_ERRNO,
+  CH_RETURN,
+  CH_STATUS,
   CH_SYSCALL,
   PROCESS_STATE_EXITED,
   PROCESS_STATE_RUNNING,
@@ -61,12 +69,12 @@ describe("DeferredWorkerHandle", () => {
 });
 
 describe("stopped process Worker launch gate", () => {
-  it("holds construction through STOPPED and releases it on SIGCONT", () => {
+  it("holds construction through STOPPED and releases it on SIGCONT", async () => {
     let processState = 1;
     const memory = createSharedMemory();
     const start = vi.fn();
     const cancel = vi.fn();
-    const worker = createWorkerHarness(memory, () => processState);
+    const { worker } = createWorkerHarness(memory, () => processState);
 
     expect(
       worker.startProcessWorkerWhenRunnable(41, memory, start, cancel),
@@ -74,71 +82,191 @@ describe("stopped process Worker launch gate", () => {
     expect(start).not.toHaveBeenCalled();
 
     processState = 0;
-    worker.resumeStoppedProcess(41);
+    expect(
+      worker.testAuthority.resumeStoppedProcessForTest(41),
+    ).toBe(true);
+    await drainLifecycleGate();
 
     expect(start).toHaveBeenCalledOnce();
     expect(cancel).not.toHaveBeenCalled();
-    expect(worker.deferredProcessWorkerStarts.has(41)).toBe(false);
   });
 
-  it("cancels an exact deferred generation on exec replacement", () => {
+  it("cancels an exact deferred generation on exec replacement", async () => {
     let processState = 1;
     const oldMemory = createSharedMemory();
     const newMemory = createSharedMemory();
     const start = vi.fn();
     const cancel = vi.fn();
-    const worker = createWorkerHarness(oldMemory, () => processState);
+    const { worker } = createWorkerHarness(oldMemory, () => processState);
 
     expect(
       worker.startProcessWorkerWhenRunnable(41, oldMemory, start, cancel),
     ).toBe("deferred");
-    worker.processes.set(41, {
+    worker.testAuthority.replaceProcessRegistrationForLifecycleTest({
+      pid: 41,
       memory: newMemory,
-      channels: [
-        {
-          pid: 41,
-          memory: newMemory,
-          channelOffset: 0,
-          i32View: new Int32Array(newMemory.buffer),
-          consecutiveSyscalls: 0,
-        },
-      ],
+      channelOffsets: [0],
     });
     processState = 0;
-    worker.resumeStoppedProcess(41);
+    expect(
+      worker.testAuthority.resumeStoppedProcessForTest(41),
+    ).toBe(true);
+    await drainLifecycleGate();
 
     expect(start).not.toHaveBeenCalled();
     expect(cancel).toHaveBeenCalledOnce();
   });
 
-  it("ignores a stale continue wake while the current Process is stopped", () => {
+  it("ignores a stale continue wake while the current Process is stopped", async () => {
     const memory = createSharedMemory();
     const start = vi.fn();
     const cancel = vi.fn();
-    const worker = createWorkerHarness(memory, () => 1);
+    let processState = PROCESS_STATE_STOPPED;
+    const { worker } = createWorkerHarness(memory, () => processState);
 
     expect(
       worker.startProcessWorkerWhenRunnable(41, memory, start, cancel),
     ).toBe("deferred");
-    worker.resumeStoppedProcess(41);
+    expect(
+      worker.testAuthority.resumeStoppedProcessForTest(41),
+    ).toBe(false);
 
     expect(start).not.toHaveBeenCalled();
     expect(cancel).not.toHaveBeenCalled();
-    expect(worker.deferredProcessWorkerStarts.has(41)).toBe(true);
+    processState = PROCESS_STATE_RUNNING;
+    expect(
+      worker.testAuthority.resumeStoppedProcessForTest(41),
+    ).toBe(true);
+    await drainLifecycleGate();
+    expect(start).toHaveBeenCalledOnce();
+  });
+
+  it("rejects reentrant lifecycle test seams without retaining caller values", async () => {
+    const memory = createSharedMemory();
+    const replacementRead = vi.fn();
+    const parkedRead = vi.fn();
+    const errors: unknown[] = [];
+    let exerciseReentry = true;
+    let worker!: ReturnType<
+      typeof createCentralizedKernelWorkerTestDouble
+    >;
+    let registeredChannel!: ReturnType<
+      typeof createWorkerHarness
+    >["channel"];
+    const getProcessState = vi.fn(() => {
+      if (exerciseReentry) {
+        exerciseReentry = false;
+        try {
+          worker.testAuthority.resumeStoppedProcessForTest(41);
+        } catch (error) {
+          errors.push(error);
+        }
+        const replacement = new Proxy(
+          {
+            pid: 41,
+            memory,
+            channelOffsets: [0],
+          },
+          {
+            get(target, property, receiver) {
+              replacementRead(property);
+              return Reflect.get(target, property, receiver);
+            },
+          },
+        );
+        try {
+          worker.testAuthority
+            .replaceProcessRegistrationForLifecycleTest(replacement);
+        } catch (error) {
+          errors.push(error);
+        }
+        const parked = new Proxy(
+          {
+            channel: registeredChannel,
+            tid: 99,
+            parentTidPointer: 512,
+          },
+          {
+            get(target, property, receiver) {
+              parkedRead(property);
+              return Reflect.get(target, property, receiver);
+            },
+          },
+        );
+        try {
+          worker.testAuthority.installParkedCloneCompletionForTest(
+            parked,
+          );
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      return PROCESS_STATE_STOPPED;
+    });
+    const harness = createWorkerHarness(memory, getProcessState);
+    worker = harness.worker;
+    registeredChannel = harness.channel;
+
+    expect(
+      worker.testAuthority.resumeStoppedProcessForTest(41),
+    ).toBe(false);
+    expect(errors).toHaveLength(3);
+    for (const error of errors) {
+      expect(error).toBeInstanceOf(KernelReentrantEntryError);
+    }
+    expect(replacementRead).not.toHaveBeenCalled();
+    expect(parkedRead).not.toHaveBeenCalled();
+    const stateReadsAfterReturn = getProcessState.mock.calls.length;
+    await drainLifecycleGate();
+    expect(getProcessState).toHaveBeenCalledTimes(stateReadsAfterReturn);
+    expect(replacementRead).not.toHaveBeenCalled();
+    expect(parkedRead).not.toHaveBeenCalled();
+  });
+
+  it("rejects a parked clone completion from a replaced memory generation", () => {
+    const oldMemory = createSharedMemory();
+    const newMemory = createSharedMemory();
+    const { worker, channel: oldChannel } = createWorkerHarness(
+      oldMemory,
+      () => PROCESS_STATE_STOPPED,
+    );
+    const [currentChannel] =
+      worker.testAuthority.replaceProcessRegistrationForLifecycleTest({
+        pid: 41,
+        memory: newMemory,
+        channelOffsets: [0],
+      });
+    if (currentChannel === undefined) {
+      throw new Error("replacement lifecycle channel was not created");
+    }
+
+    expect(() =>
+      worker.testAuthority.installParkedCloneCompletionForTest({
+        channel: oldChannel,
+        tid: 99,
+        parentTidPointer: 512,
+      })
+    ).toThrow(/exact registration/);
+    expect(() =>
+      worker.testAuthority.installParkedCloneCompletionForTest({
+        channel: currentChannel,
+        tid: 99,
+        parentTidPointer: 512,
+      })
+    ).not.toThrow();
   });
 
   it("never queues a launch for an exited child", () => {
     const memory = createSharedMemory();
     const start = vi.fn();
     const cancel = vi.fn();
-    const worker = createWorkerHarness(memory, () => 2);
+    const { worker } = createWorkerHarness(memory, () => 2);
 
     expect(
       worker.startProcessWorkerWhenRunnable(41, memory, start, cancel),
     ).toBe("dead");
     expect(start).not.toHaveBeenCalled();
     expect(cancel).toHaveBeenCalledOnce();
-    expect(worker.deferredProcessWorkerStarts.has(41)).toBe(false);
   });
 
   it("preflights a continuation observed before async child registration", () => {
@@ -153,28 +281,40 @@ describe("stopped process Worker launch gate", () => {
     };
     const start = vi.fn();
     const cancel = vi.fn();
-    const worker = createWorkerHarness(memory, () => processState);
+    const { worker } = createWorkerHarness(
+      memory,
+      () => processState,
+      {
+        kernelExports: {
+          kernel_dequeue_signal: vi.fn(() => {
+            processState = PROCESS_STATE_EXITED;
+            return 0;
+          }),
+        },
+      },
+    );
     // Exec handoff retains the pid registration but temporarily has no exact
     // channel; an async fork/spawn can also have no registration at all.
-    worker.processes.set(41, { memory, channels: [] });
+    worker.testAuthority.replaceProcessRegistrationForLifecycleTest({
+      pid: 41,
+      memory,
+      channelOffsets: [],
+    });
 
     processState = PROCESS_STATE_RUNNING;
-    expect(worker.resumeStoppedProcess(41)).toBe(true);
-    expect(worker.pendingResumePids.has(41)).toBe(true);
-
-    worker.processes.set(41, { memory, channels: [channel] });
-    worker.kernel = { toKernelPtr: (value: number) => value };
-    worker.kernelMemory = createSharedMemory();
-    installKernelWorkerTestScratch(worker, worker.kernelMemory);
-    worker.channelTids = new Map();
-    worker.kernelInstance.exports.kernel_dequeue_signal = vi.fn(() => {
-      processState = PROCESS_STATE_EXITED;
-      return 0;
-    });
-    worker.finishSignalTermination = vi.fn(() => {
-      if (processState !== PROCESS_STATE_EXITED) return false;
-      worker.discardStoppedChannelStateForProcess(41);
-      return true;
+    expect(
+      worker.testAuthority.resumeStoppedProcessForTest(41),
+    ).toBe(true);
+    const [registeredChannel] =
+      worker.testAuthority.replaceProcessRegistrationForLifecycleTest({
+        pid: 41,
+        memory,
+        channelOffsets: [0],
+      });
+    expect(registeredChannel).toMatchObject({
+      pid: channel.pid,
+      memory: channel.memory,
+      channelOffset: channel.channelOffset,
     });
 
     expect(
@@ -182,7 +322,6 @@ describe("stopped process Worker launch gate", () => {
     ).toBe("dead");
     expect(start).not.toHaveBeenCalled();
     expect(cancel).toHaveBeenCalledOnce();
-    expect(worker.pendingResumePids.has(41)).toBe(false);
   });
 
   it("drains a re-stop generated by direct late-registration preflight", () => {
@@ -190,18 +329,33 @@ describe("stopped process Worker launch gate", () => {
     const memory = createSharedMemory();
     const start = vi.fn();
     const cancel = vi.fn();
-    const worker = createWorkerHarness(memory, () => processState);
-    worker.pendingResumePids.add(41);
-    worker.stoppedPids.add(41);
-    worker.kernel = { toKernelPtr: (value: number) => value };
-    worker.kernelMemory = createSharedMemory();
-    installKernelWorkerTestScratch(worker, worker.kernelMemory);
-    worker.kernelInstance.exports.kernel_dequeue_signal = vi.fn(() => {
-      processState = PROCESS_STATE_STOPPED;
-      return 0;
+    const drainWakeups = vi.fn(() => 0);
+    const { worker } = createWorkerHarness(
+      memory,
+      () => processState,
+      {
+        kernelExports: {
+          kernel_dequeue_signal: vi.fn(() => {
+            processState = PROCESS_STATE_STOPPED;
+            return 0;
+          }),
+          kernel_drain_wakeup_events: drainWakeups,
+        },
+      },
+    );
+    worker.testAuthority.replaceProcessRegistrationForLifecycleTest({
+      pid: 41,
+      memory,
+      channelOffsets: [],
     });
-    worker.finishSignalTermination = vi.fn(() => false);
-    worker.drainAndProcessWakeupEvents = vi.fn();
+    expect(
+      worker.testAuthority.resumeStoppedProcessForTest(41),
+    ).toBe(true);
+    worker.testAuthority.replaceProcessRegistrationForLifecycleTest({
+      pid: 41,
+      memory,
+      channelOffsets: [0],
+    });
 
     expect(
       worker.startProcessWorkerWhenRunnable(41, memory, start, cancel),
@@ -209,27 +363,25 @@ describe("stopped process Worker launch gate", () => {
 
     expect(start).not.toHaveBeenCalled();
     expect(cancel).not.toHaveBeenCalled();
-    expect(worker.drainAndProcessWakeupEvents).toHaveBeenCalledOnce();
-    expect(worker.stoppedPids.has(41)).toBe(true);
+    expect(drainWakeups).toHaveBeenCalledOnce();
   });
 
   it("cancels pending launches during process teardown", () => {
     const memory = createSharedMemory();
     const start = vi.fn();
     const cancel = vi.fn();
-    const worker = createWorkerHarness(memory, () => 1);
+    const { worker } = createWorkerHarness(memory, () => 1);
 
     expect(
       worker.startProcessWorkerWhenRunnable(41, memory, start, cancel),
     ).toBe("deferred");
-    worker.discardStoppedChannelStateForProcess(41);
+    worker.testAuthority.discardStoppedProcessStateForTest(41);
 
     expect(start).not.toHaveBeenCalled();
     expect(cancel).toHaveBeenCalledOnce();
-    expect(worker.deferredProcessWorkerStarts.has(41)).toBe(false);
   });
 
-  it("turns deferred constructor failure into process exit and full teardown", () => {
+  it("turns deferred constructor failure into process exit and full teardown", async () => {
     let processState = 1;
     const memory = createSharedMemory();
     const failure = new Error("Worker constructor failed after SIGCONT");
@@ -239,11 +391,18 @@ describe("stopped process Worker launch gate", () => {
     const cancel = vi.fn();
     const laterStart = vi.fn();
     const laterCancel = vi.fn();
-    const notifyCrash = vi.fn();
+    const markSignaled = vi.fn(() => 0);
     const onExit = vi.fn();
-    const worker = createWorkerHarness(memory, () => processState);
-    worker.notifyHostProcessCrashed = notifyCrash;
-    worker.callbacks = { onExit };
+    const { worker } = createWorkerHarness(
+      memory,
+      () => processState,
+      {
+        callbacks: { onExit },
+        kernelExports: {
+          kernel_mark_process_signaled: markSignaled,
+        },
+      },
+    );
 
     expect(
       worker.startProcessWorkerWhenRunnable(41, memory, start, cancel),
@@ -258,18 +417,20 @@ describe("stopped process Worker launch gate", () => {
     ).toBe("deferred");
 
     processState = 0;
-    worker.resumeStoppedProcess(41);
+    expect(
+      worker.testAuthority.resumeStoppedProcessForTest(41),
+    ).toBe(true);
+    await drainLifecycleGate();
 
     expect(start).toHaveBeenCalledOnce();
     expect(cancel).toHaveBeenCalledOnce();
     expect(laterStart).not.toHaveBeenCalled();
     expect(laterCancel).toHaveBeenCalledOnce();
-    expect(notifyCrash).toHaveBeenCalledWith(41);
+    expect(markSignaled).toHaveBeenCalledWith(41, 11);
     expect(onExit).toHaveBeenCalledWith(41, 139);
-    expect(worker.deferredProcessWorkerStarts.has(41)).toBe(false);
   });
 
-  it("rolls back only a deferred clone when its thread Worker cannot start", () => {
+  it("rolls back only a deferred clone when its thread Worker cannot start", async () => {
     let processState = 1;
     const memory = createSharedMemory();
     const channel = {
@@ -292,26 +453,25 @@ describe("stopped process Worker launch gate", () => {
       throw new Error("thread Worker failed");
     });
     const cancel = vi.fn();
-    const notifyCrash = vi.fn();
-    const publish = vi.fn();
-    const worker = createWorkerHarness(memory, () => processState);
-    worker.processes.set(41, { memory, channels: [channel] });
-    worker.notifyHostProcessCrashed = notifyCrash;
-    worker.publishPreparedChannelCompletion = publish;
-    worker.parkedChannelCompletions.set(channel, {
-      prepared: {
-        kind: "marshalled",
-        outputWrites: [],
-        retVal: tid,
-        errVal: 0,
-        materialized: true,
-        relistenRequested: true,
-        deferredClone: {
-          tid,
-          parentTidPointer: ptidPtr,
+    const markSignaled = vi.fn(() => 0);
+    const { worker, channel: registeredChannel } = createWorkerHarness(
+      memory,
+      () => processState,
+      {
+        kernelExports: {
+          kernel_mark_process_signaled: markSignaled,
         },
       },
-      relistenRequested: true,
+    );
+    expect(registeredChannel).toMatchObject({
+      pid: channel.pid,
+      memory: channel.memory,
+      channelOffset: channel.channelOffset,
+    });
+    worker.testAuthority.installParkedCloneCompletionForTest({
+      channel: registeredChannel,
+      tid,
+      parentTidPointer: ptidPtr,
     });
 
     expect(
@@ -332,46 +492,91 @@ describe("stopped process Worker launch gate", () => {
     view.setInt32(replacementPtidPtr, 0x12345678, true);
 
     processState = 0;
-    worker.resumeStoppedProcess(41);
+    expect(
+      worker.testAuthority.resumeStoppedProcessForTest(41),
+    ).toBe(true);
+    await drainLifecycleGate();
 
     expect(cancel).toHaveBeenCalledOnce();
-    expect(notifyCrash).not.toHaveBeenCalled();
+    expect(markSignaled).not.toHaveBeenCalled();
     expect(view.getInt32(ptidPtr, true)).toBe(0);
     expect(view.getInt32(replacementPtidPtr, true)).toBe(0x12345678);
-    expect(publish).toHaveBeenCalledWith(
-      channel,
-      expect.objectContaining({ retVal: -1, errVal: 12 }),
-    );
+    expect(view.getBigInt64(CH_RETURN, true)).toBe(-1n);
+    expect(view.getUint32(CH_ERRNO, true)).toBe(12);
+    expect(
+      Atomics.load(
+        registeredChannel.i32View,
+        CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+      ),
+    ).toBe(CHANNEL_STATUS_COMPLETE);
   });
 });
+
+interface LifecycleWorkerHarnessOptions {
+  readonly callbacks?: CentralizedKernelCallbacks;
+  readonly kernelExports?: Readonly<Record<string, unknown>>;
+}
 
 function createWorkerHarness(
   memory: WebAssembly.Memory,
   getProcessState: () => number,
-): any {
-  const channel = {
-    pid: 41,
-    memory,
-    channelOffset: 0,
-    i32View: new Int32Array(memory.buffer),
-    consecutiveSyscalls: 0,
+  options: LifecycleWorkerHarnessOptions = {},
+): {
+  readonly worker: ReturnType<
+    typeof createCentralizedKernelWorkerTestDouble
+  >;
+  readonly channel: {
+    readonly pid: number;
+    readonly memory: WebAssembly.Memory;
+    readonly channelOffset: number;
+    readonly i32View: Int32Array;
+    consecutiveSyscalls: number;
   };
-  return Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-    kernelInstance: {
-      exports: {
-        kernel_get_process_state: getProcessState,
-        kernel_get_process_exit_signal: vi.fn(() => -1),
-        kernel_set_current_tid: vi.fn(() => 0),
-      },
-    },
-    processes: new Map([[41, { memory, channels: [channel] }]]),
-    channelTids: new Map(),
-    stoppedPids: new Set<number>(),
-    pendingResumePids: new Set<number>(),
-    deferredProcessWorkerStarts: new Map(),
-    parkedChannelCompletions: new Map(),
-    deferredStoppedChannels: new Map(),
+} {
+  const implementations: Record<string, unknown> = {
+    kernel_dequeue_signal: vi.fn(() => 0),
+    kernel_drain_wakeup_events: vi.fn(() => 0),
+    kernel_get_parent_pid: vi.fn(() => -1),
+    kernel_get_process_exit_signal: vi.fn(() =>
+      getProcessState() === PROCESS_STATE_EXITED ? 11 : -1
+    ),
+    kernel_get_process_state: getProcessState,
+    kernel_mark_process_signaled: vi.fn(() => 0),
+    kernel_set_current_tid: vi.fn(() => 0),
+    ...(options.kernelExports ?? {}),
+  };
+  const worker = createCentralizedKernelWorkerTestDouble({
+    callbacks: options.callbacks,
   });
+  const kernelMemory = new WebAssembly.Memory({
+    initial: 2,
+    maximum: 2,
+  });
+  installKernelWorkerTestScratch(
+    worker,
+    kernelMemory,
+    1024,
+    4,
+    { kernelExports: implementations },
+  );
+  const [channel] =
+    worker.testAuthority.replaceProcessRegistrationForLifecycleTest({
+      pid: 41,
+      memory,
+      channelOffsets: [0],
+    });
+  if (channel === undefined) {
+    throw new Error("lifecycle harness did not create its main channel");
+  }
+  return { worker, channel };
+}
+
+async function drainLifecycleGate(): Promise<void> {
+  // Resume publishes Worker construction and any crash rollback only after
+  // the exact kernel-entry scope is revoked.
+  for (let turn = 0; turn < 24; turn++) {
+    await Promise.resolve();
+  }
 }
 
 function createSharedMemory(): WebAssembly.Memory {

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { CentralizedKernelWorker } from "../src/kernel-worker";
+import {
+  createCentralizedKernelWorkerTestDouble, CentralizedKernelWorker
+} from "../src/kernel-worker";
 
 describe("MAP_SHARED host interval tracking", () => {
   it("splits a mapping around a partial munmap", () => {
@@ -56,7 +58,7 @@ describe("MAP_SHARED host interval tracking", () => {
 });
 
 function createWorker(): any {
-  return Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+  return Object.assign(createCentralizedKernelWorkerTestDouble(), {
     sharedMappings: new Map(),
   });
 }

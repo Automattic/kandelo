@@ -1,15 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  createCentralizedKernelWorkerTestDouble,
   CentralizedKernelWorker,
   isCurrentProcessGeneration,
+
 } from "../src/kernel-worker";
 import {
   ABI_SYSCALLS,
+  CHANNEL_STATUS_COMPLETE,
+  CHANNEL_STATUS_PENDING,
   CH_ARG_SIZE,
   CH_ARGS,
   CH_DATA,
   CH_DATA_SIZE,
+  CH_ERRNO,
   CH_RETURN,
+  CH_STATUS,
+  CH_SYSCALL,
   HOST_INTERCEPTED_SYSCALLS,
 } from "../src/generated/abi";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
@@ -50,7 +57,7 @@ describe("exec host-state transition", () => {
     )).toBe(false);
   });
 
-  it("drops discarded-image async and thread-channel state", () => {
+  it("drops discarded-image async and thread-channel state", async () => {
     vi.useFakeTimers();
     try {
       const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
@@ -104,17 +111,28 @@ describe("exec host-state transition", () => {
         ]),
       });
       const notify = vi.spyOn(Atomics, "notify");
-      const pendingAttachment = issueThreadAttachment(worker, mainChannel, 11);
+      const parkedMain = worker.parkedChannelCompletions.get(mainChannel);
+      worker.parkedChannelCompletions.delete(mainChannel);
+      worker.stoppedPids.delete(7);
+      const pendingAttachment = await issueThreadAttachment(
+        worker,
+        mainChannel,
+        11,
+      );
+      if (parkedMain) {
+        worker.parkedChannelCompletions.set(mainChannel, parkedMain);
+      }
+      worker.stoppedPids.add(7);
 
       worker.prepareProcessForExec(7);
 
       expect(worker.processes.has(7)).toBe(true);
       expect(worker.processes.get(7).channels).toEqual([]);
       expect(worker.isExecHandoffActive(7)).toBe(true);
-      expect(() => worker.attachThreadChannel(
-        pendingAttachment,
-        512,
-      )).toThrow(/replacing its image/);
+      expectGateFailureCause(
+        () => worker.attachThreadChannel(pendingAttachment, 512),
+        "replacing its image",
+      );
       expect(worker.processes.has(8)).toBe(true);
       expect(worker.activeChannels).toEqual([otherChannel]);
       expect(worker.waitingForChild).toEqual([
@@ -151,7 +169,7 @@ describe("exec host-state transition", () => {
     }
   });
 
-  it("rejects an old-memory clone after replacement registration", () => {
+  it("rejects an old-memory clone after replacement registration", async () => {
     const oldMemory = new WebAssembly.Memory({ initial: 1 });
     const newMemory = new WebAssembly.Memory({ initial: 1 });
     const oldChannel = createChannel(7, oldMemory, 0);
@@ -159,14 +177,19 @@ describe("exec host-state transition", () => {
       processes: new Map([[7, { channels: [oldChannel], memory: oldMemory }]]),
       activeChannels: [oldChannel],
     });
-    const pendingAttachment = issueThreadAttachment(worker, oldChannel, 11, 1, 2);
+    const pendingAttachment = await issueThreadAttachment(
+      worker,
+      oldChannel,
+      11,
+      1,
+      2,
+    );
     worker.processes.set(7, { channels: [], memory: newMemory });
 
-    expect(() => worker.attachThreadChannel(
-      pendingAttachment,
-      512,
-    ))
-      .toThrow(/changed memory generation/);
+    expectGateFailureCause(
+      () => worker.attachThreadChannel(pendingAttachment, 512),
+      "changed memory generation",
+    );
     expect(worker.processes.get(7).channels).toEqual([]);
   });
 
@@ -176,7 +199,6 @@ describe("exec host-state transition", () => {
       const memory = new WebAssembly.Memory({ initial: 3, maximum: 3, shared: true });
       const mainChannel = createChannel(7, memory, 0);
       const threadChannel = createChannel(7, memory, 0x10000);
-      const completeSleep = vi.fn();
       const mainDetachedOutput = [{
         ptr: 0x800,
         bytes: Uint8Array.of(1),
@@ -190,8 +212,17 @@ describe("exec host-state transition", () => {
           channels: [mainChannel, threadChannel],
           memory,
         }]]),
-        completeSleepWithSignalCheck: completeSleep,
       });
+      Atomics.store(
+        mainChannel.i32View,
+        CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+        CHANNEL_STATUS_PENDING,
+      );
+      Atomics.store(
+        threadChannel.i32View,
+        CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+        CHANNEL_STATUS_PENDING,
+      );
 
       expect(worker.handleSleepDelay(
         mainChannel,
@@ -214,27 +245,23 @@ describe("exec host-state transition", () => {
       expect(worker.pendingSleeps.size).toBe(2);
 
       await vi.advanceTimersByTimeAsync(10);
-      expect(completeSleep).toHaveBeenCalledTimes(1);
-      expect(completeSleep).toHaveBeenLastCalledWith(
-        threadChannel,
-        ABI_SYSCALLS.Usleep,
-        [10_000],
-        0,
-        0,
-        threadDetachedOutput,
-      );
+      expect(Atomics.load(
+        threadChannel.i32View,
+        CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+      )).not.toBe(CHANNEL_STATUS_PENDING);
+      expect(new Uint8Array(memory.buffer)[0x900]).toBe(2);
+      expect(Atomics.load(
+        mainChannel.i32View,
+        CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+      )).toBe(CHANNEL_STATUS_PENDING);
       expect(worker.pendingSleeps.has(mainChannel)).toBe(true);
 
       await vi.advanceTimersByTimeAsync(40);
-      expect(completeSleep).toHaveBeenCalledTimes(2);
-      expect(completeSleep).toHaveBeenLastCalledWith(
-        mainChannel,
-        ABI_SYSCALLS.Usleep,
-        [50_000],
-        0,
-        0,
-        mainDetachedOutput,
-      );
+      expect(Atomics.load(
+        mainChannel.i32View,
+        CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+      )).not.toBe(CHANNEL_STATUS_PENDING);
+      expect(new Uint8Array(memory.buffer)[0x800]).toBe(1);
       expect(worker.pendingSleeps.size).toBe(0);
     } finally {
       vi.useRealTimers();
@@ -263,40 +290,98 @@ describe("exec host-state transition", () => {
     expect(handleSyscall).not.toHaveBeenCalled();
   });
 
-  it("does not wake a signal-dead image after async exec failure", () => {
-    const memory = new WebAssembly.Memory({ initial: 1 });
+  it("does not wake a signal-dead image after async exec failure", async () => {
+    const memory = new WebAssembly.Memory({
+      initial: 1,
+      maximum: 1,
+      shared: true,
+    });
     const channel = createChannel(7, memory, 0);
-    const handleProcessTerminated = vi.fn();
-    const completeChannel = vi.fn();
+    const pathPtr = 0x100;
+    new Uint8Array(memory.buffer).set(
+      new TextEncoder().encode("/bin/missing\0"),
+      pathPtr,
+    );
+    let finishExec!: (result: number) => void;
+    const launched = new Promise<number>((resolve) => {
+      finishExec = resolve;
+    });
+    const getProcessExitSignal = vi.fn(() => 11);
+    const onExit = vi.fn();
     const worker = createWorker({
       processes: new Map([[7, { channels: [channel], memory }]]),
-      getProcessExitSignal: vi.fn(() => 11),
-      handleProcessTerminated,
-      completeChannel,
+      callbacks: {
+        onExec: vi.fn(() => launched),
+        onExit,
+      },
+      kernelInstance: {
+        exports: { kernel_get_process_exit_signal: getProcessExitSignal },
+      },
     });
 
-    worker.finishFailedExec(channel, 211, [0, 0, 0], 3);
+    writeChannelSyscall(
+      channel,
+      HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE,
+      [pathPtr, 0, 0],
+    );
+    worker.handleSyscall(channel);
+    await flushMicrotasksUntil(
+      () => worker.callbacks.onExec.mock.calls.length === 1,
+      "exec callback did not start",
+    );
+    finishExec(-3);
+    await flushMicrotasksUntil(
+      () => worker.hostReaped.has(7),
+      "signal-dead exec image was not reaped",
+    );
 
-    expect(handleProcessTerminated).toHaveBeenCalledWith(channel);
-    expect(completeChannel).not.toHaveBeenCalled();
+    expect(getProcessExitSignal).toHaveBeenCalledWith(7);
+    expect(onExit).toHaveBeenCalledWith(7, 139);
+    expect(readChannelStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
   });
 
-  it("does not wake a normally reaped image after async exec failure", () => {
-    const memory = new WebAssembly.Memory({ initial: 1 });
+  it("does not wake a normally reaped image after async exec failure", async () => {
+    const memory = new WebAssembly.Memory({
+      initial: 1,
+      maximum: 1,
+      shared: true,
+    });
     const channel = createChannel(7, memory, 0);
+    const pathPtr = 0x100;
+    new Uint8Array(memory.buffer).set(
+      new TextEncoder().encode("/bin/missing\0"),
+      pathPtr,
+    );
+    let finishExec!: (result: number) => void;
+    const launched = new Promise<number>((resolve) => {
+      finishExec = resolve;
+    });
     const getProcessExitSignal = vi.fn(() => 0);
-    const completeChannel = vi.fn();
     const worker = createWorker({
       processes: new Map([[7, { channels: [channel], memory }]]),
-      hostReaped: new Set([7]),
-      getProcessExitSignal,
-      completeChannel,
+      callbacks: { onExec: vi.fn(() => launched) },
+      kernelInstance: {
+        exports: { kernel_get_process_exit_signal: getProcessExitSignal },
+      },
     });
 
-    worker.finishFailedExec(channel, 211, [0, 0, 0], 3);
+    writeChannelSyscall(
+      channel,
+      HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE,
+      [pathPtr, 0, 0],
+    );
+    worker.handleSyscall(channel);
+    await flushMicrotasksUntil(
+      () => worker.callbacks.onExec.mock.calls.length === 1,
+      "exec callback did not start",
+    );
+    worker.hostReaped.add(7);
+    getProcessExitSignal.mockClear();
+    finishExec(-3);
+    await flushMicrotasks();
 
     expect(getProcessExitSignal).not.toHaveBeenCalled();
-    expect(completeChannel).not.toHaveBeenCalled();
+    expect(readChannelStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
   });
 
   it("does not create a spawn child after async resolution loses its parent channel", async () => {
@@ -314,28 +399,34 @@ describe("exec host-state transition", () => {
     });
     const kernelSpawn = vi.fn(() => 100);
     const onSpawn = vi.fn(async () => 0);
-    const completeChannel = vi.fn();
     const worker = createWorker({
       processes: new Map([[7, { channels: [channel], memory }]]),
       callbacks: {
         onResolveSpawn: vi.fn(() => program),
         onSpawn,
       },
-      completeChannel,
       kernelInstance: {
         exports: { kernel_spawn_process: kernelSpawn },
       },
     });
 
-    worker.handleSpawn(channel, [pathPtr, path.length, blobPtr, 40, 0, 0]);
+    writeChannelSyscall(
+      channel,
+      HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN,
+      [pathPtr, path.length, blobPtr, 40, 0, 0],
+    );
+    worker.handleSyscall(channel);
+    await flushMicrotasksUntil(
+      () => worker.callbacks.onResolveSpawn.mock.calls.length === 1,
+      "spawn resolution did not start",
+    );
     worker.processes.get(7).channels = [];
     resolveProgram(resolvedProgram());
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     expect(kernelSpawn).not.toHaveBeenCalled();
     expect(onSpawn).not.toHaveBeenCalled();
-    expect(completeChannel).not.toHaveBeenCalled();
+    expect(readChannelStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
   });
 
   it("rejects an unlaunchable spawn before creating a child or applying file actions", async () => {
@@ -349,53 +440,60 @@ describe("exec host-state transition", () => {
     bytes.fill(0, blobPtr, blobPtr + 40);
     const kernelSpawn = vi.fn(() => 100);
     const onSpawn = vi.fn(async () => 0);
-    const completeChannel = vi.fn();
     const worker = createWorker({
       processes: new Map([[7, { channels: [channel], memory }]]),
       callbacks: {
         onResolveSpawn: vi.fn(async () => ({ errno: 8 })),
         onSpawn,
       },
-      completeChannel,
       kernelInstance: {
         exports: { kernel_spawn_process: kernelSpawn },
       },
     });
 
-    worker.handleSpawn(channel, [pathPtr, path.length, blobPtr, 40, 0, 0]);
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(kernelSpawn).not.toHaveBeenCalled();
-    expect(onSpawn).not.toHaveBeenCalled();
-    expect(completeChannel).toHaveBeenCalledWith(
+    writeChannelSyscall(
       channel,
       HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN,
       [pathPtr, path.length, blobPtr, 40, 0, 0],
-      undefined,
-      -1,
-      8,
     );
+    worker.handleSyscall(channel);
+    await flushMicrotasksUntil(
+      () => readChannelStatus(channel) !== CHANNEL_STATUS_PENDING,
+      "unlaunchable spawn did not complete",
+    );
+
+    expect(kernelSpawn).not.toHaveBeenCalled();
+    expect(onSpawn).not.toHaveBeenCalled();
+    expect(readChannelCompletion(channel)).toEqual({
+      status: CHANNEL_STATUS_COMPLETE,
+      returnValue: -1,
+      errno: 8,
+    });
   });
 
   it("keeps a created spawn child but suppresses stale parent completion", async () => {
     const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
     const channel = createChannel(7, memory, 0);
+    const pathPtr = 0x100;
+    const path = new TextEncoder().encode("/bin/child");
+    new Uint8Array(memory.buffer).set(path, pathPtr);
+    const blobPtr = 0x200;
+    new Uint8Array(memory.buffer).fill(0, blobPtr, blobPtr + 40);
     let finishSpawn!: (result: number) => void;
     const spawned = new Promise<number>((resolve) => {
       finishSpawn = resolve;
     });
     const kernelSpawn = vi.fn(() => 100);
     const removeProcess = vi.fn();
-    const completeChannel = vi.fn();
     const onSpawn = vi.fn(() => spawned);
     const program = resolvedProgram();
     const worker = createWorker({
       processes: new Map([[7, { channels: [channel], memory }]]),
-      callbacks: { onSpawn },
-      completeChannel,
+      callbacks: {
+        onResolveSpawn: vi.fn(async () => program),
+        onSpawn,
+      },
       kernelMemory: new WebAssembly.Memory({ initial: 2 }),
-      toKernelPtr: (value: number) => value,
       kernelInstance: {
         exports: {
           kernel_spawn_process: kernelSpawn,
@@ -404,31 +502,37 @@ describe("exec host-state transition", () => {
       },
     });
 
-    worker.handleSpawnAfterResolve(
+    writeChannelSyscall(
       channel,
-      [0, 0, 0, 40, 0, 0],
-      7,
-      7,
-      0,
-      new Uint8Array(40),
-      40,
-      program,
-      [],
+      HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN,
+      [pathPtr, path.length, blobPtr, 40, 0, 0],
     );
+    worker.handleSyscall(channel);
+    await flushMicrotasks();
+    expect(worker.callbacks.onResolveSpawn).toHaveBeenCalledOnce();
+    expect(
+      kernelSpawn,
+      JSON.stringify(readChannelCompletion(channel)),
+    ).toHaveBeenCalledOnce();
+    expect(onSpawn).toHaveBeenCalledOnce();
     expect(onSpawn).toHaveBeenCalledWith(7, 100, program, []);
     worker.processes.get(7).channels = [];
     finishSpawn(0);
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     expect(kernelSpawn).toHaveBeenCalled();
     expect(removeProcess).not.toHaveBeenCalled();
-    expect(completeChannel).not.toHaveBeenCalled();
+    expect(readChannelStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
   });
 
   it("installs spawn-child listener mirrors before async worker launch", async () => {
     const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
     const channel = createChannel(7, memory, 0);
+    const pathPtr = 0x100;
+    const path = new TextEncoder().encode("/bin/child");
+    new Uint8Array(memory.buffer).set(path, pathPtr);
+    const blobPtr = 0x200;
+    new Uint8Array(memory.buffer).fill(0, blobPtr, blobPtr + 40);
     let finishSpawn!: (result: number) => void;
     const spawned = new Promise<number>((resolve) => {
       finishSpawn = resolve;
@@ -442,16 +546,19 @@ describe("exec host-state transition", () => {
     };
     const worker = createWorker({
       processes: new Map([[7, { channels: [channel], memory }]]),
-      callbacks: { onSpawn: vi.fn(() => spawned) },
-      completeChannel: vi.fn(),
+      callbacks: {
+        onResolveSpawn: vi.fn(async () => resolvedProgram()),
+        onSpawn: vi.fn(() => spawned),
+      },
       kernelMemory: new WebAssembly.Memory({ initial: 2 }),
-      toKernelPtr: (value: number) => value,
       kernelInstance: {
         exports: {
           kernel_spawn_process: () => 100,
           kernel_remove_process: vi.fn(),
           kernel_get_fd_accept_wake_idx: (_pid: number, fd: number) =>
             fd === 4 ? 41 : -1,
+          kernel_find_listener_fd_by_accept_wake:
+            (_pid: number, wakeIdx: number) => wakeIdx === 41 ? 4 : -1,
         },
       },
       tcpListenerTargets: new Map([[8080, [{
@@ -463,17 +570,18 @@ describe("exec host-state transition", () => {
       tcpListeners: new Map([["7:4", listener]]),
     });
 
-    worker.handleSpawnAfterResolve(
+    writeChannelSyscall(
       channel,
-      [0, 0, 0, 40, 0, 0],
-      7,
-      7,
-      0,
-      new Uint8Array(40),
-      40,
-      resolvedProgram(),
-      [],
+      HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN,
+      [pathPtr, path.length, blobPtr, 40, 0, 0],
     );
+    worker.handleSyscall(channel);
+    await flushMicrotasks();
+    expect(worker.callbacks.onResolveSpawn).toHaveBeenCalledOnce();
+    expect(
+      worker.callbacks.onSpawn,
+      JSON.stringify(readChannelCompletion(channel)),
+    ).toHaveBeenCalledOnce();
 
     expect(worker.tcpListenerTargets.get(8080)).toContainEqual({
       pid: 100,
@@ -482,8 +590,18 @@ describe("exec host-state transition", () => {
     });
     worker.cleanupTcpListeners(7);
     expect(close).not.toHaveBeenCalled();
+    expect(worker.pickListenerTarget(8080)).toBeNull();
+
+    const childMemory = new WebAssembly.Memory({
+      initial: 1,
+      maximum: 1,
+      shared: true,
+    });
+    worker.registerProcess(100, childMemory, [0]);
+    expect(worker.pickListenerTarget(8080)).toEqual({ pid: 100, fd: 4 });
+
     finishSpawn(0);
-    await Promise.resolve();
+    await flushMicrotasks();
   });
 
   it("drops a stale channel listener after the pid is re-registered", async () => {
@@ -491,14 +609,16 @@ describe("exec host-state transition", () => {
     const newMemory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
     const oldChannel = createChannel(7, oldMemory, 0);
     const newChannel = createChannel(7, newMemory, 0);
+    const kernelHandleChannel = vi.fn(() => 0);
     const worker = createWorker({
       processes: new Map([[7, { channels: [oldChannel], memory: oldMemory }]]),
       activeChannels: [oldChannel],
       usePolling: false,
       relistenBatchSize: 64,
+      kernelInstance: {
+        exports: { kernel_handle_channel: kernelHandleChannel },
+      },
     });
-    const handleSyscall = vi.fn();
-    worker.handleSyscall = handleSyscall;
 
     let wake!: (value: "ok") => void;
     const waited = new Promise<"ok">((resolve) => { wake = resolve; });
@@ -515,13 +635,13 @@ describe("exec host-state transition", () => {
       await Promise.resolve();
 
       expect(waitAsync).toHaveBeenCalledTimes(1);
-      expect(handleSyscall).not.toHaveBeenCalled();
+      expect(kernelHandleChannel).not.toHaveBeenCalled();
 
       // Even if the discarded mailbox becomes pending later, entering the
       // listener directly cannot dispatch it into the replacement process.
       Atomics.store(oldChannel.i32View, 0, 1);
       worker.listenOnChannel(oldChannel);
-      expect(handleSyscall).not.toHaveBeenCalled();
+      expect(kernelHandleChannel).not.toHaveBeenCalled();
     } finally {
       waitAsync.mockRestore();
     }
@@ -534,12 +654,14 @@ describe("exec host-state transition", () => {
       const newMemory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
       const oldChannel = createChannel(7, oldMemory, 0);
       const newChannel = createChannel(7, newMemory, 0);
+      const kernelHandleChannel = vi.fn(() => 0);
       const worker = createWorker({
         processes: new Map([[7, { channels: [oldChannel], memory: oldMemory }]]),
-        kernelInstance: { exports: {} },
+        kernelInstance: {
+          exports: { kernel_handle_channel: kernelHandleChannel },
+        },
         profileData: null,
       });
-      worker.retrySyscall = vi.fn();
 
       worker.handleBlockingRetry(oldChannel, 999, [0, 0, 0, 0, 0, 0]);
       vi.advanceTimersByTime(5);
@@ -552,7 +674,7 @@ describe("exec host-state transition", () => {
       vi.advanceTimersByTime(5);
       expect(worker.pendingPollRetries.has(oldChannel)).toBe(false);
       expect(worker.pendingPollRetries.has(newChannel)).toBe(true);
-      expect(worker.retrySyscall).not.toHaveBeenCalled();
+      expect(kernelHandleChannel).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
@@ -709,18 +831,40 @@ describe("exec host-state transition", () => {
   it("flushes file-backed mappings before commit and forgets them afterward", () => {
     const memory = new WebAssembly.Memory({ initial: 1 });
     const channel = { pid: 7, memory };
-    const flush = vi.fn(() => true);
+    const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+    const writes: Array<{ fd: number; length: number; offset: number }> = [];
+    const kernelHandleChannel = vi.fn((scratch: number) => {
+      const view = new DataView(kernelMemory.buffer, scratch);
+      const length = Number(view.getBigInt64(
+        CH_ARGS + 2 * CH_ARG_SIZE,
+        true,
+      ));
+      writes.push({
+        fd: Number(view.getBigInt64(CH_ARGS, true)),
+        length,
+        offset: Number(view.getBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, true)),
+      });
+      view.setBigInt64(CH_RETURN, BigInt(length), true);
+      return 0;
+    });
     const worker = createWorker({
       processes: new Map([[7, { channels: [channel], memory }]]),
       sharedMappings: new Map([[7, new Map([
         [0x1000, { fd: 4, fileOffset: 0x2000, len: 0x3000, writable: true }],
       ])]]),
-      pwriteFromProcessMemory: flush,
+      kernelMemory,
+      kernelInstance: {
+        exports: { kernel_handle_channel: kernelHandleChannel },
+      },
     });
 
     expect(worker.prepareAddressSpaceForExec(7)).toBe(0);
 
-    expect(flush).toHaveBeenCalledWith(channel, 4, 0x1000, 0x3000, 0x2000);
+    expect(writes).toEqual([{
+      fd: 4,
+      length: 0x3000,
+      offset: 0x2000,
+    }]);
     expect(worker.sharedMappings.has(7)).toBe(true);
     expect(worker.finalizeAddressSpaceForExec(7)).toBe(0);
     expect(worker.sharedMappings.has(7)).toBe(false);
@@ -728,12 +872,22 @@ describe("exec host-state transition", () => {
 
   it("retains mapping trackers when a pre-commit flush fails", () => {
     const memory = new WebAssembly.Memory({ initial: 1 });
+    const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
     const worker = createWorker({
       processes: new Map([[7, { channels: [{ pid: 7, memory }], memory }]]),
       sharedMappings: new Map([[7, new Map([
         [0x1000, { fd: 4, fileOffset: 0, len: 0x1000, writable: true }],
       ])]]),
-      pwriteFromProcessMemory: vi.fn(() => false),
+      kernelMemory,
+      kernelInstance: {
+        exports: {
+          kernel_handle_channel: (scratch: number) => {
+            new DataView(kernelMemory.buffer, scratch)
+              .setBigInt64(CH_RETURN, 0n, true);
+            return 0;
+          },
+        },
+      },
     });
 
     expect(worker.prepareAddressSpaceForExec(7)).toBe(-5);
@@ -742,17 +896,19 @@ describe("exec host-state transition", () => {
 
   it("does not flush read-only shared mappings during exec", () => {
     const memory = new WebAssembly.Memory({ initial: 1 });
-    const flush = vi.fn(() => false);
+    const kernelHandleChannel = vi.fn(() => 0);
     const worker = createWorker({
       processes: new Map([[7, { channels: [{ pid: 7, memory }], memory }]]),
       sharedMappings: new Map([[7, new Map([
         [0x1000, { fd: 4, fileOffset: 0, len: 0x1000, writable: false }],
       ])]]),
-      pwriteFromProcessMemory: flush,
+      kernelInstance: {
+        exports: { kernel_handle_channel: kernelHandleChannel },
+      },
     });
 
     expect(worker.prepareAddressSpaceForExec(7)).toBe(0);
-    expect(flush).not.toHaveBeenCalled();
+    expect(kernelHandleChannel).not.toHaveBeenCalled();
   });
 
   it("tracks mmap writeback only for kernel-classified writable regular fds", () => {
@@ -772,13 +928,20 @@ describe("exec host-state transition", () => {
   it("reacquires pwrite scratch views after kernel memory growth", () => {
     const processMemory = new WebAssembly.Memory({ initial: 2 });
     const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 4 });
-    const channel = { pid: 7, memory: processMemory };
+    const channel = createChannel(7, processMemory, 0);
     let calls = 0;
     const worker = createWorker({
       currentHandlePid: 0,
+      processes: new Map([[7, { channels: [channel], memory: processMemory }]]),
+      sharedMappings: new Map([[7, new Map([
+        [0x1000, {
+          fd: 4,
+          fileOffset: 0,
+          len: CH_DATA_SIZE + 4,
+          writable: true,
+        }],
+      ])]]),
       kernelMemory,
-      toKernelPtr: (value: number) => value,
-      bindKernelTidForChannel: vi.fn(),
       kernelInstance: {
         exports: {
           kernel_handle_channel: (offset: number) => {
@@ -799,13 +962,7 @@ describe("exec host-state transition", () => {
       },
     });
 
-    expect(worker.pwriteFromProcessMemory(
-      channel,
-      4,
-      0x1000,
-      CH_DATA_SIZE + 4,
-      0,
-    )).toBe(true);
+    expect(worker.prepareAddressSpaceForExec(7)).toBe(0);
     expect(calls).toBe(2);
     expect(worker.currentHandlePid).toBe(0);
   });
@@ -849,7 +1006,7 @@ describe("exec host-state transition", () => {
     expect(writeChunk).toHaveBeenCalledWith(
       3,
       0,
-      worker.testScratchPointer + CH_DATA,
+      workerScratchPointer(worker) + CH_DATA,
       4,
     );
     expect(detach).not.toHaveBeenCalled();
@@ -1000,72 +1157,15 @@ describe("exec host-state transition", () => {
     expect(listener.server.close).not.toHaveBeenCalled();
   });
 
-  it("keeps pending child listener targets during async worker launch", () => {
-    const targets = [
-      { pid: 7, fd: 4 },
-      { pid: 8, fd: 4 },
-    ];
-    const worker = createWorker({
-      processes: new Map([[7, { channels: [], memory: new WebAssembly.Memory({ initial: 1 }) }]]),
-      tcpListenerTargets: new Map([[8080, targets]]),
-      tcpListenerRRIndex: new Map([[8080, 0]]),
-    });
-
-    expect(worker.pickListenerTarget(8080)).toEqual({ pid: 7, fd: 4 });
-    expect(worker.tcpListenerTargets.get(8080)).toEqual(targets);
-  });
-
-  it("reconciles a reused listener fd without losing its surviving alias", () => {
-    const listener = {
-      server: { close: vi.fn() },
-      pid: 7,
-      port: 8080,
-      connections: new Set(),
-    };
-    const worker = createWorker({
-      kernelInstance: {
-        exports: {
-          kernel_get_fd_accept_wake_idx: (_pid: number, fd: number) =>
-            fd === 4 ? 99 : fd === 6 ? 41 : -1,
-          kernel_find_listener_fd_by_accept_wake: (_pid: number, wakeIdx: number) =>
-            wakeIdx === 41 ? 6 : wakeIdx === 99 ? 4 : -1,
-        },
-      },
-      tcpListenerTargets: new Map([[8080, [{
-        pid: 7,
-        fd: 4,
-        acceptWakeIdx: 41,
-      }]]]),
-      tcpListenerRRIndex: new Map([[8080, 0]]),
-      tcpListeners: new Map([["7:4", listener]]),
-      netModule: null,
-    });
-
-    worker.startTcpListener(7, 4, 9090);
-
-    expect(worker.tcpListenerTargets.get(8080)).toEqual([{
-      pid: 7,
-      fd: 6,
-      acceptWakeIdx: 41,
-    }]);
-    expect(worker.tcpListenerTargets.get(9090)).toEqual([{
-      pid: 7,
-      fd: 4,
-      acceptWakeIdx: 99,
-    }]);
-    expect(worker.tcpListeners.get("7:6")).toEqual(listener);
-    expect(listener.server.close).not.toHaveBeenCalled();
-  });
-
   it("finalizes signal death during the exec handoff exactly once", () => {
-    const notifyParent = vi.fn();
+    const getParentPid = vi.fn(() => 0);
     const onExit = vi.fn();
     const worker = createWorker({
       hostReaped: new Set(),
       callbacks: { onExit },
-      notifyParentOfExitedProcess: notifyParent,
       kernelInstance: {
         exports: {
+          kernel_get_parent_pid: getParentPid,
           kernel_get_process_exit_signal: () => 15,
         },
       },
@@ -1074,7 +1174,8 @@ describe("exec host-state transition", () => {
 
     expect(worker.finalizeExecHandoffTermination(7)).toBe(15);
     expect(worker.finalizeExecHandoffTermination(7)).toBe(15);
-    expect(notifyParent).toHaveBeenCalledTimes(1);
+    expect(getParentPid).toHaveBeenCalledOnce();
+    expect(getParentPid).toHaveBeenCalledWith(7);
     expect(onExit).toHaveBeenCalledTimes(1);
     expect(onExit).toHaveBeenCalledWith(7, 143);
     expect(worker.sharedMappings.has(7)).toBe(false);
@@ -1089,23 +1190,28 @@ describe("exec host-state transition", () => {
       },
     });
 
-    expect(() => worker.finalizeExecHandoffTermination(7)).toThrow(
+    expectGateFailureCause(
+      () => worker.finalizeExecHandoffTermination(7),
       "Kernel missing required kernel_get_process_exit_signal export",
     );
   });
 
   it("does not launch a signal-dead pending child or roll back its zombie", () => {
-    const notifyParent = vi.fn();
+    const getParentPid = vi.fn(() => 0);
     const onExit = vi.fn();
-    const cleanupTcpListeners = vi.fn();
     const removeProcess = vi.fn();
+    const listenerClose = new Map([
+      [8, vi.fn()],
+      [9, vi.fn()],
+      [10, vi.fn()],
+      [11, vi.fn()],
+    ]);
     const worker = createWorker({
       hostReaped: new Set(),
       callbacks: { onExit },
-      notifyParentOfExitedProcess: notifyParent,
-      cleanupTcpListeners,
       kernelInstance: {
         exports: {
+          kernel_get_parent_pid: getParentPid,
           kernel_get_process_exit_signal: (pid: number) => {
             if (pid === 8) return 9;
             if (pid === 9) return -1;
@@ -1115,6 +1221,17 @@ describe("exec host-state transition", () => {
           kernel_remove_process: removeProcess,
         },
       },
+      tcpListeners: new Map(
+        Array.from(listenerClose, ([pid, close]) => [
+          `${pid}:4`,
+          {
+            server: { close },
+            pid,
+            port: 8000 + pid,
+            connections: new Set(),
+          },
+        ]),
+      ),
       epollInterests: new Map([
         ["8:4", [{ fd: 6, events: 1, data: 1n }]],
         ["9:4", [{ fd: 6, events: 1, data: 2n }]],
@@ -1127,9 +1244,12 @@ describe("exec host-state transition", () => {
     expect(worker.shouldLaunchPendingChild(9)).toBe(true);
     expect(worker.shouldLaunchPendingChild(10)).toBe(false);
     expect(worker.shouldLaunchPendingChild(11)).toBe(false);
-    expect(notifyParent).toHaveBeenCalledWith(8);
+    expect(getParentPid).toHaveBeenCalledWith(8);
     expect(onExit).toHaveBeenCalledWith(8, 137);
-    expect(cleanupTcpListeners.mock.calls).toEqual([[8], [10], [11]]);
+    expect(listenerClose.get(8)).toHaveBeenCalledOnce();
+    expect(listenerClose.get(9)).not.toHaveBeenCalled();
+    expect(listenerClose.get(10)).toHaveBeenCalledOnce();
+    expect(listenerClose.get(11)).toHaveBeenCalledOnce();
     expect(worker.epollInterests.has("8:4")).toBe(false);
     expect(worker.epollInterests.has("9:4")).toBe(true);
     expect(worker.epollInterests.has("10:4")).toBe(false);
@@ -1138,95 +1258,164 @@ describe("exec host-state transition", () => {
   });
 });
 
+const workerKernelExports = new WeakMap<
+  CentralizedKernelWorker,
+  Record<string, unknown>
+>();
+const workerKernelMemories = new WeakMap<
+  CentralizedKernelWorker,
+  WebAssembly.Memory
+>();
+const workerScratchPointers = new WeakMap<CentralizedKernelWorker, number>();
+
 function createWorker(overrides: Record<string, unknown>): any {
-  const worker = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-    processes: new Map(),
-    activeChannels: [],
-    execHandoffPids: new Set(),
-    waitingForChild: [],
-    pendingSleeps: new Map(),
-    pendingPollRetries: new Map(),
-    pendingSelectRetries: new Map(),
-    pendingPipeReaders: new Map(),
-    pendingPipeWriters: new Map(),
-    pendingFutexWaits: new Map(),
-    pendingCancels: new Set(),
-    stoppedPids: new Set(),
-    parkedChannelCompletions: new Map(),
-    deferredStoppedChannels: new Map(),
-    socketTimeoutTimers: new Map(),
-    posixTimers: new Map(),
-    channelTids: new Map(),
-    threadForkContexts: new Map(),
-    threadCtidPtrs: new Map(),
-    sharedMappings: new Map(),
-    shmMappings: new Map(),
-    epollInterests: new Map(),
-    tcpListenerTargets: new Map(),
-    tcpListenerRRIndex: new Map(),
-    tcpVirtualListenerKeys: new Map(),
-    tcpListeners: new Map(),
-    tcpConnections: new Map(),
-    hostReaped: new Set(),
-    callbacks: {},
-    io: { network: undefined },
-    ...overrides,
-  });
-  const kernelInstance = worker.kernelInstance ?? { exports: {} };
-  worker.kernelInstance = {
-    ...kernelInstance,
-    exports: {
-      kernel_get_process_exit_signal: vi.fn(() => -1),
-      ...(kernelInstance.exports ?? {}),
-    },
-  };
-  if (worker.kernelMemory instanceof WebAssembly.Memory) {
-    worker.testScratchPointer = installKernelWorkerTestScratch(
-      worker,
-      worker.kernelMemory,
-    );
+  const callbacks = (overrides.callbacks ?? {}) as ConstructorParameters<
+    typeof CentralizedKernelWorker
+  >[2];
+  const io = (overrides.io ?? { network: undefined }) as ConstructorParameters<
+    typeof CentralizedKernelWorker
+  >[1];
+  const worker = createCentralizedKernelWorkerTestDouble({ callbacks, io });
+
+  // Seed only real writable state slots. Method shadows and raw
+  // instance/memory fields are deliberately ignored: the test must exercise
+  // the frozen production methods against one genuine gated Wasm instance.
+  for (const [name, value] of Object.entries(overrides)) {
+    if (name === "callbacks" || name === "io") continue;
+    if (Object.prototype.hasOwnProperty.call(worker, name)) {
+      Reflect.set(worker, name, value);
+    }
   }
+
+  const suppliedInstance = overrides.kernelInstance as
+    | { exports?: Record<string, unknown> }
+    | undefined;
+  const suppliedExports = suppliedInstance?.exports ?? {};
+  const exports: Record<string, unknown> = { ...suppliedExports };
+  if (!Object.prototype.hasOwnProperty.call(
+    suppliedExports,
+    "kernel_get_process_exit_signal",
+  )) {
+    exports.kernel_get_process_exit_signal = vi.fn(() => -1);
+  }
+  if (!Object.prototype.hasOwnProperty.call(
+    suppliedExports,
+    "kernel_handle_channel",
+  )) {
+    exports.kernel_handle_channel = vi.fn(() => 0);
+  }
+  for (const name of [
+    "kernel_drain_wakeup_events",
+    "kernel_get_parent_pid",
+    "kernel_get_process_state",
+    "kernel_set_current_tid",
+    "kernel_thread_exit",
+    "kernel_validate_task",
+  ]) {
+    if (!Object.prototype.hasOwnProperty.call(suppliedExports, name)) {
+      exports[name] = vi.fn(() => 0);
+    }
+  }
+
+  const kernelMemory = overrides.kernelMemory instanceof WebAssembly.Memory
+    ? overrides.kernelMemory
+    : new WebAssembly.Memory({ initial: 4, maximum: 8 });
+  const requestedPointerWidth = (
+    overrides.kernel as { getKernelPtrWidth?: () => unknown } | undefined
+  )?.getKernelPtrWidth?.();
+  const pointerWidth = requestedPointerWidth === 8 ? 8 : 4;
+  const scratchPointer = typeof overrides.scratchPointer === "number"
+    ? overrides.scratchPointer
+    : 128;
+  installKernelWorkerTestScratch(
+    worker,
+    kernelMemory,
+    scratchPointer,
+    pointerWidth,
+    {
+      kernelExports: exports,
+      kernelExportNames: Object.entries(exports)
+        .filter(([, value]) => typeof value === "function")
+        .map(([name]) => name),
+    },
+  );
+  workerKernelExports.set(worker, exports);
+  workerKernelMemories.set(worker, kernelMemory);
+  workerScratchPointers.set(worker, scratchPointer);
   return worker;
 }
 
-function issueThreadAttachment(
+function workerScratchPointer(worker: CentralizedKernelWorker): number {
+  const pointer = workerScratchPointers.get(worker);
+  if (pointer === undefined) throw new Error("test worker has no scratch pointer");
+  return pointer;
+}
+
+function expectGateFailureCause(
+  operation: () => void,
+  expectedMessage: string,
+): void {
+  let failure: unknown;
+  try {
+    operation();
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toBeInstanceOf(Error);
+  const cause = (failure as Error & { cause?: unknown }).cause;
+  expect(cause).toBeInstanceOf(Error);
+  expect((cause as Error).message).toContain(expectedMessage);
+}
+
+async function issueThreadAttachment(
   worker: CentralizedKernelWorker,
   channel: ReturnType<typeof createChannel>,
   tid: number,
   fnPtr = 1,
   argPtr = 2,
 ) {
-  const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
   let attachment: Parameters<CentralizedKernelWorker["attachThreadChannel"]>[0]
     | undefined;
   new DataView(channel.memory.buffer, channel.channelOffset)
     .setUint32(CH_DATA, fnPtr, true);
   new DataView(channel.memory.buffer, channel.channelOffset)
     .setUint32(CH_DATA + 4, argPtr, true);
-  Object.assign(worker as any, {
-    callbacks: {
-      onClone: (
-        value: Parameters<CentralizedKernelWorker["attachThreadChannel"]>[0],
-      ) => {
-        attachment = value;
-        return new Promise<void>(() => {});
-      },
+  (worker as any).callbacks = {
+    onClone: (
+      value: Parameters<CentralizedKernelWorker["attachThreadChannel"]>[0],
+    ) => {
+      attachment = value;
+      return new Promise<void>(() => {});
     },
-    kernel: { toKernelPtr: (value: number | bigint) => Number(value) },
-    kernelMemory,
-    currentHandlePid: 0,
-    threadCtidPtrs: (worker as any).threadCtidPtrs ?? new Map(),
-    bindKernelTidForChannel: vi.fn(),
-  });
-  installKernelWorkerTestScratch(worker as any, kernelMemory);
-  (worker as any).kernelInstance.exports.kernel_handle_channel = vi.fn(
-    (offset: number) => {
-      const kernelView = new DataView(kernelMemory.buffer, offset);
+  };
+  const exports = workerKernelExports.get(worker);
+  if (!exports) throw new Error("test worker has no gated export resolver");
+  const kernelMemory = workerKernelMemories.get(worker);
+  if (!kernelMemory) throw new Error("test worker has no kernel Memory");
+  exports.kernel_handle_channel = vi.fn(
+    (offset: number | bigint) => {
+      const scratchPointer = workerScratchPointers.get(worker);
+      if (scratchPointer === undefined || Number(offset) !== scratchPointer) {
+        throw new Error("clone did not use the owned test scratch region");
+      }
+      const kernelView = new DataView(kernelMemory.buffer, Number(offset));
       kernelView.setBigInt64(CH_RETURN, BigInt(tid), true);
       return 0;
     },
   );
-  (worker as any).handleClone(channel, [0, 0, 0, 0, 0, 0]);
+  const processView = new DataView(
+    channel.memory.buffer,
+    channel.channelOffset,
+  );
+  processView.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
+  processView.setUint32(CH_SYSCALL, ABI_SYSCALLS.Clone, true);
+  for (let index = 0; index < 6; index++) {
+    processView.setBigInt64(CH_ARGS + index * CH_ARG_SIZE, 0n, true);
+  }
+  (worker as any).handleSyscall(channel);
+  for (let index = 0; index < 8 && !attachment; index++) {
+    await Promise.resolve();
+  }
   if (!attachment) throw new Error("clone callback did not receive attachment");
   return attachment;
 }
@@ -1241,6 +1430,67 @@ function resolvedProgram() {
     programModule: new WebAssembly.Module(programBytes),
     argv: [],
   };
+}
+
+function writeChannelSyscall(
+  channel: ReturnType<typeof createChannel>,
+  syscall: number,
+  args: readonly number[],
+): void {
+  const view = new DataView(
+    channel.memory.buffer,
+    channel.channelOffset,
+  );
+  view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
+  view.setUint32(CH_SYSCALL, syscall, true);
+  for (let index = 0; index < 6; index++) {
+    view.setBigInt64(
+      CH_ARGS + index * CH_ARG_SIZE,
+      BigInt(args[index] ?? 0),
+      true,
+    );
+  }
+}
+
+function readChannelStatus(
+  channel: ReturnType<typeof createChannel>,
+): number {
+  return new DataView(
+    channel.memory.buffer,
+    channel.channelOffset,
+  ).getUint32(CH_STATUS, true);
+}
+
+function readChannelCompletion(
+  channel: ReturnType<typeof createChannel>,
+): { status: number; returnValue: number; errno: number } {
+  const view = new DataView(
+    channel.memory.buffer,
+    channel.channelOffset,
+  );
+  return {
+    status: view.getUint32(CH_STATUS, true),
+    returnValue: Number(view.getBigInt64(CH_RETURN, true)),
+    errno: view.getUint32(CH_ERRNO, true),
+  };
+}
+
+async function flushMicrotasks(turns = 16): Promise<void> {
+  for (let index = 0; index < turns; index++) {
+    await Promise.resolve();
+  }
+}
+
+async function flushMicrotasksUntil(
+  condition: () => boolean,
+  failureMessage: string,
+  turns = 32,
+): Promise<void> {
+  for (let index = 0; index < turns; index++) {
+    if (condition()) return;
+    await Promise.resolve();
+  }
+  if (!condition()) throw new Error(failureMessage);
 }
 
 function createChannel(pid: number, memory: WebAssembly.Memory, channelOffset: number): any {

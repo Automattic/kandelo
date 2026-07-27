@@ -152,6 +152,11 @@ export interface StatResult {
   gid: number;
 }
 
+export interface SharedFsAppendOutcome {
+  readonly written: number;
+  readonly end: number;
+}
+
 export interface SharedFsStats {
   blockSize: number;
   totalBlocks: number;
@@ -2749,6 +2754,67 @@ export class SharedFS {
       const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
       this.w64(base + FD_OFFSET, offset + nwritten);
       return nwritten;
+    } finally {
+      this.inodeWriteUnlock(entry.ino);
+    }
+  }
+
+  append(
+    fd: number,
+    data: Uint8Array,
+    limit: number | null,
+  ): SharedFsAppendOutcome {
+    const entry = this.fdGet(fd);
+    if (!entry) throw new SFSError(EBADF);
+
+    const accMode = entry.flags & O_ACCMODE;
+    if (accMode === O_RDONLY) throw new SFSError(EBADF);
+    if (limit !== null && (!Number.isSafeInteger(limit) || limit < 0)) {
+      throw new SFSError(EINVAL);
+    }
+
+    this.inodeWriteLock(entry.ino);
+    try {
+      // WHY: resolve EOF and mutate the inode under the same lock. The
+      // caller's current O_APPEND bit is Rust-owned, so this operation is
+      // deliberately independent of the flags captured by SharedFS.open().
+      // The file-size ceiling is applied before releasing this same lock, so
+      // another SharedFS actor cannot move EOF between the limit decision and
+      // the append.
+      const inoOff = this.inodeOffset(entry.ino);
+      const offset = this.r64(inoOff + INO_SIZE);
+      if (!Number.isSafeInteger(offset) || offset < 0) {
+        throw new SFSError(EINVAL);
+      }
+      if (offset > MAX_FILE_SIZE) {
+        throw new SFSError(EFBIG);
+      }
+
+      if (limit !== null && offset >= limit) {
+        const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
+        this.w64(base + FD_OFFSET, offset);
+        return { written: 0, end: offset };
+      }
+
+      const limitAvailable = limit === null
+        ? data.length
+        : Math.min(data.length, limit - offset);
+      const fsAvailable = MAX_FILE_SIZE - offset;
+      if (limitAvailable > fsAvailable) {
+        throw new SFSError(EFBIG);
+      }
+      const writable = data.subarray(0, limitAvailable);
+      const nwritten = this.inodeWriteData(
+        entry.ino,
+        offset,
+        writable,
+        writable.length,
+      );
+      if (nwritten < 0) throw new SFSError(nwritten);
+      const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
+      const end = offset + nwritten;
+      this.w64(base + FD_OFFSET, end);
+      return { written: nwritten, end };
     } finally {
       this.inodeWriteUnlock(entry.ino);
     }

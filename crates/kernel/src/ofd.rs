@@ -8,6 +8,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::flags::{O_APPEND, O_NONBLOCK, O_PATH};
 
+use crate::fd::FdTable;
 use crate::lock::{FileId, OfdId};
 
 // OFD table slots are process-local and reusable, so they cannot identify an
@@ -498,11 +499,62 @@ impl OfdTable {
         self.entries.get_mut(idx).and_then(|slot| slot.as_mut())
     }
 
+    /// Keep only references actually inherited through a descriptor table.
+    ///
+    /// WHY: `ref_count` also includes kernel-owned blocked-retry pins. A
+    /// fork/spawn child does not inherit those capabilities, so cloning the
+    /// parent's count would either retain an OFD with no child fd or leave a
+    /// phantom reference after the child's last real fd closes.
+    pub(crate) fn retain_fd_references(&mut self, fd_table: &FdTable) -> Result<(), Errno> {
+        let mut inherited_refs = BTreeMap::<usize, u32>::new();
+        for (_, entry) in fd_table.iter() {
+            let index = entry.ofd_ref.0;
+            if self.get(index).is_none() {
+                return Err(Errno::EBADF);
+            }
+            let count = inherited_refs.entry(index).or_insert(0);
+            *count = count.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        }
+
+        for (index, slot) in self.entries.iter_mut().enumerate() {
+            let Some(ofd) = slot.as_mut() else {
+                continue;
+            };
+            if let Some(count) = inherited_refs.remove(&index) {
+                ofd.ref_count = count;
+            } else {
+                // This clone has not acquired a machine-wide backing
+                // reference yet, so dropping an unreferenced local copy must
+                // not run ordinary final-close bookkeeping.
+                *slot = None;
+            }
+        }
+        debug_assert!(inherited_refs.is_empty());
+        Ok(())
+    }
+
     /// Increment the reference count for the OFD at `idx`.
     pub fn inc_ref(&mut self, idx: usize) {
         if let Some(ofd) = self.get_mut(idx) {
-            ofd.ref_count += 1;
+            ofd.ref_count = ofd
+                .ref_count
+                .checked_add(1)
+                .expect("open-file-description reference count exhausted");
         }
+    }
+
+    /// Fallibly retain one exact live OFD.
+    ///
+    /// A table index is reusable, so callers that keep authority beyond the
+    /// current syscall must also prove the stable [`OfdId`]. This is the
+    /// allocation-free ownership primitive used by blocked-syscall bindings.
+    pub(crate) fn try_inc_ref_exact(&mut self, idx: usize, id: OfdId) -> Result<(), Errno> {
+        let ofd = self.get_mut(idx).ok_or(Errno::EBADF)?;
+        if ofd.ofd_id != id {
+            return Err(Errno::EBADF);
+        }
+        ofd.ref_count = ofd.ref_count.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        Ok(())
     }
 
     /// Decrement the reference count for the OFD at `idx`.
@@ -610,6 +662,39 @@ mod tests {
             table.get(idx).is_none(),
             "OFD should be freed when ref_count hits 0"
         );
+    }
+
+    #[test]
+    fn inherited_table_counts_only_real_fd_aliases() {
+        let mut table = OfdTable::new();
+        let inherited = table.create(FileType::Regular, O_RDONLY, 11, Vec::new());
+        let retry_only = table.create(FileType::Regular, O_RDONLY, 12, Vec::new());
+        table.inc_ref(inherited);
+        table.inc_ref(inherited);
+        table.inc_ref(retry_only);
+
+        let mut fds = FdTable::new();
+        fds.alloc(crate::fd::OpenFileDescRef(inherited), 0)
+            .unwrap();
+        fds.alloc(crate::fd::OpenFileDescRef(inherited), 0)
+            .unwrap();
+
+        table.retain_fd_references(&fds).unwrap();
+        assert_eq!(table.get(inherited).unwrap().ref_count, 2);
+        assert!(table.get(retry_only).is_none());
+    }
+
+    #[test]
+    fn inherited_table_rejects_a_dangling_fd_without_partial_rewrite() {
+        let mut table = OfdTable::new();
+        let retained = table.create(FileType::Regular, O_RDONLY, 13, Vec::new());
+        table.inc_ref(retained);
+
+        let mut fds = FdTable::new();
+        fds.alloc(crate::fd::OpenFileDescRef(99), 0).unwrap();
+
+        assert_eq!(table.retain_fd_references(&fds), Err(Errno::EBADF));
+        assert_eq!(table.get(retained).unwrap().ref_count, 2);
     }
 
     #[test]

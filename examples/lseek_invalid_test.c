@@ -35,8 +35,25 @@ int main(int argc, char **argv)
     }
     if (expect_failure(fd, -1, SEEK_SET, EINVAL) != 0 ||
         expect_failure(fd, -3, SEEK_CUR, EINVAL) != 0 ||
-        expect_failure(fd, -7, SEEK_END, EINVAL) != 0 ||
-        expect_failure(fd, (off_t)(1ULL << 53), SEEK_SET, EOVERFLOW) != 0 ||
+        expect_failure(fd, -7, SEEK_END, EINVAL) != 0) {
+        close(fd);
+        return 4;
+    }
+
+    /*
+     * An exact signed off_t above JavaScript's safe-integer boundary is a
+     * valid seek, even though a number-only host backend could not represent
+     * it. The host-file backend carries it as an exact 64-bit value.
+     */
+    const off_t large = (off_t)(1ULL << 53);
+    errno = 0;
+    if (lseek(fd, large, SEEK_SET) != large || errno != 0) {
+        fprintf(stderr, "large exact lseek failed: errno=%d (%s)\n",
+                errno, strerror(errno));
+        close(fd);
+        return 4;
+    }
+    if (lseek(fd, 2, SEEK_SET) != 2 ||
         expect_failure(fd, (off_t)LLONG_MAX, SEEK_CUR, EOVERFLOW) != 0) {
         close(fd);
         return 4;

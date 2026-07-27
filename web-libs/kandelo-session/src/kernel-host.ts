@@ -80,7 +80,14 @@ export interface KernelSyscallEvent {
   t: number;
   pid: number;
   nr: number;
-  args: [number, number, number, number, number, number];
+  args: [
+    number | bigint,
+    number | bigint,
+    number | bigint,
+    number | bigint,
+    number | bigint,
+    number | bigint,
+  ];
 }
 
 export type LazyDownloadKind = "file" | "tree" | "archive";
@@ -1584,7 +1591,9 @@ export class LiveKernelHost implements KernelHost {
         t: `+${((raw.t - t0) / 1000).toFixed(6)}`,
         pid: raw.pid,
         call: name,
-        args: raw.args.filter((a) => a !== 0).join(", ") || "—",
+        args: raw.args
+          .filter((a) => a !== 0 && a !== 0n)
+          .join(", ") || "—",
         // Return value isn't available at trace-emit time (we only see
         // the entry, not the completion). v0 leaves this blank; future
         // work can pair entry/return events.

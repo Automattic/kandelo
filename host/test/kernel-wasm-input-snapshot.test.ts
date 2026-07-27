@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { WasmPosixKernel } from "../src/kernel";
+import {
+  createWasmPosixKernelTestHarness,
+  WasmPosixKernel,
+} from "../src/kernel";
 
 function memoryImportModule(pointerWidth: 4 | 8): Uint8Array {
   return new Uint8Array([
@@ -16,15 +19,23 @@ function memoryImportModule(pointerWidth: 4 | 8): Uint8Array {
   ]);
 }
 
-function kernel(): WasmPosixKernel {
-  return new WasmPosixKernel(
-    {
+function kernel(
+  compile: (bytes: BufferSource) => Promise<WebAssembly.Module>,
+): WasmPosixKernel {
+  return createWasmPosixKernelTestHarness({
+    config: {
       maxWorkers: 1,
       dataBufferSize: 65_536,
       useSharedMemory: true,
     },
-    {} as never,
-  );
+    engine: {
+      compile,
+      instantiate: async () => {
+        throw new Error("test compile unexpectedly succeeded");
+      },
+    },
+    initialized: false,
+  });
 }
 
 function expectBytes(source: BufferSource | undefined, expected: Uint8Array): void {
@@ -64,12 +75,12 @@ describe("kernel WebAssembly input snapshots", () => {
     const source = new SpoofedUint8Array(actual);
     const compileFailure = new Error("stop after capturing compile input");
     let compiledSource: BufferSource | undefined;
-    vi.spyOn(WebAssembly, "compile").mockImplementation(async (bytes) => {
+    const compile = vi.fn(async (bytes: BufferSource) => {
       compiledSource = bytes;
       throw compileFailure;
     });
 
-    const instance = kernel();
+    const instance = kernel(compile);
     await expect(instance.init(source)).rejects.toBe(compileFailure);
 
     expect(getterReads).toBe(0);
@@ -77,7 +88,7 @@ describe("kernel WebAssembly input snapshots", () => {
     expectBytes(compiledSource, actual);
   });
 
-  it("uses a DataView subclass's intrinsic window for both width detection and initWithMemory compilation", async () => {
+  it("uses a DataView subclass's intrinsic window for width detection and init compilation", async () => {
     const actual = memoryImportModule(8);
     const decoy = memoryImportModule(4);
     const prefixLength = 7;
@@ -110,18 +121,12 @@ describe("kernel WebAssembly input snapshots", () => {
     );
     const compileFailure = new Error("stop after capturing compile input");
     let compiledSource: BufferSource | undefined;
-    vi.spyOn(WebAssembly, "compile").mockImplementation(async (bytes) => {
+    const compile = vi.fn(async (bytes: BufferSource) => {
       compiledSource = bytes;
       throw compileFailure;
     });
-    const memory = new WebAssembly.Memory({
-      initial: 1,
-      maximum: 1,
-      shared: true,
-    });
-
-    const instance = kernel();
-    await expect(instance.initWithMemory(source, memory))
+    const instance = kernel(compile);
+    await expect(instance.init(source))
       .rejects.toBe(compileFailure);
 
     expect(getterReads).toBe(0);

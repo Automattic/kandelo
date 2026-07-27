@@ -203,6 +203,10 @@ has_resolvable() {
 KERNEL_REQUIRED_EXPORTS=(
     __abi_version
     kernel_alloc_scratch
+    kernel_blocking_retry_release
+    kernel_blocking_retry_token
+    kernel_clear_process_metadata
+    kernel_commit_process_exit
     kernel_create_process
     kernel_create_process_with_stdio
     kernel_dequeue_signal
@@ -212,6 +216,7 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_get_parent_pid
     kernel_get_process_exit_signal
     kernel_get_process_state
+    kernel_get_socket_timeout_ms
     kernel_handle_channel
     kernel_has_sa_nocldstop
     kernel_host_adapter_manifest_len
@@ -220,15 +225,36 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_ipc_shmat_for_task
     kernel_ipc_shmdt_for_process
     kernel_ipc_shmdt_for_task
+    kernel_is_fd_nonblock
     kernel_mark_process_signaled
+    kernel_mq_descriptor_msgsize
+    kernel_msqid_ds_bytes
+    kernel_pick_signal_target_tid
     kernel_pipe_has_readers
     kernel_posix_timer_fire
-    kernel_prepare_write_operation
+    kernel_push_process_metadata_entry
     kernel_reap_exited_child
     kernel_remove_process
+    kernel_semctl_array_bytes
+    kernel_semid_ds_bytes
     kernel_set_current_tid
+    kernel_set_cwd
+    kernel_shmid_ds_bytes
     kernel_spawn_process
+    kernel_spawn_reserved_process
+    kernel_spawn_scratch_begin
+    kernel_spawn_scratch_cancel
+    kernel_spawn_scratch_capacity
+    kernel_spawn_scratch_pointer
+    kernel_spawn_scratch_retained_capacity
     kernel_thread_exit
+    kernel_thread_has_deliverable
+    kernel_transfer_channel_execute
+    kernel_transfer_io_execute
+    kernel_transfer_scratch_begin
+    kernel_transfer_scratch_cancel
+    kernel_transfer_scratch_capacity
+    kernel_transfer_scratch_pointer
     kernel_validate_task
     kernel_wait_child_poll
 )

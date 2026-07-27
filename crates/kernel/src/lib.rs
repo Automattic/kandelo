@@ -6,6 +6,8 @@ extern crate alloc;
 extern crate wasm_posix_shared;
 
 pub mod audio;
+pub(crate) mod blocked_retry;
+pub(crate) mod channel_result;
 pub(crate) mod channel_scratch;
 pub(crate) mod descriptor_backing;
 pub mod devfs;
@@ -35,6 +37,7 @@ pub(crate) mod socket_wire;
 pub mod spawn;
 pub mod syscalls;
 pub mod terminal;
+pub(crate) mod transfer;
 pub mod unix_socket;
 pub mod wakeup;
 

@@ -7,7 +7,10 @@ import {
   STRUCT_SIZE_WASM_POLL_FD,
   STRUCT_SIZE_WPK_DRM_MODE_MODEINFO,
 } from "../src/generated/abi";
-import { WasmPosixKernel } from "../src/kernel";
+import {
+  createWasmPosixKernelTestHarness,
+  WasmPosixKernel,
+} from "../src/kernel";
 import { QOP_GET_ERROR } from "../src/webgl/ops";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
@@ -27,37 +30,6 @@ function hostileBytes(length: number, reportedLength = 1): Uint8Array {
 function kernelHarness(
   exports: Record<string, unknown>,
   pointerWidth: 4 | 8 = 4,
-): {
-  kernel: WasmPosixKernel & Record<string, any>;
-  memory: WebAssembly.Memory;
-} {
-  const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
-  const kernel = Object.assign(
-    Object.create(WasmPosixKernel.prototype),
-    {
-      memory,
-      instance: createKernelScratchTestInstance(
-        pointerWidth,
-        memory,
-        () => exports,
-        (capacity) => {
-          const allocator = exports.kernel_alloc_scratch;
-          if (typeof allocator !== "function") {
-            throw new Error("missing test implementation for kernel_alloc_scratch");
-          }
-          return Reflect.apply(allocator, undefined, [capacity]) as number | bigint;
-        },
-      ),
-      kernelPtrWidth: pointerWidth,
-      apiScratchRegion: null,
-      callbacks: {},
-      sharedPipes: new Map(),
-    },
-  ) as WasmPosixKernel & Record<string, any>;
-  return { kernel, memory };
-}
-
-function fullKernelHarness(
   io: Record<string, unknown> = {},
   callbacks: Record<string, unknown> = {},
 ): {
@@ -65,22 +37,50 @@ function fullKernelHarness(
   memory: WebAssembly.Memory;
 } {
   const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
-  const kernel = new WasmPosixKernel(
-    {} as any,
-    io as any,
-    callbacks as any,
-  ) as WasmPosixKernel & Record<string, any>;
-  Object.assign(kernel, {
+  const kernel = createWasmPosixKernelTestHarness({
+    io: io as any,
+    callbacks: callbacks as any,
+    memory,
+    pointerWidth,
+    instance: createKernelScratchTestInstance(
+      pointerWidth,
+      memory,
+      () => exports,
+      (capacity) => {
+        const allocator = exports.kernel_alloc_scratch;
+        if (typeof allocator !== "function") {
+          throw new Error("missing test implementation for kernel_alloc_scratch");
+        }
+        return Reflect.apply(allocator, undefined, [capacity]) as number | bigint;
+      },
+    ),
+  }) as WasmPosixKernel & Record<string, any>;
+  return { kernel, memory };
+}
+
+function fullKernelHarness(
+  io: Record<string, unknown> = {},
+  callbacks: Record<string, unknown> = {},
+  pointerWidth: 4 | 8 = 4,
+  suppliedMemory?: WebAssembly.Memory,
+): {
+  kernel: WasmPosixKernel & Record<string, any>;
+  memory: WebAssembly.Memory;
+} {
+  const memory = suppliedMemory
+    ?? new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  const kernel = createWasmPosixKernelTestHarness({
+    io: io as any,
+    callbacks: callbacks as any,
     memory,
     instance: createKernelScratchTestInstance(
-      4,
+      pointerWidth,
       memory,
       () => ({}),
-      () => 4096,
+      () => pointerWidth === 8 ? 4096n : 4096,
     ),
-    kernelPtrWidth: 4,
-    apiScratchRegion: null,
-  });
+    pointerWidth,
+  }) as WasmPosixKernel & Record<string, any>;
   return { kernel, memory };
 }
 
@@ -94,10 +94,10 @@ describe("WasmPosixKernel public API scratch ownership", () => {
     expect(() => kernel.toKernelPtr(-1)).toThrow(/non-negative/i);
     expect(() => kernel.toKernelPtr(1.5)).toThrow(/integer/i);
 
-    Object.assign(kernel, { kernelPtrWidth: 8 });
-    expect(kernel.toKernelPtr(0x1_0000_0000)).toBe(0x1_0000_0000n);
+    const { kernel: kernel64 } = kernelHarness({}, 8);
+    expect(kernel64.toKernelPtr(0x1_0000_0000)).toBe(0x1_0000_0000n);
     expect(() =>
-      kernel.toKernelPtr(BigInt(Number.MAX_SAFE_INTEGER) + 1n)
+      kernel64.toKernelPtr(BigInt(Number.MAX_SAFE_INTEGER) + 1n)
     ).toThrow(/representable/i);
   });
 
@@ -130,6 +130,60 @@ describe("WasmPosixKernel public API scratch ownership", () => {
     expect(new Uint8Array(memory.buffer, 0, 64))
       .toEqual(new Uint8Array(64).fill(0xa5));
   });
+
+  it.each([
+    ["wasm32", 4],
+    ["wasm64", 8],
+  ] as const)(
+    "%s stages scalar socket options in an allocator-owned exact range",
+    (_name, pointerWidth) => {
+      const scratchPointer = 4096;
+      const exportedPointer = pointerWidth === 8
+        ? BigInt(scratchPointer)
+        : scratchPointer;
+      const allocate = vi.fn(() => exportedPointer);
+      let memory!: WebAssembly.Memory;
+      const setsockopt = vi.fn((
+        fd: number,
+        level: number,
+        optname: number,
+        pointer: number | bigint,
+        length: number,
+      ) => {
+        expect([fd, level, optname]).toEqual([7, 1, 2]);
+        expect(pointer).toBe(exportedPointer);
+        expect(length).toBe(4);
+        expect(
+          new DataView(
+            memory.buffer,
+            Number(pointer),
+            length,
+          ).getUint32(0, true),
+        ).toBe(0x89ab_cdef);
+        return 0;
+      });
+      const harness = kernelHarness({
+        kernel_alloc_scratch: allocate,
+        kernel_setsockopt: setsockopt,
+      }, pointerWidth);
+      memory = harness.memory;
+      new Uint8Array(memory.buffer).fill(0xa5, 0, 64);
+      new Uint8Array(memory.buffer).fill(
+        0x5a,
+        scratchPointer + 4,
+        scratchPointer + 20,
+      );
+
+      harness.kernel.setsockopt(7, 1, 2, 0x89ab_cdef);
+
+      expect(allocate).toHaveBeenCalledTimes(1);
+      expect(setsockopt).toHaveBeenCalledTimes(1);
+      expect(new Uint8Array(memory.buffer, 0, 64))
+        .toEqual(new Uint8Array(64).fill(0xa5));
+      expect(new Uint8Array(memory.buffer, scratchPointer + 4, 16))
+        .toEqual(new Uint8Array(16).fill(0x5a));
+    },
+  );
 
   it("never lends stale scratch bytes when public inputs spoof their length", () => {
     const scratchPointer = 4096;
@@ -500,6 +554,55 @@ describe("WasmPosixKernel public API scratch ownership", () => {
     expect(allocate).toHaveBeenCalledTimes(1);
     expect(truncate).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    ["wasm32", 4],
+    ["wasm64", 8],
+  ] as const)(
+    "%s passes the public ftruncate length through the direct i64 ABI",
+    (_name, pointerWidth) => {
+      const length = 0x1_0000_0001;
+      const ftruncate = vi.fn((fd: number, wasmLength: bigint) => {
+        if (typeof wasmLength !== "bigint") {
+          throw new TypeError("Wasm i64 arguments require BigInt");
+        }
+        expect(fd).toBe(7);
+        expect(wasmLength).toBe(BigInt(length));
+        return 0;
+      });
+      const { kernel } = kernelHarness(
+        { kernel_ftruncate: ftruncate },
+        pointerWidth,
+      );
+
+      kernel.ftruncate(7, length);
+
+      expect(ftruncate).toHaveBeenCalledWith(7, BigInt(length));
+    },
+  );
+
+  it.each([
+    ["wasm32 negative", 4, -1],
+    ["wasm32 fractional", 4, 1.5],
+    ["wasm32 unsafe", 4, Number.MAX_SAFE_INTEGER + 1],
+    ["wasm64 negative", 8, -1],
+    ["wasm64 fractional", 8, 1.5],
+    ["wasm64 unsafe", 8, Number.MAX_SAFE_INTEGER + 1],
+  ] as const)(
+    "rejects a %s public ftruncate length before entering Wasm",
+    (_name, pointerWidth, length) => {
+      const ftruncate = vi.fn(() => 0);
+      const { kernel } = kernelHarness(
+        { kernel_ftruncate: ftruncate },
+        pointerWidth,
+      );
+
+      expect(() => kernel.ftruncate(7, length)).toThrow(
+        /non-negative safe integer/,
+      );
+      expect(ftruncate).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("Rust-owned host import ranges", () => {
@@ -507,7 +610,7 @@ describe("Rust-owned host import ranges", () => {
     const open = vi.fn(() => 7);
     const { kernel, memory } = kernelHarness({});
     Object.assign(kernel, { io: { open } });
-    const imports = kernel.buildImportObject(memory) as {
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
     const pointer = memory.buffer.byteLength - 2;
@@ -520,7 +623,7 @@ describe("Rust-owned host import ranges", () => {
     const write = vi.fn(() => 4);
     const { kernel, memory } = kernelHarness({});
     Object.assign(kernel, { io: { write } });
-    const imports = kernel.buildImportObject(memory) as {
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
     const pointer = memory.buffer.byteLength - 4;
@@ -547,7 +650,7 @@ describe("Rust-owned host import ranges", () => {
     const write = vi.fn(() => 0);
     const { kernel, memory } = kernelHarness({});
     Object.assign(kernel, { io: { write } });
-    const imports = kernel.buildImportObject(memory) as {
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
 
@@ -557,12 +660,11 @@ describe("Rust-owned host import ranges", () => {
 
   it("rejects an unrepresentable wasm64 network source without aliasing", () => {
     const send = vi.fn(() => 1);
-    const { kernel, memory } = kernelHarness({});
+    const { kernel, memory } = kernelHarness({}, 8);
     Object.assign(kernel, {
-      kernelPtrWidth: 8,
       io: { network: { send } },
     });
-    const imports = kernel.buildImportObject(memory) as {
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
 
@@ -579,7 +681,7 @@ describe("Rust-owned host import ranges", () => {
     const ftruncate = vi.fn();
     const { kernel, memory } = kernelHarness({});
     Object.assign(kernel, { io: { ftruncate } });
-    const imports = kernel.buildImportObject(memory) as {
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
 
@@ -602,7 +704,7 @@ describe("Rust-owned host import ranges", () => {
     });
     const { kernel, memory } = kernelHarness({});
     Object.assign(kernel, { io: { read } });
-    const imports = kernel.buildImportObject(memory) as {
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
 
@@ -614,11 +716,214 @@ describe("Rust-owned host import ranges", () => {
       .toEqual(new Uint8Array([0x41, 0x42]));
   });
 
+  it.each([4, 8] as const)(
+    "publishes a positioned wasm%d read at the exact memory boundary",
+    (pointerWidth) => {
+      const exactOffset = (1n << 53n) + 1n;
+      let retained: Uint8Array | undefined;
+      const read = vi.fn((
+        _handle: number,
+        destination: Uint8Array,
+        offset: number | bigint | null,
+      ) => {
+        retained = destination;
+        expect(offset).toBe(exactOffset);
+        destination.set([0x31, 0x32, 0x33, 0x34]);
+        return 4;
+      });
+      const { kernel, memory } = kernelHarness({}, pointerWidth);
+      Object.assign(kernel, { io: { read } });
+      const imports = kernel.testAuthority.buildImportObject(memory) as {
+        env: Record<string, (...args: any[]) => any>;
+      };
+      const destination = memory.buffer.byteLength - 4;
+      const pointer = pointerWidth === 4
+        ? destination
+        : BigInt(destination);
+
+      expect(imports.env.host_pread(
+        8n,
+        pointer,
+        4,
+        1,
+        0x20_0000,
+      )).toBe(4);
+      expect(read).toHaveBeenCalledWith(
+        8,
+        expect.any(Uint8Array),
+        exactOffset,
+        4,
+      );
+      expect(new Uint8Array(memory.buffer, destination, 4))
+        .toEqual(new Uint8Array([0x31, 0x32, 0x33, 0x34]));
+
+      retained![0] = 0x7f;
+      expect(new Uint8Array(memory.buffer, destination, 4))
+        .toEqual(new Uint8Array([0x31, 0x32, 0x33, 0x34]));
+
+      read.mockClear();
+      expect(imports.env.host_pread(
+        8n,
+        pointer,
+        5,
+        1,
+        0x20_0000,
+      )).toBe(-14);
+      expect(read).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects an oversized positioned-read result without publishing bytes", () => {
+    const read = vi.fn((
+      _handle: number,
+      destination: Uint8Array,
+    ) => {
+      destination.fill(0x6b);
+      return destination.byteLength + 1;
+    });
+    const { kernel, memory } = kernelHarness({});
+    Object.assign(kernel, { io: { read } });
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
+      env: Record<string, (...args: any[]) => any>;
+    };
+    new Uint8Array(memory.buffer, 4096, 8).fill(0xa5);
+
+    expect(imports.env.host_pread(8n, 4096, 4, 0, 0)).toBe(-5);
+    expect(new Uint8Array(memory.buffer, 4096, 8))
+      .toEqual(new Uint8Array(8).fill(0xa5));
+  });
+
+  it.each([4, 8] as const)(
+    "passes an exact positioned wasm%d write without stream callbacks",
+    (pointerWidth) => {
+      const exactOffset = (1n << 53n) + 1n;
+      const write = vi.fn(() => 4);
+      const onStdout = vi.fn();
+      const { kernel, memory } = kernelHarness({}, pointerWidth);
+      Object.assign(kernel, {
+        io: { write },
+        callbacks: { onStdout },
+      });
+      const imports = kernel.testAuthority.buildImportObject(memory) as {
+        env: Record<string, (...args: any[]) => any>;
+      };
+      const source = memory.buffer.byteLength - 4;
+      new Uint8Array(memory.buffer, source, 4).set([1, 2, 3, 4]);
+      const pointer = pointerWidth === 4 ? source : BigInt(source);
+
+      expect(imports.env.host_pwrite(
+        1n,
+        pointer,
+        4,
+        1,
+        0x20_0000,
+      )).toBe(4);
+      expect(write).toHaveBeenCalledWith(
+        1,
+        new Uint8Array([1, 2, 3, 4]),
+        exactOffset,
+        4,
+      );
+      expect(onStdout).not.toHaveBeenCalled();
+
+      write.mockClear();
+      expect(imports.env.host_pwrite(
+        1n,
+        pointer,
+        5,
+        1,
+        0x20_0000,
+      )).toBe(-14);
+      expect(write).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "passes a bounded wasm%d append through the explicit backend operation",
+    (pointerWidth) => {
+      const append = vi.fn(() => ({ written: 4, end: 19 }));
+      const write = vi.fn();
+      const onStdout = vi.fn();
+      const { kernel, memory } = kernelHarness(
+        {},
+        pointerWidth,
+        { append, write },
+        { onStdout },
+      );
+      const imports = kernel.testAuthority.buildImportObject(memory) as {
+        env: Record<string, (...args: any[]) => any>;
+      };
+      const source = memory.buffer.byteLength - 4;
+      new Uint8Array(memory.buffer, source, 4).set([4, 3, 2, 1]);
+      const pointer = pointerWidth === 4 ? source : BigInt(source);
+
+      expect(imports.env.host_append(1n, pointer, 4, -1, -1)).toBe(4);
+      expect(append).toHaveBeenCalledWith(
+        1,
+        new Uint8Array([4, 3, 2, 1]),
+        4,
+        null,
+      );
+      expect(imports.env.host_append_position(1n, 4)).toBe(19n);
+      expect(write).not.toHaveBeenCalled();
+      expect(onStdout).not.toHaveBeenCalled();
+
+      append.mockClear();
+      expect(imports.env.host_append(1n, pointer, 5, -1, -1)).toBe(-14);
+      expect(append).not.toHaveBeenCalled();
+    },
+  );
+
+  it("throws on an impossible append count returned by a backend", () => {
+    const append = vi.fn(() => ({ written: 2, end: 2 }));
+    const { kernel, memory } = kernelHarness({}, 4, { append });
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
+      env: Record<string, (...args: any[]) => any>;
+    };
+    new Uint8Array(memory.buffer, 4096, 1)[0] = 0x41;
+
+    expect(() => imports.env.host_append(8n, 4096, 1, -1, -1))
+      .toThrow(/invalid append byte count/i);
+  });
+
+  it("reconstructs signed i64 seek words without Number precision loss", () => {
+    const seek = vi.fn((
+      _handle: number,
+      offset: number | bigint,
+    ) => offset < 0 ? 17 : offset);
+    const { kernel, memory } = kernelHarness({});
+    Object.assign(kernel, { io: { seek } });
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
+      env: Record<string, (...args: any[]) => any>;
+    };
+
+    expect(imports.env.host_seek(8n, 1, 0x20_0000, 0))
+      .toBe((1n << 53n) + 1n);
+    expect(imports.env.host_seek(8n, 0xffff_ffff, -1, 0)).toBe(17n);
+    expect(seek.mock.calls.map((call) => call[1]))
+      .toEqual([(1n << 53n) + 1n, -1n]);
+  });
+
+  it.each([-1n, -(1n << 63n)])(
+    "maps malformed negative backend seek result %s to EIO",
+    (backendResult) => {
+      const { kernel, memory } = kernelHarness({});
+      Object.assign(kernel, {
+        io: { seek: vi.fn(() => backendResult) },
+      });
+      const imports = kernel.testAuthority.buildImportObject(memory) as {
+        env: Record<string, (...args: any[]) => any>;
+      };
+
+      expect(imports.env.host_seek(8n, 0, 0, 0)).toBe(-5n);
+    },
+  );
+
   it("rejects an invalid read destination before consuming backend data", () => {
     const read = vi.fn(() => 1);
     const { kernel, memory } = kernelHarness({});
     Object.assign(kernel, { io: { read } });
-    const imports = kernel.buildImportObject(memory) as {
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
 
@@ -634,7 +939,7 @@ describe("Rust-owned host import ranges", () => {
     const waitpid = vi.fn(() => ({ pid: 42, status: 0 }));
     const { kernel, memory } = kernelHarness({});
     Object.assign(kernel, { io: { waitpid } });
-    const imports = kernel.buildImportObject(memory) as {
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
 
@@ -655,7 +960,7 @@ describe("Rust-owned host import ranges", () => {
         },
       },
     });
-    const imports = kernel.buildImportObject(memory) as {
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
     new Uint8Array(memory.buffer).fill(0xa5, 4096, 4112);
@@ -676,7 +981,7 @@ describe("Rust-owned host import ranges", () => {
         },
       },
     });
-    const imports = kernel.buildImportObject(memory) as {
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
     new Uint8Array(memory.buffer).fill(0xa5, 4096, 4120);
@@ -684,7 +989,7 @@ describe("Rust-owned host import ranges", () => {
     expect(imports.env.host_net_recv(1, 4096, 4, 0)).toBe(-5);
     expect(new Uint8Array(memory.buffer, 4096, 24))
       .toEqual(new Uint8Array(24).fill(0xa5));
-    expect(() => kernel.writeKernelBytes(4096, 4, output))
+    expect(() => kernel.testAuthority.writeKernelBytes(4096, 4, output))
       .toThrow(/20 exceeds capacity 4/i);
     expect(new Uint8Array(memory.buffer, 4096, 24))
       .toEqual(new Uint8Array(24).fill(0xa5));
@@ -703,7 +1008,7 @@ describe("Rust-owned host import ranges", () => {
         },
       },
     });
-    const imports = kernel.buildImportObject(memory) as {
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
     new Uint8Array(memory.buffer, 2048, 2).set([0x78, 0]);
@@ -725,7 +1030,7 @@ describe("Rust-owned host import ranges", () => {
         },
       },
     });
-    const imports = kernel.buildImportObject(memory) as {
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
     new Uint8Array(memory.buffer, 2048, 2).set([0x78, 0]);
@@ -745,7 +1050,7 @@ describe("Rust-owned host import ranges", () => {
         onStdin: () => output,
       },
     });
-    const imports = kernel.buildImportObject(memory) as {
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
     new Uint8Array(memory.buffer).fill(0xa5, 4096, 4104);
@@ -757,7 +1062,7 @@ describe("Rust-owned host import ranges", () => {
 
   it("rejects a null positive-length getrandom pointer", () => {
     const { kernel, memory } = kernelHarness({});
-    const imports = kernel.buildImportObject(memory) as {
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
 
@@ -766,14 +1071,13 @@ describe("Rust-owned host import ranges", () => {
 
   it("rejects an unrepresentable wasm64 process-copy destination before a kernel write", () => {
     const processMemory = new WebAssembly.Memory({ initial: 1 });
-    const { kernel, memory } = kernelHarness({});
+    const { kernel, memory } = kernelHarness({}, 8);
     Object.assign(kernel, {
-      kernelPtrWidth: 8,
       callbacks: {
         getProcessMemory: () => processMemory,
       },
     });
-    const imports = kernel.buildImportObject(memory) as {
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
     new Uint8Array(memory.buffer).fill(0xa5, 4096, 4100);
@@ -796,7 +1100,7 @@ describe("Rust-owned host import ranges", () => {
         getProcessMemory: () => processMemory,
       },
     });
-    const imports = kernel.buildImportObject(memory) as {
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
     new Uint8Array(memory.buffer, 4096, 4).set([1, 2, 3, 4]);
@@ -818,7 +1122,7 @@ describe("Rust-owned host import ranges", () => {
         getProcessMemory: () => processMemory,
       },
     });
-    const imports = kernel.buildImportObject(memory) as {
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
     const processEnd = processMemory.buffer.byteLength;
@@ -858,9 +1162,8 @@ describe("Rust-owned host import ranges", () => {
   });
 
   it("does not wrap a wasm64 futex address onto a low kernel word", () => {
-    const { kernel, memory } = kernelHarness({});
-    Object.assign(kernel, { kernelPtrWidth: 8 });
-    const imports = kernel.buildImportObject(memory) as {
+    const { kernel, memory } = kernelHarness({}, 8);
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
     const notify = vi.spyOn(Atomics, "notify");
@@ -872,7 +1175,7 @@ describe("Rust-owned host import ranges", () => {
 
   it("rejects unaligned and end-crossing futex words", () => {
     const { kernel, memory } = kernelHarness({});
-    const imports = kernel.buildImportObject(memory) as {
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
 
@@ -884,9 +1187,8 @@ describe("Rust-owned host import ranges", () => {
   });
 
   it("rejects lossy device metadata conversions before registration", () => {
-    const { kernel, memory } = fullKernelHarness();
-    Object.assign(kernel, { kernelPtrWidth: 8 });
-    const imports = kernel.buildImportObject(memory) as {
+    const { kernel, memory } = fullKernelHarness({}, {}, 8);
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
     const invalid = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
@@ -913,7 +1215,7 @@ describe("Rust-owned host import ranges", () => {
     const create = vi.spyOn(kernel.bos, "create").mockImplementation(() => {
       throw new RangeError("allocation failed");
     });
-    const imports = kernel.buildImportObject(memory) as {
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
 
@@ -930,7 +1232,7 @@ describe("Rust-owned host import ranges", () => {
     kernel.gl.get(7)!.gl = {
       getError,
     } as unknown as WebGL2RenderingContext;
-    const imports = kernel.buildImportObject(memory) as {
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
 
@@ -964,9 +1266,8 @@ describe("Rust-owned host import ranges", () => {
   it.each([4, 8] as const)(
     "writes the generated KMS mode size at the exact wasm%d memory boundary",
     (pointerWidth) => {
-    const { kernel, memory } = fullKernelHarness();
-    Object.assign(kernel, { kernelPtrWidth: pointerWidth });
-    const imports = kernel.buildImportObject(memory) as {
+    const { kernel, memory } = fullKernelHarness({}, {}, pointerWidth);
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
     const exactPointer =
@@ -995,12 +1296,8 @@ describe("Rust-owned host import ranges", () => {
       initial: 32_769,
       maximum: 32_769,
     });
-    const { kernel } = fullKernelHarness();
-    Object.assign(kernel, {
-      memory: highMemory,
-      kernelPtrWidth: 4,
-    });
-    const imports = kernel.buildImportObject(highMemory) as {
+    const { kernel } = fullKernelHarness({}, {}, 4, highMemory);
+    const imports = kernel.testAuthority.buildImportObject(highMemory) as {
       env: Record<string, (...args: any[]) => any>;
     };
     const unsignedPointer = 0x8000_0020;

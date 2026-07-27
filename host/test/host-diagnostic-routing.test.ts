@@ -41,6 +41,18 @@ describe.each(entries)("%s kernel-worker diagnostic routing", (_name, path) => {
     expect(source).not.toContain("reportedNonzeroProcessExits");
     expect(source).not.toContain("-> forcing exit");
   });
+
+  it("wires a poisoned shared kernel instance to definitive worker teardown", () => {
+    expect(source).toMatch(
+      /\bfunction\s+terminatePoisonedKernelWorker\s*\(\s*error:\s*Error\s*\)/,
+    );
+    expect(source).toMatch(
+      /\bonKernelFatal:\s*terminatePoisonedKernelWorker\b/,
+    );
+    expect(source).toMatch(
+      /post\(\{\s*type:\s*"kernel_fatal",\s*error:\s*detail\s*\}\)/,
+    );
+  });
 });
 
 it("does not log an ordinary process exit from the process worker", () => {

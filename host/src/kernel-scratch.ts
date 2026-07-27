@@ -10,6 +10,14 @@
 import {
   checkedWasmGuestPointerOffset,
 } from "./wasm-guest-pointer";
+import {
+  invokeKernelEntryScopedOperation,
+  type KernelVoidIngressScope,
+  validatedKernelEntryCallable,
+  validateKernelEntryMemoryOwnership,
+  validateKernelEntryGatedInstance,
+  validateKernelScratchAllocatorOwnership,
+} from "./kernel-entry-gate";
 
 export type WasmPointer = number | bigint;
 export type WasmPointerWidth = 4 | 8;
@@ -37,10 +45,6 @@ const intrinsicObjectGetOwnPropertyDescriptor =
   Object.getOwnPropertyDescriptor;
 const intrinsicWeakMapGet = WeakMap.prototype.get;
 const intrinsicWeakMapSet = WeakMap.prototype.set;
-const intrinsicInstanceExports = intrinsicObjectGetOwnPropertyDescriptor(
-  WebAssembly.Instance.prototype,
-  "exports",
-)!.get!;
 const intrinsicMemoryBuffer = intrinsicObjectGetOwnPropertyDescriptor(
   WebAssembly.Memory.prototype,
   "buffer",
@@ -57,6 +61,13 @@ const intrinsicSharedArrayBufferByteLength =
       SharedArrayBuffer.prototype,
       "byteLength",
     )!.get!;
+type IntrinsicBufferByteLengthGetter = (
+  this: ArrayBufferLike,
+) => number;
+const intrinsicBufferByteLengthGetters = new WeakMap<
+  object,
+  IntrinsicBufferByteLengthGetter
+>();
 const intrinsicDataViewPrototype = IntrinsicDataView.prototype;
 const intrinsicDataViewByteLength = intrinsicObjectGetOwnPropertyDescriptor(
   intrinsicDataViewPrototype,
@@ -99,17 +110,20 @@ const typedArrayByteLength = intrinsicObjectGetOwnPropertyDescriptor(
 )!.get!;
 
 /**
- * Kernel exports whose raw pointer arguments may name a scratch lease.
+ * Kernel exports whose execution may borrow one active scratch lease.
  *
  * WHY: this is deliberately a narrow lifetime allowlist, not a list of every
  * kernel export. Each Rust implementation was reviewed to consume or copy its
  * borrowed bytes before returning. `kernel_handle_channel` scopes its raw
  * mailbox view to decoding/publishing and clears the active task binding;
  * `kernel_spawn_process` parses the complete blob into owned Rust values
- * before it enters process-table or host work. Adding a name requires the same
- * lifetime review and a pointer-position update below.
+ * before it enters process-table or host work. The transfer execute export
+ * names no raw pointer, but its token authorizes Rust to borrow the allocation
+ * represented by this exact lease. Adding a name requires the same lifetime
+ * review and a pointer-position update below.
  */
-const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
+/** @internal Exported only for the Rust/host semantic-role drift contract. */
+export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_dequeue_signal",
   "kernel_drain_audio",
   "kernel_drain_wakeup_events",
@@ -136,10 +150,13 @@ const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_select",
   "kernel_send",
   "kernel_set_cwd",
+  "kernel_setsockopt",
   "kernel_socketpair",
   "kernel_spawn_process",
   "kernel_tcgetattr",
   "kernel_tcsetattr",
+  "kernel_transfer_channel_execute",
+  "kernel_transfer_io_execute",
   "kernel_truncate",
   "kernel_uname",
   "kernel_wait_child_poll",
@@ -173,6 +190,7 @@ type KernelScratchExportFunction = (...args: never[]) => unknown;
 interface KernelScratchExportBinding {
   readonly call: KernelScratchExportFunction;
   readonly argumentCount: number;
+  readonly instance: WebAssembly.Instance;
 }
 type KernelScratchExportSnapshot = Readonly<
   Partial<Record<KernelScratchExportName, KernelScratchExportBinding>>
@@ -187,7 +205,8 @@ const REQUIRED_POINTER_5 = intrinsicObjectFreeze([5] as const);
 const REQUIRED_POINTER_11 = intrinsicObjectFreeze([11] as const);
 const NULLABLE_POINTER_1_3_5 = intrinsicObjectFreeze([1, 3, 5] as const);
 
-function kernelScratchRequiredPointerArguments(
+/** @internal Exported only for the Rust/host semantic-role drift contract. */
+export function kernelScratchRequiredPointerArguments(
   name: KernelScratchExportName,
 ): readonly number[] {
   switch (name) {
@@ -222,6 +241,7 @@ function kernelScratchRequiredPointerArguments(
     case "kernel_spawn_process":
     case "kernel_tcsetattr":
       return REQUIRED_POINTER_2;
+    case "kernel_setsockopt":
     case "kernel_socketpair":
       return REQUIRED_POINTER_3;
     case "kernel_getsockopt":
@@ -230,12 +250,15 @@ function kernelScratchRequiredPointerArguments(
       return REQUIRED_POINTER_5;
     case "kernel_inject_datagram":
       return REQUIRED_POINTER_11;
+    case "kernel_transfer_channel_execute":
+    case "kernel_transfer_io_execute":
     case "kernel_select":
       return [];
   }
 }
 
-function kernelScratchNullablePointerArguments(
+/** @internal Exported only for the Rust/host semantic-role drift contract. */
+export function kernelScratchNullablePointerArguments(
   name: KernelScratchExportName,
 ): readonly number[] {
   return name === "kernel_select" ? NULLABLE_POINTER_1_3_5 : [];
@@ -285,10 +308,13 @@ function isKernelScratchExportName(
     case "kernel_select":
     case "kernel_send":
     case "kernel_set_cwd":
+    case "kernel_setsockopt":
     case "kernel_socketpair":
     case "kernel_spawn_process":
     case "kernel_tcgetattr":
     case "kernel_tcsetattr":
+    case "kernel_transfer_channel_execute":
+    case "kernel_transfer_io_execute":
     case "kernel_truncate":
     case "kernel_uname":
     case "kernel_wait_child_poll":
@@ -303,59 +329,39 @@ function snapshotKernelScratchExports(
   memory: WebAssembly.Memory,
   label: string,
   expectedAllocator?: KernelScratchAllocator,
+  allocatorInstance: WebAssembly.Instance = instance,
 ): KernelScratchExportSnapshot {
-  let exports: WebAssembly.Exports;
   try {
-    // WHY: structural objects with an `exports` field are not sufficient.
-    // Calling the captured intrinsic getter proves the receiver is a genuine
-    // WebAssembly.Instance before any allocator or host callback can run.
-    exports = intrinsicApply(
-      intrinsicInstanceExports,
-      instance,
-      [],
-    ) as WebAssembly.Exports;
+    validateKernelEntryMemoryOwnership(instance, memory);
   } catch {
-    throw new KernelScratchError(
-      `${label} export binding is not a genuine WebAssembly.Instance`,
-    );
-  }
-  if (exports.memory !== memory) {
     throw new KernelScratchError(
       `${label} export binding does not own the supplied WebAssembly.Memory`,
     );
   }
-  if (
-    expectedAllocator !== undefined
-    && exports.kernel_alloc_scratch !== expectedAllocator
-  ) {
-    throw new KernelScratchError(
-      `${label} allocator is not the bound instance's kernel allocator`,
-    );
+  if (expectedAllocator !== undefined) {
+    try {
+      validateKernelScratchAllocatorOwnership(
+        instance,
+        allocatorInstance,
+        expectedAllocator,
+      );
+    } catch {
+      throw new KernelScratchError(
+        `${label} allocator is not the bound instance's kernel allocator`,
+      );
+    }
   }
   const snapshot = intrinsicObjectCreate(null) as Partial<
     Record<KernelScratchExportName, KernelScratchExportBinding>
   >;
   for (let index = 0; index < KERNEL_SCRATCH_EXPORT_NAMES.length; index++) {
     const name = KERNEL_SCRATCH_EXPORT_NAMES[index];
-    const value = exports[name];
-    if (typeof value === "function") {
-      const lengthDescriptor = intrinsicObjectGetOwnPropertyDescriptor(
-        value,
-        "length",
-      );
-      const argumentCount = lengthDescriptor?.value;
-      if (
-        typeof argumentCount !== "number"
-        || !intrinsicNumberIsSafeInteger(argumentCount)
-        || argumentCount < 0
-      ) {
-        throw new KernelScratchError(
-          `${label} kernel export ${name} has an invalid Wasm arity`,
-        );
-      }
+    const binding = validatedKernelEntryCallable(instance, name);
+    if (binding !== undefined) {
       snapshot[name] = intrinsicObjectFreeze({
-        call: value as KernelScratchExportFunction,
-        argumentCount,
+        call: binding.call as KernelScratchExportFunction,
+        argumentCount: binding.argumentCount,
+        instance,
       });
     }
   }
@@ -397,20 +403,43 @@ function intrinsicBufferByteLength(
   buffer: ArrayBufferLike,
   field: string,
 ): number {
+  const cachedGetter = intrinsicApply(
+    intrinsicWeakMapGet,
+    intrinsicBufferByteLengthGetters,
+    [buffer],
+  ) as IntrinsicBufferByteLengthGetter | undefined;
+  if (cachedGetter !== undefined) {
+    // WHY: cache only the proven intrinsic, never its result. Growable memory
+    // still needs a live length read, while a shared buffer must not throw
+    // through the ArrayBuffer getter on every scratch-range check.
+    return intrinsicApply(cachedGetter, buffer, []) as number;
+  }
   try {
-    return intrinsicApply(
+    const byteLength = intrinsicApply(
       intrinsicArrayBufferByteLength,
       buffer,
       [],
     ) as number;
+    intrinsicApply(
+      intrinsicWeakMapSet,
+      intrinsicBufferByteLengthGetters,
+      [buffer, intrinsicArrayBufferByteLength],
+    );
+    return byteLength;
   } catch {
     if (intrinsicSharedArrayBufferByteLength !== null) {
       try {
-        return intrinsicApply(
+        const byteLength = intrinsicApply(
           intrinsicSharedArrayBufferByteLength,
           buffer,
           [],
         ) as number;
+        intrinsicApply(
+          intrinsicWeakMapSet,
+          intrinsicBufferByteLengthGetters,
+          [buffer, intrinsicSharedArrayBufferByteLength],
+        );
+        return byteLength;
       } catch {
         // Fall through to the one checked error below.
       }
@@ -1097,6 +1126,19 @@ export interface KernelScratchLease {
     )[],
   ): number;
   /**
+   * Invoke after validating every argument, then consume one exact opaque
+   * void-ingress token immediately before the genuine gated export.
+   */
+  invokeKernelExportScoped(
+    scope: KernelVoidIngressScope,
+    name: KernelScratchExportName,
+    args: readonly (
+      | number
+      | bigint
+      | KernelScratchExportPointer
+    )[],
+  ): number;
+  /**
    * Encode the checked address of one source range into another owned range.
    *
    * WHY: writing a primitive address through a general readable DataView lets
@@ -1431,6 +1473,30 @@ class ActiveKernelScratchLease implements KernelScratchLease {
       | KernelScratchExportPointer
     )[],
   ): number {
+    return this.#invokeKernelExport(undefined, name, args);
+  }
+
+  invokeKernelExportScoped(
+    scope: KernelVoidIngressScope,
+    name: KernelScratchExportName,
+    args: readonly (
+      | number
+      | bigint
+      | KernelScratchExportPointer
+    )[],
+  ): number {
+    return this.#invokeKernelExport(scope, name, args);
+  }
+
+  #invokeKernelExport(
+    scope: KernelVoidIngressScope | undefined,
+    name: KernelScratchExportName,
+    args: readonly (
+      | number
+      | bigint
+      | KernelScratchExportPointer
+    )[],
+  ): number {
     this.#assertValid();
     if (typeof name !== "string" || !isKernelScratchExportName(name)) {
       throw new KernelScratchError(
@@ -1646,11 +1712,22 @@ class ActiveKernelScratchLease implements KernelScratchLease {
       validatePointerCapacities(requiredPointers);
       validatePointerCapacities(nullablePointers);
 
-      const result = intrinsicApply(
+      // WHY: the snapshot retains either the genuine raw Wasm function or the
+      // exact registered façade wrapper. The latter re-enters through its
+      // private gate without exposing that gate or a raw invocation closure
+      // to the scratch layer.
+      const invoke = () => intrinsicApply(
         kernelExport.call,
         undefined,
         convertedArgs,
       );
+      const result = scope === undefined
+        ? invoke()
+        : invokeKernelEntryScopedOperation(
+          scope,
+          kernelExport.instance,
+          invoke,
+        );
       if (typeof result !== "number") {
         throw new KernelScratchError(
           `${this.#label} kernel export ${name} returned a non-number`,
@@ -1897,6 +1974,15 @@ export interface KernelScratchRegion {
   revoke(): void;
 }
 
+interface OwnedKernelScratchRegionOwnership {
+  readonly memory: WebAssembly.Memory;
+  readonly pointerWidth: WasmPointerWidth;
+  readonly instance: WebAssembly.Instance | null;
+}
+
+const ownedKernelScratchRegionOwnerships =
+  new WeakMap<object, OwnedKernelScratchRegionOwnership>();
+
 /**
  * Pointer plus declared capacity for one kernel-owned allocation.
  *
@@ -1961,6 +2047,7 @@ class OwnedKernelScratchRegion implements KernelScratchRegion {
     pointerWidth: WasmPointerWidth,
     label: string,
     kernelInstance?: WebAssembly.Instance,
+    allocatorInstance?: WebAssembly.Instance,
   ): OwnedKernelScratchRegion {
     if (constructorKey !== ownedKernelScratchRegionConstructorKey) {
       throw new KernelScratchError(
@@ -1979,6 +2066,7 @@ class OwnedKernelScratchRegion implements KernelScratchRegion {
         memory,
         label,
         allocator,
+        allocatorInstance,
       );
     const capacity = exactNonNegativeInteger(
       capacityValue,
@@ -2001,7 +2089,7 @@ class OwnedKernelScratchRegion implements KernelScratchRegion {
       throw new KernelScratchError(`${label} allocation failed`);
     }
     checkedMemoryRange(memory, pointer, capacity, pointerWidth, label);
-    return new OwnedKernelScratchRegion(
+    const region = new OwnedKernelScratchRegion(
       ownedKernelScratchRegionConstructorKey,
       memory,
       pointer,
@@ -2011,6 +2099,19 @@ class OwnedKernelScratchRegion implements KernelScratchRegion {
       "reusable",
       kernelExports,
     );
+    intrinsicApply(
+      intrinsicWeakMapSet,
+      ownedKernelScratchRegionOwnerships,
+      [
+        region,
+        intrinsicObjectFreeze({
+          memory,
+          pointerWidth,
+          instance: kernelInstance ?? null,
+        }),
+      ],
+    );
+    return region;
   }
 
   static reserve(
@@ -2044,6 +2145,17 @@ class OwnedKernelScratchRegion implements KernelScratchRegion {
         `${label} minimum capacity must be positive`,
       );
     }
+    if (
+      pointerWidth === 4
+      && minimumCapacity > WASM32_MAX_POINTER
+    ) {
+      // WHY: the reservation export consumes a wasm32 usize. Reject before
+      // invoking it so JavaScript-to-Wasm i32 coercion cannot silently replace
+      // an oversized requested capacity with its low 32 bits.
+      throw new KernelScratchError(
+        `${label} minimum capacity does not fit a wasm32 usize`,
+      );
+    }
     const reservation = reserver(minimumCapacity);
     const capacity = exactNonNegativeInteger(
       reservation.capacity,
@@ -2063,7 +2175,7 @@ class OwnedKernelScratchRegion implements KernelScratchRegion {
       throw new KernelScratchError(`${label} reservation failed`);
     }
     checkedMemoryRange(memory, pointer, capacity, pointerWidth, label);
-    return new OwnedKernelScratchRegion(
+    const region = new OwnedKernelScratchRegion(
       ownedKernelScratchRegionConstructorKey,
       memory,
       pointer,
@@ -2073,6 +2185,19 @@ class OwnedKernelScratchRegion implements KernelScratchRegion {
       "single-use",
       kernelExports,
     );
+    intrinsicApply(
+      intrinsicWeakMapSet,
+      ownedKernelScratchRegionOwnerships,
+      [
+        region,
+        intrinsicObjectFreeze({
+          memory,
+          pointerWidth,
+          instance: kernelInstance ?? null,
+        }),
+      ],
+    );
+    return region;
   }
 
   #assertActiveLease(token: object): void {
@@ -2200,6 +2325,7 @@ export function allocateKernelScratchRegion(
   pointerWidth: WasmPointerWidth,
   label: string,
   kernelInstance?: WebAssembly.Instance,
+  allocatorInstance?: WebAssembly.Instance,
 ): KernelScratchRegion {
   return OwnedKernelScratchRegion.allocate(
     ownedKernelScratchRegionConstructorKey,
@@ -2209,6 +2335,7 @@ export function allocateKernelScratchRegion(
     pointerWidth,
     label,
     kernelInstance,
+    allocatorInstance,
   );
 }
 
@@ -2235,4 +2362,53 @@ export function reserveKernelScratchRegion(
     label,
     kernelInstance,
   );
+}
+
+/**
+ * @internal Validate a test-injected region without exposing its pointer.
+ *
+ * WHY: `KernelScratchRegion` is intentionally structural for callers, so a
+ * shape check cannot prove allocator ownership. The module-private WeakMap
+ * records the exact genuine instance, Memory, and entry-gate generation at
+ * factory time.
+ */
+export function validateKernelScratchRegionOwnership(
+  region: KernelScratchRegion,
+  instance: WebAssembly.Instance,
+  label: string,
+): {
+  readonly region: KernelScratchRegion;
+  readonly memory: WebAssembly.Memory;
+  readonly pointerWidth: WasmPointerWidth;
+} {
+  const ownership = intrinsicApply(
+    intrinsicWeakMapGet,
+    ownedKernelScratchRegionOwnerships,
+    [region as object],
+  ) as OwnedKernelScratchRegionOwnership | undefined;
+  if (ownership === undefined) {
+    throw new KernelScratchError(
+      `${label} is not an allocator-created kernel scratch region`,
+    );
+  }
+  try {
+    validateKernelEntryGatedInstance(instance);
+  } catch {
+    throw new KernelScratchError(
+      `${label} instance is not a registered gated kernel generation`,
+    );
+  }
+  if (ownership.instance !== instance) {
+    throw new KernelScratchError(
+      `${label} belongs to a different kernel generation`,
+    );
+  }
+  // Re-prove the current engine Memory receiver before returning it to the
+  // owning worker. A replaced structural value cannot satisfy this getter.
+  intrinsicWasmMemoryBuffer(ownership.memory, `${label} memory`);
+  return intrinsicObjectFreeze({
+    region,
+    memory: ownership.memory,
+    pointerWidth: ownership.pointerWidth,
+  });
 }

@@ -262,6 +262,12 @@ export interface InitErrorMessage {
   error: string;
 }
 
+/** The dedicated kernel instance is poisoned and has stopped permanently. */
+export interface KernelFatalMessage {
+  type: "kernel_fatal";
+  error: string;
+}
+
 export interface ResponseMessage {
   type: "response";
   requestId: number;
@@ -318,6 +324,7 @@ export type ProcEventMessage =
 export type KernelToMainMessage =
   | ReadyMessage
   | InitErrorMessage
+  | KernelFatalMessage
   | ResponseMessage
   | ExitMessage
   | StdoutMessage

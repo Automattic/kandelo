@@ -17,6 +17,7 @@ export { NodeWorkerAdapter, MockWorkerAdapter, MockWorkerHandle } from "./worker
 export { centralizedWorkerMain, centralizedThreadWorkerMain } from "./worker-main";
 export type { MessagePort as WorkerMessagePort } from "./worker-main";
 export type {
+  HostFileOffset,
   KernelConfig,
   NetworkIO,
   PathconfValue,

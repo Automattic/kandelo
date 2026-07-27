@@ -76,18 +76,26 @@ kernel_set_current_tid(pid, tid) → 0 | -errno
 kernel_fork_process(parent_pid, caller_tid) → assigned_child_pid | -errno
 kernel_spawn_process(parent_pid, caller_tid, blob_ptr, blob_len) → assigned_child_pid | -errno
 kernel_remove_process(pid) → 0
-kernel_handle_channel(channel_offset, channel_capacity, pid) → result
+kernel_handle_channel(channel_offset, channel_capacity, pid, retry_token) → result
+kernel_blocking_retry_token(pid, tid, syscall_nr) → opaque_token | -errno
+kernel_blocking_retry_release(pid, tid, opaque_token) → 0 | -errno
 kernel_exec_prepare(pid, caller_tid) → 0 | -errno
 kernel_exec_setup_for_thread(pid, caller_tid) → 0 | -errno
 kernel_thread_exit(pid, tid) → 0 | -errno
+kernel_commit_process_exit(status) → committed_low_8_bits
 kernel_dequeue_signal(pid, tid, out_ptr, out_capacity) → 0 | signum | -errno
 kernel_wait_child_poll(parent_pid, caller_tid, target_pid, event_mask, flags, out_ptr, out_capacity) → child_pid | 0 | -errno
-kernel_prepare_write_operation(pid, tid, fd, offset, len, positioned) → allowed_len | -errno
 kernel_ipc_shmat_for_task(pid, tid, shmid, addr, flags) → segment_size | -errno
 kernel_ipc_shmdt_for_task(pid, tid, shmid) → 0 | -errno
 kernel_ipc_shmat_for_process(pid, shmid, addr, flags) → segment_size | -errno
 kernel_ipc_shmdt_for_process(pid, shmid) → 0 | -errno
 kernel_alloc_scratch(size) → kernel_owned_pointer | 0
+kernel_transfer_scratch_begin(minimum_capacity) → reservation_token | -errno
+kernel_transfer_scratch_pointer(reservation_token) → kernel_owned_pointer | 0
+kernel_transfer_scratch_capacity(reservation_token) → reservation_capacity | 0
+kernel_transfer_scratch_cancel(reservation_token) → 0 | -errno
+kernel_transfer_io_execute(pid, tid, reservation_token, len, syscall, fd, offset, retry_token) → bytes | -errno
+kernel_transfer_channel_execute(pid, tid, reservation_token, retry_token) → 0 | -errno
 kernel_spawn_scratch_begin(minimum_capacity) → reservation_token | -errno
 kernel_spawn_scratch_pointer(reservation_token) → kernel_owned_pointer | 0
 kernel_spawn_scratch_capacity(reservation_token) → reservation_capacity | 0
@@ -102,7 +110,7 @@ kernel_get_cwd(pid, buf, len) → bytes_written
 kernel_set_max_addr(pid, addr) → 0
 kernel_set_brk_base(pid, addr) → 0
 kernel_set_mmap_base(pid, addr) → 0
-kernel_is_fd_nonblock(pid, fd) → bool
+kernel_is_fd_nonblock(pid, fd) → 1 | 0 | -1
 ```
 
 Normal guest exit closes descriptors before the process becomes reapable.
@@ -223,11 +231,39 @@ Scalar access checks the lease on every operation. The native `DataView` stays
 private and may be reused only while `Memory.buffer` has the same identity; a
 `memory.grow()` replaces that buffer and forces the complete capacity and
 current-memory proof to run again before the view is refreshed.
+Each genuine buffer identity is brand-checked once against captured native
+`ArrayBuffer`/`SharedArrayBuffer` getters. The successful getter—not its
+result—is cached, so repeated shared-memory proofs avoid an exception while
+every proof still observes the live post-growth byte length.
 Async syscall preparation detaches caller data into host-owned arrays; the
 final stage, Rust call, and output snapshot happen in one lease without an
 `await`. Retry, timeout, stopped-process, and signal completion state carries
 only those detached writes; `completeChannel` never rereads reusable scratch
 after the lease has ended.
+
+An `EAGAIN` retry must preserve more than the copied bytes. The host freezes an
+immutable request snapshot, while Rust pins any exact resource selected by the
+first attempt and exposes an opaque positive retry token. That token is bound
+to the process, task, and normalized operation; it is not an fd, queue id,
+pointer, or allocation address. Reentry reconstructs scratch only from the
+snapshot and activates the pinned target instead of rereading the live mailbox
+or resolving a numeric descriptor that may have been closed and reused.
+
+Normal completion, cancellation, and exact channel retirement consume a
+positive token before deleting the matching host snapshot. Exec, thread exit,
+process exit, and forced removal consume their Rust-owned bindings before the
+corresponding task or image state disappears. A zero token is an explicit
+host-only disposition, not a missing binding. This ordering prevents both
+leaked kernel references and a later operation observing scratch bytes or a
+descriptor identity from the wrong request.
+
+The generated channel `request_flags` word records whether the call entered
+through libc's cancellation-point path and whether that point may currently be
+woken. The host captures and clears those bits with the initial mailbox
+snapshot and carries them through the asynchronous wait. Cancellation or exact
+channel retirement settles that frozen request before the mailbox and its
+scratch allocation can be reused; neither path infers authority later from a
+replacement channel.
 
 The Rust channel dispatcher carries the same ownership boundary numerically as
 `ChannelScratchRegion { start, capacity }`. The host passes the complete
@@ -285,6 +321,18 @@ deliberately fixed: an eight-byte `KernelIovecWire`, a 28-byte
 `KernelMsghdrWire`, and a 12-byte-aligned `KernelCmsghdrWire`. These are
 separate contracts; copying a native wasm64 header and hoping the fixed parser
 interprets it is invalid even when the bytes fit in linear memory.
+Socket-address sizing is likewise generated as two distinct contracts.
+The 128-byte `sockaddr_storage` bounds every generic input and output staging
+region; the 110-byte `sockaddr_un` bounds family-specific AF_UNIX parsing.
+Musl layout assertions bind those totals, the two-byte `sun_path` offset, and
+the 108-byte path field to both native data models. The Unix socket registry
+owns the canonical namespace key, while `SocketInfo` retains the bounded
+original name supplied to `bind()`. This distinction matters for a relative
+name in a deep current directory: canonicalization may produce a much longer
+lookup key, but it must not enlarge the value returned by `getsockname()`.
+An exact 108-byte non-NUL pathname can make Linux-compatible `getsockname()`
+report 111 bytes after accounting for its appended terminator, which still
+fits the generic 128-byte output region.
 
 For `sendmsg`, the host validates the complete native header and iovec table,
 every nested caller range, `IOV_MAX`, and the complete fixed-wire footprint.
@@ -299,13 +347,63 @@ does not pretend that a copied socket record is the original endpoint. The
 exact flattened-iovec count is generated from the shared protocol contract,
 and a Rust compile-time guard makes changing that count fail until the fixed
 parser changes with it.
-For `recvmsg`, the host
-derives fixed-wire control capacity from the caller-native data capacity,
+Nested `sendmsg.msg_name` accepts exactly the same 128-byte input maximum as
+`sendto`; it cannot bypass that check by living inside `msghdr`. For
+`recvmsg`, the host proves and reserves at most 128 name bytes even when the
+caller advertises a larger buffer, derives fixed-wire control capacity from
+the caller-native data capacity,
 snapshots the result, validates the entire returned record, expands it with
 zeroed native padding, and scatters payload bytes across every caller iovec.
 A retry or malformed kernel result publishes none of those detached outputs.
 This flatten/scatter design preserves the public multi-iovec behavior while
 keeping the ordinary transport allocation fixed and cheap.
+
+Scalar and vectored reads or writes at most `CH_DATA_SIZE` use the main
+channel region. The host validates the complete caller range or native iovec
+table, flattens a vector directly into the data area, and dispatches one scalar
+kernel operation. A vector is never split merely to fit scratch; preserving
+one logical operation is required for pipe atomicity, datagram boundaries,
+short reads, EOF, and operation-wide file-size limits.
+
+Larger operations reserve
+`crates/kernel/src/transfer.rs::TransferScratch`. Begin creates a fresh,
+initialized Rust-owned allocation and returns a positive token. The host reads
+the token's pointer and explicit capacity together, proves the current-memory
+range, and copies under one synchronous lease. Execute changes the reservation
+from `Reserved` to `Executing` before releasing the mutex and entering exactly
+one scalar kernel operation. A normal return, including an errno, changes it
+to `Ready`; cancellation then drops the allocation. No pointer-only execute
+path exists.
+
+A host-import trap can prevent Rust from leaving `Executing`. Cancellation
+must not free or reuse a region whose callback may have observed only a prefix,
+so this state poisons the complete kernel generation. `KernelEntryGate`
+serializes every export entry, revokes its lexical scope before running
+detached callbacks, and discards queued ingress after a fatal latch. This is a
+lifetime guarantee: later work cannot overwrite the reservation or publish a
+channel completion against an uncertain Rust transition.
+
+Positioned host-backed I/O uses required `host_pread` and `host_pwrite`
+imports. Signed 64-bit offsets remain exact across TypeScript routing and are
+split and reconstructed losslessly at the Wasm boundary; one positioned
+operation leaves the shared open-file-description cursor unchanged. A backend
+that cannot represent an offset exactly returns `EOVERFLOW` instead of
+rounding it or emulating it with seek/read-or-write/seek.
+
+Host-backed `O_APPEND` uses a separate exact-outcome contract. Rust passes the
+complete payload and optional `RLIMIT_FSIZE` ceiling to `host_append`; the
+backend owns EOF selection, clipping, mutation, and ending-position
+observation as one serialized operation. `host_append_position` consumes the
+matching one-shot ending offset, and Rust validates the written prefix and
+derived start before publishing the cursor. Backends that cannot prove that
+pair return `EOPNOTSUPP` before mutation. They do not infer ownership from a
+later `stat`.
+
+For `sendfile`, `copy_file_range`, and `splice` into such an append
+destination, the source is staged without publishing its cursor or consuming
+pipe bytes. Only the prefix reported by the append is committed. An append
+rejection, file-size clip, or short write therefore cannot consume source data
+that the destination did not publish.
 
 Large spawn blobs use a different kernel-owned high-water region in
 `crates/kernel/src/spawn.rs::SpawnScratchBuffer`. Every large operation calls
@@ -600,7 +698,7 @@ Offset  Size   Field
 8       48     arguments (6 × i64)
 56      8      return_value (i64)
 64      4      errno_value (i32)
-68      4      reserved/padding
+68      4      request_flags (u32; cancellation-point and wake authority)
 72      65536  data_buffer (for path strings, read/write buffers, etc.)
 ```
 
@@ -611,6 +709,9 @@ public variadic `syscall()` entry point still reads 32-bit `long` arguments,
 because that is the C calling convention its callers use. The non-variadic
 `__syscallN` and cancellation-point `__syscall_cp` paths widen values to 64
 bits before calling the glue layer so offsets and lengths are not truncated.
+Both paths overwrite `request_flags` before publishing the atomic status.
+Plain calls write zero; cancellation-point calls use generated flag constants.
+The host captures and clears the field with the request snapshot.
 
 ### Status Values
 
@@ -626,15 +727,17 @@ bits before calling the glue layer so offsets and lengths are not truncated.
 ```
 Process Worker                          Kernel Worker (host)
 ─────────────                          ────────────────────
-1. Write syscall_number + args
+1. Write syscall_number + args + request_flags
    to channel
 2. Atomics.store(status, SYSCALL_READY)
 3. Atomics.notify(status)
 4. Atomics.wait(status, SYSCALL_READY)
    ─── blocks ───                      5. Atomics.waitAsync detects change
-                                        6. Read channel: syscall + args
+                                        6. Read channel: syscall + args;
+                                           capture and clear request_flags
                                         7. Call kernel_handle_channel(offset,
-                                                                      capacity, pid)
+                                                                      capacity, pid,
+                                                                      retry_token=0)
                                         8. Kernel reads args from process memory
                                         9. Kernel executes syscall logic
                                        10. Kernel writes return_value + errno
@@ -647,15 +750,22 @@ Process Worker                          Kernel Worker (host)
 
 ### Blocking Syscalls and Retry
 
-Some syscalls (read from empty pipe, accept on socket, poll with timeout) cannot complete immediately. The kernel returns `-EAGAIN` and the host enters a retry loop:
+Some syscalls (read from an empty pipe, accept on a socket, or poll with a
+timeout) cannot complete immediately. The process worker remains blocked in
+`Atomics.wait` while the host parks and wakes its pending channel through
+`Atomics.waitAsync`.
 
-1. Kernel returns EAGAIN for the syscall
-2. Host checks if the fd is non-blocking (`kernel_is_fd_nonblock`). If so, return EAGAIN to the process.
-3. If blocking: host stores RETRY status, keeps the channel pending
-4. When another process writes to the pipe / connects to the socket / etc., the host wakes the pending channel
-5. Host re-calls `kernel_handle_channel` — if still EAGAIN, continue waiting; if result ready, write RESULT_READY and notify
+For a represented retry, the initial call uses token zero. Before returning
+`EAGAIN`, Rust pins any exact target required by that operation. The host
+detaches the complete request, queries the authoritative token, and either
+completes a nonblocking call or parks the immutable snapshot. A later wake
+rebuilds scratch from that snapshot and calls the kernel with the same token;
+it does not reread caller memory or follow a reused fd. Terminal completion or
+cancellation consumes the token before the host drops its snapshot.
 
-This mechanism is critical: the process worker blocks on `Atomics.wait` while the host manages async retry via `Atomics.waitAsync`.
+This mechanism is critical: asynchronous scheduling never owns a live scratch
+view, while Rust retains the resource identity and lifetime needed by the next
+synchronous entry.
 
 `F_SETLKW` uses the same parking mechanism with a narrower wake contract. A
 conflict returns the internal retry result, and the host parks only that lock

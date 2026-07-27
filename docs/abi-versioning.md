@@ -278,9 +278,28 @@ that the Rust allocator assigned those bytes to the destination object.
 Ordinary channel-sized transfers carry the kernel pointer and capacity
 together in a host-side `KernelScratchRegion` and can be accessed only through
 a synchronous lease. The `kernel_handle_channel` export now takes
-`(channel_offset, channel_capacity, pid)`; Rust rejects a capacity other than
-the canonical complete channel allocation before decoding it. This signature
-change is incompatible with an ABI-42 host or kernel.
+`(channel_offset, channel_capacity, pid, retry_token)`; Rust rejects a capacity
+other than the canonical complete channel allocation before decoding it. Token
+zero starts an operation, while a positive token reactivates the exact
+Rust-owned target retained for a represented retry. This signature change is
+incompatible with an ABI-42 host or kernel.
+
+ABI 43 also assigns the channel header's former four-byte reservation at offset
+68 to generated `request_flags`. The cancellation-point and wake-authority
+bits are written by musl before status publication, captured and cleared once
+by the host, and retained with every asynchronous request snapshot. Unknown
+bits and wake-without-cancellation-point fail closed. This is observable wire
+state, not a host-only implementation detail.
+
+`kernel_blocking_retry_token(pid, tid, syscall_nr)` returns the exact positive
+token for a classified Rust target, zero for an authoritative host-only
+snapshot, or a negated errno. `kernel_blocking_retry_release` consumes a
+positive token. The trailing retry token on
+`kernel_transfer_io_execute`, `kernel_transfer_channel_execute`,
+`kernel_sendmsg`, and `kernel_recvmsg` prevents replay from resolving a numeric
+fd, queue descriptor, or System V id that may have been closed and reused.
+Completion and cancellation consume the token before the host deletes its
+immutable snapshot.
 
 Every generated pointer descriptor is explicitly and exclusively `required`
 or `nullable`. Positive-extent null pointers fail unless the shared descriptor
@@ -301,6 +320,25 @@ second per-descriptor capacity would itself be a future ABI design change.
 other options preserve its low 32-bit scalar value. Treating that slot as one
 shape for every option would either dereference a scalar or replace it with an
 unrelated scratch pointer.
+
+Large scalar and vector I/O uses a separate Rust-owned, single-use
+reservation. `kernel_transfer_scratch_begin`,
+`kernel_transfer_scratch_pointer`, and
+`kernel_transfer_scratch_capacity` publish one initialized allocation only
+while its positive token is `Reserved`. `kernel_transfer_io_execute` or
+`kernel_transfer_channel_execute` consumes that token and enters
+`Executing` before releasing the reservation mutex and calling any host
+import. A normal return makes it `Ready`; `kernel_transfer_scratch_cancel`
+then drops the allocation. The execute exports accept no host-selected
+pointer, so allocation capacity cannot be separated from ownership.
+
+A host-import trap can strand a reservation in `Executing`, where cancellation
+must reject rather than free memory that a callback may still have partially
+observed. The host therefore treats such a trap as a fatal kernel-generation
+failure and admits no later ingress. This fail-closed lifetime rule, the
+removed public raw scalar/vector exports, and the new required transactional
+exports are incompatible ABI changes folded into the still-unreleased ABI 43;
+they are not an additive ABI-42 extension.
 
 Large `SYS_SPAWN` blobs use a Rust-owned reusable
 `Vec<u8>` with a tokenized transaction:
@@ -334,6 +372,16 @@ already has enough capacity. Stale tokens, concurrent reservations, and
 reentrant host operations cannot replace bytes being consumed. The previous
 pointer-returning `kernel_spawn_scratch_reserve` interface and fixed
 worst-case compatibility fallback are not part of ABI 43.
+
+ABI 43 requires `host_pread` and `host_pwrite` so positioned regular-file I/O
+keeps a signed 64-bit offset lossless and does not mutate a shared
+open-file-description cursor through seek emulation. It also requires the
+paired append imports. `host_append(handle, pointer, length, limit_lo,
+limit_hi)` performs one EOF/limit/write transaction, and
+`host_append_position(handle, written)` consumes the matching one-shot ending
+offset. Rust validates the returned prefix and ending position before
+publishing its cursor. A backend that cannot provide this exact outcome must
+return `EOPNOTSUPP` before mutation.
 
 ABI 43 also makes System V IPC control-structure sizing explicit. Required
 pointer-width queries report the target musl layouts: `msqid_ds` is 96 bytes
@@ -375,7 +423,10 @@ observable export and wire changes, not generation-only bookkeeping.
 
 The ABI 43 required host-adapter export set retains the ABI 42-required
 `kernel_spawn_process` and adds
+`kernel_blocking_retry_release`,
+`kernel_blocking_retry_token`,
 `kernel_clear_process_metadata`,
+`kernel_commit_process_exit`,
 `kernel_msqid_ds_bytes`, `kernel_semctl_array_bytes`,
 `kernel_semid_ds_bytes`, `kernel_shmid_ds_bytes`,
 `kernel_push_process_metadata_entry`, `kernel_set_cwd`,
@@ -383,10 +434,19 @@ The ABI 43 required host-adapter export set retains the ABI 42-required
 `kernel_spawn_scratch_begin`,
 `kernel_spawn_scratch_cancel`, `kernel_spawn_scratch_capacity`,
 `kernel_spawn_scratch_pointer`, and
-`kernel_spawn_scratch_retained_capacity`. The required capabilities and large-spawn
-semantics changed, so this is incompatible rather than bookkeeping around
-additive constants. Kernels, hosts, packages, guest binaries, and VFS images
-from ABI 42 must be rebuilt rather than mixed with ABI 43 artifacts.
+`kernel_spawn_scratch_retained_capacity`, plus
+`kernel_transfer_channel_execute`, `kernel_transfer_io_execute`, and the four
+`kernel_transfer_scratch_*` exports described above. The required capabilities
+and synchronization semantics changed, so this is incompatible rather than
+bookkeeping around additive constants. Kernels, hosts, packages, guest
+binaries, and VFS images from ABI 42 must be rebuilt rather than mixed with
+ABI 43 artifacts.
+
+ABI 43 has not been published as a compatibility epoch. The retry-token,
+large-transfer, fatal-lifetime, positioned-I/O, and append corrections amend
+that same pending ABI-43 contract and snapshot. They do not justify inventing
+ABI 44 merely to preserve an unreleased draft, and they must not be hidden
+under released ABI 42.
 
 The metadata pair and cwd setter are required because process registration
 uses them unconditionally. A same-version kernel may not fall back to the
@@ -432,7 +492,11 @@ captures:
   Any change to either this section or `platform_limits` is classified as
   breaking unless the ABI epoch changes.
 - `channel_header` — field offsets and sizes in the channel header,
-  read from `shared::channel::*` constants.
+  read from `shared::channel::*` constants, including the generated
+  request-flags word and known-bit mask.
+- `channel_scalar_contract` — syscall arguments and results that must preserve
+  signed or unsigned 64-bit values rather than taking the default 32-bit
+  scalar path.
 - `channel_signal_area` — signal-delivery slot offsets in the trailing
   bytes of the channel data buffer.
 - `channel_buffers` — data buffer offset/size and minimum channel size.
@@ -513,6 +577,13 @@ them: the kernel currently acts on `SETPGROUP`, `SETSIGDEF`, `SETSIGMASK`, and
 `SETSID`, while `RESETIDS`, `SETSCHEDPARAM`, `SETSCHEDULER`, and `USEVFORK`
 remain uninterpreted. The count and complete-wire caps are defensive
 parser/transport limits, not new POSIX promises.
+
+Channel scalar widths are likewise Rust-owned. The generator writes
+`host/src/generated/abi.ts` and
+`libc/musl-overlay/include/bits/kandelo_channel_scalars.h` from
+`crates/shared/src/channel_scalar.rs`; the ABI snapshot records the same
+contract. Generated freshness tests fail if TypeScript, C, and Rust disagree
+about a signed/unsigned 64-bit argument or result.
 
 Native process layouts and fixed kernel wires follow the same ownership rule.
 `crates/shared/src/process_layout.rs` owns the wasm32/wasm64 native

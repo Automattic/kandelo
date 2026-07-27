@@ -10,8 +10,8 @@ use core::mem::size_of;
 use crate::abi::extended_syscalls as extra_syscalls;
 use crate::process_layout;
 use crate::{
-    SCHED_AFFINITY_MASK_SIZE, Syscall, WASM_RUSAGE_WIRE_SIZE, WasmTimespec,
-    kernel_scratch_wire,
+    kernel_scratch_wire, platform_limits, Syscall, WasmTimespec, SCHED_AFFINITY_MASK_SIZE,
+    WASM_RUSAGE_WIRE_SIZE,
 };
 
 /// Private channel argument used to carry the calling process's pointer width.
@@ -31,8 +31,9 @@ pub enum SyscallArgDirection {
 /// How the host computes the byte length for a pointer argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyscallArgSize {
-    /// A nul-terminated string in process memory.
-    CString,
+    /// A nul-terminated string in process memory with an explicit complete
+    /// scan/copy ceiling, including the NUL.
+    CString { max_bytes: u32, too_long_errno: u32 },
     /// Byte length comes from another syscall argument.
     Arg {
         arg_index: u8,
@@ -75,7 +76,22 @@ pub struct SyscallArgDescriptor {
 
 macro_rules! cstring {
     () => {
-        SyscallArgSize::CString
+        SyscallArgSize::CString {
+            max_bytes: platform_limits::PATH_MAX_BYTES as u32,
+            too_long_errno: crate::Errno::ENAMETOOLONG as u32,
+        }
+    };
+    ($max_bytes:expr) => {
+        SyscallArgSize::CString {
+            max_bytes: $max_bytes as u32,
+            too_long_errno: crate::Errno::ENAMETOOLONG as u32,
+        }
+    };
+    ($max_bytes:expr, $errno:ident) => {
+        SyscallArgSize::CString {
+            max_bytes: $max_bytes as u32,
+            too_long_errno: crate::Errno::$errno as u32,
+        }
     };
 }
 
@@ -223,7 +239,10 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     entry!(Syscall::Access as u32, [desc!(0, In, cstring!(), required)]),
     entry!(Syscall::Getcwd as u32, [desc!(0, Out, arg!(1), required)]),
     entry!(Syscall::Chdir as u32, [desc!(0, In, cstring!(), required)]),
-    entry!(Syscall::Opendir as u32, [desc!(0, In, cstring!(), required)]),
+    entry!(
+        Syscall::Opendir as u32,
+        [desc!(0, In, cstring!(), required)]
+    ),
     entry!(
         Syscall::Readdir as u32,
         [
@@ -266,39 +285,54 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     entry!(
         Syscall::GetEnv as u32,
         [
-            desc!(0, In, cstring!(), required),
+            desc!(
+                0,
+                In,
+                cstring!(platform_limits::PROCESS_METADATA_ENTRY_MAX_BYTES + 1, E2BIG),
+                required
+            ),
             desc!(1, Out, arg!(2), required),
         ]
     ),
     entry!(
         Syscall::SetEnv as u32,
         [
-            desc!(0, In, cstring!(), required),
-            desc!(1, In, cstring!(), required),
+            desc!(
+                0,
+                In,
+                cstring!(platform_limits::PROCESS_METADATA_ENTRY_MAX_BYTES + 1, E2BIG),
+                required
+            ),
+            desc!(
+                1,
+                In,
+                cstring!(platform_limits::PROCESS_METADATA_ENTRY_MAX_BYTES + 1, E2BIG),
+                required
+            ),
         ]
     ),
     entry!(
         Syscall::UnsetEnv as u32,
-        [desc!(0, In, cstring!(), required)]
+        [desc!(
+            0,
+            In,
+            cstring!(platform_limits::PROCESS_METADATA_ENTRY_MAX_BYTES + 1, E2BIG),
+            required
+        )]
     ),
-    entry!(
-        Syscall::Bind as u32,
-        [desc!(1, In, arg!(2), required)]
-    ),
+    entry!(Syscall::Bind as u32, [desc!(1, In, arg!(2), required)]),
     entry!(
         Syscall::Accept as u32,
         [
-            // Linux permits omitting the peer address only as a nullable
-            // address/length pair. A non-null address still requires the
-            // length pointer because it defines the staged output capacity.
+            // When the address is null, POSIX makes the length pointer
+            // ignored. The host canonicalizes that absent pair to two nulls;
+            // a non-null address still requires the length pointer because it
+            // defines the staged output capacity.
             desc!(1, Out, deref!(2), nullable),
             desc!(2, InOut, fixed!(4), nullable),
         ]
     ),
-    entry!(
-        Syscall::Connect as u32,
-        [desc!(1, In, arg!(2), required)]
-    ),
+    entry!(Syscall::Connect as u32, [desc!(1, In, arg!(2), required)]),
     entry!(Syscall::Send as u32, [desc!(1, In, arg!(2), required)]),
     entry!(Syscall::Recv as u32, [desc!(1, Out, arg!(2), required)]),
     entry!(
@@ -331,18 +365,16 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         Syscall::Recvfrom as u32,
         [
             desc!(1, Out, arg!(2), required),
-            // As with accept(2), the source address and its length are an
-            // optional pair, while a supplied address requires its length.
+            // As with accept(2), a null source-address pointer makes the
+            // caller's length pointer ignored; a supplied address requires
+            // its length.
             desc!(4, Out, deref!(5), nullable),
             desc!(5, InOut, fixed!(4), nullable),
         ]
     ),
     entry!(Syscall::Pread as u32, [desc!(1, Out, arg!(2), required)]),
     entry!(Syscall::Pwrite as u32, [desc!(1, In, arg!(2), required)]),
-    entry!(
-        Syscall::Openat as u32,
-        [desc!(1, In, cstring!(), required)]
-    ),
+    entry!(Syscall::Openat as u32, [desc!(1, In, cstring!(), required)]),
     entry!(
         Syscall::Tcgetattr as u32,
         [desc!(
@@ -365,10 +397,7 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         Syscall::Uname as u32,
         [desc!(0, Out, fixed!(390), required)]
     ),
-    entry!(
-        Syscall::Pipe2 as u32,
-        [desc!(0, Out, fixed!(8), required)]
-    ),
+    entry!(Syscall::Pipe2 as u32, [desc!(0, Out, fixed!(8), required)]),
     entry!(
         Syscall::Getrlimit as u32,
         [desc!(1, Out, fixed!(RLIMIT_SIZE), required)]
@@ -570,7 +599,12 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     entry!(
         Syscall::Getaddrinfo as u32,
         [
-            desc!(0, In, cstring!(), required),
+            desc!(
+                0,
+                In,
+                cstring!(platform_limits::HOST_NAME_MAX_BYTES),
+                required
+            ),
             // WHY: musl's lookup_name.c supplies exactly one four-byte IPv4
             // result. A larger copy-out contract overwrites caller-owned bytes
             // even though the kernel produces only this meaningful address.
@@ -751,7 +785,12 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     ),
     entry!(
         extra_syscalls::SYS_MEMFD_CREATE,
-        [desc!(0, In, cstring!(), required)]
+        [desc!(
+            0,
+            In,
+            cstring!(platform_limits::MEMFD_NAME_MAX_BYTES, EINVAL),
+            required
+        )]
     ),
     entry!(
         extra_syscalls::SYS_STATX,
@@ -861,7 +900,7 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     entry!(
         extra_syscalls::SYS_MQ_OPEN,
         [
-            desc!(0, In, cstring!(), required),
+            desc!(0, In, cstring!(platform_limits::NAME_MAX_BYTES), required),
             desc!(
                 3,
                 In,
@@ -875,7 +914,12 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     ),
     entry!(
         extra_syscalls::SYS_MQ_UNLINK,
-        [desc!(0, In, cstring!(), required)]
+        [desc!(
+            0,
+            In,
+            cstring!(platform_limits::NAME_MAX_BYTES),
+            required
+        )]
     ),
     entry!(
         extra_syscalls::SYS_MQ_TIMEDSEND,
@@ -899,11 +943,11 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(
             1,
             In,
-                process_layout!(
-                    process_layout::sigevent::WASM32_SIZE,
-                    process_layout::sigevent::WASM64_SIZE
-                ),
-                nullable
+            process_layout!(
+                process_layout::sigevent::WASM32_SIZE,
+                process_layout::sigevent::WASM64_SIZE
+            ),
+            nullable
         )]
     ),
     entry!(
@@ -963,8 +1007,9 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
 mod tests {
     extern crate std;
 
-    use super::*;
     use self::std::vec::Vec;
+    use super::*;
+    use crate::channel_scalar::{self, ChannelScalarKind};
 
     #[test]
     fn syscall_arg_descriptors_are_sorted_and_unique() {
@@ -978,6 +1023,79 @@ mod tests {
             }
             prev = Some(entry.syscall_number);
         }
+    }
+
+    #[test]
+    fn variable_extent_descriptors_have_an_explicit_scalar_domain() {
+        for descriptor in SYSCALL_ARG_DESCRIPTORS {
+            for pointer in descriptor.args {
+                let SyscallArgSize::Arg { arg_index, .. } = pointer.size else {
+                    continue;
+                };
+                let kind =
+                    channel_scalar::argument_kind(descriptor.syscall_number, arg_index.into());
+                assert!(
+                    matches!(
+                        kind,
+                        ChannelScalarKind::ProcessSize | ChannelScalarKind::U32
+                    ),
+                    "syscall {} arg {} sizes pointer arg {} but has scalar domain {:?}",
+                    descriptor.syscall_number,
+                    arg_index,
+                    pointer.arg_index,
+                    kind,
+                );
+            }
+        }
+
+        for (syscall, index) in [
+            (Syscall::Bind as u32, 2),
+            (Syscall::Connect as u32, 2),
+            (Syscall::Setsockopt as u32, 4),
+            (Syscall::Sendto as u32, 5),
+        ] {
+            assert_eq!(
+                channel_scalar::argument_kind(syscall, index),
+                ChannelScalarKind::U32,
+                "socklen_t extent must stay an unsigned 32-bit scalar"
+            );
+        }
+    }
+
+    #[test]
+    fn cstring_bounds_include_the_terminator_without_lowering_content_limits() {
+        let metadata_bound = (platform_limits::PROCESS_METADATA_ENTRY_MAX_BYTES + 1) as u32;
+        for (syscall, argument_indexes) in [
+            (Syscall::GetEnv as u32, &[0u8][..]),
+            (Syscall::SetEnv as u32, &[0u8, 1][..]),
+            (Syscall::UnsetEnv as u32, &[0u8][..]),
+        ] {
+            for argument_index in argument_indexes {
+                let descriptor = find(syscall)
+                    .args
+                    .iter()
+                    .find(|descriptor| descriptor.arg_index == *argument_index)
+                    .expect("missing process-metadata string descriptor");
+                assert_eq!(
+                    descriptor.size,
+                    cstring!(metadata_bound, E2BIG),
+                    "metadata content cap excludes its required NUL"
+                );
+            }
+        }
+
+        for syscall in [extra_syscalls::SYS_MQ_OPEN, extra_syscalls::SYS_MQ_UNLINK] {
+            assert_eq!(
+                find(syscall).args[0].size,
+                cstring!(platform_limits::NAME_MAX_BYTES),
+                "NAME_MAX_BYTES already includes the terminating NUL"
+            );
+        }
+        assert_eq!(
+            find(Syscall::Open as u32).args[0].size,
+            cstring!(),
+            "PATH_MAX is the complete C-string buffer size"
+        );
     }
 
     #[test]
@@ -1016,7 +1134,12 @@ mod tests {
                             entry.syscall_number, arg.arg_index
                         );
                     }
-                    SyscallArgSize::CString | SyscallArgSize::Deref { .. } => {}
+                    SyscallArgSize::CString { max_bytes, .. } => assert_ne!(
+                        max_bytes, 0,
+                        "syscall {} arg {} has an empty C-string bound",
+                        entry.syscall_number, arg.arg_index
+                    ),
+                    SyscallArgSize::Deref { .. } => {}
                 }
                 if arg.nullable {
                     actual_nullable.push((entry.syscall_number, arg.arg_index));
@@ -1105,15 +1228,15 @@ mod tests {
         let lchown = find(extra_syscalls::SYS_LCHOWN).args[0];
         assert_eq!(lchown.arg_index, 0);
         assert_eq!(lchown.direction, SyscallArgDirection::In);
-        assert_eq!(lchown.size, SyscallArgSize::CString);
+        assert_eq!(lchown.size, cstring!());
         assert!(!lchown.nullable);
 
         let utimensat_path = find(Syscall::Utimensat as u32).args[0];
-        assert_eq!(utimensat_path.size, SyscallArgSize::CString);
+        assert_eq!(utimensat_path.size, cstring!());
         assert!(utimensat_path.nullable);
 
         let pathconf = find(Syscall::Pathconf as u32).args;
-        assert_eq!(pathconf[0].size, SyscallArgSize::CString);
+        assert_eq!(pathconf[0].size, cstring!());
         assert!(!pathconf[0].nullable);
         assert_eq!(pathconf[1].arg_index, 2);
         assert_eq!(pathconf[1].direction, SyscallArgDirection::Out);
@@ -1221,7 +1344,10 @@ mod tests {
         let memfd_name = find(extra_syscalls::SYS_MEMFD_CREATE).args[0];
         assert_eq!(memfd_name.arg_index, 0);
         assert_eq!(memfd_name.direction, SyscallArgDirection::In);
-        assert_eq!(memfd_name.size, SyscallArgSize::CString);
+        assert_eq!(
+            memfd_name.size,
+            cstring!(platform_limits::MEMFD_NAME_MAX_BYTES, EINVAL),
+        );
         assert!(memfd_name.required);
 
         for syscall in [
@@ -1249,7 +1375,7 @@ mod tests {
         for (path, arg_index) in renameat2.iter().zip([1, 3]) {
             assert_eq!(path.arg_index, arg_index);
             assert_eq!(path.direction, SyscallArgDirection::In);
-            assert_eq!(path.size, SyscallArgSize::CString);
+            assert_eq!(path.size, cstring!());
             assert!(!path.nullable);
         }
 
