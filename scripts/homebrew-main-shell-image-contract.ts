@@ -7,6 +7,7 @@ import {
   resolveDemoPresentation,
   validateKandeloDemoConfig,
 } from "../web-libs/kandelo-session/src/demo-config";
+import type { HomebrewRuntimeSupportContract } from "../host/src/homebrew-runtime-support";
 import { assertMainShellGuestCatalogIdentity } from "./homebrew-main-shell-catalog-contract";
 export {
   assertMainShellGuestCatalogIdentity,
@@ -21,6 +22,7 @@ export interface MainShellImageContractInput {
   migrationLock: unknown;
   migrationLockSha256: string;
   migrationLockBytes: number;
+  runtimeSupport: HomebrewRuntimeSupportContract;
   guestManifest: unknown;
   imageMetadata: unknown;
   imageCapacity: unknown;
@@ -96,6 +98,35 @@ export function assertMainShellImageContract(
   if (formulaClosure.length === 0)
     fail("migration lock has no Formula closure");
   assertUnique(formulaClosure, "migration lock formula_closure");
+  const runtimeSupport = input.runtimeSupport;
+  expectEqual(
+    runtimeSupport.catalog.tapRepository,
+    tapRepository,
+    "runtime-support tap repository",
+  );
+  expectEqual(
+    runtimeSupport.catalog.tapName,
+    tapName,
+    "runtime-support tap name",
+  );
+  expectEqual(
+    runtimeSupport.catalog.tapCommit,
+    tapCommit,
+    "runtime-support tap commit",
+  );
+  expectExactStrings(
+    runtimeSupport.baseFormulaOrder,
+    formulaClosure,
+    "runtime-support base Formula order",
+  );
+  // WHY: formula_closure remains the base-shell materialization policy. The
+  // additional runtime-support Formulae are nevertheless package-owned lazy
+  // trees in the same image, so both guest and outer metadata must inventory
+  // the exact base-plus-support union.
+  const compositionFormulaOrder = [
+    ...formulaClosure,
+    ...runtimeSupport.additionalFormulaOrder,
+  ];
 
   const guest = requiredRecord(input.guestManifest, "guest Homebrew manifest");
   expectEqual(guest.schema, 1, "guest Homebrew manifest schema");
@@ -143,7 +174,7 @@ export function assertMainShellImageContract(
   );
   assertPackageClosure(
     guestPackages,
-    formulaClosure,
+    compositionFormulaOrder,
     tapRepository,
     tapName,
     "snake",
@@ -219,7 +250,7 @@ export function assertMainShellImageContract(
   );
   assertPackageClosure(
     imagePackages,
-    formulaClosure,
+    compositionFormulaOrder,
     tapRepository,
     tapName,
     "camel",
@@ -667,8 +698,8 @@ function assertPackageClosure(
   );
   assertUnique(fullNames, label);
   expectExactStrings(
-    [...fullNames].sort(),
-    [...formulaClosure].sort(),
+    fullNames,
+    formulaClosure,
     `${label} exact closure`,
   );
   packages.forEach((entry, index) => {

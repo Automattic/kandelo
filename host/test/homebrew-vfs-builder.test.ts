@@ -4288,6 +4288,41 @@ describe("Homebrew VFS builder", () => {
       ],
       tree_count: 2,
     });
+    const composition = JSON.parse(
+      readVfsFile(result.fs, "/etc/kandelo/homebrew-vfs.json"),
+    );
+    const expectedCompositionPackages = [
+      ...basePlan.packages.map((pkg) => pkg.fullName),
+      ...contract.additionalFormulaOrder,
+    ];
+    expect(result.report.packages.map((pkg) => pkg.full_name)).toEqual(
+      expectedCompositionPackages,
+    );
+    expect(composition.packages.map(
+      (pkg: { full_name: string }) => pkg.full_name,
+    )).toEqual(expectedCompositionPackages);
+    const mirrorPackageNames = result.mirrorPlan.assets.map(
+      (asset) => asset.package,
+    );
+    expect(new Set(mirrorPackageNames).size).toBe(mirrorPackageNames.length);
+    for (const packageName of mirrorPackageNames) {
+      expect(
+        result.report.packages.filter(
+          (pkg) => pkg.full_name === packageName,
+        ),
+      ).toHaveLength(1);
+      expect(
+        composition.packages.filter(
+          (pkg: { full_name: string }) => pkg.full_name === packageName,
+        ),
+      ).toHaveLength(1);
+    }
+    expect(composition.selection.requested_packages).toEqual(
+      basePlan.requestedPackages,
+    );
+    expect(composition.materialization.runtime_support.package_order).toEqual(
+      contract.additionalFormulaOrder,
+    );
   });
 
   it("preserves exact eligible external bottle URLs and rejects fragments", async () => {
@@ -4542,6 +4577,49 @@ describe("Homebrew VFS builder", () => {
       kind: "packages",
       requested_packages: ["hello"],
     });
+  });
+
+  it("rejects plan/report package reorder and duplicate drift before writing a composition", async () => {
+    const bytes = bottleTar(standardEntries());
+    let plan: HomebrewVfsPlan | undefined;
+    const result = await buildFixture(bytes, {
+      mutatePlan(value) {
+        plan = value;
+      },
+    });
+    const destination = MemoryFileSystem.create(
+      new SharedArrayBuffer(8 * 1024 * 1024),
+    );
+    const substitutedReport = {
+      ...result.report,
+      packages: result.report.packages.map((pkg) => ({
+        ...pkg,
+        full_name: "kandelo-dev/tap-core/substituted",
+      })),
+    };
+
+    expect(() =>
+      writeHomebrewVfsComposition(destination, plan!, substitutedReport)
+    ).toThrow("Homebrew VFS composition plan/report package order differs");
+    expect(() =>
+      writeHomebrewVfsComposition(
+        destination,
+        {
+          ...plan!,
+          packages: [...plan!.packages, plan!.packages[0]!],
+        },
+        {
+          ...result.report,
+          packages: [
+            ...result.report.packages,
+            result.report.packages[0]!,
+          ],
+        },
+      )
+    ).toThrow("Homebrew VFS composition plan/report package order differs");
+    expect(() =>
+      destination.lstat("/etc/kandelo/homebrew-vfs.json")
+    ).toThrow();
   });
 
   it("composes a real GNU PAX bottle while preserving its sanitized receipt bytes", async () => {

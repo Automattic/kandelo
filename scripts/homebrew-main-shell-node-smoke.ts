@@ -140,6 +140,7 @@ assertMainShellImageContract({
     .update(migrationLockBytes)
     .digest("hex"),
   migrationLockBytes: migrationLockBytes.byteLength,
+  runtimeSupport,
   guestManifest,
   imageMetadata: metadata,
   imageCapacity: capacity,

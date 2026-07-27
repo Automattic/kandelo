@@ -639,25 +639,30 @@ export async function runHomebrewVfsImageBuilder(
                 },
               }
             : {}),
-          packages: plan.packages.map((pkg) => ({
+          // WHY: a materialized image may add a separately planned lazy
+          // runtime-support cohort after the base Brewfile plan. The build
+          // report is the finalized composition inventory; serializing the
+          // original plan here would make outer metadata omit real package
+          // trees that are already named by the guest manifest and mirror.
+          packages: result.report.packages.map((pkg) => ({
             name: pkg.name,
-            fullName: pkg.fullName,
-            tapRepository: pkg.tapRepository,
-            tapName: pkg.tapName,
-            tapCommit: pkg.tapCommit,
+            fullName: pkg.full_name,
+            tapRepository: pkg.tap_repository,
+            tapName: pkg.tap_name,
+            tapCommit: pkg.tap_commit,
             version: pkg.version,
             arch: pkg.arch,
-            sourceStatus: pkg.sourceStatus,
-            cacheKeySha: pkg.cacheKeySha,
-            ...(pkg.builtFrom === undefined
+            sourceStatus: pkg.source_status,
+            cacheKeySha: pkg.cache_key_sha,
+            ...(pkg.built_from === undefined
               ? {}
               : {
                   builtFrom: {
-                    tapRepository: pkg.builtFrom.tapRepository,
-                    tapCommit: pkg.builtFrom.tapCommit,
-                    kandeloRepository: pkg.builtFrom.kandeloRepository,
-                    kandeloCommit: pkg.builtFrom.kandeloCommit,
-                    formulaSha256: pkg.builtFrom.formulaSha256,
+                    tapRepository: pkg.built_from.tap_repository,
+                    tapCommit: pkg.built_from.tap_commit,
+                    kandeloRepository: pkg.built_from.kandelo_repository,
+                    kandeloCommit: pkg.built_from.kandelo_commit,
+                    formulaSha256: pkg.built_from.formula_sha256,
                   },
                 }),
           })),

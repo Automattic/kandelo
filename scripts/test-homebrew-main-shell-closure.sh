@@ -130,14 +130,15 @@ grep -Fq 'GH_TOKEN:' <<<"$(sed -n \
 
 grep -Fq '(.selection.requested_packages | length) == $expected_root_count' "$BUILDER" ||
   fail "$BUILDER does not bind the requested-root count to the migration lock"
-grep -Fq '(.packages | length) == $expected_closure_count' "$BUILDER" ||
-  fail "$BUILDER does not bind the Formula count to the migration lock"
+grep -Fq '(.packages | length) == $expected_composition_count' "$BUILDER" ||
+  fail "$BUILDER does not bind the Formula count to the base-plus-support composition"
 grep -Fq 'MATERIALIZED_CANDIDATE' "$BUILDER" &&
   fail "$BUILDER still references the retired materialized-candidate mode"
-grep -Fq '[.packages[].full_name] | sort' "$BUILDER" ||
-  fail "$BUILDER does not compare exact Formula composition identities"
-grep -Fq 'formula_closure | sort' "$BUILDER" ||
-  fail "$BUILDER does not bind composition identities to the migration lock"
+grep -Fq '[.packages[].full_name] ==' "$BUILDER" ||
+  fail "$BUILDER does not compare exact ordered Formula composition identities"
+grep -Fq '$lock[0].formula_closure +' "$BUILDER" &&
+  grep -Fq '$runtime_support[0].additional_formula_order' "$BUILDER" ||
+  fail "$BUILDER does not bind composition identities to the base and runtime-support contracts"
 grep -Fq 'migration lock has no package roots' "$IMAGE_CONTRACT" ||
   fail "post-archive image contract must reject an empty root set"
 grep -Fq 'migration lock has no Formula closure' "$IMAGE_CONTRACT" ||

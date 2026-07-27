@@ -443,6 +443,17 @@ export function writeHomebrewVfsComposition(
       `refusing to replace existing Homebrew VFS composition: ${compositionPath}`,
     );
   }
+  const plannedPackageNames = plan.packages.map((pkg) => pkg.fullName);
+  const reportedPackageNames = report.packages.map((pkg) => pkg.full_name);
+  if (
+    new Set(plannedPackageNames).size !== plannedPackageNames.length ||
+    new Set(reportedPackageNames).size !== reportedPackageNames.length ||
+    JSON.stringify(plannedPackageNames) !== JSON.stringify(reportedPackageNames)
+  ) {
+    throw new HomebrewVfsBuildError(
+      "Homebrew VFS composition plan/report package order differs",
+    );
+  }
   const packageByName = new Map(plan.packages.map((pkg) => [pkg.fullName, pkg]));
   writeVfsFile(
     fs,
@@ -487,7 +498,7 @@ export function writeHomebrewVfsComposition(
         keg: pkg.keg,
         opt_link: pkg.opt_link,
         ...(pkg.built_from === undefined ? {} : { built_from: pkg.built_from }),
-        env: packageByName.get(pkg.full_name)?.linkManifest.env ?? {},
+        env: packageByName.get(pkg.full_name)!.linkManifest.env,
       })),
     }, null, 2) + "\n",
     0o644,

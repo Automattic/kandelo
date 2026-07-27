@@ -705,7 +705,10 @@ describe("declared shell lazy-archive inputs", () => {
     expect(buildScript).not.toContain("build-shell-vfs-image.sh");
     expect(composer).toContain("--no-fallback");
     expect(composer).toContain(
-      "([.packages[].full_name] | sort) == ($lock[0].formula_closure | sort)",
+      "$lock[0].formula_closure +",
+    );
+    expect(composer).toContain(
+      "$runtime_support[0].additional_formula_order",
     );
     expect(composer).toContain(
       ".catalog.checkout_commit == $lock[0].catalog.tap_commit",
