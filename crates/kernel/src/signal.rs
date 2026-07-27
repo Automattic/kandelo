@@ -177,7 +177,8 @@ pub(crate) fn dequeue_signal_for(
 /// signals stay queued for the guest glue. While stopped, Process selection
 /// exposes only SIGKILL; SIGCONT has already resumed at generation time.
 pub(crate) fn deliver_pending_signals(proc: &mut Process, host: &mut dyn HostIO) {
-    deliver_pending_signals_impl(proc, None, host, crate::process_table::current_tid());
+    let tid = crate::syscalls::current_tid_for_process(proc);
+    deliver_pending_signals_impl(proc, None, host, tid);
 }
 
 pub(crate) fn deliver_pending_signals_with_locks(
@@ -185,7 +186,8 @@ pub(crate) fn deliver_pending_signals_with_locks(
     locks: &mut crate::lock::AdvisoryLockManager,
     host: &mut dyn HostIO,
 ) {
-    deliver_pending_signals_impl(proc, Some(locks), host, crate::process_table::current_tid());
+    let tid = crate::syscalls::current_tid_for_process(proc);
+    deliver_pending_signals_impl(proc, Some(locks), host, tid);
 }
 
 /// Consume default/ignored signals for one exact kernel-owned task.

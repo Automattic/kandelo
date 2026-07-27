@@ -36,23 +36,9 @@ int32_t kernel_open(const uint8_t *path_ptr, uint32_t path_len,
 KERNEL_IMPORT(kernel_close)
 int32_t kernel_close(int32_t fd);
 
-KERNEL_IMPORT(kernel_read)
-int32_t kernel_read(int32_t fd, uint8_t *buf_ptr, uint32_t buf_len);
-
-KERNEL_IMPORT(kernel_write)
-int32_t kernel_write(int32_t fd, const uint8_t *buf_ptr, uint32_t buf_len);
-
 KERNEL_IMPORT(kernel_lseek)
 int64_t kernel_lseek(int32_t fd, uint32_t offset_lo, int32_t offset_hi,
                      uint32_t whence);
-
-KERNEL_IMPORT(kernel_pread)
-int32_t kernel_pread(int32_t fd, uint8_t *buf_ptr, uint32_t buf_len,
-                     uint32_t offset_lo, int32_t offset_hi);
-
-KERNEL_IMPORT(kernel_pwrite)
-int32_t kernel_pwrite(int32_t fd, const uint8_t *buf_ptr, uint32_t buf_len,
-                      uint32_t offset_lo, int32_t offset_hi);
 
 /* ------------------------------------------------------------------ */
 /* FD operations                                                       */
@@ -83,7 +69,9 @@ KERNEL_IMPORT(kernel_epoll_ctl)
 int32_t kernel_epoll_ctl(int32_t epfd, int32_t op, int32_t fd, uint8_t *event_ptr);
 
 KERNEL_IMPORT(kernel_epoll_pwait)
-int32_t kernel_epoll_pwait(int32_t epfd, uint8_t *events_ptr, int32_t maxevents, int32_t timeout, uint32_t sigmask_ptr);
+int32_t kernel_epoll_pwait(int32_t epfd, uint8_t *events_ptr,
+                           int32_t maxevents, int32_t timeout,
+                           const uint8_t *sigmask_ptr);
 
 KERNEL_IMPORT(kernel_timerfd_create)
 int32_t kernel_timerfd_create(uint32_t clock_id, uint32_t flags);
@@ -95,7 +83,8 @@ KERNEL_IMPORT(kernel_timerfd_gettime)
 int32_t kernel_timerfd_gettime(int32_t fd, uint8_t *cur_ptr);
 
 KERNEL_IMPORT(kernel_signalfd4)
-int32_t kernel_signalfd4(int32_t fd, uint32_t mask_ptr, uint32_t sigsetsize, uint32_t flags);
+int32_t kernel_signalfd4(int32_t fd, const uint8_t *mask_ptr,
+                        size_t sigsetsize, uint32_t flags);
 
 KERNEL_IMPORT(kernel_fcntl)
 int32_t kernel_fcntl(int32_t fd, uint32_t cmd, uint32_t arg);
@@ -381,27 +370,9 @@ int32_t kernel_fchmod(int32_t fd, uint32_t mode);
 KERNEL_IMPORT(kernel_fchown)
 int32_t kernel_fchown(int32_t fd, uint32_t uid, uint32_t gid);
 
-/* ------------------------------------------------------------------ */
-/* Scatter-gather I/O                                                  */
-/* ------------------------------------------------------------------ */
-
-KERNEL_IMPORT(kernel_writev)
-int32_t kernel_writev(int32_t fd, const uint8_t *iov_ptr, int32_t iovcnt);
-
-KERNEL_IMPORT(kernel_readv)
-int32_t kernel_readv(int32_t fd, uint8_t *iov_ptr, int32_t iovcnt);
-
-KERNEL_IMPORT(kernel_preadv)
-int32_t kernel_preadv(int32_t fd, uint8_t *iov_ptr, int32_t iovcnt,
-                      uint32_t offset_lo, int32_t offset_hi);
-
-KERNEL_IMPORT(kernel_pwritev)
-int32_t kernel_pwritev(int32_t fd, const uint8_t *iov_ptr, int32_t iovcnt,
-                       uint32_t offset_lo, int32_t offset_hi);
-
 KERNEL_IMPORT(kernel_sendfile)
 int32_t kernel_sendfile(int32_t out_fd, int32_t in_fd, uint8_t *offset_ptr,
-                        uint32_t count);
+                        size_t count);
 
 KERNEL_IMPORT(kernel_statx)
 int32_t kernel_statx(int32_t dirfd, const uint8_t *path_ptr,
@@ -416,13 +387,14 @@ KERNEL_IMPORT(kernel_gettid)
 int32_t kernel_gettid(void);
 
 KERNEL_IMPORT(kernel_set_tid_address)
-int32_t kernel_set_tid_address(uint32_t tidptr);
+int32_t kernel_set_tid_address(uintptr_t tidptr);
 
 KERNEL_IMPORT(kernel_set_robust_list)
-int32_t kernel_set_robust_list(uint32_t head, uint32_t len);
+int32_t kernel_set_robust_list(uintptr_t head, size_t len);
 
 KERNEL_IMPORT(kernel_get_robust_list)
-int32_t kernel_get_robust_list(uint32_t pid, uint32_t head_ptr, uint32_t len_ptr);
+int32_t kernel_get_robust_list(uint32_t pid, uintptr_t head_ptr,
+                               uintptr_t len_ptr);
 
 KERNEL_IMPORT(kernel_futex)
 int32_t kernel_futex(uint32_t uaddr, uint32_t op, uint32_t val,
@@ -724,10 +696,12 @@ int32_t kernel_setgroups(uint32_t size, const uint32_t *list_ptr);
 /* ------------------------------------------------------------------ */
 
 KERNEL_IMPORT(kernel_sendmsg)
-int32_t kernel_sendmsg(int32_t fd, const uint8_t *msg_ptr, uint32_t flags);
+int32_t kernel_sendmsg(int32_t fd, const uint8_t *msg_ptr, uint32_t flags,
+                       int64_t retry_token);
 
 KERNEL_IMPORT(kernel_recvmsg)
-int32_t kernel_recvmsg(int32_t fd, uint8_t *msg_ptr, uint32_t flags);
+int32_t kernel_recvmsg(int32_t fd, uint8_t *msg_ptr, uint32_t flags,
+                       int64_t retry_token);
 
 KERNEL_IMPORT(kernel_getaddrinfo)
 int32_t kernel_getaddrinfo(const uint8_t *name_ptr, uint32_t name_len,

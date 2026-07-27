@@ -39,9 +39,9 @@ import {
   ensureMountParentDirectories,
   HostFileSystem,
   MemoryFileSystem,
-  resolveForNode,
   readPreparedPlatformFile,
 } from "./vfs";
+import { resolveForNodeKernelSession } from "./vfs/default-mounts-node";
 import type { MountConfig } from "./vfs/types";
 import type { MountSpec } from "./vfs/default-mounts";
 import {
@@ -83,8 +83,6 @@ import {
   waitForWorkerQuiescence,
 } from "./worker-quiescence";
 import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
-import { reapHostOwnedExitedProcess } from "./host-owned-process-reap";
-import { uninitializedKernelPipeResult } from "./kernel-pipe-transport";
 import {
   ForkReplayGateCoordinator,
   observeForkReplayWorker,
@@ -169,6 +167,7 @@ let execPrograms: Record<string, string> = {};
 let vfsExecIO: PlatformIO | null = null;
 let rootfsMemfs: MemoryFileSystem | null = null;
 let initReady = false;
+let kernelFatalReported = false;
 /** Per-boot scratch directory; cleaned up on `destroy`. Only set when the
  *  worker constructs a `VirtualPlatformIO` from the default mount spec. */
 let sessionDir: string | null = null;
@@ -623,6 +622,52 @@ function reportHostDiagnostic(
   post({ type: "host_diagnostic", ...diagnostic });
 }
 
+function terminatePoisonedKernelWorker(error: Error): void {
+  if (kernelFatalReported) return;
+  kernelFatalReported = true;
+  const detail = error.stack
+    ? `${error.message}\n${error.stack}`
+    : error.message;
+  try {
+    try {
+      reportHostDiagnostic({
+        pid: 0,
+        source: "kernel fatal",
+        message: `[node-kernel-worker] fatal kernel instance failure: ${detail}`,
+      });
+    } catch (reportError) {
+      console.error(
+        "[node-kernel-worker] could not report fatal diagnostic:",
+        reportError,
+      );
+    }
+    try {
+      post({ type: "kernel_fatal", error: detail });
+    } catch (postError) {
+      console.error(
+        "[node-kernel-worker] could not post fatal state:",
+        postError,
+      );
+    }
+  } finally {
+    // WHY: a trapped kernel export can strand Rust's global transfer
+    // reservation in Executing state. Do not call back into that generation;
+    // terminate its process workers directly and stop this worker thread.
+    for (const info of processes.values()) {
+      intentionallyTerminated.add(info.worker as object);
+      void info.worker.terminate().catch(() => {});
+    }
+    for (const threads of threadWorkers.values()) {
+      for (const thread of threads) {
+        intentionallyTerminated.add(thread.worker as object);
+        void thread.worker.terminate().catch(() => {});
+      }
+    }
+    cleanupSessionDir();
+    queueMicrotask(() => process.exit(1));
+  }
+}
+
 function reportWorkerProtocolError(message: string): void {
   reportHostDiagnostic({
     pid: 0,
@@ -838,8 +883,8 @@ async function buildVirtualPlatformIO(
   sessionDir = bootSessionDir;
   let specMounts: MountConfig[];
   try {
-    specMounts = await resolveForNode(
-      rootfsMountSpec ?? DEFAULT_MOUNT_SPEC,
+    specMounts = await resolveForNodeKernelSession(
+      DEFAULT_MOUNT_SPEC,
       new Uint8Array(rootfsImage),
       bootSessionDir,
     );
@@ -970,6 +1015,7 @@ async function handleInit(msg: InitMessage) {
       onProcessMemoryTarget: (memory, target) => {
         processMemoryAllocator.observeTarget(memory, target);
       },
+      onKernelFatal: terminatePoisonedKernelWorker,
       onFork: ({ parentPid, childPid, parentMemory, continuation }) => {
         return processMemoryCreators.run("a fork process Worker", () => {
           // Notify the main thread of every kernel-side process event so
@@ -2333,7 +2379,7 @@ async function finishProcessExit(
     // to its exec successor.
     if (!detachResult.mayReapPid) return;
     try {
-      reapHostOwnedExitedProcess(kernelWorker.getKernelInstance(), pid);
+      kernelWorker.reapHostOwnedExitedProcess(pid);
     } catch (error) {
       reportHostDiagnostic({
         pid,
@@ -2451,12 +2497,8 @@ async function performDestroy() {
   // matching the browser host (which does the same and is likewise a no-op cost
   // on Chrome/V8). Phases mirror browser-kernel-worker-entry.ts performDestroy.
   let woken = new Set<number>();
-  try {
-    woken = kernelWorker.killAllBlockedForTeardown();
-  } catch (e) {
-    console.error(
-      `[node-kernel-worker] killAllBlockedForTeardown failed: ${e}`,
-    );
+  try { woken = await kernelWorker.killAllBlockedForTeardown(); } catch (e) {
+    console.error(`[node-kernel-worker] killAllBlockedForTeardown failed: ${e}`);
   }
   // Drain only for the pids we woke — a process we did not wake (e.g. one
   // already exited via a sibling thread) never posts {exit} and is

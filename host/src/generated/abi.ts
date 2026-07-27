@@ -347,6 +347,12 @@ export const KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES = 56 as const;
 export const KERNEL_SCRATCH_FD_PAIR_BYTES = 8 as const;
 export const KERNEL_SCRATCH_MQUEUE_NOTIFICATION_BYTES = 8 as const;
 export const KERNEL_SCRATCH_SOCKLEN_BYTES = 4 as const;
+export const KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES = 128 as const;
+export const KERNEL_SCRATCH_SOCKADDR_UNIX_BYTES = 110 as const;
+export const KERNEL_SCRATCH_SOCKADDR_UNIX_PATH_OFFSET_BYTES = 2 as const;
+export const KERNEL_SCRATCH_SOCKADDR_UNIX_PATH_BYTES = 108 as const;
+export const KERNEL_SCRATCH_SOCKET_OPTION_MAX_BYTES = 232 as const;
+export const KERNEL_SCRATCH_SOCKET_OPTION_INPUT_MAX_BYTES = 264 as const;
 export const PR_SET_NAME = 15 as const;
 export const PR_GET_NAME = 16 as const;
 export const PRCTL_NAME_BYTES = 16 as const;
@@ -355,6 +361,12 @@ export const SIGNAL_MASK_BYTES = 8 as const;
 
 export const POSIX_ARG_MAX_BYTES = 4194304 as const;
 export const POSIX_PATH_MAX_BYTES = 4096 as const;
+export const POSIX_NAME_MAX_BYTES = 256 as const;
+export const PROCESS_METADATA_ENTRY_MAX_BYTES = 65536 as const;
+export const POSIX_NGROUPS_MAX = 32 as const;
+export const SYSV_MSG_MAX_BYTES = 8192 as const;
+export const MAX_REPORTABLE_TRANSFER_BYTES = 2147483647 as const;
+export const MAX_TRANSFER_ALLOCATION_BYTES = 4294967295 as const;
 export const POSIX_IOV_MAX = 1024 as const;
 export const SELECT_FD_SETSIZE = 1024 as const;
 export const SELECT_FD_SET_BYTES = 128 as const;
@@ -462,7 +474,10 @@ export const HOST_ADAPTER_WORKER_FEATURES = {
 export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "__abi_version",
   "kernel_alloc_scratch",
+  "kernel_blocking_retry_release",
+  "kernel_blocking_retry_token",
   "kernel_clear_process_metadata",
+  "kernel_commit_process_exit",
   "kernel_create_process",
   "kernel_create_process_with_stdio",
   "kernel_dequeue_signal",
@@ -472,6 +487,7 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_get_parent_pid",
   "kernel_get_process_exit_signal",
   "kernel_get_process_state",
+  "kernel_get_socket_timeout_ms",
   "kernel_handle_channel",
   "kernel_has_sa_nocldstop",
   "kernel_host_adapter_manifest_len",
@@ -480,11 +496,13 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_ipc_shmat_for_task",
   "kernel_ipc_shmdt_for_process",
   "kernel_ipc_shmdt_for_task",
+  "kernel_is_fd_nonblock",
   "kernel_mark_process_signaled",
+  "kernel_mq_descriptor_msgsize",
   "kernel_msqid_ds_bytes",
+  "kernel_pick_signal_target_tid",
   "kernel_pipe_has_readers",
   "kernel_posix_timer_fire",
-  "kernel_prepare_write_operation",
   "kernel_push_process_metadata_entry",
   "kernel_reap_exited_child",
   "kernel_remove_process",
@@ -501,6 +519,13 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_spawn_scratch_pointer",
   "kernel_spawn_scratch_retained_capacity",
   "kernel_thread_exit",
+  "kernel_thread_has_deliverable",
+  "kernel_transfer_channel_execute",
+  "kernel_transfer_io_execute",
+  "kernel_transfer_scratch_begin",
+  "kernel_transfer_scratch_cancel",
+  "kernel_transfer_scratch_capacity",
+  "kernel_transfer_scratch_pointer",
   "kernel_validate_task",
   "kernel_wait_child_poll",
 ] as const;
@@ -546,7 +571,10 @@ export const CH_ARG_SIZE = 8 as const;
 export const CH_RETURN = 56 as const;
 export const CH_ERRNO = 64 as const;
 export const CH_REQUEST_FLAGS = 68 as const;
-export const CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY = 1 as const;
+export const CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY = 4 as const;
+export const CHANNEL_REQUEST_FLAG_CANCELLATION_POINT = 1 as const;
+export const CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED = 2 as const;
+export const CHANNEL_REQUEST_FLAGS_KNOWN_MASK = 7 as const;
 export const CH_DATA = 72 as const;
 export const CH_DATA_SIZE = 65536 as const;
 export const CH_HEADER_SIZE = 72 as const;
@@ -585,6 +613,8 @@ export const CH_SIGINFO_WORD_1 = 65584 as const;
 export const CH_SIGINFO_WORD_2 = 65588 as const;
 export const CH_SIG_ALT_SP = 65592 as const;
 export const CH_SIG_ALT_SIZE = 65600 as const;
+
+export const SIGNAL_ACTION_RESTART = 268435456 as const;
 
 export const WAIT_EVENT_EXITED = 1 as const;
 export const WAIT_EVENT_STOPPED = 2 as const;
@@ -817,6 +847,7 @@ export const ABI_SYSCALLS = {
   SchedSetparam: 231,
   SchedSetscheduler: 233,
   SchedRrGetInterval: 236,
+  SchedSetaffinity: 237,
   SchedGetaffinity: 238,
   EpollCreate1: 239,
   EpollCtl: 240,
@@ -836,9 +867,13 @@ export const ABI_SYSCALLS = {
   Mknod: 271,
   Mknodat: 272,
   Msync: 278,
+  Mlock: 279,
+  Mlock2: 280,
+  Munlock: 281,
   Waitid: 288,
   CopyFileRange: 290,
   Splice: 291,
+  Readahead: 293,
   Sendfile: 294,
   Preadv: 295,
   Pwritev: 296,
@@ -878,6 +913,95 @@ export const ABI_SYSCALLS = {
   Accept4: 384,
   ExitGroup: 387,
   ThreadCancel: 415,
+} as const;
+
+export type ChannelScalarSlotKind =
+  | "i32"
+  | "u32"
+  | "exact-u32"
+  | "process-size"
+  | "process-address"
+  | "i64"
+  | "split-i64-low-u32"
+  | "split-i64-high-i32";
+export type ChannelResultKind = "i32" | "i64" | "process-address";
+export type ChannelArgumentIndex = 0 | 1 | 2 | 3 | 4 | 5;
+
+export const CHANNEL_SCALAR_DEFAULT_SLOT_KIND = "i32" as const;
+export const CHANNEL_RESULT_DEFAULT_KIND = "i32" as const;
+export const CHANNEL_SCALAR_SLOT_CONTRACTS: Readonly<
+  Record<number, Readonly<Partial<Record<ChannelArgumentIndex, ChannelScalarSlotKind>>>>
+> = {
+  3: { 2: "process-size", },
+  4: { 2: "process-size", },
+  5: { 1: "split-i64-low-u32", 2: "split-i64-high-i32", },
+  19: { 2: "process-size", },
+  23: { 1: "process-size", },
+  26: { 3: "process-size", },
+  43: { 2: "process-size", },
+  46: { 0: "process-address", 1: "process-size", 5: "i64", },
+  47: { 0: "process-address", 1: "process-size", },
+  48: { 0: "process-address", },
+  49: { 0: "process-address", 1: "process-size", },
+  51: { 2: "u32", },
+  54: { 2: "u32", },
+  55: { 2: "process-size", },
+  56: { 2: "process-size", },
+  59: { 4: "u32", },
+  60: { 1: "process-size", },
+  62: { 2: "process-size", 5: "u32", },
+  63: { 2: "process-size", },
+  64: { 2: "process-size", 3: "i64", },
+  65: { 2: "process-size", 3: "i64", },
+  73: { 1: "exact-u32", },
+  79: { 1: "i64", },
+  85: { 1: "i64", },
+  102: { 3: "process-size", },
+  109: { 2: "process-size", },
+  119: { 1: "split-i64-high-i32", 2: "split-i64-low-u32", },
+  120: { 1: "process-size", },
+  122: { 2: "process-size", },
+  126: { 0: "process-address", 1: "process-size", 2: "process-size", },
+  128: { 0: "process-address", 1: "process-size", },
+  136: { 0: "process-size", },
+  200: { 0: "process-address", },
+  203: { 0: "process-address", },
+  237: { 1: "u32", },
+  238: { 1: "u32", },
+  241: { 5: "process-size", },
+  246: { 2: "process-size", },
+  251: { 1: "process-size", 4: "process-size", },
+  261: { 0: "process-address", 1: "process-size", },
+  262: { 1: "process-address", 2: "process-address", },
+  278: { 0: "process-address", 1: "process-size", },
+  279: { 0: "process-address", 1: "process-size", },
+  280: { 0: "process-address", 1: "process-size", },
+  281: { 0: "process-address", 1: "process-size", },
+  290: { 4: "process-size", },
+  291: { 4: "process-size", },
+  293: { 1: "i64", 2: "process-size", },
+  294: { 3: "process-size", },
+  295: { 3: "split-i64-low-u32", 4: "split-i64-high-i32", },
+  296: { 3: "split-i64-low-u32", 4: "split-i64-high-i32", },
+  297: { 3: "split-i64-low-u32", 4: "split-i64-high-i32", },
+  298: { 3: "split-i64-low-u32", 4: "split-i64-high-i32", },
+  308: { 2: "i64", 3: "i64", },
+  333: { 2: "process-size", },
+  334: { 2: "process-size", },
+  338: { 2: "process-size", 3: "i64", },
+  339: { 2: "process-size", },
+  342: { 2: "process-size", },
+  344: { 1: "process-size", },
+  377: { 2: "process-size", },
+} as const;
+export const CHANNEL_RESULT_CONTRACTS: Readonly<
+  Partial<Record<number, ChannelResultKind>>
+> = {
+  5: "i64",
+  46: "process-address",
+  48: "process-address",
+  66: "i64",
+  126: "process-address",
 } as const;
 
 export const PATHCONF_NAMES = {
@@ -1073,6 +1197,7 @@ export const ABI_SYSCALL_NAMES: Record<number, string> = {
   231: "sched_setparam",
   233: "sched_setscheduler",
   236: "sched_rr_get_interval",
+  237: "sched_setaffinity",
   238: "sched_getaffinity",
   239: "epoll_create1",
   240: "epoll_ctl",
@@ -1092,9 +1217,13 @@ export const ABI_SYSCALL_NAMES: Record<number, string> = {
   271: "mknod",
   272: "mknodat",
   278: "msync",
+  279: "mlock",
+  280: "mlock2",
+  281: "munlock",
   288: "waitid",
   290: "copy_file_range",
   291: "splice",
+  293: "readahead",
   294: "sendfile",
   295: "preadv",
   296: "pwritev",
@@ -1141,7 +1270,7 @@ export const ABI_SYSCALL_NAMES: Record<number, string> = {
 export type SyscallArgDirection = "in" | "out" | "inout";
 
 export type SyscallArgSizeSpec =
-  | { type: "cstring" }
+  | { type: "cstring"; maxBytes: number; tooLongErrno: number }
   | { type: "arg"; argIndex: number; multiplier?: number; add?: number }
   | { type: "deref"; argIndex: number }
   | { type: "fixed"; size: number }
@@ -1239,7 +1368,7 @@ export const IOCTL_REQUESTS: Record<number, IoctlRequestContract> = {
 
 export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   1: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   3: [
     { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 }, required: true },
@@ -1254,55 +1383,55 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
     { argIndex: 0, direction: "out", size: { type: "fixed", size: 8 }, required: true },
   ],
   11: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
     { argIndex: 1, direction: "out", size: { type: "fixed", size: 112 }, required: true },
   ],
   12: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
     { argIndex: 1, direction: "out", size: { type: "fixed", size: 112 }, required: true },
   ],
   13: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   14: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   15: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   16: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
-    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   17: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
-    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   18: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
-    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   19: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
     { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 }, required: true },
   ],
   20: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   21: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   22: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   23: [
     { argIndex: 0, direction: "out", size: { type: "arg", argIndex: 1 }, required: true },
   ],
   24: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   25: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   26: [
     { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 }, required: true },
@@ -1323,15 +1452,15 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
     { argIndex: 0, direction: "in", size: { type: "fixed", size: 16 }, required: true },
   ],
   43: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 65537, tooLongErrno: 7 }, required: true },
     { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 }, required: true },
   ],
   44: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
-    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 65537, tooLongErrno: 7 }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 65537, tooLongErrno: 7 }, required: true },
   ],
   45: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 65537, tooLongErrno: 7 }, required: true },
   ],
   51: [
     { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 }, required: true },
@@ -1378,7 +1507,7 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
     { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 }, required: true },
   ],
   69: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   70: [
     { argIndex: 1, direction: "out", size: { type: "fixed", size: 60 }, required: true },
@@ -1399,55 +1528,55 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
     { argIndex: 1, direction: "in", size: { type: "fixed", size: 16 }, required: true },
   ],
   85: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   93: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
     { argIndex: 2, direction: "out", size: { type: "fixed", size: 112 }, required: true },
   ],
   94: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   95: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   96: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
-    { argIndex: 3, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
+    { argIndex: 3, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   97: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   98: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   99: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   100: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
-    { argIndex: 3, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
+    { argIndex: 3, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   101: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
-    { argIndex: 2, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
+    { argIndex: 2, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   102: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
     { argIndex: 2, direction: "out", size: { type: "arg", argIndex: 3 }, required: true },
   ],
   108: [
     { argIndex: 1, direction: "out", size: { type: "fixed", size: 144 }, required: true },
   ],
   109: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
     { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 }, required: true },
   ],
   110: [
     { argIndex: 0, direction: "in", size: { type: "fixed", size: 8 }, required: true },
   ],
   112: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
     { argIndex: 2, direction: "out", size: { type: "fixed", size: 8 }, required: true },
   ],
   113: [
@@ -1477,11 +1606,11 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
     { argIndex: 2, direction: "in", size: { type: "fixed", size: 16 }, required: true },
   ],
   125: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" }, nullable: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, nullable: true },
     { argIndex: 2, direction: "in", size: { type: "fixed", size: 32 }, nullable: true },
   ],
   129: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
     { argIndex: 2, direction: "out", size: { type: "process-layout", wasm32Size: 88, wasm64Size: 120 }, required: true },
   ],
   130: [
@@ -1505,7 +1634,7 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
     { argIndex: 3, direction: "out", size: { type: "fixed", size: 144 }, nullable: true },
   ],
   140: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 256, tooLongErrno: 36 }, required: true },
     { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 }, required: true },
   ],
   205: [
@@ -1524,7 +1653,7 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
     { argIndex: 1, direction: "out", size: { type: "process-layout", wasm32Size: 12, wasm64Size: 24 }, nullable: true },
   ],
   211: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   224: [
     { argIndex: 1, direction: "out", size: { type: "process-layout", wasm32Size: 16, wasm64Size: 32 }, required: true },
@@ -1566,20 +1695,20 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
     { argIndex: 0, direction: "inout", size: { type: "arg", argIndex: 1, multiplier: 8 }, required: true },
   ],
   256: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 250, tooLongErrno: 22 }, required: true },
   ],
   260: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
     { argIndex: 4, direction: "out", size: { type: "fixed", size: 256 }, required: true },
   ],
   269: [
     { argIndex: 0, direction: "out", size: { type: "process-layout", wasm32Size: 312, wasm64Size: 368 }, required: true },
   ],
   271: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   272: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   288: [
     { argIndex: 2, direction: "out", size: { type: "process-layout", wasm32Size: 128, wasm64Size: 128 }, required: true },
@@ -1597,11 +1726,11 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
     { argIndex: 2, direction: "inout", size: { type: "fixed", size: 8 }, nullable: true },
   ],
   299: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   306: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
-    { argIndex: 3, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
+    { argIndex: 3, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   325: [
     { argIndex: 0, direction: "out", size: { type: "fixed", size: 4 }, nullable: true },
@@ -1619,11 +1748,11 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
     { argIndex: 1, direction: "out", size: { type: "fixed", size: 32 }, required: true },
   ],
   331: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 256, tooLongErrno: 36 }, required: true },
     { argIndex: 3, direction: "in", size: { type: "process-layout", wasm32Size: 32, wasm64Size: 64 }, nullable: true },
   ],
   332: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 256, tooLongErrno: 36 }, required: true },
   ],
   333: [
     { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 }, required: true },
@@ -1648,10 +1777,10 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
     { argIndex: 1, direction: "in", size: { type: "fixed", size: 8 }, required: true },
   ],
   382: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   383: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
   ],
   384: [
     { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 }, nullable: true },

@@ -4,22 +4,35 @@
  * Git is built with wpk_fork_* instrumentation for fork() support so that
  * subprocesses (git gc --auto, git-remote-http, index-pack) work correctly.
  *
- * Each runCentralizedProgram call creates a fresh kernel instance,
- * but the host filesystem persists, so we use unique temp dirs.
+ * Persistent native paths are rooted in random, test-owned directories so
+ * append ownership remains explicit across the complete guest lifetime.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { existsSync, rmSync, mkdirSync, writeFileSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  mkdirSync,
+  writeFileSync,
+  statSync,
+} from "node:fs";
 import { createServer, type Server } from "node:http";
-import { readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
-import { NodePlatformIO } from "../../../../host/src/platform/node";
 import { FetchNetworkBackend } from "../../../../host/src/networking/fetch-backend";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
+import { NodeKernelHost } from "../../../../host/src/node-kernel-host";
+import { createSessionOwnedHostFileSystem } from "../../../../host/src/vfs/host-fs";
+import { NodeTimeProvider } from "../../../../host/src/vfs/time";
+import { VirtualPlatformIO } from "../../../../host/src/vfs/vfs";
 
 const gitBinary = tryResolveBinary("programs/git/git.wasm");
-const gitRemoteHttpBinary = tryResolveBinary("programs/git/git-remote-http.wasm");
+const gitRemoteHttpBinary = tryResolveBinary(
+  "programs/git/git-remote-http.wasm",
+);
 
 // Phase 7: skip git tests when the resolved binaries predate the
 // wasm-fork-instrument flip (i.e. they still export asyncify_* instead
@@ -37,7 +50,23 @@ function hasWpkForkExports(path: string | null): boolean {
 }
 
 const hasGit = !!gitBinary && hasWpkForkExports(gitBinary);
-const hasGitRemoteHttp = !!gitRemoteHttpBinary && hasWpkForkExports(gitRemoteHttpBinary);
+const hasGitRemoteHttp =
+  !!gitRemoteHttpBinary && hasWpkForkExports(gitRemoteHttpBinary);
+
+function createOwnedGuestIo(root: string): VirtualPlatformIO {
+  mkdirSync(root, { recursive: true });
+  // WHY: the random root is exclusively owned by this test for the complete
+  // guest lifetime, so the backend can truthfully publish exact append ends.
+  return new VirtualPlatformIO(
+    [
+      {
+        mountPoint: "/",
+        backend: createSessionOwnedHostFileSystem(root),
+      },
+    ],
+    new NodeTimeProvider(),
+  );
+}
 
 // Git config via environment
 const gitEnv = [
@@ -77,39 +106,53 @@ describe.skipIf(!hasGit)("Git", () => {
     expect(result.stdout + result.stderr).toContain("nitialized");
   });
 
-  it("creates a commit without spurious help output (wpk_fork instrumentation)", { timeout: 30_000 }, async () => {
-    // git commit triggers fork+exec for `git gc --auto`. Without fork
-    // instrumentation, the fork child restarts from _start() with empty argv
-    // and prints help.
-    const dir = `/tmp/git-commit-test-${Date.now()}`;
-    // The two runs share state via /tmp; under the new mount-based VFS
-    // each NodeKernelHost boot owns its own scratch session dir, so the
-    // second invocation can't see the first's repo. Opt out with raw
-    // NodePlatformIO so /tmp resolves to the actual host fs and persists
-    // across runs. (A migration to a single shared kernel boot — or to
-    // a fixture-managed session dir — is follow-up work to PR 4/5.)
-    const ioForPersistence = () => new NodePlatformIO();
-    const initResult = await runCentralizedProgram({
-      programPath: gitBinary!,
-      argv: ["git", "init", dir],
-      env: gitEnv,
-      io: ioForPersistence(),
-      timeout: 15_000,
-    });
-    expect(initResult.exitCode).toBe(0);
-    // Commit with fork
-    const result = await runCentralizedProgram({
-      programPath: gitBinary!,
-      argv: ["git", "-C", dir, "commit", "--allow-empty", "-m", "test commit"],
-      env: gitEnv,
-      io: ioForPersistence(),
-      timeout: 20_000,
-    });
-    expect(result.exitCode).toBe(0);
-    const output = result.stdout + result.stderr;
-    expect(output).toContain("test commit");
-    expect(output).not.toContain("usage: git");
-  });
+  it(
+    "creates a commit without spurious help output (wpk_fork instrumentation)",
+    { timeout: 30_000 },
+    async () => {
+      // git commit triggers fork+exec for `git gc --auto`. Without fork
+      // instrumentation, the fork child restarts from _start() with empty argv
+      // and prints help.
+      const dir = "/tmp/repo";
+      const program = readFileSync(gitBinary!);
+      const programBytes = program.buffer.slice(
+        program.byteOffset,
+        program.byteOffset + program.byteLength,
+      );
+      let output = "";
+      const host = new NodeKernelHost({
+        rootfsImage: "default",
+        onStdout: (_pid, data) => {
+          output += new TextDecoder().decode(data);
+        },
+        onStderr: (_pid, data) => {
+          output += new TextDecoder().decode(data);
+        },
+      });
+      try {
+        await host.init();
+        expect(
+          await host.spawn(programBytes, ["git", "init", dir], {
+            env: gitEnv,
+          }),
+        ).toBe(0);
+        output = "";
+        // WHY: both operations share one dedicated kernel session, so /tmp
+        // retains its lifecycle-owned append authority across the process exit.
+        expect(
+          await host.spawn(
+            programBytes,
+            ["git", "-C", dir, "commit", "--allow-empty", "-m", "test commit"],
+            { env: gitEnv },
+          ),
+        ).toBe(0);
+        expect(output).toContain("test commit");
+        expect(output).not.toContain("usage: git");
+      } finally {
+        await host.destroy();
+      }
+    },
+  );
 });
 
 /**
@@ -129,10 +172,13 @@ describe.skipIf(!hasGit || !hasGitRemoteHttp)("Git HTTP clone", () => {
   let httpServer: Server;
   let httpPort: number;
   let tmpBase: string;
+  let guestRoot: string;
   const hostAlias = "kandelo-host.test";
 
   beforeAll(async () => {
-    tmpBase = `/tmp/git-http-test-${Date.now()}`;
+    tmpBase = mkdtempSync(join(tmpdir(), "kandelo-git-http-"));
+    guestRoot = join(tmpBase, "guest");
+    mkdirSync(guestRoot);
     const workDir = `${tmpBase}/work`;
     const bareRepoDir = `${tmpBase}/repo.git`;
 
@@ -185,66 +231,81 @@ describe.skipIf(!hasGit || !hasGitRemoteHttp)("Git HTTP clone", () => {
 
   afterAll(() => {
     httpServer?.close();
-    try { rmSync(tmpBase, { recursive: true, force: true }); } catch { /* ignore */ }
-  });
-
-  it("clones a repository via HTTP (dumb protocol)", { timeout: 60_000 }, async () => {
-    const io = new NodePlatformIO();
-    (io as any).network = new FetchNetworkBackend({
-      hostAliases: { [hostAlias]: "127.0.0.1" },
-    });
-
-    const cloneDir = `/tmp/git-clone-http-${Date.now()}`;
-
-    // Git's prepare_cmd() resolves helper commands via locate_in_PATH(),
-    // which uses access() against the host filesystem.  We create a
-    // temporary GIT_EXEC_PATH with placeholder executables so that
-    // access() succeeds, then register those paths in execPrograms so
-    // the kernel's exec handler maps them to the correct .wasm binary.
-    const gitExecPath = `${tmpBase}/exec`;
-    mkdirSync(gitExecPath, { recursive: true });
-    writeFileSync(join(gitExecPath, "git-remote-http"), "placeholder", { mode: 0o755 });
-    // Also create a "git" placeholder so git can re-exec itself
-    writeFileSync(join(gitExecPath, "git"), "placeholder", { mode: 0o755 });
-
-    const execPrograms = new Map<string, string>([
-      [`${gitExecPath}/git-remote-http`, gitRemoteHttpBinary!],
-      [`${gitExecPath}/git`, gitBinary!],
-      // Fallback paths git may also try
-      ["/usr/libexec/git-core/git-remote-http", gitRemoteHttpBinary!],
-      ["/usr/bin/git-remote-http", gitRemoteHttpBinary!],
-      ["/usr/bin/git", gitBinary!],
-    ]);
-
-    const cloneEnv = [
-      ...gitEnv,
-      `GIT_EXEC_PATH=${gitExecPath}`,
-    ];
-
-    const result = await runCentralizedProgram({
-      programPath: gitBinary!,
-      argv: ["git", "clone", `http://${hostAlias}:${httpPort}/`, cloneDir],
-      env: cloneEnv,
-      io,
-      execPrograms,
-      timeout: 60_000,
-    });
-
-    const output = result.stdout + result.stderr;
-    if (result.exitCode !== 0) {
-      console.error("Git clone failed with exit code:", result.exitCode);
-      console.error("stdout:", result.stdout);
-      console.error("stderr:", result.stderr);
+    try {
+      rmSync(tmpBase, { recursive: true, force: true });
+    } catch {
+      /* ignore */
     }
-    expect(result.exitCode).toBe(0);
-    expect(output).toContain("Cloning into");
-
-    // Verify the cloned repo has the expected file
-    expect(existsSync(join(cloneDir, ".git"))).toBe(true);
-    const testFile = readFileSync(join(cloneDir, "test.txt"), "utf-8");
-    expect(testFile.trim()).toBe("hello from kandelo");
-
-    // Cleanup
-    try { rmSync(cloneDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
+
+  it(
+    "clones a repository via HTTP (dumb protocol)",
+    { timeout: 60_000 },
+    async () => {
+      const io = createOwnedGuestIo(guestRoot);
+      io.network = new FetchNetworkBackend({
+        hostAliases: { [hostAlias]: "127.0.0.1" },
+      });
+
+      const cloneDir = `/clone-${Date.now()}`;
+      const cloneHostDir = join(guestRoot, cloneDir.slice(1));
+
+      // Git's prepare_cmd() resolves helper commands via locate_in_PATH(),
+      // which uses access() against the host filesystem.  We create a
+      // temporary GIT_EXEC_PATH with placeholder executables so that
+      // access() succeeds, then register those paths in execPrograms so
+      // the kernel's exec handler maps them to the correct .wasm binary.
+      const gitExecPath = "/exec";
+      const hostGitExecPath = join(guestRoot, "exec");
+      mkdirSync(hostGitExecPath, { recursive: true });
+      writeFileSync(join(hostGitExecPath, "git-remote-http"), "placeholder", {
+        mode: 0o755,
+      });
+      // Also create a "git" placeholder so git can re-exec itself
+      writeFileSync(join(hostGitExecPath, "git"), "placeholder", {
+        mode: 0o755,
+      });
+
+      const execPrograms = new Map<string, string>([
+        [`${gitExecPath}/git-remote-http`, gitRemoteHttpBinary!],
+        [`${gitExecPath}/git`, gitBinary!],
+        // Fallback paths git may also try
+        ["/usr/libexec/git-core/git-remote-http", gitRemoteHttpBinary!],
+        ["/usr/bin/git-remote-http", gitRemoteHttpBinary!],
+        ["/usr/bin/git", gitBinary!],
+      ]);
+
+      const cloneEnv = [...gitEnv, `GIT_EXEC_PATH=${gitExecPath}`];
+
+      const result = await runCentralizedProgram({
+        programPath: gitBinary!,
+        argv: ["git", "clone", `http://${hostAlias}:${httpPort}/`, cloneDir],
+        env: cloneEnv,
+        io,
+        execPrograms,
+        timeout: 60_000,
+      });
+
+      const output = result.stdout + result.stderr;
+      if (result.exitCode !== 0) {
+        console.error("Git clone failed with exit code:", result.exitCode);
+        console.error("stdout:", result.stdout);
+        console.error("stderr:", result.stderr);
+      }
+      expect(result.exitCode).toBe(0);
+      expect(output).toContain("Cloning into");
+
+      // Verify the cloned repo has the expected file
+      expect(existsSync(join(cloneHostDir, ".git"))).toBe(true);
+      const testFile = readFileSync(join(cloneHostDir, "test.txt"), "utf-8");
+      expect(testFile.trim()).toBe("hello from kandelo");
+
+      // Cleanup
+      try {
+        rmSync(cloneHostDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    },
+  );
 });

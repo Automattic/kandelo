@@ -11,6 +11,7 @@
 #include <sys/sysinfo.h>
 #include <sys/time.h>
 #include <sys/uio.h>
+#include <sys/un.h>
 
 #define ASSERT_OFFSET(type, field, expected) \
 	_Static_assert(offsetof(type, field) == (expected), #type "." #field)
@@ -23,6 +24,17 @@ _Static_assert(SOL_SOCKET == KANDELO_SOCKET_SOL_SOCKET,
 	       "generated SOL_SOCKET value");
 _Static_assert(SCM_RIGHTS == KANDELO_SOCKET_SCM_RIGHTS,
 	       "generated SCM_RIGHTS value");
+_Static_assert(sizeof(struct sockaddr_storage) ==
+	       KANDELO_SOCKADDR_STORAGE_BYTES,
+	       "generated sockaddr_storage size");
+ASSERT_OFFSET(struct sockaddr_storage, ss_family, 0);
+_Static_assert(sizeof(struct sockaddr_un) == KANDELO_SOCKADDR_UNIX_BYTES,
+	       "generated sockaddr_un size");
+ASSERT_OFFSET(struct sockaddr_un, sun_path,
+	      KANDELO_SOCKADDR_UNIX_PATH_OFFSET_BYTES);
+_Static_assert(sizeof(((struct sockaddr_un *)0)->sun_path) ==
+	       KANDELO_SOCKADDR_UNIX_PATH_BYTES,
+	       "generated sockaddr_un sun_path size");
 _Static_assert(FD_SETSIZE == KANDELO_SELECT_FD_SETSIZE,
 	       "generated FD_SETSIZE");
 _Static_assert(sizeof(fd_set) == KANDELO_SELECT_FD_SET_BYTES,

@@ -12,6 +12,7 @@ inputs = [
   "tools/mkrootfs/package-lock.json",
   "tools/mkrootfs/tsconfig.json",
   "tools/mkrootfs/src",
+  "host/src/file-offset.ts",
   "host/src/generated/abi.ts",
   "host/src/homebrew-bottle-relocation.ts",
   "host/src/homebrew-guest-layout.ts",

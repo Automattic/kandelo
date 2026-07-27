@@ -2,9 +2,11 @@
 //!
 //! A single kernel instance manages all processes via `kernel_handle_channel`.
 //! Process state lives in `PROCESS_TABLE`. User programs use channel IPC
-//! (`channel_syscall.c`) instead of direct kernel imports. The direct
-//! `kernel_*` exports remain for compatibility with older host adapters and
-//! tests, but they also resolve process state through `PROCESS_TABLE`.
+//! (`channel_syscall.c`) instead of direct kernel imports. Fixed-size and
+//! ownership-explicit `kernel_*` exports remain for host adapters and tests,
+//! but variable-sized scalar/vector I/O is private to bounded channel or
+//! tokenized transfer dispatch. All adapters resolve process state through
+//! `PROCESS_TABLE`.
 //!
 //! This module declares:
 //! 1. Host function imports (functions the host must provide).
@@ -19,20 +21,24 @@ use core::mem::{align_of, offset_of, size_of};
 use core::slice;
 
 use wasm_posix_shared::{
-    Errno, KernelWaitResult, WasmDirent, WasmStat, WasmStatfs, WasmTimespec, platform_limits,
+    abi::extended_syscalls as syscall_numbers,
+    channel_scalar::{self, ChannelResultKind},
+    platform_limits, Errno, KernelWaitResult, WasmDirent, WasmStat, WasmStatfs, WasmTimespec,
 };
 
+use crate::channel_result::{checked_mmap_byte_offset, ChannelDispatchOutcome};
 use crate::channel_scratch::{
-    ChannelScratchRegion, checked_cstr_len, validate_channel_scratch_arguments,
+    checked_cstr_len, validate_channel_scratch_arguments, ChannelScratchRegion,
 };
 use crate::ofd::FileType;
 use crate::process::{
-    HostIO, Process, ProcessState, StdioConfig, StdioKind, normalize_posix_timer_signo,
+    normalize_posix_timer_signo, HostAppendOutcome, HostIO, Process, ProcessState, StdioConfig,
+    StdioKind,
 };
 use crate::signal::{
-    DefaultSignalOutcome, apply_default_signal_action_with_locks,
-    deliver_pending_signals_for_tid_with_locks, deliver_pending_signals_with_locks,
-    dequeue_signal_for, terminate_process_by_signal_with_locks,
+    apply_default_signal_action_with_locks, deliver_pending_signals_for_tid_with_locks,
+    deliver_pending_signals_with_locks, dequeue_signal_for, terminate_process_by_signal_with_locks,
+    DefaultSignalOutcome,
 };
 use crate::socket_wire::validate_canonical_message_iov_len;
 use crate::syscalls;
@@ -48,6 +54,28 @@ unsafe extern "C" {
     fn host_close(handle: i64) -> i32;
     fn host_read(handle: i64, buf_ptr: *mut u8, buf_len: u32) -> i32;
     fn host_write(handle: i64, buf_ptr: *const u8, buf_len: u32) -> i32;
+    fn host_append(
+        handle: i64,
+        buf_ptr: *const u8,
+        buf_len: u32,
+        limit_lo: u32,
+        limit_hi: i32,
+    ) -> i32;
+    fn host_append_position(handle: i64, written: u32) -> i64;
+    fn host_pread(
+        handle: i64,
+        buf_ptr: *mut u8,
+        buf_len: u32,
+        offset_lo: u32,
+        offset_hi: i32,
+    ) -> i32;
+    fn host_pwrite(
+        handle: i64,
+        buf_ptr: *const u8,
+        buf_len: u32,
+        offset_lo: u32,
+        offset_hi: i32,
+    ) -> i32;
     fn host_seek(handle: i64, offset_lo: u32, offset_hi: i32, whence: u32) -> i64;
     fn host_fstat(handle: i64, stat_ptr: *mut u8) -> i32;
     fn host_stat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32;
@@ -215,7 +243,7 @@ struct WasmHostIO;
 /// Negative means error; the absolute value is the errno code.
 fn i32_to_result(val: i32) -> Result<(), Errno> {
     if val < 0 {
-        match Errno::from_u32((-val) as u32) {
+        match Errno::from_u32(val.unsigned_abs()) {
             Some(e) => Err(e),
             None => Err(Errno::EIO),
         }
@@ -224,17 +252,43 @@ fn i32_to_result(val: i32) -> Result<(), Errno> {
     }
 }
 
+fn checked_host_buffer_len(length: usize) -> Result<u32, Errno> {
+    u32::try_from(length).map_err(|_| Errno::EOVERFLOW)
+}
+
+fn checked_host_transfer_result(result: i32, capacity: usize) -> Result<usize, Errno> {
+    if result < 0 {
+        return match Errno::from_u32(result.unsigned_abs()) {
+            Some(error) => Err(error),
+            None => Err(Errno::EIO),
+        };
+    }
+    let transferred = result as usize;
+    if transferred > capacity {
+        return Err(Errno::EIO);
+    }
+    Ok(transferred)
+}
+
+fn checked_host_i64_result(result: i64) -> Result<i64, Errno> {
+    if result >= 0 {
+        return Ok(result);
+    }
+    let raw_errno = u32::try_from(result.unsigned_abs()).map_err(|_| Errno::EIO)?;
+    match Errno::from_u32(raw_errno) {
+        Some(error) => Err(error),
+        None => Err(Errno::EIO),
+    }
+}
+
+fn split_i64_words(value: i64) -> (u32, i32) {
+    (value as u32, (value >> 32) as i32)
+}
+
 impl HostIO for WasmHostIO {
     fn host_open(&mut self, path: &[u8], flags: u32, mode: u32) -> Result<i64, Errno> {
         let result = unsafe { host_open(path.as_ptr(), path.len() as u32, flags, mode) };
-        if result < 0 {
-            match Errno::from_u32((-result) as u32) {
-                Some(e) => Err(e),
-                None => Err(Errno::EIO),
-            }
-        } else {
-            Ok(result)
-        }
+        checked_host_i64_result(result)
     }
 
     fn host_close(&mut self, handle: i64) -> Result<(), Errno> {
@@ -243,41 +297,63 @@ impl HostIO for WasmHostIO {
     }
 
     fn host_read(&mut self, handle: i64, buf: &mut [u8]) -> Result<usize, Errno> {
-        let result = unsafe { host_read(handle, buf.as_mut_ptr(), buf.len() as u32) };
-        if result < 0 {
-            match Errno::from_u32((-result) as u32) {
-                Some(e) => Err(e),
-                None => Err(Errno::EIO),
-            }
-        } else {
-            Ok(result as usize)
-        }
+        let capacity = checked_host_buffer_len(buf.len())?;
+        let result = unsafe { host_read(handle, buf.as_mut_ptr(), capacity) };
+        checked_host_transfer_result(result, buf.len())
     }
 
     fn host_write(&mut self, handle: i64, buf: &[u8]) -> Result<usize, Errno> {
-        let result = unsafe { host_write(handle, buf.as_ptr(), buf.len() as u32) };
-        if result < 0 {
-            match Errno::from_u32((-result) as u32) {
-                Some(e) => Err(e),
-                None => Err(Errno::EIO),
-            }
-        } else {
-            Ok(result as usize)
-        }
+        let capacity = checked_host_buffer_len(buf.len())?;
+        let result = unsafe { host_write(handle, buf.as_ptr(), capacity) };
+        checked_host_transfer_result(result, buf.len())
+    }
+
+    fn host_append(
+        &mut self,
+        handle: i64,
+        buf: &[u8],
+        limit: Option<u64>,
+    ) -> Result<HostAppendOutcome, Errno> {
+        let capacity = checked_host_buffer_len(buf.len())?;
+        // A finite u64 ceiling above signed off_t cannot constrain a
+        // representable file position, so encode it as the unlimited sentinel.
+        let encoded_limit = limit
+            .and_then(|value| i64::try_from(value).ok())
+            .unwrap_or(-1);
+        let (limit_lo, limit_hi) = split_i64_words(encoded_limit);
+        let result = unsafe { host_append(handle, buf.as_ptr(), capacity, limit_lo, limit_hi) };
+        let written = checked_host_transfer_result(result, buf.len())?;
+        let written_u32 = u32::try_from(written).map_err(|_| Errno::EIO)?;
+        // WHY: the JavaScript host binds this scalar query to the immediately
+        // preceding successful append by handle and count, then consumes it.
+        // This avoids an additional host write into kernel Wasm memory.
+        let end = unsafe { host_append_position(handle, written_u32) };
+        let end = checked_host_i64_result(end)?;
+        Ok(HostAppendOutcome {
+            written,
+            end: u64::try_from(end).map_err(|_| Errno::EIO)?,
+        })
+    }
+
+    fn host_pread(&mut self, handle: i64, buf: &mut [u8], offset: i64) -> Result<usize, Errno> {
+        let capacity = checked_host_buffer_len(buf.len())?;
+        let (offset_lo, offset_hi) = split_i64_words(offset);
+        let result =
+            unsafe { host_pread(handle, buf.as_mut_ptr(), capacity, offset_lo, offset_hi) };
+        checked_host_transfer_result(result, buf.len())
+    }
+
+    fn host_pwrite(&mut self, handle: i64, buf: &[u8], offset: i64) -> Result<usize, Errno> {
+        let capacity = checked_host_buffer_len(buf.len())?;
+        let (offset_lo, offset_hi) = split_i64_words(offset);
+        let result = unsafe { host_pwrite(handle, buf.as_ptr(), capacity, offset_lo, offset_hi) };
+        checked_host_transfer_result(result, buf.len())
     }
 
     fn host_seek(&mut self, handle: i64, offset: i64, whence: u32) -> Result<i64, Errno> {
-        let offset_lo = offset as u32;
-        let offset_hi = (offset >> 32) as i32;
+        let (offset_lo, offset_hi) = split_i64_words(offset);
         let result = unsafe { host_seek(handle, offset_lo, offset_hi, whence) };
-        if result < 0 {
-            match Errno::from_u32((-result) as u32) {
-                Some(e) => Err(e),
-                None => Err(Errno::EIO),
-            }
-        } else {
-            Ok(result)
-        }
+        checked_host_i64_result(result)
     }
 
     fn host_fstat(&mut self, handle: i64) -> Result<WasmStat, Errno> {
@@ -1137,6 +1213,30 @@ unsafe fn get_process_and_advisory_locks() -> (
     }
 }
 
+/// Get the current TID and its disjoint process/lock references from one
+/// process-table borrow.
+///
+/// WHY: obtaining `&mut Process` and then calling the global `current_tid()`
+/// helper would reborrow the ProcessTable that owns that live reference.
+#[inline]
+unsafe fn get_process_tid_and_advisory_locks() -> (
+    GklGuard,
+    u32,
+    &'static mut Process,
+    &'static mut crate::lock::AdvisoryLockManager,
+) {
+    let guard = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let tid = table.current_tid();
+    match table.current_process_and_advisory_locks() {
+        Some((process, locks)) => (guard, tid, process, locks),
+        #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
+        None => unsafe { core::hint::unreachable_unchecked() },
+        #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+        None => panic!("no current process in table"),
+    }
+}
+
 /// Finish machine-wide SCM_RIGHTS releases, if any, at an exported operation
 /// boundary.
 ///
@@ -1150,10 +1250,7 @@ fn finish_machine_scm_rights_cleanup_if_pending() {
         let _gkl = GklGuard::acquire();
         let table = unsafe { &mut *PROCESS_TABLE.0.get() };
         let mut host = WasmHostIO;
-        syscalls::finish_scm_rights_cleanup(
-            table.advisory_locks_mut(),
-            &mut host,
-        );
+        syscalls::finish_scm_rights_cleanup(table.advisory_locks_mut(), &mut host);
     });
 }
 
@@ -1241,6 +1338,41 @@ pub extern "C" fn kernel_alloc_scratch(size: u32) -> usize {
         return 0;
     }
     ptr as usize
+}
+
+/// Begin one exclusive initialized reservation for a large I/O payload.
+///
+/// Returns a positive opaque token on success or a negated errno on failure.
+/// The host must query pointer and capacity while the token is Reserved, then
+/// either execute it once or cancel it.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_transfer_scratch_begin(minimum_capacity: usize) -> i64 {
+    match crate::transfer::begin_transfer_scratch(minimum_capacity) {
+        Ok(token) => token,
+        Err(error) => -(error as i64),
+    }
+}
+
+/// Pointer owned by exactly the Reserved large-I/O token, or zero otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_transfer_scratch_pointer(token: i64) -> usize {
+    crate::transfer::transfer_scratch_pointer(token).unwrap_or(0)
+}
+
+/// Initialized writable capacity owned by exactly the Reserved large-I/O
+/// token, or zero otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_transfer_scratch_capacity(token: i64) -> usize {
+    crate::transfer::transfer_scratch_capacity(token).unwrap_or(0)
+}
+
+/// Drop the allocation owned by exactly the Reserved or Ready token.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_transfer_scratch_cancel(token: i64) -> i32 {
+    match crate::transfer::cancel_transfer_scratch(token) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
 }
 
 /// Begin one exclusive host-write reservation for a complete SYS_SPAWN blob.
@@ -2023,7 +2155,11 @@ pub extern "C" fn kernel_thread_has_deliverable(pid: u32, tid: u32) -> i32 {
             if !proc.is_live_explicit_tid(tid) {
                 return -(Errno::ESRCH as i32);
             }
-            if proc.deliverable_for(tid) != 0 { 1 } else { 0 }
+            if proc.deliverable_for(tid) != 0 {
+                1
+            } else {
+                0
+            }
         }
         None => -(Errno::ESRCH as i32),
     }
@@ -2282,11 +2418,10 @@ pub extern "C" fn kernel_dequeue_signal(
     out_ptr: *mut u8,
     out_capacity: u32,
 ) -> i32 {
-    use crate::signal::{SignalHandler, sig_bit};
+    use crate::signal::{sig_bit, SignalHandler};
     use wasm_posix_shared::kernel_scratch_wire as signal_wire;
 
-    if let Err(error) =
-        crate::process_wire::validate_signal_delivery_output(out_ptr, out_capacity)
+    if let Err(error) = crate::process_wire::validate_signal_delivery_output(out_ptr, out_capacity)
     {
         return -(error as i32);
     }
@@ -2363,10 +2498,7 @@ pub extern "C" fn kernel_dequeue_signal(
                     },
                 );
                 let buf = unsafe {
-                    slice::from_raw_parts_mut(
-                        out_ptr,
-                        signal_wire::SIGNAL_DELIVERY_BYTES as usize,
-                    )
+                    slice::from_raw_parts_mut(out_ptr, signal_wire::SIGNAL_DELIVERY_BYTES as usize)
                 };
                 buf.copy_from_slice(&encoded);
                 return signum as i32;
@@ -2518,37 +2650,157 @@ fn mq_timed_blocking_errno(timeout_ptr: usize, nonblock: bool) -> i32 {
     eagain
 }
 
-/// Helper wrapping [`mq_timed_blocking_errno`] that resolves the non-blocking
-/// flag from the mqueue table for a given descriptor.
-fn mq_would_block_result(timeout_ptr: usize, table: &crate::mqueue::MqueueTable, mqd: u32) -> i32 {
-    let nonblock = table.is_nonblock(mqd).unwrap_or(false);
-    mq_timed_blocking_errno(timeout_ptr, nonblock)
+fn activate_blocking_retry_for_current_task(
+    syscall_nr: u32,
+    retry_token: i64,
+) -> Result<(), Errno> {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let tid = table.current_tid();
+    let proc = table.current_process().ok_or(Errno::ESRCH)?;
+    proc.blocked_retries.begin_dispatch(tid)?;
+    let activation = if retry_token == 0 {
+        if proc.blocked_retries.has_binding_for_tid(tid) {
+            Err(Errno::EBUSY)
+        } else {
+            Ok(())
+        }
+    } else if retry_token < 0 {
+        Err(Errno::EINVAL)
+    } else {
+        match crate::blocked_retry::BlockingRetryOperation::from_syscall(syscall_nr) {
+            Ok(operation) => proc.blocked_retries.activate(tid, retry_token, operation),
+            Err(error) => Err(error),
+        }
+    };
+    if activation.is_err() {
+        proc.blocked_retries.clear_dispatch();
+    }
+    activation
 }
 
-/// Dispatches to the appropriate kernel function, then writes:
-///   - return value (i64) at offset+56
-///   - errno (i32) at offset+64
+fn retain_blocking_retry_target(syscall_nr: u32, args: &[i64; 6]) -> Result<(), Errno> {
+    let Ok(operation) = crate::blocked_retry::BlockingRetryOperation::from_syscall(syscall_nr)
+    else {
+        return Ok(());
+    };
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let tid = table.current_tid();
+    let (proc, locks) = table
+        .current_process_and_advisory_locks()
+        .ok_or(Errno::ESRCH)?;
+    let mut host = WasmHostIO;
+    match operation {
+        crate::blocked_retry::BlockingRetryOperation::Read
+        | crate::blocked_retry::BlockingRetryOperation::Write
+        | crate::blocked_retry::BlockingRetryOperation::Fcntl
+        | crate::blocked_retry::BlockingRetryOperation::Pread
+        | crate::blocked_retry::BlockingRetryOperation::Pwrite
+        | crate::blocked_retry::BlockingRetryOperation::Accept
+        | crate::blocked_retry::BlockingRetryOperation::Connect
+        | crate::blocked_retry::BlockingRetryOperation::Send
+        | crate::blocked_retry::BlockingRetryOperation::Recv
+        | crate::blocked_retry::BlockingRetryOperation::Sendto
+        | crate::blocked_retry::BlockingRetryOperation::Recvfrom
+        | crate::blocked_retry::BlockingRetryOperation::Recvmsg
+        | crate::blocked_retry::BlockingRetryOperation::Flock => {
+            syscalls::ensure_blocking_retry_ofd_binding(
+                proc,
+                locks,
+                &mut host,
+                tid,
+                syscall_nr,
+                args[0] as i32,
+                None,
+            )?;
+        }
+        crate::blocked_retry::BlockingRetryOperation::Sendfile => {
+            syscalls::ensure_blocking_retry_ofd_pair_binding(
+                proc,
+                locks,
+                &mut host,
+                tid,
+                syscall_nr,
+                args[1] as i32,
+                args[0] as i32,
+            )?;
+        }
+        crate::blocked_retry::BlockingRetryOperation::CopyFileRange
+        | crate::blocked_retry::BlockingRetryOperation::Splice => {
+            syscalls::ensure_blocking_retry_ofd_pair_binding(
+                proc,
+                locks,
+                &mut host,
+                tid,
+                syscall_nr,
+                args[0] as i32,
+                args[2] as i32,
+            )?;
+        }
+        // kernel_sendmsg retains its SCM_RIGHTS template while the complete
+        // canonical control wire is still available.
+        crate::blocked_retry::BlockingRetryOperation::Sendmsg => return Ok(()),
+        crate::blocked_retry::BlockingRetryOperation::MqSend
+        | crate::blocked_retry::BlockingRetryOperation::MqReceive => {
+            syscalls::ensure_blocking_retry_mqueue_binding(proc, tid, syscall_nr, args[0] as i32)?;
+        }
+        crate::blocked_retry::BlockingRetryOperation::MsgSend
+        | crate::blocked_retry::BlockingRetryOperation::MsgReceive => {
+            syscalls::ensure_blocking_retry_sysv_message_binding(
+                proc,
+                tid,
+                syscall_nr,
+                args[0] as i32,
+            )?;
+        }
+        crate::blocked_retry::BlockingRetryOperation::Semop => {
+            syscalls::ensure_blocking_retry_sysv_semaphore_binding(
+                proc,
+                tid,
+                syscall_nr,
+                args[0] as i32,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Dispatch one already-owned widened-channel allocation.
 ///
-/// Returns the raw syscall result (also written to channel).
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_handle_channel(
+/// `allocation_capacity` covers the header and the complete initialized data
+/// area. The ordinary public export keeps its exact fixed-capacity ABI below;
+/// the tokenized large-channel export can call this same implementation with a
+/// larger Rust-owned allocation without weakening that public boundary.
+fn handle_owned_channel_allocation(
     offset: usize,
-    capacity: u32,
+    allocation_capacity: usize,
     pid: u32,
+    retry_token: i64,
 ) -> i32 {
     use wasm_posix_shared::channel::*;
 
-    if capacity as usize != MIN_CHANNEL_SIZE {
+    if offset == 0 || allocation_capacity < MIN_CHANNEL_SIZE {
         unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
-        return -(Errno::EINVAL as i32);
+        return -(if offset == 0 {
+            Errno::EFAULT
+        } else {
+            Errno::EINVAL
+        } as i32);
     }
-    let scratch_region = match ChannelScratchRegion::for_channel(offset) {
-        Ok(region) => region,
-        Err(error) => {
+    let scratch_start = match offset.checked_add(DATA_OFFSET) {
+        Some(start) => start,
+        None => {
             unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
-            return -(error as i32);
+            return -(Errno::EFAULT as i32);
         }
     };
+    let scratch_region =
+        match ChannelScratchRegion::new(scratch_start, allocation_capacity - DATA_OFFSET) {
+            Ok(region) => region,
+            Err(error) => {
+                unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
+                return -(error as i32);
+            }
+        };
 
     // Every mailbox call consumes an explicit kernel-validated task binding
     // installed by kernel_set_current_tid. Missing or stale ambient state must
@@ -2565,7 +2817,7 @@ pub extern "C" fn kernel_handle_channel(
         // mutate the same channel allocation through rewritten pointer args.
         let mem = unsafe {
             let ptr = base as *const u8;
-            core::slice::from_raw_parts(ptr, MIN_CHANNEL_SIZE)
+            core::slice::from_raw_parts(ptr, DATA_OFFSET)
         };
         let syscall_nr = u32::from_le_bytes([
             mem[SYSCALL_OFFSET],
@@ -2599,11 +2851,41 @@ pub extern "C" fn kernel_handle_channel(
     // kernel memory terms. The JS layer sets pointer args as absolute
     // kernel-memory addresses, so we pass them through unchanged.
 
-    let result = if has_task_binding {
-        dispatch_channel_syscall(syscall_nr, &args, scratch_region)
+    let activation = if has_task_binding {
+        activate_blocking_retry_for_current_task(syscall_nr, retry_token)
     } else {
-        -(Errno::ESRCH as i32)
+        Err(Errno::ESRCH)
     };
+    let mut outcome = if let Err(error) = activation {
+        ChannelDispatchOutcome::narrow(-(error as i32))
+    } else {
+        match channel_scalar::result_kind(syscall_nr) {
+            ChannelResultKind::I64 | ChannelResultKind::ProcessAddress => {
+                dispatch_channel_wide_result(syscall_nr, &args, scratch_region)
+            }
+            ChannelResultKind::I32 => ChannelDispatchOutcome::narrow(dispatch_channel_syscall(
+                syscall_nr,
+                &args,
+                scratch_region,
+            )),
+        }
+    };
+    if crate::blocked_retry::result_needs_target(syscall_nr, outcome.channel_errno) {
+        // connect(2) exposes EINPROGRESS/EALREADY while a host TCP handshake
+        // is pending instead of leaking HostIO's internal EAGAIN sentinel.
+        // Pin before returning to JavaScript anyway: the host may sleep and
+        // retry a blocking socket, and close+reuse must not redirect it.
+        if let Err(error) = retain_blocking_retry_target(syscall_nr, &args) {
+            outcome = ChannelDispatchOutcome::narrow(-(error as i32));
+        }
+    }
+    if has_task_binding {
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        if let Some(proc) = table.current_process() {
+            proc.blocked_retries.clear_active();
+            proc.blocked_retries.clear_dispatch();
+        }
+    }
     // Consume ambient task authority before cleanup can invoke a host close
     // callback. Cleanup needs no process identity, and a callback trap must
     // not leave a stale binding available to a later dispatch.
@@ -2617,24 +2899,35 @@ pub extern "C" fn kernel_handle_channel(
     // Write result back to channel
     let out = unsafe {
         let ptr = base as *mut u8;
-        core::slice::from_raw_parts_mut(ptr, MIN_CHANNEL_SIZE)
+        core::slice::from_raw_parts_mut(ptr, DATA_OFFSET)
     };
 
-    let ret_val: i64;
-    let errno_val: u32;
-    if result < 0 {
-        // Negative result: the absolute value is the errno
-        ret_val = -1;
-        errno_val = (-result) as u32;
-    } else {
-        ret_val = result as i64;
-        errno_val = 0;
+    out[RETURN_OFFSET..RETURN_OFFSET + 8].copy_from_slice(&outcome.channel_result.to_le_bytes());
+    out[ERRNO_OFFSET..ERRNO_OFFSET + 4].copy_from_slice(&outcome.channel_errno.to_le_bytes());
+
+    outcome.export_result
+}
+
+/// Dispatches to the appropriate kernel function, then writes:
+///   - return value (i64) at offset+56
+///   - errno (i32) at offset+64
+///
+/// Returns the legacy i32 syscall mirror. The channel is authoritative for
+/// results wider than i32.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_handle_channel(
+    scratch_ptr: usize,
+    capacity: u32,
+    pid: u32,
+    retry_token: i64,
+) -> i32 {
+    use wasm_posix_shared::channel::MIN_CHANNEL_SIZE;
+
+    if capacity as usize != MIN_CHANNEL_SIZE {
+        unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
+        return -(Errno::EINVAL as i32);
     }
-
-    out[RETURN_OFFSET..RETURN_OFFSET + 8].copy_from_slice(&ret_val.to_le_bytes());
-    out[ERRNO_OFFSET..ERRNO_OFFSET + 4].copy_from_slice(&errno_val.to_le_bytes());
-
-    result
+    handle_owned_channel_allocation(scratch_ptr, capacity as usize, pid, retry_token)
 }
 
 /// Convert a raw widened-channel pointer without first narrowing it through
@@ -2648,17 +2941,7 @@ pub extern "C" fn kernel_handle_channel(
 /// the checked `usize` conversion rejects values that cannot fit the kernel
 /// Wasm target (notably a wasm64 value presented to a wasm32 kernel).
 fn checked_channel_pointer_bits(raw: i64, pointer_bits: u32) -> Result<u64, Errno> {
-    let pointer = raw as u64;
-    let max_pointer = match pointer_bits {
-        32 => u32::MAX as u64,
-        64 => u64::MAX,
-        _ => return Err(Errno::EFAULT),
-    };
-    if pointer > max_pointer {
-        Err(Errno::EFAULT)
-    } else {
-        Ok(pointer)
-    }
+    channel_scalar::process_size_for_pointer_bits(raw as u64, pointer_bits).ok_or(Errno::EFAULT)
 }
 
 fn checked_channel_pointer(raw: i64) -> Result<usize, Errno> {
@@ -2666,12 +2949,33 @@ fn checked_channel_pointer(raw: i64) -> Result<usize, Errno> {
     usize::try_from(pointer).map_err(|_| Errno::EFAULT)
 }
 
-/// Preserve the dispatcher's established i32 interpretation for scalar
-/// count/length fields that are subsequently passed to a `usize` API.
+/// Prove that a raw widened-channel pointer names the start of the current
+/// allocation and that the complete requested range belongs to it.
 ///
-/// Pointer fields must never use this helper.
-fn channel_i32_scalar_usize(value: i32) -> usize {
-    value as usize
+/// WHY: SEMCTL's command-dependent payload cannot use the generated fixed
+/// descriptor plan, but it must not regain a bare pointer conversion that
+/// proves only total Wasm addressability. The allocation start and capacity
+/// remain independent requirements.
+fn checked_channel_scratch_start_range(
+    raw: i64,
+    length: usize,
+    region: ChannelScratchRegion,
+) -> Result<usize, Errno> {
+    let pointer = checked_channel_pointer(raw)?;
+    region.checked_start_range(pointer, length)?;
+    Ok(pointer)
+}
+
+fn checked_channel_process_address(
+    syscall_number: u32,
+    args: &[i64; 6],
+    index: usize,
+) -> Result<usize, Errno> {
+    checked_channel_pointer(channel_scalar::process_address_argument(
+        syscall_number,
+        args,
+        index,
+    ))
 }
 
 /// Zero-extend a scalar u32 count/length into the kernel target's `usize`.
@@ -2681,8 +2985,114 @@ fn channel_u32_scalar_usize(value: i32) -> usize {
     usize::try_from(value as u32).expect("all supported kernel targets represent u32")
 }
 
-fn checked_channel_usize_scalar(raw: i64) -> Result<usize, Errno> {
-    usize::try_from(raw).map_err(|_| Errno::EINVAL)
+fn checked_process_size_bits(raw: u64, pointer_bits: u32) -> Result<u64, Errno> {
+    channel_scalar::process_size_for_pointer_bits(raw, pointer_bits).ok_or(Errno::EINVAL)
+}
+
+fn checked_channel_process_size(
+    syscall_number: u32,
+    args: &[i64; 6],
+    index: usize,
+) -> Result<usize, Errno> {
+    // WHY: getBigInt64/setBigInt64 transports the physical 64 bits through a
+    // signed i64. Reinterpret before the width check so a valid wasm64 size_t
+    // with bit 63 set is not mistaken for a negative length.
+    let raw = channel_scalar::process_size_argument(syscall_number, args, index);
+    let value = checked_process_size_bits(raw, usize::BITS)?;
+    usize::try_from(value).map_err(|_| Errno::EINVAL)
+}
+
+fn reportable_channel_transfer_count(requested: usize) -> usize {
+    channel_scalar::reportable_transfer_count(requested as u64) as usize
+}
+
+fn dispatch_channel_lseek(args: &[i64; 6], scratch_region: ChannelScratchRegion) -> i64 {
+    if let Err(error) = unsafe { validate_channel_scratch_arguments(5, args, scratch_region) } {
+        return -(error as i64);
+    }
+    kernel_lseek(
+        args[0] as i32,
+        channel_scalar::split_i64_low_argument(5, args, 1),
+        channel_scalar::split_i64_high_argument(5, args, 2),
+        args[3] as u32,
+    )
+}
+
+fn dispatch_channel_mmap(
+    args: &[i64; 6],
+    scratch_region: ChannelScratchRegion,
+) -> Result<usize, Errno> {
+    unsafe { validate_channel_scratch_arguments(46, args, scratch_region) }?;
+    let byte_offset = checked_mmap_byte_offset(channel_scalar::i64_argument(46, args, 5))?;
+    let address = checked_channel_process_address(46, args, 0)?;
+    let length = checked_channel_process_size(46, args, 1)?;
+    let protection = args[2] as u32;
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let mut host = WasmHostIO;
+    let result = syscalls::sys_mmap(
+        proc,
+        &mut host,
+        address,
+        length,
+        protection,
+        args[3] as u32,
+        args[4] as i32,
+        byte_offset,
+    );
+    if let Ok(mapped_address) = result {
+        if protection != 0 {
+            ensure_memory_covers(mapped_address.saturating_add(length));
+        }
+    }
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
+}
+
+fn dispatch_channel_mremap(
+    args: &[i64; 6],
+    scratch_region: ChannelScratchRegion,
+) -> Result<usize, Errno> {
+    unsafe { validate_channel_scratch_arguments(126, args, scratch_region) }?;
+    let old_address = checked_channel_process_address(126, args, 0)?;
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let mut host = WasmHostIO;
+    let result = syscalls::sys_mremap(
+        proc,
+        old_address,
+        checked_channel_process_size(126, args, 1)?,
+        checked_channel_process_size(126, args, 2)?,
+        args[3] as u32,
+    );
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
+}
+
+fn dispatch_channel_wide_result(
+    nr: u32,
+    args: &[i64; 6],
+    scratch_region: ChannelScratchRegion,
+) -> ChannelDispatchOutcome {
+    match (nr, channel_scalar::result_kind(nr)) {
+        (5, ChannelResultKind::I64) => {
+            ChannelDispatchOutcome::exact(dispatch_channel_lseek(args, scratch_region))
+        }
+        (66, ChannelResultKind::I64) => ChannelDispatchOutcome::exact(kernel_time()),
+        (46, ChannelResultKind::ProcessAddress) => {
+            ChannelDispatchOutcome::process_address(dispatch_channel_mmap(args, scratch_region))
+        }
+        (48, ChannelResultKind::ProcessAddress) => {
+            let result = unsafe { validate_channel_scratch_arguments(48, args, scratch_region) }
+                .and_then(|_| checked_channel_process_address(48, args, 0))
+                .map(|address| kernel_brk(address));
+            ChannelDispatchOutcome::process_address(result)
+        }
+        (126, ChannelResultKind::ProcessAddress) => {
+            ChannelDispatchOutcome::process_address(dispatch_channel_mremap(args, scratch_region))
+        }
+        (_, kind) => {
+            unreachable!("channel {kind:?} result lacks a dedicated dispatcher for syscall {nr}")
+        }
+    }
 }
 
 // WHY: these exports gained explicit capacities together. Keep their exact
@@ -2690,19 +3100,9 @@ fn checked_channel_usize_scalar(raw: i64) -> Result<usize, Errno> {
 // future pointer-only call or partial signature migration cannot compile.
 const _: extern "C" fn(u32, *mut i32, u32) -> i32 = kernel_pipe2;
 const _: extern "C" fn(u32, u32, u32, *mut i32, u32) -> i32 = kernel_socketpair;
-const _: extern "C" fn(i32, u32, u32, *mut u8, u32, *mut u32, u32) -> i32 =
-    kernel_getsockopt;
+const _: extern "C" fn(i32, u32, u32, *mut u8, u32, *mut u32, u32) -> i32 = kernel_getsockopt;
 const _: extern "C" fn(*mut u8, u32, u32, i32) -> i32 = kernel_poll;
-const _: extern "C" fn(
-    i32,
-    *mut u8,
-    u32,
-    *mut u8,
-    u32,
-    *mut u8,
-    u32,
-    i32,
-) -> i32 = kernel_select;
+const _: extern "C" fn(i32, *mut u8, u32, *mut u8, u32, *mut u8, u32, i32) -> i32 = kernel_select;
 
 /// Dispatch a syscall by number with raw musl arguments.
 ///
@@ -2721,8 +3121,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         };
 
     // Scalar arguments retain the syscall ABI's existing i32 interpretation.
-    // Pointer arguments must instead use the checked macros below so wasm64
-    // address bits are never lost through these scalar aliases.
+    // Pointer and process-size arguments must instead use the checked macros
+    // below so wasm64 high bits are never lost through these scalar aliases.
     let a1 = args[0] as i32;
     let a2 = args[1] as i32;
     let a3 = args[2] as i32;
@@ -2735,9 +3135,33 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
     // const/mut macros so allocation capacity remains part of their proof.
     macro_rules! process_address {
         ($index:literal) => {
+            match checked_channel_process_address(nr, args, $index) {
+                Ok(pointer) => pointer,
+                Err(error) => return -(error as i32),
+            }
+        };
+    }
+    macro_rules! conditional_process_address {
+        ($index:literal) => {
             match checked_channel_pointer(args[$index]) {
                 Ok(pointer) => pointer,
                 Err(error) => return -(error as i32),
+            }
+        };
+    }
+    macro_rules! process_size {
+        ($index:literal) => {
+            match checked_channel_process_size(nr, args, $index) {
+                Ok(size) => size,
+                Err(error) => return -(error as i32),
+            }
+        };
+    }
+    macro_rules! process_size_u32 {
+        ($index:literal) => {
+            match u32::try_from(process_size!($index)) {
+                Ok(size) => size,
+                Err(_) => return -(Errno::EINVAL as i32),
             }
         };
     }
@@ -2756,6 +3180,51 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 Err(error) => return -(error as i32),
             }
         };
+    }
+    macro_rules! channel_const_slice {
+        ($index:literal, $length:expr) => {{
+            let pointer = match validated_scratch.pointer($index) {
+                Ok(pointer) => pointer,
+                Err(error) => return -(error as i32),
+            };
+            let length: usize = $length;
+            if let Err(error) = scratch_region.checked_range(pointer, length) {
+                return -(error as i32);
+            }
+            // The argument validator and this allocation-capacity check both
+            // run before the private slice-based syscall adapter can observe
+            // the bytes.
+            if length == 0 {
+                // WHY: Rust requires a non-null, aligned pointer even for an
+                // empty raw slice. Keep that language invariant automatic for
+                // every channel transfer instead of relying on each syscall
+                // to remember its own zero-length special case.
+                &[]
+            } else {
+                unsafe { slice::from_raw_parts(pointer as *const u8, length) }
+            }
+        }};
+    }
+    macro_rules! channel_mut_slice {
+        ($index:literal, $length:expr) => {{
+            let pointer = match validated_scratch.pointer($index) {
+                Ok(pointer) => pointer,
+                Err(error) => return -(error as i32),
+            };
+            let length: usize = $length;
+            if let Err(error) = scratch_region.checked_range(pointer, length) {
+                return -(error as i32);
+            }
+            // WHY: a Rust slice, rather than a bare exported pointer, carries
+            // the exact live channel extent into the scalar I/O adapter.
+            if length == 0 {
+                // See channel_const_slice: an ignored zero-length pointer must
+                // never be used to construct a raw Rust slice.
+                &mut []
+            } else {
+                unsafe { slice::from_raw_parts_mut(pointer as *mut u8, length) }
+            }
+        }};
     }
     macro_rules! channel_cstr_len {
         ($pointer:expr) => {{
@@ -2810,12 +3279,16 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 kernel_close(a1)
             }
         }
-        3 => kernel_read(a1, channel_mut_ptr!(1, u8), a3 as u32), // SYS_READ: (fd, buf, count)
-        4 => kernel_write(a1, channel_const_ptr!(1, u8), a3 as u32), // SYS_WRITE: (fd, buf, count)
-        5 => kernel_lseek(a1, a2 as u32, a3, a4 as u32) as i32, // SYS_LSEEK: (fd, off_lo, off_hi, whence)
+        3 => channel_read(a1, channel_mut_slice!(1, process_size!(2))), // SYS_READ: (fd, buf, count)
+        4 => channel_write(a1, channel_const_slice!(1, process_size!(2))), // SYS_WRITE: (fd, buf, count)
         119 => {
             // SYS__LLSEEK: (fd, off_hi, off_lo, result_ptr, whence)
-            let result = kernel_lseek(a1, a3 as u32, a2, a5 as u32);
+            let result = kernel_lseek(
+                a1,
+                channel_scalar::split_i64_low_argument(119, args, 2),
+                channel_scalar::split_i64_high_argument(119, args, 1),
+                a5 as u32,
+            );
             if result < 0 {
                 result as i32
             } else {
@@ -2834,13 +3307,21 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             let stat_pointer = channel_mut_ptr!(1, u8);
             kernel_fstat(a1, stat_pointer)
         }
-        64 => kernel_pread(a1, channel_mut_ptr!(1, u8), a3 as u32, args[3]), // SYS_PREAD: (fd, buf, count, offset)
-        65 => kernel_pwrite(a1, channel_const_ptr!(1, u8), a3 as u32, args[3]), // SYS_PWRITE: (fd, buf, count, offset)
+        64 => channel_pread(
+            a1,
+            channel_mut_slice!(1, process_size!(2)),
+            channel_scalar::i64_argument(64, args, 3),
+        ), // SYS_PREAD: (fd, buf, count, offset)
+        65 => channel_pwrite(
+            a1,
+            channel_const_slice!(1, process_size!(2)),
+            channel_scalar::i64_argument(65, args, 3),
+        ), // SYS_PWRITE: (fd, buf, count, offset)
 
         // FD operations
-        7 => kernel_dup(a1),                                     // SYS_DUP
-        8 => kernel_dup2(a1, a2),                                // SYS_DUP2
-        77 => kernel_dup3(a1, a2, a3 as u32),                    // SYS_DUP3
+        7 => kernel_dup(a1),                        // SYS_DUP
+        8 => kernel_dup2(a1, a2),                   // SYS_DUP2
+        77 => kernel_dup3(a1, a2, a3 as u32),       // SYS_DUP3
         9 => kernel_pipe(channel_mut_ptr!(0, i32)), // SYS_PIPE: (pipefd_ptr)
         78 => kernel_pipe2(
             a2 as u32,
@@ -2925,7 +3406,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             // SYS_READLINK: (path, buf, bufsiz)
             let p = channel_const_ptr!(0, u8);
             let len = channel_cstr_len!(p);
-            kernel_readlink(p, len, channel_mut_ptr!(1, u8), a3 as u32)
+            kernel_readlink(p, len, channel_mut_ptr!(1, u8), process_size_u32!(2))
         }
         20 => {
             // SYS_CHMOD: (path, mode)
@@ -2945,7 +3426,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             let len = channel_cstr_len!(p);
             kernel_access(p, len, a2 as u32)
         }
-        23 => kernel_getcwd(channel_mut_ptr!(0, u8), a2 as u32), // SYS_GETCWD: (buf, size)
+        23 => kernel_getcwd(channel_mut_ptr!(0, u8), process_size_u32!(1)), // SYS_GETCWD: (buf, size)
         24 => {
             // SYS_CHDIR: (path)
             let p = channel_const_ptr!(0, u8);
@@ -2963,10 +3444,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             a1,
             channel_mut_ptr!(1, u8),
             channel_mut_ptr!(2, u8),
-            a4 as u32,
+            process_size_u32!(3),
         ), // SYS_READDIR
         27 => kernel_closedir(a1), // SYS_CLOSEDIR
-        122 => kernel_getdents64(a1, channel_mut_ptr!(1, u8), a3 as u32), // SYS_GETDENTS64
+        122 => kernel_getdents64(a1, channel_mut_ptr!(1, u8), process_size_u32!(2)), // SYS_GETDENTS64
 
         // Process control
         34 => {
@@ -3029,8 +3510,14 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 0
             }
         }
-        73 => kernel_signal(a1 as u32, process_address!(1)), // SYS_SIGNAL
-        39 => kernel_alarm(a1 as u32),                       // SYS_ALARM
+        73 => {
+            let handler = match channel_scalar::exact_u32_argument(73, args, 1) {
+                Some(handler) => handler,
+                None => return -(Errno::EINVAL as i32),
+            };
+            kernel_signal(a1 as u32, handler)
+        } // SYS_SIGNAL
+        39 => kernel_alarm(a1 as u32), // SYS_ALARM
         110 => {
             // SYS_SIGSUSPEND: (mask_ptr, sigsetsize)
             let (mask_lo, mask_hi) = if args[0] != 0 {
@@ -3049,7 +3536,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 let ptr = channel_mut_ptr!(0, u8);
                 unsafe {
                     let bytes = proc
-                        .pending_for(crate::process_table::current_tid())
+                        .pending_for(syscalls::current_tid_for_process(proc))
                         .to_le_bytes();
                     for i in 0..8 {
                         *ptr.add(i) = bytes[i];
@@ -3122,9 +3609,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                         // WHY: encode the complete native object before
                         // replacing the capacity-checked scratch destination.
                         // The host holds one exclusive synchronous lease.
-                        let output = unsafe {
-                            slice::from_raw_parts_mut(p, model.siginfo_size())
-                        };
+                        let output = unsafe { slice::from_raw_parts_mut(p, model.siginfo_size()) };
                         output.copy_from_slice(&encoded);
                     }
                     sig as i32
@@ -3151,54 +3636,12 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             };
             kernel_utimensat(a1, p, len, channel_const_ptr!(2, u8), a4 as u32)
         }
-        66 => kernel_time() as i32,     // SYS_TIME
         68 => kernel_usleep(a1 as u32), // SYS_USLEEP
 
         // Memory
-        46 => {
-            // SYS_MMAP: (addr, len, prot, flags, fd, pgoffset)
-            // musl sends page offset (off / 4096) as a6.
-            // Call sys_mmap directly so the errno reaches the channel
-            // dispatcher — going through kernel_mmap would squash every
-            // Errno variant to MAP_FAILED (usize::MAX), and `as i32`
-            // turns that into -1, which the dispatcher interprets as
-            // -EPERM.
-            let pgoff = a6 as u32;
-            let byte_off = ((pgoff as u64) << 12) as i64;
-            let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-            let mut host = WasmHostIO;
-            let result = match syscalls::sys_mmap(
-                proc,
-                &mut host,
-                process_address!(0),
-                channel_i32_scalar_usize(a2),
-                a3 as u32,
-                a4 as u32,
-                a5,
-                byte_off,
-            ) {
-                Ok(addr) => {
-                    if a3 as u32 != 0 {
-                        let end = addr.saturating_add(channel_i32_scalar_usize(a2));
-                        ensure_memory_covers(end);
-                    }
-                    addr as i32
-                }
-                Err(e) => -(e as i32),
-            };
-            deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-            result
-        }
-        47 => kernel_munmap(process_address!(0), channel_i32_scalar_usize(a2)), // SYS_MUNMAP
-        48 => kernel_brk(process_address!(0)) as i32,                           // SYS_BRK
-        49 => kernel_mprotect(process_address!(0), channel_i32_scalar_usize(a2), a3 as u32), // SYS_MPROTECT
-        126 => kernel_mremap(
-            process_address!(0),
-            channel_i32_scalar_usize(a2),
-            channel_i32_scalar_usize(a3),
-            a4 as u32,
-        ) as i32, // SYS_MREMAP
-        128 => kernel_madvise(process_address!(0), channel_i32_scalar_usize(a2), a3 as u32), // SYS_MADVISE
+        47 => kernel_munmap(process_address!(0), process_size!(1)), // SYS_MUNMAP
+        49 => kernel_mprotect(process_address!(0), process_size!(1), a3 as u32), // SYS_MPROTECT
+        128 => kernel_madvise(process_address!(0), process_size!(1), a3 as u32), // SYS_MADVISE
 
         // Environment — musl: name/value are null-terminated strings
         42 => kernel_isatty(a1), // SYS_ISATTY
@@ -3206,7 +3649,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             // SYS_GETENV: (name, buf, buf_len)
             let p = channel_const_ptr!(0, u8);
             let len = channel_cstr_len!(p);
-            kernel_getenv(p, len, channel_mut_ptr!(1, u8), a3 as u32)
+            kernel_getenv(p, len, channel_mut_ptr!(1, u8), process_size_u32!(2))
         }
         44 => {
             // SYS_SETENV: (name, value, overwrite)
@@ -3223,12 +3666,12 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         74 => kernel_umask(a1 as u32) as i32, // SYS_UMASK
         75 => kernel_uname(channel_mut_ptr!(0, u8), 390), // SYS_UNAME (musl passes 1 arg; struct utsname = 6x65 = 390)
         76 => kernel_sysconf(a1) as i32,                  // SYS_SYSCONF
-        120 => kernel_getrandom(channel_mut_ptr!(0, u8), a2 as u32, a3 as u32), // SYS_GETRANDOM
+        120 => kernel_getrandom(channel_mut_ptr!(0, u8), process_size_u32!(1), a3 as u32), // SYS_GETRANDOM
         109 => {
             // SYS_REALPATH: (path, buf, buf_len)
             let p = channel_const_ptr!(0, u8);
             let len = channel_cstr_len!(p);
-            kernel_realpath(p, len, channel_mut_ptr!(1, u8), a3 as u32)
+            kernel_realpath(p, len, channel_mut_ptr!(1, u8), process_size_u32!(2))
         }
 
         // Sockets
@@ -3240,8 +3683,12 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             channel_mut_ptr!(3, i32),
             wasm_posix_shared::kernel_scratch_wire::FD_PAIR_BYTES,
         ), // SYS_SOCKETPAIR
-        51 => kernel_bind(a1, channel_const_ptr!(1, u8), a3 as u32), // SYS_BIND
-        52 => kernel_listen(a1, a2 as u32),                          // SYS_LISTEN
+        51 => kernel_bind(
+            a1,
+            channel_const_ptr!(1, u8),
+            channel_scalar::u32_argument(51, args, 2),
+        ), // SYS_BIND
+        52 => kernel_listen(a1, a2 as u32),                   // SYS_LISTEN
         53 => kernel_accept4(a1, channel_mut_ptr!(1, u8), channel_mut_ptr!(2, u8), 0), // SYS_ACCEPT
         384 => kernel_accept4(
             a1,
@@ -3249,10 +3696,19 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             channel_mut_ptr!(2, u8),
             a4 as u32,
         ), // SYS_ACCEPT4
-        54 => kernel_connect(a1, channel_const_ptr!(1, u8), a3 as u32), // SYS_CONNECT
-        55 => kernel_send(a1, channel_const_ptr!(1, u8), a3 as u32, a4 as u32), // SYS_SEND
-        56 => kernel_recv(a1, channel_mut_ptr!(1, u8), a3 as u32, a4 as u32), // SYS_RECV
-        57 => kernel_shutdown(a1, a2 as u32),                        // SYS_SHUTDOWN
+        54 => kernel_connect(
+            a1,
+            channel_const_ptr!(1, u8),
+            channel_scalar::u32_argument(54, args, 2),
+        ), // SYS_CONNECT
+        55 => kernel_send(
+            a1,
+            channel_const_ptr!(1, u8),
+            process_size_u32!(2),
+            a4 as u32,
+        ), // SYS_SEND
+        56 => kernel_recv(a1, channel_mut_ptr!(1, u8), process_size_u32!(2), a4 as u32), // SYS_RECV
+        57 => kernel_shutdown(a1, a2 as u32),                 // SYS_SHUTDOWN
         58 => {
             let optval_pointer = channel_mut_ptr!(3, u8);
             let optlen_pointer = channel_mut_ptr!(4, u32);
@@ -3282,7 +3738,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             a2 as u32,
             a3 as u32,
             channel_const_ptr!(3, u8),
-            a5 as u32,
+            channel_scalar::u32_argument(59, args, 4),
         ), // SYS_SETSOCKOPT
         114 => kernel_getsockname(a1, channel_mut_ptr!(1, u8), channel_mut_ptr!(2, u32)), // SYS_GETSOCKNAME
         115 => kernel_getpeername(a1, channel_mut_ptr!(1, u8), channel_mut_ptr!(2, u32)), // SYS_GETPEERNAME
@@ -3292,20 +3748,20 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             let len = channel_cstr_len!(p);
             kernel_getaddrinfo(p, len, channel_mut_ptr!(1, u8))
         }
-        137 => kernel_sendmsg(a1, channel_const_ptr!(1, u8), a3 as u32), // SYS_SENDMSG
-        138 => kernel_recvmsg(a1, channel_mut_ptr!(1, u8), a3 as u32),   // SYS_RECVMSG
+        137 => kernel_sendmsg(a1, channel_const_ptr!(1, u8), a3 as u32, 0), // SYS_SENDMSG
+        138 => kernel_recvmsg(a1, channel_mut_ptr!(1, u8), a3 as u32, 0),   // SYS_RECVMSG
         62 => kernel_sendto(
             a1,
             channel_const_ptr!(1, u8),
-            a3 as u32,
+            process_size_u32!(2),
             a4 as u32,
             channel_const_ptr!(4, u8),
-            a6 as u32,
+            channel_scalar::u32_argument(62, args, 5),
         ), // SYS_SENDTO
         63 => kernel_recvfrom(
             a1,
             channel_mut_ptr!(1, u8),
-            a3 as u32,
+            process_size_u32!(2),
             a4 as u32,
             channel_mut_ptr!(4, u8),
             channel_mut_ptr!(5, u32),
@@ -3313,16 +3769,17 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
 
         // Poll/select
         60 => {
-            let Some(capacity) = (a2 as u32)
-                .checked_mul(core::mem::size_of::<wasm_posix_shared::WasmPollFd>() as u32)
+            let count = process_size_u32!(1);
+            let Some(capacity) =
+                count.checked_mul(core::mem::size_of::<wasm_posix_shared::WasmPollFd>() as u32)
             else {
                 return -(Errno::EOVERFLOW as i32);
             };
-            kernel_poll(channel_mut_ptr!(0, u8), capacity, a2 as u32, a3)
+            kernel_poll(channel_mut_ptr!(0, u8), capacity, count, a3)
         } // SYS_POLL
         251 => kernel_ppoll(
             channel_mut_ptr!(0, u8),
-            a2 as u32,
+            process_size_u32!(1),
             a3,
             a4 as u32,
             a5 as u32,
@@ -3381,13 +3838,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         } // SYS_IOCTL
 
         // File system
-        79 => kernel_ftruncate(a1, args[1]), // SYS_FTRUNCATE: (fd, length)
-        80 => kernel_fsync(a1),              // SYS_FSYNC
+        79 => kernel_ftruncate(a1, channel_scalar::i64_argument(79, args, 1)), // SYS_FTRUNCATE: (fd, length)
+        80 => kernel_fsync(a1),                                                // SYS_FSYNC
         85 => {
             // SYS_TRUNCATE: (path, length)
             let p = channel_const_ptr!(0, u8);
             let plen = channel_cstr_len!(p);
-            kernel_truncate(p, plen, args[1])
+            kernel_truncate(p, plen, channel_scalar::i64_argument(85, args, 1))
         }
         86 => kernel_fdatasync(a1),                    // SYS_FDATASYNC
         87 => kernel_fchmod(a1, a2 as u32),            // SYS_FCHMOD
@@ -3404,11 +3861,30 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             let output = channel_mut_ptr!(2, u8);
             kernel_fstatfs(a1, output, args[5])
         }
-        81 => kernel_writev(a1, channel_const_ptr!(1, u8), a3), // SYS_WRITEV
-        82 => kernel_readv(a1, channel_mut_ptr!(1, u8), a3),    // SYS_READV
-        295 => kernel_preadv(a1, channel_mut_ptr!(1, u8), a3, a4 as u32, a5), // SYS_PREADV
-        296 => kernel_pwritev(a1, channel_const_ptr!(1, u8), a3, a4 as u32, a5), // SYS_PWRITEV
-        294 => kernel_sendfile(a1, a2, channel_mut_ptr!(2, u8), a4 as u32), // SYS_SENDFILE
+        81 => channel_writev(a1, channel_const_ptr!(1, u8), a3, scratch_region), // SYS_WRITEV
+        82 => channel_readv(a1, channel_mut_ptr!(1, u8), a3, scratch_region),    // SYS_READV
+        295 => channel_preadv(
+            a1,
+            channel_mut_ptr!(1, u8),
+            a3,
+            channel_scalar::split_i64_low_argument(295, args, 3),
+            channel_scalar::split_i64_high_argument(295, args, 4),
+            scratch_region,
+        ), // SYS_PREADV
+        296 => channel_pwritev(
+            a1,
+            channel_const_ptr!(1, u8),
+            a3,
+            channel_scalar::split_i64_low_argument(296, args, 3),
+            channel_scalar::split_i64_high_argument(296, args, 4),
+            scratch_region,
+        ), // SYS_PWRITEV
+        294 => kernel_sendfile_with_count(
+            a1,
+            a2,
+            channel_mut_ptr!(2, u8),
+            reportable_channel_transfer_count(process_size!(3)),
+        ), // SYS_SENDFILE
 
         // *at variants — musl: (dirfd, path, ...) without explicit path_len
         69 => {
@@ -3484,7 +3960,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             // SYS_READLINKAT: (dirfd, path, buf, bufsiz)
             let p = channel_const_ptr!(1, u8);
             let len = channel_cstr_len!(p);
-            kernel_readlinkat(a1, p, len, channel_mut_ptr!(2, u8), a4 as u32)
+            kernel_readlinkat(a1, p, len, channel_mut_ptr!(2, u8), process_size_u32!(3))
         }
 
         // Resource limits
@@ -3597,7 +4073,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             };
             kernel_getgroups(a1 as u32, list_pointer, a3 as u32)
         } // SYS_GETGROUPS
-        136 => kernel_setgroups(a1 as u32, channel_const_ptr!(1, u32)), // SYS_SETGROUPS
+        136 => kernel_setgroups(process_size_u32!(0), channel_const_ptr!(1, u32)), // SYS_SETGROUPS
 
         // Wait
         139 => kernel_wait4(
@@ -3626,12 +4102,12 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         212 | 213 => -(Errno::ENOSYS as i32), // SYS_FORK / SYS_VFORK
         201 => kernel_clone(
             0,
-            process_address!(1),
+            conditional_process_address!(1),
             a1 as u32,
             0,
-            process_address!(2),
-            process_address!(3),
-            process_address!(4),
+            conditional_process_address!(2),
+            conditional_process_address!(3),
+            conditional_process_address!(4),
         ), // SYS_CLONE
 
         // Futex
@@ -3640,14 +4116,14 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             a2 as u32,
             a3 as u32,
             a4 as u32,
-            process_address!(4),
+            conditional_process_address!(4),
             a6 as u32,
         ), // SYS_FUTEX
 
         // Thread
         202 => kernel_gettid(),                             // SYS_GETTID
         203 => kernel_set_tid_address(process_address!(0)), // SYS_SET_TID_ADDRESS
-        261 => kernel_set_robust_list(process_address!(0), channel_u32_scalar_usize(a2)), // SYS_SET_ROBUST_LIST
+        261 => kernel_set_robust_list(process_address!(0), process_size!(1)), // SYS_SET_ROBUST_LIST
         262 => kernel_get_robust_list(a1 as u32, process_address!(1), process_address!(2)), // SYS_GET_ROBUST_LIST
 
         // prctl
@@ -3710,6 +4186,17 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             // SYS_MSGRCV: (qid, msgp, msgsz, msgtyp, flags)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let (pid, uid, gid) = current_pid_eids();
+            let task = unsafe { &*PROCESS_TABLE.0.get() };
+            let tid = task.current_tid();
+            let active_pin = match task.get(pid).ok_or(Errno::ESRCH).and_then(|proc| {
+                proc.blocked_retries.active_sysv_message(
+                    tid,
+                    crate::blocked_retry::BlockingRetryOperation::MsgReceive,
+                )
+            }) {
+                Ok(pin) => pin,
+                Err(error) => return -(error as i32),
+            };
             let pointer_width = match args[5] {
                 4 => 4,
                 8 => 8,
@@ -3719,25 +4206,40 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             if msgp.is_null() {
                 return -(Errno::EFAULT as i32);
             }
-            let msgsz = match u32::try_from(args[2]) {
-                Ok(size) => size,
-                Err(_) => return -(Errno::EINVAL as i32),
-            };
+            let msgsz = process_size_u32!(2);
             let max_output_mtype = if pointer_width == 4 {
                 i32::MAX as i64
             } else {
                 i64::MAX
             };
-            match ipc.msgrcv_with_mtype_max(
-                a1,
-                msgsz,
-                args[3],
-                max_output_mtype,
-                args[4] as u32,
-                pid,
-                uid,
-                gid,
-            ) {
+            // WHY: the channel scalar contract requires one exact decode per
+            // consumed argument. Retry selection must not duplicate the
+            // signed-i64 interpretation of msgtyp.
+            let msgtyp = channel_scalar::i64_argument(338, args, 3);
+            let receive = if let Some(pin) = active_pin {
+                ipc.msgrcv_pinned_with_mtype_max(
+                    pin,
+                    msgsz,
+                    msgtyp,
+                    max_output_mtype,
+                    args[4] as u32,
+                    pid,
+                    uid,
+                    gid,
+                )
+            } else {
+                ipc.msgrcv_with_mtype_max(
+                    a1,
+                    msgsz,
+                    msgtyp,
+                    max_output_mtype,
+                    args[4] as u32,
+                    pid,
+                    uid,
+                    gid,
+                )
+            };
+            match receive {
                 Ok(result) => {
                     let wire_size = match crate::ipc_wire::sysv_message_wire_size(result.data.len())
                     {
@@ -3766,10 +4268,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             if msgp.is_null() {
                 return -(Errno::EFAULT as i32);
             }
-            let msgsz = match checked_channel_usize_scalar(args[2]) {
-                Ok(size) => size,
-                Err(error) => return -(error as i32),
-            };
+            let msgsz = process_size!(2);
             let wire_size = match crate::ipc_wire::sysv_message_wire_size(msgsz) {
                 Ok(size) => size,
                 Err(error) => return -(error as i32),
@@ -3780,7 +4279,21 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 Err(error) => return -(error as i32),
             };
             let data = &message[crate::ipc_wire::SYSV_MESSAGE_HEADER_SIZE..];
-            match ipc.msgsnd(a1, mtype, data, args[3] as u32, pid, uid, gid) {
+            let task = unsafe { &*PROCESS_TABLE.0.get() };
+            let tid = task.current_tid();
+            let active_pin = match task.get(pid).ok_or(Errno::ESRCH).and_then(|proc| {
+                proc.blocked_retries
+                    .active_sysv_message(tid, crate::blocked_retry::BlockingRetryOperation::MsgSend)
+            }) {
+                Ok(pin) => pin,
+                Err(error) => return -(error as i32),
+            };
+            let send = if let Some(pin) = active_pin {
+                ipc.msgsnd_pinned(pin, mtype, data, args[3] as u32, pid, uid, gid)
+            } else {
+                ipc.msgsnd(a1, mtype, data, args[3] as u32, pid, uid, gid)
+            };
+            match send {
                 Ok(()) => 0,
                 Err(e) => -(e as i32),
             }
@@ -3790,8 +4303,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let (pid, uid, gid) = current_pid_eids();
             let cmd = a2 & !0x100; // strip IPC_64
-            // The host-only sixth slot names the caller data model; it may
-            // differ from the kernel Wasm's own pointer width.
+                                   // The host-only sixth slot names the caller data model; it may
+                                   // differ from the kernel Wasm's own pointer width.
             let wire_transfer = if cmd == 1 || cmd == 2 {
                 let pointer_width = match args[5] {
                     4 => 4,
@@ -3866,17 +4379,36 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             // SYS_SEMOP: (semid, sops_ptr, nsops)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let (pid, uid, gid) = current_pid_eids();
-            let nsops = channel_i32_scalar_usize(a3);
-            let sops_ptr = channel_const_ptr!(1, u8);
+            let nsops = process_size!(2);
+            let bytes_len = match nsops.checked_mul(6) {
+                Some(length) => length,
+                None => return -(Errno::EINVAL as i32),
+            };
+            let bytes = channel_const_slice!(1, bytes_len);
             let mut sops = alloc::vec::Vec::with_capacity(nsops);
             for i in 0..nsops {
-                let base = unsafe { sops_ptr.add(i * 6) };
-                let num = unsafe { u16::from_le_bytes([*base, *base.add(1)]) };
-                let op = unsafe { i16::from_le_bytes([*base.add(2), *base.add(3)]) };
-                let flg = unsafe { u16::from_le_bytes([*base.add(4), *base.add(5)]) };
+                let base = i * 6;
+                let num = u16::from_le_bytes([bytes[base], bytes[base + 1]]);
+                let op = i16::from_le_bytes([bytes[base + 2], bytes[base + 3]]);
+                let flg = u16::from_le_bytes([bytes[base + 4], bytes[base + 5]]);
                 sops.push(crate::ipc::SemOp { num, op, flg });
             }
-            match ipc.semop(a1, &sops, pid, uid, gid) {
+            let task = unsafe { &*PROCESS_TABLE.0.get() };
+            let tid = task.current_tid();
+            let active_pin = match task
+                .get(pid)
+                .ok_or(Errno::ESRCH)
+                .and_then(|proc| proc.blocked_retries.active_sysv_semaphore(tid))
+            {
+                Ok(pin) => pin,
+                Err(error) => return -(error as i32),
+            };
+            let operation = if let Some(pin) = active_pin {
+                ipc.semop_pinned(pin, &sops, pid, uid, gid)
+            } else {
+                ipc.semop(a1, &sops, pid, uid, gid)
+            };
+            match operation {
                 Ok(()) => 0,
                 Err(e) => -(e as i32),
             }
@@ -3886,9 +4418,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let (pid, uid, gid) = current_pid_eids();
             let cmd = a3 & !0x100; // strip IPC_64
-            // WHY: the host-only sixth channel slot carries the caller's
-            // pointer width. The kernel Wasm width is not authoritative
-            // because one kernel may serve both wasm32 and wasm64 processes.
+                                   // WHY: the host-only sixth channel slot carries the caller's
+                                   // pointer width. The kernel Wasm width is not authoritative
+                                   // because one kernel may serve both wasm32 and wasm64 processes.
             let stat_transfer = if cmd == 2 {
                 let pointer_width = match args[5] {
                     4 => 4,
@@ -3911,14 +4443,11 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                     Ok(bytes) => bytes,
                     Err(error) => return -(error as i32),
                 };
-                let values_pointer = match checked_channel_pointer(args[3]) {
-                    Ok(pointer) if pointer == scratch_region.start() => pointer as *const u8,
-                    Ok(_) => return -(Errno::EFAULT as i32),
-                    Err(error) => return -(error as i32),
-                };
-                if let Err(error) = scratch_region.checked_range(values_pointer as usize, bytes) {
-                    return -(error as i32);
-                }
+                let values_pointer =
+                    match checked_channel_scratch_start_range(args[3], bytes, scratch_region) {
+                        Ok(pointer) => pointer as *const u8,
+                        Err(error) => return -(error as i32),
+                    };
                 // SAFETY: the ABI-43 host obtained the same permission-checked
                 // byte count before copying into its channel-scratch lease.
                 let values = unsafe { core::slice::from_raw_parts(values_pointer, bytes) };
@@ -3937,16 +4466,14 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                         let Some((size, pointer_width)) = stat_transfer else {
                             return -(Errno::EINVAL as i32);
                         };
-                        let output_pointer = match checked_channel_pointer(args[3]) {
-                            Ok(pointer) if pointer == scratch_region.start() => pointer as *mut u8,
-                            Ok(_) => return -(Errno::EFAULT as i32),
+                        let output_pointer = match checked_channel_scratch_start_range(
+                            args[3],
+                            size,
+                            scratch_region,
+                        ) {
+                            Ok(pointer) => pointer as *mut u8,
                             Err(error) => return -(error as i32),
                         };
-                        if let Err(error) =
-                            scratch_region.checked_range(output_pointer as usize, size)
-                        {
-                            return -(error as i32);
-                        }
                         // SAFETY: the ABI-43 host stages this exact-sized
                         // output in its checked channel-scratch lease.
                         let out = unsafe { core::slice::from_raw_parts_mut(output_pointer, size) };
@@ -3966,16 +4493,14 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                             Some(byte_len) => byte_len,
                             None => return -(Errno::EOVERFLOW as i32),
                         };
-                        let output_pointer = match checked_channel_pointer(args[3]) {
-                            Ok(pointer) if pointer == scratch_region.start() => pointer as *mut u8,
-                            Ok(_) => return -(Errno::EFAULT as i32),
+                        let output_pointer = match checked_channel_scratch_start_range(
+                            args[3],
+                            byte_len,
+                            scratch_region,
+                        ) {
+                            Ok(pointer) => pointer as *mut u8,
                             Err(error) => return -(error as i32),
                         };
-                        if let Err(error) =
-                            scratch_region.checked_range(output_pointer as usize, byte_len)
-                        {
-                            return -(error as i32);
-                        }
                         // SAFETY: the ABI-43 host obtained this exact byte
                         // count before reserving the channel-scratch lease.
                         let out =
@@ -3993,7 +4518,11 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             // SYS_SHMGET: (key, size, flags)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let (pid, uid, gid) = current_pid_eids();
-            match ipc.shmget(a1, a2 as u32, a3 as u32, pid, uid, gid) {
+            let size = match u32::try_from(process_size!(1)) {
+                Ok(size) => size,
+                Err(_) => return -(Errno::EINVAL as i32),
+            };
+            match ipc.shmget(a1, size, a3 as u32, pid, uid, gid) {
                 Ok(id) => id,
                 Err(e) => -(e as i32),
             }
@@ -4003,11 +4532,11 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             // The current kernel implementation ignores the requested attach
             // address, but still validate the complete raw pointer so a future
             // implementation cannot inherit the old i32 truncation.
-            let _shmaddr = process_address!(1);
+            let _shmaddr = conditional_process_address!(1);
             kernel_ipc_shmat(a1, a2, a3)
         }
         346 => {
-            let _shmaddr = process_address!(0);
+            let _shmaddr = conditional_process_address!(0);
             kernel_ipc_shmdt(a1)
         }
         347 => {
@@ -4015,8 +4544,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let (pid, uid, gid) = current_pid_eids();
             let cmd = a2 & !0x100; // strip IPC_64
-            // The host-only sixth slot names the caller data model; it may
-            // differ from the kernel Wasm's own pointer width.
+                                   // The host-only sixth slot names the caller data model; it may
+                                   // differ from the kernel Wasm's own pointer width.
             let wire_transfer = if cmd == 1 || cmd == 2 {
                 let pointer_width = match args[5] {
                     4 => 4,
@@ -4082,6 +4611,12 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         241 => {
             let events_ptr = channel_mut_ptr!(1, u8);
             let sigmask_ptr = channel_const_ptr!(4, u8);
+            if !sigmask_ptr.is_null()
+                && process_size!(5)
+                    != wasm_posix_shared::kernel_scratch_wire::SIGNAL_MASK_BYTES as usize
+            {
+                return -(Errno::EINVAL as i32);
+            }
             kernel_epoll_pwait(a1, events_ptr, a3, a4, sigmask_ptr)
         }
         379 => {
@@ -4104,8 +4639,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         245 => kernel_timerfd_gettime(a1, channel_mut_ptr!(1, u8)), // SYS_TIMERFD_GETTIME
 
         // signalfd
-        246 => kernel_signalfd4(a1, channel_const_ptr!(1, u8), a3 as u32, a4 as u32), // SYS_SIGNALFD4: (fd, mask_ptr, sigsetsize, flags)
-        377 => kernel_signalfd4(a1, channel_const_ptr!(1, u8), a3 as u32, 0), // SYS_SIGNALFD: (fd, mask_ptr, sigsetsize)
+        246 => kernel_signalfd4(a1, channel_const_ptr!(1, u8), process_size!(2), a4 as u32), // SYS_SIGNALFD4: (fd, mask_ptr, sigsetsize, flags)
+        377 => kernel_signalfd4(a1, channel_const_ptr!(1, u8), process_size!(2), 0), // SYS_SIGNALFD: (fd, mask_ptr, sigsetsize)
 
         // tkill — directed (per-thread) signal delivery. (wasm32 musl
         // uses __NR_tkill for pthread_kill too; __NR_tgkill isn't wired up.)
@@ -4123,8 +4658,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             if info_pointer.is_null() {
                 return -(Errno::EFAULT as i32);
             }
-            let info_bytes =
-                unsafe { slice::from_raw_parts(info_pointer, model.siginfo_size()) };
+            let info_bytes = unsafe { slice::from_raw_parts(info_pointer, model.siginfo_size()) };
             let info = match crate::process_wire::read_rt_sigqueueinfo(info_bytes, model) {
                 Ok(info) => info,
                 Err(error) => return -(error as i32),
@@ -4222,7 +4756,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         279 | 280 => {
             // mlock, mlock2: (addr, len, ...)
             let addr = process_address!(0);
-            let len = channel_u32_scalar_usize(a2);
+            let len = process_size!(1);
             if addr
                 .checked_add(len)
                 .map_or(true, |end| end > 1_073_741_824)
@@ -4235,7 +4769,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         281 => {
             // munlock: (addr, len)
             let addr = process_address!(0);
-            let len = channel_u32_scalar_usize(a2);
+            let len = process_size!(1);
             if addr
                 .checked_add(len)
                 .map_or(true, |end| end > 1_073_741_824)
@@ -4373,25 +4907,35 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 off_in,
                 a3,
                 off_out,
-                channel_i32_scalar_usize(a5),
+                reportable_channel_transfer_count(process_size!(4)),
             ) {
                 Ok(n) => {
-                    // Update offset pointers if provided
-                    if !off_in_ptr.is_null() {
-                        if let Some(orig) = off_in {
-                            let new_off = orig + n as i64;
-                            let buf = unsafe { slice::from_raw_parts_mut(off_in_ptr, 8) };
-                            buf.copy_from_slice(&new_off.to_le_bytes());
+                    let advanced_offsets = off_in
+                        .map(|offset| syscalls::checked_offset_advance(offset, n))
+                        .transpose()
+                        .and_then(|advanced_in| {
+                            off_out
+                                .map(|offset| syscalls::checked_offset_advance(offset, n))
+                                .transpose()
+                                .map(|advanced_out| (advanced_in, advanced_out))
+                        });
+                    match advanced_offsets {
+                        Ok((advanced_in, advanced_out)) => {
+                            // Compute both values before publishing either so
+                            // an overflow cannot leave the caller's pair only
+                            // partially updated.
+                            if let Some(new_off) = advanced_in {
+                                let buf = unsafe { slice::from_raw_parts_mut(off_in_ptr, 8) };
+                                buf.copy_from_slice(&new_off.to_le_bytes());
+                            }
+                            if let Some(new_off) = advanced_out {
+                                let buf = unsafe { slice::from_raw_parts_mut(off_out_ptr, 8) };
+                                buf.copy_from_slice(&new_off.to_le_bytes());
+                            }
+                            n as i32
                         }
+                        Err(error) => -(error as i32),
                     }
-                    if !off_out_ptr.is_null() {
-                        if let Some(orig) = off_out {
-                            let new_off = orig + n as i64;
-                            let buf = unsafe { slice::from_raw_parts_mut(off_out_ptr, 8) };
-                            buf.copy_from_slice(&new_off.to_le_bytes());
-                        }
-                    }
-                    n as i32
                 }
                 Err(e) => -(e as i32),
             };
@@ -4424,42 +4968,80 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 off_in,
                 a3,
                 off_out,
-                channel_i32_scalar_usize(a5),
+                reportable_channel_transfer_count(process_size!(4)),
                 a6 as u32,
             ) {
                 Ok(n) => {
-                    if !off_in_ptr.is_null() {
-                        if let Some(orig) = off_in {
-                            let buf = unsafe { slice::from_raw_parts_mut(off_in_ptr, 8) };
-                            buf.copy_from_slice(&(orig + n as i64).to_le_bytes());
+                    let advanced_offsets = off_in
+                        .map(|offset| syscalls::checked_offset_advance(offset, n))
+                        .transpose()
+                        .and_then(|advanced_in| {
+                            off_out
+                                .map(|offset| syscalls::checked_offset_advance(offset, n))
+                                .transpose()
+                                .map(|advanced_out| (advanced_in, advanced_out))
+                        });
+                    match advanced_offsets {
+                        Ok((advanced_in, advanced_out)) => {
+                            if let Some(new_off) = advanced_in {
+                                let buf = unsafe { slice::from_raw_parts_mut(off_in_ptr, 8) };
+                                buf.copy_from_slice(&new_off.to_le_bytes());
+                            }
+                            if let Some(new_off) = advanced_out {
+                                let buf = unsafe { slice::from_raw_parts_mut(off_out_ptr, 8) };
+                                buf.copy_from_slice(&new_off.to_le_bytes());
+                            }
+                            n as i32
                         }
+                        Err(error) => -(error as i32),
                     }
-                    if !off_out_ptr.is_null() {
-                        if let Some(orig) = off_out {
-                            let buf = unsafe { slice::from_raw_parts_mut(off_out_ptr, 8) };
-                            buf.copy_from_slice(&(orig + n as i64).to_le_bytes());
-                        }
-                    }
-                    n as i32
                 }
                 Err(e) => -(e as i32),
             };
             deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
             result
         }
-        293 => 0, // SYS_READAHEAD: advisory, always succeed
-        297 => kernel_preadv(a1, channel_mut_ptr!(1, u8), a3, a4 as u32, a5), // SYS_PREADV2 (ignore flags in a6)
-        298 => kernel_pwritev(a1, channel_const_ptr!(1, u8), a3, a4 as u32, a5), // SYS_PWRITEV2 (ignore flags in a6)
+        293 => {
+            let _count = process_size!(2);
+            0
+        } // SYS_READAHEAD: advisory, always succeed
+        297 => channel_preadv(
+            a1,
+            channel_mut_ptr!(1, u8),
+            a3,
+            channel_scalar::split_i64_low_argument(297, args, 3),
+            channel_scalar::split_i64_high_argument(297, args, 4),
+            scratch_region,
+        ), // SYS_PREADV2 (ignore flags in a6)
+        298 => channel_pwritev(
+            a1,
+            channel_const_ptr!(1, u8),
+            a3,
+            channel_scalar::split_i64_low_argument(298, args, 3),
+            channel_scalar::split_i64_high_argument(298, args, 4),
+            scratch_region,
+        ), // SYS_PWRITEV2 (ignore flags in a6)
 
         // -- Scheduling stubs (single-CPU Wasm) --
-        237 => 0, // SYS_SCHED_SETAFFINITY: no-op (single CPU)
-        238 => kernel_sched_getaffinity(a1, args[1] as u32, channel_mut_ptr!(2, u8)),
+        237 => {
+            let _cpusetsize = channel_scalar::u32_argument(237, args, 1);
+            0
+        } // SYS_SCHED_SETAFFINITY: no-op (single CPU)
+        238 => kernel_sched_getaffinity(
+            a1,
+            channel_scalar::u32_argument(238, args, 1),
+            channel_mut_ptr!(2, u8),
+        ),
 
         // -- Memory/sync stubs --
         257 => 0, // SYS_MEMBARRIER: no-op (single-threaded per process in Wasm)
         273 => 0, // SYS_SYNC: no-op (all I/O is synchronous to host)
         274 => 0, // SYS_SYNCFS: no-op
-        278 => 0, // SYS_MSYNC: no-op (MAP_PRIVATE changes are private, file-backed writes go through write())
+        278 => {
+            let _address = process_address!(0);
+            let _length = process_size!(1);
+            0
+        } // SYS_MSYNC: no-op (MAP_PRIVATE changes are private, file-backed writes go through write())
 
         // -- Process stubs --
         287 => 0, // SYS_PERSONALITY: return 0 (current personality, PER_LINUX)
@@ -4488,8 +5070,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             } else {
                 let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
                 let mut host = WasmHostIO;
-                let offset = args[2];
-                let len = args[3];
+                let offset = channel_scalar::i64_argument(308, args, 2);
+                let len = channel_scalar::i64_argument(308, args, 3);
                 let result = match syscalls::sys_fallocate(proc, &mut host, a1, offset, len) {
                     Ok(()) => 0,
                     Err(e) => -(e as i32),
@@ -4619,9 +5201,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             let (maxmsg, msgsize) = if has_attr {
                 // SAFETY: the generated process-layout descriptor copied this
                 // exact caller-native structure into capacity-checked scratch.
-                let input = unsafe {
-                    core::slice::from_raw_parts(attr_pointer, model.mq_attr_size())
-                };
+                let input =
+                    unsafe { core::slice::from_raw_parts(attr_pointer, model.mq_attr_size()) };
                 let attr = match crate::process_wire::read_mq_attr(input, model) {
                     Ok(attr) => attr,
                     Err(error) => return -(error as i32),
@@ -4651,19 +5232,34 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         }
         333 => {
             // SYS_MQ_TIMEDSEND: (mqd, msg_ptr, msg_len, priority, timeout_ptr)
-            let data_len = channel_i32_scalar_usize(a3);
-            // WHY: zero-length POSIX messages are valid and lend no bytes.
-            // Do not make their ignored pointer satisfy Rust's stronger
-            // non-null slice requirement.
-            let data = if data_len == 0 {
-                &[]
-            } else {
-                // SAFETY: the host copied exactly data_len caller bytes into
-                // capacity-checked kernel scratch before dispatch.
-                unsafe { core::slice::from_raw_parts(channel_const_ptr!(1, u8), data_len) }
-            };
+            let data_len = process_size!(2);
+            if data_len > channel_scalar::MAX_REPORTABLE_TRANSFER_BYTES as usize {
+                return -(Errno::EMSGSIZE as i32);
+            }
+            let data = channel_const_slice!(1, data_len);
             let table = unsafe { crate::mqueue::global_mqueue_table() };
-            match table.mq_send(a1 as u32, data, a4 as u32) {
+            let process_table = unsafe { &*PROCESS_TABLE.0.get() };
+            let pid = process_table.current_pid();
+            let tid = process_table.current_tid();
+            let (send, nonblock) =
+                match process_table.get(pid).ok_or(Errno::ESRCH).and_then(|proc| {
+                    proc.blocked_retries
+                        .active_mqueue(tid, crate::blocked_retry::BlockingRetryOperation::MqSend)
+                }) {
+                    Ok(Some(pin)) => {
+                        let nonblock = match table.pinned_is_nonblock(pin) {
+                            Ok(nonblock) => nonblock,
+                            Err(error) => return -(error as i32),
+                        };
+                        (table.mq_send_pinned(pin, data, a4 as u32), nonblock)
+                    }
+                    Ok(None) => (
+                        table.mq_send(a1 as u32, data, a4 as u32),
+                        table.is_nonblock(a1 as u32).unwrap_or(false),
+                    ),
+                    Err(error) => return -(error as i32),
+                };
+            match send {
                 Ok(result) => {
                     if let Some(notif) = result.notification {
                         let process_table = unsafe { &mut *PROCESS_TABLE.0.get() };
@@ -4686,18 +5282,38 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                     }
                     0
                 }
-                Err(Errno::EAGAIN) => mq_would_block_result(
-                    channel_const_ptr!(4, u8) as usize,
-                    table,
-                    a1 as u32,
-                ),
+                Err(Errno::EAGAIN) => {
+                    mq_timed_blocking_errno(channel_const_ptr!(4, u8) as usize, nonblock)
+                }
                 Err(e) => -(e as i32),
             }
         }
         334 => {
             // SYS_MQ_TIMEDRECEIVE: (mqd, msg_ptr, msg_len, prio_ptr, timeout_ptr)
+            let capacity = process_size_u32!(2);
             let table = unsafe { crate::mqueue::global_mqueue_table() };
-            match table.mq_receive(a1 as u32, a3 as u32) {
+            let process_table = unsafe { &*PROCESS_TABLE.0.get() };
+            let pid = process_table.current_pid();
+            let tid = process_table.current_tid();
+            let (receive, nonblock) =
+                match process_table.get(pid).ok_or(Errno::ESRCH).and_then(|proc| {
+                    proc.blocked_retries
+                        .active_mqueue(tid, crate::blocked_retry::BlockingRetryOperation::MqReceive)
+                }) {
+                    Ok(Some(pin)) => {
+                        let nonblock = match table.pinned_is_nonblock(pin) {
+                            Ok(nonblock) => nonblock,
+                            Err(error) => return -(error as i32),
+                        };
+                        (table.mq_receive_pinned(pin, capacity), nonblock)
+                    }
+                    Ok(None) => (
+                        table.mq_receive(a1 as u32, capacity),
+                        table.is_nonblock(a1 as u32).unwrap_or(false),
+                    ),
+                    Err(error) => return -(error as i32),
+                };
+            match receive {
                 Ok(result) => {
                     // WHY: a queued zero-length message has no destination
                     // bytes, so do not make an ignored pointer satisfy Rust's
@@ -4725,13 +5341,14 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                             *prio_ptr.add(3) = prio_bytes[3];
                         }
                     }
-                    result.data.len() as i32
+                    match i32::try_from(result.data.len()) {
+                        Ok(length) => length,
+                        Err(_) => return -(Errno::EOVERFLOW as i32),
+                    }
                 }
-                Err(Errno::EAGAIN) => mq_would_block_result(
-                    channel_const_ptr!(4, u8) as usize,
-                    table,
-                    a1 as u32,
-                ),
+                Err(Errno::EAGAIN) => {
+                    mq_timed_blocking_errno(channel_const_ptr!(4, u8) as usize, nonblock)
+                }
                 Err(e) => -(e as i32),
             }
         }
@@ -4753,9 +5370,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 };
                 // SAFETY: the host stages the complete native sigevent under
                 // the generated pointer-width-dependent descriptor.
-                let input = unsafe {
-                    core::slice::from_raw_parts(event_pointer, model.sigevent_size())
-                };
+                let input =
+                    unsafe { core::slice::from_raw_parts(event_pointer, model.sigevent_size()) };
                 let event = match crate::process_wire::read_sigevent(input, model) {
                     Ok(event) => event,
                     Err(error) => return -(error as i32),
@@ -4784,9 +5400,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             let new_flags = if !new_pointer.is_null() {
                 // SAFETY: generated host metadata copied the exact native
                 // mq_attr size into this checked scratch allocation.
-                let input = unsafe {
-                    core::slice::from_raw_parts(new_pointer, model.mq_attr_size())
-                };
+                let input =
+                    unsafe { core::slice::from_raw_parts(new_pointer, model.mq_attr_size()) };
                 let attr = match crate::process_wire::read_mq_attr(input, model) {
                     Ok(attr) => attr,
                     Err(error) => return -(error as i32),
@@ -4943,14 +5558,19 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             t.cond_wait_abort(a1 as u32, pid);
             0
         }
-        415 => {
+        syscall_numbers::SYS_THREAD_CANCEL => {
             // SYS_THREAD_CANCEL: (target_tid). Host-owned wait state is woken
-            // in kernel-worker.ts; release kernel-owned FIFO open reservations
-            // here so the interrupted target cannot leave a phantom endpoint.
+            // in kernel-worker.ts; release FIFO reservations and restore a
+            // ppoll/pselect temporary mask before the interrupted target can
+            // leave kernel-owned state behind.
             let (_gkl, proc) = unsafe { get_process() };
-            let owner = ((proc.pid as u64) << 32) | a1 as u32 as u64;
-            syscalls::cancel_fifo_open_for_owner(proc, owner);
-            0
+            let Ok(target_tid) = u32::try_from(a1) else {
+                return -(Errno::ESRCH as i32);
+            };
+            match syscalls::cancel_host_owned_wait_for_live_tid(proc, target_tid) {
+                Ok(()) => 0,
+                Err(error) => -(error as i32),
+            }
         }
 
         253..=254
@@ -4977,6 +5597,40 @@ mod channel_pointer_tests {
     use super::*;
 
     #[test]
+    fn host_transfer_counts_are_lossless_and_capacity_bounded() {
+        assert_eq!(checked_host_buffer_len(u32::MAX as usize), Ok(u32::MAX));
+        if let Some(too_large) = (u32::MAX as usize).checked_add(1) {
+            assert_eq!(checked_host_buffer_len(too_large), Err(Errno::EOVERFLOW),);
+        }
+        assert_eq!(checked_host_transfer_result(4, 4), Ok(4));
+        assert_eq!(checked_host_transfer_result(5, 4), Err(Errno::EIO));
+        assert_eq!(
+            checked_host_transfer_result(-(Errno::EAGAIN as i32), 4),
+            Err(Errno::EAGAIN),
+        );
+        assert_eq!(checked_host_transfer_result(i32::MIN, 4), Err(Errno::EIO),);
+        assert_eq!(checked_host_i64_result(17), Ok(17));
+        assert_eq!(
+            checked_host_i64_result(-(Errno::EAGAIN as i64)),
+            Err(Errno::EAGAIN),
+        );
+        assert_eq!(checked_host_i64_result(i64::MIN), Err(Errno::EIO));
+        assert_eq!(
+            checked_host_i64_result(-((u32::MAX as i64) + 1)),
+            Err(Errno::EIO),
+        );
+    }
+
+    #[test]
+    fn split_i64_words_preserves_offsets_beyond_javascript_number_precision() {
+        for offset in [0, (1i64 << 53) + 0x1234_5678, i64::MAX, i64::MIN, -1] {
+            let (lo, hi) = split_i64_words(offset);
+            let reconstructed = ((hi as i64) << 32) | i64::from(lo);
+            assert_eq!(reconstructed, offset);
+        }
+    }
+
+    #[test]
     fn raw_pointer_conversion_models_both_wasm_widths_without_signed_narrowing() {
         assert_eq!(checked_channel_pointer_bits(0, 32), Ok(0));
         assert_eq!(
@@ -4990,6 +5644,44 @@ mod channel_pointer_tests {
         assert_eq!(checked_channel_pointer_bits(i64::MIN, 64), Ok(1u64 << 63));
         assert_eq!(checked_channel_pointer_bits(-1, 64), Ok(u64::MAX));
         assert_eq!(checked_channel_pointer_bits(0, 16), Err(Errno::EFAULT));
+    }
+
+    #[test]
+    fn process_size_conversion_is_unsigned_and_exact_or_rejected() {
+        let four_gib_plus_page = 0x1_0000_1000u64;
+        assert_eq!(checked_process_size_bits(0, 32), Ok(0));
+        assert_eq!(
+            checked_process_size_bits(u32::MAX as u64, 32),
+            Ok(u32::MAX as u64)
+        );
+        assert_eq!(
+            checked_process_size_bits(four_gib_plus_page, 32),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            checked_process_size_bits(four_gib_plus_page, 64),
+            Ok(four_gib_plus_page)
+        );
+        assert_eq!(checked_process_size_bits(1u64 << 63, 64), Ok(1u64 << 63));
+        assert_eq!(checked_process_size_bits(u64::MAX, 64), Ok(u64::MAX));
+        assert_eq!(checked_process_size_bits(0, 16), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn typed_process_size_reader_preserves_the_physical_channel_bits() {
+        let mut mmap_args = [0i64; 6];
+        mmap_args[1] = i64::MIN;
+        assert_eq!(
+            channel_scalar::process_size_argument(46, &mmap_args, 1),
+            1u64 << 63
+        );
+
+        let mut sendfile_args = [0i64; 6];
+        sendfile_args[3] = -1;
+        assert_eq!(
+            channel_scalar::process_size_argument(294, &sendfile_args, 3),
+            u64::MAX
+        );
     }
 
     #[test]
@@ -5014,6 +5706,31 @@ mod channel_pointer_tests {
             );
             assert_eq!(checked_channel_pointer(-1), Ok(usize::MAX));
         }
+    }
+
+    #[test]
+    fn zero_kernel_iovec_count_does_not_require_a_table_pointer() {
+        let region = ChannelScratchRegion::new(0x1000, 16).unwrap();
+        assert_eq!(
+            checked_kernel_iovec_entries(core::ptr::null(), 0, region),
+            Ok((Vec::new(), 0)),
+        );
+        assert_eq!(
+            checked_kernel_iovec_entries(core::ptr::null(), -1, region),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(
+            checked_kernel_iovec_entries(
+                core::ptr::null(),
+                i32::try_from(platform_limits::IOV_MAX + 1).unwrap(),
+                region,
+            ),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(
+            checked_kernel_iovec_entries(core::ptr::null(), 1, region),
+            Err(Errno::EFAULT),
+        );
     }
 
     #[test]
@@ -5061,6 +5778,49 @@ pub extern "C" fn kernel_set_current_tid(pid: u32, tid: u32) -> i32 {
     match table.bind_current_tid(pid, tid) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
+    }
+}
+
+/// Return the retry authority created by the task's first blocking result.
+///
+/// The syscall number is normalized to its scalar execution family, so a
+/// host-flattened readv/writev request finds the read/write binding Rust
+/// created before returning control to JavaScript. A positive value is an
+/// opaque stable-target token. Zero means this syscall has no Rust target
+/// class and uses only a host-owned immutable request snapshot. A mapped
+/// operation with no binding fails instead of silently becoming host-only.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_blocking_retry_token(pid: u32, tid: u32, syscall_nr: u32) -> i64 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    if let Err(error) = table.validate_task(pid, tid) {
+        return -(error as i64);
+    }
+    match table
+        .get(pid)
+        .ok_or(Errno::ESRCH)
+        .and_then(|proc| proc.blocked_retries.token_for_syscall(tid, syscall_nr))
+    {
+        Ok(token) => token,
+        Err(error) => -(error as i64),
+    }
+}
+
+/// Consume one exact blocked-retry target and its kernel-owned references.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_blocking_retry_release(pid: u32, tid: u32, token: i64) -> i32 {
+    if token <= 0 {
+        return -(Errno::EINVAL as i32);
+    }
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some((proc, locks)) = table.process_and_advisory_locks(pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    let mut host = WasmHostIO;
+    match syscalls::release_blocking_retry_binding(proc, locks, &mut host, tid, token) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
     }
 }
 
@@ -5262,6 +6022,27 @@ pub extern "C" fn kernel_semctl_array_bytes(pid: u32, tid: u32, semid: i32, cmd:
 // POSIX mqueue kernel exports
 // ---------------------------------------------------------------------------
 
+/// Return the configured maximum message size for one queue descriptor.
+///
+/// PID and TID are explicit because this is a host sizing preflight, not a
+/// channel dispatch: it must validate the caller without installing or
+/// consuming the one-shot ambient task binding used by `kernel_handle_channel`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_mq_descriptor_msgsize(pid: u32, tid: u32, mqd: i32) -> i32 {
+    let process_table = unsafe { &*PROCESS_TABLE.0.get() };
+    if let Err(error) = process_table.validate_task(pid, tid) {
+        return -(error as i32);
+    }
+    if mqd < 0 {
+        return -(Errno::EBADF as i32);
+    }
+    let table = unsafe { crate::mqueue::global_mqueue_table() };
+    match table.descriptor_msgsize(mqd as u32) {
+        Ok(size) => i32::try_from(size).unwrap_or(-(Errno::EOVERFLOW as i32)),
+        Err(error) => -(error as i32),
+    }
+}
+
 fn queue_mqueue_signal_notification(
     process_table: &mut crate::process_table::ProcessTable,
     notification: crate::mqueue::MqNotification,
@@ -5292,10 +6073,7 @@ fn queue_mqueue_signal_notification(
 /// wake blocked work; it must not synthesize a second signal.
 /// Returns 1 if a notification was pending, 0 otherwise.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_mq_drain_notification(
-    out_ptr: *mut u8,
-    out_capacity: u32,
-) -> i32 {
+pub extern "C" fn kernel_mq_drain_notification(out_ptr: *mut u8, out_capacity: u32) -> i32 {
     if out_ptr.is_null() {
         return -(Errno::EFAULT as i32);
     }
@@ -5325,7 +6103,11 @@ pub extern "C" fn kernel_mq_drain_notification(
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_mq_is_mqd(fd: i32) -> i32 {
     let table = unsafe { crate::mqueue::global_mqueue_table() };
-    if table.is_mqd(fd as u32) { 1 } else { 0 }
+    if table.is_mqd(fd as u32) {
+        1
+    } else {
+        0
+    }
 }
 
 /// Serialize current process state for fork. Returns bytes written, or negative errno.
@@ -5468,11 +6250,12 @@ pub extern "C" fn kernel_close(fd: i32) -> i32 {
     result
 }
 
-/// Read from a file descriptor. Returns bytes read (>= 0) or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_read(fd: i32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
+/// Read into one already-proven live channel slice.
+///
+/// WHY: this adapter is private so no host can supply a bare kernel pointer
+/// without the channel dispatcher first proving the allocation and extent.
+fn channel_read(fd: i32, buf: &mut [u8]) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_read(proc, &mut host, fd, buf) {
         Ok(n) => n as i32,
@@ -5483,55 +6266,15 @@ pub extern "C" fn kernel_read(fd: i32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
     result
 }
 
-/// Write to a file descriptor. Returns bytes written (>= 0) or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_write(fd: i32, buf_ptr: *const u8, buf_len: u32) -> i32 {
+/// Write from one already-proven live channel slice.
+fn channel_write(fd: i32, buf: &[u8]) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let buf = unsafe { slice::from_raw_parts(buf_ptr, buf_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_write(proc, &mut host, fd, buf) {
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
-}
-
-/// Resolve one logical write's operation-wide byte budget before the host
-/// decomposes it into scratch-buffer-sized kernel calls.
-///
-/// `positioned != 0` selects the supplied offset (pwrite/pwritev); otherwise
-/// the open-file-description cursor and O_APPEND state are authoritative.
-/// The host supplies the exact calling TID so this direct export does not
-/// install or consume ambient channel-dispatch authority.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_prepare_write_operation(
-    pid: u32,
-    tid: u32,
-    fd: i32,
-    offset: i64,
-    requested_len: u32,
-    positioned: u32,
-) -> i64 {
-    let _gkl = GklGuard::acquire();
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let (proc, advisory_locks) = match table.task_and_advisory_locks(pid, tid) {
-        Some(pair) => pair,
-        None => return -(Errno::ESRCH as i64),
-    };
-    let mut host = WasmHostIO;
-    let result = match syscalls::write_operation_budget(
-        proc,
-        &mut host,
-        tid,
-        fd,
-        (positioned != 0).then_some(offset),
-        requested_len as usize,
-    ) {
-        Ok(len) => len as i64,
-        Err(e) => -(e as i64),
-    };
-    let _ = deliver_pending_signals_for_tid_with_locks(proc, advisory_locks, &mut host, tid);
     result
 }
 
@@ -5551,12 +6294,10 @@ pub extern "C" fn kernel_lseek(fd: i32, offset_lo: u32, offset_hi: i32, whence: 
     result
 }
 
-/// pread - read at offset without modifying position. Returns bytes read or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_pread(fd: i32, buf_ptr: *mut u8, buf_len: u32, offset: i64) -> i32 {
+/// Positioned read into one already-proven live channel slice.
+fn channel_pread(fd: i32, buf: &mut [u8], offset: i64) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
-    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     let result = match syscalls::sys_pread(proc, &mut host, fd, buf, offset) {
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
@@ -5565,18 +6306,178 @@ pub extern "C" fn kernel_pread(fd: i32, buf_ptr: *mut u8, buf_len: u32, offset: 
     result
 }
 
-/// pwrite - write at offset without modifying position. Returns bytes written or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_pwrite(fd: i32, buf_ptr: *const u8, buf_len: u32, offset: i64) -> i32 {
+/// Positioned write from one already-proven live channel slice.
+fn channel_pwrite(fd: i32, buf: &[u8], offset: i64) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
-    let buf = unsafe { slice::from_raw_parts(buf_ptr, buf_len as usize) };
     let result = match syscalls::sys_pwrite(proc, &mut host, fd, buf, offset) {
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
+}
+
+fn execute_transfer_io_for_task(
+    pid: u32,
+    tid: u32,
+    original_syscall: u32,
+    fd: i32,
+    offset: i64,
+    bytes: &mut [u8],
+    retry_token: i64,
+) -> Result<usize, Errno> {
+    use crate::transfer::TransferIoOperation;
+
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.bind_current_tid(pid, tid)?;
+    let activation = (|| {
+        let operation =
+            crate::blocked_retry::BlockingRetryOperation::from_syscall(original_syscall)?;
+        let proc = table.current_process().ok_or(Errno::ESRCH)?;
+        proc.blocked_retries.begin_dispatch(tid)?;
+        if retry_token == 0 {
+            let result = if proc.blocked_retries.has_binding_for_tid(tid) {
+                Err(Errno::EBUSY)
+            } else {
+                Ok(())
+            };
+            if result.is_err() {
+                proc.blocked_retries.clear_dispatch();
+            }
+            return result;
+        }
+        if retry_token < 0 {
+            proc.blocked_retries.clear_dispatch();
+            return Err(Errno::EINVAL);
+        }
+        let result = proc.blocked_retries.activate(tid, retry_token, operation);
+        if result.is_err() {
+            proc.blocked_retries.clear_dispatch();
+        }
+        result
+    })();
+    if let Err(error) = activation {
+        table.clear_current_tid_binding();
+        return Err(error);
+    }
+
+    // WHY: bind_current_tid installs the same exact-task context consumed by
+    // ordinary channel dispatch. write_operation_budget, directed signals,
+    // and SCM_RIGHTS cleanup must see the actual issuing TID, not ambient
+    // state from the preceding mailbox.
+    let result = (|| {
+        let (proc, advisory_locks) = table
+            .current_process_and_advisory_locks()
+            .ok_or(Errno::ESRCH)?;
+        let mut host = WasmHostIO;
+        let mut result = match crate::transfer::io_operation_for_syscall(original_syscall) {
+            Ok(TransferIoOperation::Read) => syscalls::sys_read(proc, &mut host, fd, bytes),
+            Ok(TransferIoOperation::Write) => syscalls::sys_write(proc, &mut host, fd, bytes),
+            Ok(TransferIoOperation::Pread) => {
+                syscalls::sys_pread(proc, &mut host, fd, bytes, offset)
+            }
+            Ok(TransferIoOperation::Pwrite) => {
+                syscalls::sys_pwrite(proc, &mut host, fd, bytes, offset)
+            }
+            Err(error) => Err(error),
+        };
+        if result == Err(Errno::EAGAIN) {
+            if let Err(error) = syscalls::ensure_blocking_retry_ofd_binding(
+                proc,
+                advisory_locks,
+                &mut host,
+                tid,
+                original_syscall,
+                fd,
+                None,
+            ) {
+                result = Err(error);
+            }
+        }
+        proc.blocked_retries.clear_active();
+        proc.blocked_retries.clear_dispatch();
+        syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
+        let _ = deliver_pending_signals_for_tid_with_locks(proc, advisory_locks, &mut host, tid);
+        result
+    })();
+
+    // All ordinary success and errno paths consume this one-shot task
+    // authority. A host-import exception traps the Wasm call before cleanup;
+    // the host must terminate that failed kernel instance, just as it must not
+    // reuse the transfer's irrecoverable Executing token.
+    table.clear_current_tid_binding();
+    result
+}
+
+/// Execute one large scalar or vector I/O operation against a Reserved token.
+///
+/// Vector syscall numbers deliberately map to exactly one scalar kernel
+/// operation because the host has already flattened their iovecs into the
+/// reservation. The return is a non-negative byte count or negated errno.
+///
+/// WHY: this token-only call is a narrowly trusted host-adapter boundary. It
+/// carries no raw pointer; the active transfer-region lease remains the sole
+/// authority for the Rust-owned allocation.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_transfer_io_execute(
+    pid: u32,
+    tid: u32,
+    token: i64,
+    length: usize,
+    original_syscall: u32,
+    fd: i32,
+    offset: i64,
+    retry_token: i64,
+) -> i32 {
+    match crate::transfer::execute_transfer_with(token, length, |bytes| {
+        execute_transfer_io_for_task(pid, tid, original_syscall, fd, offset, bytes, retry_token)
+    }) {
+        Ok(length) => length as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Execute one complete widened channel in a token-owned Rust allocation.
+///
+/// The export accepts no pointer or host-supplied capacity. Reserved →
+/// Executing atomically yields the Vec's own initialized base and length, and
+/// the transfer mutex is released before task binding, syscall dispatch, or
+/// any host import. A return value of zero means only that the transport
+/// completed; the syscall's exact result and errno are authoritative in the
+/// channel header.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_transfer_channel_execute(
+    pid: u32,
+    tid: u32,
+    token: i64,
+    retry_token: i64,
+) -> i32 {
+    use wasm_posix_shared::channel::MIN_CHANNEL_SIZE;
+
+    match crate::transfer::execute_channel_transfer_with(token, |bytes| {
+        if bytes.len() < MIN_CHANNEL_SIZE {
+            return Err(Errno::EINVAL);
+        }
+
+        let _gkl = GklGuard::acquire();
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        table.bind_current_tid(pid, tid)?;
+
+        // handle_owned_channel_allocation consumes the exact binding and runs
+        // the same SCM_RIGHTS cleanup boundary as the ordinary channel.
+        let _syscall_mirror = handle_owned_channel_allocation(
+            bytes.as_mut_ptr() as usize,
+            bytes.len(),
+            pid,
+            retry_token,
+        );
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
 }
 
 /// Duplicate a file descriptor. Returns new fd (>= 0) or negative errno.
@@ -5645,11 +6546,7 @@ pub extern "C" fn kernel_dup3(oldfd: i32, newfd: i32, flags: u32) -> i32 {
 /// Create a pipe with flags. Writes [read_fd, write_fd] to the pointer.
 /// Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_pipe2(
-    flags: u32,
-    fd_ptr: *mut i32,
-    fd_capacity: u32,
-) -> i32 {
+pub extern "C" fn kernel_pipe2(flags: u32, fd_ptr: *mut i32, fd_capacity: u32) -> i32 {
     if fd_ptr.is_null() {
         return -(Errno::EFAULT as i32);
     }
@@ -5857,10 +6754,10 @@ pub extern "C" fn kernel_timerfd_gettime(fd: i32, cur_ptr: *mut u8) -> i32 {
 pub extern "C" fn kernel_signalfd4(
     fd: i32,
     mask_ptr: *const u8,
-    sigsetsize: u32,
+    sigsetsize: usize,
     flags: u32,
 ) -> i32 {
-    if sigsetsize != core::mem::size_of::<u64>() as u32 {
+    if sigsetsize != core::mem::size_of::<u64>() {
         return -(Errno::EINVAL as i32);
     }
     if mask_ptr.is_null() {
@@ -6586,13 +7483,13 @@ fn kernel_kill_with_metadata(pid: i32, sig: u32, si_value_bits: u64, si_code: i3
                 delivered = true;
                 if sig > 0 {
                     if let Some((target, locks)) = table.process_and_advisory_locks(target_pid) {
-                            target.raise_signal_with_metadata(
-                                sig,
-                                si_value_bits,
-                                si_code,
-                                caller_pid,
-                                sender_uid,
-                            );
+                        target.raise_signal_with_metadata(
+                            sig,
+                            si_value_bits,
+                            si_code,
+                            caller_pid,
+                            sender_uid,
+                        );
                         if let Some(target_tid) = target.pick_thread_for_shared_signal(sig) {
                             let _ = deliver_pending_signals_for_tid_with_locks(
                                 target, locks, &mut host, target_tid,
@@ -6622,13 +7519,7 @@ fn kernel_kill_with_metadata(pid: i32, sig: u32, si_value_bits: u64, si_code: i3
         return -(Errno::ESRCH as i32);
     };
     if sig > 0 {
-        caller.raise_signal_with_metadata(
-            sig,
-            si_value_bits,
-            si_code,
-            caller_pid,
-            sender_uid,
-        );
+        caller.raise_signal_with_metadata(sig, si_value_bits, si_code, caller_pid, sender_uid);
     }
     let _ = deliver_pending_signals_for_tid_with_locks(caller, locks, &mut host, caller_tid);
     0
@@ -6645,8 +7536,7 @@ pub extern "C" fn kernel_sigaltstack(
     process_pointer_width: i64,
 ) -> i32 {
     use crate::process_wire::{
-        NativeSigaltstack, ProcessDataModel, SIGALTSTACK_SS_DISABLE,
-        validate_sigaltstack_range,
+        validate_sigaltstack_range, NativeSigaltstack, ProcessDataModel, SIGALTSTACK_SS_DISABLE,
     };
 
     let model = match ProcessDataModel::from_width(process_pointer_width) {
@@ -7008,9 +7898,9 @@ pub extern "C" fn kernel_sigaction(sig: u32, act_ptr: *const u8, oldact_ptr: *mu
 
 /// signal() — set signal handler (legacy API). Returns old handler or negative errno.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_signal(signum: u32, handler: usize) -> i32 {
+pub extern "C" fn kernel_signal(signum: u32, handler: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let result = match syscalls::sys_signal(proc, signum, handler as u32) {
+    let result = match syscalls::sys_signal(proc, signum, handler) {
         Ok(old) => old,
         Err(e) => -(e as i32),
     };
@@ -7176,7 +8066,7 @@ pub extern "C" fn kernel_mremap(
 pub extern "C" fn kernel_madvise(addr: usize, len: usize, advice: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_madvise(proc, addr as u32, len as u32, advice) {
+    let result = match syscalls::sys_madvise(proc, addr, len, advice) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
@@ -7409,6 +8299,32 @@ fn write_wire_u32(bytes: &mut [u8], offset: usize, value: u32) {
     bytes[offset..offset + size_of::<u32>()].copy_from_slice(&value.to_le_bytes());
 }
 
+fn finish_direct_blocking_retry_dispatch(
+    proc: &mut Process,
+    owns_active: bool,
+    owns_dispatch: bool,
+) {
+    if owns_active {
+        proc.blocked_retries.clear_active();
+    }
+    if owns_dispatch {
+        proc.blocked_retries.clear_dispatch();
+    }
+}
+
+fn deliver_pending_signals_for_known_tid(
+    proc: &mut Process,
+    advisory_locks: &mut crate::lock::AdvisoryLockManager,
+    host: &mut dyn crate::process::HostIO,
+    tid: u32,
+) {
+    // WHY: direct message exports captured TID before borrowing Process from
+    // the table. Re-reading ambient ProcessTable state here would alias that
+    // live mutable borrow, especially on activation-error paths that never
+    // install dispatch_tid.
+    let _ = deliver_pending_signals_for_tid_with_locks(proc, advisory_locks, host, tid);
+}
+
 /// Extract SCM_RIGHTS descriptors from one canonical kernel control wire.
 ///
 /// Malformed records and invalid descriptors are errors. Silently skipping
@@ -7445,11 +8361,32 @@ fn extract_scm_rights(
 /// buffer. Keeping the fixed wire at zero or one iovec preserves datagram
 /// atomicity without a second kernel allocation and payload copy.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32) -> i32 {
+pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32, retry_token: i64) -> i32 {
     use wasm_posix_shared::{KernelIovecWire, KernelMsghdrWire};
 
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let (_gkl, tid, proc, advisory_locks) = unsafe { get_process_tid_and_advisory_locks() };
     let mut host = WasmHostIO;
+    let operation = crate::blocked_retry::BlockingRetryOperation::Sendmsg;
+    let owns_active = match proc
+        .blocked_retries
+        .activate_direct(tid, retry_token, operation)
+    {
+        Ok(owns_active) => owns_active,
+        Err(error) => {
+            deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
+            return -(error as i32);
+        }
+    };
+    let owns_dispatch = match proc.blocked_retries.enter_dispatch(tid) {
+        Ok(owns_dispatch) => owns_dispatch,
+        Err(error) => {
+            if owns_active {
+                proc.blocked_retries.clear_active();
+            }
+            deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
+            return -(error as i32);
+        }
+    };
 
     let msg = unsafe { slice::from_raw_parts(msg_ptr, size_of::<KernelMsghdrWire>()) };
     let name_ptr = read_wire_u32(msg, offset_of!(KernelMsghdrWire, name)) as usize;
@@ -7460,16 +8397,53 @@ pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32) -> i32
     let control_len = read_wire_u32(msg, offset_of!(KernelMsghdrWire, control_len)) as usize;
 
     if let Err(err) = validate_canonical_message_iov_len(iov_len) {
-        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+        finish_direct_blocking_retry_dispatch(proc, owns_active, owns_dispatch);
+        deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
         return -(err as i32);
     }
 
-    let ancillary_fds = match extract_scm_rights(proc, control_ptr, control_len) {
-        Ok(fds) => fds,
+    let active_ancillary = match syscalls::clone_active_sendmsg_ancillary(proc, tid) {
+        Ok(ancillary) => ancillary,
         Err(err) => {
-            deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+            finish_direct_blocking_retry_dispatch(proc, owns_active, owns_dispatch);
+            // A fallible clone may already have retained an earlier rights
+            // entry. Its Drop queued exact deferred release metadata; consume
+            // that rollback before this exported operation returns.
+            syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
+            deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
             return -(err as i32);
         }
+    };
+    let (ancillary_fds, binding_template) = if let Some(ancillary) = active_ancillary {
+        (ancillary, None)
+    } else {
+        let ancillary = match extract_scm_rights(proc, control_ptr, control_len) {
+            Ok(fds) => fds,
+            Err(err) => {
+                finish_direct_blocking_retry_dispatch(proc, owns_active, owns_dispatch);
+                deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
+                return -(err as i32);
+            }
+        };
+        let mut template = Vec::new();
+        if template.try_reserve_exact(ancillary.len()).is_err() {
+            finish_direct_blocking_retry_dispatch(proc, owns_active, owns_dispatch);
+            deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
+            return -(Errno::ENOMEM as i32);
+        }
+        for entry in &ancillary {
+            match entry.try_clone_retained() {
+                Ok(entry) => template.push(entry),
+                Err(error) => {
+                    finish_direct_blocking_retry_dispatch(proc, owns_active, owns_dispatch);
+                    drop(template);
+                    syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
+                    deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
+                    return -(error as i32);
+                }
+            }
+        }
+        (ancillary, Some(template))
     };
 
     let (base, len) = if iov_len == 0 {
@@ -7496,27 +8470,63 @@ pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32) -> i32
     } else {
         None
     };
-    let result = match syscalls::sys_sendmsg(proc, &mut host, fd, buf, flags, addr, ancillary_fds) {
-        Ok(n) => n as i32,
-        Err(e) => -(e as i32),
-    };
+    let mut result =
+        match syscalls::sys_sendmsg(proc, &mut host, fd, buf, flags, addr, ancillary_fds) {
+            Ok(n) => n as i32,
+            Err(e) => -(e as i32),
+        };
+    if result == -(Errno::EAGAIN as i32) {
+        if let Err(error) = syscalls::ensure_blocking_retry_ofd_binding(
+            proc,
+            advisory_locks,
+            &mut host,
+            tid,
+            137,
+            fd,
+            binding_template,
+        ) {
+            result = -(error as i32);
+        }
+    }
+    finish_direct_blocking_retry_dispatch(proc, owns_active, owns_dispatch);
     syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
 
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
     result
 }
 
 /// recvmsg — receive into one canonical host-staged contiguous buffer.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
+pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32, retry_token: i64) -> i32 {
     use wasm_posix_shared::fd_flags::FD_CLOEXEC;
     use wasm_posix_shared::socket::{
         MSG_CMSG_CLOEXEC, MSG_CTRUNC, SCM_RIGHTS, SCM_RIGHTS_FD_BYTES, SOL_SOCKET,
     };
     use wasm_posix_shared::{KernelCmsghdrWire, KernelIovecWire, KernelMsghdrWire};
 
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let (_gkl, tid, proc, advisory_locks) = unsafe { get_process_tid_and_advisory_locks() };
     let mut host = WasmHostIO;
+    let operation = crate::blocked_retry::BlockingRetryOperation::Recvmsg;
+    let owns_active = match proc
+        .blocked_retries
+        .activate_direct(tid, retry_token, operation)
+    {
+        Ok(owns_active) => owns_active,
+        Err(error) => {
+            deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
+            return -(error as i32);
+        }
+    };
+    let owns_dispatch = match proc.blocked_retries.enter_dispatch(tid) {
+        Ok(owns_dispatch) => owns_dispatch,
+        Err(error) => {
+            if owns_active {
+                proc.blocked_retries.clear_active();
+            }
+            deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
+            return -(error as i32);
+        }
+    };
 
     let msg = unsafe { slice::from_raw_parts(msg_ptr, size_of::<KernelMsghdrWire>()) };
     let name_ptr = read_wire_u32(msg, offset_of!(KernelMsghdrWire, name)) as usize;
@@ -7527,7 +8537,8 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
     let control_len = read_wire_u32(msg, offset_of!(KernelMsghdrWire, control_len)) as usize;
 
     if let Err(err) = validate_canonical_message_iov_len(iov_len) {
-        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+        finish_direct_blocking_retry_dispatch(proc, owns_active, owns_dispatch);
+        deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
         return -(err as i32);
     }
 
@@ -7554,11 +8565,25 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
         &mut []
     };
 
-    let (result, mut received) =
+    let (mut result, mut received) =
         match syscalls::sys_recvmsg(proc, &mut host, fd, buf, flags, addr_buf) {
             Ok(received) => (received.return_len as i32, Some(received)),
             Err(err) => (-(err as i32), None),
         };
+    if result == -(Errno::EAGAIN as i32) {
+        if let Err(error) = syscalls::ensure_blocking_retry_ofd_binding(
+            proc,
+            advisory_locks,
+            &mut host,
+            tid,
+            138,
+            fd,
+            None,
+        ) {
+            result = -(error as i32);
+        }
+    }
+    finish_direct_blocking_retry_dispatch(proc, owns_active, owns_dispatch);
 
     // Publish all result metadata even for a zero-byte datagram: a zero-length
     // message can still carry descriptors and output flags.
@@ -7568,11 +8593,16 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
         .map_or(0, |received| received.output_flags);
     if let Some(received) = received.as_mut() {
         let msg_mut = unsafe { slice::from_raw_parts_mut(msg_ptr, size_of::<KernelMsghdrWire>()) };
-        write_wire_u32(
-            msg_mut,
-            offset_of!(KernelMsghdrWire, name_len),
-            received.addr_len as u32,
-        );
+        if name_ptr != 0 {
+            // msg_name presence, not its capacity, controls whether
+            // msg_namelen is a value-result field. A canonical non-null
+            // zero-capacity pointer still receives the complete length.
+            write_wire_u32(
+                msg_mut,
+                offset_of!(KernelMsghdrWire, name_len),
+                received.addr_len as u32,
+            );
+        }
 
         if !received.ancillary_fds.is_empty() {
             let mut in_flight = core::mem::take(&mut received.ancillary_fds);
@@ -7654,7 +8684,7 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
 
     syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
 
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
     result
 }
 
@@ -7909,15 +8939,15 @@ pub extern "C" fn kernel_mprotect(addr: usize, len: usize, prot: u32) -> i32 {
     result
 }
 
-/// Exit the process. Closes all fds and dir streams, sets state to Exited.
-/// For thread workers, just sets exit_status without destroying shared state.
+/// Commit the current task's exit transition and return its recorded status.
 ///
-/// This kernel-side transaction returns so a reusable kernel Wasm instance can
-/// run its compiler-generated shadow-stack epilogue. The guest's separate
-/// `kernel_exit` import remains non-returning and traps only after the channel
-/// handshake completes.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_exit(status: i32) {
+/// WHY: the host adapter must be able to verify process exit without treating
+/// the deliberate trap required by the guest-facing `_exit` ABI as an
+/// arbitrary recoverable WebAssembly exception. Both exported entry points
+/// share this exact transition so their cleanup and task-binding lifetime
+/// cannot drift.
+fn commit_current_task_exit(status: i32) -> i32 {
+    let committed_status;
     {
         let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
         if unsafe { host_is_thread_worker() } != 0 {
@@ -7930,10 +8960,38 @@ pub extern "C" fn kernel_exit(status: i32) {
             let mut host = WasmHostIO;
             syscalls::sys_exit_with_locks(proc, advisory_locks, &mut host, status);
         }
+        committed_status = proc.exit_status;
     } // _gkl dropped here — GKL released
-    // Preserve direct-export safety as well as the normal dispatcher contract.
-    // `kernel_handle_channel` clears the same binding again after this returns.
+    // Consume task authority before deferred descriptor cleanup can invoke a
+    // host callback. Cleanup needs no process identity, and a callback trap
+    // must not leave the exited task available to a later dispatch.
     unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
+    finish_machine_scm_rights_cleanup_if_pending();
+    committed_status
+}
+
+/// Host-adapter exit boundary that returns after committing process state.
+///
+/// The caller must compare the returned low-eight-bit status and independently
+/// verify `kernel_get_process_state(pid) == PROCESS_STATE_EXITED` before
+/// publishing lifecycle effects.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_commit_process_exit(status: i32) -> i32 {
+    commit_current_task_exit(status)
+}
+
+/// Exit the process. Closes all fds and dir streams, sets state to Exited.
+/// For thread workers, just sets exit_status without destroying shared state.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exit(status: i32) -> ! {
+    let _ = commit_current_task_exit(status);
+    // Halt execution — musl's _exit loops forever if we just return.
+    #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
+    unsafe {
+        core::hint::unreachable_unchecked();
+    }
+    #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+    unreachable!("kernel_exit should not return");
 }
 
 /// Get the exit status of the current process (set by kernel_exit).
@@ -8044,9 +9102,25 @@ pub extern "C" fn kernel_accept4(
 
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
+    let address_requested = syscalls::validate_optional_socket_address_output(
+        !addr_ptr.is_null(),
+        !addrlen_ptr.is_null(),
+    );
     let result = if !accept4_flags_are_valid(flags) {
         -(Errno::EINVAL as i32)
+    } else if let Err(error) = address_requested {
+        // Reject an incomplete active pair before accept can consume a queued
+        // connection and publish an unreachable descriptor.
+        -(error as i32)
     } else {
+        let requested_addr_len = if address_requested.unwrap_or(false) {
+            let addrlen_buf = unsafe { slice::from_raw_parts(addrlen_ptr, 4) };
+            Some(u32::from_le_bytes(
+                addrlen_buf.try_into().unwrap_or([0; 4]),
+            ) as usize)
+        } else {
+            None
+        };
         match syscalls::sys_accept(proc, &mut host, fd) {
             Ok(new_fd) => {
                 // Apply SOCK_CLOEXEC flag
@@ -8063,72 +9137,37 @@ pub extern "C" fn kernel_accept4(
                         }
                     }
                 }
-                // Write peer address if buffers provided
-                if !addr_ptr.is_null() && !addrlen_ptr.is_null() {
-                    let addrlen_buf = unsafe { slice::from_raw_parts_mut(addrlen_ptr, 4) };
-                    let max_len =
-                        u32::from_le_bytes(addrlen_buf.try_into().unwrap_or([0; 4])) as usize;
-                    // Get the accepted socket's peer address
-                    let entry = proc.fd_table.get(new_fd);
-                    if let Ok(entry) = entry {
-                        let ofd = proc.ofd_table.get(entry.ofd_ref.0);
-                        if let Some(ofd) = ofd {
-                            let sock_idx = (-(ofd.host_handle + 1)) as usize;
-                            if let Some(sock) = proc.sockets.get(sock_idx) {
-                                match sock.domain {
-                                    crate::socket::SocketDomain::Unix => {
-                                        // Write AF_UNIX sockaddr
-                                        let n = max_len.min(2);
-                                        if n >= 2 {
-                                            let addr_buf = unsafe {
-                                                slice::from_raw_parts_mut(addr_ptr, max_len)
-                                            };
-                                            addr_buf[0] = 1; // AF_UNIX
-                                            addr_buf[1] = 0;
-                                            for i in 2..max_len {
-                                                addr_buf[i] = 0;
-                                            }
-                                            addrlen_buf.copy_from_slice(&2u32.to_le_bytes());
-                                        }
-                                    }
-                                    crate::socket::SocketDomain::Inet => {
-                                        let mut sa = [0u8; 16];
-                                        sa[0] = 2; // AF_INET
-                                        let port_be = sock.peer_port.to_be_bytes();
-                                        sa[2] = port_be[0];
-                                        sa[3] = port_be[1];
-                                        sa[4] = sock.peer_addr[0];
-                                        sa[5] = sock.peer_addr[1];
-                                        sa[6] = sock.peer_addr[2];
-                                        sa[7] = sock.peer_addr[3];
-                                        let n = max_len.min(16);
-                                        let addr_buf =
-                                            unsafe { slice::from_raw_parts_mut(addr_ptr, n) };
-                                        addr_buf.copy_from_slice(&sa[..n]);
-                                        addrlen_buf.copy_from_slice(&16u32.to_le_bytes());
-                                    }
-                                    crate::socket::SocketDomain::Inet6 => {
-                                        let mut sa = [0u8; 28];
-                                        sa[0] = 10; // AF_INET6
-                                        let port_be = sock.peer_port.to_be_bytes();
-                                        sa[2] = port_be[0];
-                                        sa[3] = port_be[1];
-                                        sa[8..24].copy_from_slice(&sock.peer_addr6);
-                                        let n = max_len.min(28);
-                                        let addr_buf =
-                                            unsafe { slice::from_raw_parts_mut(addr_ptr, n) };
-                                        addr_buf.copy_from_slice(&sa[..n]);
-                                        addrlen_buf.copy_from_slice(&28u32.to_le_bytes());
-                                    }
-                                }
-                            }
-                        }
+                let address_result = if let Some(max_len) = requested_addr_len {
+                    // A zero-capacity result has no address bytes to lend, but
+                    // still reports the complete peer-address length.
+                    let addr_buf = if max_len == 0 {
+                        &mut []
+                    } else {
+                        unsafe { slice::from_raw_parts_mut(addr_ptr, max_len) }
+                    };
+                    syscalls::write_accept_peer_address(proc, new_fd, addr_buf).map(|actual_len| {
+                        let addrlen_buf =
+                            unsafe { slice::from_raw_parts_mut(addrlen_ptr, 4) };
+                        addrlen_buf.copy_from_slice(&actual_len.to_le_bytes());
+                    })
+                } else {
+                    Ok(())
+                };
+                match address_result {
+                    Ok(()) => new_fd,
+                    Err(error) => {
+                        // A result-marshalling failure cannot publish an fd
+                        // whose peer metadata the caller requested but did not
+                        // receive. Roll back the accepted descriptor first.
+                        let rollback = syscalls::sys_close_with_locks(
+                            proc,
+                            advisory_locks,
+                            &mut host,
+                            new_fd,
+                        );
+                        -(rollback.err().unwrap_or(error) as i32)
                     }
-                } else if !addrlen_ptr.is_null() {
-                    let buf = unsafe { slice::from_raw_parts_mut(addrlen_ptr, 4) };
-                    buf.copy_from_slice(&0u32.to_le_bytes());
                 }
-                new_fd
             }
             Err(e) => -(e as i32),
         }
@@ -8223,8 +9262,8 @@ fn cross_process_loopback_connect(
     // searching or mutating any other process.
     let sock_idx = {
         let proc = table.get(my_pid).ok_or(Errno::ESRCH)?;
-        let entry = proc.fd_table.get(fd)?;
-        let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+        let ofd_idx = syscalls::resolve_io_ofd(proc, fd)?;
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
         if ofd.file_type != FileType::Socket {
             return Err(Errno::ENOTSOCK);
         }
@@ -8375,8 +9414,8 @@ fn cross_process_loopback_connect6(
 
     let sock_idx = {
         let proc = table.get(my_pid).ok_or(Errno::ESRCH)?;
-        let entry = proc.fd_table.get(fd)?;
-        let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+        let ofd_idx = syscalls::resolve_io_ofd(proc, fd)?;
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
         if ofd.file_type != FileType::Socket {
             return Err(Errno::ENOTSOCK);
         }
@@ -8487,11 +9526,9 @@ fn cross_process_unix_connect(
     use crate::pipe::PipeBuffer;
     use crate::socket::{SocketDomain, SocketState, SocketType};
 
-    // Parse path from sockaddr_un
-    if addr.len() < 3 {
-        return Err(Errno::EINVAL);
-    }
-    let path_bytes = &addr[2..];
+    // sys_connect already validated this address before the cross-process
+    // fallback, but retain the family-specific bound at this second parser.
+    let path_bytes = syscalls::checked_sockaddr_un_path(addr)?;
     let (resolved, sock_idx) = {
         let proc = table.get_mut(my_pid).ok_or(Errno::ESRCH)?;
         let resolved = if path_bytes.first().copied() == Some(0) {
@@ -8513,8 +9550,8 @@ fn cross_process_unix_connect(
         // Only AF_UNIX stream sockets can enter the cross-process stream-pipe
         // connection path. In particular, never reinterpret a datagram socket
         // as a stream merely because its registry lookup found another process.
-        let entry = proc.fd_table.get(fd)?;
-        let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+        let ofd_idx = syscalls::resolve_io_ofd(proc, fd)?;
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
         if ofd.file_type != FileType::Socket {
             return Err(Errno::ENOTSOCK);
         }
@@ -8592,7 +9629,7 @@ fn cross_process_unix_connect(
 
 #[cfg(test)]
 mod socket_wrapper_tests {
-    use super::{WasmHostIO, cross_process_unix_connect, write_getsockopt_bytes};
+    use super::{cross_process_unix_connect, write_getsockopt_bytes, WasmHostIO};
     use crate::errno::Errno;
     use crate::fd::OpenFileDescRef;
     use crate::ofd::FileType;
@@ -9135,15 +10172,10 @@ pub extern "C" fn kernel_setsockopt(
 /// Poll file descriptors. Returns number of ready fds, or negative errno.
 /// fds_ptr points to an array of WasmPollFd structs (8 bytes each: i32 fd, i16 events, i16 revents).
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_poll(
-    fds_ptr: *mut u8,
-    fds_capacity: u32,
-    nfds: u32,
-    timeout: i32,
-) -> i32 {
-    let Some(required_capacity) = nfds.checked_mul(
-        core::mem::size_of::<wasm_posix_shared::WasmPollFd>() as u32,
-    ) else {
+pub extern "C" fn kernel_poll(fds_ptr: *mut u8, fds_capacity: u32, nfds: u32, timeout: i32) -> i32 {
+    let Some(required_capacity) =
+        nfds.checked_mul(core::mem::size_of::<wasm_posix_shared::WasmPollFd>() as u32)
+    else {
         return -(Errno::EOVERFLOW as i32);
     };
     if fds_capacity != required_capacity {
@@ -9214,27 +10246,38 @@ pub extern "C" fn kernel_recvfrom(
     } else {
         unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) }
     };
-    // addrlen_ptr is a channel-rewritten pointer to a u32 containing the buffer size
-    let addr_len = if !addrlen_ptr.is_null() {
-        unsafe { *addrlen_ptr }
-    } else {
-        0
-    };
-    let addr_buf = if !addr_ptr.is_null() && addr_len > 0 {
-        unsafe { slice::from_raw_parts_mut(addr_ptr, addr_len as usize) }
-    } else {
-        &mut []
-    };
-    let result = match syscalls::sys_recvfrom(proc, &mut host, fd, buf, flags, addr_buf) {
-        Ok((n, actual_addr_len)) => {
-            if !addrlen_ptr.is_null() {
-                unsafe {
-                    *addrlen_ptr = actual_addr_len as u32;
+    let address_requested = syscalls::validate_optional_socket_address_output(
+        !addr_ptr.is_null(),
+        !addrlen_ptr.is_null(),
+    );
+    let result = match address_requested {
+        Err(error) => -(error as i32),
+        Ok(address_requested) => {
+            // addrlen_ptr is a channel-rewritten pointer only for an active
+            // address result. A caller may supply arbitrary ignored bits when
+            // addr_ptr is null.
+            let addr_len = if address_requested {
+                unsafe { *addrlen_ptr }
+            } else {
+                0
+            };
+            let addr_buf = if addr_len > 0 {
+                unsafe { slice::from_raw_parts_mut(addr_ptr, addr_len as usize) }
+            } else {
+                &mut []
+            };
+            match syscalls::sys_recvfrom(proc, &mut host, fd, buf, flags, addr_buf) {
+                Ok((n, actual_addr_len)) => {
+                    if address_requested {
+                        unsafe {
+                            *addrlen_ptr = actual_addr_len as u32;
+                        }
+                    }
+                    n as i32
                 }
+                Err(e) => -(e as i32),
             }
-            n as i32
         }
-        Err(e) => -(e as i32),
     };
     syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
@@ -9521,8 +10564,7 @@ fn kernel_prctl_from_channel(option: u32, arg2: usize, _arg3: *mut u8, _arg4: u3
     // For the two thread-name operations, arg2 is the pointer to the
     // generated fixed-size name buffer. The other prctl args are
     // option-specific and may be garbage for options that don't use them.
-    let is_name_operation =
-        option == prctl::PR_SET_NAME || option == prctl::PR_GET_NAME;
+    let is_name_operation = option == prctl::PR_SET_NAME || option == prctl::PR_GET_NAME;
     let buf = if is_name_operation && arg2 != 0 {
         unsafe {
             core::slice::from_raw_parts_mut(
@@ -9658,6 +10700,11 @@ pub extern "C" fn kernel_fchown(fd: i32, uid: u32, gid: u32) -> i32 {
     result
 }
 
+// WHY: Vector parsing is private to channel dispatch and always carries the
+// allocation-bearing region beside the table pointer. The former public raw
+// exports could prove only that a pointer fit somewhere in total kernel
+// memory, not that it belonged to the live channel allocation. Current user
+// programs use channel_syscall.c and cannot import those obsolete functions.
 unsafe fn kernel_iovec_wire_at(iov_ptr: *const u8, index: usize) -> (usize, usize) {
     use wasm_posix_shared::KernelIovecWire;
 
@@ -9669,28 +10716,115 @@ unsafe fn kernel_iovec_wire_at(iov_ptr: *const u8, index: usize) -> (usize, usiz
     )
 }
 
-/// Write data from multiple fixed kernel-wire buffers.
+fn checked_kernel_iovec_entries(
+    iov_ptr: *const u8,
+    iovcnt: i32,
+    region: ChannelScratchRegion,
+) -> Result<(Vec<(usize, usize)>, usize), Errno> {
+    if iovcnt < 0 || iovcnt as usize > platform_limits::IOV_MAX {
+        return Err(Errno::EINVAL);
+    }
+    if iovcnt == 0 {
+        // POSIX permits a null iovec pointer when no table entries exist.
+        // Return before inspecting the pointer or channel allocation.
+        return Ok((Vec::new(), 0));
+    }
+    if iov_ptr.is_null() {
+        return Err(Errno::EFAULT);
+    }
+
+    let count = iovcnt as usize;
+    let table_bytes = count
+        .checked_mul(size_of::<wasm_posix_shared::KernelIovecWire>())
+        .ok_or(Errno::EFAULT)?;
+    region.checked_range(iov_ptr as usize, table_bytes)?;
+
+    let mut entries = Vec::new();
+    entries
+        .try_reserve_exact(count)
+        .map_err(|_| Errno::ENOMEM)?;
+    let mut total = 0usize;
+    for index in 0..count {
+        let (base, length) = unsafe { kernel_iovec_wire_at(iov_ptr, index) };
+        region.checked_range(base, length)?;
+        total = total.checked_add(length).ok_or(Errno::EINVAL)?;
+        if total > platform_limits::MAX_REPORTABLE_TRANSFER_BYTES {
+            return Err(Errno::EINVAL);
+        }
+        entries.push((base, length));
+    }
+    Ok((entries, total))
+}
+
+fn try_initialized_kernel_io_bytes(length: usize) -> Result<Vec<u8>, Errno> {
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(length).map_err(|_| Errno::ENOMEM)?;
+    bytes.resize(length, 0);
+    Ok(bytes)
+}
+
+unsafe fn gather_kernel_iovec_bytes(
+    entries: &[(usize, usize)],
+    total: usize,
+) -> Result<Vec<u8>, Errno> {
+    let mut gathered = Vec::new();
+    gathered
+        .try_reserve_exact(total)
+        .map_err(|_| Errno::ENOMEM)?;
+    for &(base, length) in entries {
+        if length != 0 {
+            let source = unsafe { slice::from_raw_parts(base as *const u8, length) };
+            gathered.extend_from_slice(source);
+        }
+    }
+    Ok(gathered)
+}
+
+unsafe fn scatter_kernel_iovec_prefix(
+    entries: &[(usize, usize)],
+    source: &[u8],
+    length: usize,
+) -> Result<(), Errno> {
+    let source = source.get(..length).ok_or(Errno::EIO)?;
+    let mut copied = 0usize;
+    for &(base, capacity) in entries {
+        if copied == source.len() {
+            break;
+        }
+        let count = capacity.min(source.len() - copied);
+        if count != 0 {
+            // `copy`, unlike `copy_nonoverlapping`, remains sound if a raw
+            // compatibility caller supplies overlapping destination iovecs.
+            // The table/ranges were checked before the scalar read.
+            unsafe {
+                core::ptr::copy(source.as_ptr().add(copied), base as *mut u8, count);
+            }
+            copied += count;
+        }
+    }
+    if copied == source.len() {
+        Ok(())
+    } else {
+        Err(Errno::EIO)
+    }
+}
+
+/// Write data from multiple fixed kernel-wire buffers in one live channel.
 /// Returns total bytes written (>= 0) or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_writev(fd: i32, iov_ptr: *const u8, iovcnt: i32) -> i32 {
+fn channel_writev(fd: i32, iov_ptr: *const u8, iovcnt: i32, region: ChannelScratchRegion) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
 
     let result = 'done: {
-        if iovcnt <= 0 || iovcnt as usize > platform_limits::IOV_MAX {
-            break 'done -(Errno::EINVAL as i32);
-        }
-
-        let mut buffers = Vec::with_capacity(iovcnt as usize);
-        for i in 0..iovcnt as usize {
-            let (base, len) = unsafe { kernel_iovec_wire_at(iov_ptr, i) };
-
-            if len == 0 {
-                continue;
-            }
-            buffers.push(unsafe { slice::from_raw_parts(base as *const u8, len) });
-        }
-        match syscalls::sys_writev(proc, &mut host, fd, &buffers) {
+        let (entries, total) = match checked_kernel_iovec_entries(iov_ptr, iovcnt, region) {
+            Ok(entries) => entries,
+            Err(error) => break 'done -(error as i32),
+        };
+        let gathered = match unsafe { gather_kernel_iovec_bytes(&entries, total) } {
+            Ok(bytes) => bytes,
+            Err(error) => break 'done -(error as i32),
+        };
+        match syscalls::sys_write(proc, &mut host, fd, &gathered) {
             Ok(n) => n as i32,
             Err(e) => -(e as i32),
         }
@@ -9699,129 +10833,95 @@ pub extern "C" fn kernel_writev(fd: i32, iov_ptr: *const u8, iovcnt: i32) -> i32
     result
 }
 
-/// Read data into multiple fixed kernel-wire buffers.
+/// Read data into multiple fixed kernel-wire buffers in one live channel.
 /// Returns total bytes read (>= 0) or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_readv(fd: i32, iov_ptr: *mut u8, iovcnt: i32) -> i32 {
+fn channel_readv(fd: i32, iov_ptr: *mut u8, iovcnt: i32, region: ChannelScratchRegion) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
 
     let result = 'done: {
-        if iovcnt <= 0 || iovcnt as usize > platform_limits::IOV_MAX {
-            break 'done -(Errno::EINVAL as i32);
+        let (entries, total) = match checked_kernel_iovec_entries(iov_ptr, iovcnt, region) {
+            Ok(entries) => entries,
+            Err(error) => break 'done -(error as i32),
+        };
+        let mut gathered = match try_initialized_kernel_io_bytes(total) {
+            Ok(bytes) => bytes,
+            Err(error) => break 'done -(error as i32),
+        };
+        match syscalls::sys_read(proc, &mut host, fd, &mut gathered) {
+            Ok(n) => match unsafe { scatter_kernel_iovec_prefix(&entries, &gathered, n) } {
+                Ok(()) => n as i32,
+                Err(error) => -(error as i32),
+            },
+            Err(e) => -(e as i32),
         }
-
-        let mut total: usize = 0;
-        for i in 0..iovcnt as usize {
-            let (base, len) = unsafe { kernel_iovec_wire_at(iov_ptr, i) };
-
-            if len == 0 {
-                continue;
-            }
-            let buf = unsafe { slice::from_raw_parts_mut(base as *mut u8, len) };
-            match syscalls::sys_read(proc, &mut host, fd, buf) {
-                Ok(n) => {
-                    total += n;
-                    if n < len as usize || n == 0 {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    if total > 0 {
-                        break 'done total as i32;
-                    }
-                    break 'done -(e as i32);
-                }
-            }
-        }
-        total as i32
     };
     syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
-/// preadv -- scatter-gather read from fixed kernel-wire buffers at offset.
+/// preadv -- scatter-gather read from one live channel at an exact offset.
 /// offset is split into (lo, hi) u32 pair.
 /// Returns total bytes read or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_preadv(
+fn channel_preadv(
     fd: i32,
     iov_ptr: *mut u8,
     iovcnt: i32,
     offset_lo: u32,
     offset_hi: i32,
+    region: ChannelScratchRegion,
 ) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
 
     let result = 'done: {
-        if iovcnt <= 0 || iovcnt as usize > platform_limits::IOV_MAX {
-            break 'done -(Errno::EINVAL as i32);
+        let (entries, total) = match checked_kernel_iovec_entries(iov_ptr, iovcnt, region) {
+            Ok(entries) => entries,
+            Err(error) => break 'done -(error as i32),
+        };
+        let mut gathered = match try_initialized_kernel_io_bytes(total) {
+            Ok(bytes) => bytes,
+            Err(error) => break 'done -(error as i32),
+        };
+        match syscalls::sys_pread(proc, &mut host, fd, &mut gathered, offset) {
+            Ok(n) => match unsafe { scatter_kernel_iovec_prefix(&entries, &gathered, n) } {
+                Ok(()) => n as i32,
+                Err(error) => -(error as i32),
+            },
+            Err(e) => -(e as i32),
         }
-
-        let mut total: usize = 0;
-        let mut cur_offset = offset;
-        for i in 0..iovcnt as usize {
-            let (base, len) = unsafe { kernel_iovec_wire_at(iov_ptr, i) };
-
-            if len == 0 {
-                continue;
-            }
-            let buf = unsafe { slice::from_raw_parts_mut(base as *mut u8, len) };
-            match syscalls::sys_pread(proc, &mut host, fd, buf, cur_offset) {
-                Ok(n) => {
-                    total += n;
-                    cur_offset += n as i64;
-                    if n < len as usize || n == 0 {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    if total > 0 {
-                        break 'done total as i32;
-                    }
-                    break 'done -(e as i32);
-                }
-            }
-        }
-        total as i32
     };
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
-/// pwritev -- scatter-gather write from fixed kernel-wire buffers at offset.
+/// pwritev -- scatter-gather write from one live channel at an exact offset.
 /// offset is split into (lo, hi) u32 pair.
 /// Returns total bytes written or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_pwritev(
+fn channel_pwritev(
     fd: i32,
     iov_ptr: *const u8,
     iovcnt: i32,
     offset_lo: u32,
     offset_hi: i32,
+    region: ChannelScratchRegion,
 ) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
 
     let result = 'done: {
-        if iovcnt <= 0 || iovcnt as usize > platform_limits::IOV_MAX {
-            break 'done -(Errno::EINVAL as i32);
-        }
-
-        let mut buffers = Vec::with_capacity(iovcnt as usize);
-        for i in 0..iovcnt as usize {
-            let (base, len) = unsafe { kernel_iovec_wire_at(iov_ptr, i) };
-
-            if len == 0 {
-                continue;
-            }
-            buffers.push(unsafe { slice::from_raw_parts(base as *const u8, len) });
-        }
-        match syscalls::sys_pwritev(proc, &mut host, fd, &buffers, offset) {
+        let (entries, total) = match checked_kernel_iovec_entries(iov_ptr, iovcnt, region) {
+            Ok(entries) => entries,
+            Err(error) => break 'done -(error as i32),
+        };
+        let gathered = match unsafe { gather_kernel_iovec_bytes(&entries, total) } {
+            Ok(bytes) => bytes,
+            Err(error) => break 'done -(error as i32),
+        };
+        match syscalls::sys_pwrite(proc, &mut host, fd, &gathered, offset) {
             Ok(n) => n as i32,
             Err(e) => -(e as i32),
         }
@@ -9833,8 +10933,7 @@ pub extern "C" fn kernel_pwritev(
 /// sendfile -- copy data between file descriptors.
 /// offset_ptr points to an i64 offset (or is null to use current position).
 /// Returns total bytes copied or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_sendfile(out_fd: i32, in_fd: i32, offset_ptr: *mut u8, count: u32) -> i32 {
+fn kernel_sendfile_with_count(out_fd: i32, in_fd: i32, offset_ptr: *mut u8, count: usize) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
 
@@ -9845,25 +10944,40 @@ pub extern "C" fn kernel_sendfile(out_fd: i32, in_fd: i32, offset_ptr: *mut u8, 
         i64::from_le_bytes(bytes.try_into().unwrap())
     };
 
-    let result =
-        match syscalls::sys_sendfile(proc, &mut host, out_fd, in_fd, offset, count as usize) {
-            Ok(n) => {
-                // Update offset_ptr if provided
-                if !offset_ptr.is_null() && offset >= 0 {
-                    let new_offset = offset + n as i64;
-                    let buf = unsafe { slice::from_raw_parts_mut(offset_ptr, 8) };
-                    buf.copy_from_slice(&new_offset.to_le_bytes());
+    let result = match syscalls::sys_sendfile(proc, &mut host, out_fd, in_fd, offset, count) {
+        Ok(n) => {
+            // Update offset_ptr if provided
+            if !offset_ptr.is_null() && offset >= 0 {
+                match syscalls::checked_offset_advance(offset, n) {
+                    Ok(new_offset) => {
+                        let buf = unsafe { slice::from_raw_parts_mut(offset_ptr, 8) };
+                        buf.copy_from_slice(&new_offset.to_le_bytes());
+                        n as i32
+                    }
+                    Err(error) => -(error as i32),
                 }
+            } else {
                 n as i32
             }
-            Err(e) => -(e as i32),
-        };
+        }
+        Err(e) => -(e as i32),
+    };
     // WHY: sendfile without an explicit input offset consumes through the
     // ordinary read path. Crossing stream ancillary data discards its
     // SCM_RIGHTS, so direct callers need the same cleanup as channel dispatch.
     syscalls::finish_scm_rights_cleanup(advisory_locks, &mut host);
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_sendfile(
+    out_fd: i32,
+    in_fd: i32,
+    offset_ptr: *mut u8,
+    count: usize,
+) -> i32 {
+    kernel_sendfile_with_count(out_fd, in_fd, offset_ptr, count)
 }
 
 /// statx -- extended file stat.
@@ -10403,7 +11517,11 @@ pub extern "C" fn kernel_clone(
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_is_fork_child() -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    if proc.fork_child { 1 } else { 0 }
+    if proc.fork_child {
+        1
+    } else {
+        0
+    }
 }
 
 /// Read the saved fork exec path into buf. Returns bytes written, or negative errno.
@@ -10796,28 +11914,20 @@ pub extern "C" fn kernel_timer_create(
     };
 
     // Parse sigevent (default: SIGEV_SIGNAL with SIGALRM)
-    let (sigev_signo, sigev_value_bits, sigev_notify, sigev_tid) =
-        if sevp_ptr.is_null() {
-            (14u32, 0u64, SIGEV_SIGNAL, 0u32) // default: SIGALRM
-        } else {
-            let model = match crate::process_wire::ProcessDataModel::from_width(
-                process_pointer_width,
-            ) {
-                Ok(model) => model,
-                Err(error) => return -(error as i32),
-            };
-            let input = unsafe { slice::from_raw_parts(sevp_ptr, model.sigevent_size()) };
-            let event = match crate::process_wire::read_sigevent(input, model) {
-                Ok(event) => event,
-                Err(error) => return -(error as i32),
-            };
-            (
-                event.signo,
-                event.value_bits,
-                event.notify,
-                event.thread_id,
-            )
+    let (sigev_signo, sigev_value_bits, sigev_notify, sigev_tid) = if sevp_ptr.is_null() {
+        (14u32, 0u64, SIGEV_SIGNAL, 0u32) // default: SIGALRM
+    } else {
+        let model = match crate::process_wire::ProcessDataModel::from_width(process_pointer_width) {
+            Ok(model) => model,
+            Err(error) => return -(error as i32),
         };
+        let input = unsafe { slice::from_raw_parts(sevp_ptr, model.sigevent_size()) };
+        let event = match crate::process_wire::read_sigevent(input, model) {
+            Ok(event) => event,
+            Err(error) => return -(error as i32),
+        };
+        (event.signo, event.value_bits, event.notify, event.thread_id)
+    };
 
     let sigev_signo = match normalize_posix_timer_signo(sigev_notify, sigev_signo) {
         Ok(signo) => signo,
@@ -11005,7 +12115,11 @@ pub extern "C" fn kernel_timer_settime(
         0i64
     } else {
         let ms = int_sec * 1000 + int_nsec / 1_000_000;
-        if ms < 1 { 1 } else { ms } // minimum 1ms for repeating
+        if ms < 1 {
+            1
+        } else {
+            ms
+        } // minimum 1ms for repeating
     };
 
     let signo = timer.sigev_signo as i32;
@@ -11323,6 +12437,7 @@ pub extern "C" fn kernel_get_robust_list(_pid: u32, _head_ptr: usize, _len_ptr: 
 /// Removes the thread from the process's thread table.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
     let pt = unsafe { &mut *PROCESS_TABLE.0.get() };
     match kernel_thread_exit_in_table(pt, pid, tid) {
         Ok(()) => 0,
@@ -11335,14 +12450,9 @@ fn kernel_thread_exit_in_table(
     pid: u32,
     tid: u32,
 ) -> Result<(), Errno> {
-    let owner = ((pid as u64) << 32) | tid as u64;
-    let proc = pt.get_mut(pid).ok_or(Errno::ESRCH)?;
-    if proc.get_thread(tid).is_none() {
-        return Err(Errno::ESRCH);
-    }
-    syscalls::cancel_fifo_open_for_owner(proc, owner);
-    proc.remove_thread(tid).ok_or(Errno::ESRCH)?;
-    Ok(())
+    let (proc, locks) = pt.process_and_advisory_locks(pid).ok_or(Errno::ESRCH)?;
+    let mut host = WasmHostIO;
+    syscalls::cleanup_exiting_thread(proc, locks, &mut host, tid)
 }
 
 #[cfg(test)]
@@ -11746,7 +12856,11 @@ pub extern "C" fn kernel_pipe_is_write_open(_pid: u32, pipe_idx: u32) -> i32 {
         Some(p) => p,
         None => return -(Errno::EBADF as i32),
     };
-    if pipe.is_write_end_open() { 1 } else { 0 }
+    if pipe.is_write_end_open() {
+        1
+    } else {
+        0
+    }
 }
 
 /// Check if a pipe accepts writes through a real reader or TCP discard sink.
@@ -11761,7 +12875,11 @@ pub extern "C" fn kernel_pipe_is_read_open(_pid: u32, pipe_idx: u32) -> i32 {
         Some(p) => p,
         None => return -(Errno::EBADF as i32),
     };
-    if pipe.is_read_end_open() { 1 } else { 0 }
+    if pipe.is_read_end_open() {
+        1
+    } else {
+        0
+    }
 }
 
 /// Check if a pipe has at least one application-owned reader.
@@ -11777,7 +12895,11 @@ pub extern "C" fn kernel_pipe_has_readers(_pid: u32, pipe_idx: u32) -> i32 {
         Some(p) => p,
         None => return -(Errno::EBADF as i32),
     };
-    if pipe.has_readers() { 1 } else { 0 }
+    if pipe.has_readers() {
+        1
+    } else {
+        0
+    }
 }
 
 /// Look up the recv pipe index for a socket fd.

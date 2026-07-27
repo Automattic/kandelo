@@ -1,5 +1,6 @@
 #![no_std]
 
+pub mod channel_scalar;
 pub mod host_abi;
 pub mod ioctl_contract;
 pub mod process_layout;
@@ -90,11 +91,23 @@ pub mod process_layout;
 ///     references, complete exceptions, mutable reference globals, and mutable
 ///     tables are serialized as versioned process-owned recipes and rebuilt
 ///     with fresh instance-local identities before continuation replay.
-///     Variable-sized host writes into reusable kernel spawn storage use a
-///     tokenized begin/copy/commit transaction, and System V IPC control
-///     transfers plus caller-native signal-stack, interval-timer, POSIX
-///     message-queue, filesystem-statistics, and system-information records
-///     use required pointer-width-aware kernel structure sizes.
+///     Variable-sized host writes into reusable kernel spawn storage and fresh
+///     kernel-owned large-I/O storage use tokenized begin/copy/execute
+///     transactions; vector I/O executes as one scalar operation, obsolete
+///     raw scalar/vector I/O exports and the decomposed-write budget export are
+///     removed, and positioned host I/O preserves exact signed-i64 offsets
+///     without changing the shared cursor. Paired host append imports report
+///     one atomic append's written prefix and exact ending offset before Rust
+///     advances the shared cursor. System V IPC control transfers plus
+///     caller-native signal-stack, interval-timer, POSIX message-queue,
+///     filesystem-statistics, and system-information records use required
+///     pointer-width-aware kernel structure sizes. Host-deferred retries retain
+///     exact kernel targets through required token/release exports, and their
+///     signal interruption policy requires exact target, deliverability,
+///     descriptor-mode, and socket-timeout query exports. Each channel request
+///     also carries generated, one-shot flags that distinguish `__syscall_cp`
+///     from a plain syscall with the same number and defer signal delivery for
+///     completions consumed outside libc's post-syscall trampoline.
 pub const ABI_VERSION: u32 = 43;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
@@ -112,6 +125,25 @@ pub const SCHED_AFFINITY_MASK_SIZE: u32 = 4;
 pub mod platform_limits {
     pub const ARG_MAX_BYTES: usize = 4 * 1024 * 1024;
     pub const PATH_MAX_BYTES: usize = 4096;
+    /// Maximum component plus its terminating NUL in a caller C string.
+    pub const NAME_MAX_BYTES: usize = 256;
+    /// Maximum hostname plus its terminating NUL in a caller C string.
+    pub const HOST_NAME_MAX_BYTES: usize = 256;
+    /// Linux memfd name content is limited to 249 bytes, plus its NUL.
+    pub const MEMFD_NAME_MAX_BYTES: usize = 250;
+    /// Largest one-entry argv/environment transport admitted by the host.
+    ///
+    /// This is not POSIX ARG_MAX; complete argv+env representation remains
+    /// governed independently by ARG_MAX_BYTES.
+    pub const PROCESS_METADATA_ENTRY_MAX_BYTES: usize = 65_536;
+    pub const NGROUPS_MAX: usize = 32;
+    pub const SYSV_MSG_MAX_BYTES: usize = 8192;
+    /// Largest successful byte count representable by the signed-i32 channel
+    /// result without becoming indistinguishable from an errno return.
+    pub const MAX_REPORTABLE_TRANSFER_BYTES: usize = i32::MAX as usize;
+    /// Largest private host/kernel transfer allocation representable by the
+    /// u32 byte-length wire used by tokenized scratch reservations.
+    pub const MAX_TRANSFER_ALLOCATION_BYTES: usize = u32::MAX as usize;
     pub const IOV_MAX: usize = 1024;
 }
 
@@ -1073,7 +1105,7 @@ pub mod mode {
 ///   8       48B   arguments (6 × i64)
 ///   56      8B    return value (i64)
 ///   64      4B    errno (i32)
-///   68      4B    request flags
+///   68      4B    request flags (u32)
 ///   72      64KB  data transfer buffer
 pub mod channel {
     use super::kernel_scratch_wire;
@@ -1097,14 +1129,27 @@ pub mod channel {
     /// Byte offset of the errno field (i32).
     pub const ERRNO_OFFSET: usize = RETURN_OFFSET + RETURN_SIZE;
     pub const ERRNO_SIZE: usize = size_of::<u32>();
-    /// Byte offset of host/process request flags (u32).
+    /// Byte offset of request flags written before the PENDING publication.
     pub const REQUEST_FLAGS_OFFSET: usize = ERRNO_OFFSET + ERRNO_SIZE;
     pub const REQUEST_FLAGS_SIZE: usize = size_of::<u32>();
+    /// This request entered libc through `__syscall_cp`, not a plain
+    /// `__syscallN` wrapper for the same syscall number.
+    pub const REQUEST_FLAG_CANCELLATION_POINT: u32 = 1 << 0;
+    /// The cancellation-point request may be interrupted for pthread_cancel.
+    ///
+    /// A target in PTHREAD_CANCEL_DISABLE still publishes cancellation-point
+    /// identity, but omits this bit so the host records cancellation without
+    /// disturbing the already-blocked operation or resetting its deadline.
+    pub const REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED: u32 = 1 << 1;
     /// The request completion is consumed by process-worker JavaScript, not
     /// the libc channel trampoline. Caught signals must remain kernel-pending
     /// until an explicit guest checkpoint can invoke the handler after the
     /// owning host transition returns.
-    pub const REQUEST_FLAG_DEFER_SIGNAL_DELIVERY: u32 = 1 << 0;
+    pub const REQUEST_FLAG_DEFER_SIGNAL_DELIVERY: u32 = 1 << 2;
+    /// Every request flag understood by this ABI epoch.
+    pub const REQUEST_FLAGS_KNOWN_MASK: u32 = REQUEST_FLAG_CANCELLATION_POINT
+        | REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED
+        | REQUEST_FLAG_DEFER_SIGNAL_DELIVERY;
     /// Total header size before data buffer.
     pub const HEADER_SIZE: usize = REQUEST_FLAGS_OFFSET + REQUEST_FLAGS_SIZE;
     /// Byte offset of the data buffer region.
@@ -1178,6 +1223,12 @@ mod channel_abi_tests {
         assert_eq!(
             channel::DATA_OFFSET,
             channel::REQUEST_FLAGS_OFFSET + channel::REQUEST_FLAGS_SIZE,
+        );
+        assert_eq!(
+            channel::REQUEST_FLAGS_KNOWN_MASK,
+            channel::REQUEST_FLAG_CANCELLATION_POINT
+                | channel::REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED
+                | channel::REQUEST_FLAG_DEFER_SIGNAL_DELIVERY,
         );
         assert_eq!(
             channel::SIG_BASE + channel::SIG_AREA_SIZE,
@@ -1434,6 +1485,25 @@ pub mod kernel_scratch_wire {
     pub const FD_PAIR_BYTES: u32 = 8;
     pub const MQUEUE_NOTIFICATION_BYTES: u32 = 8;
     pub const SOCKLEN_BYTES: u32 = 4;
+    /// Complete generic native socket-address container accepted or produced
+    /// at the syscall boundary (`struct sockaddr_storage`).
+    pub const SOCKADDR_STORAGE_BYTES: u32 = 128;
+    /// Offset of `sockaddr_un.sun_path` after `sa_family_t`.
+    pub const SOCKADDR_UNIX_PATH_OFFSET_BYTES: u32 = 2;
+    /// Native `sockaddr_un.sun_path` field capacity.
+    pub const SOCKADDR_UNIX_PATH_BYTES: u32 = 108;
+    /// Native AF_UNIX structure capacity.
+    ///
+    /// WHY: generic staging must accept a full `sockaddr_storage`, while
+    /// Rust's family parser must still reject AF_UNIX names that do not fit
+    /// the concrete `sockaddr_un` structure.
+    pub const SOCKADDR_UNIX_BYTES: u32 =
+        SOCKADDR_UNIX_PATH_OFFSET_BYTES + SOCKADDR_UNIX_PATH_BYTES;
+    /// Largest value currently produced by getsockopt (`struct tcp_info`).
+    pub const SOCKET_OPTION_MAX_BYTES: u32 = 232;
+    /// Largest currently accepted setsockopt record (`group_source_req` on
+    /// wasm64). Individual option parsers still enforce their exact layouts.
+    pub const SOCKET_OPTION_INPUT_MAX_BYTES: u32 = 264;
     pub const PRCTL_NAME_BYTES: u32 = 16;
     pub const FCNTL_FLOCK_BYTES: u32 = size_of::<WasmFlock>() as u32;
     pub const SIGNAL_MASK_BYTES: u32 = size_of::<u64>() as u32;
@@ -1441,7 +1511,7 @@ pub mod kernel_scratch_wire {
 
 #[cfg(test)]
 mod wait_abi_tests {
-    use super::{KERNEL_WAIT_RESULT_SIZE, KernelWaitResult, WASM_RUSAGE_WIRE_SIZE, WasmRusageWire};
+    use super::{KernelWaitResult, WasmRusageWire, KERNEL_WAIT_RESULT_SIZE, WASM_RUSAGE_WIRE_SIZE};
     use core::mem::{offset_of, size_of};
 
     #[test]
@@ -1594,8 +1664,8 @@ pub struct WasmStatfs {
 #[cfg(test)]
 mod native_wire_layout_tests {
     use super::{
-        KernelCmsghdrWire, KernelIovecWire, KernelMsghdrWire, WasmEpollEvent, WasmFlock,
-        WasmSysvMessageHeader, kernel_scratch_wire, prctl,
+        kernel_scratch_wire, prctl, KernelCmsghdrWire, KernelIovecWire, KernelMsghdrWire,
+        WasmEpollEvent, WasmFlock, WasmSysvMessageHeader,
     };
     use core::mem::{align_of, offset_of, size_of};
 
@@ -2761,7 +2831,10 @@ pub mod abi {
     pub const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS: &[&str] = &[
         "__abi_version",
         "kernel_alloc_scratch",
+        "kernel_blocking_retry_release",
+        "kernel_blocking_retry_token",
         "kernel_clear_process_metadata",
+        "kernel_commit_process_exit",
         "kernel_create_process",
         "kernel_create_process_with_stdio",
         "kernel_dequeue_signal",
@@ -2771,6 +2844,7 @@ pub mod abi {
         "kernel_get_parent_pid",
         "kernel_get_process_exit_signal",
         "kernel_get_process_state",
+        "kernel_get_socket_timeout_ms",
         "kernel_handle_channel",
         "kernel_has_sa_nocldstop",
         "kernel_host_adapter_manifest_len",
@@ -2779,11 +2853,13 @@ pub mod abi {
         "kernel_ipc_shmat_for_task",
         "kernel_ipc_shmdt_for_process",
         "kernel_ipc_shmdt_for_task",
+        "kernel_is_fd_nonblock",
         "kernel_mark_process_signaled",
+        "kernel_mq_descriptor_msgsize",
         "kernel_msqid_ds_bytes",
+        "kernel_pick_signal_target_tid",
         "kernel_pipe_has_readers",
         "kernel_posix_timer_fire",
-        "kernel_prepare_write_operation",
         "kernel_push_process_metadata_entry",
         "kernel_reap_exited_child",
         "kernel_remove_process",
@@ -2800,6 +2876,13 @@ pub mod abi {
         "kernel_spawn_scratch_pointer",
         "kernel_spawn_scratch_retained_capacity",
         "kernel_thread_exit",
+        "kernel_thread_has_deliverable",
+        "kernel_transfer_channel_execute",
+        "kernel_transfer_io_execute",
+        "kernel_transfer_scratch_begin",
+        "kernel_transfer_scratch_cancel",
+        "kernel_transfer_scratch_capacity",
+        "kernel_transfer_scratch_pointer",
         "kernel_validate_task",
         "kernel_wait_child_poll",
     ];
@@ -2867,6 +2950,7 @@ pub mod abi {
         pub const SYS_SCHED_SETPARAM: u32 = 231;
         pub const SYS_SCHED_SETSCHEDULER: u32 = 233;
         pub const SYS_SCHED_RR_GET_INTERVAL: u32 = 236;
+        pub const SYS_SCHED_SETAFFINITY: u32 = 237;
         pub const SYS_SCHED_GETAFFINITY: u32 = 238;
         pub const SYS_EPOLL_CREATE1: u32 = 239;
         pub const SYS_EPOLL_CTL: u32 = 240;
@@ -2886,9 +2970,13 @@ pub mod abi {
         pub const SYS_MKNOD: u32 = 271;
         pub const SYS_MKNODAT: u32 = 272;
         pub const SYS_MSYNC: u32 = 278;
+        pub const SYS_MLOCK: u32 = 279;
+        pub const SYS_MLOCK2: u32 = 280;
+        pub const SYS_MUNLOCK: u32 = 281;
         pub const SYS_WAITID: u32 = 288;
         pub const SYS_COPY_FILE_RANGE: u32 = 290;
         pub const SYS_SPLICE: u32 = 291;
+        pub const SYS_READAHEAD: u32 = 293;
         pub const SYS_SENDFILE: u32 = 294;
         pub const SYS_PREADV: u32 = 295;
         pub const SYS_PWRITEV: u32 = 296;
@@ -3031,6 +3119,10 @@ pub mod abi {
                 number: SYS_SCHED_RR_GET_INTERVAL,
             },
             AbiSyscallNumber {
+                name: "SchedSetaffinity",
+                number: SYS_SCHED_SETAFFINITY,
+            },
+            AbiSyscallNumber {
                 name: "SchedGetaffinity",
                 number: SYS_SCHED_GETAFFINITY,
             },
@@ -3107,6 +3199,18 @@ pub mod abi {
                 number: SYS_MSYNC,
             },
             AbiSyscallNumber {
+                name: "Mlock",
+                number: SYS_MLOCK,
+            },
+            AbiSyscallNumber {
+                name: "Mlock2",
+                number: SYS_MLOCK2,
+            },
+            AbiSyscallNumber {
+                name: "Munlock",
+                number: SYS_MUNLOCK,
+            },
+            AbiSyscallNumber {
                 name: "Waitid",
                 number: SYS_WAITID,
             },
@@ -3117,6 +3221,10 @@ pub mod abi {
             AbiSyscallNumber {
                 name: "Splice",
                 number: SYS_SPLICE,
+            },
+            AbiSyscallNumber {
+                name: "Readahead",
+                number: SYS_READAHEAD,
             },
             AbiSyscallNumber {
                 name: "Sendfile",
@@ -3465,6 +3573,26 @@ pub mod abi {
                 required_worker_features,
                 HOST_ADAPTER_REQUIRED_WORKER_FEATURES
             );
+        }
+
+        #[test]
+        fn host_adapter_requires_every_host_owned_retry_authority_export() {
+            for required in [
+                "kernel_blocking_retry_release",
+                "kernel_blocking_retry_token",
+                "kernel_dequeue_signal",
+                "kernel_get_socket_timeout_ms",
+                "kernel_is_fd_nonblock",
+                "kernel_pick_signal_target_tid",
+                "kernel_thread_has_deliverable",
+            ] {
+                assert!(
+                    HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS
+                        .binary_search(&required)
+                        .is_ok(),
+                    "host-owned retry protocol silently treats {required} as optional"
+                );
+            }
         }
 
         #[test]

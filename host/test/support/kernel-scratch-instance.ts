@@ -36,6 +36,22 @@ function signatures(
       parameters: [i32],
       result: pointer,
     },
+    kernel_commit_process_exit: {
+      parameters: [i32],
+      result: i32,
+    },
+    kernel_clear_process_metadata: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_clear_fork_child: {
+      parameters: [i32],
+      result: i32,
+    },
+    kernel_create_process_with_stdio: {
+      parameters: [i32, i32, i32],
+      result: i32,
+    },
     kernel_dequeue_signal: {
       parameters: [i32, i32, pointer, i32],
       result: i32,
@@ -52,12 +68,84 @@ function signatures(
       parameters: [pointer, i32],
       result: i32,
     },
+    kernel_exec_prepare: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_exec_setup_for_thread: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_fd_is_open: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_fd_supports_mmap_writeback: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_find_listener_fd_by_accept_wake: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_fork_process: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_ftruncate: {
+      parameters: [i32, i64],
+      result: i32,
+    },
     kernel_get_cwd: {
       parameters: [i32, pointer, i32],
       result: i32,
     },
+    kernel_get_fork_count: {
+      parameters: [i32],
+      result: i64,
+    },
+    kernel_get_memory_pages: {
+      parameters: [],
+      result: i32,
+    },
+    kernel_get_parent_pid: {
+      parameters: [i32],
+      result: i32,
+    },
+    kernel_get_process_exit_signal: {
+      parameters: [i32],
+      result: i32,
+    },
+    kernel_get_process_exit_status: {
+      parameters: [i32],
+      result: i32,
+    },
     kernel_get_fd_path: {
       parameters: [i32, i32, pointer, i32],
+      result: i32,
+    },
+    kernel_get_fd_accept_wake_idx: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_get_fd_pipe_idx: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_get_socket_timeout_ms: {
+      parameters: [i32, i32, i32],
+      result: i64,
+    },
+    kernel_get_process_state: {
+      parameters: [i32],
+      result: i32,
+    },
+    kernel_has_sa_nocldstop: {
+      parameters: [i32],
+      result: i32,
+    },
+    kernel_has_sa_nocldwait: {
+      parameters: [i32],
       result: i32,
     },
     kernel_getrusage: {
@@ -68,8 +156,20 @@ function signatures(
       parameters: [i32, i32, i32, pointer, i32, pointer, i32],
       result: i32,
     },
+    kernel_setsockopt: {
+      parameters: [i32, i32, i32, pointer, i32],
+      result: i32,
+    },
     kernel_handle_channel: {
-      parameters: [pointer, i32, i32],
+      parameters: [pointer, i32, i32, i64],
+      result: i32,
+    },
+    kernel_blocking_retry_token: {
+      parameters: [i32, i32, i32],
+      result: i64,
+    },
+    kernel_blocking_retry_release: {
+      parameters: [i32, i32, i64],
       result: i32,
     },
     kernel_inject_datagram: {
@@ -80,8 +180,19 @@ function signatures(
       ],
       result: i32,
     },
+    kernel_inject_mouse_event: {
+      parameters: [i32, i32, i32],
+      // The production export is void. Returning an ignored i32 keeps this
+      // compact fixture's one-result encoder simple while still exercising a
+      // genuine Wasm function and the exact gated export lookup.
+      result: i32,
+    },
     kernel_ioctl: {
       parameters: [i32, i32, pointer, i32, i32],
+      result: i32,
+    },
+    kernel_is_fd_nonblock: {
+      parameters: [i32, i32],
       result: i32,
     },
     kernel_ipc_shm_read_chunk: {
@@ -92,12 +203,68 @@ function signatures(
       parameters: [i32, i32, pointer, i32],
       result: i32,
     },
+    kernel_ipc_shmat_for_process: {
+      parameters: [i32, i32, i32, i32],
+      result: i32,
+    },
+    kernel_ipc_shmat_for_task: {
+      parameters: [i32, i32, i32, i32, i32],
+      result: i32,
+    },
+    kernel_ipc_shmdt_for_process: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_ipc_shmdt_for_task: {
+      parameters: [i32, i32, i32],
+      result: i32,
+    },
     kernel_mq_drain_notification: {
       parameters: [pointer, i32],
       result: i32,
     },
+    kernel_mq_descriptor_msgsize: {
+      parameters: [i32, i32, i32],
+      result: i32,
+    },
+    kernel_mark_process_signaled: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_msqid_ds_bytes: {
+      parameters: [i32],
+      result: i32,
+    },
+    kernel_kms_commit_count: {
+      parameters: [i32],
+      result: i64,
+    },
+    kernel_kms_last_frame_us: {
+      parameters: [i32],
+      result: i64,
+    },
     kernel_pipe2: {
       parameters: [i32, pointer, i32],
+      result: i32,
+    },
+    kernel_pipe_close_read: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_pipe_close_write: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_pipe_has_readers: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_pipe_is_read_open: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_pipe_is_write_open: {
+      parameters: [i32, i32],
       result: i32,
     },
     kernel_pipe_read: {
@@ -110,6 +277,14 @@ function signatures(
     },
     kernel_poll: {
       parameters: [pointer, i32, i32, i32],
+      result: i32,
+    },
+    kernel_pty_create: {
+      parameters: [i32],
+      result: i32,
+    },
+    kernel_pick_signal_target_tid: {
+      parameters: [i32, i32],
       result: i32,
     },
     kernel_pty_master_read: {
@@ -128,6 +303,22 @@ function signatures(
       parameters: [i32, pointer, i32],
       result: i32,
     },
+    kernel_remove_process: {
+      parameters: [i32],
+      result: i32,
+    },
+    kernel_reserve_host_region: {
+      parameters: [i32, pointer],
+      result: pointer,
+    },
+    kernel_reserve_host_region_at: {
+      parameters: [i32, pointer, pointer],
+      result: pointer,
+    },
+    kernel_reap_exited_child: {
+      parameters: [i32, i32],
+      result: i32,
+    },
     kernel_recv: {
       parameters: [i32, pointer, i32, i32],
       result: i32,
@@ -142,12 +333,48 @@ function signatures(
       ],
       result: i32,
     },
+    kernel_semctl_array_bytes: {
+      parameters: [i32, i32, i32, i32],
+      result: i32,
+    },
+    kernel_semid_ds_bytes: {
+      parameters: [i32],
+      result: i32,
+    },
     kernel_send: {
       parameters: [i32, pointer, i32, i32],
       result: i32,
     },
     kernel_set_cwd: {
       parameters: [i32, pointer, i32],
+      result: i32,
+    },
+    kernel_set_brk_base: {
+      parameters: [i32, pointer],
+      result: i32,
+    },
+    kernel_set_brk_limit: {
+      parameters: [i32, pointer],
+      result: i32,
+    },
+    kernel_set_process_credentials: {
+      parameters: [i32, i32, i32],
+      result: i32,
+    },
+    kernel_shmid_ds_bytes: {
+      parameters: [i32],
+      result: i32,
+    },
+    kernel_set_current_tid: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_set_max_addr: {
+      parameters: [i32, pointer],
+      result: i32,
+    },
+    kernel_set_mmap_base: {
+      parameters: [i32, pointer],
       result: i32,
     },
     kernel_socketpair: {
@@ -158,6 +385,30 @@ function signatures(
       parameters: [i32, i32, pointer, pointer],
       result: i32,
     },
+    kernel_spawn_reserved_process: {
+      parameters: [i32, i32, i64, pointer],
+      result: i32,
+    },
+    kernel_spawn_scratch_begin: {
+      parameters: [pointer],
+      result: i64,
+    },
+    kernel_spawn_scratch_pointer: {
+      parameters: [i64],
+      result: pointer,
+    },
+    kernel_spawn_scratch_capacity: {
+      parameters: [i64],
+      result: pointer,
+    },
+    kernel_spawn_scratch_cancel: {
+      parameters: [i64],
+      result: i32,
+    },
+    kernel_spawn_scratch_retained_capacity: {
+      parameters: [],
+      result: pointer,
+    },
     kernel_tcgetattr: {
       parameters: [i32, pointer, i32],
       result: i32,
@@ -166,12 +417,55 @@ function signatures(
       parameters: [i32, i32, pointer, i32],
       result: i32,
     },
+    kernel_thread_exit: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_thread_has_deliverable: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_transfer_scratch_begin: {
+      parameters: [pointer],
+      result: i64,
+    },
+    kernel_transfer_scratch_pointer: {
+      parameters: [i64],
+      result: pointer,
+    },
+    kernel_transfer_scratch_capacity: {
+      parameters: [i64],
+      result: pointer,
+    },
+    kernel_transfer_scratch_cancel: {
+      parameters: [i64],
+      result: i32,
+    },
+    kernel_transfer_io_execute: {
+      parameters: [i32, i32, i64, pointer, i32, i32, i64, i64],
+      result: i32,
+    },
+    kernel_transfer_channel_execute: {
+      parameters: [i32, i32, i64, i64],
+      result: i32,
+    },
     kernel_truncate: {
       parameters: [pointer, i32, i64],
       result: i32,
     },
     kernel_uname: {
       parameters: [pointer, i32],
+      result: i32,
+    },
+    kernel_validate_task: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_vblank: {
+      parameters: [],
+      // The production export is void. Returning an ignored i32 keeps this
+      // compact fixture's one-result encoder simple while exercising a
+      // genuine gated Wasm call.
       result: i32,
     },
     kernel_wait_child_poll: {
@@ -195,8 +489,27 @@ export function createKernelScratchTestInstance(
   memory: WebAssembly.Memory,
   resolveExports: () => Record<string, unknown>,
   allocator: (capacity: number) => number | bigint,
+  memoryAddressWidth: 4 | 8 = 4,
+  includedExports?: readonly string[],
+  excludedExports: readonly string[] = [],
 ): WebAssembly.Instance {
-  const entries = Object.entries(signatures(pointerWidth));
+  const selected = includedExports === undefined
+    ? undefined
+    : new Set(["kernel_alloc_scratch", ...includedExports]);
+  const excluded = new Set(excludedExports);
+  const entries = Object.entries(signatures(pointerWidth)).filter(
+    ([name]) =>
+      (selected === undefined || selected.has(name))
+      && !excluded.has(name),
+  );
+  if (selected !== undefined) {
+    const known = new Set(entries.map(([name]) => name));
+    for (const name of selected) {
+      if (!known.has(name)) {
+        throw new Error(`missing test Wasm signature for ${name}`);
+      }
+    }
+  }
   const memoryIsShared = typeof SharedArrayBuffer !== "undefined"
     && memory.buffer instanceof SharedArrayBuffer;
   const valueType = (type: WasmValueType): number =>
@@ -214,8 +527,12 @@ export function createKernelScratchTestInstance(
       // Shared memories require an advertised maximum; the broad wasm32
       // ceiling accepts every valid test-memory maximum while preserving the
       // exact shared-state bit that instance identity validation relies on.
-      ? [0x03, 0, ...unsignedLeb128(65_536)]
-      : [0x00, 0]),
+      ? [
+          memoryAddressWidth === 8 ? 0x07 : 0x03,
+          0,
+          ...unsignedLeb128(65_536),
+        ]
+      : [memoryAddressWidth === 8 ? 0x04 : 0x00, 0]),
   ];
   const exportPayload: number[] = [
     ...unsignedLeb128(entries.length + 1),

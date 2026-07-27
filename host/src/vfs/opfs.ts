@@ -5,10 +5,27 @@
  * then block with Atomics.wait() until the OpfsProxyWorker completes
  * the async OPFS operation.
  */
-import type { PathconfValue, StatResult, StatfsResult } from "../types";
+import type {
+  AppendOutcome,
+  HostFileOffset,
+  PathconfValue,
+  StatResult,
+  StatfsResult,
+} from "../types";
+import {
+  hostFileLimitForNumberBackend,
+  hostFileOffsetToSafeNumber,
+  hostFilePositionToSafeNumber,
+} from "../file-offset";
+import { HostAppendContractError } from "../append-contract";
 import { filesystemPathconf } from "../pathconf";
 import type { FileSystemBackend, DirEntry } from "./types";
-import { OpfsChannel, OpfsChannelStatus, OpfsOpcode } from "./opfs-channel";
+import {
+  OPFS_APPEND_CONTRACT_FAILURE,
+  OpfsChannel,
+  OpfsChannelStatus,
+  OpfsOpcode,
+} from "./opfs-channel";
 
 export class OpfsFileSystem implements FileSystemBackend {
   private readonly channel: OpfsChannel;
@@ -35,6 +52,11 @@ export class OpfsFileSystem implements FileSystemBackend {
   }
 
   private errnoToError(negErrno: number): Error {
+    if (negErrno === OPFS_APPEND_CONTRACT_FAILURE) {
+      return new HostAppendContractError(
+        "OPFS append mutated without an exact byte-count outcome",
+      );
+    }
     const ERRNO_NAMES: Record<number, string> = {
       [-1]: "EPERM",
       [-2]: "ENOENT",
@@ -54,9 +76,14 @@ export class OpfsFileSystem implements FileSystemBackend {
     return new Error(name);
   }
 
-  private setI64Arg(index: number, value: number): void {
+  private setI64Arg(index: number, value: HostFileOffset): void {
     try {
-      this.channel.setI64Arg(index, value);
+      this.channel.setI64Arg(
+        index,
+        typeof value === "bigint"
+          ? hostFileOffsetToSafeNumber(value)
+          : value,
+      );
     } catch (error) {
       if (error instanceof RangeError) throw this.errnoToError(-75);
       throw error;
@@ -79,11 +106,21 @@ export class OpfsFileSystem implements FileSystemBackend {
     return 0;
   }
 
-  read(handle: number, buffer: Uint8Array, offset: number | null, length: number): number {
+  read(
+    handle: number,
+    buffer: Uint8Array,
+    offset: HostFileOffset | null,
+    length: number,
+  ): number {
     this.channel.setArg(0, handle);
     this.channel.setArg(1, length);
     if (offset !== null) {
-      this.setI64Arg(2, offset);
+      this.setI64Arg(
+        2,
+        typeof offset === "bigint"
+          ? hostFilePositionToSafeNumber(offset)
+          : offset,
+      );
       this.channel.setArg(4, 1); // has_offset
     } else {
       this.channel.setArg(2, 0);
@@ -97,11 +134,21 @@ export class OpfsFileSystem implements FileSystemBackend {
     return bytesRead;
   }
 
-  write(handle: number, buffer: Uint8Array, offset: number | null, length: number): number {
+  write(
+    handle: number,
+    buffer: Uint8Array,
+    offset: HostFileOffset | null,
+    length: number,
+  ): number {
     this.channel.setArg(0, handle);
     this.channel.setArg(1, length);
     if (offset !== null) {
-      this.setI64Arg(2, offset);
+      this.setI64Arg(
+        2,
+        typeof offset === "bigint"
+          ? hostFilePositionToSafeNumber(offset)
+          : offset,
+      );
       this.channel.setArg(4, 1);
     } else {
       this.channel.setArg(2, 0);
@@ -112,7 +159,46 @@ export class OpfsFileSystem implements FileSystemBackend {
     return this.call(OpfsOpcode.WRITE);
   }
 
-  seek(handle: number, offset: number, whence: number): number {
+  append(
+    handle: number,
+    buffer: Uint8Array,
+    length: number,
+    limit: HostFileOffset | null,
+  ): AppendOutcome {
+    this.channel.setArg(0, handle);
+    this.channel.setArg(1, length);
+    const numberLimit = hostFileLimitForNumberBackend(limit);
+    if (numberLimit === null) {
+      this.channel.setArg(2, 0);
+      this.channel.setArg(3, 0);
+      this.channel.setArg(4, 0);
+    } else {
+      this.channel.setI64Arg(2, numberLimit);
+      this.channel.setArg(4, 1);
+    }
+    this.channel.dataBuffer.set(buffer.subarray(0, length));
+    const written = this.call(OpfsOpcode.APPEND);
+    try {
+      return {
+        written,
+        // The append handler replaces the request's limit words with the
+        // exact post-operation EOF before publishing completion.
+        end: this.channel.getI64Arg(2),
+      };
+    } catch {
+      // Completion promises a checked exact end. If the channel violates that
+      // promise after append, continuing would publish an unknowable cursor.
+      throw new HostAppendContractError(
+        "OPFS append completed with an inexact end position",
+      );
+    }
+  }
+
+  seek(
+    handle: number,
+    offset: HostFileOffset,
+    whence: number,
+  ): HostFileOffset {
     this.channel.setArg(0, handle);
     this.setI64Arg(1, offset);
     this.channel.setArg(3, whence);

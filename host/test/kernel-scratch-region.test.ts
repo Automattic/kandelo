@@ -10,6 +10,11 @@ import {
   KernelScratchError,
   reserveKernelScratchRegion,
 } from "../src/kernel-scratch";
+import {
+  createKernelEntryGatedInstance,
+  createKernelEntryScopedInstance,
+  KernelEntryGate,
+} from "../src/kernel-entry-gate";
 
 function memory(pages = 1): WebAssembly.Memory {
   return new WebAssembly.Memory({ initial: pages, maximum: pages });
@@ -736,7 +741,7 @@ describe("KernelScratchRegion", () => {
           kernel_send: vi.fn(() => 0),
         },
       } as unknown as WebAssembly.Instance,
-    )).toThrow(/genuine WebAssembly\.Instance/i);
+    )).toThrow(/does not own.*WebAssembly\.Memory/i);
     expect(allocator).not.toHaveBeenCalled();
   });
 
@@ -771,6 +776,99 @@ describe("KernelScratchRegion", () => {
       instance,
     )).toThrow(/not the bound instance.*allocator/i);
     expect(wrapper).not.toHaveBeenCalled();
+  });
+
+  it("binds a scoped allocator call to its persistent gated generation", () => {
+    const kernelMemory = memory();
+    const allocate = vi.fn(() => 4096);
+    const rawInstance = importedKernelExportInstance(
+      kernelMemory,
+      "kernel_send",
+      ["i32", "i32", "i32", "i32"],
+      () => 0,
+      allocate,
+    );
+    const gate = new KernelEntryGate();
+    const owner = createKernelEntryGatedInstance(rawInstance, gate);
+    let region: ReturnType<typeof allocateKernelScratchRegion> | undefined;
+    let staleScoped!: WebAssembly.Instance;
+    let staleAllocator!: (capacity: number) => number;
+
+    gate.runOrDeferVoidIngress("scoped scratch allocation", (scope) => {
+      const scoped = createKernelEntryScopedInstance(owner, scope);
+      const allocator = scoped.exports.kernel_alloc_scratch as
+        (capacity: number) => number;
+      staleScoped = scoped;
+      staleAllocator = allocator;
+      const alternateScoped = createKernelEntryScopedInstance(owner, scope);
+      expect(() => allocateKernelScratchRegion(
+        kernelMemory,
+        allocator,
+        32,
+        4,
+        "mismatched scoped callable scratch",
+        owner,
+        alternateScoped,
+      )).toThrow(/not the bound instance.*allocator/i);
+      expect(allocate).not.toHaveBeenCalled();
+      region = allocateKernelScratchRegion(
+        kernelMemory,
+        allocator,
+        32,
+        4,
+        "scoped test scratch",
+        owner,
+        scoped,
+      );
+    });
+
+    expect(allocate).toHaveBeenCalledOnce();
+    expect(() => region!.withLease((lease) => {
+      lease.invokeKernelExport("kernel_send", [
+        1,
+        lease.exportPointer(0, 32),
+        32,
+        0,
+      ]);
+    })).not.toThrow();
+
+    expect(() => allocateKernelScratchRegion(
+      kernelMemory,
+      staleAllocator,
+      32,
+      4,
+      "revoked scoped scratch",
+      owner,
+      staleScoped,
+    )).toThrow(/scope is no longer active/);
+    expect(allocate).toHaveBeenCalledOnce();
+
+    const foreignMemory = memory();
+    const foreignRaw = importedKernelExportInstance(
+      foreignMemory,
+      "kernel_send",
+      ["i32", "i32", "i32", "i32"],
+      () => 0,
+    );
+    const foreignOwner = createKernelEntryGatedInstance(
+      foreignRaw,
+      new KernelEntryGate(),
+    );
+    gate.runOrDeferVoidIngress("foreign scoped scratch rejection", (scope) => {
+      const scoped = createKernelEntryScopedInstance(owner, scope);
+      const allocator = scoped.exports.kernel_alloc_scratch as
+        (capacity: number) => number;
+      expect(() => allocateKernelScratchRegion(
+        foreignMemory,
+        allocator,
+        32,
+        4,
+        "foreign scoped scratch",
+        foreignOwner,
+        scoped,
+      )).toThrow(/not the bound instance.*allocator/i);
+    });
+    expect(allocate).toHaveBeenCalledOnce();
   });
 
   it("uses captured genuine Memory and buffer bounds after prototype replacement", () => {
@@ -824,6 +922,63 @@ describe("KernelScratchRegion", () => {
 
     expect(new Uint8Array(kernelMemory.buffer, 65_504, 32))
       .toEqual(new Uint8Array(32).fill(0x6c));
+  });
+
+  it("keeps captured shared-memory bounds after prototype replacement", () => {
+    const kernelMemory = new WebAssembly.Memory({
+      initial: 1,
+      maximum: 1,
+      shared: true,
+    });
+    const region = allocateKernelScratchRegion(
+      kernelMemory,
+      () => 65_504,
+      32,
+      4,
+      "captured shared-memory scratch",
+    );
+    const memoryBufferDescriptor = Object.getOwnPropertyDescriptor(
+      WebAssembly.Memory.prototype,
+      "buffer",
+    )!;
+    const byteLengthDescriptor = Object.getOwnPropertyDescriptor(
+      SharedArrayBuffer.prototype,
+      "byteLength",
+    )!;
+
+    try {
+      Object.defineProperty(WebAssembly.Memory.prototype, "buffer", {
+        configurable: true,
+        get: () => new SharedArrayBuffer(1_000_000),
+      });
+      Object.defineProperty(SharedArrayBuffer.prototype, "byteLength", {
+        configurable: true,
+        get: () => 1_000_000,
+      });
+
+      expect(() => checkedMemoryRange(
+        kernelMemory,
+        65_535,
+        2,
+        4,
+        "captured shared-memory range",
+      )).toThrow(/outside.*range/i);
+      region.withLease((scratch) => scratch.fill(0x3d, 0, 32));
+    } finally {
+      Object.defineProperty(
+        WebAssembly.Memory.prototype,
+        "buffer",
+        memoryBufferDescriptor,
+      );
+      Object.defineProperty(
+        SharedArrayBuffer.prototype,
+        "byteLength",
+        byteLengthDescriptor,
+      );
+    }
+
+    expect(new Uint8Array(kernelMemory.buffer, 65_504, 32))
+      .toEqual(new Uint8Array(32).fill(0x3d));
   });
 
   it("rejects structural memory objects even when their reported range fits", () => {
@@ -1594,6 +1749,22 @@ describe("KernelScratchRegion", () => {
     )).toBe(0x8000_0000);
   });
 
+  it("rejects a wasm32 minimum above u32 before invoking the reserver", () => {
+    const reserver = vi.fn(() => ({
+      pointer: 4096,
+      capacity: 32,
+    }));
+
+    expect(() => reserveKernelScratchRegion(
+      memory(),
+      reserver,
+      0x1_0000_0000,
+      4,
+      "oversized wasm32 reservation",
+    )).toThrow(/does not fit a wasm32 usize/);
+    expect(reserver).not.toHaveBeenCalled();
+  });
+
   it("cannot reuse or revive a reservation-derived region", () => {
     const kernelMemory = memory();
     const region = reserveKernelScratchRegion(
@@ -1692,5 +1863,101 @@ describe("checkedMemoryRange", () => {
       4,
       "empty output",
     )).toEqual({ pointer: 0, length: 0, end: 0 });
+  });
+
+  it.each([
+    ["ArrayBuffer", false],
+    ["SharedArrayBuffer", true],
+  ] as const)(
+    "reads live %s bounds after WebAssembly memory growth",
+    (_name, shared) => {
+      const kernelMemory = new WebAssembly.Memory({
+        initial: 1,
+        maximum: 2,
+        shared,
+      });
+
+      expect(checkedMemoryRange(
+        kernelMemory,
+        65_504,
+        32,
+        4,
+        "pre-growth output",
+      )).toEqual({ pointer: 65_504, length: 32, end: 65_536 });
+      expect(() => checkedMemoryRange(
+        kernelMemory,
+        65_536,
+        1,
+        4,
+        "pre-growth output",
+      )).toThrow(/outside.*range/i);
+
+      kernelMemory.grow(1);
+
+      expect(checkedMemoryRange(
+        kernelMemory,
+        131_040,
+        32,
+        4,
+        "post-growth output",
+      )).toEqual({ pointer: 131_040, length: 32, end: 131_072 });
+    },
+  );
+
+  it("probes each shared-memory buffer kind once across repeated checks", async () => {
+    const byteLengthDescriptor = Object.getOwnPropertyDescriptor(
+      ArrayBuffer.prototype,
+      "byteLength",
+    )!;
+    const byteLengthGetter = byteLengthDescriptor.get!;
+    let arrayBufferGetterCalls = 0;
+
+    try {
+      Object.defineProperty(ArrayBuffer.prototype, "byteLength", {
+        configurable: byteLengthDescriptor.configurable,
+        enumerable: byteLengthDescriptor.enumerable,
+        get(this: ArrayBufferLike): number {
+          arrayBufferGetterCalls++;
+          return Reflect.apply(byteLengthGetter, this, []) as number;
+        },
+      });
+      vi.resetModules();
+      const isolated = await import("../src/kernel-scratch");
+      const kernelMemory = new WebAssembly.Memory({
+        initial: 1,
+        maximum: 2,
+        shared: true,
+      });
+
+      for (let index = 0; index < 1_024; index++) {
+        isolated.checkedMemoryRange(
+          kernelMemory,
+          4096,
+          32,
+          4,
+          "repeated shared-memory output",
+        );
+      }
+      expect(arrayBufferGetterCalls).toBe(1);
+
+      kernelMemory.grow(1);
+      for (let index = 0; index < 1_024; index++) {
+        isolated.checkedMemoryRange(
+          kernelMemory,
+          65_536,
+          32,
+          4,
+          "grown repeated shared-memory output",
+        );
+      }
+      expect(arrayBufferGetterCalls).toBe(2);
+    } finally {
+      Object.defineProperty(
+        ArrayBuffer.prototype,
+        "byteLength",
+        byteLengthDescriptor,
+      );
+      vi.resetModules();
+    }
   });
 });
