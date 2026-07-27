@@ -315,6 +315,7 @@ jq -e '
 
 EXPECTED_ROOT_COUNT="$(jq -er '.packages | length' "$MIGRATION_LOCK")"
 EXPECTED_CLOSURE_COUNT="$(jq -er '.formula_closure | length' "$MIGRATION_LOCK")"
+EXPECTED_COMPOSITION_COUNT="$EXPECTED_CLOSURE_COUNT"
 EXPECTED_EMBEDDED_COUNT=0
 EXPECTED_DEFERRED_COUNT=0
 EXPECTED_MIRROR_FILE_COUNT=0
@@ -329,6 +330,7 @@ if [ "$LAZY_SHELL" = true ]; then
   EXPECTED_DEFERRED_COUNT="$((EXPECTED_CLOSURE_COUNT - EXPECTED_EMBEDDED_COUNT))"
   EXPECTED_RUNTIME_SUPPORT_COUNT="$(jq -er '.additional_formula_order | length' \
     "$RUNTIME_SUPPORT")"
+  EXPECTED_COMPOSITION_COUNT="$((EXPECTED_CLOSURE_COUNT + EXPECTED_RUNTIME_SUPPORT_COUNT))"
   EXPECTED_MIRROR_FILE_COUNT="$((EXPECTED_DEFERRED_COUNT + EXPECTED_RUNTIME_SUPPORT_COUNT + 1))"
 fi
 
@@ -434,6 +436,7 @@ jq -e \
   --argjson demo_config_bytes "$DEMO_CONFIG_BYTES" \
   --argjson expected_root_count "$EXPECTED_ROOT_COUNT" \
   --argjson expected_closure_count "$EXPECTED_CLOSURE_COUNT" \
+  --argjson expected_composition_count "$EXPECTED_COMPOSITION_COUNT" \
   --argjson expected_embedded_count "$EXPECTED_EMBEDDED_COUNT" \
   --argjson expected_deferred_count "$EXPECTED_DEFERRED_COUNT" \
   --argjson expected_runtime_support_count "$EXPECTED_RUNTIME_SUPPORT_COUNT" \
@@ -444,8 +447,17 @@ jq -e \
   .selection.requested_packages == $selection[0].packages and
   (.selection.requested_packages | length) == $expected_root_count and
   (($selection[0].packages - [.packages[].name]) | length == 0) and
-  (.packages | length) == $expected_closure_count and
-  (([.packages[].full_name] | sort) == ($lock[0].formula_closure | sort)) and
+  (.packages | length) == $expected_composition_count and
+  # WHY: formula_closure is the base-shell selection, while the reviewed
+  # runtime-support delta is real lazy software in this same image. Keep the
+  # two policy cohorts distinct without omitting either from the authoritative
+  # package inventory.
+  ([.packages[].full_name] ==
+    ($lock[0].formula_closure +
+      (if $lazy_shell
+       then $runtime_support[0].additional_formula_order
+       else []
+       end))) and
   (.metadata.tap_repository == $tap[0].tap_repository) and
   (.metadata.tap_name == $tap[0].tap_name) and
   (.metadata.tap_commit == $tap[0].tap_commit) and
