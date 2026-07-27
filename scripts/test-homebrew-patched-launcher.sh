@@ -6,12 +6,19 @@ TMPDIR="$(mktemp -d)"
 TMPDIR="$(cd "$TMPDIR" && pwd -P)"
 . "$REPO_ROOT/scripts/homebrew-patched-launcher.sh"
 ISOLATION_BUILD_USER=""
+ISOLATION_RECIPE_USER=""
 ISOLATION_ROOT=""
 NATIVE_TEST_BASE=""
 ISOLATION_NATIVE_BASE=""
 
 cleanup() {
   homebrew_patched_launcher_cleanup
+  if [ -n "$ISOLATION_RECIPE_USER" ] && id "$ISOLATION_RECIPE_USER" >/dev/null 2>&1; then
+    /usr/bin/sudo -n -- /usr/bin/pkill -KILL -u "$(id -u "$ISOLATION_RECIPE_USER")" \
+      >/dev/null 2>&1 || true
+    /usr/bin/sudo -n -- /usr/sbin/userdel "$ISOLATION_RECIPE_USER" \
+      >/dev/null 2>&1 || true
+  fi
   if [ -n "$ISOLATION_BUILD_USER" ] && id "$ISOLATION_BUILD_USER" >/dev/null 2>&1; then
     /usr/bin/sudo -n -- /usr/bin/pkill -KILL -u "$(id -u "$ISOLATION_BUILD_USER")" \
       >/dev/null 2>&1 || true
@@ -1532,6 +1539,10 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
     [ -x "$platform_projection/tools/bin/wasm-fork-instrument" ] &&
     [ ! -w "$platform_projection/crates/shared/src/lib.rs" ] ||
     fail "minimal platform projection exposed undeclared source or unsafe modes"
+  while IFS= read -r -d '' projected_directory; do
+    [ "$(/usr/bin/stat -c '%u:%g:%a' "$projected_directory")" = "0:0:555" ] ||
+      fail "platform projection left an unsealed ancestor: $projected_directory"
+  done < <(/usr/bin/find "$platform_projection" -type d -print0)
   projected_directory="$platform_projection/crates/shared/src"
   /usr/bin/sudo -n -- chmod 0755 "$projected_directory"
   if homebrew_patched_launcher_verify_platform_projection >/dev/null 2>&1; then
@@ -1649,8 +1660,18 @@ EOF
   git -C "$isolated_repo" commit -q -m fixture
   ln -s "$isolated_repo/bin/brew" "$isolated_prefix/bin/brew"
 
+  if id kandelo-homebrew-recipe >/dev/null 2>&1; then
+    fail "reserved tap recipe identity already exists"
+  fi
   /usr/bin/sudo -n -- /usr/sbin/useradd --system --user-group --create-home \
     --home-dir "$isolated_home" --shell /usr/sbin/nologin "$ISOLATION_BUILD_USER"
+  # WHY: staging preflight runs before the publisher creates its production
+  # identities. The live fixture must own the same exact third identity so it
+  # exercises schema-3 isolation instead of relying on later workflow state.
+  ISOLATION_RECIPE_USER="kandelo-homebrew-recipe"
+  /usr/bin/sudo -n -- /usr/sbin/useradd --system --user-group --no-create-home \
+    --home-dir /nonexistent --shell /usr/sbin/nologin "$ISOLATION_RECIPE_USER"
+  export KANDELO_HOMEBREW_RECIPE_USER="$ISOLATION_RECIPE_USER"
   assert_real_relocated_xtask_uses_source_alias "$ISOLATION_BUILD_USER"
   /usr/bin/sudo -n -- chown -R \
     "$ISOLATION_BUILD_USER:$(id -gn "$ISOLATION_BUILD_USER")" \
@@ -1676,6 +1697,10 @@ EOF
   export KANDELO_HOMEBREW_GETENT_BIN=/usr/bin/getent
   export KANDELO_HOMEBREW_PGREP_BIN=/usr/bin/pgrep
   export KANDELO_HOMEBREW_PKILL_BIN=/usr/bin/pkill
+  HOMEBREW_KANDELO_NODE="$(command -v node)"
+  export HOMEBREW_KANDELO_NODE
+  [[ "$HOMEBREW_KANDELO_NODE" =~ ^/nix/store/[0-9a-z]{32}-nodejs-[^/]+/bin/node$ ]] ||
+    fail "launcher isolation test requires the declared Nix Node executable"
   HOMEBREW_KANDELO_GNU_TAR="$(command -v tar)"
   export HOMEBREW_KANDELO_GNU_TAR
   [[ "$HOMEBREW_KANDELO_GNU_TAR" =~ ^/nix/store/[0-9a-z]{32}-gnutar-[^/]+/bin/tar$ ]] ||
@@ -2465,6 +2490,10 @@ EOF
     [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_DIR" ] && \
     [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_PATH" ] ||
     fail "isolated cleanup left the protected bottle or lifecycle state"
+  /usr/bin/sudo -n -- /usr/sbin/userdel "$ISOLATION_RECIPE_USER"
+  ! id "$ISOLATION_RECIPE_USER" >/dev/null 2>&1 ||
+    fail "tap recipe identity survived retirement"
+  ISOLATION_RECIPE_USER=""
   /usr/bin/sudo -n -- /usr/sbin/userdel -r "$ISOLATION_BUILD_USER"
   ! id "$ISOLATION_BUILD_USER" >/dev/null 2>&1 || fail "Formula build identity survived retirement"
   ISOLATION_BUILD_USER=""

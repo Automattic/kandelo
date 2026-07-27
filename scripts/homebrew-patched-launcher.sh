@@ -500,7 +500,7 @@ homebrew_patched_launcher_prepare_platform_projection() {
     tools/bin/wasm-local-root-spill
     crates/shared/src/lib.rs
   )
-  local -a entries=()
+  local -a entries=() projection_directories=()
 
   [ -d "$kandelo_root" ] && [ ! -L "$kandelo_root" ] || {
     echo "homebrew-patched-launcher: Kandelo platform source is not one real directory" >&2
@@ -510,7 +510,7 @@ homebrew_patched_launcher_prepare_platform_projection() {
     echo "homebrew-patched-launcher: platform projection destination is occupied" >&2
     return 2
   }
-  "$sudo_bin" /usr/bin/install -d -o root -g root -m 0555 "$destination"
+  "$sudo_bin" /usr/bin/install -d -o root -g root -m 0755 "$destination"
   for relative in "${roots[@]}"; do
     source="$kandelo_root/$relative"
     if [ -d "$source" ] && [ ! -L "$source" ]; then
@@ -527,7 +527,7 @@ homebrew_patched_launcher_prepare_platform_projection() {
       relative="${entry#"$kandelo_root"/}"
       [ "$relative" != "$entry" ] && [ -n "$relative" ] || return 2
       if [ -d "$entry" ] && [ ! -L "$entry" ]; then
-        "$sudo_bin" /usr/bin/install -d -o root -g root -m 0555 \
+        "$sudo_bin" /usr/bin/install -d -o root -g root -m 0755 \
           "$destination/$relative"
         continue
       fi
@@ -555,6 +555,16 @@ homebrew_patched_launcher_prepare_platform_projection() {
         return 2
       }
     done
+  done
+  # WHY: GNU install applies -m only to the final path component and creates
+  # missing ancestors as 0755. Build the root-owned tree first, then seal every
+  # directory together so path depth cannot change the projection contract.
+  mapfile -d '' projection_directories < <(
+    /usr/bin/find "$destination" -type d -print0 | LC_ALL=C /usr/bin/sort -z
+  )
+  for entry in "${projection_directories[@]}"; do
+    "$sudo_bin" /usr/bin/chown root:root "$entry" || return
+    "$sudo_bin" /usr/bin/chmod 0555 "$entry" || return
   done
   HOMEBREW_PATCHED_PLATFORM_ROOT="$destination"
   digest="$(
