@@ -227,6 +227,7 @@ describe("Homebrew bottle mirror recovery", () => {
     await createHomebrewBottleMirrorPublishManifest({
       bundleDirectory: value.outputDirectory,
       recoveryReportPath: value.reportPath,
+      targetCommitish: "e".repeat(40),
       outputPath: publishManifestPath,
     });
     const manifest = JSON.parse(readFileSync(publishManifestPath, "utf8"));
@@ -235,7 +236,7 @@ describe("Homebrew bottle mirror recovery", () => {
       schema: 1,
       repository: value.plan.repository,
       tag: value.plan.tag,
-      target_commitish: "a".repeat(40),
+      target_commitish: "e".repeat(40),
       accepted_existing_asset_sets: [],
     });
     expect(manifest.assets).toHaveLength(36);

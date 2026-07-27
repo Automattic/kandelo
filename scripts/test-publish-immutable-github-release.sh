@@ -475,6 +475,27 @@ first_asset="$(jq -r '.preferred_asset_names | sort | .[0]' "$manifest")"
 tag="$(jq -r '.tag' "$manifest")"
 target="$(jq -r '.target_commitish' "$manifest")"
 
+new_state wrong-target-main
+expect_failure_containing \
+  "publisher accepted a manifest for a different target main" \
+  "manifest target differs from exact target main" \
+  env \
+    PATH="$fake_bin:$PATH" \
+    FAKE_GITHUB_STATE="$ACTIVE_STATE" \
+    FAKE_EXPECTED_LOCK_ROOT="$lock_root" \
+    STATE_LOCK_SCRIPT="$fake_bin/state-lock" \
+    GITHUB_REPOSITORY=Kandelo-dev/homebrew-tap-core \
+    GH_TOKEN=fake-token \
+    bash "$REPO_ROOT/scripts/publish-immutable-github-release.sh" \
+      --manifest "$manifest" \
+      --asset-root "$asset_root" \
+      --lock-root "$lock_root" \
+      --exact-kandelo-main-sha "$EXACT_MAIN_SHA" \
+      --exact-target-main-sha cccccccccccccccccccccccccccccccccccccccc \
+      --receipt "$ACTIVE_RECEIPT"
+[ ! -s "$ACTIVE_STATE/gh.log" ] ||
+  fail "target-main rejection reached a GitHub API client"
+
 # One run loses the create, one upload, and publish responses after GitHub has
 # committed each operation. Reconciliation must observe state instead of
 # replaying a conflicting mutation.
