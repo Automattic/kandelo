@@ -1323,6 +1323,7 @@ mod tests {
             },
             nullable: false,
             required: true,
+            copy_out_length: None,
         };
         let mut exact = vec![b'a'; capacity];
         *exact.last_mut().unwrap() = 0;

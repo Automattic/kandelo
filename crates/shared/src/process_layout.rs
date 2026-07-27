@@ -86,6 +86,24 @@ pub mod cmsghdr {
     pub const WASM64_DATA_OFFSET: u32 = 16;
 }
 
+/// Caller-native multicast `group_req` and `group_source_req`.
+///
+/// The embedded `sockaddr_storage` fields are four-byte aligned on wasm32 and
+/// eight-byte aligned on wasm64. Option-buffer length and padding contents are
+/// not a data-model discriminator; the host carries the caller width in the
+/// channel's private sixth argument.
+pub mod multicast_group_request {
+    pub const WASM32_GROUP_REQ_SIZE: u32 = 132;
+    pub const WASM32_GROUP_OFFSET: u32 = 4;
+    pub const WASM32_GROUP_SOURCE_REQ_SIZE: u32 = 260;
+    pub const WASM32_SOURCE_OFFSET: u32 = 132;
+
+    pub const WASM64_GROUP_REQ_SIZE: u32 = 136;
+    pub const WASM64_GROUP_OFFSET: u32 = 8;
+    pub const WASM64_GROUP_SOURCE_REQ_SIZE: u32 = 264;
+    pub const WASM64_SOURCE_OFFSET: u32 = 136;
+}
+
 /// `stack_t` / `struct sigaltstack`.
 pub mod sigaltstack {
     pub const WASM32_SIZE: u32 = 12;

@@ -23,7 +23,8 @@ use core::slice;
 use wasm_posix_shared::{
     abi::extended_syscalls as syscall_numbers,
     channel_scalar::{self, ChannelResultKind},
-    platform_limits, Errno, KernelWaitResult, WasmDirent, WasmStat, WasmStatfs, WasmTimespec,
+    platform_limits, process_snapshot_wire, Errno, KernelWaitResult, WasmDirent, WasmStat,
+    WasmStatfs, WasmTimespec,
 };
 
 use crate::channel_result::{checked_mmap_byte_offset, ChannelDispatchOutcome};
@@ -34,6 +35,9 @@ use crate::ofd::FileType;
 use crate::process::{
     normalize_posix_timer_signo, HostAppendOutcome, HostIO, Process, ProcessState, StdioConfig,
     StdioKind,
+};
+use crate::process_snapshot_wire::{
+    process_snapshot_record_bytes, write_process_snapshot_record, ProcessSnapshotHeader,
 };
 use crate::signal::{
     apply_default_signal_action_with_locks, deliver_pending_signals_for_tid_with_locks,
@@ -1620,53 +1624,30 @@ pub extern "C" fn kernel_set_process_credentials(pid: u32, uid: u32, gid: u32) -
     }
 }
 
-/// Set the argv for a process.
-/// The argv is a null-separated concatenation of arguments.
-/// Called by host to populate /proc/<pid>/cmdline.
-/// Returns 0 on success, -ESRCH if pid not found.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_set_process_argv(pid: u32, data_ptr: *const u8, data_len: u32) -> i32 {
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    if let Some(proc) = table.get_mut(pid) {
-        let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
-        proc.argv.clear();
-        // Split on null bytes
-        for arg in data.split(|&b| b == 0) {
-            if !arg.is_empty() {
-                proc.argv.push(arg.to_vec());
-            }
-        }
-        0
-    } else {
-        -(Errno::ESRCH as i32)
-    }
-}
-
-/// Clear one process string vector before bounded, entry-at-a-time replacement.
+/// Begin one Rust-owned argv/environment replacement.
 ///
-/// `kind == 0` selects argv and `kind == 1` selects the environment. The host
-/// uses this together with `kernel_push_process_metadata_entry` instead of
-/// copying an arbitrarily large NUL-joined payload into its fixed-size scratch
-/// allocation. Clearing without any subsequent pushes deliberately represents
-/// an empty vector, which is required when exec installs an empty environment.
+/// The returned positive token owns two initially empty staging vectors. The
+/// live Process remains unchanged until one matching commit replaces both.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_clear_process_metadata(pid: u32, kind: u32) -> i32 {
+pub extern "C" fn kernel_process_metadata_begin(pid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let Some(proc) = table.get_mut(pid) else {
         return -(Errno::ESRCH as i32);
     };
-    match proc.clear_metadata(kind) {
-        Ok(()) => 0,
+    match proc.begin_metadata_replacement() {
+        Ok(token) => token as i32,
         Err(e) => -(e as i32),
     }
 }
 
-/// Append one argv or environment entry from the host's bounded scratch area.
-/// Empty entries are preserved; entry boundaries are supplied by the call
-/// itself rather than inferred from NUL bytes.
+/// Stage one argv or environment entry from the host's bounded scratch lease.
+///
+/// Rust copies the complete entry before returning. Empty entries are
+/// preserved; a failed stage permanently makes this token uncommittable.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_push_process_metadata_entry(
+pub extern "C" fn kernel_process_metadata_stage(
     pid: u32,
+    token: u32,
     kind: u32,
     data_ptr: *const u8,
     data_len: u32,
@@ -1676,7 +1657,36 @@ pub extern "C" fn kernel_push_process_metadata_entry(
         return -(Errno::ESRCH as i32);
     };
     let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
-    match proc.push_metadata_entry(kind, data) {
+    match proc.stage_metadata_entry(token, kind, data) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Atomically publish both vectors owned by the matching transaction.
+///
+/// All entry allocations completed during staging. Commit performs no host
+/// import and no fallible allocation between the argv and environment swaps.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_process_metadata_commit(pid: u32, token: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get_mut(pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    match proc.commit_metadata_replacement(token) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Drop one uncommitted replacement without changing live process metadata.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_process_metadata_cancel(pid: u32, token: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get_mut(pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    match proc.cancel_metadata_replacement(token) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     }
@@ -2185,26 +2195,54 @@ pub extern "C" fn kernel_get_fork_exec_path_pid(pid: u32, buf_ptr: *mut u8, buf_
 }
 
 /// Get the CWD for a specific process.
-/// Writes CWD to buf, returns bytes written, negative errno on error.
+///
+/// A zero capacity queries the complete byte length without dereferencing the
+/// pointer. A positive short capacity returns `-ERANGE` without writing.
+/// Otherwise this writes the complete CWD and returns its byte length.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_cwd(pid: u32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.get(pid) {
-        Some(proc) => {
-            let len = proc.cwd.len().min(buf_len as usize);
-            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, len) };
-            buf.copy_from_slice(&proc.cwd[..len]);
-            len as i32
-        }
+        Some(proc) => unsafe {
+            crate::complete_copy::copy_complete_bytes(&proc.cwd, buf_ptr, buf_len)
+        },
         None => -(Errno::ESRCH as i32),
     }
 }
 
 /// Get the file path for an fd in a specific process.
 /// Used by the host to resolve fexecve fd paths.
-/// Writes path to buf, returns bytes written, negative errno on error.
+///
+/// The zero-capacity query and complete-or-`ERANGE` copy contract matches
+/// `kernel_get_cwd`.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_fd_path(pid: u32, fd: i32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
+    kernel_copy_fd_path(pid, fd, buf_ptr, buf_len, false)
+}
+
+/// Get the directory path for a dirfd in a specific process.
+///
+/// Relative `execveat` and *at-style host lookups must prove that their base
+/// descriptor is a directory before joining its path. This has the same
+/// zero-capacity query and complete-or-`ERANGE` copy contract as
+/// `kernel_get_fd_path`, but returns `-ENOTDIR` for another file type.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_dirfd_path(
+    pid: u32,
+    fd: i32,
+    buf_ptr: *mut u8,
+    buf_len: u32,
+) -> i32 {
+    kernel_copy_fd_path(pid, fd, buf_ptr, buf_len, true)
+}
+
+fn kernel_copy_fd_path(
+    pid: u32,
+    fd: i32,
+    buf_ptr: *mut u8,
+    buf_len: u32,
+    require_directory: bool,
+) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.get(pid) {
         Some(proc) => match proc.fd_table.get(fd) {
@@ -2212,13 +2250,19 @@ pub extern "C" fn kernel_get_fd_path(pid: u32, fd: i32, buf_ptr: *mut u8, buf_le
                 let ofd_idx = entry.ofd_ref.0;
                 match proc.ofd_table.get(ofd_idx) {
                     Some(ofd) => {
+                        if require_directory && ofd.file_type != FileType::Directory {
+                            return -(Errno::ENOTDIR as i32);
+                        }
                         if ofd.path.is_empty() {
                             return -(Errno::ENOENT as i32);
                         }
-                        let len = ofd.path.len().min(buf_len as usize);
-                        let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, len) };
-                        buf.copy_from_slice(&ofd.path[..len]);
-                        len as i32
+                        unsafe {
+                            crate::complete_copy::copy_complete_bytes(
+                                &ofd.path,
+                                buf_ptr,
+                                buf_len,
+                            )
+                        }
                     }
                     None => -(Errno::EBADF as i32),
                 }
@@ -2286,8 +2330,7 @@ pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
     // First pass: compute total bytes we need to write so we can fail fast
     // on a too-small buffer rather than partial-writing. Skip zombies on
     // the count too so the size estimate matches what we actually emit.
-    const HDR_BYTES: usize = 4 + 4 + 4 + 4 + 4 + 8 + 4 + 4 + 4; // 40 bytes per record
-    let mut need: usize = 4; // count u32
+    let mut need: usize = process_snapshot_wire::RECORDS_OFFSET;
     for pid in &pids {
         let proc = match table.get(*pid) {
             Some(p) => p,
@@ -2301,17 +2344,32 @@ pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
         }
         let cmdline = crate::procfs::generate_cmdline(proc);
         let comm = process_name_bytes(proc);
-        need += HDR_BYTES + comm.len() + cmdline.len();
+        let record_bytes = match process_snapshot_record_bytes(comm.len(), cmdline.len()) {
+            Ok(bytes) => bytes,
+            Err(errno) => return -(errno as i32),
+        };
+        need = match need.checked_add(record_bytes) {
+            Some(size) => size,
+            None => return -(Errno::EOVERFLOW as i32),
+        };
     }
     if need > out_len as usize {
         return -(Errno::ENOSPC as i32);
     }
+    if need > i32::MAX as usize {
+        return -(Errno::EOVERFLOW as i32);
+    }
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
 
-    let buf = unsafe { core::slice::from_raw_parts_mut(out_ptr, out_len as usize) };
-    let mut off: usize = 0;
+    let buf = unsafe { core::slice::from_raw_parts_mut(out_ptr, need) };
+    let mut off = process_snapshot_wire::RECORDS_OFFSET;
 
     // count placeholder — patched after we finish walking.
-    write_u32(buf, &mut off, 0);
+    buf[process_snapshot_wire::COUNT_OFFSET
+        ..process_snapshot_wire::COUNT_OFFSET + process_snapshot_wire::COUNT_BYTES]
+        .copy_from_slice(&0_u32.to_le_bytes());
     let mut written: u32 = 0;
 
     for pid in &pids {
@@ -2338,25 +2396,41 @@ pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
         };
         let vsize: u64 = proc.memory.mappings().iter().map(|r| r.len as u64).sum();
 
-        write_u32(buf, &mut off, proc.pid);
-        write_u32(buf, &mut off, proc.ppid);
-        write_u32(buf, &mut off, proc.euid);
-        write_u32(buf, &mut off, proc.egid);
-        write_u64(buf, &mut off, vsize);
-        write_u32(buf, &mut off, state);
-        write_u32(buf, &mut off, comm.len() as u32);
-        write_u32(buf, &mut off, cmdline.len() as u32);
-        let cn = comm.len();
-        buf[off..off + cn].copy_from_slice(&comm);
-        off += cn;
-        let cm = cmdline.len();
-        buf[off..off + cm].copy_from_slice(&cmdline);
-        off += cm;
+        let comm_len = match u32::try_from(comm.len()) {
+            Ok(length) => length,
+            Err(_) => return -(Errno::EOVERFLOW as i32),
+        };
+        let cmdline_len = match u32::try_from(cmdline.len()) {
+            Ok(length) => length,
+            Err(_) => return -(Errno::EOVERFLOW as i32),
+        };
+        if write_process_snapshot_record(
+            buf,
+            &mut off,
+            &ProcessSnapshotHeader {
+                pid: proc.pid,
+                ppid: proc.ppid,
+                uid: proc.euid,
+                gid: proc.egid,
+                vsize,
+                state,
+                comm_len,
+                cmdline_len,
+            },
+            &comm,
+            &cmdline,
+        )
+        .is_err()
+        {
+            return -(Errno::EIO as i32);
+        }
         written += 1;
     }
     // Patch the count.
     let count_bytes = written.to_le_bytes();
-    buf[0..4].copy_from_slice(&count_bytes);
+    buf[process_snapshot_wire::COUNT_OFFSET
+        ..process_snapshot_wire::COUNT_OFFSET + process_snapshot_wire::COUNT_BYTES]
+        .copy_from_slice(&count_bytes);
     off as i32
 }
 
@@ -2382,15 +2456,6 @@ pub extern "C" fn kernel_read_proc_maps(pid: u32, out_ptr: *mut u8, out_len: u32
 // Local helpers for kernel_enum_procs. Kept here (not in procfs.rs) because
 // they're tied to the host-callable wire format, not the user-visible procfs
 // text generators.
-
-fn write_u32(buf: &mut [u8], off: &mut usize, v: u32) {
-    buf[*off..*off + 4].copy_from_slice(&v.to_le_bytes());
-    *off += 4;
-}
-fn write_u64(buf: &mut [u8], off: &mut usize, v: u64) {
-    buf[*off..*off + 8].copy_from_slice(&v.to_le_bytes());
-    *off += 8;
-}
 
 /// Process name (basename of argv[0], or "[kernel]" for an empty argv).
 /// Mirrors `process_name(proc)` from procfs.rs but returns bytes directly so
@@ -3733,12 +3798,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 },
             )
         } // SYS_GETSOCKOPT
-        59 => kernel_setsockopt(
+        59 => kernel_setsockopt_for_process_width(
             a1,
             a2 as u32,
             a3 as u32,
             channel_const_ptr!(3, u8),
             channel_scalar::u32_argument(59, args, 4),
+            a6 as u32,
         ), // SYS_SETSOCKOPT
         114 => kernel_getsockname(a1, channel_mut_ptr!(1, u8), channel_mut_ptr!(2, u32)), // SYS_GETSOCKNAME
         115 => kernel_getpeername(a1, channel_mut_ptr!(1, u8), channel_mut_ptr!(2, u32)), // SYS_GETPEERNAME
@@ -8794,7 +8860,8 @@ pub extern "C" fn kernel_environ_count() -> u32 {
 }
 
 /// Read the environment variable at `index` as "KEY=VALUE" into buf.
-/// Returns the number of bytes written, or negative errno on error.
+/// The zero-capacity query and complete-or-`ERANGE` copy contract matches
+/// `kernel_argv_read`.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_environ_get(index: u32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
@@ -8803,12 +8870,7 @@ pub extern "C" fn kernel_environ_get(index: u32, buf_ptr: *mut u8, buf_len: u32)
         return -(Errno::EINVAL as i32);
     }
     let entry = &proc.environ[idx];
-    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
-    if buf.len() < entry.len() {
-        return -(Errno::ERANGE as i32);
-    }
-    buf[..entry.len()].copy_from_slice(entry);
-    entry.len() as i32
+    unsafe { crate::complete_copy::copy_complete_bytes(entry, buf_ptr, buf_len) }
 }
 
 // ---------------------------------------------------------------------------
@@ -8837,17 +8899,18 @@ pub extern "C" fn kernel_get_argc() -> u32 {
     proc.argv.len() as u32
 }
 
-/// Copy argument at `index` into `buf_ptr`. Returns bytes written.
+/// Copy argument at `index` into `buf_ptr`.
+///
+/// A zero capacity queries the complete length. A positive short capacity
+/// returns `-ERANGE` without writing; otherwise the complete entry is copied.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_argv_read(index: u32, buf_ptr: *mut u8, buf_max: u32) -> u32 {
+pub extern "C" fn kernel_argv_read(index: u32, buf_ptr: *mut u8, buf_max: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    if let Some(arg) = proc.argv.get(index as usize) {
-        let len = arg.len().min(buf_max as usize);
-        let dst = unsafe { slice::from_raw_parts_mut(buf_ptr, len) };
-        dst.copy_from_slice(&arg[..len]);
-        len as u32
-    } else {
-        0
+    match proc.argv.get(index as usize) {
+        Some(arg) => unsafe {
+            crate::complete_copy::copy_complete_bytes(arg, buf_ptr, buf_max)
+        },
+        None => -(Errno::EINVAL as i32),
     }
 }
 
@@ -9943,7 +10006,32 @@ pub extern "C" fn kernel_setsockopt(
     optval_ptr: *const u8,
     optlen: u32,
 ) -> i32 {
+    kernel_setsockopt_for_process_width(
+        fd,
+        level,
+        optname,
+        optval_ptr,
+        optlen,
+        size_of::<usize>() as u32,
+    )
+}
+
+fn kernel_setsockopt_for_process_width(
+    fd: i32,
+    level: u32,
+    optname: u32,
+    optval_ptr: *const u8,
+    optlen: u32,
+    process_pointer_width: u32,
+) -> i32 {
     use wasm_posix_shared::socket::*;
+    if !matches!(
+        process_pointer_width,
+        wasm_posix_shared::process_layout::WASM32_POINTER_WIDTH
+            | wasm_posix_shared::process_layout::WASM64_POINTER_WIDTH
+    ) {
+        return -(Errno::EINVAL as i32);
+    }
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
 
     // Handle struct timeval options (SO_RCVTIMEO, SO_SNDTIMEO).
@@ -10053,82 +10141,8 @@ pub extern "C" fn kernel_setsockopt(
         }
         let buf = unsafe { slice::from_raw_parts(optval_ptr, optlen as usize) };
 
-        let parse_sockaddr_in_at = |offset: usize| -> Result<[u8; 4], Errno> {
-            if buf.len() < offset + 8 {
-                return Err(Errno::EINVAL);
-            }
-            let family = u16::from_le_bytes([buf[offset], buf[offset + 1]]);
-            if family as u32 != AF_INET {
-                return Err(Errno::EAFNOSUPPORT);
-            }
-            Ok([
-                buf[offset + 4],
-                buf[offset + 5],
-                buf[offset + 6],
-                buf[offset + 7],
-            ])
-        };
-
-        let parse_ifindex_at = |offset: usize| -> Result<[u8; 4], Errno> {
-            if buf.len() < offset + 4 {
-                return Err(Errno::EINVAL);
-            }
-            let ifindex = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap());
-            syscalls::ipv4_multicast_interface_from_index(ifindex)
-        };
-
-        let parsed = (|| -> Result<([u8; 4], [u8; 4], Option<[u8; 4]>), Errno> {
-            match optname {
-                IP_ADD_MEMBERSHIP | IP_DROP_MEMBERSHIP => {
-                    if buf.len() < 8 {
-                        Err(Errno::EINVAL)
-                    } else {
-                        Ok((
-                            [buf[0], buf[1], buf[2], buf[3]],
-                            [buf[4], buf[5], buf[6], buf[7]],
-                            None,
-                        ))
-                    }
-                }
-                IP_BLOCK_SOURCE
-                | IP_UNBLOCK_SOURCE
-                | IP_ADD_SOURCE_MEMBERSHIP
-                | IP_DROP_SOURCE_MEMBERSHIP => {
-                    if buf.len() < 12 {
-                        Err(Errno::EINVAL)
-                    } else {
-                        Ok((
-                            [buf[0], buf[1], buf[2], buf[3]],
-                            [buf[4], buf[5], buf[6], buf[7]],
-                            Some([buf[8], buf[9], buf[10], buf[11]]),
-                        ))
-                    }
-                }
-                MCAST_JOIN_GROUP | MCAST_LEAVE_GROUP => {
-                    let (group_offset, _) = syscalls::multicast_group_request_offsets(buf, false)?;
-                    Ok((
-                        parse_sockaddr_in_at(group_offset)?,
-                        parse_ifindex_at(0)?,
-                        None,
-                    ))
-                }
-                MCAST_BLOCK_SOURCE
-                | MCAST_UNBLOCK_SOURCE
-                | MCAST_JOIN_SOURCE_GROUP
-                | MCAST_LEAVE_SOURCE_GROUP => {
-                    let (group_offset, source_offset) =
-                        syscalls::multicast_group_request_offsets(buf, true)?;
-                    Ok((
-                        parse_sockaddr_in_at(group_offset)?,
-                        parse_ifindex_at(0)?,
-                        Some(parse_sockaddr_in_at(
-                            source_offset.expect("source request has source offset"),
-                        )?),
-                    ))
-                }
-                _ => unreachable!(),
-            }
-        })();
+        let parsed =
+            syscalls::parse_ipv4_multicast_request(buf, optname, process_pointer_width);
 
         let result = match parsed.and_then(|(group, interface_addr, source)| {
             syscalls::sys_setsockopt_ipv4_multicast(
