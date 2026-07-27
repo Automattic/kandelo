@@ -36,6 +36,9 @@ fail() {
   exit 1
 }
 
+PYTHONDONTWRITEBYTECODE=1 \
+  python3 "$REPO_ROOT/scripts/test-homebrew-tap-recipe-runner.py"
+
 assert_real_relocated_xtask_uses_source_alias() {
   if [ "$#" -ne 1 ]; then
     fail "real relocated xtask regression expects one isolated build user"
@@ -458,6 +461,18 @@ case "${1:-}" in
   assert-working-directory)
     [ "$(pwd -P)" = "$2" ]
     ;;
+  assert-target-dependency-sealed)
+    [ "$#" -eq 3 ]
+    dependency_file="$2"
+    dependency_opt="$3"
+    [ -r "$dependency_file" ] && [ ! -w "$dependency_file" ]
+    [ -L "$dependency_opt" ] && [ ! -w "$(dirname "$dependency_file")" ]
+    if printf 'mutated\n' >>"$dependency_file" 2>/dev/null; then exit 1; fi
+    if chmod u+w "$dependency_file" 2>/dev/null; then exit 1; fi
+    if rm -f "$dependency_file" 2>/dev/null; then exit 1; fi
+    if rm -f "$dependency_opt" 2>/dev/null; then exit 1; fi
+    if ln -snf /tmp/changed "$dependency_opt" 2>/dev/null; then exit 1; fi
+    ;;
   assert-immutable-trust)
     trust_file="${XDG_CONFIG_HOME:?}/homebrew/trust.json"
     trust_lock="${trust_file}.lock"
@@ -556,6 +571,45 @@ case "${1:-}" in
     if ( : >"$2/write-probe" ) 2>/dev/null; then exit 1; fi
     if ( : >"$3/write-probe" ) 2>/dev/null; then exit 1; fi
     if ( : >"$4/write-probe" ) 2>/dev/null; then exit 1; fi
+    ;;
+  assert-closed-source-aliases)
+    [ "$#" -eq 11 ]
+    platform_root="$2"
+    source_xtask="$3"
+    protected_xtask="$4"
+    original_kandelo="$5"
+    original_tap="$6"
+    original_output="$7"
+    original_sysroot_owner="$8"
+    original_dependency_tap="$9"
+    expected_fork_tool="${10}"
+    expected_spill_tool="${11}"
+    [ -z "${HOMEBREW_KANDELO_XTASK_BIN+x}" ]
+    [ -z "${WASM_POSIX_XTASK_BIN+x}" ]
+    for checker in "$source_xtask" "$protected_xtask"; do
+      [ ! -e "$checker" ] && [ ! -L "$checker" ] &&
+        [ ! -r "$checker" ] && [ ! -w "$checker" ] && [ ! -x "$checker" ]
+    done
+    [ "${HOMEBREW_KANDELO_ROOT:-}" = "$platform_root" ]
+    [ "${KANDELO_HOMEBREW_KANDELO_ROOT:-}" = "$platform_root" ]
+    [ "${HOMEBREW_KANDELO_FORK_INSTRUMENT:-}" = "$expected_fork_tool" ]
+    [ "${HOMEBREW_KANDELO_LOCAL_ROOT_SPILL:-}" = "$expected_spill_tool" ]
+    for required in \
+      sdk/bin/wasm32posix-cc sdk/src/bin/cc.ts libc/glue/abi_constants.h \
+      scripts/run-wasm-fork-instrument.sh tools/bin/wasm-fork-instrument \
+      tools/bin/wasm-local-root-spill crates/shared/src/lib.rs; do
+      [ -f "$platform_root/$required" ] && [ ! -L "$platform_root/$required" ] &&
+        [ -r "$platform_root/$required" ] && [ ! -w "$platform_root/$required" ]
+    done
+    for forbidden in .git Cargo.toml packages local-binaries target tools/xtask \
+      scripts/dev-shell.sh scripts/install-local-binary.sh; do
+      [ ! -e "$platform_root/$forbidden" ] && [ ! -L "$platform_root/$forbidden" ]
+    done
+    for hidden_root in "$original_kandelo" "$original_tap" "$original_output" \
+      "$original_sysroot_owner" "$original_dependency_tap"; do
+      [ ! -r "$hidden_root" ] && [ ! -w "$hidden_root" ] && [ ! -x "$hidden_root" ]
+      if ls "$hidden_root" >/dev/null 2>&1; then exit 1; fi
+    done
     ;;
   assert-primary-tap-root)
     [ "$#" -eq 2 ]
@@ -704,6 +758,110 @@ fi
 printf '%s\n' '{"schema":1}' >"$tap_recipe_attestation"
 if homebrew_patched_launcher_tier2_schema "$tap_recipe_attestation" >/dev/null 2>&1; then
   fail "Tier-2 schema reader accepted a retired control schema"
+fi
+xtask_audit_source="$(declare -f homebrew_patched_launcher_emit_xtask_access_audit)"
+isolate_source="$(declare -f homebrew_patched_launcher_isolate)"
+projection_source="$(declare -f homebrew_patched_launcher_prepare_platform_projection)"
+grep -Fq 'expected_protected_xtask=%q' <<<"$xtask_audit_source" &&
+  grep -Fq '[ -n "${WASM_POSIX_XTASK_BIN+x}" ]' <<<"$xtask_audit_source" &&
+  grep -Fq '[ -n "${HOMEBREW_KANDELO_XTASK_BIN+x}" ]' <<<"$xtask_audit_source" &&
+  grep -Fq '[ -e "$expected_protected_xtask" ]' <<<"$xtask_audit_source" &&
+  grep -Fq 'tap_recipe_inaccessible_paths=("-$xtask_alias" "$protected_xtask")' \
+    <<<"$isolate_source" &&
+  grep -Fq 'tools/bin/wasm-fork-instrument' <<<"$projection_source" &&
+  grep -Fq 'tools/bin/wasm-local-root-spill' <<<"$projection_source" ||
+  fail "schema-3 isolation does not remove both resolver paths from a minimal platform projection"
+
+if [ "$(uname -s)" = "Linux" ]; then
+  xtask_audit_root="$TMPDIR/xtask-audit"
+  schema2_xtask="$xtask_audit_root/schema2/xtask"
+  schema2_protected="$xtask_audit_root/schema2/protected-xtask"
+  schema3_xtask="$xtask_audit_root/schema3/xtask"
+  schema3_protected="$xtask_audit_root/schema3/protected-xtask"
+  readonly_findmnt="$xtask_audit_root/findmnt-ro"
+  writable_findmnt="$xtask_audit_root/findmnt-rw"
+  mkdir -p "${schema2_xtask%/*}" "${schema3_xtask%/*}"
+  printf '#!/bin/sh\nexit 0\n' >"$schema2_xtask"
+  chmod 0555 "$schema2_xtask"
+  cat >"$readonly_findmnt" <<'EOF'
+#!/bin/sh
+printf 'ro\n'
+EOF
+  cat >"$writable_findmnt" <<'EOF'
+#!/bin/sh
+printf 'rw\n'
+EOF
+  chmod 0555 "$readonly_findmnt" "$writable_findmnt"
+  schema2_state="$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' "$schema2_xtask")"
+  schema2_sha="$(/usr/bin/sha256sum "$schema2_xtask")"
+  schema2_sha="${schema2_sha%% *}"
+
+  emit_xtask_audit_fixture() {
+    local schema="$1" xtask="$2" protected="$3" findmnt="$4" output="$5"
+    {
+      printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+      homebrew_patched_launcher_emit_xtask_access_audit \
+        "$schema" "$xtask" "$protected" "$schema2_state" "$schema2_sha" \
+        "$findmnt"
+    } >"$output"
+    chmod 0555 "$output"
+  }
+
+  expect_xtask_audit_failure() {
+    local label="$1"
+    shift
+    if "$@" >/dev/null 2>&1; then
+      fail "generated xtask audit accepted $label"
+    fi
+  }
+
+  schema2_audit="$xtask_audit_root/schema2-audit"
+  emit_xtask_audit_fixture \
+    0 "$schema2_xtask" "$schema2_protected" "$readonly_findmnt" \
+    "$schema2_audit"
+  env -i \
+    "HOMEBREW_KANDELO_XTASK_BIN=$schema2_xtask" \
+    "WASM_POSIX_XTASK_BIN=$schema2_xtask" \
+    /usr/bin/bash "$schema2_audit"
+  expect_xtask_audit_failure "schema-2 without both checker aliases" \
+    env -i "WASM_POSIX_XTASK_BIN=$schema2_xtask" \
+    /usr/bin/bash "$schema2_audit"
+
+  schema2_writable_audit="$xtask_audit_root/schema2-writable-audit"
+  emit_xtask_audit_fixture \
+    0 "$schema2_xtask" "$schema2_protected" "$writable_findmnt" \
+    "$schema2_writable_audit"
+  expect_xtask_audit_failure "schema-2 checker on a writable mount" \
+    env -i \
+    "HOMEBREW_KANDELO_XTASK_BIN=$schema2_xtask" \
+    "WASM_POSIX_XTASK_BIN=$schema2_xtask" \
+    /usr/bin/bash "$schema2_writable_audit"
+  chmod 0755 "$schema2_xtask"
+  printf 'changed\n' >>"$schema2_xtask"
+  chmod 0555 "$schema2_xtask"
+  expect_xtask_audit_failure "mutated schema-2 checker bytes" \
+    env -i \
+    "HOMEBREW_KANDELO_XTASK_BIN=$schema2_xtask" \
+    "WASM_POSIX_XTASK_BIN=$schema2_xtask" \
+    /usr/bin/bash "$schema2_audit"
+
+  schema3_audit="$xtask_audit_root/schema3-audit"
+  emit_xtask_audit_fixture \
+    1 "$schema3_xtask" "$schema3_protected" "$readonly_findmnt" \
+    "$schema3_audit"
+  env -i /usr/bin/bash "$schema3_audit"
+  expect_xtask_audit_failure "schema-3 checker environment authority" \
+    env -i "HOMEBREW_KANDELO_XTASK_BIN=$schema3_xtask" \
+    /usr/bin/bash "$schema3_audit"
+  printf '#!/bin/sh\nexit 0\n' >"$schema3_xtask"
+  chmod 0555 "$schema3_xtask"
+  expect_xtask_audit_failure "schema-3 source-alias checker authority" \
+    env -i /usr/bin/bash "$schema3_audit"
+  rm "$schema3_xtask"
+  printf '#!/bin/sh\nexit 0\n' >"$schema3_protected"
+  chmod 0555 "$schema3_protected"
+  expect_xtask_audit_failure "schema-3 root-staged checker authority" \
+    env -i /usr/bin/bash "$schema3_audit"
 fi
 
 expect_tier2_staging_rejection() {
@@ -1318,6 +1476,52 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   ISOLATION_BUILD_USER="${ISOLATION_BUILD_USER:0:31}"
   ISOLATION_ROOT="$(mktemp -d /tmp/kandelo-launcher-test.XXXXXX)"
   /usr/bin/sudo -n -- chmod 1777 "$ISOLATION_ROOT"
+  platform_fixture="$ISOLATION_ROOT/platform-fixture"
+  platform_projection="$ISOLATION_ROOT/platform-projection"
+  mkdir -p \
+    "$platform_fixture/sdk/bin" "$platform_fixture/sdk/src/bin" \
+    "$platform_fixture/sdk/src/lib" "$platform_fixture/libc/glue" \
+    "$platform_fixture/scripts" "$platform_fixture/tools/bin" \
+    "$platform_fixture/crates/shared/src" \
+    "$platform_fixture/.git" "$platform_fixture/packages/registry"
+  for platform_file in \
+    sdk/activate.sh sdk/bin/wasm32posix-cc sdk/bin/wasm64posix-cc \
+    sdk/src/bin/cc.ts sdk/src/lib/toolchain.ts sdk/config.site \
+    sdk/package.json libc/glue/abi_constants.h \
+    scripts/run-wasm-fork-instrument.sh \
+    scripts/run-wasm-local-root-spill.sh scripts/wasm-artifact-guards.sh \
+    tools/bin/wasm-fork-instrument tools/bin/wasm-local-root-spill \
+    crates/shared/src/lib.rs; do
+    printf 'platform fixture: %s\n' "$platform_file" \
+      >"$platform_fixture/$platform_file"
+  done
+  chmod 0755 \
+    "$platform_fixture/sdk/activate.sh" \
+    "$platform_fixture/sdk/bin/wasm32posix-cc" \
+    "$platform_fixture/sdk/bin/wasm64posix-cc" \
+    "$platform_fixture/scripts/run-wasm-fork-instrument.sh" \
+    "$platform_fixture/scripts/run-wasm-local-root-spill.sh" \
+    "$platform_fixture/scripts/wasm-artifact-guards.sh" \
+    "$platform_fixture/tools/bin/wasm-fork-instrument" \
+    "$platform_fixture/tools/bin/wasm-local-root-spill"
+  printf 'must stay hidden\n' >"$platform_fixture/.git/config"
+  printf 'must stay hidden\n' >"$platform_fixture/packages/registry/package.toml"
+  homebrew_patched_launcher_prepare_platform_projection \
+    "$platform_fixture" "$platform_projection" /usr/bin/sudo
+  homebrew_patched_launcher_verify_platform_projection
+  [ ! -e "$platform_projection/.git" ] &&
+    [ ! -e "$platform_projection/packages" ] &&
+    [ -x "$platform_projection/tools/bin/wasm-fork-instrument" ] &&
+    [ ! -w "$platform_projection/crates/shared/src/lib.rs" ] ||
+    fail "minimal platform projection exposed undeclared source or unsafe modes"
+  /usr/bin/sudo -n -- chmod 0644 \
+    "$platform_projection/crates/shared/src/lib.rs"
+  if homebrew_patched_launcher_verify_platform_projection >/dev/null 2>&1; then
+    fail "platform projection verification accepted a mutable projected file"
+  fi
+  /usr/bin/sudo -n -- rm -rf "$platform_projection"
+  HOMEBREW_PATCHED_PLATFORM_ROOT=""
+  HOMEBREW_PATCHED_PLATFORM_SHA256=""
   isolated_repo="$ISOLATION_ROOT/repo"
   isolated_prefix="$ISOLATION_ROOT/prefix"
   isolated_work="$ISOLATION_ROOT/work"
@@ -1370,6 +1574,7 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   private_bottle="$isolated_private_bottle_dir/$protected_bottle_basename"
   printf '%s\n' "$protected_bottle_content" >"$private_bottle"
   printf 'reviewed source\n' >"$isolated_kandelo/source-marker"
+  cp -R "$platform_fixture"/. "$isolated_kandelo"/
   printf 'reviewed tap\n' >"$isolated_tap/tap-marker"
   printf 'reviewed dependency tap\n' >"$isolated_dependency_tap/tap-marker"
   printf 'reviewed sysroot\n' >"$isolated_sysroot/lib/libc.a"
@@ -1391,7 +1596,7 @@ EOF
   dependency_plan_json='{"build":["cmake"],"build_and_test":["cmake","ninja"],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","native_requirements":[],"runtime_and_test":["ninja"],"schema":4,"tap":"kandelo-dev/tap-core","target_taps":[{"tap_commit":"1111111111111111111111111111111111111111","tap_name":"kandelo-dev/tap-core","tap_repository":"kandelo-dev/homebrew-tap-core"}]}'
   printf '%s\n' "$dependency_plan_json" >"$isolated_dependency_plan"
   chmod 0600 "$isolated_dependency_plan"
-  tier2_attestation_json="$active_tier2_attestation_json"
+  tier2_attestation_json='{"arch":"wasm32","formula":"hello","formula_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","full_name":"kandelo-dev/tap-core/hello","schema":3,"support_runtime_sha256":"1111111111111111111111111111111111111111111111111111111111111111","support_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tap":"kandelo-dev/tap-core","tap_recipe":{"dependencies":[],"entrypoint":"build.sh","file_count":1,"manifest_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","script_env_keys":[],"source_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","source_url":"https://example.test/hello-1.0.tar.gz","total_bytes":1,"version":"1.0"},"tier2_bridge":null}'
   printf '%s\n' "$tier2_attestation_json" >"$isolated_tier2_attestation"
   chmod 0600 "$isolated_tier2_attestation"
   mkdir "$isolated_kandelo/runner-control"
@@ -1456,6 +1661,97 @@ EOF
   isolated_primary_tap="$isolated_overlay/Library/Taps/kandelo-dev/homebrew-tap-core"
   mkdir -p "$isolated_primary_tap"
   printf 'selected primary tap\n' >"$isolated_primary_tap/primary-tap-marker"
+  isolated_recipe_root="$isolated_primary_tap/Kandelo/recipes/hello"
+  isolated_recipe_script="$isolated_recipe_root/build.sh"
+  isolated_recipe_manifest="$isolated_recipe_root/recipe.json"
+  isolated_recipe_host_secret="$ISOLATION_ROOT/recipe-host-secret"
+  mkdir -p "$isolated_recipe_root"
+  printf 'workflow credential canary\n' >"$isolated_recipe_host_secret"
+  {
+    printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+    printf 'host_secret=%q\n' "$isolated_recipe_host_secret"
+    cat <<'EOF'
+# A tap controls this script. Exercise the escape paths an untrusted recipe
+# would use rather than merely inspecting the generated systemd arguments.
+if [ -e "$host_secret" ] || [ -r "$host_secret" ] ||
+   /usr/bin/cat "$host_secret" >/dev/null 2>&1; then
+  echo "tap recipe can read an unrelated host file" >&2
+  exit 91
+fi
+if [ -e "/proc/1/root$host_secret" ] ||
+   [ -r "/proc/1/root$host_secret" ]; then
+  echo "tap recipe escaped its root through host procfs" >&2
+  exit 94
+fi
+if [ -e /run/systemd/private ] || [ -S /run/dbus/system_bus_socket ]; then
+  echo "tap recipe retained a host service-manager socket" >&2
+  exit 92
+fi
+if /usr/bin/systemd-run --quiet --wait --pipe -- \
+     /usr/bin/true >/dev/null 2>&1; then
+  echo "tap recipe started a host transient service" >&2
+  exit 93
+fi
+[ "$(/usr/bin/cat "$WASM_POSIX_DEP_SOURCE_DIR/input.txt")" = "reviewed source" ]
+[ -r "$WASM_POSIX_DEP_RECIPE_DIR/recipe.json" ]
+[ -r "$WASM_POSIX_GLUE_DIR/abi_constants.h" ]
+[ -r "$WASM_POSIX_SYSROOT/lib/libc.a" ]
+printf 'closed root projection\n' >"$WASM_POSIX_DEP_OUT_DIR/canary.txt"
+EOF
+  } >"$isolated_recipe_script"
+  chmod 0755 "$isolated_primary_tap/Kandelo" \
+    "$isolated_primary_tap/Kandelo/recipes" "$isolated_recipe_root" \
+    "$isolated_recipe_script"
+  isolated_recipe_bytes="$(wc -c <"$isolated_recipe_script" | tr -d '[:space:]')"
+  isolated_recipe_sha="$(homebrew_sha256_stream <"$isolated_recipe_script")"
+  jq -n \
+    --argjson bytes "$isolated_recipe_bytes" \
+    --arg sha256 "$isolated_recipe_sha" \
+    '{
+      schema: 1,
+      dependencies: [],
+      entrypoint: "build.sh",
+      files: [{
+        bytes: $bytes,
+        mode: "0755",
+        path: "build.sh",
+        sha256: $sha256
+      }]
+    }' >"$isolated_recipe_manifest"
+  chmod 0644 "$isolated_recipe_manifest"
+  isolated_recipe_manifest_sha="$(
+    homebrew_sha256_stream <"$isolated_recipe_manifest"
+  )"
+  tier2_attestation_json="$(
+    jq -cn \
+      --argjson file_count 1 \
+      --arg manifest_sha256 "$isolated_recipe_manifest_sha" \
+      --argjson total_bytes "$isolated_recipe_bytes" \
+      '{
+        arch: "wasm32",
+        formula: "hello",
+        formula_sha256: ("a" * 64),
+        full_name: "kandelo-dev/tap-core/hello",
+        schema: 3,
+        support_runtime_sha256: ("1" * 64),
+        support_sha256: ("b" * 64),
+        tap: "kandelo-dev/tap-core",
+        tap_recipe: {
+          dependencies: [],
+          entrypoint: "build.sh",
+          file_count: $file_count,
+          manifest_sha256: $manifest_sha256,
+          script_env_keys: [],
+          source_sha256: ("d" * 64),
+          source_url: "https://example.test/hello-1.0.tar.gz",
+          total_bytes: $total_bytes,
+          version: "1.0"
+        },
+        tier2_bridge: null
+      }'
+  )"
+  printf '%s\n' "$tier2_attestation_json" >"$isolated_tier2_attestation"
+  chmod 0600 "$isolated_tier2_attestation"
   export HOMEBREW_KANDELO_PRIMARY_TAP_ROOT="$isolated_primary_tap"
   [ ! -e "$isolated_prefix/Library/Taps" ] ||
     fail "isolation fixture unexpectedly put repository-owned taps under the prefix"
@@ -1481,6 +1777,12 @@ EOF
     "$isolated_native_config" "$isolated_native_home"
   homebrew_patched_launcher_stage_dependency_plan "$isolated_dependency_plan"
   homebrew_patched_launcher_stage_tier2_attestation "$isolated_tier2_attestation"
+  isolated_dependency_keg="$isolated_prefix/Cellar/dependency/1.0"
+  isolated_dependency_file="$isolated_dependency_keg/lib/dependency.a"
+  isolated_dependency_opt="$isolated_prefix/opt/dependency"
+  mkdir -p "${isolated_dependency_file%/*}" "$isolated_prefix/opt"
+  printf 'sealed target dependency\n' >"$isolated_dependency_file"
+  ln -s ../Cellar/dependency/1.0 "$isolated_dependency_opt"
   [ "$(stat -c '%u:%a' "$isolated_native_base")" = "$(id -u):711" ] ||
     fail "workflow-owned native parent changed during preparation"
   for native_root in "$isolated_native_prefix" "$isolated_native_cache" \
@@ -1674,6 +1976,7 @@ EOF
     "$isolated_output" "$isolated_sysroot_owner" "$isolated_dependency_tap"
   protected_dir="$HOMEBREW_PATCHED_PROTECTED_DIR"
   source_alias_dir="$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR"
+  protected_platform_root="$HOMEBREW_PATCHED_PLATFORM_ROOT"
   protected_xtask="$HOMEBREW_PATCHED_PROTECTED_DIR/xtask"
   [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a:%h' "$protected_xtask")" = \
       "0:0:555:1" ] &&
@@ -1742,6 +2045,8 @@ EOF
   "$HOMEBREW_PATCHED_BREW_BIN" assert-protected-git \
     "$HOMEBREW_GIT_PATH"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-working-directory "$isolated_work"
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-target-dependency-sealed \
+    "$isolated_dependency_file" "$isolated_dependency_opt"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-immutable-trust reviewed-trust
   "$HOMEBREW_PATCHED_BREW_BIN" assert-dependency-plan \
     "$HOMEBREW_PATCHED_DEPENDENCY_PLAN" "$dependency_plan_json"
@@ -1752,18 +2057,16 @@ EOF
   if "$HOMEBREW_PATCHED_BREW_BIN" trust >/dev/null 2>&1; then
     fail "explicit trust mutation succeeded against the sealed store"
   fi
-  isolated_xtask_sha256="$(/usr/bin/sha256sum "$isolated_xtask")"
-  isolated_xtask_sha256="${isolated_xtask_sha256%% *}"
   HOMEBREW_KANDELO_XTASK_BIN=caller-poison \
   WASM_POSIX_XTASK_BIN=caller-poison \
-  "$HOMEBREW_PATCHED_BREW_BIN" assert-source-aliases \
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-closed-source-aliases \
     "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/kandelo" \
-    "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/tap" \
-    "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/sysroot" \
     "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/kandelo/target/x86_64-unknown-linux-gnu/release/xtask" \
-    "$isolated_xtask_sha256" \
-    "$isolated_kandelo" "$isolated_tap" "$isolated_output" "$isolated_sysroot_owner" \
-    "$isolated_dependency_tap"
+    "$protected_xtask" \
+    "$isolated_kandelo" "$isolated_tap" "$isolated_output" \
+    "$isolated_sysroot_owner" "$isolated_dependency_tap" \
+    "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/kandelo/tools/bin/wasm-fork-instrument" \
+    "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/kandelo/tools/bin/wasm-local-root-spill"
   HOMEBREW_KANDELO_PRIMARY_TAP_ROOT=caller-poison \
     "$HOMEBREW_PATCHED_BREW_BIN" assert-primary-tap-root \
       "$isolated_primary_tap"
@@ -1891,6 +2194,124 @@ EOF
   [ -z "$($HOMEBREW_PATCHED_BREW_BIN list --formula cmake)" ] ||
     fail "isolated target Homebrew rejected the native Formula proxy keg"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-no-new-privileges
+
+  recipe_build_root="$isolated_temp/tap-recipe-canary"
+  recipe_source_root="$recipe_build_root/kandelo-package-source"
+  recipe_work_root="$recipe_build_root/kandelo-package-work"
+  recipe_output_root="$recipe_build_root/kandelo-package-out"
+  recipe_request="$recipe_build_root/.kandelo-tap-recipe-request.json"
+  recipe_response="$recipe_build_root/.kandelo-tap-recipe-response.json"
+  mkdir -p "$recipe_source_root" "$recipe_work_root" "$recipe_output_root"
+  printf 'reviewed source\n' >"$recipe_source_root/input.txt"
+  recipe_config_json="$(
+    /usr/bin/sudo -n -- /usr/bin/cat "$HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG"
+  )"
+  mapfile -t recipe_native_formulae < <(
+    jq -r '.native_formulae[]' <<<"$recipe_config_json"
+  )
+  recipe_native_roots=()
+  for native_formula in "${recipe_native_formulae[@]}"; do
+    mapfile -t native_versions < <(
+      find "$isolated_native_prefix/Cellar/$native_formula" \
+        -mindepth 1 -maxdepth 1 -type d -print
+    )
+    [ "${#native_versions[@]}" -eq 1 ] ||
+      fail "recipe canary lacks one exact native keg for $native_formula"
+    recipe_native_roots+=("${native_versions[0]}")
+  done
+  recipe_native_roots_json="$(
+    if [ "${#recipe_native_roots[@]}" -eq 0 ]; then
+      printf '[]'
+    else
+      printf '%s\n' "${recipe_native_roots[@]}" |
+        LC_ALL=C sort | jq -Rsc 'split("\n")[:-1]'
+    fi
+  )"
+  recipe_request_json="$(
+    jq -cnS \
+      --arg arch "$(jq -r '.arch' <<<"$recipe_config_json")" \
+      --arg entrypoint "$(jq -r '.recipe_entrypoint' <<<"$recipe_config_json")" \
+      --arg formula "$(jq -r '.formula' <<<"$recipe_config_json")" \
+      --arg llvm_bin "$(jq -r '.llvm_bin' <<<"$recipe_config_json")" \
+      --arg manifest_sha256 "$(jq -r '.manifest_sha256' <<<"$recipe_config_json")" \
+      --arg output_root "$recipe_output_root" \
+      --arg platform_root "$(jq -r '.platform_alias_root' <<<"$recipe_config_json")" \
+      --arg recipe_root "$(jq -r '.recipe_alias_root' <<<"$recipe_config_json")" \
+      --arg recipe_user "$(jq -r '.recipe_user' <<<"$recipe_config_json")" \
+      --arg source_root "$recipe_source_root" \
+      --arg source_sha256 "$(jq -r '.source_sha256' <<<"$recipe_config_json")" \
+      --arg source_url "$(jq -r '.source_url' <<<"$recipe_config_json")" \
+      --arg sysroot "$(jq -r '.sysroot_alias_root' <<<"$recipe_config_json")" \
+      --arg version "$(jq -r '.version' <<<"$recipe_config_json")" \
+      --arg work_root "$recipe_work_root" \
+      --argjson native_roots "$recipe_native_roots_json" '
+      {
+        arch: $arch,
+        dependencies: {},
+        entrypoint: $entrypoint,
+        environment: {
+          HOME: ($work_root + "/home"),
+          LOGNAME: $recipe_user,
+          PATH: "/usr/bin:/bin",
+          TMPDIR: ($work_root + "/tmp"),
+          USER: $recipe_user,
+          WASM_POSIX_DEP_NAME: "hello",
+          WASM_POSIX_DEP_OUT_DIR: $output_root,
+          WASM_POSIX_DEP_RECIPE_DIR: $recipe_root,
+          WASM_POSIX_DEP_SOURCE_DIR: $source_root,
+          WASM_POSIX_DEP_SOURCE_SHA256: $source_sha256,
+          WASM_POSIX_DEP_SOURCE_URL: $source_url,
+          WASM_POSIX_DEP_TARGET_ARCH: $arch,
+          WASM_POSIX_DEP_VERSION: $version,
+          WASM_POSIX_DEP_WORK_DIR: $work_root,
+          WASM_POSIX_GLUE_DIR: ($platform_root + "/libc/glue"),
+          WASM_POSIX_INSTALL_LOCAL_MIRROR: "0",
+          WASM_POSIX_LLVM_DIR: $llvm_bin,
+          WASM_POSIX_SYSROOT: $sysroot
+        },
+        formula: $formula,
+        limits: {
+          max_bytes: 2147483648,
+          max_entries: 262144,
+          max_file_bytes: 1073741824,
+          max_path_bytes: 4096
+        },
+        manifest_sha256: $manifest_sha256,
+        native_roots: $native_roots,
+        output_root: $output_root,
+        platform_root: $platform_root,
+        recipe_root: $recipe_root,
+        schema: 1,
+        source_root: $source_root,
+        sysroot: $sysroot,
+        version: $version,
+        work_root: $work_root
+      }
+    '
+  )"
+  printf '%s' "$recipe_request_json" >"$recipe_request"
+  chmod 0400 "$recipe_request"
+  /usr/bin/sudo -n -- /usr/bin/chown -R \
+    "$ISOLATION_BUILD_USER:$(id -gn "$ISOLATION_BUILD_USER")" \
+    "$recipe_build_root"
+  /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+    /usr/bin/env -i "$HOMEBREW_PATCHED_RECIPE_RUNNER" \
+      --request "$recipe_request" --response "$recipe_response"
+  jq -e '
+    .schema == 1 and .entry_count == 1 and .total_bytes == 23 and
+    (.sealed_output_root | type == "string" and startswith("/run/")) and
+    (.output_manifest_sha256 | test("^[0-9a-f]{64}$")) and
+    (.request_sha256 | test("^[0-9a-f]{64}$"))
+  ' "$recipe_response" >/dev/null ||
+    fail "tap recipe canary returned an invalid sealed-output receipt"
+  recipe_sealed_root="$(jq -r '.sealed_output_root' "$recipe_response")"
+  [ "$(/usr/bin/cat "$recipe_sealed_root/canary.txt")" = \
+      "closed root projection" ] ||
+    fail "tap recipe canary did not return its declared output"
+  [ "$(/usr/bin/cat "$isolated_recipe_host_secret")" = \
+      "workflow credential canary" ] ||
+    fail "tap recipe canary changed the unrelated host sentinel"
+
   cp "$isolated_xtask" "$isolated_xtask.backup"
   # WHY: production checkers are sealed 0555. Only the private fixture owner
   # may unseal this copy, and every launcher invocation must see it resealed.
@@ -1992,11 +2413,14 @@ EOF
   [ ! -e "$isolated_prefix/.kandelo-publisher-tier2-attestation.json" ] ||
     fail "isolated cleanup left the publisher Tier-2 attestation"
   [ ! -e "$protected_dir" ] && [ ! -e "$source_alias_dir" ] && \
+    [ ! -e "$protected_platform_root" ] && \
     [ -z "$HOMEBREW_PATCHED_PROTECTED_DIR" ] && \
     [ -z "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR" ] && \
     [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK" ] && \
     [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK_STATE" ] && \
-    [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK_SHA256" ] ||
+    [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK_SHA256" ] && \
+    [ -z "$HOMEBREW_PATCHED_PLATFORM_ROOT" ] && \
+    [ -z "$HOMEBREW_PATCHED_PLATFORM_SHA256" ] ||
     fail "isolated cleanup left the protected checker or source aliases"
   [ ! -e "$protected_bottle" ] && [ ! -e "$protected_bottle_dir" ] && \
     [ -z "$(find "$isolated_shared_temp" -mindepth 1 -print -quit)" ] && \

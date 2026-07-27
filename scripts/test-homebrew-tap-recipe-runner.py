@@ -1,0 +1,553 @@
+#!/usr/bin/env python3
+"""Focused tests for the privileged tap-recipe filesystem/protocol boundary."""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import os
+import shutil
+import socket
+import stat
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+
+
+RUNNER_PATH = Path(__file__).with_name("homebrew-tap-recipe-runner.py")
+SPEC = importlib.util.spec_from_file_location("homebrew_tap_recipe_runner", RUNNER_PATH)
+if SPEC is None or SPEC.loader is None:
+    raise RuntimeError("could not load tap recipe runner")
+runner = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(runner)
+
+
+def manifest_bytes(files: list[dict[str, object]], entrypoint: str = "build.sh") -> bytes:
+    return (
+        json.dumps(
+            {
+                "schema": 1,
+                "dependencies": [],
+                "entrypoint": entrypoint,
+                "files": files,
+            },
+            indent=2,
+        )
+        + "\n"
+    ).encode()
+
+
+class ProtocolTests(unittest.TestCase):
+    def test_json_rejects_duplicate_keys_and_non_finite_numbers(self) -> None:
+        with self.assertRaisesRegex(runner.RunnerError, "repeats key"):
+            runner.parse_json_bytes(b'{"schema":1,"schema":1}', "fixture")
+        with self.assertRaisesRegex(runner.RunnerError, "non-finite"):
+            runner.parse_json_bytes(b'{"value":NaN}', "fixture")
+
+    def test_homebrew_names_include_version_and_feature_markers(self) -> None:
+        for name in ("python@3.14", "gcc@14", "libc++", "foo.bar-baz_1"):
+            self.assertIsNotNone(runner.FORMULA_RE.fullmatch(name))
+        for name in ("@broken", "+broken", "broken/name", "Uppercase"):
+            self.assertIsNone(runner.FORMULA_RE.fullmatch(name))
+
+    def test_systemd_slice_and_unit_have_distinct_grammars(self) -> None:
+        self.assertIsNotNone(runner.UNIT_RE.fullmatch("kandelo-homebrew-build-123"))
+        self.assertIsNone(runner.UNIT_RE.fullmatch("kandelo-homebrew-build-123.slice"))
+        self.assertIsNotNone(
+            runner.SLICE_RE.fullmatch("kandelo-homebrew-build-123.slice")
+        )
+
+    def test_protected_runner_socket_fits_the_linux_pathname_limit(self) -> None:
+        protected = Path("/run/kandelo-homebrew-publisher") / (
+            "build-" + ("a" * 64)
+        )
+        socket_path = protected / runner.RUNNER_SOCKET_BASENAME
+        self.assertEqual(len(os.fsencode(socket_path)), 104)
+        self.assertLessEqual(
+            len(os.fsencode(socket_path)), runner.UNIX_SOCKET_PATHNAME_BYTES
+        )
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"), "Linux sockaddr_un limit regression"
+    )
+    def test_linux_binds_a_filesystem_socket_at_the_production_length(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            padding = 104 - len(os.fsencode(root)) - len(os.fsencode("/s"))
+            self.assertGreater(padding, 0)
+            protected = root / ("a" * padding)
+            protected.mkdir()
+            socket_path = protected / "s"
+            self.assertEqual(len(os.fsencode(socket_path)), 104)
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+            try:
+                listener.bind(str(socket_path))
+            finally:
+                listener.close()
+                socket_path.unlink(missing_ok=True)
+
+    def test_relative_paths_reject_controls_unicode_and_traversal(self) -> None:
+        self.assertEqual(
+            runner.recipe_relative_path("nested/build.sh", label="fixture"),
+            "nested/build.sh",
+        )
+        for value in ("../build.sh", "nested//build.sh", "é/build.sh", "a\nb"):
+            with self.subTest(value=value):
+                with self.assertRaises(runner.RunnerError):
+                    runner.recipe_relative_path(value, label="fixture")
+
+    def test_command_deadline_survives_a_descendant_inheriting_stdout(self) -> None:
+        started = time.monotonic()
+        with self.assertRaisesRegex(runner.RunnerError, "execution deadline"):
+            runner.run_bounded_command(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import subprocess, sys; "
+                        "subprocess.Popen("
+                        "[sys.executable, '-c', 'import time; time.sleep(3)'], "
+                        "stdout=sys.stdout, stderr=sys.stderr)"
+                    ),
+                ],
+                timeout_seconds=1,
+            )
+        self.assertLess(time.monotonic() - started, 2.0)
+
+
+@unittest.skipUnless(
+    Path("/nix/var/nix/profiles/default/bin/nix-store").exists(),
+    "Nix closure query is unavailable",
+)
+class NixRuntimeProjectionTests(unittest.TestCase):
+    def test_projects_exact_runtime_closure_instead_of_the_whole_store(self) -> None:
+        node = shutil.which("node")
+        clang = shutil.which("clang")
+        if node is None or clang is None:
+            self.skipTest("declared Node and LLVM tools are unavailable")
+        node_path = Path(node).resolve(strict=True)
+        llvm_bin = Path(clang).resolve(strict=True).parent
+        store = Path("/nix/store")
+        if not runner.is_within(node_path, store) or not runner.is_within(
+            llvm_bin, store
+        ):
+            self.skipTest("declared Node and LLVM tools are not Nix store objects")
+
+        roots = runner.nix_store_requisites(
+            {"node_bin": node_path, "llvm_bin": llvm_bin}
+        )
+        self.assertNotIn(store, roots)
+        self.assertTrue(any(runner.is_within(node_path, root) for root in roots))
+        self.assertTrue(any(runner.is_within(llvm_bin, root) for root in roots))
+        self.assertTrue(
+            all(runner.NIX_STORE_ROOT_RE.fullmatch(str(root)) for root in roots)
+        )
+
+
+class RecipeProjectionTests(unittest.TestCase):
+    def make_recipe(self, root: Path) -> tuple[Path, str]:
+        source = root / "recipe-fixture"
+        nested = source / "nested"
+        nested.mkdir(parents=True)
+        source.chmod(0o755)
+        nested.chmod(0o755)
+        build = source / "build.sh"
+        helper = nested / "helper.txt"
+        build.write_bytes(b"#!/usr/bin/env bash\nexit 0\n")
+        helper.write_bytes(b"fixture\n")
+        build.chmod(0o755)
+        helper.chmod(0o644)
+        records = []
+        for path, mode in ((build, "0755"), (helper, "0644")):
+            data = path.read_bytes()
+            records.append(
+                {
+                    "bytes": len(data),
+                    "mode": mode,
+                    "path": path.relative_to(source).as_posix(),
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                }
+            )
+        data = manifest_bytes(records)
+        manifest = source / "recipe.json"
+        manifest.write_bytes(data)
+        manifest.chmod(0o644)
+        return source, hashlib.sha256(data).hexdigest()
+
+    def stage(self, root: Path, source: Path, digest: str) -> Path:
+        fake_runner = root / "homebrew-tap-recipe-runner"
+        fake_runner.write_bytes(b"runner")
+        destination = root / "selected-recipe"
+        with (
+            mock.patch.object(runner, "__file__", str(fake_runner)),
+            mock.patch.object(runner.os, "geteuid", return_value=0),
+            mock.patch.object(runner.os, "chown"),
+            mock.patch.object(runner.os, "fchown"),
+        ):
+            runner.stage_recipe(
+                str(source), str(destination), "recipe-fixture", digest
+            )
+        return destination
+
+    def test_stages_only_the_manifest_closed_recipe_with_semantic_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, digest = self.make_recipe(root)
+            destination = self.stage(root, source, digest)
+            self.assertEqual(
+                (destination / "build.sh").read_bytes(),
+                (source / "build.sh").read_bytes(),
+            )
+            self.assertEqual(
+                stat.S_IMODE((destination / "recipe.json").stat().st_mode), 0o644
+            )
+            self.assertEqual(
+                stat.S_IMODE((destination / "build.sh").stat().st_mode), 0o755
+            )
+            self.assertEqual(
+                stat.S_IMODE((destination / "nested").stat().st_mode), 0o755
+            )
+            self.assertNotEqual(destination.stat().st_ino, source.stat().st_ino)
+
+    def test_rejects_extra_nodes_and_removes_partial_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, digest = self.make_recipe(root)
+            (source / "undeclared").write_bytes(b"authority")
+            (source / "undeclared").chmod(0o644)
+            with self.assertRaisesRegex(runner.RunnerError, "unexpected file"):
+                self.stage(root, source, digest)
+            self.assertFalse((root / "selected-recipe").exists())
+
+    def test_rejects_symlinks_and_wrong_manifest_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, digest = self.make_recipe(root)
+            with self.assertRaisesRegex(runner.RunnerError, "attestation"):
+                self.stage(root, source, "0" * 64)
+            os.symlink("build.sh", source / "alias")
+            with self.assertRaises(runner.RunnerError):
+                self.stage(root, source, digest)
+
+
+class ServiceRootProjectionTests(unittest.TestCase):
+    def test_creates_only_declared_mount_destinations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            host = Path(temporary).resolve()
+            declared = host / "declared"
+            secret = host / "host-secret"
+            declared.mkdir()
+            secret.write_text("must stay outside the service root\n")
+            readonly_destination = Path("/projection/declared")
+            writable_source = host / "writable"
+            writable_source.mkdir()
+            writable_destination = Path("/projection/writable")
+            service_root = host / "service-root"
+            with (
+                mock.patch.object(runner.os, "geteuid", return_value=0),
+                mock.patch.object(runner.os, "chown"),
+            ):
+                runner.prepare_service_root(
+                    service_root,
+                    [(declared, readonly_destination)],
+                    [(writable_source, writable_destination)],
+                )
+            self.assertTrue((service_root / "projection/declared").is_dir())
+            self.assertTrue((service_root / "projection/writable").is_dir())
+            self.assertFalse((service_root / secret.relative_to("/")).exists())
+            self.assertFalse((service_root / "run/systemd/private").exists())
+
+    def test_rejects_two_sources_for_one_service_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            host = Path(temporary).resolve()
+            first = host / "first"
+            second = host / "second"
+            first.mkdir()
+            second.mkdir()
+            with (
+                mock.patch.object(runner.os, "geteuid", return_value=0),
+                mock.patch.object(runner.os, "chown"),
+                self.assertRaisesRegex(runner.RunnerError, "ambiguous"),
+            ):
+                runner.prepare_service_root(
+                    host / "service-root",
+                    [(first, Path("/input")), (second, Path("/input"))],
+                    [],
+                )
+
+    def test_rejects_one_destination_with_conflicting_access_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            host = Path(temporary).resolve()
+            source = host / "source"
+            source.mkdir()
+            with (
+                mock.patch.object(runner.os, "geteuid", return_value=0),
+                mock.patch.object(runner.os, "chown"),
+                self.assertRaisesRegex(runner.RunnerError, "ambiguous"),
+            ):
+                runner.prepare_service_root(
+                    host / "service-root",
+                    [(source, Path("/input"))],
+                    [(source, Path("/input"))],
+                )
+
+    def test_rejects_destination_traversal_before_creating_outside_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            host = Path(temporary).resolve()
+            source = host / "source"
+            source.mkdir()
+            service_root = host / "service-root"
+            escaped = host / "escaped"
+            with (
+                mock.patch.object(runner.os, "geteuid", return_value=0),
+                mock.patch.object(runner.os, "chown"),
+                self.assertRaisesRegex(runner.RunnerError, "destination is unsafe"),
+            ):
+                runner.prepare_service_root(
+                    service_root,
+                    [(source, Path("/projection/../../escaped"))],
+                    [],
+                )
+            self.assertFalse(escaped.exists())
+
+
+@unittest.skipUnless(
+    sys.platform.startswith("linux")
+    and os.geteuid() == 0
+    and os.environ.get("KANDELO_RUN_SYSTEMD_RECIPE_ROOT_TEST") == "1",
+    "live root-owned systemd recipe boundary is opt-in",
+)
+class LiveSystemdServiceRootTests(unittest.TestCase):
+    def test_malicious_recipe_cannot_reach_host_or_system_manager(self) -> None:
+        recipe_uid = 65_534
+        recipe_gid = 65_534
+        with (
+            tempfile.TemporaryDirectory(
+                prefix="kandelo-recipe-service-", dir="/run"
+            ) as protected_temporary,
+            tempfile.TemporaryDirectory(
+                prefix="kandelo-recipe-request-", dir="/tmp"
+            ) as request_temporary,
+        ):
+            protected = Path(protected_temporary)
+            request_root = Path(request_temporary)
+            recipe_host = protected / "selected-recipe"
+            platform_host = protected / "platform"
+            sysroot_host = protected / "sysroot"
+            sealed_root = protected / "sealed-outputs"
+            for directory in (
+                recipe_host,
+                platform_host / "libc/glue",
+                sysroot_host / "lib",
+                sealed_root,
+            ):
+                directory.mkdir(parents=True, exist_ok=True)
+            source = request_root / "kandelo-package-source"
+            work = request_root / "kandelo-package-work"
+            output = request_root / "kandelo-package-out"
+            for directory in (source, work, output):
+                directory.mkdir()
+            (source / "input.txt").write_text("reviewed source\n")
+            host_secret = request_root.parent / (
+                f"{request_root.name}-host-secret"
+            )
+            host_secret.write_text("must remain outside\n")
+            dependency_prefix = Path(
+                f"/home/kandelo-recipe-dependency-{os.getpid()}"
+            )
+            dependency_keg = dependency_prefix / "Cellar/dependency/1.0"
+            dependency_opt = dependency_prefix / "opt/dependency"
+            (dependency_keg / "lib").mkdir(parents=True)
+            (dependency_prefix / "opt").mkdir()
+            (dependency_keg / "lib/value.txt").write_text("sealed dependency\n")
+            dependency_opt.symlink_to(host_secret)
+            for directory in (
+                dependency_keg / "lib",
+                dependency_keg,
+                dependency_keg.parent,
+            ):
+                directory.chmod(0o555)
+
+            # Production tap and checkout aliases live below /home on GitHub
+            # runners. Keep this shape so the test proves explicit binds remain
+            # usable inside the private ProtectHome=tmpfs projection.
+            recipe_alias = Path("/home/runner/kandelo-recipe")
+            platform_alias = Path("/home/runner/kandelo-platform")
+            sysroot_alias = Path("/home/runner/kandelo-sysroot")
+            script = recipe_host / "build.sh"
+            script.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                f"host_secret={str(host_secret)!r}\n"
+                '[ ! -e "$host_secret" ] && [ ! -r "$host_secret" ]\n'
+                '[ ! -e "/proc/1/root$host_secret" ] && '
+                '[ ! -r "/proc/1/root$host_secret" ]\n'
+                "[ ! -e /run/systemd/private ]\n"
+                "if /usr/bin/systemd-run --quiet --wait --pipe -- "
+                "/usr/bin/true >/dev/null 2>&1; then exit 93; fi\n"
+                '[ "$(/usr/bin/cat "$WASM_POSIX_DEP_SOURCE_DIR/input.txt")" = '
+                '"reviewed source" ]\n'
+                '[ -r "$WASM_POSIX_DEP_RECIPE_DIR/build.sh" ]\n'
+                '[ -r "$WASM_POSIX_GLUE_DIR/abi_constants.h" ]\n'
+                '[ -r "$WASM_POSIX_SYSROOT/lib/libc.a" ]\n'
+                f'[ "$(/usr/bin/cat {str(dependency_opt)!r}/lib/value.txt)" = '
+                '"sealed dependency" ]\n'
+                "printf 'closed root projection\\n' "
+                '>"$WASM_POSIX_DEP_OUT_DIR/canary.txt"\n'
+            )
+            script.chmod(0o555)
+            (platform_host / "libc/glue/abi_constants.h").write_text("fixture\n")
+            (sysroot_host / "lib/libc.a").write_text("fixture\n")
+            passwd = protected / "recipe-passwd"
+            group = protected / "recipe-group"
+            passwd.write_text(
+                f"root:x:0:0:root:/root:/usr/sbin/nologin\n"
+                f"kandelo-homebrew-recipe:x:{recipe_uid}:{recipe_gid}:"
+                "recipe:/nonexistent:/usr/sbin/nologin\n"
+            )
+            group.write_text(
+                f"root:x:0:\nkandelo-homebrew-recipe:x:{recipe_gid}:\n"
+            )
+            for file in (
+                platform_host / "libc/glue/abi_constants.h",
+                sysroot_host / "lib/libc.a",
+                passwd,
+                group,
+            ):
+                file.chmod(0o444)
+            for directory in (
+                recipe_host,
+                platform_host / "libc/glue",
+                platform_host / "libc",
+                platform_host,
+                sysroot_host / "lib",
+                sysroot_host,
+                sealed_root,
+            ):
+                directory.chmod(0o555)
+            protected.chmod(0o555)
+
+            request = {
+                "entrypoint": recipe_alias / "build.sh",
+                "environment": {
+                    "PATH": "/usr/bin:/bin",
+                    "WASM_POSIX_DEP_OUT_DIR": str(output),
+                    "WASM_POSIX_DEP_RECIPE_DIR": str(recipe_alias),
+                    "WASM_POSIX_DEP_SOURCE_DIR": str(source),
+                    "WASM_POSIX_GLUE_DIR": str(platform_alias / "libc/glue"),
+                    "WASM_POSIX_SYSROOT": str(sysroot_alias),
+                },
+                "limits": runner.EXPECTED_LIMITS,
+                "output_root": output,
+                "platform_root": platform_alias,
+                "recipe_root": recipe_alias,
+                "source_root": source,
+                "sysroot": sysroot_alias,
+                "work_root": work,
+            }
+            config = {
+                "group_file": group,
+                "llvm_bin": Path("/usr/bin"),
+                "node_bin": Path("/usr/bin/node"),
+                "platform_host_root": platform_host,
+                "protected_root": protected,
+                "recipe_gid": recipe_gid,
+                "recipe_host_root": recipe_host,
+                "recipe_uid": recipe_uid,
+                "recipe_user": "kandelo-homebrew-recipe",
+                "sealed_root": sealed_root,
+                "slice": "system.slice",
+                "sysroot_host_root": sysroot_host,
+                "unit_prefix": f"kandelo-recipe-live-{os.getpid()}",
+                "passwd_file": passwd,
+            }
+            try:
+                sealed, _, entries, total = runner.run_recipe(
+                    request,
+                    config,
+                    {},
+                    [],
+                    [],
+                    [
+                        (dependency_keg, dependency_keg),
+                        (dependency_keg, dependency_opt),
+                    ],
+                    "a" * 64,
+                )
+                self.assertEqual(entries, 1)
+                self.assertEqual(total, 23)
+                self.assertEqual(
+                    (sealed / "canary.txt").read_text(),
+                    "closed root projection\n",
+                )
+                self.assertEqual(host_secret.read_text(), "must remain outside\n")
+            finally:
+                host_secret.unlink(missing_ok=True)
+                shutil.rmtree(dependency_prefix, ignore_errors=True)
+
+
+class OutputSealingTests(unittest.TestCase):
+    def seal(self, root: Path) -> Path:
+        raw = root / "raw"
+        sealed = root / "sealed"
+        raw_stat = raw.stat()
+        with (
+            mock.patch.object(runner.os, "chown"),
+            mock.patch.object(runner.os, "fchown"),
+        ):
+            runner.seal_output_tree(
+                raw,
+                sealed,
+                runner.EXPECTED_LIMITS,
+                recipe_uid=raw_stat.st_uid,
+                recipe_gid=raw_stat.st_gid,
+            )
+        return sealed
+
+    def test_seals_valid_output_and_preserves_executable_meaning(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            raw = root / "raw"
+            raw.mkdir(mode=0o755)
+            raw.chmod(0o755)
+            executable = raw / "program"
+            data = raw / "data"
+            executable.write_bytes(b"wasm")
+            data.write_bytes(b"data")
+            executable.chmod(0o755)
+            data.chmod(0o644)
+            sealed = self.seal(root)
+            self.assertEqual(stat.S_IMODE(sealed.stat().st_mode), 0o555)
+            self.assertEqual(stat.S_IMODE((sealed / "program").stat().st_mode), 0o555)
+            self.assertEqual(stat.S_IMODE((sealed / "data").stat().st_mode), 0o444)
+
+    def test_rejects_modes_outside_the_published_output_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            raw = root / "raw"
+            raw.mkdir(mode=0o755)
+            raw.chmod(0o755)
+            unsafe = raw / "unsafe"
+            unsafe.write_bytes(b"data")
+            unsafe.chmod(0o600)
+            with self.assertRaisesRegex(runner.RunnerError, "unsafe links, mode"):
+                self.seal(root)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO creation is unavailable")
+    def test_rejects_fifo_without_opening_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            raw = root / "raw"
+            raw.mkdir(mode=0o755)
+            raw.chmod(0o755)
+            os.mkfifo(raw / "fifo", 0o644)
+            with self.assertRaisesRegex(runner.RunnerError, "unsupported node"):
+                self.seal(root)
+
+
+if __name__ == "__main__":
+    unittest.main()

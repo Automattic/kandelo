@@ -524,6 +524,32 @@ inside the dedicated output root; hard-linked files, special nodes, absolute
 symlinks, and relative symlinks that escape that root are rejected. The
 Formula then installs only that returned tree into its keg.
 
+The Formula process does not run the recipe directly. It sends one bounded,
+canonical request to a root-owned supervisor that authenticates the Formula
+user through Unix-socket peer credentials. The supervisor copies verified
+source into a fresh immutable tree and starts the recipe as a third,
+recipe-only user. That transient service uses `RootDirectory=` with an empty
+root-owned skeleton: only the copied source, closed recipe, projected Kandelo
+tooling, sysroot, complete sealed dependency closure, exact immutable Nix
+runtime closure, ordinary system runtime directories, and private work/output
+roots are mounted into it. The Nix closure is queried before service entry and
+projected as individual content-addressed store roots; the whole Nix store is
+not exposed. The host `/`, workflow
+checkout, credentials, and host service-manager sockets are absent rather than
+merely read-only. `/etc` and `/tmp` are private service filesystems. The
+supervisor tears down the complete control group, proves the recipe UID owns no
+process, validates the output without following unsafe nodes, and returns only
+a root-owned sealed output tree. The Linux isolation test executes a malicious
+recipe that probes an unrelated host sentinel and tries to start another
+systemd unit; both paths must fail while declared inputs and output still work.
+
+The service bounds execution time, process count, descriptors, private
+`/tmp`, and captured diagnostics. Its host-backed private work and output
+directories do not yet have a per-recipe filesystem quota, and the cgroup does
+not yet set an explicit memory or CPU quota. A hostile recipe can therefore
+exhaust one ephemeral CI runner before publication fails closed; the workflow
+job remains the current outer availability boundary.
+
 The manifest SHA-256 is a Formula literal, so the Formula SHA-256 transitively
 binds the full recipe closure. Bottle sidecars already record the exact Formula
 SHA-256 and tap commit. Matrix reuse additionally requires the current Formula
