@@ -27,6 +27,7 @@ import {
 import { loadMainShellDemoConfig } from "../../images/vfs/scripts/main-shell-demo-config";
 import { resolveVfsArtifact } from "../../images/vfs/scripts/shell-vfs-build";
 import {
+  resolveDemoAssets,
   resolveDemoGuide,
   resolveDemoPresentation,
 } from "../../web-libs/kandelo-session/src/demo-config";
@@ -570,8 +571,9 @@ describe("declared shell lazy-archive inputs", () => {
 
     // The canonical shell no longer resolves the old registry ZIP packages.
     // Its only registry dependency is the atomic Homebrew source/launcher
-    // package needed to register `brew` lazily. The base Formula contract is
-    // intentionally much smaller than the separate atomic brew runtime.
+    // package needed to register `brew` lazily. Formula-owned bottle trees now
+    // carry the complete current shell surface independently of that source
+    // package.
     expect(packageToml).toMatch(
       /^depends_on\s*=\s*\["homebrew-bootstrap@6\.0\.3-4-g4ead861"\]$/m,
     );
@@ -607,8 +609,25 @@ describe("declared shell lazy-archive inputs", () => {
     expect(resolveDemoGuide(loadedDemo.config, "shell")?.title).toBe(
       "Shell demo",
     );
-    expect(resolveDemoPresentation(loadedDemo.config, "doom")).toBeNull();
-    expect(resolveDemoPresentation(loadedDemo.config, "modeset")).toBeNull();
+    expect(resolveDemoPresentation(loadedDemo.config, "doom")).toEqual(
+      expect.objectContaining({
+        runningPrimary: ["framebuffer", "terminal", "syslog"],
+        autoCommand: "/usr/local/bin/fbdoom -iwad /doom1.wad",
+      }),
+    );
+    expect(resolveDemoAssets(loadedDemo.config, "doom")).toEqual([
+      expect.objectContaining({
+        path: "/doom1.wad",
+        sha256:
+          "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771",
+      }),
+    ]);
+    expect(resolveDemoPresentation(loadedDemo.config, "modeset")).toEqual(
+      expect.objectContaining({
+        runningPrimary: ["kms", "terminal", "syslog"],
+        autoCommand: "/usr/local/bin/modeset",
+      }),
+    );
 
     const retiredBundleNames = new Set(
       SHELL_LAZY_ARCHIVE_SPECS.map(({ dependency }) => dependency),
@@ -618,15 +637,20 @@ describe("declared shell lazy-archive inputs", () => {
     );
     expect(migratedRoots).toEqual([]);
     expect(selection.tap_name).toBe("kandelo-dev/tap-core");
-    expect(selection.packages).toEqual(["bash", "dash", "bzip2", "m4"]);
-    expect(migrationLock.formula_closure).toEqual([
-      "kandelo-dev/tap-core/libcxx",
-      "kandelo-dev/tap-core/ncurses",
-      "kandelo-dev/tap-core/bash",
-      "kandelo-dev/tap-core/dash",
-      "kandelo-dev/tap-core/bzip2",
-      "kandelo-dev/tap-core/m4",
-    ]);
+    expect(selection.packages).toEqual(
+      migrationLock.packages.map(({ formula }) => formula.name),
+    );
+    expect(selection.packages).toHaveLength(32);
+    expect(migrationLock.formula_closure).toHaveLength(38);
+    expect(migrationLock.formula_closure).toEqual(
+      expect.arrayContaining([
+        "kandelo-dev/tap-core/bash",
+        "kandelo-dev/tap-core/fbdoom",
+        "kandelo-dev/tap-core/modeset",
+        "kandelo-dev/tap-core/vim",
+        "kandelo-dev/tap-core/nethack",
+      ]),
+    );
     expect(
       migrationLock.reviewed_substitutions
         .filter(
@@ -648,24 +672,14 @@ describe("declared shell lazy-archive inputs", () => {
       migrationLock.formula_closure,
     );
     expect(runtimeSupport.formula_order).toHaveLength(21);
-    expect(runtimeSupport.additional_formula_order).toHaveLength(18);
-    expect(runtimeSupport.availability.reusable_public_abi42).toHaveLength(23);
+    expect(runtimeSupport.additional_formula_order).toEqual([
+      "kandelo-dev/tap-core/ruby",
+    ]);
+    expect(runtimeSupport.availability.reusable_public_abi42).toHaveLength(25);
     expect(runtimeSupport.availability.requires_rebuild).toEqual([]);
     expect(runtimeSupport.availability.missing_metadata).toEqual([]);
-    expect(runtimeSupport.availability.can_be_deferred).toEqual([
-      "kandelo-dev/tap-core/libmagic",
-      "kandelo-dev/tap-core/file-formula",
-    ]);
-    expect(runtimeSupport.deferred_formulae).toEqual([
-      expect.objectContaining({
-        package: "kandelo-dev/tap-core/libmagic",
-        current_state: "public-abi41-only",
-      }),
-      expect.objectContaining({
-        package: "kandelo-dev/tap-core/file-formula",
-        current_state: "public-abi41-only",
-      }),
-    ]);
+    expect(runtimeSupport.availability.can_be_deferred).toEqual([]);
+    expect(runtimeSupport.deferred_formulae).toEqual([]);
     expect(runtimeSupport.lifecycle_installs).toEqual([
       expect.objectContaining({
         tap: "brandonpayton/kandelo-canary",
@@ -685,8 +699,8 @@ describe("declared shell lazy-archive inputs", () => {
         { cwd: repoRoot, encoding: "utf8" },
       ),
     ).toContain(
-      "4 reviewed migration roots and 6 Formulae match the reviewed base lock; " +
-        "18 additional Formulae",
+      "32 reviewed migration roots and 38 Formulae match the complete shell lock; " +
+        "1 additional Formulae",
     );
 
     // The package build consumes only public bottle provenance from the
@@ -704,12 +718,8 @@ describe("declared shell lazy-archive inputs", () => {
     expect(buildScript).not.toContain("build-nethack-zip.sh");
     expect(buildScript).not.toContain("build-shell-vfs-image.sh");
     expect(composer).toContain("--no-fallback");
-    expect(composer).toContain(
-      "$lock[0].formula_closure +",
-    );
-    expect(composer).toContain(
-      "$runtime_support[0].additional_formula_order",
-    );
+    expect(composer).toContain("$lock[0].formula_closure +");
+    expect(composer).toContain("$runtime_support[0].additional_formula_order");
     expect(composer).toContain(
       ".catalog.checkout_commit == $lock[0].catalog.tap_commit",
     );

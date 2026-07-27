@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import {
   assertMainShellGuestCatalogIdentity,
   assertMainShellImageContract,
+  requiredMainShellPublicPaths,
 } from "./homebrew-main-shell-image-contract";
 import { parseHomebrewRuntimeSupportContract } from "../host/src/homebrew-runtime-support";
 
@@ -161,6 +162,11 @@ function fixture(): Parameters<typeof assertMainShellImageContract>[0] {
   const demoSha256 = createHash("sha256")
     .update(demoConfigSource)
     .digest("hex");
+  const publicPaths = requiredMainShellPublicPaths(lock).map((entry) => ({
+    path: entry.path,
+    kind: entry.kind,
+    mode: entry.kind === "directory" ? 0o755 : entry.executable ? 0o755 : 0o644,
+  }));
   return {
     migrationLock: structuredClone(lock),
     migrationLockSha256: lockSha,
@@ -229,6 +235,7 @@ function fixture(): Parameters<typeof assertMainShellImageContract>[0] {
     demoConfigSource: demoConfigSource.slice(),
     expectedDemoConfigSource: demoConfigSource.slice(),
     runtimeState,
+    publicPaths,
   };
 }
 
@@ -236,13 +243,16 @@ test("accepts the exact reviewed root and Formula identities", () => {
   assert.doesNotThrow(() => assertMainShellImageContract(fixture()));
 });
 
-test("accepts omitted zero-cardinality runtime-state report sections", () => {
+test("rejects omitted nonempty runtime-state report sections", () => {
   const value = fixture() as any;
-  assert.equal(value.migrationLock.compatibility.runtime_state.length, 0);
+  assert.notEqual(value.migrationLock.compatibility.runtime_state.length, 0);
   delete value.guestManifest.runtime_state;
   delete value.imageMetadata.homebrew.runtimeState;
 
-  assert.doesNotThrow(() => assertMainShellImageContract(value));
+  assert.throws(
+    () => assertMainShellImageContract(value),
+    /runtime-state copies do not have the reviewed declaration count/,
+  );
 });
 
 test("rejects a non-array optional runtime-state report section", () => {
@@ -299,10 +309,7 @@ for (const [name, mutate, expected] of [
   [
     "rejects a reordered closure Formula",
     (value: any) => {
-      [
-        value.guestManifest.packages[0],
-        value.guestManifest.packages[1],
-      ] = [
+      [value.guestManifest.packages[0], value.guestManifest.packages[1]] = [
         value.guestManifest.packages[1],
         value.guestManifest.packages[0],
       ];
@@ -393,7 +400,34 @@ for (const [name, mutate, expected] of [
     "demoConfig sha256",
   ],
   [
-    "rejects guest runtime state outside the empty base lock",
+    "rejects a missing public command",
+    (value: any) => {
+      value.publicPaths = value.publicPaths.filter(
+        (entry: any) => entry.path !== "/bin/bash",
+      );
+    },
+    "decoded public paths have",
+  ],
+  [
+    "rejects a non-executable public command",
+    (value: any) => {
+      value.publicPaths.find((entry: any) => entry.path === "/bin/bash").mode =
+        0o644;
+    },
+    "/bin/bash is not executable",
+  ],
+  [
+    "rejects supporting data with the wrong kind",
+    (value: any) => {
+      value.publicPaths.find(
+        (entry: any) =>
+          entry.path === "/home/linuxbrew/.linuxbrew/share/misc/magic.mgc",
+      ).kind = "directory";
+    },
+    "magic.mgc decoded kind",
+  ],
+  [
+    "rejects guest runtime state outside the reviewed lock",
     (value: any) => {
       value.guestManifest.runtime_state.push({
         path: "/tmp/unreviewed",
@@ -403,7 +437,7 @@ for (const [name, mutate, expected] of [
     "runtime-state copies do not have the reviewed declaration count",
   ],
   [
-    "rejects image runtime-state metadata outside the empty base lock",
+    "rejects image runtime-state metadata outside the reviewed lock",
     (value: any) => {
       value.imageMetadata.homebrew.runtimeState.push({
         path: "/tmp/unreviewed",
@@ -413,7 +447,7 @@ for (const [name, mutate, expected] of [
     "runtime-state copies do not have the reviewed declaration count",
   ],
   [
-    "rejects decoded runtime state outside the empty base lock",
+    "rejects decoded runtime state outside the reviewed lock",
     (value: any) => {
       value.runtimeState.push({
         path: "/tmp/unreviewed",

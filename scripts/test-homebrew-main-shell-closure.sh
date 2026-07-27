@@ -424,9 +424,9 @@ jq -e '
 ' "$RUNTIME_SUPPORT" >/dev/null ||
   fail "runtime support must bind one exact reviewed canary product revision"
 grep -Fq \
-  "SHELL_ACTIVATION_MODE: \${{ github.event_name == 'workflow_dispatch' && inputs.transport_mode == 'closed' && 'bottles' || 'source-rootfs' }}" \
+  "SHELL_ACTIVATION_MODE: bottles" \
   "$WORKFLOW" ||
-  fail "only the manual closed lifecycle may select the bottled product lane"
+  fail "every Homebrew main-shell gate must select the bottled product lane"
 
 live_input_block="$(sed -n \
   '/- name: Bind exact live lifecycle revisions/,/- name: Fetch musl submodule/p' \
@@ -571,7 +571,7 @@ do
 done
 grep -Fq 'same already-verified candidate bytes' <<<"$live_fixture_block" ||
   fail "closed Chromium fixture routing needs its cross-host rationale inline"
-grep -Fq 'six-Formula base is not a brew runtime' <<<"$live_fixture_block" ||
+grep -Fq 'shell bottle closure is not itself a brew runtime' <<<"$live_fixture_block" ||
   fail "live lifecycle atomic runtime precondition needs its rationale inline"
 
 live_node_block="$(sed -n \
@@ -696,11 +696,11 @@ grep -Fq 'shell_spec=test/kandelo-homebrew-main-shell.spec.ts' "$WORKFLOW" &&
   fail "shell and lifecycle acceptance must each require one pristine browser proof"
 modeset_browser_block="$(
   sed -n \
-    '/# WHY: only the temporary source bridge owns MODESET/,/^            fi$/p' \
+    '/# WHY: modeset and its launch profile/,/^            fi$/p' \
     "$WORKFLOW"
 )"
 [ "$(grep -Fc 'npx playwright test test/kandelo-modeset.spec.ts' "$WORKFLOW")" -eq 1 ] &&
-  grep -Fq 'if [ "$SHELL_ACTIVATION_MODE" = source-rootfs ]; then' \
+  grep -Fq 'if [ "$SHELL_ACTIVATION_MODE" = bottles ]; then' \
     <<<"$modeset_browser_block" &&
   grep -Fq 'npx playwright test test/kandelo-modeset.spec.ts' \
     <<<"$modeset_browser_block" &&
@@ -2302,6 +2302,22 @@ expect_failure "compatibility.aliases[2] is invalid" \
 jq '.compatibility.aliases[1].targets[0] = .compatibility.aliases[0].targets[0]' \
   "$SOURCE_LOCK" >"$lock"
 expect_failure "compatibility alias target is duplicated" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq 'del(.compatibility.public_commands)' "$SOURCE_LOCK" >"$lock"
+expect_failure "main-shell migration compatibility policy is invalid" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.compatibility.public_commands.usr_bin_only +=
+  [.compatibility.public_commands.mirrored_names[0]]' \
+  "$SOURCE_LOCK" >"$lock"
+expect_failure "public command names across path cohorts contains duplicate" \
+  node "$CHECKER" "$BREWFILE" "$lock"
+
+jq '.compatibility.public_commands.supporting_paths[0].package =
+  "kandelo-dev/tap-core/not-locked"' \
+  "$SOURCE_LOCK" >"$lock"
+expect_failure "public_commands.supporting_paths[0] is invalid" \
   node "$CHECKER" "$BREWFILE" "$lock"
 
 jq 'del(.compatibility.runtime_state)' "$SOURCE_LOCK" >"$lock"

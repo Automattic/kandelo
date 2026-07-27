@@ -19,18 +19,23 @@ const source = JSON.parse(
 );
 
 describe("Homebrew shell runtime-support contract", () => {
-  it("binds one 18-tree atomic delta and keeps file/libmagic outside it", () => {
+  it("binds one Ruby runtime delta and admits file/libmagic through the base", () => {
     const contract = parseHomebrewRuntimeSupportContract(source);
     expect(contract.activation).toEqual({
       capability: "homebrew:runtime",
       root: "/usr/bin/brew",
       atomicGroup: "homebrew-runtime-support",
     });
-    expect(contract.additionalFormulaOrder).toHaveLength(18);
-    expect(contract.deferredRelocationFormulae).toEqual([
-      "kandelo-dev/tap-core/libmagic",
-      "kandelo-dev/tap-core/file-formula",
+    expect(contract.additionalFormulaOrder).toEqual([
+      "kandelo-dev/tap-core/ruby",
     ]);
+    expect(contract.deferredRelocationFormulae).toEqual([]);
+    expect(contract.baseFormulaOrder).toEqual(
+      expect.arrayContaining([
+        "kandelo-dev/tap-core/libmagic",
+        "kandelo-dev/tap-core/file-formula",
+      ]),
+    );
     expect(contract.lifecycleInstall).toEqual({
       tap: "brandonpayton/kandelo-canary",
       repository: "brandonpayton/homebrew-kandelo-canary",
@@ -39,23 +44,23 @@ describe("Homebrew shell runtime-support contract", () => {
     });
     expect(
       contract.deferredRelocationFormulae.some((name) =>
-        contract.formulaOrder.includes(name)
+        contract.formulaOrder.includes(name),
       ),
     ).toBe(false);
   });
 
-  it("rejects widening the fixed-prefix proof to file or libmagic", () => {
-    for (const formula of [
-      "kandelo-dev/tap-core/libmagic",
-      "kandelo-dev/tap-core/file-formula",
-    ]) {
-      const changed = structuredClone(source);
-      changed.formula_order.push(formula);
-      changed.additional_formula_order.push(formula);
-      expect(() => parseHomebrewRuntimeSupportContract(changed)).toThrow(
-        /file\/libmagic relocation boundary/,
-      );
-    }
+  it("rejects declaring one Formula as both admitted and deferred", () => {
+    const changed = structuredClone(source);
+    changed.deferred_formulae.push({
+      package: "kandelo-dev/tap-core/ruby",
+      current_state: "public-abi41-only",
+      reason: "fixture",
+      reentry_gate: "fixture",
+    });
+    changed.availability.can_be_deferred.push("kandelo-dev/tap-core/ruby");
+    expect(() => parseHomebrewRuntimeSupportContract(changed)).toThrow(
+      /cannot both admit and defer/,
+    );
   });
 
   it("requires the exact planner order and projects only the additional trees", () => {
@@ -63,14 +68,14 @@ describe("Homebrew shell runtime-support contract", () => {
     const base = plan(contract.baseFormulaOrder);
     const support = plan(contract.formulaOrder);
     expect(() =>
-      assertHomebrewRuntimeSupportPlan(contract, base, support)
+      assertHomebrewRuntimeSupportPlan(contract, base, support),
     ).not.toThrow();
 
     const delta = projectHomebrewRuntimeSupportDelta(contract, support);
     expect(delta.packages.map((pkg) => pkg.fullName)).toEqual(
       contract.additionalFormulaOrder,
     );
-    expect(delta.packages).toHaveLength(18);
+    expect(delta.packages).toHaveLength(1);
 
     const reordered = plan([
       contract.formulaOrder[1]!,
@@ -78,7 +83,7 @@ describe("Homebrew shell runtime-support contract", () => {
       ...contract.formulaOrder.slice(2),
     ]);
     expect(() =>
-      assertHomebrewRuntimeSupportPlan(contract, base, reordered)
+      assertHomebrewRuntimeSupportPlan(contract, base, reordered),
     ).toThrow(/differs from its exact base\/catalog contract/);
   });
 });

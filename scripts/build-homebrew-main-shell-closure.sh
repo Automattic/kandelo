@@ -556,11 +556,19 @@ jq -e \
   ([.packages[].source_status] | all(. == "success")) and
   ([.packages[].metadata_status] | all(. == "success")) and
   (.default_shell.path == "/home/linuxbrew/.linuxbrew/bin/bash") and
-  # WHY: these are the complete base-shell entry points. Commands such as
-  # env, git, curl, and ruby belong to the separately activated Homebrew
-  # runtime-support layer and must not expand this image by accident.
-  (["/bin/sh", "/bin/bash", "/bin/dash", "/usr/bin/sh", "/usr/bin/bash",
-    "/usr/bin/dash", "/usr/bin/bzip2", "/usr/bin/m4"] -
+  # WHY: the migration lock is the reviewed public shell namespace. Derive the
+  # complete command-path proof from it so adding a Formula cannot silently
+  # leave the command absent from the composed image.
+  (([
+      $lock[0].compatibility.public_commands.mirrored_names[] as $name |
+      "/bin/\($name)", "/usr/bin/\($name)"
+    ] + [
+      $lock[0].compatibility.public_commands.usr_bin_only[] as $name |
+      "/usr/bin/\($name)"
+    ] + [
+      $lock[0].compatibility.public_commands.usr_local_bin_only[] as $name |
+      "/usr/local/bin/\($name)"
+    ]) -
     [.compatibility_links[].path] | length == 0) and
   ([$lock[0].compatibility.aliases[] as $alias |
     $alias.targets[] as $target |

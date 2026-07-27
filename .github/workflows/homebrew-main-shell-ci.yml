@@ -53,11 +53,11 @@ jobs:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
       TRANSPORT_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.transport_mode || 'closed' }}
       KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "1"
-      # WHY: rehearsal bottles are not main-produced artifacts. Keep required
-      # PR/main browser gates on the source-rootfs bridge until every final
-      # bottle has been rebuilt by a job whose checkout is exact main. The
-      # manual closed dispatch is that cutover proof and must exercise bottles.
-      SHELL_ACTIVATION_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.transport_mode == 'closed' && 'bottles' || 'source-rootfs' }}
+      # WHY: this workflow is the product cutover gate. Every trigger must
+      # compose and boot the bottle-owned shell; allowing PR or main runs to
+      # substitute the source-rootfs bridge would make a green check prove the
+      # wrong artifact again.
+      SHELL_ACTIVATION_MODE: bottles
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -735,8 +735,8 @@ jobs:
               ((.materialization.deferred_package_order +
                 $support[0].additional_formula_order) | sort)
           ' "${{ steps.bottle_candidate.outputs.report }}" >/dev/null
-          # WHY: the six-Formula base is not a brew runtime. Bind this live
-          # proof only after the candidate contains the exact separately
+          # WHY: the shell bottle closure is not itself a brew runtime. Bind
+          # this live proof only after the candidate contains the separately
           # reviewed atomic support cohort; a partial ambient tool set must
           # fail here before either host can create lifecycle evidence.
 
@@ -938,12 +938,10 @@ jobs:
               "${playwright_env[@]}" \
               npx playwright test "$shell_spec" \
               --project=chromium --reporter=json
-            # WHY: only the temporary source bridge owns MODESET and its launch
-            # profile. Requiring it from the lean bottled base would test
-            # software that the selected image deliberately excludes.
-            if [ "$SHELL_ACTIVATION_MODE" = source-rootfs ]; then
-              # Use a fresh process because the preceding shell worker occupies
-              # enough memory to make browser-process lifetime observable.
+            # WHY: modeset and its launch profile are part of the reviewed
+            # current-shell contract, but use a fresh process because the
+            # preceding shell worker makes browser-process lifetime observable.
+            if [ "$SHELL_ACTIVATION_MODE" = bottles ]; then
               bash ../../scripts/dev-shell.sh env \
                 "PLAYWRIGHT_JSON_OUTPUT_FILE=$modeset_report" \
                 "${playwright_env[@]}" \

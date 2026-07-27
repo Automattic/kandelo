@@ -11,6 +11,15 @@
   },
   "packages": [
     {
+      "registry": { "name": "dash", "version": "0.5.12" },
+      "formula": {
+        "name": "dash",
+        "version": "0.5.12",
+        "revision": 0,
+        "bottle_rebuild": 1
+      }
+    },
+    {
       "registry": { "name": "bash", "version": "5.2.37" },
       "formula": {
         "name": "bash",
@@ -20,10 +29,190 @@
       }
     },
     {
-      "registry": { "name": "dash", "version": "0.5.12" },
+      "registry": { "name": "ncurses", "version": "6.5" },
       "formula": {
-        "name": "dash",
-        "version": "0.5.12",
+        "name": "ncurses",
+        "version": "6.5",
+        "revision": 0,
+        "bottle_rebuild": 1
+      }
+    },
+    {
+      "registry": { "name": "coreutils", "version": "9.6" },
+      "formula": {
+        "name": "coreutils",
+        "version": "9.6",
+        "revision": 0,
+        "bottle_rebuild": 1
+      }
+    },
+    {
+      "registry": { "name": "gawk", "version": "5.3.0" },
+      "formula": {
+        "name": "gawk",
+        "version": "5.3.0",
+        "revision": 0,
+        "bottle_rebuild": 1
+      }
+    },
+    {
+      "registry": { "name": "grep", "version": "3.11" },
+      "formula": {
+        "name": "grep",
+        "version": "3.11",
+        "revision": 0,
+        "bottle_rebuild": 1
+      }
+    },
+    {
+      "registry": { "name": "sed", "version": "4.9" },
+      "formula": {
+        "name": "sed",
+        "version": "4.9",
+        "revision": 0,
+        "bottle_rebuild": 1
+      }
+    },
+    {
+      "registry": { "name": "bc", "version": "1.07.1" },
+      "formula": {
+        "name": "bc",
+        "version": "1.07.1",
+        "revision": 0,
+        "bottle_rebuild": 2
+      }
+    },
+    {
+      "registry": { "name": "file", "version": "5.45" },
+      "formula": {
+        "name": "file-formula",
+        "version": "5.45",
+        "revision": 0,
+        "bottle_rebuild": 3
+      }
+    },
+    {
+      "registry": { "name": "m4", "version": "1.4.19" },
+      "formula": {
+        "name": "m4",
+        "version": "1.4.21",
+        "revision": 0,
+        "bottle_rebuild": 1
+      }
+    },
+    {
+      "registry": { "name": "make", "version": "4.4.1" },
+      "formula": {
+        "name": "make",
+        "version": "4.4.1",
+        "revision": 0,
+        "bottle_rebuild": 1
+      }
+    },
+    {
+      "registry": { "name": "findutils", "version": "4.10.0" },
+      "formula": {
+        "name": "findutils",
+        "version": "4.10.0",
+        "revision": 0,
+        "bottle_rebuild": 1
+      }
+    },
+    {
+      "registry": { "name": "diffutils", "version": "3.10" },
+      "formula": {
+        "name": "diffutils",
+        "version": "3.12",
+        "revision": 0,
+        "bottle_rebuild": 1
+      }
+    },
+    {
+      "registry": { "name": "posix-utils-lite", "version": "0.1.0" },
+      "formula": {
+        "name": "posix-utils-lite",
+        "version": "0.1.0",
+        "revision": 0,
+        "bottle_rebuild": 2
+      }
+    },
+    {
+      "registry": { "name": "fbdoom", "version": "0.1.0" },
+      "formula": {
+        "name": "fbdoom",
+        "version": "0.1.0",
+        "revision": 0,
+        "bottle_rebuild": 2
+      }
+    },
+    {
+      "registry": { "name": "modeset", "version": "0.1.0" },
+      "formula": {
+        "name": "modeset",
+        "version": "0.1.0",
+        "revision": 0,
+        "bottle_rebuild": 2
+      }
+    },
+    {
+      "registry": { "name": "less", "version": "668" },
+      "formula": {
+        "name": "less",
+        "version": "668",
+        "revision": 1,
+        "bottle_rebuild": 4
+      }
+    },
+    {
+      "registry": { "name": "tar", "version": "1.35" },
+      "formula": {
+        "name": "tar",
+        "version": "1.35",
+        "revision": 0,
+        "bottle_rebuild": 1
+      }
+    },
+    {
+      "registry": { "name": "curl", "version": "8.11.1" },
+      "formula": {
+        "name": "curl",
+        "version": "8.11.1",
+        "revision": 0,
+        "bottle_rebuild": 1
+      }
+    },
+    {
+      "registry": { "name": "netcat", "version": "0.7.1" },
+      "formula": {
+        "name": "netcat",
+        "version": "0.7.1",
+        "revision": 0,
+        "bottle_rebuild": 2
+      }
+    },
+    {
+      "registry": { "name": "wget", "version": "1.25.0" },
+      "formula": {
+        "name": "wget",
+        "version": "1.25.0",
+        "revision": 0,
+        "bottle_rebuild": 1
+      }
+    },
+    {
+      "registry": { "name": "git", "version": "2.47.1" },
+      "formula": {
+        "name": "git",
+        "version": "2.47.1",
+        "revision": 1,
+        "bottle_rebuild": 1
+      }
+    },
+    {
+      "registry": { "name": "gzip", "version": "1.13" },
+      "formula": {
+        "name": "gzip",
+        "version": "1.14",
         "revision": 0,
         "bottle_rebuild": 1
       }
@@ -38,28 +227,153 @@
       }
     },
     {
-      "registry": { "name": "m4", "version": "1.4.19" },
+      "registry": { "name": "xz", "version": "5.6.2" },
       "formula": {
-        "name": "m4",
-        "version": "1.4.21",
+        "name": "xz",
+        "version": "5.6.2",
+        "revision": 1,
+        "bottle_rebuild": 1
+      }
+    },
+    {
+      "registry": { "name": "zstd", "version": "1.5.6" },
+      "formula": {
+        "name": "zstd",
+        "version": "1.5.7",
+        "revision": 0,
+        "bottle_rebuild": 1
+      }
+    },
+    {
+      "registry": { "name": "zip", "version": "3.0" },
+      "formula": {
+        "name": "zip",
+        "version": "3.0",
+        "revision": 0,
+        "bottle_rebuild": 1
+      }
+    },
+    {
+      "registry": { "name": "unzip", "version": "6.0" },
+      "formula": {
+        "name": "unzip",
+        "version": "6.0",
+        "revision": 0,
+        "bottle_rebuild": 2
+      }
+    },
+    {
+      "registry": { "name": "lsof", "version": "0.1.0" },
+      "formula": {
+        "name": "lsof",
+        "version": "0.1.0",
+        "revision": 0,
+        "bottle_rebuild": 2
+      }
+    },
+    {
+      "registry": { "name": "nano", "version": "8.0" },
+      "formula": {
+        "name": "nano",
+        "version": "8.0",
+        "revision": 0,
+        "bottle_rebuild": 4
+      }
+    },
+    {
+      "registry": { "name": "vim", "version": "9.1.0900" },
+      "formula": {
+        "name": "vim",
+        "version": "9.2.0750",
+        "revision": 0,
+        "bottle_rebuild": 1
+      }
+    },
+    {
+      "registry": { "name": "nethack", "version": "3.6.7" },
+      "formula": {
+        "name": "nethack",
+        "version": "3.6.7",
         "revision": 0,
         "bottle_rebuild": 1
       }
     }
   ],
   "formula_closure": [
+    "kandelo-dev/tap-core/dash",
     "kandelo-dev/tap-core/libcxx",
     "kandelo-dev/tap-core/ncurses",
     "kandelo-dev/tap-core/bash",
-    "kandelo-dev/tap-core/dash",
+    "kandelo-dev/tap-core/coreutils",
+    "kandelo-dev/tap-core/gawk",
+    "kandelo-dev/tap-core/grep",
+    "kandelo-dev/tap-core/sed",
+    "kandelo-dev/tap-core/bc",
     "kandelo-dev/tap-core/bzip2",
-    "kandelo-dev/tap-core/m4"
+    "kandelo-dev/tap-core/xz",
+    "kandelo-dev/tap-core/zlib",
+    "kandelo-dev/tap-core/libmagic",
+    "kandelo-dev/tap-core/file-formula",
+    "kandelo-dev/tap-core/m4",
+    "kandelo-dev/tap-core/make",
+    "kandelo-dev/tap-core/findutils",
+    "kandelo-dev/tap-core/ed",
+    "kandelo-dev/tap-core/diffutils",
+    "kandelo-dev/tap-core/posix-utils-lite",
+    "kandelo-dev/tap-core/fbdoom",
+    "kandelo-dev/tap-core/modeset",
+    "kandelo-dev/tap-core/less",
+    "kandelo-dev/tap-core/gzip",
+    "kandelo-dev/tap-core/tar",
+    "kandelo-dev/tap-core/openssl",
+    "kandelo-dev/tap-core/libcurl",
+    "kandelo-dev/tap-core/curl",
+    "kandelo-dev/tap-core/netcat",
+    "kandelo-dev/tap-core/wget",
+    "kandelo-dev/tap-core/vim",
+    "kandelo-dev/tap-core/git",
+    "kandelo-dev/tap-core/zstd",
+    "kandelo-dev/tap-core/unzip",
+    "kandelo-dev/tap-core/zip",
+    "kandelo-dev/tap-core/lsof",
+    "kandelo-dev/tap-core/nano",
+    "kandelo-dev/tap-core/nethack"
   ],
   "reviewed_substitutions": [
+    {
+      "kind": "formula_identity",
+      "registry": "file@5.45",
+      "formula": "kandelo-dev/tap-core/file-formula@5.45",
+      "reason": "Homebrew reserves Ruby's File class name, so the same file(1) package uses the unambiguous file-formula identity."
+    },
     {
       "kind": "version",
       "registry": "m4@1.4.19",
       "formula": "kandelo-dev/tap-core/m4@1.4.21",
+      "reason": "Reviewed migration to the newer upstream release already bottled by the tap."
+    },
+    {
+      "kind": "version",
+      "registry": "diffutils@3.10",
+      "formula": "kandelo-dev/tap-core/diffutils@3.12",
+      "reason": "Reviewed migration to the newer upstream release already bottled by the tap."
+    },
+    {
+      "kind": "version",
+      "registry": "gzip@1.13",
+      "formula": "kandelo-dev/tap-core/gzip@1.14",
+      "reason": "Reviewed migration to the newer upstream release already bottled by the tap."
+    },
+    {
+      "kind": "version",
+      "registry": "zstd@1.5.6",
+      "formula": "kandelo-dev/tap-core/zstd@1.5.7",
+      "reason": "Reviewed migration to the newer upstream release already bottled by the tap."
+    },
+    {
+      "kind": "version",
+      "registry": "vim@9.1.0900",
+      "formula": "kandelo-dev/tap-core/vim@9.2.0750",
       "reason": "Reviewed migration to the newer upstream release already bottled by the tap."
     }
   ],
@@ -107,8 +421,335 @@
         "source_kind": "link",
         "source": "bin/gawk",
         "targets": ["/usr/bin/awk", "/bin/awk"]
+      },
+      {
+        "package": "kandelo-dev/tap-core/grep",
+        "source_kind": "link",
+        "source": "bin/grep",
+        "targets": [
+          "/usr/bin/egrep",
+          "/bin/egrep",
+          "/usr/bin/fgrep",
+          "/bin/fgrep"
+        ]
+      },
+      {
+        "package": "kandelo-dev/tap-core/netcat",
+        "source_kind": "link",
+        "source": "bin/nc",
+        "targets": ["/usr/bin/netcat", "/bin/netcat"]
+      },
+      {
+        "package": "kandelo-dev/tap-core/git",
+        "source_kind": "keg",
+        "source": "libexec/git-core/git-remote-http",
+        "targets": [
+          "/usr/bin/git-remote-http",
+          "/usr/bin/git-remote-https",
+          "/usr/bin/git-remote-ftp",
+          "/usr/bin/git-remote-ftps"
+        ]
+      },
+      {
+        "package": "kandelo-dev/tap-core/fbdoom",
+        "source_kind": "link",
+        "source": "bin/fbdoom",
+        "targets": ["/usr/local/bin/fbdoom"]
+      },
+      {
+        "package": "kandelo-dev/tap-core/modeset",
+        "source_kind": "link",
+        "source": "bin/modeset",
+        "targets": ["/usr/local/bin/modeset"]
       }
     ],
-    "runtime_state": []
+    "public_commands": {
+      "mirrored_names": [
+        "[",
+        "ar",
+        "arch",
+        "asa",
+        "awk",
+        "b2sum",
+        "base32",
+        "base64",
+        "basename",
+        "basenc",
+        "bash",
+        "bc",
+        "bunzip2",
+        "bzcat",
+        "bzip2",
+        "cal",
+        "captoinfo",
+        "cat",
+        "cflow",
+        "chcon",
+        "chgrp",
+        "chmod",
+        "chown",
+        "chroot",
+        "cksum",
+        "clear",
+        "cmp",
+        "comm",
+        "compress",
+        "coreutils",
+        "cp",
+        "csplit",
+        "ctags",
+        "curl",
+        "cut",
+        "cxref",
+        "dash",
+        "date",
+        "dd",
+        "df",
+        "diff",
+        "diff3",
+        "dir",
+        "dircolors",
+        "dirname",
+        "du",
+        "echo",
+        "ed",
+        "egrep",
+        "env",
+        "ex",
+        "expand",
+        "expr",
+        "factor",
+        "false",
+        "fgrep",
+        "file",
+        "find",
+        "fmt",
+        "fold",
+        "funzip",
+        "fuser",
+        "gencat",
+        "getconf",
+        "gettext",
+        "git",
+        "grep",
+        "groups",
+        "gunzip",
+        "gzip",
+        "head",
+        "hostid",
+        "iconv",
+        "id",
+        "infocmp",
+        "infotocap",
+        "install",
+        "ipcrm",
+        "ipcs",
+        "join",
+        "less",
+        "lex",
+        "link",
+        "ln",
+        "locale",
+        "logger",
+        "logname",
+        "ls",
+        "lsof",
+        "lzcat",
+        "lzma",
+        "m4",
+        "make",
+        "man",
+        "md5sum",
+        "mkdir",
+        "mkfifo",
+        "mknod",
+        "mktemp",
+        "more",
+        "msgfmt",
+        "mv",
+        "nano",
+        "nc",
+        "netcat",
+        "nethack",
+        "ngettext",
+        "nice",
+        "nl",
+        "nm",
+        "nohup",
+        "nproc",
+        "numfmt",
+        "od",
+        "paste",
+        "patch",
+        "pathchk",
+        "pax",
+        "pgrep",
+        "pr",
+        "printenv",
+        "printf",
+        "ps",
+        "ptx",
+        "pwd",
+        "readlink",
+        "realpath",
+        "renice",
+        "reset",
+        "rm",
+        "rmdir",
+        "runcon",
+        "sdiff",
+        "sed",
+        "seq",
+        "sh",
+        "sha1sum",
+        "sha224sum",
+        "sha256sum",
+        "sha384sum",
+        "sha512sum",
+        "shred",
+        "shuf",
+        "sleep",
+        "sort",
+        "split",
+        "stat",
+        "strings",
+        "strip",
+        "stty",
+        "sum",
+        "sync",
+        "tabs",
+        "tac",
+        "tail",
+        "tar",
+        "tee",
+        "test",
+        "tic",
+        "timeout",
+        "toe",
+        "touch",
+        "tput",
+        "tr",
+        "true",
+        "truncate",
+        "tset",
+        "tsort",
+        "tty",
+        "uname",
+        "uncompress",
+        "unexpand",
+        "uniq",
+        "unlink",
+        "unlzma",
+        "unxz",
+        "unzip",
+        "unzstd",
+        "uudecode",
+        "uuencode",
+        "vdir",
+        "vi",
+        "vim",
+        "wc",
+        "wget",
+        "what",
+        "whoami",
+        "xargs",
+        "xgettext",
+        "xz",
+        "xzcat",
+        "yacc",
+        "yes",
+        "zcat",
+        "zip",
+        "zipinfo",
+        "zstd",
+        "zstdcat"
+      ],
+      "usr_bin_only": [
+        "gawk",
+        "git-remote-ftp",
+        "git-remote-ftps",
+        "git-remote-http",
+        "git-remote-https"
+      ],
+      "usr_local_bin_only": ["fbdoom", "modeset"],
+      "supporting_paths": [
+        {
+          "package": "kandelo-dev/tap-core/libmagic",
+          "path": "/home/linuxbrew/.linuxbrew/share/misc/magic.mgc",
+          "kind": "file",
+          "reason": "The file command needs the version-matched compiled magic database from the same bottle closure."
+        },
+        {
+          "package": "kandelo-dev/tap-core/vim",
+          "path": "/home/linuxbrew/.linuxbrew/share/vim/vim92/defaults.vim",
+          "kind": "file",
+          "reason": "Vim must activate its runtime files atomically with the editor executable."
+        },
+        {
+          "package": "kandelo-dev/tap-core/nethack",
+          "path": "/home/linuxbrew/.linuxbrew/share/nethack/nhdat",
+          "kind": "file",
+          "reason": "NetHack must activate its game data atomically with the executable."
+        }
+      ]
+    },
+    "runtime_state": [
+      {
+        "requires_package": "kandelo-dev/tap-core/bash",
+        "path": "/etc/profile.d/kandelo-shell.sh",
+        "kind": "text_file",
+        "mode": 420,
+        "uid": 0,
+        "gid": 0,
+        "contents": "alias ls='ls --color=auto'\nalias grep='grep --color=auto'\nexport USER=player\nexport NETHACKOPTIONS='windowtype:curses,color,lit_corridor,hilite_pet'\n",
+        "reason": "Preserve the current shell's interactive aliases and guest environment without replacing the platform-owned /etc/profile."
+      },
+      {
+        "requires_package": "kandelo-dev/tap-core/git",
+        "path": "/etc/gitconfig",
+        "kind": "text_file",
+        "mode": 420,
+        "uid": 0,
+        "gid": 0,
+        "contents": "[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n[core]\n\tpager = cat\n[user]\n\tname = User\n\temail = user@wasm.local\n[init]\n\tdefaultBranch = main\n",
+        "reason": "Preserve the shell image's deterministic Git identity, pager, maintenance, and default-branch behavior."
+      },
+      {
+        "requires_package": "kandelo-dev/tap-core/nethack",
+        "path": "/home/.nethack",
+        "kind": "directory",
+        "mode": 511,
+        "uid": 1000,
+        "gid": 1000,
+        "reason": "NetHack requires a writable VAR_PLAYGROUND owned by the interactive guest user."
+      },
+      {
+        "requires_package": "kandelo-dev/tap-core/nethack",
+        "path": "/home/.nethack/perm",
+        "kind": "empty_file",
+        "mode": 438,
+        "uid": 1000,
+        "gid": 1000,
+        "reason": "NetHack expects its lock marker before read-only score and demo commands run."
+      },
+      {
+        "requires_package": "kandelo-dev/tap-core/nethack",
+        "path": "/home/.nethack/record",
+        "kind": "empty_file",
+        "mode": 438,
+        "uid": 1000,
+        "gid": 1000,
+        "reason": "NetHack expects a writable score database in VAR_PLAYGROUND."
+      },
+      {
+        "requires_package": "kandelo-dev/tap-core/bash",
+        "path": "/usr/sbin",
+        "kind": "directory",
+        "mode": 493,
+        "uid": 0,
+        "gid": 0,
+        "reason": "Preserve the current shell's standard filesystem layout even when no package installs an sbin command."
+      }
+    ]
   }
 }

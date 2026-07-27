@@ -25,7 +25,11 @@ import {
   decodeHomebrewBottleMirrorPlan,
   loadHomebrewBottleMirrorBindings,
 } from "./homebrew-closed-lazy-assets";
-import { assertMainShellImageContract } from "./homebrew-main-shell-image-contract";
+import {
+  assertMainShellImageContract,
+  requiredMainShellPublicPaths,
+  type MainShellPublicPathEntry,
+} from "./homebrew-main-shell-image-contract";
 import { KANDELO_DEMO_CONFIG_PATH } from "../web-libs/kandelo-session/src/demo-config";
 import {
   KANDELO_SHELL_CONFIG_PATH,
@@ -148,6 +152,7 @@ assertMainShellImageContract({
   demoConfigSource,
   expectedDemoConfigSource: new Uint8Array(readFileSync(demoConfigPath)),
   runtimeState: readRuntimeState(fs, migrationLock),
+  publicPaths: readPublicPaths(fs, migrationLock),
 });
 const allPendingTrees = fs
   .exportLazyArchiveEntries()
@@ -1214,6 +1219,29 @@ function readRuntimeState(
         : {
             contents: readVfsFile(fs, declaration.path, stat.size),
           }),
+    };
+  });
+}
+
+function readPublicPaths(
+  fs: MemoryFileSystem,
+  migrationLock: unknown,
+): MainShellPublicPathEntry[] {
+  return requiredMainShellPublicPaths(migrationLock).map(({ path }) => {
+    // stat() intentionally follows compatibility symlinks: the public contract
+    // is that invoking the resolved path reaches an executable regular file,
+    // not that every alias uses a particular link representation.
+    const stat = fs.stat(path);
+    const type = stat.mode & 0xf000;
+    const kind =
+      type === 0x8000 ? "file" : type === 0x4000 ? "directory" : "unsupported";
+    if (kind === "unsupported") {
+      throw new Error(`${path} is not a regular file or directory`);
+    }
+    return {
+      path,
+      kind,
+      mode: stat.mode & 0o7777,
     };
   });
 }

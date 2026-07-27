@@ -30,6 +30,7 @@ export interface MainShellImageContractInput {
   demoConfigSource: Uint8Array;
   expectedDemoConfigSource: Uint8Array;
   runtimeState: MainShellRuntimeStateEntry[];
+  publicPaths: MainShellPublicPathEntry[];
 }
 
 export interface MainShellRuntimeStateEntry {
@@ -39,6 +40,18 @@ export interface MainShellRuntimeStateEntry {
   uid: number;
   gid: number;
   contents?: Uint8Array;
+}
+
+export interface MainShellPublicPathEntry {
+  path: string;
+  kind: "file" | "directory";
+  mode: number;
+}
+
+export interface MainShellPublicPathExpectation {
+  path: string;
+  kind: "file" | "directory";
+  executable: boolean;
 }
 
 /**
@@ -296,6 +309,104 @@ export function assertMainShellImageContract(
 
   assertDemoConfig(input, homebrew);
   assertRuntimeState(input, lock, guest, homebrew, formulaClosure);
+  assertPublicPaths(input.publicPaths, requiredMainShellPublicPaths(lock));
+}
+
+/**
+ * Expand the reviewed compatibility policy into the exact guest paths that an
+ * image smoke must inspect. Keeping this projection beside the image contract
+ * prevents the builder, Node smoke, and unit fixtures from growing separate
+ * command inventories.
+ */
+export function requiredMainShellPublicPaths(
+  migrationLock: unknown,
+): MainShellPublicPathExpectation[] {
+  const lock = requiredRecord(migrationLock, "migration lock");
+  const formulaClosure = requiredStringArray(
+    lock.formula_closure,
+    "migration lock formula_closure",
+  );
+  const compatibility = requiredRecord(
+    lock.compatibility,
+    "migration lock compatibility",
+  );
+  const declarations = requiredRecord(
+    compatibility.public_commands,
+    "migration lock public_commands",
+  );
+  const mirroredNames = requiredCommandNames(
+    declarations.mirrored_names,
+    "migration lock public_commands mirrored_names",
+  );
+  const usrBinOnly = requiredCommandNames(
+    declarations.usr_bin_only,
+    "migration lock public_commands usr_bin_only",
+  );
+  const usrLocalBinOnly = requiredCommandNames(
+    declarations.usr_local_bin_only,
+    "migration lock public_commands usr_local_bin_only",
+  );
+  assertUnique(
+    [...mirroredNames, ...usrBinOnly, ...usrLocalBinOnly],
+    "migration lock public command names",
+  );
+
+  const expected: MainShellPublicPathExpectation[] = [];
+  for (const name of mirroredNames) {
+    expected.push(
+      { path: `/bin/${name}`, kind: "file", executable: true },
+      { path: `/usr/bin/${name}`, kind: "file", executable: true },
+    );
+  }
+  for (const name of usrBinOnly) {
+    expected.push({
+      path: `/usr/bin/${name}`,
+      kind: "file",
+      executable: true,
+    });
+  }
+  for (const name of usrLocalBinOnly) {
+    expected.push({
+      path: `/usr/local/bin/${name}`,
+      kind: "file",
+      executable: true,
+    });
+  }
+
+  const supportingPaths = requiredRecordArray(
+    declarations.supporting_paths,
+    "migration lock public_commands supporting_paths",
+  );
+  supportingPaths.forEach((entry, index) => {
+    const label = `migration lock public_commands supporting_paths[${index}]`;
+    const packageName = requiredString(entry, "package", label);
+    if (!formulaClosure.includes(packageName)) {
+      fail(`${label} package is outside the reviewed Formula closure`);
+    }
+    const path = requiredString(entry, "path", label);
+    if (
+      !path.startsWith("/") ||
+      path === "/" ||
+      path.endsWith("/") ||
+      path.includes("//") ||
+      path.split("/").some((part) => part === "." || part === "..")
+    ) {
+      fail(`${label} path must be a normalized absolute guest path`);
+    }
+    const kind = requiredString(entry, "kind", label);
+    if (kind !== "file" && kind !== "directory") {
+      fail(`${label} kind must be file or directory`);
+    }
+    requiredString(entry, "reason", label);
+    expected.push({ path, kind, executable: false });
+  });
+
+  assertUnique(
+    expected.map((entry) => entry.path),
+    "migration lock public paths",
+  );
+  if (expected.length === 0) fail("migration lock declares no public paths");
+  return expected;
 }
 
 function assertDemoConfig(
@@ -348,12 +459,117 @@ function assertDemoConfig(
     "Shell demo",
     "shell demo guide",
   );
-  if (
-    resolveDemoPresentation(config, "doom") !== null ||
-    resolveDemoPresentation(config, "modeset") !== null ||
-    resolveDemoAssets(config, "doom").length !== 0
-  ) {
-    fail("base shell demo must not promise optional Doom or modeset packages");
+
+  const doomPresentation = resolveDemoPresentation(config, "doom");
+  expectEqual(
+    doomPresentation?.bootPrimary,
+    "syslog",
+    "Doom demo boot presentation",
+  );
+  expectEqual(
+    doomPresentation?.runningPrimary.join(","),
+    "framebuffer,terminal,syslog",
+    "Doom demo running presentation",
+  );
+  expectEqual(
+    doomPresentation?.terminalAccess,
+    "drawer",
+    "Doom demo terminal access",
+  );
+  expectEqual(
+    doomPresentation?.internalsAccess,
+    "drawer",
+    "Doom demo internals access",
+  );
+  expectEqual(
+    doomPresentation?.autoCommand,
+    "/usr/local/bin/fbdoom -iwad /doom1.wad",
+    "Doom demo command",
+  );
+  const doomAssets = resolveDemoAssets(config, "doom");
+  expectEqual(doomAssets.length, 1, "Doom demo asset count");
+  const doomAsset = doomAssets[0]!;
+  expectEqual(doomAsset.path, "/doom1.wad", "Doom demo asset path");
+  expectEqual(
+    doomAsset.url,
+    "https://cdn.jsdelivr.net/gh/gaborbata/vanilla-mocha-doom@15825a07a48806bcfb242a42afd5ee7cb3c9a3a4/wads/doom1.wad",
+    "Doom demo asset URL",
+  );
+  expectEqual(
+    doomAsset.sha256,
+    "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771",
+    "Doom demo asset sha256",
+  );
+  expectEqual(doomAsset.mode, 0o644, "Doom demo asset mode");
+  expectEqual(doomAsset.devCorsProxy, true, "Doom demo CORS policy");
+
+  const modesetPresentation = resolveDemoPresentation(config, "modeset");
+  expectEqual(
+    modesetPresentation?.bootPrimary,
+    "syslog",
+    "modeset demo boot presentation",
+  );
+  expectEqual(
+    modesetPresentation?.runningPrimary.join(","),
+    "kms,terminal,syslog",
+    "modeset demo running presentation",
+  );
+  expectEqual(
+    modesetPresentation?.terminalAccess,
+    "drawer",
+    "modeset demo terminal access",
+  );
+  expectEqual(
+    modesetPresentation?.internalsAccess,
+    "drawer",
+    "modeset demo internals access",
+  );
+  expectEqual(
+    modesetPresentation?.autoCommand,
+    "/usr/local/bin/modeset",
+    "modeset demo command",
+  );
+  expectEqual(
+    resolveDemoAssets(config, "modeset").length,
+    0,
+    "modeset demo asset count",
+  );
+}
+
+function assertPublicPaths(
+  actual: MainShellPublicPathEntry[],
+  expected: MainShellPublicPathExpectation[],
+): void {
+  if (!Array.isArray(actual)) fail("decoded public paths must be an array");
+  if (actual.length !== expected.length) {
+    fail(
+      `decoded public paths have ${actual.length} entries, expected ${expected.length}`,
+    );
+  }
+  const actualByPath = new Map(actual.map((entry) => [entry.path, entry]));
+  if (actualByPath.size !== actual.length) {
+    fail("decoded public paths contain a duplicate path");
+  }
+  for (const expectation of expected) {
+    const entry = actualByPath.get(expectation.path);
+    if (entry === undefined) {
+      fail(`decoded public paths omit ${expectation.path}`);
+    }
+    expectEqual(
+      entry.kind,
+      expectation.kind,
+      `${expectation.path} decoded kind`,
+    );
+    if (
+      !Number.isSafeInteger(entry.mode) ||
+      entry.mode < 0 ||
+      entry.mode > 0o7777
+    ) {
+      fail(`${expectation.path} decoded mode is invalid`);
+    }
+    if (expectation.executable && (entry.mode & 0o111) === 0) {
+      fail(`${expectation.path} is not executable`);
+    }
   }
 }
 
@@ -697,11 +913,7 @@ function assertPackageClosure(
     requiredString(entry, fullNameKey, `${label}[${index}]`),
   );
   assertUnique(fullNames, label);
-  expectExactStrings(
-    fullNames,
-    formulaClosure,
-    `${label} exact closure`,
-  );
+  expectExactStrings(fullNames, formulaClosure, `${label} exact closure`);
   packages.forEach((entry, index) => {
     const entryLabel = `${label}[${index}]`;
     expectEqual(
@@ -821,6 +1033,17 @@ function requiredStringArray(value: unknown, label: string): string[] {
     fail(`${label} must be an array of strings`);
   }
   return value as string[];
+}
+
+function requiredCommandNames(value: unknown, label: string): string[] {
+  const names = requiredStringArray(value, label);
+  for (const [index, name] of names.entries()) {
+    if (name !== "[" && !/^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(name)) {
+      fail(`${label}[${index}] is not a command name`);
+    }
+  }
+  assertUnique(names, label);
+  return names;
 }
 
 function requiredPositiveInteger(

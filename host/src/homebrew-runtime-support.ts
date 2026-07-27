@@ -5,10 +5,6 @@ const FULL_FORMULA_RE =
 const GIT_SHA_RE = /^[0-9a-f]{40}$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const RUNTIME_ID = "homebrew-runtime-support";
-const DEFERRED_RELOCATION_FORMULAE = [
-  "kandelo-dev/tap-core/libmagic",
-  "kandelo-dev/tap-core/file-formula",
-] as const;
 
 export interface HomebrewRuntimeSupportContract {
   id: typeof RUNTIME_ID;
@@ -26,7 +22,7 @@ export interface HomebrewRuntimeSupportContract {
     root: "/usr/bin/brew";
     atomicGroup: typeof RUNTIME_ID;
   };
-  deferredRelocationFormulae: typeof DEFERRED_RELOCATION_FORMULAE;
+  deferredRelocationFormulae: string[];
   lifecycleInstall: {
     tap: "brandonpayton/kandelo-canary";
     repository: "brandonpayton/homebrew-kandelo-canary";
@@ -51,7 +47,9 @@ export function parseHomebrewRuntimeSupportContract(
     root.kind !== "kandelo-homebrew-runtime-support-layer" ||
     root.id !== RUNTIME_ID
   ) {
-    throw new Error("Homebrew runtime-support contract has an unsupported identity");
+    throw new Error(
+      "Homebrew runtime-support contract has an unsupported identity",
+    );
   }
   const catalog = record(root.catalog, "Homebrew runtime-support catalog");
   const tapRepository = repository(
@@ -81,7 +79,9 @@ export function parseHomebrewRuntimeSupportContract(
   );
   if (
     JSON.stringify(additionalFormulaOrder) !==
-      JSON.stringify(formulaOrder.filter((name) => !baseFormulaOrder.includes(name)))
+    JSON.stringify(
+      formulaOrder.filter((name) => !baseFormulaOrder.includes(name)),
+    )
   ) {
     throw new Error(
       "Homebrew runtime-support additional Formula order is not the base-relative closure",
@@ -144,13 +144,13 @@ export function parseHomebrewRuntimeSupportContract(
       );
     },
   );
-  if (
-    JSON.stringify(deferredRelocationFormulae) !==
-      JSON.stringify(DEFERRED_RELOCATION_FORMULAE) ||
-    deferredRelocationFormulae.some((name) => formulaOrder.includes(name))
-  ) {
+  unique(
+    deferredRelocationFormulae,
+    "Homebrew runtime-support deferred Formulae",
+  );
+  if (deferredRelocationFormulae.some((name) => formulaOrder.includes(name))) {
     throw new Error(
-      "Homebrew runtime support must exclude the file/libmagic relocation boundary",
+      "Homebrew runtime support cannot both admit and defer one Formula",
     );
   }
 
@@ -171,7 +171,9 @@ export function parseHomebrewRuntimeSupportContract(
     !GIT_SHA_RE.test(String(audited.metadata_tap_commit)) ||
     !SHA256_RE.test(String(audited.metadata_sha256)) ||
     JSON.stringify(availability.requires_rebuild) !== "[]" ||
-    JSON.stringify(availability.missing_metadata) !== "[]"
+    JSON.stringify(availability.missing_metadata) !== "[]" ||
+    JSON.stringify(availability.can_be_deferred) !==
+      JSON.stringify(deferredRelocationFormulae)
   ) {
     throw new Error(
       "Homebrew runtime-support availability is not a complete admitted ABI-42 closure",
@@ -192,8 +194,7 @@ export function parseHomebrewRuntimeSupportContract(
   );
   if (
     lifecycleInstall.tap !== "brandonpayton/kandelo-canary" ||
-    lifecycleInstall.repository !==
-      "brandonpayton/homebrew-kandelo-canary" ||
+    lifecycleInstall.repository !== "brandonpayton/homebrew-kandelo-canary" ||
     lifecycleInstall.formula !== "m4" ||
     lifecycleInstall.phase !== "guest-lifecycle" ||
     lifecycleInstall.image_closure !== false ||
@@ -221,7 +222,7 @@ export function parseHomebrewRuntimeSupportContract(
       root: "/usr/bin/brew",
       atomicGroup: RUNTIME_ID,
     },
-    deferredRelocationFormulae: DEFERRED_RELOCATION_FORMULAE,
+    deferredRelocationFormulae,
     lifecycleInstall: {
       tap: "brandonpayton/kandelo-canary",
       repository: "brandonpayton/homebrew-kandelo-canary",
@@ -249,10 +250,11 @@ export function assertHomebrewRuntimeSupportPlan(
     JSON.stringify(baseOrder) !== JSON.stringify(contract.baseFormulaOrder) ||
     JSON.stringify(supportOrder) !== JSON.stringify(contract.formulaOrder) ||
     supportPlan.kandeloAbi !== 42 ||
-    supportPlan.packages.some((pkg) =>
-      pkg.arch !== "wasm32" ||
-      pkg.sourceStatus !== "success" ||
-      pkg.metadataStatus !== "success"
+    supportPlan.packages.some(
+      (pkg) =>
+        pkg.arch !== "wasm32" ||
+        pkg.sourceStatus !== "success" ||
+        pkg.metadataStatus !== "success",
     )
   ) {
     throw new Error(
@@ -298,7 +300,7 @@ function formulaArray(value: unknown, label: string): string[] {
     throw new Error(`${label} must be a nonempty array`);
   }
   const result = value.map((entry, index) =>
-    formula(entry, `${label} ${index}`)
+    formula(entry, `${label} ${index}`),
   );
   unique(result, label);
   return result;
