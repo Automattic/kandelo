@@ -193,9 +193,18 @@ not accept a numeric TID, and rejects proof replay, duplicate offsets, duplicate
 TID ownership, and attempts to substitute a different valid sibling task. A
 successful `kernel_set_current_tid` binding authorizes exactly one
 `kernel_handle_channel` call and is cleared after every return. Because
-`_exit` intentionally traps instead of returning through the dispatcher, it
-clears the binding before trapping. Missing, rejected, stale, or exited task
-bindings fail closed with `ESRCH`; no PID-only ambient selector remains.
+the reusable kernel's exit transaction returns through the dispatcher, its
+normal epilogue restores the kernel shadow stack and clears that binding. The
+separate guest `kernel_exit` import traps only after the host completes the
+exit-channel handshake, preserving `_exit`'s non-returning program contract
+without trapping the reusable kernel instance. Missing, rejected, stale, or
+exited task bindings fail closed with `ESRCH`; no PID-only ambient selector
+remains.
+
+ABI 42 host runtimes also accept the deliberate trap emitted by older ABI 42
+kernels after a committed exit, but still require authoritative `Exited` state
+before publishing success. This preserves old/new host-kernel compatibility
+while fixed kernels return through their shadow-stack epilogue.
 
 All host-initiated guest mutations that previously depended on such a selector
 now carry their authority explicitly. `kernel_dequeue_signal(pid, tid,
