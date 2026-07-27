@@ -829,7 +829,11 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         .collect();
     let mut inherited_ofd_refs: BTreeMap<usize, u32> = BTreeMap::new();
     for (_, entry) in &fd_entries {
-        *inherited_ofd_refs.entry(entry.ofd_ref.0).or_insert(0) += 1;
+        if proc.ofd_table.get(entry.ofd_ref.0).is_none() {
+            return Err(Errno::EBADF);
+        }
+        let count = inherited_ofd_refs.entry(entry.ofd_ref.0).or_insert(0);
+        *count = count.checked_add(1).ok_or(Errno::EOVERFLOW)?;
     }
     w.write_u32(fd_entries.len() as u32)?;
     for (fd_num, entry) in &fd_entries {
@@ -966,20 +970,36 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     // ── Socket table (v10) ──
     {
         use crate::socket::{SocketDomain, SocketState, SocketType};
-        if proc.sockets.len() > MAX_SOCKET_SLOTS {
+        let socket_root_count = ofd_entries
+            .iter()
+            .filter(|(_, ofd)| ofd.file_type == FileType::Socket)
+            .count();
+        let mut socket_roots = Vec::new();
+        socket_roots
+            .try_reserve_exact(socket_root_count)
+            .map_err(|_| Errno::ENOMEM)?;
+        for (_, ofd) in &ofd_entries {
+            if ofd.file_type == FileType::Socket {
+                socket_roots.push(SocketTable::index_from_ofd_handle(ofd.host_handle)?);
+            }
+        }
+        let mut inherited_sockets = proc.sockets.clone();
+        inherited_sockets.retain_inherited_roots(&socket_roots)?;
+
+        if inherited_sockets.len() > MAX_SOCKET_SLOTS {
             return Err(Errno::EINVAL);
         }
         // Count actual sockets
         let mut sock_count = 0u32;
-        for idx in 0..proc.sockets.len() {
-            if proc.sockets.get(idx).is_some() {
+        for idx in 0..inherited_sockets.len() {
+            if inherited_sockets.get(idx).is_some() {
                 sock_count += 1;
             }
         }
-        w.write_u32(proc.sockets.len() as u32)?; // total slots (for index preservation)
+        w.write_u32(inherited_sockets.len() as u32)?; // total slots (for index preservation)
         w.write_u32(sock_count)?;
-        for idx in 0..proc.sockets.len() {
-            if let Some(sock) = proc.sockets.get(idx) {
+        for idx in 0..inherited_sockets.len() {
+            if let Some(sock) = inherited_sockets.get(idx) {
                 w.write_u32(idx as u32)?;
                 w.write_u32(match sock.domain {
                     SocketDomain::Unix => 0,
@@ -2017,6 +2037,23 @@ mod tests {
     use crate::process::Process;
     use crate::signal::SignalHandler;
 
+    fn install_socket_for_fork(
+        proc: &mut Process,
+        socket: crate::socket::SocketInfo,
+    ) -> usize {
+        let socket_index = proc.sockets.alloc(socket);
+        let ofd_index = proc.ofd_table.create(
+            FileType::Socket,
+            wasm_posix_shared::flags::O_RDWR,
+            -((socket_index as i64) + 1),
+            b"/dev/socket".to_vec(),
+        );
+        proc.fd_table
+            .alloc(OpenFileDescRef(ofd_index), 0)
+            .unwrap();
+        socket_index
+    }
+
     #[test]
     fn test_roundtrip_default_process() {
         let mut proc = Process::new(1);
@@ -2505,7 +2542,7 @@ mod tests {
                 included_sources: vec![[10, 88, 0, 3], [10, 88, 0, 4]],
             },
         ];
-        let socket_idx = proc.sockets.alloc(socket);
+        let socket_idx = install_socket_for_fork(&mut proc, socket);
 
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_fork_state(&proc, &mut buf).unwrap();
@@ -2550,7 +2587,7 @@ mod tests {
         let mut proc = Process::new(1);
         let mut socket = SocketInfo::new(SocketDomain::Inet, SocketType::Dgram, 17);
         socket.bind_device = Some(vec![b'x'; MAX_SOCKET_STRING_LEN + 1]);
-        proc.sockets.alloc(socket);
+        install_socket_for_fork(&mut proc, socket);
         let mut buf = vec![0u8; 64 * 1024];
         assert_eq!(serialize_fork_state(&proc, &mut buf), Err(Errno::EINVAL));
 
@@ -2563,7 +2600,7 @@ mod tests {
             blocked_sources: vec![[127, 0, 0, 2]; MAX_IPV4_MULTICAST_SOURCES + 1],
             included_sources: vec![],
         }];
-        proc.sockets.alloc(socket);
+        install_socket_for_fork(&mut proc, socket);
         assert_eq!(serialize_fork_state(&proc, &mut buf), Err(Errno::EINVAL));
     }
 

@@ -288,42 +288,22 @@ EOF
 write_kernel_wat() {
     local marker="$1"
     local output="$2"
+    local required_exports
+    required_exports="$(
+        jq -er '.host_adapter.required_kernel_exports[]' \
+            "$REPO_ROOT/abi/snapshot.json"
+    )" || fail "could not read required kernel exports from the ABI snapshot"
+    [ -n "$required_exports" ] ||
+        fail "ABI snapshot has no required kernel exports"
     {
         printf '%s\n' '(module' \
             '  (func $entry (result i32) i32.const 0)'
-        for export_name in \
-            __abi_version \
-            kernel_alloc_scratch \
-            kernel_create_process \
-            kernel_create_process_with_stdio \
-            kernel_dequeue_signal \
-            kernel_exec_prepare \
-            kernel_exec_setup_for_thread \
-            kernel_fork_process \
-            kernel_get_parent_pid \
-            kernel_get_process_exit_signal \
-            kernel_get_process_state \
-            kernel_handle_channel \
-            kernel_has_sa_nocldstop \
-            kernel_host_adapter_manifest_len \
-            kernel_host_adapter_manifest_ptr \
-            kernel_ipc_shmat_for_process \
-            kernel_ipc_shmat_for_task \
-            kernel_ipc_shmdt_for_process \
-            kernel_ipc_shmdt_for_task \
-            kernel_mark_process_signaled \
-            kernel_pipe_has_readers \
-            kernel_posix_timer_fire \
-            kernel_prepare_write_operation \
-            kernel_reap_exited_child \
-            kernel_remove_process \
-            kernel_set_current_tid \
-            kernel_spawn_process \
-            kernel_thread_exit \
-            kernel_validate_task \
-            kernel_wait_child_poll; do
+        # WHY: this fixture validates relocation, not an independent adapter
+        # protocol. Reading the generated ABI evidence prevents every required
+        # export change from creating a second hand-maintained manifest here.
+        while IFS= read -r export_name; do
             printf '  (export "%s" (func $entry))\n' "$export_name"
-        done
+        done <<<"$required_exports"
         printf '  (global (export "%s") i32 (i32.const 1)))\n' "$marker"
     } >"$work/kernel-$marker.wat"
     wat2wasm "$work/kernel-$marker.wat" -o "$output"
@@ -381,16 +361,30 @@ mkdir -p \
     "$composed_repo/examples" \
     "$composed_repo/benchmarks/wasm" \
     "$composed_repo/target/$HOST_TARGET/release"
-cp "$REPO_ROOT/scripts/pack-ci-test-workspace.sh" "$composed_repo/scripts/"
+for packer_support in \
+    pack-ci-test-workspace.sh \
+    browser-memory64-example-fixtures.sh \
+    browser-memory64-example-fixtures.txt; do
+    cp "$REPO_ROOT/scripts/$packer_support" "$composed_repo/scripts/"
+done
 : >"$composed_repo/host/wasm/rootfs.vfs"
 for required in \
     gencat.wasm \
     pthread_channel_reuse_test.wasm \
-    wait_lifecycle_test.wasm \
-    wait_lifecycle_test.wasm64.wasm \
-    terminal_attributes_api_test.wasm64.wasm; do
+    wait_lifecycle_test.wasm; do
     : >"$composed_repo/examples/$required"
 done
+memory64_sources="$(
+    BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
+    BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt"
+    # shellcheck source=/dev/null
+    source "$REPO_ROOT/scripts/browser-memory64-example-fixtures.sh"
+    browser_memory64_fixture_sources
+)" || fail "could not read the browser memory64 fixture contract"
+while IFS= read -r source; do
+    cp "$REPO_ROOT/$source" "$composed_repo/$source"
+    : >"$composed_repo/${source%.c}.wasm64.wasm"
+done <<<"$memory64_sources"
 for required in \
     pipe-throughput.wasm \
     file-throughput.wasm \

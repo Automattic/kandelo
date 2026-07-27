@@ -84,6 +84,31 @@ describe("ABI version marker", () => {
     expect(value).toBeGreaterThan(0);
   });
 
+  it("built kernel requires paired append and true positioned host I/O imports", async () => {
+    const module = await WebAssembly.compile(kernelWasm as BufferSource);
+    const envFunctionImports = new Set(
+      WebAssembly.Module.imports(module)
+        .filter((entry) =>
+          entry.module === "env" && entry.kind === "function"
+        )
+        .map((entry) => entry.name),
+    );
+
+    // WHY: append returns its exact end through a paired scalar import, while
+    // seek/read/seek is not pread and rounds wasm64 offsets if the split i64
+    // crosses JavaScript's safe-integer boundary. Keep this built-artifact
+    // guard beside the ABI marker because kernel imports are required host
+    // capabilities but are not represented in abi/snapshot.json.
+    expect([...envFunctionImports]).toEqual(
+      expect.arrayContaining([
+        "host_append",
+        "host_append_position",
+        "host_pread",
+        "host_pwrite",
+      ]),
+    );
+  });
+
   it("freshly-built user programs export a matching __abi_version", async () => {
     // Pick a program we know build-programs.sh regenerates every run.
     const userProg = readFileSync(resolveBinary("programs/exec-caller.wasm"));

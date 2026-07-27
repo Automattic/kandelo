@@ -9,7 +9,7 @@ use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::vec::Vec;
-use wasm_posix_shared::Errno;
+use wasm_posix_shared::{Errno, platform_limits};
 
 // ── IPC constants ──
 
@@ -39,7 +39,6 @@ const SETVAL: i32 = 16;
 const SETALL: i32 = 17;
 
 // Limits
-const MSGMAX: usize = 8192; // max message size
 const MSGMNB: u32 = 16384; // default max bytes in queue
 const SEMMSL: usize = 32; // max semaphores per set
 
@@ -93,6 +92,9 @@ struct MsgEntry {
 struct MsgQueue {
     key: i32,
     id: i32,
+    generation: u64,
+    active_pins: usize,
+    removed: bool,
     mode: u32,
     uid: u32,
     gid: u32,
@@ -150,6 +152,9 @@ struct SemValue {
 struct SemSet {
     key: i32,
     id: i32,
+    generation: u64,
+    active_pins: usize,
+    removed: bool,
     mode: u32,
     uid: u32,
     gid: u32,
@@ -237,31 +242,160 @@ pub enum SemCtlResult {
     All(Vec<u16>),
 }
 
+/// Stable identity for one message-queue generation retained across a blocked
+/// operation.
+///
+/// The fields intentionally remain private and the capability is neither
+/// `Clone` nor `Copy`: only `IpcTable` can create it, and releasing it consumes
+/// the exact pin once.
+#[derive(Debug)]
+pub(crate) struct PinnedMsgQueue {
+    pin_id: IpcPinId,
+    public_id: i32,
+    generation: u64,
+}
+
+/// Stable identity for one semaphore-set generation retained across a blocked
+/// operation.
+///
+/// See `PinnedMsgQueue` for the ownership contract.
+#[derive(Debug)]
+pub(crate) struct PinnedSemSet {
+    pin_id: IpcPinId,
+    public_id: i32,
+    generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct IpcPinId(u64);
+
+#[cfg(test)]
+impl PinnedMsgQueue {
+    fn duplicate_for_exact_release_test(&self) -> Self {
+        Self {
+            pin_id: self.pin_id,
+            public_id: self.public_id,
+            generation: self.generation,
+        }
+    }
+}
+
+#[cfg(test)]
+impl PinnedSemSet {
+    fn duplicate_for_exact_release_test(&self) -> Self {
+        Self {
+            pin_id: self.pin_id,
+            public_id: self.public_id,
+            generation: self.generation,
+        }
+    }
+}
+
 // ── IPC Table ──
 
 /// Global SysV IPC table holding message queues, semaphore sets,
 /// and shared memory segments.
 pub struct IpcTable {
     msg_queues: BTreeMap<i32, MsgQueue>,
+    removed_msg_queues: BTreeMap<u64, MsgQueue>,
+    active_msg_pins: BTreeMap<IpcPinId, u64>,
     sem_sets: BTreeMap<i32, SemSet>,
+    removed_sem_sets: BTreeMap<u64, SemSet>,
+    active_sem_pins: BTreeMap<IpcPinId, u64>,
     shm_segments: BTreeMap<i32, ShmSegment>,
     next_id: i32,
+    next_generation: u64,
+    next_pin_id: Option<IpcPinId>,
 }
 
 impl IpcTable {
     pub const fn new() -> Self {
         IpcTable {
             msg_queues: BTreeMap::new(),
+            removed_msg_queues: BTreeMap::new(),
+            active_msg_pins: BTreeMap::new(),
             sem_sets: BTreeMap::new(),
+            removed_sem_sets: BTreeMap::new(),
+            active_sem_pins: BTreeMap::new(),
             shm_segments: BTreeMap::new(),
             next_id: 0,
+            next_generation: 1,
+            next_pin_id: Some(IpcPinId(1)),
         }
     }
 
-    fn alloc_id(&mut self) -> i32 {
-        let id = self.next_id;
-        self.next_id = self.next_id.wrapping_add(1) & 0x7FFF_FFFF;
-        id
+    fn public_id_in_use(&self, id: i32) -> bool {
+        self.msg_queues.contains_key(&id)
+            || self.sem_sets.contains_key(&id)
+            || self.shm_segments.contains_key(&id)
+    }
+
+    fn alloc_id(&mut self) -> Result<i32, Errno> {
+        self.alloc_id_bounded(i32::MAX)
+    }
+
+    /// Allocate from `0..=max_id`, advancing through the domain without ever
+    /// overwriting a live object.
+    ///
+    /// The bounded form also gives unit tests a tractable way to prove
+    /// collision, wrap, and exhaustion behavior without constructing billions
+    /// of IPC objects.
+    fn alloc_id_bounded(&mut self, max_id: i32) -> Result<i32, Errno> {
+        if max_id < 0 {
+            return Err(Errno::ENOSPC);
+        }
+
+        let mut candidate = if self.next_id >= 0 && self.next_id <= max_id {
+            self.next_id
+        } else {
+            0
+        };
+        let domain_size = u64::try_from(max_id)
+            .map_err(|_| Errno::ENOSPC)?
+            .checked_add(1)
+            .ok_or(Errno::ENOSPC)?;
+
+        for _ in 0..domain_size {
+            if !self.public_id_in_use(candidate) {
+                self.next_id = if candidate == max_id {
+                    0
+                } else {
+                    candidate + 1
+                };
+                return Ok(candidate);
+            }
+            candidate = if candidate == max_id {
+                0
+            } else {
+                candidate + 1
+            };
+        }
+
+        Err(Errno::ENOSPC)
+    }
+
+    fn alloc_generation(&mut self) -> Result<u64, Errno> {
+        let generation = self.next_generation;
+        self.next_generation = self.next_generation.checked_add(1).ok_or(Errno::ENOSPC)?;
+        Ok(generation)
+    }
+
+    fn alloc_pin_id(&mut self) -> Result<IpcPinId, Errno> {
+        let mut candidate = self.next_pin_id.ok_or(Errno::EOVERFLOW)?;
+        loop {
+            if !self.active_msg_pins.contains_key(&candidate)
+                && !self.active_sem_pins.contains_key(&candidate)
+            {
+                self.next_pin_id = candidate.0.checked_add(1).map(IpcPinId);
+                return Ok(candidate);
+            }
+            candidate = IpcPinId(candidate.0.checked_add(1).ok_or(Errno::EOVERFLOW)?);
+        }
+    }
+
+    #[cfg(test)]
+    fn set_next_public_id_for_test(&mut self, next_id: i32) {
+        self.next_id = next_id;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -298,13 +432,17 @@ impl IpcTable {
             return Err(Errno::ENOENT);
         }
 
-        let id = self.alloc_id();
+        let id = self.alloc_id()?;
+        let generation = self.alloc_generation()?;
         let seq = id;
         self.msg_queues.insert(
             id,
             MsgQueue {
                 key,
                 id,
+                generation,
+                active_pins: 0,
+                removed: false,
                 mode,
                 uid,
                 gid,
@@ -325,6 +463,81 @@ impl IpcTable {
         Ok(id)
     }
 
+    /// Pin the currently visible generation behind a public message-queue ID.
+    ///
+    /// WHY: a blocked retry must retain object identity, not merely the numeric
+    /// ID that a later `msgget` is allowed to reuse.
+    pub(crate) fn pin_msg_queue(&mut self, qid: i32) -> Result<PinnedMsgQueue, Errno> {
+        let generation = self
+            .msg_queues
+            .get(&qid)
+            .map(|queue| queue.generation)
+            .ok_or(Errno::EINVAL)?;
+        let pin_id = self.alloc_pin_id()?;
+        let queue = self.msg_queues.get_mut(&qid).ok_or(Errno::EINVAL)?;
+        queue.active_pins = queue.active_pins.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        let previous = self.active_msg_pins.insert(pin_id, generation);
+        debug_assert!(previous.is_none());
+        Ok(PinnedMsgQueue {
+            pin_id,
+            public_id: qid,
+            generation,
+        })
+    }
+
+    /// Release one exact message-queue pin.
+    ///
+    /// Taking the opaque capability by value makes release consuming. A
+    /// tombstone remains reachable until the last capability is released.
+    pub(crate) fn release_msg_queue_pin(&mut self, pin: PinnedMsgQueue) -> Result<(), Errno> {
+        if self.active_msg_pins.get(&pin.pin_id) != Some(&pin.generation) {
+            return Err(Errno::EINVAL);
+        }
+
+        if let Some(queue) = self.msg_queues.get_mut(&pin.public_id) {
+            if queue.generation == pin.generation {
+                queue.active_pins = queue.active_pins.checked_sub(1).ok_or(Errno::EINVAL)?;
+                self.active_msg_pins.remove(&pin.pin_id);
+                return Ok(());
+            }
+        }
+
+        let should_reclaim = {
+            let queue = self
+                .removed_msg_queues
+                .get_mut(&pin.generation)
+                .ok_or(Errno::EINVAL)?;
+            if queue.id != pin.public_id || !queue.removed {
+                return Err(Errno::EINVAL);
+            }
+            queue.active_pins = queue.active_pins.checked_sub(1).ok_or(Errno::EINVAL)?;
+            queue.active_pins == 0
+        };
+        if should_reclaim {
+            self.removed_msg_queues.remove(&pin.generation);
+        }
+        self.active_msg_pins.remove(&pin.pin_id);
+        Ok(())
+    }
+
+    fn live_msg_queue_for_pin_mut(&mut self, pin: &PinnedMsgQueue) -> Result<&mut MsgQueue, Errno> {
+        if self.active_msg_pins.get(&pin.pin_id) != Some(&pin.generation) {
+            return Err(Errno::EIDRM);
+        }
+        if self
+            .msg_queues
+            .get(&pin.public_id)
+            .is_some_and(|queue| queue.generation == pin.generation)
+        {
+            return self.msg_queues.get_mut(&pin.public_id).ok_or(Errno::EIDRM);
+        }
+
+        // A capability never follows a reused public ID. Whether its removed
+        // generation is still tombstoned or has already been reclaimed, the
+        // operation's stable target no longer exists.
+        Err(Errno::EIDRM)
+    }
+
     /// Send a message to a queue.
     pub fn msgsnd(
         &mut self,
@@ -336,18 +549,112 @@ impl IpcTable {
         uid: u32,
         gid: u32,
     ) -> Result<(), Errno> {
+        self.msgsnd_with_reserve(
+            qid,
+            mtype,
+            data,
+            flags,
+            pid,
+            uid,
+            gid,
+            |message, additional| {
+                message
+                    .try_reserve_exact(additional)
+                    .map_err(|_| Errno::ENOMEM)
+            },
+            |messages| messages.try_reserve(1).map_err(|_| Errno::ENOMEM),
+        )
+    }
+
+    /// Retry `msgsnd` against the exact generation captured by
+    /// `pin_msg_queue`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn msgsnd_pinned(
+        &mut self,
+        pin: &PinnedMsgQueue,
+        mtype: i64,
+        data: &[u8],
+        flags: u32,
+        pid: u32,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(), Errno> {
+        let queue = self.live_msg_queue_for_pin_mut(pin)?;
+        if mtype <= 0 {
+            return Err(Errno::EINVAL);
+        }
+        Self::msgsnd_queue_with_reserve(
+            queue,
+            mtype,
+            data,
+            flags,
+            pid,
+            uid,
+            gid,
+            |message, additional| {
+                message
+                    .try_reserve_exact(additional)
+                    .map_err(|_| Errno::ENOMEM)
+            },
+            |messages| messages.try_reserve(1).map_err(|_| Errno::ENOMEM),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn msgsnd_with_reserve(
+        &mut self,
+        qid: i32,
+        mtype: i64,
+        data: &[u8],
+        flags: u32,
+        pid: u32,
+        uid: u32,
+        gid: u32,
+        reserve_message: impl FnOnce(&mut Vec<u8>, usize) -> Result<(), Errno>,
+        reserve_slot: impl FnOnce(&mut VecDeque<MsgEntry>) -> Result<(), Errno>,
+    ) -> Result<(), Errno> {
         if mtype <= 0 {
             return Err(Errno::EINVAL);
         }
         let q = self.msg_queues.get_mut(&qid).ok_or(Errno::EINVAL)?;
+        Self::msgsnd_queue_with_reserve(
+            q,
+            mtype,
+            data,
+            flags,
+            pid,
+            uid,
+            gid,
+            reserve_message,
+            reserve_slot,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn msgsnd_queue_with_reserve(
+        q: &mut MsgQueue,
+        mtype: i64,
+        data: &[u8],
+        flags: u32,
+        pid: u32,
+        uid: u32,
+        gid: u32,
+        reserve_message: impl FnOnce(&mut Vec<u8>, usize) -> Result<(), Errno>,
+        reserve_slot: impl FnOnce(&mut VecDeque<MsgEntry>) -> Result<(), Errno>,
+    ) -> Result<(), Errno> {
         ipc_check_perm(uid, gid, q.uid, q.gid, q.mode, IPC_W)?;
 
-        if data.len() > MSGMAX {
+        if data.len() > platform_limits::SYSV_MSG_MAX_BYTES {
             return Err(Errno::EINVAL);
         }
 
-        // Check queue capacity
-        if q.cbytes + data.len() as u32 > q.qbytes {
+        // Compute the complete post-commit accounting value once. Overflow
+        // cannot mean "space available"; treat it exactly like a full queue.
+        let next_cbytes = q
+            .cbytes
+            .checked_add(u32::try_from(data.len()).map_err(|_| Errno::EAGAIN)?)
+            .ok_or(Errno::EAGAIN)?;
+        if next_cbytes > q.qbytes {
             if (flags & IPC_NOWAIT) != 0 {
                 return Err(Errno::EAGAIN);
             }
@@ -355,11 +662,25 @@ impl IpcTable {
             return Err(Errno::EAGAIN);
         }
 
-        q.cbytes += data.len() as u32;
+        // WHY: both the owned payload and the VecDeque slot can allocate.
+        // Prepare them fallibly before changing accounting or queue order so
+        // ENOMEM leaves the logical message queue transaction untouched.
+        let mut message_data = Vec::new();
+        reserve_message(&mut message_data, data.len())?;
+        if message_data.capacity() < data.len() {
+            return Err(Errno::ENOMEM);
+        }
+        message_data.extend_from_slice(data);
+        reserve_slot(&mut q.messages)?;
+        if q.messages.capacity().saturating_sub(q.messages.len()) < 1 {
+            return Err(Errno::ENOMEM);
+        }
+
         q.messages.push_back(MsgEntry {
             mtype,
-            data: Vec::from(data),
+            data: message_data,
         });
+        q.cbytes = next_cbytes;
         q.lspid = pid as i32;
         q.stime = crate::current_time_secs();
 
@@ -377,16 +698,7 @@ impl IpcTable {
         uid: u32,
         gid: u32,
     ) -> Result<MsgRcvResult, Errno> {
-        self.msgrcv_with_mtype_max(
-            qid,
-            max_size,
-            msgtype,
-            i64::MAX,
-            flags,
-            pid,
-            uid,
-            gid,
-        )
+        self.msgrcv_with_mtype_max(qid, max_size, msgtype, i64::MAX, flags, pid, uid, gid)
     }
 
     /// Receive while proving the selected mtype fits the caller's native long.
@@ -406,6 +718,71 @@ impl IpcTable {
         gid: u32,
     ) -> Result<MsgRcvResult, Errno> {
         let q = self.msg_queues.get_mut(&qid).ok_or(Errno::EINVAL)?;
+        Self::msgrcv_queue_with_mtype_max(
+            q,
+            max_size,
+            msgtype,
+            max_output_mtype,
+            flags,
+            pid,
+            uid,
+            gid,
+        )
+    }
+
+    /// Retry `msgrcv` against the exact generation captured by
+    /// `pin_msg_queue`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn msgrcv_pinned(
+        &mut self,
+        pin: &PinnedMsgQueue,
+        max_size: u32,
+        msgtype: i64,
+        flags: u32,
+        pid: u32,
+        uid: u32,
+        gid: u32,
+    ) -> Result<MsgRcvResult, Errno> {
+        self.msgrcv_pinned_with_mtype_max(pin, max_size, msgtype, i64::MAX, flags, pid, uid, gid)
+    }
+
+    /// Width-aware pinned `msgrcv`; see `msgrcv_with_mtype_max`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn msgrcv_pinned_with_mtype_max(
+        &mut self,
+        pin: &PinnedMsgQueue,
+        max_size: u32,
+        msgtype: i64,
+        max_output_mtype: i64,
+        flags: u32,
+        pid: u32,
+        uid: u32,
+        gid: u32,
+    ) -> Result<MsgRcvResult, Errno> {
+        let queue = self.live_msg_queue_for_pin_mut(pin)?;
+        Self::msgrcv_queue_with_mtype_max(
+            queue,
+            max_size,
+            msgtype,
+            max_output_mtype,
+            flags,
+            pid,
+            uid,
+            gid,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn msgrcv_queue_with_mtype_max(
+        q: &mut MsgQueue,
+        max_size: u32,
+        msgtype: i64,
+        max_output_mtype: i64,
+        flags: u32,
+        pid: u32,
+        uid: u32,
+        gid: u32,
+    ) -> Result<MsgRcvResult, Errno> {
         ipc_check_perm(uid, gid, q.uid, q.gid, q.mode, IPC_R)?;
 
         let noerror = (flags & MSG_NOERROR) != 0;
@@ -452,21 +829,25 @@ impl IpcTable {
             }
         }
 
-        let msg = q.messages.remove(idx).unwrap();
-        let truncated_len = core::cmp::min(msg.data.len(), max_size as usize);
-        let data = if truncated_len < msg.data.len() {
-            msg.data[..truncated_len].to_vec()
-        } else {
-            msg.data
-        };
+        let mut msg = q.messages.remove(idx).unwrap();
+        let removed_len = msg.data.len();
+        let truncated_len = core::cmp::min(removed_len, max_size as usize);
+        // The dequeued message already owns its allocation. Truncate that Vec
+        // in place so MSG_NOERROR cannot lose a removed message to a second,
+        // fallible output-copy allocation.
+        msg.data.truncate(truncated_len);
 
-        q.cbytes = q.cbytes.saturating_sub(data.len() as u32);
+        // WHY: MSG_NOERROR truncates only the caller's returned copy. The
+        // complete queued message was removed, so capacity accounting must
+        // release its original length or a full queue can remain spuriously
+        // full after a successful truncated receive.
+        q.cbytes = q.cbytes.saturating_sub(removed_len as u32);
         q.lrpid = pid as i32;
         q.rtime = crate::current_time_secs();
 
         Ok(MsgRcvResult {
             mtype: msg.mtype,
-            data,
+            data: msg.data,
         })
     }
 
@@ -504,7 +885,16 @@ impl IpcTable {
             IPC_RMID => {
                 let q = self.msg_queues.get(&qid).ok_or(Errno::EINVAL)?;
                 ipc_check_owner(uid, q.uid, q.cuid)?;
-                self.msg_queues.remove(&qid);
+                let mut queue = self.msg_queues.remove(&qid).ok_or(Errno::EINVAL)?;
+                queue.removed = true;
+                if queue.active_pins != 0 {
+                    // Public visibility ends before any waiter is woken. The
+                    // generation-keyed tombstone exists only to make those
+                    // already-pinned retries fail with EIDRM and to keep ID
+                    // reuse from redirecting them.
+                    let previous = self.removed_msg_queues.insert(queue.generation, queue);
+                    debug_assert!(previous.is_none());
+                }
                 Ok(None)
             }
             IPC_SET => {
@@ -576,7 +966,8 @@ impl IpcTable {
             return Err(Errno::EINVAL);
         }
 
-        let id = self.alloc_id();
+        let id = self.alloc_id()?;
+        let generation = self.alloc_generation()?;
         let seq = id;
         let values = (0..nsems)
             .map(|_| SemValue {
@@ -592,6 +983,9 @@ impl IpcTable {
             SemSet {
                 key,
                 id,
+                generation,
+                active_pins: 0,
+                removed: false,
                 mode: flags & 0o777,
                 uid,
                 gid,
@@ -608,6 +1002,71 @@ impl IpcTable {
         Ok(id)
     }
 
+    /// Pin the currently visible generation behind a public semaphore-set ID.
+    pub(crate) fn pin_sem_set(&mut self, semid: i32) -> Result<PinnedSemSet, Errno> {
+        let generation = self
+            .sem_sets
+            .get(&semid)
+            .map(|set| set.generation)
+            .ok_or(Errno::EINVAL)?;
+        let pin_id = self.alloc_pin_id()?;
+        let set = self.sem_sets.get_mut(&semid).ok_or(Errno::EINVAL)?;
+        set.active_pins = set.active_pins.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        let previous = self.active_sem_pins.insert(pin_id, generation);
+        debug_assert!(previous.is_none());
+        Ok(PinnedSemSet {
+            pin_id,
+            public_id: semid,
+            generation,
+        })
+    }
+
+    /// Consume and release one exact semaphore-set pin.
+    pub(crate) fn release_sem_set_pin(&mut self, pin: PinnedSemSet) -> Result<(), Errno> {
+        if self.active_sem_pins.get(&pin.pin_id) != Some(&pin.generation) {
+            return Err(Errno::EINVAL);
+        }
+
+        if let Some(set) = self.sem_sets.get_mut(&pin.public_id) {
+            if set.generation == pin.generation {
+                set.active_pins = set.active_pins.checked_sub(1).ok_or(Errno::EINVAL)?;
+                self.active_sem_pins.remove(&pin.pin_id);
+                return Ok(());
+            }
+        }
+
+        let should_reclaim = {
+            let set = self
+                .removed_sem_sets
+                .get_mut(&pin.generation)
+                .ok_or(Errno::EINVAL)?;
+            if set.id != pin.public_id || !set.removed {
+                return Err(Errno::EINVAL);
+            }
+            set.active_pins = set.active_pins.checked_sub(1).ok_or(Errno::EINVAL)?;
+            set.active_pins == 0
+        };
+        if should_reclaim {
+            self.removed_sem_sets.remove(&pin.generation);
+        }
+        self.active_sem_pins.remove(&pin.pin_id);
+        Ok(())
+    }
+
+    fn live_sem_set_for_pin_mut(&mut self, pin: &PinnedSemSet) -> Result<&mut SemSet, Errno> {
+        if self.active_sem_pins.get(&pin.pin_id) != Some(&pin.generation) {
+            return Err(Errno::EIDRM);
+        }
+        if self
+            .sem_sets
+            .get(&pin.public_id)
+            .is_some_and(|set| set.generation == pin.generation)
+        {
+            return self.sem_sets.get_mut(&pin.public_id).ok_or(Errno::EIDRM);
+        }
+        Err(Errno::EIDRM)
+    }
+
     /// Perform atomic semaphore operations (two-pass: validate then apply).
     pub fn semop(
         &mut self,
@@ -617,7 +1076,30 @@ impl IpcTable {
         uid: u32,
         gid: u32,
     ) -> Result<(), Errno> {
-        let s = self.sem_sets.get(&semid).ok_or(Errno::EINVAL)?;
+        let set = self.sem_sets.get_mut(&semid).ok_or(Errno::EINVAL)?;
+        Self::semop_set(set, sops, pid, uid, gid)
+    }
+
+    /// Retry `semop` against the exact generation captured by `pin_sem_set`.
+    pub(crate) fn semop_pinned(
+        &mut self,
+        pin: &PinnedSemSet,
+        sops: &[SemOp],
+        pid: u32,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(), Errno> {
+        let set = self.live_sem_set_for_pin_mut(pin)?;
+        Self::semop_set(set, sops, pid, uid, gid)
+    }
+
+    fn semop_set(
+        s: &mut SemSet,
+        sops: &[SemOp],
+        pid: u32,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(), Errno> {
         let mut perm = 0;
         for op in sops {
             perm |= if op.op == 0 { IPC_R } else { IPC_W };
@@ -649,7 +1131,6 @@ impl IpcTable {
         }
 
         // Second pass: apply atomically
-        let s = self.sem_sets.get_mut(&semid).unwrap();
         for op in sops {
             let sem = &mut s.values[op.num as usize];
             if op.op != 0 {
@@ -693,7 +1174,12 @@ impl IpcTable {
             IPC_RMID => {
                 let s = self.sem_sets.get(&semid).ok_or(Errno::EINVAL)?;
                 ipc_check_owner(uid, s.uid, s.cuid)?;
-                self.sem_sets.remove(&semid);
+                let mut set = self.sem_sets.remove(&semid).ok_or(Errno::EINVAL)?;
+                set.removed = true;
+                if set.active_pins != 0 {
+                    let previous = self.removed_sem_sets.insert(set.generation, set);
+                    debug_assert!(previous.is_none());
+                }
                 Ok(SemCtlResult::Ok)
             }
             IPC_SET => {
@@ -778,7 +1264,9 @@ impl IpcTable {
             _ => return Err(Errno::EINVAL),
         };
         ipc_check_perm(uid, gid, set.uid, set.gid, set.mode, permission)?;
-        set.values.len().checked_mul(core::mem::size_of::<u16>())
+        set.values
+            .len()
+            .checked_mul(core::mem::size_of::<u16>())
             .ok_or(Errno::EOVERFLOW)
     }
 
@@ -865,7 +1353,7 @@ impl IpcTable {
             return Err(Errno::EINVAL);
         }
 
-        let id = self.alloc_id();
+        let id = self.alloc_id()?;
         let seq = id;
         self.shm_segments.insert(
             id,
@@ -1102,6 +1590,96 @@ mod tests {
     }
 
     #[test]
+    fn test_msgsnd_shared_maximum_boundary() {
+        let mut t = IpcTable::new();
+        let qid = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap();
+        let exact = vec![0xa5; platform_limits::SYSV_MSG_MAX_BYTES];
+
+        t.msgsnd(qid, 1, &exact, 0, 1, 0, 0).unwrap();
+        assert_eq!(
+            t.msgsnd(
+                qid,
+                2,
+                &vec![0x5a; platform_limits::SYSV_MSG_MAX_BYTES + 1],
+                0,
+                1,
+                0,
+                0,
+            ),
+            Err(Errno::EINVAL),
+        );
+
+        let received = t
+            .msgrcv(
+                qid,
+                platform_limits::SYSV_MSG_MAX_BYTES as u32,
+                0,
+                0,
+                1,
+                0,
+                0,
+            )
+            .unwrap();
+        assert_eq!(received.data, exact);
+    }
+
+    #[test]
+    fn msgsnd_allocation_failures_preserve_queue_accounting() {
+        let mut t = IpcTable::new();
+        let qid = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap();
+
+        assert_eq!(
+            t.msgsnd_with_reserve(
+                qid,
+                1,
+                b"payload",
+                0,
+                42,
+                0,
+                0,
+                |_, _| Err(Errno::ENOMEM),
+                |_| panic!("slot reservation must follow message reservation"),
+            ),
+            Err(Errno::ENOMEM),
+        );
+        let queue = &t.msg_queues[&qid];
+        assert!(queue.messages.is_empty());
+        assert_eq!(queue.cbytes, 0);
+        assert_eq!(queue.lspid, 0);
+        assert_eq!(queue.stime, 0);
+
+        assert_eq!(
+            t.msgsnd_with_reserve(
+                qid,
+                1,
+                b"payload",
+                0,
+                42,
+                0,
+                0,
+                |message, additional| {
+                    message
+                        .try_reserve_exact(additional)
+                        .map_err(|_| Errno::ENOMEM)
+                },
+                |_| Err(Errno::ENOMEM),
+            ),
+            Err(Errno::ENOMEM),
+        );
+        let queue = &t.msg_queues[&qid];
+        assert!(queue.messages.is_empty());
+        assert_eq!(queue.cbytes, 0);
+        assert_eq!(queue.lspid, 0);
+        assert_eq!(queue.stime, 0);
+
+        t.msgsnd(qid, 1, b"payload", 0, 42, 0, 0).unwrap();
+        let queue = &t.msg_queues[&qid];
+        assert_eq!(queue.messages.len(), 1);
+        assert_eq!(queue.cbytes, 7);
+        assert_eq!(queue.lspid, 42);
+    }
+
+    #[test]
     fn test_msgrcv_type_filter() {
         let mut t = IpcTable::new();
         let qid = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap();
@@ -1137,17 +1715,8 @@ mod tests {
 
         t.msgsnd(qid, mtype, b"wide", 0, 1, 0, 0).unwrap();
         assert_eq!(
-            t.msgrcv_with_mtype_max(
-                qid,
-                100,
-                0,
-                i32::MAX as i64,
-                0,
-                1,
-                0,
-                0,
-            )
-            .unwrap_err(),
+            t.msgrcv_with_mtype_max(qid, 100, 0, i32::MAX as i64, 0, 1, 0, 0,)
+                .unwrap_err(),
             Errno::EOVERFLOW,
         );
 
@@ -1200,6 +1769,30 @@ mod tests {
     }
 
     #[test]
+    fn test_msgrcv_truncate_releases_complete_message_capacity() {
+        let mut t = IpcTable::new();
+        let qid = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap();
+        let full_message = vec![0x33; platform_limits::SYSV_MSG_MAX_BYTES];
+
+        t.msgsnd(qid, 1, &full_message, 0, 1, 0, 0).unwrap();
+        t.msgsnd(qid, 2, &full_message, 0, 1, 0, 0).unwrap();
+        assert_eq!(
+            t.msgctl(qid, IPC_STAT, 1, 0, 0).unwrap().unwrap().cbytes,
+            MSGMNB,
+        );
+
+        let received = t.msgrcv(qid, 1, 0, MSG_NOERROR, 1, 0, 0).unwrap();
+        assert_eq!(received.data, [0x33]);
+
+        // The complete first message left the queue even though the caller
+        // requested one byte, so another maximum-sized send must fit.
+        t.msgsnd(qid, 3, &full_message, 0, 1, 0, 0).unwrap();
+        let info = t.msgctl(qid, IPC_STAT, 1, 0, 0).unwrap().unwrap();
+        assert_eq!(info.qnum, 2);
+        assert_eq!(info.cbytes, MSGMNB);
+    }
+
+    #[test]
     fn test_msgrcv_empty_nowait() {
         let mut t = IpcTable::new();
         let qid = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap();
@@ -1245,8 +1838,7 @@ mod tests {
             .msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 1000, 1000)
             .unwrap();
 
-        t.msgctl_set(qid, 2000, 2001, 0o1764, 8192, 1000)
-            .unwrap();
+        t.msgctl_set(qid, 2000, 2001, 0o1764, 8192, 1000).unwrap();
         let info = t.msgctl(qid, IPC_STAT, 1, 0, 0).unwrap().unwrap();
         assert_eq!(info.uid, 2000);
         assert_eq!(info.gid, 2001);
@@ -1264,8 +1856,7 @@ mod tests {
             Err(Errno::EPERM)
         );
 
-        t.msgctl_set(qid, 0, 0, 0o600, MSGMNB + 1, 0)
-            .unwrap();
+        t.msgctl_set(qid, 0, 0, 0o600, MSGMNB + 1, 0).unwrap();
         let info = t.msgctl(qid, IPC_STAT, 1, 0, 0).unwrap().unwrap();
         assert_eq!(info.uid, 0);
         assert_eq!(info.gid, 0);
@@ -1279,6 +1870,96 @@ mod tests {
         let qid = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap();
         t.msgctl(qid, IPC_RMID, 1, 0, 0).unwrap();
         assert_eq!(t.msgctl(qid, IPC_STAT, 1, 0, 0).unwrap_err(), Errno::EINVAL);
+    }
+
+    #[test]
+    fn pinned_msgsnd_returns_eidrm_after_rmid_and_immediate_id_reuse() {
+        let mut t = IpcTable::new();
+        let qid = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap();
+        t.msgctl_set(qid, 0, 0, 0o666, 1, 0).unwrap();
+        t.msgsnd(qid, 1, b"x", 0, 1, 0, 0).unwrap();
+
+        let pin = t.pin_msg_queue(qid).unwrap();
+        let removed_generation = pin.generation;
+        assert_eq!(
+            t.msgsnd_pinned(&pin, 2, b"y", 0, 1, 0, 0),
+            Err(Errno::EAGAIN)
+        );
+
+        t.msgctl(qid, IPC_RMID, 1, 0, 0).unwrap();
+        assert!(!t.msg_queues.contains_key(&qid));
+        assert_eq!(t.removed_msg_queues[&removed_generation].active_pins, 1);
+
+        t.set_next_public_id_for_test(qid);
+        let replacement = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 2, 0, 0).unwrap();
+        assert_eq!(replacement, qid);
+        assert_ne!(t.msg_queues[&replacement].generation, removed_generation);
+
+        assert_eq!(
+            t.msgsnd_pinned(&pin, 2, b"old", 0, 1, 0, 0),
+            Err(Errno::EIDRM)
+        );
+        t.msgsnd(replacement, 3, b"new", 0, 2, 0, 0).unwrap();
+        let received = t.msgrcv(replacement, 3, 0, 0, 2, 0, 0).unwrap();
+        assert_eq!(received.mtype, 3);
+        assert_eq!(received.data, b"new");
+
+        t.release_msg_queue_pin(pin).unwrap();
+        assert!(!t.removed_msg_queues.contains_key(&removed_generation));
+    }
+
+    #[test]
+    fn pinned_msgrcv_returns_eidrm_without_consuming_reused_queue() {
+        let mut t = IpcTable::new();
+        let qid = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap();
+        let pin = t.pin_msg_queue(qid).unwrap();
+        let removed_generation = pin.generation;
+
+        assert_eq!(
+            t.msgrcv_pinned(&pin, 16, 0, 0, 1, 0, 0).unwrap_err(),
+            Errno::EAGAIN
+        );
+        t.msgctl(qid, IPC_RMID, 1, 0, 0).unwrap();
+
+        t.set_next_public_id_for_test(qid);
+        let replacement = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 2, 0, 0).unwrap();
+        assert_eq!(replacement, qid);
+        t.msgsnd(replacement, 7, b"replacement", 0, 2, 0, 0)
+            .unwrap();
+
+        assert_eq!(
+            t.msgrcv_pinned(&pin, 16, 0, 0, 1, 0, 0).unwrap_err(),
+            Errno::EIDRM
+        );
+        let received = t.msgrcv(replacement, 16, 0, 0, 2, 0, 0).unwrap();
+        assert_eq!(received.mtype, 7);
+        assert_eq!(received.data, b"replacement");
+
+        t.release_msg_queue_pin(pin).unwrap();
+        assert!(!t.removed_msg_queues.contains_key(&removed_generation));
+    }
+
+    #[test]
+    fn message_queue_pin_release_is_exact_and_reclaims_after_last_pin() {
+        let mut t = IpcTable::new();
+        let qid = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap();
+        let first = t.pin_msg_queue(qid).unwrap();
+        let duplicate = first.duplicate_for_exact_release_test();
+        let second = t.pin_msg_queue(qid).unwrap();
+        let generation = first.generation;
+
+        assert_eq!(t.msg_queues[&qid].active_pins, 2);
+        t.msgctl(qid, IPC_RMID, 1, 0, 0).unwrap();
+        assert_eq!(t.removed_msg_queues[&generation].active_pins, 2);
+
+        t.release_msg_queue_pin(first).unwrap();
+        assert_eq!(t.removed_msg_queues[&generation].active_pins, 1);
+        assert_eq!(t.release_msg_queue_pin(duplicate), Err(Errno::EINVAL));
+        assert_eq!(t.removed_msg_queues[&generation].active_pins, 1);
+
+        t.release_msg_queue_pin(second).unwrap();
+        assert!(!t.removed_msg_queues.contains_key(&generation));
+        assert!(t.active_msg_pins.is_empty());
     }
 
     // ── Semaphore Tests ──
@@ -1578,10 +2259,7 @@ mod tests {
         ));
         // Root reads the values only to verify the write; the operation above
         // succeeded using the owning process's write-only permission.
-        let values = match t
-            .semctl(write_only, 0, GETALL, 1, 0, 0, 0)
-            .unwrap()
-        {
+        let values = match t.semctl(write_only, 0, GETALL, 1, 0, 0, 0).unwrap() {
             SemCtlResult::All(values) => values,
             _ => panic!("expected all semaphore values"),
         };
@@ -1625,6 +2303,138 @@ mod tests {
         assert_eq!(
             t.semctl(id, 0, IPC_STAT, 1, 0, 0, 0).unwrap_err(),
             Errno::EINVAL
+        );
+    }
+
+    #[test]
+    fn pinned_semop_returns_eidrm_after_rmid_and_immediate_id_reuse() {
+        let mut t = IpcTable::new();
+        let semid = t
+            .semget(IPC_PRIVATE, 1, IPC_CREAT | 0o666, 1, 0, 0)
+            .unwrap();
+        let pin = t.pin_sem_set(semid).unwrap();
+        let removed_generation = pin.generation;
+        let decrement = [SemOp {
+            num: 0,
+            op: -1,
+            flg: 0,
+        }];
+
+        assert_eq!(
+            t.semop_pinned(&pin, &decrement, 1, 0, 0),
+            Err(Errno::EAGAIN)
+        );
+        t.semctl(semid, 0, IPC_RMID, 1, 0, 0, 0).unwrap();
+        assert!(!t.sem_sets.contains_key(&semid));
+        assert_eq!(t.removed_sem_sets[&removed_generation].active_pins, 1);
+
+        t.set_next_public_id_for_test(semid);
+        let replacement = t
+            .semget(IPC_PRIVATE, 1, IPC_CREAT | 0o666, 2, 0, 0)
+            .unwrap();
+        assert_eq!(replacement, semid);
+        assert_ne!(t.sem_sets[&replacement].generation, removed_generation);
+        t.semctl(replacement, 0, SETVAL, 2, 2, 0, 0).unwrap();
+
+        assert_eq!(t.semop_pinned(&pin, &decrement, 1, 0, 0), Err(Errno::EIDRM));
+        t.semop(replacement, &decrement, 2, 0, 0).unwrap();
+        assert!(matches!(
+            t.semctl(replacement, 0, GETVAL, 2, 0, 0, 0),
+            Ok(SemCtlResult::Value(1))
+        ));
+
+        t.release_sem_set_pin(pin).unwrap();
+        assert!(!t.removed_sem_sets.contains_key(&removed_generation));
+    }
+
+    #[test]
+    fn semaphore_pin_release_is_exact_and_reclaims_after_last_pin() {
+        let mut t = IpcTable::new();
+        let semid = t
+            .semget(IPC_PRIVATE, 1, IPC_CREAT | 0o666, 1, 0, 0)
+            .unwrap();
+        let first = t.pin_sem_set(semid).unwrap();
+        let duplicate = first.duplicate_for_exact_release_test();
+        let second = t.pin_sem_set(semid).unwrap();
+        let generation = first.generation;
+
+        assert_eq!(t.sem_sets[&semid].active_pins, 2);
+        t.semctl(semid, 0, IPC_RMID, 1, 0, 0, 0).unwrap();
+        assert_eq!(t.removed_sem_sets[&generation].active_pins, 2);
+
+        t.release_sem_set_pin(first).unwrap();
+        assert_eq!(t.removed_sem_sets[&generation].active_pins, 1);
+        assert_eq!(t.release_sem_set_pin(duplicate), Err(Errno::EINVAL));
+        assert_eq!(t.removed_sem_sets[&generation].active_pins, 1);
+
+        t.release_sem_set_pin(second).unwrap();
+        assert!(!t.removed_sem_sets.contains_key(&generation));
+        assert!(t.active_sem_pins.is_empty());
+    }
+
+    #[test]
+    fn forced_process_removal_releases_blocked_message_and_semaphore_pins() {
+        use wasm_posix_shared::abi::extended_syscalls::{SYS_MSGSND, SYS_SEMOP};
+
+        let mut processes = crate::process_table::ProcessTable::new();
+        let pid = processes.create_process().unwrap();
+        let worker_tid = pid + 1;
+        processes
+            .get_mut(pid)
+            .unwrap()
+            .add_thread(crate::process::ThreadInfo::new(worker_tid, 0, 0, 0));
+        let (qid, queue_generation, semid, semaphore_generation) = {
+            let ipc = unsafe { global_ipc_table() };
+            let qid = ipc
+                .msgget(IPC_PRIVATE, IPC_CREAT | 0o600, pid, 0, 0)
+                .unwrap();
+            let semid = ipc
+                .semget(IPC_PRIVATE, 1, IPC_CREAT | 0o600, pid, 0, 0)
+                .unwrap();
+            (
+                qid,
+                ipc.msg_queues[&qid].generation,
+                semid,
+                ipc.sem_sets[&semid].generation,
+            )
+        };
+
+        crate::syscalls::ensure_blocking_retry_sysv_message_binding(
+            processes.get_mut(pid).unwrap(),
+            pid,
+            SYS_MSGSND,
+            qid,
+        )
+        .unwrap();
+        crate::syscalls::ensure_blocking_retry_sysv_semaphore_binding(
+            processes.get_mut(pid).unwrap(),
+            worker_tid,
+            SYS_SEMOP,
+            semid,
+        )
+        .unwrap();
+        {
+            let ipc = unsafe { global_ipc_table() };
+            ipc.msgctl(qid, IPC_RMID, pid, 0, 0).unwrap();
+            ipc.semctl(semid, 0, IPC_RMID, pid, 0, 0, 0).unwrap();
+            assert_eq!(ipc.removed_msg_queues[&queue_generation].active_pins, 1,);
+            assert_eq!(ipc.removed_sem_sets[&semaphore_generation].active_pins, 1,);
+        }
+
+        processes.remove_process(pid).unwrap();
+
+        let ipc = unsafe { global_ipc_table() };
+        assert!(!ipc.removed_msg_queues.contains_key(&queue_generation));
+        assert!(!ipc.removed_sem_sets.contains_key(&semaphore_generation));
+        assert!(
+            ipc.active_msg_pins
+                .values()
+                .all(|generation| *generation != queue_generation),
+        );
+        assert!(
+            ipc.active_sem_pins
+                .values()
+                .all(|generation| *generation != semaphore_generation),
         );
     }
 
@@ -1778,10 +2588,7 @@ mod tests {
         assert_eq!(info.mode, 0o640);
         assert_eq!(info.segsz, 4096);
 
-        assert_eq!(
-            t.shmctl_set(id, 3000, 3001, 0o600, 3000),
-            Err(Errno::EPERM)
-        );
+        assert_eq!(t.shmctl_set(id, 3000, 3001, 0o600, 3000), Err(Errno::EPERM));
         let info = t.shmctl(id, IPC_STAT, 1, 0, 0).unwrap().unwrap();
         assert_eq!(info.uid, 2000);
         assert_eq!(info.gid, 2001);
@@ -1808,5 +2615,77 @@ mod tests {
             .shmget(IPC_PRIVATE, 512, IPC_CREAT | 0o666, 1, 0, 0)
             .unwrap();
         assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn shared_public_id_allocator_skips_cross_class_collisions() {
+        let mut t = IpcTable::new();
+        let msgid = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap();
+        assert_eq!(msgid, 0);
+
+        t.set_next_public_id_for_test(msgid);
+        let semid = t
+            .semget(IPC_PRIVATE, 1, IPC_CREAT | 0o666, 1, 0, 0)
+            .unwrap();
+        assert_eq!(semid, 1);
+
+        t.set_next_public_id_for_test(msgid);
+        let shmid = t
+            .shmget(IPC_PRIVATE, 1, IPC_CREAT | 0o666, 1, 0, 0)
+            .unwrap();
+        assert_eq!(shmid, 2);
+    }
+
+    #[test]
+    fn shared_public_id_allocator_wraps_without_overwriting_live_ids() {
+        let mut t = IpcTable::new();
+        assert_eq!(
+            t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap(),
+            0
+        );
+        assert_eq!(
+            t.semget(IPC_PRIVATE, 1, IPC_CREAT | 0o666, 1, 0, 0)
+                .unwrap(),
+            1
+        );
+
+        t.set_next_public_id_for_test(i32::MAX);
+        assert_eq!(
+            t.shmget(IPC_PRIVATE, 1, IPC_CREAT | 0o666, 1, 0, 0)
+                .unwrap(),
+            i32::MAX
+        );
+        assert_eq!(
+            t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap(),
+            2
+        );
+        assert!(t.msg_queues.contains_key(&0));
+        assert!(t.sem_sets.contains_key(&1));
+        assert!(t.shm_segments.contains_key(&i32::MAX));
+    }
+
+    #[test]
+    fn shared_public_id_allocator_reports_bounded_exhaustion() {
+        let mut t = IpcTable::new();
+        assert_eq!(
+            t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap(),
+            0
+        );
+        assert_eq!(
+            t.semget(IPC_PRIVATE, 1, IPC_CREAT | 0o666, 1, 0, 0)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            t.shmget(IPC_PRIVATE, 1, IPC_CREAT | 0o666, 1, 0, 0)
+                .unwrap(),
+            2
+        );
+
+        t.set_next_public_id_for_test(0);
+        assert_eq!(t.alloc_id_bounded(2), Err(Errno::ENOSPC));
+        assert!(t.msg_queues.contains_key(&0));
+        assert!(t.sem_sets.contains_key(&1));
+        assert!(t.shm_segments.contains_key(&2));
     }
 }

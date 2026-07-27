@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <spawn.h>
@@ -164,6 +165,155 @@ static int test_cancel_preserves_completed_syscall(void)
     }
     return 0;
 }
+
+struct disabled_poll_cancel_ctx {
+    int read_fd;
+    atomic_int ready;
+    atomic_int poll_returned;
+    atomic_int cancellation_enabled;
+    atomic_int after_testcancel;
+    atomic_int cleanup_ran;
+    int poll_result;
+    int poll_errno;
+    short poll_revents;
+};
+
+static void record_disabled_poll_cancel_cleanup(void *opaque)
+{
+    struct disabled_poll_cancel_ctx *ctx = opaque;
+    atomic_store_explicit(&ctx->cleanup_ran, 1, memory_order_release);
+}
+
+static void *disabled_poll_cancel_thread(void *opaque)
+{
+    struct disabled_poll_cancel_ctx *ctx = opaque;
+    struct pollfd descriptor = {
+        .fd = ctx->read_fd,
+        .events = POLLIN,
+        .revents = 0,
+    };
+    int previous_state = PTHREAD_CANCEL_ENABLE;
+
+    if (pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &previous_state) != 0)
+        return (void *)(uintptr_t)1;
+
+    pthread_cleanup_push(record_disabled_poll_cancel_cleanup, ctx);
+    atomic_store_explicit(&ctx->ready, 1, memory_order_release);
+    errno = 0;
+    ctx->poll_result = poll(&descriptor, 1, -1);
+    ctx->poll_errno = errno;
+    ctx->poll_revents = descriptor.revents;
+    atomic_store_explicit(&ctx->poll_returned, 1, memory_order_release);
+
+    if (pthread_setcancelstate(previous_state, NULL) != 0)
+        return (void *)(uintptr_t)2;
+    atomic_store_explicit(
+        &ctx->cancellation_enabled,
+        1,
+        memory_order_release
+    );
+    pthread_testcancel();
+    atomic_store_explicit(&ctx->after_testcancel, 1, memory_order_release);
+    pthread_cleanup_pop(0);
+    return NULL;
+}
+
+static int test_disabled_blocked_poll_cancellation(void)
+{
+    int pipe_fds[2];
+    if (pipe(pipe_fds) != 0)
+        return fail("disabled-poll pipe");
+
+    struct disabled_poll_cancel_ctx ctx = {
+        .read_fd = pipe_fds[0],
+        .ready = ATOMIC_VAR_INIT(0),
+        .poll_returned = ATOMIC_VAR_INIT(0),
+        .cancellation_enabled = ATOMIC_VAR_INIT(0),
+        .after_testcancel = ATOMIC_VAR_INIT(0),
+        .cleanup_ran = ATOMIC_VAR_INIT(0),
+        .poll_result = -2,
+        .poll_errno = 0,
+        .poll_revents = 0,
+    };
+    pthread_t thread;
+    int error = pthread_create(
+        &thread,
+        NULL,
+        disabled_poll_cancel_thread,
+        &ctx
+    );
+    if (error != 0) {
+        errno = error;
+        close(pipe_fds[0]);
+        close(pipe_fds[1]);
+        return fail("disabled-poll pthread_create");
+    }
+
+    while (!atomic_load_explicit(&ctx.ready, memory_order_acquire))
+        usleep(1000);
+    /* The target publishes ready immediately before poll. Give the host time
+     * to install the exact infinite poll registration before cancellation. */
+    usleep(20000);
+
+    error = pthread_cancel(thread);
+    if (error != 0) {
+        errno = error;
+        close(pipe_fds[0]);
+        close(pipe_fds[1]);
+        return fail("disabled-poll pthread_cancel");
+    }
+    usleep(50000);
+    int returned_after_cancel = atomic_load_explicit(
+        &ctx.poll_returned,
+        memory_order_acquire
+    );
+
+    if (write(pipe_fds[1], "x", 1) != 1) {
+        close(pipe_fds[0]);
+        close(pipe_fds[1]);
+        return fail("disabled-poll release");
+    }
+
+    void *joined = NULL;
+    error = pthread_join(thread, &joined);
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    if (error != 0) {
+        errno = error;
+        return fail("disabled-poll pthread_join");
+    }
+
+    if (returned_after_cancel || joined != PTHREAD_CANCELED ||
+        ctx.poll_result != 1 || ctx.poll_errno != 0 ||
+        (ctx.poll_revents & POLLIN) == 0 ||
+        !atomic_load_explicit(&ctx.poll_returned, memory_order_acquire) ||
+        !atomic_load_explicit(
+            &ctx.cancellation_enabled,
+            memory_order_acquire
+        ) ||
+        atomic_load_explicit(&ctx.after_testcancel, memory_order_acquire) ||
+        !atomic_load_explicit(&ctx.cleanup_ran, memory_order_acquire)) {
+        fprintf(stderr,
+            "disabled poll cancellation mismatch: early=%d joined=%p "
+            "result=%d errno=%d revents=%#x returned=%d enabled=%d "
+            "after_testcancel=%d cleanup=%d\n",
+            returned_after_cancel, joined, ctx.poll_result, ctx.poll_errno,
+            ctx.poll_revents,
+            atomic_load_explicit(&ctx.poll_returned, memory_order_relaxed),
+            atomic_load_explicit(
+                &ctx.cancellation_enabled,
+                memory_order_relaxed
+            ),
+            atomic_load_explicit(
+                &ctx.after_testcancel,
+                memory_order_relaxed
+            ),
+            atomic_load_explicit(&ctx.cleanup_ran, memory_order_relaxed));
+        return -1;
+    }
+    return 0;
+}
+
 
 static int read_all(const char *path, char *buf, size_t size)
 {
@@ -1280,6 +1430,8 @@ int main(int argc, char **argv)
 #endif
     if (test_cancel_preserves_completed_syscall() != 0)
         return 12;
+    if (test_disabled_blocked_poll_cancellation() != 0)
+        return 13;
 #if __SIZEOF_POINTER__ == 8
     if (test_memory64_wait_layouts() != 0)
         return 1;

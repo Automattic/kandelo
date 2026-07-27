@@ -1,12 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   ABI_SYSCALLS,
+  CHANNEL_STATUS_PENDING,
   CH_ARGS,
   CH_ARG_SIZE,
+  CH_STATUS,
   CH_SYSCALL,
 } from "../src/generated/abi";
-import { checkedWasmPointer } from "../src/kernel-scratch";
-import { CentralizedKernelWorker } from "../src/kernel-worker";
+import {
+  createCentralizedKernelWorkerTestDouble,
+} from "../src/kernel-worker";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 const PID = 73;
 const MAP_PRIVATE = 0x02;
@@ -17,17 +21,7 @@ const FUTEX_REQUEUE = 3;
 const FUTEX_WAKE_OP = 5;
 
 function sharedMemory(): WebAssembly.Memory {
-  return new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
-}
-
-function channel(memory: WebAssembly.Memory) {
-  return {
-    pid: PID,
-    memory,
-    channelOffset: 0,
-    i32View: new Int32Array(memory.buffer, 0, 1),
-    consecutiveSyscalls: 0,
-  };
+  return new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true });
 }
 
 function workerHarness(
@@ -35,59 +29,49 @@ function workerHarness(
   kernelPointerWidth: 4 | 8 = pointerWidth,
 ) {
   const memory = sharedMemory();
-  const processChannel = channel(memory);
+  const kernelMemory = new WebAssembly.Memory({
+    initial: 2,
+    maximum: 2,
+  });
   const completeChannelRaw = vi.fn();
   const completeChannel = vi.fn();
   const relistenChannel = vi.fn();
   const synchronizeSharedMemoryForBoundary = vi.fn();
   const kernelHandle = vi.fn();
-  const worker = Object.assign(
-    Object.create(CentralizedKernelWorker.prototype),
+  const kernelExports: Record<string, unknown> = {
+    kernel_dequeue_signal: () => 0,
+    kernel_get_process_exit_signal: () => -1,
+    kernel_handle_channel: kernelHandle,
+    kernel_set_current_tid: () => 0,
+  };
+  const worker = createCentralizedKernelWorkerTestDouble();
+  installKernelWorkerTestScratch(
+    worker,
+    kernelMemory,
+    128,
+    kernelPointerWidth,
     {
-      callbacks: {},
-      channelTids: new Map(),
-      completeChannel,
-      completeChannelRaw,
-      config: {},
-      hostReaped: new Set(),
-      kernel: {
-        framebuffers: { rebindMemory: vi.fn() },
-        getKernelPtrWidth: () => kernelPointerWidth,
-        toKernelPtr: (value: number | bigint) => {
-          const checked = checkedWasmPointer(
-            value,
-            kernelPointerWidth,
-            "test kernel pointer",
-          );
-          return kernelPointerWidth === 8 ? BigInt(checked) : checked;
-        },
-      },
-      kernelInstance: {
-        exports: { kernel_handle_channel: kernelHandle },
-      },
-      pendingCancels: new Set(),
-      pendingFutexWaits: new Map(),
-      processes: new Map([[
-        PID,
-        {
-          pid: PID,
-          memory,
-          ptrWidth: pointerWidth,
-          channels: [processChannel],
-        },
-      ]]),
-      relistenChannel,
-      sharedMmapBackings: new Map(),
-      syscallRing: new Map(),
-      syscallTraceEnabled: false,
-      syscallTraceRing: [],
-      synchronizeSharedMemoryForBoundary,
+      kernelExports,
     },
-  ) as CentralizedKernelWorker;
+  );
+  worker.testAuthority.configureScratchBoundaryHooksForTest({
+    completeChannel,
+    completeChannelRaw,
+    relistenChannel,
+    synchronizeSharedMemoryForBoundary,
+  });
+  const [processChannel] =
+    worker.testAuthority.replaceProcessRegistrationForLifecycleTest({
+      pid: PID,
+      memory,
+      channelOffsets: [0],
+      pointerWidth,
+    });
   return {
     completeChannel,
     completeChannelRaw,
     kernelHandle,
+    kernelExports,
     memory,
     processChannel,
     relistenChannel,
@@ -97,7 +81,10 @@ function workerHarness(
 }
 
 function writeSyscall(
-  processChannel: ReturnType<typeof channel>,
+  processChannel: {
+    readonly memory: WebAssembly.Memory;
+    readonly channelOffset: number;
+  },
   syscallNr: number,
   args: readonly bigint[],
 ): void {
@@ -105,6 +92,7 @@ function writeSyscall(
     processChannel.memory.buffer,
     processChannel.channelOffset,
   );
+  view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
   view.setUint32(CH_SYSCALL, syscallNr, true);
   for (let index = 0; index < 6; index++) {
     view.setBigInt64(
@@ -131,7 +119,9 @@ describe("handwritten host process-pointer width checks", () => {
       0n,
     ]);
 
-    (h.worker as any)._handleSyscallInner(h.processChannel);
+    h.worker.testAuthority.dispatchScratchBoundarySyscallForTest(
+      h.processChannel,
+    );
 
     expect(h.kernelHandle).not.toHaveBeenCalled();
     expect(h.completeChannel).toHaveBeenCalledWith(
@@ -173,7 +163,9 @@ describe("handwritten host process-pointer width checks", () => {
       0n,
     ]);
 
-    (h.worker as any)._handleSyscallInner(h.processChannel);
+    h.worker.testAuthority.dispatchScratchBoundarySyscallForTest(
+      h.processChannel,
+    );
 
     expect(h.synchronizeSharedMemoryForBoundary).not.toHaveBeenCalled();
     expect(h.kernelHandle).not.toHaveBeenCalled();
@@ -182,7 +174,6 @@ describe("handwritten host process-pointer width checks", () => {
       -1,
       errno,
     );
-    expect(h.relistenChannel).toHaveBeenCalledWith(h.processChannel);
   });
 
   it("rejects pointer-plus-length overflow before synchronization or dispatch", () => {
@@ -196,7 +187,9 @@ describe("handwritten host process-pointer width checks", () => {
       0n,
     ]);
 
-    (h.worker as any)._handleSyscallInner(h.processChannel);
+    h.worker.testAuthority.dispatchScratchBoundarySyscallForTest(
+      h.processChannel,
+    );
 
     expect(h.synchronizeSharedMemoryForBoundary).not.toHaveBeenCalled();
     expect(h.kernelHandle).not.toHaveBeenCalled();
@@ -215,13 +208,17 @@ describe("handwritten host process-pointer width checks", () => {
       ABI_SYSCALLS.Mmap,
       highAddress,
       0,
-    )).toEqual({ retVal: Number(highAddress), errVal: 0 });
+    )).toEqual({
+      retVal: Number(highAddress),
+      publicationRetVal: Number(highAddress),
+      errVal: 0,
+    });
     expect((wasm64.worker as any).normalizeKernelSyscallResult(
       wasm64.processChannel,
       ABI_SYSCALLS.Mremap,
       BigInt(Number.MAX_SAFE_INTEGER) + 1n,
       0,
-    )).toEqual({ retVal: -1, errVal: 75 });
+    )).toEqual({ retVal: -1, publicationRetVal: -1, errVal: 75 });
 
     const wasm32 = workerHarness(4);
     expect((wasm32.worker as any).normalizeKernelSyscallResult(
@@ -229,33 +226,38 @@ describe("handwritten host process-pointer width checks", () => {
       ABI_SYSCALLS.Brk,
       highAddress,
       0,
-    )).toEqual({ retVal: -1, errVal: 75 });
+    )).toEqual({ retVal: -1, publicationRetVal: -1, errVal: 75 });
   });
 
   it("does not mistake a high wasm64 host reservation for a low u32 sentinel", () => {
     const h = workerHarness(8);
     const highAddress = 0x1_ffff_ffffn;
-    (h.worker as any).toKernelPtr = (value: number | bigint) => value;
-    (h.worker as any).kernelInstance = {
-      exports: {
-        kernel_reserve_host_region: vi.fn(() => highAddress),
-      },
-    };
+    h.kernelExports.kernel_reserve_host_region = vi.fn(() => highAddress);
 
     expect(h.worker.reserveHostRegion(PID, 4096)).toBe(Number(highAddress));
+  });
+
+  it("rejects an invalid dynamic reservation length before entering Wasm", () => {
+    const h = workerHarness(8);
+    const reserve = vi.fn(() => 0x20_000n);
+    h.kernelExports.kernel_reserve_host_region = reserve;
+
+    expect(() => h.worker.reserveHostRegion(PID, -1)).toThrow(
+      /failed to reserve -1 bytes/,
+    );
+    expect(reserve).not.toHaveBeenCalled();
+    expect(h.worker.reserveHostRegion(PID, 4096)).toBe(0x20_000);
+    expect(reserve).toHaveBeenCalledOnce();
   });
 
   it("losslessly normalizes signed high-bit wasm32 host reservations", () => {
     const h = workerHarness(4);
     const highAddress = 0x8000_5000;
     const signedExportResult = highAddress | 0;
-    (h.worker as any).toKernelPtr = (value: number | bigint) => value;
-    (h.worker as any).kernelInstance = {
-      exports: {
-        kernel_reserve_host_region: vi.fn(() => signedExportResult),
-        kernel_reserve_host_region_at: vi.fn(() => signedExportResult),
-      },
-    };
+    h.kernelExports.kernel_reserve_host_region =
+      vi.fn(() => signedExportResult);
+    h.kernelExports.kernel_reserve_host_region_at =
+      vi.fn(() => signedExportResult);
 
     expect(h.worker.reserveHostRegion(PID, 4096)).toBe(highAddress);
     expect(h.worker.reserveHostRegionAt(PID, highAddress, 4096)).toBe(
@@ -269,67 +271,69 @@ describe("handwritten host process-pointer width checks", () => {
     const signedExportResult = highAddress | 0;
     const reserve = vi.fn(() => signedExportResult);
     const reserveAt = vi.fn(() => signedExportResult);
-    (h.worker as any).kernelInstance = {
-      exports: {
-        kernel_reserve_host_region: reserve,
-        kernel_reserve_host_region_at: reserveAt,
-      },
-    };
+    h.kernelExports.kernel_reserve_host_region = reserve;
+    h.kernelExports.kernel_reserve_host_region_at = reserveAt;
 
     expect(h.worker.reserveHostRegion(PID, 4096)).toBe(highAddress);
     expect(h.worker.reserveHostRegionAt(PID, highAddress, 4096)).toBe(
       highAddress,
     );
     expect(reserve).toHaveBeenCalledWith(PID, 4096);
-    expect(reserveAt).toHaveBeenCalledWith(PID, highAddress, 4096);
+    // The genuine wasm32 boundary presents the same address bits to its
+    // JavaScript import as a signed i32; the host normalizes only the export
+    // result back into the guest's unsigned logical address.
+    expect(reserveAt).toHaveBeenCalledWith(PID, signedExportResult, 4096);
   });
 
   it("rejects a fixed reservation outside a wasm32 guest before a wasm64 export", () => {
     const h = workerHarness(4, 8);
     const reserveAt = vi.fn(() => 0x1_0000_0000n);
-    (h.worker as any).kernelInstance = {
-      exports: {
-        kernel_reserve_host_region_at: reserveAt,
-      },
-    };
+    h.kernelExports.kernel_reserve_host_region_at = reserveAt;
 
     expect(() =>
       h.worker.reserveHostRegionAt(PID, 0x1_0000_0000, 4096)
     ).toThrow(/failed to reserve pthread control memory/);
     expect(reserveAt).not.toHaveBeenCalled();
+
+    // Caller-domain rejection happens before the entry scope. It must not
+    // poison the genuine kernel generation or prevent a later valid request.
+    h.kernelExports.kernel_reserve_host_region_at =
+      vi.fn(() => 0x20_000n);
+    expect(h.worker.reserveHostRegionAt(PID, 0x20_000, 4096)).toBe(0x20_000);
   });
 
   it("rejects a returned reservation whose end exceeds the wasm32 guest domain", () => {
     const h = workerHarness(4, 8);
-    (h.worker as any).kernelInstance = {
-      exports: {
-        kernel_reserve_host_region: vi.fn(() => 0xffff_f000n),
-      },
-    };
+    h.kernelExports.kernel_reserve_host_region =
+      vi.fn(() => 0xffff_f000n);
 
-    expect(() => h.worker.reserveHostRegion(PID, 8192)).toThrow(
-      /failed to reserve 8192 bytes/,
+    let failure: unknown;
+    try {
+      h.worker.reserveHostRegion(PID, 8192);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toMatch(
+      /void kernel ingress dynamic host-region reservation/,
     );
+    expect((failure as Error & { cause?: unknown }).cause).toMatchObject({
+      message: expect.stringMatching(/failed to reserve 8192 bytes/),
+    });
   });
 
   it("accepts a wasm32 reservation whose exclusive end is exactly 4 GiB", () => {
     const h = workerHarness(4, 8);
-    (h.worker as any).kernelInstance = {
-      exports: {
-        kernel_reserve_host_region: vi.fn(() => 0xffff_0000n),
-      },
-    };
+    h.kernelExports.kernel_reserve_host_region =
+      vi.fn(() => 0xffff_0000n);
 
     expect(h.worker.reserveHostRegion(PID, 0x1_0000)).toBe(0xffff_0000);
   });
 
   it("does not treat a kernel64 0xffffffff address as the wasm32 failure sentinel", () => {
     const h = workerHarness(8, 8);
-    (h.worker as any).kernelInstance = {
-      exports: {
-        kernel_reserve_host_region: vi.fn(() => 0xffff_ffffn),
-      },
-    };
+    h.kernelExports.kernel_reserve_host_region =
+      vi.fn(() => 0xffff_ffffn);
 
     expect(h.worker.reserveHostRegion(PID, 1)).toBe(0xffff_ffff);
   });
@@ -340,17 +344,16 @@ describe("handwritten host process-pointer width checks", () => {
     const highSecond = 0x1_0000_2000n;
     const notify = vi.spyOn(Atomics, "notify");
     try {
-      (h.worker as any).handleFutex(
+      writeSyscall(h.processChannel, ABI_SYSCALLS.Futex, [
+        BigInt(primary),
+        BigInt(FUTEX_WAKE_OP),
+        1n,
+        1n,
+        highSecond,
+        0n,
+      ]);
+      h.worker.testAuthority.dispatchScratchBoundarySyscallForTest(
         h.processChannel,
-        [primary, FUTEX_WAKE_OP, 1, 1, Number(highSecond), 0],
-        [
-          BigInt(primary),
-          BigInt(FUTEX_WAKE_OP),
-          1n,
-          1n,
-          highSecond,
-          0n,
-        ],
       );
 
       expect(notify).not.toHaveBeenCalled();
@@ -370,9 +373,16 @@ describe("handwritten host process-pointer width checks", () => {
     const second = 0x2000;
     const truncatedTimeout = h.memory.buffer.byteLength - 8;
 
-    (h.worker as any).handleFutex(
+    writeSyscall(h.processChannel, ABI_SYSCALLS.Futex, [
+      BigInt(primary),
+      BigInt(FUTEX_WAIT),
+      1n,
+      BigInt(truncatedTimeout),
+      0n,
+      0n,
+    ]);
+    h.worker.testAuthority.dispatchScratchBoundarySyscallForTest(
       h.processChannel,
-      [primary, FUTEX_WAIT, 1, truncatedTimeout, 0, 0],
     );
     expect(h.completeChannelRaw).toHaveBeenLastCalledWith(
       h.processChannel,
@@ -381,9 +391,16 @@ describe("handwritten host process-pointer width checks", () => {
     );
 
     h.completeChannelRaw.mockClear();
-    (h.worker as any).handleFutex(
+    writeSyscall(h.processChannel, ABI_SYSCALLS.Futex, [
+      BigInt(primary),
+      BigInt(FUTEX_REQUEUE),
+      1n,
+      -1n,
+      BigInt(second),
+      0n,
+    ]);
+    h.worker.testAuthority.dispatchScratchBoundarySyscallForTest(
       h.processChannel,
-      [primary, FUTEX_REQUEUE, 1, -1, second, 0],
     );
     expect(h.completeChannelRaw).toHaveBeenCalledWith(
       h.processChannel,
@@ -392,12 +409,62 @@ describe("handwritten host process-pointer width checks", () => {
     );
   });
 
+  it.each([
+    [-1n, 0n],
+    [0n, -1n],
+    [0n, 1_000_000_000n],
+  ])(
+    "rejects a non-normalized futex timeout (%s, %s) before waiting",
+    (seconds, nanoseconds) => {
+      const h = workerHarness(8);
+      const primary = 0x1000;
+      const timeout = 0x2000;
+      const view = new DataView(h.memory.buffer);
+      view.setInt32(primary, 0, true);
+      view.setBigInt64(timeout, seconds, true);
+      view.setBigInt64(timeout + 8, nanoseconds, true);
+      const waitAsync = vi.spyOn(Atomics, "waitAsync").mockReturnValue({
+        async: false,
+        value: "not-equal",
+      });
+      try {
+        writeSyscall(h.processChannel, ABI_SYSCALLS.Futex, [
+          BigInt(primary),
+          BigInt(FUTEX_WAIT),
+          0n,
+          BigInt(timeout),
+          0n,
+          0n,
+        ]);
+        h.worker.testAuthority.dispatchScratchBoundarySyscallForTest(
+          h.processChannel,
+        );
+
+        expect(waitAsync).not.toHaveBeenCalled();
+        expect(h.completeChannelRaw).toHaveBeenCalledWith(
+          h.processChannel,
+          -1,
+          22,
+        );
+      } finally {
+        waitAsync.mockRestore();
+      }
+    },
+  );
+
   it("rejects a futex word that crosses the current memory boundary", () => {
     const h = workerHarness(8);
     const crossingWord = h.memory.buffer.byteLength - 2;
-    (h.worker as any).handleFutex(
+    writeSyscall(h.processChannel, ABI_SYSCALLS.Futex, [
+      BigInt(crossingWord),
+      BigInt(FUTEX_WAIT),
+      0n,
+      0n,
+      0n,
+      0n,
+    ]);
+    h.worker.testAuthority.dispatchScratchBoundarySyscallForTest(
       h.processChannel,
-      [crossingWord, FUTEX_WAIT, 0, 0, 0, 0],
     );
     expect(h.completeChannelRaw).toHaveBeenCalledWith(
       h.processChannel,

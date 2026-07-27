@@ -2097,7 +2097,37 @@ export function buildDlopenImports(
 }
 
 /**
- * Build import object for a Wasm module, stubbing unresolved imports.
+ * Reject process artifacts that request a kernel function outside the exact
+ * channel-mode CRT contract.
+ *
+ * WHY: supplying a zero-returning placeholder makes an obsolete or corrupt
+ * direct-kernel syscall import look like success. It also cannot safely bridge
+ * the process and kernel address spaces. Fail before instantiation so stale
+ * artifacts are rebuilt through the supported channel path.
+ */
+export function assertSupportedKernelFunctionImports(
+  module: WebAssembly.Module,
+  kernelImports: Record<string, WebAssembly.ExportValue>,
+): void {
+  for (const imp of WebAssembly.Module.imports(module)) {
+    if (
+      imp.kind === "function"
+      && imp.module === "kernel"
+      && (
+        !Object.hasOwn(kernelImports, imp.name)
+        || typeof kernelImports[imp.name] !== "function"
+      )
+    ) {
+      throw new Error(
+        `Unsupported kernel import kernel.${imp.name}; `
+          + "rebuild this program with the current Kandelo SDK",
+      );
+    }
+  }
+}
+
+/**
+ * Build the exact import object for a channel-mode Wasm module.
  */
 function buildImportObject(
   module: WebAssembly.Module,
@@ -2117,6 +2147,8 @@ function buildImportObject(
   ) => void,
   forkEnvImports?: Record<string, WebAssembly.ImportValue>,
 ): WebAssembly.Imports {
+  assertSupportedKernelFunctionImports(module, kernelImports);
+
   const envImports: Record<string, WebAssembly.ExportValue> = { memory };
   /** Convert wasm64 BigInt pointer to number (safe since addresses < 4GB) */
   const n = (v: number | bigint): number =>
@@ -2484,18 +2516,15 @@ function buildImportObject(
       view.setBigUint64(begin + i * 8, arr[i], true);
   };
 
-  // Stub any remaining unresolved function imports
+  // Environment integrations fail at the point of use when the host does not
+  // implement them. Kernel imports were validated above and are never faked.
   for (const imp of WebAssembly.Module.imports(module)) {
     if (imp.kind !== "function") continue;
     if (imp.module === "env") {
-      if (!envImports[imp.name]) {
+      if (!Object.hasOwn(envImports, imp.name)) {
         envImports[imp.name] = (..._args: unknown[]) => {
           throw new Error(`Unimplemented import: env.${imp.name}`);
         };
-      }
-    } else if (imp.module === "kernel") {
-      if (!kernelImports[imp.name]) {
-        kernelImports[imp.name] = (..._args: unknown[]) => 0;
       }
     }
   }

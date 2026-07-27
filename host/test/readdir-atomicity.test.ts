@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { WasmPosixKernel } from "../src/kernel";
+import { createWasmPosixKernelTestHarness } from "../src/kernel";
 import type { PlatformIO } from "../src/types";
 
 const KERNEL_CONFIG = {
@@ -15,36 +15,34 @@ function createKernelBridge(entries: Array<{ name: string; type: number; ino: nu
     readdir: vi.fn(() => entries[index++] ?? null),
     closedir: vi.fn(),
   };
-  const kernel = new WasmPosixKernel(
-    KERNEL_CONFIG,
-    io as unknown as PlatformIO,
-  );
   const memory = new WebAssembly.Memory({ initial: 1 });
-  Object.assign(kernel as object, { memory });
+  const kernel = createWasmPosixKernelTestHarness({
+    config: KERNEL_CONFIG,
+    io: io as unknown as PlatformIO,
+    memory,
+    pointerWidth: 4,
+  });
   return { io, kernel, memory };
 }
 
 describe("host readdir retry atomicity", () => {
   it("replays an entry when Wasm output marshalling fails after the backend read", () => {
-    const entry = { name: "retry-me", type: 8, ino: 42 };
+    let failFirstNameRead = true;
+    const entry = {
+      get name(): string {
+        if (failFirstNameRead) {
+          failFirstNameRead = false;
+          throw new Error("malformed first marshalling attempt");
+        }
+        return "retry-me";
+      },
+      type: 8,
+      ino: 42,
+    };
     const { io, kernel, memory } = createKernelBridge([entry]);
-    const hostReaddir = (
-      kernel as unknown as {
-        hostReaddir: (
-          handle: bigint,
-          direntPtr: number,
-          namePtr: number,
-          nameLen: number,
-        ) => number;
-      }
-    ).hostReaddir.bind(kernel);
+    const hostReaddir = kernel.testAuthority.hostReaddir;
 
-    const result = hostReaddir(
-      7n,
-      memory.buffer.byteLength - 4,
-      128,
-      64,
-    );
+    const result = hostReaddir(7n, 16, 128, 64);
     expect(result).toBeLessThan(0);
     expect(io.readdir).toHaveBeenCalledTimes(1);
 
@@ -60,28 +58,29 @@ describe("host readdir retry atomicity", () => {
         new Uint8Array(memory.buffer, 128, entry.name.length),
       ),
     ).toBe(entry.name);
-    expect(hostReaddir(7n, 0, 128, 64)).toBe(0);
+    expect(hostReaddir(7n, 16, 128, 64)).toBe(0);
     expect(io.readdir).toHaveBeenCalledTimes(2);
   });
 
   it("drops a staged entry when a directory handle closes", () => {
+    let failFirstNameRead = true;
     const { io, kernel, memory } = createKernelBridge([
-      { name: "old-iterator", type: 8, ino: 1 },
+      {
+        get name(): string {
+          if (failFirstNameRead) {
+            failFirstNameRead = false;
+            throw new Error("malformed old iterator entry");
+          }
+          return "old-iterator";
+        },
+        type: 8,
+        ino: 1,
+      },
       { name: "new-iterator", type: 4, ino: 2 },
     ]);
-    const bridge = kernel as unknown as {
-      hostReaddir: (
-        handle: bigint,
-        direntPtr: number,
-        namePtr: number,
-        nameLen: number,
-      ) => number;
-      hostClosedir: (handle: bigint) => number;
-    };
+    const bridge = kernel.testAuthority;
 
-    expect(
-      bridge.hostReaddir(7n, memory.buffer.byteLength - 4, 128, 64),
-    ).toBeLessThan(0);
+    expect(bridge.hostReaddir(7n, 16, 128, 64)).toBeLessThan(0);
     expect(bridge.hostClosedir(7n)).toBe(0);
     expect(bridge.hostReaddir(7n, 16, 128, 64)).toBe(1);
 

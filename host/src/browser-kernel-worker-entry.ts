@@ -65,7 +65,6 @@ import {
   waitForWorkerQuiescence as waitForWorkerQuiescenceFence,
 } from "./worker-quiescence";
 import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
-import { reapHostOwnedExitedProcess } from "./host-owned-process-reap";
 import {
   ForkReplayGateCoordinator,
   observeForkReplayWorker,
@@ -131,6 +130,7 @@ type LazyRegistrationMessage = Extract<
 
 let initReady = false;
 let initFailure: string | null = null;
+let kernelFatalReported = false;
 const pendingLazyRegistrationMessages: LazyRegistrationMessage[] = [];
 let lazyRegistrationTail: Promise<void> = Promise.resolve();
 const rootfsSnapshotGate = new RootfsSnapshotGate();
@@ -533,10 +533,6 @@ function reportRetainedProcessGeneration(
   }
 }
 
-// Kernel wasm exports cache
-let kernelInstance: WebAssembly.Instance | null = null;
-let kernelMemory: WebAssembly.Memory | null = null;
-
 // HTTP bridge port (transferred from main thread → service worker comms)
 let bridgePort: MessagePort | null = null;
 let bridgeTargetPort: number | null = null; // The specific HTTP port to route bridge requests to
@@ -619,6 +615,45 @@ function reportHostDiagnostic(
   if (level === "warn") console.warn(diagnostic.message);
   else console.error(diagnostic.message);
   post({ type: "host_diagnostic", ...diagnostic });
+}
+
+function terminatePoisonedKernelWorker(error: Error): void {
+  if (kernelFatalReported) return;
+  kernelFatalReported = true;
+  const detail = formatError(error);
+  try {
+    try {
+      reportHostDiagnostic({
+        pid: 0,
+        source: "kernel fatal",
+        message: `[kernel-worker] fatal kernel instance failure: ${detail}`,
+      });
+    } catch (reportError) {
+      console.error("[kernel-worker] could not report fatal diagnostic:", reportError);
+    }
+    try {
+      post({ type: "kernel_fatal", error: detail });
+    } catch (postError) {
+      console.error("[kernel-worker] could not post fatal state:", postError);
+    }
+  } finally {
+    // The kernel can no longer coordinate process teardown. Stop every nested
+    // Worker directly, then close this dedicated kernel Worker. The in-class
+    // fatal latch makes queued waitAsync/timer callbacks inert during this turn.
+    for (const info of processes.values()) {
+      intentionallyTerminated.add(info.worker as object);
+      void info.worker.terminate();
+    }
+    for (const threads of threadWorkers.values()) {
+      for (const thread of threads) {
+        intentionallyTerminated.add(thread.worker as object);
+        void thread.worker.terminate();
+      }
+    }
+    queueMicrotask(() => {
+      (globalThis as unknown as { close(): void }).close();
+    });
+  }
 }
 
 function reportBridgePendingRequests(): void {
@@ -1025,6 +1060,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       onProcessMemoryTarget: (memory, target) => {
         processMemoryAllocator.observeTarget(memory, target);
       },
+      onKernelFatal: terminatePoisonedKernelWorker,
       onFork: ({ parentPid, childPid, parentMemory, continuation }) => {
         return processMemoryCreators.run("a fork process Worker", () => {
           // Tell the main thread a kernel-side fork happened so Inspector
@@ -1079,29 +1115,17 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // MessageChannel-backed setImmediate queue so syscall handling and worker
   // messages both keep progressing under multi-process bridge load.
   // Notification remains event-driven through Atomics.waitAsync.
-  (kernelWorker as any).relistenBatchSize = 1;
+  kernelWorker.relistenBatchSize = 1;
 
-  // Inject stdout/stderr/listen callbacks
-  const kw = kernelWorker as any;
-  const existingCallbacks = kw.kernel.callbacks || {};
-  kw.kernel.callbacks = {
-    ...existingCallbacks,
-    onStdout: (data: Uint8Array) => post({ type: "stdout", pid: kw.currentHandlePid || 0, data }),
-    onStderr: (data: Uint8Array) => post({ type: "stderr", pid: kw.currentHandlePid || 0, data }),
-    onNetListen: (_fd: number, port: number, addr: [number, number, number, number]) => {
-      const pid = kw.currentHandlePid;
-      if (pid !== 0) {
-        // Register the listener target for pickListenerTarget
-        kw.startTcpListener(pid, _fd, port, addr);
-      }
-      post({ type: "listen_tcp", pid, fd: _fd, port });
-      return 0;
-    },
-  };
+  kernelWorker.setProcessOutputCallbacks({
+    onStdout: (pid, data) => post({ type: "stdout", pid, data }),
+    onStderr: (pid, data) => post({ type: "stderr", pid, data }),
+  });
+  kernelWorker.setNetworkListenObserver((pid, fd, port) => {
+    post({ type: "listen_tcp", pid, fd, port });
+  });
 
   await kernelWorker.init(msg.kernelWasmBytes);
-  kernelInstance = kw.kernelInstance;
-  kernelMemory = kw.kernelMemory;
 
   // /dev/fb0 forwarding: the registry lives in this worker, but the canvas
   // lives on the main thread. WHY: today's zero-copy fbdev contract therefore
@@ -2722,7 +2746,7 @@ async function finishProcessExit(
 
     if (!detachResult.mayReapPid) return;
     try {
-      reapHostOwnedExitedProcess(kernelInstance, pid);
+      kernelWorker.reapHostOwnedExitedProcess(pid);
     } catch (error) {
       reportHostDiagnostic({
         pid,
@@ -2950,83 +2974,94 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
 // ── Pipe operations ──
 
 function handlePipeRead(msg: Extract<MainToKernelMessage, { type: "pipe_read" }>) {
-  if (!kernelInstance) { respond(msg.requestId, null); return; }
-  respond(
-    msg.requestId,
-    kernelWorker.readPipeAvailable(msg.pid, msg.pipeIdx),
-  );
+  try {
+    respond(
+      msg.requestId,
+      kernelWorker.readPipeAvailable(msg.pid, msg.pipeIdx),
+    );
+  } catch (error) {
+    respondError(msg.requestId, formatError(error));
+  }
 }
 
 function handlePipeWrite(msg: Extract<MainToKernelMessage, { type: "pipe_write" }>) {
-  if (!kernelInstance) { respond(msg.requestId, -1); return; }
-  const written = kernelWorker.writePipeData(msg.pid, msg.pipeIdx, msg.data);
-  // Wake readers + pollers watching this pipe + broad wake.
-  kernelWorker.notifyPipeReadable(msg.pipeIdx);
-  respond(msg.requestId, written);
+  try {
+    const written = kernelWorker.writePipeData(
+      msg.pid,
+      msg.pipeIdx,
+      msg.data,
+    );
+    // Wake readers and pollers only after the gated write has completed.
+    kernelWorker.notifyPipeReadable(msg.pipeIdx);
+    respond(msg.requestId, written);
+  } catch (error) {
+    respondError(msg.requestId, formatError(error));
+  }
 }
 
-function handlePipeCloseRead(msg: Extract<MainToKernelMessage, { type: "pipe_close_read" }>) {
-  if (!initReady) return;
-  kernelWorker.closeHostPipeRead(msg.pid, msg.pipeIdx);
+function handlePipeCloseRead(
+  msg: Extract<MainToKernelMessage, { type: "pipe_close_read" }>,
+) {
+  kernelWorker.closePipeRead(msg.pid, msg.pipeIdx);
 }
 
-function handlePipeCloseWrite(msg: Extract<MainToKernelMessage, { type: "pipe_close_write" }>) {
-  if (!initReady) return;
-  kernelWorker.closeHostPipeWrite(msg.pid, msg.pipeIdx);
+function handlePipeCloseWrite(
+  msg: Extract<MainToKernelMessage, { type: "pipe_close_write" }>,
+) {
+  kernelWorker.closePipeWrite(msg.pid, msg.pipeIdx);
 }
 
 function handlePipeIsWriteOpen(msg: Extract<MainToKernelMessage, { type: "pipe_is_write_open" }>) {
-  if (!initReady) {
-    respond(msg.requestId, uninitializedKernelPipeResult("is-write-open"));
-    return;
+  try {
+    respond(
+      msg.requestId,
+      kernelWorker.isPipeWriteOpen(msg.pid, msg.pipeIdx),
+    );
+  } catch (error) {
+    respondError(msg.requestId, formatError(error));
   }
-  respond(
-    msg.requestId,
-    kernelWorker.isHostPipeWriteOpen(msg.pid, msg.pipeIdx),
-  );
 }
 
-function handleInjectConnection(msg: Extract<MainToKernelMessage, { type: "inject_connection" }>) {
-  if (!initReady) {
-    respond(msg.requestId, uninitializedKernelPipeResult("inject"));
-    return;
-  }
-  respond(
-    msg.requestId,
-    kernelWorker.injectHostConnection(
+function handleInjectConnection(
+  msg: Extract<MainToKernelMessage, { type: "inject_connection" }>,
+) {
+  try {
+    const pipeIdx = kernelWorker.injectConnection(
       msg.pid,
       msg.fd,
       msg.peerAddr,
       msg.peerPort,
-    ),
-  );
+    );
+    respond(msg.requestId, pipeIdx);
+  } catch (error) {
+    respondError(msg.requestId, formatError(error));
+  }
 }
 
-function handleWakeBlockedReaders(msg: Extract<MainToKernelMessage, { type: "wake_blocked_readers" }>) {
-  if (!initReady) return;
-  kernelWorker.wakeHostPipeReaders(msg.pipeIdx);
+function handleWakeBlockedReaders(
+  msg: Extract<MainToKernelMessage, { type: "wake_blocked_readers" }>,
+) {
+  kernelWorker.wakeBlockedReaders(msg.pipeIdx);
 }
 
-function handleWakeBlockedWriters(msg: Extract<MainToKernelMessage, { type: "wake_blocked_writers" }>) {
-  if (!initReady) return;
-  kernelWorker.wakeHostPipeWriters(msg.pipeIdx);
+function handleWakeBlockedWriters(
+  msg: Extract<MainToKernelMessage, { type: "wake_blocked_writers" }>,
+) {
+  kernelWorker.wakeBlockedWriters(msg.pipeIdx);
 }
 
 function handleIsStdinConsumed(msg: Extract<MainToKernelMessage, { type: "is_stdin_consumed" }>) {
-  if (!initReady) {
-    respond(msg.requestId, false);
-    return;
-  }
-  const kw = kernelWorker as any;
-  respond(msg.requestId, kw.stdinFinite.has(msg.pid) && !kw.stdinBuffers.has(msg.pid));
+  respond(msg.requestId, kernelWorker.isStdinConsumed(msg.pid));
 }
 
-function handlePickListenerTarget(msg: Extract<MainToKernelMessage, { type: "pick_listener_target" }>) {
-  if (!initReady) {
-    respond(msg.requestId, uninitializedKernelPipeResult("pick-listener"));
-    return;
+function handlePickListenerTarget(
+  msg: Extract<MainToKernelMessage, { type: "pick_listener_target" }>,
+) {
+  try {
+    respond(msg.requestId, kernelWorker.pickListenerTarget(msg.port));
+  } catch (error) {
+    respondError(msg.requestId, formatError(error));
   }
-  respond(msg.requestId, kernelWorker.pickListenerTarget(msg.port));
 }
 
 async function performDestroy() {
@@ -3042,7 +3077,7 @@ async function performDestroy() {
   // returns to its JS event loop (via {exit}), and it becomes reclaimable. A
   // no-op cost on V8 (Chrome), so it runs unconditionally.
   let woken = new Set<number>();
-  try { woken = kernelWorker.killAllBlockedForTeardown(); } catch (e) {
+  try { woken = await kernelWorker.killAllBlockedForTeardown(); } catch (e) {
     console.error(`[kernel-worker] killAllBlockedForTeardown failed: ${e}`);
   }
 
@@ -3225,7 +3260,7 @@ function handleRegisterPtyOutput(msg: Extract<MainToKernelMessage, { type: "regi
 // Both end up calling kernelWorker.sendHttpRequest() with the same shape.
 
 async function handleHttpRequest(requestId: number, request: any) {
-  if (!kernelInstance || !bridgePort) return;
+  if (!kernelWorker.isKernelInitialized() || !bridgePort) return;
   const portRef = bridgePort;
   const activityId = beginBridgeRequest();
   const url = request.url || "?";
@@ -3236,10 +3271,7 @@ async function handleHttpRequest(requestId: number, request: any) {
     // registered listener (matches earlier behavior).
     let port = bridgeTargetPort;
     if (port == null) {
-      const ports: number[] = Array.from(
-        (kernelWorker as any).tcpListenerTargets?.keys() ?? [],
-      );
-      port = ports[0] ?? null;
+      port = kernelWorker.firstTcpListenerPort();
     }
     if (port == null) {
       console.warn(`[bridge] no listener target for req#${requestId} ${url}`);
@@ -3294,7 +3326,7 @@ async function handleHttpRequestMessage(msg: {
   timeoutMs?: number;
   maxResponseBytes?: number;
 }) {
-  if (!kernelInstance) {
+  if (!kernelWorker.isKernelInitialized()) {
     respondError(msg.requestId, "Kernel not initialized");
     return;
   }

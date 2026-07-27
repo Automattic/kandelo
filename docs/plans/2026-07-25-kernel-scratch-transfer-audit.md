@@ -6,12 +6,14 @@ preserved below. PR #1094 closed without merging. Its main-first replacement,
 PR #1097, merged as
 `c7d039794a43788acfa0b0aea30a700c257f57cb`, and this branch has been
 retargeted to that merge result. PR #1097 shipped ABI 42; the incompatible
-export changes documented here intentionally use ABI 43. The pre-retarget and
-dirty-worktree results below remain historical or interim evidence, not a
-readiness claim. Because recording a commit's own SHA in a tracked document
-would change that SHA, the mutable exact-PR-head validation ledger belongs in
-the draft PR description after the head is frozen. Brandon's approval must be
-requested only when that ledger names the current head and its exact results.
+export changes documented here intentionally use the still-unpublished ABI
+43. No ABI 44 is introduced. Because recording a commit's own SHA in a tracked
+document would change that SHA, the mutable exact-PR-head validation ledger
+belongs in the draft PR description after the head is frozen. This audit
+records source evidence, reproductions, and validation targets; it does not
+claim a browser run, performance measurement, or full build for the current
+head. Brandon's approval must be requested only when the external ledger names
+that head and its exact results.
 
 ## Scope and method
 
@@ -49,11 +51,11 @@ The tables distinguish three source-safety dispositions:
 
 Validation status is tracked independently from source safety. Legacy table
 cells that say **Implemented; validation pending** or **final-head rerun
-pending** record the pre-freeze audit state and mean **Safe in current source**
-for the safety disposition; they do not make an exact-head validation claim.
-The draft PR's exact-head ledger supersedes those mutable status labels only
-when it names the current commit. Historical and interim commands later in
-this document never substitute for that ledger.
+pending** mean **Safe in current source** for the source disposition; they do
+not make an exact-head validation claim. Test names below identify executable
+coverage targets, not results from this documentation-only finalization. The
+draft PR's exact-head ledger supersedes those labels only when it names the
+current commit and exact commands.
 
 ## Required invariant
 
@@ -83,8 +85,9 @@ inside the current linear memory while the range following it crosses from a
   `memory`, `pointer`, pointer width, capacity, and a diagnostic label.
   Production regions come only from `allocateKernelScratchRegion` or
   `reserveKernelScratchRegion`; the compiler-backed contract inventories
-  every direct or aliased factory call and admits only the five exact
-  kernel-export-backed production sites.
+  every direct or aliased factory call and admits only the six exact
+  kernel-export-backed production sites: four persistent allocations plus the
+  spawn and generic-transfer token reservations.
   Reservation-derived regions are single-use and explicitly revoked when
   their Rust token is consumed or cancelled, so a later `Vec` growth cannot
   revive a stale pointer/capacity pair.
@@ -116,15 +119,18 @@ inside the current linear memory while the range following it crosses from a
   only for raw allocator/reservation export results; caller-supplied negative
   pointers remain invalid.
 
-`WasmPosixKernel.getMemory/getInstance` and
-`CentralizedKernelWorker.getKernel/getKernelInstance` remain explicit unsafe
-trusted-embedder/debug escape hatches. A downstream embedder can use them to
-call a pointer-returning export and mutate arbitrary kernel memory, so neither
-the type nor the repository audit claims to protect that external code. They
-are not used for repository-owned runtime transfers. Their API documentation
-warns that direct mutation is outside the checked contract; narrowing or
-removing these long-standing low-level APIs would be a separate public-host
-API decision.
+The public wrapper no longer exposes mutable kernel `Memory`, a raw
+`WebAssembly.Instance`, its export namespace, the import object, scratch
+regions, or region factories. Generation-bearing fields and helpers on
+`WasmPosixKernel` and the worker-owned kernel and scratch regions are
+ECMAScript `#private`; reflection cannot recover them by spelling a former
+TypeScript-private property name. An internal module capability grants the
+dedicated worker the exact gated facade and Memory it owns. Separate focused
+test proxies require module-secret capabilities. Neither path is re-exported
+from a supported host API entry point. This is an intentional
+public-host-API incompatibility: callers that previously depended on
+`getMemory()` or instance inspection must use an ownership-specific API rather
+than recovering a bare allocation address.
 
 `host/test/support/wasm-memory-write-audit.ts` and
 `host/test/kernel-scratch-contract.test.ts` form the static contract. The
@@ -132,29 +138,35 @@ TypeScript compiler and type checker discover production JavaScript,
 TypeScript, and selected diagnostic sources recursively, seed their ownership
 roots, and propagate kernel-memory ownership through aliases, helper parameters
 and returns, spreads, destructuring, logical/comma expressions, loop bindings,
-and common intrinsic array element/callback methods. Kernel instance/export
-namespace ownership is followed through `getInstance().exports.memory`, not
-only the sibling `getMemory()` escape. Typed-array receiver methods use a
-positive non-retaining whitelist; callback container arguments and retained
-iterators remain visible to the analysis. They report raw
+and common intrinsic array element/callback methods. The audit conservatively
+follows a `getInstance().exports.memory` or `getMemory()` spelling as potential
+kernel authority even though the supported public facade now exposes neither
+mutable value; this makes their reintroduction fail closed. Typed-array
+receiver methods use a positive non-retaining whitelist; callback container
+arguments and retained iterators remain visible to the analysis. They report raw
 typed/DataView construction, scalar and bulk writes, escapes, persistent
 stores, returned views, allocator calls, scratch-region factory calls, and
-spawn-reservation calls. The manually reviewed
-`KERNEL_SCRATCH_EXPORT_NAMES` capability list supplies the pointer-export
-contract. It is not a fail-closed classification of every present or future
-kernel export: a newly named direct export omitted from that list would not be
-recognized by the pointer-export finding alone. Listed exports and
-computed/unknown export access are tracked through direct members,
-destructuring, aliases, `call`/`apply`/`bind`, and `Reflect.apply`; invoking or
-escaping them outside `KernelScratchLease.invokeKernelExport` is a contract
-finding even when every argument is an untainted primitive. Independently,
-the ownership audit still rejects any repository-owned raw kernel-memory
-view/write and any unreviewed allocator, reservation, or region-factory call.
-That independent fail-closed check is the future direct-variable-write
-contract. The narrow exact pointer-export allowances are scalar/no-pointer
-manifest, ABI, IPC-size, and ioctl queries plus the scratch core's captured
-arity inspection. Token-only reserved spawn is not classified as a
-pointer-bearing export. A separate exact multiset allowlist admits only named
+spawn/generic-transfer scratch-reservation calls. The complete generated
+kernel-export set from `abi/snapshot.json` is the default-deny raw-call
+universe. `KERNEL_SCRATCH_EXPORT_NAMES` is the narrower, manually reviewed
+capability list that a lease may invoke, and the audit fails if that list
+contains a name absent from the generated set. A newly generated export is
+therefore still classified and denied when it is omitted from the runtime
+scratch list; the omission cannot hide a raw call. Direct members,
+computed/unknown export access, destructuring, aliases,
+`call`/`apply`/`bind`, and `Reflect.apply` are tracked. Invoking or escaping a
+generated export outside `KernelScratchLease.invokeKernelExport` is a contract
+finding even when every argument is an untainted primitive. Independently, the
+ownership audit rejects any repository-owned raw kernel-memory view/write and
+any unreviewed allocator, reservation, or region-factory call. The narrow exact
+raw-call allowances are scalar/no-pointer manifest, ABI, IPC-size, and ioctl
+queries plus the scratch core's captured arity inspection. There is no broad
+“token-only export” exclusion. The reserved-spawn commit is admitted only by
+an exact syntax-tree proof that pairs its begin-derived region and token,
+copies before commit, revokes the region, and then cancels that same token.
+Allocator and reserver calls retain their separate exact findings. A separate
+exact
+multiset allowlist admits only named
 reviewed occurrences with inline reasons;
 adding or duplicating an occurrence fails, and deleting one makes its allowance
 stale
@@ -163,18 +175,18 @@ shared-backing roots remain separately classified because their owner is not
 the kernel scratch allocator. A `.set` or `.decode` call counts as a
 synchronous reader only when TypeScript resolves it to the native typed-array
 or `TextDecoder` declaration; a same-named custom method remains an escape.
-JavaScript-family sources have one additional narrow syntax backstop:
-zero-argument `.getMemory()` and `.getInstance()` calls are treated as the
-documented raw kernel-memory authorities even when an untyped receiver prevents
-the checker from recovering its class. The normal ownership analysis then
-follows those values
-through aliases and helper parameters into raw typed-array or `DataView`
-writes. An unrelated JavaScript API with the same spelling requires an exact
-site allowance; no file is excluded to suppress it.
+JavaScript-family sources retain an additional conservative syntax backstop:
+zero-argument `.getMemory()` and `.getInstance()` calls are treated as
+potential kernel-memory authorities even when an untyped receiver prevents the
+checker from recovering its class. The public kernel facade no longer carries
+a memory export, but retaining this rule makes a future raw-accessor regression
+visible. The normal ownership analysis follows any such values through aliases
+and helper parameters into raw typed-array or `DataView` writes. An unrelated
+JavaScript API with the same spelling requires an exact site allowance; no
+file is excluded to suppress it.
 This is a compiler-backed contract over the reviewed repository source, not a
-claim of a sound general-purpose JavaScript taint analysis or control over raw
-writes performed by a downstream consumer through the unsafe trusted-embedder
-accessors.
+claim of a sound general-purpose JavaScript taint analysis or control over
+memory capabilities obtained outside the supported host API.
 
 Rust has a separate source-contract guard for dispatcher pointers.
 `crates/kernel/src/channel_scratch.rs` test
@@ -186,6 +198,88 @@ addresses for memory-management, clone, futex, and related operations; they do
 not authorize kernel-scratch dereferences. Exact contexts plus the count are
 both required so removing one approved site and adding an unrelated one cannot
 evade review.
+
+### Closed process-address disposition
+
+The pointer audit distinguishes a caller process address from a pointer into
+kernel scratch even though both occupy an `i64` channel slot. The authoritative
+generated pointer set is
+`crates/shared/src/host_abi.rs::SYSCALL_ARG_DESCRIPTORS`, emitted as
+`host/src/generated/abi.ts::SYSCALL_ARGS`. `host/test/generated-abi.test.ts`
+pins that complete generated set to the ABI snapshot and requires every
+descriptor to be explicitly required or nullable. The host planner iterates
+that table, captures the caller range, and replaces every non-null descriptor
+slot with a lease-scoped allocator-owned address;
+`crates/kernel/src/channel_scratch.rs::validate_channel_scratch_arguments`
+recomputes the same layout before dispatch. Zero-size argument records receive
+the allocator-owned empty address rather than forwarding an ignored process
+pointer. The only generated-table bypasses are:
+
+- `read(3)`, `write(4)`, `pread(64)`, and `pwrite(65)`, which use the ordinary
+  planner through `CH_DATA_SIZE` and the tokenized exact large-transfer path
+  above it;
+- `wait4(139)` and `waitid(288)`, whose complete optional outputs are handled
+  by the exact host wait path; and
+- `execve(211)`, whose path, argument vector, and environment are decoded from
+  checked caller ranges before the asynchronous exec boundary.
+
+Every other generated descriptor slot is scratch-overwritten before Rust sees
+it. The following table closes the remaining non-generated and conditional
+slots. `host/test/channel-scalar-contract.test.ts`,
+`host/test/host-process-pointer-width.test.ts`, and the exact Rust raw-pointer
+allowlist make additions or lossy width conversions executable drift
+failures.
+
+| Disposition | Exact symbols and process-address slots | Ownership and lifetime finding |
+|---|---|---|
+| **Live raw `ProcessAddress` consumed by Rust** | `host/src/kernel-worker.ts::{checkGeneratedProcessAddressArguments,checkHandwrittenProcessAddressArguments}` and `crates/shared/src/channel_scalar.rs::SYSCALLS` cover `mmap` a0, `munmap` a0, `brk` a0, `mprotect` a0, `mremap` old a0, `madvise` a0, `set_tid_address` a0, `set_robust_list` a0, `get_robust_list` a1/a2, `msync` a0, `mlock`/`mlock2` a0, and `munlock` a0. Rust consumes them only through `checked_channel_process_address`, `dispatch_channel_mmap`, `dispatch_channel_mremap`, `dispatch_channel_wide_result`, or the reviewed `process_address!` macro in `dispatch_channel_syscall`. | These are guest virtual addresses, not kernel allocation addresses. The host first proves caller width and lossless JavaScript indexing; Rust reinterprets the complete physical bits and checks its target width. No such value authorizes a kernel-scratch dereference. `mremap` fixed a4 is separately checked and used only by host mapping pre/postflight; the current Rust syscall does not consume it. |
+| **Exact host-intercepted handwritten slots** | `checkHandwrittenProcessAddressArguments` covers spawn a0/a2/a4; execve a0/a1/a2; execveat a1/a2/a3; wait4 a1/a3; waitid a2/a4; futex a0 and operation-dependent a3/a4; vector I/O a1; sendmsg/recvmsg a1; pselect6 a1-a5; select a1-a4; lock-fcntl a2; network-ioctl a2; and large read/write/pread/pwrite a1. | The host validates the complete caller or nested range and either decodes it, copies it to an owned scratch subregion, or retains only detached scalar/byte state. None of these caller pointers reaches Rust as kernel scratch. |
+| **Conditional raw values after an exact host intercept** | `handleClone` validates stack a1 and TLS a3 plus active parent/child-TID a2/a4, then its synchronous synthetic channel call lets `dispatch_channel_syscall` consume the exact active process addresses. Direct Rust fallbacks also retain checked conditional slots for futex a4, shmat a1, and shmdt a0; normal production dispatch intercepts those syscalls in `handleFutex`, `handleIpcShmat`, and `handleIpcShmdt`. | Ignored conditional arguments retain scalar/ignored semantics. Active clone pointers are process metadata or checked process-memory destinations, not scratch. The shmat/shmdt host paths keep mapping ownership in the process address space and pass no caller-selected scratch pointer to Rust. |
+| **Other exact special paths** | `handleGetgroups`; ppoll timeout/mask decoding around `SYS_PPOLL`; `handleEpollCtl`/`handleEpollPwait`; `handleSysvMessage`; `handleIpcControl`; `handleSemctl`; option-sensitive `PR_SET_NAME`/`PR_GET_NAME`; and request-sensitive ioctl planning. | Each special path proves its caller-native fixed, nested, or command-dependent shape before staging. Ppoll's generated pollfd a0 is scratch-overwritten while its timeout and mask become scalars. Unknown, scalar, and no-argument ioctls stage no pointer. `epoll_pwait` currently validates the optional mask range although its contents are not yet applied; that semantic gap does not grant scratch authority. |
+| **Nested process addresses inside an overwritten ioctl record** | `crates/shared/src/ioctl_contract.rs`, `crates/kernel/src/syscalls.rs::{handle_dri_ioctl,handle_dri_card_ioctl,checked_dri_process_pointer}`, and the process-memory `HostIO` bridge. | The outer ioctl argument is an exact scratch-overwritten record, but selected DRM/KMS/GL records contain nested process addresses that remain process addresses. Rust validates their current bridge representation before any process-memory write. The present `u32` bridge rejects a wasm64 nested address above 4 GiB; that is an explicit mixed-width device limitation, not permission to reinterpret it as kernel scratch. |
+
+`SYS_SIGNAL` a1 is deliberately absent from the raw-address set: it is a
+`u32` WebAssembly function-table index, not a process linear-memory address.
+The xattr stubs below are also not silently classified as pointers merely
+because their future implementations will need buffers.
+
+### Native-width scalar and legacy direct-import evidence
+
+The channel carries six physical `i64` words, but each word still has the
+syscall's real domain. `crates/shared/src/channel_scalar.rs` is the
+authoritative exception table: it distinguishes caller-width pointers,
+caller-width `size_t`, exact `u32`, complete `i64`, and split `i64`. The host
+starts from untouched `bigint` words and never narrows an exact slot merely for
+logging. It validates addresses before host use; Rust consumes the matching
+typed helper and either represents the complete value or rejects it before
+effects. Descriptor-backed counts are handled separately: the host validates
+their raw caller range and replaces the pointer and count with one
+capacity-owned staged extent.
+
+| Surface and exact symbols | True width and old boundary reproduction | Current disposition |
+|---|---|---|
+| Memory-management lengths for `mmap`, `munmap`, `mprotect`, `mremap`, `madvise`, `msync`, `mlock`, `mlock2`, and `munlock`; `ChannelScalarKind::ProcessSize`; `checked_channel_process_size` | The length is `size_t`. On the live lock path, `addr=0,len=0x1_0000_1000` formerly became 4,096; a high address such as `0x1_0000_1000` could likewise alias `0x1000`. | The preceding pointer table and `ProcessSize` jointly preserve both fields. `msync` and advisory memory operations validate even where the current operation is a no-op, so a future implementation cannot inherit the alias. |
+| `set_tid_address(203)` and robust-list syscalls 261/262; `kernel_set_tid_address`, `kernel_{set,get}_robust_list` | Clear-TID and robust-list slots are process pointers; robust-list length is `size_t`. A high clear-TID pointer could formerly be stored as the low address. Robust-list exports currently retain/write nothing, so their same defect was latent rather than a live overwrite. | `ProcessAddress`/`ProcessSize` reject a lossy value. Exact validation is retained for the robust no-op/`ENOSYS` surface before it gains effects. |
+| `shmget(344)`; `SHMGET_ARGUMENTS`; `u32::try_from(process_size!(1))` | Slot 1 is `size_t`, while the current segment implementation has a separate `u32` ceiling. `0x1_0000_1000` formerly allocated 4,096 bytes. | Preserve the native value first, then reject it if the implementation cannot represent it. No segment is allocated from an aliased low word. |
+| `sendfile(294)`, `copy_file_range(290)`, and `splice(291)`; `reportable_channel_transfer_count` | Count is `size_t`, but a successful channel result is signed `i32`. Preserving a request above `i32::MAX` and casting the completed byte count afterward could publish a negative errno-looking result after effects. | These operations permit a short result, so work is capped at `MAX_REPORTABLE_TRANSFER_BYTES = i32::MAX` before reading, writing, consuming input, or advancing offsets. Exact and cap+1 helper tests exercise this without allocating 2 GiB. |
+| `readahead(293)` | Slot 2 is `size_t`; the advisory implementation currently has no data effect. | `ProcessSize` is still validated. No-op is a disposition, not permission to truncate future input. |
+| `signalfd4(246)`, `signalfd(377)`, `epoll_pwait(241)`, `ppoll(251)`, and the native `{ sigset_t *, size_t }` nested in `pselect6` | Signal-set width carriers are native `size_t`; low-word parsing could make a malformed wasm64 width appear to equal eight. | Direct slots use `ProcessSize`; the bespoke nested parser preserves the caller-native field. A non-null mask must still have the generated exact signal-mask width. |
+| `sched_setaffinity(237)` and `sched_getaffinity(238)` | Linux's raw parameter is `unsigned int`, not the public musl wrapper's `size_t` (`kernel/sched/syscalls.c` declares `sched_getaffinity(pid_t, unsigned int, ...)`). | Intentionally `U32` and consumed through `u32_argument`. Widening it would invent an ABI rather than fix truncation. |
+| Legacy `signal(73)`; `SIGNAL_ARGUMENTS`; `exact_u32_argument`; `kernel_signal` | Handler a1 is Kandelo's supported `u32` WebAssembly function-table index, not a linear-memory pointer. `0x1_0000_0001` formerly aliased index 1. | `ExactU32` rejects nonzero high bits, matching the existing wasm64 `sigaction` translator. A larger table-index domain would be a separate ABI decision. |
+| Descriptor-planned read/write, socket, polling, pathname, message, and vector counts | Public counts may be `size_t`; they must not pass through JavaScript `Number` or a low-word scalar merely because the final transport is bounded. | `#handleSyscallInner` computes argument extents from `rawArgs`, checks safe arithmetic and the caller range, then publishes only the exact capacity-proven staged extent. The next subsection records which operations may legally be short. |
+| `mincore`, `tee`, `vmsplice`, `process_vm_{readv,writev}`, xattr operations, and `remap_file_pages` | Their documented pointers/counts remain native, but current Rust stubs do not dereference or write them. | Reviewed stub/`ENOSYS` or no-effect disposition only. A real implementation must add the checked ownership path before its raw-pointer allowance is removed. |
+
+The historical direct C dispatcher was scanned separately because changing a
+C type can change a Wasm function signature even when the channel is
+unchanged.
+
+| Direct C/import/export group | Evidence and disposition | ABI conclusion |
+|---|---|---|
+| `kernel_signalfd4`, `kernel_sendfile`, `kernel_set_tid_address`, and `kernel_{set,get}_robust_list` in `libc/glue/{syscall_imports.h,syscall_glue.c}`; matching `wasm_api.rs` exports | Declarations now use `size_t`/`uintptr_t` where the syscall does; `kernel_signal` deliberately uses `u32`. | The shipped kernel target is wasm32, so these types still lower to the existing `i32` signatures. `abi/snapshot.json` retains `kernel_sendfile: (i32,i32,i32,i32) -> i32`, identical to `HEAD`; no extra bump follows solely from the source-type correction. |
+| Direct path/string/record/buffer imports declared with C pointers | Those addresses belong to process memory, while the matching Rust exports dereference kernel memory and historically carried no allocation capacity. Updating pointer spelling cannot bridge the two address spaces. | The supported channel descriptor or bespoke path copies through a checked kernel-owned region. The legacy direct operation remains rejected; it is not an alternate scratch protocol. |
+| Direct `epoll_pwait`, `ppoll`, and `pselect6` signal-mask widths | `syscall_glue.c` compares the native `size_t` carrier with the fixed mask width before calling an export that does not carry that size; `pselect6` reads its native nested `{ pointer, size_t }` record. | This source check does not add an export parameter or change the shipped wasm32 snapshot. The supported channel path independently validates the same native-width contract. |
+| Direct `kernel_{mmap,munmap,mprotect,mremap,madvise}`, futex, and clone calls | Rust memory exports use `usize`, while the historical C dispatcher still declares/casts raw `u32` addresses and lengths; its futex/clone process pointers are also `u32`. | This is **not** a wasm64-safe direct interface. A future distributable wasm64 kernel would lower `usize` to `i64` and require an explicit export/signature ABI decision. |
+| Stale direct `kernel_ipc_shmget(int32_t key, int32_t size, ...)` | No matching Rust export or snapshot entry exists; the supported channel path is the exact `ProcessSize` implementation above. A complete legacy `syscall_glue.c` artifact requests unsupported `kernel.*` functions and `assertSupportedKernelFunctionImports` rejects it before instantiation. Current SDK, program, libc, POSIX, Sortix, and browser build scripts link `channel_syscall.c`. | `worker-kernel-import-contract.test.ts` pins the fail-before-instantiation policy; the stale declaration is not treated as a compatibility API. The direct source edits add no ABI epoch beyond ABI 43 and do not hide a future wasm64 signature change under today's wasm32 snapshot. |
 
 The option-sensitive `prctl` numbers and name width, the Fcntl lock-record
 width, and the signal-mask width are also cross-layer marshalling contracts.
@@ -210,6 +304,64 @@ per-suballocation capacity would require a further ABI field (or removing the
 alignment slack); this audit does not overstate the information available to
 the current Rust validator.
 
+### Generic argument-sized capacity is not permission to shorten
+
+`CentralizedKernelWorker.#handleSyscallInner` plans generated
+`SyscallArgSize::Arg` records in `host/src/kernel-worker.ts`. When an otherwise
+simple one-byte multiplier would cross `CH_DATA_SIZE`, the historical generic
+fallback reduced both the staged extent and the count visible to Rust. That is
+memory-safe only when the syscall is permitted to perform that shorter
+operation. It is not a general ownership rule: an atomic message, socket
+address, option object, or complete-or-error result cannot be made safe merely
+by changing the caller's count.
+
+The following is the closed audit of every simple generated `Arg` record.
+“Bounded contract” means shortening is not the reason the path is safe; a
+separate generated platform maximum proves that a valid result can never
+reach the fallback. Those maxima need exact-boundary and drift coverage.
+
+| Syscall and generated pointer/count slots | Short-operation disposition | Required ownership/capacity action and WHY | Focused executable evidence |
+|---|---|---|---|
+| `read(3)` `a1/a2`; `write(4)` `a1/a2`; `pread(64)` `a1/a2`; `pwrite(65)` `a1/a2` | The ordinary descriptor is never shortened: a count above `CH_DATA_SIZE` diverts before generic planning to `#handleLargeRead` or `#handleLargeWrite`. | Keep the one-operation Rust-owned large-transfer reservation. This is required even though ordinary files and streams may return short: `read`/`write` can name a datagram socket, and splitting or pre-shortening would change one message. | Existing exact/capacity+1 scalar and vector transfer tests cover reservation failure, sequential/interleaved attempts, wasm32/wasm64 ranges, and one-datagram behavior. Retain a direct scalar datagram boundary case. |
+| `getrandom(120)` `a0/a1`; `getdents64(122)` `a1/a2` | **Short operation permitted.** Random generation may return a prefix. `getdents64` may return a whole-record prefix and resume at the next cookie. | The generic count cap is semantically legal only for these two records. `getdents64` must retain its pending-entry/cookie invariant so an entry is never split or lost. | Cover channel capacity and capacity+1. The directory case must prove every returned record is complete and the following call returns the unconsumed suffix. |
+| `getcwd(23)` `a0/a1` | **Bounded contract, not short.** The result is complete with its NUL or `ERANGE`; kernel CWD state is strictly shorter than generated `PATH_MAX` (4,096). | A valid result fits one channel independently of the caller's larger capacity. Preserve the CWD admission invariant and generated-limit drift test; never document a partial `getcwd` result as legal. | Set/query `PATH_MAX-1`, reject a CWD at `PATH_MAX`, and pass caller capacities at channel capacity and capacity+1 without changing the complete result. |
+| `realpath(109)` path `a0`, output `a1/a2` | **Bounded contract, not short.** Both the accepted input and canonical result are shorter than generated `PATH_MAX`. | The two maximum path extents fit together below `CH_DATA_SIZE`. Preserve the namespace resolver's `PATH_MAX` enforcement and an aggregate drift assertion. | Exercise an exact maximum canonical path plus output capacities at its exact size/size+1 and at channel capacity+1. |
+| legacy `readdir(26)` fixed record `a1`, name `a2/a3` | **Bounded contract, not short.** One 16-byte record plus a `NAME_MAX` (255) name fits. | Preserve the generated/namespace `NAME_MAX` relationship and require the host iterator to return one complete name. A shortened name after advancing the iterator would lose directory state. | Exact 255-byte name, 254-byte destination failure behavior, and channel-capacity+1 caller capacity with one complete entry. |
+| `readlink(19)` path `a0`, output `a1/a2`; `readlinkat(102)` path `a1`, output `a2/a3` | **Must not generically shorten.** The caller's `bufsiz`, not an internal transport cap, decides whether POSIX truncation occurs. Direct readlink does not impose `PATH_MAX`, and `_PC_SYMLINK_MAX` is currently indeterminate. | Use an exact/large owned region, or define and enforce a real cross-layer symbolic-link target maximum that leaves room for the path. “Readlink may truncate” is not permission to truncate a target that fits the caller's actual buffer. | Create or inject a target larger than the ordinary remaining channel extent but smaller than caller `bufsiz`; require the complete target. Also cover exact caller capacity and capacity-1 truncation. |
+| `getenv(43)` name `a0`, output `a1/a2` | **Confirmed live false-`ERANGE` edge.** The operation is complete-or-`ERANGE`; it does not return a prefix. A process metadata entry may occupy 65,536 bytes, while the name and eight-byte alignment leave less output space. | Use aggregate exact/large ownership or reduce and document the metadata-entry contract consistently at every admission point. Do not silently lower only this call's capacity. | Install a maximum entry such as `X=` plus a value that fits the current metadata-entry ceiling. A caller buffer that holds the value must receive it; exact value capacity succeeds and one byte less returns `ERANGE`. |
+| `mq_timedsend(333)` message `a1/a2`; `mq_timedreceive(334)` destination `a1/a2` | **Confirmed atomic-message defect.** Send must enqueue the complete message or fail. Receive must compare the caller's real capacity with the authoritative open queue's `mq_msgsize` before dequeue. | Query `mq_msgsize` before allocation: report `EMSGSIZE` for an oversized send or undersized receive, stage exactly the queue maximum for receive, and route the complete message plus priority/timeout records through the fixed-or-tokenized capacity-owned channel. Rust caps queue creation at the reportable-result domain and makes allocation failure atomic. The generic immutable snapshot freezes the request/deadline while Rust pins the exact mqueue descriptor. | Queue `mq_msgsize` at fixed-channel capacity and capacity+1; send exact/+1, receive exact/+1, verify no prefix enqueue, no dequeue on `EMSGSIZE`, allocation failure before mutation, sequential reuse, blocked-wake immutability, and descriptor close/reuse. |
+| `bind(51)` `a1/a2`; `connect(54)` `a1/a2` | **All-or-nothing input object.** A socket address is not a short byte stream. | Validate family-specific minimum and maximum native `sockaddr` lengths and reject unsupported excess before copying. Do not allocate a caller-requested giant address and do not change its length to the channel remainder. In particular, bound AF_UNIX names so later address-producing calls have a finite maximum. | Supported IPv4, IPv6, pathname and abstract AF_UNIX exact maxima/+1; an oversized range with a valid prefix must reject without binding or connecting. |
+| `setsockopt(59)` `a3/a4` | **All-or-nothing option object.** Supported scalar, timeout, linger, string, and multicast records have option-specific layouts; no “short setsockopt” result exists. | Select an option-specific exact/canonical maximum and reject invalid lengths. Never let a channel cap choose wasm32 versus wasm64 multicast layout or turn a future variable option into a prefix operation. | Exact/short/long cases for each structured option, including unambiguous wasm32/wasm64 group records and an oversized buffer with a valid fixed prefix. |
+| `send(55)` `a1/a2` | **Must preserve one operation.** Stream sends may return short, but the same syscall sends atomic datagrams. | Route the real count through the Rust-owned large transaction, or perform an authoritative socket-type/datagram-limit preflight before any count rewrite. A generic prefix success is invalid. | AF_UNIX and IP datagram at channel capacity/+1: receive either the complete one message or observe the correct error, never a successful prefix. Retain a stream short-send case. |
+| `recv(56)` `a1/a2` | **Must preserve the caller's capacity.** Streams may return short; datagram receive consumes one message and reports truncation relative to the caller's buffer. | Use an exact region, or generate/enforce a datagram ceiling no greater than the independently staged capacity. An internal cap must not create `MSG_TRUNC` or discard bytes that fit the caller's actual buffer. | Queue a datagram at the supported maximum and receive into capacity, capacity-1, and channel-capacity+1 buffers with/without `MSG_PEEK` and `MSG_TRUNC`. |
+| `sendto(62)` payload `a1/a2`, address `a4/a5` | **Two all-or-nothing inputs.** Payload is one datagram and the address is one native object. | Plan one checked aggregate region: exact payload plus a bounded native address. The current descriptor order can let payload consume the channel, reduce address length to zero, and change the destination or produce `EDESTADDRREQ`. | Maximum payload with IPv4/IPv6/AF_UNIX address, aggregate exact/+1, oversized address, and an unconnected socket proving no zero-address fallback. |
+| `recvfrom(63)` destination `a1/a2`, address `a4` via `*a5` | **One message plus value-result address.** Shortening data can discard a datagram the caller could hold; reserving the caller's entire address capacity can reject before receiving even though the actual address is small. | Plan exact data capacity plus `min(caller address capacity, supported sockaddr maximum)` in one owned aggregate. Copy back only the detached actual address and length. | Maximum datagram with non-null address, data/address aggregate exact/+1, caller address capacity above channel size, truncation/peek, and no dequeue on preflight failure. |
+
+The related generated `Deref` value-result paths do not use the simple cap:
+`accept(53)`/`accept4(384)` address `a1` via `*a2`,
+`getsockopt(58)` option output `a3` via `*a4`,
+`getsockname(114)`/`getpeername(115)` address `a1` via `*a2`, and the
+`recvfrom(63)` source address above. Generic planning currently reserves the
+caller's entire advertised capacity and returns `EINVAL` when it exceeds the
+remaining channel, even though the implementation can produce only a small,
+known result (currently at most the 232-byte `TCP_INFO` or a supported native
+socket address). These paths must stage
+`min(caller capacity, generated supported-output maximum)`, preserve the
+captured value-result semantics, and copy back only the actual detached bytes.
+Focused regressions must pass an otherwise valid capacity of
+`CH_DATA_SIZE + 1`, preserve canaries, and prove that a rejected accept does
+not consume or leak the pending connection.
+
+The xattr syscall numbers 350–359 currently have no generated pointer
+descriptors, and their Rust stubs do not dereference or write their pointer
+slots (`get` returns `ENODATA`, `list` returns zero, and `set` currently
+returns success). They are capacity-safe only because the surface is not
+implemented, not because a raw pointer or partial xattr is valid. Keep these
+exact stubs on the reviewed raw-pointer/static-contract allowlist until a
+truthful implementation exists. A future get/list operation is
+complete-or-`ERANGE`, and set is an all-or-nothing input; each must enter the
+checked ownership abstraction before the stub allowance is removed.
+
 ## Allocation inventory
 
 The last column records current source safety and a coverage pointer only; it
@@ -221,13 +373,14 @@ draft PR ledger, independently of these source-safety rows.
 | Region and symbols | Allocating owner; pointer/capacity | Maximum accepted source | Lifetime and overlap | Hosts / widths | Historical audited-head finding | Current safety disposition and coverage notes |
 |---|---|---|---|---|---|---|
 | Raw allocator boundary, `crates/kernel/src/wasm_api.rs::kernel_alloc_scratch`; `crates/kernel/src/scratch_alloc.rs::layout` | Rust global allocator; successful pointer owns exactly the validated `Layout` size | The export accepts a `u32` request, but a successful allocation is further bounded by the aligned Rust `Layout`/`isize::MAX` domain | Allocation is retained for the kernel lifetime; no host-side free or growth workaround | Node/browser; wasm32/64 kernel | **Unsafe failure boundary.** Invalid `Layout` construction could trap instead of reporting allocation failure | **Implemented; validation pending.** Zero/invalid layouts and allocator-null return zero; the host rejects an invalid zero or out-of-memory-range result before constructing a region |
-| Main syscall scratch, `CentralizedKernelWorker.scratchRegion` | Rust `kernel_alloc_scratch`; `KernelScratchRegion`, 65,608 bytes (`CH_TOTAL_SIZE`) | Each layout is checked against the region; ordinary data payload is at most 65,536 bytes (`CH_DATA_SIZE`) | Kernel lifetime; one synchronous lease per dispatch/copy; nested leases fail | Node and browser; wasm32/64 kernel | **Unsafe contract.** Bare `scratchOffset`; several live overflows | **Implemented; validation pending.** All allocator-owned access is lease-mediated |
-| TCP/pipe scratch, `tcpScratchRegion`, `requireTcpScratchRegion` | Rust `kernel_alloc_scratch`; `KernelScratchRegion`, 65,536 bytes | One checked network/pipe chunk, at most 65,536 bytes | Kernel lifetime; worker callbacks/messages detach bytes before yielding | Node/browser; wasm32/64 kernel | **Safe sizes, weak contract.** Private pointer reached other code | **Implemented; validation pending.** Region stays private and all access is synchronously leased |
-| Large spawn scratch, `beginLargeSpawnScratch`, `SpawnScratchBuffer` | Rust `Vec<u8>` through required `kernel_spawn_scratch_begin/pointer/capacity/cancel`; the returned token gates both pointer and capacity, while separate pointer-free retained-capacity telemetry grants no write authority | Complete blob at most 8,417,320 bytes; ordinary blobs use main scratch | Kernel-lifetime high-water allocation, but a fresh exclusive token and single-use host region per operation. Begin and queries are nonblocking; begin may move only while idle. After every successful begin, host cleanup runs in `finally`. Commit/cancel wait on the same no-import lock and return with a definitive token state; cleanup failure is fatal and leaves the host reentry guard closed | Node/browser; wasm32/64 kernel | **Safe after #1094, weak contract.** Fixed 8,417,320-byte allocation retained after first large use | **Safe in current source.** `kernel_spawn_reserved_process` accepts token+length rather than a bare pointer, with no ABI-42 fallback. The focused Node/Chromium sizing measurements are historical pre-retarget evidence; the frozen final-head rerun remains pending |
-| Audio drain, `WasmPosixKernel.audioScratchRegion` | Rust `kernel_alloc_scratch`; 65,536-byte `KernelScratchRegion` bound to the exact Wasm instance and memory that allocated it | `min(out.byteLength, capacity)` and checked Rust return count | One kernel-wrapper generation; one synchronous drain lease. `init` and `initWithMemory` are mutually exclusive one-shot entry points, so a cached region cannot survive an instance replacement | Node/browser; wasm32/64 kernel | **Confirmed unsafe/uncertain.** Pointer/range and producer count were incomplete, and a later second initialization could leave the cached region bound to the old generation | **Safe in current source.** Allocation, requested bytes, current range, returned count, and one-generation lifetime are checked |
-| Public wrapper temporary storage, `apiScratchRegion` | Rust `kernel_alloc_scratch`; 65,536-byte `KernelScratchRegion` bound to one exact kernel generation | Each socket/poll/terminal/ioctl/uname/pipe/rusage/select request must fit | One kernel-wrapper generation; synchronous public-call lease. Concurrent or post-success initialization rejects before state mutation; a failed first attempt clears partial state and remains retryable | Node/browser; wasm32/64 kernel | **Confirmed unsafe.** Hard-coded addresses 4 and 16 were not allocations, and later reinitialization could pair an old cached region with a new memory/instance | **Safe in current source.** All temporary public API storage is allocator-owned and cannot outlive its generation |
-| Rust-lent host-import destinations, `checkedWasmImportMemoryRange`, `readKernelBytes`, `writeKernelBytes` | Rust slice/local/struct; pointer plus explicit capacity, or a generated authoritative fixed-format size such as the 68-byte KMS mode record, for one import call | Genuine producer span no larger than the Rust-supplied or generated capacity | Only the synchronous import; backend data is staged in host-owned memory and no kernel view is lent or retained | Node/browser; wasm32/64 kernel | **Valid ownership, incomplete checks.** Lossy conversions, live-view lending, and clamping writes existed | **Implemented; validation pending.** Signed-wasm32/wasm64 pointer normalization, complete range, intrinsic producer span, detached/staged backend I/O, and producer/result length precede one publish |
-| Unsafe trusted-embedder accessors, `WasmPosixKernel::{getMemory,getInstance}` and `CentralizedKernelWorker::{getKernel,getKernelInstance}` | Exposes the complete raw kernel memory/instance, not a capacity-bearing allocation | Unrestricted by design; consumers are trusted to uphold the kernel ABI | Repository transfer code does not use this path; external direct mutation has no lease or overlap guarantee | Node/browser; wasm32/64 kernel | Existing public low-level/debug API | **Reviewed out-of-contract boundary.** Explicitly documented as unsafe; the static repository audit does not claim to control downstream raw-memory writes |
+| Main syscall scratch, `CentralizedKernelWorker.#scratchRegion` | Rust `kernel_alloc_scratch`; `KernelScratchRegion`, 65,608 bytes (`CH_TOTAL_SIZE`) | Each layout is checked against the region; ordinary data payload is at most 65,536 bytes (`CH_DATA_SIZE`) | Kernel lifetime; one synchronous lease per dispatch/copy; nested leases fail | Node and browser; wasm32/64 kernel | **Unsafe contract.** Bare `scratchOffset`; several live overflows | **Implemented; validation pending.** All allocator-owned access is lease-mediated, and reflection cannot recover the region |
+| Generic widened transfer scratch, `crates/kernel/src/transfer.rs::{TransferScratch,GlobalTransferScratch}`; `kernel_transfer_scratch_{begin,pointer,capacity,cancel}`; `kernel_transfer_{channel,io}_execute` | Rust owns a fresh initialized, eight-byte-aligned `Vec<u64>` byte prefix. A positive opaque token is the sole authority for its pointer and exact authorized byte capacity; spare vector capacity is never exposed | The allocator boundary is generated `MAX_TRANSFER_ALLOCATION_BYTES` (`u32::MAX`). Each consumer applies its narrower semantic/result ceiling before effects, including `MAX_REPORTABLE_TRANSFER_BYTES` for scalar/vector and message payloads | One exclusive Reserved → Executing → Ready transaction. Pointer/capacity queries work only while Reserved; ordinary completion revokes the host region and cancels/drops the vector. Executing rejects begin/query/cancel/reuse; an export trap leaves ownership uncertain and fail-stops the kernel generation rather than reusing bytes | Node/browser shared host path; kernel wasm32/64 and guest wasm32/64 | **Missing on the audited head.** Variable transfers either overfilled the fixed mailbox or required a protocol-specific large allocation | **Capacity-safe in current source; static-contract rerun pending.** Rust proves base alignment, initialized exact capacity, allocation failure, token exhaustion, sequential/interleaved exclusion, and invalid state transitions. The host must still receive a clean final rerun of the reservation-authority and entry-context gates before this row can be called validated |
+| TCP/pipe scratch, `CentralizedKernelWorker.#tcpScratchRegion` and `#requireTcpScratchRegion` | Rust `kernel_alloc_scratch`; `KernelScratchRegion`, 65,536 bytes | One checked transport chunk, at most 65,536 bytes | Kernel lifetime; worker callbacks/messages detach bytes before yielding | Node/browser; wasm32/64 kernel | **Safe sizes, weak contract.** Private pointer reached other code | **Implemented; validation pending.** The region and accessor are runtime-private and all access is synchronously leased |
+| Large spawn scratch, `beginLargeSpawnScratch`, `SpawnScratchBuffer` | Rust `Vec<u8>` through required `kernel_spawn_scratch_begin/pointer/capacity/cancel`; the returned token gates both pointer and capacity, while separate pointer-free retained-capacity telemetry grants no write authority | Complete blob at most 8,417,320 bytes; ordinary blobs use main scratch | Kernel-lifetime high-water allocation, but a fresh exclusive token and single-use host region per operation. Begin and queries are nonblocking; begin may move only while idle. After every successful begin, host cleanup runs in `finally`. Commit/cancel wait on the same no-import lock and return with a definitive token state; cleanup failure is fatal and leaves the host reentry guard closed | Node/browser; wasm32/64 kernel | **Safe after #1094, weak contract.** Fixed 8,417,320-byte allocation retained after first large use | **Safe in current source.** `kernel_spawn_reserved_process` accepts token+length rather than a bare pointer, with no ABI-42 fallback. This document makes no retained-memory or performance claim |
+| Audio drain, `WasmPosixKernel.#audioScratchRegion` | Rust `kernel_alloc_scratch`; 65,536-byte `KernelScratchRegion` bound to the exact Wasm instance and memory that allocated it | `min(out.byteLength, capacity)` and checked Rust return count | One kernel-wrapper generation; one synchronous drain lease. `init` is one-shot, and the cached region is runtime-private, so it cannot survive an instance replacement or escape to a caller | Node/browser; wasm32/64 kernel | **Confirmed unsafe/uncertain.** Pointer/range and producer count were incomplete, and a later second initialization could leave the cached region bound to the old generation | **Safe in current source.** Allocation, requested bytes, current range, returned count, and one-generation lifetime are checked |
+| Public wrapper temporary storage, `WasmPosixKernel.#apiScratchRegion` | Rust `kernel_alloc_scratch`; 65,536-byte `KernelScratchRegion` bound to one exact kernel generation | Each socket/poll/terminal/ioctl/uname/pipe/rusage/select request must fit | One kernel-wrapper generation; synchronous public-call lease. Concurrent or post-success initialization rejects before state mutation; a failed first attempt clears partial state and remains retryable | Node/browser; wasm32/64 kernel | **Confirmed unsafe.** Hard-coded addresses 4 and 16 were not allocations, and later reinitialization could pair an old cached region with a new memory/instance | **Safe in current source.** All temporary public API storage is allocator-owned, runtime-private, and cannot outlive its generation |
+| Rust-lent host-import destinations, `checkedWasmImportMemoryRange`, `WasmPosixKernel.#readKernelBytes`, `#writeKernelBytes` | Rust slice/local/struct; pointer plus explicit capacity, or a generated authoritative fixed-format size such as the 68-byte KMS mode record, for one import call | Genuine producer span no larger than the Rust-supplied or generated capacity | Only the synchronous import; backend data is staged in host-owned memory and no kernel view is lent or retained | Node/browser; wasm32/64 kernel | **Valid ownership, incomplete checks.** Lossy conversions, live-view lending, and clamping writes existed | **Implemented; validation pending.** Signed-wasm32/wasm64 pointer normalization, complete range, intrinsic producer span, detached/staged backend I/O, and producer/result length precede one publish |
+| Public kernel authority boundary, `WasmPosixKernel`, `CentralizedKernelWorker`; `KernelEntryGate`; frozen lexical `KernelWorkerEntryContext`; internal `getWasmPosixKernelRuntimeAccess` and module-secret method-only test companions | Public callers receive no instance, export namespace, Memory, import object, scratch region, or region factory. A selected worker ingress receives only one exact gate/scope-bound facade plus a gate-owned post-revocation protocol/observer registrar; the worker stores no ambient current context | No public mutable-memory transfer surface; every synchronous export-bearing helper must receive the exact lexical context, and every later callback must open a fresh ingress | Result-bearing reentry throws. Void ingress is FIFO-queued until the active export and scratch lease unwind. Immediate-only ingress rejects reentry without queueing or retaining caller values. Typed effects run only after scope revocation; serialized host-only operations reject Promise/thenable escape; retained context/export closures, cross-gate scopes, callback export attempts, and rebinding one raw instance or Memory to another generation fail. Runtime-private fields resist reflection. Test-only construction installs frozen exact method companions rather than target-bearing proxies, and those capabilities remain absent from supported host API entry points | Node/browser; wasm32/64 kernel | Existing public accessors and TypeScript-only private fields exposed raw Memory/instance/scratch authority. Interim production and test proxies were also rejected: a synchronously reentrant backend callback could call the production target directly, while a target-bearing test proxy preserved arbitrary binding and mutation authority inside runtime source | **Static-contract validation pending.** Earlier focused gate, reflection, API-entry, test-companion, PTY, FUTEX, and real-worker cases are evidence for their exact source checkpoints. The widened reservation detector and rigid stage → execute → finish helper changed afterward, so neither the kernel-memory ownership gate nor the entry-context gate is recorded as clean until both are rerun on the stabilized source |
 
 ## Transfer inventory
 
@@ -238,52 +391,91 @@ or range validation. The last column records current source safety and coverage
 only. Its mutable exact-head validation status is recorded in the draft PR
 ledger.
 
+### Blocking-retry ownership and lifetime disposition
+
+Blocking retries matter to this audit because bytes staged in reusable scratch
+must not survive into a promise, timer, callback, or later channel use. After a
+first `EAGAIN`, the host retains only detached request values in the exhaustive
+`BlockingRetrySnapshot` union. The flattened scalar/vector forms retain their
+input bytes or process-memory output destinations, and message forms retain
+their detached nested records. A replay acquires a fresh fixed or reserved
+scratch lease, stages the snapshot, executes synchronously, detaches output,
+and releases the lease before waiting again.
+
+Rust remains the single authority for stable target ownership.
+`BlockingRetryState::token_for_syscall` returns the opaque positive token for
+the exact `(pid, tid, normalized operation)` binding created after the first
+`EAGAIN`, or zero for a host-only immutable snapshot. A mapped operation
+without a binding fails closed. Terminal completion, cancellation, exact
+channel retirement, exec, task exit, and process removal consume the Rust
+binding before the host forgets the snapshot, so a reused numeric descriptor
+or channel cannot redirect a replay.
+
+ABI 43 also assigns the existing 72-byte channel header's former reserved
+`u32` at offset 68 to generated `request_flags`. Libc publishes the generated
+cancellation-point and wake-allowed bits before `PENDING`; the host captures
+and clears them exactly once, rejects unknown combinations, and freezes them
+with the detached retry request. This is part of the async ownership proof:
+mailbox reuse cannot replace the cancellation policy of a request whose
+scratch lease has already ended.
+
+| Exact files / symbols | Ownership and lifetime proof | Disposition |
+|---|---|---|
+| `libc/glue/channel_syscall.c::{__do_syscall_impl,__syscall_cp}`; `crates/shared/src/lib.rs::channel`; generated C/TypeScript ABI constants; `host/src/kernel-worker.ts::#captureChannelRequest` | Generated `request_flags` are published before `PENDING`, consumed and cleared once, validated, and retained only as detached scalars with the represented request | **Safe in current source; generated-file drift and sequential mailbox reuse remain exact-head validation targets** |
+| `host/src/kernel-worker.ts::{BlockingRetrySnapshot,#rememberBlockingRetrySnapshot,#replayBlockingRetrySnapshot,#releaseBlockingRetrySnapshot}` | All seven shapes retain detached values only. A retry creates a new synchronous scratch transaction; no lease, native view, or pointer crosses the wait. Rust returns either the exact positive token or zero, and terminal completion releases a positive binding before deleting the host snapshot | **Safe in current source; exact-head execution not claimed here** |
+| `crates/kernel/src/blocked_retry.rs::{BlockingRetryOperation::from_syscall,BlockingRetryState::token_for_syscall,take_exact,take_for_tid,take_all}`; `crates/kernel/src/wasm_api.rs::{kernel_blocking_retry_token,kernel_blocking_retry_release}` | Rust owns the only target-classification table. Positive tokens never name an fd/pointer and are consumed exactly once; zero is permitted only for an unmapped host-only snapshot | **Safe in current source; drift coverage targets the single-authority rule** |
+| `host/src/kernel-worker.ts::{retireExactChannelAsyncState,retireAsyncChannelsForProcess}`; `crates/kernel/src/syscalls.rs::{cleanup_exiting_thread,release_all_blocking_retry_bindings,discard_blocking_retry_bindings_for_process_removal}` | Exact channel, task, and process lifecycle boundaries release the snapshot and Rust-owned pin once, after any active synchronous scratch transaction has settled | **Safe in current source; sequential, interleaved, exec, task-exit, and process-exit regressions are required targets** |
+
 | File / exact symbols | Owner; pointer and declared capacity | Maximum accepted source and origin | Capacity, range, and pointer proof | Synchronous use / overlap | Hosts / widths | Historical audited-head finding | Current safety disposition and coverage notes |
 |---|---|---|---|---|---|---|---|
 | `host/src/kernel-worker.ts::pollWaitableChild`; `crates/kernel/src/wasm_api.rs::kernel_wait_child_poll`; `crates/shared/src/lib.rs::{KernelWaitResult,KERNEL_WAIT_RESULT_SIZE}` | Rust main allocation; one `KernelScratchLease` lends `STRUCT_SIZE_KERNEL_WAIT_RESULT` bytes (160) and passes the same explicit capacity to Rust | Exactly one fixed 160-byte wait-result record generated from the shared `KernelWaitResult` layout | The lease proves allocator ownership, allocation capacity, current-memory bounds, and lossless kernel-width conversion. Rust rejects pointer zero with `EFAULT` and every capacity other than 160 with `EINVAL` before task validation or waitable-child selection | One synchronous poll and detached decode inside the lease. Rejected output ranges cannot select or consume the sole event; a successful non-`WNOWAIT` call publishes the complete record and reaps atomically | Node/browser shared path; kernel wasm32/64. The shipped real-Wasm regression executes wasm32, and host mocks exercise bigint pointer handling | **Unsafe ABI-42 contract.** The export accepted a bare result pointer, so the host/Rust boundary could not prove that 160 writable bytes belonged to the allocation before selecting the child event | **Safe in current source.** The real-Wasm regression covers pointer zero, capacities 159/160/161, canaries, rejected-call non-consumption, exact-capacity reap, and the following `ECHILD` result |
-| `host/src/kernel.ts::{intrinsicBufferSourceSpan,bufferSourceToArrayBuffer,init,initWithMemory,initialize}` | Caller supplies kernel module bytes; the host immediately owns one detached `ArrayBuffer` snapshot, then publishes one exact instance/memory generation | Exact intrinsic `ArrayBuffer`, typed-array, or `DataView` byte window accepted by the WebAssembly compiler | Captured native internal-slot getters reject non-genuine/detached sources and ignore subclass span getters; pointer-width detection and compilation consume the same snapshot. An explicit initialization state rejects a concurrent or post-success initializer before it mutates width, memory, instance, or cached scratch authority | Snapshot completes before the asynchronous compile; later caller mutation cannot replace either consumer's bytes. A failed first instantiation clears partial state and permits one clean retry; a successful wrapper is one-shot | Node/browser; kernel wasm32/64 | **Confirmed pointer-width and generation-lifetime defects.** A view subclass could make width detection parse decoy bytes while the engine compiled its intrinsic bytes; a second init could leave cached scratch authorized against the old instance | **Safe in current source.** Spoofed-input, wasm32/wasm64 cached public/audio scratch, rejected reinit, concurrent init, and failed-init retry regressions cover the contract |
-| `host/src/kernel-worker.ts::replaceProcessMetadata` | Rust main allocation; private `scratchRegion`, 65,608 bytes; payload begins at `CH_DATA` | One metadata entry at most `CH_DATA_SIZE` (65,536); exec argv/environment aggregate at most generated `ARG_MAX` | Detached caller bytes; lease proves owned allocation and current memory; Rust return count is bounded | One lease and Rust call per entry; view is reacquired after possible growth; no overlap | Node/browser; kernel and guest wasm32/64 | Sizes fit, but a bare pointer represented ownership | **Implemented; validation pending.** Lease-mediated staging |
+| `host/src/kernel.ts::{intrinsicBufferSourceSpan,bufferSourceToArrayBuffer,WasmPosixKernel.init}` | Caller supplies kernel module bytes; the host immediately owns one detached `ArrayBuffer` snapshot, then publishes one exact instance/memory generation | Exact intrinsic `ArrayBuffer`, typed-array, or `DataView` byte window accepted by the WebAssembly compiler | Captured native internal-slot getters reject non-genuine/detached sources and ignore subclass span getters; pointer-width detection and compilation consume the same snapshot. An explicit initialization state rejects a concurrent or post-success initializer before it mutates width, memory, instance, or cached scratch authority | Snapshot completes before the asynchronous compile; later caller mutation cannot replace either consumer's bytes. A failed first instantiation clears partial state and permits one clean retry; a successful wrapper is one-shot | Node/browser; kernel wasm32/64 | **Confirmed pointer-width and generation-lifetime defects.** A view subclass could make width detection parse decoy bytes while the engine compiled its intrinsic bytes; a second init could leave cached scratch authorized against the old instance | **Safe in current source.** Spoofed-input, wasm32/wasm64 cached public/audio scratch, rejected reinit, concurrent init, and failed-init retry regressions cover the contract |
+| `host/src/host-adapter-manifest.ts::readKernelHostAdapterManifest` | Rust owns one static host-adapter manifest in the exact kernel instance; the export supplies its pointer/length and generated `HOST_ADAPTER_MANIFEST_SIZE` supplies the reviewed read extent | Exactly the generated fixed manifest size; extra exported length grants no larger view | The instance/Memory pair is authenticated first, the export pointer is converted losslessly, and the fixed extent is checked against the current genuine `Memory.buffer` before constructing a private `DataView` | Synchronous scalar reads only; the view and buffer are never returned, stored, or written | Node/browser; kernel wasm32/64 | **Reviewed read-only raw-memory path.** It does not match allocator-owned scratch even though it constructs a view over kernel memory | **Reviewed `kernel-read` exclusion; static-gate rerun pending.** The exact view site is allowlisted because it reads a fixed Rust-owned record after the full range proof and grants no variable-write authority |
+| `host/src/kernel.ts::WasmPosixKernel::{#hostFutexWait,#hostFutexWake}` | Rust lends one four-byte aligned atomic word in the kernel's shared `Memory`; no allocator-scratch pointer or variable byte region is involved | Exactly four bytes per import; wake count and timeout are scalars | `checkedWasmImportMemoryRange` normalizes wasm32/wasm64 pointers losslessly, proves the current four-byte range, and requires four-byte alignment before constructing the private `Int32Array`; captured `Atomics.wait`/`notify` intrinsics receive only the proved index | One synchronous import. The atomic view is local and does not escape; wait may block the calling worker but retains no host callback or reusable scratch lease | Node/browser where shared-memory Atomics are supported; kernel wasm32/64 | **Reviewed atomic-control path.** It observes/wakes a Rust-owned futex word rather than copying variable host data | **Reviewed `kernel-control` exclusion; static-gate rerun pending.** The two exact view sites are allowlisted, and neither authorizes `set`, `fill`, `DataView` writes, or a caller-selected scratch capacity |
+| `host/src/kernel-worker.ts::replaceProcessMetadata` | Rust main allocation; private `scratchRegion`, 65,608 bytes; each entry begins at allocation-relative offset 0 | One metadata entry at most `CH_DATA_SIZE` (65,536); exec argv/environment aggregate at most generated `ARG_MAX` | Detached caller bytes; lease proves owned allocation and current memory; Rust return count is bounded | One lease and Rust call per entry; view is reacquired after possible growth; no overlap | Node/browser; kernel and guest wasm32/64 | Sizes fit, but a bare pointer represented ownership | **Implemented; validation pending.** Lease-mediated staging |
 | `host/src/kernel-worker.ts::{handleExec,handleExecveat,readExecPathFromProcess,readStringArrayFromProcess,resolveExecPathAgainstCwd,checkedScratchProducerByteLength}` | Exec pathname/argv/environment are detached JS strings read from caller process memory; only CWD/fd-path queries use the 65,608-byte main allocation | Path scan is bounded by generated `PATH_MAX` 4,096; each string by 65,536; complete argv/environment representation, including pointers and NULs, by generated `ARG_MAX` 4 MiB; CWD/fd-path output by 4,096 | Native pointer-array entries are read at guest width and wasm64 values must be losslessly representable; every string must terminate in its caller range; each direct `withLease` query passes exact pointer/capacity, validates Rust's count with `checkedScratchProducerByteLength`, and detaches with `copyOut` before releasing the lease | No scratch view crosses `callbacks.onExec`'s promise; only detached strings/arrays do. Each CWD/fd-path query completes its lease before the callback | Node/browser; guest wasm32/64 independent of kernel width | **Unsafe/uncertain edge.** Async exec and bounded-string paths used bare scratch queries and lossy/incomplete pointer scans | **Implemented; validation pending.** Explicit `PATH_MAX`/`ARG_MAX`, lossless native-pointer, checked producer count, and no-view-across-promise contract |
 | `host/src/kernel-worker.ts::{ptyMasterWrite,ptyMasterRead}` | Rust main allocation, full 65,608-byte region | Write chunks are `min(remaining, lease.capacity)`; read request is `min(4,096, lease.capacity)` | Write source slice and destination are independently checked; returned write/read count must be a safe integer no larger than the offered chunk/request | One lease per chunk/call; read bytes are detached before `drainPtyOutput`; a second operation cannot enter the active lease | Node/browser; kernel wasm32/64 | **Confirmed unsafe.** `ptyMasterWrite` copied arbitrary `data.length` into the allocation; read trusted the producer count | **Implemented; validation pending.** Exact 65,608 and 65,609 regression |
 | `host/src/kernel-worker.ts::setCwd` | Rust main allocation, 65,608 bytes | Encoded path must be shorter than generated `POSIX_PATH_MAX_BYTES` (4,096, including the NUL contract) | Length is rejected before acquiring/copying; lease then proves allocation and current-memory bounds | One synchronous lease and `kernel_set_cwd` call; no retained view | Node/browser; kernel wasm32/64 | **Confirmed unsafe.** Copy happened before Rust's `PATH_MAX` rejection | **Implemented; validation pending.** Pre-copy oversized-CWD regression |
 | `host/src/kernel-worker.ts::{enumProcs,readProcMaps,checkedScratchProducerByteLength}`; Rust exports `kernel_get_cwd`, `kernel_get_fd_path`, and wait/wake/mqueue query helpers | Rust main allocation, 65,608 bytes | Fixed or explicit producer requests, presently no more than 4,096 bytes for paths and 1,280 bytes for listed fixed records | Requested capacity is passed to Rust; returned byte/count value must be safe and fit that capacity before the same lease calls `copyOut` | Producer runs inside one direct checked lease; detached bytes cross any callback/retry boundary | Node/browser; kernel/guest wasm32/64 | Fixed requests fit; several producer counts were trusted | **Implemented; validation pending.** Inline checked leases and `checkedScratchProducerByteLength` replace the removed aggregate helper |
-| `host/src/kernel-worker.ts::CentralizedKernelWorker::_handleSyscallInner`; `host/src/generated/abi.ts::SYSCALL_ARGS`; `crates/shared/src/host_abi.rs::{SyscallArgDesc,SyscallArgSize}`; `crates/kernel/src/channel_scratch.rs::{ChannelScratchRegion,validate_channel_scratch_arguments,validate_prctl_layout,checked_cstr_len}`; `crates/kernel/src/wasm_api.rs::dispatch_channel_syscall` | Rust main allocation; channel is 72 bytes and data capacity is exactly 65,536; `kernel_handle_channel(offset, capacity, pid)` carries that complete capacity through dispatch | Sum of all descriptor-sized arguments, including alignment, must fit `CH_DATA_SIZE`; every pointer descriptor is explicitly required or nullable; size expressions originate in generated shared ABI metadata and raw syscall counts; every C string must terminate inside the remaining channel allocation | The host rejects negative, fractional, unsafe-integer, multiplication/addition overflow, positive null unless explicitly nullable, and a non-null `Deref` outer buffer without its length pointer. Null argument-sized zero-length buffers become a non-null owned empty range. All `Deref` lengths are captured before planning, then used for both buffer sizing and staged length independent of descriptor order. Rust verifies canonical pointer order, alignment, non-overlap, allocation bounds, descriptor nullability, and bespoke layouts before a checked pointer can reach dispatch. It also rejects a C-string pointer outside the numeric region or a missing in-region NUL; pathname exports separately retain generated `PATH_MAX` semantics. `prctl` uses an option-sensitive validator: name operations receive one exact required 16-byte range and scalar options receive no scratch pointer | Planning retains host-owned copies only; one lease stages, dispatches, detaches output inline in `_handleSyscallInner`, and releases; nested or promise-escaping lease use fails. Rust recomputes a dynamic range from the staged length but cannot reconstruct a separate unpadded host capacity within one alignment bucket because the wire does not encode one; the pre-captured host value under this lease remains the exact-capacity authority | Node/browser; guest wasm32/64 independent of kernel width | **Confirmed unsafe/uncertain domain edges.** Some raw pointers bypassed descriptors, fixed outputs such as `pipe(NULL)` were implicitly treated as nullable, `prctl` scalars were treated as pointers, `Deref` planning could reread mutable lengths, staging was not ownership-bearing, and Rust's bare-pointer scanner used `PATH_MAX` as both an allocation and semantic bound | **Implemented; focused validation passed.** Exact/capacity+1, positive-null and owned-empty, explicit-nullability drift, option-sensitive `prctl`, reordered/mutated `Deref`, exact raw-process-address allowlist, bounded C-string EFAULT, and non-path strings above `PATH_MAX` |
-| `host/src/kernel-worker.ts::{_handleSyscallInner,completeChannel,handleBlockingRetry,handleSleepDelay}`; `PreparedChannelCompletion` | Output belongs to the just-completed main-scratch lease, but the only state allowed to outlive it is a detached `Uint8Array` plus its already-validated process destination | Exactly the output descriptors and successful byte counts detached inline in `_handleSyscallInner` before lease release; error and interrupted completions publish no staged output | `completeChannel` has no scratch-read fallback. Retry, timeout, stopped-process, signal, and teardown state accept only explicit detached writes; absent output means an empty list | Detachment occurs synchronously in the dispatch lease; later callbacks may overlap another scratch use without observing its bytes | Node/browser; guest/kernel wasm32/64 | **Confirmed lifetime defect.** Deferred completion could reread the shared allocation after another operation replaced it | **Implemented; validation pending.** Immediate-timeout poll, EAGAIN `recvmsg`, interrupted sleep, and stale-scratch regressions |
-| `host/src/kernel-worker.ts::{PreparedChannelCompletion.deferredClone,failDeferredCloneLaunch}` | Caller process mailbox, not kernel scratch; the original four-byte parent-TID destination is validated and retained as a scalar | Exactly one `pid_t` word when the original clone requested `CLONE_PARENT_SETTID` | Rollback uses the captured `parentTidPointer`; it never rereads mutable flags or a replacement pointer from a parked mailbox | Parked completion may span worker construction and stop/continue callbacks, but retains no process or scratch view | Node/browser; guest wasm32/64 | **Confirmed deferred-lifetime defect.** Failure rollback reread mutable mailbox metadata and could clear a replacement address | **Implemented; validation pending.** Mailbox-replacement regression proves only the original word is cleared |
-| `crates/shared/src/process_layout.rs`; `crates/shared/src/host_abi.rs::SyscallArgSize::ProcessLayout`; `crates/kernel/src/process_wire.rs::{read_*,write_*}` | Main data capacity 65,536; exact width-selected native record is the capacity passed to Rust | `stack_t` 12/24, kernel-facing `itimerval` 16/32, `mq_attr` 32/64, `sigevent` 64/64, `statfs` 88/120, `sysinfo` 312/368, and `siginfo_t` 128/128 | Host selects by guest pointer width in private slot 5, validates the full caller range, and stages exactly that size; Rust rejects widths other than 4/8 and non-exact slices; output padding/reserved bytes are zeroed | One dispatch lease; Rust serializes into the complete lent slice before copy-back | Node/browser; guest wasm32/64 independent of kernel width | **Confirmed unsafe mixed-width/native-layout contract.** Fixed wasm32 or partial records truncated wasm64/full native records; stale `sysinfo` syscall 208 conflicted with musl 269 | **Safe in current source.** Historical C-layout and Rust boundary coverage plus the current dirty-tree Node and real-Chromium wasm32/wasm64 process-native fixtures pass; the exact-final-head rerun remains pending |
-| `host/src/kernel-worker.ts::dequeueSignalForDelivery`; `crates/kernel/src/wasm_api.rs::kernel_dequeue_signal`; `crates/kernel/src/process_wire.rs::{validate_signal_delivery_output,encode_signal_delivery_record}`; `libc/glue/channel_syscall.c` signal delivery | Rust main allocation; `KernelScratchLease.exportPointer(CH_SIG_BASE, 56)` lends exactly the generated 56-byte signal-delivery record and passes capacity 56 separately | Exactly one generated signal record: signum, handler, flags, raw eight-byte `si_value`, saved mask, `si_code`, two sender/timer metadata words, and alternate-stack pointer/size | The host lease proves the owned allocation and current-memory range; Rust rejects null and any capacity other than 56 before writing. Rust first encodes all 56 bytes into an owned array, then publishes once. The host detaches all 56 bytes before releasing the lease and copies them to the process channel only after a nonnegative result | One synchronous lease per dequeue; the detached record is published only after the lease ends, so a wake or second channel cannot observe partially replaced scratch bytes. The C trampoline reconstructs a native `siginfo_t` and copies only the target-width `union sigval` bytes: four for wasm32 and eight for wasm64 | Node/browser; kernel wasm32/64 and guest wasm32/64 | **Weak capacity and metadata contract.** The old export accepted only a bare output pointer, and its 44-byte payload inside a 48-byte reserved channel area did not carry complete `si_value`, sender/timer metadata, or one authoritative delivery size | **Implemented; focused Node and real-Chromium validation passed on the current dirty tree.** Rust exact-capacity/serialization tests and the rebuilt real-musl process-native fixture cover 56-byte delivery, `SA_SIGINFO`, sender metadata, and target-width C reconstruction on wasm32 and wasm64; the exact-final-head rerun remains pending |
-| `host/src/kernel-worker.ts::drainMqueueNotification`; `crates/kernel/src/wasm_api.rs::{queue_mqueue_signal_notification,kernel_mq_drain_notification}`; `crates/kernel/src/mqueue.rs::mq_notify` | Rust main allocation; one leased pointer plus explicit capacity 8 for the wake-only `{ pid: u32, signo: u32 }` record. The full notification value remains in Rust's signal queue rather than this scratch record | At most one eight-byte wake record. `mq_notify(SIGEV_SIGNAL)` accepts only signums satisfying `1 <= signo < NSIG`; zero, `NSIG`, and a negative native value represented as `u32::MAX` are rejected before registration | The lease proves the owned allocation/current memory and Rust requires capacity 8 before writing. The host accepts only safe-integer results 0 or 1; a negative errno, fractional/unsafe value, or value above 1 fails closed before unchanged reusable bytes can be decoded. Rust queues raw eight-byte `si_value`, `SI_MESGQ`, sender PID, and UID before publishing the wake record | The eight bytes are detached inside one synchronous lease. The lease is released before wake/signal processing can reenter main scratch. A rejected registration does not occupy the queue's one-shot notification slot | Node/browser; kernel wasm32/64 and guest wasm32/64 | **Weak capacity and error contract.** The old drain export accepted a bare pointer, and a negative errno was truthy in JavaScript and could decode stale scratch as a fabricated notification; invalid signal registrations were not rejected before occupying the slot | **Implemented; focused Node and real-Chromium validation passed on the current dirty tree.** Native tests cover invalid signums without registration and a valid retry; the rebuilt process-native fixture covers `SI_MESGQ` plus full-width value/sender metadata, and the host regressions prove both fail-closed negative-result handling and the real export's null/7/8/9 boundary with exact eight-byte output canaries; the exact-final-head rerun remains pending |
-| `crates/shared/src/host_abi.rs` `timer_create` process-layout descriptor; `host/src/kernel-worker.ts::_handleSyscallInner`; `crates/kernel/src/wasm_api.rs::kernel_timer_create`; `crates/kernel/src/process_wire::read_sigevent` | The caller-native 64-byte `sigevent` is staged in the 65,536-byte main data allocation; the timer ID output has its separately described caller and scratch capacity | Null selects the POSIX default; otherwise exactly 64 bytes. `union sigval` contributes four meaningful bytes for a wasm32 caller or eight for wasm64, while the containing native structure remains 64 bytes on both | Generic descriptor planning proves the complete caller range and main-allocation capacity. The private process-pointer-width slot is passed losslessly to `kernel_timer_create`; Rust accepts only width 4 or 8, selects that exact native layout, and preserves the parsed value as raw `u64` bits through timer state and delivery | One synchronous dispatch lease covers staging, parsing, timer creation, and detached timer-ID copy-back. No native view or scratch pointer survives the call | Node/browser; guest wasm32/64 independent of kernel width | **Confirmed mixed-width value defect.** The old export had no caller-width argument and parsed only a partial `sigevent`, so a wasm64 `sival_ptr` could be narrowed | **Implemented; focused native, Node, and real-Chromium validation passed on the current dirty tree.** Exact/short native-layout tests and the rebuilt process-native fixture cover wasm32 low-32-bit and wasm64 full-64-bit timer values; the exact-final-head rerun remains pending |
+| `host/src/kernel-worker.ts::{#handleSyscallInner,#executeCapacityOwnedChannel,#executeReservedChannelDispatch}`; `host/src/generated/abi.ts::SYSCALL_ARGS`; `crates/shared/src/host_abi.rs::{SyscallArgDesc,SyscallArgSize}`; `crates/kernel/src/channel_scratch.rs::{ChannelScratchRegion,validate_channel_scratch_arguments,validate_prctl_layout,checked_cstr_len}`; `crates/kernel/src/wasm_api.rs::{dispatch_channel_syscall,kernel_transfer_channel_execute}` | A complete aligned channel at most 65,608 bytes uses the reusable main allocation; a larger footprint uses one fresh token-bound `TransferScratch` whose initialized capacity is exactly the planned aligned channel size | The sum of all descriptor-sized arguments and alignment is checked against generated `MAX_TRANSFER_ALLOCATION_BYTES`; each syscall's public or implementation limit may be smaller. Every pointer descriptor is explicitly required or nullable, and every C string must terminate inside its remaining owned subrange | The host rejects negative, fractional, unsafe-integer, multiplication/addition/alignment overflow, positive null unless explicitly nullable, and a non-null `Deref` outer buffer without its length pointer. It captures every `Deref` length before planning. The fixed path passes `kernel_handle_channel` its exact 65,608-byte allocation; the widened path passes no host pointer or capacity to `kernel_transfer_channel_execute`, which derives both from the Reserved token. Rust verifies canonical pointer order, alignment, non-overlap, complete allocation bounds, descriptor nullability, bespoke layouts, and in-region C strings before dispatch | `#executeCapacityOwnedChannel` owns one rigid stage → execute → finish transaction. Callers receive neither an execute closure nor entry authority; all writes precede the one fixed/token execution and all readback is detached before lease revocation. Nested, promise-escaping, duplicate, omitted, or reordered execution is structurally unavailable | Node/browser; guest wasm32/64 independent of kernel width; kernel wasm32/64 | **Confirmed unsafe/uncertain domain edges.** Some raw pointers bypassed descriptors, fixed outputs such as `pipe(NULL)` were implicitly treated as nullable, `prctl` scalars were treated as pointers, `Deref` planning could reread mutable lengths, staging was not ownership-bearing, and Rust's bare-pointer scanner used `PATH_MAX` as both an allocation and semantic bound | **Capacity-safe in current source; final static-gate rerun pending.** Exact/capacity+1, positive-null and owned-empty, explicit-nullability drift, option-sensitive `prctl`, reordered/mutated `Deref`, bounded C strings, fixed/widened selection, reservation failure, and token settlement have focused coverage. Blocking-retry request and target ownership is independently complete as recorded in the checkpoint above; this capacity row does not substitute for that lifetime proof |
+| `host/src/kernel-worker.ts::{#handleSyscallInner,completeChannel,handleBlockingRetry,handleSleepDelay}`; `PreparedChannelCompletion` | Output belongs to the just-completed fixed or widened scratch lease, but the only byte state allowed to outlive it is a detached `Uint8Array` plus its already-validated process destination | Exactly the output descriptors and successful byte counts are detached inline before lease release; error and interrupted completions publish no staged output | `completeChannel` has no scratch-read fallback. Timeout, stopped-process, signal, and teardown state accept only explicit detached writes; absent output means an empty list | Detachment occurs synchronously in the dispatch lease; later callbacks may overlap another scratch use without observing its bytes | Node/browser; guest/kernel wasm32/64 | **Confirmed scratch-lifetime defect.** Deferred completion could reread the shared allocation after another operation replaced it | **Safe in current source; validation pending.** Scratch-byte lifetime is complete here, while immutable request/target ownership is proved independently by the following retry row |
+| `host/src/kernel-worker.ts::{#handleSyscallInner,handleBlockingRetry,#rememberBlockingRetrySnapshot,#replayBlockingRetrySnapshot,#releaseBlockingRetrySnapshot,#forgetBlockingRetrySnapshotAfterKernelLifecycle,#retrySyscallWithinKernelEntry,#retireExactChannelAsyncState}`; `crates/kernel/src/{blocked_retry.rs,syscalls.rs,wasm_api.rs}` | No scratch lease or Wasm view crosses the wait. For all seven snapshot shapes, the host owns detached immutable request state. Rust owns one opaque-token binding when its single authority maps the operation; zero records a host-only immutable snapshot | The represented scalar/vector/channel/message request, including its captured fd/mqd/qid, nested layouts, payload or output destinations, flags, priorities, and deadlines. The token is scoped to the exact pid, tid, and normalized operation and is never a substitute for allocation capacity | On first `EAGAIN`, Rust pins the stable one/two-OFD, MQ, or SysV target before control returns to JavaScript. The host then queries the positive token or authoritative zero and retains the first immutable snapshot only. Replays stage from that snapshot and activate the exact binding; they do not resolve a reused numeric name. Missing exports and negative, out-of-range, mismatched, or stale target-token results fail closed; zero is accepted only when Rust classifies the snapshot host-only. The union is exhaustive for blocking-dispatch replay | The snapshot/token may span promises, timers, and wake callbacks, but no live scratch view does. Terminal completion/cancellation/retirement releases the exact token. Exec, task exit, process exit, signal exit, and forced removal consume Rust pins first; only then does the host forget its snapshot without double release | Node/browser shared source; guest wasm32/64 and kernel wasm32/64 | **Confirmed adjacent request-identity defect, present independently of #1094.** Re-executing from live mailbox/process memory can redirect a blocked request without any scratch overflow | **Safe in current source; exact-head execution is not claimed here.** Focused regression targets cover all seven immutable replay shapes, token/zero classification, mismatch/failure, close-and-reuse, one/two-target bindings, and task/process lifecycle retirement |
+| `crates/shared/src/process_layout.rs`; `crates/shared/src/host_abi.rs::SyscallArgSize::ProcessLayout`; `crates/kernel/src/process_wire.rs::{read_*,write_*}` | Main data capacity 65,536; exact width-selected native record is the capacity passed to Rust | `stack_t` 12/24, `mq_attr` 32/64, `statfs` 88/120, `sysinfo` 312/368, and `siginfo_t` 128/128 | Host selects by guest pointer width in private slot 5, validates the full caller range, and stages exactly that size; Rust rejects widths other than 4/8 and non-exact slices; output padding/reserved bytes are zeroed | One dispatch lease; Rust serializes into the complete lent slice before copy-back | Node/browser; guest wasm32/64 independent of kernel width | **Confirmed unsafe mixed-width/native-layout contract.** Fixed wasm32 or partial records truncated wasm64/full native records; stale `sysinfo` syscall 208 conflicted with musl 269 | **Safe in current source; execution not claimed here.** C-layout, Rust boundary, and real-musl wasm32/wasm64 process-native fixtures are the required coverage targets |
+| `host/src/kernel-worker.ts::dequeueSignalForDelivery`; `crates/kernel/src/wasm_api.rs::kernel_dequeue_signal`; `crates/kernel/src/process_wire.rs::{validate_signal_delivery_output,encode_signal_delivery_record}`; `libc/glue/channel_syscall.c` signal delivery | Rust main allocation; `KernelScratchLease.exportPointer(CH_SIG_BASE, 56)` lends exactly the generated 56-byte signal-delivery record and passes capacity 56 separately | Exactly one generated signal record: signum, handler, flags, raw eight-byte `si_value`, saved mask, `si_code`, two source-metadata words, and alternate-stack pointer/size | The host lease proves the owned allocation and current-memory range; Rust rejects null and any capacity other than 56 before writing. Rust first encodes all 56 bytes into an owned array, then publishes once. The host detaches all 56 bytes before releasing the lease and copies them to the process channel only after a nonnegative result | One synchronous lease per dequeue; the detached record is published only after the lease ends, so a wake or second channel cannot observe partially replaced scratch bytes. The C trampoline reconstructs a native `siginfo_t` and copies only the target-width `union sigval` bytes: four for wasm32 and eight for wasm64 | Node/browser; kernel wasm32/64 and guest wasm32/64 | **Weak capacity and metadata contract.** The old export accepted only a bare output pointer, and its 44-byte payload inside a 48-byte reserved channel area did not carry complete `si_value`, source metadata, or one authoritative delivery size | **Safe in current source; execution not claimed here.** Rust exact-capacity/serialization tests and the real-musl process-native fixture cover 56-byte delivery, `SA_SIGINFO`, sender metadata, and target-width C reconstruction on wasm32 and wasm64 |
+| `host/src/kernel-worker.ts::drainMqueueNotification`; `crates/kernel/src/wasm_api.rs::{queue_mqueue_signal_notification,kernel_mq_drain_notification}`; `crates/kernel/src/mqueue.rs::mq_notify` | Rust main allocation; one leased pointer plus explicit capacity 8 for the wake-only `{ pid: u32, signo: u32 }` record. The full notification value remains in Rust's signal queue rather than this scratch record | At most one eight-byte wake record. `mq_notify(SIGEV_SIGNAL)` accepts only signums satisfying `1 <= signo < NSIG`; zero, `NSIG`, and a negative native value represented as `u32::MAX` are rejected before registration | The lease proves the owned allocation/current memory and Rust requires capacity 8 before writing. The host accepts only safe-integer results 0 or 1; a negative errno, fractional/unsafe value, or value above 1 fails closed before unchanged reusable bytes can be decoded. Rust queues raw eight-byte `si_value`, `SI_MESGQ`, sender PID, and UID before publishing the wake record | The eight bytes are detached inside one synchronous lease. The lease is released before wake/signal processing can reenter main scratch. A rejected registration does not occupy the queue's one-shot notification slot | Node/browser; kernel wasm32/64 and guest wasm32/64 | **Weak capacity and error contract.** The old drain export accepted a bare pointer, and a negative errno was truthy in JavaScript and could decode stale scratch as a fabricated notification; invalid signal registrations were not rejected before occupying the slot | **Safe in current source; execution not claimed here.** Native tests cover invalid signums without registration and a valid retry; the rebuilt process-native fixture covers `SI_MESGQ` plus full-width value/sender metadata, and the host regressions prove both fail-closed negative-result handling and the real export's null/7/8/9 boundary with exact eight-byte output canaries |
+| `host/src/kernel-worker.ts::{#handleSyscallInner,#executeCapacityOwnedChannel}`; `crates/kernel/src/wasm_api.rs::kernel_mq_descriptor_msgsize`; `crates/kernel/src/mqueue.rs::{descriptor_msgsize,mq_timedsend,mq_timedreceive}` | Message, priority, and optional timeout records use the fixed main allocation when their complete aligned descriptor layout fits 65,608 bytes; a larger queue message uses one fresh token-bound `TransferScratch` with that exact complete capacity | The authoritative open queue's `mq_msgsize`, capped at `MAX_REPORTABLE_TRANSFER_BYTES`. Send must request no more than that value; receive must advertise at least it, but stages only `mq_msgsize` rather than allocating the caller's possibly larger capacity | Before any allocation write, the required descriptor query validates pid/tid/mqd and returns the queue limit. The host reports `EMSGSIZE` for send-above or receive-below that limit, captures all caller ranges, and routes the complete aligned plan through fixed/token capacity checks. Rust repeats descriptor/message-size checks and fallibly reserves message/vector storage before queue or notification mutation | Each attempt is one rigid synchronous stage → fixed/token execute → finish transaction and retains no scratch view. On first `EAGAIN`, the generic retry snapshot freezes the payload or output address, priority/timeout records, and deadline while Rust pins the exact mqueue descriptor. Replay uses that snapshot and token instead of reparsing a numeric mqd after close/reuse | Node/browser; guest wasm32/64; kernel wasm32/64 | **Confirmed atomic-message capacity defect.** Generic channel shortening could enqueue a prefix, return false `EMSGSIZE`, or make a configured large queue unusable | **Capacity, allocation-failure atomicity, and the represented MQ retry ownership are implemented in current source; exact-final-head validation remains pending.** Focused coverage exists for exact/+1 queue limits, fixed/widened selection, receive preflight, no prefix/no dequeue, allocation failure before mutation, sequential reservation reuse, and stable-target retry behavior |
 | `crates/shared/src/host_abi.rs::SyscallArgSize::Fixed`; `crates/kernel/src/process_wire.rs::{write_stat,read_sched_param,write_sched_param}` | Main data capacity 65,536; the fixed native record size is part of the generated syscall descriptor | `stat` 112 bytes and `sched_param` 48 bytes on both supported caller widths | The descriptor proves the complete caller range and exact fixed capacity; these records do not use width selection or private slot 5 | One dispatch lease; Rust consumes or fills the complete fixed slice | Node/browser; guest wasm32/64 | **Confirmed partial-record contract.** Earlier descriptors did not name the complete musl object | **Implemented; validation pending.** Fixed-layout C drift checks and Rust exact/short tests |
-| Generated `timerfd_settime`, `timerfd_gettime`, `signalfd`, and `signalfd4` descriptors; Rust checked channel-pointer consumers | Main data allocation; native timer records are 32 bytes and the signal mask is exactly eight bytes | Fixed generated record sizes; nullable old-timer output is the only optional timer pointer | Complete caller range, direction, nullability, allocation capacity/current memory, and Rust channel-pointer checks; the raw caller pointer never enters the kernel namespace | One dispatch lease; all input/output is detached at the normal completion boundary | Node/browser; guest wasm32/64 independent of kernel width | **Confirmed address-domain defect.** Caller pointers were passed as kernel pointers | **Safe in current source.** Historical pre-retarget coverage rebuilt the ABI-43 kernel/host artifacts and passed guarded caller-object cases for wasm32 and wasm64; final-head Node and browser reruns remain pending |
 | `crates/shared/src/host_abi.rs` `Getaddrinfo` descriptor; `host/src/kernel-worker.ts::_handleSyscallInner`; `host/src/kernel.ts::hostGetaddrinfo` | Main data allocation; output capacity exactly four bytes, matching musl's private syscall result | Input is a required NUL-terminated name; name plus four-byte output must fit 65,536; host backend result must be exactly/fewer than the lent four bytes | Full caller name and four-byte output ranges; descriptor capacity and current memory; Rust and host import both receive explicit four-byte capacity | One dispatch lease and synchronous host import; four detached bytes are copied back | Node/browser; guest/kernel wasm32/64 | **Confirmed live caller overwrite.** Fixed 256-byte copy-back wrote 252 bytes beyond musl's four-byte result object | **Implemented; validation pending.** Four-byte result plus 252-byte canary regression |
 | `host/src/kernel-worker.ts::handleGetgroups`; `crates/kernel/src/wasm_api.rs::kernel_getgroups(size,list_ptr,list_capacity_bytes)` | Rust main allocation; positive request lends one explicit four-byte gid slot; count query lends pointer/capacity zero | Kandelo currently returns exactly one supplementary gid; `size` accepts 0 through `INT_MAX`, but positive size never increases the lent capacity beyond four | Positive caller output range is exactly four bytes; kernel pointer and capacity are staged together; Rust rejects null or capacity below four; returned count must be safe, `<= size`, and `<= 1` | One lease; output is detached before reuse; zero-count query performs no pointer conversion | Node/browser; guest/kernel wasm32/64 | **Confirmed unsafe.** A raw process pointer crossed into the kernel address space and Rust wrote one `u32` without an allocation-capacity contract | **Implemented; validation pending.** Capacity 0/3/4/5, null, count-query, and detached-copy regressions |
 | `crates/shared/src/host_abi.rs` `Setgroups` descriptor; `host/src/kernel-worker.ts::_handleSyscallInner` | Rust main data allocation, exactly 65,536 bytes | Count times four bytes; maximum one-call source is 16,384 gids from `CH_DATA_SIZE / sizeof(gid_t)` | Checked integer multiplication, complete caller source, descriptor layout, allocation capacity, current memory; count zero ignores the caller pointer and resolves a checked non-null empty scratch address under the final lease | One dispatch lease; no scratch view survives | Node/browser; guest/kernel wasm32/64 | **Unsafe address-domain contract, not a demonstrated live overwrite.** Bare caller pointer could enter the kernel namespace; current Rust did not dereference it | **Implemented; validation pending.** 16,384/16,385, zero-count high pointer, and positive null regressions |
 | `crates/shared/src/ioctl_contract.rs::IOCTL_REQUEST_CONTRACTS`; `host/src/kernel-worker.ts::_handleSyscallInner` ioctl branch; `crates/kernel/src/wasm_api.rs::kernel_ioctl` | Rust main data allocation; pointer requests receive exact request-specific capacity; scalar/no-argument/unknown requests receive no scratch pointer | Pointer sizes are table-selected: 1–160 bytes in the current table, including `termios` 60 and `DRM_IOCTL_VERSION` 36 for wasm32 or 64 for wasm64 | Unsigned request lookup; exact guest-width size/direction; complete caller range; null and one-byte-short rejection; explicit `buf_len`; Rust repeats kind, width, exact length, null, and current-memory checks. `ScalarI32` requests canonicalize only their low 32 transport bits, so unspecified upper wasm64 C-vararg bytes neither become a pointer nor reach Rust. Known width-incompatible pointer requests return `EOVERFLOW` | One dispatch lease; no pointer is manufactured for scalar/no-arg/unknown requests | Node/browser; guest wasm32/64 independent of kernel width | **Confirmed unsafe/incorrect.** Generic 256-byte staging/copy-back overran small caller objects and scalar values were treated as pointers; width-specific DRM layout was not represented | **Implemented; generated/runtime validation pending.** FIONREAD four-byte canary, exact 4/36/64, short/null, every scalar request with signed/unsigned and dirty-high-bit inputs, no-arg/unknown, and unsupported-width regressions |
-| `host/src/kernel-worker.ts::{checkedNetworkIoctlProcessRange,handleIoctlIfconf,handleIoctlIfname,handleIoctlIfhwaddr,handleIoctlIfaddr,handleIoctlIfindex}` | Caller process memory, not kernel scratch; required outer `ifconf`/`ifreq` and the nested process buffer are caller-owned | Command-specific 8/16-byte `ifconf`, 32/40-byte `ifreq`, and `ifconf.ifc_len`; no shared-table maximum substitutes for the nested length | The shared checked process-range proof rejects a null/short outer object and checks the complete nested output range; the wasm64 nested pointer remains `bigint` until lossless conversion. Only `ifc_buf == 0` after a valid outer structure retains Linux size-query semantics | Synchronous host-side handling; no kernel scratch lease or retained view | Node/browser shared code; guest wasm32/64 | **Confirmed unsafe caller-boundary defect.** The former ad-hoc total-memory check accepted outer address zero, and the nested wasm64 pointer was narrowed before its proof | **Implemented; focused Node validation passed.** Exact and one-byte-short outer/nested ranges, capacity+1 output canaries, every network `ifreq` handler, null outer objects, and high/unsafe wasm64 non-aliasing are included in the current 189-test focused transfer-boundary file; the exact-final-head browser rerun remains pending |
 | `host/src/kernel-worker.ts::handleFcntlLock` | Rust main data allocation; 32-byte `struct flock` | Exactly 32 bytes | Full caller range, owned scratch range, current memory | One synchronous lease | Node/browser; guest/kernel wasm32/64 | Fixed size fit, bare pointer | **Implemented; validation pending** |
-| `host/src/kernel-worker.ts::{handleSelect,handlePselect6}` | Rust main data allocation; three optional generated 128-byte fd sets plus timeout/mask records | Generated `FD_SETSIZE` 1,024 and `fd_set` size 128; optional eight-byte kernel mask and native timeout inputs | `nfds` is bounded by the generated set width; every optional fd set, timeout, outer pselect sigmask descriptor, and nested mask range is checked before staging | Each attempt is synchronous; retry owns copies/scalars and no scratch view | Node/browser; guest/kernel wasm32/64 | **Confirmed unsafe caller-range paths and duplicated layout constants** | **Implemented; focused Node validation passed.** Select/pselect count/range boundaries use the generated contract |
+| `host/src/kernel-worker.ts::{handleSelect,handlePselect6}` | Rust main data allocation; three optional generated 128-byte fd sets plus timeout/mask records | Generated `FD_SETSIZE` 1,024 and `fd_set` size 128; optional eight-byte kernel mask and native timeout inputs | `nfds` is bounded by the generated set width; every optional fd set, timeout, outer pselect sigmask descriptor, and nested mask range is checked before staging | Each attempt is synchronous; retry owns copies/scalars and no scratch view | Node/browser; guest/kernel wasm32/64 | **Confirmed unsafe caller-range paths and duplicated layout constants** | **Safe in current source; execution not claimed here.** Select/pselect count/range boundaries use the generated contract |
 | `host/src/kernel-worker.ts` generic `ppoll` descriptor planning and retry conversion | Main allocation/channel; 16-byte caller timespec and optional eight-byte signal mask become scalar kernel arguments | Fixed native records from syscall contract | Raw pointers remain bigint until lossless conversion; both complete caller ranges are proved on the first attempt and retry | Only final dispatch lease contains scratch bytes; retry retains scalars, never a view | Node/browser; guest wasm32/64 | **Unsafe/uncertain.** Special pointers were outside generated descriptors | **Implemented; validation pending.** Out-of-range and unrepresentable wasm64 regressions |
 | `host/src/kernel-worker.ts::{handleEpollCtl,handleEpollPwait}`; `crates/shared/src/lib.rs::WasmEpollEvent` | Caller process memory for events plus main scratch for the internal poll request; native epoll event is exactly 16 bytes | One `epoll_ctl` event or checked `maxevents * 16`; fields are events at offset 0, zero/ignored pad at 4–7, data at offset 8 | Checked multiplication and complete caller input/output ranges; exact 16-byte records; copy-out explicitly zeroes padding and writes `u64` data at offset 8 | One synchronous attempt; retry/interest state stores values, not process or scratch views | Node/browser; guest wasm32/64 | **Confirmed unsafe caller/output range handling and stale 12-byte assumption** | **Implemented; validation pending.** Exact-end, one-byte-short, padding, and offset-eight regressions |
-| `host/src/kernel-worker.ts::{checkedProcessIovecs,kernelIovecFootprint,handleWritev}` | Rust main data allocation; kernel table is 8 bytes per entry and payload follows with four-byte alignment after every entry | Count 1..generated `IOV_MAX` (1,024); full footprint is `8*count + Σ align4(iov_len)` and must be `<= CH_DATA_SIZE` | Native table is 8 bytes/entry on wasm32 or 16 on wasm64; table and every nested source are range-checked losslessly; total is `<= SSIZE_MAX`; result cannot exceed staged payload. Caller linear-memory address zero is valid for a table or data base when the complete positive-length range fits; `{ base: 0, len: 0 }` performs no data access. Positioned offsets remain exact signed `bigint` values across slow chunks | Fast path one lease; slow path sends one checked chunk of at most `CH_DATA_SIZE-8`; no view survives between calls | Node/browser; guest wasm32/64 | **Confirmed live allocation overflow and adjacent offset defect.** Admission omitted per-entry padding and could write 3,072 bytes past the 65,536-byte data area; slow `pwritev` rounded offsets above `Number.MAX_SAFE_INTEGER` | **Implemented; focused Node validation passed.** Exact footprint, address-zero semantics, and exact `2^53+1` slow-path offsets |
-| `host/src/kernel-worker.ts::{checkedProcessIovecs,kernelIovecFootprint,handleReadv}` | Rust main data allocation; same 8-byte kernel table/alignment model | Count 1..1,024; table plus requested data must fit 65,536 for fast path; slow chunks reserve the eight-byte table first | Complete native table and every output buffer are checked; returned count must be safe and no larger than offered total; each copy-back uses checked destination capacity. Address zero is caller-owned process memory here, so bounded positive output and zero-length entries may begin there. Positioned offsets remain exact signed `bigint` values across slow chunks | Fast path one lease; slow path one bounded iovec chunk per lease; copy-back bytes are detached | Node/browser; guest wasm32/64 | **Confirmed live allocation overflow and adjacent offset defect.** Fast path subtracted only eight bytes and did not enforce `IOV_MAX`, reaching 8,184 bytes past the data allocation; slow `preadv` rounded offsets above `Number.MAX_SAFE_INTEGER` | **Implemented; focused Node validation passed.** Full-table/count/address-zero and exact `2^53+1` slow-path offset regressions |
-| `host/src/kernel-worker.ts::{handleLargeWrite,handleLargeRead}` | Rust main data allocation; one data chunk at most 65,536 bytes | Requested scalar count may be larger, but each scratch transfer is `min(remaining, CH_DATA_SIZE)` | Complete caller source/destination range is proved before the first Rust call; each Rust count is safe and bounded by the offered chunk | One lease per chunk; no view survives | Node/browser; guest/kernel wasm32/64 | Scratch capacity fit; complete caller range was unsafe | **Implemented; validation pending.** Large-I/O source/destination regressions |
-| `host/src/kernel-worker.ts::{_handleSyscallInner,handleLargeWrite,handleLargeRead,handleSharedMappingsAfterFileSyscall}` ordinary and large `pread`/`pwrite` | Main scratch for transfer; the positioned file offset is a signed i64 scalar and shared-mapping state has a separate host owner | Ordinary request at most 65,536 bytes; larger requests use checked chunks | The raw channel offset remains `bigint` through ordinary dispatch, large-operation preflight, chunk addition, and kernel argument encoding. Shared-mapping updates use the exact offset only when it is safely indexable; otherwise they refresh from the authoritative file instead of aliasing a rounded JS number | One lease per dispatch/chunk; mapping refresh owns no scratch view | Node/browser; guest wasm32/64 | **Confirmed precision defect adjacent to scratch dispatch.** Ordinary and large `pread`/`pwrite` rounded `2^53+1`, and a rounded shared-map offset could update the wrong page | **Implemented; focused Node validation passed.** Ordinary/large wasm32/wasm64 exact-i64 tests plus shared-map non-aliasing |
-| `host/src/kernel-worker.ts::{checkedProcessMessage,nativeControlToKernelWire,kernelMessageLayout,handleSendmsg}`; `crates/kernel/src/socket_wire.rs`; fixed `Kernel{Msghdr,Iovec,Cmsghdr}Wire` | Rust main data allocation; one generated 28-byte fixed header, optional name/control, one generated eight-byte canonical iovec, and flattened payload share exactly 65,536 bytes | Caller-native `msghdr` is generated as 28 bytes on wasm32 or 56 on wasm64; native iovec count 0..generated `IOV_MAX` 1,024; the complete canonical footprint must fit | Full native header/table and every nested range are checked losslessly. Native `cmsghdr` records are validated and translated to a generated 12-byte-header/alignment-4 wire; all caller iovecs are flattened into one owned payload. Rust revalidates the complete canonical ancillary stream and accepts only the zero/one-iovec host wire. Returned count cannot exceed staged data | One synchronous lease covers header/control/flatten/call; only owned parsed metadata exists before it and no view survives | Node/browser; guest wasm32/64 | **Confirmed live allocation overflow plus mixed-width protocol defect.** Count/layout capacity was incomplete, only the first caller iovec reached Rust, and wasm64 ancillary headers were interpreted as wasm32 | **Implemented; focused Node validation passed.** `IOV_MAX+1`, exact/capacity+1 layout, multi-iovec/zero-entry flattening, malformed/wrapped control records, invalid descriptor propagation, sequential reuse, and wasm32/64 native-wire translation |
-| `host/src/kernel-worker.ts::{checkedProcessMessage,kernelControlCapacityForRecv,kernelControlToNative,kernelMessageLayout,handleRecvmsg}`; `crates/kernel/src/wasm_api.rs::kernel_recvmsg` | Same fixed-wire main allocation; caller name, native control, and every native iovec destination retain their own separately checked capacities | Native header 28/56; count 0..1,024; one canonical contiguous receive payload plus name and the caller-representable canonical control capacity must fit 65,536 | Complete caller table/destination ranges are proved before dispatch. Canonical ancillary capacity is derived from native data capacity rather than total native header space; returned wire length, alignment, type, and descriptor width are validated before expansion. Payload is detached and scattered across all caller iovecs, skipping zero-length entries; native padding is zeroed. `MSG_TRUNC` may report the full datagram while only the bounded prefix is copied | One synchronous lease snapshots all output; caller publication uses detached arrays after release, and retry/error paths publish nothing | Node/browser; guest wasm32/64 | **Confirmed live allocation overwrite plus mixed-width/first-iovec defects.** Complete count/footprint was unproven, only one destination received bytes, and wasm64 `cmsghdr` capacity could install descriptors that could not be represented on copy-back | **Implemented; focused Node validation passed.** Exact/capacity+1, multi-iovec scatter with a zero middle entry, EAGAIN/no-publish, malformed canonical output, `MSG_CTRUNC`, wasm32/64 capacity matrices, flags, and padding |
-| `crates/kernel/src/{pipe.rs,process_table.rs,socket.rs,syscalls.rs,wasm_api.rs}` AF_UNIX `SCM_RIGHTS`; `programs/scm-rights-semantics.c` | Stream ancillary records own retained descriptors at absolute carrier-byte ranges; each datagram queue entry atomically owns payload, source address, and retained descriptors | Generated control-record limits plus the fixed one-record host wire; receiver installation is additionally bounded by the caller control capacity and fd-table capacity | Stream reads cannot observe rights before their carrier bytes and stop `MSG_WAITALL` at a rights boundary. PEEK clones retained references fallibly without consuming them. Datagram enqueue rolls back all retained references if publication fails. Zero-iovec receive can consume a zero-byte datagram and its rights, while ordinary `read(...,0)` consumes nothing. Output `MSG_TRUNC`, input `MSG_TRUNC`, `MSG_CTRUNC`, and `MSG_CMSG_CLOEXEC` are independent. Snapshot, retain, complete-batch send, and receive installation each reject non-owning or non-reconstructible metadata; any socket in the batch returns `EOPNOTSUPP` before carrier publication | Pipe/datagram queues retain supported ownership until one consuming receive, ordinary carrier-byte discard, or close. Forced process removal, AF_UNIX datagram reconnect, and `SHUT_RD`/`SHUT_RDWR` first make every discarded queue entry visible to the one deferred-release drain; `SHUT_WR` preserves the readable queue. Accept failure and plain transfer syscalls finish any ownership they discard. Every channel dispatch clears its temporary task identity, then conditionally drains deferred ownership after all resource-table borrows end and before publishing the result. Direct host-pipe exports use the same one-check boundary, so a future ancillary-capable input cannot strand ownership. PEEK owns temporary fallible clones only. Data and ownership become visible atomically before readiness wakeup; rejected batches publish neither | Shared Rust kernel on Node/browser; real guest wasm32/64; AF_UNIX datagram routing remains same-process; socket-descriptor transfer is an explicit unsupported boundary | **Confirmed live semantic and cleanup-boundary defects.** In addition to the seven transport defects, forced removal and reconnect could discard queued datagram rights after the sole drain, read shutdown made queued rights unreachable, failed accept discarded a preaccepted stream carrying rights, and `sendfile`/`copy_file_range`/`splice` consumed plain bytes while silently discarding ancillary ownership. Direct host-pipe exports were a latent future boundary rather than an existing public ancillary input | **Safe in current source.** Historical pre-retarget evidence includes native kernel and 18/18 real-musl Node cases across wasm32/wasm64. Current dirty-tree real-Chromium evidence passes the same 16 semantics cases plus two pipe-lifetime cases; the exact-final-head browser rerun remains pending |
-| `host/src/kernel-worker.ts::{handleSpawn,decodeSpawnBlobStrings,handleSpawnAfterResolve,beginLargeSpawnScratch,cancelLargeSpawnScratch}`; `crates/kernel/src/spawn.rs::{SpawnScratchBuffer,measure_strings_by_offset,decode_measured_strings}`; `crates/kernel/src/wasm_api.rs::kernel_spawn_reserved_process` | Ordinary blob uses main allocation; large blob uses token-bound Rust `Vec<u8>` whose pointer and actual capacity are returned only while reserved | Complete blob at most generated 8,417,320; argv/environment representation at most 4 MiB; path/action/count caps from generated contracts | Caller ranges, parsed counts, paths, complete blob length, allocation capacity, current memory, pointer width, token, and reservation state are independent checks. Host and Rust first measure every referenced string against one aggregate budget, then allocate/decode | Async lookup owns a JS copy; begin/copy/commit have no await. Begin and pointer/capacity queries fail without waiting on contention. After every successful begin, cancellation runs in `finally`, including setup/copy failure. Commit and cancellation wait on the same no-host-import mutex and return only after the token is consumed, released, or shown stale; host/Rust guards reject overlap. Duplicate maximum-count offsets cannot amplify allocations before rejection | Node/browser; guest/kernel wasm32/64 | #1094 spawn fix was capacity-safe but retained a fixed 8,417,320-byte region after first large use; decoding still admitted allocation amplification from duplicate offsets | **Safe in current source.** Growable Rust-owned tokenized reservation, pre-allocation aggregate accounting, and exact-count/`ARG_MAX` boundaries are covered. The real Node/Chromium workload is historical pre-retarget evidence; the frozen final-head rerun remains pending |
-| `host/src/kernel-worker.ts::{populateMmapFromFile,pwriteFromProcessMemory,readSysvShmRange,writeSysvShmRange}` | Main data allocation for transit, 65,536 bytes per chunk; mapped/shared bytes have separate owners | One `CH_DATA_SIZE` chunk; overall mapping/segment size comes from checked mapping/kernel state | Complete process/mapping range and each Rust producer/consumer count; transit lease separately proves scratch capacity/current memory | One synchronous lease per chunk; authoritative shared bytes/snapshots live outside scratch | Node/browser; guest/kernel wasm32/64 | Capacity fit, bare pointer contract | **Implemented; validation pending** |
+| `host/src/kernel-worker.ts::{checkedProcessIovecs,copyFlattenedTransferInput,handleWritev,executeMainScratchTransfer,executeReservedScratchTransfer}`; `crates/kernel/src/transfer.rs`; `crates/kernel/src/wasm_api.rs::kernel_transfer_io_execute` | At most 65,536 bytes use the Rust-owned main data allocation; larger vectors receive one fresh Rust-owned initialized `Vec<u8>` whose pointer and capacity exist only under a positive reservation token | Count 0..generated `IOV_MAX` (1,024); the complete aggregate is checked against `SSIZE_MAX`/the transfer export's `i32` result domain before either allocation is written | Native tables are 8 bytes/entry on wasm32 or 16 on wasm64; the complete table and every nested source range are checked losslessly before begin. Payload is flattened without a second kernel table, the host proves requested bytes against explicit allocation capacity and current memory, Rust repeats token/length/capacity checks, and the returned count cannot exceed the aggregate. Caller address zero is valid only when the complete caller-owned range fits; a zero-length entry performs no access | Exactly one lease and one scalar kernel write per logical vector. The large token moves Reserved→Executing before the scratch mutex is released across the host call, then Ready→cancelled on an ordinary result. Void ingress is queued in arrival order until the outer export and lease unwind; result-bearing reverse entry fails rather than fabricating a syscall errno. A host-import trap leaves the token Executing and fail-stops the worker rather than reusing uncertain bytes | Node/browser; guest wasm32/64; kernel wasm32/64 | **Confirmed live allocation overflow plus operation-boundary and offset defects.** Old fast admission omitted per-entry padding and could write 3,072 bytes past the 65,536-byte data area; the slow path split one vector and rounded `pwritev` offsets above `Number.MAX_SAFE_INTEGER` | **Safe in current source; execution not claimed here.** Coverage targets include exact/capacity+1, `IOV_MAX+1`, later-invalid nested range before begin, allocation failure, invalid reservation range, sequential/reentrant/trap paths, exact `2^53+1`, native one-operation tests, and a real 65,538-byte AF_UNIX datagram in Node and Chromium |
+| `host/src/kernel-worker.ts::{checkedProcessIovecs,copyFlattenedTransferOutput,handleReadv,executeMainScratchTransfer,executeReservedScratchTransfer}`; `crates/kernel/src/transfer.rs`; `crates/kernel/src/wasm_api.rs::kernel_transfer_io_execute` | At most 65,536 bytes use the main data allocation; larger vectors use one fresh token-bound Rust `Vec<u8>` with explicit capacity | Count 0..1,024; the complete aggregate must stay in the one-operation transfer/result domain | The complete native table and every caller destination are proved before begin. Rust receives one contiguous capacity-bounded destination; the host validates the producer count, then scatters only that prefix through checked caller capacities. EOF and short results complete the one operation without issuing another read. Exact positioned offsets remain `bigint` through dispatch | One main lease or one Reserved→Executing→Ready large token; output is published only while the matching lease is live. A retry retains no view; reentry and traps follow the same fail-closed rules as writes | Node/browser; guest wasm32/64; kernel wasm32/64 | **Confirmed live allocation overwrite plus operation-boundary and offset defects.** Old fast admission omitted 8,184 bytes of table footprint and lacked `IOV_MAX`; the slow path could combine a second blocking read after EOF/short result and rounded `preadv` offsets | **Safe in current source; execution not claimed here.** Coverage targets include full table/count/range boundaries, producer over-report, sequential/interleaved guards, exact `2^53+1`, native one-call/EOF/record tests, and the real cross-channel AF_UNIX datagram read |
+| `host/src/kernel-worker.ts::{handleLargeWrite,handleLargeRead,handleFlattenedTransfer,executeReservedScratchTransfer}`; `crates/kernel/src/transfer.rs` | One fresh Rust-owned tokenized allocation sized for the complete scalar request, not repeated main-scratch chunks | Complete caller range, bounded by the transfer result domain; begin fails with `ENOMEM` before publishing authority if reserve fails | Caller range is proved before begin; reservation exposes pointer plus actual capacity; the host checks allocation capacity and current memory; Rust rejects length above capacity; host and Rust both reject a returned count above the request | Exactly one scalar kernel operation. The mutex is not held across the host callback, but the Executing state excludes replacement. Normal return cancels and drops the allocation; trap fail-stops without cancel | Node/browser; guest/kernel wasm32/64 | **Confirmed caller-range weakness and semantic split.** The old implementation used safe-sized chunks but made one user operation into several kernel/host operations | **Safe in current source; execution not claimed here.** Coverage targets include the complete caller range, capacity/capacity+1, allocation failure, invalid range, and sequential/reentrant/trap behavior |
+| `host/src/kernel-worker.ts::{handleWritev,handleReadv,handleLargeWrite,handleLargeRead,handleSharedMappingsAfterFileSyscall}`; `crates/kernel/src/{process.rs,syscalls.rs,wasm_api.rs}`; `host/src/{kernel.ts,file-offset.ts,types.ts}` ordinary and large `pread`/`pwrite` families | Main or tokenized transfer allocation; the signed-i64 position is a scalar `bigint`; a Rust-lent read destination is staged in host memory before one checked publish | One complete scalar/vector operation; backend offset range is signed i64, while a number-only backend has an explicit exact-representation boundary | Offset words reconstruct directly to `bigint`; Rust calls required `host_pread`/`host_pwrite` imports rather than seek/read-or-write/restore; `PlatformIO` carries `number | bigint`; unsafe narrowing returns `EOVERFLOW`. Read producer counts and Rust-lent destinations are capacity-checked. Shared-mapping updates use the exact offset only when safely indexable, otherwise refresh from authoritative storage | One positioned backend operation does not mutate the shared OFD cursor. Staged read bytes do not lend a live kernel view to the backend; main/token lifetime rules remain unchanged | Node/browser; guest wasm32/64; kernel wasm32/64 | **Confirmed precision and atomicity defects adjacent to scratch dispatch.** Ordinary/large offsets rounded `2^53+1`, shared-map follow-up could alias a rounded page, and seek/restore raced shared OFDs and could fail to restore after I/O error | **Safe in current source; execution not claimed here.** Coverage targets include exact signed-i64 words above `2^53`, unchanged cursor, one host call, backend `EOVERFLOW`, wasm32/64 import ranges, and producer over-report |
+| `crates/kernel/src/syscalls.rs::{sys_write,validate_append_outcome,transfer_output_plan,stage_transfer_input,commit_staged_transfer_input}`; `host/src/kernel.ts::{#hostAppend,#hostAppendPosition}`; `host/src/vfs/{memory-fs,sharedfs-vendor,opfs,opfs-worker,host-fs,default-mounts-node}.ts`; `host/src/platform/node.ts` | Rust owns the regular-file OFD flag/cursor; each backing owns EOF and mutation. The import source is a Rust-lent, capacity-checked kernel range for one call, while the paired result is a scalar `{ written, end }` consumed through a one-shot latch | One complete scalar/vector write within the active main/tokenized transfer capacity; optional file-size ceiling is exact signed i64. Externally mutable native backings accept no append payload | Rust independently validates pointer/length, returned count, derived start/end, signed-i64 conversion, and the file-size ceiling. Shared memory holds EOF/limit/write under the inode lock; OPFS uses one serialized handler. A module-private identity brand is granted only to the lifecycle-owned Node scratch backing; externally mutable HostFS and raw Node backings return `EOPNOTSUPP` before mutation. For `sendfile`/`copy_file_range`/`splice`, regular input uses positioned read and a kernel pipe uses peek; only the append-reported prefix commits source state | The kernel export gate admits one result-bearing operation. The append-position latch is cleared before every attempt and bound to handle/count. A malformed outcome after possible mutation traps and poisons the generation. Two sequential/interleaved managed operations cannot replace each other's result; source staging owns no scratch view after return | Node/browser; guest wasm32/64; kernel wasm32/64 | **Confirmed adjacent ownership/atomicity defects.** Seek-to-end plus write did not return the authoritative ending position or combine `RLIMIT_FSIZE` with mutation. transfer wrappers could consume input before append rejected or clipped it | **Safe in current source; execution not claimed here.** Coverage targets include managed exact/limit/interleaving behavior, fail-closed malformed outcomes, prefix-only transfer commit on rejection/short/limit/stale-fstat cases |
+| `crates/kernel/src/wasm_api.rs::{channel_readv,channel_writev,channel_preadv,channel_pwritev,checked_kernel_iovec_entries}`; `libc/glue/{channel_syscall.c,syscall_glue.c,syscall_imports.h}`; `host/src/worker-main.ts::assertSupportedKernelFunctionImports` | Private channel helpers receive `ChannelScratchRegion { start, capacity }`; there is no host-callable bare vector pointer | Canonical channel allocation and generated `IOV_MAX`; current programs use `channel_syscall.c` | Table and every payload range are checked against the same allocation-bearing region. The four raw vector exports/declarations are absent from the source and ABI snapshot. Unknown `kernel.*` function imports fail before process instantiation; they are never replaced with zero-success stubs | Private synchronous channel dispatch only; no compatibility caller can overlap an unowned raw pointer | Node/browser; kernel wasm32/64; guest wasm32/64 through channel IPC | **Confirmed unprovable compatibility surface.** The removed signatures checked total kernel memory but carried no allocation capacity; historical direct glue passed process-memory native iovecs into a distinct kernel address space/layout | **Safe in current source; execution not claimed here.** Required targets are the static source/snapshot guard, callable-import admission tests, and declared-shell artifact scan |
+| `host/src/kernel-worker.ts::{checkedProcessMessage,nativeControlToKernelWire,kernelMessageLayout,handleSendmsg,#executeCapacityOwnedChannel}`; `crates/kernel/src/socket_wire.rs`; fixed `Kernel{Msghdr,Iovec,Cmsghdr}Wire` | The complete aligned canonical message uses main scratch when it fits 65,608 bytes and a fresh token-bound `TransferScratch` when larger. Both contain one 28-byte kernel header, optional name/control, zero or one eight-byte canonical iovec, and the flattened payload | Caller-native `msghdr` is generated as 28 bytes on wasm32 or 56 on wasm64; native iovec count is 0..generated `IOV_MAX` 1,024; aggregate payload is bounded by `MAX_REPORTABLE_TRANSFER_BYTES`, control conversion retains its explicit protocol bound, and the complete aligned allocation must fit `MAX_TRANSFER_ALLOCATION_BYTES` | Full native header/table and every nested source range are checked losslessly before reservation. Native `cmsghdr` records are validated and translated to the generated 12-byte-header/alignment-4 wire; all caller iovecs are flattened into one owned payload. The fixed path proves 65,608-byte capacity; the widened token path derives pointer/capacity in Rust. Rust revalidates the complete canonical ancillary stream and zero/one-iovec wire, and the returned count cannot exceed staged payload | One rigid stage → fixed/token execute → finish lease covers header/control/flatten/call. Only detached parsed metadata exists before it and no scratch view survives. On `EAGAIN`, `SendmsgBlockingRetrySnapshot` retains the checked message/layout plus detached name, control, and payload. Rust pins the carrier OFD and its frozen in-flight ancillary descriptor template; replay uses the same token even if the numeric fd is closed and reused | Node/browser; guest wasm32/64; kernel wasm32/64 | **Confirmed live allocation overflow plus mixed-width protocol defect.** Count/layout capacity was incomplete, only the first caller iovec reached Rust, and wasm64 ancillary headers were interpreted as wasm32 | **Synchronous transfer capacity and the represented `sendmsg` retry ownership are implemented in current source; exact-final-head static and runtime validation remain pending.** `IOV_MAX+1`, exact/capacity+1, fixed/widened selection, multi-iovec/zero-entry flattening, malformed control, invalid descriptors, sequential exclusion, wasm32/64 wire translation, immutable replay, and carrier close/reuse have focused coverage |
+| `host/src/kernel-worker.ts::{checkedProcessMessage,kernelControlCapacityForRecv,kernelControlToNative,kernelMessageLayout,handleRecvmsg,#executeCapacityOwnedChannel}`; `crates/kernel/src/wasm_api.rs::kernel_recvmsg` | The same canonical layout uses the fixed main allocation when its aligned total fits and one token-bound `TransferScratch` otherwise; caller name, native control, and every native iovec destination retain separate checked process-memory capacities | Native header 28/56; count 0..1,024; aggregate destination capacity is bounded by `MAX_REPORTABLE_TRANSFER_BYTES`; canonical ancillary capacity is derived from what the caller-native control layout can represent; the complete aligned allocation must fit `MAX_TRANSFER_ALLOCATION_BYTES` | Complete caller table/destination ranges are proved before reservation. The fixed or token-owned region holds one contiguous receive payload plus name/control. Returned wire length, alignment, type, descriptor width, and producer byte count are validated before expansion; the host detaches and scatters only the bounded prefix across all caller iovecs. `MSG_TRUNC` may report the full datagram while only that prefix is copied | One rigid stage → fixed/token execute → finish lease snapshots all output, and caller publication uses detached arrays after release. Error paths publish nothing. On `EAGAIN`, `RecvmsgBlockingRetrySnapshot` retains the checked native header, iovec/name/control destinations, canonical layout, flags, and capacities. Rust pins the exact carrier OFD. Replay never reparses a replacement msghdr or numeric fd, and detached output publishes only to the originally validated destinations | Node/browser; guest wasm32/64; kernel wasm32/64 | **Confirmed live allocation overwrite plus mixed-width/first-iovec defects.** Complete count/footprint was unproven, only one destination received bytes, and wasm64 `cmsghdr` capacity could install descriptors that could not be represented on copy-back | **Synchronous transfer capacity and the represented `recvmsg` retry ownership are implemented in current source; exact-final-head static and runtime validation remain pending.** Exact/capacity+1, fixed/widened selection, multi-iovec scatter with a zero middle entry, EAGAIN/no-publish, malformed output, `MSG_CTRUNC`, flags, padding, wasm32/64 matrices, immutable destination replay, and carrier close/reuse have focused coverage |
+| `host/src/kernel-worker.ts::{handleSpawn,decodeSpawnBlobStrings,handleSpawnAfterResolve,beginLargeSpawnScratch,cancelLargeSpawnScratch}`; `crates/kernel/src/spawn.rs::{SpawnScratchBuffer,measure_strings_by_offset,decode_measured_strings}`; `crates/kernel/src/wasm_api.rs::kernel_spawn_reserved_process` | Ordinary blob uses main allocation; large blob uses token-bound Rust `Vec<u8>` whose pointer and actual capacity are returned only while reserved | Complete blob at most generated 8,417,320; argv/environment representation at most 4 MiB; path/action/count caps from generated contracts | Caller ranges, parsed counts, paths, complete blob length, allocation capacity, current memory, pointer width, token, and reservation state are independent checks. Host and Rust first measure every referenced string against one aggregate budget, then allocate/decode | Async lookup owns a JS copy; begin/copy/commit have no await. Begin and pointer/capacity queries fail without waiting on contention. After every successful begin, cancellation runs in `finally`, including setup/copy failure. Commit and cancellation wait on the same no-host-import mutex and return only after the token is consumed, released, or shown stale; host/Rust guards reject overlap. Duplicate maximum-count offsets cannot amplify allocations before rejection | Node/browser; guest/kernel wasm32/64 | #1094 spawn fix was capacity-safe but retained a fixed 8,417,320-byte region after first large use; decoding still admitted allocation amplification from duplicate offsets | **Safe in current source; execution and sizing measurements are not claimed here.** Coverage targets include the growable Rust-owned reservation, pre-allocation aggregate accounting, and exact-count/`ARG_MAX` boundaries |
+| `host/src/kernel-worker.ts::{runSharedMappingHostOperation,populateMmapFromFile,pwriteFromProcessMemory,readSysvShmRange,writeSysvShmRange}`; `KernelEntryGate::{runSerializedHostOperation,KernelVoidIngressScope.invokeSerializedHostOperation}` | Main data allocation for transit, 65,536 bytes per chunk; mapped/shared bytes have separate owners | One `CH_DATA_SIZE` chunk; overall mapping/segment size comes from checked mapping/kernel state | Complete process/mapping range and each Rust producer/consumer count; transit lease separately proves scratch capacity/current memory. Each synchronous backing read/write holds either the exact active entry's host-operation marker or the gate-owned host-only marker; it returns no Promise/thenable or retained backend view | One synchronous lease per chunk; authoritative shared bytes/snapshots live outside scratch. Reentrant void ingress queues, result-bearing ingress and a second host operation reject, and host-only teardown can run only while the gate is otherwise idle | Node/browser; guest/kernel wasm32/64 | **Confirmed ownership/overlap gap.** Capacity fit, but a bare scratch pointer and an unscoped synchronous backend callback could overlap or reenter the operation that was validating and committing its staged result | **Safe in current source; exact-final-head validation pending.** Allocation-bearing transit plus scoped/host-only serialization is covered by gate tests and shared-mapping inheritance regressions, including a hostile synchronous backend callback |
 | `host/src/kernel-worker.ts::{handleIpcShmat,handleIpcShmdt}` | Process `Memory` mapping and host `SysvShmMapping.snapshot`, not kernel scratch; address key is the checked native guest pointer | Segment size returned by the kernel attachment operation; full mapped range must fit process memory | Raw bigint address is checked losslessly for guest width before attachment/map lookup; mmap result and full mapped range are checked; failure rolls back attachment; shmdt uses the exact checked key | Coherence/attach/detach steps are synchronous; snapshot owns bytes between boundaries; no kernel scratch view is retained | Node/browser; guest wasm32/64 | **Confirmed high-address alias defect.** `>>> 0` narrowed wasm64 hints/detach keys so an address above 4 GiB could alias a low mapping | **Implemented; validation pending.** High hint, unsafe integer, and non-aliasing detach regressions |
-| `host/src/kernel-worker.ts::handleSysvMessage`; `crates/kernel/src/ipc_wire.rs` System V message header conversion | Main data allocation; fixed kernel wire header plus payload; caller message begins with native `long` (4 wasm32, 8 wasm64) | Payload is syscall `msgsz`; header plus payload must fit 65,536 for one operation | Exact native mtype field and payload range; checked addition; width passed explicitly; Rust sees fixed wire format only | One synchronous lease; blocking retry retains owned parameters, not a scratch view | Node/browser; guest wasm32/64 | **Unsafe mixed-width/native-long and aggregate-capacity contract** | **Implemented; validation pending.** Exact capacity/capacity+1 and wasm32/64 mtype coverage |
+| `host/src/kernel-worker.ts::handleSysvMessage`; `crates/shared/src/lib.rs::platform_limits::SYSV_MSG_MAX_BYTES`; `crates/kernel/src/{blocked_retry.rs,ipc.rs,ipc_wire.rs}` | The fixed main data allocation holds one generated eight-byte kernel mtype header plus payload; caller storage begins with a native four-byte wasm32 or eight-byte wasm64 `long`. The generated 8,192-byte payload ceiling keeps the complete canonical record below fixed capacity, so this path deliberately does not reserve widened transfer scratch | At most generated `SYSV_MSG_MAX_BYTES` (8,192) of message text. A larger send is `EINVAL`; receive may advertise a larger caller capacity, but no dequeued payload can exceed the queue contract | The host proves native prefix plus requested caller range and checked header addition before staging; Rust accepts only the shared payload maximum, converts through the fixed i64 wire, and fallibly reserves payload/deque storage before queue mutation. On `MSG_NOERROR`, byte accounting releases the complete dequeued message even when only a prefix is copied | One synchronous fixed-region lease and detached output. On `EAGAIN`, `SysvMessageBlockingRetrySnapshot` retains caller width, original destination, message size and flags, detached send input/native type, or receive type selector. Rust pins the exact System V message queue. Replay uses the snapshot/token rather than reparsing msgbuf or resolving a reused qid | Node/browser; guest wasm32/64; kernel wasm32/64 | **Unsafe mixed-width/native-long and aggregate-capacity contract.** The old path also had no explicit cross-layer message ceiling or allocation-failure atomicity | **Synchronous fixed-capacity transfer and represented System V message retry ownership are implemented in current source; exact-final-head validation remains pending.** Exact 8,192/8,193, wasm32/64 native mtype, allocation failure before mutation, `MSG_NOERROR` truncation, full-byte queue accounting, immutable replay, and qid close/remove-reuse behavior have focused coverage |
 | `host/src/kernel-worker.ts::handleIpcControl`; `crates/kernel/src/wasm_api.rs::{kernel_msqid_ds_bytes,kernel_shmid_ds_bytes}`; `crates/kernel/src/ipc_wire.rs::{read_*,write_*}` | Main data allocation; `msqid_ds` 96/120 and `shmid_ds` 88/112 for wasm32/64 | Exact layout size returned by required Rust query for `IPC_SET`/`IPC_STAT`; pointerless commands stage zero bytes | Width query, command direction, full caller range, allocation capacity, exact Rust slice, and narrowing checks; no fixed fallback | One synchronous lease; outputs serialize completely before copy-back | Node/browser; guest wasm32/64 independent of kernel width | **Confirmed unsafe mixed-width contract.** Fixed wasm32 descriptors proved/staged the wrong LP64 ranges | **Implemented; validation pending.** Exact/short/null/unsupported-width tests |
 | `host/src/kernel-worker.ts::handleSemctl`; `crates/kernel/src/wasm_api.rs::{kernel_semid_ds_bytes,kernel_semctl_array_bytes}`; `crates/kernel/src/ipc_wire.rs::write_semid_ds` | Main data allocation; `semid_ds` 72/88 or exact `2 * sem_nsems` array bytes | Rust permission-aware query is authoritative for GETALL/SETALL; structure query is authoritative for IPC commands | PID/TID, command kind, guest width, exact length, caller range, allocation capacity, and Rust slice bounds; missing/invalid required query fails closed | One synchronous lease; no `IPC_STAT` compatibility call is used to infer writable array capacity | Node/browser; guest wasm32/64 | **Confirmed unsafe.** Host assumed 1,024 array bytes and wasm32-only 72-byte structure | **Implemented; validation pending.** Exact/capacity+1, permissions, and missing-export regressions |
-| `host/src/kernel-worker.ts::requireTcpScratchRegion` users: TCP, virtual network, UDP, browser-pipe bridges | Separate Rust allocation; private `tcpScratchRegion`, 65,536 bytes | One chunk at most 65,536; oversized UDP datagrams are rejected | Source/backend length, region capacity/current memory, and Rust producer count | Each callback/worker message enters one synchronous lease and detaches output before returning | Node/browser; kernel wasm32/64 | Sizes fit, but pointer escaped ownership value | **Implemented; validation pending.** Private capacity-bearing region |
-| `host/src/kernel.ts` public socket/poll/terminal/ioctl/uname/pipe/rusage/select methods | Separate Rust allocation; private `apiScratchRegion`, 65,536 bytes | Call-specific exact fixed record or bounded payload; public poll accepts exactly `capacity / generated sizeof(pollfd)` = 8,192 entries and select uses generated 1,024-bit sets | Lease proves allocation and current memory; call validates the complete caller/result length and derives aggregate limits from the actual owned capacity rather than an unrelated protocol count | One synchronous public call; nested use fails | Node/browser; kernel wasm32/64 | **Confirmed unsafe ownership and artificial poll cap.** Temporary addresses 4 and 16 named no Rust allocation, while public poll reused `IOV_MAX` instead of its allocation capacity | **Implemented; focused Node validation passed.** Allocator-owned public scratch, poll exact-capacity/capacity+1, and generated select layout |
-| `host/src/kernel.ts::{hostRead,readKernelBytes,writeKernelBytes}` and VFS (`stat`, `statfs`, `pathconf`, `readlink`, `readdir`), clock, random, waitpid, network/getaddrinfo, GL, proc, and KMS import callers | Rust-owned slice/local/struct lent as pointer plus explicit capacity for one import; `host_kms_mode_info` instead derives its exact 68-byte capacity from generated `WpkDrmModeModeinfo`; producer backends receive host-owned staging buffers rather than a live kernel view | Genuine intrinsic backend span no larger than the Rust-supplied or generated capacity; fixed formats use their exact generated/Rust size | Raw signed wasm32 or bigint wasm64 import pointer is normalized losslessly; nonnegative safe length, complete current-memory range, detached/staged producer data, and producer count precede one `writeKernelBytes` publish; no typed-array clamping or subclass getter counts as validation | Synchronous import only; neither backend nor callback receives a kernel-memory view | Node/browser; kernel wasm32/64 | Correct owner but incomplete conversions/result checks and live-view lending | **Implemented; validation pending.** Checked Rust-lent range plus host staging; high-bit wasm32 KMS and hostile-producer regressions; raw sink is explicitly allowlisted below |
-| `apps/browser-demos/test/fixtures/opfs-advisory-lock-client-worker.ts::issue`; `apps/browser-demos/test/epoll-repro.ts::main` | Test kernel allocations represented as `KernelScratchRegion`; one complete channel | Fixed diagnostic channel and event records | Same lease capacity/current-memory rules as production | One lease covers stage/dispatch/snapshot | OPFS: real Chromium wasm32; epoll diagnostic: Node wasm32 | Sizes fit, bare diagnostic pointers/views | **Implemented; the historical authored-application Chromium run was blocked.** An earlier pre-final OPFS run passed, and the static contract includes both selected diagnostic sources. That broader historical run stopped before assertions because its program graph rejected an ABI-42 `bzip2.wasm`; it does not conflict with or count toward the later 28 focused minimal-runner Chromium passes |
-| `host/src/{node,browser}-kernel-worker-entry.ts` clone/transport; process-worker argv/environment | Process `Memory`, `ArrayBuffer`, or `SharedArrayBuffer`, not kernel scratch | Process layout/worker-protocol limits | Process-owner and transport-specific validation | Worker/process lifetime, not a scratch lease | Node/browser; guest wasm32/64 | Outside allocator model | **Reviewed exclusion; final transport tests pending** |
-| `host/src/framebuffer/**`; `host/src/dri/**`; GL command buffers; mmap/SysV backing views | Framebuffer/process memory or explicit host shared backing, never a pointer returned by `kernel_alloc_scratch` | Mapping/device-specific dimensions and buffer sizes | Subsystem owner/range contracts; static ownership seeds prevent reclassification as kernel scratch | Device/mapping lifetime; may be asynchronous by design, so no allocator-scratch view may enter these objects | Node/browser; guest wasm32/64 | Outside allocator model | **Reviewed exclusion, not declared globally safe.** Static contract covers ownership boundaries; subsystem-specific runtime validation remains required |
+| `host/src/kernel-worker.ts::#requireTcpScratchRegion` data paths | Separate Rust allocation; runtime-private `#tcpScratchRegion`, 65,536 bytes | One producer-checked chunk at most 65,536 bytes | Source/backend length, region capacity/current memory, and Rust producer count | Each callback/worker message enters one synchronous lease and detaches output before returning | Node/browser; kernel wasm32/64 | Sizes fit, but pointer escaped ownership value | **Implemented; validation pending.** Runtime-private capacity-bearing region |
+| `host/src/kernel.ts` public socket/poll/terminal/ioctl/uname/pipe/rusage/select methods | Separate Rust allocation; runtime-private `#apiScratchRegion`, 65,536 bytes | Call-specific exact fixed record or bounded payload; public poll accepts exactly `capacity / generated sizeof(pollfd)` = 8,192 entries and select uses generated 1,024-bit sets | Lease proves allocation and current memory; call validates the complete caller/result length and derives aggregate limits from the actual owned capacity rather than an unrelated protocol count | One synchronous public call; nested use fails | Node/browser; kernel wasm32/64 | **Confirmed unsafe ownership and artificial poll cap.** Temporary addresses 4 and 16 named no Rust allocation, while public poll reused `IOV_MAX` instead of its allocation capacity | **Safe in current source; execution not claimed here.** Allocator-owned public scratch, poll exact-capacity/capacity+1, generated select layout, and no reflective region access |
+| `host/src/kernel.ts::WasmPosixKernel.setsockopt`; `host/src/kernel-scratch.ts::{KERNEL_SCRATCH_EXPORT_NAMES,kernelScratchRequiredPointerArguments}`; `crates/kernel/src/wasm_api.rs::kernel_setsockopt` | The runtime-private allocator-owned API region; the lease lends an exact four-byte subrange and its derived wasm32/wasm64 pointer | Exactly one JavaScript scalar option value encoded as little-endian `u32` | The lease writes only the four-byte allocation subrange, proves current-memory bounds and pointer width, and invokes the existing five-argument export with `{ optval_ptr, optlen: 4 }`. The scratch contract classifies argument 3 as required, while the compiler audit defaults every generated kernel export to denied even if it is absent from the narrower runtime scratch list | One synchronous lease and one Rust call; nested public scratch use rejects and no pointer/view escapes | Node/browser shared wrapper; kernel wasm32/64 | **Confirmed live ownership/signature defect found by the widened audit.** The direct public wrapper passed only four arguments, treated the scalar `value` as `optval_ptr`, omitted `optlen`, and was absent from the scratch export list; rejection therefore occurred only after unowned address authority crossed the boundary | **Safe in current source; exact-head execution not claimed here.** Focused wasm32/wasm64 coverage targets the exact pointer type, four staged bytes, low-memory and post-capacity canaries, five-argument call, and generated-export default-deny regression |
+| `host/src/kernel.ts::{#hostRead,#readKernelBytes,#writeKernelBytes}` and VFS (`stat`, `statfs`, `pathconf`, `readlink`, `readdir`), clock, random, waitpid, network/getaddrinfo, GL, proc, and KMS import callers | Rust-owned slice/local/struct lent as pointer plus explicit capacity for one import; `host_kms_mode_info` instead derives its exact 68-byte capacity from generated `WpkDrmModeModeinfo`; producer backends receive host-owned staging buffers rather than a live kernel view | Genuine intrinsic backend span no larger than the Rust-supplied or generated capacity; fixed formats use their exact generated/Rust size | Raw signed wasm32 or bigint wasm64 import pointer is normalized losslessly; nonnegative safe length, complete current-memory range, detached/staged producer data, and producer count precede one `#writeKernelBytes` publish; no typed-array clamping or subclass getter counts as validation | Synchronous import only; neither backend nor callback receives a kernel-memory view | Node/browser; kernel wasm32/64 | Correct owner but incomplete conversions/result checks and live-view lending | **Implemented; validation pending.** Checked Rust-lent range plus host staging; high-bit wasm32 KMS and hostile-producer regressions; raw sink is explicitly allowlisted below |
+| `apps/browser-demos/test/fixtures/opfs-advisory-lock-client-worker.ts::issue`; `apps/browser-demos/test/epoll-repro.ts::main` | Test kernel allocations represented as `KernelScratchRegion`; one complete channel | Fixed diagnostic channel and event records | Same lease capacity/current-memory rules as production | One lease covers stage/dispatch/snapshot | OPFS: real Chromium wasm32; epoll diagnostic: Node wasm32 | Sizes fit, bare diagnostic pointers/views | **Safe in current source; browser execution is not claimed here.** The static contract includes both selected diagnostic sources; their exact-head runtime checks remain external validation targets |
+| `host/src/process-memory.ts::createProcessMemory`; `host/src/{node,browser}-kernel-worker-entry.ts` clone/transport; process-worker argv/environment | Each process owns its own `WebAssembly.Memory`; worker transport owns detached `ArrayBuffer`/`SharedArrayBuffer` values. None is the kernel `Memory` or a pointer returned by `kernel_alloc_scratch` | Process layout, guest address-space, and worker-protocol limits | Guest-width range checks and transport-specific validation; the static audit seeds these exact constructors/messages as `process-memory`, never as allocator scratch | Process/worker generation lifetime; asynchronous transport may retain its own detached/shared process backing but no kernel-scratch view | Node/browser; guest wasm32/64 | Outside allocator model | **Reviewed process-memory exclusion; final transport tests pending.** Its separate owner is explicit rather than hidden under a generic raw-memory allowance |
+| `host/src/framebuffer/registry.ts::{FramebufferRegistry,FbBinding.hostBuffer}` and browser framebuffer binding/rebinding messages | An mmap framebuffer view belongs to one process `Memory`; a write-based framebuffer owns a host `ArrayBuffer`/`Uint8ClampedArray` sized from checked geometry. Neither backing is kernel scratch | Binding `addr/len` or `height * stride`, plus framebuffer/device format limits | Registry binding and process-range/geometry checks select the exact backing; memory growth invalidates cached process views. Static seeds classify only these exact values as `framebuffer` | Mapping/binding lifetime and renderer callbacks may be asynchronous. Cached views are dropped on grow/unbind/teardown, and no allocator-scratch lease enters the registry | Browser presentation plus shared Node/browser host code; guest wasm32/64 | Outside allocator model | **Reviewed framebuffer exclusion, not a scratch-safety claim.** Framebuffer runtime and teardown coverage remains subsystem-specific |
+| `host/src/dri/registry.ts::{GbmBoRegistry,InternalEntry.sab}` and DRI/GBM bind/unbind synchronization | Each buffer object owns an explicit host `SharedArrayBuffer`; per-process mmap ranges belong to their respective process memories | Kernel-reported buffer-object size and each checked binding `addr/len` | The registry validates object/binding identity and copies only between the buffer object's canonical SAB and checked process ranges. Static seeds classify the SAB separately from both kernel and process memory | Buffer-object reference/binding lifetime; synchronization occurs at bind/unbind boundaries and may span processes, but never retains allocator scratch | Node/browser shared host path; guest wasm32/64 | Outside allocator model | **Reviewed explicit shared-backing exclusion.** Coherence is the DRI registry's snapshot contract, not a kernel-scratch lease |
+| `host/src/kernel-worker.ts::{populateMmapFromFile,pwriteFromProcessMemory,readSysvShmRange,writeSysvShmRange}` mapped-file and System V shared-memory backings | Authoritative VFS storage, process mappings, and `SysvShmMapping.snapshot`/shared backing own the durable bytes; main scratch is only the separately inventoried 65,536-byte transit chunk | Checked mapping/segment size, processed in bounded transit chunks | Mapping/process ranges and backing lengths are proved independently; each transit chunk uses its own main-scratch lease under the serialized host-operation contract | Backing/mapping lifetime may outlive a transit call. No scratch view survives a chunk or becomes the authoritative mapped/shared state | Node/browser; guest/kernel wasm32/64 | Outside allocator model except for the already reviewed transit lease | **Reviewed mapped/shared-backing exclusion.** Ownership is explicit; mapping coherence and serialization retain their own runtime validation |
 
 ## Explicit write sinks and raw-write allowlist
 
@@ -292,7 +484,7 @@ following sinks. `KernelScratchDataView` is a guarded part of the abstraction,
 not an allowance for a caller-created native `DataView`.
 `KernelScratchLease.copyFrom` and `fill` are likewise abstraction-internal
 guarded sinks. The only raw variable-size kernel-memory write outside that
-abstraction is `WasmPosixKernel.writeKernelBytes`, whose pointer and capacity
+abstraction is `WasmPosixKernel.#writeKernelBytes`, whose pointer and capacity
 are lent by Rust for one synchronous host import. All variable-size
 allocator-owned syscall staging must call `KernelScratchLease`. The other
 allowlisted occurrences in `host/test/kernel-scratch-contract.test.ts` are
@@ -305,7 +497,7 @@ authorizes a call-site raw write.
 | `host/src/kernel-scratch.ts::KernelScratchDataView::{setBigInt64,setBigUint64,setFloat32,setFloat64,setInt8,setInt16,setInt32,setUint8,setUint16,setUint32}` | The native `DataView` is private and spans only the range proved by `KernelScratchLease.dataView`; a `Memory.buffer` replacement triggers the full proof again | Native `DataView` bounds-checks each scalar width and offset inside that exact range | Every setter calls `currentView`, which rechecks the active lease; **guarded scratch-core sink, not a raw allowance** |
 | `host/src/kernel-scratch.ts::KernelScratchLease.copyFrom` — `Uint8Array(...).set(...)` | `ownedRange` proves the private region pointer, explicit allocation capacity, pointer width, and current `Memory.buffer` range | Source offset/length are safe integers and fit the source's intrinsic typed-array slots; the exact native base-class view prevents a subclass override from widening the write | Synchronous active lease only; **guarded scratch-core sink, not a raw allowance** |
 | `host/src/kernel-scratch.ts::KernelScratchLease.fill` — `Uint8Array(...).fill(...)` | `ownedRange` supplies exact checked start/end inside the allocation and current memory | Fill length/value validation occurs before construction | Synchronous active lease only; **guarded scratch-core sink, not a raw allowance** |
-| `host/src/kernel.ts::WasmPosixKernel.writeKernelBytes` — `getMemoryBuffer().set(...)` | `checkedWasmImportMemoryRange` normalizes the raw import pointer and proves the Rust-lent pointer, explicit/generated capacity, width, and current memory | The producer's intrinsic byte span must not exceed the supplied capacity; a typed-array subclass cannot under-report its real span | Complete synchronous import; **Rust-lent allowance** |
+| `host/src/kernel.ts::WasmPosixKernel.#writeKernelBytes` — intrinsic `Uint8Array.prototype.set` on `#getMemoryBuffer()` | `checkedWasmImportMemoryRange` normalizes the raw import pointer and proves the Rust-lent pointer, explicit/generated capacity, width, and current memory | The producer's intrinsic byte span must not exceed the supplied capacity; a typed-array subclass cannot under-report its real span | Complete synchronous import; the method and memory getter are runtime-private; **Rust-lent allowance** |
 
 ## Executable reproductions and regression coverage
 
@@ -320,11 +512,13 @@ claim a separate old-head test execution.
 | Confirmed old path and executable regression | Exact unsafe evidence on `6d923c6` | Current boundary asserted |
 |---|---|---|
 | `kernel_wait_child_poll` result pointer/capacity and child-state consumption | The ABI-42 export accepted only a bare output pointer, so the interface could not prove that the destination owned the complete 160-byte `KernelWaitResult` before selecting the sole waitable child event | The real compiled kernel rejects pointer zero and capacities 159/161 without changing either canary or consuming the event. Exact capacity 160 publishes the complete result and reaps the child, and the next exact-capacity call returns `ECHILD` |
-| `WasmPosixKernel` cached public/audio scratch across `init`/`initWithMemory` replacement | The wrapper cached allocator-owned regions containing the first generation's instance, memory, pointer, and capacity, but a later initializer replaced only the wrapper's current instance/memory. Subsequent public/audio calls could select the old region and old snapshotted export while other wrapper state named the replacement generation; a failed second instantiate could also leave new memory paired with the old instance | `kernel-initialization-lifetime.test.ts` allocates and uses both cached regions on wasm32 and wasm64, rejects cross-entry-point reinitialization before compile/instantiate or state mutation, proves the original generation still works, rejects a concurrent initializer, and proves a failed first attempt clears partial state before one clean retry |
+| `WasmPosixKernel` cached public/audio scratch across a second `init` | The wrapper cached allocator-owned regions containing the first generation's instance, memory, pointer, and capacity, but a later initializer could replace only the wrapper's current instance/memory. Subsequent public/audio calls could select the old region and old snapshotted export while other wrapper state named the replacement generation; a failed second instantiate could also leave new memory paired with the old instance | `kernel-initialization-lifetime.test.ts` allocates and uses both cached regions on wasm32 and wasm64, rejects concurrent and post-success reinitialization before compile/instantiate or state mutation, proves the original generation still works, and proves a failed first attempt clears partial state before one clean retry |
+| Public `WasmPosixKernel.setsockopt` scalar option | The old wrapper called `kernel_setsockopt(fd, level, optname, value)` directly. Rust's actual fifth-argument signature expected `{ optval_ptr, optlen }`, so an ordinary scalar became an unowned kernel pointer and no capacity crossed the boundary. Omitting this export from the hand-reviewed scratch list also exposed the prior static classification gap | `kernel-public-scratch.test.ts` targets wasm32 and wasm64, requires the pointer type appropriate to the kernel width, observes exactly four staged little-endian bytes, requires `optlen == 4`, and preserves both low-memory and post-allocation canaries. The audit mutation fixture proves a generated `kernel_setsockopt` direct call remains denied even when the scratch list omits it |
+| Channel `request_flags` capture and reuse | Before generated request flags, the host saw only `syscall_nr`; a plain call and cancellation-point call using the same number were indistinguishable, and a reused mailbox carried no authoritative call-site identity | wasm32/wasm64 fixtures publish zero, cancellation-point, and cancellation-point-plus-wake values for one number; they verify one-shot capture and clearing, reject unknown or inconsistent bits, retain the same detached flags through retry, and prove sequential mailbox reuse cannot inherit them |
 | `ptyMasterWrite` — “chunks PTY input at the exact scratch capacity and capacity + 1” | The old single `.set(data, scratchOffset)` accepts more than the 65,608-byte allocation because only total linear memory constrains the typed-array write | 65,608 is one call; 65,609 becomes calls of 65,608 and 1; 16 KiB sentinel after the allocation is unchanged |
 | `setCwd` — “rejects an oversized initial cwd before copying it” | `CH_TOTAL_SIZE + 1` encoded bytes are copied first; only the later Rust call applies `PATH_MAX` | Host rejects before `kernel_set_cwd` and before scratch mutation |
-| `handleWritev` — “accounts for every writev table and alignment byte” | 1,024 iovecs contain 57,344 payload bytes, so the old `57,344 + 8,192 == 65,536` admission passes. Per-entry four-byte alignment makes the real footprint 68,608, writing 3,072 bytes beyond the data allocation | Complete `8 * count + Σ align4(len)` footprint is rejected or chunked; tail sentinel stays intact |
-| `handleReadv` — “subtracts the complete readv iovec table from data capacity” | 1,024 entries request 65,528 data bytes. The old fast limit subtracts only one eight-byte entry, while the actual table is 8,192 bytes; the footprint is 73,720, or 8,184 bytes beyond the 65,536-byte data allocation | Complete table is included, `IOV_MAX` is enforced, returned bytes are bounded, sentinel is unchanged |
+| `handleWritev` — “accounts for every writev table and alignment byte” | 1,024 iovecs contain 57,344 payload bytes, so the old `57,344 + 8,192 == 65,536` admission passes. Per-entry four-byte alignment makes the real footprint 68,608, writing 3,072 bytes beyond the data allocation | The caller table and all nested ranges are validated, but no second kernel table is constructed. Exactly 57,344 flattened bytes use the main data region in one write; the tail sentinel stays intact |
+| `handleReadv` — “subtracts the complete readv iovec table from data capacity” | 1,024 entries request 65,528 data bytes. The old fast limit subtracts only one eight-byte entry, while the actual table is 8,192 bytes; the footprint is 73,720, or 8,184 bytes beyond the 65,536-byte data allocation | `IOV_MAX` and every destination are checked before dispatch; one 65,528-byte flat read is scattered through the caller capacities and the tail sentinel is unchanged. A larger aggregate uses one tokenized allocation rather than a partial table/data fit |
 | `handleSendmsg` / `handleRecvmsg` — `IOV_MAX + 1` cases | The old path calls Rust instead of rejecting count 1,025 with `EINVAL` | Count 1,025 is rejected before scratch mutation or Rust dispatch |
 | `handleSendmsg` / `handleRecvmsg` — complete-layout boundary and historical allocation-sized table cases | Count 8,192 alone consumes 65,536 kernel-table bytes, but the old path also writes the 28-byte kernel message header and aligned optional/data sections. That historical count is above `IOV_MAX`, so current code rejects it at the count check rather than exercising the capacity boundary | One 65,500-byte iovec makes the complete header/table/data layout exactly 65,536 bytes and is accepted; 65,501 is rejected before dispatch. Exactly 1,024 zero-length entries are accepted, while the historical 8,192-entry case is rejected by `IOV_MAX`; the sentinel stays unchanged |
 | `handleSendmsg` / `handleRecvmsg` multi-iovec behavior | The old kernel-facing path serialized the caller's full count but Rust read only the first table entry, so later payload sources/destinations were silently ignored even when all ranges fit | wasm32 and wasm64 send flatten every entry in order; receive scatters the detached result across every entry, including correctly skipping a zero-length middle entry |
@@ -333,36 +527,32 @@ claim a separate old-head test execution.
 | Kernel channel C-string allocation boundary | The old Rust scanner accepted a bare kernel pointer, stopped at a duplicated 4,096-byte constant, and did not carry the channel allocation capacity that authorized each dereference | Pointer zero, before-start, exact-end, overflow, and a missing NUL before the allocation end return `EFAULT`; a NUL in the last owned byte succeeds, and a generic non-path string larger than `PATH_MAX` remains valid |
 | Positive-count null dynamic buffers and zero-count null buffers | The old generic host path did not make a positive `Arg` extent independently imply a non-null source/destination, while a raw zero-count process pointer could cross address spaces even though no caller bytes were borrowed | wasm32 and wasm64 `read`/`write` with count 1 and pointer 0 fail with `EFAULT` before dispatch. Count 0 with pointer 0 reaches Rust only as the allocation start with zero extent, never as the caller address |
 | Positive-size fixed output nullability (`pipe(NULL)` and `uname(NULL)`) | Absence of `required` metadata was interpreted as permission for null, so fixed outputs could reach Rust without an owned destination and write through kernel address zero | Every generated pointer descriptor is exactly one of required or nullable; the reviewed nullable set is asserted exactly. wasm32 and wasm64 `pipe`/`uname` null outputs fail before kernel dispatch |
-| Non-null `Deref` outer buffer with a null length pointer | `accept`, `accept4`, `recvfrom`, `getsockname`, and `getpeername` derive output capacity from a separate `socklen_t *`. The old host could leave the non-null caller outer pointer in adjusted kernel args when that capacity pointer was null, crossing address spaces before later rejection | wasm32 and wasm64 `recvfrom` reject the malformed pair before scratch mutation or dispatch; the same shared planner covers every `Deref` descriptor |
+| Non-null `Deref` outer buffer with a null length pointer | `accept`, `accept4`, `recvfrom`, `getsockname`, and `getpeername` derive output capacity from a separate `socklen_t *`. The old host could leave the non-null caller outer pointer in adjusted kernel args when that capacity pointer was null, crossing address spaces before later rejection | wasm32 and wasm64 `accept`, `accept4`, and `recvfrom` reject the malformed optional pair before scratch mutation or dispatch; the same shared planner covers every `Deref` descriptor |
+| Absent versus zero-capacity optional socket-address output | The descriptor planner staged and later copied an `accept`/`accept4`/`recvfrom` length pointer even when the address pointer was null, although POSIX makes that field ignored. Nested `recvmsg` likewise collapsed absent `msg_name` and a supplied zero-capacity name into the same null kernel pointer, so it could overwrite an ignored native `msg_namelen` or fail to report the complete length for a present zero-capacity result | The generic nullable-`Deref` planner now canonicalizes an absent outer/length pair before any caller-memory read, while non-null output still requires its length. The canonical message wire represents a present zero-capacity name with the next allocation-owned cursor and represents absence with null; Rust and the host publish the complete length only for the former. wasm32/wasm64 regressions cover valid, out-of-range, negative, and unsafe-high-bit ignored length pointers, stale absent send/receive name lengths, present zero capacity, unchanged canaries, and both fixed socket descriptor forms |
 | One-snapshot, order-independent `Deref` planning | The old planner could size a destination from one `socklen_t` read and stage a later, mutated value; it also depended on the generated dynamic descriptor preceding the fixed length descriptor. A larger staged value could authorize Rust to use bytes the host had not reserved | The regressions mutate 4 to 28 between hypothetical reads and reverse the generated `recvfrom` descriptor order. The host performs one caller-memory read, stages that same value, and leaves the adjacent canary unchanged. Rust validates allocation order/range, with the documented alignment-bucket limitation because no separate unpadded capacity is encoded |
 | Option-sensitive `prctl` argument 1 | The generic descriptor treated argument 1 as a fixed 16-byte pointer for every option, so scalar operations such as `PR_SET_NO_NEW_PRIVS` had their value replaced by a scratch address | wasm32/wasm64 scalar options preserve the canonical low-32-bit value and stage no buffer; `PR_SET_NAME`/`PR_GET_NAME` stage exactly 16 bytes in the correct direction and reject null before dispatch |
-| `SCM_RIGHTS` stream carrier position and `MSG_WAITALL` | The old side queue could return a descriptor before the byte with which it was sent, and a wait-all read could cross more than one rights boundary | The real-musl fixture queues `A`, rights with `B`, then `C`; a nonblocking wait-all receive returns exactly `AB` with the descriptor, and the next receive returns `C` |
-| `SCM_RIGHTS` stream `MSG_PEEK` with short control | The old PEEK path removed the sole retained descriptor ownership even though it left stream bytes queued | A no-control peek and a `CMSG_LEN(0)` peek report no installed fd/`MSG_CTRUNC` as appropriate; two full peeks and the final consume all see a valid descriptor without sender ownership |
-| Addressed and connected AF_UNIX datagram rights | Datagram queue entries previously dropped control ownership, and non-Unix destinations could reach partial data publication | Abstract-address `sendmsg.msg_name` and connected sends deliver payload and rights atomically; the sender alias may close before receipt. Non-AF_UNIX ancillary use returns `EINVAL` before data becomes visible |
-| Zero-byte and zero-iovec rights | Fast exits bypassed the message ownership path, so zero-byte datagrams could lose rights or be consumed by an ordinary zero-length read | A datagram `sendmsg`/`recvmsg` with `msg_iov == NULL` and `msg_iovlen == 0` transports rights. `read(fd, ..., 0)` leaves that message queued for the later receive; a zero-byte stream send queues nothing and releases its temporary retain |
-| Datagram input/output `MSG_TRUNC` separation | The old receive path used the input flag only and did not report output truncation in `msg_flags` | A short receive always reports output `MSG_TRUNC`; without input `MSG_TRUNC` it returns the copied prefix, and with the input flag it returns the full datagram length |
-| `MSG_CMSG_CLOEXEC` | The old receive path installed transferred descriptors without applying the requested close-on-exec flag | The received descriptor has `FD_CLOEXEC`, is reflected in output flags, and is absent after the fixture execs itself; installation failure publishes no partial control result |
-| `SCM_RIGHTS` descriptor transferability | A process-local socket snapshot preserved scalar metadata but not the authoritative endpoint or queue backing, so reporting successful socket transfer created a descriptor that could not preserve the source object | The real-musl wasm32/wasm64 fixture first proves pipe transfer still succeeds, then attempts AF_UNIX stream/datagram and AF_INET/AF_INET6 socket descriptors. Every socket batch returns `EOPNOTSUPP`, publishes no carrier byte, and retains no hidden reference. Native tests also reject stale, structurally incomplete, and non-owning in-flight records before installation |
-| Forced process removal with queued datagram rights | `remove_process_inner` performed its sole deferred-release drain before dropping each socket's datagram queue, so the queue could enqueue backing work after the last cleanup boundary | `forced_removal_drains_scm_rights_queued_in_unix_datagrams` closes the sender alias, forces removal, and proves the in-flight OFD, host handle, and advisory lock all reach their final state |
-| AF_UNIX datagram reconnect with queued rights | Replacing the datagram peer cleared the old queue only after the enclosing operation's cleanup opportunity, leaving its retained descriptors stranded | `unix_datagram_reconnect_drops_and_drains_scm_rights_ownership` proves reconnect discards and finishes the old queue before publishing success |
-| Datagram shutdown modes with queued rights | `SHUT_RD` and `SHUT_RDWR` made queued messages permanently unreadable without releasing their `SCM_RIGHTS`; `SHUT_WR` must not destroy still-readable data | `unix_datagram_shutdown_modes_preserve_or_discard_scm_rights_correctly` covers both discarding modes plus `SHUT_WR` preservation and later receipt |
-| Failed accept of a preaccepted stream carrying rights | An error after selecting a preaccepted AF_UNIX stream dropped its pending ancillary state without finishing the retained backing | `failed_accept_discards_and_drains_preaccepted_stream_scm_rights` injects the failure and proves no OFD, host handle, or lock ownership remains hidden |
-| `sendfile` / `copy_file_range` / `splice` crossing a stream rights boundary | These plain-data transfers call the ordinary read path. It correctly refuses to return ancillary ownership, but the wrappers did not finish the ownership discarded at that boundary | `plain_transfer_syscalls_discard_and_drain_crossed_stream_scm_rights` executes all three operations and verifies both the copied byte and final retained-resource state |
-| Direct host pipe read/close boundaries | Today these exports normally address host-injected TCP pipes, but message-aware read and unreachable-cycle collection can enqueue deferred ownership if that trusted input boundary broadens | `direct_host_pipe_read_and_close_read_detect_deferred_scm_cleanup` and `direct_host_pipe_close_write_detects_recursive_ancillary_collection` exercise the exact pending predicate and cleanup helper used after the pipe-table borrow ends |
-| Systematic channel-dispatch cleanup order | A per-syscall list can miss a new transitive `Drop`, early return, or replacement that queues ancillary cleanup; cleanup while a task identity or resource-table borrow remains live can also re-enter with stale authority | Every channel result crosses one conditional machine-owned cleanup boundary after dispatch clears the current-TID binding and before result publication. The empty path performs one O(1) pending check; the pending path drains only after resource borrows have ended |
 | Vector/message wasm64 nested pointers | `Number(bigint)` loses an unrepresentable iovec/base/header pointer and permits an aliased range to reach Rust | Raw bigint remains intact through guest-width and safe-integer checks; failure precedes mutation |
 | Public poll exact allocation boundary | The public wrapper used the unrelated `IOV_MAX` value 1,024 even though its owned 65,536-byte region can hold 8,192 generated eight-byte `pollfd` records | Exactly 8,192 records are admitted and 8,193 is rejected before mutation; readiness parsing uses generated offsets |
-| Slow `preadv` / `pwritev` positioned offset | Reassembling the signed high and unsigned low words as a JavaScript `Number` rounds `2^53 + 1` down to `2^53`, so the chunked path re-emits the wrong low word | Offset assembly, per-chunk addition, write-budget preflight, and low/high re-emission remain `bigint`; wasm64 ingress normalizes the complete low slot before any Number conversion |
-| Ordinary and large `pread` / `pwrite` positioned offset | The generic ordinary path converted the signed i64 channel slot to `Number`, and the large path reused that rounded value across preflight and chunks. Shared-mapping follow-up could then index the rounded page | Both caller widths preserve `2^53+1` on the ordinary path and increment it exactly across a 65,536-byte chunk; an offset that cannot be indexed losslessly triggers authoritative mapping refresh instead of an aliased update |
+| Large `preadv` / `pwritev` positioned offset and operation count | Reassembling the signed high and unsigned low words as a JavaScript `Number` rounds `2^53 + 1` down to `2^53`; splitting at channel capacity also changes one vector into several positioned operations | The complete offset remains `bigint` and one token executes one required `host_pread`/`host_pwrite` call. Native tests record the exact offset and unchanged OFD cursor; host import tests reconstruct the exact two-word value for wasm32 and wasm64 |
+| Ordinary and large `pread` / `pwrite` positioned offset | The generic ordinary path converted the signed i64 channel slot to `Number`; large transfers reused that rounded value, and seek/read-or-write/restore could race a shared OFD or fail to restore after an I/O error. Shared-mapping follow-up could also index the rounded page | Both caller widths preserve `2^53+1`; Rust issues one true positioned host import without touching the cursor. Number-only backends return `EOVERFLOW`, and an offset that cannot index shared-mapping state losslessly triggers authoritative refresh instead of an aliased update |
+| Rejected ambient/proxy kernel-entry authority | An interim gate proxy protected calls made through the proxy but did not prove that every callback still held that exact receiver. A synchronous backend callback could still invoke a raw-target method while Rust was active. Proxy-returned containers, accessors, or closures could likewise retain the target. Patching individual callbacks would leave the next return edge as another authority leak | The proxy design was removed. `KernelEntryGate` now issues a frozen lexical context whose scoped facade is bound in a private gate/scope registry, and the worker stores no ambient context. Gate tests reject unscoped generic callbacks, retained scoped exports after revocation, cross-gate scopes, prototype/descriptor mutation, and observer reentry. `kernel-entry-context-audit.test.ts` mutation cases require every production export-bearing call chain to carry the exact context or open a fresh ingress. A prior source checkpoint reported zero findings, but the widened reservation detector and rigid stage → execute → finish helpers changed afterward; both the entry-context and independent kernel-memory ownership assertions remain pending until rerun on stabilized source |
+| Detached host-effect failure and reentry ordering | Running an observer while export authority was still ambient could let it steal the next export permit, append work to its own privileged phase, or make one throwing callback skip required later cleanup. Treating channel publication or scheduler registration as an ordinary observer could instead continue after required protocol state failed. A queued-then-thrown “test helper” could also reject its caller while retaining the values for later execution | `KernelEntryGate` owns a fixed, ordered batch of typed records and revokes the scope before running any of them. Immediate-only ingress rejects before queueing or retaining caller values; ordinary void ingress owns the FIFO explicitly. Observer throws and non-synchronous returns are reported and later independent records continue. Serialized host operations reject Promise/thenable escape and fail-stop because the continuation already exists. Protocol failure, or a fatal latch reached from any record, privately poisons the generation and discards every later effect and queued ingress before the worker fatal observer runs. Gate and production-worker regressions cover immediate/deferred ordering, retained-scope rejection, callback reentry, Promise returns, hostile fatal reporting, and no later publication/relisten/follower after failure |
+| Host-region caller validation versus generation failure | `reserveHostRegion` and `reserveHostRegionAt` originally validated guest pointer/length geometry inside the generation-fatal entry callback. A malformed caller range could therefore poison a coherent kernel even though no Rust export had run; fork-from-pthread could also allocate a child PID before discovering that its requested control-slot range was impossible | `host-process-pointer-width.test.ts` proves negative dynamic length and an out-of-domain fixed wasm32 range reject before the genuine Wasm export is called, then a valid request succeeds on the same generation. Fork validates the exact control-slot range before allocating the child PID. Export-return validation remains inside the gate: a returned range that exceeds the guest domain is wrapped as a generation-fatal protocol failure, while an exact wasm32 end at 4 GiB and mixed kernel/guest widths retain their lossless bit patterns |
+| Real `Getpid` completion with pending PTY output | Delivering PTY bytes after setting `CH_COMPLETE` or relistening lets a PTY callback reenter and replace reusable scratch before the original bytes are detached; delivering while the scope is live lends the callback export authority | `kernel-large-transfer-protocol.test.ts` drives the production `Getpid` channel on wasm32 and wasm64 in immediate and deferred cases. The PTY callback observes `CH_PENDING` and no relisten, its reentry queues, then the host publishes `CH_COMPLETE`, relistens, and only afterward admits the queued ingress |
+| Real `FUTEX_WAKE` completion and kernel wake batch | Publishing the futex syscall before draining Rust's wake records permits callback/retry work to reuse scratch or observe a completed wake while the corresponding waiters remain undelivered | The production-path wasm32/wasm64 regression issues genuine `FUTEX_WAKE`, proves one wake record is drained under the same lexical scope, and reaches the real raw channel-completion path only after that drain |
+| Host-driven process exit through a trapping export | Guest `kernel_exit` intentionally does not return. Calling it from the host makes its expected trap indistinguishable from a partial/incoherent export unwind, while treating that trap as success weakens the generation-fatal rule | Rust exposes required `kernel_commit_process_exit(status)`, sharing the authoritative cleanup helper but returning the low eight status bits. The host also requires `PROCESS_STATE_EXITED` before detached callbacks. A mismatched return test proves the fatal latch stops polling and leaves every channel inert rather than publishing `EIO` or relistening |
+| Host append rejection, short result, and stale EOF during transfer syscalls | `sendfile`, `copy_file_range`, and `splice` consumed a source cursor or pipe before a later append failure. A separate preflight `fstat` could also apply `RLIMIT_FSIZE` to an EOF that no longer belonged to the append transaction | Four Rust `append_transfer_` regressions cover external `EOPNOTSUPP` with unchanged regular cursor and pipe bytes, a short result that consumes only the reported prefix, exact-limit/limit-plus-one clipping, and stale-too-large/stale-too-small `fstat` values. Host append owns the current EOF and only its reported prefix is committed |
+| Large vector one-operation semantics | Chunking a 65,538-byte two-iovec AF_UNIX datagram produces multiple messages even though POSIX defines one `writev` call | The real-musl fixture writes and reads one 65,538-byte datagram, verifies every byte, then proves the nonblocking queue is empty. The same guest is the required Node and real-Chromium operation-boundary target |
+| Token allocation/capacity/lifetime | A pointer-only or retained grow-by-leak scheme can overrun, leak old regions, or replace bytes while a host callback is using them | Focused wasm32/wasm64 protocol tests cover exact capacity and +1, `ENOMEM`, invalid pointer/range, sequential tokens, deferred reentrant channels, producer over-report, retry cancellation, and execute/cancel traps. Traps latch the kernel fatal state, clear queued work, and make direct/retry/listener dispatch inert |
+| Obsolete direct variable-I/O exports | The old bare scalar/vector exports could check only total memory, and a legacy guest pointer names process memory/native layouts rather than a capacity-bearing kernel allocation | Source/snapshot tests require the four scalar exports, four vector exports, and bare-pointer write preflight to remain absent. Unknown `kernel.*` imports fail admission; a declared-shell scan found no raw vector import among 193 current program artifacts |
 | `Getaddrinfo` generic descriptor — “copies only getaddrinfo's four-byte result before the caller canary” | The old fixed 256-byte output descriptor copies 252 bytes beyond musl's four-byte result object | Detached copy-back is exactly four bytes and preserves a 252-byte canary |
 | `handleGetgroups` and `kernel_getgroups` | The old generic call passes the caller's process pointer as if it were a kernel pointer; Rust writes one `u32` without receiving the owned destination capacity | Size zero lends pointer/capacity zero; positive size lends exactly four bytes; Rust rejects capacity 0/3 and accepts 4/5; detached gid copy precedes reuse |
 | `Setgroups` generated descriptor | The old raw pointer crosses address spaces. The current Rust implementation does not dereference it, so this is an unsafe contract rather than a claimed observed overwrite | Exactly 16,384 gids fit; 16,385 is rejected; count zero ignores even an unrepresentable pointer; positive null returns `EFAULT` |
 | Request-aware `ioctl` — FIONREAD canary and exact capacities | The old generic 256-byte argument copies back 252 bytes beyond a four-byte FIONREAD object; it also cannot distinguish scalar/no-argument requests from pointer requests | FIONREAD copies exactly 4; wasm32 TIOCGPTN is 4, wasm32 DRM VERSION is 36, wasm64 DRM VERSION is 64; one-byte-short/null fail before mutation; scalar/no-arg/unknown stage no pointer |
 | Width-incompatible `ioctl` requests | The old contract has no lossless distinction for pointer-bearing wasm32-only layouts such as `GLIO_QUERY` and wasm32 DRM VERSION | wasm64 rejects those known requests with `EOVERFLOW` before conversion or copy |
 | Caller-native process records | Fixed wasm32/partial descriptors under-copy or copy back the wrong layout for wasm64; `sigevent` was treated as 16 rather than 64 bytes; `sysinfo` used stale syscall 208 instead of musl 269 | `tests/abi/{process-native-layouts,fixed-process-layouts}.c`, Rust exact/short tests, and host `sysinfo` exact-end/one-byte-short tests cover the enumerated 12/24, 16/32, 32/64, 64, 88/120, 312/368, 128, 112, and 48-byte records |
-| Signal dequeue output capacity and complete `SA_SIGINFO` record | The old `kernel_dequeue_signal(pid, tid, out_ptr)` accepted a bare kernel pointer, while its 44-byte payload inside a 48-byte reserved channel area omitted a complete raw `si_value` plus sender/timer metadata | `signal_delivery_output_requires_nonnull_exact_capacity` rejects null, 55, and 57 while accepting exactly 56; `signal_delivery_record_serializes_every_field_at_the_shared_offsets` covers the full generated record. The rebuilt real-musl `process-native-layout` Node cases pass on wasm32 and wasm64 and exercise handler-side C reconstruction, raw value width, `si_code`, PID, and UID |
+| Signal dequeue output capacity and complete `SA_SIGINFO` record | The old `kernel_dequeue_signal(pid, tid, out_ptr)` accepted a bare kernel pointer, while its 44-byte payload inside a 48-byte reserved channel area omitted a complete raw `si_value` plus source metadata | `signal_delivery_output_requires_nonnull_exact_capacity` rejects null, 55, and 57 while accepting exactly 56; `signal_delivery_record_serializes_every_field_at_the_shared_offsets` covers the full generated record. The real-musl `process-native-layout` fixture targets wasm32 and wasm64 handler-side C reconstruction, raw value width, `si_code`, PID, and UID |
 | Mqueue notification drain and registration validation | The old one-argument drain export had no allocation-capacity proof. A negative Rust errno is truthy in JavaScript, so the old host could parse unchanged reusable bytes as a pending `{pid, signo}` notification. `mq_notify` also admitted invalid signal numbers into the one-shot registration slot | Source requires an exact eight-byte destination and queues the full raw value with `SI_MESGQ` and sender metadata independently of the wake record. The host regression accepts only integer results 0/1 and fails closed on `-EINVAL` without waking or signaling. Native coverage rejects 0, `NSIG`, and `u32::MAX` without occupying the slot, then proves a valid registration succeeds. The real-Wasm export regression rejects pointer zero and capacities 7/9 without consuming or mutating the pending record, then accepts capacity 8 and preserves both destination canaries |
-| POSIX timer `sigevent` pointer width and full `sigval` | The old three-argument `kernel_timer_create` could not distinguish a wasm32 from wasm64 caller and parsed only a partial event, narrowing a wasm64 pointer value | `mq_attr_and_sigevent_follow_process_long_width` covers exact 64-byte wasm32/wasm64 layouts, short/long rejection, and raw four/eight-byte values. The rebuilt real-musl `process-native-layout` Node cases verify the low 32 bits for wasm32 and all 64 bits for wasm64 through `timer_create`, expiration, and `sigtimedwait` |
 | Signal sender metadata for plain raise/kill versus queued sources | Plain self-raise previously reached the metadata-bearing queue with PID/UID zero, making handler `siginfo_t` inconsistent with the authoritative process identity | `test_raise_preserves_self_sender_metadata` and `process_signal_metadata_distinguishes_kill_from_sigqueue` distinguish SI_USER/SI_QUEUE while preserving sender PID/UID and raw queued value. The same rebuilt real-musl Node fixture checks the handler-visible fields |
 | `handleEpollCtl` / `handleEpollPwait` native event layout | A stale 12-byte assumption cannot represent musl's required padding before 64-bit `data` and proves the wrong output range | Exact record is 16 bytes: events offset 0, padding 4–7, data offset 8; exact-end and one-byte-short input/output tests verify padding and data |
 | wasm64 `handleIpcShmat` | `shmaddr >>> 0` aliases a hint above 4 GiB to its low 32 bits before mmap/attachment logic | `0x1_0000_0000n` reaches mmap unchanged; values above `Number.MAX_SAFE_INTEGER` fail before attachment |
@@ -370,13 +560,27 @@ claim a separate old-head test execution.
 | wasm64 `msgctl` `IPC_STAT`/`IPC_SET` | Fixed 96-byte wasm32 descriptor validates/stages the wrong range instead of the 120-byte LP64 structure | Required size query selects 96/120 and exact/short ranges |
 | wasm64 `semctl` `IPC_STAT` | Fixed 72-byte wasm32 layout is selected instead of the 88-byte LP64 structure | Required size query selects 72/88; array size comes from permission-aware Rust preflight |
 | wasm64 `shmctl` `IPC_STAT`/`IPC_SET` | Fixed 88-byte wasm32 descriptor validates/stages the wrong range instead of the 112-byte LP64 structure | Required size query selects 88/112 and exact/short ranges |
+| Direct and nested socket-address capacity | The native `msghdr` path validated the caller range but accepted raw `msg_namelen` as both an input length and receive scratch capacity. That bypassed the direct bind/connect/sendto input ceiling. A first hardening pass then treated 110-byte `sockaddr_un` as the producer maximum, but an exact 108-byte non-NUL pathname legitimately makes `getsockname()` report 111 bytes, and storing a canonicalized relative bind name could make that report unbounded in a deep current directory. Several AF_UNIX producers also wrote no family prefix at one-byte capacity, and `accept4` either left the result length stale or cleared bytes beyond the actual address | The generated 128-byte `sockaddr_storage` is the complete generic input/output staging ceiling; 110 bytes remains only the concrete AF_UNIX parser ceiling. wasm32/wasm64 direct inputs and nested `sendmsg` accept 128 and reject 129. Generic address outputs and `recvmsg` reserve at most 128, reject a producer report of 129 with no partial publication, and leave unused caller bytes untouched. When an address is requested, `getsockname`, `getpeername`, `accept4`, `recvfrom`, and `recvmsg` report the complete address length while copying only the caller's zero-, one-, or two-byte AF_UNIX prefix; an absent optional address leaves its ignored length untouched. Accept rolls back its new descriptor if requested peer-address publication fails. `SocketInfo` retains the bounded original bind name while the Unix registry independently owns its canonical namespace key |
 
 The expanded parameterized coverage includes those failures plus caller
-address zero, adjacent vector slow paths, large read/write, select/pselect,
+address zero, both main and tokenized vector paths, large read/write, select/pselect,
 `ppoll` special-pointer conversion, epoll, wasm32/wasm64 System V IPC control
 layouts, generic descriptor invalid lengths, lease-time staging, and
 Linux-compatible `MSG_TRUNC`. Final case counts belong in the post-retarget
 validation report, not this in-progress rehearsal record.
+
+Validation of the abstraction itself found one performance regression rather
+than an ownership escape. `intrinsicBufferByteLength` brand-checked a shared
+kernel `Memory.buffer` by invoking the non-shared `ArrayBuffer` getter first,
+so every range proof threw and caught a `TypeError` before the genuine
+`SharedArrayBuffer` getter succeeded. A V8 profile attributed about 27 seconds
+of a 38-second focused Sortix poll run to that repeated exception. The current
+implementation caches only the successfully brand-checked intrinsic getter by
+genuine buffer identity; it still calls that getter on every proof, so memory
+growth cannot reuse a stale byte length. Focused tests cover ordinary and
+shared memories, post-growth live bounds, captured intrinsics after prototype
+replacement, and one failed brand probe per shared buffer identity. Default
+watchdog conformance remains part of the exact-candidate validation gate.
 
 Additional focused files cover the complete abstraction:
 
@@ -388,8 +592,9 @@ Additional focused files cover the complete abstraction:
   `memory.grow()`.
 - `host/test/kernel-public-scratch.test.ts`: removal of low-address scratch,
   public capacity, audio counts, signed-high raw import pointers, hostile
-  producer views, exact KMS mode-info size, and Rust-lent network output
-  bounds.
+  producer views, exact KMS mode-info size, Rust-lent network output bounds,
+  and public scalar `setsockopt` staging with exact four-byte capacity,
+  wasm32/wasm64 pointer types, and canaries.
 - `host/test/kernel-initialization-lifetime.test.ts`: both kernel pointer
   widths, cached public/audio scratch, post-success cross-entry-point
   initialization rejection, concurrent initialization, original-generation
@@ -422,8 +627,8 @@ Additional focused files cover the complete abstraction:
 - `tests/abi/process-native-layouts.c` and
   `scripts/check-process-native-layouts.sh`: executable wasm32/wasm64 musl
   size-and-offset drift checks for signal-stack, signal-information,
-  signal-event, interval-timer, message-queue, filesystem-statistics, and
-  system-information records, including the native `union sigval` width.
+  message-queue, filesystem-statistics, and system-information records,
+  including the native `union sigval` width.
 - `tests/abi/fixed-process-layouts.c`,
   `scripts/check-fixed-process-layouts.sh`,
   `tests/abi/sysv-ipc-layouts.c`, and
@@ -434,14 +639,13 @@ Additional focused files cover the complete abstraction:
   and serialization tests, zeroed padding/reserved bytes, and end-to-end
   wasm32/wasm64 syscall round trips. The current real-musl fixture also
   installs an `SA_SIGINFO` handler and verifies the generated 56-byte delivery
-  record reconstructs native `si_value`, `si_code`, PID, and UID; its timer
-  and mqueue cases preserve four-byte wasm32 and eight-byte wasm64 values and
-  reject invalid `mq_notify` signums. Focused host boundary tests separately
+  record reconstructs native `si_value`, `si_code`, PID, and UID; its mqueue
+  cases preserve four-byte wasm32 and eight-byte wasm64 values and reject
+  invalid `mq_notify` signums. Focused host boundary tests separately
   prove `sysinfo` exact-end admission, one-byte-short rejection, and that a
   negative mqueue drain result cannot decode stale scratch. The two runtime
-  cases are self-contained and set `useDefaultRootfs: false`; both passed on
-  Node against the rebuilt ABI-43 kernel and host artifacts. Chromium
-  execution of this latest fixture remains pending.
+  cases are self-contained and set `useDefaultRootfs: false`; Node and browser
+  execution remain external validation targets.
 - `crates/kernel/src/mqueue.rs`, `crates/kernel/src/signal.rs`,
   `crates/kernel/src/syscalls.rs`, and
   `host/test/kernel-scratch-transfer-boundaries.test.ts`: invalid mqueue
@@ -451,8 +655,7 @@ Additional focused files cover the complete abstraction:
   result.
 - `host/test/sysv-ipc.test.ts`: end-to-end wasm32/wasm64 message-queue,
   semaphore, and shared-memory control operations, including `IPC_SET`. Its
-  two self-contained runtime cases also set `useDefaultRootfs: false` and
-  both passed against the rebuilt ABI-43 kernel and host artifacts.
+  two self-contained runtime cases also set `useDefaultRootfs: false`.
 - `crates/shared/src/ioctl_contract.rs`, the ioctl tests in
   `crates/kernel/src/wasm_api.rs`, and
   `host/test/kernel-scratch-transfer-boundaries.test.ts`: sorted
@@ -467,17 +670,38 @@ Additional focused files cover the complete abstraction:
   publish another operation's bytes.
 - `host/test/deferred-worker-start.test.ts`: a deferred clone failure clears
   the originally validated parent-TID word even when the guest replaces its
-  mutable mailbox before worker construction fails.
-- `host/test/timerfd-signalfd-scratch.test.ts`: guarded caller objects for the
-  exact wasm32/wasm64 timer and signal-mask records. Both focused cases passed
-  after the current ABI-43 kernel and host artifacts were rebuilt. Like the
-  other self-contained native-layout fixtures, it sets
-  `useDefaultRootfs: false`.
+  mutable mailbox before worker construction fails. The real parked mailbox
+  remains owned through synchronous `Worker` construction, so constructor
+  failure replaces the provisional success before exactly one completion is
+  published.
+- `host/test/host-process-pointer-width.test.ts`: invalid dynamic and fixed
+  host-region requests reject before the genuine Wasm export and do not poison
+  the generation; a malformed export result remains generation-fatal. The same
+  cases cover mixed kernel/guest pointer widths and exact wasm32 end-of-domain
+  arithmetic.
 - `host/test/kernel-scratch-contract.test.ts` and
   `host/test/wasm-memory-write-audit.test.ts`: compiler-backed repository drift
   guard plus focused ownership-propagation, write-kind, escape, exact-allowlist,
   direct/aliased/destructured/computed pointer-export invocation, wrapped
-  callable escape, `call`/`apply`/`bind`, and reflective invocation fixtures.
+  callable argument/return/persistent-storage escape,
+  `call`/`apply`/`bind`, reflective invocation fixtures, the exact
+  reserved-spawn transaction proof, and proof that the complete generated
+  export set defaults to denied even when a raw call's name is omitted from
+  the runtime scratch list.
+- `host/test/process-wait-lifecycle.test.ts`,
+  `host/test/kernel-blocking-retry-snapshot.test.ts`, and the focused
+  sleep/signal/readiness/lock/pipe/FIFO tests: generated request-flag offsets
+  and known-bit masks; plain, enabled, masked, disabled, wake-without-point,
+  unknown, and stale combinations for one syscall number; capture-and-clear;
+  cancellation before and after every host-owned registration; disabled
+  finite-deadline preservation; immutable replay; and sequential mailbox reuse
+  on wasm32 and wasm64.
+- `crates/kernel/src/{process_table,socket,unix_socket,syscalls}.rs` native
+  tests: root-only inherited socket graphs, one-sided `FD_CLOFORK` and
+  retry-only peers, both-root preservation, alias deduplication, AF_UNIX
+  rename/reuse exact owners, abstract/pathname cleanup, and transactional
+  allocation/invalid-root failure. These tests preserve the explicit
+  same-process AF_UNIX datagram transport boundary.
 - `crates/shared/src/host_abi.rs`,
   `crates/kernel/src/channel_scratch.rs`,
   `host/test/generated-abi.test.ts`, and
@@ -497,82 +721,28 @@ Additional focused files cover the complete abstraction:
   valid empty slice before any `from_raw_parts` call. Pure Rust tests execute
   malformed canonical control lengths, partial/trailing records, invalid-FD
   propagation, and the zero/one-iovec wire limit on the native test target.
-- `programs/scm-rights-pipe-lifetime.c`,
-  `host/test/scm-rights-pipe-lifetime.test.ts`, and
-  `apps/browser-demos/test/fifo-lifecycle.spec.ts`: the same real musl
-  `sendmsg`/`recvmsg` and `SCM_RIGHTS` workload is built for both wasm32 and
-  wasm64. Its one-FD receive uses the exact native `CMSG_LEN` capacity, making
-  wasm64's 20-byte logical record distinct from its 24-byte aligned storage.
-  Node and Chromium results are recorded only after those commands run.
-- `programs/scm-rights-semantics.c`,
-  `host/test/scm-rights-semantics.test.ts`, and
-  `apps/browser-demos/test/scm-rights-semantics.spec.ts`: eight independent
-  real-musl cases cover stream carrier barriers/`MSG_WAITALL`, non-consuming
-  short/full stream `MSG_PEEK`, addressed/connected and zero-iovec AF_UNIX
-  datagrams versus ordinary `read(...,0)`, independent input/output
-  `MSG_TRUNC`, non-Unix rejection, an unrepresentable descriptor batch,
-  zero-iovec stream behavior, and `MSG_CMSG_CLOEXEC` across exec. The
-  post-retarget Node matrix passed all 16 wasm32/wasm64 semantic cases; the two
-  existing pipe-lifetime cases also passed, for 18 total Node cases. The
-  focused real-Chromium runs passed the same 16 semantic cases and both
-  pipe-lifetime cases. These are dirty-worktree results and still require the
-  frozen-head rerun described below.
 
 ## Evidence boundaries and external gaps
 
-These validation gaps prevent a “ready” disposition. They do not erase a
-source-safety proof, and a source-safety proof does not substitute for these
-missing runs. Any row still marked **Uncertain** separately remains without a
-safe source disposition.
+The tables above record source ownership and executable regression targets.
+They do not establish a current-head test result. This documentation-only
+finalization does not claim Node, browser, conformance, performance, or
+full-build evidence.
 
-1. Retargeting to merged PR #1097 is complete. Exact-head readiness is a
-   per-PR gate: the draft PR ledger must name the current head and the complete
-   rerun performed on it. Test presence, an earlier source fingerprint, or a
-   pre-retarget run is never substituted for that evidence.
-2. Framebuffer, Direct Rendering Manager (DRM), OpenGL, shared-mapping, and
-   process-worker transfers are deliberately excluded from allocator scratch.
-   The static ownership audit can prove that no kernel scratch view escapes
-   into those objects; it cannot by itself prove every subsystem's mapping
-   dimensions, callback lifetime, or browser behavior.
-3. Focused post-retarget Chromium execution now covers the scratch runtime,
-   native wasm32/wasm64 process layouts, both child-wait widths, all 16
-   wasm32/wasm64 `SCM_RIGHTS` semantic cases, both pipe-lifetime cases, and the
-   adjacent path, file-limit, and terminal fixtures: 28 assertions passed in
-   real Chromium. Those self-contained fixtures explicitly select the test
-   runner's minimal dependency set; they do not bypass validation for any
-   artifact they request. Vite's optional application dependency pre-scan
-   still warns about unavailable ABI-43 tools, and the complete browser
-   application suite remains blocked by those package artifacts. Focused
-   browser evidence does not establish every device/shared-memory exclusion or
-   the unexecuted application graph.
-4. The normal conformance runners were reprobed after retargeting and all stop
-   before the guest reaches the kernel because no one provenance tier contains
-   the complete ABI-43 program closure. Open POSIX `sigqueue sigtimedwait`
-   reported 0 pass, 17 fail, and 1 timeout. libc-test `functional spawn`
-   reported 0 pass and 1 fail. Sortix `signal` reported 0 pass, 14 fail, and 18
-   timeouts; a separately enumerated complete 24-test `basic/spawn/*` surface
-   reported 0 pass and 24 fail. A direct launch shows the exact cause:
-   `local-binaries` is not one direct immutable generation, `binaries` is not
-   one canonical program-cache generation, and the installed package lacks
-   `programs/wasm32/git/git.wasm` plus `git-remote-http.wasm`. No resolver
-   bypass, mixed-provenance selection, or test-only exception was added.
-5. Comparable post-retarget dirty-worktree measurements establish reported
-   retained scratch capacity and post-run/peak kernel linear memory for the
-   deterministic workload on Node and real Chromium. Exact-PR-head result
-   files and fingerprints belong in the mutable PR ledger. Three-round timing
-   samples and the baseline-harness provenance are insufficient for a speed or
-   broad no-regression claim. The performance guide's complete application
-   suites remain blocked by unavailable ABI-43 PHP, WordPress, and MariaDB
-   artifacts.
-6. The declared development shell does not provide its pinned
-   `rustfmt`/`cargo-fmt`; the only discovered formatter is an undeclared
-   Homebrew binary that produces unrelated repository-wide churn. Rust
-   formatting validation is blocked until the declared toolchain supplies the
-   formatter.
-7. PR #1097 merged as
-   `c7d039794a43788acfa0b0aea30a700c257f57cb`, and retargeting is complete.
-   The draft must remain unapproved and unmerged whenever its validation ledger
-   does not match its current exact head.
+Framebuffer, Direct Rendering Manager (DRM), OpenGL, process-memory,
+shared-mapping, and worker-message transfers remain deliberately outside the
+allocator-scratch abstraction because they have different owners and
+lifetimes. The static contract must prove that allocator scratch does not
+escape into them; each subsystem still needs its own range, lifetime, and host
+validation.
+
+PR #1097 merged as
+`c7d039794a43788acfa0b0aea30a700c257f57cb`, and retargeting is complete.
+Before readiness, the external PR ledger must name the frozen exact head and
+record the generated-file/ABI checks, focused host and Rust regressions,
+complete required conformance surface, and any Node/browser or measurement
+evidence needed for the claims actually made. The draft remains unapproved and
+unmerged until that ledger is current and Brandon explicitly approves it.
 
 ## Platform and spawn contract sources of truth
 
@@ -658,261 +828,21 @@ platform header, and that the musl build stages both headers before compiling
 `sysconf`. Values deliberately classified differently therefore cannot
 silently drift.
 
-## Historical pre-retarget spawn buffer sizing evidence
+## Spawn buffer sizing decision
 
-All numeric results in this section are historical #1094-baseline or
-pre-retarget dirty-worktree measurements. They are retained to explain the
-buffer-design decision; they are not current final-head performance evidence.
-Exact-PR-head retained-memory and timing results are recorded in the mutable
-draft PR ledger under the recording contract at the end of this section.
+The large-spawn ownership alternatives have different lifetime consequences:
 
-Three designs were evaluated:
+| Design | Ownership and lifetime | Decision |
+|---|---|---|
+| Fixed 8,417,320-byte worst-case region | Rust owns one bounded allocation, so it is capacity-safe, but the complete protocol ceiling is retained after the first large use even when ordinary large spawns are much smaller | Not selected for ABI 43 |
+| Reusable growable Rust region, `SpawnScratchBuffer` | Rust grows a `Vec<u8>` only while no reservation is active. A fresh token exposes one pointer/capacity pair, commit or cancellation revokes it, and later growth cannot invalidate a live host view. The allocation is leak-free and retains only its kernel-lifetime high-water capacity | Selected |
+| Geometric host allocations | The host would have to retain or leak old Rust allocations to keep stale views from becoming dangling, and it would become the de facto allocation owner | Rejected |
 
-1. The #1094 fixed 8,417,320-byte kernel allocation is simple and safe, but
-   first use just above channel size retains the complete worst case.
-2. A Rust-owned reusable `Vec<u8>` can grow to the requested high-water mark.
-   A fresh token must bind every operation even when the existing capacity is
-   reused. `try_reserve_exact` reports allocation failure before publishing a
-   reservation; begin is rejected while another reservation is active.
-3. Repeated/geometric host calls to `kernel_alloc_scratch` have no free
-   operation and would permanently leak every older region. That design was
-   rejected. ABI 43 has no host-allocation or older-kernel fixed-buffer
-   fallback.
-
-The tokenized Rust-owned reusable region is the chosen current-source design
-because Rust remains the sole allocation owner and no pointer
-can be used without an active exclusive reservation. Begin and the
-pointer/capacity queries are nonblocking; contention returns `EBUSY` or zero.
-After every successful begin, host cancellation runs in a `finally` block,
-including setup and copy failures. Commit and cancellation wait on the same
-no-host-import critical section and return with a definitive token state.
-Commit parses the selected prefix into owned vectors and drops the scratch
-lock before process-table work or host imports, so the allocation lifetime and
-reentrancy rules are mechanically enforced rather than inferred from
-JavaScript event-loop behavior.
-
-The workload performs one ordinary spawn with the fixed environment `LANG=C`,
-`PATH=/bin`, one spawn whose complete wire blob is exactly 84,386 bytes, and
-five more spawns at that size. It fails a sample unless every waited child
-exits normally with status zero. Each round starts a fresh dedicated kernel
-worker. The fixed-buffer baseline was built from an isolated archive of exact
-#1094 head `6d923c6454dd7174082f25c3d3991d03f86f5ddb`; its temporary
-host-only telemetry reported the existing fixed constant after program
-completion and did not change kernel allocation or copy behavior. The
-hardened measurements used the tokenized ABI-43 kernel and host artifacts at
-the fingerprinted rehearsal state below. Subsequent descriptor and dispatcher
-hardening means those fingerprints are not the current source head.
-
-Earlier diagnostic samples used a workload whose ordinary environment was
-host-derived and which did not reject a nonzero or abnormal child exit. They
-are superseded and are not presented as evidence for the hardened workload
-described above.
-
-The comparable rehearsal measurements completed on July 25, 2026. Values are
-medians of three fresh-worker rounds; times are milliseconds and memory is
-bytes:
-
-The measured toolchain was Node.js `v24.15.0`, Playwright `1.61.0`, and
-Chromium `149.0.7827.55`.
-
-| Host and design | Ordinary spawn | First 84,386-byte spawn | Five repeated 84,386-byte spawns, per spawn | Reported retained scratch capacity | Kernel linear-memory high-water mark |
-|---|---:|---:|---:|---:|---:|
-| Node, #1094 fixed buffer | 51.378 | 47.488 | 46.3876 | 8,417,320 | 26,017,792 (397 pages) |
-| Node, tokenized growable buffer | 46.8 | 44.08 | 43.28 | 84,386 | 17,694,720 (270 pages) |
-| Chromium, #1094 fixed buffer | 14 | 12 | 11 | 8,417,320 | 26,017,792 (397 pages) |
-| Chromium, tokenized growable buffer | 14 | 11 | 10.2 | 84,386 | 17,694,720 (270 pages) |
-
-The focused workload therefore measured 8,332,934 fewer bytes of reported
-retained scratch capacity, a 98.997% reduction. Whole kernel linear memory was
-8,323,072 bytes, or 127 64-KiB pages, smaller after the workload (31.990%).
-Those are memory measurements, not an allocator-rounding claim. The three
-timing samples are too small and noisy to support a speedup or no-regression
-claim; no such claim is made.
-
-For this design, post-run kernel memory equals peak kernel memory only because
-WebAssembly memory grows monotonically and cannot shrink. Post-run Rust
-`Vec<u8>` capacity is the retained scratch high-water mark only because the
-kernel intentionally keeps that reusable allocation and does not shrink it
-between spawns. These implementation properties make the final samples valid
-for this workload; they are not a general substitute for peak-memory
-instrumentation.
-
-The prepared hardened workload source has SHA-256
-`53556d1ad905c92b70b0f5cff29babcf5c0b3183185cdd6a86303eac18f14cc5`.
-The exact-#1094 and measurement-time hardened workload Wasm files have SHA-256
-values
-`b207969191ac8132150d43a84f0f2857db4326e7108b93ff60be7159de835514`
-and
-`e0738d4e6f87e099aa843ae562b03f14b1e16dd30b92abed2302a429c8119cfc`.
-The exact baseline kernel Git tree is
-`6a8721697edbfa5f4fbd22cb21b41d8ccdcc4a2e` and its built kernel SHA-256 is
-`e6979f1fa7fdec68959c7f735c3c16ea91060c61cd203e86fd02eaf9a00326bd`;
-the measurement-time hardened built-kernel SHA-256 is
-`db2835a4905023c81a3eecaa6861feb955ea0610eb34763a8de65983b8a96ddb`.
-The measurement-time hardened Node worker bundle is
-`f3e1ae982b9c85fffa8caf85907e9c73e52db1cd24e7a9a2da2a132af279dfdb`,
-and the measurement-time `host/src` fingerprint is
-`89c24dba492309f0196059184e9af0ffaca4e91f1faa139ed0caa0be6574ac21`.
-The fixed-baseline Node and Chromium raw logs have SHA-256 values
-`f4374b0df0a66bbbd56f19c5637542fa8f40bbfe5f552b23af055c43fcb18dcc`
-and
-`a0a4b52088ab19ad71bc88ee48c514e1bc5b0c5c58f33410c66a2bcf5d44e814`.
-The measurement-time rehearsal result files are
-`benchmark-node-1785010575047.json` with SHA-256
-`78ccaac5f4b737b34b934f68ae808769512c3da824414452dd06d6a325b42fc8`
-and `benchmark-browser-1785010588397.json` with SHA-256
-`bbef0b4bb0f82edc3d7f4fcfbc07d8e4fcc88ded464f989a99d2888e96794ede`.
-Those result files fingerprint the exact runtime inputs above, but their Git
-metadata records older committed head
-`08620d9233a2812eb1098fe6e7b53a7fba58afb4` while the measured implementation
-was still uncommitted. Later scratch-contract changes also postdate those
-fingerprints. The files are evidence for the stated rehearsal workload only,
-not a substitute for exact committed-head and post-retarget reruns.
-
-### Historical pre-retarget dirty-worktree evidence
-
-The later pre-retarget same-worktree focused results were produced on July 26,
-2026 with:
-
-```bash
-scripts/dev-shell.sh npx tsx benchmarks/run.ts --host=node \
-  --suite=spawn-scratch --rounds=3
-scripts/dev-shell.sh npx tsx benchmarks/run.ts --host=browser \
-  --suite=spawn-scratch --rounds=3
-```
-
-Their digests were computed through the declared development shell with:
-
-```bash
-scripts/dev-shell.sh sha256sum \
-  benchmarks/results/benchmark-node-1785057474317.json \
-  benchmarks/results/benchmark-browser-1785057482750.json
-```
-
-The Node result is
-`benchmarks/results/benchmark-node-1785057474317.json`, SHA-256
-`dfea628c210f77430266d83ec8a48d92387a24870d8b427dd22021354591619d`.
-It records timestamp `2026-07-26T09:17:54.316Z`, host `node`, Darwin arm64,
-Node.js `v24.15.0`, three rounds, Git head
-`b840bf2f145b264512a169dacdee21df1d4ea36b`, and Git ref
-`remotes/origin/fix/kernel-scratch-capacity-j5u66-draft`.
-The Chromium result is
-`benchmarks/results/benchmark-browser-1785057482750.json`, SHA-256
-`dfd44e7b810be14afd7af86e8625b7f860600bfdd855abc4052d91c566851f88`.
-It records timestamp `2026-07-26T09:18:02.750Z`, host `browser`, the same
-platform, architecture, Node.js harness version, round count, Git head, and
-Git ref. The result format does not record the browser executable version. A
-same-tree declared-shell inspection reported Playwright `1.61.0` and Google
-Chrome for Testing `149.0.7827.55`; those versions are environment metadata,
-not fields authenticated by the result-file digests.
-
-Both files fingerprint the same measured inputs:
-
-- `local-binaries/kernel.wasm`: 642,109 bytes, SHA-256
-  `e2abb9bf9d1b88e47e46f7971036fc44a417b6f4a43819b3319a90b0880b4df8`;
-- `host/src`: 111 files and 2,781,747 bytes, SHA-256
-  `d5fbfab41983255f2cf0dc0141d2dd82295dd15782b4cbee276abed46004cb64`;
-- `benchmarks/wasm/spawn-bench.wasm`: 38,317 bytes, SHA-256
-  `e0738d4e6f87e099aa843ae562b03f14b1e16dd30b92abed2302a429c8119cfc`;
-- `benchmarks/wasm/hello.wasm`: 7,158 bytes, SHA-256
-  `4c059e672853793fe2b0177c205de28d88cd7e8e84dabb79f30353708dce2741`.
-
-The Node file additionally fingerprints the selected
-`host/dist/node-kernel-worker-entry.js`: 1,260,964 bytes, SHA-256
-`80f648f79f4b1020bd8f08e6f0bc545696de66a093b65a2566821661996b3cea`.
-
-| Host | Ordinary spawn | Wire bytes | First large spawn | Repeated large spawn | Retained scratch | Kernel memory |
-|---|---:|---:|---:|---:|---:|---:|
-| Node | 49.8 ms | 84,386 | 48.19 ms | 46.94 ms | 84,386 bytes | 17,694,720 bytes |
-| Chromium | 20 ms | 84,386 | 17 ms | 15.4 ms | 84,386 bytes | 17,694,720 bytes |
-
-These are historical pre-retarget dirty-worktree observations, not
-committed-head evidence: the JSON Git metadata identifies the checked-out
-commit, while the artifact hashes identify the uncommitted runtime inputs
-actually measured. They preserve the historical fixed-buffer comparison above
-rather than replacing it; no contemporaneous fixed-buffer rerun was made.
-Three-round timings do not support a latency improvement or no-regression
-claim, and none is made. Retargeting is complete, but the exact frozen final
-head still requires its own Node and Chromium reruns.
-
-The baseline archive was exact #1094 plus a host-only telemetry diff, with
-SHA-256
-`f78fbd452f1b758aa9494998e00816aae521d1fc4d66e5c2a0d7de8062ebe73e`;
-that diff reported the already-retained fixed capacity and did not change the
-kernel allocator or copy path. Its Node worker bundle was
-`dd9e9e03c84d80df116448594727f2e12af2957bac3b1e55b3fa9c7b27df5e35`.
-The older Chromium wrapper labels the combined run `process-lifecycle`, while
-the hardened measurement wrapper labels the isolated component
-`spawn-scratch`; both
-created a fresh browser kernel for each round and ran the same hardened spawn
-workload. This provenance limitation is why the focused results are evidence
-for buffer sizing, not broad application performance.
-
-The browser benchmark now loads optional application URL graphs only when an
-application suite asks for them. The dedicated Node `spawn-scratch` suite uses
-an empty filesystem because it supplies both executables; the established
-`process-lifecycle` suite still requires its default rootfs. Those dependency
-declarations let the focused scratch measurement run without weakening the
-resolver or silently changing existing process metrics. Application suites
-still resolve and enforce the same package policy. Broader Node/browser
-application measurements remain blocked by unavailable ABI-43 package
-artifacts. The focused workload and all broader measurements must be rerun
-on the frozen post-retarget final head.
-
-### Interim post-retarget dirty-worktree measurements
-
-The focused workload was rerun after retargeting onto the actual #1097 merge,
-but before the implementation was committed and frozen:
-
-```bash
-scripts/dev-shell.sh -- npx tsx benchmarks/run.ts --host=node \
-  --suite=spawn-scratch --rounds=3
-scripts/dev-shell.sh -- npx tsx benchmarks/run.ts --host=browser \
-  --suite=spawn-scratch --rounds=3
-```
-
-The environment reported Node.js `v24.15.0`, Playwright `1.61.0`, and Google
-Chrome for Testing `149.0.7827.55`.
-
-| Host | Ordinary spawn | Wire bytes | First large spawn | Repeated large spawn | Retained scratch | Kernel memory |
-|---|---:|---:|---:|---:|---:|---:|
-| Node | 51.24 ms | 84,386 | 49.24 ms | 48.25 ms | 84,386 bytes | 17,694,720 bytes |
-| Chromium | 17 ms | 84,386 | 15 ms | 14 ms | 84,386 bytes | 17,694,720 bytes |
-
-The Node result is
-`benchmarks/results/benchmark-node-1785070891966.json`, SHA-256
-`2f5c6ec009829d2710f0106d1a0166fa3371e80810935d0bfeef553cee117026`.
-The Chromium result is
-`benchmarks/results/benchmark-browser-1785070900428.json`, SHA-256
-`29aa9ff74f3a7c81905e308eb01e715ce39430648a00e9bd51bd5b89722e03a4`.
-Both identify checked-out Git head
-`2e0b32d3e1620c8eb68c41999148824ceb3ccea8`, but the measured source was
-dirty. The runtime fingerprints therefore identify the actual inputs:
-
-- kernel Wasm: 644,386 bytes, SHA-256
-  `691a1ceedce21e9bce4c1eda09f646092f6c5c1c89311d70e3cc5debc5ada6a8`;
-- `host/src`: 109 files, 2,775,329 bytes, SHA-256
-  `1add5d34a592498552e50b9cbe64fc15008890cbe215c092cba61caefd0d4d0f`;
-- spawn fixture: 38,373 bytes, SHA-256
-  `b7dc5d5bc37aaafd5f384750efbfe10c89cf84de416b55cc40edc6a61c009de0`;
-- Node worker bundle: 1,264,520 bytes, SHA-256
-  `764ee4d1fdb22965bc6b1270ab1c3d04a250a931bf9a17439cfb617eac4824ea`.
-
-This post-retarget run again retained only 84,386 scratch bytes instead of the
-historical fixed 8,417,320 bytes, and kernel linear memory remained 127 pages
-below the comparable fixed-buffer workload. It is memory-sizing evidence for
-the measured inputs, not exact committed-head evidence and not a latency
-claim.
-
-### Exact-PR-head measurement recording contract
-
-After the PR head is frozen, its external validation ledger must record the
-exact commit SHA, fresh source/artifact fingerprints, and the same Node and
-real-Chromium measurements. Keeping that mutable evidence in the PR description
-avoids changing the commit merely to embed its own SHA here. The ledger must
-distinguish the historical exact-#1094 baseline from the final ABI-43
-implementation and must not claim a timing improvement from three-round
-samples.
+The selected growable design follows from ownership, exclusion, and lifetime
+correctness. This audit does not present before/after retained-memory, Node,
+browser, or timing results. If the PR makes a memory or performance claim, the
+external exact-head ledger must contain the performance guide's matching
+measurements and artifact fingerprints.
 
 ## ABI decision
 
@@ -924,13 +854,32 @@ samples.
 - `kernel_handle_channel` now accepts the complete channel capacity as its
   second argument and rejects any value other than the canonical allocation
   size. Its signature changes from the ABI-42 two-argument form to
-  `(channel_offset, channel_capacity, pid)`, so old hosts and kernels cannot be
-  mixed.
+  `(channel_offset, channel_capacity, pid, retry_token)`, so old hosts and
+  kernels cannot be mixed. Token zero denotes an initial attempt; a positive
+  token authorizes only one exact blocked operation and stable Rust-owned
+  target.
+- The existing 72-byte channel header's former reserved `u32` at offset 68 is
+  generated `request_flags`. Libc writes the generated cancellation-point and
+  wake-allowed bits before `PENDING`; plain calls write zero. The host captures
+  and clears the word once, rejects unknown combinations, and freezes it with
+  the immutable request rather than rereading a reused mailbox. Assigning these
+  semantics without moving later fields is still a channel-contract change
+  recorded in the ABI snapshot. It is folded into unpublished ABI 43, never a
+  second ABI 44.
+- ABI 43 requires
+  `kernel_blocking_retry_token(pid, tid, syscall_nr)` and
+  `kernel_blocking_retry_release(pid, tid, token)`, and adds the trailing retry
+  token to `kernel_transfer_io_execute`,
+  `kernel_transfer_channel_execute`, `kernel_sendmsg`, and `kernel_recvmsg`.
+  The immutable TypeScript snapshot is internal, but those export signatures,
+  required capabilities, and close/reuse semantics are incompatible ABI
+  contracts. They are part of this worktree's ABI-43 reconciliation rather
+  than a second ABI-44 epoch; that decision would not justify changing an
+  already released ABI 43 in place.
 - The process-channel signal area is one generated 56-byte delivery record for
   both caller widths, replacing the ABI-42 44-byte delivery payload inside a
   48-byte reserved channel area. It carries raw eight-byte `si_value` bits,
-  `si_code`, sender or
-  timer metadata, and the alternate-stack fields. The C trampoline copies only
+  `si_code`, source metadata, and the alternate-stack fields. The C trampoline copies only
   the generated target-native `union sigval` width when constructing
   `siginfo_t`, so wasm32 observes the low four bytes and wasm64 observes all
   eight. This changes the process-channel layout and handler-visible metadata,
@@ -949,14 +898,15 @@ samples.
   and rejects every nonexact capacity with `EINVAL` before validating the
   task or selecting a waitable child. The export-signature and child-state
   consumption boundary are incompatible ABI changes covered by ABI 43.
-- `kernel_timer_create` changes from
-  `(clock_id, sigevent_ptr, timerid_ptr)` to
-  `(clock_id, sigevent_ptr, timerid_ptr, process_pointer_width)`. The fourth
-  parameter is an `i64` host-private dispatch value in the Wasm export
-  signature. It selects the complete 64-byte caller-native `sigevent` layout
-  and preserves `union sigval` as raw `u64` bits, including a wasm64 pointer.
-  Timer, queued-signal, plain sender, and `SI_MESGQ` metadata now remain intact
-  through dequeue and native `siginfo_t` reconstruction.
+- Host-driven normal exit now calls the required returning
+  `kernel_commit_process_exit(status)` export. Rust commits the same
+  authoritative cleanup/state transition as guest `_exit`, then returns the
+  low eight status bits. The host verifies that return and
+  `PROCESS_STATE_EXITED` before publishing callbacks. Calling the
+  intentionally trapping guest `kernel_exit` export would make expected
+  success indistinguishable from an incoherent export trap, so this concrete
+  export addition is ABI-43 work; the lexical TypeScript entry-context shape
+  alone is not.
 - Generated pointer descriptors now classify every argument as exactly one of
   required or nullable, positive-extent null handling follows that explicit
   classification, and zero-length `Arg` buffers use a canonical owned empty
@@ -967,16 +917,45 @@ samples.
 - The large-spawn host/kernel contract is incompatible. The old
   pointer-returning reserve/fixed-fallback model is replaced with required
   begin, pointer, capacity, cancel, and token-consuming commit exports.
+- Public `WasmPosixKernel.setsockopt` now stages its four-byte scalar in
+  allocator-owned scratch and calls the already existing five-argument
+  `kernel_setsockopt` signature. The old four-argument wrapper was incorrect,
+  but this correction changes no export signature or accepted guest limit.
+  The static compiler audit's generated-export default-deny set is likewise
+  host-side enforcement, so neither creates an ABI epoch beyond 43.
+- Scalar and vector I/O above the ordinary channel uses the required
+  `kernel_transfer_scratch_begin`, `kernel_transfer_scratch_pointer`,
+  `kernel_transfer_scratch_capacity`, `kernel_transfer_scratch_cancel`, and
+  `kernel_transfer_io_execute` exports. The removed `kernel_read`,
+  `kernel_write`, `kernel_pread`, `kernel_pwrite`, `kernel_readv`,
+  `kernel_writev`, `kernel_preadv`, `kernel_pwritev`, and
+  `kernel_prepare_write_operation` exports carried bare pointers or prepared a
+  later bare-pointer operation without carrying allocation capacity. They are
+  not an ABI-43 compatibility surface.
+- Host-backed positioned I/O requires the new kernel-Wasm imports
+  `env.host_pread` and `env.host_pwrite`. They preserve the exact signed-i64
+  offset and replace seek/read-or-write/restore. The ABI snapshot does not
+  encode kernel imports, so a built-Wasm import test enforces this requirement.
 - The host-adapter manifest continues to require `kernel_spawn_process` and
-  now also requires `kernel_spawn_reserved_process`,
+  now also requires `kernel_blocking_retry_release`,
+  `kernel_blocking_retry_token`, `kernel_commit_process_exit`,
+  `kernel_get_socket_timeout_ms`, `kernel_is_fd_nonblock`,
+  `kernel_pick_signal_target_tid`, `kernel_thread_has_deliverable`,
+  `kernel_spawn_reserved_process`,
   `kernel_clear_process_metadata`,
   `kernel_push_process_metadata_entry`, `kernel_set_cwd`,
   `kernel_spawn_scratch_begin`, `kernel_spawn_scratch_pointer`,
   `kernel_spawn_scratch_capacity`,
   `kernel_spawn_scratch_retained_capacity`, `kernel_spawn_scratch_cancel`,
+  `kernel_transfer_scratch_begin`, `kernel_transfer_scratch_pointer`,
+  `kernel_transfer_scratch_capacity`, `kernel_transfer_scratch_cancel`,
+  `kernel_transfer_channel_execute`, `kernel_transfer_io_execute`,
   `kernel_msqid_ds_bytes`, `kernel_semid_ds_bytes`,
   `kernel_semctl_array_bytes`, and `kernel_shmid_ds_bytes`. A same-version
-  kernel missing them fails loudly rather than entering a legacy path.
+  kernel missing them fails loudly rather than entering a legacy path. The
+  policy queries are required because nonblocking/timeout state and signal
+  target/deliverability are Rust-owned; a missing export must not fall back to
+  a host guess.
 - The three `*_ds_bytes(process_pointer_width)` exports and the host-private
   sixth dispatch slot make the caller's wasm32/wasm64 data model authoritative
   for `msqid_ds` (96/120 bytes), `semid_ds` (72/88), and `shmid_ds` (88/112).
@@ -989,331 +968,32 @@ samples.
 PR #1097 merged as
 `c7d039794a43788acfa0b0aea30a700c257f57cb` with ABI 42. Retargeting is
 complete, so ABI 43 is the decided epoch for these incompatible changes. The
-current Rust source, generated TypeScript consumer, and ABI snapshot declare
-ABI 43, and generated TypeScript includes the request-aware ioctl table.
-Generated-file freshness, the ABI classifier, and the snapshot must pass in
-check mode on the exact PR head named by the external validation ledger.
+current Rust source declares ABI 43 and the complete required-export set.
+Generated TypeScript, the ABI classifier, and the snapshot must be regenerated
+and pass in check mode on the exact PR head named by the external validation
+ledger; this documentation-only finalization does not claim their freshness.
 
-## Historical and interim validation evidence
+## Validation boundary for finalization
 
-All commands recorded in this ledger ran through `scripts/dev-shell.sh`.
-The subsection labels distinguish historical pre-retarget evidence from
-current post-retarget dirty-tree evidence. Results inside either category do
-not all describe one source fingerprint, and artifact-sensitive results
-identify their inputs above. None is presented as an exact frozen final-head
-run.
+This tracked audit is a source and coverage contract, not a mutable execution
+log. This documentation-only finalization runs only document-local checks and
+does not claim:
 
-### Interim post-retarget evidence, not final
+- a Node runtime result;
+- real Chromium behavior;
+- retained-memory or performance measurements;
+- a complete build;
+- generated-file or ABI snapshot freshness; or
+- libc, Open POSIX, or Sortix conformance results.
 
-- `scripts/dev-shell.sh -- bash build.sh` passed the complete declared build:
-  the kernel, both-width program fixtures, host bundles, and an ABI-43 root
-  filesystem. Before that final run, both
-  `scripts/build-musl.sh` and `scripts/build-musl.sh --arch wasm64posix`
-  passed, as did `scripts/build-programs.sh`.
-- `scripts/dev-shell.sh -- cargo build --release -p kandelo --target
-  wasm64-unknown-unknown -Z build-std=core,alloc` passed the explicit wasm64
-  kernel build. It emitted existing target/conditional dead-code and
-  unused-variable warnings, not build errors.
-- `scripts/dev-shell.sh -- bash scripts/check-abi-version.sh` passed check mode.
-  It matched the IPC, native-process, and fixed-process layouts for wasm32 and
-  wasm64; confirmed all six generated ABI outputs are fresh; and verified that
-  the snapshot change accompanies the `ABI_VERSION` bump to 43.
-- The focused scratch/runtime Node matrix passed 11 files and 425 tests:
+Before the change is presented as ready, the draft PR's external ledger must
+name the frozen exact commit and record, through `scripts/dev-shell.sh`, the
+focused scratch and immutable-retry regressions, kernel parser and lifecycle unit
+tests, wasm32/wasm64 paths, complete Sortix spawn surface, generated-file and
+ABI snapshot checks, and the broader conformance suites required by the
+validation guide. Shared runtime behavior requires both Node and real Chromium
+evidence. A retained-memory or performance statement additionally requires the
+performance guide's matching before/after Node and browser measurements.
 
-  ```bash
-  scripts/dev-shell.sh -- npm --prefix host exec vitest -- run \
-    test/generated-abi.test.ts \
-    test/kernel-scratch-contract.test.ts \
-    test/wasm-memory-write-audit.test.ts \
-    test/kernel-scratch-region.test.ts \
-    test/kernel-public-scratch.test.ts \
-    test/kernel-scratch-transfer-boundaries.test.ts \
-    test/kernel.test.ts \
-    test/process-native-layout.test.ts \
-    test/timerfd-signalfd-scratch.test.ts \
-    test/scm-rights-pipe-lifetime.test.ts \
-    test/scm-rights-semantics.test.ts
-  ```
-
-  The 189 transfer-boundary cases cover both pointer widths. The four
-  real-compiled-kernel cases include mqueue and child-wait exact-capacity
-  contracts. The wait-child case rejects null and capacities 159/161 without
-  consuming the child or changing canaries, accepts exact capacity 160 and
-  reaps the child, then receives `ECHILD`.
-- A separate canonical host-directory process/spawn batch passed 8 files and
-  181 tests:
-
-  ```bash
-  scripts/dev-shell.sh -- bash -lc 'cd host && npm test -- --run \
-    test/spawn-blob-transport.test.ts \
-    test/exec-state-tracking.test.ts \
-    test/process-wait-lifecycle.test.ts \
-    test/readiness-deadline.test.ts \
-    test/advisory-lock-kernel.test.ts \
-    test/signal-accept-livelock.test.ts \
-    test/multi-worker.test.ts \
-    test/host-adapter-manifest.test.ts'
-  ```
-
-  An initial noncanonical invocation ran `multi-worker.test.ts` from the
-  repository root and failed two relative `../Cargo.toml` opens with `ENOENT`;
-  the exact canonical rerun above passed both. That invocation-context failure
-  is not a runtime or scratch failure.
-- After the adversarial review found the wrapper-generation defect,
-  `kernel-initialization-lifetime.test.ts` passed all four wasm32/wasm64,
-  reinit, concurrency, and failed-retry cases. The accompanying focused
-  public-scratch/input-snapshot/lifetime batch passed 54 tests.
-- After closing the direct pointer-export audit gap,
-  `wasm-memory-write-audit.test.ts` passed 67 focused analyzer cases. The
-  repository-wide `kernel-scratch-contract.test.ts` audit passed its selected
-  contract case in 26.56 seconds with a 60-second CI timeout. It now traces
-  wrapped callable provenance to the one reviewed lease-core raw invocation;
-  no production pointer-bearing export bypass remains allowlisted.
-- `scripts/dev-shell.sh -- npm --prefix host run typecheck` passed declaration
-  generation.
-- `scripts/dev-shell.sh -- cargo test --target aarch64-apple-darwin -p
-  kandelo` passed 1,344 unit tests, four pointer-contract integration tests,
-  and six compile-fail documentation tests.
-- `scripts/dev-shell.sh -- cargo test --target aarch64-apple-darwin -p
-  wasm-posix-shared` passed 37 shared-contract tests, and
-  `scripts/dev-shell.sh -- cargo check -p wasm-posix-shared` passed with only
-  the toolchain's unstable-atomics target-feature warning.
-- `scripts/dev-shell.sh -- cargo test -p xtask --target
-  aarch64-apple-darwin dump_abi::tests` passed 21 generator tests, and
-  `scripts/dev-shell.sh -- bash scripts/test-resolve-binary-bundle.sh` passed
-  the standalone generated-bundle freshness check.
-- Two focused Playwright commands drove real Chromium with one worker. The
-  scratch-runtime, path, file-limit, native-layout, terminal, and 16-case
-  two-width `SCM_RIGHTS` semantic group passed 23 tests. The two-width
-  child-wait and FIFO/SCM pipe-lifetime group passed another five. Total
-  focused browser evidence is eight spec files and 28 passed tests. Vite
-  reported that it could not prebundle optional application imports, but the
-  minimal self-contained test runner loaded and every listed assertion ran.
-- The libc, Open POSIX, and Sortix runners were attempted through their normal
-  entry points. The exact pre-kernel artifact-closure results are recorded in
-  “Open evidence gaps” above; none is counted as a conformance pass or a
-  scratch test failure.
-- `scripts/dev-shell.sh -- cargo fmt --all -- --check` remains blocked with
-  `error: no such command: fmt`; no undeclared host formatter was used.
-- The post-retarget Node and real-Chromium spawn-scratch measurements passed
-  three fresh-worker rounds each. Their values and runtime fingerprints are in
-  “Interim post-retarget dirty-worktree measurements.”
-
-Every result in this subsection was produced from the current dirty
-post-retarget source, not a frozen commit. It must be repeated as appropriate
-on the exact final head.
-
-### Historical pre-retarget and dirty-worktree evidence
-
-- `bash scripts/dev-shell.sh bash build.sh`: passed the complete declared build,
-  including the wasm32 kernel, wasm32/wasm64 guest programs, the TypeScript
-  host, and the root filesystem.
-- `bash scripts/dev-shell.sh cargo build --release -p kandelo --target
-  wasm64-unknown-unknown -Z build-std=core,alloc`: passed an explicit wasm64
-  kernel build from the frozen Rust source.
-- `scripts/dev-shell.sh -- cargo test --target aarch64-apple-darwin -p
-  kandelo`: the historical pre-retarget dirty-worktree run passed all 1,343
-  native kernel unit
-  tests, four integration tests, and six documentation tests. This includes
-  the exact 56-byte signal record, invalid mqueue notification signums,
-  full-width signal metadata, and self-sender metadata regressions.
-- `bash scripts/dev-shell.sh cargo test --target aarch64-apple-darwin -p
-  wasm-posix-shared` passed all 36 shared-crate unit tests, and
-  `bash scripts/dev-shell.sh cargo check -p wasm-posix-shared` passed.
-- `bash scripts/dev-shell.sh cargo check -p kandelo --target
-  wasm32-unknown-unknown -Z build-std=core,alloc` passed the explicit wasm32
-  kernel check. These are source/crate checks, not browser or full runtime
-  evidence.
-- `bash scripts/dev-shell.sh cargo test --target aarch64-apple-darwin -p kandelo
-  --test wasm_api_channel_pointer_contract`: four
-  integration tests passed. These are source-contract checks over the Wasm API
-  dispatcher and zero-length `sendmsg` guard, not a wasm-target runtime
-  execution.
-- An earlier `bash scripts/dev-shell.sh bash scripts/check-abi-version.sh` run
-  passed the ABI classifier and snapshot, generated Rust/TypeScript/C freshness
-  checks, and the wasm32/wasm64 native-layout checks. After the signal export
-  and channel-layout changes, `scripts/dev-shell.sh -- bash
-  scripts/check-abi-version.sh update` again passed both native-layout checks,
-  the kernel build, and regeneration. Check mode still requires a frozen-head
-  rerun; update mode is not substituted for that final freshness/classifier
-  evidence.
-- `scripts/dev-shell.sh -- cargo test --target aarch64-apple-darwin -p xtask
-  dump_abi::tests::generated_native_process_layout_contract_matches_both_musl_targets`
-  and the corresponding
-  `dump_abi::tests::generated_channel_contract_covers_status_layout_and_signal_wire`
-  case passed against the generated native layouts and 56-byte channel signal
-  wire.
-- `scripts/dev-shell.sh -- npm --prefix host test -- --run
-  test/kernel-scratch-transfer-boundaries.test.ts -t "fails closed when the
-  mqueue notification drain returns an errno"` passed its one selected case.
-  It proves `-EINVAL` publishes neither a wake nor a signal; the other 188
-  cases in that file were intentionally skipped by the name filter.
-- `scripts/dev-shell.sh -- npm --prefix host test -- --run test/kernel.test.ts
-  -t "requires a nonnull exact-capacity mqueue notification destination"`
-  passed its one selected real-Wasm case. It seeds one live notification
-  through `mq_notify`/`mq_timedsend`, rejects pointer zero and capacities 7/9
-  without consuming or mutating it, then accepts capacity 8, returns the
-  expected PID/signum, and preserves both destination canaries.
-- `scripts/dev-shell.sh -- npm --prefix host test -- --run
-  test/process-native-layout.test.ts` passed both wasm32 and wasm64 cases after
-  the latest full rebuild. Those cases now exercise 56-byte `SA_SIGINFO`
-  delivery, native C reconstruction, queued/timer/mqueue values, sender
-  metadata, and invalid `mq_notify` signums. This is Node evidence only;
-  Chromium remains pending.
-- `bash scripts/dev-shell.sh npm --prefix host exec vitest -- run
-  test/generated-abi.test.ts
-  test/kernel-scratch-transfer-boundaries.test.ts` passed 195 tests on the
-  regenerated TypeScript ABI consumer. Of those, 188 are the transfer-boundary
-  cases covering wasm32/wasm64 positive null, owned empty, fixed-output null,
-  option-sensitive `prctl`, null nested length, reordered `Deref`, vector and
-  message capacity, shared-memory allocator identity, and the other
-  caller/allocation boundaries inventoried above.
-- The historical broader focused host matrix passed 255 tests:
-
-  ```bash
-  scripts/dev-shell.sh npm --prefix host exec vitest -- run \
-    test/wasm-memory-write-audit.test.ts \
-    test/kernel-scratch-contract.test.ts \
-    test/kernel-scratch-region.test.ts \
-    test/kernel-public-scratch.test.ts \
-    test/spawn-blob-transport.test.ts \
-    test/centralized-spawn.test.ts \
-    test/spawn-host-parity.test.ts \
-    test/host-process-pointer-width.test.ts
-  ```
-
-  This matrix includes the 64-case compiler-backed analyzer and the
-  three-case repository scratch contract, plus region, public wrapper, spawn
-  transport, spawn lifecycle/parity, and pointer-width coverage. It is focused
-  Node evidence, not the complete host suite or a browser claim. Both focused
-  commands remain rehearsal evidence and must be repeated on the frozen
-  post-retarget head.
-- The historical broader integration matrix passed 29/29 files and 679/679
-  tests:
-
-  ```bash
-  scripts/dev-shell.sh npm --prefix host exec vitest -- run \
-    test/kernel-scratch-contract.test.ts \
-    test/wasm-memory-write-audit.test.ts \
-    test/kernel-scratch-region.test.ts \
-    test/kernel-scratch-transfer-boundaries.test.ts \
-    test/kernel-public-scratch.test.ts \
-    test/spawn-blob-transport.test.ts \
-    test/pathconf.test.ts \
-    test/file-shared-memory.test.ts \
-    test/process-native-layout.test.ts \
-    test/sysv-ipc.test.ts \
-    test/timerfd-signalfd-scratch.test.ts \
-    test/kernel-worker-copyback.test.ts \
-    test/deferred-worker-start.test.ts \
-    test/kernel-wasm-input-snapshot.test.ts \
-    test/host-process-pointer-width.test.ts \
-    test/program-fixture-freshness.test.ts \
-    test/compiled-worker-entry.test.ts \
-    test/clone-tid-authority.test.ts \
-    test/exec-state-tracking.test.ts \
-    test/process-wait-lifecycle.test.ts \
-    test/shared-memory-coherence.test.ts \
-    test/generated-abi.test.ts \
-    test/abi-version.test.ts \
-    test/host-adapter-manifest.test.ts \
-    test/terminal-attributes-api.test.ts \
-    test/centralized-spawn.test.ts \
-    test/spawn-host-parity.test.ts \
-    test/spawn-pid-authority.test.ts \
-    test/advisory-lock-kernel.test.ts
-  ```
-
-  This exact rerun includes the shared-memory allocator-identity regression
-  and every repaired wait-result pointer-plus-capacity expectation. It is
-  historical dirty-worktree Node evidence, not the complete host suite or a
-  browser claim.
-- `scripts/dev-shell.sh npm --prefix host run typecheck` passed the
-  pre-retarget dirty-worktree host declaration build.
-- `bash scripts/dev-shell.sh npx tsx --test
-  benchmarks/artifact-selection.test.ts benchmarks/timeout.test.ts`: 13
-  benchmark artifact-selection, timeout, and spawn-evidence contract tests
-  passed.
-- The generated package-index projection and its source-context check passed
-  through the worktree's declared native `xtask` with:
-
-  ```bash
-  bash scripts/dev-shell.sh target/aarch64-apple-darwin/release/xtask \
-    build-deps program-index packages/registry \
-    packages/registry/program-packages.json
-  bash scripts/dev-shell.sh target/aarch64-apple-darwin/release/xtask \
-    build-deps program-index-context-check --source-repo-root "$PWD"
-  ```
-
-  The exact-source projection has SHA-256
-  `538c269f8a4e86305929db6358176a38f4855cb6be9d83e324b1c4028db20fa0`
-  and is committed because leaving the base projection in place makes the
-  package-build-root contract fail as stale after the ABI/source changes.
-- `bash scripts/dev-shell.sh bash scripts/test-package-build-roots.sh`: passed
-  after regenerating the projection. The first CI run exposed the stale
-  projection honestly; no freshness bypass or test exception was added.
-- `bash scripts/dev-shell.sh npx tsx benchmarks/run.ts --host=node
-  --suite=spawn-scratch --rounds=3` and the corresponding `--host=browser`
-  command both passed. The browser command drove real Chromium. This evidence
-  covers only the self-contained spawn workload; the exact result files and
-  fingerprints are recorded in the sizing section.
-
-Before the fixtures opted out of the default root filesystem, artifact policy
-correctly rejected an ABI-mismatched rootfs before any assertion ran: first for
-the timer/signalfd cases, and later for the two process-native-layout plus two
-System V IPC cases. These tests execute self-contained binaries and require no
-rootfs contents, so they now pass `useDefaultRootfs: false`. The default-rootfs
-policy itself was not weakened; tests that request that artifact still require
-an ABI-matching image.
-
-### Exact final-head gates
-
-No dirty-worktree result above is substituted for these gates. The mutable
-draft PR ledger must record:
-
-- exact final head SHA plus source, generated-file, kernel Wasm, worker-bundle,
-  guest-fixture, and benchmark-input fingerprints;
-- the complete declared build and selected native/shared kernel suites;
-- ABI check mode, generated-file freshness, ABI classifier, and committed
-  snapshot checks;
-- the focused and broader Node matrices, including the real-Wasm
-  `kernel_wait_child_poll` exact-capacity regression;
-- real Chromium execution of the exact relevant specs, including scratch
-  runtime, process-native layout, wait lifecycle, and all 16 `SCM_RIGHTS`
-  semantics cases plus the two pipe-lifetime cases;
-- another normal attempt at the blocked Sortix, libc, and Open POSIX coverage
-  if the ABI-43 package closure becomes available;
-- final Node and real-Chromium retained-memory and timing measurements described
-  in the recording contract above.
-
-### Historical blockers and uncompleted coverage to reprobe
-
-- From `apps/browser-demos`,
-  `../../scripts/dev-shell.sh env CI=1 KANDELO_PLAYWRIGHT_PORT=15466
-  npx playwright test test/terminal-attributes-api.spec.ts
-  test/wait-lifecycle.spec.ts test/environment-lifecycle.spec.ts
-  test/opfs-advisory-lock.spec.ts --project=chromium` stopped during Vite
-  startup because the program graph rejected stale ABI-42 `bzip2.wasm`.
-  No assertion ran; after the blocked setup was interrupted, one test was
-  reported interrupted and five did not run. This is neither a Chromium pass
-  nor a changed-runtime failure.
-- The historical pre-retarget `SCM_RIGHTS` Chromium attempt stopped before
-  guest launch on the authored-application graph. The post-retarget focused
-  minimal-dependency command supersedes that narrow gap: all 16 semantic and
-  both pipe-lifetime cases now pass. It does not unblock the broad application
-  graph or make the historical stopped run a pass.
-- Sortix, libc-test, and Open POSIX were each reprobed normally and stop before
-  guest execution on the same incomplete one-tier ABI-43 artifact closure.
-  Exact counts and the direct resolver diagnostic are recorded above. No
-  resolver bypass or test-only exception was used.
-- The performance guide's complete application suites remain blocked by
-  unavailable ABI-43 PHP, WordPress, and MariaDB artifacts. The focused timing
-  sample is not substituted for those suites.
-- `bash scripts/dev-shell.sh cargo fmt --all -- --check` could not start:
-  the declared shell reports `error: no such command: fmt`. The discovered
-  Homebrew formatter is undeclared and was not used.
-PR #1097 is merged and retargeting is complete. The focused Chromium and
-retained-capacity results above remain historical/interim evidence rather than
-complete-application evidence. No approval may be requested and no merge may
-occur unless the draft PR's validation ledger names its current exact head and
-reports the required reruns and external blocks truthfully.
+No PR is merged by this document. Brandon's explicit approval remains required
+after the exact head and its validation ledger are ready.

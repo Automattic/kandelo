@@ -1,13 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ABI_SYSCALLS,
+  CHANNEL_STATUS_PENDING,
   CH_ARG_SIZE,
   CH_ARGS,
   CH_ERRNO,
   CH_RETURN,
+  CH_STATUS,
   CH_SYSCALL,
 } from "../src/generated/abi";
-import { CentralizedKernelWorker } from "../src/kernel-worker";
+import {
+  createCentralizedKernelWorkerTestDouble,
+} from "../src/kernel-worker";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 const EINPROGRESS = 115;
@@ -26,24 +30,11 @@ function createConnectHarness(
 ) {
   const kernelMemory = createSharedMemory();
   const processMemory = createSharedMemory();
-  const channel: any = {
-    pid: 42,
-    channelOffset: 0,
-    memory: processMemory,
-    i32View: new Int32Array(processMemory.buffer),
-  };
+  const pid = 42;
   const fd = 7;
   const addrPtr = 1024;
   const addrLen = 16;
   const args = [fd, addrPtr, addrLen, 0, 0, 0];
-  const processView = new DataView(processMemory.buffer);
-  processView.setUint32(CH_SYSCALL, ABI_SYSCALLS.Connect, true);
-  args.forEach((arg, index) => {
-    processView.setBigInt64(CH_ARGS + index * CH_ARG_SIZE, BigInt(arg), true);
-  });
-  processView.setUint16(addrPtr, options.family ?? 2, true);
-  processView.setUint16(addrPtr + 2, 80, false);
-  new Uint8Array(processMemory.buffer, addrPtr + 4, 4).set([203, 0, 113, 9]);
 
   let resultIndex = 0;
   const handleChannel = vi.fn((offset: number) => {
@@ -55,45 +46,59 @@ function createConnectHarness(
     return 0;
   });
   const completeChannel = vi.fn();
-  const worker: any = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-    kernel: { toKernelPtr: (value: number | bigint) => Number(value) },
-    kernelInstance: {
-      exports: {
+  const isFdNonblock = vi.fn(() => options.nonblock ? 1 : 0);
+  const getSocketTimeout = vi.fn(() => 0n);
+  const worker = createCentralizedKernelWorkerTestDouble();
+  installKernelWorkerTestScratch(
+    worker,
+    kernelMemory,
+    128,
+    4,
+    {
+      kernelExports: {
+        kernel_blocking_retry_release: () => 0,
+        kernel_blocking_retry_token: () => 1n,
+        kernel_dequeue_signal: () => 0,
+        kernel_get_process_exit_signal: () => -1,
+        kernel_get_socket_timeout_ms: getSocketTimeout,
         kernel_handle_channel: handleChannel,
-        kernel_is_fd_nonblock: vi.fn(() => options.nonblock ? 1 : 0),
+        kernel_is_fd_nonblock: isFdNonblock,
+        kernel_set_current_tid: () => 0,
       },
     },
-    kernelMemory,
-    processes: new Map([[channel.pid, { ptrWidth: 4 }]]),
-    currentHandlePid: 0,
-    config: {},
-    syscallRing: new Map(),
-    channelTids: new Map(),
-    syscallTraceEnabled: false,
-    sharedMmapBackings: new Map(),
-    hostReaped: new Set(),
-    pendingPollRetries: new Map(),
-    pendingSelectRetries: new Map(),
-    pendingSleeps: new Map(),
-    pendingPipeReaders: new Map(),
-    pendingPipeWriters: new Map(),
-    socketTimeoutTimers: new Map(),
-    isRegisteredChannel: vi.fn(() => true),
-    isAsyncChannelProcessActive: vi.fn(() => true),
-    deferChannelWhileStopped: vi.fn(() => false),
-    synchronizeSharedMemoryForBoundary: vi.fn(),
-    bindKernelTidForChannel: vi.fn(),
-    highControlFloorForProcess: vi.fn(() => null),
-    getProcessExitSignal: vi.fn(() => 0),
-    dequeueSignalForDelivery: vi.fn(() => 0),
-    finishSignalTermination: vi.fn(() => false),
+  );
+  worker.testAuthority.configureScratchBoundaryHooksForTest({
     completeChannel,
     completeChannelRaw: vi.fn(),
     relistenChannel: vi.fn(),
+    synchronizeSharedMemoryForBoundary: vi.fn(),
   });
-  installKernelWorkerTestScratch(worker, kernelMemory);
+  const [channel] =
+    worker.testAuthority.replaceProcessRegistrationForLifecycleTest({
+      pid,
+      memory: processMemory,
+      channelOffsets: [0],
+      pointerWidth: 4,
+    });
+  const processView = new DataView(processMemory.buffer);
+  processView.setUint32(CH_SYSCALL, ABI_SYSCALLS.Connect, true);
+  processView.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
+  args.forEach((arg, index) => {
+    processView.setBigInt64(CH_ARGS + index * CH_ARG_SIZE, BigInt(arg), true);
+  });
+  processView.setUint16(addrPtr, options.family ?? 2, true);
+  processView.setUint16(addrPtr + 2, 80, false);
+  new Uint8Array(processMemory.buffer, addrPtr + 4, 4).set([203, 0, 113, 9]);
 
-  return { args, channel, completeChannel, handleChannel, worker };
+  return {
+    args,
+    channel,
+    completeChannel,
+    getSocketTimeout,
+    handleChannel,
+    isFdNonblock,
+    worker,
+  };
 }
 
 afterEach(() => {
@@ -117,6 +122,8 @@ describe("pending AF_INET connect routing", () => {
     expect(harness.completeChannel.mock.calls[0].slice(-2)).toEqual([-1, EINPROGRESS]);
     expect(harness.completeChannel.mock.calls[1].slice(-2)).toEqual([-1, EALREADY]);
     expect(harness.worker.pendingPollRetries.size).toBe(0);
+    expect(harness.isFdNonblock).toHaveBeenCalledTimes(2);
+    expect(harness.getSocketTimeout).not.toHaveBeenCalled();
   });
 
   it("retries a blocking connect until success", () => {
@@ -136,6 +143,8 @@ describe("pending AF_INET connect routing", () => {
     expect(harness.completeChannel).toHaveBeenCalledOnce();
     expect(harness.completeChannel.mock.calls[0].slice(4, 6)).toEqual([0, 0]);
     expect(harness.worker.pendingPollRetries.size).toBe(0);
+    expect(harness.isFdNonblock).toHaveBeenCalledOnce();
+    expect(harness.getSocketTimeout).toHaveBeenCalledOnce();
   });
 
   it("keeps a blocking EALREADY retry parked and then returns the failure", () => {
@@ -158,6 +167,8 @@ describe("pending AF_INET connect routing", () => {
     expect(harness.completeChannel).toHaveBeenCalledOnce();
     expect(harness.completeChannel.mock.calls[0].slice(4, 6)).toEqual([-1, ECONNREFUSED]);
     expect(harness.worker.pendingPollRetries.size).toBe(0);
+    expect(harness.isFdNonblock).toHaveBeenCalledOnce();
+    expect(harness.getSocketTimeout).toHaveBeenCalledOnce();
   });
 
   it("does not apply the host-delegated AF_INET retry rule to AF_UNIX", () => {
@@ -171,10 +182,12 @@ describe("pending AF_INET connect routing", () => {
     expect(harness.completeChannel).toHaveBeenCalledOnce();
     expect(harness.completeChannel.mock.calls[0].slice(4, 6)).toEqual([-1, EINPROGRESS]);
     expect(harness.worker.pendingPollRetries.size).toBe(0);
+    expect(harness.isFdNonblock).not.toHaveBeenCalled();
+    expect(harness.getSocketTimeout).not.toHaveBeenCalled();
   });
 
   it("names EALREADY in syscall diagnostics", () => {
-    const worker: any = Object.create(CentralizedKernelWorker.prototype);
+    const worker = createCentralizedKernelWorkerTestDouble();
 
     expect(worker.formatSyscallReturn(ABI_SYSCALLS.Connect, -1, EALREADY))
       .toBe(" = -1 (EALREADY)");

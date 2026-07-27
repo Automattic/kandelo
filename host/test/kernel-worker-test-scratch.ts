@@ -1,36 +1,89 @@
 import { CH_TOTAL_SIZE } from "../src/generated/abi";
+import {
+  createKernelEntryGatedInstance,
+  KernelEntryGate,
+} from "../src/kernel-entry-gate";
 import { allocateKernelScratchRegion } from "../src/kernel-scratch";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
+interface KernelWorkerTestAuthority {
+  initializeKernelForTest(options: {
+    readonly instance: WebAssembly.Instance;
+    readonly gate: KernelEntryGate;
+    readonly mainScratch: ReturnType<typeof allocateKernelScratchRegion>;
+  }): void;
+}
+
+interface KernelWorkerTestScratchOptions {
+  readonly boundInstance?: WebAssembly.Instance;
+  readonly gate?: KernelEntryGate;
+  readonly kernelExports?: Readonly<Record<string, unknown>>;
+  /** Restrict the genuine fixture to these exports for required-export tests. */
+  readonly kernelExportNames?: readonly string[];
+}
+
 /**
- * Install the same capacity-carrying main scratch contract that worker.init()
- * creates, for white-box tests that intentionally bypass the constructor and
- * Wasm allocator.
+ * Install the same gated, capacity-carrying main scratch contract that
+ * worker.init() creates.
+ *
+ * Structural export mocks remain owned by the test. The worker receives only
+ * a genuine Wasm instance, its exact gate-bound facade, and an
+ * allocator-created region for that same generation.
  */
 export function installKernelWorkerTestScratch(
-  worker: Record<string, unknown>,
+  worker: {
+    readonly testAuthority?: KernelWorkerTestAuthority;
+  },
   memory: WebAssembly.Memory,
   pointer = 128,
   pointerWidth: 4 | 8 = 4,
+  options: KernelWorkerTestScratchOptions = {},
 ): number {
-  worker.kernelMemory = memory;
-  const scratchTestInstance = createKernelScratchTestInstance(
-    pointerWidth,
+  const authority = worker.testAuthority;
+  if (authority === undefined) {
+    throw new Error("worker is not a module-authorized kernel test double");
+  }
+  if ((options.boundInstance === undefined) !== (options.gate === undefined)) {
+    throw new Error(
+      "a bound test instance and its exact kernel entry gate must be provided together",
+    );
+  }
+  if (
+    options.boundInstance !== undefined &&
+    options.kernelExports !== undefined
+  ) {
+    throw new Error(
+      "kernelExports cannot replace exports on an already-bound test instance",
+    );
+  }
+  const gate = options.gate ?? new KernelEntryGate();
+  const gatedInstance = options.boundInstance ?? (() => {
+    const rawInstance = createKernelScratchTestInstance(
+      pointerWidth,
+      memory,
+      () => options.kernelExports ?? {},
+      () => pointerWidth === 8 ? BigInt(pointer) : pointer,
+      4,
+      options.kernelExportNames,
+    );
+    return createKernelEntryGatedInstance(
+      rawInstance,
+      gate,
+    );
+  })();
+  const mainScratch = allocateKernelScratchRegion(
     memory,
-    () => (
-      worker.kernelInstance as { exports?: Record<string, unknown> } | undefined
-    )?.exports ?? {},
-    () => pointerWidth === 8 ? BigInt(pointer) : pointer,
-  );
-  worker.scratchTestInstance = scratchTestInstance;
-  worker.scratchRegion = allocateKernelScratchRegion(
-    memory,
-    scratchTestInstance.exports.kernel_alloc_scratch as
+    gatedInstance.exports.kernel_alloc_scratch as
       (size: number) => number | bigint,
     CH_TOTAL_SIZE,
     pointerWidth,
     "test kernel syscall scratch",
-    scratchTestInstance,
+    gatedInstance,
   );
+  authority.initializeKernelForTest({
+    instance: gatedInstance,
+    gate,
+    mainScratch,
+  });
   return pointer;
 }

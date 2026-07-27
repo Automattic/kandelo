@@ -1,11 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  CentralizedKernelWorker,
+  type CentralizedKernelCallbacks,
+  createCentralizedKernelWorkerTestDouble,
   SPAWN_BLOB_MAX_BYTES,
 } from "../src/kernel-worker";
 import {
+  createKernelEntryGatedInstance,
+  KernelEntryGate,
+  KernelReentrantEntryError,
+} from "../src/kernel-entry-gate";
+import {
+  CHANNEL_STATUS_PENDING,
   CH_DATA_SIZE,
+  CH_STATUS,
   CH_TOTAL_SIZE,
   HOST_INTERCEPTED_SYSCALLS,
   POSIX_ARG_MAX_BYTES,
@@ -36,17 +44,16 @@ const ENAMETOOLONG = 36;
 describe("SYS_SPAWN blob transport", () => {
   it("reports the Rust-owned retained capacity losslessly", () => {
     const worker = createWorker({
-      kernelInstance: {
-        exports: {
-          kernel_spawn_scratch_retained_capacity: vi.fn(() => 84_386n),
-        },
+      pointerWidth: 8,
+      kernelExports: {
+        kernel_spawn_scratch_retained_capacity: vi.fn(() => 84_386n),
       },
     });
 
     expect(worker.getSpawnScratchCapacity()).toBe(84_386);
   });
 
-  it("grows one Rust-owned reservation to the requested high-water mark", () => {
+  it("grows one Rust-owned reservation to the requested high-water mark", async () => {
     const firstBlob = new Uint8Array(CH_TOTAL_SIZE + 1024).fill(0x31);
     const reusedBlob = new Uint8Array(firstBlob.byteLength + 512).fill(0x32);
     const grownBlob = new Uint8Array(firstBlob.byteLength + 4096).fill(0x33);
@@ -94,14 +101,12 @@ describe("SYS_SPAWN blob transport", () => {
       callbacks: { onSpawn: vi.fn(() => new Promise<number>(() => {})) },
       kernelMemory,
       scratchPointer: 1024,
-      kernelInstance: {
-        exports: {
-          kernel_spawn_scratch_begin: beginSpawnScratch,
-          kernel_spawn_scratch_pointer: spawnScratchPointer,
-          kernel_spawn_scratch_capacity: spawnScratchCapacity,
-          kernel_spawn_scratch_cancel: cancelSpawnScratch,
-          kernel_spawn_reserved_process: kernelReservedSpawn,
-        },
+      kernelExports: {
+        kernel_spawn_scratch_begin: beginSpawnScratch,
+        kernel_spawn_scratch_pointer: spawnScratchPointer,
+        kernel_spawn_scratch_capacity: spawnScratchCapacity,
+        kernel_spawn_scratch_cancel: cancelSpawnScratch,
+        kernel_spawn_reserved_process: kernelReservedSpawn,
       },
     });
     const invoke = (blob: Uint8Array) => worker.handleSpawnAfterResolve(
@@ -117,6 +122,7 @@ describe("SYS_SPAWN blob transport", () => {
     );
 
     invoke(firstBlob);
+    await drainSpawnGate();
     expect(beginSpawnScratch).toHaveBeenCalledWith(firstBlob.byteLength);
     expect(kernelReservedSpawn).toHaveBeenLastCalledWith(
       7,
@@ -126,6 +132,7 @@ describe("SYS_SPAWN blob transport", () => {
     );
 
     invoke(reusedBlob);
+    await drainSpawnGate();
     expect(beginSpawnScratch).toHaveBeenCalledTimes(2);
     expect(kernelReservedSpawn).toHaveBeenLastCalledWith(
       7,
@@ -135,6 +142,7 @@ describe("SYS_SPAWN blob transport", () => {
     );
 
     invoke(grownBlob);
+    await drainSpawnGate();
     expect(beginSpawnScratch).toHaveBeenCalledTimes(3);
     expect(beginSpawnScratch).toHaveBeenLastCalledWith(grownBlob.byteLength);
     expect(kernelReservedSpawn).toHaveBeenLastCalledWith(
@@ -157,20 +165,15 @@ describe("SYS_SPAWN blob transport", () => {
     const beginSpawnScratch = vi.fn(() => 77n);
     const kernelReservedSpawn = vi.fn(() => 42);
     const worker = createWorker({
-      kernel: {
-        toKernelPtr: (value: number | bigint) => BigInt(value),
-        getKernelPtrWidth: () => 8,
-      },
+      pointerWidth: 8,
       callbacks: { onSpawn: vi.fn(() => new Promise<number>(() => {})) },
       kernelMemory,
-      kernelInstance: {
-        exports: {
-          kernel_spawn_scratch_begin: beginSpawnScratch,
-          kernel_spawn_scratch_pointer: vi.fn(() => pointer),
-          kernel_spawn_scratch_capacity: vi.fn(() => BigInt(blob.byteLength)),
-          kernel_spawn_scratch_cancel: vi.fn(() => -EINVAL),
-          kernel_spawn_reserved_process: kernelReservedSpawn,
-        },
+      kernelExports: {
+        kernel_spawn_scratch_begin: beginSpawnScratch,
+        kernel_spawn_scratch_pointer: vi.fn(() => pointer),
+        kernel_spawn_scratch_capacity: vi.fn(() => BigInt(blob.byteLength)),
+        kernel_spawn_scratch_cancel: vi.fn(() => -EINVAL),
+        kernel_spawn_reserved_process: kernelReservedSpawn,
       },
     });
 
@@ -235,14 +238,12 @@ describe("SYS_SPAWN blob transport", () => {
       callbacks: { onSpawn: vi.fn() },
       completeChannel,
       kernelMemory: new WebAssembly.Memory({ initial: 2, maximum: 2 }),
-      kernelInstance: {
-        exports: {
-          kernel_spawn_scratch_begin: vi.fn(() => beginResult),
-          kernel_spawn_scratch_pointer: vi.fn(() => pointer),
-          kernel_spawn_scratch_capacity: vi.fn(() => capacity),
-          kernel_spawn_scratch_cancel: cancelSpawnScratch,
-          kernel_spawn_reserved_process: kernelReservedSpawn,
-        },
+      kernelExports: {
+        kernel_spawn_scratch_begin: vi.fn(() => beginResult),
+        kernel_spawn_scratch_pointer: vi.fn(() => pointer),
+        kernel_spawn_scratch_capacity: vi.fn(() => capacity),
+        kernel_spawn_scratch_cancel: cancelSpawnScratch,
+        kernel_spawn_reserved_process: kernelReservedSpawn,
       },
     });
     const channel = createChannel(7, sharedMemoryFor(65_536));
@@ -327,26 +328,23 @@ describe("SYS_SPAWN blob transport", () => {
       return childPid;
     });
     const onSpawn = vi.fn(() => new Promise<number>(() => {}));
+    const onResolveSpawn = vi.fn(async () => resolvedProgram());
+    const completeChannel = vi.fn();
     const channel = createChannel(parentPid, processMemory);
     const worker = createWorker({
       callbacks: {
-        onResolveSpawn: vi.fn(async () => resolvedProgram()),
+        onResolveSpawn,
         onSpawn,
       },
-      processes: new Map([[
-        parentPid,
-        { channels: [channel], memory: processMemory, ptrWidth: 4 },
-      ]]),
+      completeChannel,
       kernelMemory,
       scratchPointer: generalScratchOffset,
-      kernelInstance: {
-        exports: {
-          kernel_spawn_scratch_begin: beginSpawnScratch,
-          kernel_spawn_scratch_pointer: vi.fn(() => largeScratchOffset),
-          kernel_spawn_scratch_capacity: vi.fn(() => blob.byteLength),
-          kernel_spawn_scratch_cancel: vi.fn(() => -EINVAL),
-          kernel_spawn_reserved_process: kernelReservedSpawn,
-        },
+      kernelExports: {
+        kernel_spawn_scratch_begin: beginSpawnScratch,
+        kernel_spawn_scratch_pointer: vi.fn(() => largeScratchOffset),
+        kernel_spawn_scratch_capacity: vi.fn(() => blob.byteLength),
+        kernel_spawn_scratch_cancel: vi.fn(() => -EINVAL),
+        kernel_spawn_reserved_process: kernelReservedSpawn,
       },
     });
     const args = [
@@ -359,9 +357,10 @@ describe("SYS_SPAWN blob transport", () => {
     ];
 
     worker.handleSpawn(channel, args);
-    await Promise.resolve();
-    await Promise.resolve();
+    await drainSpawnGate();
 
+    expect(onResolveSpawn).toHaveBeenCalledOnce();
+    expect(completeChannel).not.toHaveBeenCalled();
     expect(beginSpawnScratch).toHaveBeenCalledOnce();
     expect(beginSpawnScratch).toHaveBeenCalledWith(blob.byteLength);
     expect(kernelReservedSpawn).toHaveBeenCalledOnce();
@@ -403,11 +402,9 @@ describe("SYS_SPAWN blob transport", () => {
       callbacks: { onSpawn: vi.fn(() => new Promise<number>(() => {})) },
       kernelMemory,
       scratchPointer,
-      kernelInstance: {
-        exports: {
-          kernel_alloc_scratch: allocScratch,
-          kernel_spawn_process: kernelSpawn,
-        },
+      kernelExports: {
+        kernel_alloc_scratch: allocScratch,
+        kernel_spawn_process: kernelSpawn,
       },
     });
 
@@ -471,15 +468,13 @@ describe("SYS_SPAWN blob transport", () => {
       callbacks: { onSpawn: vi.fn(() => new Promise<number>(() => {})) },
       kernelMemory,
       scratchPointer: 1024,
-      kernelInstance: {
-        exports: {
-          kernel_spawn_process: kernelSpawn,
-          kernel_spawn_scratch_begin: beginSpawnScratch,
-          kernel_spawn_scratch_pointer: vi.fn(() => 2 * CH_TOTAL_SIZE),
-          kernel_spawn_scratch_capacity: vi.fn(() => blobLen),
-          kernel_spawn_scratch_cancel: vi.fn(() => -EINVAL),
-          kernel_spawn_reserved_process: kernelReservedSpawn,
-        },
+      kernelExports: {
+        kernel_spawn_process: kernelSpawn,
+        kernel_spawn_scratch_begin: beginSpawnScratch,
+        kernel_spawn_scratch_pointer: vi.fn(() => 2 * CH_TOTAL_SIZE),
+        kernel_spawn_scratch_capacity: vi.fn(() => blobLen),
+        kernel_spawn_scratch_cancel: vi.fn(() => -EINVAL),
+        kernel_spawn_reserved_process: kernelReservedSpawn,
       },
     });
 
@@ -528,14 +523,12 @@ describe("SYS_SPAWN blob transport", () => {
     const worker = createWorker({
       callbacks: { onSpawn: vi.fn(() => new Promise<number>(() => {})) },
       kernelMemory,
-      kernelInstance: {
-        exports: {
-          kernel_spawn_scratch_begin: vi.fn(() => 99n),
-          kernel_spawn_scratch_pointer: vi.fn(() => largeScratchOffset),
-          kernel_spawn_scratch_capacity: vi.fn(() => blob.byteLength),
-          kernel_spawn_scratch_cancel: vi.fn(() => -EINVAL),
-          kernel_spawn_reserved_process: kernelReservedSpawn,
-        },
+      kernelExports: {
+        kernel_spawn_scratch_begin: vi.fn(() => 99n),
+        kernel_spawn_scratch_pointer: vi.fn(() => largeScratchOffset),
+        kernel_spawn_scratch_capacity: vi.fn(() => blob.byteLength),
+        kernel_spawn_scratch_cancel: vi.fn(() => -EINVAL),
+        kernel_spawn_reserved_process: kernelReservedSpawn,
       },
     });
 
@@ -572,14 +565,12 @@ describe("SYS_SPAWN blob transport", () => {
       completeChannel,
       kernelMemory: new WebAssembly.Memory({ initial: 2, maximum: 2 }),
       scratchPointer: 1024,
-      kernelInstance: {
-        exports: {
-          kernel_spawn_scratch_begin: beginSpawnScratch,
-          kernel_spawn_scratch_pointer: vi.fn(() => scratchPointer),
-          kernel_spawn_scratch_capacity: vi.fn(() => blob.byteLength),
-          kernel_spawn_scratch_cancel: vi.fn(() => -EINVAL),
-          kernel_spawn_reserved_process: kernelReservedSpawn,
-        },
+      kernelExports: {
+        kernel_spawn_scratch_begin: beginSpawnScratch,
+        kernel_spawn_scratch_pointer: vi.fn(() => scratchPointer),
+        kernel_spawn_scratch_capacity: vi.fn(() => blob.byteLength),
+        kernel_spawn_scratch_cancel: vi.fn(() => -EINVAL),
+        kernel_spawn_reserved_process: kernelReservedSpawn,
       },
     });
     const channel = createChannel(7, sharedMemoryFor(65_536));
@@ -639,11 +630,9 @@ describe("SYS_SPAWN blob transport", () => {
       completeChannel,
       kernelMemory: new WebAssembly.Memory({ initial: 2, maximum: 2 }),
       scratchPointer: 1024,
-      kernelInstance: {
-        exports: {
-          kernel_alloc_scratch: fixedAllocator,
-          kernel_spawn_reserved_process: kernelReservedSpawn,
-        },
+      kernelExports: {
+        kernel_alloc_scratch: fixedAllocator,
+        kernel_spawn_reserved_process: kernelReservedSpawn,
       },
     });
     const channel = createChannel(7, sharedMemoryFor(65_536));
@@ -687,14 +676,12 @@ describe("SYS_SPAWN blob transport", () => {
       callbacks: { onSpawn: vi.fn() },
       completeChannel,
       kernelMemory: new WebAssembly.Memory({ initial: 2, maximum: 2 }),
-      kernelInstance: {
-        exports: {
-          kernel_spawn_scratch_begin: vi.fn(() => 17n),
-          kernel_spawn_scratch_pointer: vi.fn(() => 4096),
-          kernel_spawn_scratch_capacity: vi.fn(() => blobLength),
-          kernel_spawn_scratch_cancel: cancelSpawnScratch,
-          kernel_spawn_reserved_process: kernelReservedSpawn,
-        },
+      kernelExports: {
+        kernel_spawn_scratch_begin: vi.fn(() => 17n),
+        kernel_spawn_scratch_pointer: vi.fn(() => 4096),
+        kernel_spawn_scratch_capacity: vi.fn(() => blobLength),
+        kernel_spawn_scratch_cancel: cancelSpawnScratch,
+        kernel_spawn_reserved_process: kernelReservedSpawn,
       },
     });
     const channel = createChannel(7, sharedMemoryFor(65_536));
@@ -724,7 +711,7 @@ describe("SYS_SPAWN blob transport", () => {
     );
   });
 
-  it("cancels a commit rejection before admitting the next large spawn", () => {
+  it("cancels a commit rejection before admitting the next large spawn", async () => {
     const blob = new Uint8Array(CH_TOTAL_SIZE + 1);
     const completeChannel = vi.fn();
     const beginSpawnScratch = vi.fn()
@@ -741,14 +728,12 @@ describe("SYS_SPAWN blob transport", () => {
       callbacks: { onSpawn },
       completeChannel,
       kernelMemory: new WebAssembly.Memory({ initial: 2, maximum: 2 }),
-      kernelInstance: {
-        exports: {
-          kernel_spawn_scratch_begin: beginSpawnScratch,
-          kernel_spawn_scratch_pointer: vi.fn(() => 4096),
-          kernel_spawn_scratch_capacity: vi.fn(() => blob.byteLength),
-          kernel_spawn_scratch_cancel: cancelSpawnScratch,
-          kernel_spawn_reserved_process: kernelReservedSpawn,
-        },
+      kernelExports: {
+        kernel_spawn_scratch_begin: beginSpawnScratch,
+        kernel_spawn_scratch_pointer: vi.fn(() => 4096),
+        kernel_spawn_scratch_capacity: vi.fn(() => blob.byteLength),
+        kernel_spawn_scratch_cancel: cancelSpawnScratch,
+        kernel_spawn_reserved_process: kernelReservedSpawn,
       },
     });
     const channel = createChannel(7, sharedMemoryFor(65_536));
@@ -778,32 +763,33 @@ describe("SYS_SPAWN blob transport", () => {
 
     completeChannel.mockClear();
     invoke();
+    await drainSpawnGate();
     expect(beginSpawnScratch).toHaveBeenCalledTimes(2);
     expect(kernelReservedSpawn).toHaveBeenCalledTimes(2);
     expect(cancelSpawnScratch).toHaveBeenNthCalledWith(2, 32n);
     expect(onSpawn).toHaveBeenCalledOnce();
   });
 
-  it("keeps the large-spawn guard closed after cancellation protocol failure", () => {
+  it("keeps the large-spawn guard closed after cancellation protocol failure", async () => {
     const blob = new Uint8Array(CH_TOTAL_SIZE + 1);
     const completeChannel = vi.fn();
     const beginSpawnScratch = vi.fn(() => 41n);
+    const onKernelFatal = vi.fn();
     const worker = createWorker({
-      callbacks: { onSpawn: vi.fn() },
+      callbacks: {
+        onKernelFatal,
+        onSpawn: vi.fn(),
+      },
       completeChannel,
       kernelMemory: new WebAssembly.Memory({ initial: 2, maximum: 2 }),
-      kernelInstance: {
-        exports: {
-          kernel_spawn_scratch_begin: beginSpawnScratch,
-          kernel_spawn_scratch_pointer: vi.fn(() => 4096),
-          kernel_spawn_scratch_capacity: vi.fn(() => blob.byteLength),
-          kernel_spawn_scratch_cancel: vi.fn(() => -EBUSY),
-          kernel_spawn_reserved_process: vi.fn(() => -EBUSY),
-        },
+      kernelExports: {
+        kernel_spawn_scratch_begin: beginSpawnScratch,
+        kernel_spawn_scratch_pointer: vi.fn(() => 4096),
+        kernel_spawn_scratch_capacity: vi.fn(() => blob.byteLength),
+        kernel_spawn_scratch_cancel: vi.fn(() => -EBUSY),
+        kernel_spawn_reserved_process: vi.fn(() => -EBUSY),
       },
     });
-    const protocolFailure = vi.fn();
-    worker.terminateForKernelProtocolFailure = protocolFailure;
     const channel = createChannel(7, sharedMemoryFor(65_536));
     const args = [0, 0, 0, blob.byteLength, 0, 0];
     const invoke = () => worker.handleSpawnAfterResolve(
@@ -818,23 +804,36 @@ describe("SYS_SPAWN blob transport", () => {
       [],
     );
 
-    invoke();
-    expect(protocolFailure).toHaveBeenCalledOnce();
+    let firstFailure: unknown;
+    try {
+      invoke();
+    } catch (error) {
+      firstFailure = error;
+    }
+    expect(firstFailure).toMatchObject({
+      message: "void kernel ingress resolved spawn transport test failed",
+      cause: {
+        name: "KernelTransferExecuteTrapError",
+        message: "kernel spawn reservation could not be settled",
+      },
+    });
+    await drainSpawnGate();
+    expect(onKernelFatal).toHaveBeenCalledOnce();
+    expect(onKernelFatal).toHaveBeenCalledWith(firstFailure);
     expect(completeChannel).not.toHaveBeenCalled();
 
-    invoke();
+    let secondFailure: unknown;
+    try {
+      invoke();
+    } catch (error) {
+      secondFailure = error;
+    }
+    expect(secondFailure).toBe(firstFailure);
     expect(beginSpawnScratch).toHaveBeenCalledOnce();
-    expect(completeChannel).toHaveBeenCalledWith(
-      channel,
-      HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN,
-      args,
-      undefined,
-      -1,
-      EBUSY,
-    );
+    expect(completeChannel).not.toHaveBeenCalled();
   });
 
-  it("rejects reentrant large reservation without replacing outer bytes", () => {
+  it("rejects reentrant large reservation without replacing outer bytes", async () => {
     const outerBlob = new Uint8Array(CH_TOTAL_SIZE + 1).fill(0x41);
     const nestedBlob = new Uint8Array(CH_TOTAL_SIZE + 2).fill(0x42);
     const kernelMemory = new WebAssembly.Memory({ initial: 3, maximum: 3 });
@@ -846,6 +845,7 @@ describe("SYS_SPAWN blob transport", () => {
     const channel = createChannel(7, sharedMemoryFor(65_536));
     const outerArgs = [0, 0, 0, outerBlob.byteLength, 0, 0];
     const nestedArgs = [0, 0, 0, nestedBlob.byteLength, 0, 0];
+    let reentrantError: unknown;
     let worker: any;
     const kernelReservedSpawn = vi.fn(() => {
       expect(
@@ -854,17 +854,21 @@ describe("SYS_SPAWN blob transport", () => {
           scratchPointer + outerBlob.byteLength,
         ),
       ).toEqual(outerBlob);
-      worker.handleSpawnAfterResolve(
-        channel,
-        nestedArgs,
-        7,
-        7,
-        0,
-        nestedBlob,
-        nestedBlob.byteLength,
-        resolvedProgram(),
-        [],
-      );
+      try {
+        worker.handleSpawnAfterResolve(
+          channel,
+          nestedArgs,
+          7,
+          7,
+          0,
+          nestedBlob,
+          nestedBlob.byteLength,
+          resolvedProgram(),
+          [],
+        );
+      } catch (error) {
+        reentrantError = error;
+      }
       expect(
         kernelBytes.slice(
           scratchPointer,
@@ -877,14 +881,12 @@ describe("SYS_SPAWN blob transport", () => {
       callbacks: { onSpawn: vi.fn(() => new Promise<number>(() => {})) },
       completeChannel,
       kernelMemory,
-      kernelInstance: {
-        exports: {
-          kernel_spawn_scratch_begin: beginSpawnScratch,
-          kernel_spawn_scratch_pointer: vi.fn(() => scratchPointer),
-          kernel_spawn_scratch_capacity: vi.fn(() => nestedBlob.byteLength),
-          kernel_spawn_scratch_cancel: cancelSpawnScratch,
-          kernel_spawn_reserved_process: kernelReservedSpawn,
-        },
+      kernelExports: {
+        kernel_spawn_scratch_begin: beginSpawnScratch,
+        kernel_spawn_scratch_pointer: vi.fn(() => scratchPointer),
+        kernel_spawn_scratch_capacity: vi.fn(() => nestedBlob.byteLength),
+        kernel_spawn_scratch_cancel: cancelSpawnScratch,
+        kernel_spawn_reserved_process: kernelReservedSpawn,
       },
     });
 
@@ -904,7 +906,8 @@ describe("SYS_SPAWN blob transport", () => {
     expect(kernelReservedSpawn).toHaveBeenCalledOnce();
     expect(cancelSpawnScratch).toHaveBeenCalledOnce();
     expect(cancelSpawnScratch).toHaveBeenCalledWith(23n);
-    expect(completeChannel).toHaveBeenCalledWith(
+    expect(reentrantError).toBeInstanceOf(KernelReentrantEntryError);
+    expect(completeChannel).not.toHaveBeenCalledWith(
       channel,
       HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN,
       nestedArgs,
@@ -912,6 +915,72 @@ describe("SYS_SPAWN blob transport", () => {
       -1,
       EBUSY,
     );
+    await drainSpawnGate();
+    expect(beginSpawnScratch).toHaveBeenCalledOnce();
+    expect(kernelReservedSpawn).toHaveBeenCalledOnce();
+    expect(cancelSpawnScratch).toHaveBeenCalledOnce();
+  });
+
+  it("rejects reentrant preflight without retaining caller-owned argv", async () => {
+    const blob = new Uint8Array(CH_TOTAL_SIZE + 1).fill(0x41);
+    const channel = createChannel(7, sharedMemoryFor(65_536));
+    const outerArgs = [0, 0, 0, blob.byteLength, 0, 0];
+    const callerRead = vi.fn();
+    const callerArgs = new Proxy(
+      [0, 0, 0, 0, 0, 0],
+      {
+        get(target, property, receiver) {
+          callerRead(property);
+          return Reflect.get(target, property, receiver);
+        },
+      },
+    );
+    const onResolveSpawn = vi.fn();
+    let reentrantError: unknown;
+    let worker!: SpawnWorkerTestHarness;
+    const kernelReservedSpawn = vi.fn(() => {
+      try {
+        worker.handleSpawn(channel, callerArgs);
+      } catch (error) {
+        reentrantError = error;
+      }
+      return 42;
+    });
+    worker = createWorker({
+      callbacks: {
+        onResolveSpawn,
+        onSpawn: vi.fn(() => new Promise<number>(() => {})),
+      },
+      kernelMemory: new WebAssembly.Memory({ initial: 3, maximum: 3 }),
+      scratchPointer: 4096,
+      kernelExports: {
+        kernel_spawn_scratch_begin: vi.fn(() => 23n),
+        kernel_spawn_scratch_pointer: vi.fn(() => 4096),
+        kernel_spawn_scratch_capacity: vi.fn(() => blob.byteLength),
+        kernel_spawn_scratch_cancel: vi.fn(() => -EINVAL),
+        kernel_spawn_reserved_process: kernelReservedSpawn,
+      },
+    });
+
+    worker.handleSpawnAfterResolve(
+      channel,
+      outerArgs,
+      7,
+      7,
+      0,
+      blob,
+      blob.byteLength,
+      resolvedProgram(),
+      [],
+    );
+
+    expect(reentrantError).toBeInstanceOf(KernelReentrantEntryError);
+    expect(callerRead).not.toHaveBeenCalled();
+    expect(onResolveSpawn).not.toHaveBeenCalled();
+    await drainSpawnGate();
+    expect(callerRead).not.toHaveBeenCalled();
+    expect(onResolveSpawn).not.toHaveBeenCalled();
+    expect(kernelReservedSpawn).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -1014,7 +1083,6 @@ describe("SYS_SPAWN blob transport", () => {
     const onResolveSpawn = vi.fn();
     const worker = createWorker({
       callbacks: { onResolveSpawn, onSpawn: vi.fn() },
-      processes: new Map([[7, { channels: [channel], memory, ptrWidth: 4 }]]),
       completeChannel,
     });
     const syscallArgs = args(memory.buffer.byteLength);
@@ -1039,7 +1107,6 @@ describe("SYS_SPAWN blob transport", () => {
     const onResolveSpawn = vi.fn();
     const worker = createWorker({
       callbacks: { onResolveSpawn, onSpawn: vi.fn() },
-      processes: new Map([[7, { channels: [channel], memory, ptrWidth: 4 }]]),
       completeChannel,
     });
     const args = [0, 0, 256, SPAWN_BLOB_MAX_BYTES + 1, 0, 0];
@@ -1071,7 +1138,6 @@ describe("SYS_SPAWN blob transport", () => {
     const onResolveSpawn = vi.fn();
     const worker = createWorker({
       callbacks: { onResolveSpawn, onSpawn: vi.fn() },
-      processes: new Map([[7, { channels: [channel], memory, ptrWidth: 4 }]]),
       completeChannel,
     });
     const args = [
@@ -1147,10 +1213,11 @@ describe("SYS_SPAWN blob transport", () => {
         SPAWN_MAX_ACTION_COUNT,
       ),
     },
-  ])("admits the exact $name count cap before resolution", ({ blob }) => {
+  ])("admits the exact $name count cap before resolution", async ({ blob }) => {
     const harness = createSpawnPreflightHarness(blob(), 4);
 
     harness.worker.handleSpawn(harness.channel, harness.args);
+    await drainSpawnGate();
 
     expect(harness.onResolveSpawn).toHaveBeenCalledOnce();
     expect(harness.completeChannel).not.toHaveBeenCalled();
@@ -1199,13 +1266,14 @@ describe("SYS_SPAWN blob transport", () => {
 
   it.each([4, 8] as const)(
     "enforces aggregate ARG_MAX exactly for a wasm%s caller",
-    (pointerWidth) => {
+    async (pointerWidth) => {
       const exact = createSpawnPreflightHarness(
         buildArgMaxBoundarySpawnBlob(pointerWidth, 0),
         pointerWidth,
       );
 
       exact.worker.handleSpawn(exact.channel, exact.args);
+      await drainSpawnGate();
 
       expect(exact.onResolveSpawn).toHaveBeenCalledOnce();
       expect(exact.completeChannel).not.toHaveBeenCalled();
@@ -1246,7 +1314,6 @@ describe("SYS_SPAWN blob transport", () => {
     const onResolveSpawn = vi.fn();
     const worker = createWorker({
       callbacks: { onResolveSpawn, onSpawn: vi.fn() },
-      processes: new Map([[7, { channels: [channel], memory, ptrWidth: 4 }]]),
       completeChannel,
     });
     const args = [
@@ -1296,10 +1363,7 @@ function createSpawnPreflightHarness(
   const onResolveSpawn = vi.fn(() => new Promise<never>(() => {}));
   const worker = createWorker({
     callbacks: { onResolveSpawn, onSpawn: vi.fn() },
-    processes: new Map([[
-      7,
-      { channels: [channel], memory, ptrWidth: pointerWidth },
-    ]]),
+    pointerWidth,
     completeChannel,
   });
   const args = [
@@ -1319,68 +1383,152 @@ function createSpawnPreflightHarness(
   };
 }
 
-function createWorker(overrides: Record<string, unknown>): any {
+interface SpawnWorkerTestOptions {
+  readonly callbacks?: CentralizedKernelCallbacks;
+  readonly completeChannel?: (...args: any[]) => void;
+  readonly kernelExports?: Readonly<Record<string, unknown>>;
+  readonly kernelMemory?: WebAssembly.Memory;
+  readonly pointerWidth?: 4 | 8;
+  readonly scratchPointer?: number;
+}
+
+interface SpawnWorkerTestHarness {
+  readonly getSpawnScratchCapacity: () => number;
+  readonly handleSpawn: (channel: any, origArgs: number[]) => void;
+  readonly handleSpawnAfterResolve: (
+    channel: any,
+    origArgs: number[],
+    parentPid: number,
+    callerTid: number,
+    pidOutPtr: number,
+    blobBytes: Uint8Array,
+    blobLen: number,
+    program: ReturnType<typeof resolvedProgram>,
+    envp: string[],
+  ) => void;
+}
+
+function createWorker(
+  options: SpawnWorkerTestOptions,
+): SpawnWorkerTestHarness {
   const {
     scratchPointer,
-    ...workerOverrides
-  } = overrides as Record<string, unknown> & { scratchPointer?: number };
-  const worker = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-    kernel: {
-      toKernelPtr: (value: number | bigint) => Number(value),
-      getKernelPtrWidth: () => 4,
-    },
-    callbacks: {},
-    processes: new Map(),
-    channelTids: new Map(),
-    hostReaped: new Set(),
-    sharedMappings: new Map(),
-    tcpListenerTargets: new Map(),
-    tcpListenerRRIndex: new Map(),
-    tcpListeners: new Map(),
-    epollInterests: new Map(),
-    completeChannel: vi.fn(),
-    ...workerOverrides,
-  });
-  const kernelInstance = worker.kernelInstance ?? { exports: {} };
-  worker.kernelInstance = {
-    ...kernelInstance,
-    exports: {
-      kernel_get_process_exit_signal: vi.fn(() => -1),
-      ...(kernelInstance.exports ?? {}),
-    },
+    callbacks,
+    completeChannel,
+    kernelExports,
+    kernelMemory: suppliedKernelMemory,
+    pointerWidth = 4,
+  } = options;
+  const kernelMemory = suppliedKernelMemory
+    ?? new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  const mainScratchPointer =
+    Number.isSafeInteger(scratchPointer) && scratchPointer! > 0
+      ? scratchPointer!
+      : 1024;
+  const implementations: Record<string, unknown> = {
+    kernel_get_parent_pid: vi.fn(() => -1),
+    kernel_get_process_exit_signal: vi.fn(() => -1),
+    kernel_mark_process_signaled: vi.fn(() => 0),
+    ...(kernelExports ?? {}),
   };
-  if (
-    worker.kernelMemory &&
-    Number.isSafeInteger(scratchPointer) &&
-    scratchPointer! > 0 &&
-    !worker.scratchRegion
-  ) {
-    const scratchTestInstance = createKernelScratchTestInstance(
-      4,
-      worker.kernelMemory,
-      () => worker.kernelInstance?.exports ?? {},
-      () => scratchPointer!,
-    );
-    worker.scratchTestInstance = scratchTestInstance;
-    worker.scratchRegion = allocateKernelScratchRegion(
-      worker.kernelMemory,
-      scratchTestInstance.exports.kernel_alloc_scratch as
-        (size: number) => number,
-      CH_TOTAL_SIZE,
-      4,
-      "test kernel syscall scratch",
-      scratchTestInstance,
-    );
+  const gate = new KernelEntryGate();
+  const rawInstance = createKernelScratchTestInstance(
+    pointerWidth,
+    kernelMemory,
+    () => implementations,
+    () =>
+      pointerWidth === 8
+        ? BigInt(mainScratchPointer)
+        : mainScratchPointer,
+    4,
+    Object.keys(implementations),
+  );
+  const instance = createKernelEntryGatedInstance(rawInstance, gate);
+  const mainScratch = allocateKernelScratchRegion(
+    kernelMemory,
+    instance.exports.kernel_alloc_scratch as
+      (size: number) => number | bigint,
+    CH_TOTAL_SIZE,
+    pointerWidth,
+    "spawn transport test main scratch",
+    instance,
+  );
+  const worker = createCentralizedKernelWorkerTestDouble({ callbacks });
+  worker.testAuthority.initializeKernelForTest({
+    instance,
+    gate,
+    mainScratch,
+  });
+  const activeChannels = new Set<object>();
+  worker.testAuthority.configureScratchBoundaryHooksForTest({
+    completeChannel:
+      (completeChannel ?? vi.fn()) as (...args: any[]) => void,
+    getPtrWidth: () => pointerWidth,
+    guestTidForChannel: (channel) => channel.pid,
+    isRegisteredChannel: (channel) => activeChannels.has(channel),
+  });
+
+  return Object.freeze({
+    getSpawnScratchCapacity: (): number =>
+      worker.getSpawnScratchCapacity(),
+    handleSpawn: (channel: any, origArgs: number[]): void => {
+      activeChannels.add(channel);
+      worker.testAuthority.dispatchSpawnPreflightForTest(
+        channel,
+        origArgs,
+      );
+    },
+    handleSpawnAfterResolve: (
+      channel: any,
+      origArgs: number[],
+      parentPid: number,
+      callerTid: number,
+      pidOutPtr: number,
+      blobBytes: Uint8Array,
+      blobLen: number,
+      program: ReturnType<typeof resolvedProgram>,
+      envp: string[],
+    ): void => {
+      activeChannels.add(channel);
+      worker.testAuthority.dispatchSpawnAfterResolveForTest({
+        channel,
+        origArgs,
+        parentPid,
+        callerTid,
+        pidOutPtr,
+        blobBytes,
+        blobLen,
+        program,
+        envp,
+      });
+    },
+  }) as SpawnWorkerTestHarness;
+}
+
+async function drainSpawnGate(): Promise<void> {
+  // A successful spawn stage publishes host launch only after its exact
+  // kernel-entry scope is revoked. Drain the finite queue before beginning a
+  // second reservation or asserting on that detached callback.
+  // The complete preflight path crosses resolution, a fresh result ingress,
+  // and launch publication. Keep a fixed upper bound rather than using a
+  // timer-based poll that could hide a permanently stuck gate.
+  for (let turn = 0; turn < 24; turn++) {
+    await Promise.resolve();
   }
-  return worker;
 }
 
 function createChannel(pid: number, memory: WebAssembly.Memory): any {
+  const i32View = new Int32Array(memory.buffer);
+  Atomics.store(
+    i32View,
+    CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+    CHANNEL_STATUS_PENDING,
+  );
   return {
     pid,
     memory,
     channelOffset: 0,
-    i32View: new Int32Array(memory.buffer),
+    i32View,
     consecutiveSyscalls: 0,
   };
 }

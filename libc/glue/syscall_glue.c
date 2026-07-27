@@ -388,17 +388,6 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     case SYS_CLOSE:
         return (long)kernel_close((int32_t)a1);
 
-    /* read — (fd, buf, count) */
-    case SYS_READ:
-        return (long)kernel_read((int32_t)a1, (uint8_t *)(uintptr_t)a2,
-                                 (uint32_t)a3);
-
-    /* write — (fd, buf, count) */
-    case SYS_WRITE:
-        return (long)kernel_write((int32_t)a1,
-                                  (const uint8_t *)(uintptr_t)a2,
-                                  (uint32_t)a3);
-
     /* lseek — (fd, offset_lo, offset_hi, whence)
      *
      * Direct __syscall path: 4 args after splitting via __SYSCALL_LL_E. */
@@ -418,22 +407,6 @@ static long __do_syscall(long n, long a1, long a2, long a3,
         *(int64_t *)(uintptr_t)a4 = r;
         return 0;
     }
-
-    /* pread — (fd, buf, count, off_lo, off_hi)
-     * musl: syscall_cp(SYS_pread, fd, buf, size, __SYSCALL_LL_PRW(ofs))
-     * __SYSCALL_LL_PRW → lo, hi → 5 data args */
-    case SYS_PREAD:
-        return (long)kernel_pread((int32_t)a1,
-                                  (uint8_t *)(uintptr_t)a2,
-                                  (uint32_t)a3,
-                                  (uint32_t)a4, (int32_t)a5);
-
-    /* pwrite — (fd, buf, count, off_lo, off_hi) */
-    case SYS_PWRITE:
-        return (long)kernel_pwrite((int32_t)a1,
-                                   (const uint8_t *)(uintptr_t)a2,
-                                   (uint32_t)a3,
-                                   (uint32_t)a4, (int32_t)a5);
 
     /* ============================================================== */
     /* FD operations                                                   */
@@ -728,6 +701,8 @@ static long __do_syscall(long n, long a1, long a2, long a3,
 
     /* signal — (signum, handler) */
     case SYS_SIGNAL:
+        if ((uint64_t)(uintptr_t)a2 > UINT32_MAX)
+            return -22; /* EINVAL */
         return (long)kernel_signal((uint32_t)a1, (uint32_t)a2);
 
     /*
@@ -910,22 +885,6 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     case SYS_FCHOWN:
         return (long)kernel_fchown((int32_t)a1, (uint32_t)a2,
                                    (uint32_t)a3);
-
-    /* ============================================================== */
-    /* Scatter-gather I/O                                              */
-    /* ============================================================== */
-
-    /* writev — (fd, iov, iovcnt) */
-    case SYS_WRITEV:
-        return (long)kernel_writev((int32_t)a1,
-                                   (const uint8_t *)(uintptr_t)a2,
-                                   (int32_t)a3);
-
-    /* readv — (fd, iov, iovcnt) */
-    case SYS_READV:
-        return (long)kernel_readv((int32_t)a1,
-                                  (uint8_t *)(uintptr_t)a2,
-                                  (int32_t)a3);
 
     /* ============================================================== */
     /* Resource limits                                                 */
@@ -1343,13 +1302,13 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     case SYS_SENDMSG:
         return (long)kernel_sendmsg((int32_t)a1,
                                     (const uint8_t *)(uintptr_t)a2,
-                                    (uint32_t)a3);
+                                    (uint32_t)a3, (int64_t)0);
 
     /* recvmsg — (fd, msg_ptr, flags) */
     case SYS_RECVMSG:
         return (long)kernel_recvmsg((int32_t)a1,
                                     (uint8_t *)(uintptr_t)a2,
-                                    (uint32_t)a3);
+                                    (uint32_t)a3, (int64_t)0);
 
     /* getaddrinfo — (name, result_ptr) */
     case SYS_GETADDRINFO: {
@@ -1417,13 +1376,14 @@ static long __do_syscall(long n, long a1, long a2, long a3,
 
     case SYS_SET_TID_ADDRESS:
         /* STUB: single-threaded — ignore tidptr, return pid */
-        return (long)kernel_set_tid_address((uint32_t)(uintptr_t)a1);
+        return (long)kernel_set_tid_address((uintptr_t)a1);
 
     case SYS_SET_ROBUST_LIST:
-        return (long)kernel_set_robust_list((uint32_t)(uintptr_t)a1, (uint32_t)a2);
+        return (long)kernel_set_robust_list((uintptr_t)a1, (size_t)a2);
 
     case SYS_GET_ROBUST_LIST:
-        return (long)kernel_get_robust_list((uint32_t)a1, (uint32_t)(uintptr_t)a2, (uint32_t)(uintptr_t)a3);
+        return (long)kernel_get_robust_list((uint32_t)a1, (uintptr_t)a2,
+                                            (uintptr_t)a3);
 
     /* ============================================================== */
     /* Futex stub (single-threaded)                                    */
@@ -1451,7 +1411,12 @@ static long __do_syscall(long n, long a1, long a2, long a3,
         return (long)kernel_epoll_ctl((int32_t)a1, (int32_t)a2, (int32_t)a3, (uint8_t *)(uintptr_t)a4);
 
     case SYS_EPOLL_PWAIT:
-        return (long)kernel_epoll_pwait((int32_t)a1, (uint8_t *)(uintptr_t)a2, (int32_t)a3, (int32_t)a4, (uint32_t)(uintptr_t)a5);
+        if (a5 && (size_t)a6 != 8)
+            return -22; /* EINVAL */
+        return (long)kernel_epoll_pwait((int32_t)a1,
+                                        (uint8_t *)(uintptr_t)a2,
+                                        (int32_t)a3, (int32_t)a4,
+                                        (const uint8_t *)(uintptr_t)a5);
 
     /* ============================================================== */
     /* ppoll — poll with signal mask                                    */
@@ -1475,6 +1440,8 @@ static long __do_syscall(long n, long a1, long a2, long a3,
                 timeout_ms = 1; /* round up to at least 1ms */
         }
         const uint32_t *sigmask = (const uint32_t *)(uintptr_t)a4;
+        if (sigmask && (size_t)a5 != 8)
+            return -22; /* EINVAL */
         uint32_t mask_lo = sigmask ? sigmask[0] : 0;
         uint32_t mask_hi = sigmask ? sigmask[1] : 0;
         return (long)kernel_ppoll(fds_ptr, nfds, timeout_ms, mask_lo, mask_hi);
@@ -1504,12 +1471,19 @@ static long __do_syscall(long n, long a1, long a2, long a3,
             if (timeout_ms == 0 && (sec > 0 || nsec > 0))
                 timeout_ms = 1;
         }
-        /* a6 is pointer to {sigset_t *mask, size_t size} */
-        const uint32_t *sigmask_struct = (const uint32_t *)(uintptr_t)a6;
+        /* a6 is pointer to {sigset_t *mask, size_t size}. */
+        struct pselect6_sigmask {
+            const uint32_t *mask;
+            size_t size;
+        };
+        const struct pselect6_sigmask *sigmask_struct =
+            (const struct pselect6_sigmask *)(uintptr_t)a6;
         uint32_t mask_lo = 0, mask_hi = 0;
         if (sigmask_struct) {
-            const uint32_t *mask_ptr = (const uint32_t *)(uintptr_t)sigmask_struct[0];
+            const uint32_t *mask_ptr = sigmask_struct->mask;
             if (mask_ptr) {
+                if (sigmask_struct->size != 8)
+                    return -22; /* EINVAL */
                 mask_lo = mask_ptr[0];
                 mask_hi = mask_ptr[1];
             }
@@ -1563,42 +1537,11 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     case SYS_RT_SIGRETURN:
         return 0;
 
-    /* ============================================================== */
-    /* Scatter-gather I/O with offset                                  */
-    /* ============================================================== */
-
-    /* preadv — (fd, iov, iovcnt, off_lo, off_hi) */
-    case SYS_PREADV:
-        return (long)kernel_preadv((int32_t)a1,
-                                   (uint8_t *)(uintptr_t)a2,
-                                   (int32_t)a3,
-                                   (uint32_t)a4, (int32_t)a5);
-
-    /* pwritev — (fd, iov, iovcnt, off_lo, off_hi) */
-    case SYS_PWRITEV:
-        return (long)kernel_pwritev((int32_t)a1,
-                                    (const uint8_t *)(uintptr_t)a2,
-                                    (int32_t)a3,
-                                    (uint32_t)a4, (int32_t)a5);
-
-    /* preadv2/pwritev2 — delegate to preadv/pwritev (ignore flags in a6) */
-    case SYS_PREADV2:
-        return (long)kernel_preadv((int32_t)a1,
-                                   (uint8_t *)(uintptr_t)a2,
-                                   (int32_t)a3,
-                                   (uint32_t)a4, (int32_t)a5);
-
-    case SYS_PWRITEV2:
-        return (long)kernel_pwritev((int32_t)a1,
-                                    (const uint8_t *)(uintptr_t)a2,
-                                    (int32_t)a3,
-                                    (uint32_t)a4, (int32_t)a5);
-
     /* sendfile — (out_fd, in_fd, offset_ptr, count) */
     case SYS_SENDFILE:
         return (long)kernel_sendfile((int32_t)a1, (int32_t)a2,
                                      (uint8_t *)(uintptr_t)a3,
-                                     (uint32_t)a4);
+                                     (size_t)a4);
 
     /* ============================================================== */
     /* statx — extended stat                                           */
@@ -1814,9 +1757,13 @@ static long __do_syscall(long n, long a1, long a2, long a3,
         return (long)kernel_eventfd2((uint32_t)a1, 0);
 
     case SYS_SIGNALFD4:
-        return (long)kernel_signalfd4((int32_t)a1, (uint32_t)(uintptr_t)a2, (uint32_t)a3, (uint32_t)a4);
+        return (long)kernel_signalfd4((int32_t)a1,
+                                     (const uint8_t *)(uintptr_t)a2,
+                                     (size_t)a3, (uint32_t)a4);
     case SYS_SIGNALFD:
-        return (long)kernel_signalfd4((int32_t)a1, (uint32_t)(uintptr_t)a2, (uint32_t)a3, 0);
+        return (long)kernel_signalfd4((int32_t)a1,
+                                     (const uint8_t *)(uintptr_t)a2,
+                                     (size_t)a3, 0);
 
     case SYS_TIMERFD_CREATE:
         return (long)kernel_timerfd_create((uint32_t)a1, (uint32_t)a2);

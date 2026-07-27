@@ -1,4 +1,6 @@
 import type {
+  AppendOutcome,
+  HostFileOffset,
   NetworkIO,
   PathconfValue,
   PlatformIO,
@@ -197,7 +199,7 @@ export class VirtualPlatformIO implements PlatformIO {
   read(
     handle: number,
     buffer: Uint8Array,
-    offset: number | null,
+    offset: HostFileOffset | null,
     length: number,
   ): number {
     const info = this.getFileHandle(handle);
@@ -207,14 +209,28 @@ export class VirtualPlatformIO implements PlatformIO {
   write(
     handle: number,
     buffer: Uint8Array,
-    offset: number | null,
+    offset: HostFileOffset | null,
     length: number,
   ): number {
     const info = this.getFileHandle(handle);
     return info.backend.write(info.localHandle, buffer, offset, length);
   }
 
-  seek(handle: number, offset: number, whence: number): number {
+  append(
+    handle: number,
+    buffer: Uint8Array,
+    length: number,
+    limit: HostFileOffset | null,
+  ): AppendOutcome {
+    const info = this.getFileHandle(handle);
+    return info.backend.append(info.localHandle, buffer, length, limit);
+  }
+
+  seek(
+    handle: number,
+    offset: HostFileOffset,
+    whence: number,
+  ): HostFileOffset {
     const info = this.getFileHandle(handle);
     return info.backend.seek(info.localHandle, offset, whence);
   }

@@ -1,4 +1,5 @@
 export { readPreparedPlatformFile, VirtualPlatformIO } from "./vfs";
+export type { HostFileOffset } from "../types";
 export type { PreparedPlatformFile } from "./vfs";
 export { HostFileSystem } from "./host-fs";
 export { MemoryFileSystem } from "./memory-fs";

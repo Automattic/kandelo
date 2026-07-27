@@ -838,10 +838,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
       },
       onExit: (exitPid, exitStatus) => {
         if (exitPid === pid) {
-          if (options.captureForkCount) {
-            mainThreadForkCount = kernelWorker.getForkCount(exitPid);
-          }
-          kernelWorker.unregisterProcess(exitPid);
           processProgramBytes.delete(exitPid);
           processLayouts.delete(exitPid);
           threadAllocators.delete(exitPid);
@@ -995,6 +991,19 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
 
   const exitCode = await exitPromise;
   clearTimeout(timer);
+  // WHY: onExit is a detached protocol-publication callback. A result-bearing
+  // kernel query there would be rejected as reentrant, while unregister would
+  // merely queue and could retire the zombie before its counter is observed.
+  // The resolved promise resumes only after that detached stack has unwound,
+  // so capture first from this fresh caller root. Always request unregister
+  // even if a broken counter query exposes a separate lifecycle failure.
+  try {
+    if (options.captureForkCount) {
+      mainThreadForkCount = kernelWorker.getForkCount(pid);
+    }
+  } finally {
+    kernelWorker.unregisterProcess(pid);
+  }
   if (options.captureSpawnScratchStats) {
     spawnScratchCapacity = kernelWorker.getSpawnScratchCapacity();
     kernelMemoryPages = kernelWorker.getKernelMemoryPages();

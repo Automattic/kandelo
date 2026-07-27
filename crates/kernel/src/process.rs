@@ -21,12 +21,41 @@ pub struct DirStream {
     pub synth_dot_state: u8,
 }
 
+/// Result of one backing-owned append operation.
+///
+/// `end` is captured while the backing still owns the EOF serialization
+/// boundary. Callers must not reconstruct it from a separate stat.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostAppendOutcome {
+    pub written: usize,
+    pub end: u64,
+}
+
 /// Trait for host I/O operations that the kernel delegates to the runtime.
 pub trait HostIO {
     fn host_open(&mut self, path: &[u8], flags: u32, mode: u32) -> Result<i64, Errno>;
     fn host_close(&mut self, handle: i64) -> Result<(), Errno>;
     fn host_read(&mut self, handle: i64, buf: &mut [u8]) -> Result<usize, Errno>;
     fn host_write(&mut self, handle: i64, buf: &[u8]) -> Result<usize, Errno>;
+    fn host_append(
+        &mut self,
+        _handle: i64,
+        _buf: &[u8],
+        _limit: Option<u64>,
+    ) -> Result<HostAppendOutcome, Errno> {
+        // Append must remain one host operation. Emulating it with seek/write
+        // would lose atomicity at the backing-filesystem boundary.
+        Err(Errno::ENOSYS)
+    }
+    fn host_pread(&mut self, _handle: i64, _buf: &mut [u8], _offset: i64) -> Result<usize, Errno> {
+        // Positioned I/O must be one host operation. A default seek/read/seek
+        // implementation would race another user of the shared host cursor.
+        Err(Errno::ENOSYS)
+    }
+    fn host_pwrite(&mut self, _handle: i64, _buf: &[u8], _offset: i64) -> Result<usize, Errno> {
+        // See host_pread: unsupported is truthful; cursor emulation is not.
+        Err(Errno::ENOSYS)
+    }
     fn host_seek(&mut self, handle: i64, offset: i64, whence: u32) -> Result<i64, Errno>;
     fn host_fstat(&mut self, handle: i64) -> Result<WasmStat, Errno>;
     fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno>;
@@ -698,6 +727,10 @@ pub struct Process {
     pub wait_event: Option<ChildWaitEvent>,
     pub fd_table: FdTable,
     pub ofd_table: OfdTable,
+    /// Exact kernel-owned resources retained across host-driven blocking
+    /// retries. Numeric descriptors and IPC ids may be reused while a task is
+    /// asleep, so they are never sufficient retry authority by themselves.
+    pub(crate) blocked_retries: crate::blocked_retry::BlockingRetryState,
     pub pipes: Vec<Option<PipeBuffer>>,
     pub sockets: SocketTable,
     pub cwd: Vec<u8>,
@@ -719,8 +752,7 @@ pub struct Process {
     pub rlimits: [[u64; 2]; 16], // [soft, hard] pairs for each resource
     pub alarm_deadline_ns: u64,
     pub alarm_interval_ns: u64,
-    pub thread_name:
-        [u8; wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize],
+    pub thread_name: [u8; wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize],
     /// True if this process is a fork child that should exec on startup.
     pub fork_child: bool,
     /// Saved signal mask during sigsuspend host retry.
@@ -937,6 +969,7 @@ impl Process {
             wait_event: None,
             fd_table,
             ofd_table,
+            blocked_retries: crate::blocked_retry::BlockingRetryState::new(),
             pipes: Vec::new(),
             sockets: SocketTable::new(),
             cwd: alloc::vec![b'/'],
@@ -952,8 +985,7 @@ impl Process {
             rlimits,
             alarm_deadline_ns: 0,
             alarm_interval_ns: 0,
-            thread_name:
-                [0u8; wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize],
+            thread_name: [0u8; wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize],
             fork_child: false,
             sigsuspend_saved_mask: None,
             fork_exec_path: None,
@@ -1131,13 +1163,8 @@ impl Process {
         sender_uid: u32,
     ) -> bool {
         self.prepare_signal_generation(signum);
-        self.signals.raise_with_metadata(
-            signum,
-            si_value_bits,
-            si_code,
-            sender_pid,
-            sender_uid,
-        )
+        self.signals
+            .raise_with_metadata(signum, si_value_bits, si_code, sender_pid, sender_uid)
     }
 
     /// Compatibility helper for the legacy pipe slot vector, reusing the first
@@ -1545,9 +1572,7 @@ impl Process {
             self.main_thread_signals
                 .raise_timer(signum, si_value_bits, timer_id)
         } else if let Some(thread) = self.get_thread_mut(tid) {
-            thread
-                .signals
-                .raise_timer(signum, si_value_bits, timer_id)
+            thread.signals.raise_timer(signum, si_value_bits, timer_id)
         } else {
             false
         }
@@ -1939,6 +1964,20 @@ mod tests {
     use crate::ofd::FileType;
     use crate::pipe::PipeBuffer;
 
+    fn install_socket_with_fd(proc: &mut Process, socket: crate::socket::SocketInfo) -> usize {
+        let socket_index = proc.sockets.alloc(socket);
+        let ofd_index = proc.ofd_table.create(
+            FileType::Socket,
+            wasm_posix_shared::flags::O_RDWR,
+            -((socket_index as i64) + 1),
+            b"/dev/socket".to_vec(),
+        );
+        proc.fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_index), 0)
+            .unwrap();
+        socket_index
+    }
+
     #[test]
     fn fork_count_starts_at_zero() {
         let proc = Process::new(1);
@@ -2288,12 +2327,10 @@ mod tests {
         let backlog_idx = unsafe { shared_listener_backlog_table().alloc() };
         let mut listener = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
         listener.shared_backlog_idx = Some(backlog_idx);
-        let _sock_idx = table
-            .processes
-            .get_mut(&parent_pid)
-            .unwrap()
-            .sockets
-            .alloc(listener);
+        let _sock_idx = install_socket_with_fd(
+            table.processes.get_mut(&parent_pid).unwrap(),
+            listener,
+        );
 
         let initial = unsafe { shared_listener_backlog_table().entries[backlog_idx].ref_count };
         assert_eq!(initial, 1, "alloc starts the slot at ref_count=1");
@@ -2346,12 +2383,7 @@ mod tests {
         const HANDLE: i32 = 42;
         let mut sock = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
         sock.host_net_handle = Some(HANDLE);
-        table
-            .processes
-            .get_mut(&parent_pid)
-            .unwrap()
-            .sockets
-            .alloc(sock);
+        install_socket_with_fd(table.processes.get_mut(&parent_pid).unwrap(), sock);
 
         // The handle isn't in the cross-process table yet — single-owner.
         assert_eq!(host_net_handle_ref_count(HANDLE), 0);
@@ -2421,8 +2453,8 @@ mod tests {
         let mut tcp = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
         tcp.oob_byte = Some(0xAB);
         let parent = table.processes.get_mut(&parent_pid).unwrap();
-        let udp_idx = parent.sockets.alloc(udp);
-        let tcp_idx = parent.sockets.alloc(tcp);
+        let udp_idx = install_socket_with_fd(parent, udp);
+        let tcp_idx = install_socket_with_fd(parent, tcp);
 
         // Sanity: parent still has the consume-once data.
         assert_eq!(
@@ -2498,7 +2530,7 @@ mod tests {
         listener.listen_backlog.push(7);
         listener.listen_backlog.push(11);
         let parent = table.processes.get_mut(&parent_pid).unwrap();
-        let listener_idx = parent.sockets.alloc(listener);
+        let listener_idx = install_socket_with_fd(parent, listener);
 
         // Sanity: parent has both pending entries.
         assert_eq!(
@@ -2584,12 +2616,8 @@ mod tests {
         let parent_pid = table.create_process().unwrap();
         let mut sock = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
         sock.host_net_handle = Some(HANDLE);
-        let _sock_idx = table
-            .processes
-            .get_mut(&parent_pid)
-            .unwrap()
-            .sockets
-            .alloc(sock);
+        let _sock_idx =
+            install_socket_with_fd(table.processes.get_mut(&parent_pid).unwrap(), sock);
 
         // Spawn a child → bump the refcount to (parent=1, child=2).
         let mut host = test_host::NoopHost;

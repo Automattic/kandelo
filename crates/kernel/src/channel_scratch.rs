@@ -62,9 +62,7 @@ impl ChannelScratchRegion {
     }
 
     pub(crate) fn end(self) -> Result<usize, Errno> {
-        self.start
-            .checked_add(self.capacity)
-            .ok_or(Errno::EFAULT)
+        self.start.checked_add(self.capacity).ok_or(Errno::EFAULT)
     }
 
     /// Prove a complete byte range against this allocation, independently of
@@ -89,6 +87,19 @@ impl ChannelScratchRegion {
             start: pointer,
             length,
         })
+    }
+
+    /// Prove a command-dependent payload starts at the allocation base and
+    /// fits completely inside its explicit capacity.
+    pub(crate) fn checked_start_range(
+        self,
+        pointer: usize,
+        length: usize,
+    ) -> Result<ChannelScratchRange, Errno> {
+        if pointer != self.start {
+            return Err(Errno::EFAULT);
+        }
+        self.checked_range(pointer, length)
     }
 
     fn remaining_from(self, pointer: usize) -> Result<usize, Errno> {
@@ -184,9 +195,22 @@ unsafe fn descriptor_size(
     region: ChannelScratchRegion,
 ) -> Result<usize, Errno> {
     match descriptor.size {
-        SyscallArgSize::CString => {
+        SyscallArgSize::CString {
+            max_bytes,
+            too_long_errno,
+        } => {
             let pointer = checked_pointer(args[descriptor.arg_index as usize])?;
-            let length = unsafe { checked_cstr_len(pointer as *const u8, region) }?;
+            region.checked_range(pointer, 0)?;
+            let remaining = region.end()?.checked_sub(pointer).ok_or(Errno::EFAULT)?;
+            let bounded =
+                ChannelScratchRegion::new(pointer, remaining.min(max_bytes as usize))?;
+            let length = match unsafe { checked_cstr_len(pointer as *const u8, bounded) } {
+                Ok(length) => length,
+                Err(_) if remaining >= max_bytes as usize => {
+                    return Err(Errno::from_u32(too_long_errno).unwrap_or(Errno::EIO));
+                }
+                Err(error) => return Err(error),
+            };
             usize::try_from(length)
                 .ok()
                 .and_then(|length| length.checked_add(1))
@@ -319,14 +343,7 @@ fn checked_nullable_exact_range(
     if pointer == 0 {
         return validated.mark_null(index);
     }
-    checked_exact_range(
-        validated,
-        args,
-        index,
-        expected_pointer,
-        length,
-        region,
-    )?;
+    checked_exact_range(validated, args, index, expected_pointer, length, region)?;
     Ok(())
 }
 
@@ -335,29 +352,27 @@ unsafe fn validate_iovec_layout(
     region: ChannelScratchRegion,
 ) -> Result<ValidatedChannelScratchArgs, Errno> {
     let count = checked_size_scalar(args[2])?;
-    if count == 0 || count > platform_limits::IOV_MAX {
+    if count > platform_limits::IOV_MAX {
         return Err(Errno::EINVAL);
+    }
+    let mut validated = ValidatedChannelScratchArgs::new();
+    if count == 0 {
+        // POSIX ignores the iovec pointer when no entries exist. Record a
+        // canonical null for dispatch without converting, range-checking, or
+        // reading the caller-provided pointer bits.
+        validated.mark_null(1)?;
+        return Ok(validated);
     }
     let table_bytes = count
         .checked_mul(size_of::<KernelIovecWire>())
         .ok_or(Errno::EINVAL)?;
-    let mut validated = ValidatedChannelScratchArgs::new();
-    let table = checked_exact_range(
-        &mut validated,
-        args,
-        1,
-        region.start,
-        table_bytes,
-        region,
-    )?;
+    let table = checked_exact_range(&mut validated, args, 1, region.start, table_bytes, region)?;
     let table_bytes =
         unsafe { core::slice::from_raw_parts(table.start as *const u8, table.length) };
     let mut cursor = table.start.checked_add(table.length).ok_or(Errno::EFAULT)?;
     for entry in table_bytes.chunks_exact(size_of::<KernelIovecWire>()) {
-        let base =
-            read_wire_u32(entry, offset_of!(KernelIovecWire, base))? as usize;
-        let length =
-            read_wire_u32(entry, offset_of!(KernelIovecWire, len))? as usize;
+        let base = read_wire_u32(entry, offset_of!(KernelIovecWire, base))? as usize;
+        let length = read_wire_u32(entry, offset_of!(KernelIovecWire, len))? as usize;
         if base != cursor {
             return Err(Errno::EFAULT);
         }
@@ -394,15 +409,34 @@ unsafe fn validate_message_layout(
         size_of::<KernelMsghdrWire>(),
         region,
     )?;
-    let header =
-        unsafe { core::slice::from_raw_parts(header.start as *const u8, header.length) };
+    let header = unsafe { core::slice::from_raw_parts(header.start as *const u8, header.length) };
+    unsafe { validate_message_wire_layout(header, region) }?;
+    Ok(validated)
+}
+
+/// Validate the nested extents described by one canonical message header.
+///
+/// Keeping this separate from the outer header-range proof lets native tests
+/// exercise wasm32 wire addresses without requiring the test allocator itself
+/// to return an address below 4 GiB.
+///
+/// # Safety
+///
+/// When the header describes one iovec, that iovec must name readable memory
+/// for the complete `KernelIovecWire` after this function proves its range.
+unsafe fn validate_message_wire_layout(
+    header: &[u8],
+    region: ChannelScratchRegion,
+) -> Result<(), Errno> {
+    if header.len() != size_of::<KernelMsghdrWire>() {
+        return Err(Errno::EFAULT);
+    }
     let name = read_wire_u32(header, offset_of!(KernelMsghdrWire, name))? as usize;
     let name_len = read_wire_u32(header, offset_of!(KernelMsghdrWire, name_len))? as usize;
     let iov = read_wire_u32(header, offset_of!(KernelMsghdrWire, iov))? as usize;
     let iov_len = read_wire_u32(header, offset_of!(KernelMsghdrWire, iov_len))? as usize;
     let control = read_wire_u32(header, offset_of!(KernelMsghdrWire, control))? as usize;
-    let control_len =
-        read_wire_u32(header, offset_of!(KernelMsghdrWire, control_len))? as usize;
+    let control_len = read_wire_u32(header, offset_of!(KernelMsghdrWire, control_len))? as usize;
 
     let mut cursor = region
         .start
@@ -410,7 +444,10 @@ unsafe fn validate_message_layout(
         .ok_or(Errno::EFAULT)?;
     let mut append = |pointer: usize, length: usize| -> Result<(), Errno> {
         if length == 0 {
-            return if pointer == 0 {
+            // A null pointer means the optional field is absent. The current
+            // cursor is the one canonical allocation-owned zero-capacity
+            // address and preserves presence without lending any bytes.
+            return if pointer == 0 || pointer == cursor {
                 Ok(())
             } else {
                 Err(Errno::EFAULT)
@@ -452,7 +489,7 @@ unsafe fn validate_message_layout(
             append(base, length)?;
         }
     }
-    Ok(validated)
+    Ok(())
 }
 
 fn validate_select_layout(
@@ -463,9 +500,7 @@ fn validate_select_layout(
     let mut validated = ValidatedChannelScratchArgs::new();
     let fd_set_bytes = wasm_posix_shared::select::FD_SET_BYTES;
     for index in 1usize..=3 {
-        let offset = (index - 1)
-            .checked_mul(fd_set_bytes)
-            .ok_or(Errno::EFAULT)?;
+        let offset = (index - 1).checked_mul(fd_set_bytes).ok_or(Errno::EFAULT)?;
         checked_nullable_exact_range(
             &mut validated,
             args,
@@ -513,14 +548,7 @@ fn validate_ioctl_layout(
     if checked_size_scalar(args[3])? != size {
         return Err(Errno::EINVAL);
     }
-    checked_exact_range(
-        &mut validated,
-        args,
-        2,
-        region.start,
-        size,
-        region,
-    )?;
+    checked_exact_range(&mut validated, args, 2, region.start, size, region)?;
     Ok(validated)
 }
 
@@ -541,14 +569,7 @@ fn validate_ipc_control_layout(
     } else {
         crate::ipc_wire::shmid_ds_size(width)?
     };
-    checked_exact_range(
-        &mut validated,
-        args,
-        2,
-        region.start,
-        size,
-        region,
-    )?;
+    checked_exact_range(&mut validated, args, 2, region.start, size, region)?;
     Ok(validated)
 }
 
@@ -583,12 +604,10 @@ fn validate_special_layout(
                     || x == extended_syscalls::SYS_PREADV2
                     || x == extended_syscalls::SYS_PWRITEV2
             ) =>
-        {
-            unsafe { validate_iovec_layout(args, region) }
-        }
-        number if number == Syscall::Sendmsg as u32 || number == Syscall::Recvmsg as u32 => {
-            unsafe { validate_message_layout(args, region) }
-        }
+        unsafe { validate_iovec_layout(args, region) },
+        number if number == Syscall::Sendmsg as u32 || number == Syscall::Recvmsg as u32 => unsafe {
+            validate_message_layout(args, region)
+        },
         number if number == Syscall::Getgroups as u32 => {
             let mut validated = ValidatedChannelScratchArgs::new();
             let count = checked_size_scalar(args[0])?;
@@ -623,14 +642,7 @@ fn validate_special_layout(
                 .checked_add(payload)
                 .ok_or(Errno::EINVAL)?;
             let mut validated = ValidatedChannelScratchArgs::new();
-            checked_exact_range(
-                &mut validated,
-                args,
-                1,
-                region.start,
-                length,
-                region,
-            )?;
+            checked_exact_range(&mut validated, args, 1, region.start, length, region)?;
             Ok(validated)
         }
         extended_syscalls::SYS_MSGCTL | extended_syscalls::SYS_SHMCTL => {
@@ -654,14 +666,7 @@ fn validate_special_layout(
                 .checked_mul(size_of::<WasmEpollEvent>())
                 .ok_or(Errno::EINVAL)?;
             let mut validated = ValidatedChannelScratchArgs::new();
-            checked_exact_range(
-                &mut validated,
-                args,
-                1,
-                region.start,
-                length,
-                region,
-            )?;
+            checked_exact_range(&mut validated, args, 1, region.start, length, region)?;
             if syscall_number == extended_syscalls::SYS_EPOLL_PWAIT {
                 let mask_pointer = align_up(
                     region.start.checked_add(length).ok_or(Errno::EFAULT)?,
@@ -781,6 +786,27 @@ mod tests {
     }
 
     #[test]
+    fn checked_start_range_requires_the_owned_base_and_explicit_capacity() {
+        let region = ChannelScratchRegion::new(0x1000, 16).unwrap();
+        assert_eq!(
+            region.checked_start_range(0x1000, 16),
+            Ok(ChannelScratchRange {
+                start: 0x1000,
+                length: 16,
+            }),
+        );
+        assert_eq!(
+            region.checked_start_range(0x1000, 17),
+            Err(Errno::EFAULT),
+        );
+        assert_eq!(
+            region.checked_start_range(0x1001, 15),
+            Err(Errno::EFAULT),
+        );
+        assert_eq!(region.checked_start_range(0, 0), Err(Errno::EFAULT));
+    }
+
+    #[test]
     fn dynamic_buffers_reject_positive_null_and_canonicalize_empty_null() {
         let bytes = vec![0u8; 16];
         let start = bytes.as_ptr() as usize;
@@ -799,6 +825,61 @@ mod tests {
                 unsafe { validate_channel_scratch_arguments(syscall, &empty, region) }.unwrap();
             assert_eq!(validated.pointer(1), Ok(start));
         }
+    }
+
+    #[test]
+    fn zero_iovec_count_ignores_pointer_without_reading_it() {
+        let bytes = [0u8; 1];
+        let region = ChannelScratchRegion::new(bytes.as_ptr() as usize, bytes.len()).unwrap();
+        for ignored_pointer in [0, i64::MIN, -1] {
+            let mut args = [0i64; 6];
+            args[1] = ignored_pointer;
+            args[2] = 0;
+            let validated = unsafe { validate_iovec_layout(&args, region) }.unwrap();
+            assert_eq!(validated.pointer(1), Ok(0));
+        }
+
+        let mut args = [0i64; 6];
+        args[2] = -1;
+        assert_eq!(
+            unsafe { validate_iovec_layout(&args, region) },
+            Err(Errno::EINVAL),
+        );
+        args[2] = i64::try_from(platform_limits::IOV_MAX + 1).unwrap();
+        assert_eq!(
+            unsafe { validate_iovec_layout(&args, region) },
+            Err(Errno::EINVAL),
+        );
+    }
+
+    #[test]
+    fn message_layout_distinguishes_absent_and_present_zero_capacity_names() {
+        let start = 0x1000usize;
+        let header_size = size_of::<KernelMsghdrWire>();
+        let region = ChannelScratchRegion::new(start, header_size).unwrap();
+        let canonical_zero_extent = start.checked_add(header_size).unwrap();
+        let mut header = vec![0u8; header_size];
+
+        let set_name = |header: &mut [u8], pointer: usize| {
+            let pointer = u32::try_from(pointer).unwrap().to_le_bytes();
+            let offset = offset_of!(KernelMsghdrWire, name);
+            header[offset..offset + pointer.len()].copy_from_slice(&pointer);
+        };
+
+        // Both sendmsg and recvmsg use this canonical nested-wire validator.
+        // Null encodes absence, while the current checked cursor encodes a
+        // present output field whose caller capacity is exactly zero.
+        set_name(&mut header, 0);
+        assert!(unsafe { validate_message_wire_layout(&header, region) }.is_ok());
+
+        set_name(&mut header, canonical_zero_extent);
+        assert!(unsafe { validate_message_wire_layout(&header, region) }.is_ok());
+
+        set_name(&mut header, canonical_zero_extent + 1);
+        assert_eq!(
+            unsafe { validate_message_wire_layout(&header, region) },
+            Err(Errno::EFAULT),
+        );
     }
 
     #[test]
@@ -840,11 +921,7 @@ mod tests {
         args[1] = 0;
         assert_eq!(
             unsafe {
-                validate_channel_scratch_arguments(
-                    extended_syscalls::SYS_PRCTL,
-                    &args,
-                    region,
-                )
+                validate_channel_scratch_arguments(extended_syscalls::SYS_PRCTL, &args, region)
             },
             Err(Errno::EFAULT),
         );
@@ -875,10 +952,65 @@ mod tests {
     #[test]
     fn raw_channel_pointer_allowlist_contains_only_process_addresses() {
         let dispatcher = include_str!("wasm_api.rs");
+        let channel_dispatch_source = dispatcher
+            .split("#[cfg(test)]\nmod channel_pointer_tests")
+            .next()
+            .expect("channel pointer test boundary disappeared");
 
         assert!(
             !dispatcher.contains("channel_pointer!("),
             "ambiguous raw channel pointer bypasses the scratch proof"
+        );
+
+        // Pin every remaining direct widened-pointer normalization site in the
+        // channel dispatcher. Command-dependent SEMCTL buffers must go through
+        // the named allocation-start/range proof rather than adding another
+        // raw `checked_channel_pointer(args[..])` call.
+        for context in [
+            "fn checked_channel_pointer(raw: i64) -> Result<usize, Errno> {",
+            "let pointer = checked_channel_pointer(raw)?;",
+            "checked_channel_pointer(channel_scalar::process_address_argument(",
+            "match checked_channel_pointer(args[$index]) {",
+        ] {
+            assert_eq!(
+                channel_dispatch_source.matches(context).count(),
+                1,
+                "reviewed direct channel-pointer context changed:\n{context}"
+            );
+        }
+        assert_eq!(
+            channel_dispatch_source
+                .matches("checked_channel_pointer(")
+                .count(),
+            4,
+            "review every new direct widened-channel pointer conversion"
+        );
+        // WHY: rustfmt may wrap the binding before `match`; normalize only
+        // whitespace so this still pins the exact binding and proof helper.
+        let normalized_channel_dispatch_source = channel_dispatch_source
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(
+            normalized_channel_dispatch_source
+                .matches("let values_pointer = match checked_channel_scratch_start_range(")
+                .count(),
+            1,
+            "SEMCTL SETALL must prove the exact scratch allocation and range"
+        );
+        assert_eq!(
+            normalized_channel_dispatch_source
+                .matches("let output_pointer = match checked_channel_scratch_start_range(")
+                .count(),
+            2,
+            "SEMCTL STAT/GETALL must prove the exact scratch allocation and range"
+        );
+        assert_eq!(
+            channel_dispatch_source
+                .matches("checked_channel_scratch_start_range(")
+                .count(),
+            4,
+            "review every command-dependent scratch-start proof"
         );
 
         // WHY: a count alone lets a newly added raw pointer hide behind removal
@@ -887,46 +1019,26 @@ mod tests {
         // an explicit ownership review.
         let reviewed_process_address_contexts = [
             (
-                "73 => kernel_signal(a1 as u32, process_address!(1)), // SYS_SIGNAL",
+                "47 => kernel_munmap(process_address!(0), process_size!(1)), // SYS_MUNMAP",
                 1,
             ),
             (
-                r#"let result = match syscalls::sys_mmap(
-                proc,
-                &mut host,
-                process_address!(0),"#,
+                "49 => kernel_mprotect(process_address!(0), process_size!(1), a3 as u32), // SYS_MPROTECT",
                 1,
             ),
             (
-                "47 => kernel_munmap(process_address!(0), channel_i32_scalar_usize(a2)), // SYS_MUNMAP",
-                1,
-            ),
-            (
-                "48 => kernel_brk(process_address!(0)) as i32,                           // SYS_BRK",
-                1,
-            ),
-            (
-                "49 => kernel_mprotect(process_address!(0), channel_i32_scalar_usize(a2), a3 as u32), // SYS_MPROTECT",
-                1,
-            ),
-            (
-                r#"126 => kernel_mremap(
-            process_address!(0),"#,
-                1,
-            ),
-            (
-                "128 => kernel_madvise(process_address!(0), channel_i32_scalar_usize(a2), a3 as u32), // SYS_MADVISE",
+                "128 => kernel_madvise(process_address!(0), process_size!(1), a3 as u32), // SYS_MADVISE",
                 1,
             ),
             (
                 r#"201 => kernel_clone(
             0,
-            process_address!(1),
+            conditional_process_address!(1),
             a1 as u32,
             0,
-            process_address!(2),
-            process_address!(3),
-            process_address!(4),"#,
+            conditional_process_address!(2),
+            conditional_process_address!(3),
+            conditional_process_address!(4),"#,
                 4,
             ),
             (
@@ -935,7 +1047,7 @@ mod tests {
             a2 as u32,
             a3 as u32,
             a4 as u32,
-            process_address!(4),"#,
+            conditional_process_address!(4),"#,
                 2,
             ),
             (
@@ -943,7 +1055,7 @@ mod tests {
                 1,
             ),
             (
-                "261 => kernel_set_robust_list(process_address!(0), channel_u32_scalar_usize(a2)), // SYS_SET_ROBUST_LIST",
+                "261 => kernel_set_robust_list(process_address!(0), process_size!(1)), // SYS_SET_ROBUST_LIST",
                 1,
             ),
             (
@@ -951,12 +1063,12 @@ mod tests {
                 2,
             ),
             (
-                r#"let _shmaddr = process_address!(1);
+                r#"let _shmaddr = conditional_process_address!(1);
             kernel_ipc_shmat(a1, a2, a3)"#,
                 1,
             ),
             (
-                r#"let _shmaddr = process_address!(0);
+                r#"let _shmaddr = conditional_process_address!(0);
             kernel_ipc_shmdt(a1)"#,
                 1,
             ),
@@ -970,6 +1082,12 @@ mod tests {
                 r#"281 => {
             // munlock: (addr, len)
             let addr = process_address!(0);"#,
+                1,
+            ),
+            (
+                r#"278 => {
+            let _address = process_address!(0);
+            let _length = process_size!(1);"#,
                 1,
             ),
         ];
@@ -991,6 +1109,42 @@ mod tests {
     }
 
     #[test]
+    fn variable_io_adapters_are_not_public_bare_pointer_exports() {
+        let wasm_api = include_str!("wasm_api.rs");
+        for removed_function in [
+            "fn kernel_read(",
+            "fn kernel_write(",
+            "fn kernel_pread(",
+            "fn kernel_pwrite(",
+            "fn kernel_readv(",
+            "fn kernel_writev(",
+            "fn kernel_preadv(",
+            "fn kernel_pwritev(",
+            "fn kernel_prepare_write_operation(",
+        ] {
+            assert!(
+                !wasm_api.contains(removed_function),
+                "variable I/O regained a pointer-only public adapter: {removed_function}",
+            );
+        }
+        for required_private_adapter in [
+            "fn channel_read(",
+            "fn channel_write(",
+            "fn channel_pread(",
+            "fn channel_pwrite(",
+            "fn channel_readv(",
+            "fn channel_writev(",
+            "fn channel_preadv(",
+            "fn channel_pwritev(",
+        ] {
+            assert!(
+                wasm_api.contains(required_private_adapter),
+                "bounded private adapter disappeared: {required_private_adapter}",
+            );
+        }
+    }
+
+    #[test]
     fn descriptor_range_accepts_capacity_and_rejects_capacity_plus_one() {
         let bytes = vec![0u8; 16];
         let start = bytes.as_ptr() as usize;
@@ -999,17 +1153,14 @@ mod tests {
         args[1] = pointer_arg(start);
         args[2] = bytes.len() as i64;
 
-        let validated = unsafe {
-            validate_channel_scratch_arguments(Syscall::Read as u32, &args, region)
-        }
-        .unwrap();
+        let validated =
+            unsafe { validate_channel_scratch_arguments(Syscall::Read as u32, &args, region) }
+                .unwrap();
         assert_eq!(validated.pointer(1), Ok(start));
 
         args[2] += 1;
         assert_eq!(
-            unsafe {
-                validate_channel_scratch_arguments(Syscall::Read as u32, &args, region)
-            },
+            unsafe { validate_channel_scratch_arguments(Syscall::Read as u32, &args, region) },
             Err(Errno::EFAULT),
         );
     }
@@ -1024,16 +1175,12 @@ mod tests {
 
         args[2] = -1;
         assert_eq!(
-            unsafe {
-                validate_channel_scratch_arguments(Syscall::Write as u32, &args, region)
-            },
+            unsafe { validate_channel_scratch_arguments(Syscall::Write as u32, &args, region) },
             Err(Errno::EINVAL),
         );
         args[2] = MAX_SAFE_INTEGER + 1;
         assert_eq!(
-            unsafe {
-                validate_channel_scratch_arguments(Syscall::Write as u32, &args, region)
-            },
+            unsafe { validate_channel_scratch_arguments(Syscall::Write as u32, &args, region) },
             Err(Errno::EINVAL),
         );
     }
@@ -1052,10 +1199,8 @@ mod tests {
         bytes[24..28].copy_from_slice(&4u32.to_le_bytes());
 
         assert!(
-            unsafe {
-                validate_channel_scratch_arguments(Syscall::Recvfrom as u32, &args, region)
-            }
-            .is_ok()
+            unsafe { validate_channel_scratch_arguments(Syscall::Recvfrom as u32, &args, region) }
+                .is_ok()
         );
 
         // This models a second/torn socklen observation after the host sized
@@ -1064,9 +1209,7 @@ mod tests {
         // form its output slice.
         bytes[24..28].copy_from_slice(&12u32.to_le_bytes());
         assert_eq!(
-            unsafe {
-                validate_channel_scratch_arguments(Syscall::Recvfrom as u32, &args, region)
-            },
+            unsafe { validate_channel_scratch_arguments(Syscall::Recvfrom as u32, &args, region) },
             Err(Errno::EFAULT),
         );
     }
@@ -1083,9 +1226,7 @@ mod tests {
         args[5] = 0;
 
         assert_eq!(
-            unsafe {
-                validate_channel_scratch_arguments(Syscall::Recvfrom as u32, &args, region)
-            },
+            unsafe { validate_channel_scratch_arguments(Syscall::Recvfrom as u32, &args, region) },
             Err(Errno::EFAULT),
         );
     }
@@ -1101,16 +1242,12 @@ mod tests {
         args[3] = pointer_arg(start + 2 * wasm_posix_shared::select::FD_SET_BYTES);
 
         assert!(
-            unsafe {
-                validate_channel_scratch_arguments(Syscall::Select as u32, &args, region)
-            }
-            .is_ok()
+            unsafe { validate_channel_scratch_arguments(Syscall::Select as u32, &args, region) }
+                .is_ok()
         );
         args[2] = args[1];
         assert_eq!(
-            unsafe {
-                validate_channel_scratch_arguments(Syscall::Select as u32, &args, region)
-            },
+            unsafe { validate_channel_scratch_arguments(Syscall::Select as u32, &args, region) },
             Err(Errno::EFAULT),
         );
     }
@@ -1171,6 +1308,41 @@ mod tests {
         assert_eq!(
             unsafe { checked_cstr_len(bytes.as_ptr(), region) },
             Ok((platform_limits::PATH_MAX_BYTES + 1) as u32),
+        );
+    }
+
+    #[test]
+    fn descriptor_cstr_bound_accepts_exact_capacity_and_rejects_capacity_plus_one() {
+        let capacity = platform_limits::PROCESS_METADATA_ENTRY_MAX_BYTES + 1;
+        let descriptor = SyscallArgDesc {
+            arg_index: 0,
+            direction: wasm_posix_shared::host_abi::SyscallArgDirection::In,
+            size: SyscallArgSize::CString {
+                max_bytes: capacity as u32,
+                too_long_errno: Errno::E2BIG as u32,
+            },
+            nullable: false,
+            required: true,
+        };
+        let mut exact = vec![b'a'; capacity];
+        *exact.last_mut().unwrap() = 0;
+        let exact_region =
+            ChannelScratchRegion::new(exact.as_ptr() as usize, exact.len()).unwrap();
+        let mut args = [0i64; 6];
+        args[0] = pointer_arg(exact.as_ptr() as usize);
+        assert_eq!(
+            unsafe { descriptor_size(&descriptor, &args, exact_region) },
+            Ok(capacity),
+        );
+
+        let mut oversized = vec![b'a'; capacity + 1];
+        *oversized.last_mut().unwrap() = 0;
+        let oversized_region =
+            ChannelScratchRegion::new(oversized.as_ptr() as usize, oversized.len()).unwrap();
+        args[0] = pointer_arg(oversized.as_ptr() as usize);
+        assert_eq!(
+            unsafe { descriptor_size(&descriptor, &args, oversized_region) },
+            Err(Errno::E2BIG),
         );
     }
 }
