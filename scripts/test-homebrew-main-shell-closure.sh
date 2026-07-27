@@ -856,6 +856,7 @@ do
     fail "shell build cache inputs omit $shell_input"
 done
 for materialized_shell_input in \
+  homebrew/homebrew-bootstrap-source-lock.json \
   homebrew/main-shell-lazy-artifact-lock.json \
   homebrew/main-shell-materialization-policy.json \
   images/vfs/scripts/build-homebrew-materialized-vfs-image.ts \
@@ -863,6 +864,7 @@ for materialized_shell_input in \
   host/src/homebrew-runtime-layer-consumer.ts \
   host/src/homebrew-vfs-composer.ts \
   host/src/homebrew-vfs-materialization-policy.ts \
+  scripts/verify-homebrew-bootstrap-source-lock.mjs \
   scripts/verify-homebrew-main-shell-artifact-lock.sh
 do
   grep -Fq "\"$materialized_shell_input\"" "$SHELL_BUILD_TOML" ||
@@ -1853,6 +1855,18 @@ tap_worktree="$TMP_ROOT/tap-worktree"
 git -C "$tap" worktree add --detach "$tap_worktree" "$tap_sha" >/dev/null
 [ -f "$tap_worktree/.git" ] ||
   fail "linked tap fixture does not exercise a .git worktree file"
+
+# A manual composer invocation must not be able to seal a locally generated or
+# stale ZIP under the trusted homebrew-bootstrap package name. The package's
+# source lock owns the only bytes accepted by the deferred-tree descriptor.
+expect_failure "homebrew-bootstrap source lock: output archive has" \
+  "$BUILDER" --lazy-shell --tap-root "$tap_worktree" \
+  --work-dir "$TMP_ROOT/work-wrong-bootstrap-archive" \
+  --migration-lock "$lock" \
+  --package-tree-spec "$PACKAGE_TREE_SPEC" \
+  --package-tree-archive "$bootstrap_dir/homebrew-bootstrap.zip" \
+  --homebrew-bootstrap-env "$bootstrap_dir/homebrew-brew.env"
+
 wrong_epoch_lock="$TMP_ROOT/main-shell-wrong-epoch-lock.json"
 jq '.source_date_epoch = 1' "$LAZY_ARTIFACT_LOCK" >"$wrong_epoch_lock"
 expect_failure "lock is invalid or uses a different timestamp epoch" \
@@ -1865,6 +1879,16 @@ expect_failure "lock is invalid or uses a different timestamp epoch" \
   "$BUILDER" --lazy-shell --tap-root "$tap_worktree" \
   --work-dir "$TMP_ROOT/work-extra-lazy-lock-field" --migration-lock "$lock" \
   --lazy-artifact-lock "$extra_field_lock"
+wrong_bootstrap_source_binding="$TMP_ROOT/main-shell-wrong-bootstrap-source-binding.json"
+jq '
+  .inputs.bootstrap_source_lock_sha256 =
+    "0000000000000000000000000000000000000000000000000000000000000000"
+' "$LAZY_ARTIFACT_LOCK" >"$wrong_bootstrap_source_binding"
+expect_failure \
+  "bound input digest changed: homebrew/homebrew-bootstrap-source-lock.json" \
+  bash "$LAZY_ARTIFACT_CHECKER" \
+    --lock "$wrong_bootstrap_source_binding" \
+    --expected-source-date-epoch 0
 
 # Exercise the final compressed-artifact checks without rebuilding the full
 # bottle closure. SHA-256 and byte count are independent promises: matching one
