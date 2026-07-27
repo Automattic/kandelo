@@ -463,10 +463,10 @@ an occurrence is added, duplicated, or removed. This keeps framebuffer,
 process-memory, and shared-memory paths explicit without conflating their
 ownership with kernel scratch. Because untyped JavaScript can erase a receiver
 type, the audit also treats a zero-argument `.getMemory()` call in JavaScript
-source as the documented raw kernel-memory accessor and follows its result into
-aliases, helper parameters, views, and writes. Same-named non-kernel APIs need
-an exact reviewed allowance. This narrow backstop is not a claim of sound
-general JavaScript taint analysis.
+source as a potential reintroduction of the former raw kernel-memory accessor
+and follows its result into aliases, helper parameters, views, and writes.
+Same-named non-kernel APIs need an exact reviewed allowance. This narrow
+backstop is not a claim of sound general JavaScript taint analysis.
 
 The Rust dispatcher has a separate source-contract test for raw process
 addresses. It rejects the former raw-channel-pointer macro, matches every
@@ -478,13 +478,17 @@ paired with an unrelated replacement, or a reintroduced bare channel pointer
 therefore requires an explicit review instead of passing a count-only
 allowlist.
 
-The low-level `WasmPosixKernel.getMemory/getInstance` and
-`CentralizedKernelWorker.getKernel/getKernelInstance` accessors are unsafe
-trusted-embedder/debug escape hatches, not scratch-transfer APIs. A consumer
-that calls raw pointer-returning exports and mutates the returned memory has
-opted out of the capacity and lease guarantees above. Kandelo's own runtime
-does not use those accessors for transfers, and the compiler-backed audit
-covers repository source rather than arbitrary downstream mutations.
+The former low-level `WasmPosixKernel.getMemory/getInstance` and
+`CentralizedKernelWorker.getKernel/getKernelInstance` accessors are no longer
+part of the supported host API. The public wrappers expose bounded queries
+such as kernel-memory page count, not mutable `WebAssembly.Memory`, a raw
+`WebAssembly.Instance`, or its export namespace. A module-private capability
+gives only the dedicated kernel worker the exact gate and memory it owns; it is
+not re-exported to embedders. This is an intentional host-API incompatibility:
+downstream consumers of the former raw accessors must migrate to an
+ownership-specific bounded operation. The compiler-backed audit retains the
+old method spellings as fail-closed regression seeds so reintroducing an
+unreviewed raw accessor becomes a contract failure.
 
 Current host-adapter admission requires `kernel_set_cwd`,
 `kernel_clear_process_metadata`, and
