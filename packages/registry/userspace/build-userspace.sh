@@ -13,12 +13,15 @@ if [ ! -f "$OUT" ]; then
     exit 1
 fi
 
-mkdir -p "$REPO_ROOT/local-binaries"
-cp "$OUT" "$REPO_ROOT/local-binaries/userspace.wasm"
-echo "build-userspace: installed local-binaries/userspace.wasm"
-
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    # WHY: a resolver build owns only its sealed output directory. Writing a
+    # checkout-wide resolver mirror here would leak an untracked side effect
+    # across package transactions.
     mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
     cp "$OUT" "$WASM_POSIX_DEP_OUT_DIR/wasm_posix_userspace.wasm"
     echo "build-userspace: installed $WASM_POSIX_DEP_OUT_DIR/wasm_posix_userspace.wasm"
+    exit 0
 fi
+
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary userspace "$OUT" wasm_posix_userspace.wasm

@@ -1590,8 +1590,15 @@ jobs:
             export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
             cargo build --release -p kandelo \
               -Z build-std=core,alloc
-            mkdir -p local-binaries
-            cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
+            # WHY: this is a package-owned resolver mirror. Install the exact
+            # candidate into an immutable local generation so later dependency
+            # resolution cannot substitute released kernel bytes.
+            source scripts/install-local-binary.sh
+            WASM_POSIX_LOCAL_INSTALL_SESSION="ci-kernel-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}" \
+              install_local_binary kernel \
+                target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
+                kandelo-kernel.wasm
+            cmp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
               local-binaries/kernel.wasm
             bash scripts/build-programs.sh
             bash scripts/build-rootfs.sh

@@ -176,6 +176,48 @@ if [ "${1:-}" = "build-deps" ] && [ "${2:-}" = "cache-root" ] &&
     esac
     exit 0
 fi
+if [ "${1:-}" = "build-deps" ]; then
+    shift
+    arch=""
+    if [ "${1:-}" = "--arch" ]; then
+        arch="${2:-}"
+        shift 2
+    fi
+    case "${1:-}" in
+        sha)
+            [ "$arch" = wasm32 ] || exit 2
+            case "${2:-}" in
+                kernel|local-fixture|local-one)
+                    printf 'a%.0s' {1..64}
+                    printf '\n'
+                    exit 0
+                    ;;
+            esac
+            ;;
+        output-metadata)
+            case "${2:-}:${3:-}" in
+                kernel:kernel.wasm)
+                    printf '%s\n' \
+                        '{"source_artifact":"kernel.wasm","mirror_path":"kernel.wasm"}'
+                    exit 0
+                    ;;
+                local-fixture:bin/local.wasm)
+                    printf '%s\n' \
+                        '{"source_artifact":"bin/local.wasm","mirror_path":"local-fixture/local.wasm"}'
+                    exit 0
+                    ;;
+                local-one:bin/local-one.wasm)
+                    printf '%s\n' \
+                        '{"source_artifact":"bin/local-one.wasm","mirror_path":"local-one.wasm"}'
+                    exit 0
+                    ;;
+            esac
+            ;;
+        runtime-file-metadata)
+            exit 2
+            ;;
+    esac
+fi
 exit 2
 EOF
 chmod +x "$prepared_xtask"
@@ -269,6 +311,12 @@ printf 'local fixture\n' \
 printf 'local one member package\n' \
     > "$FIXTURE/local-binaries/.kandelo-local-generations/wasm32/local-one/$cache_key/session/bin/local-one.wasm"
 printf 'local kernel\n' > "$local_kernel"
+for claimed_identity in \
+    "$FIXTURE/local-binaries/.kandelo-local-generations/wasm32/kernel/$cache_key" \
+    "$FIXTURE/local-binaries/.kandelo-local-generations/wasm32/local-fixture/$cache_key" \
+    "$FIXTURE/local-binaries/.kandelo-local-generations/wasm32/local-one/$cache_key"; do
+    : > "$claimed_identity/.session.publication-claimed"
+done
 rm "$FIXTURE/local-binaries/kernel.wasm"
 ln -s "$local_kernel" "$FIXTURE/local-binaries/kernel.wasm"
 ln -s \
@@ -357,11 +405,90 @@ if PATH="$FIXTURE/bin:$PATH" \
     echo "pack-ci-test-workspace.sh accepted a local program outside its generation cache" >&2
     exit 1
 fi
-grep -Fq "local program resolver link targets a noncanonical generation" \
+grep -Fq "staged local resolver link retains an external absolute target" \
     "$TMP_DIR/outside-local-workspace.out"
 rm -rf \
     "$FIXTURE/local-binaries/programs/wasm32/outside-local" \
     "$FIXTURE/local-binaries/not-a-generation"
+
+# A matching generation suffix is not sufficient ownership evidence. Keep a
+# valid internal generation in place while selecting different bytes through an
+# external lookalike namespace; the packer must reject instead of silently
+# substituting the internal member with the same identity.
+external_generation="$TMP_DIR/external-local-binaries/.kandelo-local-generations/wasm32/kernel/$cache_key/session"
+mkdir -p "$external_generation"
+printf 'external lookalike kernel\n' > "$external_generation/kernel.wasm"
+rm "$FIXTURE/local-binaries/kernel.wasm"
+ln -s "$external_generation/kernel.wasm" "$FIXTURE/local-binaries/kernel.wasm"
+if PATH="$FIXTURE/bin:$PATH" \
+    WASM_POSIX_BINARY_CACHE_ROOT="$source_cache" \
+    bash "$FIXTURE/scripts/pack-ci-test-workspace.sh" \
+        "$TMP_DIR/external-generation-workspace.tar.zst" \
+        > "$TMP_DIR/external-generation-workspace.out" 2>&1; then
+    echo "pack-ci-test-workspace.sh accepted an external lookalike local generation" >&2
+    exit 1
+fi
+grep -Fq "staged local resolver link has an untrusted generation namespace root" \
+    "$TMP_DIR/external-generation-workspace.out"
+rm "$FIXTURE/local-binaries/kernel.wasm"
+ln -s "$local_kernel" "$FIXTURE/local-binaries/kernel.wasm"
+
+# Kernel and userspace compatibility paths are package mirrors. Regular bytes
+# at either path have no generation/cache ownership and must never enter a
+# prepared workspace.
+cp "$local_kernel" "$TMP_DIR/regular-kernel.wasm"
+rm "$FIXTURE/local-binaries/kernel.wasm"
+cp "$TMP_DIR/regular-kernel.wasm" "$FIXTURE/local-binaries/kernel.wasm"
+if PATH="$FIXTURE/bin:$PATH" \
+    WASM_POSIX_BINARY_CACHE_ROOT="$source_cache" \
+    bash "$FIXTURE/scripts/pack-ci-test-workspace.sh" \
+        "$TMP_DIR/regular-kernel-workspace.tar.zst" \
+        > "$TMP_DIR/regular-kernel-workspace.out" 2>&1; then
+    echo "pack-ci-test-workspace.sh accepted an identityless regular kernel mirror" >&2
+    exit 1
+fi
+grep -Fq "package-owned root mirror must remain a local-generation symlink" \
+    "$TMP_DIR/regular-kernel-workspace.out"
+rm "$FIXTURE/local-binaries/kernel.wasm"
+ln -s "$local_kernel" "$FIXTURE/local-binaries/kernel.wasm"
+
+printf 'identityless userspace\n' > "$FIXTURE/local-binaries/userspace.wasm"
+if PATH="$FIXTURE/bin:$PATH" \
+    WASM_POSIX_BINARY_CACHE_ROOT="$source_cache" \
+    bash "$FIXTURE/scripts/pack-ci-test-workspace.sh" \
+        "$TMP_DIR/regular-userspace-workspace.tar.zst" \
+        > "$TMP_DIR/regular-userspace-workspace.out" 2>&1; then
+    echo "pack-ci-test-workspace.sh accepted an identityless regular userspace mirror" >&2
+    exit 1
+fi
+grep -Fq "package-owned root mirror must remain a local-generation symlink" \
+    "$TMP_DIR/regular-userspace-workspace.out"
+rm "$FIXTURE/local-binaries/userspace.wasm"
+
+printf 'internal but identityless root bytes\n' \
+    > "$FIXTURE/local-binaries/not-a-generation.wasm"
+for package_owned_root in kernel userspace; do
+    root_mirror="$FIXTURE/local-binaries/$package_owned_root.wasm"
+    if [ "$package_owned_root" = kernel ]; then
+        rm "$root_mirror"
+    fi
+    ln -s "not-a-generation.wasm" "$root_mirror"
+    if PATH="$FIXTURE/bin:$PATH" \
+        WASM_POSIX_BINARY_CACHE_ROOT="$source_cache" \
+        bash "$FIXTURE/scripts/pack-ci-test-workspace.sh" \
+            "$TMP_DIR/internal-$package_owned_root-workspace.tar.zst" \
+            > "$TMP_DIR/internal-$package_owned_root-workspace.out" 2>&1; then
+        echo "pack-ci-test-workspace.sh accepted an internal identityless $package_owned_root mirror" >&2
+        exit 1
+    fi
+    grep -Fq "package-owned root mirror must select a declared local generation" \
+        "$TMP_DIR/internal-$package_owned_root-workspace.out"
+    rm "$root_mirror"
+    if [ "$package_owned_root" = kernel ]; then
+        ln -s "$local_kernel" "$root_mirror"
+    fi
+done
+rm "$FIXTURE/local-binaries/not-a-generation.wasm"
 
 mv "$FIXTURE/binaries/programs" "$TMP_DIR/programs-with-package-mirrors"
 PATH="$FIXTURE/bin:$PATH" \
@@ -376,11 +503,16 @@ tar --zstd -xf "$TMP_DIR/scalar-only-workspace.tar.zst" -C "$scalar_extract"
     echo "pack-ci-test-workspace.sh: scalar-only workspace was not self-contained" >&2
     exit 1
 }
-[ -f "$scalar_extract/local-binaries/kernel.wasm" ] && \
-    [ ! -L "$scalar_extract/local-binaries/kernel.wasm" ] || {
-    echo "pack-ci-test-workspace.sh: scalar-only workspace did not materialize its local scalar" >&2
+[ -L "$scalar_extract/local-binaries/kernel.wasm" ] || {
+    echo "pack-ci-test-workspace.sh: scalar-only workspace flattened its package-owned root scalar" >&2
     exit 1
 }
+case "$(readlink "$scalar_extract/local-binaries/kernel.wasm")" in
+    /*)
+        echo "pack-ci-test-workspace.sh: scalar-only workspace retained an absolute local generation link" >&2
+        exit 1
+        ;;
+esac
 cmp \
     "$scalar_extract/local-binaries/kernel.wasm" \
     "$scalar_extract/local-binaries/.kandelo-local-generations/wasm32/kernel/$cache_key/session/kernel.wasm"
@@ -485,13 +617,85 @@ cmp \
     "$local_one_mirror" \
     "$pack_extract/local-binaries/.kandelo-local-generations/wasm32/local-one/$cache_key/session/bin/local-one.wasm"
 local_kernel_mirror="$pack_extract/local-binaries/kernel.wasm"
-[ -f "$local_kernel_mirror" ] && [ ! -L "$local_kernel_mirror" ] || {
-    echo "pack-ci-test-workspace.sh: did not materialize a root-level local scalar" >&2
+[ -L "$local_kernel_mirror" ] || {
+    echo "pack-ci-test-workspace.sh: flattened a package-owned root-level local scalar" >&2
     exit 1
 }
+case "$(readlink "$local_kernel_mirror")" in
+    /*)
+        echo "pack-ci-test-workspace.sh: retained an absolute root-level local generation link" >&2
+        exit 1
+        ;;
+esac
 cmp \
     "$local_kernel_mirror" \
     "$pack_extract/local-binaries/.kandelo-local-generations/wasm32/kernel/$cache_key/session/kernel.wasm"
+
+# The packer must validate the exact immutable generation selected by its
+# frozen snapshot. A missing one-shot publication claim or member is not a
+# portable local package identity.
+kernel_claim="$FIXTURE/local-binaries/.kandelo-local-generations/wasm32/kernel/$cache_key/.session.publication-claimed"
+mv "$kernel_claim" "$TMP_DIR/kernel-claim.saved"
+if PATH="$FIXTURE/bin:$PATH" \
+    WASM_POSIX_BINARY_CACHE_ROOT="$source_cache" \
+    bash "$FIXTURE/scripts/pack-ci-test-workspace.sh" \
+        "$TMP_DIR/unclaimed-local-workspace.tar.zst" \
+        >"$TMP_DIR/unclaimed-local-workspace.out" 2>&1; then
+    echo "pack-ci-test-workspace.sh accepted an unclaimed local generation" >&2
+    exit 1
+fi
+grep -Fq "local generation lacks its regular publication claim" \
+    "$TMP_DIR/unclaimed-local-workspace.out"
+mv "$TMP_DIR/kernel-claim.saved" "$kernel_claim"
+
+mv "$local_kernel" "$TMP_DIR/local-kernel.saved"
+if PATH="$FIXTURE/bin:$PATH" \
+    WASM_POSIX_BINARY_CACHE_ROOT="$source_cache" \
+    bash "$FIXTURE/scripts/pack-ci-test-workspace.sh" \
+        "$TMP_DIR/dangling-local-workspace.tar.zst" \
+        >"$TMP_DIR/dangling-local-workspace.out" 2>&1; then
+    echo "pack-ci-test-workspace.sh accepted a dangling local generation" >&2
+    exit 1
+fi
+grep -Fq "missing required artifact: local-binaries/kernel.wasm" \
+    "$TMP_DIR/dangling-local-workspace.out"
+mv "$TMP_DIR/local-kernel.saved" "$local_kernel"
+
+# Mutate the source mirror immediately after cp completes. The archive must
+# still be derived entirely from that private copy; consulting the live source
+# during classification would observe the replacement link and fail or select
+# a different package.
+real_cp="$(command -v cp)"
+cat >"$FIXTURE/bin/cp" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+"${PACKER_REAL_CP:?}" "$@"
+if [ "${1:-}" = -a ] && [ "${2:-}" = local-binaries ] &&
+   [ -n "${PACKER_CP_RACE_MIRROR:-}" ]; then
+    rm "$PACKER_CP_RACE_MIRROR"
+    ln -s "$PACKER_CP_RACE_REPLACEMENT" "$PACKER_CP_RACE_MIRROR"
+fi
+EOF
+chmod +x "$FIXTURE/bin/cp"
+kernel_source_target="$(readlink "$FIXTURE/local-binaries/kernel.wasm")"
+PATH="$FIXTURE/bin:$PATH" \
+    PACKER_REAL_CP="$real_cp" \
+    PACKER_CP_RACE_MIRROR="$FIXTURE/local-binaries/kernel.wasm" \
+    PACKER_CP_RACE_REPLACEMENT="$outside_source" \
+    WASM_POSIX_BINARY_CACHE_ROOT="$source_cache" \
+    bash "$FIXTURE/scripts/pack-ci-test-workspace.sh" \
+        "$TMP_DIR/raced-local-workspace.tar.zst"
+rm "$FIXTURE/bin/cp" "$FIXTURE/local-binaries/kernel.wasm"
+ln -s "$kernel_source_target" "$FIXTURE/local-binaries/kernel.wasm"
+race_extract="$TMP_DIR/race-extract"
+mkdir -p "$race_extract"
+tar --zstd -xf "$TMP_DIR/raced-local-workspace.tar.zst" -C "$race_extract"
+[ -L "$race_extract/local-binaries/kernel.wasm" ] || {
+    echo "pack-ci-test-workspace.sh flattened the frozen raced kernel mirror" >&2
+    exit 1
+}
+cmp "$local_kernel" "$race_extract/local-binaries/kernel.wasm"
+
 [ -f "$pack_extract/binaries/kernel.wasm" ] && \
     [ ! -L "$pack_extract/binaries/kernel.wasm" ] || {
     echo "pack-ci-test-workspace.sh: scalar resolver entry was not materialized" >&2
@@ -547,6 +751,25 @@ grep -Fxq -- \
     "--already-materialized --fetch-only prepare-browser" \
     "$TMP_DIR/relocated-browser-run.args"
 grep -Fxq materialized "$TMP_DIR/relocated-browser-blockers"
+
+for workflow in \
+    "$REPO_ROOT/.github/workflows/homebrew-main-shell-ci.yml" \
+    "$REPO_ROOT/.github/workflows/staging-build.yml" \
+    "$REPO_ROOT/.github/workflows/prepare-merge.yml" \
+    "$REPO_ROOT/.github/workflows/force-rebuild.yml"; do
+    grep -Fq 'source scripts/install-local-binary.sh' "$workflow" || {
+        echo "$(basename "$workflow"): candidate kernel bypasses the local generation installer" >&2
+        exit 1
+    }
+    grep -Fq 'install_local_binary kernel' "$workflow" || {
+        echo "$(basename "$workflow"): candidate kernel lacks package-owned installation" >&2
+        exit 1
+    }
+    grep -Fq 'local-binaries/kernel.wasm' "$workflow" || {
+        echo "$(basename "$workflow"): candidate kernel lacks exact-byte verification" >&2
+        exit 1
+    }
+done
 
 for workflow in \
     "$REPO_ROOT/.github/workflows/staging-build.yml" \

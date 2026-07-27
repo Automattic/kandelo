@@ -620,8 +620,10 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
   not flatten package mirrors into unrelated regular files: extraction at a
   different checkout path therefore preserves the same complete, single-tier
   package identity. Local package-generation links are likewise made relative
-  within `local-binaries/`; non-package scalar links are copied as verified
-  regular files. `scripts/ci-run-test-suite.sh` selects that transported cache
+  within `local-binaries/`, including package-owned root boot mirrors such as
+  `kernel.wasm`; only scalar aliases outside the local-generation namespace
+  are copied as verified regular files. `scripts/ci-run-test-suite.sh` selects
+  that transported cache
   before a suite resolves an artifact. The workspace also retains the
   materialized package tree because its root filesystem refers to
   package-backed executables lazily (for example, `/bin/sh`). libc-test runs as

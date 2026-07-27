@@ -4,7 +4,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 OUT="$REPO_ROOT/target/wasm32-unknown-unknown/release/kandelo_kernel.wasm"
-USERS_OUT="$REPO_ROOT/target/wasm32-unknown-unknown/release/wasm_posix_userspace.wasm"
 source "$REPO_ROOT/scripts/wasm-artifact-guards.sh"
 
 cd "$REPO_ROOT"
@@ -57,21 +56,19 @@ wasm_require_exports "$OUT" \
     kernel_validate_task \
     kernel_wait_child_poll
 
-mkdir -p "$REPO_ROOT/local-binaries"
-cp "$OUT" "$REPO_ROOT/local-binaries/kernel.wasm"
-echo "build-kernel: installed local-binaries/kernel.wasm"
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    # WHY: a resolver build owns only its sealed output directory. Writing a
+    # checkout-wide resolver mirror here would leak an untracked side effect
+    # across package transactions and destroy the caller's candidate identity.
+    mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
+    cp "$OUT" "$WASM_POSIX_DEP_OUT_DIR/kandelo-kernel.wasm"
+    echo "build-kernel: installed $WASM_POSIX_DEP_OUT_DIR/kandelo-kernel.wasm"
+    exit 0
+fi
+
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary kernel "$OUT" kandelo-kernel.wasm
 
 mkdir -p "$REPO_ROOT/host/wasm"
 cp "$OUT" "$REPO_ROOT/host/wasm/kandelo-kernel.wasm"
 echo "build-kernel: installed host/wasm/kandelo-kernel.wasm"
-
-if [ -f "$USERS_OUT" ]; then
-    cp "$USERS_OUT" "$REPO_ROOT/local-binaries/userspace.wasm"
-    echo "build-kernel: installed local-binaries/userspace.wasm"
-fi
-
-if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-    mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
-    cp "$OUT" "$WASM_POSIX_DEP_OUT_DIR/kandelo-kernel.wasm"
-    echo "build-kernel: installed $WASM_POSIX_DEP_OUT_DIR/kandelo-kernel.wasm"
-fi
