@@ -1,9 +1,14 @@
 #include <errno.h>
+#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+extern char **environ;
+
+static const char *const spawn_child_path = "/bin/kernel_allocator_churn_test";
 
 static int run_pipe_churn(long count) {
     const unsigned char sent = 0x5a;
@@ -64,6 +69,57 @@ static int run_fork_churn(long count) {
     return 0;
 }
 
+static int run_spawn_churn(long count) {
+    for (long iteration = 0; iteration < count; iteration++) {
+        char *const child_argv[] = {
+            (char *)spawn_child_path,
+            (char *)"spawn-child",
+            NULL,
+        };
+        pid_t child = -1;
+        int spawn_error = posix_spawn(
+            &child,
+            spawn_child_path,
+            NULL,
+            NULL,
+            child_argv,
+            environ
+        );
+        if (spawn_error != 0) {
+            fprintf(
+                stderr,
+                "posix_spawn iteration %ld failed: %s\n",
+                iteration,
+                strerror(spawn_error)
+            );
+            return 30;
+        }
+
+        int status = 0;
+        if (waitpid(child, &status, 0) != child) {
+            fprintf(
+                stderr,
+                "spawn waitpid iteration %ld failed: %s\n",
+                iteration,
+                strerror(errno)
+            );
+            return 31;
+        }
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+            fprintf(
+                stderr,
+                "spawn child iteration %ld returned status %d\n",
+                iteration,
+                status
+            );
+            return 32;
+        }
+    }
+
+    printf("KERNEL_ALLOCATOR_SPAWN_PASS count=%ld\n", count);
+    return 0;
+}
+
 static long parse_count(const char *text) {
     char *end = NULL;
     errno = 0;
@@ -75,8 +131,11 @@ static long parse_count(const char *text) {
 }
 
 int main(int argc, char **argv) {
+    if (argc == 2 && strcmp(argv[1], "spawn-child") == 0) {
+        return 0;
+    }
     if (argc != 3) {
-        fprintf(stderr, "usage: %s <pipe|fork> <positive-count>\n", argv[0]);
+        fprintf(stderr, "usage: %s <pipe|fork|spawn> <positive-count>\n", argv[0]);
         return 2;
     }
 
@@ -90,6 +149,9 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "fork") == 0) {
         return run_fork_churn(count);
+    }
+    if (strcmp(argv[1], "spawn") == 0) {
+        return run_spawn_churn(count);
     }
 
     fprintf(stderr, "unknown churn mode: %s\n", argv[1]);

@@ -310,12 +310,15 @@ function buildKernelImports(
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
       Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-      // Wait for complete, then trap
+      // Wait until the reusable kernel transaction returns and the host has
+      // committed the exit before terminating this disposable process Worker.
       while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
       onKernelExit?.(status);
-      // Per-thread exit is non-returning. Throwing here prevents libc's
-      // mandated SYS_exit retry loop from parking a second time on a channel
-      // the host has already removed, and lets the outer worker report exit.
+      // WHY: this trap belongs at the disposable guest-Worker boundary, not in
+      // the reusable kernel Wasm. It enforces `_Noreturn` even if a caller was
+      // built without the compiler's trailing unreachable, and prevents
+      // libc's SYS_exit retry loop from parking on a channel already removed
+      // by the host.
       throw new WebAssembly.RuntimeError("unreachable");
     },
 

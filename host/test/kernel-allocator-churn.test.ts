@@ -21,13 +21,16 @@ function readArrayBuffer(path: string): ArrayBuffer {
 }
 
 async function runChurn(
-  mode: "pipe" | "fork",
+  mode: "pipe" | "fork" | "spawn",
   count: number,
 ): Promise<{ pages: number; stdout: string }> {
   let stdout = "";
   let stderr = "";
   const diagnostics: string[] = [];
   const host = new NodeKernelHost({
+    execPrograms: mode === "spawn"
+      ? { "/bin/kernel_allocator_churn_test": churnProgram }
+      : undefined,
     onStdout: (_pid, bytes) => {
       stdout += new TextDecoder().decode(bytes);
     },
@@ -87,5 +90,19 @@ describe("kernel allocator lifetime under process and descriptor churn", () => {
       expect(stressed.pages).toBeLessThanOrEqual(warm.pages + 64);
     },
     120_000,
+  );
+
+  it(
+    "reuses posix_spawn and exactly reaped child state across thousands of task IDs",
+    async () => {
+      const warm = await runChurn("spawn", 8);
+      const stressed = await runChurn("spawn", 4_096);
+
+      // WHY: PID magnitude must not become process-table cardinality. Every
+      // child is synchronously reaped before the next spawn, so a kernel that
+      // retains state in proportion to historical task IDs is incorrect.
+      expect(stressed.pages).toBeLessThanOrEqual(warm.pages + 64);
+    },
+    900_000,
   );
 });

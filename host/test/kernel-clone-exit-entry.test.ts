@@ -23,6 +23,7 @@ import {
   CH_SYSCALL,
   CH_TOTAL_SIZE,
   PROCESS_STATE_EXITED,
+  PROCESS_STATE_RUNNING,
 } from "../src/generated/abi";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
@@ -423,6 +424,38 @@ describe("clone and exit entry authority", () => {
     expect(onExit).not.toHaveBeenCalled();
     // The fatal latch is synchronous, but its host observer must not run until
     // the failing export's exact entry scope has been fully revoked.
+    await flushLifecycleContinuations();
+    expect(onKernelFatal).toHaveBeenCalledOnce();
+    expect(harness.worker.hostReaped.has(harness.channel.pid)).toBe(false);
+    expect(channelResult(harness.channel).status).toBe(
+      CHANNEL_STATUS_PENDING,
+    );
+    consoleError.mockRestore();
+  });
+
+  it("keeps host exit state private when matching status leaves Rust live", async () => {
+    const onExit = vi.fn();
+    const onKernelFatal = vi.fn();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(
+      () => undefined,
+    );
+    const harness = makeHarness(
+      4,
+      { onExit, onKernelFatal },
+      {
+        kernel_commit_process_exit: (status: number) => status & 0xff,
+        kernel_get_process_state: () => PROCESS_STATE_RUNNING,
+      },
+    );
+    writeSyscall(harness.channel, ABI_SYSCALLS.Exit, [7n]);
+
+    expect(() => {
+      harness.worker.handleSyscall(harness.channel);
+    }).toThrow(
+      `kernel exit left process 41 in state ${PROCESS_STATE_RUNNING}`,
+    );
+
+    expect(onExit).not.toHaveBeenCalled();
     await flushLifecycleContinuations();
     expect(onKernelFatal).toHaveBeenCalledOnce();
     expect(harness.worker.hostReaped.has(harness.channel.pid)).toBe(false);

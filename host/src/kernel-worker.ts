@@ -22699,9 +22699,11 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // The guest-facing kernel_exit export must trap to implement `_Noreturn`.
-    // The host adapter instead uses the ABI-43 returning boundary: treating an
-    // arbitrary trap as a successful exit would hide a potentially half-
+    // Use ABI 43's dedicated returning exit transaction so the reusable kernel
+    // runs its compiler-generated shadow-stack epilogue after every short-lived
+    // child. The disposable guest Worker still enforces `_Noreturn` after the
+    // channel handshake. Treating an arbitrary kernel trap as successful exit
+    // would both preserve the old stack leak and hide a potentially half-
     // mutated kernel. Rust clears the exact task binding before this returns.
     this.#bindKernelTidForChannel(channel, entry);
     const exitExports = this.#kernelInstanceForEntry(entry).exports;
