@@ -6,35 +6,33 @@
  * a signal and redirect the instruction pointer.  Wasm has no equivalent
  * of either facility, so we implement *deferred* cancellation only.
  *
- * Design — we chose per-thread state option (c):
- *   Use stock musl's `pthread_t->cancel` field as the cancel-pending flag.
- *
- *   (a) a reserved slot in the channel buffer, or
- *   (b) a thread-local global in the guest.
+ * Design:
+ *   Use stock musl's `pthread_t->cancel` field as the authoritative
+ *   cancel-pending flag.
  *
  *   pthread_t->cancel is already:
  *     - atomic (`a_store`/`a_cas`)
  *     - thread-local (pinned to TLS via __pthread_self())
  *     - writable from any thread since all threads share linear memory
- *   so adding another slot would be redundant bookkeeping, and neither
- *   (a) nor (b) buys us anything except duplicated state.  The ABI-level
- *   addition is therefore limited to a single wake-up syscall
- *   (SYS_thread_cancel), not a channel-layout change.
+ *   so a second pending flag would be redundant bookkeeping. The channel's
+ *   generated one-shot request flags carry only transport authority: whether
+ *   this request came through __syscall_cp, and whether the target's frozen
+ *   cancellation state allows the host to wake that request.
  *
  * Flow:
  *   1. pthread_cancel(t) atomically sets `t->cancel = 1` and invokes
  *      SYS_thread_cancel(t->tid).
- *   2. The host intercepts SYS_thread_cancel and, if the target's channel
- *      is in a pending cancel-point syscall, completes it with -ECANCELED
- *      so the target wakes from Atomics.wait.  If the target is not
- *      blocked, the call is a no-op — the next cancel point will observe
- *      the flag.
- *   3. libc/glue/channel_syscall.c::__syscall_cp calls __testcancel() before
- *      the blocking dispatch and __syscall_cp_check() after it. A pending
- *      cancel terminates the thread only before dispatch or when the host
- *      interrupted an in-flight cancellation point with EINTR. A syscall
- *      that already completed keeps its result and leaves cancellation
- *      pending for the next cancellation point.
+ *   2. The host intercepts SYS_thread_cancel. It interrupts an in-flight
+ *      cancellation point with EINTR only when that exact request also
+ *      advertised cancellation-wake authority. PTHREAD_CANCEL_DISABLE omits
+ *      that authority, so the operation and any finite deadline remain live
+ *      while cancellation stays pending.
+ *   3. libc/glue/channel_syscall.c::__syscall_cp calls
+ *      __syscall_cp_cancel_preflight() before the blocking dispatch and
+ *      __syscall_cp_check() after it. ENABLE exits immediately; MASKED
+ *      returns ECANCELED so condition-wait code can relock first; DISABLE
+ *      leaves the operation live. A syscall that already completed keeps
+ *      its result and leaves cancellation pending for the next point.
  *
  * Async cancellation (PTHREAD_CANCEL_ASYNCHRONOUS) is explicitly not
  * supported: wasm cannot preempt a running thread mid-computation.
@@ -46,9 +44,7 @@
 #include <string.h>
 #include "pthread_impl.h"
 #include "syscall.h"
-
-/* Must match crates/shared/src/lib.rs and host/src/kernel-worker.ts. */
-#define SYS_thread_cancel 415
+#include <bits/kandelo_thread_syscalls.h>
 
 /* Replaces libc/musl/src/thread/pthread_cancel.c::__cancel.
  * If cancellation is enabled on this thread, terminate with
@@ -73,8 +69,30 @@ void __testcancel(void)
 		__cancel();
 }
 
-/* Check-for-cancel hook called by libc/glue/channel_syscall.c::__syscall_cp
- * both *before* and *after* a cancellation-point syscall.  This is the
+/* Check-for-cancel hook called before a cancellation-point syscall. This is
+ * the guest-side pre-registration half of the cancellation transport:
+ *
+ *   - ENABLE exits immediately.
+ *   - DISABLE leaves the operation live.
+ *   - MASKED returns -ECANCELED and switches to DISABLE so a condition wait
+ *     can remove its waiter and reacquire its mutex before exiting.
+ *
+ * A host pending-cancel marker covers cross-thread cancellation that raced a
+ * blocking registration. This preflight is still required for self-pending
+ * MASKED cancellation, where pthread_cancel intentionally makes no host
+ * syscall and therefore cannot install such a marker. */
+hidden long __syscall_cp_cancel_preflight(void)
+{
+	pthread_t self = __pthread_self();
+	if (!self->cancel) return 0;
+	if (self->canceldisable == PTHREAD_CANCEL_DISABLE) return 0;
+	if (self->canceldisable == PTHREAD_CANCEL_ENABLE || self->cancelasync)
+		pthread_exit(PTHREAD_CANCELED);
+	self->canceldisable = PTHREAD_CANCEL_DISABLE;
+	return -ECANCELED;
+}
+
+/* Check-for-cancel hook called after a cancellation-point syscall. This is the
  * one-function moral equivalent of stock musl's __syscall_cp_asm +
  * __syscall_cp_c combo:
  *
@@ -97,26 +115,20 @@ void __testcancel(void)
  */
 hidden long __syscall_cp_check(long r)
 {
-	pthread_t self = __pthread_self();
 	if (r != -EINTR) return r;
-	if (!self->cancel) return r;
-	if (self->canceldisable == PTHREAD_CANCEL_DISABLE) return r;
-	if (self->canceldisable == PTHREAD_CANCEL_ENABLE || self->cancelasync)
-		pthread_exit(PTHREAD_CANCELED);
-	/* MASKED: synthesize -ECANCELED and block further cancellation. */
-	self->canceldisable = PTHREAD_CANCEL_DISABLE;
-	return -ECANCELED;
+	long cancel = __syscall_cp_cancel_preflight();
+	return cancel ? cancel : r;
 }
 
-/* True only for the cancellation-disabled state that must keep a deferred
- * cancellation-point operation blocked. channel_syscall.c uses this after a
- * handler-free host cancellation wake; enabled and masked states must instead
- * unwind through __syscall_cp_check. */
-hidden int __syscall_cp_cancel_pending_disabled(void)
+/* Freeze whether pthread_cancel may interrupt this exact request.
+ *
+ * MASKED is intentionally wakeable: pthread_cond_timedwait relies on the
+ * EINTR -> ECANCELED handoff so it can reacquire the mutex before enabling
+ * cancellation and exiting. DISABLE instead keeps the operation live. */
+hidden int __syscall_cp_cancel_wake_allowed(void)
 {
 	pthread_t self = __pthread_self();
-	return self->cancel &&
-		self->canceldisable == PTHREAD_CANCEL_DISABLE;
+	return self->canceldisable != PTHREAD_CANCEL_DISABLE;
 }
 
 int pthread_cancel(pthread_t t)
@@ -145,7 +157,7 @@ int pthread_cancel(pthread_t t)
 	 * returns 0; the target will observe self->cancel on its next
 	 * cancel-point entry. */
 	if (t->tid > 0) {
-		__syscall(SYS_thread_cancel, t->tid);
+		__syscall(KANDELO_SYS_THREAD_CANCEL, t->tid);
 	}
 	return 0;
 }

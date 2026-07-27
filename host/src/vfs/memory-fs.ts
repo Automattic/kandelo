@@ -1,5 +1,16 @@
 import { decompress as zstdDecompress } from "fzstd";
-import type { PathconfValue, StatResult, StatfsResult } from "../types";
+import type {
+  AppendOutcome,
+  HostFileOffset,
+  PathconfValue,
+  StatResult,
+  StatfsResult,
+} from "../types";
+import {
+  hostFileLimitForNumberBackend,
+  hostFileOffsetToSafeNumber,
+  hostFilePositionToSafeNumber,
+} from "../file-offset";
 import { filesystemPathconf } from "../pathconf";
 import { SFFS_SUPER_MAGIC } from "../statfs";
 import type { FileSystemBackend, DirEntry } from "./types";
@@ -6795,7 +6806,7 @@ export class MemoryFileSystem implements FileSystemBackend {
   read(
     handle: number,
     buffer: Uint8Array,
-    offset: number | null,
+    offset: HostFileOffset | null,
     length: number,
   ): number {
     if (length > 0) {
@@ -6809,7 +6820,13 @@ export class MemoryFileSystem implements FileSystemBackend {
       }
     }
     if (offset !== null) {
-      return this.fs.readAt(handle, buffer.subarray(0, length), offset);
+      return this.fs.readAt(
+        handle,
+        buffer.subarray(0, length),
+        typeof offset === "bigint"
+          ? hostFilePositionToSafeNumber(offset)
+          : offset,
+      );
     }
     return this.fs.read(handle, buffer.subarray(0, length));
   }
@@ -6817,11 +6834,17 @@ export class MemoryFileSystem implements FileSystemBackend {
   write(
     handle: number,
     buffer: Uint8Array,
-    offset: number | null,
+    offset: HostFileOffset | null,
     length: number,
   ): number {
     if (offset !== null) {
-      const n = this.fs.writeAt(handle, buffer.subarray(0, length), offset);
+      const n = this.fs.writeAt(
+        handle,
+        buffer.subarray(0, length),
+        typeof offset === "bigint"
+          ? hostFilePositionToSafeNumber(offset)
+          : offset,
+      );
       if (n > 0) this.invalidateLazyData(this.fs.fstat(handle));
       return n;
     }
@@ -6830,8 +6853,35 @@ export class MemoryFileSystem implements FileSystemBackend {
     return n;
   }
 
-  seek(handle: number, offset: number, whence: number): number {
-    return this.fs.lseek(handle, offset, whence);
+  append(
+    handle: number,
+    buffer: Uint8Array,
+    length: number,
+    limit: HostFileOffset | null,
+  ): AppendOutcome {
+    const outcome = this.fs.append(
+      handle,
+      buffer.subarray(0, length),
+      hostFileLimitForNumberBackend(limit),
+    );
+    if (outcome.written > 0) {
+      this.invalidateLazyData(this.fs.fstat(handle));
+    }
+    return outcome;
+  }
+
+  seek(
+    handle: number,
+    offset: HostFileOffset,
+    whence: number,
+  ): HostFileOffset {
+    return this.fs.lseek(
+      handle,
+      typeof offset === "bigint"
+        ? hostFileOffsetToSafeNumber(offset)
+        : offset,
+      whence,
+    );
   }
 
   fstat(handle: number): StatResult {

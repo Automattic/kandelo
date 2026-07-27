@@ -28,6 +28,28 @@ self.onmessage = (
     if (fs.write(fd, data, null, data.length) !== data.length) {
       throw new Error("short OPFS fixture write");
     }
+    const marker = new TextEncoder().encode("!");
+    const append = fs.append(fd, marker, marker.length, null);
+    if (append.written !== marker.length || append.end !== 7) {
+      throw new Error("short OPFS fixture append");
+    }
+    const limited = fs.append(
+      fd,
+      new TextEncoder().encode("blocked"),
+      7,
+      append.end,
+    );
+    if (limited.written !== 0 || limited.end !== append.end) {
+      throw new Error("OPFS append limit was not atomic with EOF");
+    }
+    const replacement = new TextEncoder().encode("X");
+    if (fs.write(fd, replacement, 1, replacement.length) !== replacement.length) {
+      throw new Error("short OPFS positioned fixture write");
+    }
+    const observed = new Uint8Array(7);
+    if (fs.read(fd, observed, 0, observed.length) !== observed.length) {
+      throw new Error("short OPFS positioned fixture read");
+    }
 
     fs.seek(fd, 2, SEEK_SET);
     const negativeError = errorName(() => fs.seek(fd, -3, SEEK_CUR));
@@ -50,6 +72,7 @@ self.onmessage = (
       wideResult,
       overflowError,
       afterOverflow,
+      content: new TextDecoder().decode(observed),
     });
   } catch (error) {
     if (fd >= 0) {

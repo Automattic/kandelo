@@ -1,4 +1,10 @@
-import type { PathconfValue, StatResult, StatfsResult } from "../types";
+import type {
+  AppendOutcome,
+  HostFileOffset,
+  PathconfValue,
+  StatResult,
+  StatfsResult,
+} from "../types";
 
 export interface DirEntry {
   name: string;
@@ -12,9 +18,33 @@ export interface FileSystemBackend {
   // File handle operations
   open(path: string, flags: number, mode: number): number;
   close(handle: number): number;
-  read(handle: number, buffer: Uint8Array, offset: number | null, length: number): number;
-  write(handle: number, buffer: Uint8Array, offset: number | null, length: number): number;
-  seek(handle: number, offset: number, whence: number): number;
+  read(
+    handle: number,
+    buffer: Uint8Array,
+    offset: HostFileOffset | null,
+    length: number,
+  ): number;
+  write(
+    handle: number,
+    buffer: Uint8Array,
+    offset: HostFileOffset | null,
+    length: number,
+  ): number;
+  /**
+   * Atomically resolve EOF, apply an optional exclusive file-size ceiling,
+   * and append within one backing-owned operation.
+   */
+  append(
+    handle: number,
+    buffer: Uint8Array,
+    length: number,
+    limit: HostFileOffset | null,
+  ): AppendOutcome;
+  seek(
+    handle: number,
+    offset: HostFileOffset,
+    whence: number,
+  ): HostFileOffset;
   fstat(handle: number): StatResult;
   fpathconf(handle: number, name: number): PathconfValue;
   ftruncate(handle: number, length: number): void;

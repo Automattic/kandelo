@@ -16,6 +16,7 @@ inputs = [
   # this image.
   "host/src/binary-resolver.ts",
   "host/src/constants.ts",
+  "host/src/file-offset.ts",
   "host/src/generated/abi.ts",
   "host/src/homebrew-bottle-relocation.ts",
   "host/src/homebrew-guest-layout.ts",

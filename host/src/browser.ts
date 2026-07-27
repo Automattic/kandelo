@@ -17,6 +17,7 @@ export { BrowserWorkerAdapter } from "./worker-adapter-browser";
 export { centralizedWorkerMain, centralizedThreadWorkerMain, patchWasmForThread } from "./worker-main";
 export type { MessagePort as WorkerMessagePort } from "./worker-main";
 export type {
+  HostFileOffset,
   KernelConfig,
   PathconfValue,
   PlatformIO,

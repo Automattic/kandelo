@@ -24,7 +24,12 @@ import { ABI_SYSCALLS } from "../src/generated/abi";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const blockForeverBinary = join(__dirname, "../../examples/block-forever.wasm");
-const hasBinary = existsSync(blockForeverBinary);
+const worktreeKernelBinary = join(
+  __dirname,
+  "../../local-binaries/kernel.wasm",
+);
+const hasBinaries =
+  existsSync(blockForeverBinary) && existsSync(worktreeKernelBinary);
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -38,7 +43,7 @@ function loadWasm(path: string): ArrayBuffer {
 // crash status instead.
 const COOPERATIVE_EXIT_STATUS = 137;
 
-describe.skipIf(!hasBinary)("teardown reclamation of Atomics.wait-blocked workers", () => {
+describe.skipIf(!hasBinaries)("teardown reclamation of Atomics.wait-blocked workers", () => {
   it("wakes a blocked daemon to a cooperative exit on destroy", async () => {
     const exits = new Map<number, number | undefined>();
     const host = new NodeKernelHost({
@@ -47,7 +52,11 @@ describe.skipIf(!hasBinary)("teardown reclamation of Atomics.wait-blocked worker
         if (e.kind === "exit") exits.set(e.pid, e.exitStatus);
       },
     });
-    await host.init();
+    // WHY: this is source-level runtime validation. The ordinary resolver may
+    // select a previously published global cache generation whose host
+    // manifest predates the dirty worktree, producing an unrelated init
+    // failure instead of exercising the teardown code under test.
+    await host.init(loadWasm(worktreeKernelBinary));
 
     let pid = -1;
     let resolveBlocked!: () => void;

@@ -66,6 +66,40 @@ fn sendmsg_zero_length_null_iovec_never_constructs_a_raw_slice() {
 #[test]
 fn mqueue_zero_length_message_never_constructs_a_null_raw_slice() {
     let source = include_str!("../src/wasm_api.rs");
+    let const_slice_start = source
+        .find("macro_rules! channel_const_slice")
+        .expect("checked channel const-slice helper start");
+    let mut_slice_start = source[const_slice_start..]
+        .find("macro_rules! channel_mut_slice")
+        .map(|offset| const_slice_start + offset)
+        .expect("checked channel mut-slice helper start");
+    let cstr_start = source[mut_slice_start..]
+        .find("macro_rules! channel_cstr_len")
+        .map(|offset| mut_slice_start + offset)
+        .expect("checked channel mut-slice helper end");
+    let const_slice = &source[const_slice_start..mut_slice_start];
+    let mut_slice = &source[mut_slice_start..cstr_start];
+
+    for (name, helper, raw_constructor) in [
+        ("const", const_slice, "slice::from_raw_parts("),
+        ("mut", mut_slice, "slice::from_raw_parts_mut("),
+    ] {
+        let empty_guard = helper
+            .find("if length == 0 {")
+            .unwrap_or_else(|| panic!("{name} helper must select a valid empty slice"));
+        let empty_slice = helper
+            .find("&[]")
+            .or_else(|| helper.find("&mut []"))
+            .unwrap_or_else(|| panic!("{name} helper must construct a safe empty slice"));
+        let raw_slice = helper
+            .find(raw_constructor)
+            .unwrap_or_else(|| panic!("{name} helper must retain bounded non-empty slices"));
+        assert!(
+            empty_guard < empty_slice && empty_slice < raw_slice,
+            "{name} helper must select its safe empty slice before raw construction"
+        );
+    }
+
     let send_start = source
         .find("// SYS_MQ_TIMEDSEND:")
         .expect("mq_timedsend dispatcher start");
@@ -80,15 +114,9 @@ fn mqueue_zero_length_message_never_constructs_a_null_raw_slice() {
     let send = &source[send_start..receive_start];
     let receive = &source[receive_start..receive_end];
 
-    let send_empty_guard = send
-        .find("let data = if data_len == 0 {\n                &[]")
-        .expect("zero-length message must select a valid empty slice");
-    let send_raw_slice = send
-        .find("core::slice::from_raw_parts(channel_const_ptr!(1, u8), data_len)")
-        .expect("positive-length message must retain the bounded slice");
     assert!(
-        send_empty_guard < send_raw_slice,
-        "the zero-length send guard must precede raw-slice construction"
+        send.contains("let data = channel_const_slice!(1, data_len);"),
+        "mq_timedsend must use the checked slice helper with its actual length"
     );
 
     let receive_empty_guard = receive

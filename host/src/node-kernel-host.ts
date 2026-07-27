@@ -176,7 +176,13 @@ export class NodeKernelHost {
   private workerStarted = false;
   private initialized = false;
   private pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: Error) => void }>();
-  private exitResolvers = new Map<number, (status: number) => void>();
+  private exitResolvers = new Map<number, {
+    resolve: (status: number) => void;
+    reject: (error: Error) => void;
+  }>();
+  private kernelFatalError: Error | null = null;
+  private kernelWorkerExitExpected = false;
+  private workerTermination: Promise<number> | null = null;
   private unclaimedExitStatuses = new Map<number, { status: number; sequence: number }>();
   private exitSequence = 0;
   private _nextRequestId = 1;
@@ -189,6 +195,7 @@ export class NodeKernelHost {
 
   /** Initialize the kernel by spawning a dedicated worker_thread */
   async init(kernelWasmBytes?: ArrayBuffer): Promise<void> {
+    if (this.kernelFatalError !== null) throw this.kernelFatalError;
     const wasmBytes = kernelWasmBytes ?? loadKernelWasm();
     const rootfsImage = resolveRootfsImage(this.options.rootfsImage);
     if (this.options.rootfsLazyAssets !== undefined && rootfsImage === null) {
@@ -221,16 +228,15 @@ export class NodeKernelHost {
 
     this.worker = spawnKernelWorkerThread();
     this.workerStarted = true;
+    this.kernelWorkerExitExpected = false;
+    this.workerTermination = null;
 
     this.worker.on("message", (msg: KernelToMainMessage) => {
       this.handleWorkerMessage(msg);
     });
     this.worker.on("error", (err) => {
       const error = err instanceof Error ? err : new Error(String(err));
-      for (const [, { reject }] of this.pendingRequests) {
-        reject(error);
-      }
-      this.pendingRequests.clear();
+      this.failKernelHost(error);
       const diagnostic: HostDiagnostic = {
         pid: 0,
         source: "kernel worker",
@@ -244,6 +250,31 @@ export class NodeKernelHost {
         this.options.onHostDiagnostic?.(diagnostic);
       } catch (callbackError) {
         console.error("[NodeKernelHost] onHostDiagnostic callback failed:", callbackError);
+      }
+    });
+    this.worker.on("exit", (code) => {
+      this.workerStarted = false;
+      this.initialized = false;
+      if (this.kernelWorkerExitExpected || this.kernelFatalError !== null) {
+        return;
+      }
+      const error = new Error(
+        `Kernel worker exited unexpectedly (code ${code})`,
+      );
+      this.failKernelHost(error);
+      const diagnostic: HostDiagnostic = {
+        pid: 0,
+        source: "kernel worker",
+        message: `[NodeKernelHost] ${error.message}`,
+      };
+      console.error(diagnostic.message);
+      try {
+        this.options.onHostDiagnostic?.(diagnostic);
+      } catch (callbackError) {
+        console.error(
+          "[NodeKernelHost] onHostDiagnostic callback failed:",
+          callbackError,
+        );
       }
     });
 
@@ -265,10 +296,21 @@ export class NodeKernelHost {
         };
         const readyHandler = (msg: KernelToMainMessage) => {
           if (msg.type === "ready") {
-            settle(resolve);
+            if (this.kernelFatalError !== null) {
+              settle(() => reject(this.kernelFatalError!));
+            } else {
+              settle(resolve);
+            }
           } else if (msg.type === "init_error") {
             settle(() =>
               reject(new Error(`Kernel worker init failed: ${msg.error}`))
+            );
+          } else if (msg.type === "kernel_fatal") {
+            settle(() =>
+              reject(
+                this.kernelFatalError
+                  ?? new Error(`Kernel worker failed: ${msg.error}`),
+              )
             );
           }
         };
@@ -276,7 +318,12 @@ export class NodeKernelHost {
           settle(() => reject(err));
         };
         const exitHandler = (code: number) => {
-          settle(() => reject(new Error(`kernel worker exited before ready (code ${code})`)));
+          settle(() =>
+            reject(
+              this.kernelFatalError
+                ?? new Error(`kernel worker exited before ready (code ${code})`),
+            )
+          );
         };
         this.worker.on("message", readyHandler);
         this.worker.once("error", errorHandler);
@@ -317,8 +364,8 @@ export class NodeKernelHost {
     } catch (error) {
       // WHY: a worker that rejected initialization owns no usable kernel and
       // must not remain alive as a half-initialized hidden resource.
-      await this.worker.terminate().catch(() => {});
-      this.workerStarted = false;
+      this.kernelWorkerExitExpected = true;
+      await this.terminateWorker().catch(() => {});
       throw error;
     }
     this.initialized = true;
@@ -398,8 +445,12 @@ export class NodeKernelHost {
     const exit = unclaimedExitStatus !== undefined &&
       unclaimedExitStatus.sequence > spawnStartedBeforeExitSequence
       ? Promise.resolve(unclaimedExitStatus.status)
-      : new Promise<number>((resolve) => {
-          this.exitResolvers.set(pid, resolve);
+      : new Promise<number>((resolve, reject) => {
+          if (this.kernelFatalError !== null) {
+            reject(this.kernelFatalError);
+            return;
+          }
+          this.exitResolvers.set(pid, { resolve, reject });
         });
 
     this.options.onProcessEvent?.({ kind: "spawn", pid });
@@ -712,7 +763,7 @@ export class NodeKernelHost {
     });
     const resolver = this.exitResolvers.get(pid);
     this.exitResolvers.delete(pid);
-    if (resolver) resolver(status);
+    resolver?.resolve(status);
   }
 
   /** Subscribe to worker-owned lazy VFS transport progress. */
@@ -769,7 +820,8 @@ export class NodeKernelHost {
   async destroy(): Promise<void> {
     if (!this.workerStarted) return;
     let gracefulDetachFailure: string | undefined;
-    if (this.initialized) {
+    this.kernelWorkerExitExpected = true;
+    if (this.initialized && this.kernelFatalError === null) {
       const requestId = this._nextRequestId++;
       gracefulDetachFailure = await awaitGracefulKernelRealmDestroy(
         () => this.request(requestId, { type: "destroy", requestId }),
@@ -782,14 +834,12 @@ export class NodeKernelHost {
     // graceful exact-generation report was false, malformed, or timed out.
     let realmTerminationFailure: string | undefined;
     try {
-      await this.worker.terminate();
+      await this.terminateWorker();
     } catch (error) {
       realmTerminationFailure =
         "kernel-worker realm termination failed: " +
         (error instanceof Error ? error.message : String(error));
     }
-    this.workerStarted = false;
-    this.initialized = false;
     this.exitResolvers.clear();
     this.unclaimedExitStatuses.clear();
     this.pendingRequests.clear();
@@ -823,14 +873,41 @@ export class NodeKernelHost {
   // ── Private ──
 
   private sendToWorker(msg: MainToKernelMessage): void {
+    if (this.kernelFatalError !== null) throw this.kernelFatalError;
     this.worker.postMessage(msg);
   }
 
   private request(requestId: number, msg: MainToKernelMessage): Promise<any> {
     return new Promise((resolve, reject) => {
+      if (this.kernelFatalError !== null) {
+        reject(this.kernelFatalError);
+        return;
+      }
       this.pendingRequests.set(requestId, { resolve, reject });
       this.sendToWorker(msg);
     });
+  }
+
+  private failKernelHost(error: Error): void {
+    if (this.kernelFatalError !== null) return;
+    this.kernelFatalError = error;
+    for (const { reject } of this.pendingRequests.values()) reject(error);
+    this.pendingRequests.clear();
+    for (const { reject } of this.exitResolvers.values()) reject(error);
+    this.exitResolvers.clear();
+    this.unclaimedExitStatuses.clear();
+  }
+
+  private terminateWorker(): Promise<number> {
+    if (this.workerTermination !== null) return this.workerTermination;
+    const worker = this.worker;
+    this.workerTermination = worker.terminate().finally(() => {
+      if (this.worker === worker) {
+        this.workerStarted = false;
+        this.initialized = false;
+      }
+    });
+    return this.workerTermination;
   }
 
   private handleWorkerMessage(msg: KernelToMainMessage): void {
@@ -841,6 +918,16 @@ export class NodeKernelHost {
         // listener also receives init terminal messages, so account for them
         // explicitly rather than relying on implicit fall-through.
         break;
+      case "kernel_fatal": {
+        const error = new Error(`Kernel worker failed: ${msg.error}`);
+        this.failKernelHost(error);
+        // WHY: after a trapped kernel export, Rust may retain an active global
+        // transfer borrow. No later request or process completion is safe to
+        // observe, so stop the poisoned worker after rejecting every waiter.
+        this.kernelWorkerExitExpected = true;
+        void this.terminateWorker().catch(() => {});
+        break;
+      }
       case "response": {
         const pending = this.pendingRequests.get(msg.requestId);
         if (pending) {
@@ -857,7 +944,7 @@ export class NodeKernelHost {
         const resolver = this.exitResolvers.get(msg.pid);
         if (resolver) {
           this.exitResolvers.delete(msg.pid);
-          resolver(msg.status);
+          resolver.resolve(msg.status);
         } else {
           this.unclaimedExitStatuses.set(msg.pid, {
             status: msg.status,

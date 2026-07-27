@@ -1,7 +1,12 @@
-import { CAPTURED_STDIO, CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
+import {
+  CAPTURED_STDIO,
+  CentralizedKernelWorker,
+  createCentralizedKernelWorkerTestDouble,
+} from "../../../../host/src/kernel-worker";
 import {
   ABI_SYSCALLS,
   CHANNEL_STATUS_COMPLETE,
+  CHANNEL_STATUS_PENDING,
   CH_ARGS,
   CH_ARG_SIZE,
   CH_DATA,
@@ -16,7 +21,6 @@ import {
   createProcessMemory,
   type ProcessMemoryLayout,
 } from "../../../../host/src/process-memory";
-import type { KernelScratchRegion } from "../../../../host/src/kernel-scratch";
 import { OpfsFileSystem } from "../../../../host/src/vfs/opfs";
 import { BrowserTimeProvider } from "../../../../host/src/vfs/time";
 import { VirtualPlatformIO } from "../../../../host/src/vfs/vfs";
@@ -70,30 +74,11 @@ function scratchArgument(offset: number, length: number): ScratchArgument {
   return { kind: "scratch", offset, length };
 }
 
-interface ChannelInfoForTest {
-  pid: number;
-  memory: WebAssembly.Memory;
-  channelOffset: number;
-}
-
-interface KernelWorkerInternals {
-  scratchRegion: KernelScratchRegion;
-  kernelInstance: WebAssembly.Instance;
-  processes: Map<number, { channels: ChannelInfoForTest[] }>;
-  pendingAdvisoryLockRetries: Map<ChannelInfoForTest, unknown>;
-  handleFcntlLock(channel: ChannelInfoForTest, args: number[]): void;
-  drainAndProcessWakeupEvents(): void;
-}
-
 interface FixtureRequest {
   buffer: SharedArrayBuffer;
   kernelWasm: ArrayBuffer;
   identityPath: string;
   capacityPath: string;
-}
-
-function internals(worker: CentralizedKernelWorker): KernelWorkerInternals {
-  return worker as unknown as KernelWorkerInternals;
 }
 
 function makeProcessMemory(): Omit<RegisteredProcess, "pid"> {
@@ -122,85 +107,124 @@ function register(
   return { ...process, pid };
 }
 
-function issue(
-  worker: CentralizedKernelWorker,
-  pid: number,
+function prepareIssue(
+  process: RegisteredProcess,
   syscall: number,
   args: readonly SyscallArgument[],
   preparation?: ScratchPreparation,
-): SyscallResult {
-  const state = internals(worker);
-  return state.scratchRegion.withLease((scratch) => {
-    // WHY: preparation is data, not a callback receiving the lease. Keeping
-    // every scratch operation in this synchronous callback prevents a helper
-    // from retaining the lease after withLease revokes it.
-    if (preparation?.kind === "copy") {
-      scratch.copyFrom(
-        preparation.source,
-        preparation.destinationOffset,
-      );
-    } else if (preparation?.kind === "flock") {
-      scratch.fill(0, CH_DATA, 32);
-      const flock = scratch.dataView(CH_DATA, 32);
-      flock.setInt16(0, preparation.type, true);
-      flock.setInt16(2, 0, true); // SEEK_SET
-      flock.setBigInt64(8, preparation.start, true);
-      flock.setBigInt64(16, preparation.len, true);
-    }
-    const channel = scratch.dataView(0, CH_TOTAL_SIZE);
-    channel.setUint32(CH_SYSCALL, syscall, true);
-    channel.setUint32(CH_ERRNO, 0, true);
-    channel.setBigInt64(CH_RETURN, 0n, true);
-    for (let index = 0; index < 6; index++) {
-      const argument = args[index] ?? 0;
-      if (typeof argument === "object") {
-        // WHY: the descriptor carries only an offset and capacity. The
-        // lease writes its checked address without exposing a primitive that
-        // could outlive revocation.
-        scratch.writeAddress(
-          CH_ARGS + index * CH_ARG_SIZE,
-          argument.offset,
-          argument.length,
-          "u64-le",
-        );
-      } else {
-        channel.setBigInt64(
-          CH_ARGS + index * CH_ARG_SIZE,
-          BigInt(argument),
-          true,
-        );
+): void {
+  const channel = new DataView(
+    process.memory.buffer,
+    process.channelOffset,
+    CH_TOTAL_SIZE,
+  );
+  if (preparation?.kind === "copy") {
+    new Uint8Array(
+      process.memory.buffer,
+      process.channelOffset + preparation.destinationOffset,
+      preparation.source.byteLength,
+    ).set(preparation.source);
+  } else if (preparation?.kind === "flock") {
+    new Uint8Array(
+      process.memory.buffer,
+      process.channelOffset + CH_DATA,
+      32,
+    ).fill(0);
+    const flock = new DataView(
+      process.memory.buffer,
+      process.channelOffset + CH_DATA,
+      32,
+    );
+    flock.setInt16(0, preparation.type, true);
+    flock.setInt16(2, 0, true); // SEEK_SET
+    flock.setBigInt64(8, preparation.start, true);
+    flock.setBigInt64(16, preparation.len, true);
+  }
+  channel.setUint32(CH_SYSCALL, syscall, true);
+  channel.setUint32(CH_ERRNO, 0, true);
+  channel.setBigInt64(CH_RETURN, 0n, true);
+  for (let index = 0; index < 6; index++) {
+    const argument = args[index] ?? 0;
+    if (typeof argument === "object") {
+      if (
+        !Number.isSafeInteger(argument.offset)
+        || !Number.isSafeInteger(argument.length)
+        || argument.offset < 0
+        || argument.length < 0
+        || argument.offset + argument.length > CH_TOTAL_SIZE
+      ) {
+        throw new RangeError("fixture channel pointer is out of range");
       }
+      channel.setBigUint64(
+        CH_ARGS + index * CH_ARG_SIZE,
+        BigInt(process.channelOffset + argument.offset),
+        true,
+      );
+    } else {
+      channel.setBigInt64(
+        CH_ARGS + index * CH_ARG_SIZE,
+        BigInt(argument),
+        true,
+      );
     }
-
-    const setCurrentTid = state.kernelInstance.exports.kernel_set_current_tid as (
-      pid: number,
-      tid: number,
-    ) => number;
-    const bindResult = setCurrentTid(pid, pid);
-    if (bindResult !== 0) {
-      throw new Error(`kernel_set_current_tid(${pid}, ${pid}) failed: ${bindResult}`);
-    }
-    scratch.invokeKernelExport("kernel_handle_channel", [
-      scratch.exportPointer(0, CH_TOTAL_SIZE),
-      CH_TOTAL_SIZE,
-      pid,
-    ]);
-    return {
-      value: Number(channel.getBigInt64(CH_RETURN, true)),
-      errno: channel.getUint32(CH_ERRNO, true),
-    };
-  });
+  }
 }
 
-function openFile(
-  worker: CentralizedKernelWorker,
-  pid: number,
+function submitPreparedIssue(process: RegisteredProcess): void {
+  const words = new Int32Array(process.memory.buffer);
+  const statusIndex =
+    (process.channelOffset + CH_STATUS) / Int32Array.BYTES_PER_ELEMENT;
+  Atomics.store(words, statusIndex, CHANNEL_STATUS_PENDING);
+  Atomics.notify(words, statusIndex, 1);
+}
+
+async function waitForIssueCompletion(
+  process: RegisteredProcess,
+  timeoutMs = 10_000,
+): Promise<SyscallResult & { status: number }> {
+  const words = new Int32Array(process.memory.buffer);
+  const statusIndex =
+    (process.channelOffset + CH_STATUS) / Int32Array.BYTES_PER_ELEMENT;
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (Atomics.load(words, statusIndex) === CHANNEL_STATUS_COMPLETE) {
+      // The worker schedules its next wait after publishing completion. Yield
+      // once more so a following fixture syscall cannot outrun that relisten.
+      await Promise.resolve();
+      return processChannelResult(process);
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `kernel syscall for pid ${process.pid} did not complete within ${timeoutMs}ms`,
+      );
+    }
+    await Promise.resolve();
+    if (Atomics.load(words, statusIndex) !== CHANNEL_STATUS_COMPLETE) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+  }
+}
+
+async function issue(
+  process: RegisteredProcess,
+  syscall: number,
+  args: readonly SyscallArgument[],
+  preparation?: ScratchPreparation,
+): Promise<SyscallResult> {
+  // Exercise the registered guest mailbox. Kernel scratch, its lease, and all
+  // export authority remain encapsulated by CentralizedKernelWorker.
+  prepareIssue(process, syscall, args, preparation);
+  submitPreparedIssue(process);
+  return waitForIssueCompletion(process);
+}
+
+async function openFile(
+  process: RegisteredProcess,
   path: string,
-): number {
+): Promise<number> {
   const pathBytes = new TextEncoder().encode(`${path}\0`);
-  const result = issue(
-    worker,
-    pid,
+  const result = await issue(
+    process,
     ABI_SYSCALLS.Open,
     [
       scratchArgument(CH_DATA, pathBytes.byteLength),
@@ -215,21 +239,20 @@ function openFile(
   );
   if (result.errno !== 0 || result.value < 3) {
     throw new Error(
-      `kernel open failed for pid ${pid}: value=${result.value} errno=${result.errno}`,
+      `kernel open failed for pid ${process.pid}: value=${result.value} errno=${result.errno}`,
     );
   }
   return result.value;
 }
 
-function closeFile(
-  worker: CentralizedKernelWorker,
-  pid: number,
+async function closeFile(
+  process: RegisteredProcess,
   fd: number,
-): void {
-  const result = issue(worker, pid, ABI_SYSCALLS.Close, [fd]);
+): Promise<void> {
+  const result = await issue(process, ABI_SYSCALLS.Close, [fd]);
   if (result.value !== 0 || result.errno !== 0) {
     throw new Error(
-      `kernel close failed for pid ${pid}: value=${result.value} errno=${result.errno}`,
+      `kernel close failed for pid ${process.pid}: value=${result.value} errno=${result.errno}`,
     );
   }
 }
@@ -250,17 +273,15 @@ function writeFlock(
 }
 
 function lock(
-  worker: CentralizedKernelWorker,
-  pid: number,
+  process: RegisteredProcess,
   fd: number,
   start: bigint,
   len: bigint,
   type = F_WRLCK,
   command = F_SETLK64,
-): SyscallResult {
+): Promise<SyscallResult> {
   return issue(
-    worker,
-    pid,
+    process,
     ABI_SYSCALLS.Fcntl,
     [
       fd,
@@ -321,41 +342,45 @@ self.onmessage = async (event: MessageEvent<FixtureRequest>) => {
   const renamedIdentityPath = `${identityPath}-renamed`;
   const opfs = OpfsFileSystem.create(buffer);
   let worker: CentralizedKernelWorker | null = null;
-  const pids: number[] = [];
+  const registrations: RegisteredProcess[] = [];
   let response: Record<string, unknown> | null = null;
 
   try {
     createEmptyFile(opfs, identityPath);
     createEmptyFile(opfs, capacityPath);
 
-    worker = new CentralizedKernelWorker(
-      { maxWorkers: 4, dataBufferSize: 65_536, useSharedMemory: true },
-      new VirtualPlatformIO(
+    worker = createCentralizedKernelWorkerTestDouble({
+      config: {
+        maxWorkers: 4,
+        dataBufferSize: 65_536,
+        useSharedMemory: true,
+      },
+      io: new VirtualPlatformIO(
         [{ mountPoint: "/", backend: opfs }],
         new BrowserTimeProvider(),
       ),
-    );
+    });
     await worker.init(kernelWasm);
 
-    pids.push(register(worker).pid);
+    const owner = register(worker);
+    registrations.push(owner);
     const peer = register(worker);
-    pids.push(peer.pid);
+    registrations.push(peer);
     const capacityOwner = register(worker);
-    pids.push(capacityOwner.pid);
-    pids.push(register(worker).pid);
+    registrations.push(capacityOwner);
+    const capacityPeer = register(worker);
+    registrations.push(capacityPeer);
 
-    const ownerFd = openFile(worker, pids[0], identityPath);
-    const peerFd = openFile(worker, pids[1], identityPath);
-    const independentOpenAcquired = lock(
-      worker,
-      pids[0],
+    const ownerFd = await openFile(owner, identityPath);
+    const peerFd = await openFile(peer, identityPath);
+    const independentOpenAcquired = await lock(
+      owner,
       ownerFd,
       0n,
       1n,
     );
-    const independentOpenConflict = lock(
-      worker,
-      pids[1],
+    const independentOpenConflict = await lock(
+      peer,
       peerFd,
       0n,
       1n,
@@ -363,29 +388,24 @@ self.onmessage = async (event: MessageEvent<FixtureRequest>) => {
 
     opfs.rename(identityPath, renamedIdentityPath);
     opfs.unlink(renamedIdentityPath);
-    const renamedAndUnlinkedOpenConflict = lock(
-      worker,
-      pids[1],
+    const renamedAndUnlinkedOpenConflict = await lock(
+      peer,
       peerFd,
       0n,
       1n,
     );
 
     createEmptyFile(opfs, identityPath);
-    const recreatedFd = openFile(worker, pids[2], identityPath);
-    const recreatedPathIsolated = lock(
-      worker,
-      pids[2],
+    const recreatedFd = await openFile(capacityOwner, identityPath);
+    const recreatedPathIsolated = await lock(
+      capacityOwner,
       recreatedFd,
       0n,
       1n,
     );
-    closeFile(worker, pids[2], recreatedFd);
+    await closeFile(capacityOwner, recreatedFd);
 
-    const state = internals(worker);
-    const peerChannel = state.processes.get(pids[1])?.channels[0];
-    if (!peerChannel) throw new Error("peer kernel channel is not registered");
-    const blockingArgs = prepareProcessFcntl(
+    prepareProcessFcntl(
       peer,
       peerFd,
       F_SETLKW64,
@@ -393,31 +413,29 @@ self.onmessage = async (event: MessageEvent<FixtureRequest>) => {
       1n,
       F_WRLCK,
     );
-    state.handleFcntlLock(peerChannel, blockingArgs);
+    submitPreparedIssue(peer);
+    // Let the genuine channel listener park F_SETLKW before the owner unlocks.
+    await Promise.resolve();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     const blockingParkedBeforeUnlock =
-      state.pendingAdvisoryLockRetries.has(peerChannel);
+      processChannelResult(peer).status === CHANNEL_STATUS_PENDING;
 
-    const unlockResult = lock(worker, pids[0], ownerFd, 0n, 1n, F_UNLCK);
-    // Direct kernel calls do not run the host's ordinary syscall-completion
-    // hook, so explicitly consume the same generic wake stream here.
-    state.drainAndProcessWakeupEvents();
-    const wakeResult = processChannelResult(peer);
+    const unlockResult = await lock(owner, ownerFd, 0n, 1n, F_UNLCK);
+    const wakeResult = await waitForIssueCompletion(peer);
     const blockingWokeAfterUnlock =
-      !state.pendingAdvisoryLockRetries.has(peerChannel) &&
       wakeResult.status === CHANNEL_STATUS_COMPLETE &&
       wakeResult.value === 0 &&
       wakeResult.errno === 0;
 
-    closeFile(worker, pids[0], ownerFd);
-    closeFile(worker, pids[1], peerFd);
+    await closeFile(owner, ownerFd);
+    await closeFile(peer, peerFd);
 
-    const capacityFd = openFile(worker, pids[2], capacityPath);
-    const capacityPeerFd = openFile(worker, pids[3], capacityPath);
+    const capacityFd = await openFile(capacityOwner, capacityPath);
+    const capacityPeerFd = await openFile(capacityPeer, capacityPath);
     let capacityInserted = 0;
     for (let index = 0; index < MAX_LOCK_RECORDS; index++) {
-      const result = lock(
-        worker,
-        pids[2],
+      const result = await lock(
+        capacityOwner,
         capacityFd,
         BigInt(index * 2),
         1n,
@@ -430,19 +448,14 @@ self.onmessage = async (event: MessageEvent<FixtureRequest>) => {
       capacityInserted++;
     }
 
-    const capacityConflict = lock(
-      worker,
-      pids[3],
+    const capacityConflict = await lock(
+      capacityPeer,
       capacityPeerFd,
       0n,
       1n,
     );
 
-    const capacityChannel = state.processes.get(pids[2])?.channels[0];
-    if (!capacityChannel) {
-      throw new Error("capacity-owner kernel channel is not registered");
-    }
-    const exhaustionArgs = prepareProcessFcntl(
+    prepareProcessFcntl(
       capacityOwner,
       capacityFd,
       F_SETLKW64,
@@ -450,13 +463,13 @@ self.onmessage = async (event: MessageEvent<FixtureRequest>) => {
       1n,
       F_WRLCK,
     );
-    state.handleFcntlLock(capacityChannel, exhaustionArgs);
-    const exhaustion = processChannelResult(capacityOwner);
+    submitPreparedIssue(capacityOwner);
+    const exhaustion = await waitForIssueCompletion(capacityOwner);
     const exhaustionWasNotParked =
-      !state.pendingAdvisoryLockRetries.has(capacityChannel);
+      exhaustion.status === CHANNEL_STATUS_COMPLETE;
 
-    closeFile(worker, pids[2], capacityFd);
-    closeFile(worker, pids[3], capacityPeerFd);
+    await closeFile(capacityOwner, capacityFd);
+    await closeFile(capacityPeer, capacityPeerFd);
 
     response = {
       type: "result",
@@ -482,7 +495,7 @@ self.onmessage = async (event: MessageEvent<FixtureRequest>) => {
   } finally {
     const cleanupErrors: string[] = [];
     if (worker) {
-      for (const pid of pids) {
+      for (const { pid } of registrations) {
         try {
           worker.unregisterProcess(pid);
         } catch (error) {

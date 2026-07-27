@@ -44,14 +44,806 @@
         "type": "u32"
       }
     ],
+    "request_flags": {
+      "cancellation_point": 1,
+      "cancellation_wake_allowed": 2,
+      "known_mask": 7
+    },
     "size": 72
   },
   "channel_request_flags": [
     {
-      "bit": 1,
+      "bit": 4,
       "name": "defer_signal_delivery"
     }
   ],
+  "channel_scalar_contract": {
+    "default_argument_kind": "i32",
+    "default_result_kind": "i32",
+    "syscalls": [
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "read",
+        "number": 3,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "write",
+        "number": 4,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "split-i64-low-u32"
+          },
+          {
+            "index": 2,
+            "kind": "split-i64-high-i32"
+          }
+        ],
+        "musl_name": "lseek",
+        "number": 5,
+        "result": "i64"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "readlink",
+        "number": 19,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "getcwd",
+        "number": 23,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "readdir",
+        "number": 26,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "getenv",
+        "number": 43,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-size"
+          },
+          {
+            "index": 5,
+            "kind": "i64"
+          }
+        ],
+        "musl_name": "mmap",
+        "number": 46,
+        "result": "process-address"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "munmap",
+        "number": 47,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "brk",
+        "number": 48,
+        "result": "process-address"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "mprotect",
+        "number": 49,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "u32"
+          }
+        ],
+        "musl_name": "bind",
+        "number": 51,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "u32"
+          }
+        ],
+        "musl_name": "connect",
+        "number": 54,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "send",
+        "number": 55,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "recv",
+        "number": 56,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 4,
+            "kind": "u32"
+          }
+        ],
+        "musl_name": "setsockopt",
+        "number": 59,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "poll",
+        "number": 60,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          },
+          {
+            "index": 5,
+            "kind": "u32"
+          }
+        ],
+        "musl_name": "sendto",
+        "number": 62,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "recvfrom",
+        "number": 63,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          },
+          {
+            "index": 3,
+            "kind": "i64"
+          }
+        ],
+        "musl_name": "pread",
+        "number": 64,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          },
+          {
+            "index": 3,
+            "kind": "i64"
+          }
+        ],
+        "musl_name": "pwrite",
+        "number": 65,
+        "result": "i32"
+      },
+      {
+        "arguments": [],
+        "musl_name": "time",
+        "number": 66,
+        "result": "i64"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "exact-u32"
+          }
+        ],
+        "musl_name": "signal",
+        "number": 73,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "i64"
+          }
+        ],
+        "musl_name": "ftruncate",
+        "number": 79,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "i64"
+          }
+        ],
+        "musl_name": "truncate",
+        "number": 85,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "readlinkat",
+        "number": 102,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "realpath",
+        "number": 109,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "split-i64-high-i32"
+          },
+          {
+            "index": 2,
+            "kind": "split-i64-low-u32"
+          }
+        ],
+        "musl_name": "_llseek",
+        "number": 119,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "getrandom",
+        "number": 120,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "getdents64",
+        "number": 122,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-size"
+          },
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "mremap",
+        "number": 126,
+        "result": "process-address"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "madvise",
+        "number": 128,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "setgroups",
+        "number": 136,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "futex",
+        "number": 200,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "set_tid_address",
+        "number": 203,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "u32"
+          }
+        ],
+        "musl_name": "sched_setaffinity",
+        "number": 237,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "u32"
+          }
+        ],
+        "musl_name": "sched_getaffinity",
+        "number": 238,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 5,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "epoll_pwait",
+        "number": 241,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "signalfd4",
+        "number": 246,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "process-size"
+          },
+          {
+            "index": 4,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "ppoll",
+        "number": 251,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "set_robust_list",
+        "number": 261,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "process-address"
+          },
+          {
+            "index": 2,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "get_robust_list",
+        "number": 262,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "msync",
+        "number": 278,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "mlock",
+        "number": 279,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "mlock2",
+        "number": 280,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "munlock",
+        "number": 281,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 4,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "copy_file_range",
+        "number": 290,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 4,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "splice",
+        "number": 291,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "i64"
+          },
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "readahead",
+        "number": 293,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "sendfile",
+        "number": 294,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "split-i64-low-u32"
+          },
+          {
+            "index": 4,
+            "kind": "split-i64-high-i32"
+          }
+        ],
+        "musl_name": "preadv",
+        "number": 295,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "split-i64-low-u32"
+          },
+          {
+            "index": 4,
+            "kind": "split-i64-high-i32"
+          }
+        ],
+        "musl_name": "pwritev",
+        "number": 296,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "split-i64-low-u32"
+          },
+          {
+            "index": 4,
+            "kind": "split-i64-high-i32"
+          }
+        ],
+        "musl_name": "preadv2",
+        "number": 297,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "split-i64-low-u32"
+          },
+          {
+            "index": 4,
+            "kind": "split-i64-high-i32"
+          }
+        ],
+        "musl_name": "pwritev2",
+        "number": 298,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "i64"
+          },
+          {
+            "index": 3,
+            "kind": "i64"
+          }
+        ],
+        "musl_name": "fallocate",
+        "number": 308,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "mq_timedsend",
+        "number": 333,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "mq_timedreceive",
+        "number": 334,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          },
+          {
+            "index": 3,
+            "kind": "i64"
+          }
+        ],
+        "musl_name": "msgrcv",
+        "number": 338,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "msgsnd",
+        "number": 339,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "semop",
+        "number": 342,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "shmget",
+        "number": 344,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "signalfd",
+        "number": 377,
+        "result": "i32"
+      }
+    ]
+  },
   "channel_signal_area": {
     "area_size": 56,
     "base": 65552,
@@ -252,7 +1044,10 @@
     "required_kernel_exports": [
       "__abi_version",
       "kernel_alloc_scratch",
+      "kernel_blocking_retry_release",
+      "kernel_blocking_retry_token",
       "kernel_clear_process_metadata",
+      "kernel_commit_process_exit",
       "kernel_create_process",
       "kernel_create_process_with_stdio",
       "kernel_dequeue_signal",
@@ -262,6 +1057,7 @@
       "kernel_get_parent_pid",
       "kernel_get_process_exit_signal",
       "kernel_get_process_state",
+      "kernel_get_socket_timeout_ms",
       "kernel_handle_channel",
       "kernel_has_sa_nocldstop",
       "kernel_host_adapter_manifest_len",
@@ -270,11 +1066,13 @@
       "kernel_ipc_shmat_for_task",
       "kernel_ipc_shmdt_for_process",
       "kernel_ipc_shmdt_for_task",
+      "kernel_is_fd_nonblock",
       "kernel_mark_process_signaled",
+      "kernel_mq_descriptor_msgsize",
       "kernel_msqid_ds_bytes",
+      "kernel_pick_signal_target_tid",
       "kernel_pipe_has_readers",
       "kernel_posix_timer_fire",
-      "kernel_prepare_write_operation",
       "kernel_push_process_metadata_entry",
       "kernel_reap_exited_child",
       "kernel_remove_process",
@@ -291,6 +1089,13 @@
       "kernel_spawn_scratch_pointer",
       "kernel_spawn_scratch_retained_capacity",
       "kernel_thread_exit",
+      "kernel_thread_has_deliverable",
+      "kernel_transfer_channel_execute",
+      "kernel_transfer_io_execute",
+      "kernel_transfer_scratch_begin",
+      "kernel_transfer_scratch_cancel",
+      "kernel_transfer_scratch_capacity",
+      "kernel_transfer_scratch_pointer",
       "kernel_validate_task",
       "kernel_wait_child_poll"
     ],
@@ -795,6 +1600,16 @@
     },
     {
       "kind": "func",
+      "name": "kernel_blocking_retry_release",
+      "signature": "(i32,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_blocking_retry_token",
+      "signature": "(i32,i32,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_brk",
       "signature": "(i32) -> (i32)"
     },
@@ -861,6 +1676,11 @@
     {
       "kind": "func",
       "name": "kernel_closedir",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_commit_process_exit",
       "signature": "(i32) -> (i32)"
     },
     {
@@ -1321,7 +2141,7 @@
     {
       "kind": "func",
       "name": "kernel_handle_channel",
-      "signature": "(i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -1500,6 +2320,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_mq_descriptor_msgsize",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_mq_drain_notification",
       "signature": "(i32,i32) -> (i32)"
     },
@@ -1630,21 +2455,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_pread",
-      "signature": "(i32,i32,i32,i64) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_preadv",
-      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_prepare_write_operation",
-      "signature": "(i32,i32,i32,i64,i32,i32) -> (i64)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_pselect6",
       "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
@@ -1680,23 +2490,8 @@
     },
     {
       "kind": "func",
-      "name": "kernel_pwrite",
-      "signature": "(i32,i32,i32,i64) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_pwritev",
-      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_raise",
       "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_read",
-      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1717,11 +2512,6 @@
       "kind": "func",
       "name": "kernel_readlinkat",
       "signature": "(i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_readv",
-      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1751,7 +2541,7 @@
     {
       "kind": "func",
       "name": "kernel_recvmsg",
-      "signature": "(i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -1831,7 +2621,7 @@
     {
       "kind": "func",
       "name": "kernel_sendmsg",
-      "signature": "(i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -2160,6 +2950,36 @@
     },
     {
       "kind": "func",
+      "name": "kernel_transfer_channel_execute",
+      "signature": "(i32,i32,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_transfer_io_execute",
+      "signature": "(i32,i32,i64,i32,i32,i32,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_transfer_scratch_begin",
+      "signature": "(i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_transfer_scratch_cancel",
+      "signature": "(i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_transfer_scratch_capacity",
+      "signature": "(i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_transfer_scratch_pointer",
+      "signature": "(i64) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_truncate",
       "signature": "(i32,i32,i64) -> (i32)"
     },
@@ -2217,16 +3037,6 @@
       "kind": "func",
       "name": "kernel_wait_child_poll",
       "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_write",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_writev",
-      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "memory",
@@ -3781,7 +4591,11 @@
     "fd_set_bytes": 128,
     "fd_setsize": 1024,
     "iov_max": 1024,
-    "path_max_bytes": 4096
+    "max_reportable_transfer_bytes": 2147483647,
+    "max_transfer_allocation_bytes": 4294967295,
+    "ngroups_max": 32,
+    "path_max_bytes": 4096,
+    "sysv_msg_max_bytes": 8192
   },
   "process_expected_globals": [
     "__channel_base",
@@ -5551,6 +6365,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -5561,6 +6377,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
@@ -5569,6 +6387,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -5579,6 +6399,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
@@ -5587,6 +6409,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -5597,6 +6421,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
@@ -5627,6 +6453,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
@@ -5646,6 +6474,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
@@ -5676,6 +6506,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
@@ -5757,6 +6589,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
@@ -5820,6 +6654,8 @@
         "direction": "in",
         "nullable": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
@@ -5839,6 +6675,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
@@ -5859,6 +6697,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -5971,6 +6811,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -5981,6 +6823,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
@@ -6000,6 +6844,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -6010,6 +6856,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
@@ -6018,6 +6866,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -6028,6 +6878,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
@@ -6036,6 +6888,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -6046,6 +6900,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
@@ -6054,6 +6910,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -6064,6 +6922,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
@@ -6083,6 +6943,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -6168,6 +7030,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -6178,6 +7042,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -6188,6 +7054,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -6298,6 +7166,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -6350,6 +7220,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -6392,6 +7264,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 250,
+          "tooLongErrno": 22,
           "type": "cstring"
         }
       }
@@ -6422,6 +7296,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
@@ -6453,6 +7329,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -6463,6 +7341,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -6545,6 +7425,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -6566,6 +7448,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
@@ -6574,6 +7458,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -6656,6 +7542,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
@@ -6676,6 +7564,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -6832,6 +7722,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -6842,6 +7734,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -6905,6 +7799,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 65537,
+          "tooLongErrno": 7,
           "type": "cstring"
         }
       },
@@ -6924,6 +7820,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 65537,
+          "tooLongErrno": 7,
           "type": "cstring"
         }
       },
@@ -6932,6 +7830,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 65537,
+          "tooLongErrno": 7,
           "type": "cstring"
         }
       }
@@ -6942,6 +7842,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 65537,
+          "tooLongErrno": 7,
           "type": "cstring"
         }
       }
@@ -7152,6 +8054,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -7228,6 +8132,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -7249,6 +8155,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
@@ -7268,6 +8176,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -7278,6 +8188,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -7288,6 +8200,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
@@ -7296,6 +8210,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -7306,6 +8222,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -7316,6 +8234,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -7326,6 +8246,8 @@
         "direction": "in",
         "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -7981,6 +8903,10 @@
       "number": 236
     },
     {
+      "name": "SchedSetaffinity",
+      "number": 237
+    },
+    {
       "name": "SchedGetaffinity",
       "number": 238
     },
@@ -8057,6 +8983,18 @@
       "number": 278
     },
     {
+      "name": "Mlock",
+      "number": 279
+    },
+    {
+      "name": "Mlock2",
+      "number": 280
+    },
+    {
+      "name": "Munlock",
+      "number": 281
+    },
+    {
       "name": "Waitid",
       "number": 288
     },
@@ -8067,6 +9005,10 @@
     {
       "name": "Splice",
       "number": 291
+    },
+    {
+      "name": "Readahead",
+      "number": 293
     },
     {
       "name": "Sendfile",
