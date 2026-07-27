@@ -22,11 +22,15 @@ const PUBLISH_TITLE = "Kandelo Homebrew shell bottle mirror";
 export async function createHomebrewBottleMirrorPublishManifest(options: {
   bundleDirectory: string;
   recoveryReportPath: string;
+  targetCommitish: string;
   outputPath: string;
 }): Promise<void> {
   const bundleDirectory = resolve(options.bundleDirectory);
   const recoveryReportPath = resolve(options.recoveryReportPath);
   const outputPath = resolve(options.outputPath);
+  if (!/^[0-9a-f]{40}$/.test(options.targetCommitish)) {
+    throw new Error("bottle mirror release target must be an exact commit");
+  }
   assertDirectory(bundleDirectory, "bottle mirror bundle");
   assertRegularFile(recoveryReportPath, "bottle mirror recovery report");
   assertAbsent(outputPath, "bottle mirror publish manifest");
@@ -80,7 +84,11 @@ export async function createHomebrewBottleMirrorPublishManifest(options: {
     schema: 1,
     repository: plan.repository,
     tag: plan.tag,
-    target_commitish: report.catalog.checkout_commit,
+    // WHY: the sealed shell locks, guest manifest, recovery report, and handoff
+    // bind the exact bottle catalog. The mirror plan intentionally identifies
+    // the payload set alone, so the release Git tag names the later protected
+    // write authority without creating a hash cycle in the Kandelo lock.
+    target_commitish: options.targetCommitish,
     title: PUBLISH_TITLE,
     body:
       "Immutable mirror of the deferred Homebrew bottles used by the " +
@@ -231,20 +239,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function parseArgs(args: string[]) {
   if (
-    args.length !== 6 || args[0] !== "--bundle" || !args[1] ||
+    args.length !== 8 || args[0] !== "--bundle" || !args[1] ||
     args[2] !== "--recovery-report" || !args[3] ||
-    args[4] !== "--out" || !args[5]
+    args[4] !== "--target-commitish" || !args[5] ||
+    args[6] !== "--out" || !args[7]
   ) {
     throw new Error(
       "usage: npx tsx scripts/create-homebrew-bottle-mirror-publish-manifest.ts " +
         "--bundle <bottle-mirror-directory> --recovery-report <report.json> " +
+        "--target-commitish <exact-publisher-main-sha> " +
         "--out <new-publish-manifest.json>",
     );
   }
   return {
     bundleDirectory: args[1],
     recoveryReportPath: args[3],
-    outputPath: args[5],
+    targetCommitish: args[5],
+    outputPath: args[7],
   };
 }
 

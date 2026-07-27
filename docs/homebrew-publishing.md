@@ -849,6 +849,62 @@ live-head reads or any candidate construction.
 The product lock is agreement evidence; it does not replace the operator's
 mandatory `C` input.
 
+After the closed cutover proof admits the exact product, the protected
+first-party tap owns a separate public-mirror publication lane. Its
+`publish-main-shell-mirror.yml` caller may invoke
+`reusable-homebrew-main-shell-mirror-publish.yml` only from the tap's live
+`main`. The caller pins one reviewed Kandelo `Mpre` SHA in both `uses:` and the
+`kandelo-ref` input and supplies exact final bottle-catalog `TF` and canary `C`
+identities. The caller's own `${{ github.sha }}` is the later tap publication
+authority `TA`; event data cannot select it. The reusable workflow anonymously
+rechecks Kandelo `Mpre`, tap `TA`, and canary `C` as the three public main
+heads, proves `TF` is an ancestor of `TA`, and requires the shell revision,
+structured package Git input, catalog locks, runtime-support cohort, and sealed
+artifact lock to agree with `TF` before preparing any bytes.
+
+Preparation resolves the public shell generation into a fresh cache, verifies
+the main-shell artifact lock, and anonymously recovers the exact bottle set
+declared by the embedded mirror plan. The only inter-job transfer is a
+one-day, same-run artifact with an exact manifest, bounded inventory and byte
+count, shell/bootstrap identities, publication manifest, and mirror payloads.
+No PAT, GitHub App token, cross-repository workflow artifact, run ID, or
+caller-selected artifact repository participates in that handoff.
+
+Only the publication job receives `contents: write`. It uses the tap caller's
+own `GITHUB_TOKEN`, rechecks both live Kandelo and tap authority immediately
+before every release, tag, or asset write, and calls
+`scripts/publish-immutable-github-release.sh` with exact `Mpre` and live `TA`.
+The immutable release targets `TA`. The sealed shell locks, guest manifest,
+recovery report, and bounded handoff retain `TF` as the bottle catalog that
+owns every recovered payload; the embedded mirror plan is intentionally a
+content identity for the payload set, not a second catalog lock. Keeping these
+identities separate avoids the impossible cycle in which Kandelo `Mpre` would
+need to contain the SHA of a tap caller that itself pins `Mpre`.
+The publisher rejects a manifest whose target commit differs from live `TA`,
+publishes seal-last, and anonymously rehashes the resulting immutable release.
+A dependent read-only job then resolves the public package generation again,
+installs from exact product catalog `TF`, requires `TA` to remain public tap
+main, and proves the public mirror in both the Node guest lifecycle and
+Chromium; the closed-acceptance filesystem root must be absent.
+
+The schema-1 tag is content-addressed from bottle payloads, while an immutable
+release also records the `TA` that created it. The current publisher therefore
+fails closed if a later `TA` tries to publish an already-existing collection
+tag; it does not claim that the older release belongs to the new authority.
+For an unchanged bottle collection, retain and consume the already-proven
+public mirror rather than redispatching publication from a new tap commit.
+Ancestor-checked reuse by a later authority is a separate, not-yet-implemented
+workflow mode.
+
+The tap caller intentionally carries the clearly marked
+`__FINAL_KANDELO_MPRE_SHA__` and `__FINAL_TAP_CATALOG_SHA__` placeholders while
+these two branches are under review. It is not dispatchable release authority
+until both are replaced with the final 40-character Kandelo and catalog
+commits and the tap trust contract is rerun. `TA` is then derived from the
+protected caller commit rather than substituted into its own bytes. This
+public-mirror lane is independent of the existing Bash bottle caller and its
+frozen workflow digest.
+
 The checked-in `e747f724efc63c81af453eeada3b7f1453726058` first-party tap
 value is provisional activation evidence while the shell recipe remains
 `UNPUBLISHED` and the lazy artifact lock remains pending. Even its current

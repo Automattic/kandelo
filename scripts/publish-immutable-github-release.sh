@@ -7,6 +7,7 @@ ASSET_ROOT=""
 LOCK_ROOT=""
 RECEIPT=""
 EXACT_KANDELO_MAIN_SHA=""
+EXACT_TARGET_MAIN_SHA=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -15,6 +16,7 @@ while [ "$#" -gt 0 ]; do
     --lock-root) LOCK_ROOT="$2"; shift 2 ;;
     --receipt) RECEIPT="$2"; shift 2 ;;
     --exact-kandelo-main-sha) EXACT_KANDELO_MAIN_SHA="$2"; shift 2 ;;
+    --exact-target-main-sha) EXACT_TARGET_MAIN_SHA="$2"; shift 2 ;;
     *) echo "publish-immutable-github-release: unknown flag $1" >&2; exit 2 ;;
   esac
 done
@@ -27,6 +29,11 @@ for required in MANIFEST ASSET_ROOT LOCK_ROOT RECEIPT; do
 done
 if ! [[ "$EXACT_KANDELO_MAIN_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "publish-immutable-github-release: --exact-kandelo-main-sha is required and must be an exact lowercase 40-character SHA" >&2
+  exit 2
+fi
+if [ -n "$EXACT_TARGET_MAIN_SHA" ] &&
+   ! [[ "$EXACT_TARGET_MAIN_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "publish-immutable-github-release: --exact-target-main-sha must be an exact lowercase 40-character SHA" >&2
   exit 2
 fi
 
@@ -77,6 +84,11 @@ TAG="$(jq -er '.tag' "$NORMALIZED_MANIFEST")"
 TARGET_COMMIT="$(jq -er '.target_commitish' "$NORMALIZED_MANIFEST")"
 TITLE="$(jq -er '.title' "$NORMALIZED_MANIFEST")"
 BODY="$(jq -er '.body' "$NORMALIZED_MANIFEST")"
+if [ -n "$EXACT_TARGET_MAIN_SHA" ] &&
+   [ "$TARGET_COMMIT" != "$EXACT_TARGET_MAIN_SHA" ]; then
+  echo "publish-immutable-github-release: manifest target differs from exact target main" >&2
+  exit 2
+fi
 
 [ "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}" = "$REPOSITORY" ] ||
   [ "${GITHUB_REPOSITORY,,}" = "$REPOSITORY" ] || {
@@ -99,6 +111,11 @@ require_exact_main_authority() {
     bash "$REPO_ROOT/.github/scripts/require-exact-kandelo-main.sh" \
       --repository Automattic/kandelo \
       --source-sha "$EXACT_KANDELO_MAIN_SHA" >/dev/null
+  if [ -n "$EXACT_TARGET_MAIN_SHA" ]; then
+    bash "$REPO_ROOT/.github/scripts/require-exact-repository-main.sh" \
+      --repository "$REPOSITORY" \
+      --source-sha "$EXACT_TARGET_MAIN_SHA" >/dev/null
+  fi
 }
 
 sha256_file() {
