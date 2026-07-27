@@ -762,6 +762,15 @@ fi
 xtask_audit_source="$(declare -f homebrew_patched_launcher_emit_xtask_access_audit)"
 isolate_source="$(declare -f homebrew_patched_launcher_isolate)"
 projection_source="$(declare -f homebrew_patched_launcher_prepare_platform_projection)"
+projection_manifest_source="$(
+  declare -f homebrew_patched_launcher_platform_projection_manifest
+)"
+sealed_directory_source="$(
+  declare -f homebrew_patched_launcher_sealed_directory_state
+)"
+recipe_verifier_source="$(
+  declare -f homebrew_patched_launcher_verify_recipe_runner
+)"
 grep -Fq 'expected_protected_xtask=%q' <<<"$xtask_audit_source" &&
   grep -Fq '[ -n "${WASM_POSIX_XTASK_BIN+x}" ]' <<<"$xtask_audit_source" &&
   grep -Fq '[ -n "${HOMEBREW_KANDELO_XTASK_BIN+x}" ]' <<<"$xtask_audit_source" &&
@@ -771,6 +780,15 @@ grep -Fq 'expected_protected_xtask=%q' <<<"$xtask_audit_source" &&
   grep -Fq 'tools/bin/wasm-fork-instrument' <<<"$projection_source" &&
   grep -Fq 'tools/bin/wasm-local-root-spill' <<<"$projection_source" ||
   fail "schema-3 isolation does not remove both resolver paths from a minimal platform projection"
+grep -Fq "stat -c '%u:%g:%a'" <<<"$sealed_directory_source" &&
+  ! grep -Fq '%h' <<<"$sealed_directory_source" &&
+  grep -Fq 'sealed_directory_state "$root"' <<<"$projection_manifest_source" &&
+  grep -Fq 'sealed_directory_state "$entry"' <<<"$projection_manifest_source" &&
+  grep -Fq 'homebrew_patched_launcher_sealed_directory_state' \
+    <<<"$recipe_verifier_source" &&
+  grep -Fq '"$HOMEBREW_PATCHED_RECIPE_SEALED_ROOT"' \
+    <<<"$recipe_verifier_source" ||
+  fail "schema-3 isolation treats filesystem-specific directory link counts as security state"
 
 if [ "$(uname -s)" = "Linux" ]; then
   xtask_audit_root="$TMPDIR/xtask-audit"
@@ -1514,8 +1532,23 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
     [ -x "$platform_projection/tools/bin/wasm-fork-instrument" ] &&
     [ ! -w "$platform_projection/crates/shared/src/lib.rs" ] ||
     fail "minimal platform projection exposed undeclared source or unsafe modes"
+  projected_directory="$platform_projection/crates/shared/src"
+  /usr/bin/sudo -n -- chmod 0755 "$projected_directory"
+  if homebrew_patched_launcher_verify_platform_projection >/dev/null 2>&1; then
+    fail "platform projection verification accepted a writable directory"
+  fi
+  /usr/bin/sudo -n -- chmod 0555 "$projected_directory"
+  homebrew_patched_launcher_verify_platform_projection
+  projected_file="$platform_projection/crates/shared/src/lib.rs"
+  projected_file_alias="$ISOLATION_ROOT/platform-file-hardlink"
+  /usr/bin/sudo -n -- /usr/bin/ln "$projected_file" "$projected_file_alias"
+  if homebrew_patched_launcher_verify_platform_projection >/dev/null 2>&1; then
+    fail "platform projection verification accepted a hard-linked file"
+  fi
+  /usr/bin/sudo -n -- /usr/bin/unlink "$projected_file_alias"
+  homebrew_patched_launcher_verify_platform_projection
   /usr/bin/sudo -n -- chmod 0644 \
-    "$platform_projection/crates/shared/src/lib.rs"
+    "$projected_file"
   if homebrew_patched_launcher_verify_platform_projection >/dev/null 2>&1; then
     fail "platform projection verification accepted a mutable projected file"
   fi
@@ -2311,6 +2344,10 @@ EOF
   [ "$(/usr/bin/cat "$isolated_recipe_host_secret")" = \
       "workflow credential canary" ] ||
     fail "tap recipe canary changed the unrelated host sentinel"
+  homebrew_patched_launcher_sealed_directory_state \
+    "$HOMEBREW_PATCHED_RECIPE_SEALED_ROOT" >/dev/null ||
+    fail "populated sealed-output root lost its portable directory seal"
+  homebrew_patched_launcher_verify_isolation
 
   cp "$isolated_xtask" "$isolated_xtask.backup"
   # WHY: production checkers are sealed 0555. Only the private fixture owner

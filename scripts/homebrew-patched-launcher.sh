@@ -107,6 +107,22 @@ homebrew_patched_launcher_verify_protected_xtask() {
   fi
 }
 
+homebrew_patched_launcher_sealed_directory_state() {
+  if [ "$#" -ne 1 ]; then
+    echo "homebrew_patched_launcher_sealed_directory_state: expected PATH" >&2
+    return 2
+  fi
+  local path="$1" state
+  [ -d "$path" ] && [ ! -L "$path" ] || return 1
+  state="$(/usr/bin/stat -c '%u:%g:%a' "$path" 2>/dev/null)" || return 1
+  # WHY: a directory's link count reflects child directories on tmpfs/ext*
+  # and is deliberately reported as one by some overlay filesystems. Root
+  # ownership, mode, and the complete descendant manifest are the portable
+  # mutation boundary; regular files remain single-link checked separately.
+  [ "$state" = "0:0:555" ] || return 1
+  printf '%s\n' "$state"
+}
+
 homebrew_patched_launcher_platform_projection_manifest() {
   if [ "$#" -ne 1 ]; then
     echo "homebrew_patched_launcher_platform_projection_manifest: expected ROOT" >&2
@@ -118,7 +134,7 @@ homebrew_patched_launcher_platform_projection_manifest() {
     echo "homebrew-patched-launcher: platform projection is not one real directory" >&2
     return 2
   }
-  [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$root")" = "0:0:555:1" ] || {
+  homebrew_patched_launcher_sealed_directory_state "$root" >/dev/null || {
     echo "homebrew-patched-launcher: platform projection root is not sealed" >&2
     return 2
   }
@@ -137,8 +153,9 @@ homebrew_patched_launcher_platform_projection_manifest() {
       return 2
     }
     if [ -d "$entry" ] && [ ! -L "$entry" ]; then
-      state="$(/usr/bin/stat -c '%u:%g:%a:%h' "$entry")" || return 2
-      [ "$state" = "0:0:555:1" ] || {
+      state="$(
+        homebrew_patched_launcher_sealed_directory_state "$entry"
+      )" || {
         echo "homebrew-patched-launcher: platform projection directory is not sealed: $relative" >&2
         return 2
       }
@@ -227,9 +244,8 @@ homebrew_patched_launcher_verify_recipe_runner() {
      [ "$(/usr/bin/stat -c '%u:%g:%a:%h' \
        "$HOMEBREW_PATCHED_PROTECTED_DIR/recipe-group" 2>/dev/null || true)" != \
        "0:0:444:1" ] || \
-     [ "$(/usr/bin/stat -c '%u:%g:%a:%h' \
-       "$HOMEBREW_PATCHED_RECIPE_SEALED_ROOT" 2>/dev/null || true)" != \
-       "0:0:555:1" ]; then
+     ! homebrew_patched_launcher_sealed_directory_state \
+       "$HOMEBREW_PATCHED_RECIPE_SEALED_ROOT" >/dev/null 2>&1; then
     echo "homebrew-patched-launcher: protected recipe runner boundary changed" >&2
     return 1
   fi
