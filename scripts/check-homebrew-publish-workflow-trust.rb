@@ -27,10 +27,10 @@ UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "ad1578ab82804fbfcd56c4d68a6858199a8c6f056b8e013d3fa4d5d4dcddf376"
-PUBLISHER_BUILD_DIGEST = "f16029b5fe8583ce170813d0c2117c66d364952df39585e4bdea92b8a65c0974"
+PUBLISHER_BUILD_DIGEST = "08a57ef08e17f3b3200a3e93346886651e515d874342c69cce23290ae256b9ff"
 PUBLISHER_UPLOAD_DIGEST = "a44f8b7b2eb1d4b9436496cc9a099b80fb70be52143820e77fb7196e807d302f"
 PUBLISHER_INDEX_DIGEST = "7b05a7e4b076628ab999f9edb2e39a6641c4bb9a2563afcf19be15a119566bbe"
-PUBLISHER_VERIFY_DIGEST = "40d4ef5bb21e73d39896216c72697dc3bbca2fddb5dd948ffe2fdb6e946c6c3b"
+PUBLISHER_VERIFY_DIGEST = "40ef4f94af500b3e4415eb36c2d76c47d994995994e3f2048f81e5944172497c"
 PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a0335816a0886b"
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
 MAINTENANCE_VALIDATE_DIGEST = "30ebccd5d44e004e37f168e81284d7ceb18accfa067c05248c1cc19398a7515f"
@@ -2299,8 +2299,7 @@ def check_publisher(workflow)
         "publisher marks a partial Formula identity transaction as created")
   dev_shell = File.read(File.join(REPO_ROOT, "scripts/dev-shell.sh"))
   check(%w[
-    KANDELO_HOMEBREW_BUILD_USER KANDELO_HOMEBREW_RECIPE_USER
-    KANDELO_HOMEBREW_SHARED_TEMP
+    KANDELO_HOMEBREW_BUILD_USER KANDELO_HOMEBREW_SHARED_TEMP
     KANDELO_HOMEBREW_SUDO_BIN KANDELO_HOMEBREW_SYSTEMD_RUN_BIN
     KANDELO_HOMEBREW_SYSTEMCTL_BIN KANDELO_HOMEBREW_GETENT_BIN
     KANDELO_HOMEBREW_PGREP_BIN
@@ -2312,6 +2311,12 @@ def check_publisher(workflow)
     KANDELO_HOMEBREW_BROWSER_EVIDENCE
   ].all? { |name| dev_shell.include?("--keep #{name}") },
         "dev shell drops exact Homebrew runtime evidence inputs")
+  check(!dev_shell.include?("--keep KANDELO_HOMEBREW_RECIPE_USER"),
+        "dev shell globally preserves Formula recipe identity and invalidates package caches")
+  recipe_user_forwarding =
+    'KANDELO_HOMEBREW_RECIPE_USER="$KANDELO_HOMEBREW_RECIPE_USER" \\'
+  check(values_for_key(workflow, "run").join("\n").scan(recipe_user_forwarding).length == 2,
+        "publisher does not scope Formula recipe identity to build and verification")
   check(!dev_shell.include?("--keep KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"),
         "dev shell globally preserves Homebrew resolved-tap state and invalidates package caches")
   resolved_taps_forwarding =
