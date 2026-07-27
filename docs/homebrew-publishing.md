@@ -2037,9 +2037,16 @@ lazy hardlink identity with the exact resolved Bash bytes because every shell
 boot needs that executable. It preserves rootfs ABI, capacity, and existing
 lazy-file/tree identities; adds the required demo executables and complete
 shared shell product surface; registers package-owned, integrity-bound Vim and
-NetHack archive trees; and copies the exact tracked
-`homebrew/source-rootfs-shell-default.json` and
-`homebrew/main-shell-demo.json` bytes into `/etc/kandelo`.
+NetHack archive trees; copies the exact tracked
+`homebrew/source-rootfs-shell-default.json` shell selection into
+`/etc/kandelo`; and composes the lean
+`homebrew/main-shell-demo.json` base with
+`homebrew/source-rootfs-shell-demo-profiles.json`. That source-only overlay
+owns the Doom and modeset profiles because this temporary image also installs
+their executables eagerly. The final bottled base deliberately omits both.
+Its browser gate therefore does not run the modeset demo; an optional bottled
+layer that later owns that executable and profile must carry its own acceptance
+proof.
 
 The rootfs build-time archive recipes migrated by this bridge bind their
 direct-build defaults and resolver inputs to package-manifest versions, URLs,

@@ -772,6 +772,15 @@ identity because every shell boot needs it; rootfs utilities and the extended
 shell tools remain lazy. Vim and NetHack retain package-owned,
 integrity-bound lazy archive trees.
 
+The bottle shell's base demo metadata describes only the shell it actually
+owns. The temporary source bridge composes
+`homebrew/source-rootfs-shell-demo-profiles.json` because that bridge also
+installs fbDOOM and modeset eagerly. Its composer binds each added profile's
+`autoCommand` to the corresponding executable in the image. This keeps
+optional-demo promises with the image layer that supplies their bytes; future
+bottle layers for those programs should carry the same profile ownership when
+the temporary bridge is retired.
+
 The main-shell gate installs that provisional output and verifies the same
 bytes in Node and Chromium. Its sealed browser proof runs eager Bash, a
 rootfs-owned lazy `grep`, extended lazy `less`, and integrity-bound Vim and

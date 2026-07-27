@@ -20,15 +20,23 @@ import {
   assertVfsImageFitsProfile,
   declaredVfsMaxByteLength,
 } from "../web-libs/kandelo-session/src/vfs-capacity";
+import {
+  composeSourceRootfsDemoConfig,
+} from "../images/vfs/scripts/build-source-rootfs-shell-image";
 
-const { imagePath, kernelPath, shellConfigPath, demoConfigPath } = parseArgs(
-  process.argv.slice(2),
-);
+const {
+  imagePath,
+  kernelPath,
+  shellConfigPath,
+  demoConfigPath,
+  demoProfileOverlayPath,
+} = parseArgs(process.argv.slice(2));
 for (const input of [
   imagePath,
   kernelPath,
   shellConfigPath,
   demoConfigPath,
+  demoProfileOverlayPath,
 ]) {
   const stat = lstatSync(input);
   if (!stat.isFile() || stat.isSymbolicLink()) {
@@ -76,7 +84,7 @@ if (
 }
 expectExactBytes(
   readVfsFile(fs, KANDELO_DEMO_CONFIG_PATH),
-  new Uint8Array(readFileSync(demoConfigPath)),
+  composeSourceRootfsDemoConfig(demoConfigPath, demoProfileOverlayPath),
   KANDELO_DEMO_CONFIG_PATH,
 );
 
@@ -167,6 +175,7 @@ function parseArgs(args: string[]): {
   kernelPath: string;
   shellConfigPath: string;
   demoConfigPath: string;
+  demoProfileOverlayPath: string;
 } {
   const values = new Map<string, string>();
   const allowed = new Set([
@@ -174,6 +183,7 @@ function parseArgs(args: string[]): {
     "--kernel",
     "--shell-config",
     "--demo-config",
+    "--demo-profile-overlay",
   ]);
   for (let index = 0; index < args.length; index += 2) {
     const option = args[index];
@@ -192,12 +202,22 @@ function parseArgs(args: string[]): {
   const kernel = values.get("--kernel");
   const shellConfig = values.get("--shell-config");
   const demoConfig = values.get("--demo-config");
-  if (!image || !kernel || !shellConfig || !demoConfig) return usage();
+  const demoProfileOverlay = values.get("--demo-profile-overlay");
+  if (
+    !image ||
+    !kernel ||
+    !shellConfig ||
+    !demoConfig ||
+    !demoProfileOverlay
+  ) {
+    return usage();
+  }
   return {
     imagePath: resolve(image),
     kernelPath: resolve(kernel),
     shellConfigPath: resolve(shellConfig),
     demoConfigPath: resolve(demoConfig),
+    demoProfileOverlayPath: resolve(demoProfileOverlay),
   };
 }
 
@@ -206,7 +226,7 @@ function usage(): never {
     "usage: npx tsx scripts/source-rootfs-shell-node-smoke.ts " +
       "--image <shell.vfs.zst> --kernel <kernel.wasm> " +
       "--shell-config <shell.json> " +
-      "--demo-config <demo.json>",
+      "--demo-config <demo.json> --demo-profile-overlay <profiles.json>",
   );
 }
 

@@ -110,6 +110,7 @@ FBDOOM="$FBDOOM_DIR/fbdoom.wasm"
 MODESET="$MODESET_DIR/modeset.wasm"
 SHELL_CONFIG="$REPO_ROOT/homebrew/source-rootfs-shell-default.json"
 DEMO_CONFIG="$REPO_ROOT/homebrew/main-shell-demo.json"
+DEMO_PROFILE_OVERLAY="$REPO_ROOT/homebrew/source-rootfs-shell-demo-profiles.json"
 COMPOSER="$REPO_ROOT/images/vfs/scripts/build-source-rootfs-shell-image.ts"
 TSX_CLI="$REPO_ROOT/node_modules/tsx/dist/cli.mjs"
 
@@ -119,6 +120,7 @@ require_regular_file "fbdoom dependency output" "$FBDOOM"
 require_regular_file "modeset dependency output" "$MODESET"
 require_regular_file "source-rootfs shell config" "$SHELL_CONFIG"
 require_regular_file "main-shell demo config" "$DEMO_CONFIG"
+require_regular_file "source-rootfs demo profile overlay" "$DEMO_PROFILE_OVERLAY"
 require_regular_file "source-rootfs shell composer" "$COMPOSER"
 require_regular_file "locked tsx CLI" "$TSX_CLI"
 
@@ -141,6 +143,7 @@ PATH="$DECLARED_TOOL_PATH" "$NODE_BIN" "$TSX_CLI" "$COMPOSER" \
     --modeset "$MODESET" \
     --shell-config "$SHELL_CONFIG" \
     --demo-config "$DEMO_CONFIG" \
+    --demo-profile-overlay "$DEMO_PROFILE_OVERLAY" \
     --out "$VFS"
 
 require_regular_file "composed shell VFS" "$VFS"

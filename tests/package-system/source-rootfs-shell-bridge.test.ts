@@ -31,8 +31,14 @@ import {
 import {
   KANDELO_DEMO_CONFIG_PATH,
   parseKandeloDemoConfig,
+  resolveDemoAssets,
+  resolveDemoPresentation,
   validateKandeloDemoConfig,
 } from "../../web-libs/kandelo-session/src/demo-config";
+import {
+  DOOM_WAD_SHA256,
+  DOOM_WAD_URL,
+} from "../../web-libs/kandelo-session/src/demo-guides";
 import {
   KANDELO_SHELL_CONFIG_PATH,
   parseKandeloShellConfig,
@@ -170,6 +176,10 @@ function fixturePaths(root: string) {
     "homebrew/source-rootfs-shell-default.json",
   );
   const demoConfigPath = join(repoRoot, "homebrew/main-shell-demo.json");
+  const demoProfileOverlayPath = join(
+    repoRoot,
+    "homebrew/source-rootfs-shell-demo-profiles.json",
+  );
   writeFileSync(
     bashPath,
     new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]),
@@ -222,6 +232,7 @@ function fixturePaths(root: string) {
     modesetPath,
     shellConfigPath,
     demoConfigPath,
+    demoProfileOverlayPath,
     dependencyRoots,
     resolveArtifact,
   };
@@ -274,11 +285,12 @@ describe("source-rootfs shell bridge", () => {
       'name = "node"',
     ]);
     expect(buildToml).toMatch(/^commit\s*=\s*"UNPUBLISHED"$/m);
-    expect(buildToml).toMatch(/^revision\s*=\s*1$/m);
+    expect(buildToml).toMatch(/^revision\s*=\s*2$/m);
     expect(buildToml).not.toContain("[[git_inputs]]");
     for (const input of [
       "homebrew/source-rootfs-shell-default.json",
       "homebrew/main-shell-demo.json",
+      "homebrew/source-rootfs-shell-demo-profiles.json",
       "images/vfs/scripts/build-source-rootfs-shell-image.ts",
       "images/vfs/scripts/shell-vfs-build.ts",
       "images/vfs/scripts/shell-lazy-archives.ts",
@@ -447,12 +459,37 @@ describe("source-rootfs shell bridge", () => {
       argv: ["bash", "-l", "-i"],
     });
     const demoBytes = readVfsFile(fs, KANDELO_DEMO_CONFIG_PATH);
-    expect(demoBytes).toEqual(
-      new Uint8Array(readFileSync(paths.demoConfigPath)),
-    );
     const demo = parseKandeloDemoConfig(text(demoBytes));
     expect(demo).not.toBeNull();
     validateKandeloDemoConfig(demo!);
+    expect(
+      resolveDemoPresentation(demo!, "shell")?.autoCommand,
+    ).toBeUndefined();
+    expect(resolveDemoPresentation(demo!, "doom")?.autoCommand).toBe(
+      "/usr/local/bin/fbdoom -iwad /doom1.wad",
+    );
+    expect(resolveDemoPresentation(demo!, "doom")?.runningPrimary).toEqual([
+      "framebuffer",
+      "terminal",
+      "syslog",
+    ]);
+    expect(resolveDemoAssets(demo!, "doom")).toEqual([
+      {
+        path: "/doom1.wad",
+        url: DOOM_WAD_URL,
+        sha256: DOOM_WAD_SHA256,
+        mode: 0o644,
+        devCorsProxy: true,
+      },
+    ]);
+    expect(resolveDemoPresentation(demo!, "modeset")?.autoCommand).toBe(
+      "/usr/local/bin/modeset",
+    );
+    expect(resolveDemoPresentation(demo!, "modeset")?.runningPrimary).toEqual([
+      "kms",
+      "terminal",
+      "syslog",
+    ]);
   });
 
   it("rejects an implicit or wrong rootfs ABI before writing an output", async () => {
@@ -495,6 +532,54 @@ describe("source-rootfs shell bridge", () => {
         sourceDateEpoch: "0",
       }),
     ).rejects.toThrow("/bin/missing");
+  });
+
+  it("rejects a demo profile that no longer launches its owned executable", async () => {
+    const root = tempRoot();
+    const paths = fixturePaths(root);
+    await writeRootfs(paths.rootfsPath);
+    const demoProfileOverlayPath = join(root, "wrong-demo-command.json");
+    writeFileSync(
+      demoProfileOverlayPath,
+      readFileSync(paths.demoProfileOverlayPath, "utf8").replace(
+        '"autoCommand": "/usr/local/bin/modeset"',
+        '"autoCommand": "/usr/local/bin/not-modeset"',
+      ),
+    );
+
+    await expect(
+      buildSourceRootfsShellImage({
+        ...paths,
+        demoProfileOverlayPath,
+        outFile: join(root, "wrong-demo-command.vfs.zst"),
+        sourceDateEpoch: "0",
+      }),
+    ).rejects.toThrow(
+      "source-rootfs demo profile modeset must launch /usr/local/bin/modeset",
+    );
+  });
+
+  it("rejects demo metadata for a program the source image does not own", async () => {
+    const root = tempRoot();
+    const paths = fixturePaths(root);
+    await writeRootfs(paths.rootfsPath);
+    const demoProfileOverlayPath = join(root, "unowned-demo-profile.json");
+    const overlay = JSON.parse(
+      readFileSync(paths.demoProfileOverlayPath, "utf8"),
+    );
+    overlay.profiles.unowned = {};
+    writeFileSync(demoProfileOverlayPath, JSON.stringify(overlay));
+
+    await expect(
+      buildSourceRootfsShellImage({
+        ...paths,
+        demoProfileOverlayPath,
+        outFile: join(root, "unowned-demo-profile.vfs.zst"),
+        sourceDateEpoch: "0",
+      }),
+    ).rejects.toThrow(
+      "source-rootfs demo profile overlay must contain exactly the image-owned profiles: doom, modeset",
+    );
   });
 
   it("passes only resolver-owned dependency artifacts to an isolated wrapper invocation", async () => {
@@ -606,6 +691,9 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
     expect(invocation).toContain(`--bash ${bashDir}/bash.wasm`);
     expect(invocation).toContain(`--fbdoom ${fbdoomDir}/fbdoom.wasm`);
     expect(invocation).toContain(`--modeset ${modesetDir}/modeset.wasm`);
+    expect(invocation).toContain(
+      `--demo-profile-overlay ${join(repoRoot, "homebrew/source-rootfs-shell-demo-profiles.json")}`,
+    );
     expect(invocation).not.toContain("homebrew-tap");
   });
 });

@@ -342,12 +342,31 @@ mkdir "$override_probe/local-libs/unowned"
 expect_failure "refusing to replace existing local-libs" \
   bash "$override_probe/scripts/activate-local-shell-build-override.sh" \
     "$override_candidate"
+candidate_kernel_workflow_block="$(sed -n \
+  '/- name: Build the exact candidate kernel/,/- name: Build the exact source-rootfs activation shell/p' \
+  "$WORKFLOW")"
+for installed_kernel_contract in \
+  'id: candidate_kernel' \
+  'kernel_member="$(realpath local-binaries/kernel.wasm)"' \
+  '.publication-claimed' \
+  'printf "path=%s\n" "$kernel_member" >> "$GITHUB_OUTPUT"'
+do
+  grep -Fq "$installed_kernel_contract" \
+    <<<"$candidate_kernel_workflow_block" ||
+    fail "candidate kernel step does not expose its immutable installed member: $installed_kernel_contract"
+done
 node_smoke_workflow_block="$(sed -n \
   '/- name: Boot the exact installed bytes in Node/,/- name: Exercise the live first- and third-party lifecycle in Node/p' \
   "$WORKFLOW")"
 grep -Fq -- '--image "${{ steps.image.outputs.path }}"' \
   <<<"$node_smoke_workflow_block" ||
   fail "Node proof must boot the exact candidate bytes directly"
+grep -Fq -- '--kernel "${{ steps.candidate_kernel.outputs.path }}"' \
+  <<<"$node_smoke_workflow_block" ||
+  fail "source-rootfs Node proof must boot the immutable installed kernel member"
+grep -Fq -- '--demo-profile-overlay homebrew/source-rootfs-shell-demo-profiles.json' \
+  <<<"$node_smoke_workflow_block" ||
+  fail "source-rootfs Node proof must validate its image-owned demo profiles"
 grep -Fq -- '--migration-lock homebrew/main-shell-migration-lock.json' \
   <<<"$node_smoke_workflow_block" ||
   fail "post-archive Node proof must validate against the reviewed migration lock"
@@ -674,8 +693,20 @@ grep -Fq 'shell_spec=test/kandelo-homebrew-main-shell.spec.ts' "$WORKFLOW" &&
   fail "bottle activation must select and run the exact Homebrew shell proof"
 [ "$(grep -Fc '.stats.expected == 1 and .stats.unexpected == 0 and' "$WORKFLOW")" -eq 2 ] ||
   fail "shell and lifecycle acceptance must each require one pristine browser proof"
-grep -Fq 'for report in "$shell_report" "$modeset_report"; do' "$WORKFLOW" ||
-  fail "shell and MODESET acceptance must validate their exact one-test reports"
+modeset_browser_block="$(
+  sed -n \
+    '/# WHY: only the temporary source bridge owns MODESET/,/^            fi$/p' \
+    "$WORKFLOW"
+)"
+[ "$(grep -Fc 'npx playwright test test/kandelo-modeset.spec.ts' "$WORKFLOW")" -eq 1 ] &&
+  grep -Fq 'if [ "$SHELL_ACTIVATION_MODE" = source-rootfs ]; then' \
+    <<<"$modeset_browser_block" &&
+  grep -Fq 'npx playwright test test/kandelo-modeset.spec.ts' \
+    <<<"$modeset_browser_block" &&
+  grep -Fq 'reports+=("$modeset_report")' <<<"$modeset_browser_block" &&
+  grep -Fq 'reports=("$shell_report")' "$WORKFLOW" &&
+  grep -Fq 'for report in "${reports[@]}"; do' "$WORKFLOW" ||
+  fail "browser acceptance must validate shell plus only image-owned optional proofs"
 grep -Fq "' \"\$lifecycle_report\" >/dev/null" "$WORKFLOW" ||
   fail "live lifecycle acceptance must validate its exact one-test report"
 grep -Fq 'page.goto("/?demo=modeset"' "$BROWSER_SMOKE" &&

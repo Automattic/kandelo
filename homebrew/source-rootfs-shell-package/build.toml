@@ -4,6 +4,7 @@ inputs = [
   "homebrew/source-rootfs-shell-default.json",
   "homebrew/source-rootfs-shell-dependencies.json",
   "homebrew/main-shell-demo.json",
+  "homebrew/source-rootfs-shell-demo-profiles.json",
   "scripts/source-rootfs-shell-dependency-contract.mjs",
   "images/vfs/scripts/build-source-rootfs-shell-image.ts",
   "images/vfs/scripts/shell-vfs-build.ts",
@@ -33,7 +34,7 @@ inputs = [
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 1
+revision = 2
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

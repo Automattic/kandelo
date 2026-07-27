@@ -19,10 +19,10 @@ export interface LoadedMainShellDemoConfig {
 }
 
 /**
- * Load the one canonical main-shell presentation contract. Both the legacy
+ * Load the canonical lean main-shell presentation contract. Both the legacy
  * registry composer and the bottle-only composer consume these exact tracked
- * JSON bytes; this helper prevents the former from carrying a second inline
- * copy of the shell, Doom, and modeset metadata.
+ * JSON bytes, while images that own optional programs must compose their own
+ * explicitly reviewed profile layer.
  */
 export function loadMainShellDemoConfig(
   repoRoot = findRepoRoot(),

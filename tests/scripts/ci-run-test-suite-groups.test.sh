@@ -405,8 +405,19 @@ if PATH="$FIXTURE/bin:$PATH" \
     echo "pack-ci-test-workspace.sh accepted a local program outside its generation cache" >&2
     exit 1
 fi
-grep -Fq "staged local resolver link retains an external absolute target" \
-    "$TMP_DIR/outside-local-workspace.out"
+# GNU/Linux can translate this source-contained absolute link into a staged
+# relative path before the generation-shape check, while Darwin's /tmp alias
+# reaches the earlier external-target check. Both reject the same forbidden
+# ownership claim, so assert the stable safety outcome instead of one host's
+# diagnostic order.
+if ! grep -Fq "staged local resolver link retains an external absolute target" \
+        "$TMP_DIR/outside-local-workspace.out" &&
+   ! grep -Fq "local program resolver link targets a noncanonical generation" \
+        "$TMP_DIR/outside-local-workspace.out"; then
+    cat "$TMP_DIR/outside-local-workspace.out" >&2
+    echo "pack-ci-test-workspace.sh did not explain the non-generation local program" >&2
+    exit 1
+fi
 rm -rf \
     "$FIXTURE/local-binaries/programs/wasm32/outside-local" \
     "$FIXTURE/local-binaries/not-a-generation"

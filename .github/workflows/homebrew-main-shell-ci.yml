@@ -306,6 +306,7 @@ jobs:
           echo "WASM_POSIX_BINARY_INDEX_URL=$selected_url" >> "$GITHUB_ENV"
 
       - name: Build the exact candidate kernel
+        id: candidate_kernel
         run: |
           set -euo pipefail
           test -n "${WASM_POSIX_BINARY_INDEX_URL:-}"
@@ -322,6 +323,29 @@ jobs:
                 kandelo-kernel.wasm
             cmp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
               local-binaries/kernel.wasm
+            # WHY: the public mirror is intentionally a symlink. Record the
+            # immutable generation member selected by the installer so later
+            # acceptance boots installed bytes without weakening its
+            # non-symlink input boundary.
+            kernel_member="$(realpath local-binaries/kernel.wasm)"
+            kernel_generation="$(dirname "$kernel_member")"
+            kernel_identity="$(dirname "$kernel_generation")"
+            kernel_namespace="$(realpath \
+              local-binaries/.kandelo-local-generations/wasm32/kernel)"
+            kernel_session="$(basename "$kernel_generation")"
+            kernel_cache_key="$(basename "$kernel_identity")"
+            [ "$(dirname "$kernel_identity")" = "$kernel_namespace" ]
+            [ "$(basename "$kernel_member")" = kandelo-kernel.wasm ]
+            [[ "$kernel_cache_key" =~ ^[0-9a-f]{64}$ ]]
+            [ "$kernel_session" = \
+              "ci-kernel-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}" ]
+            [ -f "$kernel_identity/.$kernel_session.publication-claimed" ]
+            [ ! -L "$kernel_identity/.$kernel_session.publication-claimed" ]
+            [ -f "$kernel_member" ]
+            [ ! -L "$kernel_member" ]
+            cmp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
+              "$kernel_member"
+            printf "path=%s\n" "$kernel_member" >> "$GITHUB_OUTPUT"
           '
 
       - name: Build the exact source-rootfs activation shell
@@ -776,9 +800,10 @@ jobs:
               bash scripts/dev-shell.sh npx tsx \
                 scripts/source-rootfs-shell-node-smoke.ts \
                 --image "${{ steps.image.outputs.path }}" \
-                --kernel local-binaries/kernel.wasm \
+                --kernel "${{ steps.candidate_kernel.outputs.path }}" \
                 --shell-config homebrew/source-rootfs-shell-default.json \
-                --demo-config homebrew/main-shell-demo.json
+                --demo-config homebrew/main-shell-demo.json \
+                --demo-profile-overlay homebrew/source-rootfs-shell-demo-profiles.json
               ;;
             bottles)
               node_smoke_args=(
@@ -880,6 +905,7 @@ jobs:
           esac
           (
             cd apps/browser-demos
+            reports=("$shell_report")
             if [ "$SHELL_ACTIVATION_MODE" = bottles ]; then
               # This offline browser contract must reject before any external
               # fixture fetch. The separately gated live test runs only when
@@ -912,22 +938,26 @@ jobs:
               "${playwright_env[@]}" \
               npx playwright test "$shell_spec" \
               --project=chromium --reporter=json
-            # The shell VFS and worker occupy roughly 512 MiB, making browser-
-            # process lifetime part of this proof. Start MODESET in a fresh
-            # Playwright process so the test measures the candidate image, not
-            # whether a previous heavyweight worker has been collected yet.
-            bash ../../scripts/dev-shell.sh env \
-              "PLAYWRIGHT_JSON_OUTPUT_FILE=$modeset_report" \
-              "${playwright_env[@]}" \
-              npx playwright test test/kandelo-modeset.spec.ts \
-              --project=chromium --reporter=json
+            # WHY: only the temporary source bridge owns MODESET and its launch
+            # profile. Requiring it from the lean bottled base would test
+            # software that the selected image deliberately excludes.
+            if [ "$SHELL_ACTIVATION_MODE" = source-rootfs ]; then
+              # Use a fresh process because the preceding shell worker occupies
+              # enough memory to make browser-process lifetime observable.
+              bash ../../scripts/dev-shell.sh env \
+                "PLAYWRIGHT_JSON_OUTPUT_FILE=$modeset_report" \
+                "${playwright_env[@]}" \
+                npx playwright test test/kandelo-modeset.spec.ts \
+                --project=chromium --reporter=json
+              reports+=("$modeset_report")
+            fi
+            for report in "${reports[@]}"; do
+              jq -e '
+                .stats.expected == 1 and .stats.unexpected == 0 and
+                .stats.flaky == 0 and .stats.skipped == 0
+              ' "$report" >/dev/null
+            done
           )
-          for report in "$shell_report" "$modeset_report"; do
-            jq -e '
-              .stats.expected == 1 and .stats.unexpected == 0 and
-              .stats.flaky == 0 and .stats.skipped == 0
-            ' "$report" >/dev/null
-          done
           if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] &&
              [ "$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" = closed ]; then
             jq -e '
