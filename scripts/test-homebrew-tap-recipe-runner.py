@@ -339,6 +339,158 @@ class ServiceRootProjectionTests(unittest.TestCase):
             self.assertFalse(escaped.exists())
 
 
+class ResourceProjectionTests(unittest.TestCase):
+    RESOURCE = {
+        "name": "chocolate-doom",
+        "source_sha256": "a" * 64,
+        "source_url": "https://example.test/chocolate-doom.tar.gz",
+    }
+
+    def make_fixture(
+        self, root: Path
+    ) -> tuple[dict[str, object], dict[str, object], Path]:
+        resource = root / "kandelo-package-resources/chocolate-doom"
+        resource.mkdir(parents=True)
+        (resource / "input.txt").write_text("verified resource\n")
+        request: dict[str, object] = {
+            "resources": {"chocolate-doom": str(resource)}
+        }
+        config: dict[str, object] = {
+            "build_uid": os.getuid(),
+            "resources": [dict(self.RESOURCE)],
+        }
+        return request, config, resource
+
+    def test_accepts_only_the_attested_fixed_resource_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            request, config, resource = self.make_fixture(root)
+
+            selected = runner.validate_requested_resources(
+                request, config, root
+            )
+
+            self.assertEqual(selected, {"chocolate-doom": resource})
+            self.assertEqual(
+                runner.resource_env_key("chocolate-doom"),
+                "WASM_POSIX_DEP_RESOURCE_CHOCOLATE_DOOM_DIR",
+            )
+            self.assertEqual(
+                runner.resource_guest_root("chocolate-doom"),
+                Path("/kandelo/resources/chocolate-doom"),
+            )
+
+    def test_rejects_dependency_and_resource_environment_collision(self) -> None:
+        with self.assertRaisesRegex(
+            runner.RunnerError,
+            "dependency and resource paths collide",
+        ):
+            runner.reject_dependency_resource_env_collisions(
+                ["kandelo-dev/tap-core/resource-chocolate-doom"],
+                ["chocolate-doom"],
+            )
+
+    def test_rejects_missing_extra_and_caller_selected_resource_paths(self) -> None:
+        mutations = {
+            "missing": lambda request, _config, _resource: request[
+                "resources"
+            ].clear(),
+            "unexpected mapping": lambda request, _config, resource: request[
+                "resources"
+            ].update({"extra": str(resource)}),
+            "caller path": lambda request, _config, resource: request[
+                "resources"
+            ].update({"chocolate-doom": str(resource.parent)}),
+            "extra staged root": lambda _request, _config, resource: (
+                resource.parent / "extra"
+            ).mkdir(),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                request, config, resource = self.make_fixture(root)
+                mutate(request, config, resource)
+
+                with self.assertRaises(runner.RunnerError):
+                    runner.validate_requested_resources(request, config, root)
+
+    def test_rejects_resource_root_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            request, config, resource = self.make_fixture(root)
+            outside = root / "outside"
+            outside.mkdir()
+            shutil.rmtree(resource)
+            resource.symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaisesRegex(runner.RunnerError, "canonical"):
+                runner.validate_requested_resources(request, config, root)
+
+    def test_rejects_resource_directory_replacement_after_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            request, config, resource = self.make_fixture(root)
+            selected = runner.validate_requested_resources(
+                request, config, root
+            )
+            identity = runner.capture_resource_staging_identity(root, selected)
+            shutil.rmtree(resource)
+            resource.mkdir()
+            (resource / "input.txt").write_text("replacement\n")
+
+            with self.assertRaisesRegex(
+                runner.RunnerError,
+                "staging identity changed",
+            ):
+                runner.require_resource_staging_identity(
+                    root, selected, identity
+                )
+
+    def test_copy_rejects_symlink_escape_and_late_directory_mutation(self) -> None:
+        limits = {
+            "max_entries": 16,
+            "max_file_bytes": 1_024,
+            "max_bytes": 4_096,
+            "max_path_bytes": 128,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / "source"
+            source.mkdir()
+            (source / "input.txt").write_text("resource\n")
+            (source / "escape").symlink_to("../outside")
+            with (
+                mock.patch.object(runner.os, "fchown"),
+                mock.patch.object(runner.os, "chown"),
+                self.assertRaisesRegex(runner.RunnerError, "escapes"),
+            ):
+                runner.copy_input_tree(source, root / "escaped-copy", limits)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / "source"
+            source.mkdir()
+            (source / "input.txt").write_text("resource\n")
+            original_listdir = runner.os.listdir
+            mutated = False
+
+            def listdir_and_mutate(directory: int) -> list[str]:
+                nonlocal mutated
+                names = original_listdir(directory)
+                if not mutated:
+                    (source / "late.txt").write_text("late mutation\n")
+                    mutated = True
+                return names
+
+            with (
+                mock.patch.object(runner.os, "listdir", listdir_and_mutate),
+                mock.patch.object(runner.os, "fchown"),
+                mock.patch.object(runner.os, "chown"),
+                self.assertRaisesRegex(runner.RunnerError, "changed while copied"),
+            ):
+                runner.copy_input_tree(source, root / "mutated-copy", limits)
+
+
 @unittest.skipUnless(
     sys.platform.startswith("linux")
     and os.geteuid() == 0
@@ -371,11 +523,15 @@ class LiveSystemdServiceRootTests(unittest.TestCase):
             ):
                 directory.mkdir(parents=True, exist_ok=True)
             source = request_root / "kandelo-package-source"
+            resource_root = request_root / "kandelo-package-resources"
+            resource_source = resource_root / "fixture-data"
             work = request_root / "kandelo-package-work"
             output = request_root / "kandelo-package-out"
             for directory in (source, work, output):
                 directory.mkdir()
+            resource_source.mkdir(parents=True)
             (source / "input.txt").write_text("reviewed source\n")
+            (resource_source / "input.txt").write_text("reviewed resource\n")
             host_secret = request_root.parent / (
                 f"{request_root.name}-host-secret"
             )
@@ -415,6 +571,10 @@ class LiveSystemdServiceRootTests(unittest.TestCase):
                 "/usr/bin/true >/dev/null 2>&1; then exit 93; fi\n"
                 '[ "$(/usr/bin/cat "$WASM_POSIX_DEP_SOURCE_DIR/input.txt")" = '
                 '"reviewed source" ]\n'
+                '[ "$(/usr/bin/cat "$WASM_POSIX_DEP_RESOURCE_FIXTURE_DATA_DIR/input.txt")" = '
+                '"reviewed resource" ]\n'
+                'if (: >"$WASM_POSIX_DEP_RESOURCE_FIXTURE_DATA_DIR/write-probe") '
+                "2>/dev/null; then exit 94; fi\n"
                 '[ -r "$WASM_POSIX_DEP_RECIPE_DIR/build.sh" ]\n'
                 '[ -r "$WASM_POSIX_GLUE_DIR/abi_constants.h" ]\n'
                 '[ -r "$WASM_POSIX_SYSROOT/lib/libc.a" ]\n'
@@ -462,6 +622,9 @@ class LiveSystemdServiceRootTests(unittest.TestCase):
                     "WASM_POSIX_DEP_OUT_DIR": str(output),
                     "WASM_POSIX_DEP_RECIPE_DIR": str(recipe_alias),
                     "WASM_POSIX_DEP_SOURCE_DIR": str(source),
+                    "WASM_POSIX_DEP_RESOURCE_FIXTURE_DATA_DIR": (
+                        "/kandelo/resources/fixture-data"
+                    ),
                     "WASM_POSIX_GLUE_DIR": str(platform_alias / "libc/glue"),
                     "WASM_POSIX_SYSROOT": str(sysroot_alias),
                 },
@@ -469,11 +632,13 @@ class LiveSystemdServiceRootTests(unittest.TestCase):
                 "output_root": output,
                 "platform_root": platform_alias,
                 "recipe_root": recipe_alias,
+                "resources": {"fixture-data": str(resource_source)},
                 "source_root": source,
                 "sysroot": sysroot_alias,
                 "work_root": work,
             }
             config = {
+                "build_uid": os.getuid(),
                 "group_file": group,
                 "llvm_bin": Path("/usr/bin"),
                 "node_bin": Path("/usr/bin/node"),
@@ -483,6 +648,13 @@ class LiveSystemdServiceRootTests(unittest.TestCase):
                 "recipe_host_root": recipe_host,
                 "recipe_uid": recipe_uid,
                 "recipe_user": "kandelo-homebrew-recipe",
+                "resources": [
+                    {
+                        "name": "fixture-data",
+                        "source_sha256": "a" * 64,
+                        "source_url": "https://example.test/fixture-data.tar.gz",
+                    }
+                ],
                 "sealed_root": sealed_root,
                 "slice": "system.slice",
                 "sysroot_host_root": sysroot_host,
@@ -494,6 +666,11 @@ class LiveSystemdServiceRootTests(unittest.TestCase):
                     request,
                     config,
                     {},
+                    {"fixture-data": resource_source},
+                    runner.capture_resource_staging_identity(
+                        request_root,
+                        {"fixture-data": resource_source},
+                    ),
                     [],
                     [],
                     [
