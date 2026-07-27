@@ -28,10 +28,14 @@ import pathlib
 import sys
 import tarfile
 
-kind, output, formula_path, wasm_path, forbidden_root = sys.argv[1:]
+kind, output, formula_path, wasm_path, forbidden_root, extra_wasm_path = sys.argv[1:]
 formula = pathlib.Path(formula_path).read_bytes()
 wasm = pathlib.Path(wasm_path).read_bytes()
 forbidden_root = forbidden_root.encode()
+extra_wasm = (
+    None if extra_wasm_path == "-"
+    else pathlib.Path(extra_wasm_path).read_bytes()
+)
 root = "tool/1.0"
 
 receipt = json.dumps({
@@ -75,7 +79,7 @@ with tarfile.open(
 ) as archive:
     directories = [
         "tool", root, f"{root}/.brew", f"{root}/bin", f"{root}/libexec",
-        f"{root}/share",
+        f"{root}/lib", f"{root}/share",
     ]
     for directory in directories:
         add_dir(archive, directory)
@@ -91,10 +95,14 @@ with tarfile.open(
 
     if kind in {
         "valid", "duplicate", "special", "non-utf8", "forbidden",
-        "forbidden-boundary",
+        "forbidden-boundary", "side-module", "side-module-late",
+        "side-module-unsupported-import", "side-module-uninstrumented-fork",
+        "so-executable",
     }:
         add_link(archive, f"{root}/bin/tool", "../libexec/tool")
         add_link(archive, f"{root}/bin/tool-hard", f"{root}/libexec/tool", hard=True)
+    elif kind == "side-module-as-path-executable":
+        add_link(archive, f"{root}/bin/tool", "../lib/extension.so")
     elif kind in {"standalone", "nonexec"}:
         pass
     elif kind == "escape":
@@ -131,6 +139,15 @@ with tarfile.open(
             b"x" * split_at + forbidden_root + b"/source\n",
             0o755,
         )
+
+    if kind in {
+        "side-module", "side-module-as-path-executable", "side-module-late",
+        "side-module-unsupported-import", "side-module-uninstrumented-fork",
+        "so-executable",
+    }:
+        if extra_wasm is None:
+            raise SystemExit(f"{kind} requires an extra Wasm artifact")
+        add_file(archive, f"{root}/lib/extension.so", extra_wasm, 0o755)
 PY
 
 INSPECTOR="$REPO_ROOT/scripts/homebrew-inspect-bottle.py"
@@ -150,8 +167,9 @@ PY
 }
 make_archive() {
   local kind="$1" output="$2" wasm="${3:-$WASM}" formula_source="${4:-$FORMULA_SOURCE}"
+  local extra_wasm="${5:--}"
   python3 "$TMP_ROOT/make-archive.py" \
-    "$kind" "$output" "$formula_source" "$wasm" "$FORBIDDEN_ROOT"
+    "$kind" "$output" "$formula_source" "$wasm" "$FORBIDDEN_ROOT" "$extra_wasm"
 }
 
 VALID_ARCHIVE="$TMP_ROOT/valid.tar.gz"
@@ -231,6 +249,37 @@ make_wasm() {
   wat2wasm "$TMP_ROOT/$name.wat" -o "$TMP_ROOT/$name.wasm"
 }
 
+# wasm-ld places this minimal dylink.0 MEM_INFO section immediately after the
+# Wasm header. Keep the fixture byte-level so the test exercises structural
+# role classification without depending on a target compiler or sysroot.
+cat >"$TMP_ROOT/mark-side-module.py" <<'PY'
+import pathlib
+import sys
+
+mode, source_path, output_path = sys.argv[1:]
+source = pathlib.Path(source_path).read_bytes()
+if source[:8] != b"\0asm\1\0\0\0":
+    raise SystemExit("fixture source is not a version-1 Wasm module")
+dylink = bytes([
+    0x00, 0x0f,
+    0x08, 0x64, 0x79, 0x6c, 0x69, 0x6e, 0x6b, 0x2e, 0x30,
+    0x01, 0x04, 0x00, 0x00, 0x00, 0x00,
+])
+if mode == "first":
+    output = source[:8] + dylink + source[8:]
+elif mode == "late":
+    output = source + dylink
+else:
+    raise SystemExit(f"invalid fixture mode: {mode}")
+pathlib.Path(output_path).write_bytes(output)
+PY
+
+make_side_module() {
+  local name="$1" mode="${2:-first}"
+  python3 "$TMP_ROOT/mark-side-module.py" \
+    "$mode" "$TMP_ROOT/$name.wasm" "$TMP_ROOT/$name.so"
+}
+
 expect_wasm_failure() {
   local label="$1" kind="$2" wasm="$3" pattern="$4"
   local archive="$TMP_ROOT/$label.tar.gz" stderr="$TMP_ROOT/$label.err"
@@ -250,6 +299,77 @@ expect_wasm_failure() {
     exit 1
   }
 }
+
+make_wasm side-module-valid <<'WAT'
+(module
+  (import "env" "memory" (memory 1))
+  (func (export "extension_value") (result i32) (i32.const 42)))
+WAT
+make_side_module side-module-valid
+SIDE_MODULE_ARCHIVE="$TMP_ROOT/side-module-valid.tar.gz"
+make_archive side-module "$SIDE_MODULE_ARCHIVE" \
+  "$WASM" "$FORMULA_SOURCE" "$TMP_ROOT/side-module-valid.so"
+python3 "$INSPECTOR" \
+  --archive "$SIDE_MODULE_ARCHIVE" \
+  --formula tool \
+  --version 1.0 \
+  --expected-abi "$ABI_VERSION" \
+  --expected-arch wasm32 \
+  --forbidden-root "$FORBIDDEN_ROOT" \
+  --out "$TMP_ROOT/side-module-valid.json"
+jq -e '
+  .all_files | index("lib/extension.so") != null
+' "$TMP_ROOT/side-module-valid.json" >/dev/null
+
+expect_extra_wasm_failure() {
+  local label="$1" kind="$2" extra_wasm="$3" pattern="$4"
+  local archive="$TMP_ROOT/$label.tar.gz" stderr="$TMP_ROOT/$label.err"
+  make_archive "$kind" "$archive" "$WASM" "$FORMULA_SOURCE" "$extra_wasm"
+  if python3 "$INSPECTOR" \
+    --archive "$archive" --formula tool --version 1.0 \
+    --expected-abi "$ABI_VERSION" \
+    --expected-arch wasm32 \
+    --forbidden-root "$FORBIDDEN_ROOT" \
+    >"$TMP_ROOT/$label.out" 2>"$stderr"; then
+    echo "test-homebrew-inspect-bottle.sh: accepted $label Wasm payload" >&2
+    exit 1
+  fi
+  grep -F "$pattern" "$stderr" >/dev/null || {
+    echo "test-homebrew-inspect-bottle.sh: wrong failure for $label Wasm payload" >&2
+    cat "$stderr" >&2
+    exit 1
+  }
+}
+
+expect_extra_wasm_failure side-module-as-path-executable \
+  side-module-as-path-executable "$TMP_ROOT/side-module-valid.so" \
+  "declared executable is a dylink.0 side module"
+
+make_side_module side-module-valid late
+expect_extra_wasm_failure side-module-late side-module-late \
+  "$TMP_ROOT/side-module-valid.so" \
+  "malformed or misplaced dylink.0 artifact role"
+
+make_wasm side-module-unsupported-import <<'WAT'
+(module
+  (import "env" "memory" (memory 1))
+  (import "unsupported" "callback" (func)))
+WAT
+make_side_module side-module-unsupported-import
+expect_extra_wasm_failure side-module-unsupported-import \
+  side-module-unsupported-import "$TMP_ROOT/side-module-unsupported-import.so" \
+  "side module has an unsupported memory or import contract"
+
+make_wasm side-module-uninstrumented-fork <<'WAT'
+(module
+  (import "env" "memory" (memory 1))
+  (import "env" "fork" (func (result i32)))
+  (func (export "extension_fork") (result i32) call 0))
+WAT
+make_side_module side-module-uninstrumented-fork
+expect_extra_wasm_failure side-module-uninstrumented-fork \
+  side-module-uninstrumented-fork "$TMP_ROOT/side-module-uninstrumented-fork.so" \
+  "incomplete ABI "
 
 make_wasm fork-import-missing <<WAT
 (module
@@ -387,6 +507,8 @@ make_wasm missing-abi <<'WAT'
 WAT
 expect_wasm_failure missing-abi valid \
   "$TMP_ROOT/missing-abi.wasm" "lacks __abi_version"
+expect_extra_wasm_failure so-named-executable so-executable \
+  "$TMP_ROOT/missing-abi.wasm" "executable lacks __abi_version"
 
 make_wasm malformed-abi <<WAT
 (module
