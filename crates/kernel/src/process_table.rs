@@ -1593,6 +1593,42 @@ mod wait_tests {
     }
 
     #[test]
+    fn repeated_spawn_and_reap_preserves_only_live_processes() {
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let baseline_pids = table.all_pids();
+        let mut host = NoopHost;
+
+        for iteration in 0..4_096 {
+            let child_pid = table
+                .spawn_child_for_caller(
+                    parent_pid,
+                    parent_pid,
+                    &[b"/bin/child".as_slice()],
+                    &[],
+                    &[],
+                    &SpawnAttrs::empty(),
+                    &mut host,
+                )
+                .unwrap_or_else(|error| panic!("spawn {iteration} failed: {error:?}"));
+            table.get_mut(child_pid).unwrap().state = ProcessState::Exited;
+            table
+                .reap_process(child_pid)
+                .unwrap_or_else(|| panic!("reap {iteration} lost child {child_pid}"));
+
+            // WHY: task IDs are monotonic identities, not table slots. A
+            // completed wait must remove every child-owned process record even
+            // after the numeric PID grows into the thousands.
+            assert_eq!(table.all_pids(), baseline_pids, "iteration {iteration}");
+        }
+
+        assert_eq!(table.get(parent_pid).unwrap().state, ProcessState::Running);
+    }
+
+    #[test]
     fn synthetic_init_reservation_cannot_be_removed_or_reaped() {
         use crate::process::test_host::NoopHost;
         use crate::spawn::SpawnAttrs;
