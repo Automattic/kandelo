@@ -2,6 +2,7 @@
 
 #include <bits/kandelo_process_layouts.h>
 #include <mqueue.h>
+#include <netinet/in.h>
 #include <poll.h>
 #include <signal.h>
 #include <stddef.h>
@@ -104,6 +105,16 @@ _Static_assert(CMSG_SPACE(KANDELO_SCM_RIGHTS_FD_BYTES) ==
 	       KANDELO_PROCESS_CMSGHDR_WASM32_DATA_OFFSET +
 		       KANDELO_PROCESS_CMSGHDR_WASM32_ALIGN,
 	       "generated wasm32 SCM_RIGHTS one-fd space");
+_Static_assert(sizeof(struct group_req) ==
+	       KANDELO_PROCESS_GROUP_REQ_WASM32_SIZE,
+	       "generated wasm32 group_req size");
+ASSERT_OFFSET(struct group_req, gr_group,
+	      KANDELO_PROCESS_GROUP_REQ_WASM32_GROUP_OFFSET);
+_Static_assert(sizeof(struct group_source_req) ==
+	       KANDELO_PROCESS_GROUP_SOURCE_REQ_WASM32_SIZE,
+	       "generated wasm32 group_source_req size");
+ASSERT_OFFSET(struct group_source_req, gsr_source,
+	      KANDELO_PROCESS_GROUP_SOURCE_REQ_WASM32_SOURCE_OFFSET);
 
 _Static_assert(sizeof(stack_t) == 12, "wasm32 stack_t size");
 ASSERT_OFFSET(stack_t, ss_sp, 0);
@@ -237,6 +248,16 @@ _Static_assert(CMSG_SPACE(KANDELO_SCM_RIGHTS_FD_BYTES) ==
 	       KANDELO_PROCESS_CMSGHDR_WASM64_DATA_OFFSET +
 		       KANDELO_PROCESS_CMSGHDR_WASM64_ALIGN,
 	       "generated wasm64 SCM_RIGHTS one-fd space");
+_Static_assert(sizeof(struct group_req) ==
+	       KANDELO_PROCESS_GROUP_REQ_WASM64_SIZE,
+	       "generated wasm64 group_req size");
+ASSERT_OFFSET(struct group_req, gr_group,
+	      KANDELO_PROCESS_GROUP_REQ_WASM64_GROUP_OFFSET);
+_Static_assert(sizeof(struct group_source_req) ==
+	       KANDELO_PROCESS_GROUP_SOURCE_REQ_WASM64_SIZE,
+	       "generated wasm64 group_source_req size");
+ASSERT_OFFSET(struct group_source_req, gsr_source,
+	      KANDELO_PROCESS_GROUP_SOURCE_REQ_WASM64_SOURCE_OFFSET);
 
 _Static_assert(sizeof(stack_t) == 24, "wasm64 stack_t size");
 ASSERT_OFFSET(stack_t, ss_sp, 0);
