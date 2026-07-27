@@ -5163,9 +5163,16 @@ export class CentralizedKernelWorker {
         if (output !== null) errno = 0;
       }
     } catch (error) {
-      if (
-        isKernelExportFailure(error)
-        || error instanceof KernelTransferExecuteTrapError
+      if (isKernelExportFailure(error)) {
+        // WHY: Rust may have trapped after consuming the reservation. Record
+        // the branded failure before finally decides that cancellation is no
+        // longer safe; the exact static allowance reviews this settlement.
+        fatalError = new KernelTransferExecuteTrapError(
+          `${exportName} transfer reservation trapped`,
+          error,
+        );
+      } else if (
+        error instanceof KernelTransferExecuteTrapError
         || this.#kernelFatalError !== null
       ) {
         fatalError = error instanceof KernelTransferExecuteTrapError

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { resolveBinary } from "../src/binary-resolver";
-import { WasmPosixKernel } from "../src/kernel";
+import { createWasmPosixKernelTestHarness } from "../src/kernel";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { NodeTimeProvider } from "../src/vfs/time";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
@@ -17,23 +17,37 @@ interface ReusableKernelExports extends WebAssembly.Exports {
 
 async function reusableKernel(): Promise<ReusableKernelExports> {
   const rootfs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
-  const kernel = new WasmPosixKernel(
-    {
+  const capture: { instance: WebAssembly.Instance | null } = {
+    instance: null,
+  };
+  const kernel = createWasmPosixKernelTestHarness({
+    config: {
       maxWorkers: 1,
       dataBufferSize: 65_536,
       useSharedMemory: true,
     },
-    new VirtualPlatformIO(
+    io: new VirtualPlatformIO(
       [{ mountPoint: "/", backend: rootfs }],
       new NodeTimeProvider(),
     ),
-  );
+    engine: {
+      compile: (bytes) => WebAssembly.compile(bytes),
+      instantiate: async (module, imports) => {
+        const instance = await WebAssembly.instantiate(module, imports);
+        capture.instance = instance;
+        return instance;
+      },
+    },
+  });
   await kernel.init(readFileSync(resolveBinary("kernel.wasm")));
-  const internals = kernel as unknown as {
-    instance: WebAssembly.Instance | null;
-  };
-  expect(internals.instance).not.toBeNull();
-  return internals.instance!.exports as ReusableKernelExports;
+  // WHY: the module-secret harness engine owns this raw instance only inside
+  // the test. Production still installs and exposes only its gated facade, but
+  // this regression must call the real returning export directly to observe
+  // whether the Wasm shadow-stack epilogue restores its stack pointer.
+  const instance = capture.instance;
+  expect(instance).not.toBeNull();
+  if (instance === null) throw new Error("test engine did not instantiate");
+  return instance.exports as ReusableKernelExports;
 }
 
 describe("reusable kernel export shadow-stack lifetime", () => {
