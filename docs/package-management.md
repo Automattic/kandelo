@@ -1587,10 +1587,25 @@ packages without a publishable `build.toml`, unsafe names, and a package that
 is simultaneously selected and listed in `WASM_POSIX_FETCH_SKIP_PKGS` fail
 before materialization. Omitting `--package` preserves the full-registry walk.
 
+Consumers with a Rust-generated staging expected ledger can instead pass
+`--expected-ledger <path>`. That mode hands only the ledger's exact unique
+`(package, arch)` entries to the resolver; the resolver still traverses each
+entry's declared dependency closure. It rejects duplicate or undeclared
+architectures before the first resolver call and never falls back to a
+registry walk. `WASM_POSIX_FETCH_SKIP_PKGS` may subtract packages from the
+ledger but cannot add roots. Pair it with `--fetch-only` at CI publication
+boundaries so a stale or missing archive fails instead of becoming an
+undeclared source build.
+
 The package workflows retain the same per-entry build shape but publish to
 different lifecycle states. `staging-build.yml` writes a per-PR staging tag;
 `prepare-merge.yml` writes and tests a run-specific isolated candidate; and
-`force-rebuild.yml` is the maintainer-dispatched exact-main rebuild path.
+`force-rebuild.yml` is the maintainer-dispatched exact-main rebuild path. Its
+preflight uploads the full publication-policy expected ledger it already used
+to derive the selected producer matrix. The test gate consumes that same
+run/attempt-scoped ledger strictly because its rootfs and conditional
+package-test dependencies are broader than an arbitrary rebuild selection;
+it does not recompute the ledger or walk raw registry roots.
 That workflow preserves concurrency within each true dependency level while
 strictly sequencing levels; it never relies on GitHub matrix scheduling order.
 Post-merge

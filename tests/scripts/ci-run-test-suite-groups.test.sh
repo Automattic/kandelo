@@ -164,6 +164,62 @@ for workflow in \
     fi
 done
 
+force_rebuild_workflow="$REPO_ROOT/.github/workflows/force-rebuild.yml"
+grep -Fq 'name: test-suite (${{ matrix.label }})' \
+    "$force_rebuild_workflow" || {
+    echo "force-rebuild.yml: sharded suite jobs do not use unique labels" >&2
+    exit 1
+}
+grep -Fq 'TEST_GROUP: ${{ matrix.group }}' \
+    "$force_rebuild_workflow" || {
+    echo "force-rebuild.yml: matrix group is not exposed to the suite step" >&2
+    exit 1
+}
+grep -Fq 'bash scripts/ci-run-test-suite.sh "$SUITE" "$TEST_GROUP"' \
+    "$force_rebuild_workflow" || {
+    echo "force-rebuild.yml: test group is not passed positionally through the dev shell" >&2
+    exit 1
+}
+
+force_rebuild_rows=$(sed -n \
+    '/^  test-suite:/,/^    env:/p' \
+    "$force_rebuild_workflow" | awk '
+    /^          - suite: / {
+        suite = $0
+        sub(/^          - suite: /, "", suite)
+    }
+    /^            group: / {
+        group = $0
+        sub(/^            group: /, "", group)
+        print suite ":" group
+    }
+')
+expected_force_rebuild_rows=$'cargo-kernel:all\nfork-instrument:all\nvitest:all\nlibc:functional-regression\nlibc:math\nposix:all\nsortix:include\nsortix:basic\nsortix:runtime'
+if [ "$force_rebuild_rows" != "$expected_force_rebuild_rows" ]; then
+    echo "force-rebuild.yml: unexpected test-suite matrix:" >&2
+    printf '%s\n' "$force_rebuild_rows" >&2
+    exit 1
+fi
+
+force_rebuild_gate=$(sed -n \
+    '/^  test-gate:/,/^  # publish/p' \
+    "$force_rebuild_workflow")
+grep -Fq 'needs: [test-gate-prepare, test-suite]' \
+    <<<"$force_rebuild_gate" || {
+    echo "force-rebuild.yml: test gate no longer depends on the complete suite matrix" >&2
+    exit 1
+}
+grep -Fq 'TEST_SUITE_RESULT: ${{ needs.test-suite.result }}' \
+    <<<"$force_rebuild_gate" || {
+    echo "force-rebuild.yml: test gate no longer receives the suite matrix result" >&2
+    exit 1
+}
+grep -Fq 'if [ "$TEST_SUITE_RESULT" != "success" ]; then' \
+    <<<"$force_rebuild_gate" || {
+    echo "force-rebuild.yml: test gate no longer rejects a failed suite matrix" >&2
+    exit 1
+}
+
 prepared_xtask="$FIXTURE/target/fixture-host/release/xtask"
 mkdir -p "$(dirname "$prepared_xtask")"
 cat > "$prepared_xtask" <<'EOF'

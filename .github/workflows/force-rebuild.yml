@@ -80,6 +80,12 @@ on:
         default: true
         type: boolean
 
+# Keep the six-suite materialization surface identical to staging-build and
+# prepare-merge. The structural workflow contract test rejects drift between
+# these three declarations.
+env:
+  PACKAGE_STAGING_EXCLUSIONS: erlang-vfs,perl,perl-vfs,python-vfs,redis,texlive
+
 jobs:
   # ---------------------------------------------------------------------
   # gate — input validation. Lightweight and cheap so a malformed
@@ -189,6 +195,7 @@ jobs:
       level_7_matrix: ${{ steps.compute.outputs.level_7_matrix }}
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
+      expected_ledger_artifact: ${{ steps.compute.outputs.expected_ledger_artifact }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -241,8 +248,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           INPUT_PACKAGES: ${{ inputs.packages }}
           INPUT_ARCHES: ${{ inputs.arches }}
+          INPUT_SKIP_TESTS: ${{ inputs.skip_tests }}
         run: |
-          bash scripts/dev-shell.sh bash -c '
+          bash scripts/dev-shell.sh env \
+            PACKAGE_STAGING_EXCLUSIONS="$PACKAGE_STAGING_EXCLUSIONS" \
+            SKIP_TESTS="$INPUT_SKIP_TESTS" \
+            bash -c '
             set -euo pipefail
 
             ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk "{print \$4}")
@@ -254,10 +265,25 @@ jobs:
             # same moment.
             TARGET_TAG="binaries-abi-v${ABI}"
             echo "target_tag=$TARGET_TAG" >> "$GITHUB_OUTPUT"
+            EXPECTED_LEDGER_ARTIFACT="force-rebuild-expected-ledger-${{ github.run_id }}-attempt-${{ github.run_attempt }}"
+            echo "expected_ledger_artifact=$EXPECTED_LEDGER_ARTIFACT" >> "$GITHUB_OUTPUT"
 
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
             XTASK="target/$HOST_TARGET/release/xtask"
-            expected_ledger=$(mktemp)
+            expected_ledger="$RUNNER_TEMP/force-rebuild-expected-ledger.json"
+            blocked_report="$RUNNER_TEMP/force-rebuild-publication-blockers.json"
+            required_root_args=()
+            if [ "$INPUT_PACKAGES" != "all" ]; then
+              required_root_args+=(--require-root "$INPUT_PACKAGES")
+            fi
+            # The split test suites consume the canonical rootfs. A test-gated
+            # rebuild must therefore prove that rootfs and its dependency
+            # closure are publication-admitted even when the rebuilt root is
+            # unrelated. Deliberate skip_tests runs retain their narrower
+            # producer-only admission contract.
+            if [ "$SKIP_TESTS" != "true" ]; then
+              required_root_args+=(--require-root rootfs)
+            fi
             # WHY: the shared ledger is the publication-policy authority.
             # `all` omits pending packages and every reverse dependent; a
             # named blocked root instead fails here with its full dependency
@@ -265,12 +291,13 @@ jobs:
             "$XTASK" staging-reuse expected \
               --registry packages/registry \
               --expected-abi "$ABI" \
-              --require-root "$INPUT_PACKAGES" \
-              --output "$expected_ledger"
+              --exclude "$PACKAGE_STAGING_EXCLUSIONS" \
+              "${required_root_args[@]}" \
+              --output "$expected_ledger" \
+              --blocked-output "$blocked_report"
             all_matrix=$(jq -c \
               "[.entries[] | {package, arch, sha: .cache_key_sha, version, revision}]" \
               "$expected_ledger")
-            rm -f "$expected_ledger"
 
             all_matrix_file=$(mktemp)
             printf "%s" "$all_matrix" > "$all_matrix_file"
@@ -296,6 +323,16 @@ jobs:
               jq . <<<"$matrix"
             done
           '
+
+      - name: Upload exact-main expected ledger
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.compute.outputs.expected_ledger_artifact }}
+          path: |
+            ${{ runner.temp }}/force-rebuild-expected-ledger.json
+            ${{ runner.temp }}/force-rebuild-publication-blockers.json
+          retention-days: 1
+          if-no-files-found: error
 
   toolchain-cache:
     needs: [gate]
@@ -687,6 +724,12 @@ jobs:
           pattern: '*-wasm*'
           path: ${{ runner.temp }}/staged-archives
 
+      - name: Download exact-main expected ledger
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.preflight.outputs.expected_ledger_artifact }}
+          path: ${{ runner.temp }}/force-rebuild-expected
+
       - name: Install host npm deps (resolver prereq)
         # Must run before Materialize binaries (see staging-build.yml).
         run: |
@@ -703,14 +746,22 @@ jobs:
 
       - name: Materialize binaries (per-package package.pr.toml overlay)
         # Walk downloaded matrix artifacts (lib + prog) via the shared
-        # script, then run fetch-binaries to resolve via overlay
-        # (matrix-built file://) or package.toml (durable https://).
+        # script, then consume the exact publication-policy ledger computed by
+        # preflight. Selected matrix entries resolve via file:// overlays and
+        # unchanged entries resolve from the durable index. Fetch-only keeps a
+        # missing or stale archive visible instead of source-building an
+        # unrelated registry root inside the test gate.
+        env:
+          WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis texlive
         run: |
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
             STAGE="$RUNNER_TEMP/staged-overlay"
+            EXPECTED="$RUNNER_TEMP/force-rebuild-expected/force-rebuild-expected-ledger.json"
             bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/staged-archives" "$STAGE"
-            bash scripts/fetch-binaries.sh --allow-stale
+            bash scripts/fetch-binaries.sh \
+              --fetch-only \
+              --expected-ledger "$EXPECTED"
           '
 
       - name: Build kernel + test programs + install host deps
@@ -748,7 +799,7 @@ jobs:
           if-no-files-found: error
 
   test-suite:
-    name: test-suite (${{ matrix.suite }})
+    name: test-suite (${{ matrix.label }})
     needs: [gate, test-gate-prepare]
     if: |
       !cancelled() &&
@@ -759,34 +810,69 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
+      # WHY: libc's two groups and Sortix's three groups are exact partitions
+      # of their former `all` invocations. Keeping them as separate matrix
+      # cells removes serial work from the final gate's critical path while
+      # `test-gate` still aggregates every cell through this matrix job.
       matrix:
         include:
           - suite: cargo-kernel
+            label: cargo-kernel
+            group: all
             needs_submodules: false
             needs_toolchain: false
             needs_workspace: false
           - suite: fork-instrument
+            label: fork-instrument
+            group: all
             needs_submodules: false
             needs_toolchain: false
             needs_workspace: false
           - suite: vitest
+            label: vitest
+            group: all
             needs_submodules: false
             needs_toolchain: true
             needs_workspace: true
           - suite: libc
+            label: libc (functional + regression)
+            group: functional-regression
+            needs_submodules: true
+            needs_toolchain: true
+            needs_workspace: true
+          - suite: libc
+            label: libc (math)
+            group: math
             needs_submodules: true
             needs_toolchain: true
             needs_workspace: true
           - suite: posix
+            label: posix
+            group: all
             needs_submodules: false
             needs_toolchain: true
             needs_workspace: true
           - suite: sortix
+            label: sortix (include)
+            group: include
+            needs_submodules: true
+            needs_toolchain: true
+            needs_workspace: true
+          - suite: sortix
+            label: sortix (basic)
+            group: basic
+            needs_submodules: true
+            needs_toolchain: true
+            needs_workspace: true
+          - suite: sortix
+            label: sortix (runtime)
+            group: runtime
             needs_submodules: true
             needs_toolchain: true
             needs_workspace: true
     env:
       SUITE: ${{ matrix.suite }}
+      TEST_GROUP: ${{ matrix.group }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -825,9 +911,11 @@ jobs:
         run: |
           tar --zstd -xf "$RUNNER_TEMP/test-workspace/test-workspace.tar.zst"
 
-      - name: Run ${{ matrix.suite }} suite
+      - name: Run ${{ matrix.label }} suite
+        # Pass the group positionally across dev-shell.sh's
+        # `--ignore-environment` boundary so no shard silently defaults to all.
         run: |
-          bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
+          bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE" "$TEST_GROUP"
 
   test-gate:
     needs: [test-gate-prepare, test-suite]

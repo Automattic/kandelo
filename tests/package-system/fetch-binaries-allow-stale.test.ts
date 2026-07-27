@@ -267,17 +267,18 @@ exit 0
 
   function writeExpectedLedger(
     name: string,
-    packages: string[],
+    entries: Array<string | { package: string; arch: string }>,
   ): string {
     const ledger = path.join(fakeRepoRoot, name);
     writeFileSync(
       ledger,
       `${JSON.stringify({
         abi_version: 42,
-        entries: packages.map((packageName, index) => ({
-          package: packageName,
-          arch: index % 2 === 0 ? "wasm32" : "wasm64",
-        })),
+        entries: entries.map((entry) =>
+          typeof entry === "string"
+            ? { package: entry, arch: "wasm32" }
+            : entry
+        ),
       })}\n`,
     );
     return ledger;
@@ -406,11 +407,14 @@ exit 0
   });
 
   it.skipIf(!jqAvailable)(
-    "materializes exactly the unique expected-ledger roots without a registry fallback",
+    "materializes exactly the expected-ledger package/arch entries without a registry fallback",
     () => {
       const ledger = writeExpectedLedger(
         "expected-ledger.json",
-        ["bravo", "alpha", "bravo"],
+        [
+          { package: "bravo", arch: "wasm64" },
+          { package: "alpha", arch: "wasm32" },
+        ],
       );
       const { status, stdout, stderr } = runScript([
         "--fetch-only",
@@ -420,13 +424,16 @@ exit 0
       expect(status, `stderr:\n${stderr}\nstdout:\n${stdout}`).toBe(0);
 
       expect(logLines(/build-deps.*resolve\s+alpha\b/).length).toBe(1);
-      expect(logLines(/build-deps.*resolve\s+bravo\b/).length).toBe(2);
+      const bravoLines = logLines(/build-deps.*resolve\s+bravo\b/);
+      expect(bravoLines).toHaveLength(1);
+      expect(bravoLines[0]).toMatch(/--arch\s+wasm64/);
+      expect(bravoLines[0]).not.toMatch(/--arch\s+wasm32/);
       expect(logLines(/build-deps.*resolve\s+charlie\b/)).toEqual([]);
       expect(logLines(/build-deps.*resolve\s+delta\b/)).toEqual([]);
       expect(stdout).toContain(
-        "selected roots from expected ledger: alpha bravo",
+        "selected package/arch entries from expected ledger: bravo|wasm64 alpha|wasm32",
       );
-      expect(stdout).toMatch(/resolved=3\s+total=3\s+skipped=0/);
+      expect(stdout).toMatch(/resolved=2\s+total=2\s+skipped=0/);
       expect(
         logLines(/build-deps.*resolve\s+(?:alpha|bravo)\b/).every(
           (line) => /--fetch-only/.test(line),
@@ -497,7 +504,7 @@ exit 0
       expect(logLines(/build-deps.*resolve\s+bravo\b/)).toEqual([]);
       expect(logLines(/build-deps.*resolve\s+charlie\b/)).toEqual([]);
       expect(stdout).toContain(
-        "ledger package bravo omitted by WASM_POSIX_FETCH_SKIP_PKGS",
+        "ledger entry bravo (wasm32) omitted by WASM_POSIX_FETCH_SKIP_PKGS",
       );
       expect(stdout).toMatch(/resolved=1\s+total=1\s+skipped=0/);
 
@@ -557,16 +564,42 @@ exit 0
       const valid = writeExpectedLedger("linked-ledger-target.json", ["alpha"]);
       const linked = path.join(fakeRepoRoot, "linked-ledger.json");
       symlinkSync(valid, linked);
+      const unsupportedArch = writeExpectedLedger(
+        "unsupported-arch-ledger.json",
+        [{ package: "alpha", arch: "native" }],
+      );
+      const undeclaredArch = writeExpectedLedger(
+        "undeclared-arch-ledger.json",
+        [{ package: "alpha", arch: "wasm64" }],
+      );
+      const duplicate = writeExpectedLedger(
+        "duplicate-entry-ledger.json",
+        ["alpha", "alpha"],
+      );
 
-      for (const ledger of [malformed, empty, directory, linked]) {
+      for (const ledger of [
+        malformed,
+        empty,
+        directory,
+        linked,
+        unsupportedArch,
+        undeclaredArch,
+        duplicate,
+      ]) {
         const { status, stderr } = runScript([
           "--expected-ledger",
           ledger,
         ]);
         expect(status, `${ledger}\n${stderr}`).toBe(2);
-        expect(stderr).toMatch(
-          /expected ledger (?:is malformed or empty|must be a regular non-symlink file)/,
-        );
+        if (ledger === undeclaredArch) {
+          expect(stderr).toMatch(
+            /expected ledger selects undeclared architecture alpha \(wasm64\)/,
+          );
+        } else {
+          expect(stderr).toMatch(
+            /expected ledger (?:is malformed or empty|must be a regular non-symlink file)/,
+          );
+        }
         expect(logLines(/build-deps.*resolve/)).toEqual([]);
       }
     },

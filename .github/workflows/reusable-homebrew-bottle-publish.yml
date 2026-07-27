@@ -812,8 +812,9 @@ jobs:
           [ -n "$host" ] || {
             echo "::error::unable to resolve the Rust host target"; exit 2;
           }
-          bash scripts/dev-shell.sh cargo build --release -p xtask \
-            --target "$host" --quiet
+          bash scripts/dev-shell.sh bash \
+            .github/scripts/prepare-homebrew-package-materializer.sh \
+            --host-target "$host"
           generation_root="$RUNNER_TEMP/homebrew-package-generation-wasm32"
           # WHY: Formula build/test helpers execute as universal wasm32
           # programs even for a wasm64 bottle. Browser verification below
@@ -2127,8 +2128,9 @@ jobs:
           [ -n "$host" ] || {
             echo "::error::unable to resolve the Rust host target"; exit 2;
           }
-          bash scripts/dev-shell.sh cargo build --release -p xtask \
-            --target "$host" --quiet
+          bash scripts/dev-shell.sh bash \
+            .github/scripts/prepare-homebrew-package-materializer.sh \
+            --host-target "$host"
           generation_root="$RUNNER_TEMP/homebrew-package-generations"
           bash .github/scripts/materialize-exact-package-generations.sh \
             --selection-kind "$PACKAGE_GENERATION_KIND" \
