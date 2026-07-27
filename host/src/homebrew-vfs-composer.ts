@@ -236,6 +236,8 @@ export async function buildHomebrewMaterializedVfs(
 
   let runtimeSupportBindings: BoundCollectionTree[] = [];
   let runtimeSupportPlan: HomebrewVfsPlan | undefined;
+  let runtimeSupportPackageReports:
+    HomebrewVfsBuildReport["packages"] = [];
   let runtimeSupportCollectionConflicts:
     HomebrewVfsBuildReport["link_conflicts"] = [];
   const runtimeSupport = options.runtimeSupport;
@@ -267,6 +269,7 @@ export async function buildHomebrewMaterializedVfs(
     );
     runtimeSupportCollectionConflicts =
       supportCollection.report.link_conflicts ?? [];
+    runtimeSupportPackageReports = supportCollection.report.packages;
     const boundSupport = bindCollection(
       deltaPlan,
       supportCollection.deferredTrees,
@@ -384,6 +387,13 @@ export async function buildHomebrewMaterializedVfs(
     ...consumer.linkConflicts,
     ...(runtimeSupportConsumer?.linkConflicts ?? []),
   ];
+  const compositionPlan: HomebrewVfsPlan = {
+    ...plan,
+    packages: [
+      ...plan.packages,
+      ...(runtimeSupportPlan?.packages ?? []),
+    ],
+  };
   const report: HomebrewVfsBuildReport = {
     ...collection.report,
     ...(compatibilityLinks === undefined ? {} : {
@@ -395,6 +405,13 @@ export async function buildHomebrewMaterializedVfs(
     ...(consumer.runtimeState.length === 0 ? {} : {
       runtime_state: consumer.runtimeState,
     }),
+    // WHY: the guest composition inventories every Formula whose eager or
+    // deferred paths are part of the image. Runtime-support remains a
+    // separately explained activation cohort, but it is not absent software.
+    packages: [
+      ...collection.report.packages,
+      ...runtimeSupportPackageReports,
+    ],
     materialization: {
       policy: MATERIALIZATION_POLICY_KIND,
       embedded_package_order: selection.embeddedPackages.map((pkg) => pkg.fullName),
@@ -432,7 +449,7 @@ export async function buildHomebrewMaterializedVfs(
   };
   writeHomebrewVfsComposition(
     options.fs,
-    plan,
+    compositionPlan,
     report,
     options.createdBy ?? "host/src/homebrew-vfs-composer.ts",
   );

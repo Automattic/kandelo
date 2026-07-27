@@ -2081,6 +2081,14 @@ The builder writes `/etc/kandelo/homebrew-vfs.json` and emits a build report;
 both record each `opt_link` path and target. Each package record retains its
 full Formula name, tap repository, tap name, and exact tap commit.
 
+The main shell keeps its reviewed base closure and its Homebrew runtime-support
+delta as separate materialization-policy cohorts. They are not separate
+package inventories: the build report, `/etc/kandelo/homebrew-vfs.json`, and
+outer VFS metadata each list the exact ordered union of both cohorts. This lets
+mirror recovery authenticate every deferred bottle while preserving which
+Formulae belong to the base shell and which activate atomically on first use
+of `/usr/bin/brew`.
+
 Bottle tar hardlinks are supported only between regular files inside the same
 validated keg. The extractor resolves forward hardlinks after ordinary files,
 preserves their shared inode identity, and rejects unsafe paths, cross-keg
@@ -2411,9 +2419,12 @@ it also records every reviewed identity or version substitution. Its
 `formula_closure` is the separately reviewed distribution contract: `libcxx`,
 Ncurses, and Bash are dependency-first and embedded, while Dash, Bzip2, and
 first-party M4 remain three independent lazy bottle trees. The checker derives
-this exact six-Formula closure again from the pinned tap metadata. Both the
-composer and CI require the report to contain exactly that set; root inclusion
-alone is not sufficient evidence.
+this exact six-Formula base closure again from the pinned tap metadata. The
+composer and CI keep that base as the selection and materialization policy,
+while the package inventory records the ordered union of those six Formulae
+and the 18 additional runtime-support Formulae. This makes every mirrored
+bottle visible to recovery without pretending that all 24 Formulae are part of
+the always-needed base; root inclusion alone is not sufficient evidence.
 
 The base does not claim that those six Formulae can run Homebrew.
 `homebrew/main-shell-homebrew-runtime-support.json` declares a second,

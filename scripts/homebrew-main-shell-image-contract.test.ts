@@ -7,10 +7,19 @@ import {
   assertMainShellGuestCatalogIdentity,
   assertMainShellImageContract,
 } from "./homebrew-main-shell-image-contract";
+import { parseHomebrewRuntimeSupportContract } from "../host/src/homebrew-runtime-support";
 
 const lock = JSON.parse(
   readFileSync(resolve("homebrew/main-shell-migration-lock.json"), "utf8"),
 ) as Record<string, any>;
+const runtimeSupport = parseHomebrewRuntimeSupportContract(
+  JSON.parse(
+    readFileSync(
+      resolve("homebrew/main-shell-homebrew-runtime-support.json"),
+      "utf8",
+    ),
+  ),
+);
 const demoConfigSource = new Uint8Array(
   readFileSync(resolve("homebrew/main-shell-demo.json")),
 );
@@ -18,10 +27,14 @@ const demoConfigSource = new Uint8Array(
 function fixture(): Parameters<typeof assertMainShellImageContract>[0] {
   const roots = lock.packages.map((entry: any) => entry.formula.name);
   const closure = lock.formula_closure as string[];
+  const compositionOrder = [
+    ...closure,
+    ...runtimeSupport.additionalFormulaOrder,
+  ];
   const lockedByName = new Map(
     lock.packages.map((entry: any) => [entry.formula.name, entry.formula]),
   );
-  const snakePackages = closure.map((fullName) => {
+  const snakePackages = compositionOrder.map((fullName) => {
     const name = fullName.split("/").at(-1)!;
     const locked = lockedByName.get(name) as any;
     const version =
@@ -152,6 +165,7 @@ function fixture(): Parameters<typeof assertMainShellImageContract>[0] {
     migrationLock: structuredClone(lock),
     migrationLockSha256: lockSha,
     migrationLockBytes: lockBytes,
+    runtimeSupport: structuredClone(runtimeSupport),
     guestManifest: {
       schema: 1,
       selection: {
@@ -279,6 +293,19 @@ for (const [name, mutate, expected] of [
     "rejects a missing closure Formula",
     (value: any) => {
       value.guestManifest.packages.pop();
+    },
+    "exact closure differs",
+  ],
+  [
+    "rejects a reordered closure Formula",
+    (value: any) => {
+      [
+        value.guestManifest.packages[0],
+        value.guestManifest.packages[1],
+      ] = [
+        value.guestManifest.packages[1],
+        value.guestManifest.packages[0],
+      ];
     },
     "exact closure differs",
   ],
