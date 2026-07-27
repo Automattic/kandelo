@@ -21,6 +21,8 @@ import {
   CH_STATUS,
   CH_SYSCALL,
   HOST_INTERCEPTED_SYSCALLS,
+  PROCESS_STARTUP_MAX_ARGV_COUNT,
+  PROCESS_STARTUP_MAX_ENVP_COUNT,
 } from "../src/generated/abi";
 import { EXEC_RETIRE_SIGNAL_CODE } from "../src/worker-protocol";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
@@ -747,6 +749,24 @@ describe("exec host-state transition", () => {
     const aboveHistoricalLimit = Array.from({ length: 20 }, () => "x".repeat(4096));
 
     expect(worker.validateExecMetadata(["program"], aboveHistoricalLimit)).toBe(0);
+    expect(
+      worker.validateExecMetadata(
+        Array(PROCESS_STARTUP_MAX_ARGV_COUNT).fill(""),
+        Array(PROCESS_STARTUP_MAX_ENVP_COUNT).fill(""),
+      ),
+    ).toBe(0);
+    expect(
+      worker.validateExecMetadata(
+        Array(PROCESS_STARTUP_MAX_ARGV_COUNT + 1).fill(""),
+        [],
+      ),
+    ).toBe(-7);
+    expect(
+      worker.validateExecMetadata(
+        [],
+        Array(PROCESS_STARTUP_MAX_ENVP_COUNT + 1).fill(""),
+      ),
+    ).toBe(-7);
     expect(worker.validateExecMetadata(["x".repeat(65_537)], [])).toBe(-7);
     expect(worker.validateExecMetadata([], Array.from({ length: 1024 }, () => "x".repeat(4096))))
       .toBe(-7);
@@ -754,7 +774,8 @@ describe("exec host-state transition", () => {
 
   it("accounts ARG_MAX using the exec caller's pointer width", () => {
     const worker = createWorker({});
-    const nearBoundary = Array(8192).fill("x".repeat(504));
+    const nearBoundary = Array(PROCESS_STARTUP_MAX_ARGV_COUNT)
+      .fill("x".repeat(1016));
 
     expect(worker.validateExecMetadata(nearBoundary, [], 4)).toBe(0);
     expect(worker.validateExecMetadata(nearBoundary, [], 8)).toBe(-7);
@@ -798,6 +819,107 @@ describe("exec host-state transition", () => {
     expect("values" in parsed && parsed.values).toHaveLength(1024);
   });
 
+  it.each([4, 8] as const)(
+    "accepts exactly the wasm%s startup argv count and rejects one more",
+    (pointerWidth) => {
+      const memory = new WebAssembly.Memory({
+        initial: 2,
+        maximum: 2,
+        shared: true,
+      });
+      const bytes = new Uint8Array(memory.buffer);
+      const view = new DataView(memory.buffer);
+      const arrayPtr = 0x1000;
+      const stringPtr = 0xa000;
+      bytes[stringPtr] = 0;
+      const setPointer = (index: number, value: number) => {
+        const offset = arrayPtr + index * pointerWidth;
+        if (pointerWidth === 8) {
+          view.setBigUint64(offset, BigInt(value), true);
+        } else {
+          view.setUint32(offset, value, true);
+        }
+      };
+      for (let index = 0; index < PROCESS_STARTUP_MAX_ARGV_COUNT; index++) {
+        setPointer(index, stringPtr);
+      }
+      setPointer(PROCESS_STARTUP_MAX_ARGV_COUNT, 0);
+      const worker = createWorker({});
+
+      const exact = worker.readStringArrayFromProcess(
+        bytes,
+        arrayPtr,
+        pointerWidth,
+        PROCESS_STARTUP_MAX_ARGV_COUNT,
+      );
+      expect("values" in exact && exact.values)
+        .toHaveLength(PROCESS_STARTUP_MAX_ARGV_COUNT);
+
+      setPointer(PROCESS_STARTUP_MAX_ARGV_COUNT, stringPtr);
+      expect(
+        worker.readStringArrayFromProcess(
+          bytes,
+          arrayPtr,
+          pointerWidth,
+          PROCESS_STARTUP_MAX_ARGV_COUNT,
+        ),
+      ).toEqual({ errno: 7 });
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "rejects wasm%s exec argv count overflow before launching a replacement",
+    (pointerWidth) => {
+      const memory = new WebAssembly.Memory({
+        initial: 2,
+        maximum: 2,
+        shared: true,
+      });
+      const channel = createChannel(7, memory, 0);
+      const bytes = new Uint8Array(memory.buffer);
+      const view = new DataView(memory.buffer);
+      const pathPtr = 0x800;
+      const arrayPtr = 0x1000;
+      const stringPtr = 0xa000;
+      bytes.set(new TextEncoder().encode("/bin/next\0"), pathPtr);
+      bytes[stringPtr] = 0;
+      for (
+        let index = 0;
+        index <= PROCESS_STARTUP_MAX_ARGV_COUNT;
+        index++
+      ) {
+        const offset = arrayPtr + index * pointerWidth;
+        if (pointerWidth === 8) {
+          view.setBigUint64(offset, BigInt(stringPtr), true);
+        } else {
+          view.setUint32(offset, stringPtr, true);
+        }
+      }
+      const onExec = vi.fn(async () => 0);
+      const worker = createWorker({
+        processes: new Map([[
+          7,
+          { channels: [channel], memory, ptrWidth: pointerWidth },
+        ]]),
+        callbacks: { onExec },
+      });
+
+      writeChannelSyscall(
+        channel,
+        HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE,
+        [pathPtr, arrayPtr, 0],
+      );
+      worker.handleSyscall(channel);
+
+      expect(onExec).not.toHaveBeenCalled();
+      expect(readChannelCompletion(channel)).toEqual({
+        status: CHANNEL_STATUS_COMPLETE,
+        returnValue: -1,
+        errno: 7,
+      });
+    },
+  );
+
   it("rejects overlong or inaccessible exec paths instead of truncating them", () => {
     const memory = new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true });
     const bytes = new Uint8Array(memory.buffer);
@@ -817,77 +939,6 @@ describe("exec host-state transition", () => {
     bytes[bytes.byteLength - 1] = "c".charCodeAt(0);
     expect(worker.readExecPathFromProcess(bytes, bytes.byteLength - 1)).toEqual({ errno: 14 });
     expect(worker.readExecPathFromProcess(bytes, 0)).toEqual({ errno: 14 });
-  });
-
-  it("replaces metadata entry by entry and clears an empty environment", () => {
-    const kernelMemory = new WebAssembly.Memory({ initial: 2 });
-    const clears: Array<[number, number]> = [];
-    const pushes: Array<{ pid: number; kind: number; bytes: Uint8Array }> = [];
-    const worker = createWorker({
-      kernelMemory,
-      toKernelPtr: (value: number) => value,
-      kernelInstance: {
-        exports: {
-          kernel_clear_process_metadata: (pid: number, kind: number) => {
-            clears.push([pid, kind]);
-            return 0;
-          },
-          kernel_push_process_metadata_entry: (
-            pid: number,
-            kind: number,
-            ptr: number,
-            len: number,
-          ) => {
-            pushes.push({
-              pid,
-              kind,
-              bytes: new Uint8Array(kernelMemory.buffer, ptr, len).slice(),
-            });
-            if (pushes.length === 1) kernelMemory.grow(1);
-            return 0;
-          },
-        },
-      },
-    });
-
-    worker.replaceProcessMetadata(7, 0, ["program", ""]);
-    worker.replaceProcessMetadata(7, 1, []);
-
-    expect(clears).toEqual([[7, 0], [7, 1]]);
-    expect(pushes.map(entry => ({
-      pid: entry.pid,
-      kind: entry.kind,
-      value: new TextDecoder().decode(entry.bytes),
-    }))).toEqual([
-      { pid: 7, kind: 0, value: "program" },
-      { pid: 7, kind: 0, value: "" },
-    ]);
-  });
-
-  it.each([
-    "kernel_clear_process_metadata",
-    "kernel_push_process_metadata_entry",
-  ])("fails loudly when required metadata export %s is absent", (missing) => {
-    const kernelMemory = new WebAssembly.Memory({ initial: 2 });
-    const clear = vi.fn(() => 0);
-    const push = vi.fn(() => 0);
-    const exports: Record<string, unknown> = {
-      kernel_clear_process_metadata: clear,
-      kernel_push_process_metadata_entry: push,
-    };
-    delete exports[missing];
-    const worker = createWorker({
-      kernelMemory,
-      toKernelPtr: (value: number) => value,
-      kernelInstance: { exports },
-    });
-    const scratchBefore = new Uint8Array(kernelMemory.buffer).slice();
-
-    expect(() => worker.replaceProcessMetadata(7, 0, ["program", "arg"]))
-      .toThrow(/required bounded process metadata exports/);
-    expect(clear).not.toHaveBeenCalled();
-    expect(push).not.toHaveBeenCalled();
-    expect(new Uint8Array(kernelMemory.buffer)).toEqual(scratchBefore);
   });
 
   it("flushes file-backed mappings before commit and forgets them afterward", () => {

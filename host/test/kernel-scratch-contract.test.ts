@@ -6,6 +6,8 @@ import {
   POSIX_ARG_MAX_BYTES,
   POSIX_IOV_MAX,
   POSIX_PATH_MAX_BYTES,
+  PROCESS_STARTUP_MAX_ARGV_COUNT,
+  PROCESS_STARTUP_MAX_ENVP_COUNT,
   SELECT_FD_SET_BYTES,
   SELECT_FD_SETSIZE,
   SPAWN_ATTR_RESETIDS,
@@ -72,8 +74,15 @@ const publicLimitsHeader = readFileSync(
   new URL("../../libc/musl-overlay/include/limits.h", import.meta.url),
   "utf8",
 );
-const muslSelectHeader = readFileSync(
-  new URL("../../libc/musl/include/sys/select.h", import.meta.url),
+const processLayoutsHeader = readFileSync(
+  new URL(
+    "../../libc/musl-overlay/include/bits/kandelo_process_layouts.h",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const processNativeLayoutsSource = readFileSync(
+  new URL("../../tests/abi/process-native-layouts.c", import.meta.url),
   "utf8",
 );
 const spawnContractHeader = readFileSync(
@@ -546,6 +555,22 @@ const reviewedScalarKernelExportCall = (
 
 const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
+    "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::kernel-export-direct-use::exports.kernel_create_process()",
+  ),
+  reviewedScalarKernelExportCall(
+    "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::kernel-export-direct-use::exports.kernel_exit(0)",
+  ),
+  reviewedScalarKernelExportCall(
+    "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::kernel-export-direct-use::exports.kernel_get_stack_pointer()",
+    3,
+  ),
+  reviewedScalarKernelExportCall(
+    "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::kernel-export-direct-use::exports.kernel_reap_process(pid)",
+  ),
+  reviewedScalarKernelExportCall(
+    "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::kernel-export-direct-use::exports.kernel_set_current_tid(pid, pid)",
+  ),
+  reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#attachThreadChannelWithinKernelEntry::kernel-export-direct-use::setMaxAddr(pid, this.toKernelPtr(tlsPageAddr))",
   ),
   reviewedScalarKernelExportCall(
@@ -609,7 +634,13 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#removeFromKernelProcessTableWithinKernelEntry::kernel-export-direct-use::removeProcess(pid)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#replaceProcessMetadataWithinKernelEntry::kernel-export-direct-use::clear(pid, kind)",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#replaceProcessMetadataWithinKernelEntry::kernel-export-direct-use::begin(pid)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#replaceProcessMetadataWithinKernelEntry::kernel-export-direct-use::cancel(pid, token)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#replaceProcessMetadataWithinKernelEntry::kernel-export-direct-use::commit(pid, token)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#reserveHostRegionAtWithinKernelEntry::kernel-export-direct-use::reserveHostRegionAtFn( pid, this.toKernelPtr(request.pointer), this.toKernelPtr(request.length), )",
@@ -927,6 +958,12 @@ const auditAllowances: AuditAllowance[] = [
     disposition: "non-kernel",
     authorityOwner: "process-memory",
     why: "This browser epoll reproduction creates its test process memory, not the kernel's linear memory.",
+  },
+  {
+    key: "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::wasm-instance-authority::WebAssembly.instantiate(module, imports)",
+    disposition: "kernel-control",
+    authorityOwner: "kernel",
+    why: "This exact dedicated test-worker site is injected through the module-secret kernel harness and retains the raw instance only long enough to verify returning kernel exports restore the Wasm shadow stack; production still publishes only the gated facade.",
   },
   {
     key: 'host/src/process-memory.ts::ProcessMemoryAllocator.createMemory::wasm-memory-authority::new WebAssembly.Memory({ initial: BigInt(request.initialPages) as any, maximum: BigInt(request.maximumPages) as any, shared: true, address: "i64", } as any)',
@@ -1507,8 +1544,10 @@ describe("kernel scratch static contract", () => {
     }
     expect(formatAuditFailures(result)).toEqual([]);
     // This intentionally builds one TypeScript program for every repository
-    // runtime source; keep CI headroom above the focused local 25–35 second run.
-  }, 60_000);
+    // runtime source. Focused local runs take roughly 35 seconds, while the
+    // exact-head parallel CI run exceeded 60 seconds. Keep a finite two-minute
+    // watchdog without weakening the default-deny audit's scope or assertions.
+  }, 120_000);
 
   it("keeps variable-transfer parsing private and allocation-region-bearing", () => {
     const prefixOnlyFixture = kernelExportNamesFromSnapshot(
@@ -1603,6 +1642,14 @@ describe("kernel scratch static contract", () => {
     expect(platformLimitsHeader).toContain(
       `#define KANDELO_POSIX_IOV_MAX ${POSIX_IOV_MAX}u`,
     );
+    expect(platformLimitsHeader).toContain(
+      `#define KANDELO_PROCESS_STARTUP_MAX_ARGV_COUNT ` +
+        `${PROCESS_STARTUP_MAX_ARGV_COUNT}u`,
+    );
+    expect(platformLimitsHeader).toContain(
+      `#define KANDELO_PROCESS_STARTUP_MAX_ENVP_COUNT ` +
+        `${PROCESS_STARTUP_MAX_ENVP_COUNT}u`,
+    );
 
     expect(publicLimitsHeader).toContain("#include <bits/kandelo_limits.h>");
     expect(publicLimitsHeader).toContain(
@@ -1614,8 +1661,21 @@ describe("kernel scratch static contract", () => {
     expect(publicLimitsHeader).toContain(
       "#define IOV_MAX KANDELO_POSIX_IOV_MAX",
     );
-    expect(muslSelectHeader).toContain(
-      `#define FD_SETSIZE ${SELECT_FD_SETSIZE}`,
+    expect(processLayoutsHeader).toContain(
+      `#define KANDELO_SELECT_FD_SETSIZE ${SELECT_FD_SETSIZE}u`,
+    );
+    expect(processLayoutsHeader).toContain(
+      `#define KANDELO_SELECT_FD_SET_BYTES ${SELECT_FD_SET_BYTES}u`,
+    );
+    // WHY: Vitest checkouts intentionally need not initialize the musl
+    // submodule. This tracked compile-time probe is exercised against both
+    // installed musl sysroots by the ABI check, so it detects real C layout
+    // drift without making an ordinary host test depend on submodule state.
+    expect(processNativeLayoutsSource).toContain(
+      "_Static_assert(FD_SETSIZE == KANDELO_SELECT_FD_SETSIZE,",
+    );
+    expect(processNativeLayoutsSource).toContain(
+      "_Static_assert(sizeof(fd_set) == KANDELO_SELECT_FD_SET_BYTES,",
     );
     expect(SELECT_FD_SET_BYTES).toBe(SELECT_FD_SETSIZE / 8);
 
@@ -1691,6 +1751,8 @@ describe("kernel scratch static contract", () => {
     expect(spawnContractHeader).toContain(
       `#define WASM_POSIX_SPAWN_MAX_ENVP_COUNT ${SPAWN_MAX_ENVP_COUNT}u`,
     );
+    expect(SPAWN_MAX_ARGV_COUNT).toBe(PROCESS_STARTUP_MAX_ARGV_COUNT);
+    expect(SPAWN_MAX_ENVP_COUNT).toBe(PROCESS_STARTUP_MAX_ENVP_COUNT);
     expect(spawnContractHeader).toContain(
       `#define WASM_POSIX_SPAWN_MAX_ACTION_COUNT ${SPAWN_MAX_ACTION_COUNT}u`,
     );

@@ -146,6 +146,100 @@ describe("kernel task-ID authority", () => {
     expect(onExec).not.toHaveBeenCalled();
   });
 
+  it("distinguishes relative dirfd exec from AT_EMPTY_PATH on a regular fd", async () => {
+    const pid = 77;
+    const fd = 17;
+    const pathPtr = 16;
+    const relativePath = new TextEncoder().encode("program\0");
+    const onRelativeExec = vi.fn(async () => -2);
+    const getDirectoryPath = vi.fn(() => -20);
+    const relative = createTaskAuthorityHarness({
+      pid,
+      callbacks: { onExec: onRelativeExec },
+      kernelExports: {
+        kernel_get_dirfd_path: getDirectoryPath,
+        kernel_get_fd_path: vi.fn(() => {
+          throw new Error("relative execveat used a non-directory path getter");
+        }),
+      },
+    });
+    new Uint8Array(relative.processMemory.buffer).set(
+      relativePath,
+      pathPtr,
+    );
+    const relativeArgs = [fd, pathPtr, 0, 0, 0];
+    writeChannelSyscall(
+      relative.channel,
+      HOST_INTERCEPTED_SYSCALLS.SYS_EXECVEAT,
+      relativeArgs,
+    );
+
+    relative.worker.testAuthority.dispatchScratchBoundarySyscallForTest(
+      relative.channel,
+    );
+
+    expect(getDirectoryPath).toHaveBeenCalledOnce();
+    expect(onRelativeExec).not.toHaveBeenCalled();
+    expect(relative.completeChannel).toHaveBeenCalledWith(
+      relative.channel,
+      HOST_INTERCEPTED_SYSCALLS.SYS_EXECVEAT,
+      [...relativeArgs, 0],
+      undefined,
+      -1,
+      20,
+    );
+
+    const executable = new TextEncoder().encode("/bin/program");
+    let kernelBytes!: Uint8Array;
+    const getRegularPath = vi.fn(
+      (
+        _pid: number,
+        actualFd: number,
+        pointer: number,
+        capacity: number,
+      ) => {
+        expect(actualFd).toBe(fd);
+        if (capacity === 0) return executable.byteLength;
+        if (capacity < executable.byteLength) return -34;
+        kernelBytes.set(executable, pointer);
+        return executable.byteLength;
+      },
+    );
+    const onEmptyPathExec = vi.fn(async () => -2);
+    const emptyPath = createTaskAuthorityHarness({
+      pid,
+      callbacks: { onExec: onEmptyPathExec },
+      kernelExports: {
+        kernel_get_dirfd_path: vi.fn(() => {
+          throw new Error("AT_EMPTY_PATH used a directory-only path getter");
+        }),
+        kernel_get_fd_path: getRegularPath,
+      },
+    });
+    kernelBytes = new Uint8Array(emptyPath.kernelMemory.buffer);
+    new Uint8Array(emptyPath.processMemory.buffer)[pathPtr] = 0;
+    const emptyPathArgs = [fd, pathPtr, 0, 0, 0x1000];
+    writeChannelSyscall(
+      emptyPath.channel,
+      HOST_INTERCEPTED_SYSCALLS.SYS_EXECVEAT,
+      emptyPathArgs,
+    );
+
+    emptyPath.worker.testAuthority.dispatchScratchBoundarySyscallForTest(
+      emptyPath.channel,
+    );
+    await drainTaskAuthorityGate();
+
+    expect(getRegularPath).toHaveBeenCalledOnce();
+    expect(onEmptyPathExec).toHaveBeenCalledWith(
+      pid,
+      "/bin/program",
+      [],
+      [],
+      pid,
+    );
+  });
+
   it("rejects a zero fork result before launching a child Worker", () => {
     const parentPid = 77;
     const onFork = vi.fn();

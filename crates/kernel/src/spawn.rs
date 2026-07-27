@@ -843,6 +843,108 @@ mod parser_tests {
     }
 
     #[test]
+    fn parse_blob_round_trips_the_complete_sortix_file_action_surface_in_order() {
+        fn append_action(
+            blob: &mut Vec<u8>,
+            op: u32,
+            fd: i32,
+            newfd: i32,
+            path_off: u32,
+            path_len: u32,
+            oflag: i32,
+            mode: u32,
+        ) {
+            let mut record = [0u8; spawn_contract::WIRE_ACTION_RECORD_BYTES];
+            record
+                [spawn_contract::WIRE_ACTION_OP_OFFSET..spawn_contract::WIRE_ACTION_OP_OFFSET + 4]
+                .copy_from_slice(&op.to_le_bytes());
+            record
+                [spawn_contract::WIRE_ACTION_FD_OFFSET..spawn_contract::WIRE_ACTION_FD_OFFSET + 4]
+                .copy_from_slice(&fd.to_le_bytes());
+            record[spawn_contract::WIRE_ACTION_NEWFD_OFFSET
+                ..spawn_contract::WIRE_ACTION_NEWFD_OFFSET + 4]
+                .copy_from_slice(&newfd.to_le_bytes());
+            record[spawn_contract::WIRE_ACTION_PATH_OFF_OFFSET
+                ..spawn_contract::WIRE_ACTION_PATH_OFF_OFFSET + 4]
+                .copy_from_slice(&path_off.to_le_bytes());
+            record[spawn_contract::WIRE_ACTION_PATH_LEN_OFFSET
+                ..spawn_contract::WIRE_ACTION_PATH_LEN_OFFSET + 4]
+                .copy_from_slice(&path_len.to_le_bytes());
+            record[spawn_contract::WIRE_ACTION_OFLAG_OFFSET
+                ..spawn_contract::WIRE_ACTION_OFLAG_OFFSET + 4]
+                .copy_from_slice(&oflag.to_le_bytes());
+            record[spawn_contract::WIRE_ACTION_MODE_OFFSET
+                ..spawn_contract::WIRE_ACTION_MODE_OFFSET + 4]
+                .copy_from_slice(&mode.to_le_bytes());
+            blob.extend_from_slice(&record);
+        }
+
+        let all_attr_bits = spawn_contract::ATTR_RESETIDS
+            | spawn_contract::ATTR_SETPGROUP
+            | spawn_contract::ATTR_SETSIGDEF
+            | spawn_contract::ATTR_SETSIGMASK
+            | spawn_contract::ATTR_SETSCHEDPARAM
+            | spawn_contract::ATTR_SETSCHEDULER
+            | spawn_contract::ATTR_USEVFORK
+            | spawn_contract::ATTR_SETSID;
+        let mut blob = header(0, 0, 5);
+        blob[spawn_contract::WIRE_HEADER_ATTR_FLAGS_OFFSET
+            ..spawn_contract::WIRE_HEADER_ATTR_FLAGS_OFFSET + 4]
+            .copy_from_slice(&all_attr_bits.to_le_bytes());
+        blob[spawn_contract::WIRE_HEADER_PGRP_OFFSET..spawn_contract::WIRE_HEADER_PGRP_OFFSET + 4]
+            .copy_from_slice(&(-17i32).to_le_bytes());
+        blob[spawn_contract::WIRE_HEADER_SIGDEF_OFFSET
+            ..spawn_contract::WIRE_HEADER_SIGDEF_OFFSET + 8]
+            .copy_from_slice(&0x0102_0304_0506_0708u64.to_le_bytes());
+        blob[spawn_contract::WIRE_HEADER_SIGMASK_OFFSET
+            ..spawn_contract::WIRE_HEADER_SIGMASK_OFFSET + 8]
+            .copy_from_slice(&0x8877_6655_4433_2211u64.to_le_bytes());
+
+        append_action(&mut blob, fdop::OPEN, 3, 0, 0, 12, 0x1234, 0o640);
+        append_action(&mut blob, fdop::CLOSE, 4, 0, 0, 0, 0, 0);
+        append_action(&mut blob, fdop::DUP2, 5, 6, 0, 0, 0, 0);
+        append_action(&mut blob, fdop::CHDIR, 0, 0, 12, 7, 0, 0);
+        append_action(&mut blob, fdop::FCHDIR, 7, 0, 0, 0, 0, 0);
+        blob.extend_from_slice(b"open-target\0subdir\0");
+
+        let parsed = parse_blob(&blob).expect("complete action surface");
+        assert_eq!(parsed.attrs.flags, all_attr_bits);
+        assert_eq!(parsed.attrs.pgrp, -17);
+        assert_eq!(parsed.attrs.sigdef, 0x0102_0304_0506_0708);
+        assert_eq!(parsed.attrs.sigmask, 0x8877_6655_4433_2211);
+        assert_eq!(parsed.file_actions.len(), 5);
+
+        match &parsed.file_actions[0] {
+            FileAction::Open {
+                fd,
+                path,
+                oflag,
+                mode,
+            } => {
+                assert_eq!((*fd, *oflag, *mode), (3, 0x1234, 0o640));
+                assert_eq!(path, b"open-target");
+            }
+            _ => panic!("first action must be Open"),
+        }
+        assert!(matches!(
+            &parsed.file_actions[1],
+            FileAction::Close { fd: 4 }
+        ));
+        assert!(matches!(
+            &parsed.file_actions[2],
+            FileAction::Dup2 { srcfd: 5, fd: 6 }
+        ));
+        match &parsed.file_actions[3] {
+            FileAction::Chdir { path } => assert_eq!(path, b"subdir"),
+            _ => panic!("fourth action must be Chdir"),
+        }
+        assert!(matches!(
+            &parsed.file_actions[4],
+            FileAction::Fchdir { fd: 7 }
+        ));
+    }
+
+    #[test]
     fn parse_blob_rejects_short_header() {
         // Truncate to 39 bytes.
         let blob = build_basic_blob();
@@ -992,6 +1094,23 @@ mod parser_tests {
     }
 
     #[test]
+    fn parse_blob_accepts_all_exact_count_caps_together_and_rejects_a_truncated_tail() {
+        let exact = exact_count_blob(
+            spawn_contract::MAX_ARGV_COUNT,
+            spawn_contract::MAX_ENVP_COUNT,
+            spawn_contract::MAX_ACTION_COUNT,
+        );
+        let parsed = parse_blob(&exact).expect("all exact count caps");
+        assert_eq!(parsed.argv.len(), spawn_contract::MAX_ARGV_COUNT);
+        assert_eq!(parsed.envp.len(), spawn_contract::MAX_ENVP_COUNT);
+        assert_eq!(parsed.file_actions.len(), spawn_contract::MAX_ACTION_COUNT);
+
+        let mut truncated = exact;
+        truncated.pop();
+        assert!(matches!(parse_blob(&truncated), Err(Errno::EINVAL)));
+    }
+
+    #[test]
     fn parse_blob_rejects_each_count_at_limit_plus_one() {
         for (argc, envc, n_actions) in [
             ((spawn_contract::MAX_ARGV_COUNT + 1) as u32, 0, 0),
@@ -1061,9 +1180,9 @@ mod parser_tests {
 
     #[test]
     fn parse_blob_bounds_action_paths_by_path_max() {
-        fn action_blob(path_bytes: usize) -> Vec<u8> {
+        fn action_blob(op: u32, path_bytes: usize) -> Vec<u8> {
             let mut blob = header(0, 0, 1);
-            blob.extend_from_slice(&fdop::CHDIR.to_le_bytes());
+            blob.extend_from_slice(&op.to_le_bytes());
             blob.extend_from_slice(&0i32.to_le_bytes());
             blob.extend_from_slice(&0i32.to_le_bytes());
             blob.extend_from_slice(&0u32.to_le_bytes());
@@ -1075,11 +1194,19 @@ mod parser_tests {
             blob
         }
 
-        assert!(parse_blob(&action_blob(spawn_contract::POSIX_PATH_MAX_BYTES)).is_ok());
-        assert!(matches!(
-            parse_blob(&action_blob(spawn_contract::POSIX_PATH_MAX_BYTES + 1)),
-            Err(Errno::ENAMETOOLONG)
-        ));
+        for op in [fdop::OPEN, fdop::CHDIR] {
+            assert!(
+                parse_blob(&action_blob(op, spawn_contract::POSIX_PATH_MAX_BYTES)).is_ok(),
+                "op {op} must accept PATH_MAX bytes including NUL",
+            );
+            assert!(
+                matches!(
+                    parse_blob(&action_blob(op, spawn_contract::POSIX_PATH_MAX_BYTES + 1)),
+                    Err(Errno::ENAMETOOLONG)
+                ),
+                "op {op} must reject PATH_MAX+1 bytes including NUL",
+            );
+        }
     }
 
     #[test]

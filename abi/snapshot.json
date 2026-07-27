@@ -1046,7 +1046,6 @@
       "kernel_alloc_scratch",
       "kernel_blocking_retry_release",
       "kernel_blocking_retry_token",
-      "kernel_clear_process_metadata",
       "kernel_commit_process_exit",
       "kernel_create_process",
       "kernel_create_process_with_stdio",
@@ -1054,6 +1053,9 @@
       "kernel_exec_prepare",
       "kernel_exec_setup_for_thread",
       "kernel_fork_process",
+      "kernel_get_cwd",
+      "kernel_get_dirfd_path",
+      "kernel_get_fd_path",
       "kernel_get_parent_pid",
       "kernel_get_process_exit_signal",
       "kernel_get_process_state",
@@ -1073,7 +1075,10 @@
       "kernel_pick_signal_target_tid",
       "kernel_pipe_has_readers",
       "kernel_posix_timer_fire",
-      "kernel_push_process_metadata_entry",
+      "kernel_process_metadata_begin",
+      "kernel_process_metadata_cancel",
+      "kernel_process_metadata_commit",
+      "kernel_process_metadata_stage",
       "kernel_reap_exited_child",
       "kernel_remove_process",
       "kernel_semctl_array_bytes",
@@ -1645,11 +1650,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_clear_process_metadata",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_clock_getres",
       "signature": "(i32,i32) -> (i32)"
     },
@@ -1907,6 +1907,11 @@
       "kind": "func",
       "name": "kernel_get_cwd",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_dirfd_path",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2455,6 +2460,26 @@
     },
     {
       "kind": "func",
+      "name": "kernel_process_metadata_begin",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_process_metadata_cancel",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_process_metadata_commit",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_process_metadata_stage",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_pselect6",
       "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
@@ -2482,11 +2507,6 @@
       "kind": "func",
       "name": "kernel_push_argv",
       "signature": "(i32,i32) -> ()"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_push_process_metadata_entry",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2667,11 +2687,6 @@
       "kind": "func",
       "name": "kernel_set_mmap_base",
       "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_set_process_argv",
-      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -4595,6 +4610,8 @@
     "max_transfer_allocation_bytes": 4294967295,
     "ngroups_max": 32,
     "path_max_bytes": 4096,
+    "process_startup_max_argv_count": 4096,
+    "process_startup_max_envp_count": 4096,
     "sysv_msg_max_bytes": 8192
   },
   "process_expected_globals": [
@@ -4665,6 +4682,10 @@
     },
     "wasm_page_size": 65536
   },
+  "process_metadata_contract": {
+    "kind_argv": 0,
+    "kind_environment": 1
+  },
   "process_native_layouts": {
     "cmsghdr": {
       "wasm32": {
@@ -4721,6 +4742,20 @@
         "size": 56
       }
     },
+    "multicast_group_request": {
+      "wasm32": {
+        "group_offset": 4,
+        "group_req_size": 132,
+        "group_source_req_size": 260,
+        "source_offset": 132
+      },
+      "wasm64": {
+        "group_offset": 8,
+        "group_req_size": 136,
+        "group_source_req_size": 264,
+        "source_offset": 136
+      }
+    },
     "scm_rights": {
       "fd_bytes": 4,
       "level": 1,
@@ -4766,6 +4801,56 @@
     "socket_message_flags": {
       "trunc": 32
     }
+  },
+  "process_snapshot_wire": {
+    "count_offset": 0,
+    "count_size": 4,
+    "header": {
+      "fields": [
+        {
+          "name": "pid",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "ppid",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "uid",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "gid",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "vsize",
+          "offset": 16,
+          "span": 8
+        },
+        {
+          "name": "state",
+          "offset": 24,
+          "span": 4
+        },
+        {
+          "name": "comm_len",
+          "offset": 28,
+          "span": 4
+        },
+        {
+          "name": "cmdline_len",
+          "offset": 32,
+          "span": 4
+        }
+      ],
+      "size": 36
+    },
+    "records_offset": 4
   },
   "program_artifact": {
     "fork_instrumentation": {
@@ -7282,6 +7367,11 @@
       },
       {
         "argIndex": 2,
+        "copyOutLength": {
+          "argIndex": 1,
+          "offset": 12,
+          "type": "u32-field"
+        },
         "direction": "out",
         "required": true,
         "size": {

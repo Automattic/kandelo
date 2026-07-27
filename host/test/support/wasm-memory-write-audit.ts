@@ -1,4 +1,4 @@
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import ts from "typescript";
 
@@ -8207,6 +8207,12 @@ export function repositoryRuntimeSourceFiles(rootDir: string): string[] {
       }
       const absolute = path.join(directory, entry.name);
       if (entry.isDirectory()) {
+        if (existsSync(path.join(absolute, ".git"))) {
+          // WHY: a nested checkout is a different repository, not another
+          // Kandelo source directory. Scanning it duplicates declarations and
+          // lets local worktrees/artifacts change this repository's contract.
+          continue;
+        }
         // These checked-out upstream trees are not Kandelo TypeScript runtime
         // sources and can contain their own nested build products.
         const relative = toPosix(path.relative(rootDir, absolute));
