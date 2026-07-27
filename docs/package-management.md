@@ -10,6 +10,7 @@ source trees that consumer builds reach into (PCRE2 for MariaDB,
 content hash, and optionally fetched from a published release archive
 without rebuilding from source. The same machinery serves three
 audiences:
+
 - A developer running `bash build.sh` who wants their local edits
   to override published artifacts.
 - A developer with no Rust toolchain who wants to pull pre-built
@@ -27,22 +28,22 @@ this work caches the build outputs, not the linker step. Runtime
 
 Most readers want one of these. Detailed sections follow further down.
 
-| I want to… | Look at |
-|---|---|
-| Pull pre-built binaries without compiling | [`scripts/fetch-binaries.sh`](#release-archives) — walks every `package.toml`, calls the resolver. Run with `--allow-stale` in CI. |
-| Add a new package to the registry | [Schema: `package.toml`](#schema-packagetoml) + [docs/porting-guide.md](porting-guide.md#adding-a-new-package-to-the-registry) for the end-to-end workflow. |
-| Resolve one package on demand | `cargo xtask build-deps resolve <name>` — handles fetch/source-build, populates the cache. |
-| Find where an output lands | `cargo xtask build-deps output-path <name> <declared-artifact>` — single source of truth for the layout convention (flat for a one-member output/runtime closure, nested under `<pkg>/` for two or more members). A basename is accepted only when unique. |
-| Migrate a build script to consume cached deps | [Migrating a consumer to the cache](#migrating-a-consumer-to-the-cache) — the `WASM_POSIX_DEP_*_DIR` contract + CPPFLAGS/LDFLAGS pattern. |
-| Override a published archive locally | Drop the file at `local-binaries/programs/<arch>/<rel>` or `local-libs/<pkg>/build/`. The resolver prefers these. |
-| Override an archive in a PR for testing | Per-PR builds publish to `pr-<N>-staging` tags. Locally, run `./run.sh --pr-staging <command>` or set `WASM_POSIX_USE_PR_STAGING=1` so `run.sh` exports the matching staging `WASM_POSIX_BINARY_INDEX_URL`. Manual `WASM_POSIX_BINARY_INDEX_URL` values still win. |
-| Republish a stale archive | Dispatch `.github/workflows/force-rebuild.yml` with the comma-separated package list (or `all`). |
-| Bump a package's revision number | Edit `revision = N` in its `build.toml` (NOT `package.toml` — revision moved to the project-view file during the binary-resolution-via-index-ledger migration). Invalidates the cache for that package. Only bump when output bytes legitimately change. |
-| Understand the release flow | [docs/binary-releases.md](binary-releases.md). |
-| Work on Homebrew bottle publishing | [docs/homebrew-publishing.md](homebrew-publishing.md) - formula authoring, trusted CI, sidecars, VFS images, and Node/browser gates. |
-| Publish packages from another repository | [docs/package-sources.md](package-sources.md) — package-source layout, reusable workflow, and browser-gallery contract. |
-| Trace an ABI mismatch | [docs/abi-versioning.md](abi-versioning.md). |
-| See what's missing | [docs/package-management-future-work.md](package-management-future-work.md). |
+| I want to…                                    | Look at                                                                                                                                                                                                                                                            |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Pull pre-built binaries without compiling     | [`scripts/fetch-binaries.sh`](#release-archives) — walks every `package.toml`, calls the resolver. Run with `--allow-stale` in CI.                                                                                                                                 |
+| Add a new package to the registry             | [Schema: `package.toml`](#schema-packagetoml) + [docs/porting-guide.md](porting-guide.md#adding-a-new-package-to-the-registry) for the end-to-end workflow.                                                                                                        |
+| Resolve one package on demand                 | `cargo xtask build-deps resolve <name>` — handles fetch/source-build, populates the cache.                                                                                                                                                                         |
+| Find where an output lands                    | `cargo xtask build-deps output-path <name> <declared-artifact>` — single source of truth for the layout convention (flat for a one-member output/runtime closure, nested under `<pkg>/` for two or more members). A basename is accepted only when unique.         |
+| Migrate a build script to consume cached deps | [Migrating a consumer to the cache](#migrating-a-consumer-to-the-cache) — the `WASM_POSIX_DEP_*_DIR` contract + CPPFLAGS/LDFLAGS pattern.                                                                                                                          |
+| Override a published archive locally          | Drop the file at `local-binaries/programs/<arch>/<rel>` or `local-libs/<pkg>/build/`. The resolver prefers these.                                                                                                                                                  |
+| Override an archive in a PR for testing       | Per-PR builds publish to `pr-<N>-staging` tags. Locally, run `./run.sh --pr-staging <command>` or set `WASM_POSIX_USE_PR_STAGING=1` so `run.sh` exports the matching staging `WASM_POSIX_BINARY_INDEX_URL`. Manual `WASM_POSIX_BINARY_INDEX_URL` values still win. |
+| Republish a stale archive                     | Dispatch `.github/workflows/force-rebuild.yml` with the comma-separated package list (or `all`).                                                                                                                                                                   |
+| Bump a package's revision number              | Edit `revision = N` in its `build.toml` (NOT `package.toml` — revision moved to the project-view file during the binary-resolution-via-index-ledger migration). Invalidates the cache for that package. Only bump when output bytes legitimately change.           |
+| Understand the release flow                   | [docs/binary-releases.md](binary-releases.md).                                                                                                                                                                                                                     |
+| Work on Homebrew bottle publishing            | [docs/homebrew-publishing.md](homebrew-publishing.md) - formula authoring, trusted CI, sidecars, VFS images, and Node/browser gates.                                                                                                                               |
+| Publish packages from another repository      | [docs/package-sources.md](package-sources.md) — package-source layout, reusable workflow, and browser-gallery contract.                                                                                                                                            |
+| Trace an ABI mismatch                         | [docs/abi-versioning.md](abi-versioning.md).                                                                                                                                                                                                                       |
+| See what's missing                            | [docs/package-management-future-work.md](package-management-future-work.md).                                                                                                                                                                                       |
 
 The rest of this doc is the reference manual: schema details, cache-key
 hashing, resolver ordering, the consumer-side migration pattern, and
@@ -385,7 +386,17 @@ create-once regular files, validates the complete tree, creates a one-shot
 publication claim, and only then swaps the live package directory or scalar
 link. A claimed generation is never recreated after its root disappears.
 One-member packages retain their flat mirror name as a symlink to the
-immutable generation member.
+immutable generation member. The kernel and userspace packages follow the same
+identity contract even though their compatibility mirrors live at
+`local-binaries/kernel.wasm` and `local-binaries/userspace.wasm` instead of
+below `programs/<arch>/`. A later release materialization preserves either a
+complete package-directory closure or a scalar mirror only when every link
+selects one claimed generation with the exact current contextual cache key.
+Identityless regular or non-generation kernel/userspace mirrors, mixed
+sessions, symlinked ownership ancestors, and stale manifest or dependency
+identities fail closed instead of silently replacing the exact local candidate
+with released bytes; rebuild the local package to establish a current
+generation.
 
 Scalar replacement and package-directory replacement reserve a unique private
 transaction parent (mode 0700 on Unix), validate filesystem identity and exact
@@ -461,6 +472,8 @@ inputs = ["packages/registry/zlib/build-zlib.sh"]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "<commit at last successful build>"
 revision    = 1
+# Optional distribution gate; omitted means "ready".
+publication_state = "ready"
 
 [[git_inputs]]
 name       = "homebrew_tap_core"
@@ -491,7 +504,21 @@ index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-ab
 - `revision` is the publish-time counter the resolver hashes into
   the cache-key. Bump when output bytes legitimately change (build
   flag tweaks, fork-instrument output, etc.). Don't bump for doc-only
-  changes — it triggers a needless rebuild across the matrix.
+  changes — it triggers a needless rebuild across the matrix. The release
+  index writer refuses to replace an existing package version with a lower
+  revision; a new upstream version may restart the counter.
+- `publication_state` is an optional project/distribution gate. It defaults
+  to `"ready"`. `"pending"` keeps the recipe usable for source resolution but
+  excludes the package and its complete reverse-dependent closure from
+  staging and prepare-merge publication matrices. Direct archive staging
+  and admitted durable-generation preparation/publishing reject the same
+  dependency chain before creating output, cache, or release state. Manual
+  exact-main rebuilds and package-source publication derive their selections
+  from that same policy ledger; a named blocked root fails with its complete
+  dependency chain rather than being recorded as a failed build.
+  The field is intentionally absent from package cache identity: flip it to
+  `"ready"` only after release authority is complete, without pretending the
+  package bytes changed. Unknown states are rejected.
 - `[[git_inputs]]` declares an external repository whose exact commit is part
   of the build recipe. Names start with a lowercase letter and contain only
   lowercase letters, digits, and underscores; repository URLs are anonymous
@@ -501,10 +528,10 @@ index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-ab
 - `[binary]` declares where binaries are published. Two forms,
   exactly one of which must be present:
 
-| Form | Example | Resolver behavior |
-|---|---|---|
+| Form              | Example                                                    | Resolver behavior                                                                                                                             |
+| ----------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | Indexed (typical) | `index_url = "https://.../binaries-abi-v{abi}/index.toml"` | Fetch the index, look up `(name, version, arch)`, fetch the entry's `archive_url`. `{abi}` is substituted with `ABI_VERSION` at resolve time. |
-| Direct | `url = "https://.../foo.tar.zst"` + `sha256 = "..."` | Fetch the inline URL directly; verify against the inline sha. No index. |
+| Direct            | `url = "https://.../foo.tar.zst"` + `sha256 = "..."`       | Fetch the inline URL directly; verify against the inline sha. No index.                                                                       |
 
 The resolver picks the form by structural deserialization — mixing
 forms in one `[binary]` block is a parse error.
@@ -550,12 +577,30 @@ members or use HTTP ranges. Dependency bottles have separate identities and
 remain unfetched until a path owned by that dependency is used.
 
 The guest `brew` implementation is distributed separately from Formula
-bottles as the `homebrew-bootstrap` program package. Its single declared
-artifact, `homebrew-bootstrap.zip`, is a deterministic archive of one exact
-upstream Homebrew commit plus Kandelo's reviewed guest-platform patch. Although
-the artifact is not Wasm, it uses the ordinary program-package resolver,
-program projection, cache key, and release archive contracts; its output
-therefore declares `fork_instrumentation = "disabled"`.
+bottles as the `homebrew-bootstrap` program package. One package generation
+contains two declared outputs: `homebrew-bootstrap.zip`, a deterministic
+archive of one exact upstream Homebrew commit plus Kandelo's reviewed
+guest-platform patch, and `homebrew-brew.env`, the architecture tag and system
+environment policy consumed with that exact tree. Consumers resolve both from
+the same immutable generation; they must not reconstruct the environment file
+or combine it with a ZIP from another build. Neither output is Wasm, but both
+use the ordinary program-package resolver, projection, cache key, and release
+archive contracts and therefore declare `fork_instrumentation = "disabled"`.
+
+The bootstrap archive is not a bundled Homebrew runtime. It contains neither
+Ruby nor Git, curl, extraction tools, or their data/dependencies. The base
+shell therefore registers `/usr/bin/brew` as a lazy activation reference
+without claiming it can execute from the six-Formula shell alone.
+`homebrew/main-shell-homebrew-runtime-support.json` owns the separate atomic
+runtime-support closure. Its active seven-root closure contains 21 Formulae,
+18 beyond the six-Formula base. Its availability partition also records the
+two optional legacy-ABI Formulae (`libmagic` and `file-formula`) that are not
+needed for the fixed-prefix lifecycle and cannot enter activation until public
+ABI-42 identities are admitted. The base keeps the active layer deferred; an
+opt-in demo may materialize the same layer. A guest lifecycle is valid only
+when every declared tree has an exact admitted ABI/digest/size identity, all
+support bytes come from that declaration, and the independent-tap Formula is
+installed live rather than smuggled into the image.
 
 `homebrew/homebrew-bootstrap-source-lock.json` is the reviewed source/output
 identity. It binds the upstream archive URL and SHA-256, sealed
@@ -564,10 +609,12 @@ tree identities, portable Ruby version, archive-producing Git version, and
 final ZIP SHA-256/byte count. The package build imports the resolver-owned
 exact Git checkout into private scratch storage and performs no source fetch
 of its own. The lock also records the dedicated package output's exact SHA-256
-and byte count, so a rebuild cannot silently change guest Homebrew bytes.
-Shell and bootstrap-image consumer cutover remains a separate change. Run the
-build through `scripts/dev-shell.sh`; a different Git ZIP implementation fails
-the exact output lock instead of publishing different bytes.
+and byte count, so a rebuild cannot silently change guest Homebrew source
+bytes. The package recipe emits the environment member in the same atomic
+generation, and the program projection records both canonical nested member
+paths. Run the build through `scripts/dev-shell.sh`; a different Git ZIP
+implementation fails the exact output lock instead of publishing different
+bytes.
 
 See [docs/homebrew-publishing.md](homebrew-publishing.md) for the Homebrew
 formula, sidecar, GHCR, VFS, and runtime validation contract.
@@ -715,6 +762,7 @@ in turn, it checks:
    the marker before atomically installing the artifact, so a crash may leave
    a harmless marker-only orphan; the next build reuses it only if every field
    still matches and otherwise fails closed.
+
 3. **Index-based remote fetch** — load `build.toml`, resolve its
    `[binary]` block (typically to an `index_url`), fetch
    `index.toml` from that URL (with offline cache fallback at
@@ -742,20 +790,20 @@ absolute value.
 The build script runs with these environment variables set. A script
 that doesn't respect them cannot be cached safely.
 
-| Variable | Meaning |
-|---|---|
-| `WASM_POSIX_DEP_OUT_DIR` | Caller-owned, single-writer temp dir the script must install into. The current user owns it and each destination directory traversed within it; none is group/other-writable. Layout matches `outputs.libs` / `outputs.headers` / `outputs.pkgconfig` / `outputs.files` relative paths. |
-| `WASM_POSIX_DEP_NAME` | `name` from package.toml. |
-| `WASM_POSIX_DEP_VERSION` | `version` from package.toml. |
-| `WASM_POSIX_DEP_REVISION` | Effective package revision after `build.toml` is overlaid. |
-| `WASM_POSIX_DEP_SOURCE_URL` | Upstream tarball URL (`source.url` from package.toml). |
-| `WASM_POSIX_DEP_SOURCE_SHA256` | Expected sha256 of the downloaded tarball. Scripts **must** verify after download — the resolver does not fetch. |
-| `WASM_POSIX_DEP_TARGET_ARCH` | Requested package architecture (`wasm32` or `wasm64`). A package that supports only one must reject the other before invoking its toolchain. |
-| `WASM_POSIX_DEP_WORK_DIR` | Caller-owned, single-writer scratch root disjoint from `OUT_DIR`. The resolver creates a fresh private directory for every source build and removes it on success or failure. The sealed Homebrew Formula bridge provides the equivalent boundary from Homebrew's buildpath. Direct ad-hoc script invocation may retain a package-local default. |
-| `WASM_POSIX_DEP_SOURCE_DIR` | Optional caller-verified, already-extracted source root. When present it takes precedence over downloading `SOURCE_URL`; the URL and SHA remain provenance/cache identity. |
-| `WASM_POSIX_DEP_<UPPER>_DIR` | For each *direct* dep, the resolved path to that dep's build output. `<UPPER>` is the dep name upper-cased, with `-` → `_` (e.g. `zlib-ng` → `ZLIB_NG`). Transitive deps are not surfaced — scripts that need them should declare them in `depends_on`. |
-| `WASM_POSIX_BUILD_GIT_<NAME>_DIR` | Read-only detached checkout for a `build.toml` `[[git_inputs]]` declaration. `<NAME>` is the injective uppercase form of the validated lowercase name. |
-| `WASM_POSIX_BUILD_GIT_<NAME>_COMMIT` | Exact declared commit corresponding to that checkout. |
+| Variable                             | Meaning                                                                                                                                                                                                                                                                                                                                          |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `WASM_POSIX_DEP_OUT_DIR`             | Caller-owned, single-writer temp dir the script must install into. The current user owns it and each destination directory traversed within it; none is group/other-writable. Layout matches `outputs.libs` / `outputs.headers` / `outputs.pkgconfig` / `outputs.files` relative paths.                                                          |
+| `WASM_POSIX_DEP_NAME`                | `name` from package.toml.                                                                                                                                                                                                                                                                                                                        |
+| `WASM_POSIX_DEP_VERSION`             | `version` from package.toml.                                                                                                                                                                                                                                                                                                                     |
+| `WASM_POSIX_DEP_REVISION`            | Effective package revision after `build.toml` is overlaid.                                                                                                                                                                                                                                                                                       |
+| `WASM_POSIX_DEP_SOURCE_URL`          | Upstream tarball URL (`source.url` from package.toml).                                                                                                                                                                                                                                                                                           |
+| `WASM_POSIX_DEP_SOURCE_SHA256`       | Expected sha256 of the downloaded tarball. Scripts **must** verify after download — the resolver does not fetch.                                                                                                                                                                                                                                 |
+| `WASM_POSIX_DEP_TARGET_ARCH`         | Requested package architecture (`wasm32` or `wasm64`). A package that supports only one must reject the other before invoking its toolchain.                                                                                                                                                                                                     |
+| `WASM_POSIX_DEP_WORK_DIR`            | Caller-owned, single-writer scratch root disjoint from `OUT_DIR`. The resolver creates a fresh private directory for every source build and removes it on success or failure. The sealed Homebrew Formula bridge provides the equivalent boundary from Homebrew's buildpath. Direct ad-hoc script invocation may retain a package-local default. |
+| `WASM_POSIX_DEP_SOURCE_DIR`          | Optional caller-verified, already-extracted source root. When present it takes precedence over downloading `SOURCE_URL`; the URL and SHA remain provenance/cache identity.                                                                                                                                                                       |
+| `WASM_POSIX_DEP_<UPPER>_DIR`         | For each _direct_ dep, the resolved path to that dep's build output. `<UPPER>` is the dep name upper-cased, with `-` → `_` (e.g. `zlib-ng` → `ZLIB_NG`). Transitive deps are not surfaced — scripts that need them should declare them in `depends_on`.                                                                                          |
+| `WASM_POSIX_BUILD_GIT_<NAME>_DIR`    | Read-only detached checkout for a `build.toml` `[[git_inputs]]` declaration. `<NAME>` is the injective uppercase form of the validated lowercase name.                                                                                                                                                                                           |
+| `WASM_POSIX_BUILD_GIT_<NAME>_COMMIT` | Exact declared commit corresponding to that checkout.                                                                                                                                                                                                                                                                                            |
 
 Scripts that accept the optional sealed-build roots should source
 `scripts/package-build-roots.sh`. Explicit source, work, and output roots must
@@ -891,16 +939,16 @@ For each additional dep, repeat the `<NAME>_PREFIX` stanza
 
 **This is the load-bearing rule for autoconf consumers.** Every
 cache-using build script that runs an autoconf-style `configure`
-must set both `PKG_CONFIG_PATH` *and* `CPPFLAGS=-I` / `LDFLAGS=-L`.
+must set both `PKG_CONFIG_PATH` _and_ `CPPFLAGS=-I` / `LDFLAGS=-L`.
 Setting only one silently drops the dep.
 
 Why: autoconf probes for a library along two independent paths
 during `configure`, and which path runs depends on how the
 project's `configure.ac` was written.
 
-| Probe path | What configure runs | What env it reads |
-|---|---|---|
-| pkg-config | `pkg-config --cflags <name>` / `--libs <name>` | `PKG_CONFIG_PATH`, `PKG_CONFIG` |
+| Probe path   | What configure runs                                                    | What env it reads                       |
+| ------------ | ---------------------------------------------------------------------- | --------------------------------------- |
+| pkg-config   | `pkg-config --cflags <name>` / `--libs <name>`                         | `PKG_CONFIG_PATH`, `PKG_CONFIG`         |
 | Raw autoconf | `AC_CHECK_HEADER([zlib.h])`, `AC_CHECK_LIB([z], [...])`, `AC_TRY_LINK` | `CPPFLAGS`, `LDFLAGS`, `CFLAGS`, `LIBS` |
 
 A consumer typically tries pkg-config first; if pkg-config
@@ -924,7 +972,7 @@ wasm32posix-configure …
 
 Concrete bug from PR #352 (D.1 cpython): an early draft set only
 `PKG_CONFIG_PATH`, which let the pkg-config-based probe for zlib
-succeed but caused CPython's *separate* `py_cv_module_zlib`
+succeed but caused CPython's _separate_ `py_cv_module_zlib`
 detection (raw `AC_CHECK_HEADER`) to report `missing` because no
 `-I$ZLIB_PREFIX/include` was on `CPPFLAGS`. The build then
 silently produced a Python without `import zlib`.
@@ -1024,7 +1072,7 @@ Key contracts illustrated:
   copies) stays inside the consumer's worktree. Avoids forcing
   every consumer that vendors PCRE2 into the same flag matrix.
 - **Light presence-check on the unpacked tree.** `[ -f
-  CMakeLists.txt ]` catches a partial extract or the wrong tarball
+CMakeLists.txt ]` catches a partial extract or the wrong tarball
   layout before cmake emits a more confusing error.
 
 ### 4. Caveats / known footguns
@@ -1161,8 +1209,8 @@ content-bound proof that source-release anchor `R`, archive producer `S`, and
 main `M` are independently bound. Normally `identical-git-tree-v1` requires
 identical complete Git trees.
 
-The bounded migration-only
-`identical-package-cache-projection-v1` method instead requires exact selected
+The retired migration-only
+`identical-package-cache-projection-v1` method required exact selected
 projection/ledger equality and a byte-identical canonical component ledger for
 every selected manifest, parsed recipe, declared and Git input, direct
 dependency identity, global toolchain input, fork-instrument input,
@@ -1170,18 +1218,18 @@ architecture, and ABI. Schema-2 source-only dependencies remain in the
 projection and direct-dependency evidence but not in the archive/component
 set. Complete tree IDs remain audit evidence and the validator transition is
 exactly pinned. It does not claim that rebuilding at `M` would reproduce `S`.
-It is hard-bound to #1097 producer
+It was hard-bound to #1097 producer
 `748c2609954d2809bbcbbcb642fa7d257fc0dbc6` and the
 `pr-1097-staging` source capture, not a reusable historical-cache escape hatch.
-The audited H-to-M equality is limited to schema-1 `rootfs`/`wasm32`; the
-broader browser projection differs.
+The original H-to-M equality was limited to schema-1 `rootfs`/`wasm32`; the
+broader browser projection differed, and later declared rootfs input changes
+invalidated the narrow selection too. The promotion workflow no longer
+exposes this method. Its reader and validator remain for historical evidence;
+new generations require an exact-main rebuild and `identical-git-tree-v1`.
 
-Current authority first freezes that mutable source into an evidence-only
-`preserved-package-generation-...` release. Admission takes the exact
-published preservation tag, embeds its complete manifest and asset inventory,
-and rejects direct use of either the mutable PR tag or the preservation release
-by ordinary consumers. Archives continue to identify `S`; the preservation tag
-locates the sealed evidence and does not claim to have produced them.
+The preservation workflow may still freeze the historical source as
+`admission = "none"` audit evidence. No current path promotes or materializes
+that preservation tag.
 
 Missing current-run artifacts are errors, not permission to consult the
 mutable canonical index, and each archive uses an empty job-local cache so a
@@ -1290,8 +1338,8 @@ post-merge canonical rebuild records the exact live `main` commit. A v2
 durable generation may instead bind immutable producer `S`, its release assets,
 independently resolved release anchor `R`, current main `M`, and the main ABI
 snapshot under a versioned method. `identical-git-tree-v1` proves
-`S^{tree} == M^{tree}`. The bounded
-`identical-package-cache-projection-v1` migration method proves exact selected
+`S^{tree} == M^{tree}`. The retired
+`identical-package-cache-projection-v1` migration method proved exact selected
 projection/ledger equality plus the byte-identical canonical selected
 build-input component ledger. It retains complete `S` and `M` tree IDs for
 audit and exact-pins the validators that interpret the ledger. It is hard-bound
@@ -1372,21 +1420,18 @@ landed, dispatch `promote-package-generation.yml` from the same exact
 `refs/heads/main` SHA as described in
 [Binary releases: durable package generations](binary-releases.md#durable-package-generations-for-cross-workflow-publication).
 The normal source tag is `binaries-abi-v<N>`. A retained merged
-`pr-<N>-staging` source is accepted only by the versioned v2 contracts: exact
-complete-tree equality, or the one-shot PR #1097 cache-projection bridge
-hard-bound to its immutable producer and source capture. The promoter rebuilds
+`pr-<N>-staging` source is accepted only when the v2 contract proves exact
+complete-tree equality. The retired PR #1097 cache-projection bridge is not a
+new-publication path. The promoter rebuilds
 a minimal exact index, drops unrelated entries and every fallback, and rewrites
 URLs to the content-addressed generation tag. It preserves the archive's
 truthful producer separately from validated current main; later Homebrew
 bottles are compiled at that validated main commit and record it as their own
 producer.
 
-For the #1097 method, “source tag” at promotion means the exact
-`preserved-package-generation-...` tag returned by the preceding preservation
-workflow. The embedded preservation manifest must still identify
-`pr-1097-staging`, the exact producer, same-run artifacts, and root-job log.
-`materialize-durable-package-generation.sh` rejects the preservation tag
-itself; only the admitted `package-generation-...` result is resolver input.
+Historical #1097 preservation tags remain non-admitted audit evidence.
+`materialize-durable-package-generation.sh` rejects such a preservation tag;
+there is no supported production path from it to resolver input.
 
 Schema 1 selects one program root and its dependency closure. Schema 2
 `browser-inputs` binds the sorted browser roots, with `shell` excluded and
@@ -1642,17 +1687,20 @@ unpacked source trees, not built artifacts.
 **Schema fields**
 
 Required:
+
 - `kind = "source"`
 - `name`, `version`
 - `[source].url`, `[source].sha256`
 - `[license].spdx`
 
 Optional:
+
 - `depends_on` — same syntax as library/program manifests.
 - `[build].script_path` — see "Override" below.
 - `[[host_tools]]` — see the Host-tool requirements section below.
 
 Rejected at parse time (the parser surfaces a clear error):
+
 - `[outputs]` and `[[outputs]]` — sources have no built-artifact
   layout.
 - `[binary]` and `[compatibility]` — those describe published

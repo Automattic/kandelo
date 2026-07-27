@@ -606,7 +606,33 @@ pub struct BuildToml {
     /// field; downstream callers default to `1`. (Equivalent to the
     /// pre-existing default revision in `package.toml`.)
     pub revision: Option<u32>,
+    /// Project/distribution readiness for publishing a new archive.
+    ///
+    /// This is deliberately not package identity and must not participate in
+    /// cache-key computation. A project can prepare and test a recipe while
+    /// its final release authority is still pending, then make those exact
+    /// bytes publishable without pretending the recipe changed.
+    pub publication_state: PublicationState,
     pub binary: BinarySource,
+}
+
+/// Project-owned package publication state from `build.toml`.
+///
+/// `Ready` is the backward-compatible default. `Pending` keeps ordinary
+/// source resolution available to local consumers while making every archive
+/// publication entry point fail closed.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PublicationState {
+    #[default]
+    Ready,
+    Pending,
+}
+
+impl PublicationState {
+    pub fn is_ready(self) -> bool {
+        matches!(self, Self::Ready)
+    }
 }
 
 /// `[binary]` declaration inside a `build.toml`. Exactly one of two
@@ -639,6 +665,8 @@ struct BuildTomlRaw {
     commit: String,
     #[serde(default)]
     revision: Option<u32>,
+    #[serde(default)]
+    publication_state: PublicationState,
     binary: BinaryRaw,
 }
 
@@ -970,6 +998,9 @@ impl BuildToml {
     /// `url` (and `url` requires `sha256`).
     pub fn parse(s: &str) -> Result<Self, String> {
         let raw: BuildTomlRaw = toml::from_str(s).map_err(|e| format!("build.toml parse: {e}"))?;
+        if raw.revision == Some(0) {
+            return Err("build.toml revision must be at least 1".into());
+        }
         let binary = match (raw.binary.index_url, raw.binary.url) {
             (Some(index_url), None) => BinarySource::Indexed { index_url },
             (None, Some(url)) => {
@@ -1000,6 +1031,7 @@ impl BuildToml {
             repo_url: raw.repo_url,
             commit: raw.commit,
             revision: raw.revision,
+            publication_state: raw.publication_state,
             binary,
         })
     }
@@ -4242,6 +4274,7 @@ index_url = "https://example.com/releases/download/binaries-abi-v{abi}/index.tom
         );
         assert_eq!(bt.repo_url, "https://github.com/example/foo.git");
         assert_eq!(bt.commit, "abc123");
+        assert_eq!(bt.publication_state, PublicationState::Ready);
         assert_eq!(
             bt.git_inputs,
             vec![GitBuildInput {
@@ -4255,6 +4288,40 @@ index_url = "https://example.com/releases/download/binaries-abi-v{abi}/index.tom
             BinarySource::Indexed { ref index_url }
                 if index_url == "https://example.com/releases/download/binaries-abi-v{abi}/index.toml"
         ));
+    }
+
+    #[test]
+    fn parses_explicit_pending_publication_state_and_rejects_unknown_state() {
+        let pending = r#"
+script_path = "packages/registry/foo/build-foo.sh"
+repo_url = "https://github.com/example/foo.git"
+commit = "UNPUBLISHED"
+revision = 1
+publication_state = "pending"
+
+[binary]
+index_url = "https://example.com/releases/download/binaries-abi-v{abi}/index.toml"
+"#;
+        let build = BuildToml::parse(pending).expect("pending state should parse");
+        assert_eq!(build.publication_state, PublicationState::Pending);
+        assert!(!build.publication_state.is_ready());
+
+        let unknown = pending.replace(
+            "publication_state = \"pending\"",
+            "publication_state = \"almost-ready\"",
+        );
+        let error = BuildToml::parse(&unknown).unwrap_err();
+        assert!(
+            error.contains("unknown variant `almost-ready`"),
+            "unexpected error: {error}"
+        );
+
+        let zero_revision = pending.replace("revision = 1", "revision = 0");
+        let error = BuildToml::parse(&zero_revision).unwrap_err();
+        assert!(
+            error.contains("revision must be at least 1"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

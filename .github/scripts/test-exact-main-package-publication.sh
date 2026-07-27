@@ -55,6 +55,15 @@ exact_checkout_count="$(
 [ "$checkout_count" -eq "$exact_checkout_count" ] ||
   fail "all force-rebuild checkouts must use the admitted exact-main SHA"
 
+grep -Fq '"$XTASK" staging-reuse expected \' "$FORCE_REBUILD" ||
+  fail "force-rebuild matrix does not come from the shared publication-policy ledger"
+grep -Fq -- '--require-root "$INPUT_PACKAGES"' "$FORCE_REBUILD" ||
+  fail "force-rebuild does not loudly validate explicitly requested roots"
+if grep -Fq 'for pkg_dir in packages/registry/*/' "$FORCE_REBUILD" ||
+  grep -Fq 'compute-cache-key-sha --package "$pkg_dir"' "$FORCE_REBUILD"; then
+  fail "force-rebuild still reconstructs a policy-bypassing matrix from raw manifests"
+fi
+
 archive_count="$(grep -c '^[[:space:]]*archive-stage \\' "$EXACT_REBUILD_ACTION")"
 [ "$archive_count" -gt 0 ] ||
   fail "force-rebuild has no archive producers"
@@ -71,6 +80,30 @@ done
 grep -Fq 'mktemp -d "$RUNNER_TEMP/exact-main-package-cache.XXXXXX"' \
   "$EXACT_REBUILD_ACTION" ||
   fail "exact-main archive builds may reuse an older cache-equivalent dependency"
+
+publication_recheck_block="$(
+  awk '
+    /- name: Recheck package publication admission/ { inside = 1 }
+    inside && /- name: Download exact-main toolchain/ { exit }
+    inside { print }
+  ' "$EXACT_REBUILD_ACTION"
+)"
+for publication_guard in \
+  'staging-reuse expected' \
+  '--require-root "$PACKAGE"' \
+  '.package == \$package' \
+  '.arch == \$arch' \
+  '.cache_key_sha == \$cache_key_sha' \
+  '.version == \$version' \
+  '.revision == \$revision' \
+  'echo "admitted=true" >> "$GITHUB_OUTPUT"'
+do
+  grep -Fq -- "$publication_guard" <<<"$publication_recheck_block" ||
+    fail "exact-main rebuild lacks publication recheck: $publication_guard"
+done
+grep -Fq "if: failure() && steps.provenance.outcome == 'success' && steps.publication.outputs.admitted == 'true' && steps.build.outcome == 'failure'" \
+  "$EXACT_REBUILD_ACTION" ||
+  fail "non-build or unadmitted failure can still become a failed canonical index entry"
 
 index_writer_count="$(grep -c 'bash scripts/index-update.sh' "$EXACT_REBUILD_ACTION")"
 guarded_writer_count="$(

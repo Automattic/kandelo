@@ -183,6 +183,16 @@ manifest_abi="$(jq -er '.identity.abi_version' "$MANIFEST")"
 manifest_arch="$(jq -er '.identity.projection.arch' "$MANIFEST")"
 projection_schema="$(jq -er '.identity.projection.schema' "$MANIFEST")"
 manifest_format="$(jq -er '.format' "$MANIFEST")"
+manifest_source_tag="$(jq -er '
+  if .format == "kandelo-package-generation-v1"
+  then .identity.source_activation.evidence.tag
+  elif .format == "kandelo-package-generation-v2"
+  then .identity.producer.evidence.tag
+  elif .format == "kandelo-preserved-pr-package-generation-v1"
+  then .identity.source_capture.source_staging.tag
+  else empty
+  end
+' "$MANIFEST")"
 IS_PRESERVED=false
 if [ "$preserved_dispatch" = true ]; then
   IS_PRESERVED=true
@@ -196,12 +206,6 @@ if [ "$preserved_dispatch" = true ]; then
   ARCHIVE_PRODUCER_SHA="$(jq -er .identity.package_source_sha "$MANIFEST")"
   archive_source_args=(--package-source-sha "$ARCHIVE_PRODUCER_SHA")
 else
-manifest_source_tag="$(jq -er '
-  if .format == "kandelo-package-generation-v1"
-  then .identity.source_activation.evidence.tag
-  else .identity.producer.evidence.tag
-  end
-' "$MANIFEST")"
 if [ "$manifest_abi" != "$EXPECTED_ABI" ] ||
    [ "$manifest_arch" != "$ARCH" ] ||
    [ "$manifest_source_tag" != "$SOURCE_TAG" ]; then
@@ -323,7 +327,7 @@ env -u GH_TOKEN -u GITHUB_TOKEN \
   -u ACTIONS_ID_TOKEN_REQUEST_URL \
   -u ACTIONS_RUNTIME_TOKEN \
   -u WASM_POSIX_DEPS_REGISTRY \
-  "$AUTHORITY_XTASK" staging-reuse scan-source \
+  "$AUTHORITY_XTASK" staging-reuse scan-source-admitted \
     --source-root "$REPO_ROOT" \
     --expected-abi "$EXPECTED_ABI" \
     --arch "$ARCH" \
@@ -504,6 +508,7 @@ env -u GH_TOKEN -u GITHUB_TOKEN \
     --bundle-dir "$BUNDLE" \
     --release-tag "$TAG" \
     --release-base-url "https://github.com/$REPOSITORY/releases/download/$TAG/" \
+    --source-release-tag "$manifest_source_tag" \
     "${archive_source_args[@]}"
 jq -S \
   --arg generation_sha "$generation_sha" \
@@ -1193,6 +1198,7 @@ env -u GH_TOKEN -u GITHUB_TOKEN \
     --bundle-dir "$BUNDLE" \
     --release-tag "$TAG" \
     --release-base-url "https://github.com/$REPOSITORY/releases/download/$TAG/" \
+    --source-release-tag "$manifest_source_tag" \
     "${archive_source_args[@]}"
 # WHY: archive uploads can take long enough for main, producer tags, assets, or
 # ABI snapshot state to change. Recheck after those writes but before adding

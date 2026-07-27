@@ -123,19 +123,19 @@ function growToMax(memory: WebAssembly.Memory, ptrWidth: 4 | 8, currentPages: nu
   }
 }
 
-function createMachineIO(
+async function createMachineIO(
   network: LocalVirtualNetwork,
   rootfs: Uint8Array,
   machineId: MachineId,
   address: [number, number, number, number],
-): PlatformIO {
+): Promise<PlatformIO> {
   const mounts = [
     {
       mountPoint: "/dev/shm",
       backend: MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024)),
     },
     { mountPoint: "/dev", backend: new DeviceFileSystem() },
-    ...resolveForBrowser(DEFAULT_MOUNT_SPEC, rootfs),
+    ...await resolveForBrowser(DEFAULT_MOUNT_SPEC, rootfs),
   ];
   const io = new VirtualPlatformIO(mounts, new BrowserTimeProvider());
   io.network = network.attachMachine({ id: machineId, address, hostnames: [machineId] });
@@ -156,7 +156,12 @@ async function runProgram(
 
   machine(options.machine, `running ${options.programName}`);
 
-  const io = createMachineIO(network, artifacts.rootfs, options.machine, options.address);
+  const io = await createMachineIO(
+    network,
+    artifacts.rootfs,
+    options.machine,
+    options.address,
+  );
   const workerAdapter = new BrowserWorkerAdapter(workerEntryUrl);
 
   let resolveExit!: (status: number) => void;

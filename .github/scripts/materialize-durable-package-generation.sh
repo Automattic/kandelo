@@ -386,6 +386,7 @@ run_without_credentials "$AUTHORITY_XTASK" staging-reuse validate-generation \
   --bundle-dir "$TMP_ROOT/bundle" \
   --release-tag "$TAG" \
   --release-base-url "https://github.com/$REPOSITORY/releases/download/$TAG/" \
+  --source-release-tag "$source_release_tag" \
   "${archive_source_args[@]}"
 if [ "$(git -C "$AUTHORITY_ROOT" rev-parse HEAD)" != "$authority_sha" ] ||
    [ "$(git -C "$AUTHORITY_ROOT" rev-parse 'HEAD^{tree}')" != "$authority_tree" ] ||

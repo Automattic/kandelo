@@ -30,6 +30,9 @@ import {
 } from "../host/src/homebrew-vfs-planner";
 import { MemoryFileSystem } from "../host/src/vfs/memory-fs";
 import {
+  restoreVerifiedVfsImagePreservingCapacity,
+} from "../host/src/vfs/load-image";
+import {
   KANDELO_SHELL_CONFIG_PATH,
   MAX_KANDELO_SHELL_CONFIG_BYTES,
   parseKandeloShellConfig,
@@ -275,7 +278,9 @@ export async function validateHomebrewVfsAcceptance(
   assertReportMatchesPlan(report, plan, brewfile, shellConfig);
 
   const baseImageBytes = readArtifact(options.baseImagePath, "base VFS");
-  const baseFs = MemoryFileSystem.fromImagePreservingCapacity(baseImageBytes);
+  const baseFs = await restoreVerifiedVfsImagePreservingCapacity(
+    baseImageBytes,
+  );
   const baseMetadata = requireRecord(baseFs.getImageMetadata(), "base VFS metadata");
   const baseAbi = requiredInteger(baseMetadata, "kernelAbi", "base VFS metadata");
   if (baseAbi !== plan.kandeloAbi) {
@@ -284,7 +289,7 @@ export async function validateHomebrewVfsAcceptance(
   assertBaseReport(report, baseImageBytes, baseAbi);
 
   const imageBytes = readArtifact(options.imagePath, "composed VFS");
-  const imageFs = MemoryFileSystem.fromImagePreservingCapacity(imageBytes);
+  const imageFs = await restoreVerifiedVfsImagePreservingCapacity(imageBytes);
   assertImageMetadata(imageFs, plan, brewfile, baseImageBytes, baseAbi, shellConfig);
   assertGuestManifest(imageFs, plan, brewfile);
 

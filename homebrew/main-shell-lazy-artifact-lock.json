@@ -1,9 +1,15 @@
 {
-  "schema": 1,
+  "schema": 2,
   "kind": "kandelo-homebrew-lazy-shell-artifact-lock",
   "source_date_epoch": 0,
-  "image": {
-    "sha256": "7a08d342b4e1d00976623d18da74a2d1a923f4eafe88c93253e2947ec0a49cce",
-    "bytes": 5885691
-  }
+  "state": "pending",
+  "inputs": {
+    "bootstrap_tree_spec_sha256": "b1f4b479a8364282700bdada99257160f66a3b314cc6a237d1d52c868a4a9b62",
+    "brewfile_sha256": "4dc6e46b3f2061b357a84a2b5edc3b5108c1bfbca0d6accd02e172b358efd7da",
+    "demo_config_sha256": "1ef5f56b4a4425fc19d38da260a5742aa6be53655b8c16489d9427bf96b2d1e2",
+    "materialization_policy_sha256": "fb170c25f71e6e7fdd3470901b3ab3a42e7765648d55f62fad38230e30461fe0",
+    "migration_lock_sha256": "21fb9c3800089b6fdc7e4e8a81ae7faabedbc8abc6db734f6ed11619f5c79141",
+    "runtime_support_sha256": "7997ddcf7e59d8961bd605cc290df8b364e6493e9ffa205b9bcc0e7a81d65a9d"
+  },
+  "image": null
 }

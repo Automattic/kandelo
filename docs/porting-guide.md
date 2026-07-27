@@ -96,7 +96,13 @@ commit. Ordinary first open/read and executable resolution use the same
 preparation path; `stat` alone never downloads content. A failed preparation
 does not expose partial or zero-byte success and may be retried.
 
-At runtime the URL stored in the group is bare — a plain filename like `vim.zip`. The browser runtime calls `memfs.rewriteLazyArchiveUrls(url => BASE_URL + url)` once, right after `MemoryFileSystem.fromImage`, so the archive resolves against the deployment's base URL instead of the build-time one.
+At runtime the URL stored in the group is bare — a plain filename like
+`vim.zip`. The browser runtime first awaits `restoreVerifiedVfsImage(...)`,
+then calls `memfs.rewriteLazyArchiveUrls(url => BASE_URL + url)` once, so the
+archive resolves against the deployment's base URL instead of the build-time
+one. Do not inspect, mutate, rewrite, or boot a restored image before the
+verified restore returns: imported atomic lazy-tree seals are an untrusted
+cryptographic boundary.
 
 ### Build-side contract
 
@@ -420,8 +426,8 @@ await kernel.destroy()
 The kernel reads files from the shared `MemoryFileSystem`. For demos with many files, use a **VFS image** — a pre-built binary snapshot of the filesystem:
 
 ```typescript
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import { BrowserKernel } from "@host/browser-kernel-host";
+import { restoreVerifiedVfsImage } from "@host/vfs/load-image";
 
 // Fetch kernel wasm and VFS image in parallel
 const [kernelBuf, vfsImageBuf] = await Promise.all([
@@ -429,8 +435,9 @@ const [kernelBuf, vfsImageBuf] = await Promise.all([
   fetch(vfsImageUrl).then(r => r.arrayBuffer()),
 ]);
 
-// Restore filesystem from image (single buffer copy — fast)
-const memfs = MemoryFileSystem.fromImage(
+// Restore the filesystem and authenticate imported atomic lazy-tree seals
+// before inspecting, mutating, or giving the image to the kernel.
+const memfs = await restoreVerifiedVfsImage(
   new Uint8Array(vfsImageBuf),
   { maxByteLength: 512 * 1024 * 1024 },  // allow growth up to the image's filesystem max
 );

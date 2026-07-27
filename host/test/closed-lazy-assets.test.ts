@@ -67,6 +67,28 @@ describe("closed lazy assets", () => {
     );
   });
 
+  it("reuses one fetch-visible controller across sequential loading stages", async () => {
+    const bytes = new Uint8Array([4, 5, 6]);
+    const transportController = new AbortController();
+    const signals: AbortSignal[] = [];
+    const fetchImpl = vi.fn(async (_input: string | URL, init?: RequestInit) => {
+      signals.push(init!.signal as AbortSignal);
+      return new Response(bytes);
+    });
+
+    await loadClosedLazyAssetSources([
+      sourceBinding(URL_A, "/assets/authority.zip", bytes),
+    ], { fetchImpl, transportController });
+    await loadClosedLazyAssetSources([
+      sourceBinding(URL_B, "/assets/dependent.zip", bytes),
+    ], { fetchImpl, transportController });
+
+    expect(signals).toEqual([
+      transportController.signal,
+      transportController.signal,
+    ]);
+  });
+
   it("rejects missing, truncated, oversized, and changed transport sources", async () => {
     const source = new Uint8Array([4, 5, 6]);
     const identity = sourceBinding(URL_B, "/assets/package-tree.zip", source);
@@ -128,7 +150,9 @@ describe("closed lazy assets", () => {
     await expect(loadClosedLazyAssetSources([{
       ...identity,
       url: "http://example.test/not-https",
-    }], { fetchImpl })).rejects.toThrow("canonical credential-free HTTPS");
+    }], { fetchImpl })).rejects.toThrow(
+      "canonical HTTPS URL without userinfo or a fragment",
+    );
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -593,27 +617,27 @@ describe("closed lazy assets", () => {
     [
       "non-HTTPS URL",
       [asset("http://example.test/a")],
-      "canonical credential-free HTTPS",
+      "canonical HTTPS URL without userinfo or a fragment",
     ],
     [
       "credentialed URL",
       [asset("https://user@example.test/a")],
-      "canonical credential-free HTTPS",
+      "canonical HTTPS URL without userinfo or a fragment",
     ],
     [
       "fragment URL",
       [asset("https://example.test/a#fragment")],
-      "canonical credential-free HTTPS",
+      "canonical HTTPS URL without userinfo or a fragment",
     ],
     [
       "empty-fragment URL",
       [asset("https://example.test/a#")],
-      "canonical credential-free HTTPS",
+      "canonical HTTPS URL without userinfo or a fragment",
     ],
     [
       "noncanonical URL",
       [asset("https://EXAMPLE.test/a")],
-      "canonical credential-free HTTPS",
+      "canonical HTTPS URL without userinfo or a fragment",
     ],
     [
       "wrong size",

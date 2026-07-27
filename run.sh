@@ -21,6 +21,10 @@
 #                                  package binaries.
 #   --already-materialized        Skip browser package fetching because the
 #                                  exact binaries/ tree was prepared earlier.
+#   --source-rootfs-shell         Internal GitHub Pages-only bridge. Requires
+#                                  the exact Pages job identity, provenance,
+#                                  empty file index, fresh cache, and clean
+#                                  package-materialization workspace.
 #   --pr-staging                  Use the current PR's staging binary index
 #                                  unless WASM_POSIX_BINARY_INDEX_URL is set.
 #
@@ -62,6 +66,7 @@ step()  { echo "${CYAN}${BOLD}=== $* ===${RESET}"; }
 ALLOW_STALE_ARGS=()
 FETCH_ONLY_ARGS=()
 ALREADY_MATERIALIZED=0
+SOURCE_ROOTFS_SHELL=0
 USE_PR_STAGING=0
 NEW_ARGS=()
 for a in "$@"; do
@@ -74,6 +79,9 @@ for a in "$@"; do
             ;;
         --already-materialized)
             ALREADY_MATERIALIZED=1
+            ;;
+        --source-rootfs-shell)
+            SOURCE_ROOTFS_SHELL=1
             ;;
         --pr-staging)
             USE_PR_STAGING=1
@@ -100,10 +108,24 @@ fi
 export WASM_POSIX_ALLOW_STALE=$([ "${#ALLOW_STALE_ARGS[@]}" -gt 0 ] && echo 1 || echo 0)
 export WASM_POSIX_FETCH_ONLY=$([ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ] && echo 1 || echo 0)
 export WASM_POSIX_ALREADY_MATERIALIZED=$ALREADY_MATERIALIZED
+export WASM_POSIX_SOURCE_ROOTFS_SHELL=$SOURCE_ROOTFS_SHELL
 if [ "${WASM_POSIX_USE_PR_STAGING:-0}" = "1" ]; then
     USE_PR_STAGING=1
 fi
 export WASM_POSIX_USE_PR_STAGING=$USE_PR_STAGING
+
+if [ "$SOURCE_ROOTFS_SHELL" -eq 1 ]; then
+    [ "$#" -eq 1 ] && [ "${1:-}" = "prepare-browser" ] || {
+        err "--source-rootfs-shell is internal to the GitHub Pages prepare-browser job."
+        exit 2
+    }
+    if [ "$ALREADY_MATERIALIZED" -eq 1 ] ||
+        [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ] ||
+        [ "$USE_PR_STAGING" -eq 1 ]; then
+        err "--source-rootfs-shell cannot combine with already-materialized, fetch-only, or PR-staging modes."
+        exit 2
+    fi
+fi
 
 pr_staging_manual_override_hint() {
     local repo_hint=${1:-"<owner>/<repo>"}
@@ -358,7 +380,13 @@ has_msmtpd()        { pkg_has_output msmtpd msmtpd.wasm || [ -f "$REPO_ROOT/pack
 has_cpython()       { pkg_has_output cpython python.wasm || [ -f "$REPO_ROOT/packages/registry/cpython/bin/python.wasm" ]; }
 has_python_vfs()    { pkg_has_output python-vfs python-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/python.vfs.zst" ]; }
 has_perl_vfs()      { pkg_has_output perl-vfs perl-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/perl.vfs.zst" ]; }
-has_shell_vfs()     { pkg_has_output shell shell.vfs.zst; }
+has_shell_vfs()     {
+    pkg_has_output shell shell.vfs.zst &&
+    # The VFS keeps this dependency lazy, but the browser must still be able
+    # to serve its exact package bytes when the guest first invokes brew.
+    pkg_has_output homebrew-bootstrap homebrew-bootstrap.zip &&
+    pkg_has_output homebrew-bootstrap homebrew-brew.env
+}
 has_node()          { pkg_has_output node node.wasm; }
 has_spidermonkey_node() { pkg_has_output spidermonkey-node node.wasm || [ -f "$REPO_ROOT/packages/registry/spidermonkey-node/bin/node.wasm" ]; }
 has_node_vfs()      { pkg_has_output node-vfs node-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/node-vfs.vfs.zst" ]; }
@@ -957,7 +985,641 @@ build_nethack_zip() {
     info "nethack.zip built ($(du -h "$REPO_ROOT/apps/browser-demos/public/nethack.zip" | cut -f1))"
 }
 
+SOURCE_ROOTFS_SHELL_WORK_ROOT=""
+SOURCE_ROOTFS_SHELL_WORK_PREFIX=""
+SOURCE_ROOTFS_SHELL_STAGE_BINARIES=""
+SOURCE_ROOTFS_SHELL_CANDIDATE=""
+SOURCE_ROOTFS_SHELL_OVERRIDE_PATH=""
+SOURCE_ROOTFS_SHELL_OVERRIDE_TARGET=""
+SOURCE_ROOTFS_SHELL_OVERRIDE_SHELL_DIR_CREATED=0
+SOURCE_ROOTFS_SHELL_OVERRIDE_LOCAL_LIBS_CREATED=0
+SOURCE_ROOTFS_SHELL_FETCHED_MIRROR=""
+SOURCE_ROOTFS_SHELL_TRANSIENT_FETCHED_TARGET=""
+SOURCE_ROOTFS_SHELL_PUBLIC_TEMP=""
+SOURCE_ROOTFS_SHELL_RUNNER_TEMP=""
+SOURCE_ROOTFS_SHELL_PREFLIGHT_VALIDATED=0
+
+validate_source_rootfs_shell_pages_mode() {
+    SOURCE_ROOTFS_SHELL_PREFLIGHT_VALIDATED=0
+    [ "${WASM_POSIX_SOURCE_ROOTFS_SHELL_ISOLATION:-}" = "pages-exact-main-v1" ] || {
+        err "--source-rootfs-shell requires the Pages exact-main isolation contract."
+        return 2
+    }
+    [ "${GITHUB_ACTIONS:-}" = "true" ] &&
+        [ "${GITHUB_WORKFLOW:-}" = "Deploy GitHub Pages" ] &&
+        [ "${GITHUB_JOB:-}" = "deploy" ] || {
+        err "--source-rootfs-shell is restricted to the Deploy GitHub Pages/deploy job."
+        return 2
+    }
+    [ "${GITHUB_SERVER_URL:-}" = "https://github.com" ] || {
+        err "--source-rootfs-shell requires a supported github.com Pages event."
+        return 2
+    }
+    case "${GITHUB_EVENT_NAME:-}" in
+        push|workflow_dispatch) ;;
+        *)
+            err "--source-rootfs-shell requires a supported github.com Pages event."
+            return 2
+            ;;
+    esac
+    [ "${GITHUB_REF:-}" = "refs/heads/main" ] &&
+        [ "${GITHUB_REF_NAME:-}" = "main" ] || {
+        err "--source-rootfs-shell requires the exact main branch checkout."
+        return 2
+    }
+    [[ "${GITHUB_RUN_ID:-}" =~ ^[1-9][0-9]*$ ]] &&
+        [[ "${GITHUB_RUN_ATTEMPT:-}" =~ ^[1-9][0-9]*$ ]] || {
+        err "--source-rootfs-shell requires a real GitHub Actions run identity."
+        return 2
+    }
+    [ "${WASM_POSIX_SOURCE_ROOTFS_SHELL_RUNNER_ENVIRONMENT:-}" = "github-hosted" ] &&
+        [ "${RUNNER_OS:-}" = "Linux" ] || {
+        err "--source-rootfs-shell requires the attested GitHub-hosted Linux Pages runner."
+        return 2
+    }
+
+    local workspace="${GITHUB_WORKSPACE:-}"
+    local workspace_physical
+    local repo_physical
+    [ -d "$workspace" ] && [ ! -L "$workspace" ] || {
+        err "--source-rootfs-shell requires a real GITHUB_WORKSPACE directory."
+        return 2
+    }
+    workspace_physical="$(cd "$workspace" && pwd -P)"
+    repo_physical="$(cd "$REPO_ROOT" && pwd -P)"
+    [ "$workspace_physical" = "$repo_physical" ] || {
+        err "--source-rootfs-shell must run at the GitHub Actions workspace root."
+        return 2
+    }
+
+    local github_repository="${GITHUB_REPOSITORY:-}"
+    local source_repository="${WASM_POSIX_SOURCE_ROOTFS_SHELL_REPOSITORY:-}"
+    local source_commit="${WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT:-}"
+    [[ "$github_repository" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] &&
+        [ "$source_repository" = "https://github.com/$github_repository" ] || {
+        err "--source-rootfs-shell repository provenance must match GITHUB_REPOSITORY."
+        return 2
+    }
+    [[ "${GITHUB_SHA:-}" =~ ^[0-9a-f]{40}$ ]] &&
+        [ "$source_commit" = "$GITHUB_SHA" ] &&
+        [ "$(git -C "$REPO_ROOT" rev-parse HEAD)" = "$GITHUB_SHA" ] || {
+        err "--source-rootfs-shell commit provenance must match the checked-out GITHUB_SHA."
+        return 2
+    }
+
+    [ "$ALREADY_MATERIALIZED" -eq 0 ] &&
+        [ "${#FETCH_ONLY_ARGS[@]}" -eq 0 ] &&
+        [ "$USE_PR_STAGING" -eq 0 ] || {
+        err "--source-rootfs-shell cannot combine with already-materialized, fetch-only, or PR-staging modes."
+        return 2
+    }
+
+    local runner_temp="${RUNNER_TEMP:-}"
+    case "$runner_temp" in
+        /*) ;;
+        *)
+            err "--source-rootfs-shell requires an absolute RUNNER_TEMP."
+            return 2
+            ;;
+    esac
+    [ "$runner_temp" != "/" ] &&
+        [ -d "$runner_temp" ] &&
+        [ ! -L "$runner_temp" ] || {
+        err "--source-rootfs-shell requires a real, non-root RUNNER_TEMP directory."
+        return 2
+    }
+    local runner_physical
+    runner_physical="$(cd "$runner_temp" && pwd -P)"
+    [ "$runner_physical" = "$runner_temp" ] || {
+        err "--source-rootfs-shell requires a canonical RUNNER_TEMP path."
+        return 2
+    }
+
+    local index_url="${WASM_POSIX_BINARY_INDEX_URL:-}"
+    case "$index_url" in
+        file:///*) ;;
+        *)
+            err "--source-rootfs-shell requires the workflow-created local empty index."
+            return 2
+            ;;
+    esac
+    local index_path="${index_url#file://}"
+    [ "$index_path" = "$runner_temp/$(basename "$index_path")" ] &&
+        [ -f "$index_path" ] &&
+        [ ! -L "$index_path" ] || {
+        err "--source-rootfs-shell index must be a regular direct child of RUNNER_TEMP."
+        return 2
+    }
+    local abi
+    abi="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
+        "$REPO_ROOT/crates/shared/src/lib.rs")"
+    [[ "$abi" =~ ^[0-9]+$ ]] || {
+        err "--source-rootfs-shell could not read the current ABI version."
+        return 2
+    }
+    if ! cmp -s <(
+            printf 'abi_version = %s\n' "$abi"
+            printf 'generated_at = "1970-01-01T00:00:00Z"\n'
+            printf 'generator = "exact-main Pages source closure"\n'
+        ) "$index_path"; then
+        err "--source-rootfs-shell index is not the exact empty current-ABI Pages index."
+        return 2
+    fi
+
+    local cache_root="${WASM_POSIX_BINARY_CACHE_ROOT:-}"
+    case "$cache_root" in
+        /*) ;;
+        *)
+            err "--source-rootfs-shell requires an absolute fresh cache path."
+            return 2
+            ;;
+    esac
+    [ "$cache_root" = "$runner_temp/$(basename "$cache_root")" ] &&
+        [ "$cache_root" != "$index_path" ] &&
+        [ ! -e "$cache_root" ] &&
+        [ ! -L "$cache_root" ] || {
+        err "--source-rootfs-shell cache must be a nonexistent direct child of RUNNER_TEMP."
+        return 2
+    }
+
+    local path
+    for path in \
+        "$REPO_ROOT/local-binaries" \
+        "$REPO_ROOT/binaries" \
+        "$REPO_ROOT/local-libs" \
+        "$REPO_ROOT/apps/browser-demos/public/shell.vfs.zst"
+    do
+        if [ -e "$path" ] || [ -L "$path" ]; then
+            err "--source-rootfs-shell requires an unmaterialized Pages workspace: $path"
+            return 2
+        fi
+    done
+    [ -d "$REPO_ROOT/apps/browser-demos/public" ] &&
+        [ ! -L "$REPO_ROOT/apps/browser-demos/public" ] || {
+        err "--source-rootfs-shell requires the checked-in browser public directory."
+        return 2
+    }
+
+    SOURCE_ROOTFS_SHELL_RUNNER_TEMP="$runner_temp"
+    SOURCE_ROOTFS_SHELL_PREFLIGHT_VALIDATED=1
+}
+
+release_source_rootfs_shell_runtime_override() {
+    local failed=0
+    clear_source_rootfs_shell_transient_fetched_mirror || failed=1
+    if [ -n "$SOURCE_ROOTFS_SHELL_OVERRIDE_PATH" ]; then
+        if [ -L "$SOURCE_ROOTFS_SHELL_OVERRIDE_PATH" ]; then
+            if [ "$(readlink "$SOURCE_ROOTFS_SHELL_OVERRIDE_PATH")" = "$SOURCE_ROOTFS_SHELL_OVERRIDE_TARGET" ]; then
+                if ! rm -- "$SOURCE_ROOTFS_SHELL_OVERRIDE_PATH"; then
+                    err "Could not remove the source-rootfs shell resolver override"
+                    failed=1
+                fi
+            else
+                err "Refusing to remove a changed source-rootfs shell resolver override"
+                failed=1
+            fi
+        elif [ -e "$SOURCE_ROOTFS_SHELL_OVERRIDE_PATH" ]; then
+            err "Refusing to remove a replaced source-rootfs shell resolver override"
+            failed=1
+        fi
+        if [ "$failed" -eq 0 ] &&
+            [ "$SOURCE_ROOTFS_SHELL_OVERRIDE_SHELL_DIR_CREATED" -eq 1 ]; then
+            if [ -d "$REPO_ROOT/local-libs/shell" ] &&
+                [ ! -L "$REPO_ROOT/local-libs/shell" ]; then
+                if ! rmdir "$REPO_ROOT/local-libs/shell" 2>/dev/null; then
+                    err "Source-rootfs shell override directory gained unexpected contents"
+                    failed=1
+                fi
+            elif [ -e "$REPO_ROOT/local-libs/shell" ] ||
+                [ -L "$REPO_ROOT/local-libs/shell" ]; then
+                err "Source-rootfs shell override directory was replaced"
+                failed=1
+            fi
+        fi
+        if [ "$failed" -eq 0 ] &&
+            [ "$SOURCE_ROOTFS_SHELL_OVERRIDE_LOCAL_LIBS_CREATED" -eq 1 ]; then
+            if [ -d "$REPO_ROOT/local-libs" ] &&
+                [ ! -L "$REPO_ROOT/local-libs" ]; then
+                if ! rmdir "$REPO_ROOT/local-libs" 2>/dev/null; then
+                    err "Source-rootfs local-libs directory gained unexpected contents"
+                    failed=1
+                fi
+            elif [ -e "$REPO_ROOT/local-libs" ] ||
+                [ -L "$REPO_ROOT/local-libs" ]; then
+                err "Source-rootfs local-libs directory was replaced"
+                failed=1
+            fi
+        fi
+    fi
+    if [ "$failed" -eq 0 ]; then
+        SOURCE_ROOTFS_SHELL_OVERRIDE_PATH=""
+        SOURCE_ROOTFS_SHELL_OVERRIDE_TARGET=""
+        SOURCE_ROOTFS_SHELL_OVERRIDE_SHELL_DIR_CREATED=0
+        SOURCE_ROOTFS_SHELL_OVERRIDE_LOCAL_LIBS_CREATED=0
+        SOURCE_ROOTFS_SHELL_FETCHED_MIRROR=""
+        SOURCE_ROOTFS_SHELL_TRANSIENT_FETCHED_TARGET=""
+    fi
+    return "$failed"
+}
+
+cleanup_source_rootfs_shell_work_root() {
+    local failed=0
+    release_source_rootfs_shell_runtime_override || failed=1
+    if [ -n "$SOURCE_ROOTFS_SHELL_PUBLIC_TEMP" ]; then
+        if [ -f "$SOURCE_ROOTFS_SHELL_PUBLIC_TEMP" ] &&
+            [ ! -L "$SOURCE_ROOTFS_SHELL_PUBLIC_TEMP" ]; then
+            if ! rm -- "$SOURCE_ROOTFS_SHELL_PUBLIC_TEMP"; then
+                err "Could not remove the source-rootfs public temporary file"
+                failed=1
+            fi
+        elif [ -e "$SOURCE_ROOTFS_SHELL_PUBLIC_TEMP" ] ||
+            [ -L "$SOURCE_ROOTFS_SHELL_PUBLIC_TEMP" ]; then
+            err "Refusing to remove a replaced source-rootfs public temporary file"
+            failed=1
+        fi
+    fi
+    if [ -n "$SOURCE_ROOTFS_SHELL_WORK_ROOT" ]; then
+        case "$SOURCE_ROOTFS_SHELL_WORK_PREFIX:$SOURCE_ROOTFS_SHELL_WORK_ROOT" in
+            "$SOURCE_ROOTFS_SHELL_RUNNER_TEMP/kandelo-source-rootfs-shell.":"$SOURCE_ROOTFS_SHELL_RUNNER_TEMP/kandelo-source-rootfs-shell."*)
+                if ! rm -rf -- "$SOURCE_ROOTFS_SHELL_WORK_ROOT"; then
+                    err "Could not remove the source-rootfs shell work root"
+                    failed=1
+                fi
+                ;;
+            *)
+                err "Refusing to remove unexpected source-rootfs shell work root: $SOURCE_ROOTFS_SHELL_WORK_ROOT"
+                failed=1
+                ;;
+        esac
+    fi
+    SOURCE_ROOTFS_SHELL_WORK_ROOT=""
+    SOURCE_ROOTFS_SHELL_WORK_PREFIX=""
+    SOURCE_ROOTFS_SHELL_STAGE_BINARIES=""
+    SOURCE_ROOTFS_SHELL_CANDIDATE=""
+    SOURCE_ROOTFS_SHELL_PUBLIC_TEMP=""
+    SOURCE_ROOTFS_SHELL_PREFLIGHT_VALIDATED=0
+    return "$failed"
+}
+
+source_rootfs_shell_exit_cleanup() {
+    local original_status=$?
+    local cleanup_status=0
+    trap - EXIT INT TERM
+    cleanup_source_rootfs_shell_work_root || cleanup_status=$?
+    if [ "$original_status" -ne 0 ]; then
+        exit "$original_status"
+    fi
+    exit "$cleanup_status"
+}
+
+initialize_source_rootfs_shell_pages_mode() {
+    validate_source_rootfs_shell_pages_mode
+    [ "$SOURCE_ROOTFS_SHELL_PREFLIGHT_VALIDATED" -eq 1 ] || {
+        err "Internal error: source-rootfs Pages preflight did not complete"
+        return 1
+    }
+    SOURCE_ROOTFS_SHELL_WORK_PREFIX="$SOURCE_ROOTFS_SHELL_RUNNER_TEMP/kandelo-source-rootfs-shell."
+    SOURCE_ROOTFS_SHELL_WORK_ROOT="${SOURCE_ROOTFS_SHELL_WORK_PREFIX}${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}.${BASHPID:-$$}"
+    [ ! -e "$SOURCE_ROOTFS_SHELL_WORK_ROOT" ] &&
+        [ ! -L "$SOURCE_ROOTFS_SHELL_WORK_ROOT" ] || {
+        err "Source-rootfs shell work directory already exists"
+        return 2
+    }
+
+    # WHY: a failed or cancelled Pages step cannot advance to build, seal, or
+    # deploy. The runner is disposable; cleanup owns only runtime links and
+    # transaction-unique temporary paths, never broad package/cache state.
+    trap source_rootfs_shell_exit_cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    mkdir "$SOURCE_ROOTFS_SHELL_WORK_ROOT"
+    SOURCE_ROOTFS_SHELL_STAGE_BINARIES="$SOURCE_ROOTFS_SHELL_WORK_ROOT/binaries"
+    mkdir "$SOURCE_ROOTFS_SHELL_STAGE_BINARIES"
+    mkdir "$WASM_POSIX_BINARY_CACHE_ROOT"
+}
+
+stage_source_rootfs_shell_vfs() {
+    [ "$SOURCE_ROOTFS_SHELL" -eq 1 ] || {
+        err "Internal error: source-rootfs shell staging was not explicitly selected"
+        return 1
+    }
+    [ "$SOURCE_ROOTFS_SHELL_PREFLIGHT_VALIDATED" -eq 1 ] || {
+        err "Internal error: source-rootfs Pages preflight was bypassed"
+        return 1
+    }
+    if [ -n "$SOURCE_ROOTFS_SHELL_CANDIDATE" ]; then
+        [ -f "$SOURCE_ROOTFS_SHELL_CANDIDATE" ] &&
+            [ ! -L "$SOURCE_ROOTFS_SHELL_CANDIDATE" ] || {
+            err "The staged source-rootfs shell candidate is no longer a regular file"
+            return 1
+        }
+        return 0
+    fi
+
+    local source_repository="$WASM_POSIX_SOURCE_ROOTFS_SHELL_REPOSITORY"
+    local source_commit="$WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT"
+    [ -n "$SOURCE_ROOTFS_SHELL_WORK_ROOT" ] &&
+        [ -d "$SOURCE_ROOTFS_SHELL_STAGE_BINARIES" ] || {
+        err "Internal error: source-rootfs Pages isolation was not initialized"
+        return 1
+    }
+
+    local xtask
+    xtask="$(pkg_xtask_bin)" || {
+        err "Could not build the package resolver needed for the source-rootfs shell"
+        return 1
+    }
+
+    local archive_root="$SOURCE_ROOTFS_SHELL_WORK_ROOT/archive"
+    local manifest="$SOURCE_ROOTFS_SHELL_WORK_ROOT/manifest.toml"
+    mkdir "$archive_root"
+
+    local archive_args=(
+        archive-stage
+        --package "$REPO_ROOT/homebrew/source-rootfs-shell-package"
+        --registry "$REPO_ROOT/packages/registry"
+        --arch wasm32
+        --binaries-dir "$SOURCE_ROOTFS_SHELL_STAGE_BINARIES"
+        --out "$archive_root"
+        --build-timestamp "1970-01-01T00:00:00Z"
+        --build-host "run.sh-source-rootfs-shell"
+        --source-repository "$source_repository"
+        --source-commit "$source_commit"
+        --force-source-closure
+    )
+    archive_args+=(--cache-root "$WASM_POSIX_BINARY_CACHE_ROOT")
+
+    step "Building the explicit source-rootfs Shell VFS bridge"
+    # WHY: the bridge has a distinct recipe identity. Force-building its
+    # complete source closure means this mode cannot silently execute the
+    # canonical bottle-backed shell recipe when an archive is unavailable.
+    (cd "$REPO_ROOT" && "$xtask" "${archive_args[@]}")
+
+    local archives=()
+    local archive
+    while IFS= read -r archive; do
+        archives+=("$archive")
+    done < <(find "$archive_root" -maxdepth 1 -type f -name '*.tar.zst' -print)
+    if [ "${#archives[@]}" -ne 1 ]; then
+        err "Source-rootfs shell staging produced ${#archives[@]} archives; expected exactly one"
+        return 1
+    fi
+
+    "$xtask" archive-extract-member \
+        --archive "${archives[0]}" \
+        --member manifest.toml \
+        --out "$manifest"
+    [ -f "$manifest" ] && [ ! -L "$manifest" ] || {
+        err "Source-rootfs shell archive did not contain a regular manifest.toml"
+        return 1
+    }
+
+    local package_names=()
+    local repositories=()
+    local commits=()
+    local value
+    while IFS= read -r value; do
+        package_names+=("$value")
+    done < <(
+        awk '
+          /^\[/ { exit }
+          /^name[[:space:]]*=/ {
+            line = $0
+            sub(/^name[[:space:]]*=[[:space:]]*"/, "", line)
+            sub(/"[[:space:]]*$/, "", line)
+            print line
+          }
+        ' "$manifest"
+    )
+    while IFS= read -r value; do
+        repositories+=("$value")
+    done < <(
+        sed -nE 's/^repo_url[[:space:]]*=[[:space:]]*"([^"]+)"$/\1/p' "$manifest"
+    )
+    while IFS= read -r value; do
+        commits+=("$value")
+    done < <(
+        sed -nE 's/^commit[[:space:]]*=[[:space:]]*"([0-9a-f]{40})"$/\1/p' "$manifest"
+    )
+
+    # WHY: command-line intent is not evidence about produced bytes. Inspect
+    # the staged archive and require one exact recipe/repository/commit
+    # identity before installing any artifact under the canonical shell name.
+    [ "${#package_names[@]}" -eq 1 ] &&
+        [ "${package_names[0]}" = "source-rootfs-shell" ] || {
+        err "Source-rootfs shell archive has the wrong or ambiguous package identity"
+        return 1
+    }
+    [ "${#repositories[@]}" -eq 1 ] &&
+        [ "${repositories[0]}" = "$source_repository" ] || {
+        err "Source-rootfs shell archive repository provenance does not match the requested source"
+        return 1
+    }
+    [ "${#commits[@]}" -eq 1 ] &&
+        [ "${commits[0]}" = "$source_commit" ] || {
+        err "Source-rootfs shell archive commit provenance does not match the requested source"
+        return 1
+    }
+    if grep -Fq "UNPUBLISHED" "$manifest"; then
+        err "Source-rootfs shell archive retained an unpublished provenance marker"
+        return 1
+    fi
+
+    SOURCE_ROOTFS_SHELL_CANDIDATE="$SOURCE_ROOTFS_SHELL_WORK_ROOT/shell.vfs.zst"
+    "$xtask" archive-extract-member \
+        --archive "${archives[0]}" \
+        --member artifacts/shell.vfs.zst \
+        --out "$SOURCE_ROOTFS_SHELL_CANDIDATE"
+    [ -f "$SOURCE_ROOTFS_SHELL_CANDIDATE" ] &&
+        [ ! -L "$SOURCE_ROOTFS_SHELL_CANDIDATE" ] || {
+        err "Source-rootfs shell archive omitted its declared shell.vfs.zst artifact"
+        return 1
+    }
+}
+
+activate_source_rootfs_shell_resolver_override() {
+    local resolved
+    resolved="$("$REPO_ROOT/scripts/resolve-binary.sh" programs/shell.vfs.zst)" || {
+        err "Could not pin the installed canonical shell generation"
+        return 1
+    }
+    if [ ! -f "$resolved" ] || [ -L "$resolved" ] ||
+        ! cmp "$SOURCE_ROOTFS_SHELL_CANDIDATE" "$resolved"; then
+        err "The canonical local shell generation is not the verified bridge artifact"
+        return 1
+    fi
+
+    local local_libs="$REPO_ROOT/local-libs"
+    local shell_dir="$local_libs/shell"
+    if [ -e "$local_libs" ] || [ -L "$local_libs" ]; then
+        err "Source-rootfs Pages mode cannot replace an existing local-libs path"
+        return 1
+    fi
+
+    local override_path="$shell_dir/build"
+    local override_target
+    override_target="$(dirname "$resolved")"
+    local output_rel
+    output_rel="$(pkg_output_rel shell shell.vfs.zst wasm32)" || return 1
+    local fetched_mirror="$REPO_ROOT/binaries/programs/wasm32/$output_rel"
+    # WHY: the resolver canonicalizes a local-libs scalar target before it
+    # creates the fetched-tier mirror. Cleanup must bind the resulting
+    # immutable generation path, not the lexical override path.
+    local transient_fetched_target="$override_target/shell.vfs.zst"
+    if [ -e "$override_path" ] || [ -L "$override_path" ]; then
+        err "Source-rootfs mode cannot replace an existing local-libs/shell/build override"
+        return 1
+    fi
+    # Register exact ownership before the first mkdir/link. An EXIT/TERM trap
+    # can therefore remove any prefix of this runtime-only activation.
+    SOURCE_ROOTFS_SHELL_OVERRIDE_PATH="$override_path"
+    SOURCE_ROOTFS_SHELL_OVERRIDE_TARGET="$override_target"
+    SOURCE_ROOTFS_SHELL_OVERRIDE_LOCAL_LIBS_CREATED=1
+    SOURCE_ROOTFS_SHELL_OVERRIDE_SHELL_DIR_CREATED=1
+    SOURCE_ROOTFS_SHELL_FETCHED_MIRROR="$fetched_mirror"
+    SOURCE_ROOTFS_SHELL_TRANSIENT_FETCHED_TARGET="$transient_fetched_target"
+    mkdir "$local_libs"
+    mkdir "$shell_dir"
+    # WHY: transitive browser image recipes declare `shell@0.1.0`. Route those
+    # normal resolver reads through its supported local-libs override so a
+    # full-registry fetch cannot execute the canonical bottle recipe while the
+    # explicit bridge mode is active.
+    ln -s "$override_target" "$override_path"
+}
+
+install_source_rootfs_shell_vfs() {
+    initialize_source_rootfs_shell_pages_mode
+    stage_source_rootfs_shell_vfs
+    local xtask
+    xtask="$(pkg_xtask_bin)" || return 1
+    local work_suffix="${SOURCE_ROOTFS_SHELL_WORK_ROOT##*.}"
+    local install_session="source-rootfs-shell-${WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT:0:12}-${work_suffix}-${BASHPID:-$$}"
+    local browser_copy="$REPO_ROOT/apps/browser-demos/public/shell.vfs.zst"
+
+    # WHY: browser imports intentionally keep the public canonical shell path.
+    # Publish only the already-inspected bridge bytes through the package
+    # installer; direct copies would bypass the resolver's ownership rules.
+    WASM_POSIX_LOCAL_INSTALL_SOURCE="$SOURCE_ROOTFS_SHELL_CANDIDATE" \
+    WASM_POSIX_LOCAL_INSTALL_SESSION="$install_session" \
+        "$xtask" build-deps --arch wasm32 \
+            --binaries-dir "$REPO_ROOT/local-binaries" \
+            install-local-artifact shell shell.vfs.zst
+    activate_source_rootfs_shell_resolver_override
+    if [ -e "$browser_copy" ] || [ -L "$browser_copy" ]; then
+        err "Refusing to replace the public source-rootfs shell path"
+        return 1
+    fi
+    local public_dir
+    public_dir="$(dirname "$browser_copy")"
+    SOURCE_ROOTFS_SHELL_PUBLIC_TEMP="$public_dir/.shell.vfs.zst.source-rootfs-${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}.${BASHPID:-$$}"
+    if [ -e "$SOURCE_ROOTFS_SHELL_PUBLIC_TEMP" ] ||
+        [ -L "$SOURCE_ROOTFS_SHELL_PUBLIC_TEMP" ]; then
+        err "Source-rootfs public temporary path already exists"
+        return 1
+    fi
+    (set -o noclobber; : >"$SOURCE_ROOTFS_SHELL_PUBLIC_TEMP") || {
+        err "Could not claim the source-rootfs public temporary path"
+        return 1
+    }
+    # WHY: Vite's resolver import emits a hashed module asset, while the sealed
+    # Pages product deliberately boots `/shell.vfs.zst`. Verify the complete
+    # temporary copy, then publish it with one same-directory atomic rename.
+    cp -- "$SOURCE_ROOTFS_SHELL_CANDIDATE" "$SOURCE_ROOTFS_SHELL_PUBLIC_TEMP"
+    if [ ! -f "$SOURCE_ROOTFS_SHELL_PUBLIC_TEMP" ] ||
+        [ -L "$SOURCE_ROOTFS_SHELL_PUBLIC_TEMP" ] ||
+        ! cmp "$SOURCE_ROOTFS_SHELL_CANDIDATE" "$SOURCE_ROOTFS_SHELL_PUBLIC_TEMP"; then
+        err "Source-rootfs public temporary copy did not preserve candidate bytes"
+        return 1
+    fi
+    if [ -e "$browser_copy" ] || [ -L "$browser_copy" ]; then
+        err "Public source-rootfs shell path appeared before publication"
+        return 1
+    fi
+    mv -- "$SOURCE_ROOTFS_SHELL_PUBLIC_TEMP" "$browser_copy"
+    SOURCE_ROOTFS_SHELL_PUBLIC_TEMP=""
+    verify_source_rootfs_shell_runtime_vfs
+    info "Source-rootfs Shell VFS bridge installed"
+}
+
+clear_source_rootfs_shell_transient_fetched_mirror() {
+    [ -n "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR" ] || return 0
+    if [ -L "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR" ] &&
+        [ "$(readlink "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR")" = "$SOURCE_ROOTFS_SHELL_TRANSIENT_FETCHED_TARGET" ]; then
+        # The fetched program-cache tier must never retain a local-generation
+        # identity. Own and remove only the exact lexical link emitted while
+        # the source-mode local-libs override is active.
+        if ! rm -- "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR"; then
+            err "Could not remove the source-rootfs fetched-tier link"
+            return 1
+        fi
+    elif [ -e "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR" ] ||
+        [ -L "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR" ]; then
+        err "Refusing to clear a changed source-rootfs fetched-tier path"
+        return 1
+    fi
+}
+
+verify_source_rootfs_shell_vfs() {
+    [ -n "$SOURCE_ROOTFS_SHELL_CANDIDATE" ] &&
+        [ -f "$SOURCE_ROOTFS_SHELL_CANDIDATE" ] &&
+        [ ! -L "$SOURCE_ROOTFS_SHELL_CANDIDATE" ] || {
+        err "The explicit source-rootfs shell candidate is unavailable"
+        return 1
+    }
+    local resolved
+    resolved="$("$REPO_ROOT/scripts/resolve-binary.sh" programs/shell.vfs.zst)" || {
+        err "The installed source-rootfs shell is not resolvable at the canonical browser path"
+        return 1
+    }
+    if [ ! -f "$resolved" ] ||
+        ! cmp "$SOURCE_ROOTFS_SHELL_CANDIDATE" "$resolved"; then
+        err "The canonical browser shell path no longer contains the verified source-rootfs bytes"
+        return 1
+    fi
+    local browser_copy="$REPO_ROOT/apps/browser-demos/public/shell.vfs.zst"
+    if [ ! -f "$browser_copy" ] || [ -L "$browser_copy" ] ||
+        ! cmp "$SOURCE_ROOTFS_SHELL_CANDIDATE" "$browser_copy"; then
+        err "The stable public shell path no longer contains the verified source-rootfs bytes"
+        return 1
+    fi
+}
+
+verify_source_rootfs_shell_runtime_vfs() {
+    verify_source_rootfs_shell_vfs
+    if [ ! -L "$SOURCE_ROOTFS_SHELL_OVERRIDE_PATH" ] ||
+        [ "$(readlink "$SOURCE_ROOTFS_SHELL_OVERRIDE_PATH")" != "$SOURCE_ROOTFS_SHELL_OVERRIDE_TARGET" ]; then
+        err "The source-rootfs shell resolver override changed during browser preparation"
+        return 1
+    fi
+}
+
+verify_source_rootfs_shell_browser_closure() {
+    verify_source_rootfs_shell_vfs
+    pkg_has_output homebrew-bootstrap homebrew-bootstrap.zip || {
+        err "Source-rootfs browser preparation omitted the statically served Homebrew archive"
+        return 1
+    }
+    pkg_has_output homebrew-bootstrap homebrew-brew.env || {
+        err "Source-rootfs browser preparation omitted the Homebrew launcher policy"
+        return 1
+    }
+}
+
+verify_source_rootfs_shell_runtime_browser_closure() {
+    verify_source_rootfs_shell_browser_closure
+    verify_source_rootfs_shell_runtime_vfs
+}
+
 build_shell_vfs() {
+    if [ "$SOURCE_ROOTFS_SHELL" -eq 1 ]; then
+        # WHY: this branch must return before the canonical `resolve shell`
+        # fallback below. The explicit bridge was staged, provenance-checked,
+        # and installed by prepare-browser before any browser target ran.
+        verify_source_rootfs_shell_runtime_browser_closure
+        info "Source-rootfs Shell VFS image"
+        return
+    fi
+
     # `clean` removes only the resolver-owned local link and deliberately keeps
     # immutable fetched `binaries/`. A rebuild marker must therefore bypass the
     # ordinary availability guard so the resolver rematerializes the local
@@ -987,6 +1649,14 @@ build_shell_vfs() {
     (cd "$REPO_ROOT" && "$xtask" "${resolve_args[@]}" >/dev/null)
     if ! pkg_has_output shell shell.vfs.zst; then
         err "Package resolver did not materialize the declared shell.vfs.zst output"
+        return 1
+    fi
+    if ! pkg_has_output homebrew-bootstrap homebrew-bootstrap.zip; then
+        err "Package resolver did not materialize shell's Homebrew source dependency"
+        return 1
+    fi
+    if ! pkg_has_output homebrew-bootstrap homebrew-brew.env; then
+        err "Package resolver did not materialize shell's Homebrew launcher policy"
         return 1
     fi
     info "Bottle-built Shell VFS image resolved"
@@ -1687,6 +2357,12 @@ fetch_browser_binaries() {
     local disabled_pkgs
     local fetch_args=()
     disabled_pkgs="${BROWSER_EXTERNAL_GALLERY_PKGS[*]} ${BROWSER_FETCH_SKIP_PKGS[*]}"
+    if [ "$SOURCE_ROOTFS_SHELL" -eq 1 ]; then
+        # WHY: the selected bridge has already installed its inspected bytes
+        # under the canonical browser path. A full-registry fetch must not
+        # directly resolve the bottle-backed shell and replace that selection.
+        disabled_pkgs="$disabled_pkgs shell"
+    fi
     if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then
         fetch_args+=("${FETCH_ONLY_ARGS[@]}")
     fi
@@ -2204,6 +2880,13 @@ cmd_fetch() {
 }
 
 cmd_prepare_browser() {
+    if [ "$SOURCE_ROOTFS_SHELL" -eq 1 ]; then
+        # Select and install the bridge before the general browser fetch. Any
+        # package with a shell dependency then observes these exact local bytes
+        # instead of source-building the canonical bottle recipe.
+        install_source_rootfs_shell_vfs
+    fi
+
     # Fetch the per-package binaries for the browser UI and retained labs first.
     # The resolver-aware has_X
     # guards below then treat fetched binaries as "already built", so
@@ -2217,7 +2900,22 @@ cmd_prepare_browser() {
         fetch_browser_binaries
     fi
 
+    if [ "$SOURCE_ROOTFS_SHELL" -eq 1 ]; then
+        clear_source_rootfs_shell_transient_fetched_mirror
+        verify_source_rootfs_shell_runtime_browser_closure
+    fi
     build_browser
+    if [ "$SOURCE_ROOTFS_SHELL" -eq 1 ]; then
+        # WHY: browser preparation can resolve many transitive packages. Prove
+        # none of those steps replaced the selected bridge before releasing
+        # its staging archive and handing the canonical path to Vite.
+        clear_source_rootfs_shell_transient_fetched_mirror
+        verify_source_rootfs_shell_runtime_browser_closure
+        release_source_rootfs_shell_runtime_override
+        verify_source_rootfs_shell_browser_closure
+        cleanup_source_rootfs_shell_work_root
+        trap - EXIT INT TERM
+    fi
 }
 
 cmd_browser() {
@@ -2420,6 +3118,11 @@ cmd_list() {
     echo "                                        fetching package binaries."
     echo "  --already-materialized               Skip browser package fetching and use"
     echo "                                        the existing binaries/ tree."
+    echo "  --source-rootfs-shell                INTERNAL: Pages deploy job only. Requires"
+    echo "                                        exact GHA identity/provenance, the"
+    echo "                                        pages-exact-main-v1 attestation, an"
+    echo "                                        empty file index, fresh cache, and"
+    echo "                                        unmaterialized package workspace."
     echo "  --pr-staging                         Use the current PR's staging binary"
     echo "                                        index unless WASM_POSIX_BINARY_INDEX_URL"
     echo "                                        is already set."

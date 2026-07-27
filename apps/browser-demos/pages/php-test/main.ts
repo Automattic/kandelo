@@ -6,6 +6,7 @@
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { MemoryFileSystem } from "@host/vfs/memory-fs";
+import { restoreVerifiedVfsImage } from "@host/vfs/load-image";
 import kernelWasmUrl from "@kernel-wasm?url";
 import { finalizeKernelOwnedImage } from "../../lib/kernel-owned-boot";
 import { rewriteRootfsLazyFileUrls } from "../../lib/init/rootfs-lazy-files";
@@ -46,8 +47,10 @@ let kernel: BrowserKernel | null = null;
 let kernelInitialization: Promise<BrowserKernel> | null = null;
 let activeOutput: { stdout: string; stderr: string; output: string } | null = null;
 
-function createFs(vfsImageBytes: Uint8Array): MemoryFileSystem {
-  const fs = MemoryFileSystem.fromImage(vfsImageBytes, {
+async function createFs(vfsImageBytes: Uint8Array): Promise<MemoryFileSystem> {
+  // WHY: the test runner rewrites permissions and source files immediately.
+  // Authenticate imported lazy-tree seals before any fixture mutation.
+  const fs = await restoreVerifiedVfsImage(vfsImageBytes, {
     maxByteLength: 2 * 1024 * 1024 * 1024,
   });
   // Resolve canonical rootfs placeholders before serializing the transient
@@ -200,7 +203,7 @@ async function init() {
   ]);
 
   kernelBytes = kernelBuf;
-  const fs = createFs(new Uint8Array(imageBuf));
+  const fs = await createFs(new Uint8Array(imageBuf));
   const php = fs.stat("/usr/local/bin/php");
   if ((php.mode & 0o170000) !== 0o100000) {
     throw new Error("PHP test VFS does not contain a regular /usr/local/bin/php");

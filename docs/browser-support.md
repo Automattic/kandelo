@@ -57,6 +57,12 @@ Service Worker ──MessagePort──> Kernel Worker       │
   `writeFileToVfs`, and `unlinkFileFromVfs`). The owning worker performs those
   mutations through the mounted VFS; the main thread never receives the live
   VFS `SharedArrayBuffer`.
+  A quiescent machine can return durable root-image bytes through
+  `BrowserKernel.exportRootfsImage()`. The worker rejects export while a guest
+  process or teardown is live, serializes it against the same staging and lazy
+  materialization RPCs, and transfers only the `/` image backend. Scratch,
+  device, and shared-memory mounts are boot-local and are recreated when those
+  bytes start another machine.
 - **Legacy shared VFS** (`memfs:` constructor option + `kernel.spawn()`): main thread holds a `MemoryFileSystem` and shares the SAB with the kernel worker. Used by demos that fetch transient binaries at runtime (test runners, REPLs that load arbitrary user code, benchmark suites). The main thread transfers each program's bytes, but the Rust `ProcessTable` allocates the PID and the worker returns it. Top-level creation, guest fork/spawn, and thread clone all draw from that one authoritative task-ID sequence; no browser or host-side allocator exists.
 - **Exec reads from filesystem**: Like a real OS, `exec()` reads binaries from the kernel-side `MemoryFileSystem`. Programs are baked into the VFS image at build time (or written by the page in the legacy path before spawning). Symlinks are used for multicall binaries (e.g., coreutils).
 - **dinit for service supervision**: Multi-process demos (nginx, redis, mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and per-service files under `/etc/dinit.d/` into the VFS image via `addDinitInit()` (`images/vfs/scripts/dinit-image-helpers.ts`). dinit is the first user process, not PID 1. It reaps its directly supervised children and handles `depends-on` ordering and bootstrap-then-daemon chains. Synthetic PID 1 has no wait loop, so Kandelo does not yet reap children reparented to it. Page code waits for service-ready via `onListenTcp` (port-bind) callbacks, then starts driving the demo over kernel-loopback TCP or the HTTP bridge.
@@ -297,7 +303,14 @@ Browser demos use pre-built **VFS images** — binary snapshots of a `MemoryFile
 ### How it works
 
 1. **Build time**: A TypeScript build script creates a `MemoryFileSystem`, writes files/dirs/symlinks into it, and calls `saveImage()` to produce a zstd-compressed `.vfs.zst` file. Empty regions of the SharedFS allocator compress to nearly nothing, so a 32 MB filesystem with a few MB of real content typically ships as a 1–3 MB download. If the image should grow or report a larger `df` capacity at runtime, build it with `MemoryFileSystem.create(sab, permittedMaxBytes)` so the filesystem metadata is sized for that capacity.
-2. **Runtime**: The demo page fetches the `.vfs.zst` file, calls `MemoryFileSystem.fromImage(imageBytes, { maxByteLength })` (which auto-detects zstd magic and decompresses transparently), and passes the resulting filesystem to `BrowserKernel({ memfs })`. `maxByteLength` makes the restored `SharedArrayBuffer` growable; it does not raise the filesystem maximum beyond the image's superblock limit.
+2. **Runtime**: The demo page fetches the `.vfs.zst` file and awaits
+   `restoreVerifiedVfsImage(imageBytes, { maxByteLength })`. The helper
+   auto-detects zstd magic, restores the filesystem, and authenticates every
+   imported atomic lazy-tree seal before returning. Only then may the consumer
+   inspect, mutate, rewrite, or pass the filesystem to `BrowserKernel({
+   memfs })`. `maxByteLength` makes the restored `SharedArrayBuffer` growable;
+   it does not raise the filesystem maximum beyond the image's superblock
+   limit.
 
 The canonical Homebrew shell has a 512 MiB filesystem ceiling. Products that
 copy that shell and add their own application tree use a separate 768 MiB
@@ -331,12 +344,14 @@ consuming a `vfs` override.
 
 ```typescript
 // Typical demo pattern
+import { restoreVerifiedVfsImage } from "@host/vfs/load-image";
+
 const [kernelBuf, vfsImageBuf] = await Promise.all([
   fetch(kernelUrl).then(r => r.arrayBuffer()),
   fetch(vfsImageUrl).then(r => r.arrayBuffer()),
 ]);
 
-const memfs = MemoryFileSystem.fromImage(
+const memfs = await restoreVerifiedVfsImage(
   new Uint8Array(vfsImageBuf),
   { maxByteLength: 512 * 1024 * 1024 },
 );
@@ -479,7 +494,7 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Python (legacy opt-in) | `python-vfs.vfs.zst` | `bash packages/registry/python-vfs/build-python-vfs.sh` | ABI-bound CPython interpreter, complete stdlib, license, aliases, and demo metadata |
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
-| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the exact reviewed 42-Formula public Homebrew bottle closure, compatibility links, profile, and image-owned Homebrew Bash |
+| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the reviewed six-Formula shell: embedded `libcxx`/Ncurses/Bash and lazy Dash/Bzip2/first-party M4. `/usr/bin/brew` names a separate lazy source and atomic runtime-support layer. |
 | Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | npm 10.9.2 dist + writable `/work` |
 | WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
@@ -562,6 +577,36 @@ including across VFS image save/restore. A metadata-only tree remains deferred
 through serialization and is still verified at first-use or boot-prefetch even
 though it has no regular stub to replace. Descriptors with no package-layer
 mounts retain the ordinary shell behavior and fetch no runtime-layer bytes.
+
+Dependent first-use trees may be sealed as one atomic cohort. The producer
+names the exact expected members; VFS metadata binds every member's
+transport-independent descriptor digest plus the cohort count and digest under
+the closed `kandelo-deferred-tree-v3` kind. Restore rejects an omitted tree or
+regular alias. The host captures each sealed member in a private immutable
+activation snapshot; mutable public group objects can make an operation fail
+but cannot replace the integrity, archive member, size, source, inventory, or
+namespace mapping consumed after an await. Imported seals must pass browser or
+Node SHA-256 verification during save, activation, explicit resealing, or
+`verifyImportedLazyAtomicGroupSeals()` before synchronous export,
+pending-resource inspection, or rebase can reproduce them. A browser-side image
+consumer that needs to inspect or extend a restored image must await that
+explicit verifier first: it hashes only the private seal descriptors and does
+not fetch or materialize bottle data, snapshot the VFS, export metadata, or
+rebase storage. Deployment URL rewriting is the intentional exception for
+transport location only: the exact digest, size, decoder bounds, and mapping
+stay sealed. Concurrent browser inspection and first use share one
+per-cohort seal-validation flight. Transport and decode begin only after that
+proof, so a download failure can reject activation without discarding a
+successfully authenticated imported seal.
+
+First use fetches/decodes at most four cohort members concurrently, stops
+scheduling after one failure, and waits for all in-flight work before retry
+becomes possible. The final SharedFS transaction guards all declared
+directories, symlinks, regular names, and hard-link aliases, and capacity
+rollback leaves every stub, sequence, and timestamp retryable. Thus a browser
+or Node guest never observes a successfully activated prefix missing a required
+metadata entry or dependency tree.
+
 Across all selected layers, at most 512 layer-owned packages may be added. The
 base image's already-pending deferred groups and the newly selected bottle
 trees share one 512-group serialization budget. Pending generic deferred trees
@@ -668,38 +713,89 @@ orchestrates explicit resolver builds:
 ./run.sh build all            # Build everything including all VFS images
 ```
 
-The main shell target resolves the `shell` package into `local-binaries`; it
-does not invoke the image recipe or fbDOOM build directly. During ABI 42
-activation, its complete direct dependency contract is declared once in
-`homebrew/source-rootfs-shell-dependencies.json` and checked against the package
-manifest. The resolver may fetch the checksum-pinned upstream sources declared
-by those packages; the image composer itself consumes only resolver-owned
-outputs and has no tap, bottle-registry, binary-mirror, or ambient network
-fallback. Bash is materialized into its existing `/bin/bash` and
-`/usr/bin/bash` hardlink identity because every shell boot needs it; rootfs
-utilities and the extended shell tools remain lazy. Vim and NetHack retain
-package-owned, integrity-bound lazy archive trees. This temporary bridge
-prevents pull-request-built bottles from being relabeled as main-built through
-Git ancestry alone. The bottle-only recipe returns after every final bottle
-has been rebuilt from an actual default-branch `main` checkout.
-`./run.sh --fetch-only build shell-vfs` keeps the stricter consumer contract
-and refuses source fallback.
+The main shell target resolves the canonical `packages/registry/shell` package
+into `local-binaries`; it does not invoke the image recipe or fbDOOM build
+directly. That package is the strict bottle-backed product recipe: its tap
+commit, Formula closure, bottle identities, and lazy-artifact lock fail closed.
+`./run.sh --fetch-only build shell-vfs` therefore refuses source fallback.
 
-Required shell CI and Pages deployment do not bypass that temporary recipe.
-The main-shell gate force-builds every buildable node in the current shell
-closure and verifies the same installed bytes in Node and Chromium. Its sealed
-browser proof runs eager Bash, a rootfs-owned lazy `grep`, extended lazy
-`less`, and integrity-bound Vim and NetHack archive entries. Pages builds the
-current sysroot and exact source closure, assembles the real product tree, then
-boots that sealed `/kandelo/` tree before deployment. The dormant bottle
-candidate is not selected again until exact-main bottles exist.
+Required pull-request and default-branch CI also need to validate the exact
+checkout before its final bottles exist. That provisional lane explicitly
+stages the separate, non-published
+`homebrew/source-rootfs-shell-package` recipe. This is an internal Pages lane,
+not a supported developer build mode. The workflow selects it with
+`./run.sh prepare-browser --source-rootfs-shell`, supplies the exact event
+repository and commit through
+`WASM_POSIX_SOURCE_ROOTFS_SHELL_REPOSITORY` and
+`WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT`, and attests
+`WASM_POSIX_SOURCE_ROOTFS_SHELL_ISOLATION=pages-exact-main-v1`. The command
+also verifies the actual GitHub Actions workflow, job, main-branch checkout,
+repository, commit, workspace, run identity, and the workflow's
+`${{ runner.environment }}` attestation before mutation. It accepts only the
+reviewed GitHub-hosted Linux job. That job requires the workflow-created exact
+empty current-ABI file index, a nonexistent sibling cache path under
+`RUNNER_TEMP`, and an otherwise unmaterialized
+`local-binaries`/`binaries`/`local-libs` workspace.
+
+The bridge closure is first staged and inspected entirely under the disposable
+runner's temporary directory. Only then is the exact artifact installed
+through canonical package ownership. A temporary `local-libs` resolver
+override feeds that pinned generation to transitive image recipes without
+invoking the canonical shell recipe. The stable `/shell.vfs.zst` copy is
+verified in a same-directory temporary file and published by atomic rename.
+After the final browser closure check, the transient resolver link and override
+are removed and the remaining canonical and public bytes are rechecked.
+Failure or cancellation stops the job before its later build, browser seal,
+freshness, and deployment steps; any partial canonical state remains only on
+that disposable failed runner. The workflow contract rejects
+`continue-on-error` and failure-status overrides on those steps. An
+untrappable `SIGKILL` or runner loss can skip link/temp cleanup, but cannot
+publish that runner's partial tree. Ordinary `prepare-browser` never
+interprets or cleans up this internal lane.
+
+While this temporary source lane is active, every push to `main` starts the
+Pages workflow. The source-shell closure includes transitive package recipes,
+shared build scripts, package actions, SDK/sysroot inputs, and fork
+instrumentation; a hand-maintained path filter could otherwise leave the
+published product on an older closure when a newly shared input changes. The
+temporary Homebrew main-shell gate likewise runs for every pull request and
+`main` push so the exact Node/Chromium validation cannot be skipped by the
+same kind of allowlist drift.
+
+Its complete direct dependency contract is declared once in
+`homebrew/source-rootfs-shell-dependencies.json`; the workflow uses an empty
+binary index and a fresh cache so every buildable dependency is produced from
+its checksum-pinned source. The composer consumes only resolver-owned outputs
+and has no tap, bottle-registry, binary-mirror, or ambient network fallback.
+Bash is materialized into its existing `/bin/bash` and `/usr/bin/bash` hardlink
+identity because every shell boot needs it; rootfs utilities and the extended
+shell tools remain lazy. Vim and NetHack retain package-owned,
+integrity-bound lazy archive trees.
+
+The bottle shell's base demo metadata describes only the shell it actually
+owns. The temporary source bridge composes
+`homebrew/source-rootfs-shell-demo-profiles.json` because that bridge also
+installs fbDOOM and modeset eagerly. Its composer binds each added profile's
+`autoCommand` to the corresponding executable in the image. This keeps
+optional-demo promises with the image layer that supplies their bytes; future
+bottle layers for those programs should carry the same profile ownership when
+the temporary bridge is retired.
+
+The main-shell gate installs that provisional output and verifies the same
+bytes in Node and Chromium. Its sealed browser proof runs eager Bash, a
+rootfs-owned lazy `grep`, extended lazy `less`, and integrity-bound Vim and
+NetHack archive entries. The final bottle lane remains separate and keeps the
+canonical shell's artifact lock enabled; an explicit closed lifecycle dispatch
+must prove the exact default-branch producer and tap revisions before cutover.
 
 ### Adding a new VFS image
 
 1. Create `images/vfs/scripts/build-<name>-vfs-image.ts` — import helpers from `vfs-image-helpers.ts`
 2. Create `images/vfs/scripts/build-<name>-vfs-image.sh` — shell wrapper that runs the TypeScript script
 3. If the image is consumed by Kandelo, write `/etc/kandelo/demo.json` via `writeKandeloDemoConfig()`
-4. If the image is consumed by the Kandelo UI, expose it through a gallery manifest, preset, or direct `vfs` URL so the UI can fetch the `.vfs.zst` image and use `MemoryFileSystem.fromImage()` (which auto-decompresses)
+4. If the image is consumed by the Kandelo UI, expose it through a gallery
+   manifest, preset, or direct `vfs` URL so the UI can fetch the `.vfs.zst`
+   image and await `restoreVerifiedVfsImage()` before inspecting or booting it
 5. Add a build target in `run.sh`
 
 The shared helpers in `vfs-image-helpers.ts` provide:

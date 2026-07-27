@@ -91,6 +91,7 @@ mod package_archive_name;
 mod package_matrix;
 mod package_output_receipt;
 mod pkg_manifest;
+mod publication_policy;
 mod remote_fetch;
 mod source_extract;
 mod staging_reuse;

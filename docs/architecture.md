@@ -726,11 +726,20 @@ The kernel's hardcoded `INITIAL_BRK` (16MB) is a fallback for binaries that don'
 
 ### Default mount layout
 
-The canonical layout lives in `host/src/vfs/default-mounts.ts` as `DEFAULT_MOUNT_SPEC: MountSpec[]`. `resolveForBrowser` and `resolveForNode` (the latter in `default-mounts-node.ts` so `node:fs`/`node:path` stay out of browser bundles) materialise the spec into `MountConfig[]`:
+The canonical layout lives in `host/src/vfs/default-mounts.ts` as
+`DEFAULT_MOUNT_SPEC: MountSpec[]`. `resolveForBrowser` and `resolveForNode`
+(the latter in `default-mounts-node.ts` so `node:fs`/`node:path` stay out of
+browser bundles) validate the spec synchronously, then return
+`Promise<MountConfig[]>`. Before either promise resolves, the shared resolver
+restores every image-backed mount and asynchronously authenticates all imported
+atomic lazy-tree seals. Only after every image passes does it normalize legacy
+image state and allocate browser scratch filesystems or create Node scratch
+directories. A forged later image therefore cannot leave an earlier mount
+normalized or a host scratch directory published as a partial boot.
 
 | Mount point | Source | Browser backend | Node backend |
 |-------------|--------|-----------------|--------------|
-| `/`         | image (advisory readonly) | `MemoryFileSystem.fromImage(rootfs.vfs)` | `MemoryFileSystem.fromImage(rootfs.vfs)` |
+| `/`         | image (advisory readonly) | awaited verified `MemoryFileSystem` restore | awaited verified `MemoryFileSystem` restore |
 | `/tmp`      | scratch (ephemeral) | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 | `/var/tmp`  | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 | `/var/log`  | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
@@ -812,6 +821,29 @@ identity-guarded batch replacement, so failure leaves all pending regular
 inodes unchanged. Hard-link aliases use one SharedFS inode and retain that
 identity when the lazy metadata is transferred or saved in an image.
 
+Several first-use trees can opt into one fail-closed activation cohort. Each
+tree registers a producer-stable member name, and the producer must explicitly
+seal the exact expected member set before the cohort can activate or serialize.
+Sealing hashes each member's transport-independent content, mount, activation,
+and complete guest/source inventory, then hashes the canonical member set.
+Every serialized member carries its descriptor digest, expected cohort count,
+and cohort digest, so omitting one tree record or one regular alias makes image
+restore fail rather than turning an unbacked zero-byte stub into a concrete
+file. Deployment URLs are deliberately outside this identity because an image
+may rewrite byte-identical mirrors.
+
+Activation snapshots every declared directory, symlink, regular name, and
+hard-link alias before I/O. At most four cohort archives fetch/decode at once;
+after the first failure no new work starts, and all already-running workers are
+awaited before the attempt rejects, so an immediate retry cannot overlap
+abandoned downloads or retain duplicate decoded trees. One SharedFS commit
+revalidates the complete namespace while holding its namespace and target-inode
+locks. Capacity failure restores every touched stub's empty data, sequence, and
+timestamps; directory, symlink, ownership, mode, or alias races reject the
+whole cohort. All allocating and potentially throwing publication bookkeeping
+is prepared before that commit; afterward one bounded linear pass only retires
+the proven lazy identities.
+
 For each declared transport, materialization permits three total GET attempts:
 only HTTP 408, 429, and 5xx responses or recognized fetch/body network
 interruptions repeat the same URL. The two retry waits default to 250 and 500
@@ -829,12 +861,41 @@ live registration, cross-worker import, image restore, and filesystem rebase.
 Content, activation, mount prefix, inventory, and pending inode metadata reject
 unknown fields, unsafe or oversized strings, count/size disagreement, and
 missing, cyclic, or cross-inode hard-link targets before a group is installed.
-Serialized groups carry an explicit `kandelo-deferred-tree-v1` or
-`kandelo-legacy-zip-v1` kind, and newly saved images declare that every group is
-typed. A deferred tree therefore cannot enter the less expressive legacy ZIP
-path by dropping its inventory or activation fields. Untyped legacy ZIP groups
-remain a restore-only migration path for historical images that predate the
-typed-image flag; restoration normalizes them to the explicit legacy kind.
+Serialized groups carry an explicit `kandelo-deferred-tree-v1` (derived ZIP),
+`kandelo-deferred-tree-v2` (original bottle), or
+`kandelo-legacy-zip-v1` kind. A sealed multi-tree cohort uses
+`kandelo-deferred-tree-v3`, regardless of decoder, because its atomic membership
+is an additional closed wire contract; v1/v2 records cannot quietly acquire
+those fields. Sealing or importing v3 retains a private immutable snapshot of
+the byte identity, decoder bounds, source truth, complete inventory, runtime
+inode mapping, integrity, and activation policy. Fetch, decode, preflight,
+commit, export, save, and rebase consume that snapshot; the caller-reachable
+group remains a compatibility view that may invalidate an operation but cannot
+redirect it. Mirror locations remain outside the descriptor digest so image
+composition may rewrite them, but that explicit rewrite replaces the private
+transport snapshot without changing the sealed byte hash or mapping.
+
+An imported seal claim is structurally valid but untrusted until an asynchronous
+SHA-256 pass during save, activation, explicit resealing, or
+`verifyImportedLazyAtomicGroupSeals()` verifies every member and the cohort
+digest. Synchronous export, pending-resource inspection, and rebase reject a
+pending imported cohort before that proof. Image consumers that need those
+synchronous operations can await the explicit verifier without fetching or
+materializing a tree, snapshotting the filesystem, exporting metadata, or
+rebasing storage. Repeated verification is safe; a rejected digest leaves the
+cohort untrusted and therefore blocked. This strengthens the existing v3
+behavior without changing its serialized fields or digest schema. Concurrent
+explicit verification, image save, resealing, and first-use activation join one
+per-cohort seal-validation flight instead of hashing the same descriptors
+independently. Seal verification remains separate from transport and decode:
+once the seal proof linearizes successfully, a later download failure can leave
+inspection authenticated while activation stays deferred and retryable.
+
+Newly saved images declare that every group is typed. A deferred tree therefore
+cannot enter the less expressive legacy ZIP path by dropping its inventory or
+activation fields. Untyped legacy ZIP groups remain a restore-only migration
+path for historical images that predate the typed-image flag; restoration
+normalizes them to the explicit legacy kind.
 Cross-worker imports stage and identity-check the complete batch before
 publishing any group, so rejection of a later group cannot leave earlier lazy
 metadata active.
@@ -909,11 +970,26 @@ changed by another worker. `materializeAll: true` resolves both standalone and
 archive-backed entries and fails instead of emitting an image that still
 depends on a deferred URL.
 
+Kernel-owned machines expose that same durable boundary through
+`NodeKernelHost.exportRootfsImage()` and
+`BrowserKernel.exportRootfsImage()`. Export is available only after a
+VFS-backed kernel has initialized and every guest process and worker teardown
+has completed. The owning worker closes a snapshot gate before its first
+asynchronous wait, drains host-side mutations that started earlier, and rejects
+later spawns, lazy registration, materializing reads, writes, unlinks, and
+concurrent exports until serialization settles. The returned image contains
+only the `/` image backend; boot-scoped scratch, device, and shared-memory
+mounts are recreated on the next boot. Lazy descriptors and image metadata
+remain part of the root image, so a deferred package that was never opened
+stays deferred after export and restore. Callers must await the export before
+destroying the host.
+
 **Restore from an image:**
 
 ```typescript
-// Creates a new independent MemoryFileSystem with its own SharedArrayBuffer
-const restored = MemoryFileSystem.fromImage(image);
+// Creates an independent filesystem and authenticates imported atomic seals
+// before the caller may inspect, mutate, rewrite, or boot it.
+const restored = await restoreVerifiedVfsImage(image);
 ```
 
 The restored filesystem is fully independent — modifications to the original or restored instance don't affect each other. Multiple independent instances can be created from the same image.
@@ -921,14 +997,17 @@ The restored filesystem is fully independent — modifications to the original o
 When restoring for use in a browser, pass `maxByteLength` to create a growable `SharedArrayBuffer` so the filesystem can expand beyond the image's original size:
 
 ```typescript
-const restored = MemoryFileSystem.fromImage(image, { maxByteLength: 1024 * 1024 * 1024 });
+const restored = await restoreVerifiedVfsImage(image, {
+  maxByteLength: 1024 * 1024 * 1024,
+});
 ```
 
-The image must also have been built with a large enough filesystem maximum, for example `MemoryFileSystem.create(sab, 1024 * 1024 * 1024)`. `fromImage(..., { maxByteLength })` only controls the restored buffer's runtime growth ceiling; `statfs`/`df` and allocation remain capped by the image superblock maximum.
+The image must also have been built with a large enough filesystem maximum, for example `MemoryFileSystem.create(sab, 1024 * 1024 * 1024)`. `restoreVerifiedVfsImage(..., { maxByteLength })` only controls the restored buffer's runtime growth ceiling; `statfs`/`df` and allocation remain capped by the image superblock maximum.
 Call `MemoryFileSystem.readImageCapacity(image)` when build tooling needs the
 serialized buffer length and superblock ceiling without restoring the image.
-Call `fromImagePreservingCapacity(image)` to restore a growable buffer with the
-same ceiling the image builder recorded.
+Await `restoreVerifiedVfsImagePreservingCapacity(image)` to restore and
+authenticate a growable buffer with the same ceiling the image builder
+recorded.
 
 A consumer that must stage files larger than the image's recorded allocation
 ceiling first calls `rebaseToNewFileSystem(requiredMaxBytes)`. Shared image
@@ -936,7 +1015,7 @@ helpers never treat a partial file as complete: `writeVfsBinary` advances over
 positive short writes and throws on zero/negative progress or an underlying
 filesystem error, while still closing the descriptor.
 
-Kandelo browser UI presets use this approach. Each image builder pre-populates a VFS with runtime files, directory structure, configs, and symlinks, then saves it as a `.vfs.zst` file (zstd-compressed; `saveImage()` compresses on write). At runtime, the UI fetches the file and `MemoryFileSystem.fromImage` decompresses transparently - restoring the image replaces thousands of individual file writes with a single buffer copy. The empty regions of the SharedFS allocator compress to almost nothing, so a 32 MB filesystem with a few MB of real content typically ships as a 1-3 MB download.
+Kandelo browser UI presets use this approach. Each image builder pre-populates a VFS with runtime files, directory structure, configs, and symlinks, then saves it as a `.vfs.zst` file (zstd-compressed; `saveImage()` compresses on write). At runtime, the UI fetches the file and `restoreVerifiedVfsImage` decompresses it transparently and authenticates imported atomic lazy-tree seals before returning it. Restoring the image replaces thousands of individual file writes with a single buffer copy. The empty regions of the SharedFS allocator compress to almost nothing, so a 32 MB filesystem with a few MB of real content typically ships as a 1-3 MB download.
 
 There are two consumption patterns for VFS images, depending on whether the demo wants the kernel worker to fully own the filesystem:
 
@@ -967,8 +1046,10 @@ Build scripts are in `images/vfs/scripts/` and share common helpers (`vfs-image-
 
 `MemoryFileSystem.saveImage()` returns the raw VFS image below. The image
 builder helper wraps it in one zstd frame for `.vfs.zst` artifacts;
-`MemoryFileSystem.fromImage()` accepts either form and auto-detects the zstd
-magic (`28 B5 2F FD`) at offset 0 before parsing.
+The low-level `MemoryFileSystem.fromImage()` parser accepts either form and
+auto-detects the zstd magic (`28 B5 2F FD`) at offset 0. Imported consumers use
+`restoreVerifiedVfsImage()` (or its capacity-preserving peer) so parsing is
+followed by cryptographic authentication before the filesystem is published.
 
 Runtime snapshots preserve the filesystem's POSIX atime, mtime, and ctime by
 default. Reproducible image builders may request a fixed timestamp in the

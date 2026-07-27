@@ -22,8 +22,8 @@ import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   ensureDirRecursive,
   walkAndWrite,
-  symlink,
 } from "./vfs-image-helpers";
+import { symlinkWithParentDirectories } from "./derived-vfs-symlink";
 import {
   loadShellBaseFileSystem,
   resolveVfsArtifact,
@@ -63,7 +63,7 @@ async function main() {
   }
 
   console.log("Loading shell base image...");
-  const fs = loadShellBaseFileSystem(NODE_IMAGE_MAX_BYTES);
+  const fs = await loadShellBaseFileSystem(NODE_IMAGE_MAX_BYTES);
   populateNodeLazyBinary(fs);
 
   // Node/npm workspace additions.
@@ -116,7 +116,10 @@ function populateNodeLazyBinary(fs: MemoryFileSystem): void {
     0o755,
   );
   for (const link of NODE_LAZY_BINARY_SPEC.symlinks) {
-    symlink(fs, NODE_LAZY_BINARY_SPEC.vfsPath, link);
+    // WHY: the minimal bottle-composed shell deliberately omits optional
+    // directory skeletons such as /usr/local/bin. This derived image owns the
+    // Node aliases, so it must also own their parent directories.
+    symlinkWithParentDirectories(fs, NODE_LAZY_BINARY_SPEC.vfsPath, link);
   }
 }
 

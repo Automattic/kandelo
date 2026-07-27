@@ -45,6 +45,11 @@ export async function loadClosedLazyAssetSources(
     fetchImpl?: FetchLike;
     maxConcurrency?: number;
     signal?: AbortSignal;
+    /**
+     * Reuse one fetch-visible cancellation identity across sequential stages.
+     * The controller must not be shared with unrelated loading operations.
+     */
+    transportController?: AbortController;
   } = {},
 ): Promise<ClosedLazyAsset[]> {
   const validated = validateClosedLazyAssetSources(sources);
@@ -56,13 +61,16 @@ export async function loadClosedLazyAssetSources(
     );
   }
 
-  const controller = new AbortController();
+  const controller = options.transportController ?? new AbortController();
   let firstFailure: { reason: unknown } | undefined;
   const fail = (reason: unknown): void => {
     if (firstFailure !== undefined) return;
     firstFailure = { reason };
     controller.abort(reason);
   };
+  if (controller.signal.aborted) {
+    fail(controller.signal.reason);
+  }
 
   const callerSignal = options.signal;
   const onCallerAbort = (): void => fail(callerSignal!.reason);
@@ -298,7 +306,13 @@ function hex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function validateClosedLazyAssetSources(
+/**
+ * Validate and snapshot a complete source set without starting network I/O.
+ *
+ * This is public so staged consumers can enforce one aggregate count/byte
+ * budget before fetching an authority document and only then its dependents.
+ */
+export function validateClosedLazyAssetSources(
   sources: readonly ClosedLazyAssetSource[],
 ): ClosedLazyAssetSource[] {
   if (!Array.isArray(sources) || sources.length === 0) {
@@ -359,7 +373,7 @@ function validateCanonicalClosedUrl(url: string, label: string): void {
     parsed.href !== url
   ) {
     throw new Error(
-      `${label} must use one canonical credential-free HTTPS URL`,
+      `${label} must use one canonical HTTPS URL without userinfo or a fragment`,
     );
   }
 }

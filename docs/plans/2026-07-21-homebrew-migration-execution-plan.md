@@ -1,7 +1,7 @@
 # Homebrew Migration Living Execution Plan
 
 - Status: active
-- Last reconciled: 2026-07-25
+- Last reconciled: 2026-07-26
 - Primary repositories: `Automattic/kandelo` and
   `Kandelo-dev/homebrew-tap-core`
 - Purpose: preserve the complete Homebrew migration scope, record what has
@@ -13,42 +13,57 @@ goal merely because it is not part of the next pull request. A goal leaves this
 plan only when it is completed with evidence or explicitly superseded with the
 replacement decision recorded in the disposition log.
 
-## Active Checkpoint: Admit The #1097 Rootfs Closure
+## Superseded Checkpoint: Admit The #1097 Rootfs Closure
 
-This checkpoint is implementation and validation work in progress; it is not a
-claim that a new public generation exists.
+Do not dispatch this migration bridge. A 2026-07-26 replay against #1109 head
+`680c25bc0c90e198dde40ff3f9b3ae4454bf45c3` proved that the #1097 rootfs
+selection is no longer cache-compatible with current source. The rootfs cache
+identity changed from
+`e94b505195f0cea529b763fc2358d2b64695876fe1c352367cd28951ce35670d`
+to
+`9bbf271203cace8b662814e5557ec7ad6466e2a6df842680dc00b9ca039830c3`
+because declared inputs under `images/rootfs`, `tools/mkrootfs/src`,
+`host/src/vfs/memory-fs.ts`, and `host/src/vfs/sharedfs-vendor.ts` changed.
+That is real package-input drift, so the compatibility proof must fail closed.
 
-The immutable package producer is
+The production path is now a fresh exact-main rootfs closure rebuild after
+#1109 lands, followed by ordinary `identical-git-tree-v1` promotion. The
+historical validator pin deliberately remains
+`d8a095c60ed3bb90831afc11ec586c21abd886ee`; current
+`build_deps.rs` is `34303f596023bb48ee6eb658015d2bdae8b5252a` and must
+be rejected. The production promotion workflow exposes only
+`identical-git-tree-v1`. Retain the original bounded design below as an audit
+record until its migration-only reader is removed after cutover. It is not a
+dispatch procedure.
+
+The rejected design recorded immutable package producer
 `748c2609954d2809bbcbbcb642fa7d257fc0dbc6` (`H`). The final post-merge
-current-main publisher/validator commit is `M` and must be read back from
-`refs/heads/main`; do not substitute a candidate PR SHA. Current main remains
-the only executable and mutation authority. The producer checkout is inert
-source data, and its archives retain truthful producer `H`.
+current-main publisher/validator commit would have been `M`. Current main
+remains the only executable and mutation authority.
 
-The selected-input bridge is a bounded migration exception, not a general
-historical-cache policy:
+The rejected selected-input bridge was a bounded migration exception, not a
+general historical-cache policy. It would have:
 
-1. Preserve the exact `pr-1097-staging` rootfs/wasm32 evidence as a public,
+1. Preserved the exact `pr-1097-staging` rootfs/wasm32 evidence as a public,
    content-addressed `preserved-package-generation-...` release with
    `admission = "none"`. The preservation input is the exact selected closure
    from workflow run `30161296461`; both PR-release bytes and same-run artifact
    bytes must validate.
-2. After the bridge implementation lands, read the exact `M` SHA and the two
-   validator blob IDs from main. The candidate blob IDs are
+2. Read the exact `M` SHA and the two reviewed validator blob IDs. The
+   historical blob IDs were
    `d8a095c60ed3bb90831afc11ec586c21abd886ee` for
    `tools/xtask/src/build_deps.rs` and
-   `76a582453e25c35258b98c63040b0d4478634dbb` for
-   `tools/xtask/src/staging_reuse.rs`; these remain provisional until main
-   readback confirms the exact bytes.
-3. Dispatch `promote-package-generation.yml` with the actual preservation tag,
+   `0edc5fe7bc1f6b919816050cdc82a5e549da054b` for
+   `tools/xtask/src/staging_reuse.rs`. They stay frozen so current validator
+   bytes cannot reinterpret the one-shot evidence.
+3. Dispatched `promote-package-generation.yml` with the preservation tag,
    producer `H`, validated main `M`,
    `identical-package-cache-projection-v1`, ABI 42, selection
-   `root-package=rootfs`, and `wasm32`. Never pass the mutable PR tag or the
-   preservation tag to a consumer.
-4. Require public anonymous reconstruction and validation of the resulting
+   `root-package=rootfs`, and `wasm32`.
+4. Required public anonymous reconstruction and validation of the resulting
    admitted `package-generation-rootfs-wasm32-...` release before rotating tap
    callers.
-5. Rotate publish, dry-run, and rebuild-maintenance callers together. Their
+5. Rotated publish, dry-run, and rebuild-maintenance callers together. Their
    reusable-workflow pin and `kandelo-ref` must use the same exact `M`; their
    `package-generation-wasm32` input must use the admitted content tag.
 
@@ -60,7 +75,8 @@ against clean `H` and clean pre-bridge main `ed811d054c288ddf19a0093c96a59a5799a
 - the 44-root schema-2 browser selection is not identical because `lamp`,
   `nginx-php-vfs`, and `wordpress` have different cache identities.
 
-Do not widen the bridge or add path exceptions to admit that browser closure.
+The later #1109 replay also found real rootfs input drift. Do not widen the
+bridge or add path exceptions to admit either closure.
 Schema-2 support remains necessary for future generations built under their
 actual current-main producer. Its full projection binds source-only entries;
 the component ledger contains only materializable expected entries, while
@@ -255,7 +271,7 @@ complete here only when its exact accepted artifact has been verified.
 | Third-party tap model | Live publisher proof complete; guest use remains | The stricter load-order-independent cross-tap runtime contract landed in Kandelo as PR #1046 at `bd2b090e3e6998350be24ed018bbb76d3eb5b012`, in the core tap as PR #82 at `caad125218a2e3c6f05d290151a32128ec6c54ac`, and in the canary as PR #13 at `25069ad2acb7f86746ec3d119a823e8210a7a1eb`. PR #1049 landed the active-repository tap-store correction at `466a685d9366d3b712c4fe998307e00157bd5d15`; core-tap PR #83 pinned it at `cbb439454adf2718b010d0fe2caffe7158340a0e`, and canary PR #14 pinned it at `ee4464b87b988b163608b6c3520c2260907bda61`. Independent run `29886510154` is completely green: public M4 package and index, anonymous exact-byte pour, dependency-bearing Node.js and Chromium image proof, transactional tap finalization, and immutable five-asset VFS release `homebrew-vfs-sha256-40a44df5c6f139a4e9105b5155040be757bc20596dc5dce2d7a64286447d9f3e`. Conventional third-party `brew tap` and `brew install` inside the guest remain Phase 5 work. |
 | Deferred bottle trees | Generic producer and Phase 3 public proof complete; Phase 4 mirror public and relocation locally validated | PR #1051 landed the generic first-use substrate at `122e62a77ffeb40039bee3f2b29cd5f82ed6b1fe`. PR #1054 landed the exact original-bottle producer at `c16a48c693c8a6dea4ca14e7886b735bf685d51d`: one independently lazy tree per Formula, complete source and guest inventories, exact compressed transport identity, hardlinks, and independent TypeScript/Python validation. PR #1055 composes the exact 38-Formula namespace, PR #1060's exact head proves its immutable public mirror and canonical revision-17 cutover, and PR #1056 landed the aggregate-budget correction. The Phase 4 worktree adds receipt-owned relocation before exposing language runtimes, because exact bottle bytes are transport truth while a correct pour may replace only the placeholders named by that bottle's `INSTALL_RECEIPT.json`; its complete 39-bottle browser mirror is public and immutable. |
 | Browser deployment and exact bottle delivery | Complete for the bounded current contract | PR #1064 landed bounded, single-writer Pages publication. PR #1070 landed exact browser bottle-download delivery. Production verification reached GitHub Pages commit `418bd04` through successful Pages run `29994147876`; the app, guide, API, and service worker returned HTTP 200. This evidence closes the observed deployment failure, but does not remove later Phase 4/5 product activation work. |
-| Durable Kandelo package inputs | Single-root recovery is public; bounded #1097 rootfs bridge implemented locally, publication pending | The existing schema-1 rootfs generation remains available at `package-generation-rootfs-wasm32-abi-v42-sha256-cc8a6460221f68b077a640c39d8e63de32d3847e90e1bdac4065f060e4fb35dc`. The new v2 contract separates immutable archive producer `S` from validated current-main publisher `M`, preserves truthful archive provenance, and requires exact release, ABI, projection, expected-ledger, archive, and current-main evidence. The hard-bound #1097 bridge additionally requires byte-identical canonical selected-input components and exact pinned validator transitions. Real current-authority comparison proves equality for rootfs/wasm32 only; the broader browser selection differs and is excluded. The additive schema-2 `browser-inputs` mechanism remains the later complete path, with a generation built for each architecture and source-only identities bound without fictional archives. No new rootfs generation, tap caller rotation, or downstream Bash/M4 activation is claimed until preservation and promotion seal public releases and anonymous readback succeeds. |
+| Durable Kandelo package inputs | Single-root recovery is public; fresh exact-main rootfs rebuild pending after #1109 | The existing schema-1 rootfs generation remains available at `package-generation-rootfs-wasm32-abi-v42-sha256-cc8a6460221f68b077a640c39d8e63de32d3847e90e1bdac4065f060e4fb35dc`. The v2 contract separates immutable archive producer `S` from validated current-main publisher `M`, preserves truthful archive provenance, and requires exact release, ABI, projection, expected-ledger, archive, and current-main evidence. The #1097 cache-projection bridge is retired: real current-authority comparison found declared rootfs input drift, its reviewed validator pin is intentionally stale, and the production workflow exposes only `identical-git-tree-v1`. After #1109 lands, rebuild rootfs and its complete closure from the exact live main SHA, promote that exact-tree generation, and require anonymous readback before tap caller rotation or downstream Bash/M4 activation. The additive schema-2 `browser-inputs` mechanism remains the later complete path, with a generation built for each architecture and source-only identities bound without fictional archives. |
 | Atomic package-generation foundation | Ready for PR and landing on the exact fixture-ownership baseline | The packaging/build worktree makes Rust-generated program policy, scalar mirrors, and multi-member mirror directories publish as validated atomic generations. It aligns Rust, TypeScript, shell, Vite, external registries, and the standalone npm package on one complete highest-priority registry projection, with self-contained lower-root fallbacks. Fixture-ownership PR #802 landed as `427185cff21ed213de8b8b6573b4f1a3757aa80d`; this active foundation is rebased on that exact commit, its `program-packages.json` was regenerated there, and a repository source audit now rejects obsolete flat package paths while preserving inventory-owned and direct-source test fixtures. Independent High/Medium review found no remaining blocker. Exact-baseline validation is green across all 507 xtask tests, all 105 package-system tests, host typechecking, Chromium/Firefox/WebKit Vite boundaries, package-root and sealed/local-generation contracts, resolver-bundle freshness, Pages/CI/merge-workflow contracts, and the 17-case Homebrew shell closure. This foundation does not by itself activate the Phase 4 shell candidate, guest `brew`, registry retirement, or bottle-declared VFS packages. |
 | Guest upstream `brew` | Stock tap and bottle-pour proof complete in the opt-in image; product lifecycle incomplete | Draft PR #1059 pins upstream Homebrew, gives its unprivileged guest state the conventional writable layout, and passes exact Node.js/Chromium startup, config, operational doctor, first-party tap, and independent third-party tap discovery. An unmodified stock Bzip2 install pours and runs the public bottle once Homebrew can resolve the exact 19-Formula metadata closure for publisher-only native dependencies. Full `homebrew/core` is infeasible in the guest (about 1.3 GiB, including a 1.22 GiB Git pack); the product fix is a separately reviewed allowlist of custom Homebrew `Requirement` classes, not a partial core tap or unsupported dependency bypass. Main-shell activation, install/reinstall/uninstall, durable reboot state, and cross-tap M4 installation remain. |
 | Registry replacement | Incomplete | Formulae are increasingly authoritative, but `packages/registry` still owns recipes, platform artifacts, tests, and composite-image definitions. It cannot be deleted yet. |

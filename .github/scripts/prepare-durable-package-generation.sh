@@ -295,7 +295,7 @@ fi
 
 # WHY: S supplies only immutable bytes and provenance. Deriving selection with
 # M prevents historical workflow code from interpreting or narrowing inputs.
-run_authority_xtask_without_credentials staging-reuse scan-source \
+run_authority_xtask_without_credentials staging-reuse scan-source-admitted \
   --source-root "$AUTHORITY_ROOT" \
   --expected-abi "$EXPECTED_ABI" \
   --arch "$ARCH" \
@@ -568,6 +568,7 @@ run_authority_xtask_without_credentials staging-reuse validate-generation \
   --bundle-dir "$TMP_ROOT/output" \
   --release-tag "$(jq -er .tag "$TMP_ROOT/output/generation.json")" \
   --release-base-url "https://github.com/$REPOSITORY/releases/download/$(jq -er .tag "$TMP_ROOT/output/generation.json")/" \
+  --source-release-tag "$SOURCE_TAG" \
   --package-source-sha "$PRODUCER_SHA"
 
 mv "$TMP_ROOT/output" "$OUTPUT_DIR"

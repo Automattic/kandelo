@@ -2254,6 +2254,7 @@ guest_path = '/usr/share/runtime.dat'
       "release",
       "xtask",
     );
+    const kernelCacheKey = "a".repeat(64);
     mkdirSync(dirname(xtask), { recursive: true });
     writeFileSync(
       xtask,
@@ -2262,13 +2263,30 @@ if [ "\${1:-}" = build-deps ] && [ "\${2:-}" = cache-root ] && [ "$#" -eq 2 ]; t
   printf '%s\\n' "$WASM_POSIX_BINARY_CACHE_ROOT"
   exit 0
 fi
+if [ "\${1:-}" = build-deps ]; then
+  shift
+  arch=""
+  if [ "\${1:-}" = --arch ]; then
+    arch="\${2:-}"
+    shift 2
+  fi
+  if [ "\${1:-}" = sha ] && [ "$arch" = wasm32 ] &&
+     [ "\${2:-}" = kernel ]; then
+    printf '%s\\n' "${kernelCacheKey}"
+    exit 0
+  fi
+  if [ "\${1:-}" = output-metadata ] &&
+     [ "\${2:-}" = kernel ] && [ "\${3:-}" = kernel.wasm ]; then
+    printf '%s\\n' '{"source_artifact":"kernel.wasm","mirror_path":"kernel.wasm"}'
+    exit 0
+  fi
+fi
 exit 2
 `,
     );
     chmodSync(xtask, 0o755);
 
     for (const relPath of [
-      "local-binaries/kernel.wasm",
       "host/wasm/rootfs.vfs",
       "examples/gencat.wasm",
       "examples/pthread_channel_reuse_test.wasm",
@@ -2287,6 +2305,32 @@ exit 2
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, relPath);
     }
+
+    // WHY: kernel.wasm is a package-owned compatibility mirror. Model the
+    // same claimed immutable generation as the real build instead of letting
+    // this workspace fixture bypass the ownership contract with anonymous
+    // bytes.
+    const kernelIdentity = join(
+      sourceRepo,
+      "local-binaries",
+      ".kandelo-local-generations",
+      "wasm32",
+      "kernel",
+      kernelCacheKey,
+    );
+    const kernelGeneration = join(kernelIdentity, "fixture-session");
+    const kernelTarget = join(kernelGeneration, "kernel.wasm");
+    mkdirSync(kernelGeneration, { recursive: true });
+    writeFileSync(kernelTarget, "local kernel");
+    chmodSync(kernelTarget, 0o444);
+    writeFileSync(
+      join(kernelIdentity, ".fixture-session.publication-claimed"),
+      "",
+    );
+    symlinkSync(
+      kernelTarget,
+      join(sourceRepo, "local-binaries", "kernel.wasm"),
+    );
 
     const fixture = createMultiOutputFixture();
     const cacheKey = fixtureCacheKey(fixture.name);

@@ -12,6 +12,9 @@ import { pathToFileURL } from "node:url";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
 import { MemoryFileSystem } from "../host/src/vfs/memory-fs";
 import {
+  restoreVerifiedVfsImagePreservingCapacity,
+} from "../host/src/vfs/load-image";
+import {
   LANGUAGE_RUNTIME_INVOCATIONS,
   LANGUAGE_RUNTIME_REQUESTED_PACKAGES,
   type LanguageRuntimeInvocation,
@@ -875,7 +878,7 @@ async function main(): Promise<void> {
     `Homebrew runtime roots: ${LANGUAGE_RUNTIME_REQUESTED_PACKAGES.join(",")}`,
   );
 
-  const imageFs = MemoryFileSystem.fromImagePreservingCapacity(imageBytes);
+  const imageFs = await restoreVerifiedVfsImagePreservingCapacity(imageBytes);
   const capture: OutputCapture = {
     label: "language runtime",
     stdout: "",

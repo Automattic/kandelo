@@ -298,6 +298,9 @@ NODE
 grep -Fxq 'HOMEBREW_KANDELO_BOTTLE_TAG=wasm32_kandelo' "$RUN_ROOT/wasm32/brew.env"
 grep -Fxq 'HOMEBREW_KANDELO_BOTTLE_TAG=wasm64_kandelo' "$RUN_ROOT/wasm64/brew.env"
 grep -Fxq 'HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY=1' "$RUN_ROOT/wasm32/brew.env"
+grep -Fxq 'HOMEBREW_NO_INSTALL_FROM_API=1' "$RUN_ROOT/wasm32/brew.env"
+grep -Fxq 'HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1' \
+    "$RUN_ROOT/wasm32/brew.env"
 grep -Fq '/usr/bin/brew l 0777 0 0 target=/home/linuxbrew/.linuxbrew/bin/brew' \
     "$ROOT/scripts/build-homebrew-bootstrap.sh"
 
@@ -403,6 +406,10 @@ env -u HOMEBREW_KANDELO_BOTTLE_TAG -u KANDELO_HOMEBREW_BOTTLE_TAG \
     "$TAP_NAME/$BOTTLE_FORMULA" \
     "$TAP_NAME" \
     "$BOTTLE_TAG" "$BOTTLE_SHA256" "$BOTTLE_ROOT_URL"
+if [ -e "$EXTRACT_ROOT/Library/Taps/homebrew/homebrew-core" ]; then
+    echo "test-homebrew-bootstrap-source: explicit tap use cloned homebrew/core in no-API mode" >&2
+    exit 1
+fi
 
 # A reviewed patch must fail closed when its pinned upstream context drifts.
 DRIFT_WORKTREE="$RUN_ROOT/drift-worktree"

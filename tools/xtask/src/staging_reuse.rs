@@ -5,6 +5,8 @@
 //! uploaded release asset whose size and GitHub-computed digest are usable.
 //! Current package metadata is checked separately so a structurally complete
 //! prior run can be combined only with an exact-current canonical complement.
+//! `validate-generation --source-release-tag` binds an independently verified
+//! release locator; archive manifests remain the authority for producer provenance.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -21,6 +23,7 @@ use crate::index_toml::{EntryStatus, IndexToml, PackageEntry};
 use crate::pkg_manifest::{
     BuildToml, DepsManifest, GitBuildInput, ManifestKind, TargetArch, validate_git_build_inputs,
 };
+use crate::publication_policy::PublicationPolicy;
 
 const SOURCE_IDENTITY_ALGORITHM: &str =
     "kandelo-program-packages-v2-manifest-closure-v1";
@@ -44,6 +47,20 @@ struct ExpectedEntry {
     revision: u32,
     cache_key_sha: String,
     git_inputs: Vec<GitBuildInput>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct PublicationBlockerReport {
+    abi_version: u32,
+    entries: Vec<PublicationBlockerEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct PublicationBlockerEntry {
+    package: String,
+    blocker_chain: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -165,19 +182,24 @@ struct SourcePackage {
 pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     let Some((action, rest)) = args.split_first() else {
         return Err(
-            "usage: xtask staging-reuse <expected|scan-source|validate|validate-archives|validate-generation|compose> [args]"
+            "usage: xtask staging-reuse <expected|scan-source|scan-source-admitted|validate|validate-archives|validate-generation|compose> [args]\n\
+             validate-generation requires --source-release-tag <tag>, an independently verified locator rather than archive producer provenance"
                 .into(),
         );
     };
     match action.as_str() {
         "expected" => run_expected(rest),
-        "scan-source" => run_scan_source(rest),
+        // Evidence preservation and consumption may describe bytes that are
+        // not currently publishable. Only the explicit admitted action is a
+        // durable publication boundary.
+        "scan-source" => run_scan_source(rest, false),
+        "scan-source-admitted" => run_scan_source(rest, true),
         "validate" => run_validate(rest),
         "validate-archives" => run_validate_archives(rest),
         "validate-generation" => run_validate_generation(rest),
         "compose" => run_compose(rest),
         other => Err(format!(
-            "staging-reuse action must be expected, scan-source, validate, validate-archives, validate-generation, or compose, got {other:?}"
+            "staging-reuse action must be expected, scan-source, scan-source-admitted, validate, validate-archives, validate-generation, or compose, got {other:?}"
         )),
     }
 }
@@ -209,7 +231,14 @@ fn read_index(path: &Path) -> Result<IndexToml, String> {
 
 fn run_expected(args: &[String]) -> Result<(), String> {
     let flags = Flags::parse(args)?;
-    flags.reject_unknown(&["--registry", "--expected-abi", "--exclude", "--output"])?;
+    flags.reject_unknown(&[
+        "--registry",
+        "--expected-abi",
+        "--exclude",
+        "--require-root",
+        "--blocked-output",
+        "--output",
+    ])?;
     let registry = flags.required_path("--registry")?;
     let abi = flags.required_u32("--expected-abi")?;
     let output = flags.required_path("--output")?;
@@ -219,11 +248,52 @@ fn run_expected(args: &[String]) -> Result<(), String> {
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .collect();
-    let ledger = build_expected_ledger(registry, abi, &excluded)?;
-    write_json(output, &ledger)
+    let required_roots = parse_required_roots(flags.values("--require-root"))?;
+    require_publishable_registry_roots(registry, &required_roots)?;
+    let (ledger, blockers) = build_expected_projection(registry, abi, &excluded)?;
+    let blocked_outputs = flags.values("--blocked-output").collect::<Vec<_>>();
+    let blocked_output = match blocked_outputs.as_slice() {
+        [] => None,
+        [path] => Some(Path::new(path)),
+        _ => return Err("--blocked-output must be provided at most once".into()),
+    };
+    if blocked_output == Some(output) {
+        return Err("--blocked-output must differ from --output".into());
+    }
+    write_json(output, &ledger)?;
+    if let Some(path) = blocked_output {
+        write_json(path, &blockers)?;
+    }
+    Ok(())
 }
 
-fn run_scan_source(args: &[String]) -> Result<(), String> {
+fn parse_required_roots<'a>(
+    values: impl Iterator<Item = &'a str>,
+) -> Result<Vec<String>, String> {
+    let values = values.collect::<Vec<_>>();
+    if values.as_slice() == ["all"] || values.is_empty() {
+        return Ok(Vec::new());
+    }
+    if values.iter().any(|value| {
+        value
+            .split(',')
+            .any(|root| root.is_empty() || root == "all")
+    }) {
+        return Err(
+            "--require-root must be `all` or one or more comma-separated package names".into(),
+        );
+    }
+    let mut roots = values
+        .into_iter()
+        .flat_map(|value| value.split(','))
+        .map(|root| validate_package_name(root).map(ToOwned::to_owned))
+        .collect::<Result<Vec<_>, _>>()?;
+    roots.sort();
+    roots.dedup();
+    Ok(roots)
+}
+
+fn run_scan_source(args: &[String], require_publication_admission: bool) -> Result<(), String> {
     let flags = Flags::parse(args)?;
     flags.reject_unknown(&[
         "--source-root",
@@ -277,6 +347,7 @@ fn run_scan_source(args: &[String]) -> Result<(), String> {
     let registry = Registry {
         roots: vec![registry_path.clone()],
     };
+    enforce_source_publication_mode(require_publication_admission, &roots, &registry)?;
     let fresh_cache_identities =
         source_cache_identities(source_root, &registry, expected_abi)?;
     validate_source_program_index(
@@ -320,6 +391,54 @@ fn run_scan_source(args: &[String]) -> Result<(), String> {
             write_json(Path::new(output), &components)
         }
         _ => Err("--components-output must be provided at most once".into()),
+    }
+}
+
+fn require_publishable_roots(
+    roots: &[String],
+    registry: &Registry,
+    context: &str,
+) -> Result<(), String> {
+    let mut policy = PublicationPolicy::default();
+    for root in roots {
+        let manifest = registry.load(root)?;
+        if let Some(chain) = policy.blocker_chain(&manifest, registry)? {
+            // WHY: every publisher must apply the same dependency-closed
+            // policy before it can turn staged bytes into live authority.
+            return Err(format!(
+                "{context} {root:?} publication is blocked by pending \
+                 dependency chain {}",
+                chain.join(" -> ")
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn require_publishable_registry_roots(
+    registry_path: &Path,
+    roots: &[String],
+) -> Result<(), String> {
+    let registry = Registry {
+        roots: vec![registry_path.to_path_buf()],
+    };
+    // WHY: callers that request a named root need a loud policy error instead
+    // of an empty/missing matrix after the general ledger omits its closure.
+    require_publishable_roots(roots, &registry, "requested package root")
+}
+
+fn enforce_source_publication_mode(
+    require_publication_admission: bool,
+    roots: &[String],
+    registry: &Registry,
+) -> Result<(), String> {
+    if require_publication_admission {
+        require_publishable_roots(roots, registry, "durable source root")
+    } else {
+        // Evidence and consumption retain exact identities without publishing
+        // them. Bytes produced while pending can therefore be admitted after
+        // the live authority independently becomes ready.
+        Ok(())
     }
 }
 
@@ -1014,6 +1133,7 @@ fn run_validate_generation(args: &[String]) -> Result<(), String> {
         "--bundle-dir",
         "--release-tag",
         "--release-base-url",
+        "--source-release-tag",
         "--package-source-sha",
     ])?;
     let expected: ExpectedLedger = read_json(flags.required_path("--expected-ledger")?)?;
@@ -1030,10 +1150,17 @@ fn run_validate_generation(args: &[String]) -> Result<(), String> {
     validate_release_tag(release_tag)?;
     let release_base_url = flags.required("--release-base-url")?;
     validate_release_base_url(release_base_url, release_tag)?;
+    let source_release_tag = flags.required("--source-release-tag")?;
+    validate_release_tag(source_release_tag)?;
     let package_source_sha = flags.required("--package-source-sha")?;
     validate_git_sha(package_source_sha, "package source SHA")?;
     let bundle_dir = flags.required_path("--bundle-dir")?;
     require_nonsymlink_dir(bundle_dir, "durable generation bundle")?;
+    if declared_snapshot.release_tag != source_release_tag {
+        return Err(
+            "durable generation snapshot differs from its declared source release tag".into(),
+        );
+    }
 
     validate_exact_generation_index(&index, &expected)?;
     let computed_snapshot = validate_release(
@@ -1044,7 +1171,13 @@ fn run_validate_generation(args: &[String]) -> Result<(), String> {
         release_base_url,
         ValidationMode::Current,
     )?;
-    if !declared_snapshot.complete_current || computed_snapshot != declared_snapshot {
+    // WHY: source_release_tag above independently binds the producer locator.
+    // This clone changes only that locator to model the content-addressed
+    // release that re-homes the same files, after which full equality keeps
+    // every payload-bearing field fail-closed.
+    let mut rehomed_declared_snapshot = declared_snapshot.clone();
+    rehomed_declared_snapshot.release_tag = release_tag.to_owned();
+    if computed_snapshot != rehomed_declared_snapshot {
         return Err(
             "durable generation snapshot differs from its exact current index and assets".into(),
         );
@@ -1258,11 +1391,21 @@ fn validate_exact_generation_assets(
     Ok(())
 }
 
+#[cfg(test)]
 fn build_expected_ledger(
     registry_path: &Path,
     abi_version: u32,
     excluded: &BTreeSet<String>,
 ) -> Result<ExpectedLedger, String> {
+    build_expected_projection(registry_path, abi_version, excluded)
+        .map(|(ledger, _)| ledger)
+}
+
+fn build_expected_projection(
+    registry_path: &Path,
+    abi_version: u32,
+    excluded: &BTreeSet<String>,
+) -> Result<(ExpectedLedger, PublicationBlockerReport), String> {
     let registry = Registry {
         roots: vec![registry_path.to_path_buf()],
     };
@@ -1278,10 +1421,12 @@ fn build_expected_ledger(
     dirs.sort();
 
     let mut entries = Vec::new();
+    let mut blocker_entries = Vec::new();
     let mut keys = BTreeSet::new();
+    let mut publication_policy = PublicationPolicy::default();
     for package_dir in dirs {
         let manifest = DepsManifest::load_with_overlay(&package_dir)?;
-        if excluded.contains(&manifest.name) || manifest.build.script_path.is_none() {
+        if manifest.build.script_path.is_none() {
             continue;
         }
         let kind = match manifest.kind {
@@ -1289,8 +1434,24 @@ fn build_expected_ledger(
             ManifestKind::Program => ExpectedKind::Program,
             ManifestKind::Source => continue,
         };
+        if excluded.contains(&manifest.name) {
+            continue;
+        }
+        if let Some(blocker_chain) =
+            publication_policy.blocker_chain(&manifest, &registry)?
+        {
+            // WHY: publishability is closed over dependencies. Omitting only
+            // the pending node would let a reverse-dependent matrix job
+            // source-build it and fail after doing substantial work.
+            blocker_entries.push(PublicationBlockerEntry {
+                package: manifest.name,
+                blocker_chain,
+            });
+            continue;
+        }
         let git_inputs = if package_dir.join("build.toml").exists() {
-            BuildToml::load(&package_dir)?.git_inputs
+            let build = BuildToml::load(&package_dir)?;
+            build.git_inputs
         } else {
             Vec::new()
         };
@@ -1318,10 +1479,16 @@ fn build_expected_ledger(
         }
     }
     entries.sort_by(|a, b| (&a.package, a.arch).cmp(&(&b.package, b.arch)));
-    Ok(ExpectedLedger {
-        abi_version,
-        entries,
-    })
+    Ok((
+        ExpectedLedger {
+            abi_version,
+            entries,
+        },
+        PublicationBlockerReport {
+            abi_version,
+            entries: blocker_entries,
+        },
+    ))
 }
 
 fn validate_release(
@@ -2194,6 +2361,65 @@ cache_key_sha = "{SHA}"
         }
     }
 
+    fn write_expected_package(
+        registry: &Path,
+        name: &str,
+        dependencies: &[&str],
+        publication_state: &str,
+    ) {
+        let package = registry.join(name);
+        fs::create_dir_all(&package).unwrap();
+        let dependencies = dependencies
+            .iter()
+            .map(|dependency| format!("{dependency:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        fs::write(
+            package.join("package.toml"),
+            format!(
+                r#"kind = "program"
+name = "{name}"
+version = "1.0.0"
+kernel_abi = {kernel_abi}
+depends_on = [{dependencies}]
+
+[source]
+url = "https://example.test/{name}.tar.gz"
+sha256 = "{source_sha}"
+
+[license]
+spdx = "TestLicense"
+
+[build]
+script_path = "{name}/build-{name}.sh"
+
+[[outputs]]
+name = "{name}"
+wasm = "{name}.wasm"
+"#,
+                source_sha = "0".repeat(64),
+                kernel_abi = wasm_posix_shared::ABI_VERSION,
+            ),
+        )
+        .unwrap();
+        fs::write(package.join(format!("build-{name}.sh")), "#!/bin/sh\n").unwrap();
+        fs::write(
+            package.join("build.toml"),
+            format!(
+                r#"script_path = "{name}/build-{name}.sh"
+repo_url = "https://example.test/repo.git"
+commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision = 1
+publication_state = "{publication_state}"
+
+[binary]
+index_url = "https://example.test/binaries-abi-v{{abi}}/index.toml"
+"#
+            ),
+        )
+        .unwrap();
+    }
+
     fn fresh_source_fixture() -> (
         BTreeMap<String, SourcePackage>,
         SourceProgramIndex,
@@ -2515,6 +2741,213 @@ cache_key_sha = "{SHA}"
     }
 
     #[test]
+    fn expected_ledger_omits_pending_reverse_closure_and_ready_restores_it() {
+        let registry = archive_tempdir("pending-expected-ledger");
+        write_expected_package(&registry, "pending", &[], "pending");
+        write_expected_package(&registry, "direct", &["pending@1.0.0"], "ready");
+        write_expected_package(&registry, "transitive", &["direct@1.0.0"], "ready");
+        write_expected_package(&registry, "unrelated", &[], "ready");
+        let registry_context = Registry {
+            roots: vec![registry.clone()],
+        };
+        let pending_cache_key = compute_cache_key_sha_for_package(
+            &registry.join("pending"),
+            &registry_context,
+            TargetArch::Wasm32,
+            ABI,
+        )
+        .unwrap();
+
+        let (pending, blockers) =
+            build_expected_projection(&registry, ABI, &BTreeSet::new()).unwrap();
+        assert_eq!(
+            pending
+                .entries
+                .iter()
+                .map(|entry| entry.package.as_str())
+                .collect::<Vec<_>>(),
+            vec!["unrelated"],
+            "pending package, direct dependent, and transitive dependent must all be absent"
+        );
+        assert_eq!(
+            blockers.entries,
+            vec![
+                PublicationBlockerEntry {
+                    package: "direct".into(),
+                    blocker_chain: vec!["direct".into(), "pending".into()],
+                },
+                PublicationBlockerEntry {
+                    package: "pending".into(),
+                    blocker_chain: vec!["pending".into()],
+                },
+                PublicationBlockerEntry {
+                    package: "transitive".into(),
+                    blocker_chain: vec![
+                        "transitive".into(),
+                        "direct".into(),
+                        "pending".into(),
+                    ],
+                },
+            ],
+            "the typed report must distinguish each exact policy blocker"
+        );
+        let (_, excluded_blockers) = build_expected_projection(
+            &registry,
+            ABI,
+            &BTreeSet::from(["pending".into()]),
+        )
+        .unwrap();
+        assert_eq!(
+            excluded_blockers
+                .entries
+                .iter()
+                .map(|entry| entry.package.as_str())
+                .collect::<Vec<_>>(),
+            vec!["direct", "transitive"],
+            "an excluded pending root is not managed, but its non-excluded reverse dependents remain blocked"
+        );
+        let direct_error =
+            require_publishable_registry_roots(&registry, &["direct".into()]).unwrap_err();
+        assert!(
+            direct_error.contains("direct -> pending"),
+            "an explicitly requested dependent must name its blocker chain: {direct_error}"
+        );
+        let transitive_error =
+            require_publishable_registry_roots(&registry, &["transitive".into()]).unwrap_err();
+        assert!(
+            transitive_error.contains("transitive -> direct -> pending"),
+            "an explicitly requested transitive dependent must name its blocker chain: {transitive_error}"
+        );
+        require_publishable_registry_roots(&registry, &["unrelated".into()]).unwrap();
+
+        let pending_build = registry.join("pending/build.toml");
+        fs::write(
+            &pending_build,
+            fs::read_to_string(&pending_build)
+                .unwrap()
+                .replace(
+                    "publication_state = \"pending\"",
+                    "publication_state = \"ready\"",
+                ),
+        )
+        .unwrap();
+        let ready_cache_key = compute_cache_key_sha_for_package(
+            &registry.join("pending"),
+            &registry_context,
+            TargetArch::Wasm32,
+            ABI,
+        )
+        .unwrap();
+        assert_eq!(
+            pending_cache_key, ready_cache_key,
+            "distribution readiness must not pretend package bytes changed"
+        );
+        let (ready, ready_blockers) =
+            build_expected_projection(&registry, ABI, &BTreeSet::new()).unwrap();
+        assert_eq!(
+            ready
+                .entries
+                .iter()
+                .map(|entry| entry.package.as_str())
+                .collect::<Vec<_>>(),
+            vec!["direct", "pending", "transitive", "unrelated"],
+            "ready must restore the unchanged package identities to staging"
+        );
+        assert!(ready_blockers.entries.is_empty());
+        require_publishable_registry_roots(&registry, &["transitive".into()]).unwrap();
+    }
+
+    #[test]
+    fn expected_projection_failure_cannot_publish_a_partial_blocker_report() {
+        let registry = archive_tempdir("failed-blocker-report");
+        write_expected_package(&registry, "broken", &["missing@1.0.0"], "ready");
+        let output = registry.join("expected.json");
+        let blocked_output = registry.join("blocked.json");
+        let args = vec![
+            "--registry".into(),
+            registry.to_string_lossy().into_owned(),
+            "--expected-abi".into(),
+            ABI.to_string(),
+            "--require-root".into(),
+            "all".into(),
+            "--output".into(),
+            output.to_string_lossy().into_owned(),
+            "--blocked-output".into(),
+            blocked_output.to_string_lossy().into_owned(),
+        ];
+        let error = run_expected(&args).unwrap_err();
+        assert!(error.contains("missing"), "{error}");
+        assert!(!output.exists());
+        assert!(!blocked_output.exists());
+    }
+
+    #[test]
+    fn expected_ledger_required_roots_are_canonical_and_all_means_policy_filtered_ledger() {
+        assert!(parse_required_roots(std::iter::empty()).unwrap().is_empty());
+        assert!(
+            parse_required_roots(["all"].into_iter())
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            parse_required_roots(["zlib,bash", "zlib"].into_iter()).unwrap(),
+            vec!["bash", "zlib"]
+        );
+        for invalid in [
+            &["all,zlib"][..],
+            &["all", "zlib"][..],
+            &["zlib,"][..],
+            &["Zlib"][..],
+        ] {
+            assert!(
+                parse_required_roots(invalid.iter().copied()).is_err(),
+                "{invalid:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn admitted_source_selection_rejects_direct_and_transitive_pending_closures() {
+        let registry_path = archive_tempdir("pending-admitted-source");
+        write_expected_package(&registry_path, "pending", &[], "pending");
+        write_expected_package(
+            &registry_path,
+            "direct",
+            &["pending@1.0.0"],
+            "ready",
+        );
+        write_expected_package(
+            &registry_path,
+            "transitive",
+            &["direct@1.0.0"],
+            "ready",
+        );
+        write_expected_package(&registry_path, "unrelated", &[], "ready");
+        let registry = Registry {
+            roots: vec![registry_path],
+        };
+
+        enforce_source_publication_mode(false, &["transitive".into()], &registry)
+            .expect("producer evidence may retain pending identities");
+        let direct_error =
+            enforce_source_publication_mode(true, &["direct".into()], &registry)
+                .unwrap_err();
+        assert!(
+            direct_error.contains("direct -> pending"),
+            "direct admission error must name the blocker chain: {direct_error}"
+        );
+        let transitive_error =
+            enforce_source_publication_mode(true, &["transitive".into()], &registry)
+                .unwrap_err();
+        assert!(
+            transitive_error.contains("transitive -> direct -> pending"),
+            "transitive admission error must name the blocker chain: {transitive_error}"
+        );
+        enforce_source_publication_mode(true, &["unrelated".into()], &registry)
+            .unwrap();
+    }
+
+    #[test]
     fn generation_validator_json_inputs_reject_unknown_fields() {
         let ledger = format!(
             r#"{{"abi_version":{ABI},"entries":[{{"package":"zlib","kind":"library","arch":"wasm32","version":"1.3.1","revision":2,"cache_key_sha":"{SHA}","git_inputs":[]}}],"ignored":true}}"#,
@@ -2585,6 +3018,161 @@ cache_key_sha = "{SHA}"
             "https://github.com/Automattic/kandelo/releases/download/pr-946-staging/",
             mode,
         )
+    }
+
+    struct GenerationValidationFixture {
+        root: PathBuf,
+        bundle: PathBuf,
+        expected_path: PathBuf,
+        snapshot_path: PathBuf,
+        assets_path: PathBuf,
+        archive_path: PathBuf,
+        index_path: PathBuf,
+        source_release_tag: String,
+        destination_tag: String,
+        snapshot: ValidatedSnapshot,
+        index: IndexToml,
+    }
+
+    impl GenerationValidationFixture {
+        fn args(&self) -> Vec<String> {
+            vec![
+                "--expected-ledger".into(),
+                self.expected_path.display().to_string(),
+                "--snapshot".into(),
+                self.snapshot_path.display().to_string(),
+                "--index".into(),
+                self.index_path.display().to_string(),
+                "--assets".into(),
+                self.assets_path.display().to_string(),
+                "--bundle-dir".into(),
+                self.bundle.display().to_string(),
+                "--release-tag".into(),
+                self.destination_tag.clone(),
+                "--release-base-url".into(),
+                format!(
+                    "https://github.com/Automattic/kandelo/releases/download/{}/",
+                    self.destination_tag
+                ),
+                "--source-release-tag".into(),
+                self.source_release_tag.clone(),
+                "--package-source-sha".into(),
+                SOURCE_COMMIT.into(),
+            ]
+        }
+
+        fn write_snapshot(&self) {
+            fs::write(
+                &self.snapshot_path,
+                serde_json::to_vec(&self.snapshot).unwrap(),
+            )
+            .unwrap();
+        }
+
+        fn write_index(&self) {
+            fs::write(&self.index_path, self.index.write()).unwrap();
+        }
+    }
+
+    impl Drop for GenerationValidationFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn generation_validation_fixture(label: &str) -> GenerationValidationFixture {
+        let root = archive_tempdir(&format!("generation-rehome-{label}"));
+        let bundle = root.join("bundle");
+        fs::create_dir(&bundle).unwrap();
+
+        let archive_name = "zlib-1.3.1-rev2-abi39-wasm32-aaaaaaaa.tar.zst";
+        let archive_path = bundle.join(archive_name);
+        write_test_archive(
+            &archive_path,
+            "manifest.toml",
+            archived_manifest_at_main(&[], SOURCE_COMMIT).as_bytes(),
+            false,
+        );
+        let archive_sha256 = sha256_file(&archive_path).unwrap();
+        let destination_tag = format!(
+            "package-generation-zlib-wasm32-abi-v{ABI}-sha256-{}",
+            "d".repeat(64)
+        );
+        let mut index = index();
+        let binary = index.packages[0]
+            .binary
+            .get_mut(&TargetArch::Wasm32)
+            .unwrap();
+        binary.archive_url = Some(format!(
+            "https://github.com/Automattic/kandelo/releases/download/{destination_tag}/{archive_name}"
+        ));
+        binary.archive_sha256 = Some(archive_sha256.clone());
+
+        let index_path = bundle.join("index.toml");
+        fs::write(&index_path, index.write()).unwrap();
+        let generation_path = bundle.join("generation.json");
+        fs::write(&generation_path, b"{\"test\":\"generation seal\"}\n").unwrap();
+
+        let source_release_tag = format!(
+            "preserved-package-generation-zlib-wasm32-abi-v{ABI}-source-{}-sha256-{}",
+            SOURCE_COMMIT,
+            "e".repeat(64)
+        );
+        let snapshot = ValidatedSnapshot {
+            abi_version: ABI,
+            release_tag: source_release_tag.clone(),
+            complete_current: true,
+            entries: vec![ValidatedEntry {
+                package: "zlib".into(),
+                kind: ExpectedKind::Library,
+                arch: TargetArch::Wasm32,
+                version: "1.3.1".into(),
+                revision: 2,
+                cache_key_sha: SHA.into(),
+                current: true,
+                asset: archive_name.into(),
+                archive_sha256,
+                size: fs::metadata(&archive_path).unwrap().len(),
+            }],
+        };
+
+        let expected_path = root.join("expected.json");
+        fs::write(&expected_path, serde_json::to_vec(&expected()).unwrap()).unwrap();
+        let snapshot_path = root.join("snapshot.json");
+        fs::write(&snapshot_path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+        let assets_path = root.join("assets.json");
+        let mut asset_paths = vec![
+            archive_path.clone(),
+            generation_path,
+            index_path.clone(),
+        ];
+        asset_paths.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+        let assets = asset_paths
+            .iter()
+            .map(|path| {
+                serde_json::json!({
+                    "name": path.file_name().unwrap().to_string_lossy(),
+                    "state": "uploaded",
+                    "size": fs::metadata(path).unwrap().len(),
+                    "digest": format!("sha256:{}", sha256_file(path).unwrap()),
+                })
+            })
+            .collect::<Vec<_>>();
+        fs::write(&assets_path, serde_json::to_vec(&assets).unwrap()).unwrap();
+
+        GenerationValidationFixture {
+            root,
+            bundle,
+            expected_path,
+            snapshot_path,
+            assets_path,
+            archive_path,
+            index_path,
+            source_release_tag,
+            destination_tag,
+            snapshot,
+            index,
+        }
     }
 
     #[test]
@@ -2699,6 +3287,40 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
         let snapshot = validate(&expected(), &index(), &assets(), ValidationMode::Current).unwrap();
         assert!(snapshot.complete_current);
         assert!(snapshot.entries[0].current);
+    }
+
+    #[test]
+    fn generation_validation_rehomes_only_exact_snapshot_content() {
+        let fixture = generation_validation_fixture("valid");
+        assert_ne!(fixture.snapshot.release_tag, fixture.destination_tag);
+        run_validate_generation(&fixture.args()).unwrap();
+
+        let mut changed_snapshot = generation_validation_fixture("snapshot");
+        changed_snapshot.snapshot.entries[0].size += 1;
+        changed_snapshot.write_snapshot();
+        let error = run_validate_generation(&changed_snapshot.args()).unwrap_err();
+        assert!(error.contains("snapshot differs"), "{error}");
+
+        let mut changed_source_tag = generation_validation_fixture("source-tag");
+        changed_source_tag.snapshot.release_tag = "another-producer-release".into();
+        changed_source_tag.write_snapshot();
+        let error = run_validate_generation(&changed_source_tag.args()).unwrap_err();
+        assert!(error.contains("source release tag"), "{error}");
+
+        let mut changed_index = generation_validation_fixture("index");
+        changed_index.index.packages[0]
+            .binary
+            .get_mut(&TargetArch::Wasm32)
+            .unwrap()
+            .archive_sha256 = Some("c".repeat(64));
+        changed_index.write_index();
+        let error = run_validate_generation(&changed_index.args()).unwrap_err();
+        assert!(error.contains("digest") && error.contains("index"), "{error}");
+
+        let changed_archive = generation_validation_fixture("archive");
+        fs::write(&changed_archive.archive_path, b"tampered archive bytes").unwrap();
+        let error = run_validate_generation(&changed_archive.args()).unwrap_err();
+        assert!(error.contains("bytes differ"), "{error}");
     }
 
     #[test]

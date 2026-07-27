@@ -89,11 +89,16 @@ reachability, a tag, a merge method, or equality of only selected files is not
 this proof. Existing v1 generations remain readable, but new preparation uses
 v2.
 
-The bounded migration-only
-`identical-package-cache-projection-v1` method may admit distinct complete
-trees without claiming payload equivalence. Current-main code must derive the
-exact same selected package projection, expected ledger, and canonical
-per-package build-input component closure from inert `S` and `M`. That closure
+The retired migration-only
+`identical-package-cache-projection-v1` method described distinct complete
+trees without claiming payload equivalence. Its historical reader and
+fail-closed validator remain for audit and regression coverage, but
+`promote-package-generation.yml` no longer exposes it and agents must not
+dispatch it. Build a fresh closure from exact current main and use
+`identical-git-tree-v1` instead. The historical method required current-main
+code to derive the exact same selected package projection, expected ledger,
+and canonical per-package build-input component closure from inert `S` and
+`M`. That closure
 binds each package manifest, parsed build recipe and Git inputs, every declared
 input digest, direct dependency cache identities, the global toolchain,
 fork-instrument inputs when used, architecture, and ABI. In schema-2
@@ -103,28 +108,29 @@ non-truncated Git tree IDs remain bound for audit, and the exact validator
 transition is pinned; unrelated host/runtime leaves are not package inputs and
 therefore do not require a broad path exception.
 
-This one-shot method is hard-bound to #1097 producer
+This one-shot method was hard-bound to #1097 producer
 `748c2609954d2809bbcbbcb642fa7d257fc0dbc6` and
 the `pr-1097-staging` source capture; do not generalize it to another producer
-or source. Before admission, current-main code must preserve that mutable
-source as an evidence-only `preserved-package-generation-...` release. The
-preserved manifest binds the complete selected archives, minimal index,
+or source. Its design first preserved that mutable source as an evidence-only
+`preserved-package-generation-...` release. The preserved manifest binds the
+complete selected archives, minimal index,
 projection, expected ledger, same-run workflow artifacts, and root-job log,
-and must claim `admission = "none"`. Cache-projection promotion takes the exact
-published preservation tag, embeds and revalidates its complete manifest and
-release inventory, and only then emits an admitted
-`package-generation-...` tag. Never dispatch this method from the mutable PR
-tag, and never materialize a preserved release directly. The audited H-to-M
-comparison is equal only for the schema-1 `rootfs`/`wasm32` selection.
+and must claim `admission = "none"`. The retired promotion design would have
+taken the exact published preservation tag, embedded and revalidated its
+complete manifest and release inventory, and only then emitted an admitted
+`package-generation-...` tag. Never dispatch this method or materialize a
+preserved release directly. The historical H-to-M comparison was equal only
+for the schema-1 `rootfs`/`wasm32` selection.
 `lamp`, `nginx-php-vfs`, and `wordpress` changed cache identities in the
-schema-2 browser selection, so this bridge must not admit that broader closure.
+schema-2 browser selection, and later declared rootfs inputs changed too. No
+#1097 selection remains admissible.
 Any difference in the selected recipe, declared inputs, dependency identities,
 toolchain, fork instrumentation, architecture, ABI, projection, expected
 ledger, or preserved archive evidence fails closed. All selected archives
 still use one coherent `S`; mixed producers remain invalid.
 
-For either a normal exact-main rebuild or a producer admitted by one of these
-versioned v2 methods, the selected archive's transitive buildable dependencies
+For a normal exact-main rebuild under the active v2 method, the selected
+archive's transitive buildable dependencies
 must come from the same producer closure: partition it into topological levels,
 consume only same-run artifacts across dependency edges, and fail rather than
 falling back to an older cache-equivalent archive. Resolve those overlays

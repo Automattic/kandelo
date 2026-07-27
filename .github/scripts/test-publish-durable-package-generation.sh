@@ -260,6 +260,7 @@ bundle=""
 package_source_sha=""
 producer_sha=""
 source_repository=""
+source_release_tag=""
 source_root=""
 root_set=""
 roots_file=""
@@ -280,6 +281,7 @@ while [ "$#" -gt 0 ]; do
     --root-package) shift 2 ;;
     --roots-file) roots_file="$2"; shift 2 ;;
     --source-root) source_root="$2"; shift 2 ;;
+    --source-release-tag) source_release_tag="$2"; shift 2 ;;
     --expected-abi|--arch|--index|--assets|--release-tag|--release-base-url|--scope)
       shift 2
       ;;
@@ -290,6 +292,7 @@ case "$action" in
   "staging-reuse validate-generation")
     [ "$(jq -r .abi_version "$expected")" = 42 ]
     [ "$(jq -r .complete_current "$snapshot")" = true ]
+    [ "$source_release_tag" = "$(jq -r .release_tag "$snapshot")" ]
     [ "${producer_sha:-$package_source_sha}" = \
       "${TEST_ARCHIVE_SOURCE_SHA:-${TEST_SOURCE_SHA:?}}" ]
     [ -f "$bundle/rootfs-1-rev1-abi42-wasm32-aaaaaaaa.tar.zst" ]
@@ -302,7 +305,7 @@ case "$action" in
     [ "$source_repository" = "https://github.com/Automattic/kandelo" ]
     [ -f "$bundle/rootfs-1-rev1-abi42-wasm32-aaaaaaaa.tar.zst" ]
     ;;
-  "staging-reuse scan-source")
+  "staging-reuse scan-source"|"staging-reuse scan-source-admitted")
     if [ "$root_set" = browser-inputs ]; then
       [ "$(cat "$roots_file")" = "${TEST_BROWSER_ROOTS:-rootfs}" ] || {
         echo "source root list is not canonical and unique" >&2
@@ -1531,10 +1534,11 @@ jq -nS \
       uses_fork_instrument:false
     }]
   }' >"$TMP_ROOT/cache-components.json"
-main_build_deps_blob="$(git -C "$SCRIPT_DIR/../.." \
-  hash-object tools/xtask/src/build_deps.rs)"
-main_staging_reuse_blob="$(git -C "$SCRIPT_DIR/../.." \
-  hash-object tools/xtask/src/staging_reuse.rs)"
+# Keep coverage for reading and validating the historical one-shot evidence.
+# New publication is disabled in the workflow and the production pin remains
+# on these reviewed bytes rather than following current source.
+main_build_deps_blob="d8a095c60ed3bb90831afc11ec586c21abd886ee"
+main_staging_reuse_blob="0edc5fe7bc1f6b919816050cdc82a5e549da054b"
 jq -nS --arg tree "$preserved_tree_sha" '{
   sha:$tree,truncated:false,tree:[
     {

@@ -1,5 +1,6 @@
 export interface PlaywrightServerEnvironment {
   CI?: string;
+  KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE?: string;
   KANDELO_HOMEBREW_MAIN_SHELL_STRICT?: string;
   KANDELO_SOURCE_ROOTFS_SHELL_STRICT?: string;
 }
@@ -16,6 +17,7 @@ export function shouldReuseExistingPlaywrightServer(
   return (
     !env.CI &&
     env.KANDELO_HOMEBREW_MAIN_SHELL_STRICT !== "1" &&
-    env.KANDELO_SOURCE_ROOTFS_SHELL_STRICT !== "1"
+    env.KANDELO_SOURCE_ROOTFS_SHELL_STRICT !== "1" &&
+    env.KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE !== "1"
   );
 }

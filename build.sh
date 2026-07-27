@@ -5,18 +5,14 @@ echo "Building Rust Wasm kernel (wasm32)..."
 cargo build --release -p kandelo \
   -Z build-std=core,alloc
 
-echo "Copying Wasm artifacts into local-binaries/..."
-# local-binaries/ is the per-checkout override tree. The resolver
-# (host/src/binary-resolver.ts) prefers it over binaries/ so locally
-# rebuilt artifacts shadow whatever scripts/fetch-binaries.sh
-# downloaded. See docs/binary-releases.md.
-mkdir -p local-binaries
-cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
-   local-binaries/kernel.wasm
-if [ -f target/wasm32-unknown-unknown/release/wasm_posix_userspace.wasm ]; then
-    cp target/wasm32-unknown-unknown/release/wasm_posix_userspace.wasm \
-       local-binaries/userspace.wasm
-fi
+echo "Installing Wasm artifacts into local-binaries/..."
+# WHY: local-binaries/ is a package-owned resolver tier. Going through the
+# generation installer preserves artifact identity and prevents a later
+# dependency walk from silently replacing this checkout's exact build.
+source scripts/install-local-binary.sh
+install_local_binary kernel \
+    target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
+    kandelo-kernel.wasm
 
 echo "Building wasm-fork-instrument CLI (host tool)..."
 HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"

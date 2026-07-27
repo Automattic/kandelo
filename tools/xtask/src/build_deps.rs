@@ -3291,7 +3291,9 @@ fn ensure_built_uncached(
         // WASM_POSIX_DEP_* env vars and don't need a binaries/ entry.
         if let Some(bdir) = opts.binaries_dir {
             if matches!(dep_m.kind, ManifestKind::Program) && !dep_m.program_outputs.is_empty() {
-                place_binaries_symlinks(&dep_m, &dep_path, bdir, dep_arch)?;
+                let cache_key_sha =
+                    manifest_cache_key_sha(&dep_m, registry, dep_arch, abi_version)?;
+                place_binaries_symlinks(&dep_m, &dep_path, bdir, dep_arch, &cache_key_sha)?;
             }
         }
         dep_dirs.insert(
@@ -6548,7 +6550,8 @@ fn cmd_resolve(
     // where placing target symlinks isn't desired).
     if let Some(bdir) = binaries_dir {
         if matches!(m.kind, ManifestKind::Program) && !m.program_outputs.is_empty() {
-            place_binaries_symlinks(m, &path, bdir, arch)?;
+            let cache_key_sha = manifest_cache_key_sha(m, registry, arch, current_abi_version())?;
+            place_binaries_symlinks(m, &path, bdir, arch, &cache_key_sha)?;
         }
     }
 
@@ -6557,6 +6560,17 @@ fn cmd_resolve(
 }
 
 const LOCAL_GENERATIONS_DIR: &str = ".kandelo-local-generations";
+
+fn manifest_cache_key_sha(
+    manifest: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+) -> Result<String, String> {
+    let mut memo = BTreeMap::new();
+    let mut chain = Vec::new();
+    compute_sha(manifest, registry, arch, abi_version, &mut memo, &mut chain).map(|sha| hex(&sha))
+}
 
 #[derive(Clone, Debug)]
 struct DeclaredLocalArtifact {
@@ -6599,16 +6613,7 @@ fn cmd_install_local_artifact(
     binaries_dir: &Path,
     arch: TargetArch,
 ) -> Result<(), String> {
-    let mut memo = BTreeMap::new();
-    let mut chain = Vec::new();
-    let cache_key_sha = hex(&compute_sha(
-        manifest,
-        registry,
-        arch,
-        current_abi_version(),
-        &mut memo,
-        &mut chain,
-    )?);
+    let cache_key_sha = manifest_cache_key_sha(manifest, registry, arch, current_abi_version())?;
     let outcome = install_local_artifact(
         manifest,
         &cache_key_sha,
@@ -6794,7 +6799,17 @@ fn install_local_artifact(
                 generation_member.display(),
             )
         })?;
-        let destination = arch_root.join(&declared.mirror_relative);
+        // WHY: kernel and userspace are package-owned boot artifacts even
+        // though their historical public mirrors live at the binary root.
+        // Publishing their direct builds below programs/<arch>/ would leave
+        // an identityless root file in place and let later dependency
+        // materialization either substitute different bytes or fail on the
+        // ownership collision.
+        let destination = if manifest.uses_root_binary_mirror() {
+            binaries_dir.join(&declared.mirror_relative)
+        } else {
+            arch_root.join(&declared.mirror_relative)
+        };
         let already_claimed = publication_claim_exists(&publication_claim)?;
         let live_matches = scalar_mirror_matches_target(&destination, &canonical_member)?;
         if already_claimed {
@@ -7414,6 +7429,599 @@ fn scalar_mirror_matches_target(destination: &Path, target: &Path) -> Result<boo
             destination.display(),
         )),
     }
+}
+
+/// Normalize an absolute link spelling without consulting the filesystem.
+///
+/// This is classification only, not authorization. It lets the resolver
+/// recognize a link that claims the local-generation namespace even when its
+/// final member has disappeared, so canonicalization failure cannot turn a
+/// broken local candidate into permission to install lower-priority bytes.
+fn lexically_normalize_absolute_path(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return None;
+                }
+            }
+            Component::Normal(value) => normalized.push(value),
+        }
+    }
+    Some(normalized)
+}
+
+/// Return whether a scalar mirror is already owned by a complete direct-build
+/// generation for this exact package.
+///
+/// `local-binaries` is the higher-priority resolver tier. A later dependency
+/// walk may still materialize the corresponding released package, but it must
+/// not replace a validated local generation with those lower-priority bytes.
+/// This applies equally to ordinary one-member program mirrors and the
+/// root-level kernel/userspace boot mirrors.
+fn scalar_mirror_selects_local_generation(
+    manifest: &DepsManifest,
+    output: &crate::pkg_manifest::ProgramOutput,
+    binaries_dir: &Path,
+    arch: TargetArch,
+    expected_cache_key_sha: &str,
+    destination: &Path,
+) -> Result<bool, String> {
+    let mirror_snapshot = match std::fs::symlink_metadata(destination) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            inspect_local_mirror_entry(destination)?
+        }
+        Ok(_) => return Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => {
+            return Err(format!(
+                "{}: inspect scalar mirror {}: {e}",
+                manifest.spec(),
+                destination.display(),
+            ));
+        }
+    };
+    let LocalMirrorEntryKind::Symlink {
+        target: link_target,
+    } = &mirror_snapshot.kind
+    else {
+        return Ok(false);
+    };
+    let unresolved_target = if link_target.is_absolute() {
+        link_target.clone()
+    } else {
+        destination
+            .parent()
+            .ok_or_else(|| {
+                format!(
+                    "{}: scalar mirror has no parent: {}",
+                    manifest.spec(),
+                    destination.display(),
+                )
+            })?
+            .join(link_target)
+    };
+    let generations_root = binaries_dir.join(LOCAL_GENERATIONS_DIR);
+    let lexical_target = lexically_normalize_absolute_path(&unresolved_target);
+    let claims_local_generation = lexical_target
+        .as_ref()
+        .is_some_and(|target| target.starts_with(&generations_root));
+    if claims_local_generation
+        && matches!(
+            std::fs::symlink_metadata(&generations_root),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        )
+    {
+        return Err(format!(
+            "{}: scalar mirror {} selects the missing local-generation namespace {}; rebuild the local package instead of substituting released bytes",
+            manifest.spec(),
+            destination.display(),
+            generations_root.display(),
+        ));
+    }
+    let target = match std::fs::canonicalize(&unresolved_target) {
+        Ok(target) => target,
+        Err(e) if claims_local_generation => {
+            return Err(format!(
+                "{}: scalar mirror {} selects an unavailable local generation member {}: {e}; rebuild the local package instead of substituting released bytes",
+                manifest.spec(),
+                destination.display(),
+                unresolved_target.display(),
+            ));
+        }
+        Err(_) => return Ok(false),
+    };
+
+    match std::fs::symlink_metadata(&generations_root) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => {
+            return Err(format!(
+                "{}: local generations root must remain a real directory: {}",
+                manifest.spec(),
+                generations_root.display(),
+            ));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && claims_local_generation => {
+            return Err(format!(
+                "{}: scalar mirror {} selects the missing local-generation namespace {}; rebuild the local package instead of substituting released bytes",
+                manifest.spec(),
+                destination.display(),
+                generations_root.display(),
+            ));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => {
+            return Err(format!(
+                "{}: inspect local generations root {}: {e}",
+                manifest.spec(),
+                generations_root.display(),
+            ));
+        }
+    }
+    let canonical_generations_root = std::fs::canonicalize(&generations_root).map_err(|e| {
+        format!(
+            "{}: canonicalize local generations root {}: {e}",
+            manifest.spec(),
+            generations_root.display(),
+        )
+    })?;
+    if !claims_local_generation {
+        if target.starts_with(&canonical_generations_root) {
+            return Err(format!(
+                "{}: scalar mirror {} resolves into the local-generation namespace through a noncanonical path {}; rebuild the local package instead of substituting released bytes",
+                manifest.spec(),
+                destination.display(),
+                unresolved_target.display(),
+            ));
+        }
+        return Ok(false);
+    }
+    if !target.starts_with(&canonical_generations_root) {
+        return Err(format!(
+            "{}: scalar mirror {} lexically selects the local-generation namespace but resolves outside {} to {}; rebuild the local package instead of substituting released bytes",
+            manifest.spec(),
+            destination.display(),
+            canonical_generations_root.display(),
+            target.display(),
+        ));
+    }
+
+    let target_snapshot = inspect_local_mirror_entry(&target)?;
+    if !matches!(target_snapshot.kind, LocalMirrorEntryKind::Regular { .. }) {
+        return Err(format!(
+            "{}: scalar mirror {} selects a non-file local generation member",
+            manifest.spec(),
+            destination.display(),
+        ));
+    }
+
+    // WHY: canonicalizing the complete target before parsing ownership erases
+    // symlinked cache-key or session components. Such an indirection could be
+    // retargeted later without changing either the mirror link or the
+    // previously checked member pathname. Parse the lexical identity and
+    // require every ownership ancestor to be a real directory first; use the
+    // canonical target only as the final containment/equality proof.
+    let lexical_target =
+        lexical_target.expect("claimed local generation has a lexical target");
+    let relative = lexical_target.strip_prefix(&generations_root).map_err(|e| {
+        format!(
+            "{}: lexical local generation target {} is not below {}: {e}",
+            manifest.spec(),
+            lexical_target.display(),
+            generations_root.display(),
+        )
+    })?;
+    let mut components = relative.components();
+    let lexical_arch = match components.next() {
+        Some(Component::Normal(value)) => value.to_str().ok_or_else(|| {
+            format!(
+                "{}: local generation architecture is not UTF-8: {}",
+                manifest.spec(),
+                relative.display(),
+            )
+        })?,
+        _ => {
+            return Err(format!(
+                "{}: local generation target lacks an architecture: {}",
+                manifest.spec(),
+                lexical_target.display(),
+            ));
+        }
+    };
+    if lexical_arch != arch.as_str() {
+        return Err(format!(
+            "{}: scalar mirror {} selects local generation architecture {}; expected {}",
+            manifest.spec(),
+            destination.display(),
+            lexical_arch,
+            arch.as_str(),
+        ));
+    }
+    let lexical_package = match components.next() {
+        Some(Component::Normal(value)) => value.to_str().ok_or_else(|| {
+            format!(
+                "{}: local generation package identity is not UTF-8: {}",
+                manifest.spec(),
+                relative.display(),
+            )
+        })?,
+        _ => {
+            return Err(format!(
+                "{}: local generation target lacks a package identity: {}",
+                manifest.spec(),
+                lexical_target.display(),
+            ));
+        }
+    };
+    if lexical_package != manifest.name {
+        return Err(format!(
+            "{}: scalar mirror {} selects another package's local generation: {}",
+            manifest.spec(),
+            destination.display(),
+            lexical_target.display(),
+        ));
+    }
+    let cache_key = match components.next() {
+        Some(Component::Normal(value)) => value.to_str().ok_or_else(|| {
+            format!(
+                "{}: local generation cache identity is not UTF-8: {}",
+                manifest.spec(),
+                relative.display(),
+            )
+        })?,
+        _ => {
+            return Err(format!(
+                "{}: local generation target lacks a cache identity: {}",
+                manifest.spec(),
+                lexical_target.display(),
+            ));
+        }
+    };
+    if cache_key != expected_cache_key_sha {
+        return Err(format!(
+            "{}: scalar mirror {} selects stale local generation cache identity {}; current identity is {}; rebuild the local package instead of substituting released bytes",
+            manifest.spec(),
+            destination.display(),
+            cache_key,
+            expected_cache_key_sha,
+        ));
+    }
+    let session = match components.next() {
+        Some(Component::Normal(value)) => value.to_str().ok_or_else(|| {
+            format!(
+                "{}: local generation session is not UTF-8: {}",
+                manifest.spec(),
+                relative.display(),
+            )
+        })?,
+        _ => {
+            return Err(format!(
+                "{}: local generation target lacks an install session: {}",
+                manifest.spec(),
+                lexical_target.display(),
+            ));
+        }
+    };
+    validate_local_install_session(session)?;
+    let member: PathBuf = components.collect();
+    if member != Path::new(&output.wasm) {
+        return Err(format!(
+            "{}: scalar mirror {} selects undeclared local generation member {}; expected {}",
+            manifest.spec(),
+            destination.display(),
+            member.display(),
+            output.wasm,
+        ));
+    }
+
+    let arch_root = generations_root.join(lexical_arch);
+    ensure_existing_real_directory(&arch_root, "local generation architecture root")?;
+    let package_root = arch_root.join(lexical_package);
+    ensure_existing_real_directory(&package_root, "local generation package root")?;
+    let identity_root = package_root.join(expected_cache_key_sha);
+    ensure_existing_real_directory(&identity_root, "local generation cache-identity root")?;
+    let generation = identity_root.join(session);
+    ensure_existing_real_directory(&generation, "local package generation")?;
+    let publication_claim = identity_root.join(format!(".{session}.publication-claimed"));
+    if !publication_claim_exists(&publication_claim)? {
+        return Err(format!(
+            "{}: scalar mirror {} selects an unclaimed local generation: {}",
+            manifest.spec(),
+            destination.display(),
+            generation.display(),
+        ));
+    }
+    let claim_snapshot = inspect_local_mirror_entry(&publication_claim)?;
+    let expected = declared_generation_members(manifest)?;
+    let present = validate_local_generation_tree(manifest, &generation, &expected)?;
+    if present != expected.len() {
+        return Err(format!(
+            "{}: scalar mirror {} selects an incomplete local generation: {}",
+            manifest.spec(),
+            destination.display(),
+            generation.display(),
+        ));
+    }
+    validate_cache_artifacts(manifest, &generation)?;
+    let expected_target = std::fs::canonicalize(generation.join(&output.wasm)).map_err(|e| {
+        format!(
+            "{}: canonicalize declared local generation member {}: {e}",
+            manifest.spec(),
+            generation.join(&output.wasm).display(),
+        )
+    })?;
+    if target != expected_target {
+        return Err(format!(
+            "{}: scalar mirror {} does not select its declared local generation member",
+            manifest.spec(),
+            destination.display(),
+        ));
+    }
+    // WHY: validation must be a claim about the entries that remain live at
+    // this decision point. Recheck both identities after inspecting the
+    // generation so a concurrent swap cannot turn validation into permission
+    // to skip publication for different bytes.
+    validate_local_mirror_entry(&publication_claim, &claim_snapshot)?;
+    validate_local_mirror_entry(&target, &target_snapshot)?;
+    validate_local_mirror_entry(destination, &mirror_snapshot)?;
+    Ok(true)
+}
+
+/// Return whether a package-owned mirror directory selects one complete,
+/// current direct-build generation.
+///
+/// Multi-member packages publish their executable and supporting runtime files
+/// as one directory transaction. They therefore need the same higher-priority
+/// local-generation protection as scalar mirrors: resolving a released
+/// package must not atomically replace a valid exact local closure.
+fn package_mirror_selects_local_generation(
+    manifest: &DepsManifest,
+    binaries_dir: &Path,
+    arch: TargetArch,
+    expected_cache_key_sha: &str,
+    package_dir: &Path,
+) -> Result<bool, String> {
+    let package_snapshot = match std::fs::symlink_metadata(package_dir) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            inspect_package_mirror_snapshot(package_dir)?
+        }
+        Ok(_) => return Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => {
+            return Err(format!(
+                "{}: inspect package mirror {}: {e}",
+                manifest.spec(),
+                package_dir.display(),
+            ));
+        }
+    };
+
+    let generations_root = binaries_dir.join(LOCAL_GENERATIONS_DIR);
+    let mut lexical_targets = BTreeMap::new();
+    let mut claims_local_generation = false;
+    for (mirror_relative, link_target) in &package_snapshot.links {
+        let mirror = package_dir.join(mirror_relative);
+        let unresolved_target = if link_target.is_absolute() {
+            link_target.clone()
+        } else {
+            mirror
+                .parent()
+                .ok_or_else(|| {
+                    format!(
+                        "{}: package mirror leaf has no parent: {}",
+                        manifest.spec(),
+                        mirror.display(),
+                    )
+                })?
+                .join(link_target)
+        };
+        let lexical_target =
+            lexically_normalize_absolute_path(&unresolved_target).ok_or_else(|| {
+                format!(
+                    "{}: package mirror {} has a non-absolute normalized target: {}",
+                    manifest.spec(),
+                    mirror.display(),
+                    unresolved_target.display(),
+                )
+            })?;
+        claims_local_generation |= lexical_target.starts_with(&generations_root);
+        lexical_targets.insert(mirror_relative.clone(), (unresolved_target, lexical_target));
+    }
+
+    if !claims_local_generation {
+        if let Ok(canonical_generations_root) = std::fs::canonicalize(&generations_root) {
+            for (mirror_relative, (unresolved_target, _)) in &lexical_targets {
+                if std::fs::canonicalize(unresolved_target)
+                    .is_ok_and(|target| target.starts_with(&canonical_generations_root))
+                {
+                    return Err(format!(
+                        "{}: package mirror {} resolves into the local-generation namespace through a noncanonical path {}; rebuild the local package instead of substituting released bytes",
+                        manifest.spec(),
+                        package_dir.join(mirror_relative).display(),
+                        unresolved_target.display(),
+                    ));
+                }
+            }
+        }
+        return Ok(false);
+    }
+
+    ensure_existing_real_directory(&generations_root, "local generations root")?;
+    let generation_arch_root = generations_root.join(arch.as_str());
+    ensure_existing_real_directory(
+        &generation_arch_root,
+        "local generation architecture root",
+    )?;
+    let package_root = generation_arch_root.join(&manifest.name);
+    ensure_existing_real_directory(&package_root, "local generation package root")?;
+    let identity_root = package_root.join(expected_cache_key_sha);
+
+    let mut selected_session: Option<String> = None;
+    for (mirror_relative, (_, lexical_target)) in &lexical_targets {
+        let relative = lexical_target.strip_prefix(&identity_root).map_err(|_| {
+            format!(
+                "{}: package mirror {} does not select current local generation cache identity {}; selected {}; rebuild the local package instead of substituting released bytes",
+                manifest.spec(),
+                package_dir.join(mirror_relative).display(),
+                expected_cache_key_sha,
+                lexical_target.display(),
+            )
+        })?;
+        let mut components = relative.components();
+        let session = match components.next() {
+            Some(Component::Normal(value)) => value.to_str().ok_or_else(|| {
+                format!(
+                    "{}: local generation session is not UTF-8: {}",
+                    manifest.spec(),
+                    relative.display(),
+                )
+            })?,
+            _ => {
+                return Err(format!(
+                    "{}: package mirror {} lacks a local generation install session",
+                    manifest.spec(),
+                    package_dir.join(mirror_relative).display(),
+                ));
+            }
+        };
+        validate_local_install_session(session)?;
+        if let Some(selected) = &selected_session {
+            if selected != session {
+                return Err(format!(
+                    "{}: package mirror {} mixes local generation sessions {:?} and {:?}",
+                    manifest.spec(),
+                    package_dir.display(),
+                    selected,
+                    session,
+                ));
+            }
+        } else {
+            selected_session = Some(session.to_string());
+        }
+    }
+    let session = selected_session.ok_or_else(|| {
+        format!(
+            "{}: package mirror {} has no local generation members",
+            manifest.spec(),
+            package_dir.display(),
+        )
+    })?;
+    ensure_existing_real_directory(&identity_root, "local generation cache-identity root")?;
+    let generation = identity_root.join(&session);
+    ensure_existing_real_directory(&generation, "local package generation")?;
+    let publication_claim = identity_root.join(format!(".{session}.publication-claimed"));
+    if !publication_claim_exists(&publication_claim)? {
+        return Err(format!(
+            "{}: package mirror {} selects an unclaimed local generation: {}",
+            manifest.spec(),
+            package_dir.display(),
+            generation.display(),
+        ));
+    }
+    let claim_snapshot = inspect_local_mirror_entry(&publication_claim)?;
+
+    let expected_members = declared_generation_members(manifest)?;
+    let mut member_snapshots = BTreeMap::new();
+    for member in &expected_members {
+        let target = generation.join(member);
+        let snapshot = inspect_local_mirror_entry(&target)?;
+        if !matches!(snapshot.kind, LocalMirrorEntryKind::Regular { .. }) {
+            return Err(format!(
+                "{}: local generation member is not a regular file: {}",
+                manifest.spec(),
+                target.display(),
+            ));
+        }
+        member_snapshots.insert(target, snapshot);
+    }
+    let present = validate_local_generation_tree(manifest, &generation, &expected_members)?;
+    if present != expected_members.len() {
+        return Err(format!(
+            "{}: package mirror {} selects an incomplete local generation: {}",
+            manifest.spec(),
+            package_dir.display(),
+            generation.display(),
+        ));
+    }
+    validate_cache_artifacts(manifest, &generation)?;
+
+    let arch_root = package_dir.parent().ok_or_else(|| {
+        format!(
+            "{}: package mirror has no architecture parent: {}",
+            manifest.spec(),
+            package_dir.display(),
+        )
+    })?;
+    let local_plan = PackageClosureMirrorPlan::validate(manifest, &generation, arch_root)?;
+    let expected_links = local_plan.expected_links();
+    if package_snapshot.links.keys().ne(expected_links.keys()) {
+        return Err(format!(
+            "{}: package mirror {} does not contain its exact declared local generation closure",
+            manifest.spec(),
+            package_dir.display(),
+        ));
+    }
+
+    for (mirror_relative, expected_target) in expected_links {
+        let (unresolved_target, lexical_target) =
+            lexical_targets.get(&mirror_relative).ok_or_else(|| {
+                format!(
+                    "{}: package mirror {} is missing declared local member {}",
+                    manifest.spec(),
+                    package_dir.display(),
+                    mirror_relative.display(),
+                )
+            })?;
+        if lexical_target != &expected_target {
+            return Err(format!(
+                "{}: package mirror {} does not lexically select declared local generation member {}",
+                manifest.spec(),
+                package_dir.join(&mirror_relative).display(),
+                expected_target.display(),
+            ));
+        }
+        let target = std::fs::canonicalize(unresolved_target).map_err(|e| {
+            format!(
+                "{}: resolve package mirror {} target {}: {e}",
+                manifest.spec(),
+                package_dir.join(&mirror_relative).display(),
+                unresolved_target.display(),
+            )
+        })?;
+        if target != expected_target {
+            return Err(format!(
+                "{}: package mirror {} resolves to {} instead of declared local generation member {}",
+                manifest.spec(),
+                package_dir.join(&mirror_relative).display(),
+                target.display(),
+                expected_target.display(),
+            ));
+        }
+        if !member_snapshots.contains_key(&target) {
+            return Err(format!(
+                "{}: package mirror {} selects a member outside its snapshotted local generation",
+                manifest.spec(),
+                package_dir.join(&mirror_relative).display(),
+            ));
+        }
+    }
+
+    // WHY: the decision to preserve the exact local closure must still refer
+    // to the same claim, generation bytes, and atomic public link directory at
+    // the moment fetched publication is skipped.
+    validate_local_mirror_entry(&publication_claim, &claim_snapshot)?;
+    for (target, snapshot) in member_snapshots {
+        validate_local_mirror_entry(&target, &snapshot)?;
+    }
+    validate_package_mirror_snapshot(package_dir, &package_snapshot)?;
+    Ok(true)
 }
 
 fn publication_claim_exists(marker: &Path) -> Result<bool, String> {
@@ -8326,6 +8934,7 @@ fn place_binaries_symlinks(
     canonical: &Path,
     binaries_dir: &Path,
     arch: TargetArch,
+    expected_cache_key_sha: &str,
 ) -> Result<(), String> {
     let outputs = &m.program_outputs;
     if outputs.is_empty() {
@@ -8337,6 +8946,16 @@ fn place_binaries_symlinks(
     let arch_root = programs_root.join(arch.as_str());
     ensure_real_child_directory(&programs_root, &arch_root, "architecture publication root")?;
     if m.uses_package_mirror_directory() {
+        let package_dir = arch_root.join(&m.name);
+        if package_mirror_selects_local_generation(
+            m,
+            &binaries_dir,
+            arch,
+            expected_cache_key_sha,
+            &package_dir,
+        )? {
+            return Ok(());
+        }
         let plan = PackageClosureMirrorPlan::validate(m, canonical, &arch_root)?;
         if package_mirror_matches_plan(&plan)? {
             return Ok(());
@@ -8369,6 +8988,16 @@ fn place_binaries_symlinks(
             .parent()
             .ok_or_else(|| format!("dest path {} has no parent", dest.display()))?;
         ensure_existing_real_directory(dest_dir, "artifact publication parent")?;
+        if scalar_mirror_selects_local_generation(
+            m,
+            out,
+            &binaries_dir,
+            arch,
+            expected_cache_key_sha,
+            &dest,
+        )? {
+            continue;
+        }
         if let Ok(metadata) = std::fs::symlink_metadata(&dest) {
             if metadata.file_type().is_symlink()
                 && std::fs::read_link(&dest).ok().as_deref() == Some(src.as_path())
@@ -9417,17 +10046,7 @@ pub(crate) fn compute_cache_key_sha_for_package(
     abi_version: u32,
 ) -> Result<String, String> {
     let manifest = DepsManifest::load_with_overlay(package_dir)?;
-    let mut memo = BTreeMap::new();
-    let mut chain = Vec::new();
-    let sha = compute_sha(
-        &manifest,
-        registry,
-        arch,
-        abi_version,
-        &mut memo,
-        &mut chain,
-    )?;
-    Ok(hex(&sha))
+    manifest_cache_key_sha(&manifest, registry, arch, abi_version)
 }
 
 /// CLI entry point for `xtask compute-cache-key-sha`.
@@ -14696,7 +15315,14 @@ cache_key_sha = "{cache_key_hex}"
         };
         let remote_path = ensure_built(&manifest, &reg, TEST_ARCH, TEST_ABI, &remote_opts).unwrap();
         assert!(!remote_path.join("via-build").exists());
-        place_binaries_symlinks(&manifest, &remote_path, &remote_bin, TEST_ARCH).unwrap();
+        place_binaries_symlinks(
+            &manifest,
+            &remote_path,
+            &remote_bin,
+            TEST_ARCH,
+            LOCAL_GENERATION_CACHE_KEY,
+        )
+        .unwrap();
 
         let force = BTreeSet::from([name.to_string()]);
         let source_opts = ResolveOpts {
@@ -14709,7 +15335,14 @@ cache_key_sha = "{cache_key_hex}"
         };
         let source_path = ensure_built(&manifest, &reg, TEST_ARCH, TEST_ABI, &source_opts).unwrap();
         assert!(source_path.join("via-build").exists());
-        place_binaries_symlinks(&manifest, &source_path, &source_bin, TEST_ARCH).unwrap();
+        place_binaries_symlinks(
+            &manifest,
+            &source_path,
+            &source_bin,
+            TEST_ARCH,
+            LOCAL_GENERATION_CACHE_KEY,
+        )
+        .unwrap();
 
         let mirror_rel = Path::new("programs/wasm32").join(name).join("icu.dat");
         assert_eq!(
@@ -15302,7 +15935,14 @@ guest_path = "/usr/share/local-python/python-runtime.zip"
         fetched_wasm_bytes.extend(wasm_section(0, wasm_name("fetched-generation")));
         fs::write(&fetched_wasm, &fetched_wasm_bytes).unwrap();
         fs::write(&fetched_runtime, b"FETCHED-RUNTIME").unwrap();
-        place_binaries_symlinks(&manifest, &fetched, &binaries, TEST_ARCH).unwrap();
+        place_binaries_symlinks(
+            &manifest,
+            &fetched,
+            &binaries,
+            TEST_ARCH,
+            LOCAL_GENERATION_CACHE_KEY,
+        )
+        .unwrap();
 
         let local_wasm = sources.join("python.wasm");
         let local_runtime = sources.join("python-runtime.zip");
@@ -15419,6 +16059,130 @@ guest_path = "/usr/share/local-python/python-runtime.zip"
                 .unwrap()
                 .join(".build-one.publication-claimed")
                 .is_file()
+        );
+
+        // A lower-priority fetched resolve must preserve the complete current
+        // local closure, both with installer-owned absolute links and with the
+        // relative links emitted by the portable workspace packer.
+        let absolute_local_links = read_package_mirror_links(&live).unwrap();
+        place_binaries_symlinks(
+            &manifest,
+            &fetched,
+            &binaries,
+            TEST_ARCH,
+            LOCAL_GENERATION_CACHE_KEY,
+        )
+        .unwrap();
+        assert_eq!(
+            read_package_mirror_links(&live).unwrap(),
+            absolute_local_links
+        );
+        assert_eq!(fs::read(live.join("python.wasm")).unwrap(), local_wasm_bytes);
+        assert_eq!(
+            fs::read(live.join("share/python-runtime.zip")).unwrap(),
+            b"LOCAL-RUNTIME"
+        );
+
+        let canonical_binaries = fs::canonicalize(&binaries).unwrap();
+        for (mirror_relative, target) in &absolute_local_links {
+            let mirror = live.join(mirror_relative);
+            let target_relative = target.strip_prefix(&canonical_binaries).unwrap();
+            let nested_parent_depth = mirror_relative
+                .parent()
+                .map_or(0, |parent| parent.components().count());
+            let mut relocated_target = PathBuf::new();
+            for _ in 0..(3 + nested_parent_depth) {
+                relocated_target.push("..");
+            }
+            relocated_target.push(target_relative);
+            fs::remove_file(&mirror).unwrap();
+            symlink_file(&relocated_target, &mirror).unwrap();
+        }
+        let relative_local_links = read_package_mirror_links(&live).unwrap();
+        place_binaries_symlinks(
+            &manifest,
+            &fetched,
+            &binaries,
+            TEST_ARCH,
+            LOCAL_GENERATION_CACHE_KEY,
+        )
+        .unwrap();
+        assert_eq!(
+            read_package_mirror_links(&live).unwrap(),
+            relative_local_links
+        );
+        assert_eq!(fs::read(live.join("python.wasm")).unwrap(), local_wasm_bytes);
+        assert_eq!(
+            fs::read(live.join("share/python-runtime.zip")).unwrap(),
+            b"LOCAL-RUNTIME"
+        );
+
+        let different_cache_key =
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let stale_resolve_error = place_binaries_symlinks(
+            &manifest,
+            &fetched,
+            &binaries,
+            TEST_ARCH,
+            different_cache_key,
+        )
+        .unwrap_err();
+        assert!(
+            stale_resolve_error.contains(LOCAL_GENERATION_CACHE_KEY)
+                && stale_resolve_error.contains(different_cache_key)
+                && stale_resolve_error.contains("current local generation cache identity"),
+            "got: {stale_resolve_error}"
+        );
+        assert_eq!(
+            read_package_mirror_links(&live).unwrap(),
+            relative_local_links
+        );
+
+        let publication_claim = generation
+            .parent()
+            .unwrap()
+            .join(".build-one.publication-claimed");
+        let saved_claim = root.join("saved-build-one-publication-claim");
+        fs::rename(&publication_claim, &saved_claim).unwrap();
+        let unclaimed_error = place_binaries_symlinks(
+            &manifest,
+            &fetched,
+            &binaries,
+            TEST_ARCH,
+            LOCAL_GENERATION_CACHE_KEY,
+        )
+        .unwrap_err();
+        assert!(
+            unclaimed_error.contains("unclaimed local generation"),
+            "got: {unclaimed_error}"
+        );
+        assert_eq!(
+            read_package_mirror_links(&live).unwrap(),
+            relative_local_links
+        );
+        fs::rename(&saved_claim, &publication_claim).unwrap();
+
+        let runtime_mirror = live.join("share/python-runtime.zip");
+        let runtime_target = fs::read_link(&runtime_mirror).unwrap();
+        fs::remove_file(&runtime_mirror).unwrap();
+        fs::remove_dir(runtime_mirror.parent().unwrap()).unwrap();
+        let incomplete_mirror_error = place_binaries_symlinks(
+            &manifest,
+            &fetched,
+            &binaries,
+            TEST_ARCH,
+            LOCAL_GENERATION_CACHE_KEY,
+        )
+        .unwrap_err();
+        assert!(
+            incomplete_mirror_error.contains("exact declared local generation closure"),
+            "got: {incomplete_mirror_error}"
+        );
+        fs::create_dir(runtime_mirror.parent().unwrap()).unwrap();
+        symlink_file(&runtime_target, &runtime_mirror).unwrap();
+        assert_eq!(
+            read_package_mirror_links(&live).unwrap(),
+            relative_local_links
         );
 
         let second_wasm = sources.join("python-two.wasm");
@@ -15584,6 +16348,297 @@ wasm = "single-local.wasm"
                 .components()
                 .any(|component| component.as_os_str() == LOCAL_GENERATION_CACHE_KEY)
         );
+    }
+
+    #[test]
+    fn current_local_generation_owns_root_and_program_scalars_and_stale_identity_fails_closed() {
+        const STALE_CACHE_KEY: &str =
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        for (package, output, artifact, root_mirror) in [
+            ("single-local", "single-local", "single-local.wasm", false),
+            ("kernel", "kernel", "kandelo-kernel.wasm", true),
+            (
+                "userspace",
+                "userspace",
+                "wasm_posix_userspace.wasm",
+                true,
+            ),
+        ] {
+            let manifest = DepsManifest::parse(
+                &format!(
+                    r#"kind = "program"
+name = "{package}"
+version = "1.0"
+depends_on = []
+[source]
+url = "https://example.test/{package}.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+[[outputs]]
+name = "{output}"
+wasm = "{artifact}"
+"#,
+                ),
+                PathBuf::from(format!("/{package}")),
+            )
+            .unwrap();
+            let mut local_bytes = if package == "kernel" {
+                wasm_exporting_names(wasm_posix_shared::abi::HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS)
+            } else {
+                minimal_executable_wasm()
+            };
+            local_bytes.extend(wasm_custom_section("identity", b"local"));
+            let mut fetched_bytes = if package == "kernel" {
+                wasm_exporting_names(wasm_posix_shared::abi::HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS)
+            } else {
+                minimal_executable_wasm()
+            };
+            fetched_bytes.extend(wasm_custom_section("identity", b"fetched"));
+
+            // An identityless regular mirror remains user-owned for both
+            // historical root scalars and ordinary program scalars.
+            let negative_root = tempdir(&format!("local-scalar-regular-{package}"));
+            let negative_binaries = negative_root.join("local-binaries");
+            let negative_destination = if root_mirror {
+                negative_binaries.join(format!("{output}.wasm"))
+            } else {
+                negative_binaries.join(format!("programs/wasm32/{output}.wasm"))
+            };
+            fs::create_dir_all(negative_destination.parent().unwrap()).unwrap();
+            fs::write(&negative_destination, b"user-owned").unwrap();
+            let negative_fetched = negative_root.join("fetched");
+            fs::create_dir_all(&negative_fetched).unwrap();
+            fs::write(negative_fetched.join(artifact), &fetched_bytes).unwrap();
+            let resolver_error = place_binaries_symlinks(
+                &manifest,
+                &negative_fetched,
+                &negative_binaries,
+                TEST_ARCH,
+                LOCAL_GENERATION_CACHE_KEY,
+            )
+            .unwrap_err();
+            assert!(
+                resolver_error.contains("refusing to replace regular file"),
+                "{package}: got {resolver_error}"
+            );
+            assert_eq!(fs::read(&negative_destination).unwrap(), b"user-owned");
+
+            let negative_source = negative_root.join(artifact);
+            fs::write(&negative_source, &local_bytes).unwrap();
+            let error = install_local_artifact(
+                &manifest,
+                LOCAL_GENERATION_CACHE_KEY,
+                artifact,
+                &negative_source,
+                "negative",
+                &negative_binaries,
+                TEST_ARCH,
+            )
+            .unwrap_err();
+            assert!(
+                error.contains("refusing to replace regular file"),
+                "{package}: got {error}"
+            );
+            assert_eq!(fs::read(&negative_destination).unwrap(), b"user-owned");
+
+            let root = tempdir(&format!("local-scalar-current-{package}"));
+            let binaries = root.join("local-binaries");
+            let source = root.join(artifact);
+            fs::create_dir_all(source.parent().unwrap()).unwrap();
+            fs::write(&source, &local_bytes).unwrap();
+            let outcome = install_local_artifact(
+                &manifest,
+                LOCAL_GENERATION_CACHE_KEY,
+                artifact,
+                &source,
+                "current",
+                &binaries,
+                TEST_ARCH,
+            )
+            .unwrap();
+            let destination = match outcome {
+                LocalArtifactInstall::Replaced { mirror } => mirror,
+                other => panic!("{package}: unexpected local install outcome: {other:?}"),
+            };
+            assert_eq!(fs::read(&destination).unwrap(), local_bytes);
+            let current_target = fs::read_link(&destination).unwrap();
+
+            let fetched = root.join("fetched");
+            fs::create_dir_all(&fetched).unwrap();
+            fs::write(fetched.join(artifact), &fetched_bytes).unwrap();
+            place_binaries_symlinks(
+                &manifest,
+                &fetched,
+                &binaries,
+                TEST_ARCH,
+                LOCAL_GENERATION_CACHE_KEY,
+            )
+            .unwrap();
+            assert_eq!(fs::read_link(&destination).unwrap(), current_target);
+            assert_eq!(fs::read(&destination).unwrap(), local_bytes);
+
+            // Prepared workspaces rewrite generation links relative to their
+            // relocated mirror. Exercise that spelling before making the
+            // backing member disappear so lexical classification covers both
+            // root and programs/<arch> mirrors.
+            let relocated_target = if root_mirror {
+                PathBuf::from(LOCAL_GENERATIONS_DIR)
+            } else {
+                PathBuf::from("../..").join(LOCAL_GENERATIONS_DIR)
+            }
+            .join(TEST_ARCH.as_str())
+            .join(package)
+            .join(LOCAL_GENERATION_CACHE_KEY)
+            .join("current")
+            .join(artifact);
+            fs::remove_file(&destination).unwrap();
+            symlink_file(&relocated_target, &destination).unwrap();
+            place_binaries_symlinks(
+                &manifest,
+                &fetched,
+                &binaries,
+                TEST_ARCH,
+                LOCAL_GENERATION_CACHE_KEY,
+            )
+            .unwrap();
+            assert_eq!(fs::read_link(&destination).unwrap(), relocated_target);
+            assert_eq!(fs::read(&destination).unwrap(), local_bytes);
+
+            // An identity mismatch is ambiguous user state. Fail closed
+            // without replacing exact local candidate bytes with a release.
+            let stale_error = place_binaries_symlinks(
+                &manifest,
+                &fetched,
+                &binaries,
+                TEST_ARCH,
+                STALE_CACHE_KEY,
+            );
+            let stale_error = stale_error.unwrap_err();
+            assert!(
+                stale_error.contains(LOCAL_GENERATION_CACHE_KEY)
+                    && stale_error.contains(STALE_CACHE_KEY)
+                    && stale_error.contains("rebuild the local package"),
+                "{package}: got {stale_error}"
+            );
+            assert_eq!(fs::read_link(&destination).unwrap(), relocated_target);
+            assert_eq!(fs::read(&destination).unwrap(), local_bytes);
+
+            let generation_session = current_target.parent().unwrap();
+            let identity_root = generation_session.parent().unwrap();
+            let package_root = identity_root.parent().unwrap();
+
+            // Canonicalization must not erase a cache-identity indirection.
+            // The stale lexical key is still the mirror's owner even when its
+            // symlink currently resolves to the valid current generation.
+            let stale_identity_alias = package_root.join(STALE_CACHE_KEY);
+            symlink_file(identity_root, &stale_identity_alias).unwrap();
+            let stale_alias_target = stale_identity_alias
+                .join("current")
+                .join(artifact);
+            fs::remove_file(&destination).unwrap();
+            symlink_file(&stale_alias_target, &destination).unwrap();
+            let stale_alias_error = place_binaries_symlinks(
+                &manifest,
+                &fetched,
+                &binaries,
+                TEST_ARCH,
+                LOCAL_GENERATION_CACHE_KEY,
+            )
+            .unwrap_err();
+            assert!(
+                stale_alias_error.contains(STALE_CACHE_KEY)
+                    && stale_alias_error.contains(LOCAL_GENERATION_CACHE_KEY)
+                    && stale_alias_error.contains("stale local generation"),
+                "{package}: got {stale_alias_error}"
+            );
+            assert_eq!(fs::read_link(&destination).unwrap(), stale_alias_target);
+            fs::remove_file(&destination).unwrap();
+            symlink_file(&relocated_target, &destination).unwrap();
+            fs::remove_file(&stale_identity_alias).unwrap();
+
+            // A session alias is equally unsafe: retargeting it would change
+            // the selected bytes without changing the public mirror text.
+            let session_alias = identity_root.join("alias");
+            symlink_file(generation_session, &session_alias).unwrap();
+            let session_alias_target = session_alias.join(artifact);
+            fs::remove_file(&destination).unwrap();
+            symlink_file(&session_alias_target, &destination).unwrap();
+            let session_alias_error = place_binaries_symlinks(
+                &manifest,
+                &fetched,
+                &binaries,
+                TEST_ARCH,
+                LOCAL_GENERATION_CACHE_KEY,
+            )
+            .unwrap_err();
+            assert!(
+                session_alias_error.contains("local package generation")
+                    && session_alias_error.contains("real directory"),
+                "{package}: got {session_alias_error}"
+            );
+            assert_eq!(fs::read_link(&destination).unwrap(), session_alias_target);
+            fs::remove_file(&destination).unwrap();
+            symlink_file(&relocated_target, &destination).unwrap();
+            fs::remove_file(&session_alias).unwrap();
+
+            let escaped_generation = root.join("escaped-generation");
+            fs::create_dir_all(&escaped_generation).unwrap();
+            fs::write(escaped_generation.join(artifact), &local_bytes).unwrap();
+            fs::remove_file(&current_target).unwrap();
+            fs::remove_dir(generation_session).unwrap();
+            symlink_file(&escaped_generation, generation_session).unwrap();
+            let escape_error = place_binaries_symlinks(
+                &manifest,
+                &fetched,
+                &binaries,
+                TEST_ARCH,
+                LOCAL_GENERATION_CACHE_KEY,
+            )
+            .unwrap_err();
+            assert!(
+                escape_error.contains("lexically selects the local-generation namespace")
+                    && escape_error.contains("resolves outside"),
+                "{package}: got {escape_error}"
+            );
+            assert_eq!(fs::read_link(&destination).unwrap(), relocated_target);
+
+            fs::remove_file(generation_session).unwrap();
+            let dangling_error = place_binaries_symlinks(
+                &manifest,
+                &fetched,
+                &binaries,
+                TEST_ARCH,
+                LOCAL_GENERATION_CACHE_KEY,
+            )
+            .unwrap_err();
+            assert!(
+                dangling_error.contains("unavailable local generation member")
+                    && dangling_error.contains("rebuild the local package"),
+                "{package}: got {dangling_error}"
+            );
+            assert_eq!(fs::read_link(&destination).unwrap(), relocated_target);
+
+            fs::remove_file(identity_root.join(".current.publication-claimed")).unwrap();
+            fs::remove_dir(identity_root).unwrap();
+            fs::remove_dir(identity_root.parent().unwrap()).unwrap();
+            fs::remove_dir(identity_root.parent().unwrap().parent().unwrap()).unwrap();
+            fs::remove_dir(binaries.join(LOCAL_GENERATIONS_DIR)).unwrap();
+            let missing_namespace_error = place_binaries_symlinks(
+                &manifest,
+                &fetched,
+                &binaries,
+                TEST_ARCH,
+                LOCAL_GENERATION_CACHE_KEY,
+            )
+            .unwrap_err();
+            assert!(
+                missing_namespace_error.contains("missing local-generation namespace")
+                    && missing_namespace_error.contains("rebuild the local package"),
+                "{package}: got {missing_namespace_error}"
+            );
+            assert_eq!(fs::read_link(&destination).unwrap(), relocated_target);
+        }
     }
 
     fn scalar_local_transaction_manifest() -> DepsManifest {
@@ -16328,7 +17383,14 @@ guest_path = "/usr/share/atomic-shell/runtime/index.dat"
         .unwrap();
         symlink_file(&old_plan.links[0].source, &live_dir.join("stale-extra")).unwrap();
 
-        place_binaries_symlinks(&manifest, &new_canonical, &binaries, TEST_ARCH).unwrap();
+        place_binaries_symlinks(
+            &manifest,
+            &new_canonical,
+            &binaries,
+            TEST_ARCH,
+            LOCAL_GENERATION_CACHE_KEY,
+        )
+        .unwrap();
 
         assert_eq!(
             read_package_mirror_links(&live_dir).unwrap(),
@@ -16348,10 +17410,24 @@ guest_path = "/usr/share/atomic-shell/runtime/index.dat"
         let manifest = atomic_mirror_manifest("share/runtime/nested/index.dat");
         populate_atomic_mirror_identity(&canonical, &manifest, "same");
 
-        place_binaries_symlinks(&manifest, &canonical, &binaries, TEST_ARCH).unwrap();
+        place_binaries_symlinks(
+            &manifest,
+            &canonical,
+            &binaries,
+            TEST_ARCH,
+            LOCAL_GENERATION_CACHE_KEY,
+        )
+        .unwrap();
         let live = binaries.join("programs/wasm32/atomic-shell");
         let before = fs::symlink_metadata(&live).unwrap().ino();
-        place_binaries_symlinks(&manifest, &canonical, &binaries, TEST_ARCH).unwrap();
+        place_binaries_symlinks(
+            &manifest,
+            &canonical,
+            &binaries,
+            TEST_ARCH,
+            LOCAL_GENERATION_CACHE_KEY,
+        )
+        .unwrap();
         let after = fs::symlink_metadata(&live).unwrap().ino();
 
         assert_eq!(
@@ -16368,7 +17444,14 @@ guest_path = "/usr/share/atomic-shell/runtime/index.dat"
         let old_canonical = root.join("cache/old");
         let old_manifest = atomic_mirror_manifest("share/runtime/index.dat");
         populate_atomic_mirror_identity(&old_canonical, &old_manifest, "old");
-        place_binaries_symlinks(&old_manifest, &old_canonical, &binaries, TEST_ARCH).unwrap();
+        place_binaries_symlinks(
+            &old_manifest,
+            &old_canonical,
+            &binaries,
+            TEST_ARCH,
+            LOCAL_GENERATION_CACHE_KEY,
+        )
+        .unwrap();
         let old_live = binaries.join("programs/wasm32/atomic-shell");
         assert!(old_live.is_dir());
 
@@ -16393,7 +17476,14 @@ wasm = "shell.zip"
         fs::create_dir_all(&scalar_canonical).unwrap();
         fs::write(scalar_canonical.join("shell.zip"), b"scalar").unwrap();
 
-        place_binaries_symlinks(&scalar_manifest, &scalar_canonical, &binaries, TEST_ARCH).unwrap();
+        place_binaries_symlinks(
+            &scalar_manifest,
+            &scalar_canonical,
+            &binaries,
+            TEST_ARCH,
+            LOCAL_GENERATION_CACHE_KEY,
+        )
+        .unwrap();
         assert!(
             old_live.is_dir(),
             "scalar publication must not delete a path a concurrent package publisher can own"
@@ -16440,14 +17530,36 @@ wasm = "scalar.zip"
         fs::create_dir_all(&canonical).unwrap();
         fs::write(canonical.join("scalar.zip"), b"scalar").unwrap();
 
-        place_binaries_symlinks(&manifest, &canonical, &binaries, TEST_ARCH).unwrap();
+        place_binaries_symlinks(
+            &manifest,
+            &canonical,
+            &binaries,
+            TEST_ARCH,
+            LOCAL_GENERATION_CACHE_KEY,
+        )
+        .unwrap();
+        let mirror = arch_root.join("scalar.zip");
+        let first_target = fs::read_link(&mirror).unwrap();
+        place_binaries_symlinks(
+            &manifest,
+            &canonical,
+            &binaries,
+            TEST_ARCH,
+            LOCAL_GENERATION_CACHE_KEY,
+        )
+        .unwrap();
         assert_eq!(
             fs::read(user_directory.join("sentinel")).unwrap(),
             b"user-owned"
         );
         assert_eq!(
-            fs::read_link(arch_root.join("scalar.zip")).unwrap(),
+            fs::read_link(&mirror).unwrap(),
             fs::canonicalize(&canonical).unwrap().join("scalar.zip")
+        );
+        assert_eq!(fs::read_link(&mirror).unwrap(), first_target);
+        assert!(
+            !binaries.join(LOCAL_GENERATIONS_DIR).exists(),
+            "fetched scalar placement invented a local-generation root"
         );
     }
 
@@ -16481,8 +17593,14 @@ wasm = "scalar.zip"
                 _ => unreachable!(),
             }
 
-            let error =
-                place_binaries_symlinks(&manifest, &canonical, &binaries, TEST_ARCH).unwrap_err();
+            let error = place_binaries_symlinks(
+                &manifest,
+                &canonical,
+                &binaries,
+                TEST_ARCH,
+                LOCAL_GENERATION_CACHE_KEY,
+            )
+            .unwrap_err();
             assert!(
                 error.contains("real directory") || error.contains("file or symlink"),
                 "unexpected {attacked_component} rejection: {error}"
@@ -16512,9 +17630,14 @@ wasm = "scalar.zip"
         let live_dir = old_plan.package_dir.clone();
         write_atomic_mirror_fixture(&old_plan);
 
-        let missing_error =
-            place_binaries_symlinks(&manifest, &incomplete_canonical, &binaries, TEST_ARCH)
-                .unwrap_err();
+        let missing_error = place_binaries_symlinks(
+            &manifest,
+            &incomplete_canonical,
+            &binaries,
+            TEST_ARCH,
+            LOCAL_GENERATION_CACHE_KEY,
+        )
+        .unwrap_err();
         assert!(
             missing_error.contains("runtime file")
                 && missing_error.contains("share/runtime/nested/index.dat"),
@@ -16535,6 +17658,7 @@ wasm = "scalar.zip"
             &collision_canonical,
             &binaries,
             TEST_ARCH,
+            LOCAL_GENERATION_CACHE_KEY,
         )
         .unwrap_err();
         assert!(
@@ -18946,7 +20070,8 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
         let path = ensure_built(m, registry, arch, TEST_ABI, &opts)?;
         if let Some(bdir) = binaries_dir {
             if matches!(m.kind, ManifestKind::Program) && !m.program_outputs.is_empty() {
-                place_binaries_symlinks(m, &path, bdir, arch)?;
+                let cache_key_sha = manifest_cache_key_sha(m, registry, arch, TEST_ABI)?;
+                place_binaries_symlinks(m, &path, bdir, arch, &cache_key_sha)?;
             }
         }
         Ok(())

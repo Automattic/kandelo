@@ -13,7 +13,9 @@ import {
   KANDELO_DEMO_CONFIG_PATH,
   MAX_KANDELO_DEMO_CONFIG_BYTES,
   parseKandeloDemoConfig,
+  resolveDemoPresentation,
   validateKandeloDemoConfig,
+  type KandeloDemoConfig,
 } from "../../../web-libs/kandelo-session/src/demo-config";
 import {
   KANDELO_SHELL_CONFIG_PATH,
@@ -48,6 +50,7 @@ export interface SourceRootfsShellInputs {
   modesetPath: string;
   shellConfigPath: string;
   demoConfigPath: string;
+  demoProfileOverlayPath: string;
   outFile: string;
   resolveArtifact: ShellLazyArchiveResolver;
   sourceDateEpoch?: string;
@@ -137,19 +140,121 @@ function loadShellConfig(path: string): {
   return { bytes, config };
 }
 
-function loadDemoConfig(path: string): Uint8Array {
+function loadDemoConfig(path: string, label: string): KandeloDemoConfig {
   const bytes = readRegularInput(path, "demo config");
   if (bytes.byteLength > MAX_KANDELO_DEMO_CONFIG_BYTES) {
-    throw new Error(
-      `demo config exceeds ${MAX_KANDELO_DEMO_CONFIG_BYTES} bytes`,
-    );
+    throw new Error(`${label} exceeds ${MAX_KANDELO_DEMO_CONFIG_BYTES} bytes`);
   }
-  const config = parseKandeloDemoConfig(decodeUtf8(bytes, "demo config"));
+  const config = parseKandeloDemoConfig(decodeUtf8(bytes, label));
   if (config === null) {
-    throw new Error("demo config has an unsupported version");
+    throw new Error(`${label} has an unsupported version`);
   }
   validateKandeloDemoConfig(config);
+  return config;
+}
+
+const SOURCE_ROOTFS_DEMO_COMMANDS = {
+  doom: {
+    executable: "/usr/local/bin/fbdoom",
+    command: "/usr/local/bin/fbdoom -iwad /doom1.wad",
+  },
+  modeset: {
+    executable: "/usr/local/bin/modeset",
+    command: "/usr/local/bin/modeset",
+  },
+} as const;
+
+export function composeSourceRootfsDemoConfig(
+  basePath: string,
+  profileOverlayPath: string,
+): Uint8Array {
+  const base = loadDemoConfig(basePath, "base demo config");
+  const overlay = loadDemoConfig(
+    profileOverlayPath,
+    "source-rootfs demo profile overlay",
+  );
+  if (
+    overlay.presentation !== undefined ||
+    overlay.assets !== undefined ||
+    overlay.guide !== undefined
+  ) {
+    throw new Error(
+      "source-rootfs demo profile overlay must contain only named profiles",
+    );
+  }
+  const baseProfiles = base.profiles ?? {};
+  const overlayProfiles = overlay.profiles ?? {};
+  if (Object.keys(overlayProfiles).length === 0) {
+    throw new Error("source-rootfs demo profile overlay has no profiles");
+  }
+  const expectedProfileIds = Object.keys(SOURCE_ROOTFS_DEMO_COMMANDS).sort();
+  const actualProfileIds = Object.keys(overlayProfiles).sort();
+  if (
+    actualProfileIds.length !== expectedProfileIds.length ||
+    actualProfileIds.some(
+      (profileId, index) => profileId !== expectedProfileIds[index],
+    )
+  ) {
+    throw new Error(
+      "source-rootfs demo profile overlay must contain exactly the " +
+        `image-owned profiles: ${expectedProfileIds.join(", ")}`,
+    );
+  }
+  for (const profileId of Object.keys(overlayProfiles)) {
+    if (Object.hasOwn(baseProfiles, profileId)) {
+      throw new Error(
+        `source-rootfs demo profile overlay conflicts with base profile ${profileId}`,
+      );
+    }
+  }
+  const composed: KandeloDemoConfig = {
+    ...base,
+    profiles: {
+      ...baseProfiles,
+      ...overlayProfiles,
+    },
+  };
+  validateKandeloDemoConfig(composed);
+  const bytes = new TextEncoder().encode(
+    `${JSON.stringify(composed, null, 2)}\n`,
+  );
+  if (bytes.byteLength > MAX_KANDELO_DEMO_CONFIG_BYTES) {
+    throw new Error(
+      `composed demo config exceeds ${MAX_KANDELO_DEMO_CONFIG_BYTES} bytes`,
+    );
+  }
   return bytes;
+}
+
+function requireOwnedDemoCommands(
+  fs: MemoryFileSystem,
+  demoBytes: Uint8Array,
+): void {
+  const config = parseKandeloDemoConfig(
+    decodeUtf8(demoBytes, "composed demo config"),
+  );
+  if (config === null) {
+    throw new Error("composed demo config has an unsupported version");
+  }
+  for (const [profileId, expected] of Object.entries(
+    SOURCE_ROOTFS_DEMO_COMMANDS,
+  )) {
+    const presentation = resolveDemoPresentation(config, profileId);
+    if (presentation?.autoCommand !== expected.command) {
+      throw new Error(
+        `source-rootfs demo profile ${profileId} must launch ${expected.command}`,
+      );
+    }
+    const stat = fs.stat(expected.executable);
+    if (
+      (stat.mode & FILE_TYPE_MASK) !== REGULAR_FILE_MODE ||
+      (stat.mode & EXECUTE_BITS) === 0
+    ) {
+      throw new Error(
+        `source-rootfs demo profile ${profileId} does not own executable ${expected.executable}`,
+      );
+    }
+  }
 }
 
 function requireImageExecutable(
@@ -471,8 +576,14 @@ export async function buildSourceRootfsShellImage(
   }
   const sourceCapacity = MemoryFileSystem.readImageCapacity(rootfs);
   const fs = MemoryFileSystem.fromImagePreservingCapacity(rootfs);
+  // WHY: this builder exports and preserves lazy state from an imported image;
+  // authenticate atomic seals before the source image gains that authority.
+  await fs.verifyImportedLazyAtomicGroupSeals();
   const shell = loadShellConfig(inputs.shellConfigPath);
-  const demo = loadDemoConfig(inputs.demoConfigPath);
+  const demo = composeSourceRootfsDemoConfig(
+    inputs.demoConfigPath,
+    inputs.demoProfileOverlayPath,
+  );
 
   // WHY: the shell config is image-owned authority. Validate its executable
   // against the unmodified source rootfs before overlays can accidentally make
@@ -516,6 +627,11 @@ export async function buildSourceRootfsShellImage(
   ensureDirRecursive(fs, "/usr/local/bin");
   writeVfsBinary(fs, "/usr/local/bin/fbdoom", fbdoom, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/modeset", modeset, 0o755);
+  // WHY: the lean bottle shell must not promise optional programs it does not
+  // own, while this temporary source bridge really does install both programs.
+  // Bind its extra profiles to executable bytes so a metadata-only edit cannot
+  // advertise a demo that boots successfully but never launches its workload.
+  requireOwnedDemoCommands(fs, demo);
   ensureDirRecursive(fs, "/etc/kandelo");
   writeVfsBinary(fs, KANDELO_SHELL_CONFIG_PATH, shell.bytes, 0o644);
   writeVfsBinary(fs, KANDELO_DEMO_CONFIG_PATH, demo, 0o644);
@@ -548,6 +664,9 @@ export async function buildSourceRootfsShellImage(
     throw new Error("composed shell changed the rootfs capacity contract");
   }
   const outputFs = MemoryFileSystem.fromImagePreservingCapacity(image);
+  // WHY: post-save assertions are a separate import boundary and must verify
+  // the exact serialized seals rather than inherit trust from the source fs.
+  await outputFs.verifyImportedLazyAtomicGroupSeals();
   requireMaterializedBashIdentity(outputFs, sourceBash, bash);
   requireExpectedLazyState(
     composedLazyState,
@@ -567,6 +686,7 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     "--modeset",
     "--shell-config",
     "--demo-config",
+    "--demo-profile-overlay",
     "--out",
   ]);
   for (let index = 0; index < argv.length; index += 2) {
@@ -583,7 +703,8 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
         "usage: build-source-rootfs-shell-image.ts " +
           "--rootfs <rootfs.vfs> --bash <bash.wasm> --fbdoom <fbdoom.wasm> " +
           "--modeset <modeset.wasm> --shell-config <shell.json> " +
-          "--demo-config <demo.json> --out <shell.vfs.zst>",
+          "--demo-config <demo.json> --demo-profile-overlay <profiles.json> " +
+          "--out <shell.vfs.zst>",
       );
     }
     values.set(flag, value);
@@ -598,6 +719,7 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     modesetPath: values.get("--modeset")!,
     shellConfigPath: values.get("--shell-config")!,
     demoConfigPath: values.get("--demo-config")!,
+    demoProfileOverlayPath: values.get("--demo-profile-overlay")!,
     outFile: values.get("--out")!,
     resolveArtifact: strictResolverFromDependencyEnvironment(process.env),
   };

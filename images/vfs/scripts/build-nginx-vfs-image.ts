@@ -111,7 +111,7 @@ async function main() {
   const NGINX_WASM = resolveBinary("programs/nginx.wasm");
 
   console.log("Loading shell base image...");
-  const fs = loadShellBaseFileSystem(NGINX_IMAGE_MAX_BYTES);
+  const fs = await loadShellBaseFileSystem(NGINX_IMAGE_MAX_BYTES);
   fs.chmod("/tmp", 0o777);
   ensureDirRecursive(fs, "/usr/sbin");
   ensureDirRecursive(fs, "/run");

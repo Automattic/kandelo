@@ -16,6 +16,10 @@ import {
 import { tmpdir } from "node:os";
 import { zipSync } from "fflate";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import {
+  addSealedLazyAtomicTestTree,
+  forgeLazyAtomicSeal,
+} from "../../../host/test/lazy-atomic-seal-fixture";
 import { parseManifest } from "../src/manifest.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -33,6 +37,62 @@ function runWithSourceDateEpoch(sourceDateEpoch: string, ...args: string[]) {
     env: { ...process.env, SOURCE_DATE_EPOCH: sourceDateEpoch },
   });
 }
+
+describe("mkrootfs imported atomic seal boundary", () => {
+  it.each([
+    ["member", /activation member .* changed after sealing/],
+    ["cohort", /activation group .* differs from its seal/],
+  ] as const)(
+    "rejects a forged %s seal before inspect, metadata-only extract, or add output",
+    async (forgery, expectedSealError) => {
+      const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-forged-seal-"));
+      try {
+        const source = MemoryFileSystem.create(
+          new SharedArrayBuffer(8 * 1024 * 1024),
+        );
+        await addSealedLazyAtomicTestTree(source, {
+          groupId: "test:mkrootfs",
+          member: "metadata",
+          root: "/metadata-only",
+        });
+        const image = join(tmp, "forged.vfs");
+        writeFileSync(
+          image,
+          forgeLazyAtomicSeal(await source.saveImage(), forgery),
+        );
+        const original = readFileSync(image);
+
+        const inspect = run("inspect", image);
+        expect(inspect.status).not.toBe(0);
+        expect(inspect.stdout).toBe("");
+        expect(inspect.stderr).toMatch(expectedSealError);
+
+        const out = join(tmp, "out");
+        const extract = run("extract", image, out);
+        expect(extract.status).not.toBe(0);
+        // WHY: this metadata-only tree also fails later with EAGAIN because it
+        // has no fetched payload. Requiring the cryptographic verifier's exact
+        // error proves extract rejected the forged seal before reaching that
+        // unrelated lazy-read boundary.
+        expect(extract.stderr).toMatch(expectedSealError);
+        expect(existsSync(out)).toBe(false);
+
+        const add = run(
+          "add",
+          image,
+          "/etc/new",
+          "--file",
+          join(tmp, "missing-source"),
+        );
+        expect(add.status).not.toBe(0);
+        expect(add.stderr).toMatch(expectedSealError);
+        expect(readFileSync(image).equals(original)).toBe(true);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    },
+  );
+});
 
 describe("mkrootfs CLI — top-level", () => {
   it("prints usage on --help and exits 0", () => {

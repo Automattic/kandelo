@@ -31,6 +31,10 @@ pub fn run_index_update(args: &[String]) -> Result<(), String> {
         .map_err(|e| format!("read {}: {e}", parsed.index_path.display()))?;
     let mut idx = IndexToml::parse(&index_text)
         .map_err(|e| format!("{}: {e}", parsed.index_path.display()))?;
+    // WHY: ABI repair can prune old-ABI archive entries below. Retain the
+    // ledger as read so pruning a stale archive cannot erase the authoritative
+    // revision floor before this writer evaluates a replacement.
+    let revision_floor = idx.clone();
 
     if let Some(expected_abi) = parsed.expected_abi {
         if idx.abi_version != expected_abi {
@@ -84,6 +88,12 @@ pub fn run_index_update(args: &[String]) -> Result<(), String> {
                 .as_ref()
                 .ok_or("--status success requires --cache-key-sha")?;
 
+            reject_same_version_revision_downgrade(
+                &revision_floor,
+                package,
+                version,
+                revision,
+            )?;
             let bytes = std::fs::read(archive_path)
                 .map_err(|e| format!("read {}: {e}", archive_path.display()))?;
             let mut h = Sha256::new();
@@ -132,6 +142,12 @@ pub fn run_index_update(args: &[String]) -> Result<(), String> {
                 .error
                 .as_ref()
                 .ok_or("--status failed requires --error")?;
+            reject_same_version_revision_downgrade(
+                &revision_floor,
+                package,
+                version,
+                revision,
+            )?;
             idx.update_entry_failed(
                 package,
                 version,
@@ -160,6 +176,40 @@ pub fn run_index_update(args: &[String]) -> Result<(), String> {
 
     std::fs::write(&parsed.index_path, idx.write())
         .map_err(|e| format!("write {}: {e}", parsed.index_path.display()))
+}
+
+fn reject_same_version_revision_downgrade(
+    index: &IndexToml,
+    package: &str,
+    version: &str,
+    revision: u32,
+) -> Result<(), String> {
+    let mut existing = index
+        .packages
+        .iter()
+        .filter(|entry| entry.name == package && entry.version == version);
+    let Some(first) = existing.next() else {
+        return Ok(());
+    };
+    if existing.next().is_some() {
+        return Err(format!(
+            "index-update: authoritative index contains duplicate package \
+             blocks for {package}@{version}"
+        ));
+    }
+    if revision >= first.revision {
+        return Ok(());
+    }
+
+    // WHY: build matrices can be produced from an older checkout, but the
+    // locked index writer sees the authoritative release state. Refusing the
+    // downgrade here protects both successful and failed publication paths.
+    Err(format!(
+        "index-update: refusing to replace {package}@{version} revision {} \
+         with older revision {revision}; increment the revision or change the \
+         upstream version",
+        first.revision
+    ))
 }
 
 struct ArchiveManifestInfo {
@@ -342,11 +392,13 @@ impl ParsedArgs {
                 "--package" => package = Some(value),
                 "--version" => version = Some(value),
                 "--revision" => {
-                    revision = Some(
-                        value
-                            .parse()
-                            .map_err(|e| format!("--revision must be a positive integer ({e})"))?,
-                    )
+                    let parsed = value
+                        .parse()
+                        .map_err(|e| format!("--revision must be a positive integer ({e})"))?;
+                    if parsed == 0 {
+                        return Err("--revision must be a positive integer".into());
+                    }
+                    revision = Some(parsed)
                 }
                 "--arch" => arch = Some(value),
                 "--status" => status = Some(value),
@@ -446,6 +498,72 @@ build_host = "test-host"
         std::fs::write(path, zst_bytes).unwrap();
     }
 
+    fn success_args(
+        index_path: &std::path::Path,
+        archive_path: &std::path::Path,
+        package: &str,
+        version: &str,
+        revision: u32,
+        cache_key: &str,
+    ) -> Vec<String> {
+        vec![
+            "--index-path".into(),
+            index_path.to_string_lossy().into_owned(),
+            "--package".into(),
+            package.into(),
+            "--version".into(),
+            version.into(),
+            "--revision".into(),
+            revision.to_string(),
+            "--arch".into(),
+            "wasm32".into(),
+            "--status".into(),
+            "success".into(),
+            "--archive-path".into(),
+            archive_path.to_string_lossy().into_owned(),
+            "--archive-name".into(),
+            archive_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            "--cache-key-sha".into(),
+            cache_key.into(),
+            "--built-at".into(),
+            "2026-07-26T00:00:00Z".into(),
+            "--built-by".into(),
+            "https://example.test/run/1".into(),
+        ]
+    }
+
+    fn failed_args(
+        index_path: &std::path::Path,
+        package: &str,
+        version: &str,
+        revision: u32,
+    ) -> Vec<String> {
+        vec![
+            "--index-path".into(),
+            index_path.to_string_lossy().into_owned(),
+            "--package".into(),
+            package.into(),
+            "--version".into(),
+            version.into(),
+            "--revision".into(),
+            revision.to_string(),
+            "--arch".into(),
+            "wasm32".into(),
+            "--status".into(),
+            "failed".into(),
+            "--error".into(),
+            "test failure".into(),
+            "--built-at".into(),
+            "2026-07-26T00:00:00Z".into(),
+            "--built-by".into(),
+            "https://example.test/run/1".into(),
+        ]
+    }
+
     #[test]
     fn index_update_success_writes_entry_to_index() {
         use super::*;
@@ -514,6 +632,163 @@ build_host = "test-host"
         let expected_sha: [u8; 32] = h.finalize().into();
         let expected_hex: String = expected_sha.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(entry.archive_sha256.as_deref(), Some(expected_hex.as_str()));
+    }
+
+    #[test]
+    fn index_update_rejects_same_version_revision_downgrades_on_all_write_paths() {
+        use super::*;
+        use crate::index_toml::{EntryStatus, IndexToml};
+        use crate::pkg_manifest::TargetArch;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "wpk-xtask-idx-update-revision-floor-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let index_path = tmp.join("index.toml");
+        let mut index = IndexToml::empty(8, "seeded".into(), "test".into());
+        index.update_entry_failed(
+            "foo",
+            "1.0",
+            2,
+            TargetArch::Wasm32,
+            "seed".into(),
+            "seeded".into(),
+            "test".into(),
+        );
+        std::fs::write(&index_path, index.write()).unwrap();
+        let original = std::fs::read_to_string(&index_path).unwrap();
+
+        let failed_error =
+            run_index_update(&failed_args(&index_path, "foo", "1.0", 1)).unwrap_err();
+        assert!(
+            failed_error.contains("revision 2 with older revision 1"),
+            "unexpected failed-path error: {failed_error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&index_path).unwrap(),
+            original,
+            "failed downgrade must not mutate the authoritative index"
+        );
+
+        let old_key = "deadbeef".repeat(8);
+        let old_archive = tmp.join("foo-1.0-rev1-abi8-wasm32-deadbeef.tar.zst");
+        write_test_archive(&old_archive, "foo", "1.0", 1, 8, "wasm32", &old_key);
+        let success_error = run_index_update(&success_args(
+            &index_path,
+            &old_archive,
+            "foo",
+            "1.0",
+            1,
+            &old_key,
+        ))
+        .unwrap_err();
+        assert!(
+            success_error.contains("revision 2 with older revision 1"),
+            "unexpected success-path error: {success_error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&index_path).unwrap(),
+            original,
+            "successful downgrade must not mutate the authoritative index"
+        );
+
+        let new_key = "cafebabe".repeat(8);
+        let new_archive = tmp.join("foo-2.0-rev1-abi8-wasm32-cafebabe.tar.zst");
+        write_test_archive(&new_archive, "foo", "2.0", 1, 8, "wasm32", &new_key);
+        run_index_update(&success_args(
+            &index_path,
+            &new_archive,
+            "foo",
+            "2.0",
+            1,
+            &new_key,
+        ))
+        .unwrap();
+        run_index_update(&failed_args(&index_path, "foo", "3.0", 1)).unwrap();
+
+        let updated =
+            IndexToml::parse(&std::fs::read_to_string(&index_path).unwrap()).unwrap();
+        assert_eq!(
+            updated
+                .packages
+                .iter()
+                .find(|entry| entry.name == "foo" && entry.version == "2.0")
+                .unwrap()
+                .revision,
+            1,
+            "new upstream versions may reset revision on success"
+        );
+        assert_eq!(
+            updated
+                .lookup("foo", "3.0", TargetArch::Wasm32)
+                .unwrap()
+                .status,
+            EntryStatus::Failed,
+            "new upstream versions may reset revision on failure"
+        );
+
+        let mut duplicate = updated.clone();
+        duplicate.packages.push(
+            duplicate
+                .packages
+                .iter()
+                .find(|entry| entry.name == "foo" && entry.version == "1.0")
+                .unwrap()
+                .clone(),
+        );
+        let duplicate_error =
+            reject_same_version_revision_downgrade(&duplicate, "foo", "1.0", 2)
+                .unwrap_err();
+        assert!(
+            duplicate_error.contains("duplicate package blocks"),
+            "ambiguous revision floors must fail closed: {duplicate_error}"
+        );
+    }
+
+    #[test]
+    fn index_update_preserves_revision_floor_across_abi_pruning() {
+        use super::*;
+        use crate::index_toml::IndexToml;
+        use crate::pkg_manifest::TargetArch;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "wpk-xtask-idx-update-abi-revision-floor-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let index_path = tmp.join("index.toml");
+        let mut index = IndexToml::empty(7, "seeded".into(), "test".into());
+        index.update_entry_success(
+            "foo",
+            "1.0",
+            5,
+            TargetArch::Wasm32,
+            "foo-1.0-rev5-abi7-wasm32-deadbeef.tar.zst".into(),
+            "archive-sha".into(),
+            "cache-key".into(),
+            "seeded".into(),
+            "test".into(),
+        );
+        std::fs::write(&index_path, index.write()).unwrap();
+        let original = std::fs::read_to_string(&index_path).unwrap();
+
+        let mut args = failed_args(&index_path, "foo", "1.0", 4);
+        args.extend(["--expected-abi".into(), "8".into()]);
+        let error = run_index_update(&args).unwrap_err();
+        assert!(
+            error.contains("revision 5 with older revision 4"),
+            "ABI pruning must not erase the original revision floor: {error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&index_path).unwrap(),
+            original,
+            "rejected ABI-crossing downgrade must leave the ledger untouched"
+        );
     }
 
     #[test]
@@ -963,5 +1238,33 @@ cache_key_sha = "oldkey"
         ])
         .unwrap_err();
         assert!(err.contains("missing"), "got: {err}");
+    }
+
+    #[test]
+    fn index_update_rejects_zero_revision_before_reading_the_index() {
+        use super::*;
+
+        let err = run_index_update(&[
+            "--index-path".into(),
+            "/tmp/index-must-not-be-read.toml".into(),
+            "--package".into(),
+            "foo".into(),
+            "--version".into(),
+            "1.0".into(),
+            "--revision".into(),
+            "0".into(),
+            "--arch".into(),
+            "wasm32".into(),
+            "--status".into(),
+            "failed".into(),
+            "--error".into(),
+            "test".into(),
+            "--built-at".into(),
+            "test".into(),
+            "--built-by".into(),
+            "test".into(),
+        ])
+        .unwrap_err();
+        assert!(err.contains("positive integer"), "got: {err}");
     }
 }

@@ -8,15 +8,20 @@ WORK_DIR=""
 OUT=""
 REPORT=""
 BOTTLE_CACHE=""
+PACKAGE_TREE_SPEC=""
+PACKAGE_TREE_ARCHIVE=""
+HOMEBREW_BOOTSTRAP_ENV=""
 BREWFILE="$REPO_ROOT/homebrew/main-shell.Brewfile"
 SHELL_CONFIG="$REPO_ROOT/homebrew/main-shell-default.json"
 DEMO_CONFIG="$REPO_ROOT/homebrew/main-shell-demo.json"
 MIGRATION_LOCK="$REPO_ROOT/homebrew/main-shell-migration-lock.json"
 MATERIALIZATION_POLICY="$REPO_ROOT/homebrew/main-shell-materialization-policy.json"
+RUNTIME_SUPPORT="$REPO_ROOT/homebrew/main-shell-homebrew-runtime-support.json"
 LAZY_ARTIFACT_LOCK="$REPO_ROOT/homebrew/main-shell-lazy-artifact-lock.json"
 LAZY_ARTIFACT_CHECKER="$REPO_ROOT/scripts/verify-homebrew-main-shell-artifact-lock.sh"
 BOTTLE_MIRROR_REPOSITORY="kandelo-dev/homebrew-tap-core"
 LAZY_SHELL=false
+MATERIALIZE_PACKAGE_TREE=false
 MAX_BYTES="$((512 * 1024 * 1024))"
 
 # The shell image is a content-addressed product artifact. Do not let a Nix
@@ -43,6 +48,14 @@ Options:
   --out <image.vfs.zst>     output image
   --report <report.json>    composition evidence
   --bottle-cache <dir>      verified bottle cache
+  --package-tree-spec <json>
+                            reviewed package-owned lazy-tree recipe
+  --package-tree-archive <zip>
+                            exact dependency output named by the recipe
+  --homebrew-bootstrap-env <env>
+                            exact package-owned launcher environment
+  --materialize-package-tree
+                            embed that same tree for an eager derivative
   --migration-lock <json>   reviewed package/catalog lock
   --lazy-artifact-lock <json>
                             exact lazy-image digest and timestamp contract
@@ -78,6 +91,18 @@ while [ "$#" -gt 0 ]; do
       BOTTLE_CACHE="${2:-}"
       shift 2
       ;;
+    --package-tree-spec)
+      PACKAGE_TREE_SPEC="${2:-}"
+      shift 2
+      ;;
+    --package-tree-archive)
+      PACKAGE_TREE_ARCHIVE="${2:-}"
+      shift 2
+      ;;
+    --homebrew-bootstrap-env)
+      HOMEBREW_BOOTSTRAP_ENV="${2:-}"
+      shift 2
+      ;;
     --migration-lock)
       MIGRATION_LOCK="${2:-}"
       shift 2
@@ -92,6 +117,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --lazy-shell)
       LAZY_SHELL=true
+      shift
+      ;;
+    --materialize-package-tree)
+      MATERIALIZE_PACKAGE_TREE=true
       shift
       ;;
     -h|--help)
@@ -118,6 +147,35 @@ mkdir "$WORK_DIR"
 OUT="${OUT:-$WORK_DIR/main-shell.vfs.zst}"
 REPORT="${REPORT:-$WORK_DIR/main-shell-report.json}"
 BOTTLE_CACHE="${BOTTLE_CACHE:-$WORK_DIR/bottle-cache}"
+if { [ -n "$PACKAGE_TREE_SPEC" ] && [ -z "$PACKAGE_TREE_ARCHIVE" ]; } ||
+   { [ -z "$PACKAGE_TREE_SPEC" ] && [ -n "$PACKAGE_TREE_ARCHIVE" ]; }; then
+  echo "build-homebrew-main-shell-closure: package-tree spec and archive must be provided together" >&2
+  exit 2
+fi
+if { [ -n "$PACKAGE_TREE_SPEC" ] && [ -z "$HOMEBREW_BOOTSTRAP_ENV" ]; } ||
+   { [ -z "$PACKAGE_TREE_SPEC" ] && [ -n "$HOMEBREW_BOOTSTRAP_ENV" ]; }; then
+  echo "build-homebrew-main-shell-closure: Homebrew bootstrap environment and package tree must be provided together" >&2
+  exit 2
+fi
+if [ "$MATERIALIZE_PACKAGE_TREE" = true ] && [ -z "$PACKAGE_TREE_SPEC" ]; then
+  echo "build-homebrew-main-shell-closure: --materialize-package-tree requires a package tree" >&2
+  exit 2
+fi
+if [ -n "$PACKAGE_TREE_SPEC" ] &&
+   { [ ! -f "$PACKAGE_TREE_SPEC" ] || [ -L "$PACKAGE_TREE_SPEC" ]; }; then
+  echo "build-homebrew-main-shell-closure: package-tree spec must be a regular non-symlink file" >&2
+  exit 2
+fi
+if [ -n "$PACKAGE_TREE_ARCHIVE" ] &&
+   { [ ! -f "$PACKAGE_TREE_ARCHIVE" ] || [ -L "$PACKAGE_TREE_ARCHIVE" ]; }; then
+  echo "build-homebrew-main-shell-closure: package-tree archive must be a regular non-symlink file" >&2
+  exit 2
+fi
+if [ -n "$HOMEBREW_BOOTSTRAP_ENV" ] &&
+   { [ ! -f "$HOMEBREW_BOOTSTRAP_ENV" ] || [ -L "$HOMEBREW_BOOTSTRAP_ENV" ]; }; then
+  echo "build-homebrew-main-shell-closure: Homebrew bootstrap environment must be a regular non-symlink file" >&2
+  exit 2
+fi
 if ! [[ "$MAX_BYTES" =~ ^[1-9][0-9]*$ ]] || [ $((MAX_BYTES % 4096)) -ne 0 ]; then
   echo "build-homebrew-main-shell-closure: --max-bytes must be a positive multiple of 4096" >&2
   exit 2
@@ -138,6 +196,11 @@ fi
 if [ "$LAZY_SHELL" = true ] &&
    { [ ! -f "$MATERIALIZATION_POLICY" ] || [ -L "$MATERIALIZATION_POLICY" ]; }; then
   echo "build-homebrew-main-shell-closure: materialization policy must be a regular non-symlink file" >&2
+  exit 2
+fi
+if [ "$LAZY_SHELL" = true ] &&
+   { [ ! -f "$RUNTIME_SUPPORT" ] || [ -L "$RUNTIME_SUPPORT" ]; }; then
+  echo "build-homebrew-main-shell-closure: runtime-support contract must be a regular non-symlink file" >&2
   exit 2
 fi
 if [ ! -f "$DEMO_CONFIG" ] || [ -L "$DEMO_CONFIG" ]; then
@@ -187,7 +250,7 @@ for tool in git jq node ruby sha256sum wc; do
   }
 done
 
-if [ "$LAZY_SHELL" = true ]; then
+if [ "$LAZY_SHELL" = true ] && [ "$MATERIALIZE_PACKAGE_TREE" = false ]; then
   if [ ! -f "$LAZY_ARTIFACT_CHECKER" ] || [ -L "$LAZY_ARTIFACT_CHECKER" ]; then
     echo "build-homebrew-main-shell-closure: lazy artifact checker must be a regular non-symlink file" >&2
     exit 2
@@ -218,7 +281,8 @@ DEMO_CONFIG_SHA="${DEMO_CONFIG_SHA%% *}"
 DEMO_CONFIG_BYTES="$(wc -c <"$DEMO_CONFIG" | tr -d '[:space:]')"
 
 node "$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs" \
-  "$BREWFILE" "$MIGRATION_LOCK" "$TAP_ROOT/Kandelo/metadata.json"
+  "$BREWFILE" "$MIGRATION_LOCK" "$TAP_ROOT/Kandelo/metadata.json" \
+  "$RUNTIME_SUPPORT"
 
 for required in \
   "$REPO_ROOT/node_modules/.bin/tsx" \
@@ -254,6 +318,7 @@ EXPECTED_CLOSURE_COUNT="$(jq -er '.formula_closure | length' "$MIGRATION_LOCK")"
 EXPECTED_EMBEDDED_COUNT=0
 EXPECTED_DEFERRED_COUNT=0
 EXPECTED_MIRROR_FILE_COUNT=0
+EXPECTED_RUNTIME_SUPPORT_COUNT=0
 if [ "$LAZY_SHELL" = true ]; then
   EXPECTED_EMBEDDED_COUNT="$(jq -er '.embedded_package_order | length' \
     "$MATERIALIZATION_POLICY")"
@@ -262,7 +327,9 @@ if [ "$LAZY_SHELL" = true ]; then
     exit 1
   fi
   EXPECTED_DEFERRED_COUNT="$((EXPECTED_CLOSURE_COUNT - EXPECTED_EMBEDDED_COUNT))"
-  EXPECTED_MIRROR_FILE_COUNT="$((EXPECTED_DEFERRED_COUNT + 1))"
+  EXPECTED_RUNTIME_SUPPORT_COUNT="$(jq -er '.additional_formula_order | length' \
+    "$RUNTIME_SUPPORT")"
+  EXPECTED_MIRROR_FILE_COUNT="$((EXPECTED_DEFERRED_COUNT + EXPECTED_RUNTIME_SUPPORT_COUNT + 1))"
 fi
 
 # Deliberately omit images/rootfs/PACKAGES.toml's generated manifest fragment.
@@ -277,6 +344,29 @@ node "$REPO_ROOT/tools/mkrootfs/bin/mkrootfs.mjs" build \
   -o "$PLATFORM_BASE"
 
 MATERIALIZATION_ARGS=()
+PACKAGE_TREE_ARGS=()
+PACKAGE_TREE_JSON=null
+PACKAGE_TREE_ARCHIVE_SHA=""
+PACKAGE_TREE_ARCHIVE_BYTES=0
+HOMEBREW_BOOTSTRAP_ENV_SHA=""
+HOMEBREW_BOOTSTRAP_ENV_BYTES=0
+if [ -n "$PACKAGE_TREE_SPEC" ]; then
+  PACKAGE_TREE_ARGS=(
+    --package-tree-spec "$PACKAGE_TREE_SPEC"
+    --package-tree-archive "$PACKAGE_TREE_ARCHIVE"
+    --homebrew-bootstrap-env "$HOMEBREW_BOOTSTRAP_ENV"
+  )
+  if [ "$MATERIALIZE_PACKAGE_TREE" = true ]; then
+    PACKAGE_TREE_ARGS+=(--materialize-package-tree)
+  fi
+  PACKAGE_TREE_JSON="$(jq -c . "$PACKAGE_TREE_SPEC")"
+  PACKAGE_TREE_ARCHIVE_SHA="$(sha256sum "$PACKAGE_TREE_ARCHIVE")"
+  PACKAGE_TREE_ARCHIVE_SHA="${PACKAGE_TREE_ARCHIVE_SHA%% *}"
+  PACKAGE_TREE_ARCHIVE_BYTES="$(wc -c <"$PACKAGE_TREE_ARCHIVE" | tr -d '[:space:]')"
+  HOMEBREW_BOOTSTRAP_ENV_SHA="$(sha256sum "$HOMEBREW_BOOTSTRAP_ENV")"
+  HOMEBREW_BOOTSTRAP_ENV_SHA="${HOMEBREW_BOOTSTRAP_ENV_SHA%% *}"
+  HOMEBREW_BOOTSTRAP_ENV_BYTES="$(wc -c <"$HOMEBREW_BOOTSTRAP_ENV" | tr -d '[:space:]')"
+fi
 MATERIALIZATION_JSON=null
 VFS_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts"
 if [ "$LAZY_SHELL" = true ]; then
@@ -285,6 +375,7 @@ if [ "$LAZY_SHELL" = true ]; then
     --materialization-policy "$MATERIALIZATION_POLICY"
     --bottle-mirror-repository "$BOTTLE_MIRROR_REPOSITORY"
     --bottle-mirror-out "$BOTTLE_MIRROR_OUT"
+    --homebrew-runtime-support "$RUNTIME_SUPPORT"
   )
   MATERIALIZATION_JSON="$(jq -c . "$MATERIALIZATION_POLICY")"
 fi
@@ -303,6 +394,7 @@ fi
   --catalog-commit "$EXPECTED_TAP_SHA" \
   --migration-lock "$MIGRATION_LOCK" \
   "${MATERIALIZATION_ARGS[@]}" \
+  "${PACKAGE_TREE_ARGS[@]}" \
   --write-profile \
   --shell-config "$SHELL_CONFIG" \
   --demo-config "$DEMO_CONFIG" \
@@ -313,7 +405,7 @@ if [ ! -f "$OUT" ] || [ -L "$OUT" ] || [ ! -f "$REPORT" ] || [ -L "$REPORT" ]; t
   echo "build-homebrew-main-shell-closure: image builder did not produce regular image and report files" >&2
   exit 1
 fi
-if [ "$LAZY_SHELL" = true ]; then
+if [ "$LAZY_SHELL" = true ] && [ "$MATERIALIZE_PACKAGE_TREE" = false ]; then
   bash "$LAZY_ARTIFACT_CHECKER" \
     --lock "$LAZY_ARTIFACT_LOCK" \
     --expected-source-date-epoch "$SOURCE_DATE_EPOCH" \
@@ -324,7 +416,14 @@ jq -e \
   --slurpfile selection "$SELECTION" \
   --slurpfile tap "$TAP_ROOT/Kandelo/metadata.json" \
   --slurpfile lock "$MIGRATION_LOCK" \
+  --slurpfile runtime_support "$RUNTIME_SUPPORT" \
   --argjson materialization "$MATERIALIZATION_JSON" \
+  --argjson package_tree_spec "$PACKAGE_TREE_JSON" \
+  --arg package_tree_archive_sha "$PACKAGE_TREE_ARCHIVE_SHA" \
+  --argjson package_tree_archive_bytes "$PACKAGE_TREE_ARCHIVE_BYTES" \
+  --arg homebrew_bootstrap_env_sha "$HOMEBREW_BOOTSTRAP_ENV_SHA" \
+  --argjson homebrew_bootstrap_env_bytes "$HOMEBREW_BOOTSTRAP_ENV_BYTES" \
+  --argjson materialize_package_tree "$MATERIALIZE_PACKAGE_TREE" \
   --argjson lazy_shell "$LAZY_SHELL" \
   --argjson abi "$ABI_VERSION" \
   --arg catalog "$EXPECTED_TAP_SHA" \
@@ -337,6 +436,7 @@ jq -e \
   --argjson expected_closure_count "$EXPECTED_CLOSURE_COUNT" \
   --argjson expected_embedded_count "$EXPECTED_EMBEDDED_COUNT" \
   --argjson expected_deferred_count "$EXPECTED_DEFERRED_COUNT" \
+  --argjson expected_runtime_support_count "$EXPECTED_RUNTIME_SUPPORT_COUNT" \
   --argjson max_bytes "$MAX_BYTES" '
   (.bottle_mirror.tag) as $mirror_tag |
   .schema == 1 and
@@ -366,6 +466,15 @@ jq -e \
       $materialization.embedded_package_order) and
     (.materialization.embedded_tree_count == $expected_embedded_count) and
     (.materialization.deferred_tree_count == $expected_deferred_count) and
+    (.materialization.runtime_support == {
+      id: "homebrew-runtime-support",
+      activation_root: "/usr/bin/brew",
+      activation_capability: "homebrew:runtime",
+      package_order: $runtime_support[0].additional_formula_order,
+      tree_count: $expected_runtime_support_count,
+      deferred_relocation_formulae:
+        [$runtime_support[0].deferred_formulae[].package]
+    }) and
     ((.materialization.embedded_package_order +
       .materialization.deferred_package_order | sort) ==
       ($lock[0].formula_closure | sort)) and
@@ -373,16 +482,19 @@ jq -e \
       ($lock[0].formula_closure -
         $materialization.embedded_package_order | sort)) and
     (.materialization.bottle_mirror.repository == $mirror_repository) and
-    (.materialization.bottle_mirror.asset_count == $expected_deferred_count) and
+    (.materialization.bottle_mirror.asset_count ==
+      ($expected_deferred_count + $expected_runtime_support_count)) and
     (.bottle_mirror.repository == $mirror_repository) and
     (.bottle_mirror.tag == .materialization.bottle_mirror.tag) and
     (.bottle_mirror.collection_sha256 ==
       .materialization.bottle_mirror.collection_sha256) and
     (.bottle_mirror.plan.asset ==
       "kandelo-homebrew-bottle-mirror-plan.json") and
-    (.bottle_mirror.assets | length == $expected_deferred_count) and
+    (.bottle_mirror.assets | length ==
+      ($expected_deferred_count + $expected_runtime_support_count)) and
     (([.bottle_mirror.assets[].package] | sort) ==
-      (.materialization.deferred_package_order | sort)) and
+      ((.materialization.deferred_package_order +
+        .materialization.runtime_support.package_order) | sort)) and
     ([.bottle_mirror.assets[] |
       (.id | startswith("bottle-")) and
       (.asset | test("^kandelo-homebrew-bottle-.*-layer\\.bin$")) and
@@ -413,8 +525,11 @@ jq -e \
   ([.packages[].source_status] | all(. == "success")) and
   ([.packages[].metadata_status] | all(. == "success")) and
   (.default_shell.path == "/home/linuxbrew/.linuxbrew/bin/bash") and
-  (["/bin/sh", "/bin/bash", "/bin/dash", "/usr/bin/sh", "/usr/bin/env",
-    "/usr/local/bin/fbdoom", "/usr/local/bin/modeset"] -
+  # WHY: these are the complete base-shell entry points. Commands such as
+  # env, git, curl, and ruby belong to the separately activated Homebrew
+  # runtime-support layer and must not expand this image by accident.
+  (["/bin/sh", "/bin/bash", "/bin/dash", "/usr/bin/sh", "/usr/bin/bash",
+    "/usr/bin/dash", "/usr/bin/bzip2", "/usr/bin/m4"] -
     [.compatibility_links[].path] | length == 0) and
   ([$lock[0].compatibility.aliases[] as $alias |
     $alias.targets[] as $target |
@@ -453,7 +568,7 @@ jq -e \
     (.skipped_packages == [.owners[] | select(. != $selected)]) and
     (.path == ("/home/linuxbrew/.linuxbrew/" + .target))
   ] | all) and
-  (([.runtime_state[] | {
+  (([(.runtime_state // [])[] | {
       requires_package,
       path,
       kind,
@@ -471,7 +586,7 @@ jq -e \
       gid,
       reason
     }])) and
-  ([.runtime_state[] |
+  ([(.runtime_state // [])[] |
     if .kind == "directory" then
       (has("content_sha256") | not) and (has("content_bytes") | not)
     else
@@ -483,7 +598,64 @@ jq -e \
   (.image_capacity.max_byte_length == $max_bytes) and
   (.base_image.kernelAbi == $abi) and
   (.base_image.metadata.kernelAbi == $abi) and
-  (.base_image.metadata.homebrew == null)
+  (.base_image.metadata.homebrew == null) and
+  (if $package_tree_spec == null then
+    (.package_deferred_trees == null)
+  else
+    (.package_deferred_trees | length == 1) and
+    (.package_deferred_trees[0] as $tree |
+      $tree.schema == $package_tree_spec.schema and
+      $tree.kind == $package_tree_spec.kind and
+      $tree.id == $package_tree_spec.id and
+      $tree.content_role == $package_tree_spec.content_role and
+      $tree.package == $package_tree_spec.package and
+      $tree.archive.output == $package_tree_spec.package.output and
+      $tree.archive.url == $package_tree_spec.archive.url and
+      $tree.archive.sha256 == $package_tree_archive_sha and
+      $tree.archive.bytes == $package_tree_archive_bytes and
+      $tree.archive.expanded_bytes > 0 and
+      $tree.archive.source_entry_count > 0 and
+      ($tree.descriptor.sha256 | test("^[0-9a-f]{64}$")) and
+      $tree.descriptor.bytes > 0 and
+      $tree.mount_prefix == $package_tree_spec.mount_prefix and
+      $tree.owner == $package_tree_spec.owner and
+      $tree.activation.mode == $package_tree_spec.activation.mode and
+      $tree.activation.capabilities ==
+        $package_tree_spec.activation.capabilities and
+      $tree.activation.roots == $package_tree_spec.activation.roots and
+      $tree.activation.atomicGroup == {
+        id: $package_tree_spec.activation.atomic_group,
+        member: $package_tree_spec.id
+      } and
+      $tree.state == (if $materialize_package_tree
+        then "materialized"
+        else "deferred"
+      end) and
+      .homebrew_bootstrap == {
+        environment: {
+          path: "/etc/homebrew/brew.env",
+          sha256: $homebrew_bootstrap_env_sha,
+          bytes: $homebrew_bootstrap_env_bytes
+        },
+        entrypoint: {
+          path: "/usr/bin/brew",
+          target: "/home/linuxbrew/.linuxbrew/bin/brew"
+        },
+        ownership: {
+          prefix: "/home/linuxbrew/.linuxbrew",
+          uid: 1000,
+          gid: 1000,
+          mutable_paths: [
+            "/home/linuxbrew/.linuxbrew/Cellar",
+            "/home/linuxbrew/.linuxbrew/Library/Taps",
+            "/home/linuxbrew/.linuxbrew/var/homebrew/linked",
+            "/home/linuxbrew/.linuxbrew/var/homebrew/locks",
+            "/home/user/.cache/Homebrew"
+          ]
+        }
+      }
+    )
+  end)
 ' "$REPORT" >/dev/null
 
 if [ "$LAZY_SHELL" = true ]; then
@@ -510,7 +682,7 @@ if [ "$LAZY_SHELL" = true ]; then
   if [ "$MIRROR_ENTRY_COUNT" != "$EXPECTED_MIRROR_FILE_COUNT" ] ||
      [ "$MIRROR_FILE_COUNT" != "$EXPECTED_MIRROR_FILE_COUNT" ]; then
     echo "build-homebrew-main-shell-closure: mirror output must contain exactly " \
-      "$EXPECTED_DEFERRED_COUNT bottles and one plan" >&2
+      "$((EXPECTED_DEFERRED_COUNT + EXPECTED_RUNTIME_SUPPORT_COUNT)) bottles and one plan" >&2
     exit 1
   fi
 fi

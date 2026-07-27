@@ -1,9 +1,9 @@
 /**
  * Declarative mount layout shared by Node and Browser hosts.
  *
- * The same `MountSpec[]` produces a `MountConfig[]` via per-environment
- * resolvers — Node materialises scratch backends as host directories
- * under a session dir; the browser uses ephemeral memfs SABs.
+ * The same `MountSpec[]` produces a `Promise<MountConfig[]>` via
+ * per-environment resolvers — Node materialises scratch backends as host
+ * directories under a session dir; the browser uses ephemeral memfs SABs.
  *
  * `readonly` is currently advisory: `VirtualPlatformIO` does not
  * enforce it on writes today (PR 5/5 will wire enforcement). The
@@ -13,6 +13,7 @@
 
 import type { MountConfig } from "./types";
 import { MemoryFileSystem } from "./memory-fs";
+import { restoreVerifiedVfsImage } from "./load-image";
 
 const S_IFMT = 0xf000;
 const S_IFDIR = 0x4000;
@@ -21,7 +22,7 @@ export interface MountSpec {
   /** Absolute VFS mount point (e.g., "/etc"). No trailing slash except "/". */
   path: string;
   /**
-   * `image`   — back the mount with `MemoryFileSystem.fromImage(rootfsImage)`.
+   * `image`   — asynchronously restore and authenticate the supplied image.
    * `scratch` — empty writable backend (host dir on Node, memfs in browser).
    */
   source: "image" | "scratch";
@@ -183,6 +184,38 @@ export function validateSpec(spec: MountSpec[]): void {
 }
 
 /**
+ * Restore and authenticate every image-backed mount before any caller is
+ * allowed to normalize an image or construct scratch mounts around it.
+ *
+ * @internal Shared by the Node and browser resolvers so both hosts enforce the
+ * same imported-seal trust boundary.
+ */
+export async function restoreVerifiedImageMounts(
+  spec: MountSpec[],
+  rootfsImage: Uint8Array,
+): Promise<ReadonlyMap<MountSpec, MemoryFileSystem>> {
+  const restored = new Map(
+    await Promise.all(
+      spec
+        .filter((mount) => mount.source === "image")
+        .map(async (mount) => [
+          mount,
+          await restoreVerifiedVfsImage(rootfsImage, {
+            maxByteLength: IMAGE_MEMFS_MAX_BYTES,
+          }),
+        ] as const),
+    ),
+  );
+
+  // WHY: restore/verify the complete image set before normalization or scratch
+  // setup.
+  // A later forged mount must not leave an earlier mount or host directory
+  // partially mutated when the resolver rejects the boot.
+  for (const fs of restored.values()) normalizeLegacyRootfs(fs);
+  return restored;
+}
+
+/**
  * Per-mount scratch SAB sizing. Defaults to {@link BROWSER_SCRATCH_SAB_BYTES}
  * for any mount not in the map.
  */
@@ -192,26 +225,35 @@ export interface BrowserResolverOptions {
 }
 
 /**
- * Materialise `spec` for the browser host. Image mounts get a fresh
- * `MemoryFileSystem.fromImage(rootfsImage)`; scratch mounts get an
- * empty `MemoryFileSystem` over a small SAB (the browser has no host
- * directory to bind to).
+ * Materialise `spec` for the browser host. Image mounts get a fresh,
+ * cryptographically verified `MemoryFileSystem`; scratch mounts get an empty
+ * `MemoryFileSystem` over a small SAB (the browser has no host directory to
+ * bind to).
  *
- * Pure function: input → output, no global state.
+ * Asynchronous input → output function with no global state.
  */
 export function resolveForBrowser(
   spec: MountSpec[],
   rootfsImage: Uint8Array,
   options: BrowserResolverOptions = {},
-): MountConfig[] {
+): Promise<MountConfig[]> {
   validateSpec(spec);
+  return resolveValidatedForBrowser(spec, rootfsImage, options);
+}
+
+async function resolveValidatedForBrowser(
+  spec: MountSpec[],
+  rootfsImage: Uint8Array,
+  options: BrowserResolverOptions,
+): Promise<MountConfig[]> {
+  const imageMounts = await restoreVerifiedImageMounts(spec, rootfsImage);
   const out: MountConfig[] = [];
   for (const m of spec) {
     if (m.source === "image") {
-      const backend = MemoryFileSystem.fromImage(rootfsImage, {
-        maxByteLength: IMAGE_MEMFS_MAX_BYTES,
-      });
-      normalizeLegacyRootfs(backend);
+      const backend = imageMounts.get(m);
+      if (backend === undefined) {
+        throw new Error(`verified image mount is missing: ${m.path}`);
+      }
       out.push({
         mountPoint: m.path,
         backend,

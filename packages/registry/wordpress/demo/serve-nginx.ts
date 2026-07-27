@@ -24,6 +24,7 @@ import { NodeKernelHost } from "../../../../host/src/node-kernel-host";
 import { resolveBinary } from "../../../../host/src/binary-resolver";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import { ensureDirRecursive, writeVfsFile } from "../../../../host/src/vfs/image-helpers";
+import { restoreVerifiedVfsImage } from "../../../../host/src/vfs/load-image";
 
 const wordpressVfsPath = resolveBinary("programs/wordpress.vfs.zst");
 const dinitWasmPath = resolveBinary("programs/dinit/dinit.wasm");
@@ -95,7 +96,9 @@ async function main() {
 }
 
 async function configureWordPressVfs(image: ArrayBuffer): Promise<ArrayBuffer> {
-  const fs = MemoryFileSystem.fromImage(new Uint8Array(image), {
+  // WHY: configuration rewrites are host-side effects derived from imported
+  // image state, so reject forged lazy-tree seals before reading or writing it.
+  const fs = await restoreVerifiedVfsImage(new Uint8Array(image), {
     maxByteLength: 1024 * 1024 * 1024,
   });
   const nginxConf = readVfsText(fs, "/etc/nginx/nginx.conf")

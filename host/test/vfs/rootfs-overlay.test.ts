@@ -10,6 +10,10 @@ import {
   S_IFREG,
   SFSError,
 } from "../../src/vfs/sharedfs-vendor";
+import {
+  addSealedLazyAtomicTestTree,
+  forgeLazyAtomicSeal,
+} from "../lazy-atomic-seal-fixture";
 
 function createFs(bytes = 2 * 1024 * 1024): MemoryFileSystem {
   return MemoryFileSystem.create(new SharedArrayBuffer(bytes));
@@ -44,9 +48,9 @@ function readText(fs: MemoryFileSystem, path: string): string {
   return new TextDecoder().decode(bytes);
 }
 
-function captureError(operation: () => void): unknown {
+async function captureError(operation: () => Promise<void>): Promise<unknown> {
   try {
-    operation();
+    await operation();
   } catch (error) {
     return error;
   }
@@ -54,6 +58,30 @@ function captureError(operation: () => void): unknown {
 }
 
 describe("canonical rootfs /etc overlay", () => {
+  it.each(["member", "cohort"] as const)(
+    "rejects a forged imported %s seal before changing the target",
+    async (forgery) => {
+      const source = createFs();
+      source.mkdirWithOwner("/etc", 0o755, 0, 0);
+      writeText(source, "/etc/hosts", "canonical\n");
+      await addSealedLazyAtomicTestTree(source, {
+        groupId: "test:rootfs-overlay",
+        member: "metadata",
+        root: "/metadata-only",
+      });
+      const target = createFs();
+      target.mkdirWithOwner("/sentinel", 0o755, 0, 0);
+      const before = await target.saveImage();
+
+      await expect(overlayEtcFromRootfs(
+        target,
+        forgeLazyAtomicSeal(await source.saveImage(), forgery),
+      )).rejects.toThrow(/seal/);
+      expect(await target.saveImage()).toEqual(before);
+    },
+    15_000,
+  );
+
   it("copies nested state and metadata while preserving caller-owned entries", async () => {
     const source = createFs();
     source.mkdirWithOwner("/etc", 0o755, 0, 0);
@@ -76,7 +104,7 @@ describe("canonical rootfs /etc overlay", () => {
       1000,
     );
 
-    overlayEtcFromRootfs(target, await source.saveImage());
+    await overlayEtcFromRootfs(target, await source.saveImage());
 
     expect(readText(target, "/etc/ssl/openssl.cnf")).toBe("caller policy\n");
     expect(target.stat("/etc/ssl/openssl.cnf")).toMatchObject({
@@ -123,7 +151,7 @@ describe("canonical rootfs /etc overlay", () => {
     source.mkdirWithOwner("/etc/ssl", 0o750, 56, 78);
     const target = createFs();
 
-    overlayEtcFromRootfs(target, await source.saveImage());
+    await overlayEtcFromRootfs(target, await source.saveImage());
 
     expect(target.stat("/etc")).toMatchObject({
       mode: S_IFDIR | 0o751,
@@ -142,7 +170,7 @@ describe("canonical rootfs /etc overlay", () => {
     const target = createFs();
     const image = await source.saveImage();
 
-    const error = captureError(() => overlayEtcFromRootfs(target, image));
+    const error = await captureError(() => overlayEtcFromRootfs(target, image));
 
     expect(error).toBeInstanceOf(SFSError);
     expect((error as SFSError).code).toBe(ENOENT);
@@ -159,7 +187,7 @@ describe("canonical rootfs /etc overlay", () => {
       .mockReturnValueOnce(0);
 
     try {
-      expect(() => overlayEtcFromRootfs(target, image)).toThrow(
+      await expect(overlayEtcFromRootfs(target, image)).rejects.toThrow(
         "Short read while copying canonical rootfs path /etc/hosts: 0/20 bytes",
       );
     } finally {
@@ -175,7 +203,7 @@ describe("canonical rootfs /etc overlay", () => {
     const target = createFs(64 * 1024);
     const image = await source.saveImage();
 
-    const error = captureError(() => overlayEtcFromRootfs(target, image));
+    const error = await captureError(() => overlayEtcFromRootfs(target, image));
 
     expect(error).toBeInstanceOf(SFSError);
     expect((error as SFSError).code).toBe(ENOSPC);

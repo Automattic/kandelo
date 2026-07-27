@@ -17,6 +17,7 @@ import {
 } from "./vfs-image-helpers";
 import { populateShellEnvironment, resolveVfsArtifact } from "./shell-vfs-build";
 import { writeMainShellDemoConfig } from "./main-shell-demo-config";
+import { restoreTrustedShellRootfs } from "./shell-rootfs-restore";
 
 const OUT_FILE = "apps/browser-demos/public/shell.vfs.zst";
 
@@ -30,9 +31,10 @@ function resolveRootfsImagePath(): string {
 
 async function main() {
   const rootfsBytes = readFileSync(resolveRootfsImagePath());
-  const fs = MemoryFileSystem.fromImage(new Uint8Array(rootfsBytes), {
-    maxByteLength: 256 * 1024 * 1024,
-  });
+  const fs = await restoreTrustedShellRootfs(
+    new Uint8Array(rootfsBytes),
+    256 * 1024 * 1024,
+  );
 
   console.log("Populating shell environment...");
   populateShellEnvironment(fs, { eagerBinaries: false, baseProvided: true });

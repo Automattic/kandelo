@@ -27,9 +27,9 @@ export interface InitMessage {
   kernelWasmBytes: ArrayBuffer;
   /**
    * Pre-built VFS image bytes from MemoryFileSystem.saveImage(). The worker
-   * constructs and OWNS its own memfs via MemoryFileSystem.fromImage() — no
-   * VFS SAB is shared with the main thread. Demos that need `/etc/{passwd,
-   * group,hosts,services}` bake it into the image (see
+   * restores and authenticates an owned memfs through the verified image-mount
+   * resolver — no VFS SAB is shared with the main thread. Demos that need
+   * `/etc/{passwd,group,hosts,services}` bake it into the image (see
    * apps/browser-demos/lib/kernel-owned-boot.ts::overlayEtcFromRootfs).
    */
   vfsImage: Uint8Array;
@@ -114,6 +114,17 @@ export interface UnlinkVfsFileMessage {
   type: "unlink_vfs_file";
   requestId: number;
   path: string;
+}
+
+/**
+ * Serialize the quiescent worker-owned root filesystem.
+ *
+ * This deliberately captures only the `/` image backend. Scratch and device
+ * mounts are boot-scoped and are recreated by the host on the next boot.
+ */
+export interface ExportRootfsImageMessage {
+  type: "export_rootfs_image";
+  requestId: number;
 }
 
 export interface AppendStdinDataMessage {
@@ -345,6 +356,7 @@ export type MainToKernelMessage =
   | ReadVfsFileMessage
   | WriteVfsFileMessage
   | UnlinkVfsFileMessage
+  | ExportRootfsImageMessage
   | AppendStdinDataMessage
   | SetStdinDataMessage
   | PtyWriteMessage

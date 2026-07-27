@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { mkdtempSync, rmSync, readFileSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,11 @@ import {
   type MountSpec,
 } from "../../src/vfs/default-mounts";
 import { resolveForNode } from "../../src/vfs/default-mounts-node";
+import {
+  addSealedLazyAtomicTestTree,
+  forgeLazyAtomicSeal,
+  type LazyAtomicSealForgery,
+} from "../lazy-atomic-seal-fixture";
 
 const O_RDONLY = 0x0000;
 const O_WRONLY = 0x0001;
@@ -42,6 +47,24 @@ async function buildLegacyDinitImage(): Promise<Uint8Array> {
   return await mfs.saveImage();
 }
 
+async function buildForgedLegacyDinitImage(
+  forgery: LazyAtomicSealForgery,
+): Promise<Uint8Array> {
+  const sab = new SharedArrayBuffer(2 * 1024 * 1024);
+  const mfs = MemoryFileSystem.create(sab);
+  mfs.mkdir("/etc", 0o755);
+  const group = new TextEncoder().encode("root:x:0:\nnogroup:x:65534:\n");
+  const fd = mfs.open("/etc/group", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
+  mfs.write(fd, group, null, group.length);
+  mfs.close(fd);
+  await addSealedLazyAtomicTestTree(mfs, {
+    groupId: `default-mounts:${forgery}`,
+    member: forgery,
+    root: `/sealed-${forgery}`,
+  });
+  return forgeLazyAtomicSeal(await mfs.saveImage(), forgery);
+}
+
 function readMountFile(backend: any, path: string): Uint8Array {
   const st = backend.stat(path);
   const fd = backend.open(path, O_RDONLY, 0);
@@ -51,10 +74,13 @@ function readMountFile(backend: any, path: string): Uint8Array {
   return buf.subarray(0, n);
 }
 
-function withUmask<T>(mask: number, fn: () => T): T {
+async function withUmask<T>(
+  mask: number,
+  fn: () => T | Promise<T>,
+): Promise<T> {
   const previous = process.umask(mask);
   try {
-    return fn();
+    return await fn();
   } finally {
     process.umask(previous);
   }
@@ -99,8 +125,8 @@ describe("resolveForNode", () => {
     rmSync(sessionDir, { recursive: true, force: true });
   });
 
-  it("produces a MountConfig per spec entry", () => {
-    const mounts = resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
+  it("produces a MountConfig per spec entry", async () => {
+    const mounts = await resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
     expect(mounts).toHaveLength(DEFAULT_MOUNT_SPEC.length);
     for (const m of mounts) {
       expect(typeof m.mountPoint).toBe("string");
@@ -108,8 +134,8 @@ describe("resolveForNode", () => {
     }
   });
 
-  it("/ mount is a MemoryFileSystem loaded from the supplied image", () => {
-    const mounts = resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
+  it("/ mount is a MemoryFileSystem loaded from the supplied image", async () => {
+    const mounts = await resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
     const root = mounts.find((m) => m.mountPoint === "/");
     expect(root).toBeDefined();
     expect(root!.backend).toBeInstanceOf(MemoryFileSystem);
@@ -119,8 +145,8 @@ describe("resolveForNode", () => {
     expect(new TextDecoder().decode(passwd)).toContain("root:x:0:0");
   });
 
-  it("/tmp mount is a HostFileSystem rooted under sessionDir", () => {
-    const mounts = resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
+  it("/tmp mount is a HostFileSystem rooted under sessionDir", async () => {
+    const mounts = await resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
     const tmp = mounts.find((m) => m.mountPoint === "/tmp");
     expect(tmp).toBeDefined();
     expect(tmp!.backend).toBeInstanceOf(HostFileSystem);
@@ -134,8 +160,8 @@ describe("resolveForNode", () => {
     expect(new TextDecoder().decode(onDisk)).toBe("hello via host fs");
   });
 
-  it("pre-creates every scratch directory under sessionDir", () => {
-    resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
+  it("pre-creates every scratch directory under sessionDir", async () => {
+    await resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
     for (const spec of DEFAULT_MOUNT_SPEC) {
       if (spec.source !== "scratch") continue;
       const expected = join(sessionDir, spec.path);
@@ -144,9 +170,11 @@ describe("resolveForNode", () => {
     }
   });
 
-  it("applies declared scratch directory modes natively on creation and virtually", () => {
+  it("applies declared scratch directory modes natively on creation and virtually", async () => {
     const modeSessionDir = mkdtempSync(join(tmpdir(), "wasm-posix-default-mount-modes-"));
-    const mounts = withUmask(0, () => resolveForNode(DEFAULT_MOUNT_SPEC, image, modeSessionDir));
+    const mounts = await withUmask(0, () =>
+      resolveForNode(DEFAULT_MOUNT_SPEC, image, modeSessionDir)
+    );
     const tmp = mounts.find((m) => m.mountPoint === "/tmp")!;
     const varTmp = mounts.find((m) => m.mountPoint === "/var/tmp")!;
     const home = mounts.find((m) => m.mountPoint === "/home/user")!;
@@ -170,15 +198,43 @@ describe("resolveForNode", () => {
 
   it("adds the nobody group to legacy dinit images", async () => {
     const legacyImage = await buildLegacyDinitImage();
-    const mounts = resolveForNode(DEFAULT_MOUNT_SPEC, legacyImage, sessionDir);
+    const mounts = await resolveForNode(
+      DEFAULT_MOUNT_SPEC,
+      legacyImage,
+      sessionDir,
+    );
     const root = mounts.find((m) => m.mountPoint === "/")!;
     const group = new TextDecoder().decode(readMountFile(root.backend, "/etc/group"));
     expect(group).toContain("nogroup:x:65534:");
     expect(group).toContain("nobody:x:65534:");
   });
 
-  it("creates missing rootfs ancestors for nested runtime mount points", () => {
-    const mounts = resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
+  it.each(["member", "cohort"] as const)(
+    "rejects a forged %s seal before Node scratch directories are created",
+    async (forgery) => {
+      const forgedImage = await buildForgedLegacyDinitImage(forgery);
+      const isolatedSessionDir = mkdtempSync(
+        join(tmpdir(), "wasm-posix-forged-default-mounts-"),
+      );
+      const scratchFirst: MountSpec[] = [
+        { path: "/tmp", source: "scratch" },
+        { path: "/", source: "image" },
+      ];
+      try {
+        await expect(
+          resolveForNode(scratchFirst, forgedImage, isolatedSessionDir),
+        ).rejects.toThrow(/activation (member|group)/);
+        // Arbitrary specs may put scratch first. Two-phase resolution must
+        // still authenticate every image before touching the host filesystem.
+        expect(existsSync(join(isolatedSessionDir, "tmp"))).toBe(false);
+      } finally {
+        rmSync(isolatedSessionDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("creates missing rootfs ancestors for nested runtime mount points", async () => {
+    const mounts = await resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
     const root = mounts.find((m) => m.mountPoint === "/")!.backend as MemoryFileSystem;
 
     expect(() => root.stat("/usr/local")).toThrow();
@@ -190,8 +246,8 @@ describe("resolveForNode", () => {
     expect(() => root.stat("/usr/local/lib/kandelo")).toThrow();
   });
 
-  it("does not hide non-directory rootfs ancestors", () => {
-    const mounts = resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
+  it("does not hide non-directory rootfs ancestors", async () => {
+    const mounts = await resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
     const root = mounts.find((m) => m.mountPoint === "/")!.backend as MemoryFileSystem;
     const fd = root.open("/usr", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
     root.close(fd);
@@ -246,8 +302,8 @@ describe("resolveForBrowser", () => {
     image = await buildFixtureImage();
   });
 
-  it("produces image-backed and memfs-scratch backends only", () => {
-    const mounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
+  it("produces image-backed and memfs-scratch backends only", async () => {
+    const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
       scratchSabBytes: tinyScratch,
     });
     expect(mounts).toHaveLength(DEFAULT_MOUNT_SPEC.length);
@@ -258,8 +314,8 @@ describe("resolveForBrowser", () => {
     }
   });
 
-  it("/ mount is image-backed and reads /etc/passwd from the image", () => {
-    const mounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
+  it("/ mount is image-backed and reads /etc/passwd from the image", async () => {
+    const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
       scratchSabBytes: tinyScratch,
     });
     const root = mounts.find((m) => m.mountPoint === "/");
@@ -268,8 +324,8 @@ describe("resolveForBrowser", () => {
     expect(new TextDecoder().decode(passwd)).toContain("root:x:0:0");
   });
 
-  it("scratch mounts are independent writable memfs instances", () => {
-    const mounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
+  it("scratch mounts are independent writable memfs instances", async () => {
+    const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
       scratchSabBytes: tinyScratch,
     });
     const tmp = mounts.find((m) => m.mountPoint === "/tmp");
@@ -288,8 +344,8 @@ describe("resolveForBrowser", () => {
     expect(() => home!.backend.stat("/x.txt")).toThrow();
   });
 
-  it("applies declared scratch root modes", () => {
-    const mounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
+  it("applies declared scratch root modes", async () => {
+    const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
       scratchSabBytes: tinyScratch,
     });
     const tmp = mounts.find((m) => m.mountPoint === "/tmp")!.backend as MemoryFileSystem;
@@ -307,7 +363,7 @@ describe("resolveForBrowser", () => {
 
   it("adds the nobody group to legacy dinit images", async () => {
     const legacyImage = await buildLegacyDinitImage();
-    const mounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, legacyImage, {
+    const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, legacyImage, {
       scratchSabBytes: tinyScratch,
     });
     const root = mounts.find((m) => m.mountPoint === "/")!;
@@ -316,12 +372,34 @@ describe("resolveForBrowser", () => {
     expect(group).toContain("nobody:x:65534:");
   });
 
-  it("scratchSabBytes overrides apply per mount", () => {
+  it.each(["member", "cohort"] as const)(
+    "rejects a forged %s seal before browser scratch filesystems are allocated",
+    async (forgery) => {
+      const forgedImage = await buildForgedLegacyDinitImage(forgery);
+      const createSpy = vi.spyOn(MemoryFileSystem, "create");
+      const scratchFirst: MountSpec[] = [
+        { path: "/tmp", source: "scratch" },
+        { path: "/", source: "image" },
+      ];
+      try {
+        await expect(
+          resolveForBrowser(scratchFirst, forgedImage, {
+            scratchSabBytes: tinyScratch,
+          }),
+        ).rejects.toThrow(/activation (member|group)/);
+        expect(createSpy).not.toHaveBeenCalled();
+      } finally {
+        createSpy.mockRestore();
+      }
+    },
+  );
+
+  it("scratchSabBytes overrides apply per mount", async () => {
     const explicit = {
       "/tmp": 4 * 1024 * 1024,
       "/var/log": 256 * 1024,
     };
-    const mounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
+    const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
       scratchSabBytes: { ...tinyScratch, ...explicit },
     });
     const tmp = mounts.find((m) => m.mountPoint === "/tmp")!.backend as MemoryFileSystem;

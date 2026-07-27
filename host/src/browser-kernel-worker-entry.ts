@@ -34,10 +34,7 @@ import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-a
 import { resolveLazyUrl } from "./vfs/lazy-url";
 import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
-import {
-  DEFAULT_MOUNT_SPEC,
-  resolveForBrowser,
-} from "./vfs/default-mounts";
+import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
 import { patchWasmForThread } from "./worker-main";
@@ -54,6 +51,7 @@ import {
   threadWorkerFailureDisposition,
 } from "./thread-worker-disposition";
 import { VmInterruptTimerManager } from "./vm-interrupt-timer";
+import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
 import type {
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
@@ -92,6 +90,8 @@ type LazyRegistrationMessage = Extract<
 let initReady = false;
 let initFailure: string | null = null;
 const pendingLazyRegistrationMessages: LazyRegistrationMessage[] = [];
+let lazyRegistrationTail: Promise<void> = Promise.resolve();
+const rootfsSnapshotGate = new RootfsSnapshotGate();
 
 // Process tracking
 interface ForkReplayContext {
@@ -354,6 +354,13 @@ function respond(requestId: number, result: unknown) {
   post({ type: "response", requestId, result });
 }
 
+function respondTransferredBytes(requestId: number, result: Uint8Array) {
+  post(
+    { type: "response", requestId, result },
+    [result.buffer as ArrayBuffer],
+  );
+}
+
 function respondError(requestId: number, error: string) {
   post({ type: "response", requestId, result: null, error });
 }
@@ -384,11 +391,11 @@ function reportWorkerProtocolError(message: string): void {
   });
 }
 
-function applyLazyRegistration(msg: LazyRegistrationMessage): void {
+async function applyLazyRegistration(msg: LazyRegistrationMessage): Promise<void> {
   if (msg.type === "register_lazy_files") {
     memfs.importLazyEntries(msg.entries);
   } else {
-    memfs.importLazyArchiveEntries(msg.entries);
+    await memfs.importVerifiedLazyArchiveEntries(msg.entries);
   }
   respondIfRequested(msg, true);
 }
@@ -400,14 +407,50 @@ function failPendingLazyRegistrations(error: string): void {
   }
 }
 
-function flushPendingLazyRegistrations(): void {
-  const pending = pendingLazyRegistrationMessages.splice(0);
-  for (const msg of pending) {
-    applyLazyRegistration(msg);
+function scheduleLazyRegistration(
+  msg: LazyRegistrationMessage,
+): Promise<void> {
+  // WHY: worker message handlers may overlap after an await. Serialize trust
+  // checks so two registrations cannot both authenticate against an obsolete
+  // view and then publish in a different order.
+  const scheduled = lazyRegistrationTail.then(async () => {
+    const releaseMutation = rootfsSnapshotGate.beginMutation(
+      "register lazy rootfs entries",
+    );
+    try {
+      await applyLazyRegistration(msg);
+    } finally {
+      releaseMutation();
+    }
+  });
+  lazyRegistrationTail = scheduled.catch(() => {});
+  return scheduled;
+}
+
+function reportLazyRegistrationFailure(
+  msg: LazyRegistrationMessage,
+  err: unknown,
+): void {
+  const error = formatError(err);
+  respondErrorIfRequested(msg, error);
+  reportWorkerProtocolError(`${msg.type} failed: ${error}`);
+}
+
+async function flushPendingLazyRegistrations(): Promise<void> {
+  // Keep init closed while draining. Messages delivered while a digest yields
+  // join this queue and must be authenticated before the worker reports ready.
+  while (pendingLazyRegistrationMessages.length !== 0) {
+    const msg = pendingLazyRegistrationMessages.shift()!;
+    try {
+      await scheduleLazyRegistration(msg);
+    } catch (err) {
+      reportLazyRegistrationFailure(msg, err);
+      throw err;
+    }
   }
 }
 
-function handleLazyRegistration(msg: LazyRegistrationMessage): void {
+async function handleLazyRegistration(msg: LazyRegistrationMessage): Promise<void> {
   if (initFailure) {
     respondErrorIfRequested(msg, initFailure);
     reportWorkerProtocolError(
@@ -420,11 +463,9 @@ function handleLazyRegistration(msg: LazyRegistrationMessage): void {
     return;
   }
   try {
-    applyLazyRegistration(msg);
+    await scheduleLazyRegistration(msg);
   } catch (err) {
-    const error = formatError(err);
-    respondErrorIfRequested(msg, error);
-    reportWorkerProtocolError(`${msg.type} failed: ${error}`);
+    reportLazyRegistrationFailure(msg, err);
   }
 }
 
@@ -568,7 +609,8 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // Create VFS — prefer pre-built image bytes (kernel-owned FS); fall back
   // to the legacy shared-SAB path so the existing demos keep working.
   //
-  // vfsImage path (Task 4.4): apply DEFAULT_MOUNT_SPEC via resolveForBrowser,
+  // vfsImage path (Task 4.4): apply DEFAULT_MOUNT_SPEC through the shared
+  // browser-worker VFS-init boundary,
   // giving 8 mounts — / from the image, plus scratch memfs at /tmp, /var/tmp,
   // /var/log, /var/run, /home/user, /root, /srv. Layer /dev/shm and /dev on
   // top: those are browser-platform internals (POSIX semaphore SAB,
@@ -583,7 +625,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // apply DEFAULT_MOUNT_SPEC (/ from the image + scratch mounts for /tmp,
   // /var/*, /home/user, /root, /srv). /etc is part of the image, baked in by
   // the demo (see apps/browser-demos/lib/kernel-owned-boot.ts).
-  const specMounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, msg.vfsImage);
+  const specMounts = await restoreBrowserKernelInitMounts(msg.vfsImage);
   const rootMount = specMounts.find((m) => m.mountPoint === "/");
   if (!rootMount) throw new Error("DEFAULT_MOUNT_SPEC missing / mount");
   memfs = rootMount.backend as MemoryFileSystem;
@@ -765,8 +807,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     resetBridgePendingRequests();
   }
 
+  await flushPendingLazyRegistrations();
+  // No await separates the final queue check from opening init, so a message
+  // cannot slip past both the pending queue and the serialized live path.
   initReady = true;
-  flushPendingLazyRegistrations();
 
   post({ type: "ready" });
 }
@@ -774,8 +818,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
 // ── Spawn ──
 
 async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>) {
+  let releaseMutation: (() => void) | undefined;
   let createdPid: number | undefined;
   try {
+    releaseMutation = rootfsSnapshotGate.beginMutation("spawn a process");
     await waitForProcessTeardowns();
 
     let programBytes: ArrayBuffer;
@@ -884,6 +930,8 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       kernelWorker.removeProcessFromKernelTable(createdPid);
     }
     respondError(msg.requestId, String(e));
+  } finally {
+    releaseMutation?.();
   }
 }
 
@@ -1709,8 +1757,18 @@ async function handleReadVfsFile(
   msg: Extract<MainToKernelMessage, { type: "read_vfs_file" }>,
 ) {
   if (!io) { respond(msg.requestId, null); return; }
+  let releaseMutation: (() => void) | undefined;
   try {
+    // A read can materialize a lazy file/tree and is therefore serialized
+    // with snapshots even though an already-materialized read is non-mutating.
+    releaseMutation = rootfsSnapshotGate.beginMutation(
+      "read or materialize a rootfs file",
+    );
     const { data, stat } = await readPreparedPlatformFile(io, msg.path);
+    if ((stat.mode & 0o170000) !== 0o100000) {
+      respond(msg.requestId, null);
+      return;
+    }
     // Copy into a plain (non-shared) ArrayBuffer so it structured-clones back.
     const result = data.slice();
     respond(
@@ -1720,6 +1778,8 @@ async function handleReadVfsFile(
   } catch (error) {
     if (isMissingPathError(error)) respond(msg.requestId, null);
     else respondError(msg.requestId, formatError(error));
+  } finally {
+    releaseMutation?.();
   }
 }
 
@@ -1728,8 +1788,10 @@ async function handleReadVfsFile(
 // stage transient files between process spawns.
 function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs_file" }>) {
   if (!io) { respondError(msg.requestId, "VFS is not initialized"); return; }
+  let releaseMutation: (() => void) | undefined;
   let fd: number | null = null;
   try {
+    releaseMutation = rootfsSnapshotGate.beginMutation("write a rootfs file");
     fd = io.open(msg.path, 0o1101 /* O_WRONLY|O_CREAT|O_TRUNC */, msg.mode & 0o7777);
     let offset = 0;
     while (offset < msg.data.byteLength) {
@@ -1755,12 +1817,16 @@ function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs
       try { io.close(fd); } catch { /* preserve the original failure */ }
     }
     respondError(msg.requestId, formatError(err));
+  } finally {
+    releaseMutation?.();
   }
 }
 
 function handleUnlinkVfsFile(msg: Extract<MainToKernelMessage, { type: "unlink_vfs_file" }>) {
   if (!io) { respondError(msg.requestId, "VFS is not initialized"); return; }
+  let releaseMutation: (() => void) | undefined;
   try {
+    releaseMutation = rootfsSnapshotGate.beginMutation("unlink a rootfs file");
     try {
       io.lstat(msg.path);
     } catch {
@@ -1771,6 +1837,38 @@ function handleUnlinkVfsFile(msg: Extract<MainToKernelMessage, { type: "unlink_v
     respond(msg.requestId, true);
   } catch (err) {
     respondError(msg.requestId, formatError(err));
+  } finally {
+    releaseMutation?.();
+  }
+}
+
+async function handleExportRootfsImage(
+  msg: Extract<MainToKernelMessage, { type: "export_rootfs_image" }>,
+) {
+  if (!memfs) {
+    respondError(msg.requestId, "VFS is not initialized");
+    return;
+  }
+  if (!initReady) {
+    respondError(msg.requestId, "rootfs export requires an initialized kernel");
+    return;
+  }
+  try {
+    const image = await rootfsSnapshotGate.runSnapshot(async () => {
+      if (
+        processes.size !== 0 ||
+        processTeardowns.size !== 0 ||
+        workerTeardowns.size !== 0
+      ) {
+        throw new Error(
+          "rootfs export requires a quiescent kernel with no live or tearing-down processes",
+        );
+      }
+      return memfs.saveImage();
+    });
+    respondTransferredBytes(msg.requestId, image);
+  } catch (error) {
+    respondError(msg.requestId, formatError(error));
   }
 }
 
@@ -2206,6 +2304,7 @@ sw.onmessage = (e: MessageEvent) => {
     case "read_vfs_file": void handleReadVfsFile(msg); break;
     case "write_vfs_file": handleWriteVfsFile(msg); break;
     case "unlink_vfs_file": handleUnlinkVfsFile(msg); break;
+    case "export_rootfs_image": void handleExportRootfsImage(msg); break;
     case "append_stdin_data": kernelWorker.appendStdinData(msg.pid, msg.data); break;
     case "set_stdin_data": kernelWorker.setStdinData(msg.pid, msg.data); break;
     case "pty_write": handlePtyWrite(msg); break;
@@ -2223,8 +2322,8 @@ sw.onmessage = (e: MessageEvent) => {
     case "pick_listener_target": handlePickListenerTarget(msg); break;
     case "http_request": handleHttpRequestMessage(msg); break;
     case "destroy": void handleDestroy(msg); break;
-    case "register_lazy_files": handleLazyRegistration(msg); break;
-    case "register_lazy_archives": handleLazyRegistration(msg); break;
+    case "register_lazy_files": void handleLazyRegistration(msg); break;
+    case "register_lazy_archives": void handleLazyRegistration(msg); break;
     case "get_fork_count": {
       // Round-trip access to the kernel's per-process fork counter for
       // tests asserting SYS_SPAWN didn't fall back to fork. Mirrors the

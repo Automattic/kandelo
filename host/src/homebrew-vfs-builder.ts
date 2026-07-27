@@ -217,6 +217,14 @@ export interface HomebrewVfsBuildReport {
     deferred_package_order: string[];
     embedded_tree_count: number;
     deferred_tree_count: number;
+    runtime_support?: {
+      id: "homebrew-runtime-support";
+      activation_root: "/usr/bin/brew";
+      activation_capability: "homebrew:runtime";
+      package_order: string[];
+      tree_count: number;
+      deferred_relocation_formulae: string[];
+    };
     bottle_mirror: {
       repository: string;
       tag: string;

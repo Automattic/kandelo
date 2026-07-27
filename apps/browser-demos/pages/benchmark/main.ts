@@ -13,6 +13,7 @@
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { restoreVerifiedVfsImage } from "../../../../host/src/vfs/load-image";
 import {
   createEmptyBuildFs,
   finalizeKernelOwnedImage,
@@ -430,7 +431,7 @@ async function runErlangRing(): Promise<Record<string, number>> {
   let lastOutputTime = 0;
   let outputSeen = false;
 
-  const buildFs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
+  const buildFs = await restoreVerifiedVfsImage(new Uint8Array(vfsImageBuf), {
     maxByteLength: 256 * 1024 * 1024,
   });
   const vfsImage = await finalizeKernelOwnedImage(buildFs);
@@ -569,7 +570,7 @@ async function runWordPress(): Promise<Record<string, number>> {
   // Assemble the image in a transient build FS: base WP image + config +
   // dynamic wp-config/mu-plugin, minus any stale database. The kernel worker
   // then owns the live VFS (kernelOwnedFs).
-  const buildFs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
+  const buildFs = await restoreVerifiedVfsImage(new Uint8Array(vfsImageBuf), {
     maxByteLength: 1024 * 1024 * 1024,
   });
   writeVfsFile(buildFs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
@@ -733,7 +734,7 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
     fetchWasm(kernelWasmUrl),
     vfsResp.arrayBuffer(),
   ]);
-  const buildFs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
+  const buildFs = await restoreVerifiedVfsImage(new Uint8Array(vfsImageBuf), {
     maxByteLength: 1024 * 1024 * 1024,
   });
   const mariadbBytes = await readVfsBytes(buildFs, "/usr/sbin/mariadbd");

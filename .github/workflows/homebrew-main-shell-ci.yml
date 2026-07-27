@@ -1,141 +1,16 @@
 name: Homebrew main shell
 
 on:
+  # WHY: source-rootfs is a transitive package closure with shared tool
+  # inputs. Until the bottle cutover retires this temporary lane, a path
+  # allowlist could silently bypass the exact Node/Chromium product gate.
   pull_request:
     # WHY: marking a draft ready gives maintainers a non-destructive way to
     # rerun this long exact-product gate after a base-side CI correction.
     # Closing and reopening a package PR would delete its staging release.
     types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - ".github/actions/setup-nix/**"
-      - ".github/actions/fetch-submodules/**"
-      - ".github/workflows/homebrew-main-shell-ci.yml"
-      - ".gitmodules"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "MANIFEST"
-      - "apps/browser-demos/**"
-      - "crates/kernel/**"
-      - "crates/shared/**"
-      - "flake.lock"
-      - "flake.nix"
-      - "homebrew/main-shell*"
-      - "homebrew/source-rootfs-shell-default.json"
-      - "homebrew/source-rootfs-shell-dependencies.json"
-      - "host/package-lock.json"
-      - "host/package.json"
-      - "host/src/**"
-      - "host/test/**"
-      - "images/rootfs/**"
-      - "images/vfs/scripts/build-homebrew-materialized-vfs-image.ts"
-      - "images/vfs/scripts/build-homebrew-vfs-image.ts"
-      - "images/vfs/scripts/build-shell-vfs-image.ts"
-      - "images/vfs/scripts/build-source-rootfs-shell-image.ts"
-      - "images/vfs/scripts/main-shell-demo-config.ts"
-      - "images/vfs/scripts/vfs-image-helpers.ts"
-      - "package-lock.json"
-      - "package.json"
-      - "libc/**"
-      - "packages/registry/**"
-      - "rust-toolchain.toml"
-      - "scripts/build-homebrew-main-shell-closure.sh"
-      - "scripts/build-musl.sh"
-      - "scripts/browser-binary-package-roots.mjs"
-      - "scripts/check-homebrew-main-shell-brewfile.mjs"
-      - "scripts/create-homebrew-bottle-mirror-publish-manifest.ts"
-      - "scripts/dev-shell.sh"
-      - "scripts/fetch-binaries.sh"
-      - "scripts/homebrew-brewfile-selection.rb"
-      - "scripts/homebrew-language-runtime-contract.ts"
-      - "scripts/homebrew-main-shell-node-smoke.ts"
-      - "scripts/source-rootfs-shell-node-smoke.ts"
-      - "scripts/source-rootfs-shell-dependency-contract.mjs"
-      - "scripts/homebrew-main-shell-image-contract*.ts"
-      - "scripts/homebrew-vfs-acceptance-smoke.ts"
-      - "scripts/install-local-binary.sh"
-      - "scripts/install-overlay-headers.sh"
-      - "scripts/resolve-binary.sh"
-      - "scripts/resolve-binary.ts"
-      - "scripts/resolve-binary.bundle.mjs"
-      - "scripts/resolve-binary.bundle.LICENSES.txt"
-      - "scripts/build-resolve-binary-bundle.sh"
-      - "scripts/test-resolve-binary-bundle.sh"
-      - "scripts/recover-homebrew-bottle-mirror.ts"
-      - "scripts/test-homebrew-main-shell-closure.sh"
-      - "scripts/verify-homebrew-main-shell-artifact-lock.sh"
-      - "scripts/run-wasm-fork-instrument.sh"
-      - "sdk/**"
-      - "tests/package-system/browser-binary-dependencies.test.ts"
-      - "tests/package-system/homebrew-bottle-mirror-recovery.test.ts"
-      - "tools/mkrootfs/**"
-      - "tools/xtask/**"
-      - "web-libs/kandelo-session/**"
   push:
     branches: [main]
-    paths:
-      - ".github/actions/setup-nix/**"
-      - ".github/actions/fetch-submodules/**"
-      - ".github/workflows/homebrew-main-shell-ci.yml"
-      - ".gitmodules"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "MANIFEST"
-      - "apps/browser-demos/**"
-      - "crates/kernel/**"
-      - "crates/shared/**"
-      - "flake.lock"
-      - "flake.nix"
-      - "homebrew/main-shell*"
-      - "homebrew/source-rootfs-shell-default.json"
-      - "homebrew/source-rootfs-shell-dependencies.json"
-      - "host/package-lock.json"
-      - "host/package.json"
-      - "host/src/**"
-      - "host/test/**"
-      - "images/rootfs/**"
-      - "images/vfs/scripts/build-homebrew-materialized-vfs-image.ts"
-      - "images/vfs/scripts/build-homebrew-vfs-image.ts"
-      - "images/vfs/scripts/build-shell-vfs-image.ts"
-      - "images/vfs/scripts/build-source-rootfs-shell-image.ts"
-      - "images/vfs/scripts/main-shell-demo-config.ts"
-      - "images/vfs/scripts/vfs-image-helpers.ts"
-      - "package-lock.json"
-      - "package.json"
-      - "libc/**"
-      - "packages/registry/**"
-      - "rust-toolchain.toml"
-      - "scripts/build-homebrew-main-shell-closure.sh"
-      - "scripts/build-musl.sh"
-      - "scripts/browser-binary-package-roots.mjs"
-      - "scripts/check-homebrew-main-shell-brewfile.mjs"
-      - "scripts/create-homebrew-bottle-mirror-publish-manifest.ts"
-      - "scripts/dev-shell.sh"
-      - "scripts/fetch-binaries.sh"
-      - "scripts/homebrew-brewfile-selection.rb"
-      - "scripts/homebrew-language-runtime-contract.ts"
-      - "scripts/homebrew-main-shell-node-smoke.ts"
-      - "scripts/source-rootfs-shell-node-smoke.ts"
-      - "scripts/source-rootfs-shell-dependency-contract.mjs"
-      - "scripts/homebrew-main-shell-image-contract*.ts"
-      - "scripts/homebrew-vfs-acceptance-smoke.ts"
-      - "scripts/install-local-binary.sh"
-      - "scripts/install-overlay-headers.sh"
-      - "scripts/resolve-binary.sh"
-      - "scripts/resolve-binary.ts"
-      - "scripts/resolve-binary.bundle.mjs"
-      - "scripts/resolve-binary.bundle.LICENSES.txt"
-      - "scripts/build-resolve-binary-bundle.sh"
-      - "scripts/test-resolve-binary-bundle.sh"
-      - "scripts/recover-homebrew-bottle-mirror.ts"
-      - "scripts/test-homebrew-main-shell-closure.sh"
-      - "scripts/verify-homebrew-main-shell-artifact-lock.sh"
-      - "scripts/run-wasm-fork-instrument.sh"
-      - "sdk/**"
-      - "tests/package-system/browser-binary-dependencies.test.ts"
-      - "tests/package-system/homebrew-bottle-mirror-recovery.test.ts"
-      - "tools/mkrootfs/**"
-      - "tools/xtask/**"
-      - "web-libs/kandelo-session/**"
   workflow_dispatch:
     inputs:
       transport_mode:
@@ -146,6 +21,18 @@ on:
         options:
           - closed
           - public
+      kandelo_main_revision:
+        description: Exact live Kandelo default-branch commit M
+        required: true
+        type: string
+      core_tap_final_revision:
+        description: Exact live first-party tap commit TF
+        required: true
+        type: string
+      canary_tap_revision:
+        description: Exact live independent-canary tap commit C
+        required: true
+        type: string
 
 concurrency:
   group: homebrew-main-shell-${{ github.event.pull_request.number || github.ref }}
@@ -165,14 +52,73 @@ jobs:
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
       TRANSPORT_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.transport_mode || 'closed' }}
+      KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "1"
       # WHY: rehearsal bottles are not main-produced artifacts. Keep required
       # PR/main browser gates on the source-rootfs bridge until every final
-      # bottle has been rebuilt by a job whose checkout is exact main.
-      SHELL_ACTIVATION_MODE: source-rootfs
+      # bottle has been rebuilt by a job whose checkout is exact main. The
+      # manual closed dispatch is that cutover proof and must exercise bottles.
+      SHELL_ACTIVATION_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.transport_mode == 'closed' && 'bottles' || 'source-rootfs' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+
+      - name: Bind exact live lifecycle revisions
+        if: github.event_name == 'workflow_dispatch' && inputs.transport_mode == 'closed'
+        id: live-inputs
+        env:
+          KANDELO_M: ${{ inputs.kandelo_main_revision }}
+          CORE_TAP_TF: ${{ inputs.core_tap_final_revision }}
+          CANARY_C: ${{ inputs.canary_tap_revision }}
+        run: |
+          set -euo pipefail
+          [ "$SHELL_ACTIVATION_MODE" = bottles ]
+          for revision in "$KANDELO_M" "$CORE_TAP_TF" "$CANARY_C"; do
+            [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          done
+          [ "$GITHUB_REF" = refs/heads/main ]
+          [ "$(git rev-parse HEAD)" = "$KANDELO_M" ]
+          [ "$(jq -er '.catalog.tap_commit' \
+            homebrew/main-shell-homebrew-runtime-support.json)" = "$CORE_TAP_TF" ]
+          [ "$(jq -er '.catalog.tap_commit' \
+            homebrew/main-shell-migration-lock.json)" = "$CORE_TAP_TF" ]
+          jq -e --arg canary "$CANARY_C" '
+            .lifecycle_installs as $installs |
+            ($installs | length) == 1 and
+            $installs[0].tap == "brandonpayton/kandelo-canary" and
+            $installs[0].repository ==
+              "brandonpayton/homebrew-kandelo-canary" and
+            $installs[0].revision == $canary and
+            $installs[0].formula == "m4" and
+            $installs[0].phase == "guest-lifecycle" and
+            $installs[0].image_closure == false
+          ' homebrew/main-shell-homebrew-runtime-support.json >/dev/null
+          # WHY: a reviewed historical commit can remain fetchable forever.
+          # Require each operator-supplied identity to be its anonymous public
+          # main head before a detached fetch mistakes reachability for live
+          # cutover authority. Local locks remain independent corroboration.
+          require_exact_live_main() {
+            local repository="$1"
+            local expected="$2"
+            local record
+            record=$(env -u GH_TOKEN -u GITHUB_TOKEN git ls-remote \
+              "$repository" refs/heads/main)
+            [ -n "$record" ]
+            [ "$(printf '%s\n' "$record" | wc -l | tr -d '[:space:]')" -eq 1 ]
+            [ "${record#*[[:space:]]}" = refs/heads/main ]
+            [ "${record%%[[:space:]]*}" = "$expected" ]
+          }
+          require_exact_live_main \
+            "https://github.com/${GITHUB_REPOSITORY}.git" "$KANDELO_M"
+          require_exact_live_main \
+            "https://github.com/Kandelo-dev/homebrew-tap-core.git" "$CORE_TAP_TF"
+          require_exact_live_main \
+            "https://github.com/brandonpayton/homebrew-kandelo-canary.git" "$CANARY_C"
+          {
+            echo "m=$KANDELO_M"
+            echo "tf=$CORE_TAP_TF"
+            echo "c=$CANARY_C"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Fetch musl submodule for source-build fallback
         uses: ./.github/actions/fetch-submodules
@@ -237,6 +183,26 @@ jobs:
             cd apps/browser-demos
             npx playwright install chromium --with-deps
           )
+
+      - name: Validate the stock guest lifecycle contracts
+        run: |
+          set -euo pipefail
+          npx tsx --test \
+            apps/browser-demos/playwright-server-policy.test.ts \
+            homebrew/test/homebrew_guest_lifecycle_browser_fixture.test.ts \
+            homebrew/test/homebrew_guest_lifecycle_contract.test.ts \
+            homebrew/test/homebrew_guest_lifecycle_runner.test.ts \
+            homebrew/test/homebrew_guest_lifecycle_runtime_contract.test.ts \
+            homebrew/test/homebrew_guest_lifecycle_runtime_inputs.test.ts \
+            scripts/create-homebrew-guest-lifecycle-fixture.test.ts \
+            scripts/homebrew-main-shell-image-contract.test.ts \
+            scripts/homebrew-closed-lazy-assets.test.ts
+          npx esbuild homebrew/test/homebrew_guest_lifecycle_node.ts \
+            --bundle \
+            --platform=node \
+            --format=esm \
+            --packages=external \
+            --outfile="$RUNNER_TEMP/homebrew_guest_lifecycle_node.mjs"
 
       - name: Select one verified package generation
         env:
@@ -340,15 +306,46 @@ jobs:
           echo "WASM_POSIX_BINARY_INDEX_URL=$selected_url" >> "$GITHUB_ENV"
 
       - name: Build the exact candidate kernel
+        id: candidate_kernel
         run: |
           set -euo pipefail
           test -n "${WASM_POSIX_BINARY_INDEX_URL:-}"
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
             cargo build --release -p kandelo -Z build-std=core,alloc
-            mkdir -p local-binaries
-            cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
+            # WHY: this is a package-owned resolver mirror. Install the exact
+            # candidate into an immutable local generation so later dependency
+            # resolution cannot substitute released kernel bytes.
+            source scripts/install-local-binary.sh
+            WASM_POSIX_LOCAL_INSTALL_SESSION="ci-kernel-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}" \
+              install_local_binary kernel \
+                target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
+                kandelo-kernel.wasm
+            cmp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
               local-binaries/kernel.wasm
+            # WHY: the public mirror is intentionally a symlink. Record the
+            # immutable generation member selected by the installer so later
+            # acceptance boots installed bytes without weakening its
+            # non-symlink input boundary.
+            kernel_member="$(realpath local-binaries/kernel.wasm)"
+            kernel_generation="$(dirname "$kernel_member")"
+            kernel_identity="$(dirname "$kernel_generation")"
+            kernel_namespace="$(realpath \
+              local-binaries/.kandelo-local-generations/wasm32/kernel)"
+            kernel_session="$(basename "$kernel_generation")"
+            kernel_cache_key="$(basename "$kernel_identity")"
+            [ "$(dirname "$kernel_identity")" = "$kernel_namespace" ]
+            [ "$(basename "$kernel_member")" = kandelo-kernel.wasm ]
+            [[ "$kernel_cache_key" =~ ^[0-9a-f]{64}$ ]]
+            [ "$kernel_session" = \
+              "ci-kernel-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}" ]
+            [ -f "$kernel_identity/.$kernel_session.publication-claimed" ]
+            [ ! -L "$kernel_identity/.$kernel_session.publication-claimed" ]
+            [ -f "$kernel_member" ]
+            [ ! -L "$kernel_member" ]
+            cmp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
+              "$kernel_member"
+            printf "path=%s\n" "$kernel_member" >> "$GITHUB_OUTPUT"
           '
 
       - name: Build the exact source-rootfs activation shell
@@ -374,8 +371,11 @@ jobs:
             # WHY: no pull-request, rehearsal, or old-main artifact may satisfy
             # any buildable node in this activation closure. Immutable source
             # archives remain reusable only after their declared hash verifies.
+            # The bridge is a distinct non-published package so selecting this
+            # lane can never execute the canonical bottle-backed shell recipe.
             "$xtask" archive-stage \
-              --package packages/registry/shell \
+              --package homebrew/source-rootfs-shell-package \
+              --registry packages/registry \
               --arch wasm32 \
               --binaries-dir local-binaries \
               --out "$archive_root" \
@@ -397,9 +397,13 @@ jobs:
             archive_commit=$(sed -nE \
               "s/^commit[[:space:]]*=[[:space:]]*\"([0-9a-f]{40})\"$/\1/p" \
               "$manifest")
+            archive_package=$(sed -nE \
+              "s/^name[[:space:]]*=[[:space:]]*\"([^\"]+)\"$/\1/p" \
+              "$manifest" | head -n 1)
             # WHY: CLI intent is not provenance evidence. Fail on the staged
             # bytes if a legacy build.toml repository or UNPUBLISHED marker
             # survived archive-stage instead of the exact event checkout.
+            [ "$archive_package" = source-rootfs-shell ]
             [ "$archive_repository" = \
               "https://github.com/${GITHUB_REPOSITORY}" ]
             [ "$archive_commit" = "$GITHUB_SHA" ]
@@ -467,6 +471,20 @@ jobs:
           git -C "$tap_root" checkout --detach FETCH_HEAD
           test "$(git -C "$tap_root" rev-parse HEAD)" = "$tap_sha"
           test -z "$(git -C "$tap_root" status --porcelain=v1 --untracked-files=all)"
+          # WHY: `/usr/bin/brew` becomes usable only when its independently
+          # reviewed source tree and every bottle in its atomic support cohort
+          # are admitted at this exact tap revision.
+          node scripts/check-homebrew-main-shell-brewfile.mjs \
+            homebrew/main-shell.Brewfile \
+            homebrew/main-shell-migration-lock.json \
+            "$tap_root/Kandelo/metadata.json" \
+            homebrew/main-shell-homebrew-runtime-support.json
+          bootstrap=$(bash scripts/resolve-binary.sh \
+            programs/homebrew-bootstrap/homebrew-bootstrap.zip)
+          bootstrap_env=$(bash scripts/resolve-binary.sh \
+            programs/homebrew-bootstrap/homebrew-brew.env)
+          test -f "$bootstrap"
+          test -f "$bootstrap_env"
           env -u GH_TOKEN -u GITHUB_TOKEN \
             -u HOMEBREW_GITHUB_API_TOKEN \
             -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
@@ -476,6 +494,9 @@ jobs:
                 --lazy-shell \
                 --tap-root "$tap_root" \
                 --expected-tap-sha "$tap_sha" \
+                --package-tree-spec homebrew/main-shell-brew-package-tree.json \
+                --package-tree-archive "$bootstrap" \
+                --homebrew-bootstrap-env "$bootstrap_env" \
                 --work-dir "$candidate_root"
           test -f "$candidate_root/main-shell.vfs.zst"
           test -f "$candidate_root/main-shell-report.json"
@@ -483,11 +504,41 @@ jobs:
             "$candidate_root/main-shell-report.json")
           test "$(find "$candidate_root/bottle-mirror" -maxdepth 1 -type f | wc -l)" \
             -eq "$expected_mirror_files"
+          test "$(jq -er '.package_deferred_trees[0].state' \
+            "$candidate_root/main-shell-report.json")" = deferred
           {
             echo "image=$candidate_root/main-shell.vfs.zst"
             echo "report=$candidate_root/main-shell-report.json"
+            echo "bootstrap=$bootstrap"
+            echo "bootstrap_env=$bootstrap_env"
             echo "tap_sha=$tap_sha"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Select the source shell for dependent browser VFS builds
+        if: env.SHELL_ACTIVATION_MODE == 'source-rootfs'
+        id: source_alias
+        env:
+          CANDIDATE_PATH: ${{ steps.source_candidate.outputs.image }}
+        run: |
+          set -euo pipefail
+          bash scripts/dev-shell.sh bash \
+            scripts/install-local-shell-artifact.sh \
+              "$CANDIDATE_PATH" \
+              "homebrew-source-shell-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
+          bash scripts/activate-local-shell-build-override.sh "$CANDIDATE_PATH"
+          source_assets="$RUNNER_TEMP/source-local-binaries-with-shell.sha256"
+          source_links="$RUNNER_TEMP/source-local-binaries-with-shell.symlinks"
+          find local-binaries \( -type f -o -type l \) -print0 |
+            sort -z |
+            xargs -0 sha256sum >"$source_assets"
+          find local-binaries -type l -print0 |
+            sort -z |
+            while IFS= read -r -d '' path; do
+              printf '%s\0%s\0' "$path" "$(readlink "$path")"
+            done >"$source_links"
+          test -s "$source_assets"
+          echo "local_manifest=$source_assets" >> "$GITHUB_OUTPUT"
+          echo "link_manifest=$source_links" >> "$GITHUB_OUTPUT"
 
       - name: Resolve current direct browser bundling inputs
         run: |
@@ -521,40 +572,47 @@ jobs:
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
             bash scripts/fetch-binaries.sh "${fetch_args[@]}"
           if [ "$SHELL_ACTIVATION_MODE" = source-rootfs ]; then
+            # Re-run the idempotent verifier after all derived packages. This
+            # proves no source fallback replaced the bridge override while
+            # resolving the reverse-dependent browser VFS images.
+            bash scripts/activate-local-shell-build-override.sh \
+              "${{ steps.source_candidate.outputs.image }}"
             # WHY: unrelated browser roots may use the verified staging or
             # canonical index, but they must never replace the exact-source
             # shell closure that Vite resolves from local-binaries first.
             sha256sum --check \
-              "${{ steps.source_candidate.outputs.local_manifest }}"
-            current_links="$RUNNER_TEMP/source-local-binaries-current.symlinks"
-            find local-binaries -type l -print0 |
-              sort -z |
-              while IFS= read -r -d '' path; do
-                printf '%s\0%s\0' "$path" "$(readlink "$path")"
-              done >"$current_links"
-            cmp "${{ steps.source_candidate.outputs.link_manifest }}" \
-              "$current_links"
+              "${{ steps.source_alias.outputs.local_manifest }}"
+            # WHY: resolving unrelated browser roots is expected to add new
+            # mirrors. It must not remove or retarget any link that belonged to
+            # the exact source-shell closure selected above.
+            verified_links=0
+            while IFS= read -r -d '' path; do
+              if ! IFS= read -r -d '' expected_target; then
+                echo "::error::selected shell link manifest has an incomplete record"
+                exit 1
+              fi
+              [ -L "$path" ]
+              [ "$(readlink "$path")" = "$expected_target" ]
+              verified_links=$((verified_links + 1))
+            done <"${{ steps.source_alias.outputs.link_manifest }}"
+            [ "$verified_links" -gt 0 ]
           fi
 
       - name: Install the candidate's exact shell bytes
         id: image
         env:
           CANDIDATE_PATH: ${{ steps.source_candidate.outputs.image || steps.bottle_candidate.outputs.image }}
+          CANDIDATE_BOOTSTRAP_PATH: ${{ steps.bottle_candidate.outputs.bootstrap }}
+          CANDIDATE_BOOTSTRAP_ENV_PATH: ${{ steps.bottle_candidate.outputs.bootstrap_env }}
         run: |
           set -euo pipefail
           browser_copy=apps/browser-demos/public/shell.vfs.zst
           install_session="homebrew-main-shell-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
           test -f "$CANDIDATE_PATH"
           mkdir -p "$(dirname "$browser_copy")"
-          bash scripts/dev-shell.sh bash -c '
-            set -euo pipefail
-            host_target="$(rustc -vV | sed -n "s/^host: //p")"
-            WASM_POSIX_LOCAL_INSTALL_SOURCE="$1" \
-            WASM_POSIX_LOCAL_INSTALL_SESSION="$2" \
-              cargo run -p xtask --target "$host_target" --quiet -- \
-                build-deps --arch wasm32 --binaries-dir local-binaries \
-                install-local-artifact shell shell.vfs.zst
-          ' bash "$CANDIDATE_PATH" "$install_session"
+          bash scripts/dev-shell.sh bash \
+            scripts/install-local-shell-artifact.sh \
+              "$CANDIDATE_PATH" "$install_session"
           resolved=$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)
           test -f "$resolved"
           cmp "$CANDIDATE_PATH" "$resolved"
@@ -564,6 +622,22 @@ jobs:
           [[ "$image_sha" =~ ^[0-9a-f]{64}$ ]]
           echo "sha256=$image_sha" >> "$GITHUB_OUTPUT"
           echo "path=$CANDIDATE_PATH" >> "$GITHUB_OUTPUT"
+          if [ "$SHELL_ACTIVATION_MODE" = bottles ]; then
+            test -f "$CANDIDATE_BOOTSTRAP_PATH"
+            test -f "$CANDIDATE_BOOTSTRAP_ENV_PATH"
+            resolved_bootstrap=$(bash scripts/resolve-binary.sh \
+              programs/homebrew-bootstrap/homebrew-bootstrap.zip)
+            resolved_bootstrap_env=$(bash scripts/resolve-binary.sh \
+              programs/homebrew-bootstrap/homebrew-brew.env)
+            cmp "$CANDIDATE_BOOTSTRAP_PATH" "$resolved_bootstrap"
+            cmp "$CANDIDATE_BOOTSTRAP_ENV_PATH" "$resolved_bootstrap_env"
+            bootstrap_sha=$(sha256sum "$CANDIDATE_BOOTSTRAP_PATH" | awk '{print $1}')
+            bootstrap_bytes=$(wc -c <"$CANDIDATE_BOOTSTRAP_PATH" | tr -d '[:space:]')
+            [[ "$bootstrap_sha" =~ ^[0-9a-f]{64}$ ]]
+            [[ "$bootstrap_bytes" =~ ^[1-9][0-9]*$ ]]
+            echo "bootstrap_sha256=$bootstrap_sha" >> "$GITHUB_OUTPUT"
+            echo "bootstrap_bytes=$bootstrap_bytes" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Recover the exact bottle mirror from anonymous source packages
         if: env.SHELL_ACTIVATION_MODE == 'bottles'
@@ -623,6 +697,83 @@ jobs:
           fi
           echo "plan=$mirror_dir/kandelo-homebrew-bottle-mirror-plan.json" >> "$GITHUB_OUTPUT"
 
+      - name: Create the exact closed Chromium lifecycle fixture
+        if: github.event_name == 'workflow_dispatch' && inputs.transport_mode == 'closed'
+        id: live-fixture
+        run: |
+          set -euo pipefail
+          [ "${{ steps.live-inputs.outputs.tf }}" = \
+            "${{ steps.bottle_candidate.outputs.tap_sha }}" ]
+          main_record=$(env -u GH_TOKEN -u GITHUB_TOKEN git ls-remote \
+            "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main)
+          [ "$(wc -l <<<"$main_record" | tr -d '[:space:]')" -eq 1 ]
+          [ "${main_record%%[[:space:]]*}" = \
+            "${{ steps.live-inputs.outputs.m }}" ]
+
+          support=homebrew/main-shell-homebrew-runtime-support.json
+          runtime_id=$(jq -er '.id' "$support")
+          runtime_capability=$(jq -er '.activation.capability' "$support")
+          jq -e \
+            --arg runtime_id "$runtime_id" \
+            --arg runtime_capability "$runtime_capability" '
+              .activation.atomic_group == $runtime_id and
+              (.activation.capabilities | index($runtime_capability)) != null
+            ' homebrew/main-shell-brew-package-tree.json >/dev/null
+          jq -e --slurpfile support "$support" '
+            .materialization.runtime_support.id == $support[0].id and
+            .materialization.runtime_support.activation_root ==
+              $support[0].activation.roots[0] and
+            .materialization.runtime_support.activation_capability ==
+              $support[0].activation.capability and
+            .materialization.runtime_support.package_order ==
+              $support[0].additional_formula_order and
+            .materialization.runtime_support.tree_count ==
+              ($support[0].additional_formula_order | length) and
+            .materialization.runtime_support.deferred_relocation_formulae ==
+              [$support[0].deferred_formulae[].package] and
+            ([.bottle_mirror.assets[].package] | sort) ==
+              ((.materialization.deferred_package_order +
+                $support[0].additional_formula_order) | sort)
+          ' "${{ steps.bottle_candidate.outputs.report }}" >/dev/null
+          # WHY: the six-Formula base is not a brew runtime. Bind this live
+          # proof only after the candidate contains the exact separately
+          # reviewed atomic support cohort; a partial ambient tool set must
+          # fail here before either host can create lifecycle evidence.
+
+          fixture="$RUNNER_TEMP/homebrew-guest-lifecycle-browser-fixture.json"
+          fixed_url_root="https://closed.kandelo.invalid/homebrew-main-shell/${{ steps.live-inputs.outputs.m }}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/"
+          bash scripts/dev-shell.sh npx tsx \
+            scripts/create-homebrew-guest-lifecycle-fixture.ts \
+              --image "${{ steps.bottle_candidate.outputs.image }}" \
+              --homebrew-bootstrap-spec homebrew/main-shell-brew-package-tree.json \
+              --homebrew-bootstrap-archive "${{ steps.bottle_candidate.outputs.bootstrap }}" \
+              --homebrew-bootstrap-env "${{ steps.bottle_candidate.outputs.bootstrap_env }}" \
+              --bottle-mirror "$RUNNER_TEMP/homebrew-main-shell-bottles" \
+              --fixed-asset-url-root "$fixed_url_root" \
+              --core-revision "${{ steps.live-inputs.outputs.tf }}" \
+              --canary-revision "${{ steps.live-inputs.outputs.c }}" \
+              --timeout-ms 900000 \
+              --out "$fixture"
+          test -f "$fixture"
+
+          browser_root=apps/browser-demos/public/homebrew-main-shell-bottles
+          install_browser_fixture_asset() {
+            local source="$1"
+            local destination
+            destination="$browser_root/$(basename "$source")"
+            test ! -e "$destination"
+            cp "$source" "$destination"
+            cmp "$source" "$destination"
+          }
+          # WHY: retain canonical HTTPS identities in the fixture while the
+          # closed browser run reads the same already-verified candidate bytes
+          # used by Node. Guest tap operations still use their live Git remotes.
+          install_browser_fixture_asset "${{ steps.bottle_candidate.outputs.image }}"
+          install_browser_fixture_asset homebrew/main-shell-brew-package-tree.json
+          install_browser_fixture_asset "${{ steps.bottle_candidate.outputs.bootstrap }}"
+          install_browser_fixture_asset "${{ steps.bottle_candidate.outputs.bootstrap_env }}"
+          echo "fixture=$fixture" >> "$GITHUB_OUTPUT"
+
       - name: Build the sealed browser product tree
         working-directory: apps/browser-demos
         run: |
@@ -649,14 +800,20 @@ jobs:
               bash scripts/dev-shell.sh npx tsx \
                 scripts/source-rootfs-shell-node-smoke.ts \
                 --image "${{ steps.image.outputs.path }}" \
-                --kernel local-binaries/kernel.wasm \
+                --kernel "${{ steps.candidate_kernel.outputs.path }}" \
                 --shell-config homebrew/source-rootfs-shell-default.json \
-                --demo-config homebrew/main-shell-demo.json
+                --demo-config homebrew/main-shell-demo.json \
+                --demo-profile-overlay homebrew/source-rootfs-shell-demo-profiles.json
               ;;
             bottles)
               node_smoke_args=(
                 --image "${{ steps.image.outputs.path }}"
                 --migration-lock homebrew/main-shell-migration-lock.json
+                --homebrew-bootstrap-spec homebrew/main-shell-brew-package-tree.json
+                --homebrew-bootstrap-archive "${{ steps.bottle_candidate.outputs.bootstrap }}"
+                --homebrew-bootstrap-env "${{ steps.bottle_candidate.outputs.bootstrap_env }}"
+                --homebrew-bootstrap-state deferred
+                --homebrew-runtime-support homebrew/main-shell-homebrew-runtime-support.json
                 --demo-config homebrew/main-shell-demo.json
                 --transport-mode "$TRANSPORT_MODE"
               )
@@ -683,13 +840,33 @@ jobs:
               ;;
           esac
 
+      - name: Exercise the live first- and third-party lifecycle in Node
+        if: github.event_name == 'workflow_dispatch' && inputs.transport_mode == 'closed'
+        run: |
+          set -euo pipefail
+          bash scripts/dev-shell.sh npx tsx \
+            homebrew/test/homebrew_guest_lifecycle_node.ts \
+              --image "${{ steps.bottle_candidate.outputs.image }}" \
+              --homebrew-bootstrap-spec homebrew/main-shell-brew-package-tree.json \
+              --homebrew-bootstrap-archive "${{ steps.bottle_candidate.outputs.bootstrap }}" \
+              --homebrew-bootstrap-env "${{ steps.bottle_candidate.outputs.bootstrap_env }}" \
+              --transport-mode closed \
+              --bottle-mirror-plan "${{ steps.mirror.outputs.plan }}" \
+              --core-revision "${{ steps.live-inputs.outputs.tf }}" \
+              --canary-revision "${{ steps.live-inputs.outputs.c }}" \
+              --timeout-ms 900000
+
       - name: Boot the current main-shell path in Chromium
         env:
           KANDELO_MAIN_SHELL_SHA256: ${{ steps.image.outputs.sha256 }}
+          KANDELO_HOMEBREW_MAIN_SHELL_SHA256: ${{ steps.image.outputs.sha256 }}
+          KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256: ${{ steps.image.outputs.bootstrap_sha256 }}
+          KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES: ${{ steps.image.outputs.bootstrap_bytes }}
           KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE: ${{ env.TRANSPORT_MODE }}
           KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL: /homebrew-main-shell-bottles/kandelo-homebrew-bottle-mirror-plan.json
         run: |
           set -euo pipefail
+          lifecycle_report="$RUNNER_TEMP/homebrew-guest-lifecycle-playwright.json"
           shell_report="$RUNNER_TEMP/homebrew-main-shell-playwright.json"
           modeset_report="$RUNNER_TEMP/homebrew-main-shell-modeset-playwright.json"
           playwright_env=(
@@ -705,8 +882,10 @@ jobs:
             bottles)
               shell_spec=test/kandelo-homebrew-main-shell.spec.ts
               playwright_env+=(
-                "KANDELO_HOMEBREW_MAIN_SHELL_STRICT=1"
-                "KANDELO_HOMEBREW_MAIN_SHELL_SHA256=$KANDELO_MAIN_SHELL_SHA256"
+                "KANDELO_HOMEBREW_MAIN_SHELL_STRICT=$KANDELO_HOMEBREW_MAIN_SHELL_STRICT"
+                "KANDELO_HOMEBREW_MAIN_SHELL_SHA256=$KANDELO_HOMEBREW_MAIN_SHELL_SHA256"
+                "KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256=$KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256"
+                "KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES=$KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES"
                 "KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE=$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE"
                 "KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL=$KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL"
               )
@@ -726,27 +905,66 @@ jobs:
           esac
           (
             cd apps/browser-demos
+            reports=("$shell_report")
+            if [ "$SHELL_ACTIVATION_MODE" = bottles ]; then
+              # This offline browser contract must reject before any external
+              # fixture fetch. The separately gated live test runs only when
+              # an exact immutable fixture is explicitly supplied.
+              bash ../../scripts/dev-shell.sh env \
+                "KANDELO_BROWSER_DEMO_INPUTS=homebrew-vfs-test" \
+                "${playwright_env[@]}" \
+                npx playwright test test/homebrew-guest-lifecycle.spec.ts \
+                --project=chromium \
+                --grep "rejects a guest lifecycle fixture"
+              if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] &&
+                 [ "$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" = closed ]; then
+                # Run the rebooting live lifecycle in its own browser process so
+                # it receives the same exact image/bootstrap/mirror as Node.
+                bash ../../scripts/dev-shell.sh env \
+                  "PLAYWRIGHT_JSON_OUTPUT_FILE=$lifecycle_report" \
+                  "KANDELO_BROWSER_DEMO_INPUTS=homebrew-vfs-test" \
+                  "KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE=1" \
+                  "KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_FIXTURE_PATH=${{ steps.live-fixture.outputs.fixture }}" \
+                  "${playwright_env[@]}" \
+                  npx playwright test test/homebrew-guest-lifecycle.spec.ts \
+                  --project=chromium \
+                  --grep "survives a Chromium rootfs reboot" \
+                  --reporter=json
+              fi
+            fi
             bash ../../scripts/dev-shell.sh env \
               "PLAYWRIGHT_JSON_OUTPUT_FILE=$shell_report" \
+              "KANDELO_BROWSER_DEMO_INPUTS=main" \
               "${playwright_env[@]}" \
               npx playwright test "$shell_spec" \
               --project=chromium --reporter=json
-            # The shell VFS and worker occupy roughly 512 MiB, making browser-
-            # process lifetime part of this proof. Start MODESET in a fresh
-            # Playwright process so the test measures the candidate image, not
-            # whether a previous heavyweight worker has been collected yet.
-            bash ../../scripts/dev-shell.sh env \
-              "PLAYWRIGHT_JSON_OUTPUT_FILE=$modeset_report" \
-              "${playwright_env[@]}" \
-              npx playwright test test/kandelo-modeset.spec.ts \
-              --project=chromium --reporter=json
+            # WHY: only the temporary source bridge owns MODESET and its launch
+            # profile. Requiring it from the lean bottled base would test
+            # software that the selected image deliberately excludes.
+            if [ "$SHELL_ACTIVATION_MODE" = source-rootfs ]; then
+              # Use a fresh process because the preceding shell worker occupies
+              # enough memory to make browser-process lifetime observable.
+              bash ../../scripts/dev-shell.sh env \
+                "PLAYWRIGHT_JSON_OUTPUT_FILE=$modeset_report" \
+                "${playwright_env[@]}" \
+                npx playwright test test/kandelo-modeset.spec.ts \
+                --project=chromium --reporter=json
+              reports+=("$modeset_report")
+            fi
+            for report in "${reports[@]}"; do
+              jq -e '
+                .stats.expected == 1 and .stats.unexpected == 0 and
+                .stats.flaky == 0 and .stats.skipped == 0
+              ' "$report" >/dev/null
+            done
           )
-          for report in "$shell_report" "$modeset_report"; do
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] &&
+             [ "$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" = closed ]; then
             jq -e '
               .stats.expected == 1 and .stats.unexpected == 0 and
               .stats.flaky == 0 and .stats.skipped == 0
-            ' "$report" >/dev/null
-          done
+            ' "$lifecycle_report" >/dev/null
+          fi
 
       - name: Upload exact closure evidence
         if: always()
@@ -758,9 +976,13 @@ jobs:
             ${{ steps.source_candidate.outputs.report }}
             ${{ steps.source_candidate.outputs.manifest }}
             ${{ steps.bottle_candidate.outputs.report }}
+            ${{ steps.bottle_candidate.outputs.bootstrap }}
+            ${{ steps.bottle_candidate.outputs.bootstrap_env }}
             ${{ runner.temp }}/homebrew-main-shell-bottles
             ${{ runner.temp }}/homebrew-main-shell-bottle-recovery.json
             ${{ runner.temp }}/homebrew-main-shell-bottle-publish.json
+            ${{ runner.temp }}/homebrew-guest-lifecycle-browser-fixture.json
+            ${{ runner.temp }}/homebrew-guest-lifecycle-playwright.json
             ${{ runner.temp }}/homebrew-main-shell-playwright.json
             ${{ runner.temp }}/homebrew-main-shell-modeset-playwright.json
             apps/browser-demos/test-results

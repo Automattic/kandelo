@@ -1,11 +1,9 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  readSourceRootfsShellDependencyContract,
-} from "./source-rootfs-shell-dependency-contract.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const brewfile = resolve(
@@ -15,46 +13,107 @@ const lockPath = resolve(
   process.argv[3] ?? `${repoRoot}/homebrew/main-shell-migration-lock.json`,
 );
 const metadataPath = process.argv[4] ? resolve(process.argv[4]) : undefined;
-const sourceBridgeDependencyContractPath =
-  `${repoRoot}/homebrew/source-rootfs-shell-dependencies.json`;
+const runtimeSupportPath = resolve(
+  process.argv[5] ??
+    `${repoRoot}/homebrew/main-shell-homebrew-runtime-support.json`,
+);
 const tapRepository = "kandelo-dev/homebrew-tap-core";
 const tapName = "kandelo-dev/tap-core";
 const gitShaPattern = /^[0-9a-f]{40}$/;
 const formulaIdentityPattern = /^kandelo-dev\/tap-core\/[a-z0-9][a-z0-9._-]*$/;
+const baseRoots = [
+  { name: "bash", version: "5.2.37" },
+  { name: "dash", version: "0.5.12" },
+  { name: "bzip2", version: "1.0.8" },
+  { name: "m4", version: "1.4.19" },
+];
+const baseFormulaOrder = [
+  `${tapName}/libcxx`,
+  `${tapName}/ncurses`,
+  `${tapName}/bash`,
+  `${tapName}/dash`,
+  `${tapName}/bzip2`,
+  `${tapName}/m4`,
+];
+const runtimeSupportRootOrder = [
+  `${tapName}/ruby`,
+  `${tapName}/git`,
+  `${tapName}/curl`,
+  `${tapName}/findutils`,
+  `${tapName}/gawk`,
+  `${tapName}/tar`,
+  `${tapName}/posix-utils-lite`,
+];
+const runtimeSupportFormulaOrder = [
+  `${tapName}/zlib`,
+  `${tapName}/ruby`,
+  `${tapName}/coreutils`,
+  `${tapName}/dash`,
+  `${tapName}/ed`,
+  `${tapName}/diffutils`,
+  `${tapName}/grep`,
+  `${tapName}/libcxx`,
+  `${tapName}/ncurses`,
+  `${tapName}/less`,
+  `${tapName}/openssl`,
+  `${tapName}/libcurl`,
+  `${tapName}/sed`,
+  `${tapName}/vim`,
+  `${tapName}/git`,
+  `${tapName}/curl`,
+  `${tapName}/findutils`,
+  `${tapName}/gawk`,
+  `${tapName}/gzip`,
+  `${tapName}/tar`,
+  `${tapName}/posix-utils-lite`,
+];
+const availableRuntimeSupportFormulaOrder = [
+  `${tapName}/zlib`,
+  `${tapName}/ruby`,
+  `${tapName}/coreutils`,
+  `${tapName}/dash`,
+  `${tapName}/ed`,
+  `${tapName}/diffutils`,
+  `${tapName}/grep`,
+  `${tapName}/libcxx`,
+  `${tapName}/ncurses`,
+  `${tapName}/less`,
+  `${tapName}/openssl`,
+  `${tapName}/libcurl`,
+  `${tapName}/sed`,
+  `${tapName}/vim`,
+  `${tapName}/git`,
+  `${tapName}/curl`,
+  `${tapName}/bzip2`,
+  `${tapName}/xz`,
+  `${tapName}/findutils`,
+  `${tapName}/gawk`,
+  `${tapName}/gzip`,
+  `${tapName}/tar`,
+  `${tapName}/posix-utils-lite`,
+];
+const deferredRuntimeSupportFormulaOrder = [
+  `${tapName}/libmagic`,
+  `${tapName}/file-formula`,
+];
 
 const lock = readMigrationLock(lockPath);
-const rootfsPackages = readDependencies(
-  `${repoRoot}/packages/registry/rootfs/package.toml`,
-);
+const runtimeSupport = readRuntimeSupport(runtimeSupportPath, lock);
 const shellDependencies = readDependencies(
   `${repoRoot}/packages/registry/shell/package.toml`,
 );
-const shellBuildScript = readFileSync(
-  `${repoRoot}/packages/registry/shell/build-shell.sh`,
-  "utf8",
+const homebrewBootstrap = readPackageIdentity(
+  `${repoRoot}/packages/registry/homebrew-bootstrap/package.toml`,
 );
-const sourceBridgeActive = shellBuildScript.includes(
-  "build-source-rootfs-shell-image.ts",
+// Bottle Formulae remain selected only by the reviewed Brewfile. The sole
+// registry dependency is distribution machinery: exact Homebrew source bytes
+// that the VFS registers without materializing until a guest invokes brew.
+assertExactSequence(
+  shellDependencies,
+  [homebrewBootstrap],
+  "the canonical shell package must depend only on its exact Homebrew source package",
+  ({ name, version }) => `${name}@${version}`,
 );
-const sourceBridgeDependencies = readSourceRootfsShellDependencyContract(
-  sourceBridgeDependencyContractPath,
-).dependencies.map(({ name, version }) => ({ name, version }));
-if (sourceBridgeActive) {
-  // WHY: ancestry cannot turn PR-built bottles into exact-main artifacts. The
-  // temporary activation recipe therefore has one closed source graph; any
-  // other dependency list would silently widen or weaken that provenance.
-  assertExactSequence(
-    shellDependencies,
-    sourceBridgeDependencies,
-    "source-rootfs shell bridge dependency graph changed",
-    ({ name, version }) => `${name}@${version}`,
-  );
-} else if (shellDependencies.length !== 0) {
-  throw new Error(
-    "the canonical shell package must stay bottle-only (depends_on = []); " +
-      `found ${shellDependencies.map(({ name, version }) => `${name}@${version}`).join(", ")}`,
-  );
-}
 const lockedRegistryPackages = lock.packages.map(({ registry }) => registry);
 const expectedFormulae = lock.packages.map(({ formula }) => formula.name);
 const actualFormulae = readBrewfilePackages(brewfile);
@@ -66,10 +125,16 @@ assertUnique(
 assertUnique(expectedFormulae, "migration lock Formulae");
 assertUnique(actualFormulae, "main-shell Brewfile");
 assertExactSequence(
-  lock.packages.slice(0, rootfsPackages.length).map(({ registry }) => registry),
-  rootfsPackages,
-  "migration lock base identities do not match rootfs dependencies",
+  lockedRegistryPackages,
+  baseRoots,
+  "main-shell migration lock does not select the reviewed four base roots",
   ({ name, version }) => `${name}@${version}`,
+);
+assertExactSequence(
+  lock.formula_closure,
+  baseFormulaOrder,
+  "main-shell migration lock does not contain the reviewed six-Formula base closure",
+  (value) => value,
 );
 assertExactSequence(
   actualFormulae,
@@ -78,13 +143,18 @@ assertExactSequence(
   (value) => value,
 );
 validateReviewedSubstitutions(lock);
-validateCompatibilityPolicy(lock);
-if (metadataPath !== undefined) validateTapMetadata(lock, metadataPath);
+validateCompatibilityPolicy(lock, runtimeSupport);
+if (metadataPath !== undefined) {
+  validateTapMetadata(lock, runtimeSupport, metadataPath);
+}
 
 console.log(
   `Homebrew main-shell contract: ${actualFormulae.length} reviewed migration roots and ` +
-    `${lock.formula_closure.length} Formulae match the reviewed migration lock, ` +
-    `Brewfile, and catalog ${lock.catalog.tap_commit}.`,
+    `${lock.formula_closure.length} Formulae match the reviewed base lock; ` +
+    `${runtimeSupport.additionalFormulaOrder.length} additional Formulae are ` +
+    `declared only by the atomic Homebrew runtime-support layer, and ` +
+    `${runtimeSupport.deferredFormulae.length} optional Formulae remain deferred at catalog ` +
+    `${lock.catalog.tap_commit}.`,
 );
 
 function readMigrationLock(path) {
@@ -291,7 +361,7 @@ function readReviewedFormulaIdentity(value, label) {
   return value;
 }
 
-function validateCompatibilityPolicy(lock) {
+function validateCompatibilityPolicy(lock, runtimeSupport) {
   const compatibility = lock.compatibility;
   if (
     !isRecord(compatibility) ||
@@ -306,6 +376,13 @@ function validateCompatibilityPolicy(lock) {
   }
 
   const lockedPackages = new Set(lock.formula_closure);
+  // WHY: the deferred support trees and the embedded base eventually share
+  // one Homebrew prefix, so their link collisions and public command aliases
+  // need one policy even though support Formulae are absent from the base.
+  const consumerNamespacePackages = new Set([
+    ...lockedPackages,
+    ...runtimeSupport.additionalFormulaOrder,
+  ]);
   const conflictTargets = new Set();
   for (const [index, entry] of compatibility.link_conflict_owners.entries()) {
     if (
@@ -313,7 +390,7 @@ function validateCompatibilityPolicy(lock) {
       typeof entry.target !== "string" ||
       !/^bin\/[a-z0-9][a-z0-9._+-]*$/.test(entry.target) ||
       typeof entry.package !== "string" ||
-      !lockedPackages.has(entry.package) ||
+      !consumerNamespacePackages.has(entry.package) ||
       typeof entry.reason !== "string" ||
       entry.reason.trim().length === 0
     ) {
@@ -334,7 +411,7 @@ function validateCompatibilityPolicy(lock) {
     if (
       !isRecord(entry) ||
       typeof entry.package !== "string" ||
-      !lockedPackages.has(entry.package) ||
+      !consumerNamespacePackages.has(entry.package) ||
       (entry.source_kind !== "link" && entry.source_kind !== "keg") ||
       typeof entry.source !== "string" ||
       !/^[a-z0-9][a-z0-9._+-]*(?:\/[a-z0-9][a-z0-9._+-]*)*$/.test(
@@ -424,17 +501,25 @@ function validateCompatibilityPolicy(lock) {
   }
 }
 
-function validateTapMetadata(lock, path) {
-  const metadata = JSON.parse(readFileSync(path, "utf8"));
+function validateTapMetadata(lock, runtimeSupport, path) {
+  const metadataBytes = readFileSync(path);
+  const metadata = JSON.parse(metadataBytes.toString("utf8"));
+  const auditedCatalog = runtimeSupport.availability.auditedCatalog;
   if (
     !isRecord(metadata) ||
     metadata.schema !== 1 ||
     metadata.tap_repository !== tapRepository ||
     metadata.tap_name !== tapName ||
+    metadata.tap_commit !== auditedCatalog.metadata_tap_commit ||
+    metadata.kandelo_commit !== auditedCatalog.kandelo_commit ||
+    metadata.kandelo_abi !== auditedCatalog.kandelo_abi ||
+    metadata.release_tag !== auditedCatalog.release_tag ||
+    createHash("sha256").update(metadataBytes).digest("hex") !==
+      auditedCatalog.metadata_sha256 ||
     !Array.isArray(metadata.packages)
   ) {
     throw new Error(
-      `tap metadata has the wrong identity or package shape: ${path}`,
+      `tap metadata differs from the exact audited ABI-42 catalog: ${path}`,
     );
   }
   const byName = new Map();
@@ -482,6 +567,425 @@ function validateTapMetadata(lock, path) {
     "tap metadata dependency closure does not match reviewed formula_closure",
     (value) => value,
   );
+  const actualRuntimeSupportClosure = resolveTapFormulaClosure(
+    runtimeSupport.formulaRoots.map((entry) =>
+      entry.package.slice(`${tapName}/`.length),
+    ),
+    byName,
+  );
+  assertExactSequence(
+    actualRuntimeSupportClosure,
+    runtimeSupport.formulaOrder,
+    "tap metadata dependency closure does not match the Homebrew runtime-support layer",
+    (value) => value,
+  );
+  for (const identity of runtimeSupport.formulaOrder) {
+    const name = identity.slice(`${tapName}/`.length);
+    const pkg = byName.get(name);
+    // WHY: a named Formula is not an activatable lazy tree until the admitted
+    // catalog supplies exact successful ABI, digest, size, and canonical
+    // public-registry identity. Failing here prevents a partial brew runtime
+    // from being assembled from stale or merely source-level metadata.
+    assertAdmittedRuntimeSupportBottle(pkg, name, auditedCatalog);
+  }
+}
+
+function readRuntimeSupport(path, lock) {
+  const value = JSON.parse(readFileSync(path, "utf8"));
+  const expectedKeys = [
+    "activation",
+    "additional_formula_order",
+    "availability",
+    "base_formula_order",
+    "catalog",
+    "deferred_formulae",
+    "formula_order",
+    "formula_roots",
+    "id",
+    "kind",
+    "lifecycle_installs",
+    "required_commands",
+    "schema",
+  ];
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join("\0") !== expectedKeys.sort().join("\0") ||
+    value.schema !== 1 ||
+    value.kind !== "kandelo-homebrew-runtime-support-layer" ||
+    value.id !== "homebrew-runtime-support"
+  ) {
+    throw new Error(`invalid Homebrew runtime-support layer schema: ${path}`);
+  }
+  if (
+    !isRecord(value.catalog) ||
+    value.catalog.tap_repository !== tapRepository ||
+    value.catalog.tap_name !== tapName ||
+    value.catalog.tap_commit !== lock.catalog.tap_commit
+  ) {
+    throw new Error(
+      "Homebrew runtime-support catalog must equal the base migration lock",
+    );
+  }
+  assertExactSequence(
+    value.base_formula_order,
+    lock.formula_closure,
+    "Homebrew runtime-support layer has a different base closure",
+    (entry) => readFormulaIdentity(entry, "base_formula_order"),
+  );
+
+  if (
+    !Array.isArray(value.formula_roots) ||
+    !Array.isArray(value.formula_order) ||
+    !Array.isArray(value.additional_formula_order)
+  ) {
+    throw new Error(
+      "Homebrew runtime-support Formula contracts must be arrays",
+    );
+  }
+  const formulaRoots = value.formula_roots.map((entry, index) => {
+    if (
+      !isRecord(entry) ||
+      Object.keys(entry).sort().join("\0") !== "package\0reason" ||
+      typeof entry.reason !== "string" ||
+      entry.reason.trim().length === 0
+    ) {
+      throw new Error(`formula_roots[${index}] is invalid`);
+    }
+    return {
+      package: readFormulaIdentity(
+        entry.package,
+        `formula_roots[${index}].package`,
+      ),
+      reason: entry.reason,
+    };
+  });
+  assertUnique(
+    formulaRoots.map(({ package: packageName }) => packageName),
+    "Homebrew runtime-support roots",
+  );
+  assertExactSequence(
+    formulaRoots.map(({ package: packageName }) => packageName),
+    runtimeSupportRootOrder,
+    "Homebrew runtime-support roots differ from the reviewed guest lifecycle",
+    (entry) => entry,
+  );
+  const formulaOrder = value.formula_order.map((entry, index) =>
+    readFormulaIdentity(entry, `formula_order[${index}]`),
+  );
+  const additionalFormulaOrder = value.additional_formula_order.map(
+    (entry, index) =>
+      readFormulaIdentity(entry, `additional_formula_order[${index}]`),
+  );
+  assertUnique(formulaOrder, "Homebrew runtime-support formula_order");
+  assertExactSequence(
+    formulaOrder,
+    runtimeSupportFormulaOrder,
+    "Homebrew runtime-support closure differs from the reviewed 21-Formula activation",
+    (entry) => entry,
+  );
+  assertUnique(
+    additionalFormulaOrder,
+    "Homebrew runtime-support additional_formula_order",
+  );
+  for (const { package: packageName } of formulaRoots) {
+    if (!formulaOrder.includes(packageName)) {
+      throw new Error(
+        `Homebrew runtime-support closure omits root ${packageName}`,
+      );
+    }
+  }
+  assertExactSequence(
+    additionalFormulaOrder,
+    formulaOrder.filter(
+      (packageName) => !lock.formula_closure.includes(packageName),
+    ),
+    "Homebrew runtime-support additional closure is not its exact base-relative difference",
+    (entry) => entry,
+  );
+
+  if (!Array.isArray(value.deferred_formulae)) {
+    throw new Error(
+      "Homebrew runtime-support deferred_formulae must be an array",
+    );
+  }
+  const deferredFormulae = value.deferred_formulae.map((entry, index) => {
+    if (
+      !isRecord(entry) ||
+      Object.keys(entry).sort().join("\0") !==
+        "current_state\0package\0reason\0reentry_gate" ||
+      entry.current_state !== "public-abi41-only" ||
+      typeof entry.reason !== "string" ||
+      entry.reason.trim().length === 0 ||
+      typeof entry.reentry_gate !== "string" ||
+      entry.reentry_gate.trim().length === 0
+    ) {
+      throw new Error(`deferred_formulae[${index}] is invalid`);
+    }
+    return readFormulaIdentity(
+      entry.package,
+      `deferred_formulae[${index}].package`,
+    );
+  });
+  assertExactSequence(
+    deferredFormulae,
+    deferredRuntimeSupportFormulaOrder,
+    "Homebrew runtime-support deferred Formulae differ from the reviewed fixed-prefix exception",
+    (entry) => entry,
+  );
+  const availability = readRuntimeSupportAvailability(
+    value.availability,
+    lock,
+    formulaOrder,
+    deferredFormulae,
+  );
+
+  const activation = value.activation;
+  if (
+    !isRecord(activation) ||
+    activation.mode !== "first-use-atomic" ||
+    JSON.stringify(activation.roots) !== JSON.stringify(["/usr/bin/brew"]) ||
+    activation.capability !== "homebrew:runtime" ||
+    activation.base_image_default !== "deferred" ||
+    activation.demo_variant !== "may-materialize" ||
+    !isRecord(activation.bootstrap_package) ||
+    activation.bootstrap_package.name !== "homebrew-bootstrap" ||
+    JSON.stringify(activation.bootstrap_package.outputs) !==
+      JSON.stringify(["homebrew-bootstrap.zip", "homebrew-brew.env"]) ||
+    activation.bootstrap_package.required_kernel_abi !== 42
+  ) {
+    throw new Error(
+      "Homebrew runtime support must be one atomic, deferred /usr/bin/brew activation",
+    );
+  }
+
+  if (!Array.isArray(value.required_commands)) {
+    throw new Error(
+      "Homebrew runtime-support required_commands must be an array",
+    );
+  }
+  const requiredCommands = value.required_commands.map((entry, index) => {
+    if (
+      !isRecord(entry) ||
+      Object.keys(entry).sort().join("\0") !== "package\0path\0reason" ||
+      typeof entry.path !== "string" ||
+      !/^\/usr\/bin\/[a-z0-9][a-z0-9._+-]*$/.test(entry.path) ||
+      typeof entry.reason !== "string" ||
+      entry.reason.trim().length === 0
+    ) {
+      throw new Error(`required_commands[${index}] is invalid`);
+    }
+    const packageName = readFormulaIdentity(
+      entry.package,
+      `required_commands[${index}].package`,
+    );
+    if (!formulaOrder.includes(packageName)) {
+      throw new Error(
+        `required command ${entry.path} belongs to undeclared ${packageName}`,
+      );
+    }
+    return { path: entry.path, package: packageName };
+  });
+  assertUnique(
+    requiredCommands.map(({ path: commandPath }) => commandPath),
+    "Homebrew runtime-support command paths",
+  );
+  assertExactSet(
+    requiredCommands.map(({ package: packageName }) => packageName),
+    formulaRoots.map(({ package: packageName }) => packageName),
+    "each Homebrew runtime root must own a reviewed required command",
+    (entry) => entry,
+  );
+
+  if (
+    !Array.isArray(value.lifecycle_installs) ||
+    value.lifecycle_installs.length !== 1
+  ) {
+    throw new Error(
+      "Homebrew runtime-support lifecycle must declare one independent-tap install",
+    );
+  }
+  const lifecycleInstall = value.lifecycle_installs[0];
+  if (
+    !isRecord(lifecycleInstall) ||
+    lifecycleInstall.tap !== "brandonpayton/kandelo-canary" ||
+    lifecycleInstall.repository !==
+      "brandonpayton/homebrew-kandelo-canary" ||
+    typeof lifecycleInstall.revision !== "string" ||
+    !/^[0-9a-f]{40}$/.test(lifecycleInstall.revision) ||
+    lifecycleInstall.formula !== "m4" ||
+    lifecycleInstall.phase !== "guest-lifecycle" ||
+    lifecycleInstall.image_closure !== false ||
+    typeof lifecycleInstall.reason !== "string" ||
+    lifecycleInstall.reason.trim().length === 0
+  ) {
+    throw new Error(
+      "the third-party canary M4 must remain a live lifecycle install outside the image",
+    );
+  }
+  const canaryIdentity = `${lifecycleInstall.tap}/${lifecycleInstall.formula}`;
+  if (
+    lock.formula_closure.includes(canaryIdentity) ||
+    formulaOrder.includes(canaryIdentity)
+  ) {
+    throw new Error(
+      "third-party canary M4 leaked into a trusted image closure",
+    );
+  }
+
+  return {
+    formulaRoots,
+    formulaOrder,
+    additionalFormulaOrder,
+    deferredFormulae,
+    availability,
+  };
+}
+
+function readRuntimeSupportAvailability(
+  value,
+  lock,
+  formulaOrder,
+  deferredFormulae,
+) {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join("\0") !==
+      "audited_catalog\0can_be_deferred\0missing_metadata\0requires_rebuild\0reusable_public_abi42" ||
+    !isRecord(value.audited_catalog)
+  ) {
+    throw new Error(
+      "Homebrew runtime-support availability partition is invalid",
+    );
+  }
+  const auditedCatalog = value.audited_catalog;
+  if (
+    Object.keys(auditedCatalog).sort().join("\0") !==
+      "checkout_commit\0kandelo_abi\0kandelo_commit\0metadata_sha256\0metadata_tap_commit\0release_tag\0required_arch" ||
+    auditedCatalog.checkout_commit !== lock.catalog.tap_commit ||
+    !gitShaPattern.test(auditedCatalog.metadata_tap_commit) ||
+    !gitShaPattern.test(auditedCatalog.kandelo_commit) ||
+    typeof auditedCatalog.metadata_sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/.test(auditedCatalog.metadata_sha256) ||
+    auditedCatalog.kandelo_abi !== 42 ||
+    auditedCatalog.release_tag !== "bottles-abi-v42" ||
+    auditedCatalog.required_arch !== "wasm32"
+  ) {
+    throw new Error(
+      "Homebrew runtime-support availability must bind the exact ABI-42 wasm32 catalog",
+    );
+  }
+
+  const readPartition = (key) => {
+    if (!Array.isArray(value[key])) {
+      throw new Error(
+        `Homebrew runtime-support availability.${key} must be an array`,
+      );
+    }
+    const entries = value[key].map((entry, index) =>
+      readFormulaIdentity(entry, `availability.${key}[${index}]`),
+    );
+    assertUnique(entries, `Homebrew runtime-support availability.${key}`);
+    return entries;
+  };
+  const reusablePublicAbi42 = readPartition("reusable_public_abi42");
+  const requiresRebuild = readPartition("requires_rebuild");
+  const missingMetadata = readPartition("missing_metadata");
+  const canBeDeferred = readPartition("can_be_deferred");
+  const partition = [
+    ...reusablePublicAbi42,
+    ...requiresRebuild,
+    ...missingMetadata,
+    ...canBeDeferred,
+  ];
+  assertUnique(
+    partition,
+    "Homebrew runtime-support 25-Formula availability partition",
+  );
+  if (partition.length !== 25) {
+    throw new Error(
+      `Homebrew runtime-support availability partitions ${partition.length} Formulae, expected 25`,
+    );
+  }
+  assertExactSequence(
+    reusablePublicAbi42,
+    availableRuntimeSupportFormulaOrder,
+    "Homebrew runtime-support reusable ABI-42 availability audit changed",
+    (entry) => entry,
+  );
+  const unavailableActivation = formulaOrder.filter(
+    (identity) => !reusablePublicAbi42.includes(identity),
+  );
+  if (unavailableActivation.length !== 0) {
+    throw new Error(
+      "Homebrew runtime-support activation includes Formulae without admitted " +
+        `public ABI-42 bottles: ${unavailableActivation.join(", ")}`,
+    );
+  }
+  assertExactSequence(
+    requiresRebuild,
+    [],
+    "a Formula requiring rebuild cannot enter the current atomic activation",
+    (entry) => entry,
+  );
+  assertExactSequence(
+    missingMetadata,
+    [],
+    "a Formula missing metadata cannot enter the current atomic activation",
+    (entry) => entry,
+  );
+  assertExactSequence(
+    canBeDeferred,
+    deferredFormulae,
+    "Homebrew runtime-support availability and deferred contracts disagree",
+    (entry) => entry,
+  );
+  return { auditedCatalog, reusablePublicAbi42 };
+}
+
+function assertAdmittedRuntimeSupportBottle(pkg, name, catalog) {
+  if (!isRecord(pkg) || !Array.isArray(pkg.bottles)) {
+    throw new Error(
+      `Homebrew runtime-support Formula ${name} has no admitted package metadata`,
+    );
+  }
+  const candidates = pkg.bottles.filter(
+    (bottle) => isRecord(bottle) && bottle.arch === catalog.required_arch,
+  );
+  if (candidates.length !== 1) {
+    throw new Error(
+      `Homebrew runtime-support Formula ${name} has ${candidates.length} ` +
+        `${catalog.required_arch} bottle identities, expected one`,
+    );
+  }
+  const bottle = candidates[0];
+  const builtFrom = isRecord(bottle.built_from) ? bottle.built_from : undefined;
+  const expectedUrl = `https://ghcr.io/v2/${tapRepository}/${name}/blobs/sha256:${bottle.sha256}`;
+  if (
+    bottle.status !== "success" ||
+    bottle.kandelo_abi !== catalog.kandelo_abi ||
+    bottle.bottle_tag !== `${catalog.required_arch}_kandelo` ||
+    !Number.isSafeInteger(bottle.bytes) ||
+    bottle.bytes <= 0 ||
+    typeof bottle.sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/.test(bottle.sha256) ||
+    bottle.cache_key_sha !== bottle.sha256 ||
+    bottle.url !== expectedUrl ||
+    !Array.isArray(bottle.runtime_support) ||
+    !bottle.runtime_support.includes("node") ||
+    builtFrom === undefined ||
+    builtFrom.tap_repository !== tapRepository ||
+    builtFrom.kandelo_repository !== "Automattic/kandelo" ||
+    builtFrom.kandelo_commit !== catalog.kandelo_commit ||
+    typeof builtFrom.tap_commit !== "string" ||
+    !gitShaPattern.test(builtFrom.tap_commit) ||
+    typeof builtFrom.formula_sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/.test(builtFrom.formula_sha256)
+  ) {
+    throw new Error(
+      `Homebrew runtime-support Formula ${name} lacks an admitted public ` +
+        `${catalog.required_arch} ABI-${catalog.kandelo_abi} bottle identity`,
+    );
+  }
 }
 
 function readTapMetadataPackage(value, label) {
@@ -572,6 +1076,21 @@ function readDependencies(path) {
     }
     return { name, version };
   });
+}
+
+function readPackageIdentity(path) {
+  const source = readFileSync(path, "utf8");
+  const name = /(?:^|\n)name\s*=\s*"([^"]+)"/.exec(source)?.[1];
+  const version = /(?:^|\n)version\s*=\s*"([^"]+)"/.exec(source)?.[1];
+  if (
+    name === undefined ||
+    !/^[a-z0-9][a-z0-9._-]*$/.test(name) ||
+    version === undefined ||
+    version.length === 0
+  ) {
+    throw new Error(`cannot read package identity from ${path}`);
+  }
+  return { name, version };
 }
 
 function readBrewfilePackages(path) {

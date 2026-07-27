@@ -32,6 +32,12 @@ concurrency:
   group: staging-build-pr-${{ github.event.pull_request.number }}-${{ (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'skip-staging-tests' && github.run_id || 'active' }}
   cancel-in-progress: true
 
+# One publication selection contract feeds preflight, matrices, and test-gate.
+# Resolver-only skips may narrow that ledger for heavy runtimes, but can never
+# add a package that publication policy omitted.
+env:
+  PACKAGE_STAGING_EXCLUSIONS: erlang-vfs,perl,perl-vfs,python-vfs,redis,texlive
+
 jobs:
   # ---------------------------------------------------------------------
   # Decoupled package builds — staging-build's sole flow.
@@ -173,7 +179,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          bash scripts/dev-shell.sh bash -c '
+          bash scripts/dev-shell.sh env \
+            PACKAGE_STAGING_EXCLUSIONS="$PACKAGE_STAGING_EXCLUSIONS" \
+            bash -c '
             set -euo pipefail
             PACKAGE_STAGING_REQUIRED="${{ needs.change-scope.outputs.package_staging_required }}"
 
@@ -224,20 +232,12 @@ jobs:
             library_matrix="[]"
             program_matrix="[]"
 
-            # Temporarily disabled packages — too slow to rebuild in
-            # CI while we have no separate prebuilt-package repo to
-            # offload them to. Each is still consumable via its
-            # existing `[binary]` pin in package.toml; staging-build
-            # just refuses to redo the work. Remove an entry here (and
-            # mirror in prepare-merge.yml) to re-enable rebuilds.
-            disabled_pkgs=" erlang-vfs perl perl-vfs python-vfs redis texlive "
-
             expected_ledger=$(mktemp)
             XTASK="target/$HOST_TARGET/release/xtask"
             "$XTASK" staging-reuse expected \
               --registry packages/registry \
               --expected-abi "$ABI" \
-              --exclude "${disabled_pkgs// /,}" \
+              --exclude "$PACKAGE_STAGING_EXCLUSIONS" \
               --output "$expected_ledger"
 
             # Reusing individual assets from a partial mutable release is not
@@ -287,100 +287,54 @@ jobs:
             echo "baseline_tag=$BASELINE_TAG" >> "$GITHUB_OUTPUT"
             echo "reuse_staging=$reuse_staging" >> "$GITHUB_OUTPUT"
 
-            for pkg_dir in packages/registry/*/; do
-              pkg=$(basename "$pkg_dir")
-              # Filter: package must have a [build] block. Today this
-              # selects the recipes that own a build script and
-              # naturally excludes kernel/userspace/examples/node and
-              # *-source packages.
-              if ! grep -q "^\[build\]" "$pkg_dir/package.toml"; then
-                continue
-              fi
-
-              # Disabled-package skip (see `disabled_pkgs` above).
-              if [[ "$disabled_pkgs" == *" $pkg "* ]]; then
-                echo "preflight: skipping $pkg (temporarily disabled)" >&2
-                continue
-              fi
-
-              # Read kind so we can split into library_matrix /
-              # program_matrix. Library wave runs first, programs
-              # second; programs reuse the library archives via
-              # package.pr.toml overlays so each library builds at
-              # most once across the matrix.
-              kind=$(sed -nE "s/^kind *= *\"([^\"]+)\".*/\\1/p" "$pkg_dir/package.toml" | head -1)
-              case "$kind" in
-                library|program) ;;
-                *)
-                  echo "preflight: skipping $pkg (kind=$kind, not library/program)" >&2
-                  continue
-                  ;;
-              esac
-
-              # Per-package arches from package.toml'"'"'s top-level
-              # `arches = [...]` field (default `["wasm32"]` when
-              # absent). Mirrors the filter inside
-              # `xtask archive-stage`, which rejects a `(package, arch)`
-              # pair whose arch isn'"'"'t in the manifest'"'"'s
-              # target_arches. Assumes the single-line form
-              # `arches = ["a", "b"]`; all current package.toml files
-              # use that shape.
-              # Version + revision for the per-matrix-entry
-              # scripts/index-update.sh invocation downstream.
-              version=$(sed -nE "s/^version *= *\"([^\"]+)\".*/\\1/p" "$pkg_dir/package.toml" | head -1)
-              revision=1
-              if [ -f "$pkg_dir/build.toml" ]; then
-                revision=$(sed -nE "s/^revision *= *([0-9]+).*/\\1/p" "$pkg_dir/build.toml" | head -1)
-                revision=${revision:-1}
-              fi
-              arches=$(awk -F'"'"'[][]'"'"' '"'"'/^arches *=/ {print $2}'"'"' "$pkg_dir/package.toml" | tr -d '"'"' "'"'"' | tr '"'"','"'"' '"'"' '"'"')
-              arches=${arches:-wasm32}
-              for arch in $arches; do
-                sha=$(cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-                  compute-cache-key-sha --package "$pkg_dir" --arch "$arch" 2>/dev/null) || {
-                  echo "preflight: skipping $pkg/$arch (compute-cache-key-sha failed)" >&2
-                  continue
-                }
-                short=${sha:0:8}
-                if [ "$reuse_staging" != false ] &&
+            # WHY: matrix membership comes from the same Rust-owned ledger
+            # that release reuse validates. This keeps pending packages and
+            # their full reverse-dependent closure out of both contracts.
+            while IFS= read -r expected_entry; do
+              pkg=$(echo "$expected_entry" | jq -r .package)
+              kind=$(echo "$expected_entry" | jq -r .kind)
+              arch=$(echo "$expected_entry" | jq -r .arch)
+              sha=$(echo "$expected_entry" | jq -r .cache_key_sha)
+              version=$(echo "$expected_entry" | jq -r .version)
+              revision=$(echo "$expected_entry" | jq -r .revision)
+              short=${sha:0:8}
+              if [ "$reuse_staging" != false ] &&
                    jq -e --arg pkg "$pkg" --arg arch "$arch" "
                      .entries[] |
                      select(.package == \$pkg and .arch == \$arch and .current == true)
                    " "$reuse_dir/snapshot.json" >/dev/null; then
                   echo "preflight: skip $pkg/$arch (sha $short verified in $TARGET_TAG)"
                   continue
-                fi
-                if [ "$reuse_staging" = union ] &&
+              fi
+              if [ "$reuse_staging" = union ] &&
                    jq -e --arg pkg "$pkg" --arg arch "$arch" "
                      .entries[] |
                      select(.package == \$pkg and .arch == \$arch and .current == true)
                    " "$canonical_reuse_dir/snapshot.json" >/dev/null; then
                   echo "preflight: skip $pkg/$arch (sha $short verified in $BASELINE_TAG supplement)"
                   continue
-                fi
-                prefix="${pkg}-"
-                suffix="-abi${ABI}-${arch}-${short}.tar.zst"
-                existing_archive=$(echo "$existing_assets" | jq -r --arg pre "$prefix" --arg suf "$suffix" \
-                    "first(.[] | select(startswith(\$pre) and endswith(\$suf))) // \"\"")
-                if [ -n "$existing_archive" ] && scripts/index-has-current-entry.sh "$existing_index" "$pkg" "$arch" "$sha" "$revision"; then
-                  echo "preflight: skip $pkg/$arch (sha $short already indexed)"
-                  continue
-                fi
-                entry=$(jq -nc --arg pkg "$pkg" --arg arch "$arch" --arg sha "$sha" \
-                                --arg ver "$version" --argjson rev "$revision" \
-                  "{package: \$pkg, arch: \$arch, sha: \$sha, version: \$ver, revision: \$rev}")
-                if [ "$kind" = "library" ]; then
-                  library_matrix=$(echo "$library_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
-                else
-                  program_matrix=$(echo "$program_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
-                fi
-              done
-            done
+              fi
+              prefix="${pkg}-"
+              suffix="-abi${ABI}-${arch}-${short}.tar.zst"
+              existing_archive=$(echo "$existing_assets" | jq -r --arg pre "$prefix" --arg suf "$suffix" \
+                  "first(.[] | select(startswith(\$pre) and endswith(\$suf))) // \"\"")
+              if [ -n "$existing_archive" ] && scripts/index-has-current-entry.sh "$existing_index" "$pkg" "$arch" "$sha" "$revision"; then
+                echo "preflight: skip $pkg/$arch (sha $short already indexed)"
+                continue
+              fi
+              entry=$(jq -nc --arg pkg "$pkg" --arg arch "$arch" --arg sha "$sha" \
+                              --arg ver "$version" --argjson rev "$revision" \
+                "{package: \$pkg, arch: \$arch, sha: \$sha, version: \$ver, revision: \$rev}")
+              if [ "$kind" = "library" ]; then
+                library_matrix=$(echo "$library_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
+              else
+                program_matrix=$(echo "$program_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
+              fi
+            done < <(jq -c ".entries[]" "$expected_ledger")
 
             program_matrix_file=$(mktemp)
             printf "%s" "$program_matrix" > "$program_matrix_file"
-            program_matrix=$(cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              sort-package-matrix \
+            program_matrix=$("$XTASK" sort-package-matrix \
                 --registry packages/registry \
                 --matrix "$program_matrix_file")
             rm -f "$program_matrix_file"
@@ -866,26 +820,38 @@ jobs:
         # matrix-overlay path used by first runs and partial staging releases.
         run: |
           set -euo pipefail
+          ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
+          EXPECTED="$RUNNER_TEMP/staging-expected.json"
+          BLOCKED="$RUNNER_TEMP/staging-publication-blockers.json"
+          bash scripts/dev-shell.sh env \
+            EXPECTED="$EXPECTED" \
+            BLOCKED="$BLOCKED" \
+            PACKAGE_STAGING_EXCLUSIONS="$PACKAGE_STAGING_EXCLUSIONS" \
+            ABI="$ABI" \
+            bash -c '
+              set -euo pipefail
+              HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+              cargo build --release -p xtask --target "$HOST_TARGET"
+              "target/$HOST_TARGET/release/xtask" staging-reuse expected \
+                --registry packages/registry \
+                --expected-abi "$ABI" \
+                --exclude "$PACKAGE_STAGING_EXCLUSIONS" \
+                --output "$EXPECTED" \
+                --blocked-output "$BLOCKED"
+            '
           if [ "$PACKAGE_REUSE_STAGING" != "false" ]; then
-            ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
-            EXPECTED="$RUNNER_TEMP/staging-expected.json"
             SNAPSHOT="$RUNNER_TEMP/current-staging-snapshot"
             bash scripts/dev-shell.sh env \
               EXPECTED="$EXPECTED" \
               SNAPSHOT="$SNAPSHOT" \
               PACKAGE_TARGET_TAG="$PACKAGE_TARGET_TAG" \
               PACKAGE_BASELINE_TAG="$PACKAGE_BASELINE_TAG" \
+              PACKAGE_STAGING_EXCLUSIONS="$PACKAGE_STAGING_EXCLUSIONS" \
               ABI="$ABI" \
               bash -c '
               set -euo pipefail
               HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-              cargo build --release -p xtask --target "$HOST_TARGET"
               XTASK="target/$HOST_TARGET/release/xtask"
-              "$XTASK" staging-reuse expected \
-                --registry packages/registry \
-                --expected-abi "$ABI" \
-                --exclude cpython,erlang,erlang-vfs,perl,perl-vfs,python-vfs,redis,texlive \
-                --output "$EXPECTED"
               TARGET_SNAPSHOT="$RUNNER_TEMP/fresh-target-snapshot"
               bash .github/scripts/validate-staging-release.sh \
                 --tag "$PACKAGE_TARGET_TAG" \
@@ -931,11 +897,12 @@ jobs:
             STAGE="$RUNNER_TEMP/staged-overlay"
             bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/staged-archives" "$STAGE"
           else
-            ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
             export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml"
           fi
           echo "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" >> "$GITHUB_ENV"
-          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --fetch-only
+          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh \
+            --fetch-only \
+            --expected-ledger "$EXPECTED"
 
       - name: Skip staging test suites
         if: env.SKIP_STAGING_TESTS == 'true'
@@ -958,8 +925,15 @@ jobs:
             export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
             cargo build --release -p kandelo \
               -Z build-std=core,alloc
-            mkdir -p local-binaries
-            cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
+            # WHY: this is a package-owned resolver mirror. Install the exact
+            # candidate into an immutable local generation so later dependency
+            # resolution cannot substitute released kernel bytes.
+            source scripts/install-local-binary.sh
+            WASM_POSIX_LOCAL_INSTALL_SESSION="ci-kernel-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}" \
+              install_local_binary kernel \
+                target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
+                kandelo-kernel.wasm
+            cmp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
               local-binaries/kernel.wasm
             bash scripts/build-programs.sh
             bash scripts/build-rootfs.sh
@@ -969,6 +943,7 @@ jobs:
         if: env.SKIP_STAGING_TESTS != 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/pack-ci-test-workspace.sh \
+            --publication-blockers "$RUNNER_TEMP/staging-publication-blockers.json" \
             "$RUNNER_TEMP/test-workspace.tar.zst"
 
       - name: Upload prepared test workspace
@@ -987,7 +962,9 @@ jobs:
       !cancelled() &&
       needs.test-gate-prepare.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    # Browser validation may locally materialize publication-pending packages
+    # before running the same bounded Playwright suites as a ready release.
+    timeout-minutes: 120
     permissions:
       actions: read
       contents: read

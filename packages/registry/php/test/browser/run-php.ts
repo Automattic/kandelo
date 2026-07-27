@@ -7,6 +7,7 @@
 
 import { BrowserKernel } from "../../../../../host/src/browser-kernel-host";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
+import { restoreVerifiedVfsImage } from "../../../../../host/src/vfs/load-image";
 import {
   ensureDir,
   ensureDirRecursive,
@@ -88,7 +89,9 @@ async function runPhp(
   let stderr = "";
   const decoder = new TextDecoder();
 
-  const memfs = MemoryFileSystem.fromImage(new Uint8Array(rootfsBytes), {
+  // WHY: the harness stages programs and fixtures into imported state. Verify
+  // sealed lazy cohorts first so test setup cannot mutate forged input.
+  const memfs = await restoreVerifiedVfsImage(new Uint8Array(rootfsBytes), {
     maxByteLength: PHP_BROWSER_VFS_MAX_BYTES,
   });
   for (const dir of ["/tmp", "/root", "/home", "/dev"]) ensureDir(memfs, dir);

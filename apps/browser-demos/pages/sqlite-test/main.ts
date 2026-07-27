@@ -6,6 +6,7 @@
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { MemoryFileSystem } from "@host/vfs/memory-fs";
 import { writeVfsFile } from "@host/vfs/image-helpers";
+import { restoreVerifiedVfsImage } from "@host/vfs/load-image";
 import { finalizeKernelOwnedImage, settleWebKitReclaim } from "../../lib/kernel-owned-boot";
 import {
   patchTestrunnerForKandelo,
@@ -109,9 +110,11 @@ function installTestrunnerPatches(fs: MemoryFileSystem): void {
   ].join("\n"), 0o644);
 }
 
-function createFs(): MemoryFileSystem {
+async function createFs(): Promise<MemoryFileSystem> {
   if (!vfsImageBytes) throw new Error("SQLite test VFS image not loaded");
-  const fs = MemoryFileSystem.fromImage(vfsImageBytes, {
+  // WHY: chmod and Tcl patching mutate imported state before the worker sees
+  // it, so a forged sealed cohort must fail before either operation.
+  const fs = await restoreVerifiedVfsImage(vfsImageBytes, {
     maxByteLength: 512 * 1024 * 1024,
   });
   fs.chmod("/sqlite", 0o777);
@@ -147,7 +150,7 @@ async function init() {
 
   kernelBytes = kernelBuf;
   vfsImageBytes = new Uint8Array(imageBuf);
-  const fs = createFs();
+  const fs = await createFs();
   const fixture = readVfsFile(fs, "/usr/bin/testfixture");
   testfixtureBytes = new ArrayBuffer(fixture.byteLength);
   new Uint8Array(testfixtureBytes).set(fixture);
@@ -169,7 +172,7 @@ async function init() {
     // Assemble the test image in a transient build FS, then hand ownership to
     // the kernel worker (kernelOwnedFs) so the main thread holds no VFS
     // SharedArrayBuffer across the per-test loop (Safari OOM fix).
-    const buildFs = createFs();
+    const buildFs = await createFs();
     if (argv[1] === "kandelo-testrunner.tcl") {
       installTestrunnerPatches(buildFs);
     }

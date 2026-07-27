@@ -4,6 +4,10 @@ import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 interface InspectPackageTreeRequest {
   image: number[];
   lazyUrlBase: string;
+  atomicPaths?: {
+    first: string;
+    second: string;
+  };
 }
 
 interface WorkerScope {
@@ -12,6 +16,21 @@ interface WorkerScope {
 }
 
 const workerScope = self as unknown as WorkerScope;
+
+function readText(fs: MemoryFileSystem, path: string): string {
+  const stat = fs.stat(path);
+  const bytes = new Uint8Array(stat.size);
+  const fd = fs.open(path, 0, 0);
+  try {
+    const read = fs.read(fd, bytes, null, bytes.byteLength);
+    if (read !== bytes.byteLength) {
+      throw new Error(`short package-tree read: ${read}/${bytes.byteLength}`);
+    }
+  } finally {
+    fs.close(fd);
+  }
+  return new TextDecoder().decode(bytes);
+}
 
 workerScope.onmessage = async (event) => {
   try {
@@ -24,6 +43,49 @@ workerScope.onmessage = async (event) => {
     fs.rewriteLazyArchiveUrls((url) =>
       resolveLazyUrl(event.data.lazyUrlBase, url)
     );
+    if (event.data.atomicPaths !== undefined) {
+      const { first, second } = event.data.atomicPaths;
+      let exportBlockedBeforeVerification = false;
+      try {
+        fs.exportLazyArchiveEntries();
+      } catch (error) {
+        exportBlockedBeforeVerification =
+          error instanceof Error &&
+          /not been cryptographically verified after import/.test(error.message);
+      }
+      if (!exportBlockedBeforeVerification) {
+        throw new Error(
+          "imported atomic package trees exported before browser verification",
+        );
+      }
+      const deferredBefore = {
+        first: fs.isPathDeferred(first),
+        second: fs.isPathDeferred(second),
+      };
+      // WHY: browser SubtleCrypto is the trust boundary for imported cohort
+      // seals. Verify directly so metadata inspection does not need to
+      // snapshot and serialize the complete filesystem as an incidental step.
+      await fs.verifyImportedLazyAtomicGroupSeals();
+      const verifiedPendingTrees = fs.exportLazyArchiveEntries().length;
+      const prepared = await fs.preparePath(first);
+      workerScope.postMessage({
+        ok: true,
+        result: {
+          exportBlockedBeforeVerification,
+          deferredBefore,
+          verifiedPendingTrees,
+          prepared,
+          firstText: readText(fs, first),
+          secondText: readText(fs, second),
+          deferredAfter: {
+            first: fs.isPathDeferred(first),
+            second: fs.isPathDeferred(second),
+          },
+          pendingTrees: fs.exportLazyArchiveEntries().length,
+        },
+      });
+      return;
+    }
     const snapshot = (path: string) => {
       const stat = fs.lstat(path);
       return {
@@ -54,17 +116,6 @@ workerScope.onmessage = async (event) => {
       fs.closedir(handle);
     }
     const prepared = await fs.preparePath(readPath);
-    const stat = fs.stat(readPath);
-    const bytes = new Uint8Array(stat.size);
-    const fd = fs.open(readPath, 0, 0);
-    try {
-      const read = fs.read(fd, bytes, null, bytes.byteLength);
-      if (read !== bytes.byteLength) {
-        throw new Error(`short package-tree read: ${read}/${bytes.byteLength}`);
-      }
-    } finally {
-      fs.close(fd);
-    }
     workerScope.postMessage({
       ok: true,
       result: {
@@ -76,7 +127,7 @@ workerScope.onmessage = async (event) => {
         },
         names: names.sort(),
         prepared,
-        text: new TextDecoder().decode(bytes),
+        text: readText(fs, readPath),
         pendingTrees: fs.exportLazyArchiveEntries().length,
       },
     });

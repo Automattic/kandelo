@@ -211,4 +211,309 @@ grep -F "package 'registered' does not uniquely declare output" \
 [ "$legacy_before" = "$(shasum -a 256 "$legacy_canonical" | awk '{print $1}')" ] ||
     fail "registered package lookup failure mutated canonical cache bytes"
 
+# Exact-build helpers may publish only artifacts produced by the command they
+# just ran. In particular, a kernel-only Cargo build must never adopt an old
+# userspace target that happens to remain in target/ from an earlier command.
+for kernel_builder in \
+    "$REPO_ROOT/build.sh" \
+    "$REPO_ROOT/packages/registry/kernel/build-kernel.sh"; do
+    if grep -Fq 'wasm_posix_userspace.wasm' "$kernel_builder"; then
+        fail "$(basename "$kernel_builder") opportunistically publishes a userspace artifact it did not build"
+    fi
+done
+grep -Fq 'install_local_binary userspace "$OUT" wasm_posix_userspace.wasm' \
+    "$REPO_ROOT/packages/registry/userspace/build-userspace.sh" ||
+    fail "the userspace build does not own its direct local publication"
+
+# Exercise the complete producer/consumer boundary with the real xtask and
+# workspace packer. Unit tests cover the installer and resolver together, and
+# the packer tests cover link relocation, but this fixture deliberately composes
+# all four steps so neither side can silently weaken the other's identity
+# contract.
+composed_registry="$work/composed-registry"
+composed_repo="$work/composed-repo"
+composed_mirror="$composed_repo/local-binaries"
+composed_sources="$work/composed-sources"
+mkdir -p "$composed_registry" "$composed_mirror" "$composed_sources"
+
+write_scalar_package() {
+    local package="$1"
+    local output="$2"
+    local artifact="$3"
+    local package_root="$composed_registry/$package"
+    mkdir -p "$package_root"
+    cat >"$package_root/package.toml" <<EOF
+kind = "program"
+name = "$package"
+version = "1.0"
+depends_on = []
+
+[source]
+url = "https://example.test/$package.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "MIT"
+
+# The resolver's declared default build hook is build-$package.sh beside this
+# manifest. That hook copies the fixture's distinct fetched bytes into its
+# caller-owned output root, so a successful resolve cannot be a no-op.
+[[outputs]]
+name = "$output"
+wasm = "$artifact"
+EOF
+    cat >"$package_root/build-$package.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p "\$WASM_POSIX_DEP_OUT_DIR"
+cp "\$(cd "\$(dirname "\$0")" && pwd)/fetched.wasm" \
+    "\$WASM_POSIX_DEP_OUT_DIR/$artifact"
+EOF
+    chmod +x "$package_root/build-$package.sh"
+}
+
+write_program_wat() {
+    local marker="$1"
+    local output="$2"
+    cat >"$work/program-$marker.wat" <<EOF
+(module
+  (func \$entry (result i32) i32.const 0)
+  (export "__abi_version" (func \$entry))
+  (export "_start" (func \$entry))
+  (global (export "$marker") i32 (i32.const 1)))
+EOF
+    wat2wasm "$work/program-$marker.wat" -o "$output"
+}
+
+write_kernel_wat() {
+    local marker="$1"
+    local output="$2"
+    {
+        printf '%s\n' '(module' \
+            '  (func $entry (result i32) i32.const 0)'
+        for export_name in \
+            __abi_version \
+            kernel_alloc_scratch \
+            kernel_create_process \
+            kernel_create_process_with_stdio \
+            kernel_dequeue_signal \
+            kernel_exec_prepare \
+            kernel_exec_setup_for_thread \
+            kernel_fork_process \
+            kernel_get_parent_pid \
+            kernel_get_process_exit_signal \
+            kernel_get_process_state \
+            kernel_handle_channel \
+            kernel_has_sa_nocldstop \
+            kernel_host_adapter_manifest_len \
+            kernel_host_adapter_manifest_ptr \
+            kernel_ipc_shmat_for_process \
+            kernel_ipc_shmat_for_task \
+            kernel_ipc_shmdt_for_process \
+            kernel_ipc_shmdt_for_task \
+            kernel_mark_process_signaled \
+            kernel_pipe_has_readers \
+            kernel_posix_timer_fire \
+            kernel_prepare_write_operation \
+            kernel_reap_exited_child \
+            kernel_remove_process \
+            kernel_set_current_tid \
+            kernel_spawn_process \
+            kernel_thread_exit \
+            kernel_validate_task \
+            kernel_wait_child_poll; do
+            printf '  (export "%s" (func $entry))\n' "$export_name"
+        done
+        printf '  (global (export "%s") i32 (i32.const 1)))\n' "$marker"
+    } >"$work/kernel-$marker.wat"
+    wat2wasm "$work/kernel-$marker.wat" -o "$output"
+}
+
+write_scalar_package scalar-proof scalar-proof scalar-proof.wasm
+write_scalar_package kernel kernel kandelo-kernel.wasm
+write_scalar_package userspace userspace wasm_posix_userspace.wasm
+
+write_program_wat local_scalar "$composed_sources/scalar-proof.wasm"
+write_program_wat fetched_scalar \
+    "$composed_registry/scalar-proof/fetched.wasm"
+write_kernel_wat local_kernel "$composed_sources/kandelo-kernel.wasm"
+write_kernel_wat fetched_kernel "$composed_registry/kernel/fetched.wasm"
+write_program_wat local_userspace \
+    "$composed_sources/wasm_posix_userspace.wasm"
+write_program_wat fetched_userspace \
+    "$composed_registry/userspace/fetched.wasm"
+
+real_xtask="$REPO_ROOT/target/$HOST_TARGET/debug/xtask"
+[ -x "$real_xtask" ] ||
+    fail "real xtask was not built at $real_xtask"
+
+run_composed_xtask() {
+    (
+        cd "$REPO_ROOT"
+        WASM_POSIX_DEPS_REGISTRY="$composed_registry" \
+        WASM_POSIX_BINARY_CACHE_ROOT="$work/composed-cache" \
+            "$real_xtask" "$@"
+    )
+}
+
+install_composed_scalar() {
+    local package="$1"
+    local artifact="$2"
+    local source="$3"
+    WASM_POSIX_LOCAL_INSTALL_SOURCE="$source" \
+    WASM_POSIX_LOCAL_INSTALL_SESSION="composed-$package" \
+        run_composed_xtask \
+            build-deps --arch wasm32 --binaries-dir "$composed_mirror" \
+            install-local-artifact "$package" "$artifact"
+}
+
+install_composed_scalar \
+    scalar-proof scalar-proof.wasm "$composed_sources/scalar-proof.wasm"
+install_composed_scalar \
+    kernel kandelo-kernel.wasm "$composed_sources/kandelo-kernel.wasm"
+install_composed_scalar \
+    userspace wasm_posix_userspace.wasm \
+    "$composed_sources/wasm_posix_userspace.wasm"
+
+mkdir -p \
+    "$composed_repo/scripts" \
+    "$composed_repo/host/wasm" \
+    "$composed_repo/examples" \
+    "$composed_repo/benchmarks/wasm" \
+    "$composed_repo/target/$HOST_TARGET/release"
+cp "$REPO_ROOT/scripts/pack-ci-test-workspace.sh" "$composed_repo/scripts/"
+: >"$composed_repo/host/wasm/rootfs.vfs"
+for required in \
+    gencat.wasm \
+    pthread_channel_reuse_test.wasm \
+    wait_lifecycle_test.wasm \
+    wait_lifecycle_test.wasm64.wasm \
+    terminal_attributes_api_test.wasm64.wasm; do
+    : >"$composed_repo/examples/$required"
+done
+for required in \
+    pipe-throughput.wasm \
+    file-throughput.wasm \
+    syscall-latency.wasm \
+    fork-bench.wasm \
+    clone-bench.wasm \
+    spawn-bench.wasm \
+    hello.wasm; do
+    : >"$composed_repo/benchmarks/wasm/$required"
+done
+cp "$real_xtask" "$composed_repo/target/$HOST_TARGET/release/xtask"
+
+composed_archive="$work/composed-workspace.tar.zst"
+(
+    cd "$composed_repo"
+    WASM_POSIX_DEPS_REGISTRY="$composed_registry" \
+        bash scripts/pack-ci-test-workspace.sh "$composed_archive"
+)
+relocated="$work/composed-relocated"
+mkdir -p "$relocated"
+tar --zstd -xf "$composed_archive" -C "$relocated"
+
+resolve_relocated_scalar() {
+    local package="$1"
+    local mirror_root="$2"
+    run_composed_xtask \
+        build-deps --arch wasm32 --binaries-dir "$mirror_root" \
+        resolve "$package"
+}
+
+scalar_mirror="$relocated/local-binaries/programs/wasm32/scalar-proof.wasm"
+kernel_mirror="$relocated/local-binaries/kernel.wasm"
+userspace_mirror="$relocated/local-binaries/userspace.wasm"
+for relocated_mirror in \
+    "$scalar_mirror" \
+    "$kernel_mirror" \
+    "$userspace_mirror"; do
+    [ -L "$relocated_mirror" ] ||
+        fail "packer flattened a composed local generation: $relocated_mirror"
+    case "$(readlink "$relocated_mirror")" in
+        /*) fail "packer retained an absolute composed mirror: $relocated_mirror" ;;
+    esac
+done
+
+scalar_target_before="$(readlink "$scalar_mirror")"
+kernel_target_before="$(readlink "$kernel_mirror")"
+userspace_target_before="$(readlink "$userspace_mirror")"
+scalar_canonical="$(
+    resolve_relocated_scalar scalar-proof "$relocated/local-binaries"
+)"
+kernel_canonical="$(
+    resolve_relocated_scalar kernel "$relocated/local-binaries"
+)"
+userspace_canonical="$(
+    resolve_relocated_scalar userspace "$relocated/local-binaries"
+)"
+cmp "$composed_registry/scalar-proof/fetched.wasm" \
+    "$scalar_canonical/scalar-proof.wasm" >/dev/null ||
+    fail "ordinary dependency resolve did not produce distinct canonical bytes"
+cmp "$composed_registry/kernel/fetched.wasm" \
+    "$kernel_canonical/kandelo-kernel.wasm" >/dev/null ||
+    fail "kernel dependency resolve did not produce distinct canonical bytes"
+cmp "$composed_registry/userspace/fetched.wasm" \
+    "$userspace_canonical/wasm_posix_userspace.wasm" >/dev/null ||
+    fail "userspace dependency resolve did not produce distinct canonical bytes"
+[ "$(readlink "$scalar_mirror")" = "$scalar_target_before" ] ||
+    fail "dependency resolution retargeted the relocated ordinary scalar"
+[ "$(readlink "$kernel_mirror")" = "$kernel_target_before" ] ||
+    fail "dependency resolution retargeted the relocated kernel"
+[ "$(readlink "$userspace_mirror")" = "$userspace_target_before" ] ||
+    fail "dependency resolution retargeted the relocated userspace adapter"
+cmp "$composed_sources/scalar-proof.wasm" "$scalar_mirror" >/dev/null ||
+    fail "relocated ordinary scalar lost its exact local bytes"
+cmp "$composed_sources/kandelo-kernel.wasm" "$kernel_mirror" >/dev/null ||
+    fail "relocated kernel lost its exact local bytes"
+cmp "$composed_sources/wasm_posix_userspace.wasm" \
+    "$userspace_mirror" >/dev/null ||
+    fail "relocated userspace adapter lost its exact local bytes"
+
+# Changing a declared build input changes the contextual cache identity. The
+# relocated old generation must fail closed instead of yielding to newly built
+# release bytes.
+scalar_manifest="$composed_registry/scalar-proof/package.toml"
+sed 's/^version = "1.0"$/version = "1.1"/' \
+    "$scalar_manifest" >"$work/scalar-proof.changed.toml"
+mv "$work/scalar-proof.changed.toml" "$scalar_manifest"
+stale_err="$work/composed-stale.err"
+if resolve_relocated_scalar \
+    scalar-proof "$relocated/local-binaries" \
+    >"$work/composed-stale.out" 2>"$stale_err"; then
+    fail "relocated stale local generation was silently substituted"
+fi
+grep -F 'selects stale local generation cache identity' "$stale_err" >/dev/null ||
+    fail "relocated stale generation rejection was not explained"
+[ "$(readlink "$scalar_mirror")" = "$scalar_target_before" ] ||
+    fail "stale identity rejection retargeted the local scalar"
+cmp "$composed_sources/scalar-proof.wasm" "$scalar_mirror" >/dev/null ||
+    fail "stale identity rejection changed exact local scalar bytes"
+
+# A regular file carries bytes but no generation identity. Even when its bytes
+# match the candidate, dependency placement must not infer ownership from
+# content and replace it.
+regular_relocated="$work/composed-regular-relocated"
+mkdir -p "$regular_relocated"
+cp -a "$relocated/local-binaries" "$regular_relocated/local-binaries"
+regular_userspace="$regular_relocated/local-binaries/userspace.wasm"
+cp "$regular_userspace" "$regular_relocated/userspace.wasm"
+rm "$regular_userspace"
+mv "$regular_relocated/userspace.wasm" "$regular_userspace"
+regular_before="$(shasum -a 256 "$regular_userspace" | awk '{print $1}')"
+regular_err="$work/composed-regular.err"
+if resolve_relocated_scalar \
+    userspace "$regular_relocated/local-binaries" \
+    >"$work/composed-regular.out" 2>"$regular_err"; then
+    fail "identityless relocated regular scalar was silently replaced"
+fi
+grep -F 'refusing to replace regular file at scalar mirror' \
+    "$regular_err" >/dev/null ||
+    fail "identityless relocated scalar rejection was not explained"
+[ ! -L "$regular_userspace" ] ||
+    fail "identityless relocated scalar became a resolver symlink"
+[ "$regular_before" = \
+    "$(shasum -a 256 "$regular_userspace" | awk '{print $1}')" ] ||
+    fail "identityless relocated scalar changed during rejection"
+
 echo "test-install-local-generation.sh: ok"

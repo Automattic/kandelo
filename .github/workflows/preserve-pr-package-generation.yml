@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       source-tag:
-        description: 'Exact temporary source release, for example pr-1097-staging'
+        description: 'Exact temporary source release to preserve as non-admitted audit evidence'
         required: true
         type: string
       source-run-id:

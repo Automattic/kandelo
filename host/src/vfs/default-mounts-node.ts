@@ -10,34 +10,42 @@ import type { MountConfig } from "./types";
 import { MemoryFileSystem } from "./memory-fs";
 import { HostFileSystem } from "./host-fs";
 import {
-  IMAGE_MEMFS_MAX_BYTES,
-  normalizeLegacyRootfs,
+  restoreVerifiedImageMounts,
   validateSpec,
   type MountSpec,
 } from "./default-mounts";
 
 /**
- * Materialise `spec` for the Node host. Image mounts get a fresh
- * `MemoryFileSystem.fromImage(rootfsImage)`; scratch mounts get a
- * `HostFileSystem` rooted at `<sessionDir><spec.path>` (the directory
- * is created with `mkdirSync({recursive:true})` so `safePath` is
- * happy on first access).
+ * Materialise `spec` for the Node host. Image mounts get a fresh,
+ * cryptographically verified `MemoryFileSystem`; scratch mounts get a
+ * `HostFileSystem` rooted at `<sessionDir><spec.path>` (the directory is
+ * created with `mkdirSync({recursive:true})` so `safePath` is happy on first
+ * access).
  *
- * Pure function: input → output, no global state.
+ * Asynchronous input → output function with no global state.
  */
 export function resolveForNode(
   spec: MountSpec[],
   rootfsImage: Uint8Array,
   sessionDir: string,
-): MountConfig[] {
+): Promise<MountConfig[]> {
   validateSpec(spec);
+  return resolveValidatedForNode(spec, rootfsImage, sessionDir);
+}
+
+async function resolveValidatedForNode(
+  spec: MountSpec[],
+  rootfsImage: Uint8Array,
+  sessionDir: string,
+): Promise<MountConfig[]> {
+  const imageMounts = await restoreVerifiedImageMounts(spec, rootfsImage);
   const out: MountConfig[] = [];
   for (const m of spec) {
     if (m.source === "image") {
-      const backend = MemoryFileSystem.fromImage(rootfsImage, {
-        maxByteLength: IMAGE_MEMFS_MAX_BYTES,
-      });
-      normalizeLegacyRootfs(backend);
+      const backend = imageMounts.get(m);
+      if (backend === undefined) {
+        throw new Error(`verified image mount is missing: ${m.path}`);
+      }
       out.push({
         mountPoint: m.path,
         backend,

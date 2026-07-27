@@ -21,6 +21,77 @@ OUT_DIR_64="$REPO_ROOT/local-binaries/programs/wasm64"
 TEST_FIXTURE_DIR="$REPO_ROOT/local-binaries/test-fixtures"
 mkdir -p "$OUT_DIR_32" "$OUT_DIR_64" "$TEST_FIXTURE_DIR"
 
+# Package-owned resolver paths must never be populated by this developer/test
+# compiler. A regular file at one of those paths has no immutable package
+# generation identity, and later package materialization must correctly refuse
+# to replace it. Derive the complete ownership set from the generated package
+# projection so new package-owned programs cannot recreate that collision.
+PROGRAM_PACKAGE_INDEX="$REPO_ROOT/packages/registry/program-packages.json"
+[ -f "$PROGRAM_PACKAGE_INDEX" ] && [ ! -L "$PROGRAM_PACKAGE_INDEX" ] || {
+    echo "Error: program package ownership index is unavailable: $PROGRAM_PACKAGE_INDEX" >&2
+    exit 1
+}
+PACKAGE_OWNED_PROGRAM_MIRRORS="$(
+    node - "$PROGRAM_PACKAGE_INDEX" <<'NODE'
+const fs = require("node:fs");
+const indexPath = process.argv[2];
+const document = JSON.parse(fs.readFileSync(indexPath, "utf8"));
+if (
+  document.format !== "kandelo-program-packages-v2" ||
+  document.packages === null ||
+  typeof document.packages !== "object" ||
+  Array.isArray(document.packages)
+) {
+  throw new Error(`Invalid program package ownership index: ${indexPath}`);
+}
+const claims = new Map();
+for (const [packageName, entry] of Object.entries(document.packages)) {
+  if (
+    entry === null ||
+    typeof entry !== "object" ||
+    !Array.isArray(entry.arches) ||
+    !Array.isArray(entry.members)
+  ) {
+    throw new Error(`Invalid program package projection for ${packageName}`);
+  }
+  for (const arch of entry.arches) {
+    if (arch !== "wasm32" && arch !== "wasm64") {
+      throw new Error(`Invalid program package architecture for ${packageName}`);
+    }
+    for (const member of entry.members) {
+      if (
+        member === null ||
+        typeof member !== "object" ||
+        typeof member.mirrorPath !== "string" ||
+        member.mirrorPath.length === 0
+      ) {
+        throw new Error(`Invalid program package member for ${packageName}`);
+      }
+      const claim = `${arch}/${member.mirrorPath}`;
+      const previous = claims.get(claim);
+      if (previous !== undefined && previous !== packageName) {
+        throw new Error(
+          `Program mirror ${claim} is claimed by ${previous} and ${packageName}`,
+        );
+      }
+      claims.set(claim, packageName);
+    }
+  }
+}
+process.stdout.write([...claims.keys()].sort().join("\n"));
+NODE
+)" || {
+    echo "Error: could not derive package-owned program mirrors" >&2
+    exit 1
+}
+
+package_owns_direct_program_path() {
+    local arch="$1"
+    local mirror="$2"
+    [ -n "$PACKAGE_OWNED_PROGRAM_MIRRORS" ] &&
+        grep -Fxq -- "$arch/$mirror" <<<"$PACKAGE_OWNED_PROGRAM_MIRRORS"
+}
+
 find_llvm_bin() {
     if [ -n "${LLVM_BIN:-}" ] && [ -x "$LLVM_BIN/clang" ]; then
         echo "$LLVM_BIN"
@@ -100,9 +171,30 @@ build_program() {
     local out_dir="$2"
     shift 2
     local extra_libs=("$@")
-    local name
+    local name arch=""
     name=$(basename "$src" .c)
     local wasm="$out_dir/${name}.wasm"
+
+    case "$out_dir" in
+        "$OUT_DIR_32") arch=wasm32 ;;
+        "$OUT_DIR_64") arch=wasm64 ;;
+    esac
+    if [ -n "$arch" ] &&
+       package_owns_direct_program_path "$arch" "${name}.wasm"; then
+        # WHY: this path is a package mirror, not a compiler output directory.
+        # Its owning recipe will publish a generation-backed symlink through
+        # build-deps when a consumer actually selects the package.
+        if [ -L "$wasm" ]; then
+            echo "  Keeping $name: package resolver already owns $arch/${name}.wasm"
+            return 0
+        fi
+        if [ -e "$wasm" ]; then
+            echo "Error: package-owned resolver mirror is already occupied: $wasm" >&2
+            return 1
+        fi
+        echo "  Skipping $name: package resolver owns $arch/${name}.wasm"
+        return 0
+    fi
 
     # Auto-append GL stubs when the source pulls in EGL/GLES headers.
     # Static linking won't pick symbols out of libEGL.a / libGLESv2.a

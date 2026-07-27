@@ -76,24 +76,39 @@ expect_mutation_rejected \
   's/cancel-in-progress: true/cancel-in-progress: false/'
 
 expect_mutation_rejected \
-  "missing docs-only trigger" \
-  "does not watch docs-site/**" \
-  's/^      - "docs-site\/\*\*"\n//m'
+  "self-hosted Pages runner" \
+  "must use the reviewed GitHub-hosted Ubuntu runner" \
+  's/runs-on: ubuntu-latest/runs-on: self-hosted/'
 
 expect_mutation_rejected \
-  "missing browser package scanner trigger" \
-  "does not watch scripts/browser-binary-package-roots.mjs" \
-  's/^      - "scripts\/browser-binary-package-roots\.mjs"\n//m'
+  "decoy hosted runner with self-hosted deploy job" \
+  "must use the reviewed GitHub-hosted Ubuntu runner" \
+  's/jobs:\n  deploy:\n    runs-on: ubuntu-latest/jobs:\n  decoy:\n    runs-on: ubuntu-latest\n  deploy:\n    runs-on: self-hosted/'
 
 expect_mutation_rejected \
-  "missing package-registry trigger" \
-  "does not watch packages/registry/**" \
-  's/^      - "packages\/registry\/\*\*"\n//m'
+  "failure-tolerant browser preparation" \
+  "must remain failure-intolerant" \
+  's/(      - name: Prepare browser demo assets\n)/$1        continue-on-error: true\n/'
 
 expect_mutation_rejected \
-  "missing source-shell config trigger" \
-  "does not watch homebrew/source-rootfs-shell-default.json" \
-  's/^      - "homebrew\/source-rootfs-shell-default\.json"\n//m'
+  "failure override after browser preparation" \
+  "pre-deployment Pages work must remain success-gated" \
+  's/(      - name: Build browser demos for GitHub Pages\n)/$1        if: always()\n/'
+
+expect_mutation_rejected \
+  "partial main-push path allowlist" \
+  "must not filter main pushes by path" \
+  's/(    branches: \[main\]\n)/$1    paths:\n      - "packages\/registry\/**"\n/'
+
+expect_mutation_rejected \
+  "main-push path exclusion" \
+  "must not filter main pushes by path" \
+  's/(    branches: \[main\]\n)/$1    paths-ignore:\n      - "scripts\/**"\n/'
+
+expect_mutation_rejected \
+  "non-main Pages push branch" \
+  "must run for every main push" \
+  's/branches: \[main\]/branches: [release]/'
 
 expect_mutation_rejected \
   "bypassed package projection check" \
@@ -114,6 +129,41 @@ expect_mutation_rejected \
   "cache root lost inside dev-shell" \
   "browser preparation must retain the exact-main cache root inside dev-shell" \
   's/^            "WASM_POSIX_BINARY_CACHE_ROOT=\$WASM_POSIX_BINARY_CACHE_ROOT" \\\n//m'
+
+expect_mutation_rejected \
+  "canonical shell preparation fallback" \
+  "must select the source-rootfs recipe with exact event provenance" \
+  's/prepare-browser --source-rootfs-shell --allow-stale/prepare-browser --allow-stale/'
+
+expect_mutation_rejected \
+  "missing source-shell isolation attestation" \
+  "must select the source-rootfs recipe with exact event provenance" \
+  's/^            "WASM_POSIX_SOURCE_ROOTFS_SHELL_ISOLATION=pages-exact-main-v1" \\\n//m'
+
+expect_mutation_rejected \
+  "missing hosted-runner attestation" \
+  "must select the source-rootfs recipe with exact event provenance" \
+  's/^            "WASM_POSIX_SOURCE_ROOTFS_SHELL_RUNNER_ENVIRONMENT=\$\{\{ runner\.environment \}\}" \\\n//m'
+
+expect_mutation_rejected \
+  "swallowed source-shell preparation failure" \
+  "must select the source-rootfs recipe with exact event provenance" \
+  's#(\./run\.sh prepare-browser --source-rootfs-shell --allow-stale)#$1 || true#'
+
+expect_mutation_rejected \
+  "work after source-shell preparation command" \
+  "must be the final failure-propagating command" \
+  's#(\./run\.sh prepare-browser --source-rootfs-shell --allow-stale\n)#$1          echo continued\n#'
+
+expect_mutation_rejected \
+  "source-shell repository not bound to event repository" \
+  "must select the source-rootfs recipe with exact event provenance" \
+  's#https://github\.com/\$GITHUB_REPOSITORY#https://github.com/stale/repository#'
+
+expect_mutation_rejected \
+  "source-shell commit not bound to event SHA" \
+  "must select the source-rootfs recipe with exact event provenance" \
+  's/WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT=\$GITHUB_SHA/WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT=0000000000000000000000000000000000000000/'
 
 expect_mutation_rejected \
   "sealed preview without Pages base" \

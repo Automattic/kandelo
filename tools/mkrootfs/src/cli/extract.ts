@@ -243,6 +243,8 @@ export async function runExtract(args: string[]): Promise<number> {
   let mfs: MemoryFileSystem;
   try {
     mfs = MemoryFileSystem.fromImage(bytes);
+    // WHY: authenticate before creating an output directory or copying entries.
+    await mfs.verifyImportedLazyAtomicGroupSeals();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     process.stderr.write(

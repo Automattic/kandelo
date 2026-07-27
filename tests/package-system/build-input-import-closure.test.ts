@@ -51,16 +51,16 @@ describe("package build input import closure", () => {
       "host/src/homebrew-runtime-layer-policy.ts",
       "host/src/homebrew-lazy-layer-descriptor.ts",
     ]) {
-      // The temporary source-rootfs bridge does not execute the dormant
-      // bottle composer. Exact-main bottle activation will add these cache
-      // inputs back when the shell package actually consumes them again.
-      expect(packagesAffectedBy(changedPath)).not.toContain("shell");
+      // The canonical shell is bottle-backed and must invalidate when its
+      // runtime-layer inputs change. The temporary source-rootfs bridge is a
+      // separate non-published package inspected by its focused contract.
+      expect(packagesAffectedBy(changedPath)).toContain("shell");
     }
     expect(
       packagesAffectedBy(
         "images/vfs/scripts/build-source-rootfs-shell-image.ts",
       ),
-    ).toContain("shell");
+    ).not.toContain("shell");
     expect(packagesAffectedBy("host/src/vfs/tar.ts")).toContain("shell");
   });
 

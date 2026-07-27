@@ -26,6 +26,7 @@ import {
 } from "../host/src/homebrew-bottle-mirror-plan";
 import { fetchHomebrewBottleBytes } from "../host/src/homebrew-vfs-fetch";
 import { MemoryFileSystem } from "../host/src/vfs/memory-fs";
+import { restoreVerifiedVfsImage } from "../host/src/vfs/load-image";
 
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
@@ -50,7 +51,9 @@ export async function recoverHomebrewBottleMirror(options: {
     throw new Error("bottle mirror recovery report must be outside the output directory");
   }
 
-  const fs = MemoryFileSystem.fromImage(new Uint8Array(readFileSync(imagePath)));
+  const fs = await restoreVerifiedVfsImage(
+    new Uint8Array(readFileSync(imagePath)),
+  );
   const embeddedPlanBytes = readVfsFile(fs, HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH);
   const guestManifest = parseGuestManifest(
     readVfsFile(fs, "/etc/kandelo/homebrew-vfs.json"),
