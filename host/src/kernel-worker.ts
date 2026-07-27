@@ -30061,9 +30061,12 @@ export class CentralizedKernelWorker {
         `Node TCP pump pid=${pid}`,
         (entry) => {
           let wroteAny = false;
+          let closedRecvPipeWrite = false;
+          let closedSendPipeRead = false;
           const outbound: Uint8Array[] = [];
           if (
-            !abortRequested
+            !recvPipeWriteClosed
+            && !abortRequested
             && this.#tcpPipeReadOpenWithinKernelEntry(recvPipeIdx, entry)
           ) {
             while (inboundQueue.length > 0) {
@@ -30089,20 +30092,28 @@ export class CentralizedKernelWorker {
             if (!recvPipeWriteClosed) {
               this.#closeTcpPipeWriteWithinKernelEntry(recvPipeIdx, entry);
               recvPipeWriteClosed = true;
+              closedRecvPipeWrite = true;
             }
           }
 
-          if (!abortRequested) {
+          if (!abortRequested && !sendPipeReadClosed) {
             for (;;) {
               const bytes = this.readPipeChunk(0, sendPipeIdx, entry);
               if (!bytes) break;
               outbound.push(bytes);
             }
           }
+          // WHY: closing the host endpoint can synchronously reclaim the
+          // global pipe slot once the guest endpoint is already closed. The
+          // local ownership bits are authoritative after that transition;
+          // querying or notifying the raw index again could target a later
+          // reused pipe.
           const writeOpen =
-            this.#tcpPipeWriteOpenWithinKernelEntry(sendPipeIdx, entry);
+            !sendPipeReadClosed
+            && this.#tcpPipeWriteOpenWithinKernelEntry(sendPipeIdx, entry);
           const hasReaders =
-            this.#tcpPipeHasReadersWithinKernelEntry(recvPipeIdx, entry);
+            !recvPipeWriteClosed
+            && this.#tcpPipeHasReadersWithinKernelEntry(recvPipeIdx, entry);
           const shouldEndGuestWrite =
             !writeOpen
             && outbound.length === 0
@@ -30116,18 +30127,20 @@ export class CentralizedKernelWorker {
             if (!recvPipeWriteClosed) {
               this.#closeTcpPipeWriteWithinKernelEntry(recvPipeIdx, entry);
               recvPipeWriteClosed = true;
+              closedRecvPipeWrite = true;
             }
             if (!sendPipeReadClosed) {
               this.#closeTcpPipeReadWithinKernelEntry(sendPipeIdx, entry);
               sendPipeReadClosed = true;
+              closedSendPipeRead = true;
             }
           }
 
           entry.deferProtocolEffect(() => {
-            if (wroteAny || recvPipeWriteClosed) {
+            if (wroteAny || closedRecvPipeWrite) {
               this.notifyPipeReadable(recvPipeIdx);
             }
-            if (outbound.length > 0 || sendPipeReadClosed) {
+            if (outbound.length > 0 || closedSendPipeRead) {
               this.notifyPipeWritable(sendPipeIdx);
             }
             for (const bytes of outbound) {
