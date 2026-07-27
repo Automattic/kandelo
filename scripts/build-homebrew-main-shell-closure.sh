@@ -11,6 +11,8 @@ BOTTLE_CACHE=""
 PACKAGE_TREE_SPEC=""
 PACKAGE_TREE_ARCHIVE=""
 HOMEBREW_BOOTSTRAP_ENV=""
+HOMEBREW_BOOTSTRAP_SOURCE_LOCK="$REPO_ROOT/homebrew/homebrew-bootstrap-source-lock.json"
+HOMEBREW_BOOTSTRAP_SOURCE_LOCK_CHECKER="$REPO_ROOT/scripts/verify-homebrew-bootstrap-source-lock.mjs"
 BREWFILE="$REPO_ROOT/homebrew/main-shell.Brewfile"
 SHELL_CONFIG="$REPO_ROOT/homebrew/main-shell-default.json"
 DEMO_CONFIG="$REPO_ROOT/homebrew/main-shell-demo.json"
@@ -176,6 +178,14 @@ if [ -n "$HOMEBREW_BOOTSTRAP_ENV" ] &&
   echo "build-homebrew-main-shell-closure: Homebrew bootstrap environment must be a regular non-symlink file" >&2
   exit 2
 fi
+if [ -n "$PACKAGE_TREE_ARCHIVE" ] &&
+   { [ ! -f "$HOMEBREW_BOOTSTRAP_SOURCE_LOCK" ] ||
+     [ -L "$HOMEBREW_BOOTSTRAP_SOURCE_LOCK" ] ||
+     [ ! -f "$HOMEBREW_BOOTSTRAP_SOURCE_LOCK_CHECKER" ] ||
+     [ -L "$HOMEBREW_BOOTSTRAP_SOURCE_LOCK_CHECKER" ]; }; then
+  echo "build-homebrew-main-shell-closure: Homebrew bootstrap source-lock contract is unavailable" >&2
+  exit 2
+fi
 if ! [[ "$MAX_BYTES" =~ ^[1-9][0-9]*$ ]] || [ $((MAX_BYTES % 4096)) -ne 0 ]; then
   echo "build-homebrew-main-shell-closure: --max-bytes must be a positive multiple of 4096" >&2
   exit 2
@@ -249,6 +259,15 @@ for tool in git jq node ruby sha256sum wc; do
     exit 2
   }
 done
+
+if [ -n "$PACKAGE_TREE_ARCHIVE" ]; then
+  # WHY: a cache key or package name does not authenticate bytes supplied by a
+  # manual reseal caller. Bind the deferred tree to the same exact ZIP that the
+  # homebrew-bootstrap package recipe and resolver are allowed to publish.
+  node "$HOMEBREW_BOOTSTRAP_SOURCE_LOCK_CHECKER" \
+    --lock "$HOMEBREW_BOOTSTRAP_SOURCE_LOCK" \
+    --archive "$PACKAGE_TREE_ARCHIVE"
+fi
 
 if [ "$LAZY_SHELL" = true ] && [ "$MATERIALIZE_PACKAGE_TREE" = false ]; then
   if [ ! -f "$LAZY_ARTIFACT_CHECKER" ] || [ -L "$LAZY_ARTIFACT_CHECKER" ]; then

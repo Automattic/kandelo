@@ -4,6 +4,7 @@
   "source_date_epoch": 0,
   "state": "sealed",
   "inputs": {
+    "bootstrap_source_lock_sha256": "91052d9d0b1ab6bc2ea034ad9159da6ea9217fd7b9201710aa25ff7502b33fb7",
     "bootstrap_tree_spec_sha256": "b1f4b479a8364282700bdada99257160f66a3b314cc6a237d1d52c868a4a9b62",
     "brewfile_sha256": "4dc6e46b3f2061b357a84a2b5edc3b5108c1bfbca0d6accd02e172b358efd7da",
     "demo_config_sha256": "1ef5f56b4a4425fc19d38da260a5742aa6be53655b8c16489d9427bf96b2d1e2",
@@ -12,7 +13,7 @@
     "runtime_support_sha256": "72c6749010d9088ea8a2da8766fccfa4f8aa05c6a523fce194745396e4f934fa"
   },
   "image": {
-    "sha256": "6e5ed79fa9f86595c04e532099ec72799eb42cec504379fa427c531b0a373706",
-    "bytes": 5688020
+    "sha256": "a364990cd90b828c7e8d9f903e1d50f17ef4b9043837495ce41ddaee5dca7cb5",
+    "bytes": 5688131
   }
 }
