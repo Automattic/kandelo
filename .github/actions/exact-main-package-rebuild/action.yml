@@ -67,8 +67,17 @@ runs:
           echo "::error::package revision must be a positive integer"
           exit 1
         }
-        export ABI PACKAGE ARCH CACHE_KEY_SHA VERSION REVISION
-        bash scripts/dev-shell.sh bash -c '
+        # WHY: dev-shell.sh intentionally discards ambient workflow state.
+        # Thread only this already-validated recipe identity through the
+        # command boundary instead of weakening the repository-wide allowlist.
+        bash scripts/dev-shell.sh env \
+          ABI="$ABI" \
+          PACKAGE="$PACKAGE" \
+          ARCH="$ARCH" \
+          CACHE_KEY_SHA="$CACHE_KEY_SHA" \
+          VERSION="$VERSION" \
+          REVISION="$REVISION" \
+          bash -c '
           set -euo pipefail
           HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
           cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
