@@ -74,21 +74,45 @@ class ProtocolTests(unittest.TestCase):
     @unittest.skipUnless(
         sys.platform.startswith("linux"), "Linux sockaddr_un limit regression"
     )
-    def test_linux_binds_a_filesystem_socket_at_the_production_length(self) -> None:
+    def test_linux_enforces_the_filesystem_socket_pathname_limit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            padding = 104 - len(os.fsencode(root)) - len(os.fsencode("/s"))
-            self.assertGreater(padding, 0)
-            protected = root / ("a" * padding)
-            protected.mkdir()
-            socket_path = protected / "s"
-            self.assertEqual(len(os.fsencode(socket_path)), 104)
-            listener = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+            previous_directory = os.open(".", os.O_RDONLY)
             try:
-                listener.bind(str(socket_path))
+                os.chdir(temporary)
+
+                def relative_socket_path(length: int, marker: str) -> Path:
+                    # WHY: A relative bind makes the sockaddr bytes independent
+                    # of checkout, Nix-store, and runner temp-directory lengths.
+                    directory_bytes = length - len(os.fsencode("/s"))
+                    self.assertGreater(directory_bytes, 0)
+                    path = Path(marker * directory_bytes) / "s"
+                    path.parent.mkdir()
+                    self.assertEqual(len(os.fsencode(path)), length)
+                    return path
+
+                maximum = relative_socket_path(
+                    runner.UNIX_SOCKET_PATHNAME_BYTES, "a"
+                )
+                listener = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+                try:
+                    listener.bind(str(maximum))
+                finally:
+                    listener.close()
+                    maximum.unlink(missing_ok=True)
+
+                too_long = relative_socket_path(
+                    runner.UNIX_SOCKET_PATHNAME_BYTES + 1, "b"
+                )
+                listener = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+                try:
+                    with self.assertRaises(OSError):
+                        listener.bind(str(too_long))
+                finally:
+                    listener.close()
+                    too_long.unlink(missing_ok=True)
             finally:
-                listener.close()
-                socket_path.unlink(missing_ok=True)
+                os.fchdir(previous_directory)
+                os.close(previous_directory)
 
     def test_relative_paths_reject_controls_unicode_and_traversal(self) -> None:
         self.assertEqual(
