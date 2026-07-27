@@ -8,9 +8,14 @@ import {
   CH_STATUS,
   CH_SYSCALL,
   CHANNEL_STATUS_COMPLETE,
+  CHANNEL_STATUS_PENDING,
 } from "../src/generated/abi";
-import { WasmPosixKernel } from "../src/kernel";
-import { CentralizedKernelWorker } from "../src/kernel-worker";
+import {
+  createWasmPosixKernelTestHarness,
+} from "../src/kernel";
+import {
+  createCentralizedKernelWorkerTestDouble,
+} from "../src/kernel-worker";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 const MAP_SHARED = 1;
@@ -106,38 +111,36 @@ function createFileHarness() {
     fileHandleIdentity: vi.fn((_handle: number, dev: bigint, ino: bigint) =>
       ino === 0n ? null : `test:${dev}:${ino}`),
   };
-  const kernel = new WasmPosixKernel(
-    { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
-    io as any,
-  );
+  const kernel = createWasmPosixKernelTestHarness({
+    config: {
+      maxWorkers: 4,
+      dataBufferSize: 65536,
+      useSharedMemory: true,
+    },
+    io: io as any,
+    initialized: false,
+  });
   const retainHostFileHandle = vi.spyOn(kernel, "retainHostFileHandle");
   const releaseHostFileHandle = vi.spyOn(kernel, "releaseHostFileHandle");
   const fdIdentity = new Map<number, string>([
     [4, "/dev/shm/php-cache"],
     [9, "/dev/shm/php-cache"],
   ]);
+  const onFork = vi.fn();
   const processes = new Map(pids.map((pid) => [pid, {
     pid,
     memory: memories.get(pid)!,
     channels: [channels.get(pid)!],
   }]));
-  const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-    io,
-    kernel,
-    processes,
-    channelTids: new Map(),
-    sharedMappings: new Map(),
-    anonymousSharedBackings: new Map(),
-    sharedMmapBackings: new Map(),
-    sharedMmapFdCache: new Map(),
-    shmMappings: new Map(),
-    shmSegmentVersions: new Map(),
-    fdSupportsMmapWriteback: vi.fn(() => true),
-    getFdAccessModeForSharedMapping: vi.fn(() => ({ kind: "ok", value: 2 })),
-    getFdStatForSharedMapping: vi.fn((_channel: unknown, fd: number) => {
+  const fdSupportsMmapWriteback = vi.fn(() => true);
+  const getFdAccessModeForSharedMapping = vi.fn(
+    () => ({ kind: "ok" as const, value: 2 }),
+  );
+  const getFdStatForSharedMapping = vi.fn(
+    (_channel: unknown, fd: number) => {
       return fdHostHandles.has(fd)
         ? {
-            kind: "ok",
+            kind: "ok" as const,
             value: {
               dev: 7n,
               ino: 99n,
@@ -146,13 +149,43 @@ function createFileHarness() {
               hostHandle: fdHostHandles.get(fd)!,
             },
           }
-        : { kind: "error", errno: 9 };
-    }),
-    getFdPathForSharedMapping: vi.fn((_channel: unknown, fd: number) =>
+        : { kind: "error" as const, errno: 9 };
+    },
+  );
+  const getFdPathForSharedMapping = vi.fn(
+    (_channel: unknown, fd: number) =>
       fdIdentity.has(fd)
-        ? { kind: "ok", value: fdIdentity.get(fd)! }
-        : { kind: "error", errno: 9 }),
-  }) as CentralizedKernelWorker;
+        ? { kind: "ok" as const, value: fdIdentity.get(fd)! }
+        : { kind: "error" as const, errno: 9 },
+  );
+  const kw = Object.assign(createCentralizedKernelWorkerTestDouble({
+    io: io as any,
+    callbacks: { onFork },
+  }), {
+    processes,
+    activeChannels: Array.from(channels.values()),
+    channelTids: new Map(),
+    sharedMappings: new Map(),
+    anonymousSharedBackings: new Map(),
+    sharedMmapBackings: new Map(),
+    sharedMmapFdCache: new Map(),
+    shmMappings: new Map(),
+    shmSegmentVersions: new Map(),
+  });
+  kw.testAuthority.replaceKernelForScratchBoundaryTest(kernel);
+  kw.testAuthority.configureScratchBoundaryHooksForTest({
+    fdSupportsMmapWriteback,
+    getFdAccessModeForSharedMapping,
+    getFdStatForSharedMapping,
+    getFdPathForSharedMapping,
+  });
+  installKernelWorkerTestScratch(
+    kw as unknown as Record<string, unknown>,
+    new WebAssembly.Memory({ initial: 2, maximum: 2 }),
+    128,
+    4,
+    { kernelExportNames: [] },
+  );
 
   const mapResult = (
     pid: number,
@@ -165,6 +198,7 @@ function createFileHarness() {
       channels.get(pid),
       addr,
       [0, len, prot, MAP_SHARED, fd, 0],
+      0n,
     ) as { kind: "mapped" | "unsupported" | "error"; errno?: number };
   const map = (
     pid: number,
@@ -179,6 +213,10 @@ function createFileHarness() {
     close,
     fdHostHandles,
     fdIdentity,
+    fdSupportsMmapWriteback,
+    getFdAccessModeForSharedMapping,
+    getFdPathForSharedMapping,
+    getFdStatForSharedMapping,
     io,
     kernel,
     kw,
@@ -186,6 +224,7 @@ function createFileHarness() {
     map,
     mapResult,
     memories,
+    onFork,
     open,
     pids,
     releaseHostFileHandle,
@@ -200,19 +239,15 @@ type FileHarness = ReturnType<typeof createFileHarness>;
 function configureKernelSyscallHarness(h: FileHarness, pid: number) {
   const kernelHandle = vi.fn();
   const completeChannel = vi.fn();
-  const kernelMemory = new WebAssembly.Memory({ initial: 2 });
   Object.assign(h.kw as any, {
     config: {},
     syscallRing: new Map(),
     syscallTraceEnabled: false,
-    kernelMemory,
-    kernelInstance: { exports: { kernel_handle_channel: kernelHandle } },
-    formatSyscallEntry: vi.fn(() => "memory syscall"),
-    synchronizeSharedMemoryForBoundary: vi.fn(),
-    flushSharedMappingsBeforeFileSyscall: vi.fn(() => true),
+  });
+  h.kw.testAuthority.configureScratchBoundaryHooksForTest({
+    synchronizeSharedMemoryForBoundary: () => {},
     completeChannel,
   });
-  installKernelWorkerTestScratch(h.kw as any, kernelMemory);
   return { completeChannel, kernelHandle };
 }
 
@@ -236,6 +271,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     const preparation = (h.kw as any).prepareSharedMmapFromFile(
       h.channels.get(pid),
       args,
+      0n,
     );
     expect(preparation.kind).toBe("prepared");
 
@@ -247,9 +283,9 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     expect(h.open).not.toHaveBeenCalled();
     expect(h.retainHostFileHandle).toHaveBeenCalledOnce();
     expect(h.retainHostFileHandle).toHaveBeenCalledWith(100);
-    expect((h.kw as any).getFdStatForSharedMapping).toHaveBeenCalledTimes(1);
-    expect((h.kw as any).getFdPathForSharedMapping).not.toHaveBeenCalled();
-    expect((h.kw as any).getFdAccessModeForSharedMapping).toHaveBeenCalledTimes(1);
+    expect(h.getFdStatForSharedMapping).toHaveBeenCalledTimes(1);
+    expect(h.getFdPathForSharedMapping).not.toHaveBeenCalled();
+    expect(h.getFdAccessModeForSharedMapping).toHaveBeenCalledTimes(1);
   });
 
   it("reserves a same-file backing across MAP_FIXED replacement cleanup", () => {
@@ -261,6 +297,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     const preparation = (h.kw as any).prepareSharedMmapFromFile(
       h.channels.get(pid),
       [addr, 4096, PROT_WRITE, MAP_SHARED | MAP_FIXED, 9, 0],
+      0n,
     );
     expect(preparation.kind).toBe("prepared");
     expect(backing.refCount).toBe(2);
@@ -297,21 +334,8 @@ describe("file/POSIX MAP_SHARED page cache", () => {
       throw Object.assign(new Error("handle retain failed"), { code: "EACCES" });
     });
 
-    const kernelHandle = vi.fn();
-    const completeChannel = vi.fn();
-    const kernelMemory = new WebAssembly.Memory({ initial: 2 });
-    Object.assign(h.kw as any, {
-      config: {},
-      syscallRing: new Map(),
-      syscallTraceEnabled: false,
-      kernelMemory,
-      kernelInstance: { exports: { kernel_handle_channel: kernelHandle } },
-      formatSyscallEntry: vi.fn(() => "mmap"),
-      synchronizeSharedMemoryForBoundary: vi.fn(),
-      flushSharedMappingsBeforeFileSyscall: vi.fn(() => true),
-      completeChannel,
-    });
-    installKernelWorkerTestScratch(h.kw as any, kernelMemory);
+    const { completeChannel, kernelHandle } =
+      configureKernelSyscallHarness(h, pid);
 
     const args = [addr, 4096, PROT_WRITE, MAP_SHARED | MAP_FIXED, 4, 0];
     const view = new DataView(channel.memory.buffer, channel.channelOffset);
@@ -320,7 +344,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
       view.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, BigInt(args[i]), true);
     }
 
-    (h.kw as any)._handleSyscallInner(channel);
+    h.kw.testAuthority.dispatchScratchBoundarySyscallForTest(channel as any);
 
     expect(kernelHandle).not.toHaveBeenCalled();
     expect(completeChannel).toHaveBeenCalledWith(
@@ -344,15 +368,15 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     expect(h.map(pid, 4, addr)).toBe(true);
     const originalMap = (h.kw as any).sharedMappings.get(pid);
     const backing = Array.from((h.kw as any).sharedMmapBackings.values())[0];
-    const flush = vi.fn(() => false);
-    Object.assign(h.kw as any, { flushSharedMappings: flush });
+    new Uint8Array(h.memories.get(pid)!.buffer)[addr + 7] = 0xc7;
+    h.io.write.mockReturnValueOnce(0);
     const { completeChannel, kernelHandle } = configureKernelSyscallHarness(h, pid);
     const args = [addr, 4096, PROT_WRITE, MAP_SHARED | MAP_FIXED, 9, 0];
     writeChannelSyscall(channel, ABI_SYSCALLS.Mmap, args);
 
-    (h.kw as any)._handleSyscallInner(channel);
+    h.kw.testAuthority.dispatchScratchBoundarySyscallForTest(channel as any);
 
-    expect(flush).toHaveBeenCalledWith(channel, [addr, 65536]);
+    expect(h.io.write).toHaveBeenCalled();
     expect(kernelHandle).not.toHaveBeenCalled();
     expect(completeChannel).toHaveBeenCalledWith(
       channel, ABI_SYSCALLS.Mmap, args, undefined, -1, 5,
@@ -371,16 +395,14 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     expect(h.map(pid, 4, oldAddr)).toBe(true);
     const originalMap = (h.kw as any).sharedMappings.get(pid);
     const backing = Array.from((h.kw as any).sharedMmapBackings.values())[0];
-    const flush = vi.fn(() => true);
-    Object.assign(h.kw as any, { flushSharedMappings: flush });
     const { completeChannel, kernelHandle } = configureKernelSyscallHarness(h, pid);
     const args = [fixedAddr, 4096, PROT_WRITE, MAP_SHARED | MAP_FIXED, 9, 0];
     writeChannelSyscall(channel, ABI_SYSCALLS.Mmap, args);
 
-    (h.kw as any)._handleSyscallInner(channel);
+    h.kw.testAuthority.dispatchScratchBoundarySyscallForTest(channel as any);
 
     expect(kernelHandle).not.toHaveBeenCalled();
-    expect(flush).not.toHaveBeenCalled();
+    expect(h.io.write).not.toHaveBeenCalled();
     expect(completeChannel).toHaveBeenCalledWith(
       channel, ABI_SYSCALLS.Mmap, args, undefined, -1, 12,
     );
@@ -389,29 +411,46 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     expect(h.close).not.toHaveBeenCalledWith(backing.handle);
   });
 
-  it("releases a prepared reservation when pre-kernel MAP_FIXED work throws", () => {
+  it("releases a prepared reservation when pre-kernel MAP_FIXED flush fails", () => {
     const h = createFileHarness();
     const pid = h.pids[0];
     const addr = 0x1000;
     const channel = h.channels.get(pid)!;
     expect(h.map(pid, 4, addr)).toBe(true);
     const backing = Array.from((h.kw as any).sharedMmapBackings.values())[0];
-    Object.assign(h.kw as any, {
-      flushSharedMappings: vi.fn(() => {
-        throw new Error("pre-kernel flush threw");
-      }),
-    });
-    const { kernelHandle } = configureKernelSyscallHarness(h, pid);
+    new Uint8Array(h.memories.get(pid)!.buffer)[addr + 9] = 0xd9;
+    h.io.write.mockImplementationOnce(
+      (_handle, _input, _offset, count) => count + 1,
+    );
+    const { completeChannel, kernelHandle } =
+      configureKernelSyscallHarness(h, pid);
+    const args = [
+      addr,
+      4096,
+      PROT_WRITE,
+      MAP_SHARED | MAP_FIXED,
+      9,
+      0,
+    ];
     writeChannelSyscall(
       channel,
       ABI_SYSCALLS.Mmap,
-      [addr, 4096, PROT_WRITE, MAP_SHARED | MAP_FIXED, 9, 0],
+      args,
     );
 
-    expect(() => (h.kw as any)._handleSyscallInner(channel))
-      .toThrow(/pre-kernel flush threw/);
+    h.kw.testAuthority.dispatchScratchBoundarySyscallForTest(channel as any);
+
     expect(kernelHandle).not.toHaveBeenCalled();
+    expect(completeChannel).toHaveBeenCalledWith(
+      channel,
+      ABI_SYSCALLS.Mmap,
+      args,
+      undefined,
+      -1,
+      5,
+    );
     expect(backing.refCount).toBe(1);
+    expect(backing.dirtyPages.has(0)).toBe(true);
     expect(h.close).not.toHaveBeenCalledWith(backing.handle);
   });
 
@@ -429,7 +468,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     const args = [addr, 4096, 8192, 1, 0, 0];
     writeChannelSyscall(channel, ABI_SYSCALLS.Mremap, args);
 
-    (h.kw as any)._handleSyscallInner(channel);
+    h.kw.testAuthority.dispatchScratchBoundarySyscallForTest(channel as any);
 
     expect(kernelHandle).not.toHaveBeenCalled();
     expect(completeChannel).toHaveBeenCalledWith(
@@ -536,7 +575,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
 
     // close(fd) asks the host to close the original handle, but the mapping's
     // retain keeps it usable until the final munmap releases the backing.
-    expect((h.kernel as any).hostClose(BigInt(stableHandle))).toBe(0);
+    expect(h.kernel.testAuthority.hostClose(BigInt(stableHandle))).toBe(0);
     h.fdHostHandles.delete(4);
     (h.kw as any).handleSharedMappingsAfterFileSyscall(
       h.channels.get(pid), ABI_SYSCALLS.Close, [4], 0, 0,
@@ -561,7 +600,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     expect(h.releaseHostFileHandle).toHaveBeenCalledWith(stableHandle);
     expect(h.close).not.toHaveBeenCalledWith(stableHandle);
 
-    expect((h.kernel as any).hostClose(BigInt(stableHandle))).toBe(0);
+    expect(h.kernel.testAuthority.hostClose(BigInt(stableHandle))).toBe(0);
     expect(h.close).toHaveBeenCalledWith(stableHandle);
   });
 
@@ -823,16 +862,11 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     h.io.read.mockImplementation(() => {
       throw new Error("fork publication failed");
     });
-    const kernelForkProcess = vi.fn(() => 0);
-    Object.assign(h.kw as any, {
-      callbacks: { onFork: vi.fn() },
-      kernelInstance: { exports: { kernel_fork_process: kernelForkProcess } },
-    });
 
     expect(() => (h.kw as any).handleFork(channel, [])).toThrow(
       /fork publication failed/,
     );
-    expect(kernelForkProcess).not.toHaveBeenCalled();
+    expect(h.onFork).not.toHaveBeenCalled();
   });
 
   it("reports handle-retention and initial-read failures without leaking a backing", () => {
@@ -855,7 +889,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     expect(readFailure.close).not.toHaveBeenCalled();
 
     const writeOnly = createFileHarness();
-    (writeOnly.kw as any).getFdAccessModeForSharedMapping.mockReturnValue({
+    writeOnly.getFdAccessModeForSharedMapping.mockReturnValue({
       kind: "ok",
       value: 1,
     });
@@ -872,7 +906,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
 
     for (const errno of [24, 2, 30]) {
       const h = createFileHarness();
-      (h.kw as any).getFdStatForSharedMapping.mockReturnValueOnce({
+      h.getFdStatForSharedMapping.mockReturnValueOnce({
         kind: "error",
         errno,
       });
@@ -900,7 +934,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
 
   it("guards mprotect write upgrades with a lifetime-stable writable handle", () => {
     const denied = createFileHarness();
-    (denied.kw as any).fdSupportsMmapWriteback.mockReturnValue(false);
+    denied.fdSupportsMmapWriteback.mockReturnValue(false);
     expect(denied.map(denied.pids[0], 4, 0x1000, 4096, PROT_READ)).toBe(true);
     expect((denied.kw as any).prepareFileSharedMappingsForWrite(
       denied.pids[0], 0x1000, 4096,
@@ -914,7 +948,9 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     )[0].handle;
     // Simulate close(fd) followed by unlink/rename. The retained O_RDWR host
     // handle must suffice; no pathname lookup or reopen is permitted.
-    expect((allowed.kernel as any).hostClose(BigInt(stableHandle))).toBe(0);
+    expect(
+      allowed.kernel.testAuthority.hostClose(BigInt(stableHandle)),
+    ).toBe(0);
     allowed.fdHostHandles.delete(4);
     (allowed.kw as any).handleSharedMappingsAfterFileSyscall(
       allowed.channels.get(allowed.pids[0]), ABI_SYSCALLS.Close, [4], 0, 0,
@@ -932,7 +968,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
   it("replaces one retained O_RDONLY handle with a distinct O_RDWR handle", () => {
     const h = createFileHarness();
     const pid = h.pids[0];
-    (h.kw as any).getFdAccessModeForSharedMapping.mockImplementation(
+    h.getFdAccessModeForSharedMapping.mockImplementation(
       (_channel: unknown, fd: number) => ({ kind: "ok", value: fd === 4 ? 0 : 2 }),
     );
 
@@ -955,7 +991,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     const h = createFileHarness();
     const pid = h.pids[0];
     let accessMode = 0;
-    (h.kw as any).getFdAccessModeForSharedMapping.mockImplementation(
+    h.getFdAccessModeForSharedMapping.mockImplementation(
       () => ({ kind: "ok", value: accessMode }),
     );
 
@@ -971,7 +1007,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     const h = createFileHarness();
     const pid = h.pids[0];
     expect(h.map(pid, 4, 0x1000)).toBe(true);
-    const stat = (h.kw as any).getFdStatForSharedMapping;
+    const stat = h.getFdStatForSharedMapping;
     const callsBefore = stat.mock.calls.length;
 
     expect((h.kw as any).findSharedMmapBackingForFd(h.channels.get(pid), 77))
@@ -1194,29 +1230,28 @@ describe("file/POSIX MAP_SHARED page cache", () => {
       throw new Error("persistent refresh failure");
     });
 
-    const kernelHandle = vi.fn();
     const relistenChannel = vi.fn();
-    const kernelMemory = new WebAssembly.Memory({ initial: 2 });
     Object.assign(h.kw as any, {
       config: {},
       syscallRing: new Map(),
       syscallTraceEnabled: false,
-      kernelMemory,
-      kernelInstance: { exports: { kernel_handle_channel: kernelHandle } },
-      clearSocketTimeout: vi.fn(),
-      clearReadinessWait: vi.fn(),
       pendingCancels: new Set(),
+    });
+    h.kw.testAuthority.configureScratchBoundaryHooksForTest({
       relistenChannel,
     });
-    installKernelWorkerTestScratch(h.kw as any, kernelMemory);
     writeChannelSyscall(channel, ABI_SYSCALLS.Getpid, []);
+    Atomics.store(
+      channel.i32View,
+      CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+      CHANNEL_STATUS_PENDING,
+    );
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
     (h.kw as any).handleSyscall(channel);
 
     consoleError.mockRestore();
     const view = new DataView(channel.memory.buffer, channel.channelOffset);
-    expect(kernelHandle).not.toHaveBeenCalled();
     expect(Number(view.getBigInt64(CH_RETURN, true))).toBe(-5);
     expect(view.getUint32(CH_ERRNO, true)).toBe(5);
     expect(Atomics.load(channel.i32View, CH_STATUS / 4))
@@ -1228,15 +1263,10 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     const h = createFileHarness();
     const channel = h.channels.get(h.pids[0])!;
     const relistenChannel = vi.fn();
-    Object.assign(h.kw as any, {
+    h.kw.testAuthority.configureScratchBoundaryHooksForTest({
       synchronizeSharedMemoryForBoundary: vi.fn(() => {
         throw new Error("asynchronous refresh failure");
       }),
-      clearSocketTimeout: vi.fn(),
-      clearReadinessWait: vi.fn(),
-      drainAllPtyOutputs: vi.fn(),
-      flushTcpSendPipes: vi.fn(),
-      drainAndProcessWakeupEvents: vi.fn(),
       relistenChannel,
     });
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -1291,14 +1321,11 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     const addr = 0x1000;
     expect(h.map(pid, 4, addr)).toBe(true);
     const exactOffset = BigInt(Number.MAX_SAFE_INTEGER) + 2n;
-    const reload = vi.spyOn(
-      h.kw as any,
-      "reloadSharedMmapBackingForFd",
-    ).mockImplementation(() => {});
-    const update = vi.spyOn(
-      h.kw as any,
-      "updateSharedMmapBackingFromProcessBuffer",
-    );
+    const backing = Array.from(
+      (h.kw as any).sharedMmapBackings.values(),
+    )[0];
+    const version = backing.version;
+    h.storage[0] = 0xe4;
 
     (h.kw as any).handleSharedMappingsAfterFileSyscall(
       h.channels.get(pid),
@@ -1309,13 +1336,41 @@ describe("file/POSIX MAP_SHARED page cache", () => {
       exactOffset,
     );
 
-    expect(update).not.toHaveBeenCalled();
-    expect(reload).toHaveBeenCalledWith(h.channels.get(pid), 4);
+    expect(backing.version).toBeGreaterThan(version);
+    expect(backing.sizeValid).toBe(true);
+    expect(backing.pages.get(0)?.[0]).toBe(0xe4);
+  });
+
+  it("does not publish a rounded ftruncate length to shared-mapping state", () => {
+    const h = createFileHarness();
+    const pid = h.pids[0];
+    expect(h.map(pid, 4, 0x1000)).toBe(true);
+    const backing = Array.from(
+      (h.kw as any).sharedMmapBackings.values(),
+    )[0];
+    const exactLength = BigInt(Number.MAX_SAFE_INTEGER) + 2n;
+
+    // Model the kernel/host file operation having completed at a size that the
+    // cache can represent. The lossy Number projection of exactLength must not
+    // be installed as if it were authoritative.
+    h.setLogicalSize(37);
+    (h.kw as any).handleSharedMappingsAfterFileSyscall(
+      h.channels.get(pid),
+      ABI_SYSCALLS.Ftruncate,
+      [4, Number(exactLength)],
+      0,
+      0,
+      undefined,
+      exactLength,
+    );
+
+    expect(backing.size).toBe(37);
+    expect(backing.sizeValid).toBe(true);
   });
 
   it("rejects shared memfd mappings deliberately without affecting private mmap", () => {
     const h = createFileHarness();
-    (h.kw as any).getFdStatForSharedMapping.mockReturnValue({
+    h.getFdStatForSharedMapping.mockReturnValue({
       kind: "ok",
       value: {
         dev: 0n,
@@ -1362,9 +1417,9 @@ describe("file/POSIX MAP_SHARED page cache", () => {
   it("skips file-coherence hooks when no shared file backing exists", () => {
     const h = createFileHarness();
     const pid = h.pids[0];
-    const syncFile = vi.spyOn(h.kw as any, "syncFileSharedMappingsFromProcess");
-    const flushFd = vi.spyOn(h.kw as any, "flushSharedBackingForFd");
-    const invalidateFd = vi.spyOn(h.kw as any, "invalidateSharedMmapFdCache");
+    const cache = (h.kw as any).sharedMmapFdCache as Map<string, unknown>;
+    const sentinel = { backingKey: "untouched" };
+    cache.set(`${pid}:4`, sentinel);
 
     expect((h.kw as any).flushSharedMappingsBeforeFileSyscall(
       h.channels.get(pid), ABI_SYSCALLS.Pwrite, [4, 0, 1, 0],
@@ -1373,9 +1428,11 @@ describe("file/POSIX MAP_SHARED page cache", () => {
       h.channels.get(pid), ABI_SYSCALLS.Open, [0, 0], 4, 0,
     );
 
-    expect(syncFile).not.toHaveBeenCalled();
-    expect(flushFd).not.toHaveBeenCalled();
-    expect(invalidateFd).not.toHaveBeenCalled();
+    expect(h.getFdStatForSharedMapping).not.toHaveBeenCalled();
+    expect(h.getFdPathForSharedMapping).not.toHaveBeenCalled();
+    expect(h.io.read).not.toHaveBeenCalled();
+    expect(h.io.write).not.toHaveBeenCalled();
+    expect(cache.get(`${pid}:4`)).toBe(sentinel);
   });
 
   it("reaps a retained zero-reference backing after writeback recovers", () => {

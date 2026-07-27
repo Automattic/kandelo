@@ -2,7 +2,10 @@
  * Reproduce the epoll_pwait crash using CentralizedKernelWorker in Node.js.
  * Run: npx tsx test/epoll-repro.ts
  */
-import { CAPTURED_STDIO, CentralizedKernelWorker } from "../../../host/src/kernel-worker.ts";
+import {
+  CAPTURED_STDIO,
+  createCentralizedKernelWorkerTestDouble,
+} from "../../../host/src/kernel-worker.ts";
 import { resolveBinary } from "../../../host/src/binary-resolver.ts";
 import {
   CH_ARGS,
@@ -10,23 +13,20 @@ import {
   CH_DATA,
   CH_ERRNO,
   CH_RETURN,
+  CH_STATUS,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
+  CHANNEL_STATUS_COMPLETE,
+  CHANNEL_STATUS_PENDING,
   STRUCT_SIZE_WASM_EPOLL_EVENT,
   WASM_EPOLL_EVENT_DATA_OFFSET,
 } from "../../../host/src/generated/abi.ts";
-import type { KernelScratchRegion } from "../../../host/src/kernel-scratch.ts";
 import { VirtualPlatformIO, MemoryFileSystem, DeviceFileSystem } from "../../../host/src/vfs/index.ts";
+import { BrowserTimeProvider } from "../../../host/src/vfs/time.ts";
 import { readFileSync } from "fs";
 
 const MAX_PAGES = 16384;
 const PAGE_SIZE = 65536;
-
-interface KernelWorkerInternals {
-  scratchRegion: KernelScratchRegion;
-  kernelInstance: WebAssembly.Instance;
-  kernelMemory: WebAssembly.Memory;
-}
 
 interface ScratchPointerArgument {
   readonly offset: number;
@@ -48,23 +48,25 @@ async function main() {
   const io = new VirtualPlatformIO([
     { mountPoint: "/dev", backend: devfs },
     { mountPoint: "/", backend: memfs },
-  ]);
+  ], new BrowserTimeProvider());
 
   // Create dirs
   for (const d of ["/tmp", "/etc", "/var", "/proc"]) {
     try { memfs.mkdir(d, 0o755); } catch {}
   }
 
-  const kw = new CentralizedKernelWorker({ maxWorkers: 4, dataBufferSize: PAGE_SIZE, useSharedMemory: true }, io);
+  const kw = createCentralizedKernelWorkerTestDouble({
+    config: {
+      maxWorkers: 4,
+      dataBufferSize: PAGE_SIZE,
+      useSharedMemory: true,
+    },
+    io,
+  });
   await kw.init(kernelWasm);
 
-  const internals = kw as unknown as KernelWorkerInternals;
-  const ki = internals.kernelInstance;
-  const km = internals.kernelMemory;
-  const scratchRegion = internals.scratchRegion;
-
   console.log(
-    `scratchCapacity=${scratchRegion.capacity}, memPages=${km.grow(0)}`,
+    `memPages=${kw.getKernelMemoryPages()}`,
   );
 
   // Register a fake process
@@ -75,89 +77,83 @@ async function main() {
   const pid = kw.createProcess(CAPTURED_STDIO);
   kw.registerProcess(pid, procMem, [channelOff]);
 
-  const getSP = ki.exports.kernel_get_stack_pointer as () => number;
-  console.log(`SP initial: ${getSP()}`);
-
-  const setCurrentTid = ki.exports.kernel_set_current_tid as (
-    pid: number,
-    tid: number,
-  ) => number;
-  const bindCurrentTid = (): void => {
-    const bindResult = setCurrentTid(pid, pid);
-    if (bindResult !== 0) {
-      throw new Error(
-        `kernel_set_current_tid(${pid}, ${pid}) failed: ${bindResult}`,
-      );
-    }
-  };
-  const issueChannel = (
+  const issueChannel = async (
     syscall: number,
     args: readonly ChannelArgument[],
     event?: EpollEventPreparation,
-  ) =>
-    scratchRegion.withLease((scratch) => {
-      // WHY: preparation is inert data rather than a callback receiving the
-      // lease. No promise or helper can retain scratch authority after this
-      // synchronous callback returns.
-      const kernelView = scratch.dataView(0, CH_TOTAL_SIZE);
-      if (event !== undefined) {
-        kernelView.setUint32(CH_DATA, event.events, true);
-        kernelView.setUint32(CH_DATA + 4, 0, true);
-        kernelView.setBigUint64(
-          CH_DATA + WASM_EPOLL_EVENT_DATA_OFFSET,
-          event.data,
+  ) => {
+    // Exercise the same registered process mailbox used by real guests. The
+    // worker, not this diagnostic, owns kernel scratch and entry serialization.
+    const channel = new DataView(procMem.buffer, channelOff, CH_TOTAL_SIZE);
+    if (event !== undefined) {
+      channel.setUint32(CH_DATA, event.events, true);
+      channel.setUint32(CH_DATA + 4, 0, true);
+      channel.setBigUint64(
+        CH_DATA + WASM_EPOLL_EVENT_DATA_OFFSET,
+        event.data,
+        true,
+      );
+    }
+    channel.setUint32(CH_SYSCALL, syscall, true);
+    for (let index = 0; index < 6; index++) {
+      const argument = args[index] ?? 0n;
+      if (typeof argument === "object") {
+        if (
+          !Number.isSafeInteger(argument.offset)
+          || !Number.isSafeInteger(argument.length)
+          || argument.offset < 0
+          || argument.length < 0
+          || argument.offset + argument.length > CH_TOTAL_SIZE
+        ) {
+          throw new RangeError("diagnostic channel pointer is out of range");
+        }
+        channel.setBigUint64(
+          CH_ARGS + index * CH_ARG_SIZE,
+          BigInt(channelOff + argument.offset),
+          true,
+        );
+      } else {
+        channel.setBigInt64(
+          CH_ARGS + index * CH_ARG_SIZE,
+          argument,
           true,
         );
       }
-      kernelView.setUint32(CH_SYSCALL, syscall, true);
-      for (let index = 0; index < 6; index++) {
-        const argument = args[index] ?? 0n;
-        if (typeof argument === "object") {
-          // Keep the kernel pointer opaque and encode it losslessly into the
-          // channel's fixed u64 syscall slot.
-          scratch.writeAddress(
-            CH_ARGS + index * CH_ARG_SIZE,
-            argument.offset,
-            argument.length,
-            "u64-le",
-          );
-        } else {
-          kernelView.setBigInt64(
-            CH_ARGS + index * CH_ARG_SIZE,
-            argument,
-            true,
-          );
-        }
+    }
+    const words = new Int32Array(procMem.buffer);
+    const statusIndex = (channelOff + CH_STATUS) / Int32Array.BYTES_PER_ELEMENT;
+    Atomics.store(words, statusIndex, CHANNEL_STATUS_PENDING);
+    Atomics.notify(words, statusIndex, 1);
+    const deadline = Date.now() + 10_000;
+    while (Atomics.load(words, statusIndex) !== CHANNEL_STATUS_COMPLETE) {
+      if (Date.now() >= deadline) {
+        throw new Error(`syscall ${syscall} did not complete within 10 seconds`);
       }
-      bindCurrentTid();
-      scratch.invokeKernelExport("kernel_handle_channel", [
-        scratch.exportPointer(0, CH_TOTAL_SIZE),
-        CH_TOTAL_SIZE,
-        pid,
-      ]);
-      return {
-        result: kernelView.getBigInt64(CH_RETURN, true),
-        errno: kernelView.getUint32(CH_ERRNO, true),
-        data0: kernelView.getInt32(CH_DATA, true),
-        data1: kernelView.getInt32(CH_DATA + 4, true),
-      };
-    });
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+    return {
+      result: channel.getBigInt64(CH_RETURN, true),
+      errno: channel.getUint32(CH_ERRNO, true),
+      data0: channel.getInt32(CH_DATA, true),
+      data1: channel.getInt32(CH_DATA + 4, true),
+    };
+  };
 
   // 1. epoll_create1(0)
-  const epfd = issueChannel(239, [0n]).result;
-  console.log(`epoll_create1(0) = ${epfd}, SP=${getSP()}`);
+  const epfd = (await issueChannel(239, [0n])).result;
+  console.log(`epoll_create1(0) = ${epfd}`);
 
   // 2. pipe2()
-  const pipe = issueChannel(165, [
+  const pipe = await issueChannel(165, [
     { offset: CH_DATA, length: 8 },
     0n,
   ]);
   console.log(
-    `pipe2() = ${pipe.result}, fds=[${pipe.data0}, ${pipe.data1}], SP=${getSP()}`,
+    `pipe2() = ${pipe.result}, fds=[${pipe.data0}, ${pipe.data1}]`,
   );
 
   // 3. epoll_ctl(epfd, EPOLL_CTL_ADD=1, pipe.data0, event)
-  const ctlResult = issueChannel(
+  const ctlResult = (await issueChannel(
     240,
     [
       epfd,
@@ -172,16 +168,16 @@ async function main() {
       events: 1, // EPOLLIN
       data: BigInt(pipe.data0),
     },
-  ).result;
-  console.log(`epoll_ctl = ${ctlResult}, SP=${getSP()}`);
+  )).result;
+  console.log(`epoll_ctl = ${ctlResult}`);
 
   // 4. timeout=0 for an immediate result, then use PHP-FPM's 1s timeout.
   for (const timeout of [0, 1000]) {
     console.log(
-      `\nCalling epoll_pwait(timeout=${timeout})... SP before=${getSP()}`,
+      `\nCalling epoll_pwait(timeout=${timeout})...`,
     );
     try {
-      const result = issueChannel(241, [
+      const result = await issueChannel(241, [
         epfd,
         {
           offset: CH_DATA,
@@ -193,11 +189,13 @@ async function main() {
         8n,
       ]);
       console.log(
-        `epoll_pwait(${timeout}) = ${result.result}, errno=${result.errno}, SP=${getSP()}`,
+        `epoll_pwait(${timeout}) = ${result.result}, errno=${result.errno}`,
       );
     } catch (error) {
       console.error(`CRASHED: ${error}`);
-      console.log(`SP after crash: ${getSP()}, memPages=${km.grow(0)}`);
+      console.log(
+        `memPages=${kw.getKernelMemoryPages()}`,
+      );
     }
   }
 }

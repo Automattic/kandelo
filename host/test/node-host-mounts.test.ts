@@ -1,6 +1,6 @@
 /**
  * Task 4.3 — Node host wires `host/wasm/rootfs.vfs` and applies
- * `DEFAULT_MOUNT_SPEC` via `resolveForNode` at boot when the caller
+ * `DEFAULT_MOUNT_SPEC` via the fresh-session Node resolver at boot when the caller
  * does not supply a custom `io`.
  *
  * Each probe runs `examples/mount_probe_test.wasm` with a mode argv:

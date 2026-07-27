@@ -95,13 +95,23 @@ if [ -d "$OVERLAY_DIR/src" ]; then
 fi
 
 # The installed overlay headers are normally copied after `make install`, but
-# limits are also compiled into musl's sysconf implementation. Stage these two
-# generated/consumer headers in the source tree before `make` so the runtime
-# answer and the public header cannot advertise different Kandelo contracts.
+# limits are also compiled into musl's sysconf implementation, and pthread
+# overrides consume generated syscall numbers. Stage the complete reserved
+# Kandelo header namespace in the source tree before `make`.
+#
+# WHY: this must be a mirror, not an additive copy. Otherwise renaming a
+# generated header leaves the old contract in musl's source tree, and
+# `make install` republishes it into every subsequently rebuilt sysroot.
 cp "$OVERLAY_DIR/include/limits.h" "$MUSL_DIR/include/limits.h"
 mkdir -p "$MUSL_DIR/include/bits"
-cp "$OVERLAY_DIR/include/bits/kandelo_limits.h" \
-    "$MUSL_DIR/include/bits/kandelo_limits.h"
+find "$MUSL_DIR/include/bits" -maxdepth 1 \
+    \( -type f -o -type l \) -name 'kandelo_*.h' -delete
+KANDELO_GENERATED_HEADERS=("$OVERLAY_DIR"/include/bits/kandelo_*.h)
+if [ ! -f "${KANDELO_GENERATED_HEADERS[0]}" ]; then
+    echo "Error: no generated Kandelo bits headers found in $OVERLAY_DIR/include/bits" >&2
+    exit 1
+fi
+cp "${KANDELO_GENERATED_HEADERS[@]}" "$MUSL_DIR/include/bits/"
 
 # musl's src/internal/syscall.h uses syscall_arg_t for the public
 # varargs syscall() path and also hard-codes it into the non-varargs

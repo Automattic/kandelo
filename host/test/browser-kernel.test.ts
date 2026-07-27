@@ -538,9 +538,13 @@ describe("BrowserKernel", () => {
       requestId: spawn.requestId,
       result: 100,
     });
-    await bootPromise;
+    const { exit } = await bootPromise;
+    const exitRejection = expect(exit).rejects.toThrow(
+      "Kernel worker error: worker crashed",
+    );
 
     worker.onerror?.({ message: "worker crashed" });
+    await exitRejection;
 
     expect(onHostDiagnostic).toHaveBeenCalledOnce();
     expect(onHostDiagnostic).toHaveBeenCalledWith({
@@ -552,6 +556,70 @@ describe("BrowserKernel", () => {
     expect(consoleError).toHaveBeenCalledWith(
       "[BrowserKernel] kernel worker error: worker crashed",
     );
+  });
+
+  it("fails pending and future work when the kernel worker reports a fatal instance", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
+
+    const spawnPromise = kernel.spawnFromVfs("/bin/sleep", ["/bin/sleep"]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const spawn = worker.lastMessage("spawn");
+    worker.simulateMessage({
+      type: "response",
+      requestId: spawn.requestId,
+      result: 101,
+    });
+    const { exit } = await spawnPromise;
+
+    const pendingRequest = kernel.getKernelMemoryPages();
+    const fatalMessage = "reserved transfer execution trapped";
+    const pendingRejection = expect(pendingRequest).rejects.toThrow(
+      `Kernel worker failed: ${fatalMessage}`,
+    );
+    const exitRejection = expect(exit).rejects.toThrow(
+      `Kernel worker failed: ${fatalMessage}`,
+    );
+    const messagesBeforeFatal = worker.sent.length;
+
+    worker.simulateMessage({ type: "kernel_fatal", error: fatalMessage });
+
+    await Promise.all([pendingRejection, exitRejection]);
+    expect(worker.terminated).toBe(true);
+
+    await expect(kernel.getKernelMemoryPages()).rejects.toThrow(
+      `Kernel worker failed: ${fatalMessage}`,
+    );
+    expect(worker.sent).toHaveLength(messagesBeforeFatal);
+  });
+
+  it("rejects initialization when the kernel becomes fatal before ready", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+
+    worker.simulateMessage({
+      type: "kernel_fatal",
+      error: "kernel initialization trapped",
+    });
+
+    await expect(initPromise).rejects.toThrow(
+      "Kernel worker failed: kernel initialization trapped",
+    );
+    expect(worker.terminated).toBe(true);
   });
 
   it("forwards posix_spawn parentage from the browser kernel worker", async () => {

@@ -258,20 +258,23 @@ describe.each(backendFactories)("%s", (_name, makeCase) => {
     expect(c.backend.stat(c.vfsPath("set-id-dir")).mode & MODE_MASK).toBe(0o6770);
   });
 
-  it("relays open(O_CREAT) mode to native creation and records it virtually", () => {
+  it("uses a private native create mode and records the requested guest mode", () => {
     const c = makeCase();
     const fd = withUmask(0, () =>
       c.backend.open(c.vfsPath("created-file"), O_RDWR | O_CREAT | O_TRUNC, 0o751),
     );
     try {
       expect(c.backend.fstat(fd).mode & MODE_MASK).toBe(0o751);
-      expect(fstatSync(fd).mode & MODE_MASK).toBe(0o751);
+      // WHY: creation must not expose a permissive host inode before virtual
+      // metadata owns the guest-visible mode. The guest still observes its
+      // requested 0751 through the authoritative virtual metadata.
+      expect(fstatSync(fd).mode & MODE_MASK).toBe(0o600);
     } finally {
       c.backend.close(fd);
     }
 
     expect(c.backend.stat(c.vfsPath("created-file")).mode & MODE_MASK).toBe(0o751);
-    expect(nativeMode(c.nativePath("created-file"))).toBe(0o751);
+    expect(nativeMode(c.nativePath("created-file"))).toBe(0o600);
   });
 
   it("relays mkdir mode to native creation and records it virtually", () => {

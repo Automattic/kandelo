@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { WasmPosixKernel } from "../src/kernel";
+import {
+  createWasmPosixKernelTestHarness,
+  WasmPosixKernel,
+} from "../src/kernel";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
 const emptyModule = new WebAssembly.Module(new Uint8Array([
@@ -22,34 +25,36 @@ function memoryImportModule(pointerWidth: 4 | 8): Uint8Array {
   ]);
 }
 
-function kernel(): WasmPosixKernel {
-  return new WasmPosixKernel(
-    {
+type TestEngine = {
+  compile: (bytes: BufferSource) => Promise<WebAssembly.Module>;
+  instantiate: (
+    module: WebAssembly.Module,
+    imports: WebAssembly.Imports,
+  ) => Promise<WebAssembly.Instance>;
+};
+
+function kernel(engine: TestEngine): WasmPosixKernel {
+  return createWasmPosixKernelTestHarness({
+    config: {
       maxWorkers: 1,
       dataBufferSize: 65_536,
       useSharedMemory: true,
     },
-    {} as never,
-  );
+    engine,
+    initialized: false,
+  });
 }
 
 function installSuccessfulEngine(
   pointerWidth: 4 | 8,
   implementations: Record<string, unknown>,
   allocator: (capacity: number) => number | bigint,
-): {
-  compile: ReturnType<typeof vi.spyOn>;
-  instantiate: ReturnType<typeof vi.spyOn>;
-  memory: () => WebAssembly.Memory;
-} {
-  const compile = vi
-    .spyOn(WebAssembly, "compile")
-    .mockResolvedValue(emptyModule);
+){
+  const compile = vi.fn(async (_bytes: BufferSource) => emptyModule);
   let activeMemory: WebAssembly.Memory | null = null;
-  const instantiate = vi.spyOn(WebAssembly, "instantiate");
-  instantiate.mockImplementation((async (
+  const instantiate = vi.fn(async (
     _module: WebAssembly.Module,
-    importObject?: WebAssembly.Imports,
+    importObject: WebAssembly.Imports,
   ) => {
     activeMemory = (
       importObject as { env: { memory: WebAssembly.Memory } }
@@ -59,11 +64,13 @@ function installSuccessfulEngine(
       activeMemory,
       () => implementations,
       allocator,
+      pointerWidth,
     );
-  }) as never);
+  });
   return {
     compile,
     instantiate,
+    engine: { compile, instantiate },
     memory: () => {
       if (!activeMemory) throw new Error("kernel memory was not instantiated");
       return activeMemory;
@@ -79,7 +86,6 @@ describe("WasmPosixKernel initialization lifetime", () => {
   it.each([4, 8] as const)(
     "keeps wasm%d public and audio scratch bound to its first generation",
     async (pointerWidth) => {
-      const instance = kernel();
       let allocationIndex = 0;
       let activeMemory: WebAssembly.Memory;
       const allocator = vi.fn((_capacity: number) => {
@@ -118,46 +124,29 @@ describe("WasmPosixKernel initialization lifetime", () => {
         },
         allocator,
       );
-      const suppliedMemory = new WebAssembly.Memory({
-        initial: 4,
-        maximum: 4,
-        shared: true,
-      });
-
-      if (pointerWidth === 4) {
-        await instance.init(memoryImportModule(pointerWidth));
-      } else {
-        await instance.initWithMemory(
-          memoryImportModule(pointerWidth),
-          suppliedMemory,
-        );
-      }
+      const instance = kernel(engine.engine);
+      await instance.init(memoryImportModule(pointerWidth));
       activeMemory = engine.memory();
-      const firstMemory = instance.getMemory();
-      const firstInstance = instance.getInstance();
+      const firstMemoryPages = instance.getMemoryPageCount();
+      expect(firstMemoryPages).not.toBeNull();
+      expect(Object.getOwnPropertyNames(instance)).not.toContain("memory");
+      expect(Object.getOwnPropertyNames(instance)).not.toContain("instance");
+      expect(Object.getOwnPropertyNames(instance)).not.toContain("rawInstance");
+      expect(Object.getOwnPropertyNames(instance)).not.toContain(
+        "kernelEntryGate",
+      );
 
       expect(instance.send(7, new Uint8Array([1, 2, 3, 4]))).toBe(4);
       const firstAudio = new Uint8Array(4);
       expect(instance.drainAudio(firstAudio)).toBe(4);
       expect(firstAudio).toEqual(new Uint8Array([9, 8, 7, 6]));
 
-      const replacementMemory = new WebAssembly.Memory({
-        initial: 4,
-        maximum: 4,
-        shared: true,
-      });
-      const replacement = pointerWidth === 4
-        ? instance.initWithMemory(
-            memoryImportModule(pointerWidth),
-            replacementMemory,
-          )
-        : instance.init(memoryImportModule(pointerWidth));
+      const replacement = instance.init(memoryImportModule(pointerWidth));
       await expect(replacement).rejects.toThrow(/already initialized/i);
 
       expect(engine.compile).toHaveBeenCalledOnce();
       expect(engine.instantiate).toHaveBeenCalledOnce();
-      expect(instance.getMemory()).toBe(firstMemory);
-      expect(instance.getInstance()).toBe(firstInstance);
+      expect(instance.getMemoryPageCount()).toBe(firstMemoryPages);
       expect(instance.getKernelPtrWidth()).toBe(pointerWidth);
 
       expect(instance.send(7, new Uint8Array([1, 2, 3, 4]))).toBe(4);
@@ -171,18 +160,14 @@ describe("WasmPosixKernel initialization lifetime", () => {
   );
 
   it("rejects a concurrent initializer before it can replace candidate state", async () => {
-    const instance = kernel();
     let releaseCompile!: (module: WebAssembly.Module) => void;
     const compileGate = new Promise<WebAssembly.Module>((resolve) => {
       releaseCompile = resolve;
     });
-    const compile = vi
-      .spyOn(WebAssembly, "compile")
-      .mockReturnValue(compileGate);
-    const instantiate = vi.spyOn(WebAssembly, "instantiate");
-    instantiate.mockImplementation((async (
+    const compile = vi.fn((_bytes: BufferSource) => compileGate);
+    const instantiate = vi.fn(async (
       _module: WebAssembly.Module,
-      importObject?: WebAssembly.Imports,
+      importObject: WebAssembly.Imports,
     ) => {
       const memory = (
         importObject as { env: { memory: WebAssembly.Memory } }
@@ -193,66 +178,56 @@ describe("WasmPosixKernel initialization lifetime", () => {
         () => ({}),
         () => 4_096,
       );
-    }) as never);
+    });
+    const instance = kernel({ compile, instantiate });
 
     const first = instance.init(memoryImportModule(4));
-    const competingMemory = new WebAssembly.Memory({
-      initial: 2,
-      maximum: 2,
-      shared: true,
-    });
     await expect(
-      instance.initWithMemory(memoryImportModule(4), competingMemory),
+      instance.init(memoryImportModule(4)),
     ).rejects.toThrow(/already in progress/i);
 
     releaseCompile(emptyModule);
     await expect(first).resolves.toBeUndefined();
     expect(compile).toHaveBeenCalledOnce();
     expect(instantiate).toHaveBeenCalledOnce();
-    expect(instance.getMemory()).not.toBe(competingMemory);
+    expect(instance.getMemoryPageCount()).not.toBeNull();
   });
 
   it("clears a failed first instantiation and permits one clean retry", async () => {
-    const instance = kernel();
     const failure = new Error("synthetic instantiation failure");
-    const compile = vi
-      .spyOn(WebAssembly, "compile")
-      .mockResolvedValue(emptyModule);
+    const compile = vi.fn(async (_bytes: BufferSource) => emptyModule);
     let attempt = 0;
-    const instantiate = vi.spyOn(WebAssembly, "instantiate");
-    instantiate.mockImplementation((async (
+    let activeMemory: WebAssembly.Memory | null = null;
+    const instantiate = vi.fn(async (
       _module: WebAssembly.Module,
-      importObject?: WebAssembly.Imports,
+      importObject: WebAssembly.Imports,
     ) => {
       if (attempt++ === 0) throw failure;
-      const memory = (
+      activeMemory = (
         importObject as { env: { memory: WebAssembly.Memory } }
       ).env.memory;
       return createKernelScratchTestInstance(
         8,
-        memory,
+        activeMemory,
         () => ({}),
         () => 4_096n,
+        8,
       );
-    }) as never);
-    const memory = new WebAssembly.Memory({
-      initial: 2,
-      maximum: 2,
-      shared: true,
     });
+    const instance = kernel({ compile, instantiate });
 
     await expect(
-      instance.initWithMemory(memoryImportModule(8), memory),
+      instance.init(memoryImportModule(8)),
     ).rejects.toBe(failure);
-    expect(instance.getMemory()).toBeNull();
-    expect(instance.getInstance()).toBeNull();
+    expect(instance.getMemoryPageCount()).toBeNull();
     expect(instance.getKernelPtrWidth()).toBe(4);
 
     await expect(
-      instance.initWithMemory(memoryImportModule(8), memory),
+      instance.init(memoryImportModule(8)),
     ).resolves.toBeUndefined();
-    expect(instance.getMemory()).toBe(memory);
-    expect(instance.getInstance()).not.toBeNull();
+    expect(instance.getMemoryPageCount()).toBe(
+      activeMemory!.buffer.byteLength / 65_536,
+    );
     expect(instance.getKernelPtrWidth()).toBe(8);
     expect(compile).toHaveBeenCalledTimes(2);
     expect(instantiate).toHaveBeenCalledTimes(2);

@@ -124,6 +124,9 @@ const TEST_PROGRAMS = [
   "kernel_allocator_churn_test.c",
 ];
 
+/** Memory64 counterparts needed to prove pointer-width-neutral syscall input. */
+const WASM64_TEST_PROGRAMS = ["lseek_invalid_test.c"];
+
 const FORK_INSTRUMENTED_PROGRAMS = new Set([
   "environment_lifecycle_test.c",
   "pthread_channel_reuse_test.c",
@@ -138,6 +141,7 @@ const WAT_FIXTURES = [
   "deep-wasm-recursion.wat",
   "wasi-args.wat",
   "wasi-hello.wat",
+  "wasi-scalar-abi.wat",
 ];
 
 function needsRebuild(srcFile: string, outFile: string): boolean {
@@ -270,6 +274,24 @@ export async function setup() {
     console.log(`[global-setup] Compiling ${cFile}...`);
     compileCTestProgram(src, out, FORK_INSTRUMENTED_PROGRAMS.has(cFile));
     stampProgramFixture(src, out, contract);
+  }
+
+  for (const cFile of WASM64_TEST_PROGRAMS) {
+    const src = join(examplesDir, cFile);
+    const out = src.replace(/\.c$/, ".wasm64.wasm");
+
+    if (!existsSync(src)) {
+      console.warn(`[global-setup] Source not found: ${src}, skipping`);
+      continue;
+    }
+    if (!programFixtureNeedsRebuild(src, out, wasm64Contract)) continue;
+
+    console.log(`[global-setup] Compiling ${cFile} (wasm64)...`);
+    execFileSync("wasm64posix-cc", [src, "-o", out], {
+      cwd: repoRoot,
+      stdio: "pipe",
+    });
+    stampProgramFixture(src, out, wasm64Contract);
   }
 
   for (const watFile of WAT_FIXTURES) {
