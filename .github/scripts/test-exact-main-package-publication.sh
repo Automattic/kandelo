@@ -65,6 +65,87 @@ if grep -Fq 'for pkg_dir in packages/registry/*/' "$FORCE_REBUILD" ||
   fail "force-rebuild still reconstructs a policy-bypassing matrix from raw manifests"
 fi
 
+preflight_block="$(
+  awk '
+    /^  preflight:/ { inside = 1 }
+    inside && /^  [a-zA-Z0-9_-]+:/ && !/^  preflight:/ { exit }
+    inside { print }
+  ' "$FORCE_REBUILD"
+)"
+test_prepare_block="$(
+  awk '
+    /^  test-gate-prepare:/ { inside = 1 }
+    inside && /^  [a-zA-Z0-9_-]+:/ && !/^  test-gate-prepare:/ { exit }
+    inside { print }
+  ' "$FORCE_REBUILD"
+)"
+for expected_handoff in \
+  'expected_ledger_artifact: ${{ steps.compute.outputs.expected_ledger_artifact }}' \
+  'force-rebuild-expected-ledger-${{ github.run_id }}-attempt-${{ github.run_attempt }}' \
+  'expected_ledger="$RUNNER_TEMP/force-rebuild-expected-ledger.json"' \
+  'blocked_report="$RUNNER_TEMP/force-rebuild-publication-blockers.json"' \
+  'INPUT_SKIP_TESTS: ${{ inputs.skip_tests }}' \
+  'PACKAGE_STAGING_EXCLUSIONS="$PACKAGE_STAGING_EXCLUSIONS" \' \
+  'SKIP_TESTS="$INPUT_SKIP_TESTS" \' \
+  '--exclude "$PACKAGE_STAGING_EXCLUSIONS"' \
+  '--blocked-output "$blocked_report"' \
+  'name: ${{ steps.compute.outputs.expected_ledger_artifact }}' \
+  '${{ runner.temp }}/force-rebuild-expected-ledger.json' \
+  '${{ runner.temp }}/force-rebuild-publication-blockers.json'
+do
+  grep -Fq -- "$expected_handoff" <<<"$preflight_block" ||
+    fail "preflight does not preserve its expected ledger artifact: $expected_handoff"
+done
+grep -Fq 'required_root_args+=(--require-root rootfs)' <<<"$preflight_block" ||
+  fail "test-gated force rebuilds do not require the rootfs package closure"
+grep -Fq 'if [ "$SKIP_TESTS" != "true" ]' <<<"$preflight_block" ||
+  fail "rootfs test admission is not scoped to runs that execute tests"
+if grep -Fq 'rm -f "$expected_ledger"' <<<"$preflight_block"; then
+  fail "preflight deletes the expected ledger before its test consumer can use it"
+fi
+
+for expected_consumer in \
+  'name: ${{ needs.preflight.outputs.expected_ledger_artifact }}' \
+  'EXPECTED="$RUNNER_TEMP/force-rebuild-expected/force-rebuild-expected-ledger.json"' \
+  '--fetch-only' \
+  '--expected-ledger "$EXPECTED"'
+do
+  grep -Fq -- "$expected_consumer" <<<"$test_prepare_block" ||
+    fail "test preparation does not consume the preflight ledger strictly: $expected_consumer"
+done
+policy_exclusions=""
+fetch_exclusions=""
+for workflow in "$STAGING" "$PREPARE" "$FORCE_REBUILD"; do
+  workflow_policy="$(
+    sed -n 's/^[[:space:]]*PACKAGE_STAGING_EXCLUSIONS:[[:space:]]*//p' \
+      "$workflow" | head -1
+  )"
+  workflow_fetch="$(
+    sed -n 's/^[[:space:]]*WASM_POSIX_FETCH_SKIP_PKGS:[[:space:]]*//p' \
+      "$workflow" | head -1
+  )"
+  [ -n "$workflow_policy" ] ||
+    fail "$(basename "$workflow") has no package materialization exclusion policy"
+  [ -n "$workflow_fetch" ] ||
+    fail "$(basename "$workflow") has no package fetch exclusion policy"
+  if [ -z "$policy_exclusions" ]; then
+    policy_exclusions="$workflow_policy"
+    fetch_exclusions="$workflow_fetch"
+  else
+    [ "$workflow_policy" = "$policy_exclusions" ] ||
+      fail "$(basename "$workflow") publication exclusions drifted from the shared suite policy"
+    [ "$workflow_fetch" = "$fetch_exclusions" ] ||
+      fail "$(basename "$workflow") fetch exclusions drifted from the shared suite policy"
+  fi
+done
+grep -Fq -- '--keep WASM_POSIX_FETCH_SKIP_PKGS' "$DEV_SHELL" ||
+  fail "dev shell drops the test-gate package fetch exclusions"
+if grep -Fq -- '--allow-stale' <<<"$test_prepare_block"; then
+  fail "force-rebuild test materialization can still source-build stale or unrelated packages"
+fi
+[ "$(grep -Fc 'staging-reuse expected \' <<<"$preflight_block")" -eq 1 ] ||
+  fail "force-rebuild preflight must derive its expected ledger exactly once"
+
 archive_count="$(grep -c '^[[:space:]]*archive-stage \\' "$EXACT_REBUILD_ACTION")"
 [ "$archive_count" -gt 0 ] ||
   fail "force-rebuild has no archive producers"

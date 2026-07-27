@@ -41,10 +41,13 @@
 #                  names are de-duplicated in first-requested order. With no
 #                  --package flags, the existing full-registry walk is used.
 #   --expected-ledger <path>
-#                  Materialize exactly the unique package roots present in a
-#                  Rust-generated staging expected ledger, optionally narrowed
-#                  by WASM_POSIX_FETCH_SKIP_PKGS. This is mutually exclusive
-#                  with --package and never falls back to a registry walk.
+#                  Invoke the resolver exactly once for each unique
+#                  package/arch entry in a Rust-generated staging expected
+#                  ledger, optionally narrowed by
+#                  WASM_POSIX_FETCH_SKIP_PKGS. The resolver still owns each
+#                  entry's dependency closure. This is mutually exclusive with
+#                  --package and never falls back to a registry walk or expands
+#                  one selected package to its other arches.
 #   --offline      Set `WASM_POSIX_OFFLINE=1` so the resolver refuses
 #                  to hit the network. (No-op if every archive is
 #                  already in the cache.)
@@ -105,6 +108,7 @@ ALLOW_STALE=0
 FETCH_ONLY=0
 SKIP_PKGS=" ${WASM_POSIX_FETCH_SKIP_PKGS:-} "
 SELECTED_PKGS=()
+EXPECTED_ENTRIES=()
 EXPECTED_LEDGER=""
 EXPECTED_LEDGER_SET=0
 PACKAGE_FLAG_COUNT=0
@@ -125,6 +129,31 @@ add_selected_package() {
         [ "$selected" = "$pkg" ] && return 0
     done
     SELECTED_PKGS+=("$pkg")
+}
+
+require_supported_arch() {
+    local arch="$1"
+    case "$arch" in
+        wasm32|wasm64) ;;
+        *)
+            echo "fetch-binaries: expected ledger has unsupported architecture '$arch'" >&2
+            exit 2
+            ;;
+    esac
+}
+
+add_expected_entry() {
+    local pkg="$1"
+    local arch="$2"
+    local candidate="$pkg|$arch"
+    local selected
+    for selected in "${EXPECTED_ENTRIES[@]}"; do
+        if [ "$selected" = "$candidate" ]; then
+            echo "fetch-binaries: expected ledger contains duplicate package/arch $pkg ($arch)" >&2
+            exit 2
+        fi
+    done
+    EXPECTED_ENTRIES+=("$candidate")
 }
 
 while [ $# -gt 0 ]; do
@@ -212,37 +241,46 @@ if [ "$EXPECTED_LEDGER_SET" -eq 1 ]; then
         echo "fetch-binaries: expected ledger must be a regular non-symlink file" >&2
         exit 2
     }
-    ledger_packages="$(
+    ledger_entries="$(
         jq -er '
             if type != "object" or
                (.abi_version | type) != "number" or
                (.entries | type) != "array" or
                (.entries | length) == 0 or
-               any(.entries[]; (.package | type) != "string")
+               any(.entries[];
+                   (.package | type) != "string" or
+                   (.arch | type) != "string" or
+                   (.arch != "wasm32" and .arch != "wasm64")) or
+               (([.entries[] | [.package, .arch]] | length) !=
+                ([.entries[] | [.package, .arch]] | unique | length))
             then error("invalid expected ledger")
-            else [.entries[].package] | unique[]
+            else .entries[] | "\(.package)|\(.arch)"
             end
         ' "$EXPECTED_LEDGER"
     )" || {
         echo "fetch-binaries: expected ledger is malformed or empty" >&2
         exit 2
     }
-    while IFS= read -r pkg; do
+    while IFS= read -r entry; do
+        pkg="${entry%%|*}"
+        arch="${entry#*|}"
         require_safe_package_name "$pkg"
+        require_supported_arch "$arch"
         if [[ "$SKIP_PKGS" == *" $pkg "* ]]; then
-            echo "fetch-binaries: ledger package $pkg omitted by WASM_POSIX_FETCH_SKIP_PKGS"
+            echo "fetch-binaries: ledger entry $pkg ($arch) omitted by WASM_POSIX_FETCH_SKIP_PKGS"
             continue
         fi
         add_selected_package "$pkg"
-    done <<<"$ledger_packages"
-    [ "${#SELECTED_PKGS[@]}" -gt 0 ] || {
+        add_expected_entry "$pkg" "$arch"
+    done <<<"$ledger_entries"
+    [ "${#EXPECTED_ENTRIES[@]}" -gt 0 ] || {
         echo "fetch-binaries: expected ledger selection is empty" >&2
         exit 2
     }
     # WHY: package publication and test materialization must consume the same
     # policy projection. A raw registry fallback here would resurrect pending
     # packages that the build matrix intentionally omitted.
-    echo "fetch-binaries: selected roots from expected ledger: ${SELECTED_PKGS[*]}"
+    echo "fetch-binaries: selected package/arch entries from expected ledger: ${EXPECTED_ENTRIES[*]}"
 fi
 
 if [ "$ALLOW_STALE" = "1" ]; then
@@ -276,29 +314,6 @@ fi
 # --- Walk packages and resolve each --------------------------------------
 LIBS_DIR="$REPO_ROOT/packages/registry"
 [ -d "$LIBS_DIR" ] || { echo "fetch-binaries: $LIBS_DIR not found" >&2; exit 2; }
-
-PACKAGE_DIRS=()
-if [ ${#SELECTED_PKGS[@]} -gt 0 ]; then
-    for pkg in "${SELECTED_PKGS[@]}"; do
-        pkg_dir="$LIBS_DIR/$pkg"
-        if [ ! -f "$pkg_dir/package.toml" ]; then
-            echo "fetch-binaries: selected package '$pkg' does not exist" >&2
-            exit 2
-        fi
-        if [ ! -f "$pkg_dir/build.toml" ]; then
-            echo "fetch-binaries: selected package '$pkg' has no publishable build.toml" >&2
-            exit 2
-        fi
-        if [[ "$SKIP_PKGS" == *" $pkg "* ]]; then
-            echo "fetch-binaries: selected package '$pkg' is also listed in WASM_POSIX_FETCH_SKIP_PKGS" >&2
-            exit 2
-        fi
-        PACKAGE_DIRS+=("$pkg_dir/")
-    done
-    echo "fetch-binaries: selected package roots: ${SELECTED_PKGS[*]}"
-else
-    PACKAGE_DIRS=("$LIBS_DIR"/*/)
-fi
 
 # Collect failures and report them after the loop. A single archive
 # that's been pulled from the release (or whose source build fails on
@@ -366,57 +381,118 @@ read_package_toml() {
     ' "$toml"
 }
 
+PACKAGE_DIRS=()
+if [ "$EXPECTED_LEDGER_SET" -eq 1 ]; then
+    # Validate the complete selection before the first resolver invocation.
+    # A ledger entry is authoritative for one architecture only; silently
+    # expanding it to every arch declared by package.toml would consume bytes
+    # outside the frozen publication projection.
+    for entry in "${EXPECTED_ENTRIES[@]}"; do
+        pkg="${entry%%|*}"
+        arch="${entry#*|}"
+        pkg_dir="$LIBS_DIR/$pkg"
+        if [ ! -f "$pkg_dir/package.toml" ]; then
+            echo "fetch-binaries: selected package '$pkg' does not exist" >&2
+            exit 2
+        fi
+        if [ ! -f "$pkg_dir/build.toml" ]; then
+            echo "fetch-binaries: selected package '$pkg' has no publishable build.toml" >&2
+            exit 2
+        fi
+        eval "$(read_package_toml "$pkg_dir/package.toml")"
+        declared_arches="${ARCHES:-}"
+        [ -z "$declared_arches" ] && declared_arches="wasm32"
+        if [[ " $declared_arches " != *" $arch "* ]]; then
+            echo "fetch-binaries: expected ledger selects undeclared architecture $pkg ($arch)" >&2
+            exit 2
+        fi
+    done
+elif [ ${#SELECTED_PKGS[@]} -gt 0 ]; then
+    for pkg in "${SELECTED_PKGS[@]}"; do
+        pkg_dir="$LIBS_DIR/$pkg"
+        if [ ! -f "$pkg_dir/package.toml" ]; then
+            echo "fetch-binaries: selected package '$pkg' does not exist" >&2
+            exit 2
+        fi
+        if [ ! -f "$pkg_dir/build.toml" ]; then
+            echo "fetch-binaries: selected package '$pkg' has no publishable build.toml" >&2
+            exit 2
+        fi
+        if [[ "$SKIP_PKGS" == *" $pkg "* ]]; then
+            echo "fetch-binaries: selected package '$pkg' is also listed in WASM_POSIX_FETCH_SKIP_PKGS" >&2
+            exit 2
+        fi
+        PACKAGE_DIRS+=("$pkg_dir/")
+    done
+    echo "fetch-binaries: selected package roots: ${SELECTED_PKGS[*]}"
+else
+    PACKAGE_DIRS=("$LIBS_DIR"/*/)
+fi
+
+resolve_package_arch() {
+    local pkg="$1"
+    local arch="$2"
+    local -a resolve_args
+    TOTAL=$((TOTAL + 1))
+    echo "fetch-binaries: resolve $pkg ($arch)"
+    resolve_args=(build-deps --arch "$arch" --binaries-dir "$REPO_ROOT/binaries")
+    if [ "$FETCH_ONLY" = "1" ]; then
+        resolve_args+=(--fetch-only)
+    fi
+    resolve_args+=(resolve "$pkg")
+    if cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+            "${resolve_args[@]}" >/dev/null; then
+        RESOLVED=$((RESOLVED + 1))
+    else
+        FAILED+=("$pkg ($arch)")
+        echo "fetch-binaries: WARN $pkg ($arch) failed to resolve" >&2
+    fi
+}
+
 # Walk every immediate child directory by default, or the exact selected roots
 # in first-requested order. `xtask build-deps resolve` owns dependency closure
 # traversal; this wrapper must not duplicate or second-guess that graph.
-for pkg_dir in "${PACKAGE_DIRS[@]}"; do
-    [ -d "$pkg_dir" ] || continue
-    pkg=$(basename "$pkg_dir")
-    toml="$pkg_dir/package.toml"
-    if [ ! -f "$toml" ]; then
-        # Stray dir, ignore.
-        continue
-    fi
-
-    eval "$(read_package_toml "$toml")"
-
-    if [[ "$SKIP_PKGS" == *" $pkg "* ]]; then
-        echo "fetch-binaries: skip $pkg (WASM_POSIX_FETCH_SKIP_PKGS)"
-        SKIPPED=$((SKIPPED + 1))
-        continue
-    fi
-
-    # Post binary-resolution-via-index-ledger: a package has a
-    # publishable binary IFF a sibling build.toml exists.
-    # kernel / userspace / examples / source / link-time-only
-    # libraries don't have one and skip.
-    if [ ! -f "$pkg_dir/build.toml" ]; then
-        SKIPPED=$((SKIPPED + 1))
-        continue
-    fi
-
-    # Default arches = ["wasm32"]. Mirror the resolver's parser
-    # (tools/xtask/src/pkg_manifest.rs default for absent `arches`).
-    arches="${ARCHES:-}"
-    [ -z "$arches" ] && arches="wasm32"
-
-    for arch in $arches; do
-        TOTAL=$((TOTAL + 1))
-        echo "fetch-binaries: resolve $pkg ($arch)"
-        resolve_args=(build-deps --arch "$arch" --binaries-dir "$REPO_ROOT/binaries")
-        if [ "$FETCH_ONLY" = "1" ]; then
-            resolve_args+=(--fetch-only)
-        fi
-        resolve_args+=(resolve "$pkg")
-        if cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-                "${resolve_args[@]}" >/dev/null; then
-            RESOLVED=$((RESOLVED + 1))
-        else
-            FAILED+=("$pkg ($arch)")
-            echo "fetch-binaries: WARN $pkg ($arch) failed to resolve" >&2
-        fi
+if [ "$EXPECTED_LEDGER_SET" -eq 1 ]; then
+    for entry in "${EXPECTED_ENTRIES[@]}"; do
+        resolve_package_arch "${entry%%|*}" "${entry#*|}"
     done
-done
+else
+    for pkg_dir in "${PACKAGE_DIRS[@]}"; do
+        [ -d "$pkg_dir" ] || continue
+        pkg=$(basename "$pkg_dir")
+        toml="$pkg_dir/package.toml"
+        if [ ! -f "$toml" ]; then
+            # Stray dir, ignore.
+            continue
+        fi
+
+        eval "$(read_package_toml "$toml")"
+
+        if [[ "$SKIP_PKGS" == *" $pkg "* ]]; then
+            echo "fetch-binaries: skip $pkg (WASM_POSIX_FETCH_SKIP_PKGS)"
+            SKIPPED=$((SKIPPED + 1))
+            continue
+        fi
+
+        # Post binary-resolution-via-index-ledger: a package has a
+        # publishable binary IFF a sibling build.toml exists.
+        # kernel / userspace / examples / source / link-time-only
+        # libraries don't have one and skip.
+        if [ ! -f "$pkg_dir/build.toml" ]; then
+            SKIPPED=$((SKIPPED + 1))
+            continue
+        fi
+
+        # Default arches = ["wasm32"]. Mirror the resolver's parser
+        # (tools/xtask/src/pkg_manifest.rs default for absent `arches`).
+        arches="${ARCHES:-}"
+        [ -z "$arches" ] && arches="wasm32"
+
+        for arch in $arches; do
+            resolve_package_arch "$pkg" "$arch"
+        done
+    done
+fi
 
 echo
 echo "fetch-binaries: resolved=$RESOLVED total=$TOTAL skipped=$SKIPPED"

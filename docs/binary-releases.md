@@ -604,7 +604,17 @@ same build shape against an isolated merge-candidate prerelease. It does not
 write `binaries-abi-v<N>/index.toml` before merge. See "Merge candidates and
 canonical activation" below.
 `force-rebuild.yml` is the maintainer-dispatched exact-main producer for
-republishing selected root closures.
+republishing selected root closures. Its package matrix remains limited to
+those selected roots, but the six-suite test gate is a broader consumer:
+rootfs construction and conditional package-backed tests also consume
+unchanged packages. Preflight therefore preserves its already-computed full
+publication-policy ledger as a run/attempt-scoped artifact. Test preparation
+uses that exact artifact with `fetch-binaries.sh --fetch-only
+--expected-ledger`, plus the same explicit heavy-runtime exclusions as the
+other package test gates. It does not walk raw registry directories or
+source-build a stale unrelated package. Runs that execute tests also require
+the `rootfs` publication closure during preflight; `skip_tests=true` retains
+the producer-only admission boundary.
 
 ## Merge candidates and canonical activation
 
@@ -1202,6 +1212,22 @@ exist, have `build.toml`, and not be hidden by
 This lets focused CI consumers declare what they actually materialize without
 accepting stale unrelated artifacts or maintaining an ever-growing negative
 skip list.
+
+An expected ledger is a second bounded form:
+
+```bash
+bash scripts/fetch-binaries.sh --fetch-only \
+  --expected-ledger /path/to/expected.json
+```
+
+Each unique `(package, arch)` entry is handed to the resolver exactly once.
+The resolver still owns its declared dependency closure. The fetcher does not
+expand a ledger entry to the package's other declared architectures, does not
+fall back to a raw registry walk, and rejects duplicate, unsupported, or
+manifest-undeclared entries before resolving anything. This form is for
+consumers that already have a Rust-generated publication projection; it does
+not infer whether a narrower projection contains every artifact a test suite
+may conditionally exercise.
 
 On any verification failure, the resolver logs a warning and falls
 through to a source build (the package's build script). This
