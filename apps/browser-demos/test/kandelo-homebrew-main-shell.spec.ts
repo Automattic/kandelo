@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import { parseHomebrewRuntimeSupportContract } from "../../../host/src/homebrew-runtime-support";
+import { parseHomebrewVfsMaterializationPolicy } from "../../../host/src/homebrew-vfs-materialization-policy";
+import { assertMainShellOperationalRuntimeFetches } from "../../../scripts/homebrew-main-shell-image-contract";
 
 const strict = process.env.KANDELO_HOMEBREW_MAIN_SHELL_STRICT === "1";
 const expectedImageSha256 = process.env.KANDELO_HOMEBREW_MAIN_SHELL_SHA256;
@@ -18,6 +20,17 @@ const runtimeSupport = parseHomebrewRuntimeSupportContract(
     readFileSync(
       new URL(
         "../../../homebrew/main-shell-homebrew-runtime-support.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ),
+);
+const materializationPolicy = parseHomebrewVfsMaterializationPolicy(
+  JSON.parse(
+    readFileSync(
+      new URL(
+        "../../../homebrew/main-shell-materialization-policy.json",
         import.meta.url,
       ),
       "utf8",
@@ -73,6 +86,15 @@ const BASE_EXPECTED_PACKAGES = [
   "kandelo-dev/tap-core/m4",
 ] as const;
 const RUNTIME_SUPPORT_EXPECTED_PACKAGES = runtimeSupport.additionalFormulaOrder;
+const EXPECTED_MIRROR_PACKAGES = [
+  ...runtimeSupport.baseFormulaOrder,
+  ...runtimeSupport.additionalFormulaOrder,
+]
+  .filter(
+    (packageName) =>
+      !materializationPolicy.embedded_package_order.includes(packageName),
+  )
+  .sort();
 
 function isHomebrewBootstrapUrl(url: string): boolean {
   const path = url.split(/[?#]/, 1)[0] ?? url;
@@ -201,6 +223,34 @@ function packageNamesForRows(
       return packageName;
     })
     .sort();
+}
+
+function snapshotLazyRows(
+  rows: readonly LazyDownloadRow[],
+): Map<string | null, string> {
+  const snapshot = new Map<string | null, string>();
+  for (const row of rows) {
+    if (snapshot.has(row.source)) {
+      throw new Error(
+        `lazy ledger contains duplicate source ${String(row.source)}`,
+      );
+    }
+    snapshot.set(row.source, JSON.stringify(row));
+  }
+  return snapshot;
+}
+
+function assertPriorLazyRowsUnchanged(
+  prior: ReadonlyMap<string | null, string>,
+  currentRows: readonly LazyDownloadRow[],
+): void {
+  const current = snapshotLazyRows(currentRows);
+  for (const [source, expected] of prior) {
+    expect(
+      current.get(source),
+      `lazy ledger row changed for prior source ${String(source)}`,
+    ).toBe(expected);
+  }
 }
 
 async function waitForLazyPackageRows(
@@ -460,9 +510,8 @@ async function bootExactShellPage(page: Page): Promise<ExactShellPage> {
     return response.json() as Promise<{ assets: MirrorAsset[] }>;
   }, config.mirrorPlanUrl);
   expect(mirrorPlan.assets.length).toBeGreaterThan(0);
-  expect(mirrorPlan.assets).toHaveLength(
-    BASE_EXPECTED_PACKAGES.length + RUNTIME_SUPPORT_EXPECTED_PACKAGES.length,
-  );
+  expect(mirrorPlan.assets.map(({ package: packageName }) => packageName).sort())
+    .toEqual(EXPECTED_MIRROR_PACKAGES);
   if (config.transportMode === "closed") {
     expect(closedPayloadResponses).toHaveLength(mirrorPlan.assets.length);
     expect(closedPayloadResponses.every(({ status }) => status === 200)).toBe(
@@ -660,7 +709,57 @@ test("a fresh exact shell activates brew support atomically after independent ba
     lazyRows.filter(({ source }) => !repeatPriorSources.has(source)),
   ).toEqual([]);
 
-  const brewPriorSources = new Set(lazyRows.map(({ source }) => source));
+  const runtimeActivationPriorSources = new Set(
+    lazyRows.map(({ source }) => source),
+  );
+  // WHY: admitted lazy base commands intentionally have public paths before
+  // materialization. Probing one here could activate its bottle tree and
+  // contaminate the exact atomic cohort checked below, so this phase resolves
+  // only the runtime-support activation root and does not execute Homebrew.
+  await runTerminalCommand(
+    page,
+    bashCommand(`
+set -eu
+IFS= read -r brew_shebang < /usr/bin/brew
+test "$brew_shebang" = '#!/bin/bash -pu'
+printf 'HOMEBREW_ATOMIC_RUNTIME_ACTIVATED\n'
+`.trim()),
+    "HOMEBREW_ATOMIC_RUNTIME_ACTIVATED",
+    300_000,
+  );
+  lazyRows = await waitForLazyPackageRows(
+    page,
+    runtimeActivationPriorSources,
+    RUNTIME_SUPPORT_EXPECTED_PACKAGES,
+    shell.mirrorPlan,
+    180_000,
+  );
+  expect(
+    packageNamesForRows(
+      lazyRows.filter(
+        ({ source }) => !runtimeActivationPriorSources.has(source),
+      ),
+      shell.mirrorPlan,
+    ),
+  ).toEqual([...RUNTIME_SUPPORT_EXPECTED_PACKAGES].sort());
+  const runtimeActivationResult = await waitForHomebrewBootstrapRow(page);
+  lazyRows = runtimeActivationResult.rows;
+  const runtimeActivationRows = lazyRows.filter(
+    ({ source }) => !runtimeActivationPriorSources.has(source),
+  );
+  expect(
+    packageNamesForRows(runtimeActivationRows, shell.mirrorPlan),
+  ).toEqual([...RUNTIME_SUPPORT_EXPECTED_PACKAGES].sort());
+  assertBottleLedger(runtimeActivationRows, shell.mirrorPlan);
+  await assertBootstrapMaterialized(
+    shell,
+    runtimeActivationResult.bootstrap,
+  );
+
+  const brewOperationPriorRows = snapshotLazyRows(lazyRows);
+  const brewOperationPriorSources = new Set(
+    lazyRows.map(({ source }) => source),
+  );
   // WHY: `brew ruby` is a developer command and may query Homebrew's developer
   // package API. A temporary ordinary command observes the post-brew.env
   // process environment while the lifecycle test separately proves installs.
@@ -668,7 +767,6 @@ test("a fresh exact shell activates brew support atomically after independent ba
     page,
     bashCommand(`
 set -eu
-test ! -e /usr/bin/file
 test "$(/usr/bin/brew --prefix)" = /home/linuxbrew/.linuxbrew
 probe=/home/linuxbrew/.linuxbrew/Library/Homebrew/cmd/kandelo-env-probe.sh
 cat > "$probe" <<'KANDELO_BREW_ENV_PROBE'
@@ -678,28 +776,31 @@ homebrew-kandelo-env-probe() {
 KANDELO_BREW_ENV_PROBE
 test "$(/usr/bin/brew kandelo-env-probe)" = wasm32_kandelo
 rm -f "$probe"
-printf 'HOMEBREW_ATOMIC_RUNTIME_OK\n'
+printf 'HOMEBREW_OPERATIONAL_RUNTIME_OK\n'
 `.trim()),
-    "HOMEBREW_ATOMIC_RUNTIME_OK",
+    "HOMEBREW_OPERATIONAL_RUNTIME_OK",
     300_000,
   );
   lazyRows = await waitForLazyPackageRows(
     page,
-    brewPriorSources,
-    RUNTIME_SUPPORT_EXPECTED_PACKAGES,
+    brewOperationPriorSources,
+    [],
     shell.mirrorPlan,
     180_000,
   );
-  const brewResult = await waitForHomebrewBootstrapRow(page);
-  lazyRows = brewResult.rows;
-  expect(
-    packageNamesForRows(
-      lazyRows.filter(({ source }) => !brewPriorSources.has(source)),
-      shell.mirrorPlan,
+  assertPriorLazyRowsUnchanged(brewOperationPriorRows, lazyRows);
+  const operationalRuntimePackages = packageNamesForRows(
+    lazyRows.filter(
+      ({ source }) => !brewOperationPriorSources.has(source),
     ),
-  ).toEqual([...RUNTIME_SUPPORT_EXPECTED_PACKAGES].sort());
-  await assertBootstrapMaterialized(shell, brewResult.bootstrap);
+    shell.mirrorPlan,
+  );
+  assertMainShellOperationalRuntimeFetches(
+    runtimeSupport,
+    operationalRuntimePackages,
+  );
 
+  const repeatBrewPriorRows = snapshotLazyRows(lazyRows);
   const repeatBrewPriorSources = new Set(lazyRows.map(({ source }) => source));
   await runTerminalCommand(
     page,
@@ -709,12 +810,27 @@ printf 'HOMEBREW_ATOMIC_RUNTIME_OK\n'
     240_000,
   );
   lazyRows = await readLazyDownloadRows(page);
+  assertPriorLazyRowsUnchanged(repeatBrewPriorRows, lazyRows);
   expect(
     lazyRows.filter(({ source }) => !repeatBrewPriorSources.has(source)),
   ).toEqual([]);
+  const expectedFetchedPackages = [...new Set([
+    ...BASE_EXPECTED_PACKAGES,
+    ...RUNTIME_SUPPORT_EXPECTED_PACKAGES,
+    ...operationalRuntimePackages,
+  ])].sort();
   expect(packageNamesForRows(lazyRows, shell.mirrorPlan)).toEqual(
-    [...BASE_EXPECTED_PACKAGES, ...RUNTIME_SUPPORT_EXPECTED_PACKAGES].sort(),
+    expectedFetchedPackages,
   );
+  // WHY: the complete mirror is the structural closure, while this smoke
+  // deliberately exercises only a representative subset. Requiring untouched
+  // packages proves the wider shell did not silently become eager again.
+  expect(
+    shell.mirrorPlan.assets.filter(
+      ({ package: packageName }) =>
+        !expectedFetchedPackages.includes(packageName),
+    ).length,
+  ).toBeGreaterThan(0);
   expect(lazyRows.filter(isHomebrewBootstrapRow)).toHaveLength(1);
   assertBottleLedger(lazyRows, shell.mirrorPlan);
   expect(shell.legacyArtifactDownloads).toEqual([]);

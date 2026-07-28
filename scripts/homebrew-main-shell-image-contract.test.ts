@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import {
   assertMainShellGuestCatalogIdentity,
   assertMainShellImageContract,
+  assertMainShellOperationalRuntimeFetches,
   requiredMainShellPublicPaths,
 } from "./homebrew-main-shell-image-contract";
 import { parseHomebrewRuntimeSupportContract } from "../host/src/homebrew-runtime-support";
@@ -241,6 +242,33 @@ function fixture(): Parameters<typeof assertMainShellImageContract>[0] {
 
 test("accepts the exact reviewed root and Formula identities", () => {
   assert.doesNotThrow(() => assertMainShellImageContract(fixture()));
+});
+
+test("bounds operational Homebrew downloads to the reviewed support closure", () => {
+  assert.doesNotThrow(() =>
+    assertMainShellOperationalRuntimeFetches(runtimeSupport, []),
+  );
+  assert.doesNotThrow(() =>
+    assertMainShellOperationalRuntimeFetches(runtimeSupport, [
+      "kandelo-dev/tap-core/coreutils",
+      "kandelo-dev/tap-core/ruby",
+    ]),
+  );
+  assert.throws(
+    () =>
+      assertMainShellOperationalRuntimeFetches(runtimeSupport, [
+        "kandelo-dev/tap-core/file-formula",
+      ]),
+    /outside the reviewed support closure.*file-formula/,
+  );
+  assert.throws(
+    () =>
+      assertMainShellOperationalRuntimeFetches(runtimeSupport, [
+        "kandelo-dev/tap-core/coreutils",
+        "kandelo-dev/tap-core/coreutils",
+      ]),
+    /operational Homebrew runtime fetches contains a duplicate identity/,
+  );
 });
 
 test("rejects omitted nonempty runtime-state report sections", () => {

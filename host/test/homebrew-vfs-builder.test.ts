@@ -17,6 +17,7 @@ import { describe, expect, it, vi } from "vitest";
 import { gzipSync, zipSync, type Zippable } from "fflate";
 import { ABI_VERSION } from "../src/generated/abi";
 import {
+  applyHomebrewVfsConsumerState,
   buildHomebrewVfs,
   writeHomebrewVfsComposition,
   type HomebrewVfsBuildResult,
@@ -4325,6 +4326,235 @@ describe("Homebrew VFS builder", () => {
     );
   });
 
+  it("applies Bash- and Ruby-owned consumer state once across a Ruby-only delta", async () => {
+    const fixture = await lazyLayerFixture();
+    const template = fixture.plan.packages.find(
+      (pkg) => pkg.name === "runtime",
+    )!;
+    const makePackage = (
+      name: "bash" | "coreutils" | "ruby",
+      version: string,
+      dependencies: HomebrewVfsPlan["packages"][number]["dependencies"],
+    ): {
+      bytes: Uint8Array;
+      package: HomebrewVfsPlan["packages"][number];
+    } => {
+      const keg = `${CELLAR}/${name}/${version}`;
+      const bytes = bottleTar([
+        {
+          path: `${name}/${version}/bin/${name}`,
+          data: `#!/bin/sh\necho ${name}\n`,
+          mode: 0o755,
+        },
+        {
+          path: `${name}/${version}/.brew/${name}.rb`,
+          data: `class ${name[0].toUpperCase()}${name.slice(1)} < Formula\nend\n`,
+        },
+        {
+          path: `${name}/${version}/INSTALL_RECEIPT.json`,
+          data: "{}\n",
+        },
+      ]);
+      const cacheKey = sha256(utf8(`${name}-cache-key`));
+      return {
+        bytes,
+        package: {
+          ...structuredClone(template),
+          name,
+          fullName: `kandelo-dev/tap-core/${name}`,
+          version,
+          url: `file:///tmp/${name}.bottle.tar.gz`,
+          sha256: sha256(bytes),
+          bytes: bytes.byteLength,
+          cacheKeySha: cacheKey,
+          keg,
+          payloadRoot: `${name}/${version}`,
+          linkManifestPath:
+            `Kandelo/link/${name}-${version}-rebuild0-wasm32.json`,
+          dependencies,
+          linkManifest: {
+            ...structuredClone(template.linkManifest),
+            package: name,
+            version,
+            keg,
+            bottle: {
+              ...structuredClone(template.linkManifest.bottle),
+              url: `file:///tmp/${name}.bottle.tar.gz`,
+              sha256: sha256(bytes),
+              bytes: bytes.byteLength,
+              cache_key_sha: cacheKey,
+              payload_root: `${name}/${version}`,
+            },
+            links: [{
+              type: "symlink",
+              source: `Cellar/${name}/${version}/bin/${name}`,
+              target: `bin/${name}`,
+            }],
+            receipts: [
+              `Cellar/${name}/${version}/.brew/${name}.rb`,
+              `Cellar/${name}/${version}/INSTALL_RECEIPT.json`,
+            ],
+          },
+        },
+      };
+    };
+    const bash = makePackage("bash", "5.2", []);
+    const coreutils = makePackage("coreutils", "9.5", []);
+    const ruby = makePackage("ruby", "3.3", [{
+      name: "bash",
+      full_name: bash.package.fullName,
+      version: bash.package.version,
+    }]);
+    const basePlan: HomebrewVfsPlan = {
+      ...fixture.plan,
+      requestedPackages: ["bash", "coreutils"],
+      packages: [bash.package, coreutils.package],
+    };
+    const supportPlan: HomebrewVfsPlan = {
+      ...basePlan,
+      requestedPackages: ["bash", "coreutils", "ruby"],
+      packages: [bash.package, coreutils.package, ruby.package],
+    };
+    const contract: HomebrewRuntimeSupportContract = {
+      id: "homebrew-runtime-support",
+      catalog: {
+        tapRepository: fixture.plan.tapRepository,
+        tapName: fixture.plan.tapName,
+        tapCommit: fixture.plan.tapCommit,
+      },
+      formulaRoots: [ruby.package.fullName],
+      formulaOrder: [
+        bash.package.fullName,
+        coreutils.package.fullName,
+        ruby.package.fullName,
+      ],
+      baseFormulaOrder: [
+        bash.package.fullName,
+        coreutils.package.fullName,
+      ],
+      additionalFormulaOrder: [ruby.package.fullName],
+      activation: {
+        capability: "homebrew:runtime",
+        root: "/usr/bin/brew",
+        atomicGroup: "homebrew-runtime-support",
+      },
+      deferredRelocationFormulae: [],
+      lifecycleInstall: {
+        tap: "brandonpayton/kandelo-canary",
+        repository: "brandonpayton/homebrew-kandelo-canary",
+        revision: "4".repeat(40),
+        formula: "m4",
+      },
+    };
+    const bashProfile = "export SHELL=/usr/bin/bash\n";
+    const exactPolicy: HomebrewVfsCompatibilityPolicy = {
+      mirror_link_manifest_bin: { targets: ["/usr/bin"] },
+      link_conflict_owners: [],
+      aliases: [],
+      runtime_state: [
+        {
+          requires_package: bash.package.fullName,
+          path: "/etc/profile.d/kandelo-shell.sh",
+          kind: "text_file",
+          mode: 0o644,
+          uid: 0,
+          gid: 0,
+          contents: bashProfile,
+          reason: "The base shell owns its profile.",
+        },
+        {
+          requires_package: ruby.package.fullName,
+          path: "/var/lib/ruby-runtime",
+          kind: "directory",
+          mode: 0o755,
+          uid: 1000,
+          gid: 1000,
+          reason: "The runtime-support delta owns its mutable state.",
+        },
+      ],
+    };
+    const build = (
+      compatibilityPolicy: HomebrewVfsCompatibilityPolicy,
+    ) => {
+      const fs = MemoryFileSystem.create(
+        new SharedArrayBuffer(32 * 1024 * 1024),
+      );
+      ensureDirRecursive(fs, "/etc/profile.d");
+      ensureDirRecursive(fs, "/var/lib");
+      return buildHomebrewMaterializedVfs(basePlan, {
+        fs,
+        collectionFs: MemoryFileSystem.create(
+          new SharedArrayBuffer(32 * 1024 * 1024),
+        ),
+        runtimeSupportCollectionFs: MemoryFileSystem.create(
+          new SharedArrayBuffer(32 * 1024 * 1024),
+        ),
+        runtimeSupport: { contract, plan: supportPlan },
+        policy: {
+          schema: 1,
+          kind: "kandelo-homebrew-vfs-materialization-policy",
+          embedded_roots: [bash.package.fullName],
+          embedded_package_order: [bash.package.fullName],
+        },
+        mirrorRepository: "kandelo-dev/homebrew-tap-core",
+        compatibilityPolicy,
+        writeProfile: false,
+        loadBottleBytes(pkg) {
+          if (pkg.name === "bash") return bash.bytes;
+          if (pkg.name === "coreutils") return coreutils.bytes;
+          if (pkg.name === "ruby") return ruby.bytes;
+          throw new Error(`unexpected fixture package ${pkg.fullName}`);
+        },
+      });
+    };
+
+    const result = await build(exactPolicy);
+    expect(readVfsFile(
+      result.fs,
+      "/etc/profile.d/kandelo-shell.sh",
+    )).toBe(bashProfile);
+    expect(result.fs.lstat("/var/lib/ruby-runtime")).toMatchObject({
+      uid: 1000,
+      gid: 1000,
+    });
+    expect(result.report.runtime_state?.map((entry) => ({
+      package: entry.requires_package,
+      path: entry.path,
+    }))).toEqual([
+      {
+        package: bash.package.fullName,
+        path: "/etc/profile.d/kandelo-shell.sh",
+      },
+      {
+        package: ruby.package.fullName,
+        path: "/var/lib/ruby-runtime",
+      },
+    ]);
+    expect(new Set(
+      result.report.runtime_state?.map((entry) => entry.path),
+    ).size).toBe(2);
+    expect(result.report.compatibility_links?.filter(
+      (entry) => entry.path === "/usr/bin/bash",
+    )).toHaveLength(1);
+    expect(result.report.compatibility_links?.filter(
+      (entry) => entry.path === "/usr/bin/ruby",
+    )).toHaveLength(1);
+    expect(result.fs.isPathDeferred(`${ruby.package.keg}/bin/ruby`)).toBe(true);
+    expect(JSON.parse(
+      readVfsFile(result.fs, "/etc/kandelo/homebrew-vfs.json"),
+    ).runtime_state).toEqual(result.report.runtime_state);
+
+    await expect(build({
+      ...exactPolicy,
+      runtime_state: [{
+        ...exactPolicy.runtime_state![0],
+        requires_package: "kandelo-dev/tap-core/missing",
+      }],
+    })).rejects.toThrow(
+      "Homebrew compatibility runtime_state[0] requires_package is not in the selected plan",
+    );
+  });
+
   it("preserves exact eligible external bottle URLs and rejects fragments", async () => {
     const exactUrl =
       "https://github.com:443/kandelo-dev/homebrew-tap-core/releases/download/" +
@@ -5048,6 +5278,54 @@ describe("Homebrew VFS builder", () => {
     expect(JSON.parse(
       readVfsFile(result.fs, "/etc/kandelo/homebrew-vfs.json"),
     ).runtime_state).toEqual(result.report.runtime_state);
+  });
+
+  it("defers consumer runtime-state ownership for partial bottle collections", async () => {
+    const bytes = bottleTar(standardEntries());
+    const plan = await planHomebrewVfs(metadataForBottle(bytes), {
+      packages: ["hello"],
+      arch: "wasm32",
+      runtime: "node",
+      loadLinkManifest: () => linkManifest(bytes),
+    });
+    const runtimePath = "/etc/deferred-consumer-state";
+    const compatibilityPolicy: HomebrewVfsCompatibilityPolicy = {
+      mirror_link_manifest_bin: { targets: [] },
+      link_conflict_owners: [],
+      aliases: [],
+      runtime_state: [{
+        requires_package: "kandelo-dev/tap-core/not-in-this-collection",
+        path: runtimePath,
+        kind: "empty_file",
+        mode: 0o600,
+        uid: 0,
+        gid: 0,
+        reason: "The complete composition, not this partial collection, owns state.",
+      }],
+    };
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+
+    const collection = await buildHomebrewVfs(plan, {
+      fs,
+      compatibilityPolicy,
+      consumerState: "defer",
+      loadBottleBytes: () => bytes,
+    });
+
+    expect(readVfsFile(collection.fs, `${KEG}/bin/hello`)).toBe(
+      "#!/bin/sh\necho hello\n",
+    );
+    expect(collection.report.runtime_state).toBeUndefined();
+    expect(() => collection.fs.lstat(runtimePath)).toThrow();
+
+    expect(() => applyHomebrewVfsConsumerState(plan, {
+      fs: collection.fs,
+      compatibilityPolicy,
+      writeProfile: false,
+    })).toThrow(
+      "Homebrew compatibility runtime_state[0] requires_package is not in the selected plan",
+    );
+    expect(() => collection.fs.lstat(runtimePath)).toThrow();
   });
 
   it("rejects invalid runtime-state declarations before pouring bottles", async () => {

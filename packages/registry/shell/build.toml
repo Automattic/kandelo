@@ -76,7 +76,7 @@ publication_state = "ready"
 [[git_inputs]]
 name = "homebrew_tap_core"
 repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"
-commit = "9820ef5643dc50f5876e53a1bbf6a309fc62f9a7"
+commit = "6ad0e3dbc60e5572c4288c86919238f71c1bc110"
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

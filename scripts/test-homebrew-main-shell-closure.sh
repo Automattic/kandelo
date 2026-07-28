@@ -1986,6 +1986,7 @@ jq --slurpfile support "$RUNTIME_SUPPORT" '
     if . == "bash" then ["ncurses"]
     elif . == "ncurses" then ["libcxx"]
     elif . == "m4" then ["dash"]
+    elif . == "file-formula" then ["libmagic"]
     elif . == "diffutils" then ["coreutils", "ed"]
     elif . == "tar" then ["dash", "gzip"]
     elif . == "curl" then ["libcurl", "openssl", "zlib"]
@@ -2186,14 +2187,14 @@ jq '.formula_closure[0] = "other/tap/dash"' "$SOURCE_LOCK" >"$lock"
 expect_failure "must be a canonical kandelo-dev/tap-core/<formula> identity" \
   node "$CHECKER" "$BREWFILE" "$lock"
 
-jq '.packages |= map(select(.name != "ncurses"))' \
+jq '.packages |= map(select(.name != "libmagic"))' \
   "$metadata" >"$TMP_ROOT/missing-dependency.json"
-expect_failure "missing dependency of bash Formula ncurses" \
+expect_failure "missing dependency of file-formula Formula libmagic" \
   checker_with_metadata "$SOURCE_LOCK" "$TMP_ROOT/missing-dependency.json"
 
-jq '(.packages[] | select(.name == "bash") | .dependencies) = []' \
+jq '(.packages[] | select(.name == "file-formula") | .dependencies) = []' \
   "$metadata" >"$TMP_ROOT/short-closure.json"
-expect_failure "resolves $((SOURCE_CLOSURE_COUNT - 2)) main-shell Formulae" \
+expect_failure "resolves $((SOURCE_CLOSURE_COUNT - 1)) main-shell Formulae" \
   checker_with_metadata "$SOURCE_LOCK" "$TMP_ROOT/short-closure.json"
 
 jq '
@@ -2212,8 +2213,8 @@ expect_failure "resolves $((SOURCE_CLOSURE_COUNT + 1)) main-shell Formulae" \
   checker_with_metadata "$SOURCE_LOCK" "$TMP_ROOT/long-closure.json"
 
 jq '
-  (.packages[] | select(.name == "bash") | .dependencies[] |
-    select(.name == "ncurses")) =
+  (.packages[] | select(.name == "file-formula") | .dependencies[] |
+    select(.name == "libmagic")) =
       {"name":"unexpected","full_name":"kandelo-dev/tap-core/unexpected"} |
   .packages += [{
     "name":"unexpected",
@@ -2221,9 +2222,7 @@ jq '
     "version":"1.0",
     "formula_revision":0,
     "bottle_rebuild":0,
-    "dependencies":[
-      {"name":"libcxx","full_name":"kandelo-dev/tap-core/libcxx"}
-    ]
+    "dependencies":[]
   }]
 ' "$metadata" >"$TMP_ROOT/wrong-closure.json"
 expect_failure "tap metadata dependency closure does not match reviewed formula_closure" \
@@ -2314,9 +2313,10 @@ jq 'del(.compatibility.aliases[0].source_kind)' \
 expect_failure "compatibility.aliases[0] is invalid" \
   node "$CHECKER" "$BREWFILE" "$lock"
 
+last_alias_index="$(jq -er '.compatibility.aliases | length - 1' "$SOURCE_LOCK")"
 jq '(.compatibility.aliases[-1].package) = "kandelo-dev/tap-core/not-locked"' \
   "$SOURCE_LOCK" >"$lock"
-expect_failure "compatibility.aliases[2] is invalid" \
+expect_failure "compatibility.aliases[$last_alias_index] is invalid" \
   node "$CHECKER" "$BREWFILE" "$lock"
 
 jq '.compatibility.aliases[1].targets[0] = .compatibility.aliases[0].targets[0]' \
@@ -2329,7 +2329,8 @@ expect_failure "main-shell migration compatibility policy is invalid" \
   node "$CHECKER" "$BREWFILE" "$lock"
 
 jq '.compatibility.public_commands.usr_bin_only +=
-  [.compatibility.public_commands.mirrored_names[0]]' \
+  [.compatibility.public_commands.mirrored_names[0]] |
+  .compatibility.public_commands.usr_bin_only |= sort' \
   "$SOURCE_LOCK" >"$lock"
 expect_failure "public command names across path cohorts contains duplicate" \
   node "$CHECKER" "$BREWFILE" "$lock"
