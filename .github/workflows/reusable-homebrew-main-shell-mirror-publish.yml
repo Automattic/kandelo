@@ -29,6 +29,7 @@ jobs:
       contents: read
     outputs:
       artifact-digest: ${{ steps.handoff.outputs.artifact-digest }}
+      lifecycle-artifact-digest: ${{ steps.lifecycle-handoff.outputs.artifact-digest }}
     steps:
       - name: Validate tap-owned caller and exact live inputs
         shell: bash
@@ -326,6 +327,51 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+      - name: Prepare separate public lifecycle-input handoff
+        id: lifecycle
+        working-directory: kandelo
+        shell: bash
+        env:
+          IMAGE: ${{ steps.shell.outputs.image }}
+          BOOTSTRAP: ${{ steps.shell.outputs.bootstrap }}
+          BOOTSTRAP_ENV: ${{ steps.shell.outputs.bootstrap-env }}
+          MIRROR_PLAN: ${{ steps.mirror.outputs.root }}/kandelo-homebrew-bottle-mirror-plan.json
+          KANDELO_REF: ${{ inputs.kandelo-ref }}
+          TAP_CATALOG_REF: ${{ inputs.tap-catalog-ref }}
+          TAP_AUTHORITY_REF: ${{ github.sha }}
+          CANARY_REF: ${{ inputs.canary-ref }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/homebrew-guest-lifecycle-inputs-handoff"
+          test ! -e "$root"
+          # WHY: package releases expose shell/bootstrap outputs only as
+          # archive members, while the lazy bootstrap worker needs one direct
+          # ZIP URL. Publish these fixed proof inputs under their own immutable
+          # identity; they do not belong to the bottle-layer mirror.
+          bash scripts/dev-shell.sh npx tsx \
+            scripts/homebrew-guest-lifecycle-publication.ts create \
+              --image "$IMAGE" \
+              --homebrew-bootstrap-spec \
+                homebrew/main-shell-brew-package-tree.json \
+              --homebrew-bootstrap-archive "$BOOTSTRAP" \
+              --homebrew-bootstrap-env "$BOOTSTRAP_ENV" \
+              --bottle-mirror-plan "$MIRROR_PLAN" \
+              --kandelo-ref "$KANDELO_REF" \
+              --tap-catalog-ref "$TAP_CATALOG_REF" \
+              --tap-authority-ref "$TAP_AUTHORITY_REF" \
+              --canary-ref "$CANARY_REF" \
+              --out "$root"
+          echo "root=$root" >>"$GITHUB_OUTPUT"
+
+      - name: Upload same-run lifecycle-input handoff
+        id: lifecycle-handoff
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: homebrew-guest-lifecycle-inputs-handoff
+          path: ${{ steps.lifecycle.outputs.root }}
+          retention-days: 1
+          if-no-files-found: error
+
   publish:
     name: Publish with tap-owned token
     needs: prepare
@@ -358,6 +404,12 @@ jobs:
           name: homebrew-main-shell-mirror-handoff
           path: ${{ runner.temp }}/main-shell-mirror-handoff
 
+      - name: Download only the same-run lifecycle-input handoff
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: homebrew-guest-lifecycle-inputs-handoff
+          path: ${{ runner.temp }}/homebrew-guest-lifecycle-inputs-handoff
+
       - name: Revalidate handoff and live publication authority
         shell: bash
         env:
@@ -374,8 +426,17 @@ jobs:
           test -z "$(git status --porcelain=v1 --untracked-files=no)"
           test -z "$(git -C kandelo status --porcelain=v1 --untracked-files=all)"
           [ "${{ needs.prepare.outputs.artifact-digest }}" != "" ]
+          [ "${{ needs.prepare.outputs.lifecycle-artifact-digest }}" != "" ]
           bash kandelo/scripts/verify-homebrew-main-shell-mirror-handoff.sh \
             --root "$RUNNER_TEMP/main-shell-mirror-handoff" \
+            --kandelo-ref "$KANDELO_REF" \
+            --tap-catalog-ref "$TAP_CATALOG_REF" \
+            --tap-authority-ref "$TAP_AUTHORITY_REF" \
+            --canary-ref "$CANARY_REF"
+          bash kandelo/scripts/verify-homebrew-guest-lifecycle-publication.sh \
+            --root "$RUNNER_TEMP/homebrew-guest-lifecycle-inputs-handoff" \
+            --bottle-mirror-plan \
+              "$RUNNER_TEMP/main-shell-mirror-handoff/mirror/kandelo-homebrew-bottle-mirror-plan.json" \
             --kandelo-ref "$KANDELO_REF" \
             --tap-catalog-ref "$TAP_CATALOG_REF" \
             --tap-authority-ref "$TAP_AUTHORITY_REF" \
@@ -387,7 +448,7 @@ jobs:
             --repository Kandelo-dev/homebrew-tap-core \
             --source-sha "$TAP_AUTHORITY_REF"
 
-      - name: Publish and anonymously re-read immutable mirror
+      - name: Publish and anonymously re-read immutable public inputs
         id: release
         shell: bash
         env:
@@ -415,13 +476,38 @@ jobs:
             .immutable == true and
             (.assets | length) > 1
           ' "$receipt" >/dev/null
-          echo "receipt=$receipt" >>"$GITHUB_OUTPUT"
+          lifecycle="$RUNNER_TEMP/homebrew-guest-lifecycle-inputs-handoff"
+          lifecycle_receipt="$RUNNER_TEMP/homebrew-guest-lifecycle-inputs-release-receipt.json"
+          # The mirror publication above is independently complete. A retry of
+          # this companion release is content-addressed and cannot mutate it.
+          bash kandelo/scripts/publish-immutable-github-release.sh \
+            --manifest "$lifecycle/publish.json" \
+            --asset-root "$lifecycle" \
+            --lock-root "$GITHUB_WORKSPACE" \
+            --receipt "$lifecycle_receipt" \
+            --exact-kandelo-main-sha "$KANDELO_REF" \
+            --exact-target-main-sha "$TAP_AUTHORITY_REF"
+          jq -e \
+            --arg tap "$TAP_AUTHORITY_REF" '
+            .status == "success" and
+            .visibility == "public-anonymous-readback" and
+            .repository == "kandelo-dev/homebrew-tap-core" and
+            .target_commitish == $tap and
+            .immutable == true and
+            (.assets | length) == 4
+          ' "$lifecycle_receipt" >/dev/null
+          {
+            echo "receipt=$receipt"
+            echo "lifecycle-receipt=$lifecycle_receipt"
+          } >>"$GITHUB_OUTPUT"
 
       - name: Upload immutable publication receipt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: homebrew-main-shell-mirror-publication
-          path: ${{ steps.release.outputs.receipt }}
+          path: |
+            ${{ steps.release.outputs.receipt }}
+            ${{ steps.release.outputs.lifecycle-receipt }}
           retention-days: 7
           if-no-files-found: error
 
@@ -446,6 +532,12 @@ jobs:
         with:
           name: homebrew-main-shell-mirror-handoff
           path: ${{ runner.temp }}/main-shell-mirror-handoff
+
+      - name: Download same-run lifecycle-input handoff
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: homebrew-guest-lifecycle-inputs-handoff
+          path: ${{ runner.temp }}/homebrew-guest-lifecycle-inputs-handoff
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
@@ -497,6 +589,14 @@ jobs:
             --tap-catalog-ref "$TAP_CATALOG_REF" \
             --tap-authority-ref "$TAP_AUTHORITY_REF" \
             --canary-ref "$CANARY_REF"
+          bash scripts/verify-homebrew-guest-lifecycle-publication.sh \
+            --root "$RUNNER_TEMP/homebrew-guest-lifecycle-inputs-handoff" \
+            --bottle-mirror-plan \
+              "$RUNNER_TEMP/main-shell-mirror-handoff/mirror/kandelo-homebrew-bottle-mirror-plan.json" \
+            --kandelo-ref "$KANDELO_REF" \
+            --tap-catalog-ref "$TAP_CATALOG_REF" \
+            --tap-authority-ref "$TAP_AUTHORITY_REF" \
+            --canary-ref "$CANARY_REF"
           bash .github/scripts/require-exact-repository-main.sh \
             --repository Automattic/kandelo --source-sha "$KANDELO_REF"
           bash .github/scripts/require-exact-repository-main.sh \
@@ -531,6 +631,25 @@ jobs:
           env -u GH_TOKEN -u GITHUB_TOKEN curl --disable --fail --location \
             --silent --show-error "$plan_url" --output "$RUNNER_TEMP/public-plan.json"
           cmp "$plan" "$RUNNER_TEMP/public-plan.json"
+          lifecycle="$RUNNER_TEMP/homebrew-guest-lifecycle-inputs-handoff"
+          lifecycle_root="$(jq -er '.release.root' "$lifecycle/handoff.json")"
+          for name in \
+            main-shell.vfs.zst \
+            main-shell-brew-package-tree.json \
+            homebrew-bootstrap.zip \
+            homebrew-brew.env
+          do
+            env -u GH_TOKEN -u GITHUB_TOKEN \
+              curl --disable --fail --location --silent --show-error \
+                "${lifecycle_root}${name}" \
+                --output "$RUNNER_TEMP/public-$name"
+            cmp "$lifecycle/$name" "$RUNNER_TEMP/public-$name"
+          done
+          cmp "$image" "$lifecycle/main-shell.vfs.zst"
+          cmp homebrew/main-shell-brew-package-tree.json \
+            "$lifecycle/main-shell-brew-package-tree.json"
+          cmp "$bootstrap" "$lifecycle/homebrew-bootstrap.zip"
+          cmp "$bootstrap_env" "$lifecycle/homebrew-brew.env"
           {
             echo "image=$image"
             echo "bootstrap=$bootstrap"
@@ -539,6 +658,7 @@ jobs:
             echo "image-sha=$(sha256sum "$image" | awk '{print $1}')"
             echo "bootstrap-sha=$(sha256sum "$bootstrap" | awk '{print $1}')"
             echo "bootstrap-bytes=$(wc -c <"$bootstrap" | tr -d '[:space:]')"
+            echo "lifecycle-root=$lifecycle_root"
           } >>"$GITHUB_OUTPUT"
 
       - name: Prove public shell and live tap lifecycle in Node
@@ -578,6 +698,7 @@ jobs:
         working-directory: apps/browser-demos
         shell: bash
         env:
+          KANDELO_BROWSER_DEMO_INPUTS: main,homebrew-vfs-test
           WASM_POSIX_BINARY_CACHE_ROOT: ${{ runner.temp }}/main-shell-public-proof-cache
         run: |
           set -euo pipefail
@@ -585,10 +706,40 @@ jobs:
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
             npm run build
           test -f dist/index.html
+          test -f dist/pages/homebrew-vfs-test/index.html
           test -f dist/shell.vfs.zst
           cmp dist/shell.vfs.zst "${{ steps.public.outputs.image }}"
 
-      - name: Prove public bottle transport in Chromium
+      - name: Create exact all-public Chromium lifecycle fixture
+        id: public-fixture
+        shell: bash
+        env:
+          TAP_CATALOG_REF: ${{ inputs.tap-catalog-ref }}
+          CANARY_REF: ${{ inputs.canary-ref }}
+          FIXED_ASSET_ROOT: ${{ steps.public.outputs.lifecycle-root }}
+        run: |
+          set -euo pipefail
+          fixture="$RUNNER_TEMP/homebrew-guest-lifecycle-public-fixture.json"
+          lifecycle="$RUNNER_TEMP/homebrew-guest-lifecycle-inputs-handoff"
+          bash scripts/dev-shell.sh npx tsx \
+            scripts/create-homebrew-guest-lifecycle-fixture.ts \
+              --transport-mode public \
+              --image "$lifecycle/main-shell.vfs.zst" \
+              --homebrew-bootstrap-spec \
+                "$lifecycle/main-shell-brew-package-tree.json" \
+              --homebrew-bootstrap-archive \
+                "$lifecycle/homebrew-bootstrap.zip" \
+              --homebrew-bootstrap-env "$lifecycle/homebrew-brew.env" \
+              --bottle-mirror \
+                "$RUNNER_TEMP/main-shell-mirror-handoff/mirror" \
+              --fixed-asset-url-root "$FIXED_ASSET_ROOT" \
+              --core-revision "$TAP_CATALOG_REF" \
+              --canary-revision "$CANARY_REF" \
+              --timeout-ms 900000 \
+              --out "$fixture"
+          echo "fixture=$fixture" >>"$GITHUB_OUTPUT"
+
+      - name: Prove public shell and live tap lifecycle in Chromium
         working-directory: apps/browser-demos
         shell: bash
         env:
@@ -603,6 +754,32 @@ jobs:
         run: |
           set -euo pipefail
           test -z "${VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT:-}"
+          test -z "${KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT:-}"
           bash ../../scripts/dev-shell.sh npx playwright test \
             test/kandelo-homebrew-main-shell.spec.ts \
             --project=chromium
+          lifecycle_report="$RUNNER_TEMP/homebrew-guest-lifecycle-public-playwright.json"
+          bash ../../scripts/dev-shell.sh env \
+            "PLAYWRIGHT_JSON_OUTPUT_FILE=$lifecycle_report" \
+            "KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE=1" \
+            "KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_FIXTURE_PATH=${{ steps.public-fixture.outputs.fixture }}" \
+            npx playwright test test/homebrew-guest-lifecycle.spec.ts \
+              --project=chromium \
+              --grep "survives a Chromium rootfs reboot" \
+              --reporter=json
+          jq -e '
+            .stats.expected == 1 and .stats.unexpected == 0 and
+            .stats.flaky == 0 and .stats.skipped == 0
+          ' "$lifecycle_report" >/dev/null
+
+      - name: Upload public Chromium lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: homebrew-public-guest-lifecycle-evidence
+          path: |
+            ${{ steps.public-fixture.outputs.fixture }}
+            ${{ runner.temp }}/homebrew-guest-lifecycle-public-playwright.json
+            apps/browser-demos/test-results
+          retention-days: 7
+          if-no-files-found: warn

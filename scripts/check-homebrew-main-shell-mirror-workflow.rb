@@ -10,12 +10,30 @@ WORKFLOW = ARGV.empty? ?
   File.join(ROOT, ".github/workflows/reusable-homebrew-main-shell-mirror-publish.yml") :
   File.expand_path(ARGV.fetch(0))
 PUBLISH_JOB_DIGEST =
-  "81d6ac11e753e8ff24b124dfb00e9e390f898b28a30953538fafa90a7cc8be64"
+  "ecf30ab4dee90d803d03da0a4be5d6159e411a63fe36bb0796578f3de623379b"
 WORKFLOW_DIGEST =
-  "f30d64bf371a45b02c11290a10744a2ab31ef616dabf52a101480b928a0f05be"
+  "6f0727c4aec8dbad13170a798b444adc8154db8c64dca2114c7b71f49bd87bd2"
+DOWNLOAD_ACTION =
+  "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+UPLOAD_ACTION =
+  "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+MIRROR_HANDOFF = "homebrew-main-shell-mirror-handoff"
+LIFECYCLE_HANDOFF = "homebrew-guest-lifecycle-inputs-handoff"
+LIFECYCLE_ASSETS = %w[
+  main-shell.vfs.zst
+  main-shell-brew-package-tree.json
+  homebrew-bootstrap.zip
+  homebrew-brew.env
+].freeze
 
 def check(condition, message)
   raise message unless condition
+end
+
+def named_step(job, name)
+  matches = job.fetch("steps").select { |step| step["name"] == name }
+  check(matches.length == 1, "expected exactly one #{name.inspect} step")
+  matches.fetch(0)
 end
 
 def canonical_contract(value)
@@ -84,8 +102,8 @@ check(contract_digest(jobs.fetch("publish")) == PUBLISH_JOB_DIGEST,
 allowed_actions = [
   "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
   "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
-  "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-  "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+  UPLOAD_ACTION,
+  DOWNLOAD_ACTION,
   "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25",
   "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d",
 ].freeze
@@ -96,21 +114,77 @@ jobs.each do |job_name, job|
   steps.map { |step| step["uses"] }.compact.each do |action|
     check(allowed_actions.include?(action), "untrusted or unpinned action: #{action}")
   end
-  steps.select { |step| step["uses"]&.start_with?("actions/download-artifact@") }.
-    each do |step|
-      with = step.fetch("with")
-      check(with.keys.sort == %w[name path],
-            "#{job_name} artifact download may only select a same-run name and path")
-      check(with["name"] == "homebrew-main-shell-mirror-handoff",
-            "#{job_name} artifact name differs")
-    end
+  downloads = steps.select { |step| step["uses"] == DOWNLOAD_ACTION }
+  downloads.each do |step|
+    with = step.fetch("with")
+    check(with.keys.sort == %w[name path],
+          "#{job_name} artifact download may only select a same-run name and path")
+  end
+  expected_downloads = {
+    "prepare" => [],
+    "publish" => [
+      {
+        "name" => MIRROR_HANDOFF,
+        "path" => "${{ runner.temp }}/main-shell-mirror-handoff",
+      },
+      {
+        "name" => LIFECYCLE_HANDOFF,
+        "path" => "${{ runner.temp }}/homebrew-guest-lifecycle-inputs-handoff",
+      },
+    ],
+    "public-proof" => [
+      {
+        "name" => MIRROR_HANDOFF,
+        "path" => "${{ runner.temp }}/main-shell-mirror-handoff",
+      },
+      {
+        "name" => LIFECYCLE_HANDOFF,
+        "path" => "${{ runner.temp }}/homebrew-guest-lifecycle-inputs-handoff",
+      },
+    ],
+  }
+  check(downloads.map { |step| step.fetch("with") } ==
+        expected_downloads.fetch(job_name),
+        "#{job_name} same-run handoff downloads differ")
 end
 
+prepare_job = jobs.fetch("prepare")
+publish_job = jobs.fetch("publish")
+proof_job = jobs.fetch("public-proof")
 prepare_source = YAML.dump(jobs.fetch("prepare"))
 publish_source = YAML.dump(jobs.fetch("publish"))
 proof_source = YAML.dump(jobs.fetch("public-proof"))
 whole_source = File.read(WORKFLOW)
 
+prepare_handoff_uploads = prepare_job.fetch("steps").select do |step|
+  step["uses"] == UPLOAD_ACTION
+end
+actual_prepare_handoff_uploads = prepare_handoff_uploads.map do |step|
+  {
+    "id" => step["id"],
+    "with" => step["with"],
+  }
+end
+check(actual_prepare_handoff_uploads == [
+  {
+    "id" => "handoff",
+    "with" => {
+      "name" => MIRROR_HANDOFF,
+      "path" => "${{ steps.bounded.outputs.root }}",
+      "retention-days" => 1,
+      "if-no-files-found" => "error",
+    },
+  },
+  {
+    "id" => "lifecycle-handoff",
+    "with" => {
+      "name" => LIFECYCLE_HANDOFF,
+      "path" => "${{ steps.lifecycle.outputs.root }}",
+      "retention-days" => 1,
+      "if-no-files-found" => "error",
+    },
+  },
+], "prepared same-run handoff uploads differ")
 check(prepare_source.include?("persist-credentials: false"),
       "preparation checkouts must not retain credentials")
 check(publish_source.include?("persist-credentials: false") &&
@@ -122,6 +196,8 @@ check(prepare_source.include?("retention-days: 1"),
       "bounded handoff retention differs")
 check(jobs.fetch("prepare").fetch("outputs") == {
   "artifact-digest" => "${{ steps.handoff.outputs.artifact-digest }}",
+  "lifecycle-artifact-digest" =>
+    "${{ steps.lifecycle-handoff.outputs.artifact-digest }}",
 }, "handoff digest output differs")
 check(publish_source.scan("${{ github.token }}").length == 2,
       "tap token must have exactly the authority checks and publisher uses")
@@ -143,14 +219,114 @@ check(prepare_source.include?(
 ), "release target is not the protected tap caller")
 check(publish_source.include?("publish-immutable-github-release.sh"),
       "immutable publisher is missing")
-check(proof_source.include?("--transport-mode public"),
-      "Node public transport proof is missing")
+publication_step = named_step(
+  publish_job,
+  "Publish and anonymously re-read immutable public inputs",
+)
+publication_run = publication_step.fetch("run")
+check(publication_step["id"] == "release",
+      "immutable publication output identity differs")
+check(publication_run.scan("publish-immutable-github-release.sh").length == 2,
+      "mirror and lifecycle inputs must use exactly two immutable publications")
+check(publication_run.scan('--exact-kandelo-main-sha "$KANDELO_REF"').length == 2 &&
+      publication_run.scan(
+        '--exact-target-main-sha "$TAP_AUTHORITY_REF"'
+      ).length == 2,
+      "both immutable publications must bind the exact authorities")
+check(publication_run.include?('--manifest "$handoff/publish.json"') &&
+      publication_run.include?('--asset-root "$handoff/mirror"') &&
+      publication_run.include?('--manifest "$lifecycle/publish.json"') &&
+      publication_run.include?('--asset-root "$lifecycle"'),
+      "mirror and lifecycle publication roots differ")
+check(
+  publication_run.scan(
+    '.visibility == "public-anonymous-readback"'
+  ).length == 2 &&
+    publication_run.include?('(.assets | length) == 4') &&
+    publication_run.include?('"lifecycle-receipt=$lifecycle_receipt"'),
+  "both public release receipts are not checked exactly",
+)
+receipt_upload = named_step(publish_job, "Upload immutable publication receipt")
+receipt_paths = receipt_upload.fetch("with").fetch("path").
+  lines.map(&:strip).reject(&:empty?)
+check(receipt_paths == [
+  "${{ steps.release.outputs.receipt }}",
+  "${{ steps.release.outputs.lifecycle-receipt }}",
+], "immutable publication receipt set differs")
+check(publish_source.scan(
+  "verify-homebrew-guest-lifecycle-publication.sh"
+).length == 1 &&
+      proof_source.scan(
+        "verify-homebrew-guest-lifecycle-publication.sh"
+      ).length == 1,
+      "lifecycle-input handoff must be revalidated before and after publication")
+
+public_fixture = named_step(
+  proof_job,
+  "Create exact all-public Chromium lifecycle fixture",
+)
+public_fixture_run = public_fixture.fetch("run")
+check(public_fixture["id"] == "public-fixture" &&
+      public_fixture.fetch("env").fetch("FIXED_ASSET_ROOT") ==
+        "${{ steps.public.outputs.lifecycle-root }}",
+      "public Chromium fixture identity differs")
+check(public_fixture_run.include?(
+  "scripts/create-homebrew-guest-lifecycle-fixture.ts"
+) &&
+      public_fixture_run.scan("--transport-mode public").length == 1 &&
+      !public_fixture_run.include?("--transport-mode closed"),
+      "Chromium lifecycle fixture is not all-public")
+check(proof_source.scan("--transport-mode public").length == 3 &&
+      !proof_source.include?("--transport-mode closed"),
+      "Node and Chromium public transport coverage differs")
 check(proof_source.include?('--core-revision "$TAP_CATALOG_REF"'),
       "guest lifecycle is not pinned to the sealed tap catalog")
-check(proof_source.include?("--project=chromium"),
+chromium_step = named_step(
+  proof_job,
+  "Prove public shell and live tap lifecycle in Chromium",
+)
+chromium_run = chromium_step.fetch("run")
+check(chromium_run.include?("--project=chromium") &&
+      chromium_run.include?("test/homebrew-guest-lifecycle.spec.ts") &&
+      chromium_run.include?(
+        "KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE=1"
+      ) &&
+      chromium_run.include?(
+        "KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_FIXTURE_PATH=" \
+        "${{ steps.public-fixture.outputs.fixture }}"
+      ),
       "Chromium public transport proof is missing")
-check(proof_source.include?("VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT"),
-      "Chromium proof does not exclude the closed acceptance root")
+proof_env_keys = ([proof_job] + proof_job.fetch("steps")).flat_map do |entry|
+  env = entry["env"]
+  env.is_a?(Hash) ? env.keys : []
+end
+check(proof_env_keys.none? { |name| name.include?("CLOSED_ACCEPTANCE_ROOT") },
+      "closed acceptance input reached the public proof environment")
+check(chromium_run.include?(
+  'test -z "${VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT:-}"'
+) && chromium_run.include?(
+  'test -z "${KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT:-}"'
+), "Chromium proof does not reject closed acceptance inputs")
+
+public_resolution = named_step(
+  proof_job,
+  "Resolve the exact public browser generation",
+).fetch("run")
+check(public_resolution.include?(
+  'lifecycle_root="$(jq -er \'.release.root\' "$lifecycle/handoff.json")"'
+) &&
+      public_resolution.include?(
+        'env -u GH_TOKEN -u GITHUB_TOKEN \\'
+      ) &&
+      public_resolution.include?('"${lifecycle_root}${name}"') &&
+      public_resolution.include?(
+        'cmp "$lifecycle/$name" "$RUNNER_TEMP/public-$name"'
+      ),
+      "anonymous lifecycle-input release readback differs")
+LIFECYCLE_ASSETS.each do |asset|
+  check(public_resolution.include?(asset),
+        "public lifecycle-input readback omits #{asset}")
+end
 
 forbidden = [
   "secrets: inherit",
