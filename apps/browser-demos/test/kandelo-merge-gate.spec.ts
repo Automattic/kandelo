@@ -287,6 +287,17 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
 
 test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page }) => {
   test.setTimeout(240_000);
+  const legacyRuntimeFetches: string[] = [];
+  page.on("request", (request) => {
+    const url = request.url();
+    if (
+      request.resourceType() === "fetch" &&
+      /\/(?:bash|dash|coreutils)(?:-[^/?]+)?\.wasm(?:\?|$)/.test(url) &&
+      !url.includes("?import&url")
+    ) {
+      legacyRuntimeFetches.push(url);
+    }
+  });
 
   await gotoOrSkip(page, "/?demo=node");
   await waitForReady(page);
@@ -297,13 +308,29 @@ test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page 
   );
   expect(await terminalText(page)).not.toContain("Segmentation fault");
 
+  const nodeContractCommand = [
+    "node -e \"console.log('KANDELO_NODE_OK:' + (6 * 7))\"",
+    "[ \"$(id -u)\" = 1000 ]",
+    "[ \"$HOME\" = /work ]",
+    "[ \"$PWD\" = /work ]",
+    "[ \"$npm_config_cache\" = /tmp/.npm-cache ]",
+    "[ \"$npm_config_registry\" = http://proxy.local/ ]",
+    "spidermonkey-node -e \"console.log('KANDELO_NODE_ALIAS_OK')\"",
+    "printf 'KANDELO_NODE_CONTRACT_OK\\n'",
+  ].join(" && ");
   await runTerminalCommand(
     page,
-    "node -e \"console.log('KANDELO_NODE_OK:' + (6 * 7))\"",
-    "KANDELO_NODE_OK:42",
+    nodeContractCommand,
+    "KANDELO_NODE_CONTRACT_OK",
     180_000,
   );
+  expect(await terminalText(page)).toContain("KANDELO_NODE_OK:42");
+  expect(await terminalText(page)).toContain("KANDELO_NODE_ALIAS_OK");
   expect(await terminalText(page)).not.toContain("Segmentation fault");
+  // WHY: the node-vfs image owns Bash, Dash, Coreutils, and Node. A browser
+  // boot may bind lazy transport URLs, but must not fetch standalone legacy
+  // shell binaries and overwrite bottle-backed identities.
+  expect(legacyRuntimeFetches).toEqual([]);
 });
 
 test("Kandelo nginx demo serves its web preview", async ({ page }) => {

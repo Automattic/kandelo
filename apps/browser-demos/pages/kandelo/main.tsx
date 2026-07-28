@@ -30,16 +30,15 @@ const mount = (host: KernelHost) => {
 
 void (async () => {
   try {
-    const useSpiderMonkeyNodeHost = demo === "node" || demo === "spidermonkey-node" || demo === "spidermonkey";
-    const host = useSpiderMonkeyNodeHost
-      ? await import("./kernel-host/live-spidermonkey-node-setup")
-        .then(({ createLiveSpiderMonkeyNodeHost }) => createLiveSpiderMonkeyNodeHost(demo))
-      : await import("./kernel-host/live-setup")
-        .then(({ createLiveHost }) => createLiveHost({
-          demo,
-          vfsUrl: bootQuery.vfsImageUrl,
-          fb: fbDemo === "test" ? "test" : "none",
-        }));
+    // WHY: the restored image owns its shell and optional runtime entries.
+    // Keeping every demo on one assembler prevents a demo-specific overlay
+    // from replacing immutable bottle-backed lazy files before serialization.
+    const host = await import("./kernel-host/live-setup")
+      .then(({ createLiveHost }) => createLiveHost({
+        demo,
+        vfsUrl: bootQuery.vfsImageUrl,
+        fb: fbDemo === "test" ? "test" : "none",
+      }));
     mount(host);
   } catch (err) {
     // Surface fetch / instantiation failures in the page so the user

@@ -314,10 +314,15 @@ export function descriptorFromGalleryItem(
     : base.mounts;
   const rootBoot = item.bootCommand[0] === "/sbin/dinit";
   const nodeBoot = item.id === "node";
+  // WHY: a gallery switch changes runtime profiles. Carrying the previous
+  // descriptor's environment into the next profile leaks Node npm settings
+  // into Shell (or root service settings into user sessions). The live host
+  // merges these identity overrides onto the selected profile's canonical
+  // environment.
   const userEnv = nodeBoot
-    ? { ...base.boot.env, HOME: "/home/user", PWD: "/work", USER: "user", LOGNAME: "user" }
-    : { ...base.boot.env, HOME: "/home/user", USER: "user", LOGNAME: "user" };
-  const rootEnv = { ...base.boot.env, HOME: "/root", USER: "root", LOGNAME: "root" };
+    ? { HOME: "/work", PWD: "/work", USER: "user", LOGNAME: "user" }
+    : { HOME: "/home/user", USER: "user", LOGNAME: "user" };
+  const rootEnv = { HOME: "/root", USER: "root", LOGNAME: "root" };
   return {
     ...base,
     id: item.id,
