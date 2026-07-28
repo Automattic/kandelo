@@ -735,55 +735,8 @@ assert_matrix() {
 }
 
 assert_rootfs_publication_selection_policy() {
-  local helper="$REPO_ROOT/scripts/homebrew-rootfs-publication-selection.sh"
-  local err="$TMPDIR/rootfs-publication-selection.err"
-
-  bash "$helper" \
-    --formulae dinit \
-    --arches wasm32 \
-    --require-vfs-acceptance false ||
-    fail "rootfs publication policy rejected Dinit"
-  bash "$helper" \
-    --formulae $' m4, bash\n dinit,bash ' \
-    --arches $' wasm32,\nwasm32 ' \
-    --require-vfs-acceptance false ||
-    fail "rootfs publication policy rejected its complete normalized Formula set"
-
-  if bash "$helper" \
-    --formulae bash,ruby \
-    --arches wasm32 \
-    --require-vfs-acceptance false > /dev/null 2>"$err"; then
-    fail "rootfs publication policy accepted an unknown Formula"
-  fi
-  grep -F "does not admit Formula: ruby" "$err" >/dev/null ||
-    fail "rootfs publication policy did not explain an unknown Formula"
-
-  if bash "$helper" \
-    --formulae dinit \
-    --arches wasm64 \
-    --require-vfs-acceptance false > /dev/null 2>"$err"; then
-    fail "rootfs publication policy accepted wasm64"
-  fi
-  grep -F "supports exactly wasm32" "$err" >/dev/null ||
-    fail "rootfs publication policy did not explain the wasm64 rejection"
-
-  if bash "$helper" \
-    --formulae dinit \
-    --arches wasm32 \
-    --require-vfs-acceptance true > /dev/null 2>"$err"; then
-    fail "rootfs publication policy accepted dependency-bearing VFS acceptance"
-  fi
-  grep -F "cannot materialize the legacy VFS acceptance image" "$err" >/dev/null ||
-    fail "rootfs publication policy did not explain the VFS rejection"
-
-  if bash "$helper" \
-    --formulae ' , ' \
-    --arches wasm32 \
-    --require-vfs-acceptance false > /dev/null 2>"$err"; then
-    fail "rootfs publication policy accepted an empty Formula selection"
-  fi
-  grep -F "requires at least one Formula" "$err" >/dev/null ||
-    fail "rootfs publication policy did not explain the empty Formula selection"
+  bash "$REPO_ROOT/scripts/test-homebrew-rootfs-publication-selection.sh" ||
+    fail "rootfs publication authority policy tests failed"
 }
 
 assert_matrix_skips_unchanged_cache_key() {

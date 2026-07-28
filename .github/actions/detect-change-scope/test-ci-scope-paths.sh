@@ -328,6 +328,12 @@ assert_not_matches package_archive_changed_files \
 assert_matches package_publish_flow_changed_files \
   "scripts/homebrew-rootfs-publication-selection.sh" \
   "scripts/homebrew-rootfs-publication-selection.sh"
+assert_not_matches package_archive_changed_files \
+  "scripts/test-homebrew-rootfs-publication-selection.sh" \
+  "scripts/test-homebrew-rootfs-publication-selection.sh"
+assert_matches package_publish_flow_changed_files \
+  "scripts/test-homebrew-rootfs-publication-selection.sh" \
+  "scripts/test-homebrew-rootfs-publication-selection.sh"
 assert_matches package_publish_flow_changed_files \
   "tests/scripts/release-index-state.sh" \
   "tests/scripts/release-index-state.sh"
