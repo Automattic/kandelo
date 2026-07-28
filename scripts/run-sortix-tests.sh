@@ -646,18 +646,9 @@ _run_runtime_test_worker() {
         this_timeout="$XFAIL_TIMEOUT"
     fi
 
-    # If a matching .so file was built, symlink it where the test expects it
-    local so="$BUILD_DIR/$suite/${test_name}.so"
-    local so_link=""
-    if [ -f "$so" ]; then
-        local so_dir="${SORTIX_DATA_DIR:-$REPO_ROOT}"
-        so_link="$so_dir/${test_name}.so"
-        mkdir -p "$(dirname "$so_link")"
-        ln -sf "$so" "$so_link" 2>/dev/null || true
-    fi
-
-    # Run with timeout. KERNEL_CWD is the data directory containing symlinks
-    # to test binaries at their expected relative paths (e.g., fcntl/open).
+    # Run with timeout against the complete private fixture prepared by
+    # _run_runtime_test_with_private_fixture. The worker snapshots that
+    # quiescent tree into lifecycle-owned /tmp storage before publishing ready.
     local output rc
     local result_base="${test_name//\//__}"
     local guest_output_file="$result_dir/${result_base}.guest-output"
@@ -667,17 +658,18 @@ _run_runtime_test_worker() {
     # when not a TTY, which would drain any pipe the caller supplies.
     set +e
     (cd "$REPO_ROOT" && \
-        KERNEL_CWD="${SORTIX_DATA_DIR:-$REPO_ROOT}" \
+        KERNEL_CWD= \
         KANDELO_GUEST_OUTPUT_FILE="$guest_output_file" \
+        KANDELO_RUNNER_FIXTURE_ROOT="${SORTIX_FIXTURE_ROOT:?}" \
+        KANDELO_RUNNER_FIXTURE_CWD="$suite" \
+        KANDELO_RUNNER_GUEST_PROGRAM="$suite/$test_name" \
+        KANDELO_RUNNER_VFS=isolated \
         run_with_timeout "$this_timeout" node --experimental-wasm-exnref \
             --import tsx/esm examples/run-example.ts "${wasm}" \
             </dev/null >"$host_diagnostic_file" 2>&1)
     rc=$?
     set -e
     output=$(cat "$guest_output_file" 2>/dev/null || true)
-
-    # Clean up .so symlink
-    [ -n "$so_link" ] && rm -f "$so_link" 2>/dev/null || true
 
     # Sortix convention: if output is empty or exit code >= 2,
     # append "exit: N" to the output (matches tests/sortix/os-test/misc/run.sh)
@@ -781,6 +773,57 @@ exit: $rc"
     fi
 }
 
+# Stage exactly one test's guest-visible files before Node starts. A subshell
+# owns the temporary tree and removes it on every ordinary/error return.
+# Regular copies (including .so) keep the source tree free of symlink/hardlink
+# aliases; the worker still takes its own private snapshot before granting
+# exact-append authority.
+_run_runtime_test_with_private_fixture() (
+    local suite="$1"
+    local test_name="$2"
+    local result_dir="$3"
+    local result_file="$result_dir/${test_name//\//__}.result"
+    local wasm="$BUILD_DIR/$suite/${test_name}.wasm"
+
+    if [ ! -f "$wasm" ]; then
+        _run_runtime_test_worker "$suite" "$test_name" "$result_dir"
+        return
+    fi
+
+    local fixture_root
+    fixture_root=$(mktemp -d)
+    trap 'rm -rf "$fixture_root"' EXIT
+    local fixture_cwd="$fixture_root/$suite"
+    local fixture_program="$fixture_cwd/$test_name"
+    mkdir -p "$(dirname "$fixture_program")"
+    if ! cp "$wasm" "$fixture_program"; then
+        { echo "BUILD"; echo "failed to stage: $wasm"; } > "$result_file"
+        return
+    fi
+
+    local src="$OS_TEST/$suite/${test_name}.c"
+    if [ -f "$OS_TEST_LOCAL/$suite/${test_name}.c" ]; then
+        src="$OS_TEST_LOCAL/$suite/${test_name}.c"
+    fi
+    if [ -f "$src" ]; then
+        if ! cp "$src" "${fixture_program}.c"; then
+            { echo "BUILD"; echo "failed to stage: $src"; } > "$result_file"
+            return
+        fi
+    fi
+
+    local so="$BUILD_DIR/$suite/${test_name}.so"
+    if [ -f "$so" ]; then
+        if ! cp "$so" "${fixture_program}.so"; then
+            { echo "BUILD"; echo "failed to stage: $so"; } > "$result_file"
+            return
+        fi
+    fi
+
+    SORTIX_FIXTURE_ROOT="$fixture_root" \
+        _run_runtime_test_worker "$suite" "$test_name" "$result_dir"
+)
+
 # Run a runtime test (compile + execute) — sequential wrapper
 run_runtime_test() {
     local suite="$1"
@@ -791,28 +834,7 @@ run_runtime_test() {
     # Build the test first (sequential path)
     build_runtime_test "$suite" "$test_name" 2>/dev/null || true
 
-    # Create data directory nested under suite name so tests that open ".."
-    # and access "$suite/<path>" (e.g. fstatat opens ".." + "basic/sys_stat/fstatat")
-    # find their files correctly.
-    local data_parent
-    data_parent=$(mktemp -d)
-    local data_dir="$data_parent/$suite"
-    mkdir -p "$data_dir"
-    local wasm="$BUILD_DIR/$suite/${test_name}.wasm"
-    if [ -f "$wasm" ]; then
-        mkdir -p "$data_dir/$(dirname "$test_name")"
-        ln -f "$wasm" "$data_dir/$test_name" 2>/dev/null || \
-            cp "$wasm" "$data_dir/$test_name"
-    fi
-    # Link source file for tests like faccessat that check for .c files
-    local src
-    src="$(runtime_test_src "$suite" "$test_name")"
-    if [ -f "$src" ]; then
-        ln -f "$src" "$data_dir/${test_name}.c" 2>/dev/null || \
-            cp "$src" "$data_dir/${test_name}.c" 2>/dev/null || true
-    fi
-    SORTIX_DATA_DIR="$data_dir" _run_runtime_test_worker "$suite" "$test_name" "$result_dir"
-    rm -rf "$data_parent"
+    _run_runtime_test_with_private_fixture "$suite" "$test_name" "$result_dir"
 
     _collect_result "$suite" "$test_name" "$result_dir"
 }
@@ -1020,51 +1042,17 @@ run_suite() {
 
         echo "  Running $count tests ($PARALLEL parallel)..."
 
-        # Create a temp directory with hardlinks to test binaries at their
-        # expected relative paths. Many sortix tests open their own binary
-        # via paths like "fcntl/open" from CWD — this makes them accessible.
-        # Hardlinks (not symlinks) so lstat/fstatat see S_ISREG, not S_ISLNK.
-        # Nest under $suite/ so tests that open ".." find "$suite/<path>"
-        # (e.g. fstatat opens ".." + "basic/sys_stat/fstatat").
-        SORTIX_DATA_PARENT=$(mktemp -d)
-        SORTIX_DATA_DIR="$SORTIX_DATA_PARENT/$suite"
-        mkdir -p "$SORTIX_DATA_DIR"
-        for wasm_file in "$BUILD_DIR/$suite"/**/*.wasm; do
-            [ -f "$wasm_file" ] || continue
-            local relpath="${wasm_file#"$BUILD_DIR/$suite/"}"
-            local name="${relpath%.wasm}"
-            mkdir -p "$SORTIX_DATA_DIR/$(dirname "$name")"
-            ln -f "$wasm_file" "$SORTIX_DATA_DIR/$name" 2>/dev/null || \
-                cp "$wasm_file" "$SORTIX_DATA_DIR/$name"
-        done
-        # Link source files for tests like faccessat that check for .c files
-        for src_root in "$OS_TEST" "$OS_TEST_LOCAL"; do
-            [ -d "$src_root/$suite" ] || continue
-            while IFS= read -r src_file; do
-                [ -f "$src_file" ] || continue
-                local relpath="${src_file#"$src_root/$suite/"}"
-                local dest="$SORTIX_DATA_DIR/$relpath"
-                [ -f "$dest" ] && continue
-                mkdir -p "$(dirname "$dest")" 2>/dev/null || true
-                ln -f "$src_file" "$dest" 2>/dev/null || true
-            done < <(find "$src_root/$suite" -name "*.c" -type f)
-        done
-        export SORTIX_DATA_DIR
-
         # Export everything needed by the worker function
         export REPO_ROOT BUILD_DIR OS_TEST OS_TEST_LOCAL SYSROOT GLUE_DIR TEST_TIMEOUT XFAIL_TIMEOUT
-        export -f _run_runtime_test_worker _check_xfail_serialized run_with_timeout
+        export -f _run_runtime_test_worker _run_runtime_test_with_private_fixture
+        export -f _check_xfail_serialized run_with_timeout
 
         # Export serialized XFAIL list for this suite
         _export_xfail_for_suite "$suite"
 
         # Run tests in parallel using xargs
         printf '%s\n' "${tests[@]}" | xargs -P "$PARALLEL" -I{} \
-            bash -c '_run_runtime_test_worker "$1" "$2" "$3"' _ "$suite" {} "$result_dir"
-
-        # Clean up data directory
-        rm -rf "$SORTIX_DATA_PARENT"
-        unset SORTIX_DATA_DIR SORTIX_DATA_PARENT
+            bash -c '_run_runtime_test_with_private_fixture "$1" "$2" "$3"' _ "$suite" {} "$result_dir"
 
         # Collect results
         for test_name in "${tests[@]}"; do

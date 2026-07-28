@@ -1498,6 +1498,18 @@ image state and allocate browser scratch filesystems or create Node scratch
 directories. A forged later image therefore cannot leave an earlier mount
 normalized or a host scratch directory published as a partial boot.
 
+Node may also seed a strict descendant of an existing scratch mount through
+`NodeKernelHost.sessionSeedTrees`. The worker authenticates the complete root
+image first, copies every quiescent source tree into opaque staging paths using
+new regular-file inodes, and renames all completed trees into the private
+session before constructing any session-owned `HostFileSystem` backend or
+publishing `ready`. Symlinks, special files, overlapping destinations, image
+destinations, and destinations shadowed by another mount are rejected. Guest
+changes are never written back to the source. This copy boundary matters
+because access to a path somewhere inside a Node process is not proof that
+Kandelo exclusively owns the inode; exact append and related stateful
+operations require a lifecycle-owned backing, not merely a reachable one.
+
 | Mount point | Source | Browser backend | Node backend |
 |-------------|--------|-----------------|--------------|
 | `/`         | image (advisory readonly) | awaited verified `MemoryFileSystem` restore | awaited verified `MemoryFileSystem` restore |
@@ -1525,7 +1537,7 @@ VFS images can also carry image-level metadata outside the guest file tree. The 
 
 ### Node host
 
-`NodeKernelHost` accepts `rootfsImage: "default" | ArrayBuffer | Uint8Array | undefined`. With `"default"` (the path used by the vitest suite), the worker reads `host/wasm/rootfs.vfs`, applies `DEFAULT_MOUNT_SPEC` via `resolveForNode`, and constructs a `VirtualPlatformIO` for the kernel. The image supplies both `/etc/ssl/cert.pem` and `/etc/ssl/certs/ca-certificates.crt`; Node does not silently add them to caller-supplied images. Without a rootfs image, the worker falls back to raw `NodePlatformIO` (every host path reachable) — kept for legacy callers that haven't migrated.
+`NodeKernelHost` accepts `rootfsImage: "default" | ArrayBuffer | Uint8Array | undefined`. With `"default"` (the path used by the vitest suite), the worker reads `host/wasm/rootfs.vfs`, applies `DEFAULT_MOUNT_SPEC` via the private-session Node resolver, and constructs a `VirtualPlatformIO` for the kernel. The image supplies both `/etc/ssl/cert.pem` and `/etc/ssl/certs/ca-certificates.crt`; Node does not silently add them to caller-supplied images. Optional `sessionSeedTrees` require a rootfs image and absolute host source paths; each source must remain quiescent until `init()` resolves. Graceful destroy, initialization failure, and fatal worker paths attempt to remove the complete session tree; abrupt process termination cannot run that best-effort hook, so cleanup is not the ownership proof. New private inodes and publication-before-`ready` establish ownership. Without a rootfs image, the worker falls back to raw `NodePlatformIO` (every host path reachable) — kept for legacy callers that haven't migrated.
 
 ### Browser host
 

@@ -19,6 +19,10 @@ import { NodeKernelHost } from "../host/src/node-kernel-host";
 import { tryResolveBinaries } from "../host/src/binary-resolver";
 import { writeAllSync } from "./run-example-output";
 import { isWithinRealDirectory } from "./run-example-paths";
+import {
+    buildRunExampleGuestEnvironment,
+    resolveRunExampleFilesystem,
+} from "./run-example-vfs";
 
 const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
 
@@ -359,11 +363,13 @@ function tryLoadGuestCandidate(candidate: string, kernelCwd: string): ArrayBuffe
 function resolveProgram(
     path: string,
     builtinPrograms: Record<string, string | null>,
+    allowAmbientHostCandidates: boolean,
 ): ArrayBuffer | null {
     const mapped = builtinPrograms[path];
     if (mapped) {
         return loadBytes(mapped);
     }
+    if (!allowAmbientHostCandidates) return null;
     const kernelCwd = resolve(process.env.KERNEL_CWD || process.cwd());
     const candidates = [
         // Resolve relative to kernel CWD (sortix tests exec themselves by relative path)
@@ -380,18 +386,6 @@ function resolveProgram(
     return null;
 }
 
-function guestEnv(): string[] {
-    const kernelPath = process.env.KERNEL_PATH ?? "/usr/local/bin:/usr/bin:/bin";
-    const inherited = Object.entries(process.env)
-        .filter(([k, v]) =>
-            v !== undefined &&
-            k !== "PATH" &&
-            k !== "KANDELO_GUEST_OUTPUT_FILE"
-        )
-        .map(([k, v]) => `${k}=${v}`);
-    return [...inherited, `PATH=${kernelPath}`];
-}
-
 async function main() {
     const name = process.argv[2];
     if (!name) {
@@ -400,6 +394,10 @@ async function main() {
     }
     const uid = parseKernelCredential("KERNEL_UID");
     const gid = parseKernelCredential("KERNEL_GID");
+    const runnerFilesystem = resolveRunExampleFilesystem(
+        process.env,
+        process.cwd(),
+    );
     const builtinPrograms = resolveBuiltinPrograms();
 
     let programPath: string;
@@ -410,6 +408,12 @@ async function main() {
     } else {
         programPath = resolve(`examples/${name}.wasm`);
     }
+    // WHY: an isolated value-copy launch and any exact self-exec alias must
+    // observe one immutable program generation. Read once before worker init;
+    // later source replacement cannot silently change the executable.
+    const initialProgramBytes = runnerFilesystem.guestProgram === undefined
+        ? loadBytes(programPath)
+        : undefined;
 
     // Git system config via environment (Node.js VFS is the host filesystem,
     // so we can't write /etc/gitconfig; use GIT_CONFIG_COUNT instead).
@@ -460,25 +464,55 @@ async function main() {
     try {
         host = new NodeKernelHost({
             maxWorkers: 4,
+            rootfsImage: runnerFilesystem.rootfsImage,
+            sessionSeedTrees: runnerFilesystem.sessionSeedTrees,
             onStdout: (_pid, data) => writeGuestOutput(process.stdout, data),
             onStderr: (_pid, data) => writeGuestOutput(process.stderr, data),
-            onResolveExec: (path) => resolveProgram(path, builtinPrograms),
+            onResolveExec: (path) => {
+                if (
+                    initialProgramBytes !== undefined
+                    && path === programPath
+                ) {
+                    return initialProgramBytes.slice(0);
+                }
+                return resolveProgram(
+                    path,
+                    builtinPrograms,
+                    !runnerFilesystem.isolated,
+                );
+            },
         });
 
         await host.init();
 
-        const processArgv = [programPath, ...process.argv.slice(3)];
+        const processArgv = [
+            runnerFilesystem.guestProgram ?? programPath,
+            ...process.argv.slice(3),
+        ];
         const timeoutMs = parseInt(process.env.TIMEOUT || "30000", 10);
-        const exitPromise = host.spawn(loadBytes(programPath), processArgv, {
+        const spawnOptions = {
             env: [
-                ...guestEnv(),
+                ...buildRunExampleGuestEnvironment(
+                    process.env,
+                    runnerFilesystem.guestCwd,
+                    runnerFilesystem.isolated,
+                    process.env.KERNEL_PATH ?? "/usr/local/bin:/usr/bin:/bin",
+                    uid !== undefined && uid !== 0 ? "/home/user" : "/root",
+                ),
                 ...gitEnv,
             ],
-            cwd: process.env.KERNEL_CWD || process.cwd(),
+            cwd: runnerFilesystem.guestCwd,
             uid,
             gid,
             stdin: stdinData,
-        });
+        };
+        const exitPromise = runnerFilesystem.guestProgram === undefined
+            ? host.spawn(initialProgramBytes!, processArgv, spawnOptions)
+            : host.spawnFromVfs(
+                runnerFilesystem.guestProgram,
+                processArgv,
+                spawnOptions,
+            ).then(({ exit }) => exit);
         const timeoutPromise = new Promise<number>((_, reject) => {
             setTimeout(() => reject(new Error("Process timed out")), timeoutMs);
         });

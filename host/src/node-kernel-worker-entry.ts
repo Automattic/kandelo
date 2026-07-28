@@ -875,6 +875,7 @@ async function buildVirtualPlatformIO(
     uid?: number;
     gid?: number;
   }>,
+  sessionSeedTrees?: InitMessage["sessionSeedTrees"],
   rootfsLazyUrlBase?: InitMessage["rootfsLazyUrlBase"],
   rootfsLazyAssets?: InitMessage["rootfsLazyAssets"],
   rootfsLazyAssetSources?: InitMessage["rootfsLazyAssetSources"],
@@ -887,6 +888,8 @@ async function buildVirtualPlatformIO(
       DEFAULT_MOUNT_SPEC,
       new Uint8Array(rootfsImage),
       bootSessionDir,
+      sessionSeedTrees,
+      (extraMounts ?? []).map((mount) => mount.mountPoint),
     );
   } catch (error) {
     // WHY: imported-seal rejection occurs before scratch setup, but the Node
@@ -959,7 +962,10 @@ function cleanupSessionDir(): void {
     try {
       rmSync(sessionDir, { recursive: true, force: true });
     } catch {
-      // best-effort: tests should still pass even if cleanup races a hold
+      // WHY: a graceful/fatal worker path must attempt cleanup, but native
+      // handles can transiently retain files and abrupt process termination
+      // cannot run this hook. Never treat this best-effort cleanup as the
+      // ownership proof; private inode creation before ready is that proof.
     }
   }
   sessionDir = null;
@@ -986,16 +992,20 @@ async function handleInit(msg: InitMessage) {
   });
   execPrograms = msg.execPrograms ?? {};
   workerAdapter = new NodeWorkerAdapter();
+  if (!msg.rootfsImage && (msg.sessionSeedTrees?.length ?? 0) > 0) {
+    throw new Error("sessionSeedTrees requires rootfsImage");
+  }
 
   const io: PlatformIO = msg.rootfsImage
     ? await buildVirtualPlatformIO(
-        msg.rootfsImage,
-        msg.rootfsMountSpec,
-        msg.extraMounts,
-        msg.rootfsLazyUrlBase,
-        msg.rootfsLazyAssets,
-        msg.rootfsLazyAssetSources,
-      )
+      msg.rootfsImage,
+      msg.rootfsMountSpec,
+      msg.extraMounts,
+      msg.sessionSeedTrees,
+      msg.rootfsLazyUrlBase,
+      msg.rootfsLazyAssets,
+      msg.rootfsLazyAssetSources,
+    )
     : new NodePlatformIO();
   vfsExecIO = msg.rootfsImage ? io : null;
   if (msg.enableTcpNetwork) {
