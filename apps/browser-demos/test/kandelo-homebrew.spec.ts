@@ -10,6 +10,10 @@ import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   KANDELO_SHELL_CONFIG_PATH,
 } from "../../../web-libs/kandelo-session/src/shell-config";
+import {
+  runParentShellProbe,
+  runTerminalCommand,
+} from "./support/terminal-command";
 
 const FIXTURE_BASE_PATH = "/__kandelo-homebrew-test";
 const FIXTURE_ROOT = new URL("../public/__kandelo-homebrew-test/", import.meta.url);
@@ -70,23 +74,6 @@ async function waitForTerminalContent(
   } else {
     await assertion.toMatch(expected);
   }
-}
-
-async function runTerminalCommand(
-  page: Page,
-  command: string,
-  expected: string | RegExp,
-  timeout = 120_000,
-) {
-  await page.locator(".kshell-host").first().click();
-  const terminalInput = page.getByRole("textbox", { name: "Terminal input" }).first();
-  if (await terminalInput.count()) {
-    await terminalInput.focus();
-  }
-  await page.keyboard.insertText(command);
-  await page.waitForTimeout(250);
-  await page.keyboard.press("Enter");
-  await waitForTerminalContent(page, expected, timeout);
 }
 
 function homebrewGalleryFixturePath(name: "browser" | "nonbrowser"): string {
@@ -245,7 +232,9 @@ test("an image-owned Homebrew shell boots without legacy shell downloads", async
   await gotoOrSkip(page, `/?vfs=${encodeURIComponent(vfsUrl)}`, false);
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
   await waitForTerminalContent(page, /kandelo\$\s*$/, 180_000);
-  await runTerminalCommand(
+  // This assertion must observe the image-selected interactive shell itself,
+  // not the isolated Bash process used for ordinary behavioral commands.
+  await runParentShellProbe(
     page,
     "printf 'HOMEBREW_DEFAULT_SHELL:%s:%s:%s\\n' \"$0\" \"$(command -v \"$0\")\" \"${PATH%%:*}\"",
     `HOMEBREW_DEFAULT_SHELL:${shellArgv0}:${shellPath}:/home/linuxbrew/.linuxbrew/bin`,

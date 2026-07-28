@@ -20,6 +20,7 @@ BROWSER_SMOKE="$REPO_ROOT/apps/browser-demos/test/kandelo-homebrew-main-shell.sp
 CLOSED_ACCEPTANCE_TEST="$REPO_ROOT/apps/browser-demos/homebrew-closed-acceptance.test.ts"
 PLAYWRIGHT_ACCEPTANCE_TEST="$REPO_ROOT/apps/browser-demos/playwright-closed-acceptance.test.ts"
 SHELL_VFS_URL_TEST="$REPO_ROOT/apps/browser-demos/shell-vfs-image-url.test.ts"
+TERMINAL_COMMAND_TEST="$REPO_ROOT/apps/browser-demos/test/support/terminal-command.test.ts"
 EAGER_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts"
 MATERIALIZED_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-materialized-vfs-image.ts"
 STAGING_WORKFLOW="$REPO_ROOT/.github/workflows/staging-build.yml"
@@ -134,6 +135,10 @@ check_closed_browser_acceptance_contract() {
     return 1
   grep -Fq \
     'apps/browser-demos/shell-vfs-image-url.test.ts' \
+    "$workflow" ||
+    return 1
+  grep -Fq \
+    'apps/browser-demos/test/support/terminal-command.test.ts' \
     "$workflow" ||
     return 1
 
@@ -1901,7 +1906,8 @@ done
     "$CLOSED_ACCEPTANCE_TEST" \
     "$IMAGE_CONTRACT_TEST" \
     "$PLAYWRIGHT_ACCEPTANCE_TEST" \
-    "$SHELL_VFS_URL_TEST"
+    "$SHELL_VFS_URL_TEST" \
+    "$TERMINAL_COMMAND_TEST"
 ) || fail "post-archive image contract unit tests failed"
 
 # Exercise the package wrapper twice at once while replacing only its composer

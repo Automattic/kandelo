@@ -1,4 +1,5 @@
 import { expect, test, type FrameLocator, type Page } from "@playwright/test";
+import { runTerminalCommand } from "./support/terminal-command";
 
 type BrowserDiagnostics = {
   console: string[];
@@ -71,24 +72,6 @@ async function waitForTerminalContent(
   } else {
     await assertion.toMatch(expected);
   }
-}
-
-async function runTerminalCommand(
-  page: Page,
-  command: string,
-  expected: string | RegExp,
-  timeout = 120_000,
-) {
-  const terminalInput = page.getByRole("textbox", { name: "Terminal input" }).first();
-  if (await terminalInput.count()) {
-    await terminalInput.focus();
-  } else {
-    await page.locator(".kshell-host").first().click();
-  }
-  await page.keyboard.insertText(command);
-  await page.waitForTimeout(250);
-  await page.keyboard.press("Enter");
-  await waitForTerminalContent(page, expected, timeout);
 }
 
 async function runGuideScript(
@@ -318,15 +301,15 @@ test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page 
     "spidermonkey-node -e \"console.log('KANDELO_NODE_ALIAS_OK')\"",
     "printf 'KANDELO_NODE_CONTRACT_OK\\n'",
   ].join(" && ");
-  await runTerminalCommand(
+  const nodeContractResult = await runTerminalCommand(
     page,
     nodeContractCommand,
     "KANDELO_NODE_CONTRACT_OK",
     180_000,
   );
-  expect(await terminalText(page)).toContain("KANDELO_NODE_OK:42");
-  expect(await terminalText(page)).toContain("KANDELO_NODE_ALIAS_OK");
-  expect(await terminalText(page)).not.toContain("Segmentation fault");
+  expect(nodeContractResult.output).toContain("KANDELO_NODE_OK:42");
+  expect(nodeContractResult.output).toContain("KANDELO_NODE_ALIAS_OK");
+  expect(nodeContractResult.output).not.toContain("Segmentation fault");
   // WHY: the node-vfs image owns Bash, Dash, Coreutils, and Node. A browser
   // boot may bind lazy transport URLs, but must not fetch standalone legacy
   // shell binaries and overwrite bottle-backed identities.
@@ -348,12 +331,14 @@ test("Kandelo nginx demo serves its web preview", async ({ page }) => {
   await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);
   await runTerminalCommand(
     page,
-    "if [ \"$(id -u):$HOME:$(pwd)\" = '1000:/home/user:/home/user' ]; then export PS1=\"KANDELO_\"\"NGINX_TERMINAL_OK $ \"; else export PS1=\"KANDELO_\"\"NGINX_TERMINAL_BAD:$(id -u):$HOME:$(pwd) $ \"; fi",
+    "set -eu; test \"$(id -u):$HOME:$(pwd)\" = '1000:/home/user:/home/user'; " +
+      "printf 'KANDELO_NGINX_TERMINAL_OK\\n'",
     "KANDELO_NGINX_TERMINAL_OK",
   );
   await runTerminalCommand(
     page,
-    "printf '%s\\n' '<!doctype html><title>Kandelo nginx</title><h1>KANDELO_EDIT_OK</h1>' > /var/www/html/index.html && export PS1=\"KANDELO_\"\"NGINX_EDIT_OK $ \" || export PS1=\"KANDELO_\"\"NGINX_EDIT_BAD:$? $ \"",
+    "set -eu; printf '%s\\n' '<!doctype html><title>Kandelo nginx</title><h1>KANDELO_EDIT_OK</h1>' > /var/www/html/index.html; " +
+      "printf 'KANDELO_NGINX_EDIT_OK\\n'",
     "KANDELO_NGINX_EDIT_OK",
   );
   await webFrame(page, "nginx").locator("body").evaluate(() => {
@@ -379,7 +364,8 @@ test("Kandelo nginx + PHP demo serves dynamic PHP through the web preview", asyn
   await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);
   await runTerminalCommand(
     page,
-    "if [ \"$(id -u):$HOME:$(pwd)\" = '1000:/home/user:/home/user' ]; then export PS1=\"KANDELO_\"\"NGINX_PHP_TERMINAL_OK $ \"; else export PS1=\"KANDELO_\"\"NGINX_PHP_TERMINAL_BAD:$(id -u):$HOME:$(pwd) $ \"; fi",
+    "set -eu; test \"$(id -u):$HOME:$(pwd)\" = '1000:/home/user:/home/user'; " +
+      "printf 'KANDELO_NGINX_PHP_TERMINAL_OK\\n'",
     "KANDELO_NGINX_PHP_TERMINAL_OK",
   );
 });

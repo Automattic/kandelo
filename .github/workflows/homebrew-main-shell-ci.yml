@@ -193,6 +193,7 @@ jobs:
             apps/browser-demos/playwright-server-policy.test.ts \
             apps/browser-demos/playwright-closed-acceptance.test.ts \
             apps/browser-demos/shell-vfs-image-url.test.ts \
+            apps/browser-demos/test/support/terminal-command.test.ts \
             homebrew/test/homebrew_guest_lifecycle_browser_fixture.test.ts \
             homebrew/test/homebrew_guest_lifecycle_contract.test.ts \
             homebrew/test/homebrew_guest_lifecycle_runner.test.ts \
