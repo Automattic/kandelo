@@ -158,8 +158,8 @@
     "lamp": {
       "manifestSha256": "250b64635d64f8537178188fb5488dbfd2980d79a1c2ffbf346af67008088ba0",
       "cacheKeys": {
-        "wasm32": "0069db187836f3767207e4241584b7fa7f9f82d5f7c08c6779a0e12fec6b74a4",
-        "wasm64": "df4e9e86a5b5f4ea90d36a84bd3264d96b096526c481641061cf5c7b8ee96c49"
+        "wasm32": "2bfeac20d011454a6c76f985d4bbf8fb779ecd503560715ffb6edd6661e8009c",
+        "wasm64": "efca30d734149a74b66db55e8fd1b893ec25a35ab84c62cf08086357fd0127a1"
       }
     },
     "less": {
@@ -312,8 +312,8 @@
     "nginx-php-vfs": {
       "manifestSha256": "97976410cb02f8ba710d856b4ac904bcf976d677b50eefdee39fb64176070d4b",
       "cacheKeys": {
-        "wasm32": "bbf3528ab21ec2b0b6ae1203501af753ceebd5ed2e96f74be180a7504a4bffc2",
-        "wasm64": "d47ab60310e58d89ac0591d85ff0027a37a51e5093ccbdae77c84dd4afed9a6c"
+        "wasm32": "2ada7a71b4787e7202023fa5d405c5bd9dad3578d99527c97163a7abbe556001",
+        "wasm64": "3e7de872d44ad9d7e0cb57ecbd31fa6c791dc77f9cce7accb6a524a841a2118b"
       }
     },
     "nginx-vfs": {
@@ -515,8 +515,8 @@
     "wordpress": {
       "manifestSha256": "36465e0596a06e855a8524eecfd87da98643bc13b37ee12939f5aab44bf33418",
       "cacheKeys": {
-        "wasm32": "f0a7fb441969d639af60d8475925f00e021c139195b26b15f0f33648c844bfb9",
-        "wasm64": "d77694e485c116e448bac6d17913af5b7b93f926c8ccb8ae4acd94caf27ea531"
+        "wasm32": "4a338e6698123337273d879c0975d4fa8cee7670ed446be8d3b433f457a00b5e",
+        "wasm64": "882a37edbefb352ce2f5e043689239a6fc4d0c3c23a51ee967b21bb1e24c79f1"
       }
     },
     "xz": {
@@ -1093,7 +1093,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "0069db187836f3767207e4241584b7fa7f9f82d5f7c08c6779a0e12fec6b74a4"
+        "wasm32": "2bfeac20d011454a6c76f985d4bbf8fb779ecd503560715ffb6edd6661e8009c"
       },
       "dependencyClosures": {
         "wasm32": [
@@ -1723,7 +1723,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "bbf3528ab21ec2b0b6ae1203501af753ceebd5ed2e96f74be180a7504a4bffc2"
+        "wasm32": "2ada7a71b4787e7202023fa5d405c5bd9dad3578d99527c97163a7abbe556001"
       },
       "dependencyClosures": {
         "wasm32": [
@@ -2952,7 +2952,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "f0a7fb441969d639af60d8475925f00e021c139195b26b15f0f33648c844bfb9"
+        "wasm32": "4a338e6698123337273d879c0975d4fa8cee7670ed446be8d3b433f457a00b5e"
       },
       "dependencyClosures": {
         "wasm32": [
