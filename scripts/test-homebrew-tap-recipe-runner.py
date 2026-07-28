@@ -157,6 +157,43 @@ class ProtocolTests(unittest.TestCase):
                 self.assertEqual(config[key], Path(value))
                 self.assertFalse(Path(value).exists())
 
+    def test_sysroot_staging_cli_accepts_only_its_two_paths(self) -> None:
+        with mock.patch.object(
+            sys,
+            "argv",
+            [
+                str(RUNNER_PATH),
+                "--stage-sysroot",
+                "--source",
+                "/source",
+                "--destination",
+                "/protected/sysroot",
+            ],
+        ):
+            arguments = runner.parse_arguments()
+        self.assertTrue(arguments.stage_sysroot)
+        self.assertEqual(arguments.source, "/source")
+        self.assertEqual(arguments.destination, "/protected/sysroot")
+
+        with (
+            mock.patch.object(
+                sys,
+                "argv",
+                [
+                    str(RUNNER_PATH),
+                    "--stage-sysroot",
+                    "--source",
+                    "/source",
+                    "--destination",
+                    "/protected/sysroot",
+                    "--formula",
+                    "unexpected",
+                ],
+            ),
+            self.assertRaisesRegex(runner.RunnerError, "only --source"),
+        ):
+            runner.parse_arguments()
+
     def test_command_deadline_survives_a_descendant_inheriting_stdout(self) -> None:
         started = time.monotonic()
         with self.assertRaisesRegex(runner.RunnerError, "execution deadline"):
@@ -289,6 +326,275 @@ class RecipeProjectionTests(unittest.TestCase):
             os.symlink("build.sh", source / "alias")
             with self.assertRaises(runner.RunnerError):
                 self.stage(root, source, digest)
+
+
+class SysrootProjectionTests(unittest.TestCase):
+    def make_sysroot(self, root: Path) -> tuple[Path, int]:
+        source = root / "source-sysroot"
+        (source / "bin").mkdir(parents=True)
+        (source / "include/real").mkdir(parents=True)
+        (source / "lib").mkdir()
+        files = {
+            "metadata.txt": b"sysroot metadata\n",
+            "bin/tool": b"#!/bin/sh\nexit 0\n",
+            "include/real/fixture.h": b"#define FIXTURE 1\n",
+            "lib/libc.a": b"archive\n",
+        }
+        for relative, data in files.items():
+            path = source / relative
+            path.write_bytes(data)
+            path.chmod(0o755 if relative == "bin/tool" else 0o644)
+        (source / "lib/libc-link.a").symlink_to("libc.a")
+        (source / "include/alias").symlink_to("real", target_is_directory=True)
+        return source, sum(len(data) for data in files.values())
+
+    def stage(
+        self,
+        root: Path,
+        source: Path,
+        *,
+        limits: dict[str, int] = runner.SYSROOT_LIMITS,
+    ) -> tuple[Path, str, int, int]:
+        protected = root / "protected"
+        protected.mkdir()
+        destination = protected / "sysroot"
+        digest, entries, total = runner.stage_sysroot_tree(
+            source,
+            destination,
+            owner_uid=os.getuid(),
+            owner_gid=os.getgid(),
+            limits=limits,
+        )
+        return destination, digest, entries, total
+
+    def test_preserves_contained_symlinks_and_seals_exact_contents(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, expected_bytes = self.make_sysroot(root)
+
+            destination, digest, entries, total = self.stage(root, source)
+
+            self.assertEqual(entries, 10)
+            self.assertEqual(total, expected_bytes)
+            self.assertRegex(digest, r"^[0-9a-f]{64}$")
+            self.assertTrue((destination / "lib/libc-link.a").is_symlink())
+            self.assertEqual(
+                os.readlink(destination / "lib/libc-link.a"), "libc.a"
+            )
+            self.assertTrue((destination / "include/alias").is_symlink())
+            self.assertEqual(os.readlink(destination / "include/alias"), "real")
+            self.assertEqual(
+                (destination / "include/alias/fixture.h").read_bytes(),
+                (source / "include/real/fixture.h").read_bytes(),
+            )
+            self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o555)
+            self.assertEqual(
+                stat.S_IMODE((destination / "bin/tool").stat().st_mode), 0o555
+            )
+            self.assertEqual(
+                stat.S_IMODE((destination / "metadata.txt").stat().st_mode),
+                0o444,
+            )
+            snapshot, validated_entries, validated_bytes = (
+                runner.inspect_tree_snapshot(
+                    destination,
+                    runner.SYSROOT_LIMITS,
+                    "test sysroot",
+                    hash_files=True,
+                    sealed_owner=(os.getuid(), os.getgid()),
+                    require_single_link_files=True,
+                )
+            )
+            self.assertEqual(validated_entries, entries)
+            self.assertEqual(validated_bytes, total)
+            self.assertEqual(
+                runner.sealed_tree_manifest(snapshot, "test sysroot"), digest
+            )
+
+    def test_rejects_dangling_escaping_absolute_and_looping_symlinks(self) -> None:
+        cases = {
+            "dangling": ("missing", "dangling"),
+            "escaping": ("../outside", "escapes"),
+            "absolute": ("/etc/passwd", "unsafe symlink"),
+            "loop": ("second", "loop"),
+        }
+        for label, (target, expected) in cases.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                source = root / "source"
+                source.mkdir()
+                (source / "first").symlink_to(target)
+                if label == "loop":
+                    (source / "second").symlink_to("first")
+                protected = root / "protected"
+                protected.mkdir()
+                destination = protected / "sysroot"
+
+                with self.assertRaisesRegex(runner.RunnerError, expected):
+                    runner.stage_sysroot_tree(
+                        source,
+                        destination,
+                        owner_uid=os.getuid(),
+                        owner_gid=os.getgid(),
+                    )
+
+                self.assertFalse(destination.exists())
+                self.assertEqual(list(protected.glob(".sysroot-stage-*")), [])
+
+    def test_rejects_cross_device_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / "source"
+            source.mkdir()
+            (source / "foreign").write_bytes(b"fixture\n")
+            original_stat = runner.os.stat
+
+            def cross_device_stat(
+                path: object, *args: object, **kwargs: object
+            ) -> os.stat_result:
+                result = original_stat(path, *args, **kwargs)
+                if path == "foreign" and kwargs.get("follow_symlinks") is False:
+                    values = list(result)
+                    values[2] = result.st_dev + 1
+                    return os.stat_result(values)
+                return result
+
+            with (
+                mock.patch.object(runner.os, "stat", cross_device_stat),
+                self.assertRaisesRegex(runner.RunnerError, "crosses a filesystem"),
+            ):
+                runner.inspect_tree_snapshot(
+                    source,
+                    runner.SYSROOT_LIMITS,
+                    "test sysroot",
+                    hash_files=False,
+                )
+
+    def test_rejects_limits_before_publishing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / "source"
+            source.mkdir()
+            (source / "first").write_bytes(b"first")
+            (source / "second").write_bytes(b"second")
+            protected = root / "protected"
+            protected.mkdir()
+            limits = {
+                "max_entries": 1,
+                "max_file_bytes": 16,
+                "max_bytes": 16,
+                "max_path_bytes": 128,
+            }
+            with self.assertRaisesRegex(runner.RunnerError, "entry limit"):
+                runner.stage_sysroot_tree(
+                    source,
+                    protected / "sysroot",
+                    owner_uid=os.getuid(),
+                    owner_gid=os.getgid(),
+                    limits=limits,
+                )
+            self.assertEqual(list(protected.iterdir()), [])
+
+    def test_source_mutation_removes_the_complete_partial_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, _ = self.make_sysroot(root)
+            protected = root / "protected"
+            protected.mkdir()
+            destination = protected / "sysroot"
+            original_copy = runner.copy_input_tree
+
+            def copy_then_mutate(*args: object, **kwargs: object) -> tuple[int, int]:
+                result = original_copy(*args, **kwargs)
+                (source / "metadata.txt").write_bytes(b"changed after copy\n")
+                return result
+
+            with (
+                mock.patch.object(
+                    runner, "copy_input_tree", copy_then_mutate
+                ),
+                self.assertRaisesRegex(runner.RunnerError, "changed while"),
+            ):
+                runner.stage_sysroot_tree(
+                    source,
+                    destination,
+                    owner_uid=os.getuid(),
+                    owner_gid=os.getgid(),
+                )
+
+            self.assertFalse(destination.exists())
+            self.assertEqual(list(protected.glob(".sysroot-stage-*")), [])
+
+    def test_failed_post_rename_validation_removes_published_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, _ = self.make_sysroot(root)
+            protected = root / "protected"
+            protected.mkdir()
+            destination = protected / "sysroot"
+            original_inspect = runner.inspect_tree_snapshot
+
+            def reject_published_tree(
+                path: Path,
+                limits: dict[str, int],
+                label: str,
+                **kwargs: object,
+            ) -> tuple[runner.TreeSnapshot, int, int]:
+                if label == "published sysroot":
+                    raise runner.RunnerError("simulated final validation failure")
+                return original_inspect(path, limits, label, **kwargs)
+
+            with (
+                mock.patch.object(
+                    runner, "inspect_tree_snapshot", reject_published_tree
+                ),
+                self.assertRaisesRegex(
+                    runner.RunnerError, "simulated final validation failure"
+                ),
+            ):
+                runner.stage_sysroot_tree(
+                    source,
+                    destination,
+                    owner_uid=os.getuid(),
+                    owner_gid=os.getgid(),
+                )
+
+            self.assertFalse(destination.exists())
+            self.assertEqual(list(protected.glob(".sysroot-stage-*")), [])
+
+    def test_final_validation_rejects_mode_and_symlink_tampering(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, _ = self.make_sysroot(root)
+            destination, original_digest, _, _ = self.stage(root, source)
+            (destination / "metadata.txt").chmod(0o644)
+            with self.assertRaisesRegex(runner.RunnerError, "not sealed"):
+                runner.inspect_tree_snapshot(
+                    destination,
+                    runner.SYSROOT_LIMITS,
+                    "test sysroot",
+                    hash_files=True,
+                    sealed_owner=(os.getuid(), os.getgid()),
+                    require_single_link_files=True,
+                )
+            (destination / "metadata.txt").chmod(0o444)
+            link = destination / "lib/libc-link.a"
+            link.parent.chmod(0o755)
+            link.unlink()
+            link.symlink_to("../metadata.txt")
+            link.parent.chmod(0o555)
+            snapshot, _, _ = runner.inspect_tree_snapshot(
+                destination,
+                runner.SYSROOT_LIMITS,
+                "test sysroot",
+                hash_files=True,
+                sealed_owner=(os.getuid(), os.getgid()),
+                require_single_link_files=True,
+            )
+            self.assertNotEqual(
+                runner.sealed_tree_manifest(snapshot, "test sysroot"),
+                original_digest,
+            )
 
 
 class ServiceRootProjectionTests(unittest.TestCase):

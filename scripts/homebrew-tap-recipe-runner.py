@@ -23,6 +23,7 @@ import stat
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -43,6 +44,13 @@ MAX_RESOURCE_ENTRIES = 65_536
 MAX_RESOURCE_FILE_BYTES = 268_435_456
 MAX_RESOURCE_BYTES = 1_073_741_824
 MAX_RESOURCE_PATH_BYTES = 4_096
+MAX_SYMLINK_EXPANSIONS = 40
+SYSROOT_LIMITS = {
+    "max_bytes": 2_147_483_648,
+    "max_entries": 65_536,
+    "max_file_bytes": 1_073_741_824,
+    "max_path_bytes": 4_096,
+}
 # Linux reserves one trailing NUL in sockaddr_un.sun_path, leaving 107 bytes
 # for a pathname. The protected build identity intentionally retains all 64
 # digest characters, so the control socket uses the shortest meaningful name.
@@ -123,10 +131,14 @@ UNIT_RE = re.compile(r"^kandelo-homebrew-build-[0-9]+$")
 SLICE_RE = re.compile(r"^kandelo-homebrew-build-[0-9]+[.]slice$")
 VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+,-]{0,254}$")
 RESOURCE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._+-]{0,127}$")
+PROTECTED_BUILD_RE = re.compile(r"^build-[0-9a-f]{64}$")
+PROTECTED_PUBLISHER_ROOT = Path("/run/kandelo-homebrew-publisher")
 ResourceStagingIdentity = tuple[
     tuple[int, ...],
     dict[str, tuple[int, ...]],
 ]
+TreeNode = tuple[str, tuple[int, ...], str | None, str | None]
+TreeSnapshot = tuple[tuple[int, ...], dict[str, TreeNode]]
 SAFE_FIXED_ENV_KEYS = {
     "ACLOCAL_PATH",
     "AR",
@@ -1871,8 +1883,20 @@ def copy_input_tree(
     limits: dict[str, int],
     *,
     expected_root_identity: tuple[int, ...] | None = None,
+    destination_uid: int = 0,
+    destination_gid: int = 0,
+    require_single_link_files: bool = True,
+    destination_precreated: bool = False,
 ) -> tuple[int, int]:
-    destination.mkdir(mode=0o700)
+    if destination_precreated:
+        before_destination = destination.lstat()
+        if (
+            not stat.S_ISDIR(before_destination.st_mode)
+            or any(destination.iterdir())
+        ):
+            fail("precreated destination is not one empty real directory")
+    else:
+        destination.mkdir(mode=0o700)
     entries = 0
     total_bytes = 0
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
@@ -1929,7 +1953,9 @@ def copy_input_tree(
                     child_destination_fd = os.open(
                         name, directory_flags, dir_fd=current_destination_fd
                     )
-                    os.fchown(child_destination_fd, 0, 0)
+                    os.fchown(
+                        child_destination_fd, destination_uid, destination_gid
+                    )
                     pending.append(
                         (
                             child_source_fd,
@@ -1940,7 +1966,7 @@ def copy_input_tree(
                     )
                 elif stat.S_ISREG(before.st_mode):
                     if (
-                        before.st_nlink != 1
+                        (require_single_link_files and before.st_nlink != 1)
                         or before.st_size > limits["max_file_bytes"]
                     ):
                         fail(f"source file has unsafe links or size: {relative}")
@@ -1978,7 +2004,7 @@ def copy_input_tree(
                                     fail(f"source file copy stopped early: {relative}")
                                 view = view[written:]
                         opened_after = os.fstat(input_fd)
-                        os.fchown(output_fd, 0, 0)
+                        os.fchown(output_fd, destination_uid, destination_gid)
                         os.fchmod(
                             output_fd,
                             0o555
@@ -2004,8 +2030,8 @@ def copy_input_tree(
                     os.symlink(target, name, dir_fd=current_destination_fd)
                     os.chown(
                         name,
-                        0,
-                        0,
+                        destination_uid,
+                        destination_gid,
                         dir_fd=current_destination_fd,
                         follow_symlinks=False,
                     )
@@ -2019,7 +2045,9 @@ def copy_input_tree(
                         fail(f"source symlink changed while copied: {relative}")
                 else:
                     fail(f"source tree contains an unsupported node: {relative}")
-            os.fchown(current_destination_fd, 0, 0)
+            os.fchown(
+                current_destination_fd, destination_uid, destination_gid
+            )
             os.fchmod(current_destination_fd, 0o555)
             os.fsync(current_destination_fd)
             if file_identity(os.fstat(current_source_fd)) != file_identity(
@@ -2049,6 +2077,562 @@ def copy_input_tree(
     if file_identity(final_source) != file_identity(root_stat):
         fail("source root changed while copied")
     return entries, total_bytes
+
+
+def hash_regular_at(
+    parent_fd: int,
+    name: str,
+    before: os.stat_result,
+    *,
+    max_bytes: int,
+    label: str,
+) -> str:
+    """Hash one held regular file without following its final path component."""
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_size < 0
+        or before.st_size > max_bytes
+    ):
+        fail(f"{label} has an unsafe type or size")
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+    try:
+        fd = os.open(name, flags, dir_fd=parent_fd)
+    except OSError as error:
+        fail(f"{label} cannot be opened safely: {error}")
+    digest = hashlib.sha256()
+    copied = 0
+    try:
+        if file_identity(os.fstat(fd)) != file_identity(before):
+            fail(f"{label} changed before it was opened")
+        while True:
+            chunk = os.read(fd, min(1_048_576, before.st_size + 1 - copied))
+            if not chunk:
+                break
+            copied += len(chunk)
+            if copied > before.st_size:
+                fail(f"{label} grew while it was hashed")
+            digest.update(chunk)
+        opened_after = os.fstat(fd)
+    finally:
+        os.close(fd)
+    after = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if (
+        copied != before.st_size
+        or file_identity(opened_after) != file_identity(before)
+        or file_identity(after) != file_identity(before)
+    ):
+        fail(f"{label} changed while it was hashed")
+    return digest.hexdigest()
+
+
+def validate_tree_symlink_targets(
+    records: dict[str, TreeNode], label: str
+) -> None:
+    """Require every relative symlink to terminate at a node in this tree."""
+
+    for relative, (kind, _, target, _) in sorted(records.items()):
+        if kind != "l":
+            continue
+        if target is None:
+            fail(f"{label} has an invalid symlink record: {relative}")
+        remaining = [
+            *PurePosixPath(relative).parent.parts,
+            *PurePosixPath(target).parts,
+        ]
+        resolved: list[str] = []
+        states: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
+        expansions = 0
+        while remaining:
+            component = remaining.pop(0)
+            if component in ("", "."):
+                continue
+            if component == "..":
+                if not resolved:
+                    fail(f"{label} symlink escapes its root: {relative}")
+                resolved.pop()
+                continue
+            candidate = "/".join([*resolved, component])
+            node = records.get(candidate)
+            if node is None:
+                fail(f"{label} has a dangling symlink: {relative}")
+            node_kind, _, node_target, _ = node
+            if node_kind == "l":
+                state = (tuple(resolved), tuple([component, *remaining]))
+                if state in states or expansions >= MAX_SYMLINK_EXPANSIONS:
+                    fail(f"{label} has a symlink loop: {relative}")
+                states.add(state)
+                expansions += 1
+                if node_target is None:
+                    fail(f"{label} has an invalid symlink: {candidate}")
+                remaining = [*PurePosixPath(node_target).parts, *remaining]
+                continue
+            if remaining and node_kind != "d":
+                fail(f"{label} symlink traverses a non-directory: {relative}")
+            resolved.append(component)
+
+
+def inspect_tree_snapshot(
+    root: Path,
+    limits: dict[str, int],
+    label: str,
+    *,
+    hash_files: bool,
+    sealed_owner: tuple[int, int] | None = None,
+    require_single_link_files: bool = False,
+) -> tuple[TreeSnapshot, int, int]:
+    """Inspect one tree through held directory descriptors and return its identity."""
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        directory_flags |= os.O_NOFOLLOW
+    try:
+        root_before = root.lstat()
+        root_fd = os.open(root, directory_flags)
+    except OSError as error:
+        fail(f"{label} root cannot be opened safely: {error}")
+    root_stat = os.fstat(root_fd)
+    if (
+        not stat.S_ISDIR(root_stat.st_mode)
+        or file_identity(root_stat) != file_identity(root_before)
+    ):
+        os.close(root_fd)
+        fail(f"{label} root changed before inspection")
+    if sealed_owner is not None and (
+        root_stat.st_uid != sealed_owner[0]
+        or root_stat.st_gid != sealed_owner[1]
+        or stat.S_IMODE(root_stat.st_mode) != 0o555
+    ):
+        os.close(root_fd)
+        fail(f"{label} root is not sealed")
+
+    records: dict[str, TreeNode] = {}
+    entries = 0
+    total_bytes = 0
+    pending: list[tuple[int, str, os.stat_result]] = [(root_fd, "", root_stat)]
+    while pending:
+        current_fd, relative_dir, expected_directory = pending.pop()
+        try:
+            if file_identity(os.fstat(current_fd)) != file_identity(
+                expected_directory
+            ):
+                fail(f"{label} directory changed before inspection")
+            try:
+                names = os.listdir(current_fd)
+            except OSError as error:
+                fail(f"{label} cannot be enumerated: {error}")
+            entries += len(names)
+            if entries > limits["max_entries"]:
+                fail(f"{label} exceeds the entry limit")
+            for name in sorted(names):
+                relative = f"{relative_dir}/{name}" if relative_dir else name
+                safe_relative_path(relative, limits["max_path_bytes"])
+                before = os.stat(
+                    name, dir_fd=current_fd, follow_symlinks=False
+                )
+                if before.st_dev != root_stat.st_dev:
+                    fail(f"{label} crosses a filesystem: {relative}")
+                identity = file_identity(before)
+                if stat.S_ISDIR(before.st_mode):
+                    if sealed_owner is not None and (
+                        before.st_uid != sealed_owner[0]
+                        or before.st_gid != sealed_owner[1]
+                        or stat.S_IMODE(before.st_mode) != 0o555
+                    ):
+                        fail(f"{label} directory is not sealed: {relative}")
+                    child_fd = os.open(name, directory_flags, dir_fd=current_fd)
+                    if file_identity(os.fstat(child_fd)) != identity:
+                        os.close(child_fd)
+                        fail(f"{label} directory changed: {relative}")
+                    records[relative] = ("d", identity, None, None)
+                    pending.append((child_fd, relative, before))
+                elif stat.S_ISREG(before.st_mode):
+                    mode = stat.S_IMODE(before.st_mode)
+                    if before.st_size > limits["max_file_bytes"] or (
+                        require_single_link_files and before.st_nlink != 1
+                    ):
+                        fail(f"{label} file has unsafe links or size: {relative}")
+                    if sealed_owner is not None and (
+                        before.st_uid != sealed_owner[0]
+                        or before.st_gid != sealed_owner[1]
+                        or before.st_nlink != 1
+                        or mode not in {0o444, 0o555}
+                    ):
+                        fail(f"{label} file is not sealed: {relative}")
+                    if before.st_size > limits["max_bytes"] - total_bytes:
+                        fail(f"{label} exceeds its total byte limit")
+                    total_bytes += before.st_size
+                    digest = (
+                        hash_regular_at(
+                            current_fd,
+                            name,
+                            before,
+                            max_bytes=limits["max_file_bytes"],
+                            label=f"{label} file {relative}",
+                        )
+                        if hash_files
+                        else None
+                    )
+                    records[relative] = ("f", identity, None, digest)
+                elif stat.S_ISLNK(before.st_mode):
+                    target = os.readlink(name, dir_fd=current_fd)
+                    contained_symlink(
+                        relative, target, limits["max_path_bytes"]
+                    )
+                    if before.st_nlink != 1:
+                        fail(f"{label} symlink is not single-linked: {relative}")
+                    if sealed_owner is not None and (
+                        before.st_uid != sealed_owner[0]
+                        or before.st_gid != sealed_owner[1]
+                    ):
+                        fail(f"{label} symlink has unsafe ownership: {relative}")
+                    after = os.stat(
+                        name, dir_fd=current_fd, follow_symlinks=False
+                    )
+                    if (
+                        file_identity(after) != identity
+                        or os.readlink(name, dir_fd=current_fd) != target
+                    ):
+                        fail(f"{label} symlink changed: {relative}")
+                    records[relative] = ("l", identity, target, None)
+                else:
+                    fail(f"{label} contains an unsupported node: {relative}")
+            if file_identity(os.fstat(current_fd)) != file_identity(
+                expected_directory
+            ):
+                fail(
+                    f"{label} directory changed during inspection: "
+                    f"{relative_dir or '.'}"
+                )
+        finally:
+            os.close(current_fd)
+            # WHY: a rejected sibling must not leak a held descriptor into the
+            # persistent root supervisor or a later staging invocation.
+            if sys.exc_info()[0] is not None:
+                while pending:
+                    pending_fd, _, _ = pending.pop()
+                    os.close(pending_fd)
+    try:
+        root_after = root.lstat()
+    except OSError as error:
+        fail(f"{label} root disappeared after inspection: {error}")
+    if file_identity(root_after) != file_identity(root_stat):
+        fail(f"{label} root changed during inspection")
+    validate_tree_symlink_targets(records, label)
+    return (file_identity(root_stat), records), entries, total_bytes
+
+
+def tree_identity_signature(snapshot: TreeSnapshot) -> tuple[
+    tuple[int, ...], dict[str, tuple[str, tuple[int, ...], str | None]]
+]:
+    root_identity, records = snapshot
+    return (
+        root_identity,
+        {
+            relative: (kind, identity, target)
+            for relative, (kind, identity, target, _) in records.items()
+        },
+    )
+
+
+def tree_content_signature(
+    records: dict[str, TreeNode], label: str
+) -> dict[str, tuple[Any, ...]]:
+    result: dict[str, tuple[Any, ...]] = {}
+    for relative, (kind, identity, target, digest) in records.items():
+        if kind == "d":
+            result[relative] = ("d",)
+        elif kind == "l":
+            result[relative] = ("l", target)
+        elif kind == "f":
+            if digest is None:
+                fail(f"{label} file lacks a content digest: {relative}")
+            # The sealed projection intentionally drops write/special bits but
+            # must preserve whether the source was executable.
+            normalized_mode = (
+                0o555 if stat.S_IMODE(identity[2]) & 0o111 else 0o444
+            )
+            result[relative] = (
+                "f",
+                normalized_mode,
+                identity[6],
+                digest,
+            )
+        else:
+            fail(f"{label} has an invalid tree record: {relative}")
+    return result
+
+
+def sealed_tree_manifest(
+    snapshot: TreeSnapshot,
+    label: str,
+) -> str:
+    _, records = snapshot
+    manifest: list[list[Any]] = [["d", "", 0o555, 0]]
+    for relative, (kind, identity, target, digest) in records.items():
+        if kind == "d":
+            manifest.append(["d", relative, 0o555, 0])
+        elif kind == "l":
+            manifest.append(["l", relative, 0, target])
+        elif kind == "f":
+            if digest is None:
+                fail(f"{label} file lacks a content digest: {relative}")
+            manifest.append(
+                [
+                    "f",
+                    relative,
+                    stat.S_IMODE(identity[2]),
+                    0,
+                    identity[6],
+                    digest,
+                ]
+            )
+        else:
+            fail(f"{label} has an invalid manifest record: {relative}")
+    manifest.sort(key=lambda record: record[1])
+    return hashlib.sha256(compact_json(manifest)).hexdigest()
+
+
+def remove_staging_tree(path: Path, label: str) -> None:
+    """Remove one known-private staging tree, including already sealed directories."""
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(current.st_mode):
+        fail(f"{label} cleanup target is not a real directory")
+
+    try:
+        # shutil cannot unlink children from a sealed 0555 parent as an
+        # unprivileged test owner. Reopen only known-private real directories
+        # first; os.walk does not traverse the preserved symlinks.
+        for directory, _, _ in os.walk(path, topdown=True, followlinks=False):
+            os.chmod(directory, 0o700)
+        shutil.rmtree(path)
+    except OSError as error:
+        fail(f"{label} could not be cleaned up: {error}")
+    if path.exists() or path.is_symlink():
+        fail(f"{label} cleanup left staging state")
+
+
+def stage_sysroot_tree(
+    source: Path,
+    destination: Path,
+    *,
+    owner_uid: int,
+    owner_gid: int,
+    limits: dict[str, int] = SYSROOT_LIMITS,
+) -> tuple[str, int, int]:
+    """Copy and atomically publish one content-closed, sealed sysroot tree."""
+    source = canonical_real_directory(source, label="sysroot projection source")
+    destination_parent = canonical_real_directory(
+        destination.parent,
+        label="sysroot projection parent",
+        owner_uid=owner_uid,
+    )
+    if destination.parent != destination_parent:
+        fail("sysroot projection destination left its canonical parent")
+    if destination.exists() or destination.is_symlink():
+        fail("sysroot projection destination is occupied")
+
+    source_before, _, _ = inspect_tree_snapshot(
+        source,
+        limits,
+        "sysroot source",
+        hash_files=True,
+    )
+    temporary = Path(
+        tempfile.mkdtemp(prefix=".sysroot-stage-", dir=destination_parent)
+    )
+    os.chown(temporary, owner_uid, owner_gid)
+    published = False
+    try:
+        copied_entries, copied_bytes = copy_input_tree(
+            source,
+            temporary,
+            limits,
+            expected_root_identity=source_before[0],
+            destination_uid=owner_uid,
+            destination_gid=owner_gid,
+            require_single_link_files=False,
+            destination_precreated=True,
+        )
+        source_after, _, _ = inspect_tree_snapshot(
+            source,
+            limits,
+            "sysroot source",
+            hash_files=False,
+        )
+        if tree_identity_signature(source_after) != tree_identity_signature(
+            source_before
+        ):
+            fail("sysroot source changed while it was staged")
+        staged_snapshot, staged_entries, staged_bytes = inspect_tree_snapshot(
+            temporary,
+            limits,
+            "staged sysroot",
+            hash_files=True,
+            sealed_owner=(owner_uid, owner_gid),
+            require_single_link_files=True,
+        )
+        if (
+            copied_entries != staged_entries
+            or copied_bytes != staged_bytes
+            or tree_content_signature(staged_snapshot[1], "staged sysroot")
+            != tree_content_signature(source_before[1], "sysroot source")
+        ):
+            fail("staged sysroot differs from its stable source closure")
+        digest = sealed_tree_manifest(staged_snapshot, "staged sysroot")
+
+        # WHY: the parent is a root-owned private publisher directory. Validate
+        # completely under a random sibling first, then perform one same-device
+        # rename so neither Formula identity can observe or replace a partial
+        # sysroot at the configured destination.
+        if destination.exists() or destination.is_symlink():
+            fail("sysroot projection destination appeared during staging")
+        parent_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            parent_flags |= os.O_NOFOLLOW
+        parent_before = destination_parent.lstat()
+        parent_fd = os.open(destination_parent, parent_flags)
+        try:
+            opened_parent = os.fstat(parent_fd)
+            parent_authority = (
+                opened_parent.st_dev,
+                opened_parent.st_ino,
+                opened_parent.st_mode,
+                opened_parent.st_uid,
+                opened_parent.st_gid,
+            )
+            if parent_authority != (
+                parent_before.st_dev,
+                parent_before.st_ino,
+                parent_before.st_mode,
+                parent_before.st_uid,
+                parent_before.st_gid,
+            ):
+                fail("sysroot projection parent changed before publication")
+            temporary_before = os.stat(
+                temporary.name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+            try:
+                os.stat(
+                    destination.name,
+                    dir_fd=parent_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                pass
+            else:
+                fail("sysroot projection destination appeared during staging")
+            os.rename(
+                temporary.name,
+                destination.name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            published = True
+            published_stat = os.stat(
+                destination.name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+            # Rename updates directory ctime on some filesystems; device,
+            # inode, type/mode, links, owner, and size still identify the exact
+            # validated tree that crossed the publication boundary.
+            if file_identity(published_stat)[:7] != file_identity(
+                temporary_before
+            )[:7]:
+                fail("published sysroot is not the validated staging tree")
+            os.fsync(parent_fd)
+            opened_parent_after = os.fstat(parent_fd)
+            if parent_authority != (
+                opened_parent_after.st_dev,
+                opened_parent_after.st_ino,
+                opened_parent_after.st_mode,
+                opened_parent_after.st_uid,
+                opened_parent_after.st_gid,
+            ):
+                fail("sysroot projection parent changed during publication")
+        finally:
+            os.close(parent_fd)
+        final_snapshot, final_entries, final_bytes = inspect_tree_snapshot(
+            destination,
+            limits,
+            "published sysroot",
+            hash_files=True,
+            sealed_owner=(owner_uid, owner_gid),
+            require_single_link_files=True,
+        )
+        final_digest = sealed_tree_manifest(final_snapshot, "published sysroot")
+        if (
+            final_digest != digest
+            or final_entries != staged_entries
+            or final_bytes != staged_bytes
+        ):
+            fail("published sysroot changed after its atomic rename")
+        return final_digest, final_entries, final_bytes
+    except BaseException as error:
+        try:
+            if published:
+                remove_staging_tree(destination, "published sysroot")
+            remove_staging_tree(temporary, "sysroot staging directory")
+        except RunnerError as cleanup_error:
+            raise cleanup_error from error
+        raise
+
+
+def stage_sysroot(source_value: str, destination_value: str) -> int:
+    """Root-only CLI boundary for staging the publisher's immutable sysroot."""
+    if os.geteuid() != 0:
+        fail("sysroot staging must run as root")
+    runner = Path(__file__).resolve(strict=True)
+    runner_stat = runner.lstat()
+    parent_stat = runner.parent.lstat()
+    try:
+        anchor_stat = PROTECTED_PUBLISHER_ROOT.lstat()
+    except OSError as error:
+        fail(f"protected publisher root is unavailable: {error}")
+    if (
+        not stat.S_ISREG(runner_stat.st_mode)
+        or runner_stat.st_uid != 0
+        or runner_stat.st_gid != 0
+        or runner_stat.st_nlink != 1
+        or stat.S_IMODE(runner_stat.st_mode) != 0o555
+        or not stat.S_ISDIR(parent_stat.st_mode)
+        or runner.parent.resolve(strict=True) != runner.parent
+        or parent_stat.st_uid != 0
+        or parent_stat.st_gid != 0
+        or stat.S_IMODE(parent_stat.st_mode) not in {0o755, 0o555}
+        or runner.parent.parent != PROTECTED_PUBLISHER_ROOT
+        or not PROTECTED_BUILD_RE.fullmatch(runner.parent.name)
+        or not stat.S_ISDIR(anchor_stat.st_mode)
+        or PROTECTED_PUBLISHER_ROOT.resolve(strict=True)
+        != PROTECTED_PUBLISHER_ROOT
+        or anchor_stat.st_uid != 0
+        or anchor_stat.st_gid != 0
+        or stat.S_IMODE(anchor_stat.st_mode) != 0o711
+    ):
+        fail("sysroot staging runner is outside its sealed root-owned boundary")
+    destination = Path(destination_value)
+    if destination != runner.parent / "sysroot":
+        fail("sysroot projection left the protected runner root")
+    source = canonical_real_directory(
+        source_value, label="sysroot projection source"
+    )
+    if is_within(source, runner.parent) or is_within(runner.parent, source):
+        fail("sysroot projection source overlaps the protected runner root")
+    stage_sysroot_tree(
+        source,
+        destination,
+        owner_uid=0,
+        owner_gid=0,
+    )
+    return 0
 
 
 def seal_output_tree(
@@ -2844,14 +3428,21 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--response")
     parser.add_argument("--source")
     parser.add_argument("--stage-recipe", action="store_true")
+    parser.add_argument("--stage-sysroot", action="store_true")
     parser.add_argument("--supervisor", action="store_true")
     arguments = parser.parse_args()
-    selected_modes = int(arguments.supervisor) + int(arguments.stage_recipe)
+    selected_modes = (
+        int(arguments.supervisor)
+        + int(arguments.stage_recipe)
+        + int(arguments.stage_sysroot)
+    )
     if selected_modes > 1:
         fail("tap recipe runner modes are mutually exclusive")
-    staging_values = (
+    projection_values = (
         arguments.source,
         arguments.destination,
+    )
+    recipe_identity_values = (
         arguments.formula,
         arguments.manifest_sha256,
     )
@@ -2859,20 +3450,37 @@ def parse_arguments() -> argparse.Namespace:
         if (
             arguments.request is not None
             or arguments.response is not None
-            or any(value is not None for value in staging_values)
+            or any(
+                value is not None
+                for value in (*projection_values, *recipe_identity_values)
+            )
         ):
             fail("tap recipe supervisor accepts no request arguments")
     elif arguments.stage_recipe:
         if (
             arguments.request is not None
             or arguments.response is not None
-            or any(value is None for value in staging_values)
+            or any(
+                value is None
+                for value in (*projection_values, *recipe_identity_values)
+            )
         ):
             fail("tap recipe staging requires its exact projection arguments")
+    elif arguments.stage_sysroot:
+        if (
+            arguments.request is not None
+            or arguments.response is not None
+            or any(value is None for value in projection_values)
+            or any(value is not None for value in recipe_identity_values)
+        ):
+            fail("sysroot staging requires only --source and --destination")
     elif (
         arguments.request is None
         or arguments.response is None
-        or any(value is not None for value in staging_values)
+        or any(
+            value is not None
+            for value in (*projection_values, *recipe_identity_values)
+        )
     ):
         fail("tap recipe runner requires --request and --response")
     return arguments
@@ -2890,6 +3498,8 @@ def main() -> int:
                 arguments.formula,
                 arguments.manifest_sha256,
             )
+        if arguments.stage_sysroot:
+            return stage_sysroot(arguments.source, arguments.destination)
         if os.geteuid() == 0:
             fail("tap recipe client must not run as root")
         return client(arguments.request, arguments.response)

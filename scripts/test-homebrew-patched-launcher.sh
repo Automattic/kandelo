@@ -1507,6 +1507,16 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   ISOLATION_BUILD_USER="${ISOLATION_BUILD_USER:0:31}"
   ISOLATION_ROOT="$(mktemp -d /tmp/kandelo-launcher-test.XXXXXX)"
   /usr/bin/sudo -n -- chmod 1777 "$ISOLATION_ROOT"
+  if (
+    set +o pipefail
+    # shellcheck disable=SC2034 # output is intentionally ignored in this failure check
+    failed_find_entries=()
+    homebrew_patched_launcher_collect_sorted_find_entries \
+      "$ISOLATION_ROOT/missing-tree" failed_find_entries \
+      "missing regression fixture" >/dev/null 2>&1
+  ); then
+    fail "sorted traversal accepted a failed find without pipefail"
+  fi
   platform_fixture="$ISOLATION_ROOT/platform-fixture"
   platform_projection="$ISOLATION_ROOT/platform-projection"
   mkdir -p \
@@ -2162,6 +2172,7 @@ EOF
   protected_dir="$HOMEBREW_PATCHED_PROTECTED_DIR"
   source_alias_dir="$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR"
   protected_platform_root="$HOMEBREW_PATCHED_PLATFORM_ROOT"
+  protected_sysroot_root="$HOMEBREW_PATCHED_SYSROOT_ROOT"
   protected_xtask="$HOMEBREW_PATCHED_PROTECTED_DIR/xtask"
   [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a:%h' "$protected_xtask")" = \
       "0:0:555:1" ] &&
@@ -2191,6 +2202,34 @@ EOF
       "$protected_platform_root/scripts/homebrew-tap-recipe-runner.py" \
       "$HOMEBREW_PATCHED_RECIPE_RUNNER" ||
     fail "isolated launcher did not stage the admitted root-owned recipe runner"
+  recipe_config_json="$(
+    /usr/bin/sudo -n -- /usr/bin/cat "$HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG"
+  )"
+  [ "$protected_sysroot_root" = "$protected_dir/sysroot" ] &&
+    [ "$(jq -r '.sysroot_host_root' <<<"$recipe_config_json")" = \
+      "$protected_sysroot_root" ] &&
+    [ "$(jq -r '.sysroot_alias_root' <<<"$recipe_config_json")" = \
+      "$source_alias_dir/sysroot" ] &&
+    [ "$protected_sysroot_root" != "$isolated_sysroot" ] &&
+    [ -L "$protected_sysroot_root/contained-link" ] &&
+    [ "$(/usr/bin/sudo -n -- /usr/bin/readlink \
+      "$protected_sysroot_root/contained-link")" = "lib/libc.a" ] &&
+    /usr/bin/sudo -n -- /usr/bin/cmp -s -- \
+      "$isolated_sysroot/lib/libc.a" "$protected_sysroot_root/lib/libc.a" &&
+    /usr/bin/sudo -n -- /usr/bin/cmp -s -- \
+      "$isolated_sysroot/lib/libc.a" "$protected_sysroot_root/contained-link" ||
+    fail "recipe supervisor did not select the sealed sysroot projection"
+  [ "$(/usr/bin/sudo -n -- /usr/bin/find "$protected_sysroot_root" \
+    -type l -print | wc -l)" -eq 1 ] ||
+    fail "sealed sysroot projection changed its safe symlink closure"
+  while IFS= read -r -d '' protected_sysroot_directory; do
+    [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a' \
+      "$protected_sysroot_directory")" = "0:0:555" ] ||
+      fail "recipe sysroot projection left an unsealed ancestor"
+  done < <(
+    /usr/bin/sudo -n -- /usr/bin/find \
+      "$protected_sysroot_root" -type d -print0
+  )
   missing_namespace_error="$ISOLATION_ROOT/missing-namespace.err"
   mv "$isolated_output" "$isolated_output.missing"
   set +e
@@ -2448,9 +2487,6 @@ EOF
   printf 'reviewed resource\n' |
     /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
       /usr/bin/tee "$recipe_resource_root/payload.txt" >/dev/null
-  recipe_config_json="$(
-    /usr/bin/sudo -n -- /usr/bin/cat "$HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG"
-  )"
   mapfile -t recipe_native_formulae < <(
     jq -r '.native_formulae[]' <<<"$recipe_config_json"
   )
@@ -2571,6 +2607,26 @@ EOF
     "$HOMEBREW_PATCHED_RECIPE_SEALED_ROOT" >/dev/null ||
     fail "populated sealed-output root lost its portable directory seal"
   homebrew_patched_launcher_verify_isolation
+  /usr/bin/sudo -n -- /usr/bin/chmod 0644 \
+    "$protected_sysroot_root/lib/libc.a"
+  if homebrew_patched_launcher_verify_isolation >/dev/null 2>&1; then
+    fail "isolation verification accepted a mutable projected sysroot file"
+  fi
+  /usr/bin/sudo -n -- /usr/bin/chmod 0444 \
+    "$protected_sysroot_root/lib/libc.a"
+  homebrew_patched_launcher_verify_isolation
+  /usr/bin/sudo -n -- /usr/bin/rm -f \
+    "$protected_sysroot_root/contained-link"
+  /usr/bin/sudo -n -- /usr/bin/ln -s lib/../lib/libc.a \
+    "$protected_sysroot_root/contained-link"
+  if homebrew_patched_launcher_verify_isolation >/dev/null 2>&1; then
+    fail "isolation verification accepted a changed projected sysroot symlink"
+  fi
+  /usr/bin/sudo -n -- /usr/bin/rm -f \
+    "$protected_sysroot_root/contained-link"
+  /usr/bin/sudo -n -- /usr/bin/ln -s lib/libc.a \
+    "$protected_sysroot_root/contained-link"
+  homebrew_patched_launcher_verify_isolation
 
   cp "$isolated_xtask" "$isolated_xtask.backup"
   # WHY: production checkers are sealed 0555. Only the private fixture owner
@@ -2680,7 +2736,9 @@ EOF
     [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK_STATE" ] && \
     [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK_SHA256" ] && \
     [ -z "$HOMEBREW_PATCHED_PLATFORM_ROOT" ] && \
-    [ -z "$HOMEBREW_PATCHED_PLATFORM_SHA256" ] ||
+    [ -z "$HOMEBREW_PATCHED_PLATFORM_SHA256" ] && \
+    [ -z "$HOMEBREW_PATCHED_SYSROOT_ROOT" ] && \
+    [ -z "$HOMEBREW_PATCHED_SYSROOT_SHA256" ] ||
     fail "isolated cleanup left the protected checker or source aliases"
   [ ! -e "$protected_bottle" ] && [ ! -e "$protected_bottle_dir" ] && \
     [ -z "$(find "$isolated_shared_temp" -mindepth 1 -print -quit)" ] && \
