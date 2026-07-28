@@ -66,6 +66,7 @@ jobs:
       package-generation-wasm64: ${{ steps.trust.outputs.package-generation-wasm64 }}
       package-generation-kind: ${{ steps.trust.outputs.package-generation-kind }}
       core-dependency-tap-sha: ${{ steps.dependency-taps.outputs.core-tap-sha }}
+      rootfs-publication-selection: ${{ steps.matrix.outputs.rootfs-publication-selection }}
       vfs-acceptance-formula: ${{ steps.vfs-acceptance.outputs.formula }}
     steps:
       - name: Validate caller trust boundary
@@ -243,6 +244,11 @@ jobs:
                 ;;
               *) echo "::error::unsupported wasm32 package-generation kind"; exit 2 ;;
             esac
+          fi
+          if [ "$validated_generation_kind" = "rootfs-wasm32" ] &&
+             [ "$DRY_RUN" = "true" ]; then
+            echo "::error::the rootfs-wasm32 publication lane requires exact runtime materialization and is unavailable in dry-run"
+            exit 2
           fi
           {
             echo "kandelo-ref=$validated_kandelo_ref"
@@ -437,11 +443,36 @@ jobs:
             echo "bottle-root-prefix=$root_prefix"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Install Nix for Formula authority planning
+        if: ${{ steps.trust.outputs.package-generation-kind == 'rootfs-wasm32' }}
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Cache Nix store for Formula authority planning
+        if: ${{ steps.trust.outputs.package-generation-kind == 'rootfs-wasm32' }}
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+        with:
+          use-gha-cache: false
+          use-flakehub: false
+
+      - name: Warm pinned Formula authority tools
+        id: authority-tools
+        if: ${{ steps.trust.outputs.package-generation-kind == 'rootfs-wasm32' }}
+        shell: bash
+        run: |
+          cd kandelo
+          bash scripts/dev-shell.sh bash -c '
+            ruby --version
+            printf "ruby=%s\n" "$(command -v ruby)" >>"$GITHUB_OUTPUT"
+          '
+
       - name: Plan formula matrix
         id: matrix
         shell: bash
         env:
           ARCHES: ${{ inputs.arches }}
+          DRY_RUN: ${{ inputs.dry-run }}
           EXPECTED_ABI: ${{ steps.release.outputs.abi }}
           EXPECTED_BOTTLE_ROOT_URL: ${{ steps.release.outputs.bottle-root-prefix }}
           EXPECTED_CACHE_KEYS_JSON: ${{ inputs.expected-cache-keys }}
@@ -451,13 +482,30 @@ jobs:
           FORMULAE: ${{ inputs.formulae }}
           PACKAGE_GENERATION_KIND: ${{ steps.trust.outputs.package-generation-kind }}
           REQUIRE_VFS_ACCEPTANCE: ${{ inputs.require-vfs-acceptance }}
+          KANDELO_HOMEBREW_AUTHORITY_RUBY: ${{ steps.authority-tools.outputs.ruby }}
+          TAP_NAME: ${{ inputs.tap-name }}
         run: |
           set -euo pipefail
           if [ "$PACKAGE_GENERATION_KIND" = "rootfs-wasm32" ]; then
-            bash kandelo/scripts/homebrew-rootfs-publication-selection.sh \
-              --formulae "$FORMULAE" \
-              --arches "$ARCHES" \
-              --require-vfs-acceptance "$REQUIRE_VFS_ACCEPTANCE"
+            normalized_rootfs_arches="$(
+              printf '%s\n' "$ARCHES" |
+                tr ',[:space:]' '\n' |
+                sed '/^$/d' |
+                sort -u |
+                paste -sd, -
+            )"
+            [ "$normalized_rootfs_arches" = "wasm32" ] || {
+              echo "::error::the rootfs-wasm32 publication lane supports exactly wasm32"
+              exit 2
+            }
+            [ "$REQUIRE_VFS_ACCEPTANCE" = "false" ] || {
+              echo "::error::the rootfs-wasm32 publication lane cannot materialize dependency-bearing VFS acceptance"
+              exit 2
+            }
+            [ "$DRY_RUN" = "false" ] || {
+              echo "::error::the rootfs-wasm32 publication lane requires exact runtime materialization and is unavailable in dry-run"
+              exit 2
+            }
           fi
           expected_args=()
           if [ -n "$EXPECTED_CACHE_KEYS_JSON" ]; then
@@ -478,10 +526,33 @@ jobs:
             --formulae "$FORMULAE" \
             --arches "$ARCHES" \
             "${expected_args[@]}")"
+          rootfs_publication_selection='[]'
+          if [ "$PACKAGE_GENERATION_KIND" = "rootfs-wasm32" ] &&
+             [ "$matrix" != '[]' ]; then
+            # WHY: authority is needed only for Formulae that will actually
+            # build. Classifying the raw `all` request would let an unchanged
+            # legacy Formula block unrelated current-cache planning work.
+            planned_formulae="$(
+              jq -er 'map(.formula) | unique | join(",")' <<<"$matrix"
+            )"
+            rootfs_publication_selection="$(
+              cd "$GITHUB_WORKSPACE/kandelo"
+              bash scripts/homebrew-rootfs-publication-selection.sh \
+                --kandelo-root "$PWD" \
+                --tap-root "$GITHUB_WORKSPACE/tap" \
+                --tap-name "$TAP_NAME" \
+                --resolved-taps "$RUNNER_TEMP/homebrew-resolved-taps.json" \
+                --ruby-bin "$KANDELO_HOMEBREW_AUTHORITY_RUBY" \
+                --formulae "$planned_formulae" \
+                --arches "$ARCHES" \
+                --require-vfs-acceptance "$REQUIRE_VFS_ACCEPTANCE"
+            )"
+          fi
           formula_matrix="$(jq -c 'map({formula}) | unique_by(.formula)' <<<"$matrix")"
           {
             echo "matrix=$matrix"
             echo "formula-matrix=$formula_matrix"
+            echo "rootfs-publication-selection=$rootfs_publication_selection"
           } >> "$GITHUB_OUTPUT"
           echo "$matrix" | jq .
 
@@ -792,10 +863,14 @@ jobs:
           use-flakehub: false
 
       - name: Warm Kandelo dev shell
+        id: build-authority-tools
         shell: bash
         run: |
           cd kandelo
-          bash scripts/dev-shell.sh true
+          bash scripts/dev-shell.sh bash -c '
+            ruby --version
+            printf "ruby=%s\n" "$(command -v ruby)" >>"$GITHUB_OUTPUT"
+          '
 
       - name: Materialize exact-main Formula runtime packages
         if: ${{ !inputs.dry-run }}
@@ -1095,7 +1170,10 @@ jobs:
         env:
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
+          KANDELO_HOMEBREW_AUTHORITY_RUBY: ${{ steps.build-authority-tools.outputs.ruby }}
           KANDELO_HOMEBREW_BOTTLE_ROOT_URL: ${{ needs.plan.outputs.bottle-root-prefix }}
+          KANDELO_HOMEBREW_PACKAGE_GENERATION_KIND: ${{ needs.plan.outputs.package-generation-kind }}
+          KANDELO_HOMEBREW_ROOTFS_PUBLICATION_SELECTION: ${{ needs.plan.outputs.rootfs-publication-selection }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
           WASM_POSIX_XTASK_BIN: ${{ steps.formula-runtime.outputs.xtask-bin }}
@@ -1140,6 +1218,35 @@ jobs:
           trap restore_workflow_commands_on_exit EXIT
           workflow_commands_stopped=1
           printf '::stop-commands::%s\n' "$workflow_command_token"
+          if [ "$KANDELO_HOMEBREW_PACKAGE_GENERATION_KIND" = "rootfs-wasm32" ]; then
+            expected_authority="$(
+              jq -ceS --arg formula "$KANDELO_HOMEBREW_FORMULA" '
+                [.[] | select(.formula == $formula)] |
+                if length == 1 then . else
+                  error("planned rootfs Formula authority is absent or ambiguous")
+                end
+              ' <<<"$KANDELO_HOMEBREW_ROOTFS_PUBLICATION_SELECTION"
+            )"
+            # WHY: provisioning happens after plan-time admission. Reparse the
+            # exact Formula and support tree at the last workflow boundary
+            # before the bottle builder performs its own attestation and
+            # isolated execution, then require the complete record to match.
+            actual_authority="$(
+              bash scripts/homebrew-rootfs-publication-selection.sh \
+                --kandelo-root "$PWD" \
+                --tap-root "$GITHUB_WORKSPACE/tap" \
+                --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
+                --resolved-taps "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+                --ruby-bin "$KANDELO_HOMEBREW_AUTHORITY_RUBY" \
+                --formulae "$KANDELO_HOMEBREW_FORMULA" \
+                --arches wasm32 \
+                --require-vfs-acceptance false
+            )"
+            [ "$actual_authority" = "$expected_authority" ] || {
+              echo "rootfs Formula authority changed before bottle execution" >&2
+              exit 2
+            }
+          fi
           # WHY: recipe identity is per-run authority, not a package build
           # input. Pass it here so dev-shell bytes and package cache keys
           # stay stable.

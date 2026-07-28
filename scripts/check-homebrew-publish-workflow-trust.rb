@@ -18,7 +18,7 @@ ROOTFS_PUBLICATION_SELECTION_PATH = File.join(
   REPO_ROOT, "scripts/homebrew-rootfs-publication-selection.sh"
 )
 ROOTFS_PUBLICATION_SELECTION_SHA256 =
-  "a9fb36b12758a4efd77edd265685d3d830b7efaf8565c76d3edcd476b93ff855"
+  "4f64ae46fb71e0ebc4eac6cec8f288583b1ec922844d6a555632867b4efcbcda"
 TAP_CALLER_ROOT = File.join(REPO_ROOT, "homebrew/homebrew-tap-core/.github/workflows")
 CHECKOUT_ACTION = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
 NIX_ACTION = "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25"
@@ -26,8 +26,8 @@ MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
-PUBLISHER_PLAN_DIGEST = "ad1578ab82804fbfcd56c4d68a6858199a8c6f056b8e013d3fa4d5d4dcddf376"
-PUBLISHER_BUILD_DIGEST = "068df557fea78aecce3f12cfb54b64a45275d93f3b228aee4482fec3c16c6245"
+PUBLISHER_PLAN_DIGEST = "59a72fdf1dbe3b115208e760d9b28869dcf98e293b4a8b555d4a8b557c58d1c4"
+PUBLISHER_BUILD_DIGEST = "326932e9110ac8347db410b889c454058fee1dada05fdc95056aef2ebb0223e8"
 PUBLISHER_UPLOAD_DIGEST = "a44f8b7b2eb1d4b9436496cc9a099b80fb70be52143820e77fb7196e807d302f"
 PUBLISHER_INDEX_DIGEST = "7b05a7e4b076628ab999f9edb2e39a6641c4bb9a2563afcf19be15a119566bbe"
 PUBLISHER_VERIFY_DIGEST = "9c44194a007f49f97b2d4380d9d212530a7f4cb888c0fd0110422393a3eb2bd3"
@@ -340,6 +340,15 @@ def check_caller_validation_behavior(workflow)
           kind: "rootfs-wasm32"
         ),
         "publisher write path does not admit the bounded rootfs-wasm32 lane")
+  rootfs_dry_run = caller_validation_result(source, {
+    "PACKAGE_GENERATION_WASM32" => SELF_TEST_PACKAGE_GENERATION_ROOTFS,
+    "PACKAGE_GENERATION_WASM64" => "",
+  })
+  check(rootfs_dry_run["status"] == 2 &&
+        rootfs_dry_run["stdout"].include?(
+          "the rootfs-wasm32 publication lane requires exact runtime materialization and is unavailable in dry-run"
+        ),
+        "publisher dry-run claims rootfs generation evidence without exact materialization")
 
   {
     "wasm32 tag bound to wasm64" => {
@@ -822,32 +831,57 @@ def check_repository_canary(workflow)
 end
 
 def check_rootfs_publication_selection_semantics(source)
-  allowlist_declarations = source.lines.grep(
-    /\Areadonly ROOTFS_WASM32_ALLOWED_FORMULAE=/
-  )
+  mappings = source[
+    /readonly ROOTFS_WASM32_ALLOWED_BRIDGES=\(\n(?<body>.*?)\n\)/m,
+    :body
+  ]&.scan(/^\s+"([^"]+)"$/)&.flatten
   check(
-    allowlist_declarations == [
-      "readonly ROOTFS_WASM32_ALLOWED_FORMULAE=(bash dinit m4)\n",
-    ],
-    "rootfs publication selection allowed Formula set changed"
+    mappings == %w[modeset:modeset nethack:nethack],
+    "rootfs publication selection registry-bridge map changed"
   )
 
   [
+    'umask 077',
     'normalized_formulae="$(normalize_selection "$FORMULAE")"',
     'normalized_arches="$(normalize_selection "$ARCHES")"',
+    'normalized_tap_name="$(printf \'%s\' "$TAP_NAME"',
+    'RUBY_BIN="$(canonical_executable "$RUBY_BIN" "pinned Formula authority Ruby")"',
+    '/nix/store/*/bin/ruby)',
+    '$label must be root-owned and not group- or world-writable',
     '[ -n "$normalized_formulae" ]',
     '[ "$normalized_arches" = "wasm32" ]',
     '[ "$REQUIRE_VFS_ACCEPTANCE" = "false" ]',
+    'KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$RESOLVED_TAPS"',
+    '"$RUBY_BIN" "$resolver"',
+    '--tier2-bridge-json',
+    '.full_name == ($tap + "/" + $formula)',
+    'keys == ["package", "script_env_keys", "source_sha256", "source_url", "version"]',
+    '"declared_dependencies", "manifest_sha256", "resources"',
+    '.tier2_bridge == null',
+    'authority_class="tap-recipe"',
+    'authority_class="direct"',
+    'authority_class="registry-bridge"',
     'IFS=, read -r -a selected_formulae <<<"$normalized_formulae"',
     'for formula in "${selected_formulae[@]}"; do',
-    'for allowed_formula in "${ROOTFS_WASM32_ALLOWED_FORMULAE[@]}"; do',
-    '[ "$formula" = "$allowed_formula" ]',
-    '[ "$allowed" = "true" ]',
-    "does not admit Formula:",
+    'for mapping in "${ROOTFS_WASM32_ALLOWED_BRIDGES[@]}"; do',
+    '[ "$mapping" = "$formula:$package" ]',
+    'bridge_allowed "$formula" "$package" ||',
+    "registry bridge is not admitted by the rootfs-wasm32 lane:",
+    "jq -cSs 'sort_by(.formula)'",
+    "rootfs Formula authority selection must be one compact JSON line",
+    '[ "$(wc -c <"$result" | tr -d \'[:space:]\')" -le 65536 ]',
+    "rootfs Formula authority selection exceeds the 65536-byte workflow transport limit",
   ].each do |fragment|
     check(source.include?(fragment),
           "rootfs publication selection lacks #{fragment}")
   end
+  check(
+    %w[
+      generation-manifest resolver-root identity.archives
+      identity.expected_ledger
+    ].none? { |fragment| source.include?(fragment) },
+    "rootfs Formula authority selector is coupled to target package archives"
+  )
 end
 
 def check_rootfs_publication_selection(source)
@@ -1062,6 +1096,8 @@ def check_publisher(workflow)
     'validated_generation_kind="rootfs-wasm32"',
     'validated_generation_kind="browser-inputs"',
     'the rootfs-wasm32 publication lane forbids a wasm64 generation',
+    '[ "$validated_generation_kind" = "rootfs-wasm32" ]',
+    'the rootfs-wasm32 publication lane requires exact runtime materialization and is unavailable in dry-run',
     'normalize_package_generation wasm32 "$PACKAGE_GENERATION_WASM32"',
     'normalize_package_generation wasm64 "$PACKAGE_GENERATION_WASM64"',
     'validated_kandelo_ref="$(normalize_dry_run_source_ref "Kandelo" "$KANDELO_REF")"',
@@ -1194,14 +1230,52 @@ def check_publisher(workflow)
           /if \[ ! -e "\$config_candidate" \] && \[ ! -L "\$config_candidate" \]; then\n\s+if \[ "\$REQUIRE_VFS_ACCEPTANCE" = "true" \]; then\n\s+echo "::error::[^\n]+"\n\s+exit 1\n\s+fi\n\s+echo "::notice::[^\n]+no closure acceptance evidence"\n\s+exit 0/
         ), "publisher does not distinguish optional absence from required VFS acceptance")
   tap_checkout = named_step(plan_steps, "Checkout tap")
+  authority_nix = named_step(
+    plan_steps, "Install Nix for Formula authority planning"
+  )
+  authority_cache = named_step(
+    plan_steps, "Cache Nix store for Formula authority planning"
+  )
+  authority_warm = named_step(plan_steps, "Warm pinned Formula authority tools")
   matrix_plan = named_step(plan_steps, "Plan formula matrix")
-  check(plan_steps.index(tap_checkout) < plan_steps.index(matrix_plan) &&
+  rootfs_authority_condition =
+    "${{ steps.trust.outputs.package-generation-kind == 'rootfs-wasm32' }}"
+  authority_warm_run = <<~'BASH'
+    cd kandelo
+    bash scripts/dev-shell.sh bash -c '
+      ruby --version
+      printf "ruby=%s\n" "$(command -v ruby)" >>"$GITHUB_OUTPUT"
+    '
+  BASH
+  check(authority_nix == {
+          "name" => "Install Nix for Formula authority planning",
+          "if" => rootfs_authority_condition,
+          "uses" => NIX_ACTION,
+          "with" => { "github-token" => "" },
+        } &&
+        authority_cache == {
+          "name" => "Cache Nix store for Formula authority planning",
+          "if" => rootfs_authority_condition,
+          "uses" => MAGIC_NIX_ACTION,
+          "with" => { "use-gha-cache" => false, "use-flakehub" => false },
+        } &&
+        authority_warm.keys.sort == %w[id if name run shell] &&
+        authority_warm["id"] == "authority-tools" &&
+        authority_warm["if"] == rootfs_authority_condition &&
+        authority_warm["shell"] == "bash" &&
+        authority_warm["run"] == authority_warm_run,
+        "publisher Formula authority tools are not pinned by the repo dev shell")
+  check(plan_steps.index(tap_checkout) < plan_steps.index(authority_nix) &&
+        plan_steps.index(authority_nix) < plan_steps.index(authority_cache) &&
+        plan_steps.index(authority_cache) < plan_steps.index(authority_warm) &&
+        plan_steps.index(authority_warm) < plan_steps.index(matrix_plan) &&
         plan_steps.index(matrix_plan) < plan_steps.index(vfs_selection),
         "publisher validates VFS acceptance selection outside the planning trust boundary")
   check(matrix_plan.keys.sort == %w[env id name run shell] &&
         matrix_plan["id"] == "matrix" && matrix_plan["shell"] == "bash" &&
         matrix_plan["env"] == {
           "ARCHES" => "${{ inputs.arches }}",
+          "DRY_RUN" => "${{ inputs.dry-run }}",
           "EXPECTED_ABI" => "${{ steps.release.outputs.abi }}",
           "EXPECTED_BOTTLE_ROOT_URL" =>
             "${{ steps.release.outputs.bottle-root-prefix }}",
@@ -1211,8 +1285,11 @@ def check_publisher(workflow)
           "EXPECTED_KANDELO_REPOSITORY" => "${{ inputs.kandelo-repository }}",
           "FORCE_REBUILD" => "${{ inputs.force }}",
           "FORMULAE" => "${{ inputs.formulae }}",
+          "KANDELO_HOMEBREW_AUTHORITY_RUBY" =>
+            "${{ steps.authority-tools.outputs.ruby }}",
           "PACKAGE_GENERATION_KIND" => "${{ steps.trust.outputs.package-generation-kind }}",
           "REQUIRE_VFS_ACCEPTANCE" => "${{ inputs.require-vfs-acceptance }}",
+          "TAP_NAME" => "${{ inputs.tap-name }}",
         }, "publisher matrix planner mapping changed")
   matrix_plan_run = matrix_plan.fetch("run")
   [
@@ -1224,18 +1301,35 @@ def check_publisher(workflow)
     '--tap-root "$GITHUB_WORKSPACE/tap"', '--formulae "$FORMULAE"',
     '--arches "$ARCHES"', '"${expected_args[@]}"',
     '[ "$PACKAGE_GENERATION_KIND" = "rootfs-wasm32" ]',
-    'bash kandelo/scripts/homebrew-rootfs-publication-selection.sh',
+    '[ "$normalized_rootfs_arches" = "wasm32" ]',
+    '[ "$REQUIRE_VFS_ACCEPTANCE" = "false" ]',
+    '[ "$DRY_RUN" = "false" ]',
+    'the rootfs-wasm32 publication lane requires exact runtime materialization and is unavailable in dry-run',
+    '[ "$matrix" != \'[]\' ]',
+    'map(.formula) | unique | join(",")',
+    '--formulae "$planned_formulae"',
+    'bash scripts/homebrew-rootfs-publication-selection.sh',
+    '--ruby-bin "$KANDELO_HOMEBREW_AUTHORITY_RUBY"',
     '--require-vfs-acceptance "$REQUIRE_VFS_ACCEPTANCE"',
+    'echo "rootfs-publication-selection=$rootfs_publication_selection"',
   ].each do |fragment|
     check(matrix_plan_run.include?(fragment),
           "publisher matrix planner lacks #{fragment}")
   end
   check(
     matrix_plan_run.scan(
-      "kandelo/scripts/homebrew-rootfs-publication-selection.sh"
+      "scripts/homebrew-rootfs-publication-selection.sh"
     ).length == 1,
     "publisher matrix planner must invoke the rootfs selection policy exactly once"
   )
+  matrix_index = matrix_plan_run.index(
+    'matrix="$(bash kandelo/scripts/homebrew-plan-matrix.sh'
+  )
+  classification_index = matrix_plan_run.index(
+    "bash scripts/homebrew-rootfs-publication-selection.sh"
+  )
+  check(matrix_index && classification_index && matrix_index < classification_index,
+        "publisher classifies raw Formula requests before cache-key planning")
   check(matrix_plan_run.scan("--expected-bottle-root-url").length == 1,
         "publisher matrix planner root argument changed")
   check(matrix_plan_run.scan("--expected-kandelo-repository").length == 1 &&
@@ -1336,6 +1430,8 @@ def check_publisher(workflow)
     "package-generation-wasm64" => "${{ steps.trust.outputs.package-generation-wasm64 }}",
     "package-generation-kind" => "${{ steps.trust.outputs.package-generation-kind }}",
     "core-dependency-tap-sha" => "${{ steps.dependency-taps.outputs.core-tap-sha }}",
+    "rootfs-publication-selection" =>
+      "${{ steps.matrix.outputs.rootfs-publication-selection }}",
     "vfs-acceptance-formula" => "${{ steps.vfs-acceptance.outputs.formula }}",
   }, "publisher plan outputs changed")
   source_commits = named_step(plan_steps, "Resolve source commits")
@@ -1388,8 +1484,8 @@ def check_publisher(workflow)
 
   expected_uses = [
     *Array.new(23, CHECKOUT_ACTION),
-    *Array.new(5, NIX_ACTION),
-    *Array.new(2, MAGIC_NIX_ACTION),
+    *Array.new(6, NIX_ACTION),
+    *Array.new(3, MAGIC_NIX_ACTION),
     *Array.new(9, UPLOAD_ACTION),
     *Array.new(10, DOWNLOAD_ACTION),
   ].sort
@@ -1823,7 +1919,17 @@ def check_publisher(workflow)
   verify_warm = named_step(verify_steps, "Warm Kandelo dev shell")
   build_sysroot = named_step(build_steps, "Build Kandelo sysroot")
   verify_handoff = named_step(verify_steps, "Download strict build handoff")
+  build_warm_run = <<~'BASH'
+    cd kandelo
+    bash scripts/dev-shell.sh bash -c '
+      ruby --version
+      printf "ruby=%s\n" "$(command -v ruby)" >>"$GITHUB_OUTPUT"
+    '
+  BASH
   check(build_steps.index(build_generation) == build_steps.index(build_warm) + 1 &&
+        build_warm.keys.sort == %w[id name run shell] &&
+        build_warm["id"] == "build-authority-tools" &&
+        build_warm["run"] == build_warm_run &&
         build_steps.index(build_generation) < build_steps.index(build_sysroot),
         "publisher can resolve Formula runtime packages before exact generation activation")
   check(verify_steps.index(verify_generations) == verify_steps.index(verify_warm) + 1 &&
@@ -2173,6 +2279,21 @@ def check_publisher(workflow)
   check(build_formula_step.fetch("env").fetch("WASM_POSIX_XTASK_BIN") ==
           "${{ steps.formula-runtime.outputs.xtask-bin }}",
         "publisher does not scope the prepared checker to Formula execution")
+  check(
+    build_formula_step.fetch("env").slice(
+      "KANDELO_HOMEBREW_AUTHORITY_RUBY",
+      "KANDELO_HOMEBREW_PACKAGE_GENERATION_KIND",
+      "KANDELO_HOMEBREW_ROOTFS_PUBLICATION_SELECTION"
+    ) == {
+      "KANDELO_HOMEBREW_AUTHORITY_RUBY" =>
+        "${{ steps.build-authority-tools.outputs.ruby }}",
+      "KANDELO_HOMEBREW_PACKAGE_GENERATION_KIND" =>
+        "${{ needs.plan.outputs.package-generation-kind }}",
+      "KANDELO_HOMEBREW_ROOTFS_PUBLICATION_SELECTION" =>
+        "${{ needs.plan.outputs.rootfs-publication-selection }}",
+    },
+    "publisher does not carry the planned rootfs Formula authority to execution"
+  )
   xtask_environment_steps = build_steps.select do |step|
     step.fetch("env", {}).key?("WASM_POSIX_XTASK_BIN")
   end
@@ -2226,6 +2347,18 @@ def check_publisher(workflow)
         build_run.include?('"$HOMEBREW_BREW_FILE" --repository'),
         "publisher build phase no longer rejects credentials or uses the reviewed builder")
   [
+    '[ "$KANDELO_HOMEBREW_PACKAGE_GENERATION_KIND" = "rootfs-wasm32" ]',
+    'jq -ceS --arg formula "$KANDELO_HOMEBREW_FORMULA"',
+    "bash scripts/homebrew-rootfs-publication-selection.sh",
+    '--resolved-taps "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"',
+    '--ruby-bin "$KANDELO_HOMEBREW_AUTHORITY_RUBY"',
+    '[ "$actual_authority" = "$expected_authority" ]',
+    "rootfs Formula authority changed before bottle execution",
+  ].each do |fragment|
+    check(build_run.include?(fragment),
+          "publisher execution-boundary Formula authority lacks #{fragment}")
+  end
+  [
     '/usr/bin/od -An -N32 -tx1 /dev/urandom', "/usr/bin/tr -d ' \\n'",
     '[[ "$workflow_command_token" =~ ^[0-9a-f]{64}$ ]]',
     "trap restore_workflow_commands_on_exit EXIT",
@@ -2237,10 +2370,16 @@ def check_publisher(workflow)
     check(build_run.include?(fragment), "publisher Formula output boundary lacks #{fragment}")
   end
   stop_commands_index = build_run.index("printf '::stop-commands::%s\\n'")
+  authority_index = build_run.index(
+    "bash scripts/homebrew-rootfs-publication-selection.sh"
+  )
   builder_index = build_run.index("bash scripts/homebrew-bottle-build.sh")
   resume_commands_index = build_run.rindex("resume_workflow_commands")
-  check(stop_commands_index && builder_index && resume_commands_index &&
-        stop_commands_index < builder_index && builder_index < resume_commands_index,
+  check(stop_commands_index && authority_index && builder_index &&
+        resume_commands_index &&
+        stop_commands_index < authority_index &&
+        authority_index < builder_index &&
+        builder_index < resume_commands_index,
         "publisher Formula output is not enclosed by the workflow-command boundary")
   check(!build_run.match?(/(?:export|readonly|declare\s+-x)\s+workflow_command_token/) &&
         !build_run.include?("GITHUB_ENV=$workflow_command_token") &&
@@ -5994,14 +6133,15 @@ def self_test(publisher, maintenance, repository_canary)
   end
 
   rootfs_selection_source = File.binread(ROOTFS_PUBLICATION_SELECTION_PATH)
-  expect_rejection("rootfs selection omits Dinit") do
+  expect_rejection("rootfs selection omits a reviewed registry bridge") do
     check_rootfs_publication_selection_semantics(rootfs_selection_source.sub(
-      "(bash dinit m4)", "(bash m4)"
+      "  \"modeset:modeset\"\n", ""
     ))
   end
-  expect_rejection("rootfs selection admits an unreviewed Formula") do
+  expect_rejection("rootfs selection admits an unreviewed registry bridge") do
     check_rootfs_publication_selection_semantics(rootfs_selection_source.sub(
-      "(bash dinit m4)", "(bash dinit m4 ruby)"
+      "  \"nethack:nethack\"\n",
+      "  \"nethack:nethack\"\n  \"legacy:legacy\"\n"
     ))
   end
   expect_rejection("rootfs selection bypasses VFS exclusion") do
@@ -6021,8 +6161,8 @@ def self_test(publisher, maintenance, repository_canary)
   end
   expect_rejection("rootfs selection allows every Formula by default") do
     check_rootfs_publication_selection(rootfs_selection_source.sub(
-      "  allowed=false",
-      "  allowed=true"
+      "bridge_allowed() {\n",
+      "bridge_allowed() {\n  return 0\n"
     ))
   end
 
@@ -6129,6 +6269,13 @@ def self_test(publisher, maintenance, repository_canary)
         'validated_tap_ref="$TAP_REF"'
       )
     },
+    "rootfs dry-run evidence bypass" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Validate caller trust boundary")
+      step["run"] = step.fetch("run").sub(
+        '[ "$validated_generation_kind" = "rootfs-wasm32" ]',
+        "false"
+      )
+    },
     "write tap source selected from workflow execution head" => lambda { |w|
       step = mutate_named_step(
         w, "plan", "Bind write tap source to protected main history"
@@ -6199,10 +6346,32 @@ def self_test(publisher, maintenance, repository_canary)
         "true"
       )
     },
+    "empty-matrix rootfs architecture gate bypass" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Plan formula matrix")
+      step["run"] = step.fetch("run").sub(
+        '[ "$normalized_rootfs_arches" = "wasm32" ]',
+        "true"
+      )
+    },
+    "Formula authority Ruby output overridden" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Warm pinned Formula authority tools")
+      step["run"] = step.fetch("run") +
+        "\nprintf 'ruby=/tmp/untrusted-ruby\\n' >>\"$GITHUB_OUTPUT\"\n"
+    },
     "rootfs publication selection bypass" => lambda { |w|
       step = mutate_named_step(w, "plan", "Plan formula matrix")
       step["run"] = step.fetch("run").sub(
-        "bash kandelo/scripts/homebrew-rootfs-publication-selection.sh",
+        "bash scripts/homebrew-rootfs-publication-selection.sh",
+        "true #"
+      )
+    },
+    "execution-boundary Formula authority bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test",
+        "Build and test Homebrew bottle without publisher credentials"
+      )
+      step["run"] = step.fetch("run").sub(
+        "bash scripts/homebrew-rootfs-publication-selection.sh",
         "true #"
       )
     },

@@ -95,12 +95,26 @@ tag because it cannot write, but any supplied tag still has to be an exact
 architecture-bound content tag.
 
 The preserved schema-1 `rootfs-wasm32` generation is a narrower migration
-bridge. Its executable selection policy admits only the normalized set
-`bash`, `dinit`, and `m4`, only for `wasm32`, and rejects dependency-bearing
-VFS acceptance. The reusable publisher invokes that policy before planning
-Formula work. Adding another Formula therefore requires a reviewed policy
-change and package-generation evidence; a caller cannot broaden the older
-generation through workflow input.
+bridge. It supplies the fixed wasm32 Formula build/test runtime packages; the
+workflow builds the current-main sysroot and SDK separately, and the generation
+does not contain the target Formula's output bottle. This lane accepts only
+write publication, exactly `wasm32`, and no dependency-bearing VFS acceptance.
+Dry runs are rejected until the exact public generation can be materialized
+without exposing a repository token to branch-selected source.
+
+After cache-key planning removes already-current bottles, the publisher parses
+only the Formulae that will actually build. The static parser runs with the
+repository-pinned Nix Ruby, and its complete record is bounded for workflow
+transport. A strict schema-2 Formula with no registry bridge and a strict
+schema-3 sealed tap recipe are admitted from those exact authority records.
+Transitional registry bridges carry broader main-repository recipe authority,
+so each Formula-to-registry-package identity is explicitly reviewed; the
+current temporary mappings are
+`modeset` to `modeset` and `nethack` to `nethack`. The complete per-Formula
+record is compared again at the last workflow boundary before the bottle
+builder attests and executes the Formula. Adding a direct Formula or sealed tap
+recipe therefore does not require another name allowlist edit, while adding a
+registry bridge does.
 
 The publisher requires each generation's embedded package source to equal its
 admitted exact-main SHA and materializes it before package resolution. Formula

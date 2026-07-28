@@ -39,10 +39,9 @@ case "$SELECTION_KIND" in
     fi
     ;;
   rootfs-wasm32)
-    # WHY: schema-1 rootfs is the deliberately narrow recovery input for the
-    # first Bash/Dinit/M4 bottle wave. Requiring an explicit selection kind
-    # prevents a caller from relabeling it as the wider browser-input
-    # generation.
+    # WHY: schema-1 rootfs is the preserved wasm32-only Formula build/test
+    # runtime. Requiring an explicit selection kind prevents a caller from
+    # relabeling it as the wider browser-input generation.
     if ! [[ "$WASM32_TAG" =~ ^package-generation-rootfs-wasm32-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}$ ]] ||
        [ -n "$WASM64_TAG" ]; then
       echo "materialize-exact-package-generations: rootfs-wasm32 requires one rootfs wasm32 content tag and no wasm64 tag" >&2

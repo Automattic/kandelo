@@ -159,6 +159,15 @@ bash "$TMP_ROOT/scripts/materialize-exact-package-generations.sh" \
   --output-dir "$TMP_ROOT/materialized"
 
 [ "$(find "$TMP_ROOT/materialized/resolver" -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" = 5 ]
+while IFS= read -r -d '' archive; do
+  [ -f "$archive" ] && [ ! -L "$archive" ] || {
+    echo "exact generation materializer did not expose a regular archive: $archive" >&2
+    exit 1
+  }
+done < <(
+  find "$TMP_ROOT/materialized/resolver" -maxdepth 1 -type f \
+    ! -name index.toml -print0
+)
 [ -f "$TMP_ROOT/materialized/generations/wasm32.json" ]
 [ -f "$TMP_ROOT/materialized/generations/wasm64.json" ]
 cmp "$TMP_ROOT/expected-receipts/wasm32.json" \
@@ -225,6 +234,15 @@ bash "$TMP_ROOT/scripts/materialize-exact-package-generations.sh" \
 [ -f "$TMP_ROOT/materialized-rootfs/generations/wasm32.json" ]
 [ -f "$TMP_ROOT/materialized-rootfs/generations/wasm32.input.json" ]
 [ ! -e "$TMP_ROOT/materialized-rootfs/generations/wasm64.json" ]
+while IFS= read -r -d '' archive; do
+  [ -f "$archive" ] && [ ! -L "$archive" ] || {
+    echo "rootfs generation materializer did not expose a regular archive: $archive" >&2
+    exit 1
+  }
+done < <(
+  find "$TMP_ROOT/materialized-rootfs/resolver" -maxdepth 1 -type f \
+    ! -name index.toml -print0
+)
 grep -Fx "$rootfs_tag $source_sha" "$TMP_ROOT/rootfs-calls.log" >/dev/null
 
 for invalid_case in browser-kind-rootfs-tag rootfs-kind-browser-tag rootfs-with-wasm64; do
