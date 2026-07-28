@@ -7,6 +7,7 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
@@ -200,19 +201,36 @@ export function composeSourceRootfsDemoConfig(
         `image-owned profiles: ${expectedProfileIds.join(", ")}`,
     );
   }
+  const composedProfiles = { ...baseProfiles };
   for (const profileId of Object.keys(overlayProfiles)) {
     if (Object.hasOwn(baseProfiles, profileId)) {
+      // WHY: the canonical bottle-backed config now carries these profiles,
+      // while the temporary source bridge still repeats them as an ownership
+      // assertion. Accept only an exact structural match so the overlay can
+      // neither override nor silently drift from the shared product contract.
+      if (
+        !isDeepStrictEqual(
+          baseProfiles[profileId],
+          overlayProfiles[profileId],
+        )
+      ) {
+        throw new Error(
+          `source-rootfs demo profile overlay drifts from base profile ${profileId}`,
+        );
+      }
+      continue;
+    }
+    const overlayProfile = overlayProfiles[profileId];
+    if (overlayProfile === undefined) {
       throw new Error(
-        `source-rootfs demo profile overlay conflicts with base profile ${profileId}`,
+        `source-rootfs demo profile overlay omits profile ${profileId}`,
       );
     }
+    composedProfiles[profileId] = overlayProfile;
   }
   const composed: KandeloDemoConfig = {
     ...base,
-    profiles: {
-      ...baseProfiles,
-      ...overlayProfiles,
-    },
+    profiles: composedProfiles,
   };
   validateKandeloDemoConfig(composed);
   const bytes = new TextEncoder().encode(

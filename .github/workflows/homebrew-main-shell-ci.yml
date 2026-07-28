@@ -479,6 +479,21 @@ jobs:
             homebrew/main-shell-migration-lock.json \
             "$tap_root/Kandelo/metadata.json" \
             homebrew/main-shell-homebrew-runtime-support.json
+          bootstrap_package=$(jq -er '.package.name' \
+            homebrew/main-shell-brew-package-tree.json)
+          runtime_bootstrap_package=$(jq -er '.activation.bootstrap_package.name' \
+            homebrew/main-shell-homebrew-runtime-support.json)
+          [ "$bootstrap_package" = "$runtime_bootstrap_package" ]
+          # WHY: selecting an index does not download its packages, and
+          # resolve-binary intentionally reads only materialized resolver
+          # mirrors. Resolve the package declared by the reviewed tree through
+          # the normal package path first, preserving source fallback when a PR
+          # recipe is newer than its public archive. Pass both trust roots
+          # explicitly because the Nix dev shell admits only declared context.
+          bash scripts/dev-shell.sh env \
+            "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" \
+            "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
+            bash scripts/fetch-binaries.sh --package "$bootstrap_package"
           bootstrap=$(bash scripts/resolve-binary.sh \
             programs/homebrew-bootstrap/homebrew-bootstrap.zip)
           bootstrap_env=$(bash scripts/resolve-binary.sh \
