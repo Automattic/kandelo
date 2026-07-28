@@ -200,6 +200,29 @@ export class GbmBoRegistry {
     for (const l of this.listeners) l(pid, bo_id, "unbind");
   }
 
+  /**
+   * Remove every binding and handle owned by one process.
+   *
+   * WHY: a trapped/force-terminated Worker cannot run the normal GEM_CLOSE and
+   * munmap hooks. Flush its last visible pixels while the process Memory
+   * resolver is still valid, then remove only that pid's ownership. Shared
+   * bos survive while another process still owns them.
+   */
+  releaseProcess(pid: number): void {
+    for (const [bo_id, e] of Array.from(this.bos)) {
+      const binding = e.bindingsByPid.get(pid);
+      if (binding) {
+        this.flushMemoryToSab(e, pid, binding);
+        e.bindingsByPid.delete(pid);
+        for (const l of this.listeners) l(pid, bo_id, "unbind");
+      }
+      if (!e.pids.delete(pid)) continue;
+      if (e.pids.size !== 0) continue;
+      this.bos.delete(bo_id);
+      for (const l of this.listeners) l(pid, bo_id, "destroy");
+    }
+  }
+
   /** Find the bo bound for `pid` at `addr`. Used by kernel-worker's
    *  post-mmap hook to decide whether to run `primeBindFromSab`. */
   findBindingByAddr(pid: number, addr: number): number | undefined {

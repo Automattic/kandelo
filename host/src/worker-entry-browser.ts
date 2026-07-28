@@ -1,16 +1,18 @@
 import { centralizedWorkerMain, centralizedThreadWorkerMain } from "./worker-main";
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage } from "./worker-protocol";
+import { runWithProcessWorkerQuiescence } from "./worker-quiescence";
 
 // Web Worker global scope
 const sw = globalThis as unknown as {
   onmessage: ((e: MessageEvent) => void) | null;
   postMessage(msg: unknown, transfer?: Transferable[]): void;
+  close(): void;
 };
 
-// No cooperative-shutdown handler: the host tears process workers down with a
-// direct Worker.terminate() (see worker-adapter-browser.ts). Once a process is
-// running, this thread is always inside wasm (executing or parked in an in-wasm
-// Atomics.wait), so it could never observe a shutdown postMessage anyway.
+// Process exit is cooperative through the existing syscall channel: the kernel
+// completes the exit syscall, worker-main returns, and this entry publishes an
+// exact memory-quiescence fence. There is no separate shutdown postMessage
+// handler because a running guest can remain parked inside Wasm Atomics.wait.
 sw.onmessage = (e: MessageEvent) => {
   const data = e.data as { type: string };
 
@@ -22,15 +24,33 @@ sw.onmessage = (e: MessageEvent) => {
         sw.onmessage = (ev: MessageEvent) => handler(ev.data);
       }
     },
+    close: () => sw.close(),
   };
   if (data.type === "centralized_init") {
-    centralizedWorkerMain(port, e.data as CentralizedWorkerInitMessage).catch((err) => {
-      console.error(`[worker-entry-browser] centralizedWorkerMain error pid=${(data as any).pid}:`, err);
-    });
+    const init = e.data as CentralizedWorkerInitMessage;
+    void runWithProcessWorkerQuiescence(
+      port,
+      { pid: init.pid },
+      () => centralizedWorkerMain(port, init),
+      (error) =>
+        console.error(
+          `[worker-entry-browser] worker main error pid=${init.pid}`,
+          error,
+        ),
+    );
   } else if (data.type === "centralized_thread_init") {
-    centralizedThreadWorkerMain(port, e.data as CentralizedThreadInitMessage).catch((err) => {
-      console.error(`[worker-entry-browser] centralizedThreadWorkerMain error:`, err);
-    });
+    const init = e.data as CentralizedThreadInitMessage;
+    void runWithProcessWorkerQuiescence(
+      port,
+      { pid: init.pid, tid: init.tid },
+      () => centralizedThreadWorkerMain(port, init),
+      (error) =>
+        console.error(
+          `[worker-entry-browser] thread worker main error`
+            + ` pid=${init.pid} tid=${init.tid}`,
+          error,
+        ),
+    );
   } else {
     throw new Error(`Unknown worker init type: ${data.type}`);
   }

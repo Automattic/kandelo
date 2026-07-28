@@ -24,7 +24,7 @@ import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 export type { HttpRequest, HttpResponse };
 import workerEntryUrl from "./worker-entry-browser.ts?worker&url";
 import kernelWorkerEntryUrl from "./browser-kernel-worker-entry.ts?worker&url";
-import { DEFAULT_MAX_PAGES } from "./constants";
+import { DEFAULT_MAX_PAGES, WASM_PAGE_SIZE } from "./constants";
 import {
   snapshotClosedLazyAssets,
   type ClosedLazyAsset,
@@ -36,6 +36,12 @@ export interface BrowserKernelOptions {
   /** Maximum wasm memory pages per process (default: 16384 = 1GB). This caps
    *  guest brk/mmap growth; initial process memory is computed separately. */
   maxMemoryPages?: number;
+  /**
+   * Hard session budget for simultaneously live process address spaces.
+   * Retired generations are never reused and pass through a separate short,
+   * bounded admission window before new churn proceeds.
+   */
+  maxProcessMemoryBytes?: number;
   /** Host default pthread slots when a wasm binary declares -1 (default: 16). */
   defaultThreadSlots?: number;
   /** Additional VFS mount points */
@@ -184,7 +190,12 @@ export class BrowserKernel {
    * (host/src/framebuffer/canvas-renderer.ts) reads from here.
    */
   readonly framebuffers = new FramebufferRegistry();
-  private fbMemoryByPid = new Map<number, WebAssembly.Memory>();
+  private fbMemoryByPid = new Map<
+    number,
+    { generation: number; memory: WebAssembly.Memory }
+  >();
+  /** Highest framebuffer execution generation observed for each PID. */
+  private fbGenerationByPid = new Map<number, number>();
   /** PTY output that arrived before the main thread registered a callback —
    * happens when `boot()` is awaited (process is running) before
    * PtyTerminal calls onPtyOutput. Drained when a callback registers. */
@@ -410,6 +421,9 @@ export class BrowserKernel {
           config: {
             maxWorkers: this.options.maxWorkers,
             maxMemoryPages: this.maxPages,
+            maxProcessMemoryBytes:
+              this.options.maxProcessMemoryBytes
+              ?? this.options.maxWorkers * this.maxPages * WASM_PAGE_SIZE,
             defaultThreadSlots: this.options.defaultThreadSlots,
             env: this.options.env,
             enableSyscallLog: this.options.enableSyscallLog,
@@ -1104,6 +1118,7 @@ export class BrowserKernel {
     // them set makes reclamation depend on the whole BrowserKernel being GC'd
     // (and pins the memory outright if anything still references this kernel).
     this.fbMemoryByPid.clear();
+    this.fbGenerationByPid.clear();
     this.framebuffers.clear();
     this.pendingPtyOutput.clear();
   }
@@ -1190,6 +1205,10 @@ export class BrowserKernel {
         break;
       }
       case "exit": {
+        // WHY: a crashing process may never run munmap/close and therefore
+        // never emit fb_unbind. Drop the main-thread structured-clone Memory
+        // and cached typed views at the authoritative process-exit boundary.
+        this.releaseProcessFramebuffer(msg.pid, msg.generation);
         const resolver = this.exitResolvers.get(msg.pid);
         if (resolver) {
           this.exitResolvers.delete(msg.pid);
@@ -1258,7 +1277,17 @@ export class BrowserKernel {
         this.options.onListenTcp?.(msg.pid, msg.fd, msg.port);
         break;
       case "fb_bind":
-        this.fbMemoryByPid.set(msg.pid, msg.memory);
+        if (
+          (this.fbGenerationByPid.get(msg.pid) ?? -1)
+          > msg.generation
+        ) {
+          break;
+        }
+        this.fbGenerationByPid.set(msg.pid, msg.generation);
+        this.fbMemoryByPid.set(msg.pid, {
+          generation: msg.generation,
+          memory: msg.memory,
+        });
         this.framebuffers.bind({
           pid: msg.pid,
           addr: msg.addr,
@@ -1270,15 +1299,35 @@ export class BrowserKernel {
         });
         break;
       case "fb_unbind":
-        this.fbMemoryByPid.delete(msg.pid);
-        this.framebuffers.unbind(msg.pid);
+        this.releaseProcessFramebuffer(msg.pid, msg.generation);
         break;
-      case "fb_rebind_memory":
-        this.fbMemoryByPid.set(msg.pid, msg.memory);
+      case "fb_rebind_memory": {
+        const binding = this.fbMemoryByPid.get(msg.pid);
+        if (!binding || binding.generation !== msg.generation) break;
+        this.fbMemoryByPid.set(msg.pid, {
+          generation: msg.generation,
+          memory: msg.memory,
+        });
         this.framebuffers.rebindMemory(msg.pid);
         break;
+      }
       case "fb_write":
+        if (
+          this.fbMemoryByPid.get(msg.pid)?.generation !== msg.generation
+        ) {
+          break;
+        }
         this.framebuffers.fbWrite(msg.pid, msg.offset, msg.bytes);
+        break;
+      case "fb_release_generation":
+        // WHY: the worker's process/threads can be quiescent while this realm
+        // still owns a structured-clone Memory wrapper. Delete only the exact
+        // generation, then acknowledge that browser-main ownership is gone.
+        this.releaseProcessFramebuffer(msg.pid, msg.generation);
+        this.sendToKernel({
+          type: "fb_release_generation_ack",
+          requestId: msg.requestId,
+        });
         break;
       case "lazy_download":
         this.emitLazyDownload(msg.event);
@@ -1303,6 +1352,25 @@ export class BrowserKernel {
    * region.
    */
   getProcessMemory(pid: number): WebAssembly.Memory | undefined {
-    return this.fbMemoryByPid.get(pid);
+    return this.fbMemoryByPid.get(pid)?.memory;
+  }
+
+  private releaseProcessFramebuffer(pid: number, generation?: number): void {
+    const binding = this.fbMemoryByPid.get(pid);
+    if (generation !== undefined) {
+      this.fbGenerationByPid.set(
+        pid,
+        Math.max(generation, this.fbGenerationByPid.get(pid) ?? -1),
+      );
+    }
+    if (
+      binding
+      && generation !== undefined
+      && binding.generation !== generation
+    ) {
+      return;
+    }
+    this.fbMemoryByPid.delete(pid);
+    this.framebuffers.unbind(pid);
   }
 }

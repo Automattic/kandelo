@@ -19,16 +19,22 @@ export class DeferredWorkerHandle implements WorkerHandle {
     transfer?: Transferable[];
   }> = [];
 
-  constructor(private readonly create: () => WorkerHandle) {}
+  constructor(private create: (() => WorkerHandle) | null) {}
 
   /** Construct the backing Worker exactly once. Returns false after cancel. */
   start(): boolean {
     if (this.terminated) return false;
     if (this.worker) return true;
+    const create = this.create;
+    if (!create) return false;
+    // WHY: the factory normally closes over initData, including process
+    // Memory. Clear it before construction so the DeferredWorkerHandle cannot
+    // retain that generation after start or a synchronous constructor failure.
+    this.create = null;
 
     let worker: WorkerHandle;
     try {
-      worker = this.create();
+      worker = create();
     } catch (error) {
       this.terminated = true;
       this.pendingMessages.splice(0);
@@ -43,6 +49,7 @@ export class DeferredWorkerHandle implements WorkerHandle {
     for (const [event, handlers] of this.handlers) {
       for (const handler of handlers) worker.on(event as any, handler as any);
     }
+    this.handlers.clear();
     for (const { message, transfer } of this.pendingMessages.splice(0)) {
       worker.postMessage(message, transfer);
     }
@@ -63,13 +70,16 @@ export class DeferredWorkerHandle implements WorkerHandle {
   on(event: "exit", handler: (code: number) => void): void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: string, handler: (...args: any[]) => void): void {
+    if (this.worker) {
+      this.worker.on(event as any, handler as any);
+      return;
+    }
     let handlers = this.handlers.get(event);
     if (!handlers) {
       handlers = new Set();
       this.handlers.set(event, handlers);
     }
     handlers.add(handler);
-    if (this.worker) this.worker.on(event as any, handler as any);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -82,8 +92,14 @@ export class DeferredWorkerHandle implements WorkerHandle {
     if (this.terminationPromise) return this.terminationPromise;
     if (this.terminated) return Promise.resolve(0);
     this.terminated = true;
+    // A canceled deferred launch must release its captured initData even
+    // though no backing Worker ever existed.
+    this.create = null;
     this.pendingMessages.splice(0);
-    this.terminationPromise = this.worker?.terminate() ?? Promise.resolve(0);
+    this.handlers.clear();
+    const worker = this.worker;
+    this.worker = null;
+    this.terminationPromise = worker?.terminate() ?? Promise.resolve(0);
     return this.terminationPromise;
   }
 }
