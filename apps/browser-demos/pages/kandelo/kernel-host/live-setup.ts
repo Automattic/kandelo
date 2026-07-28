@@ -32,6 +32,7 @@ import {
   homebrewRuntimeLayerReferences,
 } from "../../../lib/init/homebrew-package-layers";
 import {
+  homebrewBootstrapClosedBinding,
   homebrewClosedAcceptanceAssetRoot,
 } from "../../../lib/homebrew-closed-acceptance";
 import {
@@ -1369,7 +1370,6 @@ async function bootProfile(
 
   const closedLazyAssets = await loadProfileClosedLazyAssets(
     buildFs,
-    profile,
     tick,
     assertCurrent,
   );
@@ -2792,7 +2792,6 @@ function readImageShellConfig(fs: MemoryFileSystem): KandeloShellConfig | null {
 
 async function loadProfileClosedLazyAssets(
   fs: MemoryFileSystem,
-  profile: LiveProfile,
   tick: (message: string) => void,
   assertCurrent: () => void,
 ) {
@@ -2801,11 +2800,18 @@ async function loadProfileClosedLazyAssets(
     import.meta.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT as
       string | undefined,
   );
-  if (!bundleRoot || profile.image !== "shell") return undefined;
-  tick("verifying exact local Homebrew bottle mirror...");
-  const embeddedPlanBytes = new Uint8Array(
-    readVfsFile(fs, HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH),
+  if (!bundleRoot) return undefined;
+  // WHY: Node and service images are layered on the main shell and inherit
+  // its deferred bottle URLs. The embedded mirror plan—not the gallery
+  // profile label—is the authority that says an image needs the closed
+  // pre-publication mirror.
+  const embeddedPlan = readOptionalVfsFile(
+    fs,
+    HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH,
   );
+  if (embeddedPlan === null) return undefined;
+  tick("verifying exact local Homebrew bottle mirror...");
+  const embeddedPlanBytes = new Uint8Array(embeddedPlan);
   const bundle = await loadHomebrewBottleMirrorClosedAssets({
     embeddedPlanBytes,
     bundleRoot,
@@ -2815,7 +2821,8 @@ async function loadProfileClosedLazyAssets(
   assertCurrent();
   tick(
     `verified ${bundle.assets.length} exact deferred bottle payloads and ` +
-      `${packageAssets.length} package source tree`,
+      `${packageAssets.length} package source ` +
+      `${packageAssets.length === 1 ? "tree" : "trees"}`,
   );
   return [...bundle.assets, ...packageAssets];
 }
@@ -2823,50 +2830,11 @@ async function loadProfileClosedLazyAssets(
 async function loadHomebrewBootstrapClosedAssets(
   fs: MemoryFileSystem,
 ): Promise<ClosedLazyAsset[]> {
-  const metadata = fs.getImageMetadata();
-  if (metadata === null || !Array.isArray(metadata.packageDeferredTrees)) {
-    throw new Error("closed shell image omits packageDeferredTrees metadata");
-  }
-  const matches = metadata.packageDeferredTrees.filter(
-    (
-      value,
-    ): value is {
-      package: { name: string; output: string };
-      archive: { output: string; url: string; sha256: string; bytes: number };
-      state: string;
-    } => {
-      if (
-        !isPlainRecord(value) ||
-        !isPlainRecord(value.package) ||
-        !isPlainRecord(value.archive)
-      )
-        return false;
-      return value.package.name === "homebrew-bootstrap";
-    },
-  );
-  if (matches.length !== 1) {
-    throw new Error(
-      `closed shell image has ${matches.length} Homebrew bootstrap bindings`,
-    );
-  }
-  const binding = matches[0]!;
-  if (
-    binding.state !== "deferred" ||
-    binding.package.output !== "homebrew-bootstrap.zip" ||
-    binding.archive.output !== binding.package.output ||
-    binding.archive.url !== binding.package.output ||
-    !/^[0-9a-f]{64}$/.test(binding.archive.sha256) ||
-    !Number.isSafeInteger(binding.archive.bytes) ||
-    binding.archive.bytes <= 0
-  ) {
-    throw new Error(
-      "closed shell image has an invalid Homebrew bootstrap binding",
-    );
-  }
-  const sourceUrl = resolveShellLazyArchiveUrl(binding.archive.url);
+  const binding = homebrewBootstrapClosedBinding(fs.getImageMetadata());
+  const sourceUrl = resolveShellLazyArchiveUrl(binding.url);
   const closedUrl =
     `https://closed-lazy.kandelo.invalid/homebrew-bootstrap/` +
-    `${binding.archive.sha256}/${binding.package.output}`;
+    `${binding.sha256}/${binding.output}`;
   // WHY: rewriteLazyArchiveUrls is filesystem-wide. Refuse an ambiguous source
   // URL so binding this one verified package cannot retarget another lazy tree.
   const pendingForSource = fs
@@ -2876,12 +2844,12 @@ async function loadHomebrewBootstrapClosedAssets(
     );
   if (
     pendingForSource.length !== 1 ||
-    pendingForSource[0]!.content?.sha256 !== binding.archive.sha256 ||
-    pendingForSource[0]!.content?.bytes !== binding.archive.bytes ||
+    pendingForSource[0]!.content?.sha256 !== binding.sha256 ||
+    pendingForSource[0]!.content?.bytes !== binding.bytes ||
     pendingForSource[0]!.content?.transports.length !== 1
   ) {
     throw new Error(
-      "closed shell image does not bind the Homebrew bootstrap source " +
+      "closed Homebrew image does not bind the Homebrew bootstrap source " +
         "to exactly one matching pending tree",
     );
   }
@@ -2893,14 +2861,10 @@ async function loadHomebrewBootstrapClosedAssets(
     {
       url: closedUrl,
       sourceUrl,
-      sha256: binding.archive.sha256,
-      size: binding.archive.bytes,
+      sha256: binding.sha256,
+      size: binding.bytes,
     },
   ]);
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function assertImageShellExecutable(fs: MemoryFileSystem, path: string): void {
@@ -2931,8 +2895,18 @@ function readOptionalVfsText(
   fs: MemoryFileSystem,
   path: string,
 ): string | null {
+  const bytes = readOptionalVfsFile(fs, path);
+  return bytes === null
+    ? null
+    : new TextDecoder().decode(new Uint8Array(bytes));
+}
+
+function readOptionalVfsFile(
+  fs: MemoryFileSystem,
+  path: string,
+): ArrayBuffer | null {
   try {
-    return new TextDecoder().decode(new Uint8Array(readVfsFile(fs, path)));
+    return readVfsFile(fs, path);
   } catch (err) {
     if (isMissingVfsPath(err)) return null;
     throw err;

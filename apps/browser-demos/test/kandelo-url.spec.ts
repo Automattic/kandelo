@@ -41,7 +41,15 @@ test("Kandelo gallery launch updates the browser URL with a VFS image", async ({
     .toContain("/node-vfs.vfs.zst#node");
   const url = new URL(page.url());
   expect(url.searchParams.get("demo")).toBe("node");
-  await expect(page.locator(".kdock-status-title")).toHaveText("Node.js");
+  // WHY: selecting a VFS updates the URL before the replacement machine has
+  // finished its service-worker reload and VFS assembly. Assert the stable
+  // accessible machine identity across that boundary instead of racing a
+  // transient descendant from the old dock.
+  await expect(
+    page.getByRole("button", {
+      name: /^Current machine: Node\.js,/,
+    }),
+  ).toBeVisible({ timeout: 30_000 });
 });
 
 test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) => {
