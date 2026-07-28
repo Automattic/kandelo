@@ -308,6 +308,7 @@ homebrew_patched_launcher_prepare_recipe_runner() {
   local runner_source_sha runner_source_sha_after
   local runner_source_state runner_source_state_after
   local runner_sha runner_sha_after runner_state attempt socket_state
+  local supervisor_state
 
   runner_source="$(
     homebrew_patched_launcher_admit_recipe_runner_source "$platform_host_root"
@@ -524,7 +525,7 @@ homebrew_patched_launcher_prepare_recipe_runner() {
     "--property=BindReadOnlyPaths=${node_bin%/*}" \
     --service-type=exec --expand-environment=no -- \
     /usr/bin/env -i /usr/bin/python3 -I "$runner" --supervisor || return
-  for ((attempt = 0; attempt < 100; attempt++)); do
+  for ((attempt = 0; attempt < 600; attempt++)); do
     if [ -S "$socket_path" ]; then
       socket_state="$(/usr/bin/stat -c '%u:%g:%a' "$socket_path")" || return
       [ "$socket_state" = "$build_uid:$build_gid:600" ] || {
@@ -533,9 +534,24 @@ homebrew_patched_launcher_prepare_recipe_runner() {
       }
       return 0
     fi
+    if (( attempt % 20 == 19 )); then
+      supervisor_state="$(
+        "$sudo_bin" -n -- "$systemctl_bin" show \
+          --property=ActiveState --value "$supervisor_unit" 2>/dev/null
+      )" || supervisor_state=""
+      case "$supervisor_state" in
+        failed|inactive) break ;;
+      esac
+    fi
     sleep 0.05
   done
   echo "homebrew-patched-launcher: recipe supervisor did not become ready" >&2
+  # The supervisor receives an empty environment and no publisher credential,
+  # so its bounded service status and journal are safe diagnostic evidence.
+  "$sudo_bin" -n -- "$systemctl_bin" status --no-pager --full \
+    "$supervisor_unit" >&2 || true
+  "$sudo_bin" -n -- /usr/bin/journalctl --no-pager --quiet \
+    --unit "$supervisor_unit" --lines 100 >&2 || true
   return 1
 }
 

@@ -712,6 +712,33 @@ def is_within(path: Path, root: Path) -> bool:
         return False
 
 
+def normalize_config_paths(config: dict[str, Any]) -> None:
+    """Separate host inputs from paths that exist only in the child service."""
+    host_directory_keys = (
+        "allowed_request_root",
+        "native_cellar",
+        "platform_host_root",
+        "protected_root",
+        "recipe_host_root",
+        "sealed_root",
+        "sysroot_host_root",
+        "target_cellar",
+    )
+    for key in host_directory_keys:
+        config[key] = canonical_real_directory(config[key], label=key)
+
+    # WHY: these are mount destinations in the empty recipe-service root, not
+    # host inputs. The supervisor deliberately runs with ProtectHome=yes, so a
+    # production tap alias below /home must remain hidden until the inner
+    # service binds the root-owned projection over this exact destination.
+    for key in (
+        "platform_alias_root",
+        "recipe_alias_root",
+        "sysroot_alias_root",
+    ):
+        config[key] = canonical_requested_path(config[key], label=key)
+
+
 def validate_config(path: Path) -> dict[str, Any]:
     data, _ = open_regular_file(
         path,
@@ -819,21 +846,7 @@ def validate_config(path: Path) -> dict[str, Any]:
     ):
         fail("recipe runner config has an invalid systemd unit prefix")
 
-    path_keys = (
-        "allowed_request_root",
-        "native_cellar",
-        "platform_alias_root",
-        "platform_host_root",
-        "protected_root",
-        "recipe_alias_root",
-        "recipe_host_root",
-        "sealed_root",
-        "sysroot_alias_root",
-        "sysroot_host_root",
-        "target_cellar",
-    )
-    for key in path_keys:
-        config[key] = canonical_real_directory(config[key], label=key)
+    normalize_config_paths(config)
     config["node_bin"] = canonical_real_file(
         config["node_bin"], label="configured Node", executable=True
     )

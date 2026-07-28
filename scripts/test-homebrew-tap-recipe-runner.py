@@ -124,6 +124,39 @@ class ProtocolTests(unittest.TestCase):
                 with self.assertRaises(runner.RunnerError):
                     runner.recipe_relative_path(value, label="fixture")
 
+    def test_config_keeps_child_mount_aliases_virtual(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            host_keys = (
+                "allowed_request_root",
+                "native_cellar",
+                "platform_host_root",
+                "protected_root",
+                "recipe_host_root",
+                "sealed_root",
+                "sysroot_host_root",
+                "target_cellar",
+            )
+            config: dict[str, object] = {}
+            for key in host_keys:
+                path = root / key
+                path.mkdir()
+                config[key] = str(path)
+            aliases = {
+                "platform_alias_root": "/home/runner/kandelo-platform",
+                "recipe_alias_root": "/home/runner/work/tap/Kandelo/recipes/fixture",
+                "sysroot_alias_root": "/home/runner/kandelo-sysroot",
+            }
+            config.update(aliases)
+
+            runner.normalize_config_paths(config)
+
+            for key in host_keys:
+                self.assertEqual(config[key], root / key)
+            for key, value in aliases.items():
+                self.assertEqual(config[key], Path(value))
+                self.assertFalse(Path(value).exists())
+
     def test_command_deadline_survives_a_descendant_inheriting_stdout(self) -> None:
         started = time.monotonic()
         with self.assertRaisesRegex(runner.RunnerError, "execution deadline"):
