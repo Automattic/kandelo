@@ -1073,19 +1073,25 @@ class NodePhpRunner implements PhpRunner {
   private async ensureHost(): Promise<NodeKernelHost> {
     if (this.host) return this.host;
     this.phpBytes = loadBytes(this.phpPath);
+    const phpFpmBytes = this.phpFpmPath && existsSync(this.phpFpmPath)
+      ? loadBytes(this.phpFpmPath)
+      : null;
     const binaryMountRoot = this.ensureBinaryMountRoot();
     const extensionMountRoot = this.ensureExtensionMountRoot();
     const host = new NodeKernelHost({
       maxWorkers: 4,
       rootfsImage: "default",
       enableTcpNetwork: this.enableTcpNetwork,
-      execPrograms: {
-        [this.virtualPhpPath]: this.phpPath,
-        "/kandelo-bin/php": this.phpPath,
-        ...(this.phpFpmPath
+      // WHY: PHP_WASM and the normal local CLI/FPM outputs are mutable build
+      // paths, not resolver-owned generations. Pin the bytes for this worker
+      // lifetime so a rebuild cannot replace a later exec asynchronously.
+      execProgramBytes: {
+        [this.virtualPhpPath]: this.phpBytes,
+        "/kandelo-bin/php": this.phpBytes,
+        ...(phpFpmBytes
           ? {
-              "/kandelo-bin/sbin/php-fpm": this.phpFpmPath,
-              "/kandelo-bin/fpm/php-fpm": this.phpFpmPath,
+              "/kandelo-bin/sbin/php-fpm": phpFpmBytes,
+              "/kandelo-bin/fpm/php-fpm": phpFpmBytes,
             }
           : {}),
       },
