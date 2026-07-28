@@ -18,6 +18,7 @@ GUEST_LIFECYCLE_NODE="$REPO_ROOT/homebrew/test/homebrew_guest_lifecycle_node.ts"
 GUEST_LIFECYCLE_FIXTURE="$REPO_ROOT/scripts/create-homebrew-guest-lifecycle-fixture.ts"
 BROWSER_SMOKE="$REPO_ROOT/apps/browser-demos/test/kandelo-homebrew-main-shell.spec.ts"
 CLOSED_ACCEPTANCE_TEST="$REPO_ROOT/apps/browser-demos/homebrew-closed-acceptance.test.ts"
+SHELL_VFS_URL_TEST="$REPO_ROOT/apps/browser-demos/shell-vfs-image-url.test.ts"
 EAGER_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts"
 MATERIALIZED_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-materialized-vfs-image.ts"
 STAGING_WORKFLOW="$REPO_ROOT/.github/workflows/staging-build.yml"
@@ -124,6 +125,10 @@ check_closed_browser_acceptance_contract() {
   ' <<<"$browser_block")"
   grep -Fq \
     'apps/browser-demos/homebrew-closed-acceptance-vite-config.test.ts' \
+    "$workflow" ||
+    return 1
+  grep -Fq \
+    'apps/browser-demos/shell-vfs-image-url.test.ts' \
     "$workflow" ||
     return 1
 
@@ -1872,7 +1877,10 @@ done
 
 (
   cd "$REPO_ROOT"
-  npx tsx --test "$CLOSED_ACCEPTANCE_TEST" "$IMAGE_CONTRACT_TEST"
+  npx tsx --test \
+    "$CLOSED_ACCEPTANCE_TEST" \
+    "$IMAGE_CONTRACT_TEST" \
+    "$SHELL_VFS_URL_TEST"
 ) || fail "post-archive image contract unit tests failed"
 
 # Exercise the package wrapper twice at once while replacing only its composer

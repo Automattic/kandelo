@@ -4,6 +4,11 @@ import { expect, test, type Page } from "@playwright/test";
 import { parseHomebrewRuntimeSupportContract } from "../../../host/src/homebrew-runtime-support";
 import { parseHomebrewVfsMaterializationPolicy } from "../../../host/src/homebrew-vfs-materialization-policy";
 import { assertMainShellOperationalRuntimeFetches } from "../../../scripts/homebrew-main-shell-image-contract";
+import {
+  isShellVfsImageUrl,
+  isVfsImageUrl,
+  SHELL_VFS_IMAGE_PATH_PATTERN_SOURCE,
+} from "../lib/shell-vfs-image-url";
 
 const strict = process.env.KANDELO_HOMEBREW_MAIN_SHELL_STRICT === "1";
 const expectedImageSha256 = process.env.KANDELO_HOMEBREW_MAIN_SHELL_SHA256;
@@ -367,7 +372,7 @@ async function bootExactShellPage(page: Page): Promise<ExactShellPage> {
   const bootstrapPayloadResponses: Array<Promise<BootstrapPayloadResponse>> =
     [];
   const closedPayloadResponses: Array<{ url: string; status: number }> = [];
-  await page.addInitScript(() => {
+  await page.addInitScript((shellVfsImagePathPatternSource) => {
     const evidence = {
       digests: [] as string[],
       errors: [] as string[],
@@ -380,9 +385,15 @@ async function bootExactShellPage(page: Page): Promise<ExactShellPage> {
     });
 
     const nativeFetch = window.fetch.bind(window);
+    const shellVfsImagePathPattern = new RegExp(
+      shellVfsImagePathPatternSource,
+    );
     window.fetch = async (...args) => {
       const response = await nativeFetch(...args);
-      if (/shell[^/]*\.vfs\.zst(?:\?|$)/.test(response.url)) {
+      // WHY: this observer runs inside the page and cannot close over the
+      // imported helper. Passing the same tested pattern keeps byte hashing
+      // and the request classifier on one filename contract.
+      if (shellVfsImagePathPattern.test(new URL(response.url).pathname)) {
         void response
           .clone()
           .arrayBuffer()
@@ -402,7 +413,7 @@ async function bootExactShellPage(page: Page): Promise<ExactShellPage> {
       }
       return response;
     };
-  });
+  }, SHELL_VFS_IMAGE_PATH_PATTERN_SOURCE);
   page.on("request", (request) => {
     const url = request.url();
     if (request.resourceType() === "fetch" && isHomebrewBootstrapUrl(url)) {
@@ -413,8 +424,7 @@ async function bootExactShellPage(page: Page): Promise<ExactShellPage> {
       request.resourceType() === "fetch" &&
       ((/\.(?:wasm|zip)(?:\?|$)/.test(url) &&
         !/kernel[^/]*\.wasm(?:\?|$)/.test(url)) ||
-        (/\.vfs(?:\.zst)?(?:\?|$)/.test(url) &&
-          !/shell[^/]*\.vfs\.zst(?:\?|$)/.test(url)))
+        (isVfsImageUrl(url) && !isShellVfsImageUrl(url)))
     ) {
       legacyArtifactDownloads.push(url);
     }
