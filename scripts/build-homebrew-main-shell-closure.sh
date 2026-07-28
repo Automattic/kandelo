@@ -24,6 +24,7 @@ LAZY_ARTIFACT_CHECKER="$REPO_ROOT/scripts/verify-homebrew-main-shell-artifact-lo
 BOTTLE_MIRROR_REPOSITORY="kandelo-dev/homebrew-tap-core"
 LAZY_SHELL=false
 MATERIALIZE_PACKAGE_TREE=false
+REVIEW_PENDING_ARTIFACT=false
 MAX_BYTES="$((512 * 1024 * 1024))"
 
 # The shell image is a content-addressed product artifact. Do not let a Nix
@@ -58,6 +59,8 @@ Options:
                             exact package-owned launcher environment
   --materialize-package-tree
                             embed that same tree for an eager derivative
+  --review-pending-artifact
+                            maintainer-only: measure a pending lazy image
   --migration-lock <json>   reviewed package/catalog lock
   --lazy-artifact-lock <json>
                             exact lazy-image digest and timestamp contract
@@ -125,6 +128,10 @@ while [ "$#" -gt 0 ]; do
       MATERIALIZE_PACKAGE_TREE=true
       shift
       ;;
+    --review-pending-artifact)
+      REVIEW_PENDING_ARTIFACT=true
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -161,6 +168,10 @@ if { [ -n "$PACKAGE_TREE_SPEC" ] && [ -z "$HOMEBREW_BOOTSTRAP_ENV" ]; } ||
 fi
 if [ "$MATERIALIZE_PACKAGE_TREE" = true ] && [ -z "$PACKAGE_TREE_SPEC" ]; then
   echo "build-homebrew-main-shell-closure: --materialize-package-tree requires a package tree" >&2
+  exit 2
+fi
+if [ "$REVIEW_PENDING_ARTIFACT" = true ] && [ "$LAZY_SHELL" != true ]; then
+  echo "build-homebrew-main-shell-closure: --review-pending-artifact requires --lazy-shell" >&2
   exit 2
 fi
 if [ -n "$PACKAGE_TREE_SPEC" ] &&
@@ -277,6 +288,11 @@ if [ "$LAZY_SHELL" = true ] && [ "$MATERIALIZE_PACKAGE_TREE" = false ]; then
   bash "$LAZY_ARTIFACT_CHECKER" \
     --lock "$LAZY_ARTIFACT_LOCK" \
     --expected-source-date-epoch "$SOURCE_DATE_EPOCH"
+  if [ "$REVIEW_PENDING_ARTIFACT" = true ] &&
+     [ "$(jq -er '.state' "$LAZY_ARTIFACT_LOCK")" != pending ]; then
+    echo "build-homebrew-main-shell-closure: --review-pending-artifact requires a pending artifact lock" >&2
+    exit 2
+  fi
 fi
 
 jq -e '
@@ -427,10 +443,22 @@ if [ ! -f "$OUT" ] || [ -L "$OUT" ] || [ ! -f "$REPORT" ] || [ -L "$REPORT" ]; t
   exit 1
 fi
 if [ "$LAZY_SHELL" = true ] && [ "$MATERIALIZE_PACKAGE_TREE" = false ]; then
-  bash "$LAZY_ARTIFACT_CHECKER" \
-    --lock "$LAZY_ARTIFACT_LOCK" \
-    --expected-source-date-epoch "$SOURCE_DATE_EPOCH" \
-    --artifact "$OUT"
+  if [ "$REVIEW_PENDING_ARTIFACT" = true ]; then
+    # WHY: the reviewed catalog changes before its deterministic image digest
+    # can be known. This explicit maintainer lane measures those bytes while
+    # the package recipe remains unpublishable; the ordinary build path still
+    # requires a sealed lock and independently reproduces it afterward.
+    REVIEW_SHA="$(sha256sum "$OUT")"
+    REVIEW_SHA="${REVIEW_SHA%% *}"
+    REVIEW_BYTES="$(wc -c <"$OUT" | tr -d '[:space:]')"
+    printf 'Homebrew pending main-shell artifact: sha256=%s bytes=%s\n' \
+      "$REVIEW_SHA" "$REVIEW_BYTES"
+  else
+    bash "$LAZY_ARTIFACT_CHECKER" \
+      --lock "$LAZY_ARTIFACT_LOCK" \
+      --expected-source-date-epoch "$SOURCE_DATE_EPOCH" \
+      --artifact "$OUT"
+  fi
 fi
 
 jq -e \

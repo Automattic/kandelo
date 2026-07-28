@@ -906,6 +906,18 @@ protected caller commit rather than substituted into its own bytes. This
 public-mirror lane is independent of the existing Bash bottle caller and its
 frozen workflow digest.
 
+Refresh the shell release locks with
+`scripts/finalize-homebrew-main-shell-release.py` from one clean checkout of
+the final live tap commit. Its default preview is read-only. `--apply` without
+an artifact advances the catalog, Formula identities, metadata/provenance
+digests, Git input, and bound artifact inputs together while changing the shell
+to `publication_state = "pending"`. The maintainer-only
+`--review-pending-artifact` composer option can then measure the deterministic
+candidate, but neither the package recipe nor CI uses that option. Rerun the
+finalizer with `--artifact <shell.vfs.zst> --apply`, reproduce the same image
+through the ordinary sealed path, and only then return the recipe to
+`publication_state = "ready"`.
+
 The checked-in `9820ef5643dc50f5876e53a1bbf6a309fc62f9a7` first-party tap value is the final shell
 catalog authority. The shell recipe remains `UNPUBLISHED` so archive staging
 can substitute the exact landed Kandelo commit, while
