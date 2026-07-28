@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   LANGUAGE_RUNTIME_INVOCATIONS,
-  MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS,
+  OPTIONAL_SHELL_LANGUAGE_LAYER_INVOCATIONS,
 } from "../../scripts/homebrew-language-runtime-contract";
 import {
   parseCompositionExpectation,
@@ -953,8 +953,8 @@ describe("Homebrew language runtime smoke result validation", () => {
     }
   });
 
-  it("defines one normal-path acceptance case for every lazy main-shell language", () => {
-    expect(MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS.map(({ packageName }) => packageName))
+  it("defines normal-path acceptance cases for optional shell language layers", () => {
+    expect(OPTIONAL_SHELL_LANGUAGE_LAYER_INVOCATIONS.map(({ packageName }) => packageName))
       .toEqual([
         "kandelo-dev/tap-core/python",
         "kandelo-dev/tap-core/perl",
@@ -962,9 +962,9 @@ describe("Homebrew language runtime smoke result validation", () => {
         "kandelo-dev/tap-core/ruby",
       ]);
     expect(new Set(
-      MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS.map(({ expectedStdout }) => expectedStdout),
-    ).size).toBe(MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS.length);
-    expect(MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS.map(({ dependencyPackages }) =>
+      OPTIONAL_SHELL_LANGUAGE_LAYER_INVOCATIONS.map(({ expectedStdout }) => expectedStdout),
+    ).size).toBe(OPTIONAL_SHELL_LANGUAGE_LAYER_INVOCATIONS.length);
+    expect(OPTIONAL_SHELL_LANGUAGE_LAYER_INVOCATIONS.map(({ dependencyPackages }) =>
       dependencyPackages
     )).toEqual([
       ["kandelo-dev/tap-core/zlib"],
@@ -972,7 +972,7 @@ describe("Homebrew language runtime smoke result validation", () => {
       [],
       ["kandelo-dev/tap-core/zlib"],
     ]);
-    for (const invocation of MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS) {
+    for (const invocation of OPTIONAL_SHELL_LANGUAGE_LAYER_INVOCATIONS) {
       expect(invocation.executable).toBe("/bin/sh");
       expect(invocation.argv.slice(0, 4)).toEqual([
         "/bin/sh",

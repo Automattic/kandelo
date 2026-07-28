@@ -2,11 +2,13 @@ kind = "program"
 name = "shell"
 version = "0.1.0"
 kernel_abi = 7
-# The canonical base shell is the reviewed six-Formula closure: Bash and its
-# dependencies are embedded, while Dash, Bzip2, and first-party M4 stay lazy.
-# It deliberately has no legacy rootfs/program dependencies. Homebrew source
-# remains a separate lazy package, and its larger runtime-support Formula layer
-# is declared separately so merely booting this base cannot download it.
+# The canonical shell maps 32 reviewed roots to a 38-Formula closure. `libcxx`,
+# Ncurses, and Bash are embedded because every shell boot needs them; the other
+# 35 Formula trees remain independently lazy. It deliberately has no legacy
+# rootfs/program dependencies. Homebrew source remains a separate lazy package,
+# and activating its runtime-support layer adds only Ruby, producing a total
+# 39-Formula inventory. Merely booting this image cannot download that optional
+# tree.
 depends_on = ["homebrew-bootstrap@6.0.3-4-g4ead861"]
 
 # Composite VFS image for the browser shell demo: a platform-only base plus the

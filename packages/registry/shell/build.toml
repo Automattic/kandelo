@@ -70,7 +70,7 @@ revision    = 22
 # WHY: ready admits only the normal exact-main archive-staging path after final
 # tap authority and every deterministic input are bound. `UNPUBLISHED` remains
 # for staging to substitute exact landed Mpre; the artifact lock independently
-# rejects all bytes until reviewers seal its measured digest and size.
+# rejects bytes whenever its reviewed input or output identity is stale.
 publication_state = "ready"
 
 [[git_inputs]]
