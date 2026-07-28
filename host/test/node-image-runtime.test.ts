@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import {
   bindImageOwnedNodeRuntime,
 } from "../../apps/browser-demos/lib/init/node-image-runtime";
+import { bindImageOwnedRuntimeUrls } from "../../apps/browser-demos/lib/init/image-owned-runtime-urls";
+import { assertShellLazyUrlsResolved } from "../../apps/browser-demos/lib/init/shell-lazy-url-contract";
 import {
   NODE_LAZY_BINARY_SPEC,
   shellLazyPlaceholderUrl,
@@ -67,6 +69,20 @@ describe("image-owned Node demo runtime", () => {
     expect(fileIdentity(fs, SPIDERMONKEY_NODE_ALIAS, true)).toEqual(
       aliasIdentity,
     );
+    expect(fs.getLazyEntry(NODE_LAZY_BINARY_SPEC.vfsPath)?.url).toBe(
+      NODE_ASSET_URL,
+    );
+  });
+
+  it("binds profile-owned URLs before the final unresolved-URL check", () => {
+    const fs = runtimeImage();
+    expect(() => assertShellLazyUrlsResolved(fs)).toThrow(
+      /\/usr\/bin\/node -> kandelo-lazy:programs\/node\.wasm/,
+    );
+
+    bindImageOwnedRuntimeUrls(fs, { nodeAssetUrl: NODE_ASSET_URL });
+
+    expect(() => assertShellLazyUrlsResolved(fs)).not.toThrow();
     expect(fs.getLazyEntry(NODE_LAZY_BINARY_SPEC.vfsPath)?.url).toBe(
       NODE_ASSET_URL,
     );
@@ -140,6 +156,16 @@ describe("image-owned Node demo runtime", () => {
         ),
       ),
     ).toBe(false);
+    const liveSetup = readFileSync(
+      resolve(
+        root,
+        "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts",
+      ),
+      "utf8",
+    );
+    expect(liveSetup).toContain("bindImageOwnedRuntimeUrls(");
+    expect(liveSetup).not.toContain("assertShellLazyUrlsResolved(buildFs)");
+    expect(liveSetup).not.toContain("bindImageOwnedNodeRuntime(buildFs");
   });
 });
 

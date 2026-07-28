@@ -3,13 +3,7 @@
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
 import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
-import {
-  assertShellLazyUrlsResolved,
-  rewriteShellLazyFileUrls,
-} from "../../../lib/init/shell-lazy-files";
-import {
-  bindImageOwnedNodeRuntime,
-} from "../../../lib/init/node-image-runtime";
+import { bindImageOwnedRuntimeUrls } from "../../../lib/init/image-owned-runtime-urls";
 import { resolveShellLazyArchiveUrl } from "../../../lib/init/lazy-archives";
 import {
   WORDPRESS_CONFIG_INIT_SCRIPT,
@@ -1318,12 +1312,10 @@ async function bootProfile(
     patchMariaDbUnixSocketConfig(buildFs);
     patchWordPressRuntimeConfig(buildFs, "mariadb");
   }
-  buildFs.rewriteLazyArchiveUrls(resolveShellLazyArchiveUrl);
-  rewriteShellLazyFileUrls(buildFs);
-  assertShellLazyUrlsResolved(buildFs);
-  if (profile.includeNodeUtility) {
-    bindImageOwnedNodeRuntime(buildFs, nodeWasmUrl);
-  }
+  bindImageOwnedRuntimeUrls(
+    buildFs,
+    profile.includeNodeUtility ? { nodeAssetUrl: nodeWasmUrl } : {},
+  );
   if (profile.init?.programUrl) {
     tick(`staging ${profile.init.argv[0]}...`);
     const bytes = await fetch(profile.init.programUrl)
