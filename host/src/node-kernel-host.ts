@@ -80,8 +80,22 @@ export interface NodeKernelHostOptions {
   /** Size of the data buffer for syscall data transfer (default: 65536).
    *  Increase for programs that do large pwrite() calls (e.g. InnoDB). */
   dataBufferSize?: number;
-  /** Virtual path → host filesystem path for exec resolution inside the worker */
+  /**
+   * Virtual path → immutable host filesystem generation for exec resolution
+   * inside the worker.
+   */
   execPrograms?: Record<string, string>;
+  /**
+   * Virtual path → exact program bytes for pre-VFS exec resolution.
+   *
+   * Ordinary ArrayBuffer-backed bytes are copied during init and owned by the
+   * worker for its complete lifetime; concurrently mutable SharedArrayBuffer
+   * views are rejected. Use this for mutable build outputs; `execPrograms` is
+   * suitable only when its host path names a generation that remains immutable.
+   */
+  execProgramBytes?: Readonly<
+    Record<string, ArrayBuffer | Uint8Array<ArrayBuffer>>
+  >;
   /** Attach a real-TCP backend in the worker so wasm programs can dial
    *  external hosts via Node `net.Socket`. */
   enableTcpNetwork?: boolean;
@@ -229,6 +243,21 @@ export class NodeKernelHost {
     if (this.options.rootfsLazyUrlBase === "") {
       throw new Error("rootfsLazyUrlBase must not be empty");
     }
+    const execProgramBytes = snapshotExecProgramBytes(
+      this.options.execProgramBytes,
+    );
+    for (const path of Object.keys(execProgramBytes ?? {})) {
+      if (
+        Object.prototype.hasOwnProperty.call(
+          this.options.execPrograms ?? {},
+          path,
+        )
+      ) {
+        throw new Error(
+          `exec program ${JSON.stringify(path)} has both path and byte sources`,
+        );
+      }
+    }
     const rootfsLazyAssets = this.options.rootfsLazyAssets === undefined
       ? undefined
       : snapshotClosedLazyAssets(this.options.rootfsLazyAssets);
@@ -366,6 +395,7 @@ export class NodeKernelHost {
             useSharedMemory: true,
           },
           execPrograms: this.options.execPrograms,
+          execProgramBytes,
           rootfsImage: rootfsImage ?? undefined,
           rootfsMountSpec: this.options.rootfsMountSpec === undefined
             ? undefined
@@ -377,9 +407,12 @@ export class NodeKernelHost {
           sessionSeedTrees,
           enableTcpNetwork: this.options.enableTcpNetwork,
         };
-        const transfer = (rootfsLazyAssets ?? []).map(
-          (asset) => asset.bytes.buffer as ArrayBuffer,
-        );
+        const transfer = [
+          ...(rootfsLazyAssets ?? []).map(
+            (asset) => asset.bytes.buffer as ArrayBuffer,
+          ),
+          ...new Set(Object.values(execProgramBytes ?? {})),
+        ];
         this.worker.postMessage(initMsg, transfer);
       });
     } catch (error) {
@@ -1072,6 +1105,36 @@ function mergeEnv(env: string[]): string[] {
 function loadKernelWasm(): ArrayBuffer {
   const buf = readFileSync(resolveBinary("kernel.wasm"));
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+}
+
+function snapshotExecProgramBytes(
+  sources: NodeKernelHostOptions["execProgramBytes"],
+): Record<string, ArrayBuffer> | undefined {
+  if (sources === undefined) return undefined;
+  const snapshots: Record<string, ArrayBuffer> = Object.create(null);
+  const copies = new WeakMap<object, ArrayBuffer>();
+  for (const [path, source] of Object.entries(sources)) {
+    if (
+      !(source instanceof ArrayBuffer)
+      && (!(source instanceof Uint8Array)
+        || !(source.buffer instanceof ArrayBuffer))
+    ) {
+      throw new Error(
+        `exec program ${JSON.stringify(path)} bytes must use an ordinary ArrayBuffer`,
+      );
+    }
+    let snapshot = copies.get(source);
+    if (snapshot === undefined) {
+      const bytes = source instanceof ArrayBuffer
+        ? new Uint8Array(source)
+        : source;
+      snapshot = new ArrayBuffer(bytes.byteLength);
+      new Uint8Array(snapshot).set(bytes);
+      copies.set(source, snapshot);
+    }
+    snapshots[path] = snapshot;
+  }
+  return snapshots;
 }
 
 /**
