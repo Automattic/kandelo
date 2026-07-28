@@ -7,6 +7,9 @@ import {
   assertShellLazyUrlsResolved,
   rewriteShellLazyFileUrls,
 } from "../../../lib/init/shell-lazy-files";
+import {
+  bindImageOwnedNodeRuntime,
+} from "../../../lib/init/node-image-runtime";
 import { resolveShellLazyArchiveUrl } from "../../../lib/init/lazy-archives";
 import {
   WORDPRESS_CONFIG_INIT_SCRIPT,
@@ -45,10 +48,6 @@ import {
   writeVfsFile,
 } from "../../../../../host/src/vfs/image-helpers";
 import { ABI_VERSION } from "../../../../../host/src/generated/abi";
-import {
-  NODE_LAZY_BINARY_SPEC,
-  shellLazyPlaceholderUrl,
-} from "../../../../../images/vfs/lib/init/shell-binaries";
 import { decompress as decompressZstd } from "fzstd";
 import {
   LiveKernelHost,
@@ -458,6 +457,7 @@ interface LiveProfile {
   shell: ShellProfile;
   includeNodeUtility: boolean;
   maxVfsByteLength: number;
+  maxMemoryPages?: number;
   autoCommand?: string;
   fallbackPresentation?: DemoPresentation;
   init?: {
@@ -523,7 +523,7 @@ const SHELL_ENV: string[] = [
 ];
 
 const NODE_SHELL_ENV: string[] = [
-  `HOME=${DEMO_HOME}`,
+  `HOME=${NODE_WORKDIR}`,
   `PWD=${NODE_WORKDIR}`,
   "TMPDIR=/tmp",
   "TERM=xterm-256color",
@@ -531,8 +531,8 @@ const NODE_SHELL_ENV: string[] = [
   "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
   `USER=${DEMO_USER}`,
   `LOGNAME=${DEMO_USER}`,
-  "PS1=node$ ",
-  `HISTFILE=${DEMO_HOME}/.bash_history`,
+  "PS1=spidermonkey-node$ ",
+  `HISTFILE=${NODE_WORKDIR}/.bash_history`,
   "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
   "SSL_CERT_DIR=/etc/ssl/certs",
   "npm_config_cache=/tmp/.npm-cache",
@@ -540,6 +540,11 @@ const NODE_SHELL_ENV: string[] = [
   "npm_config_fund=false",
   "npm_config_audit=false",
   "npm_config_progress=false",
+  "npm_config_update_notifier=false",
+  "NPM_CONFIG_FUND=false",
+  "NPM_CONFIG_AUDIT=false",
+  "NPM_CONFIG_PROGRESS=false",
+  "NPM_CONFIG_UPDATE_NOTIFIER=false",
 ];
 
 const SERVICE_ENV: string[] = [
@@ -846,6 +851,10 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       (spec.image === "shell"
         ? MAIN_SHELL_VFS_PROFILE_MAX_BYTES
         : DEFAULT_VFS_PROFILE_MAX_BYTES),
+    // WHY: memoryPages is a runtime cap, not just descriptor presentation.
+    // Preserve Node's WebKit-safe 256 MiB process ceiling when it is launched
+    // through the shared boot assembler.
+    maxMemoryPages: spec.memoryPages,
     autoCommand: spec.autoCommand,
     init: spec.init && {
       argv: spec.init.argv.slice(),
@@ -1310,7 +1319,7 @@ async function bootProfile(
   rewriteShellLazyFileUrls(buildFs);
   assertShellLazyUrlsResolved(buildFs);
   if (profile.includeNodeUtility) {
-    rewriteNodeLazyFileUrl(buildFs);
+    bindImageOwnedNodeRuntime(buildFs, nodeWasmUrl);
   }
   if (profile.init?.programUrl) {
     tick(`staging ${profile.init.argv[0]}...`);
@@ -1403,7 +1412,8 @@ async function bootProfile(
     kernel = new BrowserKernel({
       kernelOwnedFs: true,
       maxWorkers: profile.init?.maxWorkers ?? 4,
-      maxMemoryPages: profile.init?.maxMemoryPages,
+      maxMemoryPages:
+        profile.init?.maxMemoryPages ?? profile.maxMemoryPages,
       onStdout: (data) => recordProcessOutput(data, "stdout"),
       onStderr: (data) => recordProcessOutput(data, "stderr"),
       onHostDiagnostic: (diagnostic) => {
@@ -1644,14 +1654,6 @@ function stageShellUtilities(
   } catch {
     /* exists */
   }
-}
-
-function rewriteNodeLazyFileUrl(fs: MemoryFileSystem): void {
-  const placeholder = shellLazyPlaceholderUrl(NODE_LAZY_BINARY_SPEC);
-  fs.rewriteLazyFileUrls((url) => {
-    if (url !== placeholder) return url;
-    return nodeWasmUrl;
-  });
 }
 
 function ensureDemoHomes(fs: MemoryFileSystem): void {
