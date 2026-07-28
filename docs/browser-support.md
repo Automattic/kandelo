@@ -182,9 +182,17 @@ pipe pair.
 ### Framebuffer (`/dev/fb0`)
 - 640×400 BGRA32 packed-pixel framebuffer; exclusive process owner.
 - The pixel buffer lives in the process's `WebAssembly.Memory` (a `SharedArrayBuffer`); the kernel notifies the host of `(pid, addr, len, w, h, stride, fmt)` on `mmap`, and the host renders via `requestAnimationFrame` + a 2D-canvas `putImageData` per frame.
+- Framebuffer messages are tagged with the process execution generation. Exit
+  and exec wait for the main thread to acknowledge removal of that exact
+  generation's memory and view aliases, so a delayed old-image message cannot
+  disturb a successor with the same PID.
 - `host/src/framebuffer/canvas-renderer.ts::attachCanvas(canvas, registry, pid, opts)` is the consumer-side renderer.
 - Keyboard input: the demo page maps focused browser `KeyboardEvent` values to Linux input keycodes, encodes them as MEDIUMRAW bytes, and feeds them through `appendStdinData(pid, …)`; fbDOOM-style software decodes those bytes from the tty. Ctrl+Shift+Esc is reserved as the host escape from keyboard capture.
-- Limitations: `fork` does not auto-bind the child; multi-buffering / vsync via `FBIOPAN_DISPLAY` is a no-op.
+- Limitations: `fork` does not auto-bind the child; multi-buffering / vsync via
+  `FBIOPAN_DISPLAY` is a no-op. The current surface still exposes a process
+  `WebAssembly.Memory` to the presentation realm. Device/CRTC-owned bounded
+  shared surfaces, per-handle rights, serialized presentation, and
+  multi-writer/compositor ownership remain follow-up work.
 
 ### Mouse input (`/dev/input/mice`)
 - Demo pages attach `mousemove` / `mousedown` / `mouseup` listeners to the canvas and call `BrowserKernel.injectMouseEvent(dx, dy, buttons)`. The main thread posts a `mouse_inject` message to the kernel worker, which calls the kernel's `kernel_inject_mouse_event` export. The kernel encodes a 3-byte PS/2 frame and queues it on a global ring; user processes drain the queue via `read("/dev/input/mice", …)`.
@@ -855,7 +863,21 @@ Chrome rejects SharedArrayBuffer-backed views in `TextDecoder.decode()` and `cry
 Browser sandboxing prevents Kandelo from listening on real network ports or opening raw TCP/UDP sockets to arbitrary external peers. Local loopback sockets and `LocalVirtualNetwork` listeners are virtual sockets inside the browser session, so Kandelo machines can still communicate with each other using POSIX UDP/TCP. Browser-facing HTTP server demos use a service worker to intercept HTTP requests and inject them as kernel TCP connections via the connection pump.
 
 ### Memory per process
-Each process gets `WebAssembly.Memory(shared: true, initial: layout.initialPages, max: maxPages)`. The initial size covers the program's imported minimum memory, a brk window, and the low syscall control channel; it no longer allocates `maxPages` at spawn. `maxMemoryPages` still caps guest brk/mmap growth and should be tuned for workloads that need large address spaces.
+Each process gets a fresh memory layout whose requested initial pages cover the
+program's imported minimum memory and low syscall control area; it does not
+allocate `maxPages` at spawn. Every process generation receives a newly
+constructed `WebAssembly.Memory`, and an exited generation is never reused by a
+later process. `maxMemoryPages` still caps each backing's guest brk/mmap growth
+and should be tuned for workloads that need large address spaces. Fork
+synchronously copies the parent's exact current byte length into another fresh
+backing so its observable `memory.size()` and accessible address-space boundary
+match the parent before any asynchronous Worker launch work can yield.
+
+Browser `Worker.terminate()` is not treated as proof that a Worker stopped
+touching shared memory. Cooperative exit and exec publish an exact terminal
+message after worker-main returns. Forced paths drop host aliases without ever
+recycling the backing. A small retirement admission window bounds rapid churn;
+garbage-collection observations are diagnostic evidence only.
 
 ### npm registry access in the browser
 The node demo's `npm install` uses `--registry=http://proxy.local/` so registry traffic can pass through the host fetch bridge instead of requiring the JavaScript runtime to own every TLS edge case. The kernel resolves `proxy.local` via `host_getaddrinfo` (it is deliberately absent from the synthetic `/etc/hosts`), and the host-side TLS backend re-routes those requests through the existing cors-proxy (dev) or service worker (prod) onto `https://registry.npmjs.org/`. Tarball URLs in JSON responses are rewritten to the same alias so subsequent fetches stay on the same path.

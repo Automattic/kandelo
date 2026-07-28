@@ -719,7 +719,34 @@ raising Linux's `SIGBUS`, and writes made outside Kandelo's file syscall paths
 are not detected. The boundary scans are on the syscall hot path; no performance
 claim is made without before/after Node and browser benchmarks.
 
-Every spawn or exec computes a fresh layout from the target binary's memory import and `__heap_base`; the layout is per-process and is discarded when the process is unregistered. Fork children copy the parent's current memory length, not the configured maximum, and pthread workers share the owning process memory plus that process's thread allocator. WebAssembly memory cannot shrink, so a fork child may inherit the parent's current byte length, but it does not inherit dead parent pthread slot reservations. Correctness must not depend on page reloads, context resets, periodic kernel resets, or browser garbage collection reclaiming old shared memories.
+Every spawn or exec computes a fresh layout from the target binary's memory
+import and `__heap_base`; the brk, mmap, control-channel, allocator, and kernel
+metadata state is per-process and is reset when ownership changes. Each
+generation receives a newly constructed, exactly sized
+`WebAssembly.Memory`. Retired process memories are never zeroed and handed to a
+later process: shared Wasm memory cannot shrink, engines retain native backing
+stores differently, and `Worker.terminate()` is not a portable ownership
+fence.
+
+Normal exit and exec wait for an exact `memory_quiescent` message from every
+process Worker and pthread Worker before dropping host aliases. Forced
+termination drops the kernel realm's aliases but never makes the backing
+eligible for reuse. The allocator applies hard count/byte limits to live
+address spaces and a separate short, bounded retirement admission window to
+churn. `FinalizationRegistry` and bounded allocation pressure provide telemetry
+and an engine-reclamation nudge only; neither is correctness or capacity
+authority.
+
+Fork children synchronously acquire an exactly sized fresh backing and copy the
+parent's current memory length before the first asynchronous host operation.
+This preserves the syscall-time snapshot even if a sibling thread execs while
+Worker launch waits for retirement admission. The child copies the current
+length, not the configured maximum, because `memory.size()` and the accessible
+address-space boundary are part of the state fork duplicates. Pthread workers
+share the owning process memory plus that process's thread allocator. A fork
+child does not inherit dead parent pthread slot reservations. Correctness must
+not depend on page reloads, context resets, periodic kernel resets, or garbage
+collection reclaiming retired shared memories.
 
 ### Pthread slots and fork
 
@@ -1188,7 +1215,21 @@ The kernel exposes a Linux fbdev surface so unmodified fbdev software (fbDOOM, m
 
 The pixel buffer lives **inside the process's wasm `Memory`** — a `SharedArrayBuffer`. The host (browser canvas, Node test, etc.) is told `(pid, addr, len, w, h, stride, fmt)` via the `bind_framebuffer` HostIO callback; it builds a typed-array view directly over that range. There is no separate framebuffer SAB, no per-frame syscall, no copy. The host drives presentation via `requestAnimationFrame`.
 
-Cleanup paths (`munmap`, last `close` once unmapped, process exit, `exec`) clear the binding and call `unbind_framebuffer(pid)`. `fork` does not auto-bind the child (one mapping per process; documented limitation).
+Cleanup paths (`munmap`, last `close` once unmapped, process exit, `exec`) clear
+the binding and call `unbind_framebuffer(pid)`. In the browser, every
+framebuffer message carries the process execution generation. Exit and exec
+wait for the main thread to acknowledge removal of that generation's
+`WebAssembly.Memory` and typed-array aliases; a delayed message from the old
+image cannot unbind or replace the successor image's surface.
+
+This generation fence makes the current process-memory-backed fbdev path safe
+to retire, but it intentionally does not make the process's raw
+`WebAssembly.Memory` the long-term graphics ownership model. A follow-up should
+move scanout storage to a device/CRTC-owned, dynamically sized bounded shared
+surface with per-handle access rights and serialized presentation. That is the
+appropriate foundation for multiple writers and compositor ownership without
+keeping process address-space wrappers in the presentation realm. `fork` does
+not auto-bind the child (one mapping per process; documented limitation).
 
 ABI version bumped 5 → 6 to capture the new `repr(C)` structs `FbBitfield`, `FbVarScreenInfo`, `FbFixScreenInfo`. See `crates/shared/src/lib.rs::fbdev` and `abi/snapshot.json`.
 
