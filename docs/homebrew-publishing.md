@@ -835,6 +835,14 @@ URL, digest, size, and asset-name set. The verified payloads are then handed to
 the worker as an exhaustive transport: an undeclared request fails instead of
 falling back to ambient network.
 
+Generic staging and prepare-merge browser suites always use that closed
+transport for the shell image they received. A shell package can already be
+current in Kandelo's canonical package index while its independently published
+content-addressed bottle-mirror release does not exist yet; canonical package
+identity therefore does not authorize ambient public mirror requests in those
+suites. The dedicated mirror-publication proof owns anonymous public transport
+validation after publication.
+
 The product workflow's live lane is a manual, closed-transport cutover proof.
 It requires three exact lowercase 40-character inputs: Kandelo's live
 default-branch commit `M`, the final first-party tap commit `TF`, and the

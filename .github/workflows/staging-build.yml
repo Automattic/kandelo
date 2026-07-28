@@ -912,11 +912,11 @@ jobs:
               2>/dev/null || true
           )"
           [ -n "$SHELL_IMAGE" ] || SHELL_IMAGE="-"
-          # WHY: a staged archive is no longer a publication blocker once it
-          # reaches the PR release, but its final immutable bottle URLs still
-          # do not exist. Compare its exact package identity with the
-          # canonical index instead of inferring publication from presence in
-          # staging.
+          # WHY: package-index publication and immutable bottle-mirror
+          # publication are independent. Preserve exact package-identity
+          # validation here, while the state contract keeps generic browser
+          # staging on authenticated recovered bytes even when the unchanged
+          # shell is already canonical.
           bash scripts/dev-shell.sh \
             bash scripts/ci-homebrew-browser-mirror-state.sh create \
             "$EXPECTED" \

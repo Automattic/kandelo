@@ -360,6 +360,9 @@ fi
 grep -Fq \
     "ci-homebrew-browser-mirror-state: invalid state" \
     "$TMP_DIR/browser-invalid-mirror-state.out"
+# A resolved state may not opt generic browser staging back into ambient
+# public transport. Package-index publication does not prove that the
+# independently published immutable bottle mirror exists yet.
 printf '%s\n' \
     '{"abi_version":42,"entries":[]}' \
     > "$FIXTURE/.ci-test-publication-blockers.json"
@@ -368,34 +371,18 @@ write_browser_mirror_state \
     false \
     "$FIXTURE/.ci-test-publication-blockers.json" \
     "$FIXTURE/.ci-homebrew-browser-mirror-state.json"
-rm -f \
-    "$recovery_capture" \
-    "$closed_root_capture" \
-    "$closed_vite_root_capture" \
-    "$closed_mode_capture"
-PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
+if PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
     BLOCKER_CAPTURE="$blocker_capture" \
-    RECOVERY_CAPTURE="$recovery_capture" \
-    CLOSED_ROOT_CAPTURE="$closed_root_capture" \
-    CLOSED_VITE_ROOT_CAPTURE="$closed_vite_root_capture" \
-    CLOSED_MODE_CAPTURE="$closed_mode_capture" \
     FIXTURE_SHELL_IMAGE="$fixture_shell_image" \
-    RUNNER_TEMP="$runner_temp" \
     PREPARE_BROWSER_ASSETS=true \
-    bash "$FIXTURE/scripts/ci-run-test-suite.sh" browser
-[ ! -e "$recovery_capture" ] || {
-    echo "canonical shell unexpectedly received a closed Homebrew mirror" >&2
+    bash "$FIXTURE/scripts/ci-run-test-suite.sh" browser \
+        > "$TMP_DIR/browser-open-resolved-mirror-state.out" 2>&1; then
+    echo "browser suite accepted open transport for a resolved shell" >&2
     exit 1
-}
-[ "$(grep -Fxc '<unset>' "$closed_mode_capture")" -eq 2 ] || {
-    echo "canonical shell unexpectedly selected the closed Vite mode" >&2
-    exit 1
-}
-[ "$(grep -Fxc '<unset>' "$closed_root_capture")" -eq 2 ] &&
-    [ "$(grep -Fxc '<unset>' "$closed_vite_root_capture")" -eq 2 ] || {
-    echo "canonical shell unexpectedly received closed mirror authority" >&2
-    exit 1
-}
+fi
+grep -Fq \
+    "invalid resolved state contract" \
+    "$TMP_DIR/browser-open-resolved-mirror-state.out"
 rm "$FIXTURE/.ci-homebrew-browser-mirror-state.json"
 if PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
     BLOCKER_CAPTURE="$blocker_capture" \
@@ -1324,8 +1311,8 @@ bash "$REPO_ROOT/scripts/ci-homebrew-browser-mirror-state.sh" create \
     "$mirror_canonical_url" \
     "$fixture_shell_image" \
     "$mirror_state"
-[ "$(jq -r '.mirror_required' "$mirror_state")" = false ] || {
-    echo "canonical shell identity incorrectly requires a closed mirror" >&2
+[ "$(jq -r '.mirror_required' "$mirror_state")" = true ] || {
+    echo "canonical shell identity did not retain closed browser acceptance" >&2
     exit 1
 }
 sed '/^archive_url = /d' \
