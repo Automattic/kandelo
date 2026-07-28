@@ -1035,10 +1035,12 @@ receipt.
 
 After exporting and rebooting the rootfs, both hosts recheck that narrow trust
 before any Formula-evaluating operation can recreate it. They execute the
-persisted packages, prove the pinned upgrade is a no-op, uninstall, revoke the
-selected item trust, untap, and verify no selected-tap authority remains. A
-browser fixture only supplies host transport identities; it cannot replace or
-weaken those guest assertions.
+persisted packages, prove that `brew upgrade` is a same-version no-op for the
+already-pinned revisions, uninstall, revoke the selected item trust, untap, and
+verify no selected-tap authority remains. This checks the no-op upgrade path;
+it is not evidence for upgrading from an older bottle. A browser fixture only
+supplies host transport identities; it cannot replace or weaken those guest
+assertions.
 
 The live Playwright proof is disabled unless
 `KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE=1` and
@@ -1099,24 +1101,30 @@ After the closed cutover proof admits the exact product, the protected
 first-party tap owns a separate public-mirror publication lane. Its
 `publish-main-shell-mirror.yml` caller may invoke
 `reusable-homebrew-main-shell-mirror-publish.yml` only from the tap's live
-`main`. The caller pins one reviewed Kandelo `Mpre` SHA in both `uses:` and the
-`kandelo-ref` input and supplies exact final bottle-catalog `TF` and canary `C`
-identities. The caller's own `${{ github.sha }}` is the later tap publication
-authority `TA`; event data cannot select it. The reusable workflow anonymously
-rechecks Kandelo `Mpre`, tap `TA`, and canary `C` as the three public main
-heads, proves `TF` is an ancestor of `TA`, and requires the shell revision,
-structured package Git input, catalog locks, runtime-support cohort, and sealed
-artifact lock to agree with `TF` before preparing any bytes.
+`main`. The initial caller pins one reviewed Kandelo `Mpre` SHA in both `uses:`
+and the `kandelo-ref` input and supplies exact final bottle-catalog `TF` and
+canary `C` identities. Its own `${{ github.sha }}` becomes `TA0`, the commit
+that owns the immutable bottle mirror. A later caller for the complete public
+browser proof pins the exact `TA0` as `mirror-authority-ref`; its own
+`${{ github.sha }}` becomes `TA1`, the live commit that may publish only the
+direct lifecycle inputs. Event data cannot select either authority. The
+consume-only reusable workflow anonymously rechecks Kandelo `Mpre`, tap `TA1`,
+and canary `C` as the three public main heads, proves the complete
+`TF -> TA0 -> TA1` ancestry chain, and requires the shell revision, structured
+package Git input, catalog locks, runtime-support cohort, and sealed artifact
+lock to agree with `TF` before preparing any bytes.
 
 Preparation resolves the public shell generation into a fresh cache, verifies
 the main-shell artifact lock, and anonymously recovers the exact bottle set
 declared by the embedded mirror plan. The only inter-job transfer is a
 pair of one-day, same-run artifacts with exact manifests and bounded
-inventories. One owns the bottle-mirror publication manifest and payloads. The
-other owns only the fixed lifecycle inputs: the exact shell image, bootstrap
-tree specification, bootstrap ZIP, and bootstrap environment. No PAT, GitHub
-App token, cross-repository workflow artifact, run ID, or caller-selected
-artifact repository participates in either handoff.
+inventories. One re-derives the bottle-mirror plan and payloads from `TF` and
+builds the exact release manifest that the already-public `TA0` release must
+match. It is verification evidence, not publication input. The other owns only
+the fixed lifecycle inputs: the exact shell image, bootstrap tree
+specification, bootstrap ZIP, and bootstrap environment. No personal access
+token (PAT), GitHub App token, cross-repository workflow artifact, run ID, or
+caller-selected artifact repository participates in either handoff.
 
 The fixed lifecycle inputs use a separate content-addressed immutable release
 in the first-party tap. Their canonical package generations expose these
@@ -1124,47 +1132,55 @@ outputs only as members of package archives, but the browser's lazy Homebrew
 bootstrap contract requires a direct ZIP URL. Publishing direct assets avoids
 adding a second archive-member extraction implementation to the browser and
 keeps the lifecycle-input ownership separate from the bottle mirror. The
-lifecycle collection identity binds all four asset hashes and sizes, Kandelo
-and tap/canary revisions, and the exact public mirror-plan URL, hash, and size.
-Its temporary handoff expires after one day; its immutable release is durable
-content-addressed evidence and is not a temporary release to delete after the
-run.
+lifecycle collection identity binds all four asset hashes and sizes, Kandelo,
+catalog, mirror-authority, caller-authority, and canary revisions, and the exact
+public mirror-plan URL, hash, and size. Its temporary handoff expires after one
+day; its immutable release is durable content-addressed evidence and is not a
+temporary release to delete after the run.
 
 Only the publication job receives `contents: write`. It uses the tap caller's
-own `GITHUB_TOKEN`, rechecks both live Kandelo and tap authority immediately
-before every release, tag, or asset write, and calls
-`scripts/publish-immutable-github-release.sh` with exact `Mpre` and live `TA`.
-Both immutable releases target `TA`. The sealed shell locks, guest manifest,
-recovery report, and bounded handoffs retain `TF` as the bottle catalog that
-owns every recovered payload; the embedded mirror plan is intentionally a
-content identity for the payload set, not a second catalog lock. Keeping these
-identities separate avoids the impossible cycle in which Kandelo `Mpre` would
-need to contain the SHA of a tap caller that itself pins `Mpre`. Each publisher
-rejects a manifest whose target commit differs from live `TA`, publishes
-seal-last, and anonymously rehashes the resulting immutable release. A
-dependent read-only job then resolves the public package generation again,
-anonymously re-reads every direct lifecycle input, installs from exact product
-catalog `TF`, requires `TA` to remain public tap main, and runs the same stock
-first-party and independent third-party tap lifecycle in Node and Chromium.
-Both closed-acceptance filesystem roots must be absent.
+own `GITHUB_TOKEN`, but the existing mirror path calls the separate
+`verify-existing-immutable-github-release.sh` verifier. That verifier exposes
+no write mode: it performs GET-only metadata reads, requires the release and
+its direct lightweight tag to target `TA0`, requires GitHub release
+immutability and the exact asset inventory, and anonymously rehashes every
+re-derived payload. It emits a receipt whose operation is
+`verified-existing`; it never calls the release publisher.
 
-The schema-1 tag is content-addressed from bottle payloads, while an immutable
-release also records the `TA` that created it. The current publisher therefore
-fails closed if a later `TA` tries to publish an already-existing collection
-tag; it does not claim that the older release belongs to the new authority.
-For an unchanged bottle collection, retain and consume the already-proven
-public mirror rather than redispatching publication from a new tap commit.
-Ancestor-checked reuse by a later authority is a separate, not-yet-implemented
-workflow mode.
+The same job rechecks live Kandelo and `TA1` immediately before using
+`publish-immutable-github-release.sh` to write only four lifecycle assets:
+the shell image, bootstrap tree specification, bootstrap ZIP, and bootstrap
+environment. That release targets `TA1`. The sealed shell locks, guest
+manifest, recovery report, and bounded handoffs retain `TF` as the bottle
+catalog that owns every recovered payload; the mirror release retains `TA0` as
+its truthful write authority. The embedded mirror plan remains a content
+identity for the payload set, not a second catalog lock.
 
-The tap caller intentionally carries the clearly marked
-`__FINAL_KANDELO_MPRE_SHA__` and `__FINAL_TAP_CATALOG_SHA__` placeholders while
-these two branches are under review. It is not dispatchable release authority
-until both are replaced with the final 40-character Kandelo and catalog
-commits and the tap trust contract is rerun. `TA` is then derived from the
-protected caller commit rather than substituted into its own bytes. This
-public-mirror lane is independent of the existing Bash bottle caller and its
-frozen workflow digest.
+A dependent read-only job resolves the public package generation again and
+anonymously re-reads all four fixed lifecycle assets. Node uses those verified
+local bytes while every tap and bottle request uses public transport. Chromium
+loads the same four fixed inputs anonymously and also uses public transport for
+all tap and bottle traffic. Both hosts install from exact product catalog
+`TF`, require `TA1` to remain public tap main, and run the same stock
+first-party and independent third-party tap lifecycle. Both closed-acceptance
+filesystem roots must be absent.
+
+The schema-1 mirror tag is content-addressed from bottle payloads, while its
+immutable release records the `TA0` that created it. A later `TA1` therefore
+must not redispatch the publisher for the same collection or claim that the
+older release belongs to the new authority. The consume-only path retains
+`TA0`, re-derives and anonymously verifies the exact collection, and admits
+reuse only when `TF -> TA0 -> TA1` holds.
+
+A tap caller is not dispatchable release authority until its `uses:` target
+and every revision input contain the reviewed final 40-character commits and
+the tap trust contract has passed. `TA0` is the first protected live caller:
+it publishes the immutable bottle mirror. `TA1` is a later protected-main
+descendant that pins `TA0`, verifies that mirror without rewriting it, and
+publishes only the four lifecycle assets. Both authority values come from each
+caller's `${{ github.sha }}` rather than being substituted into its own bytes.
+This public-mirror lane is independent of the existing Bash bottle caller and
+its frozen workflow digest.
 
 Refresh the shell release locks with
 `scripts/finalize-homebrew-main-shell-release.py` from one clean checkout of

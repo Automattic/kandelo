@@ -8,7 +8,8 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 M="$(printf 'a%.0s' {1..40})"
 TF="$(printf 'b%.0s' {1..40})"
 C="$(printf 'c%.0s' {1..40})"
-TPUBLISHER="$(printf 'e%.0s' {1..40})"
+TMIRROR="$(printf 'e%.0s' {1..40})"
+TCALLER="$(printf 'f%.0s' {1..40})"
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -60,7 +61,7 @@ make_fixture() {
   ' >"$plan"
   plan_sha="$(sha256_file "$plan")"
   jq -n \
-    --arg tap "$TPUBLISHER" \
+    --arg tap "$TMIRROR" \
     --arg tag "$tag" \
     --arg plan_sha "$plan_sha" \
     --arg bottle_sha "$bottle_sha" \
@@ -100,7 +101,8 @@ make_fixture() {
   jq -n \
     --arg kandelo "$M" \
     --arg tap_catalog "$TF" \
-    --arg tap_authority "$TPUBLISHER" \
+    --arg tap_mirror_authority "$TMIRROR" \
+    --arg tap_caller_authority "$TCALLER" \
     --arg canary "$C" \
     --arg image_sha "$(sha256_file "$root/main-shell.vfs.zst")" \
     --argjson image_bytes "$(bytes "$root/main-shell.vfs.zst")" \
@@ -118,7 +120,8 @@ make_fixture() {
       kind: "kandelo-homebrew-main-shell-mirror-handoff",
       kandelo_ref: $kandelo,
       tap_catalog_ref: $tap_catalog,
-      tap_authority_ref: $tap_authority,
+      tap_mirror_authority_ref: $tap_mirror_authority,
+      tap_caller_authority_ref: $tap_caller_authority,
       canary_ref: $canary,
       files: {
         "main-shell.vfs.zst": { sha256: $image_sha, bytes: $image_bytes },
@@ -142,7 +145,8 @@ verify() {
     --root "$1" \
     --kandelo-ref "$M" \
     --tap-catalog-ref "$TF" \
-    --tap-authority-ref "$TPUBLISHER" \
+    --tap-mirror-authority-ref "$TMIRROR" \
+    --tap-caller-authority-ref "$TCALLER" \
     --canary-ref "$C"
 }
 
@@ -169,10 +173,18 @@ printf 'tamper\n' >"$TMP_ROOT/bottle/mirror/hello.bottle.tar.gz"
 expect_rejected "$TMP_ROOT/bottle"
 
 cp -R "$TMP_ROOT/good" "$TMP_ROOT/authority"
-jq --arg authority "$TF" '.tap_authority_ref = $authority' \
+jq --arg authority "$TF" '.tap_mirror_authority_ref = $authority' \
   "$TMP_ROOT/authority/handoff.json" >"$TMP_ROOT/authority/handoff.changed"
 mv "$TMP_ROOT/authority/handoff.changed" "$TMP_ROOT/authority/handoff.json"
 expect_rejected "$TMP_ROOT/authority"
+
+cp -R "$TMP_ROOT/good" "$TMP_ROOT/caller-authority"
+jq --arg authority "$TMIRROR" '.tap_caller_authority_ref = $authority' \
+  "$TMP_ROOT/caller-authority/handoff.json" \
+  >"$TMP_ROOT/caller-authority/handoff.changed"
+mv "$TMP_ROOT/caller-authority/handoff.changed" \
+  "$TMP_ROOT/caller-authority/handoff.json"
+expect_rejected "$TMP_ROOT/caller-authority"
 
 cp -R "$TMP_ROOT/good" "$TMP_ROOT/target"
 jq --arg tap "$M" '.target_commitish = $tap' \
