@@ -164,6 +164,7 @@ const reclamationMeasurementPressure = (() => {
 const processMemoryRetirementPressureHook =
   createProcessMemoryRetirementPressureHook(reclamationMeasurementPressure);
 let execPrograms: Record<string, string> = {};
+let execProgramBytes: Record<string, ArrayBuffer> = {};
 let vfsExecIO: PlatformIO | null = null;
 let rootfsMemfs: MemoryFileSystem | null = null;
 let initReady = false;
@@ -754,7 +755,17 @@ function bufferToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 }
 
 function resolveExecLocal(path: string): ArrayBuffer | null {
-  const mapped = execPrograms[path];
+  const owned = Object.prototype.hasOwnProperty.call(execProgramBytes, path)
+    ? execProgramBytes[path]
+    : undefined;
+  if (owned !== undefined) {
+    // WHY: process-worker launch transfers its program buffer. Preserve the
+    // worker-lifetime snapshot by lending a fresh copy to every execution.
+    return owned.slice(0);
+  }
+  const mapped = Object.prototype.hasOwnProperty.call(execPrograms, path)
+    ? execPrograms[path]
+    : undefined;
   if (mapped && existsSync(mapped)) {
     const bytes = readFileSync(mapped);
     return bufferToArrayBuffer(bytes);
@@ -991,6 +1002,7 @@ async function handleInit(msg: InitMessage) {
     retirementPressureHook: processMemoryRetirementPressureHook,
   });
   execPrograms = msg.execPrograms ?? {};
+  execProgramBytes = msg.execProgramBytes ?? {};
   workerAdapter = new NodeWorkerAdapter();
   if (!msg.rootfsImage && (msg.sessionSeedTrees?.length ?? 0) > 0) {
     throw new Error("sessionSeedTrees requires rootfsImage");
